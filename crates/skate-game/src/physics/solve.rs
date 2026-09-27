@@ -10,9 +10,9 @@ use skate_core::physics::{
     skeleton_body::PART_COUNT,
 };
 
-pub(super) fn advance(physics:&mut GamePhysics, skater:&mut SkaterRuntime,truck_targets:[f32;2],grab_rising:bool)->Result<(),String> {
+pub(super) fn advance(physics:&mut GamePhysics, skater:&mut SkaterRuntime,truck_targets:[f32;2],carry_tick:super::prop_carry::Tick)->Result<(),String> {
     let restore=crate::modding::player_physics::apply_parts(skater);
-    let result=advance_inner(physics,skater,truck_targets,grab_rising);
+    let result=advance_inner(physics,skater,truck_targets,carry_tick);
     restore.restore(skater);
     result
 }
@@ -20,7 +20,7 @@ fn advance_inner(
     physics: &mut GamePhysics,
     skater: &mut SkaterRuntime,
     truck_targets: [f32; 2],
-    grab_rising: bool,
+    carry_tick: super::prop_carry::Tick,
 ) -> Result<(), String> {
     let mod_before = crate::modding::player_physics::before_solve(physics,skater);
     let before = diagnostics::snapshot(physics, skater);
@@ -60,7 +60,7 @@ fn advance_inner(
             skate_core::math::Vector3::new(0.0, 0.0, 1.0)
         };
         physics.update_prop_carry(
-            grab_rising,
+            carry_tick,
             super::prop_carry::Carrier {
                 state: skater.player_state.current(),
                 position: skate_core::math::Vector3::new(root[3][0], root[3][1], root[3][2]),
