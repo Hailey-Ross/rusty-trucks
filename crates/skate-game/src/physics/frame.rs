@@ -244,7 +244,12 @@ pub(super) fn advance(
     //Teleport resets previous observations, but preserves this pending batch.
     skeleton_queries.publish(&mut skater.player_input.player);
     super::water::apply_board_drag(physics);
-    bevy::log::info_span!("fixed_collision_and_solve").in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets))?;
+    // Prop grab/drop (Phase 3): rising edge of A (controller bit 21). Stock
+    // offboard graphs give A no action of its own; see prop_carry.
+    let controller_words = controls.controller.words();
+    let grab_rising = controller_words[13] & (1 << 21) != 0
+        && controller_words[6] & (1 << 21) == 0;
+    bevy::log::info_span!("fixed_collision_and_solve").in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets, grab_rising))?;
     super::offboard_audit_trace::stage(tick, "solve", physics, skater, controls);
     #[cfg(debug_assertions)]
     super::dev_trace::checkpoint("solve", physics, skater);
