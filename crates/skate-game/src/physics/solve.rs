@@ -47,6 +47,14 @@ fn advance_inner(
     skeleton_query.edge_cos_bend_normal_threshold = -1.0;
     let mut skeleton_world_volumes = skeleton_volumes.clone();
     skeleton_colliders::retain_world_volumes(&mut skeleton_world_volumes, &skater.skeleton_collision);
+    // Dynamic props push back on the skater's live volumes before the queries
+    // below see the freshly re-baked prop triangles.
+    let push_volumes: Vec<_> = board_volumes
+        .iter()
+        .chain(&skeleton_world_volumes)
+        .copied()
+        .collect();
+    physics.step_props(&push_volumes);
     contacts.extend_from_slice(physics.world.query_primitives(
         &skeleton_world_volumes,
         skeleton_query,
