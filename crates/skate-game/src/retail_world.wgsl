@@ -170,7 +170,8 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         lin=(cube*olm*olm*fres+ward*p.water[0].rgb)*p.water[1].y;
         alpha=1.0;
     } else if fam==30u || fam==33u {
-        let t=frame_state.clock.x;
+        // Retail water time (half speed, loops every 5): see retail_render::water_time.
+        let t=frame_state.clock.z;
         // Convert to original UVs for scale/scroll, then back to flipped rows.
         let raw_uv=vec2<f32>(i.uv.x,1.0-i.uv.y);
         let uv_scale=select(1.0,p.water[3].x,fam==33u);

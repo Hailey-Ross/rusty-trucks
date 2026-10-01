@@ -15,8 +15,13 @@ use bevy::{
     prelude::*,
     render::extract_component::ExtractComponent,
     render::{
+        Render, RenderApp, RenderSystems,
+        extract_resource::{ExtractResource, ExtractResourcePlugin},
+        render_asset::RenderAssets,
+        renderer::RenderQueue,
+        storage::GpuShaderStorageBuffer,
         render_resource::{
-            AsBindGroup, Extent3d, Face, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+            AsBindGroup, BufferUsages, Extent3d, Face, RenderPipelineDescriptor, SpecializedMeshPipelineError,
             TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
         },
         storage::ShaderStorageBuffer,
@@ -135,7 +140,7 @@ fn pack_slot(class: usize, layer: usize, clamp: bool) -> u32 {
 /// `shadow.w` gates every dynamic-shadow read in the world shader. Shadows are
 /// out of scope for v1 (RFC 1 D5), so it stays zero and the shader never touches
 /// the cascade bindings; re-enabling them is a write to this field.
-#[derive(Resource, Clone, Default)]
+#[derive(Resource, Clone, Default, ExtractResource)]
 pub(crate) struct FrameStateData {
     pub shadow: Vec4,
     pub clock: Vec4,
@@ -772,6 +777,7 @@ impl MaterialTable {
         // texture ids it wants, so page sizing can see the whole demand.
         let mut requests: Vec<Option<Request>> = Vec::with_capacity(map.materials.len());
         let mut unsupported = 0usize;
+        let mut unsupported_shaders = std::collections::BTreeMap::<String, usize>::new();
         for material in &map.materials {
             let definition = material
                 .retail_definition
@@ -783,6 +789,9 @@ impl MaterialTable {
                 // second world material path to fall back to (RFC 1 D8), so an
                 // unsupported family renders as plain diffuse plus lightmap.
                 unsupported += 1;
+                *unsupported_shaders
+                    .entry(format!("{} (family {})", definition.shader, definition.family))
+                    .or_default() += 1;
                 definition.family = 1;
             }
             requests.push(Some(Request::new(
@@ -796,7 +805,7 @@ impl MaterialTable {
         }
         if unsupported > 0 {
             warn!(
-                "{unsupported} of {} world materials use an unsupported shader family and render as family 1",
+                "{unsupported} of {} world materials use an unsupported shader family and render as family 1: {unsupported_shaders:?}",
                 map.materials.len()
             );
         }
@@ -1369,13 +1378,13 @@ fn load_pca(mut commands: Commands, config: Res<crate::config::Config>) {
 }
 
 fn initialize_frame_state(mut buffers: ResMut<Assets<ShaderStorageBuffer>>) {
-    if let Err(error) = buffers.insert(
-        FRAME_STATE.id(),
-        ShaderStorageBuffer::new(
-            &FrameStateData::default().encode(),
-            RenderAssetUsages::RENDER_WORLD,
-        ),
-    ) {
+    let mut buffer = ShaderStorageBuffer::new(
+        &FrameStateData::default().encode(),
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    // Written in place every frame by `write_frame_state`.
+    buffer.buffer_description.usage |= BufferUsages::COPY_DST;
+    if let Err(error) = buffers.insert(FRAME_STATE.id(), buffer) {
         // Without this buffer every world bind group is unsatisfiable, so the
         // whole map would render black. Fail loudly.
         error!("could not install the shared frame state buffer: {error}");
@@ -1387,18 +1396,39 @@ fn initialize_frame_state(mut buffers: ResMut<Assets<ShaderStorageBuffer>>) {
 /// bindings entirely.
 fn advance_frame_state(
     mut state: ResMut<FrameStateData>,
-    mut buffers: ResMut<Assets<ShaderStorageBuffer>>,
     time: Res<Time>,
     pca: Option<Res<OceanPca>>,
 ) {
     state.clock.x = time.elapsed_secs();
+    state.clock.z = water_time(time.elapsed_secs_f64());
     if let Some(pca) = pca {
         let frame = ((time.elapsed_secs_f64() * f64::from(pca.hz)) as usize) % pca.frames.len();
         state.pca = pca.frames[frame].map(Vec4::from_array);
         state.clock.y = 1.;
     }
-    if let Some(buffer) = buffers.get_mut(&FRAME_STATE) {
-        buffer.data = Some(state.encode());
+}
+
+/// Retail water shader time: the PCA water update adds 1/60 per call and
+/// restarts after 5, and the game calls it once per 30 Hz frame, so the
+/// water's time runs at half real-time speed and loops every 10 s.
+/// Behaviour from the disc build's update routine (0x8276D3D8, reference only).
+fn water_time(elapsed_secs: f64) -> f32 {
+    const RATE: f64 = 0.5;
+    const PERIOD: f64 = 5.0;
+    (elapsed_secs * RATE).rem_euclid(PERIOD) as f32
+}
+
+/// Uploads this frame's state into the one GPU buffer every world material
+/// bound at preparation. Replacing the asset's data instead (as before) makes
+/// Bevy create a new GPU buffer that no existing material bind group sees, so
+/// the clock, ocean PCA and shadow floor stayed at their first values.
+fn write_frame_state(
+    state: Res<FrameStateData>,
+    buffers: Res<RenderAssets<GpuShaderStorageBuffer>>,
+    queue: Res<RenderQueue>,
+) {
+    if let Some(buffer) = buffers.get(FRAME_STATE.id()) {
+        queue.write_buffer(&buffer.buffer, 0, &state.encode());
     }
 }
 
@@ -1421,8 +1451,15 @@ impl Plugin for RetailRenderPlugin {
                 crate::retail_character::CharacterLightingPlugin,
                 crate::retail_exposure::RetailExposurePlugin,
             ))
+            .add_plugins(ExtractResourcePlugin::<FrameStateData>::default())
             .add_systems(Startup, (initialize_frame_state, load_pca))
             .add_systems(Update, advance_frame_state);
+        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.add_systems(
+                Render,
+                write_frame_state.in_set(RenderSystems::PrepareResources),
+            );
+        }
     }
 }
 
@@ -1619,6 +1656,11 @@ mod tests {
         assert_eq!(bytes.len(), MaterialSlots::SIZE);
 
         assert_eq!(FrameStateData::default().encode().len(), FrameStateData::SIZE);
+        // Water time: half speed, restarting every 5 (10 real seconds).
+        assert_eq!(water_time(0.0), 0.0);
+        assert_eq!(water_time(2.0), 1.0);
+        assert!((water_time(9.9) - 4.95).abs() < 1e-5);
+        assert!(water_time(10.0).abs() < 1e-5);
     }
 
     #[test]
