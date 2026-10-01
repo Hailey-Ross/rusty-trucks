@@ -144,6 +144,7 @@ pub(crate) fn build(
     app.add_plugins(crate::scoring_hud::ScoringHudPlugin);
     app.add_plugins(crate::debug_cam::DebugCamPlugin);
     app.add_plugins(crate::water_splash::WaterSplashPlugin);
+    app.add_plugins(crate::game_audio::GameAudioPlugin);
     app.add_systems(Last, crate::crash_context::sample);
     crate::profiling::install(&mut app);
     app

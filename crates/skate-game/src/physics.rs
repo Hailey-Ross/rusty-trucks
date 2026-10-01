@@ -408,6 +408,17 @@ impl Plugin for PhysicsPlugin {
     }
 }
 
+/// Height of each animated foot (left, right) above the ground line test under
+/// it, with that line's surface tag; None where the line found no ground.
+/// Read-only, for game_audio footsteps.
+pub(crate) fn foot_clearance(skater: &SkaterRuntime) -> [Option<(f32, u32)>; 2] {
+    let input = biped_ground::services::feet_input(skater);
+    std::array::from_fn(|i| {
+        let line = &input.lines[i];
+        line.valid.then(|| (input.world_foot_pairs[i][0][1] - line.position[1], line.surface))
+    })
+}
+
 pub(crate) fn advance(
     mut physics: ResMut<GamePhysics>,
     mut skater: ResMut<SkaterRuntime>,

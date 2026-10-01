@@ -1,0 +1,285 @@
+//! Voice pool for game sounds. Same playback model as the mod adapter
+//! (modding/audio.rs): Bevy `AudioPlayer` entities whose sink gain and speed are
+//! smoothed every frame. Pitch is playback speed, so it also changes duration.
+//!
+//! Loudness rules (keep them; the user asked for safe test levels):
+//! - a requested volume may raise a quiet clip only until the clip's own peak
+//!   reaches full scale (and never more than x4); category and master volumes
+//!   (both <= 1) then scale it down. No clip plays hotter than full scale x master;
+//! - sounds start silent and fade in over at least `MIN_FADE`;
+//! - at most `MAX_VOICES` voices, `MAX_PER_CLIP` of one sound, and a repeat of
+//!   the same sound needs `MIN_REPEAT` seconds.
+use super::{AudioSettings, library::Clip};
+use bevy::{
+    audio::{AudioSinkPlayback, PlaybackMode, SpatialScale, Volume},
+    prelude::*,
+};
+
+const MAX_VOICES: usize = 32;
+const MAX_PER_CLIP: usize = 3;
+const MIN_REPEAT: f64 = 0.04;
+const MIN_FADE: f32 = 0.01;
+/// World metres are scaled by this before Bevy's distance attenuation, which
+/// never amplifies (gain = min(1, 1 / distance^2)). 0.1 keeps a skater a few
+/// metres from the camera at full level, like the mod adapter's default.
+const SPATIAL_SCALE: f32 = 0.1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Category {
+    Ambience,
+    Effects,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Play {
+    pub category: Category,
+    pub volume: f32,
+    pub pitch: f32,
+    /// World position for a spatial sound; None plays it unpanned.
+    pub position: Option<Vec3>,
+    pub looping: bool,
+    pub fade_in: f32,
+}
+impl Play {
+    pub(crate) fn effect(volume: f32, position: Vec3) -> Self {
+        Self { category: Category::Effects, volume, pitch: 1.0, position: Some(position), looping: false, fade_in: MIN_FADE }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct VoiceId(u64);
+
+struct Voice {
+    id: VoiceId,
+    entity: Entity,
+    key: std::sync::Arc<str>,
+    category: Category,
+    looping: bool,
+    volume: f32,
+    max_volume: f32,
+    pitch: f32,
+    gain: f32,
+    speed: f32,
+    position: Option<Vec3>,
+    attack: f32,
+    attack_elapsed: f32,
+    stopping: Option<(f32, f32)>,
+    pending: f32,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct Voices {
+    voices: Vec<Voice>,
+    next: u64,
+    last_start: std::collections::HashMap<std::sync::Arc<str>, f64>,
+}
+
+/// Largest volume for a clip whose loudest sample is `peak` (0..1 of full scale).
+fn max_volume(peak: f32) -> f32 {
+    if peak.is_finite() && peak > 0.0 { (1.0 / peak).clamp(1.0, 4.0) } else { 1.0 }
+}
+fn clamp_volume(volume: f32, max: f32) -> f32 {
+    if volume.is_finite() { volume.clamp(0.0, max) } else { 0.0 }
+}
+fn clamp_pitch(pitch: f32) -> f32 {
+    if pitch.is_finite() { pitch.clamp(0.25, 4.0) } else { 1.0 }
+}
+
+impl Voices {
+    /// Whether a new voice for `clip` may start now (`now` = real seconds).
+    fn admit(&self, clip: &Clip, now: f64) -> bool {
+        let active = self.voices.iter().filter(|v| v.stopping.is_none());
+        if self.voices.len() >= MAX_VOICES || active.filter(|v| v.key == clip.key).count() >= MAX_PER_CLIP {
+            return false;
+        }
+        self.last_start.get(&clip.key).is_none_or(|t| now - t >= MIN_REPEAT)
+    }
+
+    pub(crate) fn play(&mut self, commands: &mut Commands, clip: &Clip, play: Play, now: f64) -> Option<VoiceId> {
+        if !self.admit(clip, now) {
+            return None;
+        }
+        self.last_start.insert(clip.key.clone(), now);
+        let speed = clamp_pitch(play.pitch);
+        let settings = PlaybackSettings {
+            mode: if play.looping { PlaybackMode::Loop } else { PlaybackMode::Once },
+            // Silent until `sync` applies the faded-in gain.
+            volume: Volume::Linear(0.0),
+            speed,
+            paused: true,
+            spatial: play.position.is_some(),
+            spatial_scale: Some(SpatialScale::new(SPATIAL_SCALE)),
+            ..Default::default()
+        };
+        let transform = Transform::from_translation(play.position.unwrap_or(Vec3::ZERO));
+        let entity = commands.spawn((AudioPlayer::new(clip.handle.clone()), settings, transform)).id();
+        let id = VoiceId(self.next);
+        self.next += 1;
+        self.voices.push(Voice {
+            id, entity, key: clip.key.clone(), category: play.category, looping: play.looping,
+            volume: clamp_volume(play.volume, max_volume(clip.peak)), max_volume: max_volume(clip.peak), pitch: speed, gain: 0.0, speed,
+            position: play.position, attack: play.fade_in.max(MIN_FADE), attack_elapsed: 0.0,
+            stopping: None, pending: 0.0,
+        });
+        Some(id)
+    }
+
+    /// Change a playing voice's target volume, pitch and position (smoothed).
+    pub(crate) fn set(&mut self, id: VoiceId, volume: f32, pitch: f32, position: Option<Vec3>) {
+        if let Some(v) = self.voices.iter_mut().find(|v| v.id == id && v.stopping.is_none()) {
+            v.volume = clamp_volume(volume, v.max_volume);
+            v.pitch = clamp_pitch(pitch);
+            if v.position.is_some() {
+                v.position = position.or(v.position);
+            }
+        }
+    }
+
+    /// Fade out and remove. Repeated calls never extend the fade.
+    pub(crate) fn stop(&mut self, id: VoiceId, fade: f32) {
+        if let Some(v) = self.voices.iter_mut().find(|v| v.id == id) {
+            if v.stopping.is_none() {
+                let fade = fade.max(MIN_FADE);
+                v.stopping = Some((fade, fade));
+            }
+        }
+    }
+
+    pub(crate) fn playing(&self, id: VoiceId) -> bool {
+        self.voices.iter().any(|v| v.id == id)
+    }
+
+    /// Whether any voice still plays `clip` (fading voices included).
+    pub(crate) fn uses(&self, clip: &Clip) -> bool {
+        self.voices.iter().any(|v| v.key == clip.key)
+    }
+}
+
+fn set_sink(sink: &mut impl AudioSinkPlayback, volume: f32, speed: f32, paused: bool) -> bool {
+    sink.set_volume(Volume::Linear(volume));
+    sink.set_speed(speed);
+    if paused {
+        if !sink.is_paused() { sink.pause(); }
+    } else if sink.is_paused() {
+        sink.play();
+    }
+    sink.empty()
+}
+
+type SinkQuery<'w, 's> = Query<
+    'w, 's,
+    (Option<&'static mut AudioSink>, Option<&'static mut SpatialAudioSink>, &'static mut PlaybackSettings, &'static mut Transform),
+>;
+
+pub(super) fn sync(
+    mut commands: Commands,
+    mut voices: ResMut<Voices>,
+    mut sinks: SinkQuery,
+    settings: Option<Res<AudioSettings>>,
+    time: Res<Time<Real>>,
+    menu: Option<Res<crate::graphics_menu::Menu>>,
+    replay: Res<crate::replay::Replay>,
+) {
+    let Some(settings) = settings else { return };
+    let dt = time.delta_secs().clamp(0.0, 0.25);
+    let silenced = super::silenced(menu.as_deref(), &replay);
+    let master = settings.master().clamp(0.0, 1.0);
+    let mut finished = Vec::new();
+    for v in &mut voices.voices {
+        let Ok((sink, spatial, mut playback, mut transform)) = sinks.get_mut(v.entity) else {
+            // Not spawned yet (commands from this frame) or despawned elsewhere.
+            v.pending += dt;
+            if v.pending > 1.0 { finished.push(v.id); }
+            continue;
+        };
+        if let Some(position) = v.position { transform.translation = position; }
+        if !silenced { v.attack_elapsed += dt; }
+        let attack = (v.attack_elapsed / v.attack).min(1.0);
+        let mut release = 1.0;
+        if let Some((remaining, total)) = &mut v.stopping {
+            *remaining -= dt;
+            release = (*remaining / *total).max(0.0);
+            if *remaining <= 0.0 { finished.push(v.id); continue; }
+        }
+        // Smooths parameter steps only (no dynamics processing).
+        v.gain += (v.volume - v.gain) * (1.0 - (-dt / 0.012).exp());
+        v.speed += (v.pitch - v.speed) * (1.0 - (-dt / 0.025).exp());
+        let category = settings.category(v.category).clamp(0.0, 1.0);
+        let gain = (v.gain * attack * release).clamp(0.0, v.max_volume) * category * master;
+        let speed = v.speed.clamp(0.25, 4.0);
+        // Before Bevy creates the sink, keep its initial settings current.
+        playback.volume = Volume::Linear(gain);
+        playback.speed = speed;
+        playback.paused = silenced;
+        let done = if let Some(mut sink) = sink {
+            Some(set_sink(&mut *sink, gain, speed, silenced))
+        } else if let Some(mut sink) = spatial {
+            Some(set_sink(&mut *sink, gain, speed, silenced))
+        } else {
+            None
+        };
+        match done {
+            Some(true) if !v.looping => finished.push(v.id),
+            Some(_) => v.pending = 0.0,
+            None => {
+                if !silenced { v.pending += dt; }
+                if v.pending > 2.0 && !v.looping { finished.push(v.id); }
+            }
+        }
+    }
+    voices.voices.retain(|v| {
+        let keep = !finished.contains(&v.id);
+        if !keep {
+            if let Ok(mut entity) = commands.get_entity(v.entity) { entity.despawn(); }
+        }
+        keep
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clip(name: &str) -> Clip {
+        Clip { handle: Handle::default(), key: name.into(), peak: 1.0 }
+    }
+
+    #[test]
+    fn requested_levels_are_clamped() {
+        assert_eq!(clamp_volume(3.0, 1.0), 1.0);
+        assert_eq!(clamp_volume(-1.0, 1.0), 0.0);
+        assert_eq!(clamp_volume(f32::NAN, 1.0), 0.0);
+        // A clip peaking at -12 dBFS may be raised x~4 (to full scale), never more.
+        assert_eq!(max_volume(0.25), 4.0);
+        assert_eq!(max_volume(0.5), 2.0);
+        assert_eq!(max_volume(0.1), 4.0);
+        assert_eq!(max_volume(1.0), 1.0);
+        assert_eq!(max_volume(0.0), 1.0);
+        assert_eq!(clamp_pitch(f32::INFINITY), 1.0);
+    }
+
+    #[test]
+    fn limits_voices_per_clip_and_repeats() {
+        let mut world = World::new();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &world);
+        let mut voices = Voices::default();
+        let pop = clip("pop");
+        let play = Play::effect(2.0, Vec3::ZERO);
+        let first = voices.play(&mut commands, &pop, play, 0.0).unwrap();
+        assert_eq!(voices.voices[0].volume, 1.0, "volume clamped");
+        assert!(voices.play(&mut commands, &pop, play, 0.01).is_none(), "repeat too soon");
+        assert!(voices.play(&mut commands, &pop, play, 0.05).is_some());
+        assert!(voices.play(&mut commands, &pop, play, 0.10).is_some());
+        assert!(voices.play(&mut commands, &pop, play, 0.20).is_none(), "three of one sound at most");
+        voices.stop(first, 0.1);
+        voices.stop(first, 5.0);
+        assert_eq!(voices.voices[0].stopping, Some((0.1, 0.1)));
+        assert!(voices.play(&mut commands, &pop, play, 0.30).is_some(), "fading voices do not count");
+        for i in 0..64 {
+            voices.play(&mut commands, &clip(&format!("c{i}")), play, 1.0);
+        }
+        assert_eq!(voices.voices.len(), MAX_VOICES);
+        queue.apply(&mut world);
+    }
+}

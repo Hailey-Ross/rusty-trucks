@@ -46,6 +46,9 @@ pub struct WheelLineState {
     pub normals: [Vector3; 4],
     pub distances: [f32; 4],
     pub physics_surfaces: [u32; 4],
+    /// Audio material (surface tag bits 0..6, `& 0x7F`) per wheel, 0 on a miss. Not
+    /// part of 82C079E0; kept for the engine's rolling sound.
+    pub audio_surfaces: [u32; 4],
     pub minimum_distance: f32,
 }
 impl Default for WheelLineState {
@@ -55,6 +58,7 @@ impl Default for WheelLineState {
             normals: [UP; 4],
             distances: [0.0; 4],
             physics_surfaces: [0; 4],
+            audio_surfaces: [0; 4],
             minimum_distance: 0.0,
         }
     }
@@ -66,6 +70,7 @@ impl WheelLineState {
         self.minimum_distance = WHEEL_LINE_LENGTH;
         for (i, hit) in hits.into_iter().enumerate() {
             self.physics_surfaces[i] = 0;
+            self.audio_surfaces[i] = 0;
             if let Some(hit) = hit {
                 let distance = hit.fraction * WHEEL_LINE_LENGTH;
                 self.minimum_distance = if distance - self.minimum_distance >= -0.0 {
@@ -76,6 +81,7 @@ impl WheelLineState {
                 self.normals[i] = hit.normal;
                 self.distances[i] = distance;
                 self.physics_surfaces[i] = (hit.surface_tag >> 7) & 31;
+                self.audio_surfaces[i] = hit.surface_tag & 0x7F;
             }
         }
     }
