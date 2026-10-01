@@ -12,7 +12,8 @@ Each document stands alone. File paths are relative to the repository root.
 | 1 | [ISO extraction argument order](01-iso-extraction.md) | Setup (Python) | Done, verified with a real ISO |
 | 2 | [Windows long paths during setup](02-long-paths.md) | Setup (Python) | Done; UAC path not exercised end to end |
 | 3 | [SDL3 gamepad input](03-sdl3-gamepad-input.md) | Game (Rust), build scripts, vendored `sdl3-sys` | Done, verified in play with an Xbox Elite Series 2 |
-| 4 | [Authored map spawns](04-map-spawns.md) | Asset pipeline (Python) | Done; in-game confirmation in progress |
+| 4 | [Authored map spawns](04-map-spawns.md) | Asset pipeline (Python) | Done, all 10 maps confirmed in play |
+| 5 | [Invisible collision volumes](05-collision-volumes.md) | Game data loader (Rust) | Done, all four affected maps confirmed in play |
 
 ## Environment used for verification
 
