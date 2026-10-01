@@ -6,19 +6,47 @@ from tools.owned_game.big import BigArchive
 
 TOOLS=Path(__file__).resolve().parents[1]
 
+GIB=1024**3
+
+def available_memory():
+    """Available physical memory in bytes, or None where it cannot be queried."""
+    if os.name!='nt':return None
+    import ctypes
+    class Memory(ctypes.Structure):
+        _fields_=[('length',ctypes.c_ulong),('load',ctypes.c_ulong)]+[(name,ctypes.c_ulonglong) for name in
+            ('total','available','page_total','page_available','virtual_total','virtual_available','extended')]
+    memory=Memory();memory.length=ctypes.sizeof(memory)
+    return memory.available if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)) else None
+
 def map_workers():
     count=min(3,max(1,(os.cpu_count() or 1)//2))
-    if os.name=='nt':
-        import ctypes
-        class Memory(ctypes.Structure):
-            _fields_=[('length',ctypes.c_ulong),('load',ctypes.c_ulong)]+[(name,ctypes.c_ulonglong) for name in
-                ('total','available','page_total','page_available','virtual_total','virtual_available','extended')]
-        memory=Memory();memory.length=ctypes.sizeof(memory)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)):
-            # Reserve memory for the desktop; each map and its loader can
-            # briefly hold several copies of geometry and textures.
-            count=min(count,max(1,(memory.available-2*1024**3)//(3*1024**3)))
+    available=available_memory()
+    if available is not None:
+        # Reserve memory for the desktop; each map and its loader can
+        # briefly hold several copies of geometry and textures.
+        count=min(count,max(1,(available-2*GIB)//(3*GIB)))
     return count
+
+def overlap_customiser(workers):
+    """Run the character customiser beside the map jobs only with room for one
+    more 3 GiB slot on top of the map workers and the 2 GiB desktop reserve."""
+    available=available_memory()
+    return available is None or available>=2*GIB+(workers+1)*3*GIB
+
+class Background:
+    """Run an action on a thread; join() waits and re-raises its exception."""
+    def __init__(self,action,name):
+        import threading
+        self.error=None
+        def target():
+            try:action()
+            except BaseException as error:self.error=error
+        self.thread=threading.Thread(target=target,name=name,daemon=True)
+        self.thread.start()
+
+    def join(self):
+        self.thread.join()
+        if self.error is not None:raise self.error
 XISO_URL='https://github.com/XboxDev/extract-xiso/releases/download/build-202505152050/extract-xiso-Win64_Release.zip'
 XISO_SHA='fec88d03c7efd6205ab09be4abba70c0afd0eb27a5709f0a6235b828ba5ac11e'
 
@@ -411,6 +439,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
                 note(private/'native-props/props-availability.json','Movable props',error,report=report)
         report('Validating skater, input and animation data')
         validator=start_validator(game_exe,stage/'assets',log,report)
+        customiser=None  # Background customiser when overlapped with the map stage
         def validate(request):
             """Today's checks raise (map rejected); new findings come back as warnings."""
             nonlocal validator
@@ -430,6 +459,12 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             archives=list((game_root/'data/content').glob('worldDIST_*.big'))
             archives.sort(key=lambda p:(p.stem!='worldDIST_University',p.name.lower()))
             workers=map_workers()
+            # The customiser reads only stock, default-skater and disc data (all
+            # prepared above) and writes only assets/private/customisation, so it
+            # runs beside the map jobs instead of after them.
+            if finalize and overlap_customiser(workers):
+                report('Preparing the character customiser alongside the maps')
+                customiser=Background(lambda:finalize(stage),'customiser')
             report(f'Converting {len(archives)} maps with {workers} workers')
             def map_job(archive):
                 result=work/(archive.stem+'.json')
@@ -492,7 +527,8 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             if selected.is_file() and not (stage/json.loads(selected.read_text())).is_file():
                 selected.write_text(json.dumps(catalog[0]['path']))
         remove_intermediate(work,stage)
-        if finalize:finalize(stage)
+        if customiser is not None:customiser.join()
+        elif finalize:finalize(stage)
         from .validation_report import summary
         warnings=summary(stage)
     # Publish after core validation and all optional outcomes have been recorded.

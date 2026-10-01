@@ -99,5 +99,28 @@ class MapValidatorTests(unittest.TestCase):
         install.record_validation(private, entry, None, self.reports.append)
         self.assertEqual(entry['phase_seconds']['validate'], 0.2)
 
+
+class CustomiserOverlapTests(unittest.TestCase):
+    def test_background_join_waits_and_reraises(self):
+        done = []
+        install.Background(lambda: done.append(1), 'ok').join()
+        self.assertEqual(done, [1])
+        failing = install.Background(lambda: (_ for _ in ()).throw(RuntimeError('customiser failed')), 'bad')
+        with self.assertRaisesRegex(RuntimeError, 'customiser failed'):
+            failing.join()
+
+    def test_overlap_needs_one_more_slot_than_the_map_workers(self):
+        original = install.available_memory
+        try:
+            install.available_memory = lambda: (2 + 4 * 3) * install.GIB      # 3 workers + customiser fit
+            self.assertTrue(install.overlap_customiser(3))
+            install.available_memory = lambda: (2 + 4 * 3) * install.GIB - 1  # one byte short
+            self.assertFalse(install.overlap_customiser(3))
+            install.available_memory = lambda: None                           # cannot query: allowed
+            self.assertTrue(install.overlap_customiser(3))
+        finally:
+            install.available_memory = original
+
+
 if __name__ == '__main__':
     unittest.main()
