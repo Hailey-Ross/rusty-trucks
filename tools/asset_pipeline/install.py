@@ -433,7 +433,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         if 'character' in groups:
             exports.character(game_root,stage,work,report,log,converted)
         if 'environment' in groups:
-            exports.environment(game_root,stage,work,report,log,converted)
+            exports.environment(game_root,stage,work,report,log,converted,game_exe)
         if 'maps' in groups:
             report('Preparing authored movable-object models')
             from .dynamic_props import prepare_catalog
