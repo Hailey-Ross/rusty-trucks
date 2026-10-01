@@ -28,11 +28,46 @@ fn main() {
                 continue;
             }
         };
+        if let Ok(ids) = std::env::var("MATERIAL") {
+            let ids: Vec<usize> = ids.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            material_info(&map, &ids);
+            continue;
+        }
+        if let Ok(ids) = std::env::var("TEXTURES") {
+            let ids: Vec<usize> = ids.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            println!("{}: textures", map.name);
+            texture_stats(&map, &ids);
+            continue;
+        }
+        if let Ok(model) = std::env::var("MODEL_MATERIALS") {
+            println!("{}: materials of {model}", map.name);
+            model_materials(&map, &model);
+            continue;
+        }
+        if let Ok(at) = std::env::var("RENDER_AT") {
+            let v: Vec<f32> = at.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            if let [x, z, ref rest @ ..] = v[..] {
+                println!("{}: render materials near ({x}, {z})", map.name);
+                render_at(&map, x, z, rest.first().copied().unwrap_or(3.));
+            }
+            continue;
+        }
         render_water(&map);
+        water_bindings(&map);
         let Some(archive) = map.extensions.iter().find(|e| e.tag == *b"RWCM") else {
             println!("{}: no RWCM collision", map.name);
             continue;
         };
+        if let Ok(view) = std::env::var("WATER_VIEW") {
+            let v: Vec<f32> = view.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            if let [x, y, z, ref rest @ ..] = v[..] {
+                println!("{}: view spots near ({x}, {y}, {z})", map.name);
+                let reach = rest.first().copied().unwrap_or(20.);
+                let rise = rest.get(1).copied().unwrap_or(3.);
+                view_spots(&archive.payload, x, y, z, reach, rise);
+            }
+            continue;
+        }
         let mut types = [0_usize; 32];
         let mut water = Water {
             min: [f32::MAX; 3],
@@ -139,6 +174,7 @@ fn main() {
 }
 
 /// Height range of render meshes whose retail shader is water.* or ocean.*.
+/// SKATE vertex material ids are 1-based.
 fn render_water(map: &skate_data::skate_map::SkateMap) {
     let shader = |m: &skate_data::skate_map::Material| {
         let bytes = m.retail_definition.as_deref()?;
@@ -151,10 +187,10 @@ fn render_water(map: &skate_data::skate_map::SkateMap) {
     let shaders: Vec<_> = map.materials.iter().map(shader).collect();
     let mut ranges = BTreeMap::<(String, String), ([f32; 3], [f32; 3], usize)>::new();
     for v in &map.geometry.vertices {
-        let Some(Some(name)) = shaders.get(v.material as usize) else {
+        let Some(Some(name)) = shaders.get((v.material as usize).wrapping_sub(1)) else {
             continue;
         };
-        let key = (name.clone(), map.materials[v.material as usize].name.clone());
+        let key = (name.clone(), map.materials[v.material as usize - 1].name.clone());
         let entry = ranges.entry(key).or_insert(([f32::MAX; 3], [f32::MIN; 3], 0));
         for axis in 0..3 {
             entry.0[axis] = entry.0[axis].min(v.position[axis]);
@@ -166,6 +202,218 @@ fn render_water(map: &skate_data::skate_map::SkateMap) {
         println!(
             "  render {shader} {material}: {n} vertices, y {:.2}..{:.2}, x {:.0}..{:.0}, z {:.0}..{:.0}",
             min[1], max[1], min[0], max[0], min[2], max[2]
+        );
+    }
+}
+
+/// Texture bindings of each distinct water/ocean material definition and
+/// whether the referenced 1-based texture id exists in the map.
+/// Definition layout: retail_render::Definition::parse.
+pub fn water_bindings(map: &skate_data::skate_map::SkateMap) {
+    struct R<'a>(&'a [u8]);
+    impl<'a> R<'a> {
+        fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+            let v = self.0.get(..n)?;
+            self.0 = &self.0[n..];
+            Some(v)
+        }
+        fn u32(&mut self) -> Option<u32> {
+            Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+        }
+        fn text(&mut self) -> Option<String> {
+            let n = self.u32()? as usize;
+            Some(String::from_utf8_lossy(self.take(n)?).into_owned())
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for m in &map.materials {
+        let Some(bytes) = m.retail_definition.as_deref() else { continue };
+        let mut r = R(bytes);
+        let parsed = (|| {
+            r.take(16)?;
+            let shader = r.text()?;
+            let family = r.u32()?;
+            let _flags = r.u32()?;
+            let mut bindings = Vec::new();
+            for _ in 0..r.u32()? {
+                let role = r.text()?;
+                let texture = r.u32()?;
+                let (_uv, _u, _v) = (r.u32()?, r.u32()?, r.u32()?);
+                bindings.push((role, texture));
+            }
+            Some((shader, family, bindings))
+        })();
+        let Some((shader, family, bindings)) = parsed else { continue };
+        if !(shader.starts_with("water.") || shader.starts_with("ocean.")) {
+            continue;
+        }
+        let described: Vec<_> = bindings
+            .iter()
+            .map(|(role, id)| {
+                let t = (*id as usize).checked_sub(1).and_then(|i| map.textures.get(i));
+                match t {
+                    Some(t) => format!("{role}={id}:{}({}x{})", t.name, t.width, t.height),
+                    None => format!("{role}={id}:MISSING"),
+                }
+            })
+            .collect();
+        let key = format!("{shader} fam{family} textures={:?} | {}", m.textures, described.join(", "));
+        if seen.insert(key.clone()) {
+            println!("  binding {key}");
+        }
+    }
+}
+
+/// `WATER_VIEW=x,y,z[,max_distance,max_height]`: flat, dry (non-water) ground
+/// 6 m to max_distance (20) from a water point within max_height (3) of it,
+/// nearest first: somewhere to stand and look.
+pub fn view_spots(archive: &[u8], x: f32, y: f32, z: f32, reach: f32, rise: f32) {
+    let mut spots = Vec::new();
+    let _ = skate_data::retail_collision::visit_clusters(archive, |_, cluster| {
+        for t in cluster {
+            let kind = (t.surface >> 7) & 31;
+            if !t.has_surface || kind == WATER || kind == 0 {
+                continue;
+            }
+            let [a, b, c] = t.points;
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let area = len / 2.;
+            // Retail winding is inconsistent: accept flat faces either way up.
+            if len == 0. || (n[1] / len).abs() < 0.95 || area < 1. {
+                continue;
+            }
+            let p: [f32; 3] = core::array::from_fn(|i| (a[i] + b[i] + c[i]) / 3.);
+            let d = ((p[0] - x).powi(2) + (p[2] - z).powi(2)).sqrt();
+            if (6.0..=reach).contains(&d) && (p[1] - y).abs() < rise {
+                spots.push((d, p, kind, area));
+            }
+        }
+        Ok(())
+    });
+    spots.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (d, p, kind, area) in spots.iter().take(6) {
+        let heading = (x - p[0]).atan2(z - p[2]);
+        println!(
+            "  view {:.1} {:.2} {:.1} heading {heading:.3} (type {kind}, {area:.0} m2, {d:.1} m from water)",
+            p[0], p[1], p[2]
+        );
+    }
+}
+
+/// `RENDER_AT=x,z[,radius]`: render materials of triangles whose centroid is
+/// within `radius` (3 m) of x,z horizontally, with their shader and height.
+pub fn render_at(map: &skate_data::skate_map::SkateMap, x: f32, z: f32, radius: f32) {
+    let mut found = BTreeMap::<(u32, String), (usize, f32, f32)>::new();
+    for tri in map.geometry.indices.chunks_exact(3) {
+        let v: [&skate_data::skate_map::Vertex; 3] = core::array::from_fn(|k| &map.geometry.vertices[tri[k] as usize]);
+        let c: [f32; 3] = core::array::from_fn(|a| v.iter().map(|v| v.position[a]).sum::<f32>() / 3.);
+        // Triangles directly above/below x,z, or with a centroid within radius.
+        let [a, b, d] = v.map(|v| [v.position[0], v.position[2]]);
+        let side = |p: [f32; 2], q: [f32; 2]| (q[0] - p[0]) * (z - p[1]) - (q[1] - p[1]) * (x - p[0]);
+        let (s1, s2, s3) = (side(a, b), side(b, d), side(d, a));
+        let area = ((b[0] - a[0]) * (d[1] - a[1]) - (b[1] - a[1]) * (d[0] - a[0])).abs();
+        let inside = area > 1e-4
+            && ((s1 >= 0. && s2 >= 0. && s3 >= 0.) || (s1 <= 0. && s2 <= 0. && s3 <= 0.));
+        if !inside && (c[0] - x).hypot(c[2] - z) > radius {
+            continue;
+        }
+        let material = v[0].material;
+        let m = &map.materials[material as usize - 1];
+        let shader = m
+            .retail_definition
+            .as_deref()
+            .and_then(|b| {
+                let n = u32::from_le_bytes(b.get(16..20)?.try_into().ok()?) as usize;
+                Some(String::from_utf8_lossy(b.get(20..20 + n)?).into_owned())
+            })
+            .unwrap_or_else(|| "(portable)".into());
+        let e = found.entry((material, shader)).or_insert((0, f32::MAX, f32::MIN));
+        e.0 += 1;
+        e.1 = e.1.min(c[1]);
+        e.2 = e.2.max(c[1]);
+    }
+    for ((material, shader), (n, lo, hi)) in found {
+        println!("  render at: material {material} {shader} ({}) {n} tris, y {lo:.2}..{hi:.2}", map.materials[material as usize - 1].name);
+    }
+}
+
+/// `MODEL_MATERIALS=0x<model guid>`: each material of one retail model, with
+/// shader, vertex count, height range and whether its geometry is flat.
+pub fn model_materials(map: &skate_data::skate_map::SkateMap, model: &str) {
+    let shader_of = |m: &skate_data::skate_map::Material| {
+        m.retail_definition
+            .as_deref()
+            .and_then(|b| {
+                let n = u32::from_le_bytes(b.get(16..20)?.try_into().ok()?) as usize;
+                Some(String::from_utf8_lossy(b.get(20..20 + n)?).into_owned())
+            })
+            .unwrap_or_else(|| "(portable)".into())
+    };
+    let mut ranges = BTreeMap::<u32, (usize, f32, f32, [f32; 4])>::new();
+    for v in &map.geometry.vertices {
+        if !map.materials[v.material as usize - 1].name.starts_with(model) {
+            continue;
+        }
+        let e = ranges.entry(v.material).or_insert((0, f32::MAX, f32::MIN, [f32::MAX, f32::MIN, f32::MAX, f32::MIN]));
+        e.0 += 1;
+        e.1 = e.1.min(v.position[1]);
+        e.2 = e.2.max(v.position[1]);
+        e.3 = [e.3[0].min(v.position[0]), e.3[1].max(v.position[0]), e.3[2].min(v.position[2]), e.3[3].max(v.position[2])];
+    }
+    let mut rows: Vec<_> = ranges.into_iter().collect();
+    rows.sort_by(|a, b| map.materials[a.0 as usize - 1].name.cmp(&map.materials[b.0 as usize - 1].name));
+    for (material, (n, lo, hi, xz)) in rows {
+        let m = &map.materials[material as usize - 1];
+        println!(
+            "  model {} {:30} {n:5} verts y {lo:7.2}..{hi:7.2}{} x {:.0}..{:.0} z {:.0}..{:.0}",
+            m.name, shader_of(m), if hi - lo < 0.01 { " FLAT" } else { "" }, xz[0], xz[1], xz[2], xz[3]
+        );
+    }
+}
+
+/// `TEXTURES=id,id,...`: size, colour space and mean RGBA of 1-based texture ids.
+pub fn texture_stats(map: &skate_data::skate_map::SkateMap, ids: &[usize]) {
+    for &id in ids {
+        let Some(t) = id.checked_sub(1).and_then(|i| map.textures.get(i)) else {
+            println!("  texture {id}: missing");
+            continue;
+        };
+        let mut sum = [0f64; 4];
+        let mut max = [0u8; 4];
+        let px = t.rgba.len() / 4;
+        for p in t.rgba.chunks_exact(4) {
+            for c in 0..4 {
+                sum[c] += f64::from(p[c]);
+                max[c] = max[c].max(p[c]);
+            }
+        }
+        let mean = sum.map(|s| s / px.max(1) as f64);
+        println!(
+            "  texture {id} {} {}x{} space {} mean rgba {:.0} {:.0} {:.0} {:.0} max {:?}",
+            t.name, t.width, t.height, t.color_space, mean[0], mean[1], mean[2], mean[3], max
+        );
+    }
+}
+
+/// `MATERIAL=id,...`: portable alpha mode/cutoff and retail flags of 1-based material ids.
+pub fn material_info(map: &skate_data::skate_map::SkateMap, ids: &[usize]) {
+    for &id in ids {
+        let Some(m) = id.checked_sub(1).and_then(|i| map.materials.get(i)) else { continue };
+        let def = m.retail_definition.as_deref().unwrap_or(&[]);
+        let shader_len = def.get(16..20).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+        let at = 20 + shader_len;
+        let word = |o: usize| def.get(at + o..at + o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+        println!(
+            "  material {id} {} {} alpha_mode {} cutoff {} family {:?} render_flags {:?}",
+            m.name,
+            String::from_utf8_lossy(def.get(20..at).unwrap_or(&[])),
+            m.alpha_mode,
+            m.alpha_cutoff,
+            word(0),
+            word(4)
         );
     }
 }

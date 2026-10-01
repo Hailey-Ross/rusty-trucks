@@ -1,6 +1,6 @@
-# Water (investigation in progress)
+# Water
 
-Branch: `gameplay/water`. Status: **water bail confirmed in play; water animation extraction added, awaiting in-play check.**
+Branch: `gameplay/water`. Status: **water bail and animated water confirmed in play. Splash/ripple effects not implemented.**
 
 ## Problem
 
@@ -155,6 +155,46 @@ fell back to static shading (black for `ocean.default`, which has no diffuse).
   `ocean_pca.py` to the group). Failure is optional content, like other
   environment parts. Changing the environment recipe refreshes that group once.
 
+### Water animation was frozen: per-frame shader state never reached the GPU
+
+With the table in place the water still did not move (user). The shared
+`FrameStateData` buffer (clock, PCA frame, shadow floor) was updated by
+replacing the `ShaderStorageBuffer` asset's data every frame. Bevy 0.18's
+`GpuShaderStorageBuffer::prepare_asset` then creates a new GPU buffer
+(`create_buffer_with_data`), but each world material's bind group cloned the
+first buffer at preparation and never sees the new one, so every world shader
+read the initial state: clock 0, no PCA frame. Pre-existing upstream bug; it also
+froze family 14 UV scrolling and the shadow floor colour.
+
+`retail_render.rs`: the buffer is created once with `COPY_DST`; `FrameStateData`
+is extracted to the render world (`ExtractResourcePlugin`) and
+`write_frame_state` writes it in place with `RenderQueue::write_buffer` in
+`RenderSystems::PrepareResources`. Confirmed in play: the water animates.
+
+### Water time
+
+The user found the water over-animated. The animation itself is time-based,
+not frame-rate based, and the PCA frame rate matches retail (the disc build's
+update routine advances one frame per 1/30 s, nearest frame, rows /255, which is
+what we do). The same routine also keeps the water shader's time: +1/60 per call
+(once per 30 Hz frame), restarting after 5. So retail water time runs at half
+real-time speed and loops every 10 s. `retail_render::water_time` reproduces
+that in `clock.z`, used only by the water path (families 30/33); family 14 keeps
+real time (its retail time source is unconfirmed). Behaviour re-implemented,
+not copied; the disassembly was reference only.
+
+### University water looks darker than DownTown's (data, not a bug)
+
+`RENDER_AT` shows the materials at each test spot: University fountain
+`water.flowing` (family 30), University reservoir `ocean.default` (31),
+DownTown fountain `water.alpha` (33, transparent). University's flowing water
+uses a pure black base texture and a reflection cube authored nearly black
+(both the DXT1 256x1536 and the B5G6R5 32x192 copies decode to about 9,12,15),
+so it shows only sun highlights; DownTown's has a dark-blue base and a bright
+sky cube. Texture decoding was checked and is correct. The reservoir's
+reflection is scaled by olm² × fresnel × 0.2 (retail tuning) and reads very dark.
+No retail reference was found to compare; the user accepted the look for now.
+
 ## Verification
 
 - Unit test `physics::player_input::tests::water_contact_prefers_the_skater_body_height`.
@@ -162,6 +202,14 @@ fell back to static shading (black for `ocean.default`, which has no diffuse).
 - Release build staged into `bin\`; `--test-world --check-assets` → `SKATE_ASSETS_READY`.
 - In play, first build: rode on top of the water, no bail (led to the water bail above).
 - In play, second build: bails on University fountain basin (F2), University reservoir (F3) and DownTown fountain (F4). Log shows `WATER_BAIL ... state=KnownAir` on each drop.
+- After the frame-state fix: University no longer falls back for any water or
+  ocean material (52 -> 26; the rest are adverts, transparent environment
+  pieces etc., logged by shader since this change); `RETAIL_OCEAN: loaded 30
+  authored PCA frames`; water animates in play on all three spots (user).
+- `tools.asset_pipeline.test_ocean_pca`: runs `convert` through the real
+  `spawn()` (text-mode pipes) for success and failure.
+- `retail_render` tests pass (water time unit test included) except
+  `sky_shader_validates`, a known upstream failure.
 - Asset-backed wipeout tests (`--ignored wipeout`): 4 pass; `marker_reply_restores_on_foot`
   fails identically with these changes stashed (pre-existing).
 
@@ -174,7 +222,7 @@ fell back to static shading (black for `ocean.default`, which has no diffuse).
    skater stand on the University reservoir?)
 3. Industrial's sea: retail respawned the player (user's memory), possibly
    out of reach in retail. No collision data exists for it; see section 4.
-5. Water rendering (user: static texture on the fountains, black on the
+5. Water rendering (resolved, see above; kept for the record): static texture on the fountains, black on the
    University reservoir). Cause found: the log says "52 of 8546 world
    materials use an unsupported shader family and render as family 1". Water
    (family 33) and ocean (family 31) shaders require `assets/private/ocean-pca.json`
@@ -185,16 +233,21 @@ fell back to static shading (black for `ocean.default`, which has no diffuse).
    normal encryption and LZX compression, and setup never unpacks it. Fallback
    family 1 shows the static diffuse; `ocean.default` has no diffuse, hence black.
    This affects upstream users equally.
+6. Splashes and impact ripples when the player hits water: not implemented.
+   The executable has a `cWaterEffect` class; the engine has no particle/effect
+   system for it yet.
 4. What is surface type 13 (DownTown 88, University 17,790 triangles)? It may be
    related (shallow water or a splash surface) or something unrelated, such as grass.
 
 ## Files
 
-- `crates/skate-data/examples/water_surfaces.rs` (new, diagnostic only; also prints water/ocean render mesh heights).
+- `crates/skate-data/examples/water_surfaces.rs` (new, diagnostic only: surface types, water heights, `WATER_POINTS`, `WATER_VIEW`, `RENDER_AT`, `MODEL_MATERIALS`, `TEXTURES`, `MATERIAL`; SKATE material ids are 1-based).
 - `crates/skate-game/src/physics/player_input/mod.rs` (`publish_water`, unit test).
 - `crates/skate-game/src/physics/frame.rs` (call site).
 - `crates/skate-game/src/physics/wipeout.rs` (water bail request).
-- `mods/water-test-teleport/` (dev-only test mod, F2/F3/F4 teleports; not committed, not for upstream).
+- `mods/water-test-teleport/` (dev-only test mod: F2/F3/F4 into the water, Shift+F2/F3/F4 view spots; not committed, not for upstream).
+- `crates/skate-game/src/retail_render.rs` (frame state written in place, `water_time`, per-shader fallback log), `retail_world.wgsl` (water uses `clock.z`).
+- `tools/asset_pipeline/test_ocean_pca.py`.
 - `crates/skate-data/src/xex/{mod,aes,lzx}.rs`, `crates/skate-data/src/ocean_pca.rs`, `crates/skate-data/src/lib.rs`.
 - `crates/skate-data/examples/xex_unpack.rs` (diagnostic: unpack + locate table).
 - `crates/skate-game/src/main.rs` (`--extract-ocean-pca`).

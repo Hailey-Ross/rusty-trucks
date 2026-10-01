@@ -1,6 +1,6 @@
 # Hails' additions
 
-Changes made in the [Hailey-Ross fork](https://github.com/Hailey-Ross/skate-3-rust-engine)
+Changes made in the [Hailey-Ross fork](https://github.com/Hailey-Ross/rusty-trucks)
 of SK8-ENGINE/skate-3-rust-engine, documented so upstream maintainers have the
 full context when reviewing a pull request: what broke, why, what changed, how
 it was verified, and what is still open.
