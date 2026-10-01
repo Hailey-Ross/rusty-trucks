@@ -263,6 +263,9 @@ pub(super) fn advance(
         .player_input
         .update_dynamic_normal(&physics.riding, simulation.gravity_acceleration);
     skater.player_input.publish_board(&physics.riding)?;
+    skater
+        .player_input
+        .publish_water(&physics.riding.ground, &skater.collision_feedback);
     skater.player_input.physical.skeleton.publish_deck_angles(
         skater.animated_skeleton.record.pose[0][2],
         skater.animation.packet.board_flipped,
