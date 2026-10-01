@@ -146,4 +146,7 @@ existing install rebuilds those groups on its next asset refresh.
   warnings): every map passes `skate3rust --check-assets`, and each baked
   spawn and heading read back from the `.skate` header matches the table
   above exactly.
-- In-game confirmation of the authored starts: pending.
+- In-game confirmation: all 10 authored starts tested in play and correct.
+  SkateSchool's start is inside an invisible collision volume that blocks
+  movement; that is a separate, pre-existing collision issue (the old spawn
+  stood on top of the same volume) and is documented separately.
