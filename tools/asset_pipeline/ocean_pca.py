@@ -46,7 +46,7 @@ def convert(game_exe, xex, assets, log=None):
     output.parent.mkdir(parents=True, exist_ok=True)
     with spawn([str(game_exe), '--extract-ocean-pca', str(xex), str(output)],
                stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as process:
-        text = process.stdout.read().decode('utf-8', errors='replace')
+        text = process.stdout.read()  # spawn() opens text-mode pipes
         code = process.wait()
     if log is not None:
         log.write(text)

@@ -59,9 +59,11 @@ fn main() -> bevy::app::AppExit {
         Err(error) => { eprintln!("{error}"); return bevy::app::AppExit::Success; },
         Ok(false) => {}
     }
-    if let Some(code) = crash_report::entry() { std::process::exit(code); }
     // Setup tool mode: `--extract-ocean-pca <default.xex> <ocean-pca.json>`.
+    // Before the crash supervisor, whose report window would block setup on
+    // a failed (non-zero) extraction.
     if let Some(code) = extract_ocean_pca() { std::process::exit(code); }
+    if let Some(code) = crash_report::entry() { std::process::exit(code); }
     let _trace = match profiling::init() {
         Ok(guard) => guard,
         Err(error) => { eprintln!("{error}"); return bevy::app::AppExit::error(); }
