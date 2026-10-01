@@ -16,6 +16,7 @@ Each document stands alone. File paths are relative to the repository root.
 | 5 | [Invisible collision volumes](05-collision-volumes.md) | Game data loader (Rust) | Done, all four affected maps confirmed in play |
 | 9 | [Water](09-water.md) | Game physics, camera and rendering (Rust), setup, diagnostics | Matched to retail footage (RPCS3): shallow water solid, deep water floats, board floats, water camera + vignette, entry splash, canal water look matched, small bodies calmer |
 | 10 | [Sky shader validation test](10-sky-shader-test.md) | Game tests (Rust) | Done; all six shader validation tests pass |
+| 11 | [Game audio](11-audio.md) | Setup (Python, vgmstream), game audio (Rust) | Tuned by ear over ~15 play sessions: rolling, pop/landing, board-down, footsteps, foot drag, splash, grab whoosh confirmed; bail impact, metal grinds, landing weight, fountains and some other cues not yet confirmed; regression pass pending |
 
 ## Environment used for verification
 
