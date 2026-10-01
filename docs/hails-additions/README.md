@@ -14,7 +14,8 @@ Each document stands alone. File paths are relative to the repository root.
 | 3 | [SDL3 gamepad input](03-sdl3-gamepad-input.md) | Game (Rust), build scripts, vendored `sdl3-sys` | Done, verified in play with an Xbox Elite Series 2 |
 | 4 | [Authored map spawns](04-map-spawns.md) | Asset pipeline (Python) | Done, all 10 maps confirmed in play |
 | 5 | [Invisible collision volumes](05-collision-volumes.md) | Game data loader (Rust) | Done, all four affected maps confirmed in play |
-| 9 | [Water](09-water.md) | Game physics (Rust), diagnostics | Water flag wired up (DownTown, University); awaiting in-play test |
+| 9 | [Water](09-water.md) | Game physics, camera and rendering (Rust), setup, diagnostics | Matched to retail footage (RPCS3): shallow water solid, deep water floats, board floats, water camera + vignette, entry splash, canal water look matched, small bodies calmer |
+| 10 | [Sky shader validation test](10-sky-shader-test.md) | Game tests (Rust) | Done; all six shader validation tests pass |
 
 ## Environment used for verification
 

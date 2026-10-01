@@ -14,6 +14,8 @@ verification, open questions).
 | D | Gameplay data | Skip collision volumes that have no surface IDs | [05](05-collision-volumes.md) | `dec7ade` | — | Draft upstream [#25](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/25) |
 | E | Performance | Indexed stock collection lookups (game startup −5.5 s) | [07](07-collections-index.md) | `810defa` | — | Draft upstream [#26](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/26) |
 | F | Tooling | Streaming map validator (`--validate-maps`) wired into setup | [06](06-map-validator.md) | `18f41a3` | E (speed only) | Draft upstream [#28](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/28) |
+| H | Gameplay + rendering | Water: detection and bail, shallow water solid / deep water floats, board floats, water camera + vignette, entry splash, water look (family 33 cube blur + tint, anti-tiling, body-size calming, slower waves), animated water (frame-state buffer fix, ocean PCA from default.xex, XEX2 unpacker), ripple scale | [09](09-water.md) | `gameplay/water` branch (`af1b350` onwards) | — (copies #28's `install.py` `spawn()` split) | Prepared 2026-10-01, not opened: applies to upstream `60efdef`; failing tests match upstream exactly |
+| I | Test fix | `sky_shader_validates`: add the `VERTEX_POSITIONS` shader def Bevy sets for real meshes | [10](10-sky-shader-test.md) | on `gameplay/water` | — | Not opened; tiny, can go upstream alone |
 | G | Performance (setup) | Skip decoding duplicate stream copies; run the customiser beside the maps; parallel clothing library and pro roster, plus a native RefPack DLL in `Build.ps1` | [08](08-setup-performance.md) | `8327e94` (+ overlap hunks of `install.py` in `18f41a3`) | — | Draft upstream [#29](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/29) |
 
 Opened 2026-10-01 as drafts from per-PR branches cut from upstream `60efdef`
@@ -47,7 +49,13 @@ Notes for whoever opens them:
   skate-game `production_factory_routes_three_handlers_and_all_five_conditions_to_grind_owner`,
   `embedded_static_rwcm_hits_distinct_actor_query_ids`,
   `pipelines_accept_valid_group_outputs_when_fingerprint_changes`,
-  `sky_shader_validates`; and three skate-data examples that do not compile
+  `sky_shader_validates` (fixed on `gameplay/water`, see
+  [10](10-sky-shader-test.md)); and three skate-data examples that do not compile
   (`apt_data`, `hud_data`, `scoring_flow_data`).
+- PR H includes setup changes (environment group: `ocean_pca.py`, `particles.py`)
+  that refresh that group once, and a dev-only mod (`mods/water-test-teleport/`)
+  that must be dropped from the upstream branch. The frame-state buffer fix
+  (`retail_render.rs` `write_frame_state`) also unfreezes family-14 scrolling and
+  the shadow floor, so it could go upstream on its own first.
 - Fork-only commits not meant for upstream: `167605a` (ignore the local
   `.claude/` workspace) and `c2be42b` (docs index; the docs travel with each PR).
