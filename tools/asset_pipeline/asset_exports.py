@@ -78,6 +78,10 @@ def environment(game_root, stage, work, report, log, converted=None, game_exe=No
     attempt('skies',lambda assets:write_skies(game_root,assets,converted))
     from .render_parameters import convert as write_render_parameters
     attempt('parameters',lambda assets:write_render_parameters(assets,converted))
+    # Particle sprites (water splash; dust/leaf/... for later effects).
+    report('Extracting particle sprites')
+    from .particles import convert as write_particles
+    attempt('particles',lambda assets:write_particles(game_root,assets))
     if game_exe is not None:
         # Water/ocean animation table, held only in the executable.
         report('Extracting the original water animation')

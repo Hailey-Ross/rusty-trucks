@@ -52,6 +52,8 @@ mod world;
 mod grind_world;
 mod skate_world;
 mod map_validation;
+mod water_splash;
+mod water_bodies;
 
 fn main() -> bevy::app::AppExit {
     match updater::recover() {

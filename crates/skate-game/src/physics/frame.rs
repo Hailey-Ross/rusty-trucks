@@ -243,6 +243,7 @@ pub(super) fn advance(
     //World8275ECA4 ends skeleton tests after state/forces and before solving.
     //Teleport resets previous observations, but preserves this pending batch.
     skeleton_queries.publish(&mut skater.player_input.player);
+    super::water::apply_board_drag(physics);
     bevy::log::info_span!("fixed_collision_and_solve").in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets))?;
     super::offboard_audit_trace::stage(tick, "solve", physics, skater, controls);
     #[cfg(debug_assertions)]
