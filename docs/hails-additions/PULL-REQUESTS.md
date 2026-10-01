@@ -8,13 +8,19 @@ verification, open questions).
 
 | PR | Type | Title | Documents | Fork commits | Depends on | Status |
 |---|---|---|---|---|---|---|
-| A | Setup fix | Setup: ISO extraction argument order and Windows long paths | [01](01-iso-extraction.md), [02](02-long-paths.md) | `ea549ab`, `0a88f7a` | — | Ready to propose |
-| B | Feature (input) | SDL3 gamepad input with XInput fallback | [03](03-sdl3-gamepad-input.md) | `3d485c8` | — | Ready to propose |
-| C | Gameplay data | Authored map spawns and headings | [04](04-map-spawns.md) | `b495ed6`, `f00b329` | — | Ready to propose |
-| D | Gameplay data | Skip collision volumes that have no surface IDs | [05](05-collision-volumes.md) | `dec7ade` | — | Ready to propose |
-| E | Performance | Indexed stock collection lookups (game startup −5.5 s) | [07](07-collections-index.md) | `810defa` | — | Verified |
-| F | Tooling | Streaming map validator (`--validate-maps`) wired into setup | [06](06-map-validator.md) | `18f41a3` | E (speed only) | Verified (full setup) |
-| G | Performance (setup) | Skip decoding duplicate stream copies; run the customiser beside the maps; parallel clothing library and pro roster, plus a native RefPack DLL in `Build.ps1` | [08](08-setup-performance.md) | `8327e94` (+ overlap hunks of `install.py` in `18f41a3`) | — | Verified (full setup 466 → 331 s; customiser library 127 → 51 s, roster 90 → 16 s; outputs identical; one-time customiser rebuild) |
+| A | Setup fix | Setup: ISO extraction argument order and Windows long paths | [01](01-iso-extraction.md), [02](02-long-paths.md) | `ea549ab`, `0a88f7a` | — | Draft upstream [#23](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/23) |
+| B | Feature (input) | SDL3 gamepad input with XInput fallback | [03](03-sdl3-gamepad-input.md) | `3d485c8` | — | Draft upstream [#24](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/24) |
+| C | Gameplay data | Authored map spawns and headings | [04](04-map-spawns.md) | `b495ed6`, `f00b329` | — | Draft upstream [#27](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/27) |
+| D | Gameplay data | Skip collision volumes that have no surface IDs | [05](05-collision-volumes.md) | `dec7ade` | — | Draft upstream [#25](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/25) |
+| E | Performance | Indexed stock collection lookups (game startup −5.5 s) | [07](07-collections-index.md) | `810defa` | — | Draft upstream [#26](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/26) |
+| F | Tooling | Streaming map validator (`--validate-maps`) wired into setup | [06](06-map-validator.md) | `18f41a3` | E (speed only) | Draft upstream [#28](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/28) |
+| G | Performance (setup) | Skip decoding duplicate stream copies; run the customiser beside the maps; parallel clothing library and pro roster, plus a native RefPack DLL in `Build.ps1` | [08](08-setup-performance.md) | `8327e94` (+ overlap hunks of `install.py` in `18f41a3`) | — | Draft upstream [#29](https://github.com/SK8-ENGINE/skate-3-rust-engine/pull/29) |
+
+Opened 2026-10-01 as drafts from per-PR branches cut from upstream `60efdef`
+(code only; `docs/hails-additions` stays in the fork). #29 (G) is stacked on
+#28 (F); in the upstream branches the customiser-overlap hunks of `install.py`
+live in G, and each branch has its own equivalence pairs (F: maps main→F;
+G: character/environment/maps from main and from F). Bodies: `.claude/pr-drafts/`.
 
 Notes for whoever opens them:
 
