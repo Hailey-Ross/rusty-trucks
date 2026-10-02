@@ -4,6 +4,9 @@
 //! not compatibility no-ops. Their producers are completed incrementally and
 //! execution fails with the exact authored operation until that producer is
 //! published by the corresponding physics owner.
+//!
+//! Grind attributes, crouch control and fade belong exclusively to
+//! `motion_grind`; this fallback must not claim those authored handlers.
 use skate_data::state_graph::attributes::Attributes;
 use skate_core::animation::output::attributes::AttributeName;
 use skate_core::animation::skeleton_input::name::encode;
@@ -120,9 +123,6 @@ pub enum Operation {
     UpdateStandingOnCar,
     InitMovingObjects { path: String },
     MovingObject { path: String },
-    CreateGrindAttributes,
-    ControlGrindCrouch,
-    GrindControlFade,
     SetGrabType { grab: String },
     JumpInto { attribute: AttributeName },
     ScoringHandPlants,
@@ -163,9 +163,6 @@ impl Operation {
                 | "UpdateStandingOnCar"
                 | "InitMovingObjects"
                 | "MovingObject"
-                | "CreateGrindAttributes"
-                | "ControlGrindCrouch"
-                | "GrindControlFade"
                 | "SetGrabType"
                 | "JumpInto" | "ScoringHandPlants" | "SetHandPlantAnticLength"
                 | "ScoringGrabs" | "AirDismounting" | "TweakProject"
@@ -186,9 +183,6 @@ impl Operation {
             "MovingObject" => Self::MovingObject {
                 path: authored_path(a),
             },
-            "CreateGrindAttributes" => Self::CreateGrindAttributes,
-            "ControlGrindCrouch" => Self::ControlGrindCrouch,
-            "GrindControlFade" => Self::GrindControlFade,
             "SetGrabType" => Self::SetGrabType { grab: a.text("grab").unwrap_or("").to_owned() },
             "JumpInto" => Self::JumpInto {
                 attribute: encode(
