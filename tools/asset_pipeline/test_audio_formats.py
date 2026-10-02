@@ -163,3 +163,52 @@ class LoopBands(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Emitters(unittest.TestCase):
+    def test_name_id_matches_the_ids_on_the_disc(self):
+        # Sound ids read from the disc's sfx_university.ems next to the bank they name.
+        self.assertEqual(audio.name_id('water_fountain'), 0xFAE3503B95E0A3C8)
+
+    def test_name_id_handles_keys_longer_than_one_block(self):
+        long = 'a' * 30
+        self.assertNotEqual(audio.name_id(long), audio.name_id(long[:24]))
+        self.assertEqual(audio.name_id(long), audio.name_id('a' * 30))
+
+    def test_reads_records(self):
+        record = audio.EMS_RECORD.pack(7, 0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.5, -0.866, 0.0, 0.5,
+                                       audio.name_id('water_fountain'), 1.0, 0.0, 0.5, 1.0)
+        emitters = audio.ems_emitters(struct.pack('>I', 2) + record + record)
+        self.assertEqual(len(emitters), 2)
+        first = emitters[0]
+        self.assertEqual((first['index'], first['position'], first['extent']), (7, [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]))
+        self.assertEqual(first['sound_id'], 0xFAE3503B95E0A3C8)
+        self.assertEqual(first['gains'], [1.0, 0.0, 0.5, 1.0])
+        self.assertAlmostEqual(first['scalars'][1], -0.866, places=5)
+
+    def test_rejects_a_truncated_file(self):
+        with self.assertRaises(ValueError):
+            audio.ems_emitters(struct.pack('>I', 2) + bytes(72))
+
+
+class EmitterAttributes(unittest.TestCase):
+    def test_inherited_fields_resolve_through_parents(self):
+        from tools.asset_pipeline.audio_export import EMITTER_CLASS, emitter_attributes
+
+        def record(key, parent, **fields):
+            return {'class': EMITTER_CLASS, 'key': key, 'parent': parent, 'fields': fields}
+        f32 = lambda v: {'type': 'EA::Reflection::Float', 'data': struct.pack('>f', v).hex().upper()}
+        i32 = lambda v, t='EA::Reflection::Int32': {'type': t, 'data': struct.pack('>i', v).hex().upper()}
+        collections = [
+            record('default', '', volume=f32(1.0), Hash_9908F2D75D7381BD=f32(10.0), Hash_6D18B8674D7E5337=i32(0, 'Sk8::Audio::eVolumeType')),
+            record('Hash_0000000000000AAA', 'default', Hash_6D18B8674D7E5337=i32(1, 'Sk8::Audio::eVolumeType'),
+                   Hash_F209C093F40A4CCC=i32(1, 'Sk8::Audio::eVolumeFalloffType')),
+            record('Hash_FAE3503B95E0A3C8', 'Hash_0000000000000AAA', volume=f32(0.5),
+                   Hash_BE88128A30BE926E={'type': 'EA::Reflection::Text', 'data': 'water_fountain.abk'},
+                   Hash_C493ED34D1D32521=i32(81)),
+            {'class': 'Hash_OTHER', 'key': 'Hash_0000000000000BBB', 'parent': '', 'fields': {}},
+        ]
+        sound = emitter_attributes(collections)[0xFAE3503B95E0A3C8]
+        self.assertEqual(sound, {'volume': 0.5, 'seconds': 10.0, 'kind': 1, 'falloff': 1,
+                                 'bank_file': 'water_fountain.abk', 'patch': 81})
+        self.assertNotIn(0xBBB, emitter_attributes(collections))

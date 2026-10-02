@@ -9,11 +9,33 @@ use std::{
     sync::Arc,
 };
 
-const MANIFEST_VERSION: u32 = 3;
+/// Manifests this build reads. Version 4 added the world emitters (`emitters`);
+/// a version 3 install still plays everything else until setup refreshes it.
+const MANIFEST_VERSIONS: std::ops::RangeInclusive<u32> = 3..=4;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Entry {
     pub file: String,
+    #[serde(default)]
+    pub seconds: f32,
+}
+
+/// One record of a map's `.ems` emitter file with its sound's attributes
+/// (tools/asset_pipeline/audio_export.py `emitters`).
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct EmitterRecord {
+    pub flags: u32,
+    pub position: [f32; 3],
+    pub extent: [f32; 3],
+    pub scalars: [f32; 4],
+    #[serde(default)]
+    pub kind: i32,
+    #[serde(default)]
+    pub volume: f32,
+    #[serde(default)]
+    pub falloff: i32,
+    #[serde(default)]
+    pub bank: Option<String>,
 }
 
 /// A rolling grain: its slow-to-fast recording cut into loopable speed bands.
@@ -47,6 +69,9 @@ struct Manifest {
     banks: BTreeMap<String, Vec<Entry>>,
     #[serde(default)]
     patches: BTreeMap<String, Patches>,
+    /// Emitter file stem (`sfx_university`, ...) -> its records.
+    #[serde(default)]
+    emitters: BTreeMap<String, Vec<EmitterRecord>>,
 }
 
 /// A loaded sound. `key` identifies the file for per-sound voice limits;
@@ -94,7 +119,7 @@ impl Library {
         let path = root.join("audio_manifest.json");
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-        if manifest.version != MANIFEST_VERSION {
+        if !MANIFEST_VERSIONS.contains(&manifest.version) {
             return Err(format!("{}: unsupported version {}", path.display(), manifest.version));
         }
         let files = manifest.ambience.values().chain(manifest.grains.values().flat_map(|g| &g.bands)).chain(manifest.wheels.values())
@@ -172,6 +197,21 @@ impl Library {
             }
         }
         files.iter().filter(|file| self.clip(assets, file).is_some()).count()
+    }
+
+    /// Number of samples in a bank (0 when the bank was not exported).
+    pub(crate) fn bank_len(&self, bank: &str) -> usize {
+        self.manifest.banks.get(bank).map_or(0, Vec::len)
+    }
+
+    /// Length of a bank sample in seconds at normal speed (0 if unknown).
+    pub(crate) fn sample_seconds(&self, bank: &str, index: usize) -> f32 {
+        self.manifest.banks.get(bank).and_then(|b| b.get(index)).map_or(0.0, |e| e.seconds)
+    }
+
+    /// The records of an `.ems` emitter file (empty when absent).
+    pub(crate) fn emitters(&self, file: &str) -> &[EmitterRecord] {
+        self.manifest.emitters.get(file).map_or(&[], Vec::as_slice)
     }
 
     /// A bank's retail patch tree (SPLC banks only).

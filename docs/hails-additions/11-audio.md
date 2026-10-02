@@ -1,6 +1,6 @@
 # 11 — Game audio (ambience, rolling, trick cues, footsteps, water)
 
-**Branch:** `gameplay/audio` (from `gameplay/water` 477e9de), uncommitted. **Status:** implemented and tuned
+**Branch:** `gameplay/audio` (from `gameplay/water`; committed 2026-10-02). Upstream form: `audio/retail-audio`, a draft PR marked Work in Progress. **Status:** implemented and tuned
 by ear over ~15 play sessions with the user (2026-10-01). Most cues are confirmed in play; the rest are marked
 **not yet confirmed** below. All sample choices are project choices, not retail event data.
 
@@ -78,7 +78,7 @@ archives readable with `tools/owned_game/big.py`.
 | `cues.rs` | The sample table, per-cue minimum gaps, metal-surface test, surface → grain table. |
 | `skate_events.rs` | `observe` (FixedUpdate, after each physics tick) turns state changes into cues; `play` (Update) plays them and drives the loops (rolling, grind, powerslide, foot drag, wheel spin). |
 | `ambience.rs` | One bed per map, level 0.6, 2 s cross-fade on map change. |
-| `water.rs` | Water emitters from the map's water collision. |
+| `emitters.rs` | Retail world emitters from the map's `.ems` file (shape, falloff, 5-emitter pool) with measured bank programs (water banks). |
 
 Outside the module (observation only; physics never reads any of it):
 
@@ -163,22 +163,49 @@ rolling grains p90 0.065. Our levels = retail × 2.0 (`cues::RETAIL_SCALE`), cal
 rolling level lands on our play-tested `ROLL_LEVEL`. Not decoded yet: how retail picks among the impact
 families 1050–1059 (surface/force); we choose by impact.
 
-### Water emitters (`water.rs`)
+### World emitters from the retail `.ems` files (`emitters.rs`, 2026-10-02)
 
-On map load, water collision triangles (type 12) are grouped into bodies by shared vertices and sampled on
-a 6 m grid; each body is classed by area. The nearest point of each body is the emitter, placed ≤ 8 m from
-the listener in its direction (panned, Bevy attenuation stays 1) with its own distance fade
-((1 − d/reach)^1.5). At most one body per kind and three in all; Ambience volume; random pieces with a
-0.4 s fade-in.
+Replaces our own water placement (`water.rs`), which grouped water collision into bodies and started a
+random 1–2.5 s piece every 0.7–1.3 s. The pieces piled up 2–3 deep; the user heard the University plaza
+water "overlapping or playing too many times".
 
-| Kind | Area | Bank (pieces 0–9) | Level, reach | Interval |
-|---|---|---|---|---|
-| Fountain | < 400 m² | `water_fountain` (moving/splashing water) | 0.45, 25 m | 0.6–1.1 s |
-| Canal | < 30,000 m² | `water_lapping` | 0.4, 40 m | 0.7–1.3 s |
-| Lake | larger | `water_lapping_pond` | 0.45, 60 m | 0.7–1.3 s |
+**Data (setup, `audio_formats.py` / `audio_export.py`, manifest version 4):**
+- `.ems` layout: BE u32 count + 72-byte records: index, flags, position[3], extent[3], scalars[4],
+  u64 sound id, gains[4].
+- The sound id is Bob Jenkins' lookup8 64-bit hash (seed `0xABCDEF0011223344`) of a name, written as named
+  or lower-cased.
+- Each id keys a record of the emitter attribute class `0xF0CEF367088EFFF8` in the disc's
+  `skatercollections` database, resolved through its parents:
+  - volume, bank file, patch (the selector the bank's program plays);
+  - `eVolumeType` (1 = looping emitter, 5 = reverb zone);
+  - `eVolumeFalloffType`;
+  - a float that defaults to 10 (probably a one-shot duration; unverified).
+- The exporter writes all 23 `.ems` files with resolved attributes. It also decodes every bank the
+  `sfx_*` / `skateschool` emitters use: 100 banks, 95 of them new. All 486 sound emitters resolve to a bank
+  on the disc.
 
-University: 7 bodies (6 fountains, 1 lake); DownTown: 25 (12 fountains, 13 canals). The fountain bank
-replaced a still-water lapping loop after the user's comment; **not yet confirmed in play**.
+**Game side (from TU3, reference only):**
+- **Shape:** a record is a sphere (equal extents) or an ellipsoid. Its semi-axes are the extents along
+  forward = scalars[1..4], up and side (side = Y × forward).
+- **Core:** scalars[0] is an inner core with full level. Outside it the distance is rescaled to the edge.
+- **Level** = attribute volume × falloff: (1−d)², 1−d or flat.
+- **Pool:** at most 5 emitters play (`CSTATEMGR_Emitter`'s pool), taken in the order they were reached. An
+  emitter the listener leaves is released at once (we use a 50 ms fade only against clicks).
+- **Flags:** records with non-zero flags are gated by a context mask we haven't identified, so they are
+  skipped.
+- **Gains:** the four gains are never read by the game.
+
+**Bank programs (interim):**
+- What a bank plays is its own AEMS patch program. Run through the PoC evaluator:
+  - `water_fountain`, `water_lapping`, `water_lapping_pond` and `ocean_wave_small` are two-voice relays of
+    one-shots from per-voice shuffle bags, the next piece starting about 0.17 s before the current one ends;
+  - `water_dam_*` and `fountains_waterlaps_*` are single loops;
+  - each has slow level and pitch modulation (e.g. fountain pitch 0.82–0.94).
+- `emitters.rs` `PROFILES` reproduces those measured patterns for the water banks until the AEMS evaluator
+  is ported. Banks without a profile (trees, birds, HVAC, interiors, …) are not played yet.
+
+University: the plaza channel is `fountains_waterlaps_left` (a 37 s loop; patch 347) in a 6 × 4 × 47 m
+ellipsoid, next to `water_fountain` in a 13 × 7 × 61 m one.
 
 ### Ambience per map (project choice by bed name; retail switches beds by zone via `.ems` files)
 

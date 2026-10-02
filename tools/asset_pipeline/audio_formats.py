@@ -11,6 +11,11 @@ Layouts were worked out from the owned disc's archives (docs/hails-additions/11-
 - `.grain` (rolling surfaces): u32 offset of the SNR stream, f32 duration in
   seconds, a seek table (the `.sek` layout), then one SNR stream.
 
+- `.ems` (per-map world emitters, `sfx_<map>.ems` etc.): u32 record count, then
+  72-byte records: u32 index, u32 flags, f32 position[3], f32 extent[3],
+  f32 scalars[4] (level, then the cos and sin of a yaw at [1] and [3]),
+  u64 sound id, f32 gains[4]. The sound id is `name_id` of a bank's name.
+
 vgmstream reads standalone SNR/SNS and ABKC banks itself; the SPLC and grain
 streams are cut out with these helpers into standalone `.snr` files for it.
 """
@@ -225,3 +230,67 @@ def splc_patches(data: bytes) -> dict:
     if cursor != table:
         raise ValueError(f'SPLC patch tree ends at {cursor:#x}, sample table at {table:#x}')
     return {'records': out_records, 'containers': out_containers}
+
+
+_MASK64 = (1 << 64) - 1
+NAME_ID_SEED = 0xABCDEF0011223344
+
+
+def _lookup8_mix(a: int, b: int, c: int) -> tuple[int, int, int]:
+    # Bob Jenkins' lookup8 mix64 (public domain), in 64-bit arithmetic.
+    a = (a - b - c) & _MASK64; a ^= c >> 43
+    b = (b - c - a) & _MASK64; b ^= (a << 9) & _MASK64
+    c = (c - a - b) & _MASK64; c ^= b >> 8
+    a = (a - b - c) & _MASK64; a ^= c >> 38
+    b = (b - c - a) & _MASK64; b ^= (a << 23) & _MASK64
+    c = (c - a - b) & _MASK64; c ^= b >> 5
+    a = (a - b - c) & _MASK64; a ^= c >> 35
+    b = (b - c - a) & _MASK64; b ^= (a << 49) & _MASK64
+    c = (c - a - b) & _MASK64; c ^= b >> 11
+    a = (a - b - c) & _MASK64; a ^= c >> 12
+    b = (b - c - a) & _MASK64; b ^= (a << 18) & _MASK64
+    c = (c - a - b) & _MASK64; c ^= b >> 22
+    return a, b, c
+
+
+def name_id(name: str) -> int:
+    """The 64-bit id Skate 3's audio data uses for a name: Bob Jenkins' lookup8
+    hash of its bytes with level NAME_ID_SEED (the `.ems` sound ids)."""
+    key = name.encode('ascii')
+    a = b = NAME_ID_SEED
+    c = 0x9E3779B97F4A7C13
+    rest = key
+    while len(rest) >= 24:
+        a = (a + int.from_bytes(rest[0:8], 'little')) & _MASK64
+        b = (b + int.from_bytes(rest[8:16], 'little')) & _MASK64
+        c = (c + int.from_bytes(rest[16:24], 'little')) & _MASK64
+        a, b, c = _lookup8_mix(a, b, c)
+        rest = rest[24:]
+    c = (c + len(key)) & _MASK64
+    for index, byte in enumerate(rest):
+        if index < 8:
+            a = (a + (byte << (8 * index))) & _MASK64
+        elif index < 16:
+            b = (b + (byte << (8 * (index - 8)))) & _MASK64
+        else:  # the low byte of c holds the length
+            c = (c + (byte << (8 * (index - 15)))) & _MASK64
+    return _lookup8_mix(a, b, c)[2]
+
+
+EMS_RECORD = struct.Struct('>II3f3f4fQ4f')
+
+
+def ems_emitters(data: bytes) -> list[dict]:
+    """The records of an `.ems` emitter file, fields named by their layout."""
+    count = _u32(data, 0)
+    if len(data) != 4 + count * EMS_RECORD.size:
+        raise ValueError(f'.ems: {count} records do not fill {len(data)} bytes')
+    emitters = []
+    for number in range(count):
+        fields = EMS_RECORD.unpack_from(data, 4 + number * EMS_RECORD.size)
+        emitters.append({
+            'index': fields[0], 'flags': fields[1],
+            'position': list(fields[2:5]), 'extent': list(fields[5:8]),
+            'scalars': list(fields[8:12]), 'sound_id': fields[12], 'gains': list(fields[13:17]),
+        })
+    return emitters

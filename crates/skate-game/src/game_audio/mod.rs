@@ -15,10 +15,10 @@
 //! the menu is open or a replay runs. `--mute` silences game and mod audio.
 mod ambience;
 mod cues;
+mod emitters;
 mod library;
 mod skate_events;
 mod voices;
-mod water;
 
 use bevy::{audio::Volume, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -140,7 +140,7 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<skate_events::Cues>()
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
-            .add_systems(Update, (ambience::update, skate_events::play, water::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
+            .add_systems(Update, (ambience::update, skate_events::play, emitters::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
             .add_systems(Update, voices::sync.after(CueSet))
             .add_systems(
                 PostUpdate,
@@ -161,7 +161,6 @@ fn setup(mut commands: Commands, config: Res<crate::config::Config>, mut assets:
                 .chain(cues::BED_CUES.iter().map(|(c, _)| c))
                 .map(|c| (c.bank, c.samples)).collect();
             samples.extend(records.iter().map(|(bank, ids)| (*bank, ids.as_slice())));
-            samples.extend(water::PRELOAD);
             let started = std::time::Instant::now();
             let count = library.preload(&mut assets, &samples);
             info!("Game audio: preloaded {count} clips in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);

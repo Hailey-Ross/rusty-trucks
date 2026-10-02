@@ -1,7 +1,9 @@
 """Decode the owned disc's game audio into PCM16 WAV for the engine (assets/private/audio).
 
 Only what the engine plays is exported (crates/skate-game/src/game_audio/): the
-ambience beds, rolling grains, wheel spins and the sample banks below. Audio is
+ambience beds, rolling grains, wheel spins, the sample banks below, and every
+bank the per-map sound emitters (`sfx_*.ems`, `skateschool.ems`) place in the
+world, with those emitters listed in the manifest. Audio is
 written at its original level: nothing is normalised or boosted, and surround
 ambience is downmixed to stereo by a weighted average (audio_formats.py).
 """
@@ -9,14 +11,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import struct
 import subprocess
 import wave
 from pathlib import Path
 
 from tools.owned_game.big import BigArchive
-from .audio_formats import downmix_pcm16, grain, loop_bands, scan_snr, splc_patches, splc_streams, standalone
+from .audio_formats import (downmix_pcm16, ems_emitters, grain, loop_bands, name_id, scan_snr, splc_patches,
+                            splc_streams, standalone)
 
-VERSION = 3
+VERSION = 4
 
 # Each rolling grain is a recording that sweeps from slow to fast rolling (about
 # 10 dB louder and brighter by the end). It is cut into this many speed bands,
@@ -119,6 +123,95 @@ def _streams(name: str, data: bytes):
     return streams
 
 
+# Emitter files whose sounds play in the world (the others place reverb, music,
+# crowds and speakers).
+SOUND_EMITTERS = ('sfx_', 'skateschool')
+
+
+# The emitter attribute class in the disc's skatercollections database: one
+# record per emitter sound, keyed by the same id as the `.ems` records.
+EMITTER_CLASS = 'Hash_F0CEF367088EFFF8'
+EMITTER_FIELDS = {
+    'volume': 'volume',
+    'Hash_BE88128A30BE926E': 'bank_file',
+    'Hash_C493ED34D1D32521': 'patch',
+    'Hash_6D18B8674D7E5337': 'kind',  # Sk8::Audio::eVolumeType: 1 = looping emitter, 5 = reverb zone
+    'Hash_F209C093F40A4CCC': 'falloff',  # eVolumeFalloffType: 0 = (1-d)^2, 1 = 1-d, else flat
+    'Hash_9908F2D75D7381BD': 'seconds',  # float, 10 by default (meaning not verified)
+}
+
+
+def emitter_attributes(collections: list[dict]) -> dict[int, dict]:
+    """Each emitter sound's attributes by sound id, with inherited fields resolved."""
+    records = {c['key']: c for c in collections if c['class'] == EMITTER_CLASS}
+
+    def value(field):
+        if field['type'].endswith('Text'):
+            return field['data']
+        raw = bytes.fromhex(field['data'])
+        if field['type'].endswith('Float'):
+            return round(struct.unpack('>f', raw)[0], 6)
+        return struct.unpack('>i', raw)[0]
+
+    resolved = {}
+    for key in records:
+        chain, cursor = [], key
+        while cursor in records and len(chain) < 16:
+            chain.append(records[cursor])
+            cursor = records[cursor]['parent']
+        fields = {}
+        for record in reversed(chain):
+            for name, field in record['fields'].items():
+                if name in EMITTER_FIELDS:
+                    fields[EMITTER_FIELDS[name]] = value(field)
+        if key.startswith('Hash_'):
+            resolved[int(key[5:], 16)] = fields
+    return resolved
+
+
+def emitters(files: BigArchive, attributes: dict[int, dict] | None = None) -> tuple[dict, set[str]]:
+    """Every `.ems` file's records with their sound's attributes and bank (None
+    when the disc has no such bank), and the banks placed by sound emitters."""
+    attributes = attributes or {}
+    banks = {}
+    by_file = {Path(e.path).name.lower(): Path(e.path).name for e in files.entries}
+    for entry in files.entries:
+        name = Path(entry.path).name
+        if name.endswith(('.abk', '.bnk')):
+            # Ids hash the name either as the file is named or lower-cased (both occur).
+            for key in {Path(name).stem, Path(name).stem.lower()}:
+                banks[name_id(key)] = name
+    listed, placed = {}, set()
+    for entry in sorted(files.entries, key=lambda e: e.path):
+        if not entry.path.endswith('.ems'):
+            continue
+        stem = Path(entry.path).stem
+        records = ems_emitters(files.read(entry))
+        for record in records:
+            sound = dict(attributes.get(record['sound_id'], {}))
+            named = sound.pop('bank_file', '')
+            on_disc = by_file.get(named.lower()) if named else None
+            bank = on_disc or banks.get(record['sound_id'])
+            record.update(sound)
+            record['bank'] = Path(bank).stem if bank else None
+            record['sound_id'] = f"{record['sound_id']:016X}"
+            if bank and stem.startswith(SOUND_EMITTERS):
+                placed.add(bank)
+        listed[stem] = records
+    return listed, placed
+
+
+def _collections(game_root: Path, work: Path) -> list[dict]:
+    """The disc's skatercollections records (the same conversion the core group runs)."""
+    from . import install as engine
+    from .vlt import convert as convert_vlt
+    database = work/'database'
+    engine.extract(game_root/'data/big/db.big', database, lambda e: Path(e.path).name.lower() in {
+        'skaterschema.bin', 'skaterschema.vlt', 'skatercollections.bin', 'skatercollections.vlt'})
+    names = (engine.TOOLS/'asset_pipeline/names.txt').read_text(encoding='utf-8').splitlines()
+    return convert_vlt(database/'data/db/skaterschema', database/'data/db/skatercollections', names)['collections']
+
+
 def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report, log) -> dict:
     """Write private/audio/** and private/audio/audio_manifest.json; return the manifest."""
     audio_root = game_root/'data/audio'
@@ -174,7 +267,8 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     report('Decoding sound effect banks')
     files = BigArchive(audio_root/'audiofiles.big')
     by_name = {Path(e.path).name: e for e in files.entries}
-    for bank in BANKS:
+    manifest['emitters'], placed = emitters(files, emitter_attributes(_collections(game_root, work)))
+    for bank in BANKS + tuple(sorted(placed - set(BANKS))):
         if bank not in by_name:
             raise KeyError(f'sound bank {bank} is missing from the disc')
         data = files.read(by_name[bank])
