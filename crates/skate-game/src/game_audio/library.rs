@@ -206,10 +206,10 @@ mod tests {
 
     #[test]
     fn wav_peak_reads_the_data_chunk() {
-        let mut wav = b"RIFF    WAVEfmt    ".to_vec();
+        let mut wav = b"RIFF\x00\x00\x00\x00WAVEfmt \x10\x00\x00\x00".to_vec();
         wav.extend([1, 0, 1, 0, 0x80, 0xbb, 0, 0, 0, 0x77, 1, 0, 2, 0, 16, 0]);
-        wav.extend(b"LIST   abc ");
-        wav.extend(b"data   ");
+        wav.extend(b"LIST\x03\x00\x00\x00abc\x00");
+        wav.extend(b"data\x06\x00\x00\x00");
         for s in [100i16, -8192, 50] {
             wav.extend(s.to_le_bytes());
         }
