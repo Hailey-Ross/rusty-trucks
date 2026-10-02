@@ -8,6 +8,35 @@ A Rust and Bevy skating project built from Skate 3 reverse-engineering research.
 Includes skating, tricks, grinds, offboard movement, difficulty settings and
 `.skate` map support. Gameplay parity is still a work in progress.
 
+## History
+
+Before this rewrite existed, **dumbad** spent more than two years reverse
+engineering Skate 3 and building the tools needed to understand and work with
+it. That meant countless hours digging through undocumented file formats,
+animation data, and game interaction systems, then testing those discoveries
+in the original game. Much of that work is collected in
+[DumbadsSkate3ModdingTools](https://github.com/Ethanw05/DumbadsSkate3ModdingTools),
+including tools for custom maps, meshes, collision, challenges, and DLC.
+
+That research laid the groundwork for this project. Chasm later worked on a
+recompilation and a custom renderer based on dumbad's earlier renderer work,
+before moving into the Rust/Bevy rewrite. The rewrite's development time tells
+only part of the story: the knowledge and tools it relies on took years of
+work to establish.
+
+## AI usage
+
+AI coding tools were used to develop this rewrite, but none of it would have
+been possible without dumbad's extraordinary effort to reverse engineer the
+original game. The AI had years of hard-earned research and working tools to
+build on. Describing the project as simply “AI rewriting Skate 3” leaves out
+the work that made it possible in the first place.
+
+AI helped turn that knowledge into a new implementation; it does not replace
+credit for discovering how the game works. This is still a work in progress,
+and using original assets or showing working tricks does not mean every
+system behaves exactly like the original.
+
 ## Play
 
 [Download Experimental](https://github.com/SK8-ENGINE/skate-3-rust-engine/releases/tag/experimental).
