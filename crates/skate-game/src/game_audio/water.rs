@@ -188,7 +188,7 @@ pub(super) fn update(
         if emitter.voice.as_ref().is_some_and(|(id, _)| !voices.playing(*id)) {
             emitter.voice = None;
         }
-        let mut play = Play { category: Category::Ambience, volume, pitch: 1.0, position: Some(at), looping: false, fade_in: 0.4 };
+        let mut play = Play { category: Category::Ambience, volume, pitch: 1.0, position: Some(at), looping: false, fade_in: 0.4, envelope: None };
         // Short pieces, overlapping with soft fade-ins, so the water keeps
         // moving: fountains splash and flow (not still-water lapping, which
         // the user rejected for fountains), canals and lakes lap.

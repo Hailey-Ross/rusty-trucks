@@ -65,7 +65,7 @@ pub(super) fn update(
         return;
     };
     let Some(clip) = library.ambience(&mut assets, bed) else { return };
-    let play = Play { category: Category::Ambience, volume: LEVEL, pitch: 1.0, position: None, looping: true, fade_in: CROSSFADE };
+    let play = Play { category: Category::Ambience, volume: LEVEL, pitch: 1.0, position: None, looping: true, fade_in: CROSSFADE, envelope: None };
     match voices.play(&mut commands, &clip, play, time.elapsed_secs_f64()) {
         Some(voice) => {
             info!("Ambience: {bed} for map {:?}", map.name);

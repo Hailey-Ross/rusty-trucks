@@ -72,7 +72,7 @@ archives readable with `tools/owned_game/big.py`.
 
 | File | Role |
 |---|---|
-| `mod.rs` | `AudioSettings` (master **25 % by default**, ambience 100 %, effects 100 %, 5 % steps) saved to `settings/audio.json`; menu rows in GRAPHICS; `--mute`; `GlobalVolume` follows the master so mod audio obeys it; the single `SpatialListener` (moved out of `modding/audio.rs`) follows the gameplay camera; preloads every cue sample, grain band, wheel spin and water piece at startup (~207 clips, ~35 ms) so riding never reads the disk. |
+| `mod.rs` | `AudioSettings` (master **75 % by default** — 100 % is unity gain; 25 % (−12 dB) was too quiet to judge retail parity in play, user 2026-10-02 —, ambience 100 %, effects 100 %, 5 % steps) saved to `settings/audio.json`; menu rows in GRAPHICS; `--mute`; `GlobalVolume` follows the master so mod audio obeys it; the single `SpatialListener` (moved out of `modding/audio.rs`) follows the gameplay camera; preloads every cue sample, grain band, wheel spin and water piece at startup (~207 clips, ~35 ms) so riding never reads the disk. |
 | `library.rs` | Loads the manifest; reads WAVs into `Assets<AudioSource>`, measuring each clip's peak; rejects paths outside the audio folder; warns once per missing file. |
 | `voices.rs` | Voice pool and **loudness rules** (below). Everything pauses while the menu is open or a replay runs. |
 | `cues.rs` | The sample table, per-cue minimum gaps, metal-surface test, surface → grain table. |
@@ -96,7 +96,10 @@ Outside the module (observation only; physics never reads any of it):
 - A requested volume may raise a quiet clip only until the clip's own peak reaches full scale, and never
   more than ×4; category and master volumes (both ≤ 1) then scale it down. No clip plays hotter than
   full scale × master.
-- Sounds start silent and fade in (≥ 10 ms); at most 32 voices, 3 of one sound, same sound again only
+- One-shots start at their final level on the first sample; loops and sounds that ask for a fade start
+  silent and fade in (≥ 10 ms). (Until 2026-10-01 every sound faded in and its gain was raised once per
+  frame from 0, which ate the attack of 25–35 ms impacts and knocks — pops and landings lost their
+  layering.) Retail layer offsets are kept with `Record::delay` (frame-granular). At most 32 voices, 3 of one sound, same sound again only
   after 40 ms; each cue also has a minimum gap (`cues::min_gap`: step 0.2 s, run step 0.15, push 0.3,
   bail 0.5, splash 1.0, others 0.12) as a safety net against flags that stay set for many ticks.
 - One-shots get a random ±4 % pitch. Spatial attenuation scale 0.1 (Bevy's attenuation never amplifies).
@@ -107,18 +110,17 @@ Outside the module (observation only; physics never reads any of it):
 
 | Cue | Trigger (per physics tick) | Samples | Level × scale | In play |
 |---|---|---|---|---|
-| Pop | `ground_animation.launched` rising | `Skate_Collisions` 1074–1078 | 0.45 | **Confirmed** |
-| Flip / grab whoosh | new trick name while airborne (a held grab re-announced by scoring stays silent) | `Sk8_Air_Flip_Tricks` 10–13 | 0.3 | Behaviour **confirmed**; samples never auditioned separately |
-| Land | filtered category Air → Ground, air not begun on foot; impact = `riding.ground.maximum_closing_speed` | `Skate_Collisions` 1088–1092 | 0.9 × (0.3 + 0.7·impact/12) | **Confirmed** |
-| Land weight layer | same, impact > 1.5 m/s | `Skate_Collisions` 1097–1100 | 1.0 × (0.4–1.0 over 1.5–9 m/s), pitch 1.0 → 0.8 | Not yet confirmed ("not thumpy enough" before the last change) |
-| Board down | Air → Ground when the air phase began on foot (on foot within the last 0.5 s) | `Skate_Collisions` 0–2 | 0.3 × (0.3–1.0 over 0–5 m/s) | Gentle set-down **confirmed** |
-| Board down heavy | same, impact > 2.5 m/s ("caveman" jump-on) | `Skate_Collisions` 1097–1100 | 1.0 × (impact − 2.5)/4 | Not yet confirmed |
-| Grind (loop) | `grinds.grinding_316` or a grind state, and not `leaving_317`; stop fade 0.06 s | `GRINDS` 54–56 on metal (`grinds.audio_surface_216` ∈ 9, 11–40, 67–69, 85, 89, 91), else 9/11 | 0.3 × (0.5 + 0.5·fraction) | Timing "mostly right"; metal pick (by measurement) not yet confirmed |
+| Pop | `ground_animation.launched` rising | retail recipe: knock 1112 + 878 + 891 at once, crack 1096 + one of 1097-1099 at +20 ms, body 1111 +30 ms, low thud 876 +40 ms (traced offsets) | retail median × 2 | Rebuilt from 57 traced pops + captured sound; not yet confirmed |
+| Flip / grab whoosh + catch | new trick name while airborne (a held grab re-announced by scoring stays silent) | `Sk8_Air_Flip_Tricks` 1–3 (retail's Class_Flips) + container 1115 (feet catching the board) | 0.45 / 0.8 | Retail mapping new |
+| Land | filtered category Air → Ground, air not begun on foot; impact = `riding.ground.maximum_closing_speed` | container 1095 (wheels down, ~1 s) + impact family 1055 / 1058 / 1052 by impact (< 3, < 6, ≥ 6 m/s) | (0.6; 0.5 / 0.64 / 0.72) × (0.3 + 0.7·impact/12) | Retail mapping new; the impact-family choice is ours |
+| Board down | Air → Ground when the air phase began on foot (on foot within the last 0.5 s) | container 1126 (foot on deck) + 1119 (knock) + 1054 (wheel touch) | (0.6 / 0.54 / 0.28) × (0.3–1.0 over 0–5 m/s) | Retail mapping new |
+| Board down heavy | same, impact > 2.5 m/s ("caveman" jump-on) | + landing set 1095 | 0.6 × (impact − 2.5)/4 | Retail mapping new |
+| Grind | `grinds.grinding_316` or a grind state, and not `leaving_317` | start: container 954 (ledge etc.) or 1146 (metal rail object); then metal: `GRINDS` 54–56 loop; other surfaces: container 955 pieces (202–206) re-fired every 63 ms | start 0.5 / 0.8, loop 0.26, pieces 0.3; × (0.5 + 0.5·fraction) | Retail mapping new |
 | Powerslide | state 101 SlideGround: random piece every ~0.08 s (±20 %), 10 ms fade-in | `WHEEL_SKID_BANK` 0–7 | 0.2 × fraction | Not yet confirmed |
 | Foot drag | between `brake_contact` foot-down ticks (ends at foot-up or 0.1 s after the last foot-down), riding on the ground above 0.5 m/s; piece every ~0.11 s, 50 ms fade-in | `FOOT_DRAG` 36–39, 44–47, 60–64 | 0.25 × (0.3 + 0.7·fraction) | **Confirmed** |
 | Push | `push_contact` rising edge | `fstep_skateshoe1_sm` 74–84 | 0.6 | Plays at a sane rate (no flood); sound not judged separately |
 | Step / run step | foot strike (below) while on foot (states 500/501) and moving > 0.3 m/s; run set above 3 m/s | `fstep_skateshoe1_sm` 74–84 / 6–17 | 0.85 / 0.68 × (`AudibleFootStepStrength`/4, 0.3–1.0) | **Confirmed** ("almost perfect") |
-| Bail | entering WipeoutGround (300), not in water and no splash in the last 0.5 s; tier by body speed (≥ 3.5 / ≥ 7 m/s) | `Bodyslide` 0–4 / 5–9 / 10–15 | 0.25 (sweetener layer) | Tiers heard as right; main body-impact sound still open |
+| Bail | entering WipeoutGround (300), not in water and no splash in the last 0.5 s; tier by body speed (≥ 3.5 / ≥ 7 m/s) | body hits container 1074 (records 667–671) + `Bodyslide` 0–4 / 5–9 / 10–15 layer | 0.52 × (0.6 / 0.8 / 1.0) + 0.25 | Bodyslide tiers heard as right; body hits = retail mapping, new |
 | Splash | body water contact (`collision_feedback.flags.material_12`) rising while falling > 1 m/s (1.5 s cooldown); or entering a wipeout in water with no splash in the last 1 s (speed ≥ 2) | `Skate_Collisions` 476–478 | 0.5 × (0.4 + 0.6·speed/8) | **Confirmed** (found by the user); the wading-wipeout path not yet confirmed |
 | Rolling (loop) | wheels in contact, not grinding, > 0.3 m/s; grain by majority wheel audio surface; speed band | `grains/<surface>_hard/<band>` | 0.15 × min(speed/1.5, 1) | **Confirmed** |
 | Wheel spin | take-off above 1 m/s, cut on landing (0.05 s) | `Whls_spins_Jump_1` | 0.15 × fraction | Not yet confirmed |
@@ -137,7 +139,29 @@ within 2 cm. `AudibleFootStepStrength` only scales the volume.
 `tools/vendor/university/…/owned_world_material_addon/__init__.py`): 1 asphalt_smooth; 2 asphalt_rough;
 4, 66 concrete_rough; 5, 8, 10, 55, 56 concrete_aggregate (aggregate, dirt, grass, leaves, bush);
 6, 7, 41–46, 90 wood_ramp; metal IDs → metal_smooth; everything else (Concrete_Polished = 3, curbs, tile,
-marble, unlisted) concrete_smooth. Only the "hard" grains exist for every surface, so those are used.
+marble, unlisted) concrete_smooth. Only the "hard" grains exist for every surface, so those are used;
+retail was measured playing the same "hard" grains (concrete_smooth/wood_ramp/asphalt_rough/metal_smooth).
+
+### Measured retail mapping (2026-10-01)
+The pop/flip/landing/board-down/grind/bail cues above use the retail SPLC patches that a **local
+recompiled build** of the game (github.com/mchughalex/skate3recomp, built and run locally only, no code
+taken) was measured playing for the same moments. The recomp was instrumented to log every sample start
+with its final gain (gain modules × send), every SPLC patch request with the gameplay function that asked,
+and every audio-object post; the user played normally while it logged, and the events were grouped by
+the game's own requesting function. Exact moments came from a scripted ollie/kickflip:
+
+| time after the flick | retail plays |
+|---|---|
+| +0.24 s (pop) | containers 1096 + 1098/1099, flip object (Sk8_Air_Flip_Tricks 1–3) |
+| +0.3–0.6 s (catch) | deck knocks 1112 / 1115 / 1118 (548–552 + 530–535) |
+| +0.95 s (landing) | 1095 (396–404, ~1 s) + one impact family of 1052/1055/1058 + wheel skid |
+| getting on the board | 1126 (422–426) + 1054 + 1095 + knock 1119 |
+
+Measured levels (linear, retail mix): knocks 0.36–0.57, pop/landing sets 0.2–0.46, board-down 1126 up to
+0.76, ledge grind pieces ≤ 0.35, rail start 0.49, bail hits ≤ 0.26, Bodyslide ≤ 0.19, GRINDS ≤ 0.13,
+rolling grains p90 0.065. Our levels = retail × 2.0 (`cues::RETAIL_SCALE`), calibrated so retail's
+rolling level lands on our play-tested `ROLL_LEVEL`. Not decoded yet: how retail picks among the impact
+families 1050–1059 (surface/force); we choose by impact.
 
 ### Water emitters (`water.rs`)
 

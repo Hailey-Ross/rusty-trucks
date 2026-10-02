@@ -1,11 +1,15 @@
-//! Which decoded retail samples play for which gameplay cue. Retail picks them
-//! through compiled AEMS event scripts we do not run; these picks are our own,
-//! made from the decoded banks by duration/attack/brightness and then by ear
-//! (docs/hails-additions/11-audio.md lists the candidates and how to audition
-//! them). Bank names and indices refer to assets/private/audio/audio_manifest.json.
+//! Which decoded retail sounds play for which gameplay cue. Retail picks them
+//! through compiled AEMS event scripts we do not run. Since 2026-10-01 the
+//! impact/contact cues use the retail patches (SPLC records/containers) that a
+//! local recompiled build was measured playing for the same moments, at levels
+//! in retail's measured ratios (docs/hails-additions/11-audio.md, "Measured
+//! retail mapping"). The rest are our own picks, made by ear. Bank names and
+//! indices refer to assets/private/audio/audio_manifest.json.
 //!
 //! Levels are linear and deliberately low: many raw samples peak at 0 dBFS
 //! (retail mixes them down at runtime). Final gain = level x effects x master.
+//! Retail-measured cues use level = measured retail level x RETAIL_SCALE,
+//! calibrated so rolling (retail p90 0.065) lands on our tested ROLL_LEVEL.
 
 /// A set of interchangeable samples: one is picked at random per play.
 pub(super) struct Cue {
@@ -13,6 +17,43 @@ pub(super) struct Cue {
     pub samples: &'static [usize],
     pub level: f32,
 }
+
+/// A retail patch to play as its data describes (layers, probabilities, gain
+/// ranges): record `id` of an SPLC bank, or a container (id >= record count),
+/// which picks one of its records each time.
+pub(super) struct Record {
+    pub bank: &'static str,
+    pub id: usize,
+    pub level: f32,
+    /// Seconds after the event (retail spreads a pop's layers over ~60 ms).
+    pub delay: f32,
+    /// Retail's gain over time for this layer (see the *_ENV curves).
+    pub envelope: Option<&'static [(f32, f32)]>,
+}
+impl Record {
+    const fn after(self, delay: f32) -> Self {
+        Self { delay, ..self }
+    }
+    const fn shaped(self, envelope: &'static [(f32, f32)]) -> Self {
+        Self { envelope: Some(envelope), ..self }
+    }
+}
+
+// Retail's per-layer gain over time (relative to the layer's peak), measured
+// from the recomp's gain modules for ~2,300 pop/landing voices in a clean
+// session (music and speech off): long samples are faded down within ~100 ms,
+// which is what makes retail's impacts short and punchy instead of ringing.
+/// Deck knocks and truck/wheel contacts: full for 50 ms, ~0.35 by 300 ms.
+pub(super) const KNOCK_ENV: &[(f32, f32)] =
+    &[(0.0, 1.0), (0.05, 1.0), (0.1, 0.88), (0.15, 0.58), (0.2, 0.45), (0.3, 0.35), (0.5, 0.3)];
+/// Tail impacts and the hollow (deep) sets: held longer.
+pub(super) const TAIL_ENV: &[(f32, f32)] = &[(0.0, 1.0), (0.1, 1.0), (0.15, 0.84), (0.2, 0.75), (0.3, 0.75), (0.5, 0.6)];
+/// The body set: a 50 ms swell, gone by 150 ms.
+pub(super) const BODY_ENV: &[(f32, f32)] = &[(0.0, 0.4), (0.05, 1.0), (0.1, 0.2), (0.15, 0.04)];
+/// Wheels-down (~1 s samples): cut to a fifth within 100 ms.
+pub(super) const WHEELS_ENV: &[(f32, f32)] = &[(0.0, 1.0), (0.02, 0.6), (0.05, 0.5), (0.1, 0.2), (0.15, 0.18)];
+/// The pop crack: a click, down to 14 % after 20 ms.
+pub(super) const CRACK_ENV: &[(f32, f32)] = &[(0.0, 1.0), (0.02, 0.14), (0.1, 0.08)];
 
 macro_rules! range {
     ($a:literal..=$b:literal) => {{
@@ -30,27 +71,117 @@ macro_rules! range {
     }};
 }
 
-/// Skate_Collisions 1066-1092 were picked out by ear as "heard a lot while
-/// skating": short knocks with most energy at 400-2500 Hz (the wooden deck),
-/// unlike the low thumps on either side (1060-1065, 1093-1100).
-/// Ollie / nollie pop (tail strike): the sharpest, shortest of them.
-pub(super) const POP: Cue = Cue { bank: "Skate_Collisions", samples: range!(1074..=1078), level: 0.45 };
-/// Board flip/spin whoosh when a trick registers in the air.
-pub(super) const FLIP: Cue = Cue { bank: "Sk8_Air_Flip_Tricks", samples: range!(10..=13), level: 0.3 };
-/// Landing (scaled by impact speed): the longer deck slaps of that family.
-/// (Rejected before: 35-40 harsh; 0-2 is kept for setting the board down.)
-pub(super) const LAND: Cue = Cue { bank: "Skate_Collisions", samples: range!(1088..=1092), level: 0.9 };
-/// Extra weight for hard landings and jumping onto the board: the low thumps
-/// right after the deck family (trucks/wheels), replacing the guessed 18-20.
-pub(super) const LAND_HEAVY: Cue = Cue { bank: "Skate_Collisions", samples: range!(1097..=1100), level: 1.0 };
-/// Grind/slide loop on rails and ledges.
-/// GRINDS holds every material's grind loops (all 1.4-2.6 s). 9 and 11 (noisy,
-/// low tonality) sounded like wood on a metal rail in play: they stay for
-/// ledges and other non-metal surfaces.
-pub(super) const GRIND: Cue = Cue { bank: "GRINDS", samples: &[9, 11], level: 0.3 };
-/// Metal rails: 54-56 are the most tonal, brightest (4-5.6 kHz) loops in the
-/// bank — a ringing metal scrape. Picked by measurement; not yet confirmed by ear.
-pub(super) const GRIND_METAL: Cue = Cue { bank: "GRINDS", samples: range!(54..=56), level: 0.3 };
+/// Measured retail level -> our level (ROLL_LEVEL 0.15 / retail rolling p90 0.065, rounded down).
+pub(super) const RETAIL_SCALE: f32 = 2.0;
+const fn retail(bank: &'static str, id: usize, measured: f32) -> Record {
+    Record { bank, id, level: measured * RETAIL_SCALE, delay: 0.0, envelope: None }
+}
+const SC: &str = "Skate_Collisions";
+
+// Measured sequence for an ollie/kickflip (scripted recomp run, times from the
+// flick): +0.24 s pop = containers 1096 + 1098/1099 with the flip object;
+// +0.3-0.6 s board knocks 1112/1115/1118 (feet catching the board); +0.95 s
+// landing = 1095 + one of the 1052/1055/1058 impact families + wheel skid.
+
+// Pop and landing recipes from two recomp sessions (57 pops, 83 landings) and
+// the real game sound captured with them (.local/recomp/compare_events.py):
+// which retail sets play at each moment, and their median level there.
+// (Earlier versions picked sets by their loudest moments, then by per-layer
+// medians without the low thuds; both "did not sound close" to the user —
+// the captured retail mix showed the missing low end.)
+
+/// Pop, all at once: deck knock (1112, 548-552, ~0.42, the click), body
+/// (1111, 173-182, ~0.16), low thuds (876: 199-201 ~0.18, 878: 193-195 ~0.08,
+/// 891: 936/937 ~0.16), the pop crack (1096: 259/260 + 623-626, ~0.10) and one
+/// of three tail impacts (1097/1098/1099, ~0.16 each).
+/// Delays are retail's typical offsets from the knock (traced pops): ground
+/// thud 193-195 at once, pop crack and tail impact ~+20 ms, body ~+30 ms,
+/// low ground thud 199-201 ~+40 ms.
+pub(super) const POP: &[Record] = &[
+    retail(SC, 1112, 0.42).shaped(KNOCK_ENV), retail(SC, 878, 0.08), retail(SC, 891, 0.16),
+    retail(SC, 1096, 0.10).after(0.02).shaped(CRACK_ENV), retail(SC, 1111, 0.16).after(0.03).shaped(BODY_ENV),
+    retail(SC, 876, 0.18).after(0.04),
+];
+pub(super) const POP_TAIL: &[Record] =
+    &[
+        retail(SC, 1097, 0.16).after(0.02).shaped(TAIL_ENV),
+        retail(SC, 1098, 0.16).after(0.02).shaped(TAIL_ENV),
+        retail(SC, 1099, 0.16).after(0.02).shaped(TAIL_ENV),
+    ];
+/// Feet catching the board (1115: 548-552 + 530-535, ~0.43): retail plays it
+/// ~0.2-0.3 s after the pop (scripted ollie: pop +0.24 s, knocks +0.42/+0.52 s).
+pub(super) const CATCH: Record = retail(SC, 1115, 0.40).after(0.22).shaped(KNOCK_ENV);
+/// Flip/spin whoosh when a trick registers: retail's Class_Flips plays
+/// Sk8_Air_Flip_Tricks 1-3 (measured ~0.15-0.3).
+pub(super) const FLIP: Cue = Cue { bank: "Sk8_Air_Flip_Tricks", samples: range!(1..=3), level: 0.45 };
+/// Landing: the wheels-down set (1095, 396-404, ~0.09) always, plus retail's
+/// board contact sets, ported from the game's own rule (recomp traces
+/// 2026-10-01, 340 picks; read as reference only):
+/// - a table per tier: tier 2 when the surface under the board is hollow
+///   (observed: Wood_1 park ramps; the game reads a per-material flag, we take
+///   the wood materials), tier 0 otherwise (tier 1 = during a bail);
+/// - per contact kind (which wheels/part touched) three variants (light /
+///   medium / hard). At a landing retail fires ~1.5 kinds: kind 0 44 %,
+///   kind 1 47 %, kind 2 16 %, kind 3 46 % of landings;
+/// - variant: retail uses the heaviest per-wheel impact class (not decoded);
+///   ours follows the impact speed (`land_tier`).
+/// Levels: the set's median level at landings in a clean session (music and
+/// speech off, 118 landings; 1052 carries 22 % of the energy) x RETAIL_SCALE.
+pub(super) const LAND: Record = retail(SC, 1095, 0.17).shaped(WHEELS_ENV);
+/// [kind][variant] for tier 0 (normal) and tier 2 (hollow wood).
+pub(super) const LAND_NORMAL: [[Record; 3]; 4] = [
+    [retail(SC, 1051, 0.32).shaped(KNOCK_ENV), retail(SC, 1052, 0.48).shaped(KNOCK_ENV), retail(SC, 1053, 0.35).shaped(KNOCK_ENV)],
+    [retail(SC, 1054, 0.18).shaped(KNOCK_ENV), retail(SC, 1055, 0.41).shaped(KNOCK_ENV), retail(SC, 1056, 0.31).shaped(KNOCK_ENV)],
+    [retail(SC, 1057, 0.19).shaped(KNOCK_ENV), retail(SC, 1058, 0.33).shaped(KNOCK_ENV), retail(SC, 1059, 0.30).shaped(KNOCK_ENV)],
+    [retail(SC, 1060, 0.22).shaped(KNOCK_ENV), retail(SC, 1061, 0.42).shaped(KNOCK_ENV), retail(SC, 1127, 0.30).shaped(KNOCK_ENV)],
+];
+pub(super) const LAND_HOLLOW: [[Record; 3]; 4] = [
+    [retail(SC, 1062, 0.26).shaped(TAIL_ENV), retail(SC, 1063, 0.47).shaped(TAIL_ENV), retail(SC, 1053, 0.35).shaped(TAIL_ENV)],
+    [retail(SC, 1065, 0.16).shaped(TAIL_ENV), retail(SC, 1066, 0.25).shaped(TAIL_ENV), retail(SC, 1056, 0.31).shaped(TAIL_ENV)],
+    [retail(SC, 1068, 0.19).shaped(TAIL_ENV), retail(SC, 1069, 0.25).shaped(TAIL_ENV), retail(SC, 1070, 0.25).shaped(TAIL_ENV)],
+    [retail(SC, 1071, 0.19).shaped(TAIL_ENV), retail(SC, 1131, 0.30).shaped(TAIL_ENV), retail(SC, 1132, 0.30).shaped(TAIL_ENV)],
+];
+/// Chance each contact kind sounds at a landing (retail, 100 landings).
+pub(super) const LAND_KIND_CHANCE: [f32; 4] = [0.44, 0.47, 0.16, 0.46];
+/// Cloth with the landing (sk8_foley 44-57, retail ~0.11).
+pub(super) const LAND_CLOTH: Record = retail("sk8_foley", 95, 0.11).after(0.04);
+/// Variant: light < 3, medium < 6, hard from 6 m/s impact (ours).
+pub(super) fn land_tier(impact: f32) -> usize {
+    match impact {
+        i if i >= 6.0 => 2,
+        i if i >= 3.0 => 1,
+        _ => 0,
+    }
+}
+/// Retail contact loudness rises gently with board speed (median 0.19-0.23
+/// slow, ~0.33 above 11 m/s): 0.7 standing to 1.0 from 11 m/s.
+pub(super) fn land_scale(speed: f32) -> f32 {
+    let speed = if speed.is_finite() { speed.abs() } else { 0.0 };
+    0.7 + 0.3 * (speed / 11.0).min(1.0)
+}
+/// Hollow surfaces for the tier-2 contact table: the wood materials
+/// (Wood_Ramp 6, Plywood 7, Wood_1-4 41-46, Wood_5 90 in our audio ids;
+/// retail's numbering is ours - 1).
+pub(super) fn hollow(audio_surface: u32) -> bool {
+    matches!(audio_surface, 6 | 7 | 41..=46 | 90)
+}
+/// Putting the board down / stepping on (measured when getting on the board):
+/// the foot-on-deck set (1126: 422-426, 0.23-0.76) with a deck knock (1119) and
+/// a light wheel touch (1054); jumping on (caveman) adds the landing set 1095.
+pub(super) const BOARD_DOWN: Record = retail(SC, 1126, 0.30);
+pub(super) const BOARD_DOWN_KNOCK: Record = retail(SC, 1119, 0.27).shaped(KNOCK_ENV);
+pub(super) const BOARD_DOWN_TOUCH: Record = retail(SC, 1054, 0.14);
+/// Grind start on ledges and other non-metal surfaces (954: 880-882) ...
+pub(super) const GRIND_START: Record = retail(SC, 954, 0.25);
+/// ... then retail re-fires short scrape pieces (955: 202-206, 0.04-0.24 s)
+/// about every 63 ms while grinding (measured median gap), instead of a loop.
+pub(super) const GRIND_PIECES: Record = retail(SC, 955, 0.15);
+pub(super) const GRIND_PIECE_INTERVAL: f32 = 0.063;
+/// Metal rails: the rail object's start (1146: 953-959, measured 0.49) ...
+pub(super) const GRIND_METAL_START: Record = retail(SC, 1146, 0.40);
+/// ... over the GRINDS metal loop (retail's Class_grind plays GRINDS quietly,
+/// <= 0.13). 54-56 are the most tonal, brightest loops in the bank.
+pub(super) const GRIND_METAL: Cue = Cue { bank: "GRINDS", samples: range!(54..=56), level: 0.26 };
 
 /// Whether a grind's audio surface (`grinds.audio_surface_216`) is metal:
 /// Metal (9), the solid/hollow/square/complex metal shapes (11-40), manhole
@@ -65,35 +196,24 @@ pub(super) const FOOT_DRAG: Cue = Cue { bank: "FOOT_DRAG", samples: &[36, 37, 38
 /// (seconds between shuffled pieces, fade-in of each piece).
 pub(super) const POWERSLIDE_SHUFFLE: (f32, f32) = (0.08, 0.01);
 pub(super) const FOOT_DRAG_SHUFFLE: (f32, f32) = (0.11, 0.05);
-/// Putting the board down: wheels touching after stepping on (softer, shorter impacts).
-pub(super) const BOARD_DOWN: Cue = Cue { bank: "Skate_Collisions", samples: range!(0..=2), level: 0.3 };
-/// Bail: body sliding/hitting the ground.
-/// Bodyslide 0-15 comes in three blocks of five — one longer slide, four
-/// hits — taken as soft/medium/hard tiers; 15 joins the hard tier. In play
-/// they sound like additions to a fall, not the fall itself, so they are a
-/// quieter layer until a main body-impact sound is picked
-/// (`.local/audio-audition/bail.html`). `bail_tier` picks by impact speed.
+/// Bail: retail's body hits (1074: records 667-671, samples 215-219 + 861-874,
+/// measured <= 0.26) ...
+pub(super) const BAIL_HIT: Record = retail(SC, 1074, 0.26);
+/// ... with the Bodyslide layer under them (retail <= 0.19: an addition to the
+/// fall, as heard in play). 0-15 come in three blocks of five — one longer
+/// slide, four hits — taken as soft/medium/hard tiers; 15 joins the hard tier.
 pub(super) const BAIL: Cue = Cue { bank: "Bodyslide", samples: range!(0..=15), level: 0.25 };
 pub(super) const BAIL_TIERS: [&[usize]; 3] = [range!(0..=4), range!(5..=9), range!(10..=15)];
 /// Body speed (m/s) at the start of a bail for the medium and hard tiers.
 pub(super) fn bail_tier(speed: f32) -> usize {
     if speed >= 7.0 { 2 } else if speed >= 3.5 { 1 } else { 0 }
 }
-/// A retail patch to play as its data describes (layers, probabilities, gain
-/// ranges): record `id` of an SPLC bank, or a container (id >= record count).
-pub(super) struct Record {
-    pub bank: &'static str,
-    pub id: usize,
-    pub level: f32,
-}
 
 /// Falling into water. The user found Skate_Collisions 476 by ear; the bank's
 /// patch tree puts 476-478 in record 869 with two more layers: 169 (played 75 %
 /// of the time) and one of 171/172 — retail's full splash. Level follows the
 /// fall speed. (Rejected: water_misc 0/4, Skate_Collisions 741-762, 473-475.)
-pub(super) const SPLASH: Record = Record { bank: "Skate_Collisions", id: 869, level: 0.5 };
-/// Samples of SPLASH, for preloading.
-pub(super) const SPLASH_SAMPLES: Cue = Cue { bank: "Skate_Collisions", samples: &[169, 171, 172, 476, 477, 478], level: 0.5 };
+pub(super) const SPLASH: Record = Record { bank: SC, id: 869, level: 0.5, delay: 0.0, envelope: None };
 /// Pushing: foot hitting the ground.
 pub(super) const PUSH: Cue = Cue { bank: "fstep_skateshoe1_sm", samples: range!(74..=84), level: 0.6 };
 /// On-foot steps (walk) and heavier steps (run, landing on foot).
@@ -102,8 +222,49 @@ pub(super) const PUSH: Cue = Cue { bank: "fstep_skateshoe1_sm", samples: range!(
 pub(super) const STEP: Cue = Cue { bank: "fstep_skateshoe1_sm", samples: range!(74..=84), level: 0.85 };
 pub(super) const RUN_STEP: Cue = Cue { bank: "fstep_skateshoe1_sm", samples: range!(6..=17), level: 0.68 };
 
-/// Every one-shot/loop cue, for preloading.
-pub(super) const ALL: &[&Cue] = &[&POP, &FLIP, &LAND, &LAND_HEAVY, &BOARD_DOWN, &GRIND, &GRIND_METAL, &POWERSLIDE, &FOOT_DRAG, &BAIL, &SPLASH_SAMPLES, &PUSH, &STEP, &RUN_STEP];
+/// The riding bed: what retail plays continuously while rolling, away from
+/// pops and landings (clean recomp session, 618 s; rates are starts per second
+/// at typical riding speed, scaled by `bed_rate`; levels = median x
+/// RETAIL_SCALE). Without it impacts sat on silence ("just a sound playing").
+/// Surface collision pieces (SFXObj_Collision; ~2.1/s), cloth/body foley
+/// (sk8_foley, ~2.9/s) and the odd deck knock.
+pub(super) const BED_RECORDS: &[(Record, f32)] = &[
+    (retail(SC, 955, 0.09), 0.50), (retail(SC, 954, 0.13), 0.45), (retail(SC, 956, 0.15), 0.42),
+    (retail(SC, 958, 0.07), 0.23), (retail(SC, 947, 0.11), 0.19), (retail(SC, 952, 0.14), 0.17),
+    (retail(SC, 968, 0.24), 0.17), (retail(SC, 948, 0.15), 0.11),
+    (retail("sk8_foley", 95, 0.06), 0.78), (retail("sk8_foley", 94, 0.06), 0.52), (retail("sk8_foley", 74, 0.26), 0.32),
+    (retail("sk8_foley", 73, 0.21), 0.12), (retail("sk8_foley", 62, 0.20), 0.33), (retail("sk8_foley", 84, 0.18), 0.17),
+    (retail("sk8_foley", 88, 0.16), 0.12), (retail("sk8_foley", 85, 0.23), 0.17), (retail("sk8_foley", 89, 0.07), 0.12),
+    (retail(SC, 1112, 0.19).shaped(KNOCK_ENV), 0.11), (retail(SC, 1115, 0.26).shaped(KNOCK_ENV), 0.08),
+    (retail(SC, 1119, 0.32).shaped(KNOCK_ENV), 0.02),
+];
+/// Object-bank layers of the bed (retail's most used samples): truck rattles,
+/// seams/cracks, speed wind and rolling-surface patches.
+pub(super) const BED_CUES: &[(Cue, f32)] = &[
+    (Cue { bank: "Rolling_Rattles", samples: &[11, 8, 7, 14, 9, 13], level: 0.44 }, 0.31),
+    (Cue { bank: "Seams_Bank", samples: &[44, 144, 46, 40, 156, 140, 47, 161, 159, 153, 42, 36], level: 0.09 }, 0.31),
+    (Cue { bank: "sense_of_speed", samples: &[4, 3, 0, 16, 1], level: 0.08 }, 0.5),
+    (Cue { bank: "PatchBank_Rolling_Surfaces", samples: &[11, 1, 15, 13, 3], level: 0.14 }, 0.14),
+];
+/// Bed rate multiplier for board speed (m/s): none below 0.5, 1.0 at 6 m/s.
+pub(super) fn bed_rate(speed: f32) -> f32 {
+    let speed = if speed.is_finite() { speed.abs() } else { 0.0 };
+    if speed < 0.5 { 0.0 } else { (speed / 6.0).min(1.5) }
+}
+
+/// Every one-shot/loop sample cue, for preloading.
+pub(super) const ALL: &[&Cue] = &[&FLIP, &GRIND_METAL, &POWERSLIDE, &FOOT_DRAG, &BAIL, &PUSH, &STEP, &RUN_STEP];
+/// Every retail patch cue, for preloading (all samples they can pick).
+pub(super) const RECORDS: &[&Record] = &[
+    &POP[0], &POP[1], &POP[2], &POP[3], &POP[4], &POP[5], &POP_TAIL[0], &POP_TAIL[1], &POP_TAIL[2],
+    &CATCH, &LAND, &LAND_CLOTH,
+    &LAND_NORMAL[0][0], &LAND_NORMAL[0][1], &LAND_NORMAL[0][2], &LAND_NORMAL[1][0], &LAND_NORMAL[1][1], &LAND_NORMAL[1][2],
+    &LAND_NORMAL[2][0], &LAND_NORMAL[2][1], &LAND_NORMAL[2][2], &LAND_NORMAL[3][0], &LAND_NORMAL[3][1], &LAND_NORMAL[3][2],
+    &LAND_HOLLOW[0][0], &LAND_HOLLOW[0][1], &LAND_HOLLOW[1][0], &LAND_HOLLOW[1][1], &LAND_HOLLOW[2][0], &LAND_HOLLOW[2][1],
+    &LAND_HOLLOW[2][2], &LAND_HOLLOW[3][0], &LAND_HOLLOW[3][1], &LAND_HOLLOW[3][2],
+    &BOARD_DOWN, &BOARD_DOWN_KNOCK, &BOARD_DOWN_TOUCH, &GRIND_START, &GRIND_PIECES, &GRIND_METAL_START,
+    &BAIL_HIT, &SPLASH,
+];
 
 /// Shortest time between two plays of one cue (s): a safety net against
 /// state flags that stay set for many ticks.
@@ -124,8 +285,8 @@ pub(super) const ROLL_LEVEL: f32 = 0.15;
 pub(super) const AIR_WHEELS: (&str, f32) = ("Whls_spins_Jump_1", 0.15);
 
 /// Rolling grain for an audio material ID (low 7 bits of the collision
-/// surface tag; names from the map tooling's audio surface table). Only the
-/// "hard" grains exist for every material, so those are used.
+/// surface tag; names from the map tooling's audio surface table). Retail was
+/// measured playing these "hard" grains too.
 pub(super) fn grain_for(audio_surface: u32) -> &'static str {
     match audio_surface {
         1 => "asphalt_smooth_hard",
@@ -146,19 +307,26 @@ mod tests {
 
     #[test]
     fn cue_ranges_and_levels_are_sane() {
-        assert_eq!(POP.samples, &[1074, 1075, 1076, 1077, 1078]);
+        assert_eq!(FLIP.samples, &[1, 2, 3]);
         assert_eq!(STEP.samples.len(), 11);
-        for cue in [&POP, &FLIP, &LAND, &LAND_HEAVY, &BOARD_DOWN, &GRIND, &GRIND_METAL, &POWERSLIDE, &FOOT_DRAG, &BAIL, &SPLASH_SAMPLES, &PUSH, &STEP, &RUN_STEP] {
+        for cue in ALL {
             assert!(!cue.samples.is_empty());
             assert!(cue.level > 0.0 && cue.level <= 4.0, "{} out of range", cue.bank);
+        }
+        for record in RECORDS {
+            assert!(record.level > 0.0 && record.level <= 1.0, "{}:{} out of range", record.bank, record.id);
         }
     }
 
     #[test]
-    fn bail_tiers_cover_the_bank_and_rise_with_speed() {
+    fn tiers_rise_with_impact_and_speed() {
         let all: Vec<usize> = BAIL_TIERS.iter().flat_map(|t| t.iter().copied()).collect();
         assert_eq!(all, BAIL.samples);
         assert_eq!((bail_tier(1.0), bail_tier(4.0), bail_tier(9.0)), (0, 1, 2));
+        assert_eq!((land_tier(1.0), land_tier(4.0), land_tier(8.0)), (0, 1, 2));
+        assert!(land_scale(0.0) == 0.7 && land_scale(11.0) == 1.0 && land_scale(f32::NAN) == 0.7);
+        assert!(hollow(41) && hollow(6) && !hollow(3) && !hollow(66));
+        assert!(bed_rate(0.2) == 0.0 && bed_rate(6.0) == 1.0 && bed_rate(30.0) == 1.5);
     }
 
     #[test]

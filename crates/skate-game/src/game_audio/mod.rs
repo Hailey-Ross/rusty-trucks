@@ -8,7 +8,7 @@
 //! (docs/hails-additions/11-audio.md); EA's AEMS event runtime is not
 //! re-implemented.
 //!
-//! Loudness is deliberately conservative: master volume defaults to 25%,
+//! Loudness is deliberately conservative: master volume defaults to 75%,
 //! a cue may raise a quiet clip only until the clip's own peak reaches full
 //! scale (at most x4) before the master and category volumes (both <= 1)
 //! scale it down (voices.rs), sounds fade in, voice counts are capped, and nothing plays while
@@ -39,7 +39,7 @@ struct SavedSettings {
 }
 impl Default for SavedSettings {
     fn default() -> Self {
-        Self { master: 25, ambience: 100, effects: 100 }
+        Self { master: 75, ambience: 100, effects: 100 }
     }
 }
 impl SavedSettings {
@@ -154,7 +154,13 @@ fn setup(mut commands: Commands, config: Res<crate::config::Config>, mut assets:
     commands.spawn((GameAudioListener, SpatialListener::new(0.2), Transform::default()));
     match Library::load(&config.asset_root) {
         Ok(mut library) => {
-            let mut samples: Vec<(&str, &[usize])> = cues::ALL.iter().map(|c| (c.bank, c.samples)).collect();
+            let records: Vec<(&str, Vec<usize>)> = cues::RECORDS.iter().copied()
+                .chain(cues::BED_RECORDS.iter().map(|(r, _)| r))
+                .map(|r| (r.bank, library.patch_samples(r.bank, r.id))).collect();
+            let mut samples: Vec<(&str, &[usize])> = cues::ALL.iter().copied()
+                .chain(cues::BED_CUES.iter().map(|(c, _)| c))
+                .map(|c| (c.bank, c.samples)).collect();
+            samples.extend(records.iter().map(|(bank, ids)| (*bank, ids.as_slice())));
             samples.extend(water::PRELOAD);
             let started = std::time::Instant::now();
             let count = library.preload(&mut assets, &samples);
@@ -201,7 +207,7 @@ mod tests {
 
     #[test]
     fn defaults_are_quiet_and_saved_values_are_bounded() {
-        assert_eq!(SavedSettings::default().master, 25);
+        assert_eq!(SavedSettings::default().master, 75);
         let loaded: SavedSettings = serde_json::from_str(r#"{"master":400,"ambience":33,"effects":7}"#).unwrap();
         assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5 });
     }

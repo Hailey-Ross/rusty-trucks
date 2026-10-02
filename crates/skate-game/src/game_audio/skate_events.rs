@@ -13,8 +13,6 @@ use skate_core::{
 
 /// Board ground speed (m/s) mapped to the fastest rolling band.
 const FULL_ROLL_SPEED: f32 = 10.0;
-/// Landing impact speed (m/s) for full landing level.
-const FULL_IMPACT: f32 = 12.0;
 /// Horizontal speed (m/s) above which on-foot steps use the running set.
 const RUN_SPEED: f32 = 3.0;
 /// Downward speed (m/s) a body needs for a water-entry splash, and the
@@ -337,6 +335,10 @@ pub(super) struct Loops {
     /// Seconds the wheels have been off the ground (or the board stopped).
     roll_off: f32,
     grind: Loop,
+    /// Grinding last tick (start patch on the rising edge), and the countdown
+    /// to the next re-fired scrape piece on non-metal grinds.
+    was_grinding: bool,
+    grind_piece_next: f32,
     /// Countdown to the next shuffled powerslide / foot-drag piece.
     slide_next: f32,
     drag_next: f32,
@@ -347,6 +349,8 @@ pub(super) struct Loops {
     patch_order: std::collections::HashMap<(&'static str, usize, usize), usize>,
     /// Last start time per one-shot cue, for `cues::min_gap`.
     last: std::collections::HashMap<&'static str, f64>,
+    /// Delayed retail layers: (due time, name, record, scale, position).
+    delayed: Vec<(f64, &'static str, &'static cues::Record, f32, Vec3)>,
 }
 
 fn random(rng: &mut u32) -> f32 {
@@ -373,6 +377,17 @@ fn band_for(fraction: f32, bands: usize, current: Option<usize>) -> usize {
         // every switch cross-fades two different recordings ("plays twice").
         Some(band) if (scaled - band as f32).abs() < 1.0 => band,
         _ => (scaled.round() as usize).min(bands - 1),
+    }
+}
+
+/// Play a retail layer now, or queue it for its retail offset (`Record::delay`).
+#[allow(clippy::too_many_arguments)]
+fn layer(player: &mut Player, loops: &mut Loops, now: f64, name: &'static str, record: &'static cues::Record,
+         scale: f32, at: Vec3, rng: &mut u32) {
+    if record.delay > 0.0 {
+        loops.delayed.push((now + f64::from(record.delay), name, record, scale, at));
+    } else {
+        player.play_record(name, record, scale, at, rng, &mut loops.patch_order);
     }
 }
 
@@ -447,11 +462,14 @@ impl Player<'_, '_, '_> {
             let volume = record.level * scale.clamp(0.0, 1.0) * gain;
             let mut play = Play::effect(volume, at);
             play.pitch = pitch;
+            play.envelope = record.envelope;
             if self.voices.play(&mut self.commands, &clip, play, self.now).is_some() {
                 played.push(sample);
             }
         }
-        info!("AUDIO_CUE {name} {}:record{id} samples={played:?}", record.bank);
+        if !name.is_empty() {
+            info!("AUDIO_CUE {name} {}:record{id} samples={played:?}", record.bank);
+        }
     }
 
     /// One-shot at `pitch` (playback speed), with the same small random spread.
@@ -532,6 +550,12 @@ pub(super) fn play(
     let dt = time.delta_secs().clamp(0.0, 0.25);
     let now = time.elapsed_secs_f64();
     let mut player = Player { commands, library: &mut library, voices: &mut voices, assets: &mut assets, now };
+    // Layers whose retail offset has come due (frame-granular, <= one frame late).
+    let due: Vec<_> = loops.delayed.iter().filter(|d| d.0 <= now).cloned().collect();
+    loops.delayed.retain(|d| d.0 > now);
+    for (_, name, record, scale, at) in due {
+        player.play_record(name, record, scale, at, &mut rng, &mut loops.patch_order);
+    }
     for event in events {
         // Safety net: a cue never repeats faster than its minimum gap.
         let name = event.name();
@@ -540,29 +564,55 @@ pub(super) fn play(
         }
         loops.last.insert(name, now);
         match event {
-            Event::Pop(at) => player.once("pop", &cues::POP, 1.0, at, &mut rng),
-            Event::Flip(at) => player.once("flip", &cues::FLIP, 1.0, at, &mut rng),
-            Event::Land { at, impact } => {
-                let scale = 0.3 + 0.7 * (impact / FULL_IMPACT).clamp(0.0, 1.0);
-                player.once("land", &cues::LAND, scale, at, &mut rng);
-                // Weight layer: from 1.5 m/s, louder and deeper (down to -20 %
-                // pitch) as the impact grows.
-                let heavy = ((impact - 1.5) / 7.5).clamp(0.0, 1.0);
-                if heavy > 0.0 {
-                    player.once_pitched("land_heavy", &cues::LAND_HEAVY, 0.4 + 0.6 * heavy, 1.0 - 0.2 * heavy, at, &mut rng);
+            // Retail's measured layers per moment (cues.rs): pop crack + tail
+            // impact + deck knock; flip whoosh + feet catching the board; the
+            // wheels-down set + an impact family on landing.
+            Event::Pop(at) => {
+                for record in cues::POP {
+                    layer(&mut player, loops, now, "pop", record, 1.0, at, &mut rng);
                 }
+                let tail = &cues::POP_TAIL[(random(&mut rng) * 3.0) as usize % 3];
+                layer(&mut player, loops, now, "pop_tail", tail, 1.0, at, &mut rng);
+            }
+            Event::Flip(at) => {
+                player.once("flip", &cues::FLIP, 1.0, at, &mut rng);
+                layer(&mut player, loops, now, "catch", &cues::CATCH, 1.0, at, &mut rng);
+            }
+            Event::Land { at, impact } => {
+                // Retail's board contact rule (cues.rs): hollow (wood) table or
+                // normal, each contact kind with its retail chance, variant by
+                // impact, gentle loudness rise with board speed.
+                let riding = cues.riding;
+                let hollow = cues::hollow(riding.surface);
+                let table = if hollow { &cues::LAND_HOLLOW } else { &cues::LAND_NORMAL };
+                let variant = cues::land_tier(impact);
+                let scale = cues::land_scale(riding.speed);
+                let mut kinds: Vec<usize> = (0..4).filter(|&k| random(&mut rng) < cues::LAND_KIND_CHANCE[k]).collect();
+                if kinds.is_empty() {
+                    kinds.push(1);
+                }
+                info!("AUDIO_EVENT land impact={impact:.2} variant={variant} hollow={hollow} kinds={kinds:?} scale={scale:.2}");
+                for kind in kinds {
+                    layer(&mut player, loops, now, "land_impact", &table[kind][variant], scale, at, &mut rng);
+                }
+                layer(&mut player, loops, now, "land_cloth", &cues::LAND_CLOTH, scale, at, &mut rng);
+                player.play_record("land", &cues::LAND, scale, at, &mut rng, &mut loops.patch_order);
             }
             Event::BoardDown { at, impact } => {
-                // Set down gently: the soft sample, quietly. Jumped on (caveman):
-                // louder, plus a landing impact layer that grows with the impact.
+                // Set down gently: foot on deck, knock, light wheel touch.
+                // Jumped on (caveman): louder, plus the landing set.
                 let (soft, heavy) = board_down_levels(impact);
-                player.once("board_down", &cues::BOARD_DOWN, soft, at, &mut rng);
+                player.play_record("board_down", &cues::BOARD_DOWN, soft, at, &mut rng, &mut loops.patch_order);
+                player.play_record("board_down_knock", &cues::BOARD_DOWN_KNOCK, soft, at, &mut rng, &mut loops.patch_order);
+                player.play_record("board_down_touch", &cues::BOARD_DOWN_TOUCH, soft, at, &mut rng, &mut loops.patch_order);
                 if heavy > 0.0 {
-                    player.once("board_down_heavy", &cues::LAND_HEAVY, heavy, at, &mut rng);
+                    player.play_record("board_down_heavy", &cues::LAND, heavy, at, &mut rng, &mut loops.patch_order);
                 }
             }
             Event::Bail { at, speed } => {
                 let tier = cues::bail_tier(speed);
+                let scale = [0.6, 0.8, 1.0][tier];
+                player.play_record("bail_hit", &cues::BAIL_HIT, scale, at, &mut rng, &mut loops.patch_order);
                 let cue = cues::Cue { samples: cues::BAIL_TIERS[tier], ..cues::BAIL };
                 player.once(["bail_soft", "bail_medium", "bail_hard"][tier], &cue, 1.0, at, &mut rng);
             }
@@ -639,8 +689,39 @@ pub(super) fn play(
     // Grinds, powerslides and foot drag loop while the state lasts. Braking is
     // reported in pulses, so it is held briefly.
     let dragging = r.braking && !r.airborne && !r.grinding;
-    let grind = if cues::metal(r.grind_surface) { &cues::GRIND_METAL } else { &cues::GRIND };
-    player.hold(&mut loops.grind, r.grinding, grind, grind.level * (0.5 + 0.5 * fraction), r.board, &mut rng);
+    // Riding bed: retail's continuous small sounds while rolling (cues.rs),
+    // each source a random process at its measured rate x board speed.
+    let bed = cues::bed_rate(r.speed) * if r.rolling && !r.grinding && !r.airborne { 1.0 } else { 0.0 };
+    if bed > 0.0 {
+        for (record, rate) in cues::BED_RECORDS {
+            if random(&mut rng) < rate * bed * dt {
+                player.play_record("", record, 1.0, r.board, &mut rng, &mut loops.patch_order);
+            }
+        }
+        for (cue, rate) in cues::BED_CUES {
+            if random(&mut rng) < rate * bed * dt {
+                player.once_pitched("", cue, 1.0, 1.0, r.board, &mut rng);
+            }
+        }
+    }
+
+    // Grinds: retail's start patch, then on metal the GRINDS loop; on ledges
+    // and other surfaces short scrape pieces re-fired every ~63 ms.
+    let metal = cues::metal(r.grind_surface);
+    if r.grinding && !loops.was_grinding {
+        let start = if metal { &cues::GRIND_METAL_START } else { &cues::GRIND_START };
+        player.play_record("grind_start", start, 0.5 + 0.5 * fraction, r.board, &mut rng, &mut loops.patch_order);
+        loops.grind_piece_next = cues::GRIND_PIECE_INTERVAL;
+    }
+    loops.was_grinding = r.grinding;
+    player.hold(&mut loops.grind, r.grinding && metal, &cues::GRIND_METAL, cues::GRIND_METAL.level * (0.5 + 0.5 * fraction), r.board, &mut rng);
+    if r.grinding && !metal {
+        loops.grind_piece_next -= dt;
+        if loops.grind_piece_next <= 0.0 {
+            loops.grind_piece_next += cues::GRIND_PIECE_INTERVAL;
+            player.play_record("", &cues::GRIND_PIECES, 0.5 + 0.5 * fraction, r.board, &mut rng, &mut loops.patch_order);
+        }
+    }
     let sliding = r.sliding && !r.grinding;
     player.shuffle("powerslide", &mut loops.slide_next, sliding, dt, &cues::POWERSLIDE, cues::POWERSLIDE_SHUFFLE, fraction, r.board, &mut rng);
     player.shuffle("foot_drag", &mut loops.drag_next, dragging, dt, &cues::FOOT_DRAG, cues::FOOT_DRAG_SHUFFLE, 0.3 + 0.7 * fraction, r.board, &mut rng);

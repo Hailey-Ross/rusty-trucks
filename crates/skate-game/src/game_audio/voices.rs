@@ -6,7 +6,10 @@
 //! - a requested volume may raise a quiet clip only until the clip's own peak
 //!   reaches full scale (and never more than x4); category and master volumes
 //!   (both <= 1) then scale it down. No clip plays hotter than full scale x master;
-//! - sounds start silent and fade in over at least `MIN_FADE`;
+//! - loops and sounds asking for a fade start silent and fade in (>= `MIN_FADE`);
+//!   one-shots start at their level on the first sample — impacts/knocks are
+//!   25-35 ms long, and a fade or per-frame gain ramp ate their attack (the
+//!   user heard pops/landings lose their layering);
 //! - at most `MAX_VOICES` voices, `MAX_PER_CLIP` of one sound, and a repeat of
 //!   the same sound needs `MIN_REPEAT` seconds.
 use super::{AudioSettings, library::Clip};
@@ -39,10 +42,13 @@ pub(crate) struct Play {
     pub position: Option<Vec3>,
     pub looping: bool,
     pub fade_in: f32,
+    /// Gain over time after the start, (seconds, relative gain) points with
+    /// linear interpolation (retail's per-layer fader curves); None = flat.
+    pub envelope: Option<&'static [(f32, f32)]>,
 }
 impl Play {
     pub(crate) fn effect(volume: f32, position: Vec3) -> Self {
-        Self { category: Category::Effects, volume, pitch: 1.0, position: Some(position), looping: false, fade_in: MIN_FADE }
+        Self { category: Category::Effects, volume, pitch: 1.0, position: Some(position), looping: false, fade_in: MIN_FADE, envelope: None }
     }
 }
 
@@ -65,6 +71,26 @@ struct Voice {
     attack_elapsed: f32,
     stopping: Option<(f32, f32)>,
     pending: f32,
+    envelope: Option<&'static [(f32, f32)]>,
+    /// Seconds played (not counting silenced time), for the envelope.
+    age: f32,
+}
+
+/// Relative gain of `envelope` at `age` seconds (linear between points,
+/// held before the first and after the last).
+fn envelope_at(envelope: Option<&[(f32, f32)]>, age: f32) -> f32 {
+    let Some(points) = envelope.filter(|p| !p.is_empty()) else { return 1.0 };
+    if age <= points[0].0 {
+        return points[0].1;
+    }
+    for pair in points.windows(2) {
+        let ((t0, g0), (t1, g1)) = (pair[0], pair[1]);
+        if age <= t1 {
+            let span = (t1 - t0).max(1e-6);
+            return g0 + (g1 - g0) * (age - t0) / span;
+        }
+    }
+    points[points.len() - 1].1
 }
 
 #[derive(Resource, Default)]
@@ -72,6 +98,10 @@ pub(crate) struct Voices {
     voices: Vec<Voice>,
     next: u64,
     last_start: std::collections::HashMap<std::sync::Arc<str>, f64>,
+    /// Category x master gain per category and the silenced flag, as of the
+    /// last `sync`, so one-shots can start at their final level.
+    mix: [f32; 2],
+    silenced: bool,
 }
 
 /// Largest volume for a clip whose loudest sample is `peak` (0..1 of full scale).
@@ -101,12 +131,21 @@ impl Voices {
         }
         self.last_start.insert(clip.key.clone(), now);
         let speed = clamp_pitch(play.pitch);
+        let max = max_volume(clip.peak);
+        let volume = clamp_volume(play.volume, max);
+        // One-shots start at their final level (no fade, no ramp); loops and
+        // faded sounds start silent until `sync` applies the faded-in gain.
+        let instant = !play.looping && play.fade_in <= MIN_FADE;
+        let initial = if instant {
+            volume * envelope_at(play.envelope, 0.0) * self.mix[play.category as usize]
+        } else {
+            0.0
+        };
         let settings = PlaybackSettings {
             mode: if play.looping { PlaybackMode::Loop } else { PlaybackMode::Once },
-            // Silent until `sync` applies the faded-in gain.
-            volume: Volume::Linear(0.0),
+            volume: Volume::Linear(initial),
             speed,
-            paused: true,
+            paused: !instant || self.silenced,
             spatial: play.position.is_some(),
             spatial_scale: Some(SpatialScale::new(SPATIAL_SCALE)),
             ..Default::default()
@@ -117,9 +156,10 @@ impl Voices {
         self.next += 1;
         self.voices.push(Voice {
             id, entity, key: clip.key.clone(), category: play.category, looping: play.looping,
-            volume: clamp_volume(play.volume, max_volume(clip.peak)), max_volume: max_volume(clip.peak), pitch: speed, gain: 0.0, speed,
-            position: play.position, attack: play.fade_in.max(MIN_FADE), attack_elapsed: 0.0,
-            stopping: None, pending: 0.0,
+            volume, max_volume: max, pitch: speed, gain: if instant { volume } else { 0.0 }, speed,
+            position: play.position, attack: play.fade_in.max(MIN_FADE),
+            attack_elapsed: if instant { MIN_FADE } else { 0.0 },
+            stopping: None, pending: 0.0, envelope: play.envelope, age: 0.0,
         });
         Some(id)
     }
@@ -184,6 +224,10 @@ pub(super) fn sync(
     let dt = time.delta_secs().clamp(0.0, 0.25);
     let silenced = super::silenced(menu.as_deref(), &replay);
     let master = settings.master().clamp(0.0, 1.0);
+    for category in [Category::Ambience, Category::Effects] {
+        voices.mix[category as usize] = settings.category(category).clamp(0.0, 1.0) * master;
+    }
+    voices.silenced = silenced;
     let mut finished = Vec::new();
     for v in &mut voices.voices {
         let Ok((sink, spatial, mut playback, mut transform)) = sinks.get_mut(v.entity) else {
@@ -193,7 +237,7 @@ pub(super) fn sync(
             continue;
         };
         if let Some(position) = v.position { transform.translation = position; }
-        if !silenced { v.attack_elapsed += dt; }
+        if !silenced { v.attack_elapsed += dt; v.age += dt; }
         let attack = (v.attack_elapsed / v.attack).min(1.0);
         let mut release = 1.0;
         if let Some((remaining, total)) = &mut v.stopping {
@@ -205,7 +249,8 @@ pub(super) fn sync(
         v.gain += (v.volume - v.gain) * (1.0 - (-dt / 0.012).exp());
         v.speed += (v.pitch - v.speed) * (1.0 - (-dt / 0.025).exp());
         let category = settings.category(v.category).clamp(0.0, 1.0);
-        let gain = (v.gain * attack * release).clamp(0.0, v.max_volume) * category * master;
+        let envelope = envelope_at(v.envelope, v.age);
+        let gain = (v.gain * attack * release * envelope).clamp(0.0, v.max_volume) * category * master;
         let speed = v.speed.clamp(0.25, 4.0);
         // Before Bevy creates the sink, keep its initial settings current.
         playback.volume = Volume::Linear(gain);
@@ -242,6 +287,28 @@ mod tests {
 
     fn clip(name: &str) -> Clip {
         Clip { handle: Handle::default(), key: name.into(), peak: 1.0 }
+    }
+
+    #[test]
+    fn one_shots_start_at_their_level_and_loops_fade_in() {
+        let mut world = World::new();
+        let mut voices = Voices { mix: [0.5, 0.25], ..Default::default() };
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &world);
+        let shot = voices.play(&mut commands, &clip("knock"), Play::effect(0.8, Vec3::ZERO), 0.0).unwrap();
+        let mut looped = Play::effect(0.8, Vec3::ZERO);
+        looped.looping = true;
+        let lp = voices.play(&mut commands, &clip("loop"), looped, 0.0).unwrap();
+        queue.apply(&mut world);
+        let level = |id| voices.voices.iter().find(|v| v.id == id).map(|v| (v.gain, v.entity)).unwrap();
+        let (gain, entity) = level(shot);
+        let settings = world.get::<PlaybackSettings>(entity).unwrap();
+        assert_eq!(gain, 0.8);
+        assert_eq!(settings.volume, Volume::Linear(0.8 * 0.25));
+        assert!(!settings.paused);
+        let (gain, entity) = level(lp);
+        assert_eq!(gain, 0.0);
+        assert!(world.get::<PlaybackSettings>(entity).unwrap().paused);
     }
 
     #[test]
