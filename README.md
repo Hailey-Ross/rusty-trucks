@@ -10,61 +10,32 @@ Includes skating, tricks, grinds, offboard movement, difficulty settings and
 
 ## History
 
-This rewrite builds on more than two years of Skate 3 reverse engineering and
-modding work that began before the Rust project. Its development timeline
-should not be mistaken for the time it took to understand the original game.
+Before this rewrite existed, **dumbad** spent more than two years reverse
+engineering Skate 3 and building the tools needed to understand and work with
+it. That meant countless hours digging through undocumented file formats,
+animation data, and game interaction systems, then testing those discoveries
+in the original game. Much of that work is collected in
+[DumbadsSkate3ModdingTools](https://github.com/Ethanw05/DumbadsSkate3ModdingTools),
+including tools for custom maps, meshes, collision, challenges, and DLC.
 
-Ethan Wingfield, known as **dumbad**
-([Ethanw05](https://github.com/Ethanw05)), developed the research and tooling
-collected in
-[DumbadsSkate3ModdingTools](https://github.com/Ethanw05/DumbadsSkate3ModdingTools).
-That work established the foundation for understanding the game's file formats,
-animation data, and game interaction systems used by the rewrite. It involved
-examining the original game, decoding binary structures, building parsers and
-exporters, and testing those discoveries against the game.
-
-The tooling includes ArenaBuilder, collision PSG generation, clustered-mesh
-serialization and compression, KD-tree construction, mesh and material data
-builders, AI-path data, ChallengeEditor, and DLC-building tools. These are
-concrete outputs of the earlier research, rather than discoveries that began
-with the Rust rewrite.
-
-Chasm later worked on a Skate 3 recompilation and a custom renderer based on
-Ethan's earlier renderer work. The Rust/Bevy project followed that work,
-bringing the accumulated research into a new implementation. Credit for
-developing the rewrite and credit for the research that made it possible are
-both part of this project's history.
-
-This project is a reconstruction of Skate 3 systems in Rust and Bevy.
-Recompilation of the original executable is a different approach. Loading
-original assets and reproducing demonstrated behavior does not establish
-complete equivalence with the original game; gameplay parity remains a work
-in progress.
+That research laid the groundwork for this project. Chasm later worked on a
+recompilation and a custom renderer based on dumbad's earlier renderer work,
+before moving into the Rust/Bevy rewrite. The rewrite's development time tells
+only part of the story: the knowledge and tools it relies on took years of
+work to establish.
 
 ## AI usage
 
-AI coding tools have been used in the broader research and development effort,
-including work on tooling and the Rust implementation. AI assistance is part
-of the development history and should be acknowledged alongside the people
-who directed the work and supplied the underlying research.
+AI coding tools were used to develop this rewrite, but none of it would have
+been possible without dumbad's extraordinary effort to reverse engineer the
+original game. The AI had years of hard-earned research and working tools to
+build on. Describing the project as simply “AI rewriting Skate 3” leaves out
+the work that made it possible in the first place.
 
-The rewrite was not produced by giving an AI an unexplored game and having it
-independently recover everything. It builds on the earlier reverse engineering,
-format knowledge, tools, and experiments described above. The time spent
-generating or adapting implementation code does not include the two-plus years
-of work that established that foundation.
-
-AI-generated code is not, by itself, evidence that a recovered format or
-gameplay system is correct. Claims about accuracy need support from inspection
-of the original game, reproducible tests, and behavioral comparisons.
-Likewise, a successful demonstration should not be described as proof of
-complete 1:1 parity.
-
-When describing or reporting on this project, distinguish the original
-reverse-engineering work, AI-assisted implementation, reuse of retail assets,
-and the behavior actually verified in the rewrite. AI assistance does not
-replace attribution to the people and projects whose work supplied the
-necessary knowledge.
+AI helped turn that knowledge into a new implementation; it does not replace
+credit for discovering how the game works. This is still a work in progress,
+and using original assets or showing working tricks does not mean every
+system behaves exactly like the original.
 
 ## Play
 
