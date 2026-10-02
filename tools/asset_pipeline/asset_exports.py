@@ -93,3 +93,20 @@ def environment(game_root, stage, work, report, log, converted=None, game_exe=No
     report('Preparing global foliage backdrops')
     from .backdrop import convert as write_backdrops
     attempt('backdrops',lambda assets:write_backdrops(game_root,assets,converted))
+
+
+def audio(game_root, stage, work, report, log, tools):
+    private=stage/"assets/private"
+    from .audio_export import VGMSTREAM_SHA, VGMSTREAM_URL, convert
+    from .optional_content import CONTENT_ERRORS, note
+    availability=private/'audio-availability.json'
+    report('Preparing game audio')
+    try:
+        try:vgmstream=engine.dependency(tools,'vgmstream-cli',VGMSTREAM_URL,VGMSTREAM_SHA,report)
+        except OSError as error:raise RuntimeError(f'Could not download the audio decoder: {error}') from error
+        convert(game_root,private,work/'audio',vgmstream,report,log)
+    except CONTENT_ERRORS as error:
+        if (private/'audio').exists():shutil.rmtree(private/'audio')
+        note(availability,'Game audio',error,report=report)
+        return
+    availability.unlink(missing_ok=True)

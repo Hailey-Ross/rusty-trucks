@@ -53,6 +53,7 @@ mod replay;
 mod world;
 mod grind_world;
 mod skate_world;
+mod game_audio;
 
 fn main() -> bevy::app::AppExit {
     match updater::recover() {

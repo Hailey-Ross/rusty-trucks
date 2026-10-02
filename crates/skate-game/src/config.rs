@@ -13,6 +13,8 @@ pub(crate) struct Config {
     pub multiplayer: crate::multiplayer::Options,
     pub map_fingerprint: u64,
     pub teleport: Option<String>,
+    /// `--mute`: no game or mod audio (game_audio).
+    pub mute: bool,
 }
 
 impl Config {
@@ -28,6 +30,7 @@ impl Config {
             multiplayer: crate::multiplayer::Options::default(),
             map_fingerprint: 0,
             teleport: None,
+            mute: false,
         };
         let mut difficulty_override = None;
         let mut explicit_map = false;
@@ -71,6 +74,7 @@ impl Config {
                 Some("--test-world") => { explicit_map = true; config.map = None; config.map_path = None; }
                 Some("--check-assets") => config.check_assets = true,
                 Some("--start-paused") => config.start_paused = true,
+                Some("--mute") => config.mute = true,
                 Some("--teleport") => config.teleport = Some(args.next().ok_or("--teleport requires a destination ID")?.to_string_lossy().into_owned()),
                 Some("--difficulty") => {
                     let value = args.next().ok_or("--difficulty requires easy, normal, hardcore, motorized or custom")?;
@@ -85,7 +89,7 @@ impl Config {
                 }
                 _ => {
                     return Err(format!(
-                        "Unknown argument {arg:?}. Usage: skate3rust [--assets DIRECTORY] [--map MAP.skate | --test-world] [--difficulty easy|normal|hardcore|motorized|custom] [--verify CAPTURE.png] [--check-assets] [--start-paused]"
+                        "Unknown argument {arg:?}. Usage: skate3rust [--assets DIRECTORY] [--map MAP.skate | --test-world] [--difficulty easy|normal|hardcore|motorized|custom] [--verify CAPTURE.png] [--check-assets] [--start-paused] [--mute]"
                     ));
                 }
             }

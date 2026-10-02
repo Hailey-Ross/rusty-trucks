@@ -156,3 +156,15 @@ fn opposing_contacts_use_deck_projection_range_and_reset_without_deck_contacts()
     state.update(&reports[2..], &lines, UP, 80.0, false);
     assert_eq!(state.opposing_contact, 0.0);
 }
+
+#[test]
+fn wheel_lines_keep_audio_and_physics_bits_of_the_same_tag() {
+    let mut lines = WheelLineState::default();
+    let hit = |tag| Some(WheelLineHit { fraction: 0.5, normal: UP, surface_tag: tag });
+    // Audio bits 0..7, physics type bits 7..12 (water 1591 = audio 55, physics 12).
+    lines.publish([hit(1591), hit(3 << 7 | 9), None, hit(0)]);
+    assert_eq!(lines.physics_surfaces, [12, 3, 0, 0]);
+    assert_eq!(lines.audio_surfaces, [55, 9, 0, 0]);
+    lines.publish([None; 4]);
+    assert_eq!(lines.audio_surfaces, [0; 4]);
+}

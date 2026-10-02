@@ -36,6 +36,20 @@ __pycache__/
 *.stategraph
 *.rwcmset
 !/crates/skate-data/tests/fixtures/retail-collision.rwcmset
+# Retail audio and anything decoded from it (tools/asset_pipeline/audio_export.py).
+*.snr
+*.sns
+*.sek
+*.abk
+*.bnk
+*.csi
+*.ems
+*.grain
+*.mus
+*.mpf
+*.xma
+*.wav
+!/mods/Skyline_Drive_Mod/audio/*.wav
 .env
 .env.*
 *.pem
