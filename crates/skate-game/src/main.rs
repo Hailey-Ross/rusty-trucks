@@ -45,6 +45,8 @@ mod retail_character;
 mod retail_exposure;
 mod retail_irradiance;
 mod retail_sky;
+mod water_bodies;
+mod water_splash;
 mod presentation;
 mod debug_cam;
 mod replay;
