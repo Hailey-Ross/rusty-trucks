@@ -45,9 +45,12 @@ fn id(data: &[u8], at: &mut usize, width: u8) -> Result<u16, String> {
 /// of triangles visited.
 ///
 /// Meshes in which no unit carries a surface ID are skipped. Across every
-/// shipped district these are only 12-triangle boxes (zone/trigger/bounds
-/// volumes); authored player positions lie inside some of them, e.g. the
-/// SkateSchool area and DownTown's Kube Tower landing, so they are not solid.
+/// shipped district these are only 12-triangle boxes: the shapes of named
+/// trigger volumes (tutorial areas, teleport prompts, session spots, level
+/// bounds), whose volume records in the same stream have the same bounds.
+/// Retail uses them for enter/exit events, never as collision, and authored
+/// player positions lie inside some of them (the SkateSchool area, DownTown's
+/// Kube Tower landing).
 /// Meshes that mix surfaced and surfaceless units are ordinary geometry and
 /// are kept whole.
 pub fn visit_clusters(
