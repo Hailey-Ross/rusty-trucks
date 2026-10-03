@@ -14,10 +14,20 @@
 //! scale it down (voices.rs), sounds fade in, voice counts are capped, and nothing plays while
 //! the menu is open or a replay runs. `--mute` silences game and mod audio.
 mod ambience;
+mod crossfade_groups;
 mod cues;
+#[cfg(test)]
+mod e2e;
 mod emitters;
+mod grain_bed;
 mod library;
+mod native;
+mod player_audio;
+mod random_programs;
+mod random_sets;
 mod skate_events;
+mod state_log;
+mod timing;
 mod voices;
 
 use bevy::{audio::Volume, prelude::*};
@@ -36,10 +46,13 @@ struct SavedSettings {
     master: u32,
     ambience: u32,
     effects: u32,
+    /// Play the world emitters through the native AEMS runtime (crates/skate-audio) instead of
+    /// the measured tables. Off by default; `SKATE_AEMS=1` overrides it (native.rs).
+    native: bool,
 }
 impl Default for SavedSettings {
     fn default() -> Self {
-        Self { master: 75, ambience: 100, effects: 100 }
+        Self { master: 75, ambience: 100, effects: 100, native: false }
     }
 }
 impl SavedSettings {
@@ -74,6 +87,10 @@ impl AudioSettings {
     /// Linear master gain (0 when muted).
     pub(crate) fn master(&self) -> f32 {
         if self.muted { 0.0 } else { self.saved.master as f32 / 100.0 }
+    }
+    /// Whether `settings/audio.json` asks for the native AEMS runtime.
+    pub(crate) fn native(&self) -> bool {
+        self.saved.native
     }
     pub(crate) fn category(&self, category: Category) -> f32 {
         let percent = match category {
@@ -138,10 +155,14 @@ impl Plugin for GameAudioPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Voices>()
             .init_resource::<skate_events::Cues>()
+            .init_resource::<emitters::ReverbZones>()
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
-            .add_systems(Update, (ambience::update, skate_events::play, emitters::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
+            .add_systems(Update, (native::mixmap_frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame).chain().before(CueSet).after(crate::app::FrameSet::Animation))
+            .add_systems(Update, (ambience::update, skate_events::play, emitters::update, random_sets::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
             .add_systems(Update, voices::sync.after(CueSet))
+            .add_systems(Update, timing::report)
+            .add_plugins(native::register)
             .add_systems(
                 PostUpdate,
                 (apply_global_volume, follow_camera).before(bevy::transform::TransformSystems::Propagate),
@@ -208,7 +229,7 @@ mod tests {
     fn defaults_are_quiet_and_saved_values_are_bounded() {
         assert_eq!(SavedSettings::default().master, 75);
         let loaded: SavedSettings = serde_json::from_str(r#"{"master":400,"ambience":33,"effects":7}"#).unwrap();
-        assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5 });
+        assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5, native: false });
     }
 
     #[test]

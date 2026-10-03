@@ -6,6 +6,17 @@
 //! retail mapping"). The rest are our own picks, made by ear. Bank names and
 //! indices refer to assets/private/audio/audio_manifest.json.
 //!
+//! **Native runtime (`SKATE_AEMS=1`):** these tables are the interim path only. With the native
+//! player components running, the retired ones never play (`skate_events::play` gates them):
+//! - retired, user-confirmed (19:19 build): `POP`, `POP_TAIL`, `LAND`, `LAND_NORMAL`,
+//!   `LAND_HOLLOW`, `LAND_KIND_CHANCE`, `land_tier`, `land_scale`, `LAND_CLOTH`, `POWERSLIDE*`;
+//! - retired, native replacement ready but not user-confirmed yet: `GRIND_START`, `GRIND_PIECES`,
+//!   `GRIND_METAL*`, `AIR_WHEELS`, `BOARD_DOWN_KNOCK`, `BOARD_DOWN_TOUCH`, `CATCH`, `FLIP`,
+//!   `FOOT_DRAG*`, and the `BED_CUES` / `BED_RECORDS` entries the native components play
+//!   (sense_of_speed, Seams_Bank, Rolling_Rattles, PatchBank_Rolling_Surfaces, the knocks
+//!   1112 / 1115 / 1119 and the scuffs `sk8_foley` 94 / 95).
+//! They stay for the default path (native runtime off) until that path is retired as a whole.
+//!
 //! Levels are linear and deliberately low: many raw samples peak at 0 dBFS
 //! (retail mixes them down at runtime). Final gain = level x effects x master.
 //! Retail-measured cues use level = measured retail level x RETAIL_SCALE,
@@ -238,6 +249,11 @@ pub(super) const BED_RECORDS: &[(Record, f32)] = &[
     (retail(SC, 1112, 0.19).shaped(KNOCK_ENV), 0.11), (retail(SC, 1115, 0.26).shaped(KNOCK_ENV), 0.08),
     (retail(SC, 1119, 0.32).shaped(KNOCK_ENV), 0.02),
 ];
+/// Bed records the native contacts play from the retail mechanism (`player::contacts` foot taps
+/// 1112..1120 and shoe scuffs `sk8_foley` 94 / 95): silent in the interim bed when those run.
+pub(super) fn bed_record_native(record: &Record) -> bool {
+    matches!((record.bank, record.id), (SC, 1112 | 1115 | 1119) | ("sk8_foley", 94 | 95))
+}
 /// Object-bank layers of the bed (retail's most used samples): truck rattles,
 /// seams/cracks, speed wind and rolling-surface patches.
 pub(super) const BED_CUES: &[(Cue, f32)] = &[
@@ -287,23 +303,57 @@ pub(super) const AIR_WHEELS: (&str, f32) = ("Whls_spins_Jump_1", 0.15);
 /// Rolling grain for an audio material ID (low 7 bits of the collision
 /// surface tag; names from the map tooling's audio surface table). Retail was
 /// measured playing these "hard" grains too.
+/// Rolling grain for a wheel's 7-bit audio surface tag, as retail maps it: tag → material (tag − 1) →
+/// the vault's `Sk8::AudioSurfaceMap` → rolling surface 1–14 → grain member
+/// (.claude/notes/grain-player-spec.md §1.4; corrected 2026-10-02, it used to be an own guess).
+/// Only the hard-wheel members play: what selects the soft ones is not decoded yet.
 pub(super) fn grain_for(audio_surface: u32) -> &'static str {
-    match audio_surface {
-        1 => "asphalt_smooth_hard",
-        2 => "asphalt_rough_hard",
-        4 | 66 => "concrete_rough_hard",                       // Concrete_Rough, Brick_Coarse
-        5 | 8 | 10 | 55 | 56 => "concrete_aggregate_hard",    // Aggregate, Dirt, Grass, Leaves, Bush
-        6 | 7 | 41..=46 | 90 => "wood_ramp_hard",             // Wood_Ramp, Plywood, Wood_*
-        9 | 11..=40 | 67..=69 | 85 | 89 | 91 => "metal_smooth_hard", // Metal_*, grates, rails, Metal_Ramp
-        // Concrete_Polished (the common default), curbs, benches, tile, marble,
-        // smooth brick and anything unlisted.
-        _ => "concrete_smooth_hard",
+    match audio_surface & 0x7F {
+        2 => "asphalt_rough_hard",                                                    // surface 1
+        4 | 66 => "concrete_rough_hard",                                              // surface 2
+        3 | 51..=54 | 57 | 60 | 63..=65 | 92 | 93 => "concrete_smooth_hard",          // surface 4
+        6 | 7 | 41..=50 | 58 | 59 | 94 => "wood_ramp_hard",                           // surface 5
+        5 => "concrete_aggregate_hard",                                               // surface 6
+        9 | 11..=36 | 38..=40 | 84 | 85 | 89 | 91 => "metal_smooth_hard",             // surface 9
+        // INTERIM stand-ins. Retail plays no grain on these: rolling surfaces 7 (tags 10, 70),
+        // 8 (tag 8), 10 (67), 12 (68, 69) and 13 (37) post a per-surface `Class_rolling` patch
+        // (selectors 1, 2, 10, 11, 9) that this engine cannot play until the AEMS evaluator exists.
+        8 | 10 | 70 => "concrete_aggregate_hard",
+        37 | 67..=69 => "metal_smooth_hard",
+        // UNCERTAIN: tag 90 maps to rolling surface 0, which has no grain member; kept as before.
+        90 => "wood_ramp_hard",
+        // Surface 3 asphalt_smooth: tags 1, 55, 56, 61, 62, 71–83, 86–88, ≥ 95 and 0 (no material).
+        _ => "asphalt_smooth_hard",
     }
+}
+
+/// Whether retail plays a grain on this tag (false: a `Class_rolling` patch, or uncertain).
+#[cfg(test)]
+fn retail_plays_grain(audio_surface: u32) -> bool {
+    !matches!(audio_surface & 0x7F, 8 | 10 | 70 | 37 | 67..=69 | 90)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rolling_grains_follow_the_retail_surface_map() {
+        // Spot checks against the vault's AudioSurfaceMap (grain-player-spec.md §1.4).
+        for (tag, grain) in [
+            (2, "asphalt_rough_hard"), (66, "concrete_rough_hard"), (1, "asphalt_smooth_hard"),
+            (55, "asphalt_smooth_hard"), (0, "asphalt_smooth_hard"), (100, "asphalt_smooth_hard"),
+            (3, "concrete_smooth_hard"), (93, "concrete_smooth_hard"), (47, "wood_ramp_hard"),
+            (94, "wood_ramp_hard"), (5, "concrete_aggregate_hard"), (84, "metal_smooth_hard"),
+            (36, "metal_smooth_hard"), (130, "asphalt_rough_hard"),
+        ] {
+            assert_eq!(grain_for(tag), grain, "tag {tag}");
+        }
+        for tag in [8, 10, 70, 37, 67, 68, 69, 90] {
+            assert!(!retail_plays_grain(tag), "tag {tag} is a Class_rolling / uncertain surface");
+        }
+        assert!(retail_plays_grain(1) && retail_plays_grain(9));
+    }
 
     #[test]
     fn cue_ranges_and_levels_are_sane() {
@@ -334,6 +384,7 @@ mod tests {
         assert_eq!(grain_for(3), "concrete_smooth_hard");
         assert_eq!(grain_for(6), "wood_ramp_hard");
         assert_eq!(grain_for(31), "metal_smooth_hard");
-        assert_eq!(grain_for(127), "concrete_smooth_hard");
+        // Retail: tags ≥ 95 map to asphalt_smooth (was concrete_smooth before the 2026-10-02 correction).
+        assert_eq!(grain_for(127), "asphalt_smooth_hard");
     }
 }

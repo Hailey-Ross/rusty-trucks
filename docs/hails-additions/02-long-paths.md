@@ -45,8 +45,8 @@ the OS setting is sufficient; no code paths need changing.
   the "already enabled" path does nothing; the "disabled" path builds a valid
   PowerShell command (checked with the PowerShell tokenizer); `restart()`
   forwards the original arguments.
-- **Not exercised end to end:** the real UAC prompt with long paths disabled,
-  and the frozen `skate3setup.exe` relaunch.
+- **Tested end to end (2026-10-02, the user):** the real UAC prompt with long
+  paths disabled, and the frozen `skate3setup.exe` relaunch.
 
 ## Notes for upstream
 

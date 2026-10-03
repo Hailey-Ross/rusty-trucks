@@ -294,3 +294,65 @@ def ems_emitters(data: bytes) -> list[dict]:
             'scalars': list(fields[8:12]), 'sound_id': fields[12], 'gains': list(fields[13:17]),
         })
     return emitters
+
+
+# World-painter region layers (district `cSim_*.xsf` streams, RW4 arenas with ATOC processor
+# 0xAB329A6A). Each 128 m tile holds, per layer, a quadtree of axis-aligned (x, z) boxes whose
+# leaves index a table of u64 keys. Layers the game names (`name_id` of each):
+REGION_LAYERS = (
+    'test_layer0', 'test_layer1', 'livingworld_npc_census', 'livingworld_vehicle_census', 'districts',
+    'district_locations', 'livingworld_security_guard_areas', 'audio_ambience', 'audio_emitters',
+    'challenge_zone_races', 'audio_reverb', 'rendering_colorcube', 'cameras_race', 'services',
+    'livingworld_dmo_safety', 'rendering_fog', 'rendering_sky', 'rendering_exposure', 'rendering_bloom',
+)
+REGION_PROCESSOR = 0xAB329A6A
+_LAYER_RECORD, _QUADTREE, _KEY_TABLE = 0x00EB000F, 0x00EB0010, 0x00EB0011
+NO_KEY = 0xFFFF
+
+
+def region_layers(arena: bytes) -> list[dict]:
+    """Every region layer in one arena: layer name, box (centre x, z, half x, z), quadtree
+    nodes (four child indices, then the value; child 0 = NO_KEY marks a leaf) and keys."""
+    names = {name_id(name): name for name in REGION_LAYERS}
+    count, directory = _u32(arena, 0x20), _u32(arena, 0x30)
+    entries = [struct.unpack_from('>6I', arena, directory + 24 * i) for i in range(count)]
+    layers = []
+    for entry in entries:
+        if entry[5] != _LAYER_RECORD:
+            continue
+        tree_index, table_index = struct.unpack_from('>II', arena, entry[0])
+        layer = struct.unpack_from('>Q', arena, entry[0] + 8)[0]
+        tree, table = entries[tree_index][0], entries[table_index][0]
+        cx, cz = struct.unpack_from('>ff', arena, tree)
+        hx, hz = struct.unpack_from('>ff', arena, tree + 16)
+        nodes_count, nodes_at = struct.unpack_from('>II', arena, tree + 32)
+        nodes = [list(struct.unpack_from('>5H', arena, tree + nodes_at + 10 * i)) for i in range(nodes_count)]
+        keys_count, keys_at = _u32(arena, table + 4), _u32(arena, table + 12)
+        keys = []
+        for i in range(keys_count):
+            at = _u32(arena, table + keys_at + 8 * i)
+            low, high = struct.unpack_from('>II', arena, table + at)  # stored low word first
+            keys.append((high << 32) | low)
+        layers.append({'layer': names.get(layer, f'{layer:016X}'), 'box': [cx, cz, hx, hz], 'nodes': nodes, 'keys': keys})
+    return layers
+
+
+def region_key(layer: dict, x: float, z: float) -> int | None:
+    """The key a region layer holds at (x, z), or None (outside, or a leaf without a key)."""
+    cx, cz, hx, hz = layer['box']
+    nodes = layer['nodes']
+    if not nodes or abs(x - cx) > hx or abs(z - cz) > hz:
+        return None
+    index = 0
+    while True:
+        node = nodes[index]
+        if node[0] == NO_KEY:
+            return None if node[4] == NO_KEY else layer['keys'][node[4]]
+        hx, hz = hx * 0.5, hz * 0.5
+        for child, (sx, sz) in enumerate(((-1, -1), (-1, 1), (1, -1), (1, 1))):
+            ccx, ccz = cx + sx * hx, cz + sz * hz
+            if abs(x - ccx) <= hx and abs(z - ccz) <= hz:
+                index, cx, cz = node[child], ccx, ccz
+                break
+        else:
+            return None
