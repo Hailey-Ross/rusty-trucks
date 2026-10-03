@@ -18,8 +18,12 @@
 //! - its collision messages go to the local player's collision manager (retail's one
 //!   `CSTATEMGR_Collision`).
 //!
-//! Not yet: the NPC's granular rolling bed (the routing's grain binds are dropped: the runtime has
-//! one bed), wheels, tricks, footsteps, clothing (module docs of `skaters`).
+//! - its granular rolling bed (2026-10-03): retail's SkateBoard update runs per instance, so the
+//!   held skater's routing binds its own grain players (`grain_bed::Bed::for_instance`, the
+//!   runtime's `npc_grains`) on its SkateBoard instance's MixMap outputs; the local-only parts stay
+//!   off (`grain_bed.rs` module docs). Its picks draw from the local bed's generator.
+//!
+//! Not yet: wheels, tricks, footsteps, clothing (module docs of `skaters`).
 use std::collections::HashMap;
 
 use bevy::prelude::*;
@@ -57,6 +61,9 @@ pub(crate) struct NpcHost {
     last_tick: u64,
     last_camera: Option<[f32; 3]>,
     announced: bool,
+    /// The held skater's grain bed (instance 1) and its push-plant count (`+335` rises; the bed's
+    /// push envelopes and SkateBoard input 4 follow it), with the native rolling layers on.
+    beds: HashMap<u64, (super::grain_bed::Bed, u32)>,
 }
 
 pub(crate) fn register(app: &mut App) {
@@ -107,7 +114,9 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn frame(
+    library: Option<Res<super::Library>>,
     native: Option<ResMut<Native>>,
     published: Res<NpcSkaters>,
     mut host: ResMut<NpcHost>,
@@ -124,7 +133,7 @@ fn frame(
     let Some(mut native) = native else { return };
     let Ok(camera) = listener.single() else { return };
     let host = &mut *host;
-    let Native { mixmap, player, shared, .. } = &mut *native;
+    let Native { mixmap, player, shared, bed: local_bed, .. } = &mut *native;
     let (Some(m), Some(player)) = (mixmap.as_mut(), player.as_mut()) else { return };
     if !player.components {
         return;
@@ -161,12 +170,18 @@ fn frame(
             npc.deactivate(m, &l);
         }
         host.release_all(rt, id);
+        if host.beds.remove(&id).is_some() {
+            super::grain_bed::stop_npc(rt);
+        }
         info!("AUDIO_NPC release skater {id} (instance {g})");
     }
     let parts = Parts { rolling: player.rolling_on, rattle: player.rattle_on, contacts: player.contacts_on };
     for (id, g) in assignment.claimed {
         let npc = NpcSkater::new(g as u32, parts, on("SKATE_AEMS_GRIND_ONOFF"), on("SKATE_AEMS_PLANT_LIFT"), on("SKATE_AEMS_BODY_IMPACTS"));
         host.objects.insert(id, npc);
+        if let (true, Some(bed)) = (parts.rolling, local_bed.as_ref()) {
+            host.beds.insert(id, (bed.for_instance(g as u32), 0));
+        }
         info!("AUDIO_NPC claim skater {id} (instance {g})");
     }
 
@@ -180,11 +195,35 @@ fn frame(
         s.dt = dt;
         let cmds = npc.update(m, &s, tuning, &mut rt.splice_host());
         host.apply(rt, id, cmds);
+        // The instance's grain bed after this evaluation (SkateBoard update `sub_824C6BD8`: records
+        // from its outputs), with the binds / stops of the routing's last process; then its owner
+        // inputs 2 / 3 / 4 for the next evaluation.
+        if let (Some((bed, pushes)), Some(library)) = (host.beds.get_mut(&id), library.as_deref()) {
+            *pushes = pushes.wrapping_add(u32::from(s.push_trigger));
+            let r = super::skate_events::Riding {
+                board: Vec3::from_array(s.board_position),
+                speed: s.ground_speed,
+                grinding: s.grinding,
+                braking: s.brake,
+                wheels: s.wheel_count,
+                pushes: *pushes,
+                audio: s,
+                ..Default::default()
+            };
+            let routed = Some((std::mem::take(&mut npc.routed.grains), npc.routed.primary));
+            super::grain_bed::step_with(bed, library, m, &r, dt, tuning.player, routed, |apply| apply(&mut *rt));
+            bed.write_inputs(m, &s, false);
+        }
         npc.write_inputs(m, &s, &l, local.com_velocity, tuning.player);
+        // The body poster once per console evaluation, as the local player's (`body_console`).
+        npc.set_body_calls((player.body_console && player.jitter_steps.is_some()).then_some(evaluations as usize));
+        npc.set_deck_calls((player.deck_console && player.jitter_steps.is_some()).then_some(evaluations as usize));
         let cmds = npc.process(m, &s, tuning, &mut rt.splice_host());
         host.apply(rt, id, cmds);
-        // No per-owner grain bed yet: the routing's binds are dropped.
-        npc.routed.grains.clear();
+        // The routing's binds wait for the bed's next step (dropped without a bed).
+        if !host.beds.contains_key(&id) {
+            npc.routed.grains.clear();
+        }
         collisions.extend(npc.take_collisions());
         host.objects.insert(id, npc);
     }

@@ -158,8 +158,14 @@ pub struct AudioState {
     /// `+496..+516` the six body regions' impacts (Collision `+80..`: `sub_82BD60C8` writes
     /// clamp01(max(0.001, Δv(part) · region normal × part mass × physics_collision `+164` (10)))
     /// per region with a contact part, else 0, and the conditioner `sub_82773298` keeps the max of
-    /// the last 4 frames), read by the body poster `sub_824BC188` ([`super::contacts`]).
+    /// the last 4 frames), read by the body poster `sub_824BC188` ([`super::contacts`]). These are
+    /// the values before the bridge's speed graph: the poster applies it at [`Self::com_speed_216`]
+    /// (retail stores the product back into `+496`).
     pub body_impact: [f32; 6],
+    /// `+216`: the previous bridge frame's `+212` (|COM v|, m/s; the bridge `sub_824B0DA8` copies
+    /// `+212` there after scaling the region impacts by the speed graph at it). The game sets it
+    /// per physics step; 0 (graph value 1.0) when nobody does.
+    pub com_speed_216: f32,
     /// `+688` / `+689`: hand limb 2 (part 3) / 3 (part 7) on the deck: Skeleton `+602` / `+603`
     /// ([`super::step_on::hands_on_deck`]).
     pub hands_on_deck: [bool; 2],
@@ -247,6 +253,7 @@ impl Default for AudioState {
             body_tag: [0; 6],
             body_slide_flag: false,
             body_impact: [0.0; 6],
+            com_speed_216: 0.0,
             hands_on_deck: [false; 2],
             in_water: false,
             under_water: false,

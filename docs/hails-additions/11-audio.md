@@ -3225,8 +3225,9 @@ Caveats:
    - **Two GREC owners pass the local test** in this session (board objects `40C33020` from the start, `40C34020` from
      22.9 s), each once per frame. FIRSTHIT kept one set of last values, so the +676 / +677 bytes "alternated" 1 / 0
      every call: one owner was bailing and the other was not. `40C34020` bailed once (154.7 s) with B+16 still 0, so it
-     is not the local skater. `40C33020` is. FIRSTHIT now keeps its last values per state. Earlier sessions had one
-     owner. GREC / GRECX / TREAT / SEAMPAT readers should filter by owner (GREC's published local state alternates
+     is not the local skater. `40C33020` is. FIRSTHIT now keeps its last values per state. ~~Earlier sessions had one
+     owner.~~ (Wrong: 15 of 18 sessions had the second owner, an NPC skater; the hooks now gate on local72 — see "The
+     per-player recomp hooks logged an NPC skater too" below.) GREC / GRECX / TREAT / SEAMPAT readers should filter by owner (GREC's published local state alternates
      too, so the TREAT / SEAMPAT local-mask bit 2 is unreliable when a second owner exists).
    - **10 local bails**, 3.6–7.9 s from +676 rising to clearing. +677 (end) rises 1.4–4.0 s in and clears ≈ 1.0 s before
      +676 clears.
@@ -3579,6 +3580,11 @@ The user, after the listening check of build 04:20: "go ahead and remove the int
 still in use: "oh.. if they are still being used then we aren't done." Decisions: splash "port it natively first";
 the riding bed: remove it, then check it against the recomp; installs without the data: require it (no fallback).
 
+**Listening (user, 2026-10-03, bin\ 10:06, session `state_20261003_101640`, 0 malformed):** "The sounds are SO GOOD.
+I think that is basically retail, if there is a difference i couldn't tell. Splashes sounded correct. Riding sounded
+right, jumping sounded right, falling sounded right. Cracks on bricks sounded correct at both higher speed and lower
+speed. Manual sounded amazing."
+
 **1. The water splash, from retail's mechanism (not the carried-over sound).** `SFXObj_OffBoard`'s process ends with
 `sub_824EBB58`; its update with `sub_824EBE78`. Read from the TU3 recompilation (reference only):
 - Inputs. The bridge `sub_824B0DA8` copies record `+172` bits 30 / 29 / 28 into audio state `+811` / `+812` / `+813`.
@@ -3714,3 +3720,494 @@ The zone beds, location sets and crossfades still play their measured layers thr
 
 Rerun: `py -3.13 .local/audio-re/retire/bed_vs_recomp.py <recomp sessions> <DIR:NAME,…>`,
 `py -3.13 .local/audio-re/retire/riding_posters.py <recomp sessions>` (PYTHONIOENCODING=utf-8).
+
+### The ragdoll part masses against the recomp; the missing |Δv·n| (2026-10-03, analysis only; no code change)
+
+Open item 1 of "Bail density" listed the recomp's SkeletonState `+4560` masses rounded to two digits and asked for a
+check against ours. Ours = `SkeletonAnimationMasses::part_weights` = the raw bone-box product x·y·z of each
+`PhysicsParamBoneData` size (`assets/private/stock/physics-skeletons.json`, f32 as the code multiplies). The recomp =
+the `mass` field of every BAILREG line of the fixed-hook runs t2 / ok / ok2 / ok3 (12,054 lines, 0 malformed), printed
+to six decimals:
+
+| part | ours | the recomp | | part | ours | the recomp |
+|---|---|---|---|---|---|---|
+| 1 neck1 (head) | 0.005248 | 0.005248 | | 13 spine1 | 0.005832 | 0.005832 |
+| 2 neck | 0.000784 | 0.000784 | | 15 / 19 toes | 0.000307 / 0.000307 | 0.000307 / 0.000307 |
+| 3 / 7 hands | 0.000336 / 0.000336 | 0.000336 / 0.000336 | | 16 / 20 feet | 0.001015 / 0.001016 | 0.001015 / 0.001016 |
+| 4 / 8 forearms | 0.001666 / 0.001667 | 0.001666 / 0.001667 | | 17 / 21 legs | 0.005109 / 0.005110 | 0.005109 / 0.005110 |
+| 5 / 9 arms | 0.003134 / 0.003050 | 0.003134 / 0.003050 | | 18 / 22 uplegs | 0.006708 / 0.006708 | 0.006708 / 0.006708 |
+| 6 / 10 shoulders | 0.001483 / 0.001483 | 0.001483 / 0.001483 | | 23 hips | 0.009753 | 0.009753 |
+
+**The masses are identical** for all 20 parts the recomp's bails touched (the left / right arm asymmetry 0.003134 /
+0.003050 included). The 2-digit list in "Bail density" was rounding, and the earlier "≈ 0.003 arm … 0.015 torso"
+estimate was a guess. So the masses are not part of the bail-density gap. (Parts 11 / 12 / 14, the upper spine, never
+touched in those runs: ours 0.007751 / 0.007001 / 0.005935.)
+
+**Found on the way: retail takes the absolute value of Δv·n; ours doesn't.** `sub_82BD60C8`'s region loop computes
+`vmsum3fp128 v44 = Δv · n`, then `vandc128 v42 = v44 & ~(v63 << 31)` (the sign mask): |Δv·n|. The recomp lines agree:
+with Δv·n = v_new·n − v_old·n from each line, clamp01(max(0.001, |Δv·n| × mass × 10)) matches the written impact in
+12,054 / 12,054 lines (within 0.002), the signed form in 11,776. `skate_events::region_impacts` uses the signed
+`along`, so a step with Δv·n < 0 is floored to 0.001 there.
+- How often: 5,355 of the recomp's 12,054 region steps have Δv·n < 0. Of the 1,729 above the floor, 447 (26 %) are
+  negative ones; above 0.1 it is 8 of 166, above 0.25 4 of 46.
+- What it does to ours: about a quarter of the above-floor region contacts read 0.001, under every body floor (0.002
+  head / torso / legs, 0.005 arms) and the concrete floor (0.12). Those contacts post nothing. It barely touches tier 1
+  / 2 (5 % of the impacts above 0.1). So it costs mostly tier-0 posts: a small part of the 4–5× gap, which stays the
+  ragdoll's small per-step Δv (open items 1–2).
+- Not changed (this task was report-only). The fix is audio-side, not physics: `along.abs()` in `region_impacts`
+  (the doc's "matches term by term" missed the `vandc`). It changes the bail renders, so it needs the user's go.
+  *Applied 2026-10-03 with the user's approval: see "Region impacts take |Δv·n|" below.*
+
+### The per-player recomp hooks logged an NPC skater too; measurements re-checked (2026-10-03, recomp hooks + analysis; no engine change)
+
+**Problem.** GREC / GRECX / FIRSTHIT / SKID / TREAT / SEAMPAT / SEAMHIT were meant to log the local rider only. Once an
+NPC skater spawned (20–80 s into a session), they also logged its board, treatment and seams objects, interleaved per
+frame. The earlier note "earlier sessions had one owner" was wrong: 15 of the 18 sessions with these hooks had the
+second owner (`.local/research/localtest/owner_scan.py`); only `all_20261002_204336`, `all_20261002_232153` and
+`bailrun_verify_20261003_095507` are clean. In `all_20261002_180430` (the bed-level session) the NPC owner is 227,295 of
+460,476 GREC lines.
+
+**Root cause.** The hooks tested the 32-bit WORD at `[[object+16]+72]`. The game's local flag is the BYTE at +72 (the
+skid updater `sub_824C7A20` reads `lbz 72` of `[owner+16]`; the eqchain / grain / tricks code reads `[[object+28]+72]`).
+The NPC's component has byte 72 = 0 but a non-zero byte after it, so the word test passed. The TREAT / SEAMPAT mask bit 2
+(state = GREC's last accepted state) alternated with the two owners, so it selected neither reliably.
+
+**Change (recomp research hooks only, `src/research/hooks_audio.cpp`, uncommitted).** All seven kinds now gate on the
+byte `[[object+28]+72]` (local72, as COLLPOST). SKID keeps its last holder per owner; FIRSTHIT keeps its per-state slots.
+TREAT / SEAMPAT / SEAMHIT's last field: bit 4 = local72 (the gate), bit 1 = byte `[[object+16]+72]`, bit 2 = state equals
+GREC's local state. New kind `LOCALTEST` (category `audio`, ≤ 256 lines, 6 fields; `trace.py` FIELD_COUNTS): per hook and
+object, both bytes, the old word test and the decision, whenever the pair (old, new) changes.
+
+**Proof (our own runs, `ride_spawn.txt` at the Mega-Park spawn, background, `SKATE3_TRACE=audio,audiox`, 0 malformed).**
+`localtest2_20261003_102933`: at 21.57 s the NPC's board `40C34020`, treatment `40C58200` and seams `40C60560` start
+passing the old test (bytes 0 / 0, word ≠ 0) and are rejected (`LOCALTEST … 0 0 1 0`); the local `40C33020` /
+`40C581A0` / `40C60320` pass with bytes 1 / 1. GREC / GRECX / SKID / TREAT / SEAMPAT / SEAMHIT each logged one object
+(33,048 / 33,048 / 28,533 / 33,048 / 33,047 / 929 lines) while the NPC was posting deck and body impacts (COLLPOST
+local72 0, `40C710A0`) and visible in the screenshots. Run `localtest_20261003_102703` agrees (NPC seams object
+rejected at 20.4 s).
+
+**Measurements re-checked** (copies with only the local rows: `.local/research/localtest/filter_local.py [--mask2]`;
+scripts in the same folder; the local object is the first one each trace logs, confirmed by LOCALTEST):
+
+| measurement (session) | as published | local rider only | conclusion |
+|---|---|---|---|
+| Retail turn input: share of riding frames at full / in between (180430) | 16 % / 25 % | **17 % (0.95–1.0, median 0.992) / 8 %**; release ≥ 0.9 → 0 in a median 34 ms | **Changes.** The 25 % was the NPC's steering (81 % of its frames in between). Retail's local input is as binary as ours (29 % / 8 %, release 50 ms in `state_20261002_181631`). |
+| I vs \|turn\| medians 0.1 / 0.3 / 0.5 / 1.0 (180430) | 0.066 / 0.185 / 0.30 / 0.60 | 0.062 / 0.180 / 0.301 / 0.600 | Holds. Retail's I is 0 by 50 ms after the input reads 0 (p90 0.000, 366 releases). |
+| Wheel-0 material changes while rolling (180430, `grec_material.py`) | 0.9 /s | **0.45 /s** (keep rates 100 % / 96 % unchanged) | Value changes; the fix it supported (materials from the wheel lines; ours was 5–9 /s) holds and is stronger. The comment in `skate_events.rs` (≈ line 543) still says 0.9. |
+| Trucks: neither running / (1,0)↔(0,1) swaps (180430, `grec_running.py`) | 621 of 310 k / 39 k swaps | **9 of 233 k / 86 direct swaps** (+ ~310 through both-running) | "Never stops the last sounding truck" holds. The 39 k swaps were the two owners alternating; the hand-over is rare. |
+| Clean straight-roll level(1) per material (180430) | 0.219 (mat 2, 5–10), 0.21 (40, 10–15), 0.229–0.244, 0.245–0.25 | 0.219, 0.215, 0.228–0.246, 0.243–0.250 | Holds (ours within ~1 dB). Material 65's low 5–15 km/h values (0.079 / 0.024) were the NPC; local 0.208. |
+| Manual rows gain A, 10–50 km/h (180430) | 0.141–0.157 | 0.139–0.158 | Holds. |
+| Class_Seams cadence (223306, `seampat.py`) | calls every 2.9 ms, frame field 2.5 ms; speed changes 18 %, positions 37 % | 3.0 ms, 3.0 ms; 19 %, 41 % | Holds (~3 ms pulses). The old `mask & 2` filter kept only 14,861 of 33,785 local calls. |
+| Pattern 11 hits (223306) | 15–21 /s at 20–40 km/h | 15–29 /s | Holds (sparse sidewalk = short pulse). |
+| Grid hits on a cell change of that wheel (223306, `seamhit_match.py`) | 400 of 520 | 2,677 of 3,156 (85 %); pattern 11: 470 of 619 | Holds. |
+| TREAT replay, air-time +236 changes (223306), sense_of_speed replay (223613) | 860 of 5,094 | same | Already filtered by object (`40C581A0`, `40C33020`). The "57,323 lines" count includes the NPC (local 33,786, ~305 /s). |
+| Clean carves A/(1−I), B/I; bed per material (`review/bed.py`) | — | — | Already filtered by owner (`rlib` / local owner). |
+
+**Not separable:** voice-based figures (PLAY, SPLC: the riding Skate_Collisions / sk8_foley rates, seam voice rates
+and levels) include an NPC's sounds whenever one was near, and these sessions have no COLLPOST. That was already noted
+for the 1.7 /s body posts; a user session with `PLAY_TRACE_AUDIOX.bat` (COLLPOST) settles it.
+
+**For the main session (no engine change made):**
+- "(1) Carving": the turn input is not the difference. If ours really keeps I up for ~13 frames after the stick
+  returns (retail: 0 within 50 ms), the cause is on our I side, not the animation's `Turn` scalar; worth a look.
+- Hook consumers written before this fix need an object filter (or `filter_local.py`); new traces need none.
+
+### The body poster on the console cadence (2026-10-03, `player::contacts`, open item 3 of "Bail density")
+
+**Problem.** `Contacts::body` (retail `sub_824BC188`, called from the Contacts frame `sub_824B8218`) ran once per
+`PlayerAudio::process`, and its 15-frame region cooldown counted those calls. The host runs the components once per
+pass with at least one 60 Hz step (`native::mixmap_frame`), so the cooldown was 0.25 s at 60 fps and above but 0.5 s
+at 30 fps. Retail runs the Contacts frame once per rendered frame: on the 30 fps console the cooldown is 0.5 s. The
+standing rule applies: per-frame retail processes target the 360's ~30 fps cadence, at any engine fps.
+
+**The 4-frame region max is not part of it.** The ring is the conditioner `sub_82773298`, called from
+`sub_82772748` next to the landed latch `sub_82772FD8` (same caller, same pass). Those PhysOut conditioners run per
+physics step (gotchas "MixMap console cadence": the recomp's `+236` air time steps by 1/60 on 17 % of its ~345 fps
+calls), and the bail hook measured the ragdoll pass at 60 Hz in the recomp too. So "4 frames" = 4 physics steps =
+67 ms on the console as well, which is what `skate_events::observe` (per physics tick) already does. Unchanged.
+
+**Change.**
+- `Contacts::body_calls: Option<usize>`: `Some(n)` runs the poster n times in this process (n console frames end
+  here), `None` once (the old cadence; tests).
+- `PlayerAudio::body_console` (`SKATE_AEMS_BODY_CONSOLE=0` off; e2e `E2E_BODY_CONSOLE=0`) sets `body_calls` to the
+  MixMap cadence's evaluations of the pass (`jitter_steps`: `mixmap::cadence`, every second 60 Hz step on a fixed
+  grid). Without the MixMap console cadence (`SKATE_AEMS_MIX_CONSOLE=0`) the old cadence stays.
+- The NPC skaters' host does the same for its instance (`NpcSkater::set_body_calls`, the evaluations since its last
+  call).
+- Diagnostics: `Contacts::body_digest` (FNV-1a over every posted message) and, in the e2e harness,
+  `<name>.ours.body.tsv` (the row where the count changed, the count, the digest).
+- Below 30 fps a pass spans more than one console frame and the host has only the newest step's state, so the poster
+  then runs twice on it (as the MixMap evaluations do).
+
+**Proof of frame-rate independence.**
+- Unit test `the_body_poster_keeps_the_console_cadence_at_any_frame_rate`: a 20 s 60 Hz stream of rising and falling
+  impacts on both arm regions, run through a host at 30 / 60 / 144 / 240 / 365 fps (process on passes that complete
+  steps, newest state, `Cadence`): the same messages on the same steps (counts and digests). The old cadence differs
+  between 30 and 60 fps. A held impact posts on steps 2, 32, 62, 92: every 30 steps = 0.5 s.
+- e2e, the two bail sessions (`state_20261003_084712`, `state_20261003_101640`; 0 malformed; cut with
+  `scenarios.py --cut r0-999999`, 3,324 / 14,922 rows), `E2E_FPS` = 30 / 60 / 144 / 365: the body traces are
+  byte-identical at all four rates. With the old cadence 30 fps differs from 60 (144 / 365 equal 60).
+- Identity of everything else: `E2E_BODY_CONSOLE=0` renders are byte-identical (f32 and voices) to the pre-change
+  build at all four rates. The optimisation bench (13 scenarios + 4 sessions, row and `E2E_FPS=300`,
+  `opt/runs/cad_t1` against `cad_base`): IDENTICAL. Those logs carry no region impacts (row mode also keeps the old
+  cadence).
+
+**The e2e effect on bails (`E2E_FPS=60`, `bails_cmp.py`, window −0.5…+2.5 s; tools `.local/audio-re/bodycad/`).**
+
+| | 084712 before | 084712 after | 101640 before | 101640 after |
+|---|---|---|---|---|
+| body-poster messages (whole session) | 35 | 30 (−14 %) | 102 | 91 (−11 %) |
+| bails | 2 | 2 | 10 | 10 |
+| Skate_Collisions voices / bail | 45.5 (46, 45) | 42.0 (43, 41) | 26.9 | 26.6 |
+| three banks (Collisions + Metal + Bodyslide) voices / bail | 52.0 | 48.5 | 29.0 | 28.8 |
+| three banks Σg² / bail | 1.895 (1.95, 1.84) | 2.114 (1.74, 2.49) | 0.954 | 0.997 |
+
+The longer cooldown removes 11–14 % of the body messages, far less than the "up to 2×" bound: in our bails few
+regions are hit again within 0.25–0.5 s. The voice counts drop slightly. Σg² moves both ways, because the posts that
+remain fall on different steps of the impact curve (bail 2 of 084712 now posts on a stronger step: peak 0.715 →
+0.976). The bail-density gap against the recomp (≈ 208 Skate_Collisions voices, Σg² 4.7 per bail) stays. Its cause is
+the ragdoll's per-step Δv (open items 1–2) and, for a quarter of the floor crossings, the missing |Δv·n| (section
+above). The recomp's post counts are inflated by its ~345 fps cadence (cooldown ≈ 43 ms there), so it is not the
+reference for this rate either; the console's 0.5 s is.
+
+**Files.** `crates/skate-audio/src/player/contacts.rs`, `crates/skate-audio/src/world/skaters.rs`,
+`crates/skate-game/src/game_audio/{player_audio,e2e,npc_skaters}.rs`.
+
+**Open.** The deck-impact poster `sub_824BD000` has the same shape (a 6-frame cooldown counted per process), and the
+other Contacts / component processes still run per 60 Hz step. Not changed here (not asked; extending the rule is the
+user's call).
+
+### NPC skaters' second grain bed (2026-10-03, `grain::GrainBed`, `Runtime::npc_grains`, `game_audio/{grain_bed,npc_skaters}.rs`)
+
+**Problem.** The NPC skater holding the Player slot's instance 1 (`world::skaters`, inert until an AI-skater system
+publishes) ran its routing, but its grain binds were dropped: the runtime had one bed. Most surfaces (asphalt,
+concrete, wood, aggregate, metal) are grain surfaces, so the NPC's rolling was silent there.
+
+**Retail's mechanism (TU3 recompilation, reference only).** Every `SFXObj_SkateBoard` owns 2 trucks × 2 GrainPlayers
+(owner `+1176 + 8t` / `+1180 + 8t`) and their chains. Its process `sub_824C6A78` (vtable `0x822FC780` +20) runs for an
+active record (`[+28]+52`), and its update `sub_824C6BD8` (+24) has no local test, so instance 1's board runs its own
+bed. The local tests (`[owner+16]+72`) in the bed's helpers, read one by one:
+
+| part | function | for the NPC instance |
+|---|---|---|
+| slope inputs 2 / 3 (D, U) | `sub_824CA738` | runs (no local test) |
+| routing, soft member | `sub_824C5CA8`, `sub_824C8370` | one pass, no hand-over (already ported in `player::rolling`); soft via `sub_824B23C8` = the local player's inverse |
+| push envelopes, input 4, turn intensity | `sub_824C6198` → `sub_824C8588` | run |
+| chain values (HPF / LPF / pan / env send / FSS) | `sub_824C9058` | run; the graph-2 FlangeSub sends level(21) / (22) are local only |
+| seam-pattern gain envelope | `sub_824CA448` | returns at once (local only) |
+| graph-1 → graph-3 send, level ramp | `sub_824CAEC0` | returns at once |
+| gain wobbles | `sub_824CB180` (→ `sub_824CB078`) | returns at once: the graph-1 / graph-3 Gains stay at the module default 1 |
+| graph 3 | `sub_824C8878` (chain build) | built only for the local player (`lbz 72` before the graph-3 build); the eEQChain create flag is the local byte too |
+| records (gain / pitch / position), brake slew, latches | `sub_824C6BD8` | run, from the instance's SkateBoard outputs level(1) / (2), pitch(3) |
+| rocket `x_jet_rolling` | SenseOfSpeed `sub_824E7980` | returns for non-local (already noted) |
+| pick generator | `sub_82A8AF10`, `0x82FD7D74` | one title-wide generator for every GrainPlayer |
+
+**Change.**
+- `GrainBed::local` (true by default): false skips graph 3 (`process_full(…, graph3)`). `GrainBed::share_rng` runs a
+  closure with another generator swapped in.
+- `Runtime::npc_grains: Option<Box<GrainBed>>`: rendered after the local bed on the local bed's generator (retail's
+  one generator), at the local bed's user gain and `chain_extras`. The env sends of both beds are summed when both
+  send; its dry mix is added after the local one. `None` = the previous render path exactly.
+- `grain_bed::Bed` gains its instance. `Bed::for_instance(g)`: the same tunings and decoded recordings, no rocket.
+  `write_inputs` writes `SkateBoard(g)` inputs 2 / 3 / 4. `step_with` (the old `step` body, with the runtime handed
+  in) gates the local-only parts above and targets `npc_grains` (created at the NPC bed's first step; binds draw
+  through the shared generator). `step` keeps its signature and order for the local player.
+- `npc_skaters::frame`: at the claim (native rolling layers on) the held skater gets `Bed::for_instance(1)`. Per
+  console evaluation: update → the bed step on this evaluation's outputs with the routing's binds of the last
+  process → `write_inputs` (2 / 3 / 4) → the instance's inputs → process. Push plants = `+335` rises
+  (`push_trigger`); brake = `+336` (`AudioState::brake`). At the release the bed is dropped and the trucks stop.
+  Logged as `AUDIO_NPC grain bind instance 1 truck …`.
+
+**Verification.**
+- `grain::bed::tests::a_non_local_bed_has_no_graph3_and_shares_the_generator`: without graph 3 the send level is
+  inert; with it, it adds the copy. At send 0 a built graph 3 adds only its filters' anti-denormal bias (< 1e-12;
+  retail builds none for the NPC). A bed on a shared generator renders exactly like one owning that state, and its own
+  generator never moves.
+- `npc_skaters::tests::npc_skater_rolls_on_its_own_grain_bed` (real install; the synthetic pass of the existing NPC
+  test): the second bed binds `concrete_smooth_soft` (local wheels hard → soft member), 2–4 voices while held, record
+  A gain 0.004 at 29 m → 0.096 at 10 m → 0.009 at 29 m (the instance's MixMap distance roll-off), nothing after the
+  release, the local bed never bound. In the air before the rail, the fixture's "no material" wheels rebind
+  `asphalt_smooth_soft` (surface 3): the routing's known UNCERTAIN air behaviour (grain spec §2.10).
+- The local player's renders: see "Verification of the 2026-10-03 cadence / NPC-bed stage" below.
+
+**Open.**
+- What the released instance's players do in retail (here they stop, as the packets are released): not read.
+- Retail's order of the two owners' picks on the shared generator (ours: the local bed first per block). The picks
+  are random either way; it only matters while an NPC is held.
+- The brake slew's direction test (`+336` against the direction of travel) is unported for both beds.
+
+### Verification of the 2026-10-03 cadence / NPC-bed stage (the two sections above)
+
+- `cargo test -p skate-audio --locked`: all pass (lib 220 + the integration tests; new:
+  `the_body_poster_keeps_the_console_cadence_at_any_frame_rate`, `a_non_local_bed_has_no_graph3_and_shares_the_generator`).
+- `cargo test -p skate-game --release --bin skate3rust --locked -- game_audio::`: 55 pass, 4 ignored (new:
+  `npc_skater_rolls_on_its_own_grain_bed`).
+- `cargo build --locked` (dev): OK, only the 3 known warnings (`library.rs` ×2, `prefetch.rs`).
+- e2e identity (target `.local/fma-target`; tools `.claude/skills/optimisation/tools/e2e_bench.sh`,
+  `.local/audio-re/bodycad/render.sh`):
+  - the optimisation bench, 13 scenarios + 4 sessions, row and `E2E_FPS=300`: `cad_base` (before) = `cad_t1` (body
+    cadence) = `cad_t3` (+ NPC bed), byte-identical (f32 and voices), and equal to `retire1`;
+  - the bail sessions 084712 / 101640: `E2E_BODY_CONSOLE=0` = before at 30 / 60 / 144 / 365 fps; after Task 3 = after
+    Task 1 at 60 and 30 fps (f32, voices and body traces). So the NPC bed leaves the local player's renders untouched.
+- Headless only: no game launch, no smoke test, bin\ / data\ untouched. For the user in game: bails (the body poster
+  now has the console's 0.5 s cooldown at 60+ fps). The NPC bed stays silent until an AI-skater system publishes.
+
+### Region impacts take |Δv·n|; the deck poster on the console cadence (2026-10-03, user-approved follow-up)
+
+The user approved both follow-ups of the sections above: retail's |Δv·n| and the console cadence for the deck poster.
+
+**1. |Δv·n| in `skate_events::region_impacts`.**
+- Change: `along = (Δv · n).abs()`, matching the `vandc128` sign mask in `sub_82BD60C8`. A part pulled away from the
+  surface now counts like one stopped by it, no longer flooring to 0.001.
+- Tests:
+  - `region_impacts_scale_the_velocity_change_by_the_part_mass` pins it: −2 m/s gives 0.2; a tiny step still reads the
+    0.001 floor.
+  - `region_impacts_match_the_recomps_bail_lines` (data-gated: the fixed-hook runs t2 / ok / ok2 / ok3) rebuilds every
+    BAILREG line's Δv along its normal with its mass. Ours equals the written impact within 0.002 on **12,054 / 12,054
+    lines**, 5,355 of them with Δv·n < 0.
+- **The e2e can't show it.** The harness replays the impacts the game logged (`rimp0..5`), and the two bail sessions
+  were logged with the signed formula. Re-rendered 084712 / 101640 at `E2E_FPS=60` with the new build (and the deck
+  cadence off): byte-identical to the current state. So the per-bail change (Skate_Collisions voices, Σg², tiers) needs
+  a new user session with this build.
+  - What it acts on: in the logs, contact region-frames at the 0.001 floor are 1,035 of 1,237 (084712) and 649 of
+    1,042 (101640), after the 4-step max. Some of these are negative steps that will now read their |Δv·n|.
+  - In the recomp, 26 % of the above-floor steps are negative, mostly small: 8 of 166 above 0.1.
+  - So expect more tier-0 body / cloth posts and few new tier-1 / 2 ones.
+
+**2. The deck-impact poster `sub_824BD000` on the console cadence.**
+- It had the body poster's shape: a 6-frame cooldown (vault `27D3C5DC3282B59D`) counted per `process`, so 0.1 s at
+  60+ fps and 0.2 s at 30 fps. The 4-step deck-impact max (`+668`) is the per-physics-step conditioner: unchanged.
+- Change:
+  - `Contacts::deck_calls` (as `body_calls`); `PlayerAudio::deck_console` from the MixMap cadence's evaluations.
+  - The NPC instance follows: `NpcSkater::set_deck_calls`.
+  - Off switches: `SKATE_AEMS_DECK_CONSOLE=0` / `E2E_DECK_CONSOLE=0`.
+  - Diagnostics: `deck_posts` / `deck_digest`, and e2e writes `<name>.ours.deck.tsv`.
+- Proof:
+  - Unit test `the_deck_poster_keeps_the_console_cadence_at_any_frame_rate`: the same messages on the same steps at
+    30 / 60 / 144 / 240 / 365 fps; the old cadence differs at 30. A held impact posts on steps 2, 14, 26, 38, 50, i.e.
+    every 12 steps = 0.2 s.
+  - The bail sessions at `E2E_FPS` 30 / 60 / 144 / 365: deck traces byte-identical across the four rates; the old
+    cadence's 30 fps differed.
+  - Off = before: `E2E_DECK_CONSOLE=0` renders are byte-identical to the current state (at all four rates for the bail
+    sessions; the bench `cad_dkoff` against `cad_t3`, row and fps300).
+- Effect on the bench (`cad_dk` against `cad_t3`):
+  - Row mode: identical (no console cadence there).
+  - `E2E_FPS=300`: 5 outputs change, the scenario `ollies_log` and the sessions 213757, 214224, 215843, 224747. The
+    other 12 scenarios are identical.
+  - In each changed output the body trace is unchanged and the first differing voice row comes exactly one row after the
+    first differing deck post (`.local/audio-re/bodycad/deck_attr.py ON OFF`).
+  - Later rows keep differing: from that post on, the shared Splice picks shift.
+
+| deck messages (`E2E_FPS`=300 bench / 60 bails) | old | console |
+|---|---|---|
+| ollies_log | 3 | 3 (timing moved) |
+| 213757 / 214224 / 215843 / 224747 | 11 / 2 / 18 / 19 | 9 / 2 / 15 / 19 |
+| 084712 / 101640 | 6 / 55 | 6 / 44 |
+
+- Bails (`E2E_FPS=60`, against the current state, `bails_cmp.py`):
+
+| | 084712 now | 084712 deck console | 101640 now | 101640 deck console |
+|---|---|---|---|---|
+| Skate_Collisions voices / bail | 42.0 | 41.0 | 26.6 | 25.7 |
+| Skate_Collisions Σg² / bail | 1.926 | 1.600 | 0.982 | 0.970 |
+| three banks voices / bail; Σg² / bail | 48.5; 2.114 | 47.5; 1.788 | 28.8; 0.997 | 27.6; 0.982 |
+| body / cloth voices, tier 0 / 1 / 2 | 47 / 5 / 0 | 47 / 5 / 0 | 110 / 26 / 2 | 107 / 27 / 4 |
+
+  - 084712's bail 2 Σg² drop (2.485 → 1.834) has the same count of deck posts; the post timings moved and so did the
+    Splice picks after them.
+  - The tier counts come from `bails_cmp.py`'s top-24 ids per bail; the body traces themselves are unchanged.
+
+**Verification.**
+- `cargo test -p skate-audio --locked`: all pass (lib 221).
+- `game_audio::`: 56 pass, 4 ignored.
+- `cargo build --locked`: OK, with the 3 known warnings.
+
+**Files.** `game_audio/{skate_events,player_audio,e2e,npc_skaters}.rs`, `skate-audio/src/player/contacts.rs`,
+`skate-audio/src/world/skaters.rs`.
+
+### Bail density: the missing speed curve, not the ragdoll (2026-10-03, research only; no engine change)
+
+Spec: `.claude/notes/ragdoll-contact-spec.md` (retail mechanism, ours, decision points). Summary:
+
+- **The retail Δv figures above (p99 1.8–13 m/s, max 7.6–20) are not comparable with our bails.** The scripted runs at
+  the Mega-Park spawn bailed into the gap or slid down the MegaRamp roll-in, so the body hit at 11–23 m/s (screenshots;
+  e.g. foot v·n −23 → −12 → −1 m/s). In the ordinary-height tumbles of run `bailx3_20261003_110208` (first 2 s of each
+  bail) retail's |Δv·n| is p90 2.3, max 3.7 m/s, approach speeds ≥ −4.3 m/s: the size of ours. The ragdoll solve
+  (Horus solver, 50 iterations, restitution 0, ragdoll friction 0.9, angular drag 0.5 × 60, ragdoll masses) is ported in
+  ours from the same code and data; no difference was found in the contact response.
+- **What is missing: the audio bridge's speed curve.** `sub_824B0DA8`, after copying the conditioner's 8 region impacts
+  into the audio state (`+496..`), multiplies each by an 8-point graph (`sub_82481E10`) of the previous frame's |COM v|
+  (`+216` ← `+212`): x 0 / 0.366 / 0.448 / 0.521 / 0.593 / 0.741 / 0.863 / 0.946, y 1.0 / 1.2 / 1.486 / 1.914 / 2.429 /
+  3.6 / 4.571 / 5.0 (read from the running game with a watch on `[[[0x830CFDA4]+36]+4]`). New recomp hook `BANDQ` on
+  `sub_82497088` (impact, tier, band edges per query) shows the body poster's impact = 5.0 × the clamped region impact
+  (ratio p50 5.0 over 218 posts) and band edges equal to our exported table. Ours skips the curve, so our body impacts
+  are 1/5 of retail's at the poster: no tier 1 / 2, and concrete 1047 / 991 (> 1.0 / 1.85) unreachable — this also
+  answers the open question "which impact posts concrete tier 1 / 2" above.
+- **Not changed** (needs the user's go): port the curve in `skate_events` (audio only; skate-core untouched), together
+  with the |Δv·n| abs and the body poster's 30 fps cadence; then re-measure bail density against the recomp.
+  *Ported 2026-10-03 (user: "Port it"): see "The bridge's speed curve on the body impacts" below.*
+- Script: `bail_ledge.txt` now uses `lt rt l3 r3` (6 / 6 bails; user tip), with an X jump + mid-air `l3 r3 lt rt` fallback.
+
+### The bridge's speed curve on the body impacts (2026-10-03, user decision "Port it"; `player::contacts`, `skate_events`)
+
+The user decided (2026-10-03): port retail's speed curve on the body impacts ("Port it"); the ragdoll physics item is
+closed with no physics change.
+
+**Listening before the curve** (user, session `state_20261003_110725`, build with |Δv·n| and the body / deck posters on
+the console cadence, no curve): "bails sounded good, a bit soft like you said. Deck hits sound really good and seem to
+be either equal to retail or almost perfect to retail." The deck hits are approved, so the curve must leave the deck
+posts alone (shown below).
+
+**Retail's mechanism (TU3 recompilation, reference only).**
+- The audio-state bridge `sub_824B0DA8` copies the skater entry's 116-byte block `+320` into the audio state `+496`.
+  This holds the conditioner's 8 region impacts, already clamped to [0, 1] by `sub_82BD60C8`.
+- Then, for i = 0..7: `+496 + 4i` = `fmuls`(graph(`+216`), `+496 + 4i`). The graph is `sub_82481E10(8, rec + 16, rec + 48, v)`
+  with rec = `[[0x830CFDA4] + 36] + 4`.
+- **No clamp after the multiply.** The poster sees up to 5.0. The recomp's BANDQ lines agree: the body poster's queries
+  (callers `824BC4C8` / `824BC530`) reach 4.11 (bandq run) and 4.88 (bailx3 run), concrete (material 2) up to 2.72 at
+  tier 2. The deck poster's queries (`824BD090` / `824BD0C4`) stay ≤ 1.0.
+- The deck impact `+668` lies outside the multiplied range (`+496..+524`).
+- **Which frame.** `+212` is written earlier in the same call from the skater entry's `+108`. `+216` is read by the
+  multiply, then set from `+212` after the loop. So the graph sees the *previous* bridge call's `+212`.
+- **Units.** The entry's `+108` is written by `sub_827A1B78`: the length (`vmsum3fp128` + `vrsqrtefp128` with two
+  Newton steps) of the vector at `[r30 + 36] + 16`. That is SystemReckoning `+16`, the COM velocity, in m/s. It is the
+  same quantity as our `AudioState::com_speed()` (the footsteps' walk curve reads it too).
+- The BANDQ floor queries agree with m/s. A lying body posts 0.00101–0.00116, i.e. ×1.0–1.16, and the graph gives that
+  below 0.37 m/s.
+- **Interpolation** (`sub_82481E10`, already ported for the footsteps' 16-point curves):
+  - below x0 → y0; from x7 on, or for an unordered input → y7;
+  - in between, the first i with v < x[i]: slope first, then `fmadds`;
+  - y[i] where two x coincide.
+- **Data: the install's own vault.** The words read from the running game equal the stock vault's class
+  `6EBA5BCD3E38A98A` `default` field `8B164823E008749C` (a `Sk8::PointNegGraphData8`, the same collection as the body
+  cooldown and the deck cooldown). Header 0 / 1 / 1 / 5, x at +16, y at +48:
+  - x 0, 0.3664494, 0.4478826, 0.5211726, 0.592834, 0.7410426, 0.863192, 0.946254;
+  - y 1.0, 1.2, 1.485714, 1.914286, 2.428571, 3.6, 4.571427, 5.0.
+
+**Change.**
+- `skate_audio::player::contacts::SpeedGraph8`: the 8-point graph and its evaluator. `ContactsTuning::body_speed_curve`
+  defaults to the vault words (`SpeedGraph8::BODY_SPEED`, bit patterns).
+- Setup exports the graph: `audio_export.collision_tuning` posters `body_speed_x` / `body_speed_y`. `library.rs`
+  prefers them when present. Installs set up before today use the identical default.
+- `AudioState::com_speed_216`: retail's `+216`. `skate_events::observe` sets it per physics tick to last tick's
+  `com_speed()` (`Seen::com_speed_212`).
+- `AudioState::body_impact` stays the conditioner's (pre-graph) value. `Contacts::body` multiplies each region's
+  impact by `body_speed_curve.eval(com_speed_216)` (f32, no clamp). The cloth and pad contacts read the same product,
+  as retail's poster reads `+496`.
+- Switch `Contacts::body_speed_on`: `SKATE_AEMS_BODY_CURVE=0` / `E2E_BODY_CURVE=0` turn it off, giving the impacts as
+  logged. The NPC instance's Contacts leaves it off. Its state has no `+216` (0 → ×1.0) and no ragdoll impacts yet.
+- The deck poster, the 4-step region max and `region_impacts` are unchanged.
+- **Replays.** The state log gains a `com_speed` column (`+212`, appended), and `scenarios.py` (both copies) carries
+  `com_speed` and `com_x/y/z` into cut scenarios. The e2e harness computes each row's `+216` from the previous row:
+  - from `com_speed` when the log has it;
+  - else (logs before today) |Δ COM position| × 60 from `com_x/y/z`, the reckoning's followed point at 4 decimals
+    (±0.006 m/s). The graph saturates from 0.95 m/s, so this only matters for slow bodies. A respawn jump reads as fast
+    (×5, as any speed > 0.95);
+  - else 0 (×1).
+
+  So the old bail sessions render with the curve.
+- Diagnostics: `E2E_BODY_LOG=1` writes `<name>.ours.bodymsg.tsv` (every body message with its row, region, the impact
+  the poster read, `+216`, materials, tiers, levels). `Contacts::body_log` has no effect on the output.
+
+**Tests.**
+- `the_bridge_speed_graph_is_the_vault_curve_piecewise_linear_and_clamped` checks the knots, both clamps, NaN, the
+  midpoint, and is bit-exact against the slope-first `mul_add`.
+- `the_speed_graph_scales_the_body_impacts_not_the_deck`: at rest (×1) a 0.3 arm hit on concrete is arm tier 1 /
+  concrete tier 0. Moving (×5) it is 1.5, i.e. arm tier 2 / concrete tier 1 (1047). 0.4 → 2.0 gives concrete tier 2
+  (991). Off equals at rest. 0.0011 × 5 crosses the arm floor. The deck messages are identical with the graph on and off.
+- `the_body_speed_graph_is_the_stock_vault_record` (`library.rs`, data-gated on the converted `skater-collections.json`):
+  exported posters win; the default equals the vault record word for word.
+
+**Frame-rate independence and identity** (`.local/audio-re/bodycurve/`: `render.sh`, `bails.py`, `body_attr.py`;
+inputs re-cut with `scenarios.py --cut r0-999999`, 0 malformed).
+- Body traces with the curve are byte-identical at `E2E_FPS` 30 / 60 / 144 / 365 for all three sessions.
+- `E2E_BODY_CURVE=0` renders (f32 and voices) are byte-identical to the previous state's (`bodycad/dk`) at all four rates
+  for 084712 / 101640. The new COM columns are inert when the curve is off.
+- **Deck posts unchanged:** the deck traces (count + FNV digest of every message) are identical with the curve on and
+  off in all three sessions, at every rate.
+- In each session the first differing voice row is the row of the first differing body post (084712 row 1101, 101640
+  row 2427, 110725 row 1963, all in a bail, state 300). Before it, the voices are identical.
+- After that the voices keep differing, outside the bails too: the shared Splice picks shift, as with the deck cadence
+  change. The deck hits' messages (timing, materials, tiers, levels) stay the same. Only the random variant a hit draws
+  may differ after the first bail.
+- **Bench** (13 scenarios + 4 sessions, row and `E2E_FPS=300`, `opt/runs/curve` against `cad_dk`): IDENTICAL. Those
+  inputs carry no region impacts and no COM columns, so they cannot change. The graph acts only on body posts, and it
+  scales them only while the body moves (> 0 m/s): ×1.2 at 0.37 m/s, ×5 from 0.95 m/s.
+
+**Per bail** (`E2E_FPS=60`; posts = message sides with a tier, each plays one collision id; window = bail rise − 0.5 s …
+bail clear, as the recomp's 094336 summary; voices / Σg² = `bails_cmp.py`, −0.5…+2.5 s):
+
+| per bail | the recomp (094336, 10 bails) | 084712 off → on (2) | 101640 off → on (10) | 110725 off → on (7) |
+|---|---|---|---|---|
+| body posts | 71 | 15.0 → 24.5 | 7.8 → 10.9 | 15.1 → 20.0 |
+| tier 0 / 1 / 2 | ≈ 49 / 13 / 9 | 14.0 / 1.0 / 0 → 19.5 / 3.5 / 1.5 | 6.5 / 1.1 / 0.2 → 6.7 / 2.9 / 1.3 | 12.7 / 1.7 / 0.7 → 12.3 / 5.4 / 2.3 |
+| tier-2 1030 / 1031 / 1032 | 1.8 / 3.3 / 2.1 | 0 / 0 / 0 → 0 / 0.5 / 0.5 | 0 / 0 / 0 → 0.1 / 0.6 / 0.3 | 0 / 0.1 / 0 → 0.3 / 0.9 / 0.3 |
+| torso 951 | 1.0 | 0 → 0.5 | 0.2 → 0.2 | 0.3 → 0.4 |
+| concrete 958 / 1047 / 991 | 3.4 / 2.3 / 0.9 | 1.0 / 0 / 0 → 2.0 / 0.5 / 0 | 0.1 / 0 / 0 → 0.5 / 0 / 0 | 0.6 / 0 / 0 → 1.9 / 0.4 / 0 |
+| Skate_Collisions voices (recomp: 38 bails, nine sessions) | 207.7 | 41.0 → 59.5 | 25.7 → 30.6 | 35.6 → 43.7 |
+| three banks Σg² | ≈ 5.1 | 1.79 → 2.52 | 0.98 → 1.03 | 1.58 → 1.78 |
+| peak impact the poster read (max over the bails) | 4.9 (bailx3) | 0.21 → 1.03 | 0.32 → 1.59 | 1.00 → 5.00 |
+
+- What changed: the tier-1 / 2 hits and concrete 1047 now occur. The posts per bail rise 30–60 %: floor contacts
+  0.001 × 5 = 0.005 pass the arm floor, and more regions clear their bands.
+- Concrete 991 (> 1.85, i.e. a region impact > 0.37 while moving) still doesn't occur in our bails.
+- The gap to the recomp's 71 posts stays, but the recomp is not the reference for counts. Its ~345 fps cadence makes
+  the 15-frame cooldown ≈ 43 ms (0.5 s on the console). With 6 regions and a 0.5 s cooldown, our poster can't post
+  more than ~12 groups a second.
+- Σg² rises less than the counts. A tier-2 hit's level comes from its own window, and many of the new posts are
+  quiet tier-0 floor hits.
+- 110725's last bail (155.9 s, 4.5 s long) has no region impacts at all (`rimp*` 0 throughout). Not investigated.
+
+**|Δv·n| against the older sessions** (110725 was recorded with |Δv·n|, 084712 / 101640 without; from the logs):
+
+| | 084712 | 101640 | 110725 |
+|---|---|---|---|
+| contact region-frames at the 0.001 floor | 84 % (1,035 / 1,237) | 62 % (649 / 1,042) | 76 % (1,950 / 2,554) |
+| above-floor region-frames / bail | 101 | 39 | 86 |
+| region-frames > 0.1 / > 0.25 | 12 / 0 | 68 / 16 | 71 / 29 |
+| body posts / bail, no curve | 15.0 | 7.8 | 15.1 |
+
+- No session-level signature of the abs. The bails differ more between sessions than the expected effect: 26 % of
+  above-floor steps in the recomp, mostly small, 8 of 166 above 0.1.
+- The abs can't be isolated without the same bail logged both ways (the replay reads the logged impacts). 110725's
+  many hits above 0.25 are its larger falls (peak 1.0).
+
+**Files.** `crates/skate-audio/src/player/{contacts,state}.rs`,
+`crates/skate-game/src/game_audio/{skate_events,state_log,e2e,player_audio,library}.rs`,
+`tools/asset_pipeline/audio_export.py`, `tools/audio-e2e/scenarios.py`.
+
+**Open.**
+- The NPC instance gets no `+216` (its state comes from `world::skaters`, and no ragdoll impacts are published).
+- Old logs use the COM-position fallback. Sessions from this build log `com_speed`.
+- For the user in game: bails should now have more tier-1 / 2 body hits and concrete tier 1 (louder, punchier). Deck
+  hits are unchanged.
+
+### The turn intensity after release; trace / comment leftovers (2026-10-03)
+
+**Turn intensity "linger": no change. The recomp's 50 ms is its frame rate.**
+- Retail's `sub_824C8588` moves the signed I toward the raw target by the grain collection's step per call: `+1160` ±
+  the primary truck's rise / fall step (the vault field lookup `sub_82B72420`; 0.06, 0.1 on one surface). There is no dt.
+- The local GREC rows of `all_20261002_180430` (filtered by `filter_local.py`; 1,874 calls where the input reads 0 and
+  I > 0.07) step by exactly 0.06 per call (1,832; 0.1 on 36), at 2.8 ms per call (the recomp's ~345 fps).
+- So the recomp's I is back to 0 in ~10 calls ≈ 30 ms. That is the "0 by 50 ms" figure, a recomp artefact. On the
+  30 fps console the same 10 steps take ~333 ms.
+- Ours: `TurnIntensity::step` with `frames = dt × 60` takes 0.06 per 1/60 s.
+  - In 110725 / 101640 our input (the animation's Turn) falls from ≥ 0.9 to 0 in 3 frames (p50; p90 4–5), like
+    retail's 34–50 ms.
+  - Our I then reaches 0 in 8 frames (p50; p90 9–10, simulated from the log at cap 0.6): the "~13 frames" from the
+    release start.
+  - That is already half the console's time, not a linger.
+- The retail mechanism on the console-cadence rule would be 0.06 per console frame (`frames = dt × 30`; the brake slew
+  `BRAKE_STEP` has the same shape). That doubles our fall time to ≈ 330 ms and changes the rolling bed in every riding
+  scenario. Not changed: it is the opposite of the reported symptom and needs the user's call.
+
+**Leftovers.**
+- `skate_events.rs`: the wheel-material comment now says 0.45 changes / s (local rider only).
+- The published `tools/recomp-trace/trace.py` FIELD_COUNTS gains BAILLOCAL, BAILSTEP, BAILREG, BAILCAND, COLLPOST,
+  BANDQ and LOCALTEST (scrubbed comments).
+
+**Verification (both sections).**
+- `cargo test -p skate-audio --locked`: all pass (lib 223).
+- `cargo test -p skate-game --release --bin skate3rust --locked -- game_audio::`: 57 pass, 4 ignored.
+- `cargo build --locked`: OK, with the 3 known warnings.
+- Headless only (target `.local/fma-target`); bin\ and data\ untouched.

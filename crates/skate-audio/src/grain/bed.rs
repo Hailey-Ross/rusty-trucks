@@ -129,8 +129,9 @@ impl Chain {
     }
 
     /// The full chain (graphs 1, 3, 2); the env send adds into `env` (mono, × `user`). Returns
-    /// whether the env send contributed.
-    fn process_full(&mut self, out: &mut [[f32; BLOCK]; 6], env: &mut [f32; BLOCK], tuning: &ChainTuning, user: f32) -> bool {
+    /// whether the env send contributed. `graph3`: graph 3 exists (`sub_824C8878` builds it for the
+    /// local player only); without it graph 1's send to it and its return are absent.
+    fn process_full(&mut self, out: &mut [[f32; BLOCK]; 6], env: &mut [f32; BLOCK], tuning: &ChainTuning, user: f32, graph3: bool) -> bool {
         let rate = crate::MIX_RATE as f32;
         let v = self.values;
         let mut mono = self.bus[0];
@@ -142,20 +143,24 @@ impl Chain {
         self.fss.shift_hz = v.fss_hz;
         self.fss.process(&mut mono, rate);
         let mut g3 = [0.0f32; BLOCK];
-        self.to_graph3.target = v.graph3_send;
-        self.to_graph3.add(&mono, &mut g3);
+        if graph3 {
+            self.to_graph3.target = v.graph3_send;
+            self.to_graph3.add(&mono, &mut g3);
+        }
         self.gain.target = v.level;
         self.gain.process(&mut [&mut mono[..]]);
         let mut g2 = [0.0f32; BLOCK];
         self.from_graph1.add(&mono, &mut g2);
         // Graph 3.
-        clip(&mut [&mut g3[..]], tuning.clip);
-        self.gain3.target = v.graph3_gain;
-        self.gain3.process(&mut [&mut g3[..]]);
-        self.shelf.freq = tuning.shelf_hz;
-        self.shelf.gain = tuning.shelf_gain;
-        self.shelf.process(&mut [&mut g3[..]], rate);
-        self.from_graph3.add(&g3, &mut g2);
+        if graph3 {
+            clip(&mut [&mut g3[..]], tuning.clip);
+            self.gain3.target = v.graph3_gain;
+            self.gain3.process(&mut [&mut g3[..]]);
+            self.shelf.freq = tuning.shelf_hz;
+            self.shelf.gain = tuning.shelf_gain;
+            self.shelf.process(&mut [&mut g3[..]], rate);
+            self.from_graph3.add(&g3, &mut g2);
+        }
         // Graph 2: the FlangeSub send has no bus here; the env send is mono, before the panner.
         self.env.target = v.env_send * user;
         let sends = !self.env.silent();
@@ -212,6 +217,10 @@ pub struct GrainBed {
     pub chain_extras: bool,
     /// Graph 3's clip and shelf (the owner vault; the speed-driven values come from the host).
     pub chain_tuning: ChainTuning,
+    /// The local player's bed (instance 0 of the Player slot): its chains have graph 3
+    /// (`sub_824C8878` builds it only for the local player). An NPC skater's bed (instance 1,
+    /// [`crate::runtime::Runtime::npc_grains`]) has graphs 1 and 2 only.
+    pub local: bool,
     /// This block's dry 6-channel mix (before [`GrainBed::gain`]) and the chains' env sends.
     mix: Box<[[f32; BLOCK]; 6]>,
     env: Box<[f32; BLOCK]>,
@@ -239,6 +248,7 @@ impl GrainBed {
             fold: [0.0; 6],
             chain_extras: true,
             chain_tuning: ChainTuning::default(),
+            local: true,
             mix: Box::new([[0.0; BLOCK]; 6]),
             env: Box::new([0.0; BLOCK]),
             env_active: false,
@@ -262,6 +272,16 @@ impl GrainBed {
             p.record = record;
             p.bind(source.clone(), params, &mut self.rng);
         }
+    }
+
+    /// Run `f` with `rng` as this bed's generator (swapped in and back out): retail's grain picks
+    /// all draw from the one title-wide generator (`0x82FD7D74`), so a second owner's bed (an NPC
+    /// skater's, [`crate::runtime::Runtime::npc_grains`]) draws from the local bed's.
+    pub fn share_rng<R>(&mut self, rng: &mut Rng, f: impl FnOnce(&mut Self) -> R) -> R {
+        std::mem::swap(&mut self.rng, rng);
+        let out = f(self);
+        std::mem::swap(&mut self.rng, rng);
+        out
     }
 
     /// Stop both players of a truck at once (surface change, no contact).
@@ -328,7 +348,7 @@ impl GrainBed {
                 if self.chain_extras && !t.built {
                     c.bus = [[0.0; BLOCK]; 6];
                 } else if self.chain_extras {
-                    self.env_active |= c.process_full(mix, &mut self.env, &self.chain_tuning, self.gain);
+                    self.env_active |= c.process_full(mix, &mut self.env, &self.chain_tuning, self.gain, self.local);
                 } else {
                     c.process(mix);
                 }
@@ -463,6 +483,50 @@ mod tests {
         for (k, (&e, &d)) in env.iter().zip(&dry).enumerate().skip(BLOCK) {
             assert!((e - 0.5 * d).abs() <= 1e-6 * d.abs().max(1e-3), "{k}: {e} vs {d}");
         }
+    }
+
+    /// An NPC skater's bed (`local` false) has no graph 3: its send level changes nothing. Its
+    /// picks draw from the generator it is handed (`share_rng`), leaving its own untouched.
+    #[test]
+    fn a_non_local_bed_has_no_graph3_and_shares_the_generator() {
+        let a = GrainParams { attack: 0.1, sustain: 0.2, release: 0.1, window: 1.6, drift: 0.05 };
+        let rec = [Record { gain: 0.5, pitch: 1.0, position: 0.3 }, Record { gain: 0.25, pitch: 1.0, position: 0.2 }];
+        let run = |local: bool, send: f32| {
+            let mut bed = GrainBed::new();
+            bed.local = local;
+            bed.bind_truck(0, source(), [a, a], rec);
+            bed.set_chains(0, [ChainValues { graph3_send: send, ..ChainValues::default() }; 2]);
+            let mut all = Vec::new();
+            for _ in 0..100 {
+                let mut out = [[0.0f32; BLOCK]; 6];
+                bed.render(&mut out);
+                all.extend(out.iter().flatten().copied());
+            }
+            all
+        };
+        assert_eq!(run(false, 0.0), run(false, 3.0), "no graph 3: the send is inert");
+        assert_ne!(run(true, 0.0), run(true, 3.0), "the local bed's graph 3 adds the copy");
+        // Send 0: a built graph 3 still adds its filters' anti-denormal bias (~1e-18), nothing else.
+        let gap = run(true, 0.0).iter().zip(run(false, 0.0)).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()));
+        assert!(gap < 1e-12, "send 0: graph 3 adds only its bias ({gap})");
+        // Shared generator: the same output as a bed that owns that generator's state, and the
+        // borrowing bed's own generator never moves.
+        let seed = [1, 2, 3, 4, 5, 6];
+        let mut owner = GrainBed::new();
+        owner.rng = Rng::new(seed);
+        let mut borrower = GrainBed::new();
+        let own = format!("{:?}", borrower.rng);
+        let mut shared = Rng::new(seed);
+        owner.bind_truck(0, source(), [a, a], rec);
+        borrower.share_rng(&mut shared, |b| b.bind_truck(0, source(), [a, a], rec));
+        for _ in 0..100 {
+            let (mut x, mut y) = ([[0.0f32; BLOCK]; 6], [[0.0f32; BLOCK]; 6]);
+            owner.render(&mut x);
+            borrower.share_rng(&mut shared, |b| b.render(&mut y));
+            assert_eq!(x, y);
+        }
+        assert_eq!(format!("{:?}", borrower.rng), own, "its own generator is untouched");
+        assert_eq!(format!("{shared:?}"), format!("{:?}", owner.rng), "the shared one drew as the owner's did");
     }
 
     #[test]

@@ -37,6 +37,15 @@ pub(crate) struct PlayerAudio {
     /// console cadence (n console evaluations in this pass, `native::mixmap_frame`), `None`: one
     /// step per call (the old 60 Hz host and the tests).
     pub(crate) jitter_steps: Option<usize>,
+    /// The body poster (`player::contacts`, `sub_824BC188`) on the console cadence: it runs once per
+    /// console evaluation of this pass ([`Self::jitter_steps`]), so its 15-frame cooldown is 0.5 s at
+    /// any real frame rate (2026-10-03). `SKATE_AEMS_BODY_CONSOLE=0` / `E2E_BODY_CONSOLE=0`: once per
+    /// process, as before. Follows the MixMap cadence: without it (`jitter_steps` None) the old one.
+    pub(crate) body_console: bool,
+    /// The deck-impact poster (`sub_824BD000`) on the console cadence too (its 6-frame cooldown =
+    /// 0.2 s at any frame rate; 2026-10-03). `SKATE_AEMS_DECK_CONSOLE=0` / `E2E_DECK_CONSOLE=0`: once
+    /// per process, as before.
+    pub(crate) deck_console: bool,
     positions: [ObjPos; 2],
     was_grinding: bool,
     last_camera: Option<[f32; 3]>,
@@ -124,6 +133,9 @@ impl PlayerAudio {
         // grind on / off sounds (#5); `SKATE_AEMS_{PLANT_LIFT,BODY_IMPACTS,GRIND_ONOFF}=0` off.
         board.plant_lift_on = on("SKATE_AEMS_PLANT_LIFT");
         board.body_on = on("SKATE_AEMS_BODY_IMPACTS");
+        // The bridge's speed graph on the body impacts (`sub_824B0DA8`, 2026-10-03);
+        // `SKATE_AEMS_BODY_CURVE=0`: the conditioner's impacts as before.
+        board.body_speed_on = on("SKATE_AEMS_BODY_CURVE");
         let mut grind = Grind::default();
         grind.onoff = on("SKATE_AEMS_GRIND_ONOFF");
         Self {
@@ -132,6 +144,8 @@ impl PlayerAudio {
             contacts: Contacts::default(),
             jitter,
             jitter_steps: None,
+            body_console: on("SKATE_AEMS_BODY_CONSOLE"),
+            deck_console: on("SKATE_AEMS_DECK_CONSOLE"),
             positions: [ObjPos::default(); 2],
             was_grinding: false,
             last_camera: None,
@@ -178,6 +192,18 @@ impl PlayerAudio {
         }
     }
 
+    /// The body poster's messages so far and their digest (`Contacts::body_posts` / `body_digest`).
+    #[cfg(test)]
+    pub(crate) fn body_trace(&self) -> (u64, u64) {
+        (self.board.body_posts, self.board.body_digest)
+    }
+
+    /// The deck poster's messages so far and their digest (`Contacts::deck_posts` / `deck_digest`).
+    #[cfg(test)]
+    pub(crate) fn deck_trace(&self) -> (u64, u64) {
+        (self.board.deck_posts, self.board.deck_digest)
+    }
+
     /// The session-review ports (the e2e harness's `E2E_*` switches): the plant / lift, the body
     /// poster, the grind on / off sounds.
     #[cfg(test)]
@@ -185,6 +211,24 @@ impl PlayerAudio {
         self.board.plant_lift_on = plant_lift;
         self.board.body_on = body;
         self.grind.onoff = grind_onoff;
+    }
+
+    /// The bridge's speed graph on the body impacts (the e2e harness's `E2E_BODY_CURVE`).
+    #[cfg(test)]
+    pub(crate) fn set_body_curve(&mut self, on: bool) {
+        self.board.body_speed_on = on;
+    }
+
+    /// Diagnostics (the e2e harness's `E2E_BODY_LOG`): keep every body-poster message.
+    #[cfg(test)]
+    pub(crate) fn set_body_log(&mut self, on: bool) {
+        self.board.body_log = on.then(Vec::new);
+    }
+
+    /// The body-poster messages since the last call (region, impact read, message).
+    #[cfg(test)]
+    pub(crate) fn take_body_log(&mut self) -> Vec<(usize, f32, skate_audio::player::collision::Message)> {
+        self.board.body_log.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
     /// Collision messages of another Player-slot owner (an NPC skater, `npc_skaters.rs`): retail
@@ -384,6 +428,8 @@ impl PlayerAudio {
             // The grind on / off contact sounds of this frame's Rail posts (Splice).
             self.grind.sounds(s, &self.tuning, &mut rt.splice_host());
             let before = self.board.starts;
+            self.board.body_calls = if self.body_console { self.jitter_steps } else { None };
+            self.board.deck_calls = if self.deck_console { self.jitter_steps } else { None };
             self.board.process(s, self.contacts.buckets(), &self.tuning, &self.contact_tuning, &mut rt.splice_host());
             self.posts += self.board.starts - before;
             // The collision manager runs after the player's components (its own state manager).

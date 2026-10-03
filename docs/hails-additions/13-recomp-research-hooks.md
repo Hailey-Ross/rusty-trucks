@@ -46,6 +46,10 @@ The recompilation is **not** a perfect copy of the console game, and its traces 
    is a step-by-step guide: a first trace, choosing categories, reading and checking a trace, watch lists, input
    scripts and the audio capture.
 4. Check every trace for malformed lines before using it; there should be none.
+5. Traces made before 2026-10-03 ~10:30: the per-player kinds (GREC, GRECX, FIRSTHIT, SKID, TREAT, SEAMPAT, SEAMHIT)
+   also logged a nearby NPC skater's objects, interleaved per frame. Filter them by object (the first one logged is
+   the local rider). Newer builds gate on the game's local byte `[[object+28]+72]` and log `LOCALTEST` lines; see
+   doc 11, "The per-player recomp hooks logged an NPC skater too".
 
 The analysis scripts we used are published in `tools/recomp-trace/` (trace readers, per-bank level and voice
 tools, rolling-bed and send analysis) and `tools/recomp-code-search/` (searching the recompiled sources and the

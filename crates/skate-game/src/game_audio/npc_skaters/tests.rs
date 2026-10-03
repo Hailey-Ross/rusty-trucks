@@ -300,3 +300,110 @@ fn npc_skater_rolls_and_grinds_past_the_listener() {
     let q = pass(&library, &mxb, true);
     assert!(!q.seam_soft.is_empty() && q.seam_soft.iter().all(|&w| w == 0), "soft local wheels → 0");
 }
+
+/// The NPC skater's grain bed (2026-10-03): the same pass, with the host's order per console
+/// evaluation (`npc_skaters::frame`): update → the instance's bed step on this evaluation's
+/// SkateBoard(1) outputs with the routing's last binds → its owner inputs → write inputs → process
+/// → tick. Checks: the second bed binds the NPC's soft concrete member (the local player's wheels
+/// hard), sounds only while the instance is held, louder near the camera than at 22–30 m, has no
+/// graph 3 and never touches the local bed's players; release stops it. `--nocapture` prints a
+/// per-0.5 s table (distance, held, member, voices, record A gain, bed RMS).
+#[test]
+fn npc_skater_rolls_on_its_own_grain_bed() {
+    let Some((library, mxb)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+    let Some(local_bed) = super::super::grain_bed::Bed::new(&library) else { return eprintln!("skipped: no grain recordings / tuning") };
+    let (mut rt, _, parts) = runtime(&library);
+    if !parts.rolling {
+        return eprintln!("skipped: no PatchBank_Rolling_Surfaces (the routing drives the bed)");
+    }
+    assert!(rt.npc_grains.is_none(), "inert until an NPC bed binds");
+    let tuning = library.player_tuning();
+    let contact_tuning = library.contacts_tuning();
+    let t = Tuning { player: &tuning, contacts: &contact_tuning };
+    let mut m = MixMap::from_bytes(&mxb).unwrap();
+    let mut slots = Slots::default();
+    let mut npc: Option<NpcSkater> = None;
+    let mut bed: Option<(super::super::grain_bed::Bed, u32)> = None;
+    let camera = [0.0, 1.8, 0.0];
+    let l = Listener { camera, view: [0.0, 0.0, -1.0], camera_velocity: [0.0; 3], followed: [0.0, 1.0, -3.0], facing: [0.0, 0.0, -1.0], followed_velocity: [0.0; 3] };
+    let dt = 1.0 / 30.0;
+    let frames = ((-START_X * 2.0 / V) / dt) as usize;
+    let mut out = vec![0.0f32; 2 * 1600];
+    let (mut rows, mut members) = (Vec::new(), std::collections::BTreeSet::new());
+    let (mut near, mut far, mut held_voices, mut free_voices) = (0.0f32, 0.0f32, 0usize, 0usize);
+    let (mut sum, mut n, mut gain_max) = (0.0f64, 0usize, 0.0f32);
+    let mut released = None;
+    for f in 0..frames {
+        let time = f as f32 * dt;
+        let published = npc_state(time);
+        let d = super::distance(published.com_position, camera);
+        let a = slots.assign(&[(7, d)]);
+        for _ in a.released {
+            if let Some(mut x) = npc.take() {
+                x.deactivate(&mut m, &l);
+            }
+            if bed.take().is_some() {
+                super::super::grain_bed::stop_npc(&mut rt);
+            }
+            released = Some(f);
+        }
+        for (_, g) in a.claimed {
+            npc = Some(NpcSkater::new(g as u32, parts, true, true, true));
+            bed = Some((local_bed.for_instance(g as u32), 0));
+        }
+        globals(&mut m);
+        let s = component_state(&published, false);
+        if let (Some(x), Some((b, pushes))) = (npc.as_mut(), bed.as_mut()) {
+            let _ = x.update(&m, &s, t, &mut rt.splice_host());
+            *pushes = pushes.wrapping_add(u32::from(s.push_trigger));
+            let r = super::super::skate_events::Riding { speed: s.ground_speed, grinding: s.grinding, braking: s.brake, wheels: s.wheel_count, pushes: *pushes, audio: s, ..Default::default() };
+            let routed = Some((std::mem::take(&mut x.routed.grains), x.routed.primary));
+            super::super::grain_bed::step_with(b, &library, &m, &r, dt, &tuning, routed, |apply| apply(&mut rt));
+            b.write_inputs(&mut m, &s, false);
+            x.write_inputs(&mut m, &s, &l, [0.0; 3], &tuning);
+            let _ = x.process(&mut m, &s, t, &mut rt.splice_host());
+            let _ = x.take_collisions();
+        }
+        m.tick(dt);
+        rt.fill_stereo(&mut out);
+        assert!(rt.grains.trucks.iter().all(|tr| tr.bound().is_none()) && rt.grains.voices() == 0, "the local bed is never touched");
+        let Some(g) = rt.npc_grains.as_deref() else { continue };
+        assert!(!g.local, "the NPC bed has no graph 3");
+        let voices = g.voices();
+        if let Some(name) = g.trucks[0].bound() {
+            members.insert(name.to_owned());
+        }
+        // (An unbound player keeps its constructor record, gain 1: count bound ones only.)
+        let gain = if g.trucks[0].bound().is_some() { g.trucks[0].players[0].record.gain } else { 0.0 };
+        if npc.is_some() {
+            held_voices += voices;
+            if d < 12.0 {
+                near = near.max(gain);
+            } else if d > 22.0 {
+                far = far.max(gain);
+            }
+        } else if released.is_some_and(|r| f > r + 30) {
+            free_voices += voices;
+        }
+        gain_max = gain_max.max(gain);
+        sum += out.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>();
+        n += out.len();
+        if f % 15 == 14 {
+            let rms = (10.0 * (sum / n.max(1) as f64).max(1e-12).log10()) as f32;
+            rows.push((time, d, npc.is_some(), g.trucks[0].bound().map(str::to_owned), voices, gain_max, rms));
+            (sum, n, gain_max) = (0.0, 0, 0.0);
+        }
+    }
+    println!("    t     dist  held  truck-0 member              voices  max A gain  RMS dBFS");
+    for (t, d, held, member, voices, gain, rms) in &rows {
+        println!("{t:6.2} {d:7.1}  {:4}  {:26}  {voices:6}  {gain:10.4}  {rms:8.1}", if *held { "yes" } else { "-" }, member.as_deref().unwrap_or("-"));
+    }
+    println!("members bound {members:?}; record A gain max near (< 12 m) {near:.4}, 22–30 m {far:.4}");
+    assert!(members.contains("concrete_smooth_soft") || members.contains("concrete_smooth_hard"), "concrete bound: {members:?}");
+    if library.grain_whole("concrete_smooth_soft").is_some() {
+        assert!(members.contains("concrete_smooth_soft"), "hard local wheels → the NPC's soft member");
+    }
+    assert!(held_voices > 0, "the NPC bed sounds while held");
+    assert!(near > far && far >= 0.0, "louder near the camera ({near} vs {far})");
+    assert_eq!(free_voices, 0, "stopped a second after the release");
+}

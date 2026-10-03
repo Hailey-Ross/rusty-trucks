@@ -132,6 +132,11 @@ pub struct ContactsTuning {
     /// (`3695327CFB5E1AC3` / `35FEE8A95523D812`), 112 (the face) at tier 0 (`076E9081CA1759E9` /
     /// `DF539915EB7E883E`) and tier 1 (`8E3025BAA686F721` / `504D3B73505972D4`).
     pub body_cooldown: f32,
+    /// The audio-state bridge's speed graph (`sub_824B0DA8`, the holder `*(0x830CFDA4)+36` = class
+    /// `6EBA5BCD3E38A98A` `default` field `8B164823E008749C`, a `Sk8::PointNegGraphData8`): the
+    /// eight region impacts are multiplied by it at the previous frame's |COM v|
+    /// ([`super::AudioState::com_speed_216`]) before the body poster reads them.
+    pub body_speed_curve: SpeedGraph8,
     pub body_110: [[f32; 2]; 2],
     pub body_111: [f32; 2],
     pub body_112: [[f32; 2]; 2],
@@ -186,10 +191,62 @@ impl Default for ContactsTuning {
             lift_ids: [85, 89, 93, 81, 77],
             plant_eq: 1,
             body_cooldown: 15.0,
+            body_speed_curve: SpeedGraph8::BODY_SPEED,
             body_110: [[0.75, 1.25], [0.7, 1.25]],
             body_111: [0.65, 1.25],
             body_112: [[0.05, 0.3], [0.3, 0.55]],
         }
+    }
+}
+
+/// An 8-point vault graph (`Sk8::PointNegGraphData8`: x at record `+16`, y at `+48`) evaluated by
+/// `sub_82481E10(8, x, y, v)`: below x0 → y0, from x7 on → y7, else the linear piece of the first
+/// i with v < x[i] (y[i] where two x coincide), slope first, `fmadds` order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpeedGraph8 {
+    pub x: [f32; 8],
+    pub y: [f32; 8],
+}
+
+impl SpeedGraph8 {
+    /// The stock vault's bridge speed graph (class `6EBA5BCD3E38A98A` `default`, field
+    /// `8B164823E008749C`; the same words read from the running game at `[[[0x830CFDA4]+36]+4]`):
+    /// x 0 … 0.946 m/s, y 1.0 … 5.0.
+    pub const BODY_SPEED: SpeedGraph8 = SpeedGraph8::from_bits(
+        [0x0000_0000, 0x3EBB_9F41, 0x3EE5_50DE, 0x3F05_6B91, 0x3F17_C3F8, 0x3F3D_B4F8, 0x3F5C_FA27, 0x3F72_3DB4],
+        [0x3F80_0000, 0x3F99_999A, 0x3FBE_2BE0, 0x3FF5_0753, 0x401B_6DB5, 0x4066_6666, 0x4092_4921, 0x40A0_0000],
+    );
+
+    pub const fn from_bits(x: [u32; 8], y: [u32; 8]) -> Self {
+        let mut g = SpeedGraph8 { x: [0.0; 8], y: [0.0; 8] };
+        let mut i = 0;
+        while i < 8 {
+            g.x[i] = f32::from_bits(x[i]);
+            g.y[i] = f32::from_bits(y[i]);
+            i += 1;
+        }
+        g
+    }
+
+    /// `sub_82481E10` with eight points.
+    pub fn eval(&self, v: f32) -> f32 {
+        let (x, y) = (&self.x, &self.y);
+        if v < x[0] {
+            return y[0];
+        }
+        if !(v < x[7]) {
+            return y[7];
+        }
+        for i in 1..8 {
+            if v < x[i] {
+                let dx = x[i] - x[i - 1];
+                if dx > 0.0 {
+                    return ((y[i] - y[i - 1]) / dx).mul_add(v - x[i - 1], y[i - 1]);
+                }
+                return y[i];
+            }
+        }
+        y[0]
     }
 }
 
@@ -272,12 +329,33 @@ pub struct Contacts {
     lift: Option<SoundId>,
     /// `+260..+280` the body regions' cooldowns (frames, `sub_824BC188`).
     body_cooldown: [f32; 6],
-    /// Body-poster messages posted (diagnostics).
+    /// Body-poster messages posted (diagnostics) and a running FNV-1a digest of them (every field,
+    /// in posting order): two runs posted the same messages iff counts and digests agree.
     pub body_posts: u64,
+    pub body_digest: u64,
+    /// The body poster's console cadence: `Some(n)` = n console frames end in this process (the
+    /// host's `mixmap::cadence`; 0 on the 60 Hz steps between them), so the poster runs n times
+    /// here, once per console frame as retail's per-rendered-frame `sub_824BC188` does on the 30 fps
+    /// console (15-frame cooldown = 0.5 s at any real frame rate). `None`: once per process, the
+    /// cadence before 2026-10-03 (the tests, `SKATE_AEMS_BODY_CONSOLE=0`).
+    pub body_calls: Option<usize>,
+    /// The deck-impact poster (`sub_824BD000`) the same way: `Some(n)` runs it n times in this
+    /// process (its 6-frame cooldown in console frames = 0.2 s), `None` once per process (before
+    /// 2026-10-03; `SKATE_AEMS_DECK_CONSOLE=0`). Its messages so far and their digest (diagnostics).
+    pub deck_calls: Option<usize>,
+    pub deck_posts: u64,
+    pub deck_digest: u64,
     /// The push foot's plant / lift (`sub_824BBB28`; `SKATE_AEMS_PLANT_LIFT=0` off) and the body
     /// poster (`sub_824BC188`; `SKATE_AEMS_BODY_IMPACTS=0` off). The host turns them on.
     pub plant_lift_on: bool,
     pub body_on: bool,
+    /// The bridge's speed graph on the region impacts ([`ContactsTuning::body_speed_curve`] at
+    /// [`AudioState::com_speed_216`]; `SKATE_AEMS_BODY_CURVE=0` / `E2E_BODY_CURVE=0` off: the
+    /// impacts as the conditioner wrote them, before 2026-10-03). The host turns it on.
+    pub body_speed_on: bool,
+    /// Diagnostics (the e2e harness): when `Some`, every body-poster message with its region and
+    /// the impact the poster read.
+    pub body_log: Option<Vec<(usize, f32, Message)>>,
 }
 
 /// The route of a poster's sounds: eEQChain bus `bus` (re-rolled on first use by the local
@@ -289,6 +367,20 @@ fn route(bus: u8, s: &AudioState, env: Option<i32>) -> crate::bus::Route {
         owner_env: env.map_or(0.0, |l| l as f32 * crate::dsp::INV_32767),
         mono: false,
     }
+}
+
+/// FNV-1a over a collision message's fields (diagnostics: [`Contacts::body_digest`]).
+fn body_digest(mut h: u64, m: &Message) -> u64 {
+    if h == 0 {
+        h = 0xCBF2_9CE4_8422_2325;
+    }
+    let words = [m.material[0] as u32, m.material[1] as u32, m.tier[0] as u32, m.tier[1] as u32, m.position[0].to_bits(), m.position[1].to_bits(), m.position[2].to_bits(), m.level[0] as u32, m.level[1] as u32, u32::from(m.local)];
+    for w in words {
+        for b in w.to_le_bytes() {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3);
+        }
+    }
+    h
 }
 
 /// `sub_824B95A0`'s memory: time out of the deck box per foot (`+360` foot 0, `+352` foot 1) and
@@ -375,9 +467,13 @@ impl Contacts {
             self.plant_lift(s, t, c, host);
         }
         if self.body_on {
-            self.body(s, t, c);
+            for _ in 0..self.body_calls.unwrap_or(1) {
+                self.body(s, t, c);
+            }
         }
-        self.deck(s, t, c);
+        for _ in 0..self.deck_calls.unwrap_or(1) {
+            self.deck(s, t, c);
+        }
         self.step_on.process(s, &c.step_on, host);
     }
 
@@ -428,8 +524,11 @@ impl Contacts {
         }
         let ct = &t.collision;
         let none = NO_MATERIAL as i32;
+        // `sub_824B0DA8`: `+496 + 4i` ×= graph(`+216`) (`fmuls`, no clamp after: the poster sees up
+        // to 5.0, which is what reaches the concrete record's tier 1 / 2 above 1.0 / 1.85).
+        let scale = if self.body_speed_on { c.body_speed_curve.eval(s.com_speed_216) } else { 1.0 };
         for i in 0..6 {
-            let impact = s.body_impact[i];
+            let impact = if self.body_speed_on { s.body_impact[i] * scale } else { s.body_impact[i] };
             if impact > 0.0 && !(self.body_cooldown[i] > 0.0) {
                 let (a, cloth, pad) = body_materials(i, s.body_slide_flag);
                 let tag = s.body_tag[i];
@@ -464,6 +563,13 @@ impl Contacts {
                         }
                     }
                     self.body_posts += posts;
+                    let fresh = self.outbox.len() - posts as usize;
+                    for m in &self.outbox[fresh..] {
+                        self.body_digest = body_digest(self.body_digest, m);
+                    }
+                    if let Some(log) = self.body_log.as_mut() {
+                        log.extend(self.outbox[fresh..].iter().map(|m| (i, impact, *m)));
+                    }
                 }
             }
             if self.body_cooldown[i] > 0.0 {
@@ -573,6 +679,12 @@ impl Contacts {
                     let la = (ct.level_scale(a) * la as f32) as i32;
                     let lb = (ct.level_scale(b) * lb as f32) as i32;
                     self.outbox.push(Message { tier: [sa, sb], level: [la, lb], ..msg });
+                }
+                let posts = 1 + usize::from(!(sa == 3 && sb == 3));
+                self.deck_posts += posts as u64;
+                let fresh = self.outbox.len() - posts;
+                for m in &self.outbox[fresh..] {
+                    self.deck_digest = body_digest(self.deck_digest, m);
                 }
             }
         }
@@ -1214,8 +1326,8 @@ mod tests {
         assert_eq!(h.log.started.len(), 3, "plant_lift_on off: silent");
     }
 
-    #[test]
-    fn a_body_region_impact_posts_the_pair_cloth_and_pad_contacts() {
+    /// Concrete (2), the arm (100), skin (107) and the limb pad (111) with retail-shaped bands.
+    fn body_tuning() -> PlayerTuning {
         use crate::player::collision::{CollisionTuning, Material};
         let windows = [16000, 32767, 25000, 32767, 16000, 32767, 25000, 32767, 24000, 32767, 16000, 32767, 25000, 32767];
         let mut materials = vec![Material::default(); 143];
@@ -1223,7 +1335,138 @@ mod tests {
         materials[100] = Material { kind: 0, gain: 32767, windows, bands: [0.65, 1.25, 0.2, 0.005], scale: 1.0, ..Material::default() };
         materials[107] = Material { kind: 0, gain: 18000, windows, bands: [1.0, 2.0, 0.5, 0.005], ..Material::default() };
         materials[111] = Material { kind: 0, gain: 15000, windows, bands: [1.0, 2.0, 0.5, 0.005], ..Material::default() };
-        let t = PlayerTuning { collision: CollisionTuning { materials, surface_class: vec![0; 95], surface_eq: Vec::new() }, ..PlayerTuning::default() };
+        PlayerTuning { collision: CollisionTuning { materials, surface_class: vec![0; 95], surface_eq: Vec::new() }, ..PlayerTuning::default() }
+    }
+
+    /// The body poster on the console cadence (2026-10-03): a host at any real frame rate runs
+    /// the components on the frames that complete 60 Hz steps (newest step's state) and the poster
+    /// once per console frame (`mixmap::cadence`, every second step), so the same messages are
+    /// posted on the same steps at 30 / 60 / 144 / 240 / 365 fps, and the 15-frame cooldown lasts
+    /// 30 steps = 0.5 s. (Below 30 fps a pass spans more than one console frame and the host has only
+    /// the newest step's state.) The old per-process cadence depends on the frame rate.
+    #[test]
+    fn the_body_poster_keeps_the_console_cadence_at_any_frame_rate() {
+        use crate::mixmap::cadence::Cadence;
+        let (t, c) = (body_tuning(), ContactsTuning::default());
+        // 20 s of 60 Hz steps: both arm regions on concrete, impacts rising and falling (some
+        // under every floor, some tier 2), as the conditioner's 4-step max hands them over.
+        let steps: Vec<AudioState> = (0..1200u32)
+            .map(|i| {
+                let mut s = AudioState { bail: true, ..AudioState::default() };
+                for (r, k) in [(2usize, 7u32), (3, 11)] {
+                    let x = (i.wrapping_mul(k).wrapping_add(r as u32 * 13) % 41) as f32 / 50.0;
+                    s.body_impact[r] = if x < 0.1 { 0.0 } else { x };
+                    s.body_tag[r] = 3;
+                }
+                s.board_position = [i as f32 * 0.1, 0.0, 0.0];
+                s
+            })
+            .collect();
+        let run = |fps: f64, console: bool| -> Vec<(usize, u64, u64)> {
+            let mut k = Contacts { body_on: true, ..Default::default() };
+            let mut h = Log::default();
+            let (mut cadence, mut owed, mut step, mut out) = (Cadence::default(), 0.0f64, 0usize, Vec::new());
+            while step < steps.len() {
+                owed += 60.0 / fps;
+                let n = (owed.floor() as usize).min(steps.len() - step);
+                owed -= n as f64;
+                if n == 0 {
+                    continue;
+                }
+                step += n;
+                let calls = cadence.advance(n);
+                k.body_calls = console.then_some(calls);
+                let before = k.body_posts;
+                k.process(&steps[step - 1], [0; 4], &t, &c, &mut h);
+                k.outbox.clear();
+                if k.body_posts != before {
+                    out.push((step, k.body_posts, k.body_digest));
+                }
+            }
+            out
+        };
+        let reference = run(60.0, true);
+        assert!(reference.len() > 50, "the stream posts ({} times)", reference.len());
+        for fps in [30.0, 144.0, 240.0, 365.0] {
+            assert_eq!(run(fps, true), reference, "{fps} fps");
+        }
+        assert_ne!(run(30.0, false), run(60.0, false), "the per-process cadence depends on the frame rate");
+        // A held impact: one post group per 15 console frames = 30 steps (0.5 s).
+        let mut k = Contacts { body_on: true, ..Default::default() };
+        let mut h = Log::default();
+        let mut s = AudioState { bail: true, ..AudioState::default() };
+        s.body_impact[2] = 0.7;
+        s.body_tag[2] = 3;
+        let (mut cadence, mut at) = (Cadence::default(), Vec::new());
+        for step in 1..=120 {
+            k.body_calls = Some(cadence.advance(1));
+            let before = k.body_posts;
+            k.process(&s, [0; 4], &t, &c, &mut h);
+            if k.body_posts != before {
+                at.push(step);
+            }
+        }
+        assert_eq!(at, [2, 32, 62, 92]);
+    }
+
+    /// The deck poster (`sub_824BD000`) on the console cadence (2026-10-03): the same messages on the
+    /// same steps at 30 / 60 / 144 / 240 / 365 fps, and the 6-frame cooldown lasts 12 steps (0.2 s).
+    #[test]
+    fn the_deck_poster_keeps_the_console_cadence_at_any_frame_rate() {
+        use crate::mixmap::cadence::Cadence;
+        let (t, c) = (body_tuning(), ContactsTuning::default());
+        let steps: Vec<AudioState> = (0..1200u32)
+            .map(|i| {
+                let x = (i.wrapping_mul(13) % 37) as f32 / 20.0;
+                AudioState { deck_impact: if x < 0.3 { 0.0 } else { x.min(1.0) }, deck_material: 2, board_position: [i as f32 * 0.1, 0.0, 0.0], ..AudioState::default() }
+            })
+            .collect();
+        let run = |fps: f64, console: bool| -> Vec<(usize, u64, u64)> {
+            let mut k = Contacts::default();
+            let mut h = Log::default();
+            let (mut cadence, mut owed, mut step, mut out) = (Cadence::default(), 0.0f64, 0usize, Vec::new());
+            while step < steps.len() {
+                owed += 60.0 / fps;
+                let n = (owed.floor() as usize).min(steps.len() - step);
+                owed -= n as f64;
+                if n == 0 {
+                    continue;
+                }
+                step += n;
+                k.deck_calls = console.then_some(cadence.advance(n));
+                let before = k.deck_posts;
+                k.process(&steps[step - 1], [0; 4], &t, &c, &mut h);
+                k.outbox.clear();
+                if k.deck_posts != before {
+                    out.push((step, k.deck_posts, k.deck_digest));
+                }
+            }
+            out
+        };
+        let reference = run(60.0, true);
+        assert!(reference.len() > 50, "the stream posts ({} times)", reference.len());
+        for fps in [30.0, 144.0, 240.0, 365.0] {
+            assert_eq!(run(fps, true), reference, "{fps} fps");
+        }
+        assert_ne!(run(30.0, false), run(60.0, false), "the per-process cadence depends on the frame rate");
+        let mut k = Contacts::default();
+        let mut h = Log::default();
+        let s = AudioState { deck_impact: 0.7, deck_material: 2, ..AudioState::default() };
+        let (mut cadence, mut at) = (Cadence::default(), Vec::new());
+        for step in 1..=50 {
+            k.deck_calls = Some(cadence.advance(1));
+            let before = k.deck_posts;
+            k.process(&s, [0; 4], &t, &c, &mut h);
+            if k.deck_posts != before {
+                at.push(step);
+            }
+        }
+        assert_eq!(at, [2, 14, 26, 38, 50], "every 6 console frames = 12 steps");
+    }
+
+    #[test]
+    fn a_body_region_impact_posts_the_pair_cloth_and_pad_contacts() {
+        let t = body_tuning();
         let c = ContactsTuning::default();
         let mut k = Contacts { body_on: true, ..Default::default() };
         let mut h = Log::default();
@@ -1253,6 +1496,64 @@ mod tests {
         tiny.body_impact[2] = 0.001;
         k.process(&tiny, [0; 4], &t, &c, &mut h);
         assert!(k.outbox.is_empty());
+    }
+
+    /// `sub_82481E10` over the bridge's 8 points: clamped to y0 below x0 and to y7 from x7 on
+    /// (an unordered input too), linear in between, a knot gives its own y.
+    #[test]
+    fn the_bridge_speed_graph_is_the_vault_curve_piecewise_linear_and_clamped() {
+        let g = SpeedGraph8::BODY_SPEED;
+        let x = [0.0, 0.366_449_4, 0.447_882_6, 0.521_172_6, 0.592_834, 0.741_042_6, 0.863_192, 0.946_254];
+        let y = [1.0, 1.2, 1.485_714, 1.914_286, 2.428_571, 3.6, 4.571_427, 5.0];
+        for i in 0..8 {
+            assert!((g.x[i] - x[i]).abs() < 1e-6 && (g.y[i] - y[i]).abs() < 1e-6, "point {i}");
+            assert_eq!(g.eval(g.x[i]), g.y[i], "a knot reads its own y");
+        }
+        assert_eq!(g.eval(-1.0), 1.0, "below x0: y0");
+        assert_eq!(g.eval(0.0), 1.0, "at rest: x1");
+        assert_eq!(g.eval(0.946_254), 5.0);
+        assert_eq!(g.eval(23.0), 5.0, "past x7: y7");
+        assert_eq!(g.eval(f32::NAN), 5.0, "unordered: the last value");
+        // Halfway between the knots 5 and 6: (3.6 + 4.571) / 2.
+        let mid = (g.x[5] + g.x[6]) * 0.5;
+        assert!((g.eval(mid) - (g.y[5] + g.y[6]) * 0.5).abs() < 1e-5);
+        // Slope first, fmadds: bit-exact against the formula.
+        let v = 0.2f32;
+        assert_eq!(g.eval(v), ((g.y[1] - g.y[0]) / (g.x[1] - g.x[0])).mul_add(v - g.x[0], g.y[0]));
+    }
+
+    /// The bridge's graph scales the region impacts before the poster: at rest (×1) a 0.3 arm hit on
+    /// concrete is tier 0 for both; moving (×5) the same hit reads 1.5 (concrete tier 1, the arm
+    /// tier 2), 0.4 → 2.0 (concrete tier 2): the concrete record's 1047 / 991 tiers become
+    /// reachable as in the recomp. Off, or at rest, the impacts post unchanged. The deck poster
+    /// does not see the graph.
+    #[test]
+    fn the_speed_graph_scales_the_body_impacts_not_the_deck() {
+        let t = body_tuning();
+        let c = ContactsTuning::default();
+        let post = |impact: f32, speed: f32, on: bool| {
+            let mut k = Contacts { body_on: true, body_speed_on: on, ..Default::default() };
+            let mut s = AudioState { bail: true, com_speed_216: speed, ..AudioState::default() };
+            s.body_impact[2] = impact;
+            s.body_tag[2] = 3;
+            k.process(&s, [0; 4], &t, &c, &mut Log::default());
+            k.outbox.first().map(|m| (m.material, m.tier))
+        };
+        assert_eq!(post(0.3, 0.0, true), Some(([100, 2], [1, 0])), "×1: arm tier 1 (> 0.2), concrete tier 0");
+        assert_eq!(post(0.3, 2.0, true), Some(([100, 2], [2, 1])), "×5: 1.5 → arm tier 2, concrete tier 1");
+        assert_eq!(post(0.4, 2.0, true), Some(([100, 2], [2, 2])), "×5: 2.0 → concrete tier 2");
+        assert_eq!(post(0.3, 2.0, false), post(0.3, 0.0, true), "off = the conditioner's value");
+        // Under every floor at rest (0.001 < 0.005 arm, < 0.12 concrete), above the arm's when moving.
+        assert_eq!(post(0.001, 0.0, true), None);
+        assert_eq!(post(0.0011, 2.0, true).map(|m| m.1), Some([0, 3]), "0.0055 > the arm floor 0.005");
+        // The deck poster reads `+668`, which the bridge does not scale.
+        let deck = |on: bool| {
+            let mut k = Contacts { body_speed_on: on, ..Default::default() };
+            let s = AudioState { deck_impact: 0.3, deck_material: 2, com_speed_216: 3.0, ..AudioState::default() };
+            k.process(&s, [0; 4], &t, &c, &mut Log::default());
+            (k.deck_posts, k.deck_digest)
+        };
+        assert_eq!(deck(true), deck(false));
     }
 
     #[test]

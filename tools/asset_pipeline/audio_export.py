@@ -699,6 +699,8 @@ BODY_POSTERS = (('Hash_6DD85F43C1B6E6AA', 'body_cooldown'),
                 ('Hash_3695327CFB5E1AC3', 'body_111_low'), ('Hash_35FEE8A95523D812', 'body_111_high'),
                 ('Hash_076E9081CA1759E9', 'body_112_low0'), ('Hash_DF539915EB7E883E', 'body_112_high0'),
                 ('Hash_8E3025BAA686F721', 'body_112_low1'), ('Hash_504D3B73505972D4', 'body_112_high1'))
+# The bridge's speed graph on the body impacts (sub_824B0DA8; class 6EBA5BCD3E38A98A `default`).
+BODY_SPEED_GRAPH = 'Hash_8B164823E008749C'
 # The grind on / off contact sounds per grind surface (class GRIND_CLASS): the metal flag (Skate_Metal, else
 # Skate_Collisions), the ids per layer 0..3 by bank (sub_824C35D0 / sub_824C37D8), the per-layer level factor
 # (sub_824C2FA0 / sub_824C3190) and the level / pitch endpoints A, B (sub_824C2FA0 / 3190 / 3380 / 34A8).
@@ -824,6 +826,13 @@ def collision_tuning(resolve, by_class) -> dict:
         v = resolve('Hash_6EBA5BCD3E38A98A', 'default', field)
         if v is not None:
             posters[name] = _scalar_or_list(v)
+    # The audio-state bridge's speed graph (sub_824B0DA8 scales the region impacts by it at the
+    # previous frame's |COM v|): a Sk8::PointNegGraphData8, x at +16, y at +48.
+    v = resolve('Hash_6EBA5BCD3E38A98A', 'default', BODY_SPEED_GRAPH)
+    if v is not None:
+        floats = _floats(v)
+        if len(floats) >= 20:
+            posters['body_speed_x'], posters['body_speed_y'] = floats[4:12], floats[12:20]
     return {'materials': rows, 'posters': posters}
 
 

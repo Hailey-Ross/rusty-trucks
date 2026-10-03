@@ -31,6 +31,14 @@ FIELD_COUNTS = {
     'FIRSTHIT': 6,  # B b16(u8) f24 bail676 end677 why(1 byte 2 float 4 bail/end 8 heartbeat)   (GREC hook)
     'SKID': 7,      # owner holder handle w0..w17(18 ints, or "-" on release) counter1516 slip232 rev690   (skid hook)
     'EMITSLOT': 11, # object state info0(patch) info4(positional) info8(level) info12 info16 mixkey handle w0..w8 out0..out9(hex)   (emitter slot hook)
+    # Bail body impacts (category audiox; local player, only while bailing).
+    'BAILLOCAL': 5, # character object1808 X how(1 vtable checked, 2 not) entry_index   (skater-entry update hook)
+    'BAILSTEP': 10, # X step_ms dt5220 bail end contacts sc4036 sc4040 cfg164 how   (ragdoll region pass, after its BAILREGs)
+    'BAILREG': 12,  # X region part impact |dv.n| v_old.n v_new.n |dv| normal("x y z") mass slide tag(hex)   (ragdoll region pass)
+    'BAILCAND': 7,  # src(entry|pass) lr a b flag c d: lookup diagnostics (entry: character entry bit31 object X; pass: SC X 0 0 X)
+    'COLLPOST': 16, # caller object state grec_owner local72 matA matB tierA tierB soundA soundB b40 b41 b42 pos("x y z") chain   (collision message post)
+    'BANDQ': 7,     # caller material impact flag tier low high   (impact-band queries, audiox)
+    'LOCALTEST': 6, # hook object byte16 byte28 old_word accepted   (local-test decisions per object, audio)
 }
 
 
