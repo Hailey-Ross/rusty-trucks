@@ -111,7 +111,8 @@ impl Script {
         let grinding = r.i("grinding") != 0;
         if grinding {
             self.family = Some(r.i("family") as i32);
-            self.material = Some((r.i("grind_tag") as u32).min(143));
+            // The log's grind tag → `+692` (tag − 1, 0 → 143), as `skate_events::audio_state`.
+            self.material = Some(material_of_tag(r.i("grind_tag") as u32));
         }
         let push = r.i("push") != 0;
         // The push plant (`skate_events::push_plant`, session review #1): logs since 2026-10-03 carry
@@ -189,7 +190,7 @@ impl Script {
             push_trigger,
             feet_in_deck_box: [feet & 1 != 0, feet & 2 != 0],
             grind_family: self.family.unwrap_or(-1),
-            // `+692` = Grinds+216 as the game publishes it (`audio_state`: no tag − 1 here).
+            // `+692` = Grinds+216 − 1 (the packer `sub_827A1B78`), as the game publishes it.
             grind_material: self.material.unwrap_or(143),
             local: true,
             jump_velocity: self.jump_velocity,
@@ -390,6 +391,16 @@ fn e2e_render() {
         p.wheels_on = wheels && std::env::var("E2E_WHEELS").map_or(true, |v| v != "0");
         (p.rolling_on, p.rattle_on, p.slide_on, p.tricks_on, p.treatment_on) = (optional[0], optional[1], optional[2], optional[3], optional[4]);
         let mut bed = super::grain_bed::Bed::new(&library).expect("grain bed data");
+        // The bed's turn / brake slews once per console evaluation (with the MixMap's cadence;
+        // E2E_SLEW_CONSOLE=0: per call, dt-scaled, as before).
+        bed.slew_console = !off("E2E_SLEW_CONSOLE");
+        // E2E_SLEW_LOG=1: the bed's turn input, |COM v|, special, I and brake per call
+        // (`<name>.ours.slew.tsv`).
+        let mut slew_log = std::env::var("E2E_SLEW_LOG").is_ok_and(|v| v == "1").then(|| {
+            let mut w = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.slew.tsv"))).unwrap());
+            writeln!(w, "frame	eval	turn_in	com_speed	turn_I	turn_signed	braking	brake").unwrap();
+            w
+        });
         let seams = skate_audio::player::tuning::PlayerTuning { seam_wobbles: p.tuning.seam_wobbles.clone(), ..Default::default() };
         let mut script = Script { x: 0.0, air_time: 0.0, pushes: 0, family: None, material: None, jump_velocity: 0.0, planted: false, com_212: 0.0, com_at: None };
         let mut out = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.f32"))).unwrap());
@@ -562,7 +573,12 @@ fn e2e_render() {
             }
             let t4 = std::time::Instant::now();
             let routed = p.rolling_on.then(|| (std::mem::take(&mut p.routed.grains), p.routed.primary));
+            bed.slew_calls = mix_console.then_some(mix_calls);
             super::grain_bed::step(&mut bed, &library, &m, &shared, &riding, call_dt, &seams, routed);
+            if let Some(w) = slew_log.as_mut() {
+                let (turn, brake) = bed.slews();
+                writeln!(w, "{frame}	{mix_calls}	{}	{}	{}	{turn}	{}	{brake}", s.turn, s.com_speed(), turn.abs(), u8::from(riding.braking)).unwrap();
+            }
             let t5 = std::time::Instant::now();
             if timing && frame >= 60 {
                 let us = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1e6;

@@ -229,6 +229,45 @@ impl TurnIntensity {
     }
 }
 
+/// The brake slew's step per call (§2.7; `sub_824C6198`, owner `+1168`: `lfs` of the constant at
+/// `0x82165A00`, 0.05 per grain-player-spec §2.7; no dt).
+pub const BRAKE_STEP: f32 = 0.05;
+
+/// The owner's two per-call slews in `sub_824C6198` (the SkateBoard process `sub_824C6A78`): the
+/// turn intensity (`sub_824C8588`, owner `+1160` / `+1164`) and the brake (`+1168`). Both move by a
+/// fixed step per call with no dt; retail calls them once per console frame (~30 fps).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OwnerSlews {
+    pub turn: TurnIntensity,
+    pub brake: f32,
+}
+
+impl OwnerSlews {
+    /// One host pass. `calls`: `Some(n)` = n console frames end in this pass (`mixmap::cadence`),
+    /// each one retail call (step × 1); `None` = once with the steps scaled by `frames`
+    /// (= dt × 60, the old 60 Hz host). `tuning` None: the brake still slews, the turn holds and
+    /// reads 0 (no primary grain truck). Returns |I|.
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(&mut self, tuning: Option<&SurfaceTuning>, com_speed: f32, turn: f32, special: bool, braking: bool, calls: Option<usize>, frames: f32) -> f32 {
+        let target = if braking { 1.0 } else { 0.0 };
+        match calls {
+            None => {
+                self.brake = slew(self.brake, target, BRAKE_STEP * frames);
+                tuning.map_or(0.0, |t| self.turn.step(t, com_speed, turn, special, frames))
+            }
+            Some(n) => {
+                for _ in 0..n {
+                    self.brake = slew(self.brake, target, BRAKE_STEP);
+                    if let Some(t) = tuning {
+                        self.turn.step(t, com_speed, turn, special, 1.0);
+                    }
+                }
+                tuning.map_or(0.0, |_| self.turn.value.abs())
+            }
+        }
+    }
+}
+
 /// The owner's two latches (`sub_824CA688` / `sub_824CA6E0`): manual (`+1504`) set while balancing
 /// (state `+340`), cleared once the wheel count is 0 or 4; trick (`+1505`) set while the hippy-jump
 /// flag (`+372`) holds, cleared once both feet are in the deck box (`+615 && +616`). "Special" =
@@ -455,6 +494,102 @@ mod tests {
             k.step(&t, 0.5, 1.0, false, 1.0);
         }
         assert!((k.value - 0.12).abs() < 1e-6);
+    }
+
+    /// `sub_824C6198`'s turn and brake slews on the console cadence: one retail step per console
+    /// frame (0.06 / 0.05, no dt), so a full turn (0.6) is back to ~0 after 10 console frames =
+    /// 20 steps = 333 ms (f32 leaves 7.45e-9, removed by the 11th, as retail's `fsubs` does) and a
+    /// full brake after 20 = 667 ms; nothing moves on the steps between.
+    #[test]
+    fn owner_slews_take_one_step_per_console_frame() {
+        use crate::mixmap::cadence::Cadence;
+        let t = tuning(60.0, [0, 0x3D0D_3DCB, 0x3F69_EE58, 0x3F80_0000]);
+        let mut s = OwnerSlews { turn: TurnIntensity { value: 0.6 }, brake: 1.0 };
+        let mut c = Cadence::default();
+        let (mut turn_zero, mut brake_zero, mut turn_tiny) = (None, None, None);
+        let mut last = (s.turn.value, s.brake);
+        for step in 1..=60usize {
+            let calls = c.advance(1);
+            let i = s.step(Some(&t), 10.0, 0.0, false, false, Some(calls), 1.0);
+            if calls == 0 {
+                assert_eq!((s.turn.value, s.brake), last, "no step between console frames");
+            } else {
+                // One step (the last one may be the f32 remainder down to the target).
+                assert!(s.turn.value == 0.0 || (last.0 - s.turn.value - 0.06).abs() < 1e-6, "one 0.06 step: {last:?} → {}", s.turn.value);
+                assert!(s.brake == 0.0 || (last.1 - s.brake - 0.05).abs() < 1e-6, "one 0.05 step: {last:?} → {}", s.brake);
+            }
+            assert_eq!(i, s.turn.value.abs());
+            last = (s.turn.value, s.brake);
+            if s.turn.value < 1e-6 && turn_tiny.is_none() {
+                turn_tiny = Some(step);
+            }
+            if s.turn.value == 0.0 && turn_zero.is_none() {
+                turn_zero = Some(step);
+            }
+            if s.brake == 0.0 && brake_zero.is_none() {
+                brake_zero = Some(step);
+            }
+        }
+        assert_eq!(turn_tiny, Some(20), "10 console frames = 20 steps = 333 ms");
+        assert_eq!(turn_zero, Some(22), "the f32 remainder goes on the 11th console frame");
+        assert_eq!(brake_zero, Some(40), "20 console frames = 40 steps = 667 ms");
+        // The old host (`calls` None, frames = dt × 60): 0.06 per 60 Hz step, 0 after 11 steps.
+        let mut o = OwnerSlews { turn: TurnIntensity { value: 0.6 }, brake: 1.0 };
+        let n = (1..=60).find(|_| {
+            o.step(Some(&t), 10.0, 0.0, false, false, None, 1.0);
+            o.turn.value == 0.0
+        });
+        assert_eq!(n, Some(11));
+        // Without a primary truck the brake still slews, the turn holds and reads 0.
+        let mut h = OwnerSlews { turn: TurnIntensity { value: 0.3 }, brake: 0.5 };
+        assert_eq!(h.step(None, 10.0, 0.0, false, false, Some(1), 1.0), 0.0);
+        assert_eq!((h.turn.value, h.brake), (0.3, 0.45));
+    }
+
+    /// The same values on the same console frames at 30 / 60 / 144 / 240 / 365 fps: a host that runs
+    /// once per rendered frame with the newest 60 Hz state and the pass's console calls
+    /// (`mixmap::cadence`), as `grain_bed::update` does.
+    #[test]
+    fn owner_slews_are_the_same_at_any_frame_rate() {
+        use crate::mixmap::cadence::Cadence;
+        let t = tuning(60.0, [0, 0x3D0D_3DCB, 0x3F69_EE58, 0x3F80_0000]);
+        // 20 s of 60 Hz states: turns left / right / straight, braking on / off, a varying speed.
+        let state = |k: u64| {
+            let turn = [1.0, -0.7, 0.0, 0.35][(k / 45 % 4) as usize];
+            let braking = k / 70 % 2 == 0;
+            let speed = 1.0 + 4.0 * (k as f32 * 0.013).sin().abs();
+            (speed, turn, braking, k / 400 % 3 == 2)
+        };
+        const STEPS: u64 = 20 * 60;
+        let run = |fps: u64, console: bool| {
+            let (mut s, mut c, mut done) = (OwnerSlews::default(), Cadence::default(), 0u64);
+            let mut trace = Vec::new();
+            for frame in 1.. {
+                let now = frame * 60 / fps;
+                if now > STEPS {
+                    break;
+                }
+                let ticks = (now - done) as usize;
+                done = now;
+                let calls = if ticks > 0 { c.advance(ticks) } else { 0 };
+                let (v, turn, braking, special) = state(now.saturating_sub(1));
+                let frames = 60.0 / fps as f32;
+                let i = s.step(Some(&t), v, turn, special, braking, console.then_some(calls), frames);
+                if !console || calls > 0 {
+                    trace.push((done, i.to_bits(), s.turn.value.to_bits(), s.brake.to_bits()));
+                }
+            }
+            trace
+        };
+        let at60 = run(60, true);
+        assert_eq!(at60.len() as u64, STEPS / 2);
+        assert!(at60.iter().any(|x| x.1 != 0) && at60.iter().any(|x| x.3 != 0));
+        for fps in [30, 144, 240, 365] {
+            assert_eq!(run(fps, true), at60, "{fps} fps");
+        }
+        // The old per-frame host does depend on the frame rate.
+        let on_console_frames = |t: Vec<(u64, u32, u32, u32)>| t.into_iter().filter(|x| x.0 % 2 == 0).collect::<Vec<_>>();
+        assert_ne!(on_console_frames(run(30, false)), on_console_frames(run(60, false)));
     }
 
     #[test]

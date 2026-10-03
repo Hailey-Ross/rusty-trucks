@@ -57,7 +57,8 @@ pub struct AudioState {
     /// `+615` / `+616` feet inside the deck box (Skeleton 600 / 601).
     pub feet_in_deck_box: [bool; 2],
     /// `+192` grind family (Grinds+136 latched while grinding; −1 before the first grind) and
-    /// `+692` grind material (Grinds+216 latched; [`NO_MATERIAL`] before the first grind).
+    /// `+692` grind material (Grinds+216 latched, as a material: tag − 1 like the wheels, 0 → 143, by the
+    /// packer `sub_827A1B78` record `+512`; [`NO_MATERIAL`] before the first grind).
     pub grind_family: i32,
     pub grind_material: u32,
     /// `[[state+16]+72]`: this is the local player.

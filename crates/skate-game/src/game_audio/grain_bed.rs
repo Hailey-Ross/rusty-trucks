@@ -15,7 +15,9 @@
 //!   brake slew, the turn intensity (`sub_824C8588`: |COM v|·0.24 capped × the turn input, slewed),
 //!   the manual / trick latches ("special": A × special gain, no turn layer), the downhill level D
 //!   (`sub_824CA738`, owner inputs 2/3) and wheel 0's seam-pattern gain envelope (`sub_824CA448`).
-//!   Player B is the turning / downhill layer.
+//!   Player B is the turning / downhill layer. The turn and brake slews step once per console
+//!   frame (`Bed::slew_calls`, the MixMap cadence's evaluations; 2026-10-03), as retail's per-call
+//!   steps on the ~30 fps console.
 //! - **Soft wheels** (`sub_824C8370`): the soft member of surfaces 1..6 while the board's wheel
 //!   hardness is below 0.5 (audio state `+684` = Motion+200 < 0.5); metal has only a hard member.
 //! - **Chains** (§3.2, `skate_audio::grain::chain`): high-/low-pass from level(12)/(11), pan from
@@ -38,7 +40,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use skate_audio::eval::rng::Rng;
-use skate_audio::grain::board::{self, BoardInputs, Latches, PushEnvelope, RocketTuning, SeamEnvelope, SurfaceTuning, TurnIntensity};
+use skate_audio::grain::board::{self, BoardInputs, Latches, OwnerSlews, PushEnvelope, RocketTuning, SeamEnvelope, SurfaceTuning};
 use skate_audio::grain::chain::{self, ChainFrame, ChainState, ChainTuning, PushShift};
 use skate_audio::grain::{GrainFile, GrainSource};
 use skate_audio::player::rolling::{self, GrainEvent};
@@ -91,9 +93,6 @@ pub(super) fn grain_for(audio_surface: u32) -> &'static str {
         _ => "asphalt_smooth_hard",
     }
 }
-/// The brake slew step per 60 Hz frame (§2.7).
-const BRAKE_STEP: f32 = 0.05;
-
 /// The `default` collection's tuning key in [`Bed`]'s map (rolling surface 0 binds
 /// asphalt_rough_hard with it, `rolling::member`).
 const DEFAULT_TUNING: &str = "default";
@@ -124,10 +123,20 @@ pub(crate) struct Bed {
     push_scale: PushEnvelope,
     /// The push frequency-shift envelope (`+1036`).
     shift: PushShift,
-    brake: f32,
+    /// The turn intensity (`sub_824C8588`) and brake slews: retail steps each once per call of the
+    /// SkateBoard process, no dt.
+    slews: OwnerSlews,
+    /// Those slews on the console cadence (2026-10-03, user decision "lets go for like retail"):
+    /// one retail step per console frame, [`Self::slew_calls`] times per host pass, so a release
+    /// takes the console's ~333 ms at any real frame rate. `SKATE_AEMS_SLEW_CONSOLE=0` /
+    /// `E2E_SLEW_CONSOLE=0`: the old host (the step × dt·60, i.e. 0.06 per 1/60 s).
+    pub(crate) slew_console: bool,
+    /// The console evaluations ending in this pass (`mixmap::cadence`), set by the host before each
+    /// [`step`]; taken by it. `None` (the MixMap's console cadence off, the per-row e2e renders,
+    /// tests): the old per-frame slews.
+    pub(crate) slew_calls: Option<usize>,
     /// Send, level ramp, wobbles and the gains each chain holds.
     chain: ChainState,
-    turn: TurnIntensity,
     latches: Latches,
     seam: SeamEnvelope,
     /// Our own instance of the title generator for the seam draws (retail's is shared and
@@ -172,9 +181,10 @@ impl Bed {
             pushes_seen: None,
             push_scale: PushEnvelope::default(),
             shift: PushShift::default(),
-            brake: 0.0,
+            slews: OwnerSlews::default(),
+            slew_console: !std::env::var("SKATE_AEMS_SLEW_CONSOLE").is_ok_and(|v| v == "0"),
+            slew_calls: None,
             chain: ChainState::default(),
-            turn: TurnIntensity::default(),
             latches: Latches::default(),
             seam: SeamEnvelope::default(),
             rng: Rng::new(skate_audio::grain::GrainBed::SEED),
@@ -209,9 +219,10 @@ impl Bed {
             pushes_seen: None,
             push_scale: PushEnvelope::default(),
             shift: PushShift::default(),
-            brake: 0.0,
+            slews: OwnerSlews::default(),
+            slew_console: self.slew_console,
+            slew_calls: None,
             chain: ChainState::default(),
-            turn: TurnIntensity::default(),
             latches: Latches::default(),
             seam: SeamEnvelope::default(),
             rng: Rng::new(skate_audio::grain::GrainBed::SEED),
@@ -237,6 +248,12 @@ impl Bed {
     /// The primary truck's binding (or the other's when only that one runs).
     fn primary_bound(&self) -> Option<Bound> {
         self.bound[self.primary].or(self.bound[1 - self.primary])
+    }
+
+    /// The slewed turn intensity (signed, owner `+1160`) and brake (`+1168`): diagnostics (e2e).
+    #[cfg(test)]
+    pub(crate) fn slews(&self) -> (f32, f32) {
+        (self.slews.turn.value, self.slews.brake)
     }
 
     /// The push speed-scale envelope while it runs (`player::rolling` scales its patch speeds).
@@ -359,6 +376,7 @@ pub(super) fn step_with(
     let r = *r;
     let s = r.audio;
     let frames = (dt * 60.0).clamp(0.0, 6.0);
+    let slew_calls = bed.slew_calls.take().filter(|_| bed.slew_console);
     let speed = r.speed.abs();
 
     // Surface routing: the wanted binding per truck (None = stopped).
@@ -407,9 +425,9 @@ pub(super) fn step_with(
     bed.pushes_seen = Some(r.pushes);
     bed.push_scale.advance(dt);
     bed.shift.advance(dt);
-    bed.brake = board::slew(bed.brake, if r.braking { 1.0 } else { 0.0 }, BRAKE_STEP * frames);
     let special = bed.latches.update(s.balance, s.wheel_count, s.hippy_jump, s.feet_in_deck_box);
-    let turn = tuning.as_ref().map_or(0.0, |t| bed.turn.step(t, s.com_speed(), s.turn, special, frames));
+    // `sub_824C6198`: the turn intensity and the brake move by their step per call (no dt).
+    let turn = bed.slews.step(tuning.as_ref(), s.com_speed(), s.turn, special, r.braking, slew_calls, frames);
     if local {
         let rng = &mut bed.rng;
         bed.seam.update(s.seam_pattern[0], dt, |p| seams.seam_wobble(p), || rng.draw());
@@ -426,7 +444,7 @@ pub(super) fn step_with(
         level_b: m.level(owner, 2),
         pitch: m.pitch_4096(owner, 3),
         turn,
-        brake: bed.brake,
+        brake: bed.slews.brake,
         special,
         downhill: bed.downhill,
         seam: if local { bed.seam.value() } else { None },

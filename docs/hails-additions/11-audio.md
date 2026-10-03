@@ -4200,6 +4200,7 @@ bail clear, as the recomp's 094336 summary; voices / Σg² = `bails_cmp.py`, −
 - The retail mechanism on the console-cadence rule would be 0.06 per console frame (`frames = dt × 30`; the brake slew
   `BRAKE_STEP` has the same shape). That doubles our fall time to ≈ 330 ms and changes the rolling bed in every riding
   scenario. Not changed: it is the opposite of the reported symptom and needs the user's call.
+  **Decided 2026-10-03 ("lets go for like retail"): see "The turn and brake slews on the console cadence" below.**
 
 **Leftovers.**
 - `skate_events.rs`: the wheel-material comment now says 0.45 changes / s (local rider only).
@@ -4211,3 +4212,188 @@ bail clear, as the recomp's 094336 summary; voices / Σg² = `bails_cmp.py`, −
 - `cargo test -p skate-game --release --bin skate3rust --locked -- game_audio::`: 57 pass, 4 ignored.
 - `cargo build --locked`: OK, with the 3 known warnings.
 - Headless only (target `.local/fma-target`); bin\ and data\ untouched.
+
+**Listening (user, 2026-10-03, bin\ 11:34 with the bail speed curve; session `state_20261003_113953`, 0 malformed):** "Sounds so much better!"
+
+### The turn and brake slews on the console cadence (2026-10-03, user decision "on the decision lets go for like retail"; `grain::board::OwnerSlews`, `game_audio/grain_bed.rs`)
+
+The user decided on the open item of "The turn intensity after release" above: "on the decision lets go for like
+retail".
+
+**Retail's mechanism (TU3 recompilation, reference only).**
+- The SkateBoard process `sub_824C6A78` (vtable `0x822FC780`, called with the frame's dt in f1) runs, in order:
+  slope `sub_824CA738`, routing `sub_824C5CA8`, the owner modulators `sub_824C6198` (dt passed on), then
+  `sub_824C9058`, `sub_824C7438`, `sub_824C7738`, `sub_824C9F68` and the seam envelope `sub_824CA448` (dt).
+- In `sub_824C6198`, everything that uses time takes dt: the push speed-scale and shift envelopes (`+912` / `+1036`)
+  advance through `sub_8248D510` with f1 = dt.
+- Two values move by a fixed step per call with **no dt**:
+  - **Turn intensity** `sub_824C8588` (the call at `0x824C68F4`; the result is stored as `+1164`): the signed `+1160`
+    moves toward the raw target by the primary truck's rise or fall step from the vault (`sub_82B72420`; default
+    word at `0x830D0850`), with `fadds` / `fsubs`, then `stfs +1160`.
+  - **Brake** `+1168`, inline after it. While braking (state `+336`), the cosine of the two velocity vectors
+    (state `+128`, `+96`) is checked: below 0, slew toward 1 (f31); otherwise toward 0 (f27). Without braking, slew
+    toward 0. The step is the `lfs` at `0x82165A00` (0.05, grain-player-spec §2.7). The value snaps to the target
+    once within one step.
+- The function has no other per-call slews. The manual latch (`+1504`, inline in `sub_824C8588`) and the trick latch
+  (`sub_824CA6E0`) are set / clear latches, not steps. They stay per rendered frame here: they are idempotent on a
+  repeated state, and sampling them at 30 Hz would drop one-step pulses (the reason the MixMap flags needed
+  `hold_input`).
+- **Call site cadence.** The process runs once per call of the audio manager's half (`sub_82485190`, "The MixMap on
+  the console cadence"). On the ~30 fps console both halves run on every frame, so: one step per console frame. A
+  full release from the cap 0.6 to 0 takes 10 calls (f32 leaves 7.45e-9, which the 11th call removes) = 333 ms. A
+  full brake release 1 → 0 takes 20 calls = 667 ms.
+- Ours stepped by 0.06 / 0.05 × (dt × 60), i.e. per 1/60 s: twice as fast (167 ms / 333 ms). The NPC bed ran at
+  `dt = CONSOLE_DT × evaluations`, so its step was also 0.12 per evaluation.
+
+**Change.**
+- `skate_audio::grain::board::OwnerSlews { turn, brake }` and `board::BRAKE_STEP` (moved from `grain_bed.rs`).
+  `OwnerSlews::step(tuning, com_speed, turn, special, braking, calls, frames)`:
+  - `calls = Some(n)`: n retail calls (each step × 1);
+  - `None`: once, with the steps × `frames`, the old code path.
+- `grain_bed::Bed`:
+  - `slews` replaces `turn` / `brake`.
+  - `slew_calls` is set by the host before each step and taken by it: the console evaluations of this pass from
+    `mixmap::cadence`.
+  - `slew_console` (`SKATE_AEMS_SLEW_CONSOLE=0` off) is copied to the NPC beds.
+- Hosts:
+  - `native::mixmap_frame` sets `slew_calls = Some(0)` on every frame (also frames without a 60 Hz tick) and
+    `Some(calls)` on frames that tick. With `SKATE_AEMS_MIX_CONSOLE=0` it sets `None`.
+  - The NPC host sets `Some(evaluations)`.
+  - e2e: `E2E_SLEW_CONSOLE=0` off. The cadence follows `E2E_MIX_CONSOLE` (on with `E2E_FPS`, off in the per-row
+    renders).
+- Between console frames the bed keeps feeding the records the held |I| and Bk.
+- Diagnostics: `E2E_SLEW_LOG=1` writes `<name>.ours.slew.tsv` per call (turn input, |COM v|, I, signed I, braking,
+  Bk). It has no effect on the output.
+
+**Proofs** (tools `.local/audio-re/slewcad/`: `render.sh`, `compare.py`, `localise.py`, `release.py`).
+- Inputs: the sessions 084712, 101640, 110725, **113953** (cut with `scenarios.py --cut r0-999999`; 5,484 rows =
+  lines − 1, so 0 malformed) and the bench's 213757, 214224, 215843, 224747.
+- **Off = byte-identical.** `E2E_SLEW_CONSOLE=0` renders (f32, voices, body, deck) equal the pre-change tree's at
+  `E2E_FPS` 30 / 60 / 144 / 365 for all eight sessions. `E2E_SLEW_LOG=1` was on in those renders.
+- **Frame-rate independence.**
+  - Unit test `owner_slews_are_the_same_at_any_frame_rate`: a host that runs once per rendered frame with the newest
+    60 Hz state and the cadence's calls gives bit-identical I / Bk on every console frame at 30 / 60 / 144 / 240 / 365
+    fps. The old per-frame host differs between 30 and 60.
+  - e2e: the slew logs' values on every evaluation are identical at 30 / 60 / 144 / 365 for all eight sessions.
+- **Step count.** Unit test `owner_slews_take_one_step_per_console_frame`:
+  - one 0.06 / 0.05 step on each console frame, none on the steps between;
+  - turn 0.6 → < 1e-6 after 10 console frames (20 steps), exactly 0 after 11;
+  - brake 1 → 0 after 20 (40 steps);
+  - the old host takes 11 steps;
+  - without a primary truck the brake still slews and the turn holds (reads 0).
+- **What changes (on vs off, `E2E_FPS=60`).**
+  - Only grain-bed records differ: grain0/1 A/B gain, pitch and position. No other bank's voices differ in any
+    session.
+  - Every differing voice frame lies within 0.5 s of a call where I or Bk differ.
+  - The first differing voice frame is at or after the first slew difference.
+  - Per session:
+
+    | session | calls where I / Bk differ | voice frames that differ |
+    |---|---|---|
+    | 084712 | 615 / 0 of 3,384 | 17.9 % |
+    | 101640 | 2,905 / 104 of 14,982 | 19.6 % |
+    | 110725 | 1,788 / 0 of 9,804 | 17.5 % |
+    | 113953 | 646 / 0 of 5,544 | 11.6 % |
+    | 213757 | 565 / 0 of 2,838 | 19.7 % |
+    | 214224 | 137 / 0 of 1,746 | 7.6 % |
+    | 215843 | 844 / 0 of 11,712 | 6.9 % |
+    | 224747 | 1,893 / 1 of 8,208 | 22.6 % |
+- **Bench** (13 scenarios + 4 sessions; `opt/runs/slew_on` against `slew_base`):
+  - row mode: IDENTICAL (the per-row renders keep the old cadence);
+  - `E2E_SLEW_CONSOLE=0` (`slew_off`): IDENTICAL in both modes;
+  - fps300: brake20, carve20 and ollies_log change (the scenarios with braking or turning) and the 4 sessions. The
+    other 10 scenarios are identical (roll10/20/30/45, grind_ledge / metal, manual15, ollie20, slide20, sweep).
+
+**Before / after release times** (`release.py`; a turn release = a continuous fall of I from a peak to 0, from the last
+row at the peak; the eight sessions pooled; `E2E_FPS=60`, the same at 30):
+
+| | before (off) | after (on) |
+|---|---|---|
+| turn, peak ≥ 0.5 | n 193, p50 217 ms, p90 400 ms | n 61, p50 367 ms, p90 800 ms |
+| turn, peak ≥ 0.3 | n 320, p50 167 ms, p90 300 ms | n 168, p50 267 ms, p90 500 ms |
+| brake (sessions, n 2–3) | 333 ms | 517–533 ms |
+| brake20 scenario | 1 → 0 in 333 ms, 0 → 1 in 333 ms | 667 ms each (the scenario ends at 0.25, 30 rows after the release) |
+| turn from the cap 0.6, input to 0 (theory) | 11 steps = 183 ms | 10 console frames = 333 ms (+ 1 for the f32 remainder) |
+
+- Fewer releases reach 0 after: with the slower fall the rider often turns again before I is back at 0.
+- The long tails (≈ 1–5 s) are slow input ramps, not the slew.
+
+**Files.** `crates/skate-audio/src/grain/board.rs`,
+`crates/skate-game/src/game_audio/{grain_bed,native,npc_skaters,e2e}.rs`.
+
+**Verification.**
+- `cargo test -p skate-audio --locked`: all pass (lib 225, 2 new).
+- `cargo test -p skate-game --release --bin skate3rust --locked -- game_audio::`: 57 pass, 4 ignored.
+- `cargo build --locked`: OK, with the 3 known warnings.
+- Headless only (target `.local/fma-target`); bin\ and data\ untouched.
+
+**For the user in game.** After a carve the turning layer (grain player B, the turn gain) fades out over about a third
+of a second instead of a sixth. The brake layer fades in and out over 2/3 s instead of 1/3 s. Straight rolling, tricks,
+bails and grinds are unchanged.
+
+### Concrete ledges grinded as metal: the grind material is the tag − 1 (2026-10-03, `skate_events`, `e2e`)
+
+**Report (user, 2026-10-03, session `state_20261003_115334`, 0 malformed):** "the last area I was in, the concrete
+sounded like metal where I was grinding". The spot is on University, around board (258, 64, −257) / (198, 64, −207) /
+(145, 64, −168).
+
+**Cause.** Our grind material skipped the tag − 1 step.
+- The engine's grind audio surface is the 7-bit collision tag (Grinds+216 = probe surface & 0x7F), the same kind of
+  value as the wheel tags.
+- Retail's packer `sub_827A1B78` writes every material into the record as tag − 1 (0 or out of 0..143 → 143): the
+  wheels at `+464..+476`, and the grind at `+512`. The bridge `sub_824B0DA8` copies `+512` to the audio state's `+692`.
+  The grind start `sub_824BB0E0` reads `+692` as material B (143 → 10), and Class_grind / the on / off sounds look it
+  up in the AudioSurfaceMap.
+- Ours used the tag directly (`skate_events::audio_state`), so every grind read the next entry of the surface map:
+  - tag 66 (concrete: material 65, rolling `concrete_rough`, grind surface 1) read entry 66, which is grind surface 4
+    (metal: Skate_Metal on / off, the metal GRINDS layer);
+  - tag 5 (material 4, grind surface 0) read entry 5 (surface 8, metal);
+  - tag 3 read surface 0 instead of 1. Tag 16 (a rail) gave surface 6 either way.
+- The map's tag is right. Rolling over the same ledges reads tag 66 too, and the recomp's material at the same
+  positions is 65.
+
+**Evidence (the recomp, `audiox_grind_20261003_120315`, 0 malformed, local rider `local72` = 1).** The user rode the
+same route from the PCU library to the spot. Grind start COLLPOST `824BB0E0` material B (= `+692`) and position, against
+our grind tags at the same places:
+
+| retail material B | positions (x, z) | our tag there | GRINDS samples, retail | Skate_Metal voices, retail |
+|---|---|---|---|---|
+| 65 | (255, −257), (198, −206), (150, −213), (259, −239…−189) | 66 | 13–23 | 0 in 17 grinds |
+| 2 | (149, −390), (266, −246), (230, −232) | 3 | 13–23 | 0 |
+| 4 | (175, −116) | 5 | 4–8, 14 | 0 |
+| 15 | (237, −413), (84, −403) | 16 | 55–65 | 5–17 per grind |
+
+Every retail value is our tag − 1. Retail also never reads 66 or 3 here.
+
+Our replay of the session's tag-66 grinds (e2e, `E2E_FPS=60`):
+- before: GRINDS 55–65 (the metal layer) plus 3–11 Skate_Metal voices per grind;
+- after: GRINDS 13–23, no Skate_Metal, as retail;
+- tag 16 rails: unchanged (GRINDS 55–65 plus Skate_Metal).
+
+**Change.**
+- `skate_events::audio_state`: `grind_material = material_of_tag(Grinds+216)`, as the wheels, the deck and the feet
+  already do.
+- The state log keeps the engine's tag in `grind_tag`, so the logs don't change. `e2e` converts it the same way.
+- `AudioState::grind_material` doc updated.
+- No off switch: this is the retail mechanism, and the old path read the wrong table entry.
+
+**Bench** (`.local/audio-re/grindmat/bench.sh`: the 13 scenarios plus 5 sessions incl. 115334, before / after):
+- Changed: grind_ledge, grind_metal, real_115334, real_215843, real_224747. These are exactly the inputs with grinds.
+- All other outputs are byte-identical.
+- In the changed ones, nothing differs before the first grind. Within 1 s after a grind, the differences are the
+  grind's own voices.
+- Later differences are Splice voices only (Skate_Collisions / sk8_foley member picks). The shared CRT rand stream
+  moves when a grind's on / off record has a different member count. No AEMS or grain voice differs after a grind.
+- The bench's `grind_metal` scenario (tag 9) used to render a concrete grind (entry 9 = surface 1). It now plays
+  metal (entry 8 = surface 4), as `player_audio`'s tests (which already used `material_of_tag(9)`) intended.
+
+**Verification.**
+- `cargo test -p skate-audio --locked`: all pass (lib 225).
+- game_audio tests: 57 pass, 4 ignored.
+- `cargo build --locked`: OK, with the 3 known warnings.
+- Headless only (`.local/fma-target`); bin\ and data\ untouched.
+- Tools: `.local/audio-re/grindmat/{bench.sh,ours.py,retail.py}`.
+
+**For the user in game.** Concrete ledges and curbs (e.g. that University spot) grind with the concrete GRINDS layer
+and the Skate_Collisions on / off sounds, no metal ring. Metal rails still ring. Some other concrete / stone grinds
+change surface too (tag 3: surface 0 → 1; tag 5 was metal, now concrete).

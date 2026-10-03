@@ -211,6 +211,8 @@ fn frame(
                 ..Default::default()
             };
             let routed = Some((std::mem::take(&mut npc.routed.grains), npc.routed.primary));
+            // Its turn / brake slews once per console evaluation, as the local bed's.
+            bed.slew_calls = player.jitter_steps.is_some().then_some(evaluations as usize);
             super::grain_bed::step_with(bed, library, m, &r, dt, tuning.player, routed, |apply| apply(&mut *rt));
             bed.write_inputs(m, &s, false);
         }

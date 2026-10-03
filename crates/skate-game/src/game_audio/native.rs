@@ -517,6 +517,12 @@ pub(super) fn mixmap_frame(
     // so one-frame pulses (landing, surface change, push) always reach an evaluation.
     native.mix_clock = (native.mix_clock + time.delta_secs()).min(4.0 * MIX_STEP);
     let ticks = (native.mix_clock / MIX_STEP) as usize;
+    // The bed's turn / brake slews step once per console evaluation (`grain_bed::Bed::slew_calls`):
+    // none on a frame without one; the count is set below when the frame ticks.
+    let console = mix_console_requested();
+    if let Some(bed) = &mut native.bed {
+        bed.slew_calls = console.then_some(0);
+    }
     // Class_Seams on the console's 30 fps process cadence at the rendered board's wheels, on every
     // rendered frame (Listening test 9). `SKATE_AEMS_SEAM_PULSE=0`: its whole process per 60 Hz tick
     // at the physics positions, as before.
@@ -537,8 +543,10 @@ pub(super) fn mixmap_frame(
     // The console cadence (`skate_audio::mixmap::cadence`): retail's audio manager evaluates the
     // MixMap, steps the Jitter and clears the eEQChain buses once per 1/30 s console frame with dt
     // 1/30; here every second 60 Hz step, the flag inputs held in between. Off: per 60 Hz step.
-    let console = mix_console_requested();
     let calls = if console { native.cadence.advance(ticks) } else { 0 };
+    if let Some(bed) = &mut native.bed {
+        bed.slew_calls = console.then_some(calls);
+    }
     if console && !native.holds {
         hold_flag_inputs(m);
         native.holds = true;
