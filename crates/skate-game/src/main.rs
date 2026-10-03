@@ -45,15 +45,16 @@ mod retail_character;
 mod retail_exposure;
 mod retail_irradiance;
 mod retail_sky;
-mod water_bodies;
-mod water_splash;
 mod presentation;
 mod debug_cam;
 mod replay;
 mod world;
 mod grind_world;
 mod skate_world;
+mod map_validation;
+mod water_splash;
 mod game_audio;
+mod water_bodies;
 
 fn main() -> bevy::app::AppExit {
     match updater::recover() {
@@ -102,6 +103,15 @@ fn main() -> bevy::app::AppExit {
             return bevy::app::AppExit::error();
         }
     };
+    if config.validate_maps {
+        return match map_validation::run(&config, &graphs) {
+            Ok(()) => bevy::app::AppExit::Success,
+            Err(error) => {
+                eprintln!("{error}");
+                bevy::app::AppExit::error()
+            }
+        };
+    }
     eprintln!("REPORT_META stage=map_validation");
     if let Some(map) = &config.map {
         if let Err(error) = skate_world::validate_runtime(map) {

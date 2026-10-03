@@ -97,3 +97,6 @@ __pycache__/
 /PLAY-NATIVE-TRAINER.bat
 /PLAY-SCROLL-SETTINGS.bat
 /PLAY-SHOWCASE.bat
+
+# Claude Code notes and skills (local only).
+/.claude/

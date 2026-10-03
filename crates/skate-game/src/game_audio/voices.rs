@@ -74,6 +74,7 @@ struct Voice {
     envelope: Option<&'static [(f32, f32)]>,
     /// Seconds played (not counting silenced time), for the envelope.
     age: f32,
+    channels: u16,
 }
 
 /// Relative gain of `envelope` at `age` seconds (linear between points,
@@ -102,6 +103,72 @@ pub(crate) struct Voices {
     /// last `sync`, so one-shots can start at their final level.
     mix: [f32; 2],
     silenced: bool,
+    /// Scale on every interim voice: 1 normally; `1 / cues::RETAIL_SCALE` while the native player
+    /// sounds run (`native::follow_volume`), so the retail-measured interim cues sit at their
+    /// measured level against the native voices (which play at retail level) instead of the
+    /// interim mix's rolling-anchored ×2.
+    pub(crate) scale: f32,
+    /// True while the native host runs (`native::follow_volume`): every interim voice then gets
+    /// [`native_fold_gain`], so it reaches the ears as a native voice of the same per-voice gain
+    /// would (Pan2D1 + the output stage's stereo fold) instead of Bevy's own panning.
+    pub(crate) native_fold: bool,
+    /// The listener as of the last `sync` (world → listener-local transform, ear offsets).
+    view: Option<ListenerView>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ListenerView {
+    to_local: bevy::math::Affine3A,
+    ears: (Vec3, Vec3),
+}
+
+/// The output stage's stereo fold (`skate_audio::dsp::routes::output_stereo`) of one Pan2D1 row.
+fn fold_row(row: &[f32; 6]) -> (f32, f32) {
+    use skate_audio::dsp::routes::G707;
+    (G707 * row[0] + 0.5 * row[1] + 0.5 * row[3], G707 * row[2] + 0.5 * row[1] + 0.5 * row[4])
+}
+
+/// Gain that makes an interim (Bevy) voice reach the ears with the power a native voice of the
+/// same per-voice gain gets through Pan2D1 and the output stage's stereo fold (aems-voice-graph-spec
+/// §4.9, §6.3; `examples/pan_fold_probe.rs`).
+///
+/// - Non-positional: a mono native voice opens at azimuth 0 → centre → 0.5 per ear; a stereo one
+///   (the bed graph has no panner) routes L→L, R→R → 0.707 per ear. Bevy plays both at 1 per ear.
+/// - Positional (`local` = the source in listener space, Bevy axes: −Z ahead, +X right): native =
+///   a mono Pan2D1 at the azimuth, folded; Bevy = rodio 0.20's spatial ear factors (each ear
+///   ((d_this − d_other)/gap + 1)/4 + 0.5, capped at 1, times the distance term, which stays: it
+///   is the interim layer's own distance model), with the channels summed into one (rodio's
+///   `ChannelVolume`). Multichannel sources compare as uncorrelated channels of equal power.
+pub(crate) fn native_fold_gain(channels: u16, local: Option<Vec3>, ears: (Vec3, Vec3)) -> f32 {
+    use skate_audio::dsp::pan::{ANGLE, DISTANCE, Pan2D};
+    let n = usize::from(channels.clamp(1, 2));
+    match local {
+        None => {
+            let mut pan = Pan2D::new(n);
+            if n > 1 {
+                // The bed graph has no panner: L→L, R→R, which a distance-0 layout reproduces.
+                pan.params[DISTANCE] = 0.0;
+            }
+            let m = pan.matrix();
+            let native: f32 = (0..n).map(|r| fold_row(&m[r])).map(|(l, r)| l * l + r * r).sum();
+            // Bevy: a mono clip is duplicated to both ears (power 2); stereo plays L, R as they are
+            // (power 2 for two channels of unit power).
+            (native / 2.0).sqrt()
+        }
+        Some(p) => {
+            let azimuth = p.x.atan2(-p.z).to_degrees();
+            let mut pan = Pan2D::new(1);
+            pan.params[ANGLE] = azimuth;
+            let (l, r) = fold_row(&pan.matrix()[0]);
+            let (dl, dr) = (p.distance(ears.0), p.distance(ears.1));
+            let gap = ears.0.distance(ears.1).max(1e-6);
+            let side = |d_this: f32, d_other: f32| (((d_this - d_other) / gap + 1.0) / 4.0 + 0.5).min(1.0);
+            let (bl, br) = (side(dl, dr), side(dr, dl));
+            // Rodio sums the channels into one: n uncorrelated channels carry n × the power.
+            let bevy = n as f32 * (bl * bl + br * br);
+            if bevy <= 0.0 { 1.0 } else { ((l * l + r * r) / bevy).sqrt() }
+        }
+    }
 }
 
 /// Largest volume for a clip whose loudest sample is `peak` (0..1 of full scale).
@@ -116,6 +183,23 @@ fn clamp_pitch(pitch: f32) -> f32 {
 }
 
 impl Voices {
+    fn scale_or_one(&self) -> f32 {
+        if self.scale > 0.0 && self.scale.is_finite() { self.scale } else { 1.0 }
+    }
+
+    /// [`native_fold_gain`] while the native host runs, else 1.
+    fn fold_gain(&self, channels: u16, position: Option<Vec3>) -> f32 {
+        if !self.native_fold {
+            return 1.0;
+        }
+        match (position, self.view) {
+            (None, _) => native_fold_gain(channels, None, (Vec3::ZERO, Vec3::X)),
+            (Some(at), Some(view)) => native_fold_gain(channels, Some(view.to_local.transform_point3(at)), view.ears),
+            // No listener yet: as if the sound played ahead.
+            (Some(_), None) => native_fold_gain(channels, Some(Vec3::NEG_Z), (Vec3::new(-0.1, 0.0, 0.0), Vec3::new(0.1, 0.0, 0.0))),
+        }
+    }
+
     /// Whether a new voice for `clip` may start now (`now` = real seconds).
     fn admit(&self, clip: &Clip, now: f64) -> bool {
         let active = self.voices.iter().filter(|v| v.stopping.is_none());
@@ -136,8 +220,9 @@ impl Voices {
         // One-shots start at their final level (no fade, no ramp); loops and
         // faded sounds start silent until `sync` applies the faded-in gain.
         let instant = !play.looping && play.fade_in <= MIN_FADE;
+        let fold = self.fold_gain(clip.channels, play.position);
         let initial = if instant {
-            volume * envelope_at(play.envelope, 0.0) * self.mix[play.category as usize]
+            volume * envelope_at(play.envelope, 0.0) * self.mix[play.category as usize] * self.scale_or_one() * fold
         } else {
             0.0
         };
@@ -159,7 +244,7 @@ impl Voices {
             volume, max_volume: max, pitch: speed, gain: if instant { volume } else { 0.0 }, speed,
             position: play.position, attack: play.fade_in.max(MIN_FADE),
             attack_elapsed: if instant { MIN_FADE } else { 0.0 },
-            stopping: None, pending: 0.0, envelope: play.envelope, age: 0.0,
+            stopping: None, pending: 0.0, envelope: play.envelope, age: 0.0, channels: clip.channels,
         });
         Some(id)
     }
@@ -219,8 +304,14 @@ pub(super) fn sync(
     time: Res<Time<Real>>,
     menu: Option<Res<crate::graphics_menu::Menu>>,
     replay: Res<crate::replay::Replay>,
+    listener: Query<(&GlobalTransform, &SpatialListener), With<super::GameAudioListener>>,
 ) {
+    let _timing = super::timing::scope(&super::timing::VOICES);
     let Some(settings) = settings else { return };
+    voices.view = listener.iter().next().map(|(t, l)| ListenerView {
+        to_local: t.affine().inverse(),
+        ears: (l.left_ear_offset, l.right_ear_offset),
+    });
     let dt = time.delta_secs().clamp(0.0, 0.25);
     let silenced = super::silenced(menu.as_deref(), &replay);
     let master = settings.master().clamp(0.0, 1.0);
@@ -228,8 +319,10 @@ pub(super) fn sync(
         voices.mix[category as usize] = settings.category(category).clamp(0.0, 1.0) * master;
     }
     voices.silenced = silenced;
+    let scale = voices.scale_or_one();
+    let folds: Vec<f32> = voices.voices.iter().map(|v| voices.fold_gain(v.channels, v.position)).collect();
     let mut finished = Vec::new();
-    for v in &mut voices.voices {
+    for (v, fold) in voices.voices.iter_mut().zip(folds) {
         let Ok((sink, spatial, mut playback, mut transform)) = sinks.get_mut(v.entity) else {
             // Not spawned yet (commands from this frame) or despawned elsewhere.
             v.pending += dt;
@@ -250,7 +343,7 @@ pub(super) fn sync(
         v.speed += (v.pitch - v.speed) * (1.0 - (-dt / 0.025).exp());
         let category = settings.category(v.category).clamp(0.0, 1.0);
         let envelope = envelope_at(v.envelope, v.age);
-        let gain = (v.gain * attack * release * envelope).clamp(0.0, v.max_volume) * category * master;
+        let gain = (v.gain * attack * release * envelope).clamp(0.0, v.max_volume) * category * master * scale * fold;
         let speed = v.speed.clamp(0.25, 4.0);
         // Before Bevy creates the sink, keep its initial settings current.
         playback.volume = Volume::Linear(gain);
@@ -286,7 +379,26 @@ mod tests {
     use super::*;
 
     fn clip(name: &str) -> Clip {
-        Clip { handle: Handle::default(), key: name.into(), peak: 1.0 }
+        Clip { handle: Handle::default(), key: name.into(), peak: 1.0, channels: 1 }
+    }
+
+    #[test]
+    fn interim_voices_fold_like_native_ones() {
+        let ears = (Vec3::new(-0.1, 0.0, 0.0), Vec3::new(0.1, 0.0, 0.0));
+        // Non-positional: mono → centre (0.5 per ear vs Bevy's 1), stereo → 0.707.
+        assert!((native_fold_gain(1, None, ears) - 0.5).abs() < 1e-4);
+        assert!((native_fold_gain(2, None, ears) - 0.707).abs() < 1e-3);
+        // Ahead: native 0.5 / 0.5, rodio 0.75 / 0.75 → 2/3.
+        let ahead = native_fold_gain(1, Some(Vec3::new(0.0, 0.0, -10.0)), ears);
+        assert!((ahead - 2.0 / 3.0).abs() < 1e-3, "{ahead}");
+        // Behind: native 0.35 per ear (Ls/Rs), rodio still 0.75 → about −6.6 dB.
+        let behind = native_fold_gain(1, Some(Vec3::new(0.0, 0.0, 10.0)), ears);
+        assert!((20.0 * behind.log10() + 6.6).abs() < 0.3, "{behind}");
+        // Side: native 0.72 / 0.26 (L/Ls pair), rodio 1.0 / 0.5 (power 1.25).
+        let side = native_fold_gain(1, Some(Vec3::new(10.0, 0.0, 0.0)), ears);
+        assert!(side > 0.6 && side < 0.75, "{side}");
+        // Off by default: the interim path is unchanged without the native host.
+        assert_eq!(Voices::default().fold_gain(1, None), 1.0);
     }
 
     #[test]
