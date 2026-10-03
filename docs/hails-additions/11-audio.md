@@ -3126,8 +3126,8 @@ CALL IT ALMOST OR EXACTLY RETAIL"; the footsteps while running / walking "sounde
   - Bodyslide: on 33 / 38, 1.8 voices, Σg² 0.006.
   - Collision-manager posts: mean 137, p50 133.
   - Of these, ids 968 / 969 (7.9 + 3.5 per bail) are world / ped collisions, not the rider's body.
-- *Ours, rendered: NOT DONE.* The headless e2e build (own target `.local/check-target`) was stopped mid-compile for a PC
-  restart. To finish it:
+- *Ours, rendered:* done after the restart; results in "Bail density: ours rendered" below. The original note:
+  the headless e2e build (own target `.local/check-target`) was stopped mid-compile for a PC restart. To finish it:
   - The scenario is already cut: `.local/audio-re/check0847/e2e/real_084712.tsv` (`scenarios.py --from-log … --cut
     r0-999999`).
   - Render: `CARGO_TARGET_DIR=.local/check-target E2E_DIR=.local/audio-re/check0847/e2e E2E_FPS=60 cargo test -q -p
@@ -3137,6 +3137,158 @@ CALL IT ALMOST OR EXACTLY RETAIL"; the footsteps while running / walking "sounde
   - Watch-point: with impacts ≤ 0.2 the bands may never reach tier 2, which the recomp plays at about 5 per bail
     (ids 1030–1032). If ours lacks them, compare `skate_events::region_impacts` (Δv · normal · mass × 10) against the
     recomp before changing the poster.
+
+#### Bail density: ours rendered, the impact scale checked (2026-10-03, analysis only; no code change)
+
+Session 084712 rendered headless through the e2e path (target `.local/fma-target`, `E2E_FPS=60`; `E2E_DIR` must be an
+**absolute** path, a relative one fails with "path not found" because the test runs from the crate folder). The
+state log has 0 malformed lines. `bails_cmp.py` took the time label from a missing `ms` column; it now uses row / 60.
+
+| per bail, window −0.5…+2.5 s | the recomp (38 bails) | ours bail 1 (18.2 s) | ours bail 2 (36.2 s) |
+|---|---|---|---|
+| Skate_Collisions voices | 207.7 | 46 | 45 |
+| Skate_Collisions Σg² | 4.68 | 1.89 | 1.53 |
+| Skate_Collisions peak | p50 0.61 | 0.72 | 0.72 |
+| three banks (Collisions + Metal + Bodyslide) Σg² | ≈ 5.1 | 1.95 | 1.84 |
+| collision-manager posts | 137 (p50 133) | ≈ 30 (estimate: voices / 1.5, the recomp's voices per post) | ≈ 30 |
+| tier-2 body ids 1030 / 1031 / 1032 (+ torso 951) | 1.2 / 2.5 / 1.3 (+ 1.8) | 0 | 0 |
+
+**The gap is confirmed, and it is wider than tier 2.** Ours plays no tier-1 or tier-2 body id at all except the
+head's 953 (3 in bail 2). The recomp's posts by material and tier (`fixes/bail_splc.py`, nine sessions):
+
+| region material (bands: tier 1 > b8, tier 2 > b0; floor b12) | tier 0 | tier 1 | tier 2 | ours (both bails, voices) |
+|---|---|---|---|---|
+| head 97 (0.05 / 0.375; 0.002) | 952: 2.9 | 953: 3.1 | 1032: 1.3 | 952: 3, 953: 3 |
+| torso 98 (0.1 / 0.25; 0.002) | 949: 3.9 | 950: 3.2 | 951: 1.8 | 949: 7 |
+| legs 99 (0.1 / 0.35; 0.002) | 947: 13.0 | 948: 6.0 | 1031: 2.5 | 947: 9 |
+| arms 100 (0.2 / 0.65; 0.005) | 956: 19.2 | 957: < 0.6 | 1030: 1.2 | 956: 6 |
+| skin 107 / denim 108–109 (cloth, tier 0) | 954: 20.7 / 955: 25.4 | | | 954: 7 / 955: 25 |
+| concrete 3 (1.0 / 1.85; 0.12) | 958: 8.7 | 1047: none | 991: none | 958: 0 |
+
+In the recomp 40–60 % of the head / torso / leg posts are tier 1 or 2, so its region impacts are often above 0.1 and
+several times per bail above 0.25–0.65. Ours never exceeds 0.21 in the whole log (bail 1 max 0.086).
+
+**What scale retail expects: [0, 1], the scale we already have.** The thresholds are not in an AEMS program. The poster
+picks the id by the collision material's impact bands (the AudioSurface records, `impact_band`), and the AEMS program
+only plays the id. The body bands sit inside [0, 1] (floors 0.002–0.005, tier 2 at 0.25–0.65). The concrete record's
+tier 1 / 2 (> 1.0 / > 1.85) cannot be reached by a clamped region impact, and the recomp never posts 1047 / 991 in a
+bail, while 958 (> 0.12) plays 8.7 times. So retail's impacts are clamped to [0, 1] too. Re-read of `sub_82BD60C8`'s
+region loop (0x82BD68F0…0x82BD69D4) matches `skate_events::region_impacts` term by term:
+- part = SkeletonCollision `+1200 + 4i` (−1 = none);
+- Δv = SkeletonState `+4048 + 16·part`;
+- the region normal is `+1008 + 16i`;
+- mass = SkeletonState `+4560 + 4·part`;
+- × config `+164` (10);
+- floor 0x82063A48 (0.001), then clamp to [0, 1];
+- written to Collision `+80 + 4i`, slide speed to `+112 + 4i`.
+
+`+4560` is the raw bone-box product that `82BEBAA8` normalises (`SkeletonAnimationMasses::part_weights`). Same
+indices, same constants. **So the poster and the impact formula are not the gap. The input is:** ours has small
+per-step velocity changes of the ragdoll parts along the contact normal. Rough sizes (full-extent bone boxes ≈ 0.003
+arm … 0.015 torso m³): tier 2 needs Δv·n per 1/60 s step of about 1.7 m/s (torso) to 4–5 m/s (head, legs). Ours peaks
+near 2 m/s, though the regions touch the ground for 1–2 s per bail (58–114 contact frames, sliding at 3–7 m/s). In
+our ragdoll the parts land and slide smoothly. Retail's give sharp per-step stops and bounces.
+
+**Not changed:** the mechanism on the audio side is already retail. Scaling the impacts or the bands would be a guessed
+weighting. The cause is in the physics (the ragdoll's contact response / part velocities during a bail), not in
+`contacts::body`.
+
+Caveats:
+- Two bails only (from off-board air at 6.5 m/s, and from 500 → 300 at 7.6 m/s after an air). The recomp's 38 are of
+  mixed heights.
+- The recomp's post count is inflated by its frame rate. It runs the poster at ~345 fps, so the 15-frame body cooldown
+  is ≈ 43 ms there, against 0.5 s on the 30 fps console.
+
+**Open (needs a decision or data):**
+1. Measure retail's impacts directly: a recomp hook logging Collision `+80..+100` (or the audio state `+496..+516`)
+   and the touched parts' SkeletonState `+4048` Δv per physics step during bails. This would run alongside the
+   planned `PLAY_TRACE_AUDIOX.bat bail` session (the user's session). It would say whether retail's per-step Δv is
+   really 2–3× ours, and whether that comes from the contact solve or from the bail drives.
+   *Hook built 2026-10-03 (recomp `research-hooks`, category `audiox`; session pending).* Kinds `BAILSTEP` / `BAILREG`
+   log per pass of `sub_82BD60C8`, only during the local player's bails. For each of the **8** regions with a part they
+   log the impact the game wrote (Collision `+80 + 4i`; the loop runs 8 times, so `+80..+108`), |Δv·n|, the signed
+   normal velocity before and after, |Δv|, the normal, the mass, the slide speed and the tag. They also log the update
+   interval. The local block comes from the skater-entry update `sub_827A1B78`: entry `+152` bit 31, X =
+   `[[character + 1808] + 1800]`. Found on the way: the SkeletonState velocities are finite differences × 60
+   (`sub_82BEBD28`, constant `0x822F860C` = 60; `+3216` position, `+3632` velocity, `+4048` Δv), so Δv is per update and
+   assumes 1/60 s. Summary: `.claude/skills/recomp-research/tools/bail_impacts.py <trace>`.
+   *First session (the user's `audiox_bail_20261003_094336`, 3 min, 0 malformed lines): no BAIL\* lines at all.* Cause:
+   the hook accepted only entries inside the global table `*(0x83083C38) + 0x2F070`, but neither caller of
+   `sub_827A1B78` passes a table entry. The per-skater loop `sub_827A11B0` (return address `0x827A13FC`) passes a
+   stack array (its `r1 + 1064 − 152`, stride 544), and `sub_827A1030` (return `0x827A10A0`) a single zeroed stack entry
+   with r6 = 1. So the "local entry" test never held, BAILLOCAL never logged and no pass matched the local X. Entry
+   `+152` bit 31 is the r6 argument (in the loop: the skater's controller test). Fixed in the recomp (uncommitted): the
+   hook accepts only the loop's call (`lr == 0x827A13FC`) with bit 31 set, and a bail is active when the entry's bits
+   or `+676` / `+677` of a GREC-local audio state are set. A rate-limited `BAILCAND` line (7 fields) shows the lookup's
+   raw inputs (first 32 calls; each new X of the output pass), so a failed lookup is visible in the next trace.
+   *What the session shows without the BAIL\* lines* (`.local/research/bail/bail_session_summary.py`):
+   - **Two GREC owners pass the local test** in this session (board objects `40C33020` from the start, `40C34020` from
+     22.9 s), each once per frame. FIRSTHIT kept one set of last values, so the +676 / +677 bytes "alternated" 1 / 0
+     every call: one owner was bailing and the other was not. `40C34020` bailed once (154.7 s) with B+16 still 0, so it
+     is not the local skater. `40C33020` is. FIRSTHIT now keeps its last values per state. Earlier sessions had one
+     owner. GREC / GRECX / TREAT / SEAMPAT readers should filter by owner (GREC's published local state alternates
+     too, so the TREAT / SEAMPAT local-mask bit 2 is unreliable when a second owner exists).
+   - **10 local bails**, 3.6–7.9 s from +676 rising to clearing. +677 (end) rises 1.4–4.0 s in and clears ≈ 1.0 s before
+     +676 clears.
+   - **B+16 rises in the same frame as +676** in all 10 bails, and clears 33–34 ms before +677 clears. So the first-hit
+     byte is "bail in progress" for the whole bail, not a single first contact. Its rising edge is the bail start.
+   - **B+24 is not 0.0000.** It resets to 0 at the bail start and then rises monotonically in steps about 17 ms apart
+     (8–41 steps per bail) to a final value of 0.42–1.0 (clamped at 1.0 in 3 bails). It reaches that value 0.5–4.0 s in
+     and holds it until the next bail. It is an accumulated bail strength, not a per-hit value.
+   - **Body posts per bail** (SPLC, window bail start −0.5 s … +676 clear; ids by tier as in the table above):
+
+     | bail (s) | posts | tier 0 / 1 / 2 | 1030 / 1031 / 1032 | 951 | 958 / 1047 / 991 | B+24 final |
+     |---|---|---|---|---|---|---|
+     | 39.8 | 149 | 106 / 27 / 16 | 2 / 7 / 4 | 3 | 4 / 2 / 0 | 0.68 |
+     | 81.2 | 67 | 55 / 8 / 4 | 1 / 0 / 2 | 1 | 8 / 1 / 0 | 0.42 |
+     | 91.9 | 49 | 35 / 9 / 5 | 0 / 2 / 2 | 0 | 2 / 3 / 1 | 0.56 |
+     | 101.8 | 108 | 74 / 17 / 17 | 5 / 6 / 4 | 1 | 11 / 3 / 1 | 1.00 |
+     | 121.1 | 45 | 29 / 10 / 6 | 1 / 3 / 0 | 2 | 0 / 0 / 0 | 1.00 |
+     | 136.0 | 61 | 38 / 13 / 10 | 1 / 3 / 2 | 0 | 3 / 4 / 4 | 0.96 |
+     | 144.4 | 67 | 46 / 13 / 8 | 0 / 6 / 1 | 1 | 2 / 0 / 0 | 0.64 |
+     | 157.4 | 46 | 32 / 9 / 5 | 0 / 2 / 2 | 1 | 0 / 0 / 0 | 0.55 |
+     | 168.7 | 43 | 27 / 7 / 9 | 6 / 0 / 2 | 0 | 1 / 4 / 1 | 0.82 |
+     | 184.2 | 79 | 52 / 16 / 11 | 2 / 4 / 2 | 1 | 3 / 6 / 2 | 1.00 |
+
+     Mean per bail: 71 posts; 1030 / 1031 / 1032 = 1.8 / 3.3 / 2.1 (all 74 posts of those ids fall in the 10 bails);
+     head 952 / 953 = 2.4 / 3.4, torso 949 / 950 / 951 = 2.1 / 2.1 / 1.0, legs 947 / 948 = 7.1 / 4.3, arms 956 / 957 =
+     8.8 / 0.8, skin 954 10.8, denim 955 14.8, concrete 958 3.4. **Concrete tier 1 / 2 (1047 / 991) do occur here: 2.3 /
+     0.9 per bail**, unlike the nine earlier sessions, so some impacts against that surface went above 1.0 / 1.85. Since
+     the region impacts are clamped to [0, 1], those posts come from a different impact value than the clamped region
+     impact. Open: which (e.g. the deck or another surface's bands).
+   *Measured with the fixed hook (2026-10-03, scripted background runs, 0 malformed lines).* Script
+   `.local/recomp/scripts/bail_ledge.txt`: the Super-Ultra Mega-Park spawn → off the board → a session marker → per attempt
+   go to the marker, run off the drop and use the bail input. Runs `bailrun_t2_100040` (2 bails), `bailrun_ok_100226` (4 full
+   bails), `bailrun_ok2_100514` (6 bails, cut ≈ 2.2 s in by the get-up press; the script now waits 6 s) and
+   `bailrun_ok3_101354` (5 local bails of 6 attempts with the COLLPOST build; one window was an NPC skater's bail and is
+   flagged by `bail_impacts.py`). No bail had an update > 20 ms, so no recomp hitch fell inside a bail. At spawn
+   BAILLOCAL logs once per load with `how` 1 and entry index 0 (one skater in the loop). Summary
+   `bail_impacts.py <trace>`:
+   - **The impact formula is confirmed line by line.** In 4763 / 4763 BAILREG lines, the impact the game wrote equals
+     clamp01(max(0.001, |Δv·n| × mass × 10)) within 0.002, with Δv = SS `+4048`, n = SC `+1008`, mass = SS `+4560` and
+     cfg `+164` = 10.
+   - **Update interval.** The ragdoll step runs at 60 Hz in the recomp too: step p50 16.6 ms (p10–p90 15.9–17.4) and
+     the SS `+5220` dt is always 0.01667. So retail's per-step Δv and ours (1/60 s) compare directly, despite the
+     recomp's ~345 fps render.
+   - **|Δv·n| per step, the recomp vs ours.** The recomp, all bails of the ok runs, per region: p90 0.01–1.7 m/s, **p99 1.8–13
+     m/s, max 7.6–20 m/s** (e.g. ok run: regions 3 / 5 / 6 / 7 p99 5.6 / 6.4 / 4.2 / 3.9, max 17 / 9.9 / 14.8 / 20).
+     Ours peaks near 2 m/s. The tier-2 needs (≈ 1.7 m/s torso, 4–5 m/s head / legs at our masses) are reached
+     several times per bail in the recomp. The largest steps are contact stops: in the top 10 % per region, the
+     into-surface v_old·n (−2 … −20 m/s) mostly goes to near 0 or reverses in one step ("stop" share 25–100 %). So the
+     gap is the physics: retail's parts hit the ground fast and stop in one step, while ours land and slide.
+   - **Masses (SS `+4560`, the recomp)** by part: 1 0.0052, 3 / 7 0.00034, 4 / 8 0.0017, 5 0.0031, 9 0.0031, 6 / 10 0.0015,
+     13 0.0058, 15 / 19 0.00031, 16 / 20 0.0010, 17 / 21 0.0051, 18 / 22 0.0067, 23 0.0098. They are smaller than
+     the ≈ 0.003–0.015 bone-box estimate above, so they are worth checking against ours (`part_weights`) too.
+   - The bail / end bits of the stack entry match +676 / +677 (BAILSTEP fields). With the GREC-state gate, a bail of the
+     second owner `40C34020` also opens the window for the local X (one 0.6 s stretch with bits 0 / 0 in run ok2). Filter
+     those passes by the bits.
+   - Posts per bail in these runs (higher drop; window bail start −0.5 s … +676 clear): ok run 84 / 399 / 324 / 144,
+     tier 2 = 7 / 42 / 30 / 10 (legs 1031 4 / 17 / 20 / 8 lead). Every full bail has tier-2 posts.
+2. Then a physics-side investigation of the ragdoll's contact Δv (outside the audio port).
+3. Frame-rate dependence (separate from the gap): `Contacts::body` decrements its 15-frame cooldown and the 4-frame
+   region max per rendered frame. At 60 fps that is 0.25 s / 67 ms; on the console it is 0.5 s / 133 ms. Under the
+   console-cadence rule both should run on the 30 fps cadence. That change would lower our post count further (up
+   to 2× at 60 fps). Not done here: it is not the asked gap, and it changes the output.
 
 ### Session-review leftovers: the lift level, the grind-off lag, world-bank prefetch, the first-hit gate (2026-10-03, overnight)
 
@@ -3241,8 +3393,18 @@ stall windows excluded. Tools: `.local/audio-re/left/`.
 - *Hook added (2026-10-03):* `FIRSTHIT` in the recomp's research hooks (category `audiox`, sampled from the board
   update hook, local player): B, the B+16 byte, the B+24 float and the audio state's bail / end bytes (`+676` / `+677`),
   logged when any of them changes plus once a second. It gives the timing and strength but not the writer (the hook
-  framework has no write-watch). A short bail session (4–5 bails of different heights on one spot) is queued. Until then the first-hit message and the Contacts.in7 pulse stay
+  framework has no write-watch). A short bail session (4–5 different bails in the same area) is queued. Until then the first-hit message and the Contacts.in7 pulse stay
   unported (our Contacts.in7 / in8 stay 0, as with B+16 clear).
+- *Measured 2026-10-03* (the user's session 094336 and the scripted bail runs; details under "Bail density … Open 1"):
+  - B+16 rises in the same frame as the audio state's +676 at every bail start. It clears 33–34 ms before +677 clears,
+    so it means "bail in progress".
+  - B+24 resets to 0 at the bail start and accumulates in ~17 ms steps to 0.42–1.0 (clamped).
+  - The first-hit torso post (COLLPOST from `sub_824BCEB0`, return `0x824BCFC8`) fires **once per bail**: torso 98
+    against 143, tiers 1 / 1, 0.16–0.28 s after the bail start (1.77 s once). It happens for an NPC skater's bail too
+    (local72 0).
+  - Port: on the rising edge of our bail flag, latch; at the first region contact with region ≠ 1 and tier ≥ 1, post
+    98 / 143 once and pulse Contacts.in7. In8 = B+24 × 32767 needs the accumulated strength, whose writer is still
+    unknown.
 
 **Files.**
 - `crates/skate-game/src/game_audio/world_sources.rs`, `game_audio/native/prefetch.rs`.
@@ -3392,6 +3554,9 @@ holder fields, the owner bus builder and the Class_Seams function map. No code f
 
 ### Native runtime is the default (2026-10-02)
 
+(Superseded 2026-10-03: the tables and these opt-outs are removed; see "Interim cue tables retired; the water
+splash is native".)
+
 - The native AEMS runtime is now the default. `settings/audio.json` `"interim": true` or `SKATE_AEMS=0` selects
   the interim measured tables; any other `SKATE_AEMS` value, or none, selects native.
 - The old `native` setting key is ignored. Installs saved `"native": false` while the tables were the default, and
@@ -3407,3 +3572,145 @@ The remaining 2–5 dB gap between our seam hits and the recomp's capture (after
 mechanism. Pitch, per-voice level, bus, voices per hit and the bed spectrum all match. The user closed it as a
 likely recomp artefact: the recomp's frame rate is uncapped, its audio thread stalls, and its capture includes
 ambience and the other seam voices. The user hears the seams as "WAY BETTER". No levels were changed.
+
+### Interim cue tables retired; the water splash is native (2026-10-03, `player::footsteps::Splash`)
+
+The user, after the listening check of build 04:20: "go ahead and remove the interim cues", then, on hearing some were
+still in use: "oh.. if they are still being used then we aren't done." Decisions: splash "port it natively first";
+the riding bed: remove it, then check it against the recomp; installs without the data: require it (no fallback).
+
+**1. The water splash, from retail's mechanism (not the carried-over sound).** `SFXObj_OffBoard`'s process ends with
+`sub_824EBB58`; its update with `sub_824EBE78`. Read from the TU3 recompilation (reference only):
+- Inputs. The bridge `sub_824B0DA8` copies record `+172` bits 30 / 29 / 28 into audio state `+811` / `+812` / `+813`.
+  The conditioner `sub_827A1B78` writes them:
+  - `+811` in water = the current state's byte `+81`. In our engine that is Wipeout300's `special_surface_81`
+    (its water contact), already published into `state_flags`.
+  - `+812` under the surface = `+811` and the state's surface height `+32` (`surface_height_32`) above the Y of any
+    of the PhysOut Skeleton points `+128` / `+112` / `+32`. Skeleton::FillPhysOut (`sub_82BE1AE8`) writes them: part
+    15's and part 19's pose matrices applied to a per-part local point (Skeleton `+2560` / `+2816`, translation at
+    `+48`), and part 1's pose translation (Skeleton `+8128`).
+  - `+813` the board in water = Collision `+16` = 12. That is the board's surface vote `82C08818`, which forces 12
+    when a board contact is water: `physics::board_surface`, the value respawn already reads.
+- Poster (every frame, record active; no local or on-foot gate). On `+811`'s rise the time in water `+480` starts at
+  0, then counts dt; on its fall the latches `+477` / `+478` clear. On `+812` once per stay (`+478`), unless the
+  game global `+224` is set (0 in free skate), the entry sound `+484` is stopped and a new one starts. The ids are
+  vault fields of the AudioSurface-class record `water` (`923CCB46EF5BF5BA` / `B2BD1F28DDE601B0`):
+  - Skate_Collisions **1187** (`35D3B06292CDA10B`) on the water contact's first frame;
+  - **1197** (`C17485220849574D`) once the time in water has reached 0.001 s (`9CD13431903E3719`), i.e. from the
+    next frame on;
+  - `+813` once per rise (`+492`): **1198** (`BA81E93AE985D1C7`) into `+488`.
+- Sound path: the collision Splice object `sub_82497F48` into SFX Master, start block [0, 1, 0, 0, 1, 1]. The update
+  `sub_82498140` sends [OffBoard level(13) (entry) / level(16) (board) / 32767, pitch(14) / 4096, raw(0) × 360/65535,
+  dt, 0, 1] and the env send level(15) / 32767 (as the grind on / off sounds: the last update's env level is latched
+  at each start). A sound that ended is released.
+- Cross-check: 1197 is the container of **record 869**, which is exactly the sound the user found by ear (476–478,
+  with 169 at 75 % and one of 171 / 172). 1187 → record 868 (170–172 + 169); 1198 → record 870 (473–475, the set the
+  user had rejected for small body falls: retail plays it for the board). The 2026-10-01 measured retail splash
+  (475 + 478 + 172 + 169) is 1197 + 1198.
+- Port: `skate_audio::player::footsteps::Splash` (state `in_water` / `under_water` / `board_in_water`, set in
+  `skate_events::audio_state`; the ids and threshold in `FootstepTuning`). Logged in game as
+  `AUDIO_EVENT splash native Skate_Collisions:<id>`.
+- **UNCERTAIN:** the engine does not publish the per-part local points at Skeleton `+2560` / `+2816`, so the toes'
+  pose translations stand in for `+128` / `+112`. That can only shift the entry frame by the local offset (a few
+  cm of depth).
+- Through the real MixMap (test `the_water_splash_plays_through_the_real_mixmap`): OffBoard level 13 = 14585
+  (≈ 0.45), 16 = 14401, env 15 = 862, pitch 14 = 4086.
+
+**2. The riding bed removed, checked against the recomp.** Under native the random bed still played Skate_Collisions
+947–968 and sk8_foley 62 / 73 / 74 / 84 / 85 / 88 / 89 as interim voices. All of that is gone (below). Riding = GREC
+/ state-log context roll + carve, audible voices (> 0.002), first-voice levels
+(`.local/audio-re/retire/bed_vs_recomp.py`, `riding_posters.py`):
+
+| per riding second | the recomp (6 sessions, 682 s) | ours native (5 user sessions, 229 s) | the removed bed (expected, same frames) | ours before (native + bed) |
+|---|---|---|---|---|
+| Skate_Collisions voices | 8.95 | 2.80 | 5.78 | 8.58 |
+| Skate_Collisions Σg² | 0.424 | 0.218 | 0.120 | 0.338 |
+| sk8_foley voices | 5.93 | 2.54 | 1.90 | 4.44 |
+| sk8_foley Σg² | 0.229 | 0.103 | 0.079 | 0.182 |
+
+(Recomp: all_20261002_180430, 223306, 223613, 214346, 214002, 222155. Ours: the e2e renders of 213757, 214224,
+215843, 224747 (row) and 084712 (`E2E_FPS=60`). The native renders are byte-identical before and after this change.)
+
+So without the bed ours is −2.9 dB (Skate_Collisions) and −3.5 dB (sk8_foley) below the recomp while riding. By
+poster (the recomp, riding):
+- **Skate_Collisions:** the collision manager (`sub_824D1F68` ← `sub_824D2318`) plays 3.3 posts/s while riding.
+  Most are the body materials **955 / 954 / 956 / 947** (denim / skin / arm / leg, 1.7/s, p50 ≈ 0.1); the rest are
+  969 / 958 / 968 / 1038 (≈ 0.6/s, mostly quiet). Ours: the body poster (`sub_824BC188`, ported) runs in every state,
+  but our skeleton publishes almost no body-region contacts while riding (4 of 1,770 riding rows in 084712, impacts ≤
+  0.011). The manager is shared, though: NPC skaters' Contacts and physics props (`sub_824E3BE0`) post into it too,
+  and the session review already put 969 / 958 / 968 down to world objects. The SPLC caller chain stops at the
+  manager's update, and no hook records the messages (`sub_82486EF0`: materials, tiers, levels, poster). So whether
+  the local rider's regions touch something while riding (and what) is **not established**. Not changed (no
+  guessed weighting).
+  *Measured 2026-10-03 (recomp hook `COLLPOST` on `sub_82486EF0`, category `audiox`; run `riderun_20261003_101135`,
+  scripted: three ~10 s pushing segments from a session marker at the Super-Ultra Mega-Park spawn, straight / carving;
+  0 malformed lines; summary `.claude/skills/recomp-research/tools/collision_posts.py`).* Each line has the posting
+  function (from the return address), its object, the object's audio state `[object+32]`, the GREC owner of that state,
+  `[[object+28]+72]` (local72), the materials, the tiers and the caller chain. Findings:
+  - **Clean pushing and carving on open ground: no body posts from the local rider.** Segment 1 (straight, 25.6–35.6
+    s) had none. Every local body-poster post (31, local72 = 1, owner `40C33020`) came in bursts at 52.7 s and
+    70.5–74.8 s, when the rider brushed and hit a rock wall at the edge of the park (screenshots). They paired legs 99
+    (tiers 0–2) against materials 2 / 65 / 143 with the denim cloth 108 / 143.
+  - **The other owner is an NPC skater.** The second GREC owner `40C34020` (doc above) posts with local72 = 0 through its
+    own Contacts object. Its bail at ≈ 38 s produced the run's body burst (39 posts, 34 body SPLC 956 / 954 / 955 /
+    947 at 38.2–38.4 s) while the local rider rode normally. So `[[object+28]+72]` tells the local rider from other
+    skaters, where GREC's `[[owner+16]+72]` does not.
+  - Deck impacts (`sub_824BD000`, deck 95 against the ground): local 1.28/s, the NPC 0.34/s.
+  - The 48-byte message's +32 / +36 words are not SPLC ids: mostly 0, otherwise 4-hex-digit values, e.g. 0x6590. The
+    sounds come later from the manager.
+  - Conclusion: while riding, retail's body-material sounds come from other skaters' bails and from the rider touching
+    walls, not from riding contacts. Ours having ~none on open ground matches. The 1.7/s in the user's riding
+    sessions likely include NPC skaters (no COLLPOST in those sessions; the session review's PCU / park sessions had
+    AI skaters). To check in a user session: `PLAY_TRACE_AUDIOX.bat` now logs COLLPOST.
+- **sk8_foley:** every poster is ported. The rates differ with riding style. The recomp's riding has 0.42 plant /
+  lift posts per second; ours 0.19 / 0.16 (the user: "the 19 plants are correct, i didn't ride fast"). Push-driven
+  sounds scale with that: the Clothing push foley 74 / 73 (ours 0.16/s, the recomp 0.79/s) and the on-board
+  footsteps. Shoe scuffs 94 / 95: ours 1.61/s, the recomp 2.71/s (both p50 0.061). The pedestrians' sk8_foley 62 / 63
+  (0.53/s in the recomp, `SFXObj_PedestrianSFX`) are a world layer we can't have yet. No mechanism gap found; not
+  changed.
+- **Needed to settle the Skate_Collisions part:** a recomp hook on the collision message post `sub_82486EF0`
+  (caller chain, the owner's local flag, materials A / B, tiers, levels), plus a short riding session by the user
+  (flat ground, some pushing and carving, no bails). Then compare the local rider's body-region messages with our
+  region contacts (`rimp*` / `rtag*` in the state log).
+
+**3. Native data required.** No fallback any more:
+- no AEMS banks → the runtime does not start and an error says that the skater's sounds, the world emitters and
+  rolling are silent;
+- no MixMap → error, no player sounds, no rolling;
+- no grain recordings / tuning → error, rolling silent;
+- missing player banks or Splice trees → error, those sounds silent.
+
+The zone beds, location sets and crossfades still play their measured layers through Bevy voices.
+
+**4. The interim path removed.**
+- `cues.rs` deleted. `grain_for` moved to `grain_bed.rs` (with its test); `RETAIL_SCALE` moved to `voices.rs`
+  (ambience and the Bevy-voice scale still use it).
+- `skate_events.rs`: the `Event` enum, the event detectors (pop, landing, flip, bail, push, step, splash, foot
+  strikes), the `play` system and its loops (rolling bands, bed, grinds, powerslide, foot drag, wheel spin) are
+  gone. `observe` keeps the audio state, `Riding` (minus the fields only `play` read), the state log and the
+  `AUDIO_EVENT` brake / push / grind lines.
+- `physics::foot_clearance` removed (only the interim steps used it).
+- Opt-outs removed: `SKATE_AEMS=0`, `SKATE_AEMS_PLAYER=0`, `SKATE_AEMS_FOOTSTEPS=0`. `"interim"` / `"native"` keys in
+  `settings/audio.json` still load and are ignored (test `old_settings_files_with_interim_or_native_keys_still_load`).
+  The other `SKATE_AEMS_*` switches (they pick between native variants) stay.
+- `library.rs`: the grain speed bands, the wheel-spin clips, cue preloading and the patch trees (`Patches` /
+  `Group`) are gone. Old manifests still load: unknown keys are ignored.
+- `voices.rs`: the fold / scale stay, because the measured world layers still play through Bevy voices.
+  `Play::effect` is test-only now.
+- Gone with the tables: the `AUDIO_CUE` / `AUDIO_LOOP` lines and `AUDIO_EVENT land` / `rolling` (interim-only).
+
+**Verification.**
+- `cargo test -p skate-audio --locked`: all pass, including `the_splash_plays_once_per_water_stay_by_its_time_in_water`.
+- `game_audio::` (release): 54 pass, 4 ignored (60 before; the 8 interim tests went, 2 added).
+- `cargo build --locked` (dev): OK. The 3 warnings are items that were already test-only at 45c6e65.
+- e2e byte-identical to the 45c6e65 renders (`opt/runs/fma_plain3`): 13 scenarios + 4 real sessions, row and
+  `E2E_FPS=300` (`opt/runs/retire1`), and 084712 at `E2E_FPS=60` against `check0847`. The e2e path never ran the
+  interim layer, and the splash inputs are false there.
+- Not run here: the muted 5-map smoke test (it opens a window) and bin\ staging.
+
+**For the user's check in game:**
+- a fall into deep water: one 1197 splash per entry, plus 1198 when the board lands in the water;
+- riding on flat ground without the random bed (Skate_Collisions / sk8_foley pieces), against the recomp.
+
+Rerun: `py -3.13 .local/audio-re/retire/bed_vs_recomp.py <recomp sessions> <DIR:NAME,…>`,
+`py -3.13 .local/audio-re/retire/riding_posters.py <recomp sessions>` (PYTHONIOENCODING=utf-8).

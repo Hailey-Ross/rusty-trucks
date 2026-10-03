@@ -41,12 +41,16 @@ The recompilation is **not** a perfect copy of the console game, and its traces 
    - the input script and record variables;
    - `SKATE3_BACKGROUND`.
 
-   The branch's `src/research/README.md` lists every variable and line kind.
+   The branch's `src/research/README.md` lists every variable and line kind, and
+   [`src/research/USAGE.md`](https://github.com/Hailey-Ross/skate3recomp/blob/research-hooks/src/research/USAGE.md)
+   is a step-by-step guide: a first trace, choosing categories, reading and checking a trace, watch lists, input
+   scripts and the audio capture.
 4. Check every trace for malformed lines before using it; there should be none.
 
-The analysis scripts we used (trace readers, per-bank level and voice tools, the e2e comparisons) are tied to
-this fork's layout and paths. Anyone who wants to use them needs to build the recomp and set up the paths
-themselves.
+The analysis scripts we used are published in `tools/recomp-trace/` (trace readers, per-bank level and voice
+tools, rolling-bed and send analysis) and `tools/recomp-code-search/` (searching the recompiled sources and the
+memory image); see [14](14-published-tools.md). They are reference only: anyone who wants to use them needs to
+build the recomp and set up the paths themselves.
 
 ## Credits
 

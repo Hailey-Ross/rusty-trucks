@@ -408,15 +408,11 @@ impl Plugin for PhysicsPlugin {
     }
 }
 
-/// Height of each animated foot (left, right) above the ground line test under
-/// it, with that line's surface tag; None where the line found no ground.
-/// Read-only, for game_audio footsteps.
-pub(crate) fn foot_clearance(skater: &SkaterRuntime) -> [Option<(f32, u32)>; 2] {
-    let input = biped_ground::services::feet_input(skater);
-    std::array::from_fn(|i| {
-        let line = &input.lines[i];
-        line.valid.then(|| (input.world_foot_pairs[i][0][1] - line.position[1], line.surface))
-    })
+/// Collision+16 low 16 bits: the board's surface vote (82C08818, 12 when a board
+/// contact is water), as respawn reads it. Read-only, for game_audio (the audio
+/// record's `+813`, the board in water).
+pub(crate) fn board_surface(physics: &GamePhysics) -> u32 {
+    ground_runtime::active_surface(&physics.riding, &physics.board) & 0xffff
 }
 
 pub(crate) fn advance(

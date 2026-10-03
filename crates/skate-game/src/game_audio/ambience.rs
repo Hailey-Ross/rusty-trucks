@@ -18,7 +18,7 @@ const CROSSFADE: f32 = 2.0;
 /// The Ambience MixMap's bed level carries a −11 dB base before any ducking (mixmap-spec.md; out0).
 /// Verified against retail captures at four zones (dt_open, dt_main, dt_rez, indu_quarry): predicted
 /// with the base within 0.6 dB, without it 11 dB too loud (tools/check_bed_level.py). Our levels run at
-/// `cues::RETAIL_SCALE` × retail, so the bed gets the same scale to keep retail's balance.
+/// `voices::RETAIL_SCALE` × retail, so the bed gets the same scale to keep retail's balance.
 const BED_BASE: f32 = 0.281_838_3; // 10^(-11/20)
 /// Directional crossfade voices sit this far from the listener (Bevy attenuation stays 1).
 const PAN_DISTANCE: f32 = 8.0;
@@ -185,7 +185,7 @@ pub(super) fn update(
     let phase = state.phase.unwrap_or(Phase::Silent);
     let zone = library.zone(state.current).cloned();
     if let (Some((id, _)), Some(zone)) = (&state.bed, &zone) {
-        let gain = zone.volume * BED_BASE * super::cues::RETAIL_SCALE * (1.0 - attenuation(phase, state.t, zone.time_b, zone.time_a));
+        let gain = zone.volume * BED_BASE * super::voices::RETAIL_SCALE * (1.0 - attenuation(phase, state.t, zone.time_b, zone.time_a));
         voices.set(*id, gain, 1.0, None);
     }
     if let Ok(ear) = listener.single() {

@@ -67,11 +67,10 @@ pub(crate) struct AemsFiles {
     pub splice: BTreeMap<String, String>,
 }
 
-/// A rolling grain: its slow-to-fast recording cut into loopable speed bands (the interim loop),
-/// plus the whole recording and its raw `.grain` member for the native grain player.
+/// A rolling grain member: the whole recording and its raw `.grain` member for the native grain
+/// player (the manifest's speed `bands`, the removed interim loop's, are ignored).
 #[derive(Debug, Deserialize)]
 struct Grain {
-    bands: Vec<Entry>,
     #[serde(default)]
     file: Option<String>,
     #[serde(default)]
@@ -198,22 +197,6 @@ impl SurfaceJson {
     }
 }
 
-/// One layer of a retail patch record: members as
-/// (sample, gain, gain range, pitch, probability) — see audio_formats.splc_patches.
-#[derive(Debug, Deserialize)]
-pub(crate) struct Group {
-    pub mode: u8,
-    pub members: Vec<(usize, f32, f32, f32, f32)>,
-}
-
-/// Retail SPLC patch tree of one bank: records (layers played together) and
-/// containers (pick one record).
-#[derive(Debug, Default, Deserialize)]
-pub(crate) struct Patches {
-    pub records: Vec<Vec<Group>>,
-    pub containers: Vec<Vec<usize>>,
-}
-
 /// One sound of a location set (audio_export.random_sets).
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct RandomSound {
@@ -319,8 +302,6 @@ struct Manifest {
     grains: BTreeMap<String, Grain>,
     wheels: BTreeMap<String, Entry>,
     banks: BTreeMap<String, Vec<Entry>>,
-    #[serde(default)]
-    patches: BTreeMap<String, Patches>,
     /// Emitter file stem (`sfx_university`, ...) -> its records.
     #[serde(default)]
     emitters: BTreeMap<String, Vec<EmitterRecord>>,
@@ -657,7 +638,7 @@ pub(crate) struct Clip {
     pub handle: Handle<AudioSource>,
     pub key: Arc<str>,
     pub peak: f32,
-    /// Channel count from the WAV header (1 if unreadable): the native fold of an interim voice
+    /// Channel count from the WAV header (1 if unreadable): the native fold of a Bevy voice
     /// depends on it (`voices::native_fold_gain`).
     pub channels: u16,
 }
@@ -852,7 +833,7 @@ impl Library {
         if !MANIFEST_VERSIONS.contains(&manifest.version) {
             return Err(format!("{}: unsupported version {}", path.display(), manifest.version));
         }
-        let files = manifest.ambience.values().chain(manifest.grains.values().flat_map(|g| &g.bands)).chain(manifest.wheels.values())
+        let files = manifest.ambience.values().chain(manifest.wheels.values())
             .chain(manifest.banks.values().flatten());
         let aems = manifest.aems.projects.iter().chain(manifest.aems.banks.values()).chain(manifest.aems.mixmap.iter())
             .chain(manifest.aems.splice.values())
@@ -897,40 +878,10 @@ impl Library {
         self.clip(assets, &file)
     }
 
-    /// Number of speed bands of a rolling grain (0 if absent).
-    pub(crate) fn grain_bands(&self, name: &str) -> usize {
-        self.manifest.grains.get(name).map_or(0, |g| g.bands.len())
-    }
-
-    pub(crate) fn grain(&mut self, assets: &mut Assets<AudioSource>, name: &str, band: usize) -> Option<Clip> {
-        let entry = self.manifest.grains.get(name)?.bands.get(band)?;
-        let file = entry.file.clone();
-        self.clip(assets, &file)
-    }
-
-    pub(crate) fn wheels(&mut self, assets: &mut Assets<AudioSource>, name: &str) -> Option<Clip> {
-        let entry = self.manifest.wheels.get(name)?;
-        let file = entry.file.clone();
-        self.clip(assets, &file)
-    }
-
     pub(crate) fn sample(&mut self, assets: &mut Assets<AudioSource>, bank: &str, index: usize) -> Option<Clip> {
         let entry = self.manifest.banks.get(bank)?.get(index)?;
         let file = entry.file.clone();
         self.clip(assets, &file)
-    }
-
-    /// Read every grain band, wheel spin and listed bank sample now, so
-    /// gameplay never waits on the disk (~20 MB). Returns the clip count.
-    pub(crate) fn preload(&mut self, assets: &mut Assets<AudioSource>, samples: &[(&str, &[usize])]) -> usize {
-        let mut files: Vec<String> = self.manifest.grains.values().flat_map(|g| &g.bands)
-            .chain(self.manifest.wheels.values()).map(|e| e.file.clone()).collect();
-        for (bank, indices) in samples {
-            if let Some(entries) = self.manifest.banks.get(*bank) {
-                files.extend(indices.iter().filter_map(|&i| entries.get(i)).map(|e| e.file.clone()));
-            }
-        }
-        files.iter().filter(|file| self.clip(assets, file).is_some()).count()
     }
 
     /// Number of samples in a bank (0 when the bank was not exported).
@@ -973,24 +924,6 @@ impl Library {
     pub(crate) fn random_set_named(&self, name: &str) -> Option<(u64, &RandomSet)> {
         self.manifest.random_sets.iter().find(|(_, s)| s.name.as_deref() == Some(name))
             .and_then(|(k, s)| Some((u64::from_str_radix(k, 16).ok()?, s)))
-    }
-
-    /// A bank's retail patch tree (SPLC banks only).
-    pub(crate) fn patches(&self, bank: &str) -> Option<&Patches> {
-        self.manifest.patches.get(bank)
-    }
-
-    /// Every sample patch `id` of `bank` can play (all records of a container,
-    /// every layer member), for preloading.
-    pub(crate) fn patch_samples(&self, bank: &str, id: usize) -> Vec<usize> {
-        let Some(patches) = self.patches(bank) else { return Vec::new() };
-        let records = patches.records.len();
-        let ids = if id < records { vec![id] } else { patches.containers.get(id - records).cloned().unwrap_or_default() };
-        let mut samples: Vec<usize> = ids.iter().filter_map(|&r| patches.records.get(r)).flatten()
-            .flat_map(|group| group.members.iter().map(|member| member.0)).collect();
-        samples.sort_unstable();
-        samples.dedup();
-        samples
     }
 
     /// The native AEMS runtime's files (empty before manifest v5).

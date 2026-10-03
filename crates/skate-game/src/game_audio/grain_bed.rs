@@ -1,11 +1,12 @@
 //! The game side of the native granular rolling bed (`skate_audio::grain`, spec
 //! `.claude/notes/grain-player-spec.md`), on when the native runtime runs with a MixMap and the
 //! install has the whole grain recordings and their vault tuning (`audio_export.grain_whole` /
-//! `grain_tuning`). Otherwise the interim speed-band loop in `skate_events.rs` plays.
+//! `grain_tuning`). Without them rolling is silent and the host logs an error (2026-10-03: the
+//! interim speed-band loop is gone).
 //!
 //! Per frame, after the MixMap tick (`native::mixmap_frame`):
 //! - **Surface routing** (§1.4, one sounding truck): the wheels' majority surface → grain member
-//!   (`cues::grain_for`, the retail AudioSurfaceMap); a change stops both players and binds the new
+//!   ([`grain_for`], the retail AudioSurfaceMap); a change stops both players and binds the new
 //!   member (pulsing SkateBoard input 0); grinding (surface 14) stops them. In the air the last
 //!   member keeps playing and the MixMap's no-contact duck silences it (what retail does with the
 //!   wheel material in the air is UNCERTAIN, spec §2.10).
@@ -38,7 +39,7 @@ use skate_audio::mixmap::{MixMap, keys};
 
 use super::Library;
 
-/// Every member `cues::grain_for` can name, plus the rocket layer.
+/// Every member [`grain_for`] can name, plus the rocket layer.
 const MEMBERS: &[&str] = &[
     "asphalt_rough_hard",
     "concrete_rough_hard",
@@ -58,6 +59,31 @@ const SOFT_MEMBERS: &[&str] = &[
     "asphalt_smooth_soft",
 ];
 const ROCKET: &str = "x_jet_rolling";
+
+/// Rolling grain for a wheel's 7-bit audio surface tag, as retail maps it: tag → material (tag − 1) →
+/// the vault's `Sk8::AudioSurfaceMap` → rolling surface 1–14 → grain member
+/// (.claude/notes/grain-player-spec.md §1.4). Only the hard-wheel members: [`Bed::member`] swaps in
+/// the soft one. The bed's own one-truck routing uses it (the native rolling layers route with
+/// `player::rolling`).
+pub(super) fn grain_for(audio_surface: u32) -> &'static str {
+    match audio_surface & 0x7F {
+        2 => "asphalt_rough_hard",                                                    // surface 1
+        4 | 66 => "concrete_rough_hard",                                              // surface 2
+        3 | 51..=54 | 57 | 60 | 63..=65 | 92 | 93 => "concrete_smooth_hard",          // surface 4
+        6 | 7 | 41..=50 | 58 | 59 | 94 => "wood_ramp_hard",                           // surface 5
+        5 => "concrete_aggregate_hard",                                               // surface 6
+        9 | 11..=36 | 38..=40 | 84 | 85 | 89 | 91 => "metal_smooth_hard",             // surface 9
+        // Stand-ins: retail plays no grain on these. Rolling surfaces 7 (tags 10, 70), 8 (tag 8),
+        // 10 (67), 12 (68, 69) and 13 (37) post a per-surface `Class_rolling` patch (the native
+        // rolling layers, `player::rolling`).
+        8 | 10 | 70 => "concrete_aggregate_hard",
+        37 | 67..=69 => "metal_smooth_hard",
+        // UNCERTAIN: tag 90 maps to rolling surface 0, which has no grain member.
+        90 => "wood_ramp_hard",
+        // Surface 3 asphalt_smooth: tags 1, 55, 56, 61, 62, 71–83, 86–88, ≥ 95 and 0 (no material).
+        _ => "asphalt_smooth_hard",
+    }
+}
 /// The brake slew step per 60 Hz frame (§2.7).
 const BRAKE_STEP: f32 = 0.05;
 
@@ -156,7 +182,7 @@ impl Bed {
     /// The member for a wheel surface tag: the soft member while the wheels are soft and the
     /// install has it (`sub_824C8370`).
     fn member(&self, tag: u32, soft: bool) -> &'static str {
-        let hard = super::cues::grain_for(tag);
+        let hard = grain_for(tag);
         if soft {
             if let Some(&name) = SOFT_MEMBERS.iter().find(|n| n.strip_suffix("_soft") == hard.strip_suffix("_hard")) {
                 if self.tunings.contains_key(name) {
@@ -404,7 +430,22 @@ pub(super) fn step(
 mod tests {
     use super::*;
 
-    /// `cues::grain_for` against the install's own `Sk8::AudioSurfaceMap` (when present): tag →
+    #[test]
+    fn rolling_grains_follow_the_retail_surface_map() {
+        // Spot checks against the vault's AudioSurfaceMap (grain-player-spec.md §1.4).
+        for (tag, grain) in [
+            (2, "asphalt_rough_hard"), (66, "concrete_rough_hard"), (1, "asphalt_smooth_hard"),
+            (55, "asphalt_smooth_hard"), (0, "asphalt_smooth_hard"), (100, "asphalt_smooth_hard"),
+            (3, "concrete_smooth_hard"), (93, "concrete_smooth_hard"), (47, "wood_ramp_hard"),
+            (94, "wood_ramp_hard"), (5, "concrete_aggregate_hard"), (84, "metal_smooth_hard"),
+            (36, "metal_smooth_hard"), (130, "asphalt_rough_hard"), (6, "wood_ramp_hard"),
+            (31, "metal_smooth_hard"), (127, "asphalt_smooth_hard"),
+        ] {
+            assert_eq!(grain_for(tag), grain, "tag {tag}");
+        }
+    }
+
+    /// [`grain_for`] against the install's own `Sk8::AudioSurfaceMap` (when present): tag →
     /// material (tag − 1; 0 = none → 143 → surface 3) → rolling surface → grain member, for every
     /// surface that plays a grain (1–6, 9). And every member has its tuning and recording.
     #[test]
@@ -433,7 +474,7 @@ mod tests {
                 9 => "metal_smooth_hard",
                 _ => continue, // Class_rolling surfaces and surface 0: stand-ins
             };
-            assert_eq!(super::super::cues::grain_for(tag), want, "tag {tag} (surface {surface})");
+            assert_eq!(grain_for(tag), want, "tag {tag} (surface {surface})");
         }
         let bed = Bed::new(&library).expect("every member has its recording and tuning");
         assert_eq!(bed.tunings.len(), MEMBERS.len() + SOFT_MEMBERS.len() + 1, "hard and soft members and the `default` collection");
