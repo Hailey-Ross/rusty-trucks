@@ -11,8 +11,17 @@
 //! p0 = the holder's azimuth × 360/65536: the graph keeps those values (and its filter history,
 //! send ramps and panner matrix) until the slot's next start.
 //!
-//! UNCERTAIN (spec §8): Sen0 #2's level is never posted (constructor default 1.0); Pn21 keeps its
-//! class defaults except the azimuth (distance 1, on the speaker circle).
+//! Build values (2026-10-02, from `sub_82494188` and the plug-in descriptors in the image):
+//! - Sen0 #2 (→ SFX Master) is linked but never posted: its parameter 0 keeps the class default 1.0
+//!   (Sen0 `ATTRIBUTE_SETGAIN`). The recomp's SEND lines agree: all eight FootStep SubMix graphs of
+//!   session all_20261002_223306 log Sen0 #2 at 1.0 from the build on and never change it.
+//! - Sen0 #1 (→ env bus) also starts at the class default 1.0 (the same SEND lines: 1.0 at the
+//!   build, then the holder's posted level, e.g. 0.059). The graphs are built when the holder is
+//!   created and process from then on, so the first posted level ramps from 1.0 over 64 samples.
+//! - Pn21's constructor arguments are the class defaults (front 30°, side 110°, rear 150°) except
+//!   argument 2, the normalisation (law), which the build overwrites with 0.0 (class default 2):
+//!   law gain 1.0, as for voices. Its parameters keep their class defaults except the azimuth
+//!   (distance 1, on the speaker circle).
 use super::env::Level;
 use crate::dsp::biquad::{Iir2, Kind};
 use crate::dsp::pan::{self, Pan2D};
@@ -61,8 +70,9 @@ impl Default for FootSubmix {
             hpf: Iir2::new(Kind::HighPass),
             lpf: Iir2::new(Kind::LowPass),
             peak: PeakingIir2::default(),
-            // Sen0 posts 0 at build; `sub_82494550` sets it before the first sound.
-            env: Level::new(0.0),
+            // Sen0 #1 runs at its class default 1.0 from the build until `sub_82494550` posts the
+            // holder's level at the first start (it then ramps from 1.0).
+            env: Level::running(1.0),
             pan: Pan2D::new(1),
             send: Send::default(),
         }
@@ -94,7 +104,7 @@ impl FootSubmix {
         self.env.add(&mono, &mut env_in[..]);
         let mut six = [[0.0f32; BLOCK]; 6];
         self.pan.process(&[&mono[..]], &mut six);
-        let outs: Vec<&[f32]> = six.iter().map(|c| &c[..]).collect();
+        let outs = six.each_ref().map(|c| &c[..]);
         self.send.process(&outs, to_six(6), master, Mode::Normal);
     }
 }
@@ -152,8 +162,18 @@ mod tests {
         s.input(2).unwrap()[1] = x;
         let (mut env, mut master) = ([0.0; BLOCK], [[0.0; BLOCK]; 6]);
         s.render(&mut env, &mut master);
+        // Sen0 #1 ran at its class default 1.0 since the build: the first posted level ramps from
+        // there over 64 samples (landing 64/65 of the way), then holds.
+        let step = (0.1f32 - 1.0) * (1.0 / 65.0);
         for k in 0..BLOCK {
             assert!((master[1][k] - x[k]).abs() < 1e-6, "centre carries the input at unity");
+            let level = 1.0 + k.min(64) as f32 * step;
+            assert!((env[k] - level * x[k]).abs() < 1e-6, "env send ramps from 1.0 to the posted level");
+        }
+        s.input(2).unwrap()[1] = x;
+        let (mut env, mut master) = ([0.0; BLOCK], [[0.0; BLOCK]; 6]);
+        s.render(&mut env, &mut master);
+        for k in 0..BLOCK {
             assert!((env[k] - 0.1 * x[k]).abs() < 1e-7, "env send at the posted level");
         }
         assert!([0, 2, 3, 4, 5].iter().all(|&c| master[c].iter().all(|&v| v == 0.0)));

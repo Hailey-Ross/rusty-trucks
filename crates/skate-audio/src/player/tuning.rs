@@ -44,11 +44,35 @@ impl Default for SeamWobble {
 pub struct GrindSurface {
     pub v: [f32; 4],
     pub f: [f32; 4],
+    /// The grind contact sounds (`player::components::Grind::sounds`): the surface's metal flag
+    /// (bool `02BAC36BCC8A30DE`: Skate_Metal, else Skate_Collisions) and the on (`sub_824C35D0`,
+    /// `sub_824C2FA0`, `sub_824C3380`) and off (`sub_824C37D8`, `sub_824C3190`, `sub_824C34A8`)
+    /// sounds' fields.
+    pub metal: bool,
+    pub on: GrindContact,
+    pub off: GrindContact,
 }
 
 impl Default for GrindSurface {
     fn default() -> Self {
-        Self { v: [1.0; 4], f: [1.0; 4] }
+        Self { v: [1.0; 4], f: [1.0; 4], metal: false, on: GrindContact::default(), off: GrindContact::default() }
+    }
+}
+
+/// One grind contact sound of a grind surface: the sound id per layer 0..3 (−1 = none: an install
+/// exported before 2026-10-03), the per-layer level factor, the level and pitch endpoints (A at
+/// the speed cap, B at rest) of `components::grind_lerp`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GrindContact {
+    pub ids: [i32; 4],
+    pub gain: [f32; 4],
+    pub level: [f32; 2],
+    pub pitch: [f32; 2],
+}
+
+impl Default for GrindContact {
+    fn default() -> Self {
+        Self { ids: [-1; 4], gain: [1.0; 4], level: [0.1, 1.0], pitch: [0.8, 1.0] }
     }
 }
 
@@ -115,6 +139,9 @@ pub struct PlayerTuning {
     pub tricks: super::tricks::TricksTuning,
     /// `Class_Treatment`'s vault words (`player::treatment`).
     pub treatment: super::treatment::TreatmentTuning,
+    /// The grind contact sounds' eEQChain bus (class `42AFE160E647167C` `default` field
+    /// `D1A87641CCB98787`, `sub_824C3FC8` / `sub_824C4138`): 0.
+    pub grind_contact_eq: u8,
 }
 
 /// The jitter keys of [`PlayerTuning::eq_jitter`], in order.
@@ -140,6 +167,7 @@ impl Default for PlayerTuning {
             audio_tricks_2: Default::default(),
             tricks: Default::default(),
             treatment: Default::default(),
+            grind_contact_eq: 0,
         }
     }
 }

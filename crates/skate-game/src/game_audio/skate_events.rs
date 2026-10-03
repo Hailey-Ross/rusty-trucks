@@ -108,6 +108,8 @@ pub(super) struct Seen {
     in_water: bool,
     splash_cooldown: f32,
     push: bool,
+    /// Last tick's audio-state push plant (`+333 || +334`, see [`push_plant`]).
+    planted: bool,
     feet: [FootStrike; 2],
     /// The current Air phase began on foot (stepping onto the board).
     air_from_foot: bool,
@@ -135,6 +137,9 @@ pub(super) struct Seen {
     grind_impact: f32,
     deck_ring: [f32; 4],
     deck_at: usize,
+    /// The conditioner's 4-frame ring of the body regions' impacts (`sub_82773298`, `+640`).
+    region_ring: [[f32; 6]; 4],
+    region_at: usize,
     /// The conditioner's step code (`+740`, `sub_827729B8`).
     step_code: skate_audio::player::footsteps::StepCode,
     /// Rows written to the audio state log.
@@ -326,6 +331,11 @@ pub(super) fn observe(
     let unridden = board_unridden(state);
     let (wheels, surface) = if unridden { (0, 0) } else { wheel_surface(&physics) };
     let rolling = wheels > 0;
+    // The animation's push contact edge (the interim push cue and the state log's `push` column).
+    let push_edge = seen.started && audio.push && !seen.push;
+    let state55 = skater.player_state.state_flags.get(55 - 52).copied().unwrap_or(false);
+    let (planted, plant_edge) = push_plant(push_plant_on(), state55, audio.push, seen.planted, seen.push);
+    let plant_edge = seen.started && plant_edge;
     let memory: &mut Seen = &mut seen;
     let audio_state = audio_state(&physics, &skater, AudioFrame {
         dt: time.delta_secs(),
@@ -334,8 +344,8 @@ pub(super) fn observe(
         wheels,
         board: (board, vec(deck.linear_velocity)),
         on_rail,
-        push: audio.push,
-        push_trigger: memory.started && audio.push && !memory.push,
+        push: planted,
+        push_trigger: plant_edge,
         air_time: &mut memory.air_time,
         grind_family: &mut memory.grind_family,
         grind_material: &mut memory.grind_material,
@@ -343,6 +353,8 @@ pub(super) fn observe(
         grind_impact: &mut memory.grind_impact,
         deck_ring: &mut memory.deck_ring,
         deck_at: &mut memory.deck_at,
+        region_ring: &mut memory.region_ring,
+        region_at: &mut memory.region_at,
         step_code: &mut memory.step_code,
         slip: if wheels > 0 {
             let ri = physics.board.part_transforms()[BodyId::Deck.index()].basis.columns[0];
@@ -386,7 +398,9 @@ pub(super) fn observe(
             manual: s.manual_brake,
             balance: s.balance,
             scorable: s.scorable,
-            push: s.push_trigger,
+            // The animation's push contact edge, as in every log before 2026-10-03 (the plant is
+            // the `plant` column).
+            push: push_edge,
             slope: s.slope,
             tilt: skater.ground.steering.deck_tilt,
             slip: if v.length() > 1e-3 { v.dot(lateral) / v.length() } else { 0.0 },
@@ -417,9 +431,24 @@ pub(super) fn observe(
             deck_up: deck_up(&physics, &skater),
             deck_contact: p.collision.flag_3475 != 0,
             lines: if unridden { 0 } else { (0..4).filter(|&i| physics.riding.wheel_lines.audio_surfaces[i] != 0).map(|i| 1u32 << i).sum() },
+            plant: state55,
+            stroke: s.push_stroke,
+            deck_spin: [s.deck_spin, s.deck_spin_xy[0], s.deck_spin_xy[1]],
+            bail: s.bail,
+            bail_end: s.bail_end,
+            held: s.offboard_308,
+            offboard_air: s.offboard_air,
+            footplant: s.footplant,
+            revert: s.revert,
+            soft: s.soft_wheels,
+            face: s.body_slide_flag,
+            region_impact: s.body_impact,
+            region_slide: s.body_slide,
+            region_tag: s.body_tag,
         });
     }
-    let pushes = cues.riding.pushes.wrapping_add(u32::from(seen.started && audio.push && !seen.push));
+    // The bed's push envelopes (`grain_bed.rs` `pushes_seen`) count the same edge as `+335`.
+    let pushes = cues.riding.pushes.wrapping_add(u32::from(plant_edge));
     cues.riding = Riding {
         board,
         speed: physics.riding.motion.ground_speed,
@@ -439,7 +468,7 @@ pub(super) fn observe(
     };
     *seen = Seen {
         started: true, launched, filtered, state, trick_seq, in_water, splash_cooldown: cooldown,
-        push: audio.push, feet: seen.feet, air_from_foot, since_foot, braking, brake_time, brake_event, on_rail, since_splash, trace: Some(trace),
+        push: audio.push, planted, feet: seen.feet, air_from_foot, since_foot, braking, brake_time, brake_event, on_rail, since_splash, trace: Some(trace),
         air_trick: if filtered == air { seen.air_trick.take() } else { None },
         air_time: seen.air_time,
         grind_family: seen.grind_family,
@@ -449,6 +478,8 @@ pub(super) fn observe(
         deck_ring: seen.deck_ring,
         step_code: seen.step_code,
         deck_at: seen.deck_at,
+        region_ring: seen.region_ring,
+        region_at: seen.region_at,
         log_frame: seen.log_frame + u64::from(super::state_log::enabled()),
     };
 }
@@ -471,6 +502,25 @@ fn air_time_follows_state() -> bool {
     *ON.get_or_init(|| !std::env::var("SKATE_AEMS_AIR_TIME_STATE").is_ok_and(|v| v == "0"))
 }
 
+/// The audio state's push plant `+333 || +334` and its edge `+335` (the bridge `sub_824B0DA8`):
+/// `+335` = State55 (record +148 `0x40000000`, the foot plant) rising against last frame's
+/// `+333` / `+334`; `+333` = State55 && !`+338` && State56, `+334` = State55 && `+338`. `+338`
+/// (record +160 bit 30) is not mapped yet, so the plant is State55 itself (session review
+/// 2026-10-03 #1). Every push sound but the stroke foley reads these: the rattle and the bed's
+/// push envelopes (`sub_824C6198`), the clothing plant, the Contacts' plant / lift. Retail plants
+/// land +548 ms after the stroke (`+337`); the animation's push contact (`audio.push`) fires near
+/// the stroke. `on` false (`SKATE_AEMS_PUSH_PLANT=0`): the animation's push contact, as before.
+/// Returns (planted, edge) from this tick's State55 / push contact and last tick's values.
+pub(super) fn push_plant(on: bool, state55: bool, push: bool, was_planted: bool, was_push: bool) -> (bool, bool) {
+    if on { (state55, state55 && !was_planted) } else { (push, push && !was_push) }
+}
+
+/// `SKATE_AEMS_PUSH_PLANT=0` restores the push plant from the animation's push contact.
+fn push_plant_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("SKATE_AEMS_PUSH_PLANT").is_ok_and(|v| v == "0"))
+}
+
 /// What [`audio_state`] needs beyond the physics resources.
 struct AudioFrame<'a> {
     dt: f32,
@@ -480,6 +530,7 @@ struct AudioFrame<'a> {
     wheels: u32,
     board: (Vec3, Vec3),
     on_rail: bool,
+    /// `+333 || +334` and `+335` ([`push_plant`]).
     push: bool,
     push_trigger: bool,
     air_time: &'a mut f32,
@@ -489,6 +540,8 @@ struct AudioFrame<'a> {
     grind_impact: &'a mut f32,
     deck_ring: &'a mut [f32; 4],
     deck_at: &'a mut usize,
+    region_ring: &'a mut [[f32; 6]; 4],
+    region_at: &'a mut usize,
     step_code: &'a mut skate_audio::player::footsteps::StepCode,
     /// `+232` from the deck's lateral speed (0 with no wheel down).
     slip: f32,
@@ -509,6 +562,33 @@ fn deck_up(physics: &GamePhysics, skater: &SkaterRuntime) -> f32 {
     let up = physics.board.part_transforms()[BodyId::Deck.index()].basis.columns[1];
     let n = raw3(skater.player_input.physical.ground.vector_80);
     up[0] * n[0] + up[1] * n[1] + up[2] * n[2]
+}
+
+/// physics_collision `default` `+164` (field `1430BD50F0A33475`): the region impact scale.
+const REGION_IMPACT_SCALE: f32 = 10.0;
+/// The image's floor of a region impact (`0x82063A48`).
+const REGION_IMPACT_FLOOR: f32 = f32::from_bits(0x3A83_126F);
+
+/// The six body regions' impacts as `sub_82BD60C8` publishes them into Collision `+80..+100`
+/// (audio state `+496..+516` after the conditioner's 4-frame max): per region with a contact
+/// part, clamp01(max(0.001, (SkeletonState4048 Δv of the part · the region's contact normal) ×
+/// the part's mass (SkeletonState4560: the bone-box volume) × 10)); 0 without a part. Regions 6
+/// and 7 (the feet) are not read by the audio code.
+pub(super) fn region_impacts(
+    regions: &[skate_core::physics::skeleton_body::ContactRegion; 8],
+    velocity_changes: &[[f32; 4]],
+    masses: &[f32; 24],
+) -> [f32; 6] {
+    std::array::from_fn(|i| {
+        let r = &regions[i];
+        let Some(part) = r.part else { return 0.0 };
+        let dv = velocity_changes.get(part).copied().unwrap_or([0.0; 4]);
+        let n = r.normal;
+        let along = dv[0] * n[0] + dv[1] * n[1] + dv[2] * n[2];
+        let x = along * masses.get(part).copied().unwrap_or(0.0) * REGION_IMPACT_SCALE;
+        let x = if REGION_IMPACT_FLOOR - x >= 0.0 { REGION_IMPACT_FLOOR } else { x };
+        skate_audio::player::clamp01(x)
+    })
 }
 
 /// |v| over three lanes (retail: x · the refined reciprocal square root, 0 for x = 0).
@@ -616,6 +696,10 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
     // +560..+580; the per-frame PhysOut reset leaves 0 without one), and the face point's contact
     // (specific point 1, byte 4009 → +593).
     let fb = &skater.collision_feedback;
+    // +496..+516: the regions' impacts, kept as the max of the last 4 frames (`region_impacts`).
+    f.region_ring[*f.region_at % 4] = region_impacts(&fb.regions, &record.velocity_changes, &skater.skeleton.definition.animation_masses.part_weights);
+    *f.region_at = (*f.region_at + 1) % 4;
+    let body_impact: [f32; 6] = std::array::from_fn(|i| f.region_ring.iter().map(|r| r[i]).fold(0.0f32, |m, x| if x > m { x } else { m }));
     let xz = |v: [f32; 4]| if v[0].abs() - v[2].abs() >= 0.0 { v[0].abs() } else { v[2].abs() };
     AudioState {
         dt: f.dt,
@@ -708,6 +792,7 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
         body_slide: std::array::from_fn(|i| if fb.regions[i].part.is_some() { fb.regions[i].tangent_speed } else { 0.0 }),
         body_tag: std::array::from_fn(|i| if fb.regions[i].part.is_some() { fb.regions[i].material_flags } else { 0 }),
         body_slide_flag: fb.specific[1].current,
+        body_impact,
         hands_on_deck: skate_audio::player::step_on::hands_on_deck(hands, f.state == 500, p.off_board.flag_311 != 0),
     }
 }
@@ -972,6 +1057,9 @@ pub(super) fn play(
     let native_footsteps = native_part(|p| p.footsteps_on);
     let native_rolling = native_part(|p| p.rolling_on);
     let native_rattle = native_part(|p| p.rattle_on);
+    // The body poster (`player::contacts`, `sub_824BC188`) plays the bail's body impacts through
+    // the collision manager; the interim bail_hit / bail_soft..hard cues stay silent then.
+    let native_body = native_part(|p| p.body_impacts_on());
     let Some(mut library) = library else { return };
     // Cues raised while silenced are dropped, never played late in a burst.
     if super::silenced(menu.as_deref(), &replay) {
@@ -1060,6 +1148,7 @@ pub(super) fn play(
                     player.play_record("board_down_heavy", &cues::LAND, heavy, at, &mut rng, &mut loops.patch_order);
                 }
             }
+            Event::Bail { .. } if native_body => {}
             Event::Bail { at, speed } => {
                 let tier = cues::bail_tier(speed);
                 let scale = [0.6, 0.8, 1.0][tier];
@@ -1239,6 +1328,46 @@ mod tests {
         };
         assert_eq!(run(true), [0, 1, 2, 3, 4, 5, 0]);
         assert_eq!(run(false), [0, 1, 2, 3, 4, 0, 0]);
+    }
+
+    /// The push plant follows State55 and fires its edge once per plant; off: the animation's push
+    /// contact as before.
+    #[test]
+    fn the_push_plant_is_state55_and_its_rise() {
+        // (State55, push contact) per tick: the stroke's contact first, the plant ~0.5 s later.
+        let ticks = [(false, true), (false, true), (false, false), (true, false), (true, false), (false, false)];
+        let run = |on: bool| {
+            let (mut planted, mut push) = (false, false);
+            ticks.iter().map(|&(s55, p)| {
+                let r = push_plant(on, s55, p, planted, push);
+                (planted, push) = (r.0, p);
+                r
+            }).collect::<Vec<_>>()
+        };
+        assert_eq!(run(true), [(false, false), (false, false), (false, false), (true, true), (true, false), (false, false)]);
+        assert_eq!(run(false), [(true, true), (true, false), (false, false), (false, false), (false, false), (false, false)]);
+    }
+
+    #[test]
+    fn region_impacts_scale_the_velocity_change_by_the_part_mass() {
+        use skate_core::physics::skeleton_body::ContactRegion;
+        let mut regions = [ContactRegion::default(); 8];
+        regions[1] = ContactRegion { part: Some(2), normal: [0.0, 1.0, 0.0, 0.0], ..ContactRegion::default() };
+        regions[2] = ContactRegion { part: Some(3), normal: [0.0, 1.0, 0.0, 0.0], ..ContactRegion::default() };
+        regions[3] = ContactRegion { part: Some(7), normal: [0.0, 1.0, 0.0, 0.0], ..ContactRegion::default() };
+        let mut dv = [[0.0f32; 4]; 26];
+        dv[2] = [0.0, 3.0, 0.0, 0.0];
+        dv[3] = [0.0, 50.0, 0.0, 0.0];
+        dv[7] = [0.0, -2.0, 0.0, 0.0];
+        let mut masses = [0.0f32; 24];
+        masses[2] = 0.02;
+        masses[3] = 0.01;
+        masses[7] = 0.01;
+        let r = region_impacts(&regions, &dv, &masses);
+        assert_eq!(r[0], 0.0, "no contact part");
+        assert!((r[1] - 0.6).abs() < 1e-6, "3 m/s × 0.02 × 10");
+        assert_eq!(r[2], 1.0, "clamped");
+        assert_eq!(r[3], f32::from_bits(0x3A83_126F), "away from the surface: the floor 0.001");
     }
 
     #[test]

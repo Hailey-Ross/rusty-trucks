@@ -9,7 +9,7 @@ pub const TWO_PI: f32 = std::f32::consts::TAU;
 pub const FLOOR: f32 = 0.003_141_593;
 pub const CEIL: f32 = 3.138_451_1;
 /// Denormal guard added to the feed-forward sum (cell 0x822F87B0).
-pub const BIAS: f32 = 1e-18;
+pub const BIAS: f32 = skate_audio_fma::BIAS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -17,15 +17,8 @@ pub enum Kind {
     HighPass,
 }
 
-/// Normalised coefficients {a1, a2, b0, b1, b2}.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Coefficients {
-    pub a1: f32,
-    pub a2: f32,
-    pub b0: f32,
-    pub b1: f32,
-    pub b2: f32,
-}
+/// Normalised coefficients {a1, a2, b0, b1, b2} (defined next to the kernel in `skate-audio-fma`).
+pub use skate_audio_fma::Coefficients;
 
 /// RBJ low/high-pass at Q = 1 from ω, every step in f32 (sin/cos in f64, rounded once).
 pub fn coefficients(kind: Kind, omega: f32) -> Coefficients {
@@ -106,7 +99,7 @@ impl Iir2 {
         }
         self.filtering = true;
         for (ch, samples) in channels.iter_mut().enumerate().take(8) {
-            kernel(&self.coefficients, &mut self.history[ch], samples);
+            kernel_block(&self.coefficients, &mut self.history[ch], samples);
         }
     }
 }
@@ -123,23 +116,85 @@ impl Iir2 {
 /// - position 1: b2·x2 + (b1·x1 + (b0·x + bias));
 /// - positions 2..7: b0·x + (b2·x2 + (b1·x1 + bias));
 /// - feedback: two fused negative multiply-subtracts, a1 first.
+///
+/// The loop lives in `skate-audio-fma` (`body::biquad`, the same source), which runs it with
+/// hardware FMA when the CPU has it: the same bits (doc 11 "Hardware FMA dispatch").
 pub fn kernel(k: &Coefficients, history: &mut [f32; 4], samples: &mut [f32]) {
-    let [mut x1, mut x2, mut y1, mut y2] = *history;
-    for (n, s) in samples.iter_mut().enumerate() {
-        let x = *s;
-        let t = match n % 8 {
-            0 => k.b1.mul_add(x1, k.b2.mul_add(x2, k.b0 * x + BIAS)),
-            1 => k.b2.mul_add(x2, k.b1.mul_add(x1, k.b0 * x + BIAS)),
-            _ => k.b0.mul_add(x, k.b2.mul_add(x2, k.b1 * x1 + BIAS)),
-        };
-        let y = (-k.a2).mul_add(y2, (-k.a1).mul_add(y1, t));
-        x2 = x1;
-        x1 = x;
-        y2 = y1;
-        y1 = y;
-        *s = y;
+    skate_audio_fma::biquad(k, history, samples);
+}
+
+/// The block holds only `+0.0` samples (bit pattern 0).
+pub fn silent(samples: &[f32]) -> bool {
+    samples.iter().all(|v| v.to_bits() == 0)
+}
+
+/// Every group of 8 samples is bit-identical to the first (a silent or constant block, e.g. a bus
+/// nothing plays into, or the 1e-18 bias settling a filter ahead). False for blocks whose length is
+/// not a multiple of 8 or shorter than 16.
+pub fn periodic8(samples: &[f32]) -> bool {
+    if samples.len() < 16 || samples.len() % 8 != 0 {
+        return false;
     }
-    *history = [x1, x2, y1, y2];
+    let (first, rest) = samples.split_at(8);
+    rest.chunks_exact(8).all(|c| c.iter().zip(first).all(|(a, b)| a.to_bits() == b.to_bits()))
+}
+
+/// [`kernel`], bit-identical, with a shortcut for a settled filter on an 8-periodic block
+/// ([`periodic8`]; optimisation pass 2026-10-03, doc 11 "Optimisation pass").
+///
+/// The kernel is a pure function of the coefficients, the history and the input, and its sample
+/// arithmetic depends on the position only through `n % 8`. On an 8-periodic block it runs the
+/// first group of 8 for real; when the history after it is bit-identical to the history before (a
+/// settled filter: the 1e-18 bias at its fixed point, or a cycle whose length divides 8), every
+/// later group starts in the same state with the same input and produces the same 8 outputs, and
+/// the final history is the starting one. Otherwise the rest of the block runs through [`kernel`]
+/// from the state after the group (`samples[8..]` starts at position 0 mod 8 again), so nothing is
+/// computed twice. Any other block takes [`kernel`] directly.
+///
+/// A silent block (all `+0.0`) that has not settled continues with [`kernel_silent_tail`].
+pub fn kernel_block(k: &Coefficients, history: &mut [f32; 4], samples: &mut [f32]) {
+    if !periodic8(samples) {
+        return kernel(k, history, samples);
+    }
+    let zero = silent(&samples[..8]);
+    let before = history.map(f32::to_bits);
+    let (group, rest) = samples.split_at_mut(8);
+    kernel(k, history, group);
+    if history.map(f32::to_bits) == before {
+        for chunk in rest.chunks_exact_mut(8) {
+            chunk.copy_from_slice(group);
+        }
+    } else if zero {
+        kernel_silent_tail(k, history, rest);
+    } else {
+        kernel(k, history, rest);
+    }
+}
+
+/// [`kernel`] on silent input (all `+0.0`) once the history's inputs are `+0.0` too (x1 = x2 = 0,
+/// i.e. from the third silent sample on), bit-identical to it.
+///
+/// With x = x1 = x2 = +0 each of the kernel's three feed-forward forms reduces to the bias: every
+/// product of a finite coefficient with +0 is ±0, and ±0 + 1e-18 (or a fused ±0 + 1e-18) is exactly
+/// 1e-18. That is checked at run time with the kernel's own expressions (a non-finite coefficient
+/// makes it fail, and the plain kernel runs), so only the two feedback multiply-adds remain per
+/// sample. Falls back to [`kernel`] when the history's inputs are not +0.
+pub fn kernel_silent_tail(k: &Coefficients, history: &mut [f32; 4], samples: &mut [f32]) {
+    debug_assert!(silent(samples));
+    let [x1, x2, y1, y2] = *history;
+    let z = 0.0f32;
+    let t = [
+        k.b1.mul_add(z, k.b2.mul_add(z, k.b0 * z + BIAS)),
+        k.b2.mul_add(z, k.b1.mul_add(z, k.b0 * z + BIAS)),
+        k.b0.mul_add(z, k.b2.mul_add(z, k.b1 * z + BIAS)),
+    ];
+    if x1.to_bits() != 0 || x2.to_bits() != 0 || t.iter().any(|t| t.to_bits() != BIAS.to_bits()) {
+        return kernel(k, history, samples);
+    }
+    // y = (−a2)·y2 + ((−a1)·y1 + bias) per sample (`skate-audio-fma`, `body::biquad_feedback`).
+    let mut y = [y1, y2];
+    skate_audio_fma::biquad_feedback(k, &mut y, samples);
+    *history = [z, z, y[0], y[1]];
 }
 
 #[cfg(test)]
@@ -213,5 +268,88 @@ mod tests {
         lpf.cutoff = 25000.0;
         lpf.process(&mut [&mut x[..]], 48000.0);
         assert_eq!(lpf.history[0], [0.0; 4]);
+    }
+
+    /// Coefficient sets for the shortcut checks: low/high-pass across the range, peaking EQs, the
+    /// FSS allpass sections, and degenerate ones (zero, NaN, infinite).
+    fn coefficient_sets() -> Vec<Coefficients> {
+        let mut v = Vec::new();
+        for fc in [30.0, 77.0, 400.0, 2500.0, 12000.0, 23000.0] {
+            v.push(coefficients(Kind::LowPass, omega(fc, 48000.0)));
+            v.push(coefficients(Kind::HighPass, omega(fc, 48000.0)));
+        }
+        for (f, g, q) in [(150.0, 1.5, 3.0), (5000.0, 0.75, 0.25), (450.0, 20.0, 20.0), (96000.0, 0.1, 0.2), (1500.0, 1.0000001, 3.0)] {
+            v.push(crate::dsp::peaking::coefficients(f, g, q, 48000.0));
+        }
+        v.extend(crate::dsp::fss::SECTIONS);
+        v.push(Coefficients::default());
+        v.push(Coefficients { b1: f32::NAN, ..coefficients(Kind::LowPass, 0.3) });
+        v.push(Coefficients { b0: f32::INFINITY, ..coefficients(Kind::HighPass, 0.3) });
+        v.push(Coefficients { a1: f32::NAN, ..coefficients(Kind::HighPass, 0.3) });
+        v
+    }
+
+    fn bits(x: &[f32]) -> Vec<u32> {
+        x.iter().map(|v| v.to_bits()).collect()
+    }
+
+    /// The optimisation pass's [`kernel_block`] (settled-filter and silent-tail shortcuts) against
+    /// the plain kernel, bit for bit: every coefficient set, block lengths around the group of 8,
+    /// silent / -0.0 / constant / 8-periodic / noisy blocks, from fresh, noisy, settled and
+    /// non-finite histories, over long silences so that the filters settle (and the shortcut is
+    /// shown to run).
+    #[test]
+    fn kernel_block_matches_the_plain_kernel() {
+        let mut seed = 0x2545_F491u32;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        };
+        let (mut settled, mut tails) = (0usize, 0usize);
+        for k in coefficient_sets() {
+            for len in [0usize, 1, 7, 8, 9, 15, 16, 24, 255, 256, 264] {
+                let blocks: Vec<Vec<f32>> = vec![
+                    vec![0.0; len],
+                    vec![-0.0; len],
+                    vec![0.25; len],
+                    (0..len).map(|i| [0.0, 1e-20, -3.0, 0.5, 0.0, -0.0, 7.0, 1.0][i % 8]).collect(),
+                    (0..len).map(|_| noise()).collect(),
+                    (0..len).map(|i| if i == len / 2 { 1e-30 } else { 0.0 }).collect(),
+                ];
+                let starts = [[0.0f32; 4], [0.5, -0.25, 0.125, 1.0], [0.0, 0.0, 1e-18, 1e-18], [-0.0, 0.0, 0.0, -0.0], [f32::NAN, 0.0, 1.0, 0.0], [0.0, 0.0, f32::INFINITY, 0.0]];
+                for start in starts {
+                    for b in &blocks {
+                        let (mut ha, mut hb) = (start, start);
+                        let (mut xa, mut xb) = (b.clone(), b.clone());
+                        kernel(&k, &mut ha, &mut xa);
+                        kernel_block(&k, &mut hb, &mut xb);
+                        assert_eq!(bits(&xa), bits(&xb), "{k:?} len {len} start {start:?}");
+                        assert_eq!(bits(&ha), bits(&hb), "{k:?} len {len} start {start:?}");
+                    }
+                }
+            }
+            // A burst, then a long silence: the filter decays (silent tail), then settles (the
+            // repeated group), block by block identical to the plain kernel.
+            let (mut ha, mut hb) = ([0.0f32; 4], [0.0f32; 4]);
+            for block in 0..3000 {
+                let input: Vec<f32> = if block < 3 { (0..256).map(|_| noise()).collect() } else { vec![0.0; 256] };
+                let (mut xa, mut xb) = (input.clone(), input);
+                let before = hb;
+                kernel(&k, &mut ha, &mut xa);
+                kernel_block(&k, &mut hb, &mut xb);
+                assert_eq!(bits(&xa), bits(&xb), "{k:?} block {block}");
+                assert_eq!(bits(&ha), bits(&hb), "{k:?} block {block}");
+                if block >= 3 {
+                    if bits(&before) == bits(&hb) {
+                        settled += 1;
+                    } else {
+                        tails += 1;
+                    }
+                }
+            }
+        }
+        assert!(settled > 1000 && tails > 100, "both shortcuts ran: settled {settled}, tails {tails}");
     }
 }

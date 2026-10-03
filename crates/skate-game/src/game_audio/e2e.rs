@@ -47,6 +47,8 @@ struct Script {
     family: Option<i32>,
     material: Option<u32>,
     jump_velocity: f32,
+    /// Last row's push plant (the edge `+335`).
+    planted: bool,
 }
 
 impl Script {
@@ -84,13 +86,34 @@ impl Script {
             self.material = Some((r.i("grind_tag") as u32).min(143));
         }
         let push = r.i("push") != 0;
-        self.pushes += u32::from(push);
+        // The push plant (`skate_events::push_plant`, session review #1): logs since 2026-10-03 carry
+        // State55 (`plant`), and the plant and its rise drive `+333 || +334` / `+335` and the bed's
+        // push count. E2E_PUSH_PLANT=0: the animation's push edge (`push`) as before. Older logs keep
+        // that unless E2E_PLANT_FROM_FEET=1, which takes the plant from their foot-down bits on the
+        // ground states without the brake (State55 && (State57 || State56), the bridge's
+        // `+333 || +334`; a proof aid, not the game's input).
+        let plant_on = !std::env::var("E2E_PUSH_PLANT").is_ok_and(|v| v == "0");
+        let new_log = r.0.contains_key("plant");
+        let planted = if plant_on && new_log {
+            Some(r.i("plant") != 0)
+        } else if plant_on && std::env::var("E2E_PLANT_FROM_FEET").is_ok_and(|v| v == "1") && r.0.contains_key("foot_down") {
+            Some(r.i("foot_down") & 3 != 0 && r.i("brake") == 0 && (100..200).contains(&state))
+        } else {
+            None
+        };
+        let (push_planted, push_trigger) = match planted {
+            Some(now) => (now, now && !self.planted),
+            None => (push, push),
+        };
+        self.planted = planted.unwrap_or(false);
+        self.pushes += u32::from(push_trigger);
         let scorable = r.i("scorable");
         let jv = r.f("jv");
         if jv != 0.0 {
             self.jump_velocity = skate_audio::player::state::jump_velocity(jv);
         }
         let feet = r.i("feet") as u32;
+        let h = if new_log { Self::harness(r) } else { AudioState::default() };
         let audio = AudioState {
             dt: 1.0 / 60.0,
             ground_speed: speed,
@@ -128,12 +151,14 @@ impl Script {
             grinding,
             trick_active: scorable != -1,
             hippy_jump: airborne && scorable == 234,
-            bail: false,
-            bail_end: false,
-            on_foot: false,
-            soft_wheels: false,
-            push_planted: push,
-            push_trigger: push,
+            bail: h.bail,
+            bail_end: h.bail_end,
+            // The bail, on-foot / off-board flags, the deck spin and the body regions come from the
+            // logs since 2026-10-03 (session review #10); older logs: off, as before.
+            on_foot: new_log && state == 500,
+            soft_wheels: h.soft_wheels,
+            push_planted,
+            push_trigger,
             feet_in_deck_box: [feet & 1 != 0, feet & 2 != 0],
             grind_family: self.family.unwrap_or(-1),
             // `+692` = Grinds+216 as the game publishes it (`audio_state`: no tag − 1 here).
@@ -144,10 +169,10 @@ impl Script {
             scorable: scorable as i32,
             // The scenario's slip is the sine of the deck's turn off the roll (lateral / speed).
             slip: if wheels > 0 { skate_audio::player::state::slip(r.f("slip") * speed) } else { 0.0 },
-            revert: state == 102,
-            offboard_308: false,
+            revert: if new_log { r.i("revert") != 0 } else { state == 102 },
+            offboard_308: h.offboard_308,
             deck_tilt: r.f("tilt"),
-            deck_spin: 0.0,
+            deck_spin: h.deck_spin,
             // `+240` / `+260` (Class_Treatment w8 / w9) from the rows' to_land / jump_height (both
             // scenario kinds carry them); E2E_AIR_WORDS=0: 0 as before 2026-10-02 (no Treatments).
             air_until_landing: if air_words { r.f("to_land") } else { 0.0 },
@@ -169,7 +194,7 @@ impl Script {
             step_code: if r.0.contains_key("step") { r.i("step") as i32 } else { 1 },
             body_speed: r.f("body"),
             limb_speed: r.f("limb"),
-            ..AudioState::default()
+            ..h
         };
         Riding {
             board: bevy::math::Vec3::new(self.x, 0.1, 0.0),
@@ -188,6 +213,28 @@ impl Script {
             deck_up: if r.0.contains_key("deck_up") { r.f("deck_up") } else { 1.0 },
             deck_contact: r.i("deck_contact") != 0,
             deck_material: material_of_tag(r.i("deck_tag") as u32),
+        }
+    }
+}
+
+impl Script {
+    /// The state-log columns appended 2026-10-03 (session review #10).
+    fn harness(r: &Row) -> AudioState {
+        AudioState {
+            push_stroke: r.i("stroke") != 0,
+            deck_spin: r.f("deck_spin"),
+            deck_spin_xy: [r.f("spin_x"), r.f("spin_y")],
+            bail: r.i("bail") != 0,
+            bail_end: r.i("bail_end") != 0,
+            offboard_308: r.i("held") != 0,
+            offboard_air: r.i("offboard_air") != 0,
+            footplant: r.i("footplant") != 0,
+            soft_wheels: r.i("soft") != 0,
+            body_slide_flag: r.i("face") != 0,
+            body_impact: std::array::from_fn(|i| r.f(&format!("rimp{i}"))),
+            body_slide: std::array::from_fn(|i| r.f(&format!("rslide{i}"))),
+            body_tag: std::array::from_fn(|i| r.i(&format!("rtag{i}")) as u32),
+            ..AudioState::default()
         }
     }
 }
@@ -303,12 +350,14 @@ fn e2e_render() {
         p.contacts_on = contacts && std::env::var("E2E_CONTACTS").map_or(true, |v| v != "0");
         p.contact_tuning = library.contacts_tuning();
         p.footsteps_on = p.contacts_on && !off("E2E_FOOTSTEPS");
+        // The session-review ports (E2E_PLANT_LIFT / E2E_BODY_IMPACTS / E2E_GRIND_ONOFF=0: off).
+        p.set_review_ports(!off("E2E_PLANT_LIFT"), !off("E2E_BODY_IMPACTS"), !off("E2E_GRIND_ONOFF"));
         p.set_footstep_materials(library.footstep_materials());
         p.wheels_on = wheels && std::env::var("E2E_WHEELS").map_or(true, |v| v != "0");
         (p.rolling_on, p.rattle_on, p.slide_on, p.tricks_on, p.treatment_on) = (optional[0], optional[1], optional[2], optional[3], optional[4]);
         let mut bed = super::grain_bed::Bed::new(&library).expect("grain bed data");
         let seams = skate_audio::player::tuning::PlayerTuning { seam_wobbles: p.tuning.seam_wobbles.clone(), ..Default::default() };
-        let mut script = Script { x: 0.0, air_time: 0.0, pushes: 0, family: None, material: None, jump_velocity: 0.0 };
+        let mut script = Script { x: 0.0, air_time: 0.0, pushes: 0, family: None, material: None, jump_velocity: 0.0, planted: false };
         let mut out = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.f32"))).unwrap());
         let mut voices = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.voices.tsv"))).unwrap());
         writeln!(voices, "frame\tbank\tslot\tgain\tpitch").unwrap();
@@ -336,6 +385,19 @@ fn e2e_render() {
         // elapsed 60 Hz step and rows without a call only render.
         let fps: Option<f64> = std::env::var("E2E_FPS").ok().and_then(|v| v.parse().ok());
         let console = fps.is_some() || calls > 1;
+        // The MixMap's console cadence (`native::mixmap_frame`, `skate_audio::mixmap::cadence`): one
+        // evaluation per two 60 Hz rows with dt 1/30, the Jitter stepped and the eEQChain cleared
+        // there, the flag inputs held in between. On with E2E_FPS (the game's host) unless
+        // E2E_MIX_CONSOLE=0; E2E_MIX_CONSOLE=1 turns it on for the per-row renders too.
+        let mix_console = match std::env::var("E2E_MIX_CONSOLE").ok().as_deref() {
+            Some("0") => false,
+            Some("1") => true,
+            _ => fps.is_some(),
+        };
+        let mut cadence = skate_audio::mixmap::cadence::Cadence::default();
+        if mix_console {
+            super::native::hold_flag_inputs(&mut m);
+        }
         let (mut fps_acc, mut rows_since_call) = (0.0f64, 0usize);
         for (frame, &i) in order.iter().enumerate() {
           let row_riding = script.riding(&rows[i]);
@@ -399,7 +461,19 @@ fn e2e_render() {
                     m.set_input(keys::REVERB, id, x);
                 }
             }
-            let l = p.listener([script.x - 3.0, 2.5, 0.0], [1.0, 0.0, 0.0], sub_dt, &s);
+            // Below 60 fps one call ticks once per elapsed 60 Hz step (`mixmap_frame`'s ticks loop),
+            // and the listener's velocity and the bed's frame span those steps (the game passes the
+            // real frame time). Before 2026-10-03 both took one row's dt there: E2E_FPS < 60 renders
+            // ran the camera velocity (Doppler) and the bed's clocks off by the rows per call.
+            let ticks = if fps.is_some_and(|f| f < 60.0) { rows_since_call } else { 1 };
+            let call_dt = sub_dt * ticks as f32;
+            let l = p.listener([script.x - 3.0, 2.5, 0.0], [1.0, 0.0, 0.0], call_dt, &s);
+            let mix_calls = if mix_console { cadence.advance(ticks) } else { 0 };
+            p.jitter_steps = mix_console.then_some(mix_calls);
+            // As `mixmap_frame`: sub_82491180 (half 1) before the inputs, with the last walk's values.
+            if mix_console && mix_calls > 0 {
+                shared.lock().unwrap().mixer.buses.eq.clear(p.eq_jitter());
+            }
             p.write_inputs(&mut m, &s, Some(&l));
             bed.write_inputs(&mut m, &s, !p.rolling_on);
             let speed_scale = bed.push_scale();
@@ -407,13 +481,17 @@ fn e2e_render() {
             let t1 = std::time::Instant::now();
             p.process(&mut m, &s, &mut shared.lock().unwrap(), speed_scale, loose);
             let t2 = std::time::Instant::now();
-            // Below 60 fps one call ticks once per elapsed 60 Hz step (`mixmap_frame`'s ticks loop).
-            let ticks = if fps.is_some_and(|f| f < 60.0) { rows_since_call } else { 1 };
-            for _ in 0..ticks {
-                m.tick(sub_dt);
+            if mix_console {
+                for _ in 0..mix_calls {
+                    m.tick(skate_audio::mixmap::cadence::CONSOLE_DT);
+                }
+            } else {
+                for _ in 0..ticks {
+                    m.tick(sub_dt);
+                }
             }
             rows_since_call = 0;
-            if frame % 2 == 1 {
+            if !mix_console && frame % 2 == 1 {
                 shared.lock().unwrap().mixer.buses.eq.clear(p.eq_jitter());
             }
             let t3 = std::time::Instant::now();
@@ -424,7 +502,7 @@ fn e2e_render() {
             }
             let t4 = std::time::Instant::now();
             let routed = p.rolling_on.then(|| (std::mem::take(&mut p.routed.grains), p.routed.primary));
-            super::grain_bed::step(&mut bed, &library, &m, &shared, &riding, sub_dt, &seams, routed);
+            super::grain_bed::step(&mut bed, &library, &m, &shared, &riding, call_dt, &seams, routed);
             let t5 = std::time::Instant::now();
             if timing && frame >= 60 {
                 let us = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1e6;
@@ -480,6 +558,17 @@ fn e2e_render() {
         let (hits, transitions) = p.seam_hits();
         eprintln!("{name}: {} frames (+60 settle); Class_Seams hits {hits} ({transitions} material changes)", rows.len());
         if timing && !game_us.is_empty() {
+            // The raw times for the optimisation bench (`.claude/skills/optimisation/tools/`):
+            // one line per measured game-thread call and per rendered block.
+            let mut raw = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.timing.tsv"))).unwrap());
+            writeln!(raw, "kind\tus").unwrap();
+            for (total, _, _) in &game_us {
+                writeln!(raw, "frame\t{total:.2}").unwrap();
+            }
+            for us in &block_us {
+                writeln!(raw, "block\t{us:.2}").unwrap();
+            }
+            drop(raw);
             let pct = |v: &mut Vec<f64>, q: f64| {
                 v.sort_by(f64::total_cmp);
                 v[((v.len() - 1) as f64 * q) as usize]

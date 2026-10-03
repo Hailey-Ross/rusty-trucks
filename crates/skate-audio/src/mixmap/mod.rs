@@ -3,7 +3,8 @@
 //! the same outputs as upstream PR #4's port on 73,800 golden cells).
 //!
 //! The game writes controller **inputs** (16 i32 words per controller: physics, 3-D positions,
-//! menu / pause / music flags), calls [`MixMap::tick`] once per 60 Hz frame, and the audio objects
+//! menu / pause / music flags), calls [`MixMap::tick`] once per evaluation (the console's 30 Hz
+//! cadence, [`cadence`]), and the audio objects
 //! read **outputs** (16 u32 words per SFXObj controller, two 16-bit halves each: volumes as Q15,
 //! pitch in cents, filter cutoffs in Hz, raw azimuths) through the owner readers
 //! [`MixMap::level`], [`MixMap::raw`], [`MixMap::pitch_4096`], [`MixMap::filter_hz`].
@@ -12,6 +13,7 @@
 //! lookups → F envelopes → C sums → E sums → output conversion. References read whatever is stored,
 //! so earlier records see this tick's values and later ones last tick's (retail's one-tick lags).
 //! Integer math is i32 with wrapping, floats are f32 at every step (the spec's rounding rules).
+pub mod cadence;
 pub mod format;
 pub mod keys;
 pub mod tables;
@@ -46,6 +48,11 @@ struct Controller {
     inputs: [i32; 16],
     outputs: [u32; 16],
     has_outputs: bool,
+    /// Held inputs ([`MixMap::hold_input`]): bit `id` set = the next tick sees the largest value
+    /// written since the last tick; `held` / `held_set` that value and whether one was written.
+    hold: u16,
+    held_set: u16,
+    held: [i32; 16],
 }
 
 #[derive(Clone, Debug)]
@@ -137,6 +144,8 @@ pub struct MixMap {
     dt_ms: f32,
     /// Ticks evaluated.
     pub ticks: u64,
+    /// Controllers with held inputs ([`MixMap::hold_input`]).
+    holding: Vec<usize>,
 }
 
 fn swing(t: &Tables, w: u16) -> (i32, i32) {
@@ -160,7 +169,7 @@ impl Builder<'_> {
         if let Some(&i) = self.by_key.get(&key) {
             return i;
         }
-        self.ctls.push(Controller { key, inputs: [0; 16], outputs: [0; 16], has_outputs: false });
+        self.ctls.push(Controller { key, inputs: [0; 16], outputs: [0; 16], has_outputs: false, hold: 0, held_set: 0, held: [0; 16] });
         self.by_key.insert(key, self.ctls.len() - 1);
         self.ctls.len() - 1
     }
@@ -341,6 +350,7 @@ impl MixMap {
             mode: u32::MAX,
             dt_ms: 0.0,
             ticks: 0,
+            holding: Vec::new(),
         }
     }
 
@@ -385,8 +395,28 @@ impl MixMap {
     /// Write one input word (`id` 0..15). Unknown controllers are ignored (nothing reads them).
     pub fn set_input(&mut self, key: u32, id: usize, value: i32) {
         if let (Some(i), true) = (self.find(key), id < 16) {
-            self.ctls[i].inputs[id] = value;
+            let c = &mut self.ctls[i];
+            c.inputs[id] = value;
+            let bit = 1u16 << id;
+            if c.hold & bit != 0 {
+                c.held[id] = if c.held_set & bit != 0 { c.held[id].max(value) } else { value };
+                c.held_set |= bit;
+            }
         }
+    }
+
+    /// Hold an input between ticks: the next [`MixMap::tick`] sees the largest value written to it
+    /// since the last tick (the stored input keeps the last write). For one-frame flags (0 / 32767)
+    /// written by a host that writes its inputs more often than it ticks — the console cadence,
+    /// where retail's writers run once per evaluation and see such a flag over the whole frame.
+    /// Returns false for an unknown controller or id.
+    pub fn hold_input(&mut self, key: u32, id: usize) -> bool {
+        let Some(i) = self.find(key).filter(|_| id < 16) else { return false };
+        self.ctls[i].hold |= 1 << id;
+        if !self.holding.contains(&i) {
+            self.holding.push(i);
+        }
+        true
     }
 
     pub fn set_input_f32(&mut self, key: u32, id: usize, value: f32) {
@@ -457,8 +487,37 @@ impl MixMap {
         refs.iter().fold(32767i32, |acc, &r| self.value(r, false).wrapping_mul(acc) >> 15)
     }
 
-    /// One evaluation with frame time `dt` seconds (retail: 1/60 per game frame).
+    /// One evaluation with frame time `dt` seconds: retail evaluates once per audio-manager pass,
+    /// on the ~30 fps console with the frame's dt (≈ 1/30; [`cadence`]); envelopes use `dt`, the
+    /// Doppler slew is per evaluation.
     pub fn tick(&mut self, dt: f32) {
+        // Held inputs: evaluate with the largest value since the last tick, then restore the last
+        // write (so the next tick sees only what is written after this one).
+        let mut saved = Vec::new();
+        for &i in &self.holding {
+            let c = &mut self.ctls[i];
+            if c.held_set != 0 {
+                saved.push((i, c.held_set, c.inputs));
+                for id in 0..16 {
+                    if c.held_set & (1 << id) != 0 {
+                        c.inputs[id] = c.inputs[id].max(c.held[id]);
+                    }
+                }
+                c.held_set = 0;
+            }
+        }
+        self.evaluate(dt);
+        for (i, set, inputs) in saved {
+            let c = &mut self.ctls[i];
+            for id in 0..16 {
+                if set & (1 << id) != 0 {
+                    c.inputs[id] = inputs[id];
+                }
+            }
+        }
+    }
+
+    fn evaluate(&mut self, dt: f32) {
         self.dt_ms = dt * 1000.0;
         for k in 0..self.order.len() {
             let i = self.order[k];

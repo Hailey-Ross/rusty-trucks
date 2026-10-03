@@ -18,6 +18,7 @@ Each document stands alone. File paths are relative to the repository root.
 | 10 | [Sky shader validation test](10-sky-shader-test.md) | Game tests (Rust) | Done; all six shader validation tests pass |
 | 11 | [Game audio](11-audio.md) | Setup (Python, vgmstream), game audio (Rust) | Work in progress (draft #32). Player cues tuned against retail traces; retail world audio done: .ems emitters, location-set one-shots (sirens; 1,859/1,859 retail match over 15 locations), zone ambience beds. Native AEMS runtime (`crates/skate-audio`: evaluator + voice graph) implemented behind `SKATE_AEMS=1` for the world emitters; 234/235 PoC-oracle scripts identical, DSP kernels bit-exact; MixMap + granular rolling bed; player MixMap inputs and the first native player components (grind, wind/rattle, foot drag; wind level within 0.5 dB of retail); needs a listening check. |
 | 12 | [Board solver: 50 constraint iterations](12-solver-iterations.md) | Game physics (Rust) | Done; maps identical, water traces as expected; one asset-gated customiser test fails (open question) |
+| 13 | [Research hooks for the recompilation](13-recomp-research-hooks.md) | Research tooling (external: skate3recomp `research-hooks` branch) | Published; reference and information gathering only (the recompilation is not a perfect copy of the console game) |
 
 ## Environment used for verification
 

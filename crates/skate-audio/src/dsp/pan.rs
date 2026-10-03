@@ -108,13 +108,10 @@ pub fn point_gains(x: f64, y: f64, focus: f64) -> [f64; 5] {
     let (x, y, r2) = clamp(x, y);
     let mut g = [0.0f64; 5];
     if r2 < 1.0 {
-        let w: Vec<f64> = SPEAKERS
-            .iter()
-            .map(|a| {
-                let (sx, sy) = (a.to_radians().cos(), a.to_radians().sin());
-                1.0 - 0.5 * ((sx - x).powi(2) + (sy - y).powi(2)).sqrt()
-            })
-            .collect();
+        let w: [f64; 5] = SPEAKERS.map(|a| {
+            let (sx, sy) = (a.to_radians().cos(), a.to_radians().sin());
+            1.0 - 0.5 * ((sx - x).powi(2) + (sy - y).powi(2)).sqrt()
+        });
         let mut front = 0.5 * (x + 1.0);
         let mut back = 1.0 - front;
         if front < 5e-4 {

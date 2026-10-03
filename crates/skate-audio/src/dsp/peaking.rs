@@ -4,7 +4,7 @@
 //! clamped to [FLOOR, CEIL] and Q to 0.2..20 for the coefficients. Same Direct Form I kernel as
 //! the high/low-pass ([`super::biquad::kernel`]). Not bit-exact against retail (no replay vectors:
 //! the coefficient arithmetic is RBJ in f32 with libm trig, UNCERTAIN to the ulp).
-use super::biquad::{CEIL, Coefficients, FLOOR, kernel, omega};
+use super::biquad::{CEIL, Coefficients, FLOOR, kernel_block, omega, silent};
 
 #[derive(Clone, Debug)]
 pub struct PeakingIir2 {
@@ -62,8 +62,25 @@ impl PeakingIir2 {
             self.cached = Some(key);
         }
         self.filtering = true;
-        for (ch, samples) in channels.iter_mut().enumerate().take(8) {
-            kernel(&self.coefficients, &mut self.history[ch], samples);
+        // A silent channel (all +0.0, e.g. an eEQChain bus channel nothing plays into) whose history
+        // is bit-identical to an earlier silent channel's copies that channel's output and history:
+        // same coefficients, same history, same input → the same result from the pure kernel. The
+        // rest take [`kernel_block`] (settled-filter shortcut). Bit-identical to running [`kernel`]
+        // on every channel (optimisation pass 2026-10-03; tests in `dsp::biquad`).
+        let mut silent_before: [Option<[u32; 4]>; 8] = [None; 8];
+        for ch in 0..channels.len().min(8) {
+            let (done, rest) = channels.split_at_mut(ch);
+            let samples = &mut *rest[0];
+            if silent(samples) {
+                let before = self.history[ch].map(f32::to_bits);
+                silent_before[ch] = Some(before);
+                if let Some(j) = (0..ch).find(|&j| silent_before[j] == Some(before) && done[j].len() == samples.len()) {
+                    samples.copy_from_slice(done[j]);
+                    self.history[ch] = self.history[j];
+                    continue;
+                }
+            }
+            kernel_block(&self.coefficients, &mut self.history[ch], samples);
         }
     }
 }
@@ -113,5 +130,81 @@ mod tests {
         clip(&mut [&mut c[..]], 0.1);
         assert_eq!(c, vec![0.1, -0.1, 0.09]);
         clip(&mut [&mut c[..]], 100.0);
+    }
+
+    /// The process before the optimisation pass (test-only reference): the plain kernel on every
+    /// channel.
+    fn process_reference(eq: &mut PeakingIir2, channels: &mut [&mut [f32]], rate: f32) {
+        if eq.gain == 1.0 {
+            if eq.filtering {
+                eq.history = [[0.0; 4]; 8];
+            }
+            eq.filtering = false;
+            return;
+        }
+        let key = [eq.freq.to_bits(), eq.gain.to_bits(), eq.q.to_bits()];
+        if eq.cached != Some(key) {
+            eq.coefficients = coefficients(eq.freq, eq.gain, eq.q, rate);
+            eq.cached = Some(key);
+        }
+        eq.filtering = true;
+        for (ch, samples) in channels.iter_mut().enumerate().take(8) {
+            super::super::biquad::kernel(&eq.coefficients, &mut eq.history[ch], samples);
+        }
+    }
+
+    /// Six-channel blocks as an eEQChain bus sees them (silent channels, a voice on some, -0.0,
+    /// a constant), with the parameters changing as the jitter / re-rolls change them: the
+    /// optimised process (twin copies, settled filters, silent tails) equals the reference bit for
+    /// bit, block by block, outputs and histories.
+    #[test]
+    fn silent_shortcuts_match_the_plain_kernel() {
+        let mut seed = 0x1234_5678u32;
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        };
+        let (mut a, mut b) = (PeakingIir2::default(), PeakingIir2::default());
+        for block in 0..4000usize {
+            // Parameters: re-rolled every 300 blocks, jittered every 6 for a stretch, bypass for a
+            // while (gain 1), a NaN frequency once.
+            let phase = block / 300;
+            let (f, g, q) = match phase % 5 {
+                0 => (450.0, 1.5, 3.0),
+                1 => (150.0 + (block / 6 % 7) as f32 * 30.0, 0.75 + (block / 6 % 3) as f32 * 0.1, 0.25),
+                2 => (5000.0, 1.0, 2.0),
+                3 => (if block == 1000 { f32::NAN } else { 2500.0 }, 1.25, 20.0),
+                _ => (96000.0, 0.1, 0.2),
+            };
+            for eq in [&mut a, &mut b] {
+                (eq.freq, eq.gain, eq.q) = (f, g, q);
+            }
+            // Channel contents: voices in bursts on channels 0..3, the rest silent; channel 4 -0.0
+            // sometimes, channel 5 a constant sometimes.
+            let voice = block % 97 < 20;
+            let mut input = [[0.0f32; 256]; 6];
+            for (c, ch) in input.iter_mut().enumerate() {
+                for x in ch.iter_mut() {
+                    *x = match c {
+                        0..=3 if voice && c <= block % 4 => noise() * 0.1,
+                        4 if block % 11 == 0 => -0.0,
+                        5 if block % 13 == 0 => 0.125,
+                        _ => 0.0,
+                    };
+                }
+            }
+            let (mut xa, mut xb) = (input, input);
+            {
+                let mut pa: Vec<&mut [f32]> = xa.iter_mut().map(|c| &mut c[..]).collect();
+                process_reference(&mut a, &mut pa, 48000.0);
+                let mut pb: Vec<&mut [f32]> = xb.iter_mut().map(|c| &mut c[..]).collect();
+                b.process(&mut pb, 48000.0);
+            }
+            let bits = |x: &[[f32; 256]; 6]| x.iter().flatten().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&xa), bits(&xb), "block {block}");
+            let hist = |e: &PeakingIir2| e.history.iter().flatten().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(hist(&a), hist(&b), "block {block}");
+            assert_eq!((a.filtering, a.cached), (b.filtering, b.cached));
+        }
     }
 }

@@ -70,17 +70,17 @@ impl Delay {
             let line = &mut self.lines[ch];
             let mut w = self.write;
             for (k, s) in samples.iter_mut().enumerate() {
-                let t_new = line[(w + len - d) % len];
+                let t_new = line[super::wrap(w + len - d, len)];
                 let (y, wv) = if fade && k < 128 {
                     let r = (127 - k) as f32 * (1.0 / 128.0);
-                    let t_old = line[(w + len - old_d) % len];
+                    let t_old = line[super::wrap(w + len - old_d, len)];
                     ((1.0 - r) * t_new + r * t_old, *s + (1.0 - r) * fb_new * t_new + r * old_fb * t_old)
                 } else {
                     (t_new, *s + fb_new * t_new)
                 };
                 line[w] = wv;
                 *s = y;
-                w = (w + 1) % len;
+                w = super::wrap(w + 1, len);
             }
         }
         self.write = (self.write + channels.first().map_or(0, |c| c.len())) % len;

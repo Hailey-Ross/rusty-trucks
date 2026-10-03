@@ -158,7 +158,12 @@ impl Rig {
 
     /// Render one 60 Hz frame (800 stereo frames at 48 kHz); per live voice (bank, slot, id, gain).
     fn render(&mut self) -> Vec<(&'static str, u16, u32, f32)> {
-        let mut out = vec![0.0f32; 1600];
+        self.render_frames(800)
+    }
+
+    /// Render `frames` stereo frames at 48 kHz; per live voice (bank, slot, id, gain).
+    fn render_frames(&mut self, frames: usize) -> Vec<(&'static str, u16, u32, f32)> {
+        let mut out = vec![0.0f32; 2 * frames];
         self.rt.fill_stereo(&mut out);
         self.frame += 1;
         self.rt.mixer.snapshot().into_iter().filter_map(|v| Some((*self.names.get(&v.bank)?, v.slot, v.id, v.gain))).collect()
@@ -607,6 +612,118 @@ fn treatment_replays_the_recomp_capture() {
     println!("+236 zeroed on the landing tick: identical voices = {}", zeroed == voices);
 }
 
+/// Replays the TREAT rows between `from` and `to` ms row by row: each row's state is delivered
+/// (process, MixMap tick, update) and then the audio up to the next row is rendered, starting the
+/// render clock `phase_ms` before the first row (which moves the evaluator's 32 ms walks against
+/// the rows). `stall` = a capture interval in which no audio is rendered (the recomp's audio thread
+/// stopped while the game ran on: no walks, no voice starts); the audio clock then jumps to its end.
+/// Returns the Treatments voices on the capture's clock.
+fn replay_treat_rows(rows: &[TreatRow], from: f64, to: f64, phase_ms: f64, stall: Option<(f64, f64)>) -> Option<Vec<ReplayVoice>> {
+    let mut rig = Rig::new(&["Treatments"])?;
+    let (t, g) = (TreatmentTuning::default(), Globals::default());
+    let mut k = Treatment::default();
+    let mut voices: HashMap<u32, ReplayVoice> = HashMap::new();
+    let window: Vec<TreatRow> = rows.iter().copied().filter(|r| r.ms >= from && r.ms <= to).collect();
+    let deliver = |rig: &mut Rig, k: &mut Treatment, s: &AudioState| {
+        rig.inputs(s);
+        let cmds = k.process(s, &t, &g, &Owner { mixmap: &rig.mixmap, key: keys::treatments(0) });
+        rig.apply(cmds);
+        rig.mixmap.tick(s.dt);
+        let cmds = k.update(s, &TreatmentGlobals::default(), &t, &Owner { mixmap: &rig.mixmap, key: keys::treatments(0) });
+        rig.apply(cmds);
+    };
+    // The audio clock (capture ms the rendered audio has reached); 48 frames per ms.
+    let mut audio = window[0].ms - 300.0 - phase_ms;
+    let render_to = |rig: &mut Rig, audio: &mut f64, until: f64, voices: &mut HashMap<u32, ReplayVoice>| {
+        if let Some((a, b)) = stall {
+            if until > a && *audio < b {
+                // Render up to the stall, then skip it.
+                if *audio < a {
+                    let frames = ((a - *audio) * 48.0).floor() as usize;
+                    if frames > 0 {
+                        rig.render_frames(frames);
+                    }
+                }
+                *audio = (*audio).max(until.min(b));
+                if until <= b {
+                    return;
+                }
+            }
+        }
+        let frames = ((until - *audio) * 48.0).floor().max(0.0) as usize;
+        if frames == 0 {
+            return;
+        }
+        *audio += frames as f64 / 48.0;
+        let ms = *audio;
+        for (_, slot, id, gain) in rig.render_frames(frames) {
+            let v = voices.entry(id).or_insert(ReplayVoice { start: ms, end: ms, slot, peak: 0.0 });
+            v.peak = v.peak.max(gain);
+            v.end = ms;
+        }
+    };
+    // Settle the program on the ground for 300 ms plus the phase.
+    let ground = AudioState { wheel_count: 4, wheel_contact: [true; 4], ..Default::default() };
+    let mut clock = audio;
+    while clock < window[0].ms {
+        deliver(&mut rig, &mut k, &ground);
+        clock += 1000.0 / 60.0;
+        render_to(&mut rig, &mut audio, clock.min(window[0].ms), &mut voices);
+    }
+    for (i, r) in window.iter().enumerate() {
+        let next = window.get(i + 1).map_or(r.ms + 1000.0 / 60.0, |n| n.ms);
+        let s = AudioState {
+            airborne: r.air,
+            air_time: r.air_time,
+            air_until_landing: r.to_land,
+            jump_height: r.height,
+            global_224: r.g224,
+            wheel_count: if r.air { 0 } else { 4 },
+            wheel_contact: [!r.air; 4],
+            dt: ((next - r.ms) / 1000.0) as f32,
+            ..Default::default()
+        };
+        deliver(&mut rig, &mut k, &s);
+        render_to(&mut rig, &mut audio, next, &mut voices);
+    }
+    let mut out: Vec<ReplayVoice> = voices.into_values().collect();
+    out.sort_by(|a, b| a.start.total_cmp(&b.start).then(a.slot.cmp(&b.slot)));
+    Some(out)
+}
+
+/// Diagnostic (ignored; `--nocapture`): the TREAT rows of chosen airs replayed row by row (the
+/// recomp's own update cadence, ~345 Hz) at every walk phase (0..32 ms in 2 ms steps): which slots
+/// open, when (ms after the air's first row) and how loud. `TREAT_AIRS=a-b,…` (capture ms) picks the
+/// windows; the default is the ~2 s ramp air with its 30 ms blip and the short airs. The ramp air
+/// is also replayed with the recomp's audio stall (no audio lines 101499–102500 in the capture).
+#[test]
+#[ignore = "diagnostic"]
+fn treatment_airs_by_walk_phase() {
+    let Some(rows) = treat_rows() else { return eprintln!("skipped: no TREAT session") };
+    let windows: Vec<(f64, f64, Option<(f64, f64)>)> = std::env::var("TREAT_AIRS").ok().map_or(
+        vec![
+            (101_400.0, 104_500.0, None),
+            (101_400.0, 104_500.0, Some((101_499.1, 102_500.2))),
+            (24_400.0, 25_200.0, None),
+            (116_800.0, 117_600.0, None),
+            (106_450.0, 107_600.0, None),
+            (113_350.0, 114_300.0, None),
+            (67_900.0, 68_600.0, None),
+            (71_750.0, 72_500.0, None),
+        ],
+        |s| s.split(',').map(|w| { let (a, b) = w.split_once('-').unwrap(); (a.parse().unwrap(), b.parse().unwrap(), None) }).collect(),
+    );
+    for (from, to, stall) in windows {
+        let first_air = rows.iter().find(|r| r.ms >= from && r.air).map_or(from, |r| r.ms);
+        println!("window {from}..{to} (first air row {first_air}), audio stall {stall:?}:");
+        for p in (0..32).step_by(2) {
+            let Some(v) = replay_treat_rows(&rows, from, to, p as f64, stall) else { return eprintln!("skipped: no Treatments bank") };
+            let list: Vec<_> = v.iter().map(|v| (v.slot, (v.start - first_air).round() as i64, (v.peak * 1e4).round() / 1e4)).collect();
+            println!("  phase {p:2} ms: {list:?}");
+        }
+    }
+}
+
 /// The recomp's Treatments voices in the TREAT session all_20261002_223306 (University: plain
 /// ollies, one ~2 s air off a ramp), from `retail_voices.py` with the sample-address
 /// disambiguation: Treatments 16 / 17 are byte-identical to sense_of_speed 3 / 4, so they read as
@@ -648,4 +765,87 @@ fn treatment_replay_of_the_recomp_capture() {
     println!("16 / 17 in the 0.6-1.0 s airs: {} voices, peak gains {:.4}..{:.4}, median {median:.4} vs the recomp's {RECOMP_LONG_AIR_GAIN_MEDIAN} ({db:+.1} dB)",
         gains.len(), gains[0], gains[gains.len() - 1]);
     assert!(db.abs() < 3.0, "16 / 17 median {db:+.1} dB from the recomp");
+}
+
+/// Diagnostic (ignored; `--nocapture`): `SFXObj_SenseOfSpeed` (rattle + wind) driven by a recomp
+/// session's per-update ground speed and air flag (GREC lines of the local board, `GREC_SESSION`,
+/// default all_20261002_223613; `GREC_OBJECT`, default `40C33020`), one update per 60 Hz frame,
+/// through the real `sense_of_speed` bank, MixMap and evaluator. The COM speed stands in as the
+/// ground speed (GREC has no COM velocity), so the wind is approximate in the air. Prints voices
+/// per stream and their peak-gain quantiles, to compare with the recomp's own sense_of_speed voices
+/// in the same session (`.local/audio-re/sos/sos_figures.py`, which attributes the shared samples
+/// by address: Treatments 16 / 17 = sense_of_speed 3 / 4).
+#[test]
+#[ignore = "diagnostic"]
+fn sense_of_speed_replay_of_the_recomp_speeds() {
+    use skate_audio::player::components::SenseOfSpeed;
+    let session = std::env::var("GREC_SESSION").map(PathBuf::from).unwrap_or_else(|_| root().join(".local/recomp/sessions/all_20261002_223613"));
+    let object = std::env::var("GREC_OBJECT").unwrap_or_else(|_| "40C33020".into());
+    let Ok(text) = std::fs::read_to_string(session.join("trace.tsv")) else { return eprintln!("skipped: no GREC session") };
+    // (ms, ground speed m/s, air)
+    let rows: Vec<(f64, f32, bool)> = text
+        .lines()
+        .filter(|l| l.starts_with("GREC\t"))
+        .map(|l| l.split('\t').collect::<Vec<_>>())
+        .filter(|f| f.len() >= 7 && f[2] == object)
+        .filter_map(|f| {
+            let s: Vec<&str> = f[6].split_whitespace().collect();
+            Some((f[1].parse().ok()?, s.get(1)?.parse().ok()?, s.get(3)? != &"0"))
+        })
+        .collect();
+    if rows.is_empty() {
+        return eprintln!("skipped: no GREC rows for {object}");
+    }
+    let Some(mut rig) = Rig::new(&["sense_of_speed"]) else { return eprintln!("skipped: no sense_of_speed bank") };
+    let mut k = SenseOfSpeed::default();
+    let mut voices: HashMap<u32, (u16, f64, f32)> = HashMap::new();
+    let (t0, t1) = (rows[0].0, rows[rows.len() - 1].0);
+    let (mut at, mut f) = (0usize, 0usize);
+    let mut riding = 0.0f64;
+    loop {
+        let ms = t0 + f as f64 * 1000.0 / 60.0;
+        if ms > t1 {
+            break;
+        }
+        while at + 1 < rows.len() && rows[at + 1].0 <= ms {
+            at += 1;
+        }
+        let (_, v, air) = rows[at];
+        if v.abs() * 3.6 >= 15.0 {
+            riding += 1.0 / 60.0;
+        }
+        let s = AudioState {
+            ground_speed: v,
+            com_velocity: [v, 0.0, 0.0],
+            board_velocity: [v, 0.0, 0.0],
+            airborne: air,
+            wheel_count: if air { 0 } else { 4 },
+            wheel_contact: [!air; 4],
+            ..Default::default()
+        };
+        rig.inputs(&s);
+        let cmds = k.process(&s);
+        rig.apply(cmds);
+        rig.mixmap.tick(s.dt);
+        let cmds = k.update(&s, &Owner { mixmap: &rig.mixmap, key: keys::sense_of_speed(0) });
+        rig.apply(cmds);
+        for (_, slot, id, gain) in rig.render() {
+            let e = voices.entry(id).or_insert((slot, ms, 0.0));
+            e.2 = e.2.max(gain);
+        }
+        f += 1;
+    }
+    let q = |v: &mut Vec<f32>, p: f64| {
+        v.sort_by(f32::total_cmp);
+        v.get(((v.len().max(1) - 1) as f64 * p).round() as usize).copied().unwrap_or(f32::NAN)
+    };
+    let mut all: Vec<f32> = voices.values().map(|v| v.2).collect();
+    println!("{} s at >= 15 km/h; sense_of_speed voices {}: peak gain p50 {:.4} p90 {:.4} max {:.4}", riding.round(), all.len(), q(&mut all, 0.5), q(&mut all, 0.9), q(&mut all, 1.0));
+    let mut slots: Vec<u16> = voices.values().map(|v| v.0).collect();
+    slots.sort();
+    slots.dedup();
+    for slot in slots {
+        let mut g: Vec<f32> = voices.values().filter(|v| v.0 == slot).map(|v| v.2).collect();
+        println!("  stream {slot:2}: {:4} voices, peak gain p50 {:.4} p90 {:.4} max {:.4}", g.len(), q(&mut g, 0.5), q(&mut g, 0.9), q(&mut g, 1.0));
+    }
 }

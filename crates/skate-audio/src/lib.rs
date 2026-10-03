@@ -39,6 +39,8 @@ pub mod mixmap;
 pub mod player;
 pub mod runtime;
 pub mod splice;
+/// World sound sources (traffic, pedestrians, streamed speech): see the module docs.
+pub mod world;
 
 /// Mixer rate (Hz) and block size (frames) of the retail runtime.
 pub const MIX_RATE: u32 = 48_000;
