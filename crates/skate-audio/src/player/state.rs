@@ -163,6 +163,17 @@ pub struct AudioState {
     /// `+688` / `+689`: hand limb 2 (part 3) / 3 (part 7) on the deck: Skeleton `+602` / `+603`
     /// ([`super::step_on::hands_on_deck`]).
     pub hands_on_deck: [bool; 2],
+    // ---- water (`player::footsteps::Splash`, OffBoard's `sub_824EBB58`; the bridge `sub_824B0DA8`
+    // copies the packed record's `+172` bits 30 / 29 / 28, written by the conditioner `sub_827A1B78`).
+    /// `+811` in water: the current state's `+81` (Wipeout300's special surface, i.e. its water
+    /// contact; the engine's `state_flags[81 − 52]`).
+    pub in_water: bool,
+    /// `+812` under the surface: `+811` and the state's surface height (`+32`) above the Y of any
+    /// of the PhysOut Skeleton points `+128` / `+112` / `+32` (part 15's and part 19's pose applied
+    /// to a per-part local point, and part 1's pose translation).
+    pub under_water: bool,
+    /// `+813` the board in water: Collision `+16` (the board's surface vote, `choose_surface`) = 12.
+    pub board_in_water: bool,
 }
 
 impl Default for AudioState {
@@ -237,6 +248,9 @@ impl Default for AudioState {
             body_slide_flag: false,
             body_impact: [0.0; 6],
             hands_on_deck: [false; 2],
+            in_water: false,
+            under_water: false,
+            board_in_water: false,
         }
     }
 }

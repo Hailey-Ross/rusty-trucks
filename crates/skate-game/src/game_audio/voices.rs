@@ -46,6 +46,7 @@ pub(crate) struct Play {
     /// linear interpolation (retail's per-layer fader curves); None = flat.
     pub envelope: Option<&'static [(f32, f32)]>,
 }
+#[cfg(test)]
 impl Play {
     pub(crate) fn effect(volume: f32, position: Vec3) -> Self {
         Self { category: Category::Effects, volume, pitch: 1.0, position: Some(position), looping: false, fade_in: MIN_FADE, envelope: None }
@@ -103,18 +104,23 @@ pub(crate) struct Voices {
     /// last `sync`, so one-shots can start at their final level.
     mix: [f32; 2],
     silenced: bool,
-    /// Scale on every interim voice: 1 normally; `1 / cues::RETAIL_SCALE` while the native player
-    /// sounds run (`native::follow_volume`), so the retail-measured interim cues sit at their
-    /// measured level against the native voices (which play at retail level) instead of the
-    /// interim mix's rolling-anchored ×2.
+    /// Scale on every Bevy voice: 1 normally; `1 / RETAIL_SCALE` while the native player sounds run
+    /// (`native::follow_volume`), so the retail-measured layers (zone beds, location sets,
+    /// crossfades) sit at their measured level against the native voices (which play at retail
+    /// level) instead of the old rolling-anchored ×2.
     pub(crate) scale: f32,
-    /// True while the native host runs (`native::follow_volume`): every interim voice then gets
+    /// True while the native host runs (`native::follow_volume`): every Bevy voice then gets
     /// [`native_fold_gain`], so it reaches the ears as a native voice of the same per-voice gain
     /// would (Pan2D1 + the output stage's stereo fold) instead of Bevy's own panning.
     pub(crate) native_fold: bool,
     /// The listener as of the last `sync` (world → listener-local transform, ear offsets).
     view: Option<ListenerView>,
 }
+
+/// Measured retail level → Bevy-voice level of the measured world layers (the ambience beds):
+/// ×2, anchored in 2026-10-01 to the former interim rolling loop (its level 0.15 / retail rolling
+/// p90 0.065, rounded down). [`Voices::scale`] takes it back out while the native player runs.
+pub(super) const RETAIL_SCALE: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug)]
 struct ListenerView {
@@ -128,7 +134,7 @@ fn fold_row(row: &[f32; 6]) -> (f32, f32) {
     (G707 * row[0] + 0.5 * row[1] + 0.5 * row[3], G707 * row[2] + 0.5 * row[1] + 0.5 * row[4])
 }
 
-/// Gain that makes an interim (Bevy) voice reach the ears with the power a native voice of the
+/// Gain that makes a Bevy voice (the measured world layers) reach the ears with the power a native voice of the
 /// same per-voice gain gets through Pan2D1 and the output stage's stereo fold (aems-voice-graph-spec
 /// §4.9, §6.3; `examples/pan_fold_probe.rs`).
 ///
@@ -397,7 +403,7 @@ mod tests {
         // Side: native 0.72 / 0.26 (L/Ls pair), rodio 1.0 / 0.5 (power 1.25).
         let side = native_fold_gain(1, Some(Vec3::new(10.0, 0.0, 0.0)), ears);
         assert!(side > 0.6 && side < 0.75, "{side}");
-        // Off by default: the interim path is unchanged without the native host.
+        // Off by default: Bevy voices are unchanged without the native host.
         assert_eq!(Voices::default().fold_gain(1, None), 1.0);
     }
 

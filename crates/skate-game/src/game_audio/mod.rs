@@ -2,11 +2,10 @@
 //! played from the owned disc's sounds that setup decodes to PCM WAV
 //! (tools/asset_pipeline/audio_export.py -> assets/private/audio).
 //!
-//! Gameplay events have no event bus, so each cue is found by comparing this
-//! frame's physics state with the last one, as the mod observation layer does.
-//! Which retail sample plays for which event is our own hand-made table
-//! (docs/hails-additions/11-audio.md); EA's AEMS event runtime is not
-//! re-implemented.
+//! The skater's sounds, the world emitters and the rolling bed are the native AEMS runtime
+//! (`crates/skate-audio`, `native.rs`): retail's patch programs, MixMap and player components fed
+//! from the physics state (`skate_events::observe`). The zone beds, location sets and crossfades
+//! still play measured layers through Bevy voices (docs/hails-additions/11-audio.md).
 //!
 //! Loudness is deliberately conservative: master volume defaults to 75%,
 //! a cue may raise a quiet clip only until the clip's own peak reaches full
@@ -15,7 +14,6 @@
 //! the menu is open or a replay runs. `--mute` silences game and mod audio.
 mod ambience;
 mod crossfade_groups;
-mod cues;
 #[cfg(test)]
 mod e2e;
 mod emitters;
@@ -48,14 +46,12 @@ struct SavedSettings {
     master: u32,
     ambience: u32,
     effects: u32,
-    /// Use the interim measured cue tables instead of the native AEMS runtime (crates/skate-audio),
-    /// which is the default. `SKATE_AEMS=0` / `SKATE_AEMS=1` override it (native.rs). The old
-    /// `native` key (saved as `false` while the tables were the default) is ignored.
-    interim: bool,
+    // Files saved before 2026-10-03 may hold `"interim"` (the opt-out to the removed interim cue
+    // tables) or the older `"native"`; unknown keys are ignored, so they still load.
 }
 impl Default for SavedSettings {
     fn default() -> Self {
-        Self { master: 75, ambience: 100, effects: 100, interim: false }
+        Self { master: 75, ambience: 100, effects: 100 }
     }
 }
 impl SavedSettings {
@@ -90,11 +86,6 @@ impl AudioSettings {
     /// Linear master gain (0 when muted).
     pub(crate) fn master(&self) -> f32 {
         if self.muted { 0.0 } else { self.saved.master as f32 / 100.0 }
-    }
-    /// Whether `settings/audio.json` keeps the native AEMS runtime (the default) rather than the
-    /// interim tables.
-    pub(crate) fn native(&self) -> bool {
-        !self.saved.interim
     }
     pub(crate) fn category(&self, category: Category) -> f32 {
         let percent = match category {
@@ -163,7 +154,7 @@ impl Plugin for GameAudioPlugin {
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
             .add_systems(Update, (native::mixmap_frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame).chain().before(CueSet).after(crate::app::FrameSet::Animation))
-            .add_systems(Update, (ambience::update, skate_events::play, emitters::update, random_sets::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
+            .add_systems(Update, (ambience::update, emitters::update, random_sets::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
             .add_systems(Update, voices::sync.after(CueSet))
             .add_systems(Update, timing::report)
             .add_plugins(native::register)
@@ -176,23 +167,11 @@ impl Plugin for GameAudioPlugin {
     }
 }
 
-fn setup(mut commands: Commands, config: Res<crate::config::Config>, mut assets: ResMut<Assets<AudioSource>>) {
+fn setup(mut commands: Commands, config: Res<crate::config::Config>) {
     commands.insert_resource(AudioSettings::load(&config));
     commands.spawn((GameAudioListener, SpatialListener::new(0.2), Transform::default()));
     match Library::load(&config.asset_root) {
-        Ok(mut library) => {
-            let records: Vec<(&str, Vec<usize>)> = cues::RECORDS.iter().copied()
-                .chain(cues::BED_RECORDS.iter().map(|(r, _)| r))
-                .map(|r| (r.bank, library.patch_samples(r.bank, r.id))).collect();
-            let mut samples: Vec<(&str, &[usize])> = cues::ALL.iter().copied()
-                .chain(cues::BED_CUES.iter().map(|(c, _)| c))
-                .map(|c| (c.bank, c.samples)).collect();
-            samples.extend(records.iter().map(|(bank, ids)| (*bank, ids.as_slice())));
-            let started = std::time::Instant::now();
-            let count = library.preload(&mut assets, &samples);
-            info!("Game audio: preloaded {count} clips in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
-            commands.insert_resource(library);
-        }
+        Ok(library) => commands.insert_resource(library),
         Err(error) => info!("Game audio unavailable (run setup to extract it): {error}"),
     }
 }
@@ -231,20 +210,21 @@ mod tests {
         }
     }
 
+    /// Settings files from before the interim tables were removed still load; their `"interim"` /
+    /// `"native"` keys are ignored.
     #[test]
-    fn native_is_the_default_even_with_an_old_saved_native_false() {
-        assert!(!SavedSettings::default().interim);
-        let old: SavedSettings = serde_json::from_str(r#"{"master":75,"ambience":75,"effects":75,"native":false}"#).unwrap();
-        assert!(!old.interim);
-        let opted_out: SavedSettings = serde_json::from_str(r#"{"interim":true}"#).unwrap();
-        assert!(opted_out.interim);
+    fn old_settings_files_with_interim_or_native_keys_still_load() {
+        let old: SavedSettings = serde_json::from_str(r#"{"master":60,"ambience":75,"effects":75,"native":false}"#).unwrap();
+        assert_eq!(old, SavedSettings { master: 60, ambience: 75, effects: 75 });
+        let opted_out: SavedSettings = serde_json::from_str(r#"{"master":50,"interim":true}"#).unwrap();
+        assert_eq!(opted_out, SavedSettings { master: 50, ..SavedSettings::default() });
     }
 
     #[test]
     fn defaults_are_quiet_and_saved_values_are_bounded() {
         assert_eq!(SavedSettings::default().master, 75);
         let loaded: SavedSettings = serde_json::from_str(r#"{"master":400,"ambience":33,"effects":7}"#).unwrap();
-        assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5, interim: false });
+        assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5 });
     }
 
     #[test]

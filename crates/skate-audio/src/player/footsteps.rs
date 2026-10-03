@@ -8,7 +8,7 @@
 //!   foot-down copies (`+52` = state `+724`, `+236` = `+725`); on the footplant's falling edge
 //!   (state `+768`) the countdown of the foot that was down (A first) is set to 10; both count down;
 //!   then the poster, the walking voices (on foot), the jump voices, (remote players only:
-//!   `sub_824EBA08`, not modelled) and the water splash (`sub_824EBB58`, not ported here);
+//!   `sub_824EBA08`, not modelled) and the water splash ([`Splash`], `sub_824EBB58`);
 //! - poster `sub_824E9FD8`: two `playercharacter_footstep` packets (25 words, constructor
 //!   `sub_824B73E0`), B (`+220`) then A (`+36`), posted once and held; for the local player, on a
 //!   foot-down edge: the foot's four Splice sounds stop (`sub_82494B80`) and up to four start, each
@@ -25,7 +25,7 @@
 //!   sound held;
 //! - update `sub_824E9628`: the packets (`sub_824EAEA8`) and the foot sounds' blocks
 //!   (`sub_82494C08`), the walking (`sub_824EA9C8` level 3, `sub_824EAC38` level 12) and jump
-//!   voices (`sub_824E9AB8` levels 9 / 10), the splash (`sub_824EBE78`, not ported).
+//!   voices (`sub_824E9AB8` levels 9 / 10), the splash sounds ([`Splash::update`], `sub_824EBE78`).
 //!
 //! The FootStep SubMix (per foot sound slot, mono): `Sub0 → HI20 → LI20 → PI20 → Sen0 (env bus,
 //! level) → Pn21 (azimuth) → Sen0 (SFX Master)`; its parameters are latched at each start of the
@@ -235,6 +235,12 @@ pub struct FootstepTuning {
     pub eq_other: Vec<(i32, SubmixEq)>,
     /// Materials 0..142 (setup export; empty: no material footstep layer).
     pub materials: Vec<FootstepMaterial>,
+    /// The water splash (`sub_824EBB58`): the AudioSurface-class (`923CCB46EF5BF5BA`) record
+    /// `water`'s Skate_Collisions ids — under the surface `35D3B06292CDA10B` (1187), or
+    /// `C17485220849574D` (1197) once the time in water reaches `9CD13431903E3719` (0.001 s); the
+    /// board in water `BA81E93AE985D1C7` (1198).
+    pub splash_ids: [u32; 3],
+    pub splash_time: f32,
 }
 
 const fn eq(gain: u32, q: u32, peak_gain: u32, peak_freq: u32, low_pass: u32, high_pass: u32) -> SubmixEq {
@@ -315,6 +321,8 @@ impl Default for FootstepTuning {
             eq_collision: vec![(962, e962), (960, e960), (961, e961), (959, e959), (518, e518), (519, e519)],
             eq_other: vec![(459, m459), (460, m460), (455, m455), (456, m456), (457, m455), (458, m456), (323, m323), (324, m324)],
             materials: Vec::new(),
+            splash_ids: [1187, 1197, 1198],
+            splash_time: f32::from_bits(0x3A83_126F),
         }
     }
 }
@@ -473,6 +481,8 @@ pub struct Footsteps {
     was_hippy: bool,
     jump_bucket: u32,
     from_feet: bool,
+    /// The water splash (`sub_824EBB58` / `sub_824EBE78`).
+    pub splash: Splash,
     /// Sounds started (diagnostics).
     pub starts: u64,
 }
@@ -501,6 +511,7 @@ impl Default for Footsteps {
             was_hippy: false,
             jump_bucket: 0,
             from_feet: false,
+            splash: Splash::default(),
             starts: 0,
         }
     }
@@ -557,6 +568,7 @@ impl Footsteps {
         self.was_footplant = s.footplant;
         self.was_down = s.foot_down;
         self.was_offboard_air = s.offboard_air;
+        self.splash.process(s, ft, host);
         cmds
     }
 
@@ -791,7 +803,107 @@ impl Footsteps {
                 self.apex = None;
             }
         }
+        self.splash.update(s, out, host);
         cmds
+    }
+}
+
+/// OffBoard's water splash (`sub_824EBB58`, at the end of the process, every frame for an active
+/// record; `sub_824EBE78`, at the end of the update). Owner offsets in the field docs.
+///
+/// - `+811` in water (state `+81`): on its rise the time in water `+480` starts at 0, then counts
+///   `dt` per frame; on its fall both latches clear.
+/// - `+812` under the surface, once per water stay (`+478`): unless `+224`, the entry sound `+484`
+///   is stopped and Skate_Collisions [`FootstepTuning::splash_ids`] 0 (1187) starts — or 1 (1197)
+///   when the time in water has reached [`FootstepTuning::splash_time`], i.e. from the frame after
+///   the water contact on. (With `+224` the latch is still taken: no sound for this stay.)
+/// - `+813` the board in water, once per rise (`+492`): `+488` is stopped and id 2 (1198) starts.
+///
+/// Both through the collision Splice object (`sub_82497F48`: SFX Master, start block
+/// [0, 1, 0, 0, 1, 1]); updated with [level(13) (`+484`) / level(16) (`+488`) / 32767,
+/// pitch(14) / 4096, raw(0) × 360/65535, dt, 0, 1] and the env send level(15) / 32767
+/// (`sub_82498140`; as the grind on / off sounds, the env level of the last update is latched at
+/// each start). A sound that ended is released.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Splash {
+    /// `+477` in water last frame, `+480` the time in water, `+478` the entry sound taken.
+    in_water: bool,
+    time: f32,
+    entered: bool,
+    /// `+492` the board was in water last frame.
+    board: bool,
+    /// `+484` the entry sound, `+488` the board's.
+    entry: Option<SoundId>,
+    board_sound: Option<SoundId>,
+    /// level(15) as of the last update.
+    env_level: i32,
+    /// Sounds started, and the id of the last (diagnostics).
+    pub starts: u64,
+    pub last_id: u32,
+}
+
+impl Splash {
+    pub fn process(&mut self, s: &AudioState, ft: &FootstepTuning, host: &mut dyn SpliceHost) {
+        if s.in_water {
+            if self.in_water {
+                self.time += s.dt;
+            } else {
+                self.in_water = true;
+                self.time = 0.0;
+            }
+        } else if self.in_water {
+            self.in_water = false;
+            self.entered = false;
+        }
+        if s.under_water && !self.entered {
+            if !s.global_224 {
+                if let Some(old) = self.entry.take() {
+                    host.release(old);
+                }
+                let id = if self.time >= ft.splash_time { ft.splash_ids[1] } else { ft.splash_ids[0] };
+                self.entry = self.start(id, host);
+            }
+            self.entered = true;
+        }
+        if s.board_in_water {
+            if !self.board {
+                if let Some(old) = self.board_sound.take() {
+                    host.release(old);
+                }
+                self.board_sound = self.start(ft.splash_ids[2], host);
+            }
+            self.board = true;
+        } else {
+            self.board = false;
+        }
+    }
+
+    fn start(&mut self, id: u32, host: &mut dyn SpliceHost) -> Option<SoundId> {
+        host.set_route(crate::bus::Route {
+            output: crate::bus::Output::Master,
+            create: false,
+            owner_env: self.env_level as f32 * LEVEL,
+            mono: true,
+        });
+        let sound = host.start("Skate_Collisions", id, [0.0, 1.0, 0.0, 0.0, 1.0, 1.0]);
+        if sound.is_some() {
+            self.starts += 1;
+            self.last_id = id;
+        }
+        sound
+    }
+
+    pub fn update(&mut self, s: &AudioState, out: &dyn Outputs, host: &mut dyn SpliceHost) {
+        self.env_level = out.level(15);
+        for (sound, level) in [(&mut self.entry, 13usize), (&mut self.board_sound, 16)] {
+            let Some(id) = *sound else { continue };
+            if host.alive(id) {
+                host.update(id, [out.level(level) as f32 * LEVEL, out.pitch(14) as f32 * PITCH, out.raw(0) as f32 * DEGREES, s.dt, 0.0, 1.0]);
+            } else {
+                host.release(id);
+                *sound = None;
+            }
+        }
     }
 }
 
@@ -977,6 +1089,43 @@ mod tests {
 
     fn walking(foot: [bool; 2], m: u32) -> AudioState {
         AudioState { on_foot: true, com_velocity: [1.5, 0.0, 0.0], foot_down: foot, foot_material: [m; 2], ..Default::default() }
+    }
+
+    /// `sub_824EBB58`: one entry sound per water stay (1187 on the water contact's first frame,
+    /// 1197 later; none with `+224`), the board's 1198 once per rise, updates at levels 13 / 16.
+    #[test]
+    fn the_splash_plays_once_per_water_stay_by_its_time_in_water() {
+        let ft = FootstepTuning::default();
+        let mut sp = Splash::default();
+        let mut h = Log::default();
+        let st = |in_water: bool, under: bool, board: bool| AudioState { in_water, under_water: under, board_in_water: board, ..Default::default() };
+        // Dry, then in water at once under the surface: 1187.
+        sp.process(&st(false, false, false), &ft, &mut h);
+        sp.process(&st(true, true, false), &ft, &mut h);
+        assert_eq!(h.started, [("Skate_Collisions".to_owned(), 1187)]);
+        // Staying under: no second sound; the update drives the gain at level(13).
+        sp.process(&st(true, true, false), &ft, &mut h);
+        sp.update(&st(true, true, false), &Out, &mut h);
+        assert_eq!(h.started.len(), 1);
+        assert_eq!(h.updates.last().unwrap().0, 1187);
+        assert!((h.updates.last().unwrap().1[0] - 10013.0 / 32767.0).abs() < 1e-6);
+        // Out, back in water on the surface for a frame, then under: 1197 (time in water > 0.001).
+        sp.process(&st(false, false, false), &ft, &mut h);
+        sp.process(&st(true, false, false), &ft, &mut h);
+        sp.process(&st(true, true, false), &ft, &mut h);
+        assert_eq!(h.started.last().unwrap().1, 1197);
+        // The board: once per rise.
+        sp.process(&st(true, true, true), &ft, &mut h);
+        sp.process(&st(true, true, true), &ft, &mut h);
+        assert_eq!(h.started.iter().filter(|s| s.1 == 1198).count(), 1);
+        sp.update(&st(true, true, true), &Out, &mut h);
+        assert!(h.updates.iter().any(|u| u.0 == 1198 && (u.1[0] - 10016.0 / 32767.0).abs() < 1e-6));
+        // +224: the stay's latch is taken without a sound.
+        let n = h.started.len();
+        sp.process(&st(false, false, false), &ft, &mut h);
+        sp.process(&AudioState { global_224: true, ..st(true, true, false) }, &ft, &mut h);
+        sp.process(&st(true, true, false), &ft, &mut h);
+        assert_eq!(h.started.len(), n);
     }
 
     #[test]

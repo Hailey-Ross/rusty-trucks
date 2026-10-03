@@ -1,6 +1,8 @@
 //! Host for the native AEMS runtime (`crates/skate-audio`): retail's own patch programs and voice
-//! graph instead of our measured tables. Off by default; `SKATE_AEMS=1` or `"native": true` in
-//! `settings/audio.json` turns it on (docs/hails-additions/11-audio.md, "Native AEMS runtime").
+//! graph. Always on (2026-10-03: the interim cue tables and their opt-outs `SKATE_AEMS=0` /
+//! `"interim": true` are gone; docs/hails-additions/11-audio.md). An install without the data
+//! (AEMS banks, MixMap, grain recordings, Splice trees) logs an error naming what is missing and
+//! those sounds stay silent: there is no fallback.
 //!
 //! - At startup every Csis project is installed and `emitter_utility.abk` is loaded and posted
 //!   (retail posts `c_emitter_utility` once at boot; it feeds the `*_snd` / `random_*_gbl` globals).
@@ -16,9 +18,9 @@
 //!   and the systems read its outputs (the `c_emitter` words; the rolling bed's levels, pitch,
 //!   filters and pan).
 //!
-//! Which systems use it so far: the `.ems` world emitters (`emitters.rs`) and, when the install
-//! has the whole grain recordings, the granular rolling bed (`grain_bed.rs`). Location sets, zone
-//! beds, crossfades and the other skate cues still use their measured tables.
+//! Which systems use it: the skater's sounds (`player_audio.rs`), the `.ems` world emitters
+//! (`emitters.rs`) and the granular rolling bed (`grain_bed.rs`). Location sets, zone beds and
+//! crossfades still play measured layers through Bevy voices.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -123,7 +125,7 @@ pub(crate) struct Native {
     pub(crate) player: Option<super::player_audio::PlayerAudio>,
     /// Which emitter states (MixMap Emitter instances 0..4) are taken.
     emitter_states: [bool; EMITTER_STATES],
-    /// The granular rolling bed's game-side state (None: the interim rolling loop plays).
+    /// The granular rolling bed's game-side state (None: no rolling sound; an error is logged).
     pub(crate) bed: Option<super::grain_bed::Bed>,
     /// World emitter banks read and decoded ahead of need on a worker thread ([`prefetch`]).
     pub(crate) prefetch: prefetch::Prefetch,
@@ -149,16 +151,16 @@ impl Native {
                 Some(m)
             }
             None => {
-                warn!("Game audio: this install has no MixMapSK8.mxb (run setup to refresh the audio); emitter words use defaults");
+                error!("Game audio: this install has no MixMapSK8.mxb: the skater's sounds and rolling are silent and emitter words use defaults (run setup to refresh the audio)");
                 None
             }
         };
         let bed = if mixmap.is_some() { super::grain_bed::Bed::new(library) } else { None };
         let player = mixmap.as_ref().map(|_| {
-            super::player_audio::PlayerAudio::new(library.player_tuning(), super::player_audio::components_requested())
+            super::player_audio::PlayerAudio::new(library.player_tuning(), true)
         });
         if bed.is_none() {
-            info!("Game audio: no MixMap, whole grain recordings or grain tuning in this install; the interim rolling loop plays");
+            error!("Game audio: no MixMap, whole grain recordings or grain tuning in this install: rolling is silent (run setup to refresh the audio)");
         }
         let mut native = Self {
             shared: Arc::new(Mutex::new(runtime)),
@@ -242,7 +244,7 @@ impl Native {
     }
 
     /// The player components' banks, in the player volume group; without them the components
-    /// stay off and their interim cues play.
+    /// stay off and the skater's sounds are silent.
     fn load_player_banks(&mut self, library: &Library) {
         if !self.player.as_ref().is_some_and(|p| p.components) {
             return;
@@ -255,7 +257,7 @@ impl Native {
                     }
                 }
                 Err(e) => {
-                    warn!("Game audio: native player sounds off ({e}); the measured cues play");
+                    error!("Game audio: the skater's sounds are silent ({e}; run setup to refresh the audio)");
                     if let Some(p) = &mut self.player {
                         p.components = false;
                     }
@@ -277,7 +279,7 @@ impl Native {
                         first |= i == 0;
                     }
                 }
-                None => warn!("Game audio: {stem} has no patch tree in this install (run setup to refresh the audio); its native sounds stay off"),
+                None => error!("Game audio: {stem} has no patch tree in this install: its sounds are silent (run setup to refresh the audio)"),
             }
         }
         // SFXObj_Wheels' spin-down recordings, decoded now (first trigger = later triggers).
@@ -289,7 +291,7 @@ impl Native {
         if let Some(p) = &mut self.player {
             p.contacts_on = first;
             p.set_footstep_materials(library.footstep_materials());
-            p.footsteps_on = first && !std::env::var("SKATE_AEMS_FOOTSTEPS").is_ok_and(|v| v == "0");
+            p.footsteps_on = first;
             p.contact_tuning = library.contacts_tuning();
             p.wheels_on = wheels;
             if p.contacts_on {
@@ -413,15 +415,6 @@ impl Native {
         if let Ok(mut runtime) = self.shared.lock() {
             runtime.release(node);
         }
-    }
-}
-
-/// Whether to run the native runtime: on by default; `SKATE_AEMS=0` (or `"interim": true` in
-/// `settings/audio.json`) keeps the interim tables.
-pub(crate) fn requested(settings: &super::AudioSettings) -> bool {
-    match std::env::var("SKATE_AEMS") {
-        Ok(v) => !(v == "0" || v.eq_ignore_ascii_case("false")),
-        Err(_) => settings.native(),
     }
 }
 
@@ -607,10 +600,7 @@ fn start(
     library: Option<Res<Library>>,
     mut streams: ResMut<Assets<NativeStream>>,
 ) {
-    let (Some(settings), Some(library)) = (settings, library) else { return };
-    if !requested(&settings) {
-        return;
-    }
+    let (Some(_), Some(library)) = (settings, library) else { return };
     // Which compiled copy of the DSP loops runs (hardware FMA or plain; same output bits): chosen
     // once, here, before the first render (doc 11 "Hardware FMA dispatch").
     info!("AUDIO_DSP {}", skate_audio::dsp::init_fma());
@@ -626,7 +616,7 @@ fn start(
             commands.spawn((NativeOutput, AudioPlayer(handle), PlaybackSettings::ONCE.with_volume(Volume::Linear(0.0))));
             commands.insert_resource(native);
         }
-        Err(error) => warn!("Game audio: native AEMS runtime unavailable, using the measured tables: {error}"),
+        Err(error) => error!("Game audio: the native AEMS runtime could not start, so the skater's sounds, the world emitters and rolling are silent: {error}"),
     }
 }
 
@@ -644,8 +634,8 @@ fn follow_volume(
     let Some(settings) = settings else { return };
     // rodio 0.20's spatial source gives the ear FARTHER from the source the larger factor
     // (((d_left - d_right) / gap + 1) / 4 + 0.5 on the left channel), so with the ears where Bevy
-    // puts them every interim positional sound is mirrored. With the native host on, swap the
-    // ears so interim sounds come from the side native voices (Pan2D1) put them on.
+    // puts them every Bevy positional sound is mirrored. With the native host on, swap the
+    // ears so Bevy sounds come from the side native voices (Pan2D1) put them on.
     for mut listener in &mut listeners {
         let gap = listener.left_ear_offset.distance(listener.right_ear_offset);
         let want = if native.is_some() { Vec3::X * gap / 2.0 } else { Vec3::X * gap / -2.0 };
@@ -656,15 +646,16 @@ fn follow_volume(
     }
     let silenced = super::silenced(menu.as_deref(), &replay);
     let volume = settings.master().clamp(0.0, 1.0);
-    // The interim cues are measured retail level × RETAIL_SCALE (anchored to the interim rolling
-    // loop); with the native player sounds (retail level) they drop back to the measured level.
+    // The measured world layers (zone beds, location sets, crossfades) play at measured retail level
+    // × RETAIL_SCALE; with the native player sounds (retail level) they drop back to the measured
+    // level.
     let native_player = native.as_deref().is_some_and(|n| n.player.as_ref().is_some_and(|p| p.components));
     if let Some(mut voices) = voices {
-        let scale = if native_player { 1.0 / super::cues::RETAIL_SCALE } else { 1.0 };
+        let scale = if native_player { 1.0 / super::voices::RETAIL_SCALE } else { 1.0 };
         if voices.scale != scale {
             voices.scale = scale;
         }
-        // Interim and native voices share the ears: fold the interim ones like native voices.
+        // Bevy and native voices share the ears: fold the Bevy ones like native voices.
         let fold = native.is_some();
         if voices.native_fold != fold {
             voices.native_fold = fold;
@@ -836,8 +827,8 @@ mod tests {
         assert_eq!((decoder.channels(), decoder.sample_rate()), (2, 48000));
     }
 
-    /// Native is the default: an install that lacks some of its data must still start (or fall
-    /// back to the measured tables with a warning), never panic. Each case loads a copy of the
+    /// An install that lacks some of its data must still start (or log an error and leave those
+    /// sounds silent), never panic. Each case loads a copy of the
     /// dev install's manifest with parts removed (the data folders are linked, not copied).
     /// Data-gated: skipped without the install.
     #[test]
@@ -891,7 +882,7 @@ mod tests {
             let n = start("no MixMap", &|m| m["aems"]["mixmap"] = serde_json::Value::Null).expect("starts without a MixMap");
             assert!(n.player.is_none() && n.bed.is_none());
             let n = start("no GRINDS bank", &remove_bank("GRINDS")).expect("starts without the player banks");
-            assert!(!n.player.as_ref().unwrap().components, "the components hand back to the measured cues");
+            assert!(!n.player.as_ref().unwrap().components, "the components stay off (silent, error logged)");
             let n = start("no Treatments bank", &remove_bank("Treatments")).expect("starts without Treatments");
             let p = n.player.as_ref().unwrap();
             assert!(p.components && p.tricks_on && !p.treatment_on);

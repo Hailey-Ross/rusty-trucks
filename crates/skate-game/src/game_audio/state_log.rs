@@ -1,6 +1,6 @@
 //! `SKATE_AUDIO_STATE_LOG=<path>`: record the player's per-frame audio situation while playing, as
 //! one TSV row per physics/audio frame in the columns of the e2e scenarios
-//! (`.claude/skills/aems-port/tools/e2e/scenarios.py`) plus the elapsed time and the board / COM
+//! (`tools/audio-e2e/scenarios.py`) plus the elapsed time and the board / COM
 //! world positions, so real play can be cut into windows and replayed headless into our native
 //! stack and the PoC oracle (`scenarios.py --from-log`). Off (no cost) when unset; buffered,
 //! flushed every 6 rows (~100 ms).

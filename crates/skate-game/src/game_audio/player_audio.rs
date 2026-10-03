@@ -4,10 +4,9 @@
 //! 2. components' process (posts / releases) — before the MixMap tick;
 //! 3. components' update (packets rewritten from the MixMap outputs, redelivered) — after it.
 //!
-//! The player components (Class_grind, SenseOfSpeed rattle / wind, Class_foot_drag) run when the
-//! native runtime is on unless `SKATE_AEMS_PLAYER=0`; their interim cues in `skate_events.rs`
-//! (the metal GRINDS loop, the sense_of_speed bed cue, the foot-drag pieces) are then silent. The
-//! default path (native off) is unchanged.
+//! The player components run whenever their banks are in the install (2026-10-03: the interim
+//! cue tables and the `SKATE_AEMS_PLAYER=0` / `SKATE_AEMS_FOOTSTEPS=0` opt-outs are gone; without
+//! the banks the skater's sounds are silent and the host logs an error).
 use std::collections::HashMap;
 
 use skate_audio::eval::NodeId;
@@ -28,11 +27,6 @@ use skate_audio::player::tricks::{self, Tricks};
 use skate_audio::player::wheels::{Wheels, WheelsTuning};
 use skate_audio::player::{AudioState, Owner};
 use skate_audio::runtime::Runtime;
-
-/// Whether the native player components run (with the native runtime on).
-pub(crate) fn components_requested() -> bool {
-    !std::env::var("SKATE_AEMS_PLAYER").is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("false"))
-}
 
 pub(crate) struct PlayerAudio {
     pub(crate) tuning: PlayerTuning,
@@ -99,7 +93,7 @@ pub(crate) struct PlayerAudio {
     globals: Globals,
     /// SFXObj_OffBoard's footsteps (packets + the foot-down / walking / jump Splice sounds) and the
     /// Clothing component (cloth falls, push foley, body slide): on with the board contacts (their
-    /// Splice banks) — `SKATE_AEMS_FOOTSTEPS=0` keeps the interim steps.
+    /// Splice banks), plus OffBoard's water splash.
     footsteps: Footsteps,
     footstep_tuning: FootstepTuning,
     clothing: Clothing,
@@ -191,11 +185,6 @@ impl PlayerAudio {
         self.board.plant_lift_on = plant_lift;
         self.board.body_on = body;
         self.grind.onoff = grind_onoff;
-    }
-
-    /// Whether the body poster runs (the interim bail cues stay silent then).
-    pub(crate) fn body_impacts_on(&self) -> bool {
-        self.components && self.contacts_on && self.board.body_on
     }
 
     /// Collision messages of another Player-slot owner (an NPC skater, `npc_skaters.rs`): retail
@@ -405,7 +394,12 @@ impl PlayerAudio {
             self.collision.process(m_mut, self.last_listener.as_ref());
         }
         if self.footsteps_on {
+            let splashes = self.footsteps.splash.starts;
             let mut cmds = self.footsteps.process(s, &self.tuning, &self.footstep_tuning, &mut rt.splice_host());
+            if self.footsteps.splash.starts != splashes {
+                // OffBoard's water splash (`player::footsteps::Splash`, retail `sub_824EBB58`).
+                bevy::log::info!("AUDIO_EVENT splash native Skate_Collisions:{}", self.footsteps.splash.last_id);
+            }
             cmds.extend(self.clothing.process(s, &self.tuning, &self.clothing_tuning, &mut rt.splice_host()));
             self.apply(rt, cmds);
         }
@@ -778,6 +772,49 @@ mod tests {
         let mut v = v.to_vec();
         v.sort_by(f32::total_cmp);
         (v.get(v.len() / 2).copied().unwrap_or(0.0), v.last().copied().unwrap_or(0.0))
+    }
+
+    /// OffBoard's water splash (`player::footsteps::Splash`) through the real MixMap, Splice banks
+    /// and runtime: dry, in water on the surface for a frame, under it (1197: the time in water is
+    /// past 0.001 s), then the board in water (1198). Both sound (their levels come from OffBoard
+    /// outputs 13 / 16, printed with 14 / 15).
+    #[test]
+    fn the_water_splash_plays_through_the_real_mixmap() {
+        let Some((library, mxb)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+        let (mut rt, _) = runtime(&library);
+        for stem in SPLICE_BANKS {
+            let Some((bank, pcm)) = library.splice_bank(stem) else { return eprintln!("skipped: no {stem} patch tree") };
+            let r = &mut rt;
+            r.splice.load_bank(stem, bank, pcm, &mut r.mixer);
+        }
+        let mut m = MixMap::from_bytes(&mxb).unwrap();
+        let mut p = PlayerAudio::new(library.player_tuning(), true);
+        p.footsteps_on = true;
+        let mut out = vec![0.0f32; 1600];
+        let mut energy = [0.0f64; 3];
+        for f in 0..150 {
+            let mut s = rolling(0.0, 0.0);
+            s.in_water = f >= 30;
+            s.under_water = f >= 31;
+            s.board_in_water = f >= 90;
+            globals(&mut m);
+            let l = p.listener([s.com_position[0] - 3.5, 2.4, s.com_position[2]], [1.0, -0.3, 0.0], 1.0 / 60.0, &s);
+            p.write_inputs(&mut m, &s, Some(&l));
+            p.process(&mut m, &s, &mut rt, None, 0);
+            m.tick(1.0 / 60.0);
+            p.update(&m, &s, &mut rt, None, 0);
+            rt.fill_stereo(&mut out);
+            let e: f64 = out.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+            energy[if f < 30 { 0 } else if f < 90 { 1 } else { 2 }] += e;
+            if f == 40 {
+                let k = keys::off_board(0);
+                println!("OffBoard level 13 / 15 / 16 = {} / {} / {}, pitch 14 = {}", m.level(k, 13), m.level(k, 15), m.level(k, 16), m.pitch_4096(k, 14));
+            }
+        }
+        let splash = &p.footsteps.splash;
+        println!("splash starts {} (last {}), energy dry / entry / board {energy:?}", splash.starts, splash.last_id);
+        assert_eq!((splash.starts, splash.last_id), (2, 1198));
+        assert!(energy[1] > 10.0 * energy[0].max(1e-9) && energy[2] > 0.0, "{energy:?}");
     }
 
     /// The ported components through the real banks, MixMap and voice graph, headless: what they

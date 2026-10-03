@@ -14,14 +14,14 @@
 //!
 //! What each bank then plays (relay of short pieces or one loop, and its slow
 //! level/pitch movement) is retail's patch program for the bank:
-//! - with the native AEMS runtime on (`native.rs`, `SKATE_AEMS=1`), every record whose bank is in
+//! - with the native AEMS runtime running (`native.rs`), every record whose bank is in
 //!   the install takes one of the 5 emitter states (= MixMap Emitter instances), posts `c_emitter`
 //!   and the bank's own program plays it. The payload comes from the MixMap (`Native::
 //!   emitter_payload`: w1 dry = out4 × level, w2 send = out8 × level, w3 pan = out0, w4 pitch =
 //!   out5, w5 low-pass = out6, w8 = the attribute patch = selector); the state's 3-D input gets the
 //!   listener's distance and azimuth each frame. Redelivered every frame, released (state freed)
 //!   when the listener leaves;
-//! - otherwise `PROFILES` holds those programs' measured behaviour (PoC evaluator runs, notes
+//! - otherwise (the runtime could not start) `PROFILES` holds those programs' measured behaviour (PoC evaluator runs, notes
 //!   ems-emitters-re.md) and banks without a profile are not played.
 use super::{Category, Library, Play, Voices, library::Clip, native::Native, voices::VoiceId};
 use bevy::prelude::*;

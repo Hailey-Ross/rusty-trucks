@@ -1,7 +1,7 @@
 //! End-to-end render of the native player audio (MixMap inputs → components → AEMS voices →
 //! granular bed → 6-channel bus) for the scripted per-frame situations of
-//! `.claude/skills/aems-port/tools/e2e/scenarios.py`, headless. The same scripts drive the PoC's
-//! oracle probe; `.claude/skills/aems-port/tools/e2e/compare.py` compares the two renders.
+//! `tools/audio-e2e/scenarios.py`, headless. The same scripts can drive another renderer (e.g. the
+//! PoC's oracle probe); `tools/audio-e2e/compare.py` compares two renders.
 //!
 //!   set E2E_DIR=...\.local\audio-re\e2e   (optional E2E_ONLY=roll20,grind_metal)
 //!   cargo test -p skate-game --release --bin skate3rust -- --ignored e2e_render --nocapture
@@ -199,12 +199,8 @@ impl Script {
         Riding {
             board: bevy::math::Vec3::new(self.x, 0.1, 0.0),
             speed,
-            rolling: wheels > 0,
             surface: tag,
-            airborne,
             grinding,
-            grind_surface: r.i("grind_tag") as u32,
-            sliding: state == 101,
             braking: r.i("brake") != 0 && speed > 0.5,
             wheels,
             pushes: self.pushes,
@@ -558,7 +554,7 @@ fn e2e_render() {
         let (hits, transitions) = p.seam_hits();
         eprintln!("{name}: {} frames (+60 settle); Class_Seams hits {hits} ({transitions} material changes)", rows.len());
         if timing && !game_us.is_empty() {
-            // The raw times for the optimisation bench (`.claude/skills/optimisation/tools/`):
+            // The raw times for the optimisation bench (`tools/audio-bench/`):
             // one line per measured game-thread call and per rendered block.
             let mut raw = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.timing.tsv"))).unwrap());
             writeln!(raw, "kind\tus").unwrap();
