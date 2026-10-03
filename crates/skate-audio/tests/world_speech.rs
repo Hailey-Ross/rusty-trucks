@@ -240,7 +240,7 @@ macro_rules! data {
     () => {
         match load() {
             Some(d) => d,
-            None => return eprintln!("skipped: no speech rules export (stage_world_audio.py)"),
+            None => panic!("missing private data: no speech rules export (stage_world_audio.py)"),
         }
     };
 }
@@ -250,6 +250,7 @@ fn clip_name(d: &Data, id: u16) -> &str {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn flag_one_names_the_far_lines_and_two_the_near_ones() {
     let d = data!();
     let (mut agree, mut against) = (0, 0);
@@ -274,6 +275,7 @@ fn flag_one_names_the_far_lines_and_two_the_near_ones() {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn voices_map_to_their_type_and_variant_bits() {
     let d = data!();
     for (voice, bits) in [(59, (kind::BUSINESS_MAN, 1)), (41, (kind::ADULT_MALE, 1)), (49, (kind::ADULT_FEMALE, 8)), (53, (kind::TOURIST_FEMALE, 2)), (87, (kind::BUM, 1)), (90, (kind::SKATER_MALE, 0x10)), (76, (kind::SECURITY_GUARD, 2))] {
@@ -290,6 +292,7 @@ fn voices_map_to_their_type_and_variant_bits() {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn a_bumped_business_man_warns_far_or_near_and_cycles_his_takes() {
     let d = data!();
     let mut lib = Library::new(d.headers.clone());
@@ -324,6 +327,7 @@ fn a_bumped_business_man_warns_far_or_near_and_cycles_his_takes() {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn every_free_roam_record_resolves_or_fails_closed() {
     let d = data!();
     let mut missing = 0;

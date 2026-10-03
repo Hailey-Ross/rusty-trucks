@@ -38,6 +38,10 @@ pub const TWO_PI: f32 = std::f32::consts::TAU;
 pub const INV_TWO_PI: f32 = f32::from_bits(0x3E22_F983);
 /// The resampler's interpolation weight constant (≈ 1/65536, about one part in 2^21 off).
 pub const WEIGHT: f32 = f32::from_bits(0x377F_FC9C);
+// Credit: the sin / cos polynomials are XNA Math's `XMVectorSin` / `XMVectorCos` (the Xbox 360
+// math library the title links; its successor is DirectXMath, Microsoft, MIT License,
+// https://github.com/microsoft/DirectXMath). The coefficients are the Taylor terms ±1/n! as f32,
+// read from the shipped image at the addresses below; the evaluation order follows the image.
 /// `XMVectorSin` coefficients for V³ … V²³ (`0x822F97C4` … `0x822F97EC`).
 pub const SIN: [u32; 11] = [
     0xBE2A_AAAB, 0x3C08_8889, 0xB950_0D01, 0x3638_EF1D, 0xB2D7_322B, 0x2F30_9231, 0xAB57_3F9F, 0x274A_963C, 0xA317_A4DA, 0x1EB8_DC78,

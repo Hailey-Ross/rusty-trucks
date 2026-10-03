@@ -96,7 +96,8 @@ pub struct Grind {
     pending: Vec<GrindHit>,
     /// Rail level(5) as of the last update: the sounds' env send (`sub_82498140`).
     env_level: i32,
-    /// `sub_824C3FC8` / `sub_824C4138` (`SKATE_AEMS_GRIND_ONOFF=0` off). The host turns it on.
+    /// `sub_824C3FC8` / `sub_824C4138`. The game's host always turns it on; off only isolates the
+    /// rest in tests.
     pub onoff: bool,
     /// On / off sounds started (diagnostics).
     pub hit_starts: u64,

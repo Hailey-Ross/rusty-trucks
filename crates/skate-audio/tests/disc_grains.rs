@@ -4,11 +4,11 @@
 use skate_audio::grain::GrainFile;
 
 #[test]
+#[ignore = "needs the private install data"]
 fn every_retail_grain_parses_with_a_single_entry_seek_table() {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/private/audio/grains");
     let Ok(entries) = std::fs::read_dir(dir) else {
-        eprintln!("skipped: no {dir}");
-        return;
+        panic!("missing private data: no {dir}");
     };
     let mut seen = Vec::new();
     for entry in entries.flatten() {
@@ -27,8 +27,7 @@ fn every_retail_grain_parses_with_a_single_entry_seek_table() {
         seen.push((name, g.stream.samples, g.duration));
     }
     if seen.is_empty() {
-        eprintln!("skipped: no .grain files in {dir} (run stage_grain_mixmap.py or setup)");
-        return;
+        panic!("missing private data: no .grain files in {dir} (run stage_grain_mixmap.py or setup)");
     }
     seen.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(seen.len(), 14);

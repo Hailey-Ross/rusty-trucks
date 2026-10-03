@@ -248,8 +248,9 @@ fn bank_gains<'a>(r: &'a Run, bank: &str) -> Vec<f32> {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn offboard_clothing_and_hands_play_their_retail_banks() {
-    let Some(_) = harness() else { return eprintln!("skipped: no install MixMap / extracted banks / WAVs") };
+    let Some(_) = harness() else { panic!("missing private data: no install MixMap / extracted banks / WAVs") };
     // Walking 5.4 km/h on concrete, board not in hand: step layer sk8_foley 82 (samples 69..75,
     // retail medians 0.21..0.26), walking foley 62 (samples 94..97, retail 0.387), the packets.
     let r = run(300, |f| walking(f, 5.4, 20, 3));
@@ -327,7 +328,7 @@ fn offboard_clothing_and_hands_play_their_retail_banks() {
 #[test]
 #[ignore]
 fn footstep_patch_sample_groups() {
-    let Some(_) = harness() else { return eprintln!("skipped") };
+    let Some(_) = harness() else { panic!("missing private data") };
     let base: Vec<i32> = vec![32767, 0, 4096, 0, 25000, 25000, 2456, 9200, 0, 2, 513, 0, 1, 2, 300, 1, 2, 1, 32767, 10000, 15000, 25000, 32767, 28000, 12];
     let variants: Vec<(&str, usize, Vec<i32>)> = vec![
         ("surface w16", 16, (1..=7).collect()),
@@ -373,7 +374,7 @@ fn footstep_patch_sample_groups() {
 #[test]
 #[ignore]
 fn owner_outputs_on_foot_and_on_board() {
-    let Some(h) = harness() else { return eprintln!("skipped") };
+    let Some(h) = harness() else { panic!("missing private data") };
     for (name, on_foot, kmh) in [("on foot 5.4 km/h", true, 5.4f32), ("on foot 14.4", true, 14.4), ("on board 14.4", false, 14.4), ("on board 0", false, 0.0)] {
         let mut m = MixMap::from_bytes(&h.mxb).unwrap();
         let mut physics = inputs::Physics::default();

@@ -100,6 +100,17 @@ impl Default for Slots {
 }
 
 impl Slots {
+    /// `records` NPC records (instances 1..=records): retail has 1 (`PLAYER_INSTANCES` − 1); the
+    /// game's opt-in non-retail "more audible" layout builds the MixMap with more.
+    pub fn with_records(records: usize) -> Self {
+        Self { holders: vec![None; records] }
+    }
+
+    /// How many NPC records there are.
+    pub fn records(&self) -> usize {
+        self.holders.len()
+    }
+
     /// The instance an NPC skater holds.
     pub fn instance(&self, id: u64) -> Option<u32> {
         self.holders.iter().position(|h| *h == Some(id)).map(|i| i as u32 + 1)
@@ -188,7 +199,7 @@ pub struct NpcSkater {
 
 impl NpcSkater {
     /// `grind_onoff` / `plant_lift` / `body`: the session-review ports, as the local player's
-    /// host sets them (`SKATE_AEMS_GRIND_ONOFF` / `_PLANT_LIFT` / `_BODY_IMPACTS`).
+    /// host sets them (always on in the game; off only in tests).
     pub fn new(instance: u32, parts: Parts, grind_onoff: bool, plant_lift: bool, body: bool) -> Self {
         let mut grind = Grind::default();
         grind.onoff = grind_onoff;
@@ -377,10 +388,11 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs the private install data"]
     fn npc_physics_in13_slews_toward_the_relative_speed() {
         let bytes = match std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/private/audio/aems/MixMapSK8.mxb")) {
             Ok(b) => b,
-            Err(_) => return eprintln!("skipped: no MixMap"),
+            Err(_) => panic!("missing private data: no MixMap"),
         };
         let mut m = MixMap::from_bytes(&bytes).unwrap();
         let mut npc = NpcSkater::new(1, Parts::default(), false, false, false);

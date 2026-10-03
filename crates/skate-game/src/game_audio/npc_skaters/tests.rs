@@ -260,10 +260,11 @@ fn pass(library: &Library, mxb: &[u8], local_soft: bool) -> Pass {
 /// play Skate_Collisions, Seams_Bank, Skate_Metal, GRINDS and WHEEL_SKID_BANK above their session
 /// rates (`.local/research/npc-skater-audio/instance1_voices.py`).
 #[test]
+#[ignore = "needs the private install data"]
 fn npc_skater_rolls_and_grinds_past_the_listener() {
-    let Some((library, mxb)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+    let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
     if !BANKS.iter().all(|b| library.aems().banks.contains_key(*b)) || library.player_tuning().seam_patterns.len() < 16 {
-        return eprintln!("skipped: the install lacks the player banks or the seam patterns");
+        panic!("missing private data: the install lacks the player banks or the seam patterns");
     }
     let p = pass(&library, &mxb, false);
     println!("    t     dist  held  RMS dBFS  banks (voices opened, max gain)");
@@ -309,12 +310,13 @@ fn npc_skater_rolls_and_grinds_past_the_listener() {
 /// graph 3 and never touches the local bed's players; release stops it. `--nocapture` prints a
 /// per-0.5 s table (distance, held, member, voices, record A gain, bed RMS).
 #[test]
+#[ignore = "needs the private install data"]
 fn npc_skater_rolls_on_its_own_grain_bed() {
-    let Some((library, mxb)) = install() else { return eprintln!("skipped: no install with a MixMap") };
-    let Some(local_bed) = super::super::grain_bed::Bed::new(&library) else { return eprintln!("skipped: no grain recordings / tuning") };
+    let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
+    let Some(local_bed) = super::super::grain_bed::Bed::new(&library) else { panic!("missing private data: no grain recordings / tuning") };
     let (mut rt, _, parts) = runtime(&library);
     if !parts.rolling {
-        return eprintln!("skipped: no PatchBank_Rolling_Surfaces (the routing drives the bed)");
+        panic!("missing private data: no PatchBank_Rolling_Surfaces (the routing drives the bed)");
     }
     assert!(rt.npc_grains.is_none(), "inert until an NPC bed binds");
     let tuning = library.player_tuning();
@@ -406,4 +408,64 @@ fn npc_skater_rolls_on_its_own_grain_bed() {
     assert!(held_voices > 0, "the NPC bed sounds while held");
     assert!(near > far && far >= 0.0, "louder near the camera ({near} vs {far})");
     assert_eq!(free_voices, 0, "stopped a second after the release");
+}
+
+/// The ghost NPC skater through the real host (data-gated: the install and one of the user's
+/// state logs, `SKATE_AUDIO_STATE_LOGS` or `.local/audio-state-logs`): a window of the log replayed
+/// 5 m from the camera claims Player instance 1 and sounds in the player banks; walked out to
+/// 40 m it is released (no NPC voices left); a map change (`unload_map_banks`) resets the host,
+/// and the same id claims and sounds again.
+#[test]
+#[ignore = "needs the private install data"]
+fn a_ghost_claims_instance_1_releases_and_survives_a_map_change() {
+    let Some((library, _)) = install() else { panic!("missing private data: no audio install") };
+    let Ok(mut native) = super::super::native::Native::start(&library) else { panic!("missing private data: no AEMS install") };
+    let dir = std::env::var_os("SKATE_AUDIO_STATE_LOGS").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.local/audio-state-logs")).to_path_buf());
+    let Some(log) = std::fs::read_dir(&dir).ok().and_then(|d| d.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "tsv")).max())
+    else { panic!("missing private data: no state log in {}", dir.display()) };
+    let text = std::fs::read_to_string(&log).unwrap();
+    let ghost = super::super::state_replay::ghost_states(&text, 30.0, 20.0, [5.0, 0.0, 0.0]).unwrap();
+    let mut host = NpcHost::default();
+    let mut published = super::NpcSkaters::default();
+    let local = AudioState::default();
+    let camera = ([0.0, 1.5, 0.0], [1.0, 0.0, 0.0]);
+    let id = 77u64;
+    let run = |native: &mut super::super::native::Native, host: &mut NpcHost, published: &mut super::NpcSkaters, frames: std::ops::Range<usize>, shift: f32| {
+        let (mut voices, mut held) = (0, 0);
+        for f in frames {
+            let mut s = ghost[f % ghost.len()];
+            for p in [&mut s.board_position, &mut s.com_position] {
+                p[0] += shift;
+            }
+            for w in &mut s.wheel_position {
+                w[0] += shift;
+            }
+            published.skaters = vec![skate_audio::world::skaters::NpcSkaterAudioState { id, state: s }];
+            let m = native.mixmap.as_mut().unwrap();
+            globals(m);
+            if f % 2 == 0 {
+                m.tick(skate_audio::mixmap::cadence::CONSOLE_DT);
+            }
+            super::run(host, published, native, Some(&library), camera, &local);
+            let mut rt = native.shared.lock().unwrap();
+            for _ in 0..3 {
+                rt.render_block();
+            }
+            voices += rt.mixer.snapshot().len();
+            held += usize::from(host.slots.instance(id) == Some(1));
+        }
+        (voices, held)
+    };
+    let (sounded, held) = run(&mut native, &mut host, &mut published, 0..600, 0.0);
+    eprintln!("ghost {}: held instance 1 on {held} of 600 frames, {sounded} voice-frames", log.display());
+    assert!(held > 0, "the ghost holds instance 1 while within 30 m");
+    assert!(sounded > 0, "the ghost's board sounds");
+    run(&mut native, &mut host, &mut published, 600..660, 400.0);
+    assert_eq!(host.slots.instance(id), None, "released at 30 m or more");
+    native.unload_map_banks();
+    let (again, held) = run(&mut native, &mut host, &mut published, 0..600, 0.0);
+    assert_eq!(host.epoch, Some(native.map_epoch));
+    assert!(held > 0, "claimed again after the map change");
+    assert!(again > 0, "and sounds again");
 }

@@ -172,7 +172,8 @@ impl Bank {
                 class_data_state: None,
                 function_states: Vec::new(),
             };
-            if (module.template_offset + module.data_size) as usize > d.len() || module.data_size < 24 {
+            // Checked: two file words can overflow u32 (a malformed bank must fail, not wrap).
+            if module.template_offset.checked_add(module.data_size).is_none_or(|end| end as usize > d.len()) || module.data_size < 24 {
                 return err(format!("{name}: module {m} template runs past the file"));
             }
             module.program = decode_program(name, d, module.program_offset as usize, module.data_size)?;

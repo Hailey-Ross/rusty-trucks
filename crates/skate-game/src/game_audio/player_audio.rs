@@ -1,12 +1,12 @@
-//! The local player's sounds on the native runtime (`skate_audio::player`), hosted per 60 Hz
-//! frame by `native::mixmap_frame`:
+//! The local player's sounds on the native runtime (`skate_audio::player`), hosted by
+//! `native::mixmap_frame` once per frame that took physics steps (`native::HostClock`):
 //! 1. inputs: PlayerPhysics, the two 3DObjPos blocks, Jitter, Contacts, Rail, OffBoard;
 //! 2. components' process (posts / releases) — before the MixMap tick;
 //! 3. components' update (packets rewritten from the MixMap outputs, redelivered) — after it.
 //!
 //! The player components run whenever their banks are in the install (2026-10-03: the interim
-//! cue tables and the `SKATE_AEMS_PLAYER=0` / `SKATE_AEMS_FOOTSTEPS=0` opt-outs are gone; without
-//! the banks the skater's sounds are silent and the host logs an error).
+//! cue tables and their opt-outs are gone; without the banks the skater's sounds are silent and the
+//! host logs an error).
 use std::collections::HashMap;
 
 use skate_audio::eval::NodeId;
@@ -37,15 +37,6 @@ pub(crate) struct PlayerAudio {
     /// console cadence (n console evaluations in this pass, `native::mixmap_frame`), `None`: one
     /// step per call (the old 60 Hz host and the tests).
     pub(crate) jitter_steps: Option<usize>,
-    /// The body poster (`player::contacts`, `sub_824BC188`) on the console cadence: it runs once per
-    /// console evaluation of this pass ([`Self::jitter_steps`]), so its 15-frame cooldown is 0.5 s at
-    /// any real frame rate (2026-10-03). `SKATE_AEMS_BODY_CONSOLE=0` / `E2E_BODY_CONSOLE=0`: once per
-    /// process, as before. Follows the MixMap cadence: without it (`jitter_steps` None) the old one.
-    pub(crate) body_console: bool,
-    /// The deck-impact poster (`sub_824BD000`) on the console cadence too (its 6-frame cooldown =
-    /// 0.2 s at any frame rate; 2026-10-03). `SKATE_AEMS_DECK_CONSOLE=0` / `E2E_DECK_CONSOLE=0`: once
-    /// per process, as before.
-    pub(crate) deck_console: bool,
     positions: [ObjPos; 2],
     was_grinding: bool,
     last_camera: Option<[f32; 3]>,
@@ -64,9 +55,6 @@ pub(crate) struct PlayerAudio {
     pub(crate) seam_alpha: Option<f32>,
     /// The last two physics samples of the wheel positions (previous, current).
     seam_wheels: Option<([[f32; 3]; 4], [[f32; 3]; 4])>,
-    /// Class_Seams on the console's 30 fps process cadence ([`Self::seam_frame`]); off: its whole
-    /// process once per 60 Hz tick (before Listening test 9).
-    pub(crate) seam_console: bool,
     /// `SFXObj_Contacts`' Splice one-shots (pops, landings, touchdowns); on when the install has
     /// the `Skate_Collisions` patch tree ([`PlayerAudio::contacts_on`]).
     board: board_contacts::Contacts,
@@ -123,29 +111,23 @@ impl PlayerAudio {
     pub(crate) fn new(tuning: PlayerTuning, components: bool) -> Self {
         let jitter = Jitter::new(&tuning.jitter, skate_audio::grain::GrainBed::SEED);
         // The collision voices play through their Collision SubMix (`sub_824D25E0`: mono, env send
-        // at the category's Collision output, eEQChain bus); `SKATE_AEMS_SUBMIX=0` = straight into
-        // SFX Master as before.
+        // at the category's Collision output, eEQChain bus).
         let mut collision = CollisionManager::default();
-        collision.submix = !std::env::var("SKATE_AEMS_SUBMIX").is_ok_and(|v| v == "0");
-        let on = |var: &str| !std::env::var(var).is_ok_and(|v| v == "0");
+        collision.submix = true;
         let mut board = board_contacts::Contacts::default();
         // Session review 2026-10-03: the push foot's plant / lift (#2), the body poster (#4) and the
-        // grind on / off sounds (#5); `SKATE_AEMS_{PLANT_LIFT,BODY_IMPACTS,GRIND_ONOFF}=0` off.
-        board.plant_lift_on = on("SKATE_AEMS_PLANT_LIFT");
-        board.body_on = on("SKATE_AEMS_BODY_IMPACTS");
-        // The bridge's speed graph on the body impacts (`sub_824B0DA8`, 2026-10-03);
-        // `SKATE_AEMS_BODY_CURVE=0`: the conditioner's impacts as before.
-        board.body_speed_on = on("SKATE_AEMS_BODY_CURVE");
+        // grind on / off sounds (#5); the bridge's speed graph on the body impacts (`sub_824B0DA8`).
+        board.plant_lift_on = true;
+        board.body_on = true;
+        board.body_speed_on = true;
         let mut grind = Grind::default();
-        grind.onoff = on("SKATE_AEMS_GRIND_ONOFF");
+        grind.onoff = true;
         Self {
             tuning,
             physics: Physics::default(),
             contacts: Contacts::default(),
             jitter,
             jitter_steps: None,
-            body_console: on("SKATE_AEMS_BODY_CONSOLE"),
-            deck_console: on("SKATE_AEMS_DECK_CONSOLE"),
             positions: [ObjPos::default(); 2],
             was_grinding: false,
             last_camera: None,
@@ -158,7 +140,6 @@ impl PlayerAudio {
             seams: Default::default(),
             seam_alpha: None,
             seam_wheels: None,
-            seam_console: false,
             board,
             contact_tuning: ContactsTuning::default(),
             contacts_on: false,
@@ -202,21 +183,6 @@ impl PlayerAudio {
     #[cfg(test)]
     pub(crate) fn deck_trace(&self) -> (u64, u64) {
         (self.board.deck_posts, self.board.deck_digest)
-    }
-
-    /// The session-review ports (the e2e harness's `E2E_*` switches): the plant / lift, the body
-    /// poster, the grind on / off sounds.
-    #[cfg(test)]
-    pub(crate) fn set_review_ports(&mut self, plant_lift: bool, body: bool, grind_onoff: bool) {
-        self.board.plant_lift_on = plant_lift;
-        self.board.body_on = body;
-        self.grind.onoff = grind_onoff;
-    }
-
-    /// The bridge's speed graph on the body impacts (the e2e harness's `E2E_BODY_CURVE`).
-    #[cfg(test)]
-    pub(crate) fn set_body_curve(&mut self, on: bool) {
-        self.board.body_speed_on = on;
     }
 
     /// Diagnostics (the e2e harness's `E2E_BODY_LOG`): keep every body-poster message.
@@ -305,7 +271,9 @@ impl PlayerAudio {
                     }
                     self.nodes.insert(slot, rt.post(id, &words));
                     self.posts += 1;
-                    bevy::log::info!("AUDIO_NATIVE post {class} {slot:?} words={words:?}");
+                    if trace() {
+                        bevy::log::info!("AUDIO_NATIVE post {class} {slot:?} words={words:?}");
+                    }
                 }
                 Command::Redeliver { slot, words } => {
                     if let Some(&node) = self.nodes.get(&slot) {
@@ -315,7 +283,9 @@ impl PlayerAudio {
                 Command::Release { slot } => {
                     if let Some(node) = self.nodes.remove(&slot) {
                         rt.release(node);
-                        bevy::log::info!("AUDIO_NATIVE release {slot:?}");
+                        if trace() {
+                            bevy::log::info!("AUDIO_NATIVE release {slot:?}");
+                        }
                     }
                 }
             }
@@ -402,11 +372,9 @@ impl PlayerAudio {
             rolling_cmds.extend(self.slide.process(loose, &self.tuning.rolling));
         }
         let seam_state = self.seam_state(s);
-        let seams = if self.seam_console {
-            Self::seam_commands(self.seams.process_tick(&seam_state, &self.tuning, m_mut))
-        } else {
-            Self::seam_commands(self.seams.process(&seam_state, &self.tuning, m_mut))
-        };
+        // Class_Seams' process runs on the console cadence in `seam_frame`; the tick only creates
+        // the packets and writes Cracks.in0.
+        let seams = Self::seam_commands(self.seams.process_tick(&seam_state, &self.tuning, m_mut));
         let m: &MixMap = m_mut;
         let rail = Owner { mixmap: m, key: keys::rail(0) };
         let mut cmds = self.grind.process(s, &self.tuning, &rail);
@@ -428,8 +396,10 @@ impl PlayerAudio {
             // The grind on / off contact sounds of this frame's Rail posts (Splice).
             self.grind.sounds(s, &self.tuning, &mut rt.splice_host());
             let before = self.board.starts;
-            self.board.body_calls = if self.body_console { self.jitter_steps } else { None };
-            self.board.deck_calls = if self.deck_console { self.jitter_steps } else { None };
+            // The body / deck posters run once per console evaluation of this pass (their 15 / 6-frame
+            // cooldowns = 0.5 / 0.2 s at any frame rate; `jitter_steps` None = per call, the tests).
+            self.board.body_calls = self.jitter_steps;
+            self.board.deck_calls = self.jitter_steps;
             self.board.process(s, self.contacts.buckets(), &self.tuning, &self.contact_tuning, &mut rt.splice_host());
             self.posts += self.board.starts - before;
             // The collision manager runs after the player's components (its own state manager).
@@ -451,14 +421,30 @@ impl PlayerAudio {
         }
     }
 
+    /// The wheel positions of the last two physics steps (`Riding::wheels_before`, this sample's),
+    /// which the rendered board interpolates between: the pair [`Self::seam_state`] reads. Hosts
+    /// set it before every call (2026-10-03: the pair follows the physics steps, so a frame that
+    /// takes two steps interpolates between the last two, and a board at rest has no spread);
+    /// `before = now` after a camera cut / teleport. Without it the pair follows the samples' changes.
+    pub(crate) fn step_wheels(&mut self, before: [[f32; 3]; 4], now: [[f32; 3]; 4]) {
+        self.seam_wheels = Some((before, now));
+    }
+
+    /// Forget the camera's last position (teleport, camera cut, map change): the next listener
+    /// has no velocity instead of the jump's (Doppler).
+    pub(crate) fn reset_listener(&mut self) {
+        self.last_camera = None;
+    }
+
     /// The state Class_Seams reads: with [`Self::seam_alpha`], the wheel positions of the rendered
     /// board (the last two physics samples interpolated), else the physics sample.
     fn seam_state(&mut self, s: &AudioState) -> AudioState {
         let Some(alpha) = self.seam_alpha else { return *s };
         let now = s.wheel_position;
         let (prev, cur) = match self.seam_wheels {
-            Some((_, cur)) if cur != now => (cur, now),
-            Some(track) => track,
+            // The host's pair for this sample ([`Self::step_wheels`]).
+            Some(pair) if pair.1 == now => pair,
+            Some((_, cur)) => (cur, now),
             None => (now, now),
         };
         self.seam_wheels = Some((prev, cur));
@@ -471,10 +457,9 @@ impl PlayerAudio {
     /// Class_Seams on the console cadence (Listening test 9): called on every rendered frame of
     /// `dt` seconds, before [`Self::process`] on frames that tick. Runs the seams' process on a 30 Hz
     /// virtual grid at the rendered wheel positions (`seams::Seams::frame`) and their update once
-    /// per console frame; the tick only creates the packets and writes Cracks.in0. Needs
-    /// [`Self::seam_console`].
+    /// per console frame; the tick only creates the packets and writes Cracks.in0.
     pub(crate) fn seam_frame(&mut self, m: &MixMap, s: &AudioState, dt: f32, rt: &mut Runtime) {
-        if !self.components || !self.seam_console {
+        if !self.components {
             return;
         }
         let seam_state = self.seam_state(s);
@@ -520,11 +505,7 @@ impl PlayerAudio {
         let board = Owner { mixmap: m, key: keys::skateboard(0) };
         cmds.extend(self.skid.update(s, &self.tuning, &board));
         cmds.extend(self.squeaks.update(s, &board));
-        let cracks = Owner { mixmap: m, key: keys::cracks(0) };
-        // Under the console cadence the seams' update runs in `seam_frame`.
-        if !self.seam_console {
-            cmds.extend(Self::seam_commands(self.seams.update(s, &cracks)));
-        }
+        // The seams' update runs in `seam_frame` (the console cadence).
         if self.rolling_on {
             cmds.extend(self.rolling.update(s, &self.tuning, &RollingInputs { speed_scale }, &board));
         }
@@ -565,6 +546,13 @@ impl PlayerAudio {
             self.posts += self.wheels.starts - before;
         }
     }
+}
+
+/// `SKATE_AUDIO_TRACE=1`: the `AUDIO_NATIVE post` / `release` lines (one per component post or
+/// release, written under the runtime lock; off by default since 2026-10-03).
+fn trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("SKATE_AUDIO_TRACE").is_some_and(|v| v != "0"))
 }
 
 /// The banks the components post into.
@@ -634,11 +622,12 @@ mod tests {
     /// 10 km/h; level(1) p90 0.24). Prints the table (`--nocapture`); asserts only the shape: Jitter
     /// lowers level(1) a little at most and never raises it.
     #[test]
+    #[ignore = "needs the private install data"]
     fn bed_gain_a_with_the_full_inputs() {
-        let Some((library, base)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+        let Some((library, base)) = install() else { panic!("missing private data: no install with a MixMap") };
         let tuning = library.player_tuning();
         if tuning.jitter.is_empty() {
-            return eprintln!("skipped: no player_tuning (stage_player_tuning.py)");
+            panic!("missing private data: no player_tuning (stage_player_tuning.py)");
         }
         let surface = library.grain_tuning("asphalt_smooth_hard").expect("grain tuning");
         println!("km/h  level(1) no-jitter  level(1) jitter p10/p50/p90   gainA(turn 0)  gainA / gainB (turn 0.5)  level(2)");
@@ -717,7 +706,7 @@ mod tests {
             fn set_azimuth(&mut self, v: u32, value: i32) { self.inner.set_azimuth(v, value) }
             fn query(&mut self, v: u32) -> skate_audio::eval::VoiceStatus { self.inner.query(v) }
         }
-        let Some((library, base)) = install() else { return eprintln!("skipped") };
+        let Some((library, base)) = install() else { panic!("missing private data") };
         let (mut rt, names) = runtime(&library);
         let mut m = MixMap::from_bytes(&base).unwrap();
         let mut p = PlayerAudio::new(library.player_tuning(), true);
@@ -732,6 +721,8 @@ mod tests {
             globals(&mut m);
             let l = p.listener([s.com_position[0] - 3.5, 2.4, s.com_position[2]], [1.0, -0.3, 0.0], 1.0 / 60.0, &s);
             p.write_inputs(&mut m, &s, Some(&l));
+            // Class_Seams on its console cadence, every frame before the pass (as `mixmap_frame`).
+            p.seam_frame(&m, &s, 1.0 / 60.0, &mut rt);
             p.process(&mut m, &s, &mut rt, None, 0);
             m.tick(1.0 / 60.0);
             p.update(&m, &s, &mut rt, None, 0);
@@ -796,6 +787,8 @@ mod tests {
             globals(&mut m);
             let l = p.listener([s.com_position[0] - 3.5, 2.4, s.com_position[2]], [1.0, -0.3, 0.0], 1.0 / 60.0, &s);
             p.write_inputs(&mut m, &s, Some(&l));
+            // Class_Seams on its console cadence, every frame before the pass (as `mixmap_frame`).
+            p.seam_frame(&m, &s, 1.0 / 60.0, &mut rt);
             p.process(&mut m, &s, &mut rt, None, 0);
             m.tick(1.0 / 60.0);
             p.update(&m, &s, &mut rt, None, 0);
@@ -825,11 +818,12 @@ mod tests {
     /// past 0.001 s), then the board in water (1198). Both sound (their levels come from OffBoard
     /// outputs 13 / 16, printed with 14 / 15).
     #[test]
+    #[ignore = "needs the private install data"]
     fn the_water_splash_plays_through_the_real_mixmap() {
-        let Some((library, mxb)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+        let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
         let (mut rt, _) = runtime(&library);
         for stem in SPLICE_BANKS {
-            let Some((bank, pcm)) = library.splice_bank(stem) else { return eprintln!("skipped: no {stem} patch tree") };
+            let Some((bank, pcm)) = library.splice_bank(stem) else { panic!("missing private data: no {stem} patch tree") };
             let r = &mut rt;
             r.splice.load_bank(stem, bank, pcm, &mut r.mixer);
         }
@@ -846,6 +840,8 @@ mod tests {
             globals(&mut m);
             let l = p.listener([s.com_position[0] - 3.5, 2.4, s.com_position[2]], [1.0, -0.3, 0.0], 1.0 / 60.0, &s);
             p.write_inputs(&mut m, &s, Some(&l));
+            // Class_Seams on its console cadence, every frame before the pass (as `mixmap_frame`).
+            p.seam_frame(&m, &s, 1.0 / 60.0, &mut rt);
             p.process(&mut m, &s, &mut rt, None, 0);
             m.tick(1.0 / 60.0);
             p.update(&m, &s, &mut rt, None, 0);
@@ -869,10 +865,11 @@ mod tests {
     /// Class_grind GRINDS ≤ 0.28 (medians 0.004–0.11), SenseOfSpeed_wind ≤ 0.54, rattle ≤ 0.28,
     /// Class_foot_drag FOOT_DRAG ≤ 0.28 (medians 0.002–0.07)). Prints the table (`--nocapture`).
     #[test]
+    #[ignore = "needs the private install data"]
     fn components_play_their_retail_banks() {
-        let Some((library, mxb)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+        let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
         if !BANKS.iter().all(|b| library.aems().banks.contains_key(*b)) {
-            return eprintln!("skipped: the install lacks the player banks");
+            panic!("missing private data: the install lacks the player banks");
         }
         let metal = skate_audio::player::state::material_of_tag(9);
         let concrete = skate_audio::player::state::material_of_tag(3);
@@ -902,11 +899,12 @@ mod tests {
     /// stay at or below unity and that the first hit's voice gain equals the later hits' (first-trigger
     /// rule: the bank is decoded at start, the same path plays every hit).
     #[test]
+    #[ignore = "needs the private install data"]
     fn seams_play_their_retail_bank() {
-        let Some((library, mxb)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+        let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
         let tuning = library.player_tuning();
         if tuning.seam_patterns.len() < 16 || !library.aems().banks.contains_key("Seams_Bank") {
-            return eprintln!("skipped: no seam patterns (stage_bus_tuning.py) or Seams_Bank");
+            panic!("missing private data: no seam patterns (stage_bus_tuning.py) or Seams_Bank");
         }
         println!("pattern km/h  hits  voices  gain first / median / p90 / max");
         for (pattern, kmh) in [(11u32, 10.0f32), (11, 20.0), (11, 30.0), (4, 20.0)] {
@@ -934,12 +932,13 @@ mod tests {
     /// hits spread over both eight-sample blocks (32–39 and 80–87, retail 180430), not one sample
     /// per block (Listening test 8).
     #[test]
+    #[ignore = "needs the private install data"]
     fn seam_hits_shuffle_their_samples() {
-        let Some((library, mxb)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+        let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
         let tuning = library.player_tuning();
         let banks = &library.aems().banks;
         if tuning.seam_patterns.len() < 16 || !banks.contains_key("Seams_Bank") || !banks.contains_key(skate_audio::player::seams::UTILITY_BANK) {
-            return eprintln!("skipped: no seam patterns, Seams_Bank or Common.abk (stage_extra_banks.py Common)");
+            panic!("missing private data: no seam patterns, Seams_Bank or Common.abk (stage_extra_banks.py Common)");
         }
         let v = 30.0f32 / 3.6;
         let (mut rt, names) = runtime(&library);
@@ -957,6 +956,8 @@ mod tests {
             globals(&mut m);
             let l = p.listener([s.com_position[0] - 3.5, 2.4, s.com_position[2]], [1.0, -0.3, 0.0], 1.0 / 60.0, &s);
             p.write_inputs(&mut m, &s, Some(&l));
+            // Class_Seams on its console cadence, every frame before the pass (as `mixmap_frame`).
+            p.seam_frame(&m, &s, 1.0 / 60.0, &mut rt);
             p.process(&mut m, &s, &mut rt, None, 0);
             m.tick(1.0 / 60.0);
             p.update(&m, &s, &mut rt, None, 0);
@@ -981,7 +982,7 @@ mod tests {
     #[test]
     #[ignore = "diagnostic print"]
     fn seam_samples_by_pattern() {
-        let Some((library, mxb)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+        let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
         let material: u32 = std::env::var("SEAM_MATERIAL").ok().and_then(|v| v.parse().ok()).unwrap_or(65);
         let kmh = 30.0f32;
         let v = kmh / 3.6;
@@ -1025,7 +1026,7 @@ mod tests {
     #[test]
     #[ignore = "diagnostic print"]
     fn seam_samples_by_words() {
-        let Some((library, _)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+        let Some((library, _)) = install() else { panic!("missing private data: no install with a MixMap") };
         // SEAM_SWEEP=word:value,… overrides words of the base packet (w10 1, w13 12) instead.
         let sweep: Vec<(usize, i32)> = std::env::var("SEAM_SWEEP")
             .map(|v| v.split(',').filter_map(|p| p.split_once(':')).filter_map(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))).collect())
@@ -1071,8 +1072,9 @@ mod tests {
     /// retail's capture medians (upstream PR #4's driver notes §11, ±0.5 km/h bins: 25 km/h 343,
     /// 30 km/h 730, 35 km/h 1194, 40 km/h 2017): within 1 dB.
     #[test]
+    #[ignore = "needs the private install data"]
     fn wind_level_matches_the_retail_medians() {
-        let Some((library, mxb)) = install() else { return eprintln!("skipped: no install with a MixMap") };
+        let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
         for (kmh, retail) in [(25.0f32, 343.0f32), (30.0, 730.0), (35.0, 1194.0), (40.0, 2017.0)] {
             let mut m = MixMap::from_bytes(&mxb).unwrap();
             let mut p = PlayerAudio::new(library.player_tuning(), false);

@@ -337,21 +337,21 @@ pub struct Contacts {
     /// host's `mixmap::cadence`; 0 on the 60 Hz steps between them), so the poster runs n times
     /// here, once per console frame as retail's per-rendered-frame `sub_824BC188` does on the 30 fps
     /// console (15-frame cooldown = 0.5 s at any real frame rate). `None`: once per process, the
-    /// cadence before 2026-10-03 (the tests, `SKATE_AEMS_BODY_CONSOLE=0`).
+    /// the tests (the game's host always passes `Some`).
     pub body_calls: Option<usize>,
     /// The deck-impact poster (`sub_824BD000`) the same way: `Some(n)` runs it n times in this
     /// process (its 6-frame cooldown in console frames = 0.2 s), `None` once per process (before
-    /// 2026-10-03; `SKATE_AEMS_DECK_CONSOLE=0`). Its messages so far and their digest (diagnostics).
+    /// 2026-10-03; the tests). Its messages so far and their digest (diagnostics).
     pub deck_calls: Option<usize>,
     pub deck_posts: u64,
     pub deck_digest: u64,
-    /// The push foot's plant / lift (`sub_824BBB28`; `SKATE_AEMS_PLANT_LIFT=0` off) and the body
-    /// poster (`sub_824BC188`; `SKATE_AEMS_BODY_IMPACTS=0` off). The host turns them on.
+    /// The push foot's plant / lift (`sub_824BBB28`) and the body poster (`sub_824BC188`). The game's
+    /// host always turns them on; off only isolates the rest in tests.
     pub plant_lift_on: bool,
     pub body_on: bool,
     /// The bridge's speed graph on the region impacts ([`ContactsTuning::body_speed_curve`] at
-    /// [`AudioState::com_speed_216`]; `SKATE_AEMS_BODY_CURVE=0` / `E2E_BODY_CURVE=0` off: the
-    /// impacts as the conditioner wrote them, before 2026-10-03). The host turns it on.
+    /// [`AudioState::com_speed_216`]; off: the impacts as the conditioner wrote them, the tests).
+    /// The game's host always turns it on.
     pub body_speed_on: bool,
     /// Diagnostics (the e2e harness): when `Some`, every body-poster message with its region and
     /// the impact the poster read.

@@ -91,10 +91,10 @@ fn disc_mxb() -> Option<Vec<u8>> {
 
 /// The retail file instantiates exactly the spec's census (§2.4).
 #[test]
+#[ignore = "needs the private install data"]
 fn disc_mixmap_census() {
     let Some(bytes) = disc_mxb() else {
-        eprintln!("skipped: no MixMapSK8.mxb in the dev install or .local/skate3-disc");
-        return;
+        panic!("missing private data: no MixMapSK8.mxb in the dev install or .local/skate3-disc");
     };
     let file = MixMapFile::parse(&bytes).unwrap();
     assert_eq!(file.slots.len(), 14);
@@ -116,10 +116,10 @@ fn disc_mixmap_census() {
 /// Free-skate steady state (Master.in1–4 = 32767, the rest 0): the spec's emitter and ambience
 /// outputs (§6.2, §6.3).
 #[test]
+#[ignore = "needs the private install data"]
 fn disc_mixmap_free_skate_outputs() {
     let Some(bytes) = disc_mxb() else {
-        eprintln!("skipped: no MixMapSK8.mxb");
-        return;
+        panic!("missing private data: no MixMapSK8.mxb");
     };
     let mut m = MixMap::from_bytes(&bytes).unwrap();
     for id in 1..=4 {

@@ -362,9 +362,7 @@ this keeps retail's bed-to-player balance. Before this the beds were 11 dB too l
 
 ### Dev tools
 
-- `py -3.13 tools/audio_audition.py` → `.local/audio-audition/index.html`: every cue's current samples
-  (parsed from `cues.rs`), each bank in full grouped into runs of similar clips, grains and beds; players at
-  25 % volume; links the installed WAVs, copies nothing.
+- (Removed 2026-10-03: `tools/audio_audition.py`, the cue audition page; see "PR #32 review fixes, step 1".)
 - `cargo run -p skate-data --release --example audio_surfaces -- <map.skate>` lists audio surface IDs per
   map; with `AT=x,y,z[,r]` it lists the collision surfaces (audio ID, physics type, slope) within r m
   (default 3) of a point, e.g. a HUD position the user reports.
@@ -453,7 +451,7 @@ Each step came from the user's report of an in-play session plus the `AUDIO_*` l
 ## Files
 
 - New: `tools/asset_pipeline/audio_formats.py`, `audio_export.py`, `test_audio_formats.py`,
-  `tools/audio_audition.py`, `crates/skate-game/src/game_audio/{mod,library,voices,ambience,cues,skate_events}.rs`,
+  `tools/audio_audition.py` (removed 2026-10-03), `crates/skate-game/src/game_audio/{mod,library,voices,ambience,cues,skate_events}.rs`,
   `crates/skate-data/examples/audio_surfaces.rs`.
 - 2026-10-02 world audio:
   - `game_audio/emitters.rs` replaces `water.rs`;
@@ -3438,6 +3436,9 @@ Research for the native audio runtime (specs in progress, 2026-10-02) also draws
   [BurnoutDecomp/b5-decomp](https://github.com/BurnoutDecomp/b5-decomp): RenderWare Audio plug-in
   identities, the SndPlayer1 and filter/resampler details, opcode names. b5-decomp has no licence, so it
   is reference only.
+- XNA Math / [DirectXMath](https://github.com/microsoft/DirectXMath) (Microsoft, MIT License): the
+  `XMVectorSin` / `XMVectorCos` polynomials the FrequencyShiftSsb oscillator uses (`skate-audio-fma`); the
+  coefficients are read from the shipped image.
 - [mitsevox/tw2004](https://github.com/mitsevox/tw2004) (CC0): Tiger Woods 07 RenderWare Audio function
   listings.
 No code from these is included.
@@ -4403,3 +4404,202 @@ change surface too (tag 3: surface 0 → 1; tag 5 was metal, now concrete).
 ### Riding body-collision posts settled (2026-10-03, recomp session `audiox_ride_20261003_141046`, 0 malformed)
 
 User ride (~4.5 min, 2 bails). Outside the bails (+3 s): body-poster posts from NPC skaters 163 (0.70/s, local72 0), from the local rider 49 (0.21/s), and the local ones are only three bursts, no steady riding posts: 45.9 s (4), 172.7 s (19; screenshot: landing a 7.5 ft stair gap) and 202.6 s (26; pushing into a parked car, vehicle material 36). So steady riding gives 0 local body posts in retail, as in ours; the earlier ~1.7/s was NPC skaters plus such events. Follow-up: check that ours posts body hits on a big-drop landing and on bumping a car (a state-log session with both).
+
+### PR #32 review fixes, step 1: the host clock is the physics steps; guards, tests, cleanups (2026-10-03, headless)
+
+**Problem (code review of PR #32).** `skate_events::observe` runs once per physics step (FixedUpdate, Virtual
+time, 16.6666 ms) and overwrote `Cues.riding` each step. `native::mixmap_frame` (Update) ran its own `Time<Real>`
+accumulator (`mix_clock += delta`, ticks = mix_clock / (1/60), cap 4) and ran inputs / process / update on whatever
+sample was in `Cues`. So the two grids drifted:
+- a frame with 2 physics steps and 1 mix tick lost the first step's one-step pulse (`+335`, the push plant's rise);
+- a frame with 1 mix tick and 0 steps re-processed a stale sample;
+- while the menu paused `Time<Virtual>`, `mixmap_frame` and the grain bed kept ticking on the stale sample;
+- below 60 fps the components saw every second step (still true, see below: that is retail's behaviour too).
+
+**Root cause.** Two clocks for one stream of samples. Retail's audio manager (`sub_82485190`) reads the record the
+game steps wrote; it never runs on a sample twice and never on a frame the game didn't step.
+
+**Change.**
+- `skate_events::Cues` counts the steps published since the host last took them (`Cues::publish` /
+  `take_steps`). While steps are pending, the one-step pulses of the new step are OR-ed with the pending one
+  (`latch_pulses`: `push_trigger` = `+335`). Every other field is a level (the latest step's value is what retail's
+  per-frame manager reads too), a latch (`+228`, `+468`, `+192` / `+692`), a 4-frame max (`+668`, `+496..`) or a
+  counter (`Riding::pushes`); the components find their own edges (landing, bail, grind) against the last sample
+  they processed, so those survive a 2-step frame without latching.
+- `native::HostClock::pass` (used by `mixmap_frame` and the e2e harness): takes the frame's steps. No step, or the
+  game silenced (menu, replay, the multiplayer menu that doesn't pause): no pass (no inputs, process, tick or
+  update; a silenced frame drops its steps and pulses, as the stream is paused). Otherwise ticks = steps, at most
+  `MAX_STEPS_PER_FRAME` = 4; the console cadence advances by those ticks.
+- **The cap (4 steps = 2 console evaluations).** Retail runs its audio manager once per rendered frame and never
+  catches up: a long frame is one call with a long dt. Our host counts steps to stay on the console's 30 Hz grid at any
+  frame rate, so it bounds the catch-up instead. 4 keeps frame-rate independence down to 15 fps (the old accumulator's
+  cap) while a hitch (Bevy runs up to 15 physics steps after a 250 ms frame) can't release a burst of evaluations,
+  Jitter steps or poster calls. The pulses of the dropped steps stay latched.
+- `Native::frame_ticks`: the grain bed (`grain_bed::update`) runs only on frames with a pass, dt = ticks × 1/60 (as
+  the e2e harness always did), not every rendered frame on `Time<Real>`. Pause no longer advances its envelopes.
+- Class_Seams' console cadence (`seam_frame`) still runs on every rendered frame (its own 30 Hz grid), now on game
+  time (`Time<Virtual>`, still while paused) and not while silenced. The rendered board's interpolation pair is the
+  last two physics steps (`Riding::wheels_before`, `PlayerAudio::step_wheels`), so a frame that takes two steps
+  interpolates between the right two.
+- Pause.in0 is no longer written as 32767: nothing ticks while silenced, so no evaluation would read it.
+- **Camera cuts.** `Presentation::cuts` counts the engine's snaps (teleport flag, camera discontinuity, cadence
+  change). On a change, or a map change (`CurrentMap::generation`), `mixmap_frame` resets the listener's last camera
+  (`PlayerAudio::reset_listener`: no Doppler velocity from the jump) and the seam pair (no interpolation from the old
+  place), and counts `Native::cuts`; the world / NPC hosts drop their camera velocity on a change of it.
+
+**Evidence / proof.**
+- e2e bench (`optimisation/tools/e2e_bench.sh`, 13 scenarios + 4 whole sessions; baseline built from `git archive
+  HEAD` in `.local/clk-base-src`): `row`, `fps60`, `fps144`, `fps300` byte-identical to the baseline (audio and voice
+  logs). `fps30` / `fps45` differ, as intended. Attribution: with the latch and the step pair both disabled in a
+  throw-away build, fps30 / fps45 are byte-identical to the baseline too, so these two are the only differences.
+  - The latch: in the 4 real sessions, 16 of 34 logged push edges fell on a row without a pass at 30 fps and were
+    dropped before; now each reaches one pass (also `ollies_log`'s one push).
+  - The step pair: at < 60 fps the old change-tracking pair spanned two steps.
+  - The e2e harness already modelled the ideal host at ≥ 60 fps (one pass per row); it now uses `HostClock` and
+    `Cues` itself, so the harness and the game share the scheduling code.
+- Unit test `native::tests::the_host_clock_takes_every_physics_step_once`: a Bevy app with `TimePlugin`, the physics
+  period and `TimeUpdateStrategy::ManualDuration` frame times (alternating 1 / 2 steps, frames without a step, 30 fps,
+  a 300 ms hitch = 15 steps, a paused second, a silenced stretch that still steps). Every step is taken by exactly one
+  frame; a pass sees a pulse iff one of its steps had one (the hitch frame merges three); ticks = steps capped at 4;
+  no pass while paused / silenced or without a step; console evaluations = ticks / 2.
+
+**Other review items in this step.**
+- Removed `trace-downtown-lag.json` (now ignored as `/trace-*.json`, `TRACE_PLAY.bat` writes it) and
+  `tools/audio_audition.py` (the audition pages are gone; the "Dev tools" and "Files" entries above are updated).
+- **No fallback, for real.** `emitters.rs` no longer plays the measured `PROFILES` table through Bevy voices when the
+  native runtime is absent: without it the emitters are silent (the runtime's start logs why). Removed with it: the
+  relay / loop patterns, the shuffle bag, `Library::sample_seconds` and the manifest's `seconds` field read.
+  `native::follow_volume`: Bevy voices always play at 1 / `RETAIL_SCALE` with the native fold and swapped ears (before,
+  an install without the runtime kept ×2 and Bevy's mirrored panning). Identical with the runtime.
+- Data-gated tests: 68 tests in `skate-audio` and `game_audio` (96 skip sites, incl. the world / NPC ones) are
+  `#[ignore = "needs the private install data"]`, and a missing piece now panics ("missing private data: …") instead
+  of passing silently. Run them with `-- --ignored` (or `--include-ignored`). On this machine every ignored test passes
+  (skate-audio 51, game_audio 21, older diagnostics included). The wall-clock assertion in the prefetch test is gone (timings are printed).
+- `AUDIO_NATIVE post` / `release` lines (one per component post, under the runtime lock) only with
+  `SKATE_AUDIO_TRACE=1`. No tool reads them.
+- Guards: `formats::abk` template end is a checked add; `Runtime::fill_stereo` turns non-finite samples into 0 for
+  the device (host-side safety, not a parity change: finite samples pass untouched; e2e reads the bus before it).
+- Allocations: the evaluator reuses unloaded bank slots (map changes no longer grow the list); `Evaluator::walk`
+  reuses its order snapshot; `redeliver` / `release` read their client lists in place; `destroy` reads the module's
+  object lists through the bank's `Arc` (it copied them). `grain_bed::update` no longer clones the seam wobbles and
+  builds a `PlayerTuning` every frame. `tests/render_alloc.rs` gains a hand-built AEMS bank (`eval::synthetic`, the
+  evaluator tests' builder made public and hidden from docs) with a playing program, a redeliver every console frame
+  and a release: 0 allocations in 480 warm blocks; the allocation counter is per thread now. All e2e outputs of
+  these changes are byte-identical (bench `clk_final` vs `clk_new`, every mode).
+- clippy `approx_constant` errors in the `dsp::pan` tests (`FRAC_1_SQRT_2`); 0 clippy errors in `skate-audio`.
+- `.gitignore`: `*.wav` is scoped to the folders retail audio is written to (`/assets/private`, `/data`,
+  `/maps/private`, `/.local`); no untracked WAV became visible. Mods and the SDK may ship WAVs.
+- Credit: the FSS `sin` / `cos` polynomials are XNA Math's `XMVectorSin` / `XMVectorCos` (successor DirectXMath,
+  Microsoft, MIT); see Credits.
+
+**Files.** `game_audio/{skate_events,native,grain_bed,player_audio,e2e,emitters,library,world_sources,npc_skaters}.rs`,
+`game_audio/native/prefetch.rs`, `presentation.rs` (the cut counter), `skate-audio/src/{eval/mod.rs,eval/synthetic.rs,
+eval/tests.rs,formats/abk.rs,runtime.rs,dsp/pan.rs}`, `skate-audio/tests/render_alloc.rs`, every data-gated test file,
+`skate-audio-fma/src/lib.rs`, `.gitignore`.
+
+**Open questions.**
+- Slow motion: the physics timer period changes (`physics/clock.rs`), so the host now ticks slower in real time with
+  it (it followed real time before). What retail's audio manager does in slow motion is not traced (`+220` time
+  scale is written 1.0).
+- The world / NPC hosts keep NodeIds across `unload_map_banks` (not fixed here; the world build-out step).
+- Needs the user's listening check at a low or uneven frame rate (pushes) and after a menu pause.
+
+### World audio hook-in, phases P0–P2: the map-change fix, the engine / mod surface, the dev test mod (2026-10-03, headless)
+
+Full write-up, field tables and examples: [doc 15](15-world-audio.md). Design: `.claude/notes/world-audio-hookin-spec.md`.
+
+- **P0, map change.** `Native::unload_map_banks` destroyed every instance of the 13 world banks, but `WorldHost`
+  kept the dead nodes and "already posted" objects, so an owner that survived the change was silent for the rest of
+  its life. Now `Native::map_epoch` is bumped by the unload. On a change, `WorldHost` / `NpcHost` release every node,
+  clear the pools / records, deactivate the 3DObjPos blocks, stop the ped Splice steps and the NPC bed, and drop
+  their objects; the owners still published are claimed and posted afresh. The evaluation count is a
+  `saturating_sub`. The world hosts' `dt` is now 1/30 per console evaluation and 1/60 per tick with
+  `SKATE_AEMS_MIX_CONSOLE=0` (it was `CONSOLE_DT` either way, double the real time in the non-console mode; that mode
+  went with the A/B switches, below, so it is 1/30 now).
+  Regression test `world_owners_post_again_after_a_map_change`, which fails without the reset.
+- **Retail limits from the gap runs** (spec §7.3): traffic list cut at 40 m horizontal (4 nearest); ped list cut at
+  50 m (15 nearest); ped footsteps for the 3 nearest (`S+68`); `S+148` / `S+156` = the distance / 20 m. Applied by
+  the hosts (radii) and the bridge (footsteps-on, the pair).
+- **P1, the engine surface** `crate::world_audio`: `TrafficAudio`, `PedAudio`, `NpcSkaterAudio`, `AudioVelocity`,
+  the read-back `WorldAudioInstance`, `LivingWorldAudio`, `WorldAudioStats`, the messages `PedSpeechEvent` /
+  `VehicleHorn` / `VehicleAlarm` (8 s). Bridge: `game_audio/world_bridge.rs`.
+  - The per-skater builder `skate_events::skater_audio_state` + `SkaterAudioMemory` is a pure move of `observe`'s
+    code. 1,500 production physics steps (`audio_state_capture`) gave a published state identical line for line
+    to the pre-refactor capture, and the builder equals `observe` on every step.
+  - `AudioState::rolling(&LiteSkater)` is the documented minimal fill for skaters not simulated with the player's
+    physics.
+- **User decisions included** (2026-10-03):
+  - mod cars may opt in to retail traffic engine sounds (`body=`);
+  - remote multiplayer players take the NPC skater instance, first in the list (non-retail; a lite state with the
+    ground's material);
+  - opt-in non-retail "more audible" (`settings/audio.json` `"more_audible_world": true`: 8 / 24 / 3 instances;
+    the MixMap is built with them; instance 0 unchanged);
+  - no traffic-light sounds.
+- **Mods:** `sdk.world_audio.spawn / update / event / remove / read / info` (capability `world_audio` = 1). 16
+  objects per mod, 64 in all; an object is parked after 0.5 s without updates; everything is cleaned up on disable,
+  reload or failure. The existing `sdk.audio.*` is unchanged.
+- **P2, the dev test publisher** `mods/world-audio-test/`:
+  - 16 cars (c00–c08 records, honks, skids, F8 alarm);
+  - 20 peds (walk / jog / run, warn / cheer / slam);
+  - a ghost NPC skater replaying a window of one of the user's state logs (`logs/<name>.tsv` or
+    `SKATE_AUDIO_STATE_LOGS`);
+  - debug boxes by audibility.
+
+  The e2e state-log replay moved unchanged from `e2e.rs` to `game_audio/state_replay.rs` for the ghost.
+- **Proof for the local player:** the e2e bench is byte-identical before / after (13 scenarios + 4 sessions, row and
+  fps300). Tests: the bridge unit tests, the ghost through the real host (claim, release at range, a map change), and
+  the skate-mods validation plus a 400-frame run of the test mod.
+- **Learned for the next pass (P3), from G3:** for an NPC, Wheels runs (layers 0 / 1) and Clothing runs; Tricks and
+  Treatment are local only; OffBoard creates packets but plays no steps. Instance 1 changes hands often (12× in
+  74 s).
+
+### A/B switches removed (2026-10-03, user decision; separate change after the world audio P0–P2)
+
+**Decision (the user):** remove the 15 verdict-settled A/B env switches. Their ON behaviour becomes the only
+behaviour.
+
+**Removed:**
+- `SKATE_AEMS_SEAM_PULSE`, `_MIX_CONSOLE`, `_PUSH_PLANT`, `_PLANT_LIFT`, `_BODY_IMPACTS`, `_GRIND_ONOFF`,
+  `_AIR_TIME_STATE`, `_SUBMIX`, `_FOOTSTEP_SUBMIX`, `_REVERB_INPUTS`, `_REVERB_ZONES`, `_BODY_CONSOLE`,
+  `_DECK_CONSOLE`, `_BODY_CURVE`, `_SLEW_CONSOLE`;
+- their e2e equivalents: `E2E_MIX_CONSOLE`, `_BODY_CONSOLE`, `_DECK_CONSOLE`, `_BODY_CURVE`, `_PLANT_LIFT`,
+  `_BODY_IMPACTS`, `_GRIND_ONOFF`, `_SLEW_CONSOLE`, `_FOOTSTEP_SUBMIX`, `_REVERB_INPUTS`, `_PUSH_PLANT`,
+  `_AIR_TIME_STATE`;
+- the dead comment-only names `SKATE_AEMS_PLAYER` / `SKATE_AEMS_FOOTSTEPS`.
+
+**Kept:** `SKATE_AEMS_WORLD`, `_WORLD_PREFETCH`, `_NPC_SKATERS`, `SKATE_AUDIO_FMA`, the tools (`SKATE_AUDIO_TRACE` /
+`TIMING` / `STATE_LOG` / `SET`, `SKATE_AEMS_BANKS`), and the e2e harness's part switches (`E2E_ROLLING`,
+`E2E_CONTACTS`, `E2E_BUSES`, …).
+
+**Dead code removed with them (game crate):**
+- the old 60 Hz MixMap evaluation (`HostClock::pass` has no `console` parameter; every pass is on the console
+  grid, the eEQChain clear included);
+- the per-tick Class_Seams process (`PlayerAudio::seam_console`; the seams run in `seam_frame`);
+- the fixed Reverb.in5 path;
+- the zone-less reverb;
+- the per-call body / deck posters (`PlayerAudio::body_console` / `deck_console`);
+- the dt-scaled bed slews (`Bed::slew_console`);
+- the air-flag `+236` count and the animation-contact push plant (`air_time_236` / `push_plant` lost their switch
+  parameters);
+- `set_review_ports` / `set_body_curve`;
+- the e2e harness's non-console row mode.
+
+**Kept on purpose:** the `skate-audio` components' own on / off fields (`Contacts::plant_lift_on` / `body_on` /
+`body_speed_on`, `Grind::onoff`, `CollisionManager::submix`, `Option` body / deck / slew calls). The game always
+turns them on. Their unit tests use "off" to isolate one part, so these are component configuration, not switches.
+Their docs no longer name env vars.
+
+**The e2e `row` mode is now the game's host at 60 fps.** Before, it ran the removed old 60 Hz evaluation and the
+per-tick seams.
+
+**Proof (byte-identical):**
+- e2e bench before (`wa_new` row / fps300, `sw_base` fps30 / fps60 / fps144) vs after (`sw_new`, all five
+  modes): fps30, fps60, fps144 and fps300 IDENTICAL for the 13 scenarios and the 4 whole sessions (26 + 8 outputs
+  each);
+- the new `row` renders are identical to the old `fps60` renders, which is what the game ran at 60 fps;
+- `audio_state_capture` (1,500 production physics steps through `observe`) is identical to its capture from before
+  both changes;
+- every unit and data test passes.
+- two data tests (`seams_play_their_retail_bank`, `seam_hits_shuffle_their_samples`) drove the removed per-tick seams.
+  They now call `seam_frame` before each pass, as `mixmap_frame` does, and pass with the same picture (pattern 11
+  at 10 / 20 / 30 km/h: 39 / 67 / 93 voices; brick: all 16 samples).

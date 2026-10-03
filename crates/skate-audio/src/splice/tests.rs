@@ -61,8 +61,9 @@ fn disc_bank(name: &str) -> Option<Vec<u8>> {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn disc_banks_parse_and_the_contact_ids_resolve() {
-    let Some(d) = disc_bank("Skate_Collisions") else { return eprintln!("skipped: no extracted SPLC banks") };
+    let Some(d) = disc_bank("Skate_Collisions") else { panic!("missing private data: no extracted SPLC banks") };
     let bank = SpliceBank::parse(&d).unwrap();
     assert!(bank.records.len() > 800 && !bank.containers.is_empty());
     let records = bank.records.len();
@@ -91,8 +92,9 @@ fn tone(seconds: f32) -> Arc<Pcm> {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn a_record_plays_its_layers_and_ends_after_its_length() {
-    let Some(d) = disc_bank("Skate_Collisions") else { return eprintln!("skipped: no extracted SPLC banks") };
+    let Some(d) = disc_bank("Skate_Collisions") else { panic!("missing private data: no extracted SPLC banks") };
     let bank = SpliceBank::parse(&d).unwrap();
     let pcm = (0..bank.samples).map(|_| Some(tone(0.5))).collect();
     let mut mixer = Mixer::new();

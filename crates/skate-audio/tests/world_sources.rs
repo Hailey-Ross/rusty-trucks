@@ -229,11 +229,12 @@ fn print_drive(name: &str, d: &Drive) {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn a_car_drives_past_through_its_own_engine_bank() {
     // The `c01_family01` patch with an idle / max of the default record's order; the named
     // records' values come from the install's world tuning in game.
     let record = EngineRecord { idle_rpm: 1400.0, max_rpm: 4000.0, patch: 1, ..Default::default() };
-    let Some(d) = drive(record, 12.0, 8.0, 15.0) else { return eprintln!("skipped: no world bank data") };
+    let Some(d) = drive(record, 12.0, 8.0, 15.0) else { panic!("missing private data: no world bank data") };
     print_drive("C01 at 12 m/s, lane 8 m", &d);
     // Bank selection: every engine voice that sounds is C01's (the other banks' programs destroy
     // their instances on the patch word).
@@ -266,13 +267,14 @@ fn a_car_drives_past_through_its_own_engine_bank() {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn engine_banks_answer_only_their_patch() {
     // Each patch through all eight loaded banks: which bank keeps voices (retail: the eight
     // banks are loaded together and every post sounds in exactly one).
     let mut table = Vec::new();
     for patch in 0..=9 {
         let record = EngineRecord { patch, ..Default::default() };
-        let Some(d) = drive(record, 8.0, 4.0, 1.0 + 90.0 / 8.0) else { return eprintln!("skipped: no world bank data") };
+        let Some(d) = drive(record, 8.0, 4.0, 1.0 + 90.0 / 8.0) else { panic!("missing private data: no world bank data") };
         let banks: std::collections::BTreeSet<String> = d.rows.iter().flat_map(|r| r.7.keys().filter(|b| b.starts_with("C0")).cloned()).collect();
         table.push((patch, banks));
     }
@@ -288,8 +290,9 @@ fn engine_banks_answer_only_their_patch() {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn a_ped_walks_past_and_steps_on_each_plant() {
-    let Some(mut h) = harness(&["fstep_livingworld"], &["sk8_foley"]) else { return eprintln!("skipped: no ped bank data") };
+    let Some(mut h) = harness(&["fstep_livingworld"], &["sk8_foley"]) else { panic!("missing private data: no ped bank data") };
     let l = listener();
     let tuning = PedFootstepTuning::default();
     let mut pt = PlayerTuning::default();
@@ -354,9 +357,10 @@ fn speech_from_install() -> Option<(skate_audio::world::speech::SpeechIndex, Vec
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn a_bumped_ped_warns_with_a_line_of_its_voice() {
     use skate_audio::world::speech::{SPEECH_BANK, Want, choose, reaction_cues};
-    let Some((index, files)) = speech_from_install() else { return eprintln!("skipped: no decoded speech (stage_world_audio.py --decode 501,104,205,101)") };
+    let Some((index, files)) = speech_from_install() else { panic!("missing private data: no decoded speech (stage_world_audio.py --decode 501,104,205,101)") };
     // Which voices can say each measured reaction (the voice id comes from the ped's model).
     for want in [Want::Warn, Want::SlamReaction, Want::NearbyCollisionReaction, Want::NearbySkaterTrick] {
         for cue in reaction_cues(want) {
