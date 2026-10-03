@@ -3400,3 +3400,10 @@ holder fields, the owner bus builder and the Class_Seams function map. No code f
 - Verification: `game_audio::` tests, including the new
   `native_is_the_default_even_with_an_old_saved_native_false`; muted smoke runs (`--mute`) on StartPark and University
   with the staged build: native runtime and every component on, render ready, no panics, errors or non-finite physics.
+
+### Seam-hit prominence: closed (2026-10-03)
+
+The remaining 2–5 dB gap between our seam hits and the recomp's capture (after the 110 ms alignment fix) has no
+mechanism. Pitch, per-voice level, bus, voices per hit and the bed spectrum all match. The user closed it as a
+likely recomp artefact: the recomp's frame rate is uncapped, its audio thread stalls, and its capture includes
+ambience and the other seam voices. The user hears the seams as "WAY BETTER". No levels were changed.
