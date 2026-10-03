@@ -80,3 +80,9 @@ timing and threading), so its traces are evidence for values and logic, not for 
 [rexglue SDK](https://github.com/rexglue/rexglue-sdk), [Xenia](https://github.com/xenia-project/xenia)'s
 Xbox 360 research, [vgmstream](https://github.com/vgmstream/vgmstream) for audio decoding, and the
 vendored map extraction tools in `tools/vendor/`.
+
+## Added 2026-10-03
+
+- `tools/recomp-trace/bail_impacts.py`: per-bail ragdoll impacts and sound posts (BAILSTEP / BAILREG).
+- `tools/recomp-trace/collision_posts.py`: collision-sound posts by poster and owner, with the local-rider flag.
+- `tools/recomp-trace/trace.py`: knows the newer line kinds (BAIL*, COLLPOST, BANDQ, LOCALTEST).

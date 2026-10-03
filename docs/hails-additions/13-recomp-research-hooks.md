@@ -61,3 +61,15 @@ build the recomp and set up the paths themselves.
 [skate3recomp](https://github.com/mchughalex/skate3recomp) by @mchughalex,
 the [rexglue SDK](https://github.com/rexglue/rexglue-sdk), and [Xenia](https://github.com/xenia-project/xenia)'s
 Xbox 360 research.
+
+## Playing it from the couch, and closing it
+
+- Our couch launcher (local, `.local\steam\`) starts the traced recomp from Steam / Steam Link with one shortcut per
+  trace mode, checks each trace for malformed lines afterwards, and keeps one game running at a time.
+- The recomp's settings overlay opens with **Escape** or **F1** and has **"Quit to the desktop"**; it is
+  controller-navigable once open. On the `research-hooks` branch, holding **LB + RB + Back** for ~1 s opens it from the
+  controller (cvars `skate3_menu_pad_chord` / `skate3_menu_pad_hold_ms`); a quick tap doesn't. Back alone opens Skate 3's
+  Instant Replay, which shows underneath while holding. Start isn't used because it opens Skate 3's own pause menu.
+- Closing with Steam's "Exit game" is safe for the data (the trace is written continuously).
+- A heavy trace (`audio,audiox,dsp` plus the audio capture) can coincide with stalls; the trace writer stops before a
+  stall, so a stall can be missing from the trace. Drop `dsp` if stalls recur.
