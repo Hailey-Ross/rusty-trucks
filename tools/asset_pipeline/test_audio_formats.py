@@ -435,6 +435,46 @@ class PlayerTuning(unittest.TestCase):
         self.assertEqual(t['collision']['posters'], {'landing_board': 95, 'scuff_ids': [95, 94]})
         self.assertEqual(t['landing_materials'], [])
 
+    def test_name_keyed_records_plant_ids_and_grind_contacts(self):
+        from tools.asset_pipeline.audio_export import (BAND_CLASS, GRIND_CLASS, GRIND_CONTACTS, GRIND_METAL,
+                                                        GRIND_SURFACE_KEYS, LIFT_FIELDS, MATERIAL_CLASS, PLANT_FIELDS,
+                                                        player_tuning)
+        from tools.asset_pipeline.vlt import hash64
+
+        hexf = lambda v: {'type': 'EA::Reflection::Float', 'data': struct.pack('>f', v).hex().upper()}
+        sc = lambda v: {'type': 'Skate_Collisions', 'data': '%08X' % v}
+        foley = lambda v: {'type': 'sk82_cloth_foley', 'data': '%08X' % v}
+        ref = lambda cls, key: {'type': 'Attrib::RefSpec', 'data': cls[5:] + '%016X' % key + '0' * 16}
+        on = GRIND_CONTACTS['on']
+        surface = 'Hash_%016X' % GRIND_SURFACE_KEYS[6]
+        collections = [
+            # The head's record is keyed by its name, its bands by the band class's `default`.
+            {'class': MATERIAL_CLASS, 'key': 'head', 'parent': '', 'fields': {
+                'Hash_9203DF6FD029B377': sc(1032), 'Hash_BFABF634D2B1E45A': sc(952),
+                'Hash_E228508FE0F53970': ref(BAND_CLASS, hash64('default'))}},
+            {'class': BAND_CLASS, 'key': 'default', 'parent': '', 'fields': {'Hash_C8DED1BC20B9D6A5': hexf(1.0)}},
+            {'class': 'Hash_C26949FCB638A2CA', 'key': 'default', 'parent': '', 'fields': {
+                **{f: foley(84 + i) for i, f in enumerate(PLANT_FIELDS)}, **{f: foley(90 + i) for i, f in enumerate(LIFT_FIELDS)}}},
+            {'class': GRIND_CLASS, 'key': surface, 'parent': '', 'fields': {
+                GRIND_METAL: {'type': 'EA::Reflection::Bool', 'data': '01'},
+                **{f: {'type': 'Skate_Metal', 'data': '%08X' % (535 + i)} for i, f in enumerate(on['ids'][1])},
+                on['gain'][0]: hexf(0.5), on['level'][0]: hexf(0.1), on['level'][1]: hexf(1.25),
+                on['pitch'][0]: hexf(0.8), on['pitch'][1]: hexf(1.0)}},
+        ]
+        t = player_tuning(collections)
+        head = t['collision']['materials'][97]
+        self.assertNotIn('missing', head)
+        self.assertEqual(head['ids'][:2], [1032, 952])
+        self.assertAlmostEqual(head['bands'][0], 1.0)
+        self.assertEqual(t['collision']['posters']['plant_ids'], [84, 85, 86, 87, 88])
+        self.assertEqual(t['collision']['posters']['lift_ids'], [90, 91, 92, 93, 94])
+        g = t['grind'][6]
+        self.assertTrue(g['metal'])
+        self.assertEqual(g['on']['ids'], [535, 536, 537, 538])
+        self.assertAlmostEqual(g['on']['gain'][0], 0.5)
+        self.assertEqual(g['on']['gain'][1], 1.0, 'a missing layer factor reads 1.0')
+        self.assertNotIn('off', g, 'no off fields: no off sound')
+
 
 class SpliceTrees(unittest.TestCase):
     def test_copies_the_patch_tree_of_splc_banks_only(self):

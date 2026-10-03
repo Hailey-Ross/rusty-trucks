@@ -149,3 +149,39 @@ fn disc_mixmap_free_skate_outputs() {
     }
     assert_eq!(silent.level(e, 4), 0);
 }
+
+/// A held input: a one-step flag written between ticks still reaches the next evaluation once; the
+/// stored input keeps the last write, and inputs without a hold are unchanged.
+#[test]
+fn a_held_flag_written_between_ticks_reaches_the_next_tick_once() {
+    let owner = keys::obj(0, 0, 0);
+    let run = |hold: bool| {
+        let mut m = MixMap::new(&tiny(), &[1]);
+        if hold {
+            assert!(m.hold_input(owner, 1));
+        }
+        m.tick(1.0 / 30.0);
+        let idle = m.level(owner, 0);
+        // The duck trigger pulses on one 60 Hz step and is cleared on the next, before the tick.
+        m.set_input(owner, 1, 1);
+        m.set_input(owner, 1, 0);
+        m.tick(1.0 / 30.0);
+        let after = m.level(owner, 0);
+        assert_eq!(m.input(owner, 1), 0, "the stored input is the last write");
+        (idle, after)
+    };
+    let (idle, unheld) = run(false);
+    assert_eq!(unheld, idle, "without a hold the pulse is lost");
+    let (idle, held) = run(true);
+    assert!(held < idle, "with a hold the duck starts: {held} vs {idle}");
+    // Without writes the hold is inert; a later tick sees only later writes.
+    let mut m = MixMap::new(&tiny(), &[1]);
+    m.hold_input(owner, 1);
+    m.set_input(owner, 1, 1);
+    m.tick(1.0 / 30.0);
+    m.set_input(owner, 1, 0);
+    let a = m.input(owner, 1);
+    m.tick(1.0 / 30.0);
+    assert_eq!((a, m.input(owner, 1)), (0, 0));
+    assert!(!m.hold_input(0x7777_0000, 1), "unknown controller");
+}

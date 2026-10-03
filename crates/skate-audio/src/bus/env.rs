@@ -59,6 +59,12 @@ impl Level {
         Self { target, current: target, started: false }
     }
 
+    /// A send that has already processed blocks at `level` (its class default when nothing was
+    /// posted): the next posted target ramps from there instead of starting flat.
+    pub fn running(level: f32) -> Self {
+        Self { target: level, current: level, started: true }
+    }
+
     /// dst[k] += level(k) · src[k].
     pub fn add(&mut self, src: &[f32], dst: &mut [f32]) {
         if !self.started {

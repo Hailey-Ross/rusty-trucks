@@ -39,6 +39,10 @@ pub(crate) struct PlayerAudio {
     physics: Physics,
     contacts: Contacts,
     jitter: Jitter,
+    /// The Jitter walk steps for the next [`Self::write_inputs`]: `Some(n)` under the MixMap's
+    /// console cadence (n console evaluations in this pass, `native::mixmap_frame`), `None`: one
+    /// step per call (the old 60 Hz host and the tests).
+    pub(crate) jitter_steps: Option<usize>,
     positions: [ObjPos; 2],
     was_grinding: bool,
     last_camera: Option<[f32; 3]>,
@@ -120,16 +124,25 @@ impl PlayerAudio {
         // SFX Master as before.
         let mut collision = CollisionManager::default();
         collision.submix = !std::env::var("SKATE_AEMS_SUBMIX").is_ok_and(|v| v == "0");
+        let on = |var: &str| !std::env::var(var).is_ok_and(|v| v == "0");
+        let mut board = board_contacts::Contacts::default();
+        // Session review 2026-10-03: the push foot's plant / lift (#2), the body poster (#4) and the
+        // grind on / off sounds (#5); `SKATE_AEMS_{PLANT_LIFT,BODY_IMPACTS,GRIND_ONOFF}=0` off.
+        board.plant_lift_on = on("SKATE_AEMS_PLANT_LIFT");
+        board.body_on = on("SKATE_AEMS_BODY_IMPACTS");
+        let mut grind = Grind::default();
+        grind.onoff = on("SKATE_AEMS_GRIND_ONOFF");
         Self {
             tuning,
             physics: Physics::default(),
             contacts: Contacts::default(),
             jitter,
+            jitter_steps: None,
             positions: [ObjPos::default(); 2],
             was_grinding: false,
             last_camera: None,
             components,
-            grind: Grind::default(),
+            grind,
             speed: SenseOfSpeed::default(),
             foot_drag: FootDrag::default(),
             skid: Skid::default(),
@@ -138,7 +151,7 @@ impl PlayerAudio {
             seam_alpha: None,
             seam_wheels: None,
             seam_console: false,
-            board: board_contacts::Contacts::default(),
+            board,
             contact_tuning: ContactsTuning::default(),
             contacts_on: false,
             collision,
@@ -168,6 +181,33 @@ impl PlayerAudio {
             nodes: HashMap::new(),
             classes: HashMap::new(),
             posts: 0,
+        }
+    }
+
+    /// The session-review ports (the e2e harness's `E2E_*` switches): the plant / lift, the body
+    /// poster, the grind on / off sounds.
+    #[cfg(test)]
+    pub(crate) fn set_review_ports(&mut self, plant_lift: bool, body: bool, grind_onoff: bool) {
+        self.board.plant_lift_on = plant_lift;
+        self.board.body_on = body;
+        self.grind.onoff = grind_onoff;
+    }
+
+    /// Whether the body poster runs (the interim bail cues stay silent then).
+    pub(crate) fn body_impacts_on(&self) -> bool {
+        self.components && self.contacts_on && self.board.body_on
+    }
+
+    /// Collision messages of another Player-slot owner (an NPC skater, `npc_skaters.rs`): retail
+    /// has one `CSTATEMGR_Collision`, so they join the local player's (processed at its next
+    /// `process`). No messages, no change.
+    pub(crate) fn post_collisions(&mut self, msgs: Vec<skate_audio::player::collision::Message>, rt: &mut Runtime) {
+        if msgs.is_empty() || !self.contacts_on {
+            return;
+        }
+        let mut host = rt.splice_host();
+        for msg in msgs {
+            self.collision.post(msg, &mut host);
         }
     }
 
@@ -207,8 +247,10 @@ impl PlayerAudio {
             self.positions[0].write(m, keys::obj_pos(0), l, Some((s.com_position, s.com_velocity)));
             self.positions[1].write(m, keys::obj_pos2(0), l, Some((s.board_position, s.board_velocity)));
         }
-        for (id, word) in self.jitter.process() {
-            m.set_input(keys::JITTER, id, word);
+        for _ in 0..self.jitter_steps.unwrap_or(1) {
+            for (id, word) in self.jitter.process() {
+                m.set_input(keys::JITTER, id, word);
+            }
         }
         let landed = self.contacts.write(m, s, &self.tuning);
         inputs::write_rail(m, s.grinding, self.was_grinding);
@@ -350,6 +392,8 @@ impl PlayerAudio {
         }
         self.apply(rt, cmds);
         if self.contacts_on {
+            // The grind on / off contact sounds of this frame's Rail posts (Splice).
+            self.grind.sounds(s, &self.tuning, &mut rt.splice_host());
             let before = self.board.starts;
             self.board.process(s, self.contacts.buckets(), &self.tuning, &self.contact_tuning, &mut rt.splice_host());
             self.posts += self.board.starts - before;
@@ -458,6 +502,10 @@ impl PlayerAudio {
         }
         self.apply(rt, cmds);
         if self.contacts_on {
+            // The Rail updater's end (`sub_824C42A8`): the grind on / off sounds, after its packets
+            // (the family-change starts of `Grind::update` first).
+            self.grind.sounds(s, &self.tuning, &mut rt.splice_host());
+            self.grind.update_sounds(s, &rail, &mut rt.splice_host());
             self.board.update(s, &contacts, &self.contact_tuning, &mut rt.splice_host());
             let before = self.collision.starts;
             self.collision.update(m, &self.tuning.collision, s.dt, &mut rt.splice_host());

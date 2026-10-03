@@ -17,7 +17,7 @@
 //! The class's optional 64-tap band-limiting FIR (`sub_82B42510` / `sub_82B41D58`, active when the
 //! construction parameter is 1.0) is off in the board chain (`sub_824C8878` passes 0.0), so it is
 //! not ported.
-use super::biquad::{Coefficients, TWO_PI, kernel};
+use super::biquad::{Coefficients, TWO_PI, kernel_block};
 
 /// The four allpass sections {a1, a2, b0, b1, b2} (I = 0, 1; Q = 2, 3), image `0x82FCE2B0`.
 pub const SECTIONS: [Coefficients; 4] = [
@@ -33,66 +33,26 @@ const fn allpass(a1: u32, a2: u32) -> Coefficients {
 }
 
 /// 1/2π as the image holds it (`0x822F8904` for the wrap, lane 3 of `0x822F9850` for the trig).
-pub const INV_TWO_PI: f32 = f32::from_bits(0x3E22_F983);
+pub const INV_TWO_PI: f32 = skate_audio_fma::INV_TWO_PI;
 
-/// `XMVectorSin` coefficients for V³ … V²³ (`0x822F97C4` … `0x822F97EC`).
-const SIN: [u32; 11] = [
-    0xBE2A_AAAB, 0x3C08_8889, 0xB950_0D01, 0x3638_EF1D, 0xB2D7_322B, 0x2F30_9231, 0xAB57_3F9F, 0x274A_963C, 0xA317_A4DA, 0x1EB8_DC78,
-    0x9A3B_0DA1,
-];
-/// `XMVectorCos` coefficients for V² … V²² (`0x822F97F4` … `0x822F981C`).
-const COS: [u32; 11] = [
-    0xBF00_0000, 0x3D2A_AAAB, 0xBAB6_0B61, 0x37D0_0D01, 0xB493_F27E, 0x310F_76C8, 0xAD49_CBA5, 0x2957_3F9F, 0xA534_13C3, 0x20F2_A15D,
-    0x9C86_71CB,
-];
+// The trig and the oscillator loop live in `skate-audio-fma` (`body.rs`, the same source), which
+// runs them with hardware FMA when the CPU has it: the same bits (doc 11 "Hardware FMA dispatch").
+// The `XMVectorSin` / `XMVectorCos` coefficient tables (`0x822F97C4` … `0x822F981C`) are
+// `skate_audio_fma::SIN` / `COS`.
 
-fn c(table: &[u32; 11], k: usize) -> f32 {
-    f32::from_bits(table[k])
-}
-
-/// x − 2π · round(x / 2π) (`vrfin` = nearest, ties to even; fused `vnmsubfp`).
-fn reduce(x: f32) -> f32 {
-    let n = (x * INV_TWO_PI).round_ties_even();
-    (-TWO_PI).mul_add(n, x)
-}
-
-/// `XMVectorSin` per lane: powers by repeated ×V², terms accumulated with fused multiply-adds in
+/// `XMVectorSin` per lane: x − 2π · round(x / 2π) (`vrfin` = nearest, ties to even; fused
+/// `vnmsubfp`), then powers by repeated ×V², terms V³ … V²³ accumulated with fused multiply-adds in
 /// ascending order. Retail's VMX flushes denormals; here a power that underflows stays denormal,
 /// which can only matter for |V| < 1e-30.
 pub fn sin(x: f32) -> f32 {
-    let v = reduce(x);
-    let v2 = v * v;
-    let mut p = v2 * v;
-    let mut r = c(&SIN, 0).mul_add(p, v);
-    for k in 1..11 {
-        p *= v2;
-        r = c(&SIN, k).mul_add(p, r);
-    }
-    r
+    skate_audio_fma::sin(x)
 }
 
-/// `XMVectorCos` per lane. The powers come in retail's pairing (V⁴ = V²·V², V⁶ = V⁴·V², V⁸ = V⁴·V⁴,
-/// V¹⁰ = V⁶·V⁴, V¹² = V⁶·V⁶, V¹⁴ = V⁸·V⁶, V¹⁶ = V⁸·V⁸, V¹⁸ = V¹⁰·V⁸, V²⁰ = V¹⁰·V¹⁰, V²² = V¹²·V¹⁰);
-/// the terms are summed from 1 upwards with fused multiply-adds.
+/// `XMVectorCos` per lane, same reduction. The powers come in retail's pairing (V⁴ = V²·V²,
+/// V⁶ = V⁴·V², V⁸ = V⁴·V⁴, V¹⁰ = V⁶·V⁴, V¹² = V⁶·V⁶, V¹⁴ = V⁸·V⁶, V¹⁶ = V⁸·V⁸, V¹⁸ = V¹⁰·V⁸,
+/// V²⁰ = V¹⁰·V¹⁰, V²² = V¹²·V¹⁰); the terms are summed from 1 upwards with fused multiply-adds.
 pub fn cos(x: f32) -> f32 {
-    let v = reduce(x);
-    let v2 = v * v;
-    let v4 = v2 * v2;
-    let v6 = v4 * v2;
-    let v8 = v4 * v4;
-    let v10 = v6 * v4;
-    let v12 = v6 * v6;
-    let v14 = v8 * v6;
-    let v16 = v8 * v8;
-    let v18 = v10 * v8;
-    let v20 = v10 * v10;
-    let v22 = v12 * v10;
-    let powers = [v2, v4, v6, v8, v10, v12, v14, v16, v18, v20, v22];
-    let mut r = 1.0f32;
-    for (k, p) in powers.into_iter().enumerate() {
-        r = c(&COS, k).mul_add(p, r);
-    }
-    r
+    skate_audio_fma::cos(x)
 }
 
 #[derive(Clone, Debug)]
@@ -125,23 +85,18 @@ impl FrequencyShift {
         i.copy_from_slice(samples);
         q.copy_from_slice(samples);
         let [h0, h1, h2, h3] = &mut self.history;
-        kernel(&SECTIONS[0], h0, i);
-        kernel(&SECTIONS[1], h1, i);
-        kernel(&SECTIONS[2], h2, q);
-        kernel(&SECTIONS[3], h3, q);
+        kernel_block(&SECTIONS[0], h0, i);
+        kernel_block(&SECTIONS[1], h1, i);
+        kernel_block(&SECTIONS[2], h2, q);
+        kernel_block(&SECTIONS[3], h3, q);
         let delta = (self.shift_hz / rate) * TWO_PI;
         let phi = self.phase;
-        let mut lanes = [phi, phi + delta, delta.mul_add(2.0, phi), delta.mul_add(3.0, phi)];
-        let step = delta * 4.0;
-        for (g, out) in samples.chunks_exact_mut(4).enumerate() {
-            for (k, s) in out.iter_mut().enumerate() {
-                let at = 4 * g + k;
-                *s = i[at] * cos(lanes[k]) - q[at] * sin(lanes[k]);
-            }
-            for l in &mut lanes {
-                *l += step;
-            }
-        }
+        // Lanes {φ, φ + Δ, φ + 2Δ (fused), φ + 3Δ (fused)} advancing by 4Δ per group of four;
+        // out = I · cos − Q · sin. `sin` / `cos` are pure functions of the lane's bits: a lane that
+        // holds the same value as in the previous group (a 0 Hz shift: Δ = 0) reuses them
+        // (optimisation pass 2026-10-03, bit-identical; test `repeated_lanes_reuse_the_same_trig`).
+        // The loop is `skate_audio_fma::fss_mix` (hardware FMA when available, same bits).
+        skate_audio_fma::fss_mix(samples, i, q, phi, delta);
         let end = delta.mul_add(n as f32, phi);
         let turns = ((end * INV_TWO_PI) as i32) as f32;
         self.phase = (-turns).mul_add(TWO_PI, end);
@@ -150,6 +105,7 @@ impl FrequencyShift {
 
 #[cfg(test)]
 mod tests {
+    use super::super::biquad::kernel;
     use super::*;
 
     const RATE: f32 = 48000.0;
@@ -274,5 +230,64 @@ mod tests {
         let d = (-150.0f32 / RATE) * TWO_PI;
         let end = d.mul_add(256.0, 0.0);
         assert_eq!(fss.phase(), end, "less than a turn: no wrap, sign kept");
+    }
+
+    /// The process before the optimisation pass (test-only reference): plain kernels, `sin` /
+    /// `cos` for every sample.
+    fn process_reference(f: &mut FrequencyShift, samples: &mut [f32], rate: f32) {
+        let n = samples.len();
+        let mut i = [0.0f32; crate::BLOCK];
+        let mut q = [0.0f32; crate::BLOCK];
+        let (i, q) = (&mut i[..n], &mut q[..n]);
+        i.copy_from_slice(samples);
+        q.copy_from_slice(samples);
+        let [h0, h1, h2, h3] = &mut f.history;
+        kernel(&SECTIONS[0], h0, i);
+        kernel(&SECTIONS[1], h1, i);
+        kernel(&SECTIONS[2], h2, q);
+        kernel(&SECTIONS[3], h3, q);
+        let delta = (f.shift_hz / rate) * TWO_PI;
+        let phi = f.phase;
+        let mut lanes = [phi, phi + delta, delta.mul_add(2.0, phi), delta.mul_add(3.0, phi)];
+        let step = delta * 4.0;
+        for (g, out) in samples.chunks_exact_mut(4).enumerate() {
+            for (k, s) in out.iter_mut().enumerate() {
+                let at = 4 * g + k;
+                *s = i[at] * cos(lanes[k]) - q[at] * sin(lanes[k]);
+            }
+            for l in &mut lanes {
+                *l += step;
+            }
+        }
+        let end = delta.mul_add(n as f32, phi);
+        let turns = ((end * INV_TWO_PI) as i32) as f32;
+        f.phase = (-turns).mul_add(TWO_PI, end);
+    }
+
+    /// The optimised process (settled allpasses, repeated-lane trig) equals the reference bit for
+    /// bit over shifts of 0 Hz (repeated lanes), ±150 Hz and tiny / huge / NaN ones, on tone,
+    /// silent, -0.0 and constant blocks, with the phase carried across blocks.
+    #[test]
+    fn repeated_lanes_reuse_the_same_trig() {
+        let tone = tone(382.0, 256 * 600);
+        let (mut a, mut b) = (FrequencyShift::default(), FrequencyShift::default());
+        for block in 0..600usize {
+            let shift = [0.0, 150.0, -150.0, 0.0, 1e-30, -0.0, 96000.0, f32::NAN, 0.0, 37.5][block / 60];
+            a.shift_hz = shift;
+            b.shift_hz = shift;
+            let input: Vec<f32> = match block % 7 {
+                0 | 1 => tone[block * 256..(block + 1) * 256].to_vec(),
+                2 => vec![-0.0; 256],
+                3 => vec![0.5; 256],
+                _ => vec![0.0; 256],
+            };
+            let (mut xa, mut xb) = (input.clone(), input);
+            process_reference(&mut a, &mut xa, RATE);
+            b.process(&mut xb, RATE);
+            let bits = |x: &[f32]| x.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&xa), bits(&xb), "block {block} shift {shift}");
+            assert_eq!(a.phase.to_bits(), b.phase.to_bits(), "block {block}");
+            assert_eq!(a.history.iter().flatten().map(|v| v.to_bits()).collect::<Vec<_>>(), b.history.iter().flatten().map(|v| v.to_bits()).collect::<Vec<_>>());
+        }
     }
 }

@@ -6,7 +6,7 @@
 //! look-ahead) only splits the same continuous stream, so we interpolate the stream directly.
 
 /// The interpolation weight constant (≈ 1/65536, about one part in 2^21 off).
-pub const WEIGHT: f32 = f32::from_bits(0x377F_FC9C);
+pub const WEIGHT: f32 = skate_audio_fma::WEIGHT;
 /// Step ceiling: 2^18 = ratio 4.0 (MAX_RESAMPLE_RATIO).
 pub const MAX_STEP: u32 = 1 << 18;
 
@@ -52,26 +52,12 @@ impl Resampler {
 
     /// Render `out.len()` frames of one channel from `frame(index)`. Returns nothing; call
     /// [`Resampler::advance`] once per block after all channels.
-    pub fn render(&self, out: &mut [f32], mut frame: impl FnMut(u64) -> f32) {
-        let (mut position, mut frac) = (self.position, self.frac);
-        let mut a = frame(position);
-        let mut b = frame(position + 1);
-        for o in out.iter_mut() {
-            let w = frac as f32 * WEIGHT;
-            *o = (b - a).mul_add(w, a);
-            frac += self.step;
-            let carry = u64::from(frac >> 16);
-            frac &= 0xFFFF;
-            if carry > 0 {
-                position += carry;
-                if carry == 1 {
-                    a = b;
-                } else {
-                    a = frame(position);
-                }
-                b = frame(position + 1);
-            }
-        }
+    ///
+    /// The loop (`a + (b − a)·(frac·W)` fused, the 16.16 phase stepping) is
+    /// `skate_audio_fma::resample`: hardware FMA when the CPU has it, the same bits (doc 11
+    /// "Hardware FMA dispatch").
+    pub fn render(&self, out: &mut [f32], frame: impl FnMut(u64) -> f32) {
+        skate_audio_fma::resample(out, self.position, self.frac, self.step, frame);
     }
 
     /// Advance the phase by `frames` output frames.

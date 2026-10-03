@@ -33,7 +33,10 @@
 //!   32767; redelivered.
 //!
 //! Inputs not in the engine: the global time scale of the distance mode (1.0 here) and the
-//! owner's active byte (always on).
+//! owner's active byte (always on). Retail gates the process and the update on that byte
+//! (`[record+52]`), not on the local byte: Class_Seams runs for an NPC skater's Player instance too
+//! (`world::skaters`; [`Seams::instance`]). The soft word is `sub_824B23C8`'s value, which the state
+//! carries in `soft_wheels` (the local player's `+684`; for an NPC see `world::skaters`).
 use super::state::NO_MATERIAL;
 use super::tuning::{PlayerTuning, SeamPattern};
 use super::{AudioState, Outputs, clamp01, trunc_clamp};
@@ -108,6 +111,8 @@ pub struct Seams {
     /// Hits fired, and those of them that were material changes (diagnostics).
     pub hits: u64,
     pub transitions: u64,
+    /// The Player-slot instance whose Cracks input it writes (0 = the local player).
+    pub instance: u32,
 }
 
 impl Default for Seams {
@@ -137,6 +142,7 @@ impl Default for Seams {
             calls: 0,
             hits: 0,
             transitions: 0,
+            instance: 0,
         }
     }
 }
@@ -168,7 +174,7 @@ impl Seams {
         w[4] = 4096;
         w[5] = 25000;
         w[10] = surface(s, t, wheel, false).clamp(0, 8);
-        w[11] = i32::from(s.local && s.soft_wheels);
+        w[11] = i32::from(s.soft_wheels);
         w[14] = wheel as i32;
         w[19] = EQ_CHAIN;
         w
@@ -185,7 +191,7 @@ impl Seams {
             w[9] = i32::from(single);
             w[7] = if toggle { 1 } else { 2 };
             w[10] = surface(s, t, wheel, transition).clamp(0, 8);
-            w[11] = i32::from(s.local && s.soft_wheels);
+            w[11] = i32::from(s.soft_wheels);
         }
         self.toggle[wheel] = !toggle;
         self.fired_now[wheel] = true;
@@ -279,9 +285,6 @@ impl Seams {
     /// Process (before the MixMap tick): the create on the first call, then `sub_824C14C8`.
     pub fn process(&mut self, s: &AudioState, t: &PlayerTuning, m: &mut MixMap) -> Vec<SeamCommand> {
         let mut cmds = Vec::new();
-        if !s.local {
-            return cmds;
-        }
         for wheel in 0..4 {
             if self.held[wheel].is_none() {
                 let w = Self::words(s, t, wheel);
@@ -300,7 +303,7 @@ impl Seams {
         // Cracks.in0 := 0, then 32767 if a hit fires now or fired on a call between ticks (the
         // MixMap ticks only here; retail ticks on every call).
         self.step(s, t);
-        m.set_input(keys::cracks(0), 0, if std::mem::take(&mut self.cracks) { 32767 } else { 0 });
+        m.set_input(keys::cracks(self.instance), 0, if std::mem::take(&mut self.cracks) { 32767 } else { 0 });
         for (wheel, w) in self.held.iter().enumerate() {
             if let Some(w) = w {
                 cmds.push(SeamCommand::Redeliver { wheel, words: w.clone() });
@@ -347,9 +350,6 @@ impl Seams {
     /// tick). No packet changes here, so nothing is redelivered.
     pub fn process_tick(&mut self, s: &AudioState, t: &PlayerTuning, m: &mut MixMap) -> Vec<SeamCommand> {
         let mut cmds = Vec::new();
-        if !s.local {
-            return cmds;
-        }
         for wheel in 0..4 {
             if self.held[wheel].is_none() {
                 let w = Self::words(s, t, wheel);
@@ -363,7 +363,7 @@ impl Seams {
         }
         self.prev0 = now;
         self.air0 = if now { 0 } else { self.air0 + 1 };
-        m.set_input(keys::cracks(0), 0, if std::mem::take(&mut self.cracks) { 32767 } else { 0 });
+        m.set_input(keys::cracks(self.instance), 0, if std::mem::take(&mut self.cracks) { 32767 } else { 0 });
         cmds
     }
 
@@ -404,7 +404,7 @@ impl Seams {
     /// dt = 1/30 per call. Only changed packets are redelivered.
     pub fn frame(&mut self, s: &AudioState, t: &PlayerTuning, dt: f32, block: u64) -> Vec<SeamCommand> {
         let mut cmds = Vec::new();
-        if !s.local || self.held.iter().any(Option::is_none) {
+        if self.held.iter().any(Option::is_none) {
             return cmds;
         }
         self.expire(block);
@@ -464,10 +464,7 @@ impl Seams {
     /// `sub_824C1F18` (after the tick).
     pub fn update(&mut self, s: &AudioState, out: &dyn Outputs) -> Vec<SeamCommand> {
         let mut cmds = Vec::new();
-        if !s.local {
-            return cmds;
-        }
-        let soft = s.local && s.soft_wheels;
+        let soft = s.soft_wheels;
         let speed = trunc_clamp(clamp01((s.ground_speed - 0.5) * f32::from_bits(0x3DA3_D70A)) * 10000.0, 0, 10000);
         let target = trunc_clamp(s.turn * 1000.0, i32::MIN, i32::MAX);
         for wheel in 0..4 {

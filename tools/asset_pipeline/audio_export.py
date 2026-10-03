@@ -683,6 +683,39 @@ COLLISION_POSTERS = (
     ('Hash_923CCB46EF5BF5BA', 'Hash_F1647BFB782BE97F', 'Hash_7EA37827E4228614', 'tap_other_soft'),
 )
 
+# The push foot's plant / lift (sub_824BBB28, Contacts `default`): sk8_foley ids by material kind 0..4.
+PLANT_FIELDS = ('Hash_1A5D3CDBA6C160D0', 'Hash_6C93C9BAD7B07C6B', 'Hash_9CCABF46584CA16C', 'Hash_57553DC3A33C9B38',
+                'Hash_4F138972C957C8AF')
+LIFT_FIELDS = ('Hash_2D97D30AEA78BCE2', 'Hash_73CB69882A79481B', 'Hash_767F6CAEACB748C8', 'Hash_A17BA1994B766B55',
+               'Hash_8D8EF475983B33A8')
+# The eEQChain holder (class 42AFE160E647167C `default`): the plant / lift bus and the grind contact sounds' bus.
+EQCHAIN_CLASS = 'Hash_42AFE160E647167C'
+PLANT_EQ = 'Hash_748CBC9727A5347F'
+GRIND_CONTACT_EQ = 'Hash_D1A87641CCB98787'
+# The body poster (sub_824BC188; class 6EBA5BCD3E38A98A `default`): the per-region cooldown and the pad thresholds.
+BODY_POSTERS = (('Hash_6DD85F43C1B6E6AA', 'body_cooldown'),
+                ('Hash_D12003A60E987B9D', 'body_110_head_low'), ('Hash_FA2AA5A0C0481D00', 'body_110_head_high'),
+                ('Hash_AFA4B5090F1BCF36', 'body_110_torso_low'), ('Hash_00960FEDB3EFEE9C', 'body_110_torso_high'),
+                ('Hash_3695327CFB5E1AC3', 'body_111_low'), ('Hash_35FEE8A95523D812', 'body_111_high'),
+                ('Hash_076E9081CA1759E9', 'body_112_low0'), ('Hash_DF539915EB7E883E', 'body_112_high0'),
+                ('Hash_8E3025BAA686F721', 'body_112_low1'), ('Hash_504D3B73505972D4', 'body_112_high1'))
+# The grind on / off contact sounds per grind surface (class GRIND_CLASS): the metal flag (Skate_Metal, else
+# Skate_Collisions), the ids per layer 0..3 by bank (sub_824C35D0 / sub_824C37D8), the per-layer level factor
+# (sub_824C2FA0 / sub_824C3190) and the level / pitch endpoints A, B (sub_824C2FA0 / 3190 / 3380 / 34A8).
+GRIND_METAL = 'Hash_02BAC36BCC8A30DE'
+GRIND_CONTACTS = {
+    'on': {'ids': (('Hash_013C2E46521A9080', 'Hash_71F2DBB8CA385137', 'Hash_F9FED84DD3E93919', 'Hash_2162F0EFBDDE72C6'),
+                   ('Hash_F344EC2BC1BD4B6E', 'Hash_4A76108CDB52FDD3', 'Hash_8375C9A4AD144F7D', 'Hash_991C563B70C40DED')),
+           'gain': ('Hash_3D63FBC14F6A6CEA', 'Hash_0BD0F347C3AC6D00', 'Hash_18A94AE8DEED0D27', 'Hash_AA81C2EC8304ADF0'),
+           'level': ('Hash_60418B2EF89EFE2D', 'Hash_FF11B09A395C5F7B'),
+           'pitch': ('Hash_AA380B47376A7415', 'Hash_E5E8E505DDEE595B')},
+    'off': {'ids': (('Hash_FDDA1C015F450486', 'Hash_9086C01E46C97B05', 'Hash_B2DB39923B3A2C3F', 'Hash_FFD9CE934742D506'),
+                    ('Hash_A7639B2F6ABFF8E8', 'Hash_F314474F29EB8D64', 'Hash_60470BE7D8CA45C4', 'Hash_92258B0B80C10301')),
+            'gain': ('Hash_958D61F2EC118BFF', 'Hash_94E3254CD727BEA6', 'Hash_751C968D0992C231', 'Hash_624BCB9A663D35DB'),
+            'level': ('Hash_D0BD38748095DCE3', 'Hash_E02ABA94997FABE7'),
+            'pitch': ('Hash_9F866C1CA0A23F3C', 'Hash_196D60DE7611D2D3')},
+}
+
 
 def _words(field) -> list[int]:
     """Signed 32-bit words of a field (arrays: one per item, first word)."""
@@ -710,6 +743,31 @@ def _scalar_or_list(field):
 def collision_tuning(resolve, by_class) -> dict:
     """{'materials': [143 rows], 'posters': {...}}: the collision manager's material table and the
     vault values its posters read. `resolve(cls, key, field)` follows the parent chain."""
+    # Some AudioSurface records are keyed by their name in the converted collections (head, torso, water,
+    # drum_pylon, crumpled_paper; the band holder `default`), while the image's material table and the
+    # RefSpecs name them by hash64: alias those so the lookups find them (before 2026-10-03 materials
+    # 77 / 87 / 92 / 97 / 98 exported as missing and the RefSpecs to `default` bands resolved nothing).
+    from .vlt import hash64
+    outer = resolve
+    aliased = {}
+    for cls in (MATERIAL_CLASS, WINDOW_CLASS, BAND_CLASS):
+        records = dict(by_class.get(cls, {}))
+        for name in list(records):
+            if not name.startswith('Hash_'):
+                records.setdefault('Hash_%016X' % hash64(name), records[name])
+        aliased[cls] = records
+
+    def resolve(cls, key, field):
+        if cls not in aliased:
+            return outer(cls, key, field)
+        records, seen = aliased[cls], 0
+        while key in records and seen < 32:
+            if field in records[key]['fields']:
+                return records[key]['fields'][field]
+            key, seen = records[key].get('parent', ''), seen + 1
+        return None
+
+    by_class = {**by_class, **aliased}
     def ref_key(field):
         data = ''.join(field.get('data', '').split()) if field else ''
         return 'Hash_' + data[16:32].upper() if len(data) >= 32 else None
@@ -753,6 +811,17 @@ def collision_tuning(resolve, by_class) -> dict:
     posters = {}
     for cls, key, field, name in COLLISION_POSTERS:
         v = resolve(cls, key, field)
+        if v is not None:
+            posters[name] = _scalar_or_list(v)
+    for name, fields in (('plant_ids', PLANT_FIELDS), ('lift_ids', LIFT_FIELDS)):
+        values = [resolve(WHEEL_CLASS, 'default', f) for f in fields]
+        if all(v is not None for v in values):
+            posters[name] = [_words(v)[0] for v in values]
+    v = resolve(EQCHAIN_CLASS, 'default', PLANT_EQ)
+    if v is not None:
+        posters['plant_eq'] = _words(v)[0]
+    for field, name in BODY_POSTERS:
+        v = resolve('Hash_6EBA5BCD3E38A98A', 'default', field)
         if v is not None:
             posters[name] = _scalar_or_list(v)
     return {'materials': rows, 'posters': posters}
@@ -907,8 +976,25 @@ def player_tuning(collections: list[dict], image: bytes | None = None, image_bas
             key = 'Hash_%016X' % k
             v = [resolve(GRIND_CLASS, key, f) for f in GRIND_V]
             f = [resolve(GRIND_CLASS, key, f) for f in GRIND_F]
-            surfaces.append({'v': [_exact(x) if x else 1.0 for x in v], 'f': [_exact(x) if x else 1.0 for x in f]})
+            entry = {'v': [_exact(x) if x else 1.0 for x in v], 'f': [_exact(x) if x else 1.0 for x in f]}
+            # The grind on / off contact sounds (sub_824C3FC8 / sub_824C4138).
+            metal = resolve(GRIND_CLASS, key, GRIND_METAL)
+            if metal is not None:
+                entry['metal'] = ''.join(metal.get('data', '').split())[:2] not in ('', '00')
+            for kind, fields in GRIND_CONTACTS.items():
+                ids = [resolve(GRIND_CLASS, key, x) for x in fields['ids'][int(entry.get('metal', False))]]
+                gain = [resolve(GRIND_CLASS, key, x) for x in fields['gain']]
+                level = [resolve(GRIND_CLASS, key, x) for x in fields['level']]
+                pitch = [resolve(GRIND_CLASS, key, x) for x in fields['pitch']]
+                if any(x is None for x in ids + level + pitch):
+                    continue
+                entry[kind] = {'ids': [_words(x)[0] for x in ids], 'gain': [_exact(x) if x else 1.0 for x in gain],
+                               'level': [_exact(x) for x in level], 'pitch': [_exact(x) for x in pitch]}
+            surfaces.append(entry)
         out['grind'] = surfaces
+        bus = by_class.get(EQCHAIN_CLASS, {}).get('default', {}).get('fields', {}).get(GRIND_CONTACT_EQ)
+        if bus is not None:
+            out['grind_contact_eq'] = _words(bus)[0]
     wheel = by_class.get(WHEEL_CLASS, {}).get('default')
     if wheel:
         for field, name in WHEEL_BUCKET.items():
@@ -1055,6 +1141,11 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     placed |= random_banks
     manifest['zones'], manifest['crossfades'] = ambience_zones(collections, record_names)
     placed |= set(CROSSFADE_BANKS)
+    # The world sources' banks, tuning and speech index (crates/skate-audio/src/world; inert in game
+    # until a ped / traffic system publishes owners).
+    from .world_audio import WORLD_BANKS, world_tuning
+    placed |= set(WORLD_BANKS)
+    manifest['world_tuning'] = world_tuning(collections, record_names)
     report('Reading audio regions')
     manifest['regions'] = regions(game_root, work)
     for bank in BANKS + tuple(sorted(placed - set(BANKS))):
@@ -1086,5 +1177,18 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     if mixmap:
         manifest['aems']['mixmap'] = mixmap
     manifest['aems']['splice'] = splice_trees(files, output, BANKS)
+    speech = audio_root/'english'/'livingworldspeech.big'
+    if speech.is_file():
+        report('Indexing world speech')
+        from .world_audio import decode_speech, speech_index, speech_requested
+        index = speech_index(speech)
+        (output/'speech').mkdir(parents=True, exist_ok=True)
+        (output/'speech'/'livingworld.json').write_text(json.dumps(index), encoding='utf-8')
+        entry = {'index': 'speech/livingworld.json', 'audio': None}
+        if speech_requested():  # SKATE_SETUP_SPEECH=1: ~2.4 GB of PCM
+            report('Decoding world speech')
+            decode_speech(speech, index, output/'speech'/'livingworld', work/'speech', vgmstream, _decode, log)
+            entry['audio'] = 'speech/livingworld'
+        manifest['speech'] = {'livingworld': entry}
     (output/'audio_manifest.json').write_text(json.dumps(manifest, indent=1), encoding='utf-8')
     return manifest

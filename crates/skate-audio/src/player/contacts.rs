@@ -19,7 +19,12 @@
 //!   voice of variant 2 for bucket-2 landings; gain = trunc(level(3) × K[tier][3·kind + variant]) /
 //!   32767 (`sub_824BEA80`);
 //! - manual landing: after a manual, with 3–4 wheels down: kind 4, variant 0 (`sub_824BB330`);
-//! - the hands on the deck (`sub_824B85B0` → [`super::step_on`]): 1124 / 1125 / 1126.
+//! - the hands on the deck (`sub_824B85B0` → [`super::step_on`]): 1124 / 1125 / 1126;
+//! - the push foot's plant / lift (`sub_824BBB28` → `sub_824BB8D8` / `sub_824BBA00`, update
+//!   `sub_824BF268`): `sk8_foley` by wheel 0's material kind, eEQChain bus 1 (session review
+//!   2026-10-03 #2);
+//! - the body regions' impacts (`sub_824BC188`): collision messages per region of the ragdoll
+//!   (session review 2026-10-03 #4).
 //!
 //! The block of every sound: [level/32767, pitch(1)/4096, raw(0) × 360/65535, dt, 1 for the local
 //! player's 3-D voices else 0, 1].
@@ -31,10 +36,8 @@
 //! the local player, owner byte +72 — UNCERTAIN meaning). The roll and ollie voices' bus is not
 //! recovered (SFX Master here).
 //!
-//! Not modelled: the landing's collision-manager pair contact (`sub_82496C58`, the material landing flag),
-//! the foot taps / scuffs on the deck (`sub_824B95A0` / `sub_824B9948`), the grind start contact
-//! (`sub_824BB0E0`), the body and deck impacts (`sub_824BC188` / `sub_824BD000`), the cartoon DLC
-//! sets (bank 8), the step-on force (`+500..+503`: `+720` / `+814` are not published) and which
+//! Not modelled: the cartoon DLC sets (bank 8), the body poster's first-hit torso message
+//! (`sub_824BCEB0`) and Hall of Meat layer, the step-on force (`+500..+503`: `+720` / `+814` are not published) and which
 //! update rewrites the manual-landing holder `+36` (taken as a touchdown voice of kind 4).
 use super::collision::Message;
 use super::state::NO_MATERIAL;
@@ -113,6 +116,25 @@ pub struct ContactsTuning {
     pub scuff_ids_soft: [u32; 2],
     /// The hands on the deck (`player::step_on`, `sub_824B85B0`).
     pub step_on: super::step_on::StepOnTuning,
+    /// The push foot's plant / lift (`sub_824BBB28`): `sk8_foley` ids by the material kind of wheel 0
+    /// (AudioSurfaceMap word 5, `sub_82494EB8`; kinds 0..4, Contacts `default` fields plant
+    /// `1A5D3CDBA6C160D0` `6C93C9BAD7B07C6B` `9CCABF46584CA16C` `57553DC3A33C9B38`
+    /// `4F138972C957C8AF`, lift `2D97D30AEA78BCE2` `73CB69882A79481B` `767F6CAEACB748C8`
+    /// `A17BA1994B766B55` `8D8EF475983B33A8`) and their eEQChain bus (class `42AFE160E647167C`
+    /// `default` field `748CBC9727A5347F`).
+    pub plant_ids: [u32; 5],
+    pub lift_ids: [u32; 5],
+    pub plant_eq: u8,
+    /// The body poster (`sub_824BC188`, class `6EBA5BCD3E38A98A` `default`): the per-region cooldown
+    /// (`6DD85F43C1B6E6AA`, frames) and the cloth / face thresholds `sub_824BCCF8` reads from the
+    /// Contacts object `+296..+332`: material 110 on the head / torso (low, high: `D12003A60E987B9D`
+    /// / `FA2AA5A0C0481D00`, `AFA4B5090F1BCF36` / `00960FEDB3EFEE9C`), 111 on the limbs
+    /// (`3695327CFB5E1AC3` / `35FEE8A95523D812`), 112 (the face) at tier 0 (`076E9081CA1759E9` /
+    /// `DF539915EB7E883E`) and tier 1 (`8E3025BAA686F721` / `504D3B73505972D4`).
+    pub body_cooldown: f32,
+    pub body_110: [[f32; 2]; 2],
+    pub body_111: [f32; 2],
+    pub body_112: [[f32; 2]; 2],
 }
 
 impl Default for ContactsTuning {
@@ -160,7 +182,27 @@ impl Default for ContactsTuning {
             scuff_ids: [95, 94],
             scuff_ids_soft: [97, 96],
             step_on: super::step_on::StepOnTuning::default(),
+            plant_ids: [84, 88, 92, 80, 76],
+            lift_ids: [85, 89, 93, 81, 77],
+            plant_eq: 1,
+            body_cooldown: 15.0,
+            body_110: [[0.75, 1.25], [0.7, 1.25]],
+            body_111: [0.65, 1.25],
+            body_112: [[0.05, 0.3], [0.3, 0.55]],
         }
+    }
+}
+
+/// The body poster's material of a body region (`sub_824BCBA0`: head 97, torso 98, arms 100, legs
+/// 99), its cloth contact (`+112`: none / denim 109 / skin 107 / denim 108) and its pad contact
+/// (`+120`: 110, the face 112 with the face point in contact, 111 on the limbs). The Hall of Meat
+/// layer (`+128`, materials 102..106 while the global `+859` byte is set) is not modelled.
+pub fn body_materials(region: usize, face: bool) -> (i32, i32, i32) {
+    match region {
+        0 => (97, NO_MATERIAL as i32, if face { 112 } else { 110 }),
+        1 => (98, 109, 110),
+        2 | 3 => (100, 107, 111),
+        _ => (99, 108, 111),
     }
 }
 
@@ -224,6 +266,18 @@ pub struct Contacts {
     owner_levels: [i32; 2],
     /// The local player (the buses' create flag), as of the last process.
     local: bool,
+    /// `+123` the push foot is down (`sub_824BBB28`), `+84` / `+92` the plant / lift sounds.
+    planted: bool,
+    plant: Option<SoundId>,
+    lift: Option<SoundId>,
+    /// `+260..+280` the body regions' cooldowns (frames, `sub_824BC188`).
+    body_cooldown: [f32; 6],
+    /// Body-poster messages posted (diagnostics).
+    pub body_posts: u64,
+    /// The push foot's plant / lift (`sub_824BBB28`; `SKATE_AEMS_PLANT_LIFT=0` off) and the body
+    /// poster (`sub_824BC188`; `SKATE_AEMS_BODY_IMPACTS=0` off). The host turns them on.
+    pub plant_lift_on: bool,
+    pub body_on: bool,
 }
 
 /// The route of a poster's sounds: eEQChain bus `bus` (re-rolled on first use by the local
@@ -260,7 +314,8 @@ impl Contacts {
     pub fn tier(s: &AudioState, t: &PlayerTuning) -> usize {
         let material = s.wheel_material[0];
         let hollow = material < NO_MATERIAL && t.surface_entry(material).is_some_and(|e| e[2] != 0);
-        let soft = s.local && s.soft_wheels;
+        // `sub_824B23C8`: the state carries its value (the local player's +684; NPCs: world::skaters).
+        let soft = s.soft_wheels;
         usize::from(hollow) * 2 + usize::from(soft)
     }
 
@@ -314,8 +369,138 @@ impl Contacts {
         }
         self.was_air = air;
         self.was_grinding = s.grinding;
+        // sub_824B8218's order after the process: the plant / lift `sub_824BBB28`, the body
+        // `sub_824BC188`, the deck `sub_824BD000`.
+        if self.plant_lift_on {
+            self.plant_lift(s, t, c, host);
+        }
+        if self.body_on {
+            self.body(s, t, c);
+        }
         self.deck(s, t, c);
         self.step_on.process(s, &c.step_on, host);
+    }
+
+    /// `sub_82494EB8`: the plant / lift kind of a material, AudioSurfaceMap word 5 (`+20`; entry
+    /// 94 for 94..142); 0 for no material (`+620` ≥ 143) or without the table.
+    pub fn plant_kind(material: u32, t: &PlayerTuning) -> usize {
+        if material >= NO_MATERIAL {
+            return 0;
+        }
+        t.surface_entry(material).map_or(0, |e| usize::try_from(e[5]).unwrap_or(usize::MAX))
+    }
+
+    /// `sub_824BBB28`: the push foot planting (`+333 || +334` rising while `+123` is clear) plays
+    /// the plant (`sub_824BB8D8`), lifting it again the lift (`sub_824BBA00`): `sk8_foley` by wheel
+    /// 0's material kind (kinds above 4 post id 0), through the eEQChain bus `plant_eq`, each
+    /// releasing its own previous sound first; block [0, 1, 0, dt, 1, 1], then
+    /// [level(6), pitch(1), raw(0), dt, 0, 1] from the update `sub_824BF268`.
+    fn plant_lift(&mut self, s: &AudioState, t: &PlayerTuning, c: &ContactsTuning, host: &mut dyn SpliceHost) {
+        if s.push_planted == self.planted {
+            return;
+        }
+        let kind = Self::plant_kind(s.wheel_material[0], t);
+        let (ids, slot) = if s.push_planted { (&c.plant_ids, &mut self.plant) } else { (&c.lift_ids, &mut self.lift) };
+        let id = ids.get(kind).copied().unwrap_or(0);
+        if let Some(old) = slot.take() {
+            host.release(old);
+        }
+        host.set_route(route(c.plant_eq, s, None));
+        *slot = host.start(FOLEY, id, start_block(s.dt));
+        self.starts += u64::from(slot.is_some());
+        self.planted = s.push_planted;
+    }
+
+    /// `sub_824BC188`: the body regions' impacts. With the rider bailing until the end of the bail
+    /// (`+676` && `+677` stops it, cooldowns included), per region 0..5 with an impact (`+496 + 4i`
+    /// > 0) and no cooldown: the region's material ([`body_materials`]) against the surface it
+    /// touches (`+560 + 4i` tag − 1, 143 without one), each by its impact band; nothing when both
+    /// are under their floors. Otherwise the cooldown restarts and it posts the pair (a band-2
+    /// hit adds the second message at tier 1 × the window scale, as the deck), the cloth contact
+    /// against nothing at tier 0 with the region's level, and the pad contact by
+    /// `sub_824BCCF8`'s thresholds. Cooldowns count down by min(time scale, 1) per frame.
+    /// Not modelled: the first-hit torso message (`sub_824BCEB0`, gated by an unidentified game
+    /// global at `*(0x82083C38) + 0x2FCB4`), the Hall of Meat layer and the bail flags `+406..+416`
+    /// (they feed game events, not sounds).
+    fn body(&mut self, s: &AudioState, t: &PlayerTuning, c: &ContactsTuning) {
+        if s.bail && s.bail_end {
+            return;
+        }
+        let ct = &t.collision;
+        let none = NO_MATERIAL as i32;
+        for i in 0..6 {
+            let impact = s.body_impact[i];
+            if impact > 0.0 && !(self.body_cooldown[i] > 0.0) {
+                let (a, cloth, pad) = body_materials(i, s.body_slide_flag);
+                let tag = s.body_tag[i];
+                let b = if tag == 0 { none } else { (tag as i32 - 1).clamp(0, none) };
+                let (ta, la_lo, la_hi) = if a < none { ct.impact_band(a, impact) } else { (3, 0.0, 0.0) };
+                let (tb, lb_lo, lb_hi) = if b < none { ct.impact_band(b, impact) } else { (3, 0.0, 0.0) };
+                if !(ta == 3 && tb == 3) {
+                    self.body_cooldown[i] = c.body_cooldown;
+                    let la = if a < none { ct.contact_level(a, b, ta, la_lo, la_hi, impact) } else { 0 };
+                    let lb = if b < none { ct.contact_level(b, a, tb, lb_lo, lb_hi, impact) } else { 0 };
+                    let msg = Message { material: [a, b], tier: [ta, tb], position: s.board_position, level: [la, lb], local: s.local };
+                    self.outbox.push(msg);
+                    let second = |tier: i32| if tier == 2 { 1 } else { 3 };
+                    let (sa, sb) = (second(ta), second(tb));
+                    if !(sa == 3 && sb == 3) {
+                        let la2 = (ct.level_scale(a) * la as f32) as i32;
+                        let lb2 = (ct.level_scale(b) * lb as f32) as i32;
+                        self.outbox.push(Message { tier: [sa, sb], level: [la2, lb2], ..msg });
+                    }
+                    let mut posts = 1 + u64::from(!(sa == 3 && sb == 3));
+                    if cloth != none {
+                        let l = if a < none { ct.contact_level(a, b, 0, la_lo, la_hi, impact) } else { 0 };
+                        self.outbox.push(Message { material: [cloth, none], tier: [0, 0], level: [l, 0], ..msg });
+                        posts += 1;
+                    }
+                    if pad != none {
+                        let (tier, lo, hi) = Self::pad_band(a, pad, impact, c, t);
+                        if tier != 3 && !(tier >= 1 && impact > hi) {
+                            let l = ct.contact_level(pad, b, tier, lo, hi, impact);
+                            self.outbox.push(Message { material: [pad, none], tier: [tier, 0], level: [l, 0], ..msg });
+                            posts += 1;
+                        }
+                    }
+                    self.body_posts += posts;
+                }
+            }
+            if self.body_cooldown[i] > 0.0 {
+                self.body_cooldown[i] -= s.time_scale.min(1.0);
+            }
+        }
+    }
+
+    /// `sub_824BCCF8`: the pad contact's (tier, low, high) — 3 = none. Materials 102..106 use their
+    /// own bands; 110 has a threshold on the head (97) and the torso (98) only; 111 one tier-1
+    /// threshold; 112 (the face) tier 1 above its upper threshold, else tier 0 above the lower.
+    fn pad_band(a: i32, pad: i32, impact: f32, c: &ContactsTuning, t: &PlayerTuning) -> (i32, f32, f32) {
+        match pad {
+            102..=106 => t.collision.impact_band(pad, impact),
+            110 => {
+                let th = match a {
+                    97 => c.body_110[0],
+                    98 => c.body_110[1],
+                    _ => return (3, 0.0, 0.0),
+                };
+                if impact > th[0] { (1, th[0], th[1]) } else { (3, 0.0, 0.0) }
+            }
+            111 => {
+                if impact > c.body_111[0] { (1, c.body_111[0], c.body_111[1]) } else { (3, 0.0, 0.0) }
+            }
+            112 => {
+                let [t0, t1] = c.body_112;
+                if impact > t1[0] {
+                    (1, t1[0], t1[1])
+                } else if impact > t0[0] {
+                    (0, t0[0], t0[1])
+                } else {
+                    (3, 0.0, 0.0)
+                }
+            }
+            _ => (3, 0.0, 0.0),
+        }
     }
 
     /// `sub_824BB0E0`: the board (95: families 1, 2, 5) or truck (96) against the grind material
@@ -756,6 +941,18 @@ impl Contacts {
                 *slot = None;
             }
         }
+        // sub_824BF268: the push foot's plant / lift sounds at level(6), no pan spread.
+        for slot in [&mut self.plant, &mut self.lift] {
+            let Some(sound) = *slot else { continue };
+            if host.alive(sound) {
+                let mut b = block(out.level(6));
+                b[4] = 0.0;
+                host.update(sound, b);
+            } else {
+                host.release(sound);
+                *slot = None;
+            }
+        }
         self.step_on.update(s, &c.step_on, out, host);
         if self.grind_cooldown > 0.0 {
             self.grind_cooldown -= s.dt;
@@ -956,6 +1153,106 @@ mod tests {
         k.update(&on, &Out, &c, &mut h);
         k.process(&on, [0; 4], &t, &c, &mut h);
         assert_eq!(h.started, [1113, 1115]);
+    }
+
+    #[derive(Default)]
+    struct Routed {
+        log: Log,
+        banks: Vec<String>,
+        routes: Vec<crate::bus::Route>,
+    }
+    impl SpliceHost for Routed {
+        fn set_route(&mut self, route: crate::bus::Route) {
+            self.routes.push(route);
+        }
+        fn start(&mut self, bank: &str, id: u32, b: [f32; 6]) -> Option<SoundId> {
+            self.banks.push(bank.to_owned());
+            self.log.start(bank, id, b)
+        }
+        fn update(&mut self, sound: SoundId, block: [f32; 6]) {
+            self.log.update(sound, block)
+        }
+        fn alive(&self, sound: SoundId) -> bool {
+            self.log.alive(sound)
+        }
+        fn release(&mut self, sound: SoundId) {
+            self.log.release(sound)
+        }
+    }
+
+    #[test]
+    fn the_push_foot_plants_and_lifts_by_the_material_kind() {
+        let c = ContactsTuning::default();
+        let mut t = PlayerTuning::default();
+        let mut row = [0i32; 18];
+        row[5] = 2; // AudioSurfaceMap word 5: the plant kind of material 7
+        t.surface_table = vec![[0; 18]; 95];
+        t.surface_table[7] = row;
+        let mut k = Contacts { plant_lift_on: true, ..Default::default() };
+        let mut h = Routed::default();
+        let s = AudioState { wheel_material: [7; 4], ..rolling() };
+        k.process(&s, [0; 4], &t, &c, &mut h);
+        assert!(h.log.started.is_empty(), "nothing before a plant");
+        let planted = AudioState { push_planted: true, ..s };
+        for _ in 0..5 {
+            k.process(&planted, [0; 4], &t, &c, &mut h);
+        }
+        assert_eq!(h.log.started, [92], "one plant per plant: kind 2 → sk8_foley 92");
+        assert_eq!(h.banks, ["sk8_foley"]);
+        assert_eq!(h.routes.last().map(|r| r.output), Some(crate::bus::Output::Eq(1)), "eEQChain bus 1");
+        k.update(&planted, &Out, &c, &mut h);
+        let level = h.log.updates.iter().find(|u| u.0 == 92).unwrap().1;
+        assert_eq!((level[0], level[4]), (10006.0 * f32::from_bits(0x3800_0100), 0.0), "level(6), no spread");
+        k.process(&s, [0; 4], &t, &c, &mut h);
+        assert_eq!(h.log.started, [92, 93], "the lift: kind 2 → 93");
+        // No material under wheel 0: kind 0 (84 / 85); off: nothing.
+        let none = AudioState { wheel_material: [NO_MATERIAL; 4], push_planted: true, ..s };
+        k.process(&none, [0; 4], &t, &c, &mut h);
+        assert_eq!(h.log.started.last(), Some(&84));
+        let mut off = Contacts::default();
+        off.process(&none, [0; 4], &t, &c, &mut h);
+        assert_eq!(h.log.started.len(), 3, "plant_lift_on off: silent");
+    }
+
+    #[test]
+    fn a_body_region_impact_posts_the_pair_cloth_and_pad_contacts() {
+        use crate::player::collision::{CollisionTuning, Material};
+        let windows = [16000, 32767, 25000, 32767, 16000, 32767, 25000, 32767, 24000, 32767, 16000, 32767, 25000, 32767];
+        let mut materials = vec![Material::default(); 143];
+        materials[2] = Material { kind: 0, gain: 32767, windows, bands: [1.85, 2.0, 1.0, 0.12], ..Material::default() };
+        materials[100] = Material { kind: 0, gain: 32767, windows, bands: [0.65, 1.25, 0.2, 0.005], scale: 1.0, ..Material::default() };
+        materials[107] = Material { kind: 0, gain: 18000, windows, bands: [1.0, 2.0, 0.5, 0.005], ..Material::default() };
+        materials[111] = Material { kind: 0, gain: 15000, windows, bands: [1.0, 2.0, 0.5, 0.005], ..Material::default() };
+        let t = PlayerTuning { collision: CollisionTuning { materials, surface_class: vec![0; 95], surface_eq: Vec::new() }, ..PlayerTuning::default() };
+        let c = ContactsTuning::default();
+        let mut k = Contacts { body_on: true, ..Default::default() };
+        let mut h = Log::default();
+        // Region 2 (an arm, material 100) hits concrete (tag 3 → material 2) at 0.7.
+        let mut s = AudioState { bail: true, ..AudioState::default() };
+        s.body_impact[2] = 0.7;
+        s.body_tag[2] = 3;
+        k.process(&s, [0; 4], &t, &c, &mut h);
+        let m: Vec<_> = k.outbox.iter().map(|m| (m.material, m.tier)).collect();
+        // 100 at 0.7 > 0.65 → tier 2 (and the second message at tier 1); concrete at 0.7 < 1.0 →
+        // tier 0; the skin 107 at tier 0; the limb pad 111 at 0.7 > 0.65 → tier 1.
+        assert_eq!(m, [([100, 2], [2, 0]), ([100, 2], [1, 3]), ([107, 143], [0, 0]), ([111, 143], [1, 0])]);
+        assert_eq!(k.body_posts, 4);
+        k.outbox.clear();
+        for _ in 0..13 {
+            k.process(&s, [0; 4], &t, &c, &mut h);
+        }
+        assert!(k.outbox.is_empty(), "15-frame cooldown");
+        k.process(&s, [0; 4], &t, &c, &mut h);
+        k.process(&s, [0; 4], &t, &c, &mut h);
+        assert_eq!(k.outbox.len(), 4, "posts again after the cooldown");
+        // The end of the bail stops it; a tiny impact under both floors posts nothing.
+        let mut k = Contacts { body_on: true, ..Default::default() };
+        k.process(&AudioState { bail_end: true, ..s }, [0; 4], &t, &c, &mut h);
+        assert!(k.outbox.is_empty());
+        let mut tiny = s;
+        tiny.body_impact[2] = 0.001;
+        k.process(&tiny, [0; 4], &t, &c, &mut h);
+        assert!(k.outbox.is_empty());
     }
 
     #[test]

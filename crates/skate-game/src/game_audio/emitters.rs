@@ -89,7 +89,8 @@ fn ems_file(map_stem: &str) -> Option<&'static str> {
 
 /// The `.ems` files a map's database entry lists (`F4917ACACAFAF913` field `65FA976EF23A314E`, in
 /// that order): the districts load five, the parks one. The emitter system (`sub_824A24F8`) loads
-/// them all; the sound emitters above still come from the `sfx_` file only.
+/// them all and dispatches every record by its attribute's eVolumeType (sound emitters 1, reverb
+/// zones 5, music zones 4); `music_` holds music zones, `speakers_` / `crowds_` types 6 / 7.
 fn ems_files(map_stem: &str) -> &'static [&'static str] {
     match map_stem {
         "University" => &["music_university", "sfx_university", "reverb_university", "speakers_university", "crowds_university"],
@@ -119,7 +120,11 @@ struct ZoneRecord {
     shape: Shape,
     id: u64,
     attribute: u64,
+    /// The attribute's reverb preset key (`99FD793BC30CF0FA`, collection key; 0 when it has none).
     preset: u64,
+    /// The emitter manager's vfunc92 (`sub_824A2438`) on the attribute: its preset key is one of
+    /// the 24 reverb presets (the image table `0x8302E298` = the exported `aud_reverb` keys).
+    enabled: bool,
 }
 
 #[derive(Default)]
@@ -159,25 +164,37 @@ pub(super) fn reverb_zones(
     zones_at(&state.records, &mut state.active, listener.translation(), &mut out.zones);
 }
 
-/// The map's reverb-zone records (eVolumeType 5 with a preset, flags 0) from its `.ems` files.
+/// The map's reverb-zone records (eVolumeType 5, flags 0) from its `.ems` files. A record whose
+/// attribute names no known reverb preset stays in the list, disabled: retail's zone query
+/// (`sub_82488278`) stops at the first zone node whose vfunc92 check fails instead of skipping it.
+/// On the disc every zone attribute names one of the 24 presets, so all are enabled.
 fn zone_records(library: &Library, map_stem: &str) -> Vec<ZoneRecord> {
+    let (presets, _) = library.bus_tuning();
     let mut records = Vec::new();
     for (f, file) in ems_files(map_stem).iter().enumerate() {
         for r in library.emitters(file) {
-            let Some(preset) = r.reverb.as_deref().and_then(|k| u64::from_str_radix(k, 16).ok()) else { continue };
             if r.kind != 5 || r.flags != 0 {
                 continue;
             }
+            let preset = r.reverb.as_deref().and_then(|k| u64::from_str_radix(k, 16).ok()).unwrap_or(0);
             let s = r.scalars;
             records.push(ZoneRecord {
                 shape: Shape { position: Vec3::from(r.position), extent: Vec3::from(r.extent), forward: Vec3::new(s[1], s[2], s[3]), core: s[0] },
                 id: ((f as u64) << 32) | u64::from(r.index),
                 attribute: u64::from_str_radix(&r.sound_id, 16).unwrap_or(0),
                 preset,
+                enabled: zone_enabled(&presets, preset),
             });
         }
     }
     records
+}
+
+/// `sub_824A2438` (the emitter manager's vfunc92): the attribute's reverb RefSpec key is in the
+/// image's table of the 24 reverb preset keys (`0x8302E298`; the same 24 keys as the exported
+/// `aud_reverb` presets). A missing field reads the default RefSpec (key 0): not in the table.
+fn zone_enabled<V>(presets: &std::collections::HashMap<u64, V>, preset: u64) -> bool {
+    preset != 0 && presets.contains_key(&preset)
 }
 
 /// One frame of the zone node list: drop the records the listener left, append new hits in
@@ -199,7 +216,7 @@ fn zones_at(records: &[ZoneRecord], active: &mut Vec<usize>, ear: Vec3, out: &mu
             preset: z.preset,
             d,
             position: [z.shape.position.x, z.shape.position.z],
-            enabled: true,
+            enabled: z.enabled,
         });
     }
 }
@@ -274,6 +291,59 @@ pub(super) struct State {
     /// Reached records in discovery order (retail's node list).
     nodes: Vec<Node>,
     rng: u32,
+    /// The map's native emitter banks (prefetch, `native::prefetch`), each emitter's index into
+    /// them (`usize::MAX`: a measured-table emitter) and each bank's prefetch status.
+    banks: Vec<String>,
+    emitter_bank: Vec<usize>,
+    bank_status: Vec<BankStatus>,
+    /// Per bank: the listener's distance to its nearest emitter's bounding sphere (scratch).
+    near: Vec<f32>,
+    /// Banks to request this frame, nearest first (scratch).
+    order: Vec<(f32, usize)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BankStatus {
+    Idle,
+    Requested,
+    Loaded,
+}
+
+/// Ask the prefetch worker for the native banks of the emitters the listener is getting close to
+/// (nearest first) and drop the unused ones it moved away from (`native::prefetch`). Touches no
+/// runtime, random or node state: what plays and when stays as without it.
+fn prefetch_near(state: &mut State, native: &mut Native, library: &Library, ear: Vec3) {
+    use super::native::prefetch::{AHEAD, EVICT};
+    state.near.clear();
+    state.near.resize(state.banks.len(), f32::INFINITY);
+    for (e, &b) in state.emitters.iter().zip(&state.emitter_bank) {
+        if let Some(near) = state.near.get_mut(b) {
+            *near = near.min(e.shape.position.distance(ear) - e.shape.extent.max_element());
+        }
+    }
+    state.order.clear();
+    for (b, &d) in state.near.iter().enumerate() {
+        match state.bank_status[b] {
+            BankStatus::Idle if d <= AHEAD => state.order.push((d, b)),
+            BankStatus::Requested if d > EVICT => {
+                native.prefetch.drop_bank(&state.banks[b]);
+                state.bank_status[b] = BankStatus::Idle;
+            }
+            _ => {}
+        }
+    }
+    state.order.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for &(_, b) in &state.order {
+        let stem = &state.banks[b];
+        if native.bank_loaded(stem) {
+            state.bank_status[b] = BankStatus::Loaded;
+            continue;
+        }
+        if let Ok(source) = library.bank_source(stem) {
+            native.prefetch.request(source);
+            state.bank_status[b] = BankStatus::Requested;
+        }
+    }
 }
 
 fn random(rng: &mut u32) -> f32 {
@@ -337,7 +407,12 @@ pub(super) fn update(
             native.unload_map_banks();
         }
         let stem = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
-        let records = ems_file(stem).map_or(&[][..], |file| library.emitters(file));
+        // Retail's emitter system loads every file of the map's database entry and dispatches by
+        // the attribute's eVolumeType: 1 = looping emitter (here), 5 = reverb zone
+        // (`reverb_zones`), 4 = the single-winner music zone (`sub_828EB410`: a playlist of the
+        // music system, not ported). 6 / 7 (speakers / crowds) are not dispatched by the
+        // emitter system at all. On the disc only the `sfx_` / `skateschool` files hold type 1.
+        let records: Vec<&super::library::EmitterRecord> = ems_files(stem).iter().flat_map(|file| library.emitters(file)).collect();
         let native_banks = native.as_deref();
         state.emitters = records.iter().filter(|r| r.kind == 1 && r.flags == 0).filter_map(|r| {
             let bank = r.bank.clone()?;
@@ -353,11 +428,28 @@ pub(super) fn update(
             })
         }).collect();
         info!("World emitters: {} of {} records on {stem} have a played sound", state.emitters.len(), records.len());
+        state.banks.clear();
+        state.emitter_bank.clear();
+        for e in &state.emitters {
+            let b = if e.profile.is_some() {
+                usize::MAX
+            } else if let Some(b) = state.banks.iter().position(|s| *s == e.bank) {
+                b
+            } else {
+                state.banks.push(e.bank.clone());
+                state.banks.len() - 1
+            };
+            state.emitter_bank.push(b);
+        }
+        state.bank_status = vec![BankStatus::Idle; state.banks.len()];
         state.map = Some(identity);
     }
     let Ok(listener) = listener.single() else { return };
     let ear = listener.translation();
     let skater = cues.riding.board;
+    if let Some(native) = native.as_deref_mut() {
+        prefetch_near(state, native, &library, ear);
+    }
     let silent = super::silenced(menu.as_deref(), &replay);
     let now = time.elapsed_secs_f64();
     let mut rng = state.rng;
@@ -410,6 +502,9 @@ pub(super) fn update(
             if let Some(native) = native.as_deref_mut() {
                 match native.ensure_bank(&library, &e.bank) {
                     Ok(_) => {
+                        if let Some(status) = state.emitter_bank.get(node.record).and_then(|&b| state.bank_status.get_mut(b)) {
+                            *status = BankStatus::Loaded;
+                        }
                         let level = e.volume * falloff(e.falloff, reached[node.record].unwrap_or(1.0));
                         node.state = native.claim_emitter_state();
                         if let Some(g) = node.state {
@@ -485,6 +580,89 @@ pub(super) fn update(
 mod tests {
     use super::*;
 
+    /// The distance prefetch over DownTown's emitters (data-gated): the listener visits every
+    /// emitter in turn. Each frame's `prefetch_near` only queues / drops decodes: the runtime's
+    /// banks, evaluator random state and blocks stay untouched; requested = the banks within
+    /// `AHEAD` m that are not loaded; far away everything is dropped. Prints its cost per call.
+    #[test]
+    fn the_prefetch_follows_the_listener_and_touches_no_runtime_state() {
+        use super::super::native::prefetch::{AHEAD, EVICT};
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = Library::load(root) else { return eprintln!("skipped: no audio install") };
+        let Ok(mut native) = Native::start(&library) else { return eprintln!("skipped: no AEMS install") };
+        let mut state = State::default();
+        for r in ems_files("DownTown").iter().flat_map(|f| library.emitters(f)) {
+            let Some(bank) = r.bank.clone().filter(|b| r.kind == 1 && r.flags == 0 && native.has_bank(&library, b)) else { continue };
+            let s = r.scalars;
+            state.emitters.push(Emitter {
+                shape: Shape { position: Vec3::from(r.position), extent: Vec3::from(r.extent), forward: Vec3::new(s[1], s[2], s[3]), core: s[0] },
+                volume: r.volume, falloff: r.falloff, profile: None, bank: bank.clone(), patch: r.patch,
+            });
+            let b = state.banks.iter().position(|x| *x == bank).unwrap_or_else(|| {
+                state.banks.push(bank);
+                state.banks.len() - 1
+            });
+            state.emitter_bank.push(b);
+        }
+        if state.emitters.is_empty() {
+            return eprintln!("skipped: no DownTown emitters");
+        }
+        state.bank_status = vec![BankStatus::Idle; state.banks.len()];
+        let snapshot = |n: &Native| {
+            let rt = n.shared.lock().unwrap();
+            (rt.eval.rng, rt.blocks)
+        };
+        let before = snapshot(&native);
+        let mut worst = std::time::Duration::ZERO;
+        let mut total = std::time::Duration::ZERO;
+        let mut calls = 0u32;
+        let mut first = std::time::Duration::ZERO;
+        let positions: Vec<Vec3> = state.emitters.iter().map(|e| e.shape.position).collect();
+        for (i, &at) in positions.iter().enumerate() {
+            for step in 0..20 {
+                let ear = at + Vec3::new(step as f32 * 5.0, 0.0, 0.0);
+                let t = std::time::Instant::now();
+                prefetch_near(&mut state, &mut native, &library, ear);
+                let dt = t.elapsed();
+                if calls == 0 {
+                    first = dt;
+                } else {
+                    worst = worst.max(dt);
+                }
+                (total, calls) = (total + dt, calls + 1);
+                for (b, stem) in state.banks.iter().enumerate() {
+                    let near = state.emitters.iter().zip(&state.emitter_bank).filter(|(_, x)| **x == b)
+                        .map(|(e, _)| e.shape.position.distance(ear) - e.shape.extent.max_element()).fold(f32::INFINITY, f32::min);
+                    let requested = native.prefetch.contains(stem);
+                    assert_eq!(requested, state.bank_status[b] == BankStatus::Requested, "{stem}");
+                    if near <= AHEAD {
+                        assert!(requested || native.bank_loaded(stem), "{stem} within {near} m");
+                    }
+                    if near > EVICT {
+                        assert!(!requested, "{stem} kept at {near} m");
+                    }
+                }
+            }
+            // Every tenth emitter starts: its bank comes from the prefetch, nothing decodes here.
+            // (Waiting for the worker first: in play the listener spends seconds inside AHEAD.)
+            let stem = state.emitters[i].bank.clone();
+            if i % 10 == 0 && !native.bank_loaded(&stem) {
+                assert!(native.prefetch.contains(&stem), "{stem}: the start's bank is prefetched");
+                native.prefetch.wait(&stem);
+                let decodes = super::super::library::WAV_DECODES.with(|n| n.get());
+                native.ensure_bank(&library, &stem).unwrap();
+                if let Some(s) = state.bank_status.get_mut(state.emitter_bank[i]) {
+                    *s = BankStatus::Loaded;
+                }
+                assert_eq!(super::super::library::WAV_DECODES.with(|n| n.get()), decodes, "{stem}: decoded on the game thread");
+            }
+        }
+        prefetch_near(&mut state, &mut native, &library, Vec3::splat(1.0e5));
+        assert_eq!(native.prefetch.stems().count(), 0, "far away nothing is held");
+        assert_eq!(snapshot(&native), before, "the prefetch never touches the runtime");
+        println!("prefetch_near over {} emitters / {} banks: {} calls, mean {:?}, first {:?} (starts the worker), max of the rest {:?}", state.emitters.len(), state.banks.len(), calls, total / calls, first, worst);
+    }
+
     fn shape(extent: Vec3, forward: Vec3, core: f32) -> Shape {
         Shape { position: Vec3::ZERO, extent, forward, core }
     }
@@ -557,7 +735,7 @@ mod tests {
         let camera = skate_audio::bus::zones::Camera { position: at.to_array(), forward: [0.0, 0.0, -1.0] };
         let mut zones = Vec::new();
         // Only this zone, so the test does not depend on overlapping records.
-        let only = [ZoneRecord { shape: zone.shape, id: zone.id, attribute: zone.attribute, preset: zone.preset }];
+        let only = [ZoneRecord { shape: zone.shape, id: zone.id, attribute: zone.attribute, preset: zone.preset, enabled: zone.enabled }];
         for _ in 0..90 {
             zones_at(&only, &mut active, at, &mut zones);
             env.update(1.0 / 60.0, 0, &zones, Some(&camera));

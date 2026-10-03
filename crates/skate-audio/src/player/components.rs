@@ -90,6 +90,46 @@ pub struct Grind {
     speed: i32,
     surface: i32,
     layer: i32,
+    /// The grind on / off contact sounds (Splice; [`Grind::sounds`]): per packet slot the on
+    /// (`+60 + 4k`) and off (`+68 + 4k`) sound, and the starts queued by `process` / `update`.
+    hits: [GrindHits; 2],
+    pending: Vec<GrindHit>,
+    /// Rail level(5) as of the last update: the sounds' env send (`sub_82498140`).
+    env_level: i32,
+    /// `sub_824C3FC8` / `sub_824C4138` (`SKATE_AEMS_GRIND_ONOFF=0` off). The host turns it on.
+    pub onoff: bool,
+    /// On / off sounds started (diagnostics).
+    pub hit_starts: u64,
+}
+
+/// One grind contact sound start: on (`sub_824C3FC8`) with the grind surface and layer it was
+/// posted for, or off (`sub_824C4138`, which reads them back from the slot).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GrindHit {
+    on: bool,
+    slot: usize,
+    surface: i32,
+    layer: i32,
+}
+
+/// A packet slot's contact sounds: `+92` surface / `+96` layer as of the on post, `+100` / `+104`
+/// the on / off level and `+108` / `+112` their pitches (fixed at each start).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct GrindHits {
+    on: Option<crate::splice::SoundId>,
+    off: Option<crate::splice::SoundId>,
+    surface: i32,
+    layer: i32,
+    level: [f32; 2],
+    pitch: [f32; 2],
+}
+
+/// `sub_824C2FA0` / `sub_824C3190` / `sub_824C3380` / `sub_824C34A8`: ((10000 − speed word) ×
+/// 0.0001 × (B − A) + A), the grind speed word lerping from B at rest to A at the cap.
+fn grind_lerp(speed: i32, [a, b]: [f32; 2]) -> f32 {
+    let f8 = f32::from_bits(0x461C_4000) - speed as f32; // 10000
+    let f7 = f8 * f32::from_bits(0x38D1_B717); // 0.0001
+    f7.mul_add(b - a, a)
 }
 
 pub const GRIND_SPEED_DIVISOR: f32 = 45.0;
@@ -146,20 +186,95 @@ impl Grind {
             let words = self.post_words(t, self.layer, s, out);
             cmds.push(Command::Post { slot: Slot::Grind(0), class: "Class_grind", words: words.clone() });
             self.held[0] = Some(words);
+            self.hit(true, 0, surface, self.layer);
             if s.grind_family == 0 {
                 let words = self.post_words(t, 1, s, out);
                 cmds.push(Command::Post { slot: Slot::Grind(1), class: "Class_grind", words: words.clone() });
                 self.held[1] = Some(words);
+                self.hit(true, 1, surface, 1);
             }
         } else if !s.grinding {
             for i in 0..2 {
                 if self.held[i].take().is_some() {
                     cmds.push(Command::Release { slot: Slot::Grind(i as u8) });
+                    self.hit(false, i, 0, 0);
                 }
             }
             self.family = None;
         }
         cmds
+    }
+
+    fn hit(&mut self, on: bool, slot: usize, surface: i32, layer: i32) {
+        if self.onoff {
+            self.pending.push(GrindHit { on, slot, surface, layer });
+        }
+    }
+
+    /// The grind contact sounds queued by this frame's `process` / `update` (call after each):
+    /// `sub_824C3FC8` at a grind packet's post — unless state `+810` (not published: false) —
+    /// releases the slot's on sound, stores the surface / layer, the level and pitch, and starts
+    /// the surface's on id (`sub_824C35D0`: Skate_Metal on a metal surface, else
+    /// Skate_Collisions; per layer) through the eEQChain bus of field `D1A87641CCB98787`; at the
+    /// release `sub_824C4138` does the same with the off id (`sub_824C37D8`), level and pitch for
+    /// the stored surface / layer. Start block [0, 1, 0, 0, 1, 1].
+    pub fn sounds(&mut self, s: &AudioState, t: &PlayerTuning, host: &mut dyn super::contacts::SpliceHost) {
+        for h in std::mem::take(&mut self.pending) {
+            let slot = &mut self.hits[h.slot];
+            let k = usize::from(!h.on);
+            let old = if h.on { slot.on.take() } else { slot.off.take() };
+            if let Some(old) = old {
+                host.release(old);
+            }
+            if h.on {
+                slot.surface = h.surface;
+                slot.layer = h.layer;
+            }
+            let g = t.grind_levels(slot.surface);
+            let layer = usize::try_from(slot.layer).unwrap_or(0).min(3);
+            let c = if h.on { &g.on } else { &g.off };
+            slot.level[k] = grind_lerp(self.speed, c.level) * c.gain[layer];
+            slot.pitch[k] = grind_lerp(self.speed, c.pitch);
+            let Some(id) = u32::try_from(c.ids[layer]).ok() else { continue };
+            host.set_route(crate::bus::Route {
+                output: crate::bus::Output::Eq(t.grind_contact_eq),
+                create: s.local,
+                owner_env: self.env_level as f32 * crate::dsp::INV_32767,
+                mono: true,
+            });
+            let bank = if g.metal { "Skate_Metal" } else { "Skate_Collisions" };
+            let sound = host.start(bank, id, [0.0, 1.0, 0.0, 0.0, 1.0, 1.0]);
+            self.hit_starts += u64::from(sound.is_some());
+            if h.on {
+                slot.on = sound;
+            } else {
+                slot.off = sound;
+            }
+        }
+    }
+
+    /// `sub_824C42A8` (the end of the Rail updater): per slot the on and the off sound, gain =
+    /// level(1) / 32767 × its level, pitch = pitch(2) / 4096 × its pitch, azimuth raw(0), the env
+    /// send level(5); a sound that ended is released.
+    pub fn update_sounds(&mut self, s: &AudioState, out: &dyn Outputs, host: &mut dyn super::contacts::SpliceHost) {
+        self.env_level = out.level(5);
+        const INV_32767: f32 = f32::from_bits(0x3800_0100);
+        const INV_4096: f32 = f32::from_bits(0x3980_0000);
+        const DEGREES: f32 = f32::from_bits(0x3BB4_00B4);
+        for slot in self.hits.iter_mut() {
+            for k in 0..2 {
+                let sound = if k == 0 { &mut slot.on } else { &mut slot.off };
+                let Some(id) = *sound else { continue };
+                if !host.alive(id) {
+                    host.release(id);
+                    *sound = None;
+                    continue;
+                }
+                let gain = slot.level[k] * (out.level(1) as f32 * INV_32767);
+                let pitch = slot.pitch[k] * (out.pitch(2) as f32 * INV_4096);
+                host.update(id, [gain, pitch, out.raw(0) as f32 * DEGREES, s.dt, 0.0, 1.0]);
+            }
+        }
     }
 
     /// The updater (after the tick).
@@ -173,12 +288,16 @@ impl Grind {
         if self.family != Some(family) {
             // A family change: family 0 gains the layer-1 companion, any other loses it.
             if family == 0 && self.held[1].is_none() {
-                self.surface = t.grind_surface(s.grind_material).clamp(0, 13);
+                let surface = t.grind_surface(s.grind_material);
+                self.surface = surface.clamp(0, 13);
                 let words = self.post_words(t, 1, s, out);
                 cmds.push(Command::Post { slot: Slot::Grind(1), class: "Class_grind", words: words.clone() });
                 self.held[1] = Some(words);
+                // sub_824C39E0 posts the on sound with the new family's layer (2 for family 0).
+                self.hit(true, 1, surface, layer);
             } else if family != 0 && self.held[1].take().is_some() {
                 cmds.push(Command::Release { slot: Slot::Grind(1) });
+                self.hit(false, 1, 0, 0);
             }
             self.family = Some(family);
         }
@@ -422,7 +541,7 @@ impl Skid {
         w[1] = 32767;
         w[5] = 25000;
         w[7] = Self::speed(s);
-        w[8] = i32::from(s.local && s.soft_wheels);
+        w[8] = i32::from(s.soft_wheels); // sub_824B23C8 (NPCs: world::skaters)
         w[9] = Self::surface(s, t).clamp(0, 4);
         w[10] = trunc_clamp(s.slip * 90.0, 0, 90);
         (w[11], w[12]) = (SKID_WORDS.0, SKID_WORDS.1);
@@ -563,6 +682,63 @@ mod tests {
 
     fn grinding(family: i32, material: u32) -> AudioState {
         AudioState { grinding: true, grind_family: family, grind_material: material, ground_speed: 6.0, ..Default::default() }
+    }
+
+    #[derive(Default)]
+    struct Splice {
+        started: Vec<(String, u32)>,
+        routes: Vec<crate::bus::Route>,
+        blocks: Vec<(usize, [f32; 6])>,
+        live: Vec<usize>,
+    }
+    impl super::super::contacts::SpliceHost for Splice {
+        fn set_route(&mut self, route: crate::bus::Route) {
+            self.routes.push(route);
+        }
+        fn start(&mut self, bank: &str, id: u32, _: [f32; 6]) -> Option<crate::splice::SoundId> {
+            self.started.push((bank.to_owned(), id));
+            self.live.push(id as usize);
+            Some(id as usize)
+        }
+        fn update(&mut self, sound: crate::splice::SoundId, block: [f32; 6]) {
+            self.blocks.push((sound, block));
+        }
+        fn alive(&self, sound: crate::splice::SoundId) -> bool {
+            self.live.contains(&sound)
+        }
+        fn release(&mut self, sound: crate::splice::SoundId) {
+            self.live.retain(|s| *s != sound);
+        }
+    }
+
+    #[test]
+    fn grind_on_and_off_sounds_follow_the_rail_posts() {
+        use super::super::tuning::{GrindContact, GrindSurface};
+        let contact = |base: i32| GrindContact { ids: [base, base + 1, base + 2, base + 3], gain: [0.5, 1.0, 1.0, 1.0], level: [0.1, 1.25], pitch: [0.8, 1.0] };
+        let mut t = PlayerTuning::default();
+        t.grind = vec![GrindSurface::default(); 14];
+        t.grind[4] = GrindSurface { metal: true, on: contact(525), off: contact(530), ..GrindSurface::default() };
+        let mut g = Grind { onoff: true, ..Grind::default() };
+        let mut h = Splice::default();
+        g.process(&grinding(1, NO_MATERIAL), &t, &Fixed);
+        g.sounds(&grinding(1, NO_MATERIAL), &t, &mut h);
+        // Surface 4 (no material), layer 0 (family 1): Skate_Metal on id 525, eEQChain bus 0, mono.
+        assert_eq!(h.started, [("Skate_Metal".to_owned(), 525)]);
+        assert_eq!((h.routes[0].output, h.routes[0].mono), (crate::bus::Output::Eq(0), true));
+        g.update_sounds(&grinding(1, NO_MATERIAL), &Fixed, &mut h);
+        // Level = lerp(speed 4400) × layer gain 0.5 × level(1); pitch = lerp × pitch(2).
+        let lerp = |s: i32, a: f32, b: f32| ((10000.0f32 - s as f32) * f32::from_bits(0x38D1_B717)).mul_add(b - a, a);
+        let (_, block) = h.blocks[0];
+        assert!((block[0] - lerp(4400, 0.1, 1.25) * 0.5 * (1001.0 * f32::from_bits(0x3800_0100))).abs() < 1e-6);
+        assert!((block[1] - lerp(4400, 0.8, 1.0)).abs() < 1e-6);
+        g.process(&AudioState::default(), &t, &Fixed);
+        g.sounds(&AudioState::default(), &t, &mut h);
+        assert_eq!(h.started[1], ("Skate_Metal".to_owned(), 530), "the off sound at the release");
+        // Off: nothing.
+        let mut g = Grind::default();
+        g.process(&grinding(1, NO_MATERIAL), &t, &Fixed);
+        g.sounds(&grinding(1, NO_MATERIAL), &t, &mut h);
+        assert_eq!(h.started.len(), 2);
     }
 
     #[test]

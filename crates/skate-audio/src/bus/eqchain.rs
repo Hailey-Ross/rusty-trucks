@@ -76,7 +76,10 @@ impl EqBuses {
         }
         bus.created = true;
         let Some(r) = bus.record.filter(|r| r.enabled) else { return };
-        let v: Vec<f32> = r.ranges.iter().map(|[a, b]| pick(*a, *b, &mut self.rng)).collect();
+        let mut v = [0.0f32; 6];
+        for (v, [a, b]) in v.iter_mut().zip(r.ranges) {
+            *v = pick(a, b, &mut self.rng);
+        }
         for (k, eq) in bus.eq.iter_mut().enumerate() {
             eq.freq = v[3 * k];
             eq.gain = v[3 * k + 1];
@@ -108,7 +111,7 @@ impl EqBuses {
     pub fn render(&mut self, inputs: &mut [[[f32; BLOCK]; 6]; 8], master: &mut [[f32; BLOCK]; 6]) {
         for (bus, input) in self.buses.iter_mut().zip(inputs.iter_mut()) {
             {
-                let mut planes: Vec<&mut [f32]> = input.iter_mut().map(|c| &mut c[..]).collect();
+                let mut planes = input.each_mut().map(|c| &mut c[..]);
                 clip(&mut planes, bus.level);
                 bus.eq[0].process(&mut planes, 48000.0);
                 bus.eq[1].process(&mut planes, 48000.0);

@@ -22,6 +22,7 @@ mod emitters;
 mod grain_bed;
 mod library;
 mod native;
+mod npc_skaters;
 mod player_audio;
 mod random_programs;
 mod random_sets;
@@ -29,6 +30,7 @@ mod skate_events;
 mod state_log;
 mod timing;
 mod voices;
+mod world_sources;
 
 use bevy::{audio::Volume, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -46,13 +48,14 @@ struct SavedSettings {
     master: u32,
     ambience: u32,
     effects: u32,
-    /// Play the world emitters through the native AEMS runtime (crates/skate-audio) instead of
-    /// the measured tables. Off by default; `SKATE_AEMS=1` overrides it (native.rs).
-    native: bool,
+    /// Use the interim measured cue tables instead of the native AEMS runtime (crates/skate-audio),
+    /// which is the default. `SKATE_AEMS=0` / `SKATE_AEMS=1` override it (native.rs). The old
+    /// `native` key (saved as `false` while the tables were the default) is ignored.
+    interim: bool,
 }
 impl Default for SavedSettings {
     fn default() -> Self {
-        Self { master: 75, ambience: 100, effects: 100, native: false }
+        Self { master: 75, ambience: 100, effects: 100, interim: false }
     }
 }
 impl SavedSettings {
@@ -88,9 +91,10 @@ impl AudioSettings {
     pub(crate) fn master(&self) -> f32 {
         if self.muted { 0.0 } else { self.saved.master as f32 / 100.0 }
     }
-    /// Whether `settings/audio.json` asks for the native AEMS runtime.
+    /// Whether `settings/audio.json` keeps the native AEMS runtime (the default) rather than the
+    /// interim tables.
     pub(crate) fn native(&self) -> bool {
-        self.saved.native
+        !self.saved.interim
     }
     pub(crate) fn category(&self, category: Category) -> f32 {
         let percent = match category {
@@ -163,6 +167,8 @@ impl Plugin for GameAudioPlugin {
             .add_systems(Update, voices::sync.after(CueSet))
             .add_systems(Update, timing::report)
             .add_plugins(native::register)
+            .add_plugins(world_sources::register)
+            .add_plugins(npc_skaters::register)
             .add_systems(
                 PostUpdate,
                 (apply_global_volume, follow_camera).before(bevy::transform::TransformSystems::Propagate),
@@ -226,10 +232,19 @@ mod tests {
     }
 
     #[test]
+    fn native_is_the_default_even_with_an_old_saved_native_false() {
+        assert!(!SavedSettings::default().interim);
+        let old: SavedSettings = serde_json::from_str(r#"{"master":75,"ambience":75,"effects":75,"native":false}"#).unwrap();
+        assert!(!old.interim);
+        let opted_out: SavedSettings = serde_json::from_str(r#"{"interim":true}"#).unwrap();
+        assert!(opted_out.interim);
+    }
+
+    #[test]
     fn defaults_are_quiet_and_saved_values_are_bounded() {
         assert_eq!(SavedSettings::default().master, 75);
         let loaded: SavedSettings = serde_json::from_str(r#"{"master":400,"ambience":33,"effects":7}"#).unwrap();
-        assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5, native: false });
+        assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5, interim: false });
     }
 
     #[test]

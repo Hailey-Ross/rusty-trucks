@@ -177,11 +177,12 @@ impl Voice {
         }
         // A new player publishes its format with 0 frames: the first block is silent.
         self.started = true;
+        // Plane arrays on the stack, not `Vec`s: the render must not allocate (test
+        // `tests/render_alloc.rs`).
         {
-            let (head, _) = src.split_at_mut(channels);
-            let mut planes: Vec<&mut [f32]> = head.iter_mut().map(|c| &mut c[..]).collect();
-            self.hpf.process(&mut planes, MIX_RATE as f32);
-            self.lpf.process(&mut planes, MIX_RATE as f32);
+            let mut planes = src.each_mut().map(|c| &mut c[..]);
+            self.hpf.process(&mut planes[..channels], MIX_RATE as f32);
+            self.lpf.process(&mut planes[..channels], MIX_RATE as f32);
         }
         // Send A: the channels summed to mono (routes N → 1 at unity, LFE dropped), our user volume
         // applied like on the dry path.
@@ -196,10 +197,9 @@ impl Voice {
             self.env.add(&mono, &mut buses.env_in[..]);
         }
         {
-            let (head, _) = src.split_at_mut(channels);
-            let mut planes: Vec<&mut [f32]> = head.iter_mut().map(|c| &mut c[..]).collect();
+            let mut planes = src.each_mut().map(|c| &mut c[..]);
             self.gain.target = self.master * self.dry;
-            self.gain.process(&mut planes);
+            self.gain.process(&mut planes[..channels]);
         }
         // Send B (`sub_824A3140`: only with an enabled effect record; level posted 0 at open, then
         // property 11 / 32767), our user volume applied like on the other paths.
@@ -220,8 +220,8 @@ impl Voice {
             }
         }
         let mut six = [[0.0f32; BLOCK]; 6];
-        let planes: Vec<&[f32]> = src[..channels].iter().map(|c| &c[..]).collect();
-        self.pan.process(&planes, &mut six);
+        let planes = src.each_ref().map(|c| &c[..]);
+        self.pan.process(&planes[..channels], &mut six);
         // Our own user volume of the voice's group (1 = retail level), after the retail graph.
         if user != 1.0 {
             for ch in six.iter_mut() {
@@ -244,7 +244,7 @@ impl Voice {
             }
             self.owner_env.add(&mono, &mut buses.env_in[..]);
         }
-        let outs: Vec<&[f32]> = six.iter().map(|c| &c[..]).collect();
+        let outs = six.each_ref().map(|c| &c[..]);
         let bus = buses.target(self.output, master);
         let routes = if self.mono_out { SIX_TO_MONO_CENTRE } else { to_six(6) };
         self.send.process(&outs, routes, bus, mode);

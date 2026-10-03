@@ -102,12 +102,19 @@ struct Recent {
 
 impl Recent {
     fn new() -> Self {
-        Self { windows: vec![(-2.0, -1.0)], first: (-2.0, -1.0), inserted: 0, last: (-2.0, -1.0) }
+        // Room for the sentinel and every insert before a collapse, so the audio thread's picks never
+        // grow it (test `tests/render_alloc.rs`).
+        let mut windows = Vec::with_capacity(usize::from(RECENT) + 1);
+        windows.push((-2.0, -1.0));
+        Self { windows, first: (-2.0, -1.0), inserted: 0, last: (-2.0, -1.0) }
     }
 
     fn collapse(&mut self) {
         let keep = if self.inserted == 0 { self.first } else { self.last };
-        (self.windows, self.first, self.inserted) = (vec![keep], keep, 0);
+        // In place (no new allocation): the same single-entry list.
+        self.windows.clear();
+        self.windows.push(keep);
+        (self.first, self.inserted) = (keep, 0);
     }
 
     fn insert(&mut self, w: (f32, f32)) {
@@ -238,6 +245,8 @@ pub struct GrainPlayer {
     slots: [Slot; 2],
     active: usize,
     recent: Recent,
+    /// Scratch candidate list of [`GrainPlayer::pick`] (kept for its capacity only).
+    found: Vec<(f32, f32)>,
     /// Retail's hold flag (+36): cleared on bind, no known writer (spec §2.4).
     pub hold: bool,
     /// Release de-click of voices torn down since the last render (bus channel 0).
@@ -265,6 +274,7 @@ impl GrainPlayer {
             slots: [Slot::new(), Slot::new()],
             active: 0,
             recent: Recent::new(),
+            found: Vec::with_capacity(MAX_CANDIDATES),
             hold: false,
             fold: 0.0,
             trace: false,
@@ -357,6 +367,15 @@ impl GrainPlayer {
     }
 
     fn pick_in(&mut self, duration: f32, rng: &mut Rng) -> f32 {
+        // The candidate list is a buffer kept by the player (cleared per attempt), not a new `Vec`
+        // per pick: the audio thread must not allocate (test `tests/render_alloc.rs`).
+        let mut found = std::mem::take(&mut self.found);
+        let start = self.pick_from(&mut found, duration, rng);
+        self.found = found;
+        start
+    }
+
+    fn pick_from(&mut self, found: &mut Vec<(f32, f32)>, duration: f32, rng: &mut Rng) -> f32 {
         let p = self.params;
         let len = p.length();
         let target = (duration - p.window) * self.record.position;
@@ -365,16 +384,16 @@ impl GrainPlayer {
         // A collapse leaves one window; retry at most a few times (retail retries until a window
         // fits, which cannot loop for a region of ≥ 2 windows unless one sits in its middle).
         for _ in 0..4 {
-            let mut found = Vec::with_capacity(MAX_CANDIDATES);
+            found.clear();
             let head = self.recent.windows[0];
             if !(target >= head.0) {
-                candidates(&mut found, target, head.0, len, target, end);
+                candidates(found, target, head.0, len, target, end);
             }
             for k in 0..self.recent.windows.len() {
                 let lo = self.recent.windows[k].1;
                 let hi = self.recent.windows.get(k + 1).map_or(duration, |w| w.0);
                 if found.len() < MAX_CANDIDATES {
-                    candidates(&mut found, lo, hi, len, target, end);
+                    candidates(found, lo, hi, len, target, end);
                 }
             }
             if found.is_empty() || self.recent.inserted == RECENT - 1 {

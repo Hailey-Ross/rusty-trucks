@@ -22,11 +22,20 @@ fn on(b: bool) -> i32 {
     if b { 32767 } else { 0 }
 }
 
+/// PlayerPhysics in13 for a non-local skater: vault class `0xC1831BDB6CB1B1EA`, fields
+/// `204DCC9296DC9400` (the cap, m/s) and `0395642CA6FC543A` (the slew, per second).
+pub const RELATIVE_CAP: f32 = 35.0;
+pub const RELATIVE_SLEW: f32 = 100.0;
+
 /// `PlayerPhysics` writer memory.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Physics {
     was_bail: bool,
     bail_frames: u32,
+    /// The Player-slot instance written (0 = the local player; NPC skaters, `world::skaters`).
+    pub instance: u32,
+    /// State `+784`: in13's slewed relative speed.
+    relative: f32,
 }
 
 impl Physics {
@@ -38,15 +47,23 @@ impl Physics {
     /// - 11 = the global "G+16" byte, writer not identified (UNCERTAIN, mixmap-spec §10): in PR #4's
     ///   retail capture it rises with each bail (`+676`) and holds for about 110 frames; we write
     ///   that measured shape.
-    /// - 13 = |state+96 − record₀+32| slewed (100 /s, cap 35 m, /35 × 32767): both are the COM
+    /// - 13 = |state+96 − record₀+32| slewed (100 /s, cap 35, /35 × 32767): both are the COM
     ///   velocity of the player itself for the local player (the record array `*(G+0x2F078)` holds
-    ///   player 0 first), so it is 0 here.
+    ///   player 0 first), so it is 0 here; a non-local skater's is against the local player's
+    ///   ([`Physics::write_against`]).
     /// - 3 = `sub_824B2088`'s listener-facing factor of two PhysOut slot-0 vectors whose meaning we
     ///   have not recovered: 0. Only A25 reads it, as a factor of the combo emphasis A4 (Music.in3,
     ///   0 outside combos).
-    /// - 12 = `sub_824B23C8` = state `+684` (soft wheels) for the local player.
+    /// - 12 = `sub_824B23C8`: state `+684` (soft wheels) for the local player; a non-local
+    ///   skater's state carries that function's value in `soft_wheels` (`world::skaters`).
     pub fn write(&mut self, m: &mut MixMap, s: &AudioState) {
-        let key = keys::player_physics(0);
+        self.write_against(m, s, s.com_velocity);
+    }
+
+    /// [`Physics::write`] with the local player's COM velocity for in13 (`sub_824B19C8`: the
+    /// difference's length, capped, slewed by state `+784`; 0 for the local player itself).
+    pub fn write_against(&mut self, m: &mut MixMap, s: &AudioState, local_com_velocity: [f32; 3]) {
+        let key = keys::player_physics(self.instance);
         let v = s.ground_speed.abs();
         m.set_input(key, 2, on(s.wheel_count == 0));
         let wheels = match s.wheel_count {
@@ -72,9 +89,28 @@ impl Physics {
         self.was_bail = s.bail;
         m.set_input(key, 11, on(self.bail_frames > 0));
         self.bail_frames = self.bail_frames.saturating_sub(1);
-        m.set_input(key, 13, 0);
+        m.set_input(key, 13, if s.local { 0 } else { self.relative_word(s, local_com_velocity) });
         m.set_input(key, 3, 0);
-        m.set_input(key, 12, on(s.local && s.soft_wheels));
+        m.set_input(key, 12, on(s.soft_wheels));
+    }
+
+    /// in13 of a non-local skater: d = |v − v_local| capped at 35, the `+784` value moves toward d
+    /// by at most 100 × dt, word = trunc(value / 35 × 32767) clamped.
+    fn relative_word(&mut self, s: &AudioState, local: [f32; 3]) -> i32 {
+        let v = s.com_velocity;
+        let d = ((v[0] - local[0]).powi(2) + (v[1] - local[1]).powi(2) + (v[2] - local[2]).powi(2)).sqrt();
+        let mut d = if d > RELATIVE_CAP { RELATIVE_CAP } else { d };
+        let step = RELATIVE_SLEW * s.dt;
+        let last = self.relative;
+        if d > last {
+            if d - last > step {
+                d = step + last;
+            }
+        } else if d < last && last - d > step {
+            d = last - step;
+        }
+        self.relative = d;
+        super::trunc_clamp((d / RELATIVE_CAP) * 32767.0, 0, 32767)
     }
 }
 
@@ -82,6 +118,8 @@ impl Physics {
 /// buckets (`+244` stored air factor, `+448` bucket; bridge `sub_824B2350` / `sub_824B2268`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Contacts {
+    /// The Player-slot instance written (0 = the local player).
+    pub instance: u32,
     was_airborne: bool,
     air_factor: [f32; 4],
     bucket: [u32; 4],
@@ -118,10 +156,12 @@ impl Contacts {
     /// grinding): 1 = 32767 (the bed's landing swell, Player F1/F30), 6 = 32767 for the local player
     /// when the first contacting wheel with a material is on a landing-flag material, 2 = the
     /// largest bucket of the contacting wheels (1 → 16000, 2 → 32767, else 0; 0 with no wheel down),
-    /// held until the next landing. Ids 0, 3–5, 7–9 reach no MixMap output and are not written.
+    /// held until the next landing. Ids 0, 3–5, 8, 9 reach no MixMap output and are not written; 7 is
+    /// the body poster's first-hit pulse (Player F7 → the Collision slot, +400 mB; `sub_824BCEB0`,
+    /// gated by a game flag not yet located — doc 11 "Session-review leftovers"), 0 until then.
     pub fn write(&mut self, m: &mut MixMap, s: &AudioState, t: &PlayerTuning) -> bool {
         self.update_buckets(s, t);
-        let key = keys::contacts(0);
+        let key = keys::contacts(self.instance);
         m.set_input(key, 0, 0);
         m.set_input(key, 1, 0);
         m.set_input(key, 6, 0);
@@ -147,7 +187,12 @@ impl Contacts {
 
 /// `Rail` ids 0 = grinding (`+341`), 1 = the grind ended this frame (`+342 && !+341`).
 pub fn write_rail(m: &mut MixMap, grinding: bool, was_grinding: bool) {
-    let key = keys::rail(0);
+    write_rail_at(m, 0, grinding, was_grinding);
+}
+
+/// [`write_rail`] for Player-slot instance `g`.
+pub fn write_rail_at(m: &mut MixMap, g: u32, grinding: bool, was_grinding: bool) {
+    let key = keys::rail(g);
     m.set_input(key, 0, on(grinding));
     m.set_input(key, 1, on(was_grinding && !grinding));
 }
@@ -155,7 +200,12 @@ pub fn write_rail(m: &mut MixMap, grinding: bool, was_grinding: bool) {
 /// `OffBoard` id 0 = on foot (`+716`, state 500), for the local player. `HandGrabs` id 0 (the
 /// object's grab byte) is 0 in retail's free-skate capture and left at 0.
 pub fn write_off_board(m: &mut MixMap, s: &AudioState) {
-    m.set_input(keys::off_board(0), 0, on(s.local && s.on_foot));
+    write_off_board_at(m, 0, s);
+}
+
+/// [`write_off_board`] for Player-slot instance `g`.
+pub fn write_off_board_at(m: &mut MixMap, g: u32, s: &AudioState) {
+    m.set_input(keys::off_board(g), 0, on(s.local && s.on_foot));
 }
 
 #[cfg(test)]

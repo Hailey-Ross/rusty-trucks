@@ -155,6 +155,11 @@ pub struct AudioState {
     pub body_slide: [f32; 6],
     pub body_tag: [u32; 6],
     pub body_slide_flag: bool,
+    /// `+496..+516` the six body regions' impacts (Collision `+80..`: `sub_82BD60C8` writes
+    /// clamp01(max(0.001, Δv(part) · region normal × part mass × physics_collision `+164` (10)))
+    /// per region with a contact part, else 0, and the conditioner `sub_82773298` keeps the max of
+    /// the last 4 frames), read by the body poster `sub_824BC188` ([`super::contacts`]).
+    pub body_impact: [f32; 6],
     /// `+688` / `+689`: hand limb 2 (part 3) / 3 (part 7) on the deck: Skeleton `+602` / `+603`
     /// ([`super::step_on::hands_on_deck`]).
     pub hands_on_deck: [bool; 2],
@@ -230,6 +235,7 @@ impl Default for AudioState {
             body_slide: [0.0; 6],
             body_tag: [0; 6],
             body_slide_flag: false,
+            body_impact: [0.0; 6],
             hands_on_deck: [false; 2],
         }
     }

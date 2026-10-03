@@ -1402,7 +1402,7 @@ and older builds ignore them. Setup writes the same keys (`audio_export.bus_tuni
 foundation). Measure first (AUDIO_TIMING in real play, e2e timing headless). Change one thing at a time and keep
 behaviour identical: e2e renders bit-identical, or a documented tolerance. An independent reviewer tries to break
 each change, looking for hidden output changes and fake speed-ups. Then re-measure (worst case and 1 % lows).
-Candidates: eEQChain buses that filter silence, per-block `Vec` allocations in the mixer, the wind/rattle and skid
+First round done 2026-10-03: see "Optimisation pass over the native runtime" below. Candidates: eEQChain buses that filter silence, per-block `Vec` allocations in the mixer, the wind/rattle and skid
 post/release thrash, the remaining small game-thread hitches.
 
 ### Listening test 6 (20:06 build): seams on brick and in the University park (2026-10-02)
@@ -1845,6 +1845,130 @@ first, from the optional banks).
   scale's −0.01 dB on the wet path, plus the submix.
 - Tools: `aems-port/tools/e2e/render_diff.py DIR_A DIR_B`, renders in `.local/audio-re/skel/`.
 
+### Leftovers: Treatments 16 / 17 timing, sense_of_speed figures, FootStep SubMix build values, the zone check, the other `.ems` files, fallbacks (2026-10-02, overnight)
+
+**Treatments 16 / 17: the two remaining differences are the recomp, not the mechanism.**
+- *Problem.* On the ~2 s ramp air (session `all_20261002_223306`, 102.0 s) the recomp started 16 / 17 538 / 577 ms
+  after takeoff at gains 0.051 / 0.026. Ours started them at once, at 0.10. In 2 of 7 airs under 0.5 s ours also
+  played a 0.004–0.005 voice where the recomp played none.
+- *Root cause, the late start.* The recomp's audio thread stalled. The trace has **no audio lines at all
+  (PLAY / GAIN / SEND / MOD / XMA) from 101499 to 102500 ms**, while the game thread logged 1,724 GREC / TREAT lines.
+  At 102500 about 40 voices start in the same millisecond. The second late start in the long session
+  (`all_20261002_223613`, 443.4 s: 16 / 17 at 1113 ms, gain 0.005) follows a 1055 ms stall in the same way. That
+  session has 11 stalls > 250 ms, most of them about 1.0 s.
+  - Replaying the TREAT rows through our Class_Treatment with no audio rendered during that interval gives 17 / 16 at
+    650–680 / 780–810 ms after the blip, gains 0.062 / 0.046. Without the stall: 70–130 / 160–260 ms, 0.075–0.080.
+  - The 30 ms air blip before the takeoff plays no part: without the stall both renders start 16 / 17 in the
+    second air.
+- *The short airs.* Whether a short air opens 16 / 17 depends on where the program's 32 ms walks fall against the
+  packet changes and on the shared random generator. Row-by-row replays at the recomp's cadence play none on the two
+  airs in question. Over both sessions the rate is the same: airs under 0.5 s with a 16 / 17 voice, ours (60 Hz
+  replay) 11 of 22, the recomp 10 of 22. In the long session's airs of 0.85–3.3 s both start 16 / 17 a median
+  50–90 ms after takeoff at matching levels (3 s airs: 0.15–0.19 in both).
+- *Change.* None to the component.
+- *Tools.*
+  - `.local/audio-re/treat/audio_gaps.py SESSION` lists audio stalls.
+  - `recomp_airs.py SESSION CSV` lists the recomp's Treatments voices per air, from the `retail_voices.py --csv` dump.
+  - Ignored tests in `tests/player_tricks.rs`: `treatment_airs_by_walk_phase` (row cadence, every walk phase, the ramp
+    air with and without the stall) and `treatment_replays_the_recomp_capture` (`TREAT_SESSION=` for the long session).
+  - **Check a session for audio stalls before reading timing out of it.**
+
+**sense_of_speed recomp figures, redone with the shared-sample fix.** Script `.local/audio-re/sos/sos_figures.py`
+(attributes each PLAY window's bank by sample address, as `retail_voices.py` now does; `--old` = first-match).
+
+| session | sense_of_speed voices (old → fixed) | streams 3 / 4 (old → fixed) | Treatments 16 / 17 (hidden before) | Send A lines (non-zero) |
+|---|---|---|---|---|
+| 163809 | 645 → 624 | 125 / 124 → 114 / 114 | 11 / 10 | 282 (11, values 0.08–0.55) |
+| 164620 | 1941 → 1827 | 299 / 303 → 244 / 244 | 55 / 59 | 801 (40) |
+| 223306 | 269 → 233 | 43 / 43 → 25 / 25 | 18 / 18 | 72 (2) |
+| 223613 | — → 1059 | — → 128 / 128 | 24 / 26 | 440 (9) |
+
+- Send A stays 0 (FXWET0 = 0, as the updater writes). The few non-zero lines are module-address reuse by other
+  graphs; with the fix there are fewer of them, not more. The old "retail median 0.015" was such an artefact.
+- *Ours against the recomp.* Ignored test `sense_of_speed_replay_of_the_recomp_speeds`: the local board's GREC
+  ground speed of 223613 per 60 Hz frame through SenseOfSpeed, the real bank, MixMap and evaluator. COM speed =
+  ground speed, so the wind is approximate in the air.
+  - Voice counts: 1068 for ours, 1059 for the recomp.
+  - Streams 0 / 1 / 3 / 4: 124 / 215 / 130 / 130 for ours, 111 / 219 / 128 / 128 for the recomp.
+  - 5–9: 24 in both. 10–14: 72 for ours, 61 for the recomp. 15 + 16: 343 for ours, 347 for the recomp.
+  - Streams 3 / 4 peak gain p90: 0.054 / 0.050 for ours, 0.058 / 0.056 for the recomp.
+  - **No difference to fix.** Before the fix the recomp seemed to play 3 / 4 about 20 % more often than our replay
+    would have.
+
+**FootStep SubMix: the two "class default" values, read** (`sub_82494188`, plug-in descriptors in the image):
+- *Pn21.* The build copies Pn21's four constructor arguments from its descriptor (`0x82FD0F98`, 40-byte records):
+  front 30 (1..90), side 110 (90..180), **normalisation 2** (0..2) and rear 150. It then overwrites argument 2 with
+  0.0, the same as the voice open (`sub_824A3140` passes 30, 110, 0). So the law is 0, a gain of 1.0, as `Pan2D`
+  already applies. Its parameters keep their defaults except the azimuth.
+- *Sen0 #2.* It is only linked (0x7FF7FFF4 → SFX Master), never posted. Sen0's only parameter is `ATTRIBUTE_SETGAIN`
+  "Gain", default 1.0.
+  - The recomp's SEND lines confirm this: the eight FootStep SubMix graphs (2 feet × 4 slots; pattern `SEND1 SEND6`,
+    `.local/audio-re/busleft/submix_sends.py` on 223306) log Sen0 #2 = 1.0 from the build on and never change it.
+  - The same lines show Sen0 #1 at 1.0 from the build until the holder's level is posted (e.g. 0.059).
+- *Change.* `bus/submix.rs` now starts Sen0 #1 at its class default 1.0, so the first posted level ramps from there
+  (`bus::env::Level::running`). Sen0 #2 and the law were already 1.0.
+- *Effect.* e2e renders (13 scenarios incl. the walking replay `walk8`, `.local/audio-re/ovn/`) are bit-identical
+  with the change and with it reverted, submix on and off: the ramp runs in the block before the step's voice
+  starts.
+
+**Reverb zones: the attribute check** (vfunc92 of the emitter manager, vtable `0x822FBDC8` +92 = `sub_824A2438`):
+- It reads the attribute's reverb RefSpec (`99FD793BC30CF0FA`) and passes when its key is one of the **24 reverb
+  preset keys in the image table `0x8302E298`**. That is exactly the set of the 24 exported `aud_reverb` presets.
+- A missing field reads the default RefSpec (key 0), which fails.
+- *Change.* `emitters::zone_records` keeps type-5 records without a known preset as disabled zones instead of
+  dropping them: retail's query stops at the first type-5 node that fails. All 1,040 zone records on the disc
+  pass, so nothing changes in play.
+
+**The music, speakers and crowds `.ems` files.**
+- The emitter system loads all of a map's files and dispatches by eVolumeType. Every caller of the type getter in
+  TU3 checks only 1 (the looping-emitter pool, `sub_828E9ED8` / `sub_828EAD90` / `sub_828EB028` / `sub_828EB0F0`),
+  4 (`sub_828EB410`) or 5 (`sub_82488278`).
+- *Type 4 (`music_*.ems`; 3 records in `reverb_downtown` / `reverb_industrial`) = music zones.*
+  - Their attributes reference class `E93ABF17955A5264` (RefSpec `442A158E27F2B5AD`): playlists with
+    `ePlayListMode`, `eChannelMapPreset` and `IPodSongInfo` / `DJSongInfo` song lists.
+  - `sub_824A2330` gates a node on the playlist record's `+4` = audio `+1608`. `sub_828EB410` keeps one winner
+    (smallest distance) and `sub_824A2198` stores its playlist key, volume, the float `463B21BB46415616` and its
+    distance / position in the emitter system.
+  - This feeds the licensed-music player, which we do not have. **Not ported.**
+- *Types 6 / 7 (`speakers_*`, `crowds_*`, and the Maloof / MegaPark `sfx_` files).*
+  - They have no bank, and every record carries flags. The emitter system's flags mask is audio `+1032`, or 4 when
+    that is 0 or 0x80000 (`sub_8248B258`).
+  - Their nodes are never dispatched by type: speakers belong to the music / event PA, crowds to event crowds
+    (`0B5950C0184014C2` = crowd type 3 / 4). This needs event gameplay we lack. **Not ported.**
+- *Change.* `emitters::update` now reads the sound emitters (type 1, flags 0) from all of the map's files, as
+  retail. Only the `sfx_` / `skateschool` files hold type 1, so the emitter list is unchanged.
+
+**Native as the default with missing install data** (new data-gated test
+`native::tests::missing_install_parts_fall_back_without_breaking`: copies of the dev manifest with parts removed,
+data folders linked):
+
+| case | result |
+|---|---|
+| no AEMS projects / no `emitter_utility` bank | runtime off, warning, measured tables |
+| no MixMap | native on, no player components or bed (interim player cues and rolling loop) |
+| no GRINDS (a core player bank) | native on, components off (interim cues) |
+| no Treatments, or its file missing | native on, treatment off, the rest on |
+| no `Common` (seam utility) / no bus tuning | native on, warning |
+| no Splice trees | native on, contacts and footsteps off (interim cues) |
+
+The per-frame host code (`native`, `player_audio`, `grain_bed`, `emitters`, `skate_events`) has no `unwrap` /
+`expect` outside tests. Each interim cue is gated on its own part's flag.
+
+**Files.**
+- `crates/skate-audio/src/bus/submix.rs`, `bus/env.rs` (`Level::running`)
+- `crates/skate-game/src/game_audio/emitters.rs` (zone check, all files for type 1)
+- `crates/skate-game/src/game_audio/native.rs` (fallback test)
+- `crates/skate-audio/tests/player_tricks.rs` (`render_frames`, `replay_treat_rows`, `treatment_airs_by_walk_phase`,
+  `sense_of_speed_replay_of_the_recomp_speeds`)
+- Tools in `.local/audio-re/{treat,sos}/`
+
+**Verification.**
+- skate-audio: all tests pass (183 lib).
+- game_audio: 50 pass.
+- skate-game `--no-run` builds.
+- Python: 27 tests pass.
+- e2e: identical with every new part off, and with it on (above).
+
 ### Listening test 9: University water "overplaying itself, doubling or restarting" (2026-10-02, build 21:57)
 
 **Report.** At (344.2, 68.03, −322.5), beside the dark water channel by the plaza trees: "It sounds like it is
@@ -2049,12 +2173,15 @@ reproduces both machines. No console capture exists to check the 30 fps numbers 
   listener is synthetic and gives no Doppler. SkateBoard pitch(3) carries the MixMap's Doppler term, so in game the
   camera decides it. Not yet measured in our game.
 - **Hit prominence.** A hit's high-frequency rise over the rolling median is 2.8–6.0 dB in the recomp's capture and
-  5.5–11 dB in ours. Voice gain matches, so the cause is downstream: pitch, bus or masking.
+  5.5–11 dB in ours. Voice gain matches, so the cause is downstream: pitch, bus or masking. *Re-measured in "The MixMap
+  on the console cadence; seam-hit prominence re-measured": the recomp figures were taken ~110 ms before the hits.*
 - **Other per-frame rules.** On the console the whole audio manager is per rendered frame at 30 fps. That covers the
   MixMap tick (dt 1/30), the eEQChain jitter every second frame (15 Hz on the console, 30 Hz in ours), the Doppler slew
   per evaluation, and other components' one-frame pulses. Only Class_Seams follows the console cadence so far. These are
-  listed for the host owner.
-- **Landed latch.** Wheel 0's landed latch stays per 60 Hz tick.
+  listed for the host owner. *Done for the MixMap, the Jitter and the eEQChain clear (next section); the eEQChain clear
+  is 30 Hz on the console, not 15 Hz.*
+- **Landed latch.** Wheel 0's landed latch stays per 60 Hz tick. *Correct: the conditioners run per physics step (next
+  section).*
 
 **Validation.**
 - skate-audio: 181 lib tests and the data tests pass.
@@ -2069,6 +2196,1067 @@ reproduces both machines. No console capture exists to check the 30 fps numbers 
   - `skate-game/src/game_audio/{native,player_audio,e2e}.rs`.
 - New: `skate-audio/examples/seam_pulse_probe.rs`.
 - E2E switches: `E2E_FPS`, `E2E_CALLS`, and `E2E_SUBSTEPS` (diagnostic: the whole host N times per row).
+
+### The MixMap on the console cadence; seam-hit prominence re-measured (2026-10-03, overnight)
+
+**Problem.** Listening test 9 left two items open. First, the per-frame host rules other than Class_Seams (the MixMap
+tick, the eEQChain jitter, the Doppler slew, wheel 0's landed latch) still ran on our 60 Hz step instead of the shipped
+console's cadence. The user's decision for that: "match the shipped game, use the 30 fps cadence however lets scale up
+and account for the higher framerates". Second, the seam hits measured more prominent above the rolling bed in ours
+than in the recomp's capture (5.5–11 dB vs 2.8–6 dB high-frequency rise), and ours showed more high-frequency onsets.
+
+**Mechanism (asm, `sub_82485190`, the audio manager; reference reading only).** The manager runs once per rendered
+frame with that frame's dt and splits its work into two halves.
+- Half 1: `sub_82491180` (the eEQChain clear and jitter post), the listener (`sub_8248CC08`), then every state
+  manager's process (vtable +16). That reaches each SFX object's process slot +36, which includes `SFXObj_Jitter`'s
+  walk step (`sub_824EF378`, vtable `0x822FC248` +36).
+- Half 2: the MixMap tick (`sub_8294BAE8`, the halves' summed dt), then every update (vtable +20).
+- When dt is above 0.02 s (`0x822F8DE8`), both halves run on every call. At or below it they alternate, each with the
+  sum of the last two dts.
+- So the console at ~30 fps evaluates the MixMap, steps the Jitter and clears the eEQChain buses **once per 1/30 s**,
+  with dt ≈ 1/30. It would be the same at 60 fps, with the halves alternating at 30 Hz each.
+- The eEQChain clear is in half 1, so it runs on **every** console frame (30 Hz). The "15 Hz" in the previous section was
+  wrong. Our old host's rule, every second 60 Hz frame, was already 30 Hz.
+- Envelopes use dt. The Doppler slew `D −= trunc((target − D)·(−0.2))` and the jitter walk are per evaluation, so at our
+  old 60 Hz both ran twice as fast as on the console.
+- The recomp renders uncapped (~345 fps), so its halves alternate at ~170 Hz: not the console's rate.
+
+**Change.**
+- `skate_audio::mixmap::cadence::Cadence` picks the 60 Hz host steps that carry a console evaluation: every second step
+  on the fixed grid of real time the 60 Hz steps already use. `native::mixmap_frame` keeps the inputs, the components'
+  process and update per 60 Hz step. On the steps that carry an evaluation it also:
+  - clears the eEQChain buses, before the inputs, as half 1 does;
+  - steps the Jitter walk once (`PlayerAudio::jitter_steps`);
+  - ticks the MixMap with dt = `CONSOLE_DT` (1/30).
+- Below 30 fps one real frame can carry two evaluations; both run.
+- **Held inputs.** Retail's writers run once per evaluation, so a one-frame flag lasts a whole console frame and the tick
+  always sees it. Ours write per 60 Hz step, so a flag set on the step between two evaluations would be cleared before
+  the tick. The new `MixMap::hold_input` makes the next tick see the largest value written since the last one; the
+  stored input keeps the last write. It is used for the six flag inputs (`native::hold_flag_inputs`):
+  - Contacts 1 / 6 (landing swell, landing material);
+  - Rail 1 (grind ended);
+  - SkateBoard 0 / 4 (surface change, push plant);
+  - Cracks 0 (seam hit).
+
+  Every other input the host writes is a level.
+- On by default. `SKATE_AEMS_MIX_CONSOLE=0` restores the old host: an evaluation per 60 Hz step with dt 1/60, the Jitter
+  per step and the eEQChain clear every second step. In e2e the cadence is on with `E2E_FPS` (the game's host) and off in
+  the per-row renders; `E2E_MIX_CONSOLE=0/1` forces it.
+- e2e fix: below 60 fps one call spans several rows, but the listener's velocity (Doppler) and the bed's frame took one
+  row's dt. They now take the call's dt, as the game passes the real frame time. This affects only `E2E_FPS` < 60
+  renders; the 30 fps renders in "Listening test 9 (seams)" had this error.
+
+**Wheel 0's landed latch: no change.** The latch is the conditioner `sub_82772FD8` (called from `sub_82772748`). That is a
+physics-side PhysOut conditioner (vtable `0x82310A78`, listed among physics jobs at `0x82348E98`), not an SFX object.
+The recomp shows the conditioners' outputs change at the physics rate, not per rendered frame. In session 223306 the air
+time `+236` (TREAT) changes on 860 of 5,094 in-air calls (17 %), always by 1/60 s (0.0167 / 0.0166). Its "more than 5
+frames in the air" are physics steps on the console too, so our per-60 Hz-step latch (`Seams::process_tick`,
+`contacts`, `rolling`) already matches.
+
+**Proof (e2e, both user logs: full1 = brick 213757, full3 = University 214224; `.local/audio-re/cadence/`,
+`fps_band.py`).**
+- Identity with the new parts off: the default per-row renders, and `E2E_FPS=60 E2E_MIX_CONSOLE=0`, are byte-identical
+  (f32 and voices) to a pre-change build of the same tree (`.local/cb`, my files reverted).
+- Frame rate, with the console cadence on:
+
+  | fps | full1 grain A gain p50 / p90 | full1 A pitch p50 | full3 A pitch p50 |
+  |---|---|---|---|
+  | 29.7 / 30 / 30.3 | 0.2204 / 0.2205 / 0.2019, p90 0.2491 / 0.2491 / 0.2488 | 0.9907 / 0.9907 / 0.9895 | 1.1069 |
+  | 20 | 0.2192 / 0.2491 | 0.9907 | 1.1069 |
+  | 60 / 144 / 240 / 365 | 0.2012 / 0.2488 (all four identical) | 0.9912 | 1.1074 |
+
+  - The MixMap-driven quantities are identical from 60 to 365 fps.
+  - Between 60 and 365 fps only the seams' shuffle phase moves: 18.3–20.0 seam starts/s, against 18.0–19.0 at 29.7–30.3.
+  - The 60+ fps values sit in the 30 fps band or within 0.0005 of it.
+- The remaining 30-vs-60 fps difference in per-second levels was already there with the old cadence: median
+  |Δ| 0.61 / 0.24 dB old vs 0.42 / 0.18 dB new. It comes from the components' process running once per real frame below
+  60 fps (one state sample per two physics steps), not from the MixMap.
+- New cadence vs old at 60 fps: per-second level median |Δ| 0.27 / 0.08 dB, p90 0.96 / 0.41 dB. The visible change is
+  the Doppler: grain A pitch p10 0.839 → 0.820, because the slew now runs at the console's 30 Hz.
+- Unit tests: `mixmap::cadence::tests::evaluations_follow_the_steps_not_the_frames`,
+  `mixmap::tests::a_held_flag_written_between_ticks_reaches_the_next_tick_once`.
+
+**Seam-hit prominence, re-measured (no change made).** Tools in `.local/audio-re/seams10/`: `windows.py`, `perhit.py`,
+`lag.py` (event-triggered average), `jitter.py`.
+- **The old comparison was misaligned.** `hit_prominence.py` took the recomp's high-frequency peak 0–40 ms after the
+  logged PLAY time.
+  - An event-triggered average of the capture's >2 kHz envelope around ~500 hits per session puts the hits **~110 ms
+    after** the logged time in every session (214002, 214346, 223306, 223613).
+  - Isolated strong hits spread from 75 to 160 ms (interquartile), so the capture's alignment jitters by about ±45 ms.
+  - Ours peak at +40 ms (the voice log is per 60 Hz frame).
+  - So the recomp's "2.8–6 dB" was mostly the bed before the hit.
+- **Aligned comparison.** Event-triggered peak over the local median, by band (four recomp sessions vs our two renders):
+
+  | band | the recomp | ours |
+  |---|---|---|
+  | 0.5–1 kHz | 2.3–3.7 dB | 5.5–5.8 dB |
+  | 1–2 kHz | 3.4–5.0 dB | 7.0–7.5 dB |
+  | 2–4 kHz | 5.0–6.4 dB | 8.3–8.6 dB |
+  | 4–8 kHz | 6.4–7.7 dB | 8.8–10.0 dB |
+  | 8–16 kHz | 7.3–8.3 dB | 11.5–13.2 dB |
+
+  The recomp's figures are blurred by its alignment jitter. Adding Gaussian jitter of 30–60 ms to our hit times moves
+  ours by at most about 1 dB (the hits are dense), so a gap of about 2–3 dB below 2 kHz and 3–5 dB above 8 kHz remains.
+- **Mechanism checks, all equal or not the cause:**
+  - **Pitch.** Seam voice pitch p10/50/90: the recomp 0.98 / 1.10 / 1.18 (163809 MOD); ours 0.99 / 1.08 / 1.16.
+  - **Record levels.** Seam voice gain over the bed's gain A while rolling at 20–50 km/h: the recomp −9.0 to −13.1 dB,
+    ours −11.1 to −13.4 dB. Ours is not louder at the record level.
+  - **Bus.** The seams post to eEQChain 8 = the default bus input (no EQ), like the bed's graph 2.
+  - **Voices per hit.** The same distribution (about 60 % single, 25 % pairs; identical samples per hit alike).
+  - **Fold.** 99 % of our render's energy is in C (the board ahead of the camera), so the capture's fold weights don't
+    change the comparison.
+  - **Bed spectrum.** Away from hits, relative to its 0.5–1 kHz band, the bed is within about 1.5 dB per octave up to
+    16 kHz.
+  - **Low-pass.** The recomp's seam voices often play low-passed: 54 % of their starts set the LPF below 24 kHz (down
+    to 8,990 Hz). The Seams program maps w15 = |turn·1000| (state +204, slewed ±100 per write) to the voice LPF:
+    w15 ≤ 200 → 24,971 Hz, 300 → 20,177, 600 → 15,382, 1000 → 8,990 (`program_trace`). Ours does the same. Our rolling
+    |turn| is distributed like the recomp's (both p75 0, >0.25 on 4–18 % vs 13–31 % of frames), so on straight rolling
+    the filter is open in both.
+  - **Grain start fades.** The fade request's curve is 1.0 (`0x8231A844` in `sub_828EC2F8`) → GaF0's square-root
+    curve, as ported. The window picks are bit-exact with the PoC vectors.
+  - **Onsets.** Our high-frequency onsets coincide with grain starts no more often than chance: 45 % and 41 % within
+    ±25 ms, with ~9 grain starts/s across both trucks' players, where chance is ~45 %.
+- The remaining 2–5 dB has no mechanism found. Candidates: what else the capture holds around the board (ambience at
+  6–17 dB below the bed in high frequencies, other skaters, the recomp's 25–36 seam voices/s raising the local median)
+  and the bed's post-record chain. No level change: retail parity needs a mechanism, not a fitted weight.
+
+**Files.**
+- New: `skate-audio/src/mixmap/cadence.rs`.
+- Changed:
+  - `skate-audio/src/mixmap/{mod.rs, tests.rs}` (`hold_input`, tick split into hold + `evaluate`);
+  - `skate-game/src/game_audio/native.rs` (`mix_console_requested`, `hold_flag_inputs`, the cadence in
+    `mixmap_frame`);
+  - `skate-game/src/game_audio/player_audio.rs` (`jitter_steps`);
+  - `skate-game/src/game_audio/e2e.rs` (`E2E_MIX_CONSOLE`, the call dt fix).
+
+**Verification.** skate-audio: 183 lib tests and the data tests pass; `game_audio::` 50 pass; the `--no-run` build
+passes; the e2e identity and frame-rate band are above.
+
+**Open.**
+- The components' own per-call rules still run per 60 Hz step. Retail runs every process / update on the 30 Hz cadence
+  too, but its conditioners hold pulses over several physics steps for that. Examples: Seams' turn-word slew
+  (already 30 Hz), the bed's per-frame steps (`grain_bed::update` runs per rendered frame, dt-scaled), and frame
+  counters in the components. Moving those is a separate, wider change; it touches components other agents own.
+- The remaining seam-prominence gap (above). A console capture, or a recomp capture with a time-exact voice log, would
+  settle it.
+
+### World sound sources: traffic, pedestrians, speech (2026-10-03, `skate_audio::world`, `game_audio/world_sources.rs`)
+
+**Problem.** The traces had already found retail's ped voices, ped footsteps, traffic engines, horns, alarms and skids
+(todo `audio-world-npc.md`). The engine has no living world (no peds, no traffic), so none of them could play. The
+user asked for the foundation: the retail sound objects ported and ready, so that a future ped or vehicle system
+only has to publish state.
+
+**Root cause.** These sounds are not emitters. Each comes from a per-object SFX owner on its own MixMap slot:
+- Traffic slot 4: 4 instances. TrafficEngine, TrafficSkids, TrafficHorn.
+- Pedestrian slot 5: 15 instances. PedestrianSpeech, PedestrianSFX, PedBodyFall, Tazer.
+
+Each owner is driven by its game object's state, so the owners need that state before they can sound.
+
+**Evidence** (TU3 recompilation, reference only; spec notes `.claude/notes/world-traffic-audio.md`, `world-ped-audio.md`,
+`world-speech.md`):
+- **TrafficEngine** (`sub_824D6110` / `sub_824D6478`): an RPM model.
+  - In each "gear" (4 × 7 m/s) the target rises linearly from 0 to the record's max at the gear's top.
+  - A ±8 RPM wobble is added and the result is clamped to [idle, max].
+  - The RPM follows at 2000 RPM/s, rises at 1000 and falls at 4000. A fall holds the shift word w17 = 1 for 3 updates.
+  - The levels are split front / rear by the car's heading against the camera.
+  - The `TRAFFIC_CAR` packet's w14 is the engine patch. The record's patch 1 becomes 7 or 8 for a third each, and patch 3
+    becomes 6 for half.
+  - Retail loads all eight engine banks at once (recomp READs at 8.8 s). **Each bank's program destroys its
+    instance unless w14 is its own number**, so every post sounds in exactly one bank. The recomp agrees: the starts of
+    session `all_20261002_164620` are single-bank.
+- **TrafficHorn / car alarm / TrafficSkids:**
+  - Horn: posts `TRAFFIC_HORN` with a random variant 0..8. The kind is the vehicle's horn state 1–5, and a record with
+    patch 0 never honks.
+  - Car alarm: horn state 6 posts `c_car_alarm` (variant 0..3).
+  - Skids: post `TRAFFIC_SKID`, which plays on the vehicle's skid flag.
+- **PedestrianSFX:**
+  - Two held `livingword_footstep` packets (one per foot), with the program stepping on the foot-down word.
+  - A `sk8_foley` Splice step per plant: walk / jog / run 62 / 63 / 64 by the ped's speed, above 2.5 and 7.5 m/s.
+  - The packet's shoe class (w14) picks the sample set, and **class 1 is silent**.
+- **Speech:**
+  - The state graphs send a speech value on state entry (`SendSpeechEvent`). PedestrianSpeech hands it to the speech
+    manager on change (values 7 / 8 remapped).
+  - The clips stream from `livingworldspeech.big`: 3,011 clips × 1–48 takes, mono XMA2 at 36 kHz. Each take's offset and
+    SNR header are in the nested `livingworldsth.big`.
+  - Which reaction plays which event was measured in the recomp: warn → 501, slam nearby → 104, collision nearby → 205 /
+    204 / 202, trick nearby → 101, flee → 108, greet → 1901 / 806 / 807.
+
+**Change.**
+- `crates/skate-audio/src/world/` (new, engine independent), with the player components' process / update split:
+  - `traffic.rs`: `Engine`, `Horn`, `Skids`, `Vehicle`, `EngineRecord`;
+  - `peds.rs`: `PedSfx`, `PedSpeech`, `PedFootstepTuning`;
+  - `speech.rs`: clip index, reaction cues, line choice, mixer slots;
+  - `owners.rs`: instance pools and 3DObjPos blocks, through the existing `player::objpos`;
+  - `keys.rs`: the slot 4 / 5 controller keys.
+- `game_audio/world_sources.rs` (new): the `WorldOwners` resource a ped / vehicle system fills each frame, and a system
+  after `native::mixmap_frame`. It assigns instances, updates and processes the owners, applies the posts, and loads the
+  world banks on the first published frame.
+  - **Inert by default.** With no owners it returns at once, so play is unchanged. `SKATE_AEMS_WORLD=0` turns it off.
+  - Shared files touched: one module line and one plugin line in `game_audio/mod.rs`, and one optional manifest field
+    (`world_tuning`) with its accessor in `library.rs`.
+- Setup: `tools/asset_pipeline/world_audio.py`.
+  - The 13 world banks join the decoded set.
+  - The manifest gets `world_tuning` (the `aud_traffic_engine` records and the ped footstep fields).
+  - `speech/livingworld.json` holds the clip index (2.3 MB).
+  - Decoding the speech is opt-in with `SKATE_SETUP_SPEECH=1`: about 2.4 GB of PCM for the free-roam events.
+  - Dev install tools: `stage_extra_banks.py --tag world …` and `.claude/skills/aems-port/tools/stage_world_audio.py`.
+
+**Verification.**
+- `crates/skate-audio/tests/world_sources.rs`, headless through the real MixMap and banks:
+  - A car of patch 1 at 12 m/s passing 8 m away:
+    - only `C01_family01` sounds;
+    - the engine pitch shows the Doppler shift: 4182 approaching, 4007 receding (4096 = 1.0);
+    - the front layer peaks at the closest approach and is gone beyond ~45 m;
+    - the RPM settles at 12·4000/14.
+  - Patches 0–9 through all eight banks: patch n sounds only in `C0n`; 2 and 9 are silent.
+  - A ped walks past and plants its feet: an AEMS step and a `sk8_foley` step per plant.
+    - The sample groups our evaluation produces for shoe classes 2–5 cover **4,798 of retail's 4,949**
+      `fstep_livingworld` starts (session 164620).
+  - A bumped business man (voice 59) resolves to a `501` warn line of his own voice; the take renders for its 5.49 s.
+- Unit tests:
+  - skate-audio `world::` (14): the RPM model, the patch override, the front / rear split, horn / alarm / skid
+    words, footstep packets, speech value remap, clip names, line choice;
+  - game_audio:: `world_sources` (2);
+  - Python `test_world_audio` (3).
+
+**Open questions.**
+- **Speech:**
+  - ~~the speech manager's `.evt` rules~~ and ~~the `_n` / `_f` lines~~: ported, see "World speech: the speech
+    manager's rules" below;
+  - which PedestrianSpeech output sets the speech level.
+- **Assignment and positions:**
+  - retail's instance assignment (ours: nearest N);
+  - which points the traffic position blocks 4.1–4.3 follow (ours: all three at the body).
+- **Fields not traced:** vehicle `+112` / `+144`, `TrafficCarPhysics.in0`, the ped model → shoe class / voice.
+- **Not ported:**
+  - PedBodyFall;
+  - Tazer, which needs AEMS op 38;
+  - ~~NPC skaters' boards~~: foundation ported, see "NPC skaters' board sounds" below;
+  - event PA / crowds / music zones, which need events and a music player.
+
+#### World speech: the speech manager's rules (2026-10-03, overnight; `world::speech_manager`, `world::speech_rules`)
+
+**Problem.** The line and take choice was a uniform placeholder, and the `_n` / `_f` lines and the vault tuning were open.
+
+**Root cause.** Retail's choice runs in two layers.
+- The game's speech manager maps a speech value to an event and gates it with the vault tuning.
+- A generic speech library then picks the line and its takes from the `.evt` table and the clips' `.hdr` headers.
+- Neither layer was read.
+
+**Evidence** (TU3 recompilation, reference only; `.claude/notes/world-speech.md`):
+- **Value → event** (`sub_824AB6C8`): a switch over the speech value.
+  - A `rand()` coin picks between 203 / 205, 603 / 607 and 108 / 109.
+  - Values 1 / 3 play radio lines for security guards. For bums, `rand() % 3` picks 206, 207 or 1901.
+- **Gate** (`sub_824ABA18`, `sub_824A8C78`, `sub_824A75F0`): the vault class `Hash_9C1F48F5D637E275`, with
+  `SPCHType_1_EventID` naming the living-world event. Its `Sk8::Audio::tSpeechTuning` holds:
+  - per-speaker timers: the same event after `+24` s, any line after `+8` s;
+  - a not-follow list (no line within t s after event e);
+  - a `rand() % 1000 × 0.1` probability against `+20`;
+  - the player's speed window in km/h (`+32` / `+36`);
+  - excluded challenge types;
+  - zombie mode (`+60`). The timers start at 0 and restart when a line starts (`sub_824A90B8`).
+- **Request words** (`sub_824D9908`, `sub_824ABD90`): ped type bit, voice variant bit, the near / far flag, the
+  conversation partner's type, zombie 1 / 2. Which words an event reads is per event.
+- **Line** (`sub_82973CB8`):
+  - the event's probability;
+  - the records in a weighted random order: weight = 4^(b >> 5) × (b & 31) of the record's first byte;
+  - the first record that passes its own probability and whose field masks share a bit with the request words (0 = any).
+- **Takes** (`sub_82972660`, `sub_82974220`, `sub_82973408`):
+  - a record's clips play in sequence;
+  - per clip, the takes not in its history ring (`.hdr` +8, usually the take count) are the candidates; when every
+    take is in the ring, the one played longest ago is the only candidate;
+  - a random candidate index, redrawn while it is among the last min(n/2, 10) picks of that clip in a 32-entry ring;
+  - the chosen take goes into the clip's history when the line starts.
+- **Near / far.** The flag is 1 when the ped's `+148` exceeds `+156`. The `.evt` itself shows that 1 means far:
+  `101_51_GenPos_Grn1_far`, `104_51_grn1_Slam_far`, and all 366 `_f` / `_n` records of 101 / 104 / 202 / 203 / 501
+  split that way.
+- **The recomp agrees** (`.claude/skills/recomp-research/tools/speech_takes.py`, 10 sessions, reads in audio stalls
+  left out):
+  - The take of each speech READ follows from its offset. All 57 clips played twice or more follow the history rule,
+    including one full cycle (`806_82_torm1_Int_c14_tour`: 0, 1, 0). A uniform pick would have repeated a take in
+    about 13.6 of them.
+  - All 15 multi-clip lines are one record's clip list in order (radio chirp / line / chirp; phone greet / silence /
+    call).
+
+**Change.**
+- `crates/skate-audio/src/world/speech_rules.rs` (new):
+  - the `.evt` parser (`EventTable::parse`, the same layout for all four speech banks);
+  - `Library::start`: the record order, the field match, the clip sequence, the history and the recent ring;
+  - the generator: the add-with-carry with the image seed, which retail shares with the grain player.
+- `crates/skate-audio/src/world/speech_manager.rs` (new):
+  - `event_for_value`, `request_block` / `request_words`;
+  - `EventTuning` and `SpeechManager::gate` / `request`;
+  - `speaker_bits`: voice id → type and variant bits from the records.
+- `speech.rs`:
+  - `SpeechIndex::set_ids` / `clip_by_id` / `picks_to_lines`;
+  - `choose` is now documented as a fallback for hosts without the rules.
+- `world/mod.rs`: two module lines.
+- Setup (`world_audio.py`), with no change to `audio_export.py`:
+  - `speech_index` now also exports each clip's `.hdr` id and history and the parsed `.evt` (`rules`);
+  - `world_tuning` gains `speech_tuning` (per bank and event).
+- The game host is unchanged and still inert.
+
+**Not ported** (fails closed, or unused by living-world data):
+- the per-channel request queue (16 slots, 8 streams, timeout = event +2). The recomp plays several living-world lines
+  at once;
+- the interrupt rules (`sub_824A73F0`);
+- external conditions and clip parameters;
+- the main-cast path for peds without a living-world speaker (`+116 == 0`).
+
+**Verification.**
+- skate-audio unit tests `world::speech_rules` (6) and `world::speech_manager` (4).
+- `tests/world_speech.rs` (4) on the dev install's export:
+  - near / far: 366 records agree, 0 disagree;
+  - voice ids map to their type and variant bits;
+  - a bumped business man gets `501_59_busm1_Warn_f` far and `_n` near, and is refused inside the 15 s repeat. His 3
+    takes play once each, then repeat in the same order;
+  - a guard's radio line is chirp / line / chirp with two different chirp takes.
+- Python `test_world_audio` (6).
+
+**Open.**
+- Which ped values `+148` / `+156` are.
+- The speech level and pan (which speech-manager output drives the stream voice).
+- The time unit of the queue timeout.
+
+#### NPC skaters' board sounds (2026-10-03, overnight; `world::skaters`, `game_audio/npc_skaters.rs`)
+
+**Problem.** The AI skaters (4–14 around the player in the user's sessions) had no board sounds, and which MixMap slot
+retail uses for them was open: the Player slot has only 2 instances in free skate.
+
+**Root cause.** Retail does not give every AI skater sounds. `CSTATEMGR_Player` owns exactly two records, one per
+Player-slot instance. The local player holds the first. The second goes to **one** NPC skater: the first in the skater
+list that comes within 30 m of the camera while the record is free. It runs every player component for that skater.
+
+**Evidence** (TU3 recompilation, reference only; spec `.claude/notes/world-npc-skater-audio.md`):
+- **The records.**
+  - The manager's init `sub_824F1F40` creates two `CSTATE_Player` records (creator `sub_824F8D60`; +68 skater index,
+    +72 local byte).
+  - Its update `sub_824F1FB0` walks the skater list (544-byte entries at `*(0x83083C38)+0x2F070`). It keeps a skater's
+    record (matched by id) or asks for a new one.
+  - NPC skaters are considered only while `sub_824F8EF8` holds: distance to `*(0x830CFDD4)` (the camera) < 30.0
+    (`0x820D4924`).
+  - The create `sub_824F2238` hands out the first inactive record. Only the local skater may evict one.
+  - The record's update `sub_824F8E18` drops an NPC at 30 m or more, or when it leaves the list.
+- **Every component runs for that skater.** The audio-state bridge `sub_824B0DA8` reads the skater entry at the record's
+  index. The components' local tests (`[record+72]`) pick the non-local branches the port already has: no wind /
+  rattle, one routing pass, no held layers, the collision local byte clear. Class_Seams gates only on the record's
+  active byte (`+52`), so it runs for the NPC too.
+- **The soft-wheel word** (`sub_824B23C8`). For a non-local skater it returns 1 when the local player's record `+84` is 0.
+  The bridge writes `+84` with the local player's own `+684`. So **an NPC board plays the soft-wheel samples exactly
+  when the local player's wheels are hard**.
+- **PlayerPhysics in13** (`sub_824B19C8`) for a non-local skater: |its COM velocity − the local player's|, capped at 35,
+  slewed by 100 /s, × 32767 / 35. The vault class is `0xC1831BDB6CB1B1EA`.
+- **The recomp:**
+  - The CONTACT hook's second Contacts object (`0x40C710A0`) fires in bursts that match a nearby AI board's speed and
+    landing. Session `all_20261002_164620`: 326–329 s = board `468B18F0`, 25 m away, 10–11 m/s; the local player is still.
+    The earlier note that both contact objects were the player's was wrong.
+  - The user's board is hard. Soft grain members play 0.6–4.9 voices/s around those bursts, against 0.3–0.9/s over
+    the session. Their GAIN × SEND p50 / p90: `concrete_smooth_soft` 0.026 / 0.172, `concrete_aggregate_soft` 0.012 /
+    0.090, `asphalt_rough_soft` 0.002 / 0.106. The local's `concrete_smooth_hard` reads 0.238 / 0.737.
+  - Tool: `.local/research/npc-skater-audio/instance1_voices.py SESSION`.
+- **The non-local collision helper `sub_824BF5F8`** is speech, not board audio. On a body impact during a bail it finds
+  the skater's `CSTATE_SkaterSpeech` record and posts message 8206 / 115 (a bail grunt).
+
+**Change.**
+- `crates/skate-audio/src/world/skaters.rs` (new):
+  - `Slots`: the record assignment above;
+  - `component_state`: an NPC's `AudioState`, with `local` = false and `soft_wheels` = the inverse of the local
+    player's;
+  - `NpcSkater`: the local player's component objects for instance g. It writes PlayerPhysics, the two 3DObjPos blocks,
+    Contacts, Rail and OffBoard inputs at g. It runs the rolling routing, rattle, seams, grind with its on / off
+    sounds, skid, squeaks, foot drag, sense of speed and the Splice contacts. It returns the same `Command`s and hands
+    its collision messages to the shared collision manager. No component code is forked.
+- Shared code, each change identical for the local player (`AudioState::local` is always true there):
+  - `player/inputs.rs`: `Physics` and `Contacts` get an `instance`; `Physics::write_against` gives the non-local in13;
+    `write_rail_at` and `write_off_board_at` are added.
+  - `player/seams.rs`: an `instance` for the Cracks key. The `!local` early returns are gone; retail has none.
+  - `inputs.rs` in12, `seams.rs` w11, `components.rs` skid w8 and `contacts.rs` tier: post `s.soft_wheels`
+    (`sub_824B23C8`'s value) instead of `local && soft_wheels`.
+- `game_audio/npc_skaters.rs` (new): the `NpcSkaters` resource an AI-skater system fills each frame, in list order, and
+  a system after `native::mixmap_frame`, like `world_sources.rs`. It uses the local player's tuning and loaded banks.
+  - **Inert by default:** with nothing published it returns at once.
+  - `SKATE_AEMS_NPC_SKATERS=0` turns it off.
+  - `PlayerAudio::post_collisions` takes the NPC's collision messages.
+  - Shared lines: one module line and one plugin line in `game_audio/mod.rs`.
+
+**Verification.**
+- skate-audio `world::skaters` unit tests (3): the assignment (30 m in / out, no eviction, list order, NaN, leaving the
+  list), the soft inverse, and in13's slew and cap with the instance's blocks.
+- `game_audio::npc_skaters::tests::npc_skater_rolls_and_grinds_past_the_listener` (data-gated). An NPC rolls past 8 m in
+  front of the camera at 7 m/s, ollies onto a metal rail, grinds and lands, through the real banks, MixMap, Splice and
+  buses at the 30 Hz evaluation cadence:
+  - claimed at 30.0 m, released at 30.06 m; nothing opens a second after the release;
+  - Seams_Bank voices peak at 0.046–0.065 near the camera and 0.017 at 22–30 m;
+  - GRINDS 0.087–0.094 at 8 m, Skate_Metal on / off 0.10–0.12, the landing (Skate_Collisions) 0.205;
+  - the seam packets carry the soft word 1 with hard local wheels and 0 with soft ones.
+- Identity: `e2e_bench.sh` before / after the change (13 scenarios and 4 real sessions, row and fps300) → every output
+  hash identical (`compare_runs.sh npc-pre npc-post`). skate-audio tests and `game_audio::` (60) pass.
+
+**Open.**
+- The NPC's granular rolling bed. The runtime has one `GrainBed`, driven from `skateboard(0)`; the routing's grain binds
+  are collected (`NpcSkater::routed`) and dropped by the host. Most surfaces' rolling needs that second bed.
+- Wheels, tricks, treatment, footsteps and clothing for the NPC instance (per instance in retail).
+- What an inactive instance's inputs hold. We deactivate the 3-D blocks and release the packets.
+- The manager's gate (a game-state word == 5 and `sys+560` == 1) and the AI manager's list order.
+- The NPC's speech (`sub_824BF5F8`, the SkaterSpeech manager `sub_824F7D10`) belongs to the speech stage.
+
+### Optimisation pass over the native runtime (2026-10-03, overnight; skill `optimisation`)
+
+**Problem.** The final stage of the plan: make the native audio cheaper without changing a single output bit (user:
+"optimise only with proof of identical behaviour"). The audio thread renders each 256-frame block while it holds the
+runtime lock. The game thread waits for that lock several times per frame (`game_lock_wait`), so render time turns
+straight into frame-time jitter at 300+ fps.
+
+**Measured first.**
+- *Real play* (`SKATE_AUDIO_TIMING=1`, sessions 21:37, 21:58, 22:47):
+  - `render_block` averages 263–292 µs, with a per-second maximum of ~470 µs median and 680–830 µs p90.
+  - The game thread takes the lock 490–1,170 times a second (~3.5 per frame). In most seconds one of those waits
+    is about one render long: `game_lock_wait` per-second maximum median 276–332 µs.
+  - `mixmap_frame` averages 21–37 µs per frame (lock waits included); the MixMap tick itself is ~45 µs at 30 Hz.
+  - `emitters` has 3–36 ms spikes, a few per session (below).
+- *Headless.* The new bench (`.claude/skills/optimisation/tools/e2e_bench.sh`) runs the 13 e2e scenarios and four
+  whole user sessions (state logs 21:37:57, 21:42:24, 21:58:43, 22:47:47; 24,264 rows), in `row` and `E2E_FPS=300`
+  modes, and hashes every `.f32` render and voice log. Render per block on the real sessions: p50 210 µs, p99
+  340–377 µs.
+- *Where it goes* (temporary per-stage timers, real play, µs per block): eEQChain buses 95–104, grain bed 70–77 (its
+  FrequencyShiftSsb 59), env network 22–25, voices 8–20, evaluator 5–7.
+- *Root cause.* Every `f32::mul_add` without the `fma` target feature is a call into the CRT's `fmaf`. A
+  256-sample biquad channel costs 1.4 µs that way and 0.43 µs with hardware FMA; an FSS `sin` costs 19 ns against
+  ~1 ns. The eEQChain filters 8 buses × 6 channels × 2 peaking EQs every block, mostly on silence. The FSS evaluates
+  512 polynomial `sin` / `cos` per chain per block.
+
+**Changes (each bit-identical by construction and by test).**
+1. `dsp::biquad::kernel_block` (used by `Iir2`, `PeakingIir2`, `HighShelfIir2` and the FSS allpasses). The kernel is a
+   pure function of (coefficients, history, input), and its arithmetic depends on the position only through `n % 8`.
+   - *Settled filter:* on an 8-periodic block (silent or constant), run one group of 8. If the history comes back
+     bit-identical, the remaining groups repeat it exactly. Otherwise the rest runs from the state after the group,
+     so nothing is computed twice.
+   - *Silent tail:* on silent input, after the history's inputs reach +0, each feed-forward form equals the 1e-18
+     bias exactly. This is checked at run time with the kernel's own expressions, so only the two feedback FMAs run.
+2. `PeakingIir2::process`: a silent channel whose history is bit-identical to an earlier silent channel's copies that
+   channel's output and history (jittered buses 5–7 idle with six equal histories).
+3. `FrequencyShift::process`: a lane whose value is bit-identical to its previous group's (a 0 Hz shift, 40–45 % of
+   chain blocks) reuses its `sin` / `cos`.
+4. `dsp::wrap` instead of `%` in the reverb combs and the delay lines. It equals `%` for every input, overflowed
+   ones included.
+5. No allocations on the audio thread in steady state (was ~104 per block). The voice / bus / submix plane lists are
+   stack arrays (`each_mut` / `each_ref`), the pan's speaker weights are an array, and the grain pick's candidate
+   list and recent-window list keep their buffers. RNG draw order is unchanged: an explicit loop in
+   `eqchain::resolve`.
+
+**Proof.**
+- *e2e byte identity:* `compare_runs.sh base final` → IDENTICAL for scen-row, scen-fps300, real-row and
+  real-fps300 (every `.f32` and every voice log). The same against the original sources rebuilt for `E2E_FPS=30`
+  and `E2E_FPS=1000` (frame-rate extremes).
+- *Test-only references, bit for bit:*
+  - `dsp::biquad::kernel_block_matches_the_plain_kernel`: every coefficient set, including NaN / ∞ / zero ones and
+    the FSS allpasses; lengths 0–264; silent, −0.0, constant, 8-periodic and noise blocks; fresh, noisy, settled and
+    non-finite histories; 3,000-block decays. It also asserts that both shortcuts ran.
+  - `dsp::peaking::silent_shortcuts_match_the_plain_kernel`: the old process as reference, with bus-like 6-channel
+    traffic, jitter, re-rolls, bypass and a NaN frequency.
+  - `dsp::fss::repeated_lanes_reuse_the_same_trig`: the old process as reference, with 0 / ±150 Hz, tiny, huge and
+    NaN shifts.
+  - `dsp::tests::wrap_is_the_remainder`.
+- *No allocations:* `tests/render_alloc.rs` (a counting allocator around 300 steady-state blocks of a full scene)
+  asserts 0.
+- *Suites:* skate-audio all pass; `game_audio::` 52 / 52; `--no-run` builds.
+
+**Speed (two runs each, same machine, µs per render block).**
+
+| Set | before p50 / p90 / p99 | after p50 / p90 / p99 |
+|---|---|---|
+| Real sessions, row | 210 / 250–260 / 340–377 | 131 / 167 / 233 |
+| Real sessions, 300 fps | 211–214 / 250–293 / 347–417 | 128 / 166 / 231 |
+| Scenarios, row | 120–122 / 210 / 281–288 | 84 / 140 / 193–198 |
+
+Total render time on the real sessions is down 39 % (17.1 s → 10.4 s per 75,826 blocks). The spread between runs
+is a few µs at p50 / p99. The maxima (10–38 ms) move between runs and blocks in both builds: OS preemption on a
+shared machine, not code. The game-thread side is unchanged (p50 30–35 µs per tick call). The in-game lock wait
+should shrink with the render; check `game_lock_wait` / `render_block` in the next `SKATE_AUDIO_TIMING` session.
+
+**Rejected or left for the user.**
+- *Hardware FMA* (`-C target-feature=+fma`, measured in a separate build, `.local/opt-target-fma`): render p50
+  130 → 52 µs, p99 233 → 130 µs. Every e2e output is byte-identical: the fused result is unique, and 100 M random
+  `fmaf` cases agree too. It would raise the CPU baseline to FMA3 (Intel Haswell 2013 / AMD Piledriver 2012) for
+  the whole game. **Done as runtime dispatch** (user decision "option 1"): see "Hardware FMA dispatch" below.
+- *A safe software fma* (f64 product and sum, f32 midpoint check, library fallback): exact, but no faster (the
+  kernel is latency-bound). Dropped.
+- *`a * b + c` instead of `mul_add`:* not bit-identical. Never.
+- *Skipping silent grain chains / FSS trig on idle chains:* their bias-level output (~1e-18) reaches the master
+  bit-for-bit, so it is not skippable. Dropped.
+- *Merging the game thread's lock sections:* it changes which intermediate states a render can see. Not provably
+  identical. Dropped.
+- *Emitter bank loads* (the 3–36 ms `emitters` spikes): `Native::ensure_bank` read and decoded a world emitter
+  bank's WAVs on the game thread when its first emitter started. That cost 2.6–5.4 ms warm per bank (3.8–8.7 MB of
+  f32), more from a cold disk. **Done in a follow-up:** a distance prefetch on a worker thread, see "Emitter bank
+  prefetch" below.
+
+**Files.**
+- `crates/skate-audio/src/dsp/{biquad,peaking,fss,shelf,reverb,delay,pan,mod}.rs`, `bus/{eqchain,submix}.rs`,
+  `grain/player.rs`, `mixer.rs`.
+- New test `crates/skate-audio/tests/render_alloc.rs`.
+- `crates/skate-game/src/game_audio/e2e.rs`: with `E2E_TIMING=1` it also writes `<name>.ours.timing.tsv`.
+- Bench tools: `.claude/skills/optimisation/tools/` (local).
+
+**Open.** ~~The FMA decision~~ (done: "Hardware FMA dispatch" below). MixMap tick (~45 µs at 30 Hz, game thread) not examined in depth. The emitter-bank
+prefetch is done (below).
+
+#### Emitter bank prefetch (2026-10-03, follow-up)
+
+**Problem.** The `emitters` system took 3–36 ms on a few frames per session (`AUDIO_TIMING`, 22:47 session:
+`emitters=4129/23us`). When a world emitter of a bank started for the first time, `Native::ensure_bank` read the
+bank's `.abk` and decoded every WAV to planar f32 on the game thread. That costs 2.6–5.4 ms per bank with a warm disk
+cache and more from a cold disk.
+
+**Retail.** No question about retail timing arises: the change never delays or defers a start. Every start happens on
+the same frame as before, and `Runtime::load_bank` runs at the same point in `ensure_bank`. Only reading, parsing and
+decoding move to another thread, and their result is the same data.
+
+**Memory decides the shape.** Decoded, a map's emitter banks (`.claude/skills/optimisation/tools/
+emitter_bank_memory.py`) take:
+- University: 41 banks, 161 MiB;
+- DownTown: 44 banks, 210 MiB;
+- Industrial: 51 banks, 249 MiB;
+- each park: 0–7 MiB.
+
+Prefetching a whole district would cost too much. Instead the prefetch follows the listener:
+- A bank is queued when the listener comes within `AHEAD` = 60 m of the bounding sphere (largest extent) of one of its
+  emitters, nearest first.
+- An unused prefetched bank is dropped when the listener is more than `EVICT` = 90 m from all of its emitters.
+- Loaded banks stay until the map changes, as before.
+
+The simulation over the users' sessions (`prefetch_memory_sim.py`, board position as the listener) gives this extra
+resident memory (prefetched, not yet loaded):
+
+| Session | Map | Loaded banks (as before) | Extra, peak |
+|---|---|---|---|
+| state 21:37:57 | DownTown | 4 banks, 26.8 MiB | 29.7 MiB (the spawn ring) |
+| state 21:58:43 | University | 3 banks, 17.8 MiB | 20.1 MiB |
+| state 22:47:47 | University | 6 banks, 28.6 MiB | 19.3 MiB |
+
+The other settings tried: 40 / 70 m gave a peak of 11–30 MiB, and 100 / 140 m gave 27–43 MiB.
+
+**Change.**
+- `library.rs`: a new `BankSource` (`Library::bank_source`) holds the root, `.abk` path and WAV paths, detached from the
+  library. `BankSource::load` reads, parses (`Bank::parse`) and decodes (`decode_wavs`, which `Library::bank_pcm` uses
+  too) with the same error strings `ensure_bank` had.
+- New `game_audio/native/prefetch.rs`: one worker thread (`audio-bank-prefetch`, spawned on the first request) runs
+  `BankSource::load` for the queued banks. `Prefetch::take` at the start returns:
+  - done: the data;
+  - being decoded: waits for it, which is never longer than decoding it on the game thread;
+  - queued, failed, panicked or unknown: None. The worker then skips a queued bank, and `ensure_bank` loads on the
+    game thread as before, with the same errors and warnings.
+- Dropped or cleared banks' data is handed to the worker to free. Freeing it on the game thread cost up to 0.5 ms
+  per `prefetch_near` call in the test below.
+- `native.rs`: `ensure_bank` takes from the prefetch or else calls `library.bank_source(stem)?.load()?`, then runs
+  `load_bank` as before. `unload_map_banks` also clears the prefetch.
+- `emitters.rs`: on map load, each native emitter gets the index of its bank and a status per bank
+  (idle / requested / loaded). Each frame, `prefetch_near` takes the distance to each bank's nearest emitter, queues
+  and drops banks, and touches no runtime, random or node state.
+
+**Proof.**
+- *e2e byte identity:* `compare_runs.sh pf_base pf_new` → IDENTICAL for scen-row, scen-fps300, real-row and
+  real-fps300. Both builds come from one snapshot of the tree (`.local/pf-base-src`), differing only in the four files
+  above. The e2e harness doesn't run world emitters, but it loads every player bank through the refactored
+  `bank_pcm`. The later move of frees to the worker only touches `prefetch.rs`, which the harness does not run. The
+  unit tests below were rerun on the final code.
+- *Identical data:* `native::prefetch::tests::prefetched_banks_are_identical_and_not_decoded_at_the_start` covers the
+  66 emitter banks of DownTown and University. For each, the worker's bank equals `BankSource::load` on the game thread
+  (Debug-equal), and its PCM equals both that load and `Library::bank_pcm` bit for bit (`to_bits`).
+- *No decode on the game thread:* a thread-local WAV-decode counter (test builds only) stays at 0 across
+  `ensure_bank` for every prefetched bank. The same banks loaded without the prefetch decode all their WAVs there.
+- *Runtime untouched:* `emitters::tests::the_prefetch_follows_the_listener_and_touches_no_runtime_state` moves the
+  listener past all of DownTown's emitters (3,520 frames). It checks four things:
+  - requested = within `AHEAD`, minus the loaded banks;
+  - nothing is kept beyond `EVICT`;
+  - the starts take prefetched banks with 0 decodes;
+  - the evaluator's random state and block count are unchanged by the prefetch.
+- *Map change:* `unload_map_banks` empties the prefetch and unloads the map's banks. The next start loads again (same
+  test).
+- *Fallbacks:* `unknown_failed_and_dropped_banks_fall_back_to_the_game_thread`. A missing `.abk` gives the old error
+  text, there is one slot per bank, and drop and clear work.
+
+**Speed (headless, 66 banks, warm cache, 5 runs).**
+- `ensure_bank` on the game thread (the old path): median 2.2–2.4 ms, max 5.7–16 ms.
+- Prefetched: median 0.001 ms, max 0.009–0.018 ms.
+- `prefetch_near` over DownTown's 176 emitters / 44 banks (3,520 calls):
+  - mean 0.44 µs;
+  - the first call 52–61 µs (it starts the worker thread);
+  - the rest at most 14–48 µs (queuing requests).
+- The e2e render and frame timings of both builds are the same within run-to-run noise. The e2e harness doesn't run
+  this code.
+
+**Adversarial review (skill checklist, what was tried).**
+- *Purity / hidden state:* `BankSource::load` reads only the files, and `Bank::parse` and `wav_pcm` are pure
+  functions of the bytes. The library's clip caches (`loaded` / `failed`) are not involved; `bank_pcm` never used
+  them. Nothing on the worker touches the runtime, the MixMap, the emitters' xorshift or the evaluator RNG. The test
+  checks the evaluator RNG and block count before and after 3,520 `prefetch_near` calls.
+- *Order:* the runtime sees the same sequence of `load_bank` / `post` / `redeliver` / `release` calls. Bank ids are
+  handed out at `load_bank`, which has not moved, so they are unchanged. The order in which banks are requested
+  doesn't matter: the data waits outside the runtime.
+- *Races:* `take` against a worker that is about to start on the same bank. The slot's mutex decides which comes
+  first: either the worker marks it Running first and `take` waits, or `take` marks it Skip first and the worker skips
+  it. A bank dropped while Running finishes on the worker and is freed there with the slot. No deadlock: `take` never
+  holds the runtime lock, and the worker never takes it.
+- *Failures:* missing `.abk`, missing WAVs (None slots, same as before), a panicking load (`catch_unwind` → the game
+  thread loads it and panics as it always did), no worker thread (spawn failure or the channel closed) → game-thread
+  loads.
+- *Map change / reload:* `unload_map_banks` clears the prefetch. The emitter state rebuilds its bank table on every
+  map identity change (same map, new generation included).
+- *Teleport / spawn inside a reach:* the start finds its bank queued and loads it on the game thread, exactly as
+  before. This is not a regression, only no gain.
+- *Other `ensure_bank` callers* (boot banks, `world_sources`): they take a prefetched bank when one is there (same
+  data), otherwise they load as before.
+- *Is the speed-up real?* The cost did not move to the game thread: `prefetch_near` runs at mean 0.44 µs. The first
+  version freed evicted banks on the game thread (max 0.5 ms per call), which the review caught; frees now run on the
+  worker.
+
+**Residual spikes.**
+- An emitter that is already in reach on the first frame of a map, or right after a teleport, still loads on the game
+  thread (its bank is still queued). That frame is part of the map load.
+- The world-source banks (`world_sources.rs`, traffic / peds) loaded on the game thread when the first vehicle or ped
+  was published. They now use the same prefetch once the living world sets `WorldOwners::expected` (see
+  "Session-review leftovers").
+- Map change still frees the loaded banks on the game thread (`unload_bank`, as before).
+- A file changed on disk between the prefetch and the start would differ. That only happens if setup runs while the
+  game is running.
+
+**Real play still to check.** Look at the `emitters` per-second maximum in the next `SKATE_AUDIO_TIMING=1` session.
+
+#### Hardware FMA dispatch (2026-10-03, follow-up; user decision "option 1")
+
+**Problem.** Without the `fma` target feature every `f32::mul_add` is a call into the C runtime's `fmaf`. That was
+the main render cost left after the optimisation pass (above). `-C target-feature=+fma` halved the render with
+byte-identical output, but it would raise the CPU baseline for the whole game. The user's decision: one exe that picks
+hardware FMA or the plain code at start-up, with `skate-audio` staying `#![forbid(unsafe_code)]`.
+
+**Which loops.** Only the loops that call `mul_add` per sample: the Direct Form I biquad kernel and its silent-tail
+feedback loop (`dsp::biquad`; used by the high/low-pass, PeakingIir2, the shelf and the FSS allpasses), the
+FrequencyShiftSsb oscillator with its polynomial `sin` / `cos` (`dsp::fss`), and the linear resampler
+(`dsp::resample`, every voice). Reverb, delay, pan, gain, send and the grain player have no per-sample `mul_add`. Their
+`mul_add`s are once per block or per parameter change: coefficients, envelopes, phase wrap. Evidence: the dispatched
+build reaches the whole-crate `+fma` build's render time (p50 ~54 µs vs 52 µs), so nothing else is left to gain.
+
+**Change.**
+- New crate `crates/skate-audio-fma` (no dependencies):
+  - `body.rs` holds each loop once (`#[inline(always)]`, moved verbatim from skate-audio).
+  - The `kernels!` macro wraps every body twice: `plain::name` with the normal features, and `fma::name` with
+    `#[target_feature(enable = "fma")]`, which implies AVX and SSE4.1. Same source.
+  - `Path` picks one. A `Path` naming the FMA copy only comes from `Path::fma()`, after
+    `is_x86_feature_detected!` confirmed fma, avx, sse4.2, sse4.1, ssse3 and sse3. That check is the whole safety
+    argument for the single `unsafe` call (in the macro, with a `// SAFETY:` comment; clippy
+    `undocumented_unsafe_blocks` is on).
+  - The process-wide choice is cached in an `AtomicU8` (`active()`; `init()` chooses, `force()` is for tests).
+- `SKATE_AUDIO_FMA=0` forces the plain copy. `1` (or unset) takes FMA only when the CPU has it.
+- `skate-audio`: `biquad::kernel` / `kernel_silent_tail`, `fss::{sin, cos}`, `FrequencyShift::process` and
+  `Resampler::render` call the crate. `Coefficients`, `BIAS`, `INV_TWO_PI` and `WEIGHT` come from it (same paths,
+  same values). `dsp::{init_fma, force_fma, fma_path, FmaPath, FmaChoice}` are re-exported. Still
+  `#![forbid(unsafe_code)]`.
+- Game: `game_audio/native.rs` logs `AUDIO_DSP path=fma|plain cpu_fma=… SKATE_AUDIO_FMA=…` once, at native audio start
+  and before the first render.
+
+**Proof.**
+- *e2e byte identity:* 13 scenarios + 4 whole user sessions, row and `E2E_FPS=300`, `compare_runs.sh`. Three trees:
+  (a) the tree before the change, from a snapshot in `.local/fma-base-src`; (b) the new tree with `SKATE_AUDIO_FMA=0`;
+  (c) the new tree with FMA. All IDENTICAL: every `.f32` render and every voice log, a-b, a-c and b-c, in 9 runs
+  (`fma_base{,2,3}`, `fma_plain{,2,3}`, `fma_on{,2,3}`).
+- *Both copies called directly* (`skate-audio-fma/src/tests.rs`):
+  - biquad and feedback: 4,000 random rounds with wild coefficients / histories / inputs (NaN, ±∞, denormals, ±0,
+    random bits) at lengths 0–1000; plus 60 stable filters × 400 blocks of finite input, compared exactly.
+  - `sin` / `cos`: 4 M points of the oscillator range, 4 M random bit patterns and the edge values.
+  - `fss_mix`: 3,000 rounds. `resample`: 3,000 rounds; step 0, 1×, 4× and random.
+- *Whole runtime on both paths* (`skate-audio/tests/fma_paths.rs`, own binary): the `render_alloc` scene (24 voices
+  on all buses, eEQChain, flange, env reverb, grain truck) for 1,500 blocks. Finite: every bit identical. With a
+  NaN / −NaN-payload / ∞ / denormal in a voice's PCM, or a NaN eEQChain gain (NaN biquad coefficients): NaNs in the
+  same places, every non-NaN bit identical, the same voice counts.
+- *Suites:* skate-audio 245 + skate-audio-fma 6 pass, with `SKATE_AUDIO_FMA=0` and with auto. `game_audio::` 60
+  pass. `--no-run` builds. Both link configs build: dev `cargo build -p skate-game --bin skate3rust --release
+  --locked`, and release-style `+crt-static --target x86_64-pc-windows-msvc --no-default-features` (in
+  `.local/fma-release-target`).
+
+**The one difference: a NaN's sign / payload.** When several operands of one operation are NaN, x86 returns the
+first source operand's NaN, and which operand is first is the compiler's choice per instruction. The CRT's
+`fmaf(a, b, c)` keeps its order; an inlined `vfmadd` may be commuted. In the direct tests this happened 544 times in
+the wild-input biquad rounds (NaN coefficients plus NaN histories), and never with one NaN source. ∞ − ∞ gives x86's
+default −NaN on both copies. (LLVM's constant folder makes +NaN instead: the tests use `black_box`.) Why it can't
+change an observable output:
+- Every bit-level comparison of DSP state is a memo of a pure function on the same path. Examples: the settled-filter
+  repeat (history bits before / after a group), the twin-channel copy (equal history bits), the silent-tail check,
+  `periodic8` / `silent` on the input, and the FSS trig reuse (lane bits). When a memo fires, its result is what the
+  plain kernel gives on that path (tests `kernel_block_matches_the_plain_kernel` with NaN histories and
+  coefficients, `silent_shortcuts_match_the_plain_kernel`). A different payload can only change *whether* the memo
+  fires, never a value.
+- NaN is absorbing in these loops: in the IIR feedback, the sums and the gains. No sample value feeds control flow:
+  voice lifetimes, the evaluator, grain picks and bus routing depend on parameters, positions and the RNG. So the
+  voice logs cannot see it. Casts (`as i32`), comparisons, `max` / `clamp` and `is_nan` ignore payloads.
+- The output goes to rodio as f32. A NaN there is already a broken sample either way.
+- In the whole-runtime NaN scenes, 0 of 4.4 M NaN output samples differed in bits: the bus sums re-pick the NaN.
+- In practice NaN does not occur: 0 NaN / ∞ in the 287 M samples of the kept `base` renders (13 scenarios + 4
+  sessions, both modes).
+
+**Adversarial review** (skill `optimisation` checklist):
+- *Purity:* the bodies are the old code, moved. The only new state is the cached path, which only selects a copy.
+- *Signed zero / NaN / denormals:* tested directly. Only NaN payloads differ (above). MXCSR is the same for both copies.
+  `round_ties_even` becomes `vroundss` in the FMA copy and is exact in both.
+- *Position dependence:* `kernel_block` still passes `samples[8..]` from a group boundary. The `n % 8` association
+  is inside the moved loop.
+- *Block sizes:* 0, 1, 2, 7, 8, 9, 15, 16, 24, 255, 256, 264, 1000.
+- *State across blocks:* 400-block decays, and 1,500 runtime blocks with moving cutoffs and azimuths.
+- *Frame-rate extremes:* e2e row and 300 fps. Host code is unchanged apart from the start-up log line.
+- *Integer identities:* the resampler's 16.16 stepping is moved verbatim.
+- *Allocation / RNG order:* no new draws. `init()` reads the environment once, at audio start; a lazy first use
+  outside the game only happens in tests and the e2e harness (`render_alloc` still asserts 0 after its warm-up).
+- *Soundness:* the FMA copy can only run through a `Path` that `Path::fma()` returned after the CPU check. A race
+  between two first calls stores the same answer. Without OS AVX state support, `is_x86_feature_detected!("fma")`
+  is false.
+- *Real speed-up:* 3 base runs and 2 clean plain / FMA runs. p99 improves with p50. The game thread is unchanged.
+
+**Speed** (µs per 256-frame render block, real-session and scenario replays, headless; clean runs only: run 2 of plain / FMA was disturbed by other load on the machine, and run 1 of plain's scenario sets overlapped the release-style build):
+
+| Set | before (base, 3 runs) p50 / p90 / p99 | plain (clean runs) p50 / p99 | FMA (runs 1, 3) p50 / p90 / p99 |
+|---|---|---|---|
+| Real sessions, row | 129 / 174–177 / 286–316 | 128–137 / 327–339 | 54–58 / 87–109 / 158–209 |
+| Real sessions, 300 fps | 130–140 / 178–215 / 312–392 | 128–130 / 280–355 | 55–59 / 88–102 / 153–178 |
+| Scenarios, row | 86–91 / 142–166 / 228–278 | 84–85 / 228–253 | 38–40 / 67–73 / 117–141 |
+
+The total render time on the real sessions (row) drops from 10.4 s to 4.5–5.2 s per 75,826 blocks (−50 to −56 %). The plain
+path matches the old code. The game-thread side is unchanged.
+
+**Open.**
+- In-game check: an `AUDIO_DSP path=fma` line, and `render_block` / `game_lock_wait` in a `SKATE_AUDIO_TIMING=1`
+  session.
+- A CPU without FMA runs the plain copy, the old code. The tests skip the comparison there, so it is untested on
+  such hardware here.
+- To rerun the proof:
+  - `cd .local/fma-base-src && CARGO_TARGET_DIR=../fma-base-target bash .claude/skills/optimisation/tools/e2e_bench.sh fma_base row fps300`
+    (the snapshot of the old tree);
+  - `CARGO_TARGET_DIR=.local/fma-target SKATE_AUDIO_FMA=0 bash .claude/skills/optimisation/tools/e2e_bench.sh fma_plain row fps300`,
+    then the same without the variable as `fma_on`;
+  - `compare_runs.sh fma_base fma_plain` / `fma_on`;
+  - `cargo test -p skate-audio-fma -p skate-audio --release --locked` (with and without `SKATE_AUDIO_FMA=0`).
+- Build folders to delete once accepted: `.local/fma-target`, `fma-target2`, `fma-base-target`,
+  `fma-release-target`, and `fma-base-src` (rmdir its junctions `assets`, `maps`, `.local/audio-re` first).
+
+**Files.** New: `crates/skate-audio-fma/{Cargo.toml, src/lib.rs, src/body.rs, src/tests.rs}`,
+`crates/skate-audio/tests/fma_paths.rs`. Changed: `Cargo.toml` (workspace member), `Cargo.lock` (the path crate, no
+external dependencies), `crates/skate-audio/Cargo.toml`, `crates/skate-audio/src/dsp/{mod,biquad,fss,resample}.rs`,
+`crates/skate-game/src/game_audio/native.rs`.
+
+### Session-review fixes: push plant timing, the push foot's plant / lift, the body poster, grind on / off sounds (2026-10-03, overnight)
+
+Four ranked items of the session review (`.claude/notes/session-review-2026-10-03.md` #1, #2, #4, #5) and the e2e harness
+gaps (#10). "The recomp" = skate3recomp run locally: its program logic is evidence, its frame rate and stalls are not
+retail. Recomp figures below are from the nine clean sessions 163809 … 223613, stall windows excluded
+(`.local/audio-re/review/rlib.py`).
+
+**Problem.**
+- Every push sound but the stroke foley played ~550 ms early, at the stroke instead of the foot plant, and the rattle
+  ran at a third of the recomp's rate.
+- The Contacts' push-foot plant / lift sounds (sk8_foley 84 / 85 …) never played.
+- Bails had a few body impacts where the recomp has a dense layer of skin / denim / arm / leg / head / torso hits, plus
+  the interim `bail_hit` / `bail_soft..hard` cues on top in native mode.
+- Grinds had no on / off contact sounds (Skate_Collisions 1135–1175, Skate_Metal 525–564).
+
+**Root causes.**
+- *Push plant (#1).* The audio-state bridge `sub_824B0DA8` sets `+335` on State55's rise (the foot plant), and `+333` /
+  `+334` while it holds. The host fed the animation's push contact (`flags2468` bit 27), which fires near the stroke.
+  `grain_bed`'s push count used the same edge.
+- *Plant / lift (#2).* `sub_824B8218` calls `sub_824BBB28` after the process. It was not ported.
+- *Body poster (#4).* `sub_824BC188` was not ported. It needs the regions' impacts (audio state `+496..+516`), which the
+  host did not compute. A setup export bug also lost the head and torso materials (below).
+- *Grind on / off (#5).* The Rail poster `sub_824C28B0` calls `sub_824C3FC8` after each GRINDS post and
+  `sub_824C4138` at the release. `components::Grind` skipped both.
+
+**Evidence and changes.**
+
+*#1 Push plant.*
+- `skate_events::push_plant`: `push_planted` = State55, `push_trigger` = its rise (`+333 || +334` / `+335`).
+  `cues.riding.pushes` counts the same edge.
+- The retail split (`+333` = State55 && !`+338` && State56, `+334` = State55 && `+338`) waits for `+338` to be mapped.
+  The recomp's GREC logs `+338` (the third byte of its `+336` word) if someone wants to settle it.
+- State log: new `plant` column (State55). The `push` column keeps its old meaning (the animation's push edge).
+  `e2e.rs` prefers `plant` when present.
+- Older logs have no State55. `E2E_PLANT_FROM_FEET=1` rebuilds it from their `foot_down` bits on ground states without
+  the brake (State55 && (State57 || State56)) — a proof aid only.
+- Off: `SKATE_AEMS_PUSH_PLANT=0` / `E2E_PUSH_PLANT=0`.
+
+| per push (the recomp: 137 pushes / 917 riding s; ours: 4 user logs, 32 pushes / 236 riding s) | the recomp | ours before | ours after (feet proxy) |
+|---|---|---|---|
+| plant foley sk8_foley 74, lag after the stroke | +548 ms | +0 ms | +550 ms (p10/p90 450/600) |
+| rattle, lag after the stroke | +558–660 ms | +33–50 ms | +600 ms (p10/p90 433/650) |
+| rattle per riding minute (`rattle_attr.py`, level > 0.05) | 31.3 (24.3 "other", 6.4 push) | 9.4 (0 other, 9.1 push) | 37.1 (26.7 other, 9.4 push) |
+| rattle level p50 | 0.326 / 0.355 | 0.325 | 0.326 |
+
+The plant now lands with the footstep. Most rattles come from State55 rises with no stroke nearby, in the recomp and
+in ours. The remaining rate gap is +19 % (the foot-down proxy, not the game's own State55).
+
+*#2 The push foot's plant / lift* (`player::contacts::plant_lift`, update `sub_824BF268`).
+- Trigger: `+333 || +334` rising while `+123` is clear → plant (`sub_824BB8D8`); falling → lift (`sub_824BBA00`).
+- Sound: `sk8_foley` by wheel 0's material kind. The kind is AudioSurfaceMap word 5 (`sub_82494EB8`; 0 for no
+  material).
+  - Plant ids [84, 88, 92, 80, 76], lift ids [85, 89, 93, 81, 77] (Contacts `default` fields in the code docs).
+  - Kinds above 4 post id 0.
+- Routing: eEQChain bus 1 (class `42AFE160E647167C` field `748CBC9727A5347F`).
+- Block: [0, 1, 0, dt, 1, 1] at the start, then [level(6), pitch(1), raw(0), dt, 0, 1].
+- Off: `SKATE_AEMS_PLANT_LIFT=0` / `E2E_PLANT_LIFT=0`.
+
+| | the recomp (`plantlift.py`) | ours after (feet proxy) |
+|---|---|---|
+| plant on pushes | 130 / 137 (95 %), +548 ms (498 / 682), level p50 / p90 0.220 / 0.463 | 29 / 32 (91 %), +550 ms (450 / 617), 0.222 / 0.490 |
+| lift on pushes | 130 / 137, +664 ms (580 / 748), level 0.155 / 0.423 | 28 / 32, +683 ms (583 / 717), 0.213 / 0.493 |
+| ids | 84 > 88 > 92 (materials 1–5) | 84 / 88 / 92 by kind |
+
+*#4 Body poster* (`player::contacts::body`, messages into the collision manager).
+- Gate: runs unless the rider is bailing with `+677` set.
+- Per region 0..5 with an impact and no cooldown (15 frames, vault `6DD85F43C1B6E6AA`):
+  - the region material (head 97, torso 98, arms 100, legs 99) against the touched surface (`+560` tag − 1), each by
+    its impact band;
+  - the band-2 second message;
+  - the cloth contact (denim 109 / skin 107 / denim 108) at tier 0;
+  - the pad contact (110 head / torso, the face 112, 111 limbs) by `sub_824BCCF8`'s thresholds (class
+    `6EBA5BCD3E38A98A`: 0.75 / 0.7 / 0.65, face 0.05 / 0.3; highs 1.25 / 0.55).
+- Region impacts (`skate_events::region_impacts`, from `sub_82BD60C8`): clamp01(max(0.001, Δv(part) · region normal ×
+  part mass × 10)).
+  - Δv = SkeletonState4048 `velocity_changes`.
+  - Mass = SkeletonState4560 = the bone-box volumes `animation_masses.part_weights`.
+  - 10 = physics_collision `default` +164, field `1430BD50F0A33475`.
+  - The conditioner `sub_82773298` keeps the max of the last 4 frames.
+- **Export fix:** five AudioSurface records are keyed by name in the converted collections: head, torso, water,
+  drum_pylon, crumpled_paper. The band holder's `default` is keyed by name too.
+  - Materials 77 / 87 / 92 / 97 / 98 exported as missing, and every RefSpec to the `default` bands resolved nothing.
+  - Before the fix, an impact on those materials read tier 2 with an empty window.
+  - `audio_export.collision_tuning` now aliases name keys by hash64. Head = ids 1032 / 952 / 953; torso = 951 / 949 /
+    950 — the ids the recomp plays in bails (below).
+- Not ported, and why:
+  - The first-hit torso message `sub_824BCEB0`: gated by an unidentified global at `*(0x82083C38) + 0x2FCB4`.
+  - The Hall of Meat layer: global byte `+859`.
+  - The non-local `sub_824BF5F8`.
+  - `sub_824BDA90`: game events, not sounds.
+  - `sub_824E3BE0` is not the player's ragdoll. It is a physics-prop SFX object: its own record from `[data+128]`,
+    materials `+360` / `+160`, caller `sub_824E2790`. It belongs to the world-sources stage.
+- The interim bail cues are silent while the body poster runs (`PlayerAudio::body_impacts_on`).
+- Off: `SKATE_AEMS_BODY_IMPACTS=0` / `E2E_BODY_IMPACTS=0`.
+- **The recomp, per bail** (38 bails, `fixes/bail_splc.py`):
+  - 137 collision-manager voices.
+  - Ids 955 25.4, 954 20.7, 956 19.2, 947 13.0, 958 8.7 (concrete), 948 6.0, 949–953 (torso / head) 14, 1031 / 1030 /
+    1032 (tier 2) 5.
+- **Ours.** The user's logs carry no region records yet, so no real bail can be replayed. A synthetic bail
+  (`fixes/e2e_bail_on`, region impacts set by hand) plays 31 collision voices instead of 3: torso, legs, denim and
+  skin, per-voice peaks 0.10–0.25. The recomp's mean is ≈ 0.15 (Σg² 4.3 over 185 voices). This shows the chain, not
+  the retail density. That needs a state log with the new `rimp*` / `rtag*` columns.
+
+*#5 Grind on / off* (`components::Grind::sounds` / `update_sounds`, `sub_824C42A8`).
+- At each Class_grind post: slot 0, slot 1 for family 0, and the updater's family change, which uses the new family's
+  layer.
+- Sound: the grind surface's on id (`sub_824C35D0`): Skate_Metal on a metal surface (bool `02BAC36BCC8A30DE`), else
+  Skate_Collisions, one id per layer. At the release, the off id (`sub_824C37D8`).
+- Routing: through eEQChain bus 0 (field `D1A87641CCB98787`), mono, env send = Rail level(5).
+- Level = ((10000 − speed word) × 0.0001 × (B − A) + A) × layer factor × Rail level(1). A / B = 0.1 / 1.25 on, 0.1 /
+  1.0 off.
+- Pitch = the same lerp (0.8 / 1.0) × pitch(2).
+- Data: exported per grind surface (`player_tuning.grind[*].on / off / metal`, `grind_contact_eq`).
+- Off: `SKATE_AEMS_GRIND_ONOFF=0` / `E2E_GRIND_ONOFF=0`.
+
+| per grind | the recomp (17 grinds, `fixes/evpost.py`) | ours before | ours after (7 grinds) |
+|---|---|---|---|
+| on sound | 17 / 17, lag 0, level p50 / p90 0.290 / 0.454 | 0 / 7 | 7 / 7, lag 0, 0.259 / 0.383 |
+| off sound | 17 / 17, lag 0, 0.204 / 0.285 | 0 / 7 | 7 / 7, first audible +50 ms, 0.245 / 0.313 |
+
+*#10 Harness.*
+- New state-log columns: `plant`, `stroke`, `deck_spin` / `spin_x` / `spin_y`, `bail`, `bail_end`, `held`,
+  `offboard_air`, `footplant`, `revert`, `soft`, `face`, and `rimp0..5` / `rslide0..5` / `rtag0..5`.
+- `e2e.rs` reads them when a log has `plant`, and then also sets `on_foot` = state 500. Older logs render as before.
+- `audio_trick` was already resolved from the scorable inside `PlayerAudio` (e2e included); only the Script's literal
+  read −1.
+- `scenarios.py --from-log` copies the new columns and the skeleton columns it used to drop (step, body, limb, slide,
+  deck_up, deck_contact).
+
+**Files.**
+- `crates/skate-game/src/game_audio/`: `skate_events.rs`, `state_log.rs`, `e2e.rs`, `player_audio.rs`, `library.rs`.
+- `crates/skate-audio/src/player/`: `state.rs` (`body_impact`), `contacts.rs`, `components.rs`, `tuning.rs`
+  (`GrindContact`, `grind_contact_eq`).
+- `tools/asset_pipeline/audio_export.py`, `test_audio_formats.py`.
+- Dev install: `stage_player_tuning.py` re-run. Backup: `.local/audio-re/audio_manifest.before-review-fixes-stage.json`.
+
+**Verification.**
+- skate-audio tests: 204 + integration, all pass.
+- `cargo test -p skate-game --release --bin skate3rust --locked -- game_audio::`: 57 pass.
+- Python `test_audio_formats` / `test_world_audio`: 31 pass.
+- e2e of the four user logs (213757, 214224, 215843, 224747; `E2E_FPS=60`) with every new part off: **byte-identical**
+  (f32 and voices) to a build of the tree without this pass (`.local/cbf`, old manifest). The same holds with the
+  restaged manifest, so the export fix changes nothing in these logs.
+
+**Open.**
+- A user state log with the new columns (1 min of pushing; one or two bails). It checks the game's own State55 rate
+  against the recomp's 27 plants / riding minute (the feet proxy gives 29.5) and the bail density.
+- ~~The lift's level is +2.7 dB over the recomp's (0.213 vs 0.155).~~ A measurement artefact; per id ours matches
+  (see "Session-review leftovers").
+- `+338`'s mapping.
+- The first-hit torso message's global: the gate is read; its writer is still not found (see "Session-review
+  leftovers").
+- Needs an in-game listening check.
+
+**Addendum: the user's session 084712 (2026-10-03, build 04:20, all fixes on).** University,
+`.local/audio-state-logs/state_20261003_084712.tsv` (0 malformed, new columns). The user: "sounded SO MUCH BETTER, I WOULD
+CALL IT ALMOST OR EXACTLY RETAIL"; the footsteps while running / walking "sounded amazing too". Tools:
+`.local/audio-re/check0847/` (`plants.py`, `regions.py`, `bails_cmp.py`).
+- *State55 plants: one per stroke, as in the recomp.* The lower rate is riding style (slow riding, walking between
+  bails; confirmed by the user), not a missing plant.
+
+  | | ours (084712) | the recomp (9 sessions, stalls excluded) |
+  |---|---|---|
+  | strokes (State56 rise) / riding min | 6.3 (4) | 8.8 (135) |
+  | plants (State55 rise) / riding min | 14.1 (9) | 27.0 (412 plant posts) |
+  | plants per stroke | 2.25 | 3.05 |
+  | strokes followed by a plant within 1.2 s | 4 / 4, lag p50 500 ms (400–517) | 116 / 135, lag +548 ms |
+  | plants with no stroke in the 1.2 s before | 5 (≈ 1 s apart, a foot rhythm) | 296 |
+
+  Riding = states 100–299 with wheels, plus air: 38 s here. The brief's 28 s / 19 per minute used a narrower riding set.
+- *Bails (2): the state-log side.*
+  - Bail 1 at 18.25 s comes from off-board air (501 → 300, 6.5 m/s). Bail 2 at 36.23 s comes from 500 → 300 at
+    7.6 m/s, after an air.
+  - Region impacts are low. Bail 1: max 0.086 (region 1), the others ≤ 0.02. Bail 2: regions 0 / 4 / 5 reach 0.145 /
+    0.202 / 0.206, regions 2 / 3 0.03 / 0.06.
+  - Most contact frames sit near the 0.001 floor. All the touched surfaces are tag 4.
+  - Contact frames > 0.001 per bail: 84 and 104.
+- *The recomp, per bail, same window (−0.5…+2.5 s, voices > 0.002; 38 bails):*
+  - Skate_Collisions: 207.7 voices, Σg² 4.68, peak p50 0.61.
+  - Skate_Metal: on 16 / 38 bails, 6.5 voices, Σg² 0.40.
+  - Bodyslide: on 33 / 38, 1.8 voices, Σg² 0.006.
+  - Collision-manager posts: mean 137, p50 133.
+  - Of these, ids 968 / 969 (7.9 + 3.5 per bail) are world / ped collisions, not the rider's body.
+- *Ours, rendered: NOT DONE.* The headless e2e build (own target `.local/check-target`) was stopped mid-compile for a PC
+  restart. To finish it:
+  - The scenario is already cut: `.local/audio-re/check0847/e2e/real_084712.tsv` (`scenarios.py --from-log … --cut
+    r0-999999`).
+  - Render: `CARGO_TARGET_DIR=.local/check-target E2E_DIR=.local/audio-re/check0847/e2e E2E_FPS=60 cargo test -q -p
+    skate-game --release --bin skate3rust --locked -- --ignored --exact game_audio::e2e::e2e_render --nocapture`.
+  - Compare: `py -3.13 .local/audio-re/check0847/bails_cmp.py - .local/audio-re/check0847/e2e:real_084712`. It reports
+    voices per bank, Σg², records → ids and regions per bail.
+  - Watch-point: with impacts ≤ 0.2 the bands may never reach tier 2, which the recomp plays at about 5 per bail
+    (ids 1030–1032). If ours lacks them, compare `skate_events::region_impacts` (Δv · normal · mass × 10) against the
+    recomp before changing the poster.
+
+### Session-review leftovers: the lift level, the grind-off lag, world-bank prefetch, the first-hit gate (2026-10-03, overnight)
+
+Four open items from "Session-review fixes". "The recomp" = skate3recomp run locally: its program logic is evidence,
+but its frame rate and stalls are not retail. Recomp figures come from the nine clean sessions 163809 … 223613, with
+stall windows excluded. Tools: `.local/audio-re/left/`.
+
+**1. The push foot's lift, "+2.7 dB" (0.213 vs 0.155): no mechanism difference, so no code change.**
+- *The level path is the same.* `sub_824BB8D8` (plant) and `sub_824BBA00` (lift) are the same function apart from
+  their slots (`+84` / `+80` and `+92` / `+88`). Both:
+  - post `sk8_foley` with the id of wheel 0's material kind;
+  - start with the block [0, 1, 0, dt, 1, 1];
+  - get their level from the one updater `sub_824BF268`: level(6) × 1/32767, pitch(1), raw(0), dt, 0, 1.
+- Contacts level(6) is MixMap E27 (`-600 + B[Player.2] + B[Player.0] + C[Player.8]`). It has no plant- or lift-specific
+  duck: F9, the duck on Contacts.in6, feeds out3, not out6. So a lift plays at the plant's level(6). The only per-sound
+  differences are the splice records: lift id 85 is record 31 (gains up to 2.83); 89 is record 35 (members 0.35–0.40).
+- *The gap came from the measurement.* The review's figure took the first `sk8_foley` voice within 60 ms of each push
+  edge, from any record (the clothing foley plays there too). It also pooled the sessions' different material mixes.
+  `left/plantlift_ids.py` matches every post to the voices of its own record's samples instead:
+
+  | id (kind) | the recomp: posts, level p50 / p90 | ours (`fixes/e2e_feet`): posts, level p50 / p90 |
+  |---|---|---|
+  | plant 84 (0) | 472, 0.176 / 0.491 | 147, 0.196 / 0.479 |
+  | plant 88 (1) | 123, 0.247 / 0.303 | 18, 0.235 / 0.283 |
+  | plant 92 (2) | 44, 0.221 / 0.342 | 0 |
+  | lift 85 (0) | 473, **0.201** / 0.491 | 111, **0.204** / 0.494 |
+  | lift 89 (1) | 121, 0.068 / 0.082 | 12, 0.080 / 0.083 |
+  | lift 93 (2) | 46, 0.160 / 0.205 | 0 |
+
+- Per id, ours and the recomp agree within about 1 dB (−0.1 dB for lift 85). Pooled, the recomp's lift p50 is 0.169
+  against our 0.193, because its sessions have more kind-1 surfaces: 19 % of lifts against our 10 %, and kind 1's lift
+  record is quiet. The 0.155 also included other voices.
+- `+338` doesn't enter the level. It only splits `+333` / `+334`, and the trigger reads their OR.
+
+**2. Grind off "first audible +50 ms": an authored delay plus a measurement artefact, so no code change.**
+- *Post timing is the same.* Ours posts the off sound (`sub_824C4138`) at the release, on the frame the grind ends.
+  The recomp posts it 0 ms after the grind end too (`fixes/evpost.py`).
+- *The updater is the same.* `sub_824C42A8`, read again: per slot, the on and off sound get gain = their level ×
+  level(1)/32767, pitch = their pitch × pitch(2)/4096, raw(0), dt, 0, 1, and the env send level(5); a sound that
+  ended is released. `Grind::update_sounds` matches this word for word. It runs in the same frame's update, so the
+  console cadence plays no part.
+- *The delay is in the data.* The off records' members carry authored delays. For example, Skate_Collisions record 835
+  has group 2 at 11 ms (+ up to 25 ms random) and group 1 at 50 ms (+ up to 50 ms). The splice player honours them.
+- The recomp's PLAY lines after each off post (`left/grind_off_delay.py`, sample-matched) put the first audible member
+  at p10 / p50 / p90 = 4 / 14 / 47 ms. Its delayed groups play late as authored: d57 → 64–72 ms, d64 → 80–101 ms,
+  d162 → 176–190 ms.
+- Ours: the first member comes 0–1 frames (0–17 ms) after the post in all 7 grinds, and the 50 ms groups come 3–6
+  frames later.
+- `fixes/grind_cmp.py` took the first run in its list, which is in completion order, not the earliest. Fixed to take
+  the earliest: the off lag p50 is 0 ms (7 / 7).
+
+**3. World-source banks through the prefetch** (`game_audio/world_sources.rs`, `native/prefetch.rs`).
+- *Problem.* The traffic and ped banks (`TRAFFIC_BANKS`, `PED_BANKS`; 10 of 13 in this install) were read and decoded
+  on the game thread in `ensure_bank` when the first vehicle or ped was published. That is one frame with 10 bank
+  decodes.
+- *Change.*
+  - `WorldOwners::expected` (new): the living-world system sets it as soon as it knows it will publish owners on this
+    map.
+  - While it is set, `prefetch_world_banks` queues every world bank that is neither loaded nor requested on the
+    prefetch worker. When it clears, the requested banks that no owner loaded are dropped.
+  - `Prefetch` counts its clears (`clears()`). A map change (`unload_map_banks`) clears the prefetch and unloads the
+    world banks, so the host asks again. `contains` is no longer test-only.
+- *Identity.* The rules are the same as for the emitter prefetch:
+  - `ensure_bank` still runs `load_bank` at the first owner, with the same calls in the same order;
+  - only reading and decoding move;
+  - a queued, failed or missing bank loads on the game thread as before, with the same errors.
+- *In play the host stays inert.* No system sets `expected` or publishes owners, so `frame` returns at its first line,
+  as before. The e2e harness doesn't run world sources.
+- Off: `SKATE_AEMS_WORLD_PREFETCH=0` (game-thread loads at the first owner, as before). `SKATE_AEMS_WORLD=0` turns off
+  both.
+- *Test* (`world_sources::tests::world_banks_are_prefetched_when_expected_and_load_without_decoding`, data-gated):
+  - nothing is requested until the world is expected;
+  - then every installed world bank is requested once (missing ones are listed as unavailable);
+  - the worker's bank and PCM equal `BankSource::load` bit for bit;
+  - the requests leave the evaluator RNG and the block count unchanged;
+  - `ensure_bank` for all of them decodes 0 WAVs on the calling thread;
+  - loaded banks are not requested again;
+  - `unload_map_banks` makes the host request them again;
+  - "not expected" drops them;
+  - without a prefetch the bank decodes on the game thread as before.
+  - The prefetch fallback test also checks the clear counter.
+
+**4. The first-hit torso message's gate (`sub_824BCEB0`): read further, but the writer is still not found.**
+- `sub_824BC188` sets Contacts input 7 to 0 on every frame. With the byte B+16 set, it also sets Contacts input 8 to
+  clamp(B+24 × 32767 (`0x821747FC`), 0, 32767), else 0. Here B = `*(*(0x83083C38) + 0x2FCB4)` (`lis -31992` =
+  0x8308; an earlier version of this note wrote 0x8208).
+- The object's `+420` latches B+16's rising edge (`+421` = last frame's value). `sub_824BCEB0` then:
+  - pulses Contacts input 7 = 32767;
+  - for a region (loop index `r17`) other than 1 and a region tier (`r20`) ≥ 1, posts the torso material 98
+    against no material (143) through `sub_82496C58` (level) and `sub_82486EF0`;
+  - clears `+420`.
+- Contacts.in7 triggers F7 in Player (+400 mB, hold 14, release 29). That feeds the **Collision** slot's C0: the bail's
+  collision layer is 4 dB louder for about half a second after the first hit. Contacts.in8 has no reader in the MixMap.
+- B+16 is the same flag that PlayerPhysics.in11 (`sub_824B19C8`) and the `hall_of_meat_slo_mo` companion's w11
+  (`sub_824DD6F0`, B+24 × 1000) read. `sub_824C0AB8` and `sub_824BFA48` (Contacts state) read it too.
+- B+16 is a large sub-object (≥ 12.5 KB), reset by `sub_827AB6E0` from `sub_8279E800`. The `sub_827AE9C8` /
+  `sub_827AEF08` / `sub_827AF4E0` / `sub_827AF748` / `sub_827F1DD0` family copies it into locals.
+- No direct store to B+16 byte 0 or B+24 was found in the 15 functions that load B, or in the same class's methods
+  (`sub_827A*` / `sub_827B*` `stb …,0(r3)` / `stfs …,8(r3)`).
+- Next: a recomp hook that logs B+16 (byte) and B+24 (float) per frame during bails and Hall of Meat runs. A
+  write-watch on that address would name the writer.
+- *Hook added (2026-10-03):* `FIRSTHIT` in the recomp's research hooks (category `audiox`, sampled from the board
+  update hook, local player): B, the B+16 byte, the B+24 float and the audio state's bail / end bytes (`+676` / `+677`),
+  logged when any of them changes plus once a second. It gives the timing and strength but not the writer (the hook
+  framework has no write-watch). A short bail session (4–5 bails of different heights on one spot) is queued. Until then the first-hit message and the Contacts.in7 pulse stay
+  unported (our Contacts.in7 / in8 stay 0, as with B+16 clear).
+
+**Files.**
+- `crates/skate-game/src/game_audio/world_sources.rs`, `game_audio/native/prefetch.rs`.
+- Tools: `.local/audio-re/left/{splc_records,plantlift_ids,grind_off_delay}.py`; `fixes/grind_cmp.py` (earliest
+  voice).
+
+**Verification.**
+- skate-audio tests;
+- `cargo test -p skate-game --release --bin skate3rust --locked -- game_audio::`;
+- `--no-run`.
+
+Results: skate-audio 228 pass; game_audio 58 pass (new world test included, run on the install's data); `--no-run`
+builds. e2e doesn't run the changed code: `world_sources` is not in the harness, and
+`prefetch.rs` only gained a counter and a public `contains`.
 
 ## Credits
 
@@ -2145,6 +3333,9 @@ holder fields, the owner bus builder and the Class_Seams function map. No code f
 
 ## Open questions
 
+- World sound sources (2026-10-03): the speech manager's `.evt` rules, take choice and level; retail's SFX instance
+  assignment; the traffic 3DObjPos binding; ped model → shoe class / voice; PedBodyFall, Tazer (op 38), NPC skaters' grain bed / wheels / foley (foundation in "NPC skaters' board sounds"),
+  event PA / crowds / music zones ("World sound sources").
 - Main bail body-impact sound (Bodyslide is only a layer); landing weight layer level; metal grind pick
   (54–56) by ear; powerslide, wheel spin, push sound, fountain bank, caveman jump-on — not yet confirmed.
 - Surface → grain now follows retail (2026-10-02); still open: the `Class_rolling` surfaces (interim stand-ins), tag 90, and what selects the soft-wheel grains.
@@ -2188,15 +3379,24 @@ holder fields, the owner bus builder and the Class_Seams function map. No code f
   utility ("Listening test 8"). Closed 2026-10-02 (stage "FootStep SubMix, the skeleton inputs, …"): the FootStep SubMix, the
   step code, limb / body speeds, ragdoll slide records, the loose-board vectors, Reverb.in0..6 + the env scale, the reverb
   zones (1,040 records, not one), the boot order.
-- Treatments 16 / 17 (settled: the recomp plays them too). Two details remain:
-  - On the ~2 s ramp air the recomp started them 538 / 577 ms after takeoff, ours at once (gain
-    0.05 vs 0.10). A 30 ms blip in the air just before that takeoff may explain it; one event only.
-  - In 2 of 7 airs under 0.5 s ours plays a 0.004–0.005 voice where the recomp plays none.
-- Earlier recomp figures for sense_of_speed (voice counts, the FXWET0 / Send A medians in "The buses") included
-  Treatments 16 / 17 voices: `retail_voices.py` read them as sense_of_speed 3 / 4. Redo them with the fixed tool.
-- FootStep SubMix: Sen0 #2's level and Pn21's law are unread (class defaults); a released voice's de-click tail skips the
-  submix's filters (as for every bus).
-- Reverb zones: `vfunc92` (the zone attribute check) is taken as always passing; the music / speakers / crowds `.ems` files
-  are loaded only for their zone records (their other record types are not played yet).
+- Treatments 16 / 17: settled, including the ramp air's late start (a 1 s audio stall in the recomp) and the short
+  airs (same rate as the recomp). sense_of_speed figures redone with the shared-sample fix: no difference
+  ("Leftovers: Treatments 16 / 17 timing, …").
+- FootStep SubMix: Sen0 #2 = 1.0 and the Pn21 law 0 are read, not defaults. Left: a released voice's de-click tail
+  skips the submix's filters (as for every bus).
+- Reverb zones: vfunc92 is ported (preset ∈ the 24 presets). Not ported: the music zones (type 4, playlists for the
+  licensed-music player we lack) and the speakers / crowds records (types 6 / 7, event PA and crowds; flags mask
+  audio +1032, 4 by default). The value of audio +1032 in free skate is not measured.
 - The Send A table in "The buses" is superseded for sense_of_speed (0, as retail) and the Splice voices (none):
   `.local/audio-re/busleft/senda_bank_fixed.py`.
+
+### Native runtime is the default (2026-10-02)
+
+- The native AEMS runtime is now the default. `settings/audio.json` `"interim": true` or `SKATE_AEMS=0` selects
+  the interim measured tables; any other `SKATE_AEMS` value, or none, selects native.
+- The old `native` setting key is ignored. Installs saved `"native": false` while the tables were the default, and
+  honouring it would keep those players on the tables.
+- The tables stay in the code for now.
+- Verification: `game_audio::` tests, including the new
+  `native_is_the_default_even_with_an_old_saved_native_false`; muted smoke runs (`--mute`) on StartPark and University
+  with the staged build: native runtime and every component on, render ready, no panics, errors or non-finite physics.

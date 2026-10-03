@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The header (the e2e scenario columns between `ms` and the positions).
-pub(crate) const HEADER: &str = "ms\tframe\tspeed\tturn\twheels\ttag\tair\tair_time\tto_land\tjump_height\tjv\tgrinding\tfamily\tgrind_tag\tbrake\tmanual\tbalance\tscorable\tpush\tslope\ttilt\tslip\tfeet\tstate\tboard_x\tboard_y\tboard_z\tcom_x\tcom_y\tcom_z\tgrind_impact\tdeck_impact\tdeck_tag\tfoot_y0\tfoot_y1\tfoot_xz0\tfoot_xz1\tseam0\tseam3\twheel_x\twheel_z\theading\tlines\tfoot_down\tfoot_tag_a\tfoot_tag_b\thands\tstrength\tfoot_vy_a\tfoot_vy_b\tstep\tbody\tlimb\tslide\tdeck_up\tdeck_contact";
+pub(crate) const HEADER: &str = "ms\tframe\tspeed\tturn\twheels\ttag\tair\tair_time\tto_land\tjump_height\tjv\tgrinding\tfamily\tgrind_tag\tbrake\tmanual\tbalance\tscorable\tpush\tslope\ttilt\tslip\tfeet\tstate\tboard_x\tboard_y\tboard_z\tcom_x\tcom_y\tcom_z\tgrind_impact\tdeck_impact\tdeck_tag\tfoot_y0\tfoot_y1\tfoot_xz0\tfoot_xz1\tseam0\tseam3\twheel_x\twheel_z\theading\tlines\tfoot_down\tfoot_tag_a\tfoot_tag_b\thands\tstrength\tfoot_vy_a\tfoot_vy_b\tstep\tbody\tlimb\tslide\tdeck_up\tdeck_contact\tplant\tstroke\tdeck_spin\tspin_x\tspin_y\tbail\tbail_end\theld\toffboard_air\tfootplant\trevert\tsoft\tface\trimp0\trimp1\trimp2\trimp3\trimp4\trimp5\trslide0\trslide1\trslide2\trslide3\trslide4\trslide5\trtag0\trtag1\trtag2\trtag3\trtag4\trtag5";
 
 /// One frame of the log.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -76,13 +76,33 @@ pub(crate) struct Row {
     pub slide: f32,
     pub deck_up: f32,
     pub deck_contact: bool,
+    /// Appended 2026-10-03 (session review #1 / #10, the e2e harness): the push plant State55
+    /// (`+333 || +334`, the push edge `+335` is its rise), the push stroke State56 (`+337`), the
+    /// deck spin `+488` / `+480` / `+484`, bail `+676` / end `+677`, the board held `+308`,
+    /// OffboardAir `+718`, the footplant `+768`, reverting `+690`, soft wheels `+684`, the face
+    /// point's contact `+593`, and per body region 0..5 the impact `+496..`, slide speed `+528..`
+    /// and surface tag `+560..`.
+    pub plant: bool,
+    pub stroke: bool,
+    pub deck_spin: [f32; 3],
+    pub bail: bool,
+    pub bail_end: bool,
+    pub held: bool,
+    pub offboard_air: bool,
+    pub footplant: bool,
+    pub revert: bool,
+    pub soft: bool,
+    pub face: bool,
+    pub region_impact: [f32; 6],
+    pub region_slide: [f32; 6],
+    pub region_tag: [u32; 6],
 }
 
 impl Row {
     pub(crate) fn line(&self) -> String {
         let b = |v: bool| u8::from(v);
         format!(
-            "{:.1}\t{}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{:.4}\t{:.4}\t{:.5}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}",
+            "{:.1}\t{}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{:.4}\t{:.4}\t{:.5}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.ms, self.frame, self.speed, self.turn, self.wheels, self.tag, b(self.air), self.air_time, self.to_land,
             self.jump_height, self.jv, b(self.grinding), self.family, self.grind_tag, b(self.brake), b(self.manual),
             b(self.balance), self.scorable, b(self.push), self.slope, self.tilt, self.slip, self.feet, self.state,
@@ -90,7 +110,13 @@ impl Row {
             self.grind_impact, self.deck_impact, self.deck_tag, self.foot_y[0], self.foot_y[1], self.foot_xz[0], self.foot_xz[1],
             self.seam[0], self.seam[1], self.wheel[0], self.wheel[1], self.heading, self.lines,
             self.foot_down, self.foot_material[0], self.foot_material[1], self.hands, self.strength, self.foot_vy[0], self.foot_vy[1],
-            self.step, self.body, self.limb, self.slide, self.deck_up, b(self.deck_contact)
+            self.step, self.body, self.limb, self.slide, self.deck_up, b(self.deck_contact),
+            b(self.plant), b(self.stroke), self.deck_spin[0], self.deck_spin[1], self.deck_spin[2], b(self.bail),
+            b(self.bail_end), b(self.held), b(self.offboard_air), b(self.footplant), b(self.revert), b(self.soft), b(self.face),
+            self.region_impact[0], self.region_impact[1], self.region_impact[2], self.region_impact[3], self.region_impact[4],
+            self.region_impact[5], self.region_slide[0], self.region_slide[1], self.region_slide[2], self.region_slide[3],
+            self.region_slide[4], self.region_slide[5], self.region_tag[0], self.region_tag[1], self.region_tag[2],
+            self.region_tag[3], self.region_tag[4], self.region_tag[5]
         )
     }
 }

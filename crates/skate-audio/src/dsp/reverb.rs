@@ -176,12 +176,12 @@ impl ReverbModel1 {
             let mut sum = 0.0f32;
             for c in &mut self.combs {
                 let len = c.line.len();
-                let delayed = c.line[(c.at + len - c.delay) % len];
-                let before = c.line[(c.at + len - c.delay - 1) % len];
+                let delayed = c.line[super::wrap(c.at + len - c.delay, len)];
+                let before = c.line[super::wrap(c.at + len - c.delay - 1, len)];
                 let v = input + c.g2 * delayed + c.g1 * c.last;
                 c.line[c.at] = v;
                 c.last = v;
-                c.at = (c.at + 1) % len;
+                c.at = super::wrap(c.at + 1, len);
                 sum += (delayed - c.g1 * before) * (1.0 / 6.0);
             }
             let old = self.allpass[self.ap_at];

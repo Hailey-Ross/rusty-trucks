@@ -26,13 +26,17 @@ use std::time::Duration;
 use bevy::audio::{AddAudioSource, AudioPlayer, Decodable, PlaybackSettings, Source, Volume};
 use bevy::prelude::*;
 use skate_audio::eval::NodeId;
-use skate_audio::formats::{Bank, Project};
+use skate_audio::formats::Project;
 use skate_audio::mixmap::{MixMap, keys};
 use skate_audio::runtime::Runtime;
 
 use super::Library;
 
-/// One MixMap evaluation per 60 Hz frame (mixmap-spec §1: retail's rule for any dt > 0.02).
+pub(crate) mod prefetch;
+
+/// The host's step: inputs, the components' process and update run per 60 Hz physics step; the
+/// MixMap evaluates on every second one (the console's 30 Hz, `skate_audio::mixmap::cadence`), or
+/// on each with `SKATE_AEMS_MIX_CONSOLE=0`.
 const MIX_STEP: f32 = 1.0 / 60.0;
 /// CSTATEMGR_Emitter's pool = the MixMap's Emitter instances.
 pub(crate) const EMITTER_STATES: usize = 5;
@@ -109,18 +113,24 @@ pub(crate) struct Native {
     /// The MixMap, when the install has `MixMapSK8.mxb`.
     pub(crate) mixmap: Option<MixMap>,
     mix_clock: f32,
-    /// MixMap frames run (the eEQChain clear runs on every second one).
+    /// MixMap frames run (the eEQChain clear runs on every second one; old 60 Hz cadence only).
     mix_frames: u64,
+    /// The console's 30 Hz evaluation grid over the 60 Hz steps ([`mix_console_requested`]).
+    cadence: skate_audio::mixmap::cadence::Cadence,
+    /// The flag inputs are held between evaluations (set once under the console cadence).
+    holds: bool,
     /// The local player's MixMap inputs and components (None without a MixMap).
     pub(crate) player: Option<super::player_audio::PlayerAudio>,
     /// Which emitter states (MixMap Emitter instances 0..4) are taken.
     emitter_states: [bool; EMITTER_STATES],
     /// The granular rolling bed's game-side state (None: the interim rolling loop plays).
     pub(crate) bed: Option<super::grain_bed::Bed>,
+    /// World emitter banks read and decoded ahead of need on a worker thread ([`prefetch`]).
+    pub(crate) prefetch: prefetch::Prefetch,
 }
 
 impl Native {
-    fn start(library: &Library) -> Result<Self, String> {
+    pub(super) fn start(library: &Library) -> Result<Self, String> {
         let files = library.aems();
         if files.projects.is_empty() {
             return Err("this install has no AEMS banks (run setup to refresh the audio)".into());
@@ -157,9 +167,12 @@ impl Native {
             mixmap,
             mix_clock: 0.0,
             mix_frames: 0,
+            cadence: Default::default(),
+            holds: false,
             player,
             emitter_states: [false; EMITTER_STATES],
             bed,
+            prefetch: Default::default(),
         };
         // The environment (reverb) network and the eEQChain buses (optional install data).
         let (presets, eq) = library.bus_tuning();
@@ -212,15 +225,17 @@ impl Native {
         Ok(native)
     }
 
-    /// Load a bank (and its samples) unless it is loaded already.
+    /// Load a bank (and its samples) unless it is loaded already. A bank the prefetch worker has
+    /// read and decoded is taken from it (waiting if it is mid-decode); otherwise it is read and
+    /// decoded here, by the same `BankSource::load`. Either way `load_bank` runs now.
     pub(crate) fn ensure_bank(&mut self, library: &Library, stem: &str) -> Result<usize, String> {
         if let Some(&id) = self.banks.get(stem) {
             return Ok(id);
         }
-        let file = library.aems().banks.get(stem).ok_or_else(|| format!("bank {stem} is not in the install"))?;
-        let bytes = library.read(file).map_err(|e| format!("{file}: {e}"))?;
-        let bank = Bank::parse(stem, bytes).map_err(|e| e.to_string())?;
-        let pcm = library.bank_pcm(stem);
+        let (bank, pcm) = match self.prefetch.take(stem) {
+            Some(loaded) => loaded,
+            None => library.bank_source(stem)?.load()?,
+        };
         let id = self.shared.lock().map_err(|_| "audio lock poisoned")?.load_bank(bank, pcm);
         self.banks.insert(stem.to_owned(), id);
         Ok(id)
@@ -318,8 +333,14 @@ impl Native {
         }
     }
 
-    /// Unload every bank but the utility and the player's (map change).
+    /// Whether the runtime holds the bank.
+    pub(crate) fn bank_loaded(&self, stem: &str) -> bool {
+        self.banks.contains_key(stem)
+    }
+
+    /// Unload every bank but the utility and the player's (map change); forget the prefetched ones.
     pub(crate) fn unload_map_banks(&mut self) {
+        self.prefetch.clear();
         let Ok(mut runtime) = self.shared.lock() else { return };
         self.banks.retain(|stem, id| {
             let keep = stem == "emitter_utility" || stem == skate_audio::player::seams::UTILITY_BANK || super::player_audio::BANKS.contains(&stem.as_str()) || super::player_audio::OPTIONAL_BANKS.iter().any(|b| b.contains(&stem.as_str()));
@@ -395,10 +416,11 @@ impl Native {
     }
 }
 
-/// Whether the player asked for the native runtime.
+/// Whether to run the native runtime: on by default; `SKATE_AEMS=0` (or `"interim": true` in
+/// `settings/audio.json`) keeps the interim tables.
 pub(crate) fn requested(settings: &super::AudioSettings) -> bool {
     match std::env::var("SKATE_AEMS") {
-        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        Ok(v) => !(v == "0" || v.eq_ignore_ascii_case("false")),
         Err(_) => settings.native(),
     }
 }
@@ -438,6 +460,24 @@ fn reverb_zones_requested() -> bool {
 /// `SKATE_AEMS_REVERB_INPUTS=0` keeps the fixed Reverb.in5 = 32767 (no env scale).
 fn reverb_inputs_requested() -> bool {
     !std::env::var("SKATE_AEMS_REVERB_INPUTS").is_ok_and(|v| v == "0")
+}
+
+/// `SKATE_AEMS_MIX_CONSOLE=0` turns off the MixMap's console cadence: the old evaluation per 60 Hz
+/// step with dt 1/60, the Jitter stepped and the eEQChain cleared per step / every second step.
+pub(crate) fn mix_console_requested() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("SKATE_AEMS_MIX_CONSOLE").is_ok_and(|v| v == "0"))
+}
+
+/// The one-frame flag inputs the console's writers set for a whole evaluation, held between our 60
+/// Hz writes and the 30 Hz evaluations ([`MixMap::hold_input`]): Contacts 1 / 6 (the landing
+/// swell and the landing-material flag), Rail 1 (the grind ended), SkateBoard 0 / 4 (the surface
+/// change, the push plant), Cracks 0 (a seam hit). Everything else the host writes is a level that
+/// holds between writes.
+pub(crate) fn hold_flag_inputs(m: &mut MixMap) {
+    for (key, id) in [(keys::contacts(0), 1), (keys::contacts(0), 6), (keys::rail(0), 1), (keys::skateboard(0), 0), (keys::skateboard(0), 4), (keys::cracks(0), 0)] {
+        m.hold_input(key, id);
+    }
 }
 
 /// `SKATE_AEMS_SEAM_PULSE=0` turns off Class_Seams' console cadence (Listening test 9).
@@ -501,10 +541,20 @@ pub(super) fn mixmap_frame(
         return;
     }
     native.mix_clock -= ticks as f32 * MIX_STEP;
-    // sub_82491180 on every second game frame (both halves when the frame is longer than 20 ms):
-    // the jittered eEQChain buses take the walk's values and every bus may re-roll again.
+    // The console cadence (`skate_audio::mixmap::cadence`): retail's audio manager evaluates the
+    // MixMap, steps the Jitter and clears the eEQChain buses once per 1/30 s console frame with dt
+    // 1/30; here every second 60 Hz step, the flag inputs held in between. Off: per 60 Hz step.
+    let console = mix_console_requested();
+    let calls = if console { native.cadence.advance(ticks) } else { 0 };
+    if console && !native.holds {
+        hold_flag_inputs(m);
+        native.holds = true;
+    }
+    // sub_82491180 in half 1 of the audio manager: every console frame (both halves run when the
+    // frame is longer than 20 ms); the old cadence: every second 60 Hz frame. The jittered eEQChain
+    // buses take the walk's values and every bus may re-roll again.
     native.mix_frames += 1;
-    if native.mix_frames % 2 == 0 || ticks > 1 {
+    if if console { calls > 0 } else { native.mix_frames % 2 == 0 || ticks > 1 } {
         let jitter = native.player.as_ref().and_then(|p| p.eq_jitter());
         if let Ok(mut runtime) = native.shared.lock() {
             runtime.mixer.buses.eq.clear(jitter);
@@ -514,6 +564,8 @@ pub(super) fn mixmap_frame(
     if let Some(player) = &mut native.player {
         let dt = ticks as f32 * MIX_STEP;
         let l = listener.single().ok().map(|t| player.listener(t.translation().to_array(), t.forward().as_vec3().to_array(), dt, &s));
+        // SFXObj_Jitter's walk steps once per console evaluation (half 1's process).
+        player.jitter_steps = console.then_some(calls);
         player.write_inputs(m, &s, l.as_ref());
     }
     // With the native rolling layers the owner's surface routing (player::rolling) writes
@@ -527,8 +579,14 @@ pub(super) fn mixmap_frame(
     if let (Some(player), Ok(mut runtime)) = (&mut native.player, super::timing::lock(&native.shared, &super::timing::GAME_LOCK)) {
         player.process(m, &s, &mut runtime, speed_scale, loose);
     }
-    for _ in 0..ticks {
-        m.tick(MIX_STEP);
+    if console {
+        for _ in 0..calls {
+            m.tick(skate_audio::mixmap::cadence::CONSOLE_DT);
+        }
+    } else {
+        for _ in 0..ticks {
+            m.tick(MIX_STEP);
+        }
     }
     if let (Some(player), Ok(mut runtime)) = (&mut native.player, super::timing::lock(&native.shared, &super::timing::GAME_LOCK)) {
         player.update(m, &s, &mut runtime, speed_scale, loose);
@@ -553,6 +611,9 @@ fn start(
     if !requested(&settings) {
         return;
     }
+    // Which compiled copy of the DSP loops runs (hardware FMA or plain; same output bits): chosen
+    // once, here, before the first render (doc 11 "Hardware FMA dispatch").
+    info!("AUDIO_DSP {}", skate_audio::dsp::init_fma());
     match Native::start(&library) {
         Ok(native) => {
             info!("Game audio: native AEMS runtime on ({} projects)", library.aems().projects.len());
@@ -689,9 +750,12 @@ mod tests {
             mixmap,
             mix_clock: 0.0,
             mix_frames: 0,
+            cadence: Default::default(),
+            holds: false,
             player: None,
             emitter_states: [false; EMITTER_STATES],
             bed: None,
+            prefetch: Default::default(),
         }
     }
 
@@ -770,5 +834,83 @@ mod tests {
         assert!(samples.iter().all(|&s| s == 0.0));
         assert_eq!(stream.shared.lock().unwrap().blocks, 2);
         assert_eq!((decoder.channels(), decoder.sample_rate()), (2, 48000));
+    }
+
+    /// Native is the default: an install that lacks some of its data must still start (or fall
+    /// back to the measured tables with a warning), never panic. Each case loads a copy of the
+    /// dev install's manifest with parts removed (the data folders are linked, not copied).
+    /// Data-gated: skipped without the install.
+    #[test]
+    fn missing_install_parts_fall_back_without_breaking() {
+        let real = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/private/audio"));
+        let Ok(text) = std::fs::read_to_string(real.join("audio_manifest.json")) else { return eprintln!("skipped: no audio install") };
+        let full: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if full["aems"]["projects"].as_array().is_none_or(|p| p.is_empty()) {
+            return eprintln!("skipped: the install has no AEMS banks");
+        }
+        let dir = std::env::temp_dir().join(format!("skate-audio-fallback-{}", std::process::id()));
+        let audio = dir.join("private/audio");
+        std::fs::create_dir_all(&audio).unwrap();
+        let mut links = Vec::new();
+        for sub in ["aems", "banks", "grains", "wheels", "ambience"] {
+            let (link, target) = (audio.join(sub), real.join(sub));
+            if !target.is_dir() {
+                continue;
+            }
+            // mklink does not take the `\\?\` form canonicalize returns.
+            let target = target.canonicalize().unwrap().to_string_lossy().trim_start_matches(r"\\?\").to_owned();
+            let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link.to_string_lossy().replace('/', "\\")).arg(&target).output();
+            if !out.as_ref().is_ok_and(|o| o.status.success()) {
+                let _ = std::fs::remove_dir_all(&dir);
+                let why = out.map_or_else(|e| e.to_string(), |o| String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr));
+                return eprintln!("skipped: could not link {sub} ({})", why.trim());
+            }
+            links.push(link);
+        }
+        let start = |name: &str, edit: &dyn Fn(&mut serde_json::Value)| -> Result<Native, String> {
+            let mut m = full.clone();
+            edit(&mut m);
+            std::fs::write(audio.join("audio_manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+            let library = super::super::Library::load(&dir).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let r = Native::start(&library);
+            println!("{name}: {}", match &r {
+                Ok(n) => format!("native on, player {:?}", n.player.as_ref().map(|p| (p.components, p.tricks_on, p.treatment_on, p.contacts_on, p.footsteps_on))),
+                Err(e) => format!("fallback to the tables: {e}"),
+            });
+            r
+        };
+        let remove_bank = |stem: &'static str| move |m: &mut serde_json::Value| {
+            m["aems"]["banks"].as_object_mut().unwrap().remove(stem);
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let n = start("full install", &|_| {}).expect("the full install starts");
+            let p = n.player.as_ref().expect("player components with a MixMap");
+            assert!(p.components && p.tricks_on && p.treatment_on);
+            assert!(start("no AEMS projects", &|m| m["aems"]["projects"] = serde_json::json!([])).is_err());
+            assert!(start("no emitter_utility bank", &remove_bank("emitter_utility")).is_err());
+            let n = start("no MixMap", &|m| m["aems"]["mixmap"] = serde_json::Value::Null).expect("starts without a MixMap");
+            assert!(n.player.is_none() && n.bed.is_none());
+            let n = start("no GRINDS bank", &remove_bank("GRINDS")).expect("starts without the player banks");
+            assert!(!n.player.as_ref().unwrap().components, "the components hand back to the measured cues");
+            let n = start("no Treatments bank", &remove_bank("Treatments")).expect("starts without Treatments");
+            let p = n.player.as_ref().unwrap();
+            assert!(p.components && p.tricks_on && !p.treatment_on);
+            let n = start("Treatments listed, file missing", &|m| m["aems"]["banks"]["Treatments"] = serde_json::json!("aems/missing/Treatments.abk"))
+                .expect("starts with a missing bank file");
+            assert!(!n.player.as_ref().unwrap().treatment_on);
+            start("no Common bank (seam utility)", &remove_bank(skate_audio::player::seams::UTILITY_BANK)).expect("starts without Common");
+            start("no Splice trees", &|m| m["aems"]["splice"] = serde_json::json!({})).expect("starts without the Splice trees");
+            start("no bus tuning", &|m| {
+                m.as_object_mut().unwrap().remove("bus_tuning");
+            })
+            .expect("starts without the bus tuning");
+        }));
+        for link in &links {
+            let _ = std::fs::remove_dir(link);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 }

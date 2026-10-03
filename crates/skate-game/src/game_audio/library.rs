@@ -346,6 +346,9 @@ struct Manifest {
     /// The native environment network's presets and the eEQChain buses (optional).
     #[serde(default)]
     bus_tuning: BusTuningJson,
+    /// The world sources' vault tuning (traffic engine records, ped footsteps; optional).
+    #[serde(default)]
+    world_tuning: super::world_sources::WorldTuningJson,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -407,6 +410,32 @@ struct EqBusJson {
 struct GrindJson {
     v: Vec<f32>,
     f: Vec<f32>,
+    /// The grind contact sounds (exported since 2026-10-03; optional).
+    #[serde(default)]
+    metal: bool,
+    on: Option<GrindContactJson>,
+    off: Option<GrindContactJson>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GrindContactJson {
+    ids: Vec<i32>,
+    gain: Vec<f32>,
+    level: Vec<f32>,
+    pitch: Vec<f32>,
+}
+
+impl GrindContactJson {
+    fn contact(&self) -> skate_audio::player::tuning::GrindContact {
+        let d = skate_audio::player::tuning::GrindContact::default();
+        let two = |v: &[f32], d: [f32; 2]| if v.len() == 2 { [v[0], v[1]] } else { d };
+        skate_audio::player::tuning::GrindContact {
+            ids: std::array::from_fn(|i| self.ids.get(i).copied().unwrap_or(-1)),
+            gain: std::array::from_fn(|i| self.gain.get(i).copied().unwrap_or(1.0)),
+            level: two(&self.level, d.level),
+            pitch: two(&self.pitch, d.pitch),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -433,6 +462,8 @@ struct PlayerTuningJson {
     /// (`audio_export.collision_tuning`; optional).
     #[serde(default)]
     collision: CollisionJson,
+    /// The grind contact sounds' eEQChain bus (`D1A87641CCB98787`; optional).
+    grind_contact_eq: Option<u8>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -540,6 +571,17 @@ impl CollisionJson {
             three(ids("tap_second_soft"), c.tap_ids_soft[1]),
             three(ids("tap_other_soft"), c.tap_ids_soft[2]),
         ];
+        // The push foot's plant / lift ids by material kind, their eEQChain bus; the body poster's
+        // cooldown and pad thresholds (exported since 2026-10-03; the retail defaults otherwise).
+        let five = |v: Option<Vec<u32>>, d: [u32; 5]| v.filter(|v| v.len() == 5).map_or(d, |v| [v[0], v[1], v[2], v[3], v[4]]);
+        c.plant_ids = five(ids("plant_ids"), c.plant_ids);
+        c.lift_ids = five(ids("lift_ids"), c.lift_ids);
+        c.plant_eq = f("plant_eq").map_or(c.plant_eq, |v| v as u8);
+        c.body_cooldown = f("body_cooldown").unwrap_or(c.body_cooldown);
+        let pair = |a: &str, b: &str, d: [f32; 2]| [f(a).unwrap_or(d[0]), f(b).unwrap_or(d[1])];
+        c.body_110 = [pair("body_110_head_low", "body_110_head_high", c.body_110[0]), pair("body_110_torso_low", "body_110_torso_high", c.body_110[1])];
+        c.body_111 = pair("body_111_low", "body_111_high", c.body_111);
+        c.body_112 = [pair("body_112_low0", "body_112_high0", c.body_112[0]), pair("body_112_low1", "body_112_high1", c.body_112[1])];
         c
     }
 }
@@ -566,7 +608,14 @@ impl PlayerTuningJson {
                 ms_low: w.ms_low.unwrap_or(0),
                 ms_high: w.ms_high.unwrap_or(0),
             }).collect(),
-            grind: self.grind.iter().map(|g| GrindSurface { v: four(&g.v), f: four(&g.f) }).collect(),
+            grind: self.grind.iter().map(|g| GrindSurface {
+                v: four(&g.v),
+                f: four(&g.f),
+                metal: g.metal,
+                on: g.on.as_ref().map_or_else(Default::default, GrindContactJson::contact),
+                off: g.off.as_ref().map_or_else(Default::default, GrindContactJson::contact),
+            }).collect(),
+            grind_contact_eq: self.grind_contact_eq.unwrap_or(d.grind_contact_eq),
             landing_materials: self.landing_materials.clone(),
             wheel_bucket_high: self.wheel_bucket_high.unwrap_or(d.wheel_bucket_high),
             wheel_bucket_low: self.wheel_bucket_low.unwrap_or(d.wheel_bucket_low),
@@ -671,6 +720,56 @@ pub(crate) fn wav_pcm(bytes: &[u8]) -> Option<skate_audio::mixer::Pcm> {
     None
 }
 
+/// A bank's decoded samples by S10A slot (None where a WAV is missing or unreadable).
+pub(crate) type BankPcm = Vec<Option<Arc<skate_audio::mixer::Pcm>>>;
+
+/// Read and decode the WAVs in order (`Library::bank_pcm` and `BankSource::load`).
+fn decode_wavs<'a>(root: &Path, files: impl Iterator<Item = &'a str>) -> BankPcm {
+    files
+        .map(|file| {
+            #[cfg(test)]
+            WAV_DECODES.with(|n| n.set(n.get() + 1));
+            std::fs::read(root.join(file)).ok().and_then(|bytes| wav_pcm(&bytes)).map(Arc::new)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// WAVs read and decoded on this thread (tests: no decode on the game thread at emitter start).
+    pub(crate) static WAV_DECODES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Everything needed to read, parse and decode one AEMS bank (`Library::bank_source`), with no
+/// reference to the library: `native::prefetch` runs [`BankSource::load`] on its worker thread.
+/// The game thread's own load (`Native::ensure_bank`) runs the same function, so both give the
+/// same bank and PCM.
+#[derive(Clone, Debug)]
+pub(crate) struct BankSource {
+    root: PathBuf,
+    stem: String,
+    file: String,
+    wavs: Vec<String>,
+}
+
+impl BankSource {
+    #[cfg(test)]
+    pub(crate) fn for_test(root: PathBuf, stem: &str, file: &str, wavs: Vec<String>) -> Self {
+        Self { root, stem: stem.to_owned(), file: file.to_owned(), wavs }
+    }
+
+    pub(crate) fn stem(&self) -> &str {
+        &self.stem
+    }
+
+    /// The `.abk` parsed and its WAVs decoded; the errors are `ensure_bank`'s.
+    pub(crate) fn load(&self) -> Result<(skate_audio::formats::Bank, BankPcm), String> {
+        let bytes = std::fs::read(self.root.join(&self.file)).map_err(|e| format!("{}: {e}", self.file))?;
+        let bank = skate_audio::formats::Bank::parse(&self.stem, bytes).map_err(|e| e.to_string())?;
+        Ok((bank, decode_wavs(&self.root, self.wavs.iter().map(String::as_str))))
+    }
+}
+
 #[derive(Resource)]
 pub(crate) struct Library {
     root: PathBuf,
@@ -686,6 +785,11 @@ fn safe_relative(file: &str) -> bool {
 }
 
 impl Library {
+    /// The world sources' tuning (`world_sources`; defaults on installs without it).
+    pub(crate) fn world_tuning(&self) -> &super::world_sources::WorldTuningJson {
+        &self.manifest.world_tuning
+    }
+
     /// The player components' vault tuning (empty tables on installs set up before it existed).
     pub(crate) fn player_tuning(&self) -> skate_audio::player::tuning::PlayerTuning {
         self.manifest.player_tuning.tuning()
@@ -976,9 +1080,21 @@ impl Library {
 
     /// A bank's decoded samples as planar f32 PCM by S10A slot (the WAV order); None where a file
     /// is missing or unreadable (the native runtime then plays silence of the right length).
-    pub(crate) fn bank_pcm(&self, bank: &str) -> Vec<Option<Arc<skate_audio::mixer::Pcm>>> {
+    pub(crate) fn bank_pcm(&self, bank: &str) -> BankPcm {
         let Some(entries) = self.manifest.banks.get(bank) else { return Vec::new() };
-        entries.iter().map(|e| self.read(&e.file).ok().and_then(|bytes| wav_pcm(&bytes)).map(Arc::new)).collect()
+        decode_wavs(&self.root, entries.iter().map(|e| e.file.as_str()))
+    }
+
+    /// What reading and decoding an AEMS bank needs, detached from the library so a background
+    /// thread can do it (`native::prefetch`). Err = the bank is not in the install.
+    pub(crate) fn bank_source(&self, stem: &str) -> Result<BankSource, String> {
+        let file = self.manifest.aems.banks.get(stem).ok_or_else(|| format!("bank {stem} is not in the install"))?;
+        Ok(BankSource {
+            root: self.root.clone(),
+            stem: stem.to_owned(),
+            file: file.clone(),
+            wavs: self.manifest.banks.get(stem).map_or_else(Vec::new, |e| e.iter().map(|e| e.file.clone()).collect()),
+        })
     }
 
     /// Drop a clip's PCM once nothing plays it (rodio keeps its own copy while playing).
