@@ -223,7 +223,8 @@ pub(super) fn observe(
             jv: if air440 { (jx * jx + jy * jy + jz * jz).sqrt() } else { 0.0 },
             grinding: s.grinding,
             family: if s.grinding { s.grind_family } else { 0 },
-            grind_tag: if s.grinding { s.grind_material } else { 0 },
+            // The engine's tag (as logged before the tag − 1 fix), not `+692`.
+            grind_tag: if s.grinding { p.grinds.audio_surface_216.min(143) } else { 0 },
             brake: s.brake,
             manual: s.manual_brake,
             balance: s.balance,
@@ -445,7 +446,9 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
     let grinding = f.on_rail;
     if p.grinds.grinding_316 != 0 || grinding {
         *f.grind_family = Some(p.grinds.words_136_140[0] as i32);
-        *f.grind_material = Some(p.grinds.audio_surface_216.min(143));
+        // `+692` is the material, not the tag: the packer `sub_827A1B78` stores Grinds+216 − 1 at record
+        // `+512` (0 or out of 0..143 → 143) exactly as it does for the wheels, and the bridge copies it.
+        *f.grind_material = Some(material_of_tag(p.grinds.audio_surface_216));
     }
     let score = &skater.animation.motion.score_packet;
     let scorable = if score.flags & 0x0300_0000 != 0 {
