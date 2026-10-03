@@ -73,6 +73,9 @@ pub(super) struct Seen {
     /// The conditioner's 4-frame ring of the body regions' impacts (`sub_82773298`, `+640`).
     region_ring: [[f32; 6]; 4],
     region_at: usize,
+    /// The bridge's `+212` (|COM v|) of the last tick: this tick's `+216`, the speed graph's input
+    /// (`sub_824B0DA8`).
+    com_speed_212: f32,
     /// The conditioner's step code (`+740`, `sub_827729B8`).
     step_code: skate_audio::player::footsteps::StepCode,
     /// Rows written to the audio state log.
@@ -161,7 +164,7 @@ pub(super) fn observe(
     let (planted, plant_edge) = push_plant(push_plant_on(), state55, audio.push, seen.planted, seen.push);
     let plant_edge = seen.started && plant_edge;
     let memory: &mut Seen = &mut seen;
-    let audio_state = audio_state(&physics, &skater, AudioFrame {
+    let mut audio_state = audio_state(&physics, &skater, AudioFrame {
         dt: time.delta_secs(),
         state,
         unridden,
@@ -196,6 +199,9 @@ pub(super) fn observe(
             [w.dot(Vec3::from_array(basis[0])), w.dot(Vec3::from_array(basis[1]))]
         },
     });
+    // `+216` = last tick's `+212`; the body poster applies the graph at it (`player::contacts`).
+    audio_state.com_speed_216 = seen.com_speed_212;
+    let com_speed_212 = audio_state.com_speed();
     if super::state_log::enabled() {
         let p = &skater.player_input.physical;
         let s = &audio_state;
@@ -269,6 +275,7 @@ pub(super) fn observe(
             region_impact: s.body_impact,
             region_slide: s.body_slide,
             region_tag: s.body_tag,
+            com_speed: com_speed_212,
         });
     }
     // The bed's push envelopes (`grain_bed.rs` `pushes_seen`) count the same edge as `+335`.
@@ -299,6 +306,7 @@ pub(super) fn observe(
         deck_at: seen.deck_at,
         region_ring: seen.region_ring,
         region_at: seen.region_at,
+        com_speed_212,
         log_frame: seen.log_frame + u64::from(super::state_log::enabled()),
     };
 }
@@ -403,7 +411,9 @@ pub(super) fn region_impacts(
         let Some(part) = r.part else { return 0.0 };
         let dv = velocity_changes.get(part).copied().unwrap_or([0.0; 4]);
         let n = r.normal;
-        let along = dv[0] * n[0] + dv[1] * n[1] + dv[2] * n[2];
+        // |Δv·n|: retail masks the dot product's sign bit (`vandc128` with `v63 << 31` after the
+        // `vmsum3fp128`), so a part pulled away from the surface counts as much as one stopped by it.
+        let along = (dv[0] * n[0] + dv[1] * n[1] + dv[2] * n[2]).abs();
         let x = along * masses.get(part).copied().unwrap_or(0.0) * REGION_IMPACT_SCALE;
         let x = if REGION_IMPACT_FLOOR - x >= 0.0 { REGION_IMPACT_FLOOR } else { x };
         skate_audio::player::clamp01(x)
@@ -540,7 +550,7 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
         wheel_contact,
         // `+620..+632` / `+636..+648` come from the wheel lines (82C079E0: each wheel's 0.2 m ray), not
         // from contact: retail keeps wheel 0's material on 100 % of 3-wheel and 96 % of 2-wheel frames
-        // and changes it 0.9 times a second while rolling (GREC, `aems-port/tools/grec_material.py`).
+        // and changes it 0.45 times a second while rolling (GREC, local rider only; `aems-port/tools/grec_material.py`).
         // Gating them by contact made every contact flicker a material change, i.e. a Class_Seams
         // transition hit (5–9 changes/s on wheel 0 in the 20:08 / 20:13 sessions).
         wheel_material: std::array::from_fn(|i| if f.unridden { 143 } else { material_of_tag(lines.audio_surfaces[i]) }),
@@ -621,6 +631,8 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
         body_tag: std::array::from_fn(|i| if fb.regions[i].part.is_some() { fb.regions[i].material_flags } else { 0 }),
         body_slide_flag: fb.specific[1].current,
         body_impact,
+        // `+216`: set by `observe` (last tick's `+212`).
+        com_speed_216: 0.0,
         hands_on_deck: skate_audio::player::step_on::hands_on_deck(hands, f.state == 500, p.off_board.flag_311 != 0),
         in_water,
         under_water,
@@ -688,7 +700,51 @@ mod tests {
         assert_eq!(r[0], 0.0, "no contact part");
         assert!((r[1] - 0.6).abs() < 1e-6, "3 m/s × 0.02 × 10");
         assert_eq!(r[2], 1.0, "clamped");
-        assert_eq!(r[3], f32::from_bits(0x3A83_126F), "away from the surface: the floor 0.001");
+        assert!((r[3] - 0.2).abs() < 1e-6, "away from the surface counts too: |−2| × 0.01 × 10 = {}", r[3]);
+        // Under the floor either way.
+        dv[7] = [0.0, -0.001, 0.0, 0.0];
+        assert_eq!(region_impacts(&regions, &dv, &masses)[3], f32::from_bits(0x3A83_126F), "the floor 0.001");
+    }
+
+    /// Against the recomp (data-gated): every BAILREG line of the fixed-hook bail runs (`audiox`;
+    /// `X region part impact |dv.n| v_old.n v_new.n |dv| normal mass slide tag`) gives the impact the
+    /// game wrote from Δv·n = v_new·n − v_old·n along its normal and its mass, within the lines' 4-decimal
+    /// rounding. The signed form misses the lines with Δv·n < 0.
+    #[test]
+    fn region_impacts_match_the_recomps_bail_lines() {
+        use skate_core::physics::skeleton_body::ContactRegion;
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.local/recomp/sessions"));
+        let mut lines = Vec::new();
+        for run in ["bailrun_t2_20261003_100040", "bailrun_ok_20261003_100226", "bailrun_ok2_20261003_100514", "bailrun_ok3_20261003_101354"] {
+            let Ok(text) = std::fs::read_to_string(root.join(run).join("trace.tsv")) else {
+                return eprintln!("skipped: no recomp bail trace {run}");
+            };
+            for l in text.lines().filter(|l| l.starts_with("BAILREG\t")) {
+                let f: Vec<&str> = l.split('\t').collect();
+                assert_eq!(f.len(), 14, "malformed BAILREG line: {l}");
+                lines.push(f.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+            }
+        }
+        let (mut ok, mut negative) = (0usize, 0usize);
+        for f in &lines {
+            let num = |i: usize| f[i].parse::<f32>().unwrap();
+            let (impact, v_old, v_new, mass) = (num(5), num(7), num(8), num(11));
+            let n: Vec<f32> = f[10].split(' ').map(|x| x.parse().unwrap()).collect();
+            let d = v_new - v_old;
+            negative += usize::from(d < 0.0);
+            let mut regions = [ContactRegion::default(); 8];
+            regions[0] = ContactRegion { part: Some(1), normal: [n[0], n[1], n[2], 0.0], ..ContactRegion::default() };
+            let len2 = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+            let mut dv = [[0.0f32; 4]; 26];
+            dv[1] = [n[0] * d / len2, n[1] * d / len2, n[2] * d / len2, 0.0];
+            let mut masses = [0.0f32; 24];
+            masses[1] = mass;
+            let ours = region_impacts(&regions, &dv, &masses)[0];
+            ok += usize::from((ours - impact).abs() <= 0.002);
+        }
+        println!("BAILREG lines {}, Δv·n < 0 on {negative}, ours within 0.002 on {ok}", lines.len());
+        assert!(lines.len() > 10_000 && negative > 1_000);
+        assert_eq!(ok, lines.len(), "every line");
     }
 
     #[test]

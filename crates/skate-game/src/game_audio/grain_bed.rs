@@ -26,6 +26,13 @@
 //! - **Routing:** with the native rolling layers (`PlayerAudio::rolling_on`) the owner's two-truck
 //!   surface routing (`player::rolling`, `sub_824C5CA8`) decides the binds and stops ([`GrainEvent`]s)
 //!   and writes SkateBoard inputs 0 / 6; otherwise the bed routes one truck itself (as before).
+//! - **The NPC skater's bed** ([`Bed::for_instance`], `npc_skaters.rs`, 2026-10-03): retail's
+//!   SkateBoard update `sub_824C6BD8` and most of its process run for every Player-slot instance, so
+//!   the NPC holding instance 1 gets its own bed (`Runtime::npc_grains`) on its own SkateBoard
+//!   outputs, fed by its routing. The parts with a local test (`[owner+16]+72`) stay the local
+//!   player's: the seam-pattern gain envelope (`sub_824CA448`), the graph-1 → graph-3 send and level
+//!   ramp (`sub_824CAEC0`), the gain wobbles (`sub_824CB180`), graph 3 itself (`sub_824C8878`), the
+//!   graph-2 FlangeSub sends (level(21) / (22), `sub_824C9058`) and the rocket (SenseOfSpeed).
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -128,6 +135,9 @@ pub(crate) struct Bed {
     rng: Rng,
     /// Downhill level D (owner `+1508`), computed with the owner inputs.
     downhill: f32,
+    /// The Player-slot instance this bed belongs to: 0 = the local player (`Runtime::grains`),
+    /// 1 = the NPC skater holding instance 1 (`Runtime::npc_grains`, [`Bed::for_instance`]).
+    instance: u32,
 }
 
 impl Bed {
@@ -169,6 +179,7 @@ impl Bed {
             seam: SeamEnvelope::default(),
             rng: Rng::new(skate_audio::grain::GrainBed::SEED),
             downhill: 0.0,
+            instance: 0,
         };
         // Decode every recording now: a grain's first trigger must sound like the later ones
         // (no decode on the game thread at first use).
@@ -177,6 +188,36 @@ impl Bed {
             bed.source(library, name);
         }
         Some(bed)
+    }
+
+    /// A fresh bed for Player-slot instance `instance` ≥ 1 (an NPC skater's board): the same
+    /// tunings and decoded recordings (shared `Arc`s, nothing decoded again), no rocket (local
+    /// only), every modulator at its start.
+    pub(crate) fn for_instance(&self, instance: u32) -> Self {
+        Self {
+            tunings: self.tunings.clone(),
+            rocket: None,
+            chain_tuning: self.chain_tuning,
+            tuned: false,
+            sources: self.sources.clone(),
+            failed: self.failed.clone(),
+            bound: [None; 2],
+            primary: 0,
+            rocket_on: false,
+            pulse_surface: false,
+            pulse_push: false,
+            pushes_seen: None,
+            push_scale: PushEnvelope::default(),
+            shift: PushShift::default(),
+            brake: 0.0,
+            chain: ChainState::default(),
+            turn: TurnIntensity::default(),
+            latches: Latches::default(),
+            seam: SeamEnvelope::default(),
+            rng: Rng::new(skate_audio::grain::GrainBed::SEED),
+            downhill: 0.0,
+            instance,
+        }
     }
 
     /// The member for a wheel surface tag: the soft member while the wheels are soft and the
@@ -209,7 +250,7 @@ impl Bed {
     /// member's divisors). Heading rate (5) and skid (1) reach no MixMap output and are not written.
     /// `own_routing`: the bed routes itself and writes 0 / 6 (else `player::rolling` does).
     pub(crate) fn write_inputs(&mut self, m: &mut MixMap, s: &skate_audio::player::AudioState, own_routing: bool) {
-        let owner = keys::skateboard(0);
+        let owner = keys::skateboard(self.instance);
         let pulse = std::mem::take(&mut self.pulse_surface);
         if own_routing {
             m.set_input(owner, 0, if pulse { 32767 } else { 0 });
@@ -292,6 +333,29 @@ pub(super) fn step(
     seams: &skate_audio::player::tuning::PlayerTuning,
     routed: Option<(Vec<GrainEvent>, usize)>,
 ) {
+    step_with(bed, library, m, r, dt, seams, routed, |apply| {
+        if let Ok(mut runtime) = super::timing::lock(shared, &super::timing::GAME_LOCK) {
+            apply(&mut runtime);
+        }
+    });
+}
+
+/// [`step`] with the runtime handed in by `with_runtime` (which calls the given closure with it,
+/// or not at all when it can't get it): everything up to the runtime writes runs first, as in
+/// [`step`]. The NPC skaters' host calls it with the runtime it already holds.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn step_with(
+    bed: &mut Bed,
+    library: &Library,
+    m: &MixMap,
+    r: &super::skate_events::Riding,
+    dt: f32,
+    seams: &skate_audio::player::tuning::PlayerTuning,
+    routed: Option<(Vec<GrainEvent>, usize)>,
+    with_runtime: impl FnOnce(&mut dyn FnMut(&mut skate_audio::runtime::Runtime)),
+) {
+    // The local player's bed (instance 0) or an NPC skater's (module docs: what is local-only).
+    let local = bed.instance == 0;
     let r = *r;
     let s = r.audio;
     let frames = (dt * 60.0).clamp(0.0, 6.0);
@@ -346,13 +410,15 @@ pub(super) fn step(
     bed.brake = board::slew(bed.brake, if r.braking { 1.0 } else { 0.0 }, BRAKE_STEP * frames);
     let special = bed.latches.update(s.balance, s.wheel_count, s.hippy_jump, s.feet_in_deck_box);
     let turn = tuning.as_ref().map_or(0.0, |t| bed.turn.step(t, s.com_speed(), s.turn, special, frames));
-    let rng = &mut bed.rng;
-    bed.seam.update(s.seam_pattern[0], dt, |p| seams.seam_wobble(p), || rng.draw());
-    // The chain modulators share the title generator, after the seam draws (retail's frame order).
-    let rng = &mut bed.rng;
-    bed.chain.frame(&bed.chain_tuning, speed, dt, [wanted[0].is_some(), wanted[1].is_some()], || rng.draw());
+    if local {
+        let rng = &mut bed.rng;
+        bed.seam.update(s.seam_pattern[0], dt, |p| seams.seam_wobble(p), || rng.draw());
+        // The chain modulators share the title generator, after the seam draws (retail's frame order).
+        let rng = &mut bed.rng;
+        bed.chain.frame(&bed.chain_tuning, speed, dt, [wanted[0].is_some(), wanted[1].is_some()], || rng.draw());
+    }
 
-    let owner = keys::skateboard(0);
+    let owner = keys::skateboard(bed.instance);
     let inputs = BoardInputs {
         speed,
         speed_scale: bed.push_scale.value(),
@@ -363,7 +429,7 @@ pub(super) fn step(
         brake: bed.brake,
         special,
         downhill: bed.downhill,
-        seam: bed.seam.value(),
+        seam: if local { bed.seam.value() } else { None },
     };
     let truck_tuning = |b: Option<Bound>| b.and_then(|b| bed.tunings.get(b.tuning)).cloned();
     let tunings = [truck_tuning(wanted[0]), truck_tuning(wanted[1])];
@@ -374,7 +440,7 @@ pub(super) fn step(
         lowpass_hz: m.filter_hz(owner, 11) as f32,
         pan_degrees: m.raw(owner, 0) as f32 * chain::DEGREES_PER_RAW,
         env_send: m.level(owner, 13) as f32 * chain::PER_LEVEL,
-        flange_send: [m.level(owner, 21) as f32 * chain::PER_LEVEL, m.level(owner, 22) as f32 * chain::PER_LEVEL],
+        flange_send: if local { [m.level(owner, 21) as f32 * chain::PER_LEVEL, m.level(owner, 22) as f32 * chain::PER_LEVEL] } else { [0.0; 2] },
         fss_hz: chain::fss_shifts(t, tuning.as_ref().unwrap_or(t), special, push_shift, downhill),
     };
     let sos = keys::sense_of_speed(0);
@@ -387,42 +453,71 @@ pub(super) fn step(
         _ => None,
     };
 
-    let Ok(mut runtime) = super::timing::lock(shared, &super::timing::GAME_LOCK) else { return };
-    let grains = &mut runtime.grains;
-    if !bed.tuned {
-        grains.chain_tuning = bed.chain_tuning;
-        bed.tuned = true;
-    }
-    for t in 0..2 {
-        if wanted[t] != bed.bound[t] {
-            grains.stop_truck(t);
-            if routed.is_none() {
-                bed.pulse_surface = bed.bound[t].is_some();
+    let routed_none = routed.is_none();
+    let mut apply = |runtime: &mut skate_audio::runtime::Runtime| {
+        // The local bed, or the NPC skater's (created at its first use, without graph 3), whose picks
+        // draw from the local bed's generator (retail's one title-wide generator).
+        let (grains, mut shared_rng) = if local {
+            (&mut runtime.grains, None)
+        } else {
+            let npc = runtime.npc_grains.get_or_insert_with(|| {
+                let mut g = Box::new(skate_audio::grain::GrainBed::new());
+                g.local = false;
+                g
+            });
+            (&mut **npc, Some(&mut runtime.grains.rng))
+        };
+        if !bed.tuned {
+            grains.chain_tuning = bed.chain_tuning;
+            bed.tuned = true;
+        }
+        for t in 0..2 {
+            if wanted[t] != bed.bound[t] {
+                grains.stop_truck(t);
+                if routed_none {
+                    bed.pulse_surface = bed.bound[t].is_some();
+                }
+                bed.bound[t] = None;
+                if let (Some(b), Some(source), Some(tu), Some(rec)) = (wanted[t], sources[t].clone(), &tunings[t], records[t]) {
+                    if local {
+                        info!("AUDIO_EVENT grain bind truck {t} {} ({} tuning, surface tag {})", b.stem, b.tuning, r.surface);
+                    } else {
+                        info!("AUDIO_NPC grain bind instance {} truck {t} {} ({} tuning)", bed.instance, b.stem, b.tuning);
+                    }
+                    bed.chain.rebuilt(t);
+                    match shared_rng.as_deref_mut() {
+                        Some(rng) => grains.share_rng(rng, |g| g.bind_truck(t, source, tu.params, rec)),
+                        None => grains.bind_truck(t, source, tu.params, rec),
+                    }
+                    bed.bound[t] = Some(b);
+                }
+            } else if let Some(rec) = records[t] {
+                grains.set_records(t, rec);
             }
-            bed.bound[t] = None;
-            if let (Some(b), Some(source), Some(tu), Some(rec)) = (wanted[t], sources[t].clone(), &tunings[t], records[t]) {
-                info!("AUDIO_EVENT grain bind truck {t} {} ({} tuning, surface tag {})", b.stem, b.tuning, r.surface);
-                bed.chain.rebuilt(t);
-                grains.bind_truck(t, source, tu.params, rec);
-                bed.bound[t] = Some(b);
+            if let Some(tu) = &tunings[t] {
+                grains.set_chains(t, bed.chain.values(t, &frame(tu)));
             }
-        } else if let Some(rec) = records[t] {
-            grains.set_records(t, rec);
         }
-        if let Some(tu) = &tunings[t] {
-            grains.set_chains(t, bed.chain.values(t, &frame(tu)));
+        if let (Some(t), Some(rec)) = (bed.rocket, rocket_record) {
+            if bed.rocket_on && speed * 3.6 <= t.start_kmh {
+                grains.stop_rocket();
+                bed.rocket_on = false;
+            } else if let Some(source) = rocket_source.clone() {
+                grains.start_rocket(source, t.params, rec);
+                bed.rocket_on = true;
+            } else if bed.rocket_on {
+                grains.rocket.record = rec;
+            }
         }
-    }
-    if let (Some(t), Some(rec)) = (bed.rocket, rocket_record) {
-        if bed.rocket_on && speed * 3.6 <= t.start_kmh {
-            grains.stop_rocket();
-            bed.rocket_on = false;
-        } else if let Some(source) = rocket_source {
-            grains.start_rocket(source, t.params, rec);
-            bed.rocket_on = true;
-        } else if bed.rocket_on {
-            grains.rocket.record = rec;
-        }
+    };
+    with_runtime(&mut apply);
+}
+
+/// Stop an NPC skater's bed (its instance was released; `Runtime::npc_grains`).
+pub(super) fn stop_npc(rt: &mut skate_audio::runtime::Runtime) {
+    if let Some(g) = rt.npc_grains.as_deref_mut() {
+        g.stop_truck(0);
+        g.stop_truck(1);
     }
 }
 

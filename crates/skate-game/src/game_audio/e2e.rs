@@ -49,11 +49,39 @@ struct Script {
     jump_velocity: f32,
     /// Last row's push plant (the edge `+335`).
     planted: bool,
+    /// The bridge's `+212` (|COM v|) of the last row and the last row's COM position (the
+    /// fallback below), for this row's `+216`.
+    com_212: f32,
+    com_at: Option<[f32; 3]>,
 }
 
 impl Script {
+    /// The audio state's `+216` for this row (last row's `+212`), then this row's `+212`: the
+    /// logged |COM v| (`com_speed`, logs since 2026-10-03 afternoon); for older logs |Δ COM
+    /// position| × 60 from the logged COM positions (`com_x/y/z`, the reckoning's followed point at
+    /// 4 decimals, so ±0.006 m/s; the graph saturates from 0.95 m/s); without either 0 (graph 1.0:
+    /// the impacts as logged).
+    fn com_216(&mut self, r: &Row) -> f32 {
+        let previous = self.com_212;
+        self.com_212 = if r.0.contains_key("com_speed") {
+            r.f("com_speed")
+        } else if r.0.contains_key("com_x") {
+            let at = [r.f("com_x"), r.f("com_y"), r.f("com_z")];
+            let v = self.com_at.map_or(0.0, |p| {
+                let d = [at[0] - p[0], at[1] - p[1], at[2] - p[2]];
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() * 60.0
+            });
+            self.com_at = Some(at);
+            v
+        } else {
+            0.0
+        };
+        previous
+    }
+
     fn riding(&mut self, r: &Row) -> Riding {
         let speed = r.f("speed");
+        let com_speed_216 = self.com_216(r);
         self.x += speed / 60.0;
         let state = r.i("state") as u32;
         // As `skate_events::observe`: an unridden board reports no contacts (logs recorded before
@@ -194,6 +222,7 @@ impl Script {
             step_code: if r.0.contains_key("step") { r.i("step") as i32 } else { 1 },
             body_speed: r.f("body"),
             limb_speed: r.f("limb"),
+            com_speed_216,
             ..h
         };
         Riding {
@@ -348,15 +377,37 @@ fn e2e_render() {
         p.footsteps_on = p.contacts_on && !off("E2E_FOOTSTEPS");
         // The session-review ports (E2E_PLANT_LIFT / E2E_BODY_IMPACTS / E2E_GRIND_ONOFF=0: off).
         p.set_review_ports(!off("E2E_PLANT_LIFT"), !off("E2E_BODY_IMPACTS"), !off("E2E_GRIND_ONOFF"));
+        // The body poster on the console cadence (with the MixMap's; E2E_BODY_CONSOLE=0: per call).
+        p.body_console = !off("E2E_BODY_CONSOLE");
+        // The deck poster too (E2E_DECK_CONSOLE=0: per call).
+        p.deck_console = !off("E2E_DECK_CONSOLE");
+        // The bridge's speed graph on the body impacts (E2E_BODY_CURVE=0: the logged impacts).
+        p.set_body_curve(!off("E2E_BODY_CURVE"));
+        // E2E_BODY_LOG=1: every body-poster message (`<name>.ours.bodymsg.tsv`).
+        let body_log = std::env::var("E2E_BODY_LOG").is_ok_and(|v| v == "1");
+        p.set_body_log(body_log);
         p.set_footstep_materials(library.footstep_materials());
         p.wheels_on = wheels && std::env::var("E2E_WHEELS").map_or(true, |v| v != "0");
         (p.rolling_on, p.rattle_on, p.slide_on, p.tricks_on, p.treatment_on) = (optional[0], optional[1], optional[2], optional[3], optional[4]);
         let mut bed = super::grain_bed::Bed::new(&library).expect("grain bed data");
         let seams = skate_audio::player::tuning::PlayerTuning { seam_wobbles: p.tuning.seam_wobbles.clone(), ..Default::default() };
-        let mut script = Script { x: 0.0, air_time: 0.0, pushes: 0, family: None, material: None, jump_velocity: 0.0, planted: false };
+        let mut script = Script { x: 0.0, air_time: 0.0, pushes: 0, family: None, material: None, jump_velocity: 0.0, planted: false, com_212: 0.0, com_at: None };
         let mut out = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.f32"))).unwrap());
         let mut voices = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.voices.tsv"))).unwrap());
         writeln!(voices, "frame\tbank\tslot\tgain\tpitch").unwrap();
+        // The body poster's messages: the row where its count changed, the count and the digest.
+        let mut body = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.body.tsv"))).unwrap());
+        writeln!(body, "frame\tposts\tdigest").unwrap();
+        let mut body_seen = p.body_trace();
+        let mut bodymsg = body_log.then(|| {
+            let mut w = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.bodymsg.tsv"))).unwrap());
+            writeln!(w, "frame\trow\tregion\timpact\tcom216\tmat_a\tmat_b\ttier_a\ttier_b\tlevel_a\tlevel_b").unwrap();
+            w
+        });
+        // The deck poster's messages, the same way.
+        let mut deck = std::io::BufWriter::new(std::fs::File::create(dir.join(format!("{name}.ours.deck.tsv"))).unwrap());
+        writeln!(deck, "frame\tposts\tdigest").unwrap();
+        let mut deck_seen = p.deck_trace();
         let (mut owed, blocks_per_frame) = (0.0f64, 48_000.0 / 256.0 / 60.0);
         let order: Vec<usize> = std::iter::repeat(0).take(60).chain(0..rows.len()).collect();
         // E2E_TIMING=1: per-frame cost of the game-thread side and per-block cost of the render.
@@ -477,6 +528,19 @@ fn e2e_render() {
             let t1 = std::time::Instant::now();
             p.process(&mut m, &s, &mut shared.lock().unwrap(), speed_scale, loose);
             let t2 = std::time::Instant::now();
+            if p.body_trace() != body_seen {
+                body_seen = p.body_trace();
+                writeln!(body, "{frame}\t{}\t{:016x}", body_seen.0, body_seen.1).unwrap();
+            }
+            if let Some(w) = bodymsg.as_mut() {
+                for (region, impact, m) in p.take_body_log() {
+                    writeln!(w, "{frame}\t{i}\t{region}\t{impact}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", s.com_speed_216, m.material[0], m.material[1], m.tier[0], m.tier[1], m.level[0], m.level[1]).unwrap();
+                }
+            }
+            if p.deck_trace() != deck_seen {
+                deck_seen = p.deck_trace();
+                writeln!(deck, "{frame}\t{}\t{:016x}", deck_seen.0, deck_seen.1).unwrap();
+            }
             if mix_console {
                 for _ in 0..mix_calls {
                     m.tick(skate_audio::mixmap::cadence::CONSOLE_DT);

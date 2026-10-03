@@ -559,6 +559,15 @@ impl CollisionJson {
         c.lift_ids = five(ids("lift_ids"), c.lift_ids);
         c.plant_eq = f("plant_eq").map_or(c.plant_eq, |v| v as u8);
         c.body_cooldown = f("body_cooldown").unwrap_or(c.body_cooldown);
+        // The bridge's speed graph (exported since 2026-10-03; the stock vault's words otherwise).
+        let eight = |k: &str| -> Option<[f32; 8]> {
+            let a = self.posters.get(k)?.as_array()?;
+            let v: Vec<f32> = a.iter().filter_map(|v| v.as_f64().map(|v| v as f32)).collect();
+            (v.len() == 8).then(|| std::array::from_fn(|i| v[i]))
+        };
+        if let (Some(x), Some(y)) = (eight("body_speed_x"), eight("body_speed_y")) {
+            c.body_speed_curve = skate_audio::player::contacts::SpeedGraph8 { x, y };
+        }
         let pair = |a: &str, b: &str, d: [f32; 2]| [f(a).unwrap_or(d[0]), f(b).unwrap_or(d[1])];
         c.body_110 = [pair("body_110_head_low", "body_110_head_high", c.body_110[0]), pair("body_110_torso_low", "body_110_torso_high", c.body_110[1])];
         c.body_111 = pair("body_111_low", "body_111_high", c.body_111);
@@ -1041,6 +1050,32 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bridge's speed graph: the exported posters override the default, and the default is
+    /// the stock vault's record word for word (data-gated: the converted `skater-collections.json`
+    /// of the user's own disc, class `6EBA5BCD3E38A98A` `default` field `8B164823E008749C`, a
+    /// `Sk8::PointNegGraphData8`: 16-byte header, x at +16, y at +48).
+    #[test]
+    fn the_body_speed_graph_is_the_stock_vault_record() {
+        use skate_audio::player::contacts::SpeedGraph8;
+        let json: CollisionJson = serde_json::from_str(r#"{"posters": {"body_speed_x": [0, 1, 2, 3, 4, 5, 6, 7], "body_speed_y": [1, 1, 1, 1, 2, 2, 2, 2]}}"#).unwrap();
+        let g = json.contacts().body_speed_curve;
+        assert_eq!((g.x[7], g.y[4]), (7.0, 2.0), "exported values win");
+        assert_eq!(CollisionJson::default().contacts().body_speed_curve, SpeedGraph8::BODY_SPEED, "else the vault's words");
+        let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/private/stock/skater-collections.json"));
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return eprintln!("skipped: no converted skater collections");
+        };
+        let all: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let rec = all["collections"].as_array().unwrap().iter()
+            .find(|c| c["class"] == "Hash_6EBA5BCD3E38A98A" && c["key"] == "default").expect("the Contacts body record");
+        let field = &rec["fields"]["Hash_8B164823E008749C"];
+        assert_eq!(field["type"], "Sk8::PointNegGraphData8");
+        let hex: String = field["data"].as_str().unwrap().split_whitespace().collect();
+        let word = |i: usize| f32::from_bits(u32::from_str_radix(&hex[8 * i..8 * i + 8], 16).unwrap());
+        let vault = SpeedGraph8 { x: std::array::from_fn(|i| word(4 + i)), y: std::array::from_fn(|i| word(12 + i)) };
+        assert_eq!(vault, SpeedGraph8::BODY_SPEED);
+    }
 
     #[test]
     fn wav_peak_reads_the_data_chunk() {

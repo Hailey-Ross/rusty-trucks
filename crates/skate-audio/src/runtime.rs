@@ -23,6 +23,14 @@ pub struct Runtime {
     pub eval: Evaluator,
     pub mixer: Mixer,
     pub grains: GrainBed,
+    /// The Player slot's second owner's rolling bed: the NPC skater holding instance 1
+    /// (`world::skaters`; retail's second `SFXObj_SkateBoard` has its own grain players). The host
+    /// creates it at the NPC bed's first step; `None` until then (nothing renders, the local bed's
+    /// output is unchanged). It draws its picks from [`Self::grains`]' generator (retail's one title-wide
+    /// generator), plays at the local bed's user gain and has no graph 3 (`GrainBed::local` false).
+    pub npc_grains: Option<Box<GrainBed>>,
+    /// The two beds' summed env sends (when both send).
+    env_sum: Box<[f32; BLOCK]>,
     /// The Splice one-shot player (`SPLC` banks); its voices live in [`Runtime::mixer`].
     pub splice: SplicePlayer,
     /// Our own user-volume scales (1 = retail level): AEMS voices of world banks and of the
@@ -50,6 +58,8 @@ impl Runtime {
             eval: Evaluator::new(),
             mixer: Mixer::new(),
             grains: GrainBed::new(),
+            npc_grains: None,
+            env_sum: Box::new([0.0; BLOCK]),
             splice: SplicePlayer::new(),
             aems_gain: 1.0,
             player_gain: 1.0,
@@ -137,9 +147,34 @@ impl Runtime {
         // The bed renders first so that its chains' env sends reach this block's environment
         // network; its dry mix is added after the mixer's buses, as before.
         let bed = self.grains.render_block();
-        self.mixer.render_with_env(&mut self.bus, if bed { self.grains.env_send() } else { None });
+        // The NPC skater's bed after the local one, on the same generator.
+        let npc = match self.npc_grains.as_deref_mut() {
+            Some(n) => {
+                n.gain = self.grains.gain;
+                n.chain_extras = self.grains.chain_extras;
+                n.share_rng(&mut self.grains.rng, GrainBed::render_block)
+            }
+            None => false,
+        };
+        let local_env = if bed { self.grains.env_send() } else { None };
+        let npc_env = if npc { self.npc_grains.as_deref().and_then(GrainBed::env_send) } else { None };
+        let env = match (local_env, npc_env) {
+            (Some(a), Some(b)) => {
+                for ((s, x), y) in self.env_sum.iter_mut().zip(a).zip(b) {
+                    *s = x + y;
+                }
+                Some(&*self.env_sum)
+            }
+            (a, b) => a.or(b),
+        };
+        self.mixer.render_with_env(&mut self.bus, env);
         if bed {
             self.grains.add_to(&mut self.bus);
+        }
+        if npc {
+            if let Some(n) = self.npc_grains.as_deref() {
+                n.add_to(&mut self.bus);
+            }
         }
         if !self.scheduled.is_empty() {
             let now = self.blocks;

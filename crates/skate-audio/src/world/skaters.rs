@@ -286,6 +286,17 @@ impl NpcSkater {
         c
     }
 
+    /// The body poster's console cadence for the next [`Self::process`] (`Contacts::body_calls`:
+    /// `Some(n)` = n console frames end there; `None` = once per call).
+    pub fn set_body_calls(&mut self, calls: Option<usize>) {
+        self.board.body_calls = calls;
+    }
+
+    /// The deck poster's console cadence for the next [`Self::process`] (`Contacts::deck_calls`).
+    pub fn set_deck_calls(&mut self, calls: Option<usize>) {
+        self.board.deck_calls = calls;
+    }
+
     /// The collision messages this skater's contacts posted (hand them to the collision manager
     /// before its process, like the local player's).
     pub fn take_collisions(&mut self) -> Vec<Message> {

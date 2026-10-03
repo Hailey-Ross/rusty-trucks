@@ -88,7 +88,9 @@ EXTRA = ['grind_impact', 'deck_impact', 'deck_tag', 'foot_y0', 'foot_y1', 'foot_
          'strength', 'foot_vy_a', 'foot_vy_b', 'step', 'body', 'limb', 'slide', 'deck_up', 'deck_contact',
          # the push plant, flags, deck spin, body regions.
          'plant', 'stroke', 'deck_spin', 'spin_x', 'spin_y', 'bail', 'bail_end', 'held', 'offboard_air', 'footplant',
-         'revert', 'soft', 'face'] + [f'{k}{i}' for k in ('rimp', 'rslide', 'rtag') for i in range(6)]
+         'revert', 'soft', 'face'] + [f'{k}{i}' for k in ('rimp', 'rslide', 'rtag') for i in range(6)] + [
+         # the bridge's speed graph input: |COM v| (logs since 2026-10-03), else the COM positions.
+         'com_speed', 'com_x', 'com_y', 'com_z']
 
 
 def from_log(log, cut, name, out):
