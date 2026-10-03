@@ -28,6 +28,8 @@ optionally a float32 stereo capture of the mixed output, and screenshots. A sess
 | `grain_trace_stats.py` | Grain voice starts (PLAY lines matching a `.grain` member of your disc): starts per member, per second and inter-start intervals. |
 | `retail_windows.py` | Straight four-wheel rolling windows of the session's capture per 5 km/h band (level, octave bands), next to the engine's e2e renders folded the same way (`tools/audio-e2e`). |
 | `veh_trace.py` | Traffic summary from the traffic hook lines: per vehicle speed, target speed, manoeuvre and lane changes, stops, plus the horn / skid / engine lines. |
+| `bail_impacts.py` | Per bail (BAILSTEP / BAILREG lines): the ragdoll's update interval, then per body region the impacts the game wrote, the per-update velocity change along the contact normal (percentiles), whether the largest ones are contact stops or drives, and the body / cloth / concrete sound posts in the bail. Flags hitches over 40 ms. |
+| `collision_posts.py` | Collision-sound posts (COLLPOST) split into bail windows and the rest, per posting function and owner: rates, material pairs, tiers and the local-rider flag (`local72`), so the player's own sounds can be told apart from NPC skaters' and props'. |
 
 ## Inputs
 
@@ -47,7 +49,13 @@ py -3.13 tools/recomp-trace/retail_relay.py sessions/my_session SomeBank --from 
 py -3.13 tools/recomp-trace/grec_level.py sessions/my_session/trace.tsv
 py -3.13 tools/recomp-trace/retail_windows.py sessions/my_session .local/audio-e2e --contact-callers 82AAAA,82BBBB
 py -3.13 tools/recomp-trace/first_pass.py sessions/my_session/trace.tsv SOMEKIND
+py -3.13 tools/recomp-trace/bail_impacts.py sessions/my_bail_session/trace.tsv
+py -3.13 tools/recomp-trace/collision_posts.py sessions/my_ride_session/trace.tsv --top 6
 ```
+
+Both refuse a trace with malformed lines of their kinds (record again rather than parse around bad data). Before
+comparing collision-sound rates with another engine, filter to the local rider (`local72` = 1): NPC skaters post
+into the same manager.
 
 ## Example output
 

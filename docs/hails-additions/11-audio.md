@@ -4397,3 +4397,9 @@ Our replay of the session's tag-66 grinds (e2e, `E2E_FPS=60`):
 **For the user in game.** Concrete ledges and curbs (e.g. that University spot) grind with the concrete GRINDS layer
 and the Skate_Collisions on / off sounds, no metal ring. Metal rails still ring. Some other concrete / stone grinds
 change surface too (tag 3: surface 0 → 1; tag 5 was metal, now concrete).
+
+**Listening (user, 2026-10-03, couch launcher, bin\ with the turn / brake console cadence and the grind tag - 1 fix; session `state_20261003_135706`, 0 malformed; asked about the University concrete ledge, a metal rail, carving, braking, enclosed spots (reverb) and fast riding above 46 km/h):** "all of it sounded really good"
+
+### Riding body-collision posts settled (2026-10-03, recomp session `audiox_ride_20261003_141046`, 0 malformed)
+
+User ride (~4.5 min, 2 bails). Outside the bails (+3 s): body-poster posts from NPC skaters 163 (0.70/s, local72 0), from the local rider 49 (0.21/s), and the local ones are only three bursts, no steady riding posts: 45.9 s (4), 172.7 s (19; screenshot: landing a 7.5 ft stair gap) and 202.6 s (26; pushing into a parked car, vehicle material 36). So steady riding gives 0 local body posts in retail, as in ours; the earlier ~1.7/s was NPC skaters plus such events. Follow-up: check that ours posts body hits on a big-drop landing and on bumping a car (a state-log session with both).
