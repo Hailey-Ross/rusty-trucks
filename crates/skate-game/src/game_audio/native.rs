@@ -12,11 +12,12 @@
 //!   posts, redelivers and releases between blocks under the runtime's lock.
 //! - The stream follows the master volume (the AEMS voices × ambience, the rolling bed × effects)
 //!   and pauses while the menu or a replay runs.
-//! - The MixMap mixer (`MixMapSK8.mxb`, `skate_audio::mixmap`) runs on the game thread once per
-//!   60 Hz frame (fixed steps): [`mixmap_frame`] writes the inputs we can supply (category gains,
-//!   pause, the local player's physics and 3-D position, the emitter states' positions), ticks,
-//!   and the systems read its outputs (the `c_emitter` words; the rolling bed's levels, pitch,
-//!   filters and pan).
+//! - The MixMap mixer (`MixMapSK8.mxb`, `skate_audio::mixmap`) runs on the game thread, clocked by
+//!   the physics steps ([`HostClock`]: one host tick per step since the last frame, none while
+//!   nothing steps or the game is silenced): [`mixmap_frame`] writes the inputs we can supply
+//!   (category gains, the local player's physics and 3-D position, the emitter states' positions),
+//!   ticks, and the systems read its outputs (the `c_emitter` words; the rolling bed's levels,
+//!   pitch, filters and pan).
 //!
 //! Which systems use it: the skater's sounds (`player_audio.rs`), the `.ems` world emitters
 //! (`emitters.rs`) and the granular rolling bed (`grain_bed.rs`). Location sets, zone beds and
@@ -36,10 +37,59 @@ use super::Library;
 
 pub(crate) mod prefetch;
 
-/// The host's step: inputs, the components' process and update run per 60 Hz physics step; the
-/// MixMap evaluates on every second one (the console's 30 Hz, `skate_audio::mixmap::cadence`), or
-/// on each with `SKATE_AEMS_MIX_CONSOLE=0`.
-const MIX_STEP: f32 = 1.0 / 60.0;
+/// The host's step: one 60 Hz physics step. The host ticks once per physics step ([`HostClock`]);
+/// the MixMap evaluates on every second one (the console's 30 Hz, `skate_audio::mixmap::cadence`).
+pub(crate) const MIX_STEP: f32 = 1.0 / 60.0;
+/// The most host ticks one frame takes (the steps beyond are dropped; their pulses stay latched).
+/// Retail's audio manager runs once per rendered frame and never catches up: a long frame is one
+/// call with its long dt (both halves once). Our host counts physics steps to stay on the console
+/// grid at any frame rate, so it bounds the catch-up instead: 4 steps = 2 console evaluations,
+/// enough for frame-rate independence down to 15 fps (the old Real-time accumulator's cap, 4 ×
+/// [`MIX_STEP`]), while a hitch (Bevy runs up to 15 physics steps after a 250 ms frame) never
+/// releases a burst of evaluations, Jitter steps or poster calls.
+pub(crate) const MAX_STEPS_PER_FRAME: u32 = 4;
+
+/// What a frame's host pass runs ([`HostClock::pass`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Pass {
+    /// Host ticks: the physics steps taken (capped at [`MAX_STEPS_PER_FRAME`]).
+    pub ticks: usize,
+    /// Console evaluations they complete (the console cadence).
+    pub calls: usize,
+    /// `sub_82491180` (the eEQChain clear) runs in this pass.
+    pub clear_eq: bool,
+}
+
+/// The audio host's clock: the physics steps `skate_events::observe` published since the last
+/// frame (2026-10-03, PR #32 review: before, a `Time<Real>` accumulator of its own drifted from
+/// the physics grid after hitches, re-processed a stale sample on frames without a step, dropped
+/// the first of two steps' pulses and kept ticking while the menu paused the game).
+#[derive(Default)]
+pub(crate) struct HostClock {
+    /// The console's 30 Hz evaluation grid over the steps.
+    cadence: skate_audio::mixmap::cadence::Cadence,
+}
+
+impl HostClock {
+    /// Take the frame's steps. `None` (no pass: no inputs, process, tick or update) when nothing
+    /// stepped, or while the game is silenced (menu, replay): those steps and their pulses are
+    /// dropped, as the stream is paused.
+    pub(crate) fn pass(&mut self, cues: &mut super::skate_events::Cues, silenced: bool) -> Option<Pass> {
+        let steps = cues.take_steps();
+        if steps == 0 || silenced {
+            return None;
+        }
+        let ticks = steps.min(MAX_STEPS_PER_FRAME) as usize;
+        // The console cadence (`skate_audio::mixmap::cadence`): retail's audio manager evaluates the
+        // MixMap, steps the Jitter and clears the eEQChain buses once per 1/30 s console frame with
+        // dt 1/30; here every second step, the flag inputs held in between.
+        let calls = self.cadence.advance(ticks);
+        // sub_82491180 in half 1 of the audio manager: every console frame (both halves run when the
+        // frame is longer than 20 ms).
+        let clear_eq = calls > 0;
+        Some(Pass { ticks, calls, clear_eq })
+    }
+}
 /// CSTATEMGR_Emitter's pool = the MixMap's Emitter instances.
 pub(crate) const EMITTER_STATES: usize = 5;
 
@@ -114,12 +164,18 @@ pub(crate) struct Native {
     emitter_class: Option<usize>,
     /// The MixMap, when the install has `MixMapSK8.mxb`.
     pub(crate) mixmap: Option<MixMap>,
-    mix_clock: f32,
-    /// MixMap frames run (the eEQChain clear runs on every second one; old 60 Hz cadence only).
-    mix_frames: u64,
-    /// The console's 30 Hz evaluation grid over the 60 Hz steps ([`mix_console_requested`]).
-    cadence: skate_audio::mixmap::cadence::Cadence,
-    /// The flag inputs are held between evaluations (set once under the console cadence).
+    /// The host's clock (the physics steps).
+    clock: HostClock,
+    /// This frame's host ticks (0: no pass), for the systems after [`mixmap_frame`] (the bed).
+    pub(crate) frame_ticks: usize,
+    /// Camera cuts seen (teleport, map change; [`mixmap_frame`]): the world hosts reset their own
+    /// camera velocity when it changes.
+    pub(crate) cuts: u64,
+    /// The cut signal last seen (`Presentation::cuts`, the map generation) and the wheel sample
+    /// of the step at the cut (no seam interpolation across it).
+    cut_seen: Option<(u64, u64)>,
+    cut_wheels: Option<[[f32; 3]; 4]>,
+    /// The flag inputs are held between evaluations (set once, at the first pass).
     holds: bool,
     /// The local player's MixMap inputs and components (None without a MixMap).
     pub(crate) player: Option<super::player_audio::PlayerAudio>,
@@ -129,10 +185,51 @@ pub(crate) struct Native {
     pub(crate) bed: Option<super::grain_bed::Bed>,
     /// World emitter banks read and decoded ahead of need on a worker thread ([`prefetch`]).
     pub(crate) prefetch: prefetch::Prefetch,
+    /// Bumped by every [`Native::unload_map_banks`] (map change): the world / NPC hosts release
+    /// their nodes and reset their objects when it changes (an owner that survives the change would
+    /// otherwise keep redelivering to a node whose instances the unload destroyed).
+    pub(crate) map_epoch: u64,
+    /// The world / NPC owners' instance counts the MixMap was built with.
+    pub(crate) world: WorldInstances,
+}
+
+/// How many MixMap instances the world / NPC owners get: retail's free-skate layout
+/// (`mixmap::RETAIL_INSTANCES`: 4 traffic, 15 pedestrian, 2 Player = the local player + 1 NPC
+/// skater) or the opt-in non-retail "more audible" layout (settings/audio.json
+/// `"more_audible_world": true`, user decision 2026-10-03; read at start): 8 traffic, 24
+/// pedestrian, 4 Player (3 NPC / remote skaters). The MixMap is built with these counts, so the
+/// extra objects get the same B lookups, distance curves and posts as retail's instances; only
+/// their number is not retail. Instance 0 of every slot is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WorldInstances {
+    pub traffic: usize,
+    pub peds: usize,
+    /// Player-slot instances for NPC / remote skaters (instances 1..=npc).
+    pub npc: usize,
+}
+
+impl WorldInstances {
+    pub(crate) const RETAIL: Self = Self { traffic: 4, peds: 15, npc: 1 };
+    pub(crate) const MORE_AUDIBLE: Self = Self { traffic: 8, peds: 24, npc: 3 };
+
+    /// The MixMap's instances per slot.
+    pub(crate) fn mixmap_instances(self) -> [usize; 14] {
+        let mut n = skate_audio::mixmap::RETAIL_INSTANCES;
+        n[skate_audio::world::keys::TRAFFIC as usize] = self.traffic;
+        n[skate_audio::world::keys::PEDESTRIAN as usize] = self.peds;
+        n[1] = 1 + self.npc;
+        n
+    }
 }
 
 impl Native {
+    /// Start with retail's instance layout (the data-gated tests).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn start(library: &Library) -> Result<Self, String> {
+        Self::start_with(library, WorldInstances::RETAIL)
+    }
+
+    pub(super) fn start_with(library: &Library, world: WorldInstances) -> Result<Self, String> {
         let files = library.aems();
         if files.projects.is_empty() {
             return Err("this install has no AEMS banks (run setup to refresh the audio)".into());
@@ -146,7 +243,11 @@ impl Native {
         let mixmap = match &files.mixmap {
             Some(file) => {
                 let bytes = library.read(file).map_err(|e| format!("{file}: {e}"))?;
-                let m = MixMap::from_bytes(&bytes).map_err(|e| e.to_string())?;
+                let file = skate_audio::mixmap::MixMapFile::parse(&bytes).map_err(|e| e.to_string())?;
+                let m = MixMap::new(&file, &world.mixmap_instances());
+                if world != WorldInstances::RETAIL {
+                    info!("Game audio: more audible world (not retail): {} traffic, {} pedestrian, {} NPC skater instances", world.traffic, world.peds, world.npc);
+                }
                 info!("Game audio: MixMap {} controllers ({} output blocks)", m.controller_count(), m.output_blocks());
                 Some(m)
             }
@@ -167,14 +268,18 @@ impl Native {
             banks: HashMap::new(),
             emitter_class: None,
             mixmap,
-            mix_clock: 0.0,
-            mix_frames: 0,
-            cadence: Default::default(),
+            clock: HostClock::default(),
+            frame_ticks: 0,
+            cuts: 0,
+            cut_seen: None,
+            cut_wheels: None,
             holds: false,
             player,
             emitter_states: [false; EMITTER_STATES],
             bed,
             prefetch: Default::default(),
+            map_epoch: 0,
+            world,
         };
         // The environment (reverb) network and the eEQChain buses (optional install data).
         let (presets, eq) = library.bus_tuning();
@@ -191,9 +296,9 @@ impl Native {
             runtime.mixer.buses.flange.set_presets(a, b);
         }
         // The FootStep SubMix graphs (`sub_82494188`: each foot sound through its EQ record, env
-        // send and panner); `SKATE_AEMS_FOOTSTEP_SUBMIX=0` = the voices straight into SFX Master.
+        // send and panner).
         if let Ok(mut runtime) = native.shared.lock() {
-            runtime.mixer.buses.submix.enabled = !std::env::var("SKATE_AEMS_FOOTSTEP_SUBMIX").is_ok_and(|v| v == "0");
+            runtime.mixer.buses.submix.enabled = true;
         }
         native.ensure_bank(library, "emitter_utility")?;
         native.load_player_banks(library);
@@ -335,6 +440,12 @@ impl Native {
         }
     }
 
+    /// The runtime's id of a loaded bank.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn bank_id(&self, stem: &str) -> Option<usize> {
+        self.banks.get(stem).copied()
+    }
+
     /// Whether the runtime holds the bank.
     pub(crate) fn bank_loaded(&self, stem: &str) -> bool {
         self.banks.contains_key(stem)
@@ -342,6 +453,7 @@ impl Native {
 
     /// Unload every bank but the utility and the player's (map change); forget the prefetched ones.
     pub(crate) fn unload_map_banks(&mut self) {
+        self.map_epoch += 1;
         self.prefetch.clear();
         let Ok(mut runtime) = self.shared.lock() else { return };
         self.banks.retain(|stem, id| {
@@ -437,31 +549,6 @@ fn write_position(m: &mut MixMap, key: u32, listener: &GlobalTransform, skater: 
     m.set_input(key, keys::pos::FLAGS, 1);
 }
 
-/// The inputs we can supply for this frame, then the fixed-step MixMap ticks (spec §1: inputs →
-/// components' process → tick → components' update). Written here: Master.in1–4, Music.in1/2/5,
-/// Reverb.in5 (free-skate values, §7.4) and Pause.in0 while the menu is open; through
-/// `player_audio`: PlayerPhysics 0–14, the two 3DObjPos blocks (skater COM and board, with
-/// relative speeds and the sign-flip bits), Jitter, Contacts 1/2/6, Rail 0/1, OffBoard 0; the
-/// board owner inputs (`grain_bed.rs`). Left at their free-skate 0: VU (no output meter; only the
-/// ambience reads it, not native yet), Menu / NIS / HOM / Challenge / Speech flags (no such modes
-/// in free skate), HandGrabs, Music.in3/6 (combo emphasis, not wired).
-/// `SKATE_AEMS_REVERB_ZONES=0`: the reverb preset from the region layer only.
-fn reverb_zones_requested() -> bool {
-    !std::env::var("SKATE_AEMS_REVERB_ZONES").is_ok_and(|v| v == "0")
-}
-
-/// `SKATE_AEMS_REVERB_INPUTS=0` keeps the fixed Reverb.in5 = 32767 (no env scale).
-fn reverb_inputs_requested() -> bool {
-    !std::env::var("SKATE_AEMS_REVERB_INPUTS").is_ok_and(|v| v == "0")
-}
-
-/// `SKATE_AEMS_MIX_CONSOLE=0` turns off the MixMap's console cadence: the old evaluation per 60 Hz
-/// step with dt 1/60, the Jitter stepped and the eEQChain cleared per step / every second step.
-pub(crate) fn mix_console_requested() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| !std::env::var("SKATE_AEMS_MIX_CONSOLE").is_ok_and(|v| v == "0"))
-}
-
 /// The one-frame flag inputs the console's writers set for a whole evaluation, held between our 60
 /// Hz writes and the 30 Hz evaluations ([`MixMap::hold_input`]): Contacts 1 / 6 (the landing
 /// swell and the landing-material flag), Rail 1 (the grind ended), SkateBoard 0 / 4 (the surface
@@ -473,25 +560,75 @@ pub(crate) fn hold_flag_inputs(m: &mut MixMap) {
     }
 }
 
-/// `SKATE_AEMS_SEAM_PULSE=0` turns off Class_Seams' console cadence (Listening test 9).
-fn seam_pulse_requested() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| !std::env::var("SKATE_AEMS_SEAM_PULSE").is_ok_and(|v| v == "0"))
-}
-
+/// The host pass of a frame (spec §1: inputs → components' process → tick → components' update),
+/// on frames that took physics steps ([`HostClock::pass`]: as many host ticks as steps, at most
+/// [`MAX_STEPS_PER_FRAME`]; none on a frame without a step, none while silenced). Written here:
+/// Master.in1–4, Music.in1/2/5, Reverb.in0..6 (free-skate values, §7.4); through `player_audio`:
+/// PlayerPhysics 0–14, the two 3DObjPos blocks (skater COM and board, with relative speeds and the
+/// sign-flip bits), Jitter, Contacts 1/2/6, Rail 0/1, OffBoard 0; the board owner inputs
+/// (`grain_bed.rs`). Left at their free-skate 0: VU (no output meter; only the ambience reads it,
+/// not native yet), Menu / NIS / HOM / Challenge / Speech flags (no such modes in free skate),
+/// HandGrabs, Music.in3/6 (combo emphasis, not wired), and Pause.in0: nothing ticks while the menu
+/// or a replay silences the game (the stream itself is paused), so no evaluation would read it.
+/// Class_Seams' console cadence runs on every rendered frame that is not silenced
+/// ([`PlayerAudio::seam_frame`](super::player_audio::PlayerAudio::seam_frame), game time).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn mixmap_frame(
     native: Option<ResMut<Native>>,
-    cues: Res<super::skate_events::Cues>,
+    mut cues: ResMut<super::skate_events::Cues>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
-    time: Res<Time<Real>>,
+    time: Res<Time<Virtual>>,
     fixed: Res<Time<Fixed>>,
     menu: Option<Res<crate::graphics_menu::Menu>>,
     replay: Res<crate::replay::Replay>,
+    cuts: (Option<Res<crate::presentation::Presentation>>, Option<Res<crate::map_transition::CurrentMap>>),
 ) {
     let _timing = super::timing::scope(&super::timing::MIXMAP_FRAME);
-    let Some(mut native) = native else { return };
+    let silenced = super::silenced(menu.as_deref(), &replay);
+    let Some(mut native) = native else {
+        cues.take_steps();
+        return;
+    };
     let native = &mut *native;
+    // For the systems after this one (the bed): no pass until the clock says so.
+    native.frame_ticks = 0;
+    if let Some(bed) = &mut native.bed {
+        bed.slew_calls = Some(0);
+    }
+    if native.mixmap.is_none() {
+        cues.take_steps();
+        return;
+    }
+    // A teleport, camera cut or map change: no camera velocity across it (Doppler), and no seam
+    // interpolation from the old place (the step at the cut is both ends of the pair).
+    let signal = (cuts.0.as_deref().map_or(0, |p| p.cuts), cuts.1.as_deref().map_or(0, |m| m.generation));
+    let now = cues.riding.audio.wheel_position;
+    if native.cut_seen.is_some_and(|seen| seen != signal) {
+        native.cuts += 1;
+        native.cut_wheels = Some(now);
+        if let Some(player) = &mut native.player {
+            player.reset_listener();
+        }
+    }
+    native.cut_seen = Some(signal);
+    if native.cut_wheels.is_some_and(|w| w != now) {
+        native.cut_wheels = None;
+    }
+    let before = if native.cut_wheels.is_some() { now } else { cues.riding.wheels_before };
+    // Class_Seams on the console's 30 fps process cadence at the rendered board's wheels, on every
+    // rendered frame (Listening test 9), in game time (`Time<Virtual>`: still while paused).
     let Some(m) = &mut native.mixmap else { return };
+    if let Some(player) = &mut native.player {
+        player.seam_alpha = Some(fixed.overstep_fraction());
+        player.step_wheels(before, now);
+        if !silenced {
+            if let Ok(mut runtime) = super::timing::lock(&native.shared, &super::timing::GAME_LOCK) {
+                player.seam_frame(m, &cues.riding.audio, time.delta_secs(), &mut runtime);
+            }
+        }
+    }
+    let Some(pass) = native.clock.pass(&mut cues, silenced) else { return };
+    native.frame_ticks = pass.ticks;
     for id in 1..=4 {
         m.set_input(keys::MASTER, id, 32767);
     }
@@ -500,8 +637,8 @@ pub(super) fn mixmap_frame(
     }
     // SFXObj_Reverb's first step (`sub_824DF468`): Reverb.in0..6 from the number of the preset
     // being faded to (in5 = reverb11/12/15/16/22, which ducks the global env scale out4 by 4 dB).
-    // `SKATE_AEMS_REVERB_INPUTS=0`: the old fixed in5 = 32767 and no scale.
-    let reverb = reverb_inputs_requested().then(|| super::timing::lock(&native.shared, &super::timing::GAME_LOCK).ok().map(|r| r.mixer.buses.env.reverb_inputs())).flatten();
+    // (Without the runtime lock: in5 = 32767 and no scale this pass.)
+    let reverb = super::timing::lock(&native.shared, &super::timing::GAME_LOCK).ok().map(|r| r.mixer.buses.env.reverb_inputs());
     match reverb {
         Some(v) => {
             for (id, x) in v.into_iter().enumerate() {
@@ -510,52 +647,19 @@ pub(super) fn mixmap_frame(
         }
         None => m.set_input(keys::REVERB, 5, 32767),
     }
-    let silenced = super::silenced(menu.as_deref(), &replay);
-    m.set_input(keys::PAUSE, 0, if silenced { 32767 } else { 0 });
-
-    // Inputs, components and the tick run only on frames that tick (retail: once per 60 Hz frame),
-    // so one-frame pulses (landing, surface change, push) always reach an evaluation.
-    native.mix_clock = (native.mix_clock + time.delta_secs()).min(4.0 * MIX_STEP);
-    let ticks = (native.mix_clock / MIX_STEP) as usize;
-    // The bed's turn / brake slews step once per console evaluation (`grain_bed::Bed::slew_calls`):
-    // none on a frame without one; the count is set below when the frame ticks.
-    let console = mix_console_requested();
+    m.set_input(keys::PAUSE, 0, 0);
+    let (ticks, calls) = (pass.ticks, pass.calls);
+    // The bed's turn / brake slews step once per console evaluation (`grain_bed::Bed::slew_calls`).
     if let Some(bed) = &mut native.bed {
-        bed.slew_calls = console.then_some(0);
+        bed.slew_calls = Some(calls);
     }
-    // Class_Seams on the console's 30 fps process cadence at the rendered board's wheels, on every
-    // rendered frame (Listening test 9). `SKATE_AEMS_SEAM_PULSE=0`: its whole process per 60 Hz tick
-    // at the physics positions, as before.
-    if let Some(player) = &mut native.player {
-        let console = seam_pulse_requested();
-        player.seam_console = console;
-        player.seam_alpha = console.then(|| fixed.overstep_fraction());
-        if console {
-            if let Ok(mut runtime) = super::timing::lock(&native.shared, &super::timing::GAME_LOCK) {
-                player.seam_frame(m, &cues.riding.audio, time.delta_secs(), &mut runtime);
-            }
-        }
-    }
-    if ticks == 0 {
-        return;
-    }
-    native.mix_clock -= ticks as f32 * MIX_STEP;
-    // The console cadence (`skate_audio::mixmap::cadence`): retail's audio manager evaluates the
-    // MixMap, steps the Jitter and clears the eEQChain buses once per 1/30 s console frame with dt
-    // 1/30; here every second 60 Hz step, the flag inputs held in between. Off: per 60 Hz step.
-    let calls = if console { native.cadence.advance(ticks) } else { 0 };
-    if let Some(bed) = &mut native.bed {
-        bed.slew_calls = console.then_some(calls);
-    }
-    if console && !native.holds {
+    if !native.holds {
         hold_flag_inputs(m);
         native.holds = true;
     }
-    // sub_82491180 in half 1 of the audio manager: every console frame (both halves run when the
-    // frame is longer than 20 ms); the old cadence: every second 60 Hz frame. The jittered eEQChain
-    // buses take the walk's values and every bus may re-roll again.
-    native.mix_frames += 1;
-    if if console { calls > 0 } else { native.mix_frames % 2 == 0 || ticks > 1 } {
+    // sub_82491180 (half 1): the jittered eEQChain buses take the walk's values and every bus may
+    // re-roll again.
+    if pass.clear_eq {
         let jitter = native.player.as_ref().and_then(|p| p.eq_jitter());
         if let Ok(mut runtime) = native.shared.lock() {
             runtime.mixer.buses.eq.clear(jitter);
@@ -566,7 +670,7 @@ pub(super) fn mixmap_frame(
         let dt = ticks as f32 * MIX_STEP;
         let l = listener.single().ok().map(|t| player.listener(t.translation().to_array(), t.forward().as_vec3().to_array(), dt, &s));
         // SFXObj_Jitter's walk steps once per console evaluation (half 1's process).
-        player.jitter_steps = console.then_some(calls);
+        player.jitter_steps = Some(calls);
         player.write_inputs(m, &s, l.as_ref());
     }
     // With the native rolling layers the owner's surface routing (player::rolling) writes
@@ -580,14 +684,8 @@ pub(super) fn mixmap_frame(
     if let (Some(player), Ok(mut runtime)) = (&mut native.player, super::timing::lock(&native.shared, &super::timing::GAME_LOCK)) {
         player.process(m, &s, &mut runtime, speed_scale, loose);
     }
-    if console {
-        for _ in 0..calls {
-            m.tick(skate_audio::mixmap::cadence::CONSOLE_DT);
-        }
-    } else {
-        for _ in 0..ticks {
-            m.tick(MIX_STEP);
-        }
+    for _ in 0..calls {
+        m.tick(skate_audio::mixmap::cadence::CONSOLE_DT);
     }
     if let (Some(player), Ok(mut runtime)) = (&mut native.player, super::timing::lock(&native.shared, &super::timing::GAME_LOCK)) {
         player.update(m, &s, &mut runtime, speed_scale, loose);
@@ -608,11 +706,13 @@ fn start(
     library: Option<Res<Library>>,
     mut streams: ResMut<Assets<NativeStream>>,
 ) {
-    let (Some(_), Some(library)) = (settings, library) else { return };
+    let (Some(settings), Some(library)) = (settings, library) else { return };
+    let settings = Some(settings);
     // Which compiled copy of the DSP loops runs (hardware FMA or plain; same output bits): chosen
     // once, here, before the first render (doc 11 "Hardware FMA dispatch").
     info!("AUDIO_DSP {}", skate_audio::dsp::init_fma());
-    match Native::start(&library) {
+    let world = if settings.as_deref().is_some_and(|s| s.more_audible_world()) { WorldInstances::MORE_AUDIBLE } else { WorldInstances::RETAIL };
+    match Native::start_with(&library, world) {
         Ok(native) => {
             info!("Game audio: native AEMS runtime on ({} projects)", library.aems().projects.len());
             let handle = streams.add(NativeStream { shared: native.shared.clone() });
@@ -642,11 +742,11 @@ fn follow_volume(
     let Some(settings) = settings else { return };
     // rodio 0.20's spatial source gives the ear FARTHER from the source the larger factor
     // (((d_left - d_right) / gap + 1) / 4 + 0.5 on the left channel), so with the ears where Bevy
-    // puts them every Bevy positional sound is mirrored. With the native host on, swap the
-    // ears so Bevy sounds come from the side native voices (Pan2D1) put them on.
+    // puts them every Bevy positional sound is mirrored: the ears are swapped so Bevy sounds come
+    // from the side native voices (Pan2D1) put them on.
     for mut listener in &mut listeners {
         let gap = listener.left_ear_offset.distance(listener.right_ear_offset);
-        let want = if native.is_some() { Vec3::X * gap / 2.0 } else { Vec3::X * gap / -2.0 };
+        let want = Vec3::X * gap / 2.0;
         if listener.left_ear_offset != want {
             listener.left_ear_offset = want;
             listener.right_ear_offset = -want;
@@ -654,19 +754,18 @@ fn follow_volume(
     }
     let silenced = super::silenced(menu.as_deref(), &replay);
     let volume = settings.master().clamp(0.0, 1.0);
-    // The measured world layers (zone beds, location sets, crossfades) play at measured retail level
-    // × RETAIL_SCALE; with the native player sounds (retail level) they drop back to the measured
-    // level.
-    let native_player = native.as_deref().is_some_and(|n| n.player.as_ref().is_some_and(|p| p.components));
+    // The measured world layers (zone beds, location sets, crossfades) are tuned at measured retail
+    // level × RETAIL_SCALE; against the native voices (retail level) they play at the measured
+    // level. Bevy and native voices share the ears: the Bevy ones fold like native voices. (Before
+    // 2026-10-03 an install without the native runtime kept ×RETAIL_SCALE and Bevy's own panning,
+    // a leftover of the removed interim tables; the native runtime is required now.)
     if let Some(mut voices) = voices {
-        let scale = if native_player { 1.0 / super::voices::RETAIL_SCALE } else { 1.0 };
+        let scale = 1.0 / super::voices::RETAIL_SCALE;
         if voices.scale != scale {
             voices.scale = scale;
         }
-        // Bevy and native voices share the ears: fold the Bevy ones like native voices.
-        let fold = native.is_some();
-        if voices.native_fold != fold {
-            voices.native_fold = fold;
+        if !voices.native_fold {
+            voices.native_fold = true;
         }
     }
     if let Some(native) = native {
@@ -709,8 +808,8 @@ pub(super) fn reverb_frame(
         let env = &mut runtime.mixer.buses.env;
         if env.enabled() {
             // SFXObj_Reverb's update (`sub_824DE548`) in retail's order, with the reverb-zone
-            // emitters the listener is in (`emitters::reverb_zones`; `SKATE_AEMS_REVERB_ZONES=0`: none).
-            let zones = if reverb_zones_requested() { &zones.zones[..] } else { &[] };
+            // emitters the listener is in (`emitters::reverb_zones`).
+            let zones = &zones.zones[..];
             env.update(time.delta_secs().clamp(0.0, 0.25), key, zones, camera.as_ref());
         }
     }
@@ -747,15 +846,165 @@ mod tests {
             banks: HashMap::new(),
             emitter_class: None,
             mixmap,
-            mix_clock: 0.0,
-            mix_frames: 0,
-            cadence: Default::default(),
+            clock: HostClock::default(),
+            frame_ticks: 0,
+            cuts: 0,
+            cut_seen: None,
+            cut_wheels: None,
             holds: false,
             player: None,
             emitter_states: [false; EMITTER_STATES],
             bed: None,
             prefetch: Default::default(),
+            map_epoch: 0,
+            world: WorldInstances::RETAIL,
         }
+    }
+
+    /// The host clock under jittered frame times, in a Bevy app with the game's clocks (the 60 Hz
+    /// physics period of `physics/clock.rs`, `Time<Virtual>`'s 250 ms frame cap): a FixedUpdate
+    /// system publishes one sample per physics step as `skate_events::observe` does (the step's
+    /// number in `pushes`, a push-plant pulse on some steps), an Update system takes them as
+    /// [`mixmap_frame`] does. Frames: alternating 1 and 2 steps, frames without a step, a 300 ms
+    /// hitch, a paused stretch (the menu: `Time<Virtual>` paused) and a silenced one that still
+    /// steps (a replay / the multiplayer menu). Every step is taken by exactly one frame; each
+    /// pulse reaches exactly one pass and no pass sees a pulse its steps did not have; a pass
+    /// ticks once per step (4 at most); nothing passes while paused or silenced or on a frame
+    /// without a step; the console evaluations are every second tick.
+    #[test]
+    fn the_host_clock_takes_every_physics_step_once() {
+        use super::super::skate_events::{Cues, Riding};
+        use bevy::time::{TimePlugin, TimeUpdateStrategy};
+        use std::time::Duration;
+
+        #[derive(Resource, Default)]
+        struct Log {
+            steps: u32,
+            /// The steps with a pulse.
+            pulses: Vec<u32>,
+            /// Per frame: (first step, last step) taken, the pass (ticks, calls, pulse seen) if any,
+            /// and whether the frame was paused / silenced.
+            frames: Vec<(u32, u32, Option<(usize, usize, bool)>, bool, bool)>,
+            taken: u32,
+        }
+        #[derive(Resource, Default)]
+        struct Host {
+            clock: HostClock,
+            paused: bool,
+            silenced: bool,
+        }
+        let publish = |mut cues: ResMut<Cues>, mut log: ResMut<Log>| {
+            log.steps += 1;
+            let step = log.steps;
+            // A pulse on every 5th step (the hitch frame takes three).
+            let pulse = step % 5 == 0;
+            if pulse {
+                log.pulses.push(step);
+            }
+            let mut r = Riding { pushes: step, ..Default::default() };
+            r.audio.push_trigger = pulse;
+            cues.publish(r);
+        };
+        let take = |mut cues: ResMut<Cues>, mut log: ResMut<Log>, mut host: ResMut<Host>| {
+            let host = &mut *host;
+            let (from, to) = (log.taken + 1, cues.riding.pushes);
+            let had = cues.steps;
+            let pass = host.clock.pass(&mut cues, host.silenced).map(|p| (p.ticks, p.calls, cues.riding.audio.push_trigger));
+            assert_eq!(cues.steps, 0, "the frame takes its steps");
+            if had > 0 {
+                assert_eq!(to - from + 1, had, "steps counted = steps published");
+                log.taken = to;
+            }
+            log.frames.push((from, if had > 0 { to } else { from - 1 }, pass, host.paused, host.silenced));
+        };
+        let period = Duration::from_nanos(166_666 * 100);
+        let mut app = App::new();
+        app.add_plugins(TimePlugin)
+            .insert_resource(Time::<Fixed>::from_duration(period))
+            .init_resource::<Cues>()
+            .init_resource::<Log>()
+            .init_resource::<Host>()
+            .add_systems(FixedUpdate, publish)
+            .add_systems(Update, take);
+        let ms = |x: f64| Duration::from_secs_f64(x / 1000.0);
+        let frame = |app: &mut App, dt: Duration, paused: bool, silenced: bool| {
+            app.insert_resource(TimeUpdateStrategy::ManualDuration(dt));
+            {
+                let mut v = app.world_mut().resource_mut::<Time<Virtual>>();
+                if paused { v.pause() } else { v.unpause() }
+            }
+            let mut h = app.world_mut().resource_mut::<Host>();
+            (h.paused, h.silenced) = (paused, silenced);
+            app.update();
+        };
+        let step = period.as_secs_f64() * 1000.0;
+        for _ in 0..2 {
+            frame(&mut app, ms(step), false, false);
+        }
+        // Alternating 1 and 2 steps (~40 fps), then 0-step frames (a fast renderer), then 30 fps.
+        for i in 0..40 {
+            frame(&mut app, ms(if i % 2 == 0 { step } else { 2.0 * step }), false, false);
+        }
+        for _ in 0..30 {
+            frame(&mut app, ms(step / 3.0), false, false);
+        }
+        for _ in 0..10 {
+            frame(&mut app, ms(2.0 * step), false, false);
+        }
+        // A 300 ms hitch (Time<Virtual> caps it at 250 ms: 15 steps).
+        frame(&mut app, ms(300.0), false, false);
+        frame(&mut app, ms(step), false, false);
+        // The menu: the game paused (no steps) and silenced, for a second.
+        for _ in 0..60 {
+            frame(&mut app, ms(step), true, true);
+        }
+        // A replay / the multiplayer menu: silenced while the clock still steps.
+        for _ in 0..20 {
+            frame(&mut app, ms(step), false, true);
+        }
+        for i in 0..40 {
+            frame(&mut app, ms(if i % 3 == 0 { 0.0 } else { 1.5 * step }), false, false);
+        }
+        let log = app.world().resource::<Log>();
+        assert!(log.steps > 150, "{} steps", log.steps);
+        // Every step is taken by exactly one frame, in order.
+        let mut next = 1;
+        for &(from, to, ..) in &log.frames {
+            assert_eq!(from, next);
+            next = to + 1;
+        }
+        assert_eq!(next, log.steps + 1, "every step taken");
+        let mut seen_pulses = 0;
+        let (mut ticks, mut calls) = (0usize, 0usize);
+        let (mut hitch, mut zero_frames, mut double, mut paused_frames, mut merged) = (false, 0, 0, 0, 0);
+        for &(from, to, pass, paused, silenced) in &log.frames {
+            let n = (to + 1 - from) as usize;
+            let pulses = log.pulses.iter().filter(|&&p| (from..=to).contains(&p)).count();
+            match pass {
+                Some((t, c, pulse)) => {
+                    assert!(!paused && !silenced, "a pass while paused / silenced");
+                    assert_eq!(t, n.min(MAX_STEPS_PER_FRAME as usize), "a tick per step, capped");
+                    assert_eq!(pulse, pulses > 0, "steps {from}..={to}: pulse seen = pulse published");
+                    seen_pulses += pulses;
+                    ticks += t;
+                    calls += c;
+                    hitch |= n >= 15;
+                    merged += usize::from(pulses > 1);
+                    double += usize::from(n == 2);
+                }
+                None => {
+                    assert!(n == 0 || silenced, "steps {from}..={to} not processed");
+                    zero_frames += usize::from(n == 0 && !paused);
+                    paused_frames += usize::from(paused);
+                    assert!(!paused || n == 0, "a step while paused");
+                }
+            }
+        }
+        let dropped = log.frames.iter().filter(|f| f.4 && f.2.is_none()).map(|f| log.pulses.iter().filter(|&&p| (f.0..=f.1).contains(&p)).count()).sum::<usize>();
+        assert_eq!(seen_pulses + dropped, log.pulses.len(), "each pulse in exactly one frame");
+        assert!(dropped > 0 && seen_pulses > 20);
+        assert!(hitch && merged > 0 && zero_frames > 20 && double > 20 && paused_frames == 60);
+        assert_eq!(calls, ticks / 2, "a console evaluation every second tick");
     }
 
     #[test]
@@ -780,11 +1029,11 @@ mod tests {
     /// out4 (−600 mB + the Global ducks' rest) × level, the pan is the B0 azimuth we wrote, the
     /// send rolls off with camera distance (4 → 70 m) and the filter stays open.
     #[test]
+    #[ignore = "needs the private install data"]
     fn emitter_words_from_the_retail_mixmap() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/private/audio/aems/MixMapSK8.mxb");
         let Ok(bytes) = std::fs::read(path) else {
-            eprintln!("skipped: no {path}");
-            return;
+            panic!("missing private data: no {path}");
         };
         let mut n = native(Some(MixMap::from_bytes(&bytes).unwrap()));
         let g = n.claim_emitter_state().unwrap();
@@ -840,12 +1089,13 @@ mod tests {
     /// dev install's manifest with parts removed (the data folders are linked, not copied).
     /// Data-gated: skipped without the install.
     #[test]
+    #[ignore = "needs the private install data"]
     fn missing_install_parts_fall_back_without_breaking() {
         let real = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/private/audio"));
-        let Ok(text) = std::fs::read_to_string(real.join("audio_manifest.json")) else { return eprintln!("skipped: no audio install") };
+        let Ok(text) = std::fs::read_to_string(real.join("audio_manifest.json")) else { panic!("missing private data: no audio install") };
         let full: serde_json::Value = serde_json::from_str(&text).unwrap();
         if full["aems"]["projects"].as_array().is_none_or(|p| p.is_empty()) {
-            return eprintln!("skipped: the install has no AEMS banks");
+            panic!("missing private data: the install has no AEMS banks");
         }
         let dir = std::env::temp_dir().join(format!("skate-audio-fallback-{}", std::process::id()));
         let audio = dir.join("private/audio");
@@ -862,7 +1112,7 @@ mod tests {
             if !out.as_ref().is_ok_and(|o| o.status.success()) {
                 let _ = std::fs::remove_dir_all(&dir);
                 let why = out.map_or_else(|e| e.to_string(), |o| String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr));
-                return eprintln!("skipped: could not link {sub} ({})", why.trim());
+                panic!("missing private data: could not link {sub} ({})", why.trim());
             }
             links.push(link);
         }
@@ -874,7 +1124,7 @@ mod tests {
             let r = Native::start(&library);
             println!("{name}: {}", match &r {
                 Ok(n) => format!("native on, player {:?}", n.player.as_ref().map(|p| (p.components, p.tricks_on, p.treatment_on, p.contacts_on, p.footsteps_on))),
-                Err(e) => format!("fallback to the tables: {e}"),
+                Err(e) => format!("no native runtime (silent): {e}"),
             });
             r
         };

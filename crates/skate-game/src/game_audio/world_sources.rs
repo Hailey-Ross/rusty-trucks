@@ -185,7 +185,7 @@ fn prefetch_world_banks(p: &mut WorldPrefetch, native: &mut Native, library: &Li
 }
 
 #[derive(Resource)]
-struct WorldHost {
+pub(crate) struct WorldHost {
     /// None: not tried yet; Some(false): some world banks are missing (warned once).
     banks: Option<bool>,
     traffic: Pool,
@@ -198,8 +198,12 @@ struct WorldHost {
     rng: Lcg,
     ped_tuning: Option<PedFootstepTuning>,
     player_tuning: Option<skate_audio::player::tuning::PlayerTuning>,
-    last_camera: Option<[f32; 3]>,
+    /// The camera at the last evaluation and the host's cut count then (`Native::cuts`: no
+    /// velocity across a teleport / map change).
+    last_camera: Option<([f32; 3], u64)>,
     prefetch: WorldPrefetch,
+    /// `Native::map_epoch` this host last ran in (None: never ran; [`WorldHost::reset`]).
+    epoch: Option<u64>,
 }
 
 impl Default for WorldHost {
@@ -218,12 +222,35 @@ impl Default for WorldHost {
             player_tuning: None,
             last_camera: None,
             prefetch: WorldPrefetch::default(),
+            epoch: None,
         }
     }
 }
 
+/// Which owners hold a MixMap instance after the last evaluation (the hosts write it; the
+/// engine-facing bridge turns it into `world_audio::WorldAudioInstance`).
+#[derive(Resource, Default, Debug, Clone, PartialEq)]
+pub(crate) struct WorldHeld {
+    /// (owner, instance) of the Traffic / Pedestrian pools.
+    pub(crate) traffic: Vec<(u64, u32)>,
+    pub(crate) peds: Vec<(u64, u32)>,
+    /// (owner, Player-slot instance ≥ 1) of the NPC / remote skaters (`npc_skaters.rs`).
+    pub(crate) skaters: Vec<(u64, u32)>,
+}
+
+/// Retail's traffic list is cut at 40 m horizontal distance to the listener (vehicle record
+/// `+152`, `sub_824B2A28`; recomp gap run G1: never above 39.994 m), and its 4 instances went to
+/// the 4 nearest (horizontal) in 311 / 311 holder-seconds.
+pub(crate) const TRAFFIC_LIST_RADIUS: f32 = 40.0;
+/// Retail's ped list is sorted nearest first (3-D distance, `+148`) and cut at 50 m; the 15
+/// instances = its first 15 (manager `sub_824F2890`, gap run G2).
+pub(crate) const PED_LIST_RADIUS: f32 = 50.0;
+
 pub(crate) fn register(app: &mut App) {
-    app.init_resource::<WorldOwners>().init_resource::<WorldHost>().add_systems(Update, frame.after(super::native::mixmap_frame));
+    app.init_resource::<WorldOwners>()
+        .init_resource::<WorldHost>()
+        .init_resource::<WorldHeld>()
+        .add_systems(Update, frame.after(super::native::mixmap_frame));
 }
 
 fn apply(host: &mut WorldHost, rt: &mut skate_audio::runtime::Runtime, cmds: Vec<WorldCommand>) {
@@ -257,10 +284,78 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
-fn frame(
+fn horizontal(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// A candidate inside the list radius keeps its distance; one outside never gets an instance.
+fn within(d: f32, radius: f32) -> f32 {
+    if d < radius { d } else { f32::INFINITY }
+}
+
+/// The seconds one MixMap evaluation covers (`native::mixmap_frame`: the console cadence, 1/30).
+pub(super) fn evaluation_dt() -> f32 {
+    CONSOLE_DT
+}
+
+impl WorldHost {
+    /// The map changed (`Native::map_epoch`, bumped by `unload_map_banks`), or the host runs for
+    /// the first time: the unload destroyed every instance of the world banks, so every held node
+    /// is released (harmless on a dead node; it frees them), the pools forget their holders, the
+    /// held instances' 3DObjPos blocks go inactive, the ped Splice steps stop, and the per-owner
+    /// objects are dropped. An owner that is still published is claimed again and posts afresh.
+    /// The banks reload at the next owner (`ensure_bank`, through the prefetch when expected).
+    /// The pools take the MixMap's instance counts (`Native::world`).
+    fn reset(&mut self, native: &mut Native) {
+        self.epoch = Some(native.map_epoch);
+        let traffic = self.traffic.clear();
+        let peds = self.peds.clear();
+        let Native { mixmap, shared, world, .. } = native;
+        if !self.nodes.is_empty() || !self.ped_objects.is_empty() {
+            if let Ok(mut runtime) = super::timing::lock(shared, &super::timing::GAME_LOCK) {
+                let rt = &mut *runtime;
+                for (owner, (mut sfx, _, _)) in std::mem::take(&mut self.ped_objects) {
+                    let _ = sfx.release(owner, &mut rt.splice_host());
+                }
+                for (_, node) in self.nodes.drain() {
+                    rt.release(node);
+                }
+            }
+        }
+        self.ped_objects.clear();
+        self.vehicles.clear();
+        self.nodes.clear();
+        if let Some(m) = mixmap.as_mut() {
+            let l = Listener::default();
+            for (_, g) in traffic {
+                Positions::new(&[keys::traffic_pos(g as u32, 1), keys::traffic_pos(g as u32, 2), keys::traffic_pos(g as u32, 3)]).deactivate(m, &l);
+            }
+            for (_, g) in peds {
+                Positions::new(&[keys::ped_pos(g as u32)]).deactivate(m, &l);
+            }
+            self.last_tick = self.last_tick.min(m.ticks);
+        }
+        if self.traffic.len() != world.traffic {
+            self.traffic = Pool::new(world.traffic);
+        }
+        if self.peds.len() != world.peds {
+            self.peds = Pool::new(world.peds);
+        }
+        self.banks = None;
+        self.last_camera = None;
+    }
+
+    fn held(&self) -> (Vec<(u64, u32)>, Vec<(u64, u32)>) {
+        (self.traffic.holders().map(|(g, o)| (o, g as u32)).collect(), self.peds.holders().map(|(g, o)| (o, g as u32)).collect())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn frame(
     native: Option<ResMut<Native>>,
     owners: Res<WorldOwners>,
     mut host: ResMut<WorldHost>,
+    mut held: ResMut<WorldHeld>,
     library: Option<Res<Library>>,
     cues: Res<super::skate_events::Cues>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
@@ -274,17 +369,33 @@ fn frame(
     if !requested() {
         return;
     }
-    let host = &mut *host;
-    if prefetch_on() {
-        prefetch_world_banks(&mut host.prefetch, &mut native, &library, owners.expected);
+    let camera = listener.single().ok().map(|t| (t.translation().to_array(), t.forward().as_vec3().to_array()));
+    run(&mut host, &owners, &mut native, &library, camera, &cues.riding.audio);
+    let (traffic, peds) = host.held();
+    if held.traffic != traffic || held.peds != peds {
+        held.traffic = traffic;
+        held.peds = peds;
     }
+}
+
+/// One frame of the host (after the inert checks): the prefetch, the map-change reset, the banks,
+/// and per MixMap evaluation the instance assignment, update and process. `camera` = the listener
+/// (position, forward); `local` = the local player's audio state (the followed point).
+pub(crate) fn run(host: &mut WorldHost, owners: &WorldOwners, native: &mut Native, library: &Library, camera: Option<([f32; 3], [f32; 3])>, local: &skate_audio::player::AudioState) {
+    if prefetch_on() {
+        prefetch_world_banks(&mut host.prefetch, native, library, owners.expected);
+    }
+    if host.epoch != Some(native.map_epoch) {
+        host.reset(native);
+    }
+    let idle = owners.vehicles.is_empty() && owners.peds.is_empty() && host.vehicles.is_empty() && host.ped_objects.is_empty();
     if idle {
         return;
     }
     // The world banks (cheap when loaded; a map change unloads them, `native::unload_map_banks`).
     let mut missing = false;
     for stem in TRAFFIC_BANKS.iter().chain(PED_BANKS) {
-        if let Err(e) = native.ensure_bank(&library, stem) {
+        if let Err(e) = native.ensure_bank(library, stem) {
             if host.banks.is_none() {
                 warn!("Game audio: world sources: {e} (rerun setup to refresh the audio)");
             }
@@ -297,22 +408,23 @@ fn frame(
         info!("AUDIO_WORLD on: {} vehicles, {} peds published", owners.vehicles.len(), owners.peds.len());
     }
     host.banks = Some(!missing);
-    let Ok(camera) = listener.single() else { return };
+    let Some((cam, view)) = camera else { return };
     let native = &mut *native;
     let Some(m) = native.mixmap.as_mut() else { return };
     if m.ticks == host.last_tick {
         return;
     }
-    let evaluations = m.ticks - host.last_tick;
+    // The MixMap is built once and never rebuilt, so its tick count only grows; the saturating
+    // difference keeps a host that ran ahead (a reset, a new MixMap in a test) from underflowing.
+    let evaluations = m.ticks.saturating_sub(host.last_tick).max(1);
     host.last_tick = m.ticks;
-    let dt = CONSOLE_DT * evaluations.min(4) as f32;
-    let cam = camera.translation().to_array();
-    let cam_velocity = host.last_camera.map_or([0.0; 3], |last| std::array::from_fn(|i| (cam[i] - last[i]) / dt));
-    host.last_camera = Some(cam);
-    let s = &cues.riding.audio;
+    let dt = evaluation_dt() * evaluations.min(4) as f32;
+    let cam_velocity = host.last_camera.filter(|l| l.1 == native.cuts).map_or([0.0; 3], |(last, _)| std::array::from_fn(|i| (cam[i] - last[i]) / dt));
+    host.last_camera = Some((cam, native.cuts));
+    let s = local;
     let l = Listener {
         camera: cam,
-        view: camera.forward().as_vec3().to_array(),
+        view,
         camera_velocity: cam_velocity,
         followed: s.com_position,
         facing: s.com_velocity,
@@ -324,9 +436,10 @@ fn frame(
     let ped_tuning = host.ped_tuning.take().unwrap_or_default();
     let player_tuning = host.player_tuning.take().unwrap_or_default();
 
-    // Instances by distance (provisional rule, `owners::Pool`).
-    let traffic_candidates: Vec<(u64, f32)> = owners.vehicles.iter().map(|(&id, v)| (id, distance(v.position, cam))).collect();
-    let ped_candidates: Vec<(u64, f32)> = owners.peds.iter().map(|(&id, p)| (id, distance(p.position, cam))).collect();
+    // Instances: the nearest N inside retail's list radii (traffic: horizontal, 40 m; peds: 3-D,
+    // 50 m). `owners::Pool`.
+    let traffic_candidates: Vec<(u64, f32)> = owners.vehicles.iter().map(|(&id, v)| (id, within(horizontal(v.position, cam), TRAFFIC_LIST_RADIUS))).collect();
+    let ped_candidates: Vec<(u64, f32)> = owners.peds.iter().map(|(&id, p)| (id, within(distance(p.position, cam), PED_LIST_RADIUS))).collect();
     let traffic = host.traffic.assign(&traffic_candidates);
     let peds = host.peds.assign(&ped_candidates);
     for (owner, _) in traffic.released {
@@ -423,14 +536,15 @@ mod tests {
     /// map change (`unload_map_banks`) makes them ask again, and an unexpected world drops the
     /// unused ones.
     #[test]
+    #[ignore = "needs the private install data"]
     fn world_banks_are_prefetched_when_expected_and_load_without_decoding() {
         use super::super::library::WAV_DECODES;
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
-        let Ok(library) = Library::load(root) else { return eprintln!("skipped: no audio install") };
-        let Ok(mut native) = Native::start(&library) else { return eprintln!("skipped: no AEMS install") };
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
         let stems: Vec<&str> = TRAFFIC_BANKS.iter().chain(PED_BANKS).copied().filter(|s| library.bank_source(s).is_ok()).collect();
         if stems.is_empty() {
-            return eprintln!("skipped: no world banks in the install");
+            panic!("missing private data: no world banks in the install");
         }
         let snapshot = |n: &Native| {
             let rt = n.shared.lock().unwrap();
@@ -503,5 +617,79 @@ mod tests {
         let decodes = WAV_DECODES.with(|n| n.get());
         native.ensure_bank(&library, stems[0]).unwrap();
         assert_eq!(WAV_DECODES.with(|n| n.get()) - decodes, library.bank_pcm(stems[0]).len() as u64, "decoded here without a prefetch");
+    }
+
+    /// The map-change regression (spec §2.1, data-gated): a vehicle and a ped publish, their
+    /// instances post and the C04 engine sounds; `unload_map_banks` destroys the world banks'
+    /// instances; the same ids keep publishing and must post again (before the epoch reset the
+    /// engine kept redelivering to its dead node and stayed silent for the rest of its life).
+    /// Also: with no owners a map change costs nothing but the epoch bookkeeping.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn world_owners_post_again_after_a_map_change() {
+        use skate_audio::world::peds::PedState;
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
+        let Some(engine) = library.world_tuning().engine("c04_taxi01") else { panic!("missing private data: no world tuning") };
+        let mut host = WorldHost::default();
+        let mut owners = WorldOwners::default();
+        let local = skate_audio::player::AudioState::default();
+        let camera = Some(([0.0, 1.5, 0.0], [0.0, 0.0, 1.0]));
+        // Zero owners: the first run only takes the epoch.
+        run(&mut host, &owners, &mut native, &library, camera, &local);
+        assert_eq!(host.epoch, Some(native.map_epoch));
+        assert!(host.nodes.is_empty() && host.vehicles.is_empty());
+        let (car, ped) = (7u64, 9u64);
+        let engine_voices = |native: &Native| {
+            let Some(bank) = native.bank_id("C04_taxi01") else { return 0 };
+            native.shared.lock().unwrap().mixer.snapshot().iter().filter(|v| v.bank == bank).count()
+        };
+        let step = |native: &mut Native, host: &mut WorldHost, owners: &mut WorldOwners, frames: usize| {
+            let mut most = 0;
+            for f in 0..frames {
+                let z = 8.0 + (f % 60) as f32 * 0.2;
+                owners.vehicles.insert(car, VehicleState { position: [3.0, 0.5, z], velocity: [0.0, 0.0, 12.0], speed: 12.0, engine, ..Default::default() });
+                owners.peds.insert(ped, PedState { position: [1.5, 0.0, 4.0], velocity: [0.0, 0.0, 1.3], speed: 1.3, feet: [f % 20 < 10, f % 20 >= 10], class: 2, weight: 1, ..Default::default() });
+                let m = native.mixmap.as_mut().unwrap();
+                // As `native::mixmap_frame`: the category gains, then the tick.
+                for id in 1..=4 {
+                    m.set_input(skate_audio::mixmap::keys::MASTER, id, 32767);
+                }
+                for id in [1, 2, 5] {
+                    m.set_input(skate_audio::mixmap::keys::MUSIC, id, 32767);
+                }
+                m.set_input(skate_audio::mixmap::keys::REVERB, 5, 32767);
+                m.tick(CONSOLE_DT);
+                run(host, owners, native, &library, camera, &local);
+                {
+                    let mut rt = native.shared.lock().unwrap();
+                    for _ in 0..7 {
+                        rt.render_block();
+                    }
+                }
+                most = most.max(engine_voices(native));
+            }
+            most
+        };
+        assert!(step(&mut native, &mut host, &mut owners, 40) > 0, "the engine sounds before the map change");
+        assert!(host.nodes.contains_key(&(car, WorldSlot::Engine)));
+        let before = host.nodes[&(car, WorldSlot::Engine)];
+        native.unload_map_banks();
+        assert!(!native.bank_loaded("C04_taxi01"));
+        assert!(step(&mut native, &mut host, &mut owners, 40) > 0, "the same owner sounds again after the map change");
+        assert_ne!(host.nodes[&(car, WorldSlot::Engine)], before, "posted afresh, not redelivered to the dead node");
+        assert_eq!(host.peds.instance(ped), Some(0), "the ped holds an instance again");
+        assert!(host.nodes.keys().any(|k| k.0 == ped), "the ped's footsteps posted again");
+        // The owners go: everything is released.
+        owners.vehicles.clear();
+        owners.peds.clear();
+        native.mixmap.as_mut().unwrap().tick(CONSOLE_DT);
+        run(&mut host, &owners, &mut native, &library, camera, &local);
+        assert!(host.nodes.is_empty() && host.vehicles.is_empty() && host.ped_objects.is_empty());
+        // A map change with nothing held.
+        native.unload_map_banks();
+        run(&mut host, &owners, &mut native, &library, camera, &local);
+        assert_eq!(host.epoch, Some(native.map_epoch));
     }
 }

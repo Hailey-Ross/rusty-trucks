@@ -242,11 +242,12 @@ mod tests {
     /// and takes far less time; a map change (`unload_map_banks`) forgets the prefetch and the next
     /// start loads on the game thread as before.
     #[test]
+    #[ignore = "needs the private install data"]
     fn prefetched_banks_are_identical_and_not_decoded_at_the_start() {
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
-        let Ok(library) = Library::load(root) else { return eprintln!("skipped: no audio install") };
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
         if library.aems().projects.is_empty() {
-            return eprintln!("skipped: no AEMS banks");
+            panic!("missing private data: no AEMS banks");
         }
         let mut stems: Vec<String> = Vec::new();
         for file in ["sfx_downtown", "sfx_university"] {
@@ -259,7 +260,7 @@ mod tests {
             }
         }
         if stems.is_empty() {
-            return eprintln!("skipped: no emitter records");
+            panic!("missing private data: no emitter records");
         }
         // Identity: worker result vs the game thread's load.
         let mut p = Prefetch::default();
@@ -314,7 +315,8 @@ mod tests {
             v.sort_by(f64::total_cmp);
             format!("median {:.3} ms, max {:.3} ms", v[v.len() / 2], v[v.len() - 1])
         };
+        // Timings are printed, not asserted (wall-clock order is the machine's, not the code's; the
+        // decode counts above are the proof).
         println!("ensure_bank over {} emitter banks: game-thread load {}; prefetched {}", stems.len(), stat(&mut sync), stat(&mut pre));
-        assert!(pre.last() < sync.last());
     }
 }

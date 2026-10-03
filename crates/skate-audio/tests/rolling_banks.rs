@@ -76,8 +76,9 @@ impl VoiceHost for Opens {
 /// per (selector, surface) at speed word 5000 with open levels, run 8 s of evaluator blocks and
 /// list the bank slots opened. Diagnostic print (`--nocapture`).
 #[test]
+#[ignore = "needs the private install data"]
 fn class_rolling_selector_census() {
-    let Some(dir) = banks_dir() else { return eprintln!("skipped: no extracted banks") };
+    let Some(dir) = banks_dir() else { panic!("missing private data: no extracted banks") };
     println!("selector surface speed: bank slots…");
     for selector in 0..16 {
         for surface in [3, 7, 8, 10, 11, 12, 13] {
@@ -341,11 +342,12 @@ fn quantiles(v: &[f32]) -> (f32, f32, f32) {
 /// Rolling_Rattles 0.007 / 0.301 / 0.366; 164620: Rolling_Surfaces 0.010 / 0.121 / 0.388).
 /// Asserts that something plays and that no voice exceeds unity.
 #[test]
+#[ignore = "needs the private install data"]
 fn rolling_layers_play_their_retail_banks() {
-    let (Some(dir), Some(mxb)) = (banks_dir(), mixmap()) else { return eprintln!("skipped: no extracted banks or MixMap") };
+    let (Some(dir), Some(mxb)) = (banks_dir(), mixmap()) else { panic!("missing private data: no extracted banks or MixMap") };
     let mut tuning = PlayerTuning { surface_table: surface_table(), ..Default::default() };
     if tuning.surface_table.len() < 95 {
-        return eprintln!("skipped: no surface map in the install manifest");
+        panic!("missing private data: no surface map in the install manifest");
     }
     tuning.surface_table.truncate(95);
     // Materials (tag − 1) per rolling surface: 3 asphalt_smooth (tag 1), 7 (tag 10), 8 (tag 8),
@@ -363,7 +365,7 @@ fn rolling_layers_play_their_retail_banks() {
                     }
                     (s, pushes && f % 90 == 30)
                 }) else {
-                    return eprintln!("skipped: bank samples not decoded (decode_bank_samples.py)");
+                    panic!("missing private data: bank samples not decoded (decode_bank_samples.py)");
                 };
                 for (bank, g) in &r.gains {
                     let audible: Vec<f32> = g.iter().copied().filter(|&x| x > 0.0).collect();
@@ -394,9 +396,10 @@ fn rolling_layers_play_their_retail_banks() {
 
 /// c_board_slide: the loose board (state `+780`) through `board_scrapes`.
 #[test]
+#[ignore = "needs the private install data"]
 fn board_slide_plays_board_scrapes() {
-    let (Some(dir), Some(mxb)) = (banks_dir(), mixmap()) else { return eprintln!("skipped: no extracted banks or MixMap") };
-    let Some(mut rig) = Rig::new(&dir, &["board_scrapes"]) else { return eprintln!("skipped: board_scrapes not decoded") };
+    let (Some(dir), Some(mxb)) = (banks_dir(), mixmap()) else { panic!("missing private data: no extracted banks or MixMap") };
+    let Some(mut rig) = Rig::new(&dir, &["board_scrapes"]) else { panic!("missing private data: board_scrapes not decoded") };
     let mut m = MixMap::from_bytes(&mxb).unwrap();
     let mut physics = skate_audio::player::inputs::Physics::default();
     let mut slide = BoardSlide::default();
@@ -432,13 +435,14 @@ fn board_slide_plays_board_scrapes() {
 /// next to retail's per-sample levels (164620: slot 8 median 0.322, 7 0.107, 0 0.050, 2 0.037,
 /// 11 0.035, 1 0.026, 9 0.027, 6 0.022, 10 0.018).
 #[test]
+#[ignore = "needs the private install data"]
 fn rattle_samples_by_surface_and_speed() {
-    let (Some(dir), Some(mxb)) = (banks_dir(), mixmap()) else { return eprintln!("skipped: no extracted banks or MixMap") };
+    let (Some(dir), Some(mxb)) = (banks_dir(), mixmap()) else { panic!("missing private data: no extracted banks or MixMap") };
     println!("surface speed: slot peak …");
     for surface in 0..6 {
         let mut line = String::new();
         for speed in [0, 1500, 4000, 7000, 10000] {
-            let Some(mut rig) = Rig::new(&dir, &["Rolling_Rattles"]) else { return eprintln!("skipped: not decoded") };
+            let Some(mut rig) = Rig::new(&dir, &["Rolling_Rattles"]) else { panic!("missing private data: not decoded") };
             let mut m = MixMap::from_bytes(&mxb).unwrap();
             let mut physics = skate_audio::player::inputs::Physics::default();
             let mut posts = 0;
@@ -480,8 +484,9 @@ fn rattle_samples_by_surface_and_speed() {
 
 /// The SkateBoard outputs these layers read, by speed (straight rolling, 4 wheels; and in the air).
 #[test]
+#[ignore = "needs the private install data"]
 fn skateboard_outputs_by_speed() {
-    let Some(mxb) = mixmap() else { return eprintln!("skipped: no MixMap") };
+    let Some(mxb) = mixmap() else { panic!("missing private data: no MixMap") };
     println!("km/h  air  l1    l6    l7    l9    l10   l13   l16   l19   p3    p8    f11   f12   f14   f15   f17   f18   l24 l27 f25 f26 p23");
     for air in [false, true] {
         for kmh in [0.0f32, 3.0, 8.0, 15.0, 25.0, 40.0] {
@@ -515,8 +520,9 @@ fn skateboard_outputs_by_speed() {
 /// Diagnostic: SenseOfSpeed level(1) (rattle gain) and level(4) (wind) on the ground and in the
 /// air at the same speed (listening report: rolling continues in jumps).
 #[test]
+#[ignore = "needs the private install data"]
 fn sense_of_speed_levels_ground_vs_air() {
-    let Some(mxb) = mixmap() else { return eprintln!("skipped: no MixMap") };
+    let Some(mxb) = mixmap() else { panic!("missing private data: no MixMap") };
     for air in [false, true] {
         for kmh in [25.0f32, 31.0, 40.0] {
             let mut m = MixMap::from_bytes(&mxb).unwrap();
@@ -544,18 +550,19 @@ fn sense_of_speed_levels_ground_vs_air() {
 /// native layers (rattle, held layers, patch) must go quiet in the air through the MixMap words
 /// (level(6)/(7)/(9)/(1) are 0 without wheels). Prints the per-bank gain before / after takeoff.
 #[test]
+#[ignore = "needs the private install data"]
 fn layers_go_quiet_after_takeoff() {
-    let (Some(dir), Some(mxb)) = (banks_dir(), mixmap()) else { return eprintln!("skipped: no extracted banks or MixMap") };
+    let (Some(dir), Some(mxb)) = (banks_dir(), mixmap()) else { panic!("missing private data: no extracted banks or MixMap") };
     let mut tuning = PlayerTuning { surface_table: surface_table(), ..Default::default() };
     if tuning.surface_table.len() < 95 {
-        return eprintln!("skipped: no surface map");
+        panic!("missing private data: no surface map");
     }
     tuning.surface_table.truncate(95);
     for material in [0u32, 7] {
         let mut ground = BTreeMap::<&str, f32>::new();
         let mut air = BTreeMap::<&str, f32>::new();
         let stems: Vec<&'static str> = ROLLING_BANKS.iter().copied().chain(["Rolling_Rattles"]).collect();
-        let Some(mut rig) = Rig::new(&dir, &stems) else { return eprintln!("skipped: not decoded") };
+        let Some(mut rig) = Rig::new(&dir, &stems) else { panic!("missing private data: not decoded") };
         let mut m = MixMap::from_bytes(&mxb).unwrap();
         let mut physics = skate_audio::player::inputs::Physics::default();
         let mut pos = [ObjPos::default(); 2];

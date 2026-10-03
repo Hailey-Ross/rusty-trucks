@@ -24,10 +24,12 @@ mod npc_skaters;
 mod player_audio;
 mod random_programs;
 mod random_sets;
-mod skate_events;
+pub(crate) mod skate_events;
 mod state_log;
+mod state_replay;
 mod timing;
 mod voices;
+pub(crate) mod world_bridge;
 mod world_sources;
 
 use bevy::{audio::Volume, prelude::*};
@@ -46,12 +48,16 @@ struct SavedSettings {
     master: u32,
     ambience: u32,
     effects: u32,
+    /// Opt-in, NOT retail (user decision 2026-10-03): more audible world objects at once (8 cars,
+    /// 24 peds, 3 NPC / remote skaters instead of retail's 4 / 15 / 1; `native::WorldInstances`).
+    /// Read at start. `SKATE_AUDIO_MORE_AUDIBLE=1` turns it on for one run.
+    more_audible_world: bool,
     // Files saved before 2026-10-03 may hold `"interim"` (the opt-out to the removed interim cue
     // tables) or the older `"native"`; unknown keys are ignored, so they still load.
 }
 impl Default for SavedSettings {
     fn default() -> Self {
-        Self { master: 75, ambience: 100, effects: 100 }
+        Self { master: 75, ambience: 100, effects: 100, more_audible_world: false }
     }
 }
 impl SavedSettings {
@@ -86,6 +92,10 @@ impl AudioSettings {
     /// Linear master gain (0 when muted).
     pub(crate) fn master(&self) -> f32 {
         if self.muted { 0.0 } else { self.saved.master as f32 / 100.0 }
+    }
+    /// The non-retail "more audible" world layout (see `SavedSettings::more_audible_world`).
+    pub(crate) fn more_audible_world(&self) -> bool {
+        self.saved.more_audible_world || std::env::var("SKATE_AUDIO_MORE_AUDIBLE").is_ok_and(|v| v == "1")
     }
     pub(crate) fn category(&self, category: Category) -> f32 {
         let percent = match category {
@@ -160,6 +170,7 @@ impl Plugin for GameAudioPlugin {
             .add_plugins(native::register)
             .add_plugins(world_sources::register)
             .add_plugins(npc_skaters::register)
+            .add_plugins(world_bridge::register)
             .add_systems(
                 PostUpdate,
                 (apply_global_volume, follow_camera).before(bevy::transform::TransformSystems::Propagate),
@@ -215,7 +226,7 @@ mod tests {
     #[test]
     fn old_settings_files_with_interim_or_native_keys_still_load() {
         let old: SavedSettings = serde_json::from_str(r#"{"master":60,"ambience":75,"effects":75,"native":false}"#).unwrap();
-        assert_eq!(old, SavedSettings { master: 60, ambience: 75, effects: 75 });
+        assert_eq!(old, SavedSettings { master: 60, ambience: 75, effects: 75, more_audible_world: false });
         let opted_out: SavedSettings = serde_json::from_str(r#"{"master":50,"interim":true}"#).unwrap();
         assert_eq!(opted_out, SavedSettings { master: 50, ..SavedSettings::default() });
     }
@@ -224,7 +235,9 @@ mod tests {
     fn defaults_are_quiet_and_saved_values_are_bounded() {
         assert_eq!(SavedSettings::default().master, 75);
         let loaded: SavedSettings = serde_json::from_str(r#"{"master":400,"ambience":33,"effects":7}"#).unwrap();
-        assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5 });
+        assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5, more_audible_world: false });
+        let more: SavedSettings = serde_json::from_str(r#"{"more_audible_world":true}"#).unwrap();
+        assert!(more.more_audible_world && more.master == 75);
     }
 
     #[test]

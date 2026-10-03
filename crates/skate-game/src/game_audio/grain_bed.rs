@@ -126,14 +126,11 @@ pub(crate) struct Bed {
     /// The turn intensity (`sub_824C8588`) and brake slews: retail steps each once per call of the
     /// SkateBoard process, no dt.
     slews: OwnerSlews,
-    /// Those slews on the console cadence (2026-10-03, user decision "lets go for like retail"):
-    /// one retail step per console frame, [`Self::slew_calls`] times per host pass, so a release
-    /// takes the console's ~333 ms at any real frame rate. `SKATE_AEMS_SLEW_CONSOLE=0` /
-    /// `E2E_SLEW_CONSOLE=0`: the old host (the step × dt·60, i.e. 0.06 per 1/60 s).
-    pub(crate) slew_console: bool,
     /// The console evaluations ending in this pass (`mixmap::cadence`), set by the host before each
-    /// [`step`]; taken by it. `None` (the MixMap's console cadence off, the per-row e2e renders,
-    /// tests): the old per-frame slews.
+    /// [`step`]; taken by it. The slews run on the console cadence (2026-10-03, user decision "lets
+    /// go for like retail"): one retail step per console frame, so a release takes the console's
+    /// ~333 ms at any real frame rate. `None` (unit tests only): the per-frame slews (the step ×
+    /// dt·60).
     pub(crate) slew_calls: Option<usize>,
     /// Send, level ramp, wobbles and the gains each chain holds.
     chain: ChainState,
@@ -182,7 +179,6 @@ impl Bed {
             push_scale: PushEnvelope::default(),
             shift: PushShift::default(),
             slews: OwnerSlews::default(),
-            slew_console: !std::env::var("SKATE_AEMS_SLEW_CONSOLE").is_ok_and(|v| v == "0"),
             slew_calls: None,
             chain: ChainState::default(),
             latches: Latches::default(),
@@ -220,7 +216,6 @@ impl Bed {
             push_scale: PushEnvelope::default(),
             shift: PushShift::default(),
             slews: OwnerSlews::default(),
-            slew_console: self.slew_console,
             slew_calls: None,
             chain: ChainState::default(),
             latches: Latches::default(),
@@ -316,24 +311,29 @@ impl Bed {
     }
 }
 
+/// One host pass of the bed, on the frames the MixMap host ran ([`super::native::Native::frame_ticks`]:
+/// the physics steps it took), with dt = those steps; nothing on a frame without a step or while
+/// silenced (2026-10-03: before, it ran every rendered frame in real time, the menu pause included,
+/// on a sample that only changes per physics step; the e2e harness always stepped it per pass).
 pub(super) fn update(
     native: Option<ResMut<super::native::Native>>,
     library: Option<Res<Library>>,
     cues: Res<super::skate_events::Cues>,
-    time: Res<Time<Real>>,
 ) {
     let _timing = super::timing::scope(&super::timing::GRAIN_BED);
     let (Some(mut native), Some(library)) = (native, library) else { return };
     let native = &mut *native;
-    // The seam wobbles live with the player tuning.
-    let seams = skate_audio::player::tuning::PlayerTuning {
-        seam_wobbles: native.player.as_ref().map(|p| p.tuning.seam_wobbles.clone()).unwrap_or_default(),
-        ..Default::default()
-    };
-    // The owner's routing (native rolling layers): its binds / stops since the last frame.
+    let ticks = native.frame_ticks;
+    if ticks == 0 {
+        return;
+    }
+    // The owner's routing (native rolling layers): its binds / stops since the last pass.
     let routed = native.player.as_mut().filter(|p| p.components && p.rolling_on).map(|p| (std::mem::take(&mut p.routed.grains), p.routed.primary));
+    // The seam wobbles live with the player tuning.
+    static NO_TUNING: std::sync::OnceLock<skate_audio::player::tuning::PlayerTuning> = std::sync::OnceLock::new();
+    let seams = native.player.as_ref().map_or_else(|| NO_TUNING.get_or_init(Default::default), |p| &p.tuning);
     let (Some(bed), Some(m)) = (&mut native.bed, &native.mixmap) else { return };
-    step(bed, &library, m, &native.shared, &cues.riding, time.delta_secs(), &seams, routed);
+    step(bed, &library, m, &native.shared, &cues.riding, ticks as f32 * super::native::MIX_STEP, seams, routed);
 }
 
 /// One game frame of the bed (after the MixMap tick): [`update`]'s body, callable headless.
@@ -376,7 +376,7 @@ pub(super) fn step_with(
     let r = *r;
     let s = r.audio;
     let frames = (dt * 60.0).clamp(0.0, 6.0);
-    let slew_calls = bed.slew_calls.take().filter(|_| bed.slew_console);
+    let slew_calls = bed.slew_calls.take();
     let speed = r.speed.abs();
 
     // Surface routing: the wanted binding per truck (None = stopped).
@@ -562,16 +562,15 @@ mod tests {
     /// material (tag − 1; 0 = none → 143 → surface 3) → rolling surface → grain member, for every
     /// surface that plays a grain (1–6, 9). And every member has its tuning and recording.
     #[test]
+    #[ignore = "needs the private install data"]
     fn grain_for_matches_the_vault_surface_map_and_the_bed_loads() {
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
         let Ok(library) = Library::load(root) else {
-            eprintln!("skipped: no audio install under {}", root.display());
-            return;
+            panic!("missing private data: no audio install under {}", root.display());
         };
         let map = library.surface_map();
         if map.is_empty() {
-            eprintln!("skipped: the install has no grain tuning (stage_grain_mixmap.py)");
-            return;
+            panic!("missing private data: the install has no grain tuning (stage_grain_mixmap.py)");
         }
         assert_eq!(map.len(), 95);
         for tag in 0..128u32 {

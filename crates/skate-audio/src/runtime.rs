@@ -201,6 +201,14 @@ impl Runtime {
             if self.read >= self.stereo.len() {
                 self.render_block();
                 routes::output_stereo(&self.bus, &mut self.stereo);
+                // Host-side safety for the device stream, not a parity change: a non-finite sample
+                // (a NaN / inf from any bug upstream) would poison the output device's mix, so it
+                // leaves as silence. Finite samples pass untouched (the e2e renders read the bus).
+                for x in &mut self.stereo {
+                    if !x.is_finite() {
+                        *x = 0.0;
+                    }
+                }
                 self.read = 0;
             }
             let n = (self.stereo.len() - self.read).min(out.len() - at);

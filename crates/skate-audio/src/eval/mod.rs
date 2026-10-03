@@ -15,6 +15,8 @@ pub mod fmath;
 pub mod ops;
 pub mod rng;
 pub mod symbols;
+#[doc(hidden)]
+pub mod synthetic;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -145,6 +147,8 @@ pub struct Evaluator {
     pub walks: u64,
     /// When Some, every executed op is appended (tests and golden runs).
     pub trace: Option<Vec<OpTrace>>,
+    /// The walk's snapshot of `order` (kept between walks: no allocation per walk).
+    walk_order: Vec<u32>,
 }
 
 impl Default for Evaluator {
@@ -173,6 +177,7 @@ impl Evaluator {
             countdown: BLOCKS_PER_WALK,
             walks: 0,
             trace: None,
+            walk_order: Vec::new(),
         }
     }
 
@@ -188,7 +193,10 @@ impl Evaluator {
     /// must be installed first. Returns the bank id.
     pub fn load_bank(&mut self, bank: Bank) -> usize {
         let bank = Arc::new(bank);
-        let id = self.banks.len();
+        // The first slot an unloaded bank left (map changes would otherwise grow the list for
+        // ever). Safe to reuse: unloading destroyed the bank's instances and dropped its
+        // constructors; ids are only keys (posts reach banks in constructor order, not id order).
+        let id = self.banks.iter().position(Option::is_none).unwrap_or(self.banks.len());
         let mut modules: Vec<LoadedModule> = bank
             .modules
             .iter()
@@ -211,7 +219,11 @@ impl Evaluator {
                 self.registry.classes[c].constructors.push((id, m));
             }
         }
-        self.banks.push(Some(LoadedBank { bank, modules }));
+        let loaded = Some(LoadedBank { bank, modules });
+        match self.banks.get_mut(id) {
+            Some(slot) => *slot = loaded,
+            None => self.banks.push(loaded),
+        }
         id
     }
 
@@ -298,8 +310,8 @@ impl Evaluator {
     /// Rewrite the payload of a held post (SetMemberData): only its ClassData clients rerun.
     pub fn redeliver(&mut self, node: NodeId, payload: &[i32]) {
         let Some(n) = self.nodes.get(&node.0) else { return };
-        for (inst, off) in n.class_data.clone() {
-            if let Some(i) = self.instance_mut(inst) {
+        for &(inst, off) in &n.class_data {
+            if let Some(Some(i)) = self.instances.get_mut(inst as usize) {
                 let count = u8_at(&i.mem, off as usize + 16) as usize;
                 for k in 0..count {
                     put_i32(&mut i.mem, off as usize + 20 + 4 * k, payload.get(k).copied().unwrap_or(0));
@@ -310,10 +322,9 @@ impl Evaluator {
 
     /// Release a post: its instances see the ClassDestructor pulse; the poster's reference drops.
     pub fn release(&mut self, node: NodeId) {
-        let Some(n) = self.nodes.get_mut(&node.0) else { return };
-        let destructors = n.destructors.clone();
-        for (inst, off) in destructors {
-            if let Some(i) = self.instance_mut(inst) {
+        let Some(n) = self.nodes.get(&node.0) else { return };
+        for &(inst, off) in &n.destructors {
+            if let Some(Some(i)) = self.instances.get_mut(inst as usize) {
                 put_i32(&mut i.mem, off as usize + 16, 1);
             }
         }
@@ -404,16 +415,17 @@ impl Evaluator {
         }
         let Some(Some(lb)) = self.banks.get_mut(inst.bank) else { return };
         lb.modules[inst.module].live -= 1;
-        let module = &lb.bank.modules[inst.module];
-        let players: Vec<u32> = module.players().to_vec();
-        let controllers: Vec<u32> = module.controllers().to_vec();
-        for p in players {
+        // The bank's handle (a reference count, no copy of the lists): `self.release` below needs
+        // `self` while the module's object lists are read.
+        let bank = lb.bank.clone();
+        let module = &bank.modules[inst.module];
+        for &p in module.players() {
             let voice = u32_at(&inst.mem, p as usize + 8);
             if voice != 0 {
                 host.release(voice);
             }
         }
-        for c in controllers {
+        for &c in module.controllers() {
             let child = u32_at(&inst.mem, c as usize + 8);
             if child != 0 {
                 self.release(NodeId(child));
@@ -475,12 +487,16 @@ impl Evaluator {
 
     /// Run every instance's program once, newest first.
     pub fn walk(&mut self, host: &mut dyn VoiceHost) {
-        let order: Vec<u32> = self.order.iter().copied().collect();
-        for id in order {
+        // The order as the walk starts (instances created or destroyed meanwhile don't change it).
+        let mut order = std::mem::take(&mut self.walk_order);
+        order.clear();
+        order.extend(self.order.iter().copied());
+        for &id in &order {
             if self.instance(id).is_some() {
                 self.run(id, host);
             }
         }
+        self.walk_order = order;
         self.walks += 1;
     }
 

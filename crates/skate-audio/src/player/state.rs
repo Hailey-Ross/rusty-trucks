@@ -263,7 +263,84 @@ impl Default for AudioState {
     }
 }
 
+/// What a skater that is NOT simulated with the player's physics (a route follower, a remote
+/// player, a mod's script) can tell the audio: enough for [`AudioState::rolling`]. Not retail data:
+/// retail always fills the whole record from the skater's physics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiteSkater {
+    /// The board's position and velocity (m, m/s, world).
+    pub position: [f32; 3],
+    pub velocity: [f32; 3],
+    /// The board's heading (rad about +Y; 0 = +Z, the game's convention).
+    pub heading: f32,
+    /// Wheels down (front-left, front-right, rear-left, rear-right).
+    pub wheels: [bool; 4],
+    /// The material under the board (the audio surface material, `material_of_tag(tag)`;
+    /// `NO_MATERIAL` = none).
+    pub material: u32,
+    /// On a rail / ledge and its material (`+692`, `NO_MATERIAL` = none).
+    pub grinding: bool,
+    pub grind_material: u32,
+    /// In the air and for how long (s).
+    pub airborne: bool,
+    pub air_time: f32,
+    /// The step (s).
+    pub dt: f32,
+}
+
+impl Default for LiteSkater {
+    fn default() -> Self {
+        Self {
+            position: [0.0; 3],
+            velocity: [0.0; 3],
+            heading: 0.0,
+            wheels: [true; 4],
+            material: NO_MATERIAL,
+            grinding: false,
+            grind_material: NO_MATERIAL,
+            airborne: false,
+            air_time: 0.0,
+            dt: 1.0 / 60.0,
+        }
+    }
+}
+
 impl AudioState {
+    /// A documented minimal fill for a skater not simulated with the player's physics (spec
+    /// `world-audio-hookin` §3.5): speed, wheels and their material, board / COM positions and
+    /// velocities, grind and air flags. Rolling, the Class_rolling surfaces, seams, grinds and
+    /// landings (the wheels coming down) sound; tricks, foot / body foley and the deck / region
+    /// impacts stay silent (their inputs stay at the defaults). `local` is false. The wheel
+    /// positions follow the board's heading (track 0.2 m, wheelbase 0.6 m).
+    pub fn rolling(l: &LiteSkater) -> Self {
+        let [vx, _, vz] = l.velocity;
+        let speed = (vx * vx + vz * vz).sqrt();
+        let contact = if l.airborne { [false; 4] } else { l.wheels };
+        let wheels = contact.iter().filter(|c| **c).count() as u32;
+        let (s, c) = l.heading.sin_cos();
+        let [x, y, z] = l.position;
+        let offs = [(0.1, 0.3), (-0.1, 0.3), (0.1, -0.3), (-0.1, -0.3)];
+        Self {
+            dt: l.dt,
+            ground_speed: speed,
+            com_velocity: l.velocity,
+            com_position: [x, y + 1.0, z],
+            board_position: l.position,
+            board_velocity: l.velocity,
+            wheel_count: wheels,
+            wheel_contact: contact,
+            wheel_material: [if l.airborne { NO_MATERIAL } else { l.material }; 4],
+            wheel_position: offs.map(|(r, a)| [x + c * r + s * a, y, z - s * r + c * a]),
+            airborne: l.airborne,
+            air_time: if l.airborne { l.air_time } else { 0.0 },
+            grinding: l.grinding,
+            grind_family: if l.grinding { 0 } else { -1 },
+            grind_material: if l.grinding { l.grind_material } else { NO_MATERIAL },
+            local: false,
+            ..Self::default()
+        }
+    }
+
     /// `+212`: |COM velocity|.
     pub fn com_speed(&self) -> f32 {
         let [x, y, z] = self.com_velocity;

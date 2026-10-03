@@ -535,8 +535,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs the private install data"]
     fn grid_hits_once_per_axle_per_line_and_toggle_the_trigger_word() {
-        let Some(mut m) = mixmap() else { return eprintln!("skipped: no MixMap in the install") };
+        let Some(mut m) = mixmap() else { panic!("missing private data: no MixMap in the install") };
         let t = tuning();
         let mut k = Seams::default();
         let first = k.process(&rolling(0.1, 1), &t, &mut m);
@@ -574,8 +575,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs the private install data"]
     fn a_material_change_fires_with_the_transition_surface_and_skips_the_grid() {
-        let Some(mut m) = mixmap() else { return eprintln!("skipped: no MixMap in the install") };
+        let Some(mut m) = mixmap() else { panic!("missing private data: no MixMap in the install") };
         let t = tuning();
         let mut k = Seams::default();
         k.process(&rolling(0.1, 1), &t, &mut m);
@@ -592,8 +594,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs the private install data"]
     fn distance_mode_fires_front_then_rear() {
-        let Some(mut m) = mixmap() else { return eprintln!("skipped: no MixMap in the install") };
+        let Some(mut m) = mixmap() else { panic!("missing private data: no MixMap in the install") };
         let t = tuning();
         let mut k = Seams::default();
         k.process(&rolling(0.0, 10), &t, &mut m);

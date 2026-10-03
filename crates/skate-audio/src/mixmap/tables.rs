@@ -225,11 +225,11 @@ mod tests {
 
     /// The generated tables against the retail image's, when the private TU3 image is present.
     #[test]
+    #[ignore = "needs the private install data"]
     fn tables_match_the_image_when_present() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../.local/tu3-image/default_82000000_011B0000.bin");
         let Ok(img) = std::fs::read(path) else {
-            eprintln!("skipped: no TU3 image at {path}");
-            return;
+            panic!("missing private data: no TU3 image at {path}");
         };
         let word = |a: u32| u32::from_be_bytes(img[(a - 0x8200_0000) as usize..][..4].try_into().unwrap());
         let t = Tables::generate();

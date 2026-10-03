@@ -19,7 +19,7 @@ const BRAKE_TIMEOUT: f32 = 0.1;
 
 /// Continuous state sampled at the last physics tick.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Riding {
+pub(crate) struct Riding {
     pub board: Vec3,
     pub speed: f32,
     /// Majority audio surface tag under the wheels in contact (0 with none).
@@ -39,25 +39,80 @@ pub(super) struct Riding {
     pub deck_up: f32,
     pub deck_contact: bool,
     pub deck_material: u32,
+    /// The wheel positions of the physics step before this one (this step's on the first): with
+    /// `audio.wheel_position` the pair the rendered board interpolates between, which Class_Seams
+    /// reads (`PlayerAudio::step_wheels`).
+    pub wheels_before: [[f32; 3]; 4],
 }
 
+/// What `observe` publishes for the audio host (`native::mixmap_frame`).
+///
+/// The host's clock is the physics steps (2026-10-03, PR #32 review): `observe` runs once per
+/// physics step and counts the steps since the host last took them ([`Cues::take_steps`]); the
+/// host runs inputs / process / tick / update only on frames that took steps, as many ticks as
+/// steps (capped), and none while nothing steps (menu pause). The one-step pulses of the steps
+/// not yet taken are OR-latched into the published sample ([`latch_pulses`]), so a frame that takes
+/// two steps still sees the first one's pulse and a frame without a step re-processes nothing.
 #[derive(Resource, Default)]
-pub(super) struct Cues {
+pub(crate) struct Cues {
     pub riding: Riding,
+    /// Physics steps published since the host last took them.
+    pub steps: u32,
 }
 
+impl Cues {
+    /// One physics step's sample: latched onto the pending one while the host has not taken it.
+    pub(super) fn publish(&mut self, mut next: Riding) {
+        if self.steps > 0 {
+            latch_pulses(&self.riding, &mut next);
+        }
+        self.riding = next;
+        self.steps = self.steps.saturating_add(1);
+    }
+
+    /// The steps since the last call (the host's ticks for this frame); the latched pulses are
+    /// consumed with them (the next [`Cues::publish`] starts fresh).
+    pub(super) fn take_steps(&mut self) -> u32 {
+        std::mem::take(&mut self.steps)
+    }
+}
+
+/// The audio state's one-step pulses, OR-ed over the steps a host pass takes at once: `+335` (the
+/// push plant's rise, `push_trigger`). Every other field is a level (the latest step's value is
+/// the one retail's per-frame audio manager reads too), a latch (`+228`, `+468`, `+192` / `+692`),
+/// a 4-frame max (`+668`, `+496..`) or a counter (`Riding::pushes`), and the components detect
+/// their own edges (landing, bail, grind) against the last sample they processed.
+pub(super) fn latch_pulses(pending: &Riding, next: &mut Riding) {
+    next.audio.push_trigger |= pending.audio.push_trigger;
+}
+
+/// `observe`'s own memory: the local player's [`SkaterAudioMemory`] plus what only the local
+/// player's logs and the bed's brake input need.
 #[derive(Default)]
-pub(super) struct Seen {
-    started: bool,
-    push: bool,
-    /// Last tick's audio-state push plant (`+333 || +334`, see [`push_plant`]).
-    planted: bool,
+pub(crate) struct Seen {
+    /// The audio-state builder's per-skater memory.
+    skater: SkaterAudioMemory,
     /// Foot braking, time since the last foot-down event, and the last event (+1/-1/0).
     braking: bool,
     brake_time: f32,
     brake_event: i32,
     on_rail: bool,
     trace: Option<bool>,
+    /// Rows written to the audio state log.
+    log_frame: u64,
+}
+
+/// The per-skater memory the audio-state builder ([`skater_audio_state`]) keeps between physics
+/// steps: the latches, rings and edges retail's bridge (`sub_824B0DA8`) and conditioner keep per
+/// skater. One per simulated skater (the local player's lives in `observe`; an AI-skater system
+/// keeps one per skater it fills an `AudioState` for).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SkaterAudioMemory {
+    started: bool,
+    /// Last tick's animation push contact.
+    push: bool,
+    /// Last tick's audio-state push plant (`+333 || +334`, see [`push_plant`]).
+    planted: bool,
     /// Seconds in the current air phase (audio state `+236`).
     air_time: f32,
     /// Latched grind family / material (`+192` / `+692`).
@@ -78,8 +133,6 @@ pub(super) struct Seen {
     com_speed_212: f32,
     /// The conditioner's step code (`+740`, `sub_827729B8`).
     step_code: skate_audio::player::footsteps::StepCode,
-    /// Rows written to the audio state log.
-    log_frame: u64,
 }
 
 fn vec(v: skate_core::math::Vector3) -> Vec3 {
@@ -110,7 +163,94 @@ fn wheel_surface(physics: &GamePhysics) -> (u32, u32) {
     (touching.len() as u32, surface.unwrap_or(0))
 }
 
-pub(super) fn observe(
+/// What one builder step gives besides the record (for `observe`'s publish and logs).
+struct Built {
+    state: skate_audio::player::AudioState,
+    /// The physical state, wheels down, majority surface tag, on a rail.
+    state_id: u32,
+    wheels: u32,
+    surface: u32,
+    on_rail: bool,
+    /// The plant's rise (`+335`) and the animation's push contact edge (the state log's `push`).
+    plant_edge: bool,
+    push_edge: bool,
+    /// State55 (the foot plant flag, the state log's `plant`).
+    state55: bool,
+    board: Vec3,
+    unridden: bool,
+}
+
+/// The retail audio-state record of one skater after a physics step: the only correct way to fill
+/// an [`skate_audio::player::AudioState`] from a `GamePhysics` / `SkaterRuntime` pair (air time,
+/// grind family / material latch, the deck and region rings, the step code, the push plant, `+216`).
+/// The local player's `observe` publishes exactly this; an AI-skater system that simulates its
+/// skaters with the player's physics calls it once per physics step per skater (only for skaters
+/// near the camera, see `crate::world_audio`), each with its own `memory`. `dt` = the step's
+/// seconds. Reads the animation's latched push contact without taking it.
+#[cfg_attr(not(test), allow(dead_code))] // the hook for a future AI-skater system (doc 11)
+pub(crate) fn skater_audio_state(physics: &GamePhysics, skater: &SkaterRuntime, memory: &mut SkaterAudioMemory, dt: f32) -> skate_audio::player::AudioState {
+    build(physics, skater, memory, dt, skater.animation_input.audio.push).state
+}
+
+fn build(physics: &GamePhysics, skater: &SkaterRuntime, memory: &mut SkaterAudioMemory, dt: f32, push: bool) -> Built {
+    let state = skater.player_state.current() as u32;
+    let deck = physics.board.bodies()[BodyId::Deck.index()].rates;
+    let board = vec(deck.position);
+    let grinds = &skater.player_input.physical.grinds;
+    let on_rail = (grinds.grinding_316 != 0 || grinding(state)) && grinds.leaving_317 == 0;
+    let unridden = board_unridden(state);
+    let (wheels, surface) = if unridden { (0, 0) } else { wheel_surface(physics) };
+    // The animation's push contact edge (the state log's `push` column).
+    let push_edge = memory.started && push && !memory.push;
+    let state55 = skater.player_state.state_flags.get(55 - 52).copied().unwrap_or(false);
+    let (planted, plant_edge) = push_plant(state55, memory.planted);
+    let plant_edge = memory.started && plant_edge;
+    let m = &mut *memory;
+    let mut audio_state = audio_state(physics, skater, AudioFrame {
+        dt,
+        state,
+        unridden,
+        wheels,
+        board: (board, vec(deck.linear_velocity)),
+        on_rail,
+        push: planted,
+        push_trigger: plant_edge,
+        air_time: &mut m.air_time,
+        grind_family: &mut m.grind_family,
+        grind_material: &mut m.grind_material,
+        jump_velocity: &mut m.jump_velocity,
+        grind_impact: &mut m.grind_impact,
+        deck_ring: &mut m.deck_ring,
+        deck_at: &mut m.deck_at,
+        region_ring: &mut m.region_ring,
+        region_at: &mut m.region_at,
+        step_code: &mut m.step_code,
+        slip: if wheels > 0 {
+            let ri = physics.board.part_transforms()[BodyId::Deck.index()].basis.columns[0];
+            skate_audio::player::state::slip(vec(deck.linear_velocity).dot(Vec3::from_array(ri)))
+        } else {
+            0.0
+        },
+        deck_spin: {
+            let at = physics.board.part_transforms()[BodyId::Deck.index()].basis.columns[2];
+            vec(deck.angular_velocity).dot(Vec3::from_array(at))
+        },
+        deck_spin_xy: {
+            let basis = physics.board.part_transforms()[BodyId::Deck.index()].basis.columns;
+            let w = vec(deck.angular_velocity);
+            [w.dot(Vec3::from_array(basis[0])), w.dot(Vec3::from_array(basis[1]))]
+        },
+    });
+    // `+216` = last tick's `+212`; the body poster applies the graph at it (`player::contacts`).
+    audio_state.com_speed_216 = memory.com_speed_212;
+    memory.com_speed_212 = audio_state.com_speed();
+    memory.started = true;
+    memory.push = push;
+    memory.planted = planted;
+    Built { state: audio_state, state_id: state, wheels, surface, on_rail, plant_edge, push_edge, state55, board, unridden }
+}
+
+pub(crate) fn observe(
     physics: Res<GamePhysics>,
     mut skater: ResMut<SkaterRuntime>,
     mut cues: ResMut<Cues>,
@@ -139,7 +279,7 @@ pub(super) fn observe(
     if brake_event != 0 && brake_event != seen.brake_event {
         info!("AUDIO_EVENT brake {} speed={speed:.2} state={state}", if brake_event > 0 { "down" } else { "up" });
     }
-    if audio.push && !seen.push {
+    if audio.push && !seen.skater.push {
         info!("AUDIO_EVENT push speed={speed:.2} state={state}");
     }
     let mut brake_time = if audio.brake_down { 0.0 } else { seen.brake_time + time.delta_secs() };
@@ -156,52 +296,11 @@ pub(super) fn observe(
         info!("AUDIO_EVENT grind {} surface={} ledge={} flag={} leaving={} state={state}", if on_rail { "start" } else { "stop" },
             grinds.audio_surface_216, grinds.is_ledge_320, grinds.grinding_316, grinds.leaving_317);
     }
-    let unridden = board_unridden(state);
-    let (wheels, surface) = if unridden { (0, 0) } else { wheel_surface(&physics) };
-    // The animation's push contact edge (the state log's `push` column).
-    let push_edge = seen.started && audio.push && !seen.push;
-    let state55 = skater.player_state.state_flags.get(55 - 52).copied().unwrap_or(false);
-    let (planted, plant_edge) = push_plant(push_plant_on(), state55, audio.push, seen.planted, seen.push);
-    let plant_edge = seen.started && plant_edge;
-    let memory: &mut Seen = &mut seen;
-    let mut audio_state = audio_state(&physics, &skater, AudioFrame {
-        dt: time.delta_secs(),
-        state,
-        unridden,
-        wheels,
-        board: (board, vec(deck.linear_velocity)),
-        on_rail,
-        push: planted,
-        push_trigger: plant_edge,
-        air_time: &mut memory.air_time,
-        grind_family: &mut memory.grind_family,
-        grind_material: &mut memory.grind_material,
-        jump_velocity: &mut memory.jump_velocity,
-        grind_impact: &mut memory.grind_impact,
-        deck_ring: &mut memory.deck_ring,
-        deck_at: &mut memory.deck_at,
-        region_ring: &mut memory.region_ring,
-        region_at: &mut memory.region_at,
-        step_code: &mut memory.step_code,
-        slip: if wheels > 0 {
-            let ri = physics.board.part_transforms()[BodyId::Deck.index()].basis.columns[0];
-            skate_audio::player::state::slip(vec(deck.linear_velocity).dot(Vec3::from_array(ri)))
-        } else {
-            0.0
-        },
-        deck_spin: {
-            let at = physics.board.part_transforms()[BodyId::Deck.index()].basis.columns[2];
-            vec(deck.angular_velocity).dot(Vec3::from_array(at))
-        },
-        deck_spin_xy: {
-            let basis = physics.board.part_transforms()[BodyId::Deck.index()].basis.columns;
-            let w = vec(deck.angular_velocity);
-            [w.dot(Vec3::from_array(basis[0])), w.dot(Vec3::from_array(basis[1]))]
-        },
-    });
-    // `+216` = last tick's `+212`; the body poster applies the graph at it (`player::contacts`).
-    audio_state.com_speed_216 = seen.com_speed_212;
-    let com_speed_212 = audio_state.com_speed();
+    let started = seen.skater.started;
+    let built = build(&physics, &skater, &mut seen.skater, time.delta_secs(), audio.push);
+    debug_assert_eq!((built.state_id, built.on_rail, built.board), (state, on_rail, board));
+    let Built { state: audio_state, wheels, surface, plant_edge, push_edge, state55, unridden, .. } = built;
+    let com_speed_212 = seen.skater.com_speed_212;
     if super::state_log::enabled() {
         let p = &skater.player_input.physical;
         let s = &audio_state;
@@ -281,7 +380,8 @@ pub(super) fn observe(
     }
     // The bed's push envelopes (`grain_bed.rs` `pushes_seen`) count the same edge as `+335`.
     let pushes = cues.riding.pushes.wrapping_add(u32::from(plant_edge));
-    cues.riding = Riding {
+    let wheels_before = if started { cues.riding.audio.wheel_position } else { audio_state.wheel_position };
+    cues.publish(Riding {
         board,
         speed: physics.riding.motion.ground_speed,
         surface,
@@ -293,41 +393,22 @@ pub(super) fn observe(
         deck_up: deck_up(&physics, &skater),
         deck_contact: skater.player_input.physical.collision.flag_3475 != 0,
         deck_material: skate_audio::player::state::material_of_tag(physics.riding.ground.part_audio_surfaces[2]),
-    };
-    *seen = Seen {
-        started: true,
-        push: audio.push, planted, braking, brake_time, brake_event, on_rail, trace: Some(trace),
-        air_time: seen.air_time,
-        grind_family: seen.grind_family,
-        grind_material: seen.grind_material,
-        jump_velocity: seen.jump_velocity,
-        grind_impact: seen.grind_impact,
-        deck_ring: seen.deck_ring,
-        step_code: seen.step_code,
-        deck_at: seen.deck_at,
-        region_ring: seen.region_ring,
-        region_at: seen.region_at,
-        com_speed_212,
-        log_frame: seen.log_frame + u64::from(super::state_log::enabled()),
-    };
+        wheels_before,
+    });
+    seen.braking = braking;
+    seen.brake_time = brake_time;
+    seen.brake_event = brake_event;
+    seen.on_rail = on_rail;
+    seen.log_frame += u64::from(super::state_log::enabled());
 }
 
 /// The audio state's `+236` (Air+176, the time in the air *state*) after this tick. It counts
 /// while the air state (200..300) holds, so it keeps counting on the landing tick (wheels down,
 /// `+332` already clear, the state still air) and drops to 0 with the state — the recomp's TREAT
 /// capture (session all_20261002_223306: last air tick 0.750 s, landing tick 0.767 s, then 0; the
-/// same one-tick hold as `+240`). `follow_state` off: the count before 2026-10-02 (air flag only,
-/// 0 on the landing tick).
-pub(super) fn air_time_236(previous: f32, state: u32, airborne: bool, dt: f32, follow_state: bool) -> f32 {
-    let counting = if follow_state { (200..300).contains(&state) } else { airborne };
-    if counting { previous + dt } else { 0.0 }
-}
-
-/// `SKATE_AEMS_AIR_TIME_STATE=0` restores the audio state's `+236` count from before 2026-10-02
-/// (reset on the landing tick instead of with the air state).
-fn air_time_follows_state() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| !std::env::var("SKATE_AEMS_AIR_TIME_STATE").is_ok_and(|v| v == "0"))
+/// same one-tick hold as `+240`).
+pub(super) fn air_time_236(previous: f32, state: u32, dt: f32) -> f32 {
+    if (200..300).contains(&state) { previous + dt } else { 0.0 }
 }
 
 /// The audio state's push plant `+333 || +334` and its edge `+335` (the bridge `sub_824B0DA8`):
@@ -336,17 +417,10 @@ fn air_time_follows_state() -> bool {
 /// (record +160 bit 30) is not mapped yet, so the plant is State55 itself (session review
 /// 2026-10-03 #1). Every push sound but the stroke foley reads these: the rattle and the bed's
 /// push envelopes (`sub_824C6198`), the clothing plant, the Contacts' plant / lift. Retail plants
-/// land +548 ms after the stroke (`+337`); the animation's push contact (`audio.push`) fires near
-/// the stroke. `on` false (`SKATE_AEMS_PUSH_PLANT=0`): the animation's push contact, as before.
-/// Returns (planted, edge) from this tick's State55 / push contact and last tick's values.
-pub(super) fn push_plant(on: bool, state55: bool, push: bool, was_planted: bool, was_push: bool) -> (bool, bool) {
-    if on { (state55, state55 && !was_planted) } else { (push, push && !was_push) }
-}
-
-/// `SKATE_AEMS_PUSH_PLANT=0` restores the push plant from the animation's push contact.
-fn push_plant_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| !std::env::var("SKATE_AEMS_PUSH_PLANT").is_ok_and(|v| v == "0"))
+/// land +548 ms after the stroke (`+337`); the animation's push contact fires near the stroke.
+/// Returns (planted, edge) from this tick's State55 and last tick's plant.
+pub(super) fn push_plant(state55: bool, was_planted: bool) -> (bool, bool) {
+    (state55, state55 && !was_planted)
 }
 
 /// What [`audio_state`] needs beyond the physics resources.
@@ -442,7 +516,7 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
     let lines = &physics.riding.wheel_lines;
     let wheel_contact: [bool; 4] = std::array::from_fn(|i| !f.unridden && ground.parts[i].in_contact);
     let airborne = (200..300).contains(&f.state) && f.wheels == 0;
-    *f.air_time = air_time_236(*f.air_time, f.state, airborne, f.dt, air_time_follows_state());
+    *f.air_time = air_time_236(*f.air_time, f.state, f.dt);
     let grinding = f.on_rail;
     if p.grinds.grinding_316 != 0 || grinding {
         *f.grind_family = Some(p.grinds.words_136_140[0] as i32);
@@ -649,39 +723,33 @@ mod tests {
 
     /// `+236` across an ollie as the recomp's TREAT capture has it (session all_20261002_223306,
     /// 60 Hz ticks): 0 on the ground, 1/60 on the first air tick, still counting on the landing
-    /// tick (state 201, wheels down), 0 once the state leaves the air. Off: 0 on the landing tick.
+    /// tick (state 201, wheels down), 0 once the state leaves the air.
     #[test]
     fn air_time_holds_through_the_landing_tick() {
         let dt = 1.0 / 60.0;
         // (state, wheels down) per tick: rolling, takeoff, 3 air ticks, landing tick, rolling.
         let ticks = [(103, true), (201, false), (201, false), (201, false), (201, false), (201, true), (100, true)];
-        let run = |follow: bool| {
-            let mut t = 0.0f32;
-            ticks.iter().map(|&(state, down)| {
-                t = air_time_236(t, state, (200..300).contains(&state) && !down, dt, follow);
-                (t * 60.0).round() as i32
-            }).collect::<Vec<_>>()
-        };
-        assert_eq!(run(true), [0, 1, 2, 3, 4, 5, 0]);
-        assert_eq!(run(false), [0, 1, 2, 3, 4, 0, 0]);
+        let mut t = 0.0f32;
+        let run: Vec<i32> = ticks.iter().map(|&(state, _down)| {
+            t = air_time_236(t, state, dt);
+            (t * 60.0).round() as i32
+        }).collect();
+        assert_eq!(run, [0, 1, 2, 3, 4, 5, 0]);
     }
 
-    /// The push plant follows State55 and fires its edge once per plant; off: the animation's push
-    /// contact as before.
+    /// The push plant follows State55 (not the animation's push contact) and fires its edge once
+    /// per plant.
     #[test]
     fn the_push_plant_is_state55_and_its_rise() {
         // (State55, push contact) per tick: the stroke's contact first, the plant ~0.5 s later.
         let ticks = [(false, true), (false, true), (false, false), (true, false), (true, false), (false, false)];
-        let run = |on: bool| {
-            let (mut planted, mut push) = (false, false);
-            ticks.iter().map(|&(s55, p)| {
-                let r = push_plant(on, s55, p, planted, push);
-                (planted, push) = (r.0, p);
-                r
-            }).collect::<Vec<_>>()
-        };
-        assert_eq!(run(true), [(false, false), (false, false), (false, false), (true, true), (true, false), (false, false)]);
-        assert_eq!(run(false), [(true, true), (true, false), (false, false), (false, false), (false, false), (false, false)]);
+        let mut planted = false;
+        let run: Vec<(bool, bool)> = ticks.iter().map(|&(s55, _push)| {
+            let r = push_plant(s55, planted);
+            planted = r.0;
+            r
+        }).collect();
+        assert_eq!(run, [(false, false), (false, false), (false, false), (true, true), (true, false), (false, false)]);
     }
 
     #[test]
@@ -714,13 +782,14 @@ mod tests {
     /// game wrote from Δv·n = v_new·n − v_old·n along its normal and its mass, within the lines' 4-decimal
     /// rounding. The signed form misses the lines with Δv·n < 0.
     #[test]
+    #[ignore = "needs the private install data"]
     fn region_impacts_match_the_recomps_bail_lines() {
         use skate_core::physics::skeleton_body::ContactRegion;
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.local/recomp/sessions"));
         let mut lines = Vec::new();
         for run in ["bailrun_t2_20261003_100040", "bailrun_ok_20261003_100226", "bailrun_ok2_20261003_100514", "bailrun_ok3_20261003_101354"] {
             let Ok(text) = std::fs::read_to_string(root.join(run).join("trace.tsv")) else {
-                return eprintln!("skipped: no recomp bail trace {run}");
+                panic!("missing private data: no recomp bail trace {run}");
             };
             for l in text.lines().filter(|l| l.starts_with("BAILREG\t")) {
                 let f: Vec<&str> = l.split('\t').collect();

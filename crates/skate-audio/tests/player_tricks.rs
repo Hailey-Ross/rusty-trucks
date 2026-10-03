@@ -244,6 +244,7 @@ fn peak(g: &[f32]) -> f32 {
 /// 0.21–0.31). Asserts: Class_Flips posts once on the first air frame and opens a voice; the
 /// voices stay within unity and the flip whooshes land within 3 dB of retail's 0.35.
 #[test]
+#[ignore = "needs the private install data"]
 fn tricks_play_their_retail_banks() {
     // Flips spin about the deck's At row, shove-its about Up, the ollie pitches about Ri.
     let cases = [
@@ -257,7 +258,7 @@ fn tricks_play_their_retail_banks() {
     let mut whooshes = Vec::new();
     for (name, id, id2, spin) in cases {
         let Some(r) = run_tricks(150, |f| trick_state(f, id, id2, 13, 36, spin)) else {
-            return eprintln!("skipped: no install with the trick banks and MixMap");
+            panic!("missing private data: no install with the trick banks and MixMap");
         };
         let posts: Vec<String> = r.posts.iter().map(|(f, c, w)| format!("{f}:{c}:{}", if *c == "Class_Flips" { w[11] } else { w[9] })).collect();
         let list = |bank: &str| -> String {
@@ -288,9 +289,10 @@ fn tricks_play_their_retail_banks() {
 /// First-trigger rule: the same kickflip twice; every voice of the first trick (the bank's first
 /// use) peaks at the gain the same sample reaches in the second.
 #[test]
+#[ignore = "needs the private install data"]
 fn the_first_flip_sounds_like_the_second() {
     let Some(r) = run_tricks(300, |f| trick_state(f % 150, 0, 28, 13, 36, [0.0, 0.0, 25.0])) else {
-        return eprintln!("skipped: no install with the trick banks and MixMap");
+        panic!("missing private data: no install with the trick banks and MixMap");
     };
     for bank in ["Sk8_Air_Flip_Tricks", "Foley_Cloth"] {
         let v = &r.voices[bank];
@@ -342,9 +344,10 @@ fn run_treatment_with(b: TreatmentGlobals, state: impl Fn(usize) -> AudioState) 
 /// with the `B+164` flag of PR #4's capture set, slots 0–12 (retail never plays them: the reset
 /// values stay).
 #[test]
+#[ignore = "needs the private install data"]
 fn treatment_plays_before_the_landing_at_the_retail_level() {
     let Some((starts, posts)) = run_treatment(TreatmentGlobals::default()) else {
-        return eprintln!("skipped: no Treatments bank (decode_bank.py Treatments) or no install");
+        panic!("missing private data: no Treatments bank (decode_bank.py Treatments) or no install");
     };
     let landings = [30 + 13 + 36, 230 + 13 + 36];
     println!("Treatments voices (start frame, slot, peak gain), landings at frames {landings:?}:\n  {starts:?}");
@@ -393,7 +396,7 @@ fn treatment_slots_16_17_by_word() {
     ];
     for (name, p) in profiles {
         let Some((starts, _)) = run_treatment_with(TreatmentGlobals::default(), p) else {
-            return eprintln!("skipped: no Treatments bank or install");
+            panic!("missing private data: no Treatments bank or install");
         };
         let slots: Vec<_> = starts.iter().filter(|v| v.1 >= 15).collect();
         println!("{name:32} slots ≥ 15: {slots:?}");
@@ -408,7 +411,7 @@ fn treatment_slots_16_17_by_w8_step() {
     for v in [0.05f32, 0.1, 0.2, 0.3, 0.37, 0.4, 0.5, 0.7, 1.0, 2.0, 5.0, 10.0] {
         let p = move |f: usize| AudioState { air_until_landing: if (40..160).contains(&f) { v } else { 0.0 }, ..AudioState::default() };
         let Some((starts, _)) = run_treatment_with(TreatmentGlobals::default(), p) else {
-            return eprintln!("skipped: no Treatments bank or install");
+            panic!("missing private data: no Treatments bank or install");
         };
         println!("w8 {v:5.2} s: {:?}", starts);
     }
@@ -429,7 +432,7 @@ fn treatment_slots_16_17_by_forced_word() {
         }
     }
     for (word, value) in cases {
-        let Some(mut rig) = Rig::new(&["Treatments"]) else { return eprintln!("skipped: no Treatments bank or install") };
+        let Some(mut rig) = Rig::new(&["Treatments"]) else { panic!("missing private data: no Treatments bank or install") };
         let (t, g) = (TreatmentTuning::default(), Globals::default());
         let mut k = Treatment::default();
         let mut starts: Vec<(usize, u16)> = Vec::new();
@@ -593,8 +596,8 @@ fn replay_treat(rows: &[TreatRow], shape: impl Fn(&AudioState, f64) -> AudioStat
 #[test]
 #[ignore = "diagnostic"]
 fn treatment_replays_the_recomp_capture() {
-    let Some(rows) = treat_rows() else { return eprintln!("skipped: no TREAT session") };
-    let Some(voices) = replay_treat(&rows, |s, _| s.clone()) else { return eprintln!("skipped: no Treatments bank") };
+    let Some(rows) = treat_rows() else { panic!("missing private data: no TREAT session") };
+    let Some(voices) = replay_treat(&rows, |s, _| s.clone()) else { panic!("missing private data: no Treatments bank") };
     let airs = treat_airs(&rows);
     for &(a, b) in &airs {
         let inside: Vec<_> = voices
@@ -699,7 +702,7 @@ fn replay_treat_rows(rows: &[TreatRow], from: f64, to: f64, phase_ms: f64, stall
 #[test]
 #[ignore = "diagnostic"]
 fn treatment_airs_by_walk_phase() {
-    let Some(rows) = treat_rows() else { return eprintln!("skipped: no TREAT session") };
+    let Some(rows) = treat_rows() else { panic!("missing private data: no TREAT session") };
     let windows: Vec<(f64, f64, Option<(f64, f64)>)> = std::env::var("TREAT_AIRS").ok().map_or(
         vec![
             (101_400.0, 104_500.0, None),
@@ -717,7 +720,7 @@ fn treatment_airs_by_walk_phase() {
         let first_air = rows.iter().find(|r| r.ms >= from && r.air).map_or(from, |r| r.ms);
         println!("window {from}..{to} (first air row {first_air}), audio stall {stall:?}:");
         for p in (0..32).step_by(2) {
-            let Some(v) = replay_treat_rows(&rows, from, to, p as f64, stall) else { return eprintln!("skipped: no Treatments bank") };
+            let Some(v) = replay_treat_rows(&rows, from, to, p as f64, stall) else { panic!("missing private data: no Treatments bank") };
             let list: Vec<_> = v.iter().map(|v| (v.slot, (v.start - first_air).round() as i64, (v.peak * 1e4).round() / 1e4)).collect();
             println!("  phase {p:2} ms: {list:?}");
         }
@@ -738,9 +741,10 @@ const RECOMP_LONG_AIR_GAIN_MEDIAN: f32 = 0.0149;
 /// voices: 13 / 14 / 15 exactly, 16 / 17 in every 0.6–1.0 s air at the recomp's level. Data-gated
 /// (the session and the Treatments bank).
 #[test]
+#[ignore = "needs the private install data"]
 fn treatment_replay_of_the_recomp_capture() {
-    let Some(rows) = treat_rows() else { return eprintln!("skipped: no TREAT session") };
-    let Some(voices) = replay_treat(&rows, |s, _| s.clone()) else { return eprintln!("skipped: no Treatments bank") };
+    let Some(rows) = treat_rows() else { panic!("missing private data: no TREAT session") };
+    let Some(voices) = replay_treat(&rows, |s, _| s.clone()) else { panic!("missing private data: no Treatments bank") };
     let count = |slot: u16| voices.iter().filter(|v| v.slot == slot).count();
     for (slot, recomp) in RECOMP_TREATMENT_VOICES {
         println!("slot {slot}: {} voices (recomp {recomp})", count(slot));
@@ -781,7 +785,7 @@ fn sense_of_speed_replay_of_the_recomp_speeds() {
     use skate_audio::player::components::SenseOfSpeed;
     let session = std::env::var("GREC_SESSION").map(PathBuf::from).unwrap_or_else(|_| root().join(".local/recomp/sessions/all_20261002_223613"));
     let object = std::env::var("GREC_OBJECT").unwrap_or_else(|_| "40C33020".into());
-    let Ok(text) = std::fs::read_to_string(session.join("trace.tsv")) else { return eprintln!("skipped: no GREC session") };
+    let Ok(text) = std::fs::read_to_string(session.join("trace.tsv")) else { panic!("missing private data: no GREC session") };
     // (ms, ground speed m/s, air)
     let rows: Vec<(f64, f32, bool)> = text
         .lines()
@@ -794,9 +798,9 @@ fn sense_of_speed_replay_of_the_recomp_speeds() {
         })
         .collect();
     if rows.is_empty() {
-        return eprintln!("skipped: no GREC rows for {object}");
+        panic!("missing private data: no GREC rows for {object}");
     }
-    let Some(mut rig) = Rig::new(&["sense_of_speed"]) else { return eprintln!("skipped: no sense_of_speed bank") };
+    let Some(mut rig) = Rig::new(&["sense_of_speed"]) else { panic!("missing private data: no sense_of_speed bank") };
     let mut k = SenseOfSpeed::default();
     let mut voices: HashMap<u32, (u16, f64, f32)> = HashMap::new();
     let (t0, t1) = (rows[0].0, rows[rows.len() - 1].0);

@@ -7,7 +7,6 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use skate_audio::bus::env::{DEFAULT_PRESET, Preset};
 use skate_audio::bus::flange::FlangePreset;
@@ -19,15 +18,24 @@ use skate_audio::runtime::Runtime;
 
 struct Counting;
 
-static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 thread_local! {
     static COUNTING: Cell<bool> = const { Cell::new(false) };
+    /// This thread's counted allocations (each test reads its own).
+    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+}
+
+fn count_one() {
+    let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
+}
+
+fn allocations() -> u64 {
+    ALLOCATIONS.with(Cell::get)
 }
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if COUNTING.try_with(Cell::get).unwrap_or(false) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            count_one();
         }
         unsafe { System.alloc(layout) }
     }
@@ -36,7 +44,7 @@ unsafe impl GlobalAlloc for Counting {
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if COUNTING.try_with(Cell::get).unwrap_or(false) {
-            ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            count_one();
         }
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -84,6 +92,7 @@ fn scene() -> (Runtime, Vec<u32>) {
 #[test]
 fn steady_state_render_does_not_allocate() {
     let (mut rt, ids) = scene();
+    let before = allocations();
     let mut measured = 0;
     for block in 0..400usize {
         if block % 6 == 0 {
@@ -103,7 +112,50 @@ fn steady_state_render_does_not_allocate() {
         COUNTING.with(|c| c.set(false));
         measured += usize::from(count);
     }
-    let n = ALLOCATIONS.load(Ordering::Relaxed);
+    let n = allocations() - before;
     eprintln!("{n} allocations in {measured} steady-state blocks ({} voices)", rt.mixer.voice_count());
     assert_eq!(n, 0, "render_block allocated {n} times in {measured} blocks");
+}
+
+/// The game thread's per-frame calls under the runtime lock must not allocate either (PR #32
+/// review, 2026-10-03): with an installed (hand-built) AEMS bank and a posted program playing,
+/// `redeliver` every console frame, `release` and the evaluator walks inside `render_block` run
+/// without an allocation once warm (the walk reuses its order snapshot; `redeliver` / `release`
+/// read their client lists in place; a destroy reads the module's object lists in place).
+#[test]
+fn installed_bank_redeliver_release_and_walks_do_not_allocate() {
+    use skate_audio::eval::synthetic::{Ex, bank, player_module, project};
+    let (mut rt, _) = scene();
+    rt.eval.install_project(&project());
+    let pcm = |frames: usize| Some(Arc::new(Pcm { rate: 48_000, channels: vec![(0..frames).map(|i| (i as f32 * 0.01).sin() * 0.2).collect()] }));
+    let id = rt.load_bank(bank(&[player_module(4)], &[Ex { module: 0, kind: 1, name_id: 1, name: "c_test", at: None }], &[(48_000, true), (24_000, true)]), vec![pcm(48_000), pcm(24_000)]);
+    let class = rt.eval.class_id("c_test").expect("the bank answers c_test");
+    let node = rt.post(class, &[1, 4096, 1]);
+    let doomed = rt.post(class, &[1, 4096, 0]);
+    // A release during the warm-up too: the first destroy sizes the evaluator's free list.
+    let warm = rt.post(class, &[1, 4096, 0]);
+    let before = allocations();
+    let mut measured = 0;
+    for block in 0..600usize {
+        // Warm-up: the first walks create the instances and open their voices (allocating).
+        let count = block >= 120;
+        COUNTING.with(|c| c.set(count));
+        if block % 6 == 0 {
+            rt.redeliver(node, &[1, 4096 + (block % 600) as i32, 1]);
+        }
+        if block == 30 {
+            rt.release(warm);
+        }
+        if block == 300 {
+            rt.release(doomed);
+        }
+        let _ = rt.render_block();
+        COUNTING.with(|c| c.set(false));
+        measured += usize::from(count);
+    }
+    assert!(rt.eval.bank(id).is_some(), "the bank stayed installed");
+    let n = allocations() - before;
+    eprintln!("{n} allocations in {measured} blocks with an installed bank ({} voices)", rt.mixer.voice_count());
+    assert!(rt.mixer.voice_count() > 0, "the program plays");
+    assert_eq!(n, 0, "redeliver / release / walks allocated {n} times in {measured} blocks");
 }

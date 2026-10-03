@@ -31,10 +31,10 @@ fn floats(words: &[&str]) -> Vec<f32> {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn resample_is_bit_exact_with_the_retail_kernel() {
     let Some(text) = vectors() else {
-        eprintln!("skipped: no oracle vectors");
-        return;
+        panic!("missing private data: no oracle vectors");
     };
     let src = signal(16384, 7);
     let (mut cases, mut samples, mut exact) = (0, 0, 0);
@@ -61,10 +61,10 @@ fn resample_is_bit_exact_with_the_retail_kernel() {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn lowpass_coefficients_and_kernel_agree() {
     let Some(text) = vectors() else {
-        eprintln!("skipped: no oracle vectors");
-        return;
+        panic!("missing private data: no oracle vectors");
     };
     let mut poc_coeffs = std::collections::HashMap::new();
     let (mut words, mut exact_words, mut max_ulps) = (0, 0, 0u32);
@@ -185,10 +185,10 @@ fn fit_biquad_association() {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn gain_ramp_is_bit_exact_with_the_retail_kernel() {
     let Some(text) = vectors() else {
-        eprintln!("skipped: no oracle vectors");
-        return;
+        panic!("missing private data: no oracle vectors");
     };
     let input = signal(256, 23);
     let (mut samples, mut exact, mut max_ulps) = (0, 0, 0u64);

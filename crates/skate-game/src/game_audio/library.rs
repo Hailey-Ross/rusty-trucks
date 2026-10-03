@@ -17,8 +17,8 @@ const MANIFEST_VERSIONS: std::ops::RangeInclusive<u32> = 3..=5;
 #[derive(Debug, Deserialize)]
 pub(crate) struct Entry {
     pub file: String,
-    #[serde(default)]
-    pub seconds: f32,
+    // Manifests also carry `seconds` (the sample length): read only by the removed measured
+    // emitter relay, so it is ignored.
 }
 
 /// One record of a map's `.ems` emitter file with its sound's attributes
@@ -898,11 +898,6 @@ impl Library {
         self.manifest.banks.get(bank).map_or(0, Vec::len)
     }
 
-    /// Length of a bank sample in seconds at normal speed (0 if unknown).
-    pub(crate) fn sample_seconds(&self, bank: &str, index: usize) -> f32 {
-        self.manifest.banks.get(bank).and_then(|b| b.get(index)).map_or(0.0, |e| e.seconds)
-    }
-
     /// The records of an `.ems` emitter file (empty when absent).
     pub(crate) fn emitters(&self, file: &str) -> &[EmitterRecord] {
         self.manifest.emitters.get(file).map_or(&[], Vec::as_slice)
@@ -1056,6 +1051,7 @@ mod tests {
     /// of the user's own disc, class `6EBA5BCD3E38A98A` `default` field `8B164823E008749C`, a
     /// `Sk8::PointNegGraphData8`: 16-byte header, x at +16, y at +48).
     #[test]
+    #[ignore = "needs the private install data"]
     fn the_body_speed_graph_is_the_stock_vault_record() {
         use skate_audio::player::contacts::SpeedGraph8;
         let json: CollisionJson = serde_json::from_str(r#"{"posters": {"body_speed_x": [0, 1, 2, 3, 4, 5, 6, 7], "body_speed_y": [1, 1, 1, 1, 2, 2, 2, 2]}}"#).unwrap();
@@ -1064,7 +1060,7 @@ mod tests {
         assert_eq!(CollisionJson::default().contacts().body_speed_curve, SpeedGraph8::BODY_SPEED, "else the vault's words");
         let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/private/stock/skater-collections.json"));
         let Ok(text) = std::fs::read_to_string(path) else {
-            return eprintln!("skipped: no converted skater collections");
+            panic!("missing private data: no converted skater collections");
         };
         let all: serde_json::Value = serde_json::from_str(&text).unwrap();
         let rec = all["collections"].as_array().unwrap().iter()

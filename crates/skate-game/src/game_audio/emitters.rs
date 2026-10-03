@@ -20,55 +20,16 @@
 //!   emitter_payload`: w1 dry = out4 × level, w2 send = out8 × level, w3 pan = out0, w4 pitch =
 //!   out5, w5 low-pass = out6, w8 = the attribute patch = selector); the state's 3-D input gets the
 //!   listener's distance and azimuth each frame. Redelivered every frame, released (state freed)
-//!   when the listener leaves;
-//! - otherwise (the runtime could not start) `PROFILES` holds those programs' measured behaviour (PoC evaluator runs, notes
-//!   ems-emitters-re.md) and banks without a profile are not played.
-use super::{Category, Library, Play, Voices, library::Clip, native::Native, voices::VoiceId};
+//!   when the listener leaves.
+//!
+//! Without the native runtime (an install without the AEMS data: `native.rs` logs the error) the
+//! emitters are silent; there is no measured fallback (2026-10-03: the `PROFILES` table is gone).
+use super::{Library, native::Native};
 use bevy::prelude::*;
 use skate_audio::eval::NodeId;
 
 /// CSTATEMGR_Emitter's pool size.
 const MAX_ACTIVE: usize = 5;
-/// Voices are placed at most this far from the listener towards the emitter,
-/// so Bevy's distance attenuation stays 1 and the retail level is the only one.
-const PAN_DISTANCE: f32 = 8.0;
-/// Stop fade (s). Retail releases at once; this only avoids a click.
-const STOP_FADE: f32 = 0.05;
-
-/// How a bank's program plays.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Pattern {
-    /// Two voices take turns, each drawing from its own shuffle bag of the
-    /// bank's samples; the next starts `overlap` seconds before the current ends.
-    Relay { overlap: f32 },
-    /// One voice loops the bank's first sample.
-    Loop,
-}
-
-/// Measured behaviour of a bank's program: pattern, level and pitch ranges and
-/// their modulation periods (seconds).
-#[derive(Clone, Copy, Debug)]
-struct Profile {
-    bank: &'static str,
-    pattern: Pattern,
-    level: (f32, f32, f32),
-    pitch: (f32, f32, f32),
-}
-
-const PROFILES: &[Profile] = &[
-    Profile { bank: "water_fountain", pattern: Pattern::Relay { overlap: 0.17 }, level: (0.645, 0.942, 3.46), pitch: (0.818, 0.940, 4.0) },
-    Profile { bank: "water_lapping", pattern: Pattern::Relay { overlap: 0.17 }, level: (0.466, 1.0, 2.75), pitch: (0.940, 1.062, 4.0) },
-    Profile { bank: "water_lapping_pond", pattern: Pattern::Relay { overlap: 0.17 }, level: (0.466, 1.0, 3.52), pitch: (0.940, 1.062, 4.0) },
-    Profile { bank: "ocean_wave_small", pattern: Pattern::Relay { overlap: 0.0 }, level: (0.479, 0.824, 4.0), pitch: (0.855, 1.001, 9.98) },
-    Profile { bank: "water_dam_close", pattern: Pattern::Loop, level: (0.462, 0.759, 3.5), pitch: (0.952, 1.031, 4.0) },
-    Profile { bank: "water_dam_far", pattern: Pattern::Loop, level: (0.797, 1.0, 3.52), pitch: (0.915, 1.062, 4.0) },
-    Profile { bank: "fountains_waterlaps_left", pattern: Pattern::Loop, level: (1.0, 1.0, 1.0), pitch: (1.0, 1.0, 1.0) },
-    Profile { bank: "fountains_waterlaps_right", pattern: Pattern::Loop, level: (1.0, 1.0, 1.0), pitch: (1.0, 1.0, 1.0) },
-];
-
-fn profile(bank: &str) -> Option<&'static Profile> {
-    PROFILES.iter().find(|p| p.bank == bank)
-}
 
 /// The `.ems` file of a map (by its `.skate` file stem).
 fn ems_file(map_stem: &str) -> Option<&'static str> {
@@ -263,23 +224,14 @@ struct Emitter {
     shape: Shape,
     volume: f32,
     falloff: i32,
-    /// The measured table's profile (None when the native runtime plays the bank).
-    profile: Option<&'static Profile>,
     bank: String,
     patch: i32,
 }
 
-/// A started emitter: its voices and program state.
+/// A reached emitter: its native post and emitter state once started.
 struct Node {
     record: usize,
     started: bool,
-    /// (voice, clip, end time) of the voice currently leading the relay or looping.
-    voices: Vec<(VoiceId, Clip, f64)>,
-    /// Which relay voice plays next, and each voice's shuffle bag.
-    turn: usize,
-    bags: [Vec<usize>; 2],
-    phase: (f32, f32),
-    /// The native runtime's post and emitter state (native mode only).
     post: Option<NodeId>,
     state: Option<usize>,
 }
@@ -290,9 +242,8 @@ pub(super) struct State {
     emitters: Vec<Emitter>,
     /// Reached records in discovery order (retail's node list).
     nodes: Vec<Node>,
-    rng: u32,
     /// The map's native emitter banks (prefetch, `native::prefetch`), each emitter's index into
-    /// them (`usize::MAX`: a measured-table emitter) and each bank's prefetch status.
+    /// them and each bank's prefetch status.
     banks: Vec<String>,
     emitter_bank: Vec<usize>,
     bank_status: Vec<BankStatus>,
@@ -346,66 +297,33 @@ fn prefetch_near(state: &mut State, native: &mut Native, library: &Library, ear:
     }
 }
 
-fn random(rng: &mut u32) -> f32 {
-    if *rng == 0 {
-        *rng = 0x9e37_79b9;
-    }
-    *rng ^= *rng << 13;
-    *rng ^= *rng >> 17;
-    *rng ^= *rng << 5;
-    (*rng >> 8) as f32 / (1u32 << 24) as f32
-}
-
-/// Next sample from a shuffle bag over `count` samples (no repeat until empty).
-fn draw(bag: &mut Vec<usize>, count: usize, rng: &mut u32) -> usize {
-    if bag.is_empty() {
-        *bag = (0..count).collect();
-    }
-    let at = (random(rng) * bag.len() as f32) as usize % bag.len();
-    bag.swap_remove(at)
-}
-
-fn modulate((low, high, period): (f32, f32, f32), phase: f32, now: f64) -> f32 {
-    let wave = (std::f64::consts::TAU * now / f64::from(period.max(0.1)) + f64::from(phase)).sin() as f32;
-    low + (high - low) * 0.5 * (1.0 + wave)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update(
     mut state: Local<State>,
-    mut commands: Commands,
     map: Res<crate::map_transition::CurrentMap>,
-    library: Option<ResMut<Library>>,
-    mut voices: ResMut<Voices>,
-    mut assets: ResMut<Assets<AudioSource>>,
+    library: Option<Res<Library>>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
-    time: Res<Time<Real>>,
     menu: Option<Res<crate::graphics_menu::Menu>>,
     replay: Res<crate::replay::Replay>,
-    mut native: Option<ResMut<Native>>,
+    native: Option<ResMut<Native>>,
     cues: Res<super::skate_events::Cues>,
 ) {
     let _timing = super::timing::scope(&super::timing::EMITTERS);
-    let Some(mut library) = library else { return };
+    // No native runtime: the emitters are silent (its start logged why).
+    let (Some(library), Some(mut native)) = (library, native) else { return };
+    let native = &mut *native;
     let state = &mut *state;
     let identity = (map.name.clone(), map.generation);
     if state.map.as_ref() != Some(&identity) {
         for node in state.nodes.drain(..) {
-            for (id, ..) in node.voices {
-                voices.stop(id, STOP_FADE);
+            if let Some(post) = node.post {
+                native.release(post);
             }
-            if let Some(native) = native.as_deref_mut() {
-                if let Some(post) = node.post {
-                    native.release(post);
-                }
-                if let Some(g) = node.state {
-                    native.release_emitter_state(g);
-                }
+            if let Some(g) = node.state {
+                native.release_emitter_state(g);
             }
         }
-        if let Some(native) = native.as_deref_mut() {
-            native.unload_map_banks();
-        }
+        native.unload_map_banks();
         let stem = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
         // Retail's emitter system loads every file of the map's database entry and dispatches by
         // the attribute's eVolumeType: 1 = looping emitter (here), 5 = reverb zone
@@ -413,27 +331,19 @@ pub(super) fn update(
         // music system, not ported). 6 / 7 (speakers / crowds) are not dispatched by the
         // emitter system at all. On the disc only the `sfx_` / `skateschool` files hold type 1.
         let records: Vec<&super::library::EmitterRecord> = ems_files(stem).iter().flat_map(|file| library.emitters(file)).collect();
-        let native_banks = native.as_deref();
         state.emitters = records.iter().filter(|r| r.kind == 1 && r.flags == 0).filter_map(|r| {
-            let bank = r.bank.clone()?;
-            let profile = match native_banks {
-                Some(n) if n.has_bank(&library, &bank) => None,
-                Some(_) => return None,
-                None => Some(profile(&bank)?),
-            };
+            let bank = r.bank.clone().filter(|b| native.has_bank(&library, b))?;
             let s = r.scalars;
             Some(Emitter {
                 shape: Shape { position: Vec3::from(r.position), extent: Vec3::from(r.extent), forward: Vec3::new(s[1], s[2], s[3]), core: s[0] },
-                volume: r.volume, falloff: r.falloff, profile, bank, patch: r.patch,
+                volume: r.volume, falloff: r.falloff, bank, patch: r.patch,
             })
         }).collect();
         info!("World emitters: {} of {} records on {stem} have a played sound", state.emitters.len(), records.len());
         state.banks.clear();
         state.emitter_bank.clear();
         for e in &state.emitters {
-            let b = if e.profile.is_some() {
-                usize::MAX
-            } else if let Some(b) = state.banks.iter().position(|s| *s == e.bank) {
+            let b = if let Some(b) = state.banks.iter().position(|s| *s == e.bank) {
                 b
             } else {
                 state.banks.push(e.bank.clone());
@@ -447,12 +357,8 @@ pub(super) fn update(
     let Ok(listener) = listener.single() else { return };
     let ear = listener.translation();
     let skater = cues.riding.board;
-    if let Some(native) = native.as_deref_mut() {
-        prefetch_near(state, native, &library, ear);
-    }
+    prefetch_near(state, native, &library, ear);
     let silent = super::silenced(menu.as_deref(), &replay);
-    let now = time.elapsed_secs_f64();
-    let mut rng = state.rng;
 
     // Release nodes the listener left (or everything while silenced).
     let reached: Vec<Option<f32>> = state.emitters.iter().map(|e| if silent { None } else { reach(&e.shape, ear) }).collect();
@@ -462,16 +368,11 @@ pub(super) fn update(
             if node.started {
                 info!("AUDIO_EMITTER stop {} #{}", state.emitters[node.record].bank, node.record);
             }
-            for (id, ..) in &node.voices {
-                voices.stop(*id, STOP_FADE);
+            if let Some(post) = node.post {
+                native.release(post);
             }
-            if let Some(native) = native.as_deref_mut() {
-                if let Some(post) = node.post {
-                    native.release(post);
-                }
-                if let Some(g) = node.state {
-                    native.release_emitter_state(g);
-                }
+            if let Some(g) = node.state {
+                native.release_emitter_state(g);
             }
         }
         keep
@@ -479,12 +380,7 @@ pub(super) fn update(
     // New hits join the node list in discovery order.
     for (index, hit) in reached.iter().enumerate() {
         if hit.is_some() && !state.nodes.iter().any(|n| n.record == index) {
-            state.nodes.push(Node {
-                record: index, started: false, voices: Vec::new(), turn: 0, bags: [Vec::new(), Vec::new()],
-                phase: (random(&mut rng) * std::f32::consts::TAU, random(&mut rng) * std::f32::consts::TAU),
-                post: None,
-                state: None,
-            });
+            state.nodes.push(Node { record: index, started: false, post: None, state: None });
         }
     }
     // Waiting nodes take free states in list order.
@@ -496,84 +392,35 @@ pub(super) fn update(
         node.started = true;
         active += 1;
         let e = &state.emitters[node.record];
-        info!("AUDIO_EMITTER start {} #{} at {:.1?} volume {:.2}{}", e.bank, node.record, e.shape.position.to_array(), e.volume,
-            if e.profile.is_none() { " (native)" } else { "" });
-        if e.profile.is_none() {
-            if let Some(native) = native.as_deref_mut() {
-                match native.ensure_bank(&library, &e.bank) {
-                    Ok(_) => {
-                        if let Some(status) = state.emitter_bank.get(node.record).and_then(|&b| state.bank_status.get_mut(b)) {
-                            *status = BankStatus::Loaded;
-                        }
-                        let level = e.volume * falloff(e.falloff, reached[node.record].unwrap_or(1.0));
-                        node.state = native.claim_emitter_state();
-                        if let Some(g) = node.state {
-                            native.set_emitter_position(g, listener, skater, e.shape.position);
-                        }
-                        let payload = native.emitter_payload(node.state, level, super::native::azimuth(listener, e.shape.position), e.patch);
-                        node.post = native.post_emitter(&payload);
-                    }
-                    Err(error) => warn!("AUDIO_EMITTER {}: {error}", e.bank),
+        info!("AUDIO_EMITTER start {} #{} at {:.1?} volume {:.2} (native)", e.bank, node.record, e.shape.position.to_array(), e.volume);
+        match native.ensure_bank(&library, &e.bank) {
+            Ok(_) => {
+                if let Some(status) = state.emitter_bank.get(node.record).and_then(|&b| state.bank_status.get_mut(b)) {
+                    *status = BankStatus::Loaded;
                 }
+                let level = e.volume * falloff(e.falloff, reached[node.record].unwrap_or(1.0));
+                node.state = native.claim_emitter_state();
+                if let Some(g) = node.state {
+                    native.set_emitter_position(g, listener, skater, e.shape.position);
+                }
+                let payload = native.emitter_payload(node.state, level, super::native::azimuth(listener, e.shape.position), e.patch);
+                node.post = native.post_emitter(&payload);
             }
+            Err(error) => warn!("AUDIO_EMITTER {}: {error}", e.bank),
         }
     }
 
+    // The bank's program does the rest; only the game-side words change.
     for node in state.nodes.iter_mut().filter(|n| n.started) {
         let emitter = &state.emitters[node.record];
-        let Some(d) = reached[node.record] else { continue };
-        let Some(profile) = emitter.profile else {
-            // Native: the bank's program does the rest; only the game-side words change.
-            if let (Some(post), Some(native)) = (node.post, native.as_deref_mut()) {
-                let level = emitter.volume * falloff(emitter.falloff, d);
-                if let Some(g) = node.state {
-                    native.set_emitter_position(g, listener, skater, emitter.shape.position);
-                }
-                let payload = native.emitter_payload(node.state, level, super::native::azimuth(listener, emitter.shape.position), emitter.patch);
-                native.redeliver(post, &payload);
-            }
-            continue;
-        };
-        let level = emitter.volume * falloff(emitter.falloff, d) * modulate(profile.level, node.phase.0, now);
-        let pitch = modulate(profile.pitch, node.phase.1, now);
-        let towards = emitter.shape.position - ear;
-        let at = ear + towards.normalize_or_zero() * towards.length().min(PAN_DISTANCE);
-        node.voices.retain(|(id, ..)| voices.playing(*id));
-        for (id, ..) in &node.voices {
-            voices.set(*id, level, pitch, Some(at));
+        let (Some(d), Some(post)) = (reached[node.record], node.post) else { continue };
+        let level = emitter.volume * falloff(emitter.falloff, d);
+        if let Some(g) = node.state {
+            native.set_emitter_position(g, listener, skater, emitter.shape.position);
         }
-        let samples = library.bank_len(profile.bank);
-        if samples == 0 {
-            continue;
-        }
-        let play = |looping| Play { category: Category::Ambience, volume: level, pitch, position: Some(at), looping, fade_in: 0.0, envelope: None };
-        match profile.pattern {
-            Pattern::Loop => {
-                if node.voices.is_empty() {
-                    if let Some(clip) = library.sample(&mut assets, profile.bank, 0) {
-                        if let Some(id) = voices.play(&mut commands, &clip, play(true), now) {
-                            node.voices.push((id, clip, f64::INFINITY));
-                        }
-                    }
-                }
-            }
-            Pattern::Relay { overlap } => {
-                let due = node.voices.iter().map(|v| v.2).fold(f64::NEG_INFINITY, f64::max) - f64::from(overlap);
-                if node.voices.is_empty() || now >= due {
-                    let turn = node.turn;
-                    let index = draw(&mut node.bags[turn], samples, &mut rng);
-                    if let Some(clip) = library.sample(&mut assets, profile.bank, index) {
-                        let seconds = library.sample_seconds(profile.bank, index);
-                        if let Some(id) = voices.play(&mut commands, &clip, play(false), now) {
-                            node.voices.push((id, clip, now + f64::from(seconds / pitch.max(0.25))));
-                            node.turn = 1 - turn;
-                        }
-                    }
-                }
-            }
-        }
+        let payload = native.emitter_payload(node.state, level, super::native::azimuth(listener, emitter.shape.position), emitter.patch);
+        native.redeliver(post, &payload);
     }
-    state.rng = rng;
 }
 
 #[cfg(test)]
@@ -585,18 +432,19 @@ mod tests {
     /// banks, evaluator random state and blocks stay untouched; requested = the banks within
     /// `AHEAD` m that are not loaded; far away everything is dropped. Prints its cost per call.
     #[test]
+    #[ignore = "needs the private install data"]
     fn the_prefetch_follows_the_listener_and_touches_no_runtime_state() {
         use super::super::native::prefetch::{AHEAD, EVICT};
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
-        let Ok(library) = Library::load(root) else { return eprintln!("skipped: no audio install") };
-        let Ok(mut native) = Native::start(&library) else { return eprintln!("skipped: no AEMS install") };
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
         let mut state = State::default();
         for r in ems_files("DownTown").iter().flat_map(|f| library.emitters(f)) {
             let Some(bank) = r.bank.clone().filter(|b| r.kind == 1 && r.flags == 0 && native.has_bank(&library, b)) else { continue };
             let s = r.scalars;
             state.emitters.push(Emitter {
                 shape: Shape { position: Vec3::from(r.position), extent: Vec3::from(r.extent), forward: Vec3::new(s[1], s[2], s[3]), core: s[0] },
-                volume: r.volume, falloff: r.falloff, profile: None, bank: bank.clone(), patch: r.patch,
+                volume: r.volume, falloff: r.falloff, bank: bank.clone(), patch: r.patch,
             });
             let b = state.banks.iter().position(|x| *x == bank).unwrap_or_else(|| {
                 state.banks.push(bank);
@@ -605,7 +453,7 @@ mod tests {
             state.emitter_bank.push(b);
         }
         if state.emitters.is_empty() {
-            return eprintln!("skipped: no DownTown emitters");
+            panic!("missing private data: no DownTown emitters");
         }
         state.bank_status = vec![BankStatus::Idle; state.banks.len()];
         let snapshot = |n: &Native| {
@@ -701,24 +549,17 @@ mod tests {
         assert_eq!(falloff(7, 0.5), 1.0);
     }
 
-    #[test]
-    fn shuffle_bag_plays_every_sample_before_repeating() {
-        let (mut bag, mut rng) = (Vec::new(), 1);
-        let mut seen: Vec<usize> = (0..10).map(|_| draw(&mut bag, 10, &mut rng)).collect();
-        seen.sort_unstable();
-        assert_eq!(seen, (0..10).collect::<Vec<_>>());
-    }
-
     /// A DownTown reverb zone (attribute `1F94F2F815C00368` → reverb11) through the retail selector:
     /// standing in its core the zone's preset fades in and commits, Reverb.in5 rises, and the
     /// MixMap's Reverb out4 (the global env scale) drops by F213's −400 mB.
     #[test]
+    #[ignore = "needs the private install data"]
     fn a_downtown_reverb_zone_selects_its_preset_and_raises_reverb_in5() {
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
-        let Ok(library) = Library::load(root) else { return eprintln!("skipped: no audio install") };
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
         let records = zone_records(&library, "DownTown");
         if records.is_empty() {
-            return eprintln!("skipped: the install has no reverb-zone presets (stage_reverb_zones.py)");
+            panic!("missing private data: the install has no reverb-zone presets (stage_reverb_zones.py)");
         }
         let (presets, _) = library.bus_tuning();
         let Some(zone) = records.iter().find(|z| z.attribute == 0x1F94_F2F8_15C0_0368) else { panic!("no 1F94F2F815C00368 zone") };
@@ -742,7 +583,7 @@ mod tests {
         }
         assert_eq!(env.target_key(), Some(0xBEEF_C8E3_DE04_FBAE));
         assert_eq!(env.reverb_inputs(), [0, 0, 0, 0, 0, 32767, 0], "reverb11 → Reverb.in5");
-        let Some(mxb) = library.aems().mixmap.clone() else { return eprintln!("skipped: no MixMap") };
+        let Some(mxb) = library.aems().mixmap.clone() else { panic!("missing private data: no MixMap") };
         let mut m = skate_audio::mixmap::MixMap::from_bytes(&library.read(&mxb).unwrap()).unwrap();
         let out4 = |m: &mut skate_audio::mixmap::MixMap, inputs: [i32; 7]| {
             for id in 1..=4 {
@@ -768,7 +609,6 @@ mod tests {
         for map in ["University", "DownTown", "Industrial", "SkateSchool", "MegaPark"] {
             assert!(ems_file(map).is_some(), "{map}");
         }
-        assert!(profile("water_fountain").is_some() && profile("trees_rustle").is_none());
     }
 
 }

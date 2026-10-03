@@ -572,6 +572,10 @@ mod wipeout_tests;
 #[path = "tests/water_drop.rs"]
 mod water_drop_tests;
 
+#[cfg(test)]
+#[path = "tests/audio_state_capture.rs"]
+mod audio_state_capture_tests;
+
 fn present(
     physics: Res<GamePhysics>,
     history: Res<crate::presentation::Presentation>,

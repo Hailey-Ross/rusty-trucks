@@ -30,10 +30,10 @@ fn load(dir: &PathBuf) -> (Vec<Project>, Vec<Bank>) {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn every_disc_bank_parses_and_matches_the_spec_census() {
     let Some(dir) = banks_dir() else {
-        eprintln!("skipped: no extracted banks");
-        return;
+        panic!("missing private data: no extracted banks");
     };
     let (projects, banks) = load(&dir);
     assert_eq!(projects.len(), 9);
@@ -104,10 +104,10 @@ fn every_disc_bank_parses_and_matches_the_spec_census() {
 }
 
 #[test]
+#[ignore = "needs the private install data"]
 fn exports_resolve_like_retail() {
     let Some(dir) = banks_dir() else {
-        eprintln!("skipped: no extracted banks");
-        return;
+        panic!("missing private data: no extracted banks");
     };
     let (projects, banks) = load(&dir);
     let mut eval = Evaluator::new();
@@ -173,10 +173,10 @@ impl VoiceHost for Timed {
 /// child ended itself; releasing the parent releases the child, and every instance and node goes
 /// away.
 #[test]
+#[ignore = "needs the private install data"]
 fn tazer_control_class_owns_and_releases_its_child() {
     let Some(dir) = banks_dir() else {
-        eprintln!("skipped: no extracted banks");
-        return;
+        panic!("missing private data: no extracted banks");
     };
     let mut eval = Evaluator::new();
     for name in std::fs::read_to_string(dir.join("csi_order.txt")).unwrap().lines() {
