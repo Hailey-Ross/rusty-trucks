@@ -560,6 +560,12 @@ impl Native {
         self.pending = Some(PendingPass { calls, s: Default::default(), speed_scale: None, loose: 0, reverb: false });
     }
 
+    /// Tests outside `game_audio` (the mod system's): start the runtime for `library`.
+    #[cfg(test)]
+    pub(crate) fn start_for_test(library: &Library) -> Result<Self, String> {
+        Self::start(library)
+    }
+
     /// Unload every bank but the utility and the player's (map change); forget the prefetched ones.
     pub(crate) fn unload_map_banks(&mut self) {
         self.map_epoch += 1;

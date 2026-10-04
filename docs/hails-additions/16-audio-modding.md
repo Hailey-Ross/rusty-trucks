@@ -22,12 +22,12 @@ The guide (sections A–G, and H–L for the follow-up) says what a mod can do a
 | give a custom map audio (emitters, reverb zones, zone ambience, location sets, crossfades) | `<map>.audio.json` next to the `.skate`, a `.skate` `AUDO` extension, or a mod's `maps` section | `audio_content` = 1 |
 | play a retail sound (post to a retail class), set a retail global, read MixMap outputs | `sdk.audio.post / redeliver / release / set_global / watch / handle / global / mixmap / info` | `audio` = 2 |
 | react to the game's sounds (pop, land, grind, horn, …) | `sdk.audio.subscribe / events` | `audio_events` = 1 |
-| play the mod's own WAVs (outside the native mixer, as before) | `sdk.audio.preload / play / update / stop / stop_all` | `audio` ≥ 1 |
-| play the mod's own WAVs through the game's mixer (reverb, retail pan and distance law) | `sdk.audio.play{native = true, falloff = …}` (H) | `audio` = 3 |
+| play the mod's own WAVs (with `audio` = 3 through the game's mixer by default; `native = false`: outside it, as before) | `sdk.audio.preload / play / update / stop / stop_all` | `audio` ≥ 1 |
+| play the mod's own WAVs through the game's mixer (reverb, retail pan and distance law) | `sdk.audio.play{…, falloff = …}`, the default (H) | `audio` = 3 |
 | change tuning while the mod runs (player / world / bus / reverb presets) | `sdk.audio.set_tuning / tuning / tuned` (I) | `audio_tuning` = 1 |
 | publish cars, peds, skaters to the world audio | `sdk.world_audio.*` (doc 15) | `world_audio` = 1 |
 | add sound emitters and reverb zones | `sdk.world_audio.spawn(key, 'emitter' / 'reverb_zone', …)` (J) | `world_audio` = 2 |
-| mute, replace or layer the game's own sounds | `sdk.audio.rule(key, rule)` or `audio.json` `rules` (K) | `audio_events` = 2, `audio_content` = 2 |
+| mute, replace or layer the game's own sounds (the replacement at the owner, or where the mod says) | `sdk.audio.rule(key, rule)` or `audio.json` `rules` (K) | `audio_events` = 2, `audio_content` = 2 |
 
 Test `(sdk.capabilities.audio or 0) >= 2` (and so on) before relying on a feature; an older engine lacks the keys.
 
@@ -329,18 +329,37 @@ In-game log check (muted, the branch's own staged build, about 60–75 s each, n
   every 4–8 s (`AUDIO_RANDOM fire EXAMPLE_chime`); without it: map audio `["none"]`, no sets. (Pops need input: the
   pop / land tags are covered by the data-gated tests, and `land` showed in the DownTown run.)
 
-## H. Mod WAVs through the native mixer (`native = true`, capability `audio` = 3)
+## H. Mod WAVs through the native mixer (the default, capability `audio` = 3)
 
-Status: built on `audio/moddability-2` (2026-10-04, after the PR #36 cut). Opt-in per sound (user decision
-2026-10-03): without `native = true` a mod WAV is a Bevy voice exactly as before.
+Status: built on `audio/moddability-2` (2026-10-04, after the PR #36 cut). **Native is the default** (user decision
+2026-10-04, "Yes duh"; it was opt-in until then): every `sdk.audio.play` goes through the game's mixer unless the
+sound says `native = false` (the Bevy voice, exactly as before).
+
+| `native` | routing |
+|---|---|
+| not given (default) | native while the game's native audio runs and one of the 24 native voices is free; otherwise a Bevy voice (no install audio, the native voices all in use), so a mod written for the Bevy path keeps playing |
+| `true` | native only; without native audio or a free native voice the play is a command error (`sdk.commands.request` returns it) |
+| `false` | always the Bevy voice; the native-only fields (`falloff`, `reverb`, `group`) are refused |
+
+A positional native sound without `falloff` gets the default reach `skate_mods::audio::DEFAULT_REACH`: a 40 m sphere,
+no core, the squared curve (retail's audible reach of a traffic car: the vehicle list is cut at 40 m, see doc 15);
+before the flip a positional native sound had to give its reach. `spatial_scale` stays a Bevy-only field (ignored by a
+native voice). A mod without audio is unaffected.
 
 ```lua
-sdk.audio.play('siren', {path = 'audio/siren.wav', position = {10, 0, 4}, loop = true, native = true,
+sdk.audio.play('siren', {path = 'audio/siren.wav', position = {10, 0, 4}, loop = true,
                          falloff = {radius = 40, core = 0.1, curve = 'squared'}})   -- reverb = true, group = 'world'
-sdk.audio.play('ui', {path = 'audio/click.wav', spatial = false, native = true, group = 'player', reverb = false})
+sdk.audio.play('ui', {path = 'audio/click.wav', spatial = false, group = 'player', reverb = false})
+sdk.audio.play('old', {path = 'audio/old.wav', native = false, spatial_scale = 0.1})  -- the Bevy voice
 sdk.audio.update('siren', {volume = 0.5, position = {12, 0, 4}})                    -- as for Bevy voices
 sdk.audio.stop('siren', 0.3)
 ```
+
+Existing mods: the bundled Skyline Drive mod's engine, turbo, brake and pop voices (`body` + `offset`, `spatial_scale`,
+no `falloff`) now play natively with the default reach, following the car's body, panned by the retail panner, under
+the Ambience volume (`group` default `world`); at most 12 of them at once, inside the 24. The SDK `audio-example`'s
+tick (`spatial = false`) plays natively, centred. Their levels differ from the Bevy voices (retail emitter law
+instead of Bevy's spatial gain): an in-game listen is open.
 
 What happens:
 - The WAV joins the mod's bank in the game's mixer (one bank per mod and volume group; a sample header built from
@@ -378,7 +397,12 @@ Proofs (`game_audio::mod_voices::tests`, data-gated where they need the install)
 `a_restart_reopens_loops_in_the_new_runtime`, `a_removed_native_mod_voice_restores_retail` (the same retail scenario
 with and without a mod voice: bit-identical before it, different while it plays, bit-identical again from the frame
 after the mod stops, the same retail voices), `mod_banks_slots_and_cleanup`; `skate-mods` `native_play_options`
-(serde boundary: valid, invalid, unknown fields). No-mod e2e bench: byte-identical to run `m2` (84 outputs).
+(serde boundary: valid, invalid, unknown fields; native by default, `native = false` refusing the native fields, the
+default reach) and `vm::tests::audio_rule_commands_deserialize_and_validate` (the Lua wrapper passes `native` through:
+absent = default, `false`); `modding::audio::tests::default_routing_needs_the_native_audio` (no native audio: the
+Bevy voice) and `default_routing_is_native_until_the_native_voices_are_taken` (data-gated: native while the runtime
+runs and a native voice is free, the Bevy voice once the 24 are taken, a key keeps its native voice). No-mod e2e
+bench: byte-identical to run `m2` (84 outputs).
 
 ## I. Tuning writes at run time (capability `audio_tuning` = 1)
 
@@ -451,14 +475,15 @@ sdk.world_audio.remove('cave')
   send, pan, pitch, low-pass, the patch as selector), redelivered every frame, released when the listener leaves.
   The bank must be in the audio (a retail bank, or one a content overlay adds with `add.banks`); an unknown bank is
   a command error.
-- **Emitter states (open question for the user, safe default):** retail has 5 emitter states (`CSTATEMGR_Emitter`,
-  the MixMap's 5 Emitter instances). **Default `"shared"`: mod emitters share them with the map's emitters**, by
-  retail's rule: nodes take states in the order they were reached, the map's records before published ones within
-  a frame; when all 5 are taken the next waits. So a mod emitter never adds a sixth sound, and near five map
-  emitters it waits its turn, as retail would. Setting `settings/audio.json` `"mod_emitter_slots": "extra"` (not
-  retail; `SKATE_AUDIO_MOD_EMITTER_SLOTS=extra` for one run) gives published emitters their own instances of the
-  private MixMap (H) instead: the map's emitters keep all 5, mod emitters (up to the 32 instances shared with
-  native mod voices) all play, with the same words (the private instances equal retail's).
+- **Emitter states (user decision 2026-10-04: "modding isn't in retails, so 'not like retail' isn't a thing. Yes
+  default to seperate slots."):** retail has 5 emitter states (`CSTATEMGR_Emitter`, the MixMap's 5 Emitter
+  instances). **Default `"extra"`: published emitters take their own instances of the private MixMap (H)**, so the
+  map's emitters keep all 5 and every mod emitter in reach plays (up to the 32 instances shared with native mod
+  voices; beyond that the next waits for a free one), with the same words (the private instances equal retail's).
+  `settings/audio.json` `"mod_emitter_slots": "shared"` (or `SKATE_AUDIO_MOD_EMITTER_SLOTS=shared` for one run; the
+  variable wins over the file, `extra` likewise) makes mod emitters share the 5 with the map's emitters instead, by
+  retail's rule: nodes take states in the order they were reached, the map's records before published ones within a
+  frame; when all 5 are taken the next waits. A settings file without the key gets the default.
 - **A reverb zone** (eVolumeType 5) joins the zones the reverb selector walks (`ReverbZones`, `native::reverb_frame`
   → `skate_audio::bus::zones`), after the map's records, in the order reached; its id has bit 63 set and its own
   attribute key, so it never merges with a map zone. The preset must be one of the install's 24 `aud_reverb` keys:
@@ -470,11 +495,12 @@ sdk.world_audio.remove('cave')
   every retail post), so with a mod emitter playing the retail random sequence differs from a run without it. With
   no published emitter or zone the per-frame tail rebuild does not run and the map's lists are exactly as before.
 
-Proofs (data-gated, `game_audio::emitters::tests`): `published_emitters_share_retail_slots_play_and_release` (7
-published at once: the first 5 in list order play, all 5 retail states taken; the bank's program opens voices; a
-despawned one frees its state for the 6th; out of reach all stop; with none left no state is held),
-`the_extra_setting_gives_published_emitters_their_own_instances` (all 7 play, retail's 5 states stay free, the
-instances come back), `a_published_reverb_zone_selects_its_preset` (listed after the map's with its preset and a
+Proofs (data-gated, `game_audio::emitters::tests`): `published_emitters_share_retail_slots_play_and_release` (the
+`"shared"` setting; 7 published at once: the first 5 in list order play, all 5 retail states taken; the bank's
+program opens voices; a despawned one frees its state for the 6th; out of reach all stop; with none left no state
+is held), `the_default_gives_published_emitters_their_own_instances` (the default settings: all 7 play, retail's 5
+states stay free, the instances come back); `game_audio::tests::mod_emitter_slots_default_to_extra` (the default,
+the file value, the variable overriding either way), `a_published_reverb_zone_selects_its_preset` (listed after the map's with its preset and a
 published id, the retail selector fades to it, gone outside / despawned); `skate-mods`
 `emitter_and_reverb_zone_options_validate` and the `world_audio_commands_deserialize` cases (serde boundary,
 required fields at spawn). No-mod e2e bench: byte-identical to run `m2` (84 outputs).
@@ -512,7 +538,7 @@ or, without Lua, in `audio.json` (applied while the mod runs; rules alone never 
 | `match.slot` | name | the poster's slot (`grind`, `wind`, `footstep`, `horn`, `ped_footstep`, `ring`, `body_fall`, …) |
 | `match.id` | integer | the slot index (posts), the sound id (Splice), the patch (emitters) |
 | `action` | `mute`, `replace`, `layer` | see below |
-| `play` | `{path, volume 0..1, pitch 0.25..4, reverb (true), group ('player' / 'world')}` | the mod's WAV (PCM16, 30 s, 8 MiB), required for `replace` / `layer`, refused for `mute` |
+| `play` | `{path, volume 0..1, pitch 0.25..4, reverb (true), group ('player' / 'world'), at, offset, position, falloff}` | the mod's WAV (PCM16, 30 s, 8 MiB), required for `replace` / `layer`, refused for `mute`; where it plays: below |
 | `min_interval` | 0..10 s (0.05) | the rule's sound plays at most once per interval |
 
 At least one `match` field; every given field must hold. The first matching rule decides (mods in mod-id order;
@@ -527,10 +553,42 @@ per mod the `audio.json` rules, then the runtime ones, by key). 32 rules per mod
 - A world **emitter start** (`emitters::update`): `mute` keeps the node and its emitter state (the slot use stays
   retail's) and posts nothing.
 - `replace` = `mute` + the rule's sound; `layer` = the game's sound + the rule's sound. The rule's sound is a native
-  one-shot (H) of the rule owner's bank, non-positional (centred, the retail non-positional emitter outputs), opened
-  in the same pass for requests made before `mod_voices::frame` (the local player's process and update, the world /
-  NPC owners' process) and in the next pass for later ones (their update, the emitters): at most one game frame
-  later. Each rule has a ring of 4 voices.
+  one-shot (H) of the rule owner's bank, opened in the same pass for requests made before `mod_voices::frame` (the
+  local player's process and update, the world / NPC owners' process) and in the next pass for later ones (their
+  update, the emitters); a positional one is heard from the pass after its first position (the private MixMap
+  evaluates a position before its words are read, as for every native mod voice): at most two game frames after
+  the request. Each rule has a ring of 4 voices.
+
+**Where the rule's sound plays** (user decision 2026-10-04: "Yes it should be positional, and mods should allow them
+to choose where positionally that audio should appear."; until then it played centred). `play.at`:
+
+| `at` | position | fields |
+|---|---|---|
+| `owner` (default) | the owner of the game's sound, followed every frame while the sound plays: the local skater's centre of mass (the position retail's player sounds follow, MixMap 3DObjPos 60010010), the car or ped (`WorldOwners`), the NPC skater's centre of mass (`NpcSkaters`), the emitter record's position (an emitter start) | `offset` [x, y, z] m added to the owner's position (world axes, y up; −100..100) |
+| `world` | a fixed world position | `position` [x, y, z] (required; ±100 km) |
+| `centre` (alias `center`) | non-positional, centred: the retail non-positional emitter outputs (out2 dry, out7 send, out1 pitch, out3 low-pass), the behaviour before the decision | none |
+
+A positional rule sound is a native mod voice with a position (H): the private MixMap's Emitter instance gets the
+position the way a retail emitter state does (`native::write_position`: listener, skater, source), so it has the
+retail emitter law: the dry level (out4, with the global ducks), the camera-azimuth pan (out0), pitch and low-pass,
+and the environment send rolling off with camera distance 4 → 70 m. Its level is `volume` × the reach curve
+(`falloff` = `{radius, core, curve}` as in H; refused with `centre`). Without `falloff` the reach is the owner's
+retail one: an emitter start takes the emitter record's own shape (sphere or ellipsoid, core) and falloff curve,
+exactly the reach the replaced emitter has; a car 40 m (retail's traffic list cut, `TRAFFIC_LIST_RADIUS`); a ped 50 m
+(the ped list cut, `PED_LIST_RADIUS`); a skater 30 m (retail's skater audio radius, `skaters::AUDIO_RADIUS`; the local
+player too, whose sounds sit in the same Player MixMap slot); all with the squared curve. With `at = 'world'` the reach
+still defaults to the owner's. An owner that is gone while its sound plays (a car despawned) leaves the sound at its
+last position; an owner never found (gone before the sound opened) plays it centred. Emitter records do not move: the
+sound stays at the record's position. Checked when the rule is set / the overlay is read, before the WAV is loaded:
+`offset` only with `owner`, `position` exactly with `world`, `falloff` not with `centre`, the ranges.
+
+```lua
+sdk.audio.rule('honk', {match = {tag = 'horn'}, action = 'replace',
+                        play = {path = 'audio/honk.wav', group = 'world', offset = {0, 1.2, 0}}})      -- at the car
+sdk.audio.rule('beacon', {match = {tag = 'land'}, action = 'layer',
+                          play = {path = 'audio/ping.wav', at = 'world', position = {10, 0, 4}, falloff = {radius = 30}}})
+sdk.audio.rule('ui_pop', {match = {tag = 'pop'}, action = 'replace', play = {path = 'audio/pop.wav', at = 'centre'}})
+```
 - Event rows report the game's requests: a muted request is still delivered to subscribers (a "custom pop" mod
   mutes `pop` and still sees every pop).
 - Parity: a muted post or Splice start does not run its program / sound, so the evaluator's shared random sequence
@@ -546,7 +604,15 @@ muted, the rows unchanged, the landing's layered sound queued once, and without 
 a run before rules existed), `world_sources::tests::rules_mute_replace_and_layer_the_world_hosts_posts` (no horn node
 while muted, rows and the ped's steps unchanged, replace = dropped + one sound, layer = kept + one sound),
 `emitters::tests::a_rule_mutes_an_emitter_start`, `mod_voices::tests::a_rule_sound_plays_in_the_mod_bank`;
-`skate-mods` `rules_parse_and_validate`, `rules_in_audio_json_are_checked_and_carry_no_content` (check_mod's deep
+positional (2026-10-04): `mod_rules::tests::rule_sounds_are_placed_at_their_owner` (the request's owner travels
+with the sound: the local skater, a car by id with an offset and the mod's reach, an NPC skater's request at a fixed
+position, centred, an emitter record with its own reach; an emitter request without its record centred),
+`owners_are_located_with_their_retail_reach` (skater 30 m, car 40 m, ped 50 m, fixed record; unknown ids not found),
+data-gated `mod_voices::tests::a_positional_rule_sound_plays_at_its_owner` (a replaced horn panned right at its car
+5 m right with the send, following the car left, staying where the car was when it is gone, silent beyond the car's
+40 m; an offset, a fixed world position and `centre` heard where they say); `skate-mods`
+`rule_placement_options_validate` (each `at` / `offset` / `position` / `falloff` combination, ranges, typos),
+`rules_parse_and_validate`, `rules_in_audio_json_are_checked_and_carry_no_content` (check_mod's deep
 validation: the WAV is read and counted), `audio_rule_commands_deserialize_and_validate`. No-mod e2e bench:
 byte-identical to run `m2` (84 outputs).
 
@@ -581,19 +647,45 @@ Changes (branch `audio/moddability-2`, on top of the PR #36 branch):
 Verification: the headless e2e bench (13 scripted scenarios and 4 whole sessions, the 60 Hz host and 300 fps; 84
 renders and voice logs) is byte-identical to the PR #36 head's run after every step (S1–S4); the tests named in H–K;
 all suites (skate-audio with ignored, game_audio with ignored and the private-data env, skate-mods, the build).
+The three defaults (2026-10-04): the bench on the branch head before them (run `h0`, after the merge of the PR #36
+branch) and after them (run `p1`) is byte-identical, 84 of 84 (26 scenario renders and voice logs at the 60 Hz host
+and at 300 fps each, 16 whole-session ones each), and both equal run `m2`: with no mod the sound does not change.
+Suites after them: skate-mods (all but the known `skyline_every_component_is_real_and_drives_through_ground_contact`,
+whose GLB is not in the checkout), skate-audio with ignored, the `game_audio` and `modding` tests with ignored and the
+private-data env (61 data-gated, all passing; `SKATE3_ASSET_ROOT` for the rig test), `cargo build --locked`;
+`check_mod --install` for `mods/audio-content-test` (12 identities, 2 rules) and `sdk/examples/audio-example`:
+0 warnings, 0 conflicts. Not checked in game yet: the Skyline car's and the dev mod's sounds on the native path
+(levels differ from the Bevy voices), the positional rule sounds by ear.
 
-Open questions for the user (each built with the safest retail-preserving default):
-1. **Mod emitters' states** (J): default `"shared"` = retail's 5, first reached first served (a mod emitter never
-   adds a sixth sound and may wait near five map emitters). Keep that, or default to `"extra"` (own instances while
-   a mod uses them, not retail)? Or drop the setting?
-2. **Native routing as the default** for mod WAVs (H; spec L6): still opt-in (`native = true`). Flip it later?
-3. **Rule sounds are non-positional** (K): a replaced horn or ped sound plays centred. Positional replacement (the
-   owner's position into the private MixMap) is possible; wanted?
-4. **Tuning across map changes** (I): patches are kept across map changes (globals are restored at a map change).
-   OK, or restore tuning there too?
-5. **A muted request is still an event row** (K): a "custom pop" mod mutes `pop` and still sees the pops. OK?
-6. **Empty / rules-only overlays no longer restart the sound** (K; a change to R1's rule that every overlay change
-   restarts): OK?
+Decisions (the user, 2026-10-04; the six questions the first cut was built with, each answered):
+1. **Mod emitters get their own emitter instances by default** (J): `"mod_emitter_slots"` defaults to `"extra"`;
+   `"shared"` (retail's 5 with the map's emitters, first reached first served) stays selectable. The user: "modding
+   isn't in retails, so 'not like retail' isn't a thing. Yes default to seperate slots."
+2. **Mod WAVs go through the native mixer by default** (H; spec L6): no `native` field = native (a Bevy voice when the
+   native audio is missing or its 24 voices are taken), `native = false` = the Bevy voice, `native = true` = native
+   only. The user: "Yes duh".
+3. **Rule sounds are positional, and the mod chooses where** (K): by default at the owner of the game's sound,
+   following it, with the owner's retail reach; `play.at` = `owner` (+ `offset`) / `world` (+ `position`) /
+   `centre`, `play.falloff` for the reach. The user: "Yes it should be positional, and mods should allow them to
+   choose where positionally that audio should appear."
+4. **Tuning patches are kept across map changes** (I), as built (globals are still restored at a map change).
+5. **A muted request is still an event row** (K), as built: a "custom pop" mod mutes `pop` and still sees the pops.
+6. **Empty / rules-only overlays don't restart the sound** (K), as built.
+
+Implementation of 1–3 (2026-10-04, on `audio/moddability-2`):
+- 1: `game_audio/mod.rs` (`ModEmitterSlots` default `Extra`, `mod_emitter_slots()` with the
+  `SKATE_AUDIO_MOD_EMITTER_SLOTS` override either way), `emitters.rs` (reads it), `world_audio.rs` docs.
+- 2: `skate-mods` `audio.rs` (`native: Option<bool>`, `DEFAULT_REACH`, `wants_native`), `api.lua` (passes `native`
+  through), `modding/audio.rs` (`play`: native unless `false`, the Bevy fallback for the default, the default reach; `game_audio/native.rs` `start_for_test`, a test helper), `vm.rs` (a Lua case).
+- 3: `skate-mods` `audio_rules.rs` (`RulePlay` `at` / `offset` / `position` / `falloff`, `RuleAt`, checks);
+  `game_audio/mod_rules.rs` (the request's owner travels with the queued sound: `Origin`, `mutes_at` for the emitter
+  site's position and reach; `take_plays` builds the placement); `mod_voices.rs` (`Reach` replaces the sphere tuple,
+  `Follow` / `Anchor`, owners located every frame from `Cues`, `WorldOwners`, `NpcSkaters`; the owner kinds' retail
+  reach); `emitters.rs` (`shape_level`, the emitter start passes its record's position and reach);
+  `modding/mod.rs` / `game_audio/mod.rs` `set_rule` (checks before the WAV loads).
+- `sdk/skate.lua`, `sdk/GENERAL_API.md`; `mods/audio-content-test`: F8 without `native` / `falloff` (the defaults),
+  F10's emitter on its own instance (the default), F11 adds a landing replaced by a beep at a fixed world spot,
+  `audio.json` `pop_click` at the owner and `honk_beep` 1.5 m above each honking car.
 
 ---
 
@@ -1199,6 +1291,6 @@ Every step keeps the no-mod e2e output byte-identical to the R0 reference.
 
 - **Scope of this PR:** the smaller cut: R0 + R1 (content overlay) + R2 (map audio as data) + R3(a) (posts, globals, a read-only MixMap view) + R5 observe-only (audio events) + R6 (docs, example mods). Tuning writes, mod emitters and reverb zones, mod WAVs in the native mixer and mute / replace rules follow later.
 - **Turning an audio mod on or off** restarts the native audio (a short cut, as on a map change).
-- **Mod WAVs through the native mixer:** opt-in per sound (`native = true`); existing mods behave as before.
+- **Mod WAVs through the native mixer:** opt-in per sound (`native = true`); existing mods behave as before. (Superseded 2026-10-04: native is the default, section H.)
 - **Two mods replacing the same sound:** the first by mod id wins, with a warning in the mod menu.
 - **Open:** see §4.3 (mod emitters' slots, the retail map list's source, the custom-map audio format, example mods, when an overlay is active, boot order, speech timing, check_mod depth, mute / replace rules).

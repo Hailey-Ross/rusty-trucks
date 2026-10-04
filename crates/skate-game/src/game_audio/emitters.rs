@@ -221,10 +221,12 @@ fn reach(shape: &Shape, listener: Vec3) -> Option<f32> {
     Some(if core > 0.0 && d < core { 0.0 } else if core >= 1.0 { 0.0 } else { (d - core) / (1.0 - core) })
 }
 
-/// The record test for a sphere of `radius` (inner `core`) and the falloff curve: the level factor
-/// at `ear`, None outside (the native mod voices, `mod_voices`; the same functions as the records').
-pub(super) fn sphere_level(position: Vec3, radius: f32, core: f32, curve: i32, ear: Vec3) -> Option<f32> {
-    let d = reach(&Shape { position, extent: Vec3::splat(radius), forward: Vec3::X, core }, ear)?;
+/// The record test for a shape (a sphere when the three extents are equal, else an ellipsoid with
+/// semi-axes `extent` along `forward`, up and side; inner `core`) and the falloff curve: the level
+/// factor at `ear`, None outside (the native mod voices and rule sounds, `mod_voices::Reach`; the
+/// same functions as the records').
+pub(super) fn shape_level(position: Vec3, extent: Vec3, forward: Vec3, core: f32, curve: i32, ear: Vec3) -> Option<f32> {
+    let d = reach(&Shape { position, extent, forward, core }, ear)?;
     Some(falloff(curve, d))
 }
 
@@ -253,7 +255,7 @@ struct Node {
     state: Option<usize>,
     /// A published emitter's entity (`WorldEmitter`; None for the map's records).
     entity: Option<Entity>,
-    /// A published emitter's private-MixMap instance and its build (the non-retail "extra" setting).
+    /// A published emitter's private-MixMap instance and its build (the "extra" setting, the default).
     extra: Option<(usize, u64)>,
 }
 
@@ -457,8 +459,8 @@ pub(super) fn update(
         }
     }
     // Waiting nodes take free states in list order: retail's 5 (the map's emitters, and published
-    // ones by default), or, with the non-retail "extra" setting, a published emitter takes an
-    // instance of the private MixMap instead.
+    // ones with the "shared" setting), or, with the "extra" setting (the default), a published
+    // emitter takes an instance of the private MixMap instead.
     let mut active = state.nodes.iter().filter(|n| n.started && n.extra.is_none()).count();
     for node in state.nodes.iter_mut().filter(|n| !n.started) {
         let own = extra && node.entity.is_some();
@@ -492,9 +494,11 @@ pub(super) fn update(
                         native.emitter_payload(node.state, level, super::native::azimuth(listener, e.shape.position), e.patch)
                     }
                 };
-                // A mod rule may mute the start: the node keeps its state and posts nothing.
+                // A mod rule may mute the start: the node keeps its state and posts nothing. A rule
+                // sound placed at the owner plays at the record, with the record's reach.
                 let muted = rules.set.as_deref().is_some_and(|r| {
-                    r.mutes(&super::mod_audio::EventRow { kind: super::mod_audio::EventKind::EmitterStart, source: super::mod_audio::Source::Emitter, class: super::mod_audio::intern(&e.bank), slot: "", id: e.patch, owner: node.owner() })
+                    let site = (e.shape.position, super::mod_voices::Reach { extent: e.shape.extent, forward: e.shape.forward, core: e.shape.core, curve: e.falloff });
+                    r.mutes_at(&super::mod_audio::EventRow { kind: super::mod_audio::EventKind::EmitterStart, source: super::mod_audio::Source::Emitter, class: super::mod_audio::intern(&e.bank), slot: "", id: e.patch, owner: node.owner() }, Some(site))
                 });
                 node.post = if muted { None } else { native.post_emitter(&payload) };
                 if api.events.on() && (node.post.is_some() || muted) {
@@ -819,7 +823,8 @@ mod tests {
         world.init_resource::<crate::replay::Replay>();
         world.init_resource::<ReverbZones>();
         world.init_resource::<super::super::mod_rules::AudioRules>();
-        let saved = super::super::SavedSettings { mod_emitter_slots: if extra { super::super::ModEmitterSlots::Extra } else { super::super::ModEmitterSlots::Shared }, ..Default::default() };
+        // `extra` = the default settings (own instances since 2026-10-04); else the "shared" option.
+        let saved = if extra { super::super::SavedSettings::default() } else { super::super::SavedSettings { mod_emitter_slots: super::super::ModEmitterSlots::Shared, ..Default::default() } };
         world.insert_resource(super::super::AudioSettings { saved, path: std::env::temp_dir().join("skate-emitter-test-audio.json"), muted: true });
         let listener = world.spawn((super::super::GameAudioListener, Transform::default(), GlobalTransform::default())).id();
         (world, listener)
@@ -836,7 +841,7 @@ mod tests {
         world.spawn((t, GlobalTransform::from(t), crate::world_audio::WorldEmitter { bank: bank.into(), patch, extent: Vec3::splat(20.0), forward: Vec3::X, core: 0.0, volume: 1.0, falloff: 0 })).id()
     }
 
-    /// Published emitters (data-gated), default setting: they join the live list after the map's
+    /// Published emitters (data-gated), the "shared" setting: they join the live list after the map's
     /// records and share retail's 5 emitter states (7 reached at once: the first 5 in list order
     /// play, the others wait), post `c_emitter` so the bank's program plays, take a freed state
     /// when one leaves, stop when the listener leaves their reach, and a despawned one is
@@ -878,12 +883,13 @@ mod tests {
         assert_eq!(free, [0, 1, 2, 3, 4], "nothing held");
     }
 
-    /// The non-retail "extra" setting (data-gated): published emitters take private-MixMap
-    /// instances, so all 7 play and retail's 5 states stay free for the map's emitters; their
-    /// words come from the private MixMap's Emitter instances; despawning frees the instances.
+    /// The default settings ("extra", user decision 2026-10-04; data-gated): published emitters
+    /// take private-MixMap instances, so all 7 play and retail's 5 states stay free for the map's
+    /// emitters; their words come from the private MixMap's Emitter instances; despawning frees
+    /// the instances.
     #[test]
     #[ignore = "needs the private install data"]
-    fn the_extra_setting_gives_published_emitters_their_own_instances() {
+    fn the_default_gives_published_emitters_their_own_instances() {
         let (mut world, _) = published_world(true);
         let update = world.register_system(update);
         let (bank, patch) = downtown_emitter(&world);

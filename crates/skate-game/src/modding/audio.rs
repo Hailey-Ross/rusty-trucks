@@ -140,10 +140,18 @@ pub(super) fn load_native_clip(world: &mut World, mods: &Mods, owner: &str, path
     world.resource_scope(|world, audio: Mut<ModAudio>| ensure_native_clip(world, &audio, owner, root, path))
 }
 
-/// `sdk.audio.play{native = true}`: the WAV through the game's native mixer (opt-in).
+/// Whether a native voice can be had for `owner`'s `key` now: the native audio runs (with its
+/// MixMap) and the key already holds a native voice or one of the native voices is free.
+fn native_ready(world: &World, audio: &ModAudio, owner: &str, key: &str) -> bool {
+    let running = world.get_resource::<crate::game_audio::Native>().is_some_and(|n| n.mixmap.is_some()) && world.get_resource::<ModVoices>().is_some();
+    running && (audio.native.contains_key(&(owner.to_owned(), key.to_owned())) || native_usage(world, owner).1 < MAX_NATIVE_VOICES)
+}
+
+/// The native mixer (`sdk.audio.play`, the default since 2026-10-04): the WAV through the game's
+/// own mixer.
 fn play_native(world: &mut World, mods: &Mods, owner: &str, key: String, opts: AudioPlayOptions) -> Result<(), String> {
     if world.get_resource::<crate::game_audio::Native>().is_none_or(|n| n.mixmap.is_none()) {
-        return Err("native audio is not running (play without native = true)".into());
+        return Err("native audio is not running (play with native = false for a Bevy voice)".into());
     }
     let root = &mods.manager.packages.get(owner).ok_or("Missing audio owner")?.root;
     let origin = Vec3::from_array(opts.position.unwrap_or([0.0; 3]));
@@ -171,7 +179,9 @@ fn play_native(world: &mut World, mods: &Mods, owner: &str, key: String, opts: A
             paused: opts.paused,
             fade_in: opts.fade_in,
             position: opts.spatial.then_some(position),
-            falloff: opts.falloff.map(|f| (f.radius, f.core, f.curve.retail_type())),
+            // A positional sound without `falloff` gets the default reach (40 m, squared).
+            reach: opts.spatial.then(|| crate::game_audio::mod_voices::Reach::from_falloff(opts.reach())),
+            follow: None,
             reverb: opts.reverb.unwrap_or(true),
             group: u8::from(opts.group.as_deref() == Some("player")),
         };
@@ -183,7 +193,14 @@ fn play_native(world: &mut World, mods: &Mods, owner: &str, key: String, opts: A
 
 pub(super) fn play(world: &mut World, mods: &Mods, owner: &str, key: String, opts: AudioPlayOptions) -> Result<(), String> {
     if !opts.validate() { return Err("Invalid audio play options".into()); }
-    if opts.native { return play_native(world, mods, owner, key, opts); }
+    // Routing (user decision 2026-10-04): native by default; `native = true` insists on it (an
+    // error without it); with the default a Bevy voice stands in when the native audio is not
+    // running or its native voices are all taken; `native = false` is always the Bevy voice.
+    match opts.native {
+        Some(true) => return play_native(world, mods, owner, key, opts),
+        None if native_ready(world, world.resource::<ModAudio>(), owner, &key) => return play_native(world, mods, owner, key, opts),
+        _ => {}
+    }
     let root = &mods.manager.packages.get(owner).ok_or("Missing audio owner")?.root;
     let origin = Vec3::from_array(opts.position.unwrap_or([0.0; 3]));
     let offset = Vec3::from_array(opts.offset);
@@ -420,6 +437,32 @@ mod tests {
         assert_eq!(w.resource::<ModAudio>().voices[&("a".into(),"engine".into())].stopping,Some((0.1,0.1)));
         stop(&mut w,"a","engine",0.0); stop(&mut w,"a","engine",0.0);
         assert!(w.resource::<ModAudio>().voices.is_empty());
+    }
+    /// Native is the default (user decision 2026-10-04) where it can be had: without the native
+    /// audio a default play takes the Bevy path.
+    #[test] fn default_routing_needs_the_native_audio() {
+        let mut w=world();
+        assert!(!native_ready(&w, w.resource::<ModAudio>(), "a", "k"), "no native audio: the Bevy voice");
+        w.insert_resource(ModVoices::default());
+        assert!(!native_ready(&w, w.resource::<ModAudio>(), "a", "k"), "no runtime yet");
+    }
+    /// With the native audio running (data-gated) a default play is native until the 24 native
+    /// voices are taken; a key that already holds a native voice keeps it.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn default_routing_is_native_until_the_native_voices_are_taken() {
+        use crate::game_audio::mod_voices::tests::{library, spec, tone_wav};
+        let mut w=world();
+        let library=library();
+        w.insert_resource(crate::game_audio::Native::start_for_test(&library).unwrap_or_else(|e| panic!("missing private data: {e}")));
+        w.insert_resource(ModVoices::default());
+        assert!(native_ready(&w, w.resource::<ModAudio>(), "a", "k"));
+        let wav=tone_wav(440.0, 0.1, 22050, 0.5);
+        w.resource_mut::<ModVoices>().add_clip("b", "t.wav", &wav).unwrap();
+        for i in 0..MAX_NATIVE_VOICES { w.resource_mut::<ModVoices>().play("b", &format!("v{i}"), spec("t.wav", None)).unwrap(); }
+        assert!(!native_ready(&w, w.resource::<ModAudio>(), "a", "k"), "all native voices taken: the Bevy voice");
+        w.resource_mut::<ModAudio>().native.insert(("a".into(),"k".into()), NativeVoice { body: None, position: Vec3::ZERO, offset: Vec3::ZERO, spatial: false });
+        assert!(native_ready(&w, w.resource::<ModAudio>(), "a", "k"), "a key with a native voice keeps it");
     }
     #[test] fn unloading_releases_cached_assets() {
         let mut w=world(); let h=w.resource_mut::<Assets<AudioSource>>().add(AudioSource{bytes:Vec::<u8>::new().into()});

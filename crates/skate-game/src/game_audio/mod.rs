@@ -64,17 +64,17 @@ struct SavedSettings {
     /// Read at start. `SKATE_AUDIO_MORE_AUDIBLE=1` turns it on for one run.
     more_audible_world: bool,
     /// Where mod emitters (`WorldEmitter`, `sdk.world_audio.spawn(key, 'emitter', …)`) get their
-    /// emitter state: `"shared"` (the default, retail's rule: they share the 5 emitter states with
-    /// the map's emitters, the first reached served first) or `"extra"` (NOT retail: their own
-    /// instances of the private MixMap, so the map's emitters keep all 5). Read every frame.
-    /// `SKATE_AUDIO_MOD_EMITTER_SLOTS=extra` turns it on for one run.
+    /// emitter state: `"extra"` (the default, user decision 2026-10-04: their own instances of the
+    /// private MixMap, so the map's emitters keep retail's 5) or `"shared"` (retail's rule: they
+    /// share the 5 emitter states with the map's emitters, the first reached served first). Read
+    /// every frame. `SKATE_AUDIO_MOD_EMITTER_SLOTS=shared|extra` overrides it for one run.
     mod_emitter_slots: ModEmitterSlots,
     // Files saved before 2026-10-03 may hold `"interim"` (the opt-out to the removed interim cue
     // tables) or the older `"native"`; unknown keys are ignored, so they still load.
 }
 impl Default for SavedSettings {
     fn default() -> Self {
-        Self { master: 75, ambience: 100, effects: 100, more_audible_world: false, mod_emitter_slots: ModEmitterSlots::Shared }
+        Self { master: 75, ambience: 100, effects: 100, more_audible_world: false, mod_emitter_slots: ModEmitterSlots::Extra }
     }
 }
 
@@ -82,9 +82,21 @@ impl Default for SavedSettings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ModEmitterSlots {
-    #[default]
     Shared,
+    #[default]
     Extra,
+}
+
+impl ModEmitterSlots {
+    /// The setting in force: `SKATE_AUDIO_MOD_EMITTER_SLOTS` (`shared` / `extra`) wins over the
+    /// saved value; anything else in the variable is ignored.
+    fn in_force(saved: Self, env: Option<&str>) -> Self {
+        match env {
+            Some("shared") => Self::Shared,
+            Some("extra") => Self::Extra,
+            _ => saved,
+        }
+    }
 }
 impl SavedSettings {
     fn validated(mut self) -> Self {
@@ -123,9 +135,10 @@ impl AudioSettings {
     pub(crate) fn more_audible_world(&self) -> bool {
         self.saved.more_audible_world || std::env::var("SKATE_AUDIO_MORE_AUDIBLE").is_ok_and(|v| v == "1")
     }
-    /// Whether mod emitters get their own (non-retail) instances (see `SavedSettings::mod_emitter_slots`).
+    /// Whether mod emitters get their own instances (the default; see `SavedSettings::mod_emitter_slots`).
     pub(crate) fn extra_mod_emitter_slots(&self) -> bool {
-        self.saved.mod_emitter_slots == ModEmitterSlots::Extra || std::env::var("SKATE_AUDIO_MOD_EMITTER_SLOTS").is_ok_and(|v| v == "extra")
+        let env = std::env::var("SKATE_AUDIO_MOD_EMITTER_SLOTS").ok();
+        ModEmitterSlots::in_force(self.saved.mod_emitter_slots, env.as_deref()) == ModEmitterSlots::Extra
     }
     pub(crate) fn category(&self, category: Category) -> f32 {
         let percent = match category {
@@ -260,6 +273,11 @@ pub(crate) fn set_rule(world: &mut World, owner: &str, key: &str, rule: Option<s
     if world.get_resource::<mod_rules::AudioRules>().is_none() {
         return Err("game audio is unavailable".into());
     }
+    // The whole rule (match, action, the sound's placement and reach) is checked before its WAV
+    // is read into the mod's bank.
+    if rule.as_ref().is_some_and(|r| !r.validate()) {
+        return Err("audio rule: a rule needs a known match, an action and (replace / layer) a valid play (at / offset / position / falloff)".into());
+    }
     if let Some(p) = rule.as_ref().and_then(|r| r.play.as_ref()) {
         load(world, &p.path)?;
     }
@@ -370,8 +388,29 @@ mod tests {
         assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5, ..SavedSettings::default() });
         let more: SavedSettings = serde_json::from_str(r#"{"more_audible_world":true}"#).unwrap();
         assert!(more.more_audible_world && more.master == 75);
+    }
+
+    /// Mod emitters get their own instances by default (user decision 2026-10-04); `"shared"` in
+    /// the file or the variable selects retail's 5; the variable wins over the file either way; a
+    /// file without the key gets the default.
+    #[test]
+    fn mod_emitter_slots_default_to_extra() {
+        use ModEmitterSlots::{Extra, Shared};
+        assert_eq!(SavedSettings::default().mod_emitter_slots, Extra);
+        let old: SavedSettings = serde_json::from_str(r#"{"master":60}"#).unwrap();
+        assert_eq!(old.mod_emitter_slots, Extra, "a file without the key");
+        let shared: SavedSettings = serde_json::from_str(r#"{"mod_emitter_slots":"shared"}"#).unwrap();
         let extra: SavedSettings = serde_json::from_str(r#"{"mod_emitter_slots":"extra"}"#).unwrap();
-        assert_eq!((extra.mod_emitter_slots, SavedSettings::default().mod_emitter_slots), (ModEmitterSlots::Extra, ModEmitterSlots::Shared));
+        assert_eq!((shared.mod_emitter_slots, extra.mod_emitter_slots), (Shared, Extra));
+        assert_eq!(ModEmitterSlots::in_force(Extra, None), Extra);
+        assert_eq!(ModEmitterSlots::in_force(Shared, None), Shared);
+        assert_eq!(ModEmitterSlots::in_force(Extra, Some("shared")), Shared);
+        assert_eq!(ModEmitterSlots::in_force(Shared, Some("extra")), Extra);
+        assert_eq!(ModEmitterSlots::in_force(Shared, Some("1")), Shared, "unknown values are ignored");
+        let s = |slots| AudioSettings { saved: SavedSettings { mod_emitter_slots: slots, ..Default::default() }, path: std::env::temp_dir().join("x.json"), muted: false };
+        if std::env::var("SKATE_AUDIO_MOD_EMITTER_SLOTS").is_err() {
+            assert!(s(Extra).extra_mod_emitter_slots() && !s(Shared).extra_mod_emitter_slots());
+        }
     }
 
     #[test]

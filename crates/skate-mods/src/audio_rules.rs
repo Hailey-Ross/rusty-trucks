@@ -15,10 +15,12 @@
 //! - `action`: `mute` (the request is dropped: a post is not made, so its later updates and its
 //!   release do nothing; a Splice sound does not start; an emitter keeps its state but posts
 //!   nothing), `replace` (mute + `play`), `layer` (the game's sound and `play`).
-//! - `play`: the mod's own WAV through the native mixer, non-positional (centred, the retail
-//!   non-positional emitter outputs), `volume` 0..1, `pitch` 0.25..4, `reverb` (default true),
-//!   `group` `player` (default) or `world`; at most once per `min_interval` seconds (default 0.05)
-//!   per rule.
+//! - `play`: the mod's own WAV through the native mixer, `volume` 0..1, `pitch` 0.25..4, `reverb`
+//!   (default true), `group` `player` (default) or `world`; at most once per `min_interval`
+//!   seconds (default 0.05) per rule. Where it plays (`at`): `owner` (default: at the owner of the
+//!   game's sound, following it, plus an `offset`), `world` (a fixed `position`) or `centre`
+//!   (non-positional, the retail non-positional emitter outputs); `falloff` = the reach of a
+//!   positional one (default: the owner's retail reach).
 //! - Rules apply while the mod runs (runtime `sdk.audio.rule(key, rule|nil)`, or `audio.json`
 //!   `rules`). The first matching rule decides (mods in mod-id order, then rule keys). Event rows
 //!   are the game's requests: a muted request is still reported to subscribers.
@@ -65,6 +67,21 @@ pub enum RuleAction {
     Layer,
 }
 
+/// Where a rule's sound plays (user decision 2026-10-04: positional, the mod chooses where).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleAt {
+    /// At the owner of the game's sound (the local skater, the car / ped, the NPC skater, the
+    /// emitter), following it while it plays; `offset` is added (world axes).
+    #[default]
+    Owner,
+    /// At the fixed world `position`.
+    World,
+    /// Non-positional, centred (the retail non-positional emitter outputs).
+    #[serde(alias = "center")]
+    Centre,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulePlay {
@@ -78,6 +95,18 @@ pub struct RulePlay {
     pub reverb: Option<bool>,
     #[serde(default)]
     pub group: Option<String>,
+    /// Where it plays (default: at the owner).
+    #[serde(default)]
+    pub at: RuleAt,
+    /// `owner` only: metres added to the owner's position (world axes, y up), −100..100.
+    #[serde(default)]
+    pub offset: Option<[f32; 3]>,
+    /// `world` only (required there): the world position.
+    #[serde(default)]
+    pub position: Option<[f32; 3]>,
+    /// Positional only: the reach (default: the owner's retail reach, `game_audio::mod_rules`).
+    #[serde(default)]
+    pub falloff: Option<crate::audio::NativeFalloff>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -113,6 +142,21 @@ impl RulePlay {
             && self.volume.is_finite() && (0.0..=1.0).contains(&self.volume)
             && self.pitch.is_finite() && (0.25..=4.0).contains(&self.pitch)
             && self.group.as_deref().is_none_or(|g| crate::audio::NATIVE_GROUPS.contains(&g))
+            && self.validate_placement()
+    }
+
+    /// `offset` only with `owner`, `position` exactly with `world`, `falloff` not with `centre`;
+    /// the ranges of `sdk.audio.play` (offset ±100 m, position ±100 km, the reach's).
+    fn validate_placement(&self) -> bool {
+        let fields = match self.at {
+            RuleAt::Owner => self.position.is_none(),
+            RuleAt::World => self.offset.is_none() && self.position.is_some(),
+            RuleAt::Centre => self.offset.is_none() && self.position.is_none() && self.falloff.is_none(),
+        };
+        fields
+            && self.offset.as_ref().is_none_or(crate::audio::offset)
+            && self.position.as_ref().is_none_or(crate::audio::point)
+            && self.falloff.as_ref().is_none_or(crate::audio::NativeFalloff::validate)
     }
 }
 
@@ -163,6 +207,51 @@ mod tests {
         }
         for typo in [json!({"match": {"tag": "pop"}, "action": "silence"}), json!({"match": {"tags": "pop"}, "action": "mute"}), json!({"match": {"tag": "pop"}, "action": "mute", "when": 1})] {
             assert!(serde_json::from_value::<Rule>(typo.clone()).is_err(), "{typo}");
+        }
+    }
+
+    /// Where the rule's sound plays (user decision 2026-10-04): at the owner by default, with an
+    /// offset; a fixed world position; centred; the reach. Each combination is checked.
+    #[test]
+    fn rule_placement_options_validate() {
+        let play = |p: serde_json::Value| -> Rule {
+            let mut play = json!({"path": "a.wav"});
+            play.as_object_mut().unwrap().extend(p.as_object().unwrap().clone());
+            serde_json::from_value(json!({"match": {"tag": "horn"}, "action": "replace", "play": play})).unwrap()
+        };
+        let default = play(json!({}));
+        assert_eq!(default.play.as_ref().unwrap().at, RuleAt::Owner, "at the owner by default");
+        assert!(default.validate());
+        for ok in [
+            json!({"at": "owner"}),
+            json!({"offset": [0, 1.5, 0]}),
+            json!({"at": "owner", "offset": [-100, 0, 100], "falloff": {"radius": 20, "curve": "linear"}}),
+            json!({"at": "world", "position": [10, 0, -4]}),
+            json!({"at": "world", "position": [1e5, 0, -1e5], "falloff": {"radius": 30, "core": 0.2}}),
+            json!({"at": "centre"}),
+            json!({"at": "center"}),
+        ] {
+            assert!(play(ok.clone()).validate(), "{ok}");
+        }
+        assert_eq!(play(json!({"at": "center"})).play.unwrap().at, RuleAt::Centre);
+        for bad in [
+            json!({"position": [1, 2, 3]}),
+            json!({"at": "world"}),
+            json!({"at": "world", "position": [1, 2, 3], "offset": [0, 1, 0]}),
+            json!({"at": "centre", "offset": [0, 1, 0]}),
+            json!({"at": "centre", "position": [0, 1, 0]}),
+            json!({"at": "centre", "falloff": {"radius": 10}}),
+            json!({"offset": [0, 101, 0]}),
+            json!({"at": "world", "position": [0, 1e6, 0]}),
+            json!({"falloff": {"radius": 0}}),
+            json!({"falloff": {"radius": 10, "core": 2}}),
+        ] {
+            assert!(!play(bad.clone()).validate(), "accepted {bad}");
+        }
+        for typo in [json!({"at": "listener"}), json!({"falloff": {"radius": 10, "shape": "box"}}), json!({"offset": [0, 1]})] {
+            let mut p = json!({"path": "a.wav"});
+            p.as_object_mut().unwrap().extend(typo.as_object().unwrap().clone());
+            assert!(serde_json::from_value::<Rule>(json!({"match": {"tag": "horn"}, "action": "layer", "play": p})).is_err(), "{typo}");
         }
     }
 }

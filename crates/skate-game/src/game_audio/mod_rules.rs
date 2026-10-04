@@ -10,9 +10,13 @@
 //! - `mute` drops the request (a post is not made: its later redeliveries and its release find no
 //!   node and do nothing; a Splice sound does not start; an emitter keeps its state and posts
 //!   nothing); `replace` drops it and plays the rule's WAV; `layer` keeps it and plays the WAV;
-//! - a rule's WAV plays through the native mixer (`mod_voices`, non-positional), opened in the same
-//!   pass for the sites before `mod_voices::frame` (the local player, the world / NPC owners'
-//!   process) and in the next for the later ones (their update, the emitters).
+//! - a rule's WAV plays through the native mixer (`mod_voices`), opened in the same pass for the
+//!   sites before `mod_voices::frame` (the local player, the world / NPC owners' process) and in
+//!   the next for the later ones (their update, the emitters). It is positional (user decision
+//!   2026-10-04): by default at the owner of the game's sound (the request's source and owner
+//!   travel with it, [`Origin`]; `mod_voices` follows the owner every frame), or where the rule
+//!   says (`play.at`: a fixed world position, or centred); the reach defaults to the owner's
+//!   retail one (`mod_voices::locate`).
 //!
 //! The compiled [`RuleSet`] is shared (`Arc`) with the sites; with no rules every site holds
 //! `None` and checks one branch, so without rules the game sounds exactly as before. The first
@@ -26,10 +30,78 @@ use bevy::prelude::*;
 use skate_mods::audio_rules::{MAX_RULES, MAX_RULES_PER_MOD, Rule, RuleAction};
 
 use super::mod_audio::{EventKind, EventRow, Source, Tags};
-use super::mod_voices::{ModVoices, VoiceSpec};
+use super::mod_voices::{Anchor, Follow, ModVoices, Reach, VoiceSpec};
 
 /// Concurrent voices of one rule's sound (a newer play replaces the oldest).
 const VOICES_PER_RULE: usize = 4;
+
+/// Where a rule's sound plays (`skate_mods::audio_rules::RuleAt`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Placement {
+    /// At the owner plus this offset (world axes), followed.
+    Owner(Vec3),
+    /// At a fixed world position.
+    World(Vec3),
+    /// Non-positional, centred.
+    Centre,
+}
+
+/// A rule's sound: the voice (no position yet) and where it plays.
+struct Play {
+    voice: VoiceSpec,
+    at: Placement,
+}
+
+/// The request a rule's sound answers: its source and owner (the event row's), and for an emitter
+/// start the record's position and reach.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Origin {
+    source: Source,
+    owner: u64,
+    site: Option<(Vec3, Reach)>,
+}
+
+impl Origin {
+    /// The owner to place the sound at (None: an emitter request without its record).
+    fn anchor(&self) -> Option<Anchor> {
+        Some(match self.source {
+            Source::Player => Anchor::Player,
+            Source::World => Anchor::World(self.owner),
+            Source::Npc => Anchor::Npc(self.owner),
+            Source::Emitter => {
+                let (p, r) = self.site?;
+                Anchor::Fixed(p, r)
+            }
+            // Not rule sites (zone changes, speech rows).
+            Source::Ambience | Source::Speech => return None,
+        })
+    }
+}
+
+impl Play {
+    /// The voice for one request: positioned at its owner (followed), at the rule's fixed
+    /// position, or centred; an owner that cannot be named (no emitter record) plays it centred.
+    fn spec(&self, origin: &Origin) -> VoiceSpec {
+        let mut v = self.voice.clone();
+        let anchor = origin.anchor();
+        match (self.at, anchor) {
+            (Placement::Owner(offset), Some(anchor)) => {
+                // The position comes from the owner at the voices' frame, before any word is read.
+                v.position = Some(Vec3::ZERO);
+                v.follow = Some(Follow { anchor, offset, track: true });
+            }
+            (Placement::World(p), anchor) => {
+                v.position = Some(p);
+                v.follow = anchor.map(|anchor| Follow { anchor, offset: Vec3::ZERO, track: false });
+            }
+            (Placement::Centre, _) | (Placement::Owner(_), None) => {
+                v.position = None;
+                v.reach = None;
+            }
+        }
+        v
+    }
+}
 
 /// A rule ready for the sites.
 struct Compiled {
@@ -42,7 +114,7 @@ struct Compiled {
     slot: Option<String>,
     id: Option<i32>,
     action: RuleAction,
-    play: Option<VoiceSpec>,
+    play: Option<Play>,
     min_interval: f64,
 }
 
@@ -61,8 +133,8 @@ impl Compiled {
 struct Clock {
     now: f64,
     last: Vec<f64>,
-    /// Rules whose sound is to play (in order).
-    plays: Vec<usize>,
+    /// Rules whose sound is to play (in order) and the request each answers.
+    plays: Vec<(usize, Origin)>,
 }
 
 /// The compiled rules, shared with the sites.
@@ -75,8 +147,13 @@ pub(crate) struct RuleSet {
 
 impl RuleSet {
     /// One request at a site: whether to drop it (`mute`, `replace`); a `replace` / `layer`
-    /// queues its sound (at most once per `min_interval`).
+    /// queues its sound (at most once per `min_interval`), placed at the request's owner.
     pub(crate) fn mutes(&self, row: &EventRow) -> bool {
+        self.mutes_at(row, None)
+    }
+
+    /// [`Self::mutes`] with the site's own position and reach (an emitter start: its record).
+    pub(crate) fn mutes_at(&self, row: &EventRow, site: Option<(Vec3, Reach)>) -> bool {
         let tag = self.tags.tag(row);
         let Some((i, r)) = self.rules.iter().enumerate().find(|(_, r)| r.matches(row, tag)) else { return false };
         if r.play.is_some() {
@@ -85,7 +162,7 @@ impl RuleSet {
                 if let Some(last) = c.last.get_mut(i) {
                     if now - *last >= r.min_interval {
                         *last = now;
-                        c.plays.push(i);
+                        c.plays.push((i, Origin { source: row.source, owner: row.owner, site }));
                         self.pending.store(true, Ordering::Relaxed);
                     }
                 }
@@ -99,17 +176,18 @@ impl RuleSet {
         self.pending.load(Ordering::Relaxed)
     }
 
-    /// The queued sounds as (owner, voice key, spec): each rule plays through a ring of
-    /// [`VOICES_PER_RULE`] keys.
+    /// The queued sounds as (mod, voice key, spec), each placed for its request: each rule plays
+    /// through a ring of [`VOICES_PER_RULE`] keys.
     pub(crate) fn take_plays(&self, counter: &mut u64) -> Vec<(String, String, VoiceSpec)> {
         self.pending.store(false, Ordering::Relaxed);
         let plays = self.clock.lock().map(|mut c| std::mem::take(&mut c.plays)).unwrap_or_default();
         plays
             .into_iter()
-            .filter_map(|i| {
+            .filter_map(|(i, origin)| {
                 let r = self.rules.get(i)?;
+                let spec = r.play.as_ref()?.spec(&origin);
                 *counter += 1;
-                Some((r.owner.clone(), format!("__rule.{}.{}", r.key, *counter as usize % VOICES_PER_RULE), r.play.clone()?))
+                Some((r.owner.clone(), format!("__rule.{}.{}", r.key, *counter as usize % VOICES_PER_RULE), spec))
             })
             .collect()
     }
@@ -174,6 +252,19 @@ impl AudioRules {
     }
 }
 
+/// A rule's `play` as a one-shot voice (no position yet) and its placement.
+fn play(p: &skate_mods::audio_rules::RulePlay, group: u8) -> Play {
+    use skate_mods::audio_rules::RuleAt;
+    let v3 = |a: Option<[f32; 3]>| a.map_or(Vec3::ZERO, Vec3::from_array);
+    let at = match p.at {
+        RuleAt::Owner => Placement::Owner(v3(p.offset)),
+        RuleAt::World => Placement::World(v3(p.position)),
+        RuleAt::Centre => Placement::Centre,
+    };
+    let voice = VoiceSpec { path: p.path.clone(), looping: false, volume: p.volume, pitch: p.pitch, paused: false, fade_in: 0.0, position: None, reach: p.falloff.map(Reach::from_falloff), follow: None, reverb: p.reverb.unwrap_or(true), group };
+    Play { voice, at }
+}
+
 fn kind(k: &str) -> Option<EventKind> {
     Some(match k {
         "post" => EventKind::Post,
@@ -227,7 +318,7 @@ fn compile(rules: &mut AudioRules, content: &super::AudioContent, voices: &mut M
                     rules.failed.push(format!("{owner}: rule {key}: {e}"));
                     continue;
                 }
-                Some(VoiceSpec { path: p.path.clone(), looping: false, volume: p.volume, pitch: p.pitch, paused: false, fade_in: 0.0, position: None, falloff: None, reverb: p.reverb.unwrap_or(true), group })
+                Some(play(p, group))
             }
         };
         let on = &rule.on;
@@ -314,7 +405,7 @@ impl RuleSet {
                 slot: rule.on.slot.clone(),
                 id: rule.on.id,
                 action: rule.action,
-                play: rule.play.as_ref().map(|p| VoiceSpec { path: p.path.clone(), looping: false, volume: p.volume, pitch: p.pitch, paused: false, fade_in: 0.0, position: None, falloff: None, reverb: p.reverb.unwrap_or(true), group: 1 }),
+                play: rule.play.as_ref().map(|p| play(p, 1)),
                 min_interval: f64::from(rule.min_interval),
             })
             .collect();
@@ -375,6 +466,75 @@ mod tests {
         assert!(set.mutes(&row(EventKind::Post, Source::Player, "Class_grind", "grind", 2)));
         assert!(!set.mutes(&row(EventKind::Post, Source::Player, "Class_grind", "grind", 0)));
         assert!(!set.mutes(&row(EventKind::Release, Source::Player, "", "grind", 2)), "releases never match");
+    }
+
+    /// Where the rules' sounds play (user decision 2026-10-04): at the request's owner by default
+    /// (the local skater, a world owner, an NPC skater, an emitter record with its own reach),
+    /// followed, plus an offset; at a fixed world position (the owner still gives the default
+    /// reach); centred; a mod's `falloff` replaces the default reach.
+    #[test]
+    fn rule_sounds_are_placed_at_their_owner() {
+        let tags = Tags { pop: vec![12], land: 20 };
+        let set = RuleSet::for_test(&[
+            ("dev.a", "pop", rule(json!({"match": {"tag": "pop"}, "action": "layer", "play": {"path": "a.wav"}, "min_interval": 0}))),
+            ("dev.a", "horn", rule(json!({"match": {"tag": "horn"}, "action": "replace", "play": {"path": "a.wav", "offset": [0, 1.5, 0], "falloff": {"radius": 12, "curve": "linear"}}, "min_interval": 0}))),
+            ("dev.a", "npc", rule(json!({"match": {"source": "npc"}, "action": "replace", "play": {"path": "a.wav", "at": "world", "position": [10, 0, -4]}, "min_interval": 0}))),
+            ("dev.a", "land", rule(json!({"match": {"tag": "land"}, "action": "replace", "play": {"path": "a.wav", "at": "centre"}, "min_interval": 0}))),
+            ("dev.a", "emit", rule(json!({"match": {"kind": "emitter_start"}, "action": "replace", "play": {"path": "a.wav"}, "min_interval": 0}))),
+        ], tags);
+        let bank = skate_audio::player::contacts::BANK;
+        let mut n = 0;
+        let mut one = |row: EventRow, site: Option<(Vec3, Reach)>| {
+            set.mutes_at(&row, site);
+            let mut plays = set.take_plays(&mut n);
+            assert_eq!(plays.len(), 1, "{row:?}");
+            plays.remove(0).2
+        };
+        // The local player's pop: at the skater, followed, its default reach found at play time.
+        let pop = one(row(EventKind::Splice, Source::Player, bank, "", 12), None);
+        assert_eq!(pop.follow, Some(Follow { anchor: Anchor::Player, offset: Vec3::ZERO, track: true }));
+        assert!(pop.position.is_some() && pop.reach.is_none());
+        // A car's horn: at the car (owner 7) 1.5 m up, the mod's reach.
+        let horn = one(EventRow { kind: EventKind::Post, source: Source::World, class: skate_audio::world::traffic::HORN_CLASS, slot: "horn", id: 0, owner: 7 }, None);
+        assert_eq!(horn.follow, Some(Follow { anchor: Anchor::World(7), offset: Vec3::new(0.0, 1.5, 0.0), track: true }));
+        assert_eq!(horn.reach, Some(Reach::sphere(12.0, 0.0, 1)));
+        // An NPC skater's post at a fixed world position: not followed; the skater gives the reach.
+        let npc = one(EventRow { kind: EventKind::Post, source: Source::Npc, class: "Class_grind", slot: "grind", id: 0, owner: 9 }, None);
+        assert_eq!(npc.position, Some(Vec3::new(10.0, 0.0, -4.0)));
+        assert_eq!(npc.follow, Some(Follow { anchor: Anchor::Npc(9), offset: Vec3::ZERO, track: false }));
+        // Centred: no position, no follow.
+        let land = one(row(EventKind::Splice, Source::Player, bank, "", 20), None);
+        assert_eq!((land.position, land.follow, land.reach), (None, None, None));
+        // An emitter start: at the record with the record's reach.
+        let reach = Reach { extent: Vec3::new(20.0, 5.0, 8.0), forward: Vec3::Z, core: 0.2, curve: 1 };
+        let at = Vec3::new(3.0, 1.0, -7.0);
+        let emit = one(EventRow { kind: EventKind::EmitterStart, source: Source::Emitter, class: "Baby_Cry_1", slot: "", id: 22, owner: 4 }, Some((at, reach)));
+        assert_eq!(emit.follow, Some(Follow { anchor: Anchor::Fixed(at, reach), offset: Vec3::ZERO, track: true }));
+        // An emitter request without its record cannot be placed: centred.
+        let lost = one(EventRow { kind: EventKind::EmitterStart, source: Source::Emitter, class: "Baby_Cry_1", slot: "", id: 22, owner: 4 }, None);
+        assert_eq!((lost.position, lost.follow), (None, None));
+    }
+
+    /// The owners' positions and retail reaches (`mod_voices::locate`): the skater's centre of
+    /// mass (30 m), a car (40 m) or ped (50 m) by id, an NPC skater (30 m), a fixed record; unknown
+    /// ids are not found.
+    #[test]
+    fn owners_are_located_with_their_retail_reach() {
+        use super::super::mod_voices::locate;
+        let mut cues = super::super::skate_events::Cues::default();
+        cues.riding.audio.com_position = [1.0, 2.0, 3.0];
+        let mut owners = super::super::world_sources::WorldOwners::default();
+        owners.vehicles.insert(7, skate_audio::world::traffic::VehicleState { position: [5.0, 0.0, 0.0], ..Default::default() });
+        let ped = skate_audio::world::peds::PedState { position: [0.0, 0.0, 9.0], ..Default::default() };
+        owners.peds.insert(8, ped);
+        let player = locate(&Anchor::Player, &cues, None, None).unwrap();
+        assert_eq!(player, (Vec3::new(1.0, 2.0, 3.0), Reach::sphere(30.0, 0.0, 0)));
+        assert_eq!(locate(&Anchor::World(7), &cues, Some(&owners), None), Some((Vec3::new(5.0, 0.0, 0.0), Reach::sphere(40.0, 0.0, 0))));
+        assert_eq!(locate(&Anchor::World(8), &cues, Some(&owners), None), Some((Vec3::new(0.0, 0.0, 9.0), Reach::sphere(50.0, 0.0, 0))));
+        assert_eq!(locate(&Anchor::World(99), &cues, Some(&owners), None), None);
+        assert_eq!(locate(&Anchor::Npc(3), &cues, None, None), None);
+        let r = Reach::sphere(7.0, 0.1, 2);
+        assert_eq!(locate(&Anchor::Fixed(Vec3::X, r), &cues, None, None), Some((Vec3::X, r)));
     }
 
     /// Runtime rules: limits, removal, the owner's cleanup; `audio.json` rules come with the

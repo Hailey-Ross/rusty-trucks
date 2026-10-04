@@ -25,11 +25,11 @@ local function hud()
     for t, n in pairs(counts) do tags[#tags + 1] = t .. " " .. n end
     table.sort(tags)
     sdk.ui.text("audio-content-test", string.format(
-        "Audio content test: restarts %s, generation %s, conflicts %s | post %s | global %s | native %s | tuning %s | emitter+zone %s | rules %s | emitter 0 out4 %s | %s | last: %s  [F5 global, F6 post, F7 release, F8 native siren, F9 tuning, F10 emitter + reverb zone, F11 mute grinds]",
+        "Audio content test: restarts %s, generation %s, conflicts %s | post %s | global %s | native %s | tuning %s | emitter+zone %s | rules %s | emitter 0 out4 %s | %s | last: %s  [F5 global, F6 post, F7 release, F8 native siren, F9 tuning, F10 emitter + reverb zone, F11 mute grinds + landing beacon]",
         tostring(info.restarts), tostring(info.generation), tostring(info.conflicts),
         h and (h.live and "live" or "dead") or "-", global_set and "set" or "-", native_on and "on" or "-", tuned and (#sdk.audio.tuned() .. " fields") or "-",
         placed and ((sdk.world_audio.read("emitter") or {}).audible and "playing" or "placed") or "-",
-        tostring(info.rules or 0) .. (quiet and " (grinds muted)" or ""),
+        tostring(info.rules or 0) .. (quiet and " (grinds muted, landing beacon)" or ""),
         m and tostring(m.level) or "-", table.concat(tags, ", "), table.concat(last, " / ")))
 end
 
@@ -67,19 +67,19 @@ return {
             posted = false
         end
         if key("F8") and (sdk.capabilities.audio or 0) >= 3 then
-            -- A looping siren 8 m from where the skater is, through the native mixer: the retail
-            -- emitter distance law, reverb send and panner, a 40 m reach; a native beep (no
-            -- position: the non-positional branch) marks the toggle.
+            -- A looping siren 8 m from where the skater is, through the native mixer (the default:
+            -- no `native` field): the retail emitter distance law, reverb send and panner, the
+            -- default reach (40 m, squared); a beep (no position: the non-positional branch, also
+            -- native by default) marks the toggle.
             native_on = not native_on
             if native_on then
                 local p = sdk.player.read().position
                 sdk.commands.request("native", {kind = "audio_play", key = "native_siren", options = {
-                    path = "audio/siren.wav", position = {p[1] + 8, p[2], p[3]}, loop = true, native = true,
-                    falloff = {radius = 40, core = 0.1, curve = "squared"}}})
+                    path = "audio/siren.wav", position = {p[1] + 8, p[2], p[3]}, loop = true}})
             else
                 sdk.audio.stop("native_siren", 0.3)
             end
-            sdk.commands.request("beep", {kind = "audio_play", key = "native_beep", options = {path = "audio/beep.wav", spatial = false, native = true, volume = 0.6}})
+            sdk.commands.request("beep", {kind = "audio_play", key = "native_beep", options = {path = "audio/beep.wav", spatial = false, volume = 0.6}})
         end
         if key("F9") and (sdk.capabilities.audio_tuning or 0) >= 1 then
             -- Tuning writes: the taxi engine idles higher and the default reverb preset (reverb01,
@@ -95,8 +95,9 @@ return {
         if key("F10") and (sdk.capabilities.world_audio or 0) >= 2 then
             -- A mod emitter (the Baby_Cry_1 bank this mod's audio.json replaces with a beep; patch
             -- 22) 6 m from the skater, reached within 15 m (retail's reach test and squared
-            -- falloff, a c_emitter post sharing retail's 5 emitter states), and a reverb zone
-            -- (reverb11) 30 m around the skater. F10 again removes both.
+            -- falloff, a c_emitter post on its own emitter instance: the default "extra" slots, so
+            -- the map's emitters keep retail's 5 states), and a reverb zone (reverb11) 30 m around
+            -- the skater. F10 again removes both.
             placed = not placed
             if placed then
                 local p = sdk.player.read().position
@@ -110,10 +111,18 @@ return {
             end
         end
         if key("F11") and (sdk.capabilities.audio_events or 0) >= 2 then
-            -- A runtime rule: mute the grind start (the Class_grind post is not made; the event row
-            -- still arrives). audio.json's rule "pop_click" layers a quiet beep on every pop.
+            -- Runtime rules: mute the grind start (the Class_grind post is not made; the event row
+            -- still arrives), and replace the landing with a beep at a fixed world position 10 m
+            -- east of where the skater is now (`at = 'world'`: land anywhere and it comes from that
+            -- spot, panned and rolling off with distance, silent beyond 30 m). audio.json's rule
+            -- "pop_click" layers a quiet beep on every pop at the skater (the default `at = 'owner'`),
+            -- "honk_beep" a beep 1.5 m above every honking car.
             quiet = not quiet
             sdk.audio.rule("quiet_grind", quiet and {match = {tag = "grind_start"}, action = "mute"} or nil)
+            local p = sdk.player.read().position
+            sdk.audio.rule("land_beacon", quiet and {match = {tag = "land"}, action = "replace",
+                play = {path = "audio/beep.wav", volume = 0.8, at = "world", position = {p[1] + 10, p[2], p[3]},
+                        falloff = {radius = 30}}} or nil)
         end
         if key("F5") then
             global_set = not global_set

@@ -273,8 +273,9 @@ function sdk.audio.play(key, opts)
         volume=opts.volume or 1, pitch=opts.pitch or 1,
         spatial=opts.spatial ~= false, spatial_scale=opts.spatial_scale or 0.1,
         paused=opts.paused == true, fade_in=opts.fade_in or 0.01,
-        -- Audio extension 3 (capability audio >= 3): through the game's native mixer (opt-in).
-        native=(opts.native == true) or nil, falloff=opts.falloff, reverb=opts.reverb, group=opts.group,
+        -- Audio extension 3 (capability audio >= 3): the game's native mixer, the default (nil);
+        -- native = false keeps the Bevy voice, native = true requires the native mixer.
+        native=opts.native, falloff=opts.falloff, reverb=opts.reverb, group=opts.group,
     }}
 end
 function sdk.audio.update(key, opts)

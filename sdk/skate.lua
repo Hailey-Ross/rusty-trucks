@@ -573,8 +573,10 @@ sdk.capabilities = {}
 -- Audio extension 1 (capability `audio`): the mod's own sounds. Keys and files belong to the calling
 -- mod. Files: mod-relative PCM16 WAV (`.wav`, no `..`, `\`, `:`, `#`, `?`), 1–2 channels, 8–48 kHz,
 -- at most 30 s and 8 MiB each; metadata chunks are dropped. Limits: 32 clips / 32 MiB / 32 voices per
--- mod, 128 / 128 MiB / 128 in all. The voices play outside the game's native audio engine: master
--- volume and `--mute` apply, but no retail reverb, distance curves or ducking. They pause while the
+-- mod, 128 / 128 MiB / 128 in all. By default (audio >= 3) a voice plays through the game's native
+-- mixer (see `native`); a Bevy voice (`native = false`, or no free native voice) plays outside the
+-- game's native audio engine: master volume and `--mute` apply, but no retail reverb, distance curves
+-- or ducking. They pause while the
 -- game is paused or a replay runs, and stop when the mod is disabled, reloaded or fails (clips are
 -- released then too). A voice bound to a body stops when that body is removed.
 ---@class AudioPlayOptions
@@ -589,13 +591,16 @@ sdk.capabilities = {}
 ---@field spatial_scale? number 0.001..1, world metres → spatial units (default 0.1)
 ---@field paused? boolean start paused (default false)
 ---@field fade_in? number seconds 0..2 (default 0.01)
----@field native? boolean audio >= 3: play through the game's native mixer (opt-in; default false = the
----Bevy voice above). The WAV joins a per-mod bank; the voice follows the retail world-emitter law:
----dry level and pan from a MixMap Emitter instance, the environment (reverb) send rolling off with
----camera distance 4 → 70 m, and the sound's own reach (`falloff`, the `.ems` record test). Category
----volume: `group`. Needs the native audio (else an error: use `sdk.commands.request` to fall back).
----24 native voices in all (they count in the 32 / 128 voice limits and share the mixer with the game).
----@field falloff? AudioFalloff native, positional: the reach (required when `spatial` is not false)
+---@field native? boolean audio >= 3: the game's native mixer. **Default (nil): native** while the game's
+---native audio runs and one of its 24 native voices is free, else the Bevy voice above; `true` = native
+---only (an error without it: use `sdk.commands.request` to get it as a result); `false` = always the
+---Bevy voice. The WAV joins a per-mod bank; the voice follows the retail world-emitter law: dry level
+---and pan from a MixMap Emitter instance, the environment (reverb) send rolling off with camera
+---distance 4 → 70 m, and the sound's own reach (`falloff`, the `.ems` record test). Category volume:
+---`group`. 24 native voices in all (they count in the 32 / 128 voice limits and share the mixer with
+---the game). `spatial_scale` is for the Bevy voice only (ignored by a native one).
+---@field falloff? AudioFalloff native, positional: the reach (default {radius = 40, curve = 'squared'},
+---retail's traffic-car reach: the vehicle list is cut at 40 m). Refused with `native = false`.
 ---@field reverb? boolean native: send into the environment bus (default true, as retail emitters)
 ---@field group? 'world'|'player' native: Ambience volume (`world`, default) or Effects volume
 ---@class AudioFalloff
@@ -721,8 +726,9 @@ function sdk.audio.events() end
 -- player's component posts and Splice starts (pops, landings, foley), the world / NPC hosts' posts and
 -- Splice starts, the world emitters' starts. `mute`: the request is dropped (a post is not made: its
 -- updates and release do nothing; a Splice sound does not start; an emitter keeps its state silently);
--- `replace`: dropped + `play`; `layer`: kept + `play`. The first matching rule decides (mods in mod-id
--- order). Event rows still report muted requests. 32 rules per mod, 64 in all; removed when the mod
+-- `replace`: dropped + `play`; `layer`: kept + `play`. The rule's sound plays where the game's would
+-- (at its owner, following it) unless `play.at` says otherwise. The first matching rule decides (mods
+-- in mod-id order). Event rows still report muted requests. 32 rules per mod, 64 in all; removed when the mod
 -- stops. Static rules also go in audio.json `rules` (capability audio_content >= 2).
 ---@class AudioRuleMatch
 ---@field tag? 'pop'|'land'|'grind_start'|'grind_end'|'footstep'|'horn'|'alarm'|'tazer'|'body_fall'|'emitter'
@@ -732,11 +738,22 @@ function sdk.audio.events() end
 ---@field slot? string the poster's slot (grind, wind, footstep, horn, ped_footstep, ...)
 ---@field id? integer slot index (posts), sound id (Splice), patch (emitters)
 ---@class AudioRulePlay
----@field path string mod-relative PCM16 WAV, played through the native mixer, non-positional (centred)
+---@field path string mod-relative PCM16 WAV, played through the native mixer as a one-shot
 ---@field volume? number 0..1 (default 1)
 ---@field pitch? number 0.25..4 (default 1)
 ---@field reverb? boolean environment send (default true)
 ---@field group? 'player'|'world' Effects (default) or Ambience volume
+---@field at? 'owner'|'world'|'centre' where it plays (default 'owner'): `owner` = at the owner of the
+---replaced / layered sound (the local skater's centre of mass, the car or ped, the NPC skater, the
+---emitter), following it while it plays (an owner that is gone leaves it where it was; one never found
+---plays it centred); `world` = at the fixed `position`; `centre` = non-positional, centred (the retail
+---non-positional emitter outputs). Positional sounds use the retail emitter law (MixMap Emitter dry
+---level, pan, reverb send rolling off with camera distance) and a reach (`falloff`).
+---@field offset? Vec3 `owner` only: metres added to the owner's position (world axes, y up), -100..100
+---@field position? Vec3 `world` only (required there): the world position
+---@field falloff? AudioFalloff positional only: the reach; default the owner's retail reach: the emitter
+---record's own shape and curve, 40 m for cars (retail's traffic list), 50 m for peds (the ped list),
+---30 m for skaters (the local player too: retail's skater audio radius); squared curve
 ---@class AudioRule
 ---@field match AudioRuleMatch at least one field; all given fields must hold
 ---@field action 'mute'|'replace'|'layer'
@@ -789,9 +806,11 @@ function sdk.audio.tuned() end
 -- records added to the map's live lists. An emitter plays an AEMS bank bound to c_emitter (a retail
 -- bank or one a content overlay adds) through retail's reach test (sphere when the three extents are
 -- equal, else an ellipsoid along forward / up / side; inner core at full level), falloff curve and
--- c_emitter post with the MixMap Emitter words; by default it shares retail's 5 emitter states with
--- the map's emitters (first reached, first served; settings/audio.json "mod_emitter_slots": "extra"
--- gives them their own, not retail). A reverb zone joins the zones the reverb selector walks, after
+-- c_emitter post with the MixMap Emitter words; by default it has its own emitter instance (the map's
+-- emitters keep retail's 5 emitter states; mod emitters take instances of a private MixMap with the
+-- same words, up to 32 shared with native mod voices); settings/audio.json "mod_emitter_slots":
+-- "shared" makes them share retail's 5 with the map's emitters instead (first reached, first served).
+-- A reverb zone joins the zones the reverb selector walks, after
 -- the map's. Neither parks; `read(key).audible` = playing / holding the listener.
 ---@class WorldAudioOptions
 ---@field position? Vec3 world position (ignored while body is set)

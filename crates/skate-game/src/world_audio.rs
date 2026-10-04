@@ -218,9 +218,10 @@ pub struct WorldAudioInstance {
 /// an `.ems` eVolumeType 1 record added to the map's live list (`game_audio::emitters`) with
 /// retail's reach test (a sphere when the three extents are equal, else an ellipsoid along
 /// `forward` turned by the entity's rotation, up and side; the inner `core` at full level), the
-/// falloff curve and the `c_emitter` post with the MixMap Emitter words. By default it shares
-/// retail's 5 emitter states (first reached, first served); the non-retail setting
-/// `"mod_emitter_slots": "extra"` gives such emitters their own instances instead.
+/// falloff curve and the `c_emitter` post with the MixMap Emitter words. By default (user decision
+/// 2026-10-04) it has its own instance of the private MixMap, so the map's emitters keep retail's 5
+/// emitter states; the setting `"mod_emitter_slots": "shared"` makes such emitters share the 5
+/// (first reached, first served) instead.
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct WorldEmitter {
     /// The AEMS bank bound to `c_emitter` (retail stem or a content overlay's).

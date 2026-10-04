@@ -1017,7 +1017,8 @@ impl Vm {
             // Audio extension 1: the mod's own WAVs (`sdk.audio.preload / play / update / stop /
             // stop_all`); before 2026-10-04 only `sdk.audio.version` advertised it.
             // 2 (2026-10-04): retail posts by class, globals, MixMap / global watch, `sdk.audio.info`.
-            // 3 (2026-10-04, audio/moddability-2): `native = true` on `sdk.audio.play` (the native mixer).
+            // 3 (2026-10-04, audio/moddability-2): `sdk.audio.play` through the native mixer, the
+            // default (user decision 2026-10-04; `native = false` keeps the Bevy voice).
             capabilities.set("audio", 3)?;
             // Audio content overlays (`audio.json`: replace / add retail audio content by identity;
             // `audio_content.rs`), applied while the mod runs.
@@ -2091,6 +2092,12 @@ mod world_audio_tests {
                 assert(sdk.capabilities.audio_events == 2 and sdk.capabilities.audio_content == 2, 'capabilities')
                 sdk.audio.rule('my_pop', {match = {tag = 'pop'}, action = 'replace', play = {path = 'audio/pop.wav', volume = 0.8}})
                 sdk.audio.rule('my_pop', nil)
+                -- Where the rule's sound plays (2026-10-04): an offset from the owner, a fixed spot.
+                sdk.audio.rule('honk', {match = {tag = 'horn'}, action = 'layer', play = {path = 'a.wav', offset = {0, 1.5, 0}, falloff = {radius = 20}}})
+                sdk.audio.rule('spot', {match = {tag = 'land'}, action = 'replace', play = {path = 'a.wav', at = 'world', position = {1, 2, 3}}})
+                -- Native routing is the default; native = false passes through.
+                sdk.audio.play('a', {path = 'a.wav'})
+                sdk.audio.play('b', {path = 'a.wav', native = false})
             end
             return M
         "#).unwrap();
@@ -2099,10 +2106,14 @@ mod world_audio_tests {
             "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
         let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
         let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
-        assert_eq!(cmds.iter().map(command_kind).collect::<Vec<_>>(), ["audio_rule", "audio_rule"]);
+        assert_eq!(cmds.iter().map(command_kind).collect::<Vec<_>>(), ["audio_rule", "audio_rule", "audio_rule", "audio_rule", "audio_play", "audio_play"]);
         assert!(cmds.iter().all(Command::validate));
         assert!(matches!(&cmds[0], Command::AudioRule { rule: Some(r), .. } if r.action == crate::audio_rules::RuleAction::Replace && r.on.tag.as_deref() == Some("pop")));
         assert!(matches!(&cmds[1], Command::AudioRule { rule: None, .. }));
+        assert!(matches!(&cmds[2], Command::AudioRule { rule: Some(r), .. } if r.play.as_ref().is_some_and(|p| p.at == crate::audio_rules::RuleAt::Owner && p.offset == Some([0.0, 1.5, 0.0]) && p.falloff.is_some_and(|f| f.radius == 20.0))));
+        assert!(matches!(&cmds[3], Command::AudioRule { rule: Some(r), .. } if r.play.as_ref().is_some_and(|p| p.at == crate::audio_rules::RuleAt::World && p.position == Some([1.0, 2.0, 3.0]))));
+        assert!(matches!(&cmds[4], Command::AudioPlay { options, .. } if options.native.is_none() && options.wants_native()));
+        assert!(matches!(&cmds[5], Command::AudioPlay { options, .. } if options.native == Some(false)));
         let _ = std::fs::remove_dir_all(root);
     }
 
