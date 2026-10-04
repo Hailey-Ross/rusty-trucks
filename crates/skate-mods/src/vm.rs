@@ -151,6 +151,17 @@ pub enum Command {
         options: crate::world_audio::WorldAudioEventOptions,
     },
     WorldAudioRemove { key: String },
+    /// World audio: name the announcer character (35 / 36; nil = none: free skate's silence).
+    WorldAudioAnnouncer {
+        #[serde(default)]
+        character: Option<u32>,
+    },
+    /// World audio: ask the announcer channel for an event (id or name).
+    WorldAudioAnnounce {
+        event: Value,
+        #[serde(default)]
+        options: crate::world_audio::AnnounceOptions,
+    },
     GraphicsMeshBuffer {
         key: String,
         options: crate::graphics_dynamic::MeshBufferOptions,
@@ -408,6 +419,8 @@ impl Command {
             Self::WorldAudioUpdate { key, options } => crate::schema::valid_id(key) && options.validate() && options.source.is_none(),
             Self::WorldAudioEvent { key, event, options } => crate::schema::valid_id(key) && options.validate(event),
             Self::WorldAudioRemove { key } => crate::schema::valid_id(key),
+            Self::WorldAudioAnnouncer { character } => crate::world_audio::valid_announcer_character(*character),
+            Self::WorldAudioAnnounce { event, options } => crate::world_audio::valid_announcer_event(event) && options.validate(),
             Self::GraphicsMeshBuffer { key, options } => {
                 crate::schema::valid_id(key) && options.validate()
             }
@@ -655,6 +668,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
         Command::WorldAudioRemove { .. } => "world_audio_remove",
+        Command::WorldAudioAnnouncer { .. } => "world_audio_announcer",
+        Command::WorldAudioAnnounce { .. } => "world_audio_announce",
         Command::GraphicsMeshBuffer { .. } => "graphics_mesh_buffer",
         Command::GraphicsMeshBufferWrite { .. } => "graphics_mesh_buffer_write",
         Command::GraphicsMeshBufferAppend { .. } => "graphics_mesh_buffer_append",
@@ -1829,6 +1844,10 @@ mod world_audio_tests {
             json!({"kind":"world_audio_update","key":"ped1","options":{"tazing":true,"photo_flag":true}}),
             json!({"kind":"world_audio_update","key":"sk1","options":{"loose_board":1}}),
             json!({"kind":"world_audio_remove","key":"car1"}),
+            json!({"kind":"world_audio_announcer","character":36}),
+            json!({"kind":"world_audio_announcer"}),
+            json!({"kind":"world_audio_announce","event":"480_slam_pro","options":{"pro":4}}),
+            json!({"kind":"world_audio_announce","event":24703,"options":{"words":{}}}),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert!(c.validate(), "{value}");

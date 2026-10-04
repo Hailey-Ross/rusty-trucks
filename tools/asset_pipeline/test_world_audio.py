@@ -71,6 +71,31 @@ class Tuning(unittest.TestCase):
         self.assertEqual(t['ped_objects'], {'body_fall_ids': [11, 22, 33], 'body_fall_eq': 0, 'ring_id': 5, 'tazer_seconds': 2.0})
         self.assertEqual(t['speech_voice'], {'peak_q': {'x': [float(v) for v in range(8)], 'y': [3.0] * 8}, 'delay_frames': 4})
 
+    def test_announcer_crash_distance_level_and_model_ids(self):
+        f32 = lambda v: struct.pack('>f', v).hex()  # noqa: E731
+        i32 = lambda v: struct.pack('>i', v).hex()  # noqa: E731
+        arr = lambda *v: {'type': 'EA::Reflection::Float', 'data': '00030003', 'array': {'items': [f32(x) for x in v]}}  # noqa: E731
+        from tools.asset_pipeline.audio_formats import name_id
+        chars = f'Hash_{name_id(world.PED_CLASS):016X}'
+        collections = [
+            {'class': world.SPEECH_RECORD[0], 'key': world.SPEECH_RECORD[1], 'parent': '', 'fields': {
+                world.ANNOUNCER_CRASH: {'type': 'EA::Reflection::Float', 'data': f32(12.0)},
+                world.ANNOUNCER_LEVEL['other']: arr(1.1, 1.25, 1.1),
+                world.ANNOUNCER_LEVEL['other_challenge']: arr(0.9, 1.0, 1.0)}},
+            {'class': chars, 'key': 'ann2', 'parent': '', 'fields': {
+                'Hash_EF9605D206F68DBD': {'type': 'Sk8::Audio::eSk8Characters', 'data': i32(36)},
+                'Hash_6F9C8A27E4CD37DC': {'type': 'SPCH3Type_char_ID_Ann', 'data': i32(2)}}},
+            {'class': chars, 'key': 'chris_cole', 'parent': '', 'fields': {
+                'Hash_EF9605D206F68DBD': {'type': 'Sk8::Audio::eSk8Characters', 'data': i32(4)},
+                'Hash_14B23B4527AF919E': {'type': 'SPCH3Type_pro_id_ANN', 'data': i32(2)}}},
+        ]
+        t = world.world_tuning(collections)
+        self.assertEqual(t['speech_voice']['announcer_crash_m'], 12.0)
+        self.assertEqual(t['speech_voice']['announcer_level'], {'other': [1.1, 1.25, 1.1], 'other_challenge': [0.9, 1.0, 1.0]})
+        self.assertEqual(t['ped_models']['36']['announcer_id'], 2)
+        self.assertEqual(t['ped_models']['4']['announcer_pro'], 2)
+        self.assertEqual(world.ANNOUNCER_EVENTS, (480,))
+
 
 def _evt(event_id, fields, records, name='501_warn'):
     """A one-event `.evt` in the retail layout (synthetic). records = [(values, clip ids)]."""
@@ -122,6 +147,7 @@ class SpeechRules(unittest.TestCase):
         struct.pack_into('>f', raw, 8, 10.0)
         struct.pack_into('>i', raw, 16, 100)
         struct.pack_into('>ff', raw, 20, 100.0, 15.0)
+        struct.pack_into('>ff', raw, 52, 30.0, 10.0)
         raw[60] = 1
         default = bytearray(64)
         struct.pack_into('>i', default, 16, 50)
@@ -141,6 +167,7 @@ class SpeechRules(unittest.TestCase):
         warn = t[str(0x2012)]
         self.assertEqual((warn['gap'], warn['priority'], warn['probability'], warn['repeat'], warn['zombie']), (10.0, 100, 100.0, 15.0, True))
         self.assertEqual(warn['not_follow'], [[0x2002, 30.0]])
+        self.assertEqual((warn['repeat_speaker_31'], warn['repeat_speaker_30']), (30.0, 10.0))
         self.assertEqual((t[str(0x2054)]['priority'], t[str(0x2054)]['repeat']), (50, 0.0))
 
 

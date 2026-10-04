@@ -244,6 +244,8 @@ pub fn choose(index: &SpeechIndex, cues: &[Cue], voice: u32, last: &mut HashMap<
 pub const SPEECH_BANK: usize = 1 << 22;
 /// The main cast's takes (`maincastspeech.big`), slots as in [`SPEECH_BANK`] over its own index.
 pub const MAIN_CAST_BANK: usize = SPEECH_BANK + 1;
+/// The announcer's takes (`announcerspeech.big`), slots over its own index.
+pub const ANNOUNCER_BANK: usize = SPEECH_BANK + 2;
 
 /// (clip, take) → mixer slot of [`SPEECH_BANK`].
 #[derive(Clone, Debug, Default)]

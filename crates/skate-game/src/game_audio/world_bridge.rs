@@ -90,6 +90,7 @@ pub(crate) fn register(app: &mut App) {
         .add_message::<PedTazerEvent>()
         .add_message::<PedBodyFallEvent>()
         .add_message::<NpcSkaterReactionEvent>()
+        .add_message::<AnnouncerSpeechEvent>()
         .add_message::<VehicleHorn>()
         .add_message::<VehicleAlarm>()
         .add_systems(Update, (tag_remote_players, ghost_step, publish.in_set(WorldAudioPublish)).chain().before(super::native::mixmap_frame).after(crate::app::FrameSet::Animation))

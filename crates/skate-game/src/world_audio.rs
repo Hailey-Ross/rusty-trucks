@@ -29,7 +29,9 @@
 //! Messages: [`PedSpeechEvent`] (a state graph's `SendSpeechEvent`), [`PedTazerEvent`] (a zap:
 //! the tazer burst), [`PedBodyFallEvent`] (a knock-down animation's `BodyFallType` key),
 //! [`NpcSkaterReactionEvent`] (an NPC skater saw a slam / trick or crashed: its own speech),
-//! [`VehicleHorn`] (hold a horn kind for the caller's time), [`VehicleAlarm`] (retail's 8 s alarm). Set [`LivingWorldAudio`]
+//! [`VehicleHorn`] (hold a horn kind for the caller's time), [`VehicleAlarm`] (retail's 8 s alarm),
+//! [`AnnouncerSpeechEvent`] (the announcer channel: a challenge's commentary; set
+//! [`LivingWorldAudio::announcer`] while a challenge with an announcer runs). Set [`LivingWorldAudio`]
 //! `expected` at map load when the system will publish, so the world banks decode ahead of need.
 //!
 //! Everything stays inert when nothing is published. `SKATE_AEMS_WORLD=0` /
@@ -226,6 +228,41 @@ pub struct LivingWorldAudio {
     pub photo_flag: bool,
     /// The same flag raised by mods (`photo_flag` on a mod ped; cleared with the mod's objects).
     pub mod_photo_flag: bool,
+    /// The running challenge's announcer character (retail system `+1036`: model 35 or 36, named by
+    /// the challenge record). None = free skate: the announcer channel then finds no line for any
+    /// request (retail: word 0 stays 0), so a pro's crash near the camera stays silent. A challenge
+    /// mode sets it while it runs.
+    pub announcer: Option<u32>,
+    /// The same named by a mod (`sdk.world_audio.announcer`; cleared when the mod stops). The
+    /// engine's wins.
+    pub mod_announcer: Option<u32>,
+}
+
+impl LivingWorldAudio {
+    /// The announcer character in effect (the engine's, else a mod's).
+    pub fn announcer_character(&self) -> Option<u32> {
+        self.announcer.or(self.mod_announcer)
+    }
+}
+
+/// An announcer event: by its id (24576.. = `0x6000 | n`) or by its `.evt` name (`480_slam_pro`,
+/// or just the number before the first `_`, `480`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AnnouncerLine {
+    Id(u16),
+    Name(String),
+}
+
+/// Ask the announcer channel for a line (retail's `PlayAnnouncerSpeech` script binding and the
+/// challenge modes' commentary call `sub_824AA858` the same way). `words` = the request block from
+/// word 0 (missing = 0; word 0 = 0 takes the running challenge's announcer); `pro` = a skater model
+/// whose announcer pro id goes into word 2 when it is 0 (as a pro's crash does for
+/// `480_slam_pro`). Without an announcer character ([`LivingWorldAudio::announcer`]) nothing plays.
+#[derive(Message, Clone, Debug, PartialEq, Eq)]
+pub struct AnnouncerSpeechEvent {
+    pub event: AnnouncerLine,
+    pub pro: Option<u32>,
+    pub words: Vec<u32>,
 }
 
 /// Debug counts (read only; written by the bridge every frame).

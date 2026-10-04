@@ -107,6 +107,10 @@ struct SpeechVoiceJson {
     /// The echo delay's camera-distance factor and its refresh (console frames).
     delay_factor: Option<f32>,
     delay_frames: Option<u32>,
+    /// The announcer: an NPC pro's crash asks for `480_slam_pro` within this camera distance (m),
+    /// and the stream level multipliers by language group (`other` = English) and challenge byte.
+    announcer_crash_m: Option<f32>,
+    announcer_level: HashMap<String, Vec<f32>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -117,6 +121,11 @@ struct SpeechTuningJson {
     priority: i32,
     probability: Option<f32>,
     repeat: f32,
+    /// The main cast's repeat time for speaker slots 31 / 30 (record `+52` / `+56`), and (speaker, s)
+    /// pairs a mod's tuning adds (they win over the two).
+    repeat_speaker_31: Option<f32>,
+    repeat_speaker_30: Option<f32>,
+    speaker_repeat: Vec<(u32, f32)>,
     min_player_kmh: f32,
     max_player_kmh: f32,
     timer_40: f32,
@@ -151,6 +160,11 @@ pub(crate) struct PedModelJson {
     pub(crate) cast_bit: u32,
     pub(crate) cast_word: u32,
     pub(crate) cast_word2: u32,
+    /// `SPCH3Type_char_ID_Ann` (`6F9C8A27E4CD37DC`): the announcer characters' word (model 35 → 1,
+    /// 36 → 2); `SPCH3Type_pro_id_ANN` (`14B23B4527AF919E`): the word `480_slam_pro` names this pro
+    /// by (0 = no announcer line about this model).
+    pub(crate) announcer_id: u32,
+    pub(crate) announcer_pro: u32,
 }
 
 impl PedModelJson {
@@ -239,6 +253,8 @@ impl WorldTuningJson {
                         interrupt_when_full: flags(2),
                         probability: t.probability.unwrap_or(100.0),
                         repeat: t.repeat,
+                        // A mod's pairs first: the first match wins.
+                        speaker_repeat: t.speaker_repeat.iter().copied().chain(t.repeat_speaker_31.map(|s| (31, s))).chain(t.repeat_speaker_30.map(|s| (30, s))).collect(),
                         min_player_kmh: t.min_player_kmh,
                         max_player_kmh: t.max_player_kmh,
                         timer_40: t.timer_40,
@@ -302,6 +318,24 @@ impl WorldTuningJson {
         }
         if let Some(n) = v.delay_frames.filter(|n| *n >= 1) {
             t.delay_frames = n;
+        }
+        t
+    }
+
+    /// The announcer's crash distance and level multipliers (the shipped English values where the
+    /// export lacks them).
+    pub(crate) fn announcer_level(&self) -> skate_audio::world::announcer::AnnouncerLevel {
+        let mut t = skate_audio::world::announcer::AnnouncerLevel::default();
+        let Some(v) = &self.speech_voice else { return t };
+        if let Some(d) = v.announcer_crash_m.filter(|d| d.is_finite() && *d >= 0.0) {
+            t.crash_distance = d;
+        }
+        let three = |k: &str| v.announcer_level.get(k).and_then(|a| <[f32; 3]>::try_from(a.as_slice()).ok()).filter(|a| a.iter().all(|x| x.is_finite() && *x >= 0.0));
+        if let Some(a) = three("other") {
+            t.scale = a;
+        }
+        if let Some(a) = three("other_challenge") {
+            t.scale_challenge = a;
         }
         t
     }
@@ -889,6 +923,19 @@ mod tests {
         assert_eq!(t.ped_footsteps(), PedFootstepTuning::default());
         let empty: WorldTuningJson = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.ped_footsteps(), PedFootstepTuning::default());
+    }
+
+    #[test]
+    fn main_cast_speaker_repeat_times_come_from_setup_and_mods() {
+        // Event 0 of the main cast's tuning: +24 = 20 s, +52 (slot 31) = 30 s, +56 (slot 30) = 10 s.
+        let json = r#"{"speech_tuning": {"0": {"0": {"repeat": 20, "repeat_speaker_31": 30, "repeat_speaker_30": 10},
+            "3": {"repeat": 25, "repeat_speaker_31": 30, "repeat_speaker_30": 10, "speaker_repeat": [[31, 5], [7, 2]]},
+            "9": {"repeat": 10}}}}"#;
+        let t: WorldTuningJson = serde_json::from_str(json).unwrap();
+        let bank = t.speech_tuning_bank(0);
+        assert_eq!((bank[&0].repeat, bank[&0].speaker_repeat.clone()), (20.0, vec![(31, 30.0), (30, 10.0)]));
+        assert_eq!(bank[&3].speaker_repeat, vec![(31, 5.0), (7, 2.0), (31, 30.0), (30, 10.0)], "a mod's pairs first: they win");
+        assert!(bank[&9].speaker_repeat.is_empty(), "an install from before the export: +24 for everyone");
     }
 
     #[test]

@@ -974,6 +974,8 @@ fn apply_one(
         Command::WorldAudioUpdate { key, options } => world_audio::update(world, mods, id, &key, options)?,
         Command::WorldAudioEvent { key, event, options } => world_audio::event(world, id, &key, &event, options)?,
         Command::WorldAudioRemove { key } => world_audio::remove(world, id, &key),
+        Command::WorldAudioAnnouncer { character } => world_audio::announcer(world, id, character)?,
+        Command::WorldAudioAnnounce { event, options } => world_audio::announce(world, &event, options)?,
         Command::GraphicsMeshBuffer { key, options } => {
             graphics_dynamic::mesh_buffer(world, mods, id, key, options)?;
         }
