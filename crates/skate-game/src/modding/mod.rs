@@ -158,44 +158,7 @@ impl Plugin for ModdingPlugin {
                     .unwrap_or_else(|| std::path::Path::new("."))
                     .join("settings/mods")
             });
-        app.insert_resource(Mods {
-            manager: Manager::new(root, settings),
-            native_snapshot: None,
-            world: DynamicsWorld::default(),
-            bodies: BTreeMap::new(),
-            joints: BTreeMap::new(),
-            graphics: BTreeMap::new(),
-            overlays: BTreeMap::new(),
-            canvases: BTreeMap::new(),
-            attach: None,
-            detach_error: None,
-            detach_pending: None,
-            camera: CameraOverride::default(),
-            generation: u64::MAX,
-            graphics_serial: 0,
-            debug_owners: BTreeSet::new(),
-            ground_ready: false,
-            skater_proxies: BTreeMap::new(),
-            dyn_published: BTreeSet::new(),
-            replication: replication::State::default(),
-            net_states: BTreeMap::new(),
-            net_published: BTreeSet::new(),
-            net_remote: BTreeMap::new(),
-            net_remote_wire: BTreeMap::new(),
-            net_status: String::new(),
-            multiplayer_debug: BTreeMap::new(),
-            last_contacts: Vec::new(),
-            graph_gates: BTreeMap::new(),
-            command_results: BTreeMap::new(), input_overrides: BTreeMap::new(),
-            session: session::Runtime::default(),
-            skater_remote: BTreeMap::new(),
-            pending_remote_teleport: None,
-            volumes: BTreeMap::new(),
-            custom_menus: BTreeMap::new(),
-            suspended_by: BTreeSet::new(),
-            hidden_players: BTreeMap::new(),
-            remote_cameras: BTreeMap::new(),
-        })
+        app.insert_resource(Mods::new(Manager::new(root, settings)))
         .init_resource::<ModMenu>();
         menu::install(app);
         audio::install(app);
@@ -1773,6 +1736,48 @@ fn watch_pose(world: &mut World, peer: u64, local_id: u64) -> Option<(Vec3, Quat
 }
 
 impl Mods {
+    /// A fresh host for a mod manager (the plugin's; tests build one over a temporary folder).
+    pub(crate) fn new(manager: Manager) -> Self {
+        Self {
+            manager,
+            native_snapshot: None,
+            world: DynamicsWorld::default(),
+            bodies: BTreeMap::new(),
+            joints: BTreeMap::new(),
+            graphics: BTreeMap::new(),
+            overlays: BTreeMap::new(),
+            canvases: BTreeMap::new(),
+            attach: None,
+            detach_error: None,
+            detach_pending: None,
+            camera: CameraOverride::default(),
+            generation: u64::MAX,
+            graphics_serial: 0,
+            debug_owners: BTreeSet::new(),
+            ground_ready: false,
+            skater_proxies: BTreeMap::new(),
+            dyn_published: BTreeSet::new(),
+            replication: replication::State::default(),
+            net_states: BTreeMap::new(),
+            net_published: BTreeSet::new(),
+            net_remote: BTreeMap::new(),
+            net_remote_wire: BTreeMap::new(),
+            net_status: String::new(),
+            multiplayer_debug: BTreeMap::new(),
+            last_contacts: Vec::new(),
+            graph_gates: BTreeMap::new(),
+            command_results: BTreeMap::new(), input_overrides: BTreeMap::new(),
+            session: session::Runtime::default(),
+            skater_remote: BTreeMap::new(),
+            pending_remote_teleport: None,
+            volumes: BTreeMap::new(),
+            custom_menus: BTreeMap::new(),
+            suspended_by: BTreeSet::new(),
+            hidden_players: BTreeMap::new(),
+            remote_cameras: BTreeMap::new(),
+        }
+    }
+
     pub(crate) fn multiplayer_debug_sections(&self) -> [String; 3] {
         let sync = format!("MOD REPLICATION\n{}\nLocal network keys: {} | Remote keys: {}\nPublished dynamics: {} | Local bodies: {} | Local scenes: {}",
             if self.net_status.is_empty() { "No active mod replication" } else { &self.net_status },

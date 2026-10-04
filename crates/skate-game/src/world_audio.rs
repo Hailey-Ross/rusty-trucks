@@ -220,9 +220,12 @@ pub struct WorldAudioInstance {
 
 /// A traffic vehicle or ped with this takes its own MixMap instance (doc 16 "L3",
 /// `game_audio::mod_world`) instead of competing for retail's pools (4 traffic / 15 pedestrian, the
-/// nearest win): it plays whenever it is within retail's list radius (40 m / 50 m), up to 16 own
-/// cars and 16 own peds. Not retail: for mod and engine objects that must be heard. Mods:
-/// `sdk.world_audio.spawn(key, 'traffic' | 'ped', {slots = 'own', …})`.
+/// nearest win): it plays whenever it is within retail's list radius (40 m / 50 m) and among the
+/// 16 nearest own cars / 16 nearest own peds (the farther ones wait, `WorldAudioStats::own_waiting`).
+/// Not retail. **Mods' cars and peds get it by default** (user decision 2026-10-04, doc 16 M3:
+/// `sdk.world_audio.spawn(key, 'traffic' | 'ped', …)`; `slots = 'shared'` leaves it off); an
+/// engine system publishing the living world does not add it (retail's pools) unless an object of
+/// its own must be heard.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OwnAudioInstance;
 
@@ -336,6 +339,17 @@ pub struct WorldAudioStats {
     pub more_audible: bool,
     /// Speech lines started so far (peds and NPC skaters; `game_audio::world_speech`).
     pub speech_lines: u64,
+    /// Inside the list radius but holding none of retail's instances (all held by nearer ones).
+    pub waiting: Vec<Entity>,
+    /// The objects with their own instance (`OwnAudioInstance`, doc 16 L3 / M3): published cars
+    /// and peds, holders, the private MixMap's instance counts (16 / 16) and the ones in reach
+    /// waiting for one of them (a full private pool: the nearest play).
+    pub own_vehicles: usize,
+    pub own_peds: usize,
+    pub own_traffic_held: usize,
+    pub own_peds_held: usize,
+    pub own_instances: (usize, usize),
+    pub own_waiting: Vec<Entity>,
 }
 
 /// A speech value (`S+136`, the state graphs' `SendSpeechEvent speechvalue=N`).

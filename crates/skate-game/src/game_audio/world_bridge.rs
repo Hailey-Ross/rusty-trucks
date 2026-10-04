@@ -440,6 +440,7 @@ fn read_back(
     mut bridge: ResMut<Bridge>,
     held: Res<WorldHeld>,
     owners: Res<WorldOwners>,
+    own: Res<super::mod_world::OwnWorldOwners>,
     skaters: Res<super::npc_skaters::NpcSkaters>,
     native: Option<Res<super::native::Native>>,
     mut stats: ResMut<WorldAudioStats>,
@@ -481,6 +482,13 @@ fn read_back(
         instances: (world.traffic, world.peds, world.npc),
         more_audible: world != super::native::WorldInstances::RETAIL,
         speech_lines: held.speech_lines,
+        waiting: held.waiting_traffic.iter().chain(&held.waiting_peds).map(|&id| Entity::from_bits(id)).collect(),
+        own_vehicles: own.0.vehicles.len(),
+        own_peds: own.0.peds.len(),
+        own_traffic_held: held.own_traffic.len(),
+        own_peds_held: held.own_peds.len(),
+        own_instances: (super::mod_world::TRAFFIC, super::mod_world::PEDS),
+        own_waiting: held.own_waiting_traffic.iter().chain(&held.own_waiting_peds).map(|&id| Entity::from_bits(id)).collect(),
     };
     // One summary line per second while anything is published (log-based checks; the test mod).
     if bridge.active {
@@ -502,6 +510,18 @@ fn read_back(
                 held.npc_posts.saturating_sub(npc),
                 held.speech_lines.saturating_sub(speech)
             );
+            if next.own_vehicles + next.own_peds > 0 {
+                info!(
+                    "WORLD_AUDIO own instances: cars {}/audible {}, peds {}/{}, waiting {} (of {} / {})",
+                    next.own_vehicles,
+                    next.own_traffic_held,
+                    next.own_peds,
+                    next.own_peds_held,
+                    next.own_waiting.len(),
+                    next.own_instances.0,
+                    next.own_instances.1
+                );
+            }
             bridge.log_counts = (held.posts, held.npc_posts, held.speech_lines);
         }
     } else {

@@ -147,8 +147,10 @@ pub(super) fn spawn(world: &mut World, mods: &Mods, owner: &str, key: String, ki
             }
             _ => {}
         }
-        // Doc 16 L3: its own MixMap instance (`game_audio::mod_world`) instead of retail's pools.
-        if opts.slots == Some(skate_mods::world_audio::Slots::Own) {
+        // Doc 16 L3 / M3: a mod's car or ped takes its own MixMap instance (`game_audio::mod_world`)
+        // unless it asks for retail's pools (`slots = 'shared'`). Engine systems publishing the
+        // living world add no `OwnAudioInstance` and keep retail's pools.
+        if matches!(kind, ObjectKind::Traffic | ObjectKind::Ped) && skate_mods::world_audio::Slots::resolve(opts.slots) == skate_mods::world_audio::Slots::Own {
             e.insert(crate::world_audio::OwnAudioInstance);
         }
         match kind {
@@ -307,6 +309,7 @@ pub(super) fn clear(world: &mut World) {
 pub(super) fn snapshot(world: &World, owner: &str) -> Value {
     let audio = world.resource::<ModWorldAudio>();
     let stats = world.get_resource::<WorldEmitterStats>();
+    let objects = world.get_resource::<WorldAudioStats>();
     let mut out = serde_json::Map::new();
     for ((o, key), obj) in &audio.objects {
         if o != owner {
@@ -320,6 +323,11 @@ pub(super) fn snapshot(world: &World, owner: &str) -> Value {
             "instance": held.map(|h| h.instance),
             // Doc 16 L3: the instance is the object's own (a private MixMap), not one of retail's.
             "own": held.is_some_and(|h| h.own),
+            // Doc 16 M3: a car's / ped's instances (`own`, the default, or `shared` = retail's
+            // pools; nil for other kinds), and whether it is in reach but waits for one (every
+            // instance of its pool is held by a nearer object).
+            "slots": matches!(obj.kind, ObjectKind::Traffic | ObjectKind::Ped).then(|| if world.get::<OwnAudioInstance>(obj.entity).is_some() { "own" } else { "shared" }),
+            "waiting": objects.is_some_and(|s| s.waiting.contains(&obj.entity) || s.own_waiting.contains(&obj.entity)),
             "parked": world.resource::<Time<Real>>().elapsed_secs_f64() - obj.updated > PARK_SECONDS && !obj.ghost && !matches!(obj.kind, ObjectKind::Emitter | ObjectKind::ReverbZone),
         }));
     }
@@ -336,6 +344,14 @@ pub(super) fn info(world: &World) -> Value {
         "audible": {"traffic": s.traffic_held, "peds": s.peds_held, "skaters": s.skaters_held},
         "speech_lines": s.speech_lines,
         "announcer": world.get_resource::<LivingWorldAudio>().and_then(LivingWorldAudio::announcer_character),
+        "waiting": s.waiting.len(),
+        // Doc 16 M3: the objects with their own instance (a mod's cars and peds by default).
+        "own": {
+            "instances": {"traffic": s.own_instances.0, "peds": s.own_instances.1},
+            "published": {"traffic": s.own_vehicles, "peds": s.own_peds},
+            "audible": {"traffic": s.own_traffic_held, "peds": s.own_peds_held},
+            "waiting": s.own_waiting.len(),
+        },
     })
 }
 
@@ -473,5 +489,60 @@ fn sync(
                 dt: dt.max(1e-4),
             }));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn world() -> (World, Mods) {
+        let mut w = World::new();
+        w.insert_resource(Time::<Real>::default());
+        w.init_resource::<ModWorldAudio>();
+        let dir = std::env::temp_dir().join(format!("skate-world-audio-slots-{}", std::process::id()));
+        (w, Mods::new(skate_mods::Manager::new(dir.clone(), dir)))
+    }
+
+    fn spawn_with(w: &mut World, mods: &Mods, key: &str, kind: ObjectKind, options: Value) -> Entity {
+        let opts: WorldAudioOptions = serde_json::from_value(options).unwrap();
+        spawn(w, mods, "m", key.into(), kind, opts).unwrap();
+        w.resource::<ModWorldAudio>().objects[&("m".to_owned(), key.to_owned())].entity
+    }
+
+    /// Doc 16 M3 (user decision 2026-10-04): a mod's car or ped takes its own MixMap instance by
+    /// default, `slots = 'shared'` (alias `retail`) puts it in retail's pools, `slots = 'own'`
+    /// stays valid; other kinds never take the marker; an engine-published car (the living
+    /// world's path: the components without the marker) is untouched, so it stays in retail's
+    /// pools (`world_bridge::tests::own_instance_objects_go_to_their_own_host` routes by the marker).
+    #[test]
+    fn mod_cars_and_peds_default_to_their_own_instance() {
+        let (mut w, mods) = world();
+        let own = |w: &World, e: Entity| w.get::<OwnAudioInstance>(e).is_some();
+        let car = spawn_with(&mut w, &mods, "car", ObjectKind::Traffic, json!({"engine": "c04_taxi01"}));
+        let ped = spawn_with(&mut w, &mods, "ped", ObjectKind::Ped, json!({"voice": 59}));
+        assert!(own(&w, car) && own(&w, ped), "default: own");
+        let shared_car = spawn_with(&mut w, &mods, "shared_car", ObjectKind::Traffic, json!({"slots": "shared"}));
+        let shared_ped = spawn_with(&mut w, &mods, "shared_ped", ObjectKind::Ped, json!({"slots": "retail"}));
+        assert!(!own(&w, shared_car) && !own(&w, shared_ped), "shared / retail: retail's pools");
+        let own_car = spawn_with(&mut w, &mods, "own_car", ObjectKind::Traffic, json!({"slots": "own"}));
+        assert!(own(&w, own_car), "explicit own");
+        let skater = spawn_with(&mut w, &mods, "skater", ObjectKind::Skater, json!({}));
+        assert!(!own(&w, skater), "NPC skaters stay in retail's Player slot");
+        assert!(spawn(&mut w, &mods, "m", "bad".into(), ObjectKind::Skater, serde_json::from_value(json!({"slots": "own"})).unwrap()).is_err());
+        // Respawning a key with `shared` drops the marker with the old entity.
+        let again = spawn_with(&mut w, &mods, "car", ObjectKind::Traffic, json!({"slots": "shared"}));
+        assert!(w.get_entity(car).is_err() && !own(&w, again));
+        // The engine's path: the same components, no marker.
+        let engine = w.spawn((TrafficAudio::new("c04_taxi01"), Transform::default(), GlobalTransform::default())).id();
+        assert!(!own(&w, engine), "engine objects keep retail's pools");
+        // Read back: `slots` per car / ped, nil for other kinds.
+        let snap = snapshot(&w, "m");
+        assert_eq!(snap["ped"]["slots"], "own");
+        assert_eq!(snap["car"]["slots"], "shared");
+        assert_eq!(snap["own_car"]["slots"], "own");
+        assert!(snap["skater"]["slots"].is_null());
+        assert_eq!(snap["ped"]["waiting"], false);
     }
 }

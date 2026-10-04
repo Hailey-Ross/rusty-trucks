@@ -1085,7 +1085,10 @@ impl Vm {
             capabilities.set("multiplayer_debug", 1)?;
             // 2 (2026-10-04, audio/moddability-2): the `emitter` and `reverb_zone` kinds.
             // 3 (doc 16 L3): `slots = 'own'` (a traffic / ped object on its own MixMap instance).
-            capabilities.set("world_audio", 3)?;
+            // 4 (doc 16 M3, user decision 2026-10-04): own instances are the default for a mod's
+            // cars and peds (as for its emitters); `slots = 'shared'` (alias `retail`) opts into
+            // retail's pools; `read(key).slots / waiting`, `info().own`.
+            capabilities.set("world_audio", 4)?;
             // Audio extension 1: the mod's own WAVs (`sdk.audio.preload / play / update / stop /
             // stop_all`); before 2026-10-04 only `sdk.audio.version` advertised it.
             // 2 (2026-10-04): retail posts by class, globals, MixMap / global watch, `sdk.audio.info`.
@@ -1956,10 +1959,10 @@ mod world_audio_tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("main.lua"), r#"
             assert(sdk.capabilities.audio == 4, 'audio capability')
-            assert(sdk.capabilities.world_audio == 3, 'world_audio capability')
+            assert(sdk.capabilities.world_audio == 4, 'world_audio capability')
             assert(sdk.capabilities.audio_content == 3, 'audio_content capability')
             assert(sdk.capabilities.audio_events == 3, 'audio_events capability')
-            assert(sdk.audio.version == 4 and sdk.world_audio.version == 3, 'versions')
+            assert(sdk.audio.version == 4 and sdk.world_audio.version == 4, 'versions')
             return {}
         "#).unwrap();
         let manifest: Manifest = serde_json::from_value(json!({
@@ -2318,6 +2321,9 @@ mod world_audio_tests {
             json!({"kind":"world_audio_spawn","key":"fountain","object":"emitter","options":{"bank":"water_fountain","patch":81,"position":[0,0,0],"extent":[6,6,6]}}),
             json!({"kind":"world_audio_spawn","key":"cave","object":"reverb_zone","options":{"preset":"BEEFC8E3DE04FBAE","position":[0,0,0],"extent":[20,8,12]}}),
             json!({"kind":"world_audio_update","key":"fountain","options":{"volume":0.3,"position":[1,0,0]}}),
+            json!({"kind":"world_audio_spawn","key":"car2","object":"traffic","options":{"slots":"shared"}}),
+            json!({"kind":"world_audio_spawn","key":"car3","object":"traffic","options":{"slots":"own"}}),
+            json!({"kind":"world_audio_spawn","key":"ped2","object":"ped","options":{"slots":"retail"}}),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert!(c.validate(), "{value}");
@@ -2331,6 +2337,8 @@ mod world_audio_tests {
         assert!(serde_json::from_value::<Command>(json!({"kind":"world_audio_spawn","key":"x","object":"bus"})).is_err());
         let c: Command = serde_json::from_value(json!({"kind":"world_audio_update","key":"x","options":{"source":"lite"}})).unwrap();
         assert!(!c.validate(), "the source is fixed at spawn");
+        let c: Command = serde_json::from_value(json!({"kind":"world_audio_update","key":"x","options":{"slots":"shared"}})).unwrap();
+        assert!(!c.validate(), "the slots are fixed at spawn");
     }
 }
 

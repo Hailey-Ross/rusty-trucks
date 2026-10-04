@@ -3,6 +3,8 @@
 -- where the mod starts (F9 re-centres on the skater). The game decides who is audible with
 -- retail's limits (4 nearest cars within 40 m, 15 nearest peds within 50 m with footsteps for
 -- the nearest 3, one NPC skater within 30 m); the boxes show it: green = audible, grey = not.
+-- A mod's cars and peds take their own MixMap instances by default (world audio 4); this test asks
+-- for retail's pools (slots = 'shared') unless the "own_slots" setting is on.
 -- Not retail behaviour: the motion, the gait clock, the honk timing and the reactions are this
 -- script's; only the sounds and their rules are the game's port of retail.
 
@@ -47,6 +49,13 @@ local function setting(name, default)
     local v = sdk.settings and sdk.settings[name]
     if v == nil then return default end
     return v
+end
+
+-- Retail's pools unless the setting asks for the default own instances; world audio 3 and older
+-- default to the pools anyway.
+local function slots()
+    if setting("own_slots", false) or (sdk.capabilities.world_audio or 0) < 4 then return nil end
+    return "shared"
 end
 
 local function dist(a, b)
@@ -107,7 +116,7 @@ local function spawn_all()
                     car.engine = "c04_taxi01"
                 end
                 car.position, car.heading = p, h
-                sdk.world_audio.spawn(key, "traffic", { engine = car.engine, position = p, heading = h, speed = 0 })
+                sdk.world_audio.spawn(key, "traffic", { engine = car.engine, position = p, heading = h, speed = 0, slots = slots() })
                 cars[#cars + 1] = car
             end
         end
@@ -124,7 +133,7 @@ local function spawn_all()
                 length = 6 + (i % 4) * 3, t = rand() * 10, speed = speed,
                 step = ({ walk = 0.55, jog = 0.36, run = 0.27 })[kind], voice = VOICES[1 + (i * 7) % #VOICES],
                 x = 0, sign = 1 }
-            sdk.world_audio.spawn(key, "ped", { voice = ped.voice, position = start })
+            sdk.world_audio.spawn(key, "ped", { voice = ped.voice, position = start, slots = slots() })
             peds[#peds + 1] = ped
         end
     end
