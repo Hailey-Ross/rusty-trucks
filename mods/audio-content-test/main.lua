@@ -133,29 +133,96 @@ local function count_own()
     return n
 end
 
--- Each step: name, what to listen for (HUD), and timed marks `{t, fn}`; `t` < 0 counts from the
+-- The camera (the listener) parked near a map emitter for the steps that must hear it, circling it
+-- slowly at 5.1 m (5 m out, 1 m up) so the picture visibly moves; `unpark_camera` gives the view
+-- back to the skater (also on a timeout, at the end, and on unload: the engine clears a mod's
+-- camera when it stops).
+local function park_camera(rec)
+    at.cam = {rec = rec, t = 0}
+    sdk.camera.set({rec[1] + 5, rec[2] + 1, rec[3]}, rec)
+    sdk.log("AUTOTEST_INFO camera parked at the Baby_Cry_1 record " .. fmt(rec) .. " (circling it at 5.1 m; the skater is out of view)")
+end
+
+local function drive_camera(dt)
+    local c = at.cam
+    if not c then return end
+    c.t = c.t + dt
+    local a = c.t * 2 * math.pi / 40 -- one slow lap per 40 s
+    local r = c.rec
+    sdk.camera.set({r[1] + 5 * math.cos(a), r[2] + 1, r[3] + 5 * math.sin(a)}, r)
+end
+
+local function unpark_camera(why)
+    if not at.cam then return end
+    at.cam = nil
+    at.cam_back_t = at.t
+    at.cry_stop0 = by_class["emitter_stop:Baby_Cry_1"] or 0
+    sdk.camera.clear()
+    sdk.log("AUTOTEST_INFO camera back at the skater (" .. why .. ")")
+end
+
+-- Steps with something to hear (`audible = true`) run `autotest_step` seconds after an
+-- `autotest_gap` quiet gap; silent read-back checks run `autotest_quiet_step` seconds (at most the
+-- step length) after a gap of at most 1 s.
+local function step_len(s)
+    if s.audible then return at.len end
+    return math.min(at.len, at.quiet_len)
+end
+
+local function gap_for(s)
+    if not s then return 0 end
+    if s.audible then return at.gap end
+    return math.min(at.gap, 1)
+end
+
+-- Each step: name, a short title and what to listen for (the HUD, one line each; every audible
+-- step names its own sound), the long `detail` (the log only), and timed marks `{t, fn}`; `t` < 0 counts from the
 -- step's end. A mark returning false holds the step (polling) until `wait` seconds have passed.
+-- `audible`: something to hear (the long step time); `camera`: the step needs the parked camera.
 local steps
 steps = {
-    {name = "babycry", title = "A crying baby, now a beep", listen = "The camera flies to DownTown's Baby_Cry_1 emitter: its replaced samples (a beep)", marks = {
+    {name = "babycry", audible = true, camera = true, title = "Map emitter: deep bell", listen = "A deep church bell from the building (it repeats)", detail = "The map's Baby_Cry_1 emitter (on a building): audio.json replaced its samples with a deep bell; it plays while the camera is near it", marks = {
         {0, function()
             -- DownTown's Baby_Cry_1 record (sfx_downtown, an 18 m sphere, 13 m above the street on a
             -- building): the listener is the camera, so the camera is put 5 m from it (moving the
-            -- skater there drops it to the street, out of reach). The bank is audio.json's beep.
+            -- skater there drops it to the street, out of reach). The bank is audio.json's bell.
             local rec = {-119.7, 53.48, -234.14}
             at.cry_rec, at.cry0 = rec, by_class["emitter_start:Baby_Cry_1"] or 0
-            sdk.camera.set({rec[1] + 5, rec[2] + 1, rec[3]}, rec)
-            sdk.log("AUTOTEST_INFO camera to Baby_Cry_1 record " .. fmt(rec))
+            park_camera(rec)
         end},
         {1.5, function() sdk.engine.inspect("cry_catalog", "audio_catalog") end},
         {2.5, function()
             local starts = (by_class["emitter_start:Baby_Cry_1"] or 0) - at.cry0
             local r = sdk.commands.result("cry_catalog")
             local loaded = r and r.value and has(r.value.banks, "Baby_Cry_1")
-            report("babycry_emitter", starts >= 1 and loaded, string.format("emitter_start Baby_Cry_1 rows=%d, camera set 5.1 m from the record (reach 18 m), bank Baby_Cry_1 loaded=%s (audio.json replaces its samples with the beep; the log's AUDIO_EMITTER line names the record)", starts, tostring(loaded)))
+            report("babycry_emitter", starts >= 1 and loaded, string.format("emitter_start Baby_Cry_1 rows=%d, camera set 5.1 m from the record (reach 18 m), bank Baby_Cry_1 loaded=%s (audio.json replaces its samples with the bell; the log's AUDIO_EMITTER line names the record)", starts, tostring(loaded)))
         end},
 }},
-    {name = "global", title = "Retail global set (F5)", listen = "No sound of its own: babycry_1_sel_snd = 1, then restored", note = "F5: babycry_1_sel_snd = 1 (no sound of its own)", marks = {
+    {name = "post", audible = true, camera = true, title = "F6: post, two-tone chime", listen = "A two-tone chime (ding-dong), centred, once", detail = "F6: a c_emitter post with patch 88 (Buoy_Bell, preloaded by audio.json, its sample a two-tone chime), on top of the map emitter's bell", marks = {
+        {0, function() virtual.F6 = true end},
+        {1.5, function()
+            local ok, e = result("post")
+            local h = sdk.audio.handle("emit")
+            report("F6_post", ok and h ~= nil and h.live == true and h.class == "c_emitter", "result=" .. e .. " handle=" .. fmt(h))
+        end}}},
+    {name = "release", audible = true, camera = true, title = "F7: release the post", listen = "No new sound; the bell stops as the camera returns", detail = "F7: release the c_emitter post; the map emitter's bell goes on until the camera returns to the skater near the end of this step", marks = {
+        {0, function() virtual.F7 = true end},
+        {1.0, function()
+            local h = sdk.audio.handle("emit")
+            report("F7_release", h == nil or h.live == false, "handle=" .. fmt(h))
+        end},
+        -- The camera comes back to the skater (the map emitter's bell stops: out of its reach), and
+        -- the gameplay camera must be near the skater again.
+        {-1.5, function() unpark_camera("the emitter steps are over") end},
+        {-0.2, function()
+            local c, p = (sdk.snapshot.camera or {}).position, (sdk.player.read() or {}).position
+            local d = (c and p) and math.sqrt((c[1] - p[1]) ^ 2 + (c[2] - p[2]) ^ 2 + (c[3] - p[3]) ^ 2) or -1
+            -- The listener left: the map's Baby_Cry_1 emitter stops (out of reach). The snapshot's camera
+            -- position is informative only (it may not report a mod-set camera).
+            local stops = (by_class["emitter_stop:Baby_Cry_1"] or 0) - (at.cry_stop0 or 0)
+            report("camera_back", not at.cam and stops >= 1, string.format("map emitter Baby_Cry_1 stop rows since the return=%d (the listener left its reach), snapshot camera %.1f m from the skater, parked=%s", stops, d, tostring(at.cam ~= nil)))
+        end}}},
+    {name = "global", title = "F5: retail global (silent)", listen = "Nothing to hear (a short read-back check)", detail = "F5: babycry_1_sel_snd = 1, then restored (no sound of its own)", marks = {
         {0, function() at.g0 = sdk.audio.global("babycry_1_sel_snd"); virtual.F5 = true end},
         {1.5, function()
             local ok, e = result("global")
@@ -167,34 +234,20 @@ steps = {
             local v = sdk.audio.global("babycry_1_sel_snd")
             report("F5_global_restore", v == at.g0, "value=" .. tostring(v) .. " want=" .. tostring(at.g0))
         end}}},
-    {name = "post", title = "Post a retail emitter (F6)", listen = "A second, centred beep on top of the baby emitter's (camera still there)", note = "F6: c_emitter post (Baby_Cry_1 = beep where its bank is loaded)", marks = {
-        {0, function() virtual.F6 = true end},
-        {1.5, function()
-            local ok, e = result("post")
-            local h = sdk.audio.handle("emit")
-            report("F6_post", ok and h ~= nil and h.live == true and h.class == "c_emitter", "result=" .. e .. " handle=" .. fmt(h))
-        end}}},
-    {name = "release", title = "Release the post (F7)", listen = "The centred beep stops (the emitter's own beep goes on); then the camera comes back", note = "F7: release the c_emitter post", marks = {
-        {0, function() virtual.F7 = true end},
-        {1.0, function()
-            local h = sdk.audio.handle("emit")
-            report("F7_release", h == nil or h.live == false, "handle=" .. fmt(h))
-        end},
-        {-0.3, function() sdk.camera.clear() end}}},
-    {name = "native", title = "Mod siren + beep (F8)", listen = "A looping siren 8 m to one side, a short beep; siren stops at the end", note = "F8: looping siren 8 m east + a beep (native mixer)", marks = {
+    {name = "native", audible = true, title = "F8: siren + wood block", listen = "A looping siren to one side, a wood block knock-knock", detail = "F8: a looping siren 8 m east and a wood block knock-knock (native mixer); the siren stops at the end", marks = {
         {0, function() at.v0 = sdk.audio.info().native_voices or 0; virtual.F8 = true end},
         {1.5, function()
             local ok1, e1 = result("native")
-            local ok2, e2 = result("beep")
+            local ok2, e2 = result("knock")
             local v = sdk.audio.info().native_voices
-            report("F8_native_siren", ok1 and ok2 and (v or 0) >= 1, "siren=" .. e1 .. " beep=" .. e2 .. " native_voices=" .. tostring(v) .. " before=" .. tostring(at.v0))
+            report("F8_native_siren", ok1 and ok2 and (v or 0) >= 1, "siren=" .. e1 .. " knock=" .. e2 .. " native_voices=" .. tostring(v) .. " before=" .. tostring(at.v0))
         end},
         {-1.0, function() virtual.F8 = true end},
         {-0.1, function()
             local v = sdk.audio.info().native_voices or 0
             report("F8_native_stop", v <= at.v0, "native_voices=" .. tostring(v) .. " before=" .. tostring(at.v0))
         end}}},
-    {name = "tuning", title = "Tuning writes (F9)", listen = "Very quiet: a taxi idling 3 m away, idle rpm 1200 -> 1800 and back (retail idle level)", note = "F9: taxi idle rpm 1800, reverb01 time 3 (the game spawns no traffic: a mod taxi idles 6 m away, retail's pool)", wait = 0, marks = {
+    {name = "tuning", audible = true, title = "F9: tuning, idling taxi", listen = "A quiet taxi idling 3 m away; a boing if it honks", detail = "F9: taxi idle rpm 1200 -> 1800 and back, reverb01 time 3 (the game spawns no traffic: a mod taxi idles 3 m away, retail's pool); audio.json's honk_beep rule adds a boing above a honking car", wait = 0, marks = {
         {0, function()
             local p = sdk.player.read().position
             sdk.commands.request("f9_taxi", {kind = "world_audio_spawn", key = "f9_taxi", object = "traffic", options = {
@@ -221,7 +274,7 @@ steps = {
             report("F9_tuning_restore", n == 0 and rpm == 1200, "tuned=" .. n .. " taxi_idle_rpm=" .. tostring(rpm) .. " (audio.json's 1200)")
             sdk.world_audio.remove("f9_taxi")
         end}}},
-    {name = "emitter", title = "Mod emitter + reverb zone (F10)", listen = "A beeping emitter 6 m away, a bigger reverb around you", note = "F10: beep emitter 6 m east (own instance) + reverb11 zone", marks = {
+    {name = "emitter", audible = true, title = "F10: emitter, triangle ding", listen = "A triangle ding every ~2 s, 6 m away, in big reverb", detail = "F10: a mod emitter 6 m east (Transformer_Lrg_left_2, patch 71, its sample a triangle ding; own instance) + a reverb11 zone", marks = {
         {0, function() virtual.F10 = true end},
         {2.0, function()
             local ok1, e1 = result("emitter")
@@ -235,7 +288,7 @@ steps = {
             local em, zn = sdk.world_audio.read("emitter"), sdk.world_audio.read("zone")
             report("F10_removed", em == nil and zn == nil, "read_emitter=" .. fmt(em) .. " read_zone=" .. fmt(zn))
         end}}},
-    {name = "rules", title = "Rules: mute grinds, landing beacon (F11)", listen = "Ollie: the pop beeps at the skater (audio.json pop_click), the landing beeps 10 m away", note = "F11: grind starts muted, landing replaced by a beep 10 m east (an ollie follows)", marks = {
+    {name = "rules", audible = true, title = "F11: click + low horn", listen = "On the ollie: a click at the skater, a low horn 10 m away", detail = "F11: grind starts muted, the landing replaced by a low horn 10 m east (an ollie follows); the pop gets audio.json's pop_click", marks = {
         {0, function() at.r0 = sdk.audio.info().rules or 0; at.land0 = counts.land or 0; at.sc0 = by_class["splice:Skate_Collisions"] or 0; virtual.F11 = true end},
         {1.0, function()
             local n = sdk.audio.info().rules or 0
@@ -244,14 +297,14 @@ steps = {
         end},
         {-1.2, function()
             local l = (counts.land or 0) - at.land0
-            report("F11_landing_seen", l >= 1, "land_events=" .. l .. " untagged Skate_Collisions splice rows=" .. ((by_class["splice:Skate_Collisions"] or 0) - at.sc0) .. " (synthetic ollie; the beacon beep replaces it) " .. skater() .. " ollie_cmd=" .. select(2, result("ollie")) .. " air_seen=" .. tostring(at.air_seen) .. " collisions=[" .. table.concat(at.coll_log or {}, " ") .. "]")
+            report("F11_landing_seen", l >= 1, "land_events=" .. l .. " untagged Skate_Collisions splice rows=" .. ((by_class["splice:Skate_Collisions"] or 0) - at.sc0) .. " (synthetic ollie; the beacon horn replaces it) " .. skater() .. " ollie_cmd=" .. select(2, result("ollie")) .. " air_seen=" .. tostring(at.air_seen) .. " collisions=[" .. table.concat(at.coll_log or {}, " ") .. "]")
         end},
         {-1.0, function() virtual.F11 = true end},
         {-0.1, function()
             local n = sdk.audio.info().rules or 0
             report("F11_rules_removed", n == at.r0, "rules=" .. n .. " want=" .. at.r0)
         end}}},
-    {name = "duck", title = "Duck the world (Digit1)", listen = "The whole world gets quieter (-12 dB), then comes back", note = "Digit1: the world ducked -12 dB through the Master MixMap inputs", marks = {
+    {name = "duck", audible = true, title = "Digit1: duck the world", listen = "The whole world gets quieter, then comes back", detail = "Digit1: the world ducked -12 dB through the Master MixMap inputs", marks = {
         {0, function() virtual.Digit1 = true end},
         {1.5, function()
             local rows = sdk.audio.mixmap_inputs()
@@ -266,7 +319,7 @@ steps = {
         {-0.1, function()
             report("D1_duck_release", #sdk.audio.mixmap_inputs() == 0, "inputs=" .. #sdk.audio.mixmap_inputs() .. " info.mixmap_inputs=" .. tostring(sdk.audio.info().mixmap_inputs))
         end}}},
-    {name = "seed", title = "Seed the audio random state (Digit2)", listen = "Nothing to hear", note = "Digit2: audio random state seeded 1234 (no sound of its own)", marks = {
+    {name = "seed", title = "Digit2: seed (silent)", listen = "Nothing to hear (a short read-back check)", detail = "Digit2: audio random state seeded 1234 (no sound of its own)", marks = {
         {0, function() virtual.Digit2 = true end},
         {1.5, function()
             local s = sdk.audio.info().seed
@@ -277,7 +330,7 @@ steps = {
             local s = sdk.audio.info().seed
             report("D2_seed_release", type(s) ~= "table", "seed=" .. fmt(s))
         end}}},
-    {name = "taxis", title = "Six taxis on their own instances (Digit3)", listen = "Six taxis circling you like traffic: the nearest 6 m away at 4 m/s, the others farther out and faster (up to 21 m, 14 m/s)", note = "Digit3: six taxis on rings 6-21 m around the skater at 4-14 m/s, each on its own MixMap instance", marks = {
+    {name = "taxis", audible = true, title = "Digit3: six taxis", listen = "Six taxis circling you like traffic, 6-21 m away", detail = "Digit3: six taxis on rings 6-21 m around the skater at 4-14 m/s, each on its own MixMap instance", marks = {
         {0, function() virtual.Digit3 = true end},
         {2.5, function()
             local okc = true
@@ -293,7 +346,7 @@ steps = {
             for i = 1, 6 do if sdk.world_audio.read("own_car" .. i) then left = left + 1 end end
             report("D3_taxis_removed", left == 0, "left=" .. left)
         end}}},
-    {name = "csis", title = "Mod's own Csis class + global (Digit4)", listen = "Nothing to hear (no bank uses the class)", note = "Digit4: the mod's own Csis class c_dev_mod posted, g_dev_level 9 (no sound: no bank binds it)", marks = {
+    {name = "csis", title = "Digit4: mod Csis class (silent)", listen = "Nothing to hear (a short read-back check)", detail = "Digit4: the mod's own Csis class c_dev_mod posted, g_dev_level 9 (no sound: no bank binds it)", marks = {
         {0, function() at.lv0 = dev_level(); virtual.Digit4 = true end},
         {1.5, function()
             local ok1, e1 = result("dev_post")
@@ -308,7 +361,7 @@ steps = {
             local v = dev_level()
             report("D4_csis_release", (h == nil or not h.live) and v == 7, "handle=" .. fmt(h) .. " g_dev_level=" .. tostring(v) .. " (default 7)")
         end}}},
-    {name = "nose", title = "Beep ahead of the board on pops (Digit5)", listen = "The skater ollies: a beep in front of the board", note = "Digit5: a beep 2 m ahead of the board's nose on every pop (an ollie follows)", marks = {
+    {name = "nose", audible = true, title = "Digit5: whistle chirp", listen = "On the ollie: a whistle chirp ahead, plus the click", detail = "Digit5: a rising whistle chirp 2 m ahead of the board's nose on every pop (an ollie follows); the pop_click click too", marks = {
         {0, function() at.r0 = sdk.audio.info().rules or 0; at.pop0 = counts.pop or 0; at.sc0 = by_class["splice:Skate_Collisions"] or 0; virtual.Digit5 = true end},
         {1.0, function()
             local n = sdk.audio.info().rules or 0
@@ -324,7 +377,7 @@ steps = {
             local n = sdk.audio.info().rules or 0
             report("D5_nose_removed", n == at.r0, "rules=" .. n .. " want=" .. at.r0)
         end}}},
-    {name = "orbit", title = "Orbiting emitter (Digit6)", listen = "A beep circling around you every 6 s", note = "Digit6: an emitter orbiting the skater at 8 m every 6 s (beep follows it)", marks = {
+    {name = "orbit", audible = true, title = "Digit6: orbiting shaker", listen = "A shaker rattle circling around you (a lap in 6 s)", detail = "Digit6: an emitter orbiting the skater at 8 m every 6 s (water_lapping_pond, patch 83, its samples a shaker rattle)", marks = {
         {0, function() virtual.Digit6 = true end},
         {2.0, function()
             local ok, e = result("orbit")
@@ -340,7 +393,7 @@ steps = {
         {-0.1, function()
             report("D6_orbit_removed", sdk.world_audio.read("orbit") == nil and orbit == nil, "read=" .. fmt(sdk.world_audio.read("orbit")))
         end}}},
-    {name = "tags", title = "Event tags after subscribing again", listen = "The skater ollies once more (pop click from audio.json's rule)", marks = {
+    {name = "tags", audible = true, title = "Tags: one more ollie", listen = "On the ollie: just the click at the skater", detail = "Event tags after subscribing again: an ollie; the pop gets audio.json's pop_click click", marks = {
         -- The subscription made in on_load (before the native audio ran) is checked by the two
         -- ollie steps above; subscribing again now (the audio runs) must tag pops and landings.
         {0, function() at.pop0, at.land0 = counts.pop or 0, counts.land or 0; sdk.audio.subscribe{tags = {}} end},
@@ -349,7 +402,7 @@ steps = {
             local p, l = (counts.pop or 0) - at.pop0, (counts.land or 0) - at.land0
             report("tags_after_resubscribe", p >= 1 and l >= 1, "pop_events=" .. p .. " land_events=" .. l .. " " .. skater() .. " air_seen=" .. tostring(at.air_seen) .. " collisions=[" .. table.concat(at.coll_log or {}, " ") .. "]")
         end}}},
-    {name = "hotswap", title = "Edit audio.json while running (hot swap)", listen = "No cut in the sound: the tunnel zone volume is swapped in and back", note = "L7: audio.json edited while running (tunnel zone volume), swapped in, then reverted", wait = 20, marks = {
+    {name = "hotswap", title = "Hot swap audio.json (silent)", listen = "Nothing new: no cut while audio.json is swapped", detail = "L7: audio.json edited while running (tunnel zone volume), swapped in, then reverted", wait = 20, marks = {
         {0, function()
             local i = sdk.audio.info()
             at.s0, at.rs0 = i.swaps or 0, i.restarts or 0
@@ -374,6 +427,7 @@ local function autotest(dt)
     at.t = at.t + dt
     drive_ollie(dt)
     drive_press(dt)
+    drive_camera(dt)
     local info = sdk.audio.info()
     local player = sdk.player.read()
     if not at.ready_t then
@@ -399,7 +453,7 @@ local function autotest(dt)
             .. " overlays=" .. fmt(info.overlays) .. " conflicts=" .. tostring(info.conflicts) .. " restarts=" .. tostring(info.restarts)
             .. " generation=" .. tostring(info.generation) .. " rules=" .. tostring(info.rules) .. " g_dev_level=" .. tostring(dev_level())
             .. " watch=" .. select(2, result("watch")) .. " " .. skater())
-        at.step, at.step_t, at.mark, at.gap_t = 1, 0, 1, at.gap
+        at.step, at.step_t, at.mark, at.gap_t = 1, 0, 1, gap_for(steps[1])
         return
     end
     local s = steps[at.step]
@@ -409,15 +463,18 @@ local function autotest(dt)
         at.gap_t = at.gap_t - dt
         return
     end
-    if at.step_t == 0 then sdk.log("AUTOTEST_STEP " .. at.step .. " " .. s.name .. ": " .. s.title .. " | listen: " .. s.listen) end
+    local len = step_len(s)
+    if at.step_t == 0 then
+        sdk.log(string.format("AUTOTEST_STEP %d %s: %s (%s, %g s) | listen: %s | %s", at.step, s.name, s.title, s.audible and "audible" or "silent check", len, s.listen, s.detail or ""))
+    end
     at.step_t = at.step_t + dt
-    local len = at.len
     -- Every step ends: one that is still running its marks past its length + wait + 5 s fails.
     local limit = len + (s.wait or 0) + 5
     local m = s.marks[at.mark]
     if m and at.step_t > limit then
         report(s.name .. "_timeout", false, string.format("step still at mark %d after %.1f s", at.mark, at.step_t))
         at.mark, m = #s.marks + 1, nil
+        unpark_camera("step " .. s.name .. " timed out")
     end
     if m then
         local when = m[1] >= 0 and m[1] or len + m[1]
@@ -430,8 +487,11 @@ local function autotest(dt)
         return
     end
     if at.step_t < len then return end
-    at.step, at.step_t, at.mark, at.gap_t = at.step + 1, 0, 1, at.gap
+    at.step, at.step_t, at.mark = at.step + 1, 0, 1
     local n = steps[at.step]
+    at.gap_t = gap_for(n)
+    -- The camera is parked only while a step needs it (normally the release step returns it).
+    if not (n and n.camera) then unpark_camera(n and ("step " .. n.name .. " does not need it") or "the autotest is done") end
     if not n then
         local i = sdk.audio.info()
         report("no_restart", (i.restarts or 0) == at.base.restarts, "restarts=" .. tostring(i.restarts) .. " at_start=" .. at.base.restarts .. " swaps=" .. tostring(i.swaps) .. " generation=" .. tostring(i.generation))
@@ -442,34 +502,58 @@ end
 local function autotest_hud()
     if not at.on then return end
     local s = steps[at.step]
-    local big, small
+    local big, small, cam
     if s and at.gap_t and at.gap_t > 0 then
-        big = string.format("Next: %d/%d  %s", at.step, #steps, s.title)
-        small = "(quiet for a moment)"
+        big = string.format("Next in %d s: %d/%d  %s", math.ceil(at.gap_t), at.step, #steps, s.title)
+        small = s.audible and "(quiet for a moment)" or "(quiet for a moment; a short silent check next)"
     elseif s then
-        big = string.format("%d/%d  %s", at.step, #steps, s.title)
+        local left = math.max(0, math.ceil(step_len(s) - at.step_t))
+        big = string.format("%d/%d  %s   %s", at.step, #steps, s.title, left > 0 and (left .. " s left") or "finishing...")
         small = "Listen: " .. s.listen
     elseif at.step == 0 then
         big, small = "Audio autotest", "Waiting for the map's audio..."
     else
         big, small = "Audio autotest done", string.format("%d checks ok, %d failed", at.pass, at.fail)
     end
+    if at.cam then
+        local last = at.step
+        while steps[last + 1] and steps[last + 1].camera do last = last + 1 end
+        cam = "Camera circles the bell emitter on a building until step " .. last .. " ends"
+    elseif at.cam_back_t and at.t - at.cam_back_t < 6 then
+        cam = "Camera back at the skater"
+    else
+        cam = ""
+    end
     local status = string.format("checks: %d ok, %d failed", at.pass, at.fail)
     local muted = sdk.settings.autotest_muted == true
-    if big == at.hud_big and status == at.hud_status then return end
-    at.hud_big, at.hud_status = big, status
-    -- A muted run (the runner's default) says so in red above the step.
-    local top = muted and 56 or 0
+    if big == at.hud_big and status == at.hud_status and cam == at.hud_cam then return end
+    -- The HUD text in the log at each step / gap start (not every countdown second).
+    local phase = tostring(at.step) .. (at.gap_t and at.gap_t > 0 and "gap" or "step")
+    if phase ~= at.hud_phase then
+        at.hud_phase = phase
+        sdk.log("AUTOTEST_HUD " .. big .. (cam ~= "" and (" | " .. cam) or ""))
+    end
+    if cam ~= at.hud_cam and cam ~= "" then sdk.log("AUTOTEST_HUD camera: " .. cam) end
+    at.hud_big, at.hud_status, at.hud_cam = big, status, cam
+    -- Top left, 16 units from the edges (the user, 2026-10-04; the dev mod's own top text lines are
+    -- removed while the autotest runs). A muted run (the runner's default) says so in red above the step.
+    -- One line per text, no wrapping: the HUD font (Bevy's default, Fira Mono) is monospaced at 0.6 em a
+    -- glyph, so a 952-unit line holds 56 glyphs at 28 (the title + countdown, at most 7 + 34 + 3 + 12), 79
+    -- at 20 (listen, at most 60) and 88 at 18 (camera). The canvas scales as a whole (view height / 900,
+    -- at most what fits), so the same holds at any window size: 800 px wide at 1280x720.
+    local top = muted and 40 or 0
+    local h = 140 + top
     local items = {
-        {key = "bg", type = "rect", position = {0, 0}, size = {1200, 150 + top}, color = {0, 0, 0, 0.8}},
-        {key = "big", type = "text", position = {24, 14 + top}, size = {1160, 56}, text = big, font_size = 44, color = {1, 1, 1, 1}},
-        {key = "small", type = "text", position = {24, 76 + top}, size = {1160, 36}, text = small, font_size = 28, color = {1, 0.85, 0.3, 1}},
-        {key = "status", type = "text", position = {24, 116 + top}, size = {1160, 28}, text = status, font_size = 20, color = {0.7, 0.9, 0.7, 1}},
+        {key = "bg", type = "rect", position = {0, 0}, size = {1000, h}, color = {0, 0, 0, 0.8}},
+        {key = "big", type = "text", position = {24, 12 + top}, size = {952, 36}, text = big, font_size = 28, color = {1, 1, 1, 1}},
+        {key = "small", type = "text", position = {24, 52 + top}, size = {952, 28}, text = small, font_size = 20, color = {1, 0.85, 0.3, 1}},
+        {key = "cam", type = "text", position = {24, 84 + top}, size = {952, 24}, text = cam, font_size = 18, color = {0.45, 0.85, 1, 1}},
+        {key = "status", type = "text", position = {24, 112 + top}, size = {952, 22}, text = status, font_size = 16, color = {0.7, 0.9, 0.7, 1}},
     }
     if muted then
-        items[#items + 1] = {key = "muted", type = "text", position = {24, 8}, size = {1160, 50}, text = "MUTED TEST", font_size = 44, color = {1, 0.15, 0.15, 1}}
+        items[#items + 1] = {key = "muted", type = "text", position = {24, 8}, size = {952, 36}, text = "MUTED TEST", font_size = 28, color = {1, 0.15, 0.15, 1}}
     end
-    sdk.ui.canvas("autotest", {anchor = "bottom_left", offset = {40, 60}, size = {1200, 150 + top}, scale = 1, items = items})
+    sdk.ui.canvas("autotest", {anchor = "top_left", offset = {16, 16}, size = {1000, h}, scale = 1, items = items})
 end
 
 local function hud()
@@ -500,7 +584,7 @@ local function hud()
         if r and r.own then own = own + 1 end
     end
     sdk.ui.text("audio-content-test-2", string.format(
-        "Content changes: swaps %s, restarts %s, last %s | duck %s | seed %s | own-instance cars %s (%d own) | c_dev_mod %s, g_dev_level %s | nose beep %s | orbiting emitter %s  [1 duck (Master inputs), 2 seed, 3 own-instance taxis, 4 mod Csis class + global, 5 pop beep 2 m ahead of the board, 6 orbiting emitter; edit audio.json while running: swapped, no restart]",
+        "Content changes: swaps %s, restarts %s, last %s | duck %s | seed %s | own-instance cars %s (%d own) | c_dev_mod %s, g_dev_level %s | nose whistle %s | orbiting emitter %s  [1 duck (Master inputs), 2 seed, 3 own-instance taxis, 4 mod Csis class + global, 5 pop whistle 2 m ahead of the board, 6 orbiting emitter; edit audio.json while running: swapped, no restart]",
         tostring(info.swaps), tostring(info.restarts), tostring(info.last_change),
         ducked and "on" or "-", seeded and "1234" or "-", own_cars and "on" or "-", own,
         dev_class and "posted" or "-", tostring(dev_level()), nose and "on" or "-",
@@ -517,7 +601,8 @@ return {
         request_watch()
         if sdk.settings.autotest then
             at.on, at.len, at.gap, at.loads = true, sdk.settings.autotest_step or 5, sdk.settings.autotest_gap or 0, at.loads + 1
-            sdk.log("AUTOTEST_INFO on: step " .. tostring(at.len) .. " s, gap " .. tostring(at.gap) .. " s, script load " .. at.loads .. ", events " .. tostring(sdk.settings.events))
+            at.quiet_len = sdk.settings.autotest_quiet_step or 3
+            sdk.log("AUTOTEST_INFO on: step " .. tostring(at.len) .. " s, silent checks " .. tostring(math.min(at.len, at.quiet_len)) .. " s, gap " .. tostring(at.gap) .. " s, script load " .. at.loads .. ", events " .. tostring(sdk.settings.events))
         end
         hud()
     end,
@@ -544,10 +629,11 @@ return {
         end
         if key("F6") then
             -- The retail c_emitter class with the dry / send / pan / pitch / filter words of an
-            -- unpositioned emitter at full level and patch 22, the selector of DownTown's Baby_Cry_1
-            -- records (word 8; patch 0 selected another emitter sound): the replaced Baby_Cry_1 bank
-            -- (a beep) answers while it is loaded, e.g. near a DownTown baby emitter.
-            sdk.commands.request("post", {kind = "audio_post", key = "emit", class = "c_emitter", words = {32767, 32767, 0, 0, 4096, 25000, 0, 0, 22}})
+            -- unpositioned emitter at full level and patch 88, the selector of the industrial
+            -- district's Buoy_Bell records (word 8): audio.json replaces Buoy_Bell's sample with a
+            -- two-tone chime and preloads the bank, so the post answers anywhere (its own sound, not
+            -- the Baby_Cry_1 bell of the map emitter next to it; DownTown has no Buoy_Bell record).
+            sdk.commands.request("post", {kind = "audio_post", key = "emit", class = "c_emitter", words = {32767, 32767, 0, 0, 4096, 25000, 0, 0, 88}})
             posted = true
         end
         if key("F7") and posted then
@@ -557,8 +643,8 @@ return {
         if key("F8") and (sdk.capabilities.audio or 0) >= 3 then
             -- A looping siren 8 m from where the skater is, through the native mixer (the default:
             -- no `native` field): the retail emitter distance law, reverb send and panner, the
-            -- default reach (40 m, squared); a beep (no position: the non-positional branch, also
-            -- native by default) marks the toggle.
+            -- default reach (40 m, squared); a wood block knock (no position: the non-positional
+            -- branch, also native by default) marks the toggle.
             native_on = not native_on
             if native_on then
                 local p = sdk.player.read().position
@@ -567,7 +653,7 @@ return {
             else
                 sdk.audio.stop("native_siren", 0.3)
             end
-            sdk.commands.request("beep", {kind = "audio_play", key = "native_beep", options = {path = "audio/beep.wav", spatial = false, volume = 0.6}})
+            sdk.commands.request("knock", {kind = "audio_play", key = "native_knock", options = {path = "audio/woodblock.wav", spatial = false, volume = 0.6}})
         end
         if key("F9") and (sdk.capabilities.audio_tuning or 0) >= 1 then
             -- Tuning writes: the taxi engine idles higher and the default reverb preset (reverb01,
@@ -581,8 +667,9 @@ return {
             sdk.audio.tuning("taxi", "world", "traffic_engine/c04_taxi01")
         end
         if key("F10") and (sdk.capabilities.world_audio or 0) >= 2 then
-            -- A mod emitter (the Baby_Cry_1 bank this mod's audio.json replaces with a beep; patch
-            -- 22) 6 m from the skater, reached within 15 m (retail's reach test and squared
+            -- A mod emitter (the university's Transformer_Lrg_left_2 bank, patch 71, whose program
+            -- repeats its sample every ~2.5 s; audio.json replaces it with a triangle ding) 6 m from
+            -- the skater, reached within 15 m (retail's reach test and squared
             -- falloff, a c_emitter post on its own emitter instance: the default "extra" slots, so
             -- the map's emitters keep retail's 5 states), and a reverb zone (reverb11) 30 m around
             -- the skater. F10 again removes both.
@@ -590,7 +677,7 @@ return {
             if placed then
                 local p = sdk.player.read().position
                 sdk.commands.request("emitter", {kind = "world_audio_spawn", key = "emitter", object = "emitter", options = {
-                    bank = "Baby_Cry_1", patch = 22, position = {p[1] + 6, p[2], p[3]}, extent = {15, 15, 15}, core = 0.2, volume = 0.9}})
+                    bank = "Transformer_Lrg_left_2", patch = 71, position = {p[1] + 6, p[2], p[3]}, extent = {15, 15, 15}, core = 0.2, volume = 0.9}})
                 sdk.commands.request("zone", {kind = "world_audio_spawn", key = "zone", object = "reverb_zone", options = {
                     preset = "BEEFC8E3DE04FBAE", position = p, extent = {30, 12, 30}}})
             else
@@ -600,16 +687,16 @@ return {
         end
         if key("F11") and (sdk.capabilities.audio_events or 0) >= 2 then
             -- Runtime rules: mute the grind start (the Class_grind post is not made; the event row
-            -- still arrives), and replace the landing with a beep at a fixed world position 10 m
+            -- still arrives), and replace the landing with a low horn at a fixed world position 10 m
             -- east of where the skater is now (`at = 'world'`: land anywhere and it comes from that
             -- spot, panned and rolling off with distance, silent beyond 30 m). audio.json's rule
-            -- "pop_click" layers a quiet beep on every pop at the skater (the default `at = 'owner'`),
-            -- "honk_beep" a beep 1.5 m above every honking car.
+            -- "pop_click" layers a short click on every pop at the skater (the default `at = 'owner'`),
+            -- "honk_beep" a cartoon boing 1.5 m above every honking car.
             quiet = not quiet
             sdk.audio.rule("quiet_grind", quiet and {match = {tag = "grind_start"}, action = "mute"} or nil)
             local p = sdk.player.read().position
             sdk.audio.rule("land_beacon", quiet and {match = {tag = "land"}, action = "replace",
-                play = {path = "audio/beep.wav", volume = 0.8, at = "world", position = {p[1] + 10, p[2], p[3]},
+                play = {path = "audio/horn.wav", volume = 0.8, at = "world", position = {p[1] + 10, p[2], p[3]},
                         falloff = {radius = 30}}} or nil)
         end
         if (sdk.capabilities.audio or 0) >= 4 then
@@ -665,15 +752,16 @@ return {
             sdk.commands.request("dev_global", {kind = "audio_set_global", name = "g_dev_level", value = dev_class and 9 or nil})
         end
         if key("Digit5") and (sdk.capabilities.audio_events or 0) >= 3 then
-            -- The offset in the owner's axes: a beep on every pop 2 m ahead of the board's nose
+            -- The offset in the owner's axes: a whistle chirp on every pop 2 m ahead of the board's nose
             -- (frame = 'owner'), wherever the skater faces.
             nose = not nose
             sdk.audio.rule("nose_beep", nose and {match = {tag = "pop"}, action = "layer",
-                play = {path = "audio/beep.wav", volume = 0.6, offset = {0, 0, 2}, frame = "owner"}, min_interval = 0.2} or nil)
+                play = {path = "audio/whistle.wav", volume = 0.6, offset = {0, 0, 2}, frame = "owner"}, min_interval = 0.2} or nil)
         end
         if key("Digit6") and (sdk.capabilities.world_audio or 0) >= 2 then
             -- A published emitter that keeps moving (orbiting the skater at 8 m every 6 s): its
-            -- sound follows it.
+            -- sound follows it. The industrial water_lapping_pond bank (patch 83, its program plays
+            -- a sample about every second), replaced by audio.json with a shaker rattle.
             if orbit then
                 sdk.world_audio.remove("orbit")
                 orbit = nil
@@ -681,7 +769,7 @@ return {
                 orbit = 0
                 local p = sdk.player.read().position
                 sdk.commands.request("orbit", {kind = "world_audio_spawn", key = "orbit", object = "emitter", options = {
-                    bank = "Baby_Cry_1", patch = 22, position = {p[1] + 8, p[2], p[3]}, extent = {20, 20, 20}, volume = 0.9}})
+                    bank = "water_lapping_pond", patch = 83, position = {p[1] + 8, p[2], p[3]}, extent = {20, 20, 20}, volume = 0.9}})
             end
         end
         keep_t = keep_t + (event and event.dt or 0.016)
@@ -716,6 +804,7 @@ return {
         sdk.ui.text("audio-content-test", "")
         sdk.ui.text("audio-content-test-2", "")
         sdk.ui.remove("autotest")
+        if at.cam then sdk.camera.clear() end
         if at.ollie_t then sdk.input.override_action(68, nil) end
     end,
 }

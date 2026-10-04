@@ -932,11 +932,12 @@ Verification: `mod_voices::tests::offsets_turn_with_the_owner`, `mod_rules::test
 
 Problem: checking H–M in game needed a person in DownTown pressing F5–F11 and Digit1–6. Change (dev mod only,
 `mods/audio-content-test`, no engine code): mod settings `autotest` (off by default), `autotest_step` (s per step),
-`autotest_gap` (quiet s before each step), `autotest_muted` (shows "MUTED TEST" on its HUD). With `autotest` on, once
+`autotest_gap` (quiet s before each step), `autotest_quiet_step` (s per silent read-back step, default 3),
+`autotest_muted` (shows "MUTED TEST" on its HUD). With `autotest` on, once
 the map's native audio runs the script presses its own keys on a timer (the same code paths as the keys), one step
 after the other, reads back what the engine reports and logs one line per check: `AUTOTEST <check> ok|fail <details>`
 (then `AUTOTEST done pass=N fail=M`). 16 steps: the map's Baby_Cry_1 emitter with the replaced bank (the camera, i.e.
-the listener, is put 5 m from DownTown's record), F5 global, F6 / F7 post and release (patch 22 at that emitter),
+the listener, is put 5 m from DownTown's record), F6 / F7 post and release (patch 22 at that emitter), F5 global,
 F8 native siren + beep, F9 tuning writes (a mod taxi idles 3 m away: the game spawns no traffic), F10 emitter +
 reverb zone, F11 rules with a synthetic ollie (gameplay actions: a push, then the right stick down / up), Digit1 duck,
 Digit2 seed, Digit3 six own-instance taxis driving a 6 m circle, Digit4 the mod's Csis class and global, Digit5 the
@@ -954,6 +955,35 @@ A local runner (not part of the PR) starts the game on DownTown with a copy of t
 minimised by default or audible (15 s steps, 3 s gaps), edits / reverts the copy's `audio.json` when asked, stops the
 game after `AUTOTEST done` and tabulates the lines; a second pass with the mod disabled asserts retail (`Map audio
 DownTown: ["retail"]`, the retail crossfade bank, no overlay, the install's 9 Csis projects, no mod log line).
+
+Easier to follow (2026-10-04, after the user's audible run: "the autotest is stuck" ... "it got stuck after teleporting
+the camera"; the mod kept running, but the parked camera showed a still picture for steps 1-3, step 2 (F5) made no sound
+and nothing on screen showed progress; and "it keot playing the beep even though it said it stopped it", then "oh its
+because the camera was still there": the map emitter kept beeping while the camera stayed near it). Changes, still dev
+mod + runner only:
+- Each step has an `audible` flag. Steps with something to hear run `autotest_step` s (15 s audible); the silent
+  read-back checks (F5 global, Digit2 seed, Digit4 Csis, the hot swap) run `autotest_quiet_step` s (3 s, at most the
+  step length) after a gap of at most 1 s.
+- The HUD counts down: `3/16 <step>  9 s left` (`finishing...` while a step waits for its last read-back), during gaps
+  `Next in 3 s: 4/16 <step>`. Each step / gap start is logged as `AUTOTEST_HUD <text>`.
+- The camera: steps 1-3 (the map emitter, F6 post, F7 release) carry a `camera` flag; F5 moved after them. While
+  parked, the camera slowly circles the emitter at 5.1 m (one lap per 40 s, still within the 18 m reach) so the picture
+  moves, and a cyan HUD line says "Camera moved to the Baby_Cry_1 emitter (on a building), circling it; the skater is out
+  of view. Back at the end of step 3." It returns 1.5 s before the end of F7 (the map emitter's beep stops: out of reach),
+  then the HUD says "Camera back at the skater". New check `camera_back`: an `emitter_stop` row of the map's Baby_Cry_1
+  emitter after the return (the listener left its reach; in the muted run the engine's `AUDIO_EMITTER stop Baby_Cry_1 #0`
+  came 4 ms after the return). The snapshot's camera position is logged too but not trusted (it may not report a
+  mod-set camera, see gotchas). The camera is also returned when a step times out, when the next step does not need it, at
+  the end, and in `on_unload` (the engine clears a mod's camera when the mod stops anyway). The camera override does
+  not freeze the game: the skater keeps its input and physics, only the view is fixed (hence the circling).
+- The step texts say which beep is which: the map's Baby_Cry_1 emitter (replaced samples, plays while the camera is
+  near it) vs the mod's centred F6 post.
+- The runner adds `hud_countdown` (>= 16 `AUTOTEST_HUD` lines with a countdown) and `camera_returned` (the log line).
+- Not checkable from Lua: whether the F7 post's voices really fell silent. `sdk.audio.info().native_voices` counts only
+  the mod's native-mixer WAVs, not AEMS voices of a post; `F7_release` still checks the handle. A per-handle voice count
+  (e.g. `sdk.audio.handle(key).voices`) would need an engine API.
+Muted run 2026-10-04 (`20261004_170003-on`, 5 s / 3 s steps): 41 ok, 1 fail; the fail is `tags_after_resubscribe`
+(the synthetic ollie of that step ended in a grind, FS 5-0: no pop row), a flaky ollie check, as in earlier runs.
 
 Found by it (2026-10-04): the event tags (`pop`, `land`) are computed only when a mod subscribes while the native audio
 already runs (`AudioApi::subscribe`; refreshed otherwise only by a `player` tuning write). A mod that subscribes in
