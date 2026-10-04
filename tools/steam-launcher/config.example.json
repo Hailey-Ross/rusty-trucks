@@ -1,0 +1,23 @@
+{
+  "remote": "origin",
+  "recomp": {
+    "exe": "C:\\path\\to\\skate3recomp\\out\\build\\clang-relwithdebinfo\\skate3.exe",
+    "working_dir": "C:\\path\\to\\the\\folder\\your\\recomp\\runs\\from",
+    "args": "--skate3_demo_path --skate3_demo_path_signed_in",
+    "sessions": ".local/recomp/sessions",
+    "trace_check": ""
+  },
+  "recomp_entries": [
+    { "id": "recomp-play",   "name": "Recomp: play (no tracing)", "hint": "The recomp with no hooks logging." },
+    { "id": "recomp-audio",  "name": "Recomp: audio trace", "trace": "audio", "capture": true,
+      "hint": "Sounds posted / played, the rolling bed, seams; records the mixed game sound." },
+    { "id": "recomp-audiox", "name": "Recomp: audio + extra detail", "trace": "audio,audiox,dsp", "capture": true, "ask_label": true,
+      "hint": "Board state, skids, bails, collision posts, voice levels. Asks for a label for the session folder." },
+    { "id": "recomp-marker", "name": "Recomp: marker / teleport trace", "trace": "audio,audiox,dsp", "capture": true, "label": "marker", "folder": "audiox",
+      "hint": "Session marker and teleport hooks with the sound recording." },
+    { "id": "recomp-npc",    "name": "Recomp: NPCs, traffic and world", "trace": "npc,world,traffic",
+      "hint": "Peds, traffic, trigger volumes." },
+    { "id": "recomp-all",    "name": "Recomp: everything", "trace": "audio,dsp,npc,world,traffic,aiskater", "capture": true,
+      "hint": "Audio, voice levels, NPCs, traffic, world, NPC skaters. Heavy." }
+  ]
+}
