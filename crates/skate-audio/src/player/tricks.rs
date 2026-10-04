@@ -1,7 +1,7 @@
 //! The Tricks component (component vtable `0x822FC7B8`, owner = the Tricks controller
 //! `0x40010050`): the trick whoosh `Class_Flips` (`Sk8_Air_Flip_Tricks.abk`) and the two clothing
 //! rustles `cloth_trick` (`Foley_Cloth.abk`). Written from our reading of the retail code (TU3,
-//! reference only); spec `.claude/notes/aems-tricks-treatment-spec.md`.
+//! reference only); spec `audio-specs/aems-tricks-treatment-spec.md`.
 //!
 //! - constructor `sub_824CBD98`: `+48..+60` = −1 (last trick id, flips id, cloth id, second id),
 //!   `+64` / `+68` / `+84` = 0.0, `+72` = 0, the held objects `+36` / `+40` / `+44` empty;

@@ -1,7 +1,7 @@
 //! Random distant one-shots — police sirens, horns, dogs, bangs, jets — from the
 //! location sets (`aud_wp_emitters`) setup exports into the audio manifest.
 //!
-//! Retail's scheduler (TU3 EmitterSystem; notes ems-emitters-re.md, docs 11), confirmed by a
+//! Retail's scheduler (TU3 EmitterSystem; audio-specs/ems-emitters-re.md, doc 11), confirmed by a
 //! recomp trace at the Aletown spawn (set `e_dwtn_spillway_brewery`, a sound every 4–8 s):
 //! - the current location selects one set; a change rebuilds its entries and draws an interval;
 //! - at most `LOADED` banks are loaded at once, each picked by weight among unloaded entries;

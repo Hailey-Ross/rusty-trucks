@@ -191,6 +191,21 @@ pub(crate) struct Native {
     pub(crate) map_epoch: u64,
     /// The world / NPC owners' instance counts the MixMap was built with.
     pub(crate) world: WorldInstances,
+    /// This frame's pass between [`mixmap_frame`] (inputs, the local player's process) and
+    /// [`mixmap_tick`] (the ticks, the update): the world / NPC hosts' process runs in between, as
+    /// retail runs every owner's process before its tick and the update after it.
+    pub(crate) pending: Option<PendingPass>,
+}
+
+/// A pass [`mixmap_frame`] began and [`mixmap_tick`] finishes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingPass {
+    /// Console evaluations (MixMap ticks) in this pass.
+    pub(crate) calls: usize,
+    s: skate_audio::player::AudioState,
+    speed_scale: Option<f32>,
+    loose: u32,
+    reverb: bool,
 }
 
 /// How many MixMap instances the world / NPC owners get: retail's free-skate layout
@@ -280,6 +295,7 @@ impl Native {
             prefetch: Default::default(),
             map_epoch: 0,
             world,
+            pending: None,
         };
         // The environment (reverb) network and the eEQChain buses (optional install data).
         let (presets, eq) = library.bus_tuning();
@@ -592,6 +608,7 @@ pub(super) fn mixmap_frame(
     let native = &mut *native;
     // For the systems after this one (the bed): no pass until the clock says so.
     native.frame_ticks = 0;
+    native.pending = None;
     if let Some(bed) = &mut native.bed {
         bed.slew_calls = Some(0);
     }
@@ -684,6 +701,20 @@ pub(super) fn mixmap_frame(
     if let (Some(player), Ok(mut runtime)) = (&mut native.player, super::timing::lock(&native.shared, &super::timing::GAME_LOCK)) {
         player.process(m, &s, &mut runtime, speed_scale, loose);
     }
+    // The world / NPC owners' process runs next (`world_sources::pre`, `npc_skaters::pre`), then
+    // [`mixmap_tick`].
+    native.pending = Some(PendingPass { calls, s, speed_scale, loose, reverb: reverb.is_some() });
+}
+
+/// The second half of [`mixmap_frame`]'s pass, after the world / NPC owners' process: the console
+/// evaluations (MixMap ticks), the local player's update and SFXObj_Reverb's update. The world /
+/// NPC owners' update follows (`world_sources::post`, `npc_skaters::post`).
+pub(super) fn mixmap_tick(native: Option<ResMut<Native>>) {
+    let _timing = super::timing::scope(&super::timing::MIXMAP_FRAME);
+    let Some(mut native) = native else { return };
+    let native = &mut *native;
+    let Some(PendingPass { calls, s, speed_scale, loose, reverb }) = native.pending else { return };
+    let Some(m) = &mut native.mixmap else { return };
     for _ in 0..calls {
         m.tick(skate_audio::mixmap::cadence::CONSOLE_DT);
     }
@@ -694,7 +725,7 @@ pub(super) fn mixmap_frame(
     // scale (manager +104 = out4) from the Reverb owner.
     if let Ok(mut runtime) = super::timing::lock(&native.shared, &super::timing::GAME_LOCK) {
         runtime.mixer.buses.flange.frame(std::array::from_fn(|i| m.level(keys::REVERB, i)));
-        if reverb.is_some() {
+        if reverb {
             runtime.mixer.buses.env.scale_frame(m.level(keys::REVERB, 4));
         }
     }
@@ -858,6 +889,7 @@ mod tests {
             prefetch: Default::default(),
             map_epoch: 0,
             world: WorldInstances::RETAIL,
+            pending: None,
         }
     }
 

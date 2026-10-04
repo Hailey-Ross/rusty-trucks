@@ -9,7 +9,7 @@
 //! runs `calls` times per step (1 = our 60 Hz host; the recomp ~5), a step has a hit with
 //! probability p (on its first call only), a hit fires twice (both axes: w7 toggles back) with
 //! probability q, and every call clears w7 first; each block sees the latest call's value.
-//! The banks dir is `aems-port/tools/bank_layout_check.py --extract`'s; the audio dir holds
+//! The banks dir is `tools/audio-file-inspect/bank_layout_check.py --extract`'s; the audio dir holds
 //! `banks/<stem>/NNNN.wav` (the install's `assets/private/audio`). Boots `c_emitter_utility` and
 //! `Common.abk`'s `Start_up_Play_ctl` (the seams' sample shuffle) first. Prints voice starts per
 //! second and by eight-sample block.

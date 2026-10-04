@@ -1,4 +1,4 @@
-//! Voice-graph modules (spec: `.claude/notes/aems-voice-graph-spec.md` §4, §6).
+//! Voice-graph modules (spec: `audio-specs/aems-voice-graph-spec.md` §4, §6).
 //!
 //! Each module processes one 256-frame block of planar f32 channels at the block's rate.
 pub mod biquad;

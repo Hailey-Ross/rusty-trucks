@@ -16,7 +16,7 @@ pedestrian banks, their vault tuning, and the streamed speech index.
   ~9 h of audio (~2.4 GB), so the default setup leaves it out.
 
 Reading of the disc's own data at setup time; nothing from the game is committed. Formats and the
-mechanism: .claude/notes/world-speech.md, world-traffic-audio.md, world-ped-audio.md.
+mechanism: docs/hails-additions/audio-specs/world-speech.md, world-traffic-audio.md, world-ped-audio.md.
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ PED_STEP_IDS = ('Hash_6B61C043E53C44CB', 'Hash_EC3399A49055DD8D', 'Hash_9D6D2863
 PED_TAIL = 'Hash_62A2E64238934734'
 PED_EQ = 'Hash_A9023782094771B5'
 
-# The speech events a free-roam ped can say (world-speech.md): reactions, chases, conversations, phone
+# The speech events a free-roam ped can say (audio-specs/world-speech.md): reactions, chases, conversations, phone
 # calls, bums, the player-action comments.
 FREE_ROAM_EVENTS = (101, 102, 104, 105, 108, 109, 110, 201, 202, 203, 204, 205, 206, 207, 314, 315, 316, 320,
                     330, 331, 335, 336, 338, 339, 400, 497, 501, 603, 604, 605, 606, 607, 609, 611, 805, 806, 807,
@@ -118,11 +118,107 @@ def world_tuning(collections: list[dict], record_names: list[str] | None = None)
         peds['eq_chain'] = _word(eq['data'], 'i32')
     out['ped_footsteps'] = peds
     out['speech_tuning'] = speech_tuning(collections)
+    out['ped_models'] = ped_models(collections)
+    out['traffic_models'] = traffic_models(collections, names)
+    return out
+
+
+# The per-model audio fields of living-world peds (`aud_characteristics`, read by the ped audio state's
+# activation, recomp sub_824F91B0; audio-specs/world-audio-hookin-spec.md §7.3 G2). Keyed by the model's
+# speech voice id (the record's `Character` field = the clip names' voice).
+PED_CLASS = 'aud_characteristics'
+PED_MODEL_FIELDS = {
+    'Hash_EF9605D206F68DBD': ('voice', 'i32'),        # Character (S+84)
+    'Hash_6BD295C16B243F93': ('variant', 'i32'),      # SPCH1Type_CharID: the voice variant bit (S+88)
+    'Hash_492964E71634DA6D': ('kind', 'i32'),         # the speaker type bit (S+96; 64 = security)
+    'Hash_68BB61E508841729': ('gender', 'i32'),       # S+124: 1 female, 2 male
+    'Hash_871BDC669F2B1844': ('shoe_class', 'i32'),   # S+132
+    'Hash_A27215A909135B62': ('far', 'f32'),          # S+156: the far line threshold (m)
+    'Hash_2087A3290483BB4F': ('pitch', 'f32'),        # a per-voice float (0.8-1.15; S+152, use open)
+}
+
+
+def _resolver(by_class: dict, cls: str):
+    records = by_class.get(cls, {})
+
+    def resolve(key: str, field: str):
+        seen = 0
+        while key in records and seen < 32:
+            if field in records[key]['fields']:
+                return records[key]['fields'][field]
+            key, seen = records[key].get('parent', ''), seen + 1
+        return None
+    return records, resolve
+
+
+def ped_models(collections: list[dict]) -> dict:
+    """{voice id: {variant, kind, gender, shoe_class, far, pitch, record}} for every aud_characteristics
+    record that names its own voice (abstract parents keep the default `Character` 104 and are left out)."""
+    from .audio_formats import name_id
+    by_class: dict[str, dict] = {}
+    for c in collections:
+        by_class.setdefault(c['class'], {})[c['key']] = c
+    records, resolve = _resolver(by_class, f'Hash_{name_id(PED_CLASS):016X}')
+    out: dict = {}
+    for key in records:
+        model = {}
+        for field, (name, kind) in PED_MODEL_FIELDS.items():
+            f = resolve(key, field)
+            if f is not None:
+                model[name] = _word(f['data'], kind)
+        voice = model.pop('voice', None)
+        if voice is None or voice in (0, 104) or str(voice) in out:
+            continue
+        model['record'] = key
+        out[str(voice)] = model
+    return out
+
+
+# Traffic model -> engine record (static attribute chain, spec §7.3 G1): livingworld_entities field
+# 92A043B4A11F1A2A -> livingworld_vehicle_characteristics record -> field BA2DDD830C731EE4 -> aud_traffic_engine.
+VEHICLE_SPEC_FIELD = 'Hash_92A043B4A11F1A2A'
+ENGINE_REF_FIELD = 'Hash_BA2DDD830C731EE4'
+
+
+def traffic_models(collections: list[dict], engine_names: dict) -> dict:
+    """{entity name: engine record name} for every living-world entity with a vehicle spec (after
+    inheritance). `engine_names` maps the engine record keys to names (as `world_tuning`)."""
+    from .audio_formats import name_id
+    by_class: dict[str, dict] = {}
+    for c in collections:
+        by_class.setdefault(c['class'], {})[c['key']] = c
+    entities, resolve_entity = _resolver(by_class, f'Hash_{name_id("livingworld_entities"):016X}')
+    _, resolve_spec = _resolver(by_class, f'Hash_{name_id("livingworld_vehicle_characteristics"):016X}')
+    engine_class = f'Hash_{name_id("aud_traffic_engine"):016X}'
+    engines = by_class.get(engine_class, {})
+
+    def key_of(ref: dict, records: dict):
+        raw = ''.join(ref['data'].split())
+        if len(raw) < 32:
+            return None
+        h = f'Hash_{raw[16:32].upper()}'
+        if h in records:
+            return h
+        # The converter names records whose names it knows ('default', ...): match by hash.
+        return next((k for k in records if not k.startswith('Hash_') and f'Hash_{name_id(k):016X}' == h), None)
+
+    specs = by_class.get(f'Hash_{name_id("livingworld_vehicle_characteristics"):016X}', {})
+    out: dict = {}
+    for key in entities:
+        ref = resolve_entity(key, VEHICLE_SPEC_FIELD)
+        if ref is None:
+            continue
+        spec = key_of(ref, specs)
+        engine_ref = resolve_spec(spec, ENGINE_REF_FIELD) if spec else None
+        engine = key_of(engine_ref, engines) if engine_ref else None
+        if engine is None:
+            continue
+        out[key] = engine_names.get(engine, engine)
     return out
 
 
 # The speech manager's event tuning (vault class read by recomp sub_824ABA18 / sub_824A75F0 /
-# sub_824A8C78; .claude/notes/world-speech.md "Speech manager gate").
+# sub_824A8C78; audio-specs/world-speech.md, "Mechanism", "The request").
 SPEECH_CLASS = 'Hash_9C1F48F5D637E275'
 SPEECH_TUNING = 'Hash_D675AF88AC03844D'      # Sk8::Audio::tSpeechTuning (64 bytes)
 SPEECH_CHALLENGES = 'Hash_D4332E21D03D7541'  # Sk8::Challenge::eChallengeTypes[]: no speech during these

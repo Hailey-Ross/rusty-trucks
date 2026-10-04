@@ -1,14 +1,18 @@
 //! World audio commands (API 2, world audio extension 1): mods publish traffic vehicles,
 //! pedestrians and skaters to the game's retail world audio (the same components an engine
 //! system adds, `skate-game` `world_audio.rs`), fire their one-shots (horn, alarm, speech) and read
-//! back whether an object is audible. Keys belong to the calling mod; the host enforces 16
-//! objects per mod and 64 in all, parks an object that has not been updated for 0.5 s, and removes
+//! back whether an object is audible. Keys belong to the calling mod; the host enforces 48
+//! objects per mod and 128 in all, parks an object that has not been updated for 0.5 s, and removes
 //! everything a mod published when it is disabled or reloaded.
 use serde::Deserialize;
 
 /// Objects per mod / in all.
-pub const MAX_OBJECTS_PER_MOD: usize = 16;
-pub const MAX_OBJECTS_TOTAL: usize = 64;
+/// Objects a mod may publish (and in all). Retail's instance pools pick the audible few (4 cars,
+/// 15 peds, 1 NPC skater) from everything published, so the limits only bound the bridge's and
+/// the hosts' per-frame work (a distance per object, one sort) and the update commands a mod
+/// sends; 48 lets one mod publish a street's worth (the test mod: 16 cars, 20 peds, a ghost).
+pub const MAX_OBJECTS_PER_MOD: usize = 48;
+pub const MAX_OBJECTS_TOTAL: usize = 128;
 /// An object not updated for this long is parked (speed 0, feet up, horn off).
 pub const PARK_SECONDS: f64 = 0.5;
 
@@ -41,7 +45,8 @@ pub struct WorldAudioOptions {
     pub body: Option<String>,
     // ---- traffic
     /// The `aud_traffic_engine` record (`c01_family01`, `c03_sports01`, `c04_taxi01`,
-    /// `c05_truck01`, …): a mod car opts in to the retail traffic engine sound (not retail).
+    /// `c05_truck01`, …) or a living-world model mapped to one (`taxi01`, `sedan02`, `suv`, …): a
+    /// mod car opts in to the retail traffic engine sound (not retail).
     #[serde(default)]
     pub engine: Option<String>,
     #[serde(default)]
@@ -55,7 +60,8 @@ pub struct WorldAudioOptions {
     #[serde(default)]
     pub skidding: Option<bool>,
     // ---- peds
-    /// Speech voice id 41..=96 (0 = none).
+    /// Speech voice id 41..=96 (0 = none): a ped's model (its shoe class, kind and speech words
+    /// follow from it unless given) or a skater's voice (the bail grunt).
     #[serde(default)]
     pub voice: Option<u32>,
     #[serde(default)]
@@ -154,7 +160,8 @@ impl WorldAudioOptions {
     /// The fields of other kinds are rejected (so a typo'd kind is an error, not silence).
     pub fn validate_for(&self, kind: ObjectKind) -> bool {
         let traffic = self.engine.is_some() || self.speed.is_some() || self.load.is_some() || self.horn.is_some() || self.skidding.is_some();
-        let ped = self.voice.is_some() || self.shoe_class.is_some() || self.weight.is_some() || self.close_range.is_some() || self.feet.is_some() || self.materials.is_some() || self.footsteps.is_some();
+        // `voice` is a ped's or a skater's (the AI skaters' 89–96: their bail grunt).
+        let ped = self.shoe_class.is_some() || self.weight.is_some() || self.close_range.is_some() || self.feet.is_some() || self.materials.is_some() || self.footsteps.is_some();
         let skater = self.source.is_some() || self.from.is_some() || self.seconds.is_some() || self.wheels.is_some() || self.material.is_some() || self.grinding.is_some() || self.grind_material.is_some() || self.air.is_some();
         self.validate()
             && match kind {

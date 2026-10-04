@@ -29,7 +29,7 @@
 //! The block of every sound: [level/32767, pitch(1)/4096, raw(0) × 360/65535, dt, 1 for the local
 //! player's 3-D voices else 0, 1].
 //!
-//! Buses (`.claude/notes/aems-eqchain-buses-spec.md` §3, §5): the pop plays through an owner
+//! Buses (`audio-specs/aems-eqchain-buses-spec.md` §3, §5): the pop plays through an owner
 //! one-shot bus (`sub_82488DD0`: env send at Contacts level(14) as of the post, then eEQChain bus 0),
 //! the touchdowns and the manual landing through one at level(15) (bus 0); the landing impact goes
 //! to bus 1, the foot taps and scuffs to bus 1; each resolve may re-roll the bus's EQ (create =
@@ -356,6 +356,13 @@ pub struct Contacts {
     /// Diagnostics (the e2e harness): when `Some`, every body-poster message with its region and
     /// the impact the poster read.
     pub body_log: Option<Vec<(usize, f32, Message)>>,
+    /// `+422`: armed while the skater is not bailing; the body poster's first message of a bail
+    /// calls the bail grunt helper `sub_824BF5F8` and disarms it. The helper speaks only for a
+    /// non-local skater (its SkaterSpeech record gets message 8206 / 115: the NPC's bail grunt),
+    /// so [`Self::bail_grunt`] is read only by the NPC host.
+    grunt_armed: bool,
+    /// The bail grunt is due (set by the body poster; the NPC host takes it).
+    pub bail_grunt: bool,
 }
 
 /// The route of a poster's sounds: eEQChain bus `bus` (re-rolled on first use by the local
@@ -519,6 +526,9 @@ impl Contacts {
     /// global at `*(0x82083C38) + 0x2FCB4`), the Hall of Meat layer and the bail flags `+406..+416`
     /// (they feed game events, not sounds).
     fn body(&mut self, s: &AudioState, t: &PlayerTuning, c: &ContactsTuning) {
+        if !s.bail {
+            self.grunt_armed = true;
+        }
         if s.bail && s.bail_end {
             return;
         }
@@ -541,6 +551,10 @@ impl Contacts {
                     let lb = if b < none { ct.contact_level(b, a, tb, lb_lo, lb_hi, impact) } else { 0 };
                     let msg = Message { material: [a, b], tier: [ta, tb], position: s.board_position, level: [la, lb], local: s.local };
                     self.outbox.push(msg);
+                    if s.bail && self.grunt_armed {
+                        self.grunt_armed = false;
+                        self.bail_grunt = true;
+                    }
                     let second = |tier: i32| if tier == 2 { 1 } else { 3 };
                     let (sa, sb) = (second(ta), second(tb));
                     if !(sa == 3 && sb == 3) {

@@ -1,4 +1,4 @@
-//! `.grain` members of `grains.big` (spec `.claude/notes/grain-player-spec.md` §1.2–1.3):
+//! `.grain` members of `grains.big` (spec `audio-specs/grain-player-spec.md` §1.2–1.3):
 //! `+0` u32 header length H (= offset of the EA Audio Core stream), `+4` f32 stored duration
 //! (seconds; the player uses this float), `+8..H` a seek table, then one EAAC stream.
 //!

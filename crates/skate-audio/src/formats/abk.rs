@@ -1,6 +1,6 @@
 //! AEMS ModuleBank (`.abk`, magic `ABKC`): modules (patch programs + instance templates), the
 //! interface (export) list that binds them to Csis symbols, and the `S10A` sample bank.
-//! Layout: `.claude/notes/aems-evaluator-spec.md` §1.1–1.5.
+//! Layout: `audio-specs/aems-evaluator-spec.md` §1.1–1.5.
 //!
 //! Pointers inside the bank (TABLE, sample group, …) are kept as bank-relative offsets, which is
 //! what they hold on disc before the loader's rebase; ops resolve them through the bank bytes.

@@ -330,6 +330,19 @@ struct Manifest {
     /// The world sources' vault tuning (traffic engine records, ped footsteps; optional).
     #[serde(default)]
     world_tuning: super::world_sources::WorldTuningJson,
+    /// The streamed speech exports (`speech.livingworld`: the index and, after the opt-in decode
+    /// `SKATE_SETUP_SPEECH=1`, the decoded takes; optional).
+    #[serde(default)]
+    speech: BTreeMap<String, SpeechEntry>,
+}
+
+/// One speech archive's export: the index JSON and the folder of decoded takes (None: not decoded).
+#[derive(Debug, Default, Deserialize)]
+struct SpeechEntry {
+    #[serde(default)]
+    index: String,
+    #[serde(default)]
+    audio: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -775,6 +788,17 @@ fn safe_relative(file: &str) -> bool {
 }
 
 impl Library {
+    /// A speech archive's export (`livingworld`): the index file and the decoded takes' folder
+    /// (None when the takes were not decoded). None without an index.
+    pub(crate) fn speech(&self, archive: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+        let e = self.manifest.speech.get(archive)?;
+        if !safe_relative(&e.index) {
+            return None;
+        }
+        let audio = e.audio.as_deref().filter(|a| safe_relative(a)).map(|a| self.root.join(a));
+        Some((self.root.join(&e.index), audio))
+    }
+
     /// The world sources' tuning (`world_sources`; defaults on installs without it).
     pub(crate) fn world_tuning(&self) -> &super::world_sources::WorldTuningJson {
         &self.manifest.world_tuning

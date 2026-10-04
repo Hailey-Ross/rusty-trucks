@@ -3,7 +3,7 @@
 //! `tools/audio-e2e/scenarios.py`, headless. The same scripts can drive another renderer (e.g. the
 //! PoC's oracle probe); `tools/audio-e2e/compare.py` compares two renders.
 //!
-//!   set E2E_DIR=...\.local\audio-re\e2e   (optional E2E_ONLY=roll20,grind_metal)
+//!   set E2E_DIR=<scenario dir>   (optional E2E_ONLY=roll20,grind_metal)
 //!   cargo test -p skate-game --release --bin skate3rust -- --ignored e2e_render --nocapture
 //!
 //! Writes `<name>.ours.f32` (raw f32, 6 channels in the PoC's order L, R, C, LFE, Ls, Rs) and

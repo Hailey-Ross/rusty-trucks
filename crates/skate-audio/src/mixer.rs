@@ -1,4 +1,4 @@
-//! The voice graph and the default bus (spec: `.claude/notes/aems-voice-graph-spec.md` §3–§6).
+//! The voice graph and the default bus (spec: `audio-specs/aems-voice-graph-spec.md` §3–§6).
 //!
 //! Per voice: SndPlayer1 (PCM source with loop, end, first-block format change, 16-frame stop
 //! fade) → Rechannel (no-op: our PCM always has the header's channel count) → Resample → HighPassIir2
@@ -119,6 +119,9 @@ struct Voice {
     mono_out: bool,
     /// The bank's volume group ([`Mixer::group_gain`]).
     group: u8,
+    /// A direct voice's own Send A level (speech streams, [`Mixer::set_direct_dsp`]): replaces
+    /// master × FXWET0 when set.
+    env_direct: Option<f32>,
     /// Stop fade: (source index where it starts, per-channel last sample).
     fade: Option<(u64, [f32; 8])>,
     done: bool,
@@ -186,7 +189,10 @@ impl Voice {
         }
         // Send A: the channels summed to mono (routes N → 1 at unity, LFE dropped), our user volume
         // applied like on the dry path.
-        self.env.target = self.master * self.fx * user;
+        self.env.target = match self.env_direct {
+            Some(level) => level * user,
+            None => self.master * self.fx * user,
+        };
         if !self.env.silent() {
             let mut mono = [0.0f32; BLOCK];
             for c in src.iter().take(channels.min(5)) {
@@ -344,7 +350,7 @@ impl Mixer {
                 gain: v.master * v.dry,
                 pitch: v.pitch,
                 paused: v.state == State::Paused,
-                send: v.master * v.fx + v.owner_env.target,
+                send: v.env_direct.unwrap_or(v.master * v.fx) + v.owner_env.target,
                 output: v.output,
             })
             .collect()
@@ -418,6 +424,7 @@ impl Mixer {
             mono_out: route.mono,
             group,
             fade: None,
+            env_direct: None,
             done: false,
         });
         Some(self.next)
@@ -430,6 +437,41 @@ impl Mixer {
             v.master = gain;
             if let (1, Some(a)) = (v.pan.sources(), azimuth) {
                 v.pan.params[pan::ANGLE] = a;
+            }
+        }
+    }
+
+    /// A direct voice's filters and its own Send A (environment) level: the speech streams'
+    /// high / low pass cutoffs (Hz) and reverb send, which their owner's MixMap outputs set every
+    /// frame (`world::speech_player`).
+    pub fn set_direct_dsp(&mut self, voice: u32, hpf: f32, lpf: f32, env: f32) {
+        if let Some(v) = self.voice(voice) {
+            v.hpf.cutoff = hpf;
+            v.lpf.cutoff = lpf;
+            v.env_direct = Some(env);
+        }
+    }
+
+    /// Register (or replace) one sample of a bank: streamed sounds (speech takes) are decoded on
+    /// demand instead of with the whole bank.
+    pub fn set_bank_sample(&mut self, bank: usize, slot: u16, header: SampleHeader, pcm: Arc<Pcm>) {
+        let b = self.banks.entry(bank).or_insert_with(|| BankSamples { headers: Vec::new(), pcm: Vec::new(), group: GROUP_WORLD });
+        let i = usize::from(slot);
+        if b.headers.len() <= i {
+            b.headers.resize(i + 1, None);
+            b.pcm.resize(i + 1, None);
+        }
+        b.headers[i] = Some(header);
+        b.pcm[i] = Some(pcm);
+    }
+
+    /// Forget one sample of a bank (its PCM is freed once no voice plays it).
+    pub fn clear_bank_sample(&mut self, bank: usize, slot: u16) {
+        if let Some(b) = self.banks.get_mut(&bank) {
+            let i = usize::from(slot);
+            if i < b.headers.len() {
+                b.headers[i] = None;
+                b.pcm[i] = None;
             }
         }
     }
@@ -550,6 +592,7 @@ impl VoiceHost for Mixer {
             mono_out: false,
             group,
             fade: None,
+            env_direct: None,
             done: false,
         });
         Some(self.next)

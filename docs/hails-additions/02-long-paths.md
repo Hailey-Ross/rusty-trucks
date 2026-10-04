@@ -13,7 +13,7 @@ Szafranski, Deerman of Dark Woods) with errors like:
 
 Windows' 260-character `MAX_PATH` limit. The roster work paths above are 260
 and 261 characters long when the repository sits in a moderately deep folder
-(`F:\VS-Code\Github Repos\skate-3-rust-engine`). Long paths were disabled on the
+(the test checkout's root path was 44 characters). Long paths were disabled on the
 machine (`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled = 0`).
 `python.exe` and PyInstaller-built executables are long-path aware, so enabling
 the OS setting is sufficient; no code paths need changing.

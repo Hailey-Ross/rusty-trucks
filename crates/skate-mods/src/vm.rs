@@ -1753,9 +1753,12 @@ mod world_audio_tests {
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods/world-audio-test"));
         let manifest: Manifest = serde_json::from_slice(&std::fs::read(root.join("mod.json")).unwrap()).unwrap();
         manifest.validate().unwrap();
+        assert!(!manifest.enabled_by_default, "the dev test mod is opt-in");
         let settings: BTreeMap<String, Value> = manifest.settings.iter().map(|(k, s)| (k.clone(), s.default.clone())).collect();
         let mut vm = Vm::new(root, &manifest, &settings, &Value::Null).unwrap();
         let mut spawned = 0;
+        let mut live = std::collections::BTreeSet::new();
+        let mut most = 0;
         for frame in 0..400u32 {
             let t = frame as f32 / 60.0;
             let snapshot = json!({"tick": frame, "player": {"position": [t * 4.0, 0.0, 0.0], "speed": 4.0,
@@ -1767,12 +1770,23 @@ mod world_audio_tests {
             assert!(out.len() <= 128);
             for c in &out {
                 assert!(c.validate(), "frame {frame}: invalid {c:?}");
-                if matches!(c, Command::WorldAudioSpawn { .. }) {
-                    spawned += 1;
+                match c {
+                    Command::WorldAudioSpawn { key, .. } => {
+                        spawned += 1;
+                        live.insert(key.clone());
+                    }
+                    Command::WorldAudioRemove { key } => {
+                        live.remove(key);
+                    }
+                    _ => {}
                 }
             }
+            most = most.max(live.len());
         }
         assert_eq!(spawned, 2 * 36, "16 cars and 20 peds, twice (F9 re-centres); the ghost goes through a request");
+        // Everything it publishes at once (+ the ghost) fits the host's per-mod limit: no
+        // "World audio object limit reached" (the 16 / 64 limits refused 21 of 37).
+        assert!(most + 1 <= crate::world_audio::MAX_OBJECTS_PER_MOD, "{most} + ghost objects");
     }
 
     #[test]

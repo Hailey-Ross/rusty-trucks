@@ -403,7 +403,7 @@ def mixmap_file(audio_root: Path, output: Path) -> str | None:
     return f'aems/{MIXMAP_FILE}'
 
 
-# The granular rolling bed's tuning (.claude/notes/grain-player-spec.md §1.4–1.5): the grain class
+# The granular rolling bed's tuning (audio-specs/grain-player-spec.md §1.4–1.5): the grain class
 # (one collection per `.grain` member, inheriting from `default`), the board owner class (rocket
 # layer, chain ramps) and the material → rolling surface table. Field roles from upstream PR #4's
 # notes; values are read exactly (f32) because the port compares bit patterns.
@@ -842,7 +842,7 @@ def _word(field) -> int:
     return struct.unpack('>i', bytes.fromhex(data[:8].ljust(8, '0')))[0] if data else 0
 
 
-# The environment (reverb) network's presets (.claude/notes/aems-env-bus-spec.md §3, §6): vault class
+# The environment (reverb) network's presets (audio-specs/aems-env-bus-spec.md §3, §6): vault class
 # `204CAC1FD77088B8` (`aud_reverb/reverbNN`), fields in record-offset order 0..172 (the layout the disc's
 # schema gives; +48 is the preset number). `sub_8248DD18` reads them by offset.
 REVERB_CLASS = 'Hash_204CAC1FD77088B8'
@@ -855,7 +855,7 @@ REVERB_FIELDS = ('48376C6D695CDDBB', '4E7CDD2F6C41296F', '22FB428A30D3602C', '66
                  'E9E26ECCA2D28D11', '81504B05719020A0', '433B43350289C6CE', 'FC50736430148B30', '35B87D3598BAD8E5',
                  '58C65800CA17ACD9', '9BAA927DA7AA8970', '7492F9438252B839', '843273C75A0984F5', '7B2416B80E3BA149',
                  'D6812FA712AACD13', '796D8327E0995ECC', 'B388DAFB738410FC', 'EECADFA12642D9F3')
-# The eight eEQChain ("material") buses (.claude/notes/aems-eqchain-buses-spec.md §1.3): vault class
+# The eight eEQChain ("material") buses (audio-specs/aems-eqchain-buses-spec.md §1.3): vault class
 # `AA801D9FC0ADBBBF`, collection per bus from the TU3 image table 0x8224DC78 (facts), the enable flag,
 # the clip level and the six (a, b) range pairs PI20#1 freq / gain / Q, PI20#2 freq / gain / Q.
 EQ_BUS_CLASS = 'Hash_AA801D9FC0ADBBBF'

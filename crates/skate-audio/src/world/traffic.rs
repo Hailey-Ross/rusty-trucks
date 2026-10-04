@@ -1,4 +1,4 @@
-//! Traffic vehicles' sound objects (MixMap slot 4, `world-traffic-audio.md`):
+//! Traffic vehicles' sound objects (MixMap slot 4, `audio-specs/world-traffic-audio.md`):
 //! - [`Engine`] = `SFXObj_TrafficEngine` (vtable `0x822FCBA8`): process `sub_824D6110` (vfunc 9),
 //!   update `sub_824D6478` (vfunc 10), release `sub_824D6020`; packet `TRAFFIC_CAR` (18 words,
 //!   constructor `sub_824D5B20`), banks `C00_heavy01` … `C08_family03`;
@@ -9,9 +9,10 @@
 //!   `sub_824D76B8`; packet `TRAFFIC_SKID` (11 words, `sub_824D5D20`, `Traffic_Skid`).
 //!
 //! The vehicle side ([`VehicleState`]) is the record the objects read through their owner
-//! (`[object+28]`): position `+48`, a direction `+112`, `+144`, speed `+148`, horn state `+156`,
-//! skid flag `+160`, the `aud_traffic_engine` record key `+168`. Which LW vehicle fields feed that
-//! record is not traced; a vehicle system fills [`VehicleState`] from its own simulation.
+//! (`[object+28]`): position `+48`, the heading `+112`, the driver's acceleration `+144`, speed
+//! `+148`, horn state `+156`, skid flag `+160`, the `aud_traffic_engine` record key `+168`. Its
+//! writer `sub_824B2A28` fills it each frame from the traffic AI's vehicle-audio entry (recomp gap
+//! run G1, spec `audio-specs/world-audio-hookin-spec.md` §7.3); a vehicle system fills [`VehicleState`].
 //!
 //! Every value below is read from the code (constants from the TU3 image); the record fields come
 //! from `aud_traffic_engine` (setup export, [`EngineRecord`]). The RPM model in words: within each
@@ -114,13 +115,13 @@ pub struct VehicleState {
     pub position: [f32; 3],
     /// For the 3DObjPos rates (m/s, world).
     pub velocity: [f32; 3],
-    /// `+112`: the direction the front / rear split measures against (taken as the heading;
-    /// unverified which vector the record holds).
+    /// `+112`: the heading (the world matrix's forward row, normalised; G1: dot with the recomp's
+    /// forward p50 1.0000), which the front / rear split measures against.
     pub direction: [f32; 3],
     /// `+148`: speed (m/s).
     pub speed: f32,
-    /// `+144`: a signed value scaled by 3000 into engine w15 / skid w6 (meaning not traced:
-    /// throttle or acceleration).
+    /// `+144`: the driver's signed acceleration (m/s², G1: −15.64 through a hard stop … +3.02
+    /// pulling away, 0 cruising), × 3000 into engine w15 / skid w6.
     pub load: f32,
     /// `+156`: 0 = no horn, 1–5 = the horn kind, 6 = the car alarm.
     pub horn: i32,
@@ -175,6 +176,8 @@ pub struct Engine {
     /// `+116` / `+120`: updates left with w17 = −1 (rise) / +1 (fall).
     pub rising: i32,
     pub falling: i32,
+    /// The vehicle record's `+176`: the relative speed TrafficCarPhysics.in0 carries, slewed.
+    pub relative: f32,
 }
 
 impl Engine {
@@ -312,6 +315,45 @@ impl Engine {
             None => Vec::new(),
         }
     }
+}
+
+/// `sub_824B2A28`'s tail (the vehicle audio record writer, every frame before the tick): the
+/// record's `+128` (heading × speed) against the listener's velocity (`[listener+48]`), the
+/// difference's length capped at 35 (`relative_velocity` record of class `0xC1831BDB6CB1B1EA`,
+/// field `11FAA9AADDC78EC0`), slewed toward by 100 × dt (`AB85397C101B0752`) into `+176`, then
+/// `+176 / 35 × 32767` → SFXCTL_TrafficCarPhysics input 0 (it opens A11, the +650 mB near boost of
+/// B13). The same formula as the NPC skater's PlayerPhysics in13 (recomp gap run G1: `+176`
+/// tracked the speed with the listener standing, max 24.6).
+pub fn relative_speed_word(relative: &mut f32, v: &VehicleState, listener_velocity: [f32; 3], dt: f32) -> i32 {
+    use crate::player::inputs::{RELATIVE_CAP, RELATIVE_SLEW};
+    let n = (v.direction[0].powi(2) + v.direction[1].powi(2) + v.direction[2].powi(2)).sqrt();
+    let h = if n > 0.0 && n.is_finite() { [v.direction[0] / n, v.direction[1] / n, v.direction[2] / n] } else { [0.0; 3] };
+    let d = ((h[0] * v.speed - listener_velocity[0]).powi(2) + (h[1] * v.speed - listener_velocity[1]).powi(2) + (h[2] * v.speed - listener_velocity[2]).powi(2)).sqrt();
+    let mut d = if d > RELATIVE_CAP { RELATIVE_CAP } else if d.is_finite() { d } else { 0.0 };
+    let step = RELATIVE_SLEW * dt;
+    let last = *relative;
+    if d > last {
+        if d - last > step {
+            d = step + last;
+        }
+    } else if d < last && last - d > step {
+        d = last - step;
+    }
+    *relative = d;
+    trunc_clamp((d / RELATIVE_CAP) * Q15, 0, 32767)
+}
+
+/// The vehicle record's three points (`sub_824B2A28`): the body `+48`, `+80` = body + heading ×
+/// 1 m and `+96` = body − heading × 1 m (constants `0x8231A844` = 1.0 / `0x8216DEE0` = −1.0). The
+/// TrafficEngine's 3DObjPos blocks 1 / 2 / 3 take them in that order: block 2 feeds B1 (the
+/// engine layer's Doppler, c 1557) → the front, block 3 feeds B2 (the exhaust layer, c 554) → the
+/// rear. The record order and the layer roles give the binding; its writer is not read
+/// (provisional).
+pub fn record_points(v: &VehicleState) -> [[f32; 3]; 3] {
+    let n = (v.direction[0].powi(2) + v.direction[1].powi(2) + v.direction[2].powi(2)).sqrt();
+    let h = if n > 0.0 && n.is_finite() { [v.direction[0] / n, v.direction[1] / n, v.direction[2] / n] } else { [0.0; 3] };
+    let p = v.position;
+    [p, std::array::from_fn(|i| p[i] + h[i]), std::array::from_fn(|i| p[i] - h[i])]
 }
 
 /// cos of the angle between `direction` and `position − camera` (3-D, as retail's `vmsum3fp`);
@@ -492,6 +534,12 @@ impl Vehicle {
         out
     }
 
+    /// The record's inputs before the tick (`sub_824B2A28`'s tail): TrafficCarPhysics.in0.
+    pub fn write_inputs(&mut self, g: u32, v: &VehicleState, m: &mut MixMap, listener_velocity: [f32; 3], dt: f32) {
+        let word = relative_speed_word(&mut self.engine.relative, v, listener_velocity, dt);
+        m.set_input(super::keys::traffic_car_physics(g), 0, word);
+    }
+
     /// Every object's update after the tick, on instance `g`'s outputs.
     pub fn update(&mut self, owner: u64, g: u32, v: &VehicleState, m: &mut MixMap, camera: [f32; 3], dt: f32) -> Vec<WorldCommand> {
         use super::keys;
@@ -660,6 +708,24 @@ mod tests {
         assert_eq!(c, vec![WorldCommand::Post { owner: 3, slot: WorldSlot::Alarm, class: "c_car_alarm", words: vec![0, 32767, 32767, 0, 4096, 25000, 0, 0, 3] }]);
         v.horn = 0;
         assert_eq!(h.process(3, &v, &mut || 7u32), vec![WorldCommand::Release { owner: 3, slot: WorldSlot::Alarm }]);
+    }
+
+    #[test]
+    fn relative_speed_slews_toward_the_capped_difference() {
+        let v = VehicleState { direction: [0.0, 0.0, 2.0], speed: 20.0, ..Default::default() };
+        let mut r = 0.0;
+        // 20 m/s against a still listener, 100/s × 0.1 s = 10 per call.
+        assert_eq!(relative_speed_word(&mut r, &v, [0.0; 3], 0.1), ((10.0f32 / 35.0) * 32767.0) as i32);
+        assert_eq!(relative_speed_word(&mut r, &v, [0.0; 3], 0.1), ((20.0f32 / 35.0) * 32767.0) as i32);
+        // A listener moving with the car: the difference falls back.
+        assert_eq!(relative_speed_word(&mut r, &v, [0.0, 0.0, 20.0], 0.1), ((10.0f32 / 35.0) * 32767.0) as i32);
+        let fast = VehicleState { speed: 80.0, ..v };
+        for _ in 0..5 {
+            relative_speed_word(&mut r, &fast, [0.0; 3], 0.1);
+        }
+        assert_eq!(r, 35.0, "capped");
+        let pts = record_points(&VehicleState { position: [1.0, 0.0, 1.0], direction: [0.0, 0.0, 3.0], ..Default::default() });
+        assert_eq!(pts, [[1.0, 0.0, 1.0], [1.0, 0.0, 2.0], [1.0, 0.0, 0.0]]);
     }
 
     #[test]

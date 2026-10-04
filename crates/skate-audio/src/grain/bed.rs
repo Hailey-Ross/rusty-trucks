@@ -3,7 +3,7 @@
 //! bus; plus the rocket layer straight into the default bus. One title-wide generator feeds every
 //! pick (retail's `0x82FD7D74` generator, distinct from the AEMS one).
 //!
-//! Chain per player (`sub_824C8878`; `.claude/notes/aems-grain-chain-spec.md`), all three graphs
+//! Chain per player (`sub_824C8878`; `audio-specs/aems-grain-chain-spec.md`), all three graphs
 //! inside one block (pass order 2 < 3 < 5):
 //! - graph 1: SubMix (the player's mono bus) → HighPass → LowPass → FrequencyShiftSsb → Send (→
 //!   graph 3) → Gain (level ramp × wobble) → Send (→ graph 2, level 1);

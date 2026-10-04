@@ -2,7 +2,7 @@
 //! MixMap Player slot, fed by the state an AI-skater system publishes ([`NpcSkaterAudioState`]).
 //!
 //! **What retail does** (TU3 recompilation, reference only; spec note
-//! `.claude/notes/world-npc-skater-audio.md`):
+//! `audio-specs/world-npc-skater-audio.md`):
 //! - The Player slot has 2 MixMap instances in free skate (`mixmap::RETAIL_INSTANCES[1]`), one per
 //!   `CSTATE_Player` record; `CSTATEMGR_Player` (init `sub_824F1F40`) creates exactly two records.
 //! - Its update `sub_824F1FB0` walks the skater list (`*(G+0x2F070)`, 544-byte entries, index 0 the
@@ -36,11 +36,24 @@
 //! inputs and returning [`Command`]s and Splice starts for the host to apply. The collision messages
 //! go to the host's (shared) collision manager, like the local player's.
 //!
-//! Not run here (yet): the granular rolling bed (the routing's [`GrainEvent`]s are collected in
-//! [`NpcSkater::routed`] for a per-owner bed; the runtime has one bed), SFXObj_Wheels' spin-down
-//! streams, Tricks / Treatment / OffBoard footsteps / Clothing (body foley, not the board), and the
-//! board slide. The NPC's bail grunts go through its PlayerSpeech owner (`sub_824BF5F8` → message
-//! 8206 / 115), not this module.
+//! What runs for the NPC instance besides the board (recomp gap run G3, hook `PLAYERPOST`,
+//! `gapg3_20261003_154858`: 851 lines, local72 = 0 on every instance-1 line):
+//! - **SFXObj_Wheels** (key `…820`): the spin-down streams on layers 0 (air) / 1 (balance); 18
+//!   starts in ~74 s held. Layer 2 (on foot) and the owner-bus send written after a start are
+//!   local only (`[[obj+16]+72]`), which [`crate::player::wheels`] already follows (`s.local`;
+//!   the send is not modelled for anyone). [`NpcSkater::update_wheels`].
+//! - **Clothing** (key `…860`): the push / plant foley and the body slide / cloth falls posts;
+//!   its non-local start block (float `+112` = 0, the eq-chain create flag = local72) is
+//!   [`crate::player::clothing`]'s own `s.local` branch.
+//! - **Not** Tricks or Treatment (their process functions return at once when local72 = 0: 0 NPC
+//!   posts) and **no** footsteps (OffBoard's packets exist per claim, its step sounds need
+//!   local72: 0 NPC Splice starts).
+//! - **The bail grunt**: the body poster's first message of a bail calls `sub_824BF5F8`, which
+//!   for a non-local skater sends its SkaterSpeech record message 8206 (event `201_grunt`) / 115
+//!   ([`NpcSkater::take_bail_grunt`]; the speech host plays it).
+//! - Board slide (slot 15): reached by neither instance in the runs; not run.
+//!
+//! The granular rolling bed's binds are collected in [`NpcSkater::routed`] for the host's NPC bed.
 use crate::mixmap::{MixMap, keys};
 use crate::player::collision::Message;
 use crate::player::components::{Command, FootDrag, Grind, SenseOfSpeed, Skid, Slot, Squeaks};
@@ -49,7 +62,9 @@ use crate::player::inputs::{self, Physics};
 use crate::player::objpos::{Listener, ObjPos};
 use crate::player::rolling::{Rattle, Rolling, RollingInputs, Routed};
 use crate::player::seams::{self, SeamCommand, Seams};
+use crate::player::clothing::{Clothing, ClothingTuning};
 use crate::player::tuning::PlayerTuning;
+use crate::player::wheels::{StreamHost, Wheels, WheelsTuning};
 use crate::player::{AudioState, Owner};
 
 pub use crate::player::rolling::GrainEvent;
@@ -71,6 +86,9 @@ pub const AUDIO_RADIUS: f32 = 30.0;
 pub struct NpcSkaterAudioState {
     pub id: u64,
     pub state: AudioState,
+    /// The skater's speech voice (its `aud_characteristics` model: the AI skaters' 89–96; 0 = none):
+    /// the bail grunt's speaker.
+    pub voice: u32,
 }
 
 /// `sub_824B23C8` for a non-local skater: 1 when the local player's record `+84` (= its `+684`,
@@ -164,6 +182,10 @@ pub struct Parts {
     pub rattle: bool,
     /// SFXObj_Contacts' Splice one-shots (`Skate_Collisions`) and the grind on / off sounds.
     pub contacts: bool,
+    /// SFXObj_Wheels' spin-down streams (the install's two recordings).
+    pub wheels: bool,
+    /// The Clothing component (`sk8_foley` push / plant foley, body slide, cloth falls).
+    pub clothing: bool,
 }
 
 /// The tuning the components read (the local player's: the same vault records).
@@ -171,6 +193,8 @@ pub struct Parts {
 pub struct Tuning<'a> {
     pub player: &'a PlayerTuning,
     pub contacts: &'a ContactsTuning,
+    pub wheels: &'a WheelsTuning,
+    pub clothing: &'a ClothingTuning,
 }
 
 /// One NPC skater's Player-slot instance: the same component objects as the local player's host,
@@ -191,6 +215,8 @@ pub struct NpcSkater {
     rolling: Rolling,
     rattle: Rattle,
     board: contacts::Contacts,
+    wheels: Wheels,
+    clothing: Clothing,
     /// The routing's grain binds / stops since the host last took them (for a per-owner bed).
     pub routed: Routed,
     /// Packets posted and Splice sounds started (diagnostics).
@@ -198,7 +224,7 @@ pub struct NpcSkater {
 }
 
 impl NpcSkater {
-    /// `grind_onoff` / `plant_lift` / `body`: the session-review ports, as the local player's
+    /// `grind_onoff` / `plant_lift` / `body`: the session-review fixes (doc 11), as the local player's
     /// host sets them (always on in the game; off only in tests).
     pub fn new(instance: u32, parts: Parts, grind_onoff: bool, plant_lift: bool, body: bool) -> Self {
         let mut grind = Grind::default();
@@ -228,6 +254,8 @@ impl NpcSkater {
             rolling: Rolling::default(),
             rattle: Rattle::default(),
             board,
+            wheels: Wheels::default(),
+            clothing: Clothing::default(),
             routed: Routed::default(),
             posts: 0,
         }
@@ -293,6 +321,11 @@ impl NpcSkater {
             self.board.process(s, self.contacts_in.buckets(), t.player, t.contacts, splice);
             self.posts += self.board.starts - before;
         }
+        if self.parts.clothing {
+            let before = self.clothing.starts;
+            c.extend(self.clothing.process(s, t.player, t.clothing, splice));
+            self.posts += self.clothing.starts - before;
+        }
         self.posts += c.iter().filter(|c| matches!(c, Command::Post { .. })).count() as u64;
         c
     }
@@ -337,7 +370,40 @@ impl NpcSkater {
             self.grind.update_sounds(s, &rail, splice);
             self.board.update(s, &contacts, t.contacts, splice);
         }
+        if self.parts.clothing {
+            let cloth = Owner { mixmap: m, key: keys::clothing(g) };
+            c.extend(self.clothing.update(s, t.player, t.clothing, &cloth, splice));
+        }
         c
+    }
+
+    /// Step 3b (after the tick, after [`Self::update`]): SFXObj_Wheels' spin-down streams on this
+    /// instance's Wheels outputs (layers 0 / 1; layer 2 is the local player's).
+    pub fn update_wheels(&mut self, m: &MixMap, s: &AudioState, t: &WheelsTuning, streams: &mut dyn StreamHost) {
+        if !self.parts.wheels {
+            return;
+        }
+        let owner = Owner { mixmap: m, key: keys::wheels(self.instance) };
+        let before = self.wheels.starts;
+        self.wheels.update(s, &owner, t, streams);
+        self.posts += self.wheels.starts - before;
+    }
+
+    /// Spin-down streams and Clothing Splice starts so far (diagnostics, checks against G3).
+    pub fn component_starts(&self) -> (u64, u64) {
+        (self.wheels.starts, self.clothing.starts)
+    }
+
+    /// The bail grunt is due (`sub_824BF5F8`, once per bail): the host requests event 8206
+    /// (`201_grunt`) for the skater's voice.
+    pub fn take_bail_grunt(&mut self) -> bool {
+        std::mem::take(&mut self.board.bail_grunt)
+    }
+
+    /// Stop the wheel streams (the skater lost its instance: retail's release stops every layer).
+    pub fn stop_wheels(&mut self, streams: &mut dyn StreamHost) {
+        let s = AudioState { local: false, ..Default::default() };
+        self.wheels.update(&s, &Flat, &WheelsTuning::default(), streams);
     }
 
     /// The skater lost its instance: deactivate the 3-D blocks (every B lookup of the slot then
@@ -347,6 +413,21 @@ impl NpcSkater {
         let g = self.instance;
         self.positions[0].write(m, keys::obj_pos(g), l, None);
         self.positions[1].write(m, keys::obj_pos2(g), l, None);
+    }
+}
+
+/// Zero outputs (releasing the wheel streams: no trigger holds).
+struct Flat;
+
+impl crate::player::Outputs for Flat {
+    fn level(&self, _: usize) -> i32 {
+        0
+    }
+    fn raw(&self, _: usize) -> i32 {
+        0
+    }
+    fn pitch(&self, _: usize) -> i32 {
+        4096
     }
 }
 

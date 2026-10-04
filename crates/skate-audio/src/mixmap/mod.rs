@@ -1,5 +1,6 @@
-//! The MixMap mixer (`MixMapSK8.mxb`), our own port from `.claude/notes/mixmap-spec.md`
-//! (and our reference evaluator `.claude/skills/audio-tuning/tools/re/mxb_tool.py`, which gives
+//! The MixMap mixer (`MixMapSK8.mxb`), our own port from `audio-specs/mixmap-spec.md`
+//! (and our reference evaluator `mxb_tool.py`, local and not published (it carries a name table from
+//! the game), which gives
 //! the same outputs as upstream PR #4's port on 73,800 golden cells).
 //!
 //! The game writes controller **inputs** (16 i32 words per controller: physics, 3-D positions,

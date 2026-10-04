@@ -7,7 +7,7 @@
 //!
 //! The member's tuning is concrete_rough_hard's vault values (max 60 km/h, P1 0.0345, P2 0.9138;
 //! GrainParams A 0.1/0.2/0.1/1.6/0.05, B 0.2/0.1/0.2/1.5/0.05), staged by
-//! `.claude/skills/aems-port/tools/stage_grain_mixmap.py`.
+//! setup's `audio` group (`python setup.py`).
 //!
 //! usage: cargo run -p skate-audio --release --example grain_bed_render -- <assets/private/audio> <MixMapSK8.mxb> [--wav out.wav]
 use std::sync::Arc;

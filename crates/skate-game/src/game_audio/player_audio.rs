@@ -66,7 +66,7 @@ pub(crate) struct PlayerAudio {
     /// `SFXObj_Wheels` (the spin-down streams); on when the install has both recordings
     /// ([`WHEEL_STREAMS`], decoded at start).
     wheels: Wheels,
-    wheels_tuning: WheelsTuning,
+    pub(crate) wheels_tuning: WheelsTuning,
     pub(crate) wheels_on: bool,
     /// `SFXObj_SkateBoard`'s rolling layers (`player::rolling`): the two-truck surface routing with
     /// its Class_rolling patches and held layers (on with `PatchBank_Rolling_Surfaces`), the rattle
@@ -94,7 +94,7 @@ pub(crate) struct PlayerAudio {
     footsteps: Footsteps,
     footstep_tuning: FootstepTuning,
     clothing: Clothing,
-    clothing_tuning: ClothingTuning,
+    pub(crate) clothing_tuning: ClothingTuning,
     pub(crate) footsteps_on: bool,
     /// `+300` the landing bucket (it reads the resolved audio trick), this frame's value.
     landing: LandingBucket,

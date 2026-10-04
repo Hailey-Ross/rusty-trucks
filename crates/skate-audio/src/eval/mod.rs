@@ -1,4 +1,4 @@
-//! The AEMS patch-program evaluator (spec: `.claude/notes/aems-evaluator-spec.md`).
+//! The AEMS patch-program evaluator (spec: `audio-specs/aems-evaluator-spec.md`).
 //!
 //! - Csis projects are installed first ([`Evaluator::install_project`]), then banks
 //!   ([`Evaluator::load_bank`]): every export is resolved and each module registers as a constructor

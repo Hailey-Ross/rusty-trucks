@@ -1,5 +1,5 @@
 //! The game's speech manager for living-world peds (`Sk8::Audio::TheSpeechSystem`, recomp
-//! `sub_824AB6C8` → `sub_824ABA18` → `sub_824ABD90`; `world-speech.md` "Speech manager").
+//! `sub_824AB6C8` → `sub_824ABA18` → `sub_824ABD90`; `audio-specs/world-speech.md` "Speech manager").
 //!
 //! [`super::peds::PedSpeech`] hands the manager a speech value and the near / far flag whenever the
 //! ped's state graph sends a new value. The manager then works in four steps:
@@ -27,14 +27,16 @@
 //!
 //! The far / near meaning of the flag comes from the `.evt` data itself: the records with flag 1
 //! name `101_51_GenPos_Grn1_far` / `104_51_grn1_Slam_far`, those with 2 `…_near`, and every
-//! other `_f` / `_n` pair splits the same way (`.claude/notes/world-speech.md`). Which ped values
+//! other `_f` / `_n` pair splits the same way (`audio-specs/world-speech.md`). Which ped values
 //! `+148` / `+156` compare is not traced.
 //!
+//! The interrupt rules (`sub_824A73F0`: tuning `+13` / `+14` against the playing line's priority)
+//! and the streams are [`super::speech_player`]'s.
+//!
 //! **Not ported:**
-//! - the interrupt rules (`sub_824A73F0`: tuning `+13` / `+14` against the playing line's priority);
 //! - the main-cast path for peds without a living-world speaker (`+116 == 0`: pros, `sub_824AC438`);
 //! - the extra main-cast line of value 6 (`+71`);
-//! - the speech level (`world-speech.md` "Level").
+//! - the speech level (`audio-specs/world-speech.md` "Level").
 use std::collections::HashMap;
 
 use super::Draw;
@@ -157,8 +159,12 @@ pub fn request_words(event: u16, block: &[u32; 10]) -> Vec<u32> {
 pub struct EventTuning {
     /// `+8`: seconds since this speaker's last line of any event.
     pub gap: f32,
-    /// `+16`: priority (the interrupt rules, not ported).
+    /// `+16`: priority (the interrupt rules, [`super::speech_player`]).
     pub priority: i32,
+    /// `+13`: a request may stop a playing line of lower priority on its stream (`sub_824A73F0`).
+    pub interrupt: bool,
+    /// `+14`: … only when the channel has no free stream (`sub_824A62F0` false).
+    pub interrupt_when_full: bool,
     /// `+20`: percent.
     pub probability: f32,
     /// `+24`: seconds since this speaker last said this event.
@@ -185,6 +191,8 @@ impl Default for EventTuning {
         Self {
             gap: 0.0,
             priority: 50,
+            interrupt: false,
+            interrupt_when_full: false,
             probability: 100.0,
             repeat: 0.0,
             min_player_kmh: 0.0,
@@ -328,6 +336,22 @@ impl SpeechManager {
         rng: &mut dyn Draw,
     ) -> Result<Line, Refusal> {
         let event = event_for_value(value, speaker.kind, rng).ok_or(Refusal::NoEvent)?;
+        self.request_event(library, table, event, flag, speaker, inputs, rng)
+    }
+
+    /// A request for an event directly (`sub_824ABA18`; a skater's SkaterSpeech sends the event, e.g.
+    /// the NPC bail grunt 8206): the gate, the request words, the line and takes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_event(
+        &mut self,
+        library: &mut Library,
+        table: &EventTable,
+        event: u16,
+        flag: i32,
+        speaker: &Speaker,
+        inputs: &GateInputs,
+        rng: &mut dyn Draw,
+    ) -> Result<Line, Refusal> {
         let default = EventTuning::default();
         let tuning = self.tuning.get(&event).unwrap_or(&default);
         self.gate(speaker.index, event, tuning, inputs, rng)?;

@@ -1,4 +1,4 @@
-//! The FootStep SubMix (`sub_82494188`, spec `.claude/notes/aems-offboard-clothing-spec.md` §2.5):
+//! The FootStep SubMix (`sub_82494188`, spec `audio-specs/aems-offboard-clothing-spec.md` §2.5):
 //! one mono graph per foot sound slot of `SFXObj_OffBoard` (two feet × four slots), built once
 //! for the owner's life (`sub_82494A68`):
 //!

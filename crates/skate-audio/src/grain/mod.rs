@@ -1,5 +1,5 @@
 //! The granular rolling bed (`grains.big` + GrainPlayer), our own port from
-//! `.claude/notes/grain-player-spec.md`:
+//! `audio-specs/grain-player-spec.md`:
 //! - [`format`]: `.grain` members (header, stored duration, seek table, EAAC header);
 //! - [`player`]: the GrainPlayer (pick, per-block scheduler, voices with square-root fades);
 //! - [`board`]: per-surface tuning, the speed → position curve and the per-frame records;

@@ -1,4 +1,4 @@
-//! The GrainPlayer (spec `.claude/notes/grain-player-spec.md` §2.1–2.6): two voice slots that
+//! The GrainPlayer (spec `audio-specs/grain-player-spec.md` §2.1–2.6): two voice slots that
 //! play short windows of one long slow-to-fast recording, picked without repeats around a read
 //! position, cross-faded with equal-power square-root fades, rescheduled every 256-frame block.
 //!
@@ -510,7 +510,7 @@ mod tests {
         (0..24).map(|_| format!("{:.4}", p.pick_in(DURATION, &mut rng))).collect()
     }
 
-    /// The PoC's golden pick sequences (`.local/audio-re/grains/grain_vectors.tsv`, PR #4's ported
+    /// The PoC's golden pick sequences (the PoC's golden vectors, kept locally; PR #4's ported
     /// pick driven from the zero and the image generator state).
     #[test]
     fn picks_match_the_golden_vectors() {

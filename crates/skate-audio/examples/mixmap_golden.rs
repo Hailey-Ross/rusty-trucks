@@ -1,7 +1,7 @@
 //! Run a MixMap golden script through the native port and write the watched outputs per
 //! evaluation as CSV — the same script format and CSV as the PoC's `mixmap_golden` example and
-//! our reference `mxb_tool.py eval` (spec `.claude/notes/mixmap-spec.md` §9.1), so the three can
-//! be diffed with `mxb_diff.py` / `.claude/skills/aems-port/tools/mixmap_compare.py`.
+//! our reference `mxb_tool.py eval` (spec `audio-specs/mixmap-spec.md` §9.1), so the three can
+//! be diffed with `mxb_diff.py` / `mixmap_compare.py` (local, not published).
 //!
 //! Script lines: `dt <s>` | `dtat <eval> <s>` | `frames <n>` | `watch <key hex> <id> level|raw|pitch`
 //! | `set <eval> <key hex> <id> <int|0xhex|f:float>`.

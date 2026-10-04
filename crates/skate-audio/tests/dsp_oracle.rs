@@ -1,16 +1,17 @@
 //! Our voice-graph modules against the PoC's replay-verified kernels (oracle vectors written by the
-//! local PoC probe `.claude/skills/aems-port/tools/poc/dsp_vectors.rs` into
-//! `.local/audio-re/golden/dsp/vectors.txt`; skipped when absent). Prints the agreement numbers.
+//! local PoC probe `dsp_vectors.rs` (local, not published) into a vectors file: `SKATE_DSP_VECTORS`,
+//! else `$SKATE_AUDIO_RE_DIR/golden/dsp/vectors.txt`; ignored, and fails loudly when absent). Prints the
+//! agreement numbers.
 use std::path::PathBuf;
 
 use skate_audio::dsp::biquad::{Coefficients, Kind, coefficients, kernel, omega};
 use skate_audio::dsp::gain::ramp;
 use skate_audio::dsp::resample::Resampler;
 
+mod private_data;
+
 fn vectors() -> Option<String> {
-    let path = std::env::var_os("SKATE_DSP_VECTORS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.local/audio-re/golden/dsp/vectors.txt"));
+    let path: PathBuf = private_data::file("SKATE_DSP_VECTORS", "golden/dsp/vectors.txt")?;
     std::fs::read_to_string(path).ok()
 }
 

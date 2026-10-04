@@ -17,7 +17,7 @@ cargo run --locked -p skate-mods --example check_mod -- sdk/examples/your-mod
 # copy/symlink into mods/
 ```
 
-Manifest must use `"api": 2`. Return a callback table from the entry Lua file.
+Manifest must use `"api": 2`. Return a callback table from the entry Lua file. Optional `"enabled_by_default": false` keeps a dev / test mod off until the player enables it (or `SKATE3_MODS_ENABLE=<id>[,<id>]` for one run); a saved preference always wins.
 
 ## Building blocks
 

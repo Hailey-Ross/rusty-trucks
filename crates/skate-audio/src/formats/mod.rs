@@ -1,4 +1,4 @@
-//! Disc containers used by the AEMS runtime. Layouts: `.claude/notes/aems-evaluator-spec.md` §1.
+//! Disc containers used by the AEMS runtime. Layouts: `audio-specs/aems-evaluator-spec.md` §1.
 pub mod abk;
 pub mod csi;
 pub mod snr;

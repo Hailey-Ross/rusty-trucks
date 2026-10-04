@@ -22,14 +22,14 @@ pub const fn traffic_skids(g: u32) -> u32 {
 pub const fn traffic_horn(g: u32) -> u32 {
     obj(TRAFFIC, 2, g)
 }
-/// `SFXCTL_TrafficCarPhysics` (input 0 gates A11, the +650 mB near boost of B13; writer not
-/// traced).
+/// `SFXCTL_TrafficCarPhysics` (input 0 gates A11, the +650 mB near boost of B13; written by the
+/// record writer `sub_824B2A28`: [`super::traffic::relative_speed_word`]).
 pub const fn traffic_car_physics(g: u32) -> u32 {
     ctl(TRAFFIC, 0, g)
 }
 /// The vehicle's three 3DObjPos blocks: 1 (B0, B3–B13: the body), 2 (B1, Doppler c 1557: the
-/// engine layer), 3 (B2, c 554: the exhaust layer). Which point of the car each follows is not
-/// traced (`world-traffic-audio.md` "Open").
+/// engine layer), 3 (B2, c 554: the exhaust layer); they follow the record's body / front / rear
+/// points ([`super::traffic::record_points`], binding provisional).
 pub const fn traffic_pos(g: u32, block: u32) -> u32 {
     ctl(TRAFFIC, block, g)
 }
@@ -53,6 +53,21 @@ pub const fn ped_tazer(g: u32) -> u32 {
 /// The ped's 3DObjPos block (every Pedestrian B lookup reads `Ctl 5.1`).
 pub const fn ped_pos(g: u32) -> u32 {
     ctl(PEDESTRIAN, 1, g)
+}
+
+/// The MixMap PlayerSpeech slot (13): one instance per skater's `CSTATE_SkaterSpeech` record (7 in
+/// free skate). Its object 0 is the skater's speech owner (`SFXObj_PlayerSpeech`, update
+/// `sub_824DA300`), every B lookup reads the 3DObjPos `Ctl 13.1`.
+pub const PLAYER_SPEECH: u32 = 13;
+pub const PLAYER_SPEECH_INSTANCES: usize = 7;
+
+/// `SFXObj_PlayerSpeech` (outputs 0–18).
+pub const fn player_speech(g: u32) -> u32 {
+    obj(PLAYER_SPEECH, 0, g)
+}
+/// The skater speech owner's 3DObjPos block.
+pub const fn player_speech_pos(g: u32) -> u32 {
+    ctl(PLAYER_SPEECH, 1, g)
 }
 
 #[cfg(test)]

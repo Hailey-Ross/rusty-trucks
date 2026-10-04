@@ -1,9 +1,9 @@
 //! The off-board, clothing and hands-on-deck components through the real MixMap, AEMS banks and
 //! Splice banks, headless: per scenario, the voice gains per (bank, sample) next to retail's
-//! per-sample medians (`.local/recomp/sessions/all_20261002_163809` and `_164620` report.md,
-//! collected in `.local/audio-re/footsteps/retail_levels.txt`). Needs the install's MixMap and WAVs
-//! (`assets/private/audio`), the extracted AEMS banks (`.local/audio-re/aems-banks`) and SPLC banks
-//! (`.local/audio-re/splc-banks`); skipped without them. Run with `--nocapture` for the table.
+//! per-sample medians (recomp sessions `all_20261002_163809` / `_164620`, report levels, kept
+//! locally). Needs the install's MixMap and WAVs (`assets/private/audio`), the extracted AEMS banks
+//! (`SKATE_AEMS_BANKS`) and SPLC banks (`SKATE_SPLC_BANKS`; both default under `SKATE_AUDIO_RE_DIR`);
+//! ignored, and fails loudly without them. Run with `--nocapture` for the table.
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,6 +21,8 @@ use skate_audio::player::tuning::PlayerTuning;
 use skate_audio::player::{AudioState, Owner, inputs};
 use skate_audio::runtime::Runtime;
 use skate_audio::splice::{MIXER_BANK_BASE, SpliceBank};
+
+mod private_data;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -70,7 +72,8 @@ struct Harness {
 fn harness() -> Option<Harness> {
     let r = root();
     let mxb = std::fs::read(r.join("assets/private/audio/aems/MixMapSK8.mxb")).ok()?;
-    let banks = r.join(".local/audio-re/aems-banks");
+    let banks = private_data::aems_banks()?;
+    let splc = private_data::splc_banks()?;
     let order = std::fs::read_to_string(banks.join("csi_order.txt")).ok()?;
     let mut rt = Runtime::new();
     for name in order.lines() {
@@ -86,7 +89,7 @@ fn harness() -> Option<Harness> {
     let utility = rt.eval.class_id("c_emitter_utility")?;
     rt.post(utility, &[]);
     for stem in SPLICE {
-        let bank = SpliceBank::parse(&std::fs::read(r.join(format!(".local/audio-re/splc-banks/{stem}.bnk"))).ok()?).ok()?;
+        let bank = SpliceBank::parse(&std::fs::read(splc.join(format!("{stem}.bnk"))).ok()?).ok()?;
         let count = bank.samples;
         let p = pcm(stem, count);
         if p.iter().all(Option::is_none) {

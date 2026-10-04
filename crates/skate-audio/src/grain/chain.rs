@@ -1,4 +1,4 @@
-//! The board owner's side of the grain bus chains (spec `.claude/notes/aems-grain-chain-spec.md`
+//! The board owner's side of the grain bus chains (spec `audio-specs/aems-grain-chain-spec.md`
 //! §3–§4): what `SFXObj_SkateBoard`'s process (`sub_824C6A78`, game thread, before the frame's
 //! MixMap evaluation) posts to the four chains each frame. Pure state machines; the host feeds the
 //! results into [`super::GrainBed::set_chains`] as [`ChainValues`].

@@ -13,13 +13,14 @@
 //!   (map load, its spawner starting): the banks are then read and decoded on the prefetch worker
 //!   (`native::prefetch`) and `load_bank` at the first owner takes the decoded data instead of
 //!   decoding on the game thread (`SKATE_AEMS_WORLD_PREFETCH=0`: game-thread loads as before);
-//! - per MixMap evaluation: instances go to the nearest owners (`owners::Pool`, provisional rule),
-//!   each instance's objects `update` from this evaluation's outputs, then `process` writes the
-//!   3DObjPos blocks and posts for the next one. Retail runs process before its tick and update
-//!   after; here both follow `native::mixmap_frame`'s tick, so the inputs an evaluation sees are
-//!   one console frame old (33 ms) — the seam to move into `mixmap_frame` once a system exists.
-//! - ped speech requests are logged (`AUDIO_WORLD speech`): the speech archive's playback needs
-//!   the opt-in speech export and the speech manager's level mapping (`world-speech.md`).
+//! - per pass, as retail: before the MixMap ticks ([`frame`] → [`pre`], between
+//!   `native::mixmap_frame` and `native::mixmap_tick`) the instances go to the nearest owners
+//!   within retail's list radii (`owners::Pool`), and `process` writes the 3DObjPos blocks and
+//!   inputs and posts; after the ticks ([`frame_post`] → [`post`]) each instance's objects `update`
+//!   from this pass's outputs. (Before 2026-10-03 both ran after the ticks: the inputs a tick saw
+//!   were one console frame old.)
+//! - ped speech requests go to the speech host (`world_speech`: the speech manager, the library and
+//!   the living world's two streams, levels from each speaker's PedestrianSpeech outputs).
 use std::collections::HashMap;
 
 use bevy::prelude::*;
@@ -53,6 +54,47 @@ pub(crate) struct WorldTuningJson {
     /// `aud_traffic_engine` records by name (`default`, `c01_family01`, …).
     traffic_engine: HashMap<String, EngineJson>,
     ped_footsteps: Option<PedFootstepsJson>,
+    /// The speech manager's event tuning per speech bank (`"1"` = the living world) and event id.
+    speech_tuning: HashMap<String, HashMap<String, SpeechTuningJson>>,
+    /// Per ped model (= speech voice id): `aud_characteristics` (spec §7.3 G2).
+    ped_models: HashMap<String, PedModelJson>,
+    /// Traffic model (living-world entity name: `taxi01`, `sedan02`, …) → `aud_traffic_engine`
+    /// record (spec §7.3 G1).
+    traffic_models: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct SpeechTuningJson {
+    gap: f32,
+    flags_12: Vec<u8>,
+    priority: i32,
+    probability: Option<f32>,
+    repeat: f32,
+    min_player_kmh: f32,
+    max_player_kmh: f32,
+    timer_40: f32,
+    timer_44: f32,
+    flags_48: Vec<u8>,
+    zombie: bool,
+    not_follow: Vec<(i64, f32)>,
+    challenges: Vec<i32>,
+}
+
+/// A ped model's audio fields (`aud_characteristics`, setup `world_audio.ped_models`).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub(crate) struct PedModelJson {
+    /// `SPCH1Type_CharID`: the voice variant bit (`S+88`).
+    pub(crate) variant: u32,
+    /// The speaker type bit (`S+96`; 64 = security).
+    pub(crate) kind: u32,
+    /// `S+124`: 1 female, 2 male.
+    pub(crate) gender: u32,
+    /// `S+132`.
+    pub(crate) shoe_class: u8,
+    /// `S+156`: the far line threshold (m).
+    pub(crate) far: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -101,6 +143,46 @@ impl WorldTuningJson {
             gears: e.gears,
             rear_bias: e.rear_bias,
         })
+    }
+
+    /// A ped model's fields by its voice id (None: not in the export).
+    pub(crate) fn ped_model(&self, voice: u32) -> Option<PedModelJson> {
+        self.ped_models.get(&voice.to_string()).copied()
+    }
+
+    /// A traffic model's engine record name (`taxi01` → `c04_taxi01`).
+    pub(crate) fn traffic_model(&self, model: &str) -> Option<&str> {
+        self.traffic_models.get(model).map(String::as_str)
+    }
+
+    /// The living world's speech tuning (bank 1) by event id.
+    pub(crate) fn speech_tuning(&self) -> HashMap<u16, skate_audio::world::speech_manager::EventTuning> {
+        let Some(bank) = self.speech_tuning.get("1") else { return HashMap::new() };
+        bank.iter()
+            .filter_map(|(id, t)| {
+                let flags = |i: usize| t.flags_12.get(i).is_some_and(|b| *b != 0);
+                let blocked = |i: usize| t.flags_48.get(i).is_some_and(|b| *b != 0);
+                Some((
+                    id.parse().ok()?,
+                    skate_audio::world::speech_manager::EventTuning {
+                        gap: t.gap,
+                        priority: t.priority,
+                        interrupt: flags(1),
+                        interrupt_when_full: flags(2),
+                        probability: t.probability.unwrap_or(100.0),
+                        repeat: t.repeat,
+                        min_player_kmh: t.min_player_kmh,
+                        max_player_kmh: t.max_player_kmh,
+                        timer_40: t.timer_40,
+                        timer_44: t.timer_44,
+                        blocked_by: [blocked(1), blocked(2), blocked(3)],
+                        zombie: t.zombie,
+                        not_follow: t.not_follow.iter().filter_map(|&(e, s)| Some((u16::try_from(e).ok()?, s))).collect(),
+                        challenges: t.challenges.clone(),
+                    },
+                ))
+            })
+            .collect()
     }
 
     pub(crate) fn ped_footsteps(&self) -> PedFootstepTuning {
@@ -194,7 +276,8 @@ pub(crate) struct WorldHost {
     ped_objects: HashMap<u64, (PedSfx, PedSpeech, Positions)>,
     nodes: HashMap<(u64, WorldSlot), NodeId>,
     classes: HashMap<&'static str, usize>,
-    last_tick: u64,
+    /// This frame's pass between [`pre`] and [`post`]: the camera and the seconds it covers.
+    pass: Option<([f32; 3], f32)>,
     rng: Lcg,
     ped_tuning: Option<PedFootstepTuning>,
     player_tuning: Option<skate_audio::player::tuning::PlayerTuning>,
@@ -204,6 +287,11 @@ pub(crate) struct WorldHost {
     prefetch: WorldPrefetch,
     /// `Native::map_epoch` this host last ran in (None: never ran; [`WorldHost::reset`]).
     epoch: Option<u64>,
+    /// Packets posted (the summary log).
+    posts: u64,
+    /// The ped speech requests of the last evaluation (PedestrianSpeech process), with the speaker
+    /// words and level selection: `frame` hands them to the speech host (`world_speech`).
+    pub(crate) speech_requests: Vec<super::world_speech::PedRequest>,
 }
 
 impl Default for WorldHost {
@@ -216,13 +304,15 @@ impl Default for WorldHost {
             ped_objects: HashMap::new(),
             nodes: HashMap::new(),
             classes: HashMap::new(),
-            last_tick: 0,
+            pass: None,
             rng: Lcg(0x5EED),
             ped_tuning: None,
             player_tuning: None,
             last_camera: None,
             prefetch: WorldPrefetch::default(),
             epoch: None,
+            posts: 0,
+            speech_requests: Vec::new(),
         }
     }
 }
@@ -236,6 +326,11 @@ pub(crate) struct WorldHeld {
     pub(crate) peds: Vec<(u64, u32)>,
     /// (owner, Player-slot instance ≥ 1) of the NPC / remote skaters (`npc_skaters.rs`).
     pub(crate) skaters: Vec<(u64, u32)>,
+    /// Running counts for the summary log: packets the world host posted, packets / Splice starts
+    /// of the NPC skater instances, and speech lines started.
+    pub(crate) posts: u64,
+    pub(crate) npc_posts: u64,
+    pub(crate) speech_lines: u64,
 }
 
 /// Retail's traffic list is cut at 40 m horizontal distance to the listener (vehicle record
@@ -250,7 +345,7 @@ pub(crate) fn register(app: &mut App) {
     app.init_resource::<WorldOwners>()
         .init_resource::<WorldHost>()
         .init_resource::<WorldHeld>()
-        .add_systems(Update, frame.after(super::native::mixmap_frame));
+        .add_systems(Update, frame_post.after(super::native::mixmap_tick));
 }
 
 fn apply(host: &mut WorldHost, rt: &mut skate_audio::runtime::Runtime, cmds: Vec<WorldCommand>) {
@@ -265,6 +360,7 @@ fn apply(host: &mut WorldHost, rt: &mut skate_audio::runtime::Runtime, cmds: Vec
                     rt.release(old);
                 }
                 host.nodes.insert((owner, slot), rt.post(id, &words));
+                host.posts += 1;
             }
             WorldCommand::Redeliver { owner, slot, words } => {
                 if let Some(&node) = host.nodes.get(&(owner, slot)) {
@@ -333,8 +429,8 @@ impl WorldHost {
             for (_, g) in peds {
                 Positions::new(&[keys::ped_pos(g as u32)]).deactivate(m, &l);
             }
-            self.last_tick = self.last_tick.min(m.ticks);
         }
+        self.pass = None;
         if self.traffic.len() != world.traffic {
             self.traffic = Pool::new(world.traffic);
         }
@@ -343,9 +439,10 @@ impl WorldHost {
         }
         self.banks = None;
         self.last_camera = None;
+        self.speech_requests.clear();
     }
 
-    fn held(&self) -> (Vec<(u64, u32)>, Vec<(u64, u32)>) {
+    pub(crate) fn held(&self) -> (Vec<(u64, u32)>, Vec<(u64, u32)>) {
         (self.traffic.holders().map(|(g, o)| (o, g as u32)).collect(), self.peds.holders().map(|(g, o)| (o, g as u32)).collect())
     }
 }
@@ -358,6 +455,7 @@ pub(super) fn frame(
     mut held: ResMut<WorldHeld>,
     library: Option<Res<Library>>,
     cues: Res<super::skate_events::Cues>,
+    mut speech: ResMut<super::world_speech::WorldSpeech>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
 ) {
     // Inert: nothing published, expected, held or prefetched.
@@ -370,18 +468,37 @@ pub(super) fn frame(
         return;
     }
     let camera = listener.single().ok().map(|t| (t.translation().to_array(), t.forward().as_vec3().to_array()));
-    run(&mut host, &owners, &mut native, &library, camera, &cues.riding.audio);
+    let calls = native.pending.map_or(0, |p| p.calls);
+    pre(&mut host, &owners, &mut native, &library, camera, &cues.riding.audio, calls);
+    if !host.speech_requests.is_empty() {
+        speech.peds.append(&mut host.speech_requests);
+    }
     let (traffic, peds) = host.held();
     if held.traffic != traffic || held.peds != peds {
         held.traffic = traffic;
         held.peds = peds;
     }
+    if held.posts != host.posts {
+        held.posts = host.posts;
+    }
 }
 
-/// One frame of the host (after the inert checks): the prefetch, the map-change reset, the banks,
-/// and per MixMap evaluation the instance assignment, update and process. `camera` = the listener
-/// (position, forward); `local` = the local player's audio state (the followed point).
-pub(crate) fn run(host: &mut WorldHost, owners: &WorldOwners, native: &mut Native, library: &Library, camera: Option<([f32; 3], [f32; 3])>, local: &skate_audio::player::AudioState) {
+/// The update after the MixMap ticks (`native::mixmap_tick`): [`post`].
+pub(super) fn frame_post(native: Option<ResMut<Native>>, owners: Res<WorldOwners>, mut host: ResMut<WorldHost>) {
+    if host.pass.is_none() {
+        return;
+    }
+    let Some(mut native) = native else { return };
+    post(&mut host, &owners, &mut native);
+}
+
+/// The host's first half of a frame, before the MixMap ticks (retail's process): the prefetch, the
+/// map-change reset, the banks, and with a pass this frame (`calls` console evaluations, from
+/// `Native::pending`) the instance assignment, the 3DObjPos blocks and inputs, and the objects'
+/// process (posts, Splice steps, speech requests). [`post`] runs the update after the ticks.
+/// `camera` = the listener (position, forward); `local` = the local player's audio state (the
+/// followed point).
+pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Native, library: &Library, camera: Option<([f32; 3], [f32; 3])>, local: &skate_audio::player::AudioState, calls: usize) {
     if prefetch_on() {
         prefetch_world_banks(&mut host.prefetch, native, library, owners.expected);
     }
@@ -409,18 +526,15 @@ pub(crate) fn run(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
     }
     host.banks = Some(!missing);
     let Some((cam, view)) = camera else { return };
-    let native = &mut *native;
-    let Some(m) = native.mixmap.as_mut() else { return };
-    if m.ticks == host.last_tick {
+    if calls == 0 {
         return;
     }
-    // The MixMap is built once and never rebuilt, so its tick count only grows; the saturating
-    // difference keeps a host that ran ahead (a reset, a new MixMap in a test) from underflowing.
-    let evaluations = m.ticks.saturating_sub(host.last_tick).max(1);
-    host.last_tick = m.ticks;
-    let dt = evaluation_dt() * evaluations.min(4) as f32;
+    let native = &mut *native;
+    let Some(m) = native.mixmap.as_mut() else { return };
+    let dt = evaluation_dt() * calls.min(4) as f32;
     let cam_velocity = host.last_camera.filter(|l| l.1 == native.cuts).map_or([0.0; 3], |(last, _)| std::array::from_fn(|i| (cam[i] - last[i]) / dt));
     host.last_camera = Some((cam, native.cuts));
+    host.pass = Some((cam, dt));
     let s = local;
     let l = Listener {
         camera: cam,
@@ -432,9 +546,7 @@ pub(crate) fn run(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
     };
     let Ok(mut runtime) = super::timing::lock(&native.shared, &super::timing::GAME_LOCK) else { return };
     let rt = &mut *runtime;
-    // Taken out for the frame (no per-frame clone) and put back at the end.
     let ped_tuning = host.ped_tuning.take().unwrap_or_default();
-    let player_tuning = host.player_tuning.take().unwrap_or_default();
 
     // Instances: the nearest N inside retail's list radii (traffic: horizontal, 40 m; peds: 3-D,
     // 50 m). `owners::Pool`.
@@ -464,40 +576,77 @@ pub(crate) fn run(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
         host.ped_objects.insert(owner, (PedSfx::default(), PedSpeech::default(), Positions::new(&[keys::ped_pos(g as u32)])));
     }
 
-    // Update (this evaluation's outputs), then process (inputs and posts for the next one).
+    // Process: the 3DObjPos blocks and inputs for this pass's evaluations, then the posts.
     let holders: Vec<(usize, u64)> = host.traffic.holders().collect();
     for (g, owner) in holders {
         let Some(v) = owners.vehicles.get(&owner) else { continue };
         let Some((mut vehicle, mut pos)) = host.vehicles.remove(&owner) else { continue };
-        let mut cmds = vehicle.update(owner, g as u32, v, m, cam, dt);
-        let p = Some((v.position, v.velocity));
-        pos.write(m, &l, &[p, p, p]);
-        cmds.extend(vehicle.process(owner, v, &mut host.rng));
+        // The record's body / front / rear points (`sub_824B2A28`) and TrafficCarPhysics.in0.
+        let pts = skate_audio::world::traffic::record_points(v);
+        pos.write(m, &l, &[Some((pts[0], v.velocity)), Some((pts[1], v.velocity)), Some((pts[2], v.velocity))]);
+        vehicle.write_inputs(g as u32, v, m, cam_velocity, dt);
+        let cmds = vehicle.process(owner, v, &mut host.rng);
+        apply(host, rt, cmds);
+        host.vehicles.insert(owner, (vehicle, pos));
+    }
+    let holders: Vec<(usize, u64)> = host.peds.holders().collect();
+    for (_, owner) in holders {
+        let Some(p) = owners.peds.get(&owner) else { continue };
+        let Some((mut sfx, mut speech, mut pos)) = host.ped_objects.remove(&owner) else { continue };
+        pos.write(m, &l, &[Some((p.position, p.velocity))]);
+        let cmds = sfx.process(owner, p, &ped_tuning, &mut rt.splice_host(), dt);
+        if let Some(r) = speech.process(owner, p) {
+            host.speech_requests.push(super::world_speech::PedRequest { request: r, voice: p.voice, speaker: p.speaker, level: p.level_select });
+        }
+        apply(host, rt, cmds);
+        host.ped_objects.insert(owner, (sfx, speech, pos));
+    }
+    host.ped_tuning = Some(ped_tuning);
+}
+
+/// The host's second half, after the MixMap ticks (retail's update): every held object's packets
+/// from this pass's outputs. Nothing without a pass ([`pre`]).
+pub(crate) fn post(host: &mut WorldHost, owners: &WorldOwners, native: &mut Native) {
+    let Some((cam, dt)) = host.pass.take() else { return };
+    let native = &mut *native;
+    let Some(m) = native.mixmap.as_mut() else { return };
+    let Ok(mut runtime) = super::timing::lock(&native.shared, &super::timing::GAME_LOCK) else { return };
+    let rt = &mut *runtime;
+    // Taken out for the frame (no per-frame clone) and put back at the end.
+    let ped_tuning = host.ped_tuning.take().unwrap_or_default();
+    let player_tuning = host.player_tuning.take().unwrap_or_default();
+    let holders: Vec<(usize, u64)> = host.traffic.holders().collect();
+    for (g, owner) in holders {
+        let Some(v) = owners.vehicles.get(&owner) else { continue };
+        let Some((mut vehicle, pos)) = host.vehicles.remove(&owner) else { continue };
+        let cmds = vehicle.update(owner, g as u32, v, m, cam, dt);
         apply(host, rt, cmds);
         host.vehicles.insert(owner, (vehicle, pos));
     }
     let holders: Vec<(usize, u64)> = host.peds.holders().collect();
     for (g, owner) in holders {
         let Some(p) = owners.peds.get(&owner) else { continue };
-        let Some((mut sfx, mut speech, mut pos)) = host.ped_objects.remove(&owner) else { continue };
+        let Some((mut sfx, speech, pos)) = host.ped_objects.remove(&owner) else { continue };
         let out = OutputsSnapshot::take(m, keys::ped_sfx(g as u32), &[7, 8]);
-        let mut cmds = sfx.update(owner, p, &ped_tuning, &player_tuning, &out, &mut rt.splice_host(), dt);
-        pos.write(m, &l, &[Some((p.position, p.velocity))]);
-        cmds.extend(sfx.process(owner, p, &ped_tuning, &mut rt.splice_host(), dt));
-        if let Some(r) = speech.process(owner, p) {
-            info!(
-                "AUDIO_WORLD speech owner={} value={} ({}) flag={}",
-                r.owner,
-                r.value,
-                skate_audio::world::speech::speech_value_name(r.value).unwrap_or("?"),
-                r.flag
-            );
-        }
+        let cmds = sfx.update(owner, p, &ped_tuning, &player_tuning, &out, &mut rt.splice_host(), dt);
         apply(host, rt, cmds);
         host.ped_objects.insert(owner, (sfx, speech, pos));
     }
     host.ped_tuning = Some(ped_tuning);
     host.player_tuning = Some(player_tuning);
+}
+
+/// One whole pass for tests and tools: [`pre`] with one console evaluation, the tick, [`post`] (the
+/// caller sets the MixMap's globals first, as `native::mixmap_frame` does).
+#[cfg(test)]
+pub(crate) fn run(host: &mut WorldHost, owners: &WorldOwners, native: &mut Native, library: &Library, camera: Option<([f32; 3], [f32; 3])>, local: &skate_audio::player::AudioState) {
+    pre(host, owners, native, library, camera, local, 1);
+    if host.pass.is_some()
+        && let Some(m) = native.mixmap.as_mut()
+    {
+        m.tick(CONSOLE_DT);
+    }
+    post(host, owners, native);
 }
 
 #[cfg(test)]
@@ -619,6 +768,205 @@ mod tests {
         assert_eq!(WAV_DECODES.with(|n| n.get()) - decodes, library.bank_pcm(stems[0]).len() as u64, "decoded here without a prefetch");
     }
 
+    /// The traffic record against the recomp (data-gated; gap run G1 `gapg1_20261003_152507`, hook
+    /// `VEHAUD`, ≤ 4 lines per vehicle per second): between two logged samples of one vehicle the
+    /// port steps at the console's 1/30 s with the speed interpolated and the listener's velocity
+    /// from its logged positions, starting from the first sample's RPM / `+176`, and must land on
+    /// the next sample's TrafficEngine RPM (`obj+52`, the wobble's ±8 RPM and the sampling allowed)
+    /// and on the record's `+176` relative speed (TrafficCarPhysics.in0's value). Prints the
+    /// agreement.
+    #[test]
+    #[ignore = "needs the private install data and the recomp gap run G1"]
+    fn traffic_rpm_and_relative_speed_follow_the_recomp() {
+        let base = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let Ok(library) = Library::load(&base.join("assets")) else { panic!("missing private data: no audio install") };
+        let sessions = std::env::var_os("SKATE_RECOMP_SESSIONS").filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+        let Some(Ok(text)) = sessions.map(|s| std::fs::read_to_string(s.join("gapg1_20261003_152507/trace.tsv"))) else { panic!("missing private data: no gap run G1") };
+        let v3 = |s: &str| -> [f32; 3] {
+            let v: Vec<f32> = s.split(' ').filter_map(|x| x.parse().ok()).collect();
+            [v[0], v[1], v[2]]
+        };
+        // (ms, obj, id, key, patch, rpm, pos, fwd, f144, speed, rel176, listener)
+        let mut tracks: HashMap<(String, String, String), Vec<(f64, i32, f32, [f32; 3], f32, f32, [f32; 3])>> = HashMap::new();
+        for line in text.lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.first() != Some(&"VEHAUD") || f.len() != 17 {
+                continue;
+            }
+            let speed: f32 = f[11].parse().unwrap_or(0.0);
+            if f[5] == "0000000000000000" || speed <= 0.0 {
+                continue;
+            }
+            let row = (f[1].parse().unwrap(), f[6].parse().unwrap(), f[7].parse().unwrap(), v3(f[9]), speed, f[15].parse().unwrap(), v3(f[16]));
+            tracks.entry((f[2].to_owned(), f[4].to_owned(), f[5].to_owned())).or_default().push(row);
+        }
+        let record = |patch: i32| match patch {
+            1 | 7 | 8 => "c01_family01",
+            3 | 6 => "c03_sports01",
+            4 => "c04_taxi01",
+            _ => "c05_truck01",
+        };
+        struct Zero;
+        impl skate_audio::player::Outputs for Zero {
+            fn level(&self, _: usize) -> i32 {
+                0
+            }
+            fn raw(&self, _: usize) -> i32 {
+                0
+            }
+            fn pitch(&self, _: usize) -> i32 {
+                4096
+            }
+        }
+        let (mut rpm_ok, mut rel_ok, mut n, mut stale) = (0, 0, 0, 0);
+        let (mut moving_ok, mut moving_n) = (0, 0);
+        let mut worst: Vec<f32> = Vec::new();
+        for rows in tracks.values() {
+            let Some(engine) = library.world_tuning().engine(record(rows[0].1)) else { panic!("missing private data: no world tuning") };
+            let mut e = skate_audio::world::traffic::Engine::default();
+            let v0 = VehicleState { speed: rows[0].4, engine, ..Default::default() };
+            e.process(1, &v0, &mut || 0u32);
+            e.rpm = rows[0].2;
+            let mut rel = rows[0].5;
+            for w in rows.windows(2) {
+                let (a, b) = (&w[0], &w[1]);
+                let span = ((b.0 - a.0) / 1000.0) as f32;
+                // A held vehicle that left the 40 m list keeps its frozen record (G1 "stale
+                // records"): speed, RPM and +176 all unchanged.
+                if a.4 == b.4 && a.2 == b.2 && a.5 == b.5 {
+                    stale += 1;
+                    continue;
+                }
+                if !(0.05..=0.6).contains(&span) {
+                    e.rpm = b.2;
+                    rel = b.5;
+                    continue;
+                }
+                let steps = (span * 30.0).round().max(1.0) as usize;
+                let lv: [f32; 3] = std::array::from_fn(|i| (b.6[i] - a.6[i]) / span);
+                for k in 1..=steps {
+                    let t = k as f32 / steps as f32;
+                    let speed = a.4 + (b.4 - a.4) * t;
+                    let v = VehicleState { speed, direction: a.3, engine, ..Default::default() };
+                    e.update(1, &v, &Zero, [0.0; 3], 1.0 / 30.0, None);
+                    skate_audio::world::traffic::relative_speed_word(&mut rel, &v, lv, span / steps as f32);
+                }
+                let d = (e.rpm - b.2).abs();
+                worst.push(d);
+                rpm_ok += usize::from(d <= 60.0);
+                // `[listener+48]` is the listener record's own velocity (not logged): judged while the
+                // listener stands; while it moves the difference of its logged positions stands in.
+                if lv.iter().map(|x| x * x).sum::<f32>() < 0.25 {
+                    n += 1;
+                    rel_ok += usize::from((rel - b.5).abs() <= 0.5);
+                } else {
+                    moving_n += 1;
+                    moving_ok += usize::from((rel - b.5).abs() <= 2.0);
+                }
+                if std::env::var_os("SKATE_VERIFY_VERBOSE").is_some() && (d > 60.0 || (rel - b.5).abs() > 0.5) {
+                    eprintln!("  {:.1}s span {span:.3} speed {:.2}->{:.2} rpm {:.0}->{:.0} ours {:.0} | rel {:.2}->{:.2} ours {rel:.2} lv {:?}", b.0 / 1000.0, a.4, b.4, a.2, b.2, e.rpm, a.5, b.5, lv);
+                }
+                // Resynchronise (the log is the truth at each sample).
+                e.rpm = b.2;
+                rel = b.5;
+            }
+        }
+        worst.sort_by(f32::total_cmp);
+        let q = |p: f32| worst.get(((worst.len() as f32 - 1.0) * p) as usize).copied().unwrap_or(0.0);
+        let pairs = worst.len();
+        eprintln!(
+            "G1: {} vehicle tracks, {pairs} live sample pairs ({stale} stale left out): RPM within 60 in {rpm_ok} ({:.1} %; |diff| p50 {:.1} p90 {:.1} max {:.1}); +176 within 0.5 m/s in {rel_ok} of {n} with the listener standing ({:.1} %), within 2 m/s in {moving_ok} of {moving_n} with it moving",
+            tracks.len(),
+            100.0 * rpm_ok as f32 / pairs.max(1) as f32,
+            q(0.5),
+            q(0.9),
+            q(1.0),
+            100.0 * rel_ok as f32 / n.max(1) as f32
+        );
+        assert!(pairs > 100 && n > 100, "enough sample pairs");
+        assert!(rpm_ok * 10 >= pairs * 9, "the RPM model follows the recomp");
+        assert!(rel_ok * 10 >= n * 9, "the relative speed follows the recomp");
+    }
+
+    /// The process / update move (spec §3.8, data-gated): the world host now writes its inputs and
+    /// posts before the MixMap tick and updates after it (retail's order); before, both ran after
+    /// the tick. Driving the same car past the camera both ways (the old order = tick, update,
+    /// process; the new = process, tick, update) through the real MixMap must give the same
+    /// TrafficEngine / TrafficSkids / TrafficHorn outputs shifted by exactly one console evaluation
+    /// (the new pass's tick sees this frame's position, the old one the previous frame's) and
+    /// nothing else.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn process_before_the_tick_shifts_the_outputs_by_one_evaluation() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Some(engine) = library.world_tuning().engine("c04_taxi01") else { panic!("missing private data: no world tuning") };
+        let local = skate_audio::player::AudioState::default();
+        let camera = Some(([0.0, 1.5, 0.0], [0.0, 0.0, 1.0]));
+        let frames = 90;
+        let render = |old: bool| -> Vec<Vec<i32>> {
+            let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
+            let mut host = WorldHost::default();
+            let mut owners = WorldOwners::default();
+            let mut out = Vec::new();
+            if !old {
+                // The old order's first pass ticked once before any input existed: the same history.
+                let m = native.mixmap.as_mut().unwrap();
+                for id in 1..=4 {
+                    m.set_input(skate_audio::mixmap::keys::MASTER, id, 32767);
+                }
+                for id in [1, 2, 5] {
+                    m.set_input(skate_audio::mixmap::keys::MUSIC, id, 32767);
+                }
+                m.set_input(skate_audio::mixmap::keys::REVERB, 5, 32767);
+                m.tick(CONSOLE_DT);
+            }
+            for f in 0..frames {
+                let z = -30.0 + f as f32 * 0.4;
+                owners.vehicles.insert(7, VehicleState { position: [3.0, 0.5, z], velocity: [0.0, 0.0, 12.0], direction: [0.0, 0.0, 1.0], speed: 12.0, engine, ..Default::default() });
+                {
+                    let m = native.mixmap.as_mut().unwrap();
+                    for id in 1..=4 {
+                        m.set_input(skate_audio::mixmap::keys::MASTER, id, 32767);
+                    }
+                    for id in [1, 2, 5] {
+                        m.set_input(skate_audio::mixmap::keys::MUSIC, id, 32767);
+                    }
+                    m.set_input(skate_audio::mixmap::keys::REVERB, 5, 32767);
+                }
+                if old {
+                    // Before 2026-10-03: the tick, then the update and the process.
+                    native.mixmap.as_mut().unwrap().tick(CONSOLE_DT);
+                    host.pass = Some((camera.unwrap().0, CONSOLE_DT));
+                    post(&mut host, &owners, &mut native);
+                    pre(&mut host, &owners, &mut native, &library, camera, &local, 1);
+                    host.pass = None;
+                } else {
+                    run(&mut host, &owners, &mut native, &library, camera, &local);
+                }
+                let m = native.mixmap.as_ref().unwrap();
+                let mut row = Vec::new();
+                for key in [keys::traffic_engine(0), keys::traffic_skids(0), keys::traffic_horn(0)] {
+                    for id in 0..11 {
+                        row.extend([m.level(key, id), m.raw(key, id), m.pitch_4096(key, id), m.filter_hz(key, id)]);
+                    }
+                }
+                out.push(row);
+            }
+            out
+        };
+        let (old, new) = (render(true), render(false));
+        let shifted = (0..frames - 1).filter(|&k| new[k] == old[k + 1]).count();
+        let same = (0..frames).filter(|&k| new[k] == old[k]).count();
+        for k in (0..frames - 1).filter(|&k| new[k] != old[k + 1]) {
+            let diff: Vec<(usize, i32, i32)> = new[k].iter().zip(&old[k + 1]).enumerate().filter(|(_, (a, b))| a != b).map(|(i, (a, b))| (i, *a, *b)).collect();
+            eprintln!("  evaluation {k}: {} fields differ (index = object * 44 + output * 4 + kind): {:?}", diff.len(), &diff[..diff.len().min(8)]);
+        }
+        eprintln!("process before the tick: new[k] == old[k + 1] on {shifted} of {} evaluations; unshifted equal on {same}", frames - 1);
+        assert_eq!(shifted, frames - 1, "exactly a one-evaluation shift");
+        assert!(same < frames - 1, "the outputs move (a car drives past)");
+    }
+
     /// The map-change regression (spec §2.1, data-gated): a vehicle and a ped publish, their
     /// instances post and the C04 engine sounds; `unload_map_banks` destroys the world banks'
     /// instances; the same ids keep publishing and must post again (before the epoch reset the
@@ -660,7 +1008,7 @@ mod tests {
                     m.set_input(skate_audio::mixmap::keys::MUSIC, id, 32767);
                 }
                 m.set_input(skate_audio::mixmap::keys::REVERB, 5, 32767);
-                m.tick(CONSOLE_DT);
+                // `run` = the host's process, the tick, its update (as `mixmap_frame` / `mixmap_tick`).
                 run(host, owners, native, &library, camera, &local);
                 {
                     let mut rt = native.shared.lock().unwrap();
@@ -684,7 +1032,6 @@ mod tests {
         // The owners go: everything is released.
         owners.vehicles.clear();
         owners.peds.clear();
-        native.mixmap.as_mut().unwrap().tick(CONSOLE_DT);
         run(&mut host, &owners, &mut native, &library, camera, &local);
         assert!(host.nodes.is_empty() && host.vehicles.is_empty() && host.ped_objects.is_empty());
         // A map change with nothing held.

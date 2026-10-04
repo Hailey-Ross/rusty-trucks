@@ -1,9 +1,9 @@
 //! The board's rolling layers (`player::rolling`: Class_rolling, Rolling_Rattle_Class,
-//! c_board_slide) through the real banks. Data-gated: needs the disc banks extracted to
-//! `.local/audio-re/aems-banks` (`bank_layout_check.py --extract`) and, for the rendered levels,
-//! their samples decoded to `.local/audio-re/bank-wavs/<stem>/NNNN.wav`
-//! (`.claude/skills/aems-port/tools/decode_bank_samples.py`) plus the install's MixMap; skipped
-//! otherwise (retail data is never committed).
+//! c_board_slide) through the real banks. Data-gated: needs the disc banks extracted
+//! (`SKATE_AEMS_BANKS`, else `$SKATE_AUDIO_RE_DIR/aems-banks`; `bank_layout_check.py --extract`) and,
+//! for the rendered levels, their samples decoded to `$SKATE_AUDIO_RE_DIR/bank-wavs/<stem>/NNNN.wav`
+//! (`tools/audio-file-inspect/decode_bank_samples.py`; else the install's) plus the install's MixMap;
+//! ignored, and fails loudly otherwise (retail data is never committed).
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,12 +19,14 @@ use skate_audio::player::tuning::PlayerTuning;
 use skate_audio::player::{AudioState, Owner};
 use skate_audio::runtime::Runtime;
 
+mod private_data;
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn banks_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("SKATE_AEMS_BANKS").map(PathBuf::from).unwrap_or_else(|| root().join(".local/audio-re/aems-banks"));
+    let dir = private_data::aems_banks()?;
     dir.join("csi_order.txt").is_file().then_some(dir)
 }
 
@@ -140,9 +142,9 @@ fn wav_pcm(bytes: &[u8]) -> Option<Pcm> {
     None
 }
 
-/// The samples of a bank: the decoded copies in `.local/audio-re/bank-wavs`, else the install's.
+/// The samples of a bank: the decoded copies in `$SKATE_AUDIO_RE_DIR/bank-wavs`, else the install's.
 fn pcm(stem: &str, count: usize) -> Option<Vec<Option<Arc<Pcm>>>> {
-    for base in [root().join(".local/audio-re/bank-wavs"), root().join("assets/private/audio/banks")] {
+    for base in private_data::audio_re("bank-wavs").into_iter().chain([root().join("assets/private/audio/banks")]) {
         let d = base.join(stem);
         if d.join("0000.wav").is_file() {
             return Some((0..count).map(|i| std::fs::read(d.join(format!("{i:04}.wav"))).ok().and_then(|b| wav_pcm(&b)).map(Arc::new)).collect());

@@ -1,5 +1,5 @@
 //! The game side of the native granular rolling bed (`skate_audio::grain`, spec
-//! `.claude/notes/grain-player-spec.md`), on when the native runtime runs with a MixMap and the
+//! `audio-specs/grain-player-spec.md`), on when the native runtime runs with a MixMap and the
 //! install has the whole grain recordings and their vault tuning (`audio_export.grain_whole` /
 //! `grain_tuning`). Without them rolling is silent and the host logs an error (2026-10-03: the
 //! interim speed-band loop is gone).
@@ -71,7 +71,7 @@ const ROCKET: &str = "x_jet_rolling";
 
 /// Rolling grain for a wheel's 7-bit audio surface tag, as retail maps it: tag → material (tag − 1) →
 /// the vault's `Sk8::AudioSurfaceMap` → rolling surface 1–14 → grain member
-/// (.claude/notes/grain-player-spec.md §1.4). Only the hard-wheel members: [`Bed::member`] swaps in
+/// (audio-specs/grain-player-spec.md §1.4). Only the hard-wheel members: [`Bed::member`] swaps in
 /// the soft one. The bed's own one-truck routing uses it (the native rolling layers route with
 /// `player::rolling`).
 pub(super) fn grain_for(audio_surface: u32) -> &'static str {
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn rolling_grains_follow_the_retail_surface_map() {
-        // Spot checks against the vault's AudioSurfaceMap (grain-player-spec.md §1.4).
+        // Spot checks against the vault's AudioSurfaceMap (audio-specs/grain-player-spec.md §1.4).
         for (tag, grain) in [
             (2, "asphalt_rough_hard"), (66, "concrete_rough_hard"), (1, "asphalt_smooth_hard"),
             (55, "asphalt_smooth_hard"), (0, "asphalt_smooth_hard"), (100, "asphalt_smooth_hard"),
