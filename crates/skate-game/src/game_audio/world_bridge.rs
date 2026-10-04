@@ -86,6 +86,7 @@ pub(crate) fn register(app: &mut App) {
     app.init_resource::<LivingWorldAudio>()
         .init_resource::<WorldAudioStats>()
         .init_resource::<Bridge>()
+        .init_resource::<super::mod_world::OwnWorldOwners>()
         .add_message::<PedSpeechEvent>()
         .add_message::<PedTazerEvent>()
         .add_message::<PedBodyFallEvent>()
@@ -130,6 +131,16 @@ pub(crate) struct Bridge {
     /// The summary log: seconds since the last line, and the running counts then.
     log_timer: f32,
     log_counts: (u64, u64, u64),
+}
+
+impl Bridge {
+    /// A runtime tuning write changed the world tuning (`tuning.rs`): the cached engine records and
+    /// the tazer hold are read again.
+    pub(crate) fn retune(&mut self) {
+        self.engines.clear();
+        self.unknown.clear();
+        self.tazer_seconds = None;
+    }
 }
 
 /// The component's held reactions with an event's raised on top.
@@ -194,15 +205,15 @@ fn tag_remote_players(mut commands: Commands, remotes: Query<Entity, (With<crate
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn publish(
     mut bridge: ResMut<Bridge>,
-    mut owners: ResMut<WorldOwners>,
+    (mut owners, mut own): (ResMut<WorldOwners>, ResMut<super::mod_world::OwnWorldOwners>),
     mut skaters: ResMut<super::npc_skaters::NpcSkaters>,
     living: Res<LivingWorldAudio>,
     library: Option<Res<super::Library>>,
     physics: Option<Res<crate::physics::GamePhysics>>,
     time: Res<Time>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
-    vehicles: Query<(Entity, &GlobalTransform, &TrafficAudio, Option<&AudioVelocity>)>,
-    mut peds: Query<(Entity, &GlobalTransform, &mut PedAudio, Option<&AudioVelocity>)>,
+    vehicles: Query<(Entity, &GlobalTransform, &TrafficAudio, Option<&AudioVelocity>, Has<crate::world_audio::OwnAudioInstance>)>,
+    mut peds: Query<(Entity, &GlobalTransform, &mut PedAudio, Option<&AudioVelocity>, Has<crate::world_audio::OwnAudioInstance>)>,
     mut npcs: Query<(Entity, &GlobalTransform, &mut NpcSkaterAudio, Option<&AudioVelocity>)>,
     mut speech: MessageReader<PedSpeechEvent>,
     mut horns: MessageReader<VehicleHorn>,
@@ -226,12 +237,12 @@ fn publish(
     // PedestrianSpeech requests a line when the value changes: a repeat of the current value goes
     // through 0 for one frame first (a state graph re-entering its state does the same).
     for (e, value) in std::mem::take(&mut bridge.speech_next) {
-        if let Ok((_, _, mut ped, _)) = peds.get_mut(e) {
+        if let Ok((_, _, mut ped, _, _)) = peds.get_mut(e) {
             ped.speech_value = value;
         }
     }
     for e in speech.read() {
-        if let Ok((_, _, mut ped, _)) = peds.get_mut(e.ped) {
+        if let Ok((_, _, mut ped, _, _)) = peds.get_mut(e.ped) {
             if ped.speech_value == e.value.0 && e.value.0 != 0 {
                 ped.speech_value = 0;
                 bridge.speech_next.push((e.ped, e.value.0));
@@ -290,10 +301,13 @@ fn publish(
     bridge.horns.retain(|e, (_, left)| *left > 0.0 && vehicles.contains(*e));
     let camera = listener.single().map(|t| t.translation()).unwrap_or(Vec3::ZERO);
 
-    // Vehicles.
+    // Vehicles (own-instance objects to `mod_world`'s host, doc 16 L3).
     owners.vehicles.clear();
+    if !own.0.vehicles.is_empty() {
+        own.0.vehicles.clear();
+    }
     let mut seen = Vec::with_capacity(vehicles.iter().len());
-    for (e, t, car, given) in &vehicles {
+    for (e, t, car, given, own_instance) in &vehicles {
         let at = t.translation().to_array();
         let v = velocity(bridge, e, at, given, dt);
         let speed = car.speed.unwrap_or_else(|| length(v)).max(0.0);
@@ -301,7 +315,8 @@ fn publish(
         let load = car.load.unwrap_or(if dt > 0.0 { (speed - last_speed) / dt } else { 0.0 });
         let record = engine_record(bridge, library.as_deref(), &car.engine);
         let horn = bridge.horns.get(&e).map_or(car.horn, |h| h.0);
-        owners.vehicles.insert(
+        let target = if own_instance { &mut own.0.vehicles } else { &mut owners.vehicles };
+        target.insert(
             e.to_bits(),
             VehicleState { position: at, velocity: v, direction: forward(t), speed, load, horn: horn.word(), skid: i32::from(car.skidding), engine: record },
         );
@@ -310,11 +325,14 @@ fn publish(
 
     // Peds: the nearest-first list within 50 m gives the footsteps-on rule.
     owners.peds.clear();
-    let mut list: Vec<(f32, Entity)> = peds.iter().map(|(e, t, _, _)| (t.translation().distance(camera), e)).filter(|(d, _)| *d < PED_LIST_RADIUS).collect();
+    if !own.0.peds.is_empty() {
+        own.0.peds.clear();
+    }
+    let mut list: Vec<(f32, Entity)> = peds.iter().map(|(e, t, _, _, _)| (t.translation().distance(camera), e)).filter(|(d, _)| *d < PED_LIST_RADIUS).collect();
     list.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.to_bits().cmp(&b.1.to_bits())));
     let nearest: HashSet<Entity> = list.iter().take(FOOTSTEP_PEDS).map(|x| x.1).collect();
     let tuning = library.as_deref().map(super::Library::world_tuning);
-    for (e, t, ped, given) in &peds {
+    for (e, t, ped, given, own_instance) in &peds {
         let at = t.translation().to_array();
         let v = velocity(bridge, e, at, given, dt);
         let distance = t.translation().distance(camera);
@@ -335,7 +353,8 @@ fn publish(
             (Some(voice), None) => Speaker { index: voice, ..Default::default() },
             _ => Speaker::default(),
         };
-        owners.peds.insert(
+        let target = if own_instance { &mut own.0.peds } else { &mut owners.peds };
+        target.insert(
             e.to_bits(),
             skate_audio::world::peds::PedState {
                 position: at,
@@ -430,9 +449,9 @@ fn read_back(
         return;
     }
     let mut now: HashMap<Entity, WorldAudioInstance> = HashMap::new();
-    for (list, slot) in [(&held.traffic, WorldAudioSlot::Traffic), (&held.peds, WorldAudioSlot::Ped), (&held.skaters, WorldAudioSlot::PlayerSlot)] {
+    for (list, slot, own) in [(&held.traffic, WorldAudioSlot::Traffic, false), (&held.peds, WorldAudioSlot::Ped, false), (&held.skaters, WorldAudioSlot::PlayerSlot, false), (&held.own_traffic, WorldAudioSlot::Traffic, true), (&held.own_peds, WorldAudioSlot::Ped, true)] {
         for &(id, instance) in list {
-            now.insert(Entity::from_bits(id), WorldAudioInstance { slot, instance });
+            now.insert(Entity::from_bits(id), WorldAudioInstance { slot, instance, own });
         }
     }
     for e in bridge.tagged.clone() {
@@ -501,7 +520,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<WorldOwners>().init_resource::<super::super::npc_skaters::NpcSkaters>().init_resource::<WorldHeld>();
-        app.init_resource::<LivingWorldAudio>().init_resource::<WorldAudioStats>().init_resource::<Bridge>();
+        app.init_resource::<LivingWorldAudio>().init_resource::<WorldAudioStats>().init_resource::<Bridge>().init_resource::<super::super::mod_world::OwnWorldOwners>();
         app.add_message::<PedSpeechEvent>().add_message::<VehicleHorn>().add_message::<VehicleAlarm>().add_message::<PedTazerEvent>().add_message::<PedBodyFallEvent>().add_message::<NpcSkaterReactionEvent>();
         app.add_systems(Update, (publish, read_back).chain());
         app.world_mut().spawn((super::super::GameAudioListener, Transform::default(), GlobalTransform::default()));
@@ -511,6 +530,24 @@ mod tests {
     fn at(x: f32, z: f32) -> (Transform, GlobalTransform) {
         let t = Transform::from_xyz(x, 0.0, z);
         (t, GlobalTransform::from(t))
+    }
+
+    /// Doc 16 L3: a car or ped with `OwnAudioInstance` is published to the own-instance host
+    /// (`mod_world::OwnWorldOwners`), never to retail's pools; its read-back tag says `own`.
+    #[test]
+    fn own_instance_objects_go_to_their_own_host() {
+        let mut app = app();
+        let mine = app.world_mut().spawn((TrafficAudio::new("c04_taxi01"), crate::world_audio::OwnAudioInstance, at(0.0, 10.0))).id();
+        let ped = app.world_mut().spawn((PedAudio::default(), crate::world_audio::OwnAudioInstance, at(0.0, 5.0))).id();
+        let retail = app.world_mut().spawn((TrafficAudio::new("c04_taxi01"), at(0.0, 12.0))).id();
+        app.update();
+        let owners = app.world().resource::<WorldOwners>();
+        let own = &app.world().resource::<super::super::mod_world::OwnWorldOwners>().0;
+        assert!(owners.vehicles.contains_key(&retail.to_bits()) && !owners.vehicles.contains_key(&mine.to_bits()) && owners.peds.is_empty());
+        assert!(own.vehicles.contains_key(&mine.to_bits()) && own.peds.contains_key(&ped.to_bits()) && !own.vehicles.contains_key(&retail.to_bits()));
+        app.world_mut().resource_mut::<WorldHeld>().own_traffic = vec![(mine.to_bits(), 3)];
+        app.update();
+        assert_eq!(app.world().get::<WorldAudioInstance>(mine), Some(&WorldAudioInstance { slot: WorldAudioSlot::Traffic, instance: 3, own: true }));
     }
 
     /// Components become owners (ids = entity bits), events hold their states for the right
@@ -552,7 +589,7 @@ mod tests {
         // Read-back.
         app.world_mut().resource_mut::<WorldHeld>().traffic = vec![(car.to_bits(), 2)];
         app.update();
-        assert_eq!(app.world().get::<WorldAudioInstance>(car), Some(&WorldAudioInstance { slot: WorldAudioSlot::Traffic, instance: 2 }));
+        assert_eq!(app.world().get::<WorldAudioInstance>(car), Some(&WorldAudioInstance { slot: WorldAudioSlot::Traffic, instance: 2, own: false }));
         app.world_mut().resource_mut::<WorldHeld>().traffic.clear();
         app.update();
         assert!(app.world().get::<WorldAudioInstance>(car).is_none());

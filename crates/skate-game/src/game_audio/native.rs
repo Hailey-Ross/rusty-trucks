@@ -159,6 +159,16 @@ impl Decodable for NativeStream {
 #[derive(Component)]
 struct NativeOutput;
 
+/// Tests: how many stream entities exist.
+#[cfg(test)]
+pub(crate) struct NativeOutputCount;
+#[cfg(test)]
+impl NativeOutputCount {
+    pub(crate) fn of(world: &mut World) -> usize {
+        world.query_filtered::<Entity, With<NativeOutput>>().iter(world).count()
+    }
+}
+
 /// The running native runtime and what the game has loaded into it.
 #[derive(Resource)]
 pub(crate) struct Native {
@@ -202,6 +212,10 @@ pub(crate) struct Native {
     /// Retail's front-end audio object (the `fe` records: the session marker's sounds; None on
     /// installs without them).
     pub(crate) frontend: Option<super::frontend::FrontendHost>,
+    /// Banks audio content overlays load at start and keep across map changes (`preload`).
+    resident: Vec<String>,
+    /// The overlays' Csis projects installed in the runtime: (file, content stamp, registry token).
+    pub(crate) mod_projects: Vec<(String, String, u64)>,
 }
 
 /// A pass [`mixmap_frame`] began and [`mixmap_tick`] finishes.
@@ -252,15 +266,27 @@ impl Native {
     }
 
     pub(super) fn start_with(library: &Library, world: WorldInstances) -> Result<Self, String> {
+        Self::start_from(library, world, 1)
+    }
+
+    /// Start, the evaluator handing out post ids from `first_node` on (1 = a fresh runtime; a
+    /// restart continues the old runtime's counter, `content::restart`).
+    pub(super) fn start_from(library: &Library, world: WorldInstances, first_node: u32) -> Result<Self, String> {
         let files = library.aems();
         if files.projects.is_empty() {
             return Err("this install has no AEMS banks (run setup to refresh the audio)".into());
         }
         let mut runtime = Runtime::new();
+        runtime.eval.continue_nodes(first_node);
+        let mut mod_projects = Vec::new();
         for file in &files.projects {
             let bytes = library.read(file).map_err(|e| format!("{file}: {e}"))?;
             let project = Project::parse(file, &bytes).map_err(|e| e.to_string())?;
-            runtime.install_project(&project);
+            let token = runtime.install_project(&project);
+            // An overlay's project (doc 16 "Mod Csis projects"): after the install's, in mod-id order.
+            if skate_mods::audio_merge::split_mod_ref(file).is_some() {
+                mod_projects.push((file.clone(), library.stamp(file), token));
+            }
         }
         let mixmap = match &files.mixmap {
             Some(file) => {
@@ -304,6 +330,8 @@ impl Native {
             world,
             pending: None,
             frontend: None,
+            resident: Vec::new(),
+            mod_projects,
         };
         // The environment (reverb) network and the eEQChain buses (optional install data).
         let (presets, eq) = library.bus_tuning();
@@ -355,7 +383,71 @@ impl Native {
         drop(runtime);
         // The front-end sounds (the session marker's cellphone UI; sk8_menu).
         native.frontend = super::frontend::FrontendHost::load(&native, library);
+        native.load_resident_banks(library);
         Ok(native)
+    }
+
+    /// The banks audio content overlays mark `preload`, after the retail boot (none without
+    /// overlays): loaded now, in their volume group, and kept across map changes.
+    fn load_resident_banks(&mut self, library: &Library) {
+        for (stem, player) in library.resident_banks() {
+            match self.ensure_bank(library, &stem) {
+                Ok(id) => {
+                    if let Ok(mut runtime) = self.shared.lock() {
+                        runtime.mixer.set_bank_group(id, if player { skate_audio::mixer::GROUP_PLAYER } else { skate_audio::mixer::GROUP_WORLD });
+                    }
+                    self.resident.push(stem);
+                }
+                Err(e) => warn!("Game audio: mod bank {stem}: {e}"),
+            }
+        }
+    }
+
+    /// Replace a loaded bank in place from the library (an audio content hot swap, `swap.rs`): the
+    /// same runtime id and constructor places, the new program and samples, held posts re-bound
+    /// (`Runtime::replace_bank`); its volume group from the overlay, else the one it was loaded
+    /// with (the player's banks: the player group). False when the bank is not loaded (it loads
+    /// on use).
+    pub(crate) fn replace_bank(&mut self, library: &Library, stem: &str) -> Result<bool, String> {
+        let Some(&id) = self.banks.get(stem) else { return Ok(false) };
+        self.prefetch.drop_bank(stem);
+        let (bank, pcm) = library.bank_source(stem)?.load()?;
+        let player = super::player_audio::BANKS.contains(&stem) || super::player_audio::OPTIONAL_BANKS.iter().any(|b| b.contains(&stem));
+        let mut runtime = self.shared.lock().map_err(|_| "audio lock poisoned")?;
+        runtime.replace_bank(id, bank, pcm);
+        let group = library.bank_group(stem).unwrap_or(player);
+        runtime.mixer.set_bank_group(id, if group { skate_audio::mixer::GROUP_PLAYER } else { skate_audio::mixer::GROUP_WORLD });
+        Ok(true)
+    }
+
+    /// Unload one bank (an audio content hot swap: the bank left the audio).
+    pub(crate) fn unload_bank(&mut self, stem: &str) {
+        self.prefetch.drop_bank(stem);
+        self.resident.retain(|r| r != stem);
+        if let Some(id) = self.banks.remove(stem) {
+            if let Ok(mut runtime) = self.shared.lock() {
+                runtime.unload_bank(id);
+            }
+        }
+    }
+
+    /// The overlays' preloaded banks of a new library (an audio content hot swap): the new ones
+    /// load now; ones no longer preloaded go at the next map change like any map bank.
+    pub(crate) fn set_resident(&mut self, library: &Library) {
+        self.resident.clear();
+        self.load_resident_banks(library);
+    }
+
+    /// The banks the runtime holds: (stem, runtime id), sorted by stem.
+    pub(crate) fn bank_ids(&self) -> Vec<(String, usize)> {
+        let mut v: Vec<(String, usize)> = self.banks.iter().map(|(s, &id)| (s.clone(), id)).collect();
+        v.sort();
+        v
+    }
+
+    /// The id the runtime's next post gets (a restart continues from it).
+    pub(crate) fn next_node(&self) -> u32 {
+        self.shared.lock().map_or(1, |r| r.eval.next_node())
     }
 
     /// Load a bank (and its samples) unless it is loaded already. A bank the prefetch worker has
@@ -369,7 +461,13 @@ impl Native {
             Some(loaded) => loaded,
             None => library.bank_source(stem)?.load()?,
         };
-        let id = self.shared.lock().map_err(|_| "audio lock poisoned")?.load_bank(bank, pcm);
+        let mut runtime = self.shared.lock().map_err(|_| "audio lock poisoned")?;
+        let id = runtime.load_bank(bank, pcm);
+        // An overlay can put a bank in a volume group (none without overlays).
+        if let Some(player) = library.bank_group(stem) {
+            runtime.mixer.set_bank_group(id, if player { skate_audio::mixer::GROUP_PLAYER } else { skate_audio::mixer::GROUP_WORLD });
+        }
+        drop(runtime);
         self.banks.insert(stem.to_owned(), id);
         Ok(id)
     }
@@ -477,13 +575,64 @@ impl Native {
         self.banks.contains_key(stem)
     }
 
+    /// The loaded banks' stems, sorted (the audio catalog).
+    pub(crate) fn loaded_banks(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.banks.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// A runtime the tests built by hand (no MixMap, no player).
+    #[cfg(test)]
+    pub(crate) fn for_test(runtime: Runtime) -> Self {
+        let runtime = Arc::new(Mutex::new(runtime));
+        let emitter_class = runtime.lock().unwrap().eval.class_id("c_emitter");
+        Self {
+            shared: runtime,
+            banks: HashMap::new(),
+            emitter_class,
+            mixmap: None,
+            clock: HostClock::default(),
+            frame_ticks: 0,
+            cuts: 0,
+            cut_seen: None,
+            cut_wheels: None,
+            holds: false,
+            player: None,
+            emitter_states: [false; EMITTER_STATES],
+            bed: None,
+            prefetch: Default::default(),
+            map_epoch: 0,
+            world: WorldInstances::RETAIL,
+            pending: None,
+            frontend: None,
+            resident: Vec::new(),
+            mod_projects: Vec::new(),
+        }
+    }
+
+    /// Tests: a pass of `calls` console evaluations is pending (what `mixmap_frame` leaves for the
+    /// systems after the ticks), without the player's inputs.
+    #[cfg(test)]
+    pub(crate) fn test_pass(&mut self, calls: usize) {
+        self.pending = Some(PendingPass { calls, s: Default::default(), speed_scale: None, loose: 0, reverb: false });
+    }
+
+    /// Tests outside `game_audio` (the mod system's): start the runtime for `library`.
+    #[cfg(test)]
+    pub(crate) fn start_for_test(library: &Library) -> Result<Self, String> {
+        Self::start(library)
+    }
+
     /// Unload every bank but the utility and the player's (map change); forget the prefetched ones.
     pub(crate) fn unload_map_banks(&mut self) {
         self.map_epoch += 1;
         self.prefetch.clear();
         let Ok(mut runtime) = self.shared.lock() else { return };
+        let resident = &self.resident;
         self.banks.retain(|stem, id| {
-            let keep = stem == "emitter_utility" || stem == skate_audio::player::seams::UTILITY_BANK || super::player_audio::BANKS.contains(&stem.as_str()) || super::player_audio::OPTIONAL_BANKS.iter().any(|b| b.contains(&stem.as_str()));
+            let keep = stem == "emitter_utility" || stem == skate_audio::player::seams::UTILITY_BANK || super::player_audio::BANKS.contains(&stem.as_str()) || super::player_audio::OPTIONAL_BANKS.iter().any(|b| b.contains(&stem.as_str()))
+                || resident.iter().any(|r| r == stem);
             if !keep {
                 runtime.unload_bank(*id);
             }
@@ -557,8 +706,9 @@ impl Native {
 }
 
 pub(crate) fn register(app: &mut App) {
+    // The runtime starts in `content::frame` (after the first mod scan, so an audio mod enabled at
+    // boot costs no second start), and restarts there when the running mods' audio content changes.
     app.add_audio_source::<NativeStream>()
-        .add_systems(PostStartup, start)
         .add_systems(PostUpdate, follow_volume);
 }
 
@@ -566,7 +716,7 @@ pub(crate) fn register(app: &mut App) {
 /// from the skater, in1 = f32 distance from the camera itself, in2 / in3 = azimuths (u16 scale,
 /// both in the camera frame here: who writes the emitter blocks in retail is not traced, §10),
 /// in15 bit 0 = active. The emitters are static: relative speeds (in13/14) stay 0.
-fn write_position(m: &mut MixMap, key: u32, listener: &GlobalTransform, skater: Vec3, source: Vec3) {
+pub(crate) fn write_position(m: &mut MixMap, key: u32, listener: &GlobalTransform, skater: Vec3, source: Vec3) {
     let az = azimuth(listener, source);
     m.set_input_f32(key, keys::pos::DIST_SKATER, skater.distance(source));
     m.set_input_f32(key, keys::pos::DIST_CAMERA, listener.translation().distance(source));
@@ -722,12 +872,17 @@ pub(super) fn mixmap_frame(
 /// The second half of [`mixmap_frame`]'s pass, after the world / NPC owners' process: the console
 /// evaluations (MixMap ticks), the local player's update and SFXObj_Reverb's update. The world /
 /// NPC owners' update follows (`world_sources::post`, `npc_skaters::post`).
-pub(super) fn mixmap_tick(native: Option<ResMut<Native>>) {
+pub(super) fn mixmap_tick(native: Option<ResMut<Native>>, inputs: Option<ResMut<super::mixmap_inputs::MixMapInputs>>, content: Option<Res<super::AudioContent>>) {
     let _timing = super::timing::scope(&super::timing::MIXMAP_FRAME);
     let Some(mut native) = native else { return };
     let native = &mut *native;
     let Some(PendingPass { calls, s, speed_scale, loose, reverb }) = native.pending else { return };
     let Some(m) = &mut native.mixmap else { return };
+    // Mods' MixMap input writes (doc 16 L2), after every host write of the pass, before the
+    // evaluations (nothing without writes).
+    if let Some(mut inputs) = inputs {
+        inputs.apply(m, content.map_or(0, |c| c.runtime_generation));
+    }
     for _ in 0..calls {
         m.tick(skate_audio::mixmap::cadence::CONSOLE_DT);
     }
@@ -744,32 +899,64 @@ pub(super) fn mixmap_tick(native: Option<ResMut<Native>>) {
     }
 }
 
-fn start(
-    mut commands: Commands,
-    settings: Option<Res<super::AudioSettings>>,
-    library: Option<Res<Library>>,
-    mut streams: ResMut<Assets<NativeStream>>,
-) {
-    let (Some(settings), Some(library)) = (settings, library) else { return };
-    let settings = Some(settings);
+/// What a (re)start carries over from the runtime it replaces.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Carry {
+    /// The old evaluator's next post id: ids it handed out never name a post of the new one.
+    pub first_node: u32,
+    /// The new runtime's `map_epoch` (old + 1: every host holding nodes resets).
+    pub epoch: u64,
+    pub world: WorldInstances,
+}
+
+/// Start the runtime and its output stream from the current [`Library`] (`content::frame`: the
+/// first start, and every restart with the old runtime's [`Carry`]). False when it could not
+/// start (the error is logged; those sounds stay silent).
+pub(super) fn launch(world: &mut World, carry: Option<Carry>) -> bool {
+    static DSP: std::sync::Once = std::sync::Once::new();
+    let Some(settings) = world.get_resource::<super::AudioSettings>() else { return false };
+    let instances = carry.map_or_else(|| if settings.more_audible_world() { WorldInstances::MORE_AUDIBLE } else { WorldInstances::RETAIL }, |c| c.world);
+    let Some(library) = world.get_resource::<Library>() else { return false };
     // Which compiled copy of the DSP loops runs (hardware FMA or plain; same output bits): chosen
-    // once, here, before the first render (doc 11 "Hardware FMA dispatch").
-    info!("AUDIO_DSP {}", skate_audio::dsp::init_fma());
-    let world = if settings.as_deref().is_some_and(|s| s.more_audible_world()) { WorldInstances::MORE_AUDIBLE } else { WorldInstances::RETAIL };
-    match Native::start_with(&library, world) {
-        Ok(native) => {
-            info!("Game audio: native AEMS runtime on ({} projects)", library.aems().projects.len());
-            let handle = streams.add(NativeStream { shared: native.shared.clone() });
+    // once, before the first render (doc 11 "Hardware FMA dispatch").
+    DSP.call_once(|| info!("AUDIO_DSP {}", skate_audio::dsp::init_fma()));
+    let (started, projects) = (Native::start_from(library, instances, carry.map_or(1, |c| c.first_node)), library.aems().projects.len());
+    match started {
+        Ok(mut native) => {
+            info!("Game audio: native AEMS runtime on ({projects} projects)");
+            if let Some(c) = carry {
+                native.map_epoch = c.epoch;
+            }
+            let handle = world.resource_mut::<Assets<NativeStream>>().add(NativeStream { shared: native.shared.clone() });
             // ONCE, not LOOP: the stream never ends, and Bevy's LOOP wraps it in rodio's
             // `repeat_infinite`, i.e. `Buffered`, which renders 32768 samples (64 blocks, 341 ms)
             // at a time inside the device callback and keeps every chunk forever: a lock burst of
             // 64 renders every 341 ms (game-thread stalls = the 19:01 stutter), up to 341 ms of
             // event-to-sound latency and ~23 MB/min of memory growth.
-            commands.spawn((NativeOutput, AudioPlayer(handle), PlaybackSettings::ONCE.with_volume(Volume::Linear(0.0))));
-            commands.insert_resource(native);
+            world.spawn((NativeOutput, AudioPlayer(handle), PlaybackSettings::ONCE.with_volume(Volume::Linear(0.0))));
+            world.insert_resource(native);
+            true
         }
-        Err(error) => error!("Game audio: the native AEMS runtime could not start, so the skater's sounds, the world emitters and rolling are silent: {error}"),
+        Err(error) => {
+            error!("Game audio: the native AEMS runtime could not start, so the skater's sounds, the world emitters and rolling are silent: {error}");
+            false
+        }
     }
+}
+
+/// Take the running runtime down for a restart: its stream entity is despawned (the sink and
+/// rodio's copy of the stream drop with it; a block mid-render finishes on the old runtime), the
+/// resource removed and dropped (the prefetch worker's sender with it: the worker ends after its
+/// current decode, its result discarded). Returns what the new runtime carries over.
+pub(super) fn shutdown(world: &mut World) -> Option<Carry> {
+    let outputs: Vec<Entity> = world.query_filtered::<Entity, With<NativeOutput>>().iter(world).collect();
+    for e in outputs {
+        world.despawn(e);
+    }
+    let native = world.remove_resource::<Native>()?;
+    let carry = Carry { first_node: native.next_node(), epoch: native.map_epoch + 1, world: native.world };
+    drop(native);
+    Some(carry)
 }
 
 /// Master volume on the stream; inside it the AEMS voices (world emitters: ambience) and the
@@ -834,16 +1021,15 @@ fn follow_volume(
 pub(super) fn reverb_frame(
     native: Option<Res<Native>>,
     library: Option<Res<Library>>,
-    map: Res<crate::map_transition::CurrentMap>,
     cues: Res<super::skate_events::Cues>,
     time: Res<Time<Real>>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
     zones: Res<super::emitters::ReverbZones>,
+    audio: Res<super::map_audio::MapAudio>,
 ) {
     let (Some(native), Some(library)) = (native, library) else { return };
-    let district = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
     let at = cues.riding.board;
-    let key = library.region_key(district, "audio_reverb", at.x, at.z).unwrap_or(skate_audio::bus::env::DEFAULT_PRESET);
+    let key = audio.region_key(&library, "audio_reverb", at.x, at.z).unwrap_or(skate_audio::bus::env::DEFAULT_PRESET);
     let camera = listener.single().ok().map(|t| skate_audio::bus::zones::Camera {
         position: t.translation().to_array(),
         forward: t.forward().as_vec3().to_array(),
@@ -904,6 +1090,8 @@ mod tests {
             world: WorldInstances::RETAIL,
             pending: None,
             frontend: None,
+            resident: Vec::new(),
+            mod_projects: Vec::new(),
         }
     }
 

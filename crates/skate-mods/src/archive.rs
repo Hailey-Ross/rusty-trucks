@@ -122,6 +122,18 @@ impl Drop for Cache {
 }
 
 pub fn validate_package(path: &Path) -> Result<Manifest, String> {
+    validate_package_content(path).map(|(manifest, _)| manifest)
+}
+
+/// [`validate_package`] plus the deep check of the package's audio content overlay
+/// (`audio.json`: schema and every file it names; None without one).
+pub fn validate_package_content(path: &Path) -> Result<(Manifest, Option<crate::audio_content::Loaded>), String> {
+    validate_package_content_at(path).map(|(manifest, audio, _)| (manifest, audio))
+}
+
+/// [`validate_package_content`], also returning the package's root folder (a zip is unpacked
+/// into the cache first), where its content files can be read.
+pub fn validate_package_content_at(path: &Path) -> Result<(Manifest, Option<crate::audio_content::Loaded>, std::path::PathBuf), String> {
     let source = path.canonicalize().map_err(|e| e.to_string())?;
     let mut cache = Cache::default();
     let root = if source.is_dir() {
@@ -144,7 +156,8 @@ pub fn validate_package(path: &Path) -> Result<Manifest, String> {
         .set_mode(mlua::chunk::ChunkMode::Text)
         .into_function()
         .map_err(|e| e.to_string())?;
-    Ok(manifest)
+    let audio = crate::audio_content::load(&root)?;
+    Ok((manifest, audio, root))
 }
 
 pub fn read_bounded(root: &Path, relative: &str, limit: u64) -> Result<Vec<u8>, String> {
@@ -222,7 +235,13 @@ pub fn write_temp(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[derive(Default)]
 pub(crate) struct Fingerprints {entries:HashMap<PathBuf,(Vec<(PathBuf,u64,std::time::SystemTime)>,u64)>}
 impl Fingerprints {
+    #[cfg(test)]
     pub fn get(&mut self,root:&Path,force:bool)->Result<u64,String> {
+        self.get_with_changes(root,force).map(|(hash,_)|hash)
+    }
+    /// The package's fingerprint and the files (relative, `/`-separated) whose size or time
+    /// changed, appeared or went since the last call (every file on the first call).
+    pub fn get_with_changes(&mut self,root:&Path,force:bool)->Result<(u64,Vec<String>),String> {
         fn walk(dir:&Path,out:&mut Vec<(PathBuf,u64,std::time::SystemTime)>)->Result<(),String> {
             for entry in fs::read_dir(dir).map_err(|e|e.to_string())? {
                 let entry=entry.map_err(|e|e.to_string())?;
@@ -232,8 +251,17 @@ impl Fingerprints {
             } Ok(())
         }
         let mut stamp=Vec::new();walk(root,&mut stamp)?;stamp.sort_by(|a,b|a.0.cmp(&b.0));
-        if !force {if let Some((old,hash))=self.entries.get(root){if old==&stamp{return Ok(*hash);}}}
-        let hash=fingerprint(root)?;self.entries.insert(root.to_owned(),(stamp,hash));Ok(hash)
+        if !force {if let Some((old,hash))=self.entries.get(root){if old==&stamp{return Ok((*hash,Vec::new()));}}}
+        let rel=|p:&Path|p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\',"/");
+        let changed:Vec<String>=match self.entries.get(root) {
+            Some((old,_))=>{
+                let mut c:Vec<String>=stamp.iter().filter(|s|!old.contains(s)).map(|s|rel(&s.0)).collect();
+                c.extend(old.iter().filter(|o|!stamp.iter().any(|s|s.0==o.0)).map(|o|rel(&o.0)));
+                c.sort();c.dedup();c
+            }
+            None=>stamp.iter().map(|s|rel(&s.0)).collect(),
+        };
+        let hash=fingerprint(root)?;self.entries.insert(root.to_owned(),(stamp,hash));Ok((hash,changed))
     }
 }
 

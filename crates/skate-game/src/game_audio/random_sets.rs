@@ -42,6 +42,26 @@ fn program(bank: &str) -> &'static [Layer] {
     super::random_programs::PROGRAMS.iter().find(|(b, _)| *b == bank).map_or(&[], |(_, l)| *l)
 }
 
+/// The layers a post of `bank` plays: an audio content overlay's `location_programs` row, else
+/// the measured retail row; a mod bank without either plays one shuffle layer at level 1 (a
+/// retail bank without a row stays silent, as retail).
+fn layers_for(library: &Library, bank: &str) -> std::borrow::Cow<'static, [Layer]> {
+    if let Some(rows) = library.location_program(bank) {
+        return rows.iter().map(|l| Layer {
+            delay: l.delay,
+            sample: l.sample.as_u64().map_or(SHUFFLE, |s| s as usize),
+            level: l.level,
+            pan_sweep: l.pan_sweep,
+            looping: l.looping,
+        }).collect::<Vec<_>>().into();
+    }
+    let retail = program(bank);
+    if retail.is_empty() && library.is_mod_bank(bank) {
+        return vec![Layer { delay: 0.0, sample: SHUFFLE, level: 1.0, pan_sweep: 0.0, looping: false }].into();
+    }
+    retail.into()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Slot {
     Unloaded,
@@ -61,6 +81,8 @@ struct Post {
 
 #[derive(Default)]
 pub(super) struct State {
+    /// The audio content generation the entries were built from.
+    content: u64,
     key: Option<u64>,
     slots: Vec<Slot>,
     timer: f32,
@@ -121,12 +143,12 @@ fn draw(bag: &mut Vec<usize>, count: usize, rng: &mut u32) -> usize {
 }
 
 /// The set for the skater's location (see module docs).
-fn selected(library: &Library, district: &str, at: Vec3) -> Option<u64> {
+fn selected(library: &Library, audio: &super::map_audio::MapAudio, at: Vec3) -> Option<u64> {
     static FORCED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     if let Some(name) = FORCED.get_or_init(|| std::env::var("SKATE_AUDIO_SET").ok()).as_deref() {
         return library.random_set_named(name).map(|(key, _)| key);
     }
-    library.region_key(district, "audio_emitters", at.x, at.z).filter(|key| library.random_set(*key).is_some())
+    audio.region_key(library, "audio_emitters", at.x, at.z).filter(|key| library.random_set(*key).is_some())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -138,21 +160,35 @@ pub(super) fn update(
     mut assets: ResMut<Assets<AudioSource>>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
     cues: Res<super::skate_events::Cues>,
-    map: Res<crate::map_transition::CurrentMap>,
     time: Res<Time<Real>>,
     menu: Option<Res<crate::graphics_menu::Menu>>,
     replay: Res<crate::replay::Replay>,
+    content: Res<super::AudioContent>,
+    audio: Res<super::map_audio::MapAudio>,
 ) {
     let Some(mut library) = library else { return };
     let state = &mut *state;
     let Ok(ear) = listener.single() else { return };
+    if state.content != content.generation {
+        // New audio content: the set's entries may differ; rebuild from scratch.
+        state.content = content.generation;
+        for post in state.posts.drain(..) {
+            for (_, voice, ..) in post.layers {
+                if let Some((id, _)) = voice {
+                    voices.stop(id, 0.3);
+                }
+            }
+        }
+        state.key = None;
+        state.slots.clear();
+        state.bags.clear();
+    }
     let now = time.elapsed_secs_f64();
     let dt = time.delta_secs().clamp(0.0, 0.25);
     let mut rng = state.rng;
 
     // Location change (or silenced: no set): rebuild the entries.
-    let district = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
-    let key = if super::silenced(menu.as_deref(), &replay) { None } else { selected(&library, district, cues.riding.board) };
+    let key = if super::silenced(menu.as_deref(), &replay) { None } else { selected(&library, &audio, cues.riding.board) };
     if key != state.key {
         for post in state.posts.drain(..) {
             for (_, voice, ..) in post.layers {
@@ -190,7 +226,7 @@ pub(super) fn update(
             .min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i);
         if let Some(entry) = oldest {
             let sound = &set.sounds[entry];
-            let layers = program(&sound.bank);
+            let layers = layers_for(&library, &sound.bank);
             if layers.is_empty() {
                 // The bank's program does not answer this sound's selector: retail is silent too.
                 state.slots[entry] = Slot::Unloaded;
