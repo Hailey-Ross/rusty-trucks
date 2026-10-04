@@ -30,6 +30,8 @@
 //! the tazer burst), [`PedBodyFallEvent`] (a knock-down animation's `BodyFallType` key),
 //! [`NpcSkaterReactionEvent`] (an NPC skater saw a slam / trick or crashed: its own speech),
 //! [`VehicleHorn`] (hold a horn kind for the caller's time), [`VehicleAlarm`] (retail's 8 s alarm),
+//! [`VehicleImpact`] (something touched a vehicle: retail's car alarm rule sets a [`VehicleParked`]
+//! car's alarm off, tuned by [`CarAlarmRule`], observed through [`VehicleAlarmStarted`]),
 //! [`AnnouncerSpeechEvent`] (the announcer channel: a challenge's commentary; set
 //! [`LivingWorldAudio::announcer`] while a challenge with an announcer runs). Set [`LivingWorldAudio`]
 //! `expected` at map load when the system will publish, so the world banks decode ahead of need.
@@ -414,14 +416,151 @@ pub struct VehicleHorn {
     pub seconds: f32,
 }
 
-/// Retail's car alarm: horn state 6 for 8 s (vehicle `+3716`, `audio-specs/npc-livingworld-re.md` §6).
+/// Retail's car alarm: horn state 6 for [`CarAlarmRule`]'s time (8 s, vehicle `+3716`,
+/// `audio-specs/npc-livingworld-re.md` §6), unconditionally. A second alarm while one sounds
+/// restarts the time. Engine traffic normally sends [`VehicleImpact`] instead, and the car alarm
+/// rule decides (only a parked car, only a real contact).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct VehicleAlarm {
     pub vehicle: Entity,
 }
 
-/// The car alarm's length (s).
+/// The car alarm's length (s): retail's `livingworld_vehicle_characteristics` default (field
+/// `E199FC7CEA222809`); the install's setup export (`world_tuning.vehicle_alarm.seconds`) wins.
 pub const ALARM_SECONDS: f32 = 8.0;
+/// The smallest contact that sets a parked car's alarm off: the length of the collision message's
+/// vector must exceed it (retail default, field `543475921FD9E04A`; setup export
+/// `world_tuning.vehicle_alarm.min_impact`).
+pub const ALARM_MIN_IMPACT: f32 = 0.1;
+
+/// The traffic AI holds the vehicle in retail's `StayingParked` state (vehicle `+3424` bit 0x80,
+/// set by the state's begin `sub_82C39120`, cleared by its end `sub_82C391F0`): only then can a
+/// contact set its alarm off. Insert while parked, remove when it pulls out. Mod cars: the
+/// `parked` option, else parked when the mod stopped updating them.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VehicleParked;
+
+/// Who or what touched a vehicle (retail's callback takes any collider; the source only feeds
+/// observers and mods, the rule does not test it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ImpactSource {
+    /// The local player (on the board, on foot or in a bail).
+    #[default]
+    Player,
+    /// A ped, an NPC skater or a remote player.
+    Character,
+    /// Another vehicle.
+    Vehicle,
+    /// A prop, a physics body, anything else.
+    Object,
+}
+
+impl ImpactSource {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Player => "player",
+            Self::Character => "character",
+            Self::Vehicle => "vehicle",
+            Self::Object => "object",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "player" => Self::Player,
+            "character" | "ped" | "skater" => Self::Character,
+            "vehicle" | "car" => Self::Vehicle,
+            "object" | "prop" => Self::Object,
+            _ => return None,
+        })
+    }
+}
+
+/// Something touched a vehicle (retail: the vehicle's collision callback `sub_82C3C150`, slot +32
+/// of its contact interface at `+136`). `impact` is the callback message's vector at `+48`, whose
+/// length the rule tests (a contact velocity in m/s by our reading; the hook `VEHHIT` will settle
+/// whether it is that or an impulse). Send one per contact (or per frame while touching: a
+/// repeat restarts the alarm, as in retail). Engine traffic does not exist yet; its collision
+/// handling will send this.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct VehicleImpact {
+    pub vehicle: Entity,
+    pub by: ImpactSource,
+    pub impact: Vec3,
+}
+
+impl VehicleImpact {
+    /// An impact of `speed` (the vector's length) without a direction.
+    pub fn speed(vehicle: Entity, by: ImpactSource, speed: f32) -> Self {
+        Self { vehicle, by, impact: Vec3::new(0.0, 0.0, speed) }
+    }
+}
+
+/// Read back: the car alarm rule set a parked car's alarm off (`restart` = it was already
+/// sounding; retail restarts its timer). Engine traffic restarts the car's parked timer here
+/// (retail zeroes `+3712` too, which delays pulling out) and must not pull out while the alarm
+/// sounds (`StayingParked`'s pull-out condition `sub_82C3A3A8` is false while bit 0x10 is set).
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct VehicleAlarmStarted {
+    pub vehicle: Entity,
+    pub by: ImpactSource,
+    pub restart: bool,
+}
+
+/// The car alarm rule's numbers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AlarmTuning {
+    /// The rule runs (false: impacts never set an alarm off; [`VehicleAlarm`] still does).
+    pub enabled: bool,
+    /// The contact vector's length must exceed this.
+    pub min_impact: f32,
+    /// The alarm's time after the last qualifying contact (s).
+    pub seconds: f32,
+}
+
+impl Default for AlarmTuning {
+    fn default() -> Self {
+        Self { enabled: true, min_impact: ALARM_MIN_IMPACT, seconds: ALARM_SECONDS }
+    }
+}
+
+impl AlarmTuning {
+    /// Retail's rule (`sub_82C3C150`): a parked car, a contact longer than `min_impact`.
+    pub fn sets_off(&self, parked: bool, impact: Vec3) -> bool {
+        self.enabled && parked && impact.is_finite() && impact.length() > self.min_impact
+    }
+
+    /// How long the horn holds state 6: retail adds the frame time to the alarm timer on every AI
+    /// update and stops at the first update where it exceeds `seconds` (StopAlarming
+    /// `sub_82C3A4D0`, a strict `>`), so at the console's 30 fps the alarm sounds for
+    /// `floor(seconds × 30) + 1` frames (8 s → 241 frames, 8.033 s), at any engine frame rate.
+    pub fn hold_seconds(&self) -> f32 {
+        let dt = skate_audio::mixmap::cadence::CONSOLE_DT;
+        if !self.seconds.is_finite() || self.seconds <= 0.0 {
+            return dt;
+        }
+        ((self.seconds / dt + 1e-4).floor() + 1.0) * dt
+    }
+}
+
+/// The car alarm rule's tuning: retail's values from the install's setup export (else the
+/// constants above), and an override (a mod's `sdk.world_audio.alarm_rule`, or engine code).
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct CarAlarmRule {
+    /// From the setup export (`world_tuning.vehicle_alarm`); None = the retail constants.
+    pub setup: Option<AlarmTuning>,
+    /// Wins over `setup` while set.
+    pub overrides: Option<AlarmTuning>,
+    /// The mod that set `overrides` (cleared when it stops); None = engine code.
+    pub override_owner: Option<String>,
+}
+
+impl CarAlarmRule {
+    /// The tuning in effect.
+    pub fn tuning(&self) -> AlarmTuning {
+        self.overrides.or(self.setup).unwrap_or_default()
+    }
+}
 
 /// A ped zaps with its tazer: `PedAudio::tazing` is held for `seconds` (None = the state graph's
 /// `TazerCycTime`, `world_tuning.ped_objects.tazer_seconds`, 2.0 s), the `c_tazer` burst plays.

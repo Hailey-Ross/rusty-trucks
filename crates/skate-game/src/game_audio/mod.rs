@@ -13,6 +13,7 @@
 //! scale it down (voices.rs), sounds fade in, voice counts are capped, and nothing plays while
 //! the menu is open or a replay runs. `--mute` silences game and mod audio.
 mod ambience;
+mod car_alarm;
 mod content;
 #[cfg(test)]
 mod crossfade_groups;
@@ -242,6 +243,7 @@ impl Plugin for GameAudioPlugin {
             .add_plugins(npc_skaters::register)
             .add_plugins(world_speech::register)
             .add_plugins(world_bridge::register)
+            .add_plugins(car_alarm::register)
             .add_systems(
                 PostUpdate,
                 (apply_global_volume, follow_camera).before(bevy::transform::TransformSystems::Propagate),

@@ -96,6 +96,10 @@ pub struct WorldAudioOptions {
     pub horn: Option<i32>,
     #[serde(default)]
     pub skidding: Option<bool>,
+    /// The car is parked (retail's `StayingParked`): an `impact` can set its alarm off. Default:
+    /// parked while the mod does not update it (0.5 s).
+    #[serde(default)]
+    pub parked: Option<bool>,
     // ---- peds
     /// Speech voice id 1..=96 (0 = none): a ped's model (its shoe class, kind and speech words
     /// follow from it unless given) or a skater's voice (the bail grunt, its reactions). The pros
@@ -200,6 +204,35 @@ pub struct WorldAudioEventOptions {
     /// `reaction`: the other skater's model (0 = the player; a pro 1..=29 picks the pro-on-pro lines).
     #[serde(default)]
     pub by: Option<u32>,
+    /// `impact`: the contact's speed (m/s, the length retail's car alarm rule tests; 0..=200).
+    #[serde(default)]
+    pub speed: Option<f32>,
+    /// `impact`: who touched the car (`player`, `character`, `vehicle`, `object`; default `player`).
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// The impact sources a mod may name.
+pub const IMPACT_SOURCES: [&str; 4] = ["player", "character", "vehicle", "object"];
+
+/// `alarm_rule` options (retail's car alarm trigger): fields given replace the rule's current
+/// numbers (`enabled`, `min_impact` m/s, `seconds`); no options = back to retail's (the install's
+/// setup data). Cleared when the mod stops.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AlarmRuleOptions {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub min_impact: Option<f32>,
+    #[serde(default)]
+    pub seconds: Option<f32>,
+}
+
+impl AlarmRuleOptions {
+    pub fn validate(&self) -> bool {
+        self.min_impact.is_none_or(|v| v.is_finite() && (0.0..=200.0).contains(&v)) && self.seconds.is_none_or(|v| v.is_finite() && (0.0..=600.0).contains(&v))
+    }
 }
 
 /// `announce` options (the announcer channel, retail's `PlayAnnouncerSpeech`): `pro` = a skater
@@ -316,7 +349,7 @@ impl WorldAudioOptions {
 
     /// The fields of other kinds are rejected (so a typo'd kind is an error, not silence).
     pub fn validate_for(&self, kind: ObjectKind) -> bool {
-        let traffic = self.engine.is_some() || self.speed.is_some() || self.load.is_some() || self.horn.is_some() || self.skidding.is_some();
+        let traffic = self.engine.is_some() || self.speed.is_some() || self.load.is_some() || self.horn.is_some() || self.skidding.is_some() || self.parked.is_some();
         // `voice` is a ped's or a skater's (the AI skaters' 89–96, the pros 1–29: bail grunt, reactions).
         let ped = self.shoe_class.is_some() || self.weight.is_some() || self.close_range.is_some() || self.feet.is_some() || self.materials.is_some() || self.footsteps.is_some() || self.tazing.is_some() || self.photo_flag.is_some();
         let skater = self.source.is_some() || self.from.is_some() || self.seconds.is_some() || self.wheels.is_some() || self.material.is_some() || self.grinding.is_some() || self.grind_material.is_some() || self.air.is_some() || self.loose_board.is_some();
@@ -330,7 +363,7 @@ impl WorldAudioOptions {
                 ObjectKind::Traffic => !ped && !skater && !emitter && !shape && !zone,
                 ObjectKind::Ped => !traffic && !skater && !emitter && !shape && !zone,
                 // A lite skater takes its speed from `speed` too.
-                ObjectKind::Skater => !ped && self.engine.is_none() && self.load.is_none() && self.horn.is_none() && self.skidding.is_none() && !emitter && !shape && !zone,
+                ObjectKind::Skater => !ped && self.engine.is_none() && self.load.is_none() && self.horn.is_none() && self.skidding.is_none() && !emitter && !shape && !zone && self.parked.is_none(),
                 ObjectKind::Emitter => !traffic && !ped && !skater && !zone && !moving,
                 ObjectKind::ReverbZone => !traffic && !ped && !skater && !emitter && !moving,
             }
@@ -350,6 +383,14 @@ impl WorldAudioEventOptions {
     pub fn validate(&self, event: &str) -> bool {
         match event {
             _ if event != "reaction" && self.by.is_some() => false,
+            _ if event != "impact" && (self.speed.is_some() || self.source.is_some()) => false,
+            "impact" => {
+                self.kind.is_none()
+                    && self.seconds.is_none()
+                    && self.value.is_none()
+                    && self.speed.is_some_and(|s| s.is_finite() && (0.0..=200.0).contains(&s))
+                    && self.source.as_deref().is_none_or(|s| IMPACT_SOURCES.contains(&s))
+            }
             "reaction" => self.kind.is_none() && self.seconds.is_none() && self.by.is_none_or(|b| b <= 96) && matches!(&self.value, Some(serde_json::Value::String(s)) if REACTIONS.contains(&s.as_str())),
             "horn" => self.kind.is_none_or(|k| (1..=5).contains(&k)) && self.seconds.is_none_or(|s| s.is_finite() && (0.0..=30.0).contains(&s)) && self.value.is_none(),
             "alarm" => self.kind.is_none() && self.seconds.is_none() && self.value.is_none(),
@@ -460,6 +501,19 @@ mod tests {
         let horn: WorldAudioEventOptions = serde_json::from_value(json!({"kind":3,"seconds":1.2})).unwrap();
         assert!(horn.validate("horn") && !horn.validate("alarm") && !horn.validate("bark"));
         assert!(WorldAudioEventOptions::default().validate("alarm"));
+        let hit: WorldAudioEventOptions = serde_json::from_value(json!({"speed":3.3,"source":"player"})).unwrap();
+        assert!(hit.validate("impact") && !hit.validate("alarm") && !hit.validate("horn"));
+        assert!(!WorldAudioEventOptions::default().validate("impact"), "an impact needs its speed");
+        for bad in [json!({"speed":-1}), json!({"speed":500}), json!({"speed":1,"source":"meteor"}), json!({"speed":1,"kind":2})] {
+            let o: WorldAudioEventOptions = serde_json::from_value(bad.clone()).unwrap();
+            assert!(!o.validate("impact"), "accepted {bad}");
+        }
+        let parked: WorldAudioOptions = serde_json::from_value(json!({"parked":true})).unwrap();
+        assert!(parked.validate_for(ObjectKind::Traffic) && !parked.validate_for(ObjectKind::Ped) && !parked.validate_for(ObjectKind::Skater));
+        let rule: AlarmRuleOptions = serde_json::from_value(json!({"enabled":true,"min_impact":2,"seconds":4})).unwrap();
+        assert!(rule.validate() && AlarmRuleOptions::default().validate());
+        assert!(!serde_json::from_value::<AlarmRuleOptions>(json!({"seconds":-1})).unwrap().validate());
+        assert!(serde_json::from_value::<AlarmRuleOptions>(json!({"typo":1})).is_err());
         let speech: WorldAudioEventOptions = serde_json::from_value(json!({"value":"warn"})).unwrap();
         assert!(speech.validate("speech"));
         let speech: WorldAudioEventOptions = serde_json::from_value(json!({"value":23})).unwrap();

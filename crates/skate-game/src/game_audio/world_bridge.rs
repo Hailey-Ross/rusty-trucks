@@ -202,12 +202,19 @@ fn tag_remote_players(mut commands: Commands, remotes: Query<Entity, (With<crate
     }
 }
 
+impl Bridge {
+    /// The car alarm's time left on a vehicle (None: not sounding).
+    pub(crate) fn alarm_left(&self, vehicle: Entity) -> Option<f32> {
+        self.horns.get(&vehicle).filter(|h| h.0 == HornState::Alarm).map(|h| h.1)
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn publish(
+pub(super) fn publish(
     mut bridge: ResMut<Bridge>,
     (mut owners, mut own): (ResMut<WorldOwners>, ResMut<super::mod_world::OwnWorldOwners>),
     mut skaters: ResMut<super::npc_skaters::NpcSkaters>,
-    living: Res<LivingWorldAudio>,
+    (living, alarm_rule): (Res<LivingWorldAudio>, Option<Res<CarAlarmRule>>),
     library: Option<Res<super::Library>>,
     physics: Option<Res<crate::physics::GamePhysics>>,
     time: Res<Time>,
@@ -254,8 +261,10 @@ fn publish(
     for h in horns.read() {
         bridge.horns.insert(h.vehicle, (HornState::Honk(h.kind.clamp(1, 5)), h.seconds.max(0.0)));
     }
+    // The alarm's time: the rule's (retail 8 s), whole console frames past it (`AlarmTuning::hold_seconds`).
+    let alarm_hold = alarm_rule.as_deref().map_or_else(|| AlarmTuning::default().hold_seconds(), |r| r.tuning().hold_seconds());
     for a in alarms.read() {
-        bridge.horns.insert(a.vehicle, (HornState::Alarm, ALARM_SECONDS));
+        bridge.horns.insert(a.vehicle, (HornState::Alarm, alarm_hold));
     }
     let tazer_seconds = *bridge.tazer_seconds.get_or_insert_with(|| library.as_deref().map_or_else(|| skate_audio::world::peds::PedObjectTuning::default().tazer_seconds, |l| l.world_tuning().ped_objects().tazer_seconds));
     for z in zaps.read() {

@@ -1118,6 +1118,97 @@ spec §11.
 
 Credits: the recomp (skate3recomp, rexglue, Xenia) as the research build; our own code and words.
 
+## The car alarm trigger (2026-10-04, follow-up to the world follow-ups)
+**Problem.** The car alarm sound was ported (`VehicleAlarm { vehicle }` = horn state 6 for 8 s, the mod event
+`alarm`), but nothing set it off the way retail does: a parked car's alarm goes off when the player runs into it.
+The user's words (recomp session 2026-10-04 16:11): "I found a taxi, so yeah, and I skitched on it too." / "it
+ended up parking on the side of the road and when I ran into the car alarm went off".
+
+**Root cause.** The trigger is traffic AI, not audio: it lives in the vehicle's collision callback and its
+`StayingParked` state, which the engine does not have (there is no traffic yet).
+
+**Evidence (retail, from the TU3 recompilation as reference and that session; spec
+`audio-specs/world-traffic-audio.md` "Car alarm trigger").**
+- The vehicle's collision callback `sub_82C3C150` (interface at vehicle `+136`): only while the car is in
+  `StayingParked` (`+3424` bit 0x80, set by the state's begin `sub_82C39120`, cleared by its end `sub_82C391F0`),
+  and only when the contact message's vector (`msg+48`) is longer than `livingworld_vehicle_characteristics`
+  field `543475921FD9E04A` (0.1, no shipped override), it sets the alarm flag (`+3424` bit 0x10) and zeroes the
+  alarm timer `+3716` and the parked timer `+3712`. It does not test who hit the car.
+- `StayingParked`'s update `sub_82C39138` counts the alarm timer while the flag is set. `StopAlarming`
+  (`sub_82C3A4D0`) ends the alarm when the timer passes field `E199FC7CEA222809` (8 s); its action
+  `sub_82C3B4E8` clears the flag. Pulling out (`sub_82C3A3A8`) is blocked while the alarm sounds.
+- Session: the taxi pulled over and parked at 249.8 s. The user rolled up to its rear bumper at 0.2–0.3 m/s (no
+  alarm), stepped off at 255.90 s and ran into it. The alarm post came 130 ms later (256.032 s), and nothing else
+  was posted for the car (no impact sound). The alarm then ran for the remaining 64 s, because the user stayed at
+  the car (on foot beside it, skating along and on it): every contact restarted the 8 s.
+
+**Change.**
+- Engine-facing (`crate::world_audio`): component `VehicleParked` (retail's StayingParked); message
+  `VehicleImpact { vehicle, by: ImpactSource, impact: Vec3 }` (the callback's message; `VehicleImpact::speed` for a
+  length only); resource `CarAlarmRule` with `AlarmTuning { enabled, min_impact, seconds }` (setup export first,
+  then an override from a mod or engine code); read-back message `VehicleAlarmStarted { vehicle, by, restart }`
+  for the future traffic AI (restart its parked timer, don't pull out while the alarm sounds).
+- `game_audio/car_alarm.rs`: the rule (parked, `|impact| > min_impact`, enabled → `VehicleAlarm` +
+  `VehicleAlarmStarted`; several contacts in one frame start it once).
+- Timing: the bridge holds horn state 6 for `AlarmTuning::hold_seconds()` = whole console frames past `seconds`
+  (retail adds the frame time each AI update and stops at the first update past 8 s: 241 frames at 30 fps,
+  8.033 s), the same at any engine frame rate. A repeat `VehicleAlarm` / impact restarts it (retail's timer reset).
+  This also applies to the existing `alarm` event (8.000 → 8.033 s).
+- Data: setup export `world_tuning.vehicle_alarm` = `{min_impact, seconds}` from the vehicle spec `default`
+  (+ `specs` for any spec that differs; none in retail) in `tools/asset_pipeline/world_audio.py`. Installs from
+  before it use the engine's constants, which are the same values (`ALARM_MIN_IMPACT`, `ALARM_SECONDS`).
+- Mods (API 2, world audio extension 1, backward-compatible): `sdk.world_audio.event(key, 'impact', {speed=m/s,
+  source='player'|'character'|'vehicle'|'object'})` on a mod car; traffic option `parked` (default: parked while
+  the mod doesn't update the car, as before); `sdk.world_audio.alarm_rule{enabled=, min_impact=, seconds=}` (fields
+  replace the rule's numbers for every car; `alarm_rule()` = retail; cleared when the mod stops);
+  `sdk.world_audio.read(key).alarm` = seconds left while it sounds. The dev test mod (`mods/world-audio-test`)
+  marks its taxi `parked` and reports an impact every frame the skater touches a car's box: run into the taxi and
+  its alarm goes off; the moving cars ignore it. The readout shows `ALARM carN s`.
+- Engine traffic (when it exists): add `VehicleParked` while the car is in its parked state, send `VehicleImpact`
+  from its contact handling (any collider, every contact), and react to `VehicleAlarmStarted`.
+
+**Verification.** See "Proofs and tests (car alarm)" below.
+
+**Research hook (not run yet).** `VEHHIT` (every callback: flags before / after, the vector and its length, the
+contact point, the other object, the timers, the message bytes), `VEHALARMSTOP` (the alarm's end with its timer)
+and `VEHPARK` (StayingParked begin / end), category `traffic`, in the recomp fork's `src/research/hooks_traffic.cpp`
+(uncommitted; syntax-checked, not built). One short session answers the open questions: find a car that pulls
+over (taxis do), then (1) roll into it slowly on the board, (2) walk into it on foot, (3) bump it once and stay
+away for 10 s, (4) hit it fast on the board.
+
+**Open questions.**
+- What `msg+48` is (a contact velocity or an impulse) and whether a board's contact reaches the callback at all
+  (the slow roll against the bumper did not set the alarm off). The port reads it as a speed; at 0.1 any real
+  contact counts either way.
+- The alarm's end in the recomp: the session never let it end (`VEHALARMSTOP` will show the timer at the end).
+- Per-spec values: none shipped; the export keeps a `specs` map in case, the engine uses one rule for all cars.
+
+### Proofs and tests (car alarm)
+- Local player byte-identical: the e2e bench (13 scenarios + 8 sessions, `row` and `fps300`) from this branch's
+  head before the change (`a0`) against the result (`a1`): all four sets IDENTICAL (26 + 26 + 16 + 16 outputs).
+- New unit tests: `game_audio::car_alarm::tests` (5: the retail conditions incl. the strict `>`, the hold in whole
+  console frames, impact → alarm with restart and the 7.9 s / 8.1 s edges, the same length at 30 / 60 / 144 fps,
+  overrides and disable), `modding::world_audio::tests` (2: `impact` reaches the rule, `alarm_rule` merges and is
+  cleared with its mod), the setup export (`world_tuning_reads_the_setup_export`, Python
+  `test_vehicle_alarm_reads_the_default_spec_and_overrides`), skate-mods option / command validation and the test
+  mod run (exactly one impact per frame while the skater is in the taxi's box). Against the real install's
+  collections the export gives `{min_impact: 0.1, seconds: 8.0}` = the engine's constants.
+- Suites (worktree target, private-data env): release build ok; skate-audio 235 + integration pass, all its
+  ignored data tests pass; game_audio 49 pass, its 35 ignored data tests pass; Python `test_world_audio` 9 pass;
+  skate-mods passes except the known `skyline_every_component_is_real_and_drives_through_ground_contact` (gitignored
+  model missing in a fresh worktree).
+- Not done: an in-game listen (the user: enable `dev-world-audio-test`, run into the parked taxi).
+
+### Files (car alarm)
+- `crates/skate-game/src/world_audio.rs` (`VehicleParked`, `ImpactSource`, `VehicleImpact`, `VehicleAlarmStarted`,
+  `AlarmTuning`, `CarAlarmRule`, `ALARM_MIN_IMPACT`), `game_audio/car_alarm.rs` (new), `game_audio/world_bridge.rs`
+  (the hold, `Bridge::alarm_left`), `game_audio/world_sources.rs` (`vehicle_alarm` export), `game_audio/mod.rs`.
+- `crates/skate-game/src/modding/{mod.rs, world_audio.rs}`, `crates/skate-mods/src/{world_audio.rs, vm.rs, api.lua}`,
+  `sdk/skate.lua`, `mods/world-audio-test/main.lua`.
+- `tools/asset_pipeline/world_audio.py`, `test_world_audio.py`.
+- Specs: `audio-specs/world-traffic-audio.md` "Car alarm trigger", `npc-livingworld-re.md` §6,
+  `world-audio-hookin-spec.md` (the message table).
+
 ## Open questions before P3 (kept for the record)
 
 - **Speech playback** in the host: the manager, the library and the streams. The level and pan

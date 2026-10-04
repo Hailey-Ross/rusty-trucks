@@ -49,6 +49,23 @@ class Tuning(unittest.TestCase):
         self.assertEqual(t['ped_objects'], {'body_fall_eq': 0})
         self.assertEqual(t['speech_voice'], {})
 
+    def test_vehicle_alarm_reads_the_default_spec_and_overrides(self):
+        from tools.asset_pipeline.audio_formats import name_id
+        f32 = lambda v: struct.pack('>f', v).hex()  # noqa: E731
+        cls = f'Hash_{name_id("livingworld_vehicle_characteristics"):016X}'
+        collections = [
+            {'class': cls, 'key': 'default', 'parent': '', 'fields': {
+                'Hash_543475921FD9E04A': {'type': 'EA::Reflection::Float', 'data': f32(0.1)},
+                'Hash_E199FC7CEA222809': {'type': 'EA::Reflection::Float', 'data': f32(8.0)}}},
+            {'class': cls, 'key': 'vehicle_spec_taxi01', 'parent': 'default', 'fields': {}},
+            {'class': cls, 'key': 'vehicle_spec_truck01', 'parent': 'default', 'fields': {
+                'Hash_E199FC7CEA222809': {'type': 'EA::Reflection::Float', 'data': f32(12.0)}}},
+        ]
+        self.assertEqual(world.vehicle_alarm(collections), {'min_impact': 0.1, 'seconds': 8.0, 'specs': {'vehicle_spec_truck01': {'seconds': 12.0}}})
+        self.assertEqual(world.vehicle_alarm(collections[:2]), {'min_impact': 0.1, 'seconds': 8.0})
+        self.assertEqual(world.vehicle_alarm([]), {})
+        self.assertEqual(world.world_tuning(collections[:2])['vehicle_alarm'], {'min_impact': 0.1, 'seconds': 8.0})
+
     def test_ped_objects_and_speech_curves(self):
         import tempfile
         from pathlib import Path

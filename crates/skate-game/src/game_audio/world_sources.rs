@@ -70,6 +70,15 @@ pub(crate) struct WorldTuningJson {
     ped_objects: Option<PedObjectsJson>,
     /// The speech stream voice's PEAK curves (`skate_audio::world::speech_player::SpeechVoiceTuning`).
     speech_voice: Option<SpeechVoiceJson>,
+    /// The car alarm rule (`livingworld_vehicle_characteristics` default: `min_impact`, `seconds`).
+    vehicle_alarm: Option<VehicleAlarmJson>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct VehicleAlarmJson {
+    min_impact: Option<f32>,
+    seconds: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -225,6 +234,20 @@ impl WorldTuningJson {
     /// A ped model's fields by its voice id (None: not in the export).
     pub(crate) fn ped_model(&self, voice: u32) -> Option<PedModelJson> {
         self.ped_models.get(&voice.to_string()).copied()
+    }
+
+    /// The car alarm rule's retail numbers from the export (None: an install from before it; the
+    /// engine's constants are the same values).
+    pub(crate) fn vehicle_alarm(&self) -> Option<crate::world_audio::AlarmTuning> {
+        let v = self.vehicle_alarm.as_ref()?;
+        let mut t = crate::world_audio::AlarmTuning::default();
+        if let Some(m) = v.min_impact.filter(|m| m.is_finite() && *m >= 0.0) {
+            t.min_impact = m;
+        }
+        if let Some(s) = v.seconds.filter(|s| s.is_finite() && *s >= 0.0) {
+            t.seconds = s;
+        }
+        Some(t)
     }
 
     /// A traffic model's engine record name (`taxi01` → `c04_taxi01`).
@@ -1019,6 +1042,12 @@ mod tests {
         assert_eq!(t.ped_footsteps(), PedFootstepTuning::default());
         let empty: WorldTuningJson = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.ped_footsteps(), PedFootstepTuning::default());
+        assert_eq!(empty.vehicle_alarm(), None, "an install from before the export");
+        let alarm: WorldTuningJson = serde_json::from_str(r#"{"vehicle_alarm": {"min_impact": 0.25, "seconds": 12}}"#).unwrap();
+        let a = alarm.vehicle_alarm().unwrap();
+        assert_eq!((a.enabled, a.min_impact, a.seconds), (true, 0.25, 12.0));
+        let retail: WorldTuningJson = serde_json::from_str(r#"{"vehicle_alarm": {"min_impact": 0.1, "seconds": 8}}"#).unwrap();
+        assert_eq!(retail.vehicle_alarm(), Some(crate::world_audio::AlarmTuning::default()), "the export = the engine's retail constants");
     }
 
     #[test]

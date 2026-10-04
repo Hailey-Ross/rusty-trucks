@@ -205,7 +205,8 @@ pub struct WorldAudioInstance { pub slot: WorldAudioSlot, pub instance: u32 }   
 |---|---|---|
 | `PedSpeechEvent { ped: Entity, value: SpeechValue }` | sets `PedAudio.speech_value` → PedestrianSpeech sees the change → manager → line | `SendSpeechEvent speechvalue=N` on state entry (`speech::SPEECH_VALUES`: 10 CollisionNearbyReaction, 11 warn, 20 Flee, 23 LongCheer, 25 StopCheer, …). `SpeechValue` is a typed enum with `Raw(i32)`. |
 | `VehicleHorn { vehicle, kind: 1..=5, seconds }` | holds `horn = Honk(kind)` for `seconds`, then back to `None` | horn state `+156`; the duration is the AI's (not retail data: the caller chooses) |
-| `VehicleAlarm { vehicle }` | `horn = Alarm` for **8 s** | car alarm stops after 8 s (`npc-livingworld-re.md` §6, vehicle +3716) |
+| `VehicleAlarm { vehicle }` | `horn = Alarm` for **8 s** (241 console frames, 8.033 s; a repeat restarts it) | car alarm stops after 8 s (`npc-livingworld-re.md` §6, vehicle +3716) |
+| `VehicleImpact { vehicle, by, impact }` | on a `VehicleParked` car whose `impact` is longer than 0.1 (`CarAlarmRule`): `VehicleAlarm` + `VehicleAlarmStarted` | the collision callback `sub_82C3C150` (`world-traffic-audio.md` "Car alarm trigger") |
 | `PedKnockDown { ped }` | reserved for PedBodyFall (Phase 3) | not decoded |
 | `PedTazer { ped, phase }` | reserved for Tazer (needs op 38) | |
 | `NpcSkaterBail { skater }` | the NPC bail grunt (SkaterSpeech message 8206 / 115) | `sub_824BF5F8`, Phase 3 |
