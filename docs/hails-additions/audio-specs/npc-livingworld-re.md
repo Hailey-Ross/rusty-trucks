@@ -532,7 +532,8 @@ own code (don't ship the XML).
   composed in Lua) + `mods/Skyline_Drive_Mod`, branch `skyline-driving-update`; @andrewnakas fork
   `mx/vehicle`, `mx/engine`, PR #1 "Mx/audio engine vehicles" — all player-driven. Reusable: traffic car
   bodies as kinematic proxies on skate-dynamics (skater collision), engine-sound work for
-  `aud_traffic_engine`. No licence upstream: describe, don't copy.
+  `aud_traffic_engine`. Upstream main is GPLv3 (`GPL-3.0-only`, since 2026-10-03, `4488651`); the
+  unmerged fork branches and PR #1 have no licence of their own: describe, don't copy.
 
 
 ## Tools (local research scripts, mostly not published; `veh_trace.py`, `first_pass.py`, `callctx.sh`,
