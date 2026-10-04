@@ -33,6 +33,7 @@ struct Capture {
     first_panic_open: Option<bool>,
 }
 impl Capture {
+    #[cfg(test)]
     fn line(&mut self, stream: &str, line: &[u8], elapsed: f64) {
         self.record(stream, line, false, elapsed);
     }
