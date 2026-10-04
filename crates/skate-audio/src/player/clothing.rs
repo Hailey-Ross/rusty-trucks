@@ -1,5 +1,5 @@
 //! The skater's clothing: retail's `SFXObj_Clothing` (controller `0x40010060`). Written from our
-//! reading of the retail code (TU3, reference only; spec `.claude/notes/aems-offboard-clothing-spec.md`):
+//! reading of the retail code (TU3, reference only; spec `audio-specs/aems-offboard-clothing-spec.md`):
 //!
 //! - process `sub_824DBB68`: cloth falls `sub_824DBF10`, push foley `sub_824DBBB8`, body slide
 //!   `sub_824DC0E8`;

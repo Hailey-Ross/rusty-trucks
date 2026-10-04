@@ -1,15 +1,17 @@
 //! The Tricks component (`player::tricks`: Class_Flips, cloth_trick) and `Class_Treatment`
 //! through the real banks, MixMap and runtime, headless, against the retail recomp sessions'
-//! per-voice gains (`.claude/skills/aems-port/tools/retail_voices.py`, sessions
-//! all_20261002_163809 / 164620; spec `.claude/notes/aems-tricks-treatment-spec.md` §6).
+//! per-voice gains (`tools/recomp-trace/retail_voices.py`, sessions
+//! all_20261002_163809 / 164620; spec `audio-specs/aems-tricks-treatment-spec.md` §6).
 //!
 //! Data-gated: skipped without the install's `assets/private/audio` (banks, WAVs, MixMap). The
 //! `Treatments` bank is not exported by setup yet; it is read from `assets/private/audio` when
-//! present, else from `.local/audio-re/tricks` (`decode_bank.py Treatments`). Run with
+//! present, else from `$SKATE_AUDIO_RE_DIR/tricks` (a local decode of `Treatments`). Run with
 //! `cargo test --release --test player_tricks -- --nocapture` for the tables.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+mod private_data;
 
 use skate_audio::eval::NodeId;
 use skate_audio::formats::{Bank, Project};
@@ -68,12 +70,13 @@ fn wav_pcm(bytes: &[u8]) -> Option<Pcm> {
     None
 }
 
-/// Where a bank's `.abk` and decoded WAVs are: the install, or the local research copy.
+/// Where a bank's `.abk` and decoded WAVs are: the install, or the local research copy
+/// (`$SKATE_AUDIO_RE_DIR/tricks`).
 fn bank_dirs(stem: &str) -> Option<(PathBuf, PathBuf)> {
     let install = root().join("assets/private/audio");
-    let local = root().join(".local/audio-re/tricks");
-    [(install.join("aems"), install.clone()), (local.clone(), local)]
-        .into_iter()
+    let local = private_data::audio_re("tricks").map(|l| (l.clone(), l));
+    std::iter::once((install.join("aems"), install.clone()))
+        .chain(local)
         .find(|(abk, wavs)| abk.join(format!("{stem}.abk")).is_file() && wavs.join(format!("banks/{stem}/0000.wav")).is_file())
 }
 
@@ -494,9 +497,9 @@ struct TreatRow {
 }
 
 /// The `TREAT` rows of one object of a recomp session (`TREAT_SESSION`, default the TREAT
-/// session all_20261002_223306; `TREAT_OBJECT`, default the local player's object there).
+/// session `$SKATE_RECOMP_SESSIONS/all_20261002_223306`; `TREAT_OBJECT`, default the local player's object there).
 fn treat_rows() -> Option<Vec<TreatRow>> {
-    let session = std::env::var("TREAT_SESSION").map(PathBuf::from).unwrap_or_else(|_| root().join(".local/recomp/sessions/all_20261002_223306"));
+    let session = private_data::recomp_session("TREAT_SESSION", "all_20261002_223306")?;
     let object = std::env::var("TREAT_OBJECT").unwrap_or_else(|_| "40C581A0".into());
     let text = std::fs::read_to_string(session.join("trace.tsv")).ok()?;
     let rows: Vec<TreatRow> = text
@@ -773,17 +776,19 @@ fn treatment_replay_of_the_recomp_capture() {
 
 /// Diagnostic (ignored; `--nocapture`): `SFXObj_SenseOfSpeed` (rattle + wind) driven by a recomp
 /// session's per-update ground speed and air flag (GREC lines of the local board, `GREC_SESSION`,
-/// default all_20261002_223613; `GREC_OBJECT`, default `40C33020`), one update per 60 Hz frame,
-/// through the real `sense_of_speed` bank, MixMap and evaluator. The COM speed stands in as the
+/// default `$SKATE_RECOMP_SESSIONS/all_20261002_223613`; `GREC_OBJECT`, default `40C33020`), one update
+/// per 60 Hz frame, through the real `sense_of_speed` bank, MixMap and evaluator. The COM speed stands in as the
 /// ground speed (GREC has no COM velocity), so the wind is approximate in the air. Prints voices
 /// per stream and their peak-gain quantiles, to compare with the recomp's own sense_of_speed voices
-/// in the same session (`.local/audio-re/sos/sos_figures.py`, which attributes the shared samples
+/// in the same session (a local script `sos_figures.py`, which attributes the shared samples
 /// by address: Treatments 16 / 17 = sense_of_speed 3 / 4).
 #[test]
 #[ignore = "diagnostic"]
 fn sense_of_speed_replay_of_the_recomp_speeds() {
     use skate_audio::player::components::SenseOfSpeed;
-    let session = std::env::var("GREC_SESSION").map(PathBuf::from).unwrap_or_else(|_| root().join(".local/recomp/sessions/all_20261002_223613"));
+    let Some(session) = private_data::recomp_session("GREC_SESSION", "all_20261002_223613") else {
+        panic!("missing private data: no GREC session (GREC_SESSION or SKATE_RECOMP_SESSIONS)")
+    };
     let object = std::env::var("GREC_OBJECT").unwrap_or_else(|_| "40C33020".into());
     let Ok(text) = std::fs::read_to_string(session.join("trace.tsv")) else { panic!("missing private data: no GREC session") };
     // (ms, ground speed m/s, air)

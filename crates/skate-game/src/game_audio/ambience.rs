@@ -1,4 +1,4 @@
-//! Zone ambience beds, as retail plays them (TU3 SFXObj_Ambience; notes ems-emitters-re.md, docs 11):
+//! Zone ambience beds, as retail plays them (TU3 SFXObj_Ambience; audio-specs/ems-emitters-re.md, doc 11):
 //! - the zone is the district's world-painter region layer `audio_ambience` at the skater's x, z,
 //!   an `aud_wp_ambiences` record naming its bed (ambience.big stream), volume and fade times;
 //! - one bed at a time: on a zone change the old bed fades out over the OLD zone's fade-out time and
@@ -15,7 +15,7 @@ use bevy::prelude::*;
 /// Fallback bed level and fade for installs without zone data.
 const LEVEL: f32 = 0.6;
 const CROSSFADE: f32 = 2.0;
-/// The Ambience MixMap's bed level carries a −11 dB base before any ducking (mixmap-spec.md; out0).
+/// The Ambience MixMap's bed level carries a −11 dB base before any ducking (audio-specs/mixmap-spec.md; out0).
 /// Verified against retail captures at four zones (dt_open, dt_main, dt_rez, indu_quarry): predicted
 /// with the base within 0.6 dB, without it 11 dB too loud (tools/check_bed_level.py). Our levels run at
 /// `voices::RETAIL_SCALE` × retail, so the bed gets the same scale to keep retail's balance.

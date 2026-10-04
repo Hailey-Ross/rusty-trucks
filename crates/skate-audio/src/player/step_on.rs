@@ -1,5 +1,5 @@
 //! `SFXObj_Contacts`' hand-on-deck sounds (`sub_824B85B0`, run by the Contacts process after the
-//! deck impact; spec `.claude/notes/aems-offboard-clothing-spec.md`). Written from our reading of
+//! deck impact; spec `audio-specs/aems-offboard-clothing-spec.md`). Written from our reading of
 //! the retail code (TU3, reference only):
 //!
 //! - inputs: state `+688` / `+689` = Skeleton `+602` / `+603` (`sub_82BF20C8`, Skeleton::FillPhysOut

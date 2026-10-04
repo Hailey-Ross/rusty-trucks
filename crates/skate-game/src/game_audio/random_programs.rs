@@ -1,6 +1,6 @@
 //! Measured behaviour of the location-set banks' AEMS programs (one post each through the PoC
 //! evaluator, 2026-10-02): the layers a post opens. Interim until the evaluator is ported;
-//! generated from PoC probe runs (local tools: .claude/skills/audio-tuning/tools) — regenerate, do not hand-edit.
+//! generated from PoC probe runs (local tools, not published) — regenerate, do not hand-edit.
 //! (bank, [(delay s, sample index or SHUFFLE, relative level, pan sweep deg/s, loops)])
 use super::random_sets::{Layer, SHUFFLE};
 

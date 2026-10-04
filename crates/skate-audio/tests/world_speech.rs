@@ -1,6 +1,6 @@
 //! The living world's speech rules on the dev install's export (`speech/livingworld.json` with the
 //! `.evt` rules and clip ids, `audio_manifest.json` `world_tuning.speech_tuning`;
-//! `.claude/skills/aems-port/tools/stage_world_audio.py`). Every test skips without that data.
+//! setup's `audio` group with the speech export, `SKATE_SETUP_SPEECH=1`). Every test skips without that data.
 //! Headless: no audio device, no game.
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -219,6 +219,8 @@ fn load() -> Option<Data> {
                 EventTuning {
                     gap: f("gap"),
                     priority: f("priority") as i32,
+                    interrupt: e.get("flags_12").is_some_and(|b| b.arr().get(1).is_some_and(|x| x.num() != 0.0)),
+                    interrupt_when_full: e.get("flags_12").is_some_and(|b| b.arr().get(2).is_some_and(|x| x.num() != 0.0)),
                     probability: e.get("probability").map_or(100.0, J::num) as f32,
                     repeat: f("repeat"),
                     min_player_kmh: f("min_player_kmh"),

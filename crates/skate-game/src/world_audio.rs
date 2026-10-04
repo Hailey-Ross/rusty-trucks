@@ -75,10 +75,13 @@ impl HornState {
 /// the vehicle audio record `+144..+168`, `sub_824B2A28`).
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct TrafficAudio {
-    /// The model's `aud_traffic_engine` record name (`+168`): `c01_family01` (sedans, hatchback),
-    /// `c03_sports01` (sports, muscle), `c04_taxi01` (taxi, patrol), `c05_truck01` (SUV, pickup,
-    /// minivan); the patch override picks c06 / c07 / c08 itself. `c00_heavy01` exists but retail
-    /// never uses it. Unknown or `default` = patch 2, silent (logged once).
+    /// The vehicle's `aud_traffic_engine` record (`+168`), by record name (`c01_family01` …) or by
+    /// the living-world model (`taxi01`, `sedan02`, `suv`, …), which the setup export maps through
+    /// retail's attribute chain (entity → vehicle spec → engine record, recomp gap run G1): sedans
+    /// / hatchback → `c01_family01`, sports / muscle → `c03_sports01`, taxi / patrol →
+    /// `c04_taxi01`, SUV / pickup / minivan → `c05_truck01`. The patch override picks c06 / c07 /
+    /// c08 itself. `c00_heavy01` exists but retail never uses it. Unknown or `default` = patch 2,
+    /// silent (logged once).
     pub engine: String,
     /// `+148` speed (m/s, ≥ 0). `None` = |velocity|.
     pub speed: Option<f32>,
@@ -102,15 +105,19 @@ impl TrafficAudio {
 /// requests; the ped audio state S, gap run G2).
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct PedAudio {
-    /// The model = the speech voice id 41–96 (`S+84`; the clip names' voice). None = no speech.
+    /// The model = the speech voice id 41–96 (`S+84`; the clip names' voice). Its
+    /// `aud_characteristics` record (setup export `world_tuning.ped_models`) gives the shoe class,
+    /// the security kind, the speech type / variant / gender words and the far threshold.
+    /// None = no speech, and the defaults below.
     pub voice: Option<u32>,
-    /// `S+132` shoe class 2..=5 (`aud_characteristics` per model; 2 for most, 1 = silent and used
-    /// by no model).
-    pub shoe_class: u8,
+    /// `S+132` shoe class 2..=5. `None` = the model's (2 for most models and without a voice; 1 =
+    /// silent and used by no model).
+    pub shoe_class: Option<u8>,
     /// `[obj+28]+144` (1..=5): dynamic per ped in retail (1 beyond ~12 m, 2–5 near; meaning open).
     pub weight: u8,
-    /// `S+96 == 64`: a security guard (the close-range footstep levels).
-    pub close_range: bool,
+    /// `S+96 == 64`: a security guard (the close-range footstep levels and the guard's speech
+    /// levels). `None` = the model's type bit.
+    pub close_range: Option<bool>,
     /// `S+74` / `S+73`: the walk animation's foot plants (A, B).
     pub feet_down: [bool; 2],
     /// `S+140` / `S+144`: the material under each foot (audio surface material). `None` = 0
@@ -119,7 +126,8 @@ pub struct PedAudio {
     /// `S+68` footsteps on. `None` = retail's rule: the 3 nearest peds of the list.
     pub footsteps_on: Option<bool>,
     /// `S+148` / `S+156`: distance to the listener and the model's far threshold (the `_f` lines
-    /// beyond it). `None` = retail: the 3-D distance and 20 m.
+    /// beyond it). `None` = retail: the 3-D distance and the model's threshold (20 m for regular
+    /// peds, 30 for pros).
     pub speech_distance: Option<(f32, f32)>,
     /// `S+136`: the speech value the ped's state graph last sent. Engine systems normally send
     /// [`PedSpeechEvent`] instead; the footstep packets read it too (jump 4/5, collision 6/7).
@@ -130,9 +138,9 @@ impl Default for PedAudio {
     fn default() -> Self {
         Self {
             voice: None,
-            shoe_class: 2,
+            shoe_class: None,
             weight: 1,
-            close_range: false,
+            close_range: None,
             feet_down: [false; 2],
             foot_materials: None,
             footsteps_on: None,
@@ -156,6 +164,9 @@ pub struct NpcSkaterAudio {
     pub state: Option<AudioState>,
     /// A remote multiplayer player (sorted before the NPCs).
     pub remote: bool,
+    /// The skater's speech voice (the AI skaters' models 89–96; their bail grunt, event 8206, says
+    /// a line of it). None = no speech.
+    pub voice: Option<u32>,
 }
 
 /// Overrides the velocity the bridge derives from the transform (m/s, world).
@@ -201,6 +212,8 @@ pub struct WorldAudioStats {
     pub instances: (usize, usize, usize),
     /// The opt-in non-retail "more audible" layout is on (settings/audio.json).
     pub more_audible: bool,
+    /// Speech lines started so far (peds and NPC skaters; `game_audio::world_speech`).
+    pub speech_lines: u64,
 }
 
 /// A speech value (`S+136`, the state graphs' `SendSpeechEvent speechvalue=N`).
@@ -208,7 +221,10 @@ pub struct WorldAudioStats {
 pub struct SpeechValue(pub i32);
 
 impl SpeechValue {
-    pub const WARN: Self = Self(11);
+    /// The warn (`501_warn`): the code sends 53 / 54 (the state graph's `DoWarning` entry, 11,
+    /// is commented out in retail, "moved to the code"; 11 is also `LostInterestEndChase`, which
+    /// the manager maps to `605_chase_terminate`).
+    pub const WARN: Self = Self(53);
     pub const NEARBY_REACTION: Self = Self(10);
     pub const FLEE: Self = Self(20);
     pub const LONG_CHEER: Self = Self(23);
@@ -223,7 +239,7 @@ impl SpeechValue {
             return (0..=127).contains(&n).then_some(Self(n));
         }
         let alias = match key.as_str() {
-            "warn" | "warning" => Some(11),
+            "warn" | "warning" => Some(53),
             "cheer" => Some(23),
             "slam" => Some(25),
             "flee" => Some(20),
@@ -262,7 +278,7 @@ pub struct VehicleHorn {
     pub seconds: f32,
 }
 
-/// Retail's car alarm: horn state 6 for 8 s (vehicle `+3716`, `npc-livingworld-re.md` §6).
+/// Retail's car alarm: horn state 6 for 8 s (vehicle `+3716`, `audio-specs/npc-livingworld-re.md` §6).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct VehicleAlarm {
     pub vehicle: Entity,
@@ -271,8 +287,10 @@ pub struct VehicleAlarm {
 /// The car alarm's length (s).
 pub const ALARM_SECONDS: f32 = 8.0;
 
-// Reserved for the next pass (spec §3.4, P3): `PedKnockDown` (PedBodyFall), `PedTazer` (Tazer,
-// needs AEMS op 38), `NpcSkaterBail` (the NPC bail grunt through its SkaterSpeech).
+// The NPC bail grunt needs no message: retail's body poster raises it at the bail's first body
+// impact (`NpcSkaterAudio::voice` names the speaker). Not offered (spec §3.4): `PedKnockDown`
+// (PedBodyFall) and `PedTazer` (Tazer): no recording shows what they post (doc 15 "PedBodyFall
+// and Tazer").
 
 #[cfg(test)]
 mod tests {
@@ -281,6 +299,7 @@ mod tests {
     #[test]
     fn speech_values_by_name() {
         assert_eq!(SpeechValue::from_name("warn"), Some(SpeechValue::WARN));
+        assert_eq!(SpeechValue::WARN, SpeechValue(53));
         assert_eq!(SpeechValue::from_name("DoWarning"), Some(SpeechValue(11)));
         assert_eq!(SpeechValue::from_name("long_cheer"), Some(SpeechValue(23)));
         assert_eq!(SpeechValue::from_name("PedestrianFlee"), Some(SpeechValue(20)));

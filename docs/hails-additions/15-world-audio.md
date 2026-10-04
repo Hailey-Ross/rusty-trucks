@@ -38,7 +38,7 @@ remove the component. Owner ids are `Entity::to_bits()`, so a reused index count
 
 | field | retail | meaning | who fills it | default |
 |---|---|---|---|---|
-| `engine` | vehicle record `+168` | the `aud_traffic_engine` record: sedans / hatchback `c01_family01`, sports / muscle `c03_sports01`, taxi / patrol `c04_taxi01`, SUV / pickup / minivan `c05_truck01` (entity → vehicle spec → record, G1). The engine's patch override picks c06 / c07 / c08 itself. | the vehicle system, from the model | — (an unknown name is logged once and stays silent) |
+| `engine` | vehicle record `+168` | the `aud_traffic_engine` record by name, **or the living-world model** (`taxi01`, `sedan02`, `suv`, `minivan01`, …), which setup maps through retail's attribute chain (entity → vehicle spec → record, G1; export `world_tuning.traffic_models`): sedans / hatchback → `c01_family01`, sports / muscle → `c03_sports01`, taxi / patrol → `c04_taxi01`, SUV / pickup / minivan → `c05_truck01`. The engine's patch override picks c06 / c07 / c08 itself. | the vehicle system, from the model | — (an unknown name is logged once and stays silent) |
 | `speed` | `+148` | m/s | the vehicle system | the length of the velocity |
 | `load` | `+144` | the driver's signed acceleration in m/s². G1 measured −15.6 in a hard stop, up to +3 pulling away, and 0 while cruising. It goes into the engine and skid words × 3000. | the driving AI | derived from the speed change |
 | `horn` | `+156` | `None`, `Honk(1..=5)` or `Alarm` | the AI (honk decisions) | `None` |
@@ -48,14 +48,14 @@ remove the component. Owner ids are `Entity::to_bits()`, so a reused index count
 
 | field | retail | meaning | default |
 |---|---|---|---|
-| `voice` | `S+84` | the model = the speech voice id 41–96 | none (no speech) |
-| `shoe_class` | `S+132` | 1–5 per model (`aud_characteristics`). Most models are 2; no model uses 1, which is silent. | 2 |
+| `voice` | `S+84` | the model = the speech voice id 41–96. Its `aud_characteristics` record (setup export `world_tuning.ped_models`) gives the shoe class, the security kind, the speech type / variant / gender words and the far threshold (G2) | none (no speech, the defaults below) |
+| `shoe_class` | `S+132` | 1–5 (`None` = the model's). Most models are 2; no model uses 1, which is silent. | the model's, else 2 |
 | `weight` | `[obj+28]+144` | 1–5. It changes per ped in retail (1 beyond about 12 m, 2–5 nearer) and its meaning is open. | 1 |
-| `close_range` | `S+96 == 64` | the security guards' close-range footstep levels | false |
+| `close_range` | `S+96 == 64` | the security guards' close-range footstep levels and their speech levels (`None` = the model's type bit) | the model's, else false |
 | `feet_down` | `S+74` / `S+73` | the walk animation's foot plants (A, B) | up |
 | `foot_materials` | `S+140` / `S+144` | the audio surface materials under the feet | 0 (retail's pavements read 0 in every line) |
 | `footsteps_on` | `S+68` | footsteps on | retail's rule: the 3 nearest peds in the list |
-| `speech_distance` | `S+148` / `S+156` | distance to the listener / the model's far threshold. Beyond the threshold the far `_f` lines are used. | the 3-D distance / 20 m (retail for regular peds) |
+| `speech_distance` | `S+148` / `S+156` | distance to the listener / the model's far threshold. Beyond the threshold the far `_f` lines are used. | the 3-D distance / the model's threshold (20 m for regular peds, 30 for pros) |
 | `speech_value` | `S+136` | the state graph's speech value | 0. Send `PedSpeechEvent` rather than writing it. |
 
 ### `NpcSkaterAudio` (the MixMap Player slot's second instance)
@@ -65,13 +65,17 @@ remove the component. Owner ids are `Entity::to_bits()`, so a reused index count
 | `list_order` | the skater list position (retail walks its list in order) | spawn order |
 | `state` | this frame's `AudioState`. A skater simulated with the player's physics uses `game_audio::skate_events::skater_audio_state(physics, skater, &mut memory, dt)`, the same builder the local player uses (proved identical, below). Anything else uses `AudioState::rolling(&LiteSkater { .. })`: speed, wheels, materials, grind / air flags. With that fill, rolling, surfaces, seams, grinds and landings sound; tricks and foot / body foley stay silent. | none (not published) |
 | `remote` | a remote multiplayer player (see below) | false |
+| `voice` | the skater's speech voice (the AI skaters' models 89–96): its bail grunt says a line of it | none |
 
 ### Messages, resources and the read-back
 
 - `PedSpeechEvent { ped, value: SpeechValue }`: sets the ped's speech value, so PedestrianSpeech sees
-  the change and requests a line. `SpeechValue::from_name` accepts the state-graph names (`DoWarning`,
-  `LongCheer`, …), the short names `warn` / `cheer` / `slam` / `flee` / `knockdown` / `nearby`, and
-  numbers.
+  the change and requests a line. A repeat of the current value goes through 0 for one frame, so it
+  speaks again. `SpeechValue::from_name` accepts the state-graph names (`DoWarning`, `LongCheer`, …),
+  the short names `warn` / `cheer` / `slam` / `flee` / `knockdown` / `nearby`, and numbers.
+  **`warn` is 53** (`SpeechValue::WARN`): the code's warn, which the manager maps to `501_warn`. The
+  state graph's `DoWarning` (11) entry is commented out in retail ("moved to the code"), and 11 is
+  also `LostInterestEndChase`, which maps to `605_chase_terminate`.
 - `VehicleHorn { vehicle, kind, seconds }`: holds horn kind `kind` for the caller's time. The length
   is the AI's choice, not retail data.
 - `VehicleAlarm { vehicle }`: retail's alarm, horn state 6 for **8 s**.
@@ -128,7 +132,7 @@ honks.write(VehicleHorn { vehicle, kind: 2, seconds: 0.8 });
 alarms.write(VehicleAlarm { vehicle });
 
 // A ped system: walk animation foot plants, reactions from its state graph:
-commands.spawn((transform, PedAudio { voice: Some(59), shoe_class: 5, ..Default::default() }));
+commands.spawn((transform, PedAudio { voice: Some(59), ..Default::default() })); // shoe class, kind, words: the model's
 speech.write(PedSpeechEvent { ped, value: SpeechValue::WARN });
 
 // An AI skater simulated with the player's physics, near the camera:
@@ -138,7 +142,9 @@ npc.state = Some(skate_events::skater_audio_state(&physics, &skater, &mut memory
 ## Mod surface (`sdk.world_audio`, API 2, capability `world_audio` = 1)
 
 Mods publish through the same components: each key becomes an entity. The rules follow the existing
-mod rules. Keys belong to the calling mod. The limits are **16 objects per mod and 64 in all**.
+mod rules. Keys belong to the calling mod. The limits are **48 objects per mod and 128 in all** (raised from 16 / 64 the same day: the
+test mod publishes 37 objects; retail's pools pick the audible few anyway, so the limits only
+bound the per-frame work, a distance per object and one sort).
 Options are validated before anything is allocated, and a field of another kind is an error. An
 object that is not updated for **0.5 s is parked** (speed 0, feet up, horn off). Disabling,
 reloading or a failing mod removes everything it published. The existing `sdk.audio.*` (the mod's
@@ -176,15 +182,22 @@ the spot where the mod starts:
   skids) or soft (−4). One car honks every 10–15 s with kind 1–5. One taxi is parked, and **F8**
   fires its alarm.
 - **20 peds** on back-and-forth lines: 16 walk (1.3 m/s), 3 jog (4) and 1 runs (8), so the three
-  `sk8_foley` step ids play. A gait clock alternates the feet; it is dev-only, not retail. Shoe
-  classes are 2–5, and the voices cycle through 41–96. Reactions:
-  - warn (11) when you pass within 1.5 m at more than 3 m/s;
-  - cheer (23) on a landed trick within 10 m;
-  - slam (25) on a bail within 10 m.
-
-  Speech requests are logged (`AUDIO_WORLD speech`). Playback comes in the next pass.
-- **A ghost NPC skater** replays the 20 s window of a recorded state log, 5 m beside the start.
+  `sk8_foley` step ids play. A gait clock alternates the feet; it is dev-only, not retail. Each ped is
+  one of retail's 35 living-world models (its voice), so its shoe class, kind and speech words are the
+  model's. Speech (it plays when the speech decode is installed):
+  - warn (53, `501_warn`) when you pass within 1.5 m at more than 3 m/s;
+  - cheer (23, `101_pos`) on a landed trick within 10 m;
+  - slam (25, `104_spec_slam`) on a bail within 10 m;
+  - every 6–10 s the nearest ped shouts (2, `1901_shout`; dev-only chatter, not retail). The
+    manager's own tuning still gates every line (the shout: 50 % and 30 s per voice), and nothing
+    speaks in the first 30 s after the game starts (retail's timers start at 0).
+- **A ghost NPC skater** replays the 20 s window of a recorded state log, 5 m beside the start, with
+  voice 91 (an AI skater's): its Wheels streams, Clothing foley and bail grunt play as an NPC's.
   Settings: `ghost_log`, `ghost_from`.
+- **Off by default** (`"enabled_by_default": false`, a new optional `mod.json` field): enable it in the
+  mod menu, or run with `SKATE3_MODS_ENABLE=dev-world-audio-test`. While it publishes, the game logs one
+  `WORLD_AUDIO cars N/audible M, peds N/M (footsteps K), skaters N/M, posts +P (npc +Q), speech lines +S`
+  line per second.
 - Debug **boxes**: green = holds an instance (audible), grey = not. An on-screen line shows the
   audible counts, the limits and the ghost's status. **F9** re-centres everything on the skater.
 
@@ -243,7 +256,197 @@ the spot where the mod starts:
   - `sdk/skate.lua`;
   - `.gitignore` (`mods/world-audio-test/logs/`).
 
-## Open questions and the next pass (P3–P5)
+## P3–P5: speech, the NPC instance, traffic, per-model data, retail's order (2026-10-03, headless)
+
+Everything below was built and checked headless against the existing recomp recordings. Neither the game
+nor the recomp was launched, and no new recording was made. "The recomp" numbers come from the recordings,
+not from a console.
+
+### Ped speech plays (`skate_audio::world::speech_player`, `game_audio/world_speech.rs`)
+
+**How it works.** A ped's speech value change becomes a PedestrianSpeech request (ported before). The speech
+manager maps it to an event and gates it (also ported before). The library then picks the record and its takes.
+New in this pass:
+
+- **The line plays on one of the living world's two streams.** The interrupt `sub_824A73F0` indexes the
+  channel's stream records as `channel × 2 + k`, and the recomp's living-world lines play on two stream
+  players.
+- **When both streams are busy, the event's tuning decides.** With `+13` it stops a playing line of lower
+  priority; with `+14` it does the same when the channel is full. Otherwise the request waits in the
+  16-request queue until the event's queue timeout runs out.
+- **The stream follows its speaker every console frame.** This was read from the code, not fitted: the
+  PedestrianSpeech update `sub_824D9370` copies its outputs into the block that the line's stream reads.
+  - Main level: out2. A clip whose name ends in `_f` uses out3 instead (`sub_824A89E8` compares the name with
+    `"_f"`).
+  - Reverb send: out15.
+  - Azimuth: raw out0. Pitch: out1.
+  - High pass: out13. Low pass: out14.
+  - Security guards, the guard radio and the conversation states use other outputs (spec note
+    `world-speech.md`).
+- **The cut.** A speaker whose level stays at or below 200 for more than 60 frames has its line stopped
+  (vault `6995C510258C9AF6` / `3D8CD05C962FF399`). A speaker that loses its MixMap instance stops at once.
+- **The NPC bail grunt.** It goes through the same manager and streams. Its level comes from the skater's
+  PlayerSpeech instance (`sub_824DA300`: out2 / out3, send out10, filters out8 / out9).
+- **The manager's clock is console time since the start.** Retail's per-speaker timers start at 0, so nothing
+  speaks in the first 30 s: the warn's not-follow list holds it, and the shout has its own 30 s.
+
+**`SpeechValue::WARN` is now 53**, the code's warn, which the manager maps to `501_warn`. The state graph's
+`DoWarning` (11) entry is commented out in retail. 11 is also `LostInterestEndChase` → `605_chase_terminate`.
+
+**Data and failure modes.**
+- The index and rules are part of the normal setup.
+- The takes need the opt-in decode (`SKATE_SETUP_SPEECH=1`, about 2.4 GB). The dev install now has all 40
+  free-roam events: 13,322 takes, 2.3 GB.
+- A take is read from disk when its line starts, as retail streams it. The last 24 stay loaded.
+- Without the index, speech is off and the log says so once.
+- Without the decode, lines are still chosen and logged but stay silent, and the log says so once.
+
+**Checked against the recomp.**
+- *End to end* (`a_ped_warns_through_a_stream_at_its_owner_levels`, data-gated): a business man (voice 59)
+  warns 3.6 m from the camera and gets `501_59_busm1_Warn_n`; its stream plays at out2 / 32767. At 30 m the
+  next warn is `Warn_f` at out3.
+- *Levels* (`speech_levels_follow_the_recomp`, from `recomp-research/tools/speech_levels.py` on 163809 /
+  164620 / 180430): 39 lines with a joined speaker. Each one was rebuilt at its recorded geometry (ped, camera,
+  player).
+  - The recomp's stream filters sit at exactly our out14 / out13: 24956 / 77 Hz near a speaker, 3489 / 379 Hz
+    far away.
+  - First LPF / HPF within 10 % in 4 of the 5 lines that log both.
+  - First GAIN: recomp / ours median 1.005 (p10 0.55, p90 1.43, n 34).
+  - `_f` lines at 30 / 40 m: 0.092 / 0.044 against our 0.085 / 0.056. out2 alone would be 0.030 / 0.001.
+  - SEND within 0.01 in only 10 of 37 lines (open).
+- *Overlap*: the recomp shows two persistent stream players (163809: 40 + 6 lines; 164620: 95 + 48; 180430:
+  28 + 17).
+
+### The NPC skater's instance: Wheels, Clothing, the bail grunt
+
+Recomp gap run G3 showed which components run for the NPC instance. Now ported:
+
+- **Wheels:** the spin-down streams on layers 0 / 1. Layer 2 is local only.
+- **Clothing:** push / plant foley, body slide, cloth falls, with its non-local start block.
+- **The bail grunt:** the body poster's first message of a bail (`+422`, once per bail) → event 8206 for the
+  skater's voice (`NpcSkaterAudio::voice`, the AI skaters' 89–96).
+
+Tricks, Treatment and the OffBoard steps stay off for NPCs, as in retail. Board slide was reached by neither
+instance in the runs and is not run.
+
+Data test `the_npc_instance_runs_wheels_clothing_and_the_bail_grunt`: a 476 s user log replayed as an NPC.
+- Wheel streams: 0.21 starts/s (recomp NPC 0.24 per held second, other motion).
+- Clothing: 0.39 Splice starts/s (recomp 0.27).
+- 8 grunts for 8 bails.
+- The local player's components posted nothing.
+
+### Pedestrians: per-model data
+- **Setup export `world_tuning.ped_models`** (`world_audio.ped_models`, from `aud_characteristics`, keyed by the
+  voice): variant, kind, gender, shoe class, far threshold, and a per-voice float. 82 models.
+- **The bridge fills these from `PedAudio::voice`:** the shoe class (which sets the footstep samples), the
+  security kind (footstep and speech levels), the speech words and the far threshold.
+- **Checked** (`recomp-research/tools/ped_models_check.py`) against every PEDAUD line of the gap runs: 20 models,
+  3146 of 3146 lines agree on all five fields.
+- **Footsteps** still play only for list index < 3 (already in the bridge).
+
+### Traffic
+- **Model → record:** setup export `world_tuning.traffic_models` (27 entities). `TrafficAudio::engine` accepts
+  `taxi01`, `sedan02` and the like.
+- **`TrafficCarPhysics.in0`:** the record writer's relative speed, min(|heading × speed − v_listener|, 35),
+  slewed by 100 /s, × 32767 / 35. It opens A11.
+- **3DObjPos blocks 1 / 2 / 3** follow the body and the front / rear points at ±1 m along the heading. The
+  binding is inferred: block 2 feeds the engine layer, block 3 the exhaust.
+- **Checked** (`traffic_rpm_and_relative_speed_follow_the_recomp`, gapg1 VEHAUD):
+  - the RPM model lands within 60 RPM in 97.3 % of 451 live sample pairs (p50 0.7 RPM);
+  - `+176` lands within 0.5 m/s in 99.2 % while the listener stands. While it moves, 29 of 59 land within 2 m/s;
+    the listener's own velocity is not logged.
+  - 696 pairs were frozen "stale" records of cars that had left the 40 m list. They were left out.
+
+### Retail's order: process before the tick, update after
+- **The world and NPC hosts now run inside the pass:** `native::mixmap_frame` (inputs, the local player's
+  process) → `world_sources::frame` (pre) → `npc_skaters::frame_pre` → `native::mixmap_tick` (ticks, the
+  local update) → … → the hosts' update → `world_speech::frame`.
+- **Before, both ran after the ticks**, so the inputs a tick saw were one console frame old.
+- **The local player's sequence is unchanged** (inputs → process → ticks → update), and the hosts touch nothing
+  without owners.
+- **Proof (`process_before_the_tick_shifts_the_outputs_by_one_evaluation`):** a car driving past the camera through the real MixMap, rendered in the old order (tick, update,
+  process) and the new (process, tick, update), with the same start-up history (one empty first tick). The
+  TrafficEngine / TrafficSkids / TrafficHorn outputs (level, raw, pitch and filter of 11 outputs each) satisfy
+  new[k] == old[k + 1] on 89 of 89 evaluations. So the move is a pure one-evaluation shift: the tick now sees
+  this frame's position.
+- **The NPC bed now always steps after the local bed's step.** It draws from the local bed's generator, and
+  before this the order of those two systems was not fixed.
+
+### Instance managers (checked, unchanged)
+The hosts match the measured rules:
+- Traffic: the 4 nearest within 40 m, horizontal.
+- Peds: the 15 nearest within 50 m (3-D, nearest-first), footsteps for the 3 nearest.
+- NPC skater: the first in list order within 30 m, held until 30 m.
+
+### PedBodyFall and Tazer: gaps
+- **Tazer.** The recordings support it: in 164620, each of the 3 tazer zaps (`SECTAZE want`) is followed 0.03 s
+  later by a burst of 10–20 Tazer-bank starts, 0.1–0.2 s apart, for 1.3–2.1 s (49 starts). No POST is attached,
+  which fits op 38 child posts; op 38 is ported. But `SFXObj_Tazer` itself (its trigger on the ped state, its
+  words) is not decoded. Not ported.
+- **PedBodyFall.** No recording shows a post from it (no event group with a caller in its code in the
+  163809 / 164620 reports). Not decoded.
+- Neither message is offered in the API.
+
+### Mod surface
+**Done in this pass (cheap):**
+- `voice` for skaters (the bail grunt);
+- traffic model names in `engine`;
+- the model-driven ped defaults;
+- `info().speech_lines`;
+- the mod limits raised to 48 per mod / 128 in all;
+- `"enabled_by_default"` in `mod.json` and `SKATE3_MODS_ENABLE`.
+
+**Left for the final moddability pass:** spec §8.2–§8.4 (the content overlay for banks, samples, programs and
+speech lines; mod emitters on the native voice graph; tuning read / write; `sdk.audio.post`; audio event hooks)
+and §8.6.
+
+### Proofs and tests (this pass)
+- **Local player byte-identical:** the e2e bench (13 scenarios + 4 whole sessions, `row` and `fps300`) from a worktree of
+  `a4ec831` (`p3_base`, equal to the earlier `sw_new`) against this tree (`p3_new`): all four sets IDENTICAL (26 +
+  26 + 8 + 8 outputs). The e2e harness drives the local player's pass itself, so the native split was proved by the
+  shift test and by its unchanged local sequence.
+- **New data tests** (all pass, `--ignored`):
+  - the speech end-to-end;
+  - the speech levels against the recomp;
+  - the NPC components;
+  - traffic RPM / `+176` against the recomp;
+  - the one-evaluation shift.
+- **New unit tests:**
+  - `speech_player` (level ids, far clip, streams, interrupt, queue timeout, cut);
+  - the traffic relative speed and points;
+  - the opt-in mod;
+  - the test mod's objects within the limit.
+
+### Files (this pass)
+- **New:**
+  - `crates/skate-audio/src/world/speech_player.rs`;
+  - `crates/skate-game/src/game_audio/world_speech.rs`;
+  - the local tools `speech_levels.py` and `ped_models_check.py` (not published).
+- **Changed:**
+  - `skate-audio`: `mixer.rs` (`set_direct_dsp`, `set_bank_sample`), `player/contacts.rs` (the grunt flag),
+    `world/{keys,mod,peds,skaters,speech_manager,traffic}.rs`;
+  - `skate-game`: `game_audio/{library,mod,native,npc_skaters,player_audio,world_bridge,world_sources}.rs`,
+    `modding/world_audio.rs`, `world_audio.rs`;
+  - `skate-mods`: `schema.rs`, `lib.rs`, `world_audio.rs`, `vm.rs`, `api.lua`;
+  - `sdk/skate.lua`, `sdk/AGENTS.md`, `mods/world-audio-test/*`, `tools/asset_pipeline/world_audio.py`.
+
+### Open (after P3)
+- **Speech:**
+  - the stream's PEAK filter;
+  - the reverb SEND for most lines;
+  - the `Obj:Speech` inputs a playing line sets (F45 / F19 / F42), probably the ~+100 mB the recomp's near
+    lines carry over ours;
+  - which of the two streams a request targets;
+  - the queue timeout's unit;
+  - values 49 (a Splice ring, `sub_824D9C70`) and 29 (the photographer's timer);
+  - the main-cast path for pros.
+- **Tazer** (`SFXObj_Tazer`) and **PedBodyFall**: the objects are not decoded.
+- **Traffic:** the 3DObjPos binding's writer; the horn kinds per model (the AI's); the frozen record of a held
+  car (not ported).
+- **NPC:** board slide; the walking / jump voices of an NPC on foot; the NPC grain bed against 180430's NPC GREC
+  rows (not compared in this pass).
+
+## Open questions before P3 (kept for the record)
 
 - **Speech playback** in the host: the manager, the library and the streams. The level and pan
   mapping is still open.

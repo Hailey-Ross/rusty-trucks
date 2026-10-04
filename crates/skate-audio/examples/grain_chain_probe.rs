@@ -1,4 +1,4 @@
-//! The grain bus chain headless (spec `.claude/notes/aems-grain-chain-spec.md` §6): the retail
+//! The grain bus chain headless (spec `audio-specs/aems-grain-chain-spec.md` §6): the retail
 //! MixMap + the bed on `concrete_rough_hard` through the runtime, a 12 s run — 30 km/h with a
 //! manual (special latch) from 2 to 4 s, a ramp to 85 km/h (graph-3 send, wobble, level ramp),
 //! back down to 35 km/h (the level hold) — with a push every 1.5 s.

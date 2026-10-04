@@ -31,6 +31,7 @@ mod timing;
 mod voices;
 pub(crate) mod world_bridge;
 mod world_sources;
+mod world_speech;
 
 use bevy::{audio::Volume, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -163,13 +164,22 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<emitters::ReverbZones>()
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
-            .add_systems(Update, (native::mixmap_frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame).chain().before(CueSet).after(crate::app::FrameSet::Animation))
+            .add_systems(
+                Update,
+                // The pass: inputs and the local player's process, the world / NPC owners' process,
+                // the ticks and the local update, then the beds (retail's process / tick / update).
+                (native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
+                    .chain()
+                    .before(CueSet)
+                    .after(crate::app::FrameSet::Animation),
+            )
             .add_systems(Update, (ambience::update, emitters::update, random_sets::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
             .add_systems(Update, voices::sync.after(CueSet))
             .add_systems(Update, timing::report)
             .add_plugins(native::register)
             .add_plugins(world_sources::register)
             .add_plugins(npc_skaters::register)
+            .add_plugins(world_speech::register)
             .add_plugins(world_bridge::register)
             .add_systems(
                 PostUpdate,

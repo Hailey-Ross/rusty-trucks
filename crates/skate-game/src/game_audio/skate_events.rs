@@ -559,7 +559,7 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
     // +268..+280: the toes' local velocities in the physical board's frame (Skeleton+192..+216).
     let toes = skater.foot_physical.output.local_velocity;
     // Off-board inputs (`player::footsteps` / `clothing` / `step_on`; spec
-    // `.claude/notes/aems-offboard-clothing-spec.md` §3). Foot A = toe part 19 (OffBoard side 1),
+    // `audio-specs/aems-offboard-clothing-spec.md` §3). Foot A = toe part 19 (OffBoard side 1),
     // foot B = part 15.
     let world_toes = skater.foot_physical.output.world_velocity;
     let push_planted = flag(55);
@@ -627,7 +627,8 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
         wheel_contact,
         // `+620..+632` / `+636..+648` come from the wheel lines (82C079E0: each wheel's 0.2 m ray), not
         // from contact: retail keeps wheel 0's material on 100 % of 3-wheel and 96 % of 2-wheel frames
-        // and changes it 0.45 times a second while rolling (GREC, local rider only; `aems-port/tools/grec_material.py`).
+        // and changes it 0.45 times a second while rolling (GREC, local rider only;
+        // `tools/recomp-trace/grec_material.py`).
         // Gating them by contact made every contact flicker a material change, i.e. a Class_Seams
         // transition hit (5–9 changes/s on wheel 0 in the 20:08 / 20:13 sessions).
         wheel_material: std::array::from_fn(|i| if f.unridden { 143 } else { material_of_tag(lines.audio_surfaces[i]) }),
@@ -785,7 +786,9 @@ mod tests {
     #[ignore = "needs the private install data"]
     fn region_impacts_match_the_recomps_bail_lines() {
         use skate_core::physics::skeleton_body::ContactRegion;
-        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.local/recomp/sessions"));
+        let Some(root) = std::env::var_os("SKATE_RECOMP_SESSIONS").filter(|v| !v.is_empty()).map(std::path::PathBuf::from) else {
+            panic!("missing private data: SKATE_RECOMP_SESSIONS (the recomp session folders) is not set");
+        };
         let mut lines = Vec::new();
         for run in ["bailrun_t2_20261003_100040", "bailrun_ok_20261003_100226", "bailrun_ok2_20261003_100514", "bailrun_ok3_20261003_101354"] {
             let Ok(text) = std::fs::read_to_string(root.join(run).join("trace.tsv")) else {

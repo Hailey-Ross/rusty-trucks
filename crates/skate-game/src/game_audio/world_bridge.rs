@@ -20,7 +20,12 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use skate_audio::world::traffic::{EngineRecord, VehicleState};
 
+use skate_audio::world::speech_manager::Speaker;
+
 use super::world_sources::{PED_LIST_RADIUS, WorldHeld, WorldOwners};
+
+/// The security type bit (`S+96 == 64`).
+const SECURITY: u32 = skate_audio::world::speech_manager::kind::SECURITY_GUARD;
 use crate::world_audio::*;
 
 /// Retail's footsteps-on rule: the first 3 of the nearest-first ped list (`S+68`, gap run G2;
@@ -82,7 +87,7 @@ pub(crate) fn register(app: &mut App) {
         .add_message::<VehicleHorn>()
         .add_message::<VehicleAlarm>()
         .add_systems(Update, (tag_remote_players, ghost_step, publish.in_set(WorldAudioPublish)).chain().before(super::native::mixmap_frame).after(crate::app::FrameSet::Animation))
-        .add_systems(Update, read_back.after(super::world_sources::frame).after(super::npc_skaters::frame));
+        .add_systems(Update, read_back.after(super::world_sources::frame).after(super::npc_skaters::frame).after(super::world_speech::frame));
 }
 
 /// The bridge's memory between frames.
@@ -102,6 +107,13 @@ pub(crate) struct Bridge {
     tagged: HashSet<Entity>,
     /// Something was published last frame (the owners must be cleared once when it stops).
     active: bool,
+    /// Ped voices without a model in the install (reported once).
+    unknown_models: HashSet<u32>,
+    /// Speech values to set next frame (a repeated value goes through 0 first).
+    speech_next: Vec<(Entity, i32)>,
+    /// The summary log: seconds since the last line, and the running counts then.
+    log_timer: f32,
+    log_counts: (u64, u64, u64),
 }
 
 /// The ground's audio material under a point (`material_of_tag` of the first surface a 1.5 m line
@@ -167,14 +179,26 @@ fn publish(
     if owners.expected != living.expected {
         owners.expected = living.expected;
     }
-    if !any && !bridge.active && speech.is_empty() && horns.is_empty() && alarms.is_empty() {
+    if !any && !bridge.active && speech.is_empty() && horns.is_empty() && alarms.is_empty() && bridge.speech_next.is_empty() {
         return;
     }
     let bridge = &mut *bridge;
     let dt = time.delta_secs();
+    // PedestrianSpeech requests a line when the value changes: a repeat of the current value goes
+    // through 0 for one frame first (a state graph re-entering its state does the same).
+    for (e, value) in std::mem::take(&mut bridge.speech_next) {
+        if let Ok((_, _, mut ped, _)) = peds.get_mut(e) {
+            ped.speech_value = value;
+        }
+    }
     for e in speech.read() {
         if let Ok((_, _, mut ped, _)) = peds.get_mut(e.ped) {
-            ped.speech_value = e.value.0;
+            if ped.speech_value == e.value.0 && e.value.0 != 0 {
+                ped.speech_value = 0;
+                bridge.speech_next.push((e.ped, e.value.0));
+            } else {
+                ped.speech_value = e.value.0;
+            }
         }
     }
     for h in horns.read() {
@@ -212,11 +236,28 @@ fn publish(
     let mut list: Vec<(f32, Entity)> = peds.iter().map(|(e, t, _, _)| (t.translation().distance(camera), e)).filter(|(d, _)| *d < PED_LIST_RADIUS).collect();
     list.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.to_bits().cmp(&b.1.to_bits())));
     let nearest: HashSet<Entity> = list.iter().take(FOOTSTEP_PEDS).map(|x| x.1).collect();
+    let tuning = library.as_deref().map(super::Library::world_tuning);
     for (e, t, ped, given) in &peds {
         let at = t.translation().to_array();
         let v = velocity(bridge, e, at, given, dt);
         let distance = t.translation().distance(camera);
-        let (measure, limit) = ped.speech_distance.unwrap_or((distance, PED_FAR_THRESHOLD));
+        // The model's `aud_characteristics` fields (the voice = the model, gap run G2).
+        let model = ped.voice.and_then(|voice| {
+            let m = tuning.and_then(|t| t.ped_model(voice));
+            if m.is_none() && bridge.unknown_models.insert(voice) {
+                warn!("AUDIO_WORLD ped voice {voice}: no aud_characteristics model in the install (defaults; rerun setup)");
+            }
+            m
+        });
+        let security = ped.close_range.unwrap_or(model.is_some_and(|m| m.kind == SECURITY));
+        let far = model.map_or(PED_FAR_THRESHOLD, |m| if m.far > 0.0 { m.far } else { PED_FAR_THRESHOLD });
+        let (measure, limit) = ped.speech_distance.unwrap_or((distance, far));
+        let shoe = ped.shoe_class.unwrap_or(model.map_or(2, |m| if m.shoe_class == 0 { 2 } else { m.shoe_class }));
+        let speaker = match (ped.voice, model) {
+            (Some(voice), Some(m)) => Speaker { index: voice, kind: m.kind, variant: m.variant, partner: 0, word5: 0, word6: m.gender },
+            (Some(voice), None) => Speaker { index: voice, ..Default::default() },
+            _ => Speaker::default(),
+        };
         owners.peds.insert(
             e.to_bits(),
             skate_audio::world::peds::PedState {
@@ -227,11 +268,14 @@ fn publish(
                 footsteps: ped.footsteps_on.unwrap_or_else(|| nearest.contains(&e)),
                 materials: ped.foot_materials.unwrap_or([0, 0]),
                 speech_value: ped.speech_value,
-                class: i32::from(ped.shoe_class.clamp(1, 5)),
+                class: i32::from(shoe.clamp(1, 5)),
                 weight: i32::from(ped.weight.clamp(1, 5)),
-                close: ped.close_range,
+                close: security,
                 speech_measure: measure,
                 speech_limit: limit,
+                voice: ped.voice.unwrap_or(0),
+                speaker,
+                level_select: skate_audio::world::speech_player::PedLevelSelect { security, ..Default::default() },
             },
         );
         seen.push((e, at, 0.0));
@@ -239,7 +283,7 @@ fn publish(
 
     // NPC / remote skaters, in list order.
     skaters.skaters.clear();
-    let mut list: Vec<(bool, u32, u32, u64, AudioState)> = Vec::new();
+    let mut list: Vec<(bool, u32, u32, u64, AudioState, u32)> = Vec::new();
     for (e, t, mut npc, given) in &mut npcs {
         let at = t.translation().to_array();
         if npc.remote {
@@ -254,10 +298,10 @@ fn publish(
             bridge.next_order += 1;
             bridge.next_order
         });
-        list.push((!npc.remote, if npc.list_order == 0 { u32::MAX } else { npc.list_order }, spawn, e.to_bits(), state));
+        list.push((!npc.remote, if npc.list_order == 0 { u32::MAX } else { npc.list_order }, spawn, e.to_bits(), state, npc.voice.unwrap_or(0)));
     }
     list.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
-    skaters.skaters.extend(list.into_iter().map(|(_, _, _, id, state)| skate_audio::world::skaters::NpcSkaterAudioState { id, state }));
+    skaters.skaters.extend(list.into_iter().map(|(_, _, _, id, state, voice)| skate_audio::world::skaters::NpcSkaterAudioState { id, state, voice }));
 
     bridge.last.clear();
     for (e, at, speed) in seen {
@@ -273,7 +317,10 @@ fn engine_record(bridge: &mut Bridge, library: Option<&super::Library>, name: &s
     }
     let Some(library) = library else { return EngineRecord::default() };
     let tuning = library.world_tuning();
-    let record = match tuning.engine(&name.to_ascii_lowercase()) {
+    let lower = name.to_ascii_lowercase();
+    // A record name, or a living-world model mapped to its record (the setup's attribute chain).
+    let record = tuning.engine(&lower).or_else(|| tuning.traffic_model(&lower).and_then(|r| tuning.engine(r)));
+    let record = match record {
         Some(r) => r,
         None => {
             if bridge.unknown.insert(name.to_owned()) {
@@ -287,7 +334,9 @@ fn engine_record(bridge: &mut Bridge, library: Option<&super::Library>, name: &s
 }
 
 /// `WorldAudioInstance` on the holders, and the stats.
+#[allow(clippy::too_many_arguments)]
 fn read_back(
+    time: Res<Time>,
     mut commands: Commands,
     mut bridge: ResMut<Bridge>,
     held: Res<WorldHeld>,
@@ -332,7 +381,33 @@ fn read_back(
         skaters_held: held.skaters.len(),
         instances: (world.traffic, world.peds, world.npc),
         more_audible: world != super::native::WorldInstances::RETAIL,
+        speech_lines: held.speech_lines,
     };
+    // One summary line per second while anything is published (log-based checks; the test mod).
+    if bridge.active {
+        bridge.log_timer += time.delta_secs();
+        if bridge.log_timer >= 1.0 {
+            bridge.log_timer = 0.0;
+            let footsteps = held.peds.iter().filter(|(id, _)| owners.peds.get(id).is_some_and(|p| p.footsteps)).count();
+            let (posts, npc, speech) = bridge.log_counts;
+            info!(
+                "WORLD_AUDIO cars {}/audible {}, peds {}/{} (footsteps {}), skaters {}/{}, posts +{} (npc +{}), speech lines +{}",
+                next.vehicles,
+                next.traffic_held,
+                next.peds,
+                next.peds_held,
+                footsteps,
+                next.skaters,
+                next.skaters_held,
+                held.posts.saturating_sub(posts),
+                held.npc_posts.saturating_sub(npc),
+                held.speech_lines.saturating_sub(speech)
+            );
+            bridge.log_counts = (held.posts, held.npc_posts, held.speech_lines);
+        }
+    } else {
+        bridge.log_timer = 0.0;
+    }
     if *stats != next {
         *stats = next;
     }
@@ -390,7 +465,7 @@ mod tests {
         app.world_mut().write_message(PedSpeechEvent { ped: peds[0], value: SpeechValue::WARN });
         app.update();
         assert_eq!(app.world().resource::<WorldOwners>().vehicles[&car.to_bits()].horn, 6);
-        assert_eq!(app.world().get::<PedAudio>(peds[0]).unwrap().speech_value, 11);
+        assert_eq!(app.world().get::<PedAudio>(peds[0]).unwrap().speech_value, 53);
         app.world_mut().write_message(VehicleHorn { vehicle: car, kind: 3, seconds: 0.0 });
         app.update();
         assert_eq!(app.world().resource::<WorldOwners>().vehicles[&car.to_bits()].horn, 0, "a zero-length horn ends at once");

@@ -314,3 +314,33 @@ fn skyline_waits_for_spawn_receipt_and_reports_failure_without_disabling_mod() {
     );
     call("on_unload", &s);
 }
+
+/// `"enabled_by_default": false` keeps a mod off without a saved preference (dev / test mods),
+/// the manifest default keeps the old behaviour (on), and a saved preference wins.
+#[test]
+fn opt_in_mods_start_disabled_without_a_preference() {
+    let base = std::env::temp_dir().join(format!("skate-opt-in-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (root, prefs) = (base.join("mods"), base.join("prefs"));
+    for (dir, id, extra) in [("a", "tests.on", ""), ("b", "tests.optin", r#","enabled_by_default":false"#)] {
+        let d = root.join(dir);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("main.lua"), "return {}").unwrap();
+        std::fs::write(
+            d.join("mod.json"),
+            format!(r#"{{"id":"{id}","api":2,"name":"t","version":"1.0.0","author":"t","description":"t","entry":"main.lua"{extra}}}"#),
+        )
+        .unwrap();
+    }
+    let mut m = crate::Manager::new(root.clone(), prefs.clone());
+    m.scan(true);
+    assert!(m.packages["tests.on"].enabled, "{:?}", m.diagnostics);
+    assert!(!m.packages["tests.optin"].enabled);
+    // A saved preference wins.
+    std::fs::create_dir_all(&prefs).unwrap();
+    std::fs::write(prefs.join("tests.optin.json"), r#"{"enabled":true}"#).unwrap();
+    let mut m = crate::Manager::new(root, prefs);
+    m.scan(true);
+    assert!(m.packages["tests.optin"].enabled);
+    let _ = std::fs::remove_dir_all(&base);
+}

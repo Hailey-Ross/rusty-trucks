@@ -565,7 +565,7 @@ function sdk.graphs.set_enabled(graph, target, index, enabled) end
 
 -- World audio extension 1 (capability `world_audio`): publish traffic vehicles, pedestrians and
 -- skaters to the game's retail world audio, exactly as an engine system would (doc
--- docs/hails-additions/15-world-audio.md). Keys belong to this mod; 16 objects per mod, 64 in all;
+-- docs/hails-additions/15-world-audio.md). Keys belong to this mod; 48 objects per mod, 128 in all;
 -- an object not updated for 0.5 s is parked; everything is removed on disable / reload. The game
 -- decides who is audible with retail's limits (4 nearest cars within 40 m, 15 nearest peds within
 -- 50 m, footsteps for the nearest 3, one skater within 30 m; 8 / 24 / 3 with the opt-in
@@ -575,15 +575,15 @@ function sdk.graphs.set_enabled(graph, target, index, enabled) end
 ---@field velocity? Vec3 m/s; default: from the position change (give it for teleporting objects)
 ---@field heading? number rad about +Y, 0 = +Z
 ---@field body? string follow one of this mod's physics bodies (position, rotation, velocity)
----@field engine? string traffic: aud_traffic_engine record (c01_family01, c03_sports01, c04_taxi01, c05_truck01, c00_heavy01, c06_sports02, c07_family02, c08_family03); unknown = silent
+---@field engine? string traffic: aud_traffic_engine record (c01_family01, c03_sports01, c04_taxi01, c05_truck01, c00_heavy01, c06_sports02, c07_family02, c08_family03) or a living-world model mapped to one as retail does (taxi01, patrol01, sedan02, hatchback01, sports03, muscle01, suv02, pickup01, minivan01, ...); unknown = silent
 ---@field speed? number traffic / lite skater: m/s (default |velocity|)
 ---@field load? number traffic: the driver's signed acceleration m/s² (default: from the speed change; hard stop ≈ -15)
 ---@field horn? integer traffic: 0 none, 1..5 horn kind, 6 alarm (prefer the events)
 ---@field skidding? boolean traffic: the tyres skid
----@field voice? integer ped: speech voice id 41..96 (0 none)
----@field shoe_class? integer ped: 1..5 (default 2; 1 is silent)
+---@field voice? integer ped: the model = speech voice id 41..96 (0 none); its shoe class, kind, speech words and far threshold follow (retail's aud_characteristics). skater: its voice (AI skaters 89..96): the bail grunt
+---@field shoe_class? integer ped: 1..5 (default: the model's, else 2; 1 is silent)
 ---@field weight? integer ped: 1..5 (default 1)
----@field close_range? boolean ped: a security guard's close-range footstep levels
+---@field close_range? boolean ped: a security guard's close-range footstep / speech levels (default: the model's)
 ---@field feet? boolean[] ped: {foot A planted, foot B planted}
 ---@field materials? integer[] ped: audio surface materials under the feet (default 0)
 ---@field footsteps? boolean ped: footsteps on (default: retail's 3-nearest rule)
@@ -606,12 +606,12 @@ function sdk.world_audio.spawn(key, kind, opts) end
 function sdk.world_audio.update(key, opts) end
 ---@param key string
 ---@param event 'horn'|'alarm'|'speech'
----@param opts? {kind?:integer, seconds?:number, value?:string|integer} horn: kind 1..5 for seconds; alarm: retail's 8 s; speech: value name (warn, cheer, slam, flee, nearby, DoWarning, LongCheer, ...) or number
+---@param opts? {kind?:integer, seconds?:number, value?:string|integer} horn: kind 1..5 for seconds; alarm: retail's 8 s; speech: value name (warn = 53, cheer, slam, flee, nearby, DoWarning, LongCheer, ...) or number; the ped says a line of its voice through retail's speech manager (gated by the event's timers and probability) when the speech decode is installed; a repeated value re-triggers
 function sdk.world_audio.event(key, event, opts) end
 ---@param key string
 function sdk.world_audio.remove(key) end
 ---@param key string
 ---@return {kind:string, audible:boolean, instance?:integer, parked:boolean}|nil
 function sdk.world_audio.read(key) end
----@return {more_audible:boolean, instances:{traffic:integer,peds:integer,skaters:integer}, published:table, audible:table}
+---@return {more_audible:boolean, instances:{traffic:integer,peds:integer,skaters:integer}, published:table, audible:table, speech_lines:integer}
 function sdk.world_audio.info() end

@@ -1,4 +1,4 @@
-//! The eight eEQChain ("material") buses (spec `.claude/notes/aems-eqchain-buses-spec.md`): per bus
+//! The eight eEQChain ("material") buses (spec `audio-specs/aems-eqchain-buses-spec.md`): per bus
 //! `Sub0 → DCl0 → PeakingIir2 → PeakingIir2 → Sen0 (→ SFX Master)`, 6 channels, order 253.
 //!
 //! - Buses with the record's enable flag (0–4): the first create-flagged resolve after a clear

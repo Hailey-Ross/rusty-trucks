@@ -4,7 +4,7 @@
 //! ([`inputs`], [`jitter`], [`objpos`]) and into the AEMS packets of the player classes
 //! ([`components`]).
 //!
-//! Retail order per frame (spec `.claude/notes/mixmap-spec.md` §1, upstream PR #4's driver notes):
+//! Retail order per frame (spec `audio-specs/mixmap-spec.md` §1, upstream PR #4's driver notes):
 //! audio-state bridge → state-controller inputs → every component's *process* (owner inputs,
 //! posts and releases) → one MixMap evaluation → every component's *update* (the held packets
 //! rewritten from the MixMap outputs and redelivered). [`components::Player`] follows that split:

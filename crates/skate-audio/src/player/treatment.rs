@@ -3,7 +3,7 @@
 //! words (time in the air, predicted time to the landing, jump height); its program plays the
 //! pre-landing treatment (retail session 164620: Treatments streams 13 and 14 start a median ~230 ms
 //! before the wheels touch down). Written from our reading of the retail code (TU3, reference only);
-//! spec `.claude/notes/aems-tricks-treatment-spec.md`.
+//! spec `audio-specs/aems-tricks-treatment-spec.md`.
 //!
 //! - process `sub_824DD408`, local player only (`[this+28]+72`): while `+36` is empty, the
 //!   constructor `sub_824B0080` builds and posts the 92-byte object (never released); then the

@@ -14,6 +14,19 @@ pub struct Manifest {
     pub entry: String,
     #[serde(default)]
     pub settings: BTreeMap<String, Setting>,
+    /// Whether the mod starts enabled when the player has no saved preference for it (default
+    /// true). Dev / test mods set `false` so they only run when enabled in the mod menu, through a
+    /// saved preference, or with `SKATE3_MODS_ENABLE=<id>[,<id>…]` for one run.
+    #[serde(default = "default_enabled", skip_serializing_if = "is_true")]
+    pub enabled_by_default: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

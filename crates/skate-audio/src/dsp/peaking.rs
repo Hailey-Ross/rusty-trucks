@@ -1,4 +1,4 @@
-//! PeakingIir2 (PI20, `sub_82B2C658`; spec `aems-voice-graph-spec.md` §4.10): an RBJ peaking EQ.
+//! PeakingIir2 (PI20, `sub_82B2C658`; spec `audio-specs/aems-voice-graph-spec.md` §4.10): an RBJ peaking EQ.
 //! Parameters: 0 = centre (Hz), 1 = linear gain, 2 = Q. Class defaults 96000 Hz / 1.0 / 3.0. The
 //! module bypasses (pass-through, history cleared once) only when the gain is exactly 1.0; ω is
 //! clamped to [FLOOR, CEIL] and Q to 0.2..20 for the coefficients. Same Direct Form I kernel as

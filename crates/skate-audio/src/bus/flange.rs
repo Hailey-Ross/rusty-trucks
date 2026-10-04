@@ -1,4 +1,4 @@
-//! The two "FlangeSub" effect returns (spec `.claude/notes/aems-bus-leftovers-spec.md` §1; builder
+//! The two "FlangeSub" effect returns (spec `audio-specs/aems-bus-leftovers-spec.md` §1; builder
 //! `sub_82490270`, presets `sub_824DDF58` → `sub_8248FE68`, levels `sub_824DF220` → `sub_8248FFF8`,
 //! sweeps by the LFO task `sub_82490B60` records 11–14).
 //!

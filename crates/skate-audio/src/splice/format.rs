@@ -1,5 +1,5 @@
 //! `SPLC` bank patch trees (the `.bnk` banks' header part; layout verified on all 20 disc banks,
-//! `.claude/skills/aems-port/tools/splc_fields.py`): a 60-byte header (+8 sample-table offset from
+//! `tools/audio-file-inspect/splc_fields.py`): a 60-byte header (+8 sample-table offset from
 //! byte 60, +12 record count, +16 container count, +20 extras (0), +24 sample count), 36-byte
 //! records, 72-byte containers, then per record its groups (12-byte header) of 72-byte members.
 //! Field roles from the retail Splice code (`super` docs); offsets are facts.

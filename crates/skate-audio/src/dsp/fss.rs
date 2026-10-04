@@ -1,5 +1,5 @@
 //! FrequencyShiftSsb (`FSS0`, process `sub_82B22898`, constructor `sub_82B22770`, size
-//! `sub_82B22738`; spec `.claude/notes/aems-grain-chain-spec.md` §1): a single-sideband frequency
+//! `sub_82B22738`; spec `audio-specs/aems-grain-chain-spec.md` §1): a single-sideband frequency
 //! shifter, mono.
 //!
 //! Per 256-frame block:

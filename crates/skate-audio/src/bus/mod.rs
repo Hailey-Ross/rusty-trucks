@@ -1,5 +1,5 @@
-//! The buses behind the voices (specs `.claude/notes/aems-env-bus-spec.md`,
-//! `.claude/notes/aems-eqchain-buses-spec.md`): per block, voices add into the mono environment
+//! The buses behind the voices (specs `audio-specs/aems-env-bus-spec.md`,
+//! `audio-specs/aems-eqchain-buses-spec.md`): per block, voices add into the mono environment
 //! input (their pre-gain Send A, and the owner one-shot buses' env send), into one of the eight
 //! eEQChain buses or straight into SFX Master; then the environment network (orders 199–202) and
 //! the eEQChain buses (253) render into SFX Master (254: gain 1, filters open — an identity in

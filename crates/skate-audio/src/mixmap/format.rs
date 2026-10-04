@@ -1,4 +1,4 @@
-//! `MixMapSK8.mxb` decoding (spec `.claude/notes/mixmap-spec.md` §2). Big-endian throughout.
+//! `MixMapSK8.mxb` decoding (spec `audio-specs/mixmap-spec.md` §2). Big-endian throughout.
 //! Our letters for EA's record kinds: A = MixCtl (input product), B = 3DMixCtl (distance/azimuth
 //! lookup), C = SubMixCh (clamped sum), E = MasterMixCh (output sum) with its G = Preset output
 //! list, F = EvtMixCtl (envelope).

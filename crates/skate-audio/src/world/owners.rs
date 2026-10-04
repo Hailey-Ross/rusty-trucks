@@ -3,7 +3,7 @@
 //! lookups read.
 //!
 //! **Assignment rule — provisional.** Which game objects get an instance is decided by retail's
-//! SFX object manager, not traced yet (`world-traffic-audio.md` "Open"). Until it is, [`Pool::assign`]
+//! SFX object manager, not traced yet (`audio-specs/world-traffic-audio.md` "Open"). Until it is, [`Pool::assign`]
 //! keeps the nearest N candidates by listener distance, and an owner that holds an instance keeps
 //! it while it stays among the nearest N (no reshuffling between frames). Every Traffic B lookup
 //! ends by 90 m (B7) and the vehicle census culls at 110 m, so the nearest four are the audible

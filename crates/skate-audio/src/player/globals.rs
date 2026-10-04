@@ -1,7 +1,7 @@
 //! Game-global words the trick and treatment components read outside the per-player audio state
 //! (`AudioState`): the audio game block `G = *(0x83083C38) + 0x2F070` word `G+96` and the game-flow
 //! object `X = *(0x830CFDC4)` field `X+1060`. Free-skate values as the defaults (spec
-//! `.claude/notes/aems-tricks-treatment-spec.md` §4).
+//! `audio-specs/aems-tricks-treatment-spec.md` §4).
 
 /// `G+96` bit read by `Class_Treatment`'s process (with `sub_8279E180` false and the time scale
 /// below 1.0 it posts the slow-motion companion).
