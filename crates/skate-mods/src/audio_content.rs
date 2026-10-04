@@ -959,6 +959,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
+    /// The overlays the repo ships (the SDK example and the dev test mod) pass the deep check, and
+    /// their packages validate.
+    #[test]
+    fn the_shipped_overlays_validate() {
+        for dir in ["../../sdk/examples/audio-example", "../../mods/audio-content-test"] {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
+            let loaded = load(&root).unwrap_or_else(|e| panic!("{dir}: {e}")).unwrap_or_else(|| panic!("{dir}: no audio.json"));
+            assert!(!loaded.overlay.summary().is_empty());
+            let (manifest, audio) = crate::validate_package_content(&root).unwrap_or_else(|e| panic!("{dir}: {e}"));
+            assert!(!manifest.enabled_by_default, "{dir}: audio mods ship off by default");
+            assert!(audio.is_some());
+        }
+    }
+
     #[test]
     fn map_definitions_parse_on_their_own() {
         let def = MapAudioDef::parse(br#"{"ems": ["sfx_downtown"], "crossfade_bank": "Main_Ambience_Crossfade_DT",

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "add": {
+    "banks": {
+      "EXAMPLE_chime": {
+        "samples": ["audio/chime_0.wav", "audio/chime_1.wav", "audio/chime_2.wav"],
+        "group": "world"
+      }
+    },
+    "random_sets": {
+      "00000000000E4A01": {
+        "name": "example_chimes",
+        "sounds": [{"bank": "EXAMPLE_chime", "volume": 0.6, "seconds": 3, "weight": 1}],
+        "min_interval": 4,
+        "max_interval": 8
+      }
+    },
+    "location_programs": {
+      "EXAMPLE_chime": [{"sample": "shuffle", "level": 0.8}]
+    }
+  },
+  "maps": {
+    "format-demo": {
+      "regions": {
+        "audio_emitters": [{"box": [0, 0, 400, 400], "key": "example_chimes"}]
+      }
+    }
+  }
+}

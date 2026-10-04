@@ -1,12 +1,249 @@
-# Audio modding: design and research
+# Audio modding
 
-Status: RESEARCH DONE, R0 in progress (2026-10-04); nothing else implemented yet. This is the plan for the audio
-modding PR (draft upstream #36), which builds on #32 (the native audio engine) and doc 15 (the world-object surface,
-done). Goal: every audio feature is moddable with the rest of the engine (Lua SDK, content layer), hookable by
-engine systems and data-driven, while retail stays the default and byte-identical without mods.
+Status: IMPLEMENTED (2026-10-04) for the scope chosen on 2026-10-03: the content overlay (R1), map audio as data (R2),
+retail posts / globals / read-only MixMap (R3a), observe-only audio events (R5) and docs / examples (R6), on the audio
+modding PR (draft upstream #36), which builds on #32 (the native audio engine) and doc 15 (the world-object surface).
+Speech is included. Without audio mods the game sounds exactly as before: every phase was checked byte for byte
+against the headless end-to-end renders (below). Later (not in this PR): tuning writes at run time, mod emitters and
+reverb zones as world-audio objects, mod WAVs through the native mixer, mute / replace rules.
 
-Sections 0–3 are the design (2026-10-03). Section 4 holds the research for the scope chosen on 2026-10-03: prior art,
-the engine facts each phase needs (file:line on this branch, base a4ec831), answers to the open questions and the
+The guide (sections A–G) says what a mod can do and how. The design and research it was built from follow (sections
+0–4, unchanged apart from status notes).
+
+---
+
+## A. What a mod can change, at a glance
+
+| want | how | capability |
+|---|---|---|
+| replace or add retail sounds (sample slots, whole banks, Splice trees, grain members, wheel streams, ambience beds, speech takes), sets, zones, crossfades, emitter records, tuning fields | `audio.json` (data, no Lua needed) | `audio_content` = 1 |
+| give a custom map audio (emitters, reverb zones, zone ambience, location sets, crossfades) | `<map>.audio.json` next to the `.skate`, a `.skate` `AUDO` extension, or a mod's `maps` section | `audio_content` = 1 |
+| play a retail sound (post to a retail class), set a retail global, read MixMap outputs | `sdk.audio.post / redeliver / release / set_global / watch / handle / global / mixmap / info` | `audio` = 2 |
+| react to the game's sounds (pop, land, grind, horn, …) | `sdk.audio.subscribe / events` | `audio_events` = 1 |
+| play the mod's own WAVs (outside the native mixer, as before) | `sdk.audio.preload / play / update / stop / stop_all` | `audio` ≥ 1 |
+| publish cars, peds, skaters to the world audio | `sdk.world_audio.*` (doc 15) | `world_audio` = 1 |
+
+Test `(sdk.capabilities.audio or 0) >= 2` (and so on) before relying on a feature; an older engine lacks the keys.
+
+## B. The content overlay: `audio.json`
+
+A mod ships `audio.json` at its root, next to `mod.json`; files are mod-relative paths (`/`-separated, no `..`).
+It applies **only while the mod runs**: when the mod starts, stops, is reloaded or its script fails, the game's sound
+restarts once with the new set of overlays (a short cut in the sound). Overlays merge in mod-id order over the
+install, by retail identity; **the first mod to change an identity wins** and later claims are listed in the mod menu
+("Audio conflict") and the log. An entry the install does not have (an unknown bank, slot, set…) is skipped with a
+warning, never an error. A whole overlay that fails its checks is not applied, the mod still runs, and the menu says
+why.
+
+```jsonc
+{
+  "version": 1,
+  "replace": {
+    "samples":   { "Skate_Collisions": { "3": "audio/pop.wav", "4": { "file": "audio/loop.wav", "loop_start": 1200 } } },
+    "banks":     { "C04_taxi01": { "abk": "audio/C04_taxi01.abk", "samples": ["audio/t0.wav"], "group": "world" } },
+    "splice":    { "Skate_Collisions": "audio/Skate_Collisions.splc" },
+    "grains":    { "wood_ramp_hard": { "file": "audio/wood.wav", "grain": "audio/wood.grain" } },
+    "wheels":    { "Whls_spins_Jump_1": "audio/spin.wav" },
+    "ambience":  { "04_dt_main": "audio/dt_main.wav" },
+    "mixmap":    "audio/MixMapSK8.mxb",
+    "emitters":  { "sfx_downtown": { "9": { "position": [0, 0, 0], "extent": [18, 18, 18], "bank": "Baby_Cry_1", "patch": 22 } } },
+    "random_sets": { "e_dwtn_spillway_brewery": { "sounds": [ { "bank": "Siren_city_8", "weight": 3 } ] } },
+    "zones":     { "int_tunnel": { "bed": "22_interior_tunnel_amb", "volume": 0.5 } },
+    "crossfades": [ { "from": "1F741D87EB58E84F", "to": "B6CE4BDEB63B6639", "group": 2 } ],
+    "speech":    { "livingworld": { "501_41_adtm1_Warn_n.dat": { "0": "audio/warn.wav" } } }
+  },
+  "add": {
+    "banks":     { "MOD_siren": { "samples": ["audio/siren.wav"], "preload": false, "group": "world" } },
+    "emitters":  { "sfx_mymap": [ { "position": [1, 2, 3], "extent": [6, 6, 6], "bank": "MOD_siren" },
+                                  { "position": [1, 2, 3], "extent": [12, 6, 12], "kind": 5, "reverb": "BEEFC8E3DE04FBAE" } ] },
+    "random_sets": { "00000000000DE501": { "name": "my_sirens", "sounds": [ { "bank": "MOD_siren" } ], "min_interval": 5, "max_interval": 10 } },
+    "zones":     { "00000000000DE502": { "name": "my_zone", "bed": "04_dt_main" } },
+    "crossfades": [ { "from": "00000000000DE502", "to": "DB21C7A69325F3DF", "group": 1 } ],
+    "speech":    { "livingworld": { "501_41_adtm1_Warn_n": ["audio/warn_extra.wav"] } },
+    "location_programs": { "MOD_siren": [ { "sample": "shuffle", "level": 0.8, "pan_sweep": 30 } ] }
+  },
+  "tuning": { "world": { "traffic_engine": { "c04_taxi01": { "idle_rpm": 1200 } } } },
+  "maps": { "MyMap": { "district": "DownTown", "ems": ["sfx_mymap"],
+                       "regions": { "audio_emitters": [ { "box": [0, 0, 50, 50], "key": "my_sirens" } ] } } }
+}
+```
+
+Identities and what each section does:
+
+| section | identity | notes |
+|---|---|---|
+| `replace.samples` | bank stem + S10A slot | an AEMS bank's slot gets a sample header built from the WAV (rate, length, channels); a slot that looped loops from frame 0 unless `loop_start` is given. Programs with fixed timers may cut a longer replacement. Sample banks played by Bevy voices (location sets, crossfades) and Splice banks (pops, landings, foley: Splice builds headers from the PCM) take it as is. |
+| `replace.banks` / `add.banks` | bank stem | the program (`abk`, optional for a replace) and / or the WAVs by slot. A new AEMS bank binds to the retail classes its exports name (e.g. a new engine bank bound to `TRAFFIC_CAR` with its own patch). `preload: true` loads it when the audio starts and keeps it across map changes; `group` = `player` (Effects volume) or `world` (Ambience volume). |
+| `replace.splice` | bank stem | the whole Splice patch tree (expert). |
+| `replace.grains` | grain member | the whole recording and its `.grain` member. |
+| `replace.wheels` / `replace.ambience` | stream / bed name | beds may be up to 600 s. |
+| `replace.mixmap` | the MixMap | the whole `.mxb` (expert). |
+| `replace.emitters` / `add.emitters` | `.ems` file + record index | sound emitters (`kind` 1, a bank and patch) and reverb zones (`kind` 5, a reverb preset key). Added records join a file (a new file name makes a new file a map can list). |
+| `replace.random_sets` / `zones` | 16-hex key or name | the whole record; a replacement keeps the record's name unless it gives one. `add` takes a new 16-hex key. |
+| `replace.crossfades` / `add.crossfades` | zone pair (either order) | |
+| `replace.speech` / `add.speech` | archive + clip (with or without `.dat`) + take | added takes join the clip after its own, so the speech manager can pick them. |
+| `add.location_programs` | bank | the layers a location-set post of the bank plays (the interim Bevy-voice player); a mod bank without a row plays one shuffle layer at level 1, a retail bank without one stays silent (as retail). |
+| `tuning.player / world / bus / grain` | section + field path | field merges onto the install's tuning sections; only fields the install has; arrays take decimal index keys; numbers replace numbers. An overlay whose merged tuning does not read back is left out whole. |
+| `maps.<stem>` | map stem + field | see C. |
+
+Files are checked when the mod starts (and by `check_mod`): WAVs must be PCM16, 1–2 channels, 8–48 kHz, at most 30 s
+(beds 600 s, wheel / grain streams 60 s); `.abk`, `.splc`, `.mxb` and `.grain` files must parse. Limits: 64 MiB of PCM
+per mod and 256 MiB for all running audio mods, 512 sample replacements, 64 banks, 1024 files and 4096 records per
+mod. Licence note: overlays reference retail identities (names, keys, slot numbers); mods ship their own audio.
+
+## C. Map audio (custom maps)
+
+A map's audio is assembled when the map loads, in this order (later sources override the fields they set and append
+their records and boxes):
+
+1. **retail**: the map's database entry, read at run time from the stock collections every install has (the `world`
+   row whose `WorldStream` is `DIST_<stem>` → its map entry: the `.ems` list and the crossfade bank). No setup refresh.
+2. **the map's own definition**: the `.skate` `AUDO` extension (schema 1, UTF-8 JSON), else a `<map>.audio.json` file
+   next to the `.skate`.
+3. **mods**: `maps.<stem>` in `audio.json` (first mod by id per field).
+
+All three use the same shape:
+
+```json
+{
+  "district": "DownTown",
+  "ems": ["sfx_downtown"],
+  "crossfade_bank": "Main_Ambience_Crossfade_DT",
+  "fallback_bed": "04_dt_main",
+  "emitters": [ { "position": [0, 0, 0], "extent": [6, 6, 6], "bank": "Baby_Cry_1", "patch": 22 },
+                { "position": [40, 0, 10], "extent": [20, 8, 20], "kind": 5, "reverb": "BEEFC8E3DE04FBAE" } ],
+  "regions": {
+    "audio_ambience": [ { "box": [0, 0, 64, 64], "key": "int_tunnel" } ],
+    "audio_emitters": [ { "box": [0, 0, 128, 128], "key": "e_dwtn_spillway_brewery" } ],
+    "audio_reverb":   [ { "box": [0, 0, 32, 32], "key": "BEEFC8E3DE04FBAE" } ]
+  }
+}
+```
+
+- `district`: whose retail world-painter regions apply (zone ambience, location sets, reverb). Default: the map's stem.
+- `emitters`: extra `.ems`-style records after the files' (sound emitters and reverb zones, reached and released as
+  retail's).
+- `regions`: axis-aligned boxes `[centre x, centre z, half x, half z]` per layer, checked before the district's tiles.
+  `key` is a 16-hex key or a zone / location-set name (reverb boxes take a preset key).
+- `fallback_bed`: a bed for installs without zone data (not retail).
+
+Mod files are not referenced from a map definition: a custom map uses retail identities, and new sounds come from an
+audio mod (`add.banks`, `add.random_sets`, …).
+
+## D. Runtime API (Lua and Rust)
+
+`game_audio::mod_audio::AudioApi` is the same API for engine systems and mods; the mod commands call it.
+
+```lua
+sdk.audio.post('fountain', 'c_emitter', {32767, 30000, 0, 0, 4096, 25000, 0, 0, 22})
+sdk.audio.redeliver('fountain', {32767, 20000, 0, 0, 4096, 25000, 0, 0, 22})
+sdk.audio.release('fountain')
+sdk.audio.set_global('babycry_1_sel_snd', 1)     -- nil restores
+sdk.audio.watch{globals={'babycry_1_sel_snd'}, mixmap={{slot='emitter', object=0, instance=0, output=4}}}
+local h = sdk.audio.handle('fountain')           -- {live=true, class='c_emitter'}
+local v = sdk.audio.global('babycry_1_sel_snd')
+local o = sdk.audio.mixmap('emitter', 0, 0, 4)   -- {level=…, raw=…, pitch=…, half=…}
+local info = sdk.audio.info()                    -- native, generation, restarts, overlays, conflicts, map, limits, tags
+sdk.engine.inspect('catalog', 'audio_catalog')   -- classes, functions, globals (values), loaded banks, map audio, sets, zones
+```
+
+- Posts are queued and applied at one fixed point, the start of the next audio pass (before the local player's
+  process), so their order against the game's own posts never changes. A key's post replaces its last one. An unknown
+  class or global is a command error (use `sdk.commands.request` to receive it as a result instead of failing the
+  mod). `c_emitter`'s words are expert-level: the game's own emitters derive them from the MixMap (dry, send, pan,
+  pitch, low-pass, …, patch).
+- A handle dies at a map change and when the game's sound restarts for an audio content change: it reads `live =
+  false` and the mod posts again (on `world_changed`). Dead ids are never released into the new runtime.
+- Globals: the first mod to set one owns it; `nil`, the mod stopping and a map change restore the value seen before
+  its first write; after a restart the override is applied again.
+- Limits: 32 handles per mod, 128 in all, 16 posts per frame per mod, 32 payload words, 16 watched globals and 16
+  watched MixMap outputs.
+- Parity: a post runs the bank's program, which draws from the evaluator's one random generator as every retail post
+  does, so with a mod posting the retail random sequence differs from a run without it. Without mod posts nothing
+  changes.
+
+## E. Audio events (observe only)
+
+```lua
+sdk.audio.subscribe{tags = {'pop', 'land'}}     -- {tags = {}} = every row; subscribe(nil) stops
+for _, e in ipairs(sdk.audio.events()) do        -- last frame's rows, each frame once
+  if e.tag == 'pop' then ... end                 -- e.kind, e.source, e.class, e.slot, e.id, e.owner, e.tag
+end
+```
+
+Rows come from the post sites themselves: the local player's component posts / releases and Splice starts, the world
+and NPC hosts (posts, releases, ped Splice steps), world emitter start / stop, zone ambience changes and speech line
+starts. Tags: `pop`, `land` (the board contacts' Splice starts with the Contacts tuning's pop and landing ids),
+`grind_start`, `grind_end` (the grind slot's post / release), `footstep`, `horn`, `alarm`, `emitter`, `zone_change`,
+`speech`. Rows are one frame late; at most 256 a frame (`truncated` says when more happened). Nothing is recorded while
+no mod subscribes. Muting or replacing a retail sound from an event is not possible yet (later: declarative rules).
+
+## F. Tooling, lifecycle and the menu
+
+- `cargo run -p skate-mods --example check_mod -- <package>` checks `mod.json`, the Lua syntax and `audio.json` in
+  depth and prints a summary; `--install <assets folder>` also merges it over the install as the game does and lists
+  unknown identities, `--with <package>` adds other audio mods to report conflicts.
+- The game's native audio starts after the mod manager's first scan, so an audio mod enabled at boot costs no second
+  start.
+- The mod menu shows, for the selected mod, its `audio.json` load error, conflicts (the first by mod id wins) and
+  skipped entries; with no mod selected, a count of audio problems.
+- Example: `sdk/examples/audio-example` (self-made chimes as a location set on the format-demo map, a click layered on
+  pops from the events). A larger dev test mod (off by default) is `mods/audio-content-test`.
+
+## G. Implementation (for the upstream PR)
+
+Problem: before this PR a mod could only play its own WAVs outside the native mixer and publish world objects; no
+retail content could be replaced or added, custom maps had no emitters / zones / sets, and nothing could post a
+retail sound or observe one. Root cause: retail audio data reached the engine through one install-only manifest
+reader, the map → `.ems` lists and crossfade banks were code tables for the ten retail maps, and no runtime entry
+existed outside `game_audio`.
+
+Changes:
+- `crates/skate-mods/src/audio_content.rs`: the `audio.json` schema (`deny_unknown_fields`), checks, per-kind WAV
+  limits, deep file checks through the skate-audio parsers (skate-mods now depends on skate-audio, pure Rust).
+  `audio_merge.rs`: the pure JSON merge by identity (first owner wins, conflicts, warnings); `check_mod`.
+- `crates/skate-game/src/game_audio/library.rs`: `Library::load_with` (mod files as `mod:<id>/<path>`, per-file bank
+  sources, sample headers rebuilt for mod WAVs in AEMS banks, speech take overrides, location programs, resident
+  banks). With no overlays it reads the manifest exactly as before.
+- `content.rs`: `AudioContent` (the running set, load errors, the merge report, the content generation), the native
+  start after the first scan, the restart (new runtime continuing the old post ids with `map_epoch` + 1, fresh world /
+  NPC / speech hosts: old handles forgotten, never released; stream respawned; the prefetch worker ends with the old
+  runtime). Emitters, reverb zones, zone ambience and location sets key on the content generation.
+- `map_audio.rs`: `MapAudio` (retail lookup from the stock collections, `AUDO` tag / sidecar, mod sections, box
+  regions); `skate-data` `Field.array`; `CurrentMap.audio_tag`. The old code tables remain only as the test oracle.
+- `mod_audio.rs`: `AudioApi` (posts, globals, watches, catalog, info) and the events (an observing Splice host
+  wrapper, per-site buffers that exist only while a mod subscribes, a double buffer at the start of the pass).
+- `skate-audio`: `Evaluator::next_node / continue_nodes`. `skate-mods` `vm.rs` / `api.lua`: the new commands and
+  wrappers, capabilities `audio` = 2, `audio_content` = 1, `audio_events` = 1. Mod menu lines; `sdk/skate.lua`.
+
+Verification:
+- No-mod identity: the headless e2e bench (13 scripted scenarios and whole play sessions, the 60 Hz host and 300 fps;
+  84 renders and voice logs) is byte-identical to the pre-PR build after every phase (R1, R2, R3, R5); the merge of the
+  #32 work into this branch did not change it either. A data-gated test shows the merge path with an empty overlay
+  reproduces the real install's manifest field for field.
+- R1: a restart mid-scenario plays bit for bit like a fresh runtime from that point; a mod replacing an emitter bank's
+  samples changes the output and removing it restores retail exactly; preloaded mod banks survive map changes;
+  replaced AEMS samples get their own headers; Splice / grain / speech / set / zone / emitter overlays reach their
+  readers; conflicts and rejected overlays are reported.
+- R2: the run-time retail lookup reproduces the old tables for all ten maps (files, order, crossfade banks) and the
+  reverb-zone records keep their ids; sidecar, tag and mod sections stack as described.
+- R3: post limits, dead handles (map change, restart), global restore, watches; a mod's `c_emitter` post plays.
+- R5: tags fire on real posts (pop, land, grind start / end through the real banks; horn, alarm, ped footsteps through
+  the world host); nothing is recorded without a subscriber; frame timings equal within noise.
+- Pre-existing failures unrelated to this PR: `setup::tests::pipelines_accept_valid_group_outputs_when_fingerprint_changes`
+  (listed in PULL-REQUESTS.md).
+
+Open questions / later: tuning writes at run time (`sdk.audio.set_tuning`), mod emitters and reverb zones as world-audio
+objects (emitter slots: retail's 5 or extra), mod WAVs through the native mixer (`native=true`, opt-in per sound),
+declarative mute / replace / layer rules, crossfade layouts for mod crossfade banks (the interim table only knows
+retail's three), a bank-level hot swap instead of the restart.
+
+---
+
+# Design and research (2026-10-03 / 04)
+
+The plan this was built from. Sections 0–3 are the design (2026-10-03); section 4 holds the research for the chosen
+scope: prior art, the engine facts each phase needed (file:line on the branch at a4ec831), the open questions and the
 refined plan. Line numbers drift; each reference also names the item.
 
 ---

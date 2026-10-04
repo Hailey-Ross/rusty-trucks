@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "replace": {
+    "ambience": {"04_dt_main": "audio/bed.wav"},
+    "banks": {"Baby_Cry_1": {"samples": ["audio/beep.wav", "audio/beep.wav"]}},
+    "zones": {"int_tunnel": {"bed": "22_interior_tunnel_amb", "volume": 0.5, "time_a": 1.5, "time_b": 3.0}},
+    "speech": {"livingworld": {"501_41_adtm1_Warn_n.dat": {"0": "audio/warn.wav"}}}
+  },
+  "add": {
+    "banks": {"DEV_siren": {"samples": ["audio/siren.wav"], "group": "world"}},
+    "random_sets": {
+      "00000000000DE501": {"name": "dev_sirens", "sounds": [{"bank": "DEV_siren", "volume": 0.8, "seconds": 4, "weight": 1}], "min_interval": 5, "max_interval": 10}
+    },
+    "speech": {"livingworld": {"501_41_adtm1_Warn_n": ["audio/warn.wav"]}},
+    "location_programs": {"DEV_siren": [{"sample": 0, "level": 1.0, "pan_sweep": 30}]}
+  },
+  "tuning": {
+    "world": {"traffic_engine": {"c04_taxi01": {"idle_rpm": 1200.0}}}
+  },
+  "maps": {
+    "format-demo": {
+      "district": "DownTown",
+      "regions": {"audio_emitters": [{"box": [0, 0, 400, 400], "key": "dev_sirens"}]}
+    }
+  }
+}

@@ -3,8 +3,11 @@
 Manifest API remains `2`. Feature discovery uses compiled `sdk.capabilities`:
 `engine_access=1`, `command_results=1`, `native_bodies=1`,
 `input_override=1`, `player_physics=2`, `player_overlap=1`, `landed_details=1`,
-`audio=1` (the mod's own WAVs: `sdk.audio.preload / play / update / stop / stop_all`, declared in
-`skate.lua`) and `world_audio=1` (publishing cars, peds and skaters to the game's world audio).
+`audio=2` (1: the mod's own WAVs, `sdk.audio.preload / play / update / stop / stop_all`; 2: posts to retail
+classes, globals, MixMap / global watch, `sdk.audio.info`), `audio_content=1` (an `audio.json` content overlay
+that replaces / adds retail audio by identity while the mod runs), `audio_events=1` (`sdk.audio.subscribe / events`,
+observe only) and `world_audio=1` (publishing cars, peds and skaters to the game's world audio); all declared in
+`skate.lua`, reference in `docs/hails-additions/16-audio-modding.md`.
 The host has no injury, vehicle or challenge rules. Those live in Lua.
 
 `deformation=1` adds optional impact-driven mesh/collider deformation.
@@ -37,7 +40,7 @@ available. Menus can create a named pause-menu section and nested pages using
 Catalogs are larger and requested explicitly:
 
 ```lua
-sdk.engine.inspect("catalog", "graphs") -- or "scoring"
+sdk.engine.inspect("catalog", "graphs") -- or "scoring", "audio_catalog"
 -- On a later callback:
 local result = sdk.commands.result("catalog")
 if result and result.ok then

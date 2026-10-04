@@ -45,7 +45,8 @@ fn main() {
     let mut overlays = vec![(manifest.id.clone(), audio.overlay)];
     for other in &others {
         match skate_mods::validate_package_content(std::path::Path::new(other)) {
-            Ok((m, Some(a))) => overlays.push((m.id, a.overlay)),
+            Ok((m, Some(a))) if !overlays.iter().any(|(id, _)| *id == m.id) => overlays.push((m.id, a.overlay)),
+            Ok((m, Some(_))) => println!("  ({} is already in the list)", m.id),
             Ok((m, None)) => println!("  ({} has no audio.json)", m.id),
             Err(e) => println!("  ({other}: {e})"),
         }

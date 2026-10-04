@@ -462,7 +462,7 @@ function sdk.engine.systems() end
 ---@return table|nil latest snapshot
 function sdk.engine.read(system) end
 ---@param key string command result key
----@param system 'graphs'|'scoring'
+---@param system 'graphs'|'scoring'|'audio_catalog'
 function sdk.engine.inspect(key, system) end
 
 ---@class BodyReference
@@ -596,7 +596,7 @@ sdk.capabilities = {}
 ---@field position? Vec3 unbound voices only
 ---@field offset? Vec3
 ---@type {version:integer}
-sdk.audio = { version = 1 }
+sdk.audio = { version = 2 }
 ---Load and validate a WAV now so the first play doesn't read it. A bad file, an unknown body or a
 ---full limit fails the mod (as `play` does); wrap the command in `sdk.commands.request` to get the
 ---error as a result instead.
@@ -617,6 +617,99 @@ function sdk.audio.update(key, opts) end
 function sdk.audio.stop(key, fade_out) end
 ---Stop every voice of this mod at once (the clips stay loaded).
 function sdk.audio.stop_all() end
+
+-- Audio extension 2 (capability `audio` >= 2): the game's own native audio, the same calls engine
+-- systems make. Keys belong to the calling mod: 32 handles per mod, 128 in all, 16 posts per frame.
+-- Posts and globals are applied at the start of the next audio pass. Everything is released and
+-- every global restored when the mod stops, fails or reloads; posts also end at a map change (the
+-- handle reads `live = false`; post again on `world_changed`) and when the game's sound restarts
+-- for an audio content change. A post runs the retail bank's program, which draws from the one
+-- random generator every retail post uses: with a mod posting, the retail random sequence differs.
+---@class AudioHandle
+---@field live boolean the post is held by the running audio (false after a map change / restart)
+---@field class string the class it was posted to
+---@class AudioMixMapRow
+---@field slot string
+---@field object integer
+---@field instance integer
+---@field output integer
+---@field level integer 0..32767 (a Q15 level, or a filter cutoff in Hz)
+---@field raw integer 0..65535 (an azimuth: 65536 = 360°)
+---@field pitch integer 4096 = 1.0
+---@field half integer the output word as stored
+---@class AudioWatchKey
+---@field slot "global"|"player"|"ambience"|"collision"|"traffic"|"pedestrian"|"emitter"
+---@field object? integer 0..127 (default 0)
+---@field instance? integer 0..31 (default 0)
+---@field output integer 0..31
+---@class AudioWatchOptions
+---@field globals? string[] up to 16 retail globals
+---@field mixmap? AudioWatchKey[] up to 16 MixMap outputs
+---@class AudioEvent
+---@field kind "post"|"release"|"splice"|"emitter_start"|"emitter_stop"|"zone"|"speech"
+---@field source "player"|"world"|"npc"|"emitter"|"ambience"|"speech"
+---@field class string retail class (posts), bank (Splice starts, emitters) or ""
+---@field slot string the poster's slot (`grind`, `footstep`, `horn`, …) or ""
+---@field id integer Splice sound id, emitter patch, slot index, speech event
+---@field owner string world / NPC object, zone key, speaker ("0" for the local player)
+---@field tag? "pop"|"land"|"grind_start"|"grind_end"|"footstep"|"horn"|"alarm"|"emitter"|"zone_change"|"speech"
+---@class AudioInfo
+---@field native boolean the native audio runtime runs
+---@field map_epoch? integer
+---@field generation? integer audio content generation (bumped by every restart)
+---@field restarts? integer
+---@field overlays? string[] mods whose audio.json is applied
+---@field conflicts? integer
+---@field map? {stem:string, district:string, ems:string[], sources:string[]}
+---@field limits table
+---@field tags string[]
+---Post to a retail class (e.g. `c_emitter`) with up to 32 payload words; a key's post replaces its
+---last one. An unknown class is a command error (use `sdk.commands.request` to get it as a result).
+---@param key string
+---@param class string
+---@param words? integer[]
+function sdk.audio.post(key, class, words) end
+---Rewrite a held post's payload.
+---@param key string
+---@param words integer[]
+function sdk.audio.redeliver(key, words) end
+---@param key string
+function sdk.audio.release(key) end
+---Set a retail global; `nil` restores the value seen before this mod's first write. The first mod
+---to set a global owns it; it is restored when that mod stops and at a map change.
+---@param name string
+---@param value? integer
+function sdk.audio.set_global(name, value) end
+---Replace this mod's watch lists (read with `sdk.audio.global` / `sdk.audio.mixmap`).
+---@param opts AudioWatchOptions
+function sdk.audio.watch(opts) end
+---@param key string
+---@return AudioHandle|nil
+function sdk.audio.handle(key) end
+---A watched global's value after the last audio pass (or the value this mod set).
+---@param name string
+---@return integer|nil
+function sdk.audio.global(name) end
+---A watched MixMap output after the last audio pass.
+---@return AudioMixMapRow|nil
+function sdk.audio.mixmap(slot, object, instance, output) end
+---@return AudioInfo
+function sdk.audio.info() end
+-- Audio events (capability `audio_events`): observe only, one frame late, at most 256 rows a frame.
+-- Nothing is recorded while no mod subscribes.
+---Subscribe to the rows with these tags (`{tags={}}` = every row); `nil` stops.
+---@param opts? {tags:string[]}
+function sdk.audio.subscribe(opts) end
+---The rows of the last frame not returned yet (each frame's rows once).
+---@return AudioEvent[]
+function sdk.audio.events() end
+-- Audio content (capability `audio_content`): a mod ships `audio.json` at its root (no Lua needed):
+-- replace / add retail audio content by identity (banks, sample slots, Splice trees, grain members,
+-- wheel streams, ambience beds, emitter records, location sets, zones, crossfades, speech takes,
+-- tuning fields, map audio) with its own files. Applied only while the mod runs; turning it on or
+-- off restarts the game's sound (a short cut). Two mods on one identity: the first by mod id wins
+-- and the mod menu shows the conflict. Check it with `check_mod <package> --install <assets>`.
+-- Reference: docs/hails-additions/16-audio-modding.md.
 
 -- World audio extension 1 (capability `world_audio`): publish traffic vehicles, pedestrians and
 -- skaters to the game's retail world audio, exactly as an engine system would (doc
