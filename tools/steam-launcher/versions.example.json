@@ -1,0 +1,32 @@
+[
+  {
+    "id": "main",
+    "name": "main",
+    "branch": "main",
+    "dir": ".local/versions/main",
+    "notes": "The main branch as it is. Use it to compare against your branch."
+  },
+  {
+    "id": "my-branch",
+    "name": "My branch",
+    "branch": "my-branch",
+    "dir": ".local/versions/my-branch",
+    "notes": "What to test in this version, shown before the game starts."
+  },
+  {
+    "id": "modding-pr",
+    "name": "A modding PR with a dev test mod",
+    "branch": "some/modding-branch",
+    "dir": ".local/versions/modding-pr",
+    "mods_enable": "dev-audio-content-test",
+    "notes": "Use the 'dev test mods' entry: it turns on the mod named in mods_enable."
+  },
+  {
+    "id": "work",
+    "name": "This checkout (work in progress)",
+    "branch": "",
+    "dir": ".",
+    "dev": true,
+    "notes": "This checkout as it is, uncommitted changes included. Rebuilt only when bin\\ is missing."
+  }
+]

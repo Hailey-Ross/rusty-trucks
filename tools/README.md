@@ -21,6 +21,8 @@ game; none of them contain game code or data. Default work folders are under `.l
 | [`audio-bench/`](audio-bench/README.md) | Audio performance: hashed e2e bench runs, timing summaries, emitter bank memory. |
 | [`recomp-trace/`](recomp-trace/README.md) | **For use with the Skate 3 recomp's research hooks** ([`research-hooks` branch](https://github.com/Hailey-Ross/skate3recomp/tree/research-hooks)): read and analyse trace sessions. Reference only; you build the recomp and set up the paths yourself. |
 
+| [`steam-launcher/`](steam-launcher/README.md) | Couch testing from Steam / Steam Link with a controller: start any version (main, branches, PRs; each built in its own worktree on demand) in a chosen mode, or the recomp with trace options (for use with the recomp's research hooks); a result check after each session. |
+
 `regression-checks/check_maps.py` uses the game's `--validate-maps` mode when the exe has it and falls back to `--check-assets` per map otherwise.
 
 See `docs/hails-additions/14-published-tools.md` for the background.
