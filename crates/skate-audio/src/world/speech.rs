@@ -242,6 +242,8 @@ pub fn choose(index: &SpeechIndex, cues: &[Cue], voice: u32, last: &mut HashMap<
 /// The mixer bank the decoded takes live in ([`crate::mixer::Mixer::add_bank`]; slot = the take's
 /// running number over the index, [`SpeechSlots`]).
 pub const SPEECH_BANK: usize = 1 << 22;
+/// The main cast's takes (`maincastspeech.big`), slots as in [`SPEECH_BANK`] over its own index.
+pub const MAIN_CAST_BANK: usize = SPEECH_BANK + 1;
 
 /// (clip, take) → mixer slot of [`SPEECH_BANK`].
 #[derive(Clone, Debug, Default)]

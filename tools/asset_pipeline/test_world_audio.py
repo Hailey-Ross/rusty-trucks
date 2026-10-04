@@ -45,6 +45,31 @@ class Tuning(unittest.TestCase):
         self.assertEqual((child['idle_rpm'], child['max_rpm'], child['patch'], child['gears'], child['rear_bias']), (1500.0, 4000.0, 4, 4, 20000))
         self.assertEqual(t['traffic_engine']['default']['patch'], 2)
         self.assertEqual(t['ped_footsteps'], {})
+        # Without the records: the defaults of skate_audio (eq 0 is the lookup's own default).
+        self.assertEqual(t['ped_objects'], {'body_fall_eq': 0})
+        self.assertEqual(t['speech_voice'], {})
+
+    def test_ped_objects_and_speech_curves(self):
+        import tempfile
+        from pathlib import Path
+        i32 = lambda v: struct.pack('>i', v).hex()  # noqa: E731
+        curve = bytes(16) + struct.pack('>16f', *range(8), *[3.0] * 8)
+        collections = [
+            {'class': world.BODY_FALL[0], 'key': world.BODY_FALL[1], 'parent': '', 'fields': {
+                f: {'type': 'Skate_Collisions', 'data': i32(v)} for f, v in zip(world.BODY_FALL_IDS, (11, 22, 33))}},
+            {'class': world.RING[0], 'key': world.RING[1], 'parent': '', 'fields': {
+                world.RING_ID: {'type': 'CellPhone_Rings', 'data': i32(5)}}},
+            {'class': world.SPEECH_RECORD[0], 'key': world.SPEECH_RECORD[1], 'parent': '', 'fields': {
+                world.SPEECH_PEAK['q']: {'type': 'Sk8::PointNegGraphData8', 'data': curve.hex()},
+                world.SPEECH_ECHO['delay_frames'][0]: {'type': 'EA::Reflection::Int32', 'data': i32(4)}}},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            graph = Path(tmp)/world.TAZE_GRAPH
+            graph.parent.mkdir(parents=True)
+            graph.write_text('<behaviour name="SetSimpleTimer" timerName="TazerCycTime" length="2.0"/>')
+            t = world.world_tuning(collections, None, [Path(tmp)/'missing', tmp])
+        self.assertEqual(t['ped_objects'], {'body_fall_ids': [11, 22, 33], 'body_fall_eq': 0, 'ring_id': 5, 'tazer_seconds': 2.0})
+        self.assertEqual(t['speech_voice'], {'peak_q': {'x': [float(v) for v in range(8)], 'y': [3.0] * 8}, 'delay_frames': 4})
 
 
 def _evt(event_id, fields, records, name='501_warn'):

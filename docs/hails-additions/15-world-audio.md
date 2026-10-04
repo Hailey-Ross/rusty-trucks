@@ -48,7 +48,7 @@ remove the component. Owner ids are `Entity::to_bits()`, so a reused index count
 
 | field | retail | meaning | default |
 |---|---|---|---|
-| `voice` | `S+84` | the model = the speech voice id 41–96. Its `aud_characteristics` record (setup export `world_tuning.ped_models`) gives the shoe class, the security kind, the speech type / variant / gender words and the far threshold (G2) | none (no speech, the defaults below) |
+| `voice` | `S+84` | the model = the speech voice id 1–96 (41–96 living-world peds; a pro 1–29 or the special cast 30–38 speaks on the main-cast channel). Its `aud_characteristics` record (setup export `world_tuning.ped_models`) gives the shoe class, the security kind, the speech type / variant / gender words and the far threshold (G2) | none (no speech, the defaults below) |
 | `shoe_class` | `S+132` | 1–5 (`None` = the model's). Most models are 2; no model uses 1, which is silent. | the model's, else 2 |
 | `weight` | `[obj+28]+144` | 1–5. It changes per ped in retail (1 beyond about 12 m, 2–5 nearer) and its meaning is open. | 1 |
 | `close_range` | `S+96 == 64` | the security guards' close-range footstep levels and their speech levels (`None` = the model's type bit) | the model's, else false |
@@ -57,6 +57,8 @@ remove the component. Owner ids are `Entity::to_bits()`, so a reused index count
 | `footsteps_on` | `S+68` | footsteps on | retail's rule: the 3 nearest peds in the list |
 | `speech_distance` | `S+148` / `S+156` | distance to the listener / the model's far threshold. Beyond the threshold the far `_f` lines are used. | the 3-D distance / the model's threshold (20 m for regular peds, 30 for pros) |
 | `speech_value` | `S+136` | the state graph's speech value | 0. Send `PedSpeechEvent` rather than writing it. |
+| `tazing` | `S+80` | the ped tazes (retail: its state graph's `TazeEntity` state): SFXObj_Tazer holds `c_tazer`, the zap burst | false. `PedTazerEvent` holds it for a time. |
+| `body_fall` | `S+76` | the ped animation's `BodyFallType` channel: each change to a non-zero value starts one PedBodyFall sound (8, 9, other) | 0. `PedBodyFallEvent` sends one key. |
 
 ### `NpcSkaterAudio` (the MixMap Player slot's second instance)
 
@@ -65,7 +67,9 @@ remove the component. Owner ids are `Entity::to_bits()`, so a reused index count
 | `list_order` | the skater list position (retail walks its list in order) | spawn order |
 | `state` | this frame's `AudioState`. A skater simulated with the player's physics uses `game_audio::skate_events::skater_audio_state(physics, skater, &mut memory, dt)`, the same builder the local player uses (proved identical, below). Anything else uses `AudioState::rolling(&LiteSkater { .. })`: speed, wheels, materials, grind / air flags. With that fill, rolling, surfaces, seams, grinds and landings sound; tricks and foot / body foley stay silent. | none (not published) |
 | `remote` | a remote multiplayer player (see below) | false |
-| `voice` | the skater's speech voice (the AI skaters' models 89–96): its bail grunt says a line of it | none |
+| `voice` | the skater's speech voice: the AI skaters' models 89–96 (living-world channel) or a pro 1–29 / the special cast 30–38 (main-cast channel). Its bail grunt and its reactions say lines of it | none |
+| `reactions` | the skater record's reaction bytes this frame (`SkaterReactions`: a slam seen and by whom, a second slam reaction, a trick seen and by whom, its own crash, the chase flag): its speech process (`skate_audio::world::skater_speech`) says `101_pos` / `104_slam` / `150_pro_pos` / `151_pro_slam` (pros) or `101_pos` / `404`–`405` / `105_spec_chase` (AI skaters), and `906_aislm` / `131_collide_object` on its crash | none. `NpcSkaterReactionEvent` raises one for a console frame. |
+| `loose_board` | the conditioner's loose-board state (`+780`: 0, 1 upside down, 2 on its side; `rolling::loose_board`): the board slide holds while set | 0 (ghosts: from their log) |
 
 ### Messages, resources and the read-back
 
@@ -79,8 +83,15 @@ remove the component. Owner ids are `Entity::to_bits()`, so a reused index count
 - `VehicleHorn { vehicle, kind, seconds }`: holds horn kind `kind` for the caller's time. The length
   is the AI's choice, not retail data.
 - `VehicleAlarm { vehicle }`: retail's alarm, horn state 6 for **8 s**.
-- `LivingWorldAudio { expected }`: set it at map load when the system will publish. The 13 world
-  banks then decode on the prefetch worker instead of the game thread.
+- `PedTazerEvent { ped, seconds }`: the ped zaps: `tazing` held for `seconds` (None = the state graph's
+  `TazerCycTime`, setup `world_tuning.ped_objects.tazer_seconds`, 2.0 s).
+- `PedBodyFallEvent { ped, kind }`: one `BodyFallType` key of a knock-down animation. Keys queue; each is on for
+  one console frame with a frame of 0 after it, so repeated keys sound.
+- `NpcSkaterReactionEvent { skater, reaction, by }`: an NPC skater reacts (`SkaterReaction::{Slam, SlamB, Trick,
+  Crash, Chase}`, `by` = the other skater's model, 0 = the player); held for one console frame.
+- `LivingWorldAudio { expected, photo_flag }`: set `expected` at map load when the system will publish (the
+  world banks then decode on the prefetch worker). `photo_flag` is the game flag of the photographer's repeat
+  (a ped holding speech value 29 repeats it every second; retail system byte `+912`, meaning not traced).
 - `WorldAudioInstance { slot, instance }` (read-back): the bridge inserts it on the entities that
   hold a MixMap instance. Only those are audible. An engine system can use it to skip per-frame
   audio work for the others, such as an NPC's `AudioState`.
@@ -157,7 +168,13 @@ sdk.world_audio.event('car1', 'horn', {kind=3, seconds=1.2})   -- or 'alarm' (8 
 sdk.world_audio.spawn('taxi', 'traffic', {engine='c04_taxi01', body='chassis'})  -- a mod car opts in to a retail engine sound
 sdk.world_audio.spawn('ped1', 'ped', {voice=59, shoe_class=3, position=p})
 sdk.world_audio.update('ped1', {position=p, feet={true,false}})
-sdk.world_audio.event('ped1', 'speech', {value='warn'})        -- name or number
+sdk.world_audio.event('ped1', 'speech', {value='warn'})        -- name or number (49: a phone call)
+sdk.world_audio.event('ped1', 'tazer')                         -- the zap burst (seconds = 2 by default)
+sdk.world_audio.event('ped1', 'body_fall', {kind=9})           -- one knock-down key (8, 9, other)
+sdk.world_audio.update('ped1', {tazing=true, photo_flag=true}) -- held tazing; the photographer's game flag
+sdk.world_audio.update('npc1', {loose_board=1})                -- lite skater: the board slide
+sdk.world_audio.event('npc1', 'reaction', {value='trick', by=0}) -- it saw the player's trick (slam, slam_b, trick, crash, chase)
+sdk.world_audio.update('npc1', {voice=24})                      -- a pro's voice: the main-cast channel
 sdk.world_audio.spawn('npc1', 'skater', {position=p, speed=6})  -- lite: rolling from these fields
 sdk.world_audio.spawn('ghost', 'skater', {source='state_log:state_20261003_143434', from=30, seconds=20, position=p})
 local r = sdk.world_audio.read('car1')   -- {kind='traffic', audible=true, instance=2, parked=false}
@@ -378,14 +395,8 @@ The hosts match the measured rules:
 - Peds: the 15 nearest within 50 m (3-D, nearest-first), footsteps for the 3 nearest.
 - NPC skater: the first in list order within 30 m, held until 30 m.
 
-### PedBodyFall and Tazer: gaps
-- **Tazer.** The recordings support it: in 164620, each of the 3 tazer zaps (`SECTAZE want`) is followed 0.03 s
-  later by a burst of 10–20 Tazer-bank starts, 0.1–0.2 s apart, for 1.3–2.1 s (49 starts). No POST is attached,
-  which fits op 38 child posts; op 38 is ported. But `SFXObj_Tazer` itself (its trigger on the ped state, its
-  words) is not decoded. Not ported.
-- **PedBodyFall.** No recording shows a post from it (no event group with a caller in its code in the
-  163809 / 164620 reports). Not decoded.
-- Neither message is offered in the API.
+### PedBodyFall and Tazer
+Gaps at the end of P3; closed below ("Gaps closed").
 
 ### Mod surface
 **Done in this pass (cheap):**
@@ -445,6 +456,135 @@ and §8.6.
   car (not ported).
 - **NPC:** board slide; the walking / jump voices of an NPC on foot; the NPC grain bed against 180430's NPC GREC
   rows (not compared in this pass).
+
+## Gaps closed: Tazer, PedBodyFall, speech details, the NPC board slide and bed (2026-10-03)
+
+Built from the P3–P5 state and checked headless against the existing recordings, plus one scripted background
+recomp run for the NPC board slide (user-approved gap runs; muted, one game at a time). All numbers are "the
+recomp". Reference only: the TU3 recompilation (skate3recomp / rexglue / Xenia); our own code.
+
+### Tazer (`skate_audio::world::peds::PedTazer`)
+- **Decoded:** `SFXObj_Tazer` (Pedestrian object 3, factory `sub_824F12D0`). Its process posts the 9-word
+  `c_tazer` packet while the ped audio state's byte `S+80` is set (the manager's bit 17 of the ped entry) and
+  releases it when it clears; its update writes raw 0, pitch 1, levels 3 / 2. The program (op 38, ported earlier)
+  owns a `c_tazer_grn_play` child post and plays the burst while the packet is held.
+- **`S+80` = tazing:** each post came 22 ms after the state graph's `TazeEntity` entry (`TazerCycTime` 2.0 s).
+- **Checked** (`tazer_bursts_follow_the_recomp`, session 164620: three zaps, 49 Tazer starts): per 2 s hold ours
+  start 19 sounds (recomp 10 / 20 / 19; its first burst stopped after 1.33 s, cause not traced); gaps
+  192 / 192 / 128 / 96 ms against 190 / 190 / 130 / 90–100 (the 11th gap 128 against 129 / 131); the order 8, 7,
+  then shuffles of 0–6 in both; the first start's gain recomp / ours 0.85 / 0.93 / 1.00 at each zap's geometry.
+
+### PedBodyFall (`PedBodyFall`)
+- **Decoded:** `SFXObj_PedBodyFall` (object 2). Its trigger `S+76` is the ped animation's `BodyFallType` channel.
+  Each change to a non-zero value starts one Skate_Collisions sound through the collision Splice object: type 8 →
+  1184, 9 → 948, any other → 1183 (vault record `923CCB46EF5BF5BA` / `DFEFC9212E0CBD2C`); 8 and 9 round-robin two
+  slots. Each type follows its own volume / pitch outputs (8: out1 / out2, 9: out3 / out4, other: out5 / out6).
+- **The recordings had it after all:** the starts are Splice starts, not POSTs (75 in six sessions). Retail's
+  knock-downs key 9, other, 9, 9 (0.10 / 0.48 / 0.16 s apart) or 9, 8, 8, other, 9.
+- **Checked** (`body_falls_follow_the_recomp`, 73 starts): container by type 73 / 73; voice gain recomp / ours
+  p50 0.79 (p10 0.25, p90 1.25, n 40; the knocked-down ped is not logged, the ped nearest the player is taken).
+
+### Speech details
+- **PEAK filter:** a head shadow by azimuth. The owner's raw azimuth, folded front / back, goes through three
+  curves of the speech record (centre 600 → 4000 Hz at the side → 600, gain 0.4 → 0.1, Q 3; setup export
+  `world_tuning.speech_voice`). Every recomp PEAK (6 / 6) lies on the curves at one azimuth; ours at the estimated
+  geometry 3 / 6 within 10 %. The mixer plays speech on the stream graph (PEAK, Send A, gain, then the filters).
+- **Two sends, and the echo submix (ported):** the stream system (`sub_82C5CEF0`) multiplies the gain and both
+  sends by the speaker's per-voice float (`S+152`, `aud_characteristics` `2087A3290483BB4F`, 0.8–1.4). The
+  **pre-gain** send (`desc+16`, recomp module `+0x570`) carries PedestrianSpeech **out21** (PlayerSpeech out13)
+  and feeds the stream slot's **echo submix** (`skate_audio::bus::speech_echo`, built per stream slot by
+  `sub_82C5E2D8`: high pass = owner filter 22 (skater 14), delay = camera distance × the record's factor / 344 m/s
+  up to 0.15 s (recomputed every 4 console frames, posted only on change), low pass = filter 23 (skater 15), then
+  the environment bus). The **post-filter** send (`desc+32`, `+0x7D0`) carries out15 (skater out10) straight to
+  the environment bus. Correction to the first decode: it had out15 feeding the echo; the code says the pre-gain
+  send does. Recomp: the pre-gain send = out21 in 17 of 29 lines within 25 % (out15: 10); the post-filter send =
+  out15 in 19 of 27. Modelled mono: the graph's two-channel Pn21 / Sen0 routing is a unity tap (its gains are not
+  traced).
+- **Value 49 = a phone call:** the ped's phone rings (CellPhone_Rings container 5, now part of setup) and when the
+  ring ends the ped asks for value 64 (`4402_cell_greet`). Recomp 164620: both rings answered 1.00 / 1.19 s
+  later; the ring records last 0.84–1.13 s. Without the bank (an install from before this setup) the answer
+  follows at once (logged).
+- **Value 29 (the photographer):** repeats each second while the game flag is set (`LivingWorldAudio::photo_flag`).
+- **`Obj:Speech` inputs:** in0 / in1 / in4 are raised while a playing line's speaker is 37–38 / 75–77 (the guards)
+  / 1–29 (the pros); in2 / in3 are not traced. They don't touch regular peds, so the recomp near lines' extra
+  ~0.6 dB stays open.
+- **Which stream:** the first free one (k0 when both are free: 95 of 109 new lines).
+- **Queue timeout unit (settled from the code):** the library's clock `[[0x830CFD94]+16]` is the function behind the
+  `GetVisualGameTick` Lua binding (`0x8283C2D8`): visual game ticks, one per rendered frame. The console renders
+  at its ~30 fps cadence, so the port's console-frame count is the same unit.
+- **Main-cast channel (ported):** the pros' and the special cast's speech (`maincastspeech.big`, speech-manager
+  bank 0, channel 0, its own tuning `speech_tuning["0"]`, timers, two streams and mixer bank). Who speaks there:
+  a model with no living-world type bit and a cast bit / word (`aud_characteristics` `6F2933E977CF40DD` /
+  `14FD437D190677C8`, plus `D6EA428C2B43E23A` for the pro-on-pro lines; setup `world_tuning.ped_models`). Request
+  words per event: `sub_824AC898` (`speech_manager::main_cast::request_words`); the main cast's near / far flag is
+  1 near, 2 far. Senders:
+  - a pro **ped** (`sub_824AC438`): value 29 → `1014_bored` (141), 28 → `601_ai_greet` (11, outside a challenge),
+    30 / 51 → 115 or 6, 53 / 54 → 77;
+  - an NPC **skater's** own process (`SFXObj_PlayerSpeech` non-local, `sub_824DA1B0`;
+    `skate_audio::world::skater_speech`): pros (`sub_824DA768`) say `101_pos` / `150_pro_pos` on a seen trick and
+    `104_slam` / `903_race_slam_pc` / `151_pro_slam` on a seen slam, every frame the byte holds; AI skaters
+    (`sub_824DAAC0`) `101_pos`, `404` / `405` / `903` / `104_spec_slam`, `105_spec_chase`, on change; its crash
+    (`sub_824DB688`, latched) the message pair `131_collide_object` / `906_aislm`;
+  - the skater messages by speaker kind (`sub_824DAC00`): bail grunt 8206 / 115, crash 8229 / 125, impact
+    8233 / 6, hit reaction 8309 / 253, race punch 8310 / 250, gesture 8291 / 247 (the senders of the last four are
+    engine systems the game does not have yet).
+- **Main-cast decode:** setup indexes it always (`speech/maincast.json`, 1283 clips) and decodes its free-roam
+  events with the living world's (`SKATE_SETUP_SPEECH=1`): **6596 takes, 3.0 h, 922 MB** of 44.1 kHz PCM16.
+- **Checked:** `main_cast_lines_are_reachable`: all **82** main-cast lines the recomp streamed in 11 sessions
+  (906 `AiSlam` ×45, 101 `pos`, 150 `pro_pos`, 104 `Slam`, 130 `col`, 201 `grunt`) are reachable through our
+  words for their speaker (76 of them of an event the port sends; 130 `_col` has no ported sender).
+  `a_pro_skater_says_a_main_cast_line`: Ryan Smith's model as an NPC skater sees the player's trick and the main
+  cast streams `101_24_Smit_pos` at its PlayerSpeech level.
+- **Re-verified** (`speech_levels_follow_the_recomp`, 39 lines, now with the voice float): filters 4 of 5, gain
+  recomp / ours median 0.988 (p10 0.55, p90 1.36), pre-gain send = out21 17 / 29, post-filter send = out15 19 / 27,
+  PEAK on the curves 6 / 6.
+
+### NPC skater: the board slide and the bed
+- **Board slide ported for the NPC instance:** retail's slide code has no local test and its input (the
+  loose-board state) is computed per skater, so `NpcSkater` runs it from `NpcSkaterAudio::loose_board` (ghosts:
+  per row of their log). A scripted background run (Mega-Park, 4 min standing, the PLAYERPOST hook, 0 malformed
+  lines): instance 1 was held 78 s in 12 holds, no NPC bailed, no slide post by either instance: still unobserved.
+- **NPC grain bed vs session 180430's NPC rows** (the GREC rows of the NPC object, filtered by owner, joined with
+  the board's distance; `npc_bed_follows_the_recomp_rows`, 289 straight-roll rows): truck A gain recomp / ours
+  0–10 m 0.097 / 0.108, 10–20 m 0.045 / 0.065, 20–30 m 0.005 / 0.014; pitch 0.93–0.97 / 0.96. The far bands are
+  louder in ours: the lookups measure the distance to the local skater, which the rows don't give.
+
+### Mod surface and data (moddability)
+- Engine: `PedAudio::{tazing, body_fall}`, `PedTazerEvent`, `PedBodyFallEvent`, `NpcSkaterAudio::{loose_board,
+  reactions}`, `NpcSkaterReactionEvent`, `LivingWorldAudio::photo_flag`; ped / skater `voice` 1–96 (the pros and
+  the special cast speak on the main cast).
+- Mods: ped options `tazing`, `photo_flag`; lite-skater option `loose_board`; events `tazer` (seconds) and
+  `body_fall` (kind), skater event `reaction` (value `slam` / `slam_b` / `trick` / `crash` / `chase`, `by`); speech
+  value 49 works through `speech`; `voice` accepts 1–96. The test mod: F7 tazer, F6 a retail knock-down's keys, F5
+  a phone call, F4 the photographer, F3 the ghost sees your trick, F2 the ghost switches between its AI voice and
+  a pro's (24) and crashes.
+- Setup data (`world_tuning`): `ped_objects` (fall containers, eq bus, ring container, the tazer hold from the ped
+  state graph) and `speech_voice` (the PEAK curves, the echo delay factor / per-metre / cap / refresh frames);
+  `ped_models` gained `cast_bit` / `cast_word` / `cast_word2`; `speech_tuning["0"]` (the main cast's) is now used;
+  `speech/maincast.json` + the opt-in decode; `CellPhone_Rings.bnk` decoded with its patch tree;
+  `world_audio.py` joined the audio group's fingerprint. Every field defaults to the retail value and the world
+  tuning overrides it.
+
+### Proofs and tests
+- Local player byte-identical: the e2e bench (13 scenarios + 4 sessions, `row` and `fps300`) from this pass's
+  starting point (`wg_base`) against the result (`wg_new`, and again after the echo submix and the main cast:
+  `wg_new2`): all four sets IDENTICAL (26 + 26 + 8 + 8 outputs) both times.
+- Main-cast / echo tests: `main_cast_lines_are_reachable` (82 / 82), `a_pro_skater_says_a_main_cast_line`; units
+  `skater_speech` (pro / living-world choices, crash latch), the echo delay and the echo graph; the mod event
+  `reaction` and the test mod's F3 / F2.
+- New data tests: `tazer_bursts_follow_the_recomp`, `body_falls_follow_the_recomp`,
+  `npc_bed_follows_the_recomp_rows`, `the_phone_ring_lasts_until_the_recomp_answers`; re-verified
+  `speech_levels_follow_the_recomp`. New unit tests: peds (tazer, falls, ring, photographer), the PEAK curves, the
+  mod options / events, the test mod's new keys, the setup export.
+
+### Still open
+- Speech: Obj:Speech in2 / in3; the near lines' ~0.6 dB; the echo graph's two-channel routing gains; the
+  main-cast speaker-slot repeat times for slots 30 / 31 (record `+52` / `+56`); values 30 / 51 also stopping the
+  speaker's playing line; the game modes the skater choices test (19 / 20 / 55: free skate is none of them, the
+  port passes 0); the cameraman line the crash can request; senders of the hit-reaction / race-punch / gesture /
+  skater-collision lines (no such engine systems yet).
+- NPC: the board slide is ported but unobserved; the walking / jump voices.
+- Traffic: the 3DObjPos binding's writer; horn kinds per model.
 
 ## Open questions before P3 (kept for the record)
 

@@ -285,7 +285,14 @@ impl Script {
 /// moved so the window's first board position lands on `anchor`, the velocities from the
 /// positions' change per row (the log keeps positions, not velocities). Requires every row to
 /// parse ([`try_read`]).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn ghost_states(text: &str, from: f32, seconds: f32, anchor: [f32; 3]) -> Result<Vec<AudioState>, String> {
+    ghost_window(text, from, seconds, anchor).map(|w| w.0)
+}
+
+/// [`ghost_states`] and, per row, the loose-board state (`+780`, the local host's own rule
+/// `PlayerAudio::loose_board` on the row's riding values): the NPC's board slide.
+pub(crate) fn ghost_window(text: &str, from: f32, seconds: f32, anchor: [f32; 3]) -> Result<(Vec<AudioState>, Vec<u8>), String> {
     let rows = try_read(text)?;
     let first = (from.max(0.0) * 60.0) as usize;
     let count = (seconds.max(1.0) * 60.0) as usize;
@@ -297,12 +304,15 @@ pub(crate) fn ghost_states(text: &str, from: f32, seconds: f32, anchor: [f32; 3]
     let origin = [rows[first].f("board_x"), rows[first].f("board_y"), rows[first].f("board_z")];
     let place = |p: [f32; 3]| -> [f32; 3] { std::array::from_fn(|i| p[i] - origin[i] + anchor[i]) };
     let mut out = Vec::with_capacity(end - first);
+    let mut loose = Vec::with_capacity(end - first);
     let mut last: Option<([f32; 3], [f32; 3])> = None;
     for (i, r) in rows[..end].iter().enumerate() {
-        let mut s = script.riding(r).audio;
+        let riding = script.riding(r);
+        let mut s = riding.audio;
         if i < first {
             continue;
         }
+        loose.push(super::player_audio::PlayerAudio::loose_board(&s, &riding) as u8);
         let board = place([r.f("board_x"), r.f("board_y"), r.f("board_z")]);
         let com = place([r.f("com_x"), r.f("com_y"), r.f("com_z")]);
         let rate = |now: [f32; 3], then: Option<[f32; 3]>| then.map_or([0.0; 3], |t| std::array::from_fn(|k| (now[k] - t[k]) * 60.0));
@@ -320,7 +330,7 @@ pub(crate) fn ghost_states(text: &str, from: f32, seconds: f32, anchor: [f32; 3]
         last = Some((board, com));
         out.push(s);
     }
-    Ok(out)
+    Ok((out, loose))
 }
 
 #[cfg(test)]

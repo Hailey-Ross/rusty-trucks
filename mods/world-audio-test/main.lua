@@ -15,8 +15,11 @@ local PEDS = 20
 -- and the game gives it the model's shoe class, kind and speech words.
 local VOICES = { 41, 42, 43, 46, 47, 48, 49, 51, 52, 53, 54, 55, 56, 59, 60, 61, 64, 65, 66, 69, 70, 71,
                  72, 73, 74, 75, 76, 77, 82, 83, 84, 85, 86, 87, 88 }
--- The ghost skater's voice (an AI skater's: its bail grunt).
+-- The ghost skater's voice (an AI skater's: its bail grunt), and the pro F2 switches it to
+-- (Ryan Smith's model: the main-cast channel).
 local GHOST_VOICE = 91
+local GHOST_PRO = 24
+local ghost_pro = false
 
 local anchor = nil        -- {x, y, z}
 local started = false
@@ -29,6 +32,11 @@ local ghost_status = ""
 local last_landing, last_bail = nil, nil
 local warned = {}         -- ped key -> seconds until it may warn again
 local chatter_timer = 6   -- seconds to the next ambient shout (dev only, not retail)
+local falls = {}          -- pending BodyFallType keys: {ped key, seconds until sent, kind}
+local photographer = nil  -- the ped holding PictureTaking (29) with the photo flag
+-- A retail knock-down's BodyFallType keys (recomp sessions 163809 / 164620: 9, then 0.10 s later a
+-- type-other key, 0.48 s later 9, 0.16 s later 9).
+local KNOCK_DOWN = { { 0, 9 }, { 0.10, 1 }, { 0.58, 9 }, { 0.74, 9 } }
 
 local function rand()
     seed = (seed * 1103515245 + 12345) % 2147483648
@@ -198,6 +206,17 @@ local function react(player)
     end
 end
 
+local function nearest_ped(player)
+    local best, best_d = nil, 1e9
+    for _, ped in ipairs(peds) do
+        if ped.position then
+            local d = dist(ped.position, player.position)
+            if d < best_d then best, best_d = ped, d end
+        end
+    end
+    return best
+end
+
 local function pressed(key)
     local down = sdk.input.down(key) == true
     local edge = down and not held[key]
@@ -222,6 +241,55 @@ return {
         if pressed("F9") then remove_all(); spawn_all(); return end
         if pressed("F8") then
             for _, c in ipairs(cars) do if c.parked then sdk.world_audio.event(c.key, "alarm") end end
+        end
+        -- F7: the nearest ped zaps its tazer (retail's c_tazer burst, the state graph's 2 s hold).
+        if pressed("F7") then
+            local ped = nearest_ped(player)
+            if ped then sdk.world_audio.event(ped.key, "tazer") end
+        end
+        -- F6: the nearest ped is knocked down (a retail knock-down's BodyFallType keys).
+        if pressed("F6") then
+            local ped = nearest_ped(player)
+            if ped then
+                for _, k in ipairs(KNOCK_DOWN) do falls[#falls + 1] = { ped.key, k[1], k[2] } end
+            end
+        end
+        -- F5: the nearest ped's phone rings (speech value 49); it answers when the ring ends.
+        if pressed("F5") then
+            local ped = nearest_ped(player)
+            if ped then sdk.world_audio.event(ped.key, "speech", { value = 49 }) end
+        end
+        -- F3: the ghost saw your trick (its voice's `101_pos`); F2: it switches between its AI voice
+        -- and a pro's (24, the main cast), then crashes (`131_collide_object` / `906_aislm`).
+        if pressed("F3") then sdk.world_audio.event("ghost", "reaction", { value = "trick", by = 0 }) end
+        if pressed("F2") then
+            ghost_pro = not ghost_pro
+            sdk.world_audio.update("ghost", { voice = ghost_pro and GHOST_PRO or GHOST_VOICE })
+            sdk.world_audio.event("ghost", "reaction", { value = "crash" })
+        end
+        -- F4: the nearest ped becomes a photographer (PictureTaking, 29, with the game flag:
+        -- the request repeats every second, gated by the event's timers); F4 again stops it.
+        if pressed("F4") then
+            if photographer then
+                sdk.world_audio.update(photographer, { photo_flag = false })
+                sdk.world_audio.event(photographer, "speech", { value = 0 })
+                photographer = nil
+            else
+                local ped = nearest_ped(player)
+                if ped then
+                    photographer = ped.key
+                    sdk.world_audio.update(ped.key, { photo_flag = true })
+                    sdk.world_audio.event(ped.key, "speech", { value = 29 })
+                end
+            end
+        end
+        for i = #falls, 1, -1 do
+            local f = falls[i]
+            f[2] = f[2] - dt
+            if f[2] <= 0 then
+                sdk.world_audio.event(f[1], "body_fall", { kind = f[3] })
+                table.remove(falls, i)
+            end
         end
         for _, car in ipairs(cars) do drive(car, dt) end
         for _, ped in ipairs(peds) do walk(ped, dt, player) end
@@ -274,7 +342,7 @@ return {
         end
         local info = sdk.world_audio.info()
         sdk.ui.text("world-audio-test", string.format(
-            "World audio test: cars %d/%d audible, peds %d/%d, skater %d, speech lines %d  (limits %d/%d/%d%s)  %s  [F8 alarm, F9 re-centre]",
+            "World audio test: cars %d/%d audible, peds %d/%d, skater %d, speech lines %d  (limits %d/%d/%d%s)  %s  [F4 photographer, F5 phone, F6 knock-down, F7 tazer, F8 alarm, F9 re-centre]",
             audible.traffic, #cars, audible.ped, #peds, audible.skater, info.speech_lines or 0,
             info.instances and info.instances.traffic or 4, info.instances and info.instances.peds or 15,
             info.instances and info.instances.skaters or 1, info.more_audible and ", more audible" or "", ghost_status))

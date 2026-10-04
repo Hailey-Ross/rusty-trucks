@@ -18,6 +18,7 @@ use std::sync::Arc;
 use crate::dsp::biquad::{Iir2, Kind};
 use crate::dsp::gain::Gain;
 use crate::dsp::pan::{self, Pan2D};
+use crate::dsp::peaking::PeakingIir2;
 use crate::dsp::resample::{Resampler, ratio};
 use crate::dsp::routes::to_six;
 use crate::dsp::send::{Mode, Send, fold_release};
@@ -122,6 +123,10 @@ struct Voice {
     /// A direct voice's own Send A level (speech streams, [`Mixer::set_direct_dsp`]): replaces
     /// master × FXWET0 when set.
     env_direct: Option<f32>,
+    /// The speech stream graph ([`Mixer::set_stream_dsp`]): `Resample → PI20 → Send A → Gain →
+    /// HI20 → LI20 → Pan2D1 → Send` (`sub_82C5C318`) instead of the voice graph's filters before
+    /// Send A. None for every other voice.
+    stream: Option<Box<StreamDsp>>,
     /// Stop fade: (source index where it starts, per-channel last sample).
     fade: Option<(u64, [f32; 8])>,
     done: bool,
@@ -164,6 +169,23 @@ impl Voice {
         at as f64 / f64::from(self.header.rate)
     }
 
+    /// The environment send: the channels summed to mono into the env bus at the voice's level.
+    fn env_send(&mut self, src: &[[f32; BLOCK]; 6], channels: usize, buses: &mut Buses, user: f32) {
+        self.env.target = match self.env_direct {
+            Some(level) => level * user,
+            None => self.master * self.fx * user,
+        };
+        if !self.env.silent() {
+            let mut mono = [0.0f32; BLOCK];
+            for c in src.iter().take(channels.min(5)) {
+                for (m, x) in mono.iter_mut().zip(c.iter()) {
+                    *m += x;
+                }
+            }
+            self.env.add(&mono, &mut buses.env_in[..]);
+        }
+    }
+
     fn render(&mut self, master: &mut [[f32; BLOCK]; 6], buses: &mut Buses, user: f32) {
         let channels = (self.header.channels as usize).clamp(1, 6);
         let mut src = [[0.0f32; BLOCK]; 6];
@@ -184,28 +206,49 @@ impl Voice {
         // `tests/render_alloc.rs`).
         {
             let mut planes = src.each_mut().map(|c| &mut c[..]);
-            self.hpf.process(&mut planes[..channels], MIX_RATE as f32);
-            self.lpf.process(&mut planes[..channels], MIX_RATE as f32);
+            match self.stream.as_deref_mut() {
+                // The speech stream graph: the PEAK first, the filters after the gain.
+                Some(stream) => stream.peak.process(&mut planes[..channels], MIX_RATE as f32),
+                None => {
+                    self.hpf.process(&mut planes[..channels], MIX_RATE as f32);
+                    self.lpf.process(&mut planes[..channels], MIX_RATE as f32);
+                }
+            }
         }
         // Send A: the channels summed to mono (routes N → 1 at unity, LFE dropped), our user volume
         // applied like on the dry path.
-        self.env.target = match self.env_direct {
-            Some(level) => level * user,
-            None => self.master * self.fx * user,
-        };
-        if !self.env.silent() {
-            let mut mono = [0.0f32; BLOCK];
-            for c in src.iter().take(channels.min(5)) {
-                for (m, x) in mono.iter_mut().zip(c.iter()) {
-                    *m += x;
+        if self.stream.is_none() {
+            self.env_send(&src, channels, buses, user);
+        } else if let Some(stream) = self.stream.as_deref_mut()
+            && let Some(slot) = stream.echo_slot
+        {
+            // The pre-gain Send into the stream slot's echo submix (mono sum, as Send A).
+            stream.echo.target = stream.echo_level * user;
+            if !stream.echo.silent()
+                && let Some(echo) = buses.speech_echo.slot(usize::from(slot))
+            {
+                let mut mono = [0.0f32; BLOCK];
+                for c in src.iter().take(channels.min(5)) {
+                    for (m, x) in mono.iter_mut().zip(c.iter()) {
+                        *m += x;
+                    }
                 }
+                stream.echo.add(&mono, &mut echo.input[..]);
             }
-            self.env.add(&mono, &mut buses.env_in[..]);
         }
         {
             let mut planes = src.each_mut().map(|c| &mut c[..]);
             self.gain.target = self.master * self.dry;
             self.gain.process(&mut planes[..channels]);
+            if self.stream.is_some() {
+                self.hpf.process(&mut planes[..channels], MIX_RATE as f32);
+                self.lpf.process(&mut planes[..channels], MIX_RATE as f32);
+            }
+        }
+        // The speech stream's environment send is its post-filter Send (`sub_82C5CEF0` posts it the
+        // owner's second level; its pre-gain Send feeds the stream slot's echo submix, not ported).
+        if self.stream.is_some() {
+            self.env_send(&src, channels, buses, user);
         }
         // Send B (`sub_824A3140`: only with an enabled effect record; level posted 0 at open, then
         // property 11 / 32767), our user volume applied like on the other paths.
@@ -259,6 +302,22 @@ impl Voice {
             State::Resuming => State::Playing,
             s => s,
         };
+    }
+}
+
+//// A speech stream voice's own modules (`sub_82C5C318`'s graph): the PEAK and the pre-gain Send
+/// into its slot's echo submix.
+#[derive(Clone, Debug)]
+struct StreamDsp {
+    peak: PeakingIir2,
+    echo_slot: Option<u8>,
+    echo_level: f32,
+    echo: Level,
+}
+
+impl Default for StreamDsp {
+    fn default() -> Self {
+        Self { peak: PeakingIir2::default(), echo_slot: None, echo_level: 0.0, echo: Level::new(0.0) }
     }
 }
 
@@ -425,6 +484,7 @@ impl Mixer {
             group,
             fade: None,
             env_direct: None,
+            stream: None,
             done: false,
         });
         Some(self.next)
@@ -449,6 +509,34 @@ impl Mixer {
             v.hpf.cutoff = hpf;
             v.lpf.cutoff = lpf;
             v.env_direct = Some(env);
+        }
+    }
+
+    /// A speech stream's per-frame values (`world::speech_player::VoiceParams`): the voice takes
+    /// the stream graph (PEAK, Send A, Gain, then the filters; `sub_82C5C318`) from now on.
+    /// `peak` = (centre Hz, linear gain, Q), `env` = Send A.
+    pub fn set_stream_dsp(&mut self, voice: u32, hpf: f32, lpf: f32, env: f32, peak: [f32; 3]) {
+        if let Some(v) = self.voice(voice) {
+            v.hpf.cutoff = hpf;
+            v.lpf.cutoff = lpf;
+            v.env_direct = Some(env);
+            let s = v.stream.get_or_insert_with(Default::default);
+            s.peak.freq = peak[0];
+            s.peak.gain = peak[1];
+            s.peak.q = peak[2];
+        }
+    }
+
+    /// A speech stream's echo send: its pre-gain Send into echo slot `slot` (`crate::bus::speech_echo`)
+    /// at `level`, and the slot's posted values.
+    pub fn set_stream_echo(&mut self, voice: u32, slot: u8, level: f32, params: &crate::bus::speech_echo::EchoParams) {
+        if let Some(v) = self.voice(voice) {
+            let s = v.stream.get_or_insert_with(Default::default);
+            s.echo_slot = Some(slot);
+            s.echo_level = level;
+        }
+        if let Some(e) = self.buses.speech_echo.slot(usize::from(slot)) {
+            e.set(params);
         }
     }
 
@@ -593,6 +681,7 @@ impl VoiceHost for Mixer {
             group,
             fade: None,
             env_direct: None,
+            stream: None,
             done: false,
         });
         Some(self.next)
