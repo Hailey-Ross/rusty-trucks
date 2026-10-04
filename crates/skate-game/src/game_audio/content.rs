@@ -230,6 +230,15 @@ pub(crate) fn restart(world: &mut World) {
     let carry = super::native::shutdown(world);
     reset_hosts(world);
     let started = super::native::launch(world, carry);
+    // Mods' global overrides hold in the new runtime too (their posts are gone: the handles read
+    // `live = false` and the mods post again).
+    if world.contains_resource::<super::mod_audio::AudioApi>() {
+        world.resource_scope(|world, mut api: Mut<super::mod_audio::AudioApi>| {
+            if let Some(native) = world.get_resource::<super::native::Native>() {
+                api.reapply_globals(native);
+            }
+        });
+    }
     let mut content = world.resource_mut::<AudioContent>();
     content.report = report;
     content.generation += 1;
@@ -308,6 +317,7 @@ mod tests {
         world.insert_resource(Library::load(root).unwrap());
         world.init_resource::<Assets<super::super::native::NativeStream>>();
         world.init_resource::<AudioContent>();
+        world.init_resource::<super::super::mod_audio::AudioApi>();
         reset_hosts(&mut world);
         world.resource_mut::<AudioContent>().scanned = true;
         frame(&mut world);

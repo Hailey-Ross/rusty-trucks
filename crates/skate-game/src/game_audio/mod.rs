@@ -21,6 +21,7 @@ mod emitters;
 mod grain_bed;
 mod library;
 mod map_audio;
+pub(crate) mod mod_audio;
 mod native;
 mod npc_skaters;
 mod player_audio;
@@ -41,6 +42,7 @@ use std::path::PathBuf;
 
 pub(crate) use content::AudioContent;
 pub(crate) use library::Library;
+pub(crate) use native::Native;
 pub(crate) use voices::{Category, Play, Voices};
 
 /// Volume steps for the menu (percent).
@@ -167,13 +169,14 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<emitters::ReverbZones>()
             .init_resource::<AudioContent>()
             .init_resource::<map_audio::MapAudio>()
+            .init_resource::<mod_audio::AudioApi>()
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
             .add_systems(
                 Update,
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
                 // the ticks and the local update, then the beds (retail's process / tick / update).
-                (content::frame, map_audio::update, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
+                (content::frame, map_audio::update, mod_audio::drain, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, mod_audio::readback, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
                     .chain()
                     .before(CueSet)
                     .after(crate::app::FrameSet::Animation),
@@ -200,6 +203,38 @@ fn setup(mut commands: Commands, config: Res<crate::config::Config>) {
         Ok(library) => commands.insert_resource(library),
         Err(error) => info!("Game audio unavailable (run setup to extract it): {error}"),
     }
+}
+
+/// Run `f` on the runtime audio API with the native runtime (if running) and the audio content
+/// generation: the mod command handlers' entry (`modding`), the same calls engine systems make.
+pub(crate) fn with_api<R>(world: &mut World, f: impl FnOnce(&mut mod_audio::AudioApi, Option<&native::Native>, u64) -> R) -> Option<R> {
+    let generation = world.get_resource::<AudioContent>().map_or(0, |c| c.generation);
+    world.get_resource::<mod_audio::AudioApi>()?;
+    Some(world.resource_scope(|world, mut api: Mut<mod_audio::AudioApi>| f(&mut api, world.get_resource::<native::Native>(), generation)))
+}
+
+/// A mod stopped, failed or was reloaded: its posts, globals, watches and subscriptions go.
+pub(crate) fn clear_mod(world: &mut World, owner: &str) {
+    with_api(world, |api, native, generation| api.clear_owner(native, generation, owner));
+}
+
+/// A map change: every mod post is released and every global restored.
+pub(crate) fn clear_mods_runtime(world: &mut World) {
+    with_api(world, |api, native, generation| api.clear_runtime(native, generation));
+}
+
+/// The `audio` (per mod) and `audio_info` snapshot sections.
+pub(crate) fn mod_snapshot(world: &World, owner: &str) -> serde_json::Value {
+    let generation = world.get_resource::<AudioContent>().map_or(0, |c| c.generation);
+    world.get_resource::<mod_audio::AudioApi>().map_or(serde_json::Value::Null, |api| api.snapshot(world.get_resource::<native::Native>(), generation, owner))
+}
+pub(crate) fn mod_info(world: &World) -> serde_json::Value {
+    mod_audio::info(world.get_resource::<native::Native>(), world.get_resource::<AudioContent>(), world.get_resource::<map_audio::MapAudio>())
+}
+
+/// `sdk.engine.inspect('audio_catalog')`.
+pub(crate) fn catalog(world: &World) -> serde_json::Value {
+    mod_audio::catalog(world.get_resource::<native::Native>(), world.get_resource::<Library>(), world.get_resource::<map_audio::MapAudio>(), world.get_resource::<AudioContent>())
 }
 
 /// Mod voices scale by GlobalVolume, so the master volume and --mute apply to them too.

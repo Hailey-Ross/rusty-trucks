@@ -286,6 +286,41 @@ function sdk.audio.stop(key, fade_out)
     submit{kind="audio_stop",key=key,fade_out=fade_out or 0.03}
 end
 function sdk.audio.stop_all() submit{kind="audio_stop_all"} end
+-- Audio extension 2 (capability audio >= 2): the game's own native audio. Keys are scoped to the
+-- calling mod (32 handles per mod, 128 in all, 16 posts per frame); everything is released and
+-- every global restored when the mod stops, fails or reloads, and posts end at a map change.
+sdk.audio.version = 2
+-- Post to a retail class (e.g. 'c_emitter') with up to 32 payload words; a key's post replaces
+-- its last one. Applied at the start of the next audio pass.
+function sdk.audio.post(key, class, words) submit{kind="audio_post",key=key,class=class,words=words or {}} end
+function sdk.audio.redeliver(key, words) submit{kind="audio_redeliver",key=key,words=words or {}} end
+function sdk.audio.release(key) submit{kind="audio_release",key=key} end
+-- value nil restores the value seen before this mod's first write. The first mod to set a global owns it.
+function sdk.audio.set_global(name, value) submit{kind="audio_set_global",name=name,value=value} end
+-- Replace this mod's watch lists: {globals={'name',...}, mixmap={{slot='player', object=0, instance=0, output=4},...}}.
+function sdk.audio.watch(opts)
+    opts = opts or {}
+    submit{kind="audio_watch",globals=opts.globals or {},mixmap=opts.mixmap or {}}
+end
+local function audio_mine() return as_table((as_table(sdk.snapshot.audio) or {})[sdk.mod_id]) or {} end
+-- {live=bool, class=name} for one of this mod's posts (live false after a map change or an audio restart).
+function sdk.audio.handle(key) return ((audio_mine().handles) or {})[key] end
+-- A watched global's value after the last audio pass (or the value this mod set).
+function sdk.audio.global(name)
+    local m = audio_mine()
+    local v = ((m.watch or {}).globals or {})[name]
+    if v == nil then v = (m.set_globals or {})[name] end
+    return v
+end
+-- A watched MixMap output after the last pass: {level=0..32767, raw=0..65535, pitch=4096 = 1.0, half=raw word}.
+function sdk.audio.mixmap(slot, object, instance, output)
+    for _, row in ipairs(((audio_mine().watch) or {}).mixmap or {}) do
+        if row.slot == slot and row.object == (object or 0) and row.instance == (instance or 0) and row.output == output then return row end
+    end
+    return nil
+end
+-- {native=bool, map_epoch, generation, restarts, overlays={ids}, conflicts, map={stem, district, ems, sources}, limits, tags}
+function sdk.audio.info() return as_table(sdk.snapshot.audio_info) or {native=false} end
 
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and
 -- skaters to the game's retail world audio (the same path engine systems use). Keys are scoped

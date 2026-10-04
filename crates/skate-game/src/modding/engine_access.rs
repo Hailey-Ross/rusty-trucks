@@ -30,6 +30,8 @@ pub(super) fn inspect(world: &World, system: &str) -> Value {
             |g| json!({"action":graph(&g.action),"motion":graph(&g.motion)}),
         ),
         "scoring" => world.resource::<SkaterRuntime>().scoring.mod_catalog(),
+        // Retail classes / functions / globals, loaded banks, the map's audio, sets, zones, overlays.
+        "audio_catalog" => crate::game_audio::catalog(world),
         _ => Value::Null,
     }
 }

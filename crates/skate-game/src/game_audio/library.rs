@@ -969,6 +969,16 @@ impl Library {
         self.manifest.mod_maps.get(stem)
     }
 
+    /// The location sets' names (the audio catalog).
+    pub(crate) fn random_set_names(&self) -> Vec<String> {
+        self.manifest.random_sets.values().filter_map(|s| s.name.clone()).collect()
+    }
+
+    /// The zones' names (the audio catalog).
+    pub(crate) fn zone_names(&self) -> Vec<String> {
+        self.manifest.zones.values().filter_map(|z| z.name.clone()).collect()
+    }
+
     /// A zone's key by its name.
     pub(crate) fn zone_named(&self, name: &str) -> Option<u64> {
         self.manifest.zones.iter().find(|(_, z)| z.name.as_deref() == Some(name)).and_then(|(k, _)| u64::from_str_radix(k, 16).ok())

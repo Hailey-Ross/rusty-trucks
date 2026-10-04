@@ -68,6 +68,35 @@ impl AudioUpdateOptions {
     }
 }
 
+/// A MixMap output to watch (`sdk.audio.watch`): slot by name, object, instance, output id.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MixMapKey {
+    pub slot: String,
+    #[serde(default)]
+    pub object: u32,
+    #[serde(default)]
+    pub instance: u32,
+    pub output: u32,
+}
+
+/// The MixMap slots a watch can name.
+pub const MIXMAP_SLOTS: [&str; 7] = ["global", "player", "ambience", "collision", "traffic", "pedestrian", "emitter"];
+/// Payload words of a post, globals / MixMap outputs per watch list.
+pub const MAX_WORDS: usize = 32;
+pub const MAX_WATCH: usize = 16;
+
+/// A retail class / global name (`c_emitter`, `g_snd`).
+pub fn valid_symbol(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+impl MixMapKey {
+    pub fn validate(&self) -> bool {
+        MIXMAP_SLOTS.contains(&self.slot.as_str()) && self.object <= 127 && self.instance <= 31 && self.output <= 31
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct WavInfo { pub seconds: f64, pub channels: u16, pub sample_rate: u32 }
 

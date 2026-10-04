@@ -132,6 +132,33 @@ pub enum Command {
         fade_out: f32,
     },
     AudioStopAll {},
+    /// Audio extension 2: a post to a retail class under a key (`sdk.audio.post`); a key's post
+    /// replaces its last one.
+    AudioPost {
+        key: String,
+        class: String,
+        #[serde(default)]
+        words: Vec<i32>,
+    },
+    AudioRedeliver {
+        key: String,
+        #[serde(default)]
+        words: Vec<i32>,
+    },
+    AudioRelease { key: String },
+    /// Set a retail global; no `value` restores the value before this mod's first write.
+    AudioSetGlobal {
+        name: String,
+        #[serde(default)]
+        value: Option<i32>,
+    },
+    /// Replace this mod's watch lists (globals, MixMap outputs) read in `sdk.snapshot.audio`.
+    AudioWatch {
+        #[serde(default)]
+        globals: Vec<String>,
+        #[serde(default)]
+        mixmap: Vec<crate::audio::MixMapKey>,
+    },
     /// World audio extension 1: publish a traffic vehicle / ped / skater to the retail world audio.
     WorldAudioSpawn {
         key: String,
@@ -383,7 +410,7 @@ impl Command {
         match self {
             Self::RigPart {index,options} => *index<26 && options.as_ref().is_none_or(|o|o.validate()),
             Self::GraphGate {graph,target,index,..} => matches!(graph.as_str(),"action"|"motion") && matches!(target.as_str(),"state"|"transition"|"behavior") && *index<65536,
-            Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"),
+            Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog"),
             Self::Request {key,command,token} => *token<=9_007_199_254_740_991 && crate::schema::valid_id(key) && !matches!(**command,Self::Request{..}) && command.validate(),
             Self::InputOverride {action,value} => (64..=81).contains(action) && value.is_none_or(|v|v.is_finite() && (-1.0..=1.0).contains(&v)),
             Self::NativeImpulse {body,impulse,point:p,..} => body.validate() && impulse.iter().all(|v|v.is_finite() && v.abs()<=100_000.) && p.as_ref().is_none_or(point),
@@ -404,6 +431,12 @@ impl Command {
                     && (0.0..=2.0).contains(fade_out)
             }
             Self::AudioStopAll {} => true,
+            Self::AudioPost { key, class, words } => crate::schema::valid_id(key) && crate::audio::valid_symbol(class) && words.len() <= crate::audio::MAX_WORDS,
+            Self::AudioRedeliver { key, words } => crate::schema::valid_id(key) && words.len() <= crate::audio::MAX_WORDS,
+            Self::AudioRelease { key } => crate::schema::valid_id(key),
+            Self::AudioSetGlobal { name, .. } => crate::audio::valid_symbol(name),
+            Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
+                && mixmap.len() <= crate::audio::MAX_WATCH && mixmap.iter().all(crate::audio::MixMapKey::validate),
             Self::WorldAudioSpawn { key, object, options } => crate::schema::valid_id(key) && options.validate_for(*object),
             Self::WorldAudioUpdate { key, options } => crate::schema::valid_id(key) && options.validate() && options.source.is_none(),
             Self::WorldAudioEvent { key, event, options } => crate::schema::valid_id(key) && options.validate(event),
@@ -651,6 +684,11 @@ fn command_kind(command: &Command) -> &'static str {
         Command::AudioUpdate { .. } => "audio_update",
         Command::AudioStop { .. } => "audio_stop",
         Command::AudioStopAll {} => "audio_stop_all",
+        Command::AudioPost { .. } => "audio_post",
+        Command::AudioRedeliver { .. } => "audio_redeliver",
+        Command::AudioRelease { .. } => "audio_release",
+        Command::AudioSetGlobal { .. } => "audio_set_global",
+        Command::AudioWatch { .. } => "audio_watch",
         Command::WorldAudioSpawn { .. } => "world_audio_spawn",
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
@@ -952,7 +990,8 @@ impl Vm {
             capabilities.set("world_audio", 1)?;
             // Audio extension 1: the mod's own WAVs (`sdk.audio.preload / play / update / stop /
             // stop_all`); before 2026-10-04 only `sdk.audio.version` advertised it.
-            capabilities.set("audio", 1)?;
+            // 2 (2026-10-04): retail posts by class, globals, MixMap / global watch, `sdk.audio.info`.
+            capabilities.set("audio", 2)?;
             // Audio content overlays (`audio.json`: replace / add retail audio content by identity;
             // `audio_content.rs`), applied while the mod runs.
             capabilities.set("audio_content", 1)?;
@@ -1758,10 +1797,10 @@ mod world_audio_tests {
         let root = std::env::temp_dir().join(format!("skate-audio-capabilities-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("main.lua"), r#"
-            assert(sdk.capabilities.audio == 1, 'audio capability')
+            assert(sdk.capabilities.audio == 2, 'audio capability')
             assert(sdk.capabilities.world_audio == 1, 'world_audio capability')
             assert(sdk.capabilities.audio_content == 1, 'audio_content capability')
-            assert(sdk.audio.version == 1 and sdk.world_audio.version == 1, 'versions')
+            assert(sdk.audio.version == 2 and sdk.world_audio.version == 1, 'versions')
             return {}
         "#).unwrap();
         let manifest: Manifest = serde_json::from_value(json!({
@@ -1816,6 +1855,80 @@ mod world_audio_tests {
         // Everything it publishes at once (+ the ghost) fits the host's per-mod limit: no
         // "World audio object limit reached" (the 16 / 64 limits refused 21 of 37).
         assert!(most + 1 <= crate::world_audio::MAX_OBJECTS_PER_MOD, "{most} + ghost objects");
+    }
+
+    /// The audio extension 2 commands cross the serde boundary (valid, invalid, unknown field)
+    /// and the Lua wrappers submit them; the read helpers find this mod's snapshot rows.
+    #[test]
+    fn audio_api_commands_deserialize_and_validate() {
+        for value in [
+            json!({"kind":"audio_post","key":"siren","class":"c_emitter","words":[32767,16000,0,0,4096,25000,0,0,3]}),
+            json!({"kind":"audio_post","key":"siren","class":"c_emitter"}),
+            json!({"kind":"audio_redeliver","key":"siren","words":[1,2]}),
+            json!({"kind":"audio_release","key":"siren"}),
+            json!({"kind":"audio_set_global","name":"g_snd","value":5}),
+            json!({"kind":"audio_set_global","name":"g_snd"}),
+            json!({"kind":"audio_watch","globals":["g_snd"],"mixmap":[{"slot":"player","object":0,"instance":0,"output":4}]}),
+            json!({"kind":"audio_watch"}),
+            json!({"kind":"engine_inspect","system":"audio_catalog"}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(c.validate(), "{value}");
+        }
+        for value in [
+            json!({"kind":"audio_post","key":"siren","class":"c emitter"}),
+            json!({"kind":"audio_post","key":"../x","class":"c_emitter"}),
+            json!({"kind":"audio_post","key":"siren","class":"c_emitter","words":vec![0; 33]}),
+            json!({"kind":"audio_set_global","name":""}),
+            json!({"kind":"audio_watch","mixmap":[{"slot":"music","output":0}]}),
+            json!({"kind":"audio_watch","mixmap":[{"slot":"player","output":40}]}),
+            json!({"kind":"audio_watch","globals":vec!["g"; 17]}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(!c.validate(), "accepted {value}");
+        }
+        for value in [
+            json!({"kind":"audio_post","key":"siren","class":"c_emitter","typo":1}),
+            json!({"kind":"audio_watch","mixmap":[{"slot":"player","output":1,"extra":2}]}),
+            json!({"kind":"audio_set_global","name":"g","value":1.5}),
+        ] {
+            assert!(serde_json::from_value::<Command>(value.clone()).is_err(), "{value}");
+        }
+        let root = std::env::temp_dir().join(format!("skate-audio-api-lua-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            function M.on_update()
+                sdk.audio.post('siren', 'c_emitter', {32767, 1})
+                sdk.audio.redeliver('siren', {1})
+                sdk.audio.release('siren')
+                sdk.audio.set_global('g_snd', 3)
+                sdk.audio.set_global('g_snd', nil)
+                sdk.audio.watch{globals={'g_snd'}, mixmap={{slot='emitter', object=0, instance=2, output=4}}}
+                local h = sdk.audio.handle('siren')
+                assert(h and h.live == true, 'handle')
+                assert(sdk.audio.global('g_snd') == 7, 'global')
+                local m = sdk.audio.mixmap('emitter', 0, 2, 4)
+                assert(m and m.level == 123, 'mixmap')
+                assert(sdk.audio.info().native == true, 'info')
+                assert(sdk.audio.handle('nope') == nil)
+            end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.audio-api","api":2,"name":"Audio API","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let snapshot = json!({
+            "audio": {"tests.audio-api": {"handles": {"siren": {"live": true, "class": "c_emitter"}},
+                "watch": {"globals": {"g_snd": 7}, "mixmap": [{"slot": "emitter", "object": 0, "instance": 2, "output": 4, "level": 123}]}}},
+            "audio_info": {"native": true}});
+        let cmds = vm.call("on_update", json!({"dt": 0.016}), &snapshot).unwrap();
+        let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
+        assert_eq!(kinds, ["audio_post", "audio_redeliver", "audio_release", "audio_set_global", "audio_set_global", "audio_watch"]);
+        assert!(cmds.iter().all(Command::validate));
+        assert!(matches!(&cmds[4], Command::AudioSetGlobal { value: None, .. }), "nil restores");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

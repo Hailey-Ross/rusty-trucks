@@ -515,6 +515,40 @@ impl Native {
         self.banks.contains_key(stem)
     }
 
+    /// The loaded banks' stems, sorted (the audio catalog).
+    pub(crate) fn loaded_banks(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.banks.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// A runtime the tests built by hand (no MixMap, no player).
+    #[cfg(test)]
+    pub(crate) fn for_test(runtime: Runtime) -> Self {
+        let runtime = Arc::new(Mutex::new(runtime));
+        let emitter_class = runtime.lock().unwrap().eval.class_id("c_emitter");
+        Self {
+            shared: runtime,
+            banks: HashMap::new(),
+            emitter_class,
+            mixmap: None,
+            clock: HostClock::default(),
+            frame_ticks: 0,
+            cuts: 0,
+            cut_seen: None,
+            cut_wheels: None,
+            holds: false,
+            player: None,
+            emitter_states: [false; EMITTER_STATES],
+            bed: None,
+            prefetch: Default::default(),
+            map_epoch: 0,
+            world: WorldInstances::RETAIL,
+            pending: None,
+            resident: Vec::new(),
+        }
+    }
+
     /// Unload every bank but the utility and the player's (map change); forget the prefetched ones.
     pub(crate) fn unload_map_banks(&mut self) {
         self.map_epoch += 1;

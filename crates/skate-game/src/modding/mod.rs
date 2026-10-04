@@ -543,6 +543,8 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         }).collect::<serde_json::Map<String, Value>>(),
         "world_audio": mods.manager.packages.keys().map(|owner| (owner.clone(), world_audio::snapshot(world, owner))).collect::<serde_json::Map<String, Value>>(),
         "world_audio_info": world_audio::info(world),
+        "audio": mods.manager.packages.keys().map(|owner| (owner.clone(), crate::game_audio::mod_snapshot(world, owner))).filter(|(_, v)| !v.is_null()).collect::<serde_json::Map<String, Value>>(),
+        "audio_info": crate::game_audio::mod_info(world),
         "session": session::lua(mods, net.get("active").and_then(Value::as_bool).unwrap_or(false), &local_id, host, &host_id, &players),
         "attach": mods.attach.as_ref().map(|a| json!({"body": a.body, "owner": a.owner})),
         "detach_error": mods.detach_error,
@@ -746,6 +748,7 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     replication::reset(world,mods);
     audio::clear(world);
     world_audio::clear(world);
+    crate::game_audio::clear_mods_runtime(world);
     graphics_dynamic::clear(world);
     canvas::clear_owner(world, &mut mods.canvases, None);
     detach_player(world, mods, true);
@@ -813,6 +816,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         mods.input_overrides.retain(|_,(owner,_)|owner!=id);
         audio::stop_owner(world, id, true);
         world_audio::clear_owner(world, id);
+        crate::game_audio::clear_mod(world, id);
         graphics_dynamic::clear_owner(world, id);
         volumes::clear_owner(world, mods, id);
         capture::clear_owner(world, id);
@@ -886,6 +890,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             mods.input_overrides.retain(|_,(owner,_)|owner!=&id);
             audio::stop_owner(world, &id, true);
             world_audio::clear_owner(world, &id);
+            crate::game_audio::clear_mod(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
             capture::clear_owner(world, &id);
@@ -912,6 +917,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             mods.input_overrides.retain(|_,(owner,_)|owner!=&id);
             audio::stop_owner(world, &id, true);
             world_audio::clear_owner(world, &id);
+            crate::game_audio::clear_mod(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
             capture::clear_owner(world, &id);
@@ -982,6 +988,17 @@ fn apply_one(
         Command::AudioUpdate { key, options } => audio::update_voice(world, id, &key, options),
         Command::AudioStop { key, fade_out } => audio::stop(world, id, &key, fade_out),
         Command::AudioStopAll {} => audio::stop_owner(world, id, false),
+        Command::AudioPost { key, class, words } => audio_api(world, |api, native, _| api.post(native, id, &key, &class, &words))?,
+        Command::AudioRedeliver { key, words } => audio_api(world, |api, _, _| api.redeliver(id, &key, &words))?,
+        Command::AudioRelease { key } => audio_api(world, |api, _, _| {
+            api.release(id, &key);
+            Ok(())
+        })?,
+        Command::AudioSetGlobal { name, value } => audio_api(world, |api, native, _| api.set_global(native, id, &name, value))?,
+        Command::AudioWatch { globals, mixmap } => {
+            let mixmap: Vec<_> = mixmap.into_iter().map(|k| (k.slot, k.object, k.instance, k.output)).collect();
+            audio_api(world, |api, native, _| api.watch(native, id, &globals, &mixmap))?
+        }
         Command::WorldAudioSpawn { key, object, options } => world_audio::spawn(world, mods, id, key, object, options)?,
         Command::WorldAudioUpdate { key, options } => world_audio::update(world, mods, id, &key, options)?,
         Command::WorldAudioEvent { key, event, options } => world_audio::event(world, id, &key, &event, options)?,
@@ -1317,6 +1334,11 @@ fn apply_one(
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
     Ok(())
+}
+
+/// The runtime audio API (`game_audio::mod_audio`) for a mod command.
+fn audio_api(world: &mut World, f: impl FnOnce(&mut crate::game_audio::mod_audio::AudioApi, Option<&crate::game_audio::Native>, u64) -> Result<(), String>) -> Result<(), String> {
+    crate::game_audio::with_api(world, f).unwrap_or_else(|| Err("game audio is unavailable".into()))
 }
 
 fn resolve_body(mods: &Mods, owner: &str, key: &str) -> Result<u64, String> {
