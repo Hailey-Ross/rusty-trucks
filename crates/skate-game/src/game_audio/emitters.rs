@@ -31,44 +31,12 @@ use skate_audio::eval::NodeId;
 /// CSTATEMGR_Emitter's pool size.
 const MAX_ACTIVE: usize = 5;
 
-/// The `.ems` file of a map (by its `.skate` file stem).
-fn ems_file(map_stem: &str) -> Option<&'static str> {
-    Some(match map_stem {
-        "University" => "sfx_university",
-        "DownTown" => "sfx_downtown",
-        "Industrial" => "sfx_industrial",
-        "DownTownSkatePark" => "sfx_dt_skatepark",
-        "IndustrialSkatePark" => "sfx_ind_skatepark",
-        "MegaPark" => "sfx_mega_skatepark",
-        "MaloofMoneyCup" => "sfx_maloof_money_cup",
-        "StartPark" => "sfx_startpark",
-        "BlackBoxPark" => "sfx_blackbox_park",
-        "SkateSchool" => "skateschool",
-        _ => return None,
-    })
-}
-
-/// The `.ems` files a map's database entry lists (`F4917ACACAFAF913` field `65FA976EF23A314E`, in
-/// that order): the districts load five, the parks one. The emitter system (`sub_824A24F8`) loads
-/// them all and dispatches every record by its attribute's eVolumeType (sound emitters 1, reverb
-/// zones 5, music zones 4); `music_` holds music zones, `speakers_` / `crowds_` types 6 / 7.
-fn ems_files(map_stem: &str) -> &'static [&'static str] {
-    match map_stem {
-        "University" => &["music_university", "sfx_university", "reverb_university", "speakers_university", "crowds_university"],
-        "DownTown" => &["music_downtown", "sfx_downtown", "reverb_downtown", "speakers_downtown", "crowds_downtown"],
-        "Industrial" => &["music_industrial", "sfx_industrial", "reverb_industrial", "speakers_industrial", "crowds_industrial"],
-        _ => match ems_file(map_stem) {
-            Some("sfx_dt_skatepark") => &["sfx_dt_skatepark"],
-            Some("sfx_ind_skatepark") => &["sfx_ind_skatepark"],
-            Some("sfx_mega_skatepark") => &["sfx_mega_skatepark"],
-            Some("sfx_maloof_money_cup") => &["sfx_maloof_money_cup"],
-            Some("sfx_startpark") => &["sfx_startpark"],
-            Some("sfx_blackbox_park") => &["sfx_blackbox_park"],
-            Some("skateschool") => &["skateschool"],
-            _ => &[],
-        },
-    }
-}
+// The `.ems` files a map loads come from its database entry (`F4917ACACAFAF913` field
+// `65FA976EF23A314E`, in that order; the districts list five, the parks one), read at run time
+// with the map's own definition and mods on top (`map_audio::MapAudio`). The emitter system
+// (`sub_824A24F8`) loads them all and dispatches every record by its attribute's eVolumeType
+// (sound emitters 1, reverb zones 5, music zones 4); `music_` holds music zones, `speakers_` /
+// `crowds_` types 6 / 7.
 
 /// The reverb-zone emitters (`eVolumeType` 5) the listener is inside this frame, in the order
 /// they were reached (retail's active node list, which `sub_82488278` walks for `SFXObj_Reverb`).
@@ -109,16 +77,16 @@ pub(super) fn reverb_zones(
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
     mut out: ResMut<ReverbZones>,
     content: Res<super::AudioContent>,
+    audio: Res<super::map_audio::MapAudio>,
 ) {
     let (Some(library), Some(_)) = (library, native) else { return };
     let state = &mut *state;
     let identity = (map.name.clone(), map.generation, content.generation);
     if state.map.as_ref() != Some(&identity) {
-        let stem = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
-        state.records = zone_records(&library, stem);
+        state.records = zone_records(&library, &audio);
         state.active.clear();
         if !state.records.is_empty() {
-            info!("Reverb zones: {} records on {stem}", state.records.len());
+            info!("Reverb zones: {} records on {}", state.records.len(), audio.stem);
         }
         state.map = Some(identity);
     }
@@ -131,11 +99,11 @@ pub(super) fn reverb_zones(
 /// attribute names no known reverb preset stays in the list, disabled: retail's zone query
 /// (`sub_82488278`) stops at the first zone node whose vfunc92 check fails instead of skipping it.
 /// On the disc every zone attribute names one of the 24 presets, so all are enabled.
-fn zone_records(library: &Library, map_stem: &str) -> Vec<ZoneRecord> {
+fn zone_records(library: &Library, audio: &super::map_audio::MapAudio) -> Vec<ZoneRecord> {
     let (presets, _) = library.bus_tuning();
     let mut records = Vec::new();
-    for (f, file) in ems_files(map_stem).iter().enumerate() {
-        for r in library.emitters(file) {
+    {
+        for (f, r) in audio.records(library) {
             if r.kind != 5 || r.flags != 0 {
                 continue;
             }
@@ -311,6 +279,7 @@ pub(super) fn update(
     native: Option<ResMut<Native>>,
     cues: Res<super::skate_events::Cues>,
     content: Res<super::AudioContent>,
+    audio: Res<super::map_audio::MapAudio>,
 ) {
     let _timing = super::timing::scope(&super::timing::EMITTERS);
     // No native runtime: the emitters are silent (its start logged why).
@@ -333,13 +302,14 @@ pub(super) fn update(
             }
         }
         native.unload_map_banks();
-        let stem = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
+        let stem = audio.stem.as_str();
         // Retail's emitter system loads every file of the map's database entry and dispatches by
         // the attribute's eVolumeType: 1 = looping emitter (here), 5 = reverb zone
         // (`reverb_zones`), 4 = the single-winner music zone (`sub_828EB410`: a playlist of the
         // music system, not ported). 6 / 7 (speakers / crowds) are not dispatched by the
         // emitter system at all. On the disc only the `sfx_` / `skateschool` files hold type 1.
-        let records: Vec<&super::library::EmitterRecord> = ems_files(stem).iter().flat_map(|file| library.emitters(file)).collect();
+        // The map's own definition and mods add records after the files' (`map_audio`).
+        let records: Vec<&super::library::EmitterRecord> = audio.records(&library).map(|(_, r)| r).collect();
         state.emitters = records.iter().filter(|r| r.kind == 1 && r.flags == 0).filter_map(|r| {
             let bank = r.bank.clone().filter(|b| native.has_bank(&library, b))?;
             let s = r.scalars;
@@ -448,7 +418,7 @@ mod tests {
         let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
         let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
         let mut state = State::default();
-        for r in ems_files("DownTown").iter().flat_map(|f| library.emitters(f)) {
+        for r in super::super::map_audio::tests::old_ems_files("DownTown").iter().flat_map(|f| library.emitters(f)) {
             let Some(bank) = r.bank.clone().filter(|b| r.kind == 1 && r.flags == 0 && native.has_bank(&library, b)) else { continue };
             let s = r.scalars;
             state.emitters.push(Emitter {
@@ -566,7 +536,8 @@ mod tests {
     fn a_downtown_reverb_zone_selects_its_preset_and_raises_reverb_in5() {
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
         let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
-        let records = zone_records(&library, "DownTown");
+        let audio = super::super::map_audio::build("DownTown", None, &library, Some(&retail_downtown()));
+        let records = zone_records(&library, &audio);
         if records.is_empty() {
             panic!("missing private data: the install has no reverb-zone presets (stage_reverb_zones.py)");
         }
@@ -613,11 +584,36 @@ mod tests {
         assert!((20000..21200).contains(&inside), "−400 mB with in5: {inside}");
     }
 
+    /// DownTown's retail entry as the old table listed it (the lookup itself is proven by
+    /// `map_audio::tests::retail_maps_reproduce_the_old_tables`).
+    fn retail_downtown() -> std::collections::HashMap<String, super::super::map_audio::RetailMap> {
+        let ems = super::super::map_audio::tests::old_ems_files("DownTown").iter().map(|s| s.to_string()).collect();
+        std::collections::HashMap::from([("downtown".to_owned(), super::super::map_audio::RetailMap { ems, crossfade_bank: None })])
+    }
+
+    /// The zone records keep retail's ids (`file << 32 | index`) and order: the map's audio lists
+    /// the same files as the old table for every retail map (data-gated).
     #[test]
-    fn every_map_has_its_emitter_file() {
-        for map in ["University", "DownTown", "Industrial", "SkateSchool", "MegaPark"] {
-            assert!(ems_file(map).is_some(), "{map}");
+    #[ignore = "needs the private install data"]
+    fn zone_records_through_map_audio_match_the_old_table() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Ok(c) = skate_data::collections::Collections::load(root) else { panic!("missing private data: no stock collections") };
+        let table = super::super::map_audio::retail_table(&c);
+        let mut total = 0;
+        for stem in super::super::map_audio::tests::MAPS {
+            let audio = super::super::map_audio::build(stem, None, &library, Some(&table));
+            let new: Vec<(u64, u64)> = zone_records(&library, &audio).iter().map(|z| (z.id, z.attribute)).collect();
+            let mut old = Vec::new();
+            for (f, file) in super::super::map_audio::tests::old_ems_files(stem).iter().enumerate() {
+                for r in library.emitters(file).iter().filter(|r| r.kind == 5 && r.flags == 0) {
+                    old.push((((f as u64) << 32) | u64::from(r.index), u64::from_str_radix(&r.sound_id, 16).unwrap_or(0)));
+                }
+            }
+            assert_eq!(new, old, "{stem}");
+            total += new.len();
         }
+        assert!(total > 0, "some reverb zones");
     }
 
 }

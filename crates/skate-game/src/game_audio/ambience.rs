@@ -4,7 +4,8 @@
 //! - one bed at a time: on a zone change the old bed fades out over the OLD zone's fade-out time and
 //!   stops, then the new bed starts and fades in over the NEW zone's fade-in time (linear); a return
 //!   to the old zone during the fade-out fades it back in; a change during a fade-in waits for it;
-//! - for the whole transition the district's crossfade bank (`Main_Ambience_Crossfade_DT/Ind/Uni`)
+//! - for the whole transition the map's crossfade bank (`Main_Ambience_Crossfade_DT/Ind/Uni` from the
+//!   map's database entry, `map_audio`)
 //!   plays the group of the zone pair (either order; group 1, level 1.0 if no pair), four looping
 //!   voices from fixed directions (`crossfade_groups.rs`); stopped when the fade-in ends.
 //! Beds are not positional (retail plays the channels as authored; ours are stereo downmixes).
@@ -23,7 +24,8 @@ const BED_BASE: f32 = 0.281_838_3; // 10^(-11/20)
 /// Directional crossfade voices sit this far from the listener (Bevy attenuation stays 1).
 const PAN_DISTANCE: f32 = 8.0;
 
-/// Map name -> bed, used only without zone data (choices by name and ear, not retail data).
+/// Map name -> bed, used only without zone data (choices by name and ear, not retail data; a map's
+/// audio definition can name its own, `map_audio::MapAudio::fallback_bed`).
 const BEDS: &[(&str, &str)] = &[
     ("University", "09_univ_campus"),
     ("StartPark", "10_univ_housing"),
@@ -41,15 +43,6 @@ pub(super) fn bed_for(map: &str) -> Option<&'static str> {
     BEDS.iter().find(|(name, _)| name.eq_ignore_ascii_case(map)).map(|(_, bed)| *bed)
 }
 
-/// The district's crossfade bank (retail: dist_downtown / dist_industrial / dist_university only).
-fn crossfade_bank(district: &str) -> Option<&'static str> {
-    match district {
-        "DownTown" => Some("Main_Ambience_Crossfade_DT"),
-        "Industrial" => Some("Main_Ambience_Crossfade_Ind"),
-        "University" => Some("Main_Ambience_Crossfade_Uni"),
-        _ => None,
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Phase {
@@ -97,6 +90,7 @@ pub(super) fn update(
     cues: Res<super::skate_events::Cues>,
     time: Res<Time<Real>>,
     content: Res<super::AudioContent>,
+    audio: Res<super::map_audio::MapAudio>,
 ) {
     let Some(mut library) = library else { return };
     let state = &mut *state;
@@ -116,13 +110,13 @@ pub(super) fn update(
     }
     if !library.has_zones() {
         if new_map {
-            fallback(state, &mut commands, &map.name, &mut library, &mut voices, &mut assets, now);
+            let bed = audio.fallback_bed.clone().or_else(|| bed_for(&map.name).map(str::to_owned));
+            fallback(state, &mut commands, &map.name, bed.as_deref(), &mut library, &mut voices, &mut assets, now);
         }
         return;
     }
-    let district = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("").to_owned();
     let at = cues.riding.board;
-    let desired = library.region_key(&district, "audio_ambience", at.x, at.z)
+    let desired = audio.region_key(&library, "audio_ambience", at.x, at.z)
         .filter(|key| library.zone(*key).and_then(|z| z.bed.as_ref()).is_some()).unwrap_or(0);
 
     let phase = state.phase.unwrap_or(Phase::Silent);
@@ -162,7 +156,7 @@ pub(super) fn update(
                 state.t = 0.0;
                 stop_crossfade(state, &mut voices);
                 if desired != 0 {
-                    start_crossfade(state, &district, desired, &mut commands, &mut library, &mut voices, &mut assets, now);
+                    start_crossfade(state, audio.crossfade_bank.as_deref(), desired, &mut commands, &mut library, &mut voices, &mut assets, now);
                 }
             }
         }
@@ -203,10 +197,10 @@ pub(super) fn update(
 
 #[allow(clippy::too_many_arguments)]
 fn start_crossfade(
-    state: &mut State, district: &str, to: u64, commands: &mut Commands, library: &mut Library,
+    state: &mut State, bank: Option<&str>, to: u64, commands: &mut Commands, library: &mut Library,
     voices: &mut Voices, assets: &mut Assets<AudioSource>, now: f64,
 ) {
-    let Some(bank) = crossfade_bank(district) else { return };
+    let Some(bank) = bank else { return };
     let (group, level) = library.crossfade(state.current, to).map_or((1, 1.0), |c| (c.group, c.level));
     let Some((_, _, layout)) = super::crossfade_groups::GROUPS.iter().find(|(b, g, _)| *b == bank && *g == group) else {
         return;
@@ -245,10 +239,10 @@ fn stop_all(state: &mut State, voices: &mut Voices, fade: f32) {
 
 #[allow(clippy::too_many_arguments)]
 fn fallback(
-    state: &mut State, commands: &mut Commands, map: &str, library: &mut Library, voices: &mut Voices,
+    state: &mut State, commands: &mut Commands, map: &str, bed: Option<&str>, library: &mut Library, voices: &mut Voices,
     assets: &mut Assets<AudioSource>, now: f64,
 ) {
-    let Some(bed) = bed_for(map) else {
+    let Some(bed) = bed else {
         info!("Ambience: none for map {map:?}");
         return;
     };
@@ -287,8 +281,9 @@ mod tests {
 
     #[test]
     fn crossfade_banks_exist_only_for_the_three_districts() {
-        assert_eq!(crossfade_bank("DownTown"), Some("Main_Ambience_Crossfade_DT"));
-        assert_eq!(crossfade_bank("MegaPark"), None);
+        use super::super::map_audio::tests::old_crossfade_bank;
+        assert_eq!(old_crossfade_bank("DownTown"), Some("Main_Ambience_Crossfade_DT"));
+        assert_eq!(old_crossfade_bank("MegaPark"), None);
         for bank in ["Main_Ambience_Crossfade_DT", "Main_Ambience_Crossfade_Ind", "Main_Ambience_Crossfade_Uni"] {
             assert!(super::super::crossfade_groups::GROUPS.iter().any(|(b, g, _)| *b == bank && *g == 1), "{bank}");
         }

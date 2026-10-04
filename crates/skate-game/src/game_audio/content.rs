@@ -27,7 +27,6 @@ use super::library::{ContentReport, OverlaySource};
 /// A running mod's checked overlay.
 pub(crate) struct Registered {
     pub root: PathBuf,
-    fingerprint: u64,
     pub overlay: AudioOverlay,
     pcm_bytes: u64,
 }
@@ -82,7 +81,7 @@ impl AudioContent {
                 Ok(Some(loaded)) => match self.admit(id, &loaded) {
                     Ok(()) => {
                         info!("Game audio: mod {id} audio content: {}", loaded.overlay.summary().join(", "));
-                        self.overlays.insert(id.to_owned(), Registered { root: root.to_owned(), fingerprint, overlay: loaded.overlay, pcm_bytes: loaded.pcm_bytes });
+                        self.overlays.insert(id.to_owned(), Registered { root: root.to_owned(), overlay: loaded.overlay, pcm_bytes: loaded.pcm_bytes });
                         self.pending = true;
                     }
                     Err(e) => self.refuse(id, e),

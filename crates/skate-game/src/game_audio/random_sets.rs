@@ -143,12 +143,12 @@ fn draw(bag: &mut Vec<usize>, count: usize, rng: &mut u32) -> usize {
 }
 
 /// The set for the skater's location (see module docs).
-fn selected(library: &Library, district: &str, at: Vec3) -> Option<u64> {
+fn selected(library: &Library, audio: &super::map_audio::MapAudio, at: Vec3) -> Option<u64> {
     static FORCED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     if let Some(name) = FORCED.get_or_init(|| std::env::var("SKATE_AUDIO_SET").ok()).as_deref() {
         return library.random_set_named(name).map(|(key, _)| key);
     }
-    library.region_key(district, "audio_emitters", at.x, at.z).filter(|key| library.random_set(*key).is_some())
+    audio.region_key(library, "audio_emitters", at.x, at.z).filter(|key| library.random_set(*key).is_some())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -160,11 +160,11 @@ pub(super) fn update(
     mut assets: ResMut<Assets<AudioSource>>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
     cues: Res<super::skate_events::Cues>,
-    map: Res<crate::map_transition::CurrentMap>,
     time: Res<Time<Real>>,
     menu: Option<Res<crate::graphics_menu::Menu>>,
     replay: Res<crate::replay::Replay>,
     content: Res<super::AudioContent>,
+    audio: Res<super::map_audio::MapAudio>,
 ) {
     let Some(mut library) = library else { return };
     let state = &mut *state;
@@ -188,8 +188,7 @@ pub(super) fn update(
     let mut rng = state.rng;
 
     // Location change (or silenced: no set): rebuild the entries.
-    let district = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
-    let key = if super::silenced(menu.as_deref(), &replay) { None } else { selected(&library, district, cues.riding.board) };
+    let key = if super::silenced(menu.as_deref(), &replay) { None } else { selected(&library, &audio, cues.riding.board) };
     if key != state.key {
         for post in state.posts.drain(..) {
             for (_, voice, ..) in post.layers {

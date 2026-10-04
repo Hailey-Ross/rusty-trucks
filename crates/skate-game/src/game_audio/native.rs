@@ -904,16 +904,15 @@ fn follow_volume(
 pub(super) fn reverb_frame(
     native: Option<Res<Native>>,
     library: Option<Res<Library>>,
-    map: Res<crate::map_transition::CurrentMap>,
     cues: Res<super::skate_events::Cues>,
     time: Res<Time<Real>>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
     zones: Res<super::emitters::ReverbZones>,
+    audio: Res<super::map_audio::MapAudio>,
 ) {
     let (Some(native), Some(library)) = (native, library) else { return };
-    let district = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
     let at = cues.riding.board;
-    let key = library.region_key(district, "audio_reverb", at.x, at.z).unwrap_or(skate_audio::bus::env::DEFAULT_PRESET);
+    let key = audio.region_key(&library, "audio_reverb", at.x, at.z).unwrap_or(skate_audio::bus::env::DEFAULT_PRESET);
     let camera = listener.single().ok().map(|t| skate_audio::bus::zones::Camera {
         position: t.translation().to_array(),
         forward: t.forward().as_vec3().to_array(),

@@ -20,6 +20,7 @@ mod e2e;
 mod emitters;
 mod grain_bed;
 mod library;
+mod map_audio;
 mod native;
 mod npc_skaters;
 mod player_audio;
@@ -165,13 +166,14 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<skate_events::Cues>()
             .init_resource::<emitters::ReverbZones>()
             .init_resource::<AudioContent>()
+            .init_resource::<map_audio::MapAudio>()
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
             .add_systems(
                 Update,
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
                 // the ticks and the local update, then the beds (retail's process / tick / update).
-                (content::frame, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
+                (content::frame, map_audio::update, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
                     .chain()
                     .before(CueSet)
                     .after(crate::app::FrameSet::Animation),
