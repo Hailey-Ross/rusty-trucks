@@ -913,6 +913,39 @@ Verification: `mod_voices::tests::offsets_turn_with_the_owner`, `mod_rules::test
   (which shows retail's limits) asks for `slots = 'shared'` on 4, and its new setting "Own instances" (`own_slots`)
   shows the default instead. Not checked in game yet.
 
+### M8b. Automated in-game check (the dev mod's `autotest` setting, 2026-10-04)
+
+Problem: checking H–M in game needed a person in DownTown pressing F5–F11 and Digit1–6. Change (dev mod only,
+`mods/audio-content-test`, no engine code): mod settings `autotest` (off by default), `autotest_step` (s per step),
+`autotest_gap` (quiet s before each step), `autotest_muted` (shows "MUTED TEST" on its HUD). With `autotest` on, once
+the map's native audio runs the script presses its own keys on a timer (the same code paths as the keys), one step
+after the other, reads back what the engine reports and logs one line per check: `AUTOTEST <check> ok|fail <details>`
+(then `AUTOTEST done pass=N fail=M`). 16 steps: the map's Baby_Cry_1 emitter with the replaced bank (the camera, i.e.
+the listener, is put 5 m from DownTown's record), F5 global, F6 / F7 post and release (patch 22 at that emitter),
+F8 native siren + beep, F9 tuning writes (a mod taxi idles 3 m away: the game spawns no traffic), F10 emitter +
+reverb zone, F11 rules with a synthetic ollie (gameplay actions: a push, then the right stick down / up), Digit1 duck,
+Digit2 seed, Digit3 six own-instance taxis driving a 6 m circle, Digit4 the mod's Csis class and global, Digit5 the
+nose beep with an ollie, Digit6 the orbiting emitter, event tags after subscribing again, and the L7 hot reload (it
+asks the runner to edit `audio.json`: `AUTOTEST_REQ edit_audio_json` / `revert_audio_json`, and checks two swaps, no
+restart and the script loaded once). Read-backs: `sdk.audio.info()` (native voices, rules, seed, MixMap inputs, swaps,
+restarts, last change), `handle`, `global` (the watch is re-sent once the native audio runs: at `on_load` it does not
+yet and the watch fails), `tuned` / `tuning`, `mixmap_inputs`, `sdk.world_audio.read / info`, `sdk.commands.result`,
+the audio catalog (loaded banks) and the event rows. Every step has a hard limit (its length + 5 s: a
+`<step>_timeout` fail line). Output levels of mixer voices are not readable from Lua: a check proves "held, posted,
+started", the ear (or a headless render) proves the level.
+
+A local runner (not part of the PR) starts the game on DownTown with a copy of the mod in a run folder and a private
+`SKATE3_MOD_SETTINGS` folder (`<id>.json` = `{"enabled": true, "values": {"autotest": true, ...}}`), muted and
+minimised by default or audible (15 s steps, 3 s gaps), edits / reverts the copy's `audio.json` when asked, stops the
+game after `AUTOTEST done` and tabulates the lines; a second pass with the mod disabled asserts retail (`Map audio
+DownTown: ["retail"]`, the retail crossfade bank, no overlay, the install's 9 Csis projects, no mod log line).
+
+Found by it (2026-10-04): the event tags (`pop`, `land`) are computed only when a mod subscribes while the native audio
+already runs (`AudioApi::subscribe`; refreshed otherwise only by a `player` tuning write). A mod that subscribes in
+`on_load` (before the native audio starts) keeps the empty default for the whole session: pops arrive untagged and a
+Skate_Collisions Splice with id 0 is tagged `land`. Rules are not affected (they read the tags from the native player).
+Open: refresh the tags when the native audio starts / restarts (engine fix, not done here).
+
 ### M9. Open questions
 
 1. **Own instances for NPC skaters** (L3): their host runs a whole skater's components and its own grain bed per
