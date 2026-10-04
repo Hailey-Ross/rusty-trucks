@@ -175,9 +175,13 @@ pub(crate) fn record(buf: &mut EventBuf, row: EventRow) {
 /// - `horn` / `alarm`: a traffic horn / car alarm post;
 /// - `tazer`: a ped's `c_tazer` post; `body_fall`: a ped's body-fall Splice start;
 /// - `emitter`: a world emitter start; `zone_change`: a zone ambience change; `speech`: a line.
-#[derive(Clone, Debug, Default)]
+///
+/// The pop / land ids are the running player's (`events_frame` copies them every frame a mod
+/// subscribes, so they follow a native start, restart or tuning change); 0 is "unset" and never
+/// tags a row (`Tags::default` tags no pop or landing).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Tags {
-    pub pop: Vec<i32>,
+    pub pop: [i32; 6],
     pub land: i32,
 }
 
@@ -185,15 +189,19 @@ pub(crate) const TAGS: [&str; 12] = ["pop", "land", "grind_start", "grind_end", 
 
 impl Tags {
     pub(crate) fn from_tuning(c: &skate_audio::player::contacts::ContactsTuning) -> Self {
-        Self { pop: c.pop_ids.iter().chain(&c.pop_ids_hollow).map(|&i| i as i32).collect(), land: c.landing_id as i32 }
+        let mut pop = [0; 6];
+        for (p, &i) in pop.iter_mut().zip(c.pop_ids.iter().chain(&c.pop_ids_hollow)) {
+            *p = i as i32;
+        }
+        Self { pop, land: c.landing_id as i32 }
     }
 
     pub(crate) fn tag(&self, r: &EventRow) -> Option<&'static str> {
         use skate_audio::player::contacts::BANK;
         use skate_audio::world::traffic::{ALARM_CLASS, HORN_CLASS};
         match (r.kind, r.source) {
-            (EventKind::Splice, Source::Player) if r.class == BANK && self.pop.contains(&r.id) => Some("pop"),
-            (EventKind::Splice, Source::Player) if r.class == BANK && r.id == self.land => Some("land"),
+            (EventKind::Splice, Source::Player) if r.class == BANK && r.id != 0 && self.pop.contains(&r.id) => Some("pop"),
+            (EventKind::Splice, Source::Player) if r.class == BANK && r.id != 0 && r.id == self.land => Some("land"),
             (EventKind::Splice, _) if r.class.starts_with("fstep_") => Some("footstep"),
             (EventKind::Post, Source::Player) if r.slot == "grind" && r.id == 0 => Some("grind_start"),
             (EventKind::Release, Source::Player) if r.slot == "grind" && r.id == 0 => Some("grind_end"),
@@ -386,6 +394,7 @@ impl AudioApi {
                 if let Some(bad) = tags.iter().find(|t| !TAGS.contains(&t.as_str())) {
                     return Err(format!("audio subscribe: unknown tag {bad} ({})", TAGS.join(", ")));
                 }
+                // Early copy only: `events_frame` refreshes the ids every frame (native may start later).
                 if let Some(p) = native.and_then(|n| n.player.as_ref()) {
                     self.events.tags = Tags::from_tuning(&p.contact_tuning);
                 }
@@ -563,6 +572,9 @@ pub(super) fn events_frame(
         }
         return;
     }
+    // The pop / land ids of the player whose rows this frame collects (a copy, no allocation):
+    // right however the subscription and the native start / restart / tuning change are ordered.
+    api.events.tags = native.as_deref().and_then(|n| n.player.as_ref()).map_or_else(Tags::default, |p| Tags::from_tuning(&p.contact_tuning));
     if let Some(p) = native.as_deref_mut().and_then(|n| n.player.as_mut()) {
         collect(&mut p.events, on, &mut api.events);
     }
@@ -956,6 +968,69 @@ mod tests {
         world.run_system_once(events_frame).unwrap();
         assert!(world.resource::<Native>().player.as_ref().unwrap().events.is_none(), "unsubscribed: the buffers go");
         assert!(world.resource::<AudioApi>().snapshot(None, 0, "dev.a").is_null());
+    }
+
+    /// Found by the in-game autotest: a mod that subscribes in `on_load`, before native audio
+    /// starts, kept unset pop / land ids for the session (pops untagged, a Splice row with id 0
+    /// tagged `land`). The ids now follow the running player, whenever it starts or changes.
+    #[test]
+    fn event_tags_follow_the_player_whatever_the_subscription_order() {
+        use skate_audio::player::contacts::BANK;
+        let splice = |id| EventRow { kind: EventKind::Splice, source: Source::Player, class: BANK, slot: "", id, owner: 0 };
+        let tags_of = |world: &World, owner: &str| -> Vec<(i32, Option<String>)> {
+            let s = world.resource::<AudioApi>().snapshot(None, 0, owner);
+            s["events"]["rows"].as_array().unwrap().iter().map(|r| (r["id"].as_i64().unwrap() as i32, r["tag"].as_str().map(str::to_owned))).collect()
+        };
+        let frame_with = |world: &mut World, ids: &[i32]| {
+            for &id in ids {
+                record(&mut world.resource_mut::<Native>().player.as_mut().unwrap().events, splice(id));
+            }
+            world.run_system_once(events_frame).unwrap();
+        };
+        let tag = |s: &str| Some(s.to_owned());
+        assert_eq!(Tags::default().tag(&splice(0)), None, "unset ids tag nothing");
+
+        // Subscribe at load: no native audio yet.
+        let mut world = World::new();
+        world.init_resource::<AudioApi>();
+        world.resource_mut::<AudioApi>().subscribe("dev.a", Some(vec!["pop".into(), "land".into()]), None).unwrap();
+        world.resource_mut::<AudioApi>().subscribe("dev.all", Some(vec![]), None).unwrap();
+        world.run_system_once(events_frame).unwrap();
+        // Native audio starts later (the player's Contacts tuning: pops 1097.. / 1103.., landing 1095).
+        let mut player = super::super::player_audio::PlayerAudio::new(Default::default(), true);
+        player.events = None;
+        let (pop, hollow, land) = (player.contact_tuning.pop_ids[0] as i32, player.contact_tuning.pop_ids_hollow[2] as i32, player.contact_tuning.landing_id as i32);
+        assert!(pop != 0 && hollow != 0 && land != 0);
+        let mut n = native();
+        n.player = Some(player);
+        world.insert_resource(n);
+        world.run_system_once(events_frame).unwrap();
+        frame_with(&mut world, &[pop, land, 0, hollow]);
+        assert_eq!(tags_of(&world, "dev.a"), vec![(pop, tag("pop")), (land, tag("land")), (hollow, tag("pop"))]);
+        assert_eq!(tags_of(&world, "dev.all"), vec![(pop, tag("pop")), (land, tag("land")), (0, None), (hollow, tag("pop"))], "id 0 is never `land`");
+
+        // Re-subscribing keeps the ids.
+        world.resource_mut::<AudioApi>().subscribe("dev.a", None, None).unwrap();
+        world.run_system_once(events_frame).unwrap();
+        world.resource_scope(|world, mut api: Mut<AudioApi>| api.subscribe("dev.a", Some(vec!["land".into()]), world.get_resource::<Native>())).unwrap();
+        frame_with(&mut world, &[pop, land]);
+        assert_eq!(tags_of(&world, "dev.a"), vec![(land, tag("land"))]);
+
+        // A tuning change (or a restarted player with other ids) retags from the next frame.
+        world.resource_mut::<Native>().player.as_mut().unwrap().contact_tuning.landing_id = 2000;
+        frame_with(&mut world, &[land, 2000]);
+        assert_eq!(tags_of(&world, "dev.all"), vec![(land, None), (2000, tag("land"))]);
+        let mut player = super::super::player_audio::PlayerAudio::new(Default::default(), true);
+        player.contact_tuning.pop_ids[0] = 3000;
+        world.resource_mut::<Native>().player = Some(player);
+        world.run_system_once(events_frame).unwrap();
+        frame_with(&mut world, &[3000, pop, land]);
+        assert_eq!(tags_of(&world, "dev.all"), vec![(3000, tag("pop")), (pop, None), (land, tag("land"))]);
+
+        // Native audio stops: back to unset ids.
+        world.remove_resource::<Native>();
+        world.run_system_once(events_frame).unwrap();
+        assert_eq!(world.resource::<AudioApi>().events.tags, Tags::default());
     }
 
     /// A mod's post of a retail class plays (data-gated): `c_emitter` with a DownTown emitter's
