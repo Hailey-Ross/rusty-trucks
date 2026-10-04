@@ -252,9 +252,8 @@ impl PlayerAudio {
             self.positions[1].write(m, keys::obj_pos2(0), l, Some((s.board_position, s.board_velocity)));
         }
         for _ in 0..self.jitter_steps.unwrap_or(1) {
-            for (id, word) in self.jitter.process() {
-                m.set_input(keys::JITTER, id, word);
-            }
+            // The MixMap writes don't touch the walk: the same draws and writes as collecting first.
+            self.jitter.process_each(|id, word| m.set_input(keys::JITTER, id, word));
         }
         let landed = self.contacts.write(m, s, &self.tuning);
         inputs::write_rail(m, s.grinding, self.was_grinding);

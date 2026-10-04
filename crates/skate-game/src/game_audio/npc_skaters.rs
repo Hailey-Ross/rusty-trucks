@@ -271,7 +271,7 @@ pub(crate) fn pre(host: &mut NpcHost, published: &NpcSkaters, native: &mut Nativ
         }
         info!("AUDIO_NPC release skater {id} (instance {g})");
     }
-    let parts = Parts { rolling: player.rolling_on, rattle: player.rattle_on, contacts: player.contacts_on, wheels: player.wheels_on, clothing: player.footsteps_on };
+    let parts = Parts { rolling: player.rolling_on, rattle: player.rattle_on, slide: player.slide_on, contacts: player.contacts_on, wheels: player.wheels_on, clothing: player.footsteps_on };
     for (id, g) in assignment.claimed {
         let npc = NpcSkater::new(g as u32, parts, true, true, true);
         host.objects.insert(id, npc);
@@ -286,7 +286,7 @@ pub(crate) fn pre(host: &mut NpcHost, published: &NpcSkaters, native: &mut Nativ
     let tuning = Tuning { player: &player.tuning, contacts: &player.contact_tuning, wheels: &player.wheels_tuning, clothing: &player.clothing_tuning };
     host.speakers.clear();
     for p in published.skaters.iter().filter(|p| p.voice != 0) {
-        host.speakers.push(super::world_speech::SkaterSpeaker { id: p.id, voice: p.voice, position: p.state.com_position, velocity: p.state.com_velocity });
+        host.speakers.push(super::world_speech::SkaterSpeaker { id: p.id, voice: p.voice, position: p.state.com_position, velocity: p.state.com_velocity, reactions: p.reactions });
     }
     let mut collisions = Vec::new();
     let held: Vec<(u32, u64)> = host.slots.holders().collect();
@@ -303,6 +303,7 @@ pub(crate) fn pre(host: &mut NpcHost, published: &NpcSkaters, native: &mut Nativ
         // The body / deck posters once per console evaluation, as the local player's.
         npc.set_body_calls(Some(evaluations));
         npc.set_deck_calls(Some(evaluations));
+        npc.loose_board = p.loose_board;
         let cmds = npc.process(m, &s, tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::Npc, id));
         host.apply(rt, id, cmds);
         // The routing's binds wait for the bed's step after the ticks (dropped without a bed).
@@ -335,6 +336,7 @@ pub(crate) fn post(host: &mut NpcHost, published: &NpcSkaters, native: &mut Nati
         let Some(mut npc) = host.objects.remove(&id) else { continue };
         let mut s = skaters::component_state(&p.state, local.soft_wheels);
         s.dt = dt;
+        npc.loose_board = p.loose_board;
         let cmds = npc.update(m, &s, tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::Npc, id));
         host.apply(rt, id, cmds);
         npc.update_wheels(m, &s, tuning.wheels, &mut rt.stream_host());

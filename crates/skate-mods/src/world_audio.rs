@@ -60,8 +60,9 @@ pub struct WorldAudioOptions {
     #[serde(default)]
     pub skidding: Option<bool>,
     // ---- peds
-    /// Speech voice id 41..=96 (0 = none): a ped's model (its shoe class, kind and speech words
-    /// follow from it unless given) or a skater's voice (the bail grunt).
+    /// Speech voice id 1..=96 (0 = none): a ped's model (its shoe class, kind and speech words
+    /// follow from it unless given) or a skater's voice (the bail grunt, its reactions). The pros
+    /// 1–29 and the special cast 30–38 speak on the main-cast channel.
     #[serde(default)]
     pub voice: Option<u32>,
     #[serde(default)]
@@ -79,6 +80,14 @@ pub struct WorldAudioOptions {
     /// Footsteps on (default: retail's 3-nearest rule).
     #[serde(default)]
     pub footsteps: Option<bool>,
+    /// The ped is tazing (the `c_tazer` burst plays while it holds; the `tazer` event holds it
+    /// for a time instead).
+    #[serde(default)]
+    pub tazing: Option<bool>,
+    /// Raise the game flag of the photographer's repeat (a ped holding speech value 29 repeats it
+    /// every second while any published ped sets this).
+    #[serde(default)]
+    pub photo_flag: Option<bool>,
     // ---- skaters
     /// `lite` (the default: a rolling-only state from these fields) or `state_log:<name>` (a
     /// ghost replaying a recorded audio state log, `logs/<name>.tsv` in the mod or
@@ -102,20 +111,34 @@ pub struct WorldAudioOptions {
     pub grind_material: Option<u32>,
     #[serde(default)]
     pub air: Option<bool>,
+    /// Lite skater: the loose-board state (0 none, 1 upside down, 2 on its side): the board slide
+    /// holds while it is set (ghosts take it from their log).
+    #[serde(default)]
+    pub loose_board: Option<u8>,
 }
 
-/// One-shot options (`horn`: kind, seconds; `speech`: value).
+/// One-shot options (`horn`: kind, seconds; `speech`: value; `tazer`: seconds; `body_fall`:
+/// kind; `reaction`: value, by).
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct WorldAudioEventOptions {
+    /// `horn`: the horn kind 1..=5. `body_fall`: the animation's `BodyFallType` key (8, 9 or
+    /// any other value 1..=255: three sounds).
     #[serde(default)]
     pub kind: Option<u8>,
     #[serde(default)]
     pub seconds: Option<f32>,
     /// A speech value: a number or a name (`warn`, `cheer`, `slam`, `flee`, `DoWarning`, …).
+    /// `reaction`: `slam`, `slam_b`, `trick`, `crash` or `chase`.
     #[serde(default)]
     pub value: Option<serde_json::Value>,
+    /// `reaction`: the other skater's model (0 = the player; a pro 1..=29 picks the pro-on-pro lines).
+    #[serde(default)]
+    pub by: Option<u32>,
 }
+
+/// The NPC skater reactions a mod can raise (`reaction` event values).
+pub const REACTIONS: [&str; 5] = ["slam", "slam_b", "trick", "crash", "chase"];
 
 fn finite(v: &[f32]) -> bool {
     v.iter().all(|x| x.is_finite())
@@ -146,7 +169,7 @@ impl WorldAudioOptions {
             && self.speed.is_none_or(|v| v.is_finite() && (0.0..=200.0).contains(&v))
             && self.load.is_none_or(|v| v.is_finite() && v.abs() <= 100.0)
             && self.horn.is_none_or(|v| (0..=6).contains(&v))
-            && self.voice.is_none_or(|v| v == 0 || (41..=96).contains(&v))
+            && self.voice.is_none_or(|v| v <= 96)
             && self.shoe_class.is_none_or(|v| (1..=5).contains(&v))
             && self.weight.is_none_or(|v| (1..=5).contains(&v))
             && self.materials.is_none_or(|m| m.iter().all(|x| *x <= 143))
@@ -155,14 +178,15 @@ impl WorldAudioOptions {
             && self.seconds.is_none_or(|v| v.is_finite() && (1.0..=600.0).contains(&v))
             && self.material.is_none_or(|v| v <= 143)
             && self.grind_material.is_none_or(|v| v <= 143)
+            && self.loose_board.is_none_or(|v| v <= 2)
     }
 
     /// The fields of other kinds are rejected (so a typo'd kind is an error, not silence).
     pub fn validate_for(&self, kind: ObjectKind) -> bool {
         let traffic = self.engine.is_some() || self.speed.is_some() || self.load.is_some() || self.horn.is_some() || self.skidding.is_some();
-        // `voice` is a ped's or a skater's (the AI skaters' 89–96: their bail grunt).
-        let ped = self.shoe_class.is_some() || self.weight.is_some() || self.close_range.is_some() || self.feet.is_some() || self.materials.is_some() || self.footsteps.is_some();
-        let skater = self.source.is_some() || self.from.is_some() || self.seconds.is_some() || self.wheels.is_some() || self.material.is_some() || self.grinding.is_some() || self.grind_material.is_some() || self.air.is_some();
+        // `voice` is a ped's or a skater's (the AI skaters' 89–96, the pros 1–29: bail grunt, reactions).
+        let ped = self.shoe_class.is_some() || self.weight.is_some() || self.close_range.is_some() || self.feet.is_some() || self.materials.is_some() || self.footsteps.is_some() || self.tazing.is_some() || self.photo_flag.is_some();
+        let skater = self.source.is_some() || self.from.is_some() || self.seconds.is_some() || self.wheels.is_some() || self.material.is_some() || self.grinding.is_some() || self.grind_material.is_some() || self.air.is_some() || self.loose_board.is_some();
         self.validate()
             && match kind {
                 ObjectKind::Traffic => !ped && !skater,
@@ -176,8 +200,12 @@ impl WorldAudioOptions {
 impl WorldAudioEventOptions {
     pub fn validate(&self, event: &str) -> bool {
         match event {
+            _ if event != "reaction" && self.by.is_some() => false,
+            "reaction" => self.kind.is_none() && self.seconds.is_none() && self.by.is_none_or(|b| b <= 96) && matches!(&self.value, Some(serde_json::Value::String(s)) if REACTIONS.contains(&s.as_str())),
             "horn" => self.kind.is_none_or(|k| (1..=5).contains(&k)) && self.seconds.is_none_or(|s| s.is_finite() && (0.0..=30.0).contains(&s)) && self.value.is_none(),
             "alarm" => self.kind.is_none() && self.seconds.is_none() && self.value.is_none(),
+            "tazer" => self.kind.is_none() && self.seconds.is_none_or(|s| s.is_finite() && (0.0..=30.0).contains(&s)) && self.value.is_none(),
+            "body_fall" => self.kind.is_some_and(|k| k >= 1) && self.seconds.is_none() && self.value.is_none(),
             "speech" => {
                 self.kind.is_none()
                     && self.seconds.is_none()
@@ -206,10 +234,12 @@ mod tests {
         assert!(ped.validate_for(ObjectKind::Ped) && !ped.validate_for(ObjectKind::Traffic));
         let ghost: WorldAudioOptions = serde_json::from_value(json!({"source":"state_log:state_20261003_143434","from":30,"seconds":20,"position":[0,0,0]})).unwrap();
         assert!(ghost.validate_for(ObjectKind::Skater));
-        let lite: WorldAudioOptions = serde_json::from_value(json!({"source":"lite","speed":5,"wheels":[true,true,true,true],"air":false})).unwrap();
-        assert!(lite.validate_for(ObjectKind::Skater));
-        for bad in [json!({"voice":12}), json!({"shoe_class":0}), json!({"horn":7}), json!({"source":"state_log:../x"}), json!({"source":"record"}),
-            json!({"engine":"a b"}), json!({"position":[0,1e9,0]}), json!({"velocity":[1000,0,0]}), json!({"seconds":0})] {
+        let lite: WorldAudioOptions = serde_json::from_value(json!({"source":"lite","speed":5,"wheels":[true,true,true,true],"air":false,"loose_board":2})).unwrap();
+        assert!(lite.validate_for(ObjectKind::Skater) && !lite.validate_for(ObjectKind::Ped));
+        let zapper: WorldAudioOptions = serde_json::from_value(json!({"voice":72,"tazing":true,"photo_flag":false})).unwrap();
+        assert!(zapper.validate_for(ObjectKind::Ped) && !zapper.validate_for(ObjectKind::Skater));
+        for bad in [json!({"voice":97}), json!({"shoe_class":0}), json!({"horn":7}), json!({"source":"state_log:../x"}), json!({"source":"record"}),
+            json!({"engine":"a b"}), json!({"position":[0,1e9,0]}), json!({"velocity":[1000,0,0]}), json!({"seconds":0}), json!({"loose_board":3})] {
             let o: WorldAudioOptions = serde_json::from_value(bad.clone()).unwrap();
             assert!(!o.validate(), "accepted {bad}");
         }
@@ -227,5 +257,16 @@ mod tests {
         assert!(speech.validate("speech"));
         let bad: WorldAudioEventOptions = serde_json::from_value(json!({"value":500})).unwrap();
         assert!(!bad.validate("speech"));
+        assert!(WorldAudioEventOptions::default().validate("tazer"));
+        let zap: WorldAudioEventOptions = serde_json::from_value(json!({"seconds":2.0})).unwrap();
+        assert!(zap.validate("tazer") && !zap.validate("body_fall"));
+        let fall: WorldAudioEventOptions = serde_json::from_value(json!({"kind":9})).unwrap();
+        assert!(fall.validate("body_fall") && !fall.validate("tazer"));
+        assert!(!WorldAudioEventOptions::default().validate("body_fall"), "a fall needs its kind");
+        let react: WorldAudioEventOptions = serde_json::from_value(json!({"value":"trick","by":24})).unwrap();
+        assert!(react.validate("reaction") && !react.validate("speech"));
+        let bad: WorldAudioEventOptions = serde_json::from_value(json!({"value":"dance"})).unwrap();
+        assert!(!bad.validate("reaction"));
+        assert!(!WorldAudioEventOptions::default().validate("reaction"), "a reaction needs its value");
     }
 }

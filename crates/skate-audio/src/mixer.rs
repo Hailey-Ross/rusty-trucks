@@ -18,6 +18,7 @@ use std::sync::Arc;
 use crate::dsp::biquad::{Iir2, Kind};
 use crate::dsp::gain::Gain;
 use crate::dsp::pan::{self, Pan2D};
+use crate::dsp::peaking::PeakingIir2;
 use crate::dsp::resample::{Resampler, ratio};
 use crate::dsp::routes::to_six;
 use crate::dsp::send::{Mode, Send, fold_release};
@@ -122,6 +123,10 @@ struct Voice {
     /// A direct voice's own Send A level (speech streams, [`Mixer::set_direct_dsp`]): replaces
     /// master × FXWET0 when set.
     env_direct: Option<f32>,
+    /// The speech stream graph ([`Mixer::set_stream_dsp`]): `Resample → PI20 → Send A → Gain →
+    /// HI20 → LI20 → Pan2D1 → Send` (`sub_82C5C318`) instead of the voice graph's filters before
+    /// Send A. None for every other voice.
+    stream: Option<Box<StreamDsp>>,
     /// Stop fade: (source index where it starts, per-channel last sample).
     fade: Option<(u64, [f32; 8])>,
     done: bool,
@@ -164,31 +169,8 @@ impl Voice {
         at as f64 / f64::from(self.header.rate)
     }
 
-    fn render(&mut self, master: &mut [[f32; BLOCK]; 6], buses: &mut Buses, user: f32) {
-        let channels = (self.header.channels as usize).clamp(1, 6);
-        let mut src = [[0.0f32; BLOCK]; 6];
-        if self.started {
-            self.resampler.set_ratio(ratio(self.header.rate, self.pitch));
-            for (c, out) in src.iter_mut().enumerate().take(channels) {
-                let me = &*self;
-                self.resampler.render(out, |i| me.sample(c, i));
-            }
-            self.resampler.advance(BLOCK);
-            if self.header.loop_start.is_none() && self.resampler.position >= self.total() {
-                self.done = true;
-            }
-        }
-        // A new player publishes its format with 0 frames: the first block is silent.
-        self.started = true;
-        // Plane arrays on the stack, not `Vec`s: the render must not allocate (test
-        // `tests/render_alloc.rs`).
-        {
-            let mut planes = src.each_mut().map(|c| &mut c[..]);
-            self.hpf.process(&mut planes[..channels], MIX_RATE as f32);
-            self.lpf.process(&mut planes[..channels], MIX_RATE as f32);
-        }
-        // Send A: the channels summed to mono (routes N → 1 at unity, LFE dropped), our user volume
-        // applied like on the dry path.
+    /// The environment send: the channels summed to mono into the env bus at the voice's level.
+    fn env_send(&mut self, src: &[[f32; BLOCK]; 6], channels: usize, buses: &mut Buses, user: f32) {
         self.env.target = match self.env_direct {
             Some(level) => level * user,
             None => self.master * self.fx * user,
@@ -202,10 +184,93 @@ impl Voice {
             }
             self.env.add(&mono, &mut buses.env_in[..]);
         }
+    }
+
+    fn render(&mut self, master: &mut [[f32; BLOCK]; 6], buses: &mut Buses, user: f32, scratch: &mut Scratch) {
+        let channels = (self.header.channels as usize).clamp(1, 6);
+        // The mixer's scratch planes instead of zeroed stack arrays (optimisation pass 2): only the
+        // voice's own channels of `src` are read below, and each is written in full first (by the
+        // resampler, or zeroed for the silent first block); the panner overwrites all six of `six`.
+        let Scratch { src, six } = scratch;
+        if !self.started {
+            for c in src.iter_mut().take(channels) {
+                c.fill(0.0);
+            }
+        }
+        if self.started {
+            self.resampler.set_ratio(ratio(self.header.rate, self.pitch));
+            // The last source frame this block reads: the resampler's phase after the block's 256
+            // steps, plus its right-hand interpolation point. When that is inside the sample and no
+            // stop fade runs, `sample(c, i)` is the channel's frame `i` for every index the block
+            // asks for, so the channel is read directly (the same values; optimisation pass 2).
+            let reach = (u64::from(self.resampler.frac) + u64::from(self.resampler.step) * BLOCK as u64) >> 16;
+            let direct = self.fade.is_none() && self.resampler.position + reach + 1 < self.total();
+            for (c, out) in src.iter_mut().enumerate().take(channels) {
+                match &self.pcm {
+                    Some(pcm) if direct => {
+                        let frames = pcm.channels.get(c).map_or(&[][..], |v| &v[..]);
+                        self.resampler.render(out, |i| frames.get(i as usize).copied().unwrap_or(0.0));
+                    }
+                    _ => {
+                        let me = &*self;
+                        self.resampler.render(out, |i| me.sample(c, i));
+                    }
+                }
+            }
+            self.resampler.advance(BLOCK);
+            if self.header.loop_start.is_none() && self.resampler.position >= self.total() {
+                self.done = true;
+            }
+        }
+        // A new player publishes its format with 0 frames: the first block is silent.
+        self.started = true;
+        // Plane arrays on the stack, not `Vec`s: the render must not allocate (test
+        // `tests/render_alloc.rs`).
+        {
+            let mut planes = src.each_mut().map(|c| &mut c[..]);
+            match self.stream.as_deref_mut() {
+                // The speech stream graph: the PEAK first, the filters after the gain.
+                Some(stream) => stream.peak.process(&mut planes[..channels], MIX_RATE as f32),
+                None => {
+                    self.hpf.process(&mut planes[..channels], MIX_RATE as f32);
+                    self.lpf.process(&mut planes[..channels], MIX_RATE as f32);
+                }
+            }
+        }
+        // Send A: the channels summed to mono (routes N → 1 at unity, LFE dropped), our user volume
+        // applied like on the dry path.
+        if self.stream.is_none() {
+            self.env_send(&src, channels, buses, user);
+        } else if let Some(stream) = self.stream.as_deref_mut()
+            && let Some(slot) = stream.echo_slot
+        {
+            // The pre-gain Send into the stream slot's echo submix (mono sum, as Send A).
+            stream.echo.target = stream.echo_level * user;
+            if !stream.echo.silent()
+                && let Some(echo) = buses.speech_echo.slot(usize::from(slot))
+            {
+                let mut mono = [0.0f32; BLOCK];
+                for c in src.iter().take(channels.min(5)) {
+                    for (m, x) in mono.iter_mut().zip(c.iter()) {
+                        *m += x;
+                    }
+                }
+                stream.echo.add(&mono, &mut echo.input[..]);
+            }
+        }
         {
             let mut planes = src.each_mut().map(|c| &mut c[..]);
             self.gain.target = self.master * self.dry;
             self.gain.process(&mut planes[..channels]);
+            if self.stream.is_some() {
+                self.hpf.process(&mut planes[..channels], MIX_RATE as f32);
+                self.lpf.process(&mut planes[..channels], MIX_RATE as f32);
+            }
+        }
+        // The speech stream's environment send is its post-filter Send (`sub_82C5CEF0` posts it the
+        // owner's second level; its pre-gain Send feeds the stream slot's echo submix, not ported).
+        if self.stream.is_some() {
+            self.env_send(&src, channels, buses, user);
         }
         // Send B (`sub_824A3140`: only with an enabled effect record; level posted 0 at open, then
         // property 11 / 32767), our user volume applied like on the other paths.
@@ -225,9 +290,8 @@ impl Voice {
                 }
             }
         }
-        let mut six = [[0.0f32; BLOCK]; 6];
         let planes = src.each_ref().map(|c| &c[..]);
-        self.pan.process(&planes[..channels], &mut six);
+        self.pan.process(&planes[..channels], six);
         // Our own user volume of the voice's group (1 = retail level), after the retail graph.
         if user != 1.0 {
             for ch in six.iter_mut() {
@@ -262,9 +326,34 @@ impl Voice {
     }
 }
 
+//// A speech stream voice's own modules (`sub_82C5C318`'s graph): the PEAK and the pre-gain Send
+/// into its slot's echo submix.
+#[derive(Clone, Debug)]
+struct StreamDsp {
+    peak: PeakingIir2,
+    echo_slot: Option<u8>,
+    echo_level: f32,
+    echo: Level,
+}
+
+impl Default for StreamDsp {
+    fn default() -> Self {
+        Self { peak: PeakingIir2::default(), echo_slot: None, echo_level: 0.0, echo: Level::new(0.0) }
+    }
+}
+
 /// A 6-channel send into a mono submix that sends on into its bus's centre: routes 6 → 1 (L, C,
 /// R, Ls, Rs at unity, LFE dropped; image tables 0x820ED700 / 0x820ED780) then 1 → 6 (centre).
 const SIX_TO_MONO_CENTRE: &[crate::dsp::routes::Route] = &[(0, 1, 1.0), (1, 1, 1.0), (2, 1, 1.0), (3, 1, 1.0), (4, 1, 1.0)];
+
+/// The voice render's working planes, shared by every voice of a block (no per-voice zeroing of
+/// 2 × 6 planes on the stack).
+struct Scratch {
+    /// The source after resample, filters and gain (the voice's channels).
+    src: [[f32; BLOCK]; 6],
+    /// The panner's six outputs.
+    six: [[f32; BLOCK]; 6],
+}
 
 /// A live voice as [`Mixer::snapshot`] reports it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -308,6 +397,7 @@ pub struct Mixer {
     pub max_voices: usize,
     /// Opens refused because of `max_voices` or a missing sample.
     pub refused: u64,
+    scratch: Box<Scratch>,
 }
 
 impl Default for Mixer {
@@ -318,7 +408,7 @@ impl Default for Mixer {
 
 impl Mixer {
     pub fn new() -> Self {
-        Self { voices: Vec::new(), buses: Buses::default(), next: 0, banks: HashMap::new(), fold: [0.0; 6], group_gain: [1.0; 2], max_voices: 96, refused: 0 }
+        Self { voices: Vec::new(), buses: Buses::default(), next: 0, banks: HashMap::new(), fold: [0.0; 6], group_gain: [1.0; 2], max_voices: 96, refused: 0, scratch: Box::new(Scratch { src: [[0.0; BLOCK]; 6], six: [[0.0; BLOCK]; 6] }) }
     }
 
     /// Register a bank's sample headers (by slot) and PCM (None = play silence for the sample's
@@ -425,6 +515,7 @@ impl Mixer {
             group,
             fade: None,
             env_direct: None,
+            stream: None,
             done: false,
         });
         Some(self.next)
@@ -449,6 +540,34 @@ impl Mixer {
             v.hpf.cutoff = hpf;
             v.lpf.cutoff = lpf;
             v.env_direct = Some(env);
+        }
+    }
+
+    /// A speech stream's per-frame values (`world::speech_player::VoiceParams`): the voice takes
+    /// the stream graph (PEAK, Send A, Gain, then the filters; `sub_82C5C318`) from now on.
+    /// `peak` = (centre Hz, linear gain, Q), `env` = Send A.
+    pub fn set_stream_dsp(&mut self, voice: u32, hpf: f32, lpf: f32, env: f32, peak: [f32; 3]) {
+        if let Some(v) = self.voice(voice) {
+            v.hpf.cutoff = hpf;
+            v.lpf.cutoff = lpf;
+            v.env_direct = Some(env);
+            let s = v.stream.get_or_insert_with(Default::default);
+            s.peak.freq = peak[0];
+            s.peak.gain = peak[1];
+            s.peak.q = peak[2];
+        }
+    }
+
+    /// A speech stream's echo send: its pre-gain Send into echo slot `slot` (`crate::bus::speech_echo`)
+    /// at `level`, and the slot's posted values.
+    pub fn set_stream_echo(&mut self, voice: u32, slot: u8, level: f32, params: &crate::bus::speech_echo::EchoParams) {
+        if let Some(v) = self.voice(voice) {
+            let s = v.stream.get_or_insert_with(Default::default);
+            s.echo_slot = Some(slot);
+            s.echo_level = level;
+        }
+        if let Some(e) = self.buses.speech_echo.slot(usize::from(slot)) {
+            e.set(params);
         }
     }
 
@@ -499,7 +618,7 @@ impl Mixer {
         for v in &mut self.voices {
             if v.state != State::Paused {
                 let user = self.group_gain[usize::from(v.group)];
-                v.render(bus, &mut self.buses, user);
+                v.render(bus, &mut self.buses, user, &mut self.scratch);
             }
         }
         if let Some(env) = env {
@@ -593,6 +712,7 @@ impl VoiceHost for Mixer {
             group,
             fade: None,
             env_direct: None,
+            stream: None,
             done: false,
         });
         Some(self.next)
@@ -825,6 +945,67 @@ mod tests {
         assert!(diff > 0.1, "{diff}");
         // Enable record 0: no Send B.
         assert_eq!(plain, render(true, &[(9, 4096), (10, 0), (11, 16384)]));
+    }
+
+    /// The direct source read in `Voice::render` relies on the block's highest frame index being
+    /// position + ((frac + step·256) >> 16) + 1: every index the resampler asks for stays at or below
+    /// it (and the bound is reached), for any phase and step up to the 4× ceiling.
+    #[test]
+    fn the_resampler_reads_no_frame_past_the_direct_bound() {
+        let mut seed = 0x9E37_79B9u32;
+        let mut next = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed
+        };
+        let mut steps: Vec<u32> = vec![0, 1, 65535, 65536, 65537, 1 << 17, crate::dsp::resample::MAX_STEP];
+        steps.extend((0..2000).map(|_| next() % (crate::dsp::resample::MAX_STEP + 1)));
+        for step in steps {
+            for frac in [0u32, 1, 0x7FFF, 0xFFFF, next() & 0xFFFF] {
+                let position = u64::from(next() % 100_000);
+                let mut r = Resampler::default();
+                (r.position, r.frac, r.step) = (position, frac, step);
+                let mut max = 0u64;
+                let mut out = [0.0f32; BLOCK];
+                r.render(&mut out, |i| {
+                    max = max.max(i);
+                    0.0
+                });
+                let reach = (u64::from(frac) + u64::from(step) * BLOCK as u64) >> 16;
+                assert_eq!(max, position + reach + 1, "step {step} frac {frac}");
+            }
+        }
+    }
+
+    /// A voice reading across its loop point, its end and a release fade renders the same through
+    /// the direct read and through `Voice::sample` (forced by a stop fade far in the future).
+    #[test]
+    fn the_direct_source_read_matches_the_sample_lookup() {
+        for (seconds, looping, pitch) in [(0.05, true, 1.0f32), (0.05, false, 1.7), (0.3, true, 3.9), (0.02, true, 0.31)] {
+            let (h, pcm) = mono(seconds, 44_100, looping);
+            let render = |force_lookup: bool| {
+                let mut m = Mixer::new();
+                m.add_bank(0, vec![Some(h)], vec![Some(pcm.clone())]);
+                let v = m.open(&request(0)).unwrap();
+                m.set(v, 0, (pitch * 4096.0) as i32);
+                let mut out = Vec::new();
+                for block in 0..40 {
+                    if force_lookup {
+                        // A fade that starts beyond any index this test reaches: `sample` ignores it.
+                        if let Some(x) = m.voice(v).filter(|x| x.fade.is_none()) {
+                            x.fade = Some((u64::MAX, [0.0; 8]));
+                        }
+                    }
+                    if block == 30 {
+                        m.release(v);
+                    }
+                    let mut bus = [[0.0f32; BLOCK]; 6];
+                    m.render(&mut bus);
+                    out.push(bus.map(|c| c.map(f32::to_bits)));
+                }
+                out
+            };
+            assert_eq!(render(false), render(true), "{seconds} s, loop {looping}, pitch {pitch}");
+        }
     }
 
     #[test]

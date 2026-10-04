@@ -320,8 +320,8 @@ function sdk.audio.mixmap(slot, object, instance, output)
     return nil
 end
 -- Audio events (capability audio_events): subscribe{tags={'pop','land',...}} (empty = every row),
--- subscribe(nil) stops. Tags: pop, land, grind_start, grind_end, footstep, horn, alarm, emitter,
--- zone_change, speech. Observe only, one frame late; at most 256 rows a frame.
+-- subscribe(nil) stops. Tags: pop, land, grind_start, grind_end, footstep, horn, alarm, tazer,
+-- body_fall, emitter, zone_change, speech. Observe only, one frame late; at most 256 rows a frame.
 function sdk.audio.subscribe(opts)
     if opts == nil then submit{kind="audio_subscribe"} else submit{kind="audio_subscribe",tags=opts.tags or {}} end
 end

@@ -1005,7 +1005,7 @@ rolling rattle, `Class_rolling`, footsteps, cloth / body slide, flips / treatmen
 **Files.** New: `crates/skate-audio/src/splice/{mod,format,tests}.rs`, `crates/skate-audio/src/player/contacts.rs`,
 `crates/skate-game/src/game_audio/{e2e,state_log}.rs`, `tools/audio-e2e/{scenarios,compare}.py`,
 `tools/recomp-trace/{retail_windows,retail_voices}.py`, `tools/audio-file-inspect/splc_fields.py`,
-`tools/vault-inspect/vault_fields.py`; local tools `grind_census.py`, `img.py`, `stage_splice.py`. Changed: `skate-audio` `lib.rs`, `mixer.rs`, `runtime.rs`, `player/{mod,state,tuning,inputs,
+`tools/vault-inspect/vault_fields.py` (PR #37); local tools `grind_census.py`, `img.py`, `stage_splice.py`. Changed: `skate-audio` `lib.rs`, `mixer.rs`, `runtime.rs`, `player/{mod,state,tuning,inputs,
 components}.rs`; `game_audio/{mod,library,native,player_audio,grain_bed,skate_events}.rs`;
 `tools/asset_pipeline/audio_export.py` (+ tests). The PoC probe (`player_audio/e2e.rs` in the PoC worktree) is local.
 
@@ -1136,7 +1136,7 @@ only): grind start voices Skate_Metal 194 + Skate_Collisions 619 on the first gr
 landings; wheel spin in the air and in the 6.5-s manual.
 
 **Files.** New: `crates/skate-audio/src/player/{collision,wheels}.rs`, `crates/skate-audio/examples/pan_fold_probe.rs`,
-`tools/vault-inspect/{vault_layout,find_field}.py`, `tools/recomp-trace/grec_clean.py`,
+`tools/vault-inspect/{vault_layout,find_field}.py` (PR #37), `tools/recomp-trace/grec_clean.py`,
 `tools/audio-e2e/voices_summary.py`. Changed: `skate-audio` `player/{mod,state,tuning,contacts}.rs`, `runtime.rs` (stream bank);
 `skate-core` `physics/board_ground.rs` (+ test); `skate-game` `game_audio/{player_audio,native,e2e,library,
 skate_events,grain_bed,state_log,voices}.rs`; `tools/asset_pipeline/audio_export.py` (`collision_tuning`, the image's
@@ -4634,6 +4634,27 @@ Full write-up: [15](15-world-audio.md), section "P3–P5". In short:
 - **The dev test mod is opt-in** (`"enabled_by_default": false`, `SKATE3_MODS_ENABLE`). The mod limits are now
   48 / 128, and a `WORLD_AUDIO` summary is logged once a second.
 
+### World audio gaps closed: Tazer, PedBodyFall, speech details, the NPC board slide (2026-10-03, headless + one scripted run)
+
+Full write-up: [15](15-world-audio.md), section "Gaps closed". In short:
+
+- **Tazer** (`SFXObj_Tazer` decoded): `c_tazer` held while the ped tazes. Recomp 164620: 19 starts per 2 s hold
+  against 10 / 20 / 19, the same gaps (192 / 192 / 128 / 96 ms vs 190 / 190 / 130 / 90–100) and order, first-start
+  gain recomp / ours 0.85–1.00.
+- **PedBodyFall** (decoded; trigger = the animation's `BodyFallType`): 75 recorded starts (Splice, not POST);
+  containers 73 / 73 by type; voice gain recomp / ours p50 0.79.
+- **Speech:** the stream voice's PEAK = azimuth curves (6 / 6 recomp pairs on them); the per-voice float; the
+  pre-gain send (out21) feeds the slot's **echo submix** (ported: HPF → camera-distance delay → LPF → env) and the
+  post-filter send (out15) goes to the env bus (17 / 29 and 19 / 27 recomp lines); value 49 = the phone ring → 64,
+  value 29 = the photographer's 1 s repeat, `Obj:Speech` in0 / in1 / in4, first-free stream; the queue clock =
+  visual game ticks.
+- **Main cast (pros, special cast):** its own channel (`maincastspeech.big`, decode 6596 takes / 922 MB, opt-in
+  with the living world's), pro peds, NPC skater reactions and crash (`skater_speech`), the message pairs; all 82
+  recorded main-cast lines reachable through the ported words.
+- **NPC:** the board slide runs for the NPC instance (static evidence; a 4-min scripted run saw no NPC bail); the
+  NPC bed against 180430's NPC rows: near band A gain 0.097 / 0.108.
+- Local player byte-identical (e2e bench, all sets).
+
 ### PR #32 review fixes, step 2 (code half): spec references and private-data paths (2026-10-03, headless)
 
 **Problem.** Code comments in `crates/`, `tools/asset_pipeline/` and the dev test mod cited the working notes and
@@ -4685,3 +4706,133 @@ world_audio}.py`, `mods/world-audio-test/main.lua`, doc 15. Test paths: `skate-a
 mixmap/tests.rs,splice/tests.rs}`, `skate-audio/tests/{private_data/mod.rs (new),disc_banks,dsp_oracle,
 offboard_levels,player_tricks,rolling_banks,world_sources}.rs`, `skate-game/src/game_audio/{skate_events,
 world_sources,world_speech}.rs`, `game_audio/npc_skaters/tests.rs`.
+
+### Optimisation pass 2: render load readout, an allocation-free render, cheaper voices (2026-10-03, headless)
+
+**Problem.** The second pass for PR #32 starts from the baseline taken on a4ec831. That baseline measured
+the render at about 100 µs per block in real play against 58 µs headless. The render allocated 0.2 to 0.6
+times per block in real play, about three times per walk, and 1.8 times per block with the world hosts
+running. A full world (about 85 voices) roughly tripled the render. The rule for the pass: byte-identical
+output, measured before and after, and an adversarial review of every change.
+
+**Identity reference.** `p2base` (a4ec831) and `p2pre` (the tree before this pass) are byte-identical to each
+other. Every state of the pass was compared with them: 13 e2e scenarios + 8 user sessions, `row` and
+`fps300`, 84 outputs per run.
+
+The data-gated world / NPC / speech tests were also run before and after:
+- `cargo test -p skate-audio -- --ignored`;
+- `-p skate-game … -- --ignored game_audio::world_sources / npc_skaters / world_speech / world_bridge`.
+
+Their printed tables were diffed; only the elapsed-time lines differ.
+
+**Timing method.** Other agents built and ran on the machine during the pass, so the timing of a whole bench
+run was unusable (one reference run came out +30 % p50 with identical output). Before / after numbers come
+from saved test binaries run alternately (A B A B …, 3–4 rounds):
+- two whole sessions (`real_143434`, `real_115334`, 180,638 blocks) in `row` mode;
+- the full-world host bench: 64 vehicles + 64 peds, full pools, 88.5 voices and 39 instances per block.
+
+All timing runs used one local measurement patch on both sides. The patch is a counting allocator plus
+per-block walk / voices / allocation stats in the e2e harness and a timed world-host test, and it was never
+landed. Rounds that another agent's build disturbed show up as one side jumping by 15–40 %. They are named
+below and not counted.
+
+| # | Change | Result | Kept |
+|---|---|---|---|
+| 0 | `AUDIO_TIMING` render load per block: `block_voices` (mixer voices), `block_instances` (live AEMS instances), `block_grains` (grain voices), as `name=max/avg×blocks` | output identical; `audio_timing_summary.py` prints them | yes |
+| 1 | Render allocations: the subscriber lists read in place (`call_function`, `set_global`); the Player op's input records on the stack; ControlClass / CallFunction parameters in a 255-word stack buffer (the readers' counts are u8); post reads the constructor list in place; instance memory and node client lists recycled through pools (best fit) | render allocations per block 0.17–0.63 → ≤ 0.001 in the 8 sessions (the rest is pool growth, 0–8 per whole session); world bench 1.825 → 0.004; game thread −0.15 per frame; time neutral | yes |
+| 2 | Evaluator walk: the self-contained opcodes straight to `ops::run` with one instance lookup for the op and its copy pairs, the bank's `Arc` instead of the program's | no measurable gain: walk − plain block 34.0 / 35.6 µs (before) vs 34.0 / 34.3 µs, the same within run spread | **dropped** |
+| 3a | Voice source read: when the block's last frame index (position + ((frac + step·256) >> 16) + 1) is inside the sample and no stop fade runs, the resampler reads the channel slice directly instead of `Voice::sample` | sessions p50 −0.6 / −1.3 / −0.7 µs (3 rounds); world p50 −1 µs | yes |
+| 3b | Voice scratch planes: the source and panner planes live in the mixer (12 KiB, allocated with it), not as two zeroed 6 × 256 stack arrays per voice; only the voice's own channels are read, and each is written in full first | world p50 112.4 → 105.6 µs in a clean round (with 3a) | yes |
+| 4 | eEQChain silent-bus memo: a silent bus from the state of an earlier silent block that left the state unchanged adds the stored output (state and output keyed on bits) | counted first: 77 % of bus-blocks silent, 38–40 % would hit; then no gain: sessions p50 +0.8 µs, world +1–3 µs (the extra silence scans and key compares cost what the skipped EQs saved) | **dropped** |
+| 5 | MixMap `tick`: the held-input save list kept between ticks | −1 allocation per evaluation | yes |
+| 6 | `Jitter::process_each` (same draws, same write order; the MixMap writes don't touch the walk) instead of collecting a `Vec` per frame | −1 allocation per frame; with 5: game thread 18.0–18.9 → 16.4–17.2 allocations per frame | yes |
+| 7, 8 | first emitter start after a load; per-frame map-name / tuning clones | not touched: cosmetic or ≈ 0, as the baseline said | — |
+
+The rest of item 6 was left out: making every component's `Command { words: Vec<i32> }` allocation-free.
+`Command` is public API that the modding PR (#36) builds on, so it needs a fixed-size word array agreed with
+that PR. The world host's ~100 allocations per evaluation are the same pattern.
+
+**Counts behind the choices** (local counters, `real_143434` / `real_215843` / `ollies_log`):
+- Voice HPF active in 13–25 % of voice renders, LPF in 1–1.4 %, both in 1–1.4 %. Most voices bypass both
+  filters, so a fused HPF → LPF cascade kernel (an idea for item 3) would buy nothing and was not written.
+- eEQChain: 77–92 % of bus-blocks silent; busy channels about 10 % of all bus channels. The EQs are active on
+  72–75 % of bus-blocks, silent ones included.
+- No item-5 output restructuring was attempted. `write_outputs` + outputs are integer-only and spread over
+  1,044 outputs with no dominant path.
+
+**Before / after (the pass as a whole, pre-pass binary vs the final one, alternated).**
+- Sessions, block p50: 61.9 / 62.7 / 60.4 / 59.8 µs → 58.7 / 58.8 / 58.0 / 59.6 µs (mean 66.9–72.5 → 63.8–68.2).
+  Rounds 1–2 of the pre-pass side were partly disturbed, so the clean gain is 0.2–2.4 µs p50 (≈ 1–4 %).
+- Full world (88.5 voices), clean rounds 3 and 4:
+  - render p50 129.4 / 117.8 → 111.7 / 105.2 µs (−11 to −14 %);
+  - p90 203.1 / 186.5 → 180.7 / 163.8 µs;
+  - p99 350.9 / 310.2 → 314.7 / 200.1 µs;
+  - walk blocks p50 189.8 / 179.4 → 171.3 / 165.5 µs.
+
+  Rounds 1 and 2 were each disturbed on one side.
+- MixMap tick in the same bench: 51.9 / 44.6 → 43.8 / 38.7 µs p50 (item 5 and a quieter machine). Treat it as
+  an indication, not a claim.
+
+**Review (per change; counter-examples tried).**
+- **0.** Reads counters only (`Vec::len`, a walk over the grain trucks' slots) under the lock the render
+  already holds, after the timed scope. When off: the existing relaxed `OnceLock` check. No state touched.
+- **1, subscriber loops.** The loop bodies write instance memory only, and the borrow checker now forbids
+  touching a subscriber list inside them. A re-entrant change is impossible, so the order is unchanged.
+- **1, 255-word stack buffer.** Every reader of a parameter list stops at a u8 count (≤ 255 words), and a
+  shorter list still reads 0 past its end.
+- **1, stack input records.** The Player's input records equal the old `Vec`: n is a u8.
+- **1, pools.** A recycled buffer is cleared and refilled with the template, so it has the same bytes and
+  length as before. Nothing reads capacity.
+- **1, pool-related counter-examples.** A pooled client list that was never pushed would allocate again on
+  every post; new lists therefore start with room for four. Worst-fit buffer choice kept re-growing; it is
+  now best-fit.
+- **1, tests.** `render_alloc` has two new tests:
+  - a synthetic requester bank (ControlClass children created / destroyed inside walks, CallFunction →
+    SetGlobalVariable fan-out, game-side posts / releases);
+  - a data-gated world host on the retail traffic / ped banks (4 cars, 15 peds, 27.6 voices per block).
+
+  On the pre-pass evaluator they count 1,179 and 5,061 allocations; now 0 and 0.
+- **2.** Exact (same calls and order as `exec`'s fallback arm; no instance can vanish before a
+  self-contained op), but not faster. Dropped as "gain not real".
+- **3a.** Test `the_resampler_reads_no_frame_past_the_direct_bound`: 2,000+ random steps up to the 4×
+  ceiling × 5 phases. The highest index the resampler asks for is exactly position + reach + 1, so the
+  condition is tight and sufficient.
+- **3a, equivalence.** `Voice::sample` for i < total with no fade is the same `get(i)` on the same channel. A
+  short PCM still gives 0 past its end; a missing channel gives an empty slice → 0.
+- **3a, test.** `the_direct_source_read_matches_the_sample_lookup` renders looped, ending, released and
+  pitched voices with the direct read forced off (a far-future fade) and on, and requires bit-equal output.
+- **3b.** Reads of `src` are all bounded to the voice's channels (filters, gain, both mono sums, the panner).
+  When started, the resampler writes every sample of each such channel; the silent first block zeroes them.
+  The panner zeroes all six outputs before accumulating.
+- **3b, threading and allocation.** The scratch lives in `Mixer` behind the runtime lock (no new sharing)
+  and is allocated in `Mixer::new` on the game thread.
+- **4.** Exact by construction. The memo stored output and state only when a silent block left the bit
+  state unchanged, so a hit replays a pure function. Test against a reference with jitter, re-rolls, clip,
+  bypass, a NaN frequency and −0.0 on SFX Master. The gain was not real, so it was dropped.
+- **5, 6.** Same list contents and order; RNG draws unchanged (6: the MixMap write between draws touches
+  neither the generator nor the channels).
+
+No `unsafe` and no new threads were added; float arithmetic is untouched (items 3a / 3b only change where
+samples are read from and which planes are zeroed). There is no new hard-coding: the 255 is the format's u8
+count, not a tuning value, and no data-driven path changed.
+
+**Verification.** For every kept state (items 0+1, 3, 5+6, and the final clean tree), the e2e bench (`row` +
+`fps300`) is IDENTICAL to `p2base` / `p2pre` in all 84 outputs, and the data-gated tests are unchanged
+(52 + 10 pass, tables identical; the new world allocation test failed on the pre-pass evaluator, as intended). `cargo test -p skate-audio -p skate-audio-fma --release --locked` pass
+(`render_alloc` 3 + 1 data-gated); `cargo test -p skate-game --release --bin skate3rust --locked --
+game_audio::`: 43 pass, 28 ignored.
+
+**Files.**
+- `skate-audio/src/eval/mod.rs`: item 1 and `instance_count`.
+- `skate-audio/src/mixer.rs`: 3a, 3b and their tests.
+- `skate-audio/src/mixmap/mod.rs`: item 5.
+- `skate-audio/src/player/jitter.rs`: item 6.
+- `skate-audio/tests/render_alloc.rs`: two tests and `RENDER_ALLOC_BT=1` backtraces.
+- `skate-game/src/game_audio/{timing,native,player_audio}.rs`.
+- `tools/audio-bench/audio_timing_summary.py`.
+
+**Open.**
+- The walk (≈ 34 µs per walk block in sessions, ≈ 60 µs with the world) is the interpretation itself: about
+  2,700 ops, ≈ 13 ns each. Hoisting lookups did not move it. A real gain needs a different program
+  representation, which is a bigger change.
+- Real-play load numbers need a session on a build with item 0 (`SKATE_AUDIO_TIMING=1`).

@@ -20,14 +20,16 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use serde::Deserialize;
+use skate_audio::bus::speech_echo::EchoParams;
 use skate_audio::formats::SampleHeader;
 use skate_audio::mixer::Mixer;
 use skate_audio::player::objpos::{Listener, ObjPos};
 use skate_audio::world::keys;
 use skate_audio::world::owners::Pool;
 use skate_audio::world::peds::SpeechRequest;
-use skate_audio::world::speech::{Clip, Line, SPEECH_BANK, SpeechIndex, SpeechSlots, Take};
-use skate_audio::world::speech_manager::{GateInputs, Speaker, SpeechManager, kind};
+use skate_audio::world::skater_speech::{Reactions, Say, SkaterSpeech};
+use skate_audio::world::speech::{Clip, Line, MAIN_CAST_BANK, SPEECH_BANK, SpeechIndex, SpeechSlots, Take};
+use skate_audio::world::speech_manager::{GateInputs, Speaker, SpeechManager, kind, main_cast};
 use skate_audio::world::speech_player::{self, Event, Outcome, PedLevelSelect, Request, SpeechPlayer, SpeechVoices, VoiceParams};
 use skate_audio::world::speech_rules::{ClipHeader, ClipRef, EventTable, Library as SpeechLibrary, Record};
 use skate_audio::world::traffic::OutputsSnapshot;
@@ -36,7 +38,8 @@ use skate_audio::world::Lcg;
 use super::native::Native;
 
 /// The NPC bail grunt's event (`201_grunt`, message 8206 / 115 of `sub_824BF5F8`).
-pub(crate) const BAIL_GRUNT_EVENT: u16 = 8206;
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const BAIL_GRUNT_EVENT: u16 = main_cast::message::BAIL_GRUNT.0;
 /// Decoded takes kept loaded after their line (the rest are read again when picked).
 const KEEP_TAKES: usize = 24;
 
@@ -56,12 +59,23 @@ pub(crate) struct SkaterSpeaker {
     pub(crate) voice: u32,
     pub(crate) position: [f32; 3],
     pub(crate) velocity: [f32; 3],
+    /// Its record's reaction bytes this frame (its own speech, `skater_speech`).
+    pub(crate) reactions: Reactions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Who {
     Ped(PedLevelSelect),
     Skater(u32),
+}
+
+/// The main cast's channel (`maincastspeech.big`, speech manager bank 0, channel 0): the pros' and
+/// the special cast's lines, with its own tuning, timers, streams and decoded takes.
+struct MainCast {
+    data: Data,
+    manager: SpeechManager,
+    player: SpeechPlayer,
+    loaded: VecDeque<u16>,
 }
 
 /// The loaded speech export.
@@ -94,6 +108,23 @@ pub(crate) struct WorldSpeech {
     data: Option<Data>,
     manager: SpeechManager,
     player: SpeechPlayer,
+    /// The stream voice's PEAK curves (`world_tuning.speech_voice`).
+    voice: skate_audio::world::speech_player::SpeechVoiceTuning,
+    /// Each speaker's voice id (the clip names' voice: SFXObj_Speech's inputs read it).
+    voices: HashMap<u64, u32>,
+    /// SFXObj_Speech's inputs as last written (in0..in4).
+    speech_inputs: [bool; 5],
+    /// The speaking peds' positions (`world_sources` fills it; the echo delay reads it).
+    pub(crate) ped_positions: HashMap<u64, [f32; 3]>,
+    /// Each speaker's echo delay countdown and value (`sub_824D9370`: recomputed when the count
+    /// reaches 0, then reloaded with `delay_frames`).
+    delay_clock: HashMap<u64, (i32, f32)>,
+    /// The delay last posted to each echo slot (retail posts Del0 only when it changed).
+    echo_delay: [Option<f32>; skate_audio::bus::speech_echo::SLOTS],
+    /// The main-cast channel (None: the install has no main-cast index).
+    cast: Option<MainCast>,
+    /// The NPC skaters' own speech processes (dropped while idle).
+    skater_speech: HashMap<u64, SkaterSpeech>,
     rng: Lcg,
     /// The manager clock (s): console time since the runtime started (`MixMap::ticks`).
     clock: f64,
@@ -121,7 +152,16 @@ impl Default for WorldSpeech {
             tried: false,
             data: None,
             manager: SpeechManager::default(),
-            player: SpeechPlayer::default(),
+            // The living world's speech channel is the second (streams 2 / 3; the main cast's first).
+            player: SpeechPlayer::on_channel(1),
+            voice: Default::default(),
+            voices: HashMap::new(),
+            speech_inputs: [false; 5],
+            ped_positions: HashMap::new(),
+            delay_clock: HashMap::new(),
+            echo_delay: [None; skate_audio::bus::speech_echo::SLOTS],
+            cast: None,
+            skater_speech: HashMap::new(),
             rng: Lcg(0x5EEC),
             clock: 0.0,
             last_tick: 0,
@@ -284,9 +324,12 @@ fn load(index_path: &std::path::Path, audio: Option<PathBuf>, mods: &(HashMap<(S
 
 struct Voices<'a> {
     mixer: &'a mut Mixer,
+    /// The mixer bank of this channel's takes.
+    bank: usize,
     data: &'a Data,
     loaded: &'a mut VecDeque<u16>,
     missing: &'a mut bool,
+    echo_delay: &'a mut [Option<f32>; skate_audio::bus::speech_echo::SLOTS],
 }
 
 impl Voices<'_> {
@@ -316,28 +359,43 @@ impl Voices<'_> {
         };
         let frames = pcm.channels.first().map_or(0, Vec::len) as u32;
         let header = SampleHeader { codec: 0, channels: pcm.channels.len().clamp(1, 8) as u8, rate: pcm.rate, frames, loop_start: None };
-        self.mixer.set_bank_sample(SPEECH_BANK, slot, header, Arc::new(pcm));
+        self.mixer.set_bank_sample(self.bank, slot, header, Arc::new(pcm));
         self.loaded.push_back(slot);
         while self.loaded.len() > KEEP_TAKES {
             if let Some(old) = self.loaded.pop_front() {
                 // A playing voice keeps its own reference to the PCM.
-                self.mixer.clear_bank_sample(SPEECH_BANK, old);
+                self.mixer.clear_bank_sample(self.bank, old);
             }
         }
         Some(slot)
+    }
+
+    /// The echo send and its slot's parameters; the delay goes out only when it changed.
+    fn echo(&mut self, voice: u32, p: &VoiceParams) {
+        let cached = self.echo_delay.get_mut(usize::from(p.slot));
+        let delay = match (p.delay, cached) {
+            (Some(d), Some(c)) if *c != Some(d) => {
+                *c = Some(d);
+                Some(d)
+            }
+            _ => None,
+        };
+        self.mixer.set_stream_echo(voice, p.slot, p.echo, &EchoParams { high_pass: p.echo_hpf, low_pass: p.echo_lpf, delay });
     }
 }
 
 impl SpeechVoices for Voices<'_> {
     fn open(&mut self, line: Line, p: &VoiceParams) -> Option<u32> {
         let slot = self.ensure(line)?;
-        let v = self.mixer.open_direct(SPEECH_BANK, slot, 0.0, p.pitch, p.gain, Some(p.azimuth))?;
-        self.mixer.set_direct_dsp(v, p.hpf, p.lpf, p.send);
+        let v = self.mixer.open_direct(self.bank, slot, 0.0, p.pitch, p.gain, Some(p.azimuth))?;
+        self.mixer.set_stream_dsp(v, p.hpf, p.lpf, p.send, p.peak);
+        self.echo(v, p);
         Some(v)
     }
     fn set(&mut self, voice: u32, p: &VoiceParams) {
         self.mixer.set_direct(voice, p.pitch, p.gain, Some(p.azimuth));
-        self.mixer.set_direct_dsp(voice, p.hpf, p.lpf, p.send);
+        self.mixer.set_stream_dsp(voice, p.hpf, p.lpf, p.send, p.peak);
+        self.echo(voice, p);
     }
     fn alive(&self, voice: u32) -> bool {
         self.mixer.direct_alive(voice)
@@ -360,6 +418,26 @@ fn skater_speaker(library: &super::Library, data: &Data, voice: u32) -> Speaker 
     }
 }
 
+/// A main-cast request block (`sub_824AC560`): the speaker's cast bit / word, the near / far flag
+/// (the main cast's sense: 1 near, 2 far) and, for the pro-on-pro lines, the other skater's cast bit
+/// and other-skater word.
+fn cast_block(cast: (u32, u32, u32), far: bool, other: Option<(u32, u32, u32)>) -> main_cast::Block {
+    let mut b = [0u32; 14];
+    b[0] = cast.0;
+    b[1] = cast.1;
+    b[2] = if far { main_cast::FAR } else { main_cast::NEAR };
+    if let Some(o) = other {
+        b[4] = o.0;
+        b[5] = o.2;
+    }
+    b
+}
+
+/// A speaker's main-cast words when its model speaks on the main cast.
+fn cast_of(library: &super::Library, voice: u32) -> Option<(u32, u32, u32)> {
+    library.world_tuning().ped_model(voice).and_then(|m| m.main_cast())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn frame(
     native: Option<ResMut<Native>>,
@@ -370,7 +448,9 @@ pub(super) fn frame(
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
 ) {
     let speech = &mut *speech;
-    if speech.peds.is_empty() && speech.grunts.is_empty() && speech.player.busy() == 0 && speech.player.queued() == 0 && speech.skater_slots.holders().next().is_none() {
+    let cast_idle = speech.cast.as_ref().is_none_or(|c| c.player.busy() == 0 && c.player.queued() == 0);
+    let reacting = !speech.skater_speech.is_empty() || speech.skaters.iter().any(|s| s.reactions != Reactions::default());
+    if speech.peds.is_empty() && speech.grunts.is_empty() && speech.player.busy() == 0 && speech.player.queued() == 0 && cast_idle && !reacting && speech.skater_slots.holders().next().is_none() && !speech.speech_inputs.contains(&true) {
         return;
     }
     let (Some(mut native), Some(library)) = (native, library) else {
@@ -394,10 +474,15 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
             && let Some(data) = speech.data.as_ref()
         {
             let mut missing = speech.missing_logged;
-            let mut v = Voices { mixer: &mut rt.mixer, data, loaded: &mut speech.loaded, missing: &mut missing };
+            let mut v = Voices { mixer: &mut rt.mixer, bank: SPEECH_BANK, data, loaded: &mut speech.loaded, missing: &mut missing, echo_delay: &mut speech.echo_delay };
             speech.player.clear(&mut v);
+            if let Some(c) = speech.cast.as_mut() {
+                let mut v = Voices { mixer: &mut rt.mixer, bank: MAIN_CAST_BANK, data: &c.data, loaded: &mut c.loaded, missing: &mut missing, echo_delay: &mut speech.echo_delay };
+                c.player.clear(&mut v);
+            }
             speech.missing_logged = missing;
         }
+        speech.skater_speech.clear();
         speech.who.clear();
         speech.skater_slots.clear();
         speech.skater_pos.clear();
@@ -406,6 +491,7 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
     if !speech.tried {
         speech.tried = true;
         speech.manager = SpeechManager::new(library.world_tuning().speech_tuning());
+        speech.voice = library.world_tuning().speech_voice();
         match library.speech("livingworld") {
             None => info!("AUDIO_WORLD speech off: the install has no speech index (rerun setup)"),
             Some((index, audio)) => match load(&index, audio.clone(), &library.speech_mods("livingworld")) {
@@ -419,6 +505,16 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
                 }
                 Err(e) => warn!("AUDIO_WORLD speech off: {e}"),
             },
+        }
+        // The main cast's channel (the pros and the special cast; opt-in decode as the living world's).
+        if let Some((index, audio)) = library.speech("maincast") {
+            match load(&index, audio.clone(), &library.speech_mods("maincast")) {
+                Ok(data) => {
+                    info!("AUDIO_WORLD main-cast speech {}: {} clips, {} events", if audio.is_some() { "on" } else { "chosen but silent (not decoded)" }, data.index.clips.len(), data.table.events.len());
+                    speech.cast = Some(MainCast { data, manager: SpeechManager::new(library.world_tuning().speech_tuning_bank(0)), player: SpeechPlayer::on_channel(0), loaded: VecDeque::new() });
+                }
+                Err(e) => warn!("AUDIO_WORLD main-cast speech off: {e}"),
+            }
         }
     }
     let Some(data) = speech.data.as_mut() else {
@@ -436,38 +532,85 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
     let inputs = GateInputs { now: speech.clock, player_speed: local.ground_speed.abs(), ..Default::default() };
     let mut missing = speech.missing_logged;
     // The requests.
-    let mut new: Vec<(u64, Who, Result<skate_audio::world::speech_manager::Line, skate_audio::world::speech_manager::Refusal>, i32)> = Vec::new();
+    // (speaker, who, result, value, on the main cast)
+    type Res = Result<skate_audio::world::speech_manager::Line, skate_audio::world::speech_manager::Refusal>;
+    let mut new: Vec<(u64, Who, Res, i32, bool)> = Vec::new();
     for r in std::mem::take(&mut speech.peds) {
         if r.voice == 0 {
             continue;
         }
+        speech.voices.insert(r.request.owner, r.voice);
+        // `sub_824AC438`: a ped without a living-world type (a pro) takes the main-cast path.
+        if let (Some(c), Some(words)) = (speech.cast.as_mut(), cast_of(library, r.voice)) {
+            let Some(event) = main_cast::event_for_value(r.request.value, false, &mut speech.rng) else { continue };
+            let block = cast_block(words, r.request.flag == skate_audio::world::speech_manager::FAR, None);
+            let res = c.manager.request_main_cast(&mut c.data.library, &c.data.table, event, r.voice, &block, &inputs, &mut speech.rng);
+            new.push((r.request.owner, Who::Ped(r.level), res, r.request.value, true));
+            continue;
+        }
         let res = speech.manager.request(&mut data.library, &data.table, r.request.value, r.request.flag, &r.speaker, &inputs, &mut speech.rng);
-        new.push((r.request.owner, Who::Ped(r.level), res, r.request.value));
+        new.push((r.request.owner, Who::Ped(r.level), res, r.request.value, false));
     }
     let camera_pos = camera.map(|c| c.0);
+    // Skater messages and reactions: (skater, living-world event, main-cast event, the other skater).
+    let mut says: Vec<(SkaterSpeaker, Option<u16>, Option<u16>, Option<u32>)> = Vec::new();
     for id in std::mem::take(&mut speech.grunts) {
         let Some(sk) = speech.skaters.iter().find(|s| s.id == id).copied() else { continue };
-        let words = skater_speaker(library, &*data, sk.voice);
-        let far = library.world_tuning().ped_model(sk.voice).map_or(20.0, |m| m.far);
-        let distance = camera_pos.map_or(0.0, |c| ((sk.position[0] - c[0]).powi(2) + (sk.position[1] - c[1]).powi(2) + (sk.position[2] - c[2]).powi(2)).sqrt());
-        // `sub_824DAC00`: flag 1 when the skater's distance exceeds the model's far threshold.
-        let flag = if distance > far { skate_audio::world::speech_manager::FAR } else { skate_audio::world::speech_manager::NEAR };
-        let res = speech.manager.request_event(&mut data.library, &data.table, BAIL_GRUNT_EVENT, flag, &words, &inputs, &mut speech.rng);
-        new.push((id, Who::Skater(sk.voice), res, -1));
+        let (lw, mc) = main_cast::message::BAIL_GRUNT;
+        says.push((sk, Some(lw), Some(mc), None));
     }
-    for (speaker, who, res, value) in new {
+    // `SFXObj_PlayerSpeech`'s non-local process, once per console frame (free skate: game mode 0).
+    if m.ticks != speech.last_tick {
+        for sk in speech.skaters.clone() {
+            let main = speech.cast.is_some() && cast_of(library, sk.voice).is_some();
+            let process = speech.skater_speech.entry(sk.id).or_default();
+            for say in process.process(main, &sk.reactions, 0, &mut speech.rng) {
+                says.push(match say {
+                    Say::Living(e) => (sk, Some(e), None, None),
+                    Say::MainCast { event, other } => (sk, None, Some(event), other),
+                    Say::Message(lw, mc) => (sk, Some(lw), Some(mc), None),
+                });
+            }
+        }
+        let skaters = &speech.skaters;
+        speech.skater_speech.retain(|id, p| !p.idle() && skaters.iter().any(|s| s.id == *id));
+    }
+    for (sk, lw, mc, other) in says {
+        let far_m = library.world_tuning().ped_model(sk.voice).map_or(20.0, |m| m.far);
+        let distance = camera_pos.map_or(0.0, |c| ((sk.position[0] - c[0]).powi(2) + (sk.position[1] - c[1]).powi(2) + (sk.position[2] - c[2]).powi(2)).sqrt());
+        // `sub_824DAC00`: far when the skater's distance exceeds the model's far threshold.
+        let far = distance > far_m;
+        speech.voices.insert(sk.id, sk.voice);
+        if let (Some(c), Some(words), Some(event)) = (speech.cast.as_mut(), cast_of(library, sk.voice), mc) {
+            let other = other.and_then(|o| cast_of(library, o));
+            let block = cast_block(words, far, other);
+            let res = c.manager.request_main_cast(&mut c.data.library, &c.data.table, event, sk.voice, &block, &inputs, &mut speech.rng);
+            new.push((sk.id, Who::Skater(sk.voice), res, -1, true));
+        } else if let Some(event) = lw {
+            let words = skater_speaker(library, &*data, sk.voice);
+            let flag = if far { skate_audio::world::speech_manager::FAR } else { skate_audio::world::speech_manager::NEAR };
+            let res = speech.manager.request_event(&mut data.library, &data.table, event, flag, &words, &inputs, &mut speech.rng);
+            new.push((sk.id, Who::Skater(sk.voice), res, -1, false));
+        }
+    }
+    for (speaker, who, res, value, on_cast) in new {
         match res {
             Ok(line) => {
-                let Some(lines) = data.index.picks_to_lines(&line.picks, u32::from(line.event)) else { continue };
-                let tuning = speech.manager.tuning.get(&line.event).cloned().unwrap_or_default();
-                let timeout = data.table.event(line.event).map_or(60, |e| u32::from(e.queue_timeout));
-                let names: Vec<&str> = lines.iter().filter_map(|l| data.index.clips.get(l.clip).map(|c| c.name.as_str())).collect();
+                let (d, manager, player, loaded, bank) = match (on_cast, speech.cast.as_mut()) {
+                    (true, Some(c)) => (&c.data, &c.manager, &mut c.player, &mut c.loaded, MAIN_CAST_BANK),
+                    _ => (&*data, &speech.manager, &mut speech.player, &mut speech.loaded, SPEECH_BANK),
+                };
+                let Some(lines) = d.index.picks_to_lines(&line.picks, u32::from(line.event)) else { continue };
+                let tuning = manager.tuning.get(&line.event).cloned().unwrap_or_default();
+                let timeout = d.table.event(line.event).map_or(60, |e| u32::from(e.queue_timeout));
+                let names: Vec<&str> = lines.iter().filter_map(|l| d.index.clips.get(l.clip).map(|c| c.name.as_str())).collect();
                 let req = Request { speaker, event: line.event, priority: tuning.priority, interrupt: tuning.interrupt, interrupt_when_full: tuning.interrupt_when_full, lines, timeout };
-                let mut v = Voices { mixer: &mut rt.mixer, data: &*data, loaded: &mut speech.loaded, missing: &mut missing };
-                let outcome = speech.player.request(req, &mut v);
-                info!("AUDIO_WORLD speech owner={speaker} value={value} event={} line={} -> {outcome:?}", line.event, names.join("+"));
+                let mut v = Voices { mixer: &mut rt.mixer, bank, data: d, loaded, missing: &mut missing, echo_delay: &mut speech.echo_delay };
+                let outcome = player.request(req, &mut v);
+                let channel = if on_cast { "main cast" } else { "living world" };
+                info!("AUDIO_WORLD speech ({channel}) owner={speaker} value={value} event={} line={} -> {outcome:?}", line.event, names.join("+"));
                 #[cfg(test)]
-                eprintln!("AUDIO_WORLD speech owner={speaker} value={value} event={} line={} -> {outcome:?}", line.event, names.join("+"));
+                eprintln!("AUDIO_WORLD speech ({channel}) owner={speaker} value={value} event={} line={} -> {outcome:?}", line.event, names.join("+"));
                 if !matches!(outcome, Outcome::Dropped) {
                     speech.who.insert(speaker, who);
                 }
@@ -503,41 +646,92 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
     }
     let who = &speech.who;
     let skater_slots = &speech.skater_slots;
+    let voice_tuning = speech.voice;
+    let voices_of = &speech.voices;
+    let ped_positions = &speech.ped_positions;
+    let skaters = &speech.skaters;
+    let delay_clock = &mut speech.delay_clock;
+    let world = library.world_tuning();
     let m_ref: &skate_audio::mixmap::MixMap = m;
     let mut params = |speaker: u64, far: bool, event: u16| -> Option<VoiceParams> {
-        match *who.get(&speaker)? {
+        // `S+152`, the per-voice float (0 = absent: 1.0).
+        let scale = voices_of.get(&speaker).and_then(|v| world.ped_model(*v)).map_or(1.0, |m| if m.pitch > 0.0 { m.pitch } else { 1.0 });
+        let mut p = match *who.get(&speaker)? {
             Who::Ped(sel) => {
                 let g = peds.iter().find(|(o, _)| *o == speaker)?.1;
-                let out = OutputsSnapshot::take(m_ref, keys::ped_speech(g), &speech_player::PED_FILTERS);
-                Some(speech_player::ped_outputs(&out, sel, event, far))
+                let out = OutputsSnapshot::take(m_ref, keys::ped_speech(g), &speech_player::PED_SNAPSHOT_FILTERS);
+                speech_player::ped_outputs(&out, sel, event, far, &voice_tuning, scale)
             }
             Who::Skater(voice) => {
                 let g = skater_slots.instance(speaker)? as u32 + 1;
-                let out = OutputsSnapshot::take(m_ref, keys::player_speech(g), &speech_player::SKATER_FILTERS);
-                Some(speech_player::skater_outputs(&out, voice, far))
+                let out = OutputsSnapshot::take(m_ref, keys::player_speech(g), &speech_player::SKATER_SNAPSHOT_FILTERS);
+                speech_player::skater_outputs(&out, voice, far, &voice_tuning, scale)
+            }
+        };
+        // The echo delay: every `delay_frames` console frames from the camera distance.
+        let pos = ped_positions.get(&speaker).copied().or_else(|| skaters.iter().find(|s| s.id == speaker).map(|s| s.position));
+        let clock = delay_clock.entry(speaker).or_insert((0, 0.0));
+        clock.0 -= 1;
+        if clock.0 <= 0 {
+            clock.0 = voice_tuning.delay_frames.max(1) as i32;
+            if let Some(pos) = pos {
+                let d = ((pos[0] - cam[0]).powi(2) + (pos[1] - cam[1]).powi(2) + (pos[2] - cam[2]).powi(2)).sqrt();
+                clock.1 = voice_tuning.delay(d);
             }
         }
+        p.delay = Some(clock.1);
+        Some(p)
     };
     let data = &*data;
-    let mut v = Voices { mixer: &mut rt.mixer, data, loaded: &mut speech.loaded, missing: &mut missing };
-    let events = speech.player.frame(&data.index, &mut params, &mut v);
-    for e in &events {
-        match *e {
-            Event::Started { speaker, line, .. } => {
-                speech.lines += 1;
-                super::mod_audio::record(&mut speech.events, super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Speech, source: super::mod_audio::Source::Speech, class: "speech", slot: "", id: line.event as i32, owner: speaker });
-                debug!("AUDIO_WORLD speech start owner={speaker} {} take {}", data.index.clips.get(line.clip).map_or("?", |c| c.name.as_str()), line.take);
+    let mut channels: Vec<(&Data, &mut SpeechPlayer, &mut VecDeque<u16>, usize)> = Vec::with_capacity(2);
+    if let Some(c) = speech.cast.as_mut() {
+        channels.push((&c.data, &mut c.player, &mut c.loaded, MAIN_CAST_BANK));
+    }
+    channels.push((data, &mut speech.player, &mut speech.loaded, SPEECH_BANK));
+    for (d, player, loaded, bank) in channels {
+        let mut v = Voices { mixer: &mut rt.mixer, bank, data: d, loaded, missing: &mut missing, echo_delay: &mut speech.echo_delay };
+        let events = player.frame(&d.index, &mut params, &mut v);
+        for e in &events {
+            match *e {
+                Event::Started { speaker, line, .. } => {
+                    speech.lines += 1;
+                    // Observe-only row for mods: class "speech" (living world) or "maincast".
+                    let class = if bank == MAIN_CAST_BANK { "maincast" } else { "speech" };
+                    super::mod_audio::record(&mut speech.events, super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Speech, source: super::mod_audio::Source::Speech, class, slot: "", id: line.event as i32, owner: speaker });
+                    debug!("AUDIO_WORLD speech start owner={speaker} {} take {}", d.index.clips.get(line.clip).map_or("?", |c| c.name.as_str()), line.take);
+                }
+                Event::Cut { speaker, .. } => debug!("AUDIO_WORLD speech cut owner={speaker} (level at or below 200 for 2 s)"),
+                _ => {}
             }
-            Event::Cut { speaker, .. } => debug!("AUDIO_WORLD speech cut owner={speaker} (level at or below 200 for 2 s)"),
-            _ => {}
         }
     }
     speech.missing_logged = missing;
+    // SFXObj_Speech (process `sub_824E2050`, every frame): its inputs 0 / 1 / 4 are 32767 while a
+    // playing line's speaker (the voice id of its clip name) is 37–38 / 75–77 (the security
+    // guards) / 1–29 (the pros), else 0: the Global ducks F18 / F19 / F23 / F42 / F45 … read them.
+    // Inputs 2 and 3 (a speech-system state and a per-stream flag pair) are not traced.
+    let mut active: Vec<u64> = speech.player.speakers().collect();
+    if let Some(c) = speech.cast.as_ref() {
+        active.extend(c.player.speakers());
+    }
+    let mut inputs = [false; 5];
+    for v in active.iter().filter_map(|s| speech.voices.get(s)) {
+        inputs[0] |= (37..=38).contains(v);
+        inputs[1] |= (75..=77).contains(v);
+        inputs[4] |= (1..=29).contains(v);
+    }
+    if inputs != speech.speech_inputs {
+        for (i, on) in inputs.iter().enumerate() {
+            m.set_input(skate_audio::mixmap::keys::SPEECH, i, if *on { 32767 } else { 0 });
+        }
+        speech.speech_inputs = inputs;
+    }
     // Forget speakers that no longer play or wait.
-    let active: Vec<u64> = speech.player.speakers().collect();
-    let waiting = speech.player.queued() > 0;
+    let waiting = speech.player.queued() > 0 || speech.cast.as_ref().is_some_and(|c| c.player.queued() > 0);
     if !waiting {
         speech.who.retain(|id, _| active.contains(id));
+        speech.voices.retain(|id, _| active.contains(id));
+        speech.delay_clock.retain(|id, _| active.contains(id));
     }
 }
 
@@ -688,6 +882,8 @@ mod tests {
         clip: Option<String>,
         geometry: Option<Geometry>,
         first: First,
+        #[serde(default)]
+        sends_by_module: std::collections::HashMap<String, f32>,
     }
     #[derive(Deserialize)]
     struct Geometry {
@@ -701,6 +897,8 @@ mod tests {
         send: Option<f32>,
         lpf: Option<f32>,
         hpf: Option<f32>,
+        #[serde(default)]
+        peak: Option<[f32; 3]>,
     }
 
     /// Our PedestrianSpeech values against the recomp's speech voices (data-gated: the install's
@@ -708,8 +906,11 @@ mod tests {
     /// on sessions 163809 / 164620 / 180430). Per line with a joined speaker: the ped, the camera
     /// (WPPOS) and the player (PEDSEE's target) at its start drive one ped's 3DObjPos (the camera
     /// looking at the player); the stream values our port derives from the outputs (`_f` clips
-    /// out3, else out2; send out15; filters out13 / out14) are compared with the recomp's first
-    /// GAIN / SEND / LPF / HPF targets of the voice. Prints every row and the agreement.
+    /// out3, else out2, × the voice float; the echo send out21, the env send out15; filters out13 / out14; the PEAK from the
+    /// azimuth curves) are compared with the recomp's first GAIN / SEND (per send module: `+0x570`
+    /// before the gain, `+0x7D0` after the filters) / LPF / HPF / PEAK targets of the voice. The
+    /// PEAK is also checked without our geometry: the recomp's (centre, gain) must lie on the two
+    /// curves at one azimuth. Prints every row and the agreement.
     #[test]
     #[ignore = "needs the private install data and the recomp level export"]
     fn speech_levels_follow_the_recomp() {
@@ -726,6 +927,9 @@ mod tests {
             panic!("missing private data: no speech level export (SKATE_SPEECH_LEVELS, speech_levels.py --json)");
         }
         let (mut filt_ok, mut filt_n, mut send_ok, mut send_n) = (0, 0, 0, 0);
+        let (mut echo_ok, mut echo_n, mut old_ok, mut peak_on, mut peak_ours, mut peak_n) = (0, 0, 0, 0, 0, 0);
+        let voice = skate_audio::world::speech_player::SpeechVoiceTuning::default();
+        let world = crate::game_audio::Library::load(&base.join("assets")).ok();
         let mut ratios = Vec::new();
         for (session, r) in &rows {
             let g = r.geometry.as_ref().unwrap();
@@ -742,8 +946,15 @@ mod tests {
                 tick(&mut m);
             }
             let far = r.clip.as_deref().is_some_and(speech_player::far_clip);
-            let out = OutputsSnapshot::take(&m, keys::ped_speech(0), &speech_player::PED_FILTERS);
-            let p = speech_player::ped_outputs(&out, PedLevelSelect::default(), 0, far);
+            let out = OutputsSnapshot::take(&m, keys::ped_speech(0), &speech_player::PED_SNAPSHOT_FILTERS);
+            // The speaker's per-voice float (`S+152`) from the clip name's voice.
+            let scale = r
+                .clip
+                .as_deref()
+                .and_then(skate_audio::world::speech::parse_name)
+                .and_then(|(_, v, _, _)| world.as_ref().and_then(|l| l.world_tuning().ped_model(v)))
+                .map_or(1.0, |m| if m.pitch > 0.0 { m.pitch } else { 1.0 });
+            let p = speech_player::ped_outputs(&out, PedLevelSelect::default(), 0, far, &voice, scale);
             let gain = r.first.gain.unwrap();
             if p.gain > 1e-3 && gain > 1e-3 {
                 ratios.push(gain / p.gain);
@@ -752,19 +963,47 @@ mod tests {
                 filt_n += 1;
                 filt_ok += usize::from((lpf - p.lpf).abs() <= 0.1 * lpf.max(1.0) && (hpf - p.hpf).abs() <= 0.1 * hpf.max(10.0));
             }
-            if let Some(send) = r.first.send {
+            let near = |a: f32, b: f32| (a - b).abs() <= 0.01_f32.max(0.25 * a.abs());
+            if let Some(&send) = r.sends_by_module.get("570") {
                 send_n += 1;
-                send_ok += usize::from((send - p.send).abs() <= 0.01);
+                send_ok += usize::from(near(send, p.echo));
+                // The first port's reading (out15 as this send).
+                old_ok += usize::from(near(send, p.send));
+            }
+            if let Some(&env) = r.sends_by_module.get("7D0") {
+                echo_n += 1;
+                echo_ok += usize::from(near(env, p.send));
+            }
+            if let Some([freq, gain, _]) = r.first.peak {
+                peak_n += 1;
+                // The azimuth the recomp's gain says (the gain curve falls from 0.4 to 0.1), then
+                // the centre the other curve gives there.
+                let (mut lo, mut hi) = (0.0f32, 32767.0f32);
+                for _ in 0..40 {
+                    let mid = 0.5 * (lo + hi);
+                    if voice.peak_gain.eval(mid) > gain { lo = mid } else { hi = mid }
+                }
+                let at = voice.peak_freq.eval(0.5 * (lo + hi));
+                peak_on += usize::from((at - freq).abs() <= 0.02 * freq);
+                peak_ours += usize::from((p.peak[0] - freq).abs() <= 0.1 * freq && (p.peak[1] - gain).abs() <= 0.1 * gain);
+                eprintln!("    PEAK recomp {freq:.0} Hz x {gain:.4} (on the curves: {at:.0} Hz at that gain) ours {:.0} Hz x {:.4}", p.peak[0], p.peak[1]);
+            }
+            if std::env::var("EXPLORE").is_ok() {
+                use skate_audio::player::Outputs as _;
+                let lv: Vec<String> = (0..26).map(|i| format!("{i}:{:.4}", out.level(i) as f32 / 32767.0)).collect();
+                eprintln!("  sends {:?} raw0 {} peak {:?} | {}", r.sends_by_module, out.raw(0), r.first.peak, lv.join(" "));
             }
             let d = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
             eprintln!(
-                "{session} {:7.1}s cam {:5.1} m skater {:5.1} m {:>32}: gain recomp {gain:.3} ours {:.3} | send {:?} {:.3} | lpf {:?} {:.0} hpf {:?} {:.0}",
+                "{session} {:7.1}s cam {:5.1} m skater {:5.1} m {:>32}: gain recomp {gain:.3} ours {:.3} | echo send (+570) {:?} {:.3} env send (+7D0) {:?} {:.3} | lpf {:?} {:.0} hpf {:?} {:.0}",
                 r.ms / 1000.0,
                 d(g.ped, g.camera),
                 d(g.ped, g.player),
                 r.clip.as_deref().unwrap_or("?"),
                 p.gain,
-                r.first.send,
+                r.sends_by_module.get("570"),
+                p.echo,
+                r.sends_by_module.get("7D0"),
                 p.send,
                 r.first.lpf,
                 p.lpf,
@@ -774,7 +1013,114 @@ mod tests {
         }
         ratios.sort_by(f32::total_cmp);
         let median = ratios.get(ratios.len() / 2).copied().unwrap_or(0.0);
-        eprintln!("{} lines: filters within 10 % in {filt_ok} of {filt_n}, send within 0.01 in {send_ok} of {send_n}, gain recomp / ours median {median:.3} (p10 {:.3} p90 {:.3}, n {})", rows.len(), ratios.get(ratios.len() / 10).copied().unwrap_or(0.0), ratios.get(ratios.len() * 9 / 10).copied().unwrap_or(0.0), ratios.len());
+        eprintln!("{} lines: filters within 10 % in {filt_ok} of {filt_n}; the echo send (+0x570) = out21 within 25 % (or 0.01) in {send_ok} of {send_n} (as out15: {old_ok}); the env send (+0x7D0) = out15 in {echo_ok} of {echo_n}; PEAK on the curves in {peak_on} of {peak_n}, ours within 10 % in {peak_ours}; gain recomp / ours median {median:.3} (p10 {:.3} p90 {:.3}, n {})", rows.len(), ratios.get(ratios.len() / 10).copied().unwrap_or(0.0), ratios.get(ratios.len() * 9 / 10).copied().unwrap_or(0.0), ratios.len());
         assert!(filt_n == 0 || filt_ok * 10 >= filt_n * 6, "the filters follow out13 / out14");
+        assert!(send_ok > old_ok && echo_ok * 2 >= echo_n, "the two sends follow out21 / out15");
+        assert_eq!(peak_on, peak_n, "every recomp PEAK lies on the curves");
+    }
+
+    #[derive(Deserialize)]
+    struct CastRow {
+        session: String,
+        ms: f64,
+        clip: String,
+    }
+
+    /// Every main-cast line the recomp streamed (`maincast_reads.py --json`:
+    /// `$SKATE_MAINCAST_LINES/maincast_lines.json`, 82 lines in 11 sessions) is reachable through
+    /// our port: the speaker's model speaks on the main cast (its cast bit / word from
+    /// `world_tuning.ped_models`), and a record of the clip's event matches the words
+    /// `main_cast::request_words` builds for it (near or far; the pro-on-pro lines with some other
+    /// main-cast model) with the clip among its clips. Lines whose event the port sends are counted
+    /// apart (130 `_col`, the skater-collision line, has no ported sender).
+    #[test]
+    #[ignore = "needs the private install data and the recomp main-cast export"]
+    fn main_cast_lines_are_reachable() {
+        use skate_audio::world::speech_rules::matches;
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = crate::game_audio::Library::load(root) else { panic!("missing private data: no audio install") };
+        let Some((index_path, _)) = library.speech("maincast") else { panic!("missing private data: no main-cast index (stage_world_audio.py --maincast)") };
+        let dir = std::env::var_os("SKATE_MAINCAST_LINES").filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+        let Some(Ok(text)) = dir.map(|d| std::fs::read_to_string(d.join("maincast_lines.json"))) else { panic!("missing private data: SKATE_MAINCAST_LINES (maincast_reads.py --json)") };
+        let rows: Vec<CastRow> = serde_json::from_str(&text).unwrap();
+        let json: IndexJson = serde_json::from_str(&std::fs::read_to_string(&index_path).unwrap()).unwrap();
+        let ids: HashMap<String, u16> = json.clips.iter().filter_map(|c| Some((c.name.clone(), c.id?))).collect();
+        let data = load(&index_path, None, &Default::default()).unwrap();
+        let world = library.world_tuning();
+        let cast: Vec<(u32, (u32, u32, u32))> = (1..=96).filter_map(|v| Some((v, world.ped_model(v)?.main_cast()?))).collect();
+        // The events the port sends on the main cast (skater_speech, the messages, the ped values).
+        let sent = [0u16, 1, 16, 287, 288, 115, 125, 6, 141, 11, 77, 253, 250, 247];
+        let (mut ok, mut ported, mut missing) = (0, 0, Vec::new());
+        for r in &rows {
+            let Some((number, voice, _, _)) = skate_audio::world::speech::parse_name(&r.clip) else { continue };
+            let event = data.table.events.iter().find(|e| e.name.split('_').next() == Some(&number.to_string())).map(|e| e.id);
+            let words_of = cast.iter().find(|(v, _)| *v == voice).map(|c| c.1);
+            let (Some(event), Some(words), Some(&id)) = (event, words_of, ids.get(&r.clip)) else {
+                missing.push(format!("{} {:.1}s {} (event {event:?}, cast {words_of:?})", r.session, r.ms / 1000.0, r.clip));
+                continue;
+            };
+            let ev = data.table.event(event).unwrap();
+            let others: Vec<Option<(u32, u32, u32)>> = if matches!(event, 254 | 287 | 288) { cast.iter().map(|c| Some(c.1)).collect() } else { vec![None] };
+            let hit = [false, true].iter().any(|far| {
+                others.iter().any(|o| {
+                    let w = main_cast::request_words(event, &cast_block(words, *far, *o));
+                    ev.records.iter().any(|rec| rec.clips.iter().any(|c| c.id == id) && matches(ev, rec, data.table.packed(event), &w))
+                })
+            });
+            if hit {
+                ok += 1;
+                ported += usize::from(sent.contains(&event));
+            } else {
+                missing.push(format!("{} {:.1}s {} (event {event})", r.session, r.ms / 1000.0, r.clip));
+            }
+        }
+        for m in &missing {
+            eprintln!("  not reachable: {m}");
+        }
+        eprintln!("{} recorded main-cast lines: {ok} reachable through our words ({ported} of an event the port sends)", rows.len());
+        assert!(!rows.is_empty());
+        assert!(missing.is_empty(), "{} lines not reachable", missing.len());
+    }
+
+    /// A pro (Ryan Smith, model 24) as an NPC skater sees the player's trick: its speech process
+    /// sends main-cast event 0 (`101_pos`) and the main-cast channel streams a `101_24_Smit_pos`
+    /// take at its PlayerSpeech owner's level (data-gated: the install with the main-cast decode).
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn a_pro_skater_says_a_main_cast_line() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = crate::game_audio::Library::load(root) else { panic!("missing private data: no audio install") };
+        let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
+        if library.speech("maincast").and_then(|s| s.1).is_none() {
+            panic!("missing private data: no main-cast decode (stage_world_audio.py --maincast decode)");
+        }
+        let mut speech = WorldSpeech::default();
+        let local = skate_audio::player::AudioState::default();
+        let camera = Some(([0.0, 1.5, 0.0], [0.0, 0.0, 1.0]));
+        let id = 77u64;
+        let mut seen = Vec::new();
+        // Past the events' repeat times (the manager's timers start at 0 at boot).
+        native.mixmap.as_mut().unwrap().ticks += 30 * 120;
+        for frame in 0..60 {
+            let reactions = Reactions { trick: frame == 2, ..Default::default() };
+            speech.skaters = vec![SkaterSpeaker { id, voice: 24, position: [0.0, 0.0, 4.0], velocity: [0.0; 3], reactions }];
+            {
+                let m = native.mixmap.as_mut().unwrap();
+                tick(m);
+            }
+            run(&mut speech, &[], &mut native, &library, camera, &local);
+            let mut rt = native.shared.lock().unwrap();
+            for _ in 0..3 {
+                rt.render_block();
+            }
+            for v in rt.mixer.snapshot().iter().filter(|v| v.bank == MAIN_CAST_BANK) {
+                seen.push((v.id, v.gain));
+            }
+        }
+        let cast = speech.cast.as_ref().expect("the main-cast channel loaded");
+        assert!(speech.lines >= 1, "a line started");
+        assert!(!seen.is_empty(), "a main-cast voice sounded");
+        assert!(seen.iter().any(|s| s.1 > 0.0), "audible");
+        eprintln!("main cast: {} lines, {} voice frames, started {}", speech.lines, seen.len(), cast.player.started);
     }
 }

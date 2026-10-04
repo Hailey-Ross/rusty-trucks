@@ -172,10 +172,11 @@ end
 ```
 
 Rows come from the post sites themselves: the local player's component posts / releases and Splice starts, the world
-and NPC hosts (posts, releases, ped Splice steps), world emitter start / stop, zone ambience changes and speech line
-starts. Tags: `pop`, `land` (the board contacts' Splice starts with the Contacts tuning's pop and landing ids),
-`grind_start`, `grind_end` (the grind slot's post / release), `footstep`, `horn`, `alarm`, `emitter`, `zone_change`,
-`speech`. Rows are one frame late; at most 256 a frame (`truncated` says when more happened). Nothing is recorded while
+and NPC hosts (posts, releases, ped Splice steps, ped body falls and phone rings, the ped tazer, the NPC loose-board slide),
+world emitter start / stop, zone ambience changes and speech line starts (class `speech` for the living world, `maincast`
+for the main cast). Tags: `pop`, `land` (the board contacts' Splice starts with the Contacts tuning's pop and landing ids),
+`grind_start`, `grind_end` (the grind slot's post / release), `footstep`, `horn`, `alarm`, `tazer` (a ped's `c_tazer`
+post), `body_fall` (a ped's body-fall Splice start), `emitter`, `zone_change`, `speech`. Rows are one frame late; at most 256 a frame (`truncated` says when more happened). Nothing is recorded while
 no mod subscribes. Muting or replacing a retail sound from an event is not possible yet (later: declarative rules).
 
 ## F. Tooling, lifecycle and the menu

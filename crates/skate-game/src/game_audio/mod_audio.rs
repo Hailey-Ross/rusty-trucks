@@ -173,6 +173,7 @@ pub(crate) fn record(buf: &mut EventBuf, row: EventRow) {
 /// - `footstep`: a footstep Splice start (`fstep_*` banks) or a `playercharacter_footstep` /
 ///   `livingword_footstep` post;
 /// - `horn` / `alarm`: a traffic horn / car alarm post;
+/// - `tazer`: a ped's `c_tazer` post; `body_fall`: a ped's body-fall Splice start;
 /// - `emitter`: a world emitter start; `zone_change`: a zone ambience change; `speech`: a line.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Tags {
@@ -180,7 +181,7 @@ pub(crate) struct Tags {
     pub land: i32,
 }
 
-pub(crate) const TAGS: [&str; 10] = ["pop", "land", "grind_start", "grind_end", "footstep", "horn", "alarm", "emitter", "zone_change", "speech"];
+pub(crate) const TAGS: [&str; 12] = ["pop", "land", "grind_start", "grind_end", "footstep", "horn", "alarm", "tazer", "body_fall", "emitter", "zone_change", "speech"];
 
 impl Tags {
     pub(crate) fn from_tuning(c: &skate_audio::player::contacts::ContactsTuning) -> Self {
@@ -199,6 +200,8 @@ impl Tags {
             (EventKind::Post, _) if r.class == skate_audio::player::footsteps::CLASS || r.class == skate_audio::world::peds::FOOTSTEP_CLASS => Some("footstep"),
             (EventKind::Post, Source::World) if r.class == HORN_CLASS => Some("horn"),
             (EventKind::Post, Source::World) if r.class == ALARM_CLASS => Some("alarm"),
+            (EventKind::Post, Source::World) if r.class == skate_audio::world::peds::TAZER_CLASS => Some("tazer"),
+            (EventKind::Splice, Source::World) if r.slot == "body_fall" => Some("body_fall"),
             (EventKind::EmitterStart, _) => Some("emitter"),
             (EventKind::Zone, _) => Some("zone_change"),
             (EventKind::Speech, _) => Some("speech"),
@@ -586,11 +589,18 @@ pub(crate) struct Observed<'a, 'b> {
     rows: &'b mut EventBuf,
     source: Source,
     owner: u64,
+    slot: &'static str,
 }
 
 impl<'a, 'b> Observed<'a, 'b> {
     pub(crate) fn new(inner: &'a mut dyn skate_audio::player::contacts::SpliceHost, rows: &'b mut EventBuf, source: Source, owner: u64) -> Self {
-        Self { inner, rows, source, owner }
+        Self { inner, rows, source, owner, slot: "" }
+    }
+
+    /// The object's name for the recorded rows (`body_fall`, `ring`; "" by default).
+    pub(crate) fn slot(mut self, slot: &'static str) -> Self {
+        self.slot = slot;
+        self
     }
 }
 
@@ -604,7 +614,7 @@ impl skate_audio::player::contacts::SpliceHost for Observed<'_, '_> {
     fn start(&mut self, bank: &str, id: u32, block: [f32; 6]) -> Option<skate_audio::splice::SoundId> {
         let sound = self.inner.start(bank, id, block);
         if sound.is_some() && self.rows.is_some() {
-            record(self.rows, EventRow { kind: EventKind::Splice, source: self.source, class: intern(bank), slot: "", id: id as i32, owner: self.owner });
+            record(self.rows, EventRow { kind: EventKind::Splice, source: self.source, class: intern(bank), slot: self.slot, id: id as i32, owner: self.owner });
         }
         sound
     }
@@ -671,6 +681,7 @@ pub(crate) fn world_slot(slot: &skate_audio::world::WorldSlot) -> (&'static str,
         WorldSlot::Alarm => ("alarm", 0),
         WorldSlot::Skid => ("skid", 0),
         WorldSlot::PedFootstep(n) => ("ped_footstep", i32::from(n)),
+        WorldSlot::PedTazer => ("ped_tazer", 0),
     }
 }
 

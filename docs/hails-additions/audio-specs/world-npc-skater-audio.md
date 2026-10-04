@@ -92,3 +92,14 @@ remove despawned skaters. Off switch `SKATE_AEMS_NPC_SKATERS=0`.
 - The manager's gate (`[0x830670B8+20]` == 5, `sys+560` == 1) and the skater list order of the AI manager.
 - The NPC's speech (`sub_824BF5F8`, SkaterSpeech manager `sub_824F7D10`: one record per skater, no distance gate
   there) belongs to the speech stage.
+
+## Board slide and the NPC bed vs the recomp (2026-10-03)
+- **Board slide ported for the NPC instance:** `sub_824CB3C8` / `sub_824CB4C0` have no local test; `+780` comes from
+  the conditioner per skater entry and the bridge `sub_824B0DA8` copies it, so `NpcSkater` runs `BoardSlide` with
+  `NpcSkaterAudioState::loose_board` (`NpcSkaterAudio::loose_board`; ghosts take it per row from their log; mods
+  `loose_board`). A scripted background recomp run (Mega-Park, 4 min standing) saw no NPC bail and so no board slide post.
+- **NPC grain bed vs 180430's NPC GREC rows** (owner `40C34020`, 227 k rows; a local research tool thins to 100 ms and
+  joins the NPC board by SKATEB speed; test `npc_bed_follows_the_recomp_rows`, 289 straight-roll rows): truck 0 A
+  record gain recomp / ours 0–10 m 0.097 / 0.108, 10–20 m 0.045 / 0.065, 20–30 m 0.005 / 0.014; A pitch 0.93–0.97
+  vs 0.96. Near band within 10 %; the far bands are louder in ours (the lookups use the distance to the local
+  skater, not joined: our sim keeps the local player at the camera).

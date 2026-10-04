@@ -444,7 +444,7 @@ fn a_ghost_claims_instance_1_releases_and_survives_a_map_change() {
             for w in &mut s.wheel_position {
                 w[0] += shift;
             }
-            published.skaters = vec![skate_audio::world::skaters::NpcSkaterAudioState { id, state: s, voice: 0 }];
+            published.skaters = vec![skate_audio::world::skaters::NpcSkaterAudioState { id, state: s, voice: 0, loose_board: 0, reactions: Default::default() }];
             let m = native.mixmap.as_mut().unwrap();
             globals(m);
             // A pass (process, tick, update) on every other frame: the 30 Hz console cadence.
@@ -523,7 +523,7 @@ fn the_npc_instance_runs_wheels_clothing_and_the_bail_grunt() {
                 w[i] -= off[i];
             }
         }
-        published.skaters = vec![skate_audio::world::skaters::NpcSkaterAudioState { id, state: s, voice: 91 }];
+        published.skaters = vec![skate_audio::world::skaters::NpcSkaterAudioState { id, state: s, voice: 91, loose_board: 0, reactions: Default::default() }];
         let m = native.mixmap.as_mut().unwrap();
         globals(m);
         if f % 2 == 0 {
@@ -554,4 +554,122 @@ fn the_npc_instance_runs_wheels_clothing_and_the_bail_grunt() {
     assert!(grunts >= 1 && grunts <= bails, "one bail grunt per bail at most ({grunts} for {bails})");
     assert_eq!(native.player.as_ref().map(|p| p.posts).unwrap_or(0), posts_before, "the local player's components posted nothing");
     assert_eq!(host.speakers.first().map(|s| (s.id, s.voice)), Some((id, 91)), "the speaking skater is published for the speech host");
+}
+
+#[derive(serde::Deserialize)]
+struct GrecRow {
+    turn: f32,
+    speed: f32,
+    wheels: u32,
+    air: u32,
+    material: u32,
+    #[serde(rename = "I")]
+    i: f32,
+    #[serde(rename = "Bk")]
+    bk: f32,
+    truck: GrecTruck,
+    distance: f32,
+}
+
+#[derive(serde::Deserialize)]
+struct GrecTruck {
+    a_gain: f32,
+    a_pitch: f32,
+    running: u32,
+}
+
+/// The NPC skater's grain bed against the recomp's own NPC bed (data-gated: the install, and
+/// `$SKATE_NPC_GREC/npc_rows_180430.json` from the local tool `npc_grec_rows.py`: session 180430's
+/// GREC rows of the NPC instance's SkateBoard object, filtered by owner, each joined with the NPC's
+/// board (SKATEB, matched by speed) and its distance to the camera). For the straight-roll rows
+/// (|turn| ≤ 0.02, turn intensity and brake slew ~0, wheels down, a truck running) our NPC bed rolls
+/// steadily at the row's speed, material and distance (2 s, the local player's wheels hard) and its
+/// truck 0 A record gain and pitch are compared with the recomp's, per distance band.
+#[test]
+#[ignore = "needs the private install data and the NPC GREC export"]
+fn npc_bed_follows_the_recomp_rows() {
+    let Some(dir) = std::env::var_os("SKATE_NPC_GREC").filter(|v| !v.is_empty()) else {
+        panic!("missing private data: SKATE_NPC_GREC (npc_grec_rows.py --json)");
+    };
+    let Ok(text) = std::fs::read_to_string(std::path::Path::new(&dir).join("npc_rows_180430.json")) else { panic!("missing private data: npc_rows_180430.json") };
+    let rows: Vec<GrecRow> = serde_json::from_str(&text).unwrap();
+    let straight: Vec<&GrecRow> = rows.iter().filter(|r| r.wheels > 0 && r.air == 0 && r.truck.running != 0 && r.turn.abs() <= 0.02 && r.i.abs() < 0.02 && r.bk < 0.02 && r.material != 143).collect();
+    assert!(straight.len() >= 100, "{} straight rows", straight.len());
+    let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
+    let Some(local_bed) = super::super::grain_bed::Bed::new(&library) else { panic!("missing private data: no grain recordings / tuning") };
+    let tuning = library.player_tuning();
+    let contact_tuning = library.contacts_tuning();
+    let (wheels, clothing) = (Default::default(), Default::default());
+    let t = Tuning { player: &tuning, contacts: &contact_tuning, wheels: &wheels, clothing: &clothing };
+    // One run per (2 m distance, 1 m/s speed, material) bin.
+    let mut bins: BTreeMap<(i32, i32, u32), Vec<&GrecRow>> = BTreeMap::new();
+    for r in &straight {
+        bins.entry(((r.distance / 2.0) as i32, r.speed.round() as i32, r.material)).or_default().push(r);
+    }
+    let camera = [0.0, 1.8, 0.0];
+    let l = Listener { camera, view: [1.0, 0.0, 0.0], camera_velocity: [0.0; 3], followed: [0.0, 1.0, -3.0], facing: [1.0, 0.0, 0.0], followed_velocity: [0.0; 3] };
+    let mut by_band: BTreeMap<i32, (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> = BTreeMap::new();
+    for (&(dbin, sbin, material), members) in &bins {
+        let d = dbin as f32 * 2.0 + 1.0;
+        let v = (sbin as f32).max(0.3);
+        let (mut rt, _, parts) = runtime(&library);
+        let mut m = MixMap::from_bytes(&mxb).unwrap();
+        let mut npc = NpcSkater::new(1, parts, true, true, true);
+        let mut bed = (local_bed.for_instance(1), 0u32);
+        let dt = 1.0 / 30.0;
+        let mut out = vec![0.0f32; 2 * 1600];
+        let (mut gain, mut pitch) = (0.0f32, 0.0f32);
+        for f in 0..60 {
+            // Rolling across the camera's view at distance d (along z, at x = d).
+            let z = -0.5 * v * 2.0 + v * f as f32 * dt;
+            let published = AudioState::rolling(&skate_audio::player::state::LiteSkater { position: [d, 0.1, z], velocity: [0.0, 0.0, v], heading: 0.0, material, dt, ..Default::default() });
+            let mut s = component_state(&published, false);
+            s.dt = dt;
+            globals(&mut m);
+            let _ = npc.update(&m, &s, t, &mut rt.splice_host());
+            bed.1 = bed.1.wrapping_add(u32::from(s.push_trigger));
+            let r = super::super::skate_events::Riding { speed: s.ground_speed, grinding: s.grinding, braking: s.brake, wheels: s.wheel_count, pushes: bed.1, audio: s, ..Default::default() };
+            let routed = Some((std::mem::take(&mut npc.routed.grains), npc.routed.primary));
+            super::super::grain_bed::step_with(&mut bed.0, &library, &m, &r, dt, &tuning, routed, |apply| apply(&mut rt));
+            bed.0.write_inputs(&mut m, &s, false);
+            npc.write_inputs(&mut m, &s, &l, [0.0; 3], &tuning);
+            let _ = npc.process(&mut m, &s, t, &mut rt.splice_host());
+            let _ = npc.take_collisions();
+            m.tick(dt);
+            rt.fill_stereo(&mut out);
+            if let Some(g) = rt.npc_grains.as_deref()
+                && f >= 45
+                && g.trucks[0].bound().is_some()
+            {
+                gain = g.trucks[0].players[0].record.gain;
+                pitch = g.trucks[0].players[0].record.pitch;
+            }
+        }
+        let band = (d / 10.0) as i32 * 10;
+        let e = by_band.entry(band).or_default();
+        for r in members {
+            e.0.push(r.truck.a_gain);
+            e.1.push(gain);
+            e.2.push(r.truck.a_pitch);
+            e.3.push(pitch);
+        }
+    }
+    let med = |v: &mut Vec<f32>| -> f32 {
+        v.sort_by(f32::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(0.0)
+    };
+    eprintln!("NPC bed, straight roll ({} rows of session 180430's NPC GREC rows):", straight.len());
+    eprintln!("  distance   rows   A gain recomp / ours (median)   A pitch recomp / ours");
+    let mut ok = 0;
+    let mut n = 0;
+    for (band, (mut a, mut b, mut p, mut q)) in by_band {
+        let rows = a.len();
+        let (a, b, p, q) = (med(&mut a), med(&mut b), med(&mut p), med(&mut q));
+        eprintln!("  {band:2}-{:<2} m  {rows:5}   {a:.4} / {b:.4}                  {p:.3} / {q:.3}", band + 10);
+        if rows >= 20 {
+            n += 1;
+            ok += usize::from(b > 0.0 && (a / b) > 0.5 && (a / b) < 2.0);
+        }
+    }
+    assert!(n > 0 && ok * 2 >= n, "the NPC bed's level follows the recomp's in most distance bands");
 }

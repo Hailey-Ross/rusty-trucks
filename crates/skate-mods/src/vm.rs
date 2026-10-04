@@ -1838,11 +1838,14 @@ mod world_audio_tests {
         let mut spawned = 0;
         let mut live = std::collections::BTreeSet::new();
         let mut most = 0;
+        let mut events: BTreeMap<String, usize> = BTreeMap::new();
+        let mut photo = Vec::new();
+        let mut ghost_voices = Vec::new();
         for frame in 0..400u32 {
             let t = frame as f32 / 60.0;
             let snapshot = json!({"tick": frame, "player": {"position": [t * 4.0, 0.0, 0.0], "speed": 4.0,
                 "landing_seq": frame / 100, "bail_seq": frame / 250},
-                "keys": {"F8": frame == 200, "F9": frame == 300},
+                "keys": {"F8": frame == 200, "F9": frame == 300, "F7": frame == 100, "F6": frame == 120, "F5": frame == 140, "F4": frame == 160 || frame == 180, "F3": frame == 220, "F2": frame == 240 || frame == 260},
                 "world_audio": {"dev-world-audio-test": {"car1": {"kind": "traffic", "audible": true, "instance": 0}}},
                 "command_results": {"dev-world-audio-test": {"ghost": {"token": 1, "ok": false, "error": "logs/x.tsv: missing"}}}});
             let out = vm.call("on_update", json!({"dt": 1.0 / 60.0}), &snapshot).unwrap_or_else(|e| panic!("frame {frame}: {e}"));
@@ -1857,12 +1860,34 @@ mod world_audio_tests {
                     Command::WorldAudioRemove { key } => {
                         live.remove(key);
                     }
+                    Command::WorldAudioEvent { event, options, .. } => {
+                        let name = match (event.as_str(), &options.value) {
+                            ("speech", Some(v)) if v == &json!(49) => "phone".to_owned(),
+                            ("speech", Some(v)) if v == &json!(29) => "photographer".to_owned(),
+                            ("reaction", Some(v)) => format!("reaction {}", v.as_str().unwrap_or("?")),
+                            (e, _) => e.to_owned(),
+                        };
+                        *events.entry(name).or_default() += 1;
+                    }
+                    Command::WorldAudioUpdate { options, .. } if options.photo_flag.is_some() => photo.push(options.photo_flag.unwrap()),
+                    Command::WorldAudioUpdate { key, options } if key == "ghost" && options.voice.is_some() => ghost_voices.push(options.voice.unwrap()),
                     _ => {}
                 }
             }
             most = most.max(live.len());
         }
         assert_eq!(spawned, 2 * 36, "16 cars and 20 peds, twice (F9 re-centres); the ghost goes through a request");
+        // The new ped events: F7 a zap, F6 a knock-down (four BodyFallType keys over 0.74 s), F5 a
+        // phone call (value 49), F4 a photographer (value 29 with the photo flag) and F4 again off.
+        assert_eq!(events.get("tazer"), Some(&1), "{events:?}");
+        assert_eq!(events.get("body_fall"), Some(&4), "{events:?}");
+        assert_eq!(events.get("phone"), Some(&1), "{events:?}");
+        assert_eq!(events.get("photographer"), Some(&1), "{events:?}");
+        assert_eq!(photo, vec![true, false]);
+        // The ghost: F3 a trick reaction, F2 twice a crash (first as the pro 24, then as its AI voice).
+        assert_eq!(events.get("reaction trick"), Some(&1), "{events:?}");
+        assert_eq!(events.get("reaction crash"), Some(&2), "{events:?}");
+        assert_eq!(ghost_voices, vec![24, 91]);
         // Everything it publishes at once (+ the ghost) fits the host's per-mod limit: no
         // "World audio object limit reached" (the 16 / 64 limits refused 21 of 37).
         assert!(most + 1 <= crate::world_audio::MAX_OBJECTS_PER_MOD, "{most} + ghost objects");
@@ -1960,6 +1985,13 @@ mod world_audio_tests {
             json!({"kind":"world_audio_update","key":"car1","options":{"speed":3,"load":-2}}),
             json!({"kind":"world_audio_event","key":"car1","event":"alarm"}),
             json!({"kind":"world_audio_event","key":"ped1","event":"speech","options":{"value":"warn"}}),
+            json!({"kind":"world_audio_event","key":"ped1","event":"tazer"}),
+            json!({"kind":"world_audio_event","key":"ped1","event":"tazer","options":{"seconds":2}}),
+            json!({"kind":"world_audio_event","key":"ped1","event":"body_fall","options":{"kind":9}}),
+            json!({"kind":"world_audio_event","key":"sk1","event":"reaction","options":{"value":"crash"}}),
+            json!({"kind":"world_audio_event","key":"sk1","event":"reaction","options":{"value":"slam","by":0}}),
+            json!({"kind":"world_audio_update","key":"ped1","options":{"tazing":true,"photo_flag":true}}),
+            json!({"kind":"world_audio_update","key":"sk1","options":{"loose_board":1}}),
             json!({"kind":"world_audio_remove","key":"car1"}),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();

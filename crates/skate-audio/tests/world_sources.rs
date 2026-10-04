@@ -406,3 +406,28 @@ fn a_bumped_ped_warns_with_a_line_of_its_voice() {
     assert!(peak > 0.01);
     assert!((frames as f32 * DT - seconds).abs() < 0.2, "{} frames for {seconds} s", frames);
 }
+
+/// The phone ring of speech value 49 (data-gated: the disc's `CellPhone_Rings.bnk`): the
+/// container (`PedObjectTuning::ring_id`, 5) picks one of its records; each plays its members at
+/// their delays, so a ring lasts the record's latest member end (delay + length). The recomp's two
+/// rings (session 164620) were answered (the `4402_*_HelCel` line's read) 1.00 s and 1.19 s after
+/// the ring's start: inside the records' range.
+#[test]
+#[ignore = "needs the private disc banks"]
+fn the_phone_ring_lasts_until_the_recomp_answers() {
+    let Some(dir) = private_data::splc_banks() else { panic!("missing private data: no SPLC banks") };
+    let t = skate_audio::world::peds::PedObjectTuning::default();
+    let Ok(bytes) = std::fs::read(dir.join(format!("{}.bnk", t.ring_bank))) else { panic!("missing private data: no {}.bnk", t.ring_bank) };
+    let bank = SpliceBank::parse(&bytes).unwrap();
+    let id = t.ring_id as usize;
+    let records: Vec<usize> = if id < bank.records.len() { vec![id] } else { bank.containers[id - bank.records.len()].ids.iter().map(|&r| usize::from(r)).collect() };
+    let ends: Vec<f32> = records
+        .iter()
+        .map(|&r| bank.records[r].groups.iter().flat_map(|g| g.members.iter()).map(|m| m.delay + m.length).fold(0.0f32, f32::max))
+        .collect();
+    let (lo, hi) = (ends.iter().copied().fold(f32::MAX, f32::min), ends.iter().copied().fold(0.0f32, f32::max));
+    eprintln!("ring container {id}: records {records:?}, ends {ends:?} s");
+    for answered in [1.00f32, 1.19] {
+        assert!(lo - 0.1 <= answered && answered <= hi + 0.15, "answer at {answered} s outside the rings' {lo:.2}..{hi:.2} s");
+    }
+}
