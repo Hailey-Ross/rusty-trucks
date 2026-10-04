@@ -7,8 +7,9 @@
 //! Everything here is checked before the engine sees it: the schema (`deny_unknown_fields`),
 //! counts, numbers, key and path syntax, and every referenced file (PCM16 WAVs, `.abk` banks,
 //! `.splc` trees, `.mxb` MixMaps, `.grain` members) is read inside the mod root and parsed.
-//! Identities (does the bank / slot / set exist?) need the install and are checked by the engine;
-//! an unknown identity is a warning there, never an error.
+//! Identities (does the bank / slot / set exist? does the speech index have the clip and take?)
+//! need the install and are checked by the merge (`audio_merge`, in the engine and `check_mod
+//! --install`); an unknown identity is a warning there, never an error.
 use crate::archive::read_bounded;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -301,7 +302,29 @@ pub struct Add {
     /// Bank stem → the layers a location-set post of the bank plays (interim player).
     #[serde(default)]
     pub location_programs: BTreeMap<String, Vec<LayerDef>>,
+    /// Crossfade bank stem → group (decimal 1..64) → the voices the group plays. For a bank
+    /// without a `c_main_ambience_crossfade` program (a mod bank of WAVs): banks with one get
+    /// their layout from the program, as retail; a declared layout wins over the program.
+    #[serde(default)]
+    pub crossfade_layouts: BTreeMap<String, BTreeMap<String, Vec<CrossfadeVoiceDef>>>,
 }
+
+/// One looping voice of a crossfade group: a sample slot of the crossfade bank, its direction
+/// around the listener (degrees, 0 = ahead, 90 = right) and its level (1 = full).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CrossfadeVoiceDef {
+    pub sample: u32,
+    #[serde(default)]
+    pub pan: f32,
+    #[serde(default = "one")]
+    pub level: f32,
+}
+
+/// Voices per declared crossfade group (retail's groups have four).
+pub const MAX_CROSSFADE_VOICES: usize = 8;
+/// The highest group a crossfade pair or a declared layout may name.
+pub const MAX_CROSSFADE_GROUP: u32 = 64;
 
 /// Field merges onto the install's tuning sections (only fields the install has; arrays by index
 /// as decimal keys). The engine checks every field against the install.
@@ -369,6 +392,74 @@ pub fn valid_content_path(path: &str, exts: &[&str]) -> bool {
         && exts.iter().any(|e| lower.ends_with(&format!(".{e}")))
         && !path.chars().any(|c| matches!(c, '\\' | ':' | '#' | '?') || c.is_control())
         && path.split('/').all(|s| !s.is_empty() && s != "." && s != "..")
+}
+
+/// The speech archives the engine plays (`livingworld` = peds and NPC skaters, `maincast` = the
+/// pros and the special cast).
+pub const SPEECH_ARCHIVES: [&str; 2] = ["livingworld", "maincast"];
+
+/// A speech clip name as the archives name them (`<event>_<voice>[_<voice name>]_<line>`, with
+/// or without `.dat`): the speech index's own parser reads it.
+pub fn speech_clip_name(clip: &str) -> bool {
+    skate_audio::world::speech::parse_name(clip).is_some_and(|(_, _, _, line)| !line.is_empty())
+}
+
+/// The clips of the install's speech archives (archive → clip name without `.dat` → take count),
+/// read from each archive's index (`speech.<archive>.index` in the manifest). The merge checks
+/// speech takes against it (`audio_merge::merge_one_with`).
+#[derive(Clone, Debug, Default)]
+pub struct SpeechClips {
+    pub archives: BTreeMap<String, BTreeMap<String, usize>>,
+}
+
+impl SpeechClips {
+    /// Read the indexes the manifest names under `audio_root` (the install's `private/audio`).
+    /// Archives whose index is missing or unreadable are left out (their takes then warn).
+    pub fn load(audio_root: &Path, manifest: &Value) -> Self {
+        #[derive(Deserialize)]
+        struct Index {
+            clips: Vec<IndexClip>,
+        }
+        #[derive(Deserialize)]
+        struct IndexClip {
+            name: String,
+            #[serde(default)]
+            takes: Vec<serde::de::IgnoredAny>,
+        }
+        let mut archives = BTreeMap::new();
+        for (archive, entry) in manifest.get("speech").and_then(Value::as_object).into_iter().flatten() {
+            let Some(index) = entry.get("index").and_then(Value::as_str) else { continue };
+            if !valid_content_path(index, &["json"]) {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(audio_root.join(index)) else { continue };
+            let Ok(index) = serde_json::from_slice::<Index>(&bytes) else { continue };
+            let clips = index.clips.into_iter().map(|c| (c.name.strip_suffix(".dat").unwrap_or(&c.name).to_owned(), c.takes.len())).collect();
+            archives.insert(archive.clone(), clips);
+        }
+        Self { archives }
+    }
+
+    /// Whether an overlay names speech at all (only then is the index worth reading).
+    pub fn needed(overlay: &AudioOverlay) -> bool {
+        !overlay.replace.speech.is_empty() || !overlay.add.speech.is_empty()
+    }
+
+    /// The archive's clip → take count, if the install has the archive.
+    pub fn archive(&self, archive: &str) -> Option<&BTreeMap<String, usize>> {
+        self.archives.get(archive)
+    }
+
+    /// A close clip name to suggest for an unknown one: the same name in another case, else the
+    /// first clip of the same event and voice.
+    pub fn suggest(&self, archive: &str, clip: &str) -> Option<&str> {
+        let clips = self.archive(archive)?;
+        if let Some((name, _)) = clips.iter().find(|(c, _)| c.eq_ignore_ascii_case(clip)) {
+            return Some(name);
+        }
+        let (event, voice, ..) = skate_audio::world::speech::parse_name(clip)?;
+        clips.keys().find(|c| skate_audio::world::speech::parse_name(c).is_some_and(|(e, v, ..)| e == event && v == voice)).map(String::as_str)
+    }
 }
 
 fn index(s: &str, max: u32) -> bool {
@@ -464,7 +555,7 @@ impl ZoneDef {
 
 impl CrossfadeDef {
     fn check(&self, at: &str) -> Result<(), String> {
-        if !hex_key(&self.from) || !hex_key(&self.to) || self.from == self.to || self.group > 64 || !self.level.is_finite() || !(0.0..=4.0).contains(&self.level) {
+        if !hex_key(&self.from) || !hex_key(&self.to) || self.from == self.to || self.group > MAX_CROSSFADE_GROUP || !self.level.is_finite() || !(0.0..=4.0).contains(&self.level) {
             return Err(format!("{at}: two different zone keys (16 hex digits), group ≤ 64, level 0..4"));
         }
         Ok(())
@@ -697,23 +788,48 @@ impl AudioOverlay {
             }
             records += layers.len();
         }
-        for (archive, clips) in &r.speech {
-            if !valid_name(archive) {
-                return Err(format!("replace.speech: bad archive {archive:?}"));
+        for (bank, groups) in &a.crossfade_layouts {
+            if !valid_name(bank) || groups.is_empty() {
+                return Err(format!("add.crossfade_layouts.{bank}: a bank name and at least one group"));
             }
+            for (group, voices) in groups {
+                let at = format!("add.crossfade_layouts.{bank}.{group}");
+                if !index(group, MAX_CROSSFADE_GROUP) || group.parse::<u32>() == Ok(0) {
+                    return Err(format!("{at}: the group is a number 1..{MAX_CROSSFADE_GROUP}"));
+                }
+                if voices.is_empty() || voices.len() > MAX_CROSSFADE_VOICES {
+                    return Err(format!("{at}: 1..{MAX_CROSSFADE_VOICES} voices"));
+                }
+                for (i, v) in voices.iter().enumerate() {
+                    if v.sample >= MAX_BANK_SAMPLES as u32 || !finite(&[v.pan, v.level]) || v.pan.abs() > 360.0 || !(0.0..=1.0).contains(&v.level) {
+                        return Err(format!("{at}[{i}]: sample is a slot number, pan ±360 °, level 0..1"));
+                    }
+                }
+                records += voices.len();
+            }
+        }
+        for (section, archive, clips) in r.speech.iter().map(|(a, c)| ("replace.speech", a, c.keys().collect::<Vec<_>>()))
+            .chain(a.speech.iter().map(|(a, c)| ("add.speech", a, c.keys().collect::<Vec<_>>()))) {
+            if !SPEECH_ARCHIVES.contains(&archive.as_str()) {
+                return Err(format!("{section}: unknown archive {archive:?} (one of {})", SPEECH_ARCHIVES.join(", ")));
+            }
+            for clip in clips {
+                if !valid_name(clip) || !speech_clip_name(clip) {
+                    return Err(format!("{section}.{archive}: {clip:?} is not a speech clip name (<event>_<voice>[_<voice name>]_<line>[.dat], e.g. 501_41_adtm1_Warn_n)"));
+                }
+            }
+        }
+        for (archive, clips) in &r.speech {
             for (clip, takes) in clips {
-                if !valid_name(clip) || takes.keys().any(|t| !index(t, 254)) {
-                    return Err(format!("replace.speech.{archive}: clip {clip:?} with takes 0..254"));
+                if takes.keys().any(|t| !index(t, 254)) {
+                    return Err(format!("replace.speech.{archive}.{clip}: takes are numbers 0..254"));
                 }
             }
         }
         for (archive, clips) in &a.speech {
-            if !valid_name(archive) {
-                return Err(format!("add.speech: bad archive {archive:?}"));
-            }
             for (clip, takes) in clips {
-                if !valid_name(clip) || takes.is_empty() || takes.len() > 64 {
-                    return Err(format!("add.speech.{archive}: clip {clip:?} with 1..64 takes"));
+                if takes.is_empty() || takes.len() > 64 {
+                    return Err(format!("add.speech.{archive}.{clip}: 1..64 takes"));
                 }
             }
         }
@@ -780,6 +896,7 @@ impl AudioOverlay {
         line(r.speech.values().flat_map(|c| c.values()).map(BTreeMap::len).sum(), "replaced speech takes");
         line(a.speech.values().flat_map(|c| c.values()).map(Vec::len).sum(), "added speech takes");
         line(a.location_programs.len(), "location programs");
+        line(a.crossfade_layouts.len(), "crossfade layouts");
         let t = &self.tuning;
         line([&t.player, &t.world, &t.bus, &t.grain].iter().filter(|v| v.is_some()).count(), "tuning sections");
         line(self.maps.len(), "maps");
@@ -940,7 +1057,19 @@ mod tests {
             json!({"version": 1, "tuning": {"player": 3}}),
             json!({"version": 1, "maps": {"m": {"regions": {"audio_music": []}}}}),
             json!({"version": 1, "maps": {"m": {"regions": {"audio_reverb": [{"box": [0, 0, 0, 1], "key": "x"}]}}}}),
-            json!({"version": 1, "replace": {"speech": {"livingworld": {"c": {"300": "a.wav"}}}}}),
+            json!({"version": 1, "replace": {"speech": {"livingworld": {"501_41_adtm1_Warn_n": {"300": "a.wav"}}}}}),
+            // Speech clip names are checked with the speech index's own parser, archives by name.
+            json!({"version": 1, "replace": {"speech": {"livingworld": {"c": {"0": "a.wav"}}}}}),
+            json!({"version": 1, "add": {"speech": {"livingworld": {"warn_line": ["a.wav"]}}}}),
+            json!({"version": 1, "add": {"speech": {"livingworld": {"501_41": ["a.wav"]}}}}),
+            json!({"version": 1, "add": {"speech": {"crowd": {"501_41_adtm1_Warn_n": ["a.wav"]}}}}),
+            // Declared crossfade layouts: groups 1..64, 1..8 voices, levels 0..1.
+            json!({"version": 1, "add": {"crossfade_layouts": {"b": {"0": [{"sample": 0}]}}}}),
+            json!({"version": 1, "add": {"crossfade_layouts": {"b": {"65": [{"sample": 0}]}}}}),
+            json!({"version": 1, "add": {"crossfade_layouts": {"b": {"1": []}}}}),
+            json!({"version": 1, "add": {"crossfade_layouts": {"b": {"1": [{"sample": 0, "level": 1.5}]}}}}),
+            json!({"version": 1, "add": {"crossfade_layouts": {"b": {"1": [{"sample": 0, "pan": 400}]}}}}),
+            json!({"version": 1, "add": {"crossfade_layouts": {"b": {}}}}),
         ];
         assert!(serde_json::from_value::<AudioOverlay>(base()).unwrap().validate().is_ok());
         for case in cases {

@@ -14,7 +14,9 @@
 //! the menu is open or a replay runs. `--mute` silences game and mod audio.
 mod ambience;
 mod content;
+#[cfg(test)]
 mod crossfade_groups;
+mod crossfade_layouts;
 #[cfg(test)]
 mod e2e;
 mod emitters;

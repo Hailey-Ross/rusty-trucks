@@ -1,7 +1,8 @@
 //! What each `c_main_ambience_crossfade` group plays, measured by posting the program (w0 = w8 = 32767,
 //! w9 = group) through the PoC evaluator (2026-10-02; local data). Four looping voices:
-//! (bank sample, pan degrees, level incl. the rear 23000/32767 factor). Interim until the AEMS evaluator
-//! is ported; regenerate, do not hand-edit.
+//! (bank sample, pan degrees, level incl. the rear 23000/32767 factor). The game now reads the
+//! layouts from each bank's program (`crossfade_layouts.rs`); this table stays only as the test
+//! oracle that the programs reproduce it exactly. Do not hand-edit.
 
 /// (district bank, group, voices)
 pub(super) const GROUPS: &[(&str, u32, [(usize, f32, f32); 4])] = &[

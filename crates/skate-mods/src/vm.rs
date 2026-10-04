@@ -1,4 +1,4 @@
-use crate::{read_bounded, Manifest};
+use crate::{lua_list::{list, opt_list}, read_bounded, Manifest};
 use mlua::{HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, Table, VmState};
 use serde::Deserialize;
 use serde_json::Value;
@@ -137,12 +137,12 @@ pub enum Command {
     AudioPost {
         key: String,
         class: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "list")]
         words: Vec<i32>,
     },
     AudioRedeliver {
         key: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "list")]
         words: Vec<i32>,
     },
     AudioRelease { key: String },
@@ -154,15 +154,15 @@ pub enum Command {
     },
     /// Replace this mod's watch lists (globals, MixMap outputs) read in `sdk.snapshot.audio`.
     AudioWatch {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "list")]
         globals: Vec<String>,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "list")]
         mixmap: Vec<crate::audio::MixMapKey>,
     },
     /// Audio events extension 1: receive this mod's audio event rows (`tags` empty = every row;
     /// no `tags` = stop).
     AudioSubscribe {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "opt_list")]
         tags: Option<Vec<String>>,
     },
     /// Audio events extension 2: a mute / replace / layer rule under a key (`rule` absent = remove).
@@ -301,7 +301,7 @@ pub enum Command {
     },
     GraphicsMesh {
         key: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "list")]
         deform_nodes: Vec<String>,
         /// Package-relative GLB path, or empty for a debug box.
         #[serde(default)]
@@ -1486,7 +1486,9 @@ mod graphics_mesh_buffer_tests {
             )
             .eval::<mlua::Value>()
             .unwrap();
-        assert!(lua.from_value::<Command>(value).is_err());
+        // `uvs = {}` reads as an empty list (`lua_list`), so the 3-vertex write fails validation
+        // (two UVs per vertex) instead of deserialisation; `_submit` rejects it either way.
+        assert!(lua.from_value::<Command>(value).is_ok_and(|c| !c.validate()));
     }
 
     #[test]
@@ -1967,6 +1969,8 @@ mod world_audio_tests {
                 sdk.audio.release('siren')
                 sdk.audio.set_global('g_snd', 3)
                 sdk.audio.set_global('g_snd', nil)
+                sdk.audio.watch{mixmap={{slot='emitter', object=0, instance=2, output=4}}}
+                sdk.audio.post('empty', 'c_emitter', {})
                 sdk.audio.watch{globals={'g_snd'}, mixmap={{slot='emitter', object=0, instance=2, output=4}}}
                 local h = sdk.audio.handle('siren')
                 assert(h and h.live == true, 'handle')
@@ -1976,6 +1980,7 @@ mod world_audio_tests {
                 assert(sdk.audio.info().native == true, 'info')
                 assert(sdk.audio.handle('nope') == nil)
                 sdk.audio.subscribe{tags={'pop'}}
+                sdk.audio.subscribe{tags={}}
                 sdk.audio.subscribe(nil)
                 local rows = sdk.audio.events()
                 assert(#rows == 1 and rows[1].tag == 'pop', 'events')
@@ -1994,8 +1999,12 @@ mod world_audio_tests {
             "audio_info": {"native": true}});
         let cmds = vm.call("on_update", json!({"dt": 0.016}), &snapshot).unwrap();
         let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
-        assert_eq!(kinds, ["audio_post", "audio_redeliver", "audio_release", "audio_set_global", "audio_set_global", "audio_watch", "audio_subscribe", "audio_subscribe"]);
-        assert!(matches!(&cmds[7], Command::AudioSubscribe { tags: None }), "nil stops");
+        assert_eq!(kinds, ["audio_post", "audio_redeliver", "audio_release", "audio_set_global", "audio_set_global", "audio_watch", "audio_post", "audio_watch", "audio_subscribe", "audio_subscribe", "audio_subscribe"]);
+        // Empty Lua tables reach serde as maps: they still read as empty lists.
+        assert!(matches!(&cmds[5], Command::AudioWatch { globals, mixmap } if globals.is_empty() && mixmap.len() == 1), "globals = {{}}");
+        assert!(matches!(&cmds[6], Command::AudioPost { words, .. } if words.is_empty()), "words = {{}}");
+        assert!(matches!(&cmds[9], Command::AudioSubscribe { tags: Some(t) } if t.is_empty()), "an empty Lua table = every row");
+        assert!(matches!(&cmds[10], Command::AudioSubscribe { tags: None }), "nil stops");
         assert!(cmds.iter().all(Command::validate));
         assert!(matches!(&cmds[4], Command::AudioSetGlobal { value: None, .. }), "nil restores");
         let _ = std::fs::remove_dir_all(root);
@@ -2128,5 +2137,126 @@ mod world_audio_tests {
         assert!(serde_json::from_value::<Command>(json!({"kind":"world_audio_spawn","key":"x","object":"bus"})).is_err());
         let c: Command = serde_json::from_value(json!({"kind":"world_audio_update","key":"x","options":{"source":"lite"}})).unwrap();
         assert!(!c.validate(), "the source is fixed at spawn");
+    }
+}
+
+/// An empty Lua table reaches serde as a map. Every list field a script can fill must still read
+/// `{}` as the empty list (`lua_list`), through the real `_submit` path (`Vm` + `api.lua`).
+#[cfg(test)]
+mod empty_table_lists {
+    use super::*;
+    use serde_json::json;
+
+    /// One case per callback (the sandbox has no `pcall`): `ok` cases must submit; `rejected`
+    /// cases must deserialise and then fail validation, never with a serde "expected a sequence".
+    #[test]
+    fn every_list_field_takes_an_empty_table_and_a_list() {
+        let root = std::env::temp_dir().join(format!("skate-empty-lists-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            local req = sdk.commands.request
+            local tri = {{0,0,0},{1,0,0},{0,1,0}}
+            local cases = {
+                -- audio
+                post_empty = function() sdk.audio.post('a', 'c_emitter', {}) end,
+                post_list = function() sdk.audio.post('a', 'c_emitter', {1, 2}) end,
+                redeliver_empty = function() sdk.audio.redeliver('a', {}) end,
+                redeliver_list = function() sdk.audio.redeliver('a', {3}) end,
+                watch_empty = function() sdk.audio.watch{globals={}, mixmap={}} end,
+                watch_list = function() sdk.audio.watch{globals={'g_snd'}, mixmap={{slot='player', output=4}}} end,
+                subscribe_empty = function() sdk.audio.subscribe{tags={}} end,
+                subscribe_list = function() sdk.audio.subscribe{tags={'pop'}} end,
+                post_named_keys = function() sdk.audio.post('a', 'c_emitter', {x=1}) end,
+                -- graphics (raw requests skip the api.lua wrappers that drop empty tables)
+                mesh_empty = function() req('m', {kind='graphics_mesh', key='m', deform_nodes={}}) end,
+                mesh_list = function() req('m', {kind='graphics_mesh', key='m', deform_nodes={'panel'}}) end,
+                write_list = function() req('w', {kind='graphics_mesh_buffer_write', key='b', data={positions=tri, indices={0,1,2},
+                    uvs={0,0, 1,0, 0,1}, normals={{0,0,1},{0,0,1},{0,0,1}}, colors={1,1,1,1, 1,1,1,1, 1,1,1,1}}}) end,
+                write_empty = function() req('w', {kind='graphics_mesh_buffer_write', key='b', data={positions={}, indices={}}}) end,
+                write_uvs_empty = function() req('w', {kind='graphics_mesh_buffer_write', key='b', data={positions=tri, indices={0,1,2}, uvs={}}}) end,
+                write_normals_empty = function() req('w', {kind='graphics_mesh_buffer_write', key='b', data={positions=tri, indices={0,1,2}, normals={}}}) end,
+                write_colors_empty = function() req('w', {kind='graphics_mesh_buffer_write', key='b', data={positions=tri, indices={0,1,2}, colors={}}}) end,
+                append_empty = function() req('a', {kind='graphics_mesh_buffer_append', key='b', data={positions=tri, indices={}, uvs={}, normals={}, colors={}}}) end,
+                append_list = function() req('a', {kind='graphics_mesh_buffer_append', key='b', data={positions=tri, indices={0,1,2}}}) end,
+                wrapper_write = function() sdk.graphics.mesh_buffer_write('b', {positions=tri, indices={0,1,2}, uvs={}}) end,
+                -- ui
+                canvas_empty = function() req('c', {kind='ui_canvas', key='c', options={items={}}}) end,
+                canvas_list = function() req('c', {kind='ui_canvas', key='c', options={items={{key='t', text='hi'}}}}) end,
+                canvas_wrapper_empty = function() sdk.ui.canvas('c', {items={}}) end,
+                menu_items_empty = function() sdk.ui.menu('u', {title='T', items={}}) end,
+                menu_children_empty = function() sdk.ui.menu('u', {title='T', items={{id='a', label='A', children={}}}}) end,
+                menu_children_list = function() sdk.ui.menu('u', {title='T', items={{id='a', label='A', children={{id='b', label='B'}}}}}) end,
+                -- player
+                detach_empty = function() sdk.player.detach{candidates={}} end,
+                detach_list = function() sdk.player.detach{candidates={{0,0,1}}} end,
+                -- physics query (deserialised directly, not via a command)
+                raycast_empty = function() sdk.physics.raycast({0,0,0}, {0,-1,0}, {exclude={}}) end,
+                raycast_list = function() sdk.physics.raycast({0,0,0}, {0,-1,0}, {exclude={'car'}}) end,
+            }
+            function M.on_event(p) cases[p.case]() end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.empty-lists","api":2,"name":"Empty lists","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let mut run = |case: &str| -> Result<Option<Command>, String> {
+            let cmds = vm.call("on_event", json!({"case": case}), &json!({}))?;
+            assert!(cmds.len() <= 1, "{case}");
+            Ok(cmds.into_iter().next().map(|c| match c { Command::Request { command, .. } => *command, c => c }))
+        };
+        let mut one = |case: &str| -> Command { run(case).unwrap_or_else(|e| panic!("{case}: {e}")).unwrap_or_else(|| panic!("{case}: no command")) };
+        assert!(matches!(one("post_empty"), Command::AudioPost { words, .. } if words.is_empty()));
+        assert!(matches!(one("post_list"), Command::AudioPost { words, .. } if words == [1, 2]));
+        assert!(matches!(one("redeliver_empty"), Command::AudioRedeliver { words, .. } if words.is_empty()));
+        assert!(matches!(one("redeliver_list"), Command::AudioRedeliver { words, .. } if words == [3]));
+        assert!(matches!(one("watch_empty"), Command::AudioWatch { globals, mixmap } if globals.is_empty() && mixmap.is_empty()));
+        assert!(matches!(one("watch_list"), Command::AudioWatch { globals, mixmap } if globals == ["g_snd"] && mixmap.len() == 1));
+        assert!(matches!(one("subscribe_empty"), Command::AudioSubscribe { tags: Some(t) } if t.is_empty()));
+        assert!(matches!(one("subscribe_list"), Command::AudioSubscribe { tags: Some(t) } if t == ["pop"]));
+        assert!(matches!(one("mesh_empty"), Command::GraphicsMesh { deform_nodes, .. } if deform_nodes.is_empty()));
+        assert!(matches!(one("mesh_list"), Command::GraphicsMesh { deform_nodes, .. } if deform_nodes == ["panel"]));
+        assert!(matches!(one("write_list"), Command::GraphicsMeshBufferWrite { data, .. }
+            if data.positions.len() == 3 && data.indices == [0, 1, 2] && data.uvs.as_ref().is_some_and(|u| u.len() == 6)
+                && data.normals.as_ref().is_some_and(|n| n.len() == 3) && data.colors.as_ref().is_some_and(|c| c.len() == 12)));
+        assert!(matches!(one("append_empty"), Command::GraphicsMeshBufferAppend { data, .. }
+            if data.positions.len() == 3 && data.indices.is_empty() && data.uvs.as_deref() == Some(&[][..])
+                && data.normals.as_deref() == Some(&[][..]) && data.colors.as_deref() == Some(&[][..])));
+        assert!(matches!(one("append_list"), Command::GraphicsMeshBufferAppend { data, .. } if data.indices == [0, 1, 2] && data.uvs.is_none()));
+        // api.lua's payload builder still drops an empty uvs table (no UVs).
+        assert!(matches!(one("wrapper_write"), Command::GraphicsMeshBufferWrite { data, .. } if data.uvs.is_none()));
+        assert!(matches!(one("canvas_empty"), Command::UiCanvas { options, .. } if options.items.is_empty()));
+        assert!(matches!(one("canvas_list"), Command::UiCanvas { options, .. } if options.items.len() == 1 && options.items[0].key == "t"));
+        assert!(matches!(one("canvas_wrapper_empty"), Command::UiCanvas { options, .. } if options.items.is_empty()));
+        assert!(matches!(one("menu_children_empty"), Command::UiMenu { options, .. } if options.items[0].children.is_empty()));
+        assert!(matches!(one("menu_children_list"), Command::UiMenu { options, .. } if options.items[0].children[0].id == "b"));
+        assert!(matches!(one("detach_empty"), Command::PlayerDetach { options } if options.candidates.is_empty()));
+        assert!(matches!(one("detach_list"), Command::PlayerDetach { options } if options.candidates == [[0., 0., 1.]]));
+        for case in ["raycast_empty", "raycast_list"] {
+            assert!(run(case).unwrap_or_else(|e| panic!("{case}: {e}")).is_none(), "{case}");
+        }
+        // Empty where the command needs entries: read fine, refused by validation.
+        for case in ["write_empty", "write_uvs_empty", "write_normals_empty", "write_colors_empty", "menu_items_empty"] {
+            let e = run(case).expect_err(case);
+            assert!(e.contains("Invalid command arguments") && !e.contains("expected a sequence"), "{case}: {e}");
+        }
+        // A table that is not a list is still refused.
+        let e = run("post_named_keys").expect_err("named keys");
+        assert!(e.contains("expected a list"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Fields that are maps or free values keep reading `{}` as a map / an object.
+    #[test]
+    fn map_fields_keep_empty_tables_as_maps() {
+        let lua = Lua::new();
+        let eval = |src: &str| -> Command { lua.from_value(lua.load(src).eval::<mlua::Value>().unwrap()).unwrap() };
+        assert!(matches!(eval("return {kind='network_state', key='k', value={}}"), Command::NetworkState { value, .. } if value == json!({})));
+        assert!(matches!(eval("return {kind='network_state', key='k', value={1,2}}"), Command::NetworkState { value, .. } if value == json!([1, 2])));
+        assert!(matches!(eval("return {kind='world_audio_event', key='k', event='speech', options={value={}}}"),
+            Command::WorldAudioEvent { options, .. } if options.value == Some(json!({}))));
+        assert!(matches!(eval("return {kind='ui_canvas', key='c', options={}}"), Command::UiCanvas { options, .. } if options.visible && options.items.is_empty()));
+        assert!(matches!(eval("return {kind='world_audio_update', key='k', options={}}"), Command::WorldAudioUpdate { .. }));
     }
 }

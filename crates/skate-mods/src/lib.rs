@@ -10,13 +10,14 @@ pub mod graphics_dynamic;
 pub mod presentation;
 pub mod scene;
 mod assets;
+mod lua_list;
 pub mod model;
 mod query;
 mod schema;
 mod vm;
 pub mod extensions;
 
-pub use archive::{read_bounded, validate_package, validate_package_content, Cache};
+pub use archive::{read_bounded, validate_package, validate_package_content, validate_package_content_at, Cache};
 pub use assets::convex_points_file;
 pub use model::model_shape_file;
 pub use query::{with_host, DynamicsHost, RaycastFilter, RaycastOptions};

@@ -6,8 +6,12 @@
 //!
 //! Mod files become `mod:<id>/<path>` references (the install's own paths never contain `:`).
 //! Overlay-only data goes into sections the install never has: `mod_sample_loops`, `mod_banks`,
-//! `mod_speech`, `mod_location_programs`, `mod_maps`.
-use crate::audio_content::{AudioOverlay, BankDef, EmitterDef, LayerSample, SampleFile, hex_key};
+//! `mod_speech`, `mod_location_programs`, `mod_crossfade_layouts`, `mod_maps`.
+//!
+//! Speech takes are checked against the install's speech indexes when the caller hands them in
+//! ([`merge_one_with`], [`SpeechClips`]): an unknown archive or clip, or a take past the clip's
+//! own, is a warning and is not merged.
+use crate::audio_content::{AudioOverlay, BankDef, EmitterDef, LayerSample, SampleFile, SpeechClips, hex_key};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
@@ -88,6 +92,7 @@ struct Ctx<'a, 'r> {
     id: &'a str,
     owners: &'a mut Owners,
     report: &'r mut Report,
+    speech: Option<&'a SpeechClips>,
 }
 
 impl Ctx<'_, '_> {
@@ -232,9 +237,15 @@ fn merge_tuning(ctx: &mut Ctx, target: &mut Value, patch: &Value, path: &str) {
     }
 }
 
-/// Merge one overlay into `m` (the manifest JSON).
+/// Merge one overlay into `m` (the manifest JSON) without the speech indexes (speech takes are
+/// merged unchecked).
 pub fn merge_one(m: &mut Value, source: &Source, owners: &mut Owners, report: &mut Report) {
-    let mut ctx = Ctx { id: source.id, owners, report };
+    merge_one_with(m, source, owners, report, None);
+}
+
+/// Merge one overlay into `m`, checking speech takes against the install's speech indexes.
+pub fn merge_one_with(m: &mut Value, source: &Source, owners: &mut Owners, report: &mut Report, speech: Option<&SpeechClips>) {
+    let mut ctx = Ctx { id: source.id, owners, report, speech };
     let o = source.overlay;
     let r = &o.replace;
     // Samples by slot.
@@ -411,11 +422,18 @@ pub fn merge_one(m: &mut Value, source: &Source, owners: &mut Owners, report: &m
             (Some(_), true) => ctx.warn(format!("add.crossfades: {} ↔ {} is already in the install (use replace); ignored", c.from, c.to)),
         }
     }
-    // Speech takes (the engine checks the clips against the speech index).
+    // Speech takes, checked against the speech indexes when given.
     for (archive, clips) in &r.speech {
         for (clip, takes) in clips {
             let clip = clip.strip_suffix(".dat").unwrap_or(clip);
+            let Some(count) = speech_clip(&mut ctx, "replace", archive, clip) else { continue };
             for (take, file) in takes {
+                if let Some(count) = count {
+                    if take.parse::<usize>().is_ok_and(|t| t >= count) {
+                        ctx.warn(format!("replace.speech.{archive}.{clip}: take {take} is past the clip's {count} takes (0..{}); ignored (add.speech adds takes)", count.saturating_sub(1)));
+                        continue;
+                    }
+                }
                 if !ctx.claim(&format!("speech:{archive}:{clip}:{take}")) {
                     continue;
                 }
@@ -427,6 +445,9 @@ pub fn merge_one(m: &mut Value, source: &Source, owners: &mut Owners, report: &m
     for (archive, clips) in &o.add.speech {
         for (clip, takes) in clips {
             let clip = clip.strip_suffix(".dat").unwrap_or(clip);
+            if speech_clip(&mut ctx, "add", archive, clip).is_none() {
+                continue;
+            }
             let files: Vec<Value> = takes.iter().map(|f| ctx.file(f)).collect();
             let extra = sub(sub(section(m, "mod_speech"), archive), "extra");
             let row = extra.entry(clip.to_owned()).or_insert_with(|| json!([]));
@@ -443,6 +464,25 @@ pub fn merge_one(m: &mut Value, source: &Source, owners: &mut Owners, report: &m
                 "level": l.level, "pan_sweep": l.pan_sweep, "looping": l.looping,
             })).collect();
             section(m, "mod_location_programs").insert(bank.clone(), Value::Array(rows));
+        }
+    }
+    // Declared crossfade layouts (for banks without a crossfade program).
+    for (bank, groups) in &o.add.crossfade_layouts {
+        let len = m.get("banks").and_then(|b| b.get(bank)).and_then(Value::as_array).map_or(0, Vec::len);
+        if len == 0 {
+            ctx.warn(format!("add.crossfade_layouts: bank {bank} has no samples in the install or the overlay; ignored"));
+            continue;
+        }
+        if let Some((group, v)) = groups.iter().find_map(|(g, vs)| vs.iter().find(|v| v.sample as usize >= len).map(|v| (g, v))) {
+            ctx.warn(format!("add.crossfade_layouts.{bank}.{group}: sample {} is past the bank's {len} samples; ignored", v.sample));
+            continue;
+        }
+        if ctx.claim(&format!("crossfade_layout:{bank}")) {
+            let rows: Map<String, Value> = groups.iter().map(|(g, vs)| (
+                g.parse::<u32>().map_or_else(|_| g.clone(), |g| g.to_string()),
+                Value::Array(vs.iter().map(|v| json!({"sample": v.sample, "pan": v.pan, "level": v.level})).collect()),
+            )).collect();
+            section(m, "mod_crossfade_layouts").insert(bank.clone(), Value::Object(rows));
         }
     }
     // Tuning field merges.
@@ -493,12 +533,35 @@ pub fn merge_one(m: &mut Value, source: &Source, owners: &mut Owners, report: &m
 
 /// Merge every overlay in order.
 pub fn merge(m: &mut Value, sources: &[Source]) -> Report {
+    merge_with(m, sources, None)
+}
+
+/// Merge every overlay in order, checking speech takes against the install's speech indexes.
+pub fn merge_with(m: &mut Value, sources: &[Source], speech: Option<&SpeechClips>) -> Report {
     let mut owners = Owners::default();
     let mut report = Report::default();
     for s in sources {
-        merge_one(m, s, &mut owners, &mut report);
+        merge_one_with(m, s, &mut owners, &mut report, speech);
     }
     report
+}
+
+/// Check a speech clip against the indexes: `None` = skip it (warned), `Some(None)` = merge
+/// unchecked (no indexes given), `Some(Some(n))` = the clip has `n` takes.
+fn speech_clip(ctx: &mut Ctx, what: &str, archive: &str, clip: &str) -> Option<Option<usize>> {
+    let Some(speech) = ctx.speech else { return Some(None) };
+    let Some(clips) = speech.archive(archive) else {
+        ctx.warn(format!("{what}.speech: the install has no {archive} speech index (set up speech); {archive} takes ignored"));
+        return None;
+    };
+    match clips.get(clip) {
+        Some(&n) => Some(Some(n)),
+        None => {
+            let hint = speech.suggest(archive, clip).map_or(String::new(), |s| format!(" (did you mean {s}?)"));
+            ctx.warn(format!("{what}.speech.{archive}: clip {clip} is not in the install's speech index{hint}; ignored"));
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -554,14 +617,15 @@ mod tests {
                 "random_sets": {"e_dwtn_spillway_brewery": {"sounds": [{"bank": "MOD_x"}]}},
                 "zones": {"db21c7a69325f3df": {"bed": "04_dt_main"}},
                 "crossfades": [{"from": "B6CE4BDEB63B6639", "to": "1F741D87EB58E84F", "group": 3}],
-                "speech": {"livingworld": {"c1.dat": {"2": "audio/s.wav"}}}
+                "speech": {"livingworld": {"501_41_adtm1_Warn_n.dat": {"2": "audio/s.wav"}}}
             },
             "add": {
                 "banks": {"MOD_x": {"abk": "audio/x.abk", "samples": ["audio/x0.wav"], "preload": true}},
                 "emitters": {"sfx_downtown": [{"position": [0, 0, 0], "extent": [2, 2, 2], "bank": "MOD_x"}], "sfx_new": [{"position": [0, 0, 0], "extent": [2, 2, 2], "bank": "MOD_x"}]},
                 "random_sets": {"00000000000000AA": {"sounds": [{"bank": "MOD_x"}]}},
                 "crossfades": [{"from": "00000000000000AA", "to": "00000000000000BB", "group": 2}],
-                "speech": {"livingworld": {"c1": ["audio/e.wav"]}},
+                "speech": {"livingworld": {"501_41_adtm1_Warn_n": ["audio/e.wav"]}},
+                "crossfade_layouts": {"MOD_x": {"02": [{"sample": 0, "pan": 45}, {"sample": 0, "pan": 225, "level": 0.7}]}},
                 "location_programs": {"MOD_x": [{"sample": "shuffle"}]}
             },
             "tuning": {"player": {"grind": {"0": {"v": [0.5, 0.5, 0.5, 0.5]}}, "wheel_bucket_high": 4}, "world": {"traffic_engine": {"c04_taxi01": {"idle_rpm": 900}}}},
@@ -594,8 +658,9 @@ mod tests {
         assert!(m["random_sets"]["00000000000000AA"].is_object());
         assert_eq!(m["crossfades"][0]["group"], 3, "either order");
         assert_eq!(m["crossfades"].as_array().unwrap().len(), 2);
-        assert_eq!(m["mod_speech"]["livingworld"]["takes"]["c1"]["2"], "mod:me/audio/s.wav");
-        assert_eq!(m["mod_speech"]["livingworld"]["extra"]["c1"][0], "mod:me/audio/e.wav");
+        assert_eq!(m["mod_speech"]["livingworld"]["takes"]["501_41_adtm1_Warn_n"]["2"], "mod:me/audio/s.wav");
+        assert_eq!(m["mod_speech"]["livingworld"]["extra"]["501_41_adtm1_Warn_n"][0], "mod:me/audio/e.wav");
+        assert_eq!(m["mod_crossfade_layouts"]["MOD_x"]["2"][1], json!({"sample": 0, "pan": 225.0, "level": 0.7f32}), "group keys normalised");
         assert_eq!(m["mod_location_programs"]["MOD_x"][0]["sample"], "shuffle");
         assert_eq!(m["player_tuning"]["grind"][0]["v"], json!([0.5, 0.5, 0.5, 0.5]));
         assert_eq!(m["player_tuning"]["grind"][0]["f"], json!([1, 1, 1, 1]));
@@ -631,6 +696,59 @@ mod tests {
         assert_eq!(r.warnings.len(), 10, "{:#?}", r.warnings);
         assert!(r.conflicts.is_empty());
         assert_eq!(m, install(), "nothing applied");
+    }
+
+    fn speech_clips() -> SpeechClips {
+        let mut s = SpeechClips::default();
+        s.archives.insert("livingworld".into(), [("501_41_adtm1_Warn_n".to_owned(), 3), ("101_41_adtm1_SpecPos_f".to_owned(), 5)].into_iter().collect());
+        s
+    }
+
+    /// Deep speech checks (with the install's speech indexes): unknown clips and archives and takes
+    /// past a clip's own are warnings with a hint and are not merged; known ones merge as before.
+    #[test]
+    fn speech_takes_are_checked_against_the_speech_index() {
+        let o = overlay(json!({"version": 1,
+            "replace": {"speech": {
+                "livingworld": {"501_41_adtm1_Warn_n.dat": {"2": "a.wav", "3": "b.wav"}, "501_41_ADTM1_warn_n": {"0": "c.wav"}, "501_41_adtm1_Warn_x": {"0": "d.wav"}},
+                "maincast": {"700_1_Line": {"0": "e.wav"}}}},
+            "add": {"speech": {"livingworld": {"101_41_adtm1_SpecPos_f": ["f.wav"], "999_1_Nope": ["g.wav"]}}}}));
+        let mut m = install();
+        let speech = speech_clips();
+        let r = merge_with(&mut m, &[Source { id: "me", overlay: &o }], Some(&speech));
+        let texts: Vec<&str> = r.warnings.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(texts.len(), 5, "{texts:#?}");
+        assert!(texts.iter().any(|t| t.contains("take 3 is past the clip's 3 takes (0..2)")), "{texts:#?}");
+        assert!(texts.iter().any(|t| t.contains("clip 501_41_ADTM1_warn_n is not in the install's speech index (did you mean 501_41_adtm1_Warn_n?)")), "{texts:#?}");
+        assert!(texts.iter().any(|t| t.contains("clip 501_41_adtm1_Warn_x") && t.contains("did you mean 501_41_adtm1_Warn_n?")), "{texts:#?}");
+        assert!(texts.iter().any(|t| t.contains("no maincast speech index")), "{texts:#?}");
+        assert!(texts.iter().any(|t| t.contains("add.speech.livingworld: clip 999_1_Nope is not in the install's speech index; ignored")), "{texts:#?}");
+        assert_eq!(m["mod_speech"]["livingworld"]["takes"]["501_41_adtm1_Warn_n"], json!({"2": "mod:me/a.wav"}));
+        assert_eq!(m["mod_speech"]["livingworld"]["extra"], json!({"101_41_adtm1_SpecPos_f": ["mod:me/f.wav"]}));
+        assert!(m["mod_speech"].get("maincast").is_none());
+        // Without the indexes (unit merges) speech merges unchecked, as before.
+        let mut m = install();
+        let r = merge(&mut m, &[Source { id: "me", overlay: &o }]);
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    }
+
+    /// A declared crossfade layout needs the bank's samples (install or overlay) and slots inside it.
+    #[test]
+    fn crossfade_layouts_need_the_banks_samples() {
+        let o = overlay(json!({"version": 1, "add": {
+            "banks": {"MOD_fade": {"samples": ["a.wav", "b.wav"]}},
+            "crossfade_layouts": {
+                "MOD_fade": {"1": [{"sample": 1, "pan": 45}, {"sample": 0, "pan": 315, "level": 0.5}]},
+                "Skate_Collisions": {"1": [{"sample": 2}]},
+                "Nope": {"1": [{"sample": 0}]}}}}));
+        let mut m = install();
+        let r = merge(&mut m, &[Source { id: "me", overlay: &o }]);
+        assert_eq!(r.warnings.len(), 2, "{:?}", r.warnings);
+        assert!(r.warnings[0].text.contains("bank Nope has no samples"), "{:?}", r.warnings);
+        assert!(r.warnings[1].text.contains("sample 2 is past the bank's 2 samples"), "{:?}", r.warnings);
+        assert_eq!(m["mod_crossfade_layouts"]["MOD_fade"]["1"][1]["pan"], 315.0);
+        assert!(m["mod_crossfade_layouts"].get("Skate_Collisions").is_none());
+        assert_eq!(r.claimed["crossfade_layout:MOD_fade"], "me");
     }
 
     #[test]

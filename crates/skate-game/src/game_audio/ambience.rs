@@ -6,8 +6,9 @@
 //!   to the old zone during the fade-out fades it back in; a change during a fade-in waits for it;
 //! - for the whole transition the map's crossfade bank (`Main_Ambience_Crossfade_DT/Ind/Uni` from the
 //!   map's database entry, `map_audio`)
-//!   plays the group of the zone pair (either order; group 1, level 1.0 if no pair), four looping
-//!   voices from fixed directions (`crossfade_groups.rs`); stopped when the fade-in ends.
+//!   plays the group of the zone pair (either order; group 1, level 1.0 if no pair): the looping
+//!   voices the bank's program opens for that group (retail's: four from fixed directions), or an
+//!   audio mod's declared layout (`crossfade_layouts.rs`); stopped when the fade-in ends.
 //! Beds are not positional (retail plays the channels as authored; ours are stereo downmixes).
 //! Installs without the zone data (manifest v3) keep the old per-map bed choice (`BEDS`).
 use super::{Category, Library, Play, Voices, library::Clip, voices::VoiceId};
@@ -78,6 +79,9 @@ pub(super) struct State {
     fallback: Option<(VoiceId, Clip)>,
     /// The zone the skater was last in (audio events: `zone_change`).
     zone_seen: u64,
+    /// The map's crossfade bank, the content generation its layouts were built for, and the
+    /// layouts (built when either changes, i.e. at map load or an audio content restart).
+    layouts: Option<(Option<String>, u64, super::crossfade_layouts::Layouts)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -118,6 +122,20 @@ pub(super) fn update(
         }
         return;
     }
+    let bank = audio.crossfade_bank.clone();
+    if state.layouts.as_ref().is_none_or(|(b, g, _)| *b != bank || *g != content.generation) {
+        let (layouts, why) = match &bank {
+            Some(bank) => super::crossfade_layouts::build(&library, bank),
+            None => (super::crossfade_layouts::Layouts::empty(), None),
+        };
+        if let Some(name) = &bank {
+            match why {
+                None => info!("AUDIO_AMBIENCE crossfade layouts {name}: {:?}, groups {:?}", layouts.source, layouts.groups().collect::<Vec<_>>()),
+                Some(why) => warn!("AUDIO_AMBIENCE crossfade bank {name} has no layout ({why}): its crossfades are silent"),
+            }
+        }
+        state.layouts = Some((bank, content.generation, layouts));
+    }
     let at = cues.riding.board;
     let desired = audio.region_key(&library, "audio_ambience", at.x, at.z)
         .filter(|key| library.zone(*key).and_then(|z| z.bed.as_ref()).is_some()).unwrap_or(0);
@@ -138,7 +156,9 @@ pub(super) fn update(
                         let play = Play { category: Category::Ambience, volume: 0.0, pitch: 1.0, position: None,
                             looping: true, fade_in: 0.0, envelope: None };
                         if let Some(id) = voices.play(&mut commands, &clip, play, now) {
-                            info!("AUDIO_AMBIENCE zone {} bed {bed}", zone.as_ref().and_then(|z| z.name.as_deref()).unwrap_or("?"));
+                            // A bed an audio mod replaced says whose file plays (`mod:<id>/<path>`).
+                            let from = if clip.key.starts_with(skate_mods::audio_merge::MOD_REF) { format!(" from {}", clip.key) } else { String::new() };
+                            info!("AUDIO_AMBIENCE zone {} bed {bed}{from}", zone.as_ref().and_then(|z| z.name.as_deref()).unwrap_or("?"));
                             state.bed = Some((id, clip));
                         } else {
                             state.fading.push(clip);
@@ -163,7 +183,11 @@ pub(super) fn update(
                 state.t = 0.0;
                 stop_crossfade(state, &mut voices);
                 if desired != 0 {
-                    start_crossfade(state, audio.crossfade_bank.as_deref(), desired, &mut commands, &mut library, &mut voices, &mut assets, now);
+                    let layouts = state.layouts.take();
+                    if let Some((Some(bank), _, l)) = &layouts {
+                        start_crossfade(state, bank, l, desired, &mut commands, &mut library, &mut voices, &mut assets, now);
+                    }
+                    state.layouts = layouts;
                 }
             }
         }
@@ -204,12 +228,11 @@ pub(super) fn update(
 
 #[allow(clippy::too_many_arguments)]
 fn start_crossfade(
-    state: &mut State, bank: Option<&str>, to: u64, commands: &mut Commands, library: &mut Library,
-    voices: &mut Voices, assets: &mut Assets<AudioSource>, now: f64,
+    state: &mut State, bank: &str, layouts: &super::crossfade_layouts::Layouts, to: u64, commands: &mut Commands,
+    library: &mut Library, voices: &mut Voices, assets: &mut Assets<AudioSource>, now: f64,
 ) {
-    let Some(bank) = bank else { return };
     let (group, level) = library.crossfade(state.current, to).map_or((1, 1.0), |c| (c.group, c.level));
-    let Some((_, _, layout)) = super::crossfade_groups::GROUPS.iter().find(|(b, g, _)| *b == bank && *g == group) else {
+    let Some(layout) = layouts.group(group) else {
         return;
     };
     // w0 = clamp(MixMap out1 x level); out1 not decoded yet, taken as full scale.
@@ -284,6 +307,71 @@ mod tests {
         assert!((attenuation(Phase::FadeIn, 1.0, 2.0, 3.0) - 0.5).abs() < 1e-6);
         assert!((attenuation(Phase::FadeOut, 1.5, 2.0, 3.0) - 0.5).abs() < 1e-6);
         assert_eq!(attenuation(Phase::FadeOut, 5.0, 2.0, 3.0), 1.0);
+    }
+
+    /// A mod crossfade bank plays: an overlay adds a WAV bank with a declared layout, a zone pair
+    /// naming its group and a map whose crossfade bank it is; walking from one zone into the
+    /// other starts the declared voices (the mod's samples) for the transition and stops them
+    /// when the new bed has faded in.
+    #[test]
+    fn a_mod_crossfade_bank_plays_its_layout() {
+        use super::super::library::{OverlaySource, tests::{content_fixture, test_wav}};
+        let (dir, mods) = content_fixture("ambience-crossfade");
+        let manifest = dir.join("private/audio/audio_manifest.json");
+        let mut m: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        m["zones"]["00000000000000CD"] = serde_json::json!({"name": "street", "bed": "bed"});
+        std::fs::write(&manifest, m.to_string()).unwrap();
+        std::fs::write(mods.join("audio/f0.wav"), test_wav(4800, 48000, 11)).unwrap();
+        std::fs::write(mods.join("audio/f1.wav"), test_wav(4800, 48000, 22)).unwrap();
+        let o: skate_mods::audio_content::AudioOverlay = serde_json::from_value(serde_json::json!({"version": 1,
+            "add": {
+                "banks": {"MOD_fade": {"samples": ["audio/f0.wav", "audio/f1.wav"], "group": "world"}},
+                "crossfades": [{"from": "00000000000000AB", "to": "00000000000000CD", "group": 2}],
+                "crossfade_layouts": {"MOD_fade": {"2": [{"sample": 1, "pan": 45}, {"sample": 0, "pan": 225, "level": 0.7}]}}
+            },
+            "maps": {"MyMap": {"crossfade_bank": "MOD_fade", "regions": {"audio_ambience": [
+                {"box": [-50, 0, 50, 50], "key": "plaza"}, {"box": [50, 0, 50, 50], "key": "street"}]}}}
+        })).unwrap();
+        o.validate().unwrap();
+        let (library, report) = Library::load_with(&dir, &[OverlaySource { id: "dev.a", root: &mods, overlay: &o }]).unwrap();
+        assert!(report.warnings.is_empty() && report.conflicts.is_empty() && report.rejected.is_empty(), "{report:?}");
+        let audio = super::super::map_audio::build("MyMap", None, &library, Some(&std::collections::HashMap::new()));
+        assert_eq!(audio.crossfade_bank.as_deref(), Some("MOD_fade"));
+        let mut world = World::new();
+        let mut assets = Assets::<AudioSource>::default();
+        let mut probe = Library::load_with(&dir, &[OverlaySource { id: "dev.a", root: &mods, overlay: &o }]).unwrap().0;
+        let (f0, f1) = (probe.sample(&mut assets, "MOD_fade", 0).unwrap(), probe.sample(&mut assets, "MOD_fade", 1).unwrap());
+        world.insert_resource(library);
+        world.insert_resource(assets);
+        world.insert_resource(Voices::default());
+        world.insert_resource(crate::map_transition::CurrentMap { path: None, name: "MyMap".into(), spawn: [0.0; 3], heading: 0.0, generation: 1, audio_tag: None });
+        world.insert_resource(super::super::skate_events::Cues::default());
+        world.insert_resource(Time::<Real>::default());
+        world.insert_resource(super::super::AudioContent::default());
+        world.insert_resource(audio);
+        world.insert_resource(super::super::mod_audio::AudioApi::default());
+        world.spawn((GlobalTransform::default(), super::super::GameAudioListener));
+        // One system instance for the whole walk (its Local state is the ambience player's).
+        let system = world.register_system(update);
+        let start = std::time::Instant::now();
+        let step = |world: &mut World, x: f32, t: f32| {
+            world.resource_mut::<super::super::skate_events::Cues>().riding.board = Vec3::new(x, 0.0, 0.0);
+            world.resource_mut::<Time<Real>>().update_with_instant(start + std::time::Duration::from_secs_f32(t));
+            world.run_system(system).unwrap();
+        };
+        // In the plaza until its bed has faded in (1 s), then across into the street.
+        for i in 0..15 {
+            step(&mut world, -10.0, i as f32 * 0.1);
+        }
+        assert!(!world.resource::<Voices>().uses(&f0) && !world.resource::<Voices>().uses(&f1), "no crossfade inside one zone");
+        step(&mut world, 10.0, 1.6);
+        assert!(world.resource::<Voices>().sounds(&f0) && world.resource::<Voices>().sounds(&f1), "the declared group plays the mod's samples");
+        // The old bed fades out (1 s), the new one fades in (1 s): then the crossfade stops.
+        for i in 0..30 {
+            step(&mut world, 10.0, 1.7 + i as f32 * 0.1);
+        }
+        assert!(!world.resource::<Voices>().sounds(&f0) && !world.resource::<Voices>().sounds(&f1), "stopped when the fade-in ended");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
