@@ -26,8 +26,10 @@
 //! [`WorldAudioInstance`] on the entities that hold an instance, so an engine system can skip
 //! per-frame audio work (an NPC's `AudioState`) for the others.
 //!
-//! Messages: [`PedSpeechEvent`] (a state graph's `SendSpeechEvent`), [`VehicleHorn`] (hold a horn
-//! kind for the caller's time), [`VehicleAlarm`] (retail's 8 s alarm). Set [`LivingWorldAudio`]
+//! Messages: [`PedSpeechEvent`] (a state graph's `SendSpeechEvent`), [`PedTazerEvent`] (a zap:
+//! the tazer burst), [`PedBodyFallEvent`] (a knock-down animation's `BodyFallType` key),
+//! [`NpcSkaterReactionEvent`] (an NPC skater saw a slam / trick or crashed: its own speech),
+//! [`VehicleHorn`] (hold a horn kind for the caller's time), [`VehicleAlarm`] (retail's 8 s alarm). Set [`LivingWorldAudio`]
 //! `expected` at map load when the system will publish, so the world banks decode ahead of need.
 //!
 //! Everything stays inert when nothing is published. `SKATE_AEMS_WORLD=0` /
@@ -39,6 +41,8 @@ use bevy::prelude::*;
 
 pub use skate_audio::player::AudioState;
 pub use skate_audio::player::state::LiteSkater;
+/// An NPC skater's reaction bytes (what the AI sets per frame; `skate_audio::world::skater_speech`).
+pub use skate_audio::world::skater_speech::Reactions as SkaterReactions;
 
 /// A vehicle's horn state (`+156`): what the traffic AI decides. `Honk(1..=5)` = the horn kind
 /// (which kind a model uses is the AI's; retail packs it per vehicle), `Alarm` = the car alarm
@@ -132,6 +136,14 @@ pub struct PedAudio {
     /// `S+136`: the speech value the ped's state graph last sent. Engine systems normally send
     /// [`PedSpeechEvent`] instead; the footstep packets read it too (jump 4/5, collision 6/7).
     pub speech_value: i32,
+    /// `S+80`: the ped is tazing (retail: while its state graph's `TazeEntity` state runs):
+    /// SFXObj_Tazer holds the `c_tazer` packet (the zap burst). [`PedTazerEvent`] holds it for a
+    /// time instead.
+    pub tazing: bool,
+    /// `S+76`: the ped animation's `BodyFallType` channel (0 = none). Each change to a non-zero
+    /// value starts one PedBodyFall sound (8, 9 and any other value have their own sounds).
+    /// [`PedBodyFallEvent`] sends one key instead.
+    pub body_fall: f32,
 }
 
 impl Default for PedAudio {
@@ -146,6 +158,8 @@ impl Default for PedAudio {
             footsteps_on: None,
             speech_distance: None,
             speech_value: 0,
+            tazing: false,
+            body_fall: 0.0,
         }
     }
 }
@@ -164,9 +178,19 @@ pub struct NpcSkaterAudio {
     pub state: Option<AudioState>,
     /// A remote multiplayer player (sorted before the NPCs).
     pub remote: bool,
-    /// The skater's speech voice (the AI skaters' models 89–96; their bail grunt, event 8206, says
-    /// a line of it). None = no speech.
+    /// The skater's speech voice (its `aud_characteristics` model: the AI skaters' 89–96 speak on
+    /// the living-world channel, the pros 1–29 and the special cast 30–38 on the main cast). Its
+    /// bail grunt (event 8206 / 115) and its reactions say lines of it. None = no speech.
     pub voice: Option<u32>,
+    /// The skater record's reaction bytes this frame (a slam or trick it saw and by whom, its own
+    /// crash, the chase flag): its speech process says the matching lines. Held while set, as the
+    /// AI holds them; [`NpcSkaterReactionEvent`] raises one for a console frame instead.
+    pub reactions: SkaterReactions,
+    /// The conditioner's loose-board state (state `+780`: 0 none, 1 upside down, 2 on its side;
+    /// `skate_audio::player::rolling::loose_board` from the bail / on-foot flag, the deck contact,
+    /// its material and the deck's up against the ground): the board slide (`c_board_slide`) holds
+    /// while it is set. Retail computes it per skater entry and the instance bridge copies it.
+    pub loose_board: u8,
 }
 
 /// Overrides the velocity the bridge derives from the transform (m/s, world).
@@ -196,6 +220,12 @@ pub struct LivingWorldAudio {
     /// The living world will publish on this map: the world banks are read and decoded on the
     /// prefetch worker. Set it at map load / spawner start, clear it when the world stops.
     pub expected: bool,
+    /// The game flag PedestrianSpeech's photographer repeat needs (retail: a system byte,
+    /// `*(0x830CFDC4)+912`, meaning not traced): while set, a ped holding speech value 29
+    /// (`PictureTaking`) repeats its request every `world_tuning.ped_objects.photo_repeat` s.
+    pub photo_flag: bool,
+    /// The same flag raised by mods (`photo_flag` on a mod ped; cleared with the mod's objects).
+    pub mod_photo_flag: bool,
 }
 
 /// Debug counts (read only; written by the bridge every frame).
@@ -287,10 +317,63 @@ pub struct VehicleAlarm {
 /// The car alarm's length (s).
 pub const ALARM_SECONDS: f32 = 8.0;
 
+/// A ped zaps with its tazer: `PedAudio::tazing` is held for `seconds` (None = the state graph's
+/// `TazerCycTime`, `world_tuning.ped_objects.tazer_seconds`, 2.0 s), the `c_tazer` burst plays.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct PedTazerEvent {
+    pub ped: Entity,
+    pub seconds: Option<f32>,
+}
+
+/// A ped animation's `BodyFallType` key (a knock-down's events: 9, other, 9, 9 … in retail):
+/// one PedBodyFall sound. Keys are queued; each is held for one console frame with a frame of 0
+/// before the next, so repeated values sound.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct PedBodyFallEvent {
+    pub ped: Entity,
+    pub kind: f32,
+}
+
+/// One NPC skater reaction (the skater record's reaction bytes, `sub_824B6E80`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkaterReaction {
+    /// A slam it saw (`+102`), by the skater model `by` (0 = the player).
+    Slam,
+    /// The second slam reaction (`+103`).
+    SlamB,
+    /// A trick it saw (`+104`).
+    Trick,
+    /// Its own crash (`+131`).
+    Crash,
+    /// The chase flag (living-world voices only).
+    Chase,
+}
+
+/// An NPC skater reacts: the reaction is held for one console frame (`by` = the other skater's
+/// model, 0 = the player; the pro-on-pro lines name it).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct NpcSkaterReactionEvent {
+    pub skater: Entity,
+    pub reaction: SkaterReaction,
+    pub by: u32,
+}
+
+impl SkaterReaction {
+    /// `set` with this reaction raised.
+    pub fn raise(self, mut set: SkaterReactions, by: u32) -> SkaterReactions {
+        match self {
+            Self::Slam => (set.slam, set.slam_by) = (true, by),
+            Self::SlamB => (set.slam_b, set.slam_b_by) = (true, by),
+            Self::Trick => (set.trick, set.trick_by) = (true, by),
+            Self::Crash => set.crash = true,
+            Self::Chase => set.chase = true,
+        }
+        set
+    }
+}
+
 // The NPC bail grunt needs no message: retail's body poster raises it at the bail's first body
-// impact (`NpcSkaterAudio::voice` names the speaker). Not offered (spec §3.4): `PedKnockDown`
-// (PedBodyFall) and `PedTazer` (Tazer): no recording shows what they post (doc 15 "PedBodyFall
-// and Tazer").
+// impact (`NpcSkaterAudio::voice` names the speaker).
 
 #[cfg(test)]
 mod tests {

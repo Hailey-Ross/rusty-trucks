@@ -43,7 +43,7 @@ fn merge(into: &mut WorldAudioOptions, from: WorldAudioOptions) {
     macro_rules! take {
         ($($f:ident),*) => { $( if from.$f.is_some() { into.$f = from.$f; } )* };
     }
-    take!(position, velocity, heading, body, engine, speed, load, horn, skidding, voice, shoe_class, weight, close_range, feet, materials, footsteps, source, from, seconds, wheels, material, grinding, grind_material, air);
+    take!(position, velocity, heading, body, engine, speed, load, horn, skidding, voice, shoe_class, weight, close_range, feet, materials, footsteps, tazing, photo_flag, source, from, seconds, wheels, material, grinding, grind_material, air, loose_board);
 }
 
 /// The ghost's states from `logs/<name>.tsv` in the mod, or `SKATE_AUDIO_STATE_LOGS/<name>.tsv`.
@@ -137,6 +137,24 @@ pub(super) fn event(world: &mut World, owner: &str, key: &str, event: &str, opts
         ("alarm", ObjectKind::Traffic) => {
             world.write_message(VehicleAlarm { vehicle: entity });
         }
+        ("tazer", ObjectKind::Ped) => {
+            world.write_message(PedTazerEvent { ped: entity, seconds: opts.seconds });
+        }
+        ("body_fall", ObjectKind::Ped) => {
+            let kind = opts.kind.ok_or("body_fall needs its kind")?;
+            world.write_message(PedBodyFallEvent { ped: entity, kind: f32::from(kind) });
+        }
+        ("reaction", ObjectKind::Skater) => {
+            let reaction = match opts.value.as_ref().and_then(Value::as_str) {
+                Some("slam") => SkaterReaction::Slam,
+                Some("slam_b") => SkaterReaction::SlamB,
+                Some("trick") => SkaterReaction::Trick,
+                Some("crash") => SkaterReaction::Crash,
+                Some("chase") => SkaterReaction::Chase,
+                other => return Err(format!("unknown reaction {other:?}")),
+            };
+            world.write_message(NpcSkaterReactionEvent { skater: entity, reaction, by: opts.by.unwrap_or(0) });
+        }
         ("speech", ObjectKind::Ped) => {
             let value = match &opts.value {
                 Some(Value::Number(n)) => n.as_i64().map(|v| SpeechValue(v as i32)),
@@ -215,8 +233,14 @@ fn sync(
     game_time: Res<Time>,
     physics: Option<Res<crate::physics::GamePhysics>>,
     mut q: Query<(&mut Transform, &mut GlobalTransform, Option<&mut TrafficAudio>, Option<&mut PedAudio>, Option<&mut NpcSkaterAudio>, Option<&mut AudioVelocity>)>,
+    mut living: ResMut<LivingWorldAudio>,
     mut commands: Commands,
 ) {
+    // The photographer's game flag: raised while any mod ped sets it (cleared with the objects).
+    let photo = audio.objects.values().any(|o| o.kind == ObjectKind::Ped && o.state.photo_flag == Some(true));
+    if living.mod_photo_flag != photo {
+        living.mod_photo_flag = photo;
+    }
     if audio.objects.is_empty() {
         return;
     }
@@ -284,6 +308,8 @@ fn sync(
                 footsteps_on: s.footsteps,
                 speech_distance: None,
                 speech_value: ped.speech_value,
+                tazing: !parked && s.tazing.unwrap_or(false),
+                body_fall: ped.body_fall,
             };
             if *ped != want {
                 *ped = want;
@@ -293,6 +319,10 @@ fn sync(
             let voice = s.voice.filter(|v| *v != 0);
             if npc.voice != voice {
                 npc.voice = voice;
+            }
+            let loose = s.loose_board.unwrap_or(0).min(2);
+            if npc.loose_board != loose {
+                npc.loose_board = loose;
             }
             let v = if parked { Vec3::ZERO } else { velocity.unwrap_or(derived) };
             let v = match s.speed {

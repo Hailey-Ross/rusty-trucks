@@ -29,8 +29,11 @@ from pathlib import Path
 WORLD_BANKS = (
     'C00_heavy01.abk', 'C01_family01.abk', 'C03_sports01.abk', 'C04_taxi01.abk', 'C05_truck01.abk',
     'C06_sports02.abk', 'C07_family02.abk', 'C08_family03.abk', 'Traffic_Horn.abk', 'Traffic_Skid.abk',
-    'car_alarms.abk', 'fstep_livingworld.abk', 'Tazer.abk',
+    'car_alarms.abk', 'fstep_livingworld.abk', 'Tazer.abk', 'CellPhone_Rings.bnk',
 )
+# The Splice (SPLC) banks among them: their patch trees go to the native Splice player
+# (`skate_audio::world::peds::PedSpeech`'s phone ring, retail's Splice table index 6).
+WORLD_SPLICE_BANKS = ('CellPhone_Rings.bnk',)
 
 ENGINE_CLASS = 'Hash_259095163B974174'  # aud_traffic_engine
 ENGINE_FIELDS = {
@@ -54,12 +57,56 @@ PED_SPEEDS = 'Hash_E12AF885D3C3A168'
 PED_STEP_IDS = ('Hash_6B61C043E53C44CB', 'Hash_EC3399A49055DD8D', 'Hash_9D6D2863CFE908C4')
 PED_TAIL = 'Hash_62A2E64238934734'
 PED_EQ = 'Hash_A9023782094771B5'
+# SFXObj_PedBodyFall (recomp sub_824F0AB8): the Skate_Collisions containers by BodyFallType 8 / 9 / other,
+# and the eEQChain field it resolves (absent from the shipped database: the lookup's default 0).
+BODY_FALL = ('Hash_923CCB46EF5BF5BA', 'Hash_DFEFC9212E0CBD2C')
+BODY_FALL_IDS = ('Hash_552899F3BF9927CC', 'Hash_A3E8A9381F4222E1', 'Hash_C0FFD1E535F218E2')
+BODY_FALL_EQ = 'Hash_B4C4F86A53963BA2'
+# PedestrianSpeech's phone ring for speech value 49 (sub_824D9C70): CellPhone_Rings container.
+RING = ('Hash_C1831BDB6CB1B1EA', 'cellphone')
+RING_ID = 'Hash_031EFDF991638985'
+# The speech stream voice's PEAK filter by the speaker's azimuth (PedestrianSpeech update sub_824D9370):
+# three Sk8::PointNegGraphData8 curves of the speech record (holder *(0x830CFDA4)+44).
+SPEECH_RECORD = ('Hash_B29C3B2C13D96482', 'default')
+SPEECH_PEAK = {'freq': 'Hash_2C166907CF51DB88', 'gain': 'Hash_EA2C18D9CE5CBA3A', 'q': 'Hash_CF8679F540B82B2B'}
+# The speech echo delay: the camera-distance factor and the refresh in console frames (`sub_824D9370`).
+SPEECH_ECHO = {'delay_factor': ('Hash_BF48032DB145C5B4', 'f32'), 'delay_frames': ('Hash_510BAFA32A76B340', 'i32')}
+# The state graph that holds a tazer zap (TazeEntity: TazerCycTime).
+TAZE_GRAPH = 'data/state/livingworldentities/pedestrian/aigraph/pedestrian_wanttotaze.xml'
+
+
+def _graph8(field) -> dict | None:
+    """A Sk8::PointNegGraphData8 field: 16 header bytes, then 8 x and 8 y floats."""
+    if not field:
+        return None
+    raw = bytes.fromhex(''.join(field['data'].split()))
+    if len(raw) < 80:
+        return None
+    floats = struct.unpack('>16f', raw[16:80])
+    return {'x': [round(v, 6) for v in floats[:8]], 'y': [round(v, 6) for v in floats[8:]]}
+
+
+def tazer_seconds(roots) -> float | None:
+    """The TazeEntity state's TazerCycTime (s) from the ped state graph, in the first of `roots` (the
+    extracted stock data, the disc) that has it; None when none does."""
+    for root in roots or ():
+        path = Path(root)/TAZE_GRAPH
+        if path.is_file():
+            text = path.read_text(encoding='utf-8', errors='replace')
+            m = re.search(r'timerName="TazerCycTime"\s+length="([0-9.]+)"', text)
+            return float(m.group(1)) if m else None
+    return None
 
 # The speech events a free-roam ped can say (audio-specs/world-speech.md): reactions, chases, conversations, phone
 # calls, bums, the player-action comments.
 FREE_ROAM_EVENTS = (101, 102, 104, 105, 108, 109, 110, 201, 202, 203, 204, 205, 206, 207, 314, 315, 316, 320,
                     330, 331, 335, 336, 338, 339, 400, 497, 501, 603, 604, 605, 606, 607, 609, 611, 805, 806, 807,
                     1901, 4402, 4405)
+# The main cast's (pros' and the special cast's) free-roam events (`maincastspeech.big`, the speech manager's bank 0):
+# the skater speech messages and reactions the port sends (grunt 201 / impact 202, crash 906, pos 101, slam 104, collide
+# 130, pro-on-pro 150 / 151, gestures 338, hit reactions 344 / 335 / 336, warn 500 / 501, greet 601, race 903 / 913,
+# bored 1014). ~3.0 h, ~0.95 GB as 44.1 kHz PCM16; decoded with the living world's (`SKATE_SETUP_SPEECH=1`).
+MAIN_CAST_EVENTS = (101, 104, 130, 150, 151, 201, 202, 335, 336, 338, 344, 500, 501, 601, 903, 906, 913, 1014)
 
 
 def _word(data: str, kind: str):
@@ -71,8 +118,9 @@ def _word(data: str, kind: str):
     return struct.unpack('>i', raw[:4])[0]
 
 
-def world_tuning(collections: list[dict], record_names: list[str] | None = None) -> dict:
-    """{'traffic_engine': {name: {...}}, 'ped_footsteps': {...}} from the converted collections."""
+def world_tuning(collections: list[dict], record_names: list[str] | None = None, state_roots=None) -> dict:
+    """{'traffic_engine': {name: {...}}, 'ped_footsteps': {...}, 'ped_objects': {...}, 'speech_voice': {...}, …}
+    from the converted collections (and the disc's ped state graph for the tazer hold)."""
     from .audio_formats import name_id
     names = {f'Hash_{name_id(n):016X}': n for n in (record_names or [])}
     by_class: dict[str, dict] = {}
@@ -117,6 +165,30 @@ def world_tuning(collections: list[dict], record_names: list[str] | None = None)
     if eq:
         peds['eq_chain'] = _word(eq['data'], 'i32')
     out['ped_footsteps'] = peds
+    # The ped one-shot objects (skate_audio::world::peds::PedObjectTuning; unset fields keep its retail defaults).
+    objects: dict = {}
+    ids = [resolve(*BODY_FALL, f) for f in BODY_FALL_IDS]
+    if all(ids):
+        objects['body_fall_ids'] = [_word(f['data'], 'i32') for f in ids]
+    eq = resolve(*EQ_HOLDER, BODY_FALL_EQ)
+    objects['body_fall_eq'] = _word(eq['data'], 'i32') if eq else 0
+    ring = resolve(*RING, RING_ID)
+    if ring:
+        objects['ring_id'] = _word(ring['data'], 'i32')
+    seconds = tazer_seconds(state_roots)
+    if seconds is not None:
+        objects['tazer_seconds'] = seconds
+    out['ped_objects'] = objects
+    voice = {}
+    for name, field in SPEECH_PEAK.items():
+        curve = _graph8(resolve(*SPEECH_RECORD, field))
+        if curve:
+            voice[f'peak_{name}'] = curve
+    for name, (field, kind) in SPEECH_ECHO.items():
+        f = resolve(*SPEECH_RECORD, field)
+        if f is not None:
+            voice[name] = _word(f['data'], kind)
+    out['speech_voice'] = voice
     out['speech_tuning'] = speech_tuning(collections)
     out['ped_models'] = ped_models(collections)
     out['traffic_models'] = traffic_models(collections, names)
@@ -134,7 +206,10 @@ PED_MODEL_FIELDS = {
     'Hash_68BB61E508841729': ('gender', 'i32'),       # S+124: 1 female, 2 male
     'Hash_871BDC669F2B1844': ('shoe_class', 'i32'),   # S+132
     'Hash_A27215A909135B62': ('far', 'f32'),          # S+156: the far line threshold (m)
-    'Hash_2087A3290483BB4F': ('pitch', 'f32'),        # a per-voice float (0.8-1.15; S+152, use open)
+    'Hash_2087A3290483BB4F': ('pitch', 'f32'),        # the per-voice float (S+152): the speech stream's gain / sends ×
+    'Hash_6F2933E977CF40DD': ('cast_bit', 'i32'),     # the main-cast speaker bit (skater speech record +84, word 1)
+    'Hash_14FD437D190677C8': ('cast_word', 'i32'),    # the special cast's bit (+88, word 2: characters 30-38)
+    'Hash_D6EA428C2B43E23A': ('cast_word2', 'i32'),   # the second word another skater's lines read (150 / 151)
 }
 
 

@@ -91,3 +91,34 @@ Every B lookup reads Ctl 5.1, the ped's 3DObjPos.
 - The `sub_824D8E60` flag.
 - The 3 % of retail slots we do not produce (above).
 - Instance assignment: nearest 15, provisional.
+
+## Tazer and PedBodyFall ported (2026-10-03, doc 15 "Gaps closed")
+- **SFXObj_Tazer** (object 5.3, vtable `0x822FCB60`, factory `sub_824F12D0`, 40 bytes): process `sub_824F1478`
+  (gate `[obj+16]+52`): while the ped audio state's byte `S+80` (= the manager's bit 17 of entry `+4`) is set and
+  no packet is held, post `c_tazer` (`sub_824B7950`, class descriptor `0x8302EEF8`, 9 words
+  `[32767, 0, 4096, 0, 25000, 0, 0, 0, G+4 byte]`, G = `*(0x83083C38)+0x2F070`, 0 in free skate); when it clears,
+  release. Update `sub_824F1560`: w1 raw0, w2 pitch1 (≤ 8192), w6 level3, w7 level2. The program owns a child post
+  (`c_tazer_grn_play`, op 38) and plays the burst while held: samples 8, 7, then shuffles of 0–6.
+  - `S+80` = tazing: the post comes 22 ms after the state graph's `TazeEntity` entry (PEDTIMER `TazerCycTime`
+    2.0 s, `pedestrian_wanttotaze.xml`), 3 / 3 zaps of 164620; bursts 2 / 3 last 2.1 / 2.0 s (the hold); burst 1
+    ended after 1.33 s (cause not traced).
+  - **Check** (`tazer_bursts_follow_the_recomp`, the export of a local research tool): ours 19 starts per 2 s hold vs the
+    recomp's 10 / 20 / 19 (49); gaps 192 / 192 / 128 / 96… vs 190 / 190 / 130 / 90–100, the 11th gap 128 vs 129 /
+    131; first-start gain recomp / ours 0.85 / 0.93 / 1.00 at the recorded geometry; order 8, 7, shuffles.
+- **SFXObj_PedBodyFall** (object 5.2, vtable `0x822FCB18`, factory `sub_824F0880`): process `sub_824F0AB8`:
+  `S+76` (float, = entry `+16`) is the ped animation's **`BodyFallType`** channel (the string sits with
+  `RightToeDown` / `LeftToeDown` in the animation-event table at `0x820648F8`). On a change to a non-zero value one
+  Skate_Collisions sound starts through `sub_82497F48` (mono submix on eEQChain bus `[holder +140 field
+  B4C4F86A53963BA2]` = absent → 0, create): 8 → container 1184 (2 round-robin slots `+40/+44`, index `+60`),
+  9 → 948 (`+48/+52`, `+64`), other → 1183 (`+56`); containers from class `923CCB46EF5BF5BA` record
+  `DFEFC9212E0CBD2C` (holder `+124`). Update `sub_824F0E50`: per type its own volume / pitch output (8: out1 / out2,
+  9: out3 / out4, other: out5 / out6), raw0 azimuth, dt, env send level(7) (`sub_82498140`).
+  - **The recordings DO show it** (the earlier "no post" looked at POST lines; the starts are SPLC with chain
+    `82497FAC<824F0BE8|824F0D10|824F0E0C`): 75 starts in 6 sessions, the knock-down patterns 9, +0.10 other, +0.48 9,
+    +0.16 9 and 9, +0.13 8, +0.07 8, +0.10 other, +0.38 9 and 9, +0.15 other.
+  - **Check** (`body_falls_follow_the_recomp`, 73 starts with sample resolution): container 73 / 73 by type; the
+    recomp's sample is one the container plays in 57; voice gain recomp / ours p50 0.79 (p10 0.25, p90 1.25, n 40;
+    the knocked-down ped is guessed = the ped nearest the player).
+- Engine: `PedAudio::{tazing, body_fall}`, messages `PedTazerEvent { seconds }` (default `ped_objects.tazer_seconds`
+  = TazerCycTime) and `PedBodyFallEvent { kind }` (queued, one console frame on, one off). Mod: ped option `tazing`,
+  events `tazer` / `body_fall`. Setup: `world_tuning.ped_objects` (ids, eq, tazer seconds from the xml).
