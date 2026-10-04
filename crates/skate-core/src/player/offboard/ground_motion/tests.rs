@@ -268,3 +268,46 @@ fn limiter_keeps_quaternion_w_lane_fused_residuals() {
     let expected = second_w.mul_add(2.0, from[3]);
     assert_eq!(got[3].to_bits(), expected.to_bits());
 }
+
+/// Issue #10: a stray W lane in the ground frame position (native scratch
+/// from an animation target or a collision error) must not be amplified by
+/// the moving-support velocity derivative. Before the fix a 1e-3 seed reached
+/// Inf after ~195 supported ticks and NaN the tick after.
+#[test]
+fn stray_position_w_is_not_amplified_by_support_velocity() {
+    let mut s = state();
+    let mut i = input();
+    i.contact_flags_176 = 1;
+    s.frame_0[3] = [1.0, 0.0, 2.0, 0.0];
+    for tick in 0..600 {
+        i.contact_displacement_384 = if tick == 5 { [0.0, 0.0, 0.0, 1.0e-3] } else { ZERO };
+        update(&mut s, &i);
+        assert_eq!(s.support_velocity_256[3], 0.0, "tick {tick}");
+        assert_eq!(s.predicted_support_velocity_272[3], 0.0, "tick {tick}");
+        assert!(s.frame_0[3][3].abs() <= 1.0e-3, "tick {tick}: W {}", s.frame_0[3][3]);
+        assert!(s.frame_0[3].iter().all(|v| v.is_finite()), "tick {tick}");
+    }
+    assert_eq!(&s.frame_0[3][..3], &[1.0, 0.0, 2.0]);
+}
+
+/// Same loop seeded the way animation-directed movement can seed it: the
+/// authored target frame's W lanes enter the step through target - position.
+#[test]
+fn animation_target_w_scratch_cannot_blow_up_the_ground_frame() {
+    let mut s = state();
+    let mut i = input();
+    i.contact_flags_176 = 1;
+    s.frame_0[3] = [1.0, 0.0, 2.0, 0.0];
+    for tick in 0..600 {
+        let directed = (5..15).contains(&tick);
+        i.animation_directed_304 = directed;
+        i.target_frame_present_352 = directed;
+        i.target_frame_368 = IDENTITY;
+        // Native permutation scratch: each row's X repeated into W.
+        i.target_frame_368[0][3] = 1.0;
+        i.target_frame_368[3] = [1.5, 0.0, 2.0, 1.5];
+        update(&mut s, &i);
+        assert!(s.frame_0[3].iter().all(|v| v.is_finite()), "tick {tick}: {:?}", s.frame_0[3]);
+        assert!(s.frame_0[3][3].abs() < 10.0, "tick {tick}: W {}", s.frame_0[3][3]);
+    }
+}
