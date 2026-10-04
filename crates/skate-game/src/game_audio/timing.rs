@@ -1,7 +1,8 @@
 //! Opt-in cost readout of the game audio (`SKATE_AUDIO_TIMING=1`): once per second one
 //! `AUDIO_TIMING` log line with the slowest and average time of each audio system on the game
 //! thread, the time spent waiting for the native runtime's lock (game thread and audio thread),
-//! the native render per 256-frame block, and the slowest frame. Off: one relaxed atomic load per
+//! the native render per 256-frame block, the load each block rendered (mixer voices, live AEMS
+//! instances, grain voices: max / average per block), and the slowest frame. Off: one relaxed atomic load per
 //! scope. For finding stutter in real play (`tools/audio-bench/`); measuring only, no behaviour.
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +29,47 @@ impl Stat {
     fn take(&self) -> (u64, u64, u64) {
         (self.max.swap(0, Ordering::Relaxed), self.sum.swap(0, Ordering::Relaxed), self.n.swap(0, Ordering::Relaxed))
     }
+}
+
+/// The render's load per block (counts, not µs): `name=max/avg×blocks` in the line, the average
+/// with one decimal. Ties the render cost to what it rendered.
+pub(crate) struct Gauge {
+    name: &'static str,
+    max: AtomicU64,
+    sum: AtomicU64,
+    n: AtomicU64,
+}
+
+impl Gauge {
+    const fn new(name: &'static str) -> Self {
+        Self { name, max: AtomicU64::new(0), sum: AtomicU64::new(0), n: AtomicU64::new(0) }
+    }
+    pub(crate) fn add(&self, v: u64) {
+        self.max.fetch_max(v, Ordering::Relaxed);
+        self.sum.fetch_add(v, Ordering::Relaxed);
+        self.n.fetch_add(1, Ordering::Relaxed);
+    }
+    fn take(&self) -> (u64, u64, u64) {
+        (self.max.swap(0, Ordering::Relaxed), self.sum.swap(0, Ordering::Relaxed), self.n.swap(0, Ordering::Relaxed))
+    }
+}
+
+/// Mixer voices (AEMS, Splice, streams), live AEMS instances and grain voices per rendered block.
+pub(crate) static BLOCK_VOICES: Gauge = Gauge::new("block_voices");
+pub(crate) static BLOCK_INSTANCES: Gauge = Gauge::new("block_instances");
+pub(crate) static BLOCK_GRAINS: Gauge = Gauge::new("block_grains");
+static GAUGES: [&Gauge; 3] = [&BLOCK_VOICES, &BLOCK_INSTANCES, &BLOCK_GRAINS];
+
+/// Record one rendered block's load (when the readout is on). Reads counters only: no allocation,
+/// no state change.
+pub(crate) fn block_load(rt: &skate_audio::runtime::Runtime) {
+    if !on() {
+        return;
+    }
+    BLOCK_VOICES.add(rt.mixer.voice_count() as u64);
+    BLOCK_INSTANCES.add(rt.eval.instance_count() as u64);
+    let npc = rt.npc_grains.as_deref().map_or(0, skate_audio::grain::GrainBed::voices);
+    BLOCK_GRAINS.add((rt.grains.voices() + npc) as u64);
 }
 
 pub(crate) static MIXMAP_FRAME: Stat = Stat::new("mixmap_frame");
@@ -87,6 +129,12 @@ pub(crate) fn report(time: Res<Time<Real>>, mut clock: Local<f32>) {
         let (max, sum, n) = s.take();
         if n > 0 {
             line.push_str(&format!(" {}={}/{}us×{}", s.name, max, sum / n, n));
+        }
+    }
+    for g in GAUGES {
+        let (max, sum, n) = g.take();
+        if n > 0 {
+            line.push_str(&format!(" {}={}/{:.1}×{}", g.name, max, sum as f64 / n as f64, n));
         }
     }
     let dropped = super::state_log::dropped();

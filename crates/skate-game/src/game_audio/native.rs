@@ -114,8 +114,12 @@ impl Iterator for NativeDecoder {
         if self.at >= self.buffer.len() {
             match super::timing::lock(&self.shared, &super::timing::AUDIO_LOCK) {
                 Ok(mut runtime) => {
-                    let _render = super::timing::scope(&super::timing::RENDER);
-                    runtime.fill_stereo(&mut self.buffer);
+                    {
+                        let _render = super::timing::scope(&super::timing::RENDER);
+                        runtime.fill_stereo(&mut self.buffer);
+                    }
+                    // The buffer is one block of stereo: one render per fill.
+                    super::timing::block_load(&runtime);
                 }
                 Err(_) => self.buffer.fill(0.0),
             }

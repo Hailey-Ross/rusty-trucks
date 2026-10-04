@@ -149,7 +149,16 @@ pub struct Evaluator {
     pub trace: Option<Vec<OpTrace>>,
     /// The walk's snapshot of `order` (kept between walks: no allocation per walk).
     walk_order: Vec<u32>,
+    /// Memory of destroyed instances, reused by the next ones (a walk's ControlClass posts
+    /// create instances on the audio thread: no allocation once warm, test `render_alloc`).
+    mem_pool: Vec<Vec<u8>>,
+    /// Client lists of freed nodes, reused by the next posts (the same reason).
+    client_pool: Vec<Vec<Client>>,
 }
+
+/// The most words a callee or a post reads from a parameter list: counts are u8 (a function
+/// subscriber's +24, a ClassData state's +16).
+const MAX_PARAMS: usize = 255;
 
 impl Default for Evaluator {
     fn default() -> Self {
@@ -178,6 +187,8 @@ impl Evaluator {
             walks: 0,
             trace: None,
             walk_order: Vec::new(),
+            mem_pool: Vec::new(),
+            client_pool: Vec::new(),
         }
     }
 
@@ -263,6 +274,11 @@ impl Evaluator {
         self.order.iter().filter_map(|&i| self.instance(i).map(|x| (i, x.bank, x.module))).collect()
     }
 
+    /// Live instances (no allocation: the cost readout reads it per block).
+    pub fn instance_count(&self) -> usize {
+        self.order.len()
+    }
+
     /// An instance's memory (tests, debugging).
     pub fn instance_memory(&self, id: u32) -> Option<&[u8]> {
         self.instance(id).map(|i| &i.mem[..])
@@ -297,10 +313,16 @@ impl Evaluator {
     pub fn post(&mut self, class: usize, payload: &[i32]) -> NodeId {
         let id = self.next_node;
         self.next_node = self.next_node.wrapping_add(1).max(1);
-        self.nodes.insert(id, Node { class, refcount: 1, class_data: Vec::new(), destructors: Vec::new() });
-        let constructors: Vec<(usize, usize)> =
-            self.registry.classes.get(class).map(|c| c.constructors.iter().rev().copied().collect()).unwrap_or_default();
-        for (bank, module) in constructors {
+        // Client lists from freed nodes (a new one starts with room for a few clients, so that no
+        // pooled list is ever empty-capacity).
+        let mut list = || self.client_pool.pop().unwrap_or_else(|| Vec::with_capacity(4));
+        let (class_data, destructors) = (list(), list());
+        self.nodes.insert(id, Node { class, refcount: 1, class_data, destructors });
+        // Newest bank first. Creating an instance never changes a class's constructor list (only
+        // load / unload do), so the list is read in place.
+        let count = self.registry.classes.get(class).map_or(0, |c| c.constructors.len());
+        for k in (0..count).rev() {
+            let (bank, module) = self.registry.classes[class].constructors[k];
             self.create_instance(id, bank, module);
         }
         self.redeliver(NodeId(id), payload);
@@ -335,7 +357,12 @@ impl Evaluator {
         if let Some(n) = self.nodes.get_mut(&node) {
             n.refcount = n.refcount.saturating_sub(1);
             if n.refcount == 0 {
-                self.nodes.remove(&node);
+                if let Some(mut n) = self.nodes.remove(&node) {
+                    n.class_data.clear();
+                    n.destructors.clear();
+                    self.client_pool.push(n.class_data);
+                    self.client_pool.push(n.destructors);
+                }
             }
         }
     }
@@ -346,19 +373,21 @@ impl Evaluator {
         if lb.modules[module].live >= m.max_instances {
             return;
         }
-        let mem = m.template(&lb.bank.data).to_vec();
+        // The template's bytes in a recycled buffer (the smallest with room, so that big buffers
+        // stay for big templates): the same contents and length as a fresh copy.
+        let template = m.template(&lb.bank.data);
+        let fit = self.mem_pool.iter().enumerate().filter(|(_, b)| b.capacity() >= template.len()).min_by_key(|(_, b)| b.capacity()).map(|(at, _)| at);
+        let mut mem = match fit {
+            Some(at) => self.mem_pool.swap_remove(at),
+            None => Vec::with_capacity(template.len()),
+        };
+        mem.clear();
+        mem.extend_from_slice(template);
         let destructor = m.destructor_state;
         let class_data = m.class_data_state;
-        let globals: Vec<(u32, Option<usize>)> = m
-            .global_states
-            .iter()
-            .map(|&o| (o, match lb.modules[module].handles.get(&o) { Some(SymRef::Global(g)) => Some(*g), _ => None }))
-            .collect();
-        let functions: Vec<(u32, Option<usize>)> = m
-            .function_states
-            .iter()
-            .map(|&o| (o, match lb.modules[module].handles.get(&o) { Some(SymRef::Function(f)) => Some(*f), _ => None }))
-            .collect();
+        // The bank's handle (a reference count): the module's state lists are read in place while
+        // the registry's subscriber lists change below.
+        let bank_data = lb.bank.clone();
         let id = match self.free.pop() {
             Some(id) => id,
             None => {
@@ -379,15 +408,16 @@ impl Evaluator {
             n.class_data.push((id, off));
             n.refcount += 1;
         }
-        for (off, global) in globals {
-            if let Some(g) = global {
+        let m = &bank_data.modules[module];
+        for &off in &m.global_states {
+            if let Some(SymRef::Global(g)) = self.handle(bank, module, off) {
                 self.registry.globals[g].subscribers.push((id, off));
                 let value = self.registry.globals[g].value;
                 put_i32(&mut self.instances[id as usize].as_mut().unwrap().mem, off as usize + 24, value);
             }
         }
-        for (off, function) in functions {
-            if let Some(f) = function {
+        for &off in &m.function_states {
+            if let Some(SymRef::Function(f)) = self.handle(bank, module, off) {
                 self.registry.functions[f].subscribers.push((id, off));
             }
         }
@@ -413,7 +443,10 @@ impl Evaluator {
         for f in &mut self.registry.functions {
             f.subscribers.retain(|c| c.0 != id);
         }
-        let Some(Some(lb)) = self.banks.get_mut(inst.bank) else { return };
+        let Some(Some(lb)) = self.banks.get_mut(inst.bank) else {
+            self.mem_pool.push(inst.mem);
+            return;
+        };
         lb.modules[inst.module].live -= 1;
         // The bank's handle (a reference count, no copy of the lists): `self.release` below needs
         // `self` while the module's object lists are read.
@@ -431,6 +464,7 @@ impl Evaluator {
                 self.release(NodeId(child));
             }
         }
+        self.mem_pool.push(inst.mem);
     }
 
     /// CallFunction (op 5, or game code): every subscriber copies its own number of parameters and
@@ -440,8 +474,10 @@ impl Evaluator {
         if f.subscribers.is_empty() {
             return -4;
         }
-        for (inst, off) in f.subscribers.clone() {
-            if let Some(i) = self.instance_mut(inst) {
+        // In place: the loop writes instance memory only, never a subscriber list.
+        let Evaluator { registry, instances, .. } = self;
+        for &(inst, off) in &registry.functions[function].subscribers {
+            if let Some(Some(i)) = instances.get_mut(inst as usize) {
                 let off = off as usize;
                 let count = u8_at(&i.mem, off + 24) as usize;
                 for k in 0..count {
@@ -461,8 +497,10 @@ impl Evaluator {
             return;
         }
         g.value = value;
-        for (inst, off) in g.subscribers.clone() {
-            if let Some(i) = self.instance_mut(inst) {
+        // In place: the loop writes instance memory only, never a subscriber list.
+        let Evaluator { registry, instances, .. } = self;
+        for &(inst, off) in &registry.globals[global].subscribers {
+            if let Some(Some(i)) = instances.get_mut(inst as usize) {
                 put_i32(&mut i.mem, off as usize + 24, value);
             }
         }
@@ -596,9 +634,16 @@ impl Evaluator {
     }
 
     /// The words from `at` to the end of the instance (a callee may read more parameters than the
-    /// caller declares; retail then reads on into the caller's block).
-    fn words_from(mem: &[u8], at: u32) -> Vec<i32> {
-        (at as usize..mem.len()).step_by(4).map(|o| i32_at(mem, o)).collect()
+    /// caller declares; retail then reads on into the caller's block), at most [`MAX_PARAMS`]: no
+    /// reader takes more (its count is a u8), and a shorter list reads 0 past its end either way.
+    /// Copied into `out` (a snapshot: the callee may be the caller); returns the word count.
+    fn words_from(mem: &[u8], at: u32, out: &mut [i32; MAX_PARAMS]) -> usize {
+        let mut n = 0;
+        for (slot, o) in out.iter_mut().zip((at as usize..mem.len()).step_by(4)) {
+            *slot = i32_at(mem, o);
+            n += 1;
+        }
+        n
     }
 
     /// Op 5 CallFunction: +0 function handle, +8 u8 clamp flag, +9 u8 n, +12 ranges (if flag),
@@ -613,9 +658,10 @@ impl Evaluator {
             Self::clamp_params(&mut i.mem, b + 12, inputs + 4, n);
         }
         if word(&i.mem, inputs) != 0 {
-            let params = Self::words_from(&i.mem, inputs + 4);
+            let mut params = [0i32; MAX_PARAMS];
+            let len = Self::words_from(&i.mem, inputs + 4, &mut params);
             if let Some(SymRef::Function(f)) = target {
-                self.call_function(f, &params);
+                self.call_function(f, &params[..len]);
             }
         }
         0
@@ -641,17 +687,19 @@ impl Evaluator {
                 if flag {
                     Self::clamp_params(&mut i.mem, b + 16, inputs + 8, n);
                 }
-                let params = Self::words_from(&i.mem, inputs + 8);
+                let mut params = [0i32; MAX_PARAMS];
+                let len = Self::words_from(&i.mem, inputs + 8, &mut params);
                 if let Some(SymRef::Class(c)) = class {
-                    node = self.post(c, &params).0;
+                    node = self.post(c, &params[..len]).0;
                 }
             }
         } else if node != 0 {
             if flag {
                 Self::clamp_params(&mut i.mem, b + 16, inputs + 8, n);
             }
-            let params = Self::words_from(&i.mem, inputs + 8);
-            self.redeliver(NodeId(node), &params);
+            let mut params = [0i32; MAX_PARAMS];
+            let len = Self::words_from(&i.mem, inputs + 8, &mut params);
+            self.redeliver(NodeId(node), &params[..len]);
         }
         if let Some(i) = self.instance_mut(id) {
             put_u32(&mut i.mem, b as usize + 8, node);
@@ -709,8 +757,12 @@ impl Evaluator {
                         if count <= 0 || slot == 0xFFFF {
                             clear(m);
                         } else {
-                            let inputs: Vec<(u8, i32)> =
-                                (0..n).map(|k| (u8_at(m, b + 28 + 12 * k), i32_at(m, b + 36 + 12 * k))).collect();
+                            // n is a u8: the records fit a stack array (no allocation per open).
+                            let mut records = [(0u8, 0i32); 255];
+                            for (k, r) in records.iter_mut().enumerate().take(n) {
+                                *r = (u8_at(m, b + 28 + 12 * k), i32_at(m, b + 36 + 12 * k));
+                            }
+                            let inputs = &records[..n];
                             let mut azimuth = [0u8; 6];
                             azimuth.copy_from_slice(&data[entry + 3..entry + 9]);
                             let request = OpenRequest {
@@ -719,7 +771,7 @@ impl Evaluator {
                                 level: u8_at(data, entry + 2),
                                 azimuth,
                                 stream_offset: u32_at(data, entry + 8),
-                                inputs: &inputs,
+                                inputs,
                             };
                             match host.open(&request) {
                                 Some(v) => {
