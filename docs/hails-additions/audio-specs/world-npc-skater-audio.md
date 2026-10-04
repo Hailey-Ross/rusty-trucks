@@ -103,3 +103,23 @@ remove despawned skaters. Off switch `SKATE_AEMS_NPC_SKATERS=0`.
   record gain recomp / ours 0–10 m 0.097 / 0.108, 10–20 m 0.045 / 0.065, 20–30 m 0.005 / 0.014; A pitch 0.93–0.97
   vs 0.96. Near band within 10 %; the far bands are louder in ours (the lookups use the distance to the local
   skater, not joined: our sim keeps the local player at the camera).
+
+## The NPC bed's distance input and the NPC slide, settled (2026-10-04, branch `audio/world-followups`)
+- **Correction: the Player slot's level lookups read the camera.** B2 (SkateBoard out1 / out2 …) and B4 read
+  3DObjPos input 1 (distance) and input 3 (azimuth), per-quadrant ranges 4–50 m ahead / 4–40 m at the sides /
+  1–30 m behind (B2). `sub_824AE6E0`: input 1 = |listener `+0` − emitter|, input 3 = azimuth in the frame (listener
+  `+0` pulled back 0.25 m, `+32`); inputs 0 / 2 = listener `+64` / `+96`. `sub_8248CC08`: listener `+0` / `+32`
+  from the camera matrix, `+64` from the skater list's first entry (the local skater). The port's `ObjPos` was
+  already right; the "distance to the local skater" reading above was wrong (it holds for the ped speech lookups,
+  slot 5, input 0).
+- **The test placed the NPC dead ahead** (always the 4–50 m quadrant). Rows now carry their geometry (the NPC board
+  interpolated, the local skater's own board — the track that follows the local SkateBoard's GREC speed — excluded,
+  ambiguous speed matches dropped; camera interpolated; view = camera → local board, or the camera's motion when
+  the board is > 8 m away) and `npc_bed_follows_the_recomp_rows` rolls each row at its own geometry. 176 rows:
+  0–10 m 0.101 / 0.123, 10–20 m 0.050 / 0.054, 20–30 m 0.0091 / 0.0111 (recomp / ours A gain); row median ratio
+  0.94 (p10 0.41, p90 1.13); behind vs ahead visible in both (10–20 m: 0.021 / 0.028 vs 0.055 / 0.065). No engine
+  change.
+- **NPC board slide observed** in 180430: `c_board_slide` posts at 152.13 / 152.30 s while the local rolled on four
+  wheels (8.5 m/s) and instance 1's skater (board `468DC6B0`, ~15 m) was off its wheels after a bail; each post is
+  followed 62–68 ms later by three `board_scrapes` voices (gains 0.005–0.012). The other 13 slide posts of the
+  session are the local's. Timing vs the NPC's `+780` not comparable (not logged).

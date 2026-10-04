@@ -137,6 +137,63 @@ pub struct WorldAudioEventOptions {
     pub by: Option<u32>,
 }
 
+/// `announce` options (the announcer channel, retail's `PlayAnnouncerSpeech`): `pro` = a skater
+/// model 1..=96 whose announcer pro id fills word 2 (as a pro's crash does for `480_slam_pro`);
+/// `words` = the request block from word 0 (a list of at most 33 numbers; word 0 = 0 takes the
+/// running announcer). Nothing plays without an announcer character (`sdk.world_audio.announcer`).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AnnounceOptions {
+    #[serde(default)]
+    pub pro: Option<u32>,
+    /// A Lua list arrives as an array, an empty table as a map: both are read by [`Self::words`].
+    #[serde(default)]
+    pub words: Option<serde_json::Value>,
+}
+
+/// Words per announcer request block (`sub_824AAC40` reads up to word 32).
+pub const ANNOUNCE_WORDS: usize = 33;
+
+impl AnnounceOptions {
+    /// The block words (None: not a list of at most 33 non-negative integers below 2^32).
+    pub fn words(&self) -> Option<Vec<u32>> {
+        let word = |v: &serde_json::Value| v.as_u64().and_then(|w| u32::try_from(w).ok());
+        match &self.words {
+            None => Some(Vec::new()),
+            Some(serde_json::Value::Array(a)) if a.len() <= ANNOUNCE_WORDS => a.iter().map(word).collect(),
+            // A Lua table with keys 1..n (or empty).
+            Some(serde_json::Value::Object(m)) if m.len() <= ANNOUNCE_WORDS => {
+                let mut out = vec![0; m.len()];
+                for (k, v) in m {
+                    let i: usize = k.parse().ok().filter(|i| (1..=m.len()).contains(i))?;
+                    out[i - 1] = word(v)?;
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn validate(&self) -> bool {
+        self.pro.is_none_or(|p| p <= 96) && self.words().is_some()
+    }
+}
+
+/// An announcer event: its id (24576..=24751, `0x6000 | n`) or its name (`480_slam_pro`, `480`).
+pub fn valid_announcer_event(event: &serde_json::Value) -> bool {
+    match event {
+        serde_json::Value::Number(n) => n.as_u64().is_some_and(|v| (24576..=24751).contains(&v)),
+        serde_json::Value::String(s) => !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        _ => false,
+    }
+}
+
+/// An announcer character a mod may name (a model below 104; the export's `announcer_id` gives its
+/// word: 35 → 1, 36 → 2, any other model none).
+pub fn valid_announcer_character(character: Option<u32>) -> bool {
+    character.is_none_or(|c| (1..104).contains(&c))
+}
+
 /// The NPC skater reactions a mod can raise (`reaction` event values).
 pub const REACTIONS: [&str; 5] = ["slam", "slam_b", "trick", "crash", "chase"];
 
@@ -244,6 +301,23 @@ mod tests {
             assert!(!o.validate(), "accepted {bad}");
         }
         assert!(serde_json::from_value::<WorldAudioOptions>(json!({"typo":1})).is_err());
+    }
+
+    #[test]
+    fn announce_options_read_lists_and_lua_tables() {
+        let o: AnnounceOptions = serde_json::from_value(json!({"pro":4,"words":[0,0,8]})).unwrap();
+        assert_eq!(o.words(), Some(vec![0, 0, 8]));
+        assert!(o.validate());
+        let o: AnnounceOptions = serde_json::from_value(json!({"words":{}})).unwrap();
+        assert_eq!(o.words(), Some(vec![]), "an empty Lua table");
+        let o: AnnounceOptions = serde_json::from_value(json!({"words":{"2":5,"1":1}})).unwrap();
+        assert_eq!(o.words(), Some(vec![1, 5]));
+        for bad in [json!({"pro":97}), json!({"words":[-1]}), json!({"words":{"x":1}}), json!({"words": vec![0u32; 34]})] {
+            let o: AnnounceOptions = serde_json::from_value(bad.clone()).unwrap();
+            assert!(!o.validate(), "accepted {bad}");
+        }
+        assert!(valid_announcer_event(&json!(24708)) && valid_announcer_event(&json!("480_slam_pro")) && !valid_announcer_event(&json!(8210)) && !valid_announcer_event(&json!("a b")));
+        assert!(valid_announcer_character(None) && valid_announcer_character(Some(36)) && !valid_announcer_character(Some(104)));
     }
 
     #[test]

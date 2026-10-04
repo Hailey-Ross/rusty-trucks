@@ -15,8 +15,10 @@
 //!   `150_pro_pos` (287). Each request goes out every frame the byte holds (the manager's timers
 //!   gate them).
 //! - **Its own crash** (`sub_824DB688`, `+131` rising, once until it clears): the message
-//!   [`super::speech_manager::main_cast::message::CRASH`] (`131_collide_object` / `906_aislm`).
-//!   (The cameraman's line it can also request is not ported.)
+//!   [`super::speech_manager::main_cast::message::CRASH`] (`131_collide_object` / `906_aislm`),
+//!   then [`Say::Announcer`] `480_slam_pro` (the host asks the announcer channel when the skater is
+//!   within the crash distance of the camera and its model has an announcer pro id:
+//!   [`super::announcer`]; no line plays without a challenge's announcer).
 use super::Draw;
 use super::speech_manager::main_cast::message;
 
@@ -52,6 +54,9 @@ pub enum Say {
     MainCast { event: u16, other: Option<u32> },
     /// A skater speech message pair (`sub_824DAC00`): the speaker's kind picks the event.
     Message(u16, u16),
+    /// An announcer event about this skater (`sub_824DB688`: the crash's `480_slam_pro`); the host
+    /// applies the distance and pro-id conditions.
+    Announcer(u16),
 }
 
 /// One skater's process state (`+44` the last living-world event, `+193` the crash latch).
@@ -125,6 +130,7 @@ impl SkaterSpeech {
         if r.crash {
             if !self.crash_latch {
                 out.push(Say::Message(message::CRASH.0, message::CRASH.1));
+                out.push(Say::Announcer(super::announcer::SLAM_PRO));
                 self.crash_latch = true;
             }
         } else {
@@ -146,7 +152,7 @@ mod tests {
         assert_eq!(s.process(true, &r, 0, &mut rng), vec![Say::MainCast { event: 1, other: None }]);
         assert_eq!(s.process(true, &r, MODE_RACE_A, &mut rng), vec![Say::MainCast { event: 16, other: None }]);
         let r = Reactions { trick: true, trick_by: 12, crash: true, ..Default::default() };
-        assert_eq!(s.process(true, &r, 0, &mut rng), vec![Say::MainCast { event: 287, other: Some(12) }, Say::Message(8229, 125)]);
+        assert_eq!(s.process(true, &r, 0, &mut rng), vec![Say::MainCast { event: 287, other: Some(12) }, Say::Message(8229, 125), Say::Announcer(24708)]);
         assert_eq!(s.process(true, &r, 0, &mut rng), vec![Say::MainCast { event: 287, other: Some(12) }], "the crash latch holds");
     }
 

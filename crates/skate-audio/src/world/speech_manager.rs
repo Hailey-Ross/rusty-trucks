@@ -146,23 +146,28 @@ pub mod main_cast {
         }
     }
 
-    /// `sub_824AC438`: a ped's speech value on the main-cast path (a ped without a living-world
-    /// speaker, `S+116 == 0`), or None. 28 (`601_ai_greet`) only outside a challenge
-    /// (`sub_82487ED0` / system `+1196`); 30 / 51 also stop the speaker's playing line.
-    pub fn event_for_value(value: i32, in_challenge: bool, rng: &mut dyn Draw) -> Option<u16> {
-        Some(match value {
-            29 => 141,
-            28 if !in_challenge => 11,
-            30 | 51 => {
-                if rng.draw() & 1 == 1 {
-                    115
-                } else {
-                    6
-                }
-            }
-            53 | 54 => 77,
-            _ => return None,
-        })
+    /// `sub_824AC438`: the main-cast events a ped's speech value requests on the main-cast path (a
+    /// ped without a living-world speaker, `S+116 == 0`), in order (empty: none). 29 requests
+    /// `1014_bored` (141) and then `1002_amb_chat` (136): two requests, the second through the same
+    /// manager (the code calls `sub_824AC560` with 141 and falls through to the common call with
+    /// 136). 28 (`601_ai_greet`) only outside a challenge (`sub_82487ED0` / system `+1196`); 30 / 51
+    /// draw `rand() & 1`: `201_Light_Impact_Grunt` (115) or `202_impact_react` (6), after
+    /// [`stops_line`] (the PedestrianSpeech process remaps 7 / 8 to 30 after a 29, else to 51).
+    pub fn events_for_value(value: i32, in_challenge: bool, rng: &mut dyn Draw) -> Vec<u16> {
+        match value {
+            29 => vec![141, 136],
+            28 if !in_challenge => vec![11],
+            30 | 51 => vec![if rng.draw() & 1 == 1 { 115 } else { 6 }],
+            53 | 54 => vec![77],
+            _ => Vec::new(),
+        }
+    }
+
+    /// `sub_824AC438`: values 30 / 51 first stop the speaker's playing line (`sub_82C5E1D8` on the
+    /// stream its block holds, `+72`, while its speaking byte `+76` is set; stream 2 and none (−1)
+    /// excepted), whether or not the new request then passes the gate.
+    pub fn stops_line(value: i32) -> bool {
+        matches!(value, 30 | 51)
     }
 
     /// The (living-world, main-cast) event pairs of the skater speech messages (`sub_824DAC00`:
@@ -239,6 +244,12 @@ pub struct EventTuning {
     pub probability: f32,
     /// `+24`: seconds since this speaker last said this event.
     pub repeat: f32,
+    /// Main cast only (`sub_824AC560`): speaker slots whose repeat time replaces `repeat`. Retail
+    /// has two, read from the record: slot 31 (model 31, `skate_coach`) → `+52`, slot 30 (model
+    /// 30) → `+56`, even when 0 (setup `repeat_speaker_31` / `repeat_speaker_30`; a mod's tuning
+    /// may list more in `speaker_repeat`). The living world's request (`sub_824ABA18`) has no such
+    /// override.
+    pub speaker_repeat: Vec<(u32, f32)>,
     /// `+32` / `+36`: the player's speed (km/h) must be at least / at most this (0 = no limit).
     pub min_player_kmh: f32,
     pub max_player_kmh: f32,
@@ -265,6 +276,7 @@ impl Default for EventTuning {
             interrupt_when_full: false,
             probability: 100.0,
             repeat: 0.0,
+            speaker_repeat: Vec::new(),
             min_player_kmh: 0.0,
             max_player_kmh: 0.0,
             timer_40: 0.0,
@@ -432,9 +444,10 @@ impl SpeechManager {
     }
 
     /// A main-cast request (`sub_824AC560`: the same timers / gate with the main cast's tuning, then
-    /// `sub_824AC898`'s words). `speaker` = the speaker slot the timers are kept for. This manager
-    /// must hold the main cast's tuning (`speech_tuning["0"]`). Not ported: the repeat time of
-    /// speaker slots 30 / 31 (the record's `+52` / `+56`).
+    /// `sub_824AC898`'s words). `speaker` = the speaker slot the timers are kept for (the speaker's
+    /// model, `S+84`). This manager must hold the main cast's tuning (`speech_tuning["0"]`). The
+    /// repeat time is the record's `+24`, or for speaker slots 31 / 30 its `+52` / `+56`
+    /// ([`EventTuning::speaker_repeat`]).
     #[allow(clippy::too_many_arguments)]
     pub fn request_main_cast(
         &mut self,
@@ -451,6 +464,14 @@ impl SpeechManager {
         }
         let default = EventTuning::default();
         let tuning = self.tuning.get(&event).unwrap_or(&default);
+        let own;
+        let tuning = match tuning.speaker_repeat.iter().find(|(s, _)| *s == speaker) {
+            Some(&(_, repeat)) => {
+                own = EventTuning { repeat, ..tuning.clone() };
+                &own
+            }
+            None => tuning,
+        };
         self.gate(speaker, event, tuning, inputs, rng)?;
         let words = main_cast::request_words(event, block);
         let picks = library.start(table, event, &words).map_err(Refusal::Library)?;
@@ -509,6 +530,51 @@ mod tests {
         let bum: Vec<_> = (0..3).map(|_| event_for_value(3, kind::BUM, &mut three)).collect();
         assert_eq!(bum, vec![Some(8214), Some(8247), Some(8248)]);
         assert_eq!(event_for_value(29, kind::JOCK, &mut even), None, "photographer: nothing on this path");
+    }
+
+    #[test]
+    fn main_cast_values_request_their_events_in_order() {
+        let mut odd = seq(vec![1]);
+        let mut even = seq(vec![2]);
+        assert_eq!(main_cast::events_for_value(29, false, &mut even), vec![141, 136], "1014_bored, then 1002_amb_chat");
+        assert_eq!(main_cast::events_for_value(28, false, &mut even), vec![11]);
+        assert!(main_cast::events_for_value(28, true, &mut even).is_empty(), "no greeting in a challenge");
+        assert_eq!(main_cast::events_for_value(30, false, &mut odd), vec![115]);
+        assert_eq!(main_cast::events_for_value(51, false, &mut even), vec![6]);
+        assert_eq!(main_cast::events_for_value(53, false, &mut even), vec![77]);
+        assert!(main_cast::events_for_value(7, false, &mut even).is_empty());
+        assert!(main_cast::stops_line(30) && main_cast::stops_line(51) && !main_cast::stops_line(29) && !main_cast::stops_line(53));
+    }
+
+    #[test]
+    fn main_cast_speaker_slots_30_and_31_have_their_own_repeat_time() {
+        let ev = Event {
+            id: 0,
+            name: "0_test".into(),
+            queue_timeout: 60,
+            priority: 500,
+            conditions: 0,
+            flags: 0x20,
+            probability: 100,
+            flags2: 0,
+            fields: vec![1, 2],
+            records: vec![Record { weight_code: 0x39, probability: 100, mode: 0, locals: 0, values: vec![0, 0], clips: vec![ClipRef { id: 0x20, lookup: 0, params: 0 }] }],
+        };
+        let table = EventTable { bank: 0, sub_bank: 0, events: vec![ev] };
+        let mut lib = Library::new(vec![ClipHeader { id: 0x20, takes: 4, history: 4, flags: 0 }]);
+        // Event 0's record: repeat 20 s, slot 31 → 30 s (+52), slot 30 → 10 s (+56).
+        let tuning = EventTuning { repeat: 20.0, speaker_repeat: vec![(31, 30.0), (30, 10.0)], ..Default::default() };
+        let mut m = SpeechManager::new(HashMap::from([(0, tuning)]));
+        let block = [0u32; 14];
+        let mut rng = seq(vec![0]);
+        let at = |now| GateInputs { now, ..Default::default() };
+        for (speaker, first_ok_after) in [(5u32, 20.0), (31, 30.0), (30, 10.0)] {
+            assert_eq!(m.request_main_cast(&mut lib, &table, 0, speaker, &block, &at(first_ok_after - 1.0), &mut rng), Err(Refusal::Repeat), "slot {speaker}");
+            assert!(m.request_main_cast(&mut lib, &table, 0, speaker, &block, &at(first_ok_after), &mut rng).is_ok(), "slot {speaker}");
+        }
+        // A 0 there means no wait for that slot (event 3: +52 = 0).
+        m.tuning.get_mut(&0).unwrap().speaker_repeat = vec![(31, 0.0)];
+        assert!(m.request_main_cast(&mut lib, &table, 0, 31, &block, &at(30.5), &mut rng).is_ok());
     }
 
     #[test]

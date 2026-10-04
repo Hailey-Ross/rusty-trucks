@@ -8,7 +8,7 @@ use super::Mods;
 use crate::world_audio::*;
 use bevy::prelude::*;
 use serde_json::{Value, json};
-use skate_mods::world_audio::{MAX_OBJECTS_PER_MOD, MAX_OBJECTS_TOTAL, ObjectKind, PARK_SECONDS, WorldAudioEventOptions, WorldAudioOptions};
+use skate_mods::world_audio::{AnnounceOptions, MAX_OBJECTS_PER_MOD, MAX_OBJECTS_TOTAL, ObjectKind, PARK_SECONDS, WorldAudioEventOptions, WorldAudioOptions};
 use std::collections::BTreeMap;
 
 type Key = (String, String);
@@ -29,6 +29,8 @@ struct Object {
 #[derive(Resource, Default)]
 pub(super) struct ModWorldAudio {
     objects: BTreeMap<Key, Object>,
+    /// The mod that named the announcer character (`LivingWorldAudio::mod_announcer`).
+    announcer_owner: Option<String>,
 }
 
 pub(super) fn install(app: &mut App) {
@@ -176,7 +178,44 @@ pub(super) fn remove(world: &mut World, owner: &str, key: &str) {
     }
 }
 
+/// `sdk.world_audio.announcer`: name (or clear) the announcer character for the mods.
+pub(super) fn announcer(world: &mut World, owner: &str, character: Option<u32>) -> Result<(), String> {
+    if !skate_mods::world_audio::valid_announcer_character(character) {
+        return Err(format!("invalid announcer character {character:?}"));
+    }
+    world.resource_mut::<ModWorldAudio>().announcer_owner = character.map(|_| owner.to_owned());
+    if let Some(mut living) = world.get_resource_mut::<LivingWorldAudio>() {
+        living.mod_announcer = character;
+    }
+    Ok(())
+}
+
+/// `sdk.world_audio.announce`: an announcer request (retail's `PlayAnnouncerSpeech`).
+pub(super) fn announce(world: &mut World, event: &Value, options: AnnounceOptions) -> Result<(), String> {
+    if !skate_mods::world_audio::valid_announcer_event(event) || !options.validate() {
+        return Err(format!("invalid announcer request {event}"));
+    }
+    let line = match event {
+        Value::Number(n) => AnnouncerLine::Id(n.as_u64().and_then(|v| u16::try_from(v).ok()).ok_or("invalid announcer event")?),
+        Value::String(s) => AnnouncerLine::Name(s.clone()),
+        _ => return Err("invalid announcer event".into()),
+    };
+    world.write_message(AnnouncerSpeechEvent { event: line, pro: options.pro, words: options.words().unwrap_or_default() });
+    Ok(())
+}
+
+fn clear_announcer(world: &mut World, owner: Option<&str>) {
+    let mut audio = world.resource_mut::<ModWorldAudio>();
+    if audio.announcer_owner.is_some() && owner.is_none_or(|o| audio.announcer_owner.as_deref() == Some(o)) {
+        audio.announcer_owner = None;
+        if let Some(mut living) = world.get_resource_mut::<LivingWorldAudio>() {
+            living.mod_announcer = None;
+        }
+    }
+}
+
 pub(super) fn clear_owner(world: &mut World, owner: &str) {
+    clear_announcer(world, Some(owner));
     let mut audio = world.resource_mut::<ModWorldAudio>();
     let keys: Vec<Key> = audio.objects.keys().filter(|(o, _)| o == owner).cloned().collect();
     let entities: Vec<Entity> = keys.iter().filter_map(|k| audio.objects.remove(k)).map(|o| o.entity).collect();
@@ -186,6 +225,7 @@ pub(super) fn clear_owner(world: &mut World, owner: &str) {
 }
 
 pub(super) fn clear(world: &mut World) {
+    clear_announcer(world, None);
     let objects = std::mem::take(&mut world.resource_mut::<ModWorldAudio>().objects);
     for (_, o) in objects {
         world.despawn(o.entity);
@@ -220,6 +260,7 @@ pub(super) fn info(world: &World) -> Value {
         "published": {"traffic": s.vehicles, "peds": s.peds, "skaters": s.skaters},
         "audible": {"traffic": s.traffic_held, "peds": s.peds_held, "skaters": s.skaters_held},
         "speech_lines": s.speech_lines,
+        "announcer": world.get_resource::<LivingWorldAudio>().and_then(LivingWorldAudio::announcer_character),
     })
 }
 
