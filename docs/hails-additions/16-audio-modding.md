@@ -36,7 +36,8 @@ The guide (sections A–G, and H–L for the follow-up) says what a mod can do a
 | add new Csis classes, functions, globals | `audio.json` `add.projects` (M4) | `audio_content` = 3 |
 | drive retail's MixMap controllers (a duck through the Master gains, a flag) | `sdk.audio.set_mixmap_input` (M2) | `audio` = 4 |
 | reproducible audio draws for tests | `sdk.audio.seed(n)`, `SKATE_AUDIO_SEED` (M5) | `audio` = 4 |
-| a mod car / ped heard beside retail's pools | `sdk.world_audio.spawn(…, {slots = 'own'})` (M3) | `world_audio` = 3 |
+| a mod car / ped heard beside retail's pools | the default: `sdk.world_audio.spawn(key, 'traffic' / 'ped', …)` (M3; on 3: `{slots = 'own'}`) | `world_audio` = 4 |
+| a mod car / ped in retail's pools with the map's objects (the nearest win) | `sdk.world_audio.spawn(…, {slots = 'shared'})` (M3; alias `retail`, also on 3, where it is the default) | `world_audio` = 4 |
 
 Test `(sdk.capabilities.audio or 0) >= 2` (and so on) before relying on a feature; an older engine lacks the keys.
 
@@ -703,7 +704,8 @@ Implementation of 1–3 (2026-10-04, on `audio/moddability-2`):
 Status: built on `audio/moddability-2` (2026-10-04, on top of H–K; uncommitted at the time of writing). With these
 the "Later" list of section 3 is done (L6, native routing by default, was done in H). Capabilities: `audio` = 4
 (L2, L5), `audio_content` = 3 (L1, L4, L7), `audio_events` = 3 (the offset frame, moving emitters), `world_audio` = 3
-(L3). Without mods nothing here runs: the headless e2e bench is byte-identical (below).
+(L3), then 4 (own instances the default for mod cars and peds, M3). Without mods nothing here runs: the headless e2e
+bench is byte-identical (below).
 
 ### M1. Hot swap instead of the restart (L1)
 
@@ -779,16 +781,55 @@ wins, the release gives the retail level back exactly, the limits); `skate-mods`
 
 Problem: published cars and peds compete with the map's for retail's 4 traffic / 15 pedestrian instances (8 / 24
 more-audible): a mod's sixth car near the camera is silent. (Mod emitters and voices already had their own private
-instances, H / J.) Change: `game_audio/mod_world.rs`: an object with `world_audio::OwnAudioInstance` (mods:
-`sdk.world_audio.spawn(key, 'traffic' | 'ped', {slots = 'own'})`) is published by the bridge to
-`OwnWorldOwners` instead of `WorldOwners` and played by a second `WorldHost` (the same retail traffic / ped objects,
-posts, Splice steps, speech requests, rules and event rows) on a private MixMap (the install's file, Global + 16
-Traffic + 16 Pedestrian instances, Global inputs copied from the game's before each evaluation). The retail pools
-never see them. `world_sources::pre_in / post_in` take the MixMap and pool sizes (the game's host passes its own:
-unchanged). Read back: `WorldAudioInstance.own`, `read(key).own`. NPC skaters stay in retail's Player slot (open).
+instances, H / J.) Change: `game_audio/mod_world.rs`: an object with `world_audio::OwnAudioInstance` is published by
+the bridge to `OwnWorldOwners` instead of `WorldOwners` and played by a second `WorldHost` (the same retail traffic /
+ped objects, posts, Splice steps, speech requests, rules and event rows) on a private MixMap (the install's file,
+Global + 16 Traffic + 16 Pedestrian instances, Global inputs copied from the game's before each evaluation). The
+retail pools never see them. `world_sources::pre_in / post_in` take the MixMap and pool sizes (the game's host passes
+its own: unchanged). NPC skaters stay in retail's Player slot (open, M9 Q1).
+
+**The default for mods (user decision 2026-10-04, M9 Q2: "yes I agree it should match", after "modding isn't in
+retails, so 'not like retail' isn't a thing. Yes default to seperate slots."; capability `world_audio` = 4):** a
+mod's car or ped takes its own instance unless it asks otherwise, as its emitters do (J):
+
+| `slots` (spawn only; cars and peds) | instances | |
+|---|---|---|
+| none / `'own'` | its own instance of the private MixMap | the default since `world_audio` 4; `'own'` stays valid (the opt-in of 3) |
+| `'shared'` (alias `'retail'`) | retail's pools, shared with the map's objects: the nearest win | the default of `world_audio` 3; `'retail'` works on 3 and 4 alike |
+
+Any other value, or `slots` on a skater, emitter or reverb zone or in an update, is a command error.
+
+- **Only mod objects change.** The mod command (`modding/world_audio.rs` `spawn`) adds `OwnAudioInstance` to a mod's
+  car or ped by default (`skate_mods::world_audio::Slots::resolve`). The engine-facing path is unchanged: an engine
+  system publishing the living world adds `TrafficAudio` / `PedAudio` without the marker and stays in retail's
+  pools; an engine object that must be heard adds the marker itself.
+- **A full private pool** (more than 16 own cars or 16 own peds of all mods inside the list radius, 40 m horizontal /
+  50 m 3-D): the 16 nearest hold the instances (retail's own rule, `owners::Pool`), the others **wait**, silent, and
+  take an instance as soon as they are among the 16 nearest (a nearer one moves away, goes or the listener moves).
+  Chosen over the alternatives because a mod may publish 48 objects and only the ones in reach compete: refusing the
+  17th spawn would break a mod that publishes a street (the world-audio test mod spawns 20 peds), and spilling into
+  retail's pools would take the map's instances, which own instances exist to keep. It matches the emitters (J: past
+  the private instances the next waits). Readable: `read(key).waiting` (in reach, no instance: every one is held by
+  a nearer object; the same for `shared` objects in a full retail pool), `info().own = {instances = {traffic = 16,
+  peds = 16}, published, audible, waiting}`, `info().waiting` (retail's pools), `read(key).slots` (`'own'` /
+  `'shared'`, the object's setting; `own` stays "holds an own instance"); the log warns once when waiting starts
+  (`AUDIO_WORLD own instances full: …`) and the per-second `WORLD_AUDIO own instances: …` line while own objects exist.
+  Engine side: `WorldAudioStats { waiting, own_vehicles, own_peds, own_traffic_held, own_peds_held, own_instances,
+  own_waiting }` (the hosts' `WorldHost::waiting`, `WorldHeld::{waiting_*, own_waiting_*}`: bookkeeping only).
+- Read back as before: `WorldAudioInstance.own`, `read(key).own`.
+
 Verification: data-gated `mod_world::tests::own_instance_cars_all_play_beside_retails_pool` (six own cars all hold
-an instance and post, the game's pool holds none, released when they go);
-`world_bridge::tests::own_instance_objects_go_to_their_own_host`.
+an instance and post, the game's pool holds none, released when they go),
+`mod_world::tests::a_full_private_pool_lets_the_nearest_play_and_the_rest_wait` (18 own cars in reach and one beyond
+40 m: the 16 nearest hold, the 2 farther wait, the far one does not, retail's pool holds none; one near car goes and
+the nearest waiting car takes its instance at the next pass; 16 in reach: nobody waits);
+`world_sources::tests::a_full_pool_leaves_the_farther_ones_in_reach_waiting`;
+`modding::world_audio::tests::mod_cars_and_peds_default_to_their_own_instance` (default own for cars and peds,
+`shared` / `retail` none, explicit `own`, skaters never, a respawn with `shared` drops it, an engine-published car has
+none, `read(key).slots`); `world_bridge::tests::own_instance_objects_go_to_their_own_host` (the marker routes, an
+unmarked car goes to retail's pool); `skate-mods` `world_audio::tests::slots_default_to_own_and_shared_opts_in`, the
+`world_audio_commands_deserialize` cases (`shared`, `own`, `retail` at spawn; `slots` in an update refused), the
+capability test (`world_audio` = 4). No-mod e2e bench: byte-identical to run `m2` (84 outputs).
 
 ### M4. Mod Csis projects (L4)
 
@@ -864,13 +905,22 @@ Verification: `mod_voices::tests::offsets_turn_with_the_owner`, `mod_rules::test
   Digit1 duck (Master inputs), Digit2 seed, Digit3 six own-instance taxis, Digit4 the mod's class + global, Digit5 a
   beep 2 m ahead of the board's nose on pops, Digit6 an orbiting emitter; a second HUD line shows swaps / restarts /
   the last change. Not checked in game yet.
+- **The own-instance default (M3, `world_audio` = 4, 2026-10-04):** no-mod bench run `s5` 84 of 84 byte-identical
+  to `q0` and `m2`; skate-audio with ignored all pass; `game_audio::` with ignored 135 pass, `modding::` 33 pass;
+  skate-mods 96 pass (the known Skyline failure only); `cargo build --locked` the 4 known warnings; `check_mod
+  --install`: `audio-content-test` and `audio-example` 0 warnings, 0 conflicts; the world-audio test mod and Skyline
+  OK. Dev mods: `audio-content-test` Digit3 spawns its taxis without `slots` on 4 (`'own'` on 3); `world-audio-test`
+  (which shows retail's limits) asks for `slots = 'shared'` on 4, and its new setting "Own instances" (`own_slots`)
+  shows the default instead. Not checked in game yet.
 
 ### M9. Open questions
 
 1. **Own instances for NPC skaters** (L3): their host runs a whole skater's components and its own grain bed per
    Player-slot instance (the runtime has one NPC bed); left in retail's Player slot. Wanted?
-2. **Own-instance default for mod cars / peds**: opt-in (`slots = 'own'`), unlike mod emitters (own by default):
-   doc 15 lets retail decide who is audible among published objects. Flip it for mod objects?
+2. **Own-instance default for mod cars / peds**: answered 2026-10-04, the user: "yes I agree it should match"
+   (the mod emitters, own by default; before that: "modding isn't in retails, so 'not like retail' isn't a thing.
+   Yes default to seperate slots."). Own instances are the default for a mod's cars and peds, `slots = 'shared'`
+   opts into retail's pools; a full private pool lets the nearest play and the rest wait (M3).
 3. **The restart fallback**: a mod replacing the MixMap file or a grain recording still restarts the sound. The bed
    could be rebuilt in place (a cut of the rolling only); worth it?
 4. **Swapped content restarts its own sounds**: a replaced bank's held posts continue with new instances (their
@@ -1236,7 +1286,8 @@ All done (2026-10-04, branch `audio/moddability-2`): L1–L5 and L7 in section M
 
 - **L1** bank-level hot swap instead of the runtime restart. Done: M1.
 - **L2** writable MixMap inputs (mod ducking through retail's controllers rather than a group multiplier). Done: M2.
-- **L3** extra MixMap instances for mod objects beyond the more-audible setting. Done: M3 (cars, peds).
+- **L3** extra MixMap instances for mod objects beyond the more-audible setting. Done: M3 (cars, peds; the default
+  for a mod's cars and peds since `world_audio` 4).
 - **L4** mod Csis projects (new classes, functions, globals). Done: M4.
 - **L5** a seedable world RNG for reproducible mod tests. Done: M5 (every audio generator).
 - **L6** flip `native=true` as the default for mod WAVs (Q2). Done: H.

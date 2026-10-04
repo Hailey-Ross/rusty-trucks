@@ -832,10 +832,17 @@ function sdk.audio.tuned() end
 -- World audio extension 1 (capability `world_audio`): publish traffic vehicles, pedestrians and
 -- skaters to the game's retail world audio, exactly as an engine system would (doc
 -- docs/hails-additions/15-world-audio.md). Keys belong to this mod; 48 objects per mod, 128 in all;
--- an object not updated for 0.5 s is parked; everything is removed on disable / reload. The game
--- decides who is audible with retail's limits (4 nearest cars within 40 m, 15 nearest peds within
--- 50 m, footsteps for the nearest 3, one skater within 30 m; 8 / 24 / 3 with the opt-in
--- non-retail "more audible" setting).
+-- an object not updated for 0.5 s is parked; everything is removed on disable / reload.
+-- Cars and peds (capability `world_audio` >= 4): by default each takes its own instance of a
+-- private MixMap (as mod emitters do; not retail): it plays whenever it is within retail's list
+-- radius (40 m cars, 50 m peds) and among the 16 nearest own cars / 16 nearest own peds of all mods;
+-- a farther one waits, silent (`read(key).waiting`), and takes an instance as soon as it is among
+-- the nearest; it is never refused and never takes one of retail's instances, so the map's objects
+-- keep retail's pools. `slots = 'shared'` (alias 'retail') puts a car / ped in retail's pools with
+-- the map's objects instead, where the game decides who is audible with retail's limits (4 nearest
+-- cars within 40 m, 15 nearest peds within 50 m, footsteps for the nearest 3; 8 / 24 / 3 with the
+-- opt-in non-retail "more audible" setting). Skaters: one within 30 m (retail's Player slot).
+-- (`world_audio` 3 had 'retail' as the default and `slots = 'own'` as the opt-in.)
 -- Extension 2 (capability `world_audio` >= 2): 'emitter' and 'reverb_zone' objects: `.ems`-style
 -- records added to the map's live lists. An emitter plays an AEMS bank bound to c_emitter (a retail
 -- bank or one a content overlay adds) through retail's reach test (sphere when the three extents are
@@ -882,7 +889,7 @@ function sdk.audio.tuned() end
 ---@field forward? Vec3 emitter / reverb_zone: the ellipsoid's forward axis, turned by heading (default {1,0,0})
 ---@field core? number emitter / reverb_zone: inner core fraction 0..1 (default 0)
 ---@field preset? string reverb_zone (spawn: required): the aud_reverb preset key, 16 hex digits, one the install has
----@field slots? 'retail'|'own' traffic / ped, spawn only (world_audio >= 3): 'retail' (default: retail's pools, the nearest win) or 'own' = its own MixMap instance (not retail): it plays whenever it is within retail's list radius (40 m cars, 50 m peds), up to 16 own cars and 16 own peds; the map's objects keep retail's pools
+---@field slots? 'own'|'shared'|'retail' traffic / ped, spawn only: 'own' (the default since world_audio 4) = its own instance of a private MixMap (not retail): it plays within retail's list radius (40 m cars, 50 m peds) when among the 16 nearest own cars / 16 nearest own peds (all mods), else it waits (`read(key).waiting`); the map's objects keep retail's pools. 'shared' (alias 'retail', the world_audio 3 default) = retail's pools shared with the map's objects, the nearest win
 sdk.world_audio = {}
 ---@param key string
 ---@param kind 'traffic'|'ped'|'skater'|'emitter'|'reverb_zone'
@@ -899,7 +906,9 @@ function sdk.world_audio.event(key, event, opts) end
 ---@param key string
 function sdk.world_audio.remove(key) end
 ---@param key string
----@return {kind:string, audible:boolean, instance?:integer, own:boolean, parked:boolean}|nil
+---audible: holds an instance / plays; own: the instance is a private MixMap's; slots (cars, peds; world_audio >= 4): 'own' or 'shared', the object's setting; waiting (>= 4): in reach but every instance of its pool is held by a nearer object.
+---@return {kind:string, audible:boolean, instance?:integer, own:boolean, slots?:'own'|'shared', waiting:boolean, parked:boolean}|nil
 function sdk.world_audio.read(key) end
----@return {more_audible:boolean, instances:{traffic:integer,peds:integer,skaters:integer}, published:table, audible:table, speech_lines:integer}
+---The retail pools (instances, published, audible, waiting) and, under `own` (world_audio >= 4), the private MixMap's (instances 16 / 16, published, audible, waiting).
+---@return {more_audible:boolean, instances:{traffic:integer,peds:integer,skaters:integer}, published:table, audible:table, waiting:integer, speech_lines:integer, own:{instances:{traffic:integer,peds:integer}, published:table, audible:table, waiting:integer}}
 function sdk.world_audio.info() end

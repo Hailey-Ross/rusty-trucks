@@ -371,7 +371,9 @@ function sdk.audio.tuned() return (audio_mine().tuning) or {} end
 -- to the calling mod; 48 objects per mod, 128 in all; an object not updated for 0.5 s is parked;
 -- everything is removed when the mod is disabled or reloaded. The retail limits decide which
 -- objects sound (4 nearest cars within 40 m, 15 nearest peds within 50 m, 1 skater within 30 m).
-sdk.world_audio = { version = 3 }
+-- Version 4: a mod's cars and peds take their own MixMap instance by default (16 + 16, the nearest
+-- own ones play, the rest wait); `slots = 'shared'` puts one in retail's pools instead.
+sdk.world_audio = { version = 4 }
 function sdk.world_audio.spawn(key, kind, opts)
     submit{kind="world_audio_spawn",key=key,object=kind,options=opts or {}}
 end

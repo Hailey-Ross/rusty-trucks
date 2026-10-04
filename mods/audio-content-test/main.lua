@@ -161,15 +161,16 @@ return {
             end
         end
         if key("Digit3") and (sdk.capabilities.world_audio or 0) >= 3 then
-            -- L3: six idling taxis around the skater, each on its own MixMap instance (retail's 4
-            -- traffic instances stay for the map's cars, and all six are heard).
+            -- L3 / M3: six idling taxis around the skater, each on its own MixMap instance (retail's
+            -- 4 traffic instances stay for the map's cars, and all six are heard): the default since
+            -- world audio 4 (no slots); on 3 they ask for it.
             own_cars = not own_cars
             local p = sdk.player.read().position
             for i = 1, 6 do
                 if own_cars then
                     local a = i * math.pi / 3
                     sdk.commands.request("own" .. i, {kind = "world_audio_spawn", key = "own_car" .. i, object = "traffic", options = {
-                        engine = "c04_taxi01", slots = "own", speed = 0, position = {p[1] + 9 * math.cos(a), p[2], p[3] + 9 * math.sin(a)}}})
+                        engine = "c04_taxi01", slots = (sdk.capabilities.world_audio or 0) < 4 and "own" or nil, speed = 0, position = {p[1] + 9 * math.cos(a), p[2], p[3] + 9 * math.sin(a)}}})
                 else
                     sdk.world_audio.remove("own_car" .. i)
                 end

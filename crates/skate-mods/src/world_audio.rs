@@ -31,16 +31,31 @@ pub enum ObjectKind {
     ReverbZone,
 }
 
-/// Which MixMap instances a traffic vehicle or ped plays on (world audio extension 3, doc 16 L3).
+/// Which MixMap instances a mod's traffic vehicle or ped plays on (world audio extension 3, doc 16
+/// L3; the default flipped to `own` in extension 4, user decision 2026-10-04: "yes I agree it
+/// should match" the mod emitters, which have their own instances by default).
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Slots {
-    /// Retail's pools (4 traffic / 15 pedestrian instances, the nearest win): the default.
+    /// Its own instance of a private MixMap (the default; not retail): it plays whenever it is
+    /// within retail's list radius (40 m cars, 50 m peds) and among the 16 nearest own cars / 16
+    /// nearest own peds of all mods; a farther one waits (silent, `read(key).waiting`) until it is
+    /// among them. It never takes one of retail's instances, so the map's objects keep retail's
+    /// pools.
     #[default]
-    Retail,
-    /// Its own instance of a private MixMap: it plays whenever it is within retail's list radius
-    /// (up to 16 own cars and 16 own peds), the map's objects keep retail's pools. Not retail.
     Own,
+    /// Retail's pools (4 traffic / 15 pedestrian instances, the more-audible setting 8 / 24),
+    /// shared with the map's objects: the nearest win. `retail` is accepted as well (the name
+    /// extension 3 used), so a mod passing `retail` gets the pools on 3 and 4 alike.
+    #[serde(alias = "retail")]
+    Shared,
+}
+
+impl Slots {
+    /// Spawn `slots` → the instances the object takes (`None` = the default, [`Slots::Own`]).
+    pub fn resolve(slots: Option<Self>) -> Self {
+        slots.unwrap_or_default()
+    }
 }
 
 /// Every field a spawn or an update may carry; each kind reads its own and ignores none silently
@@ -61,8 +76,8 @@ pub struct WorldAudioOptions {
     /// Follow one of this mod's physics bodies (position, rotation and velocity from it).
     #[serde(default)]
     pub body: Option<String>,
-    /// Traffic and peds, spawn only (extension 3): `retail` (the default) or `own` (its own MixMap
-    /// instance).
+    /// Traffic and peds, spawn only: `own` (the default since extension 4: its own MixMap
+    /// instance) or `shared` (alias `retail`: retail's pools with the map's objects).
     #[serde(default)]
     pub slots: Option<Slots>,
     // ---- traffic
@@ -344,6 +359,26 @@ mod tests {
         let moving: WorldAudioOptions = serde_json::from_value(json!({"bank":"x","extent":[1,1,1],"velocity":[1,0,0]})).unwrap();
         assert!(!moving.validate_for(ObjectKind::Emitter), "emitters are static records");
         assert!(serde_json::from_value::<WorldAudioOptions>(json!({"falloff":"cubic"})).is_err());
+    }
+
+    /// World audio extension 4 (doc 16 M3): a mod's car / ped takes its own instance unless it
+    /// asks for retail's pools (`shared`, alias `retail`); `own` stays valid; only traffic and
+    /// peds take `slots`; anything else is a typo, not silence.
+    #[test]
+    fn slots_default_to_own_and_shared_opts_in() {
+        let none: WorldAudioOptions = serde_json::from_value(json!({"engine":"c04_taxi01"})).unwrap();
+        assert_eq!(Slots::resolve(none.slots), Slots::Own, "no slots = its own instance");
+        for (v, want) in [("own", Slots::Own), ("shared", Slots::Shared), ("retail", Slots::Shared)] {
+            let o: WorldAudioOptions = serde_json::from_value(json!({"slots": v})).unwrap();
+            assert_eq!(Slots::resolve(o.slots), want, "{v}");
+            assert!(o.validate_for(ObjectKind::Traffic) && o.validate_for(ObjectKind::Ped), "{v}");
+            for kind in [ObjectKind::Skater, ObjectKind::Emitter, ObjectKind::ReverbZone] {
+                assert!(!o.validate_for(kind), "{v} on {kind:?}");
+            }
+        }
+        for bad in ["extra", "Own", "pool", ""] {
+            assert!(serde_json::from_value::<WorldAudioOptions>(json!({"slots": bad})).is_err(), "accepted {bad:?}");
+        }
     }
 
     #[test]

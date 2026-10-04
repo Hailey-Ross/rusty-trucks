@@ -422,6 +422,10 @@ pub(crate) struct WorldHost {
     pub(crate) events: super::mod_audio::EventBuf,
     /// The mods' mute / replace / layer rules (`mod_rules`); None without rules.
     pub(crate) rules: Option<std::sync::Arc<super::mod_rules::RuleSet>>,
+    /// The owners (cars, peds) inside the list radius that hold no instance after the last
+    /// assignment: every instance is held by a nearer one; each takes one as soon as it is among
+    /// the nearest (read back, doc 16 M3; bookkeeping only).
+    pub(crate) waiting: (Vec<u64>, Vec<u64>),
 }
 
 impl Default for WorldHost {
@@ -447,6 +451,7 @@ impl Default for WorldHost {
             speech_requests: Vec::new(),
             events: None,
             rules: None,
+            waiting: (Vec::new(), Vec::new()),
         }
     }
 }
@@ -497,6 +502,12 @@ pub(crate) struct WorldHeld {
     /// (owner, instance) of the objects with their own instance (`mod_world`, doc 16 L3).
     pub(crate) own_traffic: Vec<(u64, u32)>,
     pub(crate) own_peds: Vec<(u64, u32)>,
+    /// Owners inside the list radius waiting for an instance (all held by nearer ones): retail's
+    /// pools, and the own-instance pools (`mod_world`, doc 16 M3).
+    pub(crate) waiting_traffic: Vec<u64>,
+    pub(crate) waiting_peds: Vec<u64>,
+    pub(crate) own_waiting_traffic: Vec<u64>,
+    pub(crate) own_waiting_peds: Vec<u64>,
     /// Running counts for the summary log: packets the world host posted, packets / Splice starts
     /// of the NPC skater instances, and speech lines started.
     pub(crate) posts: u64,
@@ -567,6 +578,14 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 fn horizontal(a: [f32; 3], b: [f32; 3]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// The candidates inside the list radius that hold no instance (sorted by id).
+fn waiting(into: &mut Vec<u64>, candidates: &[(u64, f32)], pool: &Pool) {
+    into.clear();
+    into.extend(candidates.iter().filter(|c| c.1.is_finite() && pool.instance(c.0).is_none()).map(|c| c.0));
+    into.sort_unstable();
+    into.dedup();
 }
 
 /// A candidate inside the list radius keeps its distance; one outside never gets an instance.
@@ -645,6 +664,8 @@ impl WorldHost {
         self.banks = None;
         self.last_camera = None;
         self.speech_requests.clear();
+        self.waiting.0.clear();
+        self.waiting.1.clear();
     }
 
     /// A pass began in `pre` and waits for `post`.
@@ -697,6 +718,10 @@ pub(super) fn frame(
         held.traffic = traffic;
         held.peds = peds;
     }
+    if held.waiting_traffic != host.waiting.0 || held.waiting_peds != host.waiting.1 {
+        held.waiting_traffic.clone_from(&host.waiting.0);
+        held.waiting_peds.clone_from(&host.waiting.1);
+    }
     if held.posts != host.posts {
         held.posts = host.posts;
     }
@@ -737,6 +762,8 @@ pub(crate) fn pre_in(host: &mut WorldHost, owners: &WorldOwners, native: &mut Na
     }
     let idle = owners.vehicles.is_empty() && owners.peds.is_empty() && host.vehicles.is_empty() && host.ped_objects.is_empty();
     if idle {
+        host.waiting.0.clear();
+        host.waiting.1.clear();
         return;
     }
     // The world banks (cheap when loaded; a map change unloads them, `native::unload_map_banks`).
@@ -804,6 +831,8 @@ pub(crate) fn pre_in(host: &mut WorldHost, owners: &WorldOwners, native: &mut Na
     let ped_candidates: Vec<(u64, f32)> = owners.peds.iter().map(|(&id, p)| (id, within(distance(p.position, cam), PED_LIST_RADIUS))).collect();
     let traffic = host.traffic.assign(&traffic_candidates);
     let peds = host.peds.assign(&ped_candidates);
+    waiting(&mut host.waiting.0, &traffic_candidates, &host.traffic);
+    waiting(&mut host.waiting.1, &ped_candidates, &host.peds);
     for (owner, _) in traffic.released {
         if let Some((mut vehicle, mut pos)) = host.vehicles.remove(&owner) {
             pos.deactivate(m, &l);
@@ -967,6 +996,23 @@ mod tests {
         assert_eq!(host.traffic.len(), 4);
         assert_eq!(host.peds.len(), 15);
         assert!(!owners.expected && host.prefetch.requested.is_empty(), "nothing expected: no prefetch either");
+        assert!(host.waiting.0.is_empty() && host.waiting.1.is_empty());
+    }
+
+    /// Doc 16 M3: a full pool's nearest hold the instances; the others inside the list radius
+    /// wait (out of reach is not waiting), and a waiting one takes the instance a nearer one frees.
+    #[test]
+    fn a_full_pool_leaves_the_farther_ones_in_reach_waiting() {
+        let mut pool = Pool::new(2);
+        let mut out = Vec::new();
+        let candidates = [(1, 5.0), (2, 1.0), (3, 3.0), (4, f32::INFINITY)];
+        pool.assign(&candidates);
+        waiting(&mut out, &candidates, &pool);
+        assert_eq!(out, vec![1], "2 and 3 hold, 1 waits, 4 is out of reach");
+        let candidates = [(1, 5.0), (3, 3.0), (4, f32::INFINITY)];
+        pool.assign(&candidates);
+        waiting(&mut out, &candidates, &pool);
+        assert!(out.is_empty() && pool.instance(1).is_some(), "2 went: 1 takes its instance");
     }
 
     /// The world banks on the prefetch worker (data-gated): nothing is asked for until the world
