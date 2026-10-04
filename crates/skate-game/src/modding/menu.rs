@@ -358,6 +358,7 @@ fn draw(
     mut title: Single<&mut Text, (With<Title>,Without<Label>,Without<Badge>,Without<Detail>,Without<Page>)>,
     mut page: Single<&mut Text, (With<Page>,Without<Label>,Without<Badge>,Without<Title>,Without<Detail>)>,
     mut logged: Local<String>,
+    audio: Option<Res<crate::game_audio::AudioContent>>,
 ) {
     root.display = if menu.open { Display::Flex } else { Display::None };
     if !menu.open { return; }
@@ -388,9 +389,16 @@ fn draw(
     if let Some(package) = selected_package {
         description += &format!("\n{}  /  {}\n{}",package.manifest.name,package.manifest.author,package.manifest.description);
         if let Some(error) = &package.error { description += &format!("\n{}",friendly_error(error)); }
+        // Audio content: the overlay's load error, conflicts with other mods (the first by mod id
+        // wins), entries the install lacks. Kept until the overlays change.
+        for line in audio.as_deref().map(|a| a.messages_for(&package.manifest.id)).unwrap_or_default().into_iter().take(2) {
+            description += &format!("\n{line}");
+        }
         if let Action::Setting(_,key) = &entries[selected].1 { description += &format!("\n{}",package.manifest.settings[key].description); }
     } else if !mods.manager.diagnostics.is_empty() {
         description += "\nSome mod files could not load. Restore missing files, then refresh. Details are in the session log.";
+    } else if let Some(line) = audio.as_deref().and_then(|a| a.summary()) {
+        description += &format!("\n{line}");
     } else if mods.manager.packages.is_empty() {
         description += "\nNo mods installed yet. Open the mods folder to add a mod, then refresh.";
     }

@@ -563,6 +563,61 @@ function sdk.graphs.read(graph) end
 ---@param enabled? boolean nil restores the original gate
 function sdk.graphs.set_enabled(graph, target, index, enabled) end
 
+---Feature discovery: extension name → version, compiled into the engine (an older engine lacks
+---newer keys, so test `(sdk.capabilities.audio or 0) >= 1` before relying on a feature). The
+---manifest API stays 2. Includes among others `audio`, `world_audio`, `engine_access`,
+---`command_results`, `player_physics`, `menus`, `camera`, `volumes`, `capture`.
+---@type table<string, integer>
+sdk.capabilities = {}
+
+-- Audio extension 1 (capability `audio`): the mod's own sounds. Keys and files belong to the calling
+-- mod. Files: mod-relative PCM16 WAV (`.wav`, no `..`, `\`, `:`, `#`, `?`), 1–2 channels, 8–48 kHz,
+-- at most 30 s and 8 MiB each; metadata chunks are dropped. Limits: 32 clips / 32 MiB / 32 voices per
+-- mod, 128 / 128 MiB / 128 in all. The voices play outside the game's native audio engine: master
+-- volume and `--mute` apply, but no retail reverb, distance curves or ducking. They pause while the
+-- game is paused or a replay runs, and stop when the mod is disabled, reloaded or fails (clips are
+-- released then too). A voice bound to a body stops when that body is removed.
+---@class AudioPlayOptions
+---@field path string mod-relative PCM16 WAV
+---@field body? string follow one of this mod's physics bodies (exclusive with position)
+---@field position? Vec3 world position of an unbound voice (default {0,0,0})
+---@field offset? Vec3 added to the body pose or the position, -100..100 m per axis (default {0,0,0})
+---@field loop? boolean default false
+---@field volume? number 0..1 (default 1)
+---@field pitch? number playback speed 0.25..4: changes pitch and duration (default 1)
+---@field spatial? boolean positional (default true); false plays at the listener
+---@field spatial_scale? number 0.001..1, world metres → spatial units (default 0.1)
+---@field paused? boolean start paused (default false)
+---@field fade_in? number seconds 0..2 (default 0.01)
+---@class AudioUpdateOptions
+---@field volume? number 0..1
+---@field pitch? number 0.25..4
+---@field paused? boolean
+---@field position? Vec3 unbound voices only
+---@field offset? Vec3
+---@type {version:integer}
+sdk.audio = { version = 1 }
+---Load and validate a WAV now so the first play doesn't read it. A bad file, an unknown body or a
+---full limit fails the mod (as `play` does); wrap the command in `sdk.commands.request` to get the
+---error as a result instead.
+---@param path string mod-relative PCM16 WAV
+function sdk.audio.preload(path) end
+---Start a voice under `key`, replacing any voice this mod already plays under that key.
+---@param key string
+---@param opts AudioPlayOptions
+function sdk.audio.play(key, opts) end
+---Change a playing voice; never restarts it. Unknown or finished keys are ignored. Volume and pitch
+---changes are smoothed (≈ 12 ms / 25 ms).
+---@param key string
+---@param opts AudioUpdateOptions
+function sdk.audio.update(key, opts) end
+---Stop a voice with a fade (seconds, default 0.03; 0 = at once). Repeated stops don't extend it.
+---@param key string
+---@param fade_out? number
+function sdk.audio.stop(key, fade_out) end
+---Stop every voice of this mod at once (the clips stay loaded).
+function sdk.audio.stop_all() end
+
 -- World audio extension 1 (capability `world_audio`): publish traffic vehicles, pedestrians and
 -- skaters to the game's retail world audio, exactly as an engine system would (doc
 -- docs/hails-additions/15-world-audio.md). Keys belong to this mod; 48 objects per mod, 128 in all;

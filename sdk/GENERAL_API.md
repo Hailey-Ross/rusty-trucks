@@ -2,7 +2,9 @@
 
 Manifest API remains `2`. Feature discovery uses compiled `sdk.capabilities`:
 `engine_access=1`, `command_results=1`, `native_bodies=1`,
-`input_override=1`, `player_physics=2`, `player_overlap=1`, `landed_details=1`.
+`input_override=1`, `player_physics=2`, `player_overlap=1`, `landed_details=1`,
+`audio=1` (the mod's own WAVs: `sdk.audio.preload / play / update / stop / stop_all`, declared in
+`skate.lua`) and `world_audio=1` (publishing cars, peds and skaters to the game's world audio).
 The host has no injury, vehicle or challenge rules. Those live in Lua.
 
 `deformation=1` adds optional impact-driven mesh/collider deformation.

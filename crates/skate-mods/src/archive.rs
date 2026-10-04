@@ -122,6 +122,12 @@ impl Drop for Cache {
 }
 
 pub fn validate_package(path: &Path) -> Result<Manifest, String> {
+    validate_package_content(path).map(|(manifest, _)| manifest)
+}
+
+/// [`validate_package`] plus the deep check of the package's audio content overlay
+/// (`audio.json`: schema and every file it names; None without one).
+pub fn validate_package_content(path: &Path) -> Result<(Manifest, Option<crate::audio_content::Loaded>), String> {
     let source = path.canonicalize().map_err(|e| e.to_string())?;
     let mut cache = Cache::default();
     let root = if source.is_dir() {
@@ -144,7 +150,8 @@ pub fn validate_package(path: &Path) -> Result<Manifest, String> {
         .set_mode(mlua::chunk::ChunkMode::Text)
         .into_function()
         .map_err(|e| e.to_string())?;
-    Ok(manifest)
+    let audio = crate::audio_content::load(&root)?;
+    Ok((manifest, audio))
 }
 
 pub fn read_bounded(root: &Path, relative: &str, limit: u64) -> Result<Vec<u8>, String> {

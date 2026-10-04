@@ -13,6 +13,7 @@
 //! scale it down (voices.rs), sounds fade in, voice counts are capped, and nothing plays while
 //! the menu is open or a replay runs. `--mute` silences game and mod audio.
 mod ambience;
+mod content;
 mod crossfade_groups;
 #[cfg(test)]
 mod e2e;
@@ -37,6 +38,7 @@ use bevy::{audio::Volume, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub(crate) use content::AudioContent;
 pub(crate) use library::Library;
 pub(crate) use voices::{Category, Play, Voices};
 
@@ -162,13 +164,14 @@ impl Plugin for GameAudioPlugin {
         app.init_resource::<Voices>()
             .init_resource::<skate_events::Cues>()
             .init_resource::<emitters::ReverbZones>()
+            .init_resource::<AudioContent>()
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
             .add_systems(
                 Update,
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
                 // the ticks and the local update, then the beds (retail's process / tick / update).
-                (native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
+                (content::frame, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
                     .chain()
                     .before(CueSet)
                     .after(crate::app::FrameSet::Animation),

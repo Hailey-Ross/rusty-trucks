@@ -181,6 +181,17 @@ impl Evaluator {
         }
     }
 
+    /// The id the next post gets.
+    pub fn next_node(&self) -> u32 {
+        self.next_node
+    }
+
+    /// Continue another evaluator's post ids (a host that replaces its runtime: node ids the old
+    /// one handed out must never name a post of the new one). 0 is never an id.
+    pub fn continue_nodes(&mut self, next: u32) {
+        self.next_node = next.max(1);
+    }
+
     pub fn tick_scale(&self) -> f32 {
         self.tick
     }

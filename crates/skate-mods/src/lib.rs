@@ -1,6 +1,8 @@
 //! Lua mod packages (API 2): low-level physics/graphics hooks, no Vehicle class.
 mod archive;
 pub mod audio;
+pub mod audio_content;
+pub mod audio_merge;
 pub mod world_audio;
 pub mod graphics_dynamic;
 pub mod presentation;
@@ -12,7 +14,7 @@ mod schema;
 mod vm;
 pub mod extensions;
 
-pub use archive::{read_bounded, validate_package, Cache};
+pub use archive::{read_bounded, validate_package, validate_package_content, Cache};
 pub use assets::convex_points_file;
 pub use model::model_shape_file;
 pub use query::{with_host, DynamicsHost, RaycastFilter, RaycastOptions};

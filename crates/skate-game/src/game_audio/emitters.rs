@@ -90,7 +90,8 @@ struct ZoneRecord {
 
 #[derive(Default)]
 pub(super) struct ZoneState {
-    map: Option<(String, u64)>,
+    /// Map name, map generation, audio content generation.
+    map: Option<(String, u64, u64)>,
     records: Vec<ZoneRecord>,
     /// Reached records in discovery order.
     active: Vec<usize>,
@@ -107,10 +108,11 @@ pub(super) fn reverb_zones(
     native: Option<Res<Native>>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
     mut out: ResMut<ReverbZones>,
+    content: Res<super::AudioContent>,
 ) {
     let (Some(library), Some(_)) = (library, native) else { return };
     let state = &mut *state;
-    let identity = (map.name.clone(), map.generation);
+    let identity = (map.name.clone(), map.generation, content.generation);
     if state.map.as_ref() != Some(&identity) {
         let stem = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
         state.records = zone_records(&library, stem);
@@ -238,7 +240,8 @@ struct Node {
 
 #[derive(Default)]
 pub(super) struct State {
-    map: Option<(String, u64)>,
+    /// Map name, map generation, audio content generation.
+    map: Option<(String, u64, u64)>,
     emitters: Vec<Emitter>,
     /// Reached records in discovery order (retail's node list).
     nodes: Vec<Node>,
@@ -307,13 +310,19 @@ pub(super) fn update(
     replay: Res<crate::replay::Replay>,
     native: Option<ResMut<Native>>,
     cues: Res<super::skate_events::Cues>,
+    content: Res<super::AudioContent>,
 ) {
     let _timing = super::timing::scope(&super::timing::EMITTERS);
     // No native runtime: the emitters are silent (its start logged why).
     let (Some(library), Some(mut native)) = (library, native) else { return };
     let native = &mut *native;
     let state = &mut *state;
-    let identity = (map.name.clone(), map.generation);
+    let identity = (map.name.clone(), map.generation, content.generation);
+    if state.map.as_ref().is_some_and(|m| m.2 != content.generation) {
+        // The runtime restarted (`content::restart`): its posts and emitter states are the old
+        // runtime's. Forget them; never release old ids into the new runtime.
+        state.nodes.clear();
+    }
     if state.map.as_ref() != Some(&identity) {
         for node in state.nodes.drain(..) {
             if let Some(post) = node.post {

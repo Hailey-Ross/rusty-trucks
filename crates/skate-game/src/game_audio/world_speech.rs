@@ -71,6 +71,16 @@ struct Data {
     library: SpeechLibrary,
     slots: SpeechSlots,
     audio: Option<PathBuf>,
+    /// Audio content overlays' takes by (clip, take): replacements and extra takes.
+    mod_takes: HashMap<(usize, usize), PathBuf>,
+}
+
+/// An overlay take's rate and length from its WAV header (0 when unreadable: the take still plays
+/// from its PCM when picked).
+fn take_of(path: &std::path::Path) -> Take {
+    let pcm = std::fs::read(path).ok().and_then(|b| super::library::wav_pcm(&b));
+    let (rate, samples) = pcm.map_or((0, 0), |p| (p.rate, p.channels.first().map_or(0, Vec::len) as u32));
+    Take { offset: 0, size: 0, rate, samples }
 }
 
 #[derive(Resource)]
@@ -187,20 +197,50 @@ struct RecordJson {
     clips: Vec<u16>,
 }
 
-fn load(index_path: &std::path::Path, audio: Option<PathBuf>) -> Result<Data, String> {
+/// `mods`: the overlays' replaced takes by (clip name without `.dat`, take) and extra takes by
+/// clip (`Library::speech_mods`; empty without overlays).
+fn load(index_path: &std::path::Path, audio: Option<PathBuf>, mods: &(HashMap<(String, u32), PathBuf>, HashMap<String, Vec<PathBuf>>)) -> Result<Data, String> {
     let text = std::fs::read_to_string(index_path).map_err(|e| format!("{}: {e}", index_path.display()))?;
     let json: IndexJson = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", index_path.display()))?;
     let mut clips = Vec::with_capacity(json.clips.len());
     let mut ids = Vec::with_capacity(json.clips.len());
     let mut headers = Vec::new();
+    let mut mod_takes = HashMap::new();
+    let (replaced, extra) = mods;
+    let mut known = std::collections::HashSet::new();
     for c in json.clips {
         let Some((event, voice, voice_name, line)) = skate_audio::world::speech::parse_name(&c.name) else { continue };
+        let stem = c.name.strip_suffix(".dat").unwrap_or(&c.name).to_owned();
+        let mut takes: Vec<Take> = c.takes.iter().map(|t| Take { offset: t.offset, size: t.size, rate: t.rate, samples: t.samples }).collect();
+        if !replaced.is_empty() || !extra.is_empty() {
+            let index = clips.len();
+            for (t, take) in takes.iter_mut().enumerate() {
+                if let Some(path) = replaced.get(&(stem.clone(), t as u32)) {
+                    *take = take_of(path);
+                    mod_takes.insert((index, t), path.clone());
+                }
+            }
+            for path in extra.get(&stem).into_iter().flatten() {
+                if takes.len() < 255 {
+                    mod_takes.insert((index, takes.len()), path.clone());
+                    takes.push(take_of(path));
+                }
+            }
+            known.insert(stem);
+        }
         if let Some(id) = c.id {
-            headers.push(ClipHeader { id, takes: c.takes.len().min(255) as u8, history: c.history, flags: 0 });
+            headers.push(ClipHeader { id, takes: takes.len().min(255) as u8, history: c.history, flags: 0 });
         }
         ids.push(c.id);
-        let takes = c.takes.iter().map(|t| Take { offset: t.offset, size: t.size, rate: t.rate, samples: t.samples }).collect();
         clips.push(Clip { name: c.name, event, voice, voice_name, line, takes });
+    }
+    for (clip, take) in replaced.keys() {
+        if !known.contains(clip) {
+            warn!("AUDIO_WORLD speech: an audio mod replaces take {take} of {clip}, which the speech index does not have");
+        }
+    }
+    for clip in extra.keys().filter(|c| !known.contains(*c)) {
+        warn!("AUDIO_WORLD speech: an audio mod adds takes to {clip}, which the speech index does not have");
     }
     let mut index = SpeechIndex::new(clips);
     index.set_ids(&ids);
@@ -234,7 +274,7 @@ fn load(index_path: &std::path::Path, audio: Option<PathBuf>) -> Result<Data, St
         .collect();
     let table = EventTable { bank: json.rules.bank, sub_bank: json.rules.sub_bank, events };
     let slots = SpeechSlots::new(&index);
-    Ok(Data { index, table, library: SpeechLibrary::new(headers), slots, audio })
+    Ok(Data { index, table, library: SpeechLibrary::new(headers), slots, audio, mod_takes })
 }
 
 // ---- the stream voices ----
@@ -252,10 +292,15 @@ impl Voices<'_> {
         if self.loaded.contains(&slot) {
             return Some(slot);
         }
-        let audio = self.data.audio.as_ref()?;
-        let clip = self.data.index.clips.get(line.clip)?;
-        let stem = clip.name.strip_suffix(".dat").unwrap_or(&clip.name);
-        let path = audio.join(stem).join(format!("{:02}.wav", line.take));
+        let path = match self.data.mod_takes.get(&(line.clip, line.take)) {
+            Some(p) => p.clone(),
+            None => {
+                let audio = self.data.audio.as_ref()?;
+                let clip = self.data.index.clips.get(line.clip)?;
+                let stem = clip.name.strip_suffix(".dat").unwrap_or(&clip.name);
+                audio.join(stem).join(format!("{:02}.wav", line.take))
+            }
+        };
         let pcm = match std::fs::read(&path).ok().and_then(|b| super::library::wav_pcm(&b)) {
             Some(p) => p,
             None => {
@@ -360,7 +405,7 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
         speech.manager = SpeechManager::new(library.world_tuning().speech_tuning());
         match library.speech("livingworld") {
             None => info!("AUDIO_WORLD speech off: the install has no speech index (rerun setup)"),
-            Some((index, audio)) => match load(&index, audio.clone()) {
+            Some((index, audio)) => match load(&index, audio.clone(), &library.speech_mods("livingworld")) {
                 Ok(data) => {
                     if audio.is_none() {
                         info!("AUDIO_WORLD speech: lines are chosen and logged but silent: the takes are not decoded (setup with SKATE_SETUP_SPEECH=1)");
@@ -498,6 +543,45 @@ mod tests {
     use crate::game_audio::world_sources::{WorldHost, WorldOwners};
     use skate_audio::mixmap::cadence::CONSOLE_DT;
     use skate_audio::world::peds::PedState;
+
+    /// Audio content overlays on speech: a replaced take plays from the mod's WAV (with its rate
+    /// and length), extra takes join the clip (the rules' take count grows, so the manager can
+    /// pick them), the other clips and takes stay the export's. Without overlays the index loads
+    /// as before (no mod takes).
+    #[test]
+    fn mod_takes_replace_and_extend_a_clip() {
+        let dir = std::env::temp_dir().join(format!("skate-speech-mods-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let index = dir.join("livingworld.json");
+        let take = serde_json::json!({"offset": 0, "size": 10, "rate": 32000, "samples": 100});
+        std::fs::write(&index, serde_json::json!({
+            "clips": [
+                {"name": "501_59_busm1_Warn_n.dat", "id": 7, "takes": [take, take]},
+                {"name": "502_59_busm1_Other_n.dat", "id": 8, "takes": [take]}
+            ],
+            "rules": {"bank": 1, "sub_bank": 2, "events": []}
+        }).to_string()).unwrap();
+        let wav = crate::game_audio::library::tests::test_wav(2205, 22050, 99);
+        std::fs::write(dir.join("r.wav"), &wav).unwrap();
+        std::fs::write(dir.join("e.wav"), &wav).unwrap();
+        let plain = load(&index, Some(dir.clone()), &Default::default()).unwrap();
+        assert!(plain.mod_takes.is_empty());
+        assert_eq!(plain.index.clips[0].takes.len(), 2);
+        let mut replaced = HashMap::new();
+        replaced.insert(("501_59_busm1_Warn_n".to_owned(), 1u32), dir.join("r.wav"));
+        let mut extra = HashMap::new();
+        extra.insert("501_59_busm1_Warn_n".to_owned(), vec![dir.join("e.wav")]);
+        let data = load(&index, Some(dir.clone()), &(replaced, extra)).unwrap();
+        let clip = &data.index.clips[0];
+        assert_eq!(clip.takes.len(), 3, "one extra take");
+        assert_eq!((clip.takes[1].rate, clip.takes[1].samples), (22050, 2205), "the replacement's own header");
+        assert_eq!(clip.takes[0].rate, 32000, "other takes stay");
+        assert_eq!(data.mod_takes.get(&(0, 1)), Some(&dir.join("r.wav")));
+        assert_eq!(data.mod_takes.get(&(0, 2)), Some(&dir.join("e.wav")));
+        assert_eq!(data.index.clips[1].takes.len(), 1, "other clips stay");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// As `native::mixmap_frame`: the category gains.
     fn globals(m: &mut skate_audio::mixmap::MixMap) {

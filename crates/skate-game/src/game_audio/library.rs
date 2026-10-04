@@ -334,6 +334,79 @@ struct Manifest {
     /// `SKATE_SETUP_SPEECH=1`, the decoded takes; optional).
     #[serde(default)]
     speech: BTreeMap<String, SpeechEntry>,
+    // Audio content overlays only (`skate_mods::audio_merge`; never in an install's manifest).
+    /// Bank → S10A slot → the loop start (frames) of a mod WAV.
+    #[serde(default)]
+    mod_sample_loops: BTreeMap<String, BTreeMap<String, u32>>,
+    /// Mod banks' load policy and volume group.
+    #[serde(default)]
+    mod_banks: BTreeMap<String, ModBankJson>,
+    /// Speech archive → replaced takes and extra takes.
+    #[serde(default)]
+    mod_speech: BTreeMap<String, ModSpeechJson>,
+    /// Bank → the interim location-set layers of a mod bank.
+    #[serde(default)]
+    mod_location_programs: BTreeMap<String, Vec<LayerJson>>,
+    /// Map stem → map audio from overlays.
+    #[serde(default)]
+    mod_maps: BTreeMap<String, MapJson>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+struct ModBankJson {
+    #[serde(default)]
+    preload: bool,
+    #[serde(default)]
+    group: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ModSpeechJson {
+    /// Clip (without `.dat`) → take → file.
+    #[serde(default)]
+    takes: BTreeMap<String, BTreeMap<String, String>>,
+    /// Clip → extra takes after the clip's own.
+    #[serde(default)]
+    extra: BTreeMap<String, Vec<String>>,
+}
+
+/// One layer of a mod bank's location-set post (`random_sets` interim player).
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LayerJson {
+    #[serde(default)]
+    pub delay: f32,
+    /// A slot, or `"shuffle"`.
+    pub sample: serde_json::Value,
+    #[serde(default = "one")]
+    pub level: f32,
+    #[serde(default)]
+    pub pan_sweep: f32,
+    #[serde(default)]
+    pub looping: bool,
+}
+
+/// A map's audio from a mod overlay, a `<map>.audio.json` sidecar or a `.skate` `AUDO` tag
+/// (`skate_mods::audio_content::MapAudioDef`; records with their index).
+#[derive(Debug, Default, Clone, Deserialize)]
+pub(crate) struct MapJson {
+    #[serde(default)]
+    pub district: Option<String>,
+    #[serde(default)]
+    pub ems: Option<Vec<String>>,
+    #[serde(default)]
+    pub crossfade_bank: Option<String>,
+    #[serde(default)]
+    pub fallback_bed: Option<String>,
+    #[serde(default)]
+    pub emitters: Vec<EmitterRecord>,
+    #[serde(default)]
+    pub regions: BTreeMap<String, Vec<BoxJson>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct BoxJson {
+    pub r#box: [f32; 4],
+    pub key: String,
 }
 
 /// One speech archive's export: the index JSON and the folder of decoded takes (None: not decoded).
@@ -727,14 +800,29 @@ pub(crate) fn wav_pcm(bytes: &[u8]) -> Option<skate_audio::mixer::Pcm> {
 pub(crate) type BankPcm = Vec<Option<Arc<skate_audio::mixer::Pcm>>>;
 
 /// Read and decode the WAVs in order (`Library::bank_pcm` and `BankSource::load`).
-fn decode_wavs<'a>(root: &Path, files: impl Iterator<Item = &'a str>) -> BankPcm {
+fn decode_wavs<'a>(files: impl Iterator<Item = &'a Path>) -> BankPcm {
     files
         .map(|file| {
             #[cfg(test)]
             WAV_DECODES.with(|n| n.set(n.get() + 1));
-            std::fs::read(root.join(file)).ok().and_then(|bytes| wav_pcm(&bytes)).map(Arc::new)
+            std::fs::read(file).ok().and_then(|bytes| wav_pcm(&bytes)).map(Arc::new)
         })
         .collect()
+}
+
+/// The sample header a mod WAV gets in an AEMS bank: voices play by the header (frames, rate,
+/// channels, loop), so a replacement of another length or rate needs its own. The codec stays the
+/// slot's; a slot that looped loops from frame 0 unless the overlay gives `loop_start`.
+pub(crate) fn mod_header(old: Option<skate_audio::formats::SampleHeader>, pcm: &skate_audio::mixer::Pcm, loop_start: Option<u32>) -> skate_audio::formats::SampleHeader {
+    let frames = pcm.channels.first().map_or(0, |c| c.len() as u32);
+    let looped = loop_start.or(old.and_then(|h| h.loop_start).map(|_| 0));
+    skate_audio::formats::SampleHeader {
+        codec: old.map_or(0, |h| h.codec),
+        channels: pcm.channels.len().clamp(1, 6) as u8,
+        rate: pcm.rate,
+        frames,
+        loop_start: looped.filter(|&l| l < frames),
+    }
 }
 
 #[cfg(test)]
@@ -747,29 +835,39 @@ thread_local! {
 /// reference to the library: `native::prefetch` runs [`BankSource::load`] on its worker thread.
 /// The game thread's own load (`Native::ensure_bank`) runs the same function, so both give the
 /// same bank and PCM.
+/// Each file is an absolute path (a retail bank with a replaced WAV mixes the install and a mod);
+/// `rebuild` lists the slots whose header comes from their (mod) WAV, with the loop start.
 #[derive(Clone, Debug)]
 pub(crate) struct BankSource {
-    root: PathBuf,
     stem: String,
     file: String,
-    wavs: Vec<String>,
+    abk: PathBuf,
+    wavs: Vec<PathBuf>,
+    rebuild: Vec<(usize, Option<u32>)>,
 }
 
 impl BankSource {
     #[cfg(test)]
     pub(crate) fn for_test(root: PathBuf, stem: &str, file: &str, wavs: Vec<String>) -> Self {
-        Self { root, stem: stem.to_owned(), file: file.to_owned(), wavs }
+        Self { stem: stem.to_owned(), file: file.to_owned(), abk: root.join(file), wavs: wavs.iter().map(|w| root.join(w)).collect(), rebuild: Vec::new() }
     }
 
     pub(crate) fn stem(&self) -> &str {
         &self.stem
     }
 
-    /// The `.abk` parsed and its WAVs decoded; the errors are `ensure_bank`'s.
+    /// The `.abk` parsed and its WAVs decoded; the errors are `ensure_bank`'s. Mod WAVs get their
+    /// headers from the PCM ([`mod_header`]).
     pub(crate) fn load(&self) -> Result<(skate_audio::formats::Bank, BankPcm), String> {
-        let bytes = std::fs::read(self.root.join(&self.file)).map_err(|e| format!("{}: {e}", self.file))?;
-        let bank = skate_audio::formats::Bank::parse(&self.stem, bytes).map_err(|e| e.to_string())?;
-        Ok((bank, decode_wavs(&self.root, self.wavs.iter().map(String::as_str))))
+        let bytes = std::fs::read(&self.abk).map_err(|e| format!("{}: {e}", self.file))?;
+        let mut bank = skate_audio::formats::Bank::parse(&self.stem, bytes).map_err(|e| e.to_string())?;
+        let pcm = decode_wavs(self.wavs.iter().map(PathBuf::as_path));
+        for &(slot, loop_start) in &self.rebuild {
+            if let (Some(entry), Some(Some(p))) = (bank.samples.get_mut(slot), pcm.get(slot)) {
+                entry.1 = Some(mod_header(entry.1, p, loop_start));
+            }
+        }
+        Ok((bank, pcm))
     }
 }
 
@@ -777,6 +875,8 @@ impl BankSource {
 pub(crate) struct Library {
     root: PathBuf,
     manifest: Manifest,
+    /// The merged audio content overlays' roots by mod id (`mod:<id>/<path>` files).
+    mods: BTreeMap<String, PathBuf>,
     loaded: HashMap<String, Clip>,
     failed: std::collections::HashSet<String>,
 }
@@ -785,6 +885,27 @@ fn safe_relative(file: &str) -> bool {
     let path = Path::new(file);
     // ':' also rules out drive prefixes on platforms that would parse "C:" as a name.
     !file.is_empty() && !file.contains(':') && path.components().all(|c| matches!(c, Component::Normal(_)))
+}
+
+/// One running mod's audio content overlay for [`Library::load_with`].
+pub(crate) struct OverlaySource<'a> {
+    pub id: &'a str,
+    /// The mod's root folder (its files are read below it).
+    pub root: &'a Path,
+    pub overlay: &'a skate_mods::audio_content::AudioOverlay,
+}
+
+/// What merging the overlays did: per mod, conflicts (another mod owns the identity), warnings
+/// (unknown identities, tuning fields the install lacks) and rejections (the merged manifest did
+/// not read back: the whole overlay is left out).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ContentReport {
+    pub applied: Vec<String>,
+    pub conflicts: Vec<skate_mods::audio_merge::Message>,
+    pub warnings: Vec<skate_mods::audio_merge::Message>,
+    pub rejected: Vec<skate_mods::audio_merge::Message>,
+    /// Identity → owning mod.
+    pub owners: BTreeMap<String, String>,
 }
 
 impl Library {
@@ -797,6 +918,60 @@ impl Library {
         }
         let audio = e.audio.as_deref().filter(|a| safe_relative(a)).map(|a| self.root.join(a));
         Some((self.root.join(&e.index), audio))
+    }
+
+    /// A speech archive's mod takes: replaced (clip without `.dat`, take) → file, and extra takes
+    /// by clip after the clip's own (empty without overlays).
+    pub(crate) fn speech_mods(&self, archive: &str) -> (HashMap<(String, u32), PathBuf>, HashMap<String, Vec<PathBuf>>) {
+        let Some(s) = self.manifest.mod_speech.get(archive) else { return Default::default() };
+        let takes = s.takes.iter().flat_map(|(clip, takes)| {
+            takes.iter().filter_map(move |(take, file)| Some(((clip.clone(), take.parse().ok()?), self.path(file))))
+        }).collect();
+        let extra = s.extra.iter().map(|(clip, files)| (clip.clone(), files.iter().map(|f| self.path(f)).collect())).collect();
+        (takes, extra)
+    }
+
+    /// Where a manifest file is: under the install's audio folder, or under a mod's root for a
+    /// `mod:<id>/<path>` reference.
+    pub(crate) fn path(&self, file: &str) -> PathBuf {
+        match skate_mods::audio_merge::split_mod_ref(file).and_then(|(id, rel)| Some(self.mods.get(id)?.join(rel))) {
+            Some(p) => p,
+            None => self.root.join(file),
+        }
+    }
+
+    /// Banks overlays load at audio start and keep across map changes, with their group
+    /// (`true` = the player group).
+    pub(crate) fn resident_banks(&self) -> Vec<(String, bool)> {
+        self.manifest.mod_banks.iter().filter(|(_, b)| b.preload).map(|(s, b)| (s.clone(), b.group.as_deref() == Some("player"))).collect()
+    }
+
+    /// An overlay's volume group for a bank (`Some(true)` = player, `Some(false)` = world).
+    pub(crate) fn bank_group(&self, stem: &str) -> Option<bool> {
+        self.manifest.mod_banks.get(stem).and_then(|b| b.group.as_deref()).map(|g| g == "player")
+    }
+
+    /// Whether a bank comes from an audio content overlay (all its files are mod files).
+    pub(crate) fn is_mod_bank(&self, stem: &str) -> bool {
+        let is_mod = |f: &str| skate_mods::audio_merge::split_mod_ref(f).is_some();
+        let wavs = self.manifest.banks.get(stem);
+        let abk = self.manifest.aems.banks.get(stem);
+        (wavs.is_some() || abk.is_some()) && wavs.is_none_or(|w| w.iter().all(|e| is_mod(&e.file))) && abk.is_none_or(|a| is_mod(a))
+    }
+
+    /// A mod bank's interim location-set layers.
+    pub(crate) fn location_program(&self, bank: &str) -> Option<&[LayerJson]> {
+        self.manifest.mod_location_programs.get(bank).map(Vec::as_slice)
+    }
+
+    /// An overlay's map audio for a map stem.
+    pub(crate) fn mod_map(&self, stem: &str) -> Option<&MapJson> {
+        self.manifest.mod_maps.get(stem)
+    }
+
+    /// A zone's key by its name.
+    pub(crate) fn zone_named(&self, name: &str) -> Option<u64> {
+        self.manifest.zones.iter().find(|(_, z)| z.name.as_deref() == Some(name)).and_then(|(k, _)| u64::from_str_radix(k, 16).ok())
     }
 
     /// The world sources' tuning (`world_sources`; defaults on installs without it).
@@ -858,11 +1033,45 @@ impl Library {
         self.read(&entry.file).ok().and_then(|bytes| wav_pcm(&bytes)).map(Arc::new)
     }
 
+    /// The install's audio, no overlays.
     pub(crate) fn load(asset_root: &Path) -> Result<Self, String> {
+        Self::load_with(asset_root, &[]).map(|(library, _)| library)
+    }
+
+    /// The install's audio with the running mods' content overlays merged over it, in the order
+    /// given (mod-id order: the first owner of an identity wins; `skate_mods::audio_merge`). With
+    /// no overlays the manifest is read exactly as before (no JSON tree, no merge). An overlay
+    /// whose merged manifest does not read back is left out whole (reported).
+    pub(crate) fn load_with(asset_root: &Path, overlays: &[OverlaySource]) -> Result<(Self, ContentReport), String> {
         let root = asset_root.join("private/audio");
         let path = root.join("audio_manifest.json");
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut report = ContentReport::default();
+        let mut mods = BTreeMap::new();
+        let manifest: Manifest = if overlays.is_empty() {
+            serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?
+        } else {
+            use skate_mods::audio_merge::{Message, Owners, Report, Source, merge_one};
+            let mut value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            let mut owners = Owners::default();
+            for o in overlays {
+                let (mut trial, mut trial_owners, mut r) = (value.clone(), owners.clone(), Report::default());
+                merge_one(&mut trial, &Source { id: o.id, overlay: o.overlay }, &mut trial_owners, &mut r);
+                match serde_json::from_value::<Manifest>(trial.clone()) {
+                    Ok(_) => {
+                        value = trial;
+                        owners = trial_owners;
+                        report.applied.push(o.id.to_owned());
+                        report.conflicts.extend(r.conflicts);
+                        report.warnings.extend(r.warnings);
+                        mods.insert(o.id.to_owned(), o.root.to_owned());
+                    }
+                    Err(e) => report.rejected.push(Message { owner: o.id.to_owned(), text: format!("audio.json does not fit this install: {e}") }),
+                }
+            }
+            report.owners = owners.all().clone();
+            serde_json::from_value(value).map_err(|e| format!("{}: {e}", path.display()))?
+        };
         if !MANIFEST_VERSIONS.contains(&manifest.version) {
             return Err(format!("{}: unsupported version {}", path.display(), manifest.version));
         }
@@ -871,14 +1080,24 @@ impl Library {
         let aems = manifest.aems.projects.iter().chain(manifest.aems.banks.values()).chain(manifest.aems.mixmap.iter())
             .chain(manifest.aems.splice.values())
             .chain(manifest.grains.values().flat_map(|g| g.file.iter().chain(g.grain.iter())));
-        if let Some(bad) = files.map(|e| &e.file).chain(aems).find(|f| !safe_relative(f)) {
+        let speech = manifest.mod_speech.values().flat_map(|s| s.takes.values().flat_map(|t| t.values()).chain(s.extra.values().flatten()));
+        // Install files are plain relative paths; mod files are `mod:<id>/<relative path>` of a
+        // merged overlay.
+        let valid = |f: &String| match skate_mods::audio_merge::split_mod_ref(f) {
+            Some((id, rel)) => mods.contains_key(id) && safe_relative(rel),
+            None => safe_relative(f),
+        };
+        if let Some(bad) = files.map(|e| &e.file).chain(aems).chain(speech).find(|f| !valid(f)) {
             return Err(format!("{}: invalid file path {bad:?}", path.display()));
         }
         info!(
             "Game audio: {} ambience beds, {} rolling grains, {} sample banks",
             manifest.ambience.len(), manifest.grains.len(), manifest.banks.len()
         );
-        Ok(Self { root, manifest, loaded: HashMap::new(), failed: Default::default() })
+        if !overlays.is_empty() {
+            info!("Game audio: content overlays {:?} ({} conflicts, {} warnings, {} rejected)", report.applied, report.conflicts.len(), report.warnings.len(), report.rejected.len());
+        }
+        Ok((Self { root, manifest, mods, loaded: HashMap::new(), failed: Default::default() }, report))
     }
 
     fn clip(&mut self, assets: &mut Assets<AudioSource>, file: &str) -> Option<Clip> {
@@ -888,7 +1107,7 @@ impl Library {
         if self.failed.contains(file) {
             return None;
         }
-        match std::fs::read(self.root.join(file)) {
+        match std::fs::read(self.path(file)) {
             Ok(bytes) => {
                 let peak = wav_peak(&bytes);
                 let channels = wav_channels(&bytes);
@@ -1027,7 +1246,7 @@ impl Library {
 
     /// Read a manifest-listed file (paths were validated at load).
     pub(crate) fn read(&self, file: &str) -> std::io::Result<Vec<u8>> {
-        std::fs::read(self.root.join(file))
+        std::fs::read(self.path(file))
     }
 
     /// A Splice bank for the native player: its patch tree and its samples (stream n = WAV n), or
@@ -1043,18 +1262,23 @@ impl Library {
     /// is missing or unreadable (the native runtime then plays silence of the right length).
     pub(crate) fn bank_pcm(&self, bank: &str) -> BankPcm {
         let Some(entries) = self.manifest.banks.get(bank) else { return Vec::new() };
-        decode_wavs(&self.root, entries.iter().map(|e| e.file.as_str()))
+        let paths: Vec<PathBuf> = entries.iter().map(|e| self.path(&e.file)).collect();
+        decode_wavs(paths.iter().map(PathBuf::as_path))
     }
 
     /// What reading and decoding an AEMS bank needs, detached from the library so a background
     /// thread can do it (`native::prefetch`). Err = the bank is not in the install.
     pub(crate) fn bank_source(&self, stem: &str) -> Result<BankSource, String> {
         let file = self.manifest.aems.banks.get(stem).ok_or_else(|| format!("bank {stem} is not in the install"))?;
+        let entries = self.manifest.banks.get(stem).map_or(&[][..], Vec::as_slice);
+        let loops = self.manifest.mod_sample_loops.get(stem);
         Ok(BankSource {
-            root: self.root.clone(),
             stem: stem.to_owned(),
             file: file.clone(),
-            wavs: self.manifest.banks.get(stem).map_or_else(Vec::new, |e| e.iter().map(|e| e.file.clone()).collect()),
+            abk: self.path(file),
+            wavs: entries.iter().map(|e| self.path(&e.file)).collect(),
+            rebuild: entries.iter().enumerate().filter(|(_, e)| skate_mods::audio_merge::split_mod_ref(&e.file).is_some())
+                .map(|(i, _)| (i, loops.and_then(|l| l.get(&i.to_string()).copied()))).collect(),
         })
     }
 
@@ -1067,7 +1291,7 @@ impl Library {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The bridge's speed graph: the exported posters override the default, and the default is
@@ -1095,6 +1319,269 @@ mod tests {
         let word = |i: usize| f32::from_bits(u32::from_str_radix(&hex[8 * i..8 * i + 8], 16).unwrap());
         let vault = SpeedGraph8 { x: std::array::from_fn(|i| word(4 + i)), y: std::array::from_fn(|i| word(12 + i)) };
         assert_eq!(vault, SpeedGraph8::BODY_SPEED);
+    }
+
+    pub(crate) fn test_wav(frames: usize, rate: u32, value: i16) -> Vec<u8> {
+        let data = frames * 2;
+        let mut b = b"RIFF".to_vec();
+        b.extend((36 + data as u32).to_le_bytes());
+        b.extend(b"WAVEfmt ");
+        b.extend(16u32.to_le_bytes());
+        b.extend([1, 0, 1, 0]);
+        b.extend(rate.to_le_bytes());
+        b.extend((rate * 2).to_le_bytes());
+        b.extend([2, 0, 16, 0]);
+        b.extend(b"data");
+        b.extend((data as u32).to_le_bytes());
+        for _ in 0..frames {
+            b.extend(value.to_le_bytes());
+        }
+        b
+    }
+
+    /// A temp install with a sample bank `x` (2 WAVs), an AEMS bank `T` (two S10A slots, the
+    /// second looping) with its 2 WAVs, an ambience bed and a speech index; and a mod folder.
+    pub(crate) fn content_fixture(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("skate-audio-content-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let audio = dir.join("private/audio");
+        for d in ["banks/x", "banks/T", "aems", "ambience"] {
+            std::fs::create_dir_all(audio.join(d)).unwrap();
+        }
+        std::fs::write(audio.join("banks/x/0.wav"), test_wav(100, 48000, 100)).unwrap();
+        std::fs::write(audio.join("banks/x/1.wav"), test_wav(100, 48000, 200)).unwrap();
+        std::fs::write(audio.join("banks/T/0.wav"), test_wav(300, 48000, 300)).unwrap();
+        std::fs::write(audio.join("banks/T/1.wav"), test_wav(400, 48000, 400)).unwrap();
+        std::fs::write(audio.join("ambience/bed.wav"), test_wav(1000, 48000, 500)).unwrap();
+        use skate_audio::eval::synthetic;
+        let bank = synthetic::bank(&[synthetic::player_module(4)], &[], &[(300, false), (400, true)]);
+        std::fs::write(audio.join("aems/T.abk"), &bank.data).unwrap();
+        std::fs::write(audio.join("audio_manifest.json"), serde_json::json!({
+            "version": 5,
+            "ambience": {"bed": {"file": "ambience/bed.wav"}},
+            "grains": {}, "wheels": {},
+            "banks": {"x": [{"file": "banks/x/0.wav"}, {"file": "banks/x/1.wav"}], "T": [{"file": "banks/T/0.wav"}, {"file": "banks/T/1.wav"}]},
+            "zones": {"00000000000000AB": {"name": "plaza", "bed": "bed"}},
+            "aems": {"projects": [], "banks": {"T": "aems/T.abk"}},
+            "player_tuning": {"wheel_bucket_high": 3.0, "surface_table": [[1, 2]]}
+        }).to_string()).unwrap();
+        let mods = dir.join("mods/dev.a");
+        std::fs::create_dir_all(mods.join("audio")).unwrap();
+        (dir, mods)
+    }
+
+    fn overlay(v: serde_json::Value) -> skate_mods::audio_content::AudioOverlay {
+        let o: skate_mods::audio_content::AudioOverlay = serde_json::from_value(v).unwrap();
+        o.validate().unwrap();
+        o
+    }
+
+    /// The no-mod identity (R1b): `load` is `load_with(root, &[])`, which reads the manifest
+    /// straight from the bytes as before; and the merge path with an overlay that changes nothing
+    /// gives the same manifest field for field (Debug of every field: f32s print exactly).
+    #[test]
+    fn an_empty_overlay_gives_the_install_manifest_field_for_field() {
+        let (dir, mods) = content_fixture("identity");
+        let plain = Library::load(&dir).unwrap();
+        let (none, report) = Library::load_with(&dir, &[]).unwrap();
+        assert!(report.applied.is_empty());
+        let empty = overlay(serde_json::json!({"version": 1}));
+        let (merged, report) = Library::load_with(&dir, &[OverlaySource { id: "dev.a", root: &mods, overlay: &empty }]).unwrap();
+        assert_eq!(report.applied, ["dev.a"]);
+        assert_eq!(format!("{:?}", plain.manifest), format!("{:?}", none.manifest));
+        assert_eq!(format!("{:?}", plain.manifest), format!("{:?}", merged.manifest));
+        let (a, b) = (plain.bank_source("T").unwrap(), merged.bank_source("T").unwrap());
+        assert_eq!(format!("{a:?}"), format!("{b:?}"), "same files, no header rebuilds");
+        assert_eq!(a.wavs[1], dir.join("private/audio").join("banks/T/1.wav"), "install files resolve under the audio folder as before");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The same on the real install (data-gated): the merge path with an empty overlay reproduces
+    /// the install manifest exactly.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn an_empty_overlay_gives_the_real_install_manifest() {
+        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(plain) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let empty = overlay(serde_json::json!({"version": 1}));
+        let (merged, _) = Library::load_with(root, &[OverlaySource { id: "dev.a", root, overlay: &empty }]).unwrap();
+        // The world tuning holds HashMaps (no order of their own; each instance iterates
+        // differently), so compare the pretty Debug's lines as a sorted list: every field and
+        // value, wherever its map put it.
+        let lines = |m: &Manifest| {
+            let mut v: Vec<String> = format!("{m:#?}").lines().map(|l| l.trim_end_matches(',').to_owned()).collect();
+            v.sort_unstable();
+            v
+        };
+        let (a, b) = (lines(&plain.manifest), lines(&merged.manifest));
+        assert_eq!(a.len(), b.len());
+        assert!(a == b, "the merged manifest differs");
+        // And the merge itself leaves the install's JSON as it was.
+        let bytes = std::fs::read(root.join("private/audio/audio_manifest.json")).unwrap();
+        let install: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let mut m = install.clone();
+        skate_mods::audio_merge::merge(&mut m, &[skate_mods::audio_merge::Source { id: "dev.a", overlay: &empty }]);
+        assert!(m == install);
+    }
+
+    /// A replaced AEMS sample plays from the mod's WAV with a header rebuilt from it (rate,
+    /// frames, channels; the looping slot keeps looping from 0 unless the overlay says where);
+    /// the bank's other slot and the install's files are untouched; Bevy clips and plain reads
+    /// resolve the mod path, and the clip cache keys mod files apart from install files.
+    #[test]
+    fn a_replaced_sample_gets_its_own_header_and_the_mod_file() {
+        let (dir, mods) = content_fixture("sample");
+        std::fs::write(mods.join("audio/long.wav"), test_wav(2205, 22050, 1234)).unwrap();
+        std::fs::write(mods.join("audio/bed.wav"), test_wav(50, 48000, 7)).unwrap();
+        let plain = Library::load(&dir).unwrap();
+        let (want_bank, want_pcm) = plain.bank_source("T").unwrap().load().unwrap();
+        let o = overlay(serde_json::json!({"version": 1, "replace": {
+            "samples": {"T": {"1": "audio/long.wav"}, "x": {"0": {"file": "audio/long.wav", "loop_start": 100}}},
+            "ambience": {"bed": "audio/bed.wav"}}}));
+        let (mut library, report) = Library::load_with(&dir, &[OverlaySource { id: "dev.a", root: &mods, overlay: &o }]).unwrap();
+        assert!(report.warnings.is_empty() && report.conflicts.is_empty(), "{report:?}");
+        let (bank, pcm) = library.bank_source("T").unwrap().load().unwrap();
+        assert_eq!(bank.samples[0], want_bank.samples[0], "slot 0 keeps the install's header");
+        assert_eq!(pcm[0].as_ref().unwrap().channels, want_pcm[0].as_ref().unwrap().channels);
+        let h = bank.samples[1].1.unwrap();
+        let old = want_bank.samples[1].1.unwrap();
+        assert_eq!((h.rate, h.frames, h.channels, h.codec), (22050, 2205, 1, old.codec));
+        assert!(old.loop_start.is_some());
+        assert_eq!(h.loop_start, Some(0), "a looping slot loops the replacement from 0");
+        assert_eq!(pcm[1].as_ref().unwrap().channels[0][0], 1234.0 / 32768.0);
+        // An overlay loop start is kept (and dropped when it lies past the end).
+        let p = wav_pcm(&test_wav(2205, 22050, 1)).unwrap();
+        assert_eq!(mod_header(None, &p, Some(100)).loop_start, Some(100));
+        assert_eq!(mod_header(None, &p, Some(5000)).loop_start, None);
+        assert_eq!(mod_header(None, &p, None).loop_start, None);
+        // Bevy clips: the mod's bed, keyed by its mod reference.
+        let mut assets = Assets::<AudioSource>::default();
+        let clip = library.ambience(&mut assets, "bed").unwrap();
+        assert_eq!(&*clip.key, "mod:dev.a/audio/bed.wav");
+        assert_eq!(library.sample(&mut assets, "x", 1).unwrap().key.as_ref(), "banks/x/1.wav");
+        assert_eq!(library.read("mod:dev.a/audio/bed.wav").unwrap(), test_wav(50, 48000, 7));
+        assert_eq!(library.bank_pcm("x")[0].as_ref().unwrap().rate, 22050);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Two mods on one identity: the first by mod id wins, the second's claim is a conflict; an
+    /// overlay whose merged manifest does not read back is left out whole; a removed overlay
+    /// gives the install again.
+    #[test]
+    fn overlays_merge_in_order_and_a_bad_one_is_left_out() {
+        let (dir, mods) = content_fixture("order");
+        let mods_b = dir.join("mods/dev.b");
+        std::fs::create_dir_all(mods_b.join("audio")).unwrap();
+        std::fs::write(mods.join("audio/a.wav"), test_wav(10, 48000, 1)).unwrap();
+        std::fs::write(mods_b.join("audio/b.wav"), test_wav(10, 48000, 2)).unwrap();
+        let a = overlay(serde_json::json!({"version": 1, "replace": {"samples": {"x": {"1": "audio/a.wav"}}}}));
+        let b = overlay(serde_json::json!({"version": 1, "replace": {"samples": {"x": {"1": "audio/b.wav", "0": "audio/b.wav"}}}}));
+        let (library, report) = Library::load_with(&dir, &[
+            OverlaySource { id: "dev.a", root: &mods, overlay: &a },
+            OverlaySource { id: "dev.b", root: &mods_b, overlay: &b },
+        ]).unwrap();
+        assert_eq!(library.manifest.banks["x"][1].file, "mod:dev.a/audio/a.wav");
+        assert_eq!(library.manifest.banks["x"][0].file, "mod:dev.b/audio/b.wav");
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].owner, "dev.b");
+        assert_eq!(report.owners["sample:x:1"], "dev.a");
+        // Tuning and zone fields merge.
+        let good = overlay(serde_json::json!({"version": 1, "tuning": {"player": {"wheel_bucket_high": 4.5}}, "replace": {"zones": {"plaza": {"volume": 0.5}}}}));
+        let (library, report) = Library::load_with(&dir, &[OverlaySource { id: "dev.a", root: &mods, overlay: &good }]).unwrap();
+        assert_eq!(report.applied, ["dev.a"]);
+        assert_eq!(library.manifest.player_tuning.tuning().wheel_bucket_high, 4.5);
+        assert_eq!(library.zone(0xAB).unwrap().volume, 0.5);
+        // A number of the wrong kind for the typed manifest (the surface table holds integers)
+        // passes the JSON merge but not the typed read: that whole overlay is left out, the next
+        // one still applies.
+        let bad = overlay(serde_json::json!({"version": 1, "tuning": {"player": {"surface_table": {"0": {"0": 0.5}}}}, "replace": {"zones": {"plaza": {"volume": 0.25}}}}));
+        let (library, report) = Library::load_with(&dir, &[OverlaySource { id: "dev.a", root: &mods, overlay: &bad }, OverlaySource { id: "dev.b", root: &mods_b, overlay: &good }]).unwrap();
+        assert_eq!(report.applied, ["dev.b"]);
+        assert_eq!(report.rejected.len(), 1);
+        assert_eq!(library.zone(0xAB).unwrap().volume, 0.5, "dev.a's zone change left out with the rest of it");
+        let (back, _) = Library::load_with(&dir, &[]).unwrap();
+        assert_eq!(format!("{:?}", back.manifest), format!("{:?}", Library::load(&dir).unwrap().manifest), "removed overlay = retail");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The keyed sections an overlay changes reach the systems that read them: location sets (by
+    /// name), zones, emitter records (replaced and added files), crossfades, a mod bank's
+    /// location program, its group and preload.
+    #[test]
+    fn sets_zones_emitters_and_programs_come_from_the_overlay() {
+        let (dir, mods) = content_fixture("keyed");
+        let audio = dir.join("private/audio/audio_manifest.json");
+        let mut m: serde_json::Value = serde_json::from_slice(&std::fs::read(&audio).unwrap()).unwrap();
+        m["random_sets"] = serde_json::json!({"7EE1991E4909C50E": {"name": "brewery", "sounds": [{"bank": "x", "volume": 1.0, "seconds": 5.0, "weight": 1}]}});
+        m["emitters"] = serde_json::json!({"sfx_t": [{"index": 3, "flags": 0, "position": [0, 0, 0], "extent": [1, 1, 1], "scalars": [0, 1, 0, 0], "bank": "T", "kind": 1, "volume": 1.0}]});
+        m["crossfades"] = serde_json::json!([{"from": "00000000000000AB", "to": "00000000000000CD", "group": 1, "level": 1.0}]);
+        std::fs::write(&audio, m.to_string()).unwrap();
+        std::fs::write(mods.join("audio/s.wav"), test_wav(10, 48000, 3)).unwrap();
+        let o = overlay(serde_json::json!({"version": 1,
+            "replace": {
+                "random_sets": {"brewery": {"sounds": [{"bank": "MOD_s", "weight": 2}], "min_interval": 1, "max_interval": 2}},
+                "emitters": {"sfx_t": {"3": {"position": [5, 0, 5], "extent": [9, 9, 9], "bank": "T", "patch": 4}}},
+                "crossfades": [{"from": "00000000000000CD", "to": "00000000000000AB", "group": 2}]
+            },
+            "add": {
+                "banks": {"MOD_s": {"samples": ["audio/s.wav"], "group": "world"}},
+                "emitters": {"sfx_t": [{"position": [1, 1, 1], "extent": [2, 2, 2], "bank": "MOD_s"}], "sfx_mod": [{"position": [1, 1, 1], "extent": [2, 2, 2], "kind": 5, "reverb": "BEEFC8E3DE04FBAE"}]},
+                "zones": {"00000000000000EE": {"name": "mod_zone", "bed": "bed", "time_b": 4}},
+                "location_programs": {"MOD_s": [{"sample": 0, "level": 0.5, "delay": 0.25}]}
+            }}));
+        let (library, report) = Library::load_with(&dir, &[OverlaySource { id: "dev.a", root: &mods, overlay: &o }]).unwrap();
+        assert!(report.warnings.is_empty() && report.conflicts.is_empty(), "{report:?}");
+        let set = library.random_set(0x7EE1_991E_4909_C50E).unwrap();
+        assert_eq!((set.sounds[0].bank.as_str(), set.sounds[0].weight, set.min_interval), ("MOD_s", 2, 1.0));
+        assert_eq!(library.random_set_named("brewery").unwrap().0, 0x7EE1_991E_4909_C50E);
+        let recs = library.emitters("sfx_t");
+        assert_eq!((recs.len(), recs[0].index, recs[0].patch, recs[0].position), (2, 3, 4, [5.0, 0.0, 5.0]));
+        assert_eq!((recs[1].index, recs[1].bank.as_deref()), (4, Some("MOD_s")));
+        assert_eq!((library.emitters("sfx_mod")[0].kind, library.emitters("sfx_mod")[0].reverb.as_deref()), (5, Some("BEEFC8E3DE04FBAE")));
+        assert_eq!(library.crossfade(0xAB, 0xCD).unwrap().group, 2);
+        assert_eq!(library.zone(0xEE).unwrap().time_b, 4.0);
+        assert_eq!(library.zone_named("mod_zone"), Some(0xEE));
+        let layers = library.location_program("MOD_s").unwrap();
+        assert_eq!((layers[0].sample.as_u64(), layers[0].level, layers[0].delay), (Some(0), 0.5, 0.25));
+        assert!(library.is_mod_bank("MOD_s") && !library.is_mod_bank("x") && !library.is_mod_bank("nope"));
+        assert_eq!(library.bank_group("MOD_s"), Some(false));
+        assert!(library.resident_banks().is_empty(), "not preloaded");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Splice members and grain members (data-gated, the real install): a replaced sample of a
+    /// Splice bank reaches the Splice player's PCM (Splice builds its headers from the PCM); a
+    /// replaced grain member's recording and `.grain` are read from the mod.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn splice_and_grain_members_come_from_the_overlay() {
+        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(plain) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let stem = super::super::player_audio::SPLICE_BANKS[0];
+        let (_, want) = plain.splice_bank(stem).expect("a Splice tree");
+        let grain = plain.manifest.grains.iter().find(|(_, g)| g.grain.is_some() && g.file.is_some()).map(|(k, _)| k.clone()).expect("a grain member");
+        let (wav, raw) = plain.grain_whole(&grain).map(|(a, b)| (a.to_owned(), b.to_owned())).unwrap();
+        let mods = std::env::temp_dir().join(format!("skate-audio-splice-grain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&mods);
+        std::fs::create_dir_all(mods.join("audio")).unwrap();
+        std::fs::write(mods.join("audio/pop.wav"), test_wav(4800, 44100, 4321)).unwrap();
+        // The test copies the install's own member into the temp mod (never committed anywhere).
+        std::fs::copy(plain.path(&raw), mods.join("audio/g.grain")).unwrap();
+        std::fs::copy(plain.path(&wav), mods.join("audio/g.wav")).unwrap();
+        let o = overlay(serde_json::json!({"version": 1, "replace": {
+            "samples": {stem: {"0": "audio/pop.wav"}},
+            "grains": {grain.clone(): {"file": "audio/g.wav", "grain": "audio/g.grain"}}}}));
+        let (library, report) = Library::load_with(root, &[OverlaySource { id: "dev.a", root: &mods, overlay: &o }]).unwrap();
+        assert!(report.warnings.is_empty(), "{report:?}");
+        let (_, pcm) = library.splice_bank(stem).expect("still a Splice bank");
+        assert_eq!(pcm.len(), want.len());
+        let p = pcm[0].as_ref().unwrap();
+        assert_eq!((p.rate, p.channels[0].len(), p.channels[0][0]), (44100, 4800, 4321.0 / 32768.0));
+        assert_eq!(pcm[1].as_ref().unwrap().channels, want[1].as_ref().unwrap().channels, "other members stay");
+        let (w, r) = library.grain_whole(&grain).unwrap();
+        assert_eq!((w, r), ("mod:dev.a/audio/g.wav", "mod:dev.a/audio/g.grain"));
+        assert_eq!(library.read(r).unwrap(), plain.read(&raw).unwrap());
+        let _ = std::fs::remove_dir_all(&mods);
     }
 
     #[test]

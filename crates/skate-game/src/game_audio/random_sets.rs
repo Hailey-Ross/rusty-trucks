@@ -42,6 +42,26 @@ fn program(bank: &str) -> &'static [Layer] {
     super::random_programs::PROGRAMS.iter().find(|(b, _)| *b == bank).map_or(&[], |(_, l)| *l)
 }
 
+/// The layers a post of `bank` plays: an audio content overlay's `location_programs` row, else
+/// the measured retail row; a mod bank without either plays one shuffle layer at level 1 (a
+/// retail bank without a row stays silent, as retail).
+fn layers_for(library: &Library, bank: &str) -> std::borrow::Cow<'static, [Layer]> {
+    if let Some(rows) = library.location_program(bank) {
+        return rows.iter().map(|l| Layer {
+            delay: l.delay,
+            sample: l.sample.as_u64().map_or(SHUFFLE, |s| s as usize),
+            level: l.level,
+            pan_sweep: l.pan_sweep,
+            looping: l.looping,
+        }).collect::<Vec<_>>().into();
+    }
+    let retail = program(bank);
+    if retail.is_empty() && library.is_mod_bank(bank) {
+        return vec![Layer { delay: 0.0, sample: SHUFFLE, level: 1.0, pan_sweep: 0.0, looping: false }].into();
+    }
+    retail.into()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Slot {
     Unloaded,
@@ -61,6 +81,8 @@ struct Post {
 
 #[derive(Default)]
 pub(super) struct State {
+    /// The audio content generation the entries were built from.
+    content: u64,
     key: Option<u64>,
     slots: Vec<Slot>,
     timer: f32,
@@ -142,10 +164,25 @@ pub(super) fn update(
     time: Res<Time<Real>>,
     menu: Option<Res<crate::graphics_menu::Menu>>,
     replay: Res<crate::replay::Replay>,
+    content: Res<super::AudioContent>,
 ) {
     let Some(mut library) = library else { return };
     let state = &mut *state;
     let Ok(ear) = listener.single() else { return };
+    if state.content != content.generation {
+        // New audio content: the set's entries may differ; rebuild from scratch.
+        state.content = content.generation;
+        for post in state.posts.drain(..) {
+            for (_, voice, ..) in post.layers {
+                if let Some((id, _)) = voice {
+                    voices.stop(id, 0.3);
+                }
+            }
+        }
+        state.key = None;
+        state.slots.clear();
+        state.bags.clear();
+    }
     let now = time.elapsed_secs_f64();
     let dt = time.delta_secs().clamp(0.0, 0.25);
     let mut rng = state.rng;
@@ -190,7 +227,7 @@ pub(super) fn update(
             .min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i);
         if let Some(entry) = oldest {
             let sound = &set.sounds[entry];
-            let layers = program(&sound.bank);
+            let layers = layers_for(&library, &sound.bank);
             if layers.is_empty() {
                 // The bank's program does not answer this sound's selector: retail is silent too.
                 state.slots[entry] = Slot::Unloaded;

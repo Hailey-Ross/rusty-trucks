@@ -435,9 +435,11 @@ fn maintenance(world: &mut World) {
                     .dispatch("on_event", json!({"name":"world_changed","map":map}));
             }
             mods.manager.scan(false);
+            sync_audio_content(world, &mods);
             return;
         }
         mods.manager.scan(false);
+        sync_audio_content(world, &mods);
         if !mods.runtime_busy() {
             return;
         }
@@ -445,6 +447,15 @@ fn maintenance(world: &mut World) {
         // packages and applies pending lifecycle/menu commands.
         apply(world, &mut mods);
     });
+}
+
+/// Audio content overlays follow the running mods (`game_audio::AudioContent`): a mod that
+/// starts, changes, stops or fails changes the set, and the audio restarts once at the next pass.
+fn sync_audio_content(world: &mut World, mods: &Mods) {
+    let Some(mut content) = world.get_resource_mut::<crate::game_audio::AudioContent>() else { return };
+    let content = content.bypass_change_detection();
+    content.scanned = true;
+    content.sync(mods.manager.packages.iter().filter(|(_, p)| p.running()).map(|(id, p)| (id.as_str(), p.root.as_path(), p.content_fingerprint())));
 }
 
 fn camera_position(world: &mut World) -> Option<[f32; 3]> {
@@ -908,6 +919,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
         }
     }
+    sync_audio_content(world, mods);
     let mut row = 0;
     for entity in mods.overlays.values() {
         if let Some(mut node) = world.get_mut::<Node>(*entity) {

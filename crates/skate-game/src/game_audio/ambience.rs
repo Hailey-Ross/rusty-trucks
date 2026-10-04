@@ -71,7 +71,8 @@ fn attenuation(phase: Phase, t: f32, fade_in: f32, fade_out: f32) -> f32 {
 
 #[derive(Default)]
 pub(super) struct State {
-    map: Option<(String, u64)>,
+    /// Map name, map generation, audio content generation.
+    map: Option<(String, u64, u64)>,
     /// Zone of the bed that plays (retail obj+48), its phase and timer.
     current: u64,
     phase: Option<Phase>,
@@ -95,6 +96,7 @@ pub(super) fn update(
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
     cues: Res<super::skate_events::Cues>,
     time: Res<Time<Real>>,
+    content: Res<super::AudioContent>,
 ) {
     let Some(mut library) = library else { return };
     let state = &mut *state;
@@ -105,7 +107,7 @@ pub(super) fn update(
     for clip in fading {
         if voices.uses(&clip) { state.fading.push(clip); } else { library.release(&mut assets, &clip); }
     }
-    let identity = (map.name.clone(), map.generation);
+    let identity = (map.name.clone(), map.generation, content.generation);
     let new_map = state.map.as_ref() != Some(&identity);
     if new_map {
         state.map = Some(identity);

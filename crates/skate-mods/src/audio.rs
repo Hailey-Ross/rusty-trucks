@@ -74,8 +74,14 @@ pub struct WavInfo { pub seconds: f64, pub channels: u16, pub sample_rate: u32 }
 /// Validate bounded, uncompressed PCM16 and rebuild a minimal, canonical WAV.
 /// Unknown metadata chunks never reach the backend decoder. No resampling here.
 pub fn canonical_pcm_wav(bytes: &[u8]) -> Result<(Vec<u8>, WavInfo), String> {
-    let bad = || "Audio requires a valid PCM16 WAV: 1-2 channels, 8-48 kHz, 0-30 seconds".to_owned();
-    if bytes.len() < 44 || bytes.len() as u64 > MAX_WAV_BYTES
+    canonical_pcm_wav_limited(bytes, MAX_WAV_BYTES, 30.0)
+}
+
+/// [`canonical_pcm_wav`] with other limits (audio content overlays: ambience beds and streams are
+/// longer than a sample).
+pub fn canonical_pcm_wav_limited(bytes: &[u8], max_bytes: u64, max_seconds: f64) -> Result<(Vec<u8>, WavInfo), String> {
+    let bad = || format!("Audio requires a valid PCM16 WAV: 1-2 channels, 8-48 kHz, 0-{max_seconds} seconds");
+    if bytes.len() < 44 || bytes.len() as u64 > max_bytes
         || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err(bad());
     }
@@ -120,7 +126,7 @@ pub fn canonical_pcm_wav(bytes: &[u8]) -> Result<(Vec<u8>, WavInfo), String> {
     let block = usize::from(channels) * 2;
     if data.is_empty() || data.len() % block != 0 { return Err(bad()); }
     let seconds = (data.len() / block) as f64 / f64::from(sample_rate);
-    if seconds > 30.0 { return Err(bad()); }
+    if seconds > max_seconds { return Err(bad()); }
     let mut out = Vec::with_capacity(data.len() + 44);
     out.extend_from_slice(b"RIFF");
     out.extend_from_slice(&(data.len() as u32 + 36).to_le_bytes());

@@ -22,7 +22,7 @@ Each document stands alone. File paths are relative to the repository root.
 | 14 | [Published development and research tools](14-published-tools.md) | Tooling (`tools/<name>/`, Python and shell) | Done (uncommitted); scripts compile and print their usage; the two `recomp-*` folders are for the recomp's research hooks, reference only |
 | 15 | [Hooking up world audio](15-world-audio.md) | Game audio (Rust), mod API (Lua) | Part of #32 (uncommitted). Engine-facing components (`TrafficAudio`, `PedAudio`, `NpcSkaterAudio`) and `sdk.world_audio` for mods feed the ported retail traffic / ped / NPC-skater audio with retail's limits; the map-change bug fixed; a dev test mod (cars, peds, a ghost skater) makes it audible now |
 | — | [Audio specs](audio-specs/README.md) | Reference for 11 and 15 (Markdown) | Published 2026-10-03: the behavioural specs (AEMS evaluator, voice graph, buses, MixMap, grain player, player components, world / NPC audio, prior work) that docs 11 / 15 and the code comments cite by section |
-| 16 | [Audio modding](16-audio-modding.md) | Mods (Lua API 2), native audio (Rust) | Design for the audio modding PR (draft): content overlay, map audio as data, posting retail sounds and globals, audio events. Depends on #32. |
+| 16 | [Audio modding](16-audio-modding.md) | Mods (Lua API 2), native audio (Rust) | Design and research for the audio modding PR (draft #36): content overlay, map audio as data, posting retail sounds and globals, audio events; prior art, engine facts per phase, open questions. R0: `sdk.audio` declared, `audio` capability. Depends on #32. |
 
 ## Environment used for verification
 

@@ -950,6 +950,12 @@ impl Vm {
             capabilities.set("capture", 1)?;
             capabilities.set("multiplayer_debug", 1)?;
             capabilities.set("world_audio", 1)?;
+            // Audio extension 1: the mod's own WAVs (`sdk.audio.preload / play / update / stop /
+            // stop_all`); before 2026-10-04 only `sdk.audio.version` advertised it.
+            capabilities.set("audio", 1)?;
+            // Audio content overlays (`audio.json`: replace / add retail audio content by identity;
+            // `audio_content.rs`), applied while the mod runs.
+            capabilities.set("audio_content", 1)?;
             sdk.set("_native_capabilities", capabilities)?;
             sdk.set("mod_id", manifest.id.clone())?;
             sdk.set(
@@ -1744,6 +1750,29 @@ mod deformation_api_tests {
 mod world_audio_tests {
     use super::*;
     use serde_json::json;
+
+    /// Both audio extensions are advertised in `sdk.capabilities` (feature discovery, as for the
+    /// other extensions), and `sdk.audio.version` still reads 1.
+    #[test]
+    fn audio_capabilities_are_advertised() {
+        let root = std::env::temp_dir().join(format!("skate-audio-capabilities-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            assert(sdk.capabilities.audio == 1, 'audio capability')
+            assert(sdk.capabilities.world_audio == 1, 'world_audio capability')
+            assert(sdk.capabilities.audio_content == 1, 'audio_content capability')
+            assert(sdk.audio.version == 1 and sdk.world_audio.version == 1, 'versions')
+            return {}
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.audio-capabilities","api":2,"name":"Audio capabilities","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}
+        })).unwrap();
+        let loaded = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).map(|_| ());
+        std::fs::remove_file(root.join("main.lua")).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+        loaded.unwrap();
+    }
 
     /// The world audio wrappers cross the serde boundary, and the bundled dev test publisher
     /// (`mods/world-audio-test`) runs frames without a Lua error or an invalid command, within the
