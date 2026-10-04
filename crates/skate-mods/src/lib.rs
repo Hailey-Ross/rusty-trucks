@@ -6,6 +6,7 @@ pub mod graphics_dynamic;
 pub mod presentation;
 pub mod scene;
 mod assets;
+mod lua_list;
 pub mod model;
 mod query;
 mod schema;
