@@ -784,6 +784,8 @@ effect of the streaming load. Our engine has no streaming load, so a far return 
 User, after a recording with the marker hooks: "it played the noise! its the first return in the recomp run i just
 finished"
 
+Listening (user, 2026-10-04, after a play session with the ported crackle): "it sounded great".
+
 **Problem.** On a far return retail plays a noise for about a second that our engine did not play. Follow-ups 1 and 2
 found no sound for it: they searched the front-end requests, the SPLC / POST / stream lines and the capture above
 4 kHz, and this sound shows in none of them.
