@@ -1594,6 +1594,45 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&mods);
     }
 
+    /// The world-gaps data is overlay-reachable (data-gated, the real install): main-cast speech
+    /// takes (archive `maincast`, as the living world's), the ped one-shot tuning (body-fall ids,
+    /// tazer time), the speech voice's echo delay, and the `Tazer` bank's samples.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn world_gaps_data_comes_from_the_overlay() {
+        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(plain) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Some((index, _)) = plain.speech("maincast") else { panic!("missing private data: no main-cast index (stage_world_audio.py --maincast)") };
+        let json: serde_json::Value = serde_json::from_slice(&std::fs::read(index).unwrap()).unwrap();
+        let clip = json["clips"][0]["name"].as_str().unwrap().trim_end_matches(".dat").to_owned();
+        assert!(plain.speech_mods("maincast").0.is_empty());
+        let want = plain.world_tuning().ped_objects();
+        let voice = plain.world_tuning().speech_voice();
+        let mods = std::env::temp_dir().join(format!("skate-audio-world-gaps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&mods);
+        std::fs::create_dir_all(mods.join("audio")).unwrap();
+        std::fs::write(mods.join("audio/line.wav"), test_wav(2205, 22050, 5)).unwrap();
+        std::fs::write(mods.join("audio/zap.wav"), test_wav(4410, 22050, 6)).unwrap();
+        let o = overlay(serde_json::json!({"version": 1,
+            "replace": {"speech": {"maincast": {clip.clone(): {"0": "audio/line.wav"}}}, "samples": {"Tazer": {"0": "audio/zap.wav"}}},
+            "add": {"speech": {"maincast": {clip.clone(): ["audio/line.wav"]}}},
+            "tuning": {"world": {"ped_objects": {"tazer_seconds": want.tazer_seconds + 1.5, "body_fall_ids": {"0": 7}}, "speech_voice": {"delay_frames": voice.delay_frames + 3}}}}));
+        let (library, report) = Library::load_with(root, &[OverlaySource { id: "dev.a", root: &mods, overlay: &o }]).unwrap();
+        assert!(report.warnings.is_empty() && report.conflicts.is_empty() && report.rejected.is_empty(), "{report:?}");
+        let (takes, extra) = library.speech_mods("maincast");
+        assert_eq!(takes.get(&(clip.clone(), 0)), Some(&mods.join("audio/line.wav")));
+        assert_eq!(extra[&clip], [mods.join("audio/line.wav")]);
+        assert!(library.speech_mods("livingworld").0.is_empty(), "archives stay apart");
+        let got = library.world_tuning().ped_objects();
+        assert_eq!(got.tazer_seconds, want.tazer_seconds + 1.5);
+        assert_eq!(got.body_fall_ids, [7, want.body_fall_ids[1], want.body_fall_ids[2]]);
+        assert_eq!(library.world_tuning().speech_voice().delay_frames, voice.delay_frames + 3);
+        let (bank, _) = library.bank_source("Tazer").expect("the Tazer bank").load().unwrap();
+        let h = bank.samples[0].1.unwrap();
+        assert_eq!((h.rate, h.frames), (22050, 4410), "the replacement's own header");
+        let _ = std::fs::remove_dir_all(&mods);
+    }
+
     #[test]
     fn wav_peak_reads_the_data_chunk() {
         let mut wav = b"RIFF\x00\x00\x00\x00WAVEfmt \x10\x00\x00\x00".to_vec();

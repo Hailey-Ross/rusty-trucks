@@ -81,9 +81,9 @@ Identities and what each section does:
 | `replace.emitters` / `add.emitters` | `.ems` file + record index | sound emitters (`kind` 1, a bank and patch) and reverb zones (`kind` 5, a reverb preset key). Added records join a file (a new file name makes a new file a map can list). |
 | `replace.random_sets` / `zones` | 16-hex key or name | the whole record; a replacement keeps the record's name unless it gives one. `add` takes a new 16-hex key. |
 | `replace.crossfades` / `add.crossfades` | zone pair (either order) | |
-| `replace.speech` / `add.speech` | archive + clip (with or without `.dat`) + take | added takes join the clip after its own, so the speech manager can pick them. |
+| `replace.speech` / `add.speech` | archive (`livingworld` = peds and NPC skaters, `maincast` = the pros and the special cast) + clip (with or without `.dat`) + take | added takes join the clip after its own, so the speech manager can pick them. |
 | `add.location_programs` | bank | the layers a location-set post of the bank plays (the interim Bevy-voice player); a mod bank without a row plays one shuffle layer at level 1, a retail bank without one stays silent (as retail). |
-| `tuning.player / world / bus / grain` | section + field path | field merges onto the install's tuning sections; only fields the install has; arrays take decimal index keys; numbers replace numbers. An overlay whose merged tuning does not read back is left out whole. |
+| `tuning.player / world / bus / grain` | section + field path | field merges onto the install's tuning sections (e.g. `world.ped_objects` body-fall ids / tazer time, `world.speech_voice` peak filter / echo delay, `world.speech_tuning`); only fields the install has; arrays take decimal index keys; numbers replace numbers. An overlay whose merged tuning does not read back is left out whole. |
 | `maps.<stem>` | map stem + field | see C. |
 
 Files are checked when the mod starts (and by `check_mod`): WAVs must be PCM16, 1–2 channels, 8–48 kHz, at most 30 s
@@ -220,7 +220,9 @@ Changes:
 Verification:
 - No-mod identity: the headless e2e bench (13 scripted scenarios and whole play sessions, the 60 Hz host and 300 fps;
   84 renders and voice logs) is byte-identical to the pre-PR build after every phase (R1, R2, R3, R5); the merge of the
-  #32 work into this branch did not change it either. A data-gated test shows the merge path with an empty overlay
+  #32 work into this branch did not change it either, nor did the second merge (#32 at `cb71483` with
+  optimisation pass 2 and the world gaps — tazer, ped body falls, speech echo, main-cast speech, NPC loose-board
+  slide — plus upstream `main` `4488651`): the 84 outputs equal #32's own bench run of that tree. A data-gated test shows the merge path with an empty overlay
   reproduces the real install's manifest field for field.
 - R1: a restart mid-scenario plays bit for bit like a fresh runtime from that point; a mod replacing an emitter bank's
   samples changes the output and removing it restores retail exactly; preloaded mod banks survive map changes;
@@ -231,6 +233,11 @@ Verification:
 - R3: post limits, dead handles (map change, restart), global restore, watches; a mod's `c_emitter` post plays.
 - R5: tags fire on real posts (pop, land, grind start / end through the real banks; horn, alarm, ped footsteps through
   the world host); nothing is recorded without a subscriber; frame timings equal within noise.
+- World gaps (after the second merge): main-cast takes, the ped one-shot tuning, the speech echo delay and the
+  `Tazer` bank's samples come from an overlay (`world_gaps_data_comes_from_the_overlay`, data-gated); ped ring /
+  body-fall / foot-plant Splice starts, the tazer post (tag `tazer`, slot `ped_tazer`), body falls (tag `body_fall`)
+  and main-cast line starts (speech rows with class `maincast`) are recorded for subscribers
+  (`world_event_tags_fire_on_real_posts` sees `tazer` and both `body_fall` starts of a tazing, falling ped).
 - Pre-existing failures unrelated to this PR: `setup::tests::pipelines_accept_valid_group_outputs_when_fingerprint_changes`
   (listed in PULL-REQUESTS.md).
 

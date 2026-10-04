@@ -1228,6 +1228,9 @@ mod tests {
             let horn = match f { 20..80 => 2, 140..200 => 6, _ => 0 };
             owners.vehicles.insert(7, VehicleState { position: [3.0, 0.5, 8.0], velocity: [0.0, 0.0, 0.0], speed: 0.0, engine, horn, ..Default::default() });
             owners.peds.insert(9, PedState { position: [1.5, 0.0, 4.0], velocity: [0.0, 0.0, 1.3], speed: 1.3, feet: [f % 20 < 10, f % 20 >= 10], class: 2, weight: 1, ..Default::default() });
+            // A standing ped that tazes, then falls (the world-gaps one-shots).
+            let fall = match f { 100..110 => 8.0, 160..170 => 10.0, _ => 0.0 };
+            owners.peds.insert(11, PedState { position: [-1.5, 0.0, 4.0], class: 2, weight: 1, tazing: (30..90).contains(&f), body_fall: fall, ..Default::default() });
             let m = native.mixmap.as_mut().unwrap();
             for id in 1..=4 {
                 m.set_input(skate_audio::mixmap::keys::MASTER, id, 32767);
@@ -1247,6 +1250,8 @@ mod tests {
         assert!(seen.get("horn").is_some_and(|o| o.contains(&7)), "{seen:?}");
         assert!(seen.get("alarm").is_some_and(|o| o.contains(&7)), "{seen:?}");
         assert!(seen.get("footstep").is_some_and(|o| o.contains(&9)), "{seen:?}");
+        assert!(seen.get("tazer").is_some_and(|o| o.contains(&11)), "{seen:?}");
+        assert_eq!(seen.get("body_fall").map(Vec::as_slice), Some(&[11u64, 11][..]), "{seen:?}");
     }
 
     #[test]
