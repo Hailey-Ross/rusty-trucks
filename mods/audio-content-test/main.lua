@@ -277,7 +277,7 @@ steps = {
             local s = sdk.audio.info().seed
             report("D2_seed_release", type(s) ~= "table", "seed=" .. fmt(s))
         end}}},
-    {name = "taxis", title = "Six taxis on their own instances (Digit3)", listen = "Six taxis driving a 6 m circle around you at 6 m/s", note = "Digit3: six idling taxis around the skater, each on its own MixMap instance", marks = {
+    {name = "taxis", title = "Six taxis on their own instances (Digit3)", listen = "Six taxis circling you like traffic: the nearest 6 m away at 4 m/s, the others farther out and faster (up to 21 m, 14 m/s)", note = "Digit3: six taxis on rings 6-21 m around the skater at 4-14 m/s, each on its own MixMap instance", marks = {
         {0, function() virtual.Digit3 = true end},
         {2.5, function()
             local okc = true
@@ -629,20 +629,24 @@ return {
             end
         end
         if key("Digit3") and (sdk.capabilities.world_audio or 0) >= 3 then
-            -- L3 / M3: six taxis driving a 6 m circle around where the skater is, at 6 m/s (real
-            -- positions and velocities every frame, as retail's moving cars; an idle taxi at 9 m is
-            -- about -44 dBFS before the volume settings: too quiet to judge), each on its own MixMap
-            -- instance (retail's 4 traffic instances stay for the map's cars, and all six are heard):
-            -- the default since world audio 4 (no slots); on 3 they ask for it.
+            -- L3 / M3: six taxis circling where the skater is like traffic, each on its own ring and
+            -- speed (car i: radius 3 + 3i m at 2 + 2i m/s = 6 m at 4 m/s ... 21 m at 14 m/s, all
+            -- inside the 40 m list radius; real positions and velocities every frame, as retail's
+            -- moving cars), each on its own MixMap instance (retail's 4 traffic instances stay for
+            -- the map's cars, and all six are heard): the default since world audio 4 (no slots); on
+            -- 3 they ask for it. Not six equal taxis on one 6 m circle: C04's program detunes every
+            -- car at random (its Random op), and six equally loud copies at one rpm beat at 4-8 Hz,
+            -- the "lawn mower" the user heard (2026-10-04; headless 50-400 Hz envelope share in
+            -- 4-25 Hz: 0.40 for six on one circle, 0.10 for one taxi, 0.14 for these rings).
             own_cars = not own_cars
             local p = sdk.player.read().position
             own_center, own_t = {p[1], p[2], p[3]}, 0
             for i = 1, 6 do
                 if own_cars then
-                    local a = i * math.pi / 3
+                    local a, r, s = i * math.pi / 3, 3 + 3 * i, 2 + 2 * i
                     sdk.commands.request("own" .. i, {kind = "world_audio_spawn", key = "own_car" .. i, object = "traffic", options = {
-                        engine = "c04_taxi01", slots = (sdk.capabilities.world_audio or 0) < 4 and "own" or nil, position = {p[1] + 6 * math.cos(a), p[2], p[3] + 6 * math.sin(a)},
-                        velocity = {-6 * math.sin(a), 0, 6 * math.cos(a)}}})
+                        engine = "c04_taxi01", slots = (sdk.capabilities.world_audio or 0) < 4 and "own" or nil, position = {p[1] + r * math.cos(a), p[2], p[3] + r * math.sin(a)},
+                        velocity = {-s * math.sin(a), 0, s * math.cos(a)}, heading = math.atan(-math.sin(a), math.cos(a))}})
                 else
                     sdk.world_audio.remove("own_car" .. i)
                 end
@@ -689,9 +693,10 @@ return {
             own_t = own_t + (event and event.dt or 0.016)
             local c = own_center
             for i = 1, 6 do
-                local a = i * math.pi / 3 + own_t -- 6 m/s on a 6 m circle: 1 rad/s
-                sdk.world_audio.update("own_car" .. i, {position = {c[1] + 6 * math.cos(a), c[2], c[3] + 6 * math.sin(a)},
-                    velocity = {-6 * math.sin(a), 0, 6 * math.cos(a)}, heading = math.atan(-math.sin(a), math.cos(a))})
+                local r, s = 3 + 3 * i, 2 + 2 * i -- ring radius (m) and speed (m/s) of car i
+                local a = i * math.pi / 3 + own_t * s / r
+                sdk.world_audio.update("own_car" .. i, {position = {c[1] + r * math.cos(a), c[2], c[3] + r * math.sin(a)},
+                    velocity = {-s * math.sin(a), 0, s * math.cos(a)}, heading = math.atan(-math.sin(a), math.cos(a))})
             end
         end
         if orbit then
