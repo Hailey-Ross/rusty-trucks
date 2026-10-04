@@ -1005,7 +1005,7 @@ rolling rattle, `Class_rolling`, footsteps, cloth / body slide, flips / treatmen
 **Files.** New: `crates/skate-audio/src/splice/{mod,format,tests}.rs`, `crates/skate-audio/src/player/contacts.rs`,
 `crates/skate-game/src/game_audio/{e2e,state_log}.rs`, `tools/audio-e2e/{scenarios,compare}.py`,
 `tools/recomp-trace/{retail_windows,retail_voices}.py`, `tools/audio-file-inspect/splc_fields.py`,
-`tools/vault-inspect/vault_fields.py`; local tools `grind_census.py`, `img.py`, `stage_splice.py`. Changed: `skate-audio` `lib.rs`, `mixer.rs`, `runtime.rs`, `player/{mod,state,tuning,inputs,
+`tools/vault-inspect/vault_fields.py` (PR #37); local tools `grind_census.py`, `img.py`, `stage_splice.py`. Changed: `skate-audio` `lib.rs`, `mixer.rs`, `runtime.rs`, `player/{mod,state,tuning,inputs,
 components}.rs`; `game_audio/{mod,library,native,player_audio,grain_bed,skate_events}.rs`;
 `tools/asset_pipeline/audio_export.py` (+ tests). The PoC probe (`player_audio/e2e.rs` in the PoC worktree) is local.
 
@@ -1136,7 +1136,7 @@ only): grind start voices Skate_Metal 194 + Skate_Collisions 619 on the first gr
 landings; wheel spin in the air and in the 6.5-s manual.
 
 **Files.** New: `crates/skate-audio/src/player/{collision,wheels}.rs`, `crates/skate-audio/examples/pan_fold_probe.rs`,
-`tools/vault-inspect/{vault_layout,find_field}.py`, `tools/recomp-trace/grec_clean.py`,
+`tools/vault-inspect/{vault_layout,find_field}.py` (PR #37), `tools/recomp-trace/grec_clean.py`,
 `tools/audio-e2e/voices_summary.py`. Changed: `skate-audio` `player/{mod,state,tuning,contacts}.rs`, `runtime.rs` (stream bank);
 `skate-core` `physics/board_ground.rs` (+ test); `skate-game` `game_audio/{player_audio,native,e2e,library,
 skate_events,grain_bed,state_log,voices}.rs`; `tools/asset_pipeline/audio_export.py` (`collision_tuning`, the image's
