@@ -2,7 +2,7 @@
 //! their sound attributes from the skatercollections database, exported by
 //! setup into the audio manifest (tools/asset_pipeline/audio_export.py).
 //!
-//! The game side follows TU3 (.claude/notes/ems-emitters-re.md; docs 11):
+//! The game side follows TU3 (audio-specs/ems-emitters-re.md; doc 11):
 //! - a record is a sphere when its three extents are equal, otherwise an
 //!   ellipsoid whose semi-axes are the extents along forward = scalars[1..4],
 //!   up and side; the listener's normalised distance `d` must be below 1;

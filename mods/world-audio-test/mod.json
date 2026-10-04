@@ -4,8 +4,9 @@
   "name": "World Audio Test (dev)",
   "version": "0.1.0",
   "author": "Hails",
-  "description": "Dev only (PR #32): publishes traffic, pedestrians and a ghost NPC skater around the spot where it is enabled, through sdk.world_audio, so the retail world audio can be heard before the engine has a living world. Cars loop on four lanes (C00-C08 engine records) with honks and skids; F8 fires the parked car's alarm. Peds walk, jog and run, and react to you (warn, cheer, slam). The ghost replays one of your recorded audio state logs (logs/<name>.tsv in this folder, or SKATE_AUDIO_STATE_LOGS). F9 re-centres everything on you. Boxes show who is audible (green) or not (grey).",
+  "description": "Dev only (PR #32), off by default: enable it in the mod menu, or run with SKATE3_MODS_ENABLE=dev-world-audio-test. Publishes traffic, pedestrians and a ghost NPC skater around the spot where it is enabled, through sdk.world_audio, so the retail world audio can be heard before the engine has a living world. Cars loop on four lanes (C00-C08 engine records) with honks and skids; F8 fires the parked car's alarm. Peds walk, jog and run, and react to you (warn, cheer, slam). The ghost replays one of your recorded audio state logs (logs/<name>.tsv in this folder, or SKATE_AUDIO_STATE_LOGS). F9 re-centres everything on you. Boxes show who is audible (green) or not (grey).",
   "entry": "main.lua",
+  "enabled_by_default": false,
   "settings": {
     "cars": {
       "type": "boolean",

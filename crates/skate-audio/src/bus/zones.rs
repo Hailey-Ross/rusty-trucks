@@ -1,5 +1,5 @@
 //! `SFXObj_Reverb`'s preset selection with the reverb-zone emitters (spec
-//! `.claude/notes/aems-bus-leftovers-spec.md` §4): the per-frame update `sub_824DE548` and its
+//! `audio-specs/aems-bus-leftovers-spec.md` §4): the per-frame update `sub_824DE548` and its
 //! mode handlers — timed fade `sub_824DE850` (0), zone fade `sub_824DE970` (1), zone-to-zone
 //! `sub_824DEAE8` (2) — the start `sub_824DE468`, the snap `sub_824DEDD8` and the zone blend with
 //! the reverb outputs' rotation toward the zone `sub_824DEEF0`.

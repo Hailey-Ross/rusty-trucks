@@ -1,5 +1,6 @@
 //! Native port of Skate 3's retail audio runtime, written from our own behavioural specs
-//! (`.claude/notes/aems-evaluator-spec.md`, `.claude/notes/aems-voice-graph-spec.md`).
+//! (`audio-specs/aems-evaluator-spec.md`, `audio-specs/aems-voice-graph-spec.md`; `audio-specs/` in this crate
+//! means `docs/hails-additions/audio-specs/`, the published specs).
 //!
 //! Engine independent: no Bevy, no file I/O, no unsafe code. The game (or a test) hands in bank and
 //! project bytes and PCM, posts messages, and pulls 48 kHz output blocks.

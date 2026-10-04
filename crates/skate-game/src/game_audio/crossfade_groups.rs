@@ -1,5 +1,5 @@
 //! What each `c_main_ambience_crossfade` group plays, measured by posting the program (w0 = w8 = 32767,
-//! w9 = group) through the PoC evaluator (2026-10-02; data .local/audio-re/crossfade). Four looping voices:
+//! w9 = group) through the PoC evaluator (2026-10-02; local data). Four looping voices:
 //! (bank sample, pan degrees, level incl. the rear 23000/32767 factor). Interim until the AEMS evaluator
 //! is ported; regenerate, do not hand-edit.
 

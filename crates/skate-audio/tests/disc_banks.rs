@@ -1,18 +1,18 @@
 //! Checks the format layer and the evaluator's load step against every bank on the disc, using the
-//! census numbers in `.claude/notes/aems-evaluator-spec.md` §1. Needs the disc's `.abk`/`.csi`
-//! files extracted locally (`py -3.13 .claude/skills/aems-port/tools/bank_layout_check.py --extract
-//! .local/audio-re/aems-banks`, or `SKATE_AEMS_BANKS=<dir>`); skipped when they are absent (retail
-//! data is never committed).
+//! census numbers in `audio-specs/aems-evaluator-spec.md` §1. Needs the disc's `.abk`/`.csi`
+//! files extracted locally (`python tools/audio-file-inspect/bank_layout_check.py --extract <dir>`),
+//! found through `SKATE_AEMS_BANKS=<dir>` or `$SKATE_AUDIO_RE_DIR/aems-banks`; ignored, and fails
+//! loudly when they are absent (retail data is never committed).
 use std::path::PathBuf;
 
 use skate_audio::be::{u8_at, u16_at};
 use skate_audio::eval::{Evaluator, OpenRequest, VoiceHost, VoiceStatus};
 use skate_audio::formats::{Bank, Project};
 
+mod private_data;
+
 fn banks_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("SKATE_AEMS_BANKS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.local/audio-re/aems-banks"));
+    let dir = private_data::aems_banks()?;
     dir.join("csi_order.txt").is_file().then_some(dir)
 }
 

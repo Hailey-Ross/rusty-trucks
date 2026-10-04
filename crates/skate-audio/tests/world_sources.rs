@@ -3,8 +3,8 @@
 //! vehicle / ped system would publish them. Run with `--nocapture` for the per-0.5 s tables.
 //!
 //! Needs the install's MixMap and bank WAVs (`assets/private/audio`, with the world banks staged:
-//! `stage_extra_banks.py --tag world …` or a setup run) and the extracted AEMS / SPLC banks
-//! (`.local/audio-re/aems-banks`, `.local/audio-re/splc-banks`); skipped without them.
+//! a setup run) and the extracted AEMS / SPLC banks (`SKATE_AEMS_BANKS`, `SKATE_SPLC_BANKS`; both
+//! default under `SKATE_AUDIO_RE_DIR`); ignored, and fails loudly without them.
 //!
 //! Retail reference (recomp `all_20261002_164620`, `retail_voices.py`, GAIN × SEND per voice,
 //! p50 / p90): C01_family01 0.002 / 0.049, C05_truck01 0.001 / 0.051, C04_taxi01 0.001 / 0.083,
@@ -27,6 +27,8 @@ use skate_audio::world::owners::Positions;
 use skate_audio::world::peds::{PedFootstepTuning, PedSfx, PedState};
 use skate_audio::world::traffic::{EngineRecord, OutputsSnapshot, Vehicle, VehicleState};
 use skate_audio::world::{WorldCommand, WorldSlot, keys};
+
+mod private_data;
 
 const DT: f32 = 1.0 / 30.0;
 /// Stereo samples per console frame at 48 kHz.
@@ -79,7 +81,8 @@ struct Harness {
 fn harness(aems: &[&str], splice: &[&str]) -> Option<Harness> {
     let r = root();
     let m = MixMap::from_bytes(&std::fs::read(r.join("assets/private/audio/aems/MixMapSK8.mxb")).ok()?).ok()?;
-    let banks = r.join(".local/audio-re/aems-banks");
+    let banks = private_data::aems_banks()?;
+    let splc = private_data::splc_banks()?;
     let order = std::fs::read_to_string(banks.join("csi_order.txt")).ok()?;
     let mut rt = Runtime::new();
     for name in order.lines() {
@@ -100,7 +103,7 @@ fn harness(aems: &[&str], splice: &[&str]) -> Option<Harness> {
     let utility = rt.eval.class_id("c_emitter_utility")?;
     rt.post(utility, &[]);
     for stem in splice {
-        let bank = SpliceBank::parse(&std::fs::read(r.join(format!(".local/audio-re/splc-banks/{stem}.bnk"))).ok()?).ok()?;
+        let bank = SpliceBank::parse(&std::fs::read(splc.join(format!("{stem}.bnk"))).ok()?).ok()?;
         let count = bank.samples;
         let p = pcm(stem, count);
         if p.iter().all(Option::is_none) {

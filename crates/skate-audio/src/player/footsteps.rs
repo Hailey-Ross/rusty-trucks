@@ -1,6 +1,6 @@
 //! The skater's footsteps: retail's `SFXObj_OffBoard` (controller `0x40010090`) foot sounds, on
 //! the board (push and brake plants) and off it (walking, running, jumping). Written from our
-//! reading of the retail code (TU3, reference only; spec `.claude/notes/aems-offboard-clothing-spec.md`):
+//! reading of the retail code (TU3, reference only; spec `audio-specs/aems-offboard-clothing-spec.md`):
 //!
 //! - process `sub_824E9270`: OffBoard.in0 = on foot (`inputs::write_off_board`); the curve words
 //!   (`sub_82481E10` over three `Sk8::PointNegGraphData16` records): `+408` = walk(|COM v|),

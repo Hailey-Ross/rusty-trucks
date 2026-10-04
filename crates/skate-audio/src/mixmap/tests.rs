@@ -82,11 +82,13 @@ fn a_disabled_block_writes_its_first_id_only() {
     assert_eq!(m.level(owner, 0), 22768);
 }
 
+/// The install's MixMap, else the extracted disc's (`$SKATE3_DISC/data/audio`, as the published tools).
 fn disc_mxb() -> Option<Vec<u8>> {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-    ["/assets/private/audio/aems/MixMapSK8.mxb", "/.local/skate3-disc/data/audio/MixMapSK8.mxb"]
-        .iter()
-        .find_map(|p| std::fs::read(format!("{root}{p}")).ok())
+    let install = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/private/audio/aems/MixMapSK8.mxb"));
+    let disc = std::env::var_os("SKATE3_DISC")
+        .filter(|v| !v.is_empty())
+        .map(|d| std::path::PathBuf::from(d).join("data/audio/MixMapSK8.mxb"));
+    std::iter::once(install).chain(disc).find_map(|p| std::fs::read(p).ok())
 }
 
 /// The retail file instantiates exactly the spec's census (§2.4).
@@ -94,7 +96,7 @@ fn disc_mxb() -> Option<Vec<u8>> {
 #[ignore = "needs the private install data"]
 fn disc_mixmap_census() {
     let Some(bytes) = disc_mxb() else {
-        panic!("missing private data: no MixMapSK8.mxb in the dev install or .local/skate3-disc");
+        panic!("missing private data: no MixMapSK8.mxb in the dev install or $SKATE3_DISC");
     };
     let file = MixMapFile::parse(&bytes).unwrap();
     assert_eq!(file.slots.len(), 14);

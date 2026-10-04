@@ -1,4 +1,4 @@
-//! The environment (reverb) network (spec `.claude/notes/aems-env-bus-spec.md`): the mono
+//! The environment (reverb) network (spec `audio-specs/aems-env-bus-spec.md`): the mono
 //! "EnvSendSub" bus every standard voice's Send A feeds, split into two sides A / B (for preset
 //! crossfades), each = EnvSub (gain → PeakingIir2) → RvrbSub (pre-delay → ReverbModel1 → gain →
 //! two filtered outputs panned 270° / 90° with LFE 0.5) + two echo taps (delay → HPF → LPF → gain

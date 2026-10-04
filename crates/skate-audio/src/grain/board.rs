@@ -406,7 +406,7 @@ mod tests {
         }
     }
 
-    /// The PoC's POS vectors (PR #4's `board_records`, `.local/audio-re/grains/grain_vectors.tsv`):
+    /// The PoC's POS vectors (PR #4's `board_records`; the PoC's golden vectors, kept locally):
     /// speed in km/h → position A / B bit patterns.
     #[test]
     fn positions_match_the_golden_vectors() {

@@ -1,6 +1,6 @@
 //! `SFXObj_SkateBoard`'s rolling layers besides the grain bed, skid and squeaks, as pure state
 //! machines (process before the MixMap tick, update after it, [`Command`]s for the host). Spec:
-//! `.claude/notes/aems-board-layers-spec.md`. Written from our reading of the retail code (TU3
+//! `audio-specs/aems-board-layers-spec.md`. Written from our reading of the retail code (TU3
 //! recompilation, reference only):
 //!
 //! - [`Rolling`]: the owner's **surface routing** (`sub_824C5CA8`, two trucks, one sounding truck

@@ -289,7 +289,7 @@ function sdk.audio.stop_all() submit{kind="audio_stop_all"} end
 
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and
 -- skaters to the game's retail world audio (the same path engine systems use). Keys are scoped
--- to the calling mod; 16 objects per mod, 64 in all; an object not updated for 0.5 s is parked;
+-- to the calling mod; 48 objects per mod, 128 in all; an object not updated for 0.5 s is parked;
 -- everything is removed when the mod is disabled or reloaded. The retail limits decide which
 -- objects sound (4 nearest cars within 40 m, 15 nearest peds within 50 m, 1 skater within 30 m).
 sdk.world_audio = { version = 1 }

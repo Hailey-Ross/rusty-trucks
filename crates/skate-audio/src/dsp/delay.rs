@@ -1,4 +1,4 @@
-//! Delay (Del0, process `sub_82B222D8`; spec `aems-env-bus-spec.md` §8.1, §8.3): a whole-sample
+//! Delay (Del0, process `sub_82B222D8`; spec `audio-specs/aems-env-bus-spec.md` §8.1, §8.3): a whole-sample
 //! feedback delay, wet only. p0 = delay (s; 0 = off: the module is skipped and the signal passes
 //! undelayed), p1 = feedback (clamped to ±0.99). D = round-half-away(p0 · 48000).
 //! w[n] = x[n] + fb·w[n−D]; y[n] = w[n−D]. A change of D crossfades the old and new taps over 128

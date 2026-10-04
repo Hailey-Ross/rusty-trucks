@@ -2,7 +2,7 @@
 //! `AUDIO_TIMING` log line with the slowest and average time of each audio system on the game
 //! thread, the time spent waiting for the native runtime's lock (game thread and audio thread),
 //! the native render per 256-frame block, and the slowest frame. Off: one relaxed atomic load per
-//! scope. For finding stutter in real play (skill `optimisation`); measuring only, no behaviour.
+//! scope. For finding stutter in real play (`tools/audio-bench/`); measuring only, no behaviour.
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;

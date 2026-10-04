@@ -1,7 +1,6 @@
 //! Replay a post script through the native evaluator with the oracle's mock voice device and print
-//! every device call, in the same format as the local PoC probe (`.claude/skills/aems-port/tools/
-//! poc/aems_golden.rs`), so the two outputs can be diffed line by line
-//! (`.claude/skills/aems-port/tools/golden_compare.py`).
+//! every device call, in the same format as the local PoC probe (`aems_golden.rs`, local, not
+//! published), so the two outputs can be diffed line by line (a local diff script, not published).
 //!
 //! usage: aems_replay <dir with the disc's .abk/.csi files> <script> [--trace]
 //! Script lines: `banks a.abk,b.abk` · `utility` · `global name=value` ·

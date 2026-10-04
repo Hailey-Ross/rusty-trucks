@@ -1,5 +1,5 @@
 //! The speech library's event rules and its line and take choice (`<bank>_Events.evt`, the per-clip
-//! `.hdr` headers; `world-speech.md` "Speech library").
+//! `.hdr` headers; `audio-specs/world-speech.md` "Speech library").
 //!
 //! Retail's speech runs in two layers. The game's speech manager ([`super::speech_manager`]) turns a
 //! request into an event id and a few request words and gates it with the vault tuning. This module

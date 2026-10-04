@@ -1,7 +1,7 @@
 //! Mod-owned world audio objects (API 2, world audio extension 1; `skate_mods::world_audio`):
 //! each `sdk.world_audio.spawn` key becomes an entity with the same engine-facing components a
 //! game system would add (`crate::world_audio`), so mods and engine systems are equal publishers
-//! of the retail world audio. Keys belong to the calling mod; 16 objects per mod, 64 in all; an
+//! of the retail world audio. Keys belong to the calling mod; 48 objects per mod, 128 in all; an
 //! object not updated for 0.5 s is parked (speed 0, feet up, horn off; ghosts never park);
 //! everything is despawned when the mod is disabled, reloaded or fails, and on a runtime reset.
 use super::Mods;
@@ -94,7 +94,7 @@ pub(super) fn spawn(world: &mut World, mods: &Mods, owner: &str, key: String, ki
                 e.insert(PedAudio::default());
             }
             ObjectKind::Skater => {
-                e.insert(NpcSkaterAudio::default());
+                e.insert(NpcSkaterAudio { voice: opts.voice.filter(|v| *v != 0), ..Default::default() });
             }
         }
         let is_ghost = ghost.is_some();
@@ -201,6 +201,7 @@ pub(super) fn info(world: &World) -> Value {
         "instances": {"traffic": s.instances.0, "peds": s.instances.1, "skaters": s.instances.2},
         "published": {"traffic": s.vehicles, "peds": s.peds, "skaters": s.skaters},
         "audible": {"traffic": s.traffic_held, "peds": s.peds_held, "skaters": s.skaters_held},
+        "speech_lines": s.speech_lines,
     })
 }
 
@@ -275,9 +276,9 @@ fn sync(
         if let Some(mut ped) = ped {
             let want = PedAudio {
                 voice: s.voice.filter(|v| *v != 0),
-                shoe_class: s.shoe_class.unwrap_or(2),
+                shoe_class: s.shoe_class,
                 weight: s.weight.unwrap_or(1),
-                close_range: s.close_range.unwrap_or(false),
+                close_range: s.close_range,
                 feet_down: if parked { [false; 2] } else { s.feet.unwrap_or([false; 2]) },
                 foot_materials: s.materials,
                 footsteps_on: s.footsteps,
@@ -289,6 +290,10 @@ fn sync(
             }
         }
         if let Some(mut npc) = npc {
+            let voice = s.voice.filter(|v| *v != 0);
+            if npc.voice != voice {
+                npc.voice = voice;
+            }
             let v = if parked { Vec3::ZERO } else { velocity.unwrap_or(derived) };
             let v = match s.speed {
                 Some(speed) if !parked && v.length() < 1e-4 => t.rotation * Vec3::Z * speed,

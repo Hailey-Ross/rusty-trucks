@@ -1,4 +1,4 @@
-//! ReverbModel1 (RM10, process `sub_82B2F8C0`; spec `aems-env-bus-spec.md` §8.2, §8.3): mono in,
+//! ReverbModel1 (RM10, process `sub_82B2F8C0`; spec `audio-specs/aems-env-bus-spec.md` §8.2, §8.3): mono in,
 //! six parallel Moorer combs (a one-pole low-pass in each feedback loop) into one all-pass, wet
 //! only. p0 = reverb time T60 (s; ≤ 0 → silence, else at least 0.366 s), p1 = space size (m,
 //! clamped 2 … 83.3), p2 = brightness.

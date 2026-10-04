@@ -1,4 +1,4 @@
--- World Audio Test (dev only, PR #32; spec .claude/notes/world-audio-hookin-spec.md §3.10 / §8.5).
+-- World Audio Test (dev only, PR #32; spec audio-specs/world-audio-hookin-spec.md §3.10 / §8.5).
 -- Publishes traffic, pedestrians and a ghost NPC skater through sdk.world_audio around the spot
 -- where the mod starts (F9 re-centres on the skater). The game decides who is audible with
 -- retail's limits (4 nearest cars within 40 m, 15 nearest peds within 50 m with footsteps for
@@ -11,6 +11,12 @@ local ENGINES = { "c00_heavy01", "c01_family01", "c03_sports01", "c04_taxi01", "
 local LANES = 4
 local CARS_PER_LANE = 4 -- the last lane's last car is parked (the alarm car)
 local PEDS = 20
+-- The living-world ped models (= speech voices) of retail's aud_characteristics: each ped takes one,
+-- and the game gives it the model's shoe class, kind and speech words.
+local VOICES = { 41, 42, 43, 46, 47, 48, 49, 51, 52, 53, 54, 55, 56, 59, 60, 61, 64, 65, 66, 69, 70, 71,
+                 72, 73, 74, 75, 76, 77, 82, 83, 84, 85, 86, 87, 88 }
+-- The ghost skater's voice (an AI skater's: its bail grunt).
+local GHOST_VOICE = 91
 
 local anchor = nil        -- {x, y, z}
 local started = false
@@ -22,6 +28,7 @@ local shown = {}          -- key -> last box colour state
 local ghost_status = ""
 local last_landing, last_bail = nil, nil
 local warned = {}         -- ped key -> seconds until it may warn again
+local chatter_timer = 6   -- seconds to the next ambient shout (dev only, not retail)
 
 local function rand()
     seed = (seed * 1103515245 + 12345) % 2147483648
@@ -107,9 +114,9 @@ local function spawn_all()
             local key = "ped" .. i
             local ped = { key = key, start = start, dir = { math.cos(angle + 1.3), 0, math.sin(angle + 1.3) },
                 length = 6 + (i % 4) * 3, t = rand() * 10, speed = speed,
-                step = ({ walk = 0.55, jog = 0.36, run = 0.27 })[kind], voice = 41 + (i * 7) % 56,
-                shoe = 2 + i % 4, x = 0, sign = 1 }
-            sdk.world_audio.spawn(key, "ped", { voice = ped.voice, shoe_class = ped.shoe, position = start })
+                step = ({ walk = 0.55, jog = 0.36, run = 0.27 })[kind], voice = VOICES[1 + (i * 7) % #VOICES],
+                x = 0, sign = 1 }
+            sdk.world_audio.spawn(key, "ped", { voice = ped.voice, position = start })
             peds[#peds + 1] = ped
         end
     end
@@ -118,7 +125,7 @@ local function spawn_all()
         -- Through a request: a missing log is reported here instead of failing the mod.
         sdk.commands.request("ghost", { kind = "world_audio_spawn", key = "ghost", object = "skater",
             options = { source = "state_log:" .. name, from = setting("ghost_from", 30), seconds = 20,
-                position = { anchor[1] + 5, anchor[2], anchor[3] } } })
+                voice = GHOST_VOICE, position = { anchor[1] + 5, anchor[2], anchor[3] } } })
         ghost_status = "Ghost: loading " .. name
     end
 end
@@ -168,7 +175,7 @@ local function walk(ped, dt, player)
     local feet = { phase < 0.6, phase >= 1 and phase < 1.6 }
     ped.position = p
     sdk.world_audio.update(ped.key, { position = p, velocity = v, heading = math.atan(v[1], v[3]), feet = feet })
-    -- Warn (11) when the skater passes within 1.5 m above 3 m/s.
+    -- Warn (the code's value 53, `501_warn`) when the skater passes within 1.5 m above 3 m/s.
     warned[ped.key] = math.max(0, (warned[ped.key] or 0) - dt)
     if warned[ped.key] == 0 and (player.speed or 0) > 3 and dist(p, player.position) < 1.5 then
         sdk.world_audio.event(ped.key, "speech", { value = "warn" })
@@ -219,6 +226,21 @@ return {
         for _, car in ipairs(cars) do drive(car, dt) end
         for _, ped in ipairs(peds) do walk(ped, dt, player) end
         react(player)
+        -- Ambient chatter (dev only): every 6-10 s the nearest ped shouts (value 2, `1901_shout`).
+        chatter_timer = chatter_timer - dt
+        if chatter_timer <= 0 and #peds > 0 then
+            chatter_timer = 6 + 4 * rand()
+            local best, best_d = nil, 1e9
+            for _, ped in ipairs(peds) do
+                if ped.position then
+                    local d = dist(ped.position, player.position)
+                    if d < best_d then best, best_d = ped, d end
+                end
+            end
+            if best then
+                sdk.world_audio.event(best.key, "speech", { value = 2 })
+            end
+        end
         -- One moving car honks every 10-15 s (kind 1-5).
         honk_timer = honk_timer - dt
         if honk_timer <= 0 and #cars > 1 then
@@ -252,8 +274,8 @@ return {
         end
         local info = sdk.world_audio.info()
         sdk.ui.text("world-audio-test", string.format(
-            "World audio test: cars %d/%d audible, peds %d/%d, skater %d  (limits %d/%d/%d%s)  %s  [F8 alarm, F9 re-centre]",
-            audible.traffic, #cars, audible.ped, #peds, audible.skater,
+            "World audio test: cars %d/%d audible, peds %d/%d, skater %d, speech lines %d  (limits %d/%d/%d%s)  %s  [F8 alarm, F9 re-centre]",
+            audible.traffic, #cars, audible.ped, #peds, audible.skater, info.speech_lines or 0,
             info.instances and info.instances.traffic or 4, info.instances and info.instances.peds or 15,
             info.instances and info.instances.skaters or 1, info.more_audible and ", more audible" or "", ghost_status))
     end,

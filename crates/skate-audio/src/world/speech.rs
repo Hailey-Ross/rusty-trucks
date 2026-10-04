@@ -1,4 +1,4 @@
-//! Streamed world speech (`data/audio/english/livingworldspeech.big`, `world-speech.md`).
+//! Streamed world speech (`data/audio/english/livingworldspeech.big`, `audio-specs/world-speech.md`).
 //!
 //! **Data.** The archive holds 3,011 clips named `<event>_<voice>[_<voice name>]_<line>.dat` plus
 //! `livingworld_Events.evt` (the speech manager's event table, 84 named events such as `501_warn`)
@@ -151,7 +151,7 @@ const fn n(event: u32) -> Cue {
     Cue { event, evidence: Evidence::Name }
 }
 
-/// Reaction → speech events (`world-speech.md` table; the recomp sessions above). Where a reaction
+/// Reaction → speech events (`audio-specs/world-speech.md` table; the recomp sessions above). Where a reaction
 /// played several events the order is the measured frequency; the choice between them is the
 /// `.evt`'s (not decoded).
 pub const REACTION_CUES: &[(Want, &[Cue])] = &[

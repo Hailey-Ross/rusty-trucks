@@ -1,4 +1,4 @@
-//! Pedestrians' sound objects (MixMap slot 5, `world-ped-audio.md`):
+//! Pedestrians' sound objects (MixMap slot 5, `audio-specs/world-ped-audio.md`):
 //! - [`PedSfx`] = `SFXObj_PedestrianSFX` (vtable `0x822FCCC8`, factory `sub_824D7E00`): process
 //!   `sub_824D8078` (vfunc 9), update `sub_824D81A8` (vfunc 10). Its footsteps are two layers:
 //!   - the held `livingword_footstep` packets (21 words, constructor `sub_824B77F0`, bank
@@ -96,9 +96,17 @@ pub struct PedState {
     /// `+96 == 64`: the outputs read are the close-range variants (footstep level 2 / step level 4
     /// instead of 1 / 3; PedestrianSFX out4 rolls off over 3–8 m).
     pub close: bool,
-    /// The speech manager's flag pair `+148` / `+156` (`flag = 1` when `+148 > +156`, else 2).
+    /// The speech manager's flag pair `+148` / `+156` (`flag = 1` when `+148 > +156`, else 2):
+    /// the distance to the listener and the model's far threshold (recomp gap run G2).
     pub speech_measure: f32,
     pub speech_limit: f32,
+    /// `S+84`: the model = the speech voice id (0 = none: no speech).
+    pub voice: u32,
+    /// The speaker words of the model (`aud_characteristics`: type / variant bits, gender; the
+    /// speech manager's timers are kept per `index` = the voice).
+    pub speaker: super::speech_manager::Speaker,
+    /// Which PedestrianSpeech outputs a line plays at ([`super::speech_player::ped_level_ids`]).
+    pub level_select: super::speech_player::PedLevelSelect,
 }
 
 impl Default for PedState {
@@ -116,6 +124,9 @@ impl Default for PedState {
             close: false,
             speech_measure: 0.0,
             speech_limit: 0.0,
+            voice: 0,
+            speaker: super::speech_manager::Speaker::default(),
+            level_select: super::speech_player::PedLevelSelect::default(),
         }
     }
 }

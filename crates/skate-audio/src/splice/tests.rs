@@ -55,9 +55,14 @@ fn fade_curves_run_from_zero_to_one() {
     assert!((curve(3, 0.5) - (std::f32::consts::FRAC_PI_4).sin()).abs() < 1e-5);
 }
 
+/// The extracted SPLC banks: `SKATE_SPLC_BANKS`, else `$SKATE_AUDIO_RE_DIR/splc-banks`.
+fn splc_dir() -> Option<std::path::PathBuf> {
+    let var = |n: &str| std::env::var_os(n).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    var("SKATE_SPLC_BANKS").or_else(|| var("SKATE_AUDIO_RE_DIR").map(|d| d.join("splc-banks")))
+}
+
 fn disc_bank(name: &str) -> Option<Vec<u8>> {
-    let p = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.local/audio-re/splc-banks")).join(format!("{name}.bnk"));
-    std::fs::read(p).ok()
+    std::fs::read(splc_dir()?.join(format!("{name}.bnk"))).ok()
 }
 
 #[test]
@@ -73,7 +78,7 @@ fn disc_banks_parse_and_the_contact_ids_resolve() {
         assert!(id >= records && id < records + bank.containers.len(), "id {id}");
     }
     // Every bank on the disc parses.
-    let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.local/audio-re/splc-banks"));
+    let dir = splc_dir().unwrap();
     let mut n = 0;
     for e in std::fs::read_dir(dir).unwrap() {
         let p = e.unwrap().path();

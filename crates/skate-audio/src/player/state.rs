@@ -120,7 +120,7 @@ pub struct AudioState {
     pub time_scale: f32,
     pub global_224: bool,
     // ---- off-board and clothing inputs (`player::footsteps`, `player::clothing`,
-    // `player::step_on`; spec `.claude/notes/aems-offboard-clothing-spec.md`). Foot A is the
+    // `player::step_on`; spec `audio-specs/aems-offboard-clothing-spec.md`). Foot A is the
     // packet at OffBoard `+36` (OffBoard foot side 1, toe part 19), foot B the one at `+220`
     // (side 0, toe part 15).
     /// `+724` / `+725`: foot A / B down: (OffBoard 307 || Air 450 || `+334` || `+336`) /
