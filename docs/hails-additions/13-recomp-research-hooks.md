@@ -52,7 +52,7 @@ The recompilation is **not** a perfect copy of the console game, and its traces 
    doc 11, "The per-player recomp hooks logged an NPC skater too".
 
 The analysis scripts we used are published in `tools/recomp-trace/` (trace readers, per-bank level and voice
-tools, rolling-bed and send analysis) and `tools/recomp-code-search/` (searching the recompiled sources and the
+tools, rolling-bed and send analysis) and `tools/recomp-code-search/` (PR #37) (searching the recompiled sources and the
 memory image); see [14](14-published-tools.md). They are reference only: anyone who wants to use them needs to
 build the recomp and set up the paths themselves.
 

@@ -86,3 +86,7 @@ vendored map extraction tools in `tools/vendor/`.
 - `tools/recomp-trace/bail_impacts.py`: per-bail ragdoll impacts and sound posts (BAILSTEP / BAILREG).
 - `tools/recomp-trace/collision_posts.py`: collision-sound posts by poster and owner, with the local-rider flag.
 - `tools/recomp-trace/trace.py`: knows the newer line kinds (BAIL*, COLLPOST, BANDQ, LOCALTEST).
+
+## Split (2026-10-04)
+
+The non-audio tools (`regression-checks/`, `setup-equivalence/`, `collision-inspect/`, `world-stream-inspect/`, `vault-inspect/`, `recomp-code-search/`) moved to their own PR, #37 (branch `tooling/published-tools`). The audio tools (`audio-e2e/`, `audio-bench/`, `audio-file-inspect/`, `recomp-trace/`) stay with the audio work in #32.
