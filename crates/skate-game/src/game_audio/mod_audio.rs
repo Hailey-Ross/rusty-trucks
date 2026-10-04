@@ -143,8 +143,10 @@ impl Source {
 pub(crate) struct EventRow {
     pub kind: EventKind,
     pub source: Source,
-    /// The class (posts), bank (Splice starts, emitters), slot name (player releases), or "".
+    /// The class (posts), bank (Splice starts, emitters), or "".
     pub class: &'static str,
+    /// The poster's slot (`grind`, `footstep`, `horn`, …) for posts and releases, or "".
+    pub slot: &'static str,
     /// Splice sound id, emitter patch, slot index, speech event; 0 otherwise.
     pub id: i32,
     /// The world / NPC object, the zone key, the speaker; 0 for the local player.
@@ -192,8 +194,8 @@ impl Tags {
             (EventKind::Splice, Source::Player) if r.class == BANK && self.pop.contains(&r.id) => Some("pop"),
             (EventKind::Splice, Source::Player) if r.class == BANK && r.id == self.land => Some("land"),
             (EventKind::Splice, _) if r.class.starts_with("fstep_") => Some("footstep"),
-            (EventKind::Post, Source::Player) if r.class == "grind" && r.id == 0 => Some("grind_start"),
-            (EventKind::Release, Source::Player) if r.class == "grind" && r.id == 0 => Some("grind_end"),
+            (EventKind::Post, Source::Player) if r.slot == "grind" && r.id == 0 => Some("grind_start"),
+            (EventKind::Release, Source::Player) if r.slot == "grind" && r.id == 0 => Some("grind_end"),
             (EventKind::Post, _) if r.class == skate_audio::player::footsteps::CLASS || r.class == skate_audio::world::peds::FOOTSTEP_CLASS => Some("footstep"),
             (EventKind::Post, Source::World) if r.class == HORN_CLASS => Some("horn"),
             (EventKind::Post, Source::World) if r.class == ALARM_CLASS => Some("alarm"),
@@ -256,7 +258,7 @@ impl Events {
                 truncated = true;
                 break;
             }
-            rows.push(json!({"kind": r.kind.name(), "source": r.source.name(), "class": r.class, "id": r.id,
+            rows.push(json!({"kind": r.kind.name(), "source": r.source.name(), "class": r.class, "slot": r.slot, "id": r.id,
                 "owner": r.owner.to_string(), "tag": tag}));
         }
         Some(json!({"serial": self.serial, "rows": rows, "truncated": truncated}))
@@ -530,7 +532,148 @@ impl AudioApi {
     }
 }
 
-#[allow(dead_code)]
+/// The event frame boundary, first in the audio pass: the hosts' rows of the last frame join the
+/// rows the systems pushed, and become what mods read (`last`). The sites record only while some
+/// mod subscribes: their buffers are created / dropped here (nothing is recorded otherwise).
+pub(super) fn events_frame(
+    mut native: Option<ResMut<Native>>,
+    mut api: ResMut<AudioApi>,
+    mut world: Option<ResMut<super::world_sources::WorldHost>>,
+    mut npc: Option<ResMut<super::npc_skaters::NpcHost>>,
+    mut speech: Option<ResMut<super::world_speech::WorldSpeech>>,
+) {
+    let api = &mut *api;
+    let on = api.events.on();
+    if !on && api.events.last.is_empty() && api.events.current.is_empty() && !api.events.truncated {
+        // Nobody subscribes and nothing is left: drop the sites' buffers once, then nothing.
+        if let Some(p) = native.as_deref_mut().and_then(|n| n.player.as_mut()).filter(|p| p.events.is_some()) {
+            p.events = None;
+        }
+        if let Some(w) = world.as_deref_mut().filter(|w| w.events.is_some()) {
+            w.events = None;
+        }
+        if let Some(n) = npc.as_deref_mut().filter(|n| n.events.is_some()) {
+            n.events = None;
+        }
+        if let Some(s) = speech.as_deref_mut().filter(|s| s.events.is_some()) {
+            s.events = None;
+        }
+        return;
+    }
+    if let Some(p) = native.as_deref_mut().and_then(|n| n.player.as_mut()) {
+        collect(&mut p.events, on, &mut api.events);
+    }
+    if let Some(w) = world.as_deref_mut() {
+        collect(&mut w.events, on, &mut api.events);
+    }
+    if let Some(n) = npc.as_deref_mut() {
+        collect(&mut n.events, on, &mut api.events);
+    }
+    if let Some(s) = speech.as_deref_mut() {
+        collect(&mut s.events, on, &mut api.events);
+    }
+    api.events.swap();
+    api.events.truncated = false;
+    if !on {
+        api.events.last.clear();
+    }
+}
+
+/// A Splice host that records each start (`EventKind::Splice`) while the site records; every
+/// call goes to the real host unchanged.
+pub(crate) struct Observed<'a, 'b> {
+    inner: &'a mut dyn skate_audio::player::contacts::SpliceHost,
+    rows: &'b mut EventBuf,
+    source: Source,
+    owner: u64,
+}
+
+impl<'a, 'b> Observed<'a, 'b> {
+    pub(crate) fn new(inner: &'a mut dyn skate_audio::player::contacts::SpliceHost, rows: &'b mut EventBuf, source: Source, owner: u64) -> Self {
+        Self { inner, rows, source, owner }
+    }
+}
+
+impl skate_audio::player::contacts::SpliceHost for Observed<'_, '_> {
+    fn set_route(&mut self, route: skate_audio::bus::Route) {
+        self.inner.set_route(route);
+    }
+    fn set_submix(&mut self, submix: Option<skate_audio::player::footsteps::Submix>) {
+        self.inner.set_submix(submix);
+    }
+    fn start(&mut self, bank: &str, id: u32, block: [f32; 6]) -> Option<skate_audio::splice::SoundId> {
+        let sound = self.inner.start(bank, id, block);
+        if sound.is_some() && self.rows.is_some() {
+            record(self.rows, EventRow { kind: EventKind::Splice, source: self.source, class: intern(bank), slot: "", id: id as i32, owner: self.owner });
+        }
+        sound
+    }
+    fn update(&mut self, sound: skate_audio::splice::SoundId, block: [f32; 6]) {
+        self.inner.update(sound, block);
+    }
+    fn alive(&self, sound: skate_audio::splice::SoundId) -> bool {
+        self.inner.alive(sound)
+    }
+    fn release(&mut self, sound: skate_audio::splice::SoundId) {
+        self.inner.release(sound);
+    }
+}
+
+/// A bank / class name as `&'static str` for event rows (a few dozen distinct names; each is kept
+/// once, the first time it is recorded).
+pub(crate) fn intern(name: &str) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let Ok(mut names) = NAMES.lock() else { return "" };
+    if let Some(n) = names.iter().find(|n| **n == name) {
+        return n;
+    }
+    if names.len() >= 4096 {
+        return "";
+    }
+    let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    names.push(leaked);
+    leaked
+}
+
+/// A player component slot's name and index for event rows.
+pub(crate) fn player_slot(slot: &skate_audio::player::components::Slot) -> (&'static str, i32) {
+    use skate_audio::player::components::Slot;
+    match *slot {
+        Slot::Grind(n) => ("grind", i32::from(n)),
+        Slot::Rattle => ("rattle", 0),
+        Slot::Wind => ("wind", 0),
+        Slot::FootDrag => ("foot_drag", 0),
+        Slot::Skid => ("skid", 0),
+        Slot::Squeaks => ("squeaks", 0),
+        Slot::Seam(n) => ("seam", i32::from(n)),
+        Slot::RollingSurface(n) => ("rolling_surface", i32::from(n)),
+        Slot::RollingLayer(n) => ("rolling_layer", i32::from(n)),
+        Slot::RollingRattle => ("rolling_rattle", 0),
+        Slot::BoardSlide => ("board_slide", 0),
+        Slot::Flips => ("flips", 0),
+        Slot::Cloth(n) => ("cloth", i32::from(n)),
+        Slot::Treatment => ("treatment", 0),
+        Slot::HomSloMo => ("hom_slo_mo", 0),
+        Slot::Footstep(n) => ("footstep", i32::from(n)),
+        Slot::ClothFalls => ("cloth_falls", 0),
+        Slot::BodySlide => ("body_slide", 0),
+        #[allow(unreachable_patterns)]
+        _ => ("other", 0),
+    }
+}
+
+/// A world slot's name and index for event rows.
+pub(crate) fn world_slot(slot: &skate_audio::world::WorldSlot) -> (&'static str, i32) {
+    use skate_audio::world::WorldSlot;
+    match *slot {
+        WorldSlot::Engine => ("engine", 0),
+        WorldSlot::Horn => ("horn", 0),
+        WorldSlot::Alarm => ("alarm", 0),
+        WorldSlot::Skid => ("skid", 0),
+        WorldSlot::PedFootstep(n) => ("ped_footstep", i32::from(n)),
+    }
+}
+
 fn collect(buf: &mut EventBuf, on: bool, events: &mut Events) {
     match (on, buf.as_mut()) {
         (true, Some(rows)) => {
@@ -757,6 +900,51 @@ mod tests {
         assert!(api.watches.contains_key("dev.a") && api.handles.is_empty());
         api.clear_owner(Some(&n), 0, "dev.a");
         assert!(api.watches.is_empty() && api.snapshot(Some(&n), 0, "dev.a").is_null());
+    }
+
+    /// The event frame: nothing is recorded without a subscriber (the sites' buffers stay None);
+    /// with one, the hosts' rows and the systems' rows of a frame are what the mod reads at the
+    /// next frame, filtered by its tags, once per serial; unsubscribing drops the buffers.
+    #[test]
+    fn events_record_only_for_subscribers() {
+        let mut world = World::new();
+        let mut player = super::super::player_audio::PlayerAudio::new(Default::default(), true);
+        player.events = None;
+        let mut n = native();
+        n.player = Some(player);
+        world.insert_resource(n);
+        world.init_resource::<AudioApi>();
+        world.init_resource::<super::super::world_sources::WorldHost>();
+        world.init_resource::<super::super::npc_skaters::NpcHost>();
+        world.init_resource::<super::super::world_speech::WorldSpeech>();
+        let row = |kind, source, class, slot, id| EventRow { kind, source, class, slot, id, owner: 0 };
+        world.run_system_once(events_frame).unwrap();
+        assert!(world.resource::<Native>().player.as_ref().unwrap().events.is_none(), "no subscriber: no buffer");
+        world.resource_mut::<AudioApi>().events.push(row(EventKind::Zone, Source::Ambience, "", "", 0));
+        assert!(world.resource::<AudioApi>().events.current.is_empty(), "no subscriber: nothing pushed");
+        world.resource_mut::<AudioApi>().subscribe("dev.a", Some(vec!["grind_start".into(), "zone_change".into()]), None).unwrap();
+        assert!(world.resource_mut::<AudioApi>().subscribe("dev.a", Some(vec!["nope".into()]), None).is_err());
+        world.run_system_once(events_frame).unwrap();
+        assert!(world.resource::<Native>().player.as_ref().unwrap().events.is_some(), "a subscriber: the sites record");
+        // A frame: the player posts a grind and a wind layer, the ambience changes zone.
+        record(&mut world.resource_mut::<Native>().player.as_mut().unwrap().events, row(EventKind::Post, Source::Player, "Class_grind", "grind", 0));
+        record(&mut world.resource_mut::<Native>().player.as_mut().unwrap().events, row(EventKind::Post, Source::Player, "SenseOfSpeed", "wind", 0));
+        world.resource_mut::<AudioApi>().events.push(row(EventKind::Zone, Source::Ambience, "", "", 0));
+        world.run_system_once(events_frame).unwrap();
+        let api = world.resource::<AudioApi>();
+        let s = api.snapshot(None, 0, "dev.a");
+        let rows = s["events"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!((rows[0]["tag"].as_str(), rows[1]["tag"].as_str()), (Some("zone_change"), Some("grind_start")));
+        let serial = s["events"]["serial"].as_u64().unwrap();
+        world.run_system_once(events_frame).unwrap();
+        let s = world.resource::<AudioApi>().snapshot(None, 0, "dev.a");
+        assert!(s["events"]["rows"].as_array().unwrap().is_empty() && s["events"]["serial"].as_u64() == Some(serial + 1), "the next frame has its own rows");
+        world.resource_mut::<AudioApi>().subscribe("dev.a", None, None).unwrap();
+        world.run_system_once(events_frame).unwrap();
+        world.run_system_once(events_frame).unwrap();
+        assert!(world.resource::<Native>().player.as_ref().unwrap().events.is_none(), "unsubscribed: the buffers go");
+        assert!(world.resource::<AudioApi>().snapshot(None, 0, "dev.a").is_null());
     }
 
     /// A mod's post of a retail class plays (data-gated): `c_emitter` with a DownTown emitter's

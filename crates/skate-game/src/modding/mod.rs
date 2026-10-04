@@ -999,6 +999,7 @@ fn apply_one(
             let mixmap: Vec<_> = mixmap.into_iter().map(|k| (k.slot, k.object, k.instance, k.output)).collect();
             audio_api(world, |api, native, _| api.watch(native, id, &globals, &mixmap))?
         }
+        Command::AudioSubscribe { tags } => audio_api(world, |api, native, _| api.subscribe(id, tags, native))?,
         Command::WorldAudioSpawn { key, object, options } => world_audio::spawn(world, mods, id, key, object, options)?,
         Command::WorldAudioUpdate { key, options } => world_audio::update(world, mods, id, &key, options)?,
         Command::WorldAudioEvent { key, event, options } => world_audio::event(world, id, &key, &event, options)?,

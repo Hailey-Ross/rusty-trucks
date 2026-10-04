@@ -76,6 +76,8 @@ pub(super) struct State {
     fading: Vec<Clip>,
     /// Fallback (no zone data): the per-map bed.
     fallback: Option<(VoiceId, Clip)>,
+    /// The zone the skater was last in (audio events: `zone_change`).
+    zone_seen: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -91,6 +93,7 @@ pub(super) fn update(
     time: Res<Time<Real>>,
     content: Res<super::AudioContent>,
     audio: Res<super::map_audio::MapAudio>,
+    mut api: ResMut<super::mod_audio::AudioApi>,
 ) {
     let Some(mut library) = library else { return };
     let state = &mut *state;
@@ -118,6 +121,10 @@ pub(super) fn update(
     let at = cues.riding.board;
     let desired = audio.region_key(&library, "audio_ambience", at.x, at.z)
         .filter(|key| library.zone(*key).and_then(|z| z.bed.as_ref()).is_some()).unwrap_or(0);
+    if desired != state.zone_seen {
+        state.zone_seen = desired;
+        api.events.push(super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Zone, source: super::mod_audio::Source::Ambience, class: "", slot: "", id: 0, owner: desired });
+    }
 
     let phase = state.phase.unwrap_or(Phase::Silent);
     let zone = library.zone(state.current).cloned();

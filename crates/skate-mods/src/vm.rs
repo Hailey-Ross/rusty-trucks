@@ -159,6 +159,12 @@ pub enum Command {
         #[serde(default)]
         mixmap: Vec<crate::audio::MixMapKey>,
     },
+    /// Audio events extension 1: receive this mod's audio event rows (`tags` empty = every row;
+    /// no `tags` = stop).
+    AudioSubscribe {
+        #[serde(default)]
+        tags: Option<Vec<String>>,
+    },
     /// World audio extension 1: publish a traffic vehicle / ped / skater to the retail world audio.
     WorldAudioSpawn {
         key: String,
@@ -434,6 +440,7 @@ impl Command {
             Self::AudioPost { key, class, words } => crate::schema::valid_id(key) && crate::audio::valid_symbol(class) && words.len() <= crate::audio::MAX_WORDS,
             Self::AudioRedeliver { key, words } => crate::schema::valid_id(key) && words.len() <= crate::audio::MAX_WORDS,
             Self::AudioRelease { key } => crate::schema::valid_id(key),
+            Self::AudioSubscribe { tags } => tags.as_ref().is_none_or(|t| t.len() <= 16 && t.iter().all(|x| crate::audio::valid_symbol(x))),
             Self::AudioSetGlobal { name, .. } => crate::audio::valid_symbol(name),
             Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
                 && mixmap.len() <= crate::audio::MAX_WATCH && mixmap.iter().all(crate::audio::MixMapKey::validate),
@@ -689,6 +696,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::AudioRelease { .. } => "audio_release",
         Command::AudioSetGlobal { .. } => "audio_set_global",
         Command::AudioWatch { .. } => "audio_watch",
+        Command::AudioSubscribe { .. } => "audio_subscribe",
         Command::WorldAudioSpawn { .. } => "world_audio_spawn",
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
@@ -995,6 +1003,8 @@ impl Vm {
             // Audio content overlays (`audio.json`: replace / add retail audio content by identity;
             // `audio_content.rs`), applied while the mod runs.
             capabilities.set("audio_content", 1)?;
+            // Audio events, observe only (`sdk.audio.subscribe` / `sdk.audio.events`).
+            capabilities.set("audio_events", 1)?;
             sdk.set("_native_capabilities", capabilities)?;
             sdk.set("mod_id", manifest.id.clone())?;
             sdk.set(
@@ -1800,6 +1810,7 @@ mod world_audio_tests {
             assert(sdk.capabilities.audio == 2, 'audio capability')
             assert(sdk.capabilities.world_audio == 1, 'world_audio capability')
             assert(sdk.capabilities.audio_content == 1, 'audio_content capability')
+            assert(sdk.capabilities.audio_events == 1, 'audio_events capability')
             assert(sdk.audio.version == 2 and sdk.world_audio.version == 1, 'versions')
             return {}
         "#).unwrap();
@@ -1871,6 +1882,9 @@ mod world_audio_tests {
             json!({"kind":"audio_watch","globals":["g_snd"],"mixmap":[{"slot":"player","object":0,"instance":0,"output":4}]}),
             json!({"kind":"audio_watch"}),
             json!({"kind":"engine_inspect","system":"audio_catalog"}),
+            json!({"kind":"audio_subscribe","tags":["pop","land"]}),
+            json!({"kind":"audio_subscribe","tags":[]}),
+            json!({"kind":"audio_subscribe"}),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert!(c.validate(), "{value}");
@@ -1883,6 +1897,7 @@ mod world_audio_tests {
             json!({"kind":"audio_watch","mixmap":[{"slot":"music","output":0}]}),
             json!({"kind":"audio_watch","mixmap":[{"slot":"player","output":40}]}),
             json!({"kind":"audio_watch","globals":vec!["g"; 17]}),
+            json!({"kind":"audio_subscribe","tags":["no tag"]}),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert!(!c.validate(), "accepted {value}");
@@ -1912,6 +1927,11 @@ mod world_audio_tests {
                 assert(m and m.level == 123, 'mixmap')
                 assert(sdk.audio.info().native == true, 'info')
                 assert(sdk.audio.handle('nope') == nil)
+                sdk.audio.subscribe{tags={'pop'}}
+                sdk.audio.subscribe(nil)
+                local rows = sdk.audio.events()
+                assert(#rows == 1 and rows[1].tag == 'pop', 'events')
+                assert(#sdk.audio.events() == 0, 'each serial once')
             end
             return M
         "#).unwrap();
@@ -1921,11 +1941,13 @@ mod world_audio_tests {
         let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
         let snapshot = json!({
             "audio": {"tests.audio-api": {"handles": {"siren": {"live": true, "class": "c_emitter"}},
-                "watch": {"globals": {"g_snd": 7}, "mixmap": [{"slot": "emitter", "object": 0, "instance": 2, "output": 4, "level": 123}]}}},
+                "watch": {"globals": {"g_snd": 7}, "mixmap": [{"slot": "emitter", "object": 0, "instance": 2, "output": 4, "level": 123}]},
+                "events": {"serial": 4, "rows": [{"kind": "splice", "tag": "pop"}], "truncated": false}}},
             "audio_info": {"native": true}});
         let cmds = vm.call("on_update", json!({"dt": 0.016}), &snapshot).unwrap();
         let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
-        assert_eq!(kinds, ["audio_post", "audio_redeliver", "audio_release", "audio_set_global", "audio_set_global", "audio_watch"]);
+        assert_eq!(kinds, ["audio_post", "audio_redeliver", "audio_release", "audio_set_global", "audio_set_global", "audio_watch", "audio_subscribe", "audio_subscribe"]);
+        assert!(matches!(&cmds[7], Command::AudioSubscribe { tags: None }), "nil stops");
         assert!(cmds.iter().all(Command::validate));
         assert!(matches!(&cmds[4], Command::AudioSetGlobal { value: None, .. }), "nil restores");
         let _ = std::fs::remove_dir_all(root);

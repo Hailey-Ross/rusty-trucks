@@ -292,6 +292,8 @@ pub(crate) struct WorldHost {
     /// The ped speech requests of the last evaluation (PedestrianSpeech process), with the speaker
     /// words and level selection: `frame` hands them to the speech host (`world_speech`).
     pub(crate) speech_requests: Vec<super::world_speech::PedRequest>,
+    /// Audio event rows while some mod subscribes (`mod_audio::events_frame`).
+    pub(crate) events: super::mod_audio::EventBuf,
 }
 
 impl Default for WorldHost {
@@ -313,6 +315,7 @@ impl Default for WorldHost {
             epoch: None,
             posts: 0,
             speech_requests: Vec::new(),
+            events: None,
         }
     }
 }
@@ -361,6 +364,10 @@ fn apply(host: &mut WorldHost, rt: &mut skate_audio::runtime::Runtime, cmds: Vec
                 }
                 host.nodes.insert((owner, slot), rt.post(id, &words));
                 host.posts += 1;
+                if host.events.is_some() {
+                    let (name, index) = super::mod_audio::world_slot(&slot);
+                    super::mod_audio::record(&mut host.events, super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Post, source: super::mod_audio::Source::World, class, slot: name, id: index, owner });
+                }
             }
             WorldCommand::Redeliver { owner, slot, words } => {
                 if let Some(&node) = host.nodes.get(&(owner, slot)) {
@@ -370,6 +377,10 @@ fn apply(host: &mut WorldHost, rt: &mut skate_audio::runtime::Runtime, cmds: Vec
             WorldCommand::Release { owner, slot } => {
                 if let Some(node) = host.nodes.remove(&(owner, slot)) {
                     rt.release(node);
+                    if host.events.is_some() {
+                        let (name, index) = super::mod_audio::world_slot(&slot);
+                        super::mod_audio::record(&mut host.events, super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Release, source: super::mod_audio::Source::World, class: "", slot: name, id: index, owner });
+                    }
                 }
             }
         }
@@ -594,7 +605,7 @@ pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
         let Some(p) = owners.peds.get(&owner) else { continue };
         let Some((mut sfx, mut speech, mut pos)) = host.ped_objects.remove(&owner) else { continue };
         pos.write(m, &l, &[Some((p.position, p.velocity))]);
-        let cmds = sfx.process(owner, p, &ped_tuning, &mut rt.splice_host(), dt);
+        let cmds = sfx.process(owner, p, &ped_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::World, owner), dt);
         if let Some(r) = speech.process(owner, p) {
             host.speech_requests.push(super::world_speech::PedRequest { request: r, voice: p.voice, speaker: p.speaker, level: p.level_select });
         }
@@ -972,6 +983,47 @@ mod tests {
     /// instances; the same ids keep publishing and must post again (before the epoch reset the
     /// engine kept redelivering to its dead node and stayed silent for the rest of its life).
     /// Also: with no owners a map change costs nothing but the epoch bookkeeping.
+    /// Audio event tags on the world host's real posts (R5, data-gated): a car's horn (horn
+    /// state 2) and alarm (state 6), a ped's footsteps; the rows carry the owner.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn world_event_tags_fire_on_real_posts() {
+        use skate_audio::world::peds::PedState;
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
+        let Some(engine) = library.world_tuning().engine("c04_taxi01") else { panic!("missing private data: no world tuning") };
+        let mut host = WorldHost { events: Some(Vec::new()), ..Default::default() };
+        let mut owners = WorldOwners::default();
+        let local = skate_audio::player::AudioState::default();
+        let camera = Some(([0.0, 1.5, 0.0], [0.0, 0.0, 1.0]));
+        let tags = super::super::mod_audio::Tags::default();
+        let mut seen = std::collections::BTreeMap::<&str, Vec<u64>>::new();
+        for f in 0..240usize {
+            let horn = match f { 20..80 => 2, 140..200 => 6, _ => 0 };
+            owners.vehicles.insert(7, VehicleState { position: [3.0, 0.5, 8.0], velocity: [0.0, 0.0, 0.0], speed: 0.0, engine, horn, ..Default::default() });
+            owners.peds.insert(9, PedState { position: [1.5, 0.0, 4.0], velocity: [0.0, 0.0, 1.3], speed: 1.3, feet: [f % 20 < 10, f % 20 >= 10], class: 2, weight: 1, ..Default::default() });
+            let m = native.mixmap.as_mut().unwrap();
+            for id in 1..=4 {
+                m.set_input(skate_audio::mixmap::keys::MASTER, id, 32767);
+            }
+            for id in [1, 2, 5] {
+                m.set_input(skate_audio::mixmap::keys::MUSIC, id, 32767);
+            }
+            m.set_input(skate_audio::mixmap::keys::REVERB, 5, 32767);
+            run(&mut host, &owners, &mut native, &library, camera, &local);
+            for r in host.events.as_mut().unwrap().drain(..) {
+                if let Some(t) = tags.tag(&r) {
+                    seen.entry(t).or_default().push(r.owner);
+                }
+            }
+        }
+        println!("world tags: {:?}", seen.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>());
+        assert!(seen.get("horn").is_some_and(|o| o.contains(&7)), "{seen:?}");
+        assert!(seen.get("alarm").is_some_and(|o| o.contains(&7)), "{seen:?}");
+        assert!(seen.get("footstep").is_some_and(|o| o.contains(&9)), "{seen:?}");
+    }
+
     #[test]
     #[ignore = "needs the private install data"]
     fn world_owners_post_again_after_a_map_change() {

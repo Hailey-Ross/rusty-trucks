@@ -108,6 +108,8 @@ pub(crate) struct WorldSpeech {
     last_camera: Option<([f32; 3], u64)>,
     /// Lines started (the summary log).
     pub(crate) lines: u64,
+    /// Audio event rows (line starts) while some mod subscribes (`mod_audio::events_frame`).
+    pub(crate) events: super::mod_audio::EventBuf,
 }
 
 impl Default for WorldSpeech {
@@ -131,6 +133,7 @@ impl Default for WorldSpeech {
             epoch: None,
             last_camera: None,
             lines: 0,
+            events: None,
         }
     }
 }
@@ -522,6 +525,7 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
         match *e {
             Event::Started { speaker, line, .. } => {
                 speech.lines += 1;
+                super::mod_audio::record(&mut speech.events, super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Speech, source: super::mod_audio::Source::Speech, class: "speech", slot: "", id: line.event as i32, owner: speaker });
                 debug!("AUDIO_WORLD speech start owner={speaker} {} take {}", data.index.clips.get(line.clip).map_or("?", |c| c.name.as_str()), line.take);
             }
             Event::Cut { speaker, .. } => debug!("AUDIO_WORLD speech cut owner={speaker} (level at or below 200 for 2 s)"),

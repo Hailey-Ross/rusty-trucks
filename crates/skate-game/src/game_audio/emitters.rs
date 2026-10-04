@@ -280,6 +280,7 @@ pub(super) fn update(
     cues: Res<super::skate_events::Cues>,
     content: Res<super::AudioContent>,
     audio: Res<super::map_audio::MapAudio>,
+    mut api: ResMut<super::mod_audio::AudioApi>,
 ) {
     let _timing = super::timing::scope(&super::timing::EMITTERS);
     // No native runtime: the emitters are silent (its start logged why).
@@ -346,6 +347,10 @@ pub(super) fn update(
         if !keep {
             if node.started {
                 info!("AUDIO_EMITTER stop {} #{}", state.emitters[node.record].bank, node.record);
+                if api.events.on() {
+                    let e = &state.emitters[node.record];
+                    api.events.push(super::mod_audio::EventRow { kind: super::mod_audio::EventKind::EmitterStop, source: super::mod_audio::Source::Emitter, class: super::mod_audio::intern(&e.bank), slot: "", id: e.patch, owner: node.record as u64 });
+                }
             }
             if let Some(post) = node.post {
                 native.release(post);
@@ -384,6 +389,9 @@ pub(super) fn update(
                 }
                 let payload = native.emitter_payload(node.state, level, super::native::azimuth(listener, e.shape.position), e.patch);
                 node.post = native.post_emitter(&payload);
+                if api.events.on() && node.post.is_some() {
+                    api.events.push(super::mod_audio::EventRow { kind: super::mod_audio::EventKind::EmitterStart, source: super::mod_audio::Source::Emitter, class: super::mod_audio::intern(&e.bank), slot: "", id: e.patch, owner: node.record as u64 });
+                }
             }
             Err(error) => warn!("AUDIO_EMITTER {}: {error}", e.bank),
         }

@@ -52,6 +52,8 @@ fn requested() -> bool {
 
 #[derive(Resource, Default)]
 pub(crate) struct NpcHost {
+    /// Audio event rows while some mod subscribes (`mod_audio::events_frame`).
+    pub(crate) events: super::mod_audio::EventBuf,
     slots: Slots,
     objects: HashMap<u64, NpcSkater>,
     nodes: HashMap<(u64, Slot), NodeId>,
@@ -96,6 +98,10 @@ impl NpcHost {
                         rt.release(old);
                     }
                     self.nodes.insert((owner, slot), rt.post(id, &words));
+                    if self.events.is_some() {
+                        let (name, index) = super::mod_audio::player_slot(&slot);
+                        super::mod_audio::record(&mut self.events, super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Post, source: super::mod_audio::Source::Npc, class, slot: name, id: index, owner });
+                    }
                 }
                 Command::Redeliver { slot, words } => {
                     if let Some(&node) = self.nodes.get(&(owner, slot)) {
@@ -297,7 +303,7 @@ pub(crate) fn pre(host: &mut NpcHost, published: &NpcSkaters, native: &mut Nativ
         // The body / deck posters once per console evaluation, as the local player's.
         npc.set_body_calls(Some(evaluations));
         npc.set_deck_calls(Some(evaluations));
-        let cmds = npc.process(m, &s, tuning, &mut rt.splice_host());
+        let cmds = npc.process(m, &s, tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::Npc, id));
         host.apply(rt, id, cmds);
         // The routing's binds wait for the bed's step after the ticks (dropped without a bed).
         if !host.beds.contains_key(&id) {
@@ -329,7 +335,7 @@ pub(crate) fn post(host: &mut NpcHost, published: &NpcSkaters, native: &mut Nati
         let Some(mut npc) = host.objects.remove(&id) else { continue };
         let mut s = skaters::component_state(&p.state, local.soft_wheels);
         s.dt = dt;
-        let cmds = npc.update(m, &s, tuning, &mut rt.splice_host());
+        let cmds = npc.update(m, &s, tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::Npc, id));
         host.apply(rt, id, cmds);
         npc.update_wheels(m, &s, tuning.wheels, &mut rt.stream_host());
         if let (Some((bed, pushes)), Some(library)) = (host.beds.get_mut(&id), library) {

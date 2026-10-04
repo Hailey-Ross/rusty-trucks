@@ -319,6 +319,20 @@ function sdk.audio.mixmap(slot, object, instance, output)
     end
     return nil
 end
+-- Audio events (capability audio_events): subscribe{tags={'pop','land',...}} (empty = every row),
+-- subscribe(nil) stops. Tags: pop, land, grind_start, grind_end, footstep, horn, alarm, emitter,
+-- zone_change, speech. Observe only, one frame late; at most 256 rows a frame.
+function sdk.audio.subscribe(opts)
+    if opts == nil then submit{kind="audio_subscribe"} else submit{kind="audio_subscribe",tags=opts.tags or {}} end
+end
+local audio_events_serial = nil
+-- The rows of the last frame not returned yet: {kind, source, class, slot, id, owner, tag}.
+function sdk.audio.events()
+    local e = as_table(audio_mine().events)
+    if not e or e.serial == audio_events_serial then return {} end
+    audio_events_serial = e.serial
+    return as_table(e.rows) or {}
+end
 -- {native=bool, map_epoch, generation, restarts, overlays={ids}, conflicts, map={stem, district, ems, sources}, limits, tags}
 function sdk.audio.info() return as_table(sdk.snapshot.audio_info) or {native=false} end
 

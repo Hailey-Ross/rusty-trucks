@@ -176,7 +176,7 @@ impl Plugin for GameAudioPlugin {
                 Update,
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
                 // the ticks and the local update, then the beds (retail's process / tick / update).
-                (content::frame, map_audio::update, mod_audio::drain, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, mod_audio::readback, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
+                (content::frame, map_audio::update, mod_audio::events_frame, mod_audio::drain, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, mod_audio::readback, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
                     .chain()
                     .before(CueSet)
                     .after(crate::app::FrameSet::Animation),
