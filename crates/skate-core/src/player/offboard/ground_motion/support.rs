@@ -27,7 +27,14 @@ pub(super) fn update(s: &mut GroundMotionState, i: &GroundMotionInput) -> Frame 
             i.contact_frame_32,
         );
         let moved = transform_point(s.frame_0[3], delta);
-        let velocity = scale(sub(moved, s.frame_0[3]), reciprocal(DT));
+        let mut velocity = scale(sub(moved, s.frame_0[3]), reciprocal(DT));
+        // Host geometric W=0 convention (see math::rotate): transform_point
+        // treats the point as homogeneous, ignoring its W and producing W from
+        // the frame's W lanes, so this lane is not a velocity component. Left
+        // in, it is -W/DT of the frame position, and predicted272 (2v - v')
+        // integrated back into frame_0[3] makes any stray W grow by ~-1.618x
+        // per tick until Inf - Inf = NaN (issue #10).
+        velocity[3] = 0.0;
         let acceleration = madd(
             sub(velocity, s.support_velocity_256),
             reciprocal(DT),
