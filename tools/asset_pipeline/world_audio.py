@@ -214,6 +214,7 @@ def world_tuning(collections: list[dict], record_names: list[str] | None = None,
     out['speech_tuning'] = speech_tuning(collections)
     out['ped_models'] = ped_models(collections)
     out['traffic_models'] = traffic_models(collections, names)
+    out['vehicle_alarm'] = vehicle_alarm(collections)
     return out
 
 
@@ -313,6 +314,47 @@ def traffic_models(collections: list[dict], engine_names: dict) -> dict:
         if engine is None:
             continue
         out[key] = engine_names.get(engine, engine)
+    return out
+
+
+# The car alarm trigger (livingworld_vehicle_characteristics; read by the vehicle's collision callback, recomp
+# sub_82C3C150, and the StayingParked condition StopAlarming sub_82C3A4D0; audio-specs/world-traffic-audio.md
+# "Car alarm trigger"). No shipped vehicle spec overrides either field (all inherit `default`).
+VEHICLE_ALARM_FIELDS = {
+    'Hash_543475921FD9E04A': 'min_impact',  # a parked car's alarm starts when the contact vector's length exceeds this
+    'Hash_E199FC7CEA222809': 'seconds',     # ... and stops when its timer (reset by every such contact) passes this
+}
+
+
+def vehicle_alarm(collections: list[dict]) -> dict:
+    """{'min_impact': f, 'seconds': f} from the `default` vehicle spec, plus {'specs': {spec: {field: f}}} for the
+    specs whose resolved value differs (none in retail). Missing records: {} (the engine keeps its retail defaults)."""
+    from .audio_formats import name_id
+    by_class: dict[str, dict] = {}
+    for c in collections:
+        by_class.setdefault(c['class'], {})[c['key']] = c
+    cls = f'Hash_{name_id("livingworld_vehicle_characteristics"):016X}'
+    records, resolve = _resolver(by_class, cls)
+    default = next((k for k in records if k == 'default' or k == f'Hash_{name_id("default"):016X}'), None)
+
+    def values(key: str) -> dict:
+        out = {}
+        for field, name in VEHICLE_ALARM_FIELDS.items():
+            f = resolve(key, field)
+            if f is not None:
+                out[name] = _word(f['data'], 'f32')
+        return out
+
+    out = values(default) if default else {}
+    specs = {}
+    for key in records:
+        if key == default:
+            continue
+        diff = {k: v for k, v in values(key).items() if out.get(k) != v}
+        if diff:
+            specs[key] = diff
+    if specs:
+        out['specs'] = specs
     return out
 
 

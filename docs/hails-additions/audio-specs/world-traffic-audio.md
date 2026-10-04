@@ -120,10 +120,68 @@ The owner context `[object+16]` holds +52 = active (byte) and +60 = frame dt.
 
   The program gates on w5. Traffic_Skid had 139 starts in 164620.
 
+## Car alarm trigger (2026-10-04)
+What sets a car alarm off (the sound itself is "TrafficHorn / car alarm" above: horn state 6). Read from the TU3
+recompilation (reference only) and checked against the user's recomp session of 2026-10-04 16:11 (a taxi pulled
+over; the user ran into it on foot).
+
+**Mechanism.**
+- **The vehicle's collision callback** `sub_82C3C150` (slot +32 of the contact interface at vehicle `+136`, vtable
+  `0x82322218`; reached through the vtable only, no direct caller). Per contact message `m`:
+  - only while vehicle `+3424` bit 0x80 is set: `StayingParked`'s begin `sub_82C39120` sets it, its end
+    `sub_82C391F0` clears it (the same begin / update / end pattern as Impatience `82C38378` / `82C38390` /
+    `82C38718`);
+  - the length of the message's vector at `m+48` must exceed the vehicle spec's `543475921FD9E04A`
+    (`livingworld_vehicle_characteristics`, record at vehicle `+3960`; `default` = 0.1, no shipped spec
+    overrides it; a zero vector counts as length 0);
+  - then: alarm flag `+3424` bit 0x10 on, alarm timer `+3716` = 0, parked timer `+3712` = 0. A contact while the
+    alarm sounds restarts both timers.
+  - No test of who the other party is: `m+76` (the other object) only feeds a "hit by" mask at `+4248`
+    (`1 << type`), and `m+32` (the contact point) minus the vehicle position, dotted with a direction, sets
+    `+4401` bit 0x20. Neither touches audio.
+- **StayingParked's update** `sub_82C39138` (f1 = frame time): target speeds 0; with bit 0x10 the alarm timer
+  `+3716` += dt and the parked timer `+3712` = 0; without it `+3716` = 0 and `+3712` += dt.
+- **StopAlarming** `sub_82C3A4D0`: true when `+3716` > the spec's `E199FC7CEA222809` (`default` = 8 s, no override).
+  Its action `sub_82C3B4E8` clears bit 0x10. At the console's 30 fps that is the first update past 8 s (241
+  frames, ~8.03 s).
+- **Pulling out** (`sub_82C3A3A8`) is false while bit 0x10 is set; otherwise it waits for `+3712` > the field `986BB0F6F043EB3D` of the
+  record at `+4112` (class not identified) and a clear road. So an alarm also delays the car leaving.
+- **No other sound.** The only vehicle-side post at the trigger is the alarm (`c_car_alarm`, class slot 31, caller
+  `824D0DEC < 824D6F40`, the horn object's process). There is no impact or crunch sound for a parked car.
+
+**Evidence (recomp session, 2026-10-04 16:11).**
+- The taxi (VEHAUD obj `40C686E0`, key `11C6A3A54D90F447` = `c04_taxi01`) pulled over (manoeuvre 3) and stopped at
+  (103.8, 34.0, 200.3) by 249.8 s. Its planner stops logging once parked (parked cars don't run the speed
+  planner), so `+3716` itself is not in the trace.
+- The player rolled up to its rear bumper at 0.2–0.3 m/s (no alarm), stepped off at 255.90 s (material 143, the
+  board picked up) and ran into the car. The alarm post came at 256.032 s, ~130 ms later; the horn state went
+  0 → 6 in the next VEHAUD line.
+- The alarm then sounded until the session ended (car_alarms stream 7 restarted every ~2.0 s, 33 voices, 256.0 –
+  318.2 s, 64 s). The board positions show the user at the car the whole time (on foot beside it, skating along
+  it, deck contacts at the car's own position): every contact restarted the 8 s, as the code says.
+- The user's words: "I found a taxi, so yeah, and I skitched on it too." / "it ended up parking on the side of the
+  road and when I ran into the car alarm went off".
+
+**Open.**
+- What `m+48` is: a contact velocity (m/s) or an impulse. Retail's threshold (0.1) is tiny either way: any real
+  contact sets it off. The port treats it as a speed. The rolling touch at 0.2–0.3 m/s before the step-off did not
+  set it off; whether the board touched the bumper is not in the trace (the board's contacts may not reach the
+  vehicle's callback at all).
+- The hook `VEHHIT` (category `traffic`, `hooks_traffic.cpp`, with `VEHALARMSTOP` and `VEHPARK`) logs every
+  callback with the vector, the other object and the timers; one short session (below) answers both.
+
+**Port.** `crate::world_audio`: `VehicleParked` (StayingParked), `VehicleImpact { vehicle, by, impact }` (the
+callback message), `CarAlarmRule` / `AlarmTuning` (`min_impact`, `seconds`, `enabled`; setup export
+`world_tuning.vehicle_alarm`), `VehicleAlarmStarted` (read-back: the AI restarts its parked timer and must not pull
+out while the alarm sounds). `game_audio/car_alarm.rs` applies the rule; the bridge holds horn state 6 for
+`AlarmTuning::hold_seconds` (whole console frames past `seconds`). Mods: event `impact {speed, source}`, traffic
+option `parked`, `sdk.world_audio.alarm_rule{...}`, `read(key).alarm`.
+
 ## Waiting on the engine
 1. **A vehicle system** (traffic AI on the road network, notes `npc-livingworld-re.md` §2/§6). Per vehicle it fills
    `world_sources::WorldOwners.vehicles[id]` with a `VehicleState`: position, velocity, direction, speed, load,
-   horn state (honk when blocked, alarm when hit), skid flag, and the `EngineRecord` of its model
+   horn state (honk when blocked; the alarm: send `VehicleImpact` on contacts and keep `VehicleParked` while
+   parked, "Car alarm trigger" above), skid flag, and the `EngineRecord` of its model
    (`Library::world_tuning().engine("c04_taxi01")`). Which record each model uses is not traced
    (`livingworld_models` / `vehicle_characteristics` → the record key at +168).
 2. Nothing else: banks load on the first published frame, and instances, inputs, posts and releases are handled.
