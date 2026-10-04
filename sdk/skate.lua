@@ -131,6 +131,7 @@
 ---@field paused boolean
 ---@field replay boolean
 ---@field camera? {position:Vec3}
+---@field camera_angle? CameraAngleState
 ---@field attach? {body:string, owner:string}
 ---@field physics {bodies:table<string,BodySnapshot>, contacts:ContactEvent[], touching:TouchingPair[]}
 ---@field network? NetworkInfo
@@ -313,6 +314,35 @@ function sdk.camera.clear_follow() end
 function sdk.camera.set(position, look_at) end
 ---@param peer string|number|nil peer whose actual camera transform/FOV to mirror; nil restores native camera
 function sdk.camera.watch(peer) end
+---@class CameraAngleState
+---@field selected '"low"'|'"high"' the player's Camera Angle setting
+---@field active '"low"'|'"high"' the angle the stock camera graph uses now (a mod may force it)
+---@field owner string|nil mod forcing the angle
+---@field shot string current stock camera shot (e.g. "bl_chase" low, "bl_high_chase" high)
+---@field tuned table<string,string> tuned shot -> owning mod
+---@return CameraAngleState
+function sdk.camera.angle() end
+---Force the retail Camera Angle; nil hands it back to the player's setting (capability camera >= 4).
+---@param angle '"low"'|'"high"'|nil
+function sdk.camera.set_angle(angle) end
+---@class CameraShotTuning retail camera_shots attributes, in their units (metres, degrees, seconds)
+---@field PositionDistance? number
+---@field PositionElevation? number
+---@field PositionHeading? number
+---@field FramingLensLength? number
+---@field FramingRoll? number
+---@field FramingYaw? number
+---@field FramingPitch? number
+---@field ReferenceBoardOffset? number
+---@field SmoothingDirection? number
+---@field SmoothingElevation? number
+---@field SmoothingYaw? number
+---@field SmoothingPitch? number
+---@field TransitionTime? number
+---Replace stock values of one camera shot; nil restores it. Unknown shots fail the command.
+---@param shot string stock shot name, lower case
+---@param patch CameraShotTuning|nil
+function sdk.camera.tune_shot(shot, patch) end
 ---@param key string
 ---@return boolean
 function sdk.input.down(key) end

@@ -549,6 +549,7 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         "paused": world.resource::<crate::graphics_menu::Menu>().open,
         "replay": world.resource::<crate::replay::Replay>().active,
         "camera": camera.map(|position| json!({"position": position})),
+        "camera_angle": camera_angle_snapshot(world),
         "physics": {"bodies": {}, "contacts": []},
         "network": net,
     })
@@ -731,6 +732,18 @@ fn update(world: &mut World) {
     });
 }
 
+/// Camera Angle holds and shot tunings of one mod (`Some`) or of every mod (`None`).
+fn clear_camera_angle(world: &mut World, owner: Option<&str>) {
+    if let Some(mut settings) = world.get_resource_mut::<crate::camera::CameraAngleSettings>() {
+        settings.clear_owner(owner);
+    }
+}
+
+fn camera_angle_snapshot(world: &World) -> Value {
+    let shot = world.get_resource::<crate::camera::CameraRuntime>().map_or("", |c| c.selected_shot());
+    world.get_resource::<crate::camera::CameraAngleSettings>().map_or(Value::Null, |s| s.snapshot(shot))
+}
+
 fn clear_runtime(world: &mut World, mods: &mut Mods) {
     replication::reset(world,mods);
     audio::clear(world);
@@ -771,6 +784,7 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     mods.pending_remote_teleport = None;
     volumes::clear(world, mods);
     capture::clear(world);
+    clear_camera_angle(world, None);
     world.resource_mut::<crate::physics::GamePhysics>().set_external_queries(None);
     mods.world = DynamicsWorld::default();
     mods.ground_ready = false;
@@ -805,6 +819,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         graphics_dynamic::clear_owner(world, id);
         volumes::clear_owner(world, mods, id);
         capture::clear_owner(world, id);
+        clear_camera_angle(world, Some(id));
         player_physics::clear(world,Some(id));
         mods.custom_menus.retain(|(owner,_),_|owner!=id);
         canvas::clear_owner(world, &mut mods.canvases, Some(id));
@@ -878,6 +893,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
             capture::clear_owner(world, &id);
+            clear_camera_angle(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
             continue;
@@ -904,6 +920,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
             capture::clear_owner(world, &id);
+            clear_camera_angle(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
         }
@@ -1248,6 +1265,15 @@ fn apply_one(
         Command::PlayerSuspend { suspended } => {
             if suspended { mods.suspended_by.insert(id.to_owned()); }
             else { mods.suspended_by.remove(id); }
+        }
+        Command::CameraAngle { angle } => {
+            world.resource_mut::<crate::camera::CameraAngleSettings>().force(id, angle.map(Into::into))?;
+        }
+        Command::CameraShotTune { shot, patch } => {
+            if !world.resource::<crate::camera::CameraRuntime>().has_shot(&shot) {
+                return Err(format!("unknown camera shot {shot}"));
+            }
+            world.resource_mut::<crate::camera::CameraAngleSettings>().tune(id, &shot, patch)?;
         }
         Command::CameraWatch { peer } => {
             let empty = peer.as_deref().is_none_or(|p| p.is_empty());

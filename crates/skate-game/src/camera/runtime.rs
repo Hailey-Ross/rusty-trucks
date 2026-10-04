@@ -33,6 +33,12 @@ pub(crate) struct CameraRuntime {
     pub manual_cam_settings: ManualCamSettings,
     /// Keeps the camera above water while the skater is in it.
     water: super::water::WaterView,
+    /// Stock camera graph `IsCameraTypeActive` value: 0 Low, 1 High (camera/angle.rs).
+    camera_type: u32,
+    /// `CameraAngleSettings` generation whose shot tunings are applied (0 = none yet).
+    tuning_generation: u64,
+    /// Reload the current shot tree once, after the shot tunings changed.
+    reselect_shot: bool,
 }
 
 #[cfg(test)]
@@ -65,7 +71,9 @@ impl CameraRuntime {
             simulation_rate_requests: Vec::new(),
             manual_cam: ManualCam::default(),
             manual_cam_settings: settings::manual_cam_settings(&data)?,
-            water: Default::default() })
+            water: Default::default(),
+            camera_type: super::angle::CameraAngle::default().graph_type(),
+            tuning_generation: 0, reselect_shot: false })
     }
 
     /// Ignores a degenerate ratio rather than storing it.
@@ -86,6 +94,24 @@ impl CameraRuntime {
         }
     }
     pub fn selected_shot(&self) -> &str { &self.manager.shots.current().name }
+
+    pub fn camera_type(&self) -> u32 { self.camera_type }
+    /// The graph re-evaluates `IsCameraTypeActive` on its next update and switches branch
+    /// through its own shot transitions.
+    pub fn set_camera_type(&mut self, value: u32) { self.camera_type = value; }
+
+    pub fn has_shot(&self, name: &str) -> bool { self.shots.contains(name) }
+    pub fn tuning_generation(&self) -> u64 { self.tuning_generation }
+
+    /// Replaces the mod shot tunings. The current shot tree is re-selected on the next
+    /// advance, so a tuned shot that is in use changes at once (through the normal shot
+    /// transition) instead of waiting for the graph's next choice.
+    pub fn set_shot_tunings<'a>(&mut self, generation: u64,
+        tunings: impl Iterator<Item = (&'a str, &'a skate_mods::presentation::CameraShotTuning)>) {
+        self.shots.set_tunings(tunings);
+        self.tuning_generation = generation;
+        self.reselect_shot = true;
+    }
 
     /// `GetMatrix` for presentation capture when manual cam may be active.
     pub fn presentation_frame(&self) -> Option<CameraFrame> {
@@ -111,6 +137,12 @@ impl CameraRuntime {
         let requests = self.graph.update(dt, &mut self.manager, &subject,
             snapshot.graph, environment, &self.shots)?;
         self.simulation_rate_requests.extend(requests);
+        if std::mem::take(&mut self.reselect_shot) {
+            let current = self.manager.shots.current().name.clone();
+            if !current.is_empty() {
+                self.manager.set_shot(&current, true, &subject, &self.shots)?;
+            }
+        }
         let [a, b, c] = &mut self.trajectories;
         let mut trajectories = [a, b, c].map(|result| CameraTrajectory {
             world, gravity: query_gravity, result,

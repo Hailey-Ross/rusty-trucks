@@ -14,6 +14,7 @@ mod graph;
 mod runtime;
 mod water;
 mod publication;
+pub(crate) mod angle;
 pub(crate) use publication::{
     snapshot as publish_camera_subject, CameraPublicationInputs, CameraStateOutput,
     CameraAnimationOutput, CameraAirOutput, CameraOffboardOutput, CameraGrindOutput,
@@ -21,6 +22,7 @@ pub(crate) use publication::{
 };
 pub(crate) use graph_subject::CameraGraphEnvironment;
 pub(crate) use runtime::CameraRuntime;
+pub(crate) use angle::{CameraAngle, CameraAngleSettings};
 use bevy::prelude::*;
 use crate::{app::FrameSet, config::Config};
 
@@ -31,6 +33,8 @@ pub(crate) struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn)
+            // After the pause menu, before the fixed simulation steps that advance the camera.
+            .add_systems(PreUpdate, angle::sync_runtime.after(crate::graphics_menu::MenuInput))
             .add_systems(Update, present.after(FrameSet::Animation).before(FrameSet::Verification));
     }
 }
@@ -38,6 +42,7 @@ fn spawn(mut commands: Commands, config: Res<Config>, retail: Res<crate::retail_
     let runtime = CameraRuntime::load(&config.asset_root)
         .unwrap_or_else(|error| panic!("Cannot initialize normal gameplay camera: {error}"));
     commands.insert_resource(runtime);
+    commands.insert_resource(CameraAngleSettings::load(&config.asset_root));
     let mut camera = commands.spawn((
         GameplayCamera,
         Camera3d::default(),

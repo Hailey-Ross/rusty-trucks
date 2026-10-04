@@ -103,6 +103,11 @@ impl CaptureOptions {
     }
 }
 
+/// Stock camera shot names are lower-case collection keys (`bl_chase`, `high_grind`, …).
+fn valid_shot_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
 fn valid_peer(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 20
@@ -316,6 +321,17 @@ pub enum Command {
     CameraWatch {
         #[serde(default)]
         peer: Option<String>,
+    },
+    /// Forces the retail Camera Angle (`low` / `high`); nil hands it back to the player's setting.
+    CameraAngle {
+        #[serde(default)]
+        angle: Option<crate::presentation::CameraAngle>,
+    },
+    /// Replaces stock values of one camera shot; nil restores the stock shot.
+    CameraShotTune {
+        shot: String,
+        #[serde(default)]
+        patch: Option<crate::presentation::CameraShotTuning>,
     },
     NetworkState {
         key: String,
@@ -619,6 +635,9 @@ impl Command {
             Self::CameraWatch { peer } => peer
                 .as_ref()
                 .is_none_or(|p| p.is_empty() || valid_peer(p)),
+            Self::CameraAngle { .. } => true,
+            Self::CameraShotTune { shot, patch } => valid_shot_name(shot)
+                && patch.as_ref().is_none_or(|p| p.validate()),
             Self::NetworkState { key, value } => {
                 crate::schema::valid_id(key)
                     && serde_json::to_vec(value).is_ok_and(|v| v.len() <= 512)
@@ -701,6 +720,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::CameraFollow { .. } => "camera_follow",
         Command::CameraSet { .. } => "camera_set",
         Command::CameraWatch { .. } => "camera_watch",
+        Command::CameraAngle { .. } => "camera_angle",
+        Command::CameraShotTune { .. } => "camera_shot_tune",
         Command::NetworkState { .. } => "network_state",
         Command::UiMenu { .. } => "ui_menu",
         Command::UiRemoveMenu { .. } => "ui_remove_menu",
@@ -805,6 +826,7 @@ fn default_snapshot() -> Value {
         "paused": false,
         "replay": false,
         "camera": Value::Null,
+        "camera_angle": {"selected": "high", "active": "high", "owner": Value::Null, "shot": "", "tuned": {}},
         "physics": {"bodies": {}, "contacts": []},
         "network": {
             "active": false,
@@ -958,7 +980,7 @@ impl Vm {
             capabilities.set("input_override", 1)?;
             capabilities.set("player_overlap", 1)?;
             capabilities.set("landed_details", 1)?;
-            capabilities.set("camera", 3)?;
+            capabilities.set("camera", 4)?;
             capabilities.set("player_control", 1)?;
             capabilities.set("session", 1)?;
             capabilities.set("volumes", 1)?;
@@ -1256,6 +1278,50 @@ mod driving_extension_tests {
         assert!(matches!(&out[4],Command::CameraFollow{body:None,..}));
         assert!(matches!(&out[5],Command::MultiplayerDebug{key,text} if key=="replication" && text=="Ready"));
         assert!(matches!(&out[6],Command::MultiplayerDebug{text,..} if text.is_empty()));
+        drop(vm);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn camera_angle_api_crosses_the_lua_boundary() {
+        use std::time::{SystemTime,UNIX_EPOCH};
+        let root=std::env::temp_dir().join(format!("skate-camera-angle-api-{}-{}",
+            std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            return { on_load=function()
+                assert(sdk.capabilities.camera >= 4)
+                local a = sdk.camera.angle()
+                assert(a.selected == "high" and a.active == "high" and a.owner == nil)
+                sdk.camera.set_angle("low")
+                sdk.camera.set_angle(nil)
+                sdk.camera.tune_shot("chase_flat_slow", {PositionDistance=1.4, FramingPitch=-6})
+                sdk.camera.tune_shot("chase_flat_slow", nil)
+            end }
+        "#).unwrap();
+        let manifest:Manifest=serde_json::from_value(json!({
+            "id":"tests.camera_angle","api":2,"name":"Camera angle test", "version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}
+        })).unwrap();
+        let snap=json!({});
+        let mut vm=Vm::new(&root,&manifest,&BTreeMap::new(),&snap).unwrap();
+        let out=vm.call("on_load",json!({}),&snap).unwrap();
+        assert_eq!(out.len(),4);
+        assert!(matches!(&out[0],Command::CameraAngle{angle:Some(crate::presentation::CameraAngle::Low)}));
+        assert!(matches!(&out[1],Command::CameraAngle{angle:None}));
+        match &out[2] { Command::CameraShotTune{shot,patch:Some(p)} => {
+            assert_eq!(shot,"chase_flat_slow");
+            assert_eq!(p.position_distance,Some(1.4));
+            assert_eq!(p.framing_pitch,Some(-6.0));
+            assert_eq!(p.position_elevation,None);
+        }, other => panic!("wrong tune command {other:?}") }
+        assert!(matches!(&out[3],Command::CameraShotTune{patch:None,..}));
+        // Unknown angles / attribute names fail to deserialize; bad shot names fail validation.
+        assert!(serde_json::from_value::<Command>(json!({"kind":"camera_angle","angle":"sideways"})).is_err());
+        assert!(serde_json::from_value::<Command>(json!({"kind":"camera_shot_tune","shot":"bl_chase","patch":{"distance":2}})).is_err());
+        let bad:Command=serde_json::from_value(json!({"kind":"camera_shot_tune","shot":"Bad Name","patch":{"PositionDistance":2}})).unwrap();
+        assert!(!bad.validate());
+        let far:Command=serde_json::from_value(json!({"kind":"camera_shot_tune","shot":"bl_chase","patch":{"PositionDistance":900}})).unwrap();
+        assert!(!far.validate());
         drop(vm);std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -1859,6 +1925,8 @@ mod world_audio_tests {
         assert!(serde_json::from_value::<Command>(json!({"kind":"world_audio_spawn","key":"x","object":"bus"})).is_err());
         let c: Command = serde_json::from_value(json!({"kind":"world_audio_update","key":"x","options":{"source":"lite"}})).unwrap();
         assert!(!c.validate(), "the source is fixed at spawn");
+    }
+}
 
 /// An empty Lua table reaches serde as a map. Every list field a script can fill must still read
 /// `{}` as the empty list (`lua_list`), through the real `_submit` path (`Vm` + `api.lua`).

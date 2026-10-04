@@ -363,6 +363,15 @@ function sdk.camera.set(position, look_at) submit{kind="camera_set",position=pos
 function sdk.camera.watch(peer) submit{kind="camera_watch",peer=peer ~= nil and tostring(peer) or nil} end
 function sdk.camera.capture(key, options) submit{kind="camera_capture",key=key,options=options} end
 function sdk.camera.clear_capture(key) submit{kind="camera_clear_capture",key=key} end
+-- Retail Camera Angle (Game Settings > Control Settings): "low" or "high" (capability camera >= 4).
+-- read() = {selected = player's setting, active = what the camera graph uses, owner = mod forcing it or nil,
+--           shot = current stock shot, tuned = {shot = owner}}.
+function sdk.camera.angle() return as_table(sdk.snapshot.camera_angle) or {} end
+-- Force "low" / "high"; nil returns to the player's setting. One mod at a time; released on disable.
+function sdk.camera.set_angle(angle) submit{kind="camera_angle",angle=angle} end
+-- Replace stock values of one camera shot by retail attribute name (PositionDistance, PositionElevation,
+-- FramingPitch, ...); nil restores the stock shot. One mod per shot; released on disable.
+function sdk.camera.tune_shot(shot, patch) submit{kind="camera_shot_tune",shot=shot,patch=patch} end
 
 sdk.session = {}
 function sdk.session.info() return as_table(sdk.snapshot.session) or {} end
