@@ -12,7 +12,37 @@ def saved_source(marker):
     if selected.is_file() or selected.is_dir():return selected
     return None
 
+class TolerantStream:
+    """Console stream whose write/flush failures are ignored.
+
+    Progress output is diagnostics only. The setup exe inherits the game's
+    console pipe, and when that pipe or console is gone a print raises
+    OSError (Errno 22 / broken pipe) and aborted the whole conversion (#20).
+    After the first failure output is dropped; files and logs are unaffected."""
+    def __init__(self,stream):
+        self._stream=stream;self._dead=False
+    def write(self,text):
+        if not self._dead:
+            try:return self._stream.write(text)
+            except (OSError,ValueError):self._dead=True
+        return len(text)
+    def writelines(self,lines):
+        for line in lines:self.write(line)
+    def flush(self):
+        if not self._dead:
+            try:self._stream.flush()
+            except (OSError,ValueError):self._dead=True
+    def __getattr__(self,name):
+        return getattr(self._stream,name)
+
+def tolerate_dead_console():
+    for name in ('stdout','stderr'):
+        stream=getattr(sys,name)
+        # A windowed exe has no console stream at all; print() already skips None.
+        if stream is not None and not isinstance(stream,TolerantStream):setattr(sys,name,TolerantStream(stream))
+
 def main():
+    tolerate_dead_console()
     if len(sys.argv)>1 and sys.argv[1]=='--character-import':
         # Keep the importer inside the already versioned setup payload: even
         # protocol-1 updaters deliver it atomically with the game executable.
