@@ -120,6 +120,8 @@ pub(crate) fn gameplay_active(menu: Option<Res<Menu>>) -> bool {
     menu.is_none_or(|m| !m.open)
 }
 
+/// Retail "Camera Angle" (Game Settings > Control Settings), in the SKATER section.
+const CAMERA_ANGLE_ROW: usize = 5;
 const SECTIONS: &[(&str, &str)] = &[
     ("MAPS", "Choose a map, then pick your drop-in spot."),
     ("SKATER", "Make it yours."),
@@ -151,8 +153,8 @@ impl Menu {
                 rows
             }
             0 => (1000..1000 + self.maps.len()).collect(),
-            1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([8,10]).collect(),
-            1 => vec![3, 8, 10],
+            1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([CAMERA_ANGLE_ROW,8,10]).collect(),
+            1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
             2 => vec![0, 1, 2, 13],
             4 => vec![7, 11, 14],
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
@@ -354,7 +356,7 @@ pub(crate) fn interact(
     mut exit: MessageWriter<AppExit>,
     mut net: ResMut<crate::multiplayer::Multiplayer>,
     mut typing: MessageReader<bevy::input::keyboard::KeyboardInput>,
-    mut updater: ResMut<crate::updater::Updater>,
+    (mut updater, mut camera_angle): (ResMut<crate::updater::Updater>, ResMut<crate::camera::CameraAngleSettings>),
     travel: Res<crate::teleport_menu::Travel>,
     mut mods: ResMut<crate::modding::ModMenu>,
 ) {
@@ -423,7 +425,8 @@ pub(crate) fn interact(
         if keys.just_pressed(KeyCode::ArrowDown) || nav.pressed & 2 != 0 {
             menu.selected = visible[(index + 1) % rows];
         }
-        let adjustable = (menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected)) || (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && menu.selected < 4);
+        let adjustable = (menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected)) || (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && menu.selected < 4)
+            || (!menu.multiplayer && !menu.daylight && menu.section == 1 && menu.selected == CAMERA_ANGLE_ROW);
         if adjustable && (keys.just_pressed(KeyCode::ArrowLeft) || nav.pressed & 4 != 0) {
             action = Some((menu.selected, -1));
         }
@@ -568,6 +571,16 @@ pub(crate) fn interact(
                         Err(e) => format!("Applied, but could not save: {e}"),
                     };
                 }
+                CAMERA_ANGLE_ROW => {
+                    camera_angle.selected = cycle(&crate::camera::CameraAngle::ALL, camera_angle.selected, direction);
+                    menu.status = match camera_angle.save() {
+                        Ok(()) if camera_angle.forced_by().is_some() => format!(
+                            "Camera angle saved. Mod {} is forcing the camera right now.",
+                            camera_angle.forced_by().unwrap_or_default()),
+                        Ok(()) => "Camera angle saved".into(),
+                        Err(e) => format!("Applied, but could not save: {e}"),
+                    };
+                }
                 6 => menu.open = false,
                 7 => {
                     exit.write(AppExit::Success);
@@ -675,6 +688,7 @@ fn labels(
     mut headings: Query<(&mut Text, Has<MenuTitle>), (Or<(With<MenuTitle>, With<MenuSubtitle>)>, Without<StatusLabel>)>,
     mut status: Single<&mut Text, With<StatusLabel>>,
     debug: (Res<crate::modding::Mods>, Res<crate::physics::GamePhysics>, Res<crate::multiplayer::appearance::Appearances>),
+    camera_angle: Res<crate::camera::CameraAngleSettings>,
     mut buttons: Query<(&MenuRow, &Interaction, &mut BackgroundColor, &mut Node), Without<MenuRoot>>,
 ) {
     root.display = if menu.open && !travel.open && !customiser.open && !custom_models.open && !mods.open {
@@ -803,6 +817,7 @@ fn labels(
                     }
                 ),
                 3 => format!("Difficulty            {}", menu.difficulty.label()),
+                CAMERA_ANGLE_ROW => format!("Camera angle          {}", camera_angle.selected.label()),
                 300..=334 => menu.custom.label(label.0-300),
                 335 => if menu.custom_dirty {"Apply custom tuning *".into()} else {"Apply custom tuning".into()},
                 336 => "Reset custom tuning to Easy".into(),
@@ -1014,7 +1029,7 @@ mod tests {
             assert!(rows.iter().all(|id| *id < 16 || *id >= 1000));
         }
         menu.select_section(1);
-        assert_eq!(menu.rows(),vec![3,8,10]);
+        assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
         menu.custom_sections=vec![("Challenges".into(),vec![("test.mod".into(),"race".into(),"Race".into())])];
         menu.select_section(SECTIONS.len());
         assert_eq!(menu.rows(),vec![200]);

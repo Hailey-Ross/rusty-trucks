@@ -2,12 +2,17 @@
 use skate_core::camera::{Shot, ShotDatabase, ShotDefinition};
 use skate_data::collections::Collections;
 use std::collections::BTreeMap;
+use skate_mods::presentation::CameraShotTuning;
 
 const CLASS: &str = "camera_shots";
 const CLASS_HASH: u64 = 0xf27dd93e059ef6cb;
 const RADIANS: f32 = f32::from_bits(0x3c8efa35);
 
-pub(crate) struct StockShots(BTreeMap<String, ShotDefinition>);
+pub(crate) struct StockShots {
+    stock: BTreeMap<String, ShotDefinition>,
+    /// Mod replacements (camera/angle.rs), applied whenever a shot is loaded.
+    tuned: BTreeMap<String, CameraShotTuning>,
+}
 
 impl StockShots {
     pub fn from_collections(data: &Collections) -> Result<Self, String> {
@@ -145,16 +150,78 @@ impl StockShots {
                 }
             }
         }
-        Ok(Self(definitions))
+        Ok(Self { stock: definitions, tuned: BTreeMap::new() })
     }
+}
+
+impl StockShots {
+    pub fn contains(&self, name: &str) -> bool {
+        self.stock.contains_key(&name.to_ascii_lowercase())
+    }
+
+    pub fn set_tunings<'a>(&mut self, tunings: impl Iterator<Item = (&'a str, &'a CameraShotTuning)>) {
+        self.tuned = tunings.map(|(name, tuning)| (name.to_ascii_lowercase(), tuning.clone())).collect();
+    }
+}
+
+/// Retail attribute units: angles are stored in degrees and converted like the stock loader.
+fn apply_tuning(definition: &mut ShotDefinition, t: &CameraShotTuning) {
+    let shot = &mut definition.shot;
+    let set = |field: &mut f32, value: Option<f32>, scale: f32| if let Some(v) = value { *field = v * scale; };
+    set(&mut shot.distance, t.position_distance, 1.0);
+    set(&mut shot.lens_length, t.framing_lens_length, 1.0);
+    set(&mut shot.position_heading, t.position_heading, RADIANS);
+    set(&mut shot.position_elevation, t.position_elevation, RADIANS);
+    set(&mut shot.framing[0], t.framing_roll, RADIANS);
+    set(&mut shot.framing[1], t.framing_yaw, RADIANS);
+    set(&mut shot.framing[2], t.framing_pitch, RADIANS);
+    set(&mut shot.board_offset, t.reference_board_offset, 1.0);
+    for (field, value) in shot.smoothing.iter_mut()
+        .zip([t.smoothing_direction, t.smoothing_elevation, t.smoothing_yaw, t.smoothing_pitch]) {
+        set(field, value, 1.0);
+    }
+    set(&mut definition.transition_time, t.transition_time, 1.0);
 }
 
 impl ShotDatabase for StockShots {
     fn load(&self, name: &str) -> Result<ShotDefinition, String> {
-        self.0
-            .get(&name.to_ascii_lowercase())
+        let key = name.to_ascii_lowercase();
+        let mut definition = self.stock
+            .get(&key)
             .cloned()
-            .ok_or_else(|| format!("Missing stock camera shot {name}"))
+            .ok_or_else(|| format!("Missing stock camera shot {name}"))?;
+        if let Some(tuning) = self.tuned.get(&key) {
+            apply_tuning(&mut definition, tuning);
+        }
+        Ok(definition)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skate_core::camera::Shot;
+
+    #[test]
+    fn tuning_replaces_only_named_fields_in_retail_units() {
+        let stock = ShotDefinition {
+            name: "chase_flat_slow".into(), shot_type: 0,
+            shot: Shot { distance: 1.8, position_elevation: 7.0 * RADIANS, lens_length: 12.0, ..Shot::new() },
+            transition_time: 0.5, transition_units: 0, children: [None, None, None],
+            blend_points: [0.0; 3], blend_value: 0.0, blend_type: 0, blend_smoothing: 0.0,
+        };
+        let mut shots = StockShots { stock: BTreeMap::from([(stock.name.clone(), stock.clone())]), tuned: BTreeMap::new() };
+        assert_eq!(shots.load("CHASE_FLAT_SLOW").unwrap(), stock);
+        let tuning = CameraShotTuning { position_distance: Some(3.0), position_elevation: Some(30.0), ..Default::default() };
+        shots.set_tunings([("chase_flat_slow", &tuning)].into_iter());
+        let tuned = shots.load("chase_flat_slow").unwrap();
+        assert_eq!(tuned.shot.distance, 3.0);
+        assert_eq!(tuned.shot.position_elevation, 30.0 * RADIANS);
+        assert_eq!(tuned.shot.lens_length, 12.0);
+        assert_eq!(tuned.transition_time, 0.5);
+        shots.set_tunings(std::iter::empty());
+        assert_eq!(shots.load("chase_flat_slow").unwrap(), stock);
+        assert!(shots.contains("Chase_Flat_Slow") && !shots.contains("made_up"));
     }
 }
 

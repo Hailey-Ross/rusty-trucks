@@ -210,6 +210,29 @@ mod unload removes its entry; empty sections disappear. Back returns to the
 section that opened the menu. Limits: 8 custom sections, 64 section menus total,
 32 bytes per section name. `sdk.capabilities.menus >= 3` supports this placement.
 
+## Camera angle and stock shots
+
+The native gameplay camera is Skate 3's stock camera graph. Its **Camera Angle**
+setting (pause menu SKATER > Camera angle, `settings/camera.json`) picks the
+graph's Low or High branch, which choose different stock shots (`bl_chase` vs
+`bl_high_chase`, ...). With `sdk.capabilities.camera >= 4`:
+
+- `sdk.camera.angle()` returns `{selected, active, owner, shot, tuned}`: the
+  player's setting, the angle in use, the mod forcing it (or nil), the current
+  stock shot and a `shot -> mod` table of tuned shots.
+- `sdk.camera.set_angle("low" | "high")` forces an angle; `nil` hands it back to
+  the player's setting. One mod at a time; the player's saved choice is untouched.
+- `sdk.camera.tune_shot(shot, patch)` replaces stock values of one shot (and of
+  every blend tree using it). Keys are the retail attribute names in their units:
+  `PositionDistance` (m), `PositionElevation`, `PositionHeading`, `FramingRoll`,
+  `FramingYaw`, `FramingPitch` (degrees), `FramingLensLength`,
+  `ReferenceBoardOffset`, `SmoothingDirection`, `SmoothingElevation`,
+  `SmoothingYaw`, `SmoothingPitch`, `TransitionTime` (s). `nil` restores the stock
+  shot. One mod per shot; unknown shots, keys or out-of-range values fail the
+  command (use `sdk.commands.request` to get the error back).
+
+Disabling, failing or reloading the mod releases its angle and shot tunings.
+
 ## Local actor suspension and peer cameras
 
 `sdk.player.suspend(true)` freezes the local native simulation, hides its skater,
