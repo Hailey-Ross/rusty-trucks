@@ -53,6 +53,8 @@ mod grind_world;
 mod skate_world;
 mod map_validation;
 mod water_splash;
+mod game_audio;
+pub(crate) mod world_audio;
 mod water_bodies;
 
 fn main() -> bevy::app::AppExit {

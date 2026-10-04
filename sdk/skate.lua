@@ -562,3 +562,59 @@ function sdk.graphs.read(graph) end
 ---@param index integer runtime ID from the catalog; zero-based
 ---@param enabled? boolean nil restores the original gate
 function sdk.graphs.set_enabled(graph, target, index, enabled) end
+
+-- World audio extension 1 (capability `world_audio`): publish traffic vehicles, pedestrians and
+-- skaters to the game's retail world audio, exactly as an engine system would (doc
+-- docs/hails-additions/15-world-audio.md). Keys belong to this mod; 48 objects per mod, 128 in all;
+-- an object not updated for 0.5 s is parked; everything is removed on disable / reload. The game
+-- decides who is audible with retail's limits (4 nearest cars within 40 m, 15 nearest peds within
+-- 50 m, footsteps for the nearest 3, one skater within 30 m; 8 / 24 / 3 with the opt-in
+-- non-retail "more audible" setting).
+---@class WorldAudioOptions
+---@field position? Vec3 world position (ignored while body is set)
+---@field velocity? Vec3 m/s; default: from the position change (give it for teleporting objects)
+---@field heading? number rad about +Y, 0 = +Z
+---@field body? string follow one of this mod's physics bodies (position, rotation, velocity)
+---@field engine? string traffic: aud_traffic_engine record (c01_family01, c03_sports01, c04_taxi01, c05_truck01, c00_heavy01, c06_sports02, c07_family02, c08_family03) or a living-world model mapped to one as retail does (taxi01, patrol01, sedan02, hatchback01, sports03, muscle01, suv02, pickup01, minivan01, ...); unknown = silent
+---@field speed? number traffic / lite skater: m/s (default |velocity|)
+---@field load? number traffic: the driver's signed acceleration m/s² (default: from the speed change; hard stop ≈ -15)
+---@field horn? integer traffic: 0 none, 1..5 horn kind, 6 alarm (prefer the events)
+---@field skidding? boolean traffic: the tyres skid
+---@field voice? integer ped: the model = speech voice id 41..96 (0 none); its shoe class, kind, speech words and far threshold follow (retail's aud_characteristics). skater: its voice (AI skaters 89..96): the bail grunt
+---@field shoe_class? integer ped: 1..5 (default: the model's, else 2; 1 is silent)
+---@field weight? integer ped: 1..5 (default 1)
+---@field close_range? boolean ped: a security guard's close-range footstep / speech levels (default: the model's)
+---@field feet? boolean[] ped: {foot A planted, foot B planted}
+---@field materials? integer[] ped: audio surface materials under the feet (default 0)
+---@field footsteps? boolean ped: footsteps on (default: retail's 3-nearest rule)
+---@field tazing? boolean ped: tazing (the c_tazer zap burst plays while it holds; prefer the tazer event)
+---@field photo_flag? boolean ped: raise the game flag of the photographer's repeat (a ped holding speech value 29, PictureTaking, repeats it every second while any published ped sets this)
+---@field source? string skater (spawn only): 'lite' (default) or 'state_log:<name>' (a ghost replaying logs/<name>.tsv of this mod or SKATE_AUDIO_STATE_LOGS/<name>.tsv)
+---@field from? number ghost: window start (s)
+---@field seconds? number ghost: window length (s, default 20), looped
+---@field wheels? boolean[] lite skater: wheels down {FL, FR, RL, RR}
+---@field material? integer lite skater: material under the board (default: the ground's)
+---@field grinding? boolean lite skater
+---@field grind_material? integer lite skater
+---@field air? boolean lite skater: in the air
+---@field loose_board? integer lite skater: the loose board (0 none, 1 upside down, 2 on its side): the board slide holds while set (ghosts take it from their log)
+sdk.world_audio = {}
+---@param key string
+---@param kind 'traffic'|'ped'|'skater'
+---@param opts? WorldAudioOptions
+function sdk.world_audio.spawn(key, kind, opts) end
+---Merge fields into the object's description (a field of another kind is an error).
+---@param key string
+---@param opts WorldAudioOptions
+function sdk.world_audio.update(key, opts) end
+---@param key string
+---@param event 'horn'|'alarm'|'speech'|'tazer'|'body_fall'|'reaction'
+---@param opts? {kind?:integer, seconds?:number, value?:string|integer, by?:integer} reaction (skaters): value slam / slam_b / trick / crash / chase, by = the other skater's model (0 = the player; a pro 1..29 picks the pro-on-pro lines): the skater's own speech process says the matching line of its voice for one console frame (AI skaters 89..96 on the living-world channel, pros 1..29 / special cast 30..38 on the main cast); horn: kind 1..5 for seconds; alarm: retail's 8 s; speech: value name (warn = 53, cheer, slam, flee, nearby, DoWarning, LongCheer, ...) or number; the ped says a line of its voice through retail's speech manager (gated by the event's timers and probability) when the speech decode is installed; a repeated value re-triggers (49 rings a phone, then the ped answers); tazer: the ped zaps for seconds (default the state graph's 2 s): retail's c_tazer burst; body_fall: one BodyFallType key of a knock-down animation (kind 9, 8 or any other value 1..255: three Skate_Collisions sounds; retail's falls go 9, other, 9, 9 about 0.1 / 0.5 / 0.16 s apart)
+function sdk.world_audio.event(key, event, opts) end
+---@param key string
+function sdk.world_audio.remove(key) end
+---@param key string
+---@return {kind:string, audible:boolean, instance?:integer, parked:boolean}|nil
+function sdk.world_audio.read(key) end
+---@return {more_audible:boolean, instances:{traffic:integer,peds:integer,skaters:integer}, published:table, audible:table, speech_lines:integer}
+function sdk.world_audio.info() end

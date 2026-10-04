@@ -16,5 +16,11 @@ game; none of them contain game code or data. Default work folders are under `.l
 | [`world-stream-inspect/`](world-stream-inspect/README.md) | List / extract `.big` archives; survey the RW4 arenas of the district simulation streams; dump named trigger volumes. |
 | [`vault-inspect/`](vault-inspect/README.md) | Look up fields in the attribute database (converted skater collections) and class layouts in the schema. |
 | [`recomp-code-search/`](recomp-code-search/README.md) | **For use with the Skate 3 recomp's research hooks** ([`research-hooks` branch](https://github.com/Hailey-Ross/skate3recomp/tree/research-hooks)): search the recompiled sources and the memory image. Reference only; you build the recomp and set up the paths yourself. |
+| [`audio-file-inspect/`](audio-file-inspect/README.md) | Readers for the audio formats: ABKC banks and MOIR projects, SPLC banks, `.ems` emitter files, `.grain` data; decode bank samples. |
+| [`audio-e2e/`](audio-e2e/README.md) | Scripted scenarios for the headless audio render and analysis of the renders (diffs, levels, voices, bus share). |
+| [`audio-bench/`](audio-bench/README.md) | Audio performance: hashed e2e bench runs, timing summaries, emitter bank memory. |
+| [`recomp-trace/`](recomp-trace/README.md) | **For use with the Skate 3 recomp's research hooks** ([`research-hooks` branch](https://github.com/Hailey-Ross/skate3recomp/tree/research-hooks)): read and analyse trace sessions. Reference only; you build the recomp and set up the paths yourself. |
 
 `regression-checks/check_maps.py` uses the game's `--validate-maps` mode when the exe has it and falls back to `--check-assets` per map otherwise.
+
+See `docs/hails-additions/14-published-tools.md` for the background.
