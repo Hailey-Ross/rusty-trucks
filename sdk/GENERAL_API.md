@@ -3,11 +3,14 @@
 Manifest API remains `2`. Feature discovery uses compiled `sdk.capabilities`:
 `engine_access=1`, `command_results=1`, `native_bodies=1`,
 `input_override=1`, `player_physics=2`, `player_overlap=1`, `landed_details=1`,
-`audio=2` (1: the mod's own WAVs, `sdk.audio.preload / play / update / stop / stop_all`; 2: posts to retail
-classes, globals, MixMap / global watch, `sdk.audio.info`), `audio_content=1` (an `audio.json` content overlay
-that replaces / adds retail audio by identity while the mod runs), `audio_events=1` (`sdk.audio.subscribe / events`,
-observe only) and `world_audio=1` (publishing cars, peds and skaters to the game's world audio); all declared in
-`skate.lua`, reference in `docs/hails-additions/16-audio-modding.md`.
+`audio=3` (1: the mod's own WAVs, `sdk.audio.preload / play / update / stop / stop_all`; 2: posts to retail
+classes, globals, MixMap / global watch, `sdk.audio.info`; 3: `native = true` on `sdk.audio.play`, the WAV through
+the game's mixer with the retail emitter distance law, reverb send and panner), `audio_content=2` (an `audio.json`
+content overlay that replaces / adds retail audio by identity while the mod runs; 2: its `rules`), `audio_events=2`
+(`sdk.audio.subscribe / events`, observe; 2: `sdk.audio.rule`, declarative mute / replace / layer rules),
+`audio_tuning=1` (`sdk.audio.set_tuning / tuning / tuned`: player / world / bus / reverb tuning while the mod runs)
+and `world_audio=2` (publishing cars, peds and skaters to the game's world audio; 2: `emitter` and `reverb_zone`
+objects); all declared in `skate.lua`, reference in `docs/hails-additions/16-audio-modding.md`.
 The host has no injury, vehicle or challenge rules. Those live in Lua.
 
 `deformation=1` adds optional impact-driven mesh/collider deformation.
@@ -40,7 +43,7 @@ available. Menus can create a named pause-menu section and nested pages using
 Catalogs are larger and requested explicitly:
 
 ```lua
-sdk.engine.inspect("catalog", "graphs") -- or "scoring", "audio_catalog"
+sdk.engine.inspect("catalog", "graphs") -- or "scoring", "audio_catalog", "audio_tuning:<domain>[/path]"
 -- On a later callback:
 local result = sdk.commands.result("catalog")
 if result and result.ok then

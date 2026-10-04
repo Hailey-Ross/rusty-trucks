@@ -1000,6 +1000,8 @@ fn apply_one(
             audio_api(world, |api, native, _| api.watch(native, id, &globals, &mixmap))?
         }
         Command::AudioSubscribe { tags } => audio_api(world, |api, native, _| api.subscribe(id, tags, native))?,
+        Command::AudioSetTuning { domain, patch } => crate::game_audio::set_tuning(world, id, &domain, patch)?,
+        Command::AudioRule { key, rule } => crate::game_audio::set_rule(world, id, &key, rule, |world, path| audio::load_native_clip(world, mods, id, path))?,
         Command::WorldAudioSpawn { key, object, options } => world_audio::spawn(world, mods, id, key, object, options)?,
         Command::WorldAudioUpdate { key, options } => world_audio::update(world, mods, id, &key, options)?,
         Command::WorldAudioEvent { key, event, options } => world_audio::event(world, id, &key, &event, options)?,

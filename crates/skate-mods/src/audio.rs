@@ -23,7 +23,60 @@ pub struct AudioPlayOptions {
     #[serde(default = "spatial_scale")] pub spatial_scale: f32,
     #[serde(default)] pub paused: bool,
     #[serde(default = "fade_in")] pub fade_in: f32,
+    /// Audio extension 3: play through the game's own (native) mixer instead of a Bevy voice: a
+    /// per-mod bank, the retail emitter distance law (MixMap Emitter outputs), the environment
+    /// (reverb) send, the retail panner. Opt-in per sound; false keeps the Bevy voice.
+    #[serde(default)] pub native: bool,
+    /// Native only: the reach of a positional sound (the `.ems` record shape: a sphere of
+    /// `radius` m with an inner `core`, and the falloff curve). Required for a positional native
+    /// sound (no guessed default reach).
+    #[serde(default)] pub falloff: Option<NativeFalloff>,
+    /// Native only: send into the environment (reverb) bus (default true, as retail emitters).
+    #[serde(default)] pub reverb: Option<bool>,
+    /// Native only: the volume group, `world` (the Ambience volume, as world emitters; default)
+    /// or `player` (the Effects volume).
+    #[serde(default)] pub group: Option<String>,
 }
+
+/// The reach of a native positional sound: retail's emitter record test (sphere of `radius`, an
+/// inner `core` fraction at full level) and falloff curve (`eVolumeFalloffType`).
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NativeFalloff {
+    pub radius: f32,
+    #[serde(default)] pub core: f32,
+    #[serde(default)] pub curve: FalloffCurve,
+}
+
+/// `eVolumeFalloffType`: 0 = (1 − d)², 1 = 1 − d, other = flat.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FalloffCurve {
+    #[default]
+    Squared,
+    Linear,
+    Flat,
+}
+
+impl FalloffCurve {
+    /// The retail `eVolumeFalloffType` number.
+    pub fn retail_type(self) -> i32 {
+        match self {
+            Self::Squared => 0,
+            Self::Linear => 1,
+            Self::Flat => 2,
+        }
+    }
+}
+
+impl NativeFalloff {
+    pub fn validate(&self) -> bool {
+        between(self.radius, 0.1, 10_000.0) && between(self.core, 0.0, 1.0)
+    }
+}
+
+/// The volume groups a native mod sound can play in.
+pub const NATIVE_GROUPS: [&str; 2] = ["world", "player"];
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,6 +110,18 @@ impl AudioPlayOptions {
             && between(self.pitch, 0.25, 4.0)
             && between(self.spatial_scale, 0.001, 1.0)
             && between(self.fade_in, 0.0, 2.0)
+            && self.validate_native()
+    }
+
+    /// The native-only fields: rejected on a Bevy voice; a positional native sound needs its
+    /// reach.
+    fn validate_native(&self) -> bool {
+        if !self.native {
+            return self.falloff.is_none() && self.reverb.is_none() && self.group.is_none();
+        }
+        self.falloff.as_ref().is_none_or(NativeFalloff::validate)
+            && self.group.as_deref().is_none_or(|g| NATIVE_GROUPS.contains(&g))
+            && (!self.spatial || self.falloff.is_some())
     }
 }
 impl AudioUpdateOptions {
@@ -214,6 +279,37 @@ mod tests {
         }
         let update=AudioUpdateOptions {pitch:Some(f32::NAN), ..Default::default()};
         assert!(!update.validate());
+    }
+    /// Audio extension 3: the native routing options cross the serde boundary; native-only fields
+    /// are rejected on a Bevy voice; a positional native sound needs its reach.
+    #[test] fn native_play_options() {
+        for ok in [
+            json!({"path":"a.wav","native":true,"position":[1,2,3],"falloff":{"radius":30}}),
+            json!({"path":"a.wav","native":true,"position":[1,2,3],"falloff":{"radius":12,"core":0.25,"curve":"linear"},"reverb":false,"group":"player"}),
+            json!({"path":"a.wav","native":true,"spatial":false}),
+            json!({"path":"a.wav","native":true,"spatial":false,"group":"world","reverb":true}),
+        ] {
+            let p: AudioPlayOptions = serde_json::from_value(ok.clone()).unwrap();
+            assert!(p.validate(), "{ok}");
+            let c: crate::Command = serde_json::from_value(json!({"kind":"audio_play","key":"k","options":ok})).unwrap();
+            assert!(c.validate());
+        }
+        for bad in [
+            json!({"path":"a.wav","falloff":{"radius":30}}),
+            json!({"path":"a.wav","reverb":true}),
+            json!({"path":"a.wav","group":"world"}),
+            json!({"path":"a.wav","native":true,"position":[0,0,0]}),
+            json!({"path":"a.wav","native":true,"spatial":false,"group":"music"}),
+            json!({"path":"a.wav","native":true,"falloff":{"radius":0},"position":[0,0,0]}),
+            json!({"path":"a.wav","native":true,"falloff":{"radius":10,"core":1.5},"position":[0,0,0]}),
+        ] {
+            let p: AudioPlayOptions = serde_json::from_value(bad.clone()).unwrap();
+            assert!(!p.validate(), "accepted {bad}");
+        }
+        for typo in [json!({"path":"a.wav","native":true,"falloff":{"radius":3,"shape":"box"}}), json!({"path":"a.wav","native":true,"spatial":false,"falloff":{"radius":3,"curve":"cubic"}})] {
+            assert!(serde_json::from_value::<AudioPlayOptions>(typo.clone()).is_err(), "{typo}");
+        }
+        assert_eq!([FalloffCurve::Squared, FalloffCurve::Linear, FalloffCurve::Flat].map(FalloffCurve::retail_type), [0, 1, 2]);
     }
     #[test] fn pcm_round_trip_and_corruption() {
         let b=wav(); let (out,info)=canonical_pcm_wav(&b).unwrap();

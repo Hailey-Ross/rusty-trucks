@@ -66,6 +66,10 @@ pub struct AudioOverlay {
     /// Map stem → that map's audio (custom maps; also a retail map's extras).
     #[serde(default)]
     pub maps: BTreeMap<String, MapAudioDef>,
+    /// Mute / replace / layer rules on the event sites (`audio_rules`; capability `audio_content`
+    /// = 2): applied while the mod runs, without an audio restart.
+    #[serde(default)]
+    pub rules: BTreeMap<String, crate::audio_rules::Rule>,
 }
 
 /// A WAV: a path, or a path with the loop start (frames) for a slot that loops.
@@ -569,7 +573,15 @@ impl AudioOverlay {
                 out.extend(takes.iter().map(|f| (f.as_str(), FileKind::Speech)));
             }
         }
+        out.extend(self.rules.values().filter_map(|r| r.play.as_ref()).map(|p| (p.path.as_str(), FileKind::Sample)));
         out
+    }
+
+    /// Whether the overlay changes content (anything but `rules`): only such an overlay restarts
+    /// the game's sound when it comes or goes.
+    pub fn has_content(&self) -> bool {
+        let content = AudioOverlay { version: self.version, rules: BTreeMap::new(), ..self.clone() };
+        content != AudioOverlay { version: self.version, ..Default::default() }
     }
 
     /// Schema-level checks: version, counts, numbers, key and path syntax.
@@ -719,6 +731,14 @@ impl AudioOverlay {
         if records > MAX_RECORDS {
             return Err(format!("more than {MAX_RECORDS} records"));
         }
+        if self.rules.len() > crate::audio_rules::MAX_RULES_PER_MOD {
+            return Err(format!("more than {} rules", crate::audio_rules::MAX_RULES_PER_MOD));
+        }
+        for (key, rule) in &self.rules {
+            if !crate::schema::valid_id(key) || !rule.validate() {
+                return Err(format!("rules.{key}: a rule needs a known match (tag / kind / source / class / slot / id), an action (mute, replace, layer) and, for replace / layer, a play with a mod WAV"));
+            }
+        }
         let files = self.files();
         if files.len() > MAX_FILES {
             return Err(format!("more than {MAX_FILES} files"));
@@ -763,6 +783,7 @@ impl AudioOverlay {
         let t = &self.tuning;
         line([&t.player, &t.world, &t.bus, &t.grain].iter().filter(|v| v.is_some()).count(), "tuning sections");
         line(self.maps.len(), "maps");
+        line(self.rules.len(), "rules");
         out
     }
 }
@@ -981,5 +1002,34 @@ mod tests {
         assert_eq!(def.ems.as_deref(), Some(&["sfx_downtown".to_owned()][..]));
         assert!(MapAudioDef::parse(br#"{"ems": "sfx"}"#, "x").is_err());
         assert!(MapAudioDef::parse(br#"{"unknown": 1}"#, "x").is_err());
+    }
+
+    /// `rules` in audio.json (capability `audio_content` = 2): checked in depth (the rule shape and
+    /// its WAV, counted in the PCM budget); an overlay of rules only has no content (no restart).
+    #[test]
+    fn rules_in_audio_json_are_checked_and_carry_no_content() {
+        let d = dir("rules");
+        std::fs::write(d.join("audio/pop.wav"), wav(4800, 48000, 1)).unwrap();
+        let only = json!({"version": 1, "rules": {"my_pop": {"match": {"tag": "pop"}, "action": "replace", "play": {"path": "audio/pop.wav"}}}});
+        std::fs::write(d.join(FILE), only.to_string()).unwrap();
+        let loaded = load(&d).unwrap().unwrap();
+        assert!(!loaded.overlay.has_content(), "rules only: no restart");
+        assert_eq!(loaded.pcm_bytes, 9600, "the rule's WAV counts");
+        assert!(loaded.overlay.summary().contains(&"rules: 1".to_owned()));
+        let both = json!({"version": 1, "replace": {"samples": {"x": {"0": "audio/pop.wav"}}}, "rules": {"q": {"match": {"tag": "land"}, "action": "mute"}}});
+        let o: AudioOverlay = serde_json::from_value(both).unwrap();
+        assert!(o.has_content() && o.validate().is_ok());
+        for bad in [
+            json!({"version": 1, "rules": {"x": {"match": {"tag": "pop"}, "action": "replace", "play": {"path": "audio/missing.wav"}}}}),
+            json!({"version": 1, "rules": {"x": {"match": {}, "action": "mute"}}}),
+            json!({"version": 1, "rules": {"bad key": {"match": {"tag": "pop"}, "action": "mute"}}}),
+        ] {
+            std::fs::write(d.join(FILE), bad.to_string()).unwrap();
+            assert!(load(&d).is_err(), "accepted {bad}");
+        }
+        let many: serde_json::Map<String, Value> = (0..33).map(|i| (format!("r{i}"), json!({"match": {"tag": "pop"}, "action": "mute"}))).collect();
+        let o: AudioOverlay = serde_json::from_value(json!({"version": 1, "rules": many})).unwrap();
+        assert!(o.validate().is_err(), "32 rules at most");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

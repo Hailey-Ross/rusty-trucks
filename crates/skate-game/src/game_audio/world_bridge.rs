@@ -131,6 +131,16 @@ pub(crate) struct Bridge {
     log_counts: (u64, u64, u64),
 }
 
+impl Bridge {
+    /// A runtime tuning write changed the world tuning (`tuning.rs`): the cached engine records and
+    /// the tazer hold are read again.
+    pub(crate) fn retune(&mut self) {
+        self.engines.clear();
+        self.unknown.clear();
+        self.tazer_seconds = None;
+    }
+}
+
 /// The component's held reactions with an event's raised on top.
 fn merge_reactions(held: SkaterReactions, event: SkaterReactions) -> SkaterReactions {
     let mut r = held;

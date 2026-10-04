@@ -395,6 +395,13 @@ impl AudioApi {
         Ok(())
     }
 
+    /// A tuning write changed the Contacts tuning: the pop / landing tags follow.
+    pub(crate) fn retune_tags(&mut self, native: Option<&Native>) {
+        if let Some(p) = native.and_then(|n| n.player.as_ref()).filter(|_| self.events.on()) {
+            self.events.tags = Tags::from_tuning(&p.contact_tuning);
+        }
+    }
+
     /// Everything `owner` holds: live posts released, globals restored, watches and
     /// subscriptions dropped (a mod stopped, failed or was reloaded).
     pub(crate) fn clear_owner(&mut self, native: Option<&Native>, generation: u64, owner: &str) {
@@ -582,19 +589,27 @@ pub(super) fn events_frame(
     }
 }
 
-/// A Splice host that records each start (`EventKind::Splice`) while the site records; every
-/// call goes to the real host unchanged.
+/// A Splice host that records each start (`EventKind::Splice`) while the site records, and applies
+/// the mods' rules (`mod_rules`: a muted start does not happen); every other call goes to the real
+/// host unchanged.
 pub(crate) struct Observed<'a, 'b> {
     inner: &'a mut dyn skate_audio::player::contacts::SpliceHost,
     rows: &'b mut EventBuf,
     source: Source,
     owner: u64,
     slot: &'static str,
+    rules: Option<&'b super::mod_rules::RuleSet>,
 }
 
 impl<'a, 'b> Observed<'a, 'b> {
     pub(crate) fn new(inner: &'a mut dyn skate_audio::player::contacts::SpliceHost, rows: &'b mut EventBuf, source: Source, owner: u64) -> Self {
-        Self { inner, rows, source, owner, slot: "" }
+        Self { inner, rows, source, owner, slot: "", rules: None }
+    }
+
+    /// The site's rules (None: no rules, nothing is checked).
+    pub(crate) fn rules(mut self, rules: Option<&'b super::mod_rules::RuleSet>) -> Self {
+        self.rules = rules;
+        self
     }
 
     /// The object's name for the recorded rows (`body_fall`, `ring`; "" by default).
@@ -612,6 +627,14 @@ impl skate_audio::player::contacts::SpliceHost for Observed<'_, '_> {
         self.inner.set_submix(submix);
     }
     fn start(&mut self, bank: &str, id: u32, block: [f32; 6]) -> Option<skate_audio::splice::SoundId> {
+        if let Some(rules) = self.rules {
+            let row = EventRow { kind: EventKind::Splice, source: self.source, class: intern(bank), slot: self.slot, id: id as i32, owner: self.owner };
+            if rules.mutes(&row) {
+                // The request is still reported to subscribers; the sound does not start.
+                record(self.rows, row);
+                return None;
+            }
+        }
         let sound = self.inner.start(bank, id, block);
         if sound.is_some() && self.rows.is_some() {
             record(self.rows, EventRow { kind: EventKind::Splice, source: self.source, class: intern(bank), slot: self.slot, id: id as i32, owner: self.owner });

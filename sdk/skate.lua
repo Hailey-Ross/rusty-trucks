@@ -462,7 +462,7 @@ function sdk.engine.systems() end
 ---@return table|nil latest snapshot
 function sdk.engine.read(system) end
 ---@param key string command result key
----@param system 'graphs'|'scoring'|'audio_catalog'
+---@param system 'graphs'|'scoring'|'audio_catalog'|string `audio_tuning:<domain>[/path]` reads a tuning domain
 function sdk.engine.inspect(key, system) end
 
 ---@class BodyReference
@@ -589,6 +589,19 @@ sdk.capabilities = {}
 ---@field spatial_scale? number 0.001..1, world metres → spatial units (default 0.1)
 ---@field paused? boolean start paused (default false)
 ---@field fade_in? number seconds 0..2 (default 0.01)
+---@field native? boolean audio >= 3: play through the game's native mixer (opt-in; default false = the
+---Bevy voice above). The WAV joins a per-mod bank; the voice follows the retail world-emitter law:
+---dry level and pan from a MixMap Emitter instance, the environment (reverb) send rolling off with
+---camera distance 4 → 70 m, and the sound's own reach (`falloff`, the `.ems` record test). Category
+---volume: `group`. Needs the native audio (else an error: use `sdk.commands.request` to fall back).
+---24 native voices in all (they count in the 32 / 128 voice limits and share the mixer with the game).
+---@field falloff? AudioFalloff native, positional: the reach (required when `spatial` is not false)
+---@field reverb? boolean native: send into the environment bus (default true, as retail emitters)
+---@field group? 'world'|'player' native: Ambience volume (`world`, default) or Effects volume
+---@class AudioFalloff
+---@field radius number reach in metres (0.1..10000): silent at and beyond it
+---@field core? number inner fraction 0..1 at full level (default 0)
+---@field curve? 'squared'|'linear'|'flat' retail eVolumeFalloffType 0 / 1 / 2 (default 'squared')
 ---@class AudioUpdateOptions
 ---@field volume? number 0..1
 ---@field pitch? number 0.25..4
@@ -596,7 +609,7 @@ sdk.capabilities = {}
 ---@field position? Vec3 unbound voices only
 ---@field offset? Vec3
 ---@type {version:integer}
-sdk.audio = { version = 2 }
+sdk.audio = { version = 3 }
 ---Load and validate a WAV now so the first play doesn't read it. A bad file, an unknown body or a
 ---full limit fails the mod (as `play` does); wrap the command in `sdk.commands.request` to get the
 ---error as a result instead.
@@ -703,6 +716,36 @@ function sdk.audio.subscribe(opts) end
 ---The rows of the last frame not returned yet (each frame's rows once).
 ---@return AudioEvent[]
 function sdk.audio.events() end
+-- Rules (capability `audio_events` >= 2): mute / replace / layer the game's own sounds where they are
+-- posted, the same frame (Lua can't run in the audio pass, so rules are declarative). Sites: the local
+-- player's component posts and Splice starts (pops, landings, foley), the world / NPC hosts' posts and
+-- Splice starts, the world emitters' starts. `mute`: the request is dropped (a post is not made: its
+-- updates and release do nothing; a Splice sound does not start; an emitter keeps its state silently);
+-- `replace`: dropped + `play`; `layer`: kept + `play`. The first matching rule decides (mods in mod-id
+-- order). Event rows still report muted requests. 32 rules per mod, 64 in all; removed when the mod
+-- stops. Static rules also go in audio.json `rules` (capability audio_content >= 2).
+---@class AudioRuleMatch
+---@field tag? 'pop'|'land'|'grind_start'|'grind_end'|'footstep'|'horn'|'alarm'|'tazer'|'body_fall'|'emitter'
+---@field kind? 'post'|'splice'|'emitter_start'
+---@field source? 'player'|'world'|'npc'|'emitter'
+---@field class? string a retail class (posts) or bank (Splice starts, emitters)
+---@field slot? string the poster's slot (grind, wind, footstep, horn, ped_footstep, ...)
+---@field id? integer slot index (posts), sound id (Splice), patch (emitters)
+---@class AudioRulePlay
+---@field path string mod-relative PCM16 WAV, played through the native mixer, non-positional (centred)
+---@field volume? number 0..1 (default 1)
+---@field pitch? number 0.25..4 (default 1)
+---@field reverb? boolean environment send (default true)
+---@field group? 'player'|'world' Effects (default) or Ambience volume
+---@class AudioRule
+---@field match AudioRuleMatch at least one field; all given fields must hold
+---@field action 'mute'|'replace'|'layer'
+---@field play? AudioRulePlay required for replace / layer
+---@field min_interval? number seconds between two plays of the rule's sound (default 0.05)
+---Set (a table) or remove (`nil`) this mod's rule `key`. A bad rule or WAV is a command error.
+---@param key string
+---@param rule AudioRule|nil
+function sdk.audio.rule(key, rule) end
 -- Audio content (capability `audio_content`): a mod ships `audio.json` at its root (no Lua needed):
 -- replace / add retail audio content by identity (banks, sample slots, Splice trees, grain members,
 -- wheel streams, ambience beds, emitter records, location sets, zones, crossfades, speech takes,
@@ -711,6 +754,30 @@ function sdk.audio.events() end
 -- and the mod menu shows the conflict. Check it with `check_mod <package> --install <assets>`.
 -- Reference: docs/hails-additions/16-audio-modding.md.
 
+-- Audio tuning (capability `audio_tuning`): patch the game's typed tuning while this mod runs.
+-- Domains: 'player' (player_tuning: surfaces, grinds, seams, landing / collision materials, tricks,
+-- treatment, contacts), 'world' (world_tuning: traffic engine records, ped footsteps / objects,
+-- speech events and voice), 'bus' (bus_tuning: reverb presets, eEQChain buses, FlangeSub returns),
+-- 'reverb' (bus_tuning.reverb: preset key → its 44 values by index). A patch is a field merge
+-- (tables by field, arrays by decimal index `{['3'] = 0.5}`, leaves of the same type: numbers,
+-- booleans, strings, number arrays of the same length); a field the install lacks or another type is
+-- a command error. Applied between audio passes; the first mod to write a field owns it (another
+-- mod's write of it is an error); restored when the mod stops, fails or reloads. Kept across map
+-- changes. The MixMap's layout is not tunable.
+---Set (a table) or restore (`nil`) this mod's patch of a tuning domain.
+---@param domain 'player'|'world'|'bus'|'reverb'
+---@param patch table|nil
+function sdk.audio.set_tuning(domain, patch) end
+---Request a domain (or a path inside it, e.g. 'traffic_engine/c04_taxi01') as the game uses it now;
+---read it as `sdk.commands.result(key).value` (at most 256 KiB: read a path for big domains).
+---@param key string command result key
+---@param domain 'player'|'world'|'bus'|'reverb'
+---@param path? string
+function sdk.audio.tuning(key, domain, path) end
+---The tuning fields this mod owns, as applied at the last audio pass ('world_tuning/traffic_engine/c04_taxi01/idle_rpm', …).
+---@return string[]
+function sdk.audio.tuned() end
+
 -- World audio extension 1 (capability `world_audio`): publish traffic vehicles, pedestrians and
 -- skaters to the game's retail world audio, exactly as an engine system would (doc
 -- docs/hails-additions/15-world-audio.md). Keys belong to this mod; 48 objects per mod, 128 in all;
@@ -718,6 +785,14 @@ function sdk.audio.events() end
 -- decides who is audible with retail's limits (4 nearest cars within 40 m, 15 nearest peds within
 -- 50 m, footsteps for the nearest 3, one skater within 30 m; 8 / 24 / 3 with the opt-in
 -- non-retail "more audible" setting).
+-- Extension 2 (capability `world_audio` >= 2): 'emitter' and 'reverb_zone' objects: `.ems`-style
+-- records added to the map's live lists. An emitter plays an AEMS bank bound to c_emitter (a retail
+-- bank or one a content overlay adds) through retail's reach test (sphere when the three extents are
+-- equal, else an ellipsoid along forward / up / side; inner core at full level), falloff curve and
+-- c_emitter post with the MixMap Emitter words; by default it shares retail's 5 emitter states with
+-- the map's emitters (first reached, first served; settings/audio.json "mod_emitter_slots": "extra"
+-- gives them their own, not retail). A reverb zone joins the zones the reverb selector walks, after
+-- the map's. Neither parks; `read(key).audible` = playing / holding the listener.
 ---@class WorldAudioOptions
 ---@field position? Vec3 world position (ignored while body is set)
 ---@field velocity? Vec3 m/s; default: from the position change (give it for teleporting objects)
@@ -746,9 +821,17 @@ function sdk.audio.events() end
 ---@field grind_material? integer lite skater
 ---@field air? boolean lite skater: in the air
 ---@field loose_board? integer lite skater: the loose board (0 none, 1 upside down, 2 on its side): the board slide holds while set (ghosts take it from their log)
+---@field bank? string emitter (spawn: required): the AEMS bank bound to c_emitter (unknown bank = command error)
+---@field patch? integer emitter: the attribute patch = the c_emitter selector 0..500 (default 0)
+---@field volume? number emitter: attribute volume 0..1 (default 1): level = volume × curve(d)
+---@field falloff? 'squared'|'linear'|'flat' emitter: eVolumeFalloffType 0 / 1 / 2 (default 'squared')
+---@field extent? Vec3 emitter / reverb_zone (spawn: required): extents in m (0.1..10000)
+---@field forward? Vec3 emitter / reverb_zone: the ellipsoid's forward axis, turned by heading (default {1,0,0})
+---@field core? number emitter / reverb_zone: inner core fraction 0..1 (default 0)
+---@field preset? string reverb_zone (spawn: required): the aud_reverb preset key, 16 hex digits, one the install has
 sdk.world_audio = {}
 ---@param key string
----@param kind 'traffic'|'ped'|'skater'
+---@param kind 'traffic'|'ped'|'skater'|'emitter'|'reverb_zone'
 ---@param opts? WorldAudioOptions
 function sdk.world_audio.spawn(key, kind, opts) end
 ---Merge fields into the object's description (a field of another kind is an error).

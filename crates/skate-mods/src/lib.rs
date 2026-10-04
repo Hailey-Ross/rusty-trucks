@@ -3,6 +3,8 @@ mod archive;
 pub mod audio;
 pub mod audio_content;
 pub mod audio_merge;
+pub mod audio_rules;
+pub mod audio_tuning;
 pub mod world_audio;
 pub mod graphics_dynamic;
 pub mod presentation;

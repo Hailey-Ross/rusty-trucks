@@ -273,6 +273,8 @@ function sdk.audio.play(key, opts)
         volume=opts.volume or 1, pitch=opts.pitch or 1,
         spatial=opts.spatial ~= false, spatial_scale=opts.spatial_scale or 0.1,
         paused=opts.paused == true, fade_in=opts.fade_in or 0.01,
+        -- Audio extension 3 (capability audio >= 3): through the game's native mixer (opt-in).
+        native=(opts.native == true) or nil, falloff=opts.falloff, reverb=opts.reverb, group=opts.group,
     }}
 end
 function sdk.audio.update(key, opts)
@@ -289,7 +291,7 @@ function sdk.audio.stop_all() submit{kind="audio_stop_all"} end
 -- Audio extension 2 (capability audio >= 2): the game's own native audio. Keys are scoped to the
 -- calling mod (32 handles per mod, 128 in all, 16 posts per frame); everything is released and
 -- every global restored when the mod stops, fails or reloads, and posts end at a map change.
-sdk.audio.version = 2
+sdk.audio.version = 3
 -- Post to a retail class (e.g. 'c_emitter') with up to 32 payload words; a key's post replaces
 -- its last one. Applied at the start of the next audio pass.
 function sdk.audio.post(key, class, words) submit{kind="audio_post",key=key,class=class,words=words or {}} end
@@ -335,13 +337,28 @@ function sdk.audio.events()
 end
 -- {native=bool, map_epoch, generation, restarts, overlays={ids}, conflicts, map={stem, district, ems, sources}, limits, tags}
 function sdk.audio.info() return as_table(sdk.snapshot.audio_info) or {native=false} end
+-- Rules (capability audio_events >= 2): mute / replace / layer the game's own sounds at their post
+-- sites, the same frame: rule(key, {match={tag="pop"}, action="replace", play={path="pop.wav"}});
+-- rule(key, nil) removes it. Removed when the mod stops.
+function sdk.audio.rule(key, rule) submit{kind="audio_rule",key=key,rule=rule} end
+-- Tuning writes (capability audio_tuning): patch a typed tuning domain ("player", "world", "bus",
+-- "reverb") while this mod runs; applied between audio passes; nil restores this mod's patch of
+-- the domain (everything is restored when the mod stops). The first mod to write a field owns it.
+function sdk.audio.set_tuning(domain, patch) submit{kind="audio_set_tuning",domain=domain,patch=patch} end
+-- Read a domain (or a path inside it, "traffic_engine/c04_taxi01") as the game uses it now:
+-- the value arrives as sdk.commands.result(key).value.
+function sdk.audio.tuning(key, domain, path)
+    sdk.engine.inspect(key, "audio_tuning:" .. domain .. (path and ("/" .. path) or ""))
+end
+-- The tuning fields this mod owns, as applied at the last audio pass ("world_tuning/traffic_engine/...").
+function sdk.audio.tuned() return (audio_mine().tuning) or {} end
 
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and
 -- skaters to the game's retail world audio (the same path engine systems use). Keys are scoped
 -- to the calling mod; 48 objects per mod, 128 in all; an object not updated for 0.5 s is parked;
 -- everything is removed when the mod is disabled or reloaded. The retail limits decide which
 -- objects sound (4 nearest cars within 40 m, 15 nearest peds within 50 m, 1 skater within 30 m).
-sdk.world_audio = { version = 1 }
+sdk.world_audio = { version = 2 }
 function sdk.world_audio.spawn(key, kind, opts)
     submit{kind="world_audio_spawn",key=key,object=kind,options=opts or {}}
 end

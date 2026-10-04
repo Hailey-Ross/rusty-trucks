@@ -108,9 +108,20 @@ pub(crate) struct PlayerAudio {
     /// Audio event rows (posts, releases, Splice starts) while some mod subscribes
     /// (`mod_audio::events_frame`); None otherwise: nothing is recorded.
     pub(crate) events: super::mod_audio::EventBuf,
+    /// The mods' mute / replace / layer rules (`mod_rules`); None without rules.
+    pub(crate) rules: Option<std::sync::Arc<super::mod_rules::RuleSet>>,
 }
 
 impl PlayerAudio {
+    /// A runtime tuning write changed the player tuning (`tuning.rs`): the vault tuning, the
+    /// Contacts posters' values and the footstep materials follow. SFXObj_Jitter keeps the walk it
+    /// was built with (its parameters change at the next start).
+    pub(crate) fn retune(&mut self, library: &super::Library) {
+        self.tuning = library.player_tuning();
+        self.contact_tuning = library.contacts_tuning();
+        self.set_footstep_materials(library.footstep_materials());
+    }
+
     pub(crate) fn new(tuning: PlayerTuning, components: bool) -> Self {
         let jitter = Jitter::new(&tuning.jitter, skate_audio::grain::GrainBed::SEED);
         // The collision voices play through their Collision SubMix (`sub_824D25E0`: mono, env send
@@ -174,6 +185,7 @@ impl PlayerAudio {
             classes: HashMap::new(),
             posts: 0,
             events: None,
+            rules: None,
         }
     }
 
@@ -209,7 +221,7 @@ impl PlayerAudio {
             return;
         }
         let mut access = rt.splice_host();
-        let mut host = super::mod_audio::Observed::new(&mut access, &mut self.events, super::mod_audio::Source::Player, 0);
+        let mut host = super::mod_audio::Observed::new(&mut access, &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref());
         for msg in msgs {
             self.collision.post(msg, &mut host);
         }
@@ -273,7 +285,14 @@ impl PlayerAudio {
                     if let Some(old) = self.nodes.remove(&slot) {
                         rt.release(old);
                     }
-                    self.nodes.insert(slot, rt.post(id, &words));
+                    // A mod rule may drop the post (its redeliveries and release then find no node).
+                    let muted = self.rules.as_deref().is_some_and(|r| {
+                        let (name, index) = super::mod_audio::player_slot(&slot);
+                        r.mutes(&super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Post, source: super::mod_audio::Source::Player, class, slot: name, id: index, owner: 0 })
+                    });
+                    if !muted {
+                        self.nodes.insert(slot, rt.post(id, &words));
+                    }
                     self.posts += 1;
                     if self.events.is_some() {
                         let (name, index) = super::mod_audio::player_slot(&slot);
@@ -406,17 +425,17 @@ impl PlayerAudio {
         self.apply(rt, cmds);
         if self.contacts_on {
             // The grind on / off contact sounds of this frame's Rail posts (Splice).
-            self.grind.sounds(s, &self.tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0));
+            self.grind.sounds(s, &self.tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref()));
             let before = self.board.starts;
             // The body / deck posters run once per console evaluation of this pass (their 15 / 6-frame
             // cooldowns = 0.5 / 0.2 s at any frame rate; `jitter_steps` None = per call, the tests).
             self.board.body_calls = self.jitter_steps;
             self.board.deck_calls = self.jitter_steps;
-            self.board.process(s, self.contacts.buckets(), &self.tuning, &self.contact_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0));
+            self.board.process(s, self.contacts.buckets(), &self.tuning, &self.contact_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref()));
             self.posts += self.board.starts - before;
             // The collision manager runs after the player's components (its own state manager).
             let mut access = rt.splice_host();
-            let mut host = super::mod_audio::Observed::new(&mut access, &mut self.events, super::mod_audio::Source::Player, 0);
+            let mut host = super::mod_audio::Observed::new(&mut access, &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref());
             for msg in std::mem::take(&mut self.board.outbox) {
                 self.collision.post(msg, &mut host);
             }
@@ -424,12 +443,12 @@ impl PlayerAudio {
         }
         if self.footsteps_on {
             let splashes = self.footsteps.splash.starts;
-            let mut cmds = self.footsteps.process(s, &self.tuning, &self.footstep_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0));
+            let mut cmds = self.footsteps.process(s, &self.tuning, &self.footstep_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref()));
             if self.footsteps.splash.starts != splashes {
                 // OffBoard's water splash (`player::footsteps::Splash`, retail `sub_824EBB58`).
                 bevy::log::info!("AUDIO_EVENT splash native Skate_Collisions:{}", self.footsteps.splash.last_id);
             }
-            cmds.extend(self.clothing.process(s, &self.tuning, &self.clothing_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0)));
+            cmds.extend(self.clothing.process(s, &self.tuning, &self.clothing_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref())));
             self.apply(rt, cmds);
         }
     }
@@ -538,18 +557,18 @@ impl PlayerAudio {
         if self.contacts_on {
             // The Rail updater's end (`sub_824C42A8`): the grind on / off sounds, after its packets
             // (the family-change starts of `Grind::update` first).
-            self.grind.sounds(s, &self.tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0));
-            self.grind.update_sounds(s, &rail, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0));
-            self.board.update(s, &contacts, &self.contact_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0));
+            self.grind.sounds(s, &self.tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref()));
+            self.grind.update_sounds(s, &rail, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref()));
+            self.board.update(s, &contacts, &self.contact_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref()));
             let before = self.collision.starts;
-            self.collision.update(m, &self.tuning.collision, s.dt, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0));
+            self.collision.update(m, &self.tuning.collision, s.dt, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref()));
             self.posts += self.collision.starts - before;
         }
         if self.footsteps_on {
             let off = Owner { mixmap: m, key: keys::off_board(0) };
-            let mut cmds = self.footsteps.update(s, &self.tuning, &self.footstep_tuning, &off, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0));
+            let mut cmds = self.footsteps.update(s, &self.tuning, &self.footstep_tuning, &off, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref()));
             let cloth = Owner { mixmap: m, key: keys::clothing(0) };
-            cmds.extend(self.clothing.update(s, &self.tuning, &self.clothing_tuning, &cloth, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0)));
+            cmds.extend(self.clothing.update(s, &self.tuning, &self.clothing_tuning, &cloth, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref())));
             self.apply(rt, cmds);
         }
         if self.wheels_on {
@@ -980,6 +999,102 @@ mod tests {
         s.grind_material = metal;
         p.process(&mut m, &s, &mut rt, None, 0);
         assert!(p.events.is_none());
+    }
+
+    /// Rules at the local player's sites (data-gated; the scenario of `event_tags_fire_on_real_posts`:
+    /// a popped trick, a landing, a grind). `mute` on `pop` keeps the pop Splice sounds from
+    /// starting (the board contacts' bank plays nothing in the pop frames) and `mute` on
+    /// `grind_start` drops the grind post (no grind node), while the rows still report both;
+    /// `layer` on `land` keeps the landing and queues the rule's sound; without rules the output is
+    /// the same as before rules existed.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn rules_mute_and_layer_the_players_pop_grind_and_landing() {
+        let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
+        let rule = |v: serde_json::Value| -> skate_mods::audio_rules::Rule { serde_json::from_value(v).unwrap() };
+        let ids = skate_core::scoring::catalog::IDENTIFIERS;
+        let metal = skate_audio::player::state::material_of_tag(9);
+        let run = |rules: Option<std::sync::Arc<super::super::mod_rules::RuleSet>>| {
+            let (mut rt, _) = runtime(&library);
+            for stem in SPLICE_BANKS {
+                let Some((bank, pcm)) = library.splice_bank(stem) else { panic!("missing private data: no {stem} patch tree") };
+                let r = &mut rt;
+                r.splice.load_bank(stem, bank, pcm, &mut r.mixer);
+            }
+            let contacts = rt.splice.bank_index(skate_audio::player::contacts::BANK).map(|i| skate_audio::splice::MIXER_BANK_BASE + i).expect("the contacts bank");
+            let mut m = MixMap::from_bytes(&mxb).unwrap();
+            let mut p = PlayerAudio::new(library.player_tuning(), true);
+            p.contacts_on = true;
+            p.contact_tuning = library.contacts_tuning();
+            p.events = Some(Vec::new());
+            p.rules = rules.clone();
+            let tags = super::super::mod_audio::Tags::from_tuning(&p.contact_tuning);
+            let scorable = (0..ids.len()).find(|&i| !matches!(p.tuning.audio_trick(ids[i].0), -1 | 31 | 32 | 35 | 36)).expect("a trick with an audio trick");
+            let (mut seen, mut pop_voices, mut grind_frames) = (std::collections::BTreeMap::<&str, usize>::new(), 0, 0);
+            let mut out = vec![0.0f32; 1600];
+            let mut all = Vec::new();
+            for f in 0..260usize {
+                let mut s = rolling(18.0, 0.0);
+                s.local = true;
+                match f {
+                    30..60 => {
+                        s.airborne = true;
+                        s.trick_active = true;
+                        s.scorable = scorable as _;
+                        s.wheel_count = 0;
+                        s.wheel_contact = [false; 4];
+                        s.air_time = (f - 30) as f32 / 60.0;
+                    }
+                    120..180 => {
+                        s.grinding = true;
+                        s.grind_family = 1;
+                        s.grind_material = metal;
+                    }
+                    _ => {}
+                }
+                globals(&mut m);
+                let l = p.listener([s.com_position[0] - 3.5, 2.4, s.com_position[2]], [1.0, -0.3, 0.0], 1.0 / 60.0, &s);
+                p.write_inputs(&mut m, &s, Some(&l));
+                p.seam_frame(&m, &s, 1.0 / 60.0, &mut rt);
+                p.process(&mut m, &s, &mut rt, None, 0);
+                m.tick(1.0 / 60.0);
+                p.update(&m, &s, &mut rt, None, 0);
+                rt.fill_stereo(&mut out);
+                all.extend_from_slice(&out);
+                if (25..60).contains(&f) {
+                    pop_voices += rt.mixer.snapshot().iter().filter(|v| v.bank == contacts).count();
+                }
+                grind_frames += usize::from(p.nodes.keys().any(|s| matches!(s, skate_audio::player::components::Slot::Grind(0))));
+                for r in p.events.as_mut().unwrap().drain(..) {
+                    if let Some(t) = tags.tag(&r) {
+                        *seen.entry(t).or_default() += 1;
+                    }
+                }
+            }
+            let plays = rules.map(|r| r.take_plays(&mut 0).len()).unwrap_or(0);
+            (seen, pop_voices, grind_frames, plays, all)
+        };
+        let (seen, pop_voices, grind_frames, _, plain) = run(None);
+        assert!(seen.contains_key("pop") && seen.contains_key("land") && pop_voices > 0 && grind_frames > 0, "{seen:?} {pop_voices} {grind_frames}");
+        let set = super::super::mod_rules::RuleSet::for_test(&[
+            ("dev.a", "quiet_pop", rule(serde_json::json!({"match": {"tag": "pop"}, "action": "mute"}))),
+            ("dev.a", "no_grind", rule(serde_json::json!({"match": {"tag": "grind_start"}, "action": "mute"}))),
+            ("dev.a", "landing", rule(serde_json::json!({"match": {"tag": "land"}, "action": "layer", "play": {"path": "thud.wav"}, "min_interval": 10}))),
+        ], super::super::mod_audio::Tags::from_tuning(&library.contacts_tuning()));
+        let (ruled, ruled_pops, ruled_grind, plays, modded) = run(Some(set));
+        assert!(ruled_pops < pop_voices, "the pop's Splice sounds did not start: {ruled_pops} of {pop_voices} contact voices left in the pop frames");
+        assert_eq!(ruled_grind, 0, "no grind post");
+        assert_eq!((ruled.get("pop"), ruled.get("grind_start"), ruled.get("land")), (seen.get("pop"), seen.get("grind_start"), seen.get("land")), "the requests are still reported");
+        assert_eq!(plays, 1, "the landing's layered sound, once");
+        assert_ne!(plain, modded, "the rules are heard");
+        // A class rule on Splice starts: nothing of the board contacts' bank starts at all.
+        let all_contacts = super::super::mod_rules::RuleSet::for_test(&[
+            ("dev.a", "no_contacts", rule(serde_json::json!({"match": {"kind": "splice", "class": skate_audio::player::contacts::BANK}, "action": "mute"}))),
+        ], Default::default());
+        let (_, none, _, _, _) = run(Some(all_contacts));
+        assert_eq!(none, 0, "no contact voice in the pop frames");
+        let (_, _, _, _, again) = run(None);
+        assert!(plain.iter().zip(&again).all(|(a, b)| a.to_bits() == b.to_bits()), "without rules: the same output");
     }
 
     /// Class_Seams through the real bank and MixMap: rolling over the sidewalk pattern (11) at three

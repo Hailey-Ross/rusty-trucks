@@ -17,6 +17,9 @@
   "tuning": {
     "world": {"traffic_engine": {"c04_taxi01": {"idle_rpm": 1200.0}}}
   },
+  "rules": {
+    "pop_click": {"match": {"tag": "pop"}, "action": "layer", "play": {"path": "audio/beep.wav", "volume": 0.3}, "min_interval": 0.2}
+  },
   "maps": {
     "format-demo": {
       "district": "DownTown",

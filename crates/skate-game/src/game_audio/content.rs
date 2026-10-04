@@ -61,6 +61,9 @@ pub(crate) struct AudioContent {
     runtime: Runtime,
     /// Restarts done.
     pub(crate) restarts: u64,
+    /// Bumped when a running overlay with `rules` comes or goes (`mod_rules` recompiles; rules
+    /// alone never restart the sound).
+    pub(crate) rules_generation: u64,
 }
 
 impl AudioContent {
@@ -75,27 +78,40 @@ impl AudioContent {
                 continue;
             }
             self.checked.insert(id.to_owned(), fingerprint);
-            let was = self.overlays.remove(id).is_some();
+            let was = self.overlays.remove(id);
             self.load_errors.remove(id);
             match skate_mods::audio_content::load(root) {
                 Ok(Some(loaded)) => match self.admit(id, &loaded) {
                     Ok(()) => {
                         info!("Game audio: mod {id} audio content: {}", loaded.overlay.summary().join(", "));
+                        // Only content restarts the sound; rules apply without a restart.
+                        self.pending |= loaded.overlay.has_content();
+                        if !loaded.overlay.rules.is_empty() {
+                            self.rules_generation += 1;
+                        }
                         self.overlays.insert(id.to_owned(), Registered { root: root.to_owned(), overlay: loaded.overlay, pcm_bytes: loaded.pcm_bytes });
-                        self.pending = true;
                     }
                     Err(e) => self.refuse(id, e),
                 },
                 Ok(None) => {}
                 Err(e) => self.refuse(id, e),
             }
-            self.pending |= was;
+            if let Some(old) = was {
+                self.pending |= old.overlay.has_content();
+                if !old.overlay.rules.is_empty() {
+                    self.rules_generation += 1;
+                }
+            }
         }
         let stopped: Vec<String> = self.overlays.keys().filter(|id| !alive.contains(&id.as_str())).cloned().collect();
         for id in stopped {
             info!("Game audio: mod {id} stopped: its audio content is removed");
-            self.overlays.remove(&id);
-            self.pending = true;
+            if let Some(old) = self.overlays.remove(&id) {
+                self.pending |= old.overlay.has_content();
+                if !old.overlay.rules.is_empty() {
+                    self.rules_generation += 1;
+                }
+            }
         }
         self.checked.retain(|id, _| alive.contains(&id.as_str()));
         self.load_errors.retain(|id, _| alive.contains(&id.as_str()));
@@ -113,6 +129,12 @@ impl AudioContent {
     fn refuse(&mut self, id: &str, e: String) {
         warn!("Game audio: mod {id}: {e}");
         self.load_errors.insert(id.to_owned(), e);
+    }
+
+    /// Tests: whether the content changed (a restart at the next pass).
+    #[cfg(test)]
+    pub(crate) fn restart_pending(&self) -> bool {
+        self.pending
     }
 
     /// Request a rebuild at the next audio pass (tests; an engine importer that changed data).
@@ -222,6 +244,8 @@ pub(super) fn frame(world: &mut World) {
         Runtime::Started | Runtime::Failed if pending => restart(world),
         _ => {}
     }
+    // Tuning writes apply here, between passes (after a restart: onto the new Library).
+    super::tuning::apply(world);
 }
 
 /// Rebuild the library and restart the native runtime (see the module docs).
@@ -289,13 +313,20 @@ mod tests {
         assert!(c.messages_for("dev.a")[0].starts_with("Audio content not loaded"));
         assert!(c.summary().is_some());
         c.pending = false;
-        // Fixed, then the mod stops (disabled or its script failed): removed.
-        package(&dir, "dev.a", Some(serde_json::json!({"version": 1})));
+        // Fixed, then the mod stops (disabled or its script failed): removed. (An overlay without
+        // content, e.g. rules only, never needs a restart: audio/moddability-2.)
+        package(&dir, "dev.a", Some(serde_json::json!({"version": 1, "replace": {"samples": {"x": {"0": "audio/a.wav"}}}})));
         c.sync([("dev.a", a.as_path(), 3)].into_iter());
         assert!(c.pending && c.overlays.contains_key("dev.a") && c.load_errors.is_empty());
         c.pending = false;
         c.sync(std::iter::empty());
         assert!(c.pending && c.overlays.is_empty());
+        c.pending = false;
+        package(&dir, "dev.a", Some(serde_json::json!({"version": 1})));
+        c.sync([("dev.a", a.as_path(), 4)].into_iter());
+        assert!(!c.pending && c.overlays.contains_key("dev.a"), "an empty overlay: registered, no restart");
+        c.sync(std::iter::empty());
+        assert!(!c.pending && c.overlays.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

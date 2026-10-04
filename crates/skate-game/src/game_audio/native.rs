@@ -553,6 +553,13 @@ impl Native {
         }
     }
 
+    /// Tests: a pass of `calls` console evaluations is pending (what `mixmap_frame` leaves for the
+    /// systems after the ticks), without the player's inputs.
+    #[cfg(test)]
+    pub(crate) fn test_pass(&mut self, calls: usize) {
+        self.pending = Some(PendingPass { calls, s: Default::default(), speed_scale: None, loose: 0, reverb: false });
+    }
+
     /// Unload every bank but the utility and the player's (map change); forget the prefetched ones.
     pub(crate) fn unload_map_banks(&mut self) {
         self.map_epoch += 1;
@@ -645,7 +652,7 @@ pub(crate) fn register(app: &mut App) {
 /// from the skater, in1 = f32 distance from the camera itself, in2 / in3 = azimuths (u16 scale,
 /// both in the camera frame here: who writes the emitter blocks in retail is not traced, §10),
 /// in15 bit 0 = active. The emitters are static: relative speeds (in13/14) stay 0.
-fn write_position(m: &mut MixMap, key: u32, listener: &GlobalTransform, skater: Vec3, source: Vec3) {
+pub(crate) fn write_position(m: &mut MixMap, key: u32, listener: &GlobalTransform, skater: Vec3, source: Vec3) {
     let az = azimuth(listener, source);
     m.set_input_f32(key, keys::pos::DIST_SKATER, skater.distance(source));
     m.set_input_f32(key, keys::pos::DIST_CAMERA, listener.translation().distance(source));

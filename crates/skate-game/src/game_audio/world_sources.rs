@@ -420,6 +420,8 @@ pub(crate) struct WorldHost {
     pub(crate) speech_requests: Vec<super::world_speech::PedRequest>,
     /// Audio event rows while some mod subscribes (`mod_audio::events_frame`).
     pub(crate) events: super::mod_audio::EventBuf,
+    /// The mods' mute / replace / layer rules (`mod_rules`); None without rules.
+    pub(crate) rules: Option<std::sync::Arc<super::mod_rules::RuleSet>>,
 }
 
 impl Default for WorldHost {
@@ -444,6 +446,7 @@ impl Default for WorldHost {
             posts: 0,
             speech_requests: Vec::new(),
             events: None,
+            rules: None,
         }
     }
 }
@@ -524,7 +527,13 @@ fn apply(host: &mut WorldHost, rt: &mut skate_audio::runtime::Runtime, cmds: Vec
                 if let Some(old) = host.nodes.remove(&(owner, slot)) {
                     rt.release(old);
                 }
-                host.nodes.insert((owner, slot), rt.post(id, &words));
+                let muted = host.rules.as_deref().is_some_and(|r| {
+                    let (name, index) = super::mod_audio::world_slot(&slot);
+                    r.mutes(&super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Post, source: super::mod_audio::Source::World, class, slot: name, id: index, owner })
+                });
+                if !muted {
+                    host.nodes.insert((owner, slot), rt.post(id, &words));
+                }
                 host.posts += 1;
                 if host.events.is_some() {
                     let (name, index) = super::mod_audio::world_slot(&slot);
@@ -568,6 +577,18 @@ pub(super) fn evaluation_dt() -> f32 {
 }
 
 impl WorldHost {
+    /// A runtime tuning write changed the world or player tuning (`tuning.rs`): the cached copies
+    /// follow (only once the host has read them; before, it reads the new values itself).
+    pub(crate) fn retune(&mut self, library: &super::Library, player: Option<&skate_audio::player::tuning::PlayerTuning>) {
+        if self.banks.is_some() {
+            self.ped_tuning = Some(library.world_tuning().ped_footsteps());
+            self.object_tuning = library.world_tuning().ped_objects();
+            if let Some(p) = player {
+                self.player_tuning = Some(p.clone());
+            }
+        }
+    }
+
     /// The map changed (`Native::map_epoch`, bumped by `unload_map_banks`), or the host runs for
     /// the first time: the unload destroyed every instance of the world banks, so every held node
     /// is released (harmless on a dead node; it frees them), the pools forget their holders, the
@@ -798,7 +819,7 @@ pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
         o.pos.write(m, &l, &[Some((p.position, p.velocity))]);
         // Retail's object order in the Pedestrian slot: Speech, SFX, BodyFall, Tazer. The Splice
         // starts (ring, foot plants, body falls) are recorded for mods (observe only).
-        let request = o.speech.process(owner, p, dt, owners.photo_flag, &host.object_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::World, owner).slot("ring"));
+        let request = o.speech.process(owner, p, dt, owners.photo_flag, &host.object_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::World, owner).rules(host.rules.as_deref()).slot("ring"));
         if let Some(r) = request {
             host.speech_requests.push(super::world_speech::PedRequest { request: r, voice: p.voice, speaker: p.speaker, level: p.level_select });
         } else if p.speech_value == 49 && o.speech.ring.is_none() && host.ring_bank == Some(false) && o.ring_fallback != Some(p.speech_value) {
@@ -811,8 +832,8 @@ pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
             });
         }
         o.ring_fallback = (p.speech_value == 49).then_some(49);
-        let mut cmds = o.sfx.process(owner, p, &ped_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::World, owner), dt);
-        o.body_fall.process(p, &host.object_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::World, owner).slot("body_fall"));
+        let mut cmds = o.sfx.process(owner, p, &ped_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::World, owner).rules(host.rules.as_deref()), dt);
+        o.body_fall.process(p, &host.object_tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::World, owner).rules(host.rules.as_deref()).slot("body_fall"));
         cmds.extend(o.tazer.process(owner, p, local.global_224));
         apply(host, rt, cmds);
         host.ped_objects.insert(owner, o);
@@ -1252,6 +1273,63 @@ mod tests {
         assert!(seen.get("footstep").is_some_and(|o| o.contains(&9)), "{seen:?}");
         assert!(seen.get("tazer").is_some_and(|o| o.contains(&11)), "{seen:?}");
         assert_eq!(seen.get("body_fall").map(Vec::as_slice), Some(&[11u64, 11][..]), "{seen:?}");
+    }
+
+    /// Rules at the world host's post site (data-gated): a car honks for 60 frames and a ped walks.
+    /// Without rules the horn is posted; `mute` on the horn tag drops the post (no horn node, the
+    /// ped's footsteps untouched) while subscribers still see the request; `replace` drops it and
+    /// queues the rule's sound once (min_interval); `layer` keeps the post and queues the sound.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn rules_mute_replace_and_layer_the_world_hosts_posts() {
+        use skate_audio::world::peds::PedState;
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Some(engine) = library.world_tuning().engine("c04_taxi01") else { panic!("missing private data: no world tuning") };
+        let rule = |v: serde_json::Value| -> skate_mods::audio_rules::Rule { serde_json::from_value(v).unwrap() };
+        let run_with = |rules: Option<std::sync::Arc<super::super::mod_rules::RuleSet>>| {
+            let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
+            let mut host = WorldHost { events: Some(Vec::new()), rules: rules.clone(), ..Default::default() };
+            let mut owners = WorldOwners::default();
+            let local = skate_audio::player::AudioState::default();
+            let camera = Some(([0.0, 1.5, 0.0], [0.0, 0.0, 1.0]));
+            let tags = super::super::mod_audio::Tags::default();
+            let (mut horn_frames, mut horn_rows, mut steps) = (0, 0, 0);
+            for f in 0..120usize {
+                let horn = if (20..80).contains(&f) { 2 } else { 0 };
+                owners.vehicles.insert(7, VehicleState { position: [3.0, 0.5, 8.0], engine, horn, ..Default::default() });
+                owners.peds.insert(9, PedState { position: [1.5, 0.0, 4.0], velocity: [0.0, 0.0, 1.3], speed: 1.3, feet: [f % 20 < 10, f % 20 >= 10], class: 2, weight: 1, ..Default::default() });
+                let m = native.mixmap.as_mut().unwrap();
+                for id in 1..=4 {
+                    m.set_input(skate_audio::mixmap::keys::MASTER, id, 32767);
+                }
+                for id in [1, 2, 5] {
+                    m.set_input(skate_audio::mixmap::keys::MUSIC, id, 32767);
+                }
+                m.set_input(skate_audio::mixmap::keys::REVERB, 5, 32767);
+                run(&mut host, &owners, &mut native, &library, camera, &local);
+                horn_frames += usize::from(host.nodes.contains_key(&(7, WorldSlot::Horn)));
+                for r in host.events.as_mut().unwrap().drain(..) {
+                    match tags.tag(&r) {
+                        Some("horn") => horn_rows += 1,
+                        Some("footstep") => steps += 1,
+                        _ => {}
+                    }
+                }
+            }
+            let plays = rules.map(|r| r.take_plays(&mut 0).len()).unwrap_or(0);
+            (horn_frames, horn_rows, steps, plays)
+        };
+        let plain = run_with(None);
+        assert!(plain.0 > 0 && plain.1 > 0 && plain.2 > 0, "{plain:?}");
+        let set = |r| super::super::mod_rules::RuleSet::for_test(&[("dev.a", "horn", r)], Default::default());
+        let muted = run_with(Some(set(rule(serde_json::json!({"match": {"tag": "horn"}, "action": "mute"})))));
+        assert_eq!(muted.0, 0, "no horn node while muted");
+        assert_eq!((muted.1, muted.2), (plain.1, plain.2), "the requests are still reported; the steps untouched");
+        let replaced = run_with(Some(set(rule(serde_json::json!({"match": {"tag": "horn"}, "action": "replace", "play": {"path": "honk.wav"}, "min_interval": 10})))));
+        assert_eq!((replaced.0, replaced.3), (0, 1), "dropped, one sound (min_interval)");
+        let layered = run_with(Some(set(rule(serde_json::json!({"match": {"source": "world", "slot": "horn"}, "action": "layer", "play": {"path": "honk.wav"}, "min_interval": 10})))));
+        assert_eq!((layered.0, layered.3), (plain.0, 1), "kept, plus one sound");
     }
 
     #[test]

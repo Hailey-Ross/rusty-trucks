@@ -143,6 +143,21 @@ pub(crate) struct WorldSpeech {
     pub(crate) events: super::mod_audio::EventBuf,
 }
 
+impl WorldSpeech {
+    /// A runtime tuning write changed the world tuning (`tuning.rs`): the managers' event tuning and
+    /// the stream voice's curves follow; the managers' timers (who spoke when) are kept.
+    pub(crate) fn retune(&mut self, library: &super::Library) {
+        if !self.tried {
+            return;
+        }
+        self.manager.tuning = library.world_tuning().speech_tuning();
+        self.voice = library.world_tuning().speech_voice();
+        if let Some(cast) = &mut self.cast {
+            cast.manager.tuning = library.world_tuning().speech_tuning_bank(0);
+        }
+    }
+}
+
 impl Default for WorldSpeech {
     fn default() -> Self {
         Self {

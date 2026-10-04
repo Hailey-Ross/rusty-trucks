@@ -879,6 +879,26 @@ pub(crate) struct Library {
     mods: BTreeMap<String, PathBuf>,
     loaded: HashMap<String, Clip>,
     failed: std::collections::HashSet<String>,
+    /// The tuning sections as loaded (JSON, the overlays' merge included): the base of the runtime
+    /// tuning writes (`tuning.rs`). Read from the install manifest on first use when no overlay was
+    /// merged (nothing is parsed twice without tuning writes).
+    tuning_raw: std::sync::OnceLock<Result<serde_json::Map<String, serde_json::Value>, String>>,
+    /// The loaded tuning sections a runtime tuning write replaced, kept to put back exactly.
+    tuning_saved: TuningSaved,
+}
+
+/// The tuning sections the runtime tuning writes replace (`Library::set_tuning`).
+pub(crate) const TUNING_SECTIONS: [&str; 3] = ["player_tuning", "world_tuning", "bus_tuning"];
+
+#[derive(Default)]
+struct TuningSaved {
+    player: Option<PlayerTuningJson>,
+    world: Option<super::world_sources::WorldTuningJson>,
+    bus: Option<BusTuningJson>,
+}
+
+fn tuning_sections(v: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    TUNING_SECTIONS.iter().filter_map(|k| v.get(*k).map(|x| ((*k).to_owned(), x.clone()))).collect()
 }
 
 fn safe_relative(file: &str) -> bool {
@@ -989,6 +1009,77 @@ impl Library {
         &self.manifest.world_tuning
     }
 
+    /// The tuning sections as loaded (see `tuning_raw`): the base the runtime tuning writes patch.
+    pub(crate) fn tuning_base(&self) -> Result<&serde_json::Map<String, serde_json::Value>, String> {
+        self.tuning_raw
+            .get_or_init(|| {
+                let path = self.root.join("audio_manifest.json");
+                let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+                Ok(tuning_sections(&value))
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    /// Whether a tuning section's JSON reads back as the typed tuning the game uses.
+    pub(crate) fn check_tuning(section: &str, value: &serde_json::Value) -> Result<(), String> {
+        let read = match section {
+            "player_tuning" => serde_json::from_value::<PlayerTuningJson>(value.clone()).map(|_| ()),
+            "world_tuning" => serde_json::from_value::<super::world_sources::WorldTuningJson>(value.clone()).map(|_| ()),
+            "bus_tuning" => serde_json::from_value::<BusTuningJson>(value.clone()).map(|_| ()),
+            _ => return Err(format!("no tuning section {section}")),
+        };
+        read.map_err(|e| format!("{section} does not read back: {e}"))
+    }
+
+    /// Replace a tuning section with `value` (a runtime tuning write); the loaded section is kept
+    /// and comes back with [`Library::restore_tuning`].
+    pub(crate) fn set_tuning(&mut self, section: &str, value: &serde_json::Value) -> Result<(), String> {
+        let err = |e: serde_json::Error| format!("{section} does not read back: {e}");
+        match section {
+            "player_tuning" => {
+                let new = serde_json::from_value::<PlayerTuningJson>(value.clone()).map_err(err)?;
+                let old = std::mem::replace(&mut self.manifest.player_tuning, new);
+                self.tuning_saved.player.get_or_insert(old);
+            }
+            "world_tuning" => {
+                let new = serde_json::from_value::<super::world_sources::WorldTuningJson>(value.clone()).map_err(err)?;
+                let old = std::mem::replace(&mut self.manifest.world_tuning, new);
+                self.tuning_saved.world.get_or_insert(old);
+            }
+            "bus_tuning" => {
+                let new = serde_json::from_value::<BusTuningJson>(value.clone()).map_err(err)?;
+                let old = std::mem::replace(&mut self.manifest.bus_tuning, new);
+                self.tuning_saved.bus.get_or_insert(old);
+            }
+            _ => return Err(format!("no tuning section {section}")),
+        }
+        Ok(())
+    }
+
+    /// Put the loaded tuning section back (the very value loaded, not a re-read).
+    pub(crate) fn restore_tuning(&mut self, section: &str) {
+        match section {
+            "player_tuning" => {
+                if let Some(old) = self.tuning_saved.player.take() {
+                    self.manifest.player_tuning = old;
+                }
+            }
+            "world_tuning" => {
+                if let Some(old) = self.tuning_saved.world.take() {
+                    self.manifest.world_tuning = old;
+                }
+            }
+            "bus_tuning" => {
+                if let Some(old) = self.tuning_saved.bus.take() {
+                    self.manifest.bus_tuning = old;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// The player components' vault tuning (empty tables on installs set up before it existed).
     pub(crate) fn player_tuning(&self) -> skate_audio::player::tuning::PlayerTuning {
         self.manifest.player_tuning.tuning()
@@ -1058,6 +1149,7 @@ impl Library {
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut report = ContentReport::default();
         let mut mods = BTreeMap::new();
+        let raw = std::sync::OnceLock::new();
         let manifest: Manifest = if overlays.is_empty() {
             serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?
         } else {
@@ -1080,6 +1172,7 @@ impl Library {
                 }
             }
             report.owners = owners.all().clone();
+            let _ = raw.set(Ok(tuning_sections(&value)));
             serde_json::from_value(value).map_err(|e| format!("{}: {e}", path.display()))?
         };
         if !MANIFEST_VERSIONS.contains(&manifest.version) {
@@ -1107,7 +1200,7 @@ impl Library {
         if !overlays.is_empty() {
             info!("Game audio: content overlays {:?} ({} conflicts, {} warnings, {} rejected)", report.applied, report.conflicts.len(), report.warnings.len(), report.rejected.len());
         }
-        Ok((Self { root, manifest, mods, loaded: HashMap::new(), failed: Default::default() }, report))
+        Ok((Self { root, manifest, mods, loaded: HashMap::new(), failed: Default::default(), tuning_raw: raw, tuning_saved: TuningSaved::default() }, report))
     }
 
     fn clip(&mut self, assets: &mut Assets<AudioSource>, file: &str) -> Option<Clip> {

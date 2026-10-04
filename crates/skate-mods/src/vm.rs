@@ -165,6 +165,19 @@ pub enum Command {
         #[serde(default)]
         tags: Option<Vec<String>>,
     },
+    /// Audio events extension 2: a mute / replace / layer rule under a key (`rule` absent = remove).
+    AudioRule {
+        key: String,
+        #[serde(default)]
+        rule: Option<crate::audio_rules::Rule>,
+    },
+    /// Audio tuning extension 1: patch a typed tuning domain while the mod runs (`patch` absent =
+    /// restore this mod's patch of the domain).
+    AudioSetTuning {
+        domain: String,
+        #[serde(default)]
+        patch: Option<Value>,
+    },
     /// World audio extension 1: publish a traffic vehicle / ped / skater to the retail world audio.
     WorldAudioSpawn {
         key: String,
@@ -416,7 +429,7 @@ impl Command {
         match self {
             Self::RigPart {index,options} => *index<26 && options.as_ref().is_none_or(|o|o.validate()),
             Self::GraphGate {graph,target,index,..} => matches!(graph.as_str(),"action"|"motion") && matches!(target.as_str(),"state"|"transition"|"behavior") && *index<65536,
-            Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog"),
+            Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog") || crate::audio_tuning::valid_inspect(system),
             Self::Request {key,command,token} => *token<=9_007_199_254_740_991 && crate::schema::valid_id(key) && !matches!(**command,Self::Request{..}) && command.validate(),
             Self::InputOverride {action,value} => (64..=81).contains(action) && value.is_none_or(|v|v.is_finite() && (-1.0..=1.0).contains(&v)),
             Self::NativeImpulse {body,impulse,point:p,..} => body.validate() && impulse.iter().all(|v|v.is_finite() && v.abs()<=100_000.) && p.as_ref().is_none_or(point),
@@ -442,9 +455,11 @@ impl Command {
             Self::AudioRelease { key } => crate::schema::valid_id(key),
             Self::AudioSubscribe { tags } => tags.as_ref().is_none_or(|t| t.len() <= 16 && t.iter().all(|x| crate::audio::valid_symbol(x))),
             Self::AudioSetGlobal { name, .. } => crate::audio::valid_symbol(name),
+            Self::AudioRule { key, rule } => crate::schema::valid_id(key) && rule.as_ref().is_none_or(crate::audio_rules::Rule::validate),
+            Self::AudioSetTuning { domain, patch } => crate::audio_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::audio_tuning::valid_patch(domain, p)),
             Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
                 && mixmap.len() <= crate::audio::MAX_WATCH && mixmap.iter().all(crate::audio::MixMapKey::validate),
-            Self::WorldAudioSpawn { key, object, options } => crate::schema::valid_id(key) && options.validate_for(*object),
+            Self::WorldAudioSpawn { key, object, options } => crate::schema::valid_id(key) && options.validate_for(*object) && options.complete_for(*object),
             Self::WorldAudioUpdate { key, options } => crate::schema::valid_id(key) && options.validate() && options.source.is_none(),
             Self::WorldAudioEvent { key, event, options } => crate::schema::valid_id(key) && options.validate(event),
             Self::WorldAudioRemove { key } => crate::schema::valid_id(key),
@@ -697,6 +712,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::AudioSetGlobal { .. } => "audio_set_global",
         Command::AudioWatch { .. } => "audio_watch",
         Command::AudioSubscribe { .. } => "audio_subscribe",
+        Command::AudioSetTuning { .. } => "audio_set_tuning",
+        Command::AudioRule { .. } => "audio_rule",
         Command::WorldAudioSpawn { .. } => "world_audio_spawn",
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
@@ -995,16 +1012,22 @@ impl Vm {
             capabilities.set("volumes", 1)?;
             capabilities.set("capture", 1)?;
             capabilities.set("multiplayer_debug", 1)?;
-            capabilities.set("world_audio", 1)?;
+            // 2 (2026-10-04, audio/moddability-2): the `emitter` and `reverb_zone` kinds.
+            capabilities.set("world_audio", 2)?;
             // Audio extension 1: the mod's own WAVs (`sdk.audio.preload / play / update / stop /
             // stop_all`); before 2026-10-04 only `sdk.audio.version` advertised it.
             // 2 (2026-10-04): retail posts by class, globals, MixMap / global watch, `sdk.audio.info`.
-            capabilities.set("audio", 2)?;
+            // 3 (2026-10-04, audio/moddability-2): `native = true` on `sdk.audio.play` (the native mixer).
+            capabilities.set("audio", 3)?;
             // Audio content overlays (`audio.json`: replace / add retail audio content by identity;
             // `audio_content.rs`), applied while the mod runs.
-            capabilities.set("audio_content", 1)?;
+            // 2 (audio/moddability-2): `rules` in audio.json.
+            capabilities.set("audio_content", 2)?;
             // Audio events, observe only (`sdk.audio.subscribe` / `sdk.audio.events`).
-            capabilities.set("audio_events", 1)?;
+            // 2 (audio/moddability-2): mute / replace / layer rules (`sdk.audio.rule`).
+            capabilities.set("audio_events", 2)?;
+            // Tuning writes at run time (`sdk.audio.set_tuning`: player / world / bus / reverb domains).
+            capabilities.set("audio_tuning", 1)?;
             sdk.set("_native_capabilities", capabilities)?;
             sdk.set("mod_id", manifest.id.clone())?;
             sdk.set(
@@ -1807,11 +1830,11 @@ mod world_audio_tests {
         let root = std::env::temp_dir().join(format!("skate-audio-capabilities-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("main.lua"), r#"
-            assert(sdk.capabilities.audio == 2, 'audio capability')
-            assert(sdk.capabilities.world_audio == 1, 'world_audio capability')
-            assert(sdk.capabilities.audio_content == 1, 'audio_content capability')
-            assert(sdk.capabilities.audio_events == 1, 'audio_events capability')
-            assert(sdk.audio.version == 2 and sdk.world_audio.version == 1, 'versions')
+            assert(sdk.capabilities.audio == 3, 'audio capability')
+            assert(sdk.capabilities.world_audio == 2, 'world_audio capability')
+            assert(sdk.capabilities.audio_content == 2, 'audio_content capability')
+            assert(sdk.capabilities.audio_events == 2, 'audio_events capability')
+            assert(sdk.audio.version == 3 and sdk.world_audio.version == 2, 'versions')
             return {}
         "#).unwrap();
         let manifest: Manifest = serde_json::from_value(json!({
@@ -1978,6 +2001,102 @@ mod world_audio_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// Audio tuning extension 1: `audio_set_tuning` crosses the serde boundary (valid, invalid,
+    /// unknown field); the tuning read is an `engine_inspect` of `audio_tuning:<domain>[/path]`; the
+    /// Lua wrappers submit both and `audio_tuning` is advertised.
+    #[test]
+    fn audio_tuning_commands_deserialize_and_validate() {
+        for value in [
+            json!({"kind":"audio_set_tuning","domain":"world","patch":{"traffic_engine":{"c04_taxi01":{"idle_rpm":1200}}}}),
+            json!({"kind":"audio_set_tuning","domain":"reverb","patch":{"BEEFC8E3DE04FBAE":{"3":0.5}}}),
+            json!({"kind":"audio_set_tuning","domain":"player"}),
+            json!({"kind":"engine_inspect","system":"audio_tuning:world"}),
+            json!({"kind":"engine_inspect","system":"audio_tuning:world/traffic_engine/c04_taxi01"}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(c.validate(), "{value}");
+        }
+        for value in [
+            json!({"kind":"audio_set_tuning","domain":"mixmap","patch":{"a":1}}),
+            json!({"kind":"audio_set_tuning","domain":"world","patch":{"a":null}}),
+            json!({"kind":"audio_set_tuning","domain":"world","patch":7}),
+            json!({"kind":"engine_inspect","system":"audio_tuning:mixmap"}),
+            json!({"kind":"engine_inspect","system":"audio_tuning:world/../x"}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(!c.validate(), "accepted {value}");
+        }
+        assert!(serde_json::from_value::<Command>(json!({"kind":"audio_set_tuning","domain":"world","patch":{},"owner":"x"})).is_err());
+        let root = std::env::temp_dir().join(format!("skate-audio-tuning-lua-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            function M.on_update()
+                assert(sdk.capabilities.audio_tuning == 1, 'capability')
+                sdk.audio.set_tuning('world', {traffic_engine = {c04_taxi01 = {idle_rpm = 1200}}})
+                sdk.audio.set_tuning('world', nil)
+                sdk.audio.tuning('t', 'world', 'traffic_engine/c04_taxi01')
+            end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.audio-tuning","api":2,"name":"Audio tuning","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
+        let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
+        assert_eq!(kinds, ["audio_set_tuning", "audio_set_tuning", "request"]);
+        assert!(cmds.iter().all(Command::validate));
+        assert!(matches!(&cmds[1], Command::AudioSetTuning { patch: None, .. }), "nil restores");
+        assert!(matches!(&cmds[2], Command::Request { command, .. } if matches!(&**command, Command::EngineInspect { system } if system == "audio_tuning:world/traffic_engine/c04_taxi01")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Audio events extension 2: `audio_rule` crosses the serde boundary (valid, invalid, unknown
+    /// field) and the Lua wrapper submits it (a nil rule removes).
+    #[test]
+    fn audio_rule_commands_deserialize_and_validate() {
+        for value in [
+            json!({"kind":"audio_rule","key":"quiet_pop","rule":{"match":{"tag":"pop"},"action":"mute"}}),
+            json!({"kind":"audio_rule","key":"my_pop","rule":{"match":{"tag":"pop"},"action":"replace","play":{"path":"audio/pop.wav","volume":0.8}}}),
+            json!({"kind":"audio_rule","key":"horns","rule":{"match":{"source":"world","class":"TRAFFIC_HORN"},"action":"layer","play":{"path":"a.wav"},"min_interval":0.3}}),
+            json!({"kind":"audio_rule","key":"quiet_pop"}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(c.validate(), "{value}");
+        }
+        for value in [
+            json!({"kind":"audio_rule","key":"../x","rule":{"match":{"tag":"pop"},"action":"mute"}}),
+            json!({"kind":"audio_rule","key":"x","rule":{"match":{},"action":"mute"}}),
+            json!({"kind":"audio_rule","key":"x","rule":{"match":{"tag":"pop"},"action":"replace"}}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(!c.validate(), "accepted {value}");
+        }
+        assert!(serde_json::from_value::<Command>(json!({"kind":"audio_rule","key":"x","rule":{"match":{"tag":"pop"},"action":"mute"},"extra":1})).is_err());
+        let root = std::env::temp_dir().join(format!("skate-audio-rule-lua-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            function M.on_update()
+                assert(sdk.capabilities.audio_events == 2 and sdk.capabilities.audio_content == 2, 'capabilities')
+                sdk.audio.rule('my_pop', {match = {tag = 'pop'}, action = 'replace', play = {path = 'audio/pop.wav', volume = 0.8}})
+                sdk.audio.rule('my_pop', nil)
+            end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.audio-rule","api":2,"name":"Audio rule","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
+        assert_eq!(cmds.iter().map(command_kind).collect::<Vec<_>>(), ["audio_rule", "audio_rule"]);
+        assert!(cmds.iter().all(Command::validate));
+        assert!(matches!(&cmds[0], Command::AudioRule { rule: Some(r), .. } if r.action == crate::audio_rules::RuleAction::Replace && r.on.tag.as_deref() == Some("pop")));
+        assert!(matches!(&cmds[1], Command::AudioRule { rule: None, .. }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn world_audio_commands_deserialize() {
         for value in [
@@ -1993,12 +2112,19 @@ mod world_audio_tests {
             json!({"kind":"world_audio_update","key":"ped1","options":{"tazing":true,"photo_flag":true}}),
             json!({"kind":"world_audio_update","key":"sk1","options":{"loose_board":1}}),
             json!({"kind":"world_audio_remove","key":"car1"}),
+            json!({"kind":"world_audio_spawn","key":"fountain","object":"emitter","options":{"bank":"water_fountain","patch":81,"position":[0,0,0],"extent":[6,6,6]}}),
+            json!({"kind":"world_audio_spawn","key":"cave","object":"reverb_zone","options":{"preset":"BEEFC8E3DE04FBAE","position":[0,0,0],"extent":[20,8,12]}}),
+            json!({"kind":"world_audio_update","key":"fountain","options":{"volume":0.3,"position":[1,0,0]}}),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert!(c.validate(), "{value}");
         }
         let c: Command = serde_json::from_value(json!({"kind":"world_audio_spawn","key":"x","object":"ped","options":{"engine":"c04_taxi01"}})).unwrap();
         assert!(!c.validate(), "a traffic field on a ped");
+        for incomplete in [json!({"kind":"world_audio_spawn","key":"e","object":"emitter","options":{"bank":"x"}}), json!({"kind":"world_audio_spawn","key":"z","object":"reverb_zone","options":{"extent":[1,1,1]}})] {
+            let c: Command = serde_json::from_value(incomplete.clone()).unwrap();
+            assert!(!c.validate(), "{incomplete}");
+        }
         assert!(serde_json::from_value::<Command>(json!({"kind":"world_audio_spawn","key":"x","object":"bus"})).is_err());
         let c: Command = serde_json::from_value(json!({"kind":"world_audio_update","key":"x","options":{"source":"lite"}})).unwrap();
         assert!(!c.validate(), "the source is fixed at spawn");

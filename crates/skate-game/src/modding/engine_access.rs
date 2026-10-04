@@ -32,6 +32,8 @@ pub(super) fn inspect(world: &World, system: &str) -> Value {
         "scoring" => world.resource::<SkaterRuntime>().scoring.mod_catalog(),
         // Retail classes / functions / globals, loaded banks, the map's audio, sets, zones, overlays.
         "audio_catalog" => crate::game_audio::catalog(world),
+        // A tuning domain (or a path inside it) as the game uses it now (`sdk.audio.tuning`).
+        s if s.starts_with("audio_tuning:") => crate::game_audio::tuning_read(world, &s["audio_tuning:".len()..]),
         _ => Value::Null,
     }
 }

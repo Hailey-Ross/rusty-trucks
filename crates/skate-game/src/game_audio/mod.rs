@@ -22,6 +22,8 @@ mod grain_bed;
 mod library;
 mod map_audio;
 pub(crate) mod mod_audio;
+pub(crate) mod mod_rules;
+pub(crate) mod mod_voices;
 mod native;
 mod npc_skaters;
 mod player_audio;
@@ -31,6 +33,7 @@ pub(crate) mod skate_events;
 mod state_log;
 mod state_replay;
 mod timing;
+pub(crate) mod tuning;
 mod voices;
 pub(crate) mod world_bridge;
 mod world_sources;
@@ -58,13 +61,28 @@ struct SavedSettings {
     /// 24 peds, 3 NPC / remote skaters instead of retail's 4 / 15 / 1; `native::WorldInstances`).
     /// Read at start. `SKATE_AUDIO_MORE_AUDIBLE=1` turns it on for one run.
     more_audible_world: bool,
+    /// Where mod emitters (`WorldEmitter`, `sdk.world_audio.spawn(key, 'emitter', …)`) get their
+    /// emitter state: `"shared"` (the default, retail's rule: they share the 5 emitter states with
+    /// the map's emitters, the first reached served first) or `"extra"` (NOT retail: their own
+    /// instances of the private MixMap, so the map's emitters keep all 5). Read every frame.
+    /// `SKATE_AUDIO_MOD_EMITTER_SLOTS=extra` turns it on for one run.
+    mod_emitter_slots: ModEmitterSlots,
     // Files saved before 2026-10-03 may hold `"interim"` (the opt-out to the removed interim cue
     // tables) or the older `"native"`; unknown keys are ignored, so they still load.
 }
 impl Default for SavedSettings {
     fn default() -> Self {
-        Self { master: 75, ambience: 100, effects: 100, more_audible_world: false }
+        Self { master: 75, ambience: 100, effects: 100, more_audible_world: false, mod_emitter_slots: ModEmitterSlots::Shared }
     }
+}
+
+/// See `SavedSettings::mod_emitter_slots`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ModEmitterSlots {
+    #[default]
+    Shared,
+    Extra,
 }
 impl SavedSettings {
     fn validated(mut self) -> Self {
@@ -102,6 +120,10 @@ impl AudioSettings {
     /// The non-retail "more audible" world layout (see `SavedSettings::more_audible_world`).
     pub(crate) fn more_audible_world(&self) -> bool {
         self.saved.more_audible_world || std::env::var("SKATE_AUDIO_MORE_AUDIBLE").is_ok_and(|v| v == "1")
+    }
+    /// Whether mod emitters get their own (non-retail) instances (see `SavedSettings::mod_emitter_slots`).
+    pub(crate) fn extra_mod_emitter_slots(&self) -> bool {
+        self.saved.mod_emitter_slots == ModEmitterSlots::Extra || std::env::var("SKATE_AUDIO_MOD_EMITTER_SLOTS").is_ok_and(|v| v == "extra")
     }
     pub(crate) fn category(&self, category: Category) -> f32 {
         let percent = match category {
@@ -170,13 +192,18 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<AudioContent>()
             .init_resource::<map_audio::MapAudio>()
             .init_resource::<mod_audio::AudioApi>()
+            .init_resource::<mod_voices::ModMix>()
+            .init_resource::<mod_voices::ModVoices>()
+            .init_resource::<tuning::AudioTuning>()
+            .init_resource::<mod_rules::AudioRules>()
+            .init_resource::<crate::world_audio::WorldEmitterStats>()
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
             .add_systems(
                 Update,
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
                 // the ticks and the local update, then the beds (retail's process / tick / update).
-                (content::frame, map_audio::update, mod_audio::events_frame, mod_audio::drain, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, mod_audio::readback, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
+                (content::frame, map_audio::update, mod_audio::events_frame, mod_rules::frame, mod_audio::drain, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, mod_audio::readback, mod_voices::frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
                     .chain()
                     .before(CueSet)
                     .after(crate::app::FrameSet::Animation),
@@ -213,9 +240,47 @@ pub(crate) fn with_api<R>(world: &mut World, f: impl FnOnce(&mut mod_audio::Audi
     Some(world.resource_scope(|world, mut api: Mut<mod_audio::AudioApi>| f(&mut api, world.get_resource::<native::Native>(), generation)))
 }
 
-/// A mod stopped, failed or was reloaded: its posts, globals, watches and subscriptions go.
+/// A mod stopped, failed or was reloaded: its posts, globals, watches, subscriptions and tuning
+/// patches go (the tuning is restored at the next audio pass).
 pub(crate) fn clear_mod(world: &mut World, owner: &str) {
     with_api(world, |api, native, generation| api.clear_owner(native, generation, owner));
+    if let Some(mut t) = world.get_resource_mut::<tuning::AudioTuning>() {
+        t.clear_owner(owner);
+    }
+    if let Some(mut r) = world.get_resource_mut::<mod_rules::AudioRules>() {
+        r.clear_owner(owner);
+    }
+}
+
+/// `sdk.audio.rule`: set (or with `None` remove) a mod's rule; a replace / layer rule's WAV is
+/// loaded into the mod's native bank now (`load` reads and checks it: the mod system's limits).
+pub(crate) fn set_rule(world: &mut World, owner: &str, key: &str, rule: Option<skate_mods::audio_rules::Rule>, load: impl FnOnce(&mut World, &str) -> Result<(), String>) -> Result<(), String> {
+    if world.get_resource::<mod_rules::AudioRules>().is_none() {
+        return Err("game audio is unavailable".into());
+    }
+    if let Some(p) = rule.as_ref().and_then(|r| r.play.as_ref()) {
+        load(world, &p.path)?;
+    }
+    world.resource_mut::<mod_rules::AudioRules>().set_rule(owner, key, rule)
+}
+
+/// `sdk.audio.set_tuning`: set (or with `None` restore) a mod's patch of a tuning domain.
+pub(crate) fn set_tuning(world: &mut World, owner: &str, domain: &str, patch: Option<serde_json::Value>) -> Result<(), String> {
+    if world.get_resource::<tuning::AudioTuning>().is_none() {
+        return Err("game audio is unavailable".into());
+    }
+    world.resource_scope(|world, mut t: Mut<tuning::AudioTuning>| {
+        let library = world.get_resource::<Library>().ok_or("game audio is unavailable (no audio install)")?;
+        t.set(library, owner, domain, patch)
+    })
+}
+
+/// `sdk.engine.inspect(key, 'audio_tuning:<domain>[/path]')`: the domain as the game uses it now.
+pub(crate) fn tuning_read(world: &World, query: &str) -> serde_json::Value {
+    match (world.get_resource::<tuning::AudioTuning>(), world.get_resource::<Library>()) {
+        (Some(t), Some(library)) => t.read(library, query),
+        _ => serde_json::Value::Null,
+    }
 }
 
 /// A map change: every mod post is released and every global restored.
@@ -226,10 +291,25 @@ pub(crate) fn clear_mods_runtime(world: &mut World) {
 /// The `audio` (per mod) and `audio_info` snapshot sections.
 pub(crate) fn mod_snapshot(world: &World, owner: &str) -> serde_json::Value {
     let generation = world.get_resource::<AudioContent>().map_or(0, |c| c.generation);
-    world.get_resource::<mod_audio::AudioApi>().map_or(serde_json::Value::Null, |api| api.snapshot(world.get_resource::<native::Native>(), generation, owner))
+    let mut v = world.get_resource::<mod_audio::AudioApi>().map_or(serde_json::Value::Null, |api| api.snapshot(world.get_resource::<native::Native>(), generation, owner));
+    // The tuning fields this mod owns (as of the last audio pass).
+    let owned = world.get_resource::<tuning::AudioTuning>().map(|t| t.owned(owner)).unwrap_or_default();
+    if !owned.is_empty() {
+        if v.is_null() {
+            v = serde_json::json!({});
+        }
+        v["tuning"] = serde_json::json!(owned);
+    }
+    v
 }
 pub(crate) fn mod_info(world: &World) -> serde_json::Value {
-    mod_audio::info(world.get_resource::<native::Native>(), world.get_resource::<AudioContent>(), world.get_resource::<map_audio::MapAudio>())
+    let mut v = mod_audio::info(world.get_resource::<native::Native>(), world.get_resource::<AudioContent>(), world.get_resource::<map_audio::MapAudio>());
+    // audio/moddability-2: rules in force, native mod voices, where mod emitters get their state.
+    v["rules"] = serde_json::json!(world.get_resource::<mod_rules::AudioRules>().map_or(0, mod_rules::AudioRules::count));
+    v["native_voices"] = serde_json::json!(world.get_resource::<mod_voices::ModVoices>().map_or(0, |m| m.voice_usage("").1));
+    v["native_voices_max"] = serde_json::json!(mod_voices::MAX_NATIVE_VOICES);
+    v["mod_emitter_slots"] = serde_json::json!(if world.get_resource::<AudioSettings>().is_some_and(AudioSettings::extra_mod_emitter_slots) { "extra" } else { "shared" });
+    v
 }
 
 /// `sdk.engine.inspect('audio_catalog')`.
@@ -276,7 +356,7 @@ mod tests {
     #[test]
     fn old_settings_files_with_interim_or_native_keys_still_load() {
         let old: SavedSettings = serde_json::from_str(r#"{"master":60,"ambience":75,"effects":75,"native":false}"#).unwrap();
-        assert_eq!(old, SavedSettings { master: 60, ambience: 75, effects: 75, more_audible_world: false });
+        assert_eq!(old, SavedSettings { master: 60, ambience: 75, effects: 75, ..SavedSettings::default() });
         let opted_out: SavedSettings = serde_json::from_str(r#"{"master":50,"interim":true}"#).unwrap();
         assert_eq!(opted_out, SavedSettings { master: 50, ..SavedSettings::default() });
     }
@@ -285,9 +365,11 @@ mod tests {
     fn defaults_are_quiet_and_saved_values_are_bounded() {
         assert_eq!(SavedSettings::default().master, 75);
         let loaded: SavedSettings = serde_json::from_str(r#"{"master":400,"ambience":33,"effects":7}"#).unwrap();
-        assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5, more_audible_world: false });
+        assert_eq!(loaded.validated(), SavedSettings { master: 100, ambience: 30, effects: 5, ..SavedSettings::default() });
         let more: SavedSettings = serde_json::from_str(r#"{"more_audible_world":true}"#).unwrap();
         assert!(more.more_audible_world && more.master == 75);
+        let extra: SavedSettings = serde_json::from_str(r#"{"mod_emitter_slots":"extra"}"#).unwrap();
+        assert_eq!((extra.mod_emitter_slots, SavedSettings::default().mod_emitter_slots), (ModEmitterSlots::Extra, ModEmitterSlots::Shared));
     }
 
     #[test]
