@@ -408,6 +408,13 @@ impl Plugin for PhysicsPlugin {
     }
 }
 
+/// Collision+16 low 16 bits: the board's surface vote (82C08818, 12 when a board
+/// contact is water), as respawn reads it. Read-only, for game_audio (the audio
+/// record's `+813`, the board in water).
+pub(crate) fn board_surface(physics: &GamePhysics) -> u32 {
+    ground_runtime::active_surface(&physics.riding, &physics.board) & 0xffff
+}
+
 pub(crate) fn advance(
     mut physics: ResMut<GamePhysics>,
     mut skater: ResMut<SkaterRuntime>,
@@ -564,6 +571,10 @@ mod wipeout_tests;
 #[cfg(test)]
 #[path = "tests/water_drop.rs"]
 mod water_drop_tests;
+
+#[cfg(test)]
+#[path = "tests/audio_state_capture.rs"]
+mod audio_state_capture_tests;
 
 fn present(
     physics: Res<GamePhysics>,

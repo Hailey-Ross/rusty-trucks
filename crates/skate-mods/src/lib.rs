@@ -1,6 +1,7 @@
 //! Lua mod packages (API 2): low-level physics/graphics hooks, no Vehicle class.
 mod archive;
 pub mod audio;
+pub mod world_audio;
 pub mod graphics_dynamic;
 pub mod presentation;
 pub mod scene;
@@ -27,6 +28,12 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+
+/// `SKATE3_MODS_ENABLE=<id>[,<id>…]` lists mods that start enabled without a saved preference
+/// (dev and test mods whose manifest has `"enabled_by_default": false`). A saved preference wins.
+fn enabled_by_env(id: &str) -> bool {
+    std::env::var("SKATE3_MODS_ENABLE").is_ok_and(|v| v.split(',').any(|x| x.trim() == id))
+}
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -231,7 +238,7 @@ impl Manager {
                     self.start(&id);
                 }
             } else {
-                let saved = self.read_preferences(&id);
+                let saved = self.read_preferences(&id, manifest.enabled_by_default);
                 let settings = manifest
                     .settings
                     .iter()
@@ -268,7 +275,10 @@ impl Manager {
         }
     }
 
-    fn read_preferences(&mut self, id: &str) -> Preferences {
+    /// The saved preference of a mod; without one it starts enabled when its manifest says so
+    /// (`enabled_by_default`, default true) or when `SKATE3_MODS_ENABLE` lists its id.
+    fn read_preferences(&mut self, id: &str, enabled_by_default: bool) -> Preferences {
+        let fresh = enabled_by_default || enabled_by_env(id);
         match std::fs::read(self.preferences.join(format!("{id}.json"))) {
             Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
                 self.diagnostics
@@ -276,13 +286,13 @@ impl Manager {
                 Preferences::default()
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Preferences {
-                enabled: true,
+                enabled: fresh,
                 values: BTreeMap::new(),
             },
             Err(e) => {
                 self.diagnostics.push(format!("Settings {id}: {e}"));
                 Preferences {
-                    enabled: true,
+                    enabled: fresh,
                     values: BTreeMap::new(),
                 }
             }
