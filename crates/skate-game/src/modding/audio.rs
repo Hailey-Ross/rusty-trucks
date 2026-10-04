@@ -41,6 +41,37 @@ struct ModAudio {
 pub(super) fn install(app: &mut App) {
     app.init_resource::<ModAudio>();
     app.add_systems(Update, sync.after(super::update).after(super::present_camera));
+    app.add_systems(Update, session_marker_events.after(crate::app::FrameSet::Animation).before(super::update));
+}
+
+/// `sdk.audio.frontend(name)`: one of the game's front-end sounds, through the same message the
+/// engine's UI sends (`crate::ui_audio::FrontendSound`). A one-shot: nothing to clean up when the
+/// mod stops (retail's 10 front-end slots bound how many play at once).
+pub(super) fn frontend(world: &mut World, name: &str) {
+    world.write_message(crate::ui_audio::FrontendSound::named(name));
+}
+
+/// `sdk.audio.teleport_effect(amount)`: the teleport effect (`crate::ui_audio::TeleportEffect`, the
+/// message the session marker's hold sends): the screen static and the skater's Class_Treatment
+/// crackle. It lapses four UI ticks after the last send, so a stopped or disabled mod leaves nothing
+/// behind.
+pub(super) fn teleport_effect(world: &mut World, amount: f32) {
+    let now = world.resource::<Time<Real>>().elapsed_secs_f64();
+    if let Some(mut effect) = world.get_resource_mut::<crate::ui_audio::TeleportEffect>() {
+        effect.set_from_mod(amount, now);
+    }
+}
+
+/// The session marker's actions reach mods as `on_event {name = "session_marker", action =
+/// "opened" | "placed" | "refused" | "returned"}`.
+fn session_marker_events(mods: Option<ResMut<Mods>>, mut events: MessageReader<crate::ui_audio::SessionMarkerEvent>) {
+    let Some(mut mods) = mods else {
+        events.clear();
+        return;
+    };
+    for e in events.read() {
+        mods.manager.dispatch("on_event", serde_json::json!({"name": "session_marker", "action": e.action.name()}));
+    }
 }
 
 fn ensure_clip(

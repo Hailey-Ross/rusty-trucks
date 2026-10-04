@@ -46,6 +46,11 @@ pub fn valid_audio_path(path: &str) -> bool {
         && !path.chars().any(|c| matches!(c, '\\' | ':' | '#' | '?')) && !path.chars().any(char::is_control)
         && path.split('/').all(|s| !s.is_empty() && s != "." && s != "..")
 }
+/// A front-end sound name (`sdk.audio.frontend`): a retail `fe` record name, lower-case ASCII
+/// letters, digits and `_`, 1..=64 bytes. Unknown names are accepted here and play nothing.
+pub fn valid_frontend_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
 impl AudioPlayOptions {
     pub fn validate(&self) -> bool {
         valid_audio_path(&self.path)
@@ -167,12 +172,22 @@ mod tests {
             let p: AudioPlayOptions=serde_json::from_value(value).unwrap(); assert!(!p.validate());
         }
         assert!(serde_json::from_value::<AudioPlayOptions>(json!({"path":"a.wav","typo":true})).is_err());
-        for kind in ["audio_preload","audio_play","audio_update","audio_stop","audio_stop_all"] {
+        assert!(valid_frontend_name("cellphone_place_marker") && valid_frontend_name("1up_1_user"));
+        for bad in ["", "Cellphone", "a b", "../x", &"x".repeat(65)] {
+            assert!(!valid_frontend_name(bad), "accepted {bad}");
+        }
+        for bad in [json!(-0.1), json!(1.5), json!("x")] {
+            let c = serde_json::from_value::<crate::Command>(json!({"kind":"audio_teleport_effect","amount":bad}));
+            assert!(c.map_or(true, |c| !c.validate()), "accepted teleport amount {bad}");
+        }
+        for kind in ["audio_preload","audio_play","audio_update","audio_stop","audio_stop_all","audio_frontend","audio_teleport_effect"] {
             let value=match kind {
                 "audio_preload" => json!({"kind":kind,"path":"a.wav"}),
                 "audio_play" => json!({"kind":kind,"key":"engine","options":{"path":"a.wav"}}),
                 "audio_update" => json!({"kind":kind,"key":"engine","options":{"volume":0.0,"paused":false}}),
                 "audio_stop" => json!({"kind":kind,"key":"engine","fade_out":0.0}),
+                "audio_frontend" => json!({"kind":kind,"name":"cellphone_goto_marker"}),
+                "audio_teleport_effect" => json!({"kind":kind,"amount":0.5}),
                 _ => json!({"kind":kind}),
             };
             let c: crate::Command=serde_json::from_value(value).unwrap(); assert!(c.validate());

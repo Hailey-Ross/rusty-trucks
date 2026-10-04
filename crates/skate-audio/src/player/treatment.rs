@@ -50,9 +50,14 @@ impl Default for TreatmentTuning {
 
 /// The block `B = *(*(0x83083C38) + 0x2FCB4)` whose `+16` sub-object (reset by `sub_827AB6E0`)
 /// the updater reads: `B+16` (the byte PlayerPhysics.in11 also reads, set for a while after a bail
-/// in upstream PR #4's capture), `B+24` (f32), `B+164` (byte), `B+168` (f32). Its writer was not
-/// located; the defaults are the reset values (w11 = w12 = 0, w13 keeps 0). UNCERTAIN: PR #4's
-/// capture reports `B+164` set with `B+168` ≈ 1.0 for most of play.
+/// in upstream PR #4's capture), `B+24` (f32), `B+164` (byte), `B+168` (f32). The sub-object is the
+/// VisualDirector's decoded presentation packet (`sub_827AB790`, one field per header slot):
+/// `B+164` / `B+168` = the teleport effect field (present on frames whose packet carried
+/// `cMsgTeleportEffectAmount`, the amount): the session marker's Go To Marker hold ramps it 0 → 1
+/// and the Treatments program answers with its teleport crackle (slots 1–12 while on, slot 0 at
+/// 1.0). `B+16` / `B+24` keep their reset values (that field's writer is not ported). Defaults: the
+/// reset values (w11 = w12 = 0, w13 keeps 0). (Upstream PR #4's capture reported `B+164` set with
+/// `B+168` ≈ 1.0 for most of play: not what the recomp shows; it is set only during the hold.)
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TreatmentGlobals {
     pub flag_16: bool,
