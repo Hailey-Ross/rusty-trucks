@@ -224,6 +224,35 @@ class EmitterAttributes(unittest.TestCase):
         self.assertEqual(zone, {'reverb': 0xBEEFC8E3DE04FBAE, 'kind': 5})
 
 
+class FrontendSounds(unittest.TestCase):
+    def test_fe_records_inherit_from_fe_sfx_and_are_keyed_by_name_hash(self):
+        from tools.asset_pipeline.audio_export import frontend_sounds
+        from tools.asset_pipeline.audio_formats import name_id
+        f32 = lambda v: {'type': 'EA::Reflection::Float', 'data': struct.pack('>f', v).hex().upper()}
+        menu = lambda v: {'type': 'sk8_menu', 'data': struct.pack('>i', v).hex().upper()}
+        text = lambda v: {'type': 'EA::Reflection::Text', 'data': v}
+        flag = lambda v: {'type': 'EA::Reflection::Bool', 'data': '01000000' if v else '00000000'}
+        collections = [
+            {'class': 'fe', 'key': 'fe_sfx', 'parent': '', 'fields': {
+                'Hash_875BA75341DC8391': f32(1.0), 'Hash_8FCC7EF9B9208858': menu(0), 'Hash_942AB8AEE4B414ED': text('fe_sfx'),
+                'Hash_BF45D439FAC71A2E': flag(False)}},
+            {'class': 'fe', 'key': 'cellphone_activate', 'parent': 'fe_sfx', 'fields': {
+                'Hash_875BA75341DC8391': f32(0.5), 'Hash_8FCC7EF9B9208858': menu(235),
+                'Hash_942AB8AEE4B414ED': text('cellphone_activate')}},
+            {'class': 'fe', 'key': 'cellphone_goto_marker', 'parent': 'fe_sfx', 'fields': {
+                'Hash_8FCC7EF9B9208858': menu(236), 'Hash_942AB8AEE4B414ED': text('cellphone_goto_marker')}},
+            {'class': 'Hash_OTHER', 'key': 'x', 'parent': '', 'fields': {}},
+        ]
+        out = frontend_sounds(collections)
+        self.assertEqual(out['bank'], 'sk8_menu')
+        self.assertEqual(out['sounds']['%016X' % name_id('cellphone_activate')],
+                         {'name': 'cellphone_activate', 'id': 235, 'level': 0.5, 'hom': 0, 'moment': 0, 'alt_bus': False})
+        goto = out['sounds']['7F135F9FD28F7F21']  # the key UpdateSessionMarker posts
+        self.assertEqual((goto['id'], goto['level']), (236, 1.0))
+        self.assertEqual(len(out['sounds']), 3)
+        self.assertEqual(frontend_sounds([]), {})
+
+
 class AemsFiles(unittest.TestCase):
     def test_copies_projects_in_archive_order_and_only_abkc_banks(self):
         import tempfile

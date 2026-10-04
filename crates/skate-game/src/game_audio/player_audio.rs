@@ -88,6 +88,10 @@ pub(crate) struct PlayerAudio {
     pub(crate) treatment_on: bool,
     /// The game-mode globals those read (free skate).
     globals: Globals,
+    /// The teleport effect amount this pass (`ui_audio::TeleportEffect`: the session marker's Go To
+    /// Marker hold, or a mod's): the presentation block's teleport field `B+164` / `B+168` that
+    /// Class_Treatment's update turns into w12 / w13 (its program's teleport crackle). None = absent.
+    pub(crate) teleport_effect: Option<f32>,
     /// SFXObj_OffBoard's footsteps (packets + the foot-down / walking / jump Splice sounds) and the
     /// Clothing component (cloth falls, push foley, body slide): on with the board contacts (their
     /// Splice banks), plus OffBoard's water splash.
@@ -159,6 +163,7 @@ impl PlayerAudio {
             tricks_on: false,
             treatment_on: false,
             globals: Globals::default(),
+            teleport_effect: None,
             footsteps: Footsteps::default(),
             footstep_tuning: FootstepTuning::default(),
             clothing: Clothing::default(),
@@ -518,7 +523,9 @@ impl PlayerAudio {
             cmds.extend(self.tricks.update(s, &self.tuning.tricks, &Owner { mixmap: m, key: keys::tricks(0) }));
         }
         if self.treatment_on {
-            cmds.extend(self.treatment.update(s, &TreatmentGlobals::default(), &self.tuning.treatment, &Owner { mixmap: m, key: keys::treatments(0) }));
+            // B+16 / B+24 (the bail field) stay at their reset values: writer not ported.
+            let b = TreatmentGlobals { flag_164: self.teleport_effect.is_some(), value_168: self.teleport_effect.unwrap_or(0.0), ..Default::default() };
+            cmds.extend(self.treatment.update(s, &b, &self.tuning.treatment, &Owner { mixmap: m, key: keys::treatments(0) }));
         }
         self.apply(rt, cmds);
         if self.contacts_on {

@@ -970,6 +970,8 @@ fn apply_one(
         Command::AudioUpdate { key, options } => audio::update_voice(world, id, &key, options),
         Command::AudioStop { key, fade_out } => audio::stop(world, id, &key, fade_out),
         Command::AudioStopAll {} => audio::stop_owner(world, id, false),
+        Command::AudioFrontend { name } => audio::frontend(world, &name),
+        Command::AudioTeleportEffect { amount } => audio::teleport_effect(world, amount),
         Command::WorldAudioSpawn { key, object, options } => world_audio::spawn(world, mods, id, key, object, options)?,
         Command::WorldAudioUpdate { key, options } => world_audio::update(world, mods, id, &key, options)?,
         Command::WorldAudioEvent { key, event, options } => world_audio::event(world, id, &key, &event, options)?,

@@ -34,6 +34,8 @@ pub mod bus;
 pub mod dsp;
 pub mod eval;
 pub mod formats;
+/// The front-end sounds (`fe` records → `sk8_menu` Splice one-shots): the session marker's UI.
+pub mod frontend;
 pub mod grain;
 pub mod mixer;
 pub mod mixmap;

@@ -563,6 +563,24 @@ function sdk.graphs.read(graph) end
 ---@param enabled? boolean nil restores the original gate
 function sdk.graphs.set_enabled(graph, target, index, enabled) end
 
+-- Front-end sounds (audio extension 1): the game's own UI sounds, retail's `fe` records by name
+-- (cellphone_activate, cellphone_place_marker, cellphone_marker_error, cellphone_goto_marker,
+-- challenge_count_1..3, challenge_count_go, core_a_button, ...), played as the game's UI plays them
+-- (sk8_menu, the record's level, at most 10 at once). Unknown names play nothing. The session marker
+-- sends on_event {name="session_marker", action="opened"|"placed"|"refused"|"returned"} to every
+-- running mod (doc docs/hails-additions/15-world-audio.md "Session marker sounds").
+sdk.audio = sdk.audio or {}
+---@param name string
+function sdk.audio.frontend(name) end
+
+-- The teleport effect (audio extension 1): the screen static and the skater's teleport crackle
+-- (retail's teleport effect amount, which the session marker's Go To Marker hold ramps 0 -> 1 over
+-- 0.2-1 s; the crackle comes from the Treatments bank's program). Holds for four UI ticks (1/15 s):
+-- send it every frame for as long as it should last; 0 clears it. The larger of the game's and the
+-- mod's amount is used.
+---@param amount number 0..1
+function sdk.audio.teleport_effect(amount) end
+
 -- World audio extension 1 (capability `world_audio`): publish traffic vehicles, pedestrians and
 -- skaters to the game's retail world audio, exactly as an engine system would (doc
 -- docs/hails-additions/15-world-audio.md). Keys belong to this mod; 48 objects per mod, 128 in all;

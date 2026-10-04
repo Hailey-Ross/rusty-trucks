@@ -370,6 +370,123 @@ fn treatment_plays_before_the_landing_at_the_retail_level() {
     }
 }
 
+/// The teleport static: `B+164` / `B+168` are the VisualDirector's teleport effect amount
+/// (`cMsgTeleportEffectAmount`, decoded by `sub_827AB790` from the presentation packet; present only
+/// on frames that received the message). A Go To Marker hold of `hold_ticks` UI ticks (60 Hz) with the
+/// amount ramping `t / hold_ticks`, the relocation in the last tick and two more ticks at 1.0, the
+/// skater standing still. Returns per Treatments voice of slots 0–12 (start in ms from the hold's
+/// first tick, slot, peak gain) and the relocation tick's time in ms.
+fn teleport_hold(hold_ticks: usize, seed_frames: usize) -> Option<(Vec<(f32, u16, f32)>, f32)> {
+    teleport_hold_audio(hold_ticks, seed_frames, None).map(|(v, jump, _)| (v, jump))
+}
+
+/// [`teleport_hold`] plus the rendered stereo output from the hold's first tick (48 kHz,
+/// interleaved); `released`: the stick is let go after that many ticks (no relocation, no tail).
+fn teleport_hold_audio(hold_ticks: usize, seed_frames: usize, released: Option<usize>) -> Option<(Vec<(f32, u16, f32)>, f32, Vec<f32>)> {
+    let mut rig = Rig::new(&["Treatments"])?;
+    let (t, g) = (TreatmentTuning::default(), Globals::default());
+    let mut k = Treatment::default();
+    let start = 30 + seed_frames;
+    let relocate = start + hold_ticks; // the tick in which elapsed passes the hold's duration
+    let mut voices: HashMap<u32, (u16, usize, Vec<f32>)> = HashMap::new();
+    let mut audio = Vec::new();
+    for f in 0..relocate + 90 {
+        let s = AudioState::default();
+        let b = if released.is_some_and(|r| f > start + r) {
+            TreatmentGlobals::default()
+        } else if f > start && f <= relocate {
+            TreatmentGlobals { flag_164: true, value_168: ((f - start) as f32 / hold_ticks as f32).min(1.0), ..Default::default() }
+        } else if f > relocate && f <= relocate + 2 {
+            TreatmentGlobals { flag_164: true, value_168: 1.0, ..Default::default() }
+        } else {
+            TreatmentGlobals::default()
+        };
+        rig.inputs(&s);
+        let cmds = k.process(&s, &t, &g, &Owner { mixmap: &rig.mixmap, key: keys::treatments(0) });
+        rig.apply(cmds);
+        rig.mixmap.tick(s.dt);
+        let cmds = k.update(&s, &b, &t, &Owner { mixmap: &rig.mixmap, key: keys::treatments(0) });
+        rig.apply(cmds);
+        let mut out = vec![0.0f32; 1600];
+        rig.rt.fill_stereo(&mut out);
+        rig.frame += 1;
+        if f > start {
+            audio.extend_from_slice(&out);
+        }
+        for v in rig.rt.mixer.snapshot() {
+            if rig.names.contains_key(&v.bank) {
+                voices.entry(v.id).or_insert((v.slot, f, Vec::new())).2.push(v.gain);
+            }
+        }
+    }
+    let ms = |f: usize| (f as f32 - (start + 1) as f32) * 1000.0 / 60.0;
+    let mut out: Vec<(f32, u16, f32)> = voices.values().filter(|v| v.0 <= 12).map(|(slot, f, g)| (ms(*f), *slot, peak(g))).collect();
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Some((out, ms(relocate), audio))
+}
+
+/// The teleport crackle (Class_Treatment's teleport layer, `Treatments` slots 1–12 while the
+/// effect is on, slot 0 when it reaches 1.0) against the recomp (the user's session of 2026-10-04
+/// 12:53 with the marker hooks, plus three earlier sessions; voice gains from
+/// `tools/recomp-trace/retail_voices.py`): the 1559 m return holds 1.0 s (61 effect messages), its
+/// first crackle starts 40 ms after the first message (24 and 68 ms on two other holds), 15 crackles
+/// sound through the hold, the last 0.18 s before the jump, slot 0 starts 5–33 ms after the jump (12
+/// of 12 completed holds; gain 0.1229 on 10), none after a released hold (0.43 s to 0.70); short
+/// holds (0.2 s, ≤ 100 m) sound 3–5 crackles. Crackle peak gains over 68 voices: median 0.1870,
+/// max 0.2842.
+#[test]
+#[ignore = "needs the private install data"]
+fn teleport_crackle_follows_the_recomp() {
+    let mut gains = Vec::new();
+    for seed in [0usize, 7, 23, 41] {
+        let Some((v, jump)) = teleport_hold(60, seed) else {
+            panic!("missing private data: no install with the Treatments bank and MixMap");
+        };
+        let crackles: Vec<_> = v.iter().filter(|x| x.1 >= 1).collect();
+        let ends: Vec<_> = v.iter().filter(|x| x.1 == 0).collect();
+        println!("1.0 s hold (seed {seed}): {} crackles, first at {:.0} ms, last {:.0} ms, slot 0 {:?}, jump {jump:.0} ms", crackles.len(), crackles[0].0, crackles.last().unwrap().0, ends);
+        assert!(crackles[0].0 <= 70.0, "onset {} ms", crackles[0].0);
+        assert!((10..=24).contains(&crackles.len()), "{} crackles in 1.0 s (recomp 15)", crackles.len());
+        assert!(crackles.iter().all(|c| c.0 < jump + 1.0), "a crackle after the jump");
+        assert!(crackles.last().unwrap().0 > 0.6 * jump, "the crackle lasts through the hold");
+        let [end] = ends[..] else { panic!("slot 0 once at the end: {ends:?}") };
+        assert!(end.0 >= jump && end.0 <= jump + 50.0, "slot 0 at {} ms, jump {jump} ms", end.0);
+        assert!((end.2 / 0.1229 - 1.0).abs() < 0.01, "slot 0 gain {}", end.2);
+        gains.extend(crackles.iter().map(|c| c.2).filter(|g| *g > 0.0));
+    }
+    gains.sort_by(f32::total_cmp);
+    let (median, max) = (gains[gains.len() / 2], *gains.last().unwrap());
+    println!("crackle peak gains: median {median:.4} (recomp 0.1870), max {max:.4} (recomp 0.2842), {} voices", gains.len());
+    assert!((20.0 * (median / 0.1870).log10()).abs() < 1.5, "median {median}");
+    assert!(max < 0.2842 * 1.12, "max {max}");
+    // A 0.2 s hold (≤ 100 m): a few crackles, then slot 0.
+    let (v, jump) = teleport_hold(12, 0).unwrap();
+    let n = v.iter().filter(|x| x.1 >= 1).count();
+    println!("0.2 s hold: {n} crackles, slot 0 at {:?} (jump {jump:.0} ms)", v.iter().find(|x| x.1 == 0).map(|x| x.0));
+    assert!((2..=6).contains(&n) && v.iter().any(|x| x.1 == 0), "{v:?}");
+    // A released hold (to 0.70 of 1.0 s, as the recomp's 433275): crackles, no slot 0.
+    let (v, _, _) = teleport_hold_audio(60, 0, Some(42)).unwrap();
+    println!("released at 0.70: {} crackles, slot 0: {}", v.iter().filter(|x| x.1 >= 1).count(), v.iter().any(|x| x.1 == 0));
+    assert!(v.iter().any(|x| x.1 >= 1) && !v.iter().any(|x| x.1 == 0), "{v:?}");
+}
+
+/// Diagnostic (`--nocapture`): the teleport static for 0.2 s / 0.638 s / 1.0 s holds.
+#[test]
+#[ignore = "diagnostic"]
+fn teleport_static_by_hold() {
+    for (ticks, seed) in [(12usize, 0usize), (38, 0), (60, 0), (60, 7), (60, 23)] {
+        let Some((v, jump)) = teleport_hold(ticks, seed) else { panic!("missing private data") };
+        println!("hold {ticks} ticks (seed {seed}), jump at {jump:.0} ms: {} voices", v.len());
+        if let (Ok(dir), Some((_, _, audio))) = (std::env::var("TELEPORT_STATIC_OUT"), teleport_hold_audio(ticks, seed, None)) {
+            let bytes: Vec<u8> = audio.iter().flat_map(|x| x.to_le_bytes()).collect();
+            std::fs::write(Path::new(&dir).join(format!("hold{ticks}_seed{seed}.f32")), bytes).unwrap();
+        }
+        for (ms, slot, gain) in v {
+            println!("  {ms:7.1} slot {slot:2} peak {gain:.4}");
+        }
+    }
+}
+
 /// Diagnostic (ignored; `--nocapture`): which packet word starts Treatments slots 16 / 17. The
 /// fixture's air words are varied one at a time over the same two 0.6 s airs. (Written when 16 / 17
 /// seemed absent from the recomp; they are not — their samples equal sense_of_speed 3 / 4.)

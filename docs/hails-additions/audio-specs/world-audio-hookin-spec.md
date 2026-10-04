@@ -708,3 +708,81 @@ is updated. Phase 4 adds a second example, a "louder horns / custom engine" mod 
   is applied; the queue clock = visual game ticks. Main-cast channel: pro peds, NPC skater reactions / crash
   (`NpcSkaterAudio::reactions`, `NpcSkaterReactionEvent`, mod event `reaction`), the message pairs; decode 6596
   takes / 922 MB; all 82 recorded main-cast lines reachable through the ported words.
+
+## 11. Session marker sounds (2026-10-04, doc 15 "Session marker sounds"; follow-up branch `audio/respawn-marker`)
+
+The front-end sound path, decoded from the recomp (TU3; reference only):
+
+| Step | Code | What |
+|---|---|---|
+| Ask | `sub_825DFAF0(key64, flag)` | looks up the `fe` record (class lookup8 `5831CB95F3E90598`); if it has a sk8_menu id, a HOM id or a moment SFX, calls the audio system's vfunc `+44` (`sub_82482B10`): queues message `0x34FF4A33` {key, flag} |
+| Receive | `sub_824955A8` → `sub_824955B8` | on the audio thread: record `+8` (sk8_menu id, ≥ 1), `+4` (level), HOM `845A10052522A2FB`, moment `A4080FB65880E3C2`, bools `9574DCC8B216CE79` / `BF45D439FAC71A2E` (second bus) |
+| Slot | `sub_82495828(this, key, bank 5, id, …, repeat, alt, level)` | level ≤ 0 → nothing; first of 10 slots (32 bytes from `this+32`: key, bank, id, handle, level, repeat, pending, alt) with neither pending nor handle |
+| Play | `sub_824958F0(this, dt)` (from `sub_82495528`, the audio update `sub_824854A8`, `this` = audio system + 64) | pending → `sub_82975700(bank, id, out)` + `sub_82975A60` with `[level·v, 1, 0, 0, 1, 1]`; playing → `sub_82975B08` with `[level·v, 1, 0, dt, 1, 1]`; ended → release, re-request when `repeat` |
+| Volume | `v = [[X+88]+40] × 1/32767` (`+44` unless bank 5 / 2) | = MixMap Master out 0 (14568 in free skate; watch run `marker_fevol`: `+40` 14568, `+44` 14568, `+48` 32692) |
+| Output | `out = [[[0x830CFDBC]+8]+52]` (mastering graph) or `[this+360]` with the alt flag | no env send, no eEQChain |
+
+Session marker posts: `sub_82898FC8` action 42 → `0D6C88A3B91C828F` (`cellphone_place_marker`, placed) /
+`66B3AFE3B602918C` (`cellphone_marker_error`, refused); the relocation tick → `7F135F9FD28F7F21`
+(`cellphone_goto_marker`); `sub_826682B0` (cellphone UI, state 2, input 4) → `47FE75BF61F19941`
+(`cellphone_activate`). Records: 235 / 0.5, 237 / 1.0, 209 / 1.0, 236 / 1.0 (sk8_menu id / level).
+
+Measured (SPLC bank index 5 = sk8_menu, user sessions `audiox_bail_20261003_094336`, `audiox_20261003_095054` and
+scripted bail runs; 50 / 11 / 18 events): steady gains activate 58 0.6288 / 59 0.1572; place 58 0.8892 / 40 peak
+0.3048 / 59 0.6288; go-to 58 0.6288 / 36 0.4446 / 40 peak 0.2223 / 59 0.6288 = member gain × record gain × level ×
+14568 / 32767. Delays after the post 10 / 46; 13 / 77 / 144; 8 / 162 / 189 / 278 ms (members' `+20` delays).
+Port: `skate_audio::frontend`, `game_audio::frontend`, `crate::ui_audio`.
+**Go To Marker's "static" (2026-10-04, user: "I tried the marker sounds and they sound good. but there is no static
+noise that plays with the transition when you go back to a marker like it does in retail.").** No separate sound in
+retail: the hold sends `cMsgTeleportEffectAmount` (`0xFAF37902`, progress at `+16`, every tick plus 3 ticks of 1 after
+the jump) whose only game listener is the VisualDirector (`sub_827A96F8` registers, `sub_827A9C60` stores `+48`,
+`sub_827AAF10` draws) = the screen static, visual only; the relocation tick queues `Flow::Teleport` (`sub_825582D0`)
+and asks `cellphone_goto_marker`, the only `fe` record of the path (361 `sub_825DFAF0` calls listed). Around 23
+recorded go-tos only the record's sk8_menu 58 / 36 / 40 / 59 follow (plus the ride's SenseOfSpeed POST 12 and one
+quiet pass-by whoosh, Sk82_Whsh_Bys id 91, `sub_824D2C70`, gains ≤ 0.021); the recomp's capture (20 go-tos) shows above 4 kHz
+only 58's and 59's noise bursts (0 … 40 ms and 270 … 300 ms after 58's onset). So the static is samples 58 / 59
+(white-noise bursts) of the record, which the port already plays in the same shape. Nothing ported; open with the
+user (doc 15 "Follow-up: the static noise on Go To Marker"). Tools: local, not published.
+
+**Far return (2026-10-04, investigating).** User: "1. on console it last for about a second and it only happened when
+you had traveled farther away from where the marker was set. 2. the go to sound? as in the sound when you return to the
+marker? Yes it does. 3. maybe". The hold is 0.2 s up to 100 m, `d / 1125 + 1/9` s to 1000 m, 1 s beyond (the static
+ramps over it). The request goes to `sub_82709740` → `sub_82706F50`, which asks `sub_82864C40` whether the destination is
+streamed in (radius 30 / 50 m): if not, the loading state (`0x82707508`, event 7) runs a loading screen. The user's
+recording `audiox_marker_20261004_123843` (0 malformed): the far return showed the loading screen; the record played,
+then the whole mix was cut at ~+420 ms and stayed silent through the load; no other sound (no fe, POST, stream). The
+short return (83 m) was the record over the ride. No ~1 s static sound in the recomp (its loads and audio timing differ
+from the console). New hooks `hooks_marker.cpp` (audiox: TPMARK, TPDEC, TPSTREAM, TPFX, FEREQ, GSTATE, GEVENT, HUBMSG)
+for the next recording; doc 15 "Follow-up 2: the far return". Resolved below (the noise is the hold's Treatments crackle; that recording had it too, below 4 kHz).
+
+**The far-return noise: Class_Treatment's teleport crackle (2026-10-04, ported; doc 15 "Follow-up 3").** User, after
+a recording with the marker hooks: "it played the noise! its the first return in the recomp run i just finished". The
+noise is not a front-end sound. It comes from the skater's `Class_Treatment` (bank `Treatments`, the packet posted
+once and held), which plays slots 1–12 while the teleport effect is on and slot 0 when the effect reaches 1.0.
+
+| Step | Code | What |
+|---|---|---|
+| Send | `sub_82898FC8` | `cMsgTeleportEffectAmount` (`0xFAF37902`, amount = hold progress) on every UI tick of the hold, then the relocation tick and two more at 1.0 |
+| Hold | `sub_827A9C60` | VisualDirector: amount → `+48` |
+| Build | `sub_827AAF10` | amount ≥ 0.0 (`0x82165A10`) → the presentation packet's header slot 3 carries it; after each build `+48` = −1.0 (`0x8216DEE0`) |
+| Decode | `sub_827AB790` | presentation block `B+16`: `+148` = slot 3 present, `+152` = the amount (`B = *(*(0x83083C38)+0x2FCB4)`; reset `sub_827AB6E0`), i.e. `B+164` / `B+168` |
+| Read | `sub_824DD6F0` | Class_Treatment update: `B+164` → w12 = 1, w13 = trunc(`B+168` × 10000); else w12 = 0 (w13 keeps) |
+| Play | Treatments program | slots 1–12 while w12 = 1 (one every 30–130 ms), slot 0 when w13 reaches 10000 |
+
+Measured (`audiox_marker_20261004_125320`, 0 malformed):
+- **The 1559 m return** (hold 1.0 s, 61 `TPFX`): 15 crackles from +40 ms to +811 ms after the first message, then
+  slot 0 5.5 ms after the go-to. Peak gains 0.02–0.28, slot 0 0.1229.
+- **The 593 m return** (0.638 s) and a released hold (to 0.70) have it too; the released hold has no slot 0.
+- **All 10 go-tos of three earlier sessions:** 3–5 crackles in each 0.2 s hold, slot 0 5–33 ms after the go-to
+  (0.1229 on 10 of 12). Over 68 crackles: median peak 0.1870, max 0.2842.
+- **The capture over the 1 s hold:** 250–4000 Hz rises 12–15 dB above a standing bed, peaks at 600–750 ms, almost
+  nothing above 4 kHz.
+- **Both marker returns loaded** (`TPSTREAM` 0 → loading state `0x82707508`; the mix is muted from ~+420 ms to the
+  end of the load). The crackle does not depend on that: its trigger is the hold (amount present), and the distance
+  sets only the hold's length (0.2–1 s).
+
+Port: `crate::ui_audio::TeleportEffect` (session marker → the frame's amount; a mod's through
+`sdk.audio.teleport_effect`), `PlayerAudio::teleport_effect` → `TreatmentGlobals { flag_164, value_168 }`. The screen
+static reads the same resource. Proof: `teleport_crackle_follows_the_recomp` (onset, count, slot 0's time and gain,
+median / max peak) and an e2e render of a standing hold (`E2E_TELEPORT`) folded like the capture: within 1.3–1.9 dB
+per band over the hold. The bench is byte-identical. Not ported: the load's mute (no streaming load in our engine).

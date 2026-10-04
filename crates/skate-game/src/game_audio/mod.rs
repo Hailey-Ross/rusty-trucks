@@ -17,6 +17,7 @@ mod crossfade_groups;
 #[cfg(test)]
 mod e2e;
 mod emitters;
+mod frontend;
 mod grain_bed;
 mod library;
 mod native;
@@ -168,10 +169,12 @@ impl Plugin for GameAudioPlugin {
                 Update,
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
                 // the ticks and the local update, then the beds (retail's process / tick / update).
-                (native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
+                // The front-end sounds (session marker) after the ticks, once per pass.
+                (native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, frontend::frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
                     .chain()
                     .before(CueSet)
-                    .after(crate::app::FrameSet::Animation),
+                    .after(crate::app::FrameSet::Animation)
+                    .after(crate::ui_audio::UiAudioSet),
             )
             .add_systems(Update, (ambience::update, emitters::update, random_sets::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
             .add_systems(Update, voices::sync.after(CueSet))
