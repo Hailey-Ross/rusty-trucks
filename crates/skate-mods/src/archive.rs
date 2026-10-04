@@ -128,6 +128,12 @@ pub fn validate_package(path: &Path) -> Result<Manifest, String> {
 /// [`validate_package`] plus the deep check of the package's audio content overlay
 /// (`audio.json`: schema and every file it names; None without one).
 pub fn validate_package_content(path: &Path) -> Result<(Manifest, Option<crate::audio_content::Loaded>), String> {
+    validate_package_content_at(path).map(|(manifest, audio, _)| (manifest, audio))
+}
+
+/// [`validate_package_content`], also returning the package's root folder (a zip is unpacked
+/// into the cache first), where its content files can be read.
+pub fn validate_package_content_at(path: &Path) -> Result<(Manifest, Option<crate::audio_content::Loaded>, std::path::PathBuf), String> {
     let source = path.canonicalize().map_err(|e| e.to_string())?;
     let mut cache = Cache::default();
     let root = if source.is_dir() {
@@ -151,7 +157,7 @@ pub fn validate_package_content(path: &Path) -> Result<(Manifest, Option<crate::
         .into_function()
         .map_err(|e| e.to_string())?;
     let audio = crate::audio_content::load(&root)?;
-    Ok((manifest, audio))
+    Ok((manifest, audio, root))
 }
 
 pub fn read_bounded(root: &Path, relative: &str, limit: u64) -> Result<Vec<u8>, String> {

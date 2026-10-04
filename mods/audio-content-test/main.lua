@@ -40,6 +40,10 @@ return {
         if (sdk.capabilities.audio or 0) < 2 then return end
         for _, e in ipairs(sdk.audio.events()) do
             local name = e.tag or (e.kind .. ":" .. (e.slot ~= "" and e.slot or e.class))
+            if not counts[name] then
+                -- First row of each kind in the log too (unattended log checks).
+                sdk.log("audio event " .. name .. " (" .. tostring(e.source) .. " " .. tostring(e.class) .. ")")
+            end
             counts[name] = (counts[name] or 0) + 1
             table.insert(last, 1, name)
             if #last > 5 then table.remove(last) end

@@ -347,6 +347,9 @@ struct Manifest {
     /// Bank → the interim location-set layers of a mod bank.
     #[serde(default)]
     mod_location_programs: BTreeMap<String, Vec<LayerJson>>,
+    /// Crossfade bank → group (decimal) → declared crossfade voices.
+    #[serde(default)]
+    mod_crossfade_layouts: BTreeMap<String, BTreeMap<String, Vec<CrossfadeVoiceJson>>>,
     /// Map stem → map audio from overlays.
     #[serde(default)]
     mod_maps: BTreeMap<String, MapJson>,
@@ -368,6 +371,17 @@ struct ModSpeechJson {
     /// Clip → extra takes after the clip's own.
     #[serde(default)]
     extra: BTreeMap<String, Vec<String>>,
+}
+
+/// One voice of a declared crossfade group (`add.crossfade_layouts`): sample slot, degrees
+/// (0 = ahead, 90 = right), level.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct CrossfadeVoiceJson {
+    pub sample: usize,
+    #[serde(default)]
+    pub pan: f32,
+    #[serde(default = "one")]
+    pub level: f32,
 }
 
 /// One layer of a mod bank's location-set post (`random_sets` interim player).
@@ -964,6 +978,11 @@ impl Library {
         self.manifest.mod_location_programs.get(bank).map(Vec::as_slice)
     }
 
+    /// An audio content overlay's declared crossfade layout for a bank (group → voices).
+    pub(crate) fn crossfade_layout(&self, bank: &str) -> Option<&BTreeMap<String, Vec<CrossfadeVoiceJson>>> {
+        self.manifest.mod_crossfade_layouts.get(bank)
+    }
+
     /// An overlay's map audio for a map stem.
     pub(crate) fn mod_map(&self, stem: &str) -> Option<&MapJson> {
         self.manifest.mod_maps.get(stem)
@@ -1061,12 +1080,16 @@ impl Library {
         let manifest: Manifest = if overlays.is_empty() {
             serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?
         } else {
-            use skate_mods::audio_merge::{Message, Owners, Report, Source, merge_one};
+            use skate_mods::audio_merge::{Message, Owners, Report, Source, merge_one_with};
             let mut value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            // Speech takes are checked against the install's speech indexes (read only when an
+            // overlay names speech).
+            let speech = overlays.iter().any(|o| skate_mods::audio_content::SpeechClips::needed(o.overlay))
+                .then(|| skate_mods::audio_content::SpeechClips::load(&root, &value));
             let mut owners = Owners::default();
             for o in overlays {
                 let (mut trial, mut trial_owners, mut r) = (value.clone(), owners.clone(), Report::default());
-                merge_one(&mut trial, &Source { id: o.id, overlay: o.overlay }, &mut trial_owners, &mut r);
+                merge_one_with(&mut trial, &Source { id: o.id, overlay: o.overlay }, &mut trial_owners, &mut r, speech.as_ref());
                 match serde_json::from_value::<Manifest>(trial.clone()) {
                     Ok(_) => {
                         value = trial;
@@ -1597,6 +1620,37 @@ pub(crate) mod tests {
     /// The world-gaps data is overlay-reachable (data-gated, the real install): main-cast speech
     /// takes (archive `maincast`, as the living world's), the ped one-shot tuning (body-fall ids,
     /// tazer time), the speech voice's echo delay, and the `Tazer` bank's samples.
+    /// Speech takes are checked against the install's speech index when the overlays merge (not
+    /// only when the speech index loads): an unknown clip or a take past the clip's own is a
+    /// warning in the report (the mod menu, check_mod) and is not merged; known takes merge.
+    #[test]
+    fn speech_takes_are_checked_when_the_overlays_merge() {
+        let (dir, mods) = content_fixture("speech-check");
+        let audio = dir.join("private/audio");
+        std::fs::create_dir_all(audio.join("speech")).unwrap();
+        std::fs::write(audio.join("speech/livingworld.json"), serde_json::json!({"clips": [
+            {"name": "501_41_adtm1_Warn_n.dat", "takes": [{}, {}]}, {"name": "101_41_adtm1_SpecPos_f.dat", "takes": [{}]}]}).to_string()).unwrap();
+        let manifest = audio.join("audio_manifest.json");
+        let mut m: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        m["speech"] = serde_json::json!({"livingworld": {"index": "speech/livingworld.json"}});
+        std::fs::write(&manifest, m.to_string()).unwrap();
+        std::fs::write(mods.join("audio/w.wav"), test_wav(100, 22050, 9)).unwrap();
+        let o = overlay(serde_json::json!({"version": 1,
+            "replace": {"speech": {"livingworld": {"501_41_adtm1_Warn_n.dat": {"1": "audio/w.wav", "2": "audio/w.wav"}, "501_41_adtm1_Warn_f": {"0": "audio/w.wav"}}}},
+            "add": {"speech": {"livingworld": {"101_41_adtm1_SpecPos_f": ["audio/w.wav"]}, "maincast": {"700_1_Line": ["audio/w.wav"]}}}}));
+        let (library, report) = Library::load_with(&dir, &[OverlaySource { id: "dev.a", root: &mods, overlay: &o }]).unwrap();
+        let texts: Vec<&str> = report.warnings.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(texts.len(), 3, "{texts:#?}");
+        assert!(texts.iter().any(|t| t.contains("take 2 is past the clip's 2 takes")), "{texts:#?}");
+        assert!(texts.iter().any(|t| t.contains("clip 501_41_adtm1_Warn_f is not in the install's speech index (did you mean 501_41_adtm1_Warn_n?)")), "{texts:#?}");
+        assert!(texts.iter().any(|t| t.contains("no maincast speech index")), "{texts:#?}");
+        let (takes, extra) = library.speech_mods("livingworld");
+        assert_eq!(takes.keys().collect::<Vec<_>>(), [&("501_41_adtm1_Warn_n".to_owned(), 1)]);
+        assert_eq!(extra.keys().collect::<Vec<_>>(), ["101_41_adtm1_SpecPos_f"]);
+        assert!(library.speech_mods("maincast").1.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     #[ignore = "needs the private install data"]
     fn world_gaps_data_comes_from_the_overlay() {

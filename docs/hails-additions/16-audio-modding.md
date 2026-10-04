@@ -60,7 +60,8 @@ why.
     "zones":     { "00000000000DE502": { "name": "my_zone", "bed": "04_dt_main" } },
     "crossfades": [ { "from": "00000000000DE502", "to": "DB21C7A69325F3DF", "group": 1 } ],
     "speech":    { "livingworld": { "501_41_adtm1_Warn_n": ["audio/warn_extra.wav"] } },
-    "location_programs": { "MOD_siren": [ { "sample": "shuffle", "level": 0.8, "pan_sweep": 30 } ] }
+    "location_programs": { "MOD_siren": [ { "sample": "shuffle", "level": 0.8, "pan_sweep": 30 } ] },
+    "crossfade_layouts": { "MOD_fade": { "1": [ { "sample": 0, "pan": 45 }, { "sample": 0, "pan": 225, "level": 0.7 } ] } }
   },
   "tuning": { "world": { "traffic_engine": { "c04_taxi01": { "idle_rpm": 1200 } } } },
   "maps": { "MyMap": { "district": "DownTown", "ems": ["sfx_mymap"],
@@ -81,8 +82,9 @@ Identities and what each section does:
 | `replace.emitters` / `add.emitters` | `.ems` file + record index | sound emitters (`kind` 1, a bank and patch) and reverb zones (`kind` 5, a reverb preset key). Added records join a file (a new file name makes a new file a map can list). |
 | `replace.random_sets` / `zones` | 16-hex key or name | the whole record; a replacement keeps the record's name unless it gives one. `add` takes a new 16-hex key. |
 | `replace.crossfades` / `add.crossfades` | zone pair (either order) | |
-| `replace.speech` / `add.speech` | archive (`livingworld` = peds and NPC skaters, `maincast` = the pros and the special cast) + clip (with or without `.dat`) + take | added takes join the clip after its own, so the speech manager can pick them. |
+| `replace.speech` / `add.speech` | archive (`livingworld` = peds and NPC skaters, `maincast` = the pros and the special cast) + clip (with or without `.dat`) + take | added takes join the clip after its own, so the speech manager can pick them. Clip names must read as speech clip names (`<event>_<voice>[_<voice name>]_<line>`, an error otherwise); when the overlays merge (game and `check_mod --install`) each clip is looked up in the install's speech index: an unknown clip (with a "did you mean" hint), an archive the install has no index for, or a replaced take past the clip's own is a warning and is not applied. |
 | `add.location_programs` | bank | the layers a location-set post of the bank plays (the interim Bevy-voice player); a mod bank without a row plays one shuffle layer at level 1, a retail bank without one stays silent (as retail). |
+| `add.crossfade_layouts` | crossfade bank | group (1..64) → the looping voices the zone-transition crossfade plays: sample slot, `pan` in degrees (0 = ahead, 90 = right), `level` 0..1; 1..8 voices. For a crossfade bank without a program (a bank of WAVs). A bank with a `c_main_ambience_crossfade` program (retail's three, or a mod's `.abk`) gets its layout from the program, as retail does; a declared layout wins over a program. The bank's samples must exist (warning otherwise). |
 | `tuning.player / world / bus / grain` | section + field path | field merges onto the install's tuning sections (e.g. `world.ped_objects` body-fall ids / tazer time, `world.speech_voice` peak filter / echo delay, `world.speech_tuning`); only fields the install has; arrays take decimal index keys; numbers replace numbers. An overlay whose merged tuning does not read back is left out whole. |
 | `maps.<stem>` | map stem + field | see C. |
 
@@ -126,6 +128,10 @@ All three use the same shape:
 - `regions`: axis-aligned boxes `[centre x, centre z, half x, half z]` per layer, checked before the district's tiles.
   `key` is a 16-hex key or a zone / location-set name (reverb boxes take a preset key).
 - `fallback_bed`: a bed for installs without zone data (not retail).
+- `crossfade_bank`: the bank the zone-transition crossfade plays (retail: `Main_Ambience_Crossfade_DT / _Ind / _Uni`).
+  Which voices each zone pair's group plays comes from the bank itself: its `c_main_ambience_crossfade` program
+  (posted per group, as retail's ambience manager does) or, for a mod bank of WAVs, the overlay's
+  `add.crossfade_layouts`. A bank with neither stays silent at transitions (logged; `check_mod --install` warns).
 
 Mod files are not referenced from a map definition: a custom map uses retail identities, and new sounds come from an
 audio mod (`add.banks`, `add.random_sets`, …).
@@ -183,7 +189,9 @@ no mod subscribes. Muting or replacing a retail sound from an event is not possi
 
 - `cargo run -p skate-mods --example check_mod -- <package>` checks `mod.json`, the Lua syntax and `audio.json` in
   depth and prints a summary; `--install <assets folder>` also merges it over the install as the game does and lists
-  unknown identities, `--with <package>` adds other audio mods to report conflicts.
+  unknown identities (speech clips and takes are checked against the install's speech indexes), says where each
+  crossfade bank the overlay names or lays out gets its layout (program / declared, or a warning when it has none),
+  and `--with <package>` adds other audio mods to report conflicts.
 - The game's native audio starts after the mod manager's first scan, so an audio mod enabled at boot costs no second
   start.
 - The mod menu shows, for the selected mod, its `audio.json` load error, conflicts (the first by mod id wins) and
@@ -243,8 +251,77 @@ Verification:
 
 Open questions / later: tuning writes at run time (`sdk.audio.set_tuning`), mod emitters and reverb zones as world-audio
 objects (emitter slots: retail's 5 or extra), mod WAVs through the native mixer (`native=true`, opt-in per sound),
-declarative mute / replace / layer rules, crossfade layouts for mod crossfade banks (the interim table only knows
-retail's three), a bank-level hot swap instead of the restart.
+declarative mute / replace / layer rules, a bank-level hot swap instead of the restart.
+
+### Closed after review (2026-10-04)
+
+Two gaps the first version left open:
+
+- **Mod crossfade banks played no crossfade.** Problem: a mod (or custom map) could name its own crossfade bank, but
+  the interim player looked the zone pair's group up in a measured table that knew only retail's three banks, so a mod
+  bank stayed silent at zone transitions. Root cause: the layout (which samples, from which directions, at which
+  level) was engine data, while in retail it is the bank's own data: the ambience manager posts
+  `c_main_ambience_crossfade` with the pair's group in w9 and the bank's program opens the voices. Change:
+  `skate_audio::world::crossfade::layouts` posts every group (1..25) at full level to a private evaluator and records
+  the voices the program opens (slot, azimuth input, level input); `game_audio/crossfade_layouts.rs` builds a map's
+  layouts when its crossfade bank or the audio content changes (declared `add.crossfade_layouts` first, then the
+  program, else none + a warning) and `ambience.rs` plays them; the table is now only the test oracle
+  (`crossfade_groups.rs`, `#[cfg(test)]`). Program layouts are rounded to the table's precision (pan 0.1°, level
+  1e-4), so retail plays exactly as before. Evidence: `retail_layouts_come_from_the_banks_programs` (data-gated): all
+  21 groups of the three retail banks, voices in the same order, equal to the table bit for bit; deriving all three
+  banks takes ~8 ms (about 3 ms at a map load). Mod tests: `a_mod_crossfade_bank_gets_its_layout` (data-gated:
+  declared layout, a program shipped under a mod bank name with mod WAVs, a bank with neither) and
+  `a_mod_crossfade_bank_plays_its_layout` (the ambience system walks from one zone into another: the declared voices
+  play the mod's samples for the transition and stop when the new bed has faded in). The dev test mod now makes a
+  self-made bank (`DEV_fade`) DownTown's crossfade bank.
+- **Speech clip names were only checked when the speech index loaded** (a log warning at run time, after the merge
+  had accepted them). Change: `validate` rejects names that do not parse as speech clip names and unknown archives;
+  `audio_merge::merge_one_with` / `merge_with` take the install's speech indexes (`SpeechClips::load`, read only when
+  an overlay names speech) and turn unknown clips (with a "did you mean" hint), missing archives and takes past a
+  clip's own into warnings that skip the entry, in the game (mod menu, log) and in `check_mod --install`. Tests:
+  `speech_takes_are_checked_against_the_speech_index` (skate-mods), `speech_takes_are_checked_when_the_overlays_merge`
+  (game library), the validation cases in `bad_overlays_are_rejected`.
+- **Found by the in-game check: empty Lua tables broke audio commands.** An empty Lua table has no array part and
+  reaches serde as an empty map, so `sdk.audio.watch{mixmap = …}` (whose wrapper sends `globals = {}`),
+  `sdk.audio.subscribe{tags = {}}` and `sdk.audio.post(key, class, {})` failed with "invalid type: map, expected a
+  sequence"; the dev test mod's `on_load` died on it, so its overlay never applied (as designed: overlays apply only
+  while the mod runs). Unit tests had sent JSON arrays and non-empty Lua tables. Root cause: `Command` is an
+  internally tagged enum, so serde buffers the whole table first (mlua's own `deserialize_seq` would accept `{}`, the
+  buffered map does not). The same issue was in every other list field a script can fill, audio or not. Change: one
+  shared helper, `crates/skate-mods/src/lua_list.rs` (`list` / `opt_list`): a sequence reads as before, a table whose
+  keys are exactly 1..n (the empty table included) reads as that list in key order, any other table is an error
+  ("expected a list, found a table with the key …"); `nil` on an optional list stays "absent". Used on
+  `audio_post` / `audio_redeliver` `words`, `audio_watch` `globals` / `mixmap`, `audio_subscribe` `tags`,
+  `graphics_mesh` `deform_nodes`, mesh-buffer write / append `positions` / `indices` / `normals` / `colors` / `uvs`,
+  `ui_canvas` `items`, `ui_menu` `items` and each item's `children`, `player_detach` `candidates`, raycast `exclude`.
+  Fields that are maps or free values (`network_state` `value`, world-audio `value`, struct options such as
+  `options = {}`) are not touched. Not changed: `Shape` `points` / `hulls` (in skate-dynamics) still refuse `{}` at
+  deserialisation; an empty hull is invalid either way, only the error text differs. Before this, for example
+  `sdk.ui.menu(key, {..., items = {{..., children = {}}}})` and `sdk.player.detach{candidates = {}}` failed the same
+  way. Tests: `vm::empty_table_lists::every_list_field_takes_an_empty_table_and_a_list` (a real mod through `Vm` /
+  `api.lua` / `_submit`: `{}` and a normal list for every field; empty where entries are required = a validation error,
+  never a serde one; a named-key table still refused), `map_fields_keep_empty_tables_as_maps`, `lua_list::tests`
+  (gaps, 0, negative, fractional and named keys refused; JSON unchanged). The upstream test
+  `mesh_buffer_write_rejects_empty_uv_table` now checks the write is refused by validation (it still is, by
+  `_submit`) instead of by deserialisation. No-mod e2e `m5` = `m4` (84/84 identical).
+
+Proofs for these changes: the headless e2e bench (84 renders and voice logs) is byte-identical to the previous
+reference (`m2`) after them (`m3`, and `m4` with the final tree); all suites pass (skate-audio with ignored, the
+game's `game_audio::` tests with ignored and every private-data variable, skate-mods apart from the known missing
+Skyline GLB), `check_mod --install` passes the three shipped / dev audio mods with 0 warnings, `cargo build --locked`.
+
+In-game log check (muted, the branch's own staged build, about 60–75 s each, no input):
+- DownTown with `audio-content-test`: the overlay merged (0 conflicts, 0 warnings, 0 rejected), the native runtime
+  started once (after the first mod scan, no restart), map audio `["retail", "mod"]` with crossfade bank `DEV_fade`,
+  `AUDIO_AMBIENCE crossfade layouts DEV_fade: Declared, groups [1..7]`, the spawn walk-in crossed zones and played
+  `crossfade DEV_fade group 2 level 1.75`, then `zone dt_main bed 04_dt_main from mod:dev-audio-content-test/audio/bed.wav`;
+  the mod logged event rows (`zone_change`, `footstep`, `land`, player posts, `sk8_foley` Splice starts); no errors or
+  panics. The replaced `Baby_Cry_1` emitter was not in range of the spawn (unit-tested).
+- DownTown without it: map audio `["retail"]`, `crossfade layouts Main_Ambience_Crossfade_DT: Program, groups [1..7]`,
+  the same transition played `crossfade Main_Ambience_Crossfade_DT group 2 level 1.75`, the retail bed.
+- format-demo with `audio-example`: overlay merged, map audio `["mod"]`, `AUDIO_RANDOM set example_chimes`, a chime
+  every 4–8 s (`AUDIO_RANDOM fire EXAMPLE_chime`); without it: map audio `["none"]`, no sets. (Pops need input: the
+  pop / land tags are covered by the data-gated tests, and `land` showed in the DownTown run.)
 
 ---
 
