@@ -198,7 +198,7 @@ end
 Rows come from the post sites themselves: the local player's component posts / releases and Splice starts, the world
 and NPC hosts (posts, releases, ped Splice steps, ped body falls and phone rings, the ped tazer, the NPC loose-board slide),
 world emitter start / stop, zone ambience changes and speech line starts (class `speech` for the living world, `maincast`
-for the main cast). Tags: `pop`, `land` (the board contacts' Splice starts with the Contacts tuning's pop and landing ids),
+for the main cast). Tags: `pop`, `land` (the board contacts' Splice starts with the running player's Contacts tuning pop and landing ids, whenever the mod subscribed),
 `grind_start`, `grind_end` (the grind slot's post / release), `footstep`, `horn`, `alarm`, `tazer` (a ped's `c_tazer`
 post), `body_fall` (a ped's body-fall Splice start), `emitter`, `zone_change`, `speech`. Rows are one frame late; at most 256 a frame (`truncated` says when more happened). Nothing is recorded while
 no mod subscribes. Muting, replacing or layering a retail sound: declarative rules (K).
@@ -273,7 +273,7 @@ the mute / replace / layer rules are built on the follow-up branch: H–L.)
 
 ### Closed after review (2026-10-04)
 
-Two gaps the first version left open:
+Gaps the first version left open:
 
 - **Mod crossfade banks played no crossfade.** Problem: a mod (or custom map) could name its own crossfade bank, but
   the interim player looked the zone pair's group up in a measured table that knew only retail's three banks, so a mod
@@ -322,6 +322,21 @@ Two gaps the first version left open:
   (gaps, 0, negative, fractional and named keys refused; JSON unchanged). The upstream test
   `mesh_buffer_write_rejects_empty_uv_table` now checks the write is refused by validation (it still is, by
   `_submit`) instead of by deserialisation. No-mod e2e `m5` = `m4` (84/84 identical).
+- **Found by the in-game autotest: `pop` / `land` were wrong for a mod that subscribed at load.** Problem: a mod
+  calling `sdk.audio.subscribe` in `on_load` (the normal case: before native audio starts) got pops untagged for the
+  whole session, and any player `Skate_Collisions` Splice row with id 0 tagged `land` (the `land` rows of the DownTown
+  log check above were most likely these). Root cause: `AudioApi::subscribe` copied the pop / landing ids from the
+  native player only if it was already running; otherwise the tags kept `Tags::default` (no pops, landing 0) until the
+  mod re-subscribed. Rules were not affected (they would read the player directly). Change (`mod_audio.rs`):
+  `events_frame` copies the running player's ids into the tags every frame a mod subscribes (before it collects that
+  frame's rows), so they follow a native start, restart, map change or tuning change whatever the order; no player =
+  unset ids. `Tags` holds fixed arrays (`[i32; 6]` pops, the landing id) and is `Copy`: the refresh allocates nothing,
+  and with no subscriber `events_frame` returns before it as before. Id 0 (unset) never tags `pop` or `land`. The
+  copy at subscribe stays as an early value. Mod API unchanged. Test:
+  `event_tags_follow_the_player_whatever_the_subscription_order` (subscribe with no native audio, start it: a pop, a
+  hollow pop and a landing tagged, an id-0 row untagged; unsubscribe / re-subscribe; a landing-id change and a
+  replaced player retag from the next frame; native stopped → unset). No-mod e2e `b1` = `b0` (this branch's head
+  before the fix, itself = `m5`).
 
 Proofs for these changes: the headless e2e bench (84 renders and voice logs) is byte-identical to the previous
 reference (`m2`) after them (`m3`, and `m4` with the final tree); all suites pass (skate-audio with ignored, the
