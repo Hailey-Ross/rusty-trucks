@@ -198,7 +198,7 @@ end
 Rows come from the post sites themselves: the local player's component posts / releases and Splice starts, the world
 and NPC hosts (posts, releases, ped Splice steps, ped body falls and phone rings, the ped tazer, the NPC loose-board slide),
 world emitter start / stop, zone ambience changes and speech line starts (class `speech` for the living world, `maincast`
-for the main cast). Tags: `pop`, `land` (the board contacts' Splice starts with the Contacts tuning's pop and landing ids),
+for the main cast). Tags: `pop`, `land` (the board contacts' Splice starts with the running player's Contacts tuning pop and landing ids, whenever the mod subscribed),
 `grind_start`, `grind_end` (the grind slot's post / release), `footstep`, `horn`, `alarm`, `tazer` (a ped's `c_tazer`
 post), `body_fall` (a ped's body-fall Splice start), `emitter`, `zone_change`, `speech`. Rows are one frame late; at most 256 a frame (`truncated` says when more happened). Nothing is recorded while
 no mod subscribes. Muting, replacing or layering a retail sound: declarative rules (K).
@@ -273,7 +273,7 @@ the mute / replace / layer rules are built on the follow-up branch: H–L.)
 
 ### Closed after review (2026-10-04)
 
-Two gaps the first version left open:
+Gaps the first version left open:
 
 - **Mod crossfade banks played no crossfade.** Problem: a mod (or custom map) could name its own crossfade bank, but
   the interim player looked the zone pair's group up in a measured table that knew only retail's three banks, so a mod
@@ -322,6 +322,21 @@ Two gaps the first version left open:
   (gaps, 0, negative, fractional and named keys refused; JSON unchanged). The upstream test
   `mesh_buffer_write_rejects_empty_uv_table` now checks the write is refused by validation (it still is, by
   `_submit`) instead of by deserialisation. No-mod e2e `m5` = `m4` (84/84 identical).
+- **Found by the in-game autotest: `pop` / `land` were wrong for a mod that subscribed at load.** Problem: a mod
+  calling `sdk.audio.subscribe` in `on_load` (the normal case: before native audio starts) got pops untagged for the
+  whole session, and any player `Skate_Collisions` Splice row with id 0 tagged `land` (the `land` rows of the DownTown
+  log check above were most likely these). Root cause: `AudioApi::subscribe` copied the pop / landing ids from the
+  native player only if it was already running; otherwise the tags kept `Tags::default` (no pops, landing 0) until the
+  mod re-subscribed. Rules were not affected (they would read the player directly). Change (`mod_audio.rs`):
+  `events_frame` copies the running player's ids into the tags every frame a mod subscribes (before it collects that
+  frame's rows), so they follow a native start, restart, map change or tuning change whatever the order; no player =
+  unset ids. `Tags` holds fixed arrays (`[i32; 6]` pops, the landing id) and is `Copy`: the refresh allocates nothing,
+  and with no subscriber `events_frame` returns before it as before. Id 0 (unset) never tags `pop` or `land`. The
+  copy at subscribe stays as an early value. Mod API unchanged. Test:
+  `event_tags_follow_the_player_whatever_the_subscription_order` (subscribe with no native audio, start it: a pop, a
+  hollow pop and a landing tagged, an id-0 row untagged; unsubscribe / re-subscribe; a landing-id change and a
+  replaced player retag from the next frame; native stopped → unset). No-mod e2e `b1` = `b0` (this branch's head
+  before the fix, itself = `m5`).
 
 Proofs for these changes: the headless e2e bench (84 renders and voice logs) is byte-identical to the previous
 reference (`m2`) after them (`m3`, and `m4` with the final tree); all suites pass (skate-audio with ignored, the
@@ -912,6 +927,39 @@ Verification: `mod_voices::tests::offsets_turn_with_the_owner`, `mod_rules::test
   OK. Dev mods: `audio-content-test` Digit3 spawns its taxis without `slots` on 4 (`'own'` on 3); `world-audio-test`
   (which shows retail's limits) asks for `slots = 'shared'` on 4, and its new setting "Own instances" (`own_slots`)
   shows the default instead. Not checked in game yet.
+
+### M8b. Automated in-game check (the dev mod's `autotest` setting, 2026-10-04)
+
+Problem: checking H–M in game needed a person in DownTown pressing F5–F11 and Digit1–6. Change (dev mod only,
+`mods/audio-content-test`, no engine code): mod settings `autotest` (off by default), `autotest_step` (s per step),
+`autotest_gap` (quiet s before each step), `autotest_muted` (shows "MUTED TEST" on its HUD). With `autotest` on, once
+the map's native audio runs the script presses its own keys on a timer (the same code paths as the keys), one step
+after the other, reads back what the engine reports and logs one line per check: `AUTOTEST <check> ok|fail <details>`
+(then `AUTOTEST done pass=N fail=M`). 16 steps: the map's Baby_Cry_1 emitter with the replaced bank (the camera, i.e.
+the listener, is put 5 m from DownTown's record), F5 global, F6 / F7 post and release (patch 22 at that emitter),
+F8 native siren + beep, F9 tuning writes (a mod taxi idles 3 m away: the game spawns no traffic), F10 emitter +
+reverb zone, F11 rules with a synthetic ollie (gameplay actions: a push, then the right stick down / up), Digit1 duck,
+Digit2 seed, Digit3 six own-instance taxis driving a 6 m circle, Digit4 the mod's Csis class and global, Digit5 the
+nose beep with an ollie, Digit6 the orbiting emitter, event tags after subscribing again, and the L7 hot reload (it
+asks the runner to edit `audio.json`: `AUTOTEST_REQ edit_audio_json` / `revert_audio_json`, and checks two swaps, no
+restart and the script loaded once). Read-backs: `sdk.audio.info()` (native voices, rules, seed, MixMap inputs, swaps,
+restarts, last change), `handle`, `global` (the watch is re-sent once the native audio runs: at `on_load` it does not
+yet and the watch fails), `tuned` / `tuning`, `mixmap_inputs`, `sdk.world_audio.read / info`, `sdk.commands.result`,
+the audio catalog (loaded banks) and the event rows. Every step has a hard limit (its length + 5 s: a
+`<step>_timeout` fail line). Output levels of mixer voices are not readable from Lua: a check proves "held, posted,
+started", the ear (or a headless render) proves the level.
+
+A local runner (not part of the PR) starts the game on DownTown with a copy of the mod in a run folder and a private
+`SKATE3_MOD_SETTINGS` folder (`<id>.json` = `{"enabled": true, "values": {"autotest": true, ...}}`), muted and
+minimised by default or audible (15 s steps, 3 s gaps), edits / reverts the copy's `audio.json` when asked, stops the
+game after `AUTOTEST done` and tabulates the lines; a second pass with the mod disabled asserts retail (`Map audio
+DownTown: ["retail"]`, the retail crossfade bank, no overlay, the install's 9 Csis projects, no mod log line).
+
+Found by it (2026-10-04): the event tags (`pop`, `land`) are computed only when a mod subscribes while the native audio
+already runs (`AudioApi::subscribe`; refreshed otherwise only by a `player` tuning write). A mod that subscribes in
+`on_load` (before the native audio starts) keeps the empty default for the whole session: pops arrive untagged and a
+Skate_Collisions Splice with id 0 is tagged `land`. Rules are not affected (they read the tags from the native player).
+Open: refresh the tags when the native audio starts / restarts (engine fix, not done here).
 
 ### M9. Open questions
 

@@ -218,7 +218,7 @@ pub(crate) struct AudioRules {
     /// `AudioContent::rules_generation` compiled last.
     content: u64,
     /// The pop / landing ids the set was compiled with (the Contacts tuning).
-    tags: Option<(Vec<i32>, i32)>,
+    tags: Option<Tags>,
     pub(crate) set: Option<Arc<RuleSet>>,
     /// Rules left out at the last compile (their WAV did not load), for the log.
     pub(crate) failed: Vec<String>,
@@ -371,7 +371,7 @@ pub(super) fn frame(
     time: Res<Time<Real>>,
 ) {
     let player_tags = native.as_deref().and_then(|n| n.player.as_ref()).map(|p| Tags::from_tuning(&p.contact_tuning));
-    let tag_key = player_tags.as_ref().map(|t| (t.pop.clone(), t.land));
+    let tag_key = player_tags;
     let changed = rules.dirty || rules.content != content.rules_generation || (rules.set.is_some() && rules.tags != tag_key);
     if changed {
         rules.dirty = false;
@@ -447,7 +447,7 @@ mod tests {
     /// `min_interval`, through a ring of keys.
     #[test]
     fn rules_match_decide_and_queue() {
-        let tags = Tags { pop: vec![12, 13], land: 20 };
+        let tags = Tags { pop: [12, 13, 0, 0, 0, 0], land: 20 };
         let set = RuleSet::for_test(&[
             ("dev.a", "quiet_land", rule(json!({"match": {"tag": "land"}, "action": "mute"}))),
             ("dev.a", "my_pop", rule(json!({"match": {"tag": "pop"}, "action": "replace", "play": {"path": "pop.wav"}, "min_interval": 0.1}))),
@@ -485,7 +485,7 @@ mod tests {
     /// reach); centred; a mod's `falloff` replaces the default reach.
     #[test]
     fn rule_sounds_are_placed_at_their_owner() {
-        let tags = Tags { pop: vec![12], land: 20 };
+        let tags = Tags { pop: [12, 0, 0, 0, 0, 0], land: 20 };
         let set = RuleSet::for_test(&[
             ("dev.a", "pop", rule(json!({"match": {"tag": "pop"}, "action": "layer", "play": {"path": "a.wav"}, "min_interval": 0}))),
             ("dev.a", "horn", rule(json!({"match": {"tag": "horn"}, "action": "replace", "play": {"path": "a.wav", "offset": [0, 1.5, 0], "falloff": {"radius": 12, "curve": "linear"}}, "min_interval": 0}))),
@@ -578,7 +578,7 @@ mod tests {
         assert!(!content.restart_pending(), "rules alone do not restart the sound");
         let mut voices = ModVoices::default();
         r.set_rule("dev.b", "quiet", Some(mute.clone())).unwrap();
-        let set = compile(&mut r, &content, &mut voices, Tags { pop: vec![5], land: 6 }).expect("two rules");
+        let set = compile(&mut r, &content, &mut voices, Tags { pop: [5, 0, 0, 0, 0, 0], land: 6 }).expect("two rules");
         assert_eq!(set.rules.iter().map(|c| (c.owner.as_str(), c.key.as_str())).collect::<Vec<_>>(), [("dev.a", "my_pop"), ("dev.b", "quiet")], "mod-id order");
         assert!(voices.has_clip("dev.a", "audio/pop.wav"), "the overlay rule's WAV is in the mod's bank");
         // The mod stops: its overlay rules go (a recompile), still no restart.

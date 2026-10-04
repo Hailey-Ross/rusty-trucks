@@ -4,7 +4,7 @@
   "name": "Audio Content Test (dev)",
   "version": "0.1.0",
   "author": "Hails",
-  "description": "Dev only (PR #36), off by default: enable it in the mod menu, or run with SKATE3_MODS_ENABLE=dev-audio-content-test. Its audio.json replaces DownTown's main zone bed with soft noise, the Baby_Cry_1 emitter bank with a beep, a tunnel zone's volume, a speech take, a taxi's idle rpm, makes a self-made crossfade bank DownTown's zone-transition crossfade (a declared layout), and adds a siren location set on the format-demo map (district DownTown). The script posts a retail c_emitter with F6 and releases it with F7, sets a global with F5 (again to restore), and shows the last audio events and a watched MixMap output on the HUD. audio/moddability-2: F8 plays a siren through the native mixer (the default routing, default reach) and a beep, F9 toggles tuning writes (taxi idle rpm, a reverb preset value), F10 places a mod emitter (its own emitter instance, the default) and a reverb zone at the skater, F11 toggles rules muting grind starts and replacing the landing with a beep at a fixed spot 10 m east; audio.json layers a quiet beep on every pop at the skater and one above every honking car (positional rules). audio.json's honk_beep plays 1.5 m above and 2 m ahead of each honking car (offset in the car's own axes, frame = owner). Third pass (doc 16 L1-L7): turning the mod on or off, or editing audio.json or its files while it runs, is swapped into the running audio without a restart (only the changed banks; the HUD's second line shows swaps / restarts / the last change); audio.json adds the mod's own Csis project audio/dev.csi (class c_dev_mod, global g_dev_level). Digit1 ducks the world through retail's Master MixMap inputs (L2), Digit2 seeds the audio random state (L5), Digit3 places six idling taxis on their own MixMap instances (L3), Digit4 posts the mod's own class and sets its global to 9 (L4), Digit5 adds a beep 2 m ahead of the board's nose on every pop (frame = owner), Digit6 places an emitter that orbits the skater (its sound follows it).",
+  "description": "Dev only (PR #36), off by default: enable it in the mod menu, or run with SKATE3_MODS_ENABLE=dev-audio-content-test. Its audio.json replaces DownTown's main zone bed with soft noise, the Baby_Cry_1 emitter bank with a beep, a tunnel zone's volume, a speech take, a taxi's idle rpm, makes a self-made crossfade bank DownTown's zone-transition crossfade (a declared layout), and adds a siren location set on the format-demo map (district DownTown). The script posts a retail c_emitter with F6 and releases it with F7, sets a global with F5 (again to restore), and shows the last audio events and a watched MixMap output on the HUD. audio/moddability-2: F8 plays a siren through the native mixer (the default routing, default reach) and a beep, F9 toggles tuning writes (taxi idle rpm, a reverb preset value), F10 places a mod emitter (its own emitter instance, the default) and a reverb zone at the skater, F11 toggles rules muting grind starts and replacing the landing with a beep at a fixed spot 10 m east; audio.json layers a quiet beep on every pop at the skater and one above every honking car (positional rules). audio.json's honk_beep plays 1.5 m above and 2 m ahead of each honking car (offset in the car's own axes, frame = owner). Third pass (doc 16 L1-L7): turning the mod on or off, or editing audio.json or its files while it runs, is swapped into the running audio without a restart (only the changed banks; the HUD's second line shows swaps / restarts / the last change); audio.json adds the mod's own Csis project audio/dev.csi (class c_dev_mod, global g_dev_level). Digit1 ducks the world through retail's Master MixMap inputs (L2), Digit2 seeds the audio random state (L5), Digit3 places six running taxis on their own MixMap instances (L3), Digit4 posts the mod's own class and sets its global to 9 (L4), Digit5 adds a beep 2 m ahead of the board's nose on every pop (frame = owner), Digit6 places an emitter that orbits the skater (its sound follows it). Setting autotest: all of it on a timer, one AUTOTEST log line per check.",
   "entry": "main.lua",
   "enabled_by_default": false,
   "settings": {
@@ -13,6 +13,36 @@
       "label": "Show audio events",
       "description": "Subscribe to every audio event and show the last ones.",
       "default": true
+    },
+    "autotest": {
+      "type": "boolean",
+      "label": "Autotest (dev)",
+      "description": "Runs every key action on a timer once the map's audio runs and logs one AUTOTEST line per check (a runner sets it for one run through SKATE3_MOD_SETTINGS).",
+      "default": false
+    },
+    "autotest_step": {
+      "type": "number",
+      "label": "Autotest step (s)",
+      "description": "Seconds per autotest step (time to listen to each).",
+      "min": 2,
+      "max": 30,
+      "step": 1,
+      "default": 5
+    },
+    "autotest_gap": {
+      "type": "number",
+      "label": "Autotest gap (s)",
+      "description": "Quiet seconds before each autotest step.",
+      "min": 0,
+      "max": 10,
+      "step": 1,
+      "default": 0
+    },
+    "autotest_muted": {
+      "type": "boolean",
+      "label": "Autotest is muted",
+      "description": "Shows MUTED TEST on the autotest HUD (the runner sets it for muted runs).",
+      "default": false
     }
   }
 }
