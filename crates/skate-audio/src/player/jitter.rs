@@ -72,14 +72,20 @@ impl Jitter {
     /// later channel on the same id overwrites an earlier one, as retail's writes do).
     pub fn process(&mut self) -> Vec<(usize, i32)> {
         let mut out = Vec::new();
+        self.process_each(|id, word| out.push((id, word)));
+        out
+    }
+
+    /// [`Jitter::process`] without the list: `write(input id, word)` per enabled channel, in the
+    /// same order and with the same draws (the game's per-frame call; no allocation).
+    pub fn process_each(&mut self, mut write: impl FnMut(usize, i32)) {
         for ch in &mut self.channels {
             let r = self.rng.draw();
             ch.step(r);
             if ch.params.enabled {
-                out.push((ch.params.id, ch.word()));
+                write(ch.params.id, ch.word());
             }
         }
-        out
     }
 }
 

@@ -147,6 +147,8 @@ pub struct MixMap {
     pub ticks: u64,
     /// Controllers with held inputs ([`MixMap::hold_input`]).
     holding: Vec<usize>,
+    /// The tick's saved last writes of the held inputs (kept between ticks: no allocation per tick).
+    saved: Vec<(usize, u16, [i32; 16])>,
 }
 
 fn swing(t: &Tables, w: u16) -> (i32, i32) {
@@ -352,6 +354,7 @@ impl MixMap {
             dt_ms: 0.0,
             ticks: 0,
             holding: Vec::new(),
+            saved: Vec::new(),
         }
     }
 
@@ -494,7 +497,8 @@ impl MixMap {
     pub fn tick(&mut self, dt: f32) {
         // Held inputs: evaluate with the largest value since the last tick, then restore the last
         // write (so the next tick sees only what is written after this one).
-        let mut saved = Vec::new();
+        let mut saved = std::mem::take(&mut self.saved);
+        saved.clear();
         for &i in &self.holding {
             let c = &mut self.ctls[i];
             if c.held_set != 0 {
@@ -508,7 +512,7 @@ impl MixMap {
             }
         }
         self.evaluate(dt);
-        for (i, set, inputs) in saved {
+        for &(i, set, inputs) in &saved {
             let c = &mut self.ctls[i];
             for id in 0..16 {
                 if set & (1 << id) != 0 {
@@ -516,6 +520,7 @@ impl MixMap {
                 }
             }
         }
+        self.saved = saved;
     }
 
     fn evaluate(&mut self, dt: f32) {
