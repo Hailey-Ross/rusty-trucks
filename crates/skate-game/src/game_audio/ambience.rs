@@ -108,7 +108,7 @@ pub(super) fn update(
     for clip in fading {
         if voices.uses(&clip) { state.fading.push(clip); } else { library.release(&mut assets, &clip); }
     }
-    let identity = (map.name.clone(), map.generation, content.generation);
+    let identity = (map.name.clone(), map.generation, content.world_generation);
     let new_map = state.map.as_ref() != Some(&identity);
     if new_map {
         state.map = Some(identity);

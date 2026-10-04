@@ -64,6 +64,15 @@ pub(crate) struct AudioContent {
     /// Bumped when a running overlay with `rules` comes or goes (`mod_rules` recompiles; rules
     /// alone never restart the sound).
     pub(crate) rules_generation: u64,
+    /// Bumped by every runtime restart only (not by a hot swap): what holds runtime handles (post
+    /// ids, mixer voices, private MixMap instances) forgets them when it changes.
+    pub(crate) runtime_generation: u64,
+    /// Bumped by a restart and by a hot swap that changed the world layer (beds, zones, records,
+    /// sets, map audio: `Library::world_key`): the map-keyed state rebuilds when it changes.
+    pub(crate) world_generation: u64,
+    /// Hot swaps done (doc 16 L1), and the last content change: "swap" or "restart: <reasons>".
+    pub(crate) swaps: u64,
+    pub(crate) last_change: Option<String>,
 }
 
 impl AudioContent {
@@ -177,8 +186,15 @@ impl AudioContent {
 }
 
 /// Rebuild the library from the install and the registered overlays (the install alone when
-/// the merge fails). None when the install has no audio.
+/// the merge fails) and make it the resource. None when the install has no audio.
 fn rebuild(world: &mut World) -> Option<ContentReport> {
+    let (library, report) = merged(world)?;
+    world.insert_resource(library);
+    Some(report)
+}
+
+/// The library of the install and the registered overlays (see [`rebuild`]), not inserted.
+fn merged(world: &mut World) -> Option<(Library, ContentReport)> {
     let root = world.get_resource::<crate::config::Config>()?.asset_root.clone();
     let content = world.resource::<AudioContent>();
     let result = Library::load_with(&root, &content.sources());
@@ -198,8 +214,7 @@ fn rebuild(world: &mut World) -> Option<ContentReport> {
     for m in report.warnings.iter().chain(&report.rejected) {
         warn!("Game audio: mod {}: {}", m.owner, m.text);
     }
-    world.insert_resource(library);
-    Some(report)
+    Some((library, report))
 }
 
 /// Replace the hosts that hold runtime handles (node ids, Splice sounds, MixMap instances,
@@ -233,24 +248,81 @@ pub(super) fn frame(world: &mut World) {
             // startup library is used untouched.
             let report = if overlays { rebuild(world) } else { None };
             let started = super::native::launch(world, None);
+            super::seed::from_env(world);
             let mut content = world.resource_mut::<AudioContent>();
             if let Some(report) = report {
                 content.report = report;
                 content.generation += 1;
+                content.world_generation += 1;
             }
             content.pending = false;
             content.runtime = if started { Runtime::Started } else { Runtime::Failed };
         }
-        Runtime::Started | Runtime::Failed if pending => restart(world),
+        Runtime::Started if pending => swap_or_restart(world),
+        Runtime::Failed if pending => restart(world),
         _ => {}
     }
-    // Tuning writes apply here, between passes (after a restart: onto the new Library).
+    // Tuning writes apply here, between passes (after a restart: onto the new Library); then a
+    // seed of the random state (doc 16 L5; nothing while unseeded).
     super::tuning::apply(world);
+    super::seed::apply(world);
+}
+
+/// The running mods' audio content changed: swap the new library in without a restart where that
+/// is exact (`swap.rs`, doc 16 L1), else restart the runtime (the fallback, with its reasons).
+pub(crate) fn swap_or_restart(world: &mut World) {
+    let Some((library, report)) = merged(world) else { return };
+    let plan = match (world.get_resource::<Library>(), world.get_resource::<super::native::Native>()) {
+        (Some(old), Some(native)) => super::swap::plan(old, &library, native),
+        _ => {
+            let mut p = super::swap::Plan::default();
+            p.restart.push("no running runtime".into());
+            p
+        }
+    };
+    if !plan.restart.is_empty() {
+        info!("Game audio: the audio content change needs a restart: {}", plan.restart.join("; "));
+        world.insert_resource(library);
+        restart_with(world, report, Some(plan.restart.join("; ")));
+        return;
+    }
+    if let Err(e) = super::swap::apply(world, &plan, &library) {
+        warn!("Game audio: the hot swap failed ({e}); restarting the audio instead");
+        world.insert_resource(library);
+        restart_with(world, report, Some(format!("the swap failed: {e}")));
+        return;
+    }
+    if !plan.tuning.is_empty() {
+        let changed = plan.tuning.clone();
+        world.insert_resource(library);
+        super::tuning::retune(world, &changed);
+    } else {
+        world.insert_resource(library);
+    }
+    let mut content = world.resource_mut::<AudioContent>();
+    content.report = report;
+    content.generation += 1;
+    content.swaps += 1;
+    if plan.world {
+        content.world_generation += 1;
+    }
+    content.pending = false;
+    content.last_change = Some("swap".into());
+    info!(
+        "Game audio: swapped the mods' audio content in place (generation {}, overlays {:?}; banks replaced {:?}, unloaded {:?}, Splice {:?}, wheels {}, projects in {:?} out {:?}, tuning {:?}, speech {}, world {})",
+        content.generation, content.overlays.keys().collect::<Vec<_>>(), plan.replace, plan.unload, plan.splice, plan.wheels, plan.projects_in, plan.projects_out.iter().map(|p| &p.0).collect::<Vec<_>>(),
+        plan.tuning.iter().map(|t| t.0).collect::<Vec<_>>(), plan.speech, plan.world
+    );
 }
 
 /// Rebuild the library and restart the native runtime (see the module docs).
 pub(crate) fn restart(world: &mut World) {
     let Some(report) = rebuild(world) else { return };
+    restart_with(world, report, None);
+}
+
+/// Restart the runtime on the library in place (`report`: its merge report).
+fn restart_with(world: &mut World, report: ContentReport, why: Option<String>) {
     let carry = super::native::shutdown(world);
     reset_hosts(world);
     let started = super::native::launch(world, carry);
@@ -266,7 +338,10 @@ pub(crate) fn restart(world: &mut World) {
     let mut content = world.resource_mut::<AudioContent>();
     content.report = report;
     content.generation += 1;
+    content.runtime_generation += 1;
+    content.world_generation += 1;
     content.restarts += 1;
+    content.last_change = Some(format!("restart{}", why.map_or(String::new(), |w| format!(": {w}"))));
     content.pending = false;
     content.runtime = if started { Runtime::Started } else { Runtime::Failed };
     info!("Game audio: restarted for the mods' audio content (generation {}, overlays {:?})", content.generation, content.overlays.keys().collect::<Vec<_>>());
@@ -460,7 +535,7 @@ mod tests {
         let held = world.resource::<Native>().next_node() - 1;
         let (next, epoch) = (world.resource::<Native>().next_node(), world.resource::<Native>().map_epoch);
         world.resource_mut::<AudioContent>().invalidate();
-        frame(&mut world);
+        restart(&mut world);
         assert_eq!(world.resource::<AudioContent>().restarts, 1);
         assert_eq!(world.resource::<AudioContent>().generation, 1);
         {
@@ -496,14 +571,14 @@ mod tests {
         let overlay = serde_json::json!({"version": 1, "replace": {"banks": {bank.clone(): {"samples": vec!["audio/tone.wav"; samples]}}}});
         std::fs::write(dir.join("audio.json"), overlay.to_string()).unwrap();
         world.resource_mut::<AudioContent>().sync([("dev.restart", dir.as_path(), 1)].into_iter());
-        frame(&mut world);
+        restart(&mut world);
         assert!(world.resource::<AudioContent>().report.applied == ["dev.restart"], "{:?}", world.resource::<AudioContent>().report);
         let modded = scenario(&mut world, &bank, patch);
         assert!(!same(&modded, &fresh), "the mod's samples play");
         // ...and removing it restores retail: the output equals a fresh no-mod runtime's.
         world.resource_mut::<AudioContent>().sync(std::iter::empty());
         let next = world.resource::<Native>().next_node();
-        frame(&mut world);
+        restart(&mut world);
         assert_eq!(world.resource::<AudioContent>().restarts, 3);
         let restored = scenario(&mut world, &bank, patch);
         let fresh = {
@@ -514,6 +589,192 @@ mod tests {
             scenario(&mut w, &bank, patch)
         };
         assert!(same(&restored, &fresh), "removed mod = retail");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// L4 (data-gated): a mod's Csis project brings a class and a global; its preloaded bank binds
+    /// to the class. Swapped in (no restart): the class and global resolve, a post to the class
+    /// plays the mod bank. Swapped out: the names resolve no more and the bank is gone; retail's
+    /// lookups never changed. A project reusing a retail name is left out (first owner wins); a
+    /// restart installs the mod project after the install's.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn a_mod_csis_project_is_installed_and_taken_out_without_a_restart() {
+        use super::super::native::Native;
+        use skate_audio::eval::synthetic;
+        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        if Library::load(root).is_err() {
+            panic!("missing private data: no audio install");
+        }
+        let mut world = game_world(root);
+        let retail_emitter = world.resource::<Native>().shared.lock().unwrap().eval.class_id("c_emitter");
+        let dir = std::env::temp_dir().join(format!("skate-audio-csi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        let sym = |name: &str, name_id: u16, default: i32| skate_audio::formats::csi::Symbol { name: name.into(), name_id, default };
+        let project = |class: &str| skate_audio::formats::Project { name: "mod.csi".into(), id: synthetic::PROJECT, tables: [vec![], vec![sym(class, 1, 0)], vec![sym("g_dev_mod", 2, 41)]] };
+        std::fs::write(dir.join("audio/mod.csi"), project("c_dev_mod").to_bytes()).unwrap();
+        let abk = synthetic::bank(&[synthetic::player_module(2)], &[synthetic::Ex { module: 0, kind: 1, name_id: 1, name: "c_dev_mod", at: None }], &[(4800, false)]).data;
+        std::fs::write(dir.join("audio/mod.abk"), &abk).unwrap();
+        std::fs::write(dir.join("audio/a.wav"), super::super::library::tests::test_wav(4800, 48000, 9000)).unwrap();
+        std::fs::write(dir.join("audio.json"), serde_json::json!({"version": 1, "add": {
+            "projects": ["audio/mod.csi"],
+            "banks": {"MOD_csi": {"abk": "audio/mod.abk", "samples": ["audio/a.wav"], "preload": true, "group": "world"}}}}).to_string()).unwrap();
+        world.resource_mut::<AudioContent>().sync([("dev.csi", dir.as_path(), 1)].into_iter());
+        frame(&mut world);
+        {
+            let c = world.resource::<AudioContent>();
+            assert_eq!((c.restarts, c.swaps), (0, 1), "{:?} {:?}", c.last_change, c.report.rejected);
+        }
+        {
+            let n = world.resource::<Native>();
+            assert!(n.bank_loaded("MOD_csi"));
+            assert_eq!(n.mod_projects.len(), 1);
+            let mut rt = n.shared.lock().unwrap();
+            let class = rt.eval.class_id("c_dev_mod").expect("the mod's class");
+            let g = rt.eval.global_id("g_dev_mod").expect("the mod's global");
+            assert_eq!(rt.eval.global(g), Some(41));
+            let before = rt.eval.instance_count();
+            rt.post(class, &[1, 4096, 0]);
+            assert_eq!(rt.eval.instance_count(), before + 1, "the mod bank answers the mod class");
+            assert_eq!(rt.eval.class_id("c_emitter"), retail_emitter);
+        }
+        world.resource_mut::<AudioContent>().sync(std::iter::empty());
+        frame(&mut world);
+        {
+            assert_eq!((world.resource::<AudioContent>().restarts, world.resource::<AudioContent>().swaps), (0, 2));
+            let n = world.resource::<Native>();
+            assert!(!n.bank_loaded("MOD_csi") && n.mod_projects.is_empty());
+            let rt = n.shared.lock().unwrap();
+            assert!(rt.eval.class_id("c_dev_mod").is_none() && rt.eval.global_id("g_dev_mod").is_none());
+            assert_eq!(rt.eval.class_id("c_emitter"), retail_emitter);
+        }
+        // A project that reuses a retail class name is left out.
+        std::fs::write(dir.join("audio/mod.csi"), project("c_emitter").to_bytes()).unwrap();
+        world.resource_mut::<AudioContent>().sync([("dev.csi", dir.as_path(), 2)].into_iter());
+        frame(&mut world);
+        assert!(world.resource::<AudioContent>().report.rejected.iter().any(|m| m.owner == "dev.csi" && m.text.contains("c_emitter")), "{:?}", world.resource::<AudioContent>().report);
+        // A restart with the mod: its project after the install's.
+        std::fs::write(dir.join("audio/mod.csi"), project("c_dev_mod").to_bytes()).unwrap();
+        world.resource_mut::<AudioContent>().sync([("dev.csi", dir.as_path(), 3)].into_iter());
+        restart(&mut world);
+        let n = world.resource::<Native>();
+        assert_eq!(n.mod_projects.len(), 1);
+        assert!(n.shared.lock().unwrap().eval.class_id("c_dev_mod").is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    pub(crate) fn render(world: &World, blocks: usize) -> Vec<f32> {
+        let n = world.resource::<super::super::native::Native>();
+        let mut out = vec![0.0f32; 2 * skate_audio::BLOCK];
+        let mut all = Vec::with_capacity(blocks * out.len());
+        for _ in 0..blocks {
+            n.shared.lock().unwrap().fill_stereo(&mut out);
+            all.extend_from_slice(&out);
+        }
+        all
+    }
+
+    /// The bank the runtime holds under `stem` equals what loading it from `library` gives (its
+    /// samples' headers, its program bytes): what a restart would have loaded.
+    fn holds_library_bank(world: &World, library: &Library, stem: &str) -> bool {
+        let n = world.resource::<super::super::native::Native>();
+        let id = n.bank_id(stem).expect("loaded");
+        let (fresh, _) = library.bank_source(stem).unwrap().load().unwrap();
+        let rt = n.shared.lock().unwrap();
+        let held = rt.eval.bank(id).unwrap();
+        held.data == fresh.data && held.samples == fresh.samples
+    }
+
+    /// L1 (data-gated): a mod's audio content coming and going is swapped in place, no restart:
+    /// the runtime (and its stream) stays, the replaced bank keeps its runtime id and its place
+    /// among its class's constructors and holds exactly the new library's content, a held post of
+    /// it keeps sounding on the new samples (re-bound with its payload), an unrelated held post
+    /// keeps its instance. Removing the mod swaps the install's bank back. A MixMap replacement
+    /// cannot be swapped exactly: it restarts (the fallback, with its reason).
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn a_mod_is_swapped_in_and_out_without_a_restart() {
+        use super::super::native::Native;
+        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        if Library::load(root).is_err() {
+            panic!("missing private data: no audio install");
+        }
+        let (mut a, mut b) = (game_world(root), game_world(root));
+        let (bank, patch) = emitter_bank(a.resource::<Library>());
+        let mut nodes = Vec::new();
+        for w in [&mut a, &mut b] {
+            let library = w.remove_resource::<Library>().unwrap();
+            let mut native = w.resource_mut::<Native>();
+            native.ensure_bank(&library, &bank).unwrap();
+            let payload = native.emitter_payload(None, 0.8, 9000, patch);
+            nodes.push(native.post_emitter(&payload).expect("c_emitter"));
+            drop(native);
+            w.insert_resource(library);
+        }
+        assert!(same(&render(&a, 200), &render(&b, 200)), "two equal worlds");
+        let shared = std::sync::Arc::as_ptr(&a.resource::<Native>().shared);
+        let id = a.resource::<Native>().bank_id(&bank).unwrap();
+        let utility = a.resource::<Native>().bank_id("emitter_utility").unwrap();
+        let (class, constructors, utility_instances) = {
+            let rt = a.resource::<Native>().shared.lock().unwrap();
+            let class = rt.eval.node_class(nodes[0]).unwrap();
+            (class, rt.eval.registry.classes[class].constructors.clone(), rt.eval.instances().into_iter().filter(|i| i.1 == utility).collect::<Vec<_>>())
+        };
+        let dir = std::env::temp_dir().join(format!("skate-audio-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        let samples = a.resource::<Library>().bank_len(&bank);
+        std::fs::write(dir.join("audio/tone.wav"), super::super::library::tests::test_wav(22050, 22050, 6000)).unwrap();
+        std::fs::write(dir.join("audio.json"), serde_json::json!({"version": 1, "replace": {"banks": {bank.clone(): {"samples": vec!["audio/tone.wav"; samples]}}}}).to_string()).unwrap();
+        a.resource_mut::<AudioContent>().sync([("dev.swap", dir.as_path(), 1)].into_iter());
+        frame(&mut a);
+        {
+            let c = a.resource::<AudioContent>();
+            assert_eq!((c.restarts, c.swaps, c.runtime_generation, c.last_change.as_deref()), (0, 1, 0, Some("swap")), "{:?}", c.last_change);
+            assert_eq!(c.report.applied, ["dev.swap"]);
+        }
+        assert_eq!(std::sync::Arc::as_ptr(&a.resource::<Native>().shared), shared, "the same runtime");
+        assert_eq!(super::super::native::NativeOutputCount::of(&mut a), 1, "the same stream");
+        assert_eq!(a.resource::<Native>().bank_id(&bank), Some(id), "the same bank id");
+        assert!(holds_library_bank(&a, a.resource::<Library>(), &bank), "the new library's bank");
+        {
+            let rt = a.resource::<Native>().shared.lock().unwrap();
+            assert_eq!(rt.eval.registry.classes[class].constructors, constructors, "the same constructor places");
+            assert_eq!(rt.eval.node_class(nodes[0]), Some(class), "the post is still held");
+            assert!(rt.eval.instances().iter().any(|i| i.1 == id), "and re-bound to the new bank");
+            assert_eq!(rt.eval.instances().into_iter().filter(|i| i.1 == utility).collect::<Vec<_>>(), utility_instances, "an unrelated post keeps its instance");
+        }
+        let (modded, retail) = (render(&a, 600), render(&b, 600));
+        assert!(modded.iter().any(|s| *s != 0.0) && !same(&modded, &retail), "the mod's samples play on the held post");
+        // L7: the WAV edited in place while the mod runs (same path, new content; the package's
+        // fingerprint changes): swapped again, its new header in the runtime.
+        let header = |w: &World| {
+            let n = w.resource::<Native>();
+            let rt = n.shared.lock().unwrap();
+            rt.eval.bank(id).unwrap().samples[0].1
+        };
+        let before = header(&a);
+        std::fs::write(dir.join("audio/tone.wav"), super::super::library::tests::test_wav(11025, 22050, 3000)).unwrap();
+        a.resource_mut::<AudioContent>().sync([("dev.swap", dir.as_path(), 2)].into_iter());
+        frame(&mut a);
+        assert_eq!((a.resource::<AudioContent>().restarts, a.resource::<AudioContent>().swaps), (0, 2));
+        assert!(holds_library_bank(&a, a.resource::<Library>(), &bank) && header(&a) != before, "the edited WAV");
+        // Out again: the install's bank is swapped back.
+        a.resource_mut::<AudioContent>().sync(std::iter::empty());
+        frame(&mut a);
+        assert_eq!((a.resource::<AudioContent>().restarts, a.resource::<AudioContent>().swaps), (0, 3));
+        assert!(holds_library_bank(&a, b.resource::<Library>(), &bank), "the install's bank again");
+        assert!(render(&a, 300).iter().any(|s| *s != 0.0), "still sounding");
+        // A MixMap replacement restarts (the fallback).
+        let mxb = a.resource::<Library>().aems().mixmap.clone().expect("a MixMap");
+        std::fs::copy(a.resource::<Library>().path(&mxb), dir.join("audio/mix.mxb")).unwrap();
+        std::fs::write(dir.join("audio.json"), serde_json::json!({"version": 1, "replace": {"mixmap": "audio/mix.mxb"}}).to_string()).unwrap();
+        a.resource_mut::<AudioContent>().sync([("dev.swap", dir.as_path(), 3)].into_iter());
+        frame(&mut a);
+        let c = a.resource::<AudioContent>();
+        assert_eq!((c.restarts, c.swaps), (1, 3));
+        assert!(c.last_change.as_deref().is_some_and(|l| l.starts_with("restart: the MixMap file changed")), "{:?}", c.last_change);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

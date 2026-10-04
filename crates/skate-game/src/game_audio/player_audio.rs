@@ -113,6 +113,14 @@ pub(crate) struct PlayerAudio {
 }
 
 impl PlayerAudio {
+    /// SFXObj_Jitter's generator (`seed.rs`, doc 16 L5).
+    pub(crate) fn jitter_rng(&self) -> skate_audio::eval::rng::Rng {
+        self.jitter.rng
+    }
+    pub(crate) fn jitter_rng_mut(&mut self) -> &mut skate_audio::eval::rng::Rng {
+        &mut self.jitter.rng
+    }
+
     /// A runtime tuning write changed the player tuning (`tuning.rs`): the vault tuning, the
     /// Contacts posters' values and the footstep materials follow. SFXObj_Jitter keeps the walk it
     /// was built with (its parameters change at the next start).

@@ -31,6 +31,18 @@ pub enum ObjectKind {
     ReverbZone,
 }
 
+/// Which MixMap instances a traffic vehicle or ped plays on (world audio extension 3, doc 16 L3).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Slots {
+    /// Retail's pools (4 traffic / 15 pedestrian instances, the nearest win): the default.
+    #[default]
+    Retail,
+    /// Its own instance of a private MixMap: it plays whenever it is within retail's list radius
+    /// (up to 16 own cars and 16 own peds), the map's objects keep retail's pools. Not retail.
+    Own,
+}
+
 /// Every field a spawn or an update may carry; each kind reads its own and ignores none silently
 /// (a field of another kind is rejected by [`WorldAudioOptions::validate_for`]).
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -49,6 +61,10 @@ pub struct WorldAudioOptions {
     /// Follow one of this mod's physics bodies (position, rotation and velocity from it).
     #[serde(default)]
     pub body: Option<String>,
+    /// Traffic and peds, spawn only (extension 3): `retail` (the default) or `own` (its own MixMap
+    /// instance).
+    #[serde(default)]
+    pub slots: Option<Slots>,
     // ---- traffic
     /// The `aud_traffic_engine` record (`c01_family01`, `c03_sports01`, `c04_taxi01`,
     /// `c05_truck01`, …) or a living-world model mapped to one (`taxi01`, `sedan02`, `suv`, …): a
@@ -237,6 +253,7 @@ impl WorldAudioOptions {
         let zone = self.preset.is_some();
         let moving = self.velocity.is_some() || self.voice.is_some() || self.speed.is_some();
         self.validate()
+            && (self.slots.is_none() || matches!(kind, ObjectKind::Traffic | ObjectKind::Ped))
             && match kind {
                 ObjectKind::Traffic => !ped && !skater && !emitter && !shape && !zone,
                 ObjectKind::Ped => !traffic && !skater && !emitter && !shape && !zone,

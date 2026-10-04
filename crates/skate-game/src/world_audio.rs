@@ -212,7 +212,17 @@ pub enum WorldAudioSlot {
 pub struct WorldAudioInstance {
     pub slot: WorldAudioSlot,
     pub instance: u32,
+    /// The instance is the object's own (`OwnAudioInstance`, a private MixMap), not one of retail's.
+    pub own: bool,
 }
+
+/// A traffic vehicle or ped with this takes its own MixMap instance (doc 16 "L3",
+/// `game_audio::mod_world`) instead of competing for retail's pools (4 traffic / 15 pedestrian, the
+/// nearest win): it plays whenever it is within retail's list radius (40 m / 50 m), up to 16 own
+/// cars and 16 own peds. Not retail: for mod and engine objects that must be heard. Mods:
+/// `sdk.world_audio.spawn(key, 'traffic' | 'ped', {slots = 'own', …})`.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OwnAudioInstance;
 
 /// A sound emitter at the entity (world audio extension 2; doc 16 "Mod emitters and reverb zones"):
 /// an `.ems` eVolumeType 1 record added to the map's live list (`game_audio::emitters`) with

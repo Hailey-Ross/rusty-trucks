@@ -143,6 +143,14 @@ pub(super) fn spawn(world: &mut World, mods: &Mods, owner: &str, key: String, ki
             ObjectKind::Ped => {
                 e.insert(PedAudio::default());
             }
+            _ => {}
+        }
+        // Doc 16 L3: its own MixMap instance (`game_audio::mod_world`) instead of retail's pools.
+        if opts.slots == Some(skate_mods::world_audio::Slots::Own) {
+            e.insert(crate::world_audio::OwnAudioInstance);
+        }
+        match kind {
+            ObjectKind::Traffic | ObjectKind::Ped => {}
             ObjectKind::Skater => {
                 e.insert(NpcSkaterAudio { voice: opts.voice.filter(|v| *v != 0), ..Default::default() });
             }
@@ -270,6 +278,8 @@ pub(super) fn snapshot(world: &World, owner: &str) -> Value {
             // Emitters: playing now (holding an emitter state); reverb zones: holding the listener.
             "audible": held.is_some() || stats.is_some_and(|s| s.playing.contains(&obj.entity) || s.zones.contains(&obj.entity)),
             "instance": held.map(|h| h.instance),
+            // Doc 16 L3: the instance is the object's own (a private MixMap), not one of retail's.
+            "own": held.is_some_and(|h| h.own),
             "parked": world.resource::<Time<Real>>().elapsed_secs_f64() - obj.updated > PARK_SECONDS && !obj.ghost && !matches!(obj.kind, ObjectKind::Emitter | ObjectKind::ReverbZone),
         }));
     }

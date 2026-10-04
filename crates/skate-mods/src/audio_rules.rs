@@ -82,6 +82,19 @@ pub enum RuleAt {
     Centre,
 }
 
+/// The axes a rule sound's `offset` is in (audio events extension 3, doc 16 "offset frame").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleFrame {
+    /// World axes (x, y up, z): the default.
+    #[default]
+    World,
+    /// The owner's own axes, turning with it: x = its right, y = up, z = its facing (the local
+    /// skater's and an NPC skater's board, a car's direction, a ped's walking direction, an
+    /// emitter's forward).
+    Owner,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulePlay {
@@ -101,6 +114,9 @@ pub struct RulePlay {
     /// `owner` only: metres added to the owner's position (world axes, y up), −100..100.
     #[serde(default)]
     pub offset: Option<[f32; 3]>,
+    /// `owner` only: the axes of `offset` (default `world`; `owner` = the owner's right, up, facing).
+    #[serde(default)]
+    pub frame: Option<RuleFrame>,
     /// `world` only (required there): the world position.
     #[serde(default)]
     pub position: Option<[f32; 3]>,
@@ -150,8 +166,8 @@ impl RulePlay {
     fn validate_placement(&self) -> bool {
         let fields = match self.at {
             RuleAt::Owner => self.position.is_none(),
-            RuleAt::World => self.offset.is_none() && self.position.is_some(),
-            RuleAt::Centre => self.offset.is_none() && self.position.is_none() && self.falloff.is_none(),
+            RuleAt::World => self.offset.is_none() && self.position.is_some() && self.frame.is_none(),
+            RuleAt::Centre => self.offset.is_none() && self.position.is_none() && self.falloff.is_none() && self.frame.is_none(),
         };
         fields
             && self.offset.as_ref().is_none_or(crate::audio::offset)
@@ -230,9 +246,14 @@ mod tests {
             json!({"at": "world", "position": [1e5, 0, -1e5], "falloff": {"radius": 30, "core": 0.2}}),
             json!({"at": "centre"}),
             json!({"at": "center"}),
+            json!({"offset": [0, 0, 2], "frame": "owner"}),
+            json!({"at": "owner", "offset": [1, 0, 0], "frame": "world"}),
         ] {
             assert!(play(ok.clone()).validate(), "{ok}");
         }
+        assert_eq!(default.play.as_ref().unwrap().frame, None, "world axes by default");
+        assert_eq!(play(json!({"frame": "owner"})).play.unwrap().frame, Some(RuleFrame::Owner));
+        assert!(serde_json::from_value::<Rule>(json!({"match": {"tag": "horn"}, "action": "layer", "play": {"path": "a.wav", "frame": "car"}})).is_err());
         assert_eq!(play(json!({"at": "center"})).play.unwrap().at, RuleAt::Centre);
         for bad in [
             json!({"position": [1, 2, 3]}),
@@ -241,6 +262,8 @@ mod tests {
             json!({"at": "centre", "offset": [0, 1, 0]}),
             json!({"at": "centre", "position": [0, 1, 0]}),
             json!({"at": "centre", "falloff": {"radius": 10}}),
+            json!({"at": "world", "position": [1, 2, 3], "frame": "owner"}),
+            json!({"at": "centre", "frame": "owner"}),
             json!({"offset": [0, 101, 0]}),
             json!({"at": "world", "position": [0, 1e6, 0]}),
             json!({"falloff": {"radius": 0}}),

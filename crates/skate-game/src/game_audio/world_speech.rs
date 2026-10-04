@@ -158,6 +158,38 @@ impl WorldSpeech {
     }
 }
 
+impl WorldSpeech {
+    /// The speech generator's state (`seed.rs`, doc 16 L5).
+    pub(crate) fn rng_state(&self) -> u32 {
+        self.rng.0
+    }
+    pub(crate) fn set_rng_state(&mut self, state: u32) {
+        self.rng.0 = state;
+    }
+
+    /// An audio content hot swap changed the speech (an overlay's takes, `swap.rs`): the lines
+    /// speaking stop and the index and takes are read again at the next request (the managers'
+    /// "who spoke when" timers start again with them).
+    pub(crate) fn reload_content(&mut self, rt: &mut skate_audio::runtime::Runtime) {
+        let mut missing = self.missing_logged;
+        if let Some(data) = self.data.as_ref() {
+            let mut v = Voices { mixer: &mut rt.mixer, bank: SPEECH_BANK, data, loaded: &mut self.loaded, missing: &mut missing, echo_delay: &mut self.echo_delay };
+            self.player.clear(&mut v);
+        }
+        if let Some(c) = self.cast.as_mut() {
+            let mut v = Voices { mixer: &mut rt.mixer, bank: MAIN_CAST_BANK, data: &c.data, loaded: &mut c.loaded, missing: &mut missing, echo_delay: &mut self.echo_delay };
+            c.player.clear(&mut v);
+        }
+        self.missing_logged = missing;
+        self.loaded.clear();
+        rt.mixer.remove_bank(SPEECH_BANK);
+        rt.mixer.remove_bank(MAIN_CAST_BANK);
+        self.data = None;
+        self.cast = None;
+        self.tried = false;
+    }
+}
+
 impl Default for WorldSpeech {
     fn default() -> Self {
         Self {

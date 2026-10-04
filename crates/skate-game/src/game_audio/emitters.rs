@@ -88,7 +88,7 @@ pub(super) fn reverb_zones(
 ) {
     let (Some(library), Some(_)) = (library, native) else { return };
     let state = &mut *state;
-    let identity = (map.name.clone(), map.generation, content.generation);
+    let identity = (map.name.clone(), map.generation, content.world_generation);
     if state.map.as_ref() != Some(&identity) {
         state.records = zone_records(&library, &audio);
         state.active.clear();
@@ -286,6 +286,8 @@ pub(super) struct State {
     /// after them, in `dynamic` order.
     map_len: usize,
     dynamic: Vec<Entity>,
+    /// `AudioContent::runtime_generation` the nodes belong to.
+    runtime: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -356,13 +358,19 @@ pub(super) fn update(
     let (Some(library), Some(mut native)) = (library, native) else { return };
     let native = &mut *native;
     let state = &mut *state;
-    let identity = (map.name.clone(), map.generation, content.generation);
-    if state.map.as_ref().is_some_and(|m| m.2 != content.generation) {
+    let identity = (map.name.clone(), map.generation, content.world_generation);
+    let runtime_changed = state.runtime != content.runtime_generation;
+    if runtime_changed {
         // The runtime restarted (`content::restart`): its posts and emitter states are the old
         // runtime's. Forget them; never release old ids into the new runtime.
         state.nodes.clear();
+        state.runtime = content.runtime_generation;
     }
     if state.map.as_ref() != Some(&identity) {
+        // A new map or a restart unloads the map's banks (the map-change path); a hot swap that
+        // changed the world layer (`content::swap_or_restart`) only rebuilds the records: the
+        // runtime and its banks stay (doc 16 L1).
+        let map_changed = runtime_changed || state.map.as_ref().is_none_or(|m| m.0 != map.name || m.1 != map.generation);
         for node in state.nodes.drain(..) {
             if let Some(post) = node.post {
                 native.release(post);
@@ -376,7 +384,9 @@ pub(super) fn update(
                 }
             }
         }
-        native.unload_map_banks();
+        if map_changed {
+            native.unload_map_banks();
+        }
         let stem = audio.stem.as_str();
         // Retail's emitter system loads every file of the map's database entry and dispatches by
         // the attribute's eVolumeType: 1 = looping emitter (here), 5 = reverb zone
@@ -416,7 +426,7 @@ pub(super) fn update(
     if !dynamic.is_empty() || !state.dynamic.is_empty() {
         sync_dynamic(state, native, &library, &mut mix, &dynamic, &mut api);
         if extra {
-            mix.ensure(&library, native, content.generation);
+            mix.ensure(&library, native, content.runtime_generation);
         }
     }
     let Ok(listener) = listener.single() else { return };
@@ -498,7 +508,7 @@ pub(super) fn update(
                 // sound placed at the owner plays at the record, with the record's reach.
                 let muted = rules.set.as_deref().is_some_and(|r| {
                     let site = (e.shape.position, super::mod_voices::Reach { extent: e.shape.extent, forward: e.shape.forward, core: e.shape.core, curve: e.falloff });
-                    r.mutes_at(&super::mod_audio::EventRow { kind: super::mod_audio::EventKind::EmitterStart, source: super::mod_audio::Source::Emitter, class: super::mod_audio::intern(&e.bank), slot: "", id: e.patch, owner: node.owner() }, Some(site))
+                    r.mutes_at_published(&super::mod_audio::EventRow { kind: super::mod_audio::EventKind::EmitterStart, source: super::mod_audio::Source::Emitter, class: super::mod_audio::intern(&e.bank), slot: "", id: e.patch, owner: node.owner() }, Some(site), node.entity.map(Entity::to_bits))
                 });
                 node.post = if muted { None } else { native.post_emitter(&payload) };
                 if api.events.on() && (node.post.is_some() || muted) {
@@ -909,6 +919,37 @@ mod tests {
         world.run_system(update).unwrap();
         assert!(!world.resource::<super::super::mod_voices::ModMix>().in_use(), "instances freed");
         assert!(world.resource::<crate::world_audio::WorldEmitterStats>().playing.is_empty());
+    }
+
+    /// A published emitter that moves after its sound started (data-gated, doc 16 "moving
+    /// emitters"): the same post keeps playing and its instance's 3-D input follows the entity
+    /// (the camera distance it writes), and leaving the reach as it moves away releases it.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn a_moving_published_emitter_is_followed() {
+        let (mut world, _) = published_world(true);
+        let update = world.register_system(update);
+        let (bank, patch) = downtown_emitter(&world);
+        let e = publish(&mut world, &bank, patch, Vec3::new(3.0, 0.0, 0.0));
+        world.run_system(update).unwrap();
+        assert_eq!(world.resource::<crate::world_audio::WorldEmitterStats>().playing, [e]);
+        let dist = |w: &mut World| {
+            let mut mix = w.resource_mut::<super::super::mod_voices::ModMix>();
+            let m = mix.mixmap().unwrap();
+            (0..super::super::mod_voices::MIX_INSTANCES as u32).map(|g| f32::from_bits(m.input(skate_audio::mixmap::keys::emitter_pos(g), skate_audio::mixmap::keys::pos::DIST_CAMERA) as u32)).find(|d| *d > 0.0)
+        };
+        let near = dist(&mut world).expect("an instance with a position");
+        let posts = world.resource::<Native>().next_node();
+        let t = Transform::from_xyz(8.0, 0.0, 0.0);
+        world.entity_mut(e).insert((t, GlobalTransform::from(t)));
+        world.run_system(update).unwrap();
+        let far = dist(&mut world).unwrap();
+        assert!((near - 3.0).abs() < 1e-3 && (far - 8.0).abs() < 1e-3, "followed: {near} → {far}");
+        assert_eq!(world.resource::<Native>().next_node(), posts, "the same post, not a new one");
+        let t = Transform::from_xyz(500.0, 0.0, 0.0);
+        world.entity_mut(e).insert((t, GlobalTransform::from(t)));
+        world.run_system(update).unwrap();
+        assert!(world.resource::<crate::world_audio::WorldEmitterStats>().playing.is_empty(), "out of reach");
     }
 
     /// A published reverb zone (data-gated): the listener inside it lists the zone (after the

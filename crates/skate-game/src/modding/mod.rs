@@ -435,10 +435,12 @@ fn maintenance(world: &mut World) {
                     .dispatch("on_event", json!({"name":"world_changed","map":map}));
             }
             mods.manager.scan(false);
+            audio_reloads(world, &mut mods);
             sync_audio_content(world, &mods);
             return;
         }
         mods.manager.scan(false);
+        audio_reloads(world, &mut mods);
         sync_audio_content(world, &mods);
         if !mods.runtime_busy() {
             return;
@@ -447,6 +449,24 @@ fn maintenance(world: &mut World) {
         // packages and applies pending lifecycle/menu commands.
         apply(world, &mut mods);
     });
+}
+
+/// Doc 16 L7: a running mod whose only changed files are its `audio.json` and files it names keeps
+/// its script; its audio content is reloaded (the overlay is read again by `sync_audio_content`
+/// and hot-swapped, `game_audio::swap`). The native clips of the changed files are dropped (read
+/// again at the next play or rule compile); a changed file the script holds as a Bevy clip
+/// reloads the mod as before.
+fn audio_reloads(world: &mut World, mods: &mut Mods) {
+    let ids: Vec<String> = mods.manager.packages.iter().filter(|(_, p)| p.running()).map(|(id, _)| id.clone()).collect();
+    for id in ids {
+        let Some(changes) = mods.manager.packages.get_mut(&id).and_then(|p| p.take_audio_changes()) else { continue };
+        if audio::files_changed(world, &id, &changes) {
+            info!("Mods: {id}: audio content changed ({}): reloaded while the script keeps running", changes.join(", "));
+        } else {
+            info!("Mods: {id}: a changed file is a clip the script plays ({}): the mod reloads", changes.join(", "));
+            mods.manager.reload(&id);
+        }
+    }
 }
 
 /// Audio content overlays follow the running mods (`game_audio::AudioContent`): a mod that
@@ -1001,6 +1021,12 @@ fn apply_one(
         }
         Command::AudioSubscribe { tags } => audio_api(world, |api, native, _| api.subscribe(id, tags, native))?,
         Command::AudioSetTuning { domain, patch } => crate::game_audio::set_tuning(world, id, &domain, patch)?,
+        Command::AudioSetMixmapInput { slot, object, instance, input, value, float } => {
+            use crate::game_audio::mixmap_inputs::InputValue;
+            let value = value.map(|v| if float { InputValue::Float(v as f32) } else { InputValue::Word(v as i32) });
+            crate::game_audio::set_mixmap_input(world, id, &slot, object, instance, input, value)?
+        }
+        Command::AudioSeed { seed } => crate::game_audio::set_seed(world, id, seed)?,
         Command::AudioRule { key, rule } => crate::game_audio::set_rule(world, id, &key, rule, |world, path| audio::load_native_clip(world, mods, id, path))?,
         Command::WorldAudioSpawn { key, object, options } => world_audio::spawn(world, mods, id, key, object, options)?,
         Command::WorldAudioUpdate { key, options } => world_audio::update(world, mods, id, &key, options)?,

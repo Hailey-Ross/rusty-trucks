@@ -344,3 +344,57 @@ fn opt_in_mods_start_disabled_without_a_preference() {
     assert!(m.packages["tests.optin"].enabled);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// Doc 16 L7: editing a running mod's `audio.json` or a file it names reloads only the audio
+/// content (the game hot-swaps it): the script keeps running and the changed files are handed
+/// over once; editing anything else (the script) reloads the mod as before.
+#[test]
+fn audio_only_edits_keep_the_script_running() {
+    use std::time::{Duration, Instant};
+    let base = std::env::temp_dir().join(format!("skate-mods-audio-reload-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let (root, prefs) = (base.join("mods"), base.join("prefs"));
+    let d = root.join("tests.audio");
+    std::fs::create_dir_all(d.join("audio")).unwrap();
+    std::fs::write(d.join("mod.json"), r#"{"id":"tests.audio","api":2,"name":"t","version":"1.0.0","author":"t","description":"t","entry":"main.lua"}"#).unwrap();
+    std::fs::write(d.join("main.lua"), "return { on_load = function() sdk.log('loaded') end }").unwrap();
+    std::fs::write(d.join("audio/a.wav"), b"one").unwrap();
+    std::fs::write(d.join("audio/other.txt"), b"x").unwrap();
+    std::fs::write(d.join("audio.json"), r#"{"version":1,"replace":{"ambience":{"04_dt_main":"audio/a.wav"}}}"#).unwrap();
+    let mut m = crate::Manager::new(root, prefs);
+    m.scan(true);
+    let loads = |m: &crate::Manager| m.commands.iter().filter(|(_, c)| matches!(c, crate::Command::Log { .. })).count();
+    assert!(m.packages["tests.audio"].running(), "{:?}", m.diagnostics);
+    assert_eq!(loads(&m), 1);
+    // The scan debounce: a change is taken once it held for 750 ms (scans 500 ms apart).
+    let settle = |m: &mut crate::Manager| {
+        for _ in 0..2 {
+            m.last_scan = Instant::now() - Duration::from_secs(2);
+            m.scan(false);
+            std::thread::sleep(Duration::from_millis(800));
+        }
+        m.last_scan = Instant::now() - Duration::from_secs(2);
+        m.scan(false);
+    };
+    std::fs::write(d.join("audio.json"), r#"{"version":1,"replace":{"ambience":{"04_dt_main":"audio/a.wav","04_dt_alt":"audio/b.wav"}}}"#).unwrap();
+    settle(&mut m);
+    let p = m.packages.get_mut("tests.audio").unwrap();
+    assert!(p.running());
+    assert_eq!(p.take_audio_changes(), Some(vec!["audio.json".to_owned()]));
+    assert_eq!(p.take_audio_changes(), None, "taken once");
+    assert_eq!(loads(&m), 1, "the script was not restarted");
+    // A file the new audio.json names (new) and one the old named: audio only.
+    std::fs::write(d.join("audio/b.wav"), b"two").unwrap();
+    std::fs::write(d.join("audio/a.wav"), b"uno").unwrap();
+    settle(&mut m);
+    let mut changes = m.packages.get_mut("tests.audio").unwrap().take_audio_changes().unwrap();
+    changes.sort();
+    assert_eq!(changes, ["audio/a.wav", "audio/b.wav"]);
+    assert_eq!(loads(&m), 1);
+    // Anything else: the mod reloads as before.
+    std::fs::write(d.join("audio/other.txt"), b"y").unwrap();
+    settle(&mut m);
+    assert_eq!(loads(&m), 2, "a full reload");
+    assert_eq!(m.packages.get_mut("tests.audio").unwrap().take_audio_changes(), None);
+    let _ = std::fs::remove_dir_all(&base);
+}

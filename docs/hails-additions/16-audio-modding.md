@@ -7,7 +7,10 @@ Speech is included. Without audio mods the game sounds exactly as before: every 
 against the headless end-to-end renders (below). The deferred items are built as code on the follow-up branch
 `audio/moddability-2` (2026-10-04, sections H–L): mod WAVs through the native mixer (H), tuning writes at run time
 (I), mod emitters and reverb zones as world-audio objects (J), declarative mute / replace / layer rules (K); each
-proven byte-identical without mods, with its open questions in L.
+proven byte-identical without mods, with its open questions in L. The third pass on that branch (section M) builds
+the rest of the "Later" list: content changes hot-swapped without a restart (L1), writable MixMap inputs (L2), own
+MixMap instances for world objects (L3), mod Csis projects (L4), a seedable audio random state (L5), `audio.json`
+hot reload while the mod runs (L7), offsets in the owner's axes and moving emitters.
 
 The guide (sections A–G, and H–L for the follow-up) says what a mod can do and how. The design and research it was built from follow (sections
 0–4, unchanged apart from status notes).
@@ -28,14 +31,22 @@ The guide (sections A–G, and H–L for the follow-up) says what a mod can do a
 | publish cars, peds, skaters to the world audio | `sdk.world_audio.*` (doc 15) | `world_audio` = 1 |
 | add sound emitters and reverb zones | `sdk.world_audio.spawn(key, 'emitter' / 'reverb_zone', …)` (J) | `world_audio` = 2 |
 | mute, replace or layer the game's own sounds (the replacement at the owner, or where the mod says) | `sdk.audio.rule(key, rule)` or `audio.json` `rules` (K) | `audio_events` = 2, `audio_content` = 2 |
+| a rule sound's offset in the owner's own axes; follow a moving published emitter | `play.frame = 'owner'` (M7) | `audio_events` = 3 |
+| turn an audio mod on / off or edit its `audio.json` and files while it runs without cutting the sound | automatic: hot swap and reload (M1, M6) | `audio_content` = 3 |
+| add new Csis classes, functions, globals | `audio.json` `add.projects` (M4) | `audio_content` = 3 |
+| drive retail's MixMap controllers (a duck through the Master gains, a flag) | `sdk.audio.set_mixmap_input` (M2) | `audio` = 4 |
+| reproducible audio draws for tests | `sdk.audio.seed(n)`, `SKATE_AUDIO_SEED` (M5) | `audio` = 4 |
+| a mod car / ped heard beside retail's pools | `sdk.world_audio.spawn(…, {slots = 'own'})` (M3) | `world_audio` = 3 |
 
 Test `(sdk.capabilities.audio or 0) >= 2` (and so on) before relying on a feature; an older engine lacks the keys.
 
 ## B. The content overlay: `audio.json`
 
 A mod ships `audio.json` at its root, next to `mod.json`; files are mod-relative paths (`/`-separated, no `..`).
-It applies **only while the mod runs**: when the mod starts, stops, is reloaded or its script fails, the game's sound
-restarts once with the new set of overlays (a short cut in the sound). Overlays merge in mod-id order over the
+It applies **only while the mod runs**: when the mod starts, stops, is reloaded or its script fails, the new set of
+overlays is swapped into the running audio (M1: only what changed is replaced; a MixMap or grain replacement still
+restarts the game's sound once, a short cut). Editing `audio.json` or a file it names while the mod runs reloads the
+content without restarting the script (M6). Overlays merge in mod-id order over the
 install, by retail identity; **the first mod to change an identity wins** and later claims are listed in the mod menu
 ("Audio conflict") and the log. An entry the install does not have (an unknown bank, slot, set…) is skipped with a
 warning, never an error. A whole overlay that fails its checks is not applied, the mod still runs, and the menu says
@@ -164,7 +175,7 @@ sdk.engine.inspect('catalog', 'audio_catalog')   -- classes, functions, globals 
   class or global is a command error (use `sdk.commands.request` to receive it as a result instead of failing the
   mod). `c_emitter`'s words are expert-level: the game's own emitters derive them from the MixMap (dry, send, pan,
   pitch, low-pass, …, patch).
-- A handle dies at a map change and when the game's sound restarts for an audio content change: it reads `live =
+- A handle dies at a map change and when the game's sound restarts for an audio content change (a hot swap, M1, keeps it): it reads `live =
   false` and the mod posts again (on `world_changed`). Dead ids are never released into the new runtime.
 - Globals: the first mod to set one owns it; `nil`, the mod stopping and a map change restore the value seen before
   its first write; after a restart the override is applied again.
@@ -255,7 +266,7 @@ Verification:
 - Pre-existing failures unrelated to this PR: `setup::tests::pipelines_accept_valid_group_outputs_when_fingerprint_changes`
   (listed in PULL-REQUESTS.md).
 
-Open questions / later: a bank-level hot swap instead of the restart. (Crossfade layouts for mod crossfade banks
+Open questions / later: a bank-level hot swap instead of the restart (done: M1). (Crossfade layouts for mod crossfade banks
 are closed below; tuning writes at run time, mod emitters and reverb zones, mod WAVs through the native mixer and
 the mute / replace / layer rules are built on the follow-up branch: H–L.)
 
@@ -687,6 +698,188 @@ Implementation of 1–3 (2026-10-04, on `audio/moddability-2`):
   F10's emitter on its own instance (the default), F11 adds a landing replaced by a beep at a fixed world spot,
   `audio.json` `pop_click` at the owner and `honk_beep` 1.5 m above each honking car.
 
+## M. The third pass: hot swap, MixMap inputs and instances, Csis projects, seed, hot reload (L1–L5, L7)
+
+Status: built on `audio/moddability-2` (2026-10-04, on top of H–K; uncommitted at the time of writing). With these
+the "Later" list of section 3 is done (L6, native routing by default, was done in H). Capabilities: `audio` = 4
+(L2, L5), `audio_content` = 3 (L1, L4, L7), `audio_events` = 3 (the offset frame, moving emitters), `world_audio` = 3
+(L3). Without mods nothing here runs: the headless e2e bench is byte-identical (below).
+
+### M1. Hot swap instead of the restart (L1)
+
+Problem: a mod's audio content coming or going restarted the whole native runtime: every sound was cut and every
+held post, emitter, voice and speech line started again. Root cause: the content overlay rebuilt the `Library` and
+the only way to bring it into the runtime was `content::restart`.
+
+Change: `content::swap_or_restart` (`game_audio/swap.rs`) compares the running library with the new one and
+replaces only what changed, in place, in the same runtime:
+
+| what changed | in place |
+|---|---|
+| an AEMS bank the runtime holds (its `.abk`, WAVs by slot, rebuilt headers, volume group) | `Runtime::replace_bank` / `Evaluator::replace_bank`: the bank keeps its runtime id and its place in each class's constructor list; its instances go (voices released); every post its poster still holds is re-bound to the new bank with the post's last payload (the longest ClassData copy of the post), so a held traffic engine, emitter or player layer continues on the new content. No random draws. A bank that left the audio is unloaded; banks not loaded load from the new library on use. |
+| overlay-preloaded banks | the new set loads now |
+| a Splice tree (pops, landings, foley, the ped ring) or its WAVs | `SplicePlayer::replace_bank`: same index and mixer bank; its sounding sounds stop (as after a release) |
+| the wheel streams | `Runtime::load_streams` again |
+| mod Csis projects (M4) | installed / taken out of the lookups (`Registry::uninstall`); the banks bound to them re-bound |
+| tuning sections from overlays | handed to the systems that cache them (`tuning::retune`, as a tuning write) |
+| speech index / takes | `WorldSpeech::reload_content`: the lines speaking stop, the data is read again |
+| the world layer (beds, zones, crossfades, regions, `.ems` records, sets, map audio: `Library::world_key`) | `AudioContent::world_generation`: the map-keyed state (emitters, reverb zones, zone ambience) rebuilds; the emitters release their nodes in the same runtime and do **not** unload the map's banks (no epoch: the world / NPC hosts keep playing) |
+
+"Exact" here means: after a swap the runtime holds, for everything it has loaded, exactly what a restart would load
+(the same `.abk` bytes, sample headers, PCM, groups, class bindings in the same constructor order, Splice trees,
+streams, tuning, projects); only the sounds of the replaced content restart. Kept as the **restart fallback** (the
+plan's reasons are logged and shown in `sdk.audio.info().last_change`):
+- the **MixMap file** (its controller graph and every instance's state are built from it);
+- the **rolling bed's** grain recordings or grain tuning (the bed is built at the runtime's start);
+- the **install's own projects** (overlays never change them; a guard), a Splice tree that left the audio (a guard),
+  and any error while swapping.
+
+Identities that live as long as the runtime now key on `AudioContent::runtime_generation` (bumped by restarts only):
+mod post handles (`mod_audio`), native mod voices and the private MixMap (`mod_voices`), the emitters' node
+forgetting. `generation` is bumped by every content change (the new library: tuning re-applied, layouts and sets
+rebuilt). Mod files are stamped (size and modification time) when the library loads (`Library::stamp`), so a file
+edited in place is new content.
+
+Files: `crates/skate-audio/src/eval/mod.rs` (`bind`, `replace_bank`, `payload_of`, `banks_using_project`,
+`uninstall_project`), `eval/symbols.rs` (install tokens, `records_of`, `uninstall`), `runtime.rs` (`replace_bank`,
+`install_project` returns the token), `mixer.rs` (`bank_group`), `splice/mod.rs` (`replace_bank`);
+`crates/skate-game/src/game_audio/swap.rs` (new), `content.rs` (`swap_or_restart`, `merged`, `restart_with`, the
+new counters, `last_change`), `library.rs` (`stamp`, the content keys `bank_key / splice_key / wheels_key /
+mixmap_key / grain_key / speech_key / world_key / project_files / tuning_sections`), `native.rs` (`replace_bank`,
+`unload_bank`, `set_resident`, `bank_ids`, `mod_projects`), `world_speech.rs` (`reload_content`), `emitters.rs`,
+`ambience.rs`, `mod_voices.rs`, `mod_audio.rs` (`swaps`, `last_change` in the info), `tuning.rs` (`retune` shared).
+
+Verification: `eval::tests::a_replaced_bank_keeps_its_place_and_re_instances_held_posts` (the constructor place,
+only the held post re-instanced with its payload and playing its slot at the next walk, a released post not, the
+generator untouched; with the project out-take below); data-gated
+`content::tests::a_mod_is_swapped_in_and_out_without_a_restart` (the same runtime and stream, the same bank id and
+constructor list, the runtime holds exactly the new library's bank, a held emitter post re-bound and sounding on the
+mod's samples while a second world without the mod differs, an unrelated held post keeps its instance; the WAV
+edited in place is swapped again with its new header; the mod out = the install's bank again; a MixMap replacement
+restarts with the reason); the restart test (`a_restart_mid_scenario_…`) calls the restart explicitly and still
+proves restart = fresh start.
+
+### M2. Writable MixMap inputs (L2)
+
+Problem: a mod could read MixMap outputs but not drive the controllers, so a "duck the world" mod could only scale
+a group volume, outside retail's curves. Change: `game_audio/mixmap_inputs.rs` (`MixMapInputs`):
+`sdk.audio.set_mixmap_input(slot, object, instance, input, value | nil, {float})`. Checked at the command (slot name,
+object 0..127, instance 0..31, input 0..15, an integer word or a finite f32, the controller must exist in the game's
+MixMap); owned (first mod per input), 16 per mod, 64 in all. Applied in `native::mixmap_tick` after every host write
+of the pass and before the evaluations, so a value holds against inputs the host writes (the Master gains) as well
+as the duck flags it never writes. Released by `nil` / the mod stopping, failing or reloading: the input gets the
+value it had before the first write; kept across map changes; written again over a restarted runtime's MixMap.
+Read back: `sdk.audio.mixmap_inputs()` (`snapshot.audio[mod].inputs`), `info().mixmap_inputs`.
+Verification: data-gated `mixmap_inputs::tests::mixmap_inputs_drive_retail_controllers_and_release_exactly` (the
+checks, an emitter instance at 5 m ducked through the Master gains, held against the host's write, first owner
+wins, the release gives the retail level back exactly, the limits); `skate-mods`
+`vm::tests::mixmap_input_and_seed_commands_deserialize_and_validate`.
+
+### M3. Extra MixMap instances for world objects (L3)
+
+Problem: published cars and peds compete with the map's for retail's 4 traffic / 15 pedestrian instances (8 / 24
+more-audible): a mod's sixth car near the camera is silent. (Mod emitters and voices already had their own private
+instances, H / J.) Change: `game_audio/mod_world.rs`: an object with `world_audio::OwnAudioInstance` (mods:
+`sdk.world_audio.spawn(key, 'traffic' | 'ped', {slots = 'own'})`) is published by the bridge to
+`OwnWorldOwners` instead of `WorldOwners` and played by a second `WorldHost` (the same retail traffic / ped objects,
+posts, Splice steps, speech requests, rules and event rows) on a private MixMap (the install's file, Global + 16
+Traffic + 16 Pedestrian instances, Global inputs copied from the game's before each evaluation). The retail pools
+never see them. `world_sources::pre_in / post_in` take the MixMap and pool sizes (the game's host passes its own:
+unchanged). Read back: `WorldAudioInstance.own`, `read(key).own`. NPC skaters stay in retail's Player slot (open).
+Verification: data-gated `mod_world::tests::own_instance_cars_all_play_beside_retails_pool` (six own cars all hold
+an instance and post, the game's pool holds none, released when they go);
+`world_bridge::tests::own_instance_objects_go_to_their_own_host`.
+
+### M4. Mod Csis projects (L4)
+
+Problem: a mod bank could only bind to a retail class. Change: `audio.json` `add.projects` (`.csi` files, at most 8):
+checked by the Csis parser (`check_file`, a project without symbols refused), appended after the install's
+projects (`audio_merge`); when the overlays merge (game and `check_mod --install`) a project whose symbol name (per
+table: function, class, global) is the install's or an earlier mod's is a clash and the whole overlay is left out
+(`audio_content::project_clash`; a mod name can never shadow a name the game or another mod posts by). Installed at
+the runtime's start after the install's (`Native::mod_projects` keeps each one's registry token), and in a hot
+swap: a new project installed, one that went taken out of the lookups (`Registry::uninstall`: every reference and
+game-side name resolves as if it had never been installed; its records stay, emptied, ids are indices), the banks
+bound to it re-bound or unloaded. `skate_audio::formats::csi::Project::to_bytes` writes projects (tools, tests; the
+dev mod's `synthesize.py` has the same writer).
+Verification: data-gated `content::tests::a_mod_csis_project_is_installed_and_taken_out_without_a_restart` (class and
+global resolve, the global's default, a post to the class makes the mod bank's instance, retail lookups unchanged,
+out again by a swap, a clash with `c_emitter` rejected, a restart installs it after the install's);
+`skate-mods` `audio_content::tests::mod_csis_projects_are_checked_and_merged`, `csi::tests::a_written_project_reads_back`.
+
+### M5. A seedable audio random state (L5)
+
+Problem: the audio's draws are deterministic from the start but a mod test cannot start them from a known point.
+Change: `game_audio/seed.rs`: `sdk.audio.seed(n | nil)` (or `SKATE_AUDIO_SEED=<n>` for a run) sets **every**
+generator from one number (splitmix64 per generator): the evaluator's, the Splice player's, the grain bed's, the
+eEQChain buses', the Jitter walk's, the world host's and the speech host's; at the start of the next pass. One owner;
+`nil` puts back the states from the first seed; a restarted runtime is seeded again. Unseeded nothing runs.
+Verification: data-gated `seed::tests::a_seed_makes_runs_reproducible_and_unseeded_is_retail` (unseeded: no state
+changes; equal worlds whose generators were scrambled before the seed point render bit-identically after the same
+seed, another seed differs on an emitter program that draws; release restores; a restart is re-seeded); the no-mod
+bench.
+
+### M6. Hot reload of `audio.json` (L7)
+
+Problem: editing a running mod's `audio.json` (or a WAV it names) reloaded the whole mod (its script restarted) and
+then restarted the game's sound. Change: the mod manager (`skate_mods::Manager::scan`) now knows which files changed
+(`Fingerprints::get_with_changes`); when every changed file is `audio.json` or a file the old or new `audio.json`
+names (and `mod.json` is unchanged), the package's fingerprint is updated **without** stopping the script and the
+changed files are handed to the game once (`Package::take_audio_changes`). The game drops the native clips of those
+files (`ModVoices::forget_clips`: re-read at the next play or rule compile) and the content overlay is read again and
+hot-swapped (M1). A changed file the script holds as a Bevy clip reloads the mod as before; any other change too.
+Verification: `skate-mods` `general_api_tests::audio_only_edits_keep_the_script_running` (the script's `on_load`
+ran once across an `audio.json` edit and edits of WAVs the old and the new `audio.json` name; another file reloads
+it); the in-place WAV edit in the swap test (M1).
+
+### M7. Offsets in the owner's axes; moving emitters
+
+- `play.frame = 'owner'` (rules, `at = 'owner'`): the `offset` is x = the owner's right, y = up, z = its facing,
+  turning with it (`mod_voices::owner_offset`; facing: the skater's board from its wheels (front pair minus back
+  pair, else its velocity), a car's direction, a ped's velocity, an emitter's forward; flattened to the ground,
+  +Z without one). Default `world` (unchanged). Validation: only with `at = 'owner'`.
+- A rule sound at a **published** emitter (`WorldEmitter`) follows the entity when it moves
+  (`Anchor::Emitter`, located every frame from its transform, its reach turned with it); the map's records stay
+  fixed. The published emitter's own sound already followed (the published tail is rebuilt from the transforms every
+  frame): now proven.
+Verification: `mod_voices::tests::offsets_turn_with_the_owner`, `mod_rules::tests::rule_sounds_are_placed_at_their_owner`
+(the published emitter's entity travels with the sound), data-gated `emitters::tests::a_moving_published_emitter_is_followed`
+(the same post, its instance's camera distance 3 → 8 m as the entity moves, released out of reach); `skate-mods`
+`rule_placement_options_validate`.
+
+### M8. Verification (the whole pass)
+
+- No-mod identity: the headless e2e bench (13 scenarios + whole sessions, the 60 Hz host and 300 fps; 84 renders
+  and voice logs) on the branch head before the pass (run `q0`, = `m2`), after L1 + L7 (`r1`), after L2 / L5 / M7
+  (`r2`) and after L3 / L4 (`r3`): every run 84 of 84 byte-identical to `q0` and `m2`. (Bench from a saved test
+  binary of the worktree's own target, `run_exe.sh`.)
+- Suites: skate-audio with ignored (all pass, `render_alloc` included: the render path stays allocation-free); the
+  game's `game_audio::` tests with ignored and the private-data env (133 pass) and `modding::` (32 pass); skate-mods
+  (all but the known `skyline_every_component_is_real_and_drives_through_ground_contact`, whose GLB is not in the
+  checkout); `cargo build --locked` with no new warnings (the 4 known).
+- `check_mod --install`: `mods/audio-content-test` (12 identities, its project 3 symbols, 0 warnings, 0 conflicts),
+  `sdk/examples/audio-example` (0 warnings); Skyline and the world-audio test mod pass (no `audio.json`).
+- Dev mod `mods/audio-content-test`: `audio.json` adds its project `audio/dev.csi` (made by `synthesize.py`;
+  `.gitignore` excepts it), `honk_beep` 1.5 m above and 2 m ahead of each honking car (`frame = 'owner'`); keys
+  Digit1 duck (Master inputs), Digit2 seed, Digit3 six own-instance taxis, Digit4 the mod's class + global, Digit5 a
+  beep 2 m ahead of the board's nose on pops, Digit6 an orbiting emitter; a second HUD line shows swaps / restarts /
+  the last change. Not checked in game yet.
+
+### M9. Open questions
+
+1. **Own instances for NPC skaters** (L3): their host runs a whole skater's components and its own grain bed per
+   Player-slot instance (the runtime has one NPC bed); left in retail's Player slot. Wanted?
+2. **Own-instance default for mod cars / peds**: opt-in (`slots = 'own'`), unlike mod emitters (own by default):
+   doc 15 lets retail decide who is audible among published objects. Flip it for mod objects?
+3. **The restart fallback**: a mod replacing the MixMap file or a grain recording still restarts the sound. The bed
+   could be rebuilt in place (a cut of the rolling only); worth it?
+4. **Swapped content restarts its own sounds**: a replaced bank's held posts continue with new instances (their
+   programs start again); a replaced Splice tree's sounding sounds stop; a speech change stops the current lines and
+   resets the speech managers' timers.
+5. **Seed scope**: one seed sets every audio generator; per-generator seeds (only the world's) if a test needs them.
+6. **Hot reload and Bevy clips**: a changed WAV the script plays through a Bevy voice (`native = false`) still
+   reloads the whole mod.
+
 ---
 
 # Design and research (2026-10-03 / 04)
@@ -1039,14 +1232,16 @@ emitters, native WAV routing and rules would follow.
 
 ### Later
 
-- **L1** bank-level hot swap instead of the runtime restart.
-- **L2** writable MixMap inputs (mod ducking through retail's controllers rather than a group multiplier).
-- **L3** extra MixMap instances for mod objects beyond the more-audible setting.
-- **L4** mod Csis projects (new classes, functions, globals).
-- **L5** a seedable world RNG for reproducible mod tests.
-- **L6** flip `native=true` as the default for mod WAVs (Q2).
+All done (2026-10-04, branch `audio/moddability-2`): L1–L5 and L7 in section M, L6 in H.
+
+- **L1** bank-level hot swap instead of the runtime restart. Done: M1.
+- **L2** writable MixMap inputs (mod ducking through retail's controllers rather than a group multiplier). Done: M2.
+- **L3** extra MixMap instances for mod objects beyond the more-audible setting. Done: M3 (cars, peds).
+- **L4** mod Csis projects (new classes, functions, globals). Done: M4.
+- **L5** a seedable world RNG for reproducible mod tests. Done: M5 (every audio generator).
+- **L6** flip `native=true` as the default for mod WAVs (Q2). Done: H.
 - **L7** hot reload of `audio.json` while the mod runs (the manager already fingerprints packages; changes then
-  trigger R1's rebuild).
+  trigger R1's rebuild). Done: M6 (the script keeps running; the change is hot-swapped).
 
 ### Tests and proofs
 

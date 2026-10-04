@@ -223,7 +223,7 @@ pub(super) fn apply(world: &mut World) {
 
 /// Hand changed sections (section, before, after) to the systems that cache them; within the
 /// bus section only the parts that changed (a FlangeSub preset re-applied restarts its LFOs).
-fn retune(world: &mut World, changed: &[(&'static str, Value, Value)]) {
+pub(super) fn retune(world: &mut World, changed: &[(&'static str, Value, Value)]) {
     let part = |section: &str, field: &str| changed.iter().any(|(s, a, b)| *s == section && (field.is_empty() || a.get(field) != b.get(field)));
     world.resource_scope(|world, library: Mut<Library>| {
         let library = &*library;

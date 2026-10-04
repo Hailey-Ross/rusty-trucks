@@ -899,6 +899,8 @@ pub(crate) struct Library {
     tuning_raw: std::sync::OnceLock<Result<serde_json::Map<String, serde_json::Value>, String>>,
     /// The loaded tuning sections a runtime tuning write replaced, kept to put back exactly.
     tuning_saved: TuningSaved,
+    /// Mod files' stamps (size, modification time) taken at load (`stamp`).
+    stamps: HashMap<String, String>,
 }
 
 /// The tuning sections the runtime tuning writes replace (`Library::set_tuning`).
@@ -972,6 +974,90 @@ impl Library {
             Some(p) => p,
             None => self.root.join(file),
         }
+    }
+
+    /// A manifest file's identity for the hot swap (`swap.rs`): its reference, and for a mod file
+    /// also its size and modification time (a mod file edited in place is new content; install
+    /// files do not change while the game runs).
+    pub(crate) fn stamp(&self, file: &str) -> String {
+        if skate_mods::audio_merge::split_mod_ref(file).is_none() {
+            return file.to_owned();
+        }
+        match self.stamps.get(file) {
+            Some(s) => s.clone(),
+            None => self.file_stamp(file),
+        }
+    }
+
+    fn file_stamp(&self, file: &str) -> String {
+        let meta = std::fs::metadata(self.path(file)).ok();
+        let modified = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+        format!("{file}|{}|{modified}", meta.map_or(0, |m| m.len()))
+    }
+
+    /// An AEMS bank's content key (its `.abk`, WAVs by slot, rebuilt headers' loop starts, the
+    /// overlay's volume group); None when the bank is not in the audio.
+    pub(crate) fn bank_key(&self, stem: &str) -> Option<String> {
+        let abk = self.manifest.aems.banks.get(stem)?;
+        let wavs: Vec<String> = self.manifest.banks.get(stem).map_or(Vec::new(), |e| e.iter().map(|e| self.stamp(&e.file)).collect());
+        Some(format!("{}|{:?}|{:?}|{:?}", self.stamp(abk), wavs, self.manifest.mod_sample_loops.get(stem), self.bank_group(stem)))
+    }
+
+    /// A Splice bank's content key (its patch tree and its WAVs).
+    pub(crate) fn splice_key(&self, stem: &str) -> Option<String> {
+        let tree = self.manifest.aems.splice.get(stem)?;
+        let wavs: Vec<String> = self.manifest.banks.get(stem).map_or(Vec::new(), |e| e.iter().map(|e| self.stamp(&e.file)).collect());
+        Some(format!("{}|{wavs:?}", self.stamp(tree)))
+    }
+
+    /// The wheel-spin streams' content key.
+    pub(crate) fn wheels_key(&self) -> String {
+        format!("{:?}", self.manifest.wheels.iter().map(|(k, e)| (k, self.stamp(&e.file))).collect::<Vec<_>>())
+    }
+
+    /// The MixMap file's content key.
+    pub(crate) fn mixmap_key(&self) -> Option<String> {
+        self.manifest.aems.mixmap.as_deref().map(|f| self.stamp(f))
+    }
+
+    /// The rolling bed's content key (its grain recordings and the grain player's tuning: the bed
+    /// is built at the runtime's start).
+    pub(crate) fn grain_key(&self) -> String {
+        let grains: Vec<(String, Option<String>, Option<String>)> = self.manifest.grains.iter().map(|(k, g)| (k.clone(), g.file.as_deref().map(|f| self.stamp(f)), g.grain.as_deref().map(|f| self.stamp(f)))).collect();
+        format!("{grains:?}|{:?}", self.manifest.grain_player)
+    }
+
+    /// A speech archive's content key (its index and the overlays' takes).
+    pub(crate) fn speech_key(&self, archive: &str) -> String {
+        let e = self.manifest.speech.get(archive).map(|e| (e.index.clone(), e.audio.clone()));
+        let mods = self.manifest.mod_speech.get(archive).map(|s| {
+            let takes: Vec<(String, String, String)> = s.takes.iter().flat_map(|(c, t)| t.iter().map(move |(k, f)| (c.clone(), k.clone(), f.clone()))).map(|(c, k, f)| (c, k, self.stamp(&f))).collect();
+            let extra: Vec<(String, Vec<String>)> = s.extra.iter().map(|(c, fs)| (c.clone(), fs.iter().map(|f| self.stamp(f)).collect())).collect();
+            format!("{takes:?}|{extra:?}")
+        });
+        format!("{e:?}|{mods:?}")
+    }
+
+    /// The Csis project files in install order, split into the install's and the overlays' (`mod:`
+    /// files, each with its stamp).
+    pub(crate) fn project_files(&self) -> (Vec<String>, Vec<(String, String)>) {
+        let (mods, retail): (Vec<&String>, Vec<&String>) = self.manifest.aems.projects.iter().partition(|f| skate_mods::audio_merge::split_mod_ref(f).is_some());
+        (retail.into_iter().cloned().collect(), mods.into_iter().map(|f| (f.clone(), self.stamp(f))).collect())
+    }
+
+    /// The world layer's content key: zone beds (with their files), zones, crossfades, regions,
+    /// `.ems` records, location sets, location programs, crossfade layouts and map audio. When it
+    /// changes, a hot swap rebuilds the map-keyed world state (emitters, reverb zones, zone
+    /// ambience); when it does not, they keep playing through the swap.
+    pub(crate) fn world_key(&self) -> String {
+        let m = &self.manifest;
+        let beds: Vec<(&String, String)> = m.ambience.iter().map(|(k, e)| (k, self.stamp(&e.file))).collect();
+        format!("{beds:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}", m.zones, m.crossfades, m.regions, m.emitters, m.random_sets, m.mod_location_programs, m.mod_crossfade_layouts, m.mod_maps)
+    }
+
+    /// The tuning sections as loaded (JSON; `Null` when the install's manifest cannot be read).
+    pub(crate) fn tuning_sections(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.tuning_base().cloned().unwrap_or_default()
     }
 
     /// Banks overlays load at audio start and keep across map changes, with their group
@@ -1179,7 +1265,29 @@ impl Library {
             let speech = overlays.iter().any(|o| skate_mods::audio_content::SpeechClips::needed(o.overlay))
                 .then(|| skate_mods::audio_content::SpeechClips::load(&root, &value));
             let mut owners = Owners::default();
+            // Doc 16 L4: mod Csis projects may not reuse a symbol name of the install's projects or of
+            // an earlier mod's (the game and other mods post by name). Read only when a project is added.
+            let mut taken: Option<std::collections::BTreeSet<(u8, String)>> = None;
             for o in overlays {
+                let mut symbols = Vec::new();
+                if !o.overlay.add.projects.is_empty() {
+                    let taken = taken.get_or_insert_with(|| {
+                        let files: Vec<String> = value["aems"]["projects"].as_array().map_or(Vec::new(), |a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect());
+                        files.iter().filter_map(|f| std::fs::read(root.join(f)).ok().and_then(|b| skate_mods::audio_content::project_symbols(&b, f).ok())).flatten().collect()
+                    });
+                    let read: Result<Vec<(u8, String)>, String> = o.overlay.add.projects.iter().try_fold(Vec::new(), |mut acc, f| {
+                        let bytes = skate_mods::read_bounded(o.root, f, skate_mods::audio_content::MAX_BINARY_BYTES)?;
+                        acc.extend(skate_mods::audio_content::project_symbols(&bytes, f)?);
+                        Ok(acc)
+                    });
+                    match read.map(|s| (skate_mods::audio_content::project_clash(taken, &s), s)) {
+                        Ok((None, s)) => symbols = s,
+                        Ok((Some(clash), _)) | Err(clash) => {
+                            report.rejected.push(Message { owner: o.id.to_owned(), text: clash });
+                            continue;
+                        }
+                    }
+                }
                 let (mut trial, mut trial_owners, mut r) = (value.clone(), owners.clone(), Report::default());
                 merge_one_with(&mut trial, &Source { id: o.id, overlay: o.overlay }, &mut trial_owners, &mut r, speech.as_ref());
                 match serde_json::from_value::<Manifest>(trial.clone()) {
@@ -1190,6 +1298,9 @@ impl Library {
                         report.conflicts.extend(r.conflicts);
                         report.warnings.extend(r.warnings);
                         mods.insert(o.id.to_owned(), o.root.to_owned());
+                        if let Some(t) = taken.as_mut() {
+                            t.extend(symbols);
+                        }
                     }
                     Err(e) => report.rejected.push(Message { owner: o.id.to_owned(), text: format!("audio.json does not fit this install: {e}") }),
                 }
@@ -1213,8 +1324,14 @@ impl Library {
             Some((id, rel)) => mods.contains_key(id) && safe_relative(rel),
             None => safe_relative(f),
         };
-        if let Some(bad) = files.map(|e| &e.file).chain(aems).chain(speech).find(|f| !valid(f)) {
-            return Err(format!("{}: invalid file path {bad:?}", path.display()));
+        let mut mod_files: Vec<String> = Vec::new();
+        for f in files.map(|e| &e.file).chain(aems).chain(speech) {
+            if !valid(f) {
+                return Err(format!("{}: invalid file path {f:?}", path.display()));
+            }
+            if skate_mods::audio_merge::split_mod_ref(f).is_some() {
+                mod_files.push(f.clone());
+            }
         }
         info!(
             "Game audio: {} ambience beds, {} rolling grains, {} sample banks",
@@ -1223,7 +1340,14 @@ impl Library {
         if !overlays.is_empty() {
             info!("Game audio: content overlays {:?} ({} conflicts, {} warnings, {} rejected)", report.applied, report.conflicts.len(), report.warnings.len(), report.rejected.len());
         }
-        Ok((Self { root, manifest, mods, loaded: HashMap::new(), failed: Default::default(), tuning_raw: raw, tuning_saved: TuningSaved::default() }, report))
+        let mut library = Self { root, manifest, mods, loaded: HashMap::new(), failed: Default::default(), tuning_raw: raw, tuning_saved: TuningSaved::default(), stamps: HashMap::new() };
+        // The mod files' stamps as loaded (the hot swap compares them: a file edited later is new
+        // content of the next library, `stamp`).
+        for f in mod_files {
+            let s = library.file_stamp(&f);
+            library.stamps.insert(f, s);
+        }
+        Ok((library, report))
     }
 
     fn clip(&mut self, assets: &mut Assets<AudioSource>, file: &str) -> Option<Clip> {

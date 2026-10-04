@@ -38,8 +38,9 @@ const VOICES_PER_RULE: usize = 4;
 /// Where a rule's sound plays (`skate_mods::audio_rules::RuleAt`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Placement {
-    /// At the owner plus this offset (world axes), followed.
-    Owner(Vec3),
+    /// At the owner plus this offset, followed; the offset in the owner's axes when the flag is set
+    /// (`play.frame = 'owner'`), else world axes.
+    Owner(Vec3, bool),
     /// At a fixed world position.
     World(Vec3),
     /// Non-positional, centred.
@@ -59,6 +60,8 @@ pub(crate) struct Origin {
     source: Source,
     owner: u64,
     site: Option<(Vec3, Reach)>,
+    /// A published emitter's entity (`WorldEmitter`): the sound follows it (it can move).
+    entity: Option<u64>,
 }
 
 impl Origin {
@@ -70,7 +73,10 @@ impl Origin {
             Source::Npc => Anchor::Npc(self.owner),
             Source::Emitter => {
                 let (p, r) = self.site?;
-                Anchor::Fixed(p, r)
+                match self.entity {
+                    Some(e) => Anchor::Emitter(e, p, r),
+                    None => Anchor::Fixed(p, r),
+                }
             }
             // Not rule sites (zone changes, speech rows).
             Source::Ambience | Source::Speech => return None,
@@ -85,16 +91,16 @@ impl Play {
         let mut v = self.voice.clone();
         let anchor = origin.anchor();
         match (self.at, anchor) {
-            (Placement::Owner(offset), Some(anchor)) => {
+            (Placement::Owner(offset, local), Some(anchor)) => {
                 // The position comes from the owner at the voices' frame, before any word is read.
                 v.position = Some(Vec3::ZERO);
-                v.follow = Some(Follow { anchor, offset, track: true });
+                v.follow = Some(Follow { anchor, offset, track: true, local });
             }
             (Placement::World(p), anchor) => {
                 v.position = Some(p);
-                v.follow = anchor.map(|anchor| Follow { anchor, offset: Vec3::ZERO, track: false });
+                v.follow = anchor.map(|anchor| Follow { anchor, offset: Vec3::ZERO, track: false, local: false });
             }
-            (Placement::Centre, _) | (Placement::Owner(_), None) => {
+            (Placement::Centre, _) | (Placement::Owner(..), None) => {
                 v.position = None;
                 v.reach = None;
             }
@@ -154,6 +160,11 @@ impl RuleSet {
 
     /// [`Self::mutes`] with the site's own position and reach (an emitter start: its record).
     pub(crate) fn mutes_at(&self, row: &EventRow, site: Option<(Vec3, Reach)>) -> bool {
+        self.mutes_at_published(row, site, None)
+    }
+
+    /// [`Self::mutes_at`] for a published emitter (`WorldEmitter` entity): its sound follows it.
+    pub(crate) fn mutes_at_published(&self, row: &EventRow, site: Option<(Vec3, Reach)>, entity: Option<u64>) -> bool {
         let tag = self.tags.tag(row);
         let Some((i, r)) = self.rules.iter().enumerate().find(|(_, r)| r.matches(row, tag)) else { return false };
         if r.play.is_some() {
@@ -162,7 +173,7 @@ impl RuleSet {
                 if let Some(last) = c.last.get_mut(i) {
                     if now - *last >= r.min_interval {
                         *last = now;
-                        c.plays.push((i, Origin { source: row.source, owner: row.owner, site }));
+                        c.plays.push((i, Origin { source: row.source, owner: row.owner, site, entity }));
                         self.pending.store(true, Ordering::Relaxed);
                     }
                 }
@@ -257,7 +268,7 @@ fn play(p: &skate_mods::audio_rules::RulePlay, group: u8) -> Play {
     use skate_mods::audio_rules::RuleAt;
     let v3 = |a: Option<[f32; 3]>| a.map_or(Vec3::ZERO, Vec3::from_array);
     let at = match p.at {
-        RuleAt::Owner => Placement::Owner(v3(p.offset)),
+        RuleAt::Owner => Placement::Owner(v3(p.offset), p.frame == Some(skate_mods::audio_rules::RuleFrame::Owner)),
         RuleAt::World => Placement::World(v3(p.position)),
         RuleAt::Centre => Placement::Centre,
     };
@@ -492,16 +503,16 @@ mod tests {
         };
         // The local player's pop: at the skater, followed, its default reach found at play time.
         let pop = one(row(EventKind::Splice, Source::Player, bank, "", 12), None);
-        assert_eq!(pop.follow, Some(Follow { anchor: Anchor::Player, offset: Vec3::ZERO, track: true }));
+        assert_eq!(pop.follow, Some(Follow { anchor: Anchor::Player, offset: Vec3::ZERO, track: true, local: false }));
         assert!(pop.position.is_some() && pop.reach.is_none());
         // A car's horn: at the car (owner 7) 1.5 m up, the mod's reach.
         let horn = one(EventRow { kind: EventKind::Post, source: Source::World, class: skate_audio::world::traffic::HORN_CLASS, slot: "horn", id: 0, owner: 7 }, None);
-        assert_eq!(horn.follow, Some(Follow { anchor: Anchor::World(7), offset: Vec3::new(0.0, 1.5, 0.0), track: true }));
+        assert_eq!(horn.follow, Some(Follow { anchor: Anchor::World(7), offset: Vec3::new(0.0, 1.5, 0.0), track: true, local: false }));
         assert_eq!(horn.reach, Some(Reach::sphere(12.0, 0.0, 1)));
         // An NPC skater's post at a fixed world position: not followed; the skater gives the reach.
         let npc = one(EventRow { kind: EventKind::Post, source: Source::Npc, class: "Class_grind", slot: "grind", id: 0, owner: 9 }, None);
         assert_eq!(npc.position, Some(Vec3::new(10.0, 0.0, -4.0)));
-        assert_eq!(npc.follow, Some(Follow { anchor: Anchor::Npc(9), offset: Vec3::ZERO, track: false }));
+        assert_eq!(npc.follow, Some(Follow { anchor: Anchor::Npc(9), offset: Vec3::ZERO, track: false, local: false }));
         // Centred: no position, no follow.
         let land = one(row(EventKind::Splice, Source::Player, bank, "", 20), None);
         assert_eq!((land.position, land.follow, land.reach), (None, None, None));
@@ -509,7 +520,11 @@ mod tests {
         let reach = Reach { extent: Vec3::new(20.0, 5.0, 8.0), forward: Vec3::Z, core: 0.2, curve: 1 };
         let at = Vec3::new(3.0, 1.0, -7.0);
         let emit = one(EventRow { kind: EventKind::EmitterStart, source: Source::Emitter, class: "Baby_Cry_1", slot: "", id: 22, owner: 4 }, Some((at, reach)));
-        assert_eq!(emit.follow, Some(Follow { anchor: Anchor::Fixed(at, reach), offset: Vec3::ZERO, track: true }));
+        assert_eq!(emit.follow, Some(Follow { anchor: Anchor::Fixed(at, reach), offset: Vec3::ZERO, track: true, local: false }));
+        // A published emitter's start: its entity travels with the sound (it may move).
+        set.mutes_at_published(&EventRow { kind: EventKind::EmitterStart, source: Source::Emitter, class: "Baby_Cry_1", slot: "", id: 22, owner: 77 }, Some((at, reach)), Some(77));
+        let moving = set.take_plays(&mut 100).remove(0).2;
+        assert_eq!(moving.follow, Some(Follow { anchor: Anchor::Emitter(77, at, reach), offset: Vec3::ZERO, track: true, local: false }));
         // An emitter request without its record cannot be placed: centred.
         let lost = one(EventRow { kind: EventKind::EmitterStart, source: Source::Emitter, class: "Baby_Cry_1", slot: "", id: 22, owner: 4 }, None);
         assert_eq!((lost.position, lost.follow), (None, None));

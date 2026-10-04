@@ -23,9 +23,11 @@ mod emitters;
 mod grain_bed;
 mod library;
 mod map_audio;
+pub(crate) mod mixmap_inputs;
 pub(crate) mod mod_audio;
 pub(crate) mod mod_rules;
 pub(crate) mod mod_voices;
+pub(crate) mod mod_world;
 mod native;
 mod npc_skaters;
 mod player_audio;
@@ -33,7 +35,9 @@ mod random_programs;
 mod random_sets;
 pub(crate) mod skate_events;
 mod state_log;
+mod seed;
 mod state_replay;
+mod swap;
 mod timing;
 pub(crate) mod tuning;
 mod voices;
@@ -211,6 +215,10 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<mod_voices::ModVoices>()
             .init_resource::<tuning::AudioTuning>()
             .init_resource::<mod_rules::AudioRules>()
+            .init_resource::<seed::AudioSeed>()
+            .init_resource::<mixmap_inputs::MixMapInputs>()
+            .init_resource::<mod_world::OwnWorldOwners>()
+            .init_resource::<mod_world::ModWorld>()
             .init_resource::<crate::world_audio::WorldEmitterStats>()
             .add_systems(Startup, setup)
             .add_systems(FixedUpdate, skate_events::observe.after(crate::app::SimulationSet::Physics))
@@ -218,7 +226,7 @@ impl Plugin for GameAudioPlugin {
                 Update,
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
                 // the ticks and the local update, then the beds (retail's process / tick / update).
-                (content::frame, map_audio::update, mod_audio::events_frame, mod_rules::frame, mod_audio::drain, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, mod_audio::readback, mod_voices::frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
+                (content::frame, map_audio::update, mod_audio::events_frame, mod_rules::frame, mod_audio::drain, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, mod_world::frame, mod_audio::readback, mod_voices::frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
                     .chain()
                     .before(CueSet)
                     .after(crate::app::FrameSet::Animation),
@@ -250,7 +258,8 @@ fn setup(mut commands: Commands, config: Res<crate::config::Config>) {
 /// Run `f` on the runtime audio API with the native runtime (if running) and the audio content
 /// generation: the mod command handlers' entry (`modding`), the same calls engine systems make.
 pub(crate) fn with_api<R>(world: &mut World, f: impl FnOnce(&mut mod_audio::AudioApi, Option<&native::Native>, u64) -> R) -> Option<R> {
-    let generation = world.get_resource::<AudioContent>().map_or(0, |c| c.generation);
+    // Handles live as long as the runtime: a hot swap keeps them (`AudioContent::runtime_generation`).
+    let generation = world.get_resource::<AudioContent>().map_or(0, |c| c.runtime_generation);
     world.get_resource::<mod_audio::AudioApi>()?;
     Some(world.resource_scope(|world, mut api: Mut<mod_audio::AudioApi>| f(&mut api, world.get_resource::<native::Native>(), generation)))
 }
@@ -265,6 +274,26 @@ pub(crate) fn clear_mod(world: &mut World, owner: &str) {
     if let Some(mut r) = world.get_resource_mut::<mod_rules::AudioRules>() {
         r.clear_owner(owner);
     }
+    if let Some(mut s) = world.get_resource_mut::<seed::AudioSeed>() {
+        s.clear_owner(owner);
+    }
+    if let Some(mut i) = world.get_resource_mut::<mixmap_inputs::MixMapInputs>() {
+        i.clear_owner(owner);
+    }
+}
+
+/// `sdk.audio.set_mixmap_input`: write (or with `None` release) one MixMap input (doc 16 L2).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn set_mixmap_input(world: &mut World, owner: &str, slot: &str, object: u32, instance: u32, input: u32, value: Option<mixmap_inputs::InputValue>) -> Result<(), String> {
+    world.resource_scope(|world, mut inputs: Mut<mixmap_inputs::MixMapInputs>| {
+        let mixmap = world.get_resource::<native::Native>().and_then(|n| n.mixmap.as_ref());
+        inputs.set(mixmap, owner, slot, object, instance, input, value)
+    })
+}
+
+/// `sdk.audio.seed`: seed (or with `None` release) the audio random state (doc 16 L5).
+pub(crate) fn set_seed(world: &mut World, owner: &str, seed: Option<u64>) -> Result<(), String> {
+    world.get_resource_mut::<seed::AudioSeed>().ok_or("game audio is unavailable")?.set(owner, seed)
 }
 
 /// `sdk.audio.rule`: set (or with `None` remove) a mod's rule; a replace / layer rule's WAV is
@@ -310,8 +339,15 @@ pub(crate) fn clear_mods_runtime(world: &mut World) {
 
 /// The `audio` (per mod) and `audio_info` snapshot sections.
 pub(crate) fn mod_snapshot(world: &World, owner: &str) -> serde_json::Value {
-    let generation = world.get_resource::<AudioContent>().map_or(0, |c| c.generation);
+    let generation = world.get_resource::<AudioContent>().map_or(0, |c| c.runtime_generation);
     let mut v = world.get_resource::<mod_audio::AudioApi>().map_or(serde_json::Value::Null, |api| api.snapshot(world.get_resource::<native::Native>(), generation, owner));
+    // The MixMap inputs this mod writes (doc 16 L2).
+    if let Some(rows) = world.get_resource::<mixmap_inputs::MixMapInputs>().and_then(|i| i.snapshot(owner)) {
+        if v.is_null() {
+            v = serde_json::json!({});
+        }
+        v["inputs"] = rows;
+    }
     // The tuning fields this mod owns (as of the last audio pass).
     let owned = world.get_resource::<tuning::AudioTuning>().map(|t| t.owned(owner)).unwrap_or_default();
     if !owned.is_empty() {
@@ -328,6 +364,8 @@ pub(crate) fn mod_info(world: &World) -> serde_json::Value {
     v["rules"] = serde_json::json!(world.get_resource::<mod_rules::AudioRules>().map_or(0, mod_rules::AudioRules::count));
     v["native_voices"] = serde_json::json!(world.get_resource::<mod_voices::ModVoices>().map_or(0, |m| m.voice_usage("").1));
     v["native_voices_max"] = serde_json::json!(mod_voices::MAX_NATIVE_VOICES);
+    v["mixmap_inputs"] = serde_json::json!(world.get_resource::<mixmap_inputs::MixMapInputs>().map_or(0, mixmap_inputs::MixMapInputs::count));
+    v["seed"] = world.get_resource::<seed::AudioSeed>().and_then(|s| s.current()).map_or(serde_json::Value::Null, |(o, n)| serde_json::json!({"owner": o, "seed": n}));
     v["mod_emitter_slots"] = serde_json::json!(if world.get_resource::<AudioSettings>().is_some_and(AudioSettings::extra_mod_emitter_slots) { "extra" } else { "shared" });
     v
 }

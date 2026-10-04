@@ -8,6 +8,7 @@
   },
   "add": {
     "banks": {"DEV_siren": {"samples": ["audio/siren.wav"], "group": "world"}, "DEV_fade": {"samples": ["audio/fade.wav"], "group": "world"}},
+    "projects": ["audio/dev.csi"],
     "random_sets": {
       "00000000000DE501": {"name": "dev_sirens", "sounds": [{"bank": "DEV_siren", "volume": 0.8, "seconds": 4, "weight": 1}], "min_interval": 5, "max_interval": 10}
     },
@@ -28,7 +29,7 @@
   },
   "rules": {
     "pop_click": {"match": {"tag": "pop"}, "action": "layer", "play": {"path": "audio/beep.wav", "volume": 0.3, "at": "owner"}, "min_interval": 0.2},
-    "honk_beep": {"match": {"tag": "horn"}, "action": "layer", "play": {"path": "audio/beep.wav", "volume": 0.5, "group": "world", "offset": [0, 1.5, 0]}, "min_interval": 0.5}
+    "honk_beep": {"match": {"tag": "horn"}, "action": "layer", "play": {"path": "audio/beep.wav", "volume": 0.5, "group": "world", "offset": [0, 1.5, 2], "frame": "owner"}, "min_interval": 0.5}
   },
   "maps": {
     "DownTown": {"crossfade_bank": "DEV_fade"},

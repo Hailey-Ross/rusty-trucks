@@ -494,6 +494,9 @@ pub(crate) struct WorldHeld {
     pub(crate) peds: Vec<(u64, u32)>,
     /// (owner, Player-slot instance ≥ 1) of the NPC / remote skaters (`npc_skaters.rs`).
     pub(crate) skaters: Vec<(u64, u32)>,
+    /// (owner, instance) of the objects with their own instance (`mod_world`, doc 16 L3).
+    pub(crate) own_traffic: Vec<(u64, u32)>,
+    pub(crate) own_peds: Vec<(u64, u32)>,
     /// Running counts for the summary log: packets the world host posted, packets / Splice starts
     /// of the NPC skater instances, and speech lines started.
     pub(crate) posts: u64,
@@ -577,6 +580,14 @@ pub(super) fn evaluation_dt() -> f32 {
 }
 
 impl WorldHost {
+    /// The world generator's state (`seed.rs`, doc 16 L5).
+    pub(crate) fn rng_state(&self) -> u32 {
+        self.rng.0
+    }
+    pub(crate) fn set_rng_state(&mut self, state: u32) {
+        self.rng.0 = state;
+    }
+
     /// A runtime tuning write changed the world or player tuning (`tuning.rs`): the cached copies
     /// follow (only once the host has read them; before, it reads the new values itself).
     pub(crate) fn retune(&mut self, library: &super::Library, player: Option<&skate_audio::player::tuning::PlayerTuning>) {
@@ -596,11 +607,11 @@ impl WorldHost {
     /// objects are dropped. An owner that is still published is claimed again and posts afresh.
     /// The banks reload at the next owner (`ensure_bank`, through the prefetch when expected).
     /// The pools take the MixMap's instance counts (`Native::world`).
-    fn reset(&mut self, native: &mut Native) {
+    fn reset(&mut self, native: &mut Native, mixmap: Option<&mut skate_audio::mixmap::MixMap>, pools: (usize, usize)) {
         self.epoch = Some(native.map_epoch);
         let traffic = self.traffic.clear();
         let peds = self.peds.clear();
-        let Native { mixmap, shared, world, .. } = native;
+        let shared = &native.shared;
         if !self.nodes.is_empty() || !self.ped_objects.is_empty() {
             if let Ok(mut runtime) = super::timing::lock(shared, &super::timing::GAME_LOCK) {
                 let rt = &mut *runtime;
@@ -615,7 +626,7 @@ impl WorldHost {
         self.ped_objects.clear();
         self.vehicles.clear();
         self.nodes.clear();
-        if let Some(m) = mixmap.as_mut() {
+        if let Some(m) = mixmap {
             let l = Listener::default();
             for (_, g) in traffic {
                 Positions::new(&[keys::traffic_pos(g as u32, 1), keys::traffic_pos(g as u32, 2), keys::traffic_pos(g as u32, 3)]).deactivate(m, &l);
@@ -625,15 +636,20 @@ impl WorldHost {
             }
         }
         self.pass = None;
-        if self.traffic.len() != world.traffic {
-            self.traffic = Pool::new(world.traffic);
+        if self.traffic.len() != pools.0 {
+            self.traffic = Pool::new(pools.0);
         }
-        if self.peds.len() != world.peds {
-            self.peds = Pool::new(world.peds);
+        if self.peds.len() != pools.1 {
+            self.peds = Pool::new(pools.1);
         }
         self.banks = None;
         self.last_camera = None;
         self.speech_requests.clear();
+    }
+
+    /// A pass began in `pre` and waits for `post`.
+    pub(crate) fn has_pass(&self) -> bool {
+        self.pass.is_some()
     }
 
     pub(crate) fn held(&self) -> (Vec<(u64, u32)>, Vec<(u64, u32)>) {
@@ -702,11 +718,22 @@ pub(super) fn frame_post(native: Option<ResMut<Native>>, owners: Res<WorldOwners
 /// `camera` = the listener (position, forward); `local` = the local player's audio state (the
 /// followed point).
 pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Native, library: &Library, camera: Option<([f32; 3], [f32; 3])>, local: &skate_audio::player::AudioState, calls: usize) {
+    // The game's MixMap and its instance pools (the more-audible setting); `mod_world` runs the
+    // same host on a private MixMap (doc 16 L3).
+    let pools = (native.world.traffic, native.world.peds);
+    let mut m = native.mixmap.take();
+    pre_in(host, owners, native, m.as_mut(), pools, library, camera, local, calls);
+    native.mixmap = m;
+}
+
+/// [`pre`] on a given MixMap with given instance pools (traffic, peds).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pre_in(host: &mut WorldHost, owners: &WorldOwners, native: &mut Native, mut mix: Option<&mut skate_audio::mixmap::MixMap>, pools: (usize, usize), library: &Library, camera: Option<([f32; 3], [f32; 3])>, local: &skate_audio::player::AudioState, calls: usize) {
     if prefetch_on() {
         prefetch_world_banks(&mut host.prefetch, native, library, owners.expected);
     }
     if host.epoch != Some(native.map_epoch) {
-        host.reset(native);
+        host.reset(native, mix.as_deref_mut(), pools);
     }
     let idle = owners.vehicles.is_empty() && owners.peds.is_empty() && host.vehicles.is_empty() && host.ped_objects.is_empty();
     if idle {
@@ -753,7 +780,7 @@ pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
         return;
     }
     let native = &mut *native;
-    let Some(m) = native.mixmap.as_mut() else { return };
+    let Some(m) = mix else { return };
     let dt = evaluation_dt() * calls.min(4) as f32;
     let cam_velocity = host.last_camera.filter(|l| l.1 == native.cuts).map_or([0.0; 3], |(last, _)| std::array::from_fn(|i| (cam[i] - last[i]) / dt));
     host.last_camera = Some((cam, native.cuts));
@@ -844,9 +871,16 @@ pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
 /// The host's second half, after the MixMap ticks (retail's update): every held object's packets
 /// from this pass's outputs. Nothing without a pass ([`pre`]).
 pub(crate) fn post(host: &mut WorldHost, owners: &WorldOwners, native: &mut Native) {
+    let mut m = native.mixmap.take();
+    post_in(host, owners, native, m.as_mut());
+    native.mixmap = m;
+}
+
+/// [`post`] on a given MixMap (`mod_world`, doc 16 L3).
+pub(crate) fn post_in(host: &mut WorldHost, owners: &WorldOwners, native: &mut Native, mix: Option<&mut skate_audio::mixmap::MixMap>) {
     let Some((cam, dt)) = host.pass.take() else { return };
     let native = &mut *native;
-    let Some(m) = native.mixmap.as_mut() else { return };
+    let Some(m) = mix else { return };
     let Ok(mut runtime) = super::timing::lock(&native.shared, &super::timing::GAME_LOCK) else { return };
     let rt = &mut *runtime;
     // Taken out for the frame (no per-frame clone) and put back at the end.

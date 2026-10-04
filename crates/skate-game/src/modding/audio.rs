@@ -134,6 +134,20 @@ fn ensure_native_clip(world: &mut World, audio: &ModAudio, owner: &str, root: &P
     world.resource_mut::<ModVoices>().add_clip(owner, path, &bytes)
 }
 
+/// Doc 16 L7: `owner`'s files changed while it runs (an audio-only reload). The native clips of
+/// them are dropped (re-read at the next play / rule compile); false when the script holds a Bevy
+/// clip of one (the Bevy voices cannot swap their source: the mod reloads as before).
+pub(super) fn files_changed(world: &mut World, owner: &str, paths: &[String]) -> bool {
+    let bevy = world.get_resource::<ModAudio>().is_some_and(|a| paths.iter().any(|p| a.clips.contains_key(&(owner.to_owned(), p.clone()))));
+    if bevy {
+        return false;
+    }
+    if let Some(mut voices) = world.get_resource_mut::<ModVoices>() {
+        voices.forget_clips(owner, paths);
+    }
+    true
+}
+
 /// A rule's WAV (`sdk.audio.rule`): loaded into the mod's native bank under the same limits.
 pub(super) fn load_native_clip(world: &mut World, mods: &Mods, owner: &str, path: &str) -> Result<(), String> {
     let root = &mods.manager.packages.get(owner).ok_or("Missing audio owner")?.root;

@@ -224,6 +224,35 @@ impl SplicePlayer {
         index
     }
 
+    /// Replace a loaded bank's patch tree and samples in place (an audio content hot swap): its
+    /// sounding sounds stop (their owners' later updates find nothing, as after a release), the
+    /// bank keeps its index and mixer bank. None when the bank is not loaded (it loads on use).
+    pub fn replace_bank(&mut self, name: &str, bank: SpliceBank, pcm: Vec<Option<Arc<Pcm>>>, mixer: &mut Mixer) -> Option<usize> {
+        let index = self.banks.iter().position(|b| b.name == name)?;
+        for id in 0..self.sounds.len() {
+            if self.sounds[id].as_ref().is_some_and(|s| s.bank == index) {
+                self.release(id, mixer);
+            }
+        }
+        let headers = pcm
+            .iter()
+            .map(|p| {
+                p.as_ref().map(|p| crate::formats::SampleHeader {
+                    codec: 3,
+                    channels: p.channels.len() as u8,
+                    rate: p.rate,
+                    frames: p.channels.first().map_or(0, |c| c.len() as u32),
+                    loop_start: None,
+                })
+            })
+            .collect();
+        let mixer_bank = self.banks[index].mixer_bank;
+        mixer.add_bank(mixer_bank, headers, pcm);
+        mixer.set_bank_group(mixer_bank, crate::mixer::GROUP_PLAYER);
+        self.banks[index].bank = bank;
+        Some(index)
+    }
+
     pub fn bank_index(&self, name: &str) -> Option<usize> {
         self.banks.iter().position(|b| b.name == name)
     }

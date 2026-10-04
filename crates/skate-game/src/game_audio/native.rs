@@ -211,6 +211,8 @@ pub(crate) struct Native {
     pub(crate) pending: Option<PendingPass>,
     /// Banks audio content overlays load at start and keep across map changes (`preload`).
     resident: Vec<String>,
+    /// The overlays' Csis projects installed in the runtime: (file, content stamp, registry token).
+    pub(crate) mod_projects: Vec<(String, String, u64)>,
 }
 
 /// A pass [`mixmap_frame`] began and [`mixmap_tick`] finishes.
@@ -273,10 +275,15 @@ impl Native {
         }
         let mut runtime = Runtime::new();
         runtime.eval.continue_nodes(first_node);
+        let mut mod_projects = Vec::new();
         for file in &files.projects {
             let bytes = library.read(file).map_err(|e| format!("{file}: {e}"))?;
             let project = Project::parse(file, &bytes).map_err(|e| e.to_string())?;
-            runtime.install_project(&project);
+            let token = runtime.install_project(&project);
+            // An overlay's project (doc 16 "Mod Csis projects"): after the install's, in mod-id order.
+            if skate_mods::audio_merge::split_mod_ref(file).is_some() {
+                mod_projects.push((file.clone(), library.stamp(file), token));
+            }
         }
         let mixmap = match &files.mixmap {
             Some(file) => {
@@ -320,6 +327,7 @@ impl Native {
             world,
             pending: None,
             resident: Vec::new(),
+            mod_projects,
         };
         // The environment (reverb) network and the eEQChain buses (optional install data).
         let (presets, eq) = library.bus_tuning();
@@ -387,6 +395,48 @@ impl Native {
                 Err(e) => warn!("Game audio: mod bank {stem}: {e}"),
             }
         }
+    }
+
+    /// Replace a loaded bank in place from the library (an audio content hot swap, `swap.rs`): the
+    /// same runtime id and constructor places, the new program and samples, held posts re-bound
+    /// (`Runtime::replace_bank`); its volume group from the overlay, else the one it was loaded
+    /// with (the player's banks: the player group). False when the bank is not loaded (it loads
+    /// on use).
+    pub(crate) fn replace_bank(&mut self, library: &Library, stem: &str) -> Result<bool, String> {
+        let Some(&id) = self.banks.get(stem) else { return Ok(false) };
+        self.prefetch.drop_bank(stem);
+        let (bank, pcm) = library.bank_source(stem)?.load()?;
+        let player = super::player_audio::BANKS.contains(&stem) || super::player_audio::OPTIONAL_BANKS.iter().any(|b| b.contains(&stem));
+        let mut runtime = self.shared.lock().map_err(|_| "audio lock poisoned")?;
+        runtime.replace_bank(id, bank, pcm);
+        let group = library.bank_group(stem).unwrap_or(player);
+        runtime.mixer.set_bank_group(id, if group { skate_audio::mixer::GROUP_PLAYER } else { skate_audio::mixer::GROUP_WORLD });
+        Ok(true)
+    }
+
+    /// Unload one bank (an audio content hot swap: the bank left the audio).
+    pub(crate) fn unload_bank(&mut self, stem: &str) {
+        self.prefetch.drop_bank(stem);
+        self.resident.retain(|r| r != stem);
+        if let Some(id) = self.banks.remove(stem) {
+            if let Ok(mut runtime) = self.shared.lock() {
+                runtime.unload_bank(id);
+            }
+        }
+    }
+
+    /// The overlays' preloaded banks of a new library (an audio content hot swap): the new ones
+    /// load now; ones no longer preloaded go at the next map change like any map bank.
+    pub(crate) fn set_resident(&mut self, library: &Library) {
+        self.resident.clear();
+        self.load_resident_banks(library);
+    }
+
+    /// The banks the runtime holds: (stem, runtime id), sorted by stem.
+    pub(crate) fn bank_ids(&self) -> Vec<(String, usize)> {
+        let mut v: Vec<(String, usize)> = self.banks.iter().map(|(s, &id)| (s.clone(), id)).collect();
+        v.sort();
+        v
     }
 
     /// The id the runtime's next post gets (a restart continues from it).
@@ -550,6 +600,7 @@ impl Native {
             world: WorldInstances::RETAIL,
             pending: None,
             resident: Vec::new(),
+            mod_projects: Vec::new(),
         }
     }
 
@@ -811,12 +862,17 @@ pub(super) fn mixmap_frame(
 /// The second half of [`mixmap_frame`]'s pass, after the world / NPC owners' process: the console
 /// evaluations (MixMap ticks), the local player's update and SFXObj_Reverb's update. The world /
 /// NPC owners' update follows (`world_sources::post`, `npc_skaters::post`).
-pub(super) fn mixmap_tick(native: Option<ResMut<Native>>) {
+pub(super) fn mixmap_tick(native: Option<ResMut<Native>>, inputs: Option<ResMut<super::mixmap_inputs::MixMapInputs>>, content: Option<Res<super::AudioContent>>) {
     let _timing = super::timing::scope(&super::timing::MIXMAP_FRAME);
     let Some(mut native) = native else { return };
     let native = &mut *native;
     let Some(PendingPass { calls, s, speed_scale, loose, reverb }) = native.pending else { return };
     let Some(m) = &mut native.mixmap else { return };
+    // Mods' MixMap input writes (doc 16 L2), after every host write of the pass, before the
+    // evaluations (nothing without writes).
+    if let Some(mut inputs) = inputs {
+        inputs.apply(m, content.map_or(0, |c| c.runtime_generation));
+    }
     for _ in 0..calls {
         m.tick(skate_audio::mixmap::cadence::CONSOLE_DT);
     }
@@ -1024,6 +1080,7 @@ mod tests {
             world: WorldInstances::RETAIL,
             pending: None,
             resident: Vec::new(),
+            mod_projects: Vec::new(),
         }
     }
 

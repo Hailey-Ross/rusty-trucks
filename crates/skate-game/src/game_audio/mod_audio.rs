@@ -492,7 +492,7 @@ pub(super) fn drain(native: Option<Res<Native>>, content: Res<super::AudioConten
     let api = &mut *api;
     api.posts.clear();
     match native {
-        Some(native) => api.apply_queue(&native, content.generation),
+        Some(native) => api.apply_queue(&native, content.runtime_generation),
         None => api.queue.clear(),
     }
 }
@@ -750,6 +750,9 @@ pub(crate) fn info(native: Option<&Native>, content: Option<&super::AudioContent
         "map_epoch": native.map(|n| n.map_epoch),
         "generation": content.map(|c| c.generation),
         "restarts": content.map(|c| c.restarts),
+        // Doc 16 L1: content changes swapped in place, and the last change ("swap" / "restart: …").
+        "swaps": content.map(|c| c.swaps),
+        "last_change": content.and_then(|c| c.last_change.clone()),
         "overlays": content.map(|c| c.overlays.keys().cloned().collect::<Vec<_>>()),
         "conflicts": content.map(|c| c.report.conflicts.len()),
         "map": map.map(|m| json!({"stem": m.stem, "district": m.district, "ems": m.ems, "sources": m.sources})),

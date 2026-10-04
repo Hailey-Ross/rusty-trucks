@@ -235,7 +235,13 @@ pub fn write_temp(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[derive(Default)]
 pub(crate) struct Fingerprints {entries:HashMap<PathBuf,(Vec<(PathBuf,u64,std::time::SystemTime)>,u64)>}
 impl Fingerprints {
+    #[cfg(test)]
     pub fn get(&mut self,root:&Path,force:bool)->Result<u64,String> {
+        self.get_with_changes(root,force).map(|(hash,_)|hash)
+    }
+    /// The package's fingerprint and the files (relative, `/`-separated) whose size or time
+    /// changed, appeared or went since the last call (every file on the first call).
+    pub fn get_with_changes(&mut self,root:&Path,force:bool)->Result<(u64,Vec<String>),String> {
         fn walk(dir:&Path,out:&mut Vec<(PathBuf,u64,std::time::SystemTime)>)->Result<(),String> {
             for entry in fs::read_dir(dir).map_err(|e|e.to_string())? {
                 let entry=entry.map_err(|e|e.to_string())?;
@@ -245,8 +251,17 @@ impl Fingerprints {
             } Ok(())
         }
         let mut stamp=Vec::new();walk(root,&mut stamp)?;stamp.sort_by(|a,b|a.0.cmp(&b.0));
-        if !force {if let Some((old,hash))=self.entries.get(root){if old==&stamp{return Ok(*hash);}}}
-        let hash=fingerprint(root)?;self.entries.insert(root.to_owned(),(stamp,hash));Ok(hash)
+        if !force {if let Some((old,hash))=self.entries.get(root){if old==&stamp{return Ok((*hash,Vec::new()));}}}
+        let rel=|p:&Path|p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\',"/");
+        let changed:Vec<String>=match self.entries.get(root) {
+            Some((old,_))=>{
+                let mut c:Vec<String>=stamp.iter().filter(|s|!old.contains(s)).map(|s|rel(&s.0)).collect();
+                c.extend(old.iter().filter(|o|!stamp.iter().any(|s|s.0==o.0)).map(|o|rel(&o.0)));
+                c.sort();c.dedup();c
+            }
+            None=>stamp.iter().map(|s|rel(&s.0)).collect(),
+        };
+        let hash=fingerprint(root)?;self.entries.insert(root.to_owned(),(stamp,hash));Ok((hash,changed))
     }
 }
 

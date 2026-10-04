@@ -28,6 +28,8 @@ pub const MAX_FILES: usize = 1024;
 pub const MAX_SAMPLE_REPLACEMENTS: usize = 512;
 /// Banks one overlay may replace or add.
 pub const MAX_BANKS: usize = 64;
+/// Csis projects one overlay may add (doc 16 L4).
+pub const MAX_PROJECTS: usize = 8;
 /// WAVs per replaced / added bank.
 pub const MAX_BANK_SAMPLES: usize = 512;
 /// Records (emitters, sets, zones, crossfades, programs, regions) per overlay, all kinds together.
@@ -286,6 +288,11 @@ pub struct Replace {
 pub struct Add {
     #[serde(default)]
     pub banks: BTreeMap<String, BankDef>,
+    /// Csis projects (`.csi`: new classes, functions, globals; doc 16 L4), installed after the
+    /// install's in mod-id order. Their symbol names must not be the install's or an earlier mod's
+    /// (checked when the overlays merge: the overlay is left out otherwise).
+    #[serde(default)]
+    pub projects: Vec<String>,
     /// `.ems` file stem → records appended (a new stem makes a new file a map can list).
     #[serde(default)]
     pub emitters: BTreeMap<String, Vec<EmitterDef>>,
@@ -481,6 +488,8 @@ pub enum FileKind {
     Splice,
     MixMap,
     Grain,
+    /// A Csis project (doc 16 L4).
+    Csi,
 }
 
 impl FileKind {
@@ -491,6 +500,7 @@ impl FileKind {
             Self::Splice => &["splc"],
             Self::MixMap => &["mxb"],
             Self::Grain => &["grain"],
+            Self::Csi => &["csi"],
         }
     }
 }
@@ -665,6 +675,7 @@ impl AudioOverlay {
             }
         }
         out.extend(self.rules.values().filter_map(|r| r.play.as_ref()).map(|p| (p.path.as_str(), FileKind::Sample)));
+        out.extend(self.add.projects.iter().map(|f| (f.as_str(), FileKind::Csi)));
         out
     }
 
@@ -688,6 +699,9 @@ impl AudioOverlay {
         }
         if r.banks.len() + a.banks.len() > MAX_BANKS {
             return Err(format!("more than {MAX_BANKS} banks"));
+        }
+        if a.projects.len() > MAX_PROJECTS {
+            return Err(format!("more than {MAX_PROJECTS} Csis projects"));
         }
         for (bank, slots) in &r.samples {
             if !valid_name(bank) {
@@ -880,6 +894,7 @@ impl AudioOverlay {
         line(r.samples.values().map(BTreeMap::len).sum(), "replaced samples");
         line(r.banks.len(), "replaced banks");
         line(a.banks.len(), "added banks");
+        line(a.projects.len(), "added Csis projects");
         line(r.splice.len(), "replaced Splice trees");
         line(r.grains.len(), "replaced grain members");
         line(r.wheels.len(), "replaced wheel streams");
@@ -933,7 +948,22 @@ pub fn check_file(root: &Path, path: &str, kind: FileKind) -> Result<u64, String
         FileKind::Splice => skate_audio::splice::SpliceBank::parse(&bytes).map(|_| 0).map_err(|e| format!("{path}: {e}")),
         FileKind::MixMap => skate_audio::mixmap::MixMapFile::parse(&bytes).map(|_| 0).map_err(|e| format!("{path}: {e}")),
         FileKind::Grain => skate_audio::grain::GrainFile::parse(&bytes).map(|_| 0).map_err(|e| format!("{path}: {e}")),
+        FileKind::Csi => project_symbols(&bytes, path).and_then(|s| if s.is_empty() { Err(format!("{path}: a project without symbols")) } else { Ok(0) }),
     }
+}
+
+/// A Csis project's symbols as (table, name): 0 functions, 1 classes, 2 globals.
+pub fn project_symbols(bytes: &[u8], name: &str) -> Result<Vec<(u8, String)>, String> {
+    let p = skate_audio::formats::Project::parse(name, bytes).map_err(|e| format!("{name}: {e}"))?;
+    Ok(p.tables.iter().enumerate().flat_map(|(t, syms)| syms.iter().map(move |s| (t as u8, s.name.clone()))).collect())
+}
+
+/// Doc 16 L4: the symbol names already taken (the install's projects, then the overlays merged so
+/// far) and a mod's projects: the first symbol of the mod that is taken, as a message. A mod's
+/// symbol may not shadow one the game or another mod posts by name.
+pub fn project_clash(taken: &std::collections::BTreeSet<(u8, String)>, symbols: &[(u8, String)]) -> Option<String> {
+    let kind = |t: u8| ["function", "class", "global"].get(usize::from(t)).copied().unwrap_or("symbol");
+    symbols.iter().find(|s| taken.contains(*s)).map(|(t, n)| format!("add.projects: the {} {n} is already defined (by the install or an earlier mod); the overlay is left out", kind(*t)))
 }
 
 /// Read, parse and check a mod's `audio.json` and every file it names. `Ok(None)`: the mod has
@@ -1159,6 +1189,44 @@ mod tests {
         let many: serde_json::Map<String, Value> = (0..33).map(|i| (format!("r{i}"), json!({"match": {"tag": "pop"}, "action": "mute"}))).collect();
         let o: AudioOverlay = serde_json::from_value(json!({"version": 1, "rules": many})).unwrap();
         assert!(o.validate().is_err(), "32 rules at most");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Doc 16 L4: `add.projects` names `.csi` files, read through the Csis parser (a project without
+    /// symbols, a broken file or another extension is refused); a project's symbols that the
+    /// install or an earlier mod already defines are a clash; the merge appends the project after
+    /// the install's.
+    #[test]
+    fn mod_csis_projects_are_checked_and_merged() {
+        use skate_audio::formats::{Project, csi::Symbol};
+        let d = std::env::temp_dir().join(format!("skate-audio-csi-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("audio")).unwrap();
+        let s = |name: &str| Symbol { name: name.into(), name_id: 1, default: 0 };
+        std::fs::write(d.join("audio/mod.csi"), Project { name: "m".into(), id: 7, tables: [vec![], vec![s("c_mod")], vec![s("g_mod")]] }.to_bytes()).unwrap();
+        std::fs::write(d.join("audio/empty.csi"), Project { name: "e".into(), id: 7, tables: Default::default() }.to_bytes()).unwrap();
+        std::fs::write(d.join("audio/bad.csi"), b"nope").unwrap();
+        let write = |o: serde_json::Value| std::fs::write(d.join(FILE), o.to_string()).unwrap();
+        write(json!({"version": 1, "add": {"projects": ["audio/mod.csi"]}}));
+        let loaded = load(&d).unwrap().unwrap();
+        assert!(loaded.overlay.has_content() && loaded.overlay.summary().contains(&"added Csis projects: 1".to_owned()));
+        for bad in ["audio/empty.csi", "audio/bad.csi", "audio/mod.abk", "../mod.csi"] {
+            write(json!({"version": 1, "add": {"projects": [bad]}}));
+            assert!(load(&d).is_err(), "{bad}");
+        }
+        write(json!({"version": 1, "add": {"projects": vec!["audio/mod.csi"; MAX_PROJECTS + 1]}}));
+        assert!(load(&d).is_err(), "too many");
+        let symbols = project_symbols(&std::fs::read(d.join("audio/mod.csi")).unwrap(), "mod.csi").unwrap();
+        assert_eq!(symbols, [(1, "c_mod".to_owned()), (2, "g_mod".to_owned())]);
+        let mut taken = std::collections::BTreeSet::from([(1u8, "c_emitter".to_owned())]);
+        assert_eq!(project_clash(&taken, &symbols), None);
+        taken.insert((2, "g_mod".into()));
+        assert!(project_clash(&taken, &symbols).is_some_and(|m| m.contains("global g_mod")));
+        assert_eq!(project_clash(&std::collections::BTreeSet::from([(0u8, "g_mod".to_owned())]), &symbols), None, "another table");
+        let mut m = json!({"aems": {"projects": ["aems/a.csi"]}});
+        let o: AudioOverlay = serde_json::from_value(json!({"version": 1, "add": {"projects": ["audio/mod.csi"]}})).unwrap();
+        crate::audio_merge::merge(&mut m, &[crate::audio_merge::Source { id: "me", overlay: &o }]);
+        assert_eq!(m["aems"]["projects"], json!(["aems/a.csi", "mod:me/audio/mod.csi"]));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

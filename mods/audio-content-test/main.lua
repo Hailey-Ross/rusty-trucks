@@ -8,6 +8,8 @@ local native_on = false
 local tuned = false
 local placed = false
 local quiet = false
+-- audio/moddability-2, third pass (doc 16 L1-L7): Digit1..Digit6.
+local ducked, seeded, own_cars, dev_class, nose, orbit = false, false, false, false, false, nil
 local pressed = {}
 
 local function key(name)
@@ -15,6 +17,10 @@ local function key(name)
     local edge = down and not pressed[name]
     pressed[name] = down
     return edge
+end
+
+local function dev_level()
+    return sdk.audio.global("g_dev_level")
 end
 
 local function hud()
@@ -31,6 +37,17 @@ local function hud()
         placed and ((sdk.world_audio.read("emitter") or {}).audible and "playing" or "placed") or "-",
         tostring(info.rules or 0) .. (quiet and " (grinds muted, landing beacon)" or ""),
         m and tostring(m.level) or "-", table.concat(tags, ", "), table.concat(last, " / ")))
+    local own = 0
+    for i = 1, 6 do
+        local r = sdk.world_audio.read("own_car" .. i)
+        if r and r.own then own = own + 1 end
+    end
+    sdk.ui.text("audio-content-test-2", string.format(
+        "Content changes: swaps %s, restarts %s, last %s | duck %s | seed %s | own-instance cars %s (%d own) | c_dev_mod %s, g_dev_level %s | nose beep %s | orbiting emitter %s  [1 duck (Master inputs), 2 seed, 3 own-instance taxis, 4 mod Csis class + global, 5 pop beep 2 m ahead of the board, 6 orbiting emitter; edit audio.json while running: swapped, no restart]",
+        tostring(info.swaps), tostring(info.restarts), tostring(info.last_change),
+        ducked and "on" or "-", seeded and "1234" or "-", own_cars and "on" or "-", own,
+        dev_class and "posted" or "-", tostring(dev_level()), nose and "on" or "-",
+        orbit and ((sdk.world_audio.read("orbit") or {}).audible and "playing" or "placed") or "-"))
 end
 
 return {
@@ -40,10 +57,13 @@ return {
             return
         end
         if sdk.settings.events then sdk.audio.subscribe{tags = {}} end
-        sdk.audio.watch{mixmap = {{slot = "emitter", object = 0, instance = 0, output = 4}}}
+        -- g_dev_level is the global of this mod's own Csis project (audio.json add.projects, doc 16
+        -- L4); without it (an older engine) the watch fails, so it goes through a request.
+        sdk.commands.request("watch", {kind = "audio_watch", globals = (sdk.capabilities.audio_content or 0) >= 3 and {"g_dev_level"} or {},
+            mixmap = {{slot = "emitter", object = 0, instance = 0, output = 4}}})
         hud()
     end,
-    on_update = function()
+    on_update = function(event)
         if (sdk.capabilities.audio or 0) < 2 then return end
         for _, e in ipairs(sdk.audio.events()) do
             local name = e.tag or (e.kind .. ":" .. (e.slot ~= "" and e.slot or e.class))
@@ -124,6 +144,75 @@ return {
                 play = {path = "audio/beep.wav", volume = 0.8, at = "world", position = {p[1] + 10, p[2], p[3]},
                         falloff = {radius = 30}}} or nil)
         end
+        if (sdk.capabilities.audio or 0) >= 4 then
+            if key("Digit1") then
+                -- L2: duck the world through retail's own controllers: the Master category gains
+                -- (Global object 2, inputs 1..4; the host writes 32767) held at 8192 (-12 dB).
+                ducked = not ducked
+                for i = 1, 4 do
+                    sdk.commands.request("duck" .. i, {kind = "audio_set_mixmap_input", slot = "global", object = 2, instance = 0, input = i, value = ducked and 8192 or nil})
+                end
+            end
+            if key("Digit2") then
+                -- L5: seed every audio generator (the same draws from here on each time); again
+                -- releases it.
+                seeded = not seeded
+                sdk.audio.seed(seeded and 1234 or nil)
+            end
+        end
+        if key("Digit3") and (sdk.capabilities.world_audio or 0) >= 3 then
+            -- L3: six idling taxis around the skater, each on its own MixMap instance (retail's 4
+            -- traffic instances stay for the map's cars, and all six are heard).
+            own_cars = not own_cars
+            local p = sdk.player.read().position
+            for i = 1, 6 do
+                if own_cars then
+                    local a = i * math.pi / 3
+                    sdk.commands.request("own" .. i, {kind = "world_audio_spawn", key = "own_car" .. i, object = "traffic", options = {
+                        engine = "c04_taxi01", slots = "own", speed = 0, position = {p[1] + 9 * math.cos(a), p[2], p[3] + 9 * math.sin(a)}}})
+                else
+                    sdk.world_audio.remove("own_car" .. i)
+                end
+            end
+        end
+        if key("Digit4") and (sdk.capabilities.audio_content or 0) >= 3 then
+            -- L4: this mod's Csis project: post its class c_dev_mod (no bank binds it: a post that
+            -- makes nothing, as retail's posts to an unbound class) and set its global g_dev_level
+            -- (default 7) to 9; again releases both.
+            dev_class = not dev_class
+            if dev_class then
+                sdk.commands.request("dev_post", {kind = "audio_post", key = "dev_class", class = "c_dev_mod", words = {1}})
+            else
+                sdk.audio.release("dev_class")
+            end
+            sdk.commands.request("dev_global", {kind = "audio_set_global", name = "g_dev_level", value = dev_class and 9 or nil})
+        end
+        if key("Digit5") and (sdk.capabilities.audio_events or 0) >= 3 then
+            -- The offset in the owner's axes: a beep on every pop 2 m ahead of the board's nose
+            -- (frame = 'owner'), wherever the skater faces.
+            nose = not nose
+            sdk.audio.rule("nose_beep", nose and {match = {tag = "pop"}, action = "layer",
+                play = {path = "audio/beep.wav", volume = 0.6, offset = {0, 0, 2}, frame = "owner"}, min_interval = 0.2} or nil)
+        end
+        if key("Digit6") and (sdk.capabilities.world_audio or 0) >= 2 then
+            -- A published emitter that keeps moving (orbiting the skater at 8 m every 6 s): its
+            -- sound follows it.
+            if orbit then
+                sdk.world_audio.remove("orbit")
+                orbit = nil
+            else
+                orbit = 0
+                local p = sdk.player.read().position
+                sdk.commands.request("orbit", {kind = "world_audio_spawn", key = "orbit", object = "emitter", options = {
+                    bank = "Baby_Cry_1", patch = 22, position = {p[1] + 8, p[2], p[3]}, extent = {20, 20, 20}, volume = 0.9}})
+            end
+        end
+        if orbit then
+            orbit = orbit + (event and event.dt or 0.016)
+            local p = sdk.player.read().position
+            local a = orbit * 2 * math.pi / 6
+            sdk.world_audio.update("orbit", {position = {p[1] + 8 * math.cos(a), p[2], p[3] + 8 * math.sin(a)}})
+        end
         if key("F5") then
             global_set = not global_set
             sdk.commands.request("global", {kind = "audio_set_global", name = "babycry_1_sel_snd", value = global_set and 1 or nil})
@@ -132,5 +221,6 @@ return {
     end,
     on_unload = function()
         sdk.ui.text("audio-content-test", "")
+        sdk.ui.text("audio-content-test-2", "")
     end,
 }

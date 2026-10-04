@@ -674,8 +674,12 @@ function sdk.audio.stop_all() end
 ---@class AudioInfo
 ---@field native boolean the native audio runtime runs
 ---@field map_epoch? integer
----@field generation? integer audio content generation (bumped by every restart)
----@field restarts? integer
+---@field generation? integer audio content generation (bumped by every content change: a swap or a restart)
+---@field restarts? integer runtime restarts (only where a change cannot be swapped in place: the MixMap file, the rolling bed's grains)
+---@field swaps? integer audio content changes swapped into the running audio without a restart (audio_content >= 3)
+---@field last_change? string the last content change: "swap", or "restart: <reasons>"
+---@field mixmap_inputs? integer MixMap inputs written by mods (audio >= 4)
+---@field seed? {owner:string, seed:integer} the audio random state's seed in force (audio >= 4)
 ---@field overlays? string[] mods whose audio.json is applied
 ---@field conflicts? integer
 ---@field map? {stem:string, district:string, ems:string[], sources:string[]}
@@ -749,7 +753,8 @@ function sdk.audio.events() end
 ---plays it centred); `world` = at the fixed `position`; `centre` = non-positional, centred (the retail
 ---non-positional emitter outputs). Positional sounds use the retail emitter law (MixMap Emitter dry
 ---level, pan, reverb send rolling off with camera distance) and a reach (`falloff`).
----@field offset? Vec3 `owner` only: metres added to the owner's position (world axes, y up), -100..100
+---@field offset? Vec3 `owner` only: metres added to the owner's position, -100..100 (world axes, y up; with `frame = 'owner'` the owner's axes)
+---@field frame? 'world'|'owner' `owner` only (audio_events >= 3): the axes of `offset`: 'world' (default) or 'owner' = x its right, y up, z its facing (the board's nose for skaters, a car's direction, a ped's walking direction, an emitter's forward), turning with it. A rule sound at a published emitter follows it when it moves.
 ---@field position? Vec3 `world` only (required there): the world position
 ---@field falloff? AudioFalloff positional only: the reach; default the owner's retail reach: the emitter
 ---record's own shape and curve, 40 m for cars (retail's traffic list), 50 m for peds (the ped list),
@@ -763,11 +768,40 @@ function sdk.audio.events() end
 ---@param key string
 ---@param rule AudioRule|nil
 function sdk.audio.rule(key, rule) end
+-- Audio extension 4 (capability `audio` >= 4).
+---Write (or with `value = nil` release) one input (0..15) of a retail MixMap controller: drive the
+---game's own controllers (the Master category gains `'global', 2, 0, 1..4`, the duck flags of the
+---Global objects, an instance's inputs) through retail's curves and envelopes. Applied every audio
+---pass after the game's own writes, right before the evaluations, so it holds against inputs the game
+---writes too. The first mod to write an input owns it; 16 per mod, 64 in all; an unknown controller is
+---a command error. Released (the value before the first write comes back) by nil, when the mod stops,
+---fails or reloads; kept across map changes, written again after an audio restart.
+---@param slot 'global'|'player'|'ambience'|'collision'|'traffic'|'pedestrian'|'emitter'
+---@param object integer 0..127
+---@param instance integer 0..31
+---@param input integer 0..15
+---@param value integer|number|nil an integer word (or with `opts.float` an f32, the distance inputs)
+---@param opts? {float?:boolean}
+function sdk.audio.set_mixmap_input(slot, object, instance, input, value, opts) end
+---The MixMap inputs this mod writes.
+---@return {slot:string, object:integer, instance:integer, input:integer, value:number}[]
+function sdk.audio.mixmap_inputs() end
+---Seed the audio random state for reproducible tests: every audio generator (programs, Splice picks,
+---grain picks, eEQChain rolls, Jitter, the world and speech hosts) is set from `n` at the start of the
+---next audio pass, so the same seed at the same point draws the same. One owner (the first mod);
+---`nil` (or the mod stopping) puts back the states the generators had at the first seed. Unseeded the
+---draws are retail's, unchanged. `SKATE_AUDIO_SEED=<n>` seeds a whole run.
+---@param n integer|nil
+function sdk.audio.seed(n) end
 -- Audio content (capability `audio_content`): a mod ships `audio.json` at its root (no Lua needed):
 -- replace / add retail audio content by identity (banks, sample slots, Splice trees, grain members,
 -- wheel streams, ambience beds, emitter records, location sets, zones, crossfades, speech takes,
--- tuning fields, map audio) with its own files. Applied only while the mod runs; turning it on or
--- off restarts the game's sound (a short cut). Two mods on one identity: the first by mod id wins
+-- tuning fields, map audio, Csis projects) with its own files. Applied only while the mod runs.
+-- Capability audio_content >= 3: turning the mod on or off, or editing audio.json / its files while
+-- it runs, is swapped into the running audio in place (only what changed is replaced; held sounds
+-- continue on the new content); only a MixMap or grain change restarts the game's sound (a short
+-- cut). `add.projects` = the mod's own `.csi` projects (new classes, functions, globals; names must
+-- not be the install's or another mod's). Two mods on one identity: the first by mod id wins
 -- and the mod menu shows the conflict. Check it with `check_mod <package> --install <assets>`.
 -- Reference: docs/hails-additions/16-audio-modding.md.
 
@@ -848,6 +882,7 @@ function sdk.audio.tuned() end
 ---@field forward? Vec3 emitter / reverb_zone: the ellipsoid's forward axis, turned by heading (default {1,0,0})
 ---@field core? number emitter / reverb_zone: inner core fraction 0..1 (default 0)
 ---@field preset? string reverb_zone (spawn: required): the aud_reverb preset key, 16 hex digits, one the install has
+---@field slots? 'retail'|'own' traffic / ped, spawn only (world_audio >= 3): 'retail' (default: retail's pools, the nearest win) or 'own' = its own MixMap instance (not retail): it plays whenever it is within retail's list radius (40 m cars, 50 m peds), up to 16 own cars and 16 own peds; the map's objects keep retail's pools
 sdk.world_audio = {}
 ---@param key string
 ---@param kind 'traffic'|'ped'|'skater'|'emitter'|'reverb_zone'
@@ -864,7 +899,7 @@ function sdk.world_audio.event(key, event, opts) end
 ---@param key string
 function sdk.world_audio.remove(key) end
 ---@param key string
----@return {kind:string, audible:boolean, instance?:integer, parked:boolean}|nil
+---@return {kind:string, audible:boolean, instance?:integer, own:boolean, parked:boolean}|nil
 function sdk.world_audio.read(key) end
 ---@return {more_audible:boolean, instances:{traffic:integer,peds:integer,skaters:integer}, published:table, audible:table, speech_lines:integer}
 function sdk.world_audio.info() end

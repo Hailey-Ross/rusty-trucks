@@ -292,7 +292,7 @@ function sdk.audio.stop_all() submit{kind="audio_stop_all"} end
 -- Audio extension 2 (capability audio >= 2): the game's own native audio. Keys are scoped to the
 -- calling mod (32 handles per mod, 128 in all, 16 posts per frame); everything is released and
 -- every global restored when the mod stops, fails or reloads, and posts end at a map change.
-sdk.audio.version = 3
+sdk.audio.version = 4
 -- Post to a retail class (e.g. 'c_emitter') with up to 32 payload words; a key's post replaces
 -- its last one. Applied at the start of the next audio pass.
 function sdk.audio.post(key, class, words) submit{kind="audio_post",key=key,class=class,words=words or {}} end
@@ -342,6 +342,18 @@ function sdk.audio.info() return as_table(sdk.snapshot.audio_info) or {native=fa
 -- sites, the same frame: rule(key, {match={tag="pop"}, action="replace", play={path="pop.wav"}});
 -- rule(key, nil) removes it. Removed when the mod stops.
 function sdk.audio.rule(key, rule) submit{kind="audio_rule",key=key,rule=rule} end
+-- Audio extension 4 (capability audio >= 4). MixMap inputs: drive one input (0..15) of a retail
+-- MixMap controller (slot name, object, instance; e.g. 'global', 2, 0 = Master) with an integer
+-- word (opts.float = true: an f32 input); nil releases it (the input's value before the first
+-- write comes back). The first mod to write an input owns it; 16 per mod, 64 in all.
+function sdk.audio.set_mixmap_input(slot, object, instance, input, value, opts)
+    submit{kind="audio_set_mixmap_input",slot=slot,object=object,instance=instance,input=input,value=value,float=(opts and opts.float) or false}
+end
+-- The inputs this mod writes: {{slot=, object=, instance=, input=, value=}, ...}.
+function sdk.audio.mixmap_inputs() return (audio_mine().inputs) or {} end
+-- Seed the audio random state (every audio generator, from the next audio pass) for reproducible
+-- tests; nil releases it (the generators get back their states from the first seed). One owner.
+function sdk.audio.seed(n) submit{kind="audio_seed",seed=n} end
 -- Tuning writes (capability audio_tuning): patch a typed tuning domain ("player", "world", "bus",
 -- "reverb") while this mod runs; applied between audio passes; nil restores this mod's patch of
 -- the domain (everything is restored when the mod stops). The first mod to write a field owns it.
@@ -359,7 +371,7 @@ function sdk.audio.tuned() return (audio_mine().tuning) or {} end
 -- to the calling mod; 48 objects per mod, 128 in all; an object not updated for 0.5 s is parked;
 -- everything is removed when the mod is disabled or reloaded. The retail limits decide which
 -- objects sound (4 nearest cars within 40 m, 15 nearest peds within 50 m, 1 skater within 30 m).
-sdk.world_audio = { version = 2 }
+sdk.world_audio = { version = 3 }
 function sdk.world_audio.spawn(key, kind, opts)
     submit{kind="world_audio_spawn",key=key,object=kind,options=opts or {}}
 end

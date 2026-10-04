@@ -292,6 +292,16 @@ pub fn merge_one_with(m: &mut Value, source: &Source, owners: &mut Owners, repor
         }
         bank_meta(m, stem, b);
     }
+    // Mod Csis projects (doc 16 L4): installed after the install's, in mod-id order (their symbol
+    // names are checked against the install's where the project files are read: the game's library
+    // and check_mod --install, `audio_content::project_clash`).
+    for file in &o.add.projects {
+        let v = ctx.file(file);
+        match section(m, "aems").entry("projects").or_insert_with(|| Value::Array(Vec::new())) {
+            Value::Array(list) => list.push(v),
+            _ => ctx.warn("add.projects: the install's project list is not a list; ignored".into()),
+        }
+    }
     for (stem, b) in &o.add.banks {
         if has(m, &["banks", stem]) || has(m, &["aems", "banks", stem]) {
             ctx.warn(format!("add.banks: {stem} is already in the install (use replace.banks); ignored"));

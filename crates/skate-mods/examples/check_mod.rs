@@ -64,12 +64,32 @@ fn main() {
     overlays.sort_by(|a, b| a.0.cmp(&b.0));
     // The speech indexes, read only when an overlay names speech (they are a few MB).
     let speech = overlays.iter().any(|(_, o, _)| SpeechClips::needed(o)).then(|| SpeechClips::load(&audio_root, &m));
+    // Mod Csis projects (doc 16 L4): their symbols against the install's and the earlier mods' (the
+    // game leaves such an overlay out).
+    let mut clashes: Vec<(String, String)> = Vec::new();
+    if overlays.iter().any(|(_, o, _)| !o.add.projects.is_empty()) {
+        let mut taken: std::collections::BTreeSet<(u8, String)> = m["aems"]["projects"].as_array().into_iter().flatten().filter_map(|v| v.as_str())
+            .filter_map(|f| std::fs::read(audio_root.join(f)).ok().and_then(|b| skate_mods::audio_content::project_symbols(&b, f).ok())).flatten().collect();
+        for (id, o, root) in &overlays {
+            let symbols: Vec<(u8, String)> = o.add.projects.iter().filter_map(|f| skate_mods::read_bounded(root, f, skate_mods::audio_content::MAX_BINARY_BYTES).ok().and_then(|b| skate_mods::audio_content::project_symbols(&b, f).ok())).flatten().collect();
+            match skate_mods::audio_content::project_clash(&taken, &symbols) {
+                Some(c) => clashes.push((id.clone(), c)),
+                None => {
+                    if !o.add.projects.is_empty() {
+                        println!("  Csis projects of {id}: {} symbols, none of the install's", symbols.len());
+                    }
+                    taken.extend(symbols);
+                }
+            }
+        }
+    }
     let sources: Vec<_> = overlays.iter().map(|(id, o, _)| skate_mods::audio_merge::Source { id, overlay: o }).collect();
     let report = skate_mods::audio_merge::merge_with(&mut m, &sources, speech.as_ref());
     let mine = |owner: &str| owner == manifest.id;
     let mut warnings: Vec<String> = report.warnings.iter().filter(|w| mine(&w.owner)).map(|w| w.text.clone()).collect();
     let conflicts: Vec<_> = report.conflicts.iter().filter(|c| mine(&c.owner)).collect();
     let roots: BTreeMap<&str, &Path> = overlays.iter().map(|(id, _, r)| (id.as_str(), r.as_path())).collect();
+    warnings.extend(clashes.iter().filter(|(id, _)| mine(id)).map(|(_, c)| c.clone()));
     let own = &overlays.iter().find(|(id, ..)| *id == manifest.id).expect("the checked mod").1;
     let crossfades = crossfade_banks(&audio_root, &m, &roots, own);
     for (bank, result) in &crossfades {

@@ -7,6 +7,8 @@ two-tone beep at 22.05 kHz (replaces an emitter bank's samples: another rate and
 retail ones, so the rebuilt sample headers are exercised), warn.wav: a short falling tone (a speech
 take), siren.wav: a 3 s rising-falling tone (an added location-set bank), fade.wav: 2 s of looping
 band-passed noise with a slow flutter (a mod crossfade bank's sample, played by a declared layout).
+dev.csi: a Csis project of the mod's own (doc 16 L4): the class c_dev_mod, the function f_dev_msg
+and the global g_dev_level (default 7); the layout skate-audio's `Project::parse` reads.
 """
 from __future__ import annotations
 
@@ -71,10 +73,34 @@ def fade() -> list[float]:
     return out
 
 
+def csi(path: Path) -> None:
+    """A MOIR project: header 0x28 (counts at 0x0A / 0x0C / 0x0E, id at 0x10, big-endian), the
+    function and class records (12 bytes: name offset at +4, name id at +8), the global records (16
+    bytes: default at +4, name offset at +8, name id at +12), then the names."""
+    tables = [[("f_dev_msg", 1, 0)], [("c_dev_mod", 1, 0)], [("g_dev_level", 1, 7)]]
+    records = sum(len(t) * (16 if i == 2 else 12) for i, t in enumerate(tables))
+    head = bytearray(0x28)
+    head[0:4] = b"MOIR"
+    for i, at in enumerate((0x0A, 0x0C, 0x0E)):
+        head[at:at + 2] = struct.pack(">H", len(tables[i]))
+    head[0x10:0x12] = struct.pack(">H", 0x4445)
+    rec, names = bytearray(), bytearray()
+    for i, table in enumerate(tables):
+        for name, name_id, default in table:
+            off = 0x28 + records + len(names)
+            names += name.encode() + b"\0"
+            if i == 2:
+                rec += b"\0" * 4 + struct.pack(">iIH", default, off, name_id) + b"\0" * 2
+            else:
+                rec += b"\0" * 4 + struct.pack(">IH", off, name_id) + b"\0" * 2
+    path.write_bytes(bytes(head + rec + names))
+
+
 if __name__ == "__main__":
     write("bed.wav", bed())
     write("beep.wav", beep(22050), 22050)
     write("warn.wav", warn())
     write("siren.wav", siren())
     write("fade.wav", fade())
-    print("wrote", sorted(p.name for p in HERE.glob("*.wav")))
+    csi(HERE / "dev.csi")
+    print("wrote", sorted(p.name for p in HERE.glob("*.wav")), "dev.csi")

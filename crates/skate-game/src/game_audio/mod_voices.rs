@@ -207,6 +207,9 @@ pub(crate) enum Anchor {
     Npc(u64),
     /// A fixed place and its reach (an emitter record: records do not move).
     Fixed(Vec3, Reach),
+    /// A published emitter (`WorldEmitter` entity bits), its position and reach at the start: it
+    /// can move, the sound follows it (its record's reach turned with it).
+    Emitter(u64, Vec3, Reach),
 }
 
 /// A rule sound's placement relative to its owner.
@@ -218,24 +221,51 @@ pub(crate) struct Follow {
     /// The sound follows the owner (`at = 'owner'`); false: a fixed position, the owner only gives
     /// the default reach (`at = 'world'`).
     pub track: bool,
+    /// `offset` is in the owner's axes (x right, y up, z its facing; `play.frame = 'owner'`).
+    pub local: bool,
+}
+
+/// An offset in an owner's axes as a world offset: x = right, y = up, z = `facing` (horizontal;
+/// world +Z when the owner has none).
+pub(crate) fn owner_offset(offset: Vec3, facing: Vec3) -> Vec3 {
+    let f = Vec3::new(facing.x, 0.0, facing.z).normalize_or(Vec3::Z);
+    let right = f.cross(Vec3::Y);
+    right * offset.x + Vec3::Y * offset.y + f * offset.z
+}
+
+/// A skater's facing from its wheels (front pair minus back pair; FL, FR, BL, BR), else its
+/// centre-of-mass velocity.
+fn board_facing(s: &skate_audio::player::AudioState) -> Vec3 {
+    let w = s.wheel_position.map(Vec3::from_array);
+    let along = (w[0] + w[1] - w[2] - w[3]) * 0.5;
+    if along.length_squared() > 1e-6 { along } else { Vec3::from_array(s.com_velocity) }
 }
 
 /// The owner's position now and its kind's retail reach: the skater audio radius (30 m, the local
 /// player too: its sounds sit in the same Player MixMap slot), the traffic list (40 m), the ped
 /// list (50 m), all with the squared curve; an emitter record's own shape and curve.
+#[cfg(test)]
 pub(crate) fn locate(a: &Anchor, cues: &super::skate_events::Cues, owners: Option<&super::world_sources::WorldOwners>, npcs: Option<&super::npc_skaters::NpcSkaters>) -> Option<(Vec3, Reach)> {
+    locate_facing(a, cues, owners, npcs, &|_| None).map(|(p, r, _)| (p, r))
+}
+
+/// [`locate`] with the owner's facing (`Follow::local`), and published emitters found through
+/// `emitters` (entity bits → position, forward).
+pub(crate) fn locate_facing(a: &Anchor, cues: &super::skate_events::Cues, owners: Option<&super::world_sources::WorldOwners>, npcs: Option<&super::npc_skaters::NpcSkaters>, emitters: &dyn Fn(u64) -> Option<(Vec3, Vec3)>) -> Option<(Vec3, Reach, Vec3)> {
     use skate_audio::world::skaters::AUDIO_RADIUS;
     match a {
-        Anchor::Player => Some((Vec3::from_array(cues.riding.audio.com_position), Reach::sphere(AUDIO_RADIUS, 0.0, 0))),
+        Anchor::Player => Some((Vec3::from_array(cues.riding.audio.com_position), Reach::sphere(AUDIO_RADIUS, 0.0, 0), board_facing(&cues.riding.audio))),
         Anchor::World(id) => {
             let o = owners?;
-            let (p, r) = o.vehicles.get(id).map(|v| (v.position, super::world_sources::TRAFFIC_LIST_RADIUS)).or_else(|| o.peds.get(id).map(|p| (p.position, super::world_sources::PED_LIST_RADIUS)))?;
-            Some((Vec3::from_array(p), Reach::sphere(r, 0.0, 0)))
+            let (p, r, f) = o.vehicles.get(id).map(|v| (v.position, super::world_sources::TRAFFIC_LIST_RADIUS, v.direction)).or_else(|| o.peds.get(id).map(|p| (p.position, super::world_sources::PED_LIST_RADIUS, p.velocity)))?;
+            Some((Vec3::from_array(p), Reach::sphere(r, 0.0, 0), Vec3::from_array(f)))
         }
-        Anchor::Npc(id) => npcs?.skaters.iter().find(|s| s.id == *id).map(|s| (Vec3::from_array(s.state.com_position), Reach::sphere(AUDIO_RADIUS, 0.0, 0))),
-        Anchor::Fixed(p, r) => Some((*p, *r)),
+        Anchor::Npc(id) => npcs?.skaters.iter().find(|s| s.id == *id).map(|s| (Vec3::from_array(s.state.com_position), Reach::sphere(AUDIO_RADIUS, 0.0, 0), board_facing(&s.state))),
+        Anchor::Fixed(p, r) => Some((*p, *r, r.forward)),
+        Anchor::Emitter(e, _, r) => emitters(*e).map(|(p, forward)| (p, Reach { forward, ..*r }, forward)),
     }
 }
+
 
 /// What `sdk.audio.play` (native) or a rule's sound asks for (validated by `skate_mods`).
 #[derive(Clone, Debug, PartialEq)]
@@ -434,6 +464,38 @@ impl ModVoices {
         }
     }
 
+    /// An audio-only reload changed these files of `owner` (doc 16 L7): their clips are dropped
+    /// (the next play or rule compile reads the new file) and the voices playing them stop. Their
+    /// old slots stay registered in the mod's bank until the mod stops (a later play takes a new
+    /// slot). Returns whether anything was dropped.
+    pub(crate) fn forget_clips(&mut self, owner: &str, paths: &[String]) -> bool {
+        let mut any = false;
+        let mut slots: Vec<(usize, u16)> = Vec::new();
+        for path in paths {
+            any |= self.clips.remove(&(owner.to_owned(), path.clone())).is_some();
+            for group in 0..2u8 {
+                if !self.banks.contains_key(&(owner.to_owned(), group)) {
+                    continue;
+                }
+                let id = self.bank_id(owner, group);
+                if let Some(bank) = self.banks.get_mut(&(owner.to_owned(), group)) {
+                    for looping in [false, true] {
+                        if let Some(slot) = bank.slots.remove(&(path.clone(), looping)) {
+                            slots.push((id, slot));
+                        }
+                    }
+                }
+            }
+        }
+        let keys: Vec<_> = self.voices.iter().filter(|((o, _), v)| o == owner && slots.contains(&(v.bank, v.slot))).map(|(k, _)| k.clone()).collect();
+        for k in keys {
+            if let Some(v) = self.voices.remove(&k) {
+                self.forget(v);
+            }
+        }
+        any || !slots.is_empty()
+    }
+
     /// Everything (a map change: the mod system clears every mod's runtime state).
     pub(crate) fn clear(&mut self) {
         let owners: Vec<String> = self.owners.keys().cloned().collect();
@@ -465,6 +527,7 @@ pub(super) fn frame(
     rules: Option<Res<super::mod_rules::AudioRules>>,
     owners: Option<Res<super::world_sources::WorldOwners>>,
     npcs: Option<Res<super::npc_skaters::NpcSkaters>>,
+    published: Query<(&GlobalTransform, &crate::world_audio::WorldEmitter)>,
 ) {
     let plays = rules.as_deref().and_then(|r| r.set.as_ref()).filter(|s| s.has_plays());
     if voices.idle() && !mix.in_use() && plays.is_none() {
@@ -483,7 +546,7 @@ pub(super) fn frame(
         }
         mv.rule_plays = counter;
     }
-    let runtime = (Arc::as_ptr(&native.shared) as usize, content.generation);
+    let runtime = (Arc::as_ptr(&native.shared) as usize, content.runtime_generation);
     if mv.runtime != Some(runtime) {
         // A new runtime (first use, or a restart): the old one's mixer ids are forgotten, never
         // released into this one; the banks are registered again.
@@ -501,7 +564,7 @@ pub(super) fn frame(
         }
         mv.runtime = Some(runtime);
     }
-    mix.ensure(&library, &native, content.generation);
+    mix.ensure(&library, &native, content.runtime_generation);
     for (g, build) in std::mem::take(&mut mv.free_instances) {
         if build == mix.build {
             mix.release(g);
@@ -562,10 +625,15 @@ pub(super) fn frame(
         // A rule sound's owner: its position now (when followed) and its default reach. An owner
         // gone after it was found leaves the sound where it was; one never found plays it centred.
         if let Some(f) = v.spec.follow {
-            match locate(&f.anchor, &cues, owners.as_deref(), npcs.as_deref()) {
-                Some((p, reach)) => {
+            let emitter = |bits: u64| {
+                let (t, e) = published.get(Entity::try_from_bits(bits)?).ok()?;
+                let (_, rotation, position) = t.to_scale_rotation_translation();
+                Some((position, (rotation * e.forward).normalize_or(Vec3::X)))
+            };
+            match locate_facing(&f.anchor, &cues, owners.as_deref(), npcs.as_deref(), &emitter) {
+                Some((p, reach, facing)) => {
                     if f.track {
-                        v.spec.position = Some(p + f.offset);
+                        v.spec.position = Some(p + if f.local { owner_offset(f.offset, facing) } else { f.offset });
                     }
                     v.spec.reach.get_or_insert(reach);
                     v.placed = true;
@@ -679,6 +747,29 @@ pub(crate) mod tests {
 
     pub(crate) fn spec(path: &str, position: Option<Vec3>) -> VoiceSpec {
         VoiceSpec { path: path.into(), looping: true, volume: 1.0, pitch: 1.0, paused: false, fade_in: 0.0, position, reach: position.map(|_| Reach::sphere(30.0, 0.0, 0)), follow: None, reverb: true, group: 0 }
+    }
+
+    /// `play.frame = 'owner'`: an offset in the owner's axes (x right, y up, z facing, the facing
+    /// flattened to the ground), world +Z without a facing; the owners' facings (a car's direction,
+    /// a ped's walk, a skater's board from its wheels, an emitter's forward).
+    #[test]
+    fn offsets_turn_with_the_owner() {
+        let o = Vec3::new(1.0, 0.5, 2.0);
+        assert!(owner_offset(o, Vec3::Z).abs_diff_eq(Vec3::new(-1.0, 0.5, 2.0), 1e-6), "facing +Z: right is -X");
+        assert!(owner_offset(o, Vec3::X).abs_diff_eq(Vec3::new(2.0, 0.5, 1.0), 1e-6));
+        assert!(owner_offset(o, Vec3::new(0.0, -3.0, 0.0)).abs_diff_eq(owner_offset(o, Vec3::Z), 1e-6), "no horizontal facing: +Z");
+        assert!(owner_offset(o, Vec3::new(0.0, 5.0, -2.0)).abs_diff_eq(Vec3::new(1.0, 0.5, -2.0), 1e-6), "pitched facing flattened");
+        let mut cues = super::super::skate_events::Cues::default();
+        cues.riding.audio.wheel_position = [[1.0, 0.0, 0.5], [1.0, 0.0, -0.5], [0.0, 0.0, 0.5], [0.0, 0.0, -0.5]];
+        let none = |_: u64| None;
+        assert_eq!(locate_facing(&Anchor::Player, &cues, None, None, &none).unwrap().2, Vec3::new(1.0, 0.0, 0.0), "the board's nose");
+        let mut owners = super::super::world_sources::WorldOwners::default();
+        owners.vehicles.insert(7, skate_audio::world::traffic::VehicleState { direction: [0.0, 0.0, -1.0], ..Default::default() });
+        assert_eq!(locate_facing(&Anchor::World(7), &cues, Some(&owners), None, &none).unwrap().2, Vec3::new(0.0, 0.0, -1.0));
+        let r = Reach::sphere(5.0, 0.0, 0);
+        let moved = |_: u64| Some((Vec3::new(9.0, 0.0, 9.0), Vec3::X));
+        assert_eq!(locate_facing(&Anchor::Emitter(3, Vec3::ZERO, r), &cues, None, None, &moved).unwrap().0, Vec3::new(9.0, 0.0, 9.0), "a published emitter where it is now");
+        assert_eq!(locate_facing(&Anchor::Emitter(3, Vec3::ZERO, r), &cues, None, None, &none), None, "gone");
     }
 
     /// The per-mod banks: a clip gets one slot per play mode (once / looping) in its group's bank;
@@ -993,7 +1084,7 @@ pub(crate) mod tests {
         // The restart: a new runtime, the content generation bumped.
         let fresh = Native::start(world.resource::<Library>()).unwrap();
         world.insert_resource(fresh);
-        world.resource_mut::<super::super::AudioContent>().generation += 1;
+        world.resource_mut::<super::super::AudioContent>().runtime_generation += 1;
         for _ in 0..3 {
             step(&mut world, &mut out);
         }

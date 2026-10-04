@@ -178,6 +178,24 @@ pub enum Command {
         #[serde(default)]
         patch: Option<Value>,
     },
+    /// Audio extension 4 (doc 16 L2): write one input of a retail MixMap controller (`value` absent
+    /// = release it: the input gets back the value before this mod's first write).
+    AudioSetMixmapInput {
+        slot: String,
+        object: u32,
+        instance: u32,
+        input: u32,
+        #[serde(default)]
+        value: Option<f64>,
+        /// The value is an f32 input (the distance inputs), not an integer word.
+        #[serde(default)]
+        float: bool,
+    },
+    /// Audio extension 4 (doc 16 L5): seed the audio random state (`seed` absent = release it).
+    AudioSeed {
+        #[serde(default)]
+        seed: Option<u64>,
+    },
     /// World audio extension 1: publish a traffic vehicle / ped / skater to the retail world audio.
     WorldAudioSpawn {
         key: String,
@@ -456,11 +474,14 @@ impl Command {
             Self::AudioSubscribe { tags } => tags.as_ref().is_none_or(|t| t.len() <= 16 && t.iter().all(|x| crate::audio::valid_symbol(x))),
             Self::AudioSetGlobal { name, .. } => crate::audio::valid_symbol(name),
             Self::AudioRule { key, rule } => crate::schema::valid_id(key) && rule.as_ref().is_none_or(crate::audio_rules::Rule::validate),
+            Self::AudioSetMixmapInput { slot, object, instance, input, value, float } => crate::audio::valid_symbol(slot) && *object <= 127 && *instance <= 31 && *input <= 15
+                && value.is_none_or(|v| v.is_finite() && (*float || (v.fract() == 0.0 && (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&v)))),
+            Self::AudioSeed { .. } => true,
             Self::AudioSetTuning { domain, patch } => crate::audio_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::audio_tuning::valid_patch(domain, p)),
             Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
                 && mixmap.len() <= crate::audio::MAX_WATCH && mixmap.iter().all(crate::audio::MixMapKey::validate),
             Self::WorldAudioSpawn { key, object, options } => crate::schema::valid_id(key) && options.validate_for(*object) && options.complete_for(*object),
-            Self::WorldAudioUpdate { key, options } => crate::schema::valid_id(key) && options.validate() && options.source.is_none(),
+            Self::WorldAudioUpdate { key, options } => crate::schema::valid_id(key) && options.validate() && options.source.is_none() && options.slots.is_none(),
             Self::WorldAudioEvent { key, event, options } => crate::schema::valid_id(key) && options.validate(event),
             Self::WorldAudioRemove { key } => crate::schema::valid_id(key),
             Self::GraphicsMeshBuffer { key, options } => {
@@ -714,6 +735,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::AudioSubscribe { .. } => "audio_subscribe",
         Command::AudioSetTuning { .. } => "audio_set_tuning",
         Command::AudioRule { .. } => "audio_rule",
+        Command::AudioSetMixmapInput { .. } => "audio_set_mixmap_input",
+        Command::AudioSeed { .. } => "audio_seed",
         Command::WorldAudioSpawn { .. } => "world_audio_spawn",
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
@@ -1013,20 +1036,27 @@ impl Vm {
             capabilities.set("capture", 1)?;
             capabilities.set("multiplayer_debug", 1)?;
             // 2 (2026-10-04, audio/moddability-2): the `emitter` and `reverb_zone` kinds.
-            capabilities.set("world_audio", 2)?;
+            // 3 (doc 16 L3): `slots = 'own'` (a traffic / ped object on its own MixMap instance).
+            capabilities.set("world_audio", 3)?;
             // Audio extension 1: the mod's own WAVs (`sdk.audio.preload / play / update / stop /
             // stop_all`); before 2026-10-04 only `sdk.audio.version` advertised it.
             // 2 (2026-10-04): retail posts by class, globals, MixMap / global watch, `sdk.audio.info`.
             // 3 (2026-10-04, audio/moddability-2): `sdk.audio.play` through the native mixer, the
             // default (user decision 2026-10-04; `native = false` keeps the Bevy voice).
-            capabilities.set("audio", 3)?;
+            // 4 (doc 16 L2 / L5): `sdk.audio.set_mixmap_input` (writable MixMap inputs) and
+            // `sdk.audio.seed` (a seedable audio random state).
+            capabilities.set("audio", 4)?;
             // Audio content overlays (`audio.json`: replace / add retail audio content by identity;
             // `audio_content.rs`), applied while the mod runs.
             // 2 (audio/moddability-2): `rules` in audio.json.
-            capabilities.set("audio_content", 2)?;
+            // 3 (doc 16 L1 / L4 / L7): content changes are hot-swapped (no restart where exact),
+            // `add.projects` (mod Csis projects), and `audio.json` reloads while the mod runs.
+            capabilities.set("audio_content", 3)?;
             // Audio events, observe only (`sdk.audio.subscribe` / `sdk.audio.events`).
             // 2 (audio/moddability-2): mute / replace / layer rules (`sdk.audio.rule`).
-            capabilities.set("audio_events", 2)?;
+            // 3: a rule sound's `offset` in the owner's frame (`play.frame = 'owner'`), and rule
+            // sounds at a published emitter follow it.
+            capabilities.set("audio_events", 3)?;
             // Tuning writes at run time (`sdk.audio.set_tuning`: player / world / bus / reverb domains).
             capabilities.set("audio_tuning", 1)?;
             sdk.set("_native_capabilities", capabilities)?;
@@ -1833,11 +1863,11 @@ mod world_audio_tests {
         let root = std::env::temp_dir().join(format!("skate-audio-capabilities-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("main.lua"), r#"
-            assert(sdk.capabilities.audio == 3, 'audio capability')
-            assert(sdk.capabilities.world_audio == 2, 'world_audio capability')
-            assert(sdk.capabilities.audio_content == 2, 'audio_content capability')
-            assert(sdk.capabilities.audio_events == 2, 'audio_events capability')
-            assert(sdk.audio.version == 3 and sdk.world_audio.version == 2, 'versions')
+            assert(sdk.capabilities.audio == 4, 'audio capability')
+            assert(sdk.capabilities.world_audio == 3, 'world_audio capability')
+            assert(sdk.capabilities.audio_content == 3, 'audio_content capability')
+            assert(sdk.capabilities.audio_events == 3, 'audio_events capability')
+            assert(sdk.audio.version == 4 and sdk.world_audio.version == 3, 'versions')
             return {}
         "#).unwrap();
         let manifest: Manifest = serde_json::from_value(json!({
@@ -2062,6 +2092,63 @@ mod world_audio_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// Audio extension 4 (doc 16 L2, L5): `audio_set_mixmap_input` and `audio_seed` cross the serde
+    /// boundary (valid, invalid, unknown field) and the Lua wrappers submit them (nil releases).
+    #[test]
+    fn mixmap_input_and_seed_commands_deserialize_and_validate() {
+        for value in [
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":2,"instance":0,"input":1,"value":8192}),
+            json!({"kind":"audio_set_mixmap_input","slot":"emitter","object":0,"instance":3,"input":1,"value":12.5,"float":true}),
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":6,"instance":0,"input":0}),
+            json!({"kind":"audio_seed","seed":42}),
+            json!({"kind":"audio_seed"}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(c.validate(), "{value}");
+        }
+        for value in [
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":2,"instance":0,"input":16,"value":1}),
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":200,"instance":0,"input":1,"value":1}),
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":2,"instance":40,"input":1,"value":1}),
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":2,"instance":0,"input":1,"value":0.5}),
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":2,"instance":0,"input":1,"value":4294967296.0}),
+            json!({"kind":"audio_set_mixmap_input","slot":"bad slot","object":2,"instance":0,"input":1,"value":1}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(!c.validate(), "accepted {value}");
+        }
+        assert!(serde_json::from_value::<Command>(json!({"kind":"audio_seed","seed":1,"owner":"x"})).is_err());
+        assert!(serde_json::from_value::<Command>(json!({"kind":"audio_seed","seed":-1})).is_err());
+        let root = std::env::temp_dir().join(format!("skate-audio-l2l5-lua-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            function M.on_update()
+                assert(sdk.capabilities.audio == 4, 'capability')
+                sdk.audio.set_mixmap_input('global', 2, 0, 1, 8192)
+                sdk.audio.set_mixmap_input('emitter', 0, 0, 1, 3.5, {float = true})
+                sdk.audio.set_mixmap_input('global', 2, 0, 1, nil)
+                sdk.audio.seed(42)
+                sdk.audio.seed(nil)
+                assert(#sdk.audio.mixmap_inputs() == 0)
+            end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.audio-l2l5","api":2,"name":"Audio L2 L5","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
+        let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
+        assert_eq!(kinds, ["audio_set_mixmap_input", "audio_set_mixmap_input", "audio_set_mixmap_input", "audio_seed", "audio_seed"]);
+        assert!(cmds.iter().all(Command::validate));
+        assert!(matches!(&cmds[1], Command::AudioSetMixmapInput { float: true, .. }));
+        assert!(matches!(&cmds[2], Command::AudioSetMixmapInput { value: None, .. }), "nil releases");
+        assert!(matches!(&cmds[3], Command::AudioSeed { seed: Some(42) }));
+        assert!(matches!(&cmds[4], Command::AudioSeed { seed: None }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// Audio events extension 2: `audio_rule` crosses the serde boundary (valid, invalid, unknown
     /// field) and the Lua wrapper submits it (a nil rule removes).
     #[test]
@@ -2089,7 +2176,7 @@ mod world_audio_tests {
         std::fs::write(root.join("main.lua"), r#"
             local M = {}
             function M.on_update()
-                assert(sdk.capabilities.audio_events == 2 and sdk.capabilities.audio_content == 2, 'capabilities')
+                assert(sdk.capabilities.audio_events == 3 and sdk.capabilities.audio_content == 3, 'capabilities')
                 sdk.audio.rule('my_pop', {match = {tag = 'pop'}, action = 'replace', play = {path = 'audio/pop.wav', volume = 0.8}})
                 sdk.audio.rule('my_pop', nil)
                 -- Where the rule's sound plays (2026-10-04): an offset from the owner, a fixed spot.
