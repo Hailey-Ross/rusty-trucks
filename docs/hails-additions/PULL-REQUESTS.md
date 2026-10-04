@@ -45,6 +45,18 @@ Notes for whoever opens them:
   cutting the PR G branch. PR G now changes the customiser fingerprint (one
   rebuild of the customiser, with identical output).
 - Upstream sync (2026-10-02, upstream `main` = `7ae67f2`; fork PR [Hailey-Ross/rusty-trucks#4](https://github.com/Hailey-Ross/rusty-trucks/pull/4) syncs our `main`): merging it into `hails-additions`, `gameplay/water` and `gameplay/audio` conflicts only in `install.py` / `customiser_setup.py` (the ISO argument order, same fix both sides — take upstream's lines). `customiser_setup.py` is in the customiser fingerprint, so the next setup refresh after the merge rebuilds the customiser once. `water/retail-water` merges clean. Upstream also created an empty `audio-integration` branch (= `main`), likely for PR #4/#1 audio.
+- Upstream sync (2026-10-03, upstream `main` = `4488651`: `8280fc4` adds `LICENSE` (GPLv3), `4488651` adds a
+  "License" section to `README.md` — the project is now `GPL-3.0-only`, third-party code keeps its own licences,
+  no rights to EA's code/data/assets; this closes the "no licence" question of issue #22). Our `main` fast-forwarded
+  `7ae67f2` → `4488651`. Merged clean (no conflicts; each merge changes only `LICENSE` and `README.md`) into every
+  open PR branch and the integration branches: #23 `be0dd4c`→`96dd832`, #24 `2c14036`→`e885883`,
+  #25 `164b3a8`→`6e4203f`, #27 `eef2de6`→`447c39b`, #28 `3bf7d1b`→`b875582`, #29 `2c35aa3`→`1beb038`,
+  #30 `7fb1268`→`5245a18`, #35 `3f6e989`→`d47f647`, #37 `92d078f`→`a20ae65`, `gameplay/water`
+  `969485e`→`f1dea29`, `hails-additions` `992a229`→`befba92`, `gameplay/audio` `3ed0652`→`756dd17` (+ this doc
+  update), #32 mirrored from `gameplay/audio`. #36 (`audio/moddability`) is synced by its own work stream.
+  Verification: no compiled or tested input changed (tree diff per branch = `LICENSE` + `README.md` only; nothing in
+  the build reads either file); `gameplay/audio` rebuilt and retested (release). Contributions to upstream are now
+  GPLv3: our PRs' own code is offered under it; reference-only sources without a licence stay reference-only.
 - PR F works without PR E but validates ~10× slower (each skater/camera load
   then takes ~5.5 s instead of ~0.2 s).
 - Pre-existing upstream test failures (present on untouched upstream `60efdef`,
