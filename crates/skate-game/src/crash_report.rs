@@ -11,6 +11,9 @@ use std::{
 const CHILD: &str = "SKATE_REPORT_CHILD";
 const LINE_LIMIT: usize = 4096;
 const LOG_LIMIT: usize = 256;
+const PANIC_LIMIT: usize = 128;
+/// Appended to a line cut at `LINE_LIMIT`; the line keeps its start instead of being dropped.
+const TRUNCATED: &str = " [line truncated]";
 #[cfg(windows)]
 #[path = "crash_native.rs"]
 mod native;
@@ -23,10 +26,29 @@ struct Capture {
     transitions: VecDeque<String>,
     metadata: std::collections::BTreeMap<String, String>,
     panic: VecDeque<String>,
+    /// The first panic message and its location. Later panics (often follow-on failures on
+    /// other threads) can flood the bounded `panic` ring; the original error must survive.
+    first_panic: Vec<String>,
+    /// `Some(true)` while the line right after the first panic message may still be its location.
+    first_panic_open: Option<bool>,
 }
 impl Capture {
     fn line(&mut self, stream: &str, line: &[u8], elapsed: f64) {
-        let line = sanitize(&String::from_utf8_lossy(line));
+        self.record(stream, line, false, elapsed);
+    }
+    /// `truncated` is set by the pipe reader when the line was longer than `LINE_LIMIT` bytes and
+    /// its tail was discarded. The kept start is reported with a `TRUNCATED` marker.
+    fn record(&mut self, stream: &str, line: &[u8], truncated: bool, elapsed: f64) {
+        let mut line = sanitize(&String::from_utf8_lossy(line));
+        if truncated && !line.ends_with(TRUNCATED) && !line.ends_with(" omitted]") {
+            line = mark_truncated(line.chars());
+        }
+        if let Some(rest) = line.strip_prefix("REPORT_PANIC ") {
+            // Release builds have no symbols: every frame is `N: <unknown>`, which is pure noise.
+            if is_unknown_frame(rest) {
+                return;
+            }
+        }
         // Advanced capture status must reach the launch console even while the
         // supervisor keeps normal logs bounded and private. Sanitize first.
         if line.starts_with("TRACE ") { eprintln!("{line}"); }
@@ -42,8 +64,24 @@ impl Capture {
         if line.starts_with("REPORT_TRANSITION ") {
             push(&mut self.transitions, entry.clone(), 64);
         }
+        if line.starts_with("REPORT_PANIC ") {
+            match self.first_panic_open {
+                None => {
+                    self.first_panic.push(entry.clone());
+                    self.first_panic_open = Some(true);
+                }
+                Some(true) => {
+                    // The panic hook prints the location right after the message.
+                    if line.starts_with("REPORT_PANIC at ") {
+                        self.first_panic.push(entry.clone());
+                    }
+                    self.first_panic_open = Some(false);
+                }
+                Some(false) => {}
+            }
+        }
         if line.starts_with("REPORT_PANIC ") || line.starts_with("REPORT_NATIVE ") {
-            push(&mut self.panic, entry.clone(), 128);
+            push(&mut self.panic, entry.clone(), PANIC_LIMIT);
         }
         #[cfg(debug_assertions)]
         if line.starts_with("REPORT_PHYSICS ") {
@@ -52,6 +90,18 @@ impl Capture {
         }
         push(&mut self.logs, entry, LOG_LIMIT);
     }
+}
+/// A backtrace frame line without a symbol, e.g. `  12: <unknown>`.
+fn is_unknown_frame(line: &str) -> bool {
+    line.trim().split_once(':').is_some_and(|(index, rest)| {
+        !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()) && rest.trim() == "<unknown>"
+    })
+}
+/// Cut to `LINE_LIMIT` characters including the `TRUNCATED` marker.
+fn mark_truncated(chars: impl Iterator<Item = char>) -> String {
+    let mut kept: String = chars.take(LINE_LIMIT - TRUNCATED.len()).collect();
+    kept.push_str(TRUNCATED);
+    kept
 }
 fn push(queue: &mut VecDeque<String>, value: String, limit: usize) {
     if queue.len() == limit {
@@ -99,11 +149,11 @@ fn sanitize(value: &str) -> String {
     {
         return "[absolute-path line omitted]".into();
     }
-    value
-        .chars()
-        .filter(|c| !c.is_control() || *c == '\t')
-        .take(LINE_LIMIT)
-        .collect()
+    let clean = value.chars().filter(|c| !c.is_control() || *c == '\t');
+    if clean.clone().nth(LINE_LIMIT).is_some() {
+        return mark_truncated(clean);
+    }
+    clean.collect()
 }
 
 fn reader(
@@ -123,13 +173,10 @@ fn reader(
             };
             for &byte in &buffer[..count] {
                 if byte == b'\n' {
-                    if truncated {
-                        line.clear();
-                        line.extend_from_slice(b"[oversized line omitted]");
-                    }
-                    capture.lock().unwrap_or_else(|e| e.into_inner()).line(
+                    capture.lock().unwrap_or_else(|e| e.into_inner()).record(
                         stream,
                         &line,
+                        truncated,
                         start.elapsed().as_secs_f64(),
                     );
                     line.clear();
@@ -147,14 +194,11 @@ fn reader(
                 let _ = std::io::stdout().write_all(&buffer[..count]);
             }
         }
-        if truncated {
-            line.clear();
-            line.extend_from_slice(b"[oversized line omitted]");
-        }
         if !line.is_empty() {
-            capture.lock().unwrap_or_else(|e| e.into_inner()).line(
+            capture.lock().unwrap_or_else(|e| e.into_inner()).record(
                 stream,
                 &line,
+                truncated,
                 start.elapsed().as_secs_f64(),
             );
         }
@@ -264,6 +308,7 @@ fn install_panic_hook() {
         for line in std::backtrace::Backtrace::force_capture()
             .to_string()
             .lines()
+            .filter(|line| !is_unknown_frame(line))
             .take(120)
         {
             eprintln!("REPORT_PANIC {}", sanitize(line));
@@ -277,7 +322,7 @@ fn report(capture: &Capture, outcome: &str, elapsed: f64) -> String {
     #[cfg(not(windows))]
     let os_version = "OS version unavailable";
     let mut text = format!(
-        "Skate 3 Rust Engine diagnostic report v1\nBuild: {}\nPlatform: {} / {}\nUTC Unix seconds: {}\nRuntime seconds: {elapsed:.3}\n{outcome}\n\nNo automatic upload. Review before sharing. Paths and sensitive-context log lines are omitted.\nNative fault stack/registers: unavailable (no memory dump collected).\nGPU/driver, map and settings: available only if initialized and recorded below.\nMods: no authoritative mod inventory; modified asset contents are not collected.\nLogs: last 256 bounded lines; transitions: last 64; panic: last 128 lines.\nState is sampled every second; brief transitions can be missed. Abrupt exits can lose pending pipe data.\n",
+        "Skate 3 Rust Engine diagnostic report v1\nBuild: {}\nPlatform: {} / {}\nUTC Unix seconds: {}\nRuntime seconds: {elapsed:.3}\n{outcome}\n\nNo automatic upload. Review before sharing. Paths and sensitive-context log lines are omitted.\nNative fault stack/registers: unavailable (no memory dump collected).\nGPU/driver, map and settings: available only if initialized and recorded below.\nMods: no authoritative mod inventory; modified asset contents are not collected.\nLogs: last 256 bounded lines; transitions: last 64; panic: first panic message and location pinned, then last 128 lines (frames without symbols dropped).\nState is sampled every second; brief transitions can be missed. Abrupt exits can lose pending pipe data.\n",
         env!("SKATE_BUILD_ID"),
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -296,6 +341,7 @@ fn report(capture: &Capture, outcome: &str, elapsed: f64) -> String {
             "Recent state transitions",
             capture.transitions.iter().collect(),
         ),
+        ("First panic (pinned)", capture.first_panic.iter().collect()),
         (
             "Panic, native exception and stack",
             capture.panic.iter().collect(),
@@ -443,6 +489,80 @@ mod tests {
             "panic at crates/skate-game/src/main.rs:12"
         );
         assert!(sanitize(&"x".repeat(100000)).len() <= LINE_LIMIT);
+    }
+
+    #[test]
+    fn first_panic_survives_a_flood_of_later_panics() {
+        let mut capture = Capture::default();
+        capture.line("stderr", b"REPORT_PANIC Not enough memory left", 1.);
+        capture.line("stderr", b"REPORT_PANIC at crates/skate-game/src/render.rs:10:5", 1.);
+        capture.line("stderr", b"REPORT_PANIC    0: std::backtrace::Backtrace::create", 1.);
+        for i in 0..1000 {
+            capture.line("stderr", format!("REPORT_PANIC Buffer {i} is invalid").as_bytes(), 2.);
+            capture.line("stderr", b"REPORT_PANIC at crates/skate-game/src/other.rs:1:1", 2.);
+        }
+        assert_eq!(capture.panic.len(), PANIC_LIMIT);
+        assert!(!capture.panic.iter().any(|l| l.contains("Not enough memory")));
+        assert_eq!(capture.first_panic.len(), 2);
+        assert!(capture.first_panic[0].ends_with("REPORT_PANIC Not enough memory left"));
+        assert!(capture.first_panic[1].ends_with("at crates/skate-game/src/render.rs:10:5"));
+        let text = report(&capture, "exit=1", 3.);
+        let pinned = text.find("First panic (pinned)").unwrap();
+        assert!(text[pinned..].contains("Not enough memory left"));
+        assert!(text[pinned..].contains("render.rs:10:5"));
+        assert!(text.contains("Buffer 999 is invalid"));
+    }
+
+    #[test]
+    fn first_panic_without_location_pins_only_the_message() {
+        let mut capture = Capture::default();
+        capture.line("stderr", b"REPORT_PANIC first", 1.);
+        capture.line("stderr", b"REPORT_PANIC    0: frame", 1.);
+        capture.line("stderr", b"REPORT_PANIC at crates/x.rs:1:1", 1.);
+        assert_eq!(capture.first_panic.len(), 1);
+        let empty = report(&Capture::default(), "exit=1", 0.);
+        assert!(empty.contains("First panic (pinned)\nUnavailable / not recorded"));
+    }
+
+    #[test]
+    fn unknown_backtrace_frames_are_dropped() {
+        let mut capture = Capture::default();
+        capture.line("stderr", b"REPORT_PANIC boom", 1.);
+        for i in 0..200 {
+            capture.line("stderr", format!("REPORT_PANIC   {i:>3}: <unknown>").as_bytes(), 1.);
+        }
+        capture.line("stderr", b"REPORT_PANIC   7: skate3rust::main", 1.);
+        assert_eq!(capture.panic.len(), 2);
+        assert!(!capture.logs.iter().any(|l| l.contains("<unknown>")));
+        assert!(!report(&capture, "exit=1", 2.).contains("<unknown>"));
+        assert!(is_unknown_frame("  12: <unknown>"));
+        assert!(!is_unknown_frame("panic payload: <unknown>"));
+        assert!(!is_unknown_frame("  3: foo::<unknown>"));
+    }
+
+    #[test]
+    fn long_lines_are_truncated_with_a_marker() {
+        let mut capture = Capture::default();
+        let long = format!("REPORT_PANIC wgpu error: {}", "a".repeat(10_000));
+        capture.line("stderr", long.as_bytes(), 1.);
+        // The reader keeps only the first LINE_LIMIT bytes and flags the cut.
+        let cut = format!("REPORT_PANIC Validation Error: {}", "b".repeat(LINE_LIMIT));
+        capture.record("stderr", &cut.as_bytes()[..LINE_LIMIT], true, 1.);
+        for line in [&capture.first_panic[0], &capture.panic[1]] {
+            assert!(line.ends_with(TRUNCATED), "{line}");
+            assert!(line.contains("REPORT_PANIC"));
+            assert!(!line.contains("oversized line omitted"));
+        }
+        assert!(capture.panic[0].contains("wgpu error: aaaa"));
+        assert!(capture.panic[1].contains("Validation Error: bbbb"));
+        let s = sanitize(&"x".repeat(100000));
+        assert!(s.len() <= LINE_LIMIT && s.ends_with(TRUNCATED));
+        assert_eq!(sanitize(&"y".repeat(LINE_LIMIT)), "y".repeat(LINE_LIMIT));
+        // A short, flagged line still says it was cut; privacy placeholders stay unchanged.
+        capture.record("stderr", b"short", true, 1.);
+        assert!(capture.logs.back().unwrap().ends_with("short [line truncated]"));
+        capture.record("stderr", b"C:\\Users\\x", true, 1.);
+        assert!(capture.logs.back().unwrap().ends_with("[absolute-path line omitted]"));
     }
 
     #[test]
