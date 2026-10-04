@@ -686,3 +686,25 @@ is updated. Phase 4 adds a second example, a "louder horns / custom engine" mod 
 | The `SKATE_AEMS_*` switches are process env vars | throughout `game_audio` | per-mod or per-session toggles |
 | No AEMS post / global / MixMap read access and no audio event callbacks in the SDK | `skate-mods` | play retail sounds by name, react to game sounds |
 | The world owners' `rand()` generator (`Lcg(0x5EED)`) | `world_sources.rs:216` | seed for reproducible mod tests (minor) |
+
+## 10. Gaps closed (2026-10-03, doc 15 "Gaps closed")
+- **Tazer** ported: `SFXObj_Tazer` decoded (`world-ped-audio.md` "Tazer and PedBodyFall ported"); `c_tazer` held
+  while `S+80`. vs 164620: 19 starts per 2 s hold (recomp 10 / 20 / 19 = 49), gaps 192 / 192 / 128 / 96 vs
+  190 / 190 / 130 / 90–100, first-start gain recomp / ours 0.85–1.00, order 8, 7, shuffles of 0–6.
+- **PedBodyFall** ported: the trigger is the animation's `BodyFallType` (`S+76`); the recordings hold 75 starts
+  (SPLC, not POST). 73 / 73 containers by type; voice gain recomp / ours p50 0.79.
+- **Speech** (`world-speech.md` "Speech details resolved"): PEAK = azimuth head-shadow curves (6 / 6 recomp pairs on
+  the curves), Send A = out21 (pre-gain) and Send B = out15 (echo submix, not played), value 49 = phone ring →
+  64 (2 / 2 in 164620), value 29 = 1 s repeat with the game flag, Obj:Speech in0 / in1 / in4 by speaker id ranges,
+  first-free stream (95 / 109), constructor last = 68, main-cast mapping decoded (port needs the main-cast
+  index / decode). Open: the queue clock's unit, the echo submix, in2 / in3, the per-voice float, the near lines'
+  +0.6 dB.
+- **NPC board slide** ported on static evidence (no local gate; `+780` per skater entry). Scripted background run (Mega-Park, 4 min standing, PLAYERPOST, 0 malformed): 12 instance-1 holds (78 s), no
+  NPC bail, so no slot-15 post by either instance: still unobserved.
+- **NPC grain bed vs 180430** (filtered by owner): near band A gain 0.097 / 0.108, further bands louder in ours
+  (the local-skater distance is not joined); pitch matches.
+- **Update (same day): echo submix and main cast ported** (`world-speech.md` "The echo send and the main cast"). The
+  pre-gain send (out21) feeds the echo submix, out15 goes to the env bus (corrects the line above); the voice float
+  is applied; the queue clock = visual game ticks. Main-cast channel: pro peds, NPC skater reactions / crash
+  (`NpcSkaterAudio::reactions`, `NpcSkaterReactionEvent`, mod event `reaction`), the message pairs; decode 6596
+  takes / 922 MB; all 82 recorded main-cast lines reachable through the ported words.

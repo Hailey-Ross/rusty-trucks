@@ -33,10 +33,10 @@
 //! The interrupt rules (`sub_824A73F0`: tuning `+13` / `+14` against the playing line's priority)
 //! and the streams are [`super::speech_player`]'s.
 //!
-//! **Not ported:**
-//! - the main-cast path for peds without a living-world speaker (`+116 == 0`: pros, `sub_824AC438`);
-//! - the extra main-cast line of value 6 (`+71`);
-//! - the speech level (`audio-specs/world-speech.md` "Level").
+//! The main cast (pros, the special cast) uses [`main_cast`] and [`SpeechManager::request_main_cast`]
+//! with its own manager instance.
+//!
+//! **Not ported:** the extra main-cast line of value 6 (`+71`).
 use std::collections::HashMap;
 
 use super::Draw;
@@ -114,6 +114,76 @@ pub fn event_for_value(value: i32, speaker_kind: u32, rng: &mut dyn Draw) -> Opt
         67 => 8299,                                    // 331_TzerDone
         _ => return None,
     })
+}
+
+/// The main-cast (bank 0) speech: pros (and the special cast) speak through the same manager logic
+/// with the main cast's tuning (`speech_tuning["0"]`), event table and takes (`sub_824AC560`).
+pub mod main_cast {
+    use super::Draw;
+
+    /// Request words of a main-cast speaker: `w[0]` the cast bit (`aud_characteristics`
+    /// `6F2933E977CF40DD`, the speaker record's `+84`), `w[1]` the cast word (`14FD437D190677C8`,
+    /// `+88`: the special cast 30–38), `w[2]` the flag (1 near, 2 far: the main cast's sense is the
+    /// living world's inverted), `w[3]` the living-world switch (0), `w[4]` / `w[5]` another skater's
+    /// cast bit / word (`D6EA428C2B43E23A`; the pro-on-pro lines 150 / 151), the rest 0.
+    pub type Block = [u32; 14];
+
+    pub const NEAR: u32 = 1;
+    pub const FAR: u32 = 2;
+
+    /// `sub_824AC898`: the words an event's library request carries, in field order.
+    pub fn request_words(event: u16, w: &Block) -> Vec<u32> {
+        match event {
+            0 | 1 => vec![w[1], w[0], w[2]],
+            247 => vec![w[0], w[9], w[1]],
+            251 => vec![w[0], w[1], w[10]],
+            254 => vec![w[1], w[5], w[0], w[4]],
+            268 => vec![w[0], w[1], w[11]],
+            271 | 274 | 275 => vec![w[0], w[1], w[12]],
+            280 => vec![w[0], w[1], w[13]],
+            287 | 288 => vec![w[1], w[0], w[4], w[5]],
+            _ => vec![w[0], w[1]],
+        }
+    }
+
+    /// `sub_824AC438`: a ped's speech value on the main-cast path (a ped without a living-world
+    /// speaker, `S+116 == 0`), or None. 28 (`601_ai_greet`) only outside a challenge
+    /// (`sub_82487ED0` / system `+1196`); 30 / 51 also stop the speaker's playing line.
+    pub fn event_for_value(value: i32, in_challenge: bool, rng: &mut dyn Draw) -> Option<u16> {
+        Some(match value {
+            29 => 141,
+            28 if !in_challenge => 11,
+            30 | 51 => {
+                if rng.draw() & 1 == 1 {
+                    115
+                } else {
+                    6
+                }
+            }
+            53 | 54 => 77,
+            _ => return None,
+        })
+    }
+
+    /// The (living-world, main-cast) event pairs of the skater speech messages (`sub_824DAC00`:
+    /// a speaker with a living-world voice says the first, a main-cast speaker the second; 8318 /
+    /// 294 = none). Senders read from the code.
+    pub mod message {
+        /// The bail grunt (body poster `sub_824BF5F8`).
+        pub const BAIL_GRUNT: (u16, u16) = (8206, 115);
+        /// An NPC skater's own crash (`SFXObj_PlayerSpeech` `sub_824DB688`, its record's `+131`
+        /// rising): `131_collide_object` / `906_aislm`.
+        pub const CRASH: (u16, u16) = (8229, 125);
+        /// Collisions between skaters (`sub_824BD358`): `202_impact_react` …
+        pub const IMPACT: (u16, u16) = (8233, 6);
+        /// … and the AI's own slam reaction there.
+        pub const IMPACT_SLAM: (u16, u16) = (8241, 125);
+        /// `sub_824EFA60`: `344_HitReaction` / `913_RacePunch` pairs.
+        pub const HIT_REACTION: (u16, u16) = (8309, 253);
+        pub const RACE_PUNCH: (u16, u16) = (8310, 250);
+        /// `sub_824F8778`: the gesture (`338_gesture` / `338_gestures`).
+        pub const GESTURE: (u16, u16) = (8291, 247);
+    }
 }
 
 /// What the ped's audio state holds for its speech.
@@ -358,6 +428,33 @@ impl SpeechManager {
         let words = request_words(event, &request_block(speaker, flag, inputs.zombie));
         let picks = library.start(table, event, &words).map_err(Refusal::Library)?;
         self.started(speaker.index, event, inputs.now);
+        Ok(Line { event, picks })
+    }
+
+    /// A main-cast request (`sub_824AC560`: the same timers / gate with the main cast's tuning, then
+    /// `sub_824AC898`'s words). `speaker` = the speaker slot the timers are kept for. This manager
+    /// must hold the main cast's tuning (`speech_tuning["0"]`). Not ported: the repeat time of
+    /// speaker slots 30 / 31 (the record's `+52` / `+56`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_main_cast(
+        &mut self,
+        library: &mut Library,
+        table: &EventTable,
+        event: u16,
+        speaker: u32,
+        block: &main_cast::Block,
+        inputs: &GateInputs,
+        rng: &mut dyn Draw,
+    ) -> Result<Line, Refusal> {
+        if event == 294 {
+            return Err(Refusal::NoEvent);
+        }
+        let default = EventTuning::default();
+        let tuning = self.tuning.get(&event).unwrap_or(&default);
+        self.gate(speaker, event, tuning, inputs, rng)?;
+        let words = main_cast::request_words(event, block);
+        let picks = library.start(table, event, &words).map_err(Refusal::Library)?;
+        self.started(speaker, event, inputs.now);
         Ok(Line { event, picks })
     }
 }

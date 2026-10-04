@@ -1152,9 +1152,9 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     placed |= set(CROSSFADE_BANKS)
     # The world sources' banks, tuning and speech index (crates/skate-audio/src/world; inert in game
     # until a ped / traffic system publishes owners).
-    from .world_audio import WORLD_BANKS, world_tuning
+    from .world_audio import WORLD_BANKS, WORLD_SPLICE_BANKS, world_tuning
     placed |= set(WORLD_BANKS)
-    manifest['world_tuning'] = world_tuning(collections, record_names)
+    manifest['world_tuning'] = world_tuning(collections, record_names, (private/'stock', game_root))
     report('Reading audio regions')
     manifest['regions'] = regions(game_root, work)
     for bank in BANKS + tuple(sorted(placed - set(BANKS))):
@@ -1185,7 +1185,7 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     mixmap = mixmap_file(audio_root, output)
     if mixmap:
         manifest['aems']['mixmap'] = mixmap
-    manifest['aems']['splice'] = splice_trees(files, output, BANKS)
+    manifest['aems']['splice'] = splice_trees(files, output, BANKS + WORLD_SPLICE_BANKS)
     speech = audio_root/'english'/'livingworldspeech.big'
     if speech.is_file():
         report('Indexing world speech')
@@ -1199,5 +1199,19 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
             decode_speech(speech, index, output/'speech'/'livingworld', work/'speech', vgmstream, _decode, log)
             entry['audio'] = 'speech/livingworld'
         manifest['speech'] = {'livingworld': entry}
+    main_cast = audio_root/'english'/'maincastspeech.big'
+    if main_cast.is_file():
+        report('Indexing main-cast speech')
+        from .world_audio import MAIN_CAST_EVENTS, decode_speech, speech_index, speech_requested
+        index = speech_index(main_cast, 'maincast')
+        (output/'speech').mkdir(parents=True, exist_ok=True)
+        (output/'speech'/'maincast.json').write_text(json.dumps(index), encoding='utf-8')
+        entry = {'index': 'speech/maincast.json', 'audio': None}
+        if speech_requested():  # SKATE_SETUP_SPEECH=1: ~0.95 GB more
+            report('Decoding main-cast speech')
+            decode_speech(main_cast, index, output/'speech'/'maincast', work/'speech_maincast', vgmstream, _decode, log,
+                          events=MAIN_CAST_EVENTS)
+            entry['audio'] = 'speech/maincast'
+        manifest.setdefault('speech', {})['maincast'] = entry
     (output/'audio_manifest.json').write_text(json.dumps(manifest, indent=1), encoding='utf-8')
     return manifest

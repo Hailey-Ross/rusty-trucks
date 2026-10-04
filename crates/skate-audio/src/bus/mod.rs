@@ -9,6 +9,7 @@
 pub mod env;
 pub mod eqchain;
 pub mod flange;
+pub mod speech_echo;
 pub mod submix;
 pub mod zones;
 
@@ -52,6 +53,8 @@ pub struct Buses {
     pub flange: flange::FlangeReturns,
     /// The FootStep SubMix graphs (`player::footsteps`).
     pub submix: submix::FootSubmixes,
+    /// The speech stream slots' echo submixes (`world::speech_player`).
+    pub speech_echo: speech_echo::SpeechEchoes,
 }
 
 impl Default for Buses {
@@ -65,6 +68,7 @@ impl Default for Buses {
             flange_active: [false; 2],
             flange: flange::FlangeReturns::default(),
             submix: submix::FootSubmixes::default(),
+            speech_echo: speech_echo::SpeechEchoes::default(),
         }
     }
 }
@@ -100,6 +104,7 @@ impl Buses {
     /// SFX Master.
     pub fn render(&mut self, master: &mut [[f32; BLOCK]; 6]) {
         self.submix.render(&mut self.env_in, master);
+        self.speech_echo.render(&mut self.env_in);
         if self.flange.enabled() {
             for (k, r) in self.flange.returns.iter_mut().enumerate() {
                 r.render(&mut self.flange_in[k], self.flange_active[k], &mut self.env_in, master);

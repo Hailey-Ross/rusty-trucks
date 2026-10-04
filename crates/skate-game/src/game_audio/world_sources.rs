@@ -29,7 +29,8 @@ use skate_audio::eval::NodeId;
 use skate_audio::mixmap::cadence::CONSOLE_DT;
 use skate_audio::player::objpos::Listener;
 use skate_audio::world::owners::{Pool, Positions};
-use skate_audio::world::peds::{PedFootstepTuning, PedSfx, PedSpeech, PedState};
+use skate_audio::world::peds::{PedBodyFall, PedFootstepTuning, PedObjectTuning, PedSfx, PedSpeech, PedState, PedTazer};
+use skate_audio::player::Outputs as _;
 use skate_audio::world::traffic::{EngineRecord, OutputsSnapshot, Vehicle, VehicleState};
 use skate_audio::world::{Lcg, PED_BANKS, TRAFFIC_BANKS, WorldCommand, WorldSlot, keys};
 
@@ -44,6 +45,9 @@ pub(crate) struct WorldOwners {
     /// The living world will publish owners on this map: prefetch the world banks (decode only;
     /// see the module docs). Clearing it drops the prefetched banks no owner has used yet.
     pub(crate) expected: bool,
+    /// The game flag PedestrianSpeech's photographer repeat needs (system byte
+    /// `*(0x830CFDC4)+912`; meaning not traced): `LivingWorldAudio::photo_repeat`.
+    pub(crate) photo_flag: bool,
 }
 
 /// The install's world tuning (`audio_manifest.json` `world_tuning`, setup
@@ -61,6 +65,48 @@ pub(crate) struct WorldTuningJson {
     /// Traffic model (living-world entity name: `taxi01`, `sedan02`, …) → `aud_traffic_engine`
     /// record (spec §7.3 G1).
     traffic_models: HashMap<String, String>,
+    /// The ped one-shot objects (`skate_audio::world::peds::PedObjectTuning`): PedBodyFall's
+    /// containers and eEQChain bus, the phone ring, the tazer hold.
+    ped_objects: Option<PedObjectsJson>,
+    /// The speech stream voice's PEAK curves (`skate_audio::world::speech_player::SpeechVoiceTuning`).
+    speech_voice: Option<SpeechVoiceJson>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct PedObjectsJson {
+    body_fall_ids: Vec<u32>,
+    body_fall_bank: Option<String>,
+    body_fall_eq: Option<u8>,
+    ring_bank: Option<String>,
+    ring_id: Option<u32>,
+    ring_answer: Option<i32>,
+    photo_repeat: Option<f32>,
+    tazer_seconds: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct GraphJson {
+    x: Vec<f32>,
+    y: Vec<f32>,
+}
+
+impl GraphJson {
+    fn graph8(&self) -> Option<skate_audio::world::speech_player::Graph8> {
+        Some(skate_audio::world::speech_player::Graph8 { x: self.x.as_slice().try_into().ok()?, y: self.y.as_slice().try_into().ok()? })
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+struct SpeechVoiceJson {
+    peak_freq: Option<GraphJson>,
+    peak_gain: Option<GraphJson>,
+    peak_q: Option<GraphJson>,
+    /// The echo delay's camera-distance factor and its refresh (console frames).
+    delay_factor: Option<f32>,
+    delay_frames: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -95,6 +141,23 @@ pub(crate) struct PedModelJson {
     pub(crate) shoe_class: u8,
     /// `S+156`: the far line threshold (m).
     pub(crate) far: f32,
+    /// `S+152`: the per-voice float (`2087A3290483BB4F`, 0.8–1.2): the speech stream's gain and
+    /// sends are multiplied by it (`sub_82C5CEF0`). 0 = absent (1.0).
+    pub(crate) pitch: f32,
+    /// The main cast's words (`S+84` / `+88`, the other-skater word `D6EA428C2B43E23A`): the cast bit
+    /// (`6F2933E977CF40DD`: the pros 1–29), the cast word (`14FD437D190677C8`: the special cast) and
+    /// the word another pro's line names this one by. A model with no type bit (`kind` 0) and a
+    /// cast bit or word speaks on the main-cast channel.
+    pub(crate) cast_bit: u32,
+    pub(crate) cast_word: u32,
+    pub(crate) cast_word2: u32,
+}
+
+impl PedModelJson {
+    /// The main-cast words (bit, word, other-skater word) when this model speaks on the main cast.
+    pub(crate) fn main_cast(&self) -> Option<(u32, u32, u32)> {
+        (self.kind == 0 && (self.cast_bit != 0 || self.cast_word != 0)).then_some((self.cast_bit, self.cast_word, self.cast_word2))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -157,7 +220,12 @@ impl WorldTuningJson {
 
     /// The living world's speech tuning (bank 1) by event id.
     pub(crate) fn speech_tuning(&self) -> HashMap<u16, skate_audio::world::speech_manager::EventTuning> {
-        let Some(bank) = self.speech_tuning.get("1") else { return HashMap::new() };
+        self.speech_tuning_bank(1)
+    }
+
+    /// One speech bank's tuning by event id (0 = the main cast, 1 = the living world).
+    pub(crate) fn speech_tuning_bank(&self, bank: u32) -> HashMap<u16, skate_audio::world::speech_manager::EventTuning> {
+        let Some(bank) = self.speech_tuning.get(&bank.to_string()) else { return HashMap::new() };
         bank.iter()
             .filter_map(|(id, t)| {
                 let flags = |i: usize| t.flags_12.get(i).is_some_and(|b| *b != 0);
@@ -183,6 +251,59 @@ impl WorldTuningJson {
                 ))
             })
             .collect()
+    }
+
+    /// The ped one-shot objects' tuning (the retail defaults where the export lacks a field).
+    pub(crate) fn ped_objects(&self) -> PedObjectTuning {
+        let mut t = PedObjectTuning::default();
+        let Some(p) = &self.ped_objects else { return t };
+        if let [a, b, c] = p.body_fall_ids[..] {
+            t.body_fall_ids = [a, b, c];
+        }
+        if let Some(v) = &p.body_fall_bank {
+            t.body_fall_bank = v.clone();
+        }
+        if let Some(v) = p.body_fall_eq {
+            t.body_fall_eq = v.min(7);
+        }
+        if let Some(v) = &p.ring_bank {
+            t.ring_bank = v.clone();
+        }
+        if let Some(v) = p.ring_id {
+            t.ring_id = v;
+        }
+        if let Some(v) = p.ring_answer {
+            t.ring_answer = v;
+        }
+        if let Some(v) = p.photo_repeat.filter(|v| v.is_finite() && *v > 0.0) {
+            t.photo_repeat = v;
+        }
+        if let Some(v) = p.tazer_seconds.filter(|v| v.is_finite() && *v >= 0.0) {
+            t.tazer_seconds = v;
+        }
+        t
+    }
+
+    /// The speech stream voice's tuning (the shipped curves where the export lacks one).
+    pub(crate) fn speech_voice(&self) -> skate_audio::world::speech_player::SpeechVoiceTuning {
+        let mut t = skate_audio::world::speech_player::SpeechVoiceTuning::default();
+        let Some(v) = &self.speech_voice else { return t };
+        if let Some(g) = v.peak_freq.as_ref().and_then(GraphJson::graph8) {
+            t.peak_freq = g;
+        }
+        if let Some(g) = v.peak_gain.as_ref().and_then(GraphJson::graph8) {
+            t.peak_gain = g;
+        }
+        if let Some(g) = v.peak_q.as_ref().and_then(GraphJson::graph8) {
+            t.peak_q = g;
+        }
+        if let Some(f) = v.delay_factor.filter(|f| f.is_finite() && *f >= 0.0) {
+            t.delay_factor = f;
+        }
+        if let Some(n) = v.delay_frames.filter(|n| *n >= 1) {
+            t.delay_frames = n;
+        }
+        t
     }
 
     pub(crate) fn ped_footsteps(&self) -> PedFootstepTuning {
@@ -273,13 +394,18 @@ pub(crate) struct WorldHost {
     traffic: Pool,
     peds: Pool,
     vehicles: HashMap<u64, (Vehicle, Positions)>,
-    ped_objects: HashMap<u64, (PedSfx, PedSpeech, Positions)>,
+    ped_objects: HashMap<u64, PedObjects>,
     nodes: HashMap<(u64, WorldSlot), NodeId>,
     classes: HashMap<&'static str, usize>,
     /// This frame's pass between [`pre`] and [`post`]: the camera and the seconds it covers.
     pass: Option<([f32; 3], f32)>,
     rng: Lcg,
     ped_tuning: Option<PedFootstepTuning>,
+    /// The ped one-shot objects' tuning (`world_tuning.ped_objects`, read with the banks).
+    object_tuning: PedObjectTuning,
+    /// The phone ring's Splice bank is loaded (without it the answer follows the value at once:
+    /// a missing-data fallback, logged once).
+    ring_bank: Option<bool>,
     player_tuning: Option<skate_audio::player::tuning::PlayerTuning>,
     /// The camera at the last evaluation and the host's cut count then (`Native::cuts`: no
     /// velocity across a teleport / map change).
@@ -307,6 +433,8 @@ impl Default for WorldHost {
             pass: None,
             rng: Lcg(0x5EED),
             ped_tuning: None,
+            object_tuning: PedObjectTuning::default(),
+            ring_bank: None,
             player_tuning: None,
             last_camera: None,
             prefetch: WorldPrefetch::default(),
@@ -314,6 +442,40 @@ impl Default for WorldHost {
             posts: 0,
             speech_requests: Vec::new(),
         }
+    }
+}
+
+//// A held ped's objects (the Pedestrian slot's four: Speech 5.0, SFX 5.1, BodyFall 5.2, Tazer 5.3)
+/// and its 3DObjPos block.
+pub(crate) struct PedObjects {
+    sfx: PedSfx,
+    speech: PedSpeech,
+    body_fall: PedBodyFall,
+    tazer: PedTazer,
+    pos: Positions,
+    /// The missing-ring fallback answered this value (once per value change).
+    ring_fallback: Option<i32>,
+}
+
+impl PedObjects {
+    fn new(g: u32) -> Self {
+        Self {
+            sfx: PedSfx::default(),
+            speech: PedSpeech::default(),
+            body_fall: PedBodyFall::default(),
+            tazer: PedTazer::default(),
+            pos: Positions::new(&[keys::ped_pos(g)]),
+            ring_fallback: None,
+        }
+    }
+
+    /// The ped lost its instance: every packet released, every Splice sound stopped.
+    fn release(&mut self, owner: u64, splice: &mut dyn skate_audio::player::contacts::SpliceHost) -> Vec<WorldCommand> {
+        let mut cmds = self.sfx.release(owner, splice);
+        cmds.extend(self.tazer.release(owner));
+        self.body_fall.release(splice);
+        self.speech.release(splice);
+        cmds
     }
 }
 
@@ -410,8 +572,8 @@ impl WorldHost {
         if !self.nodes.is_empty() || !self.ped_objects.is_empty() {
             if let Ok(mut runtime) = super::timing::lock(shared, &super::timing::GAME_LOCK) {
                 let rt = &mut *runtime;
-                for (owner, (mut sfx, _, _)) in std::mem::take(&mut self.ped_objects) {
-                    let _ = sfx.release(owner, &mut rt.splice_host());
+                for (owner, mut o) in std::mem::take(&mut self.ped_objects) {
+                    let _ = o.release(owner, &mut rt.splice_host());
                 }
                 for (_, node) in self.nodes.drain() {
                     rt.release(node);
@@ -473,6 +635,15 @@ pub(super) fn frame(
     if !host.speech_requests.is_empty() {
         speech.peds.append(&mut host.speech_requests);
     }
+    // The speaking peds' positions (the speech echo's delay reads the camera distance).
+    if !speech.ped_positions.is_empty() || !owners.peds.is_empty() {
+        speech.ped_positions.clear();
+        for (id, _) in host.peds.holders().map(|(g, o)| (o, g)) {
+            if let Some(p) = owners.peds.get(&id) {
+                speech.ped_positions.insert(id, p.position);
+            }
+        }
+    }
     let (traffic, peds) = host.held();
     if held.traffic != traffic || held.peds != peds {
         held.traffic = traffic;
@@ -521,10 +692,30 @@ pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
     }
     if host.banks.is_none() {
         host.ped_tuning = Some(library.world_tuning().ped_footsteps());
+        host.object_tuning = library.world_tuning().ped_objects();
         host.player_tuning = native.player.as_ref().map(|p| p.tuning.clone());
         info!("AUDIO_WORLD on: {} vehicles, {} peds published", owners.vehicles.len(), owners.peds.len());
     }
     host.banks = Some(!missing);
+    // The phone ring's Splice bank (once: Splice banks stay loaded across maps).
+    if host.ring_bank.is_none() && !owners.peds.is_empty() {
+        let stem = host.object_tuning.ring_bank.clone();
+        let loaded = match library.splice_bank(&stem) {
+            Some((bank, pcm)) => match super::timing::lock(&native.shared, &super::timing::GAME_LOCK) {
+                Ok(mut runtime) => {
+                    let rt = &mut *runtime;
+                    rt.splice.load_bank(&stem, bank, pcm, &mut rt.mixer);
+                    true
+                }
+                Err(_) => false,
+            },
+            None => {
+                warn!("AUDIO_WORLD {stem} has no patch tree in this install: phone calls answer without the ring (rerun setup)");
+                false
+            }
+        };
+        host.ring_bank = Some(loaded);
+    }
     let Some((cam, view)) = camera else { return };
     if calls == 0 {
         return;
@@ -562,9 +753,9 @@ pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
         }
     }
     for (owner, _) in peds.released {
-        if let Some((mut sfx, _, mut pos)) = host.ped_objects.remove(&owner) {
-            pos.deactivate(m, &l);
-            let cmds = sfx.release(owner, &mut rt.splice_host());
+        if let Some(mut o) = host.ped_objects.remove(&owner) {
+            o.pos.deactivate(m, &l);
+            let cmds = o.release(owner, &mut rt.splice_host());
             apply(host, rt, cmds);
         }
     }
@@ -573,7 +764,7 @@ pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
         host.vehicles.insert(owner, (Vehicle::default(), Positions::new(&[keys::traffic_pos(g, 1), keys::traffic_pos(g, 2), keys::traffic_pos(g, 3)])));
     }
     for (owner, g) in peds.claimed {
-        host.ped_objects.insert(owner, (PedSfx::default(), PedSpeech::default(), Positions::new(&[keys::ped_pos(g as u32)])));
+        host.ped_objects.insert(owner, PedObjects::new(g as u32));
     }
 
     // Process: the 3DObjPos blocks and inputs for this pass's evaluations, then the posts.
@@ -592,14 +783,27 @@ pub(crate) fn pre(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
     let holders: Vec<(usize, u64)> = host.peds.holders().collect();
     for (_, owner) in holders {
         let Some(p) = owners.peds.get(&owner) else { continue };
-        let Some((mut sfx, mut speech, mut pos)) = host.ped_objects.remove(&owner) else { continue };
-        pos.write(m, &l, &[Some((p.position, p.velocity))]);
-        let cmds = sfx.process(owner, p, &ped_tuning, &mut rt.splice_host(), dt);
-        if let Some(r) = speech.process(owner, p) {
+        let Some(mut o) = host.ped_objects.remove(&owner) else { continue };
+        o.pos.write(m, &l, &[Some((p.position, p.velocity))]);
+        // Retail's object order in the Pedestrian slot: Speech, SFX, BodyFall, Tazer.
+        let request = o.speech.process(owner, p, dt, owners.photo_flag, &host.object_tuning, &mut rt.splice_host());
+        if let Some(r) = request {
             host.speech_requests.push(super::world_speech::PedRequest { request: r, voice: p.voice, speaker: p.speaker, level: p.level_select });
+        } else if p.speech_value == 49 && o.speech.ring.is_none() && host.ring_bank == Some(false) && o.ring_fallback != Some(p.speech_value) {
+            // No ring bank in the install: answer at once (missing-data fallback).
+            host.speech_requests.push(super::world_speech::PedRequest {
+                request: skate_audio::world::peds::SpeechRequest { owner, value: host.object_tuning.ring_answer, flag: PedSpeech::flag(p) },
+                voice: p.voice,
+                speaker: p.speaker,
+                level: p.level_select,
+            });
         }
+        o.ring_fallback = (p.speech_value == 49).then_some(49);
+        let mut cmds = o.sfx.process(owner, p, &ped_tuning, &mut rt.splice_host(), dt);
+        o.body_fall.process(p, &host.object_tuning, &mut rt.splice_host());
+        cmds.extend(o.tazer.process(owner, p, local.global_224));
         apply(host, rt, cmds);
-        host.ped_objects.insert(owner, (sfx, speech, pos));
+        host.ped_objects.insert(owner, o);
     }
     host.ped_tuning = Some(ped_tuning);
 }
@@ -626,11 +830,27 @@ pub(crate) fn post(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nati
     let holders: Vec<(usize, u64)> = host.peds.holders().collect();
     for (g, owner) in holders {
         let Some(p) = owners.peds.get(&owner) else { continue };
-        let Some((mut sfx, speech, pos)) = host.ped_objects.remove(&owner) else { continue };
-        let out = OutputsSnapshot::take(m, keys::ped_sfx(g as u32), &[7, 8]);
-        let cmds = sfx.update(owner, p, &ped_tuning, &player_tuning, &out, &mut rt.splice_host(), dt);
+        let Some(mut o) = host.ped_objects.remove(&owner) else { continue };
+        let g = g as u32;
+        if o.speech.ring.is_some() {
+            let out = OutputsSnapshot::take(m, keys::ped_speech(g), &skate_audio::world::speech_player::PED_FILTERS);
+            let main = out.level(skate_audio::world::speech_player::ped_level_ids(p.level_select, 0, false).0);
+            if let Some(r) = o.speech.update(owner, p, main, &out, dt, &host.object_tuning, &mut rt.splice_host()) {
+                host.speech_requests.push(super::world_speech::PedRequest { request: r, voice: p.voice, speaker: p.speaker, level: p.level_select });
+            }
+        }
+        let out = OutputsSnapshot::take(m, keys::ped_sfx(g), &[7, 8]);
+        let mut cmds = o.sfx.update(owner, p, &ped_tuning, &player_tuning, &out, &mut rt.splice_host(), dt);
+        if o.body_fall.sounding() {
+            o.body_fall.update(&OutputsSnapshot::take(m, keys::ped_body_fall(g), &[]), dt, &mut rt.splice_host());
+        } else {
+            o.body_fall.latch_env(m.level(keys::ped_body_fall(g), 7));
+        }
+        if o.tazer.packet.is_some() {
+            cmds.extend(o.tazer.update(owner, &OutputsSnapshot::take(m, keys::ped_tazer(g), &[])));
+        }
         apply(host, rt, cmds);
-        host.ped_objects.insert(owner, (sfx, speech, pos));
+        host.ped_objects.insert(owner, o);
     }
     host.ped_tuning = Some(ped_tuning);
     host.player_tuning = Some(player_tuning);
@@ -648,6 +868,10 @@ pub(crate) fn run(host: &mut WorldHost, owners: &WorldOwners, native: &mut Nativ
     }
     post(host, owners, native);
 }
+
+#[cfg(test)]
+#[path = "world_oneshot_tests.rs"]
+mod oneshot_tests;
 
 #[cfg(test)]
 mod tests {

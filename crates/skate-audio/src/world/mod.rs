@@ -13,7 +13,8 @@
 //!   `SFXObj_TrafficHorn` (`TRAFFIC_HORN`, `c_car_alarm`) and `SFXObj_TrafficSkids`
 //!   (`TRAFFIC_SKID`);
 //! - [`peds`]: `SFXObj_PedestrianSFX`'s footsteps (`livingword_footstep` packets and the
-//!   `sk8_foley` Splice steps) and `SFXObj_PedestrianSpeech`'s speech requests;
+//!   `sk8_foley` Splice steps), `SFXObj_PedestrianSpeech`'s speech requests (and its phone ring),
+//!   `SFXObj_PedBodyFall`'s fall one-shots and `SFXObj_Tazer`'s `c_tazer` packet;
 //! - [`skaters`]: NPC (AI) skaters' board sounds — the local player's components for the Player
 //!   slot's second instance, which retail gives to one NPC skater within 30 m of the camera;
 //! - [`speech`]: the streamed speech archives (`livingworldspeech.big`): the clip index and the
@@ -32,6 +33,7 @@
 pub mod keys;
 pub mod owners;
 pub mod peds;
+pub mod skater_speech;
 pub mod skaters;
 pub mod speech;
 pub mod speech_manager;
@@ -52,6 +54,8 @@ pub enum WorldSlot {
     Skid,
     /// `livingword_footstep`: foot A (PedestrianSFX `+40`) = 0, foot B (`+224`) = 1.
     PedFootstep(u8),
+    /// `c_tazer` (SFXObj_Tazer `+36`, while the ped audio state's tazer byte `+80` is set).
+    PedTazer,
 }
 
 /// A world owner: the game object (vehicle or ped id the engine system hands out) and the slot.

@@ -51,7 +51,12 @@
 //! - **The bail grunt**: the body poster's first message of a bail calls `sub_824BF5F8`, which
 //!   for a non-local skater sends its SkaterSpeech record message 8206 (event `201_grunt`) / 115
 //!   ([`NpcSkater::take_bail_grunt`]; the speech host plays it).
-//! - Board slide (slot 15): reached by neither instance in the runs; not run.
+//! - **Board slide** (slot 15, `c_board_slide`): SkateBoard's process `sub_824C6A78` calls
+//!   `sub_824CB3C8` and its update `sub_824CB4C0` for every instance with no local test; the
+//!   loose-board state they read (`+780`) is computed per skater entry by the conditioner
+//!   (`sub_827A1B78`, the per-skater loop) and copied by the instance bridge `sub_824B0DA8`, so an
+//!   NPC whose board lies loose (bail / on foot, deck contact, upside down or on its side) holds it
+//!   too ([`NpcSkaterAudioState::loose_board`]).
 //!
 //! The granular rolling bed's binds are collected in [`NpcSkater::routed`] for the host's NPC bed.
 use crate::mixmap::{MixMap, keys};
@@ -60,7 +65,7 @@ use crate::player::components::{Command, FootDrag, Grind, SenseOfSpeed, Skid, Sl
 use crate::player::contacts::{self, ContactsTuning, SpliceHost};
 use crate::player::inputs::{self, Physics};
 use crate::player::objpos::{Listener, ObjPos};
-use crate::player::rolling::{Rattle, Rolling, RollingInputs, Routed};
+use crate::player::rolling::{BoardSlide, Rattle, Rolling, RollingInputs, Routed};
 use crate::player::seams::{self, SeamCommand, Seams};
 use crate::player::clothing::{Clothing, ClothingTuning};
 use crate::player::tuning::PlayerTuning;
@@ -89,6 +94,11 @@ pub struct NpcSkaterAudioState {
     /// The skater's speech voice (its `aud_characteristics` model: the AI skaters' 89–96; 0 = none):
     /// the bail grunt's speaker.
     pub voice: u32,
+    /// The conditioner's loose-board state (`+780`: 0 none, 1 upside down, 2 on its side;
+    /// [`crate::player::rolling::loose_board`]): the board slide holds while it is set.
+    pub loose_board: u32,
+    /// The skater record's reaction bytes this frame ([`super::skater_speech`]: its own speech).
+    pub reactions: super::skater_speech::Reactions,
 }
 
 /// `sub_824B23C8` for a non-local skater: 1 when the local player's record `+84` (= its `+684`,
@@ -180,6 +190,8 @@ pub struct Parts {
     pub rolling: bool,
     /// The rattle (`Rolling_Rattles`).
     pub rattle: bool,
+    /// The loose board's slide (`board_scrapes`).
+    pub slide: bool,
     /// SFXObj_Contacts' Splice one-shots (`Skate_Collisions`) and the grind on / off sounds.
     pub contacts: bool,
     /// SFXObj_Wheels' spin-down streams (the install's two recordings).
@@ -214,6 +226,9 @@ pub struct NpcSkater {
     seams: Seams,
     rolling: Rolling,
     rattle: Rattle,
+    slide: BoardSlide,
+    /// The loose-board state of this pass (the host sets it before [`Self::process`]).
+    pub loose_board: u32,
     board: contacts::Contacts,
     wheels: Wheels,
     clothing: Clothing,
@@ -253,6 +268,8 @@ impl NpcSkater {
             seams,
             rolling: Rolling::default(),
             rattle: Rattle::default(),
+            slide: BoardSlide::default(),
+            loose_board: 0,
             board,
             wheels: Wheels::default(),
             clothing: Clothing::default(),
@@ -305,6 +322,10 @@ impl NpcSkater {
         }
         if self.parts.rattle {
             cmds.extend(self.rattle.process(s, &self.rolling, &t.player.rolling));
+        }
+        // SkateBoard's process: the routing, the rattle, then the board slide (as the local's).
+        if self.parts.slide {
+            cmds.extend(self.slide.process(self.loose_board, &t.player.rolling));
         }
         let seam_cmds = Self::seam_commands(self.seams.process(s, t.player, m));
         let m: &MixMap = m;
@@ -364,6 +385,9 @@ impl NpcSkater {
         }
         if self.parts.rattle {
             c.extend(self.rattle.update(&board));
+        }
+        if self.parts.slide {
+            c.extend(self.slide.update(s, self.loose_board, &t.player.rolling, &board));
         }
         if self.parts.contacts {
             self.grind.sounds(s, t.player, splice);

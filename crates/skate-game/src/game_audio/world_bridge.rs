@@ -45,6 +45,8 @@ pub(crate) struct WorldAudioPublish;
 #[derive(Component, Clone, Debug)]
 pub(crate) struct GhostSkater {
     pub(crate) states: Vec<AudioState>,
+    /// The loose-board state per row (the board slide).
+    pub(crate) loose: Vec<u8>,
     /// Rows played (fractional).
     pub(crate) at: f64,
 }
@@ -52,11 +54,11 @@ pub(crate) struct GhostSkater {
 impl GhostSkater {
     /// Load a state log's window as a ghost (see `ghost_states`).
     pub(crate) fn from_log(text: &str, from: f32, seconds: f32, anchor: [f32; 3]) -> Result<Self, String> {
-        let states = super::state_replay::ghost_states(text, from, seconds, anchor)?;
+        let (states, loose) = super::state_replay::ghost_window(text, from, seconds, anchor)?;
         if states.is_empty() {
             return Err("empty window".into());
         }
-        Ok(Self { states, at: 0.0 })
+        Ok(Self { states, loose, at: 0.0 })
     }
 }
 
@@ -76,6 +78,7 @@ fn ghost_step(time: Res<Time>, mut ghosts: Query<(&mut GhostSkater, &mut NpcSkat
         t.translation = Vec3::from_array(s.board_position);
         *g = GlobalTransform::from(*t);
         npc.state = Some(s);
+        npc.loose_board = ghost.loose.get(now % n).copied().unwrap_or(0);
     }
 }
 
@@ -84,6 +87,9 @@ pub(crate) fn register(app: &mut App) {
         .init_resource::<WorldAudioStats>()
         .init_resource::<Bridge>()
         .add_message::<PedSpeechEvent>()
+        .add_message::<PedTazerEvent>()
+        .add_message::<PedBodyFallEvent>()
+        .add_message::<NpcSkaterReactionEvent>()
         .add_message::<VehicleHorn>()
         .add_message::<VehicleAlarm>()
         .add_systems(Update, (tag_remote_players, ghost_step, publish.in_set(WorldAudioPublish)).chain().before(super::native::mixmap_frame).after(crate::app::FrameSet::Animation))
@@ -111,9 +117,35 @@ pub(crate) struct Bridge {
     unknown_models: HashSet<u32>,
     /// Speech values to set next frame (a repeated value goes through 0 first).
     speech_next: Vec<(Entity, i32)>,
+    /// Tazer holds from [`PedTazerEvent`]: seconds left.
+    tazers: HashMap<Entity, f32>,
+    /// Body-fall keys from [`PedBodyFallEvent`]: the queue, the key on now (0 = the gap) and the
+    /// seconds it has left.
+    falls: HashMap<Entity, (std::collections::VecDeque<f32>, f32, f32)>,
+    /// NPC skater reactions from [`NpcSkaterReactionEvent`]: the set and the seconds it has left.
+    reactions: HashMap<Entity, (SkaterReactions, f32)>,
+    /// The ped tuning's tazer hold (`world_tuning.ped_objects.tazer_seconds`), read once.
+    tazer_seconds: Option<f32>,
     /// The summary log: seconds since the last line, and the running counts then.
     log_timer: f32,
     log_counts: (u64, u64, u64),
+}
+
+/// The component's held reactions with an event's raised on top.
+fn merge_reactions(held: SkaterReactions, event: SkaterReactions) -> SkaterReactions {
+    let mut r = held;
+    if event.slam {
+        (r.slam, r.slam_by) = (true, event.slam_by);
+    }
+    if event.slam_b {
+        (r.slam_b, r.slam_b_by) = (true, event.slam_b_by);
+    }
+    if event.trick {
+        (r.trick, r.trick_by) = (true, event.trick_by);
+    }
+    r.crash |= event.crash;
+    r.chase |= event.chase;
+    r
 }
 
 /// The ground's audio material under a point (`material_of_tag` of the first surface a 1.5 m line
@@ -174,12 +206,18 @@ fn publish(
     mut speech: MessageReader<PedSpeechEvent>,
     mut horns: MessageReader<VehicleHorn>,
     mut alarms: MessageReader<VehicleAlarm>,
+    mut zaps: MessageReader<PedTazerEvent>,
+    (mut falls, mut reacts): (MessageReader<PedBodyFallEvent>, MessageReader<NpcSkaterReactionEvent>),
 ) {
     let any = !vehicles.is_empty() || !peds.is_empty() || !npcs.is_empty();
     if owners.expected != living.expected {
         owners.expected = living.expected;
     }
-    if !any && !bridge.active && speech.is_empty() && horns.is_empty() && alarms.is_empty() && bridge.speech_next.is_empty() {
+    let photo = living.photo_flag || living.mod_photo_flag;
+    if owners.photo_flag != photo {
+        owners.photo_flag = photo;
+    }
+    if !any && !bridge.active && speech.is_empty() && horns.is_empty() && alarms.is_empty() && zaps.is_empty() && falls.is_empty() && reacts.is_empty() && bridge.speech_next.is_empty() && bridge.reactions.is_empty() {
         return;
     }
     let bridge = &mut *bridge;
@@ -207,6 +245,44 @@ fn publish(
     for a in alarms.read() {
         bridge.horns.insert(a.vehicle, (HornState::Alarm, ALARM_SECONDS));
     }
+    let tazer_seconds = *bridge.tazer_seconds.get_or_insert_with(|| library.as_deref().map_or_else(|| skate_audio::world::peds::PedObjectTuning::default().tazer_seconds, |l| l.world_tuning().ped_objects().tazer_seconds));
+    for z in zaps.read() {
+        bridge.tazers.insert(z.ped, z.seconds.unwrap_or(tazer_seconds).max(0.0));
+    }
+    for f in falls.read() {
+        if f.kind != 0.0 && f.kind.is_finite() {
+            bridge.falls.entry(f.ped).or_default().0.push_back(f.kind);
+        }
+    }
+    // Each key is on for one console frame, then 0 for one frame (so a repeated key is a change).
+    let step = skate_audio::mixmap::cadence::CONSOLE_DT;
+    for (queue, now, left) in bridge.falls.values_mut() {
+        *left -= dt;
+        if *left <= 0.0 {
+            if *now != 0.0 {
+                *now = 0.0;
+                *left = step;
+            } else if let Some(k) = queue.pop_front() {
+                *now = k;
+                *left = step;
+            }
+        }
+    }
+    bridge.falls.retain(|e, (q, now, left)| peds.contains(*e) && (!q.is_empty() || *now != 0.0 || *left > 0.0));
+    // A reaction is held for one console frame (the AI's bytes are per frame).
+    for (_, left) in bridge.reactions.values_mut() {
+        *left -= dt;
+    }
+    bridge.reactions.retain(|e, (_, left)| *left > 0.0 && npcs.contains(*e));
+    for r in reacts.read() {
+        let (set, left) = bridge.reactions.entry(r.skater).or_insert((SkaterReactions::default(), 0.0));
+        *set = r.reaction.raise(*set, r.by);
+        *left = step;
+    }
+    for left in bridge.tazers.values_mut() {
+        *left -= dt;
+    }
+    bridge.tazers.retain(|e, left| *left > 0.0 && peds.contains(*e));
     for (_, left) in bridge.horns.values_mut() {
         *left -= dt;
     }
@@ -276,6 +352,8 @@ fn publish(
                 voice: ped.voice.unwrap_or(0),
                 speaker,
                 level_select: skate_audio::world::speech_player::PedLevelSelect { security, ..Default::default() },
+                tazing: ped.tazing || bridge.tazers.contains_key(&e),
+                body_fall: bridge.falls.get(&e).map_or(ped.body_fall, |f| f.1),
             },
         );
         seen.push((e, at, 0.0));
@@ -283,7 +361,7 @@ fn publish(
 
     // NPC / remote skaters, in list order.
     skaters.skaters.clear();
-    let mut list: Vec<(bool, u32, u32, u64, AudioState, u32)> = Vec::new();
+    let mut list: Vec<(bool, u32, u32, u64, AudioState, u32, u8, SkaterReactions)> = Vec::new();
     for (e, t, mut npc, given) in &mut npcs {
         let at = t.translation().to_array();
         if npc.remote {
@@ -298,10 +376,11 @@ fn publish(
             bridge.next_order += 1;
             bridge.next_order
         });
-        list.push((!npc.remote, if npc.list_order == 0 { u32::MAX } else { npc.list_order }, spawn, e.to_bits(), state, npc.voice.unwrap_or(0)));
+        let reactions = bridge.reactions.get(&e).map_or(npc.reactions, |(set, _)| merge_reactions(npc.reactions, *set));
+        list.push((!npc.remote, if npc.list_order == 0 { u32::MAX } else { npc.list_order }, spawn, e.to_bits(), state, npc.voice.unwrap_or(0), npc.loose_board, reactions));
     }
     list.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
-    skaters.skaters.extend(list.into_iter().map(|(_, _, _, id, state, voice)| skate_audio::world::skaters::NpcSkaterAudioState { id, state, voice }));
+    skaters.skaters.extend(list.into_iter().map(|(_, _, _, id, state, voice, loose_board, reactions)| skate_audio::world::skaters::NpcSkaterAudioState { id, state, voice, loose_board: u32::from(loose_board.min(2)), reactions }));
 
     bridge.last.clear();
     for (e, at, speed) in seen {
@@ -422,7 +501,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.init_resource::<WorldOwners>().init_resource::<super::super::npc_skaters::NpcSkaters>().init_resource::<WorldHeld>();
         app.init_resource::<LivingWorldAudio>().init_resource::<WorldAudioStats>().init_resource::<Bridge>();
-        app.add_message::<PedSpeechEvent>().add_message::<VehicleHorn>().add_message::<VehicleAlarm>();
+        app.add_message::<PedSpeechEvent>().add_message::<VehicleHorn>().add_message::<VehicleAlarm>().add_message::<PedTazerEvent>().add_message::<PedBodyFallEvent>().add_message::<NpcSkaterReactionEvent>();
         app.add_systems(Update, (publish, read_back).chain());
         app.world_mut().spawn((super::super::GameAudioListener, Transform::default(), GlobalTransform::default()));
         app

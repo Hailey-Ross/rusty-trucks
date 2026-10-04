@@ -232,3 +232,86 @@ Harness: `tests/world_sources.rs` `a_bumped_ped_warns_with_a_line_of_its_voice`.
 3. The request queue and stream count for the living world (why lines overlap in the recomp).
 4. Main cast / cameraman / announcer: they use the same library and already parse. Their managers differ (other vault
    types, `sub_824AC560`).
+
+## Speech details resolved (2026-10-03, doc 15 "Gaps closed")
+- **Block layout** (PedestrianSpeech update `sub_824D9370`, block = obj+44; PlayerSpeech `sub_824DA300`, obj+48):
+  +4 speaker voice id (parsed from the clip name by `sub_824A89E8`), +8 main level, +12 the per-voice float
+  (S+152), +16 raw azimuth, +20 pitch, +24 HP (ped out13 / skater out8), +28 LP (out14 / out9), +32 second level
+  (out15… / out10…), +36/+40/+44 the PEAK curves' values, +48 a delay = min(S+148 × 1.0 [field BF48032DB145C5B4]
+  × 1/344, 0.15) s refreshed every 4 frames (field 510BAFA32A76B340), +69 far flag, +72 the stream the speaker
+  holds (−1 none), +76 speaking, +80 level 21 (ped) / 13 (skater), +84/+88 filters 22/23 (ped) / 14/15 (skater).
+- **PEAK filter = head shadow by azimuth.** raw out0 folded (> 32767 → 65536 − raw), then three 8-point curves of
+  record `B29C3B2C13D96482` `default` (holder `*(0x830CFDA4)+44`): centre `2C166907CF51DB88` (600 → 4000 at the
+  side → 600), gain `EA2C18D9CE5CBA3A` (0.4 → 0.1), Q `CF8679F540B82B2B` (3). Recomp 163809: 6 / 6 PEAK (centre,
+  gain) pairs lie on the two curves at one azimuth (≤ 1 Hz); ours at the joined geometry 3 / 6 within 10 % (camera
+  orientation estimated). Ported: `SpeechVoiceTuning`, export `world_tuning.speech_voice`, mixer stream graph.
+- **Two sends.** The stream voice graph (`sub_82C5C318`): Rsp0 → PI20 → Sen0 (Send A, pre-gain, env) → Gai0 →
+  HI20 → LI20 → Sen0 (Send B) → Pn21 → Sen0. Recomp modules `+0x570` (A) and `+0x7D0` (B). A = level 21 (ped) /
+  13 (skater): 17 of 29 lines within 25 % (out15 there: 11); B = out15: 18 of 27. Send B feeds the stream slot's
+  echo submix (`sub_82C5E2D8`: Sub0 → HI20 → Del0 → LI20 → Pn21 → Sen0 → the env bus; delay = block +48; filters
+  likely 22 / 23): **not ported** (Send B is computed, not played).
+- **Value 49** = the phone: `sub_824D9C70` stops the old ring and starts CellPhone_Rings (Splice index 6) container 5
+  (class `C1831BDB6CB1B1EA` `cellphone` field `031EFDF991638985`); `sub_824D9AD8` (end of the update) follows it
+  with the main level / pitch / azimuth and, when it ends, requests value **64** (`4402_cell_greet`). Recomp
+  164620: SPLC 6/5 at 88.73 → 4402 HelCel 89.73; 234.38 → 235.57; the rings' records last 0.84–1.13 s.
+- **Value 29**: while system byte `*(0x830CFDC4)+912` is set, obj+160 accumulates dt; at ≥ 1.0 (image constant) it
+  resets and the request repeats (the flag's meaning not traced: `LivingWorldAudio::photo_flag`).
+- **Obj:Speech inputs** (SFXObj_Speech process `sub_824E2050`, every frame): in0 / in1 / in4 = 32767 while a playing
+  line's speaker (block +4) is 37–38 / 75–77 / 1–29; in2 = speech-system word `+0x1BD28` == 2; in3 = a block with
+  +60 == 0 and +93 set (neither traced). F45 (+200 mB on ped out2 / out3) is in0 → not regular peds: the ~+0.6 dB
+  of the recomp's near lines stays unexplained (E0's other terms A[Global.2], F[Global.28] / [108], A[Global.112]).
+  Ported: in0 / in1 / in4.
+- **Which stream**: a new line takes the first free stream (k0 when both are free: 95 of 109 new lines in
+  163809 / 164620 / 180430). The interrupt reads record `channel × 2 + block +72` (the speaker's own stream;
+  −1 aliases the previous channel's second record).
+- **Queue timeout unit**: the library's clock = the speech system's time callback `sub_824A4E90` =
+  `[[0x830CFD94]+16]` (installed by `sub_82C5EC20`); its unit was not settled from the code (no writer found).
+- **Constructor** `sub_824D90D8`: obj+36 (last value) = 68, obj+40 = 8318, +156 = −1 (ported: `PedSpeech::default`).
+- **Main-cast path (pros, S+116 == 0)**: `sub_824AC438`: 29 → event 141 (speaker word 136), 28 → 11 (when
+  `sub_82487ED0` is false and system +1196 == 0), 30 / 51 → stop the speaker's stream, then 6 or 115 (`rand() & 1`),
+  53 / 54 → 77, else nothing; request `sub_824AC560` (event id → index in a 72-entry table at `0x8224CB80`, vault
+  record at mgr + (index + 194) × 8, tuning bank "0" — exported) with words [S+100, S+104, flag 2/1 swapped, 0,
+  S+108, S+112]. **Not ported:** needs the main-cast speech index + decode (`maincastspeech.big`).
+
+## The echo send and the main cast (2026-10-03, ported; corrects "Two sends" and "Queue timeout unit" above)
+- **The stream system** (`sub_82C5CEF0`, every frame per speech stream): gain = block +8 / 32767 × block +12 (the
+  per-voice float `S+152`, `aud_characteristics` `2087A3290483BB4F`, 0.8–1.4); `Send(desc+32)` = block +32 (ped
+  out15 / skater out10) × the float, the post-filter send straight into the environment bus; `Send(desc+16)` =
+  block +80 (ped out21 / skater out13) × the float, the pre-gain send into the slot's echo submix. The echo's
+  HI20 = block +84 (ped filter 22 / skater 14), LI20 = block +88 (23 / 15), Del0 = block +48, posted only when it
+  changed; Pn21 and Sen0 keep their class defaults. **Correction:** the first decode had Send B (out15) feeding
+  the echo; the code says the pre-gain send (out21) does, and out15 goes to the environment bus.
+- **Delay refresh** (`sub_824D9370`): a per-speaker countdown; at ≤ 0 the delay is recomputed from the camera
+  distance and the count reloads with field `510BAFA32A76B340` (4).
+- **Ported:** `skate_audio::bus::speech_echo` (one graph per stream slot, channel × 2 + k; mono, the Pn21 / Sen0
+  routing as a unity tap), the mixer's stream path (PEAK → echo send → gain → HPF / LPF → env send), the voice
+  float, the delay countdown. Setup `world_tuning.speech_voice` carries `delay_factor` / `delay_frames`.
+- **Recomp, re-verified** (39 lines, 163809 / 164620 / 180430, with the voice float): pre-gain send (`+0x570`) =
+  out21 within 25 % in 17 of 29 (out15: 10); env send (`+0x7D0`) = out15 in 19 of 27; gain median 0.988
+  (p10 0.55, p90 1.36); filters 4 of 5; PEAK on the curves 6 / 6.
+- **Queue timeout unit (settled):** `[[0x830CFD94]+16]` is the function behind the `GetVisualGameTick` Lua binding
+  (`0x8283C2D8`): visual game ticks, one per rendered frame (the console's ~30 fps), the port's console frames.
+- **Main-cast channel** (bank 0, channel 0; `maincastspeech.big`, 1283 clips, 73 events, tuning `speech_tuning["0"]`):
+  - who: a model with no living-world type bit and a cast bit / word (`6F2933E977CF40DD` = the pros' bit 1 << (n−1),
+    `14FD437D190677C8` = the special cast 30–38, `D6EA428C2B43E23A` = the word another pro's line names it by);
+  - words (`sub_824AC898`, block w0 = cast bit, w1 = cast word, w2 = 1 near / 2 far, w4 / w5 = the other skater's
+    cast bit / `D6EA` word): events 0 / 1 → [w1, w0, w2]; 247 → [w0, w9, w1]; 251 → [w0, w1, w10];
+    254 → [w1, w5, w0, w4]; 268 → [w0, w1, w11]; 271 / 274 / 275 → [w0, w1, w12]; 280 → [w0, w1, w13];
+    287 / 288 → [w1, w0, w4, w5]; else [w0, w1];
+  - NPC skater speech (`SFXObj_PlayerSpeech` non-local process `sub_824DA1B0`, inputs from the skater entry via
+    `sub_824B6E80`: `+102` = entry `+392` bit 4, `+103` = bit 3, `+104` = entry `+396` bit 10, `+131` = entry `+388`
+    bit 5). Living-world voices (`sub_824DAAC0`): `+102` / `+103` → 8204 in mode 55, 8239 in modes 19 / 20, else
+    8234 | (`rand()` & 1); `+104` → 8202; the chase flag (system `+1100` bit 6) → 8205 when nothing else; a request
+    only on change. Pros (`sub_824DA768`): `+102` → 1 (16 in modes 19 / 20 by the player) or 288 by a pro
+    (`+112`); `+103` → 1 / 288 by `+116`; `+104` → 0 / 287 by `+108`; requested every frame the byte holds. The
+    skater's crash (`sub_824DB688`, `+131` rising, latched in obj `+193`): message 8229 / 125;
+  - skater message pairs (`sub_824DAC00`, living-world / main-cast): bail grunt 8206 / 115, crash 8229 / 125,
+    impact 8233 / 6 and 8241 / 125 (`sub_824BD358`), hit reaction 8309 / 253 and race punch 8310 / 250
+    (`sub_824EFA60`), gesture 8291 / 247 (`sub_824F8778`).
+- **Main-cast decode:** the free-roam events (101, 104, 130, 150, 151, 201, 202, 335, 336, 338, 344, 500, 501, 601,
+  903, 906, 913, 1014): 6596 takes, 3.0 h, 922 MB of 44.1 kHz PCM16 (opt-in with the living world's).
+- **Recomp check:** 82 main-cast lines streamed in 11 sessions (READs of `maincastspeech.big`: 906 `AiSlam` ×45,
+  101 `pos`, 150 `pro_pos`, 104 `Slam`, 130 `col`, 201 `grunt`): all reachable through the ported words for their
+  speaker (76 of an event the port sends; 130 `_col` has no ported sender).
+- **Not ported:** the repeat times of speaker slots 30 / 31 (record `+52` / `+56`); values 30 / 51 stopping the
+  speaker's stream first; the cameraman line of the crash; the game modes (free skate passes 0).

@@ -4634,6 +4634,27 @@ Full write-up: [15](15-world-audio.md), section "P3–P5". In short:
 - **The dev test mod is opt-in** (`"enabled_by_default": false`, `SKATE3_MODS_ENABLE`). The mod limits are now
   48 / 128, and a `WORLD_AUDIO` summary is logged once a second.
 
+### World audio gaps closed: Tazer, PedBodyFall, speech details, the NPC board slide (2026-10-03, headless + one scripted run)
+
+Full write-up: [15](15-world-audio.md), section "Gaps closed". In short:
+
+- **Tazer** (`SFXObj_Tazer` decoded): `c_tazer` held while the ped tazes. Recomp 164620: 19 starts per 2 s hold
+  against 10 / 20 / 19, the same gaps (192 / 192 / 128 / 96 ms vs 190 / 190 / 130 / 90–100) and order, first-start
+  gain recomp / ours 0.85–1.00.
+- **PedBodyFall** (decoded; trigger = the animation's `BodyFallType`): 75 recorded starts (Splice, not POST);
+  containers 73 / 73 by type; voice gain recomp / ours p50 0.79.
+- **Speech:** the stream voice's PEAK = azimuth curves (6 / 6 recomp pairs on them); the per-voice float; the
+  pre-gain send (out21) feeds the slot's **echo submix** (ported: HPF → camera-distance delay → LPF → env) and the
+  post-filter send (out15) goes to the env bus (17 / 29 and 19 / 27 recomp lines); value 49 = the phone ring → 64,
+  value 29 = the photographer's 1 s repeat, `Obj:Speech` in0 / in1 / in4, first-free stream; the queue clock =
+  visual game ticks.
+- **Main cast (pros, special cast):** its own channel (`maincastspeech.big`, decode 6596 takes / 922 MB, opt-in
+  with the living world's), pro peds, NPC skater reactions and crash (`skater_speech`), the message pairs; all 82
+  recorded main-cast lines reachable through the ported words.
+- **NPC:** the board slide runs for the NPC instance (static evidence; a 4-min scripted run saw no NPC bail); the
+  NPC bed against 180430's NPC rows: near band A gain 0.097 / 0.108.
+- Local player byte-identical (e2e bench, all sets).
+
 ### PR #32 review fixes, step 2 (code half): spec references and private-data paths (2026-10-03, headless)
 
 **Problem.** Code comments in `crates/`, `tools/asset_pipeline/` and the dev test mod cited the working notes and
