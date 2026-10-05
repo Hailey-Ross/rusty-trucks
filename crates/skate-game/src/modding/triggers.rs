@@ -165,7 +165,7 @@ pub(super) fn configure(world: &mut World, owner: &str, options: Option<skate_mo
         radius: o.radius.unwrap_or(r.radius),
         length_scale: o.length_scale.unwrap_or(r.length_scale),
         length_pad: o.length_pad.unwrap_or(r.length_pad),
-        top_pad: o.top_pad.unwrap_or(r.top_pad),
+        foot_pad: o.foot_pad.unwrap_or(r.foot_pad),
     };
     state.shape_owner = Some(owner.to_owned());
     Ok(())
@@ -179,11 +179,14 @@ pub(super) fn sync_tracked(world: &mut World, mods: &Mods) {
         let Some(snapshot) = mods.bodies.get(&(owner.clone(), key.clone())).and_then(|id| mods.world.read(*id)) else {
             return false; // the body is gone: stop tracking (its exits follow)
         };
-        let top = snapshot.position;
+        // The body's position is the feet point; the cylinder stands on it and
+        // reaches `length` up (the player's head), axis straight down.
+        let feet = snapshot.position;
         let length = options.length.unwrap_or(0.);
-        let bottom = [top[0], top[1] - length, top[2]];
+        let head = [feet[0], feet[1] + length, feet[2]];
+        let hips = [feet[0], feet[1] + 1., feet[2]];
         let query = QueryShape { radius: options.radius.unwrap_or(shape.radius), ..shape };
-        if let Some(cylinder) = query.cylinder(top, bottom, bottom) {
+        if let Some(cylinder) = query.cylinder(feet, head, hips) {
             rows.push((body_id(owner, key), cylinder));
         }
         true

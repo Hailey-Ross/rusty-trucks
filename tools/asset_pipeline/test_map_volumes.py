@@ -41,7 +41,7 @@ def box_volume(centre, half, yaw=0.0, kind=4):
 
 
 def volume_set(items):
-    """items: (name, lo, hi, link GUID, instance id, link section index)."""
+    """items: (name, lo, hi, link GUID, instance id, link section index[, group word +216])."""
     names = b''
     offsets = []
     strings = 32 + mv.ITEM_SIZE * len(items)
@@ -50,8 +50,9 @@ def volume_set(items):
         names += item[0].encode() + b'\0'
     raw = bytearray(strings) + names
     struct.pack_into('>5I', raw, 0, mv.SET_MAGIC, len(items), len(items), 32, strings)
-    for i, (name, lo, hi, guid, iid, link) in enumerate(items):
+    for i, (name, lo, hi, guid, iid, link, *group) in enumerate(items):
         at = 32 + mv.ITEM_SIZE * i
+        struct.pack_into('>I', raw, at + 216, group[0] if group else 0)
         struct.pack_into('>16f', raw, at, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
         struct.pack_into('>3f', raw, at + 64, *lo)
         struct.pack_into('>3f', raw, at + 80, *hi)
@@ -94,6 +95,20 @@ class TriggerVolumeExportTests(unittest.TestCase):
         self.assertEqual(shape['half_extents'], [2.0, 1.0, 3.0])
         self.assertEqual(shape['fatness'], 0.0)
         self.assertEqual(volume['aabb'], {'min': [8.0, 0.0, -8.0], 'max': [12.0, 2.0, -2.0]})
+
+    def test_group_comes_from_the_item_group_word(self):
+        # Trigger manager 82DD7C58: +216 = 1 Stairs, 2 Camera, anything else Challenge.
+        name = 'stairs_test_vol_0x0000041203e38705:0x2c70170600251290::[0x2c701704002e0002]_HighLOD'
+        lo, hi = (8.0, 0.0, -8.0), (12.0, 2.0, -2.0)
+        for word, group in [(0, 'challenge'), (1, 'stairs'), (2, 'camera'), (7, 'challenge')]:
+            raw = arena([
+                (0x00EB0008, b'\0' * 16),
+                (mv.VOLUME_SET, volume_set([(name, lo, hi, 1, 0x2C70170600251290, 2, word)])),
+                (mv.LINK_RECORD, link(3)),
+                (mv.RW_VOLUME, box_volume((10.0, 1.0, -5.0), (2.0, 1.0, 3.0))),
+            ])
+            [volume] = mv.arena_volumes(raw)
+            self.assertEqual(volume['group'], group)
 
     def test_rotated_box_keeps_its_axes_not_its_bounds(self):
         [volume] = mv.arena_volumes(self.sample(yaw=math.pi / 4, half=(3.0, 1.0, 3.0)))

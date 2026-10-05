@@ -20,8 +20,11 @@ pub const MAX_VOLUMES: usize = 4096;
 const MAX_ID: usize = 128;
 const MAX_NAME: usize = 512;
 
-/// The trigger manager's three groups (`sub_82DD7AE0`). Every volume seen in
-/// the recomp went to Challenge; Stairs and Camera have no known volumes yet.
+/// The trigger manager's three groups (`sub_82DD7AE0`). A retail item's group
+/// word (+216) picks one (`82DD7C58`: 1 Stairs, 2 Camera, else Challenge); every
+/// shipped item holds 0. Only Challenge tracks bodies: Stairs and Camera are
+/// built without entity slots (group descriptors `0x82FCA108`), so they are
+/// position/name lookups that never post enter/exit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TriggerGroup {
@@ -46,6 +49,11 @@ impl TriggerGroup {
             "camera" => Some(Self::Camera),
             _ => None,
         }
+    }
+    /// Whether the group gives tracked bodies enter/exit events (retail: only
+    /// the Challenge group has entity slots).
+    pub fn tracks_bodies(self) -> bool {
+        self == Self::Challenge
     }
 }
 
