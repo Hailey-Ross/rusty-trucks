@@ -463,6 +463,50 @@ Files: `skate-core/src/living_world/{traffic/spawn.rs, census.rs, config.rs, pop
 `skate-game/src/living_world/mod.rs`. Open: palette pick (not in the code read; seeded per id), spawn speed (0),
 the overlap extents formula (radius = half the larger side), the pool size behind the limit, the meaning of
 `FFE5E258BD468196` (census `+144`).
+
+## Change: milestone V3, cars on screen
+Census cars become visible, moving traffic that obeys the lights and is heard through #32's engine audio.
+
+- **Follower** (`skate-core::living_world::traffic::follow`): per 60 Hz world tick, every car (in key order) runs
+  the V1 junction query once the stop line is within its look-ahead plus one second of speed, brakes to the line on
+  Signal / Yield / Blocked (`-v^2 / (2 (d - f2) + 0.001)`, `sub_82C3FA08` [code]), slows to the connector's entry
+  speed on Approach, keeps `min_gap` behind the car ahead on its path (same lane, its chosen connector, the exit lane),
+  and integrates speed with retail's integrator (`sub_82C3FF38` [code]: speed += accel x dt, accel 0 above the cap;
+  cap = lane speed limit, 14.167 / 13.889 m/s [data], 17.0 while skitched [trace, V7]). Pull-away accel ramps at
+  0.8 m/s^3 [trace] up to the spec field `Hash_328B9F4685A14018` (2.0-3.1, [data], meaning a candidate); planning
+  decel = `Hash_758229215579C6D1` (2.5-3.0, candidate); hardest braking 7.3 m/s^2 [trace]. Connectors by retail's
+  least-loaded rule (V1). Cars at a dead end leave.
+- **V3 simplifications until V4**: cars are the only obstacles (skater, NPCs, peds are V4 / V5); the look-ahead is the
+  comfortable stopping distance (retail `+3516` not read); following is "brake to the lead's speed by `min_gap`
+  (2 m, engine value)" instead of retail's lead-minus-20-km/h term (kept as `retail_follow_accel` for V4; its gap
+  inputs `+3756` / `+3760` / `+3728` are not read); a car that got Go and can no longer stop comfortably commits
+  (amber dilemma zone); no lane changes, overtakes, horns, parking, skids.
+- **Engine-side safeguard, not retail**: two lanes of one approach merging into one exit lane. Retail's junction
+  query never scans the car's own approach (`sub_82E11E90` passes only ends from_end + 1 / + 2 / + 3 to
+  `sub_82E11C78` / `sub_82E11980` [code]); the spacing comes from the look-ahead (V4). Until then the follower treats a
+  car inside the junction on another connector into the same exit lane, nearer the exit, as the car ahead.
+- **Look** (`skate-game::living_world::vehicles`): the car GLB as a scene, glTF materials on render layers 0 / 28 (the
+  mod-graphics path); `vehicle_chassis` gets a tinted copy of its base texture, `vehicle_glass` is drawn at 0.55
+  opacity (engine value); wheel bones spin by distance / `wheel_hint` [data]. Drivers are in the body mesh, cars have
+  no lights [data, V0].
+- **Tint rule (shader not decoded, open)**: the atlases paint the body pure blue `(0, 0, b)` and the base palettes are
+  chassis `(0, 0, 1)` / secondary `(1, 0, 0)` [data], so the chassis colour replaces the blue channel and the
+  secondary the red channel, weighted by channel purity; identity for the base palette. The painted value is scaled by
+  a gain of 2.0: an estimate from the data (paint blue sits at 0.5-0.56; only 2x makes palette white and taxi yellow
+  read as such), not retail, overridable (`VehicleOverrides::paint_gain`).
+- **Collision**: a kinematic box per car from the GLB bounds joins the skater's contact solve
+  (`physics::network::Proxies`); solid only, bails and roofs are V5.
+- **Audio**: `TrafficAudio` per car: engine = the entity's spec `engine_audio` record, speed = `+3412`, load = the
+  commanded accel `+3408`; `AudioVelocity` for Doppler.
+- **Multiplayer (no networking)**: a car's motion is a function of its spawn record, the world tick, the signal
+  clock's tick count (one per world tick since the world loaded) and the other cars; the connector choice reads the
+  occupancy, so a client runs the whole car set from the host's spawn / despawn records (plus the host's tick and
+  signal tick count) rather than one car. Retail runs no traffic online [code]; that default stays.
+- **Mod surface**: `VehicleOverrides` (model per entity, GLB per model, colour per palette id, follower numbers per
+  entity, connector choice, tint gain) and `TrafficEvent` (spawned, despawned, junction answer, entered junction,
+  entered lane); `sdk.living_world.vehicles` bindings are V8.
+- **Tests**: 7 core follower tests, 7 headless engine tests, 1 data-gated DownTown run (30 cars, 120 s, 0 entries on
+  red, no overlaps, moving median 6.4 m/s / p90 14.2 vs the recomp's 5.8 / 14.7).
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).

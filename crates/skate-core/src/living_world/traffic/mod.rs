@@ -26,12 +26,14 @@
 //! is plain input records a mod can write ([`RoadInput`]).
 
 pub mod cursor;
+pub mod follow;
 pub mod graph;
 pub mod junction;
 pub mod signals;
 pub mod spawn;
 
 pub use cursor::{choose_connector, Advance, ConnectorChoice, LaneCursor, Place};
+pub use follow::{Car, FollowEvent, FollowParams};
 pub use graph::{
     ConnectorId, ConnectorInput, Curve, EndInput, Frame, JunctionId, JunctionInput, LaneId, PieceInput, RoadInput, RoadNetwork, SegmentId,
     SegmentInput, TrafficError, Turn,

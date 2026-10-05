@@ -29,6 +29,7 @@ use std::path::Path;
 
 pub(crate) mod npc_skaters;
 pub(crate) mod peds;
+pub(crate) mod vehicles;
 
 #[cfg(test)]
 #[path = "tests.rs"]
@@ -39,6 +40,9 @@ mod npc_tests;
 #[cfg(test)]
 #[path = "peds_tests.rs"]
 mod peds_tests;
+#[cfg(test)]
+#[path = "vehicles_tests.rs"]
+mod vehicles_tests;
 
 /// Who runs the population decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -517,5 +521,6 @@ impl Plugin for LivingWorldPlugin {
             );
         npc_skaters::install(app);
         peds::install(app);
+        vehicles::install(app);
     }
 }
