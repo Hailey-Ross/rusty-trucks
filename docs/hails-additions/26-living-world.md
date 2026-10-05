@@ -34,8 +34,13 @@ truth"); the recomp only validates. Addresses are TU3; no game code or data is c
   (FollowingLane, PassingIntersection, Impatience, ChangingLane, PullingOver, StayingParked) with a speed planner
   (`sub_82C3FA08`) and a manoeuvre decider (`sub_82C41CD0`). Lights: green 7 or 8 s, amber 1 s, all-red 0.5 s per
   direction. In the recomp: median 5.8 m/s, p90 14.9 m/s; cars stop and queue for a skater in the lane; a skitched
-  car speeds up to about 16.8 m/s and brakes at about 6.2 m/s² when let go. The design pass for traffic is in
-  progress; its milestones and any data requests are added here when done.
+  car speeds up to about 16.8 m/s. Cars are kinematic (the AI integrates speed along a lane: `+3408` commanded
+  acceleration, `+3412` speed, `sub_82C3FF38`); they spawn in an 80 to 100 m ring (2 tries, at most 1 spawn per
+  tick) and cull at 110 m; no traffic spawns in zombie mode or online; there are no patrol cars in the Skate 3
+  districts. The horn decider `sub_82C40660` writes the horn state the audio reads. Skitching is a per-frame latch on
+  the car (`+4403` bits 0x80 / 0x40, `sub_82C34648`, `sub_82C34CD0`); our `skate-core` already has the skater's
+  Skitching state (104). 18 car recipes with colour palettes in `livingworld_models`. Details:
+  [`living-world/vehicles-design.md`](living-world/vehicles-design.md).
 - **Online:** nothing ambient spawns (census spawn pass and AI count gated by the online flags; culling runs).
 - **Free Play** (mode 3, `sub_82706B40`): Traffic / Pedestrians / A.I. Skaters options scale the census caps
   (`sub_826B7010`, `sub_826B8A28`) and switch the AI skaters (`sub_8245C548`); career free roam has no switch.
@@ -64,6 +69,92 @@ Files: `crates/skate-data/src/aipath.rs`, `crates/skate-data/tests/aipath_data.r
 `tools/asset_pipeline/{living_world,living_world_models,living_world_skaters}.py` (+ tests), `versions.py`,
 `install.py`, `group_receipts.py`, `asset_exports.py`, `native_roster.py`, `tools/test_setup_assets.py`.
 
+## Change (milestone 2: population core)
+
+One census engine for every ambient kind, shared by NPC skaters, pedestrians and vehicles (props and dynamic
+objects later). Pure rules in `skate-core::living_world` (no ECS, no I/O), readers in `skate-data::living_world`,
+a minimal Bevy plugin in `skate-game::living_world` that emits spawn / despawn decisions as messages. No bodies or
+rendering yet (later milestones consume the messages).
+
+What retail does, checked in the code for this milestone (tags [code] / [data]; addresses TU3):
+- **Census tick** `sub_826B71F0` runs one living-world type per console tick in rotation (peds 0, vehicles 1, DMOs
+  2, props 3), each a cull pass then a spawn pass [code]. So each census kind gets a pass every 4 ticks.
+- **Census circle**: the `livingworld_census_ranges` sets lerped by the player's speed `|v| x 3.6` km/h
+  (`sub_826B7D60`, `0x822F8628`); peds 50-60 m ring / 70 m cull at 45 km/h, 50-80 / 90 with offset 20 at 80 km/h;
+  vehicles 80-100 / 110 [data]. Cull = 3-D squared distance to the circle centre (`sub_826BA8B0`) [code].
+- **Spawn pass** `sub_826B9940` (peds) / `sub_826B9B90` (vehicles): gated by the manager byte, `0x83082929` and
+  `IsOnline`; 2 attempts / at most 1 spawn; initial populate 6000 attempts / 600 spawns in an 8-80 m ring
+  (`0x82099250`, `0x820E5748`) [code]. Ring point (`sub_82E17508`): direction from two uniform draws in
+  [-0.5, 0.5) normalised, radius uniform in [inner, outer] (linear), heading = u32 x 2pi / 2^32 (`0x822F9598`) [code].
+- **Cap at the point** `sub_826B8A28`: the record painted in the census layer at the spawn point, max population x
+  density (Free Play scale, truncated; skipped in zombie mode). **An unpainted point has no record and cap 0** for
+  peds and vehicles (the lookup only resolves a record when the layer query hits) [code]; this corrects the
+  milestone-1 note "retail falls back to `default`", which only holds for the other census types.
+- **Budget and category** `sub_826B8B88`: cap 0 = no spawn (even in zombie mode); count >= cap = no spawn unless the
+  zombie cheat is on; category roll `rand() % 100 + 1` against the cumulative weight x 100 (`0x820ED57C`), no hit =
+  no spawn (DownTown traffic weights sum to 0.875) [code, data]. Ped pool 31 [code].
+- **Free Play** (mode 3): `sub_826B7010` clamps `+336` / `+332` to 0..1 as the ped / vehicle density; below 1.19e-7
+  the whole kind is culled at once [code]. A.I. Skaters `+340` off: no spawns (`sub_8245C548`) and the per-skater
+  checks despawn every ambient NPC (`sub_8245A9B8`, the `r25` gate) [code].
+- **Ambient skaters** `sub_8245BA28`: 60-tick cycle (cull 0, pool 15, spawn 30, checks 3-12 / 18-27 / 33-57),
+  desired 3 (0 online), AI cap 5, 7 slots shared with players, spawn at the start node of an unused line 60-90 m away
+  (`0x821FF080`), cull 120 m 3-D or 1000 m height (`0x82256FE0`, `0x82256FE8`) or excess [code]. Line scorer
+  `sub_8245C018` (lowest wins): reject when any skater is within 5 m (`d^2 < 25`, `0x8209994C`); nearest skater
+  closer than 10 m (`d^2 < 100`): 600 below 0.5 m, else `(10 - d) x 300 x 600` (`0x821963E4`, `0x822F92C0` =
+  0x4395FFFF, `0x820994A8`); plus `rand() % 400`; online both terms are skipped [code]. Character scorer
+  `sub_8245B068`: 500 if it fits a nearby line + 5 per fitting line + `rand() % 160`, highest wins [code].
+
+Change:
+- `skate-core::living_world`: `LivingWorld` (one session: config, seed, console clock, three kinds),
+  `PopulationConfig` (code constants as defaults, `config::retail` with labels and addresses; census ranges and
+  caps only from data), `census` (circle lerp, grid lookup, ring point, cap, category roll, cull), `skaters`
+  (`SkaterWorld` trait, line and character scorers, pool, slots), `population` (rosters, `Scorer` trait,
+  `pick_lowest` / `pick_highest`, the census pass), `clock` (console ticks at 30 Hz from any engine step), `rng`
+  (seeded PCG32, derived sub-seeds; no global state).
+- `skate-data::living_world`: `parse_census_grid`, `LivingWorldTables` (census records resolved through the
+  category groups, ranges, `apply_to` the config), `skater_characters` (free-roam pool; unrecruited teammates
+  left out), `skater_lines` (ambient lines, start node, heading).
+- `skate-game::living_world` (`LivingWorldPlugin`): `LivingWorldSettings` (per kind enabled / density, ambient
+  skater count, Free Play options, zombie, net role, seed, debug log; defaults = retail), `PopulationState`,
+  `LivingWorldObservers`; `FixedUpdate` after physics: load the district's data on map change, gather the local
+  skater's deck position / velocity and the multiplayer state, run the due console ticks, write
+  `LivingWorldSpawn` / `LivingWorldDespawn`. `SKATE_LIVING_WORLD=0` turns it off, `SKATE_LIVING_WORLD_DEBUG=1`
+  logs a summary every 5 s.
+
+Multiplayer seams (user, 2026-10-04: "build everything with multiplayer support, just dont add the multiplayer
+yet, we can have it ready for that to be added however."): a decision is a pure function of (config, seed, tick,
+observers, slot budget); it runs in one place (`NetRole` Standalone / Host; a Client never decides and mirrors
+records with `PopulationState::apply_records`). The core takes a list of observers (culls use all of them; the
+spawn pass rotates through them; one observer = retail). Every entity has a stable `LivingWorldId` (kind + serial,
+never reused in a session); records carry kind, id, tick, position, heading, the entity's own seed and the choice
+(census record + category, or line id + character + slot) and serialise as `WireRecord`. Rosters are `BTreeMap`s;
+no frame-time dependence. No transport or replication code. Retail default stays: nothing ambient spawns online.
+
+Moddability: every rule value is a public config field (code defaults, data ranges), settings are one resource,
+ids are stable, decisions are messages any system (or a mod bridge) can read. `sdk.living_world` population
+surface (planned, not built in this milestone): `set_density(kind, scale)`, `set_enabled(kind, bool)`,
+`set_ambient_skaters(n)`, census record / range patches through `living_world.json` (content overlay), events
+`spawned` / `despawned` {kind, id, reason, record, category | line, character}; on mod disable the settings return
+to `LivingWorldSettings::default()` and mod-spawned entities are despawned (`DespawnReason::External`).
+
+Files: `crates/skate-core/src/living_world/{mod,census,clock,config,population,rng,skaters,tests}.rs`,
+`crates/skate-core/src/lib.rs`, `crates/skate-data/src/living_world.rs`, `crates/skate-data/src/lib.rs`,
+`crates/skate-data/tests/living_world_data.rs`, `crates/skate-game/src/living_world/{mod,tests}.rs`,
+`crates/skate-game/src/{main,app}.rs`.
+
+Verification (milestone 2):
+- `cargo test -p skate-core --release --locked living_world`: 24 tests (circle lerp, ring, caps, category roll,
+  initial populate, one spawn per pass in rotation, cull radii, unpainted = none, vehicles 80-100 / 110 / 30, Free
+  Play scale and zero removes all at once, online spawns nothing but culls, zombie, skaters 3 / phase 30 /
+  60-90 m / 5 m rule / 120 m cull / Free Play off / online excess / shared slots, same inputs same stream, ids
+  unique and a client mirror equals the host).
+- `cargo test -p skate-data --release --locked --lib living_world` (2) and, with `SKATE3_ASSET_ROOT`,
+  `--test living_world_data` (4): caps and ranges exact on the export, the three grids parse, a DownTown run keeps
+  15 peds max and 30 cars with every spawn in its ring, 38 pool characters and 1,691 lines.
+- `cargo test -p skate-game --release --locked --bin skate3rust -- living_world::` (4): a fake player drives a
+  path in a headless app; counts, radii, determinism at 60 and 144 Hz, wire round trip, client role, online,
+  settings.
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).
@@ -78,10 +169,12 @@ Files: `crates/skate-data/src/aipath.rs`, `crates/skate-data/tests/aipath_data.r
 ## Plan (milestones inside the one PR)
 
 Shared core: population engine (`skate-core::living_world`, seeded, Free Play scaling, slots shared with online
-players), crowd renderer and kinematic proxies, `sdk.living_world`. NPC skaters: replay tier, AI, simulated tier.
+players; **done, milestone 2**), crowd renderer and kinematic proxies, `sdk.living_world`. NPC skaters: replay tier, AI, simulated tier.
 Pedestrians: body and animation, navigation, behaviour runtime, skater interaction, plugins and hand props.
-Traffic: data, driving (lanes, junctions, lights, queuing, parked cars), bodies and collisions, **skitching** (grab,
-the car's skitch state, the skater's side, mod hooks), audio publishing into #32. Then Free Play, zombie mode and the
+Traffic (V0 to V8): data (vehicle tables, 18 car GLBs and tints, lanes / junctions / signals), road graph and signal
+clock, vehicle census, cars on screen with `TrafficAudio`, the driver (planner, queues, horns, skids, manoeuvres,
+parking, alarm), car colliders in the skater solve (roof landings, bails), **skitching** (grab conditions, the car's
+skitch state, the skater's side, mod hooks, fixture tests from two recorded sessions), the vehicle mod surface. Then Free Play, zombie mode and the
 standing pros, multiplayer (retail default: nothing online; opt-in host-authoritative). The PR description keeps the
 checklist.
 
@@ -93,13 +186,21 @@ stops. Extends engine modding; there is no retail to match.
 
 ## Credits
 
-skate3recomp / rexglue / Xenia (retail code reference); DumbadsSkate3ModdingTools by Ethanw05 (credits to SunJay,
+skate3recomp by @mchughalex (rexglue SDK, Xenia), the reference for how the retail code is used; DumbadsSkate3ModdingTools by Ethanw05 (credits to SunJay,
 Dumbad, RenderWareGavin and Tuukkas) for the AIPATH field names, NavPower constants and trigger types, used as a
 format reference, no code copied; @andrewnakas' `mx/vehicle` fork as prior work on a (player-driven) vehicle Lua API,
 described, not copied.
 
 ## Open questions
 
+- Population core (milestone 2): retail reads the census count once per spawn pass (`r23` in `sub_826B9940`), so
+  during the initial populate the cap would not bind and only the factory (pool 31) would; the recomp sessions show
+  at most 15 peds in 15-cap areas, so we re-read the count per spawn (identical outside the initial populate). Also
+  open: the vehicle pool size; the character pool's release rule (`sub_8245B400`; we release the oldest unused
+  entry that fits no nearby line, and load at once instead of streaming); the line / profile capability bits
+  (profile `+144..+146` unnamed; fit = allowed-skater bit or a matching flag bit); the per-skater stuck despawn
+  (`skater+1804` vfunc 76 < 0.2) and the requested-character queue; mode 2 (45 m / 20 m cull, 4-30 m ring); the
+  forward offset uses the horizontal velocity direction; spawn points are not snapped to the nav mesh / ground yet.
 - Teammate looks at runtime: what writes the binding (recruit menu, save importer or mod).
 - AIPATH: branch weight meaning, node flag bit 4, orientation order, `m_ID` bytes 6 to 15; the 38 `ai_skater`
   tunables.
@@ -107,4 +208,6 @@ described, not copied.
   ATMs, fountains are placed objects, not waypoint streams).
 - Ped rig: the converted models carry 39 bones, the animation bank 50; matched by name in the ped-body milestone.
 - How retail picks among shared-look entities (`sub_826B8B88`).
-- Traffic: the design pass is running.
+- Traffic: lane snapping at spawn, the census +144 reader, junction connector / approach fields and which light
+  each approach uses, the skid flag writer, the skitch grab / attach / release numbers, the vehicle bail thresholds.
+  New recomp hooks (skitch, lights, connectors, vehicle bails) and a few short play sessions will measure them.

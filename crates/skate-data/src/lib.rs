@@ -22,3 +22,4 @@ pub mod xex;
 pub mod ocean_pca;
 pub mod trigger_volumes;
 pub mod aipath;
+pub mod living_world;

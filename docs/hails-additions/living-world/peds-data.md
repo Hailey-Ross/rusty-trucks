@@ -47,7 +47,7 @@ moodresults, knowledge, protect, patrolzone), `_moodeventcategories`, `_models`,
 ### <District>.census.bin (little-endian, documented in `write_census_grid`)
 `LWCENSUS`, u32 version 1, f32 cell (4 m), f32 origin x/z, u32 width/height, u32 layer count, u32 name count, per layer
 32-byte name + u32 offset, names (u16 length + ASCII), then per layer width x height u16 cells (row-major z then x;
-0 = unpainted, retail falls back to `default`; k = name k-1). Cell value = the record at the cell centre, from the exact
+0 = unpainted: for peds and vehicles no record and cap 0, `sub_826B8A28`, see doc 26 milestone 2; k = name k-1). Cell value = the record at the cell centre, from the exact
 quadtree (`audio_formats.region_key`). Sizes: DownTown 384 x 448, Industrial 640 x 288, University 384 x 448 cells.
 Layer keys are the vault hash of the `livingworld_census` record name [data] (all keys resolved).
 Records painted: DownTown aletown, business_center, mall, memorial, residential (+ vehicles dwntwn); Industrial
