@@ -1,0 +1,26 @@
+# Known issues (hails-additions)
+
+The current known issues of the `hails-additions` branch, kept in step with the latest fork release
+([early-alpha-1](https://github.com/Hailey-Ross/rusty-trucks/releases/tag/early-alpha-1)). Fixed items move
+out of this list into the change's own document.
+
+## Known issues
+
+From the latest play tests (fixes in progress for #52):
+- **Carrying props:** while holding a prop you get pushed forwards or slightly to the side and cannot move fully freely (carry movement is not retail's yet, and stepping up curbs while dragging is lost). The grab lands close to the prop's edge but not exactly on it. A dragged bench can fall through the ground, especially near the curb by the DownTown default spawn. Your skateboard stays with you when you grab a prop (retail drops it on the floor).
+- **NPC skaters:** after switching to another recorded line one can ride backwards (facing one way, moving the other), including through grinds. Some animations still look stiff, grabs show an ollie, and trick height, grind variety, landings, spins and fakie / goofy are not finished. They push props but do not steer round obstacles or bail on heavy props yet.
+- **Pedestrians:** one can stand idle in the air above the wide DownTown stairs; one model walks stiffly and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail.
+- **Cars:** pedestrians pass straight through cars (retail cars knock them down). Paint colours and glass are estimates (the vehicle shader is not decoded yet).
+- **NPC draw distance** (Pause > GRAPHICS) is a quality-of-life option, not retail; higher settings cost frame time.
+- **Grinding:** some grind locations make you bail at random. This also happens on upstream `main`, so it is not caused by this fork's changes; a fix is planned.
+- Known upstream test failures (also on `main`): `pipelines_accept_valid_group_outputs_when_fingerprint_changes` (skate-game), `a_moving_group_8_body_...` and `predictive_contacts_and_retention_...` (skate-core).
+
+## Known missing features
+
+- **NPC skaters:** full skater physics and bails, trick choice from the retail profiles, grabs, grind variety, landings, spins, fakie and goofy, obstacle avoidance.
+- **Pedestrians:** behaviour (perception, moods, reactions), stumbling and knock-downs, warnings, chases and takedowns, speech and conversations, hand props, benches, phones and vending machines.
+- **Traffic:** cars do not stop for you, honk, change lanes or park yet; no car collisions, roof landings or bails from cars; no skitching.
+- **Movable objects:** retail object streaming by distance, per-type physics values from the game data, the safety layer and reset rule, grindable props.
+- **Modes:** Free Play options (Traffic, Pedestrians, A.I. Skaters), zombie mode, the standing pros.
+- **Multiplayer for the living world:** built ready for it, no networking yet.
+- **Teammate recruit menu:** teammate looks come from `settings/living_world_teammates.json` until the menu system exists.

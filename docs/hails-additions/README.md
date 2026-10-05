@@ -7,6 +7,8 @@ it was verified, and what is still open.
 
 Each document stands alone. File paths are relative to the repository root.
 
+Current known issues and missing features of this branch: [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
+
 | # | Change | Area | Status |
 |---|---|---|---|
 | 1 | [ISO extraction argument order](01-iso-extraction.md) | Setup (Python) | Superseded: upstream fixed it the same way (`713fe70`, `7ae67f2`, 2026-10-02); dropped from PR A |
