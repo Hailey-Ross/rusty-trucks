@@ -100,7 +100,8 @@ impl Prefetch {
         }
     }
 
-    /// Whether the bank was requested and not taken or dropped since.
+    /// Whether the bank was requested and not taken or dropped since (tests).
+    #[cfg(test)]
     pub(crate) fn contains(&self, stem: &str) -> bool {
         self.slots.contains_key(stem)
     }
