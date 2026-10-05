@@ -20,13 +20,17 @@ for updates on upstream.
   `release.json`, and bakes it into the updater as a generated module
   (`target/updater-build/generated/release_repository.py`, added through PyInstaller `--paths`).
 - `updater.py` takes `REPO` from the baked module, then `SKATE3RUST_REPOSITORY`, then the upstream default.
-- On `Hailey-Ross/rusty-trucks`, pushes to `hails-additions` also publish a rolling `hails-additions` prerelease
-  through the existing `publish_branch.py`. Numbered releases (the `release: published` event) work on any
-  repository as before.
+- A manual run (`workflow_dispatch`) takes an optional `release_tag`: it builds for that existing release and
+  attaches the package, like the `release: published` event (rebuild a release without republishing it).
+- On `Hailey-Ross/rusty-trucks` only `hails-additions` builds. The fork-only `fork-release.yml` (guarded by the
+  repository name, so it never runs upstream) builds pushes to `hails-additions` into a rolling `hails-additions`
+  prerelease, and builds releases and manual runs. The shared `release.yml` is disabled in the fork's Actions
+  settings: every branch carries its own copy of it, so a branch filter in one copy would not stop the others.
 
 ## Files
 
 - `.github/workflows/release.yml`
+- `.github/workflows/fork-release.yml`
 - `scripts/Build-Release.ps1`
 - `tools/updater.py`
 

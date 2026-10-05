@@ -1,29 +1,30 @@
-name: Windows release
+# Fork-only release build for Hailey-Ross/rusty-trucks: builds only hails-additions (push), its releases and
+# manual runs. The shared release.yml is disabled on the fork so other branches never build there.
+name: Fork release (hails-additions)
 on:
   push:
-    branches: ['**']
+    branches: [hails-additions]
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Existing release to build for and attach the package to (empty: a branch build)'
+        description: 'Existing release to build for and attach the package to (empty: the rolling hails-additions build)'
         required: false
         default: ''
 permissions:
   contents: read
 env:
-  # Forks build, publish and update from their own repository.
   SKATE3RUST_REPOSITORY: ${{ github.repository }}
 jobs:
   windows:
-    if: github.event_name != 'release' || github.event.release.tag_name != 'experimental'
+    if: github.repository == 'Hailey-Ross/rusty-trucks' && (github.event_name != 'release' || github.event.release.tag_name != 'experimental')
     runs-on: windows-2025
     timeout-minutes: 90
     env:
       SCCACHE_GHA_ENABLED: "true"
     concurrency:
-      group: windows-build-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || github.ref }}
+      group: fork-build-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
@@ -68,12 +69,12 @@ jobs:
             target/release.json
   publish:
     needs: windows
-    if: github.event_name == 'release' || inputs.release_tag != '' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/skyline-driving-update'
+    if: github.repository == 'Hailey-Ross/rusty-trucks' && (github.event_name == 'release' || inputs.release_tag != '' || github.ref == 'refs/heads/hails-additions')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     concurrency:
-      group: windows-release-publish
+      group: fork-release-publish
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -81,17 +82,12 @@ jobs:
         with:
           name: skate3rust-windows-x64
           path: target
-      - name: Publish rolling experimental
-        if: github.event_name != 'release' && inputs.release_tag == '' && github.ref == 'refs/heads/main'
+      - name: Publish rolling hails-additions prerelease
+        if: github.event_name != 'release' && inputs.release_tag == ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python tools/publish_experimental.py --directory target
-      - name: Publish branch release
-        if: github.event_name != 'release' && inputs.release_tag == '' && github.ref == 'refs/heads/skyline-driving-update'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python tools/publish_branch.py --directory target --branch skyline-driving-update
-      - name: Attach numbered release
+        run: python tools/publish_branch.py --directory target --branch hails-additions
+      - name: Attach release package
         if: github.event_name == 'release' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
