@@ -192,12 +192,51 @@ impl Evaluator {
         }
     }
 
+    /// The id the next post gets.
+    pub fn next_node(&self) -> u32 {
+        self.next_node
+    }
+
+    /// Continue another evaluator's post ids (a host that replaces its runtime: node ids the old
+    /// one handed out must never name a post of the new one). 0 is never an id.
+    pub fn continue_nodes(&mut self, next: u32) {
+        self.next_node = next.max(1);
+    }
+
     pub fn tick_scale(&self) -> f32 {
         self.tick
     }
 
-    pub fn install_project(&mut self, project: &crate::formats::Project) {
-        self.registry.install(project);
+    /// Install a Csis project; returns its token ([`Evaluator::uninstall_project`]).
+    pub fn install_project(&mut self, project: &crate::formats::Project) -> u64 {
+        self.registry.install(project)
+    }
+
+    /// The loaded banks whose modules bind a symbol of the installed project `token` (a class or a
+    /// handle): the banks a host must replace or unload before / after taking the project out.
+    pub fn banks_using_project(&self, token: u64) -> Vec<usize> {
+        let Some(ids) = self.registry.records_of(token) else { return Vec::new() };
+        self.banks
+            .iter()
+            .enumerate()
+            .filter_map(|(b, lb)| {
+                let lb = lb.as_ref()?;
+                let uses = lb.modules.iter().any(|m| {
+                    m.class.is_some_and(|c| ids[1].contains(&c))
+                        || m.handles.values().any(|s| match *s {
+                            SymRef::Function(f) => ids[0].contains(&f),
+                            SymRef::Class(c) => ids[1].contains(&c),
+                            SymRef::Global(g) => ids[2].contains(&g),
+                        })
+                });
+                uses.then_some(b)
+            })
+            .collect()
+    }
+
+    /// Take an installed project out (see `Registry::uninstall`); false for an unknown token.
+    pub fn uninstall_project(&mut self, token: u64) -> bool {
+        self.registry.uninstall(token).is_some()
     }
 
     /// Install a bank: resolve its exports and register its modules on their classes. Projects
@@ -208,6 +247,23 @@ impl Evaluator {
         // ever). Safe to reuse: unloading destroyed the bank's instances and dropped its
         // constructors; ids are only keys (posts reach banks in constructor order, not id order).
         let id = self.banks.iter().position(Option::is_none).unwrap_or(self.banks.len());
+        let modules = self.bind(&bank);
+        for (m, module) in modules.iter().enumerate() {
+            if let Some(c) = module.class {
+                self.registry.classes[c].constructors.push((id, m));
+            }
+        }
+        let loaded = Some(LoadedBank { bank, modules });
+        match self.banks.get_mut(id) {
+            Some(slot) => *slot = loaded,
+            None => self.banks.push(loaded),
+        }
+        id
+    }
+
+    /// Resolve a bank's exports against the installed projects: each module's class and the
+    /// handles inside its template.
+    fn bind(&self, bank: &Bank) -> Vec<LoadedModule> {
         let mut modules: Vec<LoadedModule> = bank
             .modules
             .iter()
@@ -225,17 +281,98 @@ impl Evaluator {
                 }
             }
         }
-        for (m, module) in modules.iter().enumerate() {
-            if let Some(c) = module.class {
-                self.registry.classes[c].constructors.push((id, m));
+        modules
+    }
+
+    /// Replace a loaded bank in place (an audio content hot swap, no restart): its live instances
+    /// are destroyed (voices released, ControlClass children released), the new bank takes the
+    /// same id and, in every class's constructor list, the place the old bank's modules had (a
+    /// class it newly binds gets it last, as a load would). Every post still held by its poster
+    /// whose class the new bank binds gets the new bank's instances at once, with the post's
+    /// payload (its last words: those of the destroyed instance, else of another instance of the
+    /// post), as if the bank had been loaded with this content when the post was made. Creating
+    /// instances draws nothing from the random generator; the new instances join the walk as the
+    /// newest. Posts are re-instanced in post-id order (deterministic). Returns the posts that got
+    /// instances.
+    pub fn replace_bank(&mut self, id: usize, bank: Bank, host: &mut dyn VoiceHost) -> Vec<NodeId> {
+        // The posts' payloads before anything goes: every ClassData client of a post holds the
+        // post's last words up to its own count, so the longest is the most complete.
+        let mut payloads: HashMap<u32, Vec<i32>> = HashMap::new();
+        for (&node, n) in &self.nodes {
+            let best = n.class_data.iter().filter_map(|&(inst, _)| self.payload_of(inst)).max_by_key(Vec::len);
+            if let Some(words) = best {
+                payloads.insert(node, words);
             }
         }
-        let loaded = Some(LoadedBank { bank, modules });
+        let doomed: Vec<u32> = self.order.iter().copied().filter(|&i| self.instance(i).is_some_and(|x| x.bank == id)).collect();
+        for i in doomed {
+            self.destroy(i, host);
+        }
+        // Where the old bank sat in each class's constructor list.
+        let mut places: HashMap<usize, usize> = HashMap::new();
+        for (c, class) in self.registry.classes.iter_mut().enumerate() {
+            if let Some(at) = class.constructors.iter().position(|&(b, _)| b == id) {
+                places.insert(c, at);
+            }
+            class.constructors.retain(|&(b, _)| b != id);
+        }
+        let modules = self.bind(&bank);
+        let mut bound: Vec<usize> = Vec::new();
+        for (m, module) in modules.iter().enumerate() {
+            let Some(c) = module.class else { continue };
+            let list = &mut self.registry.classes[c].constructors;
+            match places.get_mut(&c) {
+                Some(at) => {
+                    let at_now = (*at).min(list.len());
+                    list.insert(at_now, (id, m));
+                    *at = at_now + 1;
+                }
+                None => list.push((id, m)),
+            }
+            if !bound.contains(&c) {
+                bound.push(c);
+            }
+        }
+        let loaded = Some(LoadedBank { bank: Arc::new(bank), modules });
         match self.banks.get_mut(id) {
             Some(slot) => *slot = loaded,
-            None => self.banks.push(loaded),
+            None => {
+                self.banks.resize_with(id, || None);
+                self.banks.push(loaded);
+            }
         }
-        id
+        // Held posts of the bound classes get the new bank's instances (post-id order).
+        let mut held: Vec<u32> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| bound.contains(&n.class) && n.refcount as usize > n.class_data.len() + n.destructors.len())
+            .map(|(&k, _)| k)
+            .collect();
+        held.sort_unstable();
+        for &node in &held {
+            let payload = payloads.remove(&node);
+            let class = self.nodes[&node].class;
+            let count = self.registry.classes[class].constructors.len();
+            for k in (0..count).rev() {
+                let (b, m) = self.registry.classes[class].constructors[k];
+                if b == id {
+                    self.create_instance(node, b, m);
+                }
+            }
+            if let Some(words) = payload {
+                self.redeliver(NodeId(node), &words);
+            }
+        }
+        held.into_iter().map(NodeId).collect()
+    }
+
+    /// An instance's ClassData words (the post's last payload), when its module has that state.
+    fn payload_of(&self, inst: u32) -> Option<Vec<i32>> {
+        let i = self.instance(inst)?;
+        let lb = self.banks.get(i.bank)?.as_ref()?;
+        let off = lb.bank.modules[i.module].class_data_state? as usize;
+        let count = u8_at(&i.mem, off + 16) as usize;
+        Some((0..count).map(|k| i32_at(&i.mem, off + 20 + 4 * k)).collect())
     }
 
     /// Remove a bank: its live instances are destroyed (voices released) and its modules stop

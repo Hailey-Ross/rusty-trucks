@@ -1247,5 +1247,19 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
                           events=MAIN_CAST_EVENTS)
             entry['audio'] = 'speech/maincast'
         manifest.setdefault('speech', {})['maincast'] = entry
+    announcer = audio_root/'english'/'announcerspeech.big'
+    if announcer.is_file():
+        report('Indexing announcer speech')
+        from .world_audio import ANNOUNCER_EVENTS, decode_speech, speech_index, speech_requested
+        index = speech_index(announcer, 'announcer')
+        (output/'speech').mkdir(parents=True, exist_ok=True)
+        (output/'speech'/'announcer.json').write_text(json.dumps(index), encoding='utf-8')
+        entry = {'index': 'speech/announcer.json', 'audio': None}
+        if speech_requested():  # SKATE_SETUP_SPEECH=1: ~41 MB more (the crash line)
+            report('Decoding announcer speech')
+            decode_speech(announcer, index, output/'speech'/'announcer', work/'speech_announcer', vgmstream, _decode, log,
+                          events=ANNOUNCER_EVENTS)
+            entry['audio'] = 'speech/announcer'
+        manifest.setdefault('speech', {})['announcer'] = entry
     (output/'audio_manifest.json').write_text(json.dumps(manifest, indent=1), encoding='utf-8')
     return manifest

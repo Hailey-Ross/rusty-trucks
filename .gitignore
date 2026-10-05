@@ -45,6 +45,8 @@ __pycache__/
 *.abk
 *.bnk
 *.csi
+# The audio content test mod's own Csis project (self-made by its synthesize.py, doc 16 L4).
+!/mods/audio-content-test/audio/dev.csi
 *.ems
 *.grain
 *.mus

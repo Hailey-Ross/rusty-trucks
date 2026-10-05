@@ -2,7 +2,28 @@
 
 Manifest API remains `2`. Feature discovery uses compiled `sdk.capabilities`:
 `engine_access=1`, `command_results=1`, `native_bodies=1`,
-`input_override=1`, `player_physics=2`, `player_overlap=1`, `landed_details=1`.
+`input_override=1`, `player_physics=2`, `player_overlap=1`, `landed_details=1`,
+`audio=4` (1: the mod's own WAVs, `sdk.audio.preload / play / update / stop / stop_all`; 2: posts to retail
+classes, globals, MixMap / global watch, `sdk.audio.info`; 3: `sdk.audio.play` goes through the game's mixer by
+default, with the retail emitter distance law, reverb send and panner (`native = false` keeps the Bevy voice; a
+positional sound's reach defaults to 40 m squared); 4: `sdk.audio.set_mixmap_input` (drive an input of a retail
+MixMap controller, e.g. the Master gains for a duck; owned, released on `nil` / stop) and `sdk.audio.seed`
+(a seedable audio random state for reproducible tests)), `audio_content=3` (an `audio.json` content overlay that
+replaces / adds retail audio by identity while the mod runs; 2: its `rules`; 3: content changes are swapped
+into the running audio without a restart (only a MixMap or grain change restarts it), `audio.json` and its files
+reload while the mod runs (the script keeps running), `add.projects` = the mod's own Csis projects), `audio_events=3`
+(`sdk.audio.subscribe / events`, observe; 2: `sdk.audio.rule`, declarative mute / replace / layer rules whose
+sound plays at the owner of the game's sound by default, following it; `play.at` = `owner` (with an `offset`),
+`world` (a fixed `position`) or `centre`, `play.falloff` the reach; 3: `play.frame = 'owner'` puts the `offset`
+in the owner's axes (right, up, facing), and a rule sound at a published emitter follows it when it moves),
+`audio_tuning=1` (`sdk.audio.set_tuning / tuning / tuned`: player / world / bus / reverb tuning while the mod runs)
+and `world_audio=4` (publishing cars, peds and skaters to the game's world audio; 2: `emitter` and `reverb_zone`
+objects; a mod emitter has its own emitter instance by default, `settings/audio.json` `"mod_emitter_slots":
+"shared"` makes it share retail's 5 with the map's emitters; 3: `slots = 'own'` gives a car or ped its own
+MixMap instance instead of retail's pools; 4: that is the default for a mod's cars and peds, as for its emitters:
+the 16 nearest own cars / 16 nearest own peds (all mods) within retail's list radii play, a farther one waits
+(`read(key).waiting`) and is never refused or moved into retail's pools; `slots = 'shared'` (alias `retail`,
+accepted by 3 too) puts one in retail's pools with the map's objects; `read(key).slots`, `info().own`); all declared in `skate.lua`, reference in `docs/hails-additions/16-audio-modding.md`.
 The host has no injury, vehicle or challenge rules. Those live in Lua.
 
 `deformation=1` adds optional impact-driven mesh/collider deformation.
@@ -35,7 +56,7 @@ available. Menus can create a named pause-menu section and nested pages using
 Catalogs are larger and requested explicitly:
 
 ```lua
-sdk.engine.inspect("catalog", "graphs") -- or "scoring"
+sdk.engine.inspect("catalog", "graphs") -- or "scoring", "audio_catalog", "audio_tuning:<domain>[/path]"
 -- On a later callback:
 local result = sdk.commands.result("catalog")
 if result and result.ok then

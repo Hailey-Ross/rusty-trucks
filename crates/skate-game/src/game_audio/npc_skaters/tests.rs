@@ -568,7 +568,21 @@ struct GrecRow {
     #[serde(rename = "Bk")]
     bk: f32,
     truck: GrecTruck,
+    /// |camera − NPC board| (m): the 3DObjPos block's input 1, which the Player slot's B lookups read.
     distance: f32,
+    /// The NPC board's azimuth in the camera frame (0..65535 clockwise from the view): input 3.
+    azimuth: u32,
+    /// World-space geometry at the row (the camera's view estimated from the camera to the local
+    /// skater, the follow camera's aim): camera, view, the NPC board / velocity, the local board /
+    /// velocity.
+    #[allow(dead_code)]
+    view_from: String,
+    camera: [f32; 3],
+    view: [f32; 3],
+    npc: [f32; 3],
+    npc_v: [f32; 3],
+    local: [f32; 3],
+    local_v: [f32; 3],
 }
 
 #[derive(serde::Deserialize)]
@@ -581,10 +595,16 @@ struct GrecTruck {
 /// The NPC skater's grain bed against the recomp's own NPC bed (data-gated: the install, and
 /// `$SKATE_NPC_GREC/npc_rows_180430.json` from the local tool `npc_grec_rows.py`: session 180430's
 /// GREC rows of the NPC instance's SkateBoard object, filtered by owner, each joined with the NPC's
-/// board (SKATEB, matched by speed) and its distance to the camera). For the straight-roll rows
-/// (|turn| ≤ 0.02, turn intensity and brake slew ~0, wheels down, a truck running) our NPC bed rolls
-/// steadily at the row's speed, material and distance (2 s, the local player's wheels hard) and its
-/// truck 0 A record gain and pitch are compared with the recomp's, per distance band.
+/// board (SKATEB, matched by speed, the local skater's own board left out), the local skater's
+/// board and the camera, interpolated to the row). For the straight-roll rows (|turn| ≤ 0.02, turn
+/// intensity and brake slew ~0, wheels down, a truck running) our NPC bed rolls steadily for 2 s
+/// through the row's own geometry — the NPC at the row's position and velocity (scaled to the row's
+/// ground speed), the camera and the local skater moving with the local board's velocity, the
+/// camera's view fixed — at the row's material, with the local player's wheels hard; its truck 0 A
+/// record gain and pitch are compared with the recomp's, per camera-distance band and per front /
+/// side / back sector. The Player slot's level lookup B2 reads the camera distance (input 1) and the
+/// camera-frame azimuth (input 3) with per-quadrant ranges (4–50 m ahead, 4–40 m at the sides,
+/// 1–30 m behind), so the azimuth matters as much as the distance.
 #[test]
 #[ignore = "needs the private install data and the NPC GREC export"]
 fn npc_bed_follows_the_recomp_rows() {
@@ -593,7 +613,7 @@ fn npc_bed_follows_the_recomp_rows() {
     };
     let Ok(text) = std::fs::read_to_string(std::path::Path::new(&dir).join("npc_rows_180430.json")) else { panic!("missing private data: npc_rows_180430.json") };
     let rows: Vec<GrecRow> = serde_json::from_str(&text).unwrap();
-    let straight: Vec<&GrecRow> = rows.iter().filter(|r| r.wheels > 0 && r.air == 0 && r.truck.running != 0 && r.turn.abs() <= 0.02 && r.i.abs() < 0.02 && r.bk < 0.02 && r.material != 143).collect();
+    let straight: Vec<&GrecRow> = rows.iter().filter(|r| r.wheels > 0 && r.air == 0 && r.speed >= 1.0 && r.truck.running != 0 && r.turn.abs() <= 0.02 && r.i.abs() < 0.02 && r.bk < 0.02 && r.material != 143).collect();
     assert!(straight.len() >= 100, "{} straight rows", straight.len());
     let Some((library, mxb)) = install() else { panic!("missing private data: no install with a MixMap") };
     let Some(local_bed) = super::super::grain_bed::Bed::new(&library) else { panic!("missing private data: no grain recordings / tuning") };
@@ -601,75 +621,106 @@ fn npc_bed_follows_the_recomp_rows() {
     let contact_tuning = library.contacts_tuning();
     let (wheels, clothing) = (Default::default(), Default::default());
     let t = Tuning { player: &tuning, contacts: &contact_tuning, wheels: &wheels, clothing: &clothing };
-    // One run per (2 m distance, 1 m/s speed, material) bin.
-    let mut bins: BTreeMap<(i32, i32, u32), Vec<&GrecRow>> = BTreeMap::new();
+    let dt = 1.0 / 30.0;
+    // The row's moment is frame AT of the 60-frame run.
+    const AT: usize = 54;
+    let sector = |az: u32| -> &'static str {
+        match (az as f32 / 65535.0 * 360.0) as i32 {
+            45..=134 => "right",
+            135..=224 => "back",
+            225..=314 => "left",
+            _ => "front",
+        }
+    };
+    // (camera-distance band, sector) → (recomp gains, our gains, recomp pitches, our pitches).
+    type Band = (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>);
+    let mut by_band: BTreeMap<(i32, &str), Band> = BTreeMap::new();
+    let mut by_distance: BTreeMap<i32, Band> = BTreeMap::new();
+    let mut ratios = Vec::new();
     for r in &straight {
-        bins.entry(((r.distance / 2.0) as i32, r.speed.round() as i32, r.material)).or_default().push(r);
-    }
-    let camera = [0.0, 1.8, 0.0];
-    let l = Listener { camera, view: [1.0, 0.0, 0.0], camera_velocity: [0.0; 3], followed: [0.0, 1.0, -3.0], facing: [1.0, 0.0, 0.0], followed_velocity: [0.0; 3] };
-    let mut by_band: BTreeMap<i32, (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> = BTreeMap::new();
-    for (&(dbin, sbin, material), members) in &bins {
-        let d = dbin as f32 * 2.0 + 1.0;
-        let v = (sbin as f32).max(0.3);
         let (mut rt, _, parts) = runtime(&library);
         let mut m = MixMap::from_bytes(&mxb).unwrap();
         let mut npc = NpcSkater::new(1, parts, true, true, true);
         let mut bed = (local_bed.for_instance(1), 0u32);
-        let dt = 1.0 / 30.0;
         let mut out = vec![0.0f32; 2 * 1600];
         let (mut gain, mut pitch) = (0.0f32, 0.0f32);
+        // The NPC's horizontal velocity at the row's ground speed (its board's direction).
+        let h = r.npc_v[0].hypot(r.npc_v[2]);
+        let v = r.speed;
+        let npc_v = if h > 0.05 { [r.npc_v[0] / h * v, 0.0, r.npc_v[2] / h * v] } else { [0.0, 0.0, v] };
+        let heading = npc_v[0].atan2(npc_v[2]);
+        let lv = [r.local_v[0], 0.0, r.local_v[2]];
         for f in 0..60 {
-            // Rolling across the camera's view at distance d (along z, at x = d).
-            let z = -0.5 * v * 2.0 + v * f as f32 * dt;
-            let published = AudioState::rolling(&skate_audio::player::state::LiteSkater { position: [d, 0.1, z], velocity: [0.0, 0.0, v], heading: 0.0, material, dt, ..Default::default() });
+            let at = (f as f32 - AT as f32) * dt;
+            let moved = |p: [f32; 3], v: [f32; 3]| -> [f32; 3] { std::array::from_fn(|i| p[i] + v[i] * at) };
+            let position = moved(r.npc, npc_v);
+            let l = Listener {
+                camera: moved(r.camera, lv),
+                view: r.view,
+                camera_velocity: lv,
+                followed: moved(r.local, lv),
+                facing: if lv[0].hypot(lv[2]) > 0.05 { lv } else { r.view },
+                followed_velocity: lv,
+            };
+            let published = AudioState::rolling(&skate_audio::player::state::LiteSkater { position, velocity: npc_v, heading, material: r.material, dt, ..Default::default() });
             let mut s = component_state(&published, false);
             s.dt = dt;
             globals(&mut m);
             let _ = npc.update(&m, &s, t, &mut rt.splice_host());
             bed.1 = bed.1.wrapping_add(u32::from(s.push_trigger));
-            let r = super::super::skate_events::Riding { speed: s.ground_speed, grinding: s.grinding, braking: s.brake, wheels: s.wheel_count, pushes: bed.1, audio: s, ..Default::default() };
+            let rd = super::super::skate_events::Riding { speed: s.ground_speed, grinding: s.grinding, braking: s.brake, wheels: s.wheel_count, pushes: bed.1, audio: s, ..Default::default() };
             let routed = Some((std::mem::take(&mut npc.routed.grains), npc.routed.primary));
-            super::super::grain_bed::step_with(&mut bed.0, &library, &m, &r, dt, &tuning, routed, |apply| apply(&mut rt));
+            super::super::grain_bed::step_with(&mut bed.0, &library, &m, &rd, dt, &tuning, routed, |apply| apply(&mut rt));
             bed.0.write_inputs(&mut m, &s, false);
-            npc.write_inputs(&mut m, &s, &l, [0.0; 3], &tuning);
+            npc.write_inputs(&mut m, &s, &l, lv, &tuning);
             let _ = npc.process(&mut m, &s, t, &mut rt.splice_host());
             let _ = npc.take_collisions();
             m.tick(dt);
             rt.fill_stereo(&mut out);
-            if let Some(g) = rt.npc_grains.as_deref()
-                && f >= 45
+            if f == AT
+                && let Some(g) = rt.npc_grains.as_deref()
                 && g.trucks[0].bound().is_some()
             {
                 gain = g.trucks[0].players[0].record.gain;
                 pitch = g.trucks[0].players[0].record.pitch;
             }
         }
-        let band = (d / 10.0) as i32 * 10;
-        let e = by_band.entry(band).or_default();
-        for r in members {
+        let band = (r.distance / 10.0) as i32 * 10;
+        for e in [by_band.entry((band, sector(r.azimuth))).or_default(), by_distance.entry(band).or_default()] {
             e.0.push(r.truck.a_gain);
             e.1.push(gain);
             e.2.push(r.truck.a_pitch);
             e.3.push(pitch);
         }
+        if r.truck.a_gain > 0.002 && gain > 0.0 {
+            ratios.push(r.truck.a_gain / gain);
+        }
     }
-    let med = |v: &mut Vec<f32>| -> f32 {
+    let med = |v: &[f32]| -> f32 {
+        let mut v = v.to_vec();
         v.sort_by(f32::total_cmp);
         v.get(v.len() / 2).copied().unwrap_or(0.0)
     };
-    eprintln!("NPC bed, straight roll ({} rows of session 180430's NPC GREC rows):", straight.len());
-    eprintln!("  distance   rows   A gain recomp / ours (median)   A pitch recomp / ours");
+    eprintln!("NPC bed, straight roll ({} rows of session 180430's NPC GREC rows, each at its own geometry):", straight.len());
+    eprintln!("  camera distance  sector  rows   A gain recomp / ours (median)   A pitch recomp / ours");
+    for ((band, sec), (a, b, p, q)) in &by_band {
+        eprintln!("  {band:2}-{:<2} m         {sec:6} {:5}   {:.4} / {:.4}                  {:.3} / {:.3}", band + 10, a.len(), med(a), med(b), med(p), med(q));
+    }
     let mut ok = 0;
     let mut n = 0;
-    for (band, (mut a, mut b, mut p, mut q)) in by_band {
-        let rows = a.len();
-        let (a, b, p, q) = (med(&mut a), med(&mut b), med(&mut p), med(&mut q));
-        eprintln!("  {band:2}-{:<2} m  {rows:5}   {a:.4} / {b:.4}                  {p:.3} / {q:.3}", band + 10);
-        if rows >= 20 {
+    eprintln!("  per band (all sectors):");
+    for (band, (a, b, p, q)) in &by_distance {
+        let (ga, gb) = (med(a), med(b));
+        eprintln!("  {band:2}-{:<2} m                {:5}   {ga:.4} / {gb:.4}                  {:.3} / {:.3}", band + 10, a.len(), med(p), med(q));
+        if a.len() >= 20 {
             n += 1;
-            ok += usize::from(b > 0.0 && (a / b) > 0.5 && (a / b) < 2.0);
+            ok += usize::from(gb > 0.0 && (ga / gb) > 0.67 && (ga / gb) < 1.5);
         }
     }
-    assert!(n > 0 && ok * 2 >= n, "the NPC bed's level follows the recomp's in most distance bands");
+    let mut sorted = ratios.clone();
+    sorted.sort_by(f32::total_cmp);
+    let pct = |p: f32| sorted.get(((sorted.len() as f32 - 1.0) * p) as usize).copied().unwrap_or(0.0);
+    eprintln!("  row by row (recomp gain > 0.002): recomp / ours p10 {:.2}, p50 {:.2}, p90 {:.2} (n {})", pct(0.1), pct(0.5), pct(0.9), sorted.len());
+    assert!(n > 0 && ok == n, "the NPC bed's level follows the recomp's in every distance band ({ok} of {n})");
+    assert!(sorted.len() >= 50 && (0.8..1.25).contains(&pct(0.5)), "row by row the median recomp / ours ratio is near 1");
 }

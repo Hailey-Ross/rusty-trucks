@@ -3,6 +3,8 @@
 -- where the mod starts (F9 re-centres on the skater). The game decides who is audible with
 -- retail's limits (4 nearest cars within 40 m, 15 nearest peds within 50 m with footsteps for
 -- the nearest 3, one NPC skater within 30 m); the boxes show it: green = audible, grey = not.
+-- A mod's cars and peds take their own MixMap instances by default (world audio 4); this test asks
+-- for retail's pools (slots = 'shared') unless the "own_slots" setting is on.
 -- Not retail behaviour: the motion, the gait clock, the honk timing and the reactions are this
 -- script's; only the sounds and their rules are the game's port of retail.
 
@@ -47,6 +49,13 @@ local function setting(name, default)
     local v = sdk.settings and sdk.settings[name]
     if v == nil then return default end
     return v
+end
+
+-- Retail's pools unless the setting asks for the default own instances; world audio 3 and older
+-- default to the pools anyway.
+local function slots()
+    if setting("own_slots", false) or (sdk.capabilities.world_audio or 0) < 4 then return nil end
+    return "shared"
 end
 
 local function dist(a, b)
@@ -107,7 +116,8 @@ local function spawn_all()
                     car.engine = "c04_taxi01"
                 end
                 car.position, car.heading = p, h
-                sdk.world_audio.spawn(key, "traffic", { engine = car.engine, position = p, heading = h, speed = 0 })
+                -- parked = retail's StayingParked: an impact can set its alarm off (the game's rule).
+                sdk.world_audio.spawn(key, "traffic", { engine = car.engine, position = p, heading = h, speed = 0, slots = slots(), parked = parked })
                 cars[#cars + 1] = car
             end
         end
@@ -124,7 +134,7 @@ local function spawn_all()
                 length = 6 + (i % 4) * 3, t = rand() * 10, speed = speed,
                 step = ({ walk = 0.55, jog = 0.36, run = 0.27 })[kind], voice = VOICES[1 + (i * 7) % #VOICES],
                 x = 0, sign = 1 }
-            sdk.world_audio.spawn(key, "ped", { voice = ped.voice, position = start })
+            sdk.world_audio.spawn(key, "ped", { voice = ped.voice, position = start, slots = slots() })
             peds[#peds + 1] = ped
         end
     end
@@ -148,7 +158,7 @@ end
 
 local function drive(car, dt)
     if car.parked then
-        sdk.world_audio.update(car.key, { position = car.position, heading = car.heading, speed = 0, load = 0, skidding = false })
+        sdk.world_audio.update(car.key, { position = car.position, heading = car.heading, speed = 0, load = 0, skidding = false, parked = true })
         return
     end
     -- Accelerate to cruise, cruise 3-8 s, brake hard to 3 m/s (skids below -8 m/s²), repeat.
@@ -188,6 +198,27 @@ local function walk(ped, dt, player)
     if warned[ped.key] == 0 and (player.speed or 0) > 3 and dist(p, player.position) < 1.5 then
         sdk.world_audio.event(ped.key, "speech", { value = "warn" })
         warned[ped.key] = 5
+    end
+end
+
+-- Impact demo (the car alarm trigger): while the skater touches a car's box (1.8 x 4.2 m plus 0.4 m for the
+-- skater), report an impact with the skater's speed every frame, as an engine collision would. The game's port
+-- of retail's rule decides: only the parked taxi alarms (contact > 0.1 m/s), each contact restarts its 8 s, the
+-- moving cars ignore it. The touch test is this script's, not retail's collision.
+local function impacts(player)
+    if not player or not player.position then return end
+    local v = player.velocity or { 0, 0, 0 }
+    local speed = math.sqrt(v[1] * v[1] + v[2] * v[2] + v[3] * v[3])
+    for _, car in ipairs(cars) do
+        local p = car.position
+        if p and math.abs(player.position[2] - p[2]) < 2 then
+            local dx, dz = player.position[1] - p[1], player.position[3] - p[3]
+            local c, s = math.cos(car.heading or 0), math.sin(car.heading or 0)
+            local lx, lz = dx * c - dz * s, dx * s + dz * c
+            if math.abs(lx) <= 0.9 + 0.4 and math.abs(lz) <= 2.1 + 0.4 then
+                sdk.world_audio.event(car.key, "impact", { speed = math.min(speed, 200), source = "player" })
+            end
+        end
     end
 end
 
@@ -293,6 +324,7 @@ return {
         end
         for _, car in ipairs(cars) do drive(car, dt) end
         for _, ped in ipairs(peds) do walk(ped, dt, player) end
+        if setting("impacts", true) then impacts(player) end
         react(player)
         -- Ambient chatter (dev only): every 6-10 s the nearest ped shouts (value 2, `1901_shout`).
         chatter_timer = chatter_timer - dt
@@ -318,10 +350,12 @@ return {
         end
         -- Boxes and the readout.
         local audible = { traffic = 0, ped = 0, skater = 0 }
+        local alarm = ""
         for _, c in ipairs(cars) do
             local r = sdk.world_audio.read(c.key)
             local on = r and r.audible
             if on then audible.traffic = audible.traffic + 1 end
+            if r and r.alarm then alarm = string.format("  ALARM %s %.1f s", c.key, r.alarm) end
             box(c.key, c.position, c.heading, { 1.8, 1.4, 4.2 }, on)
         end
         for _, p in ipairs(peds) do
@@ -342,10 +376,10 @@ return {
         end
         local info = sdk.world_audio.info()
         sdk.ui.text("world-audio-test", string.format(
-            "World audio test: cars %d/%d audible, peds %d/%d, skater %d, speech lines %d  (limits %d/%d/%d%s)  %s  [F4 photographer, F5 phone, F6 knock-down, F7 tazer, F8 alarm, F9 re-centre]",
+            "World audio test: cars %d/%d audible, peds %d/%d, skater %d, speech lines %d  (limits %d/%d/%d%s)  %s%s  [run into the parked taxi: its alarm; F4 photographer, F5 phone, F6 knock-down, F7 tazer, F8 alarm, F9 re-centre]",
             audible.traffic, #cars, audible.ped, #peds, audible.skater, info.speech_lines or 0,
             info.instances and info.instances.traffic or 4, info.instances and info.instances.peds or 15,
-            info.instances and info.instances.skaters or 1, info.more_audible and ", more audible" or "", ghost_status))
+            info.instances and info.instances.skaters or 1, info.more_audible and ", more audible" or "", ghost_status, alarm))
     end,
     on_unload = function()
         sdk.ui.text("world-audio-test", "")

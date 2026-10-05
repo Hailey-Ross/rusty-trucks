@@ -20,6 +20,12 @@
       "description": "Twenty pedestrians walking, jogging and running on lines.",
       "default": true
     },
+    "own_slots": {
+      "type": "boolean",
+      "label": "Own instances",
+      "description": "Cars and peds on their own MixMap instances (the mod default since world audio 4) instead of retail's pools: all within reach are heard, up to 16 + 16. Off (this test's default) shows retail's limits.",
+      "default": false
+    },
     "ghost": {
       "type": "boolean",
       "label": "Ghost skater",

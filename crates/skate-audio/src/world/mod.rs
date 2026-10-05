@@ -21,7 +21,9 @@
 //!   reaction → speech event table measured in the recomp; [`speech_manager`]: speech value →
 //!   event, the vault tuning gate and the request words; [`speech_rules`]: the speech library's
 //!   `.evt` rules, line and take choice; [`speech_player`]: the channel's two streams, the
-//!   interrupt / queue rules and the per-frame stream values from the speaker's MixMap owner.
+//!   interrupt / queue rules and the per-frame stream values from the speaker's MixMap owner;
+//! - [`crossfade`]: the zone-ambience crossfade layers a crossfade bank's own program opens per
+//!   group (`c_main_ambience_crossfade`).
 //!
 //! Like the player components (`crate::player::components`), every object is a pure state
 //! machine with retail's split: `process` before the MixMap tick (posts, releases, owner
@@ -30,6 +32,8 @@
 //!
 //! Read from the TU3 recompilation (addresses in each item's docs); reference only, our own code.
 //! Spec notes: `audio-specs/world-traffic-audio.md`, `audio-specs/world-ped-audio.md`, `audio-specs/world-speech.md`.
+pub mod announcer;
+pub mod crossfade;
 pub mod keys;
 pub mod owners;
 pub mod peds;

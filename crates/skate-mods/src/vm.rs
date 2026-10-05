@@ -1,4 +1,4 @@
-use crate::{read_bounded, Manifest};
+use crate::{lua_list::{list, opt_list}, read_bounded, Manifest};
 use mlua::{HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, Table, VmState};
 use serde::Deserialize;
 use serde_json::Value;
@@ -139,6 +139,70 @@ pub enum Command {
     /// screen static and the skater's teleport crackle (retail's `cMsgTeleportEffectAmount`, which the
     /// session marker's Go To Marker hold ramps 0 → 1). Lapses unless sent again each frame.
     AudioTeleportEffect { amount: f32 },
+    /// Audio extension 2: a post to a retail class under a key (`sdk.audio.post`); a key's post
+    /// replaces its last one.
+    AudioPost {
+        key: String,
+        class: String,
+        #[serde(default, deserialize_with = "list")]
+        words: Vec<i32>,
+    },
+    AudioRedeliver {
+        key: String,
+        #[serde(default, deserialize_with = "list")]
+        words: Vec<i32>,
+    },
+    AudioRelease { key: String },
+    /// Set a retail global; no `value` restores the value before this mod's first write.
+    AudioSetGlobal {
+        name: String,
+        #[serde(default)]
+        value: Option<i32>,
+    },
+    /// Replace this mod's watch lists (globals, MixMap outputs) read in `sdk.snapshot.audio`.
+    AudioWatch {
+        #[serde(default, deserialize_with = "list")]
+        globals: Vec<String>,
+        #[serde(default, deserialize_with = "list")]
+        mixmap: Vec<crate::audio::MixMapKey>,
+    },
+    /// Audio events extension 1: receive this mod's audio event rows (`tags` empty = every row;
+    /// no `tags` = stop).
+    AudioSubscribe {
+        #[serde(default, deserialize_with = "opt_list")]
+        tags: Option<Vec<String>>,
+    },
+    /// Audio events extension 2: a mute / replace / layer rule under a key (`rule` absent = remove).
+    AudioRule {
+        key: String,
+        #[serde(default)]
+        rule: Option<crate::audio_rules::Rule>,
+    },
+    /// Audio tuning extension 1: patch a typed tuning domain while the mod runs (`patch` absent =
+    /// restore this mod's patch of the domain).
+    AudioSetTuning {
+        domain: String,
+        #[serde(default)]
+        patch: Option<Value>,
+    },
+    /// Audio extension 4 (doc 16 L2): write one input of a retail MixMap controller (`value` absent
+    /// = release it: the input gets back the value before this mod's first write).
+    AudioSetMixmapInput {
+        slot: String,
+        object: u32,
+        instance: u32,
+        input: u32,
+        #[serde(default)]
+        value: Option<f64>,
+        /// The value is an f32 input (the distance inputs), not an integer word.
+        #[serde(default)]
+        float: bool,
+    },
+    /// Audio extension 4 (doc 16 L5): seed the audio random state (`seed` absent = release it).
+    AudioSeed {
+        #[serde(default)]
+        seed: Option<u64>,
+    },
     /// World audio extension 1: publish a traffic vehicle / ped / skater to the retail world audio.
     WorldAudioSpawn {
         key: String,
@@ -158,6 +222,22 @@ pub enum Command {
         options: crate::world_audio::WorldAudioEventOptions,
     },
     WorldAudioRemove { key: String },
+    /// World audio: name the announcer character (35 / 36; nil = none: free skate's silence).
+    WorldAudioAnnouncer {
+        #[serde(default)]
+        character: Option<u32>,
+    },
+    /// World audio: ask the announcer channel for an event (id or name).
+    WorldAudioAnnounce {
+        event: Value,
+        #[serde(default)]
+        options: crate::world_audio::AnnounceOptions,
+    },
+    /// World audio: tune or disable retail's car alarm trigger (None = back to retail's).
+    WorldAudioAlarmRule {
+        #[serde(default)]
+        options: Option<crate::world_audio::AlarmRuleOptions>,
+    },
     GraphicsMeshBuffer {
         key: String,
         options: crate::graphics_dynamic::MeshBufferOptions,
@@ -262,7 +342,7 @@ pub enum Command {
     },
     GraphicsMesh {
         key: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "list")]
         deform_nodes: Vec<String>,
         /// Package-relative GLB path, or empty for a debug box.
         #[serde(default)]
@@ -390,7 +470,7 @@ impl Command {
         match self {
             Self::RigPart {index,options} => *index<26 && options.as_ref().is_none_or(|o|o.validate()),
             Self::GraphGate {graph,target,index,..} => matches!(graph.as_str(),"action"|"motion") && matches!(target.as_str(),"state"|"transition"|"behavior") && *index<65536,
-            Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"),
+            Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog") || crate::audio_tuning::valid_inspect(system),
             Self::Request {key,command,token} => *token<=9_007_199_254_740_991 && crate::schema::valid_id(key) && !matches!(**command,Self::Request{..}) && command.validate(),
             Self::InputOverride {action,value} => (64..=81).contains(action) && value.is_none_or(|v|v.is_finite() && (-1.0..=1.0).contains(&v)),
             Self::NativeImpulse {body,impulse,point:p,..} => body.validate() && impulse.iter().all(|v|v.is_finite() && v.abs()<=100_000.) && p.as_ref().is_none_or(point),
@@ -413,10 +493,25 @@ impl Command {
             Self::AudioStopAll {} => true,
             Self::AudioFrontend { name } => crate::audio::valid_frontend_name(name),
             Self::AudioTeleportEffect { amount } => amount.is_finite() && (0.0..=1.0).contains(amount),
-            Self::WorldAudioSpawn { key, object, options } => crate::schema::valid_id(key) && options.validate_for(*object),
-            Self::WorldAudioUpdate { key, options } => crate::schema::valid_id(key) && options.validate() && options.source.is_none(),
+            Self::AudioPost { key, class, words } => crate::schema::valid_id(key) && crate::audio::valid_symbol(class) && words.len() <= crate::audio::MAX_WORDS,
+            Self::AudioRedeliver { key, words } => crate::schema::valid_id(key) && words.len() <= crate::audio::MAX_WORDS,
+            Self::AudioRelease { key } => crate::schema::valid_id(key),
+            Self::AudioSubscribe { tags } => tags.as_ref().is_none_or(|t| t.len() <= 16 && t.iter().all(|x| crate::audio::valid_symbol(x))),
+            Self::AudioSetGlobal { name, .. } => crate::audio::valid_symbol(name),
+            Self::AudioRule { key, rule } => crate::schema::valid_id(key) && rule.as_ref().is_none_or(crate::audio_rules::Rule::validate),
+            Self::AudioSetMixmapInput { slot, object, instance, input, value, float } => crate::audio::valid_symbol(slot) && *object <= 127 && *instance <= 31 && *input <= 15
+                && value.is_none_or(|v| v.is_finite() && (*float || (v.fract() == 0.0 && (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&v)))),
+            Self::AudioSeed { .. } => true,
+            Self::AudioSetTuning { domain, patch } => crate::audio_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::audio_tuning::valid_patch(domain, p)),
+            Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
+                && mixmap.len() <= crate::audio::MAX_WATCH && mixmap.iter().all(crate::audio::MixMapKey::validate),
+            Self::WorldAudioSpawn { key, object, options } => crate::schema::valid_id(key) && options.validate_for(*object) && options.complete_for(*object),
+            Self::WorldAudioUpdate { key, options } => crate::schema::valid_id(key) && options.validate() && options.source.is_none() && options.slots.is_none(),
             Self::WorldAudioEvent { key, event, options } => crate::schema::valid_id(key) && options.validate(event),
             Self::WorldAudioRemove { key } => crate::schema::valid_id(key),
+            Self::WorldAudioAnnouncer { character } => crate::world_audio::valid_announcer_character(*character),
+            Self::WorldAudioAnnounce { event, options } => crate::world_audio::valid_announcer_event(event) && options.validate(),
+            Self::WorldAudioAlarmRule { options } => options.as_ref().is_none_or(crate::world_audio::AlarmRuleOptions::validate),
             Self::GraphicsMeshBuffer { key, options } => {
                 crate::schema::valid_id(key) && options.validate()
             }
@@ -662,10 +757,23 @@ fn command_kind(command: &Command) -> &'static str {
         Command::AudioStopAll {} => "audio_stop_all",
         Command::AudioFrontend { .. } => "audio_frontend",
         Command::AudioTeleportEffect { .. } => "audio_teleport_effect",
+        Command::AudioPost { .. } => "audio_post",
+        Command::AudioRedeliver { .. } => "audio_redeliver",
+        Command::AudioRelease { .. } => "audio_release",
+        Command::AudioSetGlobal { .. } => "audio_set_global",
+        Command::AudioWatch { .. } => "audio_watch",
+        Command::AudioSubscribe { .. } => "audio_subscribe",
+        Command::AudioSetTuning { .. } => "audio_set_tuning",
+        Command::AudioRule { .. } => "audio_rule",
+        Command::AudioSetMixmapInput { .. } => "audio_set_mixmap_input",
+        Command::AudioSeed { .. } => "audio_seed",
         Command::WorldAudioSpawn { .. } => "world_audio_spawn",
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
         Command::WorldAudioRemove { .. } => "world_audio_remove",
+        Command::WorldAudioAnnouncer { .. } => "world_audio_announcer",
+        Command::WorldAudioAnnounce { .. } => "world_audio_announce",
+        Command::WorldAudioAlarmRule { .. } => "world_audio_alarm_rule",
         Command::GraphicsMeshBuffer { .. } => "graphics_mesh_buffer",
         Command::GraphicsMeshBufferWrite { .. } => "graphics_mesh_buffer_write",
         Command::GraphicsMeshBufferAppend { .. } => "graphics_mesh_buffer_append",
@@ -960,7 +1068,33 @@ impl Vm {
             capabilities.set("volumes", 1)?;
             capabilities.set("capture", 1)?;
             capabilities.set("multiplayer_debug", 1)?;
-            capabilities.set("world_audio", 1)?;
+            // 2 (2026-10-04, audio/moddability-2): the `emitter` and `reverb_zone` kinds.
+            // 3 (doc 16 L3): `slots = 'own'` (a traffic / ped object on its own MixMap instance).
+            // 4 (doc 16 M3, user decision 2026-10-04): own instances are the default for a mod's
+            // cars and peds (as for its emitters); `slots = 'shared'` (alias `retail`) opts into
+            // retail's pools; `read(key).slots / waiting`, `info().own`.
+            capabilities.set("world_audio", 4)?;
+            // Audio extension 1: the mod's own WAVs (`sdk.audio.preload / play / update / stop /
+            // stop_all`); before 2026-10-04 only `sdk.audio.version` advertised it.
+            // 2 (2026-10-04): retail posts by class, globals, MixMap / global watch, `sdk.audio.info`.
+            // 3 (2026-10-04, audio/moddability-2): `sdk.audio.play` through the native mixer, the
+            // default (user decision 2026-10-04; `native = false` keeps the Bevy voice).
+            // 4 (doc 16 L2 / L5): `sdk.audio.set_mixmap_input` (writable MixMap inputs) and
+            // `sdk.audio.seed` (a seedable audio random state).
+            capabilities.set("audio", 4)?;
+            // Audio content overlays (`audio.json`: replace / add retail audio content by identity;
+            // `audio_content.rs`), applied while the mod runs.
+            // 2 (audio/moddability-2): `rules` in audio.json.
+            // 3 (doc 16 L1 / L4 / L7): content changes are hot-swapped (no restart where exact),
+            // `add.projects` (mod Csis projects), and `audio.json` reloads while the mod runs.
+            capabilities.set("audio_content", 3)?;
+            // Audio events, observe only (`sdk.audio.subscribe` / `sdk.audio.events`).
+            // 2 (audio/moddability-2): mute / replace / layer rules (`sdk.audio.rule`).
+            // 3: a rule sound's `offset` in the owner's frame (`play.frame = 'owner'`), and rule
+            // sounds at a published emitter follow it.
+            capabilities.set("audio_events", 3)?;
+            // Tuning writes at run time (`sdk.audio.set_tuning`: player / world / bus / reverb domains).
+            capabilities.set("audio_tuning", 1)?;
             sdk.set("_native_capabilities", capabilities)?;
             sdk.set("mod_id", manifest.id.clone())?;
             sdk.set(
@@ -1419,7 +1553,9 @@ mod graphics_mesh_buffer_tests {
             )
             .eval::<mlua::Value>()
             .unwrap();
-        assert!(lua.from_value::<Command>(value).is_err());
+        // `uvs = {}` reads as an empty list (`lua_list`), so the 3-vertex write fails validation
+        // (two UVs per vertex) instead of deserialisation; `_submit` rejects it either way.
+        assert!(lua.from_value::<Command>(value).is_ok_and(|c| !c.validate()));
     }
 
     #[test]
@@ -1756,6 +1892,30 @@ mod world_audio_tests {
     use super::*;
     use serde_json::json;
 
+    /// Both audio extensions are advertised in `sdk.capabilities` (feature discovery, as for the
+    /// other extensions), and `sdk.audio.version` still reads 1.
+    #[test]
+    fn audio_capabilities_are_advertised() {
+        let root = std::env::temp_dir().join(format!("skate-audio-capabilities-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            assert(sdk.capabilities.audio == 4, 'audio capability')
+            assert(sdk.capabilities.world_audio == 4, 'world_audio capability')
+            assert(sdk.capabilities.audio_content == 3, 'audio_content capability')
+            assert(sdk.capabilities.audio_events == 3, 'audio_events capability')
+            assert(sdk.audio.version == 4 and sdk.world_audio.version == 4, 'versions')
+            return {}
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.audio-capabilities","api":2,"name":"Audio capabilities","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}
+        })).unwrap();
+        let loaded = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).map(|_| ());
+        std::fs::remove_file(root.join("main.lua")).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+        loaded.unwrap();
+    }
+
     /// The world audio wrappers cross the serde boundary, and the bundled dev test publisher
     /// (`mods/world-audio-test`) runs frames without a Lua error or an invalid command, within the
     /// 128-commands-per-callback limit.
@@ -1773,9 +1933,12 @@ mod world_audio_tests {
         let mut events: BTreeMap<String, usize> = BTreeMap::new();
         let mut photo = Vec::new();
         let mut ghost_voices = Vec::new();
+        let mut impacts = Vec::new();
         for frame in 0..400u32 {
             let t = frame as f32 / 60.0;
-            let snapshot = json!({"tick": frame, "player": {"position": [t * 4.0, 0.0, 0.0], "speed": 4.0,
+            // Frames 320..330: the skater stands in the parked taxi's box (anchor (20, 0, 0) after F9, taxi at +(8, 0.5, 6)).
+            let position = if (320..330).contains(&frame) { [28.0, 0.0, 6.0] } else { [t * 4.0, 0.0, 0.0] };
+            let snapshot = json!({"tick": frame, "player": {"position": position, "velocity": [4.0, 0.0, 0.0], "speed": 4.0,
                 "landing_seq": frame / 100, "bail_seq": frame / 250},
                 "keys": {"F8": frame == 200, "F9": frame == 300, "F7": frame == 100, "F6": frame == 120, "F5": frame == 140, "F4": frame == 160 || frame == 180, "F3": frame == 220, "F2": frame == 240 || frame == 260},
                 "world_audio": {"dev-world-audio-test": {"car1": {"kind": "traffic", "audible": true, "instance": 0}}},
@@ -1792,7 +1955,10 @@ mod world_audio_tests {
                     Command::WorldAudioRemove { key } => {
                         live.remove(key);
                     }
-                    Command::WorldAudioEvent { event, options, .. } => {
+                    Command::WorldAudioEvent { event, options, key } => {
+                        if event == "impact" {
+                            impacts.push((frame, key.clone(), options.speed));
+                        }
                         let name = match (event.as_str(), &options.value) {
                             ("speech", Some(v)) if v == &json!(49) => "phone".to_owned(),
                             ("speech", Some(v)) if v == &json!(29) => "photographer".to_owned(),
@@ -1820,9 +1986,267 @@ mod world_audio_tests {
         assert_eq!(events.get("reaction trick"), Some(&1), "{events:?}");
         assert_eq!(events.get("reaction crash"), Some(&2), "{events:?}");
         assert_eq!(ghost_voices, vec![24, 91]);
+        // The impact demo: one impact per frame while the skater stands in the parked taxi (car16), with its speed.
+        assert_eq!(impacts.len(), 10, "{impacts:?}");
+        assert!(impacts.iter().all(|(f, key, speed)| (320..330).contains(f) && key == "car16" && *speed == Some(4.0)), "{impacts:?}");
         // Everything it publishes at once (+ the ghost) fits the host's per-mod limit: no
         // "World audio object limit reached" (the 16 / 64 limits refused 21 of 37).
         assert!(most + 1 <= crate::world_audio::MAX_OBJECTS_PER_MOD, "{most} + ghost objects");
+    }
+
+    /// The audio extension 2 commands cross the serde boundary (valid, invalid, unknown field)
+    /// and the Lua wrappers submit them; the read helpers find this mod's snapshot rows.
+    #[test]
+    fn audio_api_commands_deserialize_and_validate() {
+        for value in [
+            json!({"kind":"audio_post","key":"siren","class":"c_emitter","words":[32767,16000,0,0,4096,25000,0,0,3]}),
+            json!({"kind":"audio_post","key":"siren","class":"c_emitter"}),
+            json!({"kind":"audio_redeliver","key":"siren","words":[1,2]}),
+            json!({"kind":"audio_release","key":"siren"}),
+            json!({"kind":"audio_set_global","name":"g_snd","value":5}),
+            json!({"kind":"audio_set_global","name":"g_snd"}),
+            json!({"kind":"audio_watch","globals":["g_snd"],"mixmap":[{"slot":"player","object":0,"instance":0,"output":4}]}),
+            json!({"kind":"audio_watch"}),
+            json!({"kind":"engine_inspect","system":"audio_catalog"}),
+            json!({"kind":"audio_subscribe","tags":["pop","land"]}),
+            json!({"kind":"audio_subscribe","tags":[]}),
+            json!({"kind":"audio_subscribe"}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(c.validate(), "{value}");
+        }
+        for value in [
+            json!({"kind":"audio_post","key":"siren","class":"c emitter"}),
+            json!({"kind":"audio_post","key":"../x","class":"c_emitter"}),
+            json!({"kind":"audio_post","key":"siren","class":"c_emitter","words":vec![0; 33]}),
+            json!({"kind":"audio_set_global","name":""}),
+            json!({"kind":"audio_watch","mixmap":[{"slot":"music","output":0}]}),
+            json!({"kind":"audio_watch","mixmap":[{"slot":"player","output":40}]}),
+            json!({"kind":"audio_watch","globals":vec!["g"; 17]}),
+            json!({"kind":"audio_subscribe","tags":["no tag"]}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(!c.validate(), "accepted {value}");
+        }
+        for value in [
+            json!({"kind":"audio_post","key":"siren","class":"c_emitter","typo":1}),
+            json!({"kind":"audio_watch","mixmap":[{"slot":"player","output":1,"extra":2}]}),
+            json!({"kind":"audio_set_global","name":"g","value":1.5}),
+        ] {
+            assert!(serde_json::from_value::<Command>(value.clone()).is_err(), "{value}");
+        }
+        let root = std::env::temp_dir().join(format!("skate-audio-api-lua-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            function M.on_update()
+                sdk.audio.post('siren', 'c_emitter', {32767, 1})
+                sdk.audio.redeliver('siren', {1})
+                sdk.audio.release('siren')
+                sdk.audio.set_global('g_snd', 3)
+                sdk.audio.set_global('g_snd', nil)
+                sdk.audio.watch{mixmap={{slot='emitter', object=0, instance=2, output=4}}}
+                sdk.audio.post('empty', 'c_emitter', {})
+                sdk.audio.watch{globals={'g_snd'}, mixmap={{slot='emitter', object=0, instance=2, output=4}}}
+                local h = sdk.audio.handle('siren')
+                assert(h and h.live == true, 'handle')
+                assert(sdk.audio.global('g_snd') == 7, 'global')
+                local m = sdk.audio.mixmap('emitter', 0, 2, 4)
+                assert(m and m.level == 123, 'mixmap')
+                assert(sdk.audio.info().native == true, 'info')
+                assert(sdk.audio.handle('nope') == nil)
+                sdk.audio.subscribe{tags={'pop'}}
+                sdk.audio.subscribe{tags={}}
+                sdk.audio.subscribe(nil)
+                local rows = sdk.audio.events()
+                assert(#rows == 1 and rows[1].tag == 'pop', 'events')
+                assert(#sdk.audio.events() == 0, 'each serial once')
+            end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.audio-api","api":2,"name":"Audio API","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let snapshot = json!({
+            "audio": {"tests.audio-api": {"handles": {"siren": {"live": true, "class": "c_emitter"}},
+                "watch": {"globals": {"g_snd": 7}, "mixmap": [{"slot": "emitter", "object": 0, "instance": 2, "output": 4, "level": 123}]},
+                "events": {"serial": 4, "rows": [{"kind": "splice", "tag": "pop"}], "truncated": false}}},
+            "audio_info": {"native": true}});
+        let cmds = vm.call("on_update", json!({"dt": 0.016}), &snapshot).unwrap();
+        let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
+        assert_eq!(kinds, ["audio_post", "audio_redeliver", "audio_release", "audio_set_global", "audio_set_global", "audio_watch", "audio_post", "audio_watch", "audio_subscribe", "audio_subscribe", "audio_subscribe"]);
+        // Empty Lua tables reach serde as maps: they still read as empty lists.
+        assert!(matches!(&cmds[5], Command::AudioWatch { globals, mixmap } if globals.is_empty() && mixmap.len() == 1), "globals = {{}}");
+        assert!(matches!(&cmds[6], Command::AudioPost { words, .. } if words.is_empty()), "words = {{}}");
+        assert!(matches!(&cmds[9], Command::AudioSubscribe { tags: Some(t) } if t.is_empty()), "an empty Lua table = every row");
+        assert!(matches!(&cmds[10], Command::AudioSubscribe { tags: None }), "nil stops");
+        assert!(cmds.iter().all(Command::validate));
+        assert!(matches!(&cmds[4], Command::AudioSetGlobal { value: None, .. }), "nil restores");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Audio tuning extension 1: `audio_set_tuning` crosses the serde boundary (valid, invalid,
+    /// unknown field); the tuning read is an `engine_inspect` of `audio_tuning:<domain>[/path]`; the
+    /// Lua wrappers submit both and `audio_tuning` is advertised.
+    #[test]
+    fn audio_tuning_commands_deserialize_and_validate() {
+        for value in [
+            json!({"kind":"audio_set_tuning","domain":"world","patch":{"traffic_engine":{"c04_taxi01":{"idle_rpm":1200}}}}),
+            json!({"kind":"audio_set_tuning","domain":"reverb","patch":{"BEEFC8E3DE04FBAE":{"3":0.5}}}),
+            json!({"kind":"audio_set_tuning","domain":"player"}),
+            json!({"kind":"engine_inspect","system":"audio_tuning:world"}),
+            json!({"kind":"engine_inspect","system":"audio_tuning:world/traffic_engine/c04_taxi01"}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(c.validate(), "{value}");
+        }
+        for value in [
+            json!({"kind":"audio_set_tuning","domain":"mixmap","patch":{"a":1}}),
+            json!({"kind":"audio_set_tuning","domain":"world","patch":{"a":null}}),
+            json!({"kind":"audio_set_tuning","domain":"world","patch":7}),
+            json!({"kind":"engine_inspect","system":"audio_tuning:mixmap"}),
+            json!({"kind":"engine_inspect","system":"audio_tuning:world/../x"}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(!c.validate(), "accepted {value}");
+        }
+        assert!(serde_json::from_value::<Command>(json!({"kind":"audio_set_tuning","domain":"world","patch":{},"owner":"x"})).is_err());
+        let root = std::env::temp_dir().join(format!("skate-audio-tuning-lua-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            function M.on_update()
+                assert(sdk.capabilities.audio_tuning == 1, 'capability')
+                sdk.audio.set_tuning('world', {traffic_engine = {c04_taxi01 = {idle_rpm = 1200}}})
+                sdk.audio.set_tuning('world', nil)
+                sdk.audio.tuning('t', 'world', 'traffic_engine/c04_taxi01')
+            end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.audio-tuning","api":2,"name":"Audio tuning","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
+        let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
+        assert_eq!(kinds, ["audio_set_tuning", "audio_set_tuning", "request"]);
+        assert!(cmds.iter().all(Command::validate));
+        assert!(matches!(&cmds[1], Command::AudioSetTuning { patch: None, .. }), "nil restores");
+        assert!(matches!(&cmds[2], Command::Request { command, .. } if matches!(&**command, Command::EngineInspect { system } if system == "audio_tuning:world/traffic_engine/c04_taxi01")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Audio extension 4 (doc 16 L2, L5): `audio_set_mixmap_input` and `audio_seed` cross the serde
+    /// boundary (valid, invalid, unknown field) and the Lua wrappers submit them (nil releases).
+    #[test]
+    fn mixmap_input_and_seed_commands_deserialize_and_validate() {
+        for value in [
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":2,"instance":0,"input":1,"value":8192}),
+            json!({"kind":"audio_set_mixmap_input","slot":"emitter","object":0,"instance":3,"input":1,"value":12.5,"float":true}),
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":6,"instance":0,"input":0}),
+            json!({"kind":"audio_seed","seed":42}),
+            json!({"kind":"audio_seed"}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(c.validate(), "{value}");
+        }
+        for value in [
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":2,"instance":0,"input":16,"value":1}),
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":200,"instance":0,"input":1,"value":1}),
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":2,"instance":40,"input":1,"value":1}),
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":2,"instance":0,"input":1,"value":0.5}),
+            json!({"kind":"audio_set_mixmap_input","slot":"global","object":2,"instance":0,"input":1,"value":4294967296.0}),
+            json!({"kind":"audio_set_mixmap_input","slot":"bad slot","object":2,"instance":0,"input":1,"value":1}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(!c.validate(), "accepted {value}");
+        }
+        assert!(serde_json::from_value::<Command>(json!({"kind":"audio_seed","seed":1,"owner":"x"})).is_err());
+        assert!(serde_json::from_value::<Command>(json!({"kind":"audio_seed","seed":-1})).is_err());
+        let root = std::env::temp_dir().join(format!("skate-audio-l2l5-lua-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            function M.on_update()
+                assert(sdk.capabilities.audio == 4, 'capability')
+                sdk.audio.set_mixmap_input('global', 2, 0, 1, 8192)
+                sdk.audio.set_mixmap_input('emitter', 0, 0, 1, 3.5, {float = true})
+                sdk.audio.set_mixmap_input('global', 2, 0, 1, nil)
+                sdk.audio.seed(42)
+                sdk.audio.seed(nil)
+                assert(#sdk.audio.mixmap_inputs() == 0)
+            end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.audio-l2l5","api":2,"name":"Audio L2 L5","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
+        let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
+        assert_eq!(kinds, ["audio_set_mixmap_input", "audio_set_mixmap_input", "audio_set_mixmap_input", "audio_seed", "audio_seed"]);
+        assert!(cmds.iter().all(Command::validate));
+        assert!(matches!(&cmds[1], Command::AudioSetMixmapInput { float: true, .. }));
+        assert!(matches!(&cmds[2], Command::AudioSetMixmapInput { value: None, .. }), "nil releases");
+        assert!(matches!(&cmds[3], Command::AudioSeed { seed: Some(42) }));
+        assert!(matches!(&cmds[4], Command::AudioSeed { seed: None }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Audio events extension 2: `audio_rule` crosses the serde boundary (valid, invalid, unknown
+    /// field) and the Lua wrapper submits it (a nil rule removes).
+    #[test]
+    fn audio_rule_commands_deserialize_and_validate() {
+        for value in [
+            json!({"kind":"audio_rule","key":"quiet_pop","rule":{"match":{"tag":"pop"},"action":"mute"}}),
+            json!({"kind":"audio_rule","key":"my_pop","rule":{"match":{"tag":"pop"},"action":"replace","play":{"path":"audio/pop.wav","volume":0.8}}}),
+            json!({"kind":"audio_rule","key":"horns","rule":{"match":{"source":"world","class":"TRAFFIC_HORN"},"action":"layer","play":{"path":"a.wav"},"min_interval":0.3}}),
+            json!({"kind":"audio_rule","key":"quiet_pop"}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(c.validate(), "{value}");
+        }
+        for value in [
+            json!({"kind":"audio_rule","key":"../x","rule":{"match":{"tag":"pop"},"action":"mute"}}),
+            json!({"kind":"audio_rule","key":"x","rule":{"match":{},"action":"mute"}}),
+            json!({"kind":"audio_rule","key":"x","rule":{"match":{"tag":"pop"},"action":"replace"}}),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert!(!c.validate(), "accepted {value}");
+        }
+        assert!(serde_json::from_value::<Command>(json!({"kind":"audio_rule","key":"x","rule":{"match":{"tag":"pop"},"action":"mute"},"extra":1})).is_err());
+        let root = std::env::temp_dir().join(format!("skate-audio-rule-lua-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            function M.on_update()
+                assert(sdk.capabilities.audio_events == 3 and sdk.capabilities.audio_content == 3, 'capabilities')
+                sdk.audio.rule('my_pop', {match = {tag = 'pop'}, action = 'replace', play = {path = 'audio/pop.wav', volume = 0.8}})
+                sdk.audio.rule('my_pop', nil)
+                -- Where the rule's sound plays (2026-10-04): an offset from the owner, a fixed spot.
+                sdk.audio.rule('honk', {match = {tag = 'horn'}, action = 'layer', play = {path = 'a.wav', offset = {0, 1.5, 0}, falloff = {radius = 20}}})
+                sdk.audio.rule('spot', {match = {tag = 'land'}, action = 'replace', play = {path = 'a.wav', at = 'world', position = {1, 2, 3}}})
+                -- Native routing is the default; native = false passes through.
+                sdk.audio.play('a', {path = 'a.wav'})
+                sdk.audio.play('b', {path = 'a.wav', native = false})
+            end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.audio-rule","api":2,"name":"Audio rule","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
+        assert_eq!(cmds.iter().map(command_kind).collect::<Vec<_>>(), ["audio_rule", "audio_rule", "audio_rule", "audio_rule", "audio_play", "audio_play"]);
+        assert!(cmds.iter().all(Command::validate));
+        assert!(matches!(&cmds[0], Command::AudioRule { rule: Some(r), .. } if r.action == crate::audio_rules::RuleAction::Replace && r.on.tag.as_deref() == Some("pop")));
+        assert!(matches!(&cmds[1], Command::AudioRule { rule: None, .. }));
+        assert!(matches!(&cmds[2], Command::AudioRule { rule: Some(r), .. } if r.play.as_ref().is_some_and(|p| p.at == crate::audio_rules::RuleAt::Owner && p.offset == Some([0.0, 1.5, 0.0]) && p.falloff.is_some_and(|f| f.radius == 20.0))));
+        assert!(matches!(&cmds[3], Command::AudioRule { rule: Some(r), .. } if r.play.as_ref().is_some_and(|p| p.at == crate::audio_rules::RuleAt::World && p.position == Some([1.0, 2.0, 3.0]))));
+        assert!(matches!(&cmds[4], Command::AudioPlay { options, .. } if options.native.is_none() && options.wants_native()));
+        assert!(matches!(&cmds[5], Command::AudioPlay { options, .. } if options.native == Some(false)));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1840,14 +2264,157 @@ mod world_audio_tests {
             json!({"kind":"world_audio_update","key":"ped1","options":{"tazing":true,"photo_flag":true}}),
             json!({"kind":"world_audio_update","key":"sk1","options":{"loose_board":1}}),
             json!({"kind":"world_audio_remove","key":"car1"}),
+            json!({"kind":"world_audio_spawn","key":"fountain","object":"emitter","options":{"bank":"water_fountain","patch":81,"position":[0,0,0],"extent":[6,6,6]}}),
+            json!({"kind":"world_audio_spawn","key":"cave","object":"reverb_zone","options":{"preset":"BEEFC8E3DE04FBAE","position":[0,0,0],"extent":[20,8,12]}}),
+            json!({"kind":"world_audio_update","key":"fountain","options":{"volume":0.3,"position":[1,0,0]}}),
+            json!({"kind":"world_audio_spawn","key":"car2","object":"traffic","options":{"slots":"shared"}}),
+            json!({"kind":"world_audio_spawn","key":"car3","object":"traffic","options":{"slots":"own"}}),
+            json!({"kind":"world_audio_spawn","key":"ped2","object":"ped","options":{"slots":"retail"}}),
+            json!({"kind":"world_audio_announcer","character":36}),
+            json!({"kind":"world_audio_announcer"}),
+            json!({"kind":"world_audio_announce","event":"480_slam_pro","options":{"pro":4}}),
+            json!({"kind":"world_audio_announce","event":24703,"options":{"words":{}}}),
+            json!({"kind":"world_audio_event","key":"car1","event":"impact","options":{"speed":3.3}}),
+            json!({"kind":"world_audio_event","key":"car1","event":"impact","options":{"speed":1,"source":"vehicle"}}),
+            json!({"kind":"world_audio_update","key":"car1","options":{"parked":true}}),
+            json!({"kind":"world_audio_alarm_rule","options":{"enabled":false}}),
+            json!({"kind":"world_audio_alarm_rule","options":{"min_impact":1.5,"seconds":4}}),
+            json!({"kind":"world_audio_alarm_rule"}),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert!(c.validate(), "{value}");
         }
         let c: Command = serde_json::from_value(json!({"kind":"world_audio_spawn","key":"x","object":"ped","options":{"engine":"c04_taxi01"}})).unwrap();
         assert!(!c.validate(), "a traffic field on a ped");
+        for incomplete in [json!({"kind":"world_audio_spawn","key":"e","object":"emitter","options":{"bank":"x"}}), json!({"kind":"world_audio_spawn","key":"z","object":"reverb_zone","options":{"extent":[1,1,1]}})] {
+            let c: Command = serde_json::from_value(incomplete.clone()).unwrap();
+            assert!(!c.validate(), "{incomplete}");
+        }
         assert!(serde_json::from_value::<Command>(json!({"kind":"world_audio_spawn","key":"x","object":"bus"})).is_err());
         let c: Command = serde_json::from_value(json!({"kind":"world_audio_update","key":"x","options":{"source":"lite"}})).unwrap();
         assert!(!c.validate(), "the source is fixed at spawn");
+        let c: Command = serde_json::from_value(json!({"kind":"world_audio_update","key":"x","options":{"slots":"shared"}})).unwrap();
+        assert!(!c.validate(), "the slots are fixed at spawn");
+    }
+}
+
+/// An empty Lua table reaches serde as a map. Every list field a script can fill must still read
+/// `{}` as the empty list (`lua_list`), through the real `_submit` path (`Vm` + `api.lua`).
+#[cfg(test)]
+mod empty_table_lists {
+    use super::*;
+    use serde_json::json;
+
+    /// One case per callback (the sandbox has no `pcall`): `ok` cases must submit; `rejected`
+    /// cases must deserialise and then fail validation, never with a serde "expected a sequence".
+    #[test]
+    fn every_list_field_takes_an_empty_table_and_a_list() {
+        let root = std::env::temp_dir().join(format!("skate-empty-lists-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            local req = sdk.commands.request
+            local tri = {{0,0,0},{1,0,0},{0,1,0}}
+            local cases = {
+                -- audio
+                post_empty = function() sdk.audio.post('a', 'c_emitter', {}) end,
+                post_list = function() sdk.audio.post('a', 'c_emitter', {1, 2}) end,
+                redeliver_empty = function() sdk.audio.redeliver('a', {}) end,
+                redeliver_list = function() sdk.audio.redeliver('a', {3}) end,
+                watch_empty = function() sdk.audio.watch{globals={}, mixmap={}} end,
+                watch_list = function() sdk.audio.watch{globals={'g_snd'}, mixmap={{slot='player', output=4}}} end,
+                subscribe_empty = function() sdk.audio.subscribe{tags={}} end,
+                subscribe_list = function() sdk.audio.subscribe{tags={'pop'}} end,
+                post_named_keys = function() sdk.audio.post('a', 'c_emitter', {x=1}) end,
+                -- graphics (raw requests skip the api.lua wrappers that drop empty tables)
+                mesh_empty = function() req('m', {kind='graphics_mesh', key='m', deform_nodes={}}) end,
+                mesh_list = function() req('m', {kind='graphics_mesh', key='m', deform_nodes={'panel'}}) end,
+                write_list = function() req('w', {kind='graphics_mesh_buffer_write', key='b', data={positions=tri, indices={0,1,2},
+                    uvs={0,0, 1,0, 0,1}, normals={{0,0,1},{0,0,1},{0,0,1}}, colors={1,1,1,1, 1,1,1,1, 1,1,1,1}}}) end,
+                write_empty = function() req('w', {kind='graphics_mesh_buffer_write', key='b', data={positions={}, indices={}}}) end,
+                write_uvs_empty = function() req('w', {kind='graphics_mesh_buffer_write', key='b', data={positions=tri, indices={0,1,2}, uvs={}}}) end,
+                write_normals_empty = function() req('w', {kind='graphics_mesh_buffer_write', key='b', data={positions=tri, indices={0,1,2}, normals={}}}) end,
+                write_colors_empty = function() req('w', {kind='graphics_mesh_buffer_write', key='b', data={positions=tri, indices={0,1,2}, colors={}}}) end,
+                append_empty = function() req('a', {kind='graphics_mesh_buffer_append', key='b', data={positions=tri, indices={}, uvs={}, normals={}, colors={}}}) end,
+                append_list = function() req('a', {kind='graphics_mesh_buffer_append', key='b', data={positions=tri, indices={0,1,2}}}) end,
+                wrapper_write = function() sdk.graphics.mesh_buffer_write('b', {positions=tri, indices={0,1,2}, uvs={}}) end,
+                -- ui
+                canvas_empty = function() req('c', {kind='ui_canvas', key='c', options={items={}}}) end,
+                canvas_list = function() req('c', {kind='ui_canvas', key='c', options={items={{key='t', text='hi'}}}}) end,
+                canvas_wrapper_empty = function() sdk.ui.canvas('c', {items={}}) end,
+                menu_items_empty = function() sdk.ui.menu('u', {title='T', items={}}) end,
+                menu_children_empty = function() sdk.ui.menu('u', {title='T', items={{id='a', label='A', children={}}}}) end,
+                menu_children_list = function() sdk.ui.menu('u', {title='T', items={{id='a', label='A', children={{id='b', label='B'}}}}}) end,
+                -- player
+                detach_empty = function() sdk.player.detach{candidates={}} end,
+                detach_list = function() sdk.player.detach{candidates={{0,0,1}}} end,
+                -- physics query (deserialised directly, not via a command)
+                raycast_empty = function() sdk.physics.raycast({0,0,0}, {0,-1,0}, {exclude={}}) end,
+                raycast_list = function() sdk.physics.raycast({0,0,0}, {0,-1,0}, {exclude={'car'}}) end,
+            }
+            function M.on_event(p) cases[p.case]() end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.empty-lists","api":2,"name":"Empty lists","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let mut run = |case: &str| -> Result<Option<Command>, String> {
+            let cmds = vm.call("on_event", json!({"case": case}), &json!({}))?;
+            assert!(cmds.len() <= 1, "{case}");
+            Ok(cmds.into_iter().next().map(|c| match c { Command::Request { command, .. } => *command, c => c }))
+        };
+        let mut one = |case: &str| -> Command { run(case).unwrap_or_else(|e| panic!("{case}: {e}")).unwrap_or_else(|| panic!("{case}: no command")) };
+        assert!(matches!(one("post_empty"), Command::AudioPost { words, .. } if words.is_empty()));
+        assert!(matches!(one("post_list"), Command::AudioPost { words, .. } if words == [1, 2]));
+        assert!(matches!(one("redeliver_empty"), Command::AudioRedeliver { words, .. } if words.is_empty()));
+        assert!(matches!(one("redeliver_list"), Command::AudioRedeliver { words, .. } if words == [3]));
+        assert!(matches!(one("watch_empty"), Command::AudioWatch { globals, mixmap } if globals.is_empty() && mixmap.is_empty()));
+        assert!(matches!(one("watch_list"), Command::AudioWatch { globals, mixmap } if globals == ["g_snd"] && mixmap.len() == 1));
+        assert!(matches!(one("subscribe_empty"), Command::AudioSubscribe { tags: Some(t) } if t.is_empty()));
+        assert!(matches!(one("subscribe_list"), Command::AudioSubscribe { tags: Some(t) } if t == ["pop"]));
+        assert!(matches!(one("mesh_empty"), Command::GraphicsMesh { deform_nodes, .. } if deform_nodes.is_empty()));
+        assert!(matches!(one("mesh_list"), Command::GraphicsMesh { deform_nodes, .. } if deform_nodes == ["panel"]));
+        assert!(matches!(one("write_list"), Command::GraphicsMeshBufferWrite { data, .. }
+            if data.positions.len() == 3 && data.indices == [0, 1, 2] && data.uvs.as_ref().is_some_and(|u| u.len() == 6)
+                && data.normals.as_ref().is_some_and(|n| n.len() == 3) && data.colors.as_ref().is_some_and(|c| c.len() == 12)));
+        assert!(matches!(one("append_empty"), Command::GraphicsMeshBufferAppend { data, .. }
+            if data.positions.len() == 3 && data.indices.is_empty() && data.uvs.as_deref() == Some(&[][..])
+                && data.normals.as_deref() == Some(&[][..]) && data.colors.as_deref() == Some(&[][..])));
+        assert!(matches!(one("append_list"), Command::GraphicsMeshBufferAppend { data, .. } if data.indices == [0, 1, 2] && data.uvs.is_none()));
+        // api.lua's payload builder still drops an empty uvs table (no UVs).
+        assert!(matches!(one("wrapper_write"), Command::GraphicsMeshBufferWrite { data, .. } if data.uvs.is_none()));
+        assert!(matches!(one("canvas_empty"), Command::UiCanvas { options, .. } if options.items.is_empty()));
+        assert!(matches!(one("canvas_list"), Command::UiCanvas { options, .. } if options.items.len() == 1 && options.items[0].key == "t"));
+        assert!(matches!(one("canvas_wrapper_empty"), Command::UiCanvas { options, .. } if options.items.is_empty()));
+        assert!(matches!(one("menu_children_empty"), Command::UiMenu { options, .. } if options.items[0].children.is_empty()));
+        assert!(matches!(one("menu_children_list"), Command::UiMenu { options, .. } if options.items[0].children[0].id == "b"));
+        assert!(matches!(one("detach_empty"), Command::PlayerDetach { options } if options.candidates.is_empty()));
+        assert!(matches!(one("detach_list"), Command::PlayerDetach { options } if options.candidates == [[0., 0., 1.]]));
+        for case in ["raycast_empty", "raycast_list"] {
+            assert!(run(case).unwrap_or_else(|e| panic!("{case}: {e}")).is_none(), "{case}");
+        }
+        // Empty where the command needs entries: read fine, refused by validation.
+        for case in ["write_empty", "write_uvs_empty", "write_normals_empty", "write_colors_empty", "menu_items_empty"] {
+            let e = run(case).expect_err(case);
+            assert!(e.contains("Invalid command arguments") && !e.contains("expected a sequence"), "{case}: {e}");
+        }
+        // A table that is not a list is still refused.
+        let e = run("post_named_keys").expect_err("named keys");
+        assert!(e.contains("expected a list"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Fields that are maps or free values keep reading `{}` as a map / an object.
+    #[test]
+    fn map_fields_keep_empty_tables_as_maps() {
+        let lua = Lua::new();
+        let eval = |src: &str| -> Command { lua.from_value(lua.load(src).eval::<mlua::Value>().unwrap()).unwrap() };
+        assert!(matches!(eval("return {kind='network_state', key='k', value={}}"), Command::NetworkState { value, .. } if value == json!({})));
+        assert!(matches!(eval("return {kind='network_state', key='k', value={1,2}}"), Command::NetworkState { value, .. } if value == json!([1, 2])));
+        assert!(matches!(eval("return {kind='world_audio_event', key='k', event='speech', options={value={}}}"),
+            Command::WorldAudioEvent { options, .. } if options.value == Some(json!({}))));
+        assert!(matches!(eval("return {kind='ui_canvas', key='c', options={}}"), Command::UiCanvas { options, .. } if options.visible && options.items.is_empty()));
+        assert!(matches!(eval("return {kind='world_audio_update', key='k', options={}}"), Command::WorldAudioUpdate { .. }));
     }
 }
