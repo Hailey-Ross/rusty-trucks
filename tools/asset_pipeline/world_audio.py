@@ -13,7 +13,8 @@ pedestrian banks, their vault tuning, and the streamed speech index.
   and the not-follow lists) per speech bank; part of `world_tuning`.
 - `decode_speech(...)`: opt-in (`SKATE_SETUP_SPEECH=1`): each take of the chosen events decoded to a
   mono PCM16 WAV at its own 36 kHz (`speech/livingworld/<clip>/<take>.wav`). All free-roam events are
-  ~9 h of audio (~2.4 GB), so the default setup leaves it out.
+  ~9 h of audio (~2.4 GB), so the default setup leaves it out. The main cast's (`maincastspeech.big`)
+  and the announcer's (`announcerspeech.big`, `ANNOUNCER_EVENTS`) indexes and decodes work the same.
 
 Reading of the disc's own data at setup time; nothing from the game is committed. Formats and the
 mechanism: docs/hails-additions/audio-specs/world-speech.md, world-traffic-audio.md, world-ped-audio.md.
@@ -71,6 +72,13 @@ SPEECH_RECORD = ('Hash_B29C3B2C13D96482', 'default')
 SPEECH_PEAK = {'freq': 'Hash_2C166907CF51DB88', 'gain': 'Hash_EA2C18D9CE5CBA3A', 'q': 'Hash_CF8679F540B82B2B'}
 # The speech echo delay: the camera-distance factor and the refresh in console frames (`sub_824D9370`).
 SPEECH_ECHO = {'delay_factor': ('Hash_BF48032DB145C5B4', 'f32'), 'delay_frames': ('Hash_510BAFA32A76B340', 'i32')}
+# The announcer (skate_audio::world::announcer): an NPC skater's crash asks for `480_slam_pro` within this camera
+# distance (sub_824DB688), and the announcer stream's level multiplier per console language group and challenge byte
+# (sub_824A8250: three entries each, by the line's speaker 35 / 36 / 31). English uses `other`.
+ANNOUNCER_CRASH = 'Hash_887C1D3324B12C4A'
+ANNOUNCER_LEVEL = {'french': 'Hash_CCC18F677B896049', 'french_challenge': 'Hash_CAD1FAC38891DA18',
+                   'german': 'Hash_7A9D965C3AE7BB73', 'german_challenge': 'Hash_E0F263477B891647',
+                   'other': 'Hash_49AE841BE63F9EB7', 'other_challenge': 'Hash_60E0221FD3D6F04B'}
 # The state graph that holds a tazer zap (TazeEntity: TazerCycTime).
 TAZE_GRAPH = 'data/state/livingworldentities/pedestrian/aigraph/pedestrian_wanttotaze.xml'
 
@@ -107,6 +115,10 @@ FREE_ROAM_EVENTS = (101, 102, 104, 105, 108, 109, 110, 201, 202, 203, 204, 205, 
 # 130, pro-on-pro 150 / 151, gestures 338, hit reactions 344 / 335 / 336, warn 500 / 501, greet 601, race 903 / 913,
 # bored 1014). ~3.0 h, ~0.95 GB as 44.1 kHz PCM16; decoded with the living world's (`SKATE_SETUP_SPEECH=1`).
 MAIN_CAST_EVENTS = (101, 104, 130, 150, 151, 201, 202, 335, 336, 338, 344, 500, 501, 601, 903, 906, 913, 1014)
+# The announcer's events an engine sender can request (`announcerspeech.big`, speech bank 3): the NPC pro's crash
+# (480_slam_pro, 571 s, ~41 MB as 36 kHz PCM16). Free skate never plays it (no challenge announcer); the other 62
+# events belong to the challenge modes. Decoded with the living world's (`SKATE_SETUP_SPEECH=1`).
+ANNOUNCER_EVENTS = (480,)
 
 
 def _word(data: str, kind: str):
@@ -188,10 +200,21 @@ def world_tuning(collections: list[dict], record_names: list[str] | None = None,
         f = resolve(*SPEECH_RECORD, field)
         if f is not None:
             voice[name] = _word(f['data'], kind)
+    crash = resolve(*SPEECH_RECORD, ANNOUNCER_CRASH)
+    if crash is not None:
+        voice['announcer_crash_m'] = _word(crash['data'], 'f32')
+    level = {}
+    for name, field in ANNOUNCER_LEVEL.items():
+        f = resolve(*SPEECH_RECORD, field)
+        if f and 'array' in f:
+            level[name] = [_word(item, 'f32') for item in f['array']['items']]
+    if level:
+        voice['announcer_level'] = level
     out['speech_voice'] = voice
     out['speech_tuning'] = speech_tuning(collections)
     out['ped_models'] = ped_models(collections)
     out['traffic_models'] = traffic_models(collections, names)
+    out['vehicle_alarm'] = vehicle_alarm(collections)
     return out
 
 
@@ -210,6 +233,8 @@ PED_MODEL_FIELDS = {
     'Hash_6F2933E977CF40DD': ('cast_bit', 'i32'),     # the main-cast speaker bit (skater speech record +84, word 1)
     'Hash_14FD437D190677C8': ('cast_word', 'i32'),    # the special cast's bit (+88, word 2: characters 30-38)
     'Hash_D6EA428C2B43E23A': ('cast_word2', 'i32'),   # the second word another skater's lines read (150 / 151)
+    'Hash_6F9C8A27E4CD37DC': ('announcer_id', 'i32'), # SPCH3Type_char_ID_Ann: the announcer characters 35 / 36 (1 / 2)
+    'Hash_14B23B4527AF919E': ('announcer_pro', 'i32'),  # SPCH3Type_pro_id_ANN: the word 480_slam_pro names a pro by
 }
 
 
@@ -292,6 +317,47 @@ def traffic_models(collections: list[dict], engine_names: dict) -> dict:
     return out
 
 
+# The car alarm trigger (livingworld_vehicle_characteristics; read by the vehicle's collision callback, recomp
+# sub_82C3C150, and the StayingParked condition StopAlarming sub_82C3A4D0; audio-specs/world-traffic-audio.md
+# "Car alarm trigger"). No shipped vehicle spec overrides either field (all inherit `default`).
+VEHICLE_ALARM_FIELDS = {
+    'Hash_543475921FD9E04A': 'min_impact',  # a parked car's alarm starts when the contact vector's length exceeds this
+    'Hash_E199FC7CEA222809': 'seconds',     # ... and stops when its timer (reset by every such contact) passes this
+}
+
+
+def vehicle_alarm(collections: list[dict]) -> dict:
+    """{'min_impact': f, 'seconds': f} from the `default` vehicle spec, plus {'specs': {spec: {field: f}}} for the
+    specs whose resolved value differs (none in retail). Missing records: {} (the engine keeps its retail defaults)."""
+    from .audio_formats import name_id
+    by_class: dict[str, dict] = {}
+    for c in collections:
+        by_class.setdefault(c['class'], {})[c['key']] = c
+    cls = f'Hash_{name_id("livingworld_vehicle_characteristics"):016X}'
+    records, resolve = _resolver(by_class, cls)
+    default = next((k for k in records if k == 'default' or k == f'Hash_{name_id("default"):016X}'), None)
+
+    def values(key: str) -> dict:
+        out = {}
+        for field, name in VEHICLE_ALARM_FIELDS.items():
+            f = resolve(key, field)
+            if f is not None:
+                out[name] = _word(f['data'], 'f32')
+        return out
+
+    out = values(default) if default else {}
+    specs = {}
+    for key in records:
+        if key == default:
+            continue
+        diff = {k: v for k, v in values(key).items() if out.get(k) != v}
+        if diff:
+            specs[key] = diff
+    if specs:
+        out['specs'] = specs
+    return out
+
+
 # The speech manager's event tuning (vault class read by recomp sub_824ABA18 / sub_824A75F0 /
 # sub_824A8C78; audio-specs/world-speech.md, "Mechanism", "The request").
 SPEECH_CLASS = 'Hash_9C1F48F5D637E275'
@@ -316,6 +382,9 @@ def _tuning_struct(raw: bytes) -> dict:
         'max_player_kmh': f(36),           # +36: … and stay at or below this
         'timer_40': f(40), 'timer_44': f(44),
         'flags_48': list(raw[48:52]),      # +49 / +50 / +51: tested against game flags
+        # +52 / +56: the main cast's repeat time for speaker slots 31 / 30 (models 31 skate_coach and
+        # 30), in place of +24 (sub_824AC560)
+        'repeat_speaker_31': f(52), 'repeat_speaker_30': f(56),
         'zombie': raw[60] != 0,            # +60: allowed while zombie mode is on
     }
 

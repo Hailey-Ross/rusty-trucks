@@ -4749,7 +4749,7 @@ below and not counted.
 | 7, 8 | first emitter start after a load; per-frame map-name / tuning clones | not touched: cosmetic or ≈ 0, as the baseline said | — |
 
 The rest of item 6 was left out: making every component's `Command { words: Vec<i32> }` allocation-free.
-`Command` is public API that the modding PR (#36) builds on, so it needs a fixed-size word array agreed with
+`Command` is public API that the audio modding (doc 16; former #36, now part of #32) builds on, so it needs a fixed-size word array agreed with
 that PR. The world host's ~100 allocations per evaluation are the same pattern.
 
 **Counts behind the choices** (local counters, `real_143434` / `real_215843` / `ollies_log`):
@@ -4836,3 +4836,19 @@ game_audio::`: 43 pass, 28 ignored.
   2,700 ops, ≈ 13 ns each. Hoisting lookups did not move it. A real gain needs a different program
   representation, which is a bigger change.
 - Real-play load numbers need a session on a build with item 0 (`SKATE_AUDIO_TIMING=1`).
+
+### World audio follow-ups: speech inputs, main-cast repeat times and stops, the NPC bed's distance, the NPC slide (2026-10-04, headless)
+
+Full write-up: [15](15-world-audio.md), section "Follow-ups". In short:
+
+- **`Obj:Speech`** in0 / in1 / in4 read the main cast's two streams only (fix: a living-world guard no longer raises
+  in1); in2 (scripted dialogue) and in3 (a main-cast stream flag pair) are never raised in free roam. The near
+  lines' ~0.6 dB is gone since the voice float (near −22 mB, far +45 mB; the VU meter checked and ruled out).
+- **Main cast:** the repeat times of speaker slots 31 / 30 (record `+52` / `+56`, setup + mod tuning); values
+  30 / 51 stop the speaker's playing line before the new request; value 29 requests 141 and then 136. The crash's
+  "cameraman line" is the announcer's `480_slam_pro` (announcer channel not ported).
+- **NPC bed:** the Player slot's level lookups read the camera's distance and azimuth, as the port already did;
+  the data test now uses each recomp row's geometry: 10–20 m 0.050 / 0.054, 20–30 m 0.0091 / 0.0111, row median
+  0.94 (was 0.045 / 0.065 and 0.005 / 0.014 with the NPC always dead ahead). No engine change.
+- **NPC board slide observed** in session 180430 (an NPC bail, two posts, `board_scrapes` 62–68 ms later).
+- Local player byte-identical (e2e bench, all sets).

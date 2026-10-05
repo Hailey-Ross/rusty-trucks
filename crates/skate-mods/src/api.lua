@@ -273,6 +273,9 @@ function sdk.audio.play(key, opts)
         volume=opts.volume or 1, pitch=opts.pitch or 1,
         spatial=opts.spatial ~= false, spatial_scale=opts.spatial_scale or 0.1,
         paused=opts.paused == true, fade_in=opts.fade_in or 0.01,
+        -- Audio extension 3 (capability audio >= 3): the game's native mixer, the default (nil);
+        -- native = false keeps the Bevy voice, native = true requires the native mixer.
+        native=opts.native, falloff=opts.falloff, reverb=opts.reverb, group=opts.group,
     }}
 end
 function sdk.audio.update(key, opts)
@@ -286,25 +289,127 @@ function sdk.audio.stop(key, fade_out)
     submit{kind="audio_stop",key=key,fade_out=fade_out or 0.03}
 end
 function sdk.audio.stop_all() submit{kind="audio_stop_all"} end
+-- Audio extension 2 (capability audio >= 2): the game's own native audio. Keys are scoped to the
+-- calling mod (32 handles per mod, 128 in all, 16 posts per frame); everything is released and
+-- every global restored when the mod stops, fails or reloads, and posts end at a map change.
+sdk.audio.version = 4
+-- Post to a retail class (e.g. 'c_emitter') with up to 32 payload words; a key's post replaces
+-- its last one. Applied at the start of the next audio pass.
+function sdk.audio.post(key, class, words) submit{kind="audio_post",key=key,class=class,words=words or {}} end
+function sdk.audio.redeliver(key, words) submit{kind="audio_redeliver",key=key,words=words or {}} end
+function sdk.audio.release(key) submit{kind="audio_release",key=key} end
+-- value nil restores the value seen before this mod's first write. The first mod to set a global owns it.
+function sdk.audio.set_global(name, value) submit{kind="audio_set_global",name=name,value=value} end
+-- Replace this mod's watch lists: {globals={'name',...}, mixmap={{slot='player', object=0, instance=0, output=4},...}}.
+function sdk.audio.watch(opts)
+    opts = opts or {}
+    submit{kind="audio_watch",globals=opts.globals or {},mixmap=opts.mixmap or {}}
+end
+local function audio_mine() return as_table((as_table(sdk.snapshot.audio) or {})[sdk.mod_id]) or {} end
+-- {live=bool, class=name} for one of this mod's posts (live false after a map change or an audio restart).
+function sdk.audio.handle(key) return ((audio_mine().handles) or {})[key] end
+-- A watched global's value after the last audio pass (or the value this mod set).
+function sdk.audio.global(name)
+    local m = audio_mine()
+    local v = ((m.watch or {}).globals or {})[name]
+    if v == nil then v = (m.set_globals or {})[name] end
+    return v
+end
+-- A watched MixMap output after the last pass: {level=0..32767, raw=0..65535, pitch=4096 = 1.0, half=raw word}.
+function sdk.audio.mixmap(slot, object, instance, output)
+    for _, row in ipairs(((audio_mine().watch) or {}).mixmap or {}) do
+        if row.slot == slot and row.object == (object or 0) and row.instance == (instance or 0) and row.output == output then return row end
+    end
+    return nil
+end
+-- Audio events (capability audio_events): subscribe{tags={'pop','land',...}} (empty = every row),
+-- subscribe(nil) stops. Tags: pop, land, grind_start, grind_end, footstep, horn, alarm, tazer,
+-- body_fall, emitter, zone_change, speech. Observe only, one frame late; at most 256 rows a frame.
+function sdk.audio.subscribe(opts)
+    if opts == nil then submit{kind="audio_subscribe"} else submit{kind="audio_subscribe",tags=opts.tags or {}} end
+end
+local audio_events_serial = nil
+-- The rows of the last frame not returned yet: {kind, source, class, slot, id, owner, tag}.
+function sdk.audio.events()
+    local e = as_table(audio_mine().events)
+    if not e or e.serial == audio_events_serial then return {} end
+    audio_events_serial = e.serial
+    return as_table(e.rows) or {}
+end
+-- {native=bool, map_epoch, generation, restarts, overlays={ids}, conflicts, map={stem, district, ems, sources}, limits, tags}
+function sdk.audio.info() return as_table(sdk.snapshot.audio_info) or {native=false} end
+-- Rules (capability audio_events >= 2): mute / replace / layer the game's own sounds at their post
+-- sites, the same frame: rule(key, {match={tag="pop"}, action="replace", play={path="pop.wav"}});
+-- rule(key, nil) removes it. Removed when the mod stops.
+function sdk.audio.rule(key, rule) submit{kind="audio_rule",key=key,rule=rule} end
+-- Audio extension 4 (capability audio >= 4). MixMap inputs: drive one input (0..15) of a retail
+-- MixMap controller (slot name, object, instance; e.g. 'global', 2, 0 = Master) with an integer
+-- word (opts.float = true: an f32 input); nil releases it (the input's value before the first
+-- write comes back). The first mod to write an input owns it; 16 per mod, 64 in all.
+function sdk.audio.set_mixmap_input(slot, object, instance, input, value, opts)
+    submit{kind="audio_set_mixmap_input",slot=slot,object=object,instance=instance,input=input,value=value,float=(opts and opts.float) or false}
+end
+-- The inputs this mod writes: {{slot=, object=, instance=, input=, value=}, ...}.
+function sdk.audio.mixmap_inputs() return (audio_mine().inputs) or {} end
+-- Seed the audio random state (every audio generator, from the next audio pass) for reproducible
+-- tests; nil releases it (the generators get back their states from the first seed). One owner.
+function sdk.audio.seed(n) submit{kind="audio_seed",seed=n} end
+-- Tuning writes (capability audio_tuning): patch a typed tuning domain ("player", "world", "bus",
+-- "reverb") while this mod runs; applied between audio passes; nil restores this mod's patch of
+-- the domain (everything is restored when the mod stops). The first mod to write a field owns it.
+function sdk.audio.set_tuning(domain, patch) submit{kind="audio_set_tuning",domain=domain,patch=patch} end
+-- Read a domain (or a path inside it, "traffic_engine/c04_taxi01") as the game uses it now:
+-- the value arrives as sdk.commands.result(key).value.
+function sdk.audio.tuning(key, domain, path)
+    sdk.engine.inspect(key, "audio_tuning:" .. domain .. (path and ("/" .. path) or ""))
+end
+-- The tuning fields this mod owns, as applied at the last audio pass ("world_tuning/traffic_engine/...").
+function sdk.audio.tuned() return (audio_mine().tuning) or {} end
+-- The game's own front-end sounds (retail `fe` records by name, played as the game's UI plays them).
+function sdk.audio.frontend(name) submit{kind="audio_frontend",name=name} end
+-- The teleport effect (screen static + the skater's teleport crackle) at amount 0..1; send it every frame to hold it.
+function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",amount=amount} end
 
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and
 -- skaters to the game's retail world audio (the same path engine systems use). Keys are scoped
 -- to the calling mod; 48 objects per mod, 128 in all; an object not updated for 0.5 s is parked;
 -- everything is removed when the mod is disabled or reloaded. The retail limits decide which
 -- objects sound (4 nearest cars within 40 m, 15 nearest peds within 50 m, 1 skater within 30 m).
-sdk.world_audio = { version = 1 }
+-- Version 4: a mod's cars and peds take their own MixMap instance by default (16 + 16, the nearest
+-- own ones play, the rest wait); `slots = 'shared'` puts one in retail's pools instead.
+sdk.world_audio = { version = 4 }
 function sdk.world_audio.spawn(key, kind, opts)
     submit{kind="world_audio_spawn",key=key,object=kind,options=opts or {}}
 end
 function sdk.world_audio.update(key, opts)
     submit{kind="world_audio_update",key=key,options=opts or {}}
 end
--- event: 'horn' {kind=1..5, seconds=s}, 'alarm' (retail's 8 s), 'speech' {value=name or number}
+-- event: 'horn' {kind=1..5, seconds=s}, 'alarm' (retail's 8 s), 'speech' {value=name or number},
+-- 'impact' {speed=m/s, source='player'|'character'|'vehicle'|'object'}: something touched this car; a parked
+-- car (option parked=true, or not updated for 0.5 s) sets its alarm off as retail does (contact > 0.1, 8 s,
+-- every further contact restarts it)
 function sdk.world_audio.event(key, event, opts)
     submit{kind="world_audio_event",key=key,event=event,options=opts or {}}
 end
 function sdk.world_audio.remove(key) submit{kind="world_audio_remove",key=key} end
--- {kind=..., audible=bool, instance=n or nil} for one of this mod's objects (nil if unknown).
+-- The announcer channel (retail's contest commentator, models 35 / 36). Free skate has no announcer
+-- (retail: a pro's crash near the camera asks for 480_slam_pro and finds no line); naming one makes
+-- those requests speak. announcer(nil) clears it (also when the mod stops).
+function sdk.world_audio.announcer(character)
+    submit{kind="world_audio_announcer",character=character}
+end
+-- event: an announcer event id (24576..24751) or name ('480_slam_pro', '422_slam', '480');
+-- opts: {pro=model (its announcer pro id fills word 2), words={...} (the request block from word 0)}.
+function sdk.world_audio.announce(event, opts)
+    submit{kind="world_audio_announce",event=event,options=opts or {}}
+end
+-- Retail's car alarm trigger: opts {enabled=bool, min_impact=m/s, seconds=s} replace the rule's numbers for
+-- every car (engine traffic too); alarm_rule() goes back to retail's. Cleared when the mod stops.
+function sdk.world_audio.alarm_rule(opts)
+    submit{kind="world_audio_alarm_rule",options=opts}
+end
+-- {kind=..., audible=bool, instance=n or nil, parked=bool, alarm=seconds left or nil} for one of this
+-- mod's objects (nil if unknown).
 function sdk.world_audio.read(key)
     local owners = as_table(sdk.snapshot.world_audio) or {}
     return (owners[sdk.mod_id] or {})[key]

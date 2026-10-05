@@ -71,8 +71,9 @@ impl Runtime {
         }
     }
 
-    pub fn install_project(&mut self, project: &Project) {
-        self.eval.install_project(project);
+    /// Install a Csis project; returns its token (`Evaluator::uninstall_project`).
+    pub fn install_project(&mut self, project: &Project) -> u64 {
+        self.eval.install_project(project)
     }
 
     /// Install a bank and its decoded samples (by S10A slot; None plays silence of the right
@@ -82,6 +83,20 @@ impl Runtime {
         let id = self.eval.load_bank(bank);
         self.mixer.add_bank(id, headers, pcm);
         id
+    }
+
+    /// Replace a loaded bank in place (an audio content hot swap; `Evaluator::replace_bank`): the
+    /// same id, its place in the class constructor lists, its volume group; the new samples.
+    /// Voices of the old bank keep their own copy of the samples until their release ends.
+    pub fn replace_bank(&mut self, id: usize, bank: Bank, pcm: Vec<Option<Arc<Pcm>>>) -> Vec<NodeId> {
+        let headers = bank.samples.iter().map(|s| s.1).collect();
+        let group = self.mixer.bank_group(id);
+        let held = self.eval.replace_bank(id, bank, &mut self.mixer);
+        self.mixer.add_bank(id, headers, pcm);
+        if let Some(g) = group {
+            self.mixer.set_bank_group(id, g);
+        }
+        held
     }
 
     pub fn unload_bank(&mut self, id: usize) {

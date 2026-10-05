@@ -424,6 +424,11 @@ impl Mixer {
         }
     }
 
+    /// A registered bank's volume group.
+    pub fn bank_group(&self, bank: usize) -> Option<u8> {
+        self.banks.get(&bank).map(|b| b.group)
+    }
+
     pub fn remove_bank(&mut self, bank: usize) {
         self.banks.remove(&bank);
     }

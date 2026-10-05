@@ -29,7 +29,11 @@
 //! Messages: [`PedSpeechEvent`] (a state graph's `SendSpeechEvent`), [`PedTazerEvent`] (a zap:
 //! the tazer burst), [`PedBodyFallEvent`] (a knock-down animation's `BodyFallType` key),
 //! [`NpcSkaterReactionEvent`] (an NPC skater saw a slam / trick or crashed: its own speech),
-//! [`VehicleHorn`] (hold a horn kind for the caller's time), [`VehicleAlarm`] (retail's 8 s alarm). Set [`LivingWorldAudio`]
+//! [`VehicleHorn`] (hold a horn kind for the caller's time), [`VehicleAlarm`] (retail's 8 s alarm),
+//! [`VehicleImpact`] (something touched a vehicle: retail's car alarm rule sets a [`VehicleParked`]
+//! car's alarm off, tuned by [`CarAlarmRule`], observed through [`VehicleAlarmStarted`]),
+//! [`AnnouncerSpeechEvent`] (the announcer channel: a challenge's commentary; set
+//! [`LivingWorldAudio::announcer`] while a challenge with an announcer runs). Set [`LivingWorldAudio`]
 //! `expected` at map load when the system will publish, so the world banks decode ahead of need.
 //!
 //! Everything stays inert when nothing is published. `SKATE_AEMS_WORLD=0` /
@@ -212,6 +216,64 @@ pub enum WorldAudioSlot {
 pub struct WorldAudioInstance {
     pub slot: WorldAudioSlot,
     pub instance: u32,
+    /// The instance is the object's own (`OwnAudioInstance`, a private MixMap), not one of retail's.
+    pub own: bool,
+}
+
+/// A traffic vehicle or ped with this takes its own MixMap instance (doc 16 "L3",
+/// `game_audio::mod_world`) instead of competing for retail's pools (4 traffic / 15 pedestrian, the
+/// nearest win): it plays whenever it is within retail's list radius (40 m / 50 m) and among the
+/// 16 nearest own cars / 16 nearest own peds (the farther ones wait, `WorldAudioStats::own_waiting`).
+/// Not retail. **Mods' cars and peds get it by default** (user decision 2026-10-04, doc 16 M3:
+/// `sdk.world_audio.spawn(key, 'traffic' | 'ped', …)`; `slots = 'shared'` leaves it off); an
+/// engine system publishing the living world does not add it (retail's pools) unless an object of
+/// its own must be heard.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OwnAudioInstance;
+
+/// A sound emitter at the entity (world audio extension 2; doc 16 "Mod emitters and reverb zones"):
+/// an `.ems` eVolumeType 1 record added to the map's live list (`game_audio::emitters`) with
+/// retail's reach test (a sphere when the three extents are equal, else an ellipsoid along
+/// `forward` turned by the entity's rotation, up and side; the inner `core` at full level), the
+/// falloff curve and the `c_emitter` post with the MixMap Emitter words. By default (user decision
+/// 2026-10-04) it has its own instance of the private MixMap, so the map's emitters keep retail's 5
+/// emitter states; the setting `"mod_emitter_slots": "shared"` makes such emitters share the 5
+/// (first reached, first served) instead.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct WorldEmitter {
+    /// The AEMS bank bound to `c_emitter` (retail stem or a content overlay's).
+    pub bank: String,
+    /// The attribute patch = the `c_emitter` selector (0..=500).
+    pub patch: i32,
+    pub extent: Vec3,
+    /// The ellipsoid's forward axis in the entity's frame.
+    pub forward: Vec3,
+    pub core: f32,
+    /// Attribute volume (level = volume × curve(d)).
+    pub volume: f32,
+    /// `eVolumeFalloffType`: 0 = (1 − d)², 1 = 1 − d, other = flat.
+    pub falloff: i32,
+}
+
+/// A reverb zone at the entity (world audio extension 2): an eVolumeType 5 record that joins the
+/// zones the reverb selector walks (`game_audio::emitters::reverb_zones`), after the map's own, in
+/// the order they are reached. `preset`: an `aud_reverb` key the install has (a zone naming no
+/// known preset ends retail's zone walk, so spawning one is refused).
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct ReverbZoneVolume {
+    pub preset: u64,
+    pub extent: Vec3,
+    pub forward: Vec3,
+    pub core: f32,
+}
+
+/// Read back (written by `game_audio::emitters` every frame while any exists): the
+/// [`WorldEmitter`] entities playing now and the [`ReverbZoneVolume`] entities holding the
+/// listener.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct WorldEmitterStats {
+    pub playing: Vec<Entity>,
+    pub zones: Vec<Entity>,
 }
 
 /// The living world's audio switches.
@@ -226,6 +288,41 @@ pub struct LivingWorldAudio {
     pub photo_flag: bool,
     /// The same flag raised by mods (`photo_flag` on a mod ped; cleared with the mod's objects).
     pub mod_photo_flag: bool,
+    /// The running challenge's announcer character (retail system `+1036`: model 35 or 36, named by
+    /// the challenge record). None = free skate: the announcer channel then finds no line for any
+    /// request (retail: word 0 stays 0), so a pro's crash near the camera stays silent. A challenge
+    /// mode sets it while it runs.
+    pub announcer: Option<u32>,
+    /// The same named by a mod (`sdk.world_audio.announcer`; cleared when the mod stops). The
+    /// engine's wins.
+    pub mod_announcer: Option<u32>,
+}
+
+impl LivingWorldAudio {
+    /// The announcer character in effect (the engine's, else a mod's).
+    pub fn announcer_character(&self) -> Option<u32> {
+        self.announcer.or(self.mod_announcer)
+    }
+}
+
+/// An announcer event: by its id (24576.. = `0x6000 | n`) or by its `.evt` name (`480_slam_pro`,
+/// or just the number before the first `_`, `480`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AnnouncerLine {
+    Id(u16),
+    Name(String),
+}
+
+/// Ask the announcer channel for a line (retail's `PlayAnnouncerSpeech` script binding and the
+/// challenge modes' commentary call `sub_824AA858` the same way). `words` = the request block from
+/// word 0 (missing = 0; word 0 = 0 takes the running challenge's announcer); `pro` = a skater model
+/// whose announcer pro id goes into word 2 when it is 0 (as a pro's crash does for
+/// `480_slam_pro`). Without an announcer character ([`LivingWorldAudio::announcer`]) nothing plays.
+#[derive(Message, Clone, Debug, PartialEq, Eq)]
+pub struct AnnouncerSpeechEvent {
+    pub event: AnnouncerLine,
+    pub pro: Option<u32>,
+    pub words: Vec<u32>,
 }
 
 /// Debug counts (read only; written by the bridge every frame).
@@ -244,6 +341,17 @@ pub struct WorldAudioStats {
     pub more_audible: bool,
     /// Speech lines started so far (peds and NPC skaters; `game_audio::world_speech`).
     pub speech_lines: u64,
+    /// Inside the list radius but holding none of retail's instances (all held by nearer ones).
+    pub waiting: Vec<Entity>,
+    /// The objects with their own instance (`OwnAudioInstance`, doc 16 L3 / M3): published cars
+    /// and peds, holders, the private MixMap's instance counts (16 / 16) and the ones in reach
+    /// waiting for one of them (a full private pool: the nearest play).
+    pub own_vehicles: usize,
+    pub own_peds: usize,
+    pub own_traffic_held: usize,
+    pub own_peds_held: usize,
+    pub own_instances: (usize, usize),
+    pub own_waiting: Vec<Entity>,
 }
 
 /// A speech value (`S+136`, the state graphs' `SendSpeechEvent speechvalue=N`).
@@ -308,14 +416,152 @@ pub struct VehicleHorn {
     pub seconds: f32,
 }
 
-/// Retail's car alarm: horn state 6 for 8 s (vehicle `+3716`, `audio-specs/npc-livingworld-re.md` §6).
+/// Retail's car alarm: horn state 6 for [`CarAlarmRule`]'s time (8 s, vehicle `+3716`,
+/// `audio-specs/npc-livingworld-re.md` §6), unconditionally. A second alarm while one sounds
+/// restarts the time. Engine traffic normally sends [`VehicleImpact`] instead, and the car alarm
+/// rule decides (only a parked car, only a real contact).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct VehicleAlarm {
     pub vehicle: Entity,
 }
 
-/// The car alarm's length (s).
+/// The car alarm's length (s): retail's `livingworld_vehicle_characteristics` default (field
+/// `E199FC7CEA222809`); the install's setup export (`world_tuning.vehicle_alarm.seconds`) wins.
 pub const ALARM_SECONDS: f32 = 8.0;
+/// The smallest contact that sets a parked car's alarm off: the length of the collision message's
+/// vector must exceed it (retail default, field `543475921FD9E04A`; setup export
+/// `world_tuning.vehicle_alarm.min_impact`).
+pub const ALARM_MIN_IMPACT: f32 = 0.1;
+
+/// The traffic AI holds the vehicle in retail's `StayingParked` state (vehicle `+3424` bit 0x80,
+/// set by the state's begin `sub_82C39120`, cleared by its end `sub_82C391F0`): only then can a
+/// contact set its alarm off. Insert while parked, remove when it pulls out. Mod cars: the
+/// `parked` option, else parked when the mod stopped updating them.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VehicleParked;
+
+/// Who or what touched a vehicle (retail's callback takes any collider; the source only feeds
+/// observers and mods, the rule does not test it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ImpactSource {
+    /// The local player (on the board, on foot or in a bail).
+    #[default]
+    Player,
+    /// A ped, an NPC skater or a remote player.
+    Character,
+    /// Another vehicle.
+    Vehicle,
+    /// A prop, a physics body, anything else.
+    Object,
+}
+
+impl ImpactSource {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Player => "player",
+            Self::Character => "character",
+            Self::Vehicle => "vehicle",
+            Self::Object => "object",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "player" => Self::Player,
+            "character" | "ped" | "skater" => Self::Character,
+            "vehicle" | "car" => Self::Vehicle,
+            "object" | "prop" => Self::Object,
+            _ => return None,
+        })
+    }
+}
+
+/// Something touched a vehicle (retail: the vehicle's collision callback `sub_82C3C150`, slot +32
+/// of its contact interface at `+136`). `impact` is the callback message's vector at `+48`, whose
+/// length the rule tests: the relative velocity at the contact in m/s (the vehicle's minus the
+/// other body's; measured with the hook `VEHHIT`, not mass-weighted: a board, the rider and a
+/// pedestrian each give their own speed against the car). Send one per contact (or per frame while touching: a
+/// repeat restarts the alarm, as in retail). Engine traffic does not exist yet; its collision
+/// handling will send this.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct VehicleImpact {
+    pub vehicle: Entity,
+    pub by: ImpactSource,
+    pub impact: Vec3,
+}
+
+impl VehicleImpact {
+    /// An impact of `speed` (the vector's length) without a direction.
+    pub fn speed(vehicle: Entity, by: ImpactSource, speed: f32) -> Self {
+        Self { vehicle, by, impact: Vec3::new(0.0, 0.0, speed) }
+    }
+}
+
+/// Read back: the car alarm rule set a parked car's alarm off (`restart` = it was already
+/// sounding; retail restarts its timer). Engine traffic restarts the car's parked timer here
+/// (retail zeroes `+3712` too, which delays pulling out) and must not pull out while the alarm
+/// sounds (`StayingParked`'s pull-out condition `sub_82C3A3A8` is false while bit 0x10 is set).
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct VehicleAlarmStarted {
+    pub vehicle: Entity,
+    pub by: ImpactSource,
+    pub restart: bool,
+}
+
+/// The car alarm rule's numbers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AlarmTuning {
+    /// The rule runs (false: impacts never set an alarm off; [`VehicleAlarm`] still does).
+    pub enabled: bool,
+    /// The contact vector's length must exceed this.
+    pub min_impact: f32,
+    /// The alarm's time after the last qualifying contact (s).
+    pub seconds: f32,
+}
+
+impl Default for AlarmTuning {
+    fn default() -> Self {
+        Self { enabled: true, min_impact: ALARM_MIN_IMPACT, seconds: ALARM_SECONDS }
+    }
+}
+
+impl AlarmTuning {
+    /// Retail's rule (`sub_82C3C150`): a parked car, a contact longer than `min_impact`.
+    pub fn sets_off(&self, parked: bool, impact: Vec3) -> bool {
+        self.enabled && parked && impact.is_finite() && impact.length() > self.min_impact
+    }
+
+    /// How long the horn holds state 6: retail adds the frame time to the alarm timer on every AI
+    /// update and stops at the first update where it exceeds `seconds` (StopAlarming
+    /// `sub_82C3A4D0`, a strict `>`), so at the console's 30 fps the alarm sounds for
+    /// `floor(seconds × 30) + 1` frames (8 s → 241 frames, 8.033 s), at any engine frame rate.
+    pub fn hold_seconds(&self) -> f32 {
+        let dt = skate_audio::mixmap::cadence::CONSOLE_DT;
+        if !self.seconds.is_finite() || self.seconds <= 0.0 {
+            return dt;
+        }
+        ((self.seconds / dt + 1e-4).floor() + 1.0) * dt
+    }
+}
+
+/// The car alarm rule's tuning: retail's values from the install's setup export (else the
+/// constants above), and an override (a mod's `sdk.world_audio.alarm_rule`, or engine code).
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct CarAlarmRule {
+    /// From the setup export (`world_tuning.vehicle_alarm`); None = the retail constants.
+    pub setup: Option<AlarmTuning>,
+    /// Wins over `setup` while set.
+    pub overrides: Option<AlarmTuning>,
+    /// The mod that set `overrides` (cleared when it stops); None = engine code.
+    pub override_owner: Option<String>,
+}
+
+impl CarAlarmRule {
+    /// The tuning in effect.
+    pub fn tuning(&self) -> AlarmTuning {
+        self.overrides.or(self.setup).unwrap_or_default()
+    }
+}
 
 /// A ped zaps with its tazer: `PedAudio::tazing` is held for `seconds` (None = the state graph's
 /// `TazerCycTime`, `world_tuning.ped_objects.tazer_seconds`, 2.0 s), the `c_tazer` burst plays.

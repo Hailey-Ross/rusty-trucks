@@ -284,6 +284,12 @@ impl Voices {
     pub(crate) fn uses(&self, clip: &Clip) -> bool {
         self.voices.iter().any(|v| v.key == clip.key)
     }
+
+    /// Whether a voice plays `clip` and is not stopping.
+    #[cfg(test)]
+    pub(crate) fn sounds(&self, clip: &Clip) -> bool {
+        self.voices.iter().any(|v| v.key == clip.key && v.stopping.is_none())
+    }
 }
 
 fn set_sink(sink: &mut impl AudioSinkPlayback, volume: f32, speed: f32, paused: bool) -> bool {

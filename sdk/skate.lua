@@ -462,7 +462,7 @@ function sdk.engine.systems() end
 ---@return table|nil latest snapshot
 function sdk.engine.read(system) end
 ---@param key string command result key
----@param system 'graphs'|'scoring'
+---@param system 'graphs'|'scoring'|'audio_catalog'|string `audio_tuning:<domain>[/path]` reads a tuning domain
 function sdk.engine.inspect(key, system) end
 
 ---@class BodyReference
@@ -563,13 +563,314 @@ function sdk.graphs.read(graph) end
 ---@param enabled? boolean nil restores the original gate
 function sdk.graphs.set_enabled(graph, target, index, enabled) end
 
+---Feature discovery: extension name → version, compiled into the engine (an older engine lacks
+---newer keys, so test `(sdk.capabilities.audio or 0) >= 1` before relying on a feature). The
+---manifest API stays 2. Includes among others `audio`, `world_audio`, `engine_access`,
+---`command_results`, `player_physics`, `menus`, `camera`, `volumes`, `capture`.
+---@type table<string, integer>
+sdk.capabilities = {}
+
+-- Audio extension 1 (capability `audio`): the mod's own sounds. Keys and files belong to the calling
+-- mod. Files: mod-relative PCM16 WAV (`.wav`, no `..`, `\`, `:`, `#`, `?`), 1–2 channels, 8–48 kHz,
+-- at most 30 s and 8 MiB each; metadata chunks are dropped. Limits: 32 clips / 32 MiB / 32 voices per
+-- mod, 128 / 128 MiB / 128 in all. By default (audio >= 3) a voice plays through the game's native
+-- mixer (see `native`); a Bevy voice (`native = false`, or no free native voice) plays outside the
+-- game's native audio engine: master volume and `--mute` apply, but no retail reverb, distance curves
+-- or ducking. They pause while the
+-- game is paused or a replay runs, and stop when the mod is disabled, reloaded or fails (clips are
+-- released then too). A voice bound to a body stops when that body is removed.
+---@class AudioPlayOptions
+---@field path string mod-relative PCM16 WAV
+---@field body? string follow one of this mod's physics bodies (exclusive with position)
+---@field position? Vec3 world position of an unbound voice (default {0,0,0})
+---@field offset? Vec3 added to the body pose or the position, -100..100 m per axis (default {0,0,0})
+---@field loop? boolean default false
+---@field volume? number 0..1 (default 1)
+---@field pitch? number playback speed 0.25..4: changes pitch and duration (default 1)
+---@field spatial? boolean positional (default true); false plays at the listener
+---@field spatial_scale? number 0.001..1, world metres → spatial units (default 0.1)
+---@field paused? boolean start paused (default false)
+---@field fade_in? number seconds 0..2 (default 0.01)
+---@field native? boolean audio >= 3: the game's native mixer. **Default (nil): native** while the game's
+---native audio runs and one of its 24 native voices is free, else the Bevy voice above; `true` = native
+---only (an error without it: use `sdk.commands.request` to get it as a result); `false` = always the
+---Bevy voice. The WAV joins a per-mod bank; the voice follows the retail world-emitter law: dry level
+---and pan from a MixMap Emitter instance, the environment (reverb) send rolling off with camera
+---distance 4 → 70 m, and the sound's own reach (`falloff`, the `.ems` record test). Category volume:
+---`group`. 24 native voices in all (they count in the 32 / 128 voice limits and share the mixer with
+---the game). `spatial_scale` is for the Bevy voice only (ignored by a native one).
+---@field falloff? AudioFalloff native, positional: the reach (default {radius = 40, curve = 'squared'},
+---retail's traffic-car reach: the vehicle list is cut at 40 m). Refused with `native = false`.
+---@field reverb? boolean native: send into the environment bus (default true, as retail emitters)
+---@field group? 'world'|'player' native: Ambience volume (`world`, default) or Effects volume
+---@class AudioFalloff
+---@field radius number reach in metres (0.1..10000): silent at and beyond it
+---@field core? number inner fraction 0..1 at full level (default 0)
+---@field curve? 'squared'|'linear'|'flat' retail eVolumeFalloffType 0 / 1 / 2 (default 'squared')
+---@class AudioUpdateOptions
+---@field volume? number 0..1
+---@field pitch? number 0.25..4
+---@field paused? boolean
+---@field position? Vec3 unbound voices only
+---@field offset? Vec3
+---@type {version:integer}
+sdk.audio = { version = 3 }
+---Load and validate a WAV now so the first play doesn't read it. A bad file, an unknown body or a
+---full limit fails the mod (as `play` does); wrap the command in `sdk.commands.request` to get the
+---error as a result instead.
+---@param path string mod-relative PCM16 WAV
+function sdk.audio.preload(path) end
+---Start a voice under `key`, replacing any voice this mod already plays under that key.
+---@param key string
+---@param opts AudioPlayOptions
+function sdk.audio.play(key, opts) end
+---Change a playing voice; never restarts it. Unknown or finished keys are ignored. Volume and pitch
+---changes are smoothed (≈ 12 ms / 25 ms).
+---@param key string
+---@param opts AudioUpdateOptions
+function sdk.audio.update(key, opts) end
+---Stop a voice with a fade (seconds, default 0.03; 0 = at once). Repeated stops don't extend it.
+---@param key string
+---@param fade_out? number
+function sdk.audio.stop(key, fade_out) end
+---Stop every voice of this mod at once (the clips stay loaded).
+function sdk.audio.stop_all() end
+
+-- Audio extension 2 (capability `audio` >= 2): the game's own native audio, the same calls engine
+-- systems make. Keys belong to the calling mod: 32 handles per mod, 128 in all, 16 posts per frame.
+-- Posts and globals are applied at the start of the next audio pass. Everything is released and
+-- every global restored when the mod stops, fails or reloads; posts also end at a map change (the
+-- handle reads `live = false`; post again on `world_changed`) and when the game's sound restarts
+-- for an audio content change. A post runs the retail bank's program, which draws from the one
+-- random generator every retail post uses: with a mod posting, the retail random sequence differs.
+---@class AudioHandle
+---@field live boolean the post is held by the running audio (false after a map change / restart)
+---@field class string the class it was posted to
+---@class AudioMixMapRow
+---@field slot string
+---@field object integer
+---@field instance integer
+---@field output integer
+---@field level integer 0..32767 (a Q15 level, or a filter cutoff in Hz)
+---@field raw integer 0..65535 (an azimuth: 65536 = 360°)
+---@field pitch integer 4096 = 1.0
+---@field half integer the output word as stored
+---@class AudioWatchKey
+---@field slot "global"|"player"|"ambience"|"collision"|"traffic"|"pedestrian"|"emitter"
+---@field object? integer 0..127 (default 0)
+---@field instance? integer 0..31 (default 0)
+---@field output integer 0..31
+---@class AudioWatchOptions
+---@field globals? string[] up to 16 retail globals
+---@field mixmap? AudioWatchKey[] up to 16 MixMap outputs
+---@class AudioEvent
+---@field kind "post"|"release"|"splice"|"emitter_start"|"emitter_stop"|"zone"|"speech"
+---@field source "player"|"world"|"npc"|"emitter"|"ambience"|"speech"
+---@field class string retail class (posts), bank (Splice starts, emitters), "speech" / "maincast" (speech lines) or ""
+---@field slot string the poster's slot (`grind`, `footstep`, `horn`, `ped_tazer`, `body_fall`, `ring`, …) or ""
+---@field id integer Splice sound id, emitter patch, slot index, speech event
+---@field owner string world / NPC object, zone key, speaker ("0" for the local player)
+---@field tag? "pop"|"land"|"grind_start"|"grind_end"|"footstep"|"horn"|"alarm"|"tazer"|"body_fall"|"emitter"|"zone_change"|"speech"
+---@class AudioInfo
+---@field native boolean the native audio runtime runs
+---@field map_epoch? integer
+---@field generation? integer audio content generation (bumped by every content change: a swap or a restart)
+---@field restarts? integer runtime restarts (only where a change cannot be swapped in place: the MixMap file, the rolling bed's grains)
+---@field swaps? integer audio content changes swapped into the running audio without a restart (audio_content >= 3)
+---@field last_change? string the last content change: "swap", or "restart: <reasons>"
+---@field mixmap_inputs? integer MixMap inputs written by mods (audio >= 4)
+---@field seed? {owner:string, seed:integer} the audio random state's seed in force (audio >= 4)
+---@field overlays? string[] mods whose audio.json is applied
+---@field conflicts? integer
+---@field map? {stem:string, district:string, ems:string[], sources:string[]}
+---@field limits table
+---@field tags string[]
+---Post to a retail class (e.g. `c_emitter`) with up to 32 payload words; a key's post replaces its
+---last one. An unknown class is a command error (use `sdk.commands.request` to get it as a result).
+---@param key string
+---@param class string
+---@param words? integer[]
+function sdk.audio.post(key, class, words) end
+---Rewrite a held post's payload.
+---@param key string
+---@param words integer[]
+function sdk.audio.redeliver(key, words) end
+---@param key string
+function sdk.audio.release(key) end
+---Set a retail global; `nil` restores the value seen before this mod's first write. The first mod
+---to set a global owns it; it is restored when that mod stops and at a map change.
+---@param name string
+---@param value? integer
+function sdk.audio.set_global(name, value) end
+---Replace this mod's watch lists (read with `sdk.audio.global` / `sdk.audio.mixmap`).
+---@param opts AudioWatchOptions
+function sdk.audio.watch(opts) end
+---@param key string
+---@return AudioHandle|nil
+function sdk.audio.handle(key) end
+---A watched global's value after the last audio pass (or the value this mod set).
+---@param name string
+---@return integer|nil
+function sdk.audio.global(name) end
+---A watched MixMap output after the last audio pass.
+---@return AudioMixMapRow|nil
+function sdk.audio.mixmap(slot, object, instance, output) end
+---@return AudioInfo
+function sdk.audio.info() end
+-- Audio events (capability `audio_events`): observe only, one frame late, at most 256 rows a frame.
+-- Nothing is recorded while no mod subscribes.
+---Subscribe to the rows with these tags (`{tags={}}` = every row); `nil` stops.
+---@param opts? {tags:string[]}
+function sdk.audio.subscribe(opts) end
+---The rows of the last frame not returned yet (each frame's rows once).
+---@return AudioEvent[]
+function sdk.audio.events() end
+-- Rules (capability `audio_events` >= 2): mute / replace / layer the game's own sounds where they are
+-- posted, the same frame (Lua can't run in the audio pass, so rules are declarative). Sites: the local
+-- player's component posts and Splice starts (pops, landings, foley), the world / NPC hosts' posts and
+-- Splice starts, the world emitters' starts. `mute`: the request is dropped (a post is not made: its
+-- updates and release do nothing; a Splice sound does not start; an emitter keeps its state silently);
+-- `replace`: dropped + `play`; `layer`: kept + `play`. The rule's sound plays where the game's would
+-- (at its owner, following it) unless `play.at` says otherwise. The first matching rule decides (mods
+-- in mod-id order). Event rows still report muted requests. 32 rules per mod, 64 in all; removed when the mod
+-- stops. Static rules also go in audio.json `rules` (capability audio_content >= 2).
+---@class AudioRuleMatch
+---@field tag? 'pop'|'land'|'grind_start'|'grind_end'|'footstep'|'horn'|'alarm'|'tazer'|'body_fall'|'emitter'
+---@field kind? 'post'|'splice'|'emitter_start'
+---@field source? 'player'|'world'|'npc'|'emitter'
+---@field class? string a retail class (posts) or bank (Splice starts, emitters)
+---@field slot? string the poster's slot (grind, wind, footstep, horn, ped_footstep, ...)
+---@field id? integer slot index (posts), sound id (Splice), patch (emitters)
+---@class AudioRulePlay
+---@field path string mod-relative PCM16 WAV, played through the native mixer as a one-shot
+---@field volume? number 0..1 (default 1)
+---@field pitch? number 0.25..4 (default 1)
+---@field reverb? boolean environment send (default true)
+---@field group? 'player'|'world' Effects (default) or Ambience volume
+---@field at? 'owner'|'world'|'centre' where it plays (default 'owner'): `owner` = at the owner of the
+---replaced / layered sound (the local skater's centre of mass, the car or ped, the NPC skater, the
+---emitter), following it while it plays (an owner that is gone leaves it where it was; one never found
+---plays it centred); `world` = at the fixed `position`; `centre` = non-positional, centred (the retail
+---non-positional emitter outputs). Positional sounds use the retail emitter law (MixMap Emitter dry
+---level, pan, reverb send rolling off with camera distance) and a reach (`falloff`).
+---@field offset? Vec3 `owner` only: metres added to the owner's position, -100..100 (world axes, y up; with `frame = 'owner'` the owner's axes)
+---@field frame? 'world'|'owner' `owner` only (audio_events >= 3): the axes of `offset`: 'world' (default) or 'owner' = x its right, y up, z its facing (the board's nose for skaters, a car's direction, a ped's walking direction, an emitter's forward), turning with it. A rule sound at a published emitter follows it when it moves.
+---@field position? Vec3 `world` only (required there): the world position
+---@field falloff? AudioFalloff positional only: the reach; default the owner's retail reach: the emitter
+---record's own shape and curve, 40 m for cars (retail's traffic list), 50 m for peds (the ped list),
+---30 m for skaters (the local player too: retail's skater audio radius); squared curve
+---@class AudioRule
+---@field match AudioRuleMatch at least one field; all given fields must hold
+---@field action 'mute'|'replace'|'layer'
+---@field play? AudioRulePlay required for replace / layer
+---@field min_interval? number seconds between two plays of the rule's sound (default 0.05)
+---Set (a table) or remove (`nil`) this mod's rule `key`. A bad rule or WAV is a command error.
+---@param key string
+---@param rule AudioRule|nil
+function sdk.audio.rule(key, rule) end
+-- Audio extension 4 (capability `audio` >= 4).
+---Write (or with `value = nil` release) one input (0..15) of a retail MixMap controller: drive the
+---game's own controllers (the Master category gains `'global', 2, 0, 1..4`, the duck flags of the
+---Global objects, an instance's inputs) through retail's curves and envelopes. Applied every audio
+---pass after the game's own writes, right before the evaluations, so it holds against inputs the game
+---writes too. The first mod to write an input owns it; 16 per mod, 64 in all; an unknown controller is
+---a command error. Released (the value before the first write comes back) by nil, when the mod stops,
+---fails or reloads; kept across map changes, written again after an audio restart.
+---@param slot 'global'|'player'|'ambience'|'collision'|'traffic'|'pedestrian'|'emitter'
+---@param object integer 0..127
+---@param instance integer 0..31
+---@param input integer 0..15
+---@param value integer|number|nil an integer word (or with `opts.float` an f32, the distance inputs)
+---@param opts? {float?:boolean}
+function sdk.audio.set_mixmap_input(slot, object, instance, input, value, opts) end
+---The MixMap inputs this mod writes.
+---@return {slot:string, object:integer, instance:integer, input:integer, value:number}[]
+function sdk.audio.mixmap_inputs() end
+---Seed the audio random state for reproducible tests: every audio generator (programs, Splice picks,
+---grain picks, eEQChain rolls, Jitter, the world and speech hosts) is set from `n` at the start of the
+---next audio pass, so the same seed at the same point draws the same. One owner (the first mod);
+---`nil` (or the mod stopping) puts back the states the generators had at the first seed. Unseeded the
+---draws are retail's, unchanged. `SKATE_AUDIO_SEED=<n>` seeds a whole run.
+---@param n integer|nil
+function sdk.audio.seed(n) end
+-- Audio content (capability `audio_content`): a mod ships `audio.json` at its root (no Lua needed):
+-- replace / add retail audio content by identity (banks, sample slots, Splice trees, grain members,
+-- wheel streams, ambience beds, emitter records, location sets, zones, crossfades, speech takes,
+-- tuning fields, map audio, Csis projects) with its own files. Applied only while the mod runs.
+-- Capability audio_content >= 3: turning the mod on or off, or editing audio.json / its files while
+-- it runs, is swapped into the running audio in place (only what changed is replaced; held sounds
+-- continue on the new content); only a MixMap or grain change restarts the game's sound (a short
+-- cut). `add.projects` = the mod's own `.csi` projects (new classes, functions, globals; names must
+-- not be the install's or another mod's). Two mods on one identity: the first by mod id wins
+-- and the mod menu shows the conflict. Check it with `check_mod <package> --install <assets>`.
+-- Reference: docs/hails-additions/16-audio-modding.md.
+
+-- Audio tuning (capability `audio_tuning`): patch the game's typed tuning while this mod runs.
+-- Domains: 'player' (player_tuning: surfaces, grinds, seams, landing / collision materials, tricks,
+-- treatment, contacts), 'world' (world_tuning: traffic engine records, ped footsteps / objects,
+-- speech events and voice), 'bus' (bus_tuning: reverb presets, eEQChain buses, FlangeSub returns),
+-- 'reverb' (bus_tuning.reverb: preset key → its 44 values by index). A patch is a field merge
+-- (tables by field, arrays by decimal index `{['3'] = 0.5}`, leaves of the same type: numbers,
+-- booleans, strings, number arrays of the same length); a field the install lacks or another type is
+-- a command error. Applied between audio passes; the first mod to write a field owns it (another
+-- mod's write of it is an error); restored when the mod stops, fails or reloads. Kept across map
+-- changes. The MixMap's layout is not tunable.
+---Set (a table) or restore (`nil`) this mod's patch of a tuning domain.
+---@param domain 'player'|'world'|'bus'|'reverb'
+---@param patch table|nil
+function sdk.audio.set_tuning(domain, patch) end
+---Request a domain (or a path inside it, e.g. 'traffic_engine/c04_taxi01') as the game uses it now;
+---read it as `sdk.commands.result(key).value` (at most 256 KiB: read a path for big domains).
+---@param key string command result key
+---@param domain 'player'|'world'|'bus'|'reverb'
+---@param path? string
+function sdk.audio.tuning(key, domain, path) end
+---The tuning fields this mod owns, as applied at the last audio pass ('world_tuning/traffic_engine/c04_taxi01/idle_rpm', …).
+---@return string[]
+function sdk.audio.tuned() end
+
+-- Front-end sounds (audio extension 1): the game's own UI sounds, retail's `fe` records by name
+-- (cellphone_activate, cellphone_place_marker, cellphone_marker_error, cellphone_goto_marker,
+-- challenge_count_1..3, challenge_count_go, core_a_button, ...), played as the game's UI plays them
+-- (sk8_menu, the record's level, at most 10 at once). Unknown names play nothing. The session marker
+-- sends on_event {name="session_marker", action="opened"|"placed"|"refused"|"returned"} to every
+-- running mod (doc docs/hails-additions/15-world-audio.md "Session marker sounds").
+sdk.audio = sdk.audio or {}
+---@param name string
+function sdk.audio.frontend(name) end
+
+-- The teleport effect (audio extension 1): the screen static and the skater's teleport crackle
+-- (retail's teleport effect amount, which the session marker's Go To Marker hold ramps 0 -> 1 over
+-- 0.2-1 s; the crackle comes from the Treatments bank's program). Holds for four UI ticks (1/15 s):
+-- send it every frame for as long as it should last; 0 clears it. The larger of the game's and the
+-- mod's amount is used.
+---@param amount number 0..1
+function sdk.audio.teleport_effect(amount) end
+
 -- World audio extension 1 (capability `world_audio`): publish traffic vehicles, pedestrians and
 -- skaters to the game's retail world audio, exactly as an engine system would (doc
 -- docs/hails-additions/15-world-audio.md). Keys belong to this mod; 48 objects per mod, 128 in all;
--- an object not updated for 0.5 s is parked; everything is removed on disable / reload. The game
--- decides who is audible with retail's limits (4 nearest cars within 40 m, 15 nearest peds within
--- 50 m, footsteps for the nearest 3, one skater within 30 m; 8 / 24 / 3 with the opt-in
--- non-retail "more audible" setting).
+-- an object not updated for 0.5 s is parked; everything is removed on disable / reload.
+-- Cars and peds (capability `world_audio` >= 4): by default each takes its own instance of a
+-- private MixMap (as mod emitters do; not retail): it plays whenever it is within retail's list
+-- radius (40 m cars, 50 m peds) and among the 16 nearest own cars / 16 nearest own peds of all mods;
+-- a farther one waits, silent (`read(key).waiting`), and takes an instance as soon as it is among
+-- the nearest; it is never refused and never takes one of retail's instances, so the map's objects
+-- keep retail's pools. `slots = 'shared'` (alias 'retail') puts a car / ped in retail's pools with
+-- the map's objects instead, where the game decides who is audible with retail's limits (4 nearest
+-- cars within 40 m, 15 nearest peds within 50 m, footsteps for the nearest 3; 8 / 24 / 3 with the
+-- opt-in non-retail "more audible" setting). Skaters: one within 30 m (retail's Player slot).
+-- (`world_audio` 3 had 'retail' as the default and `slots = 'own'` as the opt-in.)
+-- Extension 2 (capability `world_audio` >= 2): 'emitter' and 'reverb_zone' objects: `.ems`-style
+-- records added to the map's live lists. An emitter plays an AEMS bank bound to c_emitter (a retail
+-- bank or one a content overlay adds) through retail's reach test (sphere when the three extents are
+-- equal, else an ellipsoid along forward / up / side; inner core at full level), falloff curve and
+-- c_emitter post with the MixMap Emitter words; by default it has its own emitter instance (the map's
+-- emitters keep retail's 5 emitter states; mod emitters take instances of a private MixMap with the
+-- same words, up to 32 shared with native mod voices); settings/audio.json "mod_emitter_slots":
+-- "shared" makes them share retail's 5 with the map's emitters instead (first reached, first served).
+-- A reverb zone joins the zones the reverb selector walks, after
+-- the map's. Neither parks; `read(key).audible` = playing / holding the listener.
 ---@class WorldAudioOptions
 ---@field position? Vec3 world position (ignored while body is set)
 ---@field velocity? Vec3 m/s; default: from the position change (give it for teleporting objects)
@@ -580,6 +881,7 @@ function sdk.graphs.set_enabled(graph, target, index, enabled) end
 ---@field load? number traffic: the driver's signed acceleration m/s² (default: from the speed change; hard stop ≈ -15)
 ---@field horn? integer traffic: 0 none, 1..5 horn kind, 6 alarm (prefer the events)
 ---@field skidding? boolean traffic: the tyres skid
+---@field parked? boolean traffic: parked (retail's StayingParked): an impact can set its alarm off (default: parked while this mod doesn't update it, 0.5 s)
 ---@field voice? integer ped: the model = speech voice id 41..96 (0 none); its shoe class, kind, speech words and far threshold follow (retail's aud_characteristics). skater: its voice (AI skaters 89..96): the bail grunt
 ---@field shoe_class? integer ped: 1..5 (default: the model's, else 2; 1 is silent)
 ---@field weight? integer ped: 1..5 (default 1)
@@ -598,9 +900,18 @@ function sdk.graphs.set_enabled(graph, target, index, enabled) end
 ---@field grind_material? integer lite skater
 ---@field air? boolean lite skater: in the air
 ---@field loose_board? integer lite skater: the loose board (0 none, 1 upside down, 2 on its side): the board slide holds while set (ghosts take it from their log)
+---@field bank? string emitter (spawn: required): the AEMS bank bound to c_emitter (unknown bank = command error)
+---@field patch? integer emitter: the attribute patch = the c_emitter selector 0..500 (default 0)
+---@field volume? number emitter: attribute volume 0..1 (default 1): level = volume × curve(d)
+---@field falloff? 'squared'|'linear'|'flat' emitter: eVolumeFalloffType 0 / 1 / 2 (default 'squared')
+---@field extent? Vec3 emitter / reverb_zone (spawn: required): extents in m (0.1..10000)
+---@field forward? Vec3 emitter / reverb_zone: the ellipsoid's forward axis, turned by heading (default {1,0,0})
+---@field core? number emitter / reverb_zone: inner core fraction 0..1 (default 0)
+---@field preset? string reverb_zone (spawn: required): the aud_reverb preset key, 16 hex digits, one the install has
+---@field slots? 'own'|'shared'|'retail' traffic / ped, spawn only: 'own' (the default since world_audio 4) = its own instance of a private MixMap (not retail): it plays within retail's list radius (40 m cars, 50 m peds) when among the 16 nearest own cars / 16 nearest own peds (all mods), else it waits (`read(key).waiting`); the map's objects keep retail's pools. 'shared' (alias 'retail', the world_audio 3 default) = retail's pools shared with the map's objects, the nearest win
 sdk.world_audio = {}
 ---@param key string
----@param kind 'traffic'|'ped'|'skater'
+---@param kind 'traffic'|'ped'|'skater'|'emitter'|'reverb_zone'
 ---@param opts? WorldAudioOptions
 function sdk.world_audio.spawn(key, kind, opts) end
 ---Merge fields into the object's description (a field of another kind is an error).
@@ -608,13 +919,18 @@ function sdk.world_audio.spawn(key, kind, opts) end
 ---@param opts WorldAudioOptions
 function sdk.world_audio.update(key, opts) end
 ---@param key string
----@param event 'horn'|'alarm'|'speech'|'tazer'|'body_fall'|'reaction'
----@param opts? {kind?:integer, seconds?:number, value?:string|integer, by?:integer} reaction (skaters): value slam / slam_b / trick / crash / chase, by = the other skater's model (0 = the player; a pro 1..29 picks the pro-on-pro lines): the skater's own speech process says the matching line of its voice for one console frame (AI skaters 89..96 on the living-world channel, pros 1..29 / special cast 30..38 on the main cast); horn: kind 1..5 for seconds; alarm: retail's 8 s; speech: value name (warn = 53, cheer, slam, flee, nearby, DoWarning, LongCheer, ...) or number; the ped says a line of its voice through retail's speech manager (gated by the event's timers and probability) when the speech decode is installed; a repeated value re-triggers (49 rings a phone, then the ped answers); tazer: the ped zaps for seconds (default the state graph's 2 s): retail's c_tazer burst; body_fall: one BodyFallType key of a knock-down animation (kind 9, 8 or any other value 1..255: three Skate_Collisions sounds; retail's falls go 9, other, 9, 9 about 0.1 / 0.5 / 0.16 s apart)
+---@param event 'horn'|'alarm'|'impact'|'speech'|'tazer'|'body_fall'|'reaction'
+---@param opts? {kind?:integer, seconds?:number, value?:string|integer, by?:integer, speed?:number, source?:'player'|'character'|'vehicle'|'object'} impact (traffic): something touched the car with speed m/s (source default 'player'); the game applies retail's car alarm rule: a parked car whose contact exceeds 0.1 sets its alarm off for 8 s, every further contact restarts it, a car that is not parked ignores it (send one per contact or every frame while touching); reaction (skaters): value slam / slam_b / trick / crash / chase, by = the other skater's model (0 = the player; a pro 1..29 picks the pro-on-pro lines): the skater's own speech process says the matching line of its voice for one console frame (AI skaters 89..96 on the living-world channel, pros 1..29 / special cast 30..38 on the main cast); horn: kind 1..5 for seconds; alarm: retail's 8 s; speech: value name (warn = 53, cheer, slam, flee, nearby, DoWarning, LongCheer, ...) or number; the ped says a line of its voice through retail's speech manager (gated by the event's timers and probability) when the speech decode is installed; a repeated value re-triggers (49 rings a phone, then the ped answers); tazer: the ped zaps for seconds (default the state graph's 2 s): retail's c_tazer burst; body_fall: one BodyFallType key of a knock-down animation (kind 9, 8 or any other value 1..255: three Skate_Collisions sounds; retail's falls go 9, other, 9, 9 about 0.1 / 0.5 / 0.16 s apart)
 function sdk.world_audio.event(key, event, opts) end
 ---@param key string
 function sdk.world_audio.remove(key) end
 ---@param key string
----@return {kind:string, audible:boolean, instance?:integer, parked:boolean}|nil
+---audible: holds an instance / plays; own: the instance is a private MixMap's; slots (cars, peds; world_audio >= 4): 'own' or 'shared', the object's setting; waiting (>= 4): in reach but every instance of its pool is held by a nearer object; alarm (cars): the car alarm's seconds left while it sounds.
+---@return {kind:string, audible:boolean, instance?:integer, own:boolean, slots?:'own'|'shared', waiting:boolean, parked:boolean, alarm?:number}|nil
 function sdk.world_audio.read(key) end
----@return {more_audible:boolean, instances:{traffic:integer,peds:integer,skaters:integer}, published:table, audible:table, speech_lines:integer}
+---Retail's car alarm trigger for every car (engine traffic too): the fields given replace the rule's numbers; no argument = back to retail's (contact > 0.1, 8 s; the install's setup data). Cleared when this mod stops.
+---@param opts? {enabled?:boolean, min_impact?:number, seconds?:number}
+function sdk.world_audio.alarm_rule(opts) end
+---The retail pools (instances, published, audible, waiting) and, under `own` (world_audio >= 4), the private MixMap's (instances 16 / 16, published, audible, waiting).
+---@return {more_audible:boolean, instances:{traffic:integer,peds:integer,skaters:integer}, published:table, audible:table, waiting:integer, speech_lines:integer, own:{instances:{traffic:integer,peds:integer}, published:table, audible:table, waiting:integer}}
 function sdk.world_audio.info() end

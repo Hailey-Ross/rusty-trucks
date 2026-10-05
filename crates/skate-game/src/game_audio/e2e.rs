@@ -184,6 +184,13 @@ fn e2e_render() {
         // row ticks; every call runs `seam_frame`); below 60 fps a call ticks the MixMap once per
         // elapsed 60 Hz step and rows without a call only render.
         let fps: Option<f64> = std::env::var("E2E_FPS").ok().and_then(|v| v.parse().ok());
+        // E2E_TELEPORT=<row>,<ticks>: a Go To Marker hold of `ticks` UI ticks from that row (the
+        // teleport effect amount `ui_audio::TeleportEffect` ramping 0 → 1, then two ticks at 1.0), as
+        // `session_marker` publishes it: Class_Treatment's teleport crackle. Unset: none.
+        let teleport: Option<(usize, usize)> = std::env::var("E2E_TELEPORT").ok().and_then(|v| {
+            let (a, b) = v.split_once(',')?;
+            Some((a.trim().parse().ok()?, b.trim().parse::<usize>().ok()?.max(1)))
+        });
         // The MixMap's console cadence (`native::mixmap_frame`, `skate_audio::mixmap::cadence`): one
         // evaluation per two 60 Hz rows with dt 1/30, the Jitter stepped and the eEQChain cleared
         // there, the flag inputs held in between (2026-10-03: the only host; the per-row renders
@@ -296,6 +303,10 @@ fn e2e_render() {
                 m.tick(skate_audio::mixmap::cadence::CONSOLE_DT);
             }
             let t3 = std::time::Instant::now();
+            if let Some((first, ticks)) = teleport {
+                let k = frame as i64 - first as i64 + 1;
+                p.teleport_effect = (1..=ticks as i64 + 2).contains(&k).then(|| (k as f32 / ticks as f32).min(1.0));
+            }
             p.update(&m, &s, &mut shared.lock().unwrap(), speed_scale, loose);
             shared.lock().unwrap().mixer.buses.flange.frame(std::array::from_fn(|i| m.level(keys::REVERB, i)));
             shared.lock().unwrap().mixer.buses.env.scale_frame(m.level(keys::REVERB, 4));

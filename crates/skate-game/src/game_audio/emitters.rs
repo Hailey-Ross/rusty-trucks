@@ -31,44 +31,12 @@ use skate_audio::eval::NodeId;
 /// CSTATEMGR_Emitter's pool size.
 const MAX_ACTIVE: usize = 5;
 
-/// The `.ems` file of a map (by its `.skate` file stem).
-fn ems_file(map_stem: &str) -> Option<&'static str> {
-    Some(match map_stem {
-        "University" => "sfx_university",
-        "DownTown" => "sfx_downtown",
-        "Industrial" => "sfx_industrial",
-        "DownTownSkatePark" => "sfx_dt_skatepark",
-        "IndustrialSkatePark" => "sfx_ind_skatepark",
-        "MegaPark" => "sfx_mega_skatepark",
-        "MaloofMoneyCup" => "sfx_maloof_money_cup",
-        "StartPark" => "sfx_startpark",
-        "BlackBoxPark" => "sfx_blackbox_park",
-        "SkateSchool" => "skateschool",
-        _ => return None,
-    })
-}
-
-/// The `.ems` files a map's database entry lists (`F4917ACACAFAF913` field `65FA976EF23A314E`, in
-/// that order): the districts load five, the parks one. The emitter system (`sub_824A24F8`) loads
-/// them all and dispatches every record by its attribute's eVolumeType (sound emitters 1, reverb
-/// zones 5, music zones 4); `music_` holds music zones, `speakers_` / `crowds_` types 6 / 7.
-fn ems_files(map_stem: &str) -> &'static [&'static str] {
-    match map_stem {
-        "University" => &["music_university", "sfx_university", "reverb_university", "speakers_university", "crowds_university"],
-        "DownTown" => &["music_downtown", "sfx_downtown", "reverb_downtown", "speakers_downtown", "crowds_downtown"],
-        "Industrial" => &["music_industrial", "sfx_industrial", "reverb_industrial", "speakers_industrial", "crowds_industrial"],
-        _ => match ems_file(map_stem) {
-            Some("sfx_dt_skatepark") => &["sfx_dt_skatepark"],
-            Some("sfx_ind_skatepark") => &["sfx_ind_skatepark"],
-            Some("sfx_mega_skatepark") => &["sfx_mega_skatepark"],
-            Some("sfx_maloof_money_cup") => &["sfx_maloof_money_cup"],
-            Some("sfx_startpark") => &["sfx_startpark"],
-            Some("sfx_blackbox_park") => &["sfx_blackbox_park"],
-            Some("skateschool") => &["skateschool"],
-            _ => &[],
-        },
-    }
-}
+// The `.ems` files a map loads come from its database entry (`F4917ACACAFAF913` field
+// `65FA976EF23A314E`, in that order; the districts list five, the parks one), read at run time
+// with the map's own definition and mods on top (`map_audio::MapAudio`). The emitter system
+// (`sub_824A24F8`) loads them all and dispatches every record by its attribute's eVolumeType
+// (sound emitters 1, reverb zones 5, music zones 4); `music_` holds music zones, `speakers_` /
+// `crowds_` types 6 / 7.
 
 /// The reverb-zone emitters (`eVolumeType` 5) the listener is inside this frame, in the order
 /// they were reached (retail's active node list, which `sub_82488278` walks for `SFXObj_Reverb`).
@@ -90,11 +58,17 @@ struct ZoneRecord {
 
 #[derive(Default)]
 pub(super) struct ZoneState {
-    map: Option<(String, u64)>,
+    /// Map name, map generation, audio content generation.
+    map: Option<(String, u64, u64)>,
     records: Vec<ZoneRecord>,
     /// Reached records in discovery order.
     active: Vec<usize>,
+    /// The map's records (the first `map_len`); published `ReverbZoneVolume` zones after them.
+    map_len: usize,
 }
+
+/// A published reverb zone's id bit (map records are `file << 32 | index`).
+const PUBLISHED_ZONE: u64 = 1 << 63;
 
 /// Per frame, before `native::reverb_frame`: which reverb zones hold the listener (the camera, as
 /// the emitter query's `0x820CFDD4`), with their normalised distance after the inner core
@@ -107,33 +81,69 @@ pub(super) fn reverb_zones(
     native: Option<Res<Native>>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
     mut out: ResMut<ReverbZones>,
+    content: Res<super::AudioContent>,
+    audio: Res<super::map_audio::MapAudio>,
+    published: Query<(Entity, &GlobalTransform, &crate::world_audio::ReverbZoneVolume)>,
+    mut stats: ResMut<crate::world_audio::WorldEmitterStats>,
 ) {
     let (Some(library), Some(_)) = (library, native) else { return };
     let state = &mut *state;
-    let identity = (map.name.clone(), map.generation);
+    let identity = (map.name.clone(), map.generation, content.world_generation);
     if state.map.as_ref() != Some(&identity) {
-        let stem = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
-        state.records = zone_records(&library, stem);
+        state.records = zone_records(&library, &audio);
         state.active.clear();
         if !state.records.is_empty() {
-            info!("Reverb zones: {} records on {stem}", state.records.len());
+            info!("Reverb zones: {} records on {}", state.records.len(), audio.stem);
         }
+        state.map_len = state.records.len();
         state.map = Some(identity);
+    }
+    // Published zones (mods, engine systems): after the map's records, rebuilt every frame while
+    // any exists; the reached ones keep their place in the node list.
+    let any = !published.is_empty() || state.records.len() > state.map_len;
+    if any {
+        let held: Vec<u64> = state.active.iter().map(|&i| state.records[i].id).collect();
+        state.records.truncate(state.map_len);
+        let (presets, _) = library.bus_tuning();
+        let mut list: Vec<ZoneRecord> = published
+            .iter()
+            .map(|(e, t, z)| {
+                let (_, rotation, position) = t.to_scale_rotation_translation();
+                let id = PUBLISHED_ZONE | e.to_bits();
+                ZoneRecord {
+                    shape: Shape { position, extent: z.extent, forward: (rotation * z.forward).normalize_or(Vec3::X), core: z.core },
+                    id,
+                    attribute: id,
+                    preset: z.preset,
+                    enabled: zone_enabled(&presets, z.preset),
+                }
+            })
+            .collect();
+        list.sort_by_key(|z| z.id);
+        state.records.extend(list);
+        let records = &state.records;
+        state.active = held.iter().filter_map(|id| records.iter().position(|r| r.id == *id)).collect();
     }
     out.zones.clear();
     let Ok(listener) = listener.single() else { return };
     zones_at(&state.records, &mut state.active, listener.translation(), &mut out.zones);
+    if any || !stats.zones.is_empty() {
+        let inside: Vec<Entity> = state.active.iter().filter(|&&i| i >= state.map_len).map(|&i| Entity::from_bits(state.records[i].id & !PUBLISHED_ZONE)).collect();
+        if stats.zones != inside {
+            stats.zones = inside;
+        }
+    }
 }
 
 /// The map's reverb-zone records (eVolumeType 5, flags 0) from its `.ems` files. A record whose
 /// attribute names no known reverb preset stays in the list, disabled: retail's zone query
 /// (`sub_82488278`) stops at the first zone node whose vfunc92 check fails instead of skipping it.
 /// On the disc every zone attribute names one of the 24 presets, so all are enabled.
-fn zone_records(library: &Library, map_stem: &str) -> Vec<ZoneRecord> {
+fn zone_records(library: &Library, audio: &super::map_audio::MapAudio) -> Vec<ZoneRecord> {
     let (presets, _) = library.bus_tuning();
     let mut records = Vec::new();
-    for (f, file) in ems_files(map_stem).iter().enumerate() {
-        for r in library.emitters(file) {
+    {
+        for (f, r) in audio.records(library) {
             if r.kind != 5 || r.flags != 0 {
                 continue;
             }
@@ -211,6 +221,15 @@ fn reach(shape: &Shape, listener: Vec3) -> Option<f32> {
     Some(if core > 0.0 && d < core { 0.0 } else if core >= 1.0 { 0.0 } else { (d - core) / (1.0 - core) })
 }
 
+/// The record test for a shape (a sphere when the three extents are equal, else an ellipsoid with
+/// semi-axes `extent` along `forward`, up and side; inner `core`) and the falloff curve: the level
+/// factor at `ear`, None outside (the native mod voices and rule sounds, `mod_voices::Reach`; the
+/// same functions as the records').
+pub(super) fn shape_level(position: Vec3, extent: Vec3, forward: Vec3, core: f32, curve: i32, ear: Vec3) -> Option<f32> {
+    let d = reach(&Shape { position, extent, forward, core }, ear)?;
+    Some(falloff(curve, d))
+}
+
 /// Retail falloff curve by `eVolumeFalloffType`.
 fn falloff(kind: i32, d: f32) -> f32 {
     match kind {
@@ -234,11 +253,23 @@ struct Node {
     started: bool,
     post: Option<NodeId>,
     state: Option<usize>,
+    /// A published emitter's entity (`WorldEmitter`; None for the map's records).
+    entity: Option<Entity>,
+    /// A published emitter's private-MixMap instance and its build (the "extra" setting, the default).
+    extra: Option<(usize, u64)>,
+}
+
+impl Node {
+    /// The event rows' owner: the record index, or a published emitter's entity.
+    fn owner(&self) -> u64 {
+        self.entity.map_or(self.record as u64, Entity::to_bits)
+    }
 }
 
 #[derive(Default)]
 pub(super) struct State {
-    map: Option<(String, u64)>,
+    /// Map name, map generation, audio content generation.
+    map: Option<(String, u64, u64)>,
     emitters: Vec<Emitter>,
     /// Reached records in discovery order (retail's node list).
     nodes: Vec<Node>,
@@ -251,6 +282,12 @@ pub(super) struct State {
     near: Vec<f32>,
     /// Banks to request this frame, nearest first (scratch).
     order: Vec<(f32, usize)>,
+    /// The map's records (the first `map_len` emitters); the published `WorldEmitter` entities
+    /// after them, in `dynamic` order.
+    map_len: usize,
+    dynamic: Vec<Entity>,
+    /// `AudioContent::runtime_generation` the nodes belong to.
+    runtime: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -307,14 +344,33 @@ pub(super) fn update(
     replay: Res<crate::replay::Replay>,
     native: Option<ResMut<Native>>,
     cues: Res<super::skate_events::Cues>,
+    content: Res<super::AudioContent>,
+    audio: Res<super::map_audio::MapAudio>,
+    mut api: ResMut<super::mod_audio::AudioApi>,
+    dynamic: Query<(Entity, &GlobalTransform, &crate::world_audio::WorldEmitter)>,
+    mut mix: ResMut<super::mod_voices::ModMix>,
+    settings: Option<Res<super::AudioSettings>>,
+    mut stats: ResMut<crate::world_audio::WorldEmitterStats>,
+    rules: Res<super::mod_rules::AudioRules>,
 ) {
     let _timing = super::timing::scope(&super::timing::EMITTERS);
     // No native runtime: the emitters are silent (its start logged why).
     let (Some(library), Some(mut native)) = (library, native) else { return };
     let native = &mut *native;
     let state = &mut *state;
-    let identity = (map.name.clone(), map.generation);
+    let identity = (map.name.clone(), map.generation, content.world_generation);
+    let runtime_changed = state.runtime != content.runtime_generation;
+    if runtime_changed {
+        // The runtime restarted (`content::restart`): its posts and emitter states are the old
+        // runtime's. Forget them; never release old ids into the new runtime.
+        state.nodes.clear();
+        state.runtime = content.runtime_generation;
+    }
     if state.map.as_ref() != Some(&identity) {
+        // A new map or a restart unloads the map's banks (the map-change path); a hot swap that
+        // changed the world layer (`content::swap_or_restart`) only rebuilds the records: the
+        // runtime and its banks stay (doc 16 L1).
+        let map_changed = runtime_changed || state.map.as_ref().is_none_or(|m| m.0 != map.name || m.1 != map.generation);
         for node in state.nodes.drain(..) {
             if let Some(post) = node.post {
                 native.release(post);
@@ -322,15 +378,23 @@ pub(super) fn update(
             if let Some(g) = node.state {
                 native.release_emitter_state(g);
             }
+            if let Some((g, build)) = node.extra {
+                if build == mix.build {
+                    mix.release(g);
+                }
+            }
         }
-        native.unload_map_banks();
-        let stem = map.path.as_deref().and_then(|p| p.file_stem()).and_then(|s| s.to_str()).unwrap_or("");
+        if map_changed {
+            native.unload_map_banks();
+        }
+        let stem = audio.stem.as_str();
         // Retail's emitter system loads every file of the map's database entry and dispatches by
         // the attribute's eVolumeType: 1 = looping emitter (here), 5 = reverb zone
         // (`reverb_zones`), 4 = the single-winner music zone (`sub_828EB410`: a playlist of the
         // music system, not ported). 6 / 7 (speakers / crowds) are not dispatched by the
         // emitter system at all. On the disc only the `sfx_` / `skateschool` files hold type 1.
-        let records: Vec<&super::library::EmitterRecord> = ems_files(stem).iter().flat_map(|file| library.emitters(file)).collect();
+        // The map's own definition and mods add records after the files' (`map_audio`).
+        let records: Vec<&super::library::EmitterRecord> = audio.records(&library).map(|(_, r)| r).collect();
         state.emitters = records.iter().filter(|r| r.kind == 1 && r.flags == 0).filter_map(|r| {
             let bank = r.bank.clone().filter(|b| native.has_bank(&library, b))?;
             let s = r.scalars;
@@ -352,7 +416,18 @@ pub(super) fn update(
             state.emitter_bank.push(b);
         }
         state.bank_status = vec![BankStatus::Idle; state.banks.len()];
+        state.map_len = state.emitters.len();
+        state.dynamic.clear();
         state.map = Some(identity);
+    }
+    // Emitters published as `WorldEmitter` components (mods, engine systems): a tail after the
+    // map's records, rebuilt every frame while any exists (nothing runs without them).
+    let extra = settings.as_deref().is_some_and(super::AudioSettings::extra_mod_emitter_slots);
+    if !dynamic.is_empty() || !state.dynamic.is_empty() {
+        sync_dynamic(state, native, &library, &mut mix, &dynamic, &mut api);
+        if extra {
+            mix.ensure(&library, native, content.runtime_generation);
+        }
     }
     let Ok(listener) = listener.single() else { return };
     let ear = listener.translation();
@@ -367,6 +442,10 @@ pub(super) fn update(
         if !keep {
             if node.started {
                 info!("AUDIO_EMITTER stop {} #{}", state.emitters[node.record].bank, node.record);
+                if api.events.on() {
+                    let e = &state.emitters[node.record];
+                    api.events.push(super::mod_audio::EventRow { kind: super::mod_audio::EventKind::EmitterStop, source: super::mod_audio::Source::Emitter, class: super::mod_audio::intern(&e.bank), slot: "", id: e.patch, owner: node.owner() });
+                }
             }
             if let Some(post) = node.post {
                 native.release(post);
@@ -374,37 +453,67 @@ pub(super) fn update(
             if let Some(g) = node.state {
                 native.release_emitter_state(g);
             }
+            if let Some((g, build)) = node.extra {
+                if build == mix.build {
+                    mix.release(g);
+                }
+            }
         }
         keep
     });
     // New hits join the node list in discovery order.
     for (index, hit) in reached.iter().enumerate() {
         if hit.is_some() && !state.nodes.iter().any(|n| n.record == index) {
-            state.nodes.push(Node { record: index, started: false, post: None, state: None });
+            let entity = index.checked_sub(state.map_len).and_then(|i| state.dynamic.get(i).copied());
+            state.nodes.push(Node { record: index, started: false, post: None, state: None, entity, extra: None });
         }
     }
-    // Waiting nodes take free states in list order.
-    let mut active = state.nodes.iter().filter(|n| n.started).count();
+    // Waiting nodes take free states in list order: retail's 5 (the map's emitters, and published
+    // ones with the "shared" setting), or, with the "extra" setting (the default), a published
+    // emitter takes an instance of the private MixMap instead.
+    let mut active = state.nodes.iter().filter(|n| n.started && n.extra.is_none()).count();
     for node in state.nodes.iter_mut().filter(|n| !n.started) {
-        if active >= MAX_ACTIVE {
-            break;
+        let own = extra && node.entity.is_some();
+        if own {
+            let Some(g) = mix.claim() else { continue };
+            node.extra = Some((g, mix.build));
+        } else if active >= MAX_ACTIVE {
+            continue;
+        } else {
+            active += 1;
         }
         node.started = true;
-        active += 1;
         let e = &state.emitters[node.record];
-        info!("AUDIO_EMITTER start {} #{} at {:.1?} volume {:.2} (native)", e.bank, node.record, e.shape.position.to_array(), e.volume);
+        info!("AUDIO_EMITTER start {} #{} at {:.1?} volume {:.2} (native{})", e.bank, node.record, e.shape.position.to_array(), e.volume, if own { ", own instance" } else { "" });
         match native.ensure_bank(&library, &e.bank) {
             Ok(_) => {
                 if let Some(status) = state.emitter_bank.get(node.record).and_then(|&b| state.bank_status.get_mut(b)) {
                     *status = BankStatus::Loaded;
                 }
                 let level = e.volume * falloff(e.falloff, reached[node.record].unwrap_or(1.0));
-                node.state = native.claim_emitter_state();
-                if let Some(g) = node.state {
-                    native.set_emitter_position(g, listener, skater, e.shape.position);
+                let payload = match node.extra {
+                    Some((g, _)) => {
+                        mix.set_position(g, listener, skater, e.shape.position);
+                        mix.words(g, level, e.patch).unwrap_or_else(|| native.emitter_payload(None, level, super::native::azimuth(listener, e.shape.position), e.patch))
+                    }
+                    None => {
+                        node.state = native.claim_emitter_state();
+                        if let Some(g) = node.state {
+                            native.set_emitter_position(g, listener, skater, e.shape.position);
+                        }
+                        native.emitter_payload(node.state, level, super::native::azimuth(listener, e.shape.position), e.patch)
+                    }
+                };
+                // A mod rule may mute the start: the node keeps its state and posts nothing. A rule
+                // sound placed at the owner plays at the record, with the record's reach.
+                let muted = rules.set.as_deref().is_some_and(|r| {
+                    let site = (e.shape.position, super::mod_voices::Reach { extent: e.shape.extent, forward: e.shape.forward, core: e.shape.core, curve: e.falloff });
+                    r.mutes_at_published(&super::mod_audio::EventRow { kind: super::mod_audio::EventKind::EmitterStart, source: super::mod_audio::Source::Emitter, class: super::mod_audio::intern(&e.bank), slot: "", id: e.patch, owner: node.owner() }, Some(site), node.entity.map(Entity::to_bits))
+                });
+                node.post = if muted { None } else { native.post_emitter(&payload) };
+                if api.events.on() && (node.post.is_some() || muted) {
+                    api.events.push(super::mod_audio::EventRow { kind: super::mod_audio::EventKind::EmitterStart, source: super::mod_audio::Source::Emitter, class: super::mod_audio::intern(&e.bank), slot: "", id: e.patch, owner: node.owner() });
                 }
-                let payload = native.emitter_payload(node.state, level, super::native::azimuth(listener, e.shape.position), e.patch);
-                node.post = native.post_emitter(&payload);
             }
             Err(error) => warn!("AUDIO_EMITTER {}: {error}", e.bank),
         }
@@ -415,12 +524,79 @@ pub(super) fn update(
         let emitter = &state.emitters[node.record];
         let (Some(d), Some(post)) = (reached[node.record], node.post) else { continue };
         let level = emitter.volume * falloff(emitter.falloff, d);
-        if let Some(g) = node.state {
-            native.set_emitter_position(g, listener, skater, emitter.shape.position);
-        }
-        let payload = native.emitter_payload(node.state, level, super::native::azimuth(listener, emitter.shape.position), emitter.patch);
+        let payload = match node.extra {
+            Some((g, _)) => {
+                mix.set_position(g, listener, skater, emitter.shape.position);
+                mix.words(g, level, emitter.patch).unwrap_or_else(|| native.emitter_payload(None, level, super::native::azimuth(listener, emitter.shape.position), emitter.patch))
+            }
+            None => {
+                if let Some(g) = node.state {
+                    native.set_emitter_position(g, listener, skater, emitter.shape.position);
+                }
+                native.emitter_payload(node.state, level, super::native::azimuth(listener, emitter.shape.position), emitter.patch)
+            }
+        };
         native.redeliver(post, &payload);
     }
+    // Read back which published emitters play (only while any exists).
+    if !state.dynamic.is_empty() || !stats.playing.is_empty() {
+        let playing: Vec<Entity> = state.nodes.iter().filter(|n| n.started && n.post.is_some()).filter_map(|n| n.entity).collect();
+        if stats.playing != playing {
+            stats.playing = playing;
+        }
+    }
+}
+
+/// Rebuild the published emitters' tail of the list (sorted by entity, so the order is stable)
+/// and follow the reached nodes to their new indices; a node whose entity is gone (or whose bank
+/// the install lacks now) is released as when the listener leaves.
+fn sync_dynamic(
+    state: &mut State,
+    native: &mut Native,
+    library: &Library,
+    mix: &mut super::mod_voices::ModMix,
+    q: &Query<(Entity, &GlobalTransform, &crate::world_audio::WorldEmitter)>,
+    api: &mut super::mod_audio::AudioApi,
+) {
+    let mut list: Vec<(Entity, Emitter)> = q
+        .iter()
+        .filter(|(_, _, e)| native.has_bank(library, &e.bank))
+        .map(|(entity, t, e)| {
+            let (_, rotation, position) = t.to_scale_rotation_translation();
+            let forward = (rotation * e.forward).normalize_or(Vec3::X);
+            (entity, Emitter { shape: Shape { position, extent: e.extent, forward, core: e.core }, volume: e.volume, falloff: e.falloff, bank: e.bank.clone(), patch: e.patch })
+        })
+        .collect();
+    list.sort_by_key(|(e, _)| e.to_bits());
+    state.emitters.truncate(state.map_len);
+    state.dynamic.clear();
+    for (entity, e) in list {
+        state.dynamic.push(entity);
+        state.emitters.push(e);
+    }
+    let (map_len, dynamic) = (state.map_len, &state.dynamic);
+    state.nodes.retain_mut(|node| {
+        let Some(entity) = node.entity else { return true };
+        if let Some(i) = dynamic.iter().position(|d| *d == entity) {
+            node.record = map_len + i;
+            return true;
+        }
+        if node.started && api.events.on() {
+            api.events.push(super::mod_audio::EventRow { kind: super::mod_audio::EventKind::EmitterStop, source: super::mod_audio::Source::Emitter, class: "", slot: "", id: 0, owner: entity.to_bits() });
+        }
+        if let Some(post) = node.post {
+            native.release(post);
+        }
+        if let Some(g) = node.state {
+            native.release_emitter_state(g);
+        }
+        if let Some((g, build)) = node.extra {
+            if build == mix.build {
+                mix.release(g);
+            }
+        }
+        false
+    });
 }
 
 #[cfg(test)]
@@ -439,7 +615,7 @@ mod tests {
         let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
         let Ok(mut native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
         let mut state = State::default();
-        for r in ems_files("DownTown").iter().flat_map(|f| library.emitters(f)) {
+        for r in super::super::map_audio::tests::old_ems_files("DownTown").iter().flat_map(|f| library.emitters(f)) {
             let Some(bank) = r.bank.clone().filter(|b| r.kind == 1 && r.flags == 0 && native.has_bank(&library, b)) else { continue };
             let s = r.scalars;
             state.emitters.push(Emitter {
@@ -557,7 +733,8 @@ mod tests {
     fn a_downtown_reverb_zone_selects_its_preset_and_raises_reverb_in5() {
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
         let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
-        let records = zone_records(&library, "DownTown");
+        let audio = super::super::map_audio::build("DownTown", None, &library, Some(&retail_downtown()));
+        let records = zone_records(&library, &audio);
         if records.is_empty() {
             panic!("missing private data: the install has no reverb-zone presets (stage_reverb_zones.py)");
         }
@@ -604,11 +781,235 @@ mod tests {
         assert!((20000..21200).contains(&inside), "−400 mB with in5: {inside}");
     }
 
-    #[test]
-    fn every_map_has_its_emitter_file() {
-        for map in ["University", "DownTown", "Industrial", "SkateSchool", "MegaPark"] {
-            assert!(ems_file(map).is_some(), "{map}");
-        }
+    /// DownTown's retail entry as the old table listed it (the lookup itself is proven by
+    /// `map_audio::tests::retail_maps_reproduce_the_old_tables`).
+    fn retail_downtown() -> std::collections::HashMap<String, super::super::map_audio::RetailMap> {
+        let ems = super::super::map_audio::tests::old_ems_files("DownTown").iter().map(|s| s.to_string()).collect();
+        std::collections::HashMap::from([("downtown".to_owned(), super::super::map_audio::RetailMap { ems, crossfade_bank: None })])
     }
 
+    /// The zone records keep retail's ids (`file << 32 | index`) and order: the map's audio lists
+    /// the same files as the old table for every retail map (data-gated).
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn zone_records_through_map_audio_match_the_old_table() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Ok(c) = skate_data::collections::Collections::load(root) else { panic!("missing private data: no stock collections") };
+        let table = super::super::map_audio::retail_table(&c);
+        let mut total = 0;
+        for stem in super::super::map_audio::tests::MAPS {
+            let audio = super::super::map_audio::build(stem, None, &library, Some(&table));
+            let new: Vec<(u64, u64)> = zone_records(&library, &audio).iter().map(|z| (z.id, z.attribute)).collect();
+            let mut old = Vec::new();
+            for (f, file) in super::super::map_audio::tests::old_ems_files(stem).iter().enumerate() {
+                for r in library.emitters(file).iter().filter(|r| r.kind == 5 && r.flags == 0) {
+                    old.push((((f as u64) << 32) | u64::from(r.index), u64::from_str_radix(&r.sound_id, 16).unwrap_or(0)));
+                }
+            }
+            assert_eq!(new, old, "{stem}");
+            total += new.len();
+        }
+        assert!(total > 0, "some reverb zones");
+    }
+
+
+    /// A world for the emitter / zone systems with the install's runtime, no map records (the
+    /// default map audio) and the listener at the origin.
+    fn published_world(extra: bool) -> (World, Entity) {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"));
+        let Ok(library) = Library::load(root) else { panic!("missing private data: no audio install") };
+        let Ok(native) = Native::start(&library) else { panic!("missing private data: no AEMS install") };
+        let mut world = World::new();
+        world.insert_resource(native);
+        world.insert_resource(library);
+        world.insert_resource(crate::map_transition::CurrentMap { path: None, name: "Test world".into(), spawn: [0.0; 3], heading: 0.0, generation: 0, audio_tag: None });
+        world.init_resource::<super::super::map_audio::MapAudio>();
+        world.init_resource::<super::super::AudioContent>();
+        world.init_resource::<super::super::mod_audio::AudioApi>();
+        world.init_resource::<super::super::mod_voices::ModMix>();
+        world.init_resource::<crate::world_audio::WorldEmitterStats>();
+        world.init_resource::<super::super::skate_events::Cues>();
+        world.init_resource::<crate::replay::Replay>();
+        world.init_resource::<ReverbZones>();
+        world.init_resource::<super::super::mod_rules::AudioRules>();
+        // `extra` = the default settings (own instances since 2026-10-04); else the "shared" option.
+        let saved = if extra { super::super::SavedSettings::default() } else { super::super::SavedSettings { mod_emitter_slots: super::super::ModEmitterSlots::Shared, ..Default::default() } };
+        world.insert_resource(super::super::AudioSettings { saved, path: std::env::temp_dir().join("skate-emitter-test-audio.json"), muted: true });
+        let listener = world.spawn((super::super::GameAudioListener, Transform::default(), GlobalTransform::default())).id();
+        (world, listener)
+    }
+
+    fn downtown_emitter(world: &World) -> (String, i32) {
+        let library = world.resource::<Library>();
+        let r = library.emitters("sfx_downtown").iter().find(|r| r.kind == 1 && r.bank.as_ref().is_some_and(|b| library.aems().banks.contains_key(b))).unwrap_or_else(|| panic!("missing private data: no DownTown emitter"));
+        (r.bank.clone().unwrap(), r.patch)
+    }
+
+    fn publish(world: &mut World, bank: &str, patch: i32, at: Vec3) -> Entity {
+        let t = Transform::from_translation(at);
+        world.spawn((t, GlobalTransform::from(t), crate::world_audio::WorldEmitter { bank: bank.into(), patch, extent: Vec3::splat(20.0), forward: Vec3::X, core: 0.0, volume: 1.0, falloff: 0 })).id()
+    }
+
+    /// Published emitters (data-gated), the "shared" setting: they join the live list after the map's
+    /// records and share retail's 5 emitter states (7 reached at once: the first 5 in list order
+    /// play, the others wait), post `c_emitter` so the bank's program plays, take a freed state
+    /// when one leaves, stop when the listener leaves their reach, and a despawned one is
+    /// released; with none left the list is the map's again and nothing is held.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn published_emitters_share_retail_slots_play_and_release() {
+        let (mut world, listener) = published_world(false);
+        // One system instance throughout (its `Local` state is the live node list).
+        let update = world.register_system(update);
+        let (bank, patch) = downtown_emitter(&world);
+        let mut entities: Vec<Entity> = (0..7).map(|i| publish(&mut world, &bank, patch, Vec3::new(2.0 + i as f32, 0.0, -3.0))).collect();
+        entities.sort_by_key(|e| e.to_bits());
+        world.run_system(update).unwrap();
+        let playing = world.resource::<crate::world_audio::WorldEmitterStats>().playing.clone();
+        assert_eq!(playing, entities[..5], "retail's 5 states, first in list order");
+        assert!(world.resource_mut::<Native>().claim_emitter_state().is_none(), "all 5 states taken");
+        // The program plays: voices of the bank after some blocks.
+        let id = world.resource::<Native>().bank_id(&bank).expect("loaded at the start");
+        let mut out = vec![0.0f32; 2 * skate_audio::BLOCK];
+        for _ in 0..60 {
+            world.resource::<Native>().shared.lock().unwrap().fill_stereo(&mut out);
+        }
+        assert!(world.resource::<Native>().shared.lock().unwrap().mixer.snapshot().iter().any(|v| v.bank == id), "the bank's program opened voices");
+        // One leaves (despawned): the 6th takes its state.
+        world.despawn(entities[0]);
+        world.run_system(update).unwrap();
+        assert_eq!(world.resource::<crate::world_audio::WorldEmitterStats>().playing, entities[1..6]);
+        // The listener walks away: everything stops, the states are free.
+        world.entity_mut(listener).insert(GlobalTransform::from(Transform::from_xyz(500.0, 0.0, 0.0)));
+        world.run_system(update).unwrap();
+        assert!(world.resource::<crate::world_audio::WorldEmitterStats>().playing.is_empty());
+        for e in &entities[1..] {
+            world.despawn(*e);
+        }
+        world.run_system(update).unwrap();
+        let mut native = world.resource_mut::<Native>();
+        let free: Vec<_> = (0..5).filter_map(|_| native.claim_emitter_state()).collect();
+        assert_eq!(free, [0, 1, 2, 3, 4], "nothing held");
+    }
+
+    /// The default settings ("extra", user decision 2026-10-04; data-gated): published emitters
+    /// take private-MixMap instances, so all 7 play and retail's 5 states stay free for the map's
+    /// emitters; their words come from the private MixMap's Emitter instances; despawning frees
+    /// the instances.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn the_default_gives_published_emitters_their_own_instances() {
+        let (mut world, _) = published_world(true);
+        let update = world.register_system(update);
+        let (bank, patch) = downtown_emitter(&world);
+        let entities: Vec<Entity> = (0..7).map(|i| publish(&mut world, &bank, patch, Vec3::new(2.0 + i as f32, 0.0, -3.0))).collect();
+        world.run_system(update).unwrap();
+        assert_eq!(world.resource::<crate::world_audio::WorldEmitterStats>().playing.len(), 7);
+        assert!(world.resource::<super::super::mod_voices::ModMix>().in_use());
+        let mut native = world.resource_mut::<Native>();
+        let free: Vec<_> = (0..5).filter_map(|_| native.claim_emitter_state()).collect();
+        assert_eq!(free, [0, 1, 2, 3, 4], "retail's states untouched");
+        for g in free {
+            native.release_emitter_state(g);
+        }
+        for e in entities {
+            world.despawn(e);
+        }
+        world.run_system(update).unwrap();
+        assert!(!world.resource::<super::super::mod_voices::ModMix>().in_use(), "instances freed");
+        assert!(world.resource::<crate::world_audio::WorldEmitterStats>().playing.is_empty());
+    }
+
+    /// A published emitter that moves after its sound started (data-gated, doc 16 "moving
+    /// emitters"): the same post keeps playing and its instance's 3-D input follows the entity
+    /// (the camera distance it writes), and leaving the reach as it moves away releases it.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn a_moving_published_emitter_is_followed() {
+        let (mut world, _) = published_world(true);
+        let update = world.register_system(update);
+        let (bank, patch) = downtown_emitter(&world);
+        let e = publish(&mut world, &bank, patch, Vec3::new(3.0, 0.0, 0.0));
+        world.run_system(update).unwrap();
+        assert_eq!(world.resource::<crate::world_audio::WorldEmitterStats>().playing, [e]);
+        let dist = |w: &mut World| {
+            let mut mix = w.resource_mut::<super::super::mod_voices::ModMix>();
+            let m = mix.mixmap().unwrap();
+            (0..super::super::mod_voices::MIX_INSTANCES as u32).map(|g| f32::from_bits(m.input(skate_audio::mixmap::keys::emitter_pos(g), skate_audio::mixmap::keys::pos::DIST_CAMERA) as u32)).find(|d| *d > 0.0)
+        };
+        let near = dist(&mut world).expect("an instance with a position");
+        let posts = world.resource::<Native>().next_node();
+        let t = Transform::from_xyz(8.0, 0.0, 0.0);
+        world.entity_mut(e).insert((t, GlobalTransform::from(t)));
+        world.run_system(update).unwrap();
+        let far = dist(&mut world).unwrap();
+        assert!((near - 3.0).abs() < 1e-3 && (far - 8.0).abs() < 1e-3, "followed: {near} → {far}");
+        assert_eq!(world.resource::<Native>().next_node(), posts, "the same post, not a new one");
+        let t = Transform::from_xyz(500.0, 0.0, 0.0);
+        world.entity_mut(e).insert((t, GlobalTransform::from(t)));
+        world.run_system(update).unwrap();
+        assert!(world.resource::<crate::world_audio::WorldEmitterStats>().playing.is_empty(), "out of reach");
+    }
+
+    /// A published reverb zone (data-gated): the listener inside it lists the zone (after the
+    /// map's, with its preset and a published id), the retail selector fades to its preset and
+    /// raises its Reverb input; outside or despawned it is gone.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn a_published_reverb_zone_selects_its_preset() {
+        let (mut world, listener) = published_world(false);
+        let reverb_zones = world.register_system(reverb_zones);
+        let (presets, _) = world.resource::<Library>().bus_tuning();
+        let preset = presets.keys().copied().find(|k| *k != skate_audio::bus::env::DEFAULT_PRESET).unwrap_or_else(|| panic!("missing private data: no reverb presets"));
+        let t = Transform::from_xyz(0.0, 0.0, 0.0);
+        let zone = world.spawn((t, GlobalTransform::from(t), crate::world_audio::ReverbZoneVolume { preset, extent: Vec3::new(30.0, 10.0, 15.0), forward: Vec3::X, core: 0.5 })).id();
+        world.run_system(reverb_zones).unwrap();
+        let zones = world.resource::<ReverbZones>().zones.clone();
+        assert_eq!(zones.len(), 1);
+        assert!(zones[0].id & PUBLISHED_ZONE != 0 && zones[0].preset == preset && zones[0].enabled && zones[0].d == 0.0);
+        assert_eq!(world.resource::<crate::world_audio::WorldEmitterStats>().zones, [zone]);
+        let mut env = skate_audio::bus::env::EnvNetwork::default();
+        env.presets = presets;
+        let camera = skate_audio::bus::zones::Camera { position: [0.0; 3], forward: [0.0, 0.0, -1.0] };
+        for _ in 0..90 {
+            env.update(1.0 / 60.0, 0, &zones, Some(&camera));
+        }
+        assert_eq!(env.target_key(), Some(preset), "the selector fades to the zone's preset");
+        world.entity_mut(listener).insert(GlobalTransform::from(Transform::from_xyz(0.0, 0.0, 40.0)));
+        world.run_system(reverb_zones).unwrap();
+        assert!(world.resource::<ReverbZones>().zones.is_empty(), "outside its 15 m side axis");
+        world.entity_mut(listener).insert(GlobalTransform::default());
+        world.despawn(zone);
+        world.run_system(reverb_zones).unwrap();
+        assert!(world.resource::<ReverbZones>().zones.is_empty() && world.resource::<crate::world_audio::WorldEmitterStats>().zones.is_empty());
+    }
+
+    /// A rule muting an emitter's start (data-gated): the published emitter takes its state (the
+    /// slot use is retail's) but posts nothing; without the rule it plays.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn a_rule_mutes_an_emitter_start() {
+        let (mut world, _) = published_world(false);
+        let update = world.register_system(update);
+        let (bank, patch) = downtown_emitter(&world);
+        let rule: skate_mods::audio_rules::Rule = serde_json::from_value(serde_json::json!({"match": {"kind": "emitter_start", "class": bank}, "action": "mute"})).unwrap();
+        world.resource_mut::<super::super::mod_rules::AudioRules>().set = Some(super::super::mod_rules::RuleSet::for_test(&[("dev.a", "quiet", rule)], Default::default()));
+        let e = publish(&mut world, &bank, patch, Vec3::new(2.0, 0.0, -3.0));
+        world.run_system(update).unwrap();
+        assert!(world.resource::<crate::world_audio::WorldEmitterStats>().playing.is_empty(), "muted: no post");
+        let mut native = world.resource_mut::<Native>();
+        let free: Vec<_> = (0..5).filter_map(|_| native.claim_emitter_state()).collect();
+        assert_eq!(free.len(), 4, "its state is taken");
+        for g in free {
+            native.release_emitter_state(g);
+        }
+        // Without the rule a fresh start plays.
+        world.resource_mut::<super::super::mod_rules::AudioRules>().set = None;
+        world.despawn(e);
+        world.run_system(update).unwrap();
+        let e2 = publish(&mut world, &bank, patch, Vec3::new(2.0, 0.0, -3.0));
+        world.run_system(update).unwrap();
+        assert_eq!(world.resource::<crate::world_audio::WorldEmitterStats>().playing, [e2]);
+    }
 }
