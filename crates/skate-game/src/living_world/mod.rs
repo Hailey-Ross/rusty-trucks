@@ -28,6 +28,7 @@ use skate_core::living_world::{
 use std::path::Path;
 
 pub(crate) mod npc_skaters;
+pub(crate) mod peds;
 
 #[cfg(test)]
 #[path = "tests.rs"]
@@ -35,6 +36,9 @@ mod tests;
 #[cfg(test)]
 #[path = "npc_tests.rs"]
 mod npc_tests;
+#[cfg(test)]
+#[path = "peds_tests.rs"]
+mod peds_tests;
 
 /// Who runs the population decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -512,5 +516,6 @@ impl Plugin for LivingWorldPlugin {
                 (load_for_map, gather_observers, step_population).chain().after(crate::app::SimulationSet::Physics),
             );
         npc_skaters::install(app);
+        peds::install(app);
     }
 }

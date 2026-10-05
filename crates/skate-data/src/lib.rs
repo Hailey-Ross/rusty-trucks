@@ -22,4 +22,5 @@ pub mod xex;
 pub mod ocean_pca;
 pub mod aipath;
 pub mod living_world;
+pub mod ped_anim;
 pub mod roads;

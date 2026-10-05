@@ -830,6 +830,8 @@ def export(ctx) -> dict:
     report('Exporting living-world tables')
     collections = _collections(ctx, game_root, work)
     doc = tables(collections)
+    from .living_world_anim import collections_bin, resolve_anim_names
+    resolve_anim_names(doc, collections_bin(game_root, work))  # clip names for the ped remaps (M2)
     (output/'tables.json').write_text(json.dumps(doc, indent=1), encoding='utf-8')
 
     report('Reading living-world census layers, roads and waypoints')

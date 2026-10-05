@@ -20,6 +20,7 @@
 pub mod census;
 pub mod clock;
 pub mod config;
+pub mod peds;
 pub mod population;
 pub mod replay;
 pub mod rng;

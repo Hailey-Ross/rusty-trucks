@@ -226,6 +226,75 @@ Moddability: lines are keyed by retail id in a shared map a content overlay can 
 key (`NpcSkaterLooks`); NPC events are messages; spawn / despawn go through the population (stable ids). The
 `sdk.living_world` NPC surface is designed below (open items) and comes with the mod milestone.
 ```
+
+## Change: peds milestone M2, the ped body
+
+Pedestrian spawn records become visible, animated peds with footstep audio.
+
+What retail does, checked in the code and data for this milestone (TU3):
+- The entity inside the rolled category: `sub_826B8B88` draws `sub_826BB058` (world RNG u32 x 2^-32 as f32,
+  `0x822F88F4`) and takes `trunc(draw x 100) % count` (`0x820ED57C` = 100) of the category's `entities` array
+  (`sub_8269B040`); an empty list spawns nothing [code]. The model's tint pair comes from one rand `r`:
+  `tints_a[r % na]`, `tints_b[r % nb]` (`sub_827B4170`) [code].
+- `PedestrianSkeletonPres.abin`: 462 VBR clips, a 50-bone rig with trajectory and 10 parts; the clips carry the
+  first 6 parts (bones 0..=26), additive over the `PEDESTRIAN_RIG_TPOSE` pose record; fingers, face and twist
+  helpers have no clip data [data]. Clip attributes `LEFTTOEDOWN` / `RIGHTTOEDOWN` / `LEFTHEELDOWN` /
+  `RIGHTHEELDOWN` (phase windows) and `BODYFALLTYPE` (values) are the foot plants and body falls the ped audio
+  reads [data]. The walk clip's trajectory moves 1.325 m/s (recomp walking median 1.30).
+- `livingworld_entity_animation` names its clips by vault hashes of the motion graph's logical names
+  (`FwdWalkCyc` = `Hash_4AA12E0083F10739`); `tAnimAttributes.anim` is a byte offset into
+  `skatercollections.bin`'s string pool [data]. The motion graph gives the blends and exits: idle 0.1 (cycle
+  swap 0.5), Stand2Walk 0.25 (exit 0.03 s before its end), walk 0.1, Walk2Stand and turns 0.15 (exit 0.1 s
+  before the end; Walk2Stand inside a walk branch window), left turns mirror the right clip [data].
+- The 51 ped GLBs' 39 joints are all rig bones by name; their bind skeletons match the animation reference to
+  1 cm [data].
+
+Change:
+- Setup: `living_world_anim.py` adds `anim_name` / `anim_b_name` beside those offsets (tables otherwise
+  identical; only the `livingworld` fingerprint changes).
+- `skate-core::living_world::peds`: `choice` (catalog, the retail entity index, tints, overrides, `PedLook`),
+  `anim` (clips, rig, the player: remap, blend, mirror, root motion, foot channels, the locomotion states,
+  `TestPath`), `match_bones`.
+- `skate-data::ped_anim`: `PedBank` (rig, reference pose, partial-part clip decode with attributes),
+  `PedTables` (categories, entities, models, animation sets).
+- `skate-game::living_world::peds`: one entity per pedestrian record (`Pedestrian`, `PedBody`, `PedAudio`), the
+  GLB bound to the rig by name, bones without clip data following their parent with the bind offset, ground snap,
+  root motion, `PedAudio.feet_down` / `body_fall` / voice, `PedLooks` overrides, `PedEvent`, debug readout with
+  `SKATE_LIVING_WORLD_DEBUG=1`.
+
+Simplifications until later milestones (documented, not retail): no navigation (M3): a ped idles, walks a few
+metres straight, stops and turns round (`TestPath`); the motion graph is not run (M4): the locomotion subset is
+hand-wired from its data, the crossfade is linear over `blendTime`, the idle cycle swap is a uniform draw per
+wrap; LOD switches LOD0 / LOD1 at the model's 45 / 55 m pair (meaning unconfirmed, `sub_827C1188` not read),
+animation runs every tick for every ped; tints are kept but not drawn (the shader mask is not decoded); the group
+model child is a seeded uniform pick (code not found); the `granny` set names `GRAN_WNDR_*` clips no shipped
+bank holds, such peds use the `default` set.
+
+Files: `crates/skate-core/src/living_world/peds/{mod,choice,anim,tests}.rs`, `crates/skate-data/src/ped_anim.rs`,
+`crates/skate-data/tests/ped_anim_data.rs`, `crates/skate-game/src/living_world/{peds,peds_tests}.rs`,
+`tools/asset_pipeline/{living_world_anim,test_living_world_anim}.py`, registration lines in the three
+`mod.rs` / `lib.rs`, `living_world.py`, `versions.py`.
+
+Verification (peds M2):
+- `cargo test -p skate-core --release --locked living_world::peds`: 11 tests (retail index formula, tints,
+  seeded looks, overrides, bone matching, idle / start / walk / stop, walk speed at 30 / 60 / 144 Hz, mirrored
+  turns, determinism, reference add, idle swap, test path).
+- `SKATE3_ASSET_ROOT=<roots> cargo test -p skate-data --release --locked --test ped_anim_data`: every clip
+  decodes, rig and reference, walk 1.325 m/s, turn -3.07 rad, every census entity resolves a look and its
+  clips, all 51 GLBs match the rig (bind vs reference 1 cm).
+- `cargo test -p skate-game --release --locked --bin skate3rust -- living_world::peds_tests`: 5 tests (seeded
+  looks, despawn, rejection, state = f(record, tick) at 60 / 144 Hz, foot plants, overrides, LOD, followers,
+  data-gated load).
+- Headless render: a mid-walk pose skinned onto `male_jock_2` (`render_glb.py --pose`) shows a correct stride.
+
+Multiplayer: the look is a function of the spawn record; the body steps once per world tick from the spawn
+tick; a client rebuilds the same ped from the same record. Moddability: `PedLooks` (category entity lists,
+entity model / animation set, recipe GLB), `PedEvent`; restoring `PedLooks::default()` undoes a mod for new
+spawns. `sdk.living_world` ped calls come with the mod milestone.
+```
+
+Plan line for doc 26 (milestone table): "peds M2 ped body: done (looks, animation player, foot plants; TestPath
+until M3)". Open-questions additions: the 4 parked items below.
 ## Change: milestone V0, vehicle data
 
 What retail ships, read from the disc and the code for this milestone (details and formats:
