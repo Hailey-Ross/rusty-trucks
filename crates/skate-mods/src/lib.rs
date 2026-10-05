@@ -17,7 +17,8 @@ pub use model::model_shape_file;
 pub use query::{with_host, DynamicsHost, RaycastFilter, RaycastOptions};
 pub use schema::{Manifest, Setting, SettingValue};
 pub use vm::{
-    CaptureOptions, Command, TeleportOptions, VolumeOptions,
+    CaptureOptions, Command, TeleportOptions, TriggerBoxOptions, TriggerShapeOptions,
+    TriggerTrackOptions, VolumeOptions,
 };
 
 use serde::{Deserialize, Serialize};

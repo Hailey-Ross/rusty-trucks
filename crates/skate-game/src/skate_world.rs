@@ -336,6 +336,14 @@ pub(crate) fn validate_runtime(map: &SkateMap) -> Result<(), String> {
         if extension.tag == *b"RWCM" {
             continue;
         }
+        if extension.tag == skate_data::trigger_volumes::EXTENSION_TAG {
+            // Named trigger volumes (data only, never collision); see trigger_volumes.rs.
+            if extension.schema != skate_data::trigger_volumes::EXTENSION_SCHEMA {
+                return Err(format!("SKATE extension TVOL schema {} is not supported", extension.schema));
+            }
+            skate_data::trigger_volumes::parse(&extension.payload)?;
+            continue;
+        }
         if extension.tag == *b"MOBJ" {
             skate_data::skate_map::validate_static_objects(map, extension)?;
             continue;

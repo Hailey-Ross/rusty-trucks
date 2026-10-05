@@ -179,6 +179,18 @@ def convert_map(archive,work,maps,stage,game_exe,log,report):
     from .dynamic_props import export as write_props
     caches=list((work/'dmo/cache').glob('DMO_*'))
     from .optional_content import CONTENT_ERRORS, note
+    # Named trigger volumes (0x00EB0019) beside the map, like .irradiance.
+    # Optional: a map without the sidecar simply has no trigger volumes.
+    from .map_volumes import export as write_triggers
+    triggers=final.with_suffix('.triggers')
+    try:
+        volumes=write_triggers(stream,triggers,label)
+        (stage/'assets/private/map-status'/(label+'-triggers-availability.json')).unlink(missing_ok=True)
+        report(f'{label}: {len(volumes)} trigger volumes')
+    except CONTENT_ERRORS as error:
+        triggers.unlink(missing_ok=True)
+        note(stage/'assets/private/map-status'/(label+'-triggers-availability.json'),label+' trigger volumes',error,report=report)
+    finished('triggers')
     props=stage/'assets/private/native-props'/(label+'.skate')
     try:
         if not caches:raise RuntimeError('Movable-object source catalog is unavailable')

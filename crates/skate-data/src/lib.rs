@@ -18,3 +18,4 @@ mod sha256;
 pub mod state_graph;
 pub mod skate_map;
 pub mod retail_collision;
+pub mod trigger_volumes;

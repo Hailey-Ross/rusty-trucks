@@ -24,6 +24,7 @@ reads the latest snapshot, without executing a new simulation step:
 | animation | Tick, pose generation and bone count | No arbitrary animation replacement or pose injection |
 | scoring | Current player scoring observations | No arbitrary native score/collector mutation |
 | world | Current map observation | Existing mod geometry and volume APIs; no rewriting map assets |
+| triggers | Map, custom-map and mod trigger volumes; who is inside; enter/exit `on_event`s | `sdk.triggers` mod volumes, map-volume switches, tracked bodies, query-shape constants |
 | camera | Current camera observation | Existing follow, watch, mirror, rig, set, capture and release controls |
 | network | Session identity, peers and mod state | Existing state publication, entity replication and authority-controlled operations |
 | commands | This mod's most recent command receipts | `sdk.commands.request` |
