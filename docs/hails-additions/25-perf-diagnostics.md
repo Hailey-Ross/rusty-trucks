@@ -185,7 +185,7 @@ unchanged.
 
 ## Verification
 
-- Rust: `cargo test -p skate-game --release --bin skate3rust --locked`: 323 passed, 2 failed — the known
+- Rust: `cargo test -p skate-game --release --bin skate3rust --locked`: 323 passed, 2 failed - the known
   pre-existing `setup::tests::pipelines_accept_valid_group_outputs_when_fingerprint_changes` and
   `retail_render::shader_tests::sky_shader_validates`. New: 18 in `frame_timing` + `graphics_menu` (stats math,
   log format and writer, window, CPU split, app-level identity, system access, menu setting).
