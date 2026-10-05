@@ -375,6 +375,68 @@ impl RoadGraph {
         self.segments.iter().find(|s| s.from_node == j.node && s.from_end == connector.to_end)
     }
 
+    /// The traffic core's input (`skate_core::living_world::traffic::RoadInput`): segments with
+    /// their pieces, junctions with their approach / exit ends (end records of kind 1) and
+    /// connectors. `flag_04` becomes `signalled`, `f32_50` the connector's entry speed.
+    pub fn traffic_input(&self) -> skate_core::living_world::traffic::RoadInput {
+        use skate_core::living_world::traffic as t;
+        let curve = |c: &Curve| t::Curve { start: c.start, end: c.end, tangent_start: c.tangent_start, tangent_end: c.tangent_end, length: c.length, arc: c.arc };
+        let segments = self
+            .segments
+            .iter()
+            .map(|s| t::SegmentInput {
+                id: t::SegmentId(s.id),
+                from_node: s.from_node,
+                from_end: s.from_end as u8,
+                to_node: s.to_node,
+                to_end: s.to_end as u8,
+                length: s.length,
+                speed_limit: s.speed_limit,
+                lanes: s.lanes as u8,
+                district: s.district,
+                pieces: self
+                    .segment_pieces(s)
+                    .iter()
+                    .map(|p| t::PieceInput { end_distance: p.distance, centre: curve(&p.centre), left_start: p.left_start, right_start: p.right_start, left_end: p.left_end, right_end: p.right_end })
+                    .collect(),
+            })
+            .collect();
+        let junctions = self
+            .junctions
+            .iter()
+            .map(|j| {
+                let end = |k: usize| -> Option<t::EndInput> {
+                    let e = &j.ends[k];
+                    (e.kind == 1).then(|| t::EndInput {
+                        lanes: e.lanes as u8,
+                        lane_connectors: (0..(e.lanes as usize).min(4)).map(|lane| self.lane_connectors(j, k, lane).to_vec()).collect(),
+                    })
+                };
+                t::JunctionInput {
+                    id: t::JunctionId(j.node),
+                    signalled: j.flag_04 != 0,
+                    speed: j.speed,
+                    approaches: std::array::from_fn(end),
+                    exits: std::array::from_fn(|k| end(4 + k)),
+                    connectors: self
+                        .junction_connectors(j)
+                        .iter()
+                        .map(|c| t::ConnectorInput {
+                            index: c.index,
+                            entry_speed: c.f32_50,
+                            from_end: c.from_end as u8,
+                            from_lane: c.from_lane as u8,
+                            to_end: c.to_end as u8,
+                            to_lane: c.to_lane as u8,
+                            curve: curve(&c.curve),
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        skate_core::living_world::traffic::RoadInput { segments, junctions }
+    }
+
     /// Write the same format (`roads.bin` v2).
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -438,6 +500,21 @@ impl RoadGraph {
         u32s(&mut out, &self.lane_entries);
         out
     }
+}
+
+/// Signal durations from the exported `tables.json` (`classes.livingworld.trafficlights`:
+/// `signal_green`, `signal_amber`, `signal_all_red`, `Hash_5E41C959D17527CC` = the walk split,
+/// read by `sub_826B1540` into controller `+300`). A content overlay that patches those fields
+/// changes the city's lights. `None` when a field is missing.
+pub fn signal_timings(tables: &serde_json::Value) -> Option<skate_core::living_world::traffic::SignalTimings> {
+    let f = tables.pointer("/classes/livingworld/trafficlights/fields")?;
+    let num = |k: &str| f.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
+    Some(skate_core::living_world::traffic::SignalTimings {
+        green: num("signal_green")?,
+        amber: num("signal_amber")?,
+        all_red: num("signal_all_red")?,
+        walk_split: num("Hash_5E41C959D17527CC")?,
+    })
 }
 
 #[cfg(test)]
@@ -514,6 +591,20 @@ mod tests {
         assert_eq!(next.len(), 1);
         assert_eq!(g.connector_exit(next[0]).map(|s| s.id), Some(2));
         assert_eq!(g.district("Test").unwrap().segments, 0..2);
+    }
+
+    #[test]
+    fn traffic_input_builds_a_network() {
+        use skate_core::living_world::traffic::{RoadNetwork, SegmentId};
+        let g = synthetic();
+        let net = RoadNetwork::build(&g.traffic_input()).unwrap();
+        let s1 = net.segment_index(SegmentId(1)).unwrap();
+        assert_eq!(net.segments[s1].pieces.len(), 2);
+        assert!(net.junctions[0].signalled);
+        let next = net.next_connectors(s1, 0);
+        assert_eq!(next.len(), 1);
+        assert_eq!(net.segments[net.connector_exit(next[0]).unwrap()].id, SegmentId(2));
+        assert_eq!(net.connectors[next[0]].entry_speed, 13.888889);
     }
 
     #[test]

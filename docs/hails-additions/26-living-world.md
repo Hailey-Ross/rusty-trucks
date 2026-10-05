@@ -279,6 +279,99 @@ Verification (milestone V0):
   `environment`, `maps`, `audio` identical before and after.
 - Rendered the taxi and sports_car_01 without their windows: the driver figure sits in the body mesh.
 
+
+## Change: milestone V1, road graph, lane cursor, traffic signals and junction entry
+
+**Problem.** Traffic needs the road network as a graph a car can drive on, retail's traffic lights and retail's rule for
+when a car may enter a junction, before the census (V2) and the driver (V4) can use them.
+
+**What retail does (code read, TU3 recomp as reference).**
+- Road network object (global `0x830854C0`, vtable `0x8230C6A8`): `+8` vehicle by id, `+16` junction by node, `+24`
+  lane run by id, `+32` segment by id, `+36` / `+40` signal controller by index (`sub_8269B2F0`, controllers 320 bytes
+  apart) [code].
+- **Signal binding** [code `sub_82E11E90`]: the controller an approach obeys is the connector's `from_end` (connector
+  `+84`), so every signalled junction shares the 4 controllers: node ends 0 / 2 run together, 1 / 3 together, the whole
+  city switches in step. The light is consulted only when the junction's `flag_04` (header `+0x244`) is set, so
+  `flag_04` = "has traffic lights" (24 of 33 shipped junctions) [code + data].
+- **Signal programmes** [code `sub_826B1540`, `sub_82E156D8`]: even controllers all-red 0.5, red 8 (= green + amber),
+  all-red 0.5, green 7, amber 1; odd controllers all-red 0.5, green 7, amber 1, all-red 0.5, red 8. Walk list: a green
+  splits into walk green `(1 - 0.4) x 7` = 4.2 and walk amber `7 x 0.4` = 2.8, every other phase is walk red. Jump
+  targets `+304` / `+308` (all-red before red) and `+312` / `+316` (all-red before green).
+- **Signal tick** [code `sub_82E158D8`]: a fixed 1/60 s per call (`0x820849C8`); below 0 the next phase starts and
+  inherits the overshoot, except on the car list's wrap to phase 0 (overshoot dropped, walk list forced to phase 0).
+  Called for all 4 controllers by the manager `sub_826B2C18` from the living-world update `sub_826BDB50` in the world
+  tick `sub_82859E70`, which runs as a **fixed 60 Hz step** [trace: 60 ticks per second while the recomp renders at
+  ~345 fps], so the cycle is 17 s of game time. The f32 carries make the odd controllers' walk light lead the car light
+  by one tick (253 / 167 / 1 / 59 ticks), exactly as recorded.
+- **Green wave** [code]: a priority vehicle (`sub_8269B328` sets it, `sub_8269B338` clears it; caller not found) within
+  50 m (`0x8220E13C`) of a signalled junction, or inside one, calls `sub_826B3C88(end)`: controllers of the end's parity
+  jump to their all-red before green, the others to their all-red before red, and the lights freeze (`+13382`) once
+  the end's controller is green, until the priority is cleared.
+- **Connector choice** [code `sub_82C376E8`]: when a car has no connector or changed segment it picks one from its
+  approach lane's list and stores it at `+4388`. With vehicle flag `+4401` bit 0x02 (constructor `sub_82C3B7C8` writes
+  0xCE, no code clears it, so every car) the connector whose exit lane has the smallest `load / exit length` wins (exit
+  segment `+136`, a vec4 per lane; strict `<`, first wins a tie). The other branch (flag clear, unused) picks
+  `trunc(u32 x 100 / 2^32) mod n` from the world RNG (`0x822F94B0`).
+- **Junction entry** [code `sub_82E11E90`, run by FollowingLane once the stop line is within look-ahead + speed x 1 s;
+  conflict scans `sub_82E11C78` / `sub_82E11980`]. Results (the VEHJUNC codes; stored as junction state `+4392`):
+  - 0 go;
+  - 1 signal: red or amber, or green with `speed x remaining green < distance to the line - length / 2`; a right turn
+    (`to_end == from_end - 1`) skips the light (turn on red). A car stopped at the line therefore only goes on green when
+    its front is within half its length of the line;
+  - 2 approach: faster than the connector's entry speed (connector `+0x50`, V0's `f32_50`: the road speed on straight
+    connectors, 1.4-2.7 m/s on turns) while still beyond its look-ahead; at an unsignalled junction the entry speed is
+    0.1 m/s (`0x820641A8`), a stop sign;
+  - 3 yield: another connector from my lane in use; a car inside the junction merging into my exit lane (left turns
+    check lanes up to theirs, right turns and straight on the lanes from theirs outwards); or a crossing / oncoming flow.
+    Cars still on their approach count only by distance (closer first, a tie goes to the lower id), at unsignalled
+    junctions for every flow and at signalled ones for the oncoming flow of left turns and straight on. A blocker with
+    mover flag `+96` (the skitch speed-cap bit) makes FollowingLane set state 5 (horn 3);
+  - 4 blocked: no room on the exit lane (`my length > rear car distance + speed x 1 s - its length / 2`), the car ahead
+    on my connector closer than my minimum gap, or a missing approach / exit segment.
+  - The light check is skipped (`r7 = !sub_82C344D0`) while the player skitches the car (`+4403` bit 0x80) or for a car
+    with `+4401` bit 0x10 faster than the driver's `Hash_F142ABBFBEDA71E2` km/h (taxi 40); no code read sets bit 0x10.
+- **Lane leader** [code `sub_82E14EE0`]: each lane of a segment (`+104`) and each connector (`+8`) lists its cars newest
+  first; the leader is the next older car, none for the front car, the rearmost car for one not on the lane.
+- Lane geometry [data]: a piece's centre curve is the road middle; lane `k` of `n` sits at `(k + 0.5) / n` from the left
+  edge (4 m lanes, lane 0 left); connectors start and end exactly on those lane points. Right turns leave from the right
+  lane, left turns from the left lane.
+
+**Evidence.** proof1 / proof2 VEHJUNC (89 result changes): straight on red / amber always 1, green 0 (1 when the green
+cannot be cleared), right turns never 1, unsignalled right turns 2, light skipped with the flag off. TRAFLIGHT2: all
+500 recorded phase changes reproduced tick for tick. TRAFPROG: the programme layout above.
+
+**Change.** `skate-core::living_world::traffic`:
+- `RoadNetwork::build(&RoadInput)`: segments / junctions / connectors sorted by retail id (stable dense indices on every
+  machine), ends resolved to segments, references checked; `lane_frame` (fractional lanes for lane changes),
+  `connector_frame`, `next_connectors`, `connector_exit` / `approach`, `adjacent_lanes`, `nearest_lane` (engine helper).
+- `LaneCursor`: lane or connector plus distance; `advance` carries the overshoot across pieces, onto the chosen connector
+  and onto its exit lane (choosing the next connector on entry, as retail); stops at dead ends; `set_lane`.
+- `choose_connector` with `ConnectorChoice::{LeastLoaded (retail), Random}` and a load function.
+- `SignalClock`: 4 `Controller`s built from `SignalTimings` (data), the f32 tick, a 60 Hz accumulator so any engine
+  frame rate gives the same ticks, phase-change records, `controller_for_end` / `light_for` (binding), `walk_for_end`,
+  `request_green` / `clear_priority` (green wave) and `priority_end`.
+- `junction_entry(&EntryQuery)` returning `Entry::{Go, Signal, Approach, Yield, Blocked}` plus the flagged-blocker bit;
+  `Occupancy` (newest-first lists, `leader`, `lane_load`); `VehicleSnapshot` (the mover values the query reads).
+`skate-data::roads`: `RoadGraph::traffic_input()`, `signal_timings(&tables)`.
+
+**Moddability.** Durations come from the `trafficlights` record (a content overlay changes the city's lights;
+`SignalClock::set_timings` rebuilds live); `ticks_per_second` is a field; the connector choice takes a policy and a
+load function; `request_green` gives a mod (or a scripted car) retail's green wave; `RoadInput` is plain records a mod
+map can fill (or `RoadGraph::to_bytes` for the file format). Stable ids: `SegmentId`, `JunctionId`, `ConnectorId`
+(junction + retail index), `LaneId`.
+
+**Multiplayer readiness.** No hash-map iteration, no frame-time dependence; the light state is a pure function of the
+tick count and timings (a client can rebuild it from the host's `SignalClock::ticks`); random draws take an explicit
+seeded `Rng`.
+
+**Tests.** 18 unit tests on synthetic graphs (graph build / rejects, lane frames, cursor continuity across pieces,
+connectors and segments, connector choice, programme layout, recorded tick gaps, 30 / 60 / 144 / 240 / 29.97 Hz
+identical, controller alternation, approach binding, green wave, junction results for lights, stop sign, yields,
+blocks, distance and id priority, left turn vs oncoming, leader, priority distance); 1 skate-data unit test; 6
+data-gated tests (shipped counts and 24 signalled junctions, connector endpoints on lanes, every lane reachable,
+cursors over the whole network, 4 controllers with the shipped timings, recorded timelines from the traces).
+
+**Open questions.** See the list below.
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).
