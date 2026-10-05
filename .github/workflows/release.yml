@@ -7,6 +7,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  # Forks build, publish and update from their own repository.
+  SKATE3RUST_REPOSITORY: ${{ github.repository }}
 jobs:
   windows:
     if: github.event_name != 'release' || github.event.release.tag_name != 'experimental'
@@ -60,7 +63,7 @@ jobs:
             target/release.json
   publish:
     needs: windows
-    if: github.event_name == 'release' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/skyline-driving-update'
+    if: github.event_name == 'release' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/skyline-driving-update' || (github.repository == 'Hailey-Ross/rusty-trucks' && github.ref == 'refs/heads/hails-additions')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -83,6 +86,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python tools/publish_branch.py --directory target --branch skyline-driving-update
+      - name: Publish fork branch release
+        if: github.event_name != 'release' && github.repository == 'Hailey-Ross/rusty-trucks' && github.ref == 'refs/heads/hails-additions'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/publish_branch.py --directory target --branch hails-additions
       - name: Attach numbered release
         if: github.event_name == 'release'
         env:

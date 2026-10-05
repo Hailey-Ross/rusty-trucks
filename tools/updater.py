@@ -16,7 +16,22 @@ import zipfile
 import update_install as installer
 from update_processes import close_programs
 
-REPO = 'SK8-ENGINE/skate-3-rust-engine'
+DEFAULT_REPO = 'SK8-ENGINE/skate-3-rust-engine'
+
+
+def release_repository():
+    # A fork's release build bakes its own owner/repo (scripts/Build-Release.ps1 writes
+    # release_repository.py); its CI publish scripts read SKATE3RUST_REPOSITORY.
+    try:
+        from release_repository import REPOSITORY as repo
+    except ImportError:
+        repo = os.environ.get('SKATE3RUST_REPOSITORY') or DEFAULT_REPO
+    if not re.fullmatch(r'[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}', repo):
+        raise ValueError('Invalid release repository')
+    return repo
+
+
+REPO = release_repository()
 API = f'https://api.github.com/repos/{REPO}/releases'
 ACTIONS_API = f'https://api.github.com/repos/{REPO}/actions'
 BRANCHES_API = f'https://api.github.com/repos/{REPO}/branches'

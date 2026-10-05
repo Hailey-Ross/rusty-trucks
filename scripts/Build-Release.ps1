@@ -79,7 +79,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Setup packaging failed' }
     & $packagePython tools/mixamo_to_skate/check_package.py --setup "$stage/support/skate3setup.exe"
     if ($LASTEXITCODE -ne 0) { throw 'Packaged character importer verification failed' }
+    # The updater talks to the repository that published this build (a fork's own releases).
+    $repository = if ($env:SKATE3RUST_REPOSITORY) { $env:SKATE3RUST_REPOSITORY } else { 'SK8-ENGINE/skate-3-rust-engine' }
+    if ($repository -notmatch '^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$') { throw "Invalid release repository '$repository'" }
+    New-Item -ItemType Directory -Path target/updater-build/generated -Force | Out-Null
+    Set-Content -LiteralPath target/updater-build/generated/release_repository.py -Value "REPOSITORY = '$repository'" -Encoding ascii
     & $packagePython -m PyInstaller --noconfirm --clean --onefile --windowed --name skate3update `
+        --paths "$ProjectRoot/target/updater-build/generated" `
         --distpath "$stage/support" --workpath target/updater-build/work --specpath target/updater-build tools/updater.py
     if ($LASTEXITCODE -ne 0) { throw 'Updater packaging failed' }
     # GitHub run number is monotonic across releases, including prereleases. Re-runs
@@ -124,7 +130,7 @@ try {
         $files[$name] = Get-Sha256Hex $file.FullName
     }
     @{
-        schema = 1; repository = 'SK8-ENGINE/skate-3-rust-engine'; target = 'windows-x64'
+        schema = 1; repository = $repository; target = 'windows-x64'
         build = $build; tag = $tag; revision = (& git rev-parse HEAD).Trim(); files = $files
         asset_pipelines = $assetPipelines; character_customiser = $characterCustomiser
         pipeline_equivalence = $pipelineEquivalence
