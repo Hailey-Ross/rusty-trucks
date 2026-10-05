@@ -57,6 +57,7 @@ mod game_audio;
 pub(crate) mod world_audio;
 pub(crate) mod ui_audio;
 mod water_bodies;
+mod living_world;
 
 fn main() -> bevy::app::AppExit {
     match updater::recover() {

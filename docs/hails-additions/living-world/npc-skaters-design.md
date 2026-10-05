@@ -2,8 +2,8 @@
 
 Status: design, 2026-10-04; milestone M1 (data) is done (see `skaters-data.md`). Retail findings and their evidence:
 `.claude/notes/npc-skaters-re.md` (tags: [code] = retail code, [data] = disc data, [recomp] = observed in the
-recomp; the code is the source of truth). Credit: the TU3 static recompilation (skate3recomp / rexglue / Xenia) as
-the reference for the retail code; no game code or data is copied, the disc data is read at setup like every other
+recomp; the code is the source of truth). Credit: the TU3 static recompilation (skate3recomp by @mchughalex, rexglue SDK, Xenia)
+as the reference for how the retail code is used; no game code or data is copied, the disc data is read at setup like every other
 asset.
 
 **One PR (user, 2026-10-04): NPC skaters and all ped work ship upstream as one combined PR.** The phases below are
