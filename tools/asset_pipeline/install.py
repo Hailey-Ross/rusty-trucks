@@ -436,6 +436,8 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             exports.environment(game_root,stage,work,report,log,converted,game_exe)
         if 'audio' in groups:
             exports.audio(game_root,stage,work,report,log,base/'tools')
+        if 'livingworld' in groups:
+            exports.livingworld(game_root,stage,work,report,log,converted)
         if 'maps' in groups:
             report('Preparing authored movable-object models')
             from .dynamic_props import prepare_catalog
