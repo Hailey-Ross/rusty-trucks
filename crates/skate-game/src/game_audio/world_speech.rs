@@ -652,7 +652,7 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
         }
         // The announcer's channel (no cut: the announcer object has none).
         if let Some((index, audio)) = library.speech("announcer") {
-            match load(&index, audio.clone()) {
+            match load(&index, audio.clone(), &library.speech_mods("announcer")) {
                 Ok(data) => {
                     info!("AUDIO_WORLD announcer speech {}: {} clips, {} events", if audio.is_some() { "on" } else { "chosen but silent (not decoded)" }, data.index.clips.len(), data.table.events.len());
                     let mut player = SpeechPlayer::on_channel(announcer::CHANNEL);

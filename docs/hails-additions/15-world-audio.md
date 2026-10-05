@@ -592,7 +592,7 @@ recomp". Reference only: the TU3 recompilation (skate3recomp / rexglue / Xenia);
 
 ## Follow-ups: speech inputs, the main cast's repeat times and stops, the NPC bed's distance, the NPC slide (2026-10-04, headless)
 
-Branch `audio/world-followups` (after #32, which stays as it is). Worked from the code and the existing
+Branch `audio/world-followups` (former #44, now merged into `gameplay/audio`, #32). Worked from the code and the existing
 recordings only: no new sessions, no scripted run. All numbers are "the recomp". Reference only: the TU3
 recompilation (skate3recomp / rexglue / Xenia); addresses and constants are facts, the code is our own.
 
@@ -811,7 +811,7 @@ checked against all 38 recorded sessions; no new session was run.
 - Levels against a recording: none exists (free roam never streams the announcer). A challenge session in the
   recomp would give one.
 
-## Session marker sounds (2026-10-04, follow-up to #32, branch `audio/respawn-marker`)
+## Session marker sounds (2026-10-04, branch `audio/respawn-marker`; former #49, now part of #32)
 
 ### Problem
 Setting a session marker (LB + D-pad down) and returning to it (LB + D-pad up held) were silent in our engine; the
@@ -873,7 +873,7 @@ the engine asked for them.
   names silent; one-shots, nothing to clean up on disable; at most 10 play at once, as retail); every running mod
   gets `on_event {name = "session_marker", action = "opened" | "placed" | "refused" | "returned"}`. Remapping or
   muting the marker sounds from a mod (a content-overlay identity for `fe` records / sk8_menu) belongs to the
-  modding PR #36, which is not in this branch: the identities are the `fe` record names and the
+  audio modding (doc 16, former #36, now part of #32), which was not in this branch at the time: the identities are the `fe` record names and the
   `SessionMarkerSounds` resource.
 
 ### Files
@@ -1079,7 +1079,7 @@ starts these voices itself, with no POST or SPLC per crackle. That is why the ea
   resource. It holds for four UI ticks, so a mod sends it every frame for as long as it should last. 0 clears it, and a
   stopped or disabled mod's amount lapses by itself. Mods already see the marker's actions (`on_event {name =
   "session_marker"}`). Replacing the crackle's samples or program (the Treatments bank) is content-overlay work for
-  the modding PR #36.
+  the audio modding (doc 16, former #36, now part of #32).
 - **Bench hook:** `E2E_TELEPORT=<row>,<ticks>` makes the e2e harness play a hold from that row (unset: unchanged).
 
 **Files.** `crates/skate-game/src/{ui_audio.rs, session_marker/mod.rs, session_marker/effect.rs}`,

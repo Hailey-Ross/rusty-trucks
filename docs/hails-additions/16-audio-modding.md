@@ -2,7 +2,7 @@
 
 Status: IMPLEMENTED (2026-10-04) for the scope chosen on 2026-10-03: the content overlay (R1), map audio as data (R2),
 retail posts / globals / read-only MixMap (R3a), observe-only audio events (R5) and docs / examples (R6), on the audio
-modding PR (draft upstream #36), which builds on #32 (the native audio engine) and doc 15 (the world-object surface).
+modding PR (upstream #36, folded into #32 on 2026-10-04 together with #43), which builds on the rest of #32 (the native audio engine) and doc 15 (the world-object surface).
 Speech is included. Without audio mods the game sounds exactly as before: every phase was checked byte for byte
 against the headless end-to-end renders (below). The deferred items are built as code on the follow-up branch
 `audio/moddability-2` (2026-10-04, sections H–L): mod WAVs through the native mixer (H), tuning writes at run time
@@ -358,7 +358,7 @@ In-game log check (muted, the branch's own staged build, about 60–75 s each, n
 
 ## H. Mod WAVs through the native mixer (the default, capability `audio` = 3)
 
-Status: built on `audio/moddability-2` (2026-10-04, after the PR #36 cut). **Native is the default** (user decision
+Status: built on `audio/moddability-2` (2026-10-04, after the first modding cut, then PR #36; all now in #32). **Native is the default** (user decision
 2026-10-04, "Yes duh"; it was opt-in until then): every `sdk.audio.play` goes through the game's mixer unless the
 sound says `native = false` (the Bevy voice, exactly as before).
 
@@ -645,12 +645,12 @@ byte-identical to run `m2` (84 outputs).
 
 ## L. The follow-up (H–K): implementation, verification, open questions
 
-Problem: after the PR #36 cut a mod could still not route its own sounds through the game's mixer, change tuning
+Problem: after the first modding cut (then PR #36, now part of #32) a mod could still not route its own sounds through the game's mixer, change tuning
 while it runs, add emitters or reverb zones, or change the game's own sounds. Root cause: mod WAVs had only the Bevy
 path; tuning was read once at start; the emitter and zone lists were the map's only; the post sites had no hook a
 mod could reach (Lua cannot run in the audio pass).
 
-Changes (branch `audio/moddability-2`, on top of the PR #36 branch):
+Changes (branch `audio/moddability-2`, then PR #43, on top of the PR #36 branch; both now part of #32):
 - `crates/skate-game/src/game_audio/mod_voices.rs` (new): per-mod mixer banks, native mod voices driven by the
   retail emitter words, the private MixMap (`ModMix`); `emitters.rs` `sphere_level`; `native.rs` `write_position`
   public, a test helper.
