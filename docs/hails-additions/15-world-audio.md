@@ -547,7 +547,9 @@ recomp". Reference only: the TU3 recompilation (skate3recomp / rexglue / Xenia);
 - **NPC grain bed vs session 180430's NPC rows** (the GREC rows of the NPC object, filtered by owner, joined with
   the board's distance; `npc_bed_follows_the_recomp_rows`, 289 straight-roll rows): truck A gain recomp / ours
   0–10 m 0.097 / 0.108, 10–20 m 0.045 / 0.065, 20–30 m 0.005 / 0.014; pitch 0.93–0.97 / 0.96. The far bands are
-  louder in ours: the lookups measure the distance to the local skater, which the rows don't give.
+  louder in ours: the lookups measure the distance to the local skater, which the rows don't give. (Corrected
+  2026-10-04: the lookups read the camera's distance and azimuth; the test's geometry was the cause. See
+  "Follow-ups".)
 
 ### Mod surface and data (moddability)
 - Engine: `PedAudio::{tazing, body_fall}`, `PedTazerEvent`, `PedBodyFallEvent`, `NpcSkaterAudio::{loose_board,
@@ -578,6 +580,8 @@ recomp". Reference only: the TU3 recompilation (skate3recomp / rexglue / Xenia);
   mod options / events, the test mod's new keys, the setup export.
 
 ### Still open
+(Followed up 2026-10-04: see "Follow-ups" below for in2 / in3, the near lines, the slot 30 / 31 repeat times, values
+30 / 51, the crash line (the announcer's), the NPC bed's distance input and the NPC slide.)
 - Speech: Obj:Speech in2 / in3; the near lines' ~0.6 dB; the echo graph's two-channel routing gains; the
   main-cast speaker-slot repeat times for slots 30 / 31 (record `+52` / `+56`); values 30 / 51 also stopping the
   speaker's playing line; the game modes the skater choices test (19 / 20 / 55: free skate is none of them, the
@@ -585,6 +589,354 @@ recomp". Reference only: the TU3 recompilation (skate3recomp / rexglue / Xenia);
   skater-collision lines (no such engine systems yet).
 - NPC: the board slide is ported but unobserved; the walking / jump voices.
 - Traffic: the 3DObjPos binding's writer; horn kinds per model.
+
+## Follow-ups: speech inputs, the main cast's repeat times and stops, the NPC bed's distance, the NPC slide (2026-10-04, headless)
+
+Branch `audio/world-followups` (after #32, which stays as it is). Worked from the code and the existing
+recordings only: no new sessions, no scripted run. All numbers are "the recomp". Reference only: the TU3
+recompilation (skate3recomp / rexglue / Xenia); addresses and constants are facts, the code is our own.
+
+### Speech: `Obj:Speech` inputs 2 / 3, and the near lines' ~0.6 dB
+- **Inputs 0 / 1 / 4 look at the main cast's streams only (fix).** SFXObj_Speech's process (`sub_824E2050`)
+  walks the stream system's first two stream records (`[mgr+8]+1120` / `+1124`). Those are streams 0 and 1:
+  channel 0, the main cast (the pro path stops "its" stream by the same index, `sub_82C5E1D8(sys, k)`). So
+  in0 / in1 / in4 are raised by a main-cast line whose clip voice is 37–38 / 75–77 / 1–29. The main cast has voice
+  77 (18 clips) and 37 / 38; the living world's guards (75 / 76) speak on channel 1 and raise nothing. The port
+  used to raise in1 for a living-world guard line. In free skate that was inaudible (in1's duck F42 → Global C3 →
+  the Music outputs is scaled by `Master.in7`, which free skate leaves at 0; F19 feeds nothing), but the input now
+  follows retail: only the main-cast player's speakers count.
+- **Input 2** = the speech system's word `+0x1BD28` == 2. The only code that drives that word is the scripted
+  dialogue path (`sub_824A4EE8`, request ids ≥ 5000, categories 31–40: the story / challenge lines; set to 1 when
+  its stream starts, cleared by `sub_824A54D0`). **Input 3** = a main-cast stream whose block has `+60` == 0 and
+  `+93` set (`+60` is written by the stream start `sub_82C5DC80` from its fourth argument). Neither happens in
+  free roam; both stay 0. What they drive: in2 → F29 (−200 mB on the music) and F221 / F222 (with Pause.in2); in3
+  → F46 (−200 mB on the music), F33 / F34 (+0 mB). None of them touches ped speech.
+- **The near lines' ~0.6 dB is gone.** With the per-voice float (ported in the gaps pass), the 34 recomp lines
+  with a gain give recomp / ours median 0.988 (−13 mB); near lines (camera < 10 m, 24) −22 mB, far lines (10)
+  +45 mB: no near offset is left. Checked against the one global term in PedestrianSpeech's level that the port
+  leaves at 0, `A[Global.112]` = `VU.in0` (+200 mB at full): the VU object (`SFXObj_VU`, process `sub_824EDBE8`)
+  meters a mixer bus and slews the result into in0 / in1. If it explained an offset, the gain ratio would grow
+  with the game's loudness; against the capture's RMS over the 500 ms before each line (`audio.f32`, 34 lines)
+  the correlation is −0.20 (RMS terciles −4 / −86 / −150 mB). Not ported (it would also move the ambience,
+  emitters, cameraman and ped SFX); noted under Still open.
+
+### Main cast: the speaker-slot repeat times, values 30 / 51, value 29, the "cameraman" line
+- **Repeat times of speaker slots 30 / 31 (ported).** `sub_824AC560` takes the event's repeat time from the
+  speech record's `+24`, except for speaker slot 31 (`+52`) and 30 (`+56`), even when that value is 0. The
+  speaker slot is the speaker's model (`S+84`): 31 = `skate_coach`, 30 = the special-cast model
+  `47231014932CE8B3`. Examples from the vault: event 0 repeats after 20 s, for slot 31 after 30 s, for slot 30
+  after 10 s; event 3: 25 / 0 / 25 s; event 141 (`1014_bored`): 30 / 0 / 20 s. The living world's request
+  (`sub_824ABA18`) has no such override.
+  - Setup: `world_tuning.speech_tuning[bank][event]` gains `repeat_speaker_31` / `repeat_speaker_30`.
+  - Engine: `EventTuning::speaker_repeat` (speaker, seconds), used by `request_main_cast` only. A mod's tuning
+    overlay can list more pairs in `speaker_repeat`.
+  - An install from before this change has neither field: the main cast then keeps `+24` for every speaker, as
+    before. A setup rerun brings them.
+- **Values 30 / 51 stop the speaker's line first (ported).** `sub_824AC438`: with the speaker's speaking byte
+  (block `+76`) set and its stream (block `+72`) neither −1 nor 2, `sub_82C5E1D8` stops that stream before the
+  request, whether or not the new request then passes the gate. PedestrianSpeech remaps the bump values 7 / 8 to
+  30 (after a 29) or 51, so a knocked pro cuts its own line short and says `202_impact_react` or
+  `201_Light_Impact_Grunt`. Ported as `SpeechPlayer::stop_speaker` (the stream frees at once, the queue stays),
+  called by the host before the request; `main_cast::stops_line`.
+- **Value 29 asks twice (correction).** The pro path requests `1014_bored` (141) and then `1002_amb_chat`
+  (136): the code calls `sub_824AC560` with 141 and falls through to the common call with 136. The first port
+  read 136 as a word. `main_cast::events_for_value` returns both, in order.
+- **The crash line is the announcer's, not the cameraman's (not ported).** `sub_824DB688`, after the crash
+  message, compares the skater's camera distance (its record `+96`, written by `sub_824B6E80`) with the speech
+  record's field `887C1D3324B12C4A` (12.0 m). Closer, it reads the model's `aud_characteristics` field
+  `14B23B4527AF919E` (`SPCH3Type_pro_id_ANN`: the pro's bit, e.g. `chris_cole` 0x2) and, when it is non-zero,
+  requests event 24708 = bank 3 (0x6000) event 0x84 = the announcer's `480_slam_pro` (fields 1 / 2 / 3, 26
+  records) with the bit in word 2, through `sub_824AA858`. That is the announcer channel
+  (`announcerspeech.big`, bank 3, 63 events), which is not indexed, decoded or managed yet; its request has its
+  own game-state gates (the challenge's announcer `+1036`, `+1089`, the record's `+48` byte). Ported in step 4
+  ("The announcer channel" below): free skate never plays it.
+
+### NPC grain bed at distance: the input was the camera's all along
+- **The code.** The Player slot's level lookup B2 (SkateBoard out1 / out2 …) reads its 3DObjPos block's
+  input 1 (distance) and input 3 (azimuth) with per-quadrant ranges: 4–50 m ahead, 4–40 m at the sides, 1–30 m
+  behind (MixMap catalog). `sub_824AE6E0` writes input 1 = |listener `+0` − emitter| and input 3 = the azimuth in
+  the frame (listener `+0` pulled back 0.25 m, listener `+32`); inputs 0 / 2 use listener `+64` / `+96`.
+  `sub_8248CC08` fills the listener: `+0` / `+32` from the camera's matrix, `+64` from the skater list's first
+  entry (the local skater). So the bed's level reads the **camera** distance and the **camera-frame** azimuth —
+  what the port already writes (`ObjPos::write`). The earlier note ("the lookups measure the distance to the local
+  skater, which the rows don't give") was wrong for the Player slot; it holds for the ped speech lookups (input 0).
+- **What was wrong was the test.** `npc_bed_follows_the_recomp_rows` placed the NPC dead ahead of the camera for
+  every row: always the 4–50 m quadrant. The recomp's NPC passes at the side or behind as often.
+- **The rows now carry their geometry** (local tool `npc_grec_rows.py`): the NPC board (SKATEB, matched by speed,
+  with the local skater's own board — the track that follows the local SkateBoard's GREC speed, median error
+  0.11 m/s — left out, and rows where two boards match within 0.3 m/s dropped), interpolated to the row; the
+  camera (WPPOS, interpolated); the camera's view (not logged: the direction from the camera to the local board,
+  or the camera's own motion when that board is more than 8 m away). The test rolls our NPC bed through each
+  row's own geometry (camera and local skater moving with the local board's velocity).
+- **Result** (session 180430, 176 straight-roll rows at ≥ 1 m/s; truck 0 A gain recomp / ours, medians):
+
+  | camera distance | rows | recomp / ours | before (NPC dead ahead) |
+  |---|---|---|---|
+  | 0–10 m | 34 | 0.101 / 0.123 | 0.097 / 0.108 |
+  | 10–20 m | 80 | 0.050 / 0.054 | 0.045 / 0.065 |
+  | 20–30 m | 58 | 0.0091 / 0.0111 | 0.005 / 0.014 |
+
+  Row by row (recomp gain > 0.002, n 165) recomp / ours p10 0.41, p50 0.94, p90 1.13. Per sector the azimuth
+  shows in both: 10–20 m behind 0.021 / 0.028 against 0.055 / 0.065 ahead; 20–30 m behind 0.0020 / 0.0022,
+  ahead 0.028 / 0.028. Pitch 0.97 / 1.00. The scatter is the estimated view and the 250 / 500 ms
+  interpolation. No engine change.
+
+### NPC board slide: observed
+- Session 180430, 152.13 and 152.30 s: two `c_board_slide` posts (class 15 from the slide process, `824CB470`)
+  while the local skater rolled on four wheels at 8.5 m/s and instance 1's skater (board `468DC6B0`, about 15 m
+  away, contacts `0000001` at 151.98 s) had no wheels down and slowed from 4.8 to 3.7 m/s: the NPC's bail (local
+  tool `npc_slide_posts.py`, the two SkateBoard owners' GREC rows of this pre-fix session; the other 13 posts in
+  the session are the local skater's own bails). Each post is followed 62–68 ms later by three `board_scrapes`
+  voices (18 / 19 / 24, then 4 / 8 / 10) at gains 0.005–0.012, with the NPC's Clothing body slide
+  (`Bodyslide` 17 / 15) beside them. So retail's instance 1 does play the board slide, as ported (no local test
+  in the slide code). Its loose-board state is not logged, so the post timing is not compared.
+
+### Moddability
+- Speech tuning: `repeat_speaker_31` / `repeat_speaker_30` from setup, `speaker_repeat` pairs from a mod's
+  tuning overlay (`world_tuning.speech_tuning`).
+- A mod ped with a pro voice (`voice` 1–29) and speech values 29 / 30 / 51 (`speech`) reaches the double
+  request and the stop; `Obj:Speech` follows whatever the main cast plays.
+
+### Proofs and tests
+- Local player byte-identical: e2e bench (13 scenarios + 8 sessions, `row` and `fps300`) from this branch's
+  starting point (`f0`) against the result (`f1`): all four sets IDENTICAL (26 + 26 + 16 + 16 outputs).
+- New: `main_cast_values_request_their_events_in_order`, `main_cast_speaker_slots_30_and_31_have_their_own_repeat_time`
+  (skate-audio), `a_speaker_s_new_value_stops_its_playing_line` (speech player),
+  `a_pro_ped_s_impact_value_stops_its_line_first` (data-gated: value 30 stops the playing `202_24_Smit_Rct`
+  line, the next one follows; in4 on for all 12 frames, in1 never); the Python export test checks `+52` / `+56`.
+- Changed: `npc_bed_follows_the_recomp_rows` (per-row geometry; every band within 0.67–1.5, row median within
+  0.8–1.25).
+- Suites: `cargo build --locked` ok; skate-audio 229 + integration pass, all its ignored data tests pass; game_audio 44 pass, its 34 ignored data tests pass (private-data env set); Python `test_world_audio` 7 pass; skate-mods passes except `skyline_every_component_is_real_and_drives_through_ground_contact` ("Skyline GLB missing": the gitignored model is not in a fresh worktree; unrelated).
+
+### Files
+- `crates/skate-audio/src/world/speech_manager.rs` (`EventTuning::speaker_repeat`, `request_main_cast`,
+  `main_cast::{events_for_value, stops_line}`), `speech_player.rs` (`stop_speaker`, `stopped`),
+  `crates/skate-audio/tests/world_speech.rs`.
+- `crates/skate-game/src/game_audio/world_speech.rs` (the stop, the double request, `Obj:Speech` from the main
+  cast's streams, the new test), `world_sources.rs` (the tuning fields), `npc_skaters/tests.rs`.
+- `tools/asset_pipeline/world_audio.py`, `test_world_audio.py`.
+
+### Still open
+- ~~The announcer channel (and with it the crash's `480_slam_pro`).~~ Ported, see "The announcer channel" below.
+- `VU.in0` / `in1` (the VU meter of a mixer bus, `sub_824EDBE8`): which bus, the meter's scale; not needed for
+  the speech levels by the evidence above.
+- The main-cast request gate: the record's `+48` byte lets a line through while `sub_8279E180` holds (a game
+  state not traced; free roam passes).
+- The NPC slide's timing against the NPC's loose-board state (not logged); the NPC's walking / jump voices.
+
+### The announcer channel (2026-10-04, follow-up step 4)
+Retail's contest commentator: `announcerspeech.big` (405 clips, 2,822 takes, 3.4 h, 36 kHz mono; 63 events of
+speech bank 3), speech channel 3 (stream records 6 / 7). Read from the TU3 recompilation (reference only) and
+checked against all 38 recorded sessions; no new session was run.
+
+**Mechanism.**
+- **Two announcers.** Models 35 and 36 (`aud_characteristics` parent `ip`, `SPCH3Type_char_ID_Ann` 1 / 2). Every
+  announcer record's first field is 1 or 2, and its clips carry that voice (`480_35_…` / `480_36_…`).
+- **Who is announcing** is the running challenge's choice: the system word `+1036`, written from the challenge
+  record when the challenge changes (`sub_82488330`), and 104 ("nobody") when no challenge runs.
+- **The request** (`sub_824AA858`):
+  - the event's vault tuning (bank 3, already exported in `speech_tuning["3"]`);
+  - the game-state gate the main cast also has (record `+48`, `sub_8279E180`, system `+104` / `+997`; not
+    modelled, as for the main cast);
+  - word 0 = the announcer's id (from model `+1036`'s `char_ID_Ann`) when the caller left it 0 and a challenge
+    names one; word 8 = 5 / 6 (system `+1089`);
+  - the manager's timers are kept per announcer (104 → slot 35);
+  - the gate (`sub_824A8C78` + `sub_824A75F0`: one `rand()` for the probability; the timers `+40` / `+44` compare
+    challenge clocks);
+  - the interrupt on channel 3, then the library request with each event's words (`sub_824AAC40`, two jump
+    tables; e.g. `480_slam_pro` = words 0 / 2 / 11, `426_results` = 0 / 2 / 11 / 32 / 7, most events word 0 only).
+- **Free skate never plays an announcer line.** Without a challenge, word 0 stays 0 and no record matches.
+  SFXObj_Announcer's own commentary (`sub_824CF350`, 11 requests) also returns at once unless `+1036` is 35 / 36.
+- **The senders.** There are 39 calls in all:
+  - the challenge commentary (tricks, grinds, bails, big air, leaders, results, timers);
+  - the contest results (`sub_8248C988`);
+  - the scripts' `PlayAnnouncerSpeech` binding;
+  - one that runs in free skate: an NPC skater's crash (`sub_824DB688`). Below 12 m from the camera it asks for
+    `480_slam_pro` with word 2 = the model's `SPCH3Type_pro_id_ANN` (pros 1–29 only).
+
+  So in free skate a pro's crash near the camera is gated and draws one `rand()`, then finds no line.
+- **Recordings agree.** In 38 sessions, `announcerspeech.big` was read only at boot (its 5 index reads), never
+  for a clip. Those sessions include 37 NPC crash lines (`906_aislm`), several of them with a skater well inside
+  12 m of the camera.
+- **The voice.** The stream block at `mgr+0x1B898` is refreshed every frame from SFXObj_Announcer (registered at
+  `mgr+0x1B8F8`; its `sub_824D07B8` copies the Global Announcer object's outputs):
+  - level = out2 × a vault multiplier, truncated to an integer. The multiplier (`sub_824A8250`) depends on the
+    console language (English, Italian and Spanish use the `other` arrays: 1.1 / 1.25 / 1.1 for speaker 35 / 36 /
+    31; with the challenge byte `+1044`: 0.9 / 1.0 / 1.0);
+  - pitch out1, azimuth out0 (no MixMap term: centre), high pass out4, low pass out3, environment send out5;
+  - voice float 1.0, PEAK flat (96 kHz, gain 1, Q 3), no echo send (`sub_824A3C28`'s constants);
+  - no level cut (that is the ped / skater owners' rule).
+
+  While a line plays, SFXObj_Announcer raises `Announcer.in0` (`sub_824CF218` / `sub_824A61C0`). The Global ducks
+  the mix with it (F2 / F37 / F47 / F50 / F95 / F172 / F241) and the reverb (F208 / F209 / F212).
+
+**Ported.**
+- `skate_audio::world::announcer`: the words (`request_words`), `Context` (character, its word, word 8, slot),
+  `SpeechManager::request_announcer`, `AnnouncerLevel`, `crash_block`.
+- `speech_player::announcer_outputs`, plus `SpeechPlayer::no_cut` for the announcer's streams.
+- `skater_speech`: `Say::Announcer(480_slam_pro)` after the crash message.
+- The host (`game_audio/world_speech.rs`): the announcer channel (bank `ANNOUNCER_BANK`), the crash request
+  (distance below the export's `announcer_crash_m` and a non-zero pro id), engine / mod requests, its stream
+  values, and `Announcer.in0` (written only when it changes).
+- Engine: `LivingWorldAudio::{announcer, mod_announcer}` (None = free skate) and the message
+  `AnnouncerSpeechEvent { event: Id | Name, pro, words }` (the `PlayAnnouncerSpeech` equivalent).
+- Mods: `sdk.world_audio.announcer(character)` (cleared when the mod stops) and
+  `sdk.world_audio.announce(event, {pro, words})`; `info().announcer`.
+- Setup: `speech/announcer.json` (always). `world_tuning.speech_voice.announcer_crash_m` and `.announcer_level`
+  (all six arrays). `ped_models[..].announcer_id` / `announcer_pro`. The opt-in decode
+  (`SKATE_SETUP_SPEECH=1`) covers `ANNOUNCER_EVENTS` = 480 only, the one free-skate sender (571 s, ~41 MB);
+  other events are chosen and logged but stay silent until decoded.
+
+**Proofs and tests.**
+- Local player byte-identical to `f1` (e2e bench, 13 scenarios + 8 sessions, `row` and `fps300`): all four sets IDENTICAL (26 + 26 + 16 + 16), with the old install and again with the announcer data staged.
+- Suites: `cargo build --locked` ok; skate-audio 235 + integration pass and all its ignored data tests (7 speech data tests); game_audio 44 pass, its 35 ignored data tests pass (private-data env set); Python `test_world_audio` 8 pass; skate-mods passes except the unrelated `skyline_every_component_is_real_and_drives_through_ground_contact` (gitignored model missing in the worktree).
+- Unit tests: `announcer::tests` (words, block, free skate draws and finds no line, the per-announcer timers, the
+  level scale), `the_announcer_takes_its_object_outputs_and_keeps_playing_when_quiet`, the skater speech crash
+  order, the mod options / commands, and the Python export.
+- Data tests (ignored, private data):
+  - `the_announcer_index_holds_two_announcers` (63 events, every record announcer 1 / 2 with its voice, one shipped exception: `118_DbailSpc` plays `117_36_DbailGen` for announcer 1);
+  - `slam_pro_lines_need_a_challenge_announcer` (every `480_slam_pro` record refused in free skate, reached
+    with its announcer and pro word);
+  - `the_recordings_never_stream_an_announcer_line` (38 sessions: index reads only, 0 clip reads);
+  - game_audio `a_pro_crash_near_the_camera_asks_the_announcer` (free skate: asked, no voice; announcer 36:
+    `480_36_slam_pro_Smit` at out2 × 1.25 (gain 0.442 = expected) with `Announcer.in0` up for its 88 frames; 20 m: not asked; a request by name reaches the gate).
+
+**Still open (announcer).**
+- The challenge clocks behind the timers `+40` / `+44` (system `+900` / `+904` / `+908`). The port uses the time
+  since the announcer was named, and no limit for the second.
+- System `+1089` / `+1044` (the port: 0).
+- The record `+48` gate (shared with the main cast).
+- The interrupt's fifth argument (`sub_824A61C0(mgr, 1)`).
+- The other 38 senders: they belong to challenge modes the engine does not have.
+- Levels against a recording: none exists (free roam never streams the announcer). A challenge session in the
+  recomp would give one.
+
+## The car alarm trigger (2026-10-04, follow-up to the world follow-ups)
+**Problem.** The car alarm sound was ported (`VehicleAlarm { vehicle }` = horn state 6 for 8 s, the mod event
+`alarm`), but nothing set it off the way retail does: a parked car's alarm goes off when the player runs into it.
+The user's words (recomp session 2026-10-04 16:11): "I found a taxi, so yeah, and I skitched on it too." / "it
+ended up parking on the side of the road and when I ran into the car alarm went off".
+
+**Root cause.** The trigger is traffic AI, not audio: it lives in the vehicle's collision callback and its
+`StayingParked` state, which the engine does not have (there is no traffic yet).
+
+**Evidence (retail, from the TU3 recompilation as reference and that session; spec
+`audio-specs/world-traffic-audio.md` "Car alarm trigger").**
+- The vehicle's collision callback `sub_82C3C150` (interface at vehicle `+136`): only while the car is in
+  `StayingParked` (`+3424` bit 0x80, set by the state's begin `sub_82C39120`, cleared by its end `sub_82C391F0`),
+  and only when the contact message's vector (`msg+48`) is longer than `livingworld_vehicle_characteristics`
+  field `543475921FD9E04A` (0.1, no shipped override), it sets the alarm flag (`+3424` bit 0x10) and zeroes the
+  alarm timer `+3716` and the parked timer `+3712`. It does not test who hit the car.
+- `StayingParked`'s update `sub_82C39138` counts the alarm timer while the flag is set. `StopAlarming`
+  (`sub_82C3A4D0`) ends the alarm when the timer passes field `E199FC7CEA222809` (8 s); its action
+  `sub_82C3B4E8` clears the flag. Pulling out (`sub_82C3A3A8`) is blocked while the alarm sounds.
+- Session: the taxi pulled over and parked at 249.8 s. The user rolled up to its rear bumper at 0.2–0.3 m/s (no
+  alarm), stepped off at 255.90 s and ran into it. The alarm post came 130 ms later (256.032 s), and nothing else
+  was posted for the car (no impact sound). The alarm then ran for the remaining 64 s, because the user stayed at
+  the car (on foot beside it, skating along and on it): every contact restarted the 8 s.
+
+**Change.**
+- Engine-facing (`crate::world_audio`): component `VehicleParked` (retail's StayingParked); message
+  `VehicleImpact { vehicle, by: ImpactSource, impact: Vec3 }` (the callback's message; `VehicleImpact::speed` for a
+  length only); resource `CarAlarmRule` with `AlarmTuning { enabled, min_impact, seconds }` (setup export first,
+  then an override from a mod or engine code); read-back message `VehicleAlarmStarted { vehicle, by, restart }`
+  for the future traffic AI (restart its parked timer, don't pull out while the alarm sounds).
+- `game_audio/car_alarm.rs`: the rule (parked, `|impact| > min_impact`, enabled → `VehicleAlarm` +
+  `VehicleAlarmStarted`; several contacts in one frame start it once).
+- Timing: the bridge holds horn state 6 for `AlarmTuning::hold_seconds()` = whole console frames past `seconds`
+  (retail adds the frame time each AI update and stops at the first update past 8 s: 241 frames at 30 fps,
+  8.033 s), the same at any engine frame rate. A repeat `VehicleAlarm` / impact restarts it (retail's timer reset).
+  This also applies to the existing `alarm` event (8.000 → 8.033 s).
+- Data: setup export `world_tuning.vehicle_alarm` = `{min_impact, seconds}` from the vehicle spec `default`
+  (+ `specs` for any spec that differs; none in retail) in `tools/asset_pipeline/world_audio.py`. Installs from
+  before it use the engine's constants, which are the same values (`ALARM_MIN_IMPACT`, `ALARM_SECONDS`).
+- Mods (API 2, world audio extension 1, backward-compatible): `sdk.world_audio.event(key, 'impact', {speed=m/s,
+  source='player'|'character'|'vehicle'|'object'})` on a mod car; traffic option `parked` (default: parked while
+  the mod doesn't update the car, as before); `sdk.world_audio.alarm_rule{enabled=, min_impact=, seconds=}` (fields
+  replace the rule's numbers for every car; `alarm_rule()` = retail; cleared when the mod stops);
+  `sdk.world_audio.read(key).alarm` = seconds left while it sounds. The dev test mod (`mods/world-audio-test`)
+  marks its taxi `parked` and reports an impact every frame the skater touches a car's box: run into the taxi and
+  its alarm goes off; the moving cars ignore it. The readout shows `ALARM carN s`.
+- Engine traffic (when it exists): add `VehicleParked` while the car is in its parked state, send `VehicleImpact`
+  from its contact handling (any collider, every contact), and react to `VehicleAlarmStarted`.
+
+**Verification.** See "Proofs and tests (car alarm)" below.
+
+**Research hook (run 2026-10-04 18:03).** `VEHHIT` (every callback: flags before / after, the vector and its
+length, the contact point, the other object, the timers, the message bytes), `VEHALARMSTOP` (the alarm's end with
+its timer) and `VEHPARK` (StayingParked begin / end), category `traffic`, in the recomp fork's
+`src/research/hooks_traffic.cpp`. Session `all_20261004_180303` (0 malformed; that build logged the timers before
+the call and gated lines at 100 ms per car unless the flags changed): a taxi (`47CB6660`) parked at 623.7 s and
+stood still at (103.81, 34.03, 200.33) to the end of the session; the user walked into it, hit it fast on the board
+(three times, with bails), rolled up to it slowly and stayed around it. Player state from `SKATEB` (the player's
+board `469434F0`: contacts, deck velocity, 4 Hz) and the screenshots; `msg+64` names the player's part
+(`469434F0` = the board, `4693BEB0` = the skater's body, the same `msg+76` = `40451020` for both).
+
+| Time (s) | Action (shot) | Part (`msg+64`) | Other's speed | Car | \|v48\| | Flags |
+|---|---|---|---|---|---|---|
+| 630.094 | on foot, walks into the rear with the board in hand (629.4) | board | 2.1-2.3 m/s (walking) | 0 | 2.652 | 80 → 90 (alarm) |
+| 630.312 | the same walk, the body follows | body | walking | 0 | 3.603 | 90 |
+| 644.508 | rides into the rear at 7.9 m/s, bails onto the boot (645.9) | body | 7.93 m/s (84 ms before) | 0 | 5.788 | 80 → 90 (alarm) |
+| 645.5-648.7 | lies on the boot (resting contact) | body | ~0 | 0 | 0.003-0.07 | 90, timer runs on |
+| 650.3-652.4 | rolls up at 1.1-1.6 m/s, stops short (652.1), steps off | - | - | - | no call | - |
+| 652.567 | the board swings into the bumper as it is picked up | board | ~4.6 m/s | 0 | 6.466 | 90, restart |
+| 666.736 | rides in at 8.5-9.4 m/s | body | 9.39 m/s (134 ms before) | 0 | 9.068 | 80 → 90 (alarm) |
+| 677.795 | a pedestrian (`47BAC700`, `PEDXYZ`) walks along the side | ped | 0.3-0.5 m/s | 0 | 0.225-0.99 | 80 → 90 (alarm) |
+| 721.732 | rides in at 8.7 m/s, bails beside the car (722.9) | body | 8.70 m/s | 0 | 6.698 | 80 → 90 (alarm) |
+| 722.06-723.37 | the riderless board rolls along the car, deck touching | board | 0.074-0.083 | 0 | 0.073-0.084 | 90, timer runs on (0.07 → 0.90 s) |
+| 723.53-725.34 | the same board speeds up | board | 0.18-0.41 | 0 | 0.150-0.401 | 90, restart each call |
+
+Same-moment pairs of the riderless board's deck speed (`SKATEB`) and \|v48\|: 0.0736 / 0.0737 (723.368),
+0.3313 / 0.3335 (725.120), 0.0783 / 0.0782, 0.2533 / 0.2590, 0.0700 / 0.0667, 0.2512 / 0.2635, 0.4099 / 0.4012.
+
+**Answers.**
+- `msg+48` is the relative velocity at the contact in m/s, the car's minus the other body's (a board rolling +x
+  gives -x, a pedestrian walking -x gives +x): its length equals the other's speed against the parked car to
+  0.01 m/s for a few-kg board, and a ~70 kg pedestrian at 0.3-0.5 m/s gives 0.2-0.5. An impulse would scale with
+  mass, and a body lying on the boot would carry its weight (tens of N·s per step); it gives 0.003-0.07. Not a
+  penetration depth either (it follows the speed while the contact stays the same). The port's reading (a speed,
+  `min_impact` 0.1) is right; nothing changes. The strict `> 0.1` shows too: 0.074-0.084 m/s against the car let
+  the alarm timer run on, 0.150 restarted it.
+- Every body reaches the callback: the board (carried, swung, riderless, during a bail), the skater's body and a
+  pedestrian; who hit the car is not tested (the pedestrian set the alarm off). A slow roll on the board did not
+  touch the car in this session (it stopped short and the user stepped off), so the 16:11 session's 0.2-0.3 m/s
+  roll without an alarm stays unexplained: either no contact (the board stopped at the bumper's lip) or the car
+  was not yet in StayingParked; the measured rule would have fired at that speed.
+- The alarm's end: all 6 `VEHALARMSTOP` lines come at 8.0333 s (241 console frames), as the port holds it. At
+  the end the state machine leaves StayingParked and re-enters it with the parked timer at 0 (`VEHPARK` 0 with the
+  flags `10`, then 1 with `80`), so every alarm restarts the parked time: the taxi stayed parked for the remaining
+  110 s while other cars pulled out after 20 / 30 s. The future traffic AI does this from `VehicleAlarmStarted`.
+- Three contacts with no other object (`msg+64` and `msg+76` 0) gave 2.2-5.9 during the walk and two hits; not
+  identified (probably a part with no owner); they changed nothing because the alarm was already sounding.
+
+**Open questions.**
+- Per-spec values: none shipped; the export keeps a `specs` map in case, the engine uses one rule for all cars.
+
+### Proofs and tests (car alarm)
+- Local player byte-identical: the e2e bench (13 scenarios + 8 sessions, `row` and `fps300`) from this branch's
+  head before the change (`a0`) against the result (`a1`): all four sets IDENTICAL (26 + 26 + 16 + 16 outputs).
+- New unit tests: `game_audio::car_alarm::tests` (5: the retail conditions incl. the strict `>`, the hold in whole
+  console frames, impact → alarm with restart and the 7.9 s / 8.1 s edges, the same length at 30 / 60 / 144 fps,
+  overrides and disable), `modding::world_audio::tests` (2: `impact` reaches the rule, `alarm_rule` merges and is
+  cleared with its mod), the setup export (`world_tuning_reads_the_setup_export`, Python
+  `test_vehicle_alarm_reads_the_default_spec_and_overrides`), skate-mods option / command validation and the test
+  mod run (exactly one impact per frame while the skater is in the taxi's box). Against the real install's
+  collections the export gives `{min_impact: 0.1, seconds: 8.0}` = the engine's constants.
+- Suites (worktree target, private-data env): release build ok; skate-audio 235 + integration pass, all its
+  ignored data tests pass; game_audio 49 pass, its 35 ignored data tests pass; Python `test_world_audio` 9 pass;
+  skate-mods passes except the known `skyline_every_component_is_real_and_drives_through_ground_contact` (gitignored
+  model missing in a fresh worktree).
+- Not done: an in-game listen (the user: enable `dev-world-audio-test`, run into the parked taxi).
+
+### Files (car alarm)
+- `crates/skate-game/src/world_audio.rs` (`VehicleParked`, `ImpactSource`, `VehicleImpact`, `VehicleAlarmStarted`,
+  `AlarmTuning`, `CarAlarmRule`, `ALARM_MIN_IMPACT`), `game_audio/car_alarm.rs` (new), `game_audio/world_bridge.rs`
+  (the hold, `Bridge::alarm_left`), `game_audio/world_sources.rs` (`vehicle_alarm` export), `game_audio/mod.rs`.
+- `crates/skate-game/src/modding/{mod.rs, world_audio.rs}`, `crates/skate-mods/src/{world_audio.rs, vm.rs, api.lua}`,
+  `sdk/skate.lua`, `mods/world-audio-test/main.lua`.
+- `tools/asset_pipeline/world_audio.py`, `test_world_audio.py`.
+- Specs: `audio-specs/world-traffic-audio.md` "Car alarm trigger", `npc-livingworld-re.md` §6,
+  `world-audio-hookin-spec.md` (the message table).
 
 ## Open questions before P3 (kept for the record)
 

@@ -863,6 +863,7 @@ function sdk.audio.tuned() end
 ---@field load? number traffic: the driver's signed acceleration m/s² (default: from the speed change; hard stop ≈ -15)
 ---@field horn? integer traffic: 0 none, 1..5 horn kind, 6 alarm (prefer the events)
 ---@field skidding? boolean traffic: the tyres skid
+---@field parked? boolean traffic: parked (retail's StayingParked): an impact can set its alarm off (default: parked while this mod doesn't update it, 0.5 s)
 ---@field voice? integer ped: the model = speech voice id 41..96 (0 none); its shoe class, kind, speech words and far threshold follow (retail's aud_characteristics). skater: its voice (AI skaters 89..96): the bail grunt
 ---@field shoe_class? integer ped: 1..5 (default: the model's, else 2; 1 is silent)
 ---@field weight? integer ped: 1..5 (default 1)
@@ -900,15 +901,18 @@ function sdk.world_audio.spawn(key, kind, opts) end
 ---@param opts WorldAudioOptions
 function sdk.world_audio.update(key, opts) end
 ---@param key string
----@param event 'horn'|'alarm'|'speech'|'tazer'|'body_fall'|'reaction'
----@param opts? {kind?:integer, seconds?:number, value?:string|integer, by?:integer} reaction (skaters): value slam / slam_b / trick / crash / chase, by = the other skater's model (0 = the player; a pro 1..29 picks the pro-on-pro lines): the skater's own speech process says the matching line of its voice for one console frame (AI skaters 89..96 on the living-world channel, pros 1..29 / special cast 30..38 on the main cast); horn: kind 1..5 for seconds; alarm: retail's 8 s; speech: value name (warn = 53, cheer, slam, flee, nearby, DoWarning, LongCheer, ...) or number; the ped says a line of its voice through retail's speech manager (gated by the event's timers and probability) when the speech decode is installed; a repeated value re-triggers (49 rings a phone, then the ped answers); tazer: the ped zaps for seconds (default the state graph's 2 s): retail's c_tazer burst; body_fall: one BodyFallType key of a knock-down animation (kind 9, 8 or any other value 1..255: three Skate_Collisions sounds; retail's falls go 9, other, 9, 9 about 0.1 / 0.5 / 0.16 s apart)
+---@param event 'horn'|'alarm'|'impact'|'speech'|'tazer'|'body_fall'|'reaction'
+---@param opts? {kind?:integer, seconds?:number, value?:string|integer, by?:integer, speed?:number, source?:'player'|'character'|'vehicle'|'object'} impact (traffic): something touched the car with speed m/s (source default 'player'); the game applies retail's car alarm rule: a parked car whose contact exceeds 0.1 sets its alarm off for 8 s, every further contact restarts it, a car that is not parked ignores it (send one per contact or every frame while touching); reaction (skaters): value slam / slam_b / trick / crash / chase, by = the other skater's model (0 = the player; a pro 1..29 picks the pro-on-pro lines): the skater's own speech process says the matching line of its voice for one console frame (AI skaters 89..96 on the living-world channel, pros 1..29 / special cast 30..38 on the main cast); horn: kind 1..5 for seconds; alarm: retail's 8 s; speech: value name (warn = 53, cheer, slam, flee, nearby, DoWarning, LongCheer, ...) or number; the ped says a line of its voice through retail's speech manager (gated by the event's timers and probability) when the speech decode is installed; a repeated value re-triggers (49 rings a phone, then the ped answers); tazer: the ped zaps for seconds (default the state graph's 2 s): retail's c_tazer burst; body_fall: one BodyFallType key of a knock-down animation (kind 9, 8 or any other value 1..255: three Skate_Collisions sounds; retail's falls go 9, other, 9, 9 about 0.1 / 0.5 / 0.16 s apart)
 function sdk.world_audio.event(key, event, opts) end
 ---@param key string
 function sdk.world_audio.remove(key) end
 ---@param key string
----audible: holds an instance / plays; own: the instance is a private MixMap's; slots (cars, peds; world_audio >= 4): 'own' or 'shared', the object's setting; waiting (>= 4): in reach but every instance of its pool is held by a nearer object.
----@return {kind:string, audible:boolean, instance?:integer, own:boolean, slots?:'own'|'shared', waiting:boolean, parked:boolean}|nil
+---audible: holds an instance / plays; own: the instance is a private MixMap's; slots (cars, peds; world_audio >= 4): 'own' or 'shared', the object's setting; waiting (>= 4): in reach but every instance of its pool is held by a nearer object; alarm (cars): the car alarm's seconds left while it sounds.
+---@return {kind:string, audible:boolean, instance?:integer, own:boolean, slots?:'own'|'shared', waiting:boolean, parked:boolean, alarm?:number}|nil
 function sdk.world_audio.read(key) end
+---Retail's car alarm trigger for every car (engine traffic too): the fields given replace the rule's numbers; no argument = back to retail's (contact > 0.1, 8 s; the install's setup data). Cleared when this mod stops.
+---@param opts? {enabled?:boolean, min_impact?:number, seconds?:number}
+function sdk.world_audio.alarm_rule(opts) end
 ---The retail pools (instances, published, audible, waiting) and, under `own` (world_audio >= 4), the private MixMap's (instances 16 / 16, published, audible, waiting).
 ---@return {more_audible:boolean, instances:{traffic:integer,peds:integer,skaters:integer}, published:table, audible:table, waiting:integer, speech_lines:integer, own:{instances:{traffic:integer,peds:integer}, published:table, audible:table, waiting:integer}}
 function sdk.world_audio.info() end

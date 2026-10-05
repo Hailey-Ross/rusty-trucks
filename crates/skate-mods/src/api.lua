@@ -380,12 +380,32 @@ end
 function sdk.world_audio.update(key, opts)
     submit{kind="world_audio_update",key=key,options=opts or {}}
 end
--- event: 'horn' {kind=1..5, seconds=s}, 'alarm' (retail's 8 s), 'speech' {value=name or number}
+-- event: 'horn' {kind=1..5, seconds=s}, 'alarm' (retail's 8 s), 'speech' {value=name or number},
+-- 'impact' {speed=m/s, source='player'|'character'|'vehicle'|'object'}: something touched this car; a parked
+-- car (option parked=true, or not updated for 0.5 s) sets its alarm off as retail does (contact > 0.1, 8 s,
+-- every further contact restarts it)
 function sdk.world_audio.event(key, event, opts)
     submit{kind="world_audio_event",key=key,event=event,options=opts or {}}
 end
 function sdk.world_audio.remove(key) submit{kind="world_audio_remove",key=key} end
--- {kind=..., audible=bool, instance=n or nil} for one of this mod's objects (nil if unknown).
+-- The announcer channel (retail's contest commentator, models 35 / 36). Free skate has no announcer
+-- (retail: a pro's crash near the camera asks for 480_slam_pro and finds no line); naming one makes
+-- those requests speak. announcer(nil) clears it (also when the mod stops).
+function sdk.world_audio.announcer(character)
+    submit{kind="world_audio_announcer",character=character}
+end
+-- event: an announcer event id (24576..24751) or name ('480_slam_pro', '422_slam', '480');
+-- opts: {pro=model (its announcer pro id fills word 2), words={...} (the request block from word 0)}.
+function sdk.world_audio.announce(event, opts)
+    submit{kind="world_audio_announce",event=event,options=opts or {}}
+end
+-- Retail's car alarm trigger: opts {enabled=bool, min_impact=m/s, seconds=s} replace the rule's numbers for
+-- every car (engine traffic too); alarm_rule() goes back to retail's. Cleared when the mod stops.
+function sdk.world_audio.alarm_rule(opts)
+    submit{kind="world_audio_alarm_rule",options=opts}
+end
+-- {kind=..., audible=bool, instance=n or nil, parked=bool, alarm=seconds left or nil} for one of this
+-- mod's objects (nil if unknown).
 function sdk.world_audio.read(key)
     local owners = as_table(sdk.snapshot.world_audio) or {}
     return (owners[sdk.mod_id] or {})[key]

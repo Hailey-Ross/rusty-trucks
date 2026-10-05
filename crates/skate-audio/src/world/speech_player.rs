@@ -1,4 +1,5 @@
-//! The speech streams of one speech channel (0 = the main cast, 1 = the living world): the lines the speech manager
+//! The speech streams of one speech channel (0 = the main cast, 1 = the living world, 3 = the announcer, whose
+//! values come from the Global Announcer object: [`announcer_outputs`]): the lines the speech manager
 //! starts ([`super::speech_manager`]), played as stream voices whose level, send, pitch, pan and
 //! filters follow the speaker's MixMap owner every console frame. Read from the TU3 recompilation
 //! (reference only; addresses are facts):
@@ -275,6 +276,37 @@ pub fn skater_outputs(out: &dyn Outputs, model: u32, far: bool, voice: &SpeechVo
     params(out, skater_level_ids(model, far), SKATER_SEND_A, SKATER_FILTERS, SKATER_ECHO_FILTERS, voice, scale)
 }
 
+/// The announcer's block constants (`sub_824A3C28`): the PEAK stays flat (centre `*(0x822F8920)`
+/// = 96000 Hz, gain 1.0, Q 3.0), the voice float is 1.0 and there is no echo send.
+pub const ANNOUNCER_PEAK: [f32; 3] = [96_000.0, 1.0, 3.0];
+
+/// The announcer's values (`out` = a snapshot of the Global slot's Announcer object with outputs
+/// 3 / 4 read as filters; `scale` = [`super::announcer::AnnouncerLevel::scale`]): the level is
+/// out2 × the scale truncated to an integer (`sub_824A7FA0`'s neighbour: `fctiwz`), the pitch
+/// out1, the azimuth out0 (raw), the high pass out4, the low pass out3, the environment send out5
+/// (SFXObj_Announcer `sub_824D07B8` copies them into its object, the stream block takes them).
+pub fn announcer_outputs(out: &dyn Outputs, scale: f32) -> VoiceParams {
+    let level = ((out.level(2) as f32 * scale) as i32).clamp(0, 32767);
+    VoiceParams {
+        level,
+        gain: level as f32 * INV_32767,
+        send: out.level(5).clamp(0, 32767) as f32 * INV_32767,
+        echo: 0.0,
+        echo_hpf: 0.0,
+        echo_lpf: 0.0,
+        delay: None,
+        slot: 0,
+        pitch: out.pitch(1).max(1) as f32 * INV_4096,
+        azimuth: out.raw(0) as f32 * DEGREES,
+        hpf: out.level(4) as f32,
+        lpf: out.level(3) as f32,
+        peak: ANNOUNCER_PEAK,
+    }
+}
+
+/// The Announcer object's filter outputs (read with the MixMap's filter reader).
+pub const ANNOUNCER_SNAPSHOT_FILTERS: [usize; 2] = [3, 4];
+
 /// `sub_824A89E8`: the clip is a far line (its name ends in `_f`).
 pub fn far_clip(name: &str) -> bool {
     name.strip_suffix(".dat").unwrap_or(name).ends_with("_f")
@@ -353,6 +385,11 @@ pub struct SpeechPlayer {
     pub interrupted: u64,
     pub dropped: u64,
     pub cut: u64,
+    /// Lines a speaker's new value stopped ([`SpeechPlayer::stop_speaker`]).
+    pub stopped: u64,
+    /// No cut: the cut is the speech owners' (PedestrianSpeech / PlayerSpeech updates); the
+    /// announcer's object has none.
+    pub no_cut: bool,
 }
 
 impl SpeechPlayer {
@@ -411,6 +448,17 @@ impl SpeechPlayer {
         Outcome::Queued
     }
 
+    /// Stop the line `speaker` plays (`sub_82C5E1D8` on the stream its block holds): the stream
+    /// frees at once, queued requests stay. Returns the stream it played on.
+    pub fn stop_speaker(&mut self, speaker: u64, voices: &mut dyn SpeechVoices) -> Option<usize> {
+        let k = self.streams.iter().position(|s| s.as_ref().is_some_and(|s| s.req.speaker == speaker))?;
+        if let Some(v) = self.streams[k].take().and_then(|s| s.voice) {
+            voices.stop(v);
+        }
+        self.stopped += 1;
+        Some(k)
+    }
+
     /// Stop every line and forget the queue (a map change, the speech going off).
     pub fn clear(&mut self, voices: &mut dyn SpeechVoices) {
         for s in self.streams.iter_mut() {
@@ -454,7 +502,9 @@ impl SpeechPlayer {
                 continue;
             };
             // The cut.
-            if p.level <= CUT_LEVEL {
+            if self.no_cut {
+                s.low = 0;
+            } else if p.level <= CUT_LEVEL {
                 s.low += 1;
                 if s.low > CUT_FRAMES {
                     if let Some(v) = s.voice {
@@ -593,6 +643,24 @@ mod tests {
     }
 
     #[test]
+    fn the_announcer_takes_its_object_outputs_and_keeps_playing_when_quiet() {
+        // out2 = 9804 × 1.25 (announcer 2) → 12255; out3 / out4 the filters; out5 the env send.
+        let p = announcer_outputs(&Out(9804), 1.25);
+        assert_eq!((p.level, p.lpf, p.hpf), (12255, 2903.0, 400.0));
+        assert!((p.send - 500.0 / 32767.0).abs() < 1e-6 && p.echo == 0.0 && p.peak == ANNOUNCER_PEAK);
+        assert_eq!(announcer_outputs(&Out(9804), 1.1).level, 10784, "truncated (fctiwz)");
+        let ix = index();
+        let mut p = SpeechPlayer { no_cut: true, ..SpeechPlayer::on_channel(3) };
+        let mut v = Voices::default();
+        assert_eq!(p.request(req(1, 0, 620, false), &mut v), Outcome::Playing(0));
+        for _ in 0..80 {
+            let ev = p.frame(&ix, &mut |_, _, _| Some(announcer_outputs(&Out(100), 1.1)), &mut v);
+            assert!(!ev.iter().any(|e| matches!(e, Event::Cut { .. })));
+        }
+        assert_eq!((p.busy(), v.last.map(|p| p.slot)), (1, Some(6)), "channel 3: stream record 6");
+    }
+
+    #[test]
     fn the_echo_delay_is_the_sound_travel_time_up_to_150_ms() {
         let t = SpeechVoiceTuning::default();
         assert!((t.delay(34.4) - 0.1).abs() < 1e-5);
@@ -648,5 +716,23 @@ mod tests {
         v.live.clear();
         let ev = p.frame(&ix, &mut |_, _, _| Some(ped_outputs(&Out(9000), PedLevelSelect::default(), 8210, false, &SpeechVoiceTuning::default(), 1.0)), &mut v);
         assert_eq!(ev, vec![Event::Finished { k: 0, speaker: 5 }]);
+    }
+
+    #[test]
+    fn a_speaker_s_new_value_stops_its_playing_line() {
+        let ix = index();
+        let mut p = SpeechPlayer::default();
+        let mut v = Voices::default();
+        assert_eq!(p.request(req(7, 0, 500, false), &mut v), Outcome::Playing(0));
+        assert_eq!(p.request(req(8, 0, 500, false), &mut v), Outcome::Playing(1));
+        assert_eq!(p.request(req(9, 0, 500, false), &mut v), Outcome::Queued);
+        p.frame(&ix, &mut |_, _, _| Some(ped_outputs(&Out(9000), PedLevelSelect::default(), 8210, false, &SpeechVoiceTuning::default(), 1.0)), &mut v);
+        assert_eq!(v.live.len(), 2);
+        assert_eq!(p.stop_speaker(8, &mut v), Some(1));
+        assert_eq!((v.live.len(), p.busy(), p.queued(), p.stopped), (1, 1, 1, 1), "its voice stops; the queue stays");
+        assert_eq!(p.stop_speaker(8, &mut v), None, "nothing left to stop");
+        // The freed stream takes the queued line on the next frame.
+        p.frame(&ix, &mut |_, _, _| Some(ped_outputs(&Out(9000), PedLevelSelect::default(), 8210, false, &SpeechVoiceTuning::default(), 1.0)), &mut v);
+        assert_eq!(p.speakers().collect::<Vec<_>>(), vec![7, 9]);
     }
 }

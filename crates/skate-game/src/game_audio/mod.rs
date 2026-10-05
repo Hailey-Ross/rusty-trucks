@@ -13,6 +13,7 @@
 //! scale it down (voices.rs), sounds fade in, voice counts are capped, and nothing plays while
 //! the menu is open or a replay runs. `--mute` silences game and mod audio.
 mod ambience;
+mod car_alarm;
 mod content;
 #[cfg(test)]
 mod crossfade_groups;
@@ -20,6 +21,7 @@ mod crossfade_layouts;
 #[cfg(test)]
 mod e2e;
 mod emitters;
+mod frontend;
 mod grain_bed;
 mod library;
 mod map_audio;
@@ -226,10 +228,12 @@ impl Plugin for GameAudioPlugin {
                 Update,
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
                 // the ticks and the local update, then the beds (retail's process / tick / update).
-                (content::frame, map_audio::update, mod_audio::events_frame, mod_rules::frame, mod_audio::drain, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, mod_world::frame, mod_audio::readback, mod_voices::frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
+                // The front-end sounds (session marker) after the ticks, once per pass.
+                (content::frame, map_audio::update, mod_audio::events_frame, mod_rules::frame, mod_audio::drain, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, frontend::frame, mod_world::frame, mod_audio::readback, mod_voices::frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
                     .chain()
                     .before(CueSet)
-                    .after(crate::app::FrameSet::Animation),
+                    .after(crate::app::FrameSet::Animation)
+                    .after(crate::ui_audio::UiAudioSet),
             )
             .add_systems(Update, (ambience::update, emitters::update, random_sets::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
             .add_systems(Update, voices::sync.after(CueSet))
@@ -239,6 +243,7 @@ impl Plugin for GameAudioPlugin {
             .add_plugins(npc_skaters::register)
             .add_plugins(world_speech::register)
             .add_plugins(world_bridge::register)
+            .add_plugins(car_alarm::register)
             .add_systems(
                 PostUpdate,
                 (apply_global_volume, follow_camera).before(bevy::transform::TransformSystems::Propagate),

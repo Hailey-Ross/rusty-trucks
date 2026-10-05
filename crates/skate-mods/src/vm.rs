@@ -215,6 +215,22 @@ pub enum Command {
         options: crate::world_audio::WorldAudioEventOptions,
     },
     WorldAudioRemove { key: String },
+    /// World audio: name the announcer character (35 / 36; nil = none: free skate's silence).
+    WorldAudioAnnouncer {
+        #[serde(default)]
+        character: Option<u32>,
+    },
+    /// World audio: ask the announcer channel for an event (id or name).
+    WorldAudioAnnounce {
+        event: Value,
+        #[serde(default)]
+        options: crate::world_audio::AnnounceOptions,
+    },
+    /// World audio: tune or disable retail's car alarm trigger (None = back to retail's).
+    WorldAudioAlarmRule {
+        #[serde(default)]
+        options: Option<crate::world_audio::AlarmRuleOptions>,
+    },
     GraphicsMeshBuffer {
         key: String,
         options: crate::graphics_dynamic::MeshBufferOptions,
@@ -484,6 +500,9 @@ impl Command {
             Self::WorldAudioUpdate { key, options } => crate::schema::valid_id(key) && options.validate() && options.source.is_none() && options.slots.is_none(),
             Self::WorldAudioEvent { key, event, options } => crate::schema::valid_id(key) && options.validate(event),
             Self::WorldAudioRemove { key } => crate::schema::valid_id(key),
+            Self::WorldAudioAnnouncer { character } => crate::world_audio::valid_announcer_character(*character),
+            Self::WorldAudioAnnounce { event, options } => crate::world_audio::valid_announcer_event(event) && options.validate(),
+            Self::WorldAudioAlarmRule { options } => options.as_ref().is_none_or(crate::world_audio::AlarmRuleOptions::validate),
             Self::GraphicsMeshBuffer { key, options } => {
                 crate::schema::valid_id(key) && options.validate()
             }
@@ -741,6 +760,9 @@ fn command_kind(command: &Command) -> &'static str {
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
         Command::WorldAudioRemove { .. } => "world_audio_remove",
+        Command::WorldAudioAnnouncer { .. } => "world_audio_announcer",
+        Command::WorldAudioAnnounce { .. } => "world_audio_announce",
+        Command::WorldAudioAlarmRule { .. } => "world_audio_alarm_rule",
         Command::GraphicsMeshBuffer { .. } => "graphics_mesh_buffer",
         Command::GraphicsMeshBufferWrite { .. } => "graphics_mesh_buffer_write",
         Command::GraphicsMeshBufferAppend { .. } => "graphics_mesh_buffer_append",
@@ -1900,9 +1922,12 @@ mod world_audio_tests {
         let mut events: BTreeMap<String, usize> = BTreeMap::new();
         let mut photo = Vec::new();
         let mut ghost_voices = Vec::new();
+        let mut impacts = Vec::new();
         for frame in 0..400u32 {
             let t = frame as f32 / 60.0;
-            let snapshot = json!({"tick": frame, "player": {"position": [t * 4.0, 0.0, 0.0], "speed": 4.0,
+            // Frames 320..330: the skater stands in the parked taxi's box (anchor (20, 0, 0) after F9, taxi at +(8, 0.5, 6)).
+            let position = if (320..330).contains(&frame) { [28.0, 0.0, 6.0] } else { [t * 4.0, 0.0, 0.0] };
+            let snapshot = json!({"tick": frame, "player": {"position": position, "velocity": [4.0, 0.0, 0.0], "speed": 4.0,
                 "landing_seq": frame / 100, "bail_seq": frame / 250},
                 "keys": {"F8": frame == 200, "F9": frame == 300, "F7": frame == 100, "F6": frame == 120, "F5": frame == 140, "F4": frame == 160 || frame == 180, "F3": frame == 220, "F2": frame == 240 || frame == 260},
                 "world_audio": {"dev-world-audio-test": {"car1": {"kind": "traffic", "audible": true, "instance": 0}}},
@@ -1919,7 +1944,10 @@ mod world_audio_tests {
                     Command::WorldAudioRemove { key } => {
                         live.remove(key);
                     }
-                    Command::WorldAudioEvent { event, options, .. } => {
+                    Command::WorldAudioEvent { event, options, key } => {
+                        if event == "impact" {
+                            impacts.push((frame, key.clone(), options.speed));
+                        }
                         let name = match (event.as_str(), &options.value) {
                             ("speech", Some(v)) if v == &json!(49) => "phone".to_owned(),
                             ("speech", Some(v)) if v == &json!(29) => "photographer".to_owned(),
@@ -1947,6 +1975,9 @@ mod world_audio_tests {
         assert_eq!(events.get("reaction trick"), Some(&1), "{events:?}");
         assert_eq!(events.get("reaction crash"), Some(&2), "{events:?}");
         assert_eq!(ghost_voices, vec![24, 91]);
+        // The impact demo: one impact per frame while the skater stands in the parked taxi (car16), with its speed.
+        assert_eq!(impacts.len(), 10, "{impacts:?}");
+        assert!(impacts.iter().all(|(f, key, speed)| (320..330).contains(f) && key == "car16" && *speed == Some(4.0)), "{impacts:?}");
         // Everything it publishes at once (+ the ghost) fits the host's per-mod limit: no
         // "World audio object limit reached" (the 16 / 64 limits refused 21 of 37).
         assert!(most + 1 <= crate::world_audio::MAX_OBJECTS_PER_MOD, "{most} + ghost objects");
@@ -2228,6 +2259,16 @@ mod world_audio_tests {
             json!({"kind":"world_audio_spawn","key":"car2","object":"traffic","options":{"slots":"shared"}}),
             json!({"kind":"world_audio_spawn","key":"car3","object":"traffic","options":{"slots":"own"}}),
             json!({"kind":"world_audio_spawn","key":"ped2","object":"ped","options":{"slots":"retail"}}),
+            json!({"kind":"world_audio_announcer","character":36}),
+            json!({"kind":"world_audio_announcer"}),
+            json!({"kind":"world_audio_announce","event":"480_slam_pro","options":{"pro":4}}),
+            json!({"kind":"world_audio_announce","event":24703,"options":{"words":{}}}),
+            json!({"kind":"world_audio_event","key":"car1","event":"impact","options":{"speed":3.3}}),
+            json!({"kind":"world_audio_event","key":"car1","event":"impact","options":{"speed":1,"source":"vehicle"}}),
+            json!({"kind":"world_audio_update","key":"car1","options":{"parked":true}}),
+            json!({"kind":"world_audio_alarm_rule","options":{"enabled":false}}),
+            json!({"kind":"world_audio_alarm_rule","options":{"min_impact":1.5,"seconds":4}}),
+            json!({"kind":"world_audio_alarm_rule"}),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert!(c.validate(), "{value}");

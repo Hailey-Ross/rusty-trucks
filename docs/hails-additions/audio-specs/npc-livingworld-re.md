@@ -339,6 +339,12 @@ Takedowns 4/4 successful (attempt → success 0.10–0.13 s). Chases were short 
   slow/stopped car, 3 pull over), target lane +4380. Impatience: stopped (≤0.1 m/s) + gap test.
 - Speed planner sub_82C3FA08 → target speed +3408 (lane speed + driver offset); look-ahead braking over
   20 m, 5 m stop/reverse distance. Car alarm stops after 8 s (+3716).
+- **Car alarm trigger (2026-10-04):** the vehicle's collision callback `sub_82C3C150` (interface at `+136`) sets the
+  alarm flag `+3424` bit 0x10 and zeroes the alarm timer `+3716` and the parked timer `+3712` when the car is in
+  StayingParked (`+3424` bit 0x80) and the contact vector (`msg+48`) is longer than
+  `vehicle_characteristics.543475921FD9E04A` (0.1); any collider, every contact restarts it. StayingParked's update
+  counts `+3716` while alarming; StopAlarming = `+3716` > `E199FC7CEA222809` (8 s), action `sub_82C3B4E8` clears
+  the flag; pull-out (`sub_82C3A3A8`) is blocked while it is set. Details: `world-traffic-audio.md` "Car alarm trigger".
 - Traffic lights sub_826B1540: 7 / 1 / 0.5 / 0.4 s phases via sub_82E156D8 (which is which unknown).
 - Sounds: SFXObj_TrafficHorn sub_824D6BE8, SFXObj_TrafficSkids 824D7440, banks Traffic_Horn,
   Traffic_Skid, car_alarms.abk; engine `aud_traffic_engine` (idle 800–1870 rpm, max 2100–4000, patch

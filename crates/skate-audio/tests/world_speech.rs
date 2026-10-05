@@ -1,7 +1,9 @@
 //! The living world's speech rules on the dev install's export (`speech/livingworld.json` with the
 //! `.evt` rules and clip ids, `audio_manifest.json` `world_tuning.speech_tuning`;
 //! setup's `audio` group with the speech export, `SKATE_SETUP_SPEECH=1`). Every test skips without that data.
-//! Headless: no audio device, no game.
+//! The announcer's (`speech/announcer.json`, bank 3) too, and the recomp sessions
+//! (`SKATE_RECOMP_SESSIONS`, `SKATE_MAINCAST_LINES`) for what retail streamed from it. Headless: no
+//! audio device, no game.
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -157,8 +159,13 @@ struct Data {
 }
 
 fn load() -> Option<Data> {
+    load_bank("livingworld", "1")
+}
+
+/// One speech archive's export and its bank's tuning.
+fn load_bank(name: &str, bank: &str) -> Option<Data> {
     let dir = root().join("assets/private/audio");
-    let index = parse_json(&std::fs::read_to_string(dir.join("speech/livingworld.json")).ok()?);
+    let index = parse_json(&std::fs::read_to_string(dir.join(format!("speech/{name}.json"))).ok()?);
     let rules = index.get("rules")?;
     let mut clips = Vec::new();
     let mut ids = Vec::new();
@@ -209,7 +216,7 @@ fn load() -> Option<Data> {
     let table = EventTable { bank: rules.get("bank")?.num() as u8, sub_bank: rules.get("sub_bank")?.num() as u8, events };
     let mut tuning = HashMap::new();
     if let Ok(text) = std::fs::read_to_string(dir.join("audio_manifest.json"))
-        && let Some(t) = parse_json(&text).get("world_tuning").and_then(|w| w.get("speech_tuning")).and_then(|s| s.get("1")).cloned()
+        && let Some(t) = parse_json(&text).get("world_tuning").and_then(|w| w.get("speech_tuning")).and_then(|s| s.get(bank)).cloned()
         && let J::Obj(entries) = t
     {
         for (id, e) in entries {
@@ -223,6 +230,7 @@ fn load() -> Option<Data> {
                     interrupt_when_full: e.get("flags_12").is_some_and(|b| b.arr().get(2).is_some_and(|x| x.num() != 0.0)),
                     probability: e.get("probability").map_or(100.0, J::num) as f32,
                     repeat: f("repeat"),
+                    speaker_repeat: Vec::new(),
                     min_player_kmh: f("min_player_kmh"),
                     max_player_kmh: f("max_player_kmh"),
                     timer_40: f("timer_40"),
@@ -359,4 +367,97 @@ fn every_free_roam_record_resolves_or_fails_closed() {
     assert_eq!(line.picks.len(), 3);
     assert_eq!(line.picks[0].clip, line.picks[2].clip);
     assert_ne!(line.picks[0].take, line.picks[2].take);
+}
+
+/// The announcer's index: 63 events of bank 3, every record names an announcer (field 1 = 1 or 2)
+/// and its clips carry that announcer's voice (35 / 36).
+#[test]
+#[ignore = "needs the private install data"]
+fn the_announcer_index_holds_two_announcers() {
+    let Some(d) = load_bank("announcer", "3") else { panic!("missing private data: no announcer export (stage_world_audio.py --announcer)") };
+    assert_eq!((d.table.bank, d.table.events.len()), (3, 63));
+    let mut records = 0;
+    let mut mismatched = Vec::new();
+    for ev in &d.table.events {
+        assert_eq!(ev.fields.first(), Some(&1), "{}", ev.name);
+        for r in &ev.records {
+            records += 1;
+            let ann = r.values[0];
+            assert!(ann == 1 || ann == 2, "{}: {ann}", ev.name);
+            for c in &r.clips {
+                let Some(i) = d.index.clip_by_id(c.id) else { continue };
+                let voice = d.index.clips[i].voice;
+                if voice != 34 + ann {
+                    // Shipped data: `118_DbailSpc`'s announcer-1 record plays `117_36_DbailGen`.
+                    mismatched.push(format!("{} {}", ev.name, d.index.clips[i].name));
+                }
+            }
+        }
+    }
+    println!("announcer: {} events, {records} records, {} clips; other voice: {mismatched:?}", d.table.events.len(), d.index.clips.len());
+    assert_eq!(mismatched, vec!["118_DbailSpc 117_36_DbailGen.dat".to_owned()]);
+}
+
+/// `480_slam_pro` (`sub_824DB688` → `sub_824AA858`): in free skate (no announcer character, word 0
+/// = 0) no record matches, whatever pro crashed; with the challenge's announcer every record is
+/// reached by its own pro word, through the ported words (`announcer::request_words`).
+#[test]
+#[ignore = "needs the private install data"]
+fn slam_pro_lines_need_a_challenge_announcer() {
+    use skate_audio::world::announcer::{self, Context, SLAM_PRO};
+    let Some(d) = load_bank("announcer", "3") else { panic!("missing private data: no announcer export (stage_world_audio.py --announcer)") };
+    let ev = d.table.event(SLAM_PRO).expect("480_slam_pro");
+    let mut crt = skate_audio::world::Lcg(3);
+    let (mut free, mut reached) = (0, 0);
+    for r in &ev.records {
+        let mut block = announcer::crash_block(r.values[1].max(1)).unwrap();
+        block[11] = r.values[2];
+        let mut lib = Library::new(d.headers.clone());
+        let mut manager = SpeechManager::new(d.tuning.clone());
+        let inputs = GateInputs { now: 1000.0, ..Default::default() };
+        let refused = manager.request_announcer(&mut lib, &d.table, SLAM_PRO, &Context::default(), &block, &inputs, &mut crt);
+        assert!(matches!(refused, Err(Refusal::Library(_)) | Err(Refusal::Probability)), "free skate: {refused:?}");
+        free += 1;
+        let character = 34 + r.values[0];
+        let ctx = Context { character: Some(character), character_word: r.values[0], ..Default::default() };
+        // Retail draws the probability (100 % for 480); the challenge timers pass well into one.
+        let line = manager.request_announcer(&mut lib, &d.table, SLAM_PRO, &ctx, &block, &inputs, &mut crt).expect("a line");
+        let name = clip_name(&d, line.picks[0].clip);
+        assert!(r.clips.iter().any(|c| c.id == line.picks[0].clip), "{name}");
+        reached += 1;
+    }
+    println!("480_slam_pro: {free} records refused in free skate, {reached} reached with their announcer");
+    assert_eq!(reached, ev.records.len());
+}
+
+/// What retail streamed from `announcerspeech.big` in every recorded session: only the index (the
+/// archive's nested `.hdr` / `.sth` / `.evt` reads before the first clip), never a clip, though
+/// NPC pros crashed in front of the camera (`906_aislm` main-cast lines) in several of them.
+#[test]
+#[ignore = "needs the private recomp sessions"]
+fn the_recordings_never_stream_an_announcer_line() {
+    let Some(sessions) = std::env::var_os("SKATE_RECOMP_SESSIONS").map(PathBuf::from) else { panic!("missing private data: SKATE_RECOMP_SESSIONS") };
+    let index = parse_json(&std::fs::read_to_string(root().join("assets/private/audio/speech/announcer.json")).unwrap_or_else(|_| panic!("missing private data: no announcer export")));
+    let first_clip = index.get("clips").unwrap().arr().iter().map(|c| c.get("dat_offset").unwrap().num() as u64).min().unwrap();
+    let (mut sessions_read, mut clip_reads, mut index_reads, mut crashes) = (0, 0, 0, 0);
+    for entry in std::fs::read_dir(&sessions).unwrap().flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path().join("trace.tsv")) else { continue };
+        sessions_read += 1;
+        for line in text.lines().filter(|l| l.starts_with("READ\t")) {
+            let f: Vec<&str> = line.split('\t').collect();
+            let offset: u64 = f.get(3).and_then(|v| v.parse().ok()).unwrap_or(0);
+            if f.get(2).is_some_and(|p| p.ends_with("announcerspeech.big")) {
+                if offset >= first_clip { clip_reads += 1 } else { index_reads += 1 }
+            }
+        }
+    }
+    // The NPC crashes in those sessions (main-cast `906_*_AiSlam` reads, `maincast_reads.py --json`).
+    if let Some(dir) = std::env::var_os("SKATE_MAINCAST_LINES").map(PathBuf::from)
+        && let Ok(text) = std::fs::read_to_string(dir.join("maincast_lines.json"))
+    {
+        crashes = parse_json(&text).arr().iter().filter(|l| l.get("clip").is_some_and(|c| c.str().starts_with("906_"))).count();
+    }
+    println!("{sessions_read} sessions: {index_reads} announcer index reads, {clip_reads} clip reads (first clip at {first_clip}); {crashes} NPC crash lines");
+    assert!(sessions_read >= 10 && index_reads > 0);
+    assert_eq!(clip_reads, 0, "free roam streamed an announcer line");
 }

@@ -315,3 +315,75 @@ Harness: `tests/world_sources.rs` `a_bumped_ped_warns_with_a_line_of_its_voice`.
   speaker (76 of an event the port sends; 130 `_col` has no ported sender).
 - **Not ported:** the repeat times of speaker slots 30 / 31 (record `+52` / `+56`); values 30 / 51 stopping the
   speaker's stream first; the cameraman line of the crash; the game modes (free skate passes 0).
+
+## Follow-ups (2026-10-04, branch `audio/world-followups`; corrects some lines above)
+- **`Obj:Speech` in0 / in1 / in4 see the main cast's streams only.** `sub_824E2050` walks the stream system's
+  records `+1120` / `+1124` = streams 0 / 1 = channel 0 (the main cast; the pro path's stop `sub_82C5E1D8(sys, k)`
+  indexes the same records). Main-cast voices include 77 (18 clips) and 37 / 38. A living-world guard (75 / 76)
+  raises nothing (the port did raise in1; inaudible in free skate: F42 is scaled by `Master.in7` = 0, F19 feeds
+  nothing). **in2** = speech-system word `+0x1BD28` == 2: only the scripted-dialogue path drives it
+  (`sub_824A4EE8`, request ids ≥ 5000, categories 31–40; 1 while its stream starts, 0 from `sub_824A54D0`). **in3**
+  = a main-cast stream block with `+60` == 0 and `+93` set (`+60` from the stream start `sub_82C5DC80`'s fourth
+  argument). Neither in free roam. They duck the music (F29, F46) and F221 / F222 (with Pause.in2).
+- **The near lines' ~0.6 dB is gone** since the voice float: 34 lines median 0.988; near (< 10 m, 24) −22 mB, far
+  (10) +45 mB. `VU.in0` (`A[Global.112]`, +200 mB on PedestrianSpeech out2 / out3; `SFXObj_VU` process
+  `sub_824EDBE8` meters a mixer bus and slews it into in0 / in1) does not explain any residual: ratio vs the
+  capture's RMS before each line, correlation −0.20 (a local script, not published).
+- **Main-cast repeat times, slots 30 / 31 (ported):** `sub_824AC560` uses record `+52` for speaker slot 31 and
+  `+56` for slot 30 instead of `+24` (even 0). Slot = model `S+84`: 31 `skate_coach`, 30 special cast
+  `47231014932CE8B3`. Export `repeat_speaker_31` / `repeat_speaker_30`; `EventTuning::speaker_repeat`.
+- **Values 30 / 51 stop the speaker's stream first (ported):** speaking byte block `+76` set and stream block `+72`
+  not −1 / 2 → `sub_82C5E1D8` before the request (regardless of the gate). `SpeechPlayer::stop_speaker`.
+- **Value 29 = two requests (correction):** 141 (`1014_bored`) then 136 (`1002_amb_chat`), not "141 with word 136".
+- **The crash's "cameraman line" is the announcer's** `480_slam_pro` (event 24708 = bank 3 event 0x84): after the
+  crash message, when the skater's camera distance (record `+96`, `sub_824B6E80`) < speech record field
+  `887C1D3324B12C4A` (12.0 m), request via `sub_824AA858` with word 2 = the model's `14B23B4527AF919E`
+  (`SPCH3Type_pro_id_ANN`, the pro bit), when non-zero. Needs the announcer channel (`announcerspeech.big`, 63
+  events): not ported.
+
+## The announcer channel (2026-10-04, branch `audio/world-followups`, ported)
+- **Data.** `announcerspeech.big` (`announcer` prefix; EB v3 like the others): 405 clips, 2,822 takes, 3.4 h,
+  36 kHz; `announcer_Events.evt` = bank 3, 63 events (ids 24576–24751). Field 1 of every record = the announcer
+  (1 / 2), whose clips use voice 35 / 36. Tuning: `speech_tuning["3"]` (e.g. `480_slam_pro`: repeat 15 s,
+  priority 90, probability 100, timers `+40` 8 / `+44` 5).
+- **Announcers.** `aud_characteristics` models 35 / 36 (parent `ip`), `SPCH3Type_char_ID_Ann`
+  (`6F9C8A27E4CD37DC`) 1 / 2. The pros carry `SPCH3Type_pro_id_ANN` (`14B23B4527AF919E`): bit (model − 1), the
+  word `480_slam_pro` names them by.
+- **Request** (`sub_824AA858`). Steps in order:
+  1. the record `+48` / `sub_8279E180` gate (as the main cast);
+  2. word 0 = `char_ID_Ann` of model system `+1036` when 0 and `+1036` < 104;
+  3. word 8 = 4 | (1 + (system `+1089` ≠ 0));
+  4. timers kept for slot `+1036` (104 → 35);
+  5. gate `sub_824A8C78` / `sub_824A75F0`: one `rand()`; timer `+40` against system `+904` − `+900` (timed) or
+     `+908`, `+44` against `+900`;
+  6. `sub_824A73F0` on channel 3;
+  7. library request `sub_824AAC40`, whose words per event come from two jump tables at `0x824AAEF0` / `0x824AB09C`.
+- **Who is announcing.** `+1036` is written from the challenge record (`sub_82488330`), and is 104 with no
+  challenge. So free skate never matches a record.
+- **Senders.** 39 calls. In free skate only the NPC crash (`sub_824DB688`) can ask: camera distance (record
+  `+96`) below `887C1D3324B12C4A` (12 m), and `pro_id_ANN` ≠ 0, then 24708 with word 2. The rest are challenge
+  and contest code, plus `PlayAnnouncerSpeech`. SFXObj_Announcer's commentary (`sub_824CF350`) runs only for
+  announcer 35 / 36.
+- **Voice.** The fixed block `mgr+0x1B898` (constructor `sub_824A3C28`: voice float 1.0, PEAK 96 kHz / 1.0 /
+  3.0, echo 0). The update (beside `sub_824A7FA0`) reads SFXObj_Announcer at `mgr+0x1B8F8` (copied by
+  `sub_824D07B8`):
+  - level = int(out2 × `sub_824A8250` multiplier), from the speech record's arrays by language: French
+    `CCC18F677B896049` / `CAD1FAC38891DA18`, German `7A9D965C3AE7BB73` / `E0F263477B891647`, other (English)
+    `49AE841BE63F9EB7` / `60E0221FD3D6F04B`, the second of each pair with the challenge byte `+1044`;
+    index 36 → 1, 31 → 2, else 0;
+  - azimuth out0, pitch out1, HP out4, LP out3, env send out5.
+
+  `Announcer.in0` = 32767 while the stream system plays channel 3 (`sub_824CF218`).
+- **Recordings.** 38 sessions read only the archive's index (5 reads at boot), never a clip, though they hold
+  37 NPC crash lines.
+- **Port.** `skate_audio::world::announcer`, `speech_player::announcer_outputs` / `no_cut`, the host's announcer
+  channel, `LivingWorldAudio::announcer`, `AnnouncerSpeechEvent`, `sdk.world_audio.announcer` / `announce`;
+  setup `speech/announcer.json`, `ANNOUNCER_EVENTS` = (480,) for the opt-in decode.
+- **Open.**
+  - The challenge clocks (`+900` / `+904` / `+908`).
+  - `+1089` / `+1044`.
+  - The `+48` gate.
+  - The interrupt's fifth argument.
+  - The challenge senders.
+  - A recorded announcer line to check levels against.
+
