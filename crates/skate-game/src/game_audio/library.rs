@@ -87,7 +87,9 @@ pub(crate) struct GrainTuningJson {
     #[serde(default)]
     owner: OwnerJson,
     /// Collision material (tag − 1) → rolling surface 1–14 (`Sk8::AudioSurfaceMap`).
+    /// Read only by the vault check (`grain_for_matches_the_vault_surface_map_and_the_bed_loads`).
     #[serde(default)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub surface_map: Vec<u32>,
 }
 
@@ -1243,6 +1245,7 @@ impl Library {
 
     /// Collision material → rolling surface (`Sk8::AudioSurfaceMap`, 95 entries; empty before
     /// 2026-10-02 installs).
+    #[cfg(test)]
     pub(crate) fn surface_map(&self) -> &[u32] {
         &self.manifest.grain_player.surface_map
     }
