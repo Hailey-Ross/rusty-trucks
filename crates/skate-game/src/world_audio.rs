@@ -216,6 +216,64 @@ pub enum WorldAudioSlot {
 pub struct WorldAudioInstance {
     pub slot: WorldAudioSlot,
     pub instance: u32,
+    /// The instance is the object's own (`OwnAudioInstance`, a private MixMap), not one of retail's.
+    pub own: bool,
+}
+
+/// A traffic vehicle or ped with this takes its own MixMap instance (doc 16 "L3",
+/// `game_audio::mod_world`) instead of competing for retail's pools (4 traffic / 15 pedestrian, the
+/// nearest win): it plays whenever it is within retail's list radius (40 m / 50 m) and among the
+/// 16 nearest own cars / 16 nearest own peds (the farther ones wait, `WorldAudioStats::own_waiting`).
+/// Not retail. **Mods' cars and peds get it by default** (user decision 2026-10-04, doc 16 M3:
+/// `sdk.world_audio.spawn(key, 'traffic' | 'ped', …)`; `slots = 'shared'` leaves it off); an
+/// engine system publishing the living world does not add it (retail's pools) unless an object of
+/// its own must be heard.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OwnAudioInstance;
+
+/// A sound emitter at the entity (world audio extension 2; doc 16 "Mod emitters and reverb zones"):
+/// an `.ems` eVolumeType 1 record added to the map's live list (`game_audio::emitters`) with
+/// retail's reach test (a sphere when the three extents are equal, else an ellipsoid along
+/// `forward` turned by the entity's rotation, up and side; the inner `core` at full level), the
+/// falloff curve and the `c_emitter` post with the MixMap Emitter words. By default (user decision
+/// 2026-10-04) it has its own instance of the private MixMap, so the map's emitters keep retail's 5
+/// emitter states; the setting `"mod_emitter_slots": "shared"` makes such emitters share the 5
+/// (first reached, first served) instead.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct WorldEmitter {
+    /// The AEMS bank bound to `c_emitter` (retail stem or a content overlay's).
+    pub bank: String,
+    /// The attribute patch = the `c_emitter` selector (0..=500).
+    pub patch: i32,
+    pub extent: Vec3,
+    /// The ellipsoid's forward axis in the entity's frame.
+    pub forward: Vec3,
+    pub core: f32,
+    /// Attribute volume (level = volume × curve(d)).
+    pub volume: f32,
+    /// `eVolumeFalloffType`: 0 = (1 − d)², 1 = 1 − d, other = flat.
+    pub falloff: i32,
+}
+
+/// A reverb zone at the entity (world audio extension 2): an eVolumeType 5 record that joins the
+/// zones the reverb selector walks (`game_audio::emitters::reverb_zones`), after the map's own, in
+/// the order they are reached. `preset`: an `aud_reverb` key the install has (a zone naming no
+/// known preset ends retail's zone walk, so spawning one is refused).
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct ReverbZoneVolume {
+    pub preset: u64,
+    pub extent: Vec3,
+    pub forward: Vec3,
+    pub core: f32,
+}
+
+/// Read back (written by `game_audio::emitters` every frame while any exists): the
+/// [`WorldEmitter`] entities playing now and the [`ReverbZoneVolume`] entities holding the
+/// listener.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct WorldEmitterStats {
+    pub playing: Vec<Entity>,
+    pub zones: Vec<Entity>,
 }
 
 /// The living world's audio switches.
@@ -283,6 +341,17 @@ pub struct WorldAudioStats {
     pub more_audible: bool,
     /// Speech lines started so far (peds and NPC skaters; `game_audio::world_speech`).
     pub speech_lines: u64,
+    /// Inside the list radius but holding none of retail's instances (all held by nearer ones).
+    pub waiting: Vec<Entity>,
+    /// The objects with their own instance (`OwnAudioInstance`, doc 16 L3 / M3): published cars
+    /// and peds, holders, the private MixMap's instance counts (16 / 16) and the ones in reach
+    /// waiting for one of them (a full private pool: the nearest play).
+    pub own_vehicles: usize,
+    pub own_peds: usize,
+    pub own_traffic_held: usize,
+    pub own_peds_held: usize,
+    pub own_instances: (usize, usize),
+    pub own_waiting: Vec<Entity>,
 }
 
 /// A speech value (`S+136`, the state graphs' `SendSpeechEvent speechvalue=N`).

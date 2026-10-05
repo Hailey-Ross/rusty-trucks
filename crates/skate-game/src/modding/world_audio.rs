@@ -45,7 +45,56 @@ fn merge(into: &mut WorldAudioOptions, from: WorldAudioOptions) {
     macro_rules! take {
         ($($f:ident),*) => { $( if from.$f.is_some() { into.$f = from.$f; } )* };
     }
-    take!(position, velocity, heading, body, engine, speed, load, horn, skidding, parked, voice, shoe_class, weight, close_range, feet, materials, footsteps, tazing, photo_flag, source, from, seconds, wheels, material, grinding, grind_material, air, loose_board);
+    take!(position, velocity, heading, body, engine, speed, load, horn, skidding, parked, voice, shoe_class, weight, close_range, feet, materials, footsteps, tazing, photo_flag, source, from, seconds, wheels, material, grinding, grind_material, air, loose_board,
+        bank, patch, volume, falloff, extent, forward, core, preset);
+}
+
+/// An emitter's component from its description (the record's defaults: forward +X, no core,
+/// volume 1, the squared curve).
+fn emitter(s: &WorldAudioOptions) -> WorldEmitter {
+    WorldEmitter {
+        bank: s.bank.clone().unwrap_or_default(),
+        patch: s.patch.unwrap_or(0),
+        extent: Vec3::from_array(s.extent.unwrap_or([1.0; 3])),
+        forward: Vec3::from_array(s.forward.unwrap_or([1.0, 0.0, 0.0])),
+        core: s.core.unwrap_or(0.0),
+        volume: s.volume.unwrap_or(1.0),
+        falloff: s.falloff.unwrap_or_default().retail_type(),
+    }
+}
+
+fn zone(s: &WorldAudioOptions) -> ReverbZoneVolume {
+    ReverbZoneVolume {
+        preset: s.preset.as_deref().and_then(|p| u64::from_str_radix(p, 16).ok()).unwrap_or(0),
+        extent: Vec3::from_array(s.extent.unwrap_or([1.0; 3])),
+        forward: Vec3::from_array(s.forward.unwrap_or([1.0, 0.0, 0.0])),
+        core: s.core.unwrap_or(0.0),
+    }
+}
+
+/// An emitter's bank must be in the audio (install or a running content overlay) and a reverb
+/// zone's preset one of the install's: a zone naming no known preset would end retail's zone walk.
+fn check_audio_refs(world: &World, kind: ObjectKind, opts: &WorldAudioOptions) -> Result<(), String> {
+    let library = world.get_resource::<crate::game_audio::Library>();
+    match kind {
+        ObjectKind::Emitter => {
+            if let (Some(bank), Some(l)) = (&opts.bank, library) {
+                if !l.aems().banks.contains_key(bank) {
+                    return Err(format!("world audio emitter: the audio has no AEMS bank {bank}"));
+                }
+            }
+        }
+        ObjectKind::ReverbZone => {
+            if let (Some(p), Some(l)) = (&opts.preset, library) {
+                let key = u64::from_str_radix(p, 16).unwrap_or(0);
+                if !l.bus_tuning().0.contains_key(&key) {
+                    return Err(format!("world audio reverb zone: the install has no reverb preset {p}"));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// The ghost's states from `logs/<name>.tsv` in the mod, or `SKATE_AUDIO_STATE_LOGS/<name>.tsv`.
@@ -63,9 +112,10 @@ fn ghost(mods: &Mods, owner: &str, name: &str, opts: &WorldAudioOptions, anchor:
 }
 
 pub(super) fn spawn(world: &mut World, mods: &Mods, owner: &str, key: String, kind: ObjectKind, opts: WorldAudioOptions) -> Result<(), String> {
-    if !opts.validate_for(kind) {
+    if !opts.validate_for(kind) || !opts.complete_for(kind) {
         return Err("Invalid world audio options".into());
     }
+    check_audio_refs(world, kind, &opts)?;
     if let Some(body) = &opts.body {
         super::resolve_body(mods, owner, body)?;
     }
@@ -95,8 +145,24 @@ pub(super) fn spawn(world: &mut World, mods: &Mods, owner: &str, key: String, ki
             ObjectKind::Ped => {
                 e.insert(PedAudio::default());
             }
+            _ => {}
+        }
+        // Doc 16 L3 / M3: a mod's car or ped takes its own MixMap instance (`game_audio::mod_world`)
+        // unless it asks for retail's pools (`slots = 'shared'`). Engine systems publishing the
+        // living world add no `OwnAudioInstance` and keep retail's pools.
+        if matches!(kind, ObjectKind::Traffic | ObjectKind::Ped) && skate_mods::world_audio::Slots::resolve(opts.slots) == skate_mods::world_audio::Slots::Own {
+            e.insert(crate::world_audio::OwnAudioInstance);
+        }
+        match kind {
+            ObjectKind::Traffic | ObjectKind::Ped => {}
             ObjectKind::Skater => {
                 e.insert(NpcSkaterAudio { voice: opts.voice.filter(|v| *v != 0), ..Default::default() });
+            }
+            ObjectKind::Emitter => {
+                e.insert(emitter(&opts));
+            }
+            ObjectKind::ReverbZone => {
+                e.insert(zone(&opts));
             }
         }
         let is_ghost = ghost.is_some();
@@ -121,6 +187,13 @@ pub(super) fn update(world: &mut World, mods: &Mods, owner: &str, key: &str, opt
     if !opts.validate_for(obj.kind) {
         return Err(format!("Invalid world audio update for {key}"));
     }
+    let kind = obj.kind;
+    drop(audio);
+    check_audio_refs(world, kind, &opts)?;
+    let mut audio = world.resource_mut::<ModWorldAudio>();
+    let Some(obj) = audio.objects.get_mut(&(owner.to_owned(), key.to_owned())) else {
+        return Err(format!("unknown world audio object {key}"));
+    };
     merge(&mut obj.state, opts);
     obj.updated = now;
     Ok(())
@@ -281,6 +354,8 @@ pub(super) fn clear(world: &mut World) {
 /// `snapshot.world_audio[owner]`: per key `{kind, audible, instance}`.
 pub(super) fn snapshot(world: &World, owner: &str) -> Value {
     let audio = world.resource::<ModWorldAudio>();
+    let stats = world.get_resource::<WorldEmitterStats>();
+    let objects = world.get_resource::<WorldAudioStats>();
     let bridge = world.get_resource::<crate::game_audio::world_bridge::Bridge>();
     let mut out = serde_json::Map::new();
     for ((o, key), obj) in &audio.objects {
@@ -289,10 +364,18 @@ pub(super) fn snapshot(world: &World, owner: &str) -> Value {
         }
         let held = world.get::<WorldAudioInstance>(obj.entity);
         let mut entry = json!({
-            "kind": match obj.kind { ObjectKind::Traffic => "traffic", ObjectKind::Ped => "ped", ObjectKind::Skater => "skater" },
-            "audible": held.is_some(),
+            "kind": match obj.kind { ObjectKind::Traffic => "traffic", ObjectKind::Ped => "ped", ObjectKind::Skater => "skater", ObjectKind::Emitter => "emitter", ObjectKind::ReverbZone => "reverb_zone" },
+            // Emitters: playing now (holding an emitter state); reverb zones: holding the listener.
+            "audible": held.is_some() || stats.is_some_and(|s| s.playing.contains(&obj.entity) || s.zones.contains(&obj.entity)),
             "instance": held.map(|h| h.instance),
-            "parked": world.resource::<Time<Real>>().elapsed_secs_f64() - obj.updated > PARK_SECONDS && !obj.ghost,
+            // Doc 16 L3: the instance is the object's own (a private MixMap), not one of retail's.
+            "own": held.is_some_and(|h| h.own),
+            // Doc 16 M3: a car's / ped's instances (`own`, the default, or `shared` = retail's
+            // pools; nil for other kinds), and whether it is in reach but waits for one (every
+            // instance of its pool is held by a nearer object).
+            "slots": matches!(obj.kind, ObjectKind::Traffic | ObjectKind::Ped).then(|| if world.get::<OwnAudioInstance>(obj.entity).is_some() { "own" } else { "shared" }),
+            "waiting": objects.is_some_and(|s| s.waiting.contains(&obj.entity) || s.own_waiting.contains(&obj.entity)),
+            "parked": world.resource::<Time<Real>>().elapsed_secs_f64() - obj.updated > PARK_SECONDS && !obj.ghost && !matches!(obj.kind, ObjectKind::Emitter | ObjectKind::ReverbZone),
         });
         // Traffic: the car alarm's seconds left while it sounds (an `alarm` / `impact` event, or engine code).
         if let Some(left) = bridge.and_then(|b| b.alarm_left(obj.entity)) {
@@ -313,6 +396,14 @@ pub(super) fn info(world: &World) -> Value {
         "audible": {"traffic": s.traffic_held, "peds": s.peds_held, "skaters": s.skaters_held},
         "speech_lines": s.speech_lines,
         "announcer": world.get_resource::<LivingWorldAudio>().and_then(LivingWorldAudio::announcer_character),
+        "waiting": s.waiting.len(),
+        // Doc 16 M3: the objects with their own instance (a mod's cars and peds by default).
+        "own": {
+            "instances": {"traffic": s.own_instances.0, "peds": s.own_instances.1},
+            "published": {"traffic": s.own_vehicles, "peds": s.own_peds},
+            "audible": {"traffic": s.own_traffic_held, "peds": s.own_peds_held},
+            "waiting": s.own_waiting.len(),
+        },
     })
 }
 
@@ -325,7 +416,7 @@ fn sync(
     time: Res<Time<Real>>,
     game_time: Res<Time>,
     physics: Option<Res<crate::physics::GamePhysics>>,
-    mut q: Query<(&mut Transform, &mut GlobalTransform, Option<&mut TrafficAudio>, Option<&mut PedAudio>, Option<&mut NpcSkaterAudio>, Option<&mut AudioVelocity>)>,
+    mut q: Query<(&mut Transform, &mut GlobalTransform, Option<&mut TrafficAudio>, Option<&mut PedAudio>, Option<&mut NpcSkaterAudio>, Option<&mut AudioVelocity>, Option<&mut WorldEmitter>, Option<&mut ReverbZoneVolume>)>,
     mut living: ResMut<LivingWorldAudio>,
     mut commands: Commands,
     parked_now: Query<(), With<VehicleParked>>,
@@ -344,7 +435,7 @@ fn sync(
         if obj.ghost {
             continue;
         }
-        let Ok((mut t, mut g, car, ped, npc, vel)) = q.get_mut(obj.entity) else { continue };
+        let Ok((mut t, mut g, car, ped, npc, vel, emit, reverb)) = q.get_mut(obj.entity) else { continue };
         let parked = now - obj.updated > PARK_SECONDS;
         let s = &obj.state;
         // Where: a body of this mod, or the given position / heading.
@@ -378,6 +469,19 @@ fn sync(
                 commands.entity(obj.entity).remove::<AudioVelocity>();
             }
             (None, None) => {}
+        }
+        // Emitters and reverb zones are records: they never park.
+        if let Some(mut e) = emit {
+            let want = emitter(s);
+            if *e != want {
+                *e = want;
+            }
+        }
+        if let Some(mut z) = reverb {
+            let want = zone(s);
+            if *z != want {
+                *z = want;
+            }
         }
         if car.is_some() {
             // Retail's StayingParked for the car alarm rule: the `parked` option, else the host's parking.
@@ -455,6 +559,56 @@ fn sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn world() -> (World, Mods) {
+        let mut w = World::new();
+        w.insert_resource(Time::<Real>::default());
+        w.init_resource::<ModWorldAudio>();
+        let dir = std::env::temp_dir().join(format!("skate-world-audio-slots-{}", std::process::id()));
+        (w, Mods::new(skate_mods::Manager::new(dir.clone(), dir)))
+    }
+
+    fn spawn_with(w: &mut World, mods: &Mods, key: &str, kind: ObjectKind, options: Value) -> Entity {
+        let opts: WorldAudioOptions = serde_json::from_value(options).unwrap();
+        spawn(w, mods, "m", key.into(), kind, opts).unwrap();
+        w.resource::<ModWorldAudio>().objects[&("m".to_owned(), key.to_owned())].entity
+    }
+
+    /// Doc 16 M3 (user decision 2026-10-04): a mod's car or ped takes its own MixMap instance by
+    /// default, `slots = 'shared'` (alias `retail`) puts it in retail's pools, `slots = 'own'`
+    /// stays valid; other kinds never take the marker; an engine-published car (the living
+    /// world's path: the components without the marker) is untouched, so it stays in retail's
+    /// pools (`world_bridge::tests::own_instance_objects_go_to_their_own_host` routes by the marker).
+    #[test]
+    fn mod_cars_and_peds_default_to_their_own_instance() {
+        let (mut w, mods) = world();
+        let own = |w: &World, e: Entity| w.get::<OwnAudioInstance>(e).is_some();
+        let car = spawn_with(&mut w, &mods, "car", ObjectKind::Traffic, json!({"engine": "c04_taxi01"}));
+        let ped = spawn_with(&mut w, &mods, "ped", ObjectKind::Ped, json!({"voice": 59}));
+        assert!(own(&w, car) && own(&w, ped), "default: own");
+        let shared_car = spawn_with(&mut w, &mods, "shared_car", ObjectKind::Traffic, json!({"slots": "shared"}));
+        let shared_ped = spawn_with(&mut w, &mods, "shared_ped", ObjectKind::Ped, json!({"slots": "retail"}));
+        assert!(!own(&w, shared_car) && !own(&w, shared_ped), "shared / retail: retail's pools");
+        let own_car = spawn_with(&mut w, &mods, "own_car", ObjectKind::Traffic, json!({"slots": "own"}));
+        assert!(own(&w, own_car), "explicit own");
+        let skater = spawn_with(&mut w, &mods, "skater", ObjectKind::Skater, json!({}));
+        assert!(!own(&w, skater), "NPC skaters stay in retail's Player slot");
+        assert!(spawn(&mut w, &mods, "m", "bad".into(), ObjectKind::Skater, serde_json::from_value(json!({"slots": "own"})).unwrap()).is_err());
+        // Respawning a key with `shared` drops the marker with the old entity.
+        let again = spawn_with(&mut w, &mods, "car", ObjectKind::Traffic, json!({"slots": "shared"}));
+        assert!(w.get_entity(car).is_err() && !own(&w, again));
+        // The engine's path: the same components, no marker.
+        let engine = w.spawn((TrafficAudio::new("c04_taxi01"), Transform::default(), GlobalTransform::default())).id();
+        assert!(!own(&w, engine), "engine objects keep retail's pools");
+        // Read back: `slots` per car / ped, nil for other kinds.
+        let snap = snapshot(&w, "m");
+        assert_eq!(snap["ped"]["slots"], "own");
+        assert_eq!(snap["car"]["slots"], "shared");
+        assert_eq!(snap["own_car"]["slots"], "own");
+        assert!(snap["skater"]["slots"].is_null());
+        assert_eq!(snap["ped"]["waiting"], false);
+    }
 
     fn world_with_car() -> (World, Entity) {
         let mut world = World::new();

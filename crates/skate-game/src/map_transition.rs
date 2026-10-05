@@ -24,12 +24,16 @@ pub(crate) struct CurrentMap {
     pub spawn: [f32; 3],
     pub heading: f32,
     pub generation: u64,
+    /// The map's own audio definition: its `AUDO` extension (schema 1, UTF-8 JSON;
+    /// `game_audio::map_audio`), if it has one.
+    pub audio_tag: Option<Arc<[u8]>>,
 }
 impl CurrentMap {
     fn from_package(path: Option<PathBuf>, map: Option<&skate_data::skate_map::SkateMap>) -> Self {
         Self { path, name: map.map_or_else(|| "Test world".into(), |m| m.name.clone()),
             spawn: map.map_or([0., crate::physics::ground::HEIGHT, 0.], |m| m.spawn),
-            heading: map.map_or(0., |m| m.heading), generation: 0 }
+            heading: map.map_or(0., |m| m.heading), generation: 0,
+            audio_tag: map.and_then(|m| m.extensions.iter().find(|e| e.tag == *b"AUDO" && e.schema == 1)).map(|e| Arc::from(&e.payload[..])) }
     }
 }
 

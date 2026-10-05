@@ -23,6 +23,39 @@ pub enum ObjectKind {
     Traffic,
     Ped,
     Skater,
+    /// World audio extension 2: a sound emitter (an `.ems` eVolumeType 1 record added to the map's
+    /// live list: retail's reach test, falloff curve and `c_emitter` post).
+    Emitter,
+    /// World audio extension 2: a reverb zone (eVolumeType 5: joins the zone list the reverb preset
+    /// selector walks).
+    ReverbZone,
+}
+
+/// Which MixMap instances a mod's traffic vehicle or ped plays on (world audio extension 3, doc 16
+/// L3; the default flipped to `own` in extension 4, user decision 2026-10-04: "yes I agree it
+/// should match" the mod emitters, which have their own instances by default).
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Slots {
+    /// Its own instance of a private MixMap (the default; not retail): it plays whenever it is
+    /// within retail's list radius (40 m cars, 50 m peds) and among the 16 nearest own cars / 16
+    /// nearest own peds of all mods; a farther one waits (silent, `read(key).waiting`) until it is
+    /// among them. It never takes one of retail's instances, so the map's objects keep retail's
+    /// pools.
+    #[default]
+    Own,
+    /// Retail's pools (4 traffic / 15 pedestrian instances, the more-audible setting 8 / 24),
+    /// shared with the map's objects: the nearest win. `retail` is accepted as well (the name
+    /// extension 3 used), so a mod passing `retail` gets the pools on 3 and 4 alike.
+    #[serde(alias = "retail")]
+    Shared,
+}
+
+impl Slots {
+    /// Spawn `slots` → the instances the object takes (`None` = the default, [`Slots::Own`]).
+    pub fn resolve(slots: Option<Self>) -> Self {
+        slots.unwrap_or_default()
+    }
 }
 
 /// Every field a spawn or an update may carry; each kind reads its own and ignores none silently
@@ -43,6 +76,10 @@ pub struct WorldAudioOptions {
     /// Follow one of this mod's physics bodies (position, rotation and velocity from it).
     #[serde(default)]
     pub body: Option<String>,
+    /// Traffic and peds, spawn only: `own` (the default since extension 4: its own MixMap
+    /// instance) or `shared` (alias `retail`: retail's pools with the map's objects).
+    #[serde(default)]
+    pub slots: Option<Slots>,
     // ---- traffic
     /// The `aud_traffic_engine` record (`c01_family01`, `c03_sports01`, `c04_taxi01`,
     /// `c05_truck01`, …) or a living-world model mapped to one (`taxi01`, `sedan02`, `suv`, …): a
@@ -119,6 +156,34 @@ pub struct WorldAudioOptions {
     /// holds while it is set (ghosts take it from their log).
     #[serde(default)]
     pub loose_board: Option<u8>,
+    // ---- emitters (extension 2)
+    /// The AEMS bank bound to `c_emitter` (a retail bank stem, or one a content overlay adds).
+    #[serde(default)]
+    pub bank: Option<String>,
+    /// The attribute patch = the `c_emitter` selector (0..=500).
+    #[serde(default)]
+    pub patch: Option<i32>,
+    /// Attribute volume 0..=1 (level = volume × falloff curve).
+    #[serde(default)]
+    pub volume: Option<f32>,
+    /// `eVolumeFalloffType`: `squared` (the default), `linear`, `flat`.
+    #[serde(default)]
+    pub falloff: Option<crate::audio::FalloffCurve>,
+    // ---- emitters and reverb zones (extension 2): the record's shape
+    /// Extents (m): a sphere of radius `extent[0]` when all three are equal, else an ellipsoid with
+    /// semi-axes along forward, up and side.
+    #[serde(default)]
+    pub extent: Option<[f32; 3]>,
+    /// The ellipsoid's forward axis in the object's frame (default +X; turned by `heading`).
+    #[serde(default)]
+    pub forward: Option<[f32; 3]>,
+    /// Inner core fraction 0..=1 at full level.
+    #[serde(default)]
+    pub core: Option<f32>,
+    // ---- reverb zones (extension 2)
+    /// The reverb preset (`aud_reverb` key, 16 hex digits).
+    #[serde(default)]
+    pub preset: Option<String>,
 }
 
 /// One-shot options (`horn`: kind, seconds; `speech`: value; `tazer`: seconds; `body_fall`:
@@ -243,6 +308,10 @@ fn name(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.') && !s.contains("..")
 }
 
+fn hex16(s: &str) -> bool {
+    s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// `lite`, or `state_log:<name>` with a safe file name.
 pub fn valid_source(s: &str) -> bool {
     s == "lite" || s.strip_prefix("state_log:").is_some_and(name)
@@ -269,6 +338,13 @@ impl WorldAudioOptions {
             && self.material.is_none_or(|v| v <= 143)
             && self.grind_material.is_none_or(|v| v <= 143)
             && self.loose_board.is_none_or(|v| v <= 2)
+            && self.bank.as_deref().is_none_or(name)
+            && self.patch.is_none_or(|v| (0..=500).contains(&v))
+            && self.volume.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+            && self.extent.is_none_or(|e| e.iter().all(|x| x.is_finite() && (0.1..=10_000.0).contains(x)))
+            && self.forward.is_none_or(|f| finite(&f) && f.iter().map(|x| x * x).sum::<f32>() > 1e-6 && f.iter().all(|x| x.abs() <= 1000.0))
+            && self.core.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+            && self.preset.as_deref().is_none_or(hex16)
     }
 
     /// The fields of other kinds are rejected (so a typo'd kind is an error, not silence).
@@ -277,13 +353,29 @@ impl WorldAudioOptions {
         // `voice` is a ped's or a skater's (the AI skaters' 89–96, the pros 1–29: bail grunt, reactions).
         let ped = self.shoe_class.is_some() || self.weight.is_some() || self.close_range.is_some() || self.feet.is_some() || self.materials.is_some() || self.footsteps.is_some() || self.tazing.is_some() || self.photo_flag.is_some();
         let skater = self.source.is_some() || self.from.is_some() || self.seconds.is_some() || self.wheels.is_some() || self.material.is_some() || self.grinding.is_some() || self.grind_material.is_some() || self.air.is_some() || self.loose_board.is_some();
+        let emitter = self.bank.is_some() || self.patch.is_some() || self.volume.is_some() || self.falloff.is_some();
+        let shape = self.extent.is_some() || self.forward.is_some() || self.core.is_some();
+        let zone = self.preset.is_some();
+        let moving = self.velocity.is_some() || self.voice.is_some() || self.speed.is_some();
         self.validate()
+            && (self.slots.is_none() || matches!(kind, ObjectKind::Traffic | ObjectKind::Ped))
             && match kind {
-                ObjectKind::Traffic => !ped && !skater,
-                ObjectKind::Ped => !traffic && !skater,
+                ObjectKind::Traffic => !ped && !skater && !emitter && !shape && !zone,
+                ObjectKind::Ped => !traffic && !skater && !emitter && !shape && !zone,
                 // A lite skater takes its speed from `speed` too.
-                ObjectKind::Skater => !ped && self.engine.is_none() && self.load.is_none() && self.horn.is_none() && self.skidding.is_none() && self.parked.is_none(),
+                ObjectKind::Skater => !ped && self.engine.is_none() && self.load.is_none() && self.horn.is_none() && self.skidding.is_none() && !emitter && !shape && !zone && self.parked.is_none(),
+                ObjectKind::Emitter => !traffic && !ped && !skater && !zone && !moving,
+                ObjectKind::ReverbZone => !traffic && !ped && !skater && !emitter && !moving,
             }
+    }
+
+    /// What a spawn must give: an emitter its bank and extent, a reverb zone its preset and extent.
+    pub fn complete_for(&self, kind: ObjectKind) -> bool {
+        match kind {
+            ObjectKind::Emitter => self.bank.is_some() && self.extent.is_some(),
+            ObjectKind::ReverbZone => self.preset.is_some() && self.extent.is_some(),
+            _ => true,
+        }
     }
 }
 
@@ -342,6 +434,49 @@ mod tests {
             assert!(!o.validate(), "accepted {bad}");
         }
         assert!(serde_json::from_value::<WorldAudioOptions>(json!({"typo":1})).is_err());
+    }
+
+    /// World audio extension 2: emitters and reverb zones take their own fields only, need their
+    /// bank / preset and extent at spawn, and keep within the record bounds.
+    #[test]
+    fn emitter_and_reverb_zone_options_validate() {
+        let fountain: WorldAudioOptions = serde_json::from_value(json!({"bank":"water_fountain","patch":81,"position":[1,2,3],"extent":[6,6,6],"core":0.2,"volume":0.5,"falloff":"linear"})).unwrap();
+        assert!(fountain.validate_for(ObjectKind::Emitter) && fountain.complete_for(ObjectKind::Emitter));
+        assert!(!fountain.validate_for(ObjectKind::Traffic) && !fountain.validate_for(ObjectKind::ReverbZone));
+        let cave: WorldAudioOptions = serde_json::from_value(json!({"preset":"BEEFC8E3DE04FBAE","position":[0,0,0],"extent":[20,8,12],"forward":[0,0,1],"heading":1.5})).unwrap();
+        assert!(cave.validate_for(ObjectKind::ReverbZone) && cave.complete_for(ObjectKind::ReverbZone));
+        assert!(!cave.validate_for(ObjectKind::Emitter) && !cave.validate_for(ObjectKind::Ped));
+        let bare: WorldAudioOptions = serde_json::from_value(json!({"position":[0,0,0]})).unwrap();
+        assert!(bare.validate_for(ObjectKind::Emitter) && !bare.complete_for(ObjectKind::Emitter), "an update may omit them, a spawn not");
+        assert!(!bare.complete_for(ObjectKind::ReverbZone));
+        for bad in [json!({"patch":501}), json!({"volume":1.5}), json!({"extent":[0,1,1]}), json!({"extent":[1,1,20000]}), json!({"forward":[0,0,0]}),
+            json!({"core":2}), json!({"preset":"beef"}), json!({"preset":"GGGGGGGGGGGGGGGG"}), json!({"bank":"../x"})] {
+            let o: WorldAudioOptions = serde_json::from_value(bad.clone()).unwrap();
+            assert!(!o.validate(), "accepted {bad}");
+        }
+        let moving: WorldAudioOptions = serde_json::from_value(json!({"bank":"x","extent":[1,1,1],"velocity":[1,0,0]})).unwrap();
+        assert!(!moving.validate_for(ObjectKind::Emitter), "emitters are static records");
+        assert!(serde_json::from_value::<WorldAudioOptions>(json!({"falloff":"cubic"})).is_err());
+    }
+
+    /// World audio extension 4 (doc 16 M3): a mod's car / ped takes its own instance unless it
+    /// asks for retail's pools (`shared`, alias `retail`); `own` stays valid; only traffic and
+    /// peds take `slots`; anything else is a typo, not silence.
+    #[test]
+    fn slots_default_to_own_and_shared_opts_in() {
+        let none: WorldAudioOptions = serde_json::from_value(json!({"engine":"c04_taxi01"})).unwrap();
+        assert_eq!(Slots::resolve(none.slots), Slots::Own, "no slots = its own instance");
+        for (v, want) in [("own", Slots::Own), ("shared", Slots::Shared), ("retail", Slots::Shared)] {
+            let o: WorldAudioOptions = serde_json::from_value(json!({"slots": v})).unwrap();
+            assert_eq!(Slots::resolve(o.slots), want, "{v}");
+            assert!(o.validate_for(ObjectKind::Traffic) && o.validate_for(ObjectKind::Ped), "{v}");
+            for kind in [ObjectKind::Skater, ObjectKind::Emitter, ObjectKind::ReverbZone] {
+                assert!(!o.validate_for(kind), "{v} on {kind:?}");
+            }
+        }
+        for bad in ["extra", "Own", "pool", ""] {
+            assert!(serde_json::from_value::<WorldAudioOptions>(json!({"slots": bad})).is_err(), "accepted {bad:?}");
+        }
     }
 
     #[test]

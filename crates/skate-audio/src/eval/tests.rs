@@ -261,3 +261,47 @@ fn unload_bank_destroys_its_instances_and_stops_answering_posts() {
     assert!(e.instances().is_empty());
 }
 
+
+/// An audio content hot swap (`replace_bank`): the bank keeps its id and its place among the
+/// class's constructors; its instances go (voices released); a post its poster still holds gets
+/// the new bank's instance with the post's payload and plays it at the next walk; a released post
+/// gets nothing; the other bank's instance is untouched; nothing is drawn from the generator.
+#[test]
+fn a_replaced_bank_keeps_its_place_and_re_instances_held_posts() {
+    let ex = || vec![Ex { module: 0, kind: 1, name_id: 1, name: "c_test", at: None }];
+    let mut e = Evaluator::new();
+    e.install_project(&project());
+    let a = e.load_bank(bank(&[player_module(4)], &ex(), &[(48000, false), (24000, false)]));
+    let b = e.load_bank(bank(&[player_module(4)], &ex(), &[(48000, false), (24000, false)]));
+    let class = e.class_id("c_test").unwrap();
+    let mut log = Log::default();
+    let held = e.post(class, &[1, 4096, 1]);
+    let gone = e.post(class, &[1, 4096, 0]);
+    walk(&mut e, &mut log);
+    e.release(gone);
+    walk(&mut e, &mut log);
+    assert_eq!(e.instances().len(), 2, "the held post's two instances");
+    let rng = e.rng;
+    log.calls.clear();
+    let again = e.replace_bank(a, bank(&[player_module(4)], &ex(), &[(12000, false), (6000, false)]), &mut log);
+    assert_eq!(again, [held], "only the held post");
+    assert_eq!(e.registry.classes[class].constructors, [(a, 0), (b, 0)], "the same place");
+    assert!(log.calls.iter().all(|c| c.starts_with("release")) && log.calls.len() == 1, "{:?}", log.calls);
+    assert_eq!(e.instances().len(), 2);
+    assert_eq!(e.instances()[0].1, a, "the new instance is the newest");
+    walk(&mut e, &mut log);
+    assert!(log.calls.iter().any(|c| c.starts_with("open") && c.ends_with("slot 1")), "the payload came along: {:?}", log.calls);
+    assert_eq!(e.rng, rng);
+    // The project of a mod: its banks are found, and once it is out nothing resolves to it.
+    let s = |name: &str, id: u16| crate::formats::csi::Symbol { name: name.into(), name_id: id, default: 5 };
+    let modp = crate::formats::Project { name: "mod.csi".into(), id: 0x4D4F, tables: [vec![], vec![s("c_mod", 1)], vec![s("g_mod", 1)]] };
+    let token = e.install_project(&modp);
+    let m = e.load_bank(bank(&[player_module(1)], &[Ex { module: 0, kind: 1, name_id: 1, name: "c_mod", at: None }], &[(1000, false)]));
+    assert!(e.class_id("c_mod").is_some() && e.global_id("g_mod").is_some());
+    assert_eq!(e.banks_using_project(token), [m]);
+    e.unload_bank(m, &mut log);
+    assert!(e.uninstall_project(token));
+    assert!(e.class_id("c_mod").is_none() && e.global_id("g_mod").is_none());
+    assert_eq!(e.class_id("c_test"), Some(class), "retail lookups unchanged");
+    assert!(!e.uninstall_project(token));
+}

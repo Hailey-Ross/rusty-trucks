@@ -4,6 +4,7 @@
 use super::{Mods, resolve_body};
 use bevy::{audio::{AudioSinkPlayback, PlaybackMode, SpatialScale, Volume}, prelude::*};
 use skate_mods::audio::{AudioPlayOptions, AudioUpdateOptions, MAX_WAV_BYTES, canonical_pcm_wav};
+use crate::game_audio::mod_voices::{MAX_NATIVE_VOICES, ModVoices, VoiceSpec};
 use std::{collections::BTreeMap, path::Path};
 
 type Key = (String, String);
@@ -32,10 +33,19 @@ struct Voice {
     pending: f32,
     warned: bool,
 }
+/// A native voice's placement (audio extension 3: the voice itself lives in
+/// `game_audio::mod_voices`, which the mod system feeds the resolved position every frame).
+struct NativeVoice {
+    body: Option<String>,
+    position: Vec3,
+    offset: Vec3,
+    spatial: bool,
+}
 #[derive(Resource, Default)]
 struct ModAudio {
     clips: BTreeMap<Key, Clip>,
     voices: BTreeMap<Key, Voice>,
+    native: BTreeMap<Key, NativeVoice>,
 }
 
 pub(super) fn install(app: &mut App) {
@@ -85,6 +95,11 @@ fn emitter_position(mods: &Mods, owner: &str, body: Option<&str>, position: Vec3
     } else { Some(position + offset) }
 }
 fn remove_voice(world: &mut World, audio: &mut ModAudio, key: &Key) {
+    if audio.native.remove(key).is_some() {
+        if let Some(mut voices) = world.get_resource_mut::<ModVoices>() {
+            voices.stop(&key.0, &key.1, 0.0);
+        }
+    }
     if let Some(voice) = audio.voices.remove(key) {
         // Explicit stop also covers backend semantics where dropping a sink detaches it.
         if let Some(sink) = world.get::<AudioSink>(voice.entity) { sink.stop(); }
@@ -93,8 +108,65 @@ fn remove_voice(world: &mut World, audio: &mut ModAudio, key: &Key) {
     }
 }
 
-pub(super) fn play(world: &mut World, mods: &Mods, owner: &str, key: String, opts: AudioPlayOptions) -> Result<(), String> {
-    if !opts.validate() { return Err("Invalid audio play options".into()); }
+/// Native voices of one owner / in all (`game_audio::mod_voices`).
+fn native_usage(world: &World, owner: &str) -> (usize, usize) {
+    world.get_resource::<ModVoices>().map_or((0, 0), |v| v.voice_usage(owner))
+}
+
+/// A clip for the native mixer: read and checked once, under the same per-mod / total limits as
+/// the Bevy clips (both caches count).
+fn ensure_native_clip(world: &mut World, audio: &ModAudio, owner: &str, root: &Path, path: &str) -> Result<(), String> {
+    let Some(voices) = world.get_resource::<ModVoices>() else { return Err("native audio is not available".into()) };
+    if voices.has_clip(owner, path) { return Ok(()); }
+    if !skate_mods::audio::valid_audio_path(path) { return Err("Invalid audio path".into()); }
+    let (mine, mine_bytes, all, all_bytes) = voices.clip_usage(owner);
+    let bevy_mine = audio.clips.keys().filter(|(o, _)| o == owner).count();
+    if all + audio.clips.len() >= MAX_CLIPS_TOTAL || mine + bevy_mine >= MAX_CLIPS_PER_MOD {
+        return Err("Audio cache limit reached (32 clips/mod, 128 total)".into());
+    }
+    let input = skate_mods::read_bounded(root, path, MAX_WAV_BYTES)?;
+    let (bytes, _info) = canonical_pcm_wav(&input).map_err(|e| format!("{path}: {e}"))?;
+    let bevy_total: usize = audio.clips.values().map(|c| c.bytes).sum();
+    let bevy_owned: usize = audio.clips.iter().filter(|((o, _), _)| o == owner).map(|(_, c)| c.bytes).sum();
+    if bevy_total + all_bytes + bytes.len() > MAX_BYTES_TOTAL || bevy_owned + mine_bytes + bytes.len() > MAX_BYTES_PER_MOD {
+        return Err("Audio cache byte limit reached (32 MiB/mod, 128 MiB total)".into());
+    }
+    world.resource_mut::<ModVoices>().add_clip(owner, path, &bytes)
+}
+
+/// Doc 16 L7: `owner`'s files changed while it runs (an audio-only reload). The native clips of
+/// them are dropped (re-read at the next play / rule compile); false when the script holds a Bevy
+/// clip of one (the Bevy voices cannot swap their source: the mod reloads as before).
+pub(super) fn files_changed(world: &mut World, owner: &str, paths: &[String]) -> bool {
+    let bevy = world.get_resource::<ModAudio>().is_some_and(|a| paths.iter().any(|p| a.clips.contains_key(&(owner.to_owned(), p.clone()))));
+    if bevy {
+        return false;
+    }
+    if let Some(mut voices) = world.get_resource_mut::<ModVoices>() {
+        voices.forget_clips(owner, paths);
+    }
+    true
+}
+
+/// A rule's WAV (`sdk.audio.rule`): loaded into the mod's native bank under the same limits.
+pub(super) fn load_native_clip(world: &mut World, mods: &Mods, owner: &str, path: &str) -> Result<(), String> {
+    let root = &mods.manager.packages.get(owner).ok_or("Missing audio owner")?.root;
+    world.resource_scope(|world, audio: Mut<ModAudio>| ensure_native_clip(world, &audio, owner, root, path))
+}
+
+/// Whether a native voice can be had for `owner`'s `key` now: the native audio runs (with its
+/// MixMap) and the key already holds a native voice or one of the native voices is free.
+fn native_ready(world: &World, audio: &ModAudio, owner: &str, key: &str) -> bool {
+    let running = world.get_resource::<crate::game_audio::Native>().is_some_and(|n| n.mixmap.is_some()) && world.get_resource::<ModVoices>().is_some();
+    running && (audio.native.contains_key(&(owner.to_owned(), key.to_owned())) || native_usage(world, owner).1 < MAX_NATIVE_VOICES)
+}
+
+/// The native mixer (`sdk.audio.play`, the default since 2026-10-04): the WAV through the game's
+/// own mixer.
+fn play_native(world: &mut World, mods: &Mods, owner: &str, key: String, opts: AudioPlayOptions) -> Result<(), String> {
+    if world.get_resource::<crate::game_audio::Native>().is_none_or(|n| n.mixmap.is_none()) {
+        return Err("native audio is not running (play with native = false for a Bevy voice)".into());
+    }
     let root = &mods.manager.packages.get(owner).ok_or("Missing audio owner")?.root;
     let origin = Vec3::from_array(opts.position.unwrap_or([0.0; 3]));
     let offset = Vec3::from_array(opts.offset);
@@ -102,9 +174,58 @@ pub(super) fn play(world: &mut World, mods: &Mods, owner: &str, key: String, opt
         .ok_or("Audio emitter body does not exist")?;
     world.resource_scope(|world, mut audio: Mut<ModAudio>| {
         let slot = (owner.to_owned(), key);
-        if !audio.voices.contains_key(&slot)
-            && (audio.voices.len() >= MAX_VOICES_TOTAL
-                || audio.voices.keys().filter(|(o, _)| o == owner).count() >= MAX_VOICES_PER_MOD) {
+        let (mine, all) = native_usage(world, owner);
+        let bevy_mine = audio.voices.keys().filter(|(o, _)| *o == owner).count();
+        let exists = audio.voices.contains_key(&slot) || audio.native.contains_key(&slot);
+        if !exists && (audio.voices.len() + all >= MAX_VOICES_TOTAL || bevy_mine + mine >= MAX_VOICES_PER_MOD) {
+            return Err("Audio voice limit reached (32 voices/mod, 128 total)".into());
+        }
+        if !audio.native.contains_key(&slot) && all >= MAX_NATIVE_VOICES {
+            return Err(format!("Native audio voice limit reached ({MAX_NATIVE_VOICES} in all)"));
+        }
+        ensure_native_clip(world, &audio, owner, root, &opts.path)?;
+        remove_voice(world, &mut audio, &slot);
+        let spec = VoiceSpec {
+            path: opts.path.clone(),
+            looping: opts.looping,
+            volume: opts.volume,
+            pitch: opts.pitch,
+            paused: opts.paused,
+            fade_in: opts.fade_in,
+            position: opts.spatial.then_some(position),
+            // A positional sound without `falloff` gets the default reach (40 m, squared).
+            reach: opts.spatial.then(|| crate::game_audio::mod_voices::Reach::from_falloff(opts.reach())),
+            follow: None,
+            reverb: opts.reverb.unwrap_or(true),
+            group: u8::from(opts.group.as_deref() == Some("player")),
+        };
+        world.resource_mut::<ModVoices>().play(owner, &slot.1, spec)?;
+        audio.native.insert(slot, NativeVoice { body: opts.body, position: origin, offset, spatial: opts.spatial });
+        Ok(())
+    })
+}
+
+pub(super) fn play(world: &mut World, mods: &Mods, owner: &str, key: String, opts: AudioPlayOptions) -> Result<(), String> {
+    if !opts.validate() { return Err("Invalid audio play options".into()); }
+    // Routing (user decision 2026-10-04): native by default; `native = true` insists on it (an
+    // error without it); with the default a Bevy voice stands in when the native audio is not
+    // running or its native voices are all taken; `native = false` is always the Bevy voice.
+    match opts.native {
+        Some(true) => return play_native(world, mods, owner, key, opts),
+        None if native_ready(world, world.resource::<ModAudio>(), owner, &key) => return play_native(world, mods, owner, key, opts),
+        _ => {}
+    }
+    let root = &mods.manager.packages.get(owner).ok_or("Missing audio owner")?.root;
+    let origin = Vec3::from_array(opts.position.unwrap_or([0.0; 3]));
+    let offset = Vec3::from_array(opts.offset);
+    let position = emitter_position(mods, owner, opts.body.as_deref(), origin, offset)
+        .ok_or("Audio emitter body does not exist")?;
+    world.resource_scope(|world, mut audio: Mut<ModAudio>| {
+        let slot = (owner.to_owned(), key);
+        let (native_mine, native_all) = native_usage(world, owner);
+        if !audio.voices.contains_key(&slot) && !audio.native.contains_key(&slot)
+            && (audio.voices.len() + native_all >= MAX_VOICES_TOTAL
+                || audio.voices.keys().filter(|(o, _)| o == owner).count() + native_mine >= MAX_VOICES_PER_MOD) {
             return Err("Audio voice limit reached (32 voices/mod, 128 total)".into());
         }
         let handle = ensure_clip(world, &mut audio, owner, root, &opts.path)?;
@@ -130,6 +251,24 @@ pub(super) fn play(world: &mut World, mods: &Mods, owner: &str, key: String, opt
 }
 
 pub(super) fn update_voice(world: &mut World, owner: &str, key: &str, opts: AudioUpdateOptions) {
+    let slot = (owner.to_owned(), key.to_owned());
+    let native = {
+        let mut audio = world.resource_mut::<ModAudio>();
+        match audio.native.get_mut(&slot) {
+            Some(n) => {
+                if n.body.is_none() { if let Some(x) = opts.position { n.position = Vec3::from_array(x); } }
+                if let Some(x) = opts.offset { n.offset = Vec3::from_array(x); }
+                true
+            }
+            None => false,
+        }
+    };
+    if native {
+        if let Some(mut voices) = world.get_resource_mut::<ModVoices>() {
+            voices.update(owner, key, opts.volume, opts.pitch, opts.paused);
+        }
+        return;
+    }
     let mut audio = world.resource_mut::<ModAudio>();
     let Some(v) = audio.voices.get_mut(&(owner.to_owned(), key.to_owned())) else { return; };
     if v.stopping.is_some() { return; }
@@ -146,6 +285,10 @@ pub(super) fn stop(world: &mut World, owner: &str, key: &str, fade: f32) {
     world.resource_scope(|world, mut audio: Mut<ModAudio>| {
         let key = (owner.to_owned(), key.to_owned());
         if fade <= 0.0 { remove_voice(world, &mut audio, &key); }
+        else if audio.native.contains_key(&key) {
+            // The native voice fades in `game_audio::mod_voices` (repeated stops keep the first fade).
+            if let Some(mut voices) = world.get_resource_mut::<ModVoices>() { voices.stop(&key.0, &key.1, fade); }
+        }
         else if let Some(v) = audio.voices.get_mut(&key) {
             // Repeated stop calls must not extend the sound's lifetime.
             if v.stopping.is_none() { v.stopping = Some((fade, fade)); }
@@ -157,15 +300,18 @@ pub(super) fn stop_body(world: &mut World, owner: &str, body: &str) {
     world.resource_scope(|world, mut audio: Mut<ModAudio>| {
         let keys: Vec<_> = audio.voices.iter()
             .filter(|((o, _), v)| o == owner && v.body.as_deref() == Some(body))
-            .map(|(k, _)| k.clone()).collect();
+            .map(|(k, _)| k.clone())
+            .chain(audio.native.iter().filter(|((o, _), v)| o == owner && v.body.as_deref() == Some(body)).map(|(k, _)| k.clone()))
+            .collect();
         for key in keys { remove_voice(world, &mut audio, &key); }
     });
 }
 
 pub(super) fn stop_owner(world: &mut World, owner: &str, release_clips: bool) {
     world.resource_scope(|world, mut audio: Mut<ModAudio>| {
-        let keys: Vec<_> = audio.voices.keys().filter(|(o, _)| o == owner).cloned().collect();
+        let keys: Vec<_> = audio.voices.keys().chain(audio.native.keys()).filter(|(o, _)| o == owner).cloned().collect();
         for key in keys { remove_voice(world, &mut audio, &key); }
+        if let Some(mut voices) = world.get_resource_mut::<ModVoices>() { voices.stop_owner(owner, release_clips); }
         if release_clips {
             let keys: Vec<_> = audio.clips.keys().filter(|(o, _)| o == owner).cloned().collect();
             for key in keys {
@@ -179,8 +325,9 @@ pub(super) fn stop_owner(world: &mut World, owner: &str, release_clips: bool) {
 
 pub(super) fn clear(world: &mut World) {
     world.resource_scope(|world, mut audio: Mut<ModAudio>| {
-        let keys: Vec<_> = audio.voices.keys().cloned().collect();
+        let keys: Vec<_> = audio.voices.keys().chain(audio.native.keys()).cloned().collect();
         for key in keys { remove_voice(world, &mut audio, &key); }
+        if let Some(mut voices) = world.get_resource_mut::<ModVoices>() { voices.clear(); }
         for (_, clip) in std::mem::take(&mut audio.clips) {
             world.resource_mut::<Assets<AudioSource>>().remove(clip.handle.id());
         }
@@ -209,6 +356,22 @@ fn sync(world: &mut World) {
             || mods.manager.snapshot["replay"].as_bool().unwrap_or(false)
     };
     world.resource_scope(|world, mut audio: Mut<ModAudio>| {
+        // Native voices: the resolved position (a body, or the position + offset); gone when the
+        // voice ended in the mixer or its body is gone.
+        if !audio.native.is_empty() {
+            let mut gone = Vec::new();
+            for (key, n) in &audio.native {
+                let alive = world.get_resource::<ModVoices>().is_some_and(|v| v.has_voice(&key.0, &key.1));
+                let position = emitter_position(world.resource::<Mods>(), &key.0, n.body.as_deref(), n.position, n.offset);
+                match (alive, position) {
+                    (true, Some(p)) => {
+                        if n.spatial { world.resource_mut::<ModVoices>().set_position(&key.0, &key.1, p); }
+                    }
+                    _ => gone.push(key.clone()),
+                }
+            }
+            for key in gone { remove_voice(world, &mut audio, &key); }
+        }
         let mut remove = Vec::new();
         for (key, v) in &mut audio.voices {
             if world.get_entity(v.entity).is_err() { remove.push(key.clone()); continue; }
@@ -288,6 +451,32 @@ mod tests {
         assert_eq!(w.resource::<ModAudio>().voices[&("a".into(),"engine".into())].stopping,Some((0.1,0.1)));
         stop(&mut w,"a","engine",0.0); stop(&mut w,"a","engine",0.0);
         assert!(w.resource::<ModAudio>().voices.is_empty());
+    }
+    /// Native is the default (user decision 2026-10-04) where it can be had: without the native
+    /// audio a default play takes the Bevy path.
+    #[test] fn default_routing_needs_the_native_audio() {
+        let mut w=world();
+        assert!(!native_ready(&w, w.resource::<ModAudio>(), "a", "k"), "no native audio: the Bevy voice");
+        w.insert_resource(ModVoices::default());
+        assert!(!native_ready(&w, w.resource::<ModAudio>(), "a", "k"), "no runtime yet");
+    }
+    /// With the native audio running (data-gated) a default play is native until the 24 native
+    /// voices are taken; a key that already holds a native voice keeps it.
+    #[test]
+    #[ignore = "needs the private install data"]
+    fn default_routing_is_native_until_the_native_voices_are_taken() {
+        use crate::game_audio::mod_voices::tests::{library, spec, tone_wav};
+        let mut w=world();
+        let library=library();
+        w.insert_resource(crate::game_audio::Native::start_for_test(&library).unwrap_or_else(|e| panic!("missing private data: {e}")));
+        w.insert_resource(ModVoices::default());
+        assert!(native_ready(&w, w.resource::<ModAudio>(), "a", "k"));
+        let wav=tone_wav(440.0, 0.1, 22050, 0.5);
+        w.resource_mut::<ModVoices>().add_clip("b", "t.wav", &wav).unwrap();
+        for i in 0..MAX_NATIVE_VOICES { w.resource_mut::<ModVoices>().play("b", &format!("v{i}"), spec("t.wav", None)).unwrap(); }
+        assert!(!native_ready(&w, w.resource::<ModAudio>(), "a", "k"), "all native voices taken: the Bevy voice");
+        w.resource_mut::<ModAudio>().native.insert(("a".into(),"k".into()), NativeVoice { body: None, position: Vec3::ZERO, offset: Vec3::ZERO, spatial: false });
+        assert!(native_ready(&w, w.resource::<ModAudio>(), "a", "k"), "a key with a native voice keeps it");
     }
     #[test] fn unloading_releases_cached_assets() {
         let mut w=world(); let h=w.resource_mut::<Assets<AudioSource>>().add(AudioSource{bytes:Vec::<u8>::new().into()});
