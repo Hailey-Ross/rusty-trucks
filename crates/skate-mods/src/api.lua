@@ -481,6 +481,27 @@ function sdk.volumes.read(key)
     return (owners[sdk.mod_id] or {})[key]
 end
 
+-- Named trigger volumes (retail map volumes, custom-map volumes, mod volumes).
+-- Events arrive in on_event: {name="trigger_entered"|"trigger_exited", body=..., volume=...}.
+sdk.triggers = { version = 1 }
+local function trigger_snapshot() return as_table(sdk.snapshot.triggers) or {} end
+function sdk.triggers.list() return as_table(trigger_snapshot().volumes) or {} end
+function sdk.triggers.get(id)
+    for _, v in ipairs(sdk.triggers.list()) do
+        if v.id == id or v.name == id then return v end
+    end
+end
+function sdk.triggers.inside(body)
+    return (as_table(trigger_snapshot().bodies) or {})[body or "player"] or {}
+end
+function sdk.triggers.box(key, options) submit{kind="trigger_box",key=key,options=options} end
+function sdk.triggers.remove(key) submit{kind="trigger_remove",key=key} end
+function sdk.triggers.set_enabled(id, enabled) submit{kind="trigger_enable",id=id,enabled=enabled ~= false} end
+local function non_empty(t) if type(t) == "table" and next(t) ~= nil then return t end return nil end
+function sdk.triggers.track(key, options) submit{kind="trigger_track",key=key,options=non_empty(options)} end
+function sdk.triggers.untrack(key) submit{kind="trigger_untrack",key=key} end
+function sdk.triggers.configure(options) submit{kind="trigger_configure",options=non_empty(options)} end
+
 sdk.input = {}
 -- Mapped gameplay action IDs by stable key (retail input.cfg GP_* order, see
 -- sdk/GENERAL_API.md). Accepted wherever an action ID is.

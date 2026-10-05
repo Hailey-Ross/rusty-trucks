@@ -57,6 +57,7 @@ mod game_audio;
 pub(crate) mod world_audio;
 pub(crate) mod ui_audio;
 mod water_bodies;
+mod trigger_volumes;
 
 fn main() -> bevy::app::AppExit {
     match updater::recover() {
@@ -152,6 +153,13 @@ fn main() -> bevy::app::AppExit {
         if let Err(error) = camera::CameraRuntime::load(&config.asset_root) {
             eprintln!("{error}");
             return bevy::app::AppExit::error();
+        }
+        match trigger_volumes::check(config.map_path.as_deref(), config.map.as_ref()) {
+            Ok(count) => eprintln!("SKATE_TRIGGERS_READY volumes={count}"),
+            Err(error) => {
+                eprintln!("{error}");
+                return bevy::app::AppExit::error();
+            }
         }
         eprintln!("SKATE_ASSETS_READY");
         return bevy::app::AppExit::Success;

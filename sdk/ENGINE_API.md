@@ -69,6 +69,44 @@ inside it. This is a point overlap query, not a collider or a skater hull test.
 Boxes belong to their creating mod, max 32 per mod; remove with
 `sdk.volumes.remove(key)`. Changes become observable on the next snapshot.
 
+## Trigger volumes (`sdk.triggers`, capability `triggers` 1)
+
+The engine tracks the map's named trigger volumes the way retail Skate 3 does:
+each fixed tick the local player (body `"player"`) and every tracked body get a
+query cylinder (retail: radius 0.34 m, spanning the skater from just below the
+feet to just above the head) which is tested against each volume's oriented box.
+Changes post `on_event` events before `on_fixed_update`:
+
+    {name="trigger_entered"|"trigger_exited", body="player"|"mod:<mod>:<key>",
+     volume=<id>, volume_name=<short name>, group="challenge"|"stairs"|"camera",
+     instance_id=<16 hex digits or nil>, link_guid=<16 hex digits or nil>}
+
+Retail map volumes come from the converted map (`maps/<Map>.triggers`, written by
+setup); their `id` is the retail instance id challenge scripts use (e.g.
+SkateSchool's map-wide `tut_sksc_reset_vol01` is `2c7017060025128f`). Custom maps
+carry their own in a `<Map>.triggers` sidecar or a `TVOL` extension (same JSON;
+see `docs/hails-additions/24-trigger-volumes.md`).
+
+- `sdk.triggers.list()` — every volume: `{id, name, full_name, group, source="map"|"mod",
+  owner, instance_id, link_guid, center, axes, rotation, half_extents, fatness,
+  aabb_min, aabb_max, enabled, inside={bodies}}`. `sdk.triggers.get(id_or_name)`.
+- `sdk.triggers.inside(body)` — volume ids the body (default `"player"`) is in.
+- `sdk.triggers.box(key, {center={x,y,z}, half_extents={x,y,z}, rotation={x,y,z,w},
+  name="...", group="challenge"})` — a mod volume with id `mod:<mod>:<key>`
+  (max 64 per mod); `sdk.triggers.remove(key)`.
+- `sdk.triggers.set_enabled(id, false)` switches a map volume off for everyone
+  until the same mod switches it on or stops.
+- `sdk.triggers.track(key, {radius=0.34, length=0})` follows one of the mod's
+  physics bodies (body id `mod:<mod>:<key>`, max 16); `sdk.triggers.untrack(key)`.
+  Positions are taken after the dynamics step, so their events lag one tick.
+- `sdk.triggers.configure({radius=, length_scale=, length_pad=, top_pad=})` changes
+  the query-cylinder constants (one mod at a time); `configure()` restores retail.
+
+Removing a volume never posts an exit (retail); a body that stops being tracked
+exits everything it was in. Everything a mod set is undone when it stops; mod
+volumes, switches and tracked bodies are also cleared when the world changes
+(re-add them on `world_changed`).
+
 `sdk.camera.capture(key, {position={x,y,z}, look_at={x,y,z}, fov=radians,
 width=256, height=256})` creates or updates an offscreen camera. FOV defaults to
 70 degrees (in radians), range 0.2–2.5. Dimensions must be multiples of 16 between

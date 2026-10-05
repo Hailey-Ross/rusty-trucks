@@ -419,6 +419,51 @@ function sdk.volumes.remove(key) end
 ---@return {position:Vec3,size:Vec3,rotation:Quat,inside:string[]}|nil point overlaps, not physical collisions
 function sdk.volumes.read(key) end
 
+---@class TriggerVolume
+---@field id string retail instance id (16 hex digits), custom-map id or "mod:<mod>:<key>"
+---@field name string short name, e.g. "tut_sksc_reset_vol01"
+---@field full_name string|nil retail editor path
+---@field group "challenge"|"stairs"|"camera"
+---@field source "map"|"mod"
+---@field owner string|nil mod id for mod volumes
+---@field instance_id string|nil
+---@field link_guid string|nil
+---@field center Vec3
+---@field axes Vec3[] box axes in world space
+---@field rotation Quat
+---@field half_extents Vec3
+---@field fatness number
+---@field aabb_min Vec3
+---@field aabb_max Vec3
+---@field enabled boolean false while a mod switched it off
+---@field inside string[] tracked bodies inside ("player", "mod:<mod>:<key>")
+
+sdk.triggers = {}
+---@return TriggerVolume[]
+function sdk.triggers.list() end
+---@param id string id or short name
+---@return TriggerVolume|nil
+function sdk.triggers.get(id) end
+---@param body? string default "player"
+---@return string[] volume ids
+function sdk.triggers.inside(body) end
+---Events: on_event {name="trigger_entered"|"trigger_exited", body, volume, volume_name, group, instance_id, link_guid}.
+---@param key string mod-owned id; at most 64 per mod
+---@param options {center:Vec3, half_extents:Vec3, rotation?:Quat, name?:string, group?:"challenge"|"stairs"|"camera"}
+function sdk.triggers.box(key, options) end
+---@param key string
+function sdk.triggers.remove(key) end
+---@param id string map volume id; the switch ends when this mod stops
+---@param enabled boolean
+function sdk.triggers.set_enabled(id, enabled) end
+---@param key string one of this mod's physics bodies; at most 16
+---@param options? {radius?:number, length?:number}
+function sdk.triggers.track(key, options) end
+---@param key string
+function sdk.triggers.untrack(key) end
+---@param options? {radius?:number, length_scale?:number, length_pad?:number, top_pad?:number} nil restores retail (0.34, 0.5, 0.05, 0.02)
+function sdk.triggers.configure(options) end
+
 ---@param key string mod-owned id; at most 2 per mod, 4 total
 ---@param options {position:Vec3,look_at:Vec3,fov?:number,width?:integer,height?:integer} fov radians [0.2,2.5]; sizes [64,512], multiples of 16
 function sdk.camera.capture(key, options) end

@@ -18,6 +18,7 @@ pub(crate) use participation::{player_suspended, peer_suspended};
 mod session;
 mod volumes;
 mod world_audio;
+mod triggers;
 mod capture;
 pub(crate) mod player_physics;
 
@@ -165,6 +166,7 @@ impl Plugin for ModdingPlugin {
         world_audio::install(app);
         graphics_dynamic::install(app);
         capture::install(app);
+        triggers::install(app);
         app.add_systems(
             PreUpdate,
             maintenance.after(crate::map_transition::MapTransitionSet),
@@ -181,6 +183,7 @@ impl Plugin for ModdingPlugin {
             FixedUpdate,
             fixed
                 .after(crate::app::SimulationSet::Physics)
+                .after(crate::trigger_volumes::TriggerSet)
                 .run_if(crate::graphics_menu::gameplay_active),
         )
         .add_systems(
@@ -534,6 +537,7 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         "detach_error": mods.detach_error,
         "detach_pending": mods.detach_pending.is_some(),
         "map": {"name": map.name, "generation": map.generation},
+        "triggers": triggers::snapshot(world),
         "tick": physics.ticks,
         "keys": keys,
         "actions": actions,
@@ -570,6 +574,8 @@ fn fixed(world: &mut World) {
         if let Err(e) = ensure_ground(world, &mut mods) {
             warn!("dynamics ground: {e}");
         }
+        // Enter/exit events of this tick's trigger update, before on_fixed_update.
+        triggers::dispatch(world, &mut mods);
         let ids: Vec<_> = mods
             .manager
             .packages
@@ -696,6 +702,7 @@ fn fixed(world: &mut World) {
             mods.world.step(dt as f32);
             mods.last_contacts = mods.world.drain_contacts();
         }
+        triggers::sync_tracked(world, &mods);
         sync_graphics(world, &mut mods);
         sync_attach(world, &mut mods);
         // Record native post-step poses for render interpolation, including hood view.
@@ -782,6 +789,7 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     mods.skater_remote.clear();
     mods.pending_remote_teleport = None;
     volumes::clear(world, mods);
+    triggers::clear(world);
     capture::clear(world);
     clear_camera_angle(world, None);
     world.resource_mut::<crate::physics::GamePhysics>().set_external_queries(None);
@@ -818,6 +826,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         crate::game_audio::clear_mod(world, id);
         graphics_dynamic::clear_owner(world, id);
         volumes::clear_owner(world, mods, id);
+        triggers::clear_owner(world, id);
         capture::clear_owner(world, id);
         clear_camera_angle(world, Some(id));
         player_physics::clear(world,Some(id));
@@ -893,6 +902,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             crate::game_audio::clear_mod(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
+            triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
             clear_camera_angle(world, Some(&id));
             player_physics::clear(world,Some(&id));
@@ -921,6 +931,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             crate::game_audio::clear_mod(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
+            triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
             clear_camera_angle(world, Some(&id));
             player_physics::clear(world,Some(&id));
@@ -1355,6 +1366,12 @@ fn apply_one(
         Command::SessionTeleport { peer, options } => session::teleport(world, mods, &peer, options)?,
         Command::VolumeBox { key, options } => volumes::set(world, mods, id, key, options)?,
         Command::VolumeRemove { key } => volumes::remove(world, mods, id, &key),
+        Command::TriggerBox { key, options } => triggers::set_box(world, id, key, options)?,
+        Command::TriggerRemove { key } => triggers::remove_box(world, id, &key),
+        Command::TriggerEnable { id: volume, enabled } => triggers::enable(world, id, &volume, enabled)?,
+        Command::TriggerTrack { key, options } => triggers::track(world, mods, id, key, options)?,
+        Command::TriggerUntrack { key } => triggers::untrack(world, id, &key),
+        Command::TriggerConfigure { options } => triggers::configure(world, id, options)?,
         Command::CameraCapture { key, options } => { capture::set(world, id, key, options)?; }
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }

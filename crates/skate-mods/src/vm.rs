@@ -32,6 +32,78 @@ impl TeleportOptions {
     }
 }
 
+/// `sdk.triggers.box`: a mod-owned trigger volume (an oriented box) that
+/// takes part in the engine's enter/exit events like a map volume.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerBoxOptions {
+    pub center: [f32; 3],
+    pub half_extents: [f32; 3],
+    #[serde(default)]
+    pub rotation: Option<[f32; 4]>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+impl TriggerBoxOptions {
+    pub fn validate(&self) -> bool {
+        self.center.iter().all(|v| v.is_finite() && v.abs() <= 100_000.)
+            && self.half_extents.iter().all(|v| v.is_finite() && *v >= 0.005 && *v <= 5_000.)
+            && self.rotation.as_ref().is_none_or(crate::scene::valid_quaternion)
+            && self.name.as_ref().is_none_or(|n| n.len() <= 128 && !n.chars().any(char::is_control))
+            && self.group.as_deref().is_none_or(|g| matches!(g, "challenge" | "stairs" | "camera"))
+    }
+}
+
+/// `sdk.triggers.track`: follow one of the mod's physics bodies. The body's
+/// position is the top point of its query cylinder (retail shape by default).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerTrackOptions {
+    #[serde(default)]
+    pub radius: Option<f32>,
+    /// Distance from the top point to the bottom (retail "length" span).
+    #[serde(default)]
+    pub length: Option<f32>,
+}
+
+impl TriggerTrackOptions {
+    pub fn validate(&self) -> bool {
+        self.radius.is_none_or(|r| r.is_finite() && (0. ..=50.).contains(&r))
+            && self.length.is_none_or(|l| l.is_finite() && (0. ..=100.).contains(&l))
+    }
+}
+
+/// `sdk.triggers.configure`: the query-cylinder constants (retail: radius
+/// 0.34, length scale 0.5, length pad 0.05, top pad 0.02). Omitted fields keep
+/// the retail value; `nil` options restore all of them.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerShapeOptions {
+    #[serde(default)]
+    pub radius: Option<f32>,
+    #[serde(default)]
+    pub length_scale: Option<f32>,
+    #[serde(default)]
+    pub length_pad: Option<f32>,
+    #[serde(default)]
+    pub top_pad: Option<f32>,
+}
+
+impl TriggerShapeOptions {
+    pub fn validate(&self) -> bool {
+        [self.radius, self.length_scale, self.length_pad, self.top_pad]
+            .iter().flatten().all(|v| v.is_finite() && v.abs() <= 100.)
+            && self.radius.is_none_or(|r| r >= 0.)
+    }
+}
+
+fn valid_trigger_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VolumeOptions {
@@ -444,6 +516,29 @@ pub enum Command {
     VolumeRemove {
         key: String,
     },
+    TriggerBox {
+        key: String,
+        options: TriggerBoxOptions,
+    },
+    TriggerRemove {
+        key: String,
+    },
+    TriggerEnable {
+        id: String,
+        enabled: bool,
+    },
+    TriggerTrack {
+        key: String,
+        #[serde(default)]
+        options: Option<TriggerTrackOptions>,
+    },
+    TriggerUntrack {
+        key: String,
+    },
+    TriggerConfigure {
+        #[serde(default)]
+        options: Option<TriggerShapeOptions>,
+    },
     CameraCapture {
         key: String,
         options: CaptureOptions,
@@ -745,6 +840,13 @@ impl Command {
             Self::SessionTeleport { peer, options } => valid_peer(peer) && options.validate(),
             Self::VolumeBox { key, options } => crate::schema::valid_id(key) && options.validate(),
             Self::VolumeRemove { key } => crate::schema::valid_id(key),
+            Self::TriggerBox { key, options } => crate::schema::valid_id(key) && options.validate(),
+            Self::TriggerRemove { key } | Self::TriggerUntrack { key } => crate::schema::valid_id(key),
+            Self::TriggerEnable { id, .. } => valid_trigger_id(id),
+            Self::TriggerTrack { key, options } => {
+                crate::schema::valid_id(key) && options.as_ref().is_none_or(TriggerTrackOptions::validate)
+            }
+            Self::TriggerConfigure { options } => options.as_ref().is_none_or(TriggerShapeOptions::validate),
             Self::CameraCapture { key, options } => {
                 crate::schema::valid_id(key) && options.validate()
             }
@@ -839,6 +941,12 @@ fn command_kind(command: &Command) -> &'static str {
         Command::SessionTeleport { .. } => "session_teleport",
         Command::VolumeBox { .. } => "volume_box",
         Command::VolumeRemove { .. } => "volume_remove",
+        Command::TriggerBox { .. } => "trigger_box",
+        Command::TriggerRemove { .. } => "trigger_remove",
+        Command::TriggerEnable { .. } => "trigger_enable",
+        Command::TriggerTrack { .. } => "trigger_track",
+        Command::TriggerUntrack { .. } => "trigger_untrack",
+        Command::TriggerConfigure { .. } => "trigger_configure",
         Command::CameraCapture { .. } => "camera_capture",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
@@ -918,6 +1026,7 @@ fn default_snapshot() -> Value {
             "players": ["0"]
         },
         "volumes": {},
+        "triggers": {"volumes": [], "bodies": {}},
         "attach": Value::Null,
         "detach_error": Value::Null,
         "detach_pending": false,
@@ -1093,6 +1202,7 @@ impl Vm {
             capabilities.set("player_control", 1)?;
             capabilities.set("session", 1)?;
             capabilities.set("volumes", 1)?;
+            capabilities.set("triggers", 1)?;
             capabilities.set("capture", 1)?;
             capabilities.set("multiplayer_debug", 1)?;
             // 2 (2026-10-04, audio/moddability-2): the `emitter` and `reverb_zone` kinds.
@@ -1543,6 +1653,51 @@ mod model_collision_extension_tests {
     /// the first frame is `Value::Null`. Every snapshot reader must still work:
     /// mods legitimately check attachment state during startup cleanup.
     #[test]
+    fn trigger_api_crosses_the_lua_serde_boundary() {
+        let root = std::env::temp_dir().join(format!("skate-mods-triggers-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            return { on_load=function()
+                assert(sdk.capabilities.triggers == 1, 'capability')
+                local reset = sdk.triggers.get('tut_sksc_reset_vol01')
+                assert(reset and reset.id == '2c7017060025128f', 'get by name')
+                assert(sdk.triggers.get('2c7017060025128f').group == 'challenge', 'get by id')
+                assert(#sdk.triggers.list() == 1, 'list')
+                assert(sdk.triggers.inside()[1] == '2c7017060025128f', 'player inside')
+                assert(#sdk.triggers.inside('mod:x:ball') == 0, 'other body')
+                sdk.triggers.box('goal', {center={1,2,3}, half_extents={1,1,1}, rotation={0,0,0,1}, name='goal', group='stairs'})
+                sdk.triggers.remove('goal')
+                sdk.triggers.set_enabled('2c7017060025128f', false)
+                sdk.triggers.track('ball')
+                sdk.triggers.track('ball', {radius=0.5, length=0.2})
+                sdk.triggers.untrack('ball')
+                sdk.triggers.configure({radius=0.4})
+                sdk.triggers.configure()
+            end }
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({"id":"tests.triggers","api":2,"name":"Triggers",
+            "version":"1.0.0","author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        manifest.validate().unwrap();
+        let snap = json!({"triggers": {"volumes": [{"id": "2c7017060025128f", "name": "tut_sksc_reset_vol01",
+            "group": "challenge"}], "bodies": {"player": ["2c7017060025128f"]}}});
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &snap).unwrap();
+        let out = vm.call("on_load", json!({}), &snap).unwrap();
+        assert_eq!(out.iter().map(command_kind).collect::<Vec<_>>(), vec!["trigger_box", "trigger_remove",
+            "trigger_enable", "trigger_track", "trigger_track", "trigger_untrack", "trigger_configure", "trigger_configure"]);
+        assert!(out.iter().all(Command::validate));
+        assert!(matches!(&out[2], Command::TriggerEnable { enabled: false, .. }));
+        assert!(matches!(&out[3], Command::TriggerTrack { options: None, .. }));
+        assert!(matches!(&out[4], Command::TriggerTrack { options: Some(o), .. } if o.radius == Some(0.5)));
+        assert!(matches!(&out[7], Command::TriggerConfigure { options: None }));
+        let bad = TriggerBoxOptions { center: [0.; 3], half_extents: [0., 1., 1.], rotation: None, name: None, group: None };
+        assert!(!bad.validate());
+        let lobby = TriggerBoxOptions { half_extents: [1.; 3], group: Some("lobby".into()), ..bad };
+        assert!(!lobby.validate());
+        drop(vm);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn snapshot_readers_work_before_the_host_has_built_a_snapshot() {
         let root = std::env::temp_dir().join(format!(
             "skate-mods-null-snapshot-{}",
@@ -1563,6 +1718,7 @@ mod model_collision_extension_tests {
                 assert(sdk.input.action(64) == 0.0, 'action')
                 assert(type(sdk.input.pad()) == 'table', 'pad')
                 assert(type(sdk.net.info()) == 'table', 'net')
+                assert(#sdk.triggers.list() == 0 and #sdk.triggers.inside() == 0, 'triggers')
             end}
         "#,
         )

@@ -397,6 +397,7 @@ fn audio_only_edits_keep_the_script_running() {
     assert_eq!(loads(&m), 2, "a full reload");
     assert_eq!(m.packages.get_mut("tests.audio").unwrap().take_audio_changes(), None);
     let _ = std::fs::remove_dir_all(&base);
+}
 
 #[test]
 fn input_reads_controller_identity_and_accepts_action_keys() {
