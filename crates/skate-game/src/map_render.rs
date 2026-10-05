@@ -99,6 +99,18 @@ impl SceneCommands {
             world.spawn((bundle, MapEntity));
         });
     }
+
+    /// A parent with children in one deferred command. Only the parent gets
+    /// `MapEntity`: despawning it removes the children with it, and marking
+    /// them too would make retirement despawn them twice.
+    pub(crate) fn spawn_with_children<B: Bundle, C: Bundle>(&mut self, bundle: B, children: Vec<C>) {
+        self.queue.push(move |world: &mut World| {
+            let parent = world.spawn((bundle, MapEntity)).id();
+            for child in children {
+                world.spawn((child, ChildOf(parent)));
+            }
+        });
+    }
 }
 
 /// Assets owned by the live scene, released on the next map change.
@@ -184,6 +196,25 @@ impl PreparedScene {
             &mut self.images,
             &mut self.params,
         );
+        // Movable props (SK8-ENGINE PR #15): retail districts only, as before
+        // the renderer rewrite.
+        if self.retail {
+            if let Some((props, objects)) =
+                crate::skate_world::load_prop_package(asset_root, &map.name)
+            {
+                crate::skate_world::spawn_instances(
+                    &props,
+                    &objects,
+                    &tuning,
+                    &environment,
+                    &mut self.commands,
+                    &mut self.meshes,
+                    &mut self.world_materials,
+                    &mut self.images,
+                    &mut self.params,
+                );
+            }
+        }
         if let Some(sky) = sky {
             sky.spawn(
                 &mut self.commands,

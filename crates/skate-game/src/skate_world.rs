@@ -306,6 +306,192 @@ fn spawn_lights(map: &SkateMap, commands: &mut SceneCommands) {
 }
 
 // ---------------------------------------------------------------------------
+// Dynamic props (DMO instances)
+//
+// Ported from SK8-ENGINE PR #15 (laaledesiempre, phase 0) onto the current
+// renderer: each MOBJ record becomes one root entity with its own transform,
+// and its template geometry is merged per (render class, slab) like the
+// static world, but in template space and shared between instances.
+// ---------------------------------------------------------------------------
+
+/// Marker on the root entity of one spawned dynamic-prop (DMO) instance.
+/// Later phases move these entities; static batches never contain them.
+#[derive(Component)]
+pub(crate) struct PropInstance {
+    pub id: u32,
+    pub template: String,
+    pub name: String,
+}
+
+/// The district's movable-prop package (`private/native-props/<map>.skate`)
+/// and its MOBJ placements. The package is a presentation supplement: a
+/// missing or invalid file leaves the map without props instead of failing it.
+pub(crate) fn load_prop_package(
+    asset_root: &std::path::Path,
+    map_name: &str,
+) -> Option<(SkateMap, Vec<skate_data::skate_map::StaticObject>)> {
+    let path = asset_root
+        .join("private")
+        .join("native-props")
+        .join(format!("{map_name}.skate"));
+    if !path.is_file() {
+        return None;
+    }
+    let map = match std::fs::read(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|data| SkateMap::parse_render_only(&data))
+    {
+        Ok(map) => map,
+        Err(error) => {
+            error!("SKATE_PROPS: {}: {error}", path.display());
+            return None;
+        }
+    };
+    // Presentation only; never route lights, doors or rails from it.
+    if map.name != map_name
+        || !map.geometry.collision.is_empty()
+        || !map.lights.is_empty()
+        || !map.doors.is_empty()
+        || !map.rails.is_empty()
+    {
+        error!("SKATE_PROPS: invalid render-only package {}", path.display());
+        return None;
+    }
+    let mut objects = Vec::new();
+    for extension in map.extensions.iter().filter(|e| e.tag == *b"MOBJ") {
+        match skate_data::skate_map::parse_static_objects(&map, extension) {
+            Ok(parsed) => objects.extend(parsed),
+            Err(error) => {
+                error!("SKATE_PROPS: {}: {error}", path.display());
+                return None;
+            }
+        }
+    }
+    Some((map, objects))
+}
+
+/// Row-vector affine (v @ basis + translation) as a column-vector matrix:
+/// the basis rows become the matrix columns.
+pub(crate) fn prop_affine(t: &[f32; 12]) -> Mat4 {
+    Mat4::from_cols(
+        Vec4::new(t[0], t[1], t[2], 0.),
+        Vec4::new(t[3], t[4], t[5], 0.),
+        Vec4::new(t[6], t[7], t[8], 0.),
+        Vec4::new(t[9], t[10], t[11], 1.),
+    )
+}
+
+/// One template's render parts: a merged template-space mesh per
+/// (render class, slab), with its bounds.
+type PropPart = (RenderClass, u16, Handle<Mesh>, Aabb);
+
+fn prop_template_parts(
+    map: &SkateMap,
+    table: &MaterialTable,
+    object: &skate_data::skate_map::StaticObject,
+    meshes: &mut impl AssetSink<Mesh>,
+) -> Vec<PropPart> {
+    let start = object.first_index as usize;
+    let end = start + object.index_count as usize;
+    let Some(range) = map.geometry.indices.get(start..end) else {
+        return Vec::new();
+    };
+    let mut triangles = Vec::with_capacity(range.len() / 3);
+    for tri in range.chunks_exact(3) {
+        let [a, b, c] = [tri[0], tri[1], tri[2]];
+        let Some(source) = (map.geometry.vertices[a as usize].material as usize).checked_sub(1)
+        else {
+            continue;
+        };
+        let Some(entry) = table.entry(source) else { continue };
+        let position = |i: u32| Vec3::from_array(map.geometry.vertices[i as usize].position);
+        triangles.push(Triangle {
+            indices: [a, b, c],
+            centroid: (position(a) + position(b) + position(c)) / 3.0,
+            slab: entry.slab,
+            class: entry.class,
+        });
+    }
+    // First-seen order keeps the spawn order deterministic.
+    let mut buckets: Vec<((RenderClass, u16), Vec<usize>)> = Vec::new();
+    for (index, triangle) in triangles.iter().enumerate() {
+        let key = (triangle.class, triangle.slab);
+        match buckets.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, members)) => members.push(index),
+            None => buckets.push((key, vec![index])),
+        }
+    }
+    buckets
+        .into_iter()
+        .map(|((class, slab), members)| {
+            let (mesh, aabb) = merge(map, table, &triangles, &members);
+            (class, slab, meshes.add(mesh), aabb)
+        })
+        .collect()
+}
+
+/// Spawn one root entity per MOBJ object. Template meshes are built once per
+/// geometry range and shared by every instance that places it.
+pub(crate) fn spawn_instances(
+    map: &SkateMap,
+    objects: &[skate_data::skate_map::StaticObject],
+    tuning: &crate::retail_render::MaterialTuning,
+    environment: &crate::retail_sky::SkyEnvironment,
+    commands: &mut SceneCommands,
+    meshes: &mut impl AssetSink<Mesh>,
+    materials: &mut impl AssetSink<WorldMaterial>,
+    images: &mut impl AssetSink<Image>,
+    buffers: &mut impl AssetSink<bevy::render::storage::ShaderStorageBuffer>,
+) -> usize {
+    let _span = info_span!("spawn_prop_instances").entered();
+    let table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
+    let mut templates: HashMap<(u32, u32), Vec<PropPart>> = HashMap::new();
+    let mut draws = 0;
+    for object in objects {
+        let parts = templates
+            .entry((object.first_index, object.index_count))
+            .or_insert_with(|| prop_template_parts(map, &table, object, meshes));
+        // The exporter prefixes the template ID to the authored locator name.
+        let (template, name) = object
+            .name
+            .split_once('/')
+            .unwrap_or(("", object.name.as_str()));
+        let children: Vec<_> = parts
+            .iter()
+            .map(|(class, slab, mesh, aabb)| {
+                (
+                    Name::new(format!("{} {class:?} slab {slab}", object.name)),
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(table.material(*slab, *class)),
+                    Transform::default(),
+                    *aabb,
+                )
+            })
+            .collect();
+        draws += children.len();
+        commands.spawn_with_children(
+            (
+                Name::new(object.name.clone()),
+                PropInstance {
+                    id: object.id,
+                    template: template.to_string(),
+                    name: name.to_string(),
+                },
+                Transform::from_matrix(prop_affine(&object.transform)),
+                Visibility::default(),
+            ),
+            children,
+        );
+    }
+    eprintln!(
+        "SKATE_PROP_INSTANCES count={} templates={} draws={draws}",
+        objects.len(),
+        templates.len()
+    );
+    objects.len()
+}
+
+// ---------------------------------------------------------------------------
 // Validation and collision
 //
 // Everything below is carried over unchanged. Physics was validated against this
