@@ -77,7 +77,7 @@ impl TriggerTrackOptions {
 }
 
 /// `sdk.triggers.configure`: the query-cylinder constants (retail: radius
-/// 0.34, length scale 0.5, length pad 0.05, top pad 0.02). Omitted fields keep
+/// 0.34, length scale 0.5, length pad 0.05, foot pad 0.02). Omitted fields keep
 /// the retail value; `nil` options restore all of them.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -89,12 +89,12 @@ pub struct TriggerShapeOptions {
     #[serde(default)]
     pub length_pad: Option<f32>,
     #[serde(default)]
-    pub top_pad: Option<f32>,
+    pub foot_pad: Option<f32>,
 }
 
 impl TriggerShapeOptions {
     pub fn validate(&self) -> bool {
-        [self.radius, self.length_scale, self.length_pad, self.top_pad]
+        [self.radius, self.length_scale, self.length_pad, self.foot_pad]
             .iter().flatten().all(|v| v.is_finite() && v.abs() <= 100.)
             && self.radius.is_none_or(|r| r >= 0.)
     }

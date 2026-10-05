@@ -11,22 +11,42 @@ fn yawed(center: [f32; 3], half: [f32; 3], yaw: f32) -> OrientedBox {
 
 #[test]
 fn retail_query_cylinder_from_three_points() {
-    // Points 1.8 m apart on the vertical: half-height 0.5*1.8+0.05, top 2 cm above the top point.
-    let c = QueryShape::RETAIL.cylinder([0., 1.8, 0.], [0., 0., 0.], [0., 0., 0.]).unwrap();
+    // A standing skater as the recomp measured it: feet on the ground, head 1.62 m
+    // and hips 0.98 m above. Half-height 0.5*1.62+0.05; 2 cm below the feet to 8 cm
+    // above the head; the axis points from the hips to the feet.
+    let c = QueryShape::RETAIL.cylinder([0., 0., 0.], [0., 1.62, 0.], [0., 0.98, 0.]).unwrap();
     assert_eq!(c.radius, 0.34);
-    assert!((c.half_height - 0.95).abs() < 1e-6);
-    assert!((c.center[1] - (1.8 - 0.93)).abs() < 1e-6);
-    assert!((c.center[1] + c.half_height - 1.82).abs() < 1e-6);
-    assert!((c.center[1] - c.half_height - -0.08).abs() < 1e-5);
-    assert_eq!(c.axis, [0., 1., 0.]);
-    // The axis follows top - direction, not top - length.
-    let tilted = QueryShape::RETAIL.cylinder([1., 1., 0.], [0., 0., 0.], [0., 0., 0.]).unwrap();
-    assert!((tilted.axis[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
-    // Coincident points: world up, minimum length.
+    assert!((c.half_height - 0.86).abs() < 1e-6);
+    assert!((c.center[1] - 0.84).abs() < 1e-6);
+    assert!((c.center[1] - c.half_height - -0.02).abs() < 1e-6);
+    assert!((c.center[1] + c.half_height - 1.70).abs() < 1e-6);
+    assert_eq!(c.axis, [0., -1., 0.]);
+    // The axis follows feet - hips, not feet - head.
+    let leaning = QueryShape::RETAIL.cylinder([0., 0., 0.], [0., 1.62, 0.], [-1., 1., 0.]).unwrap();
+    assert!((leaning.axis[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    assert!((leaning.axis[1] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+    // Coincident points: straight down from the feet, minimum length.
     let point = QueryShape::RETAIL.cylinder([0., 0., 0.], [0., 0., 0.], [0., 0., 0.]).unwrap();
-    assert_eq!(point.axis, [0., 1., 0.]);
+    assert_eq!(point.axis, [0., -1., 0.]);
     assert!((point.half_height - 0.05).abs() < 1e-7);
     assert!(QueryShape::RETAIL.cylinder([f32::NAN, 0., 0.], [0.; 3], [0.; 3]).is_none());
+}
+
+#[test]
+fn query_cylinder_matches_a_recomp_sample() {
+    // The recomp's player at PCU Library (TRIGQRY 90428 ms, session trig_questions):
+    // head and hips as logged, feet rebuilt on the logged axis; the builder's
+    // output centre and axis must come back.
+    let head = [308.6950, 75.6429, -439.0241];
+    let hips = [308.6946, 74.9921, -438.9733];
+    let feet = [308.6855, 74.0002, -438.9550];
+    let c = QueryShape::RETAIL.cylinder(feet, head, hips).unwrap();
+    for (got, want) in c.center.iter().zip([308.6933, 74.8521, -438.9707]) {
+        assert!((got - want).abs() < 2e-3, "centre {:?}", c.center);
+    }
+    for (got, want) in c.axis.iter().zip([-0.0092, -0.9998, 0.0184]) {
+        assert!((got - want).abs() < 2e-3, "axis {:?}", c.axis);
+    }
 }
 
 #[test]

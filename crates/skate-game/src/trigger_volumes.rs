@@ -110,9 +110,12 @@ impl TriggerVolumes {
     }
 
     /// Active volumes in registration order: map volumes, then mod volumes.
+    /// Only groups with entity slots (Challenge) take part; retail's Stairs and
+    /// Camera groups never post enter/exit (`TriggerGroup::tracks_bodies`).
     pub(crate) fn active(&self) -> Vec<(String, OrientedBox)> {
         self.map.iter().filter(|v| self.enabled(&v.id))
             .chain(self.mods.values())
+            .filter(|v| v.group.tracks_bodies())
             .map(|v| (v.id.clone(), v.shape))
             .collect()
     }
@@ -209,18 +212,24 @@ fn reset_on_world_change(
     }
 }
 
-/// Player query cylinder from three skeleton points. The retail entity reports
-/// three points (top, length, direction) whose bones are not identified yet;
-/// we use the head body (top), and the toes' midpoint for length and direction,
-/// so the cylinder spans the skater from the feet to just above the head.
-pub(crate) fn player_cylinder(skater: &crate::physics::SkaterRuntime, shape: &QueryShape) -> Option<Cylinder> {
+/// The player's three query points, as the retail skater entity reports them
+/// (vtable +12 / +16 / +20, measured in the recomp with a hook on `82DD80B8`):
+/// the feet (the character's ground point: the animation root, which the
+/// recomp put exactly on the ground plane while standing), the head and the
+/// hips. Recomp: head 1.61-1.65 m and hips 0.97-1.00 m above the feet.
+pub(crate) fn player_points(skater: &crate::physics::SkaterRuntime) -> [[f32; 3]; 3] {
     const HEAD: usize = 1;
-    const TOES: [usize; 2] = [15, 19];
+    const HIPS: usize = 23;
     let parts = skater.skeleton.part_transforms();
     let p = |i: usize| -> [f32; 3] { let t = parts[i][3]; [t[0], t[1], t[2]] };
-    let [l, r] = TOES.map(p);
-    let feet = [(l[0] + r[0]) * 0.5, (l[1] + r[1]) * 0.5, (l[2] + r[2]) * 0.5];
-    shape.cylinder(p(HEAD), feet, feet)
+    let root = skater.animated_skeleton.roots.animation_to_world[3];
+    [[root[0], root[1], root[2]], p(HEAD), p(HIPS)]
+}
+
+/// Player query cylinder: feet to just above the head (`player_points`).
+pub(crate) fn player_cylinder(skater: &crate::physics::SkaterRuntime, shape: &QueryShape) -> Option<Cylinder> {
+    let [feet, head, hips] = player_points(skater);
+    shape.cylinder(feet, head, hips)
 }
 
 fn update(

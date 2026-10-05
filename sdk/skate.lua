@@ -412,7 +412,7 @@ function sdk.triggers.set_enabled(id, enabled) end
 function sdk.triggers.track(key, options) end
 ---@param key string
 function sdk.triggers.untrack(key) end
----@param options? {radius?:number, length_scale?:number, length_pad?:number, top_pad?:number} nil restores retail (0.34, 0.5, 0.05, 0.02)
+---@param options? {radius?:number, length_scale?:number, length_pad?:number, foot_pad?:number} nil restores retail (0.34, 0.5, 0.05, 0.02)
 function sdk.triggers.configure(options) end
 
 ---@param key string mod-owned id; at most 2 per mod, 4 total

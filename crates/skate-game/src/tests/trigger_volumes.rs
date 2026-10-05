@@ -9,8 +9,10 @@ fn record_file(volumes: &[(&str, [f32; 3], [f32; 3])]) -> Vec<TriggerVolumeRecor
     parse(&serde_json::to_vec(&doc).unwrap()).unwrap().volumes
 }
 
+/// A standing skater as the recomp measured one: feet on the ground, head 1.62 m
+/// and hips 0.98 m above them.
 fn standing(x: f32, z: f32) -> Cylinder {
-    QueryShape::RETAIL.cylinder([x, 1.7, z], [x, 0., z], [x, 0., z]).unwrap()
+    QueryShape::RETAIL.cylinder([x, 0., z], [x, 1.62, z], [x, 0.98, z]).unwrap()
 }
 
 fn app(volumes: TriggerVolumes) -> App {
@@ -89,6 +91,23 @@ fn mods_add_volumes_and_switch_map_volumes_off_until_they_go_away() {
 }
 
 #[test]
+fn only_challenge_volumes_track_bodies() {
+    // Retail's Stairs and Camera groups are built without entity slots: their
+    // volumes are listed but never post enter/exit.
+    let rows: Vec<_> = [("challenge", "a"), ("stairs", "b"), ("camera", "c")].iter().map(|(group, id)| serde_json::json!({
+        "id": id, "name": id, "group": group,
+        "shape": {"kind": "box", "center": [0., 1., 0.], "half_extents": [2., 1., 2.]}})).collect();
+    let doc = serde_json::json!({"format": "skate3rust-trigger-volumes", "version": 1, "volumes": rows});
+    let records = parse(&serde_json::to_vec(&doc).unwrap()).unwrap().volumes;
+    let volumes = TriggerVolumes::from_records(&records, "test".into()).unwrap();
+    assert_eq!(volumes.map.len(), 3);
+    let mut app = app(volumes);
+    app.world_mut().resource_mut::<TriggerBodies>().bodies.insert(PLAYER.into(), standing(0., 0.));
+    app.update();
+    assert_eq!(drain::<TriggerEntered>(&mut app), vec![TriggerEntered { body: PLAYER.into(), volume: "a".into() }]);
+}
+
+#[test]
 fn map_ids_cannot_use_the_mod_prefix() {
     assert!(TriggerVolumes::from_records(&record_file(&[("mod:x:y", [0.; 3], [1.; 3])]), "t".into()).is_err());
 }
@@ -113,7 +132,7 @@ fn skateschool_start_is_inside_the_hub_and_reset_volumes() {
     assert_eq!(volumes.map.len(), 6);
     let mut app = app(volumes);
     app.world_mut().resource_mut::<TriggerBodies>().bodies
-        .insert(PLAYER.into(), QueryShape::RETAIL.cylinder([-31.2822, 1.8, -31.5035], [-31.2822, 0.112, -31.5035], [-31.2822, 0.112, -31.5035]).unwrap());
+        .insert(PLAYER.into(), QueryShape::RETAIL.cylinder([-31.2822, 0.112, -31.5035], [-31.2822, 1.732, -31.5035], [-31.2822, 1.092, -31.5035]).unwrap());
     app.update();
     let names: Vec<String> = drain::<TriggerEntered>(&mut app).iter()
         .map(|e| app.world().resource::<TriggerVolumes>().get(&e.volume).unwrap().name.clone()).collect();

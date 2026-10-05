@@ -3,10 +3,13 @@
 //!
 //! TU3 evidence (reference only; notes `triggers-volumes-re.md`):
 //! - Each group update (`82DD70E8`) gives every tracked entity a query
-//!   **cylinder** (`82DD80B8` → `82ADA4E0`, RW volume type 5): radius 0.34 m,
-//!   axis along `top - direction`, half-height `0.5·|length - top| + 0.05`,
-//!   centred `half-height - 0.02` below `top` (three points the entity
-//!   reports; which body points those are is not identified yet).
+//!   **cylinder** (`82DD80B8` → `82ADA4E0`, RW volume type 5) from three points
+//!   the skater entity reports (vtable +12 / +16 / +20): its **feet** (ground
+//!   point), **head** and **hips**. Measured in the recomp: head 1.61-1.65 m and
+//!   hips 0.97-1.00 m above the feet for a standing skater, feet on the ground
+//!   plane. Radius 0.34 m, axis `feet - hips` (pointing down), half-height
+//!   `0.5·|head - feet| + 0.05`, centred `half-height - 0.02` above the feet:
+//!   the cylinder runs from 2 cm below the feet to 8 cm above the head.
 //! - Candidates come from an AABB tree of the volumes' bounds, then each one is
 //!   tested against the volume's real shape (`82DD8498` → `82AD3CD8`, RW
 //!   volume-volume overlap, tolerance 0): the oriented box linked from the
@@ -93,26 +96,28 @@ pub struct QueryShape {
     pub radius: f32,
     pub length_scale: f32,
     pub length_pad: f32,
-    pub top_pad: f32,
+    /// How far the cylinder's end reaches past the feet point.
+    pub foot_pad: f32,
 }
 
 impl QueryShape {
-    pub const RETAIL: Self = Self { radius: 0.34, length_scale: 0.5, length_pad: 0.05, top_pad: 0.02 };
+    pub const RETAIL: Self = Self { radius: 0.34, length_scale: 0.5, length_pad: 0.05, foot_pad: 0.02 };
 
-    /// `top` is where the cylinder ends (plus `top_pad`), `direction` sets the
-    /// axis (`top - direction`, world up when degenerate) and `length` its
-    /// length (`|length - top|`).
-    pub fn cylinder(&self, top: Point, length: Point, direction: Point) -> Option<Cylinder> {
-        let [t, l, c] = [top, length, direction].map(|p| p.map(f64::from));
-        if !t.iter().chain(l.iter()).chain(c.iter()).all(|v| v.is_finite()) {
+    /// The retail entity's points: `feet` anchors the cylinder (one end lies
+    /// `foot_pad` past it), the axis runs `feet - hips` (straight down when
+    /// they coincide; retail would normalise a zero vector) and the length
+    /// follows `|head - feet|`, so the cylinder reaches past the head.
+    pub fn cylinder(&self, feet: Point, head: Point, hips: Point) -> Option<Cylinder> {
+        let [f, h, c] = [feet, head, hips].map(|p| p.map(f64::from));
+        if !f.iter().chain(h.iter()).chain(c.iter()).all(|v| v.is_finite()) {
             return None;
         }
-        let up = sub(t, c);
-        let len = dot(up, up).sqrt();
-        let axis = if len > 1e-6 { scale(up, 1. / len) } else { [0., 1., 0.] };
-        let span = dot(sub(l, t), sub(l, t)).sqrt();
+        let down = sub(f, c);
+        let len = dot(down, down).sqrt();
+        let axis = if len > 1e-6 { scale(down, 1. / len) } else { [0., -1., 0.] };
+        let span = dot(sub(h, f), sub(h, f)).sqrt();
         let half = f64::from(self.length_scale) * span + f64::from(self.length_pad);
-        let center = sub(t, scale(axis, half - f64::from(self.top_pad)));
+        let center = sub(f, scale(axis, half - f64::from(self.foot_pad)));
         Some(Cylinder {
             center: center.map(|v| v as f32),
             axis: axis.map(|v| v as f32),

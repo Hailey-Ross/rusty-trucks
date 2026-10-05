@@ -557,6 +557,10 @@ mod air_tests;
 #[path = "tests/wipeout_playback.rs"]
 mod wipeout_tests;
 
+#[cfg(test)]
+#[path = "tests/trigger_points.rs"]
+mod trigger_points_tests;
+
 fn present(
     physics: Res<GamePhysics>,
     history: Res<crate::presentation::Presentation>,

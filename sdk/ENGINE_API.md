@@ -98,9 +98,16 @@ see `docs/hails-additions/24-trigger-volumes.md`).
   until the same mod switches it on or stops.
 - `sdk.triggers.track(key, {radius=0.34, length=0})` follows one of the mod's
   physics bodies (body id `mod:<mod>:<key>`, max 16); `sdk.triggers.untrack(key)`.
+  The cylinder stands on the body's position (like the player's feet) and
+  reaches `length` metres up, plus retail's pads (2 cm below, 8 cm above).
   Positions are taken after the dynamics step, so their events lag one tick.
-- `sdk.triggers.configure({radius=, length_scale=, length_pad=, top_pad=})` changes
+- `sdk.triggers.configure({radius=, length_scale=, length_pad=, foot_pad=})` changes
   the query-cylinder constants (one mod at a time); `configure()` restores retail.
+  The player's cylinder is built like retail's skater from its feet (ground
+  point), head and hips: radius 0.34, half-height `length_scale * |head - feet| +
+  length_pad` (0.5, 0.05), one end `foot_pad` (0.02) below the feet.
+- Only `challenge` volumes post `trigger_entered` / `trigger_exited`; retail's
+  `stairs` and `camera` groups have no tracked bodies (they are listed, not tracked).
 
 Removing a volume never posts an exit (retail); a body that stops being tracked
 exits everything it was in. Everything a mod set is undone when it stops; mod

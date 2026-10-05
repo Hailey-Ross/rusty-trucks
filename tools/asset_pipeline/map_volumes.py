@@ -8,8 +8,10 @@ narrow phase 82DD8498 -> 82AD3CD8.
 
 Volume set: +0 magic 0x46DB86E5, +4 count, +8 count, +12 items, +16 strings.
 Item (240 bytes): +0 mat4, +64 AABB min, +80 AABB max, +176 u64 link GUID,
-+184 u64 instance id (the id challenge scripts use), +220 index of the item's
-0x00EB000A link record, +224 name offset (from the set start).
++184 u64 instance id (the id challenge scripts use), +216 u32 group word
+(the trigger manager 82DD7C58 adds the item to Stairs for 1, Camera for 2 and
+Challenge otherwise), +220 index of the item's 0x00EB000A link record, +224
+name offset (from the set start).
 Link record: +0 index of the box volume, +12 index of the mesh volume.
 Box volume (RW collision volume, 0x00080001): +0 3x3 rotation rows (the box's
 local axes in world space), +48 centre, +64 type (4 = box), +68 half extents,
@@ -36,9 +38,15 @@ RW_VOLUME = 0x00080001
 SET_MAGIC = 0x46DB86E5
 ITEM_SIZE = 240
 BOX = 4
-# All world-stream volumes went to the trigger manager's Challenge group in
-# the recomp trace (19/19 AddVolume calls, notes triggers-volumes-re.md §7).
+# Item +216 picks the trigger manager group (82DD7C58). Every shipped item
+# (11 world, 2,549 missions.big) holds 0 = Challenge, and the recomp trace put
+# every AddVolume in Challenge (notes triggers-volumes-re.md §7, §9).
+GROUPS = {1: 'stairs', 2: 'camera'}
 DEFAULT_GROUP = 'challenge'
+
+
+def group_of(word):
+    return GROUPS.get(word, DEFAULT_GROUP)
 
 
 def _sections(raw):
@@ -126,7 +134,7 @@ def arena_volumes(raw):
             if any(a > b for a, b in zip(lo, hi)):
                 raise ValueError('Inverted volume bounds')
             link_guid, instance_id = struct.unpack_from('>QQ', raw, at + 176)
-            link, name_offset = struct.unpack_from('>II', raw, at + 220)
+            group_word, link, name_offset = struct.unpack_from('>III', raw, at + 216)
             name = _cstring(raw, base + name_offset, base + size)
             if not 0 <= link < len(sections) or sections[link][5] != LINK_RECORD:
                 raise ValueError(f'{name}: item link is not a volume link record')
@@ -137,7 +145,7 @@ def arena_volumes(raw):
             result.append(dict(
                 id='%016x' % instance_id, name=short_name(name), full_name=name,
                 instance_id='%016x' % instance_id, link_guid='%016x' % link_guid,
-                group=DEFAULT_GROUP, shape=shape, aabb=dict(min=lo, max=hi)))
+                group=group_of(group_word), shape=shape, aabb=dict(min=lo, max=hi)))
     return result
 
 
