@@ -359,6 +359,9 @@ SunJay, Dumbad, RenderWareGavin, Tuukkas); recomp: skate3recomp / rexglue / Xeni
 
 Plan line for doc 26: "peds M3 navigation: done (NavPower navmesh decoded, retail NoRoad wander, avoidance;
 crosswalk rule as mod option since retail never uses it)". Open-questions additions: items 1-5 below.
+
+Player memory agrees with the code (user, 2026-10-05): "I don't remember them using crosswalks in the retail game".
+
 ## Change: milestone V0, vehicle data
 
 What retail ships, read from the disc and the code for this milestone (details and formats:
