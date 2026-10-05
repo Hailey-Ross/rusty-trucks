@@ -34,8 +34,13 @@ truth"); the recomp only validates. Addresses are TU3; no game code or data is c
   (FollowingLane, PassingIntersection, Impatience, ChangingLane, PullingOver, StayingParked) with a speed planner
   (`sub_82C3FA08`) and a manoeuvre decider (`sub_82C41CD0`). Lights: green 7 or 8 s, amber 1 s, all-red 0.5 s per
   direction. In the recomp: median 5.8 m/s, p90 14.9 m/s; cars stop and queue for a skater in the lane; a skitched
-  car speeds up to about 16.8 m/s and brakes at about 6.2 m/s² when let go. The design pass for traffic is in
-  progress; its milestones and any data requests are added here when done.
+  car speeds up to about 16.8 m/s. Cars are kinematic (the AI integrates speed along a lane: `+3408` commanded
+  acceleration, `+3412` speed, `sub_82C3FF38`); they spawn in an 80 to 100 m ring (2 tries, at most 1 spawn per
+  tick) and cull at 110 m; no traffic spawns in zombie mode or online; there are no patrol cars in the Skate 3
+  districts. The horn decider `sub_82C40660` writes the horn state the audio reads. Skitching is a per-frame latch on
+  the car (`+4403` bits 0x80 / 0x40, `sub_82C34648`, `sub_82C34CD0`); our `skate-core` already has the skater's
+  Skitching state (104). 18 car recipes with colour palettes in `livingworld_models`. Details:
+  [`living-world/vehicles-design.md`](living-world/vehicles-design.md).
 - **Online:** nothing ambient spawns (census spawn pass and AI count gated by the online flags; culling runs).
 - **Free Play** (mode 3, `sub_82706B40`): Traffic / Pedestrians / A.I. Skaters options scale the census caps
   (`sub_826B7010`, `sub_826B8A28`) and switch the AI skaters (`sub_8245C548`); career free roam has no switch.
@@ -80,8 +85,10 @@ Files: `crates/skate-data/src/aipath.rs`, `crates/skate-data/tests/aipath_data.r
 Shared core: population engine (`skate-core::living_world`, seeded, Free Play scaling, slots shared with online
 players), crowd renderer and kinematic proxies, `sdk.living_world`. NPC skaters: replay tier, AI, simulated tier.
 Pedestrians: body and animation, navigation, behaviour runtime, skater interaction, plugins and hand props.
-Traffic: data, driving (lanes, junctions, lights, queuing, parked cars), bodies and collisions, **skitching** (grab,
-the car's skitch state, the skater's side, mod hooks), audio publishing into #32. Then Free Play, zombie mode and the
+Traffic (V0 to V8): data (vehicle tables, 18 car GLBs and tints, lanes / junctions / signals), road graph and signal
+clock, vehicle census, cars on screen with `TrafficAudio`, the driver (planner, queues, horns, skids, manoeuvres,
+parking, alarm), car colliders in the skater solve (roof landings, bails), **skitching** (grab conditions, the car's
+skitch state, the skater's side, mod hooks, fixture tests from two recorded sessions), the vehicle mod surface. Then Free Play, zombie mode and the
 standing pros, multiplayer (retail default: nothing online; opt-in host-authoritative). The PR description keeps the
 checklist.
 
@@ -107,4 +114,6 @@ described, not copied.
   ATMs, fountains are placed objects, not waypoint streams).
 - Ped rig: the converted models carry 39 bones, the animation bank 50; matched by name in the ped-body milestone.
 - How retail picks among shared-look entities (`sub_826B8B88`).
-- Traffic: the design pass is running.
+- Traffic: lane snapping at spawn, the census +144 reader, junction connector / approach fields and which light
+  each approach uses, the skid flag writer, the skitch grab / attach / release numbers, the vehicle bail thresholds.
+  New recomp hooks (skitch, lights, connectors, vehicle bails) and a few short play sessions will measure them.
