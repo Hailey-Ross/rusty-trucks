@@ -5,6 +5,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release to build for and attach the package to (empty: a branch build)'
+        required: false
+        default: ''
 permissions:
   contents: read
 env:
@@ -18,7 +23,7 @@ jobs:
     env:
       SCCACHE_GHA_ENABLED: "true"
     concurrency:
-      group: windows-build-${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+      group: windows-build-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +51,7 @@ jobs:
       - name: Build Windows package
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || 'experimental' }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || 'experimental' }}
           RUSTC_WRAPPER: sccache
         run: ./scripts/Build-Release.ps1
       - name: Report compiler cache hits
@@ -63,7 +68,7 @@ jobs:
             target/release.json
   publish:
     needs: windows
-    if: github.event_name == 'release' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/skyline-driving-update' || (github.repository == 'Hailey-Ross/rusty-trucks' && github.ref == 'refs/heads/hails-additions')
+    if: github.event_name == 'release' || inputs.release_tag != '' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/skyline-driving-update' || (github.repository == 'Hailey-Ross/rusty-trucks' && github.ref == 'refs/heads/hails-additions')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -77,23 +82,23 @@ jobs:
           name: skate3rust-windows-x64
           path: target
       - name: Publish rolling experimental
-        if: github.event_name != 'release' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'release' && inputs.release_tag == '' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python tools/publish_experimental.py --directory target
       - name: Publish branch release
-        if: github.event_name != 'release' && github.ref == 'refs/heads/skyline-driving-update'
+        if: github.event_name != 'release' && inputs.release_tag == '' && github.ref == 'refs/heads/skyline-driving-update'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python tools/publish_branch.py --directory target --branch skyline-driving-update
       - name: Publish fork branch release
-        if: github.event_name != 'release' && github.repository == 'Hailey-Ross/rusty-trucks' && github.ref == 'refs/heads/hails-additions'
+        if: github.event_name != 'release' && inputs.release_tag == '' && github.repository == 'Hailey-Ross/rusty-trucks' && github.ref == 'refs/heads/hails-additions'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python tools/publish_branch.py --directory target --branch hails-additions
       - name: Attach numbered release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
         run: gh release upload "$RELEASE_TAG" target/skate3rust-windows-x64.zip target/skate3rust-windows-x64.zip.sha256 target/release.json --clobber
