@@ -10,8 +10,15 @@
 //!   `PedestrianSkeletonPres.abin`, stepped once per population world tick (1/60 s, `clock::RETAIL_TICK_HZ`) so a ped's state is a
 //!   function of its spawn record and the population tick. Root motion moves the ped; it is
 //!   snapped to the ground below (a line query, like the audio's ground material probe).
-//!   Without navigation (M3) a ped follows [`TestPath`]: idle, start, walk a few metres straight,
-//!   stop, idle, turn round, repeat (placeholder).
+//!   The intent comes from navigation (M3, below); on a map without a navmesh a ped follows
+//!   [`TestPath`] (idle, walk a few metres, stop, turn round).
+//! - **Navigation** (milestone M3): the district's NavPower navmesh (`private/living_world/
+//!   navmesh.bin`, [`PedData::nav`]) and retail's `NoRoadWander` goal
+//!   (`skate_core::living_world::peds::wander`: probe fans 40 m / 10 m, A* + funnel corners,
+//!   re-target on arrival), ped-to-ped avoidance and separation, every step kept on walkable
+//!   polygons. Retail ambient peds never use crosswalks (the road branch of `Pedestrian.xml` is
+//!   unreachable in TU3); [`PedNavSettings::crosswalk`] = `WalkSignal` is a mod option that waits
+//!   for the walk light of the shared traffic signal clock.
 //! - **Skinning**: the GLB's 39 joints bind to the 50-bone rig by name (all match, data test);
 //!   bones the clips do not carry (fingers, face) follow their rig parent with the GLB's bind
 //!   offset.
@@ -31,7 +38,8 @@ use super::{LivingWorldDespawn, LivingWorldSettings, LivingWorldSpawn, Populatio
 use crate::world_audio::PedAudio;
 use bevy::prelude::*;
 use skate_core::living_world::peds::anim::{PedClip, PedClips, TestPath};
-use skate_core::living_world::peds::{Locomotion, PedAnimPlayer, PedCatalog, PedEvaluator, PedOverrides, PedRig};
+use skate_core::living_world::peds::wander::{NoSignals, constrain_step, crosswalk_ok, separation_ok};
+use skate_core::living_world::peds::{CrosswalkRule, Locomotion, NavMesh, NavRules, Neighbour, PedAnimPlayer, PedCatalog, PedEvaluator, PedNav, PedOverrides, PedRig, WalkSignals, WanderParams};
 use skate_core::living_world::{Decision, DespawnReason, Kind, LivingWorldId, SpawnChoice};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -50,6 +58,12 @@ pub(crate) struct PedData {
     pub rig: Arc<PedRig>,
     pub clips: Arc<BTreeMap<String, PedClip>>,
     pub status: String,
+    /// The district's navmesh (M3); `None` on maps without one (peds use [`TestPath`]).
+    pub nav: Option<Arc<NavMesh>>,
+    /// The navmesh records as loaded (rebuilt with new [`NavRules`] when a mod changes them).
+    pub nav_input: Option<Arc<skate_core::living_world::peds::NavMeshInput>>,
+    /// Signalled junction arms of the loaded roads (mod crosswalk rule).
+    pub arms: Arc<Vec<(usize, u8, [f32; 3])>>,
     loaded_for: Option<(String, u64)>,
 }
 
@@ -65,6 +79,23 @@ impl PedData {
 
     pub(crate) fn ready(&self) -> bool {
         !self.rig.names.is_empty() && !self.catalog.categories.is_empty()
+    }
+
+    /// Read the district's navmesh (M3) from `navmesh.bin` (none: peds use the test path).
+    pub(crate) fn load_nav(&mut self, asset_root: &std::path::Path, district: &str, rules: &NavRules) {
+        let input = std::fs::read(asset_root.join(skate_data::ped_nav::NAVMESH))
+            .map_err(|e| e.to_string())
+            .and_then(|b| skate_data::ped_nav::district(&b, district));
+        match input {
+            Ok(Some(input)) => {
+                let mesh = NavMesh::build(&input, rules.clone());
+                self.status.push_str(&format!(", navmesh {} polygons", mesh.polys.len()));
+                self.nav = Some(Arc::new(mesh));
+                self.nav_input = Some(Arc::new(input));
+            }
+            Ok(None) => self.status.push_str(", no navmesh for this map"),
+            Err(e) => self.status.push_str(&format!(", navmesh: {e}")),
+        }
     }
 
     /// Read the tables and the bank, decode every clip an animation set names.
@@ -88,7 +119,7 @@ impl PedData {
                     }
                 }
                 let status = format!("peds: {} categories, {} sets, {} clips ({} missing, {} unresolved remaps)", t.catalog.categories.len(), t.anim_sets.len(), clips.len(), failed, t.unresolved);
-                Self { catalog: Arc::new(t.catalog), anim_sets: Arc::new(t.anim_sets), rig: Arc::new(bank.rig), clips: Arc::new(clips), status, loaded_for: None }
+                Self { catalog: Arc::new(t.catalog), anim_sets: Arc::new(t.anim_sets), rig: Arc::new(bank.rig), clips: Arc::new(clips), status, loaded_for: None, ..Self::default() }
             }
             (t, b) => Self { status: format!("peds: no body data ({})", [t.err(), b.err()].into_iter().flatten().collect::<Vec<_>>().join("; ")), ..Self::default() },
         }
@@ -119,11 +150,25 @@ pub(crate) struct Pedestrian {
     pub tint_b: [f32; 4],
 }
 
-/// The simulated body: animation player, placeholder path, position and heading.
+/// Navigation settings (mod-facing; default = retail): wander parameters, which navmesh areas
+/// peds may use and what they cost, and the crosswalk rule (retail `Off`).
+#[derive(Resource, Default, Clone, PartialEq)]
+pub(crate) struct PedNavSettings {
+    pub wander: WanderParams,
+    pub rules: NavRules,
+    pub crosswalk: CrosswalkRule,
+}
+
+/// The simulated body: animation player, navigation, position and heading.
 #[derive(Component, Clone, Debug)]
 pub(crate) struct PedBody {
     pub player: PedAnimPlayer,
+    /// Placeholder intent source on maps without a navmesh.
     pub path: TestPath,
+    /// Navigation state (M3); a mod route goes in `nav.route`.
+    pub nav: PedNav,
+    /// Seconds the body's steps have been refused (walls, other peds, the crosswalk rule).
+    pub blocked: f32,
     pub position: Vec3,
     pub heading: f32,
     /// Console ticks stepped since the spawn.
@@ -162,13 +207,34 @@ fn ground(physics: Option<&crate::physics::GamePhysics>, at: Vec3) -> Option<f32
     }
 }
 
-fn load_ped_data(config: Option<Res<crate::config::Config>>, map: Option<Res<crate::map_transition::CurrentMap>>, mut data: ResMut<PedData>, audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>, settings: Res<LivingWorldSettings>) {
+#[allow(clippy::too_many_arguments)]
+fn load_ped_data(
+    config: Option<Res<crate::config::Config>>,
+    map: Option<Res<crate::map_transition::CurrentMap>>,
+    mut data: ResMut<PedData>,
+    audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
+    settings: Res<LivingWorldSettings>,
+    nav: Res<PedNavSettings>,
+    state: Res<PopulationState>,
+) {
+    // A mod changed the nav rules: rebuild the mesh from the loaded records.
+    if data.nav.as_ref().is_some_and(|m| m.rules != nav.rules) {
+        if let Some(input) = data.nav_input.clone() {
+            data.nav = Some(Arc::new(NavMesh::build(&input, nav.rules.clone())));
+        }
+    }
+    if data.arms.is_empty() {
+        if let Some(roads) = state.roads.as_ref() {
+            data.arms = Arc::new(skate_core::living_world::peds::crosswalk::signalled_arms(roads));
+        }
+    }
     let (Some(config), Some(map)) = (config, map) else { return };
     let key = (map.name.clone(), map.generation);
     if data.loaded_for.as_ref() == Some(&key) {
         return;
     }
     let mut loaded = PedData::load(&config.asset_root);
+    loaded.load_nav(&config.asset_root, &map.name, &nav.rules);
     info!("LIVING_WORLD {}", loaded.status);
     loaded.loaded_for = Some(key);
     if let Some(mut audio) = audio {
@@ -232,7 +298,10 @@ pub(crate) fn apply_ped_records(
             tint_a: look.tint_a,
             tint_b: look.tint_b,
         };
-        let body = PedBody { player, path: TestPath::new(s.seed), position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
+        if let Some(p) = data.nav.as_ref().and_then(|m| m.locate(at.to_array())) {
+            at = Vec3::from_array(p.position);
+        }
+        let body = PedBody { player, path: TestPath::new(s.seed), nav: PedNav::default(), blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
         let e = commands
             .spawn((
                 Name::new(format!("Pedestrian {} ({})", s.id.serial, look.recipe)),
@@ -265,10 +334,15 @@ pub(crate) fn release_rejected(mut rejected: ResMut<PedRejected>, mut state: Res
     }
 }
 
-/// Step every ped to the population tick: animation, root motion, ground, audio, position.
+/// Step every ped to the population tick: navigation (M3), animation, root motion kept on the
+/// navmesh and apart from other peds, ground, audio, position. Peds step in id order against a
+/// shared position list, so the result does not depend on query order (host-deterministic).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn advance_peds(
     mut state: ResMut<PopulationState>,
     data: Res<PedData>,
+    nav_settings: Res<PedNavSettings>,
+    traffic: Option<Res<super::vehicles::TrafficState>>,
     physics: Option<Res<crate::physics::GamePhysics>>,
     mut peds: Query<(&Pedestrian, &mut PedBody, &mut Transform, &mut PedAudio)>,
     mut events: MessageWriter<PedEvent>,
@@ -277,15 +351,55 @@ pub(crate) fn advance_peds(
     let dt = tick_seconds(state.world.clock().hz);
     let mut list: Vec<_> = peds.iter_mut().collect();
     list.sort_by_key(|(p, ..)| p.id);
-    for (ped, mut body, mut transform, mut audio) in list {
+    let mut neighbours: Vec<Neighbour> = list.iter().map(|(p, b, ..)| Neighbour { order: id_order(p.id), position: b.position.to_array() }).collect();
+    let clock = traffic.as_ref().and_then(|t| t.clock.as_ref());
+    let road_signals = clock.map(|clock| skate_core::living_world::peds::crosswalk::RoadWalkSignals { arms: &data.arms, clock, radius: 20.0 });
+    let signals: &dyn WalkSignals = match &road_signals {
+        Some(s) => s,
+        None => &NoSignals,
+    };
+    for (k, (ped, mut body, mut transform, mut audio)) in list.into_iter().enumerate() {
         let Some(set) = data.anim_sets.get(&ped.anim_set).or_else(|| data.anim_sets.get("default")) else { continue };
         let target = tick.saturating_sub(ped.spawn_tick);
         let body = &mut *body;
+        let me = id_order(ped.id);
         while body.ticks < target {
-            body.player.intent = body.path.intent(dt, body.player.state);
+            let mut turn = 0.0;
+            match data.nav.as_deref() {
+                Some(mesh) => {
+                    let out = body.nav.step(mesh, &nav_settings.wander, nav_settings.crosswalk, signals, me, body.position.to_array(), body.heading, body.player.state, &neighbours, dt);
+                    body.player.intent = out.intent;
+                    turn = out.turn;
+                }
+                None => body.player.intent = body.path.intent(dt, body.player.state),
+            }
             let out = body.player.step(dt, set, &*data);
+            body.heading += turn;
             let rotation = Quat::from_rotation_y(body.heading);
-            body.position += rotation * Vec3::from_array(out.root.translation);
+            let to = body.position + rotation * Vec3::from_array(out.root.translation);
+            match data.nav.as_deref() {
+                Some(mesh) => {
+                    let (next, on_mesh) = constrain_step(mesh, body.position.to_array(), to.to_array());
+                    let moving = (to - body.position).length_squared() > 1e-10;
+                    let ok = on_mesh
+                        && separation_ok(body.position.to_array(), next, me, &neighbours, mesh.agent[1])
+                        && crosswalk_ok(mesh, nav_settings.crosswalk, signals, body.position.to_array(), next);
+                    if ok {
+                        body.position = Vec3::from_array(next);
+                        body.blocked = 0.0;
+                    } else if moving {
+                        body.blocked += dt;
+                        if body.blocked > nav_settings.wander.yield_patience {
+                            // Stuck against a wall / ped / red light: pick another way (short fan).
+                            body.blocked = 0.0;
+                            body.nav.skip_long = true;
+                            body.nav.corners.clear();
+                        }
+                    }
+                    neighbours[k].position = body.position.to_array();
+                }
+                None => body.position = to,
+            }
             body.heading += out.root.yaw;
             body.feet_down = out.feet_down;
             body.body_fall = out.body_fall;
@@ -303,6 +417,11 @@ pub(crate) fn advance_peds(
         audio.body_fall = body.body_fall;
         state.world.update_position(ped.id, body.position.to_array());
     }
+}
+
+/// A stable ordering key for a ped (avoidance priority: lower first).
+pub(crate) fn id_order(id: LivingWorldId) -> u64 {
+    id.serial as u64
 }
 
 /// The look of one ped (render side).
@@ -482,6 +601,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<PedLooks>()
         .init_resource::<PedIndex>()
         .init_resource::<PedRejected>()
+        .init_resource::<PedNavSettings>()
         .add_message::<PedEvent>()
         .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, advance_peds, log_ped_readout).chain().after(super::step_population))
         .add_systems(Update, (present_ped_looks, present_ped_pose).chain().after(crate::app::FrameSet::Animation));

@@ -1,5 +1,7 @@
 //! Pedestrian body (doc 26, peds milestone M2): which entity / model a census spawn becomes, the
-//! ped animation player and the foot events the audio reads. Pure and engine-independent (no
+//! ped animation player and the foot events the audio reads; navigation (milestone M3): the
+//! NavPower navmesh (`nav`), retail's wander goal and avoidance (`wander`), the mod crosswalk
+//! rule's walk lights (`crosswalk`). Pure and engine-independent (no
 //! ECS, no I/O); `skate-data::ped_anim` fills the data types from the user's export, the game
 //! (`skate-game::living_world::peds`) hosts it.
 //!
@@ -20,9 +22,14 @@
 
 pub mod anim;
 pub mod choice;
+pub mod crosswalk;
+pub mod nav;
+pub mod wander;
 
 pub use anim::{Locomotion, PedAnimPlayer, PedAnimSet, PedClip, PedEvaluator, PedFrame, PedRig};
 pub use choice::{PedCatalog, PedEntity, PedLook, PedModel, PedOverrides};
+pub use nav::{NavMesh, NavMeshInput, NavPoint, NavPolyInput, NavRules};
+pub use wander::{CrosswalkRule, Fan, NavOutput, NavWait, Neighbour, PedNav, PedRoute, WalkSignals, WanderParams};
 
 /// Map one rig's bone names onto another's by name (case-insensitive). Returns, per `target`
 /// bone, the index in `source` (or `None`), plus the source bones no target uses.
@@ -32,5 +39,7 @@ pub fn match_bones(target: &[String], source: &[String]) -> (Vec<Option<usize>>,
     (map, unused)
 }
 
+#[cfg(test)]
+mod nav_tests;
 #[cfg(test)]
 mod tests;

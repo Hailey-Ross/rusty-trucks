@@ -99,6 +99,7 @@ fn app(hz: f32) -> App {
         .init_resource::<PedLooks>()
         .init_resource::<PedIndex>()
         .init_resource::<PedRejected>()
+        .init_resource::<PedNavSettings>()
         .init_resource::<Seen>()
         .add_message::<LivingWorldSpawn>()
         .add_message::<LivingWorldDespawn>()
@@ -176,7 +177,7 @@ fn living_world_ped_motion_follows_from_the_record_and_tick_at_any_frame_rate() 
         let set = &d.anim_sets["default"];
         let mut body = PedBody {
             player: PedAnimPlayer::new(set, 77).unwrap(),
-            path: skate_core::living_world::peds::anim::TestPath::new(77),
+            path: skate_core::living_world::peds::anim::TestPath::new(77), nav: Default::default(), blocked: 0.0,
             position: Vec3::new(3.0, 0.0, 10.0),
             heading: 0.5,
             ticks: 0,
@@ -244,7 +245,7 @@ fn living_world_ped_mod_overrides_and_render_helpers() {
     let d = data();
     let body = PedBody {
         player: PedAnimPlayer::new(&d.anim_sets["default"], 1).unwrap(),
-        path: skate_core::living_world::peds::anim::TestPath::new(1),
+        path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0,
         position: Vec3::ZERO,
         heading: 0.0,
         ticks: 0,
@@ -272,7 +273,7 @@ fn living_world_ped_data_loads_from_the_export() {
     assert!(d.clips.len() > 50);
     let look = d.catalog.choose("aletown", 1, &PedOverrides::default()).unwrap();
     let set = &d.anim_sets[&look.anim_set];
-    let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
+    let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
     let g = ped_globals(&d.rig, &body, &d, 0.0, &[]).unwrap();
     assert!((0.8..1.1).contains(&g[1].w_axis.y), "hips height {}", g[1].w_axis.y);
 }
@@ -286,7 +287,7 @@ fn living_world_ped_pose_dump_for_a_render_check() {
     let Some(root) = std::env::split_paths(&raw).find(|r| r.join(skate_data::ped_anim::PED_BANK).exists() && r.join("private/living_world/tables.json").exists()) else { return };
     let d = PedData::load(&root);
     let set = &d.anim_sets["default"];
-    let mut body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
+    let mut body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
     body.player.intent = skate_core::living_world::peds::anim::Intent::Walk;
     let mut poses = Vec::new();
     for t in 0..180 {
@@ -299,4 +300,84 @@ fn living_world_ped_pose_dump_for_a_render_check() {
     }
     let doc = serde_json::json!({"names": d.rig.names, "parents": d.rig.parents, "animated": d.rig.animated, "poses": poses});
     std::fs::write(out, serde_json::to_string(&doc).unwrap()).unwrap();
+}
+
+/// A flat 40 x 40 m navmesh of 2 m squares with a 6 x 6 m hole in the middle (M3).
+fn plaza() -> skate_core::living_world::peds::NavMeshInput {
+    use skate_core::living_world::peds::NavPolyInput;
+    let hole = |i: i32, j: i32| (8..11).contains(&i) && (8..11).contains(&j);
+    let index = |i: i32, j: i32| if (0..20).contains(&i) && (0..20).contains(&j) && !hole(i, j) { Some((j * 20 + i) as u32) } else { None };
+    let mut polygons = Vec::new();
+    for j in 0..20 {
+        for i in 0..20 {
+            let (x, z) = (i as f32 * 2.0, j as f32 * 2.0);
+            let walkable = !hole(i, j);
+            polygons.push(NavPolyInput {
+                verts: vec![[x, 0.0, z], [x + 2.0, 0.0, z], [x + 2.0, 0.0, z + 2.0], [x, 0.0, z + 2.0]],
+                neighbours: if walkable { vec![index(i, j - 1), index(i + 1, j), index(i, j + 1), index(i - 1, j)] } else { vec![None; 4] },
+                area: if walkable { 0x11 } else { 0xF1 },
+            });
+        }
+    }
+    skate_core::living_world::peds::NavMeshInput { agent: [0.12, 0.35, 0.2, 1.6], polygons }
+}
+
+#[test]
+fn living_world_peds_wander_on_the_navmesh_deterministically() {
+    let mut finals = Vec::new();
+    for _ in 0..2 {
+        let mut a = app(60.0);
+        {
+            let mut d = a.world_mut().resource_mut::<PedData>();
+            let input = plaza();
+            d.nav = Some(Arc::new(skate_core::living_world::peds::NavMesh::build(&input, Default::default())));
+            d.nav_input = Some(Arc::new(input));
+        }
+        let tick = a.world().resource::<PopulationState>().world.tick();
+        for i in 1..=4 {
+            let mut r = record(i, "aletown", 200 + i as u64, tick);
+            r.position = [4.0 + 8.0 * i as f32, 0.0, 4.0];
+            spawn_at_tick(&mut a, r);
+        }
+        let mut targets = 0;
+        for _ in 0..(60 * 40) {
+            a.update();
+            let mut q = a.world_mut().query::<&PedBody>();
+            let bodies: Vec<PedBody> = q.iter(a.world()).cloned().collect();
+            let mesh = a.world().resource::<PedData>().nav.clone().unwrap();
+            for b in &bodies {
+                assert!(mesh.locate(b.position.to_array()).is_some(), "off the navmesh at {}", b.position);
+                for o in &bodies {
+                    let d = (b.position - o.position).length();
+                    assert!(d == 0.0 || d >= 0.7 - 1e-3, "peds closer than twice the agent radius: {d}");
+                }
+            }
+            targets = bodies.iter().map(|b| b.nav.targets_chosen).sum::<u32>();
+        }
+        assert!(targets >= 4, "every ped chose a wander target ({targets})");
+        let list = peds(&mut a);
+        assert!(list.iter().filter(|p| p.2.distance(Vec3::new(4.0 + 8.0 * p.0.serial as f32, 0.0, 4.0)) > 3.0).count() >= 3, "they walked: {list:?}");
+        finals.push(list);
+    }
+    assert_eq!(finals[0], finals[1], "same records, same walk");
+}
+
+#[test]
+fn living_world_ped_navmesh_loads_from_the_export() {
+    let Some(raw) = std::env::var_os("SKATE3_ASSET_ROOT") else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT (an asset root with living_world/navmesh.bin)");
+        return;
+    };
+    let Some(root) = std::env::split_paths(&raw).find(|r| r.join(skate_data::ped_nav::NAVMESH).exists()) else {
+        eprintln!("skipped: no root holds living_world/navmesh.bin");
+        return;
+    };
+    for (district, polygons) in [("DownTown", 36443), ("Industrial", 8693), ("University", 18147)] {
+        let mut d = PedData::default();
+        d.load_nav(&root, district, &Default::default());
+        assert_eq!(d.nav.as_ref().map(|m| m.polys.len()), Some(polygons), "{district}: {}", d.status);
+    }
+    let mut d = PedData::default();
+    d.load_nav(&root, "SomePark", &Default::default());
+    assert!(d.nav.is_none() && d.status.contains("no navmesh"));
 }

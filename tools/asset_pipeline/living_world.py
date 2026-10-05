@@ -30,8 +30,9 @@ them, see ``living_world_skaters.py``):
     (``waypoint_vendingmachine``, ``waypoint_usetrashbin``) and its waypoints (position, facing,
     locator name).
 
-``navmesh.json``
-    What NavPower data (``0x00EB0027``) the districts hold (counts and sizes only; decoding is M3).
+``navmesh.json`` + ``navmesh.bin``
+    The NavPower nav graphs (``0x00EB0027``) of each district, decoded and joined across tiles
+    (``living_world_navmesh``, peds M3); the JSON holds counts and the area histogram.
 
 ``vehicles.json`` + ``vehicles/<recipe>.glb``
     The car models, palettes, vehicle entities and vehicle census (``living_world_vehicles.py``).
@@ -841,6 +842,8 @@ def export(ctx) -> dict:
     roads: dict[str, list] = {}
     waypoints: dict[str, list] = {}
     navmesh: dict[str, dict] = {}
+    from . import living_world_navmesh
+    nav_graphs: dict[str, list] = {}
     for district, tile, asset_id, processor, data in district_assets(game_root, work):
         if processor == REGION_PROCESSOR:
             for layer in region_layers(data):
@@ -856,6 +859,9 @@ def export(ctx) -> dict:
             info['objects'] += 1
             info['bytes'] += len(blob)
             info['tiles'].add(tile)
+            graph = living_world_navmesh.parse_graph(blob)
+            if graph is not None:
+                nav_graphs.setdefault(district, []).append((tile, asset_id, graph))
 
     report('Writing living-world census grids')
     census_index = {'version': VERSION, 'cell': CENSUS_CELL, 'layers': list(CENSUS_LAYERS), 'districts': {}}
@@ -907,8 +913,12 @@ def export(ctx) -> dict:
     (output/'roads.json').write_text(json.dumps(road_doc, indent=1), encoding='utf-8')
     (output/'waypoints.json').write_text(json.dumps({'version': VERSION, 'districts': waypoints}, indent=1),
                                          encoding='utf-8')
-    (output/'navmesh.json').write_text(json.dumps({'version': VERSION, 'decoded': False, 'districts': {
-        d: {**i, 'tiles': len(i['tiles'])} for d, i in sorted(navmesh.items())}}, indent=1), encoding='utf-8')
+    meshes = {d: living_world_navmesh.merge_district([g for _, _, g in sorted(items, key=lambda e: (e[0], e[1]))])
+              for d, items in sorted(nav_graphs.items())}
+    (output/'navmesh.bin').write_bytes(living_world_navmesh.write_navmesh(meshes))
+    (output/'navmesh.json').write_text(json.dumps({'version': VERSION, 'decoded': True, 'file': 'navmesh.bin', 'districts': {
+        d: {**i, 'tiles': len(i['tiles']), **(living_world_navmesh.summary(meshes[d]) if d in meshes else {})}
+        for d, i in sorted(navmesh.items())}}, indent=1), encoding='utf-8')
 
     report('Reading pedestrian recipes')
     models = model_manifest(game_root)

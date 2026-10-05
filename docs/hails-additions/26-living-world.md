@@ -295,6 +295,70 @@ spawns. `sdk.living_world` ped calls come with the mod milestone.
 
 Plan line for doc 26 (milestone table): "peds M2 ped body: done (looks, animation player, foot plants; TestPath
 until M3)". Open-questions additions: the 4 parked items below.
+
+## Change: peds milestone M3, navigation
+
+**What retail does** (TU3 code read; addresses are evidence only):
+- **Ambient peds never use the road branch.** `Pedestrian.xml`'s `Wander` takes `WanderMode.Road` (FollowRoad +
+  `UseCrossWalk`) only while `HasRoadWanderTarget`, and `WanderOnRoad` on `IsOnRoad`; in
+  `StateGraph::TheConditionFactory` (`sub_826C1730`) both are registered with the generic factory `sub_82BC3F68`
+  (`sub_82F7A698`, `sub_82F79698`) whose evaluate (vtable `0x8231ED5C` + 48) returns 0 [code]. Every ped runs
+  `WanderMode.NoRoad`: `CheckForRoadTarget` (no-ops) and `NoRoadWander` (`sub_826A2FB8`). The crosswalk states and
+  `WalkSignSaysGo` (`sub_826AC190`) are unreachable for ambient peds; the working `IsOnRoad` / `IsNearCrossWalk`
+  belong to the plugin transfer conditions (`usetrashbin.xml`).
+- `NoRoadWander` puts the ped on its NavPower mover (`ped+2224`, vtable `0x8232C708`) with the wander goal
+  (`ped+5632`, vtable `0x8232C9C8`, mover value 2.0). Target (`sub_82E30F58`): from the ped's forward, probe 5
+  directions within 90 degrees at 40 m, else 9 within 270 degrees at 10 m (skipped to the second fan after a
+  NavPower failure event 1-3), else step `max(3, 1.1 x 2.0)` m ahead. Probe order (`sub_82E311A8`): straight, then
+  `ceil(i/2) x (spread/2)/(n/2)`, negative first. A direction fits when its end point snaps to the navmesh (0.5 m)
+  and is reachable (`sub_82C464F0`, a connectivity bitset); NavPower plans the path and steers. On arrival (bot
+  state 1, `sub_82E2CB08`) the goal picks the next target.
+- **Navmesh** (`0x00EB0027`, all 678 objects) [data]: NavPower v23 graphs per tile: agent block 0.12 / 0.35 / 0.2 /
+  1.6 (cell, radius, step, height; unverified), tile bounds, polygons (centroid, radius, flags; the area byte in
+  bits 8-15 of the second flags word) with 24-byte edge records (neighbour offset relative to the graph base,
+  vertex, edge flags). 63283 polygons, every one of the 148258 neighbour links checked. Areas: 0x11 pavement
+  (91-92 % of recomp ped positions), 0xA1 road carriageway (2054 of 2147 DownTown road piece starts; 3-4 % of ped
+  positions), 0xF1 never stood on [data + trace]. Tiles stop 0.14 m short of their borders; cross-tile neighbours
+  are resolved at setup.
+
+**Change.**
+- Setup (`livingworld` group): `living_world_navmesh.py` writes `living_world/navmesh.bin` (polygons, areas,
+  neighbours incl. cross-tile links) and `navmesh.json` (counts, area histogram).
+- `skate-core::living_world::peds`: `nav` (`NavMesh`: point location with the 0.5 m snap, reachability components,
+  A* + funnel paths; `NavRules`), `wander` (the retail target choice, `PedNav` per ped, avoidance, step checks,
+  `CrosswalkRule`), `crosswalk` (walk lights from the shared `SignalClock` for the mod rule).
+- `skate-data::ped_nav`: `navmesh.bin` reader / writer.
+- `skate-game::living_world::peds`: the district navmesh in `PedData`, `PedNavSettings`, navigation-driven intents,
+  every step kept on walkable polygons and 0.7 m from other peds; maps without a navmesh keep the test path.
+
+**Simplifications (not retail, documented):** NavPower's path search, path following and local avoidance are not
+decoded: paths are A* over polygon portals (equal cost) with funnel corners, a ped turns at 45 degrees per second
+while walking (locomotion field `Hash_AD1EA18F819BF397` = 45 read as degrees per second, unverified) and pivots
+when a corner is more than 60 degrees off; avoidance = yield to a lower id ahead, side-step a higher id, never
+closer than twice the agent radius; 0xF1 polygons blocked (trace-backed); event 4 (`+33`, head back) has no
+trigger yet; spawn points snap onto the navmesh (retail's spawn probe not read).
+
+**Moddability.** `PedNavSettings` (wander fans / distances / fallback, turn and avoidance values, `NavRules`
+blocked areas and area costs, crosswalk rule), `PedNav::set_route` (mod routes), `NavMeshInput` (a custom map's
+walk areas, or `navmesh.bin` written with `skate_data::ped_nav::write`), `WalkSignals` (own crossing lights). The
+crosswalk rule (`WalkSignal`: wait while the walk light is not green) is the unused retail `UseCrossWalk` logic,
+off by default.
+
+**Multiplayer readiness.** A ped's walk is a function of its spawn record, the world tick, the navmesh and the
+other peds' positions (stepped in id order); no hash-map iteration, ties broken by polygon index.
+
+**Tests.** skate-core 8 (fan order, location / reachability, paths, target choice, wander on walkable ground +
+determinism, crosswalk waits for walk, clock mapping, avoidance radius); skate-data 1 + 3 data-gated (DownTown
+counts and areas, road pieces on 0xA1, 15 peds x 90 s never off walkable ground and identical on rerun, crosswalk
+rule: every road entry at a signalled arm on walk green); skate-game 2 (navmesh wander in the app, export load);
+Python 4.
+
+Credits: NavPower v23 constants cross-checked against DumbadsSkate3ModdingTools by Ethanw05 (credits there to
+SunJay, Dumbad, RenderWareGavin, Tuukkas); recomp: skate3recomp / rexglue / Xenia (code reading and PEDXYZ traces).
+```
+
+Plan line for doc 26: "peds M3 navigation: done (NavPower navmesh decoded, retail NoRoad wander, avoidance;
+crosswalk rule as mod option since retail never uses it)". Open-questions additions: items 1-5 below.
 ## Change: milestone V0, vehicle data
 
 What retail ships, read from the disc and the code for this milestone (details and formats:
