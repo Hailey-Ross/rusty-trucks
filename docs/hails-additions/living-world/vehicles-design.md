@@ -1,6 +1,7 @@
 # Living world: vehicles design (ambient traffic and skitching; part of doc 26)
 
-Status: design, 2026-10-04. No engine code yet.
+Status: design, 2026-10-04. V0 (vehicle data) done 2026-10-05: [`vehicles-data.md`](vehicles-data.md); findings below
+updated where V0 changed them.
 Part of the ONE living-world PR (user, 2026-10-04: "Lets begin work on adding vehicles to the game as well ... IF you
 need more data, just ask. finding your way to vehicles automated will be tough." then "add this to the living world
 work"). Skitching is an explicit part of it (user, 2026-10-04).
@@ -53,14 +54,16 @@ has an engine-facing and a mod-facing entry point, and a mod's changes are undon
   `type="Vehicle"`): fourdoor_sedan_01, hatchback_01, minivan_01, mongo_patrol_01, muscle_car_01, older_sedan_01,
   pickup_truck_01/02, reda_car, sedan_4door_02/03, sports_car_01/02/03, suv_01/02, taxi_sedan_01, z_pipeline_lw_vih.
   Each: one LOD (`lod idx=0`), body mesh (`Accessory`), windows (`Equipment`), materials `vehicle_chassis` and
-  `vehicle_glass` (diffuse / environment / normal), 73 textures under `vehicle/texture/`. Only `reda_car` (a marquee
-  prop) has a separate `Misc` wheels mesh, so ambient car wheels are part of the body mesh.
+  `vehicle_glass` (diffuse / environment / normal), 73 textures under `vehicle/texture/` (all referenced). Only
+  `reda_car` (a marquee prop) has a separate `Misc` wheels mesh, so ambient car wheels are part of the body mesh,
+  rigidly skinned to an 8-bone rig (`Vehicle_Root`, `Chassis`, six wheel bones) so they can spin [data, V0].
 - Shaders: `vehicle_*`, `vehiclelight_*` (head / tail lights) and `vehicle_glass_*` (VS/PS, `0x820AC584..`); effect
   instances `vehicleEffectInstance` etc. Our retail renderer needs a car material path (chassis tint + glass).
 - `livingworld_models` vehicle records (`vehicle_taxi01`, `vehicle_sedan01` ...): recipe name, two **tint palettes**
-  (vec4 lists `12026E2EED18CC8D`: 1-8 chassis colours, `DF76D7D773857EDB`: 1-10 secondary colours), a vec3
-  `F983F2518B335286` (e.g. 1.9, 1.7, 4.0: probably the box half-extents or width / height / length, open), a float
-  `FD7A66142F16B9CC` (0.31-0.32: probably wheel radius, open), base record `vehicles`: `9FCFDBEA` / `73B6874C` = (65, 75)
+  (vec4 lists `12026E2EED18CC8D` = `chassis_colours`: 2-10 colours, `DF76D7D773857EDB` = `secondary_colours`: 1-10;
+  base records blue / red = the body atlas's paint mask), a vec3 `F983F2518B335286` (a per-class value, 1.9 x 1.7 x 4.0
+  for all sedans and sports cars, not the mesh size; open), a float `FD7A66142F16B9CC` (= the wheel bone height,
+  i.e. the wheel radius, on most cars [data, V0]), base record `vehicles`: `9FCFDBEA` / `73B6874C` = (65, 75)
   (LOD distances, as for peds), 20 / 20 / 40 / 40, `F6897CC7` = 3. `VehiclesDB.abin` (6.6 KB, stock anim) exists:
   probably wheel / door clips (open).
 - Entities (`livingworld_entities`, graph `state/livingworldentities/vehicle/Vehicle.xml`): each points to a model, a
@@ -75,14 +78,19 @@ has an engine-facing and a mod-facing entry point, and a mod's changes are undon
   | taxi01 | vehicle_spec_taxi01 | driver_taxi | c04_taxi01 |
   | suv01-02, pickup01-02 | vehicle_spec_truck01 | driver_normal | c05_truck01 |
   | patrol01 (Skate 2 only) | vehicle_spec_taxi01 | driver_normal | c04_taxi01 |
-- Drivers: not visible people in the vehicle data (no driver model reference in the vehicle entity or recipe). Whether
-  a driver mesh is drawn is a data request (D4).
+- Drivers [data, V0]: modelled into each car's body mesh (a dark low-poly figure in the left front seat); no driver
+  model, part or texture exists. The user sees drivers in retail; they come with the car mesh (D4 answered).
 
-### 1.3 Road network (`0x00EB0013`) [data, partly decoded]
+### 1.3 Road network (`0x00EB0013`) [data, decoded in V0; layout in `vehicles-data.md`]
+- V0 corrections: there are 76 segments (DownTown 46, Industrial 26, University 4); the header's second count is the
+  lane-run count. Lanes run from `node_b` to `node_a` (`node_a` = destination). Junction = inner / outer quad, 8 end
+  records (approaches 0-3, exits 0-3, per-lane connector lists), connectors (Hermite, from / to end and lane); lane
+  geometry = about 4 m Hermite pieces with edges and arc tables. 33 junctions, 138 connectors, 3,831 pieces. The text
+  below is the design pass's first reading.
 - Per tile object (82 on the disc): bbox, intersection count, segment count, table offsets (`living_world.parse_roads`
   in the M0 worktree). Segments (0x40 B) are **directed**: id, node A + end, node B + end, length, width A / B,
   **speed limit 14.167 m/s (51 km/h) or 13.889 m/s (50 km/h)**, `word_52` = lane count (8 m wide = 2, 4 m = 1)
-  [data, 77 segments over the 3 districts]. Reverse segments come in pairs (A808 / CD1A).
+  [data, 76 segments over the 3 districts (V0)]. Reverse segments come in pairs (A808 / CD1A).
 - Intersections (new this pass, `roads_probe.py`): two quads (inner junction box and an outer box ~3 m larger:
   probably the crosswalk ring), per-approach 0x38-byte records (id, counts, offset, three packed words, probably
   signal group ids), then a connector block: f32 turn speed (13.889 seen; also 10.3, 11.7) + count + **0x70-byte turn
@@ -94,6 +102,9 @@ has an engine-facing and a mod-facing entry point, and a mod's changes are undon
   `sub_826B3738`) [data], meaning open.
 
 ### 1.4 Traffic lights [code + data + trace]
+- V0 [code `sub_826B1540`]: 4 signal controllers (the 20 timers = 4 x 5), each with two light groups and the cycle
+  all-red 0.5, green 7, amber 1, all-red 0.5, red 8 s; odd controllers start with the other group. The junction ->
+  controller / group binding is not in the road data (V1).
 - `livingworld.trafficlights` (7, 0.5, 0.4, 1) read by `sub_826B1540`; per junction phase timers through
   `sub_82E156D8`. Recomp [trace, TRAFPHASE at load]: 20 timers in two orders **0.5 / 8.0 / 0.5 / 7.0 / 1.0** and
   0.5 / 7.0 / 1.0 / 0.5 / 8.0 s: per direction green 7 or 8 s, amber 1 s, all-red 0.5 s (interpretation).
@@ -273,7 +284,7 @@ Same patterns as the peds / NPC skaters (`sdk.living_world`), plus vehicles:
 | item | source of truth | check |
 |---|---|---|
 | ring 80-100, cull 110, 2 / 1 per tick, initial 6000 / 600 / 8-80, caps 30 / 25 / 10, weights, Free Play scale, online / zombie gates | code + data | unit tests on the exported tables; headless census run vs code bounds; recomp sanity (17-27 vehicles per session) |
-| lane speeds, lane counts, junction connectors | data | data-gated decode tests (77 segments, connector counts per junction) |
+| lane speeds, lane counts, junction connectors | data | data-gated decode tests (76 segments, connector counts per junction; V0 `tests/roads_data.rs`) |
 | light phases | data + trace | unit test: 0.5 / 8 / 0.5 / 7 / 1 cycle; cars stop on red; peds cross on walk |
 | planner / integrator / horn / manoeuvres | code | unit tests per formula with the code constants; replay fixtures from VEHSTATE (164620, 161156): speed from accel within 0.1 m/s |
 | stopping for the skater, queues | code + trace | headless: a scripted skater stands in a lane; cars stop behind it and queue (152302 numbers as a sanity range: stops 2-5 s, holds 14-20 s while blocked) |

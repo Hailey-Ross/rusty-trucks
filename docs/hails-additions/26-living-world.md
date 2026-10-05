@@ -53,7 +53,7 @@ truth"); the recomp only validates. Addresses are TU3; no game code or data is c
   exporters (about 40 s on the disc, 53 MB):
   - `tables.json` (29 living-world vault classes, inheritance applied, readable names where known plus a
     `field_names` map to the `Hash_*` names), census grids per district (4 m cells) and `census.json`,
-    `roads.json` / `roads.bin` (77 segments; road objects kept verbatim for the navigation milestone),
+    `roads.json` / `roads.bin` (segments; road objects kept verbatim; milestone V0 decodes the rest and corrects the count to 76),
     `waypoints.json` (74 groups, 394 waypoints), `navmesh.json` (inventory only), `models.json` and
     `models/<recipe>.glb` (all 77 recipes from a binary `.recipe` reader; each GLB with the model's skeleton, both
     LODs, all parts and textures). Format details: [`living-world/peds-data.md`](living-world/peds-data.md).
@@ -155,6 +155,63 @@ Verification (milestone 2):
   path in a headless app; counts, radii, determinism at 60 and 144 Hz, wire round trip, client role, online,
   settings.
 
+## Change: milestone V0, vehicle data
+
+What retail ships, read from the disc and the code for this milestone (details and formats:
+[`living-world/vehicles-data.md`](living-world/vehicles-data.md)):
+- **Cars** [data]: 18 vehicle recipes (`livingworld.big`), each a body (`Accessory`) and windows (`Equipment`) on an
+  8-bone rig (root, chassis, six wheel bones), one LOD, materials `vehicle_chassis` / `vehicle_glass`; positions are
+  half floats. The visible **drivers are modelled into the body mesh** (a dark low-poly figure in the left front
+  seat); there is no driver model or texture, and no light material (no head / tail / brake lights).
+- **Palettes** [data]: `livingworld_models` gives each car model 2-10 chassis colours and 1-10 secondary colours; the
+  base records hold blue / red, the colours of the body atlas's paint mask.
+- **Specs and drivers** [data + code]: `livingworld_vehicle_characteristics` (6 records) and
+  `livingworld_vehicle_drivers` (5); fields with a reading code site are named (horn timers and speed, pull-over
+  chance, parked time, alarm impulse / duration, the following rule's speeds), the rest keep `Hash_*` names.
+- **Road network** [data, all 82 objects]: decoded completely: per district directed segments (lane runs go from
+  `node_b` to `node_a`, so `node_a` is the destination), lane geometry as about 4 m Hermite pieces with edges and
+  arc-length tables, junctions with 8 end records (the approaches and exits of node ends 0-3, each lane listing the
+  turn connectors it may take) and the turn connectors (Hermite curves from an approach lane to an exit lane):
+  DownTown 46 segments / 19 junctions / 88 connectors, Industrial 26 / 10 / 46, University 4 / 4 / 4. Milestone 1's
+  77th segment was a phantom (the header's second count is the lane-run count, the third the segment count).
+- **Traffic lights** [code `sub_826B1540`]: 4 signal controllers, each with two light groups and the cycle all-red
+  0.5, green 7, amber 1, all-red 0.5, red 8 s (the other group's green + amber), odd controllers offset by half a
+  cycle; values from the `livingworld.trafficlights` record. Which approach uses which controller and group is not in
+  the road data (V1 reads the binding from the code).
+
+Change:
+- Setup group `livingworld` (same group, same vault conversion; only its fingerprint changes): `tables.json` gains the
+  two vehicle classes, `vehicles/<recipe>.glb` (18 cars: rig, body / windows / wheels primitives tagged with their
+  role and material kind, diffuse and normal maps), `vehicles.json` (models with palettes and stable palette ids
+  `<model>/chassis/<i>`, entities with model / spec / driver, the vehicle census resolved to recipes), `roads.bin` v2
+  (a little-endian road graph), `roads.json` v2 and `roads_raw.bin` (the old verbatim pack, unchanged). The export
+  fails the group (world runs empty) if a painted vehicle census record does not resolve to built cars with a spec
+  and a driver. Recipe reader: the LOD word is the material instance count (two on `reda_car`'s wheels); single-
+  instance output is unchanged, so every ped file stays byte-identical.
+- `skate-data::roads`: `RoadGraph::parse` / `to_bytes`, lookups by retail id (segment, junction), the connectors a
+  lane may take at its destination, the segment a connector leads onto, Hermite evaluation and arc-length
+  parameters. No I/O, no engine types.
+
+Moddability: every value stays setup data a mod overrides by key (tables by class / record / field, palettes by
+stable id, cars by recipe name with the same bone names and primitive tags, roads by retail id with
+`RoadGraph::to_bytes` for custom maps); the mod surface itself is V8. Multiplayer: every car model, palette entry,
+segment, junction and connector keeps a stable retail id, and the export is deterministic (two runs byte-identical).
+
+Files: `tools/asset_pipeline/{living_world_vehicles,living_world_roads,test_living_world_vehicles}.py`,
+`tools/asset_pipeline/{living_world,versions}.py`, `crates/skate-data/src/{roads,lib}.rs`,
+`crates/skate-data/tests/roads_data.rs`, `docs/hails-additions/living-world/{vehicles-data,vehicles-design,peds-data}.md`.
+
+Verification (milestone V0):
+- `py -3.13 -m unittest tools.asset_pipeline.test_living_world_vehicles`: 13 OK; all pipeline tests (every
+  `tools/asset_pipeline/test_*.py` + `tools.test_setup_assets`): 190 OK, 2 skipped.
+- `cargo test -p skate-data --release --locked --lib --tests`: all pass; with `SKATE3_ASSET_ROOT` on the export,
+  `--test roads_data` (3) and `--test living_world_data` (4) pass: shipped counts, continuous pieces ending at their
+  junction, every connector in its lane lists and leading onto a segment, every lane into a junction has a way on.
+- Export on the user's disc: 35 s, 18 / 18 cars, validation clean; ped files and GLBs byte-identical to milestone 1;
+  `roads_raw.bin` byte-identical to milestone 1's `roads.bin`; fingerprints of `core`, `hud`, `character`,
+  `environment`, `maps`, `audio` identical before and after.
+- Rendered the taxi and sports_car_01 without their windows: the driver figure sits in the body mesh.
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).
@@ -204,10 +261,12 @@ described, not copied.
 - Teammate looks at runtime: what writes the binding (recruit menu, save importer or mod).
 - AIPATH: branch weight meaning, node flag bit 4, orientation order, `m_ID` bytes 6 to 15; the 38 `ai_skater`
   tunables.
-- Roads: node, lane-sample and crossing records (navigation milestone); NavPower; DMO plugin anchors (benches,
-  ATMs, fountains are placed objects, not waypoint streams).
+- Roads: decoded in V0 except the meaning of a few raw fields (junction `flag_04`, connector `f32_50`, segment
+  `word_56`, quad tags); crosswalks for peds (navigation milestone); NavPower; DMO plugin anchors (benches, ATMs,
+  fountains are placed objects, not waypoint streams).
 - Ped rig: the converted models carry 39 bones, the animation bank 50; matched by name in the ped-body milestone.
 - How retail picks among shared-look entities (`sub_826B8B88`).
-- Traffic: lane snapping at spawn, the census +144 reader, junction connector / approach fields and which light
-  each approach uses, the skid flag writer, the skitch grab / attach / release numbers, the vehicle bail thresholds.
+- Traffic: lane snapping at spawn, the census +144 reader, which of the 4 signal controllers and which light group
+  each junction approach uses (V1), the chassis / secondary tint rule of the `vehicle_chassis` shader (V3), the skid
+  flag writer, the skitch grab / attach / release numbers, the vehicle bail thresholds.
   New recomp hooks (skitch, lights, connectors, vehicle bails) and a few short play sessions will measure them.

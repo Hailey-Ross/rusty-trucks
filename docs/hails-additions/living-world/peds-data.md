@@ -61,7 +61,9 @@ differs), u32 intersection table offset (stale pointer when the count is 0), u32
 offset. Segment 0x40: u64 id, u64 node A, u32 end A, pad, u64 node B, u32 end B, f32 length, f32 width A, f32 width B,
 f32 speed limit (14.17 m/s = 51 km/h; some 13.89), u32 word_52, u32 word_56 (1-3; probably lane counts,
 unverified). Per district: DownTown 46 unique segments / 19 nodes / 19 intersections in 51 objects; Industrial 26 / 10
-/ 10 in 19; University 5 / 6 / 4 in 12. `roads.bin` = every object verbatim (`LWROADS\0` pack, same layout as the
+/ 10 in 19; University 5 / 6 / 4 in 12. (V0, [`vehicles-data.md`](vehicles-data.md): University has 4 segments; the
+fifth was a phantom from reading the lane-run count as the segment count. `roads.bin` is now the v2 road graph and
+the verbatim pack moved to `roads_raw.bin`.) `roads.bin` = every object verbatim (`LWROADS\0` pack, same layout as the
 skater path packs) so M3 decodes nodes / lane samples (4 m, 0x19 per block) / crossing quads without a new setup.
 
 ### waypoints.json (`0x00EB001A`) [data, 59 objects, 74 groups, 394 waypoints, layout checked on all]

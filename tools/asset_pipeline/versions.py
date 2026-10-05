@@ -27,10 +27,11 @@ SOURCES = {
              'asset_pipeline/retail_material.py', 'asset_pipeline/backdrop.py', 'asset_pipeline/sky.py'),
     'audio': ('asset_pipeline/optional_content.py', 'asset_pipeline/audio_export.py', 'asset_pipeline/audio_formats.py',
               'asset_pipeline/world_audio.py'),
-    # Living world (peds + NPC skaters): both exporters, the vault reader and names, the region-layer
+    # Living world (peds + NPC skaters + vehicles): the exporters, the vault reader and names, the region-layer
     # parser (audio_formats.region_layers / region_key) and the district stream reader.
     'livingworld': ('asset_pipeline/optional_content.py', 'asset_pipeline/living_world.py',
                     'asset_pipeline/living_world_models.py', 'asset_pipeline/living_world_skaters.py',
+                    'asset_pipeline/living_world_roads.py', 'asset_pipeline/living_world_vehicles.py',
                     'asset_pipeline/character_glb.py', 'asset_pipeline/retail_character.py',
                     'extract_default_skater.py', 'vendor/utt/**/*.py', 'asset_pipeline/vlt.py', 'asset_pipeline/names.txt',
                     'asset_pipeline/audio_formats.py',
