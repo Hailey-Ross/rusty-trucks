@@ -7,6 +7,8 @@ from tools.owned_game.big import BigArchive
 TOOLS=Path(__file__).resolve().parents[1]
 
 def map_workers():
+    # The districts are not equal: DownTown alone sets the map stage's length,
+    # so more than three workers barely helps (SKATE_SETUP_MAP_WORKERS overrides).
     count=min(3,max(1,(os.cpu_count() or 1)//2))
     if os.name=='nt':
         import ctypes
@@ -16,9 +18,12 @@ def map_workers():
         memory=Memory();memory.length=ctypes.sizeof(memory)
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)):
             # Reserve memory for the desktop; each map and its loader can
-            # briefly hold several copies of geometry and textures.
+            # briefly hold several copies of geometry and textures. Measured
+            # (2026-10-04): DownTown's job peaks at 1.4 GiB committed, then its
+            # --check-assets game process at 1.9 GiB, so 3 GiB per worker holds.
             count=min(count,max(1,(memory.available-2*1024**3)//(3*1024**3)))
-    return count
+    from .setup_budget import map_workers as budget
+    return budget(count)
 XISO_URL='https://github.com/XboxDev/extract-xiso/releases/download/build-202505152050/extract-xiso-Win64_Release.zip'
 XISO_SHA='fec88d03c7efd6205ab09be4abba70c0afd0eb27a5709f0a6235b828ba5ac11e'
 
@@ -108,7 +113,10 @@ def dependency(cache,name,url,sha,report):
     return executable
 
 def run(args,log,report):
-    kwargs={'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}
+    from .setup_budget import priority_class
+    # Conversion processes run below normal priority (SKATE_SETUP_PRIORITY
+    # overrides) so the machine stays usable; their own children inherit it.
+    kwargs={'creationflags':subprocess.CREATE_NO_WINDOW|priority_class()} if os.name=='nt' else {}
     external=os.name=='nt' and getattr(sys,'frozen',False) and Path(args[0]).resolve()!=Path(sys.executable).resolve()
     if external:
         # External tools and the game must load their own libraries, not
@@ -170,24 +178,32 @@ def convert_map(archive,work,maps,stage,game_exe,log,report):
         # deleted after conversion. Keep simulation and irradiance sources.
         write_render_sources=False)
     finished('prepare')
-    collision=district_work/'collision.rwcmset'
-    build_archive(manifest_path,collision)
-    finished('collision_archive')
-    final=maps/(label+'.skate')
-    write_map(manifest_path,final,collision,report,prepared_spawn=spawn.result(label))
-    finished('write_map')
     from .dynamic_props import export as write_props
     caches=list((work/'dmo/cache').glob('DMO_*'))
     from .optional_content import CONTENT_ERRORS, note
     props=stage/'assets/private/native-props'/(label+'.skate')
-    try:
-        if not caches:raise RuntimeError('Movable-object source catalog is unavailable')
-        placed, unresolved=write_props(manifest_path,caches,props,catalog_path=work/'dmo/catalog.json')
-        (stage/'assets/private/native-props'/(label+'-availability.json')).unlink(missing_ok=True)
-    except CONTENT_ERRORS as error:
-        if props.is_dir():remove_intermediate(props,stage)
-        note(stage/'assets/private/native-props'/(label+'-availability.json'),label+' movable props',error,report=report)
-        placed,unresolved=0,0
+    def movable_props():
+        try:
+            if not caches:raise RuntimeError('Movable-object source catalog is unavailable')
+            placed, unresolved=write_props(manifest_path,caches,props,catalog_path=work/'dmo/catalog.json')
+            (stage/'assets/private/native-props'/(label+'-availability.json')).unlink(missing_ok=True)
+        except CONTENT_ERRORS as error:
+            if props.is_dir():remove_intermediate(props,stage)
+            note(stage/'assets/private/native-props'/(label+'-availability.json'),label+' movable props',error,report=report)
+            placed,unresolved=0,0
+        return placed,unresolved
+    # The props only read the prepared manifest and the DMO catalog, and write
+    # their own folder: build them beside the collision archive and the map.
+    # 'props' is then the time left waiting for them after write_map.
+    with ThreadPoolExecutor(max_workers=1) as background:
+        pending_props=background.submit(movable_props)
+        collision=district_work/'collision.rwcmset'
+        build_archive(manifest_path,collision)
+        finished('collision_archive')
+        final=maps/(label+'.skate')
+        write_map(manifest_path,final,collision,report,prepared_spawn=spawn.result(label))
+        finished('write_map')
+        placed,unresolved=pending_props.result()
     finished('props')
     report(f'{label}: placed {placed} authored DMO instances, {unresolved} unresolved templates')
     report('Checking converted map: '+label)
@@ -202,7 +218,10 @@ def convert_map(archive,work,maps,stage,game_exe,log,report):
 
 def install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None):
     from .setup_state import setup_lock
-    with setup_lock(base):
+    from .setup_budget import lowered_priority
+    # Setup's own work (extraction, the character customiser) also runs below
+    # normal priority; the previous priority returns afterwards.
+    with setup_lock(base), lowered_priority():
         return _install(iso,base,game_exe,report,game_root,refresh,finalize)
 
 

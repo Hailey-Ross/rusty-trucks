@@ -120,6 +120,22 @@
 ---@field players string[]
 ---@field states table<string, table<string, table<string, any>>> mod_id → peer_id → key → value
 ---@field status string
+---@class FrameSnapshot read-only frame-time statistics of the presented frames (engine `frame_timing`)
+---@field frame integer presented frames since start
+---@field ms number last frame time (real time between frame starts)
+---@field fixed_steps integer physics (fixed 60 Hz) steps run in the last frame; >1 = catching up after a slow frame
+---@field main_ms number CPU time of the engine's main-thread schedules in the last frame (much less than `ms` = waiting on rendering/GPU)
+---@field fixed_ms number CPU time of the physics steps in the last frame
+---@field hitch boolean last frame took more than 2x the median of the previous 120 frames
+---@field window_s number seconds covered by the statistics below (5)
+---@field frames integer frames in that window
+---@field fps number mean frames per second over the window
+---@field mean_ms number
+---@field median_ms number
+---@field low_1_ms number 1 % low: the slowest 1 % of frames take at least this long (99th percentile)
+---@field low_01_ms number 0.1 % low (99.9th percentile)
+---@field worst_ms number longest frame in the window
+---@field hitches integer hitch frames in the window
 ---@class SDKSnapshot
 ---@field player PlayerSnapshot
 ---@field skaters table<string, PlayerSnapshot>
@@ -130,6 +146,7 @@
 ---@field pad PadSnapshot
 ---@field paused boolean
 ---@field replay boolean
+---@field frame FrameSnapshot frame-time statistics, read-only; refreshed 4x per second (ms/fixed_steps/hitch every frame)
 ---@field camera? {position:Vec3}
 ---@field attach? {body:string, owner:string}
 ---@field physics {bodies:table<string,BodySnapshot>, contacts:ContactEvent[], touching:TouchingPair[]}

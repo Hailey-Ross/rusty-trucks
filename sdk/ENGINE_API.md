@@ -185,6 +185,19 @@ return {on_fixed_update=function()
 end}
 ```
 
+## Frame-time statistics
+
+`sdk.snapshot.frame` is a read-only view of the engine's frame timing (the same
+numbers as the graphics menu's frame-time counter and the `SKATE_FRAME_LOG` log):
+`ms` (last frame), `fixed_steps` (physics steps run in that frame), `main_ms` /
+`fixed_ms` (CPU time of the engine's main thread / of the physics steps in that frame), `hitch`,
+and over the last `window_s` seconds `fps`, `mean_ms`, `median_ms`, `low_1_ms`
+(1 % low = 99th-percentile frame time), `low_01_ms` (0.1 % low), `worst_ms` and
+`hitches` (frames longer than twice the median of the previous 120). The window
+values refresh four times a second. Reading them costs nothing extra; mods cannot
+change them. Use them for adaptive effects (drop a costly effect while
+`low_1_ms` is high) or a custom performance HUD.
+
 ## UI updates during pause
 
 `on_ui_update({dt, paused})` runs every presentation update with a fresh snapshot,

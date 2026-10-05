@@ -11,11 +11,14 @@ def u(f,*v):f.write(struct.pack('<'+'I'*len(v),*v))
 def floats(f,*v):f.write(struct.pack('<'+'f'*len(v),*v))
 def string(f,s):
     b=str(s).encode();u(f,len(b));f.write(b)
-def stored(f,data):
+def packed_blob(data):
+    """The bytes `stored` writes for `data`: header and payload."""
     packed=zlib.compress(data,1)
     method=1
     if len(packed)>=len(data):method=0;packed=data
-    u(f,method,len(packed));f.write(packed)
+    return struct.pack('<II',method,len(packed)),packed
+def stored(f,data):
+    for part in packed_blob(data):f.write(part)
 
 def packed_texture(root,name,entry):
     if 'rgba' in entry:
@@ -30,13 +33,18 @@ def packed_texture(root,name,entry):
     result=io.BytesIO();string(result,name);u(result,width,height,1);stored(result,rgba)
     return result.getvalue()
 
-def write_textures(output,root,textures):
-    # zlib releases the GIL. Bound outstanding work to two textures rather
-    # than retaining an entire district's decoded/compressed images.
+def write_textures(output,root,textures,workers=None):
+    # zlib releases the GIL. Bound outstanding work to one texture per worker
+    # rather than retaining an entire district's decoded/compressed images;
+    # results are written in name order whatever the worker count.
+    if workers is None:
+        from tools.asset_pipeline.setup_budget import job_threads
+        workers=job_threads()
+    workers=max(1,workers)
     names=iter(sorted(textures))
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         pending=deque()
-        for _ in range(2):
+        for _ in range(workers):
             name=next(names,None)
             if name is not None:pending.append(pool.submit(packed_texture,root,name,textures[name]))
         while pending:
@@ -170,11 +178,22 @@ def write(manifest_path,output,collision,report=lambda _:None, *, render_only=Fa
                  .045,.10,.26,1.,.32,.10,.05,.035,.06,.007,.015,.045,.045,.085,.17,.008,.014,.032,
                  1.,.96,.86,.42,.56,.92,1.,.18,.34,.10,1.,1.,1.]
     rails=m['grind_splines'];output.parent.mkdir(parents=True,exist_ok=True)
-    with output.open('wb') as f:
+    extensions=[(b'WMET',json.dumps(m,separators=(',',':')).encode())]
+    if not render_only:extensions.insert(0,(b'RWCM',collision.read_bytes()))
+    from tools.asset_pipeline.setup_budget import job_threads
+    threads=job_threads()
+    # The geometry and extension blobs do not depend on the textures: compress
+    # them on two more threads while the textures are written. Every blob is
+    # written in the original order, so the file is byte-identical.
+    with output.open('wb') as f, ThreadPoolExecutor(max_workers=2) as blobs:
+        geometry=[blobs.submit(packed_blob,data) for data in (vertices.getvalue(),indices.getvalue(),b'')]
+        packed_extensions=[(tag,len(data),blobs.submit(packed_blob,data)) for tag,data in extensions]
+        del vertices,indices,extensions
         f.write(b'SKATE14\0');u(f,0x12345678);string(f,m['map_name']);floats(f,*spawn,0.,*environment)
         u(f,nm,len(ids),nv,ni,0,len(rails),0,0,0);f.write(mats.getvalue())
-        write_textures(f,root,textures)
-        stored(f,vertices.getvalue());stored(f,indices.getvalue());stored(f,b'')
+        write_textures(f,root,textures,threads)
+        for blob in geometry:
+            for part in blob.result():f.write(part)
         for rail in rails:
             string(f,f"{rail['asset_id']}_{rail['section_index']}_{rail['rail_index']}")
             u(f,int(rail['closed']),1);f.write(struct.pack('<QQ',int(rail['spline_id'],0),int(rail['type_signature'],0)))
@@ -183,11 +202,10 @@ def write(manifest_path,output,collision,report=lambda _:None, *, render_only=Fa
                 raw=bytes.fromhex(segment)
                 if len(raw)!=120:raise ValueError('Invalid native spline segment')
                 f.write(np.frombuffer(raw,dtype='>u4').astype('<u4').tobytes())
-        extensions=[(b'WMET',json.dumps(m,separators=(',',':')).encode())]
-        if not render_only:extensions.insert(0,(b'RWCM',collision.read_bytes()))
-        u(f,len(extensions))
-        for tag,data in extensions:
-            f.write(tag);u(f,1,len(data));stored(f,data)
+        u(f,len(packed_extensions))
+        for tag,size,blob in packed_extensions:
+            f.write(tag);u(f,1,size)
+            for part in blob.result():f.write(part)
     report('Map written: '+m['map_name'])
     if not render_only:
         from tools.asset_pipeline.irradiance import write as write_irradiance

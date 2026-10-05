@@ -762,6 +762,9 @@ fn default_snapshot() -> Value {
         "pad": {"buttons": 0, "triggers": [0.0, 0.0], "left": [0.0, 0.0], "right": [0.0, 0.0]},
         "paused": false,
         "replay": false,
+        "frame": {"frame": 0, "ms": 0.0, "fixed_steps": 0, "main_ms": 0.0, "fixed_ms": 0.0, "hitch": false, "window_s": 5.0, "frames": 0,
+                  "fps": 0.0, "mean_ms": 0.0, "median_ms": 0.0, "low_1_ms": 0.0, "low_01_ms": 0.0,
+                  "worst_ms": 0.0, "hitches": 0},
         "camera": Value::Null,
         "physics": {"bodies": {}, "contacts": []},
         "network": {
@@ -1353,6 +1356,19 @@ mod model_collision_extension_tests {
         assert_eq!(filled["physics"]["bodies"], json!({}));
         assert!(filled["camera"].is_null());
         assert_eq!(complete(&Value::Null)["paused"], false);
+    }
+
+    /// `sdk.snapshot.frame` (frame-time statistics) is always readable: zeros
+    /// before the host publishes it, the host's values afterwards.
+    #[test]
+    fn frame_statistics_have_defaults_and_keep_host_values() {
+        let empty = complete(&Value::Null);
+        assert_eq!(empty["frame"]["fps"], 0.0);
+        assert_eq!(empty["frame"]["low_1_ms"], 0.0);
+        assert_eq!(empty["frame"]["hitches"], 0);
+        let live = complete(&json!({"frame": {"ms": 6.5, "worst_ms": 197.0, "hitches": 3}}));
+        assert_eq!(live["frame"]["worst_ms"], 197.0);
+        assert_eq!(live["frame"]["hitches"], 3);
     }
 }
 
