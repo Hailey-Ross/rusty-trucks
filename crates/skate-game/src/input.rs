@@ -3,6 +3,10 @@ use crate::app::SimulationSet;
 use bevy::prelude::*;
 
 mod controllers;
+pub(crate) mod controller_kind;
+#[cfg(test)]
+#[path = "input/tests/action_docs.rs"]
+mod action_docs;
 pub(crate) mod gesture_catalog;
 mod gesture_mapping_data;
 pub(crate) mod gesture_mapping;
@@ -38,10 +42,39 @@ impl Plugin for InputPlugin {
 /// settings/controller.json, e.g. {"paddles": {"right1": "a", "left1": "x"}}.
 /// Paddle names are right1, left1, right2, left2 (SDL paddle order); values
 /// are names from `platform::BUTTON_NAMES`.
+/// `models` names pads the built-in table lacks (or renames them):
+/// [{"vendor": "2dc8", "product": "3106", "name": "8BitDo", "family": "xbox_one", "paddles": 2}].
 #[derive(serde::Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct ControllerSettings {
     paddles: std::collections::BTreeMap<String, String>,
+    models: Vec<ModelSetting>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelSetting {
+    vendor: serde_json::Value,
+    product: serde_json::Value,
+    name: String,
+    #[serde(default)]
+    family: Option<controller_kind::Family>,
+    #[serde(default)]
+    paddles: u8,
+}
+
+fn user_models(settings: &ControllerSettings, path: &std::path::Path) -> Vec<controller_kind::Model> {
+    settings.models.iter().filter_map(|m| {
+        match (controller_kind::parse_id(&m.vendor), controller_kind::parse_id(&m.product)) {
+            (Some(vendor), Some(product)) => Some(controller_kind::Model {
+                vendor, product, name: m.name.clone(), family: m.family, paddles: m.paddles,
+            }),
+            _ => {
+                warn!("{}: ignoring controller model {:?} (vendor/product must be hex ids)", path.display(), m.name);
+                None
+            }
+        }
+    }).collect()
 }
 
 fn start_controllers(config: Res<crate::config::Config>) {
@@ -59,6 +92,7 @@ fn start_controllers(config: Res<crate::config::Config>) {
                     }
                 }
                 platform::set_paddles(masks);
+                controller_kind::set_user_models(user_models(&settings, &path));
             }
             Err(error) => warn!("Invalid controller settings {}: {error}", path.display()),
         },
@@ -71,6 +105,7 @@ fn start_controllers(config: Res<crate::config::Config>) {
 
 pub(crate) fn poll_controllers(mut input: ResMut<ControllerInput>,config:Res<crate::config::Config>,net:Option<Res<crate::multiplayer::Multiplayer>>,windows:Query<&Window>,mut capabilities:Local<[platform::CapabilityCache;4]>) {
     let previous = input.status;
+    let previous_kinds = input.kinds.clone();
     let focused=windows.iter().any(|w|w.focused);
     let active=net.is_some_and(|n|n.active());
     input.collect(std::array::from_fn(|slot| {
@@ -88,6 +123,11 @@ pub(crate) fn poll_controllers(mut input: ResMut<ControllerInput>,config:Res<cra
                 }
                 _ => warn!("Controller {index}: {after:?}"),
             }
+        }
+    }
+    for (index, (before, after)) in previous_kinds.iter().zip(&input.kinds).enumerate() {
+        if let Some(kind) = after.as_deref().filter(|&kind| before.as_deref() != Some(kind)) {
+            info!("Controller {index}: identified as {}", kind.summary());
         }
     }
 }

@@ -112,6 +112,23 @@
 ---@field triggers number[] LT, RT in 0..1
 ---@field left number[] stick XY
 ---@field right number[] stick XY
+---Identity of one controller slot (read-only; capability `controllers` = 1).
+---@class ControllerKind
+---@field family 'xbox360'|'xbox_one'|'xbox_elite'|'xinput_gamepad'|'playstation3'|'playstation4'|'playstation5'|'switch_pro'|'joycon_left'|'joycon_right'|'joycon_pair'|'standard'|'wheel'|'arcade_stick'|'flight_stick'|'dance_pad'|'guitar'|'drum_kit'|'arcade_pad'|'unknown'
+---@field name string device name (SDL) or model name
+---@field vendor_id? integer USB vendor id (e.g. 0x045e Microsoft)
+---@field product_id? integer USB product id (e.g. 0x0b22 Elite Series 2 over Bluetooth LE)
+---@field backend 'sdl'|'xinput'
+---@field driver string SDL device path ("XInput#0" = SDL's XInput driver) or "XInput"
+---@field xinput_subtype? integer XINPUT_DEVSUBTYPE_* (XInput backend only)
+---@field wireless? boolean XInput backend only
+---@field paddles integer back paddles the driver reports (usable in settings/controller.json)
+---@field hardware_paddles integer back paddles the model has (0 = none / unknown)
+---@field touchpad boolean
+---@field misc_button boolean Share / Capture / Mute button reported
+---@field prompt_style 'xbox'|'playstation'|'nintendo' printed face-button names (layout stays positional)
+---@field face_labels string[] printed names of the South, East, West, North buttons
+---@field summary string one-line description (as in the log and the Esc menu)
 ---@class NetworkInfo
 ---@field active boolean
 ---@field local_id string
@@ -128,6 +145,7 @@
 ---@field keys table<string,boolean>
 ---@field actions number[]
 ---@field pad PadSnapshot
+---@field controllers {active?:integer, slots:(ControllerKind|nil)[]} slot 0..3 at index 1..4
 ---@field paused boolean
 ---@field replay boolean
 ---@field camera? {position:Vec3}
@@ -346,7 +364,8 @@ function sdk.camera.tune_shot(shot, patch) end
 ---@param key string
 ---@return boolean
 function sdk.input.down(key) end
----@param id integer
+---Current value of a mapped gameplay action (ID 64..81 or a key of `sdk.input.action_ids`).
+---@param id integer|string
 ---@return number
 function sdk.input.action(id) end
 ---@return PadSnapshot
@@ -580,9 +599,41 @@ function sdk.rig.reset_part(index) end
 ---Restores all joint AND part overrides owned by this mod.
 function sdk.rig.reset() end
 
----@param id integer mapped gameplay action 64..81
----@param value? number [-1,1]; nil restores normal input
+---Overrides one mapped gameplay action (retail input.cfg GP_* actions; table in GENERAL_API.md):
+---64 left_stick_x  GP_LStickX  steer, kick-turn, body spin, powerslide, grind balance
+---65 left_stick_y  GP_LStickY  steering angle, automatic push, off-board walking
+---66 left_stick_click  GP_LStickIn  bail (with 69 and both triggers full)
+---67 right_stick_x  GP_RStickX  flick-it tricks, tweaks, grinds, off-board look
+---68 right_stick_y  GP_RStickY  flick-it tricks, manuals, tweaks, off-board look
+---69 right_stick_click  GP_RStickIn  bail (with 66), off-board air body tweak
+---70 left_trigger  GP_LTrigger  left-hand grab, crouch; full press off board drops the board
+---71 right_trigger  GP_RTrigger  right-hand grab, crouch; full press off board throws the board
+---72 left_bumper  GP_LBumper  wins over RB; held, blocks D-pad gestures and the board toggle
+---73 right_bumper  GP_RBumper  grab the world (ledges, handplants), dark catch
+---74..77 dpad_up / dpad_down / dpad_left / dpad_right  gameplay gestures
+---78 x  GP_XFace  push (left foot), off-board jump, recover after a bail
+---79 y  GP_YFace  get off / back on the board
+---80 a  GP_AFace  push (right foot), off-board sprint, recover after a bail
+---81 b  GP_BFace  brake, dismount / no-foot air, dark catch
+---@param id integer|string action ID 64..81 or a key of `sdk.input.action_ids`
+---@param value? number [-1,1] (buttons: 1 pressed; triggers 0..1, full = 1); nil restores normal input
 function sdk.input.override_action(id, value) end
+---Mapped gameplay action IDs by key (capability `action_ids` = 1).
+---@type table<string, integer>
+sdk.input.action_ids = {
+    left_stick_x = 64, left_stick_y = 65, left_stick_click = 66,
+    right_stick_x = 67, right_stick_y = 68, right_stick_click = 69,
+    left_trigger = 70, right_trigger = 71, left_bumper = 72, right_bumper = 73,
+    dpad_up = 74, dpad_down = 75, dpad_left = 76, dpad_right = 77,
+    x = 78, y = 79, a = 80, b = 81,
+}
+---Identity of the controller in a slot (capability `controllers` = 1). Read-only.
+---@param slot? integer 0..3; default = the slot gameplay reads
+---@return ControllerKind|nil nil when the slot is empty
+function sdk.input.controller(slot) end
+---All four slots and the slot gameplay reads.
+---@return {active?:integer, slots:(ControllerKind|nil)[]}
+function sdk.input.controllers() end
 sdk.graphs = {}
 ---@param graph 'action'|'motion'
 ---@return {current?:integer,previous?:integer,name?:string,dt:number,state_times:table,active_behaviors:integer[]}|nil

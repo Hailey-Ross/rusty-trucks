@@ -927,6 +927,8 @@ fn default_snapshot() -> Value {
         // 18 gameplay actions, IDs 64..=81.
         "actions": vec![0.0f32; 18],
         "pad": {"buttons": 0, "triggers": [0.0, 0.0], "left": [0.0, 0.0], "right": [0.0, 0.0]},
+        // Identity per controller slot 0..3 (null = empty) and the slot gameplay reads.
+        "controllers": {"active": Value::Null, "slots": []},
         "paused": false,
         "replay": false,
         "camera": Value::Null,
@@ -1082,6 +1084,9 @@ impl Vm {
             capabilities.set("command_results", 1)?;
             capabilities.set("native_bodies", 1)?;
             capabilities.set("input_override", 1)?;
+            // sdk.input.controller(s) (read-only identity) and sdk.input.action_ids.
+            capabilities.set("controllers", 1)?;
+            capabilities.set("action_ids", 1)?;
             capabilities.set("player_overlap", 1)?;
             capabilities.set("landed_details", 1)?;
             capabilities.set("camera", 4)?;

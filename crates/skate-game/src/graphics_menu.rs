@@ -156,7 +156,7 @@ impl Menu {
             1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([CAMERA_ANGLE_ROW,8,10]).collect(),
             1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
             2 => vec![0, 1, 2, 13, 16, 17, 18],
-            4 => vec![7, 11, 14],
+            4 => vec![7, 11, 14, 19],
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
         }
@@ -290,7 +290,7 @@ fn setup(
                 body.spawn((Text::new(""),MenuSubtitle,TextFont {font_size:16.,..default()},TextColor(Color::srgb(0.65,0.72,0.72))));
                 body.spawn((Node {height:px(3),width:px(64),margin:UiRect::bottom(px(10)),..default()},BackgroundColor(Color::srgb(0.78,0.96,0.3))));
                 body.spawn((MenuScroll,ScrollPosition::default(),Node {flex_grow:1.,min_height:px(0),overflow:Overflow::scroll_y(),flex_direction:FlexDirection::Column,row_gap:px(8),..default()})).with_children(|list| {
-                    for i in (0..4).chain(300..337).chain(4..10).chain(11..19).chain(20..27).chain([10]).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
+                    for i in (0..4).chain(300..337).chain(4..10).chain(11..20).chain(20..27).chain([10]).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
                         list.spawn((Button,MenuRow(i),Node {flex_direction:if (300..335).contains(&i) {FlexDirection::Column} else {FlexDirection::Row},width:percent(100),min_height:px(56),flex_shrink:0.,padding:UiRect::axes(px(18),px(12)),align_items:AlignItems::Center,border_radius:BorderRadius::all(px(4)),..default()},BackgroundColor(Color::srgb(0.075,0.09,0.095))))
                             .with_children(|row| {
                                 row.spawn((MenuLabel(i),Text::new(""),TextFont {font_size:18.,..default()},TextColor(Color::WHITE)));
@@ -631,6 +631,18 @@ pub(crate) fn interact(
         time.unpause();
     }
 }
+/// Read-only troubleshooting row: who is in each controller slot.
+fn controller_label(input: &crate::input::ControllerInput) -> String {
+    let rows: Vec<String> = input.kinds.iter().enumerate()
+        .filter_map(|(slot, kind)| kind.as_deref().map(|kind| format!("{slot}: {}", kind.summary())))
+        .collect();
+    if rows.is_empty() {
+        "Controller            none connected".into()
+    } else {
+        format!("Controller            {}", rows.join("\n                      "))
+    }
+}
+
 fn toggle_fullscreen(
     keys: Res<ButtonInput<KeyCode>>,
     menu: Res<Menu>,
@@ -694,7 +706,7 @@ fn labels(
     mut labels: Query<(&MenuLabel, &mut Text), (Without<StatusLabel>, Without<MenuTitle>, Without<MenuSubtitle>)>,
     mut headings: Query<(&mut Text, Has<MenuTitle>), (Or<(With<MenuTitle>, With<MenuSubtitle>)>, Without<StatusLabel>)>,
     mut status: Single<&mut Text, With<StatusLabel>>,
-    debug: (Res<crate::modding::Mods>, Res<crate::physics::GamePhysics>, Res<crate::multiplayer::appearance::Appearances>),
+    debug: (Res<crate::modding::Mods>, Res<crate::physics::GamePhysics>, Res<crate::multiplayer::appearance::Appearances>, Res<crate::input::ControllerInput>),
     (audio, camera_angle): (Option<Res<crate::game_audio::AudioSettings>>, Res<crate::camera::CameraAngleSettings>),
     mut buttons: Query<(&MenuRow, &Interaction, &mut BackgroundColor, &mut Node), Without<MenuRoot>>,
 ) {
@@ -837,6 +849,7 @@ fn labels(
                 13 => "Day & night".into(),
                 14 => "Mods".into(),
                 16..=18 => audio.as_ref().map(|a| a.label(audio_row(label.0))).unwrap_or_default(),
+                19 => controller_label(&debug.3),
                 _ => "Multiplayer".into(),
             }
         };
@@ -1034,8 +1047,8 @@ mod tests {
             let rows = menu.rows();
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
-            // Spawned row ids: 0..19 (16..19 are the audio rows), 1000+ maps.
-            assert!(rows.iter().all(|id| *id < 19 || *id >= 1000));
+            // Spawned row ids: 0..20 (16..19 are the audio rows, 19 the controller row), 1000+ maps.
+            assert!(rows.iter().all(|id| *id < 20 || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
