@@ -186,6 +186,9 @@ impl LivingWorld {
     pub fn tick(&self) -> u64 {
         self.tick
     }
+    pub fn clock(&self) -> &ConsoleClock {
+        &self.clock
+    }
     pub fn clock_mut(&mut self) -> &mut ConsoleClock {
         &mut self.clock
     }

@@ -45,6 +45,11 @@ impl ConsoleClock {
         due
     }
 
+    /// Fraction (0..1) of the next tick already elapsed (render interpolation).
+    pub fn overstep(&self) -> f64 {
+        (self.accumulator * self.hz).clamp(0.0, 1.0)
+    }
+
     /// Console ticks counted so far.
     pub fn ticks(&self) -> u64 {
         self.ticks

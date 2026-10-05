@@ -155,6 +155,73 @@ Verification (milestone 2):
   path in a headless app; counts, radii, determinism at 60 and 144 Hz, wire round trip, client role, online,
   settings.
 
+
+## Change (milestone 3: NPC skaters, replay tier)
+
+Ambient NPC skaters are visible in free roam: the population's skater spawn records become skaters that ride the
+retail recorded lines kinematically (the "replay tier"; the simulated tier with the full skater physics follows).
+
+What retail does, checked in the code for this milestone (TU3):
+- An NPC is a full skater steered along its line by the `PathController` (ctor `sub_824685F0`). At a node that
+  carries a branch group the controller picks where to continue (`sub_8246BEE0`): stay on the line, or a branch
+  target that exists, is not in use and is valid. The lowest score of `sub_8246C230` wins, the first on ties; there
+  is no random draw and the branch record's f32 is not read [code]. A candidate is rejected when the line has no
+  node after it, when the next node lies 50 deg or more off the skater's forward (`0x822F91B0`), or when an airborne
+  or event node lies within one node (`sub_8246C4F8`). Score = angle x 572.958 + (offline) 1024 per other AI skater
+  on the same line within 5 nodes (`sub_82456A38`) + min(30 x the player's distance to the line, 1500)
+  (`sub_8246C5D8`) + 1000 for lines with flag bits 0..2 all set + a skill term. A taken branch starts at the target
+  node nearest the skater among the 3 before it (`sub_82455BB0`) [code].
+- Line nodes carry the skater and board orientation as quaternions x, y, z, w with +Z forward [data: 81 % of
+  moving nodes]; branch groups never sit on a line's last node [data].
+
+Change:
+- `skate-core::living_world::replay`: the line cursor (node index + frame in the segment at the 60 Hz recording
+  rate; any engine rate gives the same cursor), pose / velocity / heading / orientations / node flags and events,
+  the phase (rolling, crouched, air, air trick, ground trick, off board), the retail branch choice, and a mirror mode
+  that replays recorded branch decisions. `skate-data::living_world::replay_line` converts a decoded line.
+- `skate-game::living_world::npc_skaters`: one entity per skater spawn record (`NpcSkater` with the stable
+  `LivingWorldId`, character, slot, seed, voice; `NpcReplay` with the cursor). The cursor stays at
+  2 x (population tick - spawn tick) recording frames, so an NPC's state follows from its spawn record, the tick and
+  its branch records. Its position goes back into the population (culls, the 5 m rule). Collision: a kinematic
+  capsule and board box join the skater solve through the network proxies (like a mod's solid), so the player bumps
+  into NPCs. Look: the character's native roster GLB (the customiser's and online players' files), a mod override
+  (`NpcSkaterLooks`), else the stock skater; bound to the stock skeleton like a remote player. Puppet animation: one
+  stock clip per phase from the player's evaluator; the root takes the recorded position and skater orientation.
+  Audio: `NpcSkaterAudio` with a lite state (speed, air, ground trick as a grind) and the character's voice, so
+  #32's NPC board sounds and speech play. Events: `NpcSkaterEvent` (spawned, despawned, node event, branch, line
+  end). Debug: `SKATE_LIVING_WORLD_DEBUG=1` logs the NPC count and the nearest NPC (distance, line id, node, phase,
+  speed) every 5 s.
+
+Replay-tier simplifications until the simulated tier (documented, not retail): positions and timing come from the
+recording, not from steering (`AIPhysicsInput`); the branch is evaluated once when the node is reached; the
+obstacle-list rejection is not modelled; NPCs do not react to the player (the proxy is infinite mass, no bails);
+tricks show one clip per phase (a grind, slide or manual is one 50-50 clip; the recording does not say which), the
+stock graphs do not run; the end of a line with no branch taken despawns the NPC (retail behaviour not decoded).
+
+Files: `crates/skate-core/src/living_world/{replay,replay_tests,mod,clock,population}.rs`,
+`crates/skate-data/src/living_world.rs`, `crates/skate-data/tests/living_world_data.rs`,
+`crates/skate-game/src/living_world/{npc_skaters,npc_tests,mod,tests}.rs`.
+
+Verification (milestone 3):
+- `cargo test -p skate-core --release --locked living_world::replay`: 7 tests (60 Hz timing and interpolation,
+  frame-rate independence at 30 / 60 / 64 / 144 / 240 Hz, phases from flags and trick events, line end, every term
+  of the branch score against the code constants, branch taken / stay / in-use target, client mirror equals host,
+  orientation order).
+- `SKATE3_ASSET_ROOT=<export> cargo test -p skate-data --release --locked --test living_world_data`: every one of
+  the 1,691 lines rides end to end with the retail branch choice (1,331 branches taken, average ride 14.6 s; recomp
+  NPC median life 13 to 28 s), every branch target resolves, no frame moves more than 3 m, deterministic.
+- `cargo test -p skate-game --release --locked --bin skate3rust -- living_world`: 9 tests; new: NPCs ride their
+  lines and each position equals a cursor rebuilt from the spawn record and the tick, 3 NPCs max, line ends despawn,
+  audio velocity and voice published, same result at 60 and 144 Hz, NPC entities go with the population, proxy /
+  audio state / clip table; with `SKATE3_ASSET_ROOT` every puppet clip evaluates on the stock banks.
+
+Multiplayer: an NPC is reproducible from its spawn record, the console tick and its branch records
+(`Decider::Mirror`); a client never decides (`NetRole::Client` mirrors). No transport.
+
+Moddability: lines are keyed by retail id in a shared map a content overlay can extend or patch; looks by character
+key (`NpcSkaterLooks`); NPC events are messages; spawn / despawn go through the population (stable ids). The
+`sdk.living_world` NPC surface is designed below (open items) and comes with the mod milestone.
+```
 ## Change: milestone V0, vehicle data
 
 What retail ships, read from the disc and the code for this milestone (details and formats:

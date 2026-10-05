@@ -7,11 +7,13 @@
 //! - `tables.json` → [`LivingWorldTables`]: `livingworld_census` records resolved through their
 //!   category group, and the `livingworld_census_ranges` circles;
 //! - `skater_profiles.json` → [`SkaterCharacter`]s of the free-roam pool;
-//! - decoded AIPATH lines (`aipath`) → [`SkaterLine`]s.
+//! - decoded AIPATH lines (`aipath`) → [`SkaterLine`]s (population) and [`ReplayLine`]s (the
+//!   replay-tier cursor, milestone 3).
 
 use crate::aipath::AiPath;
 use serde_json::Value;
 use skate_core::living_world::census::CensusCategory;
+use skate_core::living_world::replay::{ReplayBranch, ReplayBranchGroup, ReplayJump, ReplayLine, ReplayNode};
 use skate_core::living_world::{CensusCircle, CensusGrid, CensusMap, CensusRange, CensusRecord, PopulationConfig, SkaterCharacter, SkaterLine};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -200,6 +202,49 @@ pub fn skater_lines<'a>(paths: impl IntoIterator<Item = &'a AiPath>) -> Vec<Skat
             Some(SkaterLine { id: p.id.0, start, heading, valid: true, allowed_skaters: p.allowed_skaters, flags: p.flags })
         })
         .collect()
+}
+
+/// A decoded line as the replay cursor reads it (`skate_core::living_world::replay`): nodes,
+/// jumps and branch groups unchanged (ids, frames, events, flags and orientations as on the disc).
+pub fn replay_line(p: &AiPath) -> ReplayLine {
+    ReplayLine {
+        id: p.id.0,
+        flags: p.flags,
+        skill: p.skill_level,
+        nodes: p
+            .nodes
+            .iter()
+            .map(|n| ReplayNode {
+                position: n.position,
+                board: n.board_orientation,
+                skater: n.skater_orientation,
+                frames: n.frames_since_last_node,
+                event: n.event,
+                flags: n.flags,
+                jump: n.extended.map(|e| e as u32),
+            })
+            .collect(),
+        jumps: p
+            .extended
+            .iter()
+            .map(|e| ReplayJump {
+                start_position: e.trajectory_start_position,
+                start_velocity: e.trajectory_start_velocity,
+                offset: e.trajectory_offset,
+                trick: e.trick_index,
+                spins: e.air_spin_180_count,
+                flags: e.flags,
+            })
+            .collect(),
+        groups: p
+            .branch_groups
+            .iter()
+            .map(|g| ReplayBranchGroup {
+                node: g.node,
+                branches: g.branches.iter().map(|b| ReplayBranch { target: b.target.0, target_node: b.target_node, weight: b.weight }).collect(),
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]

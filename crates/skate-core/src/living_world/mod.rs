@@ -21,6 +21,7 @@ pub mod census;
 pub mod clock;
 pub mod config;
 pub mod population;
+pub mod replay;
 pub mod rng;
 pub mod skaters;
 

@@ -1,8 +1,7 @@
 //! Living world, engine side (doc `docs/hails-additions/26-living-world.md`, milestone 2: the
 //! population core). Runs `skate_core::living_world` around the local player at the console
-//! cadence and publishes spawn / despawn decisions as messages. No bodies or rendering yet:
-//! later milestones consume [`LivingWorldSpawn`] / [`LivingWorldDespawn`] and create the NPC
-//! skaters, peds and cars.
+//! cadence and publishes spawn / despawn decisions as messages. Consumers: the replay-tier NPC
+//! skaters ([`npc_skaters`], milestone 3); peds and cars come with their milestones.
 //!
 //! Data: the setup group `livingworld` export (`private/living_world/`): `tables.json`
 //! (census caps, ranges), `<District>.census.bin`, `skater_profiles.json`,
@@ -28,9 +27,14 @@ use skate_core::living_world::{
 };
 use std::path::Path;
 
+pub(crate) mod npc_skaters;
+
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "npc_tests.rs"]
+mod npc_tests;
 
 /// Who runs the population decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +214,8 @@ pub(crate) struct PopulationState {
     pub world: LivingWorld,
     pub census: Option<CensusMap>,
     pub skaters: Option<SkaterData>,
+    /// Replay-tier lines and voices of the loaded district (milestone 3).
+    pub npc: npc_skaters::NpcData,
     /// The ranges from `tables.json` (re-applied after settings changes).
     data_config: PopulationConfig,
     /// (map name, generation) the data was loaded for.
@@ -226,6 +232,7 @@ impl Default for PopulationState {
             world: LivingWorld::new(PopulationConfig::retail(), 0),
             census: None,
             skaters: None,
+            npc: npc_skaters::NpcData::default(),
             data_config: PopulationConfig::retail(),
             loaded_for: None,
             status: "no living-world data".into(),
@@ -244,6 +251,7 @@ impl PopulationState {
         self.world = LivingWorld::new(self.data_config.clone(), seed);
         self.census = data.census;
         self.skaters = data.skaters;
+        self.npc = data.npc;
         self.status = data.status;
         self.loaded_for = Some((map.to_string(), generation));
     }
@@ -267,6 +275,7 @@ pub(crate) struct LoadedData {
     pub config: PopulationConfig,
     pub census: Option<CensusMap>,
     pub skaters: Option<SkaterData>,
+    pub npc: npc_skaters::NpcData,
     pub status: String,
 }
 
@@ -293,13 +302,16 @@ pub(crate) fn load_data(asset_root: &Path, district: &str) -> LoadedData {
             }
         }
     });
+    let mut npc = npc_skaters::NpcData::default();
     let skaters = (|| {
         let profiles = std::fs::read(dir.join("skater_profiles.json")).ok()?;
         let characters = skate_data::living_world::skater_characters(&profiles, &[]).ok()?;
+        npc.voices = npc_voices(&profiles);
         let pack = std::fs::read(dir.join("skater_paths").join(format!("{district}.bin"))).ok()?;
         let tiles = skate_data::aipath::parse_pack(&pack).ok()?;
         let (paths, _) = skate_data::aipath::district_paths(&tiles).ok()?;
         let lines = skate_data::living_world::skater_lines(paths.iter().map(|p| &p.path));
+        npc.lines = std::sync::Arc::new(paths.iter().filter(|p| p.path.id.is_ambient()).map(|p| (p.path.id.0, skate_data::living_world::replay_line(&p.path))).collect());
         Some(SkaterData { lines, characters })
     })();
     status.insert(
@@ -310,7 +322,18 @@ pub(crate) fn load_data(asset_root: &Path, district: &str) -> LoadedData {
             skaters.as_ref().map_or(0, |s| s.lines.len())
         ),
     );
-    LoadedData { config, census, skaters, status: status.join("; ") }
+    LoadedData { config, census, skaters, npc, status: status.join("; ") }
+}
+
+/// `characters_marquee` voice ids by character key (`skater_profiles.json` `characters.*.voice`).
+pub(crate) fn npc_voices(profiles: &[u8]) -> std::collections::BTreeMap<String, u32> {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(profiles) else { return Default::default() };
+    v["characters"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, c)| c["voice"].as_u64().map(|x| (k.clone(), x as u32)))
+        .collect()
 }
 
 /// The observers this frame: the local skater (deck position and velocity). Remote players join
@@ -343,6 +366,7 @@ fn load_for_map(
     settings: Res<LivingWorldSettings>,
     mut state: ResMut<PopulationState>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
+    audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
 ) {
     let key = (map.name.clone(), map.generation);
     if state.loaded_for.as_ref() == Some(&key) {
@@ -355,6 +379,10 @@ fn load_for_map(
     }
     let data = load_data(&config.asset_root, &map.name);
     info!("LIVING_WORLD data {}", data.status);
+    // NPC skaters will publish board audio and speech here: let the world banks decode early.
+    if let Some(mut audio) = audio {
+        audio.expected = settings.enabled && !data.npc.lines.is_empty();
+    }
     state.install(&map.name, map.generation, &settings, data);
 }
 
@@ -434,5 +462,6 @@ impl Plugin for LivingWorldPlugin {
                 FixedUpdate,
                 (load_for_map, gather_observers, step_population).chain().after(crate::app::SimulationSet::Physics),
             );
+        npc_skaters::install(app);
     }
 }

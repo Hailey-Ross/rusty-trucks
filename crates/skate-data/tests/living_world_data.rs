@@ -161,3 +161,69 @@ fn skater_pool_and_lines_load() {
     }
     assert_eq!(total, 1_691);
 }
+
+/// Milestone 3: every exported line rides end to end with the replay cursor at the recording
+/// rate, with the retail branch choice (a player standing at the line start), deterministically.
+#[test]
+fn replay_cursor_rides_every_exported_line() {
+    use skate_core::living_world::replay::{BranchContext, CursorEvent, Decider, LineCursor, ReplayLine};
+    use std::collections::BTreeMap;
+    let Some(paths) = find("skater_paths") else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to an export with skater_paths");
+        return;
+    };
+    let mut total = (0usize, 0usize, 0usize, 0u64);
+    for district in ["DownTown", "Industrial", "University"] {
+        let pack = std::fs::read(paths.join(format!("{district}.bin"))).unwrap();
+        let tiles = aipath::parse_pack(&pack).unwrap();
+        let (unique, _) = aipath::district_paths(&tiles).unwrap();
+        let lines: BTreeMap<[u8; 16], ReplayLine> = unique.iter().map(|p| (p.path.id.0, living_world::replay_line(&p.path))).collect();
+        // Every branch target resolves to a line of the same district with the node in range.
+        for l in lines.values() {
+            for g in &l.groups {
+                assert!((g.node as usize) < l.nodes.len().saturating_sub(1), "group on the last node");
+                for b in &g.branches {
+                    assert!(lines.get(&b.target).is_some_and(|t| (b.target_node as usize) < t.nodes.len()));
+                }
+            }
+        }
+        let run = |id: [u8; 16]| {
+            let start = lines[&id].nodes[0].position;
+            let players = [start];
+            let mut c = LineCursor::spawn(&lines, id, 0);
+            let mut ev = Vec::new();
+            let mut frames = 0u64;
+            let mut last = c.sample(&lines, 0.0).unwrap().position;
+            let mut max_jump = 0.0f32;
+            while !c.finished && frames < 60 * 60 * 10 {
+                let s = c.sample(&lines, 0.0).unwrap();
+                let speed = (s.velocity[0].powi(2) + s.velocity[1].powi(2) + s.velocity[2].powi(2)).sqrt();
+                let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false };
+                c.step(&lines, &mut Decider::Decide(ctx), &mut ev);
+                frames += 1;
+                let p = c.sample(&lines, 0.0).unwrap().position;
+                let branched = matches!(ev.last(), Some(CursorEvent::Branch(_)));
+                if !branched {
+                    max_jump = max_jump.max(((p[0] - last[0]).powi(2) + (p[1] - last[1]).powi(2) + (p[2] - last[2]).powi(2)).sqrt());
+                }
+                last = p;
+            }
+            (c, ev.into_iter().filter(|e| matches!(e, CursorEvent::Branch(_))).count(), frames, max_jump)
+        };
+        for &id in lines.keys() {
+            let (c, branches, frames, max_jump) = run(id);
+            // A recorded line moves at most a few metres per 60 Hz frame (p90 speed 16 m/s [data]).
+            assert!(max_jump < 3.0, "{district} {:02x?}: {max_jump} m in one frame", &id[..8]);
+            total.0 += 1;
+            total.1 += branches;
+            total.2 += c.finished as usize;
+            total.3 += frames;
+        }
+        // Deterministic: the same line twice gives the same cursor.
+        let first = *lines.keys().next().unwrap();
+        assert_eq!(run(first).0, run(first).0);
+    }
+    eprintln!("replay: {} lines, {} branches taken, {} finished, {} frames", total.0, total.1, total.2, total.3);
+    assert_eq!(total.0, 1691);
+    assert!(total.2 > 1600, "most rides end at a line end within 10 minutes");
+}

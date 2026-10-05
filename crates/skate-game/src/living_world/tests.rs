@@ -33,7 +33,7 @@ fn data() -> LoadedData {
         })
         .collect();
     let characters = (0..6).map(|i| SkaterCharacter { key: format!("pro_{i}"), pro_index: Some(i), capabilities: [false; 3], community: false }).collect();
-    LoadedData { config, census: Some(census()), skaters: Some(SkaterData { lines, characters }), status: "test".into() }
+    LoadedData { config, census: Some(census()), skaters: Some(SkaterData { lines, characters }), npc: Default::default(), status: "test".into() }
 }
 
 #[derive(Resource, Default)]
