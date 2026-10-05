@@ -10,6 +10,18 @@ use skate_core::{
 };
 use skate_data::{animation_metadata::AnimationMetadata, collections::Collections};
 
+/// Object-move curves of the inputlistener collection read by 8259C4B0
+/// (`skate_core::input::offboard_intentions::produce_object_move`).
+pub(crate) fn load_object_move_curves(
+    data: &Collections,
+) -> Result<skate_core::input::offboard_intentions::ObjectMoveCurves, String> {
+    Ok(skate_core::input::offboard_intentions::ObjectMoveCurves {
+        x_gain: curves::load::<8>(data, "inputlistener", "Hash_1A1A7AC37A72DF87")?.0,
+        z_gain: curves::load::<8>(data, "inputlistener", "Hash_05BA8B52C23B3481")?.0,
+        rotation: curves::load::<16>(data, "inputlistener", "Hash_9ADFC2E222938C1E")?.0,
+    })
+}
+
 pub(crate) struct Settings {
     pub controller: controller::Settings,
     pub board: skate_core::player::offboard::ground_sync::BoardSettings,

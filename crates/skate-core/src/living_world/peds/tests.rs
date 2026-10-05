@@ -66,6 +66,19 @@ fn tints_share_one_rand() {
 }
 
 #[test]
+fn a_mod_palette_replaces_the_model_tints_with_the_same_rule() {
+    let c = catalog();
+    let mut o = PedOverrides::default();
+    let base = c.choose("aletown", 42, &o).unwrap();
+    o.model_tints.insert(base.model.clone(), (vec![[0.9, 0.1, 0.1, 1.0]], vec![[0.1, 0.1, 0.9, 1.0]]));
+    let modded = c.choose("aletown", 42, &o).unwrap();
+    assert_eq!((modded.entity.as_str(), modded.model.as_str()), (base.entity.as_str(), base.model.as_str()));
+    assert_eq!((modded.tint_a, modded.tint_b), ([0.9, 0.1, 0.1, 1.0], [0.1, 0.1, 0.9, 1.0]));
+    // restoring the defaults (mod disabled) gives the retail look again
+    assert_eq!(c.choose("aletown", 42, &PedOverrides::default()).unwrap(), base);
+}
+
+#[test]
 fn the_look_follows_from_category_and_seed() {
     let c = catalog();
     let o = PedOverrides::default();
@@ -284,4 +297,93 @@ fn test_path_walks_turns_and_repeats() {
     for s in [Locomotion::Idle, Locomotion::Start, Locomotion::Walk, Locomotion::Stop, Locomotion::TurnRight, Locomotion::TurnLeft] {
         assert!(states.contains(&s), "{s:?} never reached");
     }
+}
+
+/// A rig like the export's: the hips reference carries the 180 degree literal that trajectory
+/// mode 1 mirroring multiplies in, so the reference is symmetric only as a FULL pose.
+fn mirror_fixture() -> (PedRig, PedAnimSet, BTreeMap<String, PedClip>) {
+    let leg = |z: f32| Sqt { scale: [1.0; 4], rotation: [0.0, 0.0, 0.0, 1.0], translation: [0.0, -0.4, z, 1.0] };
+    let rig = PedRig {
+        names: s(&["TRAJECTORY", "HIPS", "LEFTUPLEG", "RIGHTUPLEG"]),
+        parents: vec![-1, 0, 1, 1],
+        mirrors: vec![0, 1, 3, 2],
+        reference: vec![IDENTITY, Sqt { scale: [1.0; 4], rotation: [0.5, 0.5, -0.5, -0.5], translation: [0.0, 0.92, 0.0, 1.0] }, leg(0.1), leg(-0.1)],
+        animated: vec![true, true, true, true],
+    };
+    let bend = |a: f32| Sqt { scale: [1.0; 4], rotation: [(a * 0.5).sin(), 0.0, 0.0, (a * 0.5).cos()], translation: [0.0, 0.0, 0.0, 1.0] };
+    let still = |name: &str, frames: usize, turn: f32, looping: bool| PedClip {
+        name: name.into(),
+        fps: FPS,
+        frames: (0..frames)
+            .map(|f| {
+                let t = f as f32 / (frames - 1) as f32;
+                // Hips delta zero; only the left leg moves (an asymmetric clip).
+                vec![sqt([0.0, 0.0, 0.0], turn * t), IDENTITY, bend(0.6 * t), IDENTITY]
+            })
+            .collect(),
+        looping,
+        loop_rotation: [0.0, 0.0, 0.0, 1.0],
+        loop_translation: [0.0; 3],
+        windows: vec![],
+    };
+    let mut clips = BTreeMap::new();
+    clips.insert("IDLE".into(), still("IDLE", 31, 0.0, true));
+    clips.insert("TURN".into(), still("TURN", 43, -std::f32::consts::PI, false));
+    let r = |c: &str| vec![RemapClip { clip: c.into(), windows: vec![] }];
+    let mut set = PedAnimSet::default();
+    set.entries.insert(anim::names::IDLE.into(), r("IDLE"));
+    set.entries.insert(anim::names::TURN_180.into(), r("TURN"));
+    (rig, set, clips)
+}
+
+fn angle(a: [f32; 4], b: [f32; 4]) -> f32 {
+    let d: f32 = (0..4).map(|k| a[k] * b[k]).sum();
+    2.0 * d.abs().min(1.0).acos()
+}
+
+#[test]
+fn the_mirrored_turn_mirrors_the_full_pose_and_never_flips_the_hips() {
+    let (rig, set, clips) = mirror_fixture();
+    // Precondition: the reference is symmetric under the full-pose mirror.
+    let mut m = rig.reference.clone();
+    crate::animation::pose_mirror::mirror(&mut m, &rig.parents, &rig.mirrors, 1).unwrap();
+    for (a, b) in m.iter().zip(&rig.reference).skip(1) {
+        assert!(angle(a.rotation, b.rotation) < 1e-4);
+    }
+    let dt = 1.0 / 60.0;
+    let poses = |intent: Intent| {
+        let mut p = PedAnimPlayer::new(&set, 1).unwrap();
+        p.intent = intent;
+        let mut out = Vec::new();
+        for _ in 0..40 {
+            p.step(dt, &set, &clips);
+            p.intent = Intent::Idle;
+            out.push((p.blend_weight(), p.pose(&rig, &clips, 0.0).unwrap()));
+        }
+        out
+    };
+    let right = poses(Intent::TurnRight);
+    let left = poses(Intent::TurnLeft);
+    for (k, ((wl, l), (wr, r))) in left.iter().zip(&right).enumerate() {
+        assert_eq!(wl, wr);
+        // The hips delta is zero in every clip: mid-blend or not, the hips stay at the reference
+        // (the old delta mirror turned them 180 degrees: the ped stood on its head).
+        assert!(angle(l[1].rotation, rig.reference[1].rotation) < 1e-3, "tick {k} weight {wl}: hips {:?}", l[1].rotation);
+        // Out of the blend, the left turn is the right turn's full pose mirrored (in the blend the
+        // outgoing idle layer is not mirrored).
+        if *wl < 1.0 {
+            continue;
+        }
+        let mut mr = r.clone();
+        crate::animation::pose_mirror::mirror(&mut mr, &rig.parents, &rig.mirrors, 1).unwrap();
+        for b in 1..4 {
+            assert!(angle(l[b].rotation, mr[b].rotation) < 1e-3, "tick {k} bone {b}: {:?} vs {:?}", l[b].rotation, mr[b].rotation);
+            assert!((0..3).all(|i| (l[b].translation[i] - mr[b].translation[i]).abs() < 1e-5), "tick {k} bone {b} translation");
+        }
+    }
+    // And the clip really is asymmetric: the left leg moves in the right turn, the right leg in the left.
+    let (_, r) = &right[39];
+    let (_, l) = &left[39];
+    assert!(angle(r[2].rotation, rig.reference[2].rotation) > 0.1 && angle(r[3].rotation, rig.reference[3].rotation) < 1e-4);
+    assert!(angle(l[3].rotation, rig.reference[3].rotation) > 0.1 && angle(l[2].rotation, rig.reference[2].rotation) < 1e-4);
 }

@@ -5,7 +5,11 @@
 //! `entities` array (`Hash_D5E1267E2D715124`, `sub_8269B040`), draw `sub_826BB058`
 //! (u32 x 2^-32 as f32), index = `trunc(draw x 100) % count` (unsigned remainder), count 0 = no
 //! spawn [code]. The model's tints come from one rand `r` (`sub_827B4170`): `tints_a[r % na]`,
-//! `tints_b[r % nb]`, a default vector when an array is empty [code].
+//! `tints_b[r % nb]`, a default vector when an array is empty [code]. `tints_a` is the model's
+//! `secondary_colours` list (`Hash_DF76D7D773857EDB`, read first), `tints_b` its
+//! `chassis_colours` (`Hash_12026E2EED18CC8D`) [code: the two hash keys in `sub_827B4170`]; the
+//! ped shaders paint the atlas's red mask with `tints_a` and the blue mask with `tints_b`
+//! (`colorize`).
 //!
 //! Our draws come from the spawn record's seed (one sub-RNG per ped, fixed draw order: entity,
 //! group child, tints), not from retail's global RNG, so a ped's look is a pure function of its
@@ -27,10 +31,13 @@ pub struct PedModel {
     pub recipe: String,
     /// `Hash_3EB8E0CD15F0891C` = the speech voice id (`world-ped-audio.md`).
     pub voice: Option<u32>,
+    /// `secondary_colours`: the red mask tints (`i_colorize_red`).
     pub tints_a: Vec<[f32; 4]>,
+    /// `chassis_colours`: the blue mask tints (`i_colorize_blue`).
     pub tints_b: Vec<[f32; 4]>,
     /// `Hash_73B6874C7B46C7C6` (45 / 55) and `Hash_9FCFDBEA56BA4733` (65 / 75) [data]: read by
-    /// `sub_827C1188` [code]; most likely LOD / fade distances (meaning not confirmed).
+    /// `sub_827C1188` [code]: the first is the camera distance fade (opaque to 45 m, gone at
+    /// 55 m, `peds::fade`); the second replaces it only when its third float is larger.
     pub lod_near: Option<[f32; 2]>,
     pub lod_far: Option<[f32; 2]>,
 }
@@ -62,6 +69,9 @@ pub struct PedOverrides {
     pub entity_model: BTreeMap<String, String>,
     /// entity -> animation set.
     pub entity_anim_set: BTreeMap<String, String>,
+    /// model record -> replacement tint palettes `(tints_a, tints_b)` (red mask, blue mask);
+    /// picked with the same one-rand rule as the retail lists.
+    pub model_tints: BTreeMap<String, (Vec<[f32; 4]>, Vec<[f32; 4]>)>,
 }
 
 /// The resolved look of one ped.
@@ -134,7 +144,10 @@ impl PedCatalog {
             model_key = children[(child_draw % children.len() as u32) as usize].to_string();
             model = &self.models[&model_key];
         }
-        let (tint_a, tint_b) = tints(model, tint_draw);
+        let (tint_a, tint_b) = match overrides.model_tints.get(&model_key) {
+            Some((a, b)) => tints(&PedModel { tints_a: a.clone(), tints_b: b.clone(), ..PedModel::default() }, tint_draw),
+            None => tints(model, tint_draw),
+        };
         let anim_set = overrides.entity_anim_set.get(entity).cloned().or_else(|| record.and_then(|e| e.anim_set.clone())).unwrap_or_else(|| "default".into());
         Some(PedLook { entity: entity.to_string(), model: model_key, recipe: model.recipe.clone(), anim_set, voice: model.voice, tint_a, tint_b })
     }

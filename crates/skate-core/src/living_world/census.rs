@@ -54,16 +54,17 @@ impl CensusRange {
     }
 
     /// Circle and centre for an observer: speed = |velocity| x 3.6 [code `0x822F8628`]; the centre
-    /// moves `forward_offset` along the horizontal velocity direction.
+    /// moves `forward_offset` along the 3-D velocity direction (`normalize3(velocity)`,
+    /// `sub_826B7530`) [code], so on a slope the centre also moves up or down the hill.
     pub fn around(&self, observer: &Observer) -> (CensusCircle, Vec3) {
         let v = observer.velocity;
         let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
         let circle = self.at(speed * retail::KMH_PER_MS);
         let mut centre = observer.position;
-        let h = (v[0] * v[0] + v[2] * v[2]).sqrt();
-        if h > 1e-6 && circle.forward_offset != 0.0 {
-            centre[0] += v[0] / h * circle.forward_offset;
-            centre[2] += v[2] / h * circle.forward_offset;
+        if speed > 1e-6 && circle.forward_offset != 0.0 {
+            for (c, d) in centre.iter_mut().zip(v) {
+                *c += d / speed * circle.forward_offset;
+            }
         }
         (circle, centre)
     }

@@ -20,6 +20,8 @@
 pub mod census;
 pub mod clock;
 pub mod config;
+pub mod draw_distance;
+pub mod leave_fade;
 pub mod peds;
 pub mod population;
 pub mod replay;
@@ -29,6 +31,7 @@ pub mod skaters;
 pub use census::{CensusCircle, CensusGrid, CensusMap, CensusRange, CensusRecord, VehicleCatalog, VehicleEntity};
 pub use clock::ConsoleClock;
 pub use config::{CensusKindConfig, FreePlay, PopulationConfig, SkaterConfig};
+pub use draw_distance::DrawDistance;
 pub use population::{LaneState, LivingWorld, TickInputs};
 pub use rng::Rng;
 pub use skaters::{SkaterCharacter, SkaterLine, SkaterWorld};

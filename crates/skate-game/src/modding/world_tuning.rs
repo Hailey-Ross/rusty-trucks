@@ -1,0 +1,403 @@
+//! World tuning writes (capability `world_tuning` = 1, schema `skate_mods::world_tuning`): the
+//! same entry for mods (`sdk.world.set_tuning(domain, patch)`) and engine systems ([`set`]).
+//!
+//! Patches are held per owner in [`WorldTuning`] (serialisable JSON, in arrival order). After every
+//! change the domain is rebuilt from the shipped values plus the merged patches (first writer wins
+//! per field) and written into the one authority resource of that domain:
+//! - `living_world` -> `LivingWorldSettings` (rebuilt with `reset_mod_overrides`, so the player's
+//!   menu draw distance comes back when no mod sets one),
+//! - `props` -> `PropTuningSettings`,
+//! - `carry` -> `CarrySettings`.
+//! A mod that stops, fails or reloads loses its patches ([`clear_owner`]); [`clear_all`] when every
+//! mod goes.
+
+use bevy::prelude::*;
+use serde_json::{json, Value};
+use skate_core::math::Vector3;
+use skate_mods::world_tuning::{parse, CarryPatch, LivingWorldPatch, Merge, Patch, PropTuningPatch, PropsPatch, DOMAINS};
+
+use crate::living_world::LivingWorldSettings;
+use crate::physics::prop_carry::{CarryButtons, CarryLocomotion, CarrySettings};
+use crate::physics::prop_dynamics::{PropBox, PropTuning, PropTuningSettings, PropTuningTable};
+
+/// Per-owner patches, in arrival order (a re-set keeps the owner's place).
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub(crate) struct WorldTuning {
+    pub entries: Vec<(String, String, Value)>,
+}
+
+impl WorldTuning {
+    fn merged<T: Merge + Default>(&self, domain: &str, pick: impl Fn(Patch) -> Option<T>) -> T {
+        let mut out: Option<T> = None;
+        for (_, d, v) in &self.entries {
+            let Some(p) = (d == domain).then(|| parse(d, v)).flatten().and_then(&pick) else { continue };
+            match out.as_mut() {
+                Some(o) => o.merge(&p),
+                None => out = Some(p),
+            }
+        }
+        out.unwrap_or_default()
+    }
+}
+
+/// Set (or with `None` remove) `owner`'s patch of `domain`, then rebuild that domain.
+pub(crate) fn set(world: &mut World, owner: &str, domain: &str, patch: Option<Value>) -> Result<(), String> {
+    if !DOMAINS.contains(&domain) {
+        return Err(format!("unknown world tuning domain {domain}"));
+    }
+    if let Some(p) = &patch {
+        parse(domain, p).ok_or_else(|| format!("invalid {domain} tuning patch"))?;
+    }
+    let mut t = world.remove_resource::<WorldTuning>().unwrap_or_default();
+    let at = t.entries.iter().position(|(o, d, _)| o == owner && d == domain);
+    match (at, patch) {
+        (Some(i), Some(p)) => t.entries[i].2 = p,
+        (None, Some(p)) => t.entries.push((owner.to_owned(), domain.to_owned(), p)),
+        (Some(i), None) => {
+            t.entries.remove(i);
+        }
+        (None, None) => {}
+    }
+    rebuild(world, &t, domain);
+    world.insert_resource(t);
+    Ok(())
+}
+
+/// A mod stopped, failed or reloaded: its patches go and the domains it touched are rebuilt.
+pub(crate) fn clear_owner(world: &mut World, owner: &str) {
+    let Some(mut t) = world.remove_resource::<WorldTuning>() else { return };
+    let touched: Vec<String> = t.entries.iter().filter(|(o, _, _)| o == owner).map(|(_, d, _)| d.clone()).collect();
+    t.entries.retain(|(o, _, _)| o != owner);
+    for d in &touched {
+        rebuild(world, &t, d);
+    }
+    world.insert_resource(t);
+}
+
+/// Every mod went: every domain back to the shipped values (and the player's own choices).
+pub(crate) fn clear_all(world: &mut World) {
+    let had = world.remove_resource::<WorldTuning>().is_some_and(|t| !t.entries.is_empty());
+    let empty = WorldTuning::default();
+    if had {
+        for d in DOMAINS {
+            rebuild(world, &empty, d);
+        }
+    }
+    world.insert_resource(empty);
+}
+
+fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
+    match domain {
+        "living_world" => {
+            let p = t.merged(domain, |p| if let Patch::LivingWorld(p) = p { Some(p) } else { None });
+            if let Some(mut s) = world.get_resource_mut::<LivingWorldSettings>() {
+                apply_living_world(&mut s, &p);
+            }
+        }
+        "props" => {
+            let p = t.merged(domain, |p| if let Patch::Props(p) = p { Some(p) } else { None });
+            let table = props_table(&p);
+            match world.get_resource_mut::<PropTuningSettings>() {
+                Some(mut s) => s.0 = table,
+                None => world.insert_resource(PropTuningSettings(table)),
+            }
+        }
+        "carry" => {
+            let p = t.merged(domain, |p| if let Patch::Carry(p) = p { Some(p) } else { None });
+            let c = carry_settings(&p);
+            match world.get_resource_mut::<CarrySettings>() {
+                Some(mut s) => *s = c,
+                None => world.insert_resource(c),
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Shipped values (player's choices kept) plus the patch. Negative times / alphas clamp to 0.
+pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPatch) {
+    s.reset_mod_overrides();
+    if let Some(m) = p.npc_draw_distance {
+        s.npc_draw_distance = skate_core::living_world::DrawDistance::new(m).multiplier();
+    }
+    if let Some(f) = &p.skater_fade {
+        let c = &mut s.skater_fade;
+        c.fade_in_seconds = f.fade_in_seconds.map_or(c.fade_in_seconds, |v| v.max(0.0));
+        c.fade_seconds = f.fade_seconds.map_or(c.fade_seconds, |v| v.max(0.0));
+        c.despawn_alpha = f.despawn_alpha.map_or(c.despawn_alpha, |v| v.clamp(0.0, 1.0));
+    }
+    if let Some(f) = &p.skater_line_chain {
+        let c = &mut s.skater_line_chain;
+        c.radius = f.radius.map_or(c.radius, |v| v.max(0.0));
+        c.max_candidates = f.max_candidates.map_or(c.max_candidates, |v| v as usize);
+        c.blend_seconds = f.blend_seconds.map_or(c.blend_seconds, |v| v.max(0.0));
+        c.keep_facing = f.keep_facing.unwrap_or(c.keep_facing);
+    }
+    if let Some(f) = &p.ped_fade {
+        let c = &mut s.ped_fade;
+        c.distance = f.distance.map_or(c.distance, |[a, b]| [a.max(0.0), b.max(0.0)]);
+        c.fade_in_seconds = f.fade_in_seconds.map_or(c.fade_in_seconds, |v| v.max(0.0));
+        c.enabled = f.enabled.unwrap_or(c.enabled);
+    }
+    if let Some(f) = &p.ped_obstacles {
+        let c = &mut s.ped_obstacles;
+        c.enabled = f.enabled.unwrap_or(c.enabled);
+        c.min_half_extent = f.min_half_extent.map_or(c.min_half_extent, |v| v.max(0.0));
+        c.moving_speed = f.moving_speed.map_or(c.moving_speed, |v| v.max(0.0));
+        c.recut_fraction = f.recut_fraction.map_or(c.recut_fraction, |v| v.max(0.0));
+        c.detour_margin = f.detour_margin.map_or(c.detour_margin, |v| v.max(0.0));
+        c.step_height = f.step_height.map_or(c.step_height, |v| v.max(0.0));
+    }
+    if let Some(f) = &p.npc_skater_props {
+        s.npc_skater_props.enabled = f.enabled.unwrap_or(s.npc_skater_props.enabled);
+    }
+    if let Some(m) = &p.skater_clips {
+        s.skater_clips = m.clone();
+    }
+    if let Some(m) = &p.skater_blend_seconds {
+        s.skater_blend_seconds = m.iter().map(|(k, v)| (k.clone(), v.max(0.0))).collect();
+    }
+}
+
+fn prop_tuning(base: &PropTuning, p: &PropTuningPatch) -> PropTuning {
+    let f = |v: Option<f32>, d: f32| v.map_or(d, |v| v.max(0.0));
+    PropTuning {
+        contact_padding: f(p.contact_padding, base.contact_padding),
+        penetration_slop: f(p.penetration_slop, base.penetration_slop),
+        penetration_correction: f(p.penetration_correction, base.penetration_correction),
+        max_depenetration_per_tick: f(p.max_depenetration_per_tick, base.max_depenetration_per_tick),
+        restitution_threshold: f(p.restitution_threshold, base.restitution_threshold),
+        skater_push_mass: f(p.skater_push_mass, base.skater_push_mass),
+        push_transfer: f(p.push_transfer, base.push_transfer),
+        body_push_speed: f(p.body_push_speed, base.body_push_speed),
+        board_push_speed: f(p.board_push_speed, base.board_push_speed),
+        penetration_push_speed: f(p.penetration_push_speed, base.penetration_push_speed),
+        stuck_release_ticks: p.stuck_release_ticks.unwrap_or(base.stuck_release_ticks),
+        collision_box: p.collision_box.map_or(base.collision_box, |b| {
+            Some(PropBox { center: Vector3::new(b.center[0], b.center[1], b.center[2]), half_extents: Vector3::new(b.half_extents[0], b.half_extents[1], b.half_extents[2]) })
+        }),
+    }
+}
+
+/// Shipped table plus the patch; a template entry starts from the (patched) default.
+pub(crate) fn props_table(p: &PropsPatch) -> PropTuningTable {
+    let mut t = PropTuningTable::default();
+    if let Some(d) = &p.default {
+        t.default = prop_tuning(&t.default, d);
+    }
+    for (name, patch) in &p.by_template {
+        let entry = prop_tuning(&t.default, patch);
+        t.by_template.insert(name.clone(), entry);
+    }
+    t
+}
+
+pub(crate) fn carry_settings(p: &CarryPatch) -> CarrySettings {
+    let d = CarrySettings::default();
+    CarrySettings {
+        buttons: CarryButtons { grab_bit: p.grab_bit.unwrap_or(d.buttons.grab_bit), placement_bit: p.placement_bit.unwrap_or(d.buttons.placement_bit) },
+        grab_range: p.grab_range.filter(|r| *r > 0.0).unwrap_or(d.grab_range),
+        locomotion: CarryLocomotion {
+            push_speed: p.push_speed.unwrap_or(d.locomotion.push_speed),
+            pull_speed: p.pull_speed.unwrap_or(d.locomotion.pull_speed),
+            side_speed: p.side_speed.unwrap_or(d.locomotion.side_speed),
+            turn_rate: p.turn_rate.unwrap_or(d.locomotion.turn_rate),
+            grip_reach: p.grip_reach.unwrap_or(d.locomotion.grip_reach),
+        }
+        .sanitized(),
+    }
+}
+
+/// `sdk.engine.inspect(key, 'world_tuning:<domain>')`: the domain as the game uses it now.
+pub(crate) fn read(world: &World, domain: &str) -> Value {
+    let v3 = |v: Vector3| json!([v.x, v.y, v.z]);
+    let tuning = |t: &PropTuning| {
+        json!({
+            "contact_padding": t.contact_padding, "penetration_slop": t.penetration_slop,
+            "penetration_correction": t.penetration_correction, "max_depenetration_per_tick": t.max_depenetration_per_tick,
+            "restitution_threshold": t.restitution_threshold, "skater_push_mass": t.skater_push_mass,
+            "push_transfer": t.push_transfer, "body_push_speed": t.body_push_speed, "board_push_speed": t.board_push_speed,
+            "penetration_push_speed": t.penetration_push_speed, "stuck_release_ticks": t.stuck_release_ticks,
+            "collision_box": t.collision_box.map_or(Value::Null, |b| json!({"center": v3(b.center), "half_extents": v3(b.half_extents)})),
+        })
+    };
+    match domain {
+        "living_world" => world.get_resource::<LivingWorldSettings>().map_or(Value::Null, |s| {
+            json!({
+                "npc_draw_distance": s.npc_draw_distance,
+                "user_npc_draw_distance": s.user_npc_draw_distance,
+                "skater_fade": {"fade_in_seconds": s.skater_fade.fade_in_seconds, "fade_seconds": s.skater_fade.fade_seconds, "despawn_alpha": s.skater_fade.despawn_alpha},
+                "skater_line_chain": {"radius": s.skater_line_chain.radius, "max_candidates": s.skater_line_chain.max_candidates, "blend_seconds": s.skater_line_chain.blend_seconds, "keep_facing": s.skater_line_chain.keep_facing},
+                "ped_fade": {"distance": s.ped_fade.distance, "fade_in_seconds": s.ped_fade.fade_in_seconds, "enabled": s.ped_fade.enabled},
+                "ped_obstacles": {"enabled": s.ped_obstacles.enabled, "min_half_extent": s.ped_obstacles.min_half_extent,
+                    "moving_speed": s.ped_obstacles.moving_speed, "recut_fraction": s.ped_obstacles.recut_fraction,
+                    "detour_margin": s.ped_obstacles.detour_margin, "step_height": s.ped_obstacles.step_height},
+                "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
+                "skater_clips": s.skater_clips,
+                "skater_blend_seconds": s.skater_blend_seconds,
+            })
+        }),
+        "props" => world.get_resource::<PropTuningSettings>().map_or(Value::Null, |s| {
+            let by: serde_json::Map<String, Value> = s.0.by_template.iter().map(|(k, t)| (k.clone(), tuning(t))).collect();
+            json!({"default": tuning(&s.0.default), "by_template": by})
+        }),
+        "carry" => world.get_resource::<CarrySettings>().map_or(Value::Null, |c| {
+            let l = c.locomotion;
+            json!({"grab_bit": c.buttons.grab_bit, "placement_bit": c.buttons.placement_bit, "grab_range": c.grab_range,
+                "push_speed": l.push_speed, "pull_speed": l.pull_speed, "side_speed": l.side_speed, "turn_rate": l.turn_rate,
+                "grip_reach": l.grip_reach})
+        }),
+        _ => Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn world() -> World {
+        let mut w = World::new();
+        w.insert_resource(LivingWorldSettings::default());
+        w.init_resource::<PropTuningSettings>();
+        w.init_resource::<CarrySettings>();
+        w
+    }
+
+    #[test]
+    fn living_world_values_set_and_reset_on_disable() {
+        let mut w = world();
+        w.resource_mut::<LivingWorldSettings>().set_user_draw_distance(1.5);
+        set(&mut w, "dev.a", "living_world", Some(json!({
+            "npc_draw_distance": 3.0,
+            "skater_fade": {"fade_in_seconds": 0.0, "fade_seconds": 2.5, "despawn_alpha": 0.05},
+            "skater_line_chain": {"radius": 0.0, "blend_seconds": 0.6, "keep_facing": false},
+            "ped_fade": {"distance": [90.0, 110.0], "fade_in_seconds": 2.0, "enabled": false},
+        }))).unwrap();
+        {
+            let s = w.resource::<LivingWorldSettings>();
+            assert_eq!(s.npc_draw_distance, 3.0);
+            assert_eq!(s.user_npc_draw_distance, 1.5, "the player's choice is kept aside");
+            assert_eq!((s.skater_fade.fade_in_seconds, s.skater_fade.fade_seconds, s.skater_fade.despawn_alpha), (0.0, 2.5, 0.05));
+            assert_eq!((s.ped_fade.distance, s.ped_fade.fade_in_seconds, s.ped_fade.enabled), ([90.0, 110.0], 2.0, false));
+            assert_eq!((s.skater_line_chain.radius, s.skater_line_chain.max_candidates), (0.0, 16), "absent fields keep retail");
+            assert_eq!(s.skater_line_chain.blend_seconds, 0.6);
+            assert!(!s.skater_line_chain.keep_facing);
+        }
+        assert_eq!(read(&w, "living_world")["skater_line_chain"]["radius"], json!(0.0));
+        assert!((read(&w, "living_world")["skater_line_chain"]["blend_seconds"].as_f64().unwrap() - 0.6).abs() < 1e-6);
+        assert_eq!(read(&w, "living_world")["skater_line_chain"]["keep_facing"], json!(false));
+        assert_eq!(read(&w, "living_world")["skater_fade"]["fade_seconds"], json!(2.5));
+        clear_owner(&mut w, "dev.a");
+        let s = w.resource::<LivingWorldSettings>();
+        assert_eq!(s.npc_draw_distance, 1.5, "disable restores the player's menu choice");
+        let retail = LivingWorldSettings::default();
+        assert_eq!((s.skater_fade, s.ped_fade, s.skater_line_chain), (retail.skater_fade, retail.ped_fade, retail.skater_line_chain));
+    }
+
+    #[test]
+    fn first_writer_wins_and_nil_gives_fields_back() {
+        let mut w = world();
+        set(&mut w, "dev.a", "living_world", Some(json!({"skater_fade": {"fade_seconds": 2.0}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"skater_fade": {"fade_seconds": 4.0}, "npc_draw_distance": 2.0}))).unwrap();
+        assert_eq!(w.resource::<LivingWorldSettings>().skater_fade.fade_seconds, 2.0);
+        assert_eq!(w.resource::<LivingWorldSettings>().npc_draw_distance, 2.0);
+        set(&mut w, "dev.a", "living_world", None).unwrap();
+        assert_eq!(w.resource::<LivingWorldSettings>().skater_fade.fade_seconds, 4.0);
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"bogus": 1}))).is_err());
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<LivingWorldSettings>(), LivingWorldSettings::default());
+    }
+
+    #[test]
+    fn npc_skater_clips_set_merge_and_reset() {
+        let mut w = world();
+        set(&mut w, "dev.a", "living_world", Some(json!({"skater_clips": {"rolling": "A_CYC"}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"skater_clips": {"rolling": "B_CYC", "air": "C"}}))).unwrap();
+        {
+            let s = w.resource::<LivingWorldSettings>();
+            assert_eq!((s.skater_clips["rolling"].as_str(), s.skater_clips["air"].as_str()), ("A_CYC", "C"));
+        }
+        assert_eq!(read(&w, "living_world")["skater_clips"]["air"], json!("C"));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"skater_clips": {"flying": "X"}}))).is_err());
+        clear_all(&mut w);
+        assert!(w.resource::<LivingWorldSettings>().skater_clips.is_empty());
+        // The stable phase ids the mod API accepts are the engine's.
+        use skate_core::living_world::replay::ReplayPhase as P;
+        let names = [P::Rolling, P::Crouched, P::Air, P::AirTrick, P::GroundTrick, P::OffBoard].map(P::name);
+        assert_eq!(names, skate_mods::world_tuning::NPC_SKATER_PHASES);
+    }
+
+    #[test]
+    fn npc_skater_blend_seconds_set_merge_and_reset() {
+        use crate::living_world::npc_skaters::{RETAIL_BLEND_SECONDS, blend_seconds};
+        use skate_core::living_world::replay::ReplayPhase as P;
+        let mut w = world();
+        assert_eq!(blend_seconds(&w.resource::<LivingWorldSettings>().skater_blend_seconds, P::Air), RETAIL_BLEND_SECONDS);
+        set(&mut w, "dev.a", "living_world", Some(json!({"skater_blend_seconds": {"air": 0.4}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"skater_blend_seconds": {"air": 0.1, "default": 0.0}}))).unwrap();
+        {
+            let s = &w.resource::<LivingWorldSettings>().skater_blend_seconds;
+            assert_eq!((blend_seconds(s, P::Air), blend_seconds(s, P::Rolling)), (0.4, 0.0));
+        }
+        assert_eq!(read(&w, "living_world")["skater_blend_seconds"]["default"], json!(0.0));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"skater_blend_seconds": {"air": -1.0}}))).is_err());
+        clear_all(&mut w);
+        assert!(w.resource::<LivingWorldSettings>().skater_blend_seconds.is_empty());
+    }
+
+    #[test]
+    fn prop_tuning_and_collision_box_set_and_reset() {
+        let mut w = world();
+        set(&mut w, "dev.a", "props", Some(json!({
+            "default": {"max_depenetration_per_tick": 0.1, "stuck_release_ticks": 10},
+            "by_template": {"bench01": {"push_transfer": 0.2, "collision_box": {"center": [0.0, 0.4, 0.0], "half_extents": [1.0, 0.4, 0.3]}}},
+        }))).unwrap();
+        {
+            let t = &w.resource::<PropTuningSettings>().0;
+            assert_eq!((t.default.max_depenetration_per_tick, t.default.stuck_release_ticks), (0.1, 10));
+            let b = t.for_template("bench01");
+            assert_eq!((b.push_transfer, b.max_depenetration_per_tick), (0.2, 0.1), "template starts from the patched default");
+            let bx = b.collision_box.unwrap();
+            assert_eq!((bx.center.y, bx.half_extents.x), (0.4, 1.0));
+            assert_eq!(t.for_template("other").push_transfer, PropTuning::default().push_transfer);
+        }
+        assert_eq!(read(&w, "props")["by_template"]["bench01"]["collision_box"]["half_extents"], json!([1.0f32, 0.4f32, 0.3f32]));
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(*w.resource::<PropTuningSettings>(), PropTuningSettings::default());
+    }
+
+    #[test]
+    fn carry_move_object_speeds_set_and_reset() {
+        let mut w = world();
+        set(&mut w, "dev.a", "carry", Some(json!({"push_speed": 2.5, "turn_rate": 0.4}))).unwrap();
+        let c = *w.resource::<CarrySettings>();
+        let d = CarryLocomotion::default();
+        assert_eq!((c.locomotion.push_speed, c.locomotion.turn_rate), (2.5, 0.4));
+        assert_eq!((c.locomotion.pull_speed, c.locomotion.side_speed), (d.pull_speed, d.side_speed), "unset fields keep defaults");
+        let mut carry = crate::physics::prop_carry::PropCarry::default();
+        c.apply_to(&mut carry);
+        assert_eq!(carry.locomotion().push_speed, 2.5);
+        assert_eq!(read(&w, "carry")["turn_rate"], json!(0.4f32));
+        clear_owner(&mut w, "dev.a");
+        let reset = *w.resource::<CarrySettings>();
+        assert_eq!(reset, CarrySettings::default(), "mod disable restores the engine speeds");
+        reset.apply_to(&mut carry);
+        assert_eq!(carry.locomotion(), d);
+    }
+
+    #[test]
+    fn carry_buttons_and_grab_range_set_and_reset() {
+        let mut w = world();
+        set(&mut w, "dev.a", "carry", Some(json!({"grab_bit": 21, "placement_bit": 22, "grab_range": 3.5}))).unwrap();
+        let c = *w.resource::<CarrySettings>();
+        assert_eq!((c.buttons.grab_bit, c.buttons.placement_bit, c.grab_range), (21, 22, 3.5));
+        let mut carry = crate::physics::prop_carry::PropCarry::default();
+        c.apply_to(&mut carry);
+        assert_eq!((carry.buttons().grab_bit, carry.grab_range()), (21, 3.5));
+        clear_owner(&mut w, "dev.a");
+        let d = *w.resource::<CarrySettings>();
+        assert_eq!(d, CarrySettings::default());
+        d.apply_to(&mut carry);
+        assert_eq!((carry.buttons(), carry.grab_range()), (CarryButtons::default(), 2.0));
+    }
+}

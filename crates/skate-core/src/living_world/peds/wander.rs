@@ -46,6 +46,7 @@ use crate::living_world::traffic::signals::Light;
 
 use super::anim::{Intent, Locomotion};
 use super::nav::{NavMesh, NavPoint, dist_xz};
+use super::obstacles::NavObstacles;
 
 /// One probe fan [code `sub_82E311A8` arguments].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -177,6 +178,10 @@ pub struct PedNav {
     pub targets_chosen: u32,
     pub route: Option<PedRoute>,
     route_index: usize,
+    /// [`NavObstacles::version`] the corners were last checked against (fix 11).
+    pub obstacle_version: u64,
+    /// The polygon the body stands on (kept by [`constrain_move`]; fix 17). `None` = locate.
+    pub poly: Option<u32>,
 }
 
 fn rotate_y(v: [f32; 2], angle: f32) -> [f32; 2] {
@@ -218,11 +223,17 @@ pub fn fan_angles(fan: &Fan) -> Vec<f32> {
 
 /// Retail's fan probe: the first direction whose end point is on the mesh and reachable.
 pub fn probe_fan(mesh: &NavMesh, from: NavPoint, dir: [f32; 2], fan: &Fan) -> Option<NavPoint> {
+    probe_fan_clear(mesh, from, dir, fan, None)
+}
+
+/// [`probe_fan`] on the cut mesh: an end point inside a resting obstacle (grown by the agent
+/// radius) does not fit, as retail's snap to the cut NavPower mesh fails there (fix 11).
+pub fn probe_fan_clear(mesh: &NavMesh, from: NavPoint, dir: [f32; 2], fan: &Fan, obstacles: Option<&NavObstacles>) -> Option<NavPoint> {
     for angle in fan_angles(fan) {
         let d = rotate_y(dir, angle);
         let end = [from.position[0] + d[0] * fan.distance, from.position[1], from.position[2] + d[1] * fan.distance];
         if let Some(p) = mesh.locate(end) {
-            if mesh.reachable(from.poly, p.poly) {
+            if mesh.reachable(from.poly, p.poly) && !obstacles.is_some_and(|o| o.blocked(p.position, mesh.agent[1])) {
                 return Some(p);
             }
         }
@@ -232,12 +243,17 @@ pub fn probe_fan(mesh: &NavMesh, from: NavPoint, dir: [f32; 2], fan: &Fan) -> Op
 
 /// Retail's target choice (`sub_82E30F58`) from `from` facing `dir`.
 pub fn choose_target(mesh: &NavMesh, params: &WanderParams, from: NavPoint, dir: [f32; 2], skip_long: bool) -> (Vec3, Option<NavPoint>) {
+    choose_target_clear(mesh, params, from, dir, skip_long, None)
+}
+
+/// [`choose_target`] with resting obstacles cut out (fix 11).
+pub fn choose_target_clear(mesh: &NavMesh, params: &WanderParams, from: NavPoint, dir: [f32; 2], skip_long: bool, obstacles: Option<&NavObstacles>) -> (Vec3, Option<NavPoint>) {
     if !skip_long {
-        if let Some(p) = probe_fan(mesh, from, dir, &params.long) {
+        if let Some(p) = probe_fan_clear(mesh, from, dir, &params.long, obstacles) {
             return (p.position, Some(p));
         }
     }
-    if let Some(p) = probe_fan(mesh, from, dir, &params.short) {
+    if let Some(p) = probe_fan_clear(mesh, from, dir, &params.short, obstacles) {
         return (p.position, Some(p));
     }
     let step = params.fallback_min.max(params.mover_value * params.fallback_scale);
@@ -253,7 +269,7 @@ impl PedNav {
         self.corners.clear();
     }
 
-    fn plan(&mut self, mesh: &NavMesh, params: &WanderParams, here: NavPoint, heading: f32) {
+    fn plan(&mut self, mesh: &NavMesh, params: &WanderParams, here: NavPoint, heading: f32, obstacles: Option<&NavObstacles>) {
         let dir = forward(heading);
         let skip = std::mem::take(&mut self.skip_long);
         let (target, located) = if let Some(route) = &self.route {
@@ -268,7 +284,7 @@ impl PedNav {
                 (t, mesh.locate(t))
             }
         } else {
-            choose_target(mesh, params, here, dir, skip)
+            choose_target_clear(mesh, params, here, dir, skip, obstacles)
         };
         self.targets_chosen += 1;
         self.target = Some(target);
@@ -282,6 +298,11 @@ impl PedNav {
                 vec![target]
             }
         };
+        if let Some(o) = obstacles {
+            // NavPower plans on the cut mesh: bend the path round resting obstacles.
+            self.corners = o.detour(mesh, here.position, &self.corners, mesh.agent[1]);
+            self.obstacle_version = o.version;
+        }
     }
 
     /// One world tick. `position` / `heading` / `state` are the body's; `others` the nearby
@@ -300,16 +321,47 @@ impl PedNav {
         others: &[Neighbour],
         dt: f32,
     ) -> NavOutput {
-        let Some(here) = mesh.locate(position) else {
+        self.step_avoiding(mesh, params, rule, signals, me, position, heading, state, others, None, dt)
+    }
+
+    /// [`Self::step`] with the map's dynamic obstacles (fix 11): targets inside a resting obstacle
+    /// do not fit, paths bend round them, and when a cut changes the rest of the path is checked
+    /// again (retail: NavPower re-plans on the re-cut mesh).
+    #[allow(clippy::too_many_arguments)]
+    pub fn step_avoiding(
+        &mut self,
+        mesh: &NavMesh,
+        params: &WanderParams,
+        rule: CrosswalkRule,
+        signals: &dyn WalkSignals,
+        me: u64,
+        position: Vec3,
+        heading: f32,
+        state: Locomotion,
+        others: &[Neighbour],
+        obstacles: Option<&NavObstacles>,
+        dt: f32,
+    ) -> NavOutput {
+        let here = self.poly.and_then(|k| mesh.point_on(k, position)).or_else(|| mesh.locate(position));
+        let Some(here) = here else {
             self.waiting = NavWait::OffMesh;
             return NavOutput { intent: Intent::Idle, turn: 0.0, waiting: NavWait::OffMesh };
         };
         // Arrival / no plan: choose the next target (the bot's state 1).
         let arrived = self.corners.is_empty() || (self.next + 1 >= self.corners.len() && self.corners.last().is_some_and(|c| dist_xz(*c, position) < params.corner_radius));
         if arrived {
-            self.plan(mesh, params, here, heading);
+            self.plan(mesh, params, here, heading, obstacles);
+        } else if let Some(o) = obstacles.filter(|o| o.version != self.obstacle_version) {
+            let rest = self.corners.split_off(self.next.min(self.corners.len()));
+            self.corners = o.detour(mesh, position, &rest, mesh.agent[1]);
+            self.next = 0;
+            self.obstacle_version = o.version;
         }
-        while self.next + 1 < self.corners.len() && dist_xz(self.corners[self.next], position) < params.corner_radius {
+        // A corner counts as passed within the corner radius once the next one is in straight
+        // reach over the surface; before that the ped keeps walking to the corner (the corners
+        // are mesh boundary vertices, so cutting one early walks into the boundary: fix 17).
+        let at = NavPoint { poly: here.poly, position };
+        while self.next + 1 < self.corners.len() && dist_xz(self.corners[self.next], position) < params.corner_radius && mesh.clear_line(at, self.corners[self.next + 1]) {
             self.next += 1;
         }
         let corner = self.corners[self.next.min(self.corners.len() - 1)];
@@ -349,10 +401,20 @@ impl PedNav {
             }
         }
         if let Some((_, d)) = blocker {
-            // Side-step: the perpendicular to the blocker closer to the corner (ties: +90 degrees).
+            // Side-step: the perpendicular to the blocker closer to the corner (ties: +90
+            // degrees), on walkable ground (one agent diameter of room); with no room either
+            // side (a narrow strip) the ped yields instead of walking into the boundary (fix 17).
             let (a, b) = ([d[1], -d[0]], [-d[1], d[0]]);
-            let side = if a[0] * to[0] + a[1] * to[1] > b[0] * to[0] + b[1] * to[1] { a } else { b };
-            error = wrap(heading_of(side) - heading);
+            let (first, second) = if a[0] * to[0] + a[1] * to[1] > b[0] * to[0] + b[1] * to[1] { (a, b) } else { (b, a) };
+            let room = |v: [f32; 2]| {
+                let l = (v[0] * v[0] + v[1] * v[1]).sqrt().max(1e-6);
+                let reach = 2.0 * radius;
+                mesh.clear_line(at, [position[0] + v[0] / l * reach, position[1], position[2] + v[1] / l * reach])
+            };
+            match [first, second].into_iter().find(|v| room(*v)) {
+                Some(side) => error = wrap(heading_of(side) - heading),
+                None => yield_to = true,
+            }
         } else if push != [0.0, 0.0] {
             let steer = [to[0] + push[0] * 2.0, to[1] + push[1] * 2.0];
             error = wrap(heading_of(steer) - heading);
@@ -402,12 +464,26 @@ impl PedNav {
     }
 }
 
-/// Keep a move on walkable ground: the step from `from` to `to` is taken when `to` locates on
-/// the mesh (the position comes back on the polygon's surface), else the ped stays.
+/// Keep a move on walkable ground: the step from `from` to `to` moves over the polygons linked
+/// to the one under `from` ([`NavMesh::move_along`]: across tile seams, sliding along boundary
+/// edges, never onto an unconnected layer); the position comes back on the surface. A body off
+/// the mesh stays.
 pub fn constrain_step(mesh: &NavMesh, from: Vec3, to: Vec3) -> (Vec3, bool) {
-    match mesh.locate(to) {
-        Some(p) => (p.position, true),
-        None => (from, false),
+    let (p, _, ok) = constrain_move(mesh, None, from, to);
+    (p, ok)
+}
+
+/// [`constrain_step`] from a known polygon (`poly`, e.g. [`PedNav::poly`]; `None` or a polygon
+/// `from` is not on = locate). Returns the position, its polygon and whether the body is on the
+/// mesh (fix 17).
+pub fn constrain_move(mesh: &NavMesh, poly: Option<u32>, from: Vec3, to: Vec3) -> (Vec3, Option<u32>, bool) {
+    let here = poly.and_then(|k| mesh.point_on(k, from)).or_else(|| mesh.locate(from));
+    match here {
+        Some(h) => {
+            let m = mesh.move_along(NavPoint { poly: h.poly, position: from }, to);
+            (m.position, Some(m.poly), true)
+        }
+        None => (from, None, false),
     }
 }
 

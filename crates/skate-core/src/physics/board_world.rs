@@ -336,6 +336,14 @@ impl BoardWorld {
         self.buffer.capacity = retention.capacity;
         self.buffer.distance_squared_threshold = retention.duplicate_distance_squared;
         self.buffer.deferred_reduction = u8::from(retention.deferred_reduction);
+        // No volumes, no pairs: the union bounds below would be None and
+        // candidate_ranges(None) means "every triangle", so a hidden board
+        // (all volumes disabled, state 3) walked the whole map each tick
+        // for an empty result (fix15). The result and buffer state are the
+        // same as the full walk's: nothing allocated, nothing flushed.
+        if volumes.is_empty() {
+            return &self.contacts;
+        }
         let padding =
             if query.volume_padding.is_finite() && query.maximum_separating_distance.is_finite() {
                 query.volume_padding.max(0.) + query.maximum_separating_distance.max(0.)

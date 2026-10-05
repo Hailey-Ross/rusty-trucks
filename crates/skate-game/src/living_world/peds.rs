@@ -3,8 +3,8 @@
 //!
 //! - **Look** ([`Pedestrian`]): the entity inside the census category and its model from the
 //!   spawn record's seed (`skate_core::living_world::peds::choice`, retail `sub_826B8B88` /
-//!   `sub_826BB058`), the model's tint pair (`sub_827B4170`; kept on the component, not drawn
-//!   yet: the shader mask they modulate is not decoded). GLB `private/living_world/models/
+//!   `sub_826BB058`), the model's tint pair (`sub_827B4170`), painted onto the body's mask
+//!   texels by [`present_ped_tints`] (retail's ped shader rule, `peds::colorize`). GLB `private/living_world/models/
 //!   <recipe>.glb` (both LODs, parts, textures), or a mod's GLB from [`PedLooks`].
 //! - **Animation** ([`PedBody`]): the ped animation player on the clips of
 //!   `PedestrianSkeletonPres.abin`, stepped once per population world tick (1/60 s, `clock::RETAIL_TICK_HZ`) so a ped's state is a
@@ -19,11 +19,30 @@
 //!   polygons. Retail ambient peds never use crosswalks (the road branch of `Pedestrian.xml` is
 //!   unreachable in TU3); [`PedNavSettings::crosswalk`] = `WalkSignal` is a mod option that waits
 //!   for the walk light of the shared traffic signal clock.
+//! - **Dynamic obstacles** (fix 11, retail DynamicObject NavPower obstacles, see
+//!   `skate_core::living_world::peds::obstacles`): [`PedObstacles`] holds every prop (the
+//!   physics' prop bodies at their current pose, so a prop the player moved counts where it lies)
+//!   and every mod body. At rest they are cut out of the walkable area (re-cut after moving more
+//!   than a quarter of the smallest half extent, no cut while moving faster than 0.4 m/s or
+//!   carried); targets inside a cut do not fit, paths bend round cuts, and a body is never stepped
+//!   into ([`NavObstacles::resolve_step`]). Rules: [`LivingWorldSettings::ped_obstacles`]
+//!   (`sdk.world.set_tuning("living_world", {ped_obstacles = {...}})`).
 //! - **Skinning**: the GLB's 39 joints bind to the 50-bone rig by name (all match, data test);
 //!   bones the clips do not carry (fingers, face) follow their rig parent with the GLB's bind
-//!   offset.
-//! - **LOD** (placeholder until `sub_827C1188` is read): `LOD0` within the model's first
-//!   distance pair (45 m [data]), `LOD1` beyond its second (55 m), hysteresis between.
+//!   offset. The skin matrix is `bone global x inverse(GLB bind)` with NO extra bone-local
+//!   basis: the ped GLBs keep the retail model's bind frames, which are the rig's reference
+//!   frames (data test `ped_glb_bind_frames_are_the_rig_reference_frames`), so the reference pose
+//!   skins to the bind mesh. The skater's `render_basis` (its GLBs bake a matching basis into the
+//!   bind) twisted every ped bone 90 degrees about its own axis (torso -90, legs +90 at the
+//!   hips): the pinched waist / warped peds of fix10. [`ped_bone_basis`] picks the basis per
+//!   model from its bind frames, so a mod GLB written the skater way still works.
+//! - **Draw fade** (retail `sub_827C1188`, `skate_core::living_world::peds::fade`): opaque up to
+//!   the model's first distance pair (45 m [data]) from the camera, gone at 55 m, plus a 1 s
+//!   spawn fade in; the opacity goes into [`NpcFade::alpha`](super::npc_skaters::NpcFade) and is
+//!   drawn by the shared NPC fade; at 0 the ped's scene is hidden. This is what keeps the census
+//!   cull (70 m, a pure distance test) out of sight, as in retail.
+//! - **LOD** (placeholder, the LOD pick is not decoded): `LOD0` within 45 m, `LOD1` beyond 55 m,
+//!   hysteresis between; with the fade above `LOD1` only shows while fading.
 //! - **Audio**: [`PedAudio`](crate::world_audio::PedAudio) with the model's voice, the clip's
 //!   `LEFTTOEDOWN` / `RIGHTTOEDOWN` windows as `feet_down` and `BODYFALLTYPE` as `body_fall`, so
 //!   #32's ped footsteps and body falls play.
@@ -38,8 +57,8 @@ use super::{LivingWorldDespawn, LivingWorldSettings, LivingWorldSpawn, Populatio
 use crate::world_audio::PedAudio;
 use bevy::prelude::*;
 use skate_core::living_world::peds::anim::{PedClip, PedClips, TestPath};
-use skate_core::living_world::peds::wander::{NoSignals, constrain_step, crosswalk_ok, separation_ok};
-use skate_core::living_world::peds::{CrosswalkRule, Locomotion, NavMesh, NavRules, Neighbour, PedAnimPlayer, PedCatalog, PedEvaluator, PedNav, PedOverrides, PedRig, WalkSignals, WanderParams};
+use skate_core::living_world::peds::wander::{NoSignals, constrain_move, crosswalk_ok, separation_ok};
+use skate_core::living_world::peds::{CrosswalkRule, Locomotion, NavMesh, NavObstacles, NavRules, Neighbour, ObstacleInput, PedAnimPlayer, PedCatalog, PedEvaluator, PedNav, PedOverrides, PedRig, WalkSignals, WanderParams};
 use skate_core::living_world::{Decision, DespawnReason, Kind, LivingWorldId, SpawnChoice};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -159,6 +178,54 @@ pub(crate) struct PedNavSettings {
     pub crosswalk: CrosswalkRule,
 }
 
+/// Dynamic objects as ped navigation obstacles (fix 11): props and mod bodies by stable id.
+#[derive(Resource, Default, Clone, Debug, PartialEq)]
+pub(crate) struct PedObstacles(pub NavObstacles);
+
+/// Obstacle id of a mod body (props keep their prop id; mod bodies live above 2^40).
+pub(crate) const MOD_BODY_OBSTACLE_BASE: u64 = 1 << 40;
+
+/// The obstacle list of this tick: prop boxes (current pose, carried flag) and mod bodies
+/// (world AABBs, the attached one carried).
+pub(crate) fn obstacle_inputs(physics: Option<&crate::physics::GamePhysics>, mod_solids: &[(u64, [f32; 3], [f32; 3], [f32; 3], bool)]) -> Vec<ObstacleInput> {
+    let mut out = Vec::new();
+    if let Some(d) = physics.and_then(|p| p.prop_dynamics()) {
+        for (id, c, basis, h, v, held) in d.obstacle_boxes() {
+            out.push(ObstacleInput { id: id as u64, center: [c.x, c.y, c.z], axes: basis.columns, half_extents: [h.x, h.y, h.z], velocity: [v.x, v.y, v.z], inactive: held });
+        }
+    }
+    for (id, min, max, v, attached) in mod_solids {
+        let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5, (min[2] + max[2]) * 0.5];
+        let half = [(max[0] - min[0]) * 0.5, (max[1] - min[1]) * 0.5, (max[2] - min[2]) * 0.5];
+        if !half.iter().all(|h| h.is_finite()) {
+            continue;
+        }
+        out.push(ObstacleInput { id: MOD_BODY_OBSTACLE_BASE | id, center, axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], half_extents: half, velocity: *v, inactive: *attached });
+    }
+    out
+}
+
+/// Retail's per-object obstacle update, once per population tick before the peds step. Only a
+/// changed cut bumps the version (resting props cost no rebuild).
+pub(crate) fn update_ped_obstacles(
+    settings: Res<LivingWorldSettings>,
+    data: Res<PedData>,
+    physics: Option<Res<crate::physics::GamePhysics>>,
+    mods: Option<Res<crate::modding::Mods>>,
+    mut obstacles: ResMut<PedObstacles>,
+) {
+    obstacles.0.set_params(settings.ped_obstacles.clone());
+    if data.nav.is_none() {
+        if !obstacles.0.states.is_empty() {
+            obstacles.0.update(&[]);
+        }
+        return;
+    }
+    let solids = mods.as_deref().map(crate::modding::bridge::obstacle_solids).unwrap_or_default();
+    let inputs = obstacle_inputs(physics.as_deref(), &solids);
+    obstacles.0.update(&inputs);
+}
+
 /// The simulated body: animation player, navigation, position and heading.
 #[derive(Component, Clone, Debug)]
 pub(crate) struct PedBody {
@@ -198,10 +265,10 @@ impl PedClips for PedData {
 }
 
 /// Ground height below / near a point (a 9 m line from 3 m above), `None` when nothing is hit.
-fn ground(physics: Option<&crate::physics::GamePhysics>, at: Vec3) -> Option<f32> {
+fn ground(physics: Option<&crate::physics::GamePhysics>, at: Vec3, reach: f32) -> Option<f32> {
     use skate_core::math::Vector3;
     let p = physics?;
-    match p.world().query_thin_line(Vector3::new(at.x, at.y + 3.0, at.z), Vector3::new(at.x, at.y - 6.0, at.z)) {
+    match p.world().query_thin_line(Vector3::new(at.x, at.y + reach, at.z), Vector3::new(at.x, at.y - reach, at.z)) {
         Ok(Some(hit)) => Some(hit.geometry.position.y),
         _ => None,
     }
@@ -282,8 +349,20 @@ pub(crate) fn apply_ped_records(
         look.anim_set = set.0.clone();
         let Some(player) = PedAnimPlayer::new(set.1, s.seed) else { continue };
         let mut at = Vec3::from_array(s.position);
-        if let Some(y) = ground(physics.as_deref(), at) {
-            at.y = y;
+        let mut nav = PedNav::default();
+        // On the navmesh at the record's own height (a ground probe first could land on a wall
+        // top above the record and put the ped on that layer, fix 17); maps without a navmesh
+        // take the ground below.
+        match data.nav.as_ref().and_then(|m| m.locate(at.to_array())) {
+            Some(p) => {
+                at = Vec3::from_array(p.position);
+                nav.poly = Some(p.poly);
+            }
+            None => {
+                if let Some(y) = ground(physics.as_deref(), at, 3.0) {
+                    at.y = y;
+                }
+            }
         }
         let ped = Pedestrian {
             id: s.id,
@@ -298,16 +377,15 @@ pub(crate) fn apply_ped_records(
             tint_a: look.tint_a,
             tint_b: look.tint_b,
         };
-        if let Some(p) = data.nav.as_ref().and_then(|m| m.locate(at.to_array())) {
-            at = Vec3::from_array(p.position);
-        }
-        let body = PedBody { player, path: TestPath::new(s.seed), nav: PedNav::default(), blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
+        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
         let e = commands
             .spawn((
                 Name::new(format!("Pedestrian {} ({})", s.id.serial, look.recipe)),
                 Transform::from_translation(at).with_rotation(Quat::from_rotation_y(s.heading)),
                 Visibility::Inherited,
                 PedAudio { voice: look.voice, ..Default::default() },
+                // Spawn fade in starts at 0 (retail `+576`); `present_ped_pose` raises it.
+                super::npc_skaters::NpcFade { alpha: 0.0, ..Default::default() },
                 body,
                 ped,
             ))
@@ -344,9 +422,11 @@ pub(crate) fn advance_peds(
     nav_settings: Res<PedNavSettings>,
     traffic: Option<Res<super::vehicles::TrafficState>>,
     physics: Option<Res<crate::physics::GamePhysics>>,
+    obstacles: Res<PedObstacles>,
     mut peds: Query<(&Pedestrian, &mut PedBody, &mut Transform, &mut PedAudio)>,
     mut events: MessageWriter<PedEvent>,
 ) {
+    let obstacles = &obstacles.0;
     let tick = state.world.tick();
     let dt = tick_seconds(state.world.clock().hz);
     let mut list: Vec<_> = peds.iter_mut().collect();
@@ -367,7 +447,7 @@ pub(crate) fn advance_peds(
             let mut turn = 0.0;
             match data.nav.as_deref() {
                 Some(mesh) => {
-                    let out = body.nav.step(mesh, &nav_settings.wander, nav_settings.crosswalk, signals, me, body.position.to_array(), body.heading, body.player.state, &neighbours, dt);
+                    let out = body.nav.step_avoiding(mesh, &nav_settings.wander, nav_settings.crosswalk, signals, me, body.position.to_array(), body.heading, body.player.state, &neighbours, Some(obstacles), dt);
                     body.player.intent = out.intent;
                     turn = out.turn;
                 }
@@ -379,13 +459,33 @@ pub(crate) fn advance_peds(
             let to = body.position + rotation * Vec3::from_array(out.root.translation);
             match data.nav.as_deref() {
                 Some(mesh) => {
-                    let (next, on_mesh) = constrain_step(mesh, body.position.to_array(), to.to_array());
+                    // Over linked polygons only: across tile seams, never onto an unconnected
+                    // layer such as a wall top (fix 17).
+                    let from = body.position.to_array();
+                    let (next, mut poly, on_mesh) = constrain_move(mesh, body.nav.poly, from, to.to_array());
                     let moving = (to - body.position).length_squared() > 1e-10;
+                    // Never into a prop or mod body: slide along its face or stay (fix 11).
+                    let (next, clear) = match obstacles.resolve_step(from, next, mesh.agent[1]) {
+                        Some(n) if n == next => (n, true),
+                        Some(n) => {
+                            let (m, k, ok) = constrain_move(mesh, body.nav.poly, from, n);
+                            poly = k;
+                            (m, ok)
+                        }
+                        None => (next, false),
+                    };
+                    // A step that slid to (almost) nothing against an edge counts as refused, so
+                    // a ped walking into a boundary re-plans instead of walking in place.
+                    let wanted = (to - body.position).with_y(0.0).length();
+                    let progressed = !moving || Vec3::from_array(next).with_y(0.0).distance(body.position.with_y(0.0)) >= 0.25 * wanted;
                     let ok = on_mesh
+                        && clear
+                        && progressed
                         && separation_ok(body.position.to_array(), next, me, &neighbours, mesh.agent[1])
                         && crosswalk_ok(mesh, nav_settings.crosswalk, signals, body.position.to_array(), next);
                     if ok {
                         body.position = Vec3::from_array(next);
+                        body.nav.poly = poly;
                         body.blocked = 0.0;
                     } else if moving {
                         body.blocked += dt;
@@ -408,10 +508,16 @@ pub(crate) fn advance_peds(
                 events.write(PedEvent::State { id: ped.id, state: s });
             }
         }
-        if let Some(y) = ground(physics.as_deref(), body.position) {
-            body.position.y = y;
+        // The render ground: a line query in a window round the navmesh height (one agent height
+        // up and down, the NavPower agent block [data]). It never feeds back into the navigation
+        // position, so geometry above the ped (a wall top, a ledge) cannot lift it onto another
+        // layer (fix 17).
+        let mut shown = body.position;
+        let reach = data.nav.as_deref().map_or(3.0, |m| m.agent[3].max(0.5));
+        if let Some(y) = ground(physics.as_deref(), body.position, reach) {
+            shown.y = y;
         }
-        transform.translation = body.position;
+        transform.translation = shown;
         transform.rotation = Quat::from_rotation_y(body.heading);
         audio.feet_down = body.feet_down;
         audio.body_fall = body.body_fall;
@@ -433,6 +539,8 @@ pub(crate) struct PedPuppet {
     followers: Vec<(usize, usize, Mat4)>,
     lods: Vec<(Entity, u8)>,
     lod: u8,
+    /// Bone-local basis of this GLB's joint frames relative to the rig's ([`ped_bone_basis`]).
+    basis: Mat4,
 }
 
 fn render_basis() -> Mat4 {
@@ -473,8 +581,8 @@ pub(crate) fn present_ped_looks(
         }
         match crate::animation::AnimationStatus::for_scene(scene, &data.rig.names, &skins, &nodes, &parents) {
             Ok(b) => {
-                // Bind globals (native space) per rig bone from the skin's inverse bind matrices.
-                let mut bind: BTreeMap<usize, Mat4> = BTreeMap::new();
+                // GLB bind globals per rig bone from the skin's inverse bind matrices.
+                let mut glb_bind: BTreeMap<usize, Mat4> = BTreeMap::new();
                 for (mesh, skin) in &skins {
                     if !parents.iter_ancestors(mesh).any(|p| p == scene) {
                         continue;
@@ -484,10 +592,14 @@ pub(crate) fn present_ped_looks(
                     for (joint, ibm) in skin.joints.iter().zip(ibms.iter()) {
                         let Ok((name, _)) = nodes.get(*joint) else { continue };
                         if let Some(i) = data.rig.names.iter().position(|n| n.eq_ignore_ascii_case(name.as_str())) {
-                            bind.insert(i, ibm.inverse() * render_basis().inverse());
+                            glb_bind.insert(i, ibm.inverse());
                         }
                     }
                 }
+                let basis = ped_bone_basis(&reference_globals(&data.rig), &glb_bind);
+                // Bind in the rig's bone frames (native space).
+                let bind: BTreeMap<usize, Mat4> = glb_bind.iter().map(|(&i, m)| (i, *m * basis.inverse())).collect();
+                puppet.basis = basis;
                 puppet.followers = follower_offsets(&data.rig, &bind);
                 puppet.lods = named
                     .iter()
@@ -504,6 +616,119 @@ pub(crate) fn present_ped_looks(
             }
         }
     }
+}
+
+/// A ped whose body materials carry its tint pair (look side, set once per ped).
+#[derive(Component)]
+pub(crate) struct PedTinted;
+
+/// Recoloured ped materials per (source material, tint pair): peds sharing a model and a palette
+/// entry share one texture copy. Weak ids: a copy (and its texture) is freed with the last ped
+/// mesh using it, and its entry is dropped.
+#[derive(Resource, Default)]
+pub(crate) struct PedMaterials(BTreeMap<(AssetId<StandardMaterial>, [u32; 8]), AssetId<StandardMaterial>>);
+
+/// Whether a ped GLB material gets the tint: its retail material type from the export's
+/// material extras (`{"shader": "pedestrian_high_stamp"}`, `colorize::colorized_shader`); for
+/// a GLB exported before the type was written (no extras), the body slot `Rostral_*` (every
+/// shipped ped body is `pedestrian_high_stamp` / `pedestrian_low` [data]; only one ped hair uses
+/// the ped shader and is missed by this fallback until the next export).
+pub(crate) fn ped_material_colorized(name: Option<&str>, extras: Option<&str>) -> bool {
+    match extras {
+        Some(json) => serde_json::from_str::<serde_json::Value>(json)
+            .ok()
+            .and_then(|v| v.get("shader").and_then(|s| s.as_str()).map(skate_core::living_world::peds::colorize::colorized_shader))
+            .unwrap_or(false),
+        None => name.is_some_and(|n| n.starts_with("Rostral_")),
+    }
+}
+
+/// Paint each bound ped's body materials with its tint pair (retail's ped shader rule,
+/// `skate_core::living_world::peds::colorize`): a copy of the diffuse texture per tint pair.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn present_ped_tints(
+    mut commands: Commands,
+    peds: Query<(Entity, &Pedestrian, &PedPuppet), Without<PedTinted>>,
+    children: Query<&Children>,
+    meshes: Query<(&MeshMaterial3d<StandardMaterial>, Option<&bevy::gltf::GltfMaterialName>, Option<&bevy::gltf::GltfMaterialExtras>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut cache: ResMut<PedMaterials>,
+) {
+    cache.0.retain(|_, id| materials.contains(*id));
+    for (e, ped, puppet) in &peds {
+        let (Some(scene), true) = (puppet.scene, puppet.bindings.is_some()) else { continue };
+        let bits = |c: [f32; 4]| c.map(f32::to_bits);
+        let (a, b) = (bits(ped.tint_a), bits(ped.tint_b));
+        let pair = [a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3]];
+        let mut pending = false;
+        for ent in children.iter_descendants(scene) {
+            let Ok((handle, name, extras)) = meshes.get(ent) else { continue };
+            if !ped_material_colorized(name.map(|n| n.0.as_str()), extras.map(|x| x.value.as_str())) {
+                continue;
+            }
+            let key = (handle.0.id(), pair);
+            if let Some(m) = cache.0.get(&key).and_then(|id| materials.get_strong_handle(*id)) {
+                commands.entity(ent).insert(MeshMaterial3d(m));
+                continue;
+            }
+            let Some(source) = materials.get(&handle.0).cloned() else {
+                pending = true;
+                continue;
+            };
+            let Some(tex) = source.base_color_texture.clone() else { continue };
+            let Some(image) = images.get(&tex) else {
+                pending = true;
+                continue;
+            };
+            let mut tinted = image.clone();
+            match tinted.data.as_mut() {
+                Some(px) if tinted.texture_descriptor.format.block_copy_size(None) == Some(4) => {
+                    skate_core::living_world::peds::colorize::colorize_rgba8(px, ped.tint_a, ped.tint_b)
+                }
+                _ => warn!("LIVING_WORLD peds: {} base texture is not RGBA8; drawn untinted", ped.recipe),
+            }
+            let mut m = source;
+            m.base_color_texture = Some(images.add(tinted));
+            let h = materials.add(m);
+            cache.0.insert(key, h.id());
+            commands.entity(ent).insert(MeshMaterial3d(h));
+        }
+        if !pending {
+            commands.entity(e).insert(PedTinted);
+        }
+    }
+}
+
+/// Model-space globals of the rig's reference pose (`PEDESTRIAN_RIG_TPOSE`, root at the origin
+/// like [`PedAnimPlayer::pose`](skate_core::living_world::peds::PedAnimPlayer::pose)).
+pub(crate) fn reference_globals(rig: &PedRig) -> Vec<Mat4> {
+    let mut locals = rig.reference.clone();
+    if let Some(root) = locals.first_mut() {
+        *root = skate_core::living_world::peds::anim::IDENTITY;
+    }
+    PedEvaluator::globals(rig, &locals).into_iter().map(crate::animation::native_matrix).collect()
+}
+
+/// The bone-local basis between a ped GLB's joint frames and the rig's: the candidate (identity,
+/// the retail ped GLBs; or the skater GLB convention `render_basis`) whose
+/// `reference x basis` is closest in rotation to the GLB bind over the matched bones. Identity
+/// for every shipped ped model (data test); a pure function of the model, so deterministic.
+pub(crate) fn ped_bone_basis(reference: &[Mat4], glb_bind: &BTreeMap<usize, Mat4>) -> Mat4 {
+    let angle = |a: Mat4, b: Mat4| {
+        let (qa, qb) = (Quat::from_mat4(&a).normalize(), Quat::from_mat4(&b).normalize());
+        2.0 * qa.dot(qb).abs().min(1.0).acos()
+    };
+    let score = |basis: Mat4| -> f32 { glb_bind.iter().filter_map(|(&i, b)| Some(angle(*reference.get(i)? * basis, *b))).sum() };
+    [Mat4::IDENTITY, render_basis()].into_iter().map(|b| (score(b), b)).fold((f32::INFINITY, Mat4::IDENTITY), |best, x| if x.0 < best.0 { x } else { best }).1
+}
+
+/// Joint globals for [`AnimationStatus::pose_transforms`](crate::animation::AnimationStatus)
+/// (which right-multiplies the skater's `render_basis`): the rig globals in the GLB's joint
+/// frames, so the skin matrix is `global x basis x inverse(GLB bind)`.
+pub(crate) fn ped_joint_globals(globals: &[Mat4], basis: Mat4) -> Vec<Mat4> {
+    let cancel = render_basis().inverse() * basis;
+    globals.iter().map(|g| *g * cancel).collect()
 }
 
 /// Bones the clips do not carry follow their rig parent with the bind offset between them.
@@ -530,6 +755,20 @@ pub(crate) fn ped_globals(rig: &PedRig, body: &PedBody, clips: &dyn PedClips, ah
     Some(g)
 }
 
+/// Drawn ped opacity with the NPC draw distance (QoL, not retail): the fade pair (model pair or
+/// the configured default) x the multiplier, so the fade keeps ending before the scaled census
+/// cull. At retail (1x) the pair is used as is. The LOD distances stay retail (far peds keep the
+/// cheaper LOD).
+pub(crate) fn ped_draw_alpha(settings: &LivingWorldSettings, pair: Option<[f32; 2]>, distance: f32, since_spawn: f32) -> f32 {
+    let dd = settings.draw_distance();
+    if dd.is_retail() {
+        return skate_core::living_world::peds::draw_alpha(&settings.ped_fade, pair, distance, since_spawn);
+    }
+    let scale = |p: [f32; 2]| [dd.distance(p[0]), dd.distance(p[1])];
+    let cfg = skate_core::living_world::peds::PedFadeConfig { distance: scale(settings.ped_fade.distance), ..settings.ped_fade };
+    skate_core::living_world::peds::draw_alpha(&cfg, pair.map(scale), distance, since_spawn)
+}
+
 /// LOD placeholder: LOD0 within the model's first distance (45 m), LOD1 beyond its second
 /// (55 m), hysteresis between [data pair `Hash_73B6874C7B46C7C6`, meaning unconfirmed].
 pub(crate) fn lod_for(distance: f32, current: u8, near: [f32; 2]) -> u8 {
@@ -543,24 +782,42 @@ pub(crate) fn lod_for(distance: f32, current: u8, near: [f32; 2]) -> u8 {
 }
 
 /// Place the root and pose the skeleton between world ticks.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn present_ped_pose(
     data: Res<PedData>,
     state: Res<PopulationState>,
+    settings: Res<LivingWorldSettings>,
     fixed: Res<Time<Fixed>>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
-    mut peds: Query<(&Pedestrian, &PedBody, &mut PedPuppet)>,
+    mut peds: Query<(&Pedestrian, &PedBody, &mut PedPuppet, Option<&mut super::npc_skaters::NpcFade>)>,
     mut joints: Query<&mut Transform, Without<PedBody>>,
     mut vis: Query<&mut Visibility>,
 ) {
     let hz = state.world.clock().hz;
     let ahead = ((state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * hz).clamp(0.0, 1.0) as f32) * tick_seconds(hz);
     let camera = cameras.iter().next().map(|c| c.translation());
-    for (ped, body, mut puppet) in &mut peds {
+    for (ped, body, mut puppet, fade) in &mut peds {
         let Some(bindings) = puppet.bindings.as_ref() else { continue };
         let Some(globals) = ped_globals(&data.rig, body, &*data, ahead, &puppet.followers) else { continue };
-        for (joint, local) in bindings.pose_transforms(&globals) {
+        for (joint, local) in bindings.pose_transforms(&ped_joint_globals(&globals, puppet.basis)) {
             if let Ok(mut t) = joints.get_mut(joint) {
                 *t = local;
+            }
+        }
+        if let (Some(cam), Some(mut fade)) = (camera, fade) {
+            let pair = data.catalog.models.get(&ped.model).and_then(|m| m.lod_near);
+            let since = state.world.tick().saturating_sub(ped.spawn_tick) as f32 / hz.max(1.0) as f32;
+            let alpha = ped_draw_alpha(&settings, pair, cam.distance(body.position), since);
+            if fade.alpha != alpha {
+                fade.alpha = alpha;
+            }
+            if let Some(scene) = puppet.scene
+                && let Ok(mut v) = vis.get_mut(scene)
+            {
+                let want = if alpha > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+                if *v != want {
+                    *v = want;
+                }
             }
         }
         if let Some(cam) = camera {
@@ -588,10 +845,9 @@ pub(crate) fn ped_readout(peds: &[(LivingWorldId, String, Locomotion, Vec3)], pl
 }
 
 fn log_ped_readout(settings: Res<LivingWorldSettings>, state: Res<PopulationState>, observers: Res<super::LivingWorldObservers>, peds: Query<(&Pedestrian, &PedBody)>, mut last: Local<u64>) {
-    if !settings.debug || state.world.tick() < *last + 150 {
+    if !settings.debug || !super::report_due(state.world.tick(), &mut last, 150) {
         return;
     }
-    *last = state.world.tick();
     let list: Vec<_> = peds.iter().map(|(p, b)| (p.id, p.recipe.clone(), b.player.state, b.position)).collect();
     info!("LIVING_WORLD {}", ped_readout(&list, observers.observers.first().map(|o| Vec3::from_array(o.position))));
 }
@@ -602,7 +858,9 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<PedIndex>()
         .init_resource::<PedRejected>()
         .init_resource::<PedNavSettings>()
+        .init_resource::<PedObstacles>()
         .add_message::<PedEvent>()
-        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, advance_peds, log_ped_readout).chain().after(super::step_population))
-        .add_systems(Update, (present_ped_looks, present_ped_pose).chain().after(crate::app::FrameSet::Animation));
+        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, advance_peds, log_ped_readout).chain().after(super::step_population))
+        .init_resource::<PedMaterials>()
+        .add_systems(Update, (present_ped_looks, present_ped_tints, present_ped_pose).chain().after(crate::app::FrameSet::Animation).before(super::npc_skaters::present_fade));
 }

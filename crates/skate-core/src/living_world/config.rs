@@ -182,6 +182,13 @@ pub struct SkaterConfig {
     pub score_rand: u32,
     /// Community skaters may be offered (retail: only offline, `sub_8245B7A0`).
     pub allow_community_offline: bool,
+    /// How a skater appears and leaves: 1 s fade in after the spawn (`sub_825926F8`); 1 s fade out,
+    /// removed below opacity 0.2 (`sub_8246EA90`, `sub_8245A9B8`), only at a dead end of the
+    /// replay tier (fix 9: retail chains lines, see `line_chain`).
+    pub leave_fade: super::leave_fade::LeaveFadeConfig,
+    /// What a skater does at the end of its line: continue on a line starting within 4 m
+    /// (`sub_8246C7F8`, [data] `ai_skater` tunable), so it leaves only by the 120 m cull.
+    pub line_chain: super::replay::ChainConfig,
 }
 
 impl SkaterConfig {
@@ -206,6 +213,8 @@ impl SkaterConfig {
             near_radius2: SKATER_NEAR_RADIUS2,
             score_rand: SKATER_SCORE_RAND,
             allow_community_offline: true,
+            leave_fade: super::leave_fade::LeaveFadeConfig::retail(),
+            line_chain: super::replay::ChainConfig::retail(),
         }
     }
 
@@ -220,6 +229,10 @@ pub struct PopulationConfig {
     pub skaters: SkaterConfig,
     pub pedestrians: CensusKindConfig,
     pub vehicles: CensusKindConfig,
+    /// NPC draw distance (QoL, not retail; `draw_distance` module): every population distance x
+    /// this, caps x its square. 1.0 = retail (the config above runs unchanged). Owned by the
+    /// population authority; settings and mods set it through the engine's settings resource.
+    pub draw_distance: f32,
 }
 
 impl PopulationConfig {
@@ -229,6 +242,7 @@ impl PopulationConfig {
             skaters: SkaterConfig::retail(),
             pedestrians: CensusKindConfig::retail_pedestrians(),
             vehicles: CensusKindConfig::retail_vehicles(),
+            draw_distance: super::draw_distance::DrawDistance::RETAIL,
         }
     }
 }

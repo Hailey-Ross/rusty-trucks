@@ -15,6 +15,11 @@
 //! is a connected-component label; polygons of [`NavRules::blocked_areas`] (default the 0xF1
 //! area, where no recomp ped position ever lies [trace]) are not walkable.
 //!
+//! Tile seams (fix 17): NavPower tiles stop about 0.12 m short of their shared border [data] and
+//! setup links the two sides, sometimes on one side only; [`NavMesh::move_along`] steps across the
+//! gap over linked polygons only (never onto an unconnected wall-top layer), and the links are
+//! used in both directions.
+//!
 //! Pure and deterministic: no hash-map iteration, ties broken by polygon index, so every machine
 //! that loads the same mesh plans the same paths.
 
@@ -96,6 +101,14 @@ pub struct NavMesh {
     cell: f32,
     grid: BTreeMap<(i32, i32), Vec<u32>>,
     component: Vec<u32>,
+    /// Walkable links per polygon in both directions (sorted; a tile-stitched link may be
+    /// recorded on one side only).
+    links: Vec<Vec<u32>>,
+    /// Per polygon: (edge, neighbour) for every walkable link across its edges, its own
+    /// neighbours plus the links recorded only on the other side (setup's tile stitch links the
+    /// polygons along one tile border to the long edge across it, which records at most one of
+    /// them), mapped to this polygon's closest edge (fix 17). Sorted.
+    edge_links: Vec<Vec<(u8, u32)>>,
 }
 
 /// A located point: polygon and the point on it (snapped when it was outside).
@@ -204,7 +217,47 @@ impl NavMesh {
             }
             next += 1;
         }
-        Self { agent: input.agent, polys, rules, cell, grid, component }
+        let links = adjacency
+            .into_iter()
+            .map(|mut l| {
+                l.retain(|&q| rules.walkable(polys[q as usize].area));
+                l.sort_unstable();
+                l.dedup();
+                l
+            })
+            .collect();
+        let mut edge_links: Vec<Vec<(u8, u32)>> = vec![Vec::new(); polys.len()];
+        for (k, p) in polys.iter().enumerate() {
+            if !rules.walkable(p.area) {
+                continue;
+            }
+            for (e, nb) in p.neighbours.iter().enumerate() {
+                let Some(q) = *nb else { continue };
+                if !rules.walkable(polys[q as usize].area) {
+                    continue;
+                }
+                edge_links[k].push((e as u8, q));
+                // The reverse link when q does not record one: q's closest edge to this edge.
+                let qq = &polys[q as usize];
+                if qq.neighbours.contains(&Some(k as u32)) || qq.verts.len() < 2 {
+                    continue;
+                }
+                let (a, b) = (p.verts[e], p.verts[(e + 1) % p.verts.len()]);
+                let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5];
+                let n = qq.verts.len();
+                let f = (0..n)
+                    .map(|f| (closest_on_segment(mid, qq.verts[f], qq.verts[(f + 1) % n]).1, f))
+                    .min_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)))
+                    .map(|(_, f)| f)
+                    .unwrap_or(0);
+                edge_links[q as usize].push((f as u8, k as u32));
+            }
+        }
+        for l in &mut edge_links {
+            l.sort_unstable();
+            l.dedup();
+        }
+        Self { agent: input.agent, polys, rules, cell, grid, component, links, edge_links }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -253,7 +306,11 @@ impl NavMesh {
     }
 
     /// The walkable polygon under `p` (closest in height within [`NavRules::locate_height`]), or
-    /// the closest walkable polygon edge point within [`NavRules::locate_radius`].
+    /// the closest walkable polygon edge point within [`NavRules::locate_radius`]. A polygon
+    /// under `p` more than the agent's step height (the agent block's third value, 0.2 [data])
+    /// above or below it competes with the edge points by vertical plus horizontal distance, so
+    /// a point in the gap of a tile seam lands on its own layer's edge, not on a wall-top layer
+    /// overhead (fix 17).
     pub fn locate(&self, p: Vec3) -> Option<NavPoint> {
         let mut best: Option<(f32, u32)> = None;
         for &k in self.candidates(p[0], p[2]) {
@@ -265,8 +322,11 @@ impl NavMesh {
                 best = Some((dy, k));
             }
         }
-        if let Some((_, k)) = best {
-            return Some(NavPoint { poly: k, position: [p[0], self.height_at(k, p[0], p[2]), p[2]] });
+        let inside = best.map(|(dy, k)| (dy, NavPoint { poly: k, position: [p[0], self.height_at(k, p[0], p[2]), p[2]] }));
+        if let Some((dy, at)) = inside {
+            if dy <= self.agent[2].max(0.0) {
+                return Some(at);
+            }
         }
         let r = self.rules.locate_radius;
         let mut snap: Option<(f32, u32, Vec3)> = None;
@@ -282,14 +342,162 @@ impl NavMesh {
                     let n = poly.verts.len();
                     for e in 0..n {
                         let (q, d2) = closest_on_segment(p, poly.verts[e], poly.verts[(e + 1) % n]);
-                        if d2 <= r * r && snap.is_none_or(|(b, bk, _)| d2 < b || (d2 == b && k < bk)) {
-                            snap = Some((d2, k, q));
+                        if d2 > r * r {
+                            continue;
+                        }
+                        // Without a polygon under the point: the closest edge (as before); with
+                        // one: horizontal plus vertical distance against its height difference.
+                        let score = if inside.is_some() { d2.sqrt() + (q[1] - p[1]).abs() } else { d2 };
+                        if snap.is_none_or(|(b, bk, _)| score < b || (score == b && k < bk)) {
+                            snap = Some((score, k, q));
                         }
                     }
                 }
             }
         }
-        snap.map(|(_, k, q)| NavPoint { poly: k, position: q })
+        match (inside, snap) {
+            (Some((dy, at)), Some((score, _, _))) if dy <= score => Some(at),
+            (Some((_, at)), None) => Some(at),
+            (_, Some((_, k, q))) => Some(NavPoint { poly: k, position: q }),
+            (None, None) => None,
+        }
+    }
+
+    /// `p` on polygon `poly`: inside it (height on its plane), or the closest point of its edges
+    /// within [`NavRules::locate_radius`] (the snap of [`Self::locate`] limited to one polygon).
+    pub fn point_on(&self, poly: u32, p: Vec3) -> Option<NavPoint> {
+        let k = poly as usize;
+        if k >= self.polys.len() || !self.rules.walkable(self.polys[k].area) {
+            return None;
+        }
+        if self.contains_xz(poly, p[0], p[2]) {
+            return Some(NavPoint { poly, position: [p[0], self.height_at(poly, p[0], p[2]), p[2]] });
+        }
+        let r = self.rules.locate_radius;
+        let verts = &self.polys[k].verts;
+        let n = verts.len();
+        let mut best: Option<(f32, Vec3)> = None;
+        for e in 0..n {
+            let (q, d2) = closest_on_segment(p, verts[e], verts[(e + 1) % n]);
+            if d2 <= r * r && best.is_none_or(|(b, _)| d2 < b) {
+                best = Some((d2, q));
+            }
+        }
+        best.map(|(_, q)| NavPoint { poly, position: q })
+    }
+
+    /// Move from `from` toward `to` over the surface: only polygons linked to `from.poly`
+    /// (directly or through linked neighbours near the move) can take the step, so a step never
+    /// jumps onto an unconnected layer (a wall top or planter island above the ped), and a step
+    /// into the gap between two tile-stitched polygons is kept (the tiles stop short of their
+    /// shared border, about 0.12 to 0.14 m each side [data]) instead of being snapped back to the
+    /// edge it left. Against a boundary edge the step slides onto the edge (as [`Self::locate`]'s
+    /// snap). Retail: the NavPower bot moves over linked polygons only (path follow not decoded;
+    /// fix 17).
+    pub fn move_along(&self, from: NavPoint, to: Vec3) -> NavPoint {
+        let reach = dist_xz(from.position, to) + self.rules.locate_radius;
+        let near = |k: u32| {
+            let p = &self.polys[k as usize];
+            let dx = (p.min[0] - to[0]).max(to[0] - p.max[0]).max(0.0);
+            let dz = (p.min[1] - to[2]).max(to[2] - p.max[1]).max(0.0);
+            (dx * dx + dz * dz).sqrt() <= reach
+        };
+        // Linked polygons around the move, breadth first from the start polygon (bounded).
+        let mut set = vec![from.poly];
+        let mut at = 0;
+        while at < set.len() && set.len() < 64 {
+            let k = set[at];
+            at += 1;
+            for &q in &self.links[k as usize] {
+                if !set.contains(&q) && near(q) {
+                    set.push(q);
+                }
+            }
+        }
+        let mut inside: Option<(f32, u32, f32)> = None;
+        for &k in &set {
+            if self.contains_xz(k, to[0], to[2]) {
+                let y = self.height_at(k, to[0], to[2]);
+                let dy = (y - from.position[1]).abs();
+                if inside.is_none_or(|(b, bk, _)| dy < b || (dy == b && k < bk)) {
+                    inside = Some((dy, k, y));
+                }
+            }
+        }
+        if let Some((_, k, y)) = inside {
+            return NavPoint { poly: k, position: [to[0], y, to[2]] };
+        }
+        // Outside every polygon. Just past a linked edge (within its span and the snap radius):
+        // the gap of a tile seam, keep the step; it may also be a hair outside the boundary
+        // edge that meets the seam at a tile corner. Otherwise slide onto the closest edge.
+        let r2 = self.rules.locate_radius * self.rules.locate_radius;
+        let mut seam: Option<(f32, u32, Vec3)> = None;
+        let mut best: Option<(f32, u32, Vec3)> = None;
+        for &k in &set {
+            let p = &self.polys[k as usize];
+            let n = p.verts.len();
+            for e in 0..n {
+                let (a, b) = (p.verts[e], p.verts[(e + 1) % n]);
+                let (q, d2) = closest_on_segment(to, a, b);
+                if best.is_none_or(|(d, bk, _)| d2 < d || (d2 == d && k < bk)) {
+                    best = Some((d2, k, q));
+                }
+                let linked = self.edge_links[k as usize].iter().any(|&(f, _)| f as usize == e);
+                // Beyond this linked edge and inside (2 cm tolerance) every other edge of the
+                // polygon: the strip across the seam, not past some other boundary.
+                if linked && d2 <= r2 && self.outside(k, e, to) > 0.0 && (0..n).all(|f| f == e || self.outside(k, f, to) <= 0.02) && seam.is_none_or(|(d, sk, _)| d2 < d || (d2 == d && k < sk)) {
+                    seam = Some((d2, k, q));
+                }
+            }
+        }
+        match (seam, best) {
+            (Some((_, k, q)), _) => NavPoint { poly: k, position: [to[0], q[1], to[2]] },
+            (None, Some((_, k, q))) => NavPoint { poly: k, position: q },
+            (None, None) => from,
+        }
+    }
+
+    /// Signed distance (xz) of `p` outside edge `e` of polygon `k` (positive = outside, away
+    /// from the polygon's centre).
+    fn outside(&self, k: u32, e: usize, p: Vec3) -> f32 {
+        let poly = &self.polys[k as usize];
+        let (a, b) = (poly.verts[e], poly.verts[(e + 1) % poly.verts.len()]);
+        let ab = sub2(b, a);
+        let len = (ab[0] * ab[0] + ab[1] * ab[1]).sqrt();
+        if len <= 0.0 {
+            return 0.0;
+        }
+        let mut nrm = [ab[1] / len, -ab[0] / len];
+        let c = sub2(poly.centre, a);
+        if c[0] * nrm[0] + c[1] * nrm[1] > 0.0 {
+            nrm = [-nrm[0], -nrm[1]];
+        }
+        let ap = sub2(p, a);
+        ap[0] * nrm[0] + ap[1] * nrm[1]
+    }
+
+    /// Whether a body at `from` can walk straight to `to` over the surface ([`Self::move_along`]
+    /// in 0.25 m steps without sliding off the line). Used to leave a path corner only once the
+    /// next one is in straight reach (fix 17).
+    pub fn clear_line(&self, from: NavPoint, to: Vec3) -> bool {
+        let total = dist_xz(from.position, to);
+        if total < 1e-4 {
+            return true;
+        }
+        let dir = [(to[0] - from.position[0]) / total, (to[2] - from.position[2]) / total];
+        let mut at = from;
+        let mut done = 0.0f32;
+        while done < total {
+            let d = (total - done).min(0.25);
+            let want = [at.position[0] + dir[0] * d, at.position[1], at.position[2] + dir[1] * d];
+            let next = self.move_along(at, want);
+            if dist_xz(next.position, want) > 0.02 {
+                return false;
+            }
+            at = next;
+            done += d;
+        }
+        true
     }
 
     /// Whether `b` can be reached from `a` (same component; retail: the graph's connectivity
@@ -305,7 +513,7 @@ impl NavMesh {
         let pp = &self.polys[p as usize];
         let (a, b) = (pp.verts[e], pp.verts[(e + 1) % pp.verts.len()]);
         let qq = &self.polys[q as usize];
-        let back = qq.neighbours.iter().position(|&x| x == Some(p));
+        let back = self.edge_links[q as usize].iter().find(|&&(_, x)| x == p).map(|&(f, _)| f as usize);
         let Some(f) = back else { return (a, b) };
         let (c, d) = (qq.verts[f], qq.verts[(f + 1) % qq.verts.len()]);
         let ab = sub2(b, a);
@@ -353,11 +561,8 @@ impl NavMesh {
                 return None;
             }
             let p = &self.polys[poly as usize];
-            for (e, nb) in p.neighbours.iter().enumerate() {
-                let Some(q) = *nb else { continue };
-                if !self.rules.walkable(self.polys[q as usize].area) {
-                    continue;
-                }
+            for &(e, q) in &self.edge_links[poly as usize] {
+                let e = e as usize;
                 let (a, b) = self.portal(poly, e, q);
                 let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5];
                 let step = dist_xz(entry[poly as usize], mid) * self.rules.cost(p.area);

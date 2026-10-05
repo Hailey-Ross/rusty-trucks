@@ -8,8 +8,12 @@
 //!   `population tick - spawn tick` recording frames (the 60 Hz lines at the retail 60 Hz world
 //!   tick, `skate_core::living_world::clock`), so the state is a function of the spawn record and the tick; branch decisions use the
 //!   retail score with the players and the other NPCs and are kept as records a client would
-//!   mirror. The NPC's position goes back into the population (culls, the 5 m rule). The end of a
-//!   line with no branch taken despawns the NPC (parked: retail behaviour not decoded).
+//!   mirror. The NPC's position goes back into the population (culls, the 5 m rule). At the end
+//!   of a line it continues on an unused line starting within 4 m, picked by the same retail
+//!   score (`replay::choose_next_line`, `sub_8246C7F8`; fix 9), so it keeps riding until the
+//!   population's 120 m cull removes it. A new NPC fades in over its first second; only at a dead
+//!   end (no line starts near the end) does it fade out and leave once its opacity is below 0.2
+//!   (`skate_core::living_world::leave_fade`; [`NpcFade`]).
 //! - **Collision**: a kinematic proxy (capsule for the body, box for the board, infinite mass, the
 //!   cursor's velocity) joins `physics::network::Proxies` like a mod's solid, so the player bumps
 //!   into it. NPCs never react (replay tier).
@@ -18,7 +22,31 @@
 //!   the stock skater. Bound to the stock skeleton like a remote player (`AnimationStatus`).
 //! - **Puppet animation** (`Update`): one stock clip per [`ReplayPhase`] ([`puppet_clip`]),
 //!   evaluated with the player's evaluator; root = the recorded position and skater orientation.
-//!   The stock graphs are not run (simplification until the simulated tier).
+//!   The stock graphs are not run (simplification until the simulated tier). The clip time is the
+//!   time since the phase began; a looping clip (`_CYC` in its name) wraps by its length like the
+//!   player's `ClipClock`, others hold their last frame. Each NPC carries [`NpcPuppetClip`] (the
+//!   clip and time in effect). A mod may override the clip per phase id or `<phase>.<style>`
+//!   (`LivingWorldSettings::skater_clips`, `sdk.world.set_tuning('living_world', {skater_clips})`);
+//!   an override that does not evaluate falls back to the shipped pick. A phase change (also one a
+//!   branch or line chain brings) crossfades from the previous phase's clip, which keeps playing,
+//!   with the player's graph transition curve (`playback_transition::transition_weight`,
+//!   Blend82B96058: smoothstep over the transition time) over [`RETAIL_BLEND_SECONDS`] (the stock
+//!   graph's default transition time); mods set it per phase (`skater_blend_seconds`). The
+//!   weight is a function of the cursor's phase frames, so a client derives the same pose.
+//!   Render (fix 14): drawn from the cursor one tick back ([`NpcReplay::previous`]) towards the
+//!   current one by the fixed-step fraction, like the player, with the recorded branches
+//!   (`LineCursor::render_sample`); clip and blend times include the sub-frame; after a branch or
+//!   chain the root blends onto the new line (`replay::LineSwitch`, `skater_line_chain.blend_seconds`).
+//!   Fix 21: the crossfade nests like a retail transition (Blend82B96058 keeps the running
+//!   transition as the outgoing tree): the cursor remembers the last `replay::PHASE_HISTORY` phases and
+//!   the pose is built from every phase whose blend still runs ([`puppet_layers`]), so a phase
+//!   change during a blend (half of all changes on the shipped lines) no longer restarts from one
+//!   clip. A recorded trick slot (`EScorableID`) plays its stock trick animation on body and board
+//!   (the board is the rig's `Skateboard_Root`): `<anim>_G` on the ground, `<anim>_A` once
+//!   airborne, like `T_Trick.xml` ([`retail_trick_anim`]; mods: `skater_clips["trick.<id name>"]`).
+//! - **Fade** (`Update`, [`present_fade`]): while [`NpcFade::alpha`] is below 1 every mesh under
+//!   the NPC (body and board) draws with a per-NPC blended copy of its material; at 1 the shared
+//!   materials come back and the copies are freed, so a solid NPC costs what it did before.
 //! - **Audio**: [`NpcSkaterAudio`](crate::world_audio::NpcSkaterAudio) with a lite state from the
 //!   cursor (position, velocity, air, ground trick as a grind) and the character's voice; #32's
 //!   host picks the one audible NPC by retail's rule.
@@ -30,7 +58,8 @@
 use super::{LivingWorldDespawn, LivingWorldObservers, LivingWorldSettings, LivingWorldSpawn, NetRole, PopulationState};
 use crate::world_audio::{AudioState, AudioVelocity, LiteSkater, NpcSkaterAudio};
 use bevy::prelude::*;
-use skate_core::living_world::replay::{BranchContext, BranchRecord, CursorEvent, Decider, LineCursor, ReplayLine, ReplayPhase, ReplaySample};
+use skate_core::living_world::replay::{BranchContext, BranchRecord, CursorEvent, Decider, LineCursor, PhaseEntry, ReplayLine, ReplayPhase, ReplaySample};
+use skate_core::living_world::leave_fade::LeaveFade;
 use skate_core::living_world::{DespawnReason, Kind, LivingWorldId, SpawnChoice};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -66,6 +95,23 @@ pub(crate) struct NpcReplay {
     /// Branch decisions so far (what a host would send).
     pub branches: Vec<BranchRecord>,
     pub last: Option<ReplaySample>,
+    /// The cursor one world tick back: the render draws from it towards `cursor` by the fixed-step
+    /// fraction (the player's previous-to-current interpolation), so it never guesses a branch.
+    pub previous: Option<LineCursor>,
+}
+
+/// The NPC's leave fade and its opacity now (1 = solid). Engine systems and mods read `alpha` to
+/// draw the fade; the removal follows from it (`skate_core::living_world::leave_fade`).
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NpcFade {
+    pub fade: LeaveFade,
+    pub alpha: f32,
+}
+
+impl Default for NpcFade {
+    fn default() -> Self {
+        Self { fade: LeaveFade::default(), alpha: 1.0 }
+    }
 }
 
 /// LivingWorldId -> entity.
@@ -102,6 +148,255 @@ pub(crate) fn puppet_clip(phase: ReplayPhase, style: &str) -> &'static str {
         ReplayPhase::GroundTrick => "G_5050_FS_LOW_0_CYC",
         ReplayPhase::OffBoard => "BR_STAND_0_CYC",
     }
+}
+
+/// The clip in effect: a mod override for `<phase>.<style>`, then for `<phase>`, else the shipped
+/// pick ([`puppet_clip`]).
+pub(crate) fn resolve_puppet_clip<'a>(overrides: &'a BTreeMap<String, String>, phase: ReplayPhase, style: &str) -> &'a str {
+    if overrides.is_empty() {
+        return puppet_clip(phase, style);
+    }
+    overrides
+        .get(&format!("{}.{style}", phase.name()))
+        .or_else(|| overrides.get(phase.name()))
+        .map_or_else(|| puppet_clip(phase, style), String::as_str)
+}
+
+/// Stock naming: cyclic clips carry `_CYC` (they loop); others play once and hold.
+pub(crate) fn clip_loops(clip: &str) -> bool {
+    clip.to_ascii_uppercase().contains("_CYC")
+}
+
+/// Sample time of `clip` after `time` s in its phase: wrapped by `length` when the clip loops.
+pub(crate) fn puppet_clip_time(clip: &str, time: f32, length: f32) -> f32 {
+    if clip_loops(clip) && length > 0.0 { time.rem_euclid(length) } else { time.max(0.0) }
+}
+
+/// Transition time (s) into a phase's clip: a `PlayAnimation` without a `time` attribute
+/// transitions over the literal at `0x82099280` = 0.2 s ([code], read in
+/// `graph_host::motion_nodes::transition`), and the stock motion graph's looping idle states the
+/// puppet clips stand for enter with 0.2 s ([data] `air.xml` `B_AIR_CYC` time 0.2,
+/// `offboard.xml` stand `BLENDSEC` 0.2, `T_handplantair.xml` `IA_IDLE_N_N_0_CYC` time 0.2).
+pub(crate) const RETAIL_BLEND_SECONDS: f32 = 0.2;
+
+/// Crossfade time into `to`'s clip: a mod's value for the phase id, then for `default`, else
+/// [`RETAIL_BLEND_SECONDS`].
+pub(crate) fn blend_seconds(overrides: &BTreeMap<String, f32>, to: ReplayPhase) -> f32 {
+    overrides.get(to.name()).or_else(|| overrides.get("default")).copied().unwrap_or(RETAIL_BLEND_SECONDS)
+}
+
+/// Takeoff transition into a trick's ground clip: [data] `T_Trick.xml` / `T_Ollie.xml`
+/// `Takeoff/FromAntic` and `FromManual` `PlayAnimation anim="$ANIM_NAME$_G" time="0.05"`.
+pub(crate) const RETAIL_TRICK_TAKEOFF_SECONDS: f32 = 0.05;
+/// Into a trick's air clip without its ground clip before it (a trick started in the air):
+/// [data] `T_Trick.xml` `GrindOutAssist/LeftGround` `time="0.1"`. After the ground clip the air
+/// clip follows as a sequence (`LeftGround/Default` `transType="sequence"`: no blend, 0 s).
+pub(crate) const RETAIL_TRICK_AIR_SECONDS: f32 = 0.1;
+
+/// The stock trick animation base a recorded trick slot plays (`<base>_G` on the ground,
+/// `<base>_A` in the air), from the trick's `EScorableID` ([code] node ext +0x24, see
+/// `ReplayLine::node_trick`; names `skate_core::scoring::catalog`, table 0x820862A8). Pairs are
+/// [data] `MotionGraphIncludes/Tricks/Tricks.xml` (`TRICK_NAME` -> `ANIM_NAME`): the flips and
+/// shuvits by name, kickflip / heelflip and their nollie forms use `B_<NAME>_IN`; numbered,
+/// late and underflip variants use their base flip; a grab or any other air trick leaves the
+/// ground with the ollie (`B_OLLIE`, retail grabs are performed out of an ollie). Ground-only
+/// tricks (manuals, powerslides, reverts, grinds, slides; catalog classes 0 and 1) and
+/// handplants (class 6) have none and keep the phase clip.
+pub(crate) fn retail_trick_anim(trick: i16) -> Option<String> {
+    let (name, class, _) = *skate_core::scoring::catalog::IDENTIFIERS.get(usize::try_from(trick).ok()?)?;
+    /// `TRICK_NAME`s of `Tricks.xml` with a `T_Trick` / `T_TrickWithUnderflip` /
+    /// `T_TrickWithDarkCatch` include (`ANIM_NAME` = `B_<NAME>`), each also as `N_<NAME>`.
+    const FLIPS: [&str; 12] = ["popshuvit", "fspopshuvit", "varialkickflip", "varialheelflip", "hardflip", "inwardheelflip", "360popshuvit", "fs360popshuvit", "360flip", "laserflip", "360hardflip", "360inwardheelflip"];
+    match class {
+        3 => {
+            let base = name.trim_end_matches("_underflip").trim_end_matches("_darkcatch").trim_end_matches(|c: char| c.is_ascii_digit());
+            let plain = base.strip_prefix("n_").unwrap_or(base);
+            Some(if matches!(plain, "kickflip" | "heelflip") {
+                // `T_Kickflip.xml` includes: `ANIM_NAME="B_<NAME>_IN"`.
+                format!("B_{}_IN", base.to_ascii_uppercase())
+            } else if FLIPS.contains(&plain) {
+                format!("B_{}", base.to_ascii_uppercase())
+            } else if base.starts_with("n_") {
+                "B_NOLLIE".to_owned()
+            } else {
+                // Late flips, dark catches out of other tricks: the takeoff is an ollie.
+                "B_OLLIE".to_owned()
+            })
+        }
+        4 if name == "nollie" => Some("B_NOLLIE".to_owned()),
+        2 | 4 => Some("B_OLLIE".to_owned()),
+        _ => None,
+    }
+}
+
+/// The trick animation in effect for a recorded trick: a mod's `skater_clips["trick.<name>"]`
+/// (the catalog's identifier, e.g. `trick.kickflip`; value = an animation base without `_G`/`_A`),
+/// else [`retail_trick_anim`].
+pub(crate) fn resolve_trick_anim(overrides: &BTreeMap<String, String>, trick: i16) -> Option<String> {
+    let name = skate_core::scoring::catalog::IDENTIFIERS.get(usize::try_from(trick).ok()?)?.0;
+    overrides.get(&format!("trick.{name}")).cloned().or_else(|| retail_trick_anim(trick))
+}
+
+/// The clip a remembered phase shows and its transition time (`older` = the phase before it):
+/// a trick span with a trick animation plays `<base>_G` then `<base>_A` from the ground (0.05 s
+/// in), or `<base>_A` alone when it starts in the air (0.1 s in); the air after an air trick keeps
+/// the clip (one layer); everything else the phase's puppet clip with its blend time. A clip
+/// that does not evaluate (`evaluates` false) falls back to the shipped phase pick; trick names
+/// go through `stock` (authored tree name -> playable clip, [`stock_tree_leaf`]).
+pub(crate) fn puppet_layer_clip(
+    clips: &BTreeMap<String, String>,
+    blends: &BTreeMap<String, f32>,
+    style: &str,
+    evaluates: &dyn Fn(&str) -> bool,
+    stock: &dyn Fn(&str) -> Option<String>,
+    e: PhaseEntry,
+    older: Option<PhaseEntry>,
+) -> (String, f32) {
+    let phase_clip = || {
+        let clip = resolve_puppet_clip(clips, e.phase, style);
+        let clip = if evaluates(clip) { clip } else { puppet_clip(e.phase, style) };
+        (clip.to_owned(), blend_seconds(blends, e.phase))
+    };
+    let tuned = |key: &str, retail: f32| blends.get(key).copied().unwrap_or(retail);
+    // Each `+` part through `stock` (authored tree name -> clip); `None` when any part is missing.
+    let trick_clip = |entry: PhaseEntry, suffix: &str| {
+        let base = resolve_trick_anim(clips, entry.trick)?;
+        let names = if suffix == "_A" { trick_air_sequence(&base, entry.trick) } else { format!("{base}{suffix}") };
+        names.split('+').map(stock).collect::<Option<Vec<_>>>().map(|v| v.join("+"))
+    };
+    match e.phase {
+        // The takeoff: `_G`, then the air part as a sequence (`LeftGround/Default`
+        // `transType="sequence"` starts it when the ground clip ends, not when the recorder's
+        // airborne flag comes). [`puppet_layers`] continues this clip through the air phases.
+        ReplayPhase::GroundTrick => match (trick_clip(e, "_G"), trick_clip(e, "_A")) {
+            (Some(g), Some(a)) => (format!("{g}+{a}"), tuned("trick_takeoff", RETAIL_TRICK_TAKEOFF_SECONDS)),
+            _ => phase_clip(),
+        },
+        // Without its takeoff before it (a trick started in the air): the air part, 0.1 s in.
+        ReplayPhase::AirTrick => trick_clip(e, "_A").map_or_else(phase_clip, |c| (c, tuned("trick_air", RETAIL_TRICK_AIR_SECONDS))),
+        // The air after an air trick keeps the trick's clip (merged into its layer).
+        ReplayPhase::Air => older.filter(|o| o.phase == ReplayPhase::AirTrick).and_then(|o| trick_clip(o, "_A")).map_or_else(phase_clip, |c| (c, 0.0)),
+        _ => phase_clip(),
+    }
+}
+
+/// The air part of a trick animation base: `<base>_A`, and for the kickflip family (`T_Kickflip.xml`:
+/// `LeftGround` plays `$ANIM_NAME$_A`, then as sequences `$ANIM_CYC_NAME$1..3` per extra flip and
+/// `$ANIM_OUT_NAME$<n>`) `B_<FLIP>_IN_A`, `B_<FLIP>_CYC1..n`, `B_<FLIP>_OUT<n>` with n the
+/// trick's flip count (`kickflip2` = 2; 1 without a digit). Parts are joined with `+`: the
+/// puppet plays them back to back (`transType="sequence"`, no blend).
+pub(crate) fn trick_air_sequence(base: &str, trick: i16) -> String {
+    let Some(flip) = base.strip_suffix("_IN") else { return format!("{base}_A") };
+    let name = usize::try_from(trick).ok().and_then(|t| skate_core::scoring::catalog::IDENTIFIERS.get(t)).map_or("", |e| e.0);
+    let digits = name.trim_end_matches("_underflip").trim_end_matches("_darkcatch");
+    let n: usize = digits.chars().last().and_then(|c| c.to_digit(10)).map_or(1, |d| d as usize).clamp(1, 4);
+    let mut parts = vec![format!("{base}_A")];
+    parts.extend((1..=n.min(3)).map(|i| format!("{flip}_CYC{i}")));
+    parts.push(format!("{flip}_OUT{n}"));
+    parts.join("+")
+}
+
+/// The clip a stock authored tree plays for an NPC: a clip is itself, a selector its default
+/// child, a phase blend its first child (the low end of its parameter, e.g. `TRICKHEIGHT` 0:
+/// the replay does not carry the player's trick height). Blend and selection spaces: none.
+pub(crate) fn stock_tree_leaf(meta: &skate_data::animation_metadata::AnimationMetadata, name: &str) -> Option<String> {
+    use skate_data::animation_metadata::TreeMetadata;
+    let mut name = name.to_owned();
+    for _ in 0..8 {
+        name = match meta.tree(&name).ok()? {
+            TreeMetadata::Clip(c) => return Some(c.name.clone()),
+            TreeMetadata::Selector(s) => s.default.clone(),
+            TreeMetadata::PhaseBlend(p) => p.children.first()?.clone(),
+            _ => return None,
+        };
+    }
+    None
+}
+
+/// One clip of the puppet's nested crossfade: `weight` is how far it has blended in over
+/// everything older (the oldest layer is the base, its weight is unused).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PuppetLayer {
+    pub clip: String,
+    /// Seconds since the clip began (its phase start, or the first of the phases it continues).
+    pub time: f32,
+    pub weight: f32,
+}
+
+/// The puppet's layers, oldest first, from the cursor's phases (`history`: newest first, seconds
+/// since each began). `resolve(entry, older)` gives a phase's clip and its transition time.
+/// Consecutive phases showing the same clip are one layer (the clip keeps playing from the older
+/// start: a trick's air clip runs on after its span closes). Layers stop at the first one fully
+/// blended in: older ones no longer show. Pure: same history, same layers.
+pub(crate) fn puppet_layers(history: &[(PhaseEntry, f32)], resolve: impl Fn(PhaseEntry, Option<PhaseEntry>) -> (String, f32)) -> Vec<PuppetLayer> {
+    let resolved: Vec<(String, f32, f32)> = history
+        .iter()
+        .enumerate()
+        .map(|(i, (e, t))| {
+            let (clip, seconds) = resolve(*e, history.get(i + 1).map(|h| h.0));
+            (clip, seconds, *t)
+        })
+        .collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < resolved.len() {
+        // An older phase whose clip is this one, or a sequence ending in it (`<ground>+<air>`
+        // before `<air>`), is the same playing clip: continue it from the older start.
+        let mut j = i;
+        while j + 1 < resolved.len() && (resolved[j + 1].0 == resolved[j].0 || resolved[j + 1].0.ends_with(&format!("+{}", resolved[j].0))) {
+            j += 1;
+        }
+        let (ref clip, seconds, time) = resolved[j];
+        let weight = skate_core::animation::playback_transition::transition_weight(time, seconds);
+        out.push(PuppetLayer { clip: clip.clone(), time, weight });
+        if weight >= 1.0 {
+            break;
+        }
+        i = j + 1;
+    }
+    out.reverse();
+    out
+}
+
+/// An NPC's crossfade out of the previous phase's clip (the outgoing tree of a graph transition).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PuppetBlend {
+    pub from: String,
+    /// Time since the previous phase began: the outgoing clip keeps playing (transition matching 0).
+    pub from_time: f32,
+    /// Weight of the incoming clip (0 = all `from`, 1 = done).
+    pub weight: f32,
+}
+
+/// [`puppet_blend`] at fractional times (s since each phase began): the render passes
+/// `(frames + sub_frame) / 60`, so the weight and the outgoing clip move between ticks.
+pub(crate) fn puppet_blend_at(from: &str, from_time: f32, to: &str, to_time: f32, seconds: f32) -> Option<PuppetBlend> {
+    if from == to {
+        return None;
+    }
+    let weight = skate_core::animation::playback_transition::transition_weight(to_time, seconds);
+    (weight < 1.0).then(|| PuppetBlend { from: from.to_owned(), from_time, weight })
+}
+
+/// The crossfade in effect `to_frames` 60 Hz frames into the new phase, `None` once it is done or
+/// when both phases show the same clip (nothing to blend).
+pub(crate) fn puppet_blend(from: &str, from_frames: u64, to: &str, to_frames: u64, seconds: f32) -> Option<PuppetBlend> {
+    puppet_blend_at(from, from_frames as f32 / 60.0, to, to_frames as f32 / 60.0, seconds)
+}
+
+/// The clip one NPC shows now and the time since its phase began (render side, rewritten every
+/// frame from the replay; deterministic from the replay cursor).
+#[derive(Component, Clone, Debug, PartialEq)]
+pub(crate) struct NpcPuppetClip {
+    pub phase: ReplayPhase,
+    pub clip: String,
+    pub time: f32,
+    /// The crossfade from the previous layer's clip while it runs.
+    pub blend: Option<PuppetBlend>,
+    /// Every clip in the pose, oldest first ([`puppet_layers`]); the last one is `clip`.
+    pub layers: Vec<PuppetLayer>,
+    /// Whether the last frame posed the skeleton from it (false until the look is bound).
+    pub posed: bool,
 }
 
 pub(crate) const PUPPET_CLIPS: [&str; 8] =
@@ -152,7 +447,8 @@ pub(crate) fn apply_records(
                 Name::new(format!("NPC skater {} ({character})", s.id.serial)),
                 Transform::from_translation(at).with_rotation(Quat::from_rotation_y(s.heading)),
                 Visibility::Inherited,
-                NpcReplay { cursor, branches: Vec::new(), last: sample },
+                NpcReplay { cursor, branches: Vec::new(), last: sample, previous: None },
+                NpcFade { alpha: state.world.config.skaters.leave_fade.fade_in_alpha(0), ..NpcFade::default() },
                 NpcSkaterAudio { list_order: u32::from(*slot), voice: npc.voice, ..Default::default() },
                 npc,
             ))
@@ -170,7 +466,7 @@ pub(crate) fn advance(
     observers: Res<LivingWorldObservers>,
     mut state: ResMut<PopulationState>,
     mut index: ResMut<NpcSkaterIndex>,
-    mut npcs: Query<(Entity, &NpcSkater, &mut NpcReplay, &mut Transform, &mut NpcSkaterAudio)>,
+    mut npcs: Query<(Entity, &NpcSkater, &mut NpcReplay, &mut Transform, &mut NpcSkaterAudio, &mut NpcFade)>,
     physics: Option<Res<crate::physics::GamePhysics>>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
     mut events: MessageWriter<NpcSkaterEvent>,
@@ -185,15 +481,24 @@ pub(crate) fn advance(
     let mut finished = Vec::new();
     let mut sorted: Vec<_> = npcs.iter_mut().collect();
     sorted.sort_by_key(|(_, n, ..)| n.id);
-    for (e, npc, mut replay, mut transform, mut audio) in sorted {
+    let fade_cfg = state.world.config.skaters.leave_fade;
+    let chain = state.world.config.skaters.line_chain;
+    for (e, npc, mut replay, mut transform, mut audio, mut fade) in sorted {
         let target = tick.saturating_sub(npc.spawn_tick) * FRAMES_PER_TICK;
         let mut out = Vec::new();
+        // The switch blend time (branch / chain root blend) is a tuning value, the same on a client.
+        replay.cursor.switch_blend_seconds = chain.blend_seconds;
+        // Keep the skater's facing across switches (fix 16, retail on); a tuning value like the blend.
+        replay.cursor.keep_facing = chain.keep_facing;
         while replay.cursor.frames < target && !replay.cursor.finished {
+            if replay.cursor.frames + FRAMES_PER_TICK >= target {
+                replay.previous = Some(replay.cursor.clone());
+            }
             let s = replay.cursor.sample(&*lines, 0.0);
             let others: Vec<([u8; 16], u32)> = order.iter().filter(|o| o.0 != npc.id).map(|o| (o.1, o.2)).collect();
             let in_use: Vec<[u8; 16]> = others.iter().map(|o| o.0).collect();
             let (position, forward, speed) = s.as_ref().map_or(([0.0; 3], [0.0, 0.0, 1.0], 0.0), |s| (s.position, s.velocity, length(s.velocity)));
-            let ctx = BranchContext { position, forward, speed, players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online };
+            let ctx = BranchContext { position, forward, speed, players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online, chain };
             let records = replay.branches.clone();
             let mut decider = if mirror { Decider::Mirror(&records) } else { Decider::Decide(ctx) };
             replay.cursor.step(&*lines, &mut decider, &mut out);
@@ -217,9 +522,22 @@ pub(crate) fn advance(
                 }
                 CursorEvent::Finished => {
                     events.write(NpcSkaterEvent::LineEnd { id: npc.id });
-                    finished.push((npc.id, e));
                 }
             }
+        }
+        // Spawn fade in (retail `sub_825926F8`: 0 to 1 over the first second), then the leave fade
+        // (retail `sub_8246EA90` / `sub_8245A9B8`, removal below opacity 0.2): only once the
+        // cursor has ended at a dead end (no line starts within the chain radius), holding the
+        // last pose while fading. The clock is the spawn-relative frame (`target`), which keeps
+        // running after the cursor stops, so clients derive the same alpha from the same spawn
+        // record and tick.
+        fade.fade.update(&replay.cursor, &*lines, &fade_cfg);
+        let alpha = fade.fade.alpha(target, &fade_cfg);
+        if fade.alpha != alpha {
+            fade.alpha = alpha;
+        }
+        if fade.fade.should_despawn(target, &fade_cfg) {
+            finished.push((npc.id, e));
         }
         let Some(s) = replay.cursor.sample(&*lines, 0.0) else { continue };
         state.world.update_position(npc.id, s.position);
@@ -231,8 +549,8 @@ pub(crate) fn advance(
         commands.entity(e).insert(AudioVelocity(Vec3::from_array(s.velocity)));
         replay.last = Some(s);
     }
-    // Line end without a branch: the NPC leaves (parked, see the module doc). Hosts decide this;
-    // a client waits for the host's despawn record.
+    // Faded out (opacity below the threshold): the NPC leaves. Hosts decide this; a client waits
+    // for the host's despawn record.
     if !mirror {
         for (id, e) in finished {
             if let Some(skate_core::living_world::Decision::Despawn(r)) = state.world.despawn(id, DespawnReason::External) {
@@ -314,23 +632,84 @@ pub(crate) fn proxy(id: LivingWorldId, s: &ReplaySample) -> skate_dynamics::Soli
     }
 }
 
-/// Add the NPC proxies to the skater solve (after the network proxies were rebuilt).
+/// NPC skaters against dynamic props (DMOs), doc 26 fix 19. Retail NPC skaters are full skaters
+/// (`AIController` on the player's skater physics, [code] notes `npc-skaters-re.md` section 0),
+/// so their board and body hit a DMO like the player's: the prop step pushes it by the prop's own
+/// tuning (`props` domain: push mass, transfer, board / body caps). Our NPC is a replay puppet, so
+/// it does not slow down or bail; the prop is pushed out of its line. A mod may switch it off
+/// (`sdk.world.set_tuning("living_world", {npc_skater_props = {enabled = false}})`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NpcSkaterPropContact {
+    /// Retail on.
+    pub enabled: bool,
+}
+
+impl Default for NpcSkaterPropContact {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// The prop-step push volumes of one NPC: the proxy's body capsule and its board (as a capsule
+/// along the deck), at the recorded velocity, in the same places as [`proxy`]. Both count as a
+/// board hit (the prop's `board_push_speed` cap): the lower body-bump cap is for the player's
+/// walking body, which the prop's triangles stop; a puppet is not stopped, and in retail the
+/// whole skater rides into the prop at riding speed. Actor id = the proxy's solid id (stable, the
+/// prop's authority owner).
+pub(crate) fn prop_volumes(id: LivingWorldId, s: &ReplaySample) -> [(u64, skate_core::physics::board_world::BoardWorldVolume); 2] {
+    use skate_core::math::Vector3;
+    use skate_core::physics::board_step::CollisionBody;
+    use skate_core::physics::board_world::BoardWorldVolume;
+    use skate_core::physics::world_contact::ContactPrimitive;
+    let [x, y, z, w] = s.skater;
+    let q = Quat::from_xyzw(x, y, z, w);
+    let q = if q.is_finite() && q.length_squared() > 0.5 { q.normalize() } else { Quat::from_rotation_y(s.heading) };
+    let v = |a: Vec3| Vector3::new(a.x, a.y, a.z);
+    let at = |local: [f32; 3]| v(Vec3::from_array(s.position) + q * Vec3::from_array(local));
+    let material = skate_core::physics::contact::RetailContactMaterial { static_friction: 0.5, dynamic_friction: 0.5, restitution: 0.0 };
+    let velocity = Vector3::new(s.velocity[0], s.velocity[1], s.velocity[2]);
+    let actor = PROXY_ID_TAG | id.to_u64();
+    let hit = CollisionBody::Board(skate_core::physics::board::BodyId::Deck);
+    let body = BoardWorldVolume {
+        body: hit,
+        primitive: ContactPrimitive::Capsule { center: at([0.0, 0.9, 0.0]), axis: v(q * Vec3::Y), half_length: 0.65, radius: 0.25 },
+        linear_velocity: velocity,
+        material,
+    };
+    let board = BoardWorldVolume {
+        body: hit,
+        // The proxy's 0.8 x 0.1 x 0.2 m board box as a capsule along the deck (0.4 m to each end).
+        primitive: ContactPrimitive::Capsule { center: at([0.0, 0.08, 0.0]), axis: v(q * Vec3::Z), half_length: 0.3, radius: 0.1 },
+        linear_velocity: velocity,
+        material,
+    };
+    [(actor, body), (actor, board)]
+}
+
+/// Add the NPC proxies to the skater solve (after the network proxies were rebuilt), and their
+/// push volumes to the prop step ([`prop_volumes`]).
 pub(crate) fn push_proxies(
     npcs: Query<(&NpcSkater, &NpcReplay)>,
     mut physics: ResMut<crate::physics::GamePhysics>,
     skater: Res<crate::physics::SkaterRuntime>,
     replay: Res<crate::replay::Replay>,
+    settings: Res<LivingWorldSettings>,
 ) {
+    physics.actor_prop_volumes.clear();
     if replay.active {
         return;
     }
     let mut proxies = std::mem::take(&mut physics.network_proxies);
     let mut list: Vec<_> = npcs.iter().filter_map(|(n, r)| r.last.as_ref().map(|s| (n.id, s))).collect();
     list.sort_by_key(|x| x.0);
-    for (id, s) in list {
+    for &(id, s) in &list {
         proxies.append_solid(proxy(id, s), &physics, &skater, false);
     }
     physics.network_proxies = proxies;
+    if settings.npc_skater_props.enabled {
+        let volumes = list.iter().flat_map(|&(id, s)| prop_volumes(id, s)).collect();
+        physics.actor_prop_volumes = volumes;
+    }
 }
 
 /// The look and the puppet pose of one NPC (render side).
@@ -392,55 +771,219 @@ pub(crate) fn present_looks(
     }
 }
 
-/// Place the root between fixed steps and pose the skeleton from the phase's stock clip.
+/// Place the root between fixed steps, pick the phase's clip and pose the skeleton from it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn present_pose(
-    skater: Res<crate::physics::SkaterRuntime>,
+    mut commands: Commands,
+    skater: Option<Res<crate::physics::SkaterRuntime>>,
+    settings: Res<LivingWorldSettings>,
     state: Res<PopulationState>,
     fixed: Res<Time<Fixed>>,
-    mut npcs: Query<(&NpcReplay, &NpcPuppet, &mut Transform)>,
+    mut npcs: Query<(Entity, &NpcSkater, &NpcReplay, Option<&NpcPuppet>, Option<&mut NpcPuppetClip>, &mut Transform)>,
     mut joints: Query<&mut Transform, Without<NpcReplay>>,
 ) {
     let lines = npc_lines(&state);
-    // Render interpolation: fraction of the next world tick (FRAMES_PER_TICK recording frames).
+    // Render interpolation: fraction of the next world tick (FRAMES_PER_TICK recording frames)
+    // already elapsed. Like the player (`physics.rs` / `animation.rs`: previous -> current by the
+    // fixed-step alpha) the NPC is drawn from the cursor one tick back towards the current one, with
+    // the branch records already made, so the drawn pose is a function of the cursor, the records
+    // and this fraction (fix 14; before it extrapolated past the current tick with `Decider::Stay`).
     let hz = state.world.clock().hz;
     let ahead = (state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * hz).clamp(0.0, 1.0) as f32
         * FRAMES_PER_TICK as f32;
-    for (replay, puppet, mut root) in &mut npcs {
-        // A look-ahead of the cursor (no branching inside it; the next fixed step corrects).
-        let sample = if ahead > 0.0 && !replay.cursor.finished {
-            let mut c = replay.cursor.clone();
-            let whole = ahead.floor() as u32;
-            c.advance(whole, &*lines, &mut Decider::Stay, &mut Vec::new());
-            c.sample(&*lines, ahead - whole as f32)
-        } else {
-            replay.cursor.sample(&*lines, 0.0)
+    for (e, npc, replay, puppet, current, mut root) in &mut npcs {
+        let (cursor, frac) = match &replay.previous {
+            Some(previous) if !replay.cursor.finished => previous.render_cursor(&*lines, &replay.branches, ahead),
+            _ => (replay.cursor.clone(), 0.0),
         };
+        let sample = cursor.sample(&*lines, frac);
         let Some(s) = sample.or_else(|| replay.last.clone()) else { continue };
         root.translation = Vec3::from_array(s.position);
         root.rotation = root_rotation(&s);
-        let Some(bindings) = puppet.bindings.as_ref() else { continue };
-        let clip = puppet_clip(s.phase, puppet.style);
-        let Some(globals) = puppet_pose(&skater, clip, s.phase_frames as f32 / 60.0) else { continue };
-        for (joint, local) in bindings.pose_transforms(&globals) {
-            if let Ok(mut t) = joints.get_mut(joint) {
-                *t = local;
+        let style = puppet.map_or_else(|| crate::custom_models::native_animation_style(&npc.character), |p| p.style);
+        // A mod's clip that does not evaluate falls back to the shipped pick (also the outgoing
+        // clip of a crossfade).
+        let usable = |phase: ReplayPhase| {
+            let clip = resolve_puppet_clip(&settings.skater_clips, phase, style);
+            match skater.as_deref() {
+                Some(k) if k.animation.evaluator.clip_length(clip).is_err() => puppet_clip(phase, style),
+                _ => clip,
+            }
+        };
+        let evaluates = |clip: &str| skater.as_deref().is_none_or(|k| k.animation.evaluator.clip_length(clip).is_ok());
+        let meta = skater.as_deref().map(|k| k.animation.motion.animation.metadata());
+        let stock = |name: &str| match meta {
+            Some(m) => stock_tree_leaf(m, name).filter(|c| evaluates(c)),
+            None => Some(name.to_owned()),
+        };
+        let resolve = |e: PhaseEntry, older: Option<PhaseEntry>| puppet_layer_clip(&settings.skater_clips, &settings.skater_blend_seconds, style, &evaluates, &stock, e, older);
+        // Clip and blend time include the render sub-frame (no 60 Hz stair steps under a smooth root).
+        let history: Vec<(PhaseEntry, f32)> = cursor.phase_history().map(|(e, frames)| (e, (frames as f32 + s.sub_frame) / 60.0)).collect();
+        let mut layers = puppet_layers(&history, resolve);
+        if layers.is_empty() {
+            layers.push(PuppetLayer { clip: usable(s.phase).to_owned(), time: (s.phase_frames as f32 + s.sub_frame) / 60.0, weight: 1.0 });
+        }
+        let top = layers.last().cloned().expect("one layer");
+        let clip = top.clip.as_str();
+        let time = top.time;
+        let blend = (layers.len() >= 2).then(|| {
+            let from = &layers[layers.len() - 2];
+            PuppetBlend { from: from.clip.clone(), from_time: from.time, weight: top.weight }
+        });
+        let bound = skater.as_deref().zip(puppet.and_then(|p| p.bindings.as_ref()));
+        let posed = bound.and_then(|(skater, bindings)| {
+            let globals = puppet_layers_pose(&skater.animation.evaluator, &layers)?;
+            for (joint, local) in bindings.pose_transforms(&globals) {
+                if let Ok(mut t) = joints.get_mut(joint) {
+                    *t = local;
+                }
+            }
+            Some(())
+        });
+        let next = NpcPuppetClip { phase: s.phase, clip: clip.to_owned(), time, blend, layers, posed: posed.is_some() };
+        match current {
+            Some(mut c) => {
+                if *c != next {
+                    *c = next;
+                }
+            }
+            None => {
+                commands.entity(e).insert(next);
             }
         }
     }
 }
 
-/// Global (model-space) bone matrices of a stock clip at `time` s, root trajectory held at the
-/// origin (the cursor moves the root).
-pub(crate) fn puppet_pose(skater: &crate::physics::SkaterRuntime, clip: &str, time: f32) -> Option<Vec<Mat4>> {
+/// Blended material copies of one NPC while it fades (spawn fade in, leave fade). Absent while the
+/// NPC is solid. Dropping it (despawn, mod disable, map change) frees the copies: they are only
+/// held here.
+#[derive(Component, Default)]
+pub(crate) struct NpcFadeMaterials {
+    /// Mesh entity and its own (shared) material, put back at alpha 1.
+    pub originals: Vec<(Entity, Handle<StandardMaterial>)>,
+    /// Source material -> its blended copy and the source's own base alpha.
+    pub copies: BTreeMap<AssetId<StandardMaterial>, (Handle<StandardMaterial>, f32)>,
+    /// Alpha the copies were last set to (NaN = not yet).
+    pub alpha: f32,
+}
+
+/// Draw [`NpcFade::alpha`]: below 1, swap every mesh under the NPC (body, board, anything a mod
+/// parents to it) to a blended copy of its material at the source alpha times the fade; at 1,
+/// restore the shared materials and drop the copies. Meshes that load mid fade are picked up on
+/// the next frame. Generic: works on any entity carrying [`NpcFade`] (NPC skaters; peds may use it
+/// for their camera-distance fade). Render only: the alpha itself is simulation state.
+pub(crate) fn present_fade(
+    mut commands: Commands,
+    mut npcs: Query<(Entity, &NpcFade, Option<&mut NpcFadeMaterials>)>,
+    children: Query<&Children>,
+    mut meshes: Query<&mut MeshMaterial3d<StandardMaterial>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (e, fade, state) in &mut npcs {
+        let alpha = fade.alpha.clamp(0.0, 1.0);
+        if alpha >= 1.0 {
+            if let Some(state) = state {
+                for (mesh, original) in &state.originals {
+                    if let Ok(mut m) = meshes.get_mut(*mesh) {
+                        m.0 = original.clone();
+                    }
+                }
+                commands.entity(e).remove::<NpcFadeMaterials>();
+            }
+            continue;
+        }
+        let mut fresh = None;
+        let state: &mut NpcFadeMaterials = match state {
+            Some(s) => s.into_inner(),
+            None => fresh.insert(NpcFadeMaterials { alpha: f32::NAN, ..Default::default() }),
+        };
+        let mut added = false;
+        for mesh in children.iter_descendants(e) {
+            let Ok(mut m) = meshes.get_mut(mesh) else { continue };
+            let current = m.0.id();
+            if state.copies.values().any(|(h, _)| h.id() == current) {
+                continue;
+            }
+            let copy = match state.copies.get(&current) {
+                Some((h, _)) => h.clone(),
+                None => {
+                    let Some(source) = materials.get(current) else { continue };
+                    let mut blended = source.clone();
+                    let base = source.base_color.alpha();
+                    blended.alpha_mode = AlphaMode::Blend;
+                    blended.base_color.set_alpha(base * alpha);
+                    let h = materials.add(blended);
+                    state.copies.insert(current, (h.clone(), base));
+                    added = true;
+                    h
+                }
+            };
+            state.originals.retain(|(x, _)| *x != mesh);
+            state.originals.push((mesh, m.0.clone()));
+            m.0 = copy;
+        }
+        if added || state.alpha != alpha {
+            for (h, base) in state.copies.values() {
+                if let Some(mat) = materials.get_mut(h.id()) {
+                    mat.base_color.set_alpha(*base * alpha);
+                }
+            }
+            state.alpha = alpha;
+        }
+        if let Some(s) = fresh {
+            commands.entity(e).insert(s);
+        }
+    }
+}
+
+/// Global (model-space) bone matrices of a stock clip `time` s into its phase (wrapped when the
+/// clip loops), root trajectory held at the origin (the cursor moves the root).
+pub(crate) fn evaluator_pose(evaluator: &crate::animation_pose::PoseEvaluator, clip: &str, time: f32) -> Option<Vec<Mat4>> {
+    puppet_blend_pose(evaluator, clip, time, None)
+}
+
+/// [`evaluator_pose`] with an optional crossfade: like a graph transition, the outgoing and the
+/// incoming clip are evaluated and blended with `PoseCommand::Blend` (the player's SQT blend,
+/// `pose_blend::blend_sample`), then the reference pose is added to the result.
+pub(crate) fn puppet_blend_pose(evaluator: &crate::animation_pose::PoseEvaluator, clip: &str, time: f32, blend: Option<&PuppetBlend>) -> Option<Vec<Mat4>> {
+    let mut layers = Vec::with_capacity(2);
+    if let Some(b) = blend {
+        layers.push(PuppetLayer { clip: b.from.clone(), time: b.from_time, weight: 1.0 });
+    }
+    layers.push(PuppetLayer { clip: clip.to_owned(), time, weight: blend.map_or(1.0, |b| b.weight) });
+    puppet_layers_pose(evaluator, &layers)
+}
+
+/// [`puppet_blend_pose`] for nested layers (oldest first): the base clip, then each newer clip
+/// blended over the result by its weight (`PoseCommand::Blend`, the player's SQT blend), like a
+/// graph transition whose outgoing tree is the running transition. A layer whose clip does not
+/// evaluate is skipped (an outgoing one) or fails the pose (the newest one).
+pub(crate) fn puppet_layers_pose(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer]) -> Option<Vec<Mat4>> {
     use skate_core::animation::playback_tree::PoseCommand;
-    let evaluator = &skater.animation.evaluator;
-    let pose = evaluator
-        .evaluate(&[
-            PoseCommand::Clip { name: clip.to_owned(), previous_time: time, time, loops: 0 },
-            PoseCommand::Pose { name: "RIG_TPOSE".into() },
-            PoseCommand::Add { motion_is_a: true },
-        ])
-        .ok()?;
+    let sample = |clip: &str, time: f32| -> Option<PoseCommand> {
+        let (clip, time) = sequence_part(evaluator, clip, time)?;
+        let time = puppet_clip_time(clip, time, evaluator.clip_length(clip).ok()?);
+        Some(PoseCommand::Clip { name: clip.to_owned(), previous_time: time, time, loops: 0 })
+    };
+    let (top, older) = layers.split_last()?;
+    let mut commands = Vec::with_capacity(layers.len() * 2 + 2);
+    for l in older {
+        if let Some(c) = sample(&l.clip, l.time) {
+            let base = commands.is_empty();
+            commands.push(c);
+            if !base {
+                commands.push(PoseCommand::Blend { weight: l.weight });
+            }
+        }
+    }
+    let to = sample(&top.clip, top.time)?;
+    let base = commands.is_empty();
+    commands.push(to);
+    if !base {
+        commands.push(PoseCommand::Blend { weight: top.weight });
+    }
+    commands.extend([PoseCommand::Pose { name: "RIG_TPOSE".into() }, PoseCommand::Add { motion_is_a: true }]);
+    let pose = evaluator.evaluate(&commands).ok()?;
     let locals: Vec<Mat4> = pose.iter().copied().map(skate_core::animation::output::sqt_to_matrix).map(crate::animation::native_matrix).collect();
     let parents = &evaluator.frames.parents;
     let mut globals: Vec<Mat4> = Vec::with_capacity(locals.len());
@@ -452,6 +995,24 @@ pub(crate) fn puppet_pose(skater: &crate::physics::SkaterRuntime, clip: &str, ti
         globals.push(g);
     }
     Some(globals)
+}
+
+/// The part of a `+`-joined clip sequence playing `time` s in and the time inside it: parts play
+/// back to back, the last one holds (or loops when it is a `_CYC` clip). A plain clip is itself.
+pub(crate) fn sequence_part<'a>(evaluator: &crate::animation_pose::PoseEvaluator, clip: &'a str, time: f32) -> Option<(&'a str, f32)> {
+    let mut parts = clip.split('+').peekable();
+    let mut t = time.max(0.0);
+    while let Some(part) = parts.next() {
+        if parts.peek().is_none() {
+            return Some((part, t));
+        }
+        let len = evaluator.clip_length(part).ok()?;
+        if t < len {
+            return Some((part, t));
+        }
+        t -= len;
+    }
+    None
 }
 
 /// One-line NPC summary for the debug readout: count, the nearest NPC (distance, line, phase).
@@ -478,10 +1039,9 @@ pub(crate) fn npc_readout(npcs: &[(LivingWorldId, String, Option<ReplaySample>)]
 
 /// The debug readout system (`SKATE_LIVING_WORLD_DEBUG=1`, every 5 s with the population line).
 pub(crate) fn log_readout(settings: Res<LivingWorldSettings>, state: Res<PopulationState>, observers: Res<LivingWorldObservers>, npcs: Query<(&NpcSkater, &NpcReplay)>, mut last: Local<u64>) {
-    if !settings.debug || state.world.tick() < *last + 150 {
+    if !settings.debug || !super::report_due(state.world.tick(), &mut last, 150) {
         return;
     }
-    *last = state.world.tick();
     let list: Vec<_> = npcs.iter().map(|(n, r)| (n.id, n.character.clone(), r.last.clone())).collect();
     info!("LIVING_WORLD {}", npc_readout(&list, observers.observers.first().map(|o| o.position)));
 }
@@ -495,5 +1055,5 @@ pub(crate) fn install(app: &mut App) {
             FixedUpdate,
             push_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),
         )
-        .add_systems(Update, (present_looks, present_pose).chain().after(crate::app::FrameSet::Animation));
+        .add_systems(Update, (present_looks, present_pose, present_fade).chain().after(crate::app::FrameSet::Animation));
 }

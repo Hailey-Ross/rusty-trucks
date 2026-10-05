@@ -14,8 +14,8 @@
 //!   (blendTime 0.1, `cycleSwappingPercentage` 0.5), `Stand2Walk` (0.25, leaves 0.03 s before its
 //!   end), `FwdWalkCyc` (0.1), `Walk2Stand` (0.15, leaves 0.1 s before its end, entered inside a
 //!   walk branch window), `StandTurnR180` (0.15, mirrored for the left turn).
-//! - mirror: `pose_mirror::mirror` (`0x828CDAF8`) with the rig's partner table; the root motion
-//!   is reflected on x.
+//! - mirror: `pose_mirror::mirror` (`0x828CDAF8`, trajectory mode 1) with the rig's partner
+//!   table, on the full pose (delta + reference); the root motion is reflected on x.
 //! - foot plants and body falls: clip attributes `LEFTTOEDOWN` / `RIGHTTOEDOWN` /
 //!   `BODYFALLTYPE`, phase windows x length (`playback_clip` attribute status) [data].
 //!
@@ -369,6 +369,15 @@ impl PedAnimPlayer {
 
     /// The local pose (one SQT per rig bone, reference added, trajectory zeroed) at the player's
     /// time plus `ahead` seconds (render interpolation; no state change).
+    ///
+    /// Each layer is made a full pose (clip delta added onto the reference) BEFORE it is
+    /// mirrored: `pose_mirror::mirror` with trajectory mode 1 is a full-pose operation (it
+    /// multiplies the root's children by the literal 180 degree quaternion that the rig's
+    /// reference hips carry), so mirroring a bare delta turned the whole body upside down in the
+    /// mirrored left turn. The reference is symmetric under it (the export: every bone within
+    /// 7 degrees), so a zero delta mirrors to the reference. Blending the full poses equals
+    /// blending the deltas and then adding (the add is a left multiply / affine map, which
+    /// nlerp and lerp commute with).
     pub fn pose(&self, rig: &PedRig, clips: &dyn PedClips, ahead: f32) -> Option<PedFrame> {
         let sample = |layer: &Layer| -> Option<PedFrame> {
             let clip = clips.clip(&layer.clip)?;
@@ -380,6 +389,7 @@ impl PedAnimPlayer {
             if f.len() != rig.parents.len() {
                 return None;
             }
+            add_reference(rig, &mut f);
             if layer.mirror {
                 pose_mirror::mirror(&mut f, &rig.parents, &rig.mirrors, 1).ok()?;
             }
@@ -394,14 +404,19 @@ impl PedAnimPlayer {
                 }
             }
         }
-        for (i, s) in pose.iter_mut().enumerate() {
-            let reference = rig.reference.get(i).copied().unwrap_or(IDENTITY);
-            *s = if rig.animated.get(i).copied().unwrap_or(false) { pose_add::add(*s, reference, true) } else { reference };
-        }
         if let Some(root) = pose.first_mut() {
             *root = IDENTITY;
         }
         Some(pose)
+    }
+}
+
+/// Clip delta -> full local pose: `AddSQT(delta, reference)` on the animated bones, the
+/// reference on the rest.
+fn add_reference(rig: &PedRig, frame: &mut [Sqt]) {
+    for (i, s) in frame.iter_mut().enumerate() {
+        let reference = rig.reference.get(i).copied().unwrap_or(IDENTITY);
+        *s = if rig.animated.get(i).copied().unwrap_or(false) { pose_add::add(*s, reference, true) } else { reference };
     }
 }
 

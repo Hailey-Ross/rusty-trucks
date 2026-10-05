@@ -9,7 +9,7 @@
 use skate_core::living_world::peds::anim::{Intent, Locomotion};
 use skate_core::living_world::peds::crosswalk::{RoadWalkSignals, signalled_arms};
 use skate_core::living_world::peds::nav::{AREA_DEFAULT, AREA_OTHER, AREA_ROAD};
-use skate_core::living_world::peds::wander::{NoSignals, constrain_step, crosswalk_ok, forward, separation_ok};
+use skate_core::living_world::peds::wander::{NoSignals, constrain_move, constrain_step, crosswalk_ok, forward, separation_ok};
 use skate_core::living_world::peds::{CrosswalkRule, NavMesh, NavRules, Neighbour, PedNav, WalkSignals, WanderParams};
 use skate_core::living_world::traffic::{RoadNetwork, SignalClock};
 use skate_core::living_world::traffic::signals::Light;
@@ -181,4 +181,172 @@ fn downtown_crosswalk_rule_crosses_only_on_walk() {
     }
     eprintln!("120 s x 30 peds with the crosswalk rule: {entries} road entries ({signalled} at signalled arms), {waits} wait ticks");
     assert!(signalled > 0 && waits > 0, "the rule was exercised");
+}
+
+/// fix 17 (user: peds "get lined up and start walking in place in specific spots", one standing
+/// on a wall top): every tile seam of the shipped DownTown mesh (NavPower tiles stop short of
+/// their shared border; setup links the two sides) is walked across at the walk clip's speed.
+/// The old step rule (locate the step's end on its own) snaps a ped in the gap back to the edge
+/// it left, so it walks in place there; the surface move crosses and never changes component
+/// (no step onto an unconnected wall-top layer).
+#[test]
+fn downtown_tile_seams_are_crossed_without_layer_jumps() {
+    let Some(m) = downtown() else {
+        eprintln!("skipped: needs living_world/navmesh.bin under SKATE3_ASSET_ROOT");
+        return;
+    };
+    let step = 1.325 / 30.0; // one console tick of the walk clip
+    let (mut seams, mut crossed, mut old_crossed, mut jumps, mut old_jumps) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    for (k, p) in m.polys.iter().enumerate() {
+        let n = p.verts.len();
+        for e in 0..n {
+            let Some(q) = p.neighbours[e] else { continue };
+            if !m.rules.walkable(p.area) || !m.rules.walkable(m.polys[q as usize].area) {
+                continue;
+            }
+            let (a, b) = (p.verts[e], p.verts[(e + 1) % n]);
+            let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5];
+            let len = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+            if len < 0.5 {
+                continue;
+            }
+            // Outward normal (away from the polygon's centre).
+            let mut nrm = [(b[2] - a[2]) / len, -(b[0] - a[0]) / len];
+            if (mid[0] - p.centre[0]) * nrm[0] + (mid[2] - p.centre[2]) * nrm[1] < 0.0 {
+                nrm = [-nrm[0], -nrm[1]];
+            }
+            // A seam: just past the edge is not inside the neighbour (a gap between tiles).
+            let probe = [mid[0] + nrm[0] * 0.05, mid[1], mid[2] + nrm[1] * 0.05];
+            let inside_q = m.point_on(q, probe).is_some_and(|x| x.position[0] == probe[0] && x.position[2] == probe[2]);
+            if inside_q {
+                continue;
+            }
+            let start = [mid[0] - nrm[0] * 0.2, mid[1], mid[2] - nrm[1] * 0.2];
+            let Some(s) = m.point_on(k as u32, start).filter(|x| x.position[0] == start[0] && x.position[2] == start[2]) else { continue };
+            seams += 1;
+            let along = |x: [f32; 3]| (x[0] - mid[0]) * nrm[0] + (x[2] - mid[2]) * nrm[1];
+            let (mut pos, mut old) = (s.position, s.position);
+            let (mut jumped, mut old_jumped) = (false, false);
+            let mut poly = Some(s.poly);
+            for _ in 0..20 {
+                let to = [pos[0] + nrm[0] * step, pos[1], pos[2] + nrm[1] * step];
+                // As the game steps: from the tracked polygon (`PedNav::poly`).
+                let (next, at, ok) = constrain_move(&m, poly, pos, to);
+                poly = at;
+                assert!(ok);
+                jumped |= poly.is_none_or(|x| !m.reachable(x, s.poly)) || (next[1] - pos[1]).abs() > 1.0;
+                pos = next;
+                if let Some(x) = m.locate([old[0] + nrm[0] * step, old[1], old[2] + nrm[1] * step]) {
+                    old_jumped |= !m.reachable(x.poly, s.poly) || (x.position[1] - old[1]).abs() > 1.0;
+                    old = x.position;
+                }
+            }
+            crossed += (along(pos) > 0.45) as u32;
+            old_crossed += (along(old) > 0.45) as u32;
+            jumps += jumped as u32;
+            old_jumps += old_jumped as u32;
+        }
+    }
+    eprintln!("DownTown seams {seams}: crossed {crossed} (old rule {old_crossed}), layer jumps {jumps} (old rule {old_jumps})");
+    assert!(seams > 1000, "tile seams found: {seams}");
+    assert!(old_crossed * 2 < seams, "control: the old rule stalls at most seams");
+    assert_eq!(jumps, 0, "no step leaves the connected surface");
+    // The rest are seams into slivers a few centimetres wide, walked straight on into their
+    // boundary (a body slides there).
+    assert!(crossed as f32 >= 0.93 * seams as f32, "seams crossed: {crossed} of {seams}");
+}
+
+/// fix 17 end to end at the user's spot (the DownTown ramp with the long blue rail, player near
+/// [-254, 41, 100], on a tile border): 30 peds wander 120 s with the game's step rules (surface
+/// moves, separation, re-plan after 3 s of refused or no-progress steps). No ped may walk in
+/// place (walking 4 s without getting 0.3 m anywhere) or leave its connected surface.
+#[test]
+fn downtown_peds_at_the_ramp_never_walk_in_place() {
+    let Some(m) = downtown() else {
+        eprintln!("skipped: needs living_world/navmesh.bin under SKATE3_ASSET_ROOT");
+        return;
+    };
+    let centre = [-254.0f32, 40.7, 100.0];
+    let home = m.locate(centre).expect("the ramp plaza is on the mesh").poly;
+    let pick: Vec<usize> = (0..m.polys.len())
+        .filter(|&k| {
+            let p = &m.polys[k];
+            p.area == AREA_DEFAULT
+                && ((p.centre[0] - centre[0]).powi(2) + (p.centre[2] - centre[2]).powi(2)).sqrt() < 40.0
+                && (p.centre[1] - centre[1]).abs() < 12.0
+                && m.reachable(k as u32, home)
+        })
+        .collect();
+    assert!(pick.len() >= 30, "pavement round the ramp: {}", pick.len());
+    let params = WanderParams::default();
+    let dt = 1.0 / 30.0;
+    struct Walker {
+        b: Body,
+        blocked: f32,
+        anchor: [f32; 3],
+        walking: f32,
+    }
+    let mut w: Vec<Walker> = (0..30)
+        .map(|i| {
+            let k = pick[i * pick.len() / 30];
+            let pos = m.polys[k].centre;
+            Walker { b: Body { id: i as u64 + 1, pos, heading: i as f32 * 0.9, nav: PedNav::default(), state: Locomotion::Idle }, blocked: 0.0, anchor: pos, walking: 0.0 }
+        })
+        .collect();
+    let (mut in_place, mut worst) = (0u32, 0.0f32);
+    for _ in 0..(30 * 120) {
+        for k in 0..w.len() {
+            let others: Vec<Neighbour> = w.iter().map(|x| Neighbour { order: x.b.id, position: x.b.pos }).collect();
+            let x = &mut w[k];
+            let out = x.b.nav.step(&m, &params, CrosswalkRule::Off, &NoSignals, x.b.id, x.b.pos, x.b.heading, x.b.state, &others, dt);
+            x.b.heading += out.turn;
+            match out.intent {
+                Intent::Walk => {
+                    x.b.state = Locomotion::Walk;
+                    let f = forward(x.b.heading);
+                    let to = [x.b.pos[0] + f[0] * 1.325 * dt, x.b.pos[1], x.b.pos[2] + f[1] * 1.325 * dt];
+                    let (next, poly, ok) = constrain_move(&m, x.b.nav.poly, x.b.pos, to);
+                    let progressed = ((next[0] - x.b.pos[0]).powi(2) + (next[2] - x.b.pos[2]).powi(2)).sqrt() >= 0.25 * 1.325 * dt;
+                    if ok && progressed && separation_ok(x.b.pos, next, x.b.id, &others, m.agent[1]) {
+                        x.b.pos = next;
+                        x.b.nav.poly = poly;
+                        x.blocked = 0.0;
+                    } else {
+                        x.blocked += dt;
+                        if x.blocked > params.yield_patience {
+                            x.blocked = 0.0;
+                            x.b.nav.skip_long = true;
+                            x.b.nav.corners.clear();
+                        }
+                    }
+                    x.walking += dt;
+                }
+                Intent::TurnLeft | Intent::TurnRight => {
+                    x.b.heading += if out.intent == Intent::TurnLeft { std::f32::consts::PI } else { -std::f32::consts::PI };
+                    x.b.state = Locomotion::Idle;
+                    x.walking = 0.0;
+                    x.anchor = x.b.pos;
+                }
+                Intent::Idle => {
+                    x.b.state = Locomotion::Idle;
+                    x.walking = 0.0;
+                    x.anchor = x.b.pos;
+                }
+            }
+            let from_anchor = ((x.b.pos[0] - x.anchor[0]).powi(2) + (x.b.pos[2] - x.anchor[2]).powi(2)).sqrt();
+            if from_anchor > 0.3 {
+                x.anchor = x.b.pos;
+                x.walking = 0.0;
+            } else if x.walking > 4.0 {
+                in_place += 1;
+                worst = worst.max(x.walking);
+                eprintln!("ped {} walking in place at {:?}", x.b.id, x.b.pos);
+                x.walking = 0.0;
+            }
+            let here = x.b.nav.poly.and_then(|k| m.point_on(k, x.b.pos)).or_else(|| m.locate(x.b.pos)).expect("on the mesh");
+            assert!(m.reachable(here.poly, home), "ped {} left its connected surface at {:?}", x.b.id, x.b.pos);
+        }
+    }
+    eprintln!("120 s x 30 peds round the ramp: walking-in-place episodes {in_place}");
+    assert_eq!(in_place, 0, "walking in place (worst {worst:.1} s)");
 }

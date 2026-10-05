@@ -10,7 +10,7 @@
 //!   `BODYFALLTYPE`, ...) come from `animation_metadata` (first payload word = the value).
 //! - Tables (`private/living_world/tables.json`): `livingworld_entitycategories.entities`,
 //!   `livingworld_entities` (`model`, the `livingworld_entity_animation` ref), `livingworld_models`
-//!   (`recipe`, `voice`, `tints_a` / `tints_b`, distance pairs) and the animation sets, whose
+//!   (`recipe`, `voice`, `tints_a` / `tints_b` = `secondary_colours` / `chassis_colours`, distance pairs) and the animation sets, whose
 //!   logical names are vault hashes (`attrib_hash::hash("FwdWalkCyc")` = `Hash_4AA12E0083F10739`)
 //!   and whose `tAnimAttributes` entries name their clip through `anim_name` (setup resolves the
 //!   string-pool offset, `living_world_anim.py`).
@@ -209,15 +209,17 @@ impl PedTables {
         }
         for (k, row) in class("livingworld_models").into_iter().flatten() {
             let f = &row["fields"];
-            let tints = |name: &str| f[name].as_array().map(|a| a.iter().filter_map(f32s).collect()).unwrap_or_default();
+            // `sub_827B4170` reads `secondary_colours` (red mask) then `chassis_colours` (blue
+            // mask) [code]; the export names them, the raw hash key is accepted too.
+            let tints = |name: &str, hash: &str| f.get(name).or_else(|| f.get(hash)).and_then(Value::as_array).map(|a| a.iter().filter_map(f32s).collect()).unwrap_or_default();
             t.catalog.models.insert(
                 k.clone(),
                 PedModel {
                     parent: row["parent"].as_str().map(String::from),
                     recipe: f["recipe"].as_str().unwrap_or("").to_string(),
                     voice: f["voice"].as_u64().map(|v| v as u32),
-                    tints_a: tints("tints_a"),
-                    tints_b: tints("tints_b"),
+                    tints_a: tints("secondary_colours", "Hash_DF76D7D773857EDB"),
+                    tints_b: tints("chassis_colours", "Hash_12026E2EED18CC8D"),
                     lod_near: pair(&f["Hash_73B6874C7B46C7C6"]),
                     lod_far: pair(&f["Hash_9FCFDBEA56BA4733"]),
                 },
@@ -262,7 +264,7 @@ mod tests {
             "livingworld_entities": {"jock02": {"parent": "jock", "fields": {"model": {"class": "livingworld_models", "key": "jock02"},
                 "Hash_00367B8F33E79C43": {"class": "livingworld_entity_animation", "key": "jock"}}}},
             "livingworld_models": {"jock02": {"parent": "jock", "fields": {"recipe": "male_jock_2", "voice": 55,
-                "tints_a": [{"x": 1.0, "y": 0.5, "z": 0.25, "w": 1.0}], "tints_b": [],
+                "secondary_colours": [{"x": 1.0, "y": 0.5, "z": 0.25, "w": 1.0}], "Hash_12026E2EED18CC8D": [{"x": 0.0, "y": 0.0, "z": 1.0, "w": 1.0}, {"x": 0.5, "y": 0.5, "z": 0.5, "w": 1.0}],
                 "Hash_73B6874C7B46C7C6": {"f32_0": 45.0, "f32_4": 55.0, "f32_8": 0.0}}}},
             "livingworld_entity_animation": {"jock": {"parent": null, "fields": {
                 "Hash_4AA12E0083F10739": {"anim": 52075, "anim_name": "NPC_WNDR_WLK_N_0_CYC", "window_0": [0.0, 0.051, 1], "window_1": [0.4166, 0.584, -1], "window_2": [0.0, 0.0, 0]},
@@ -273,6 +275,7 @@ mod tests {
         assert_eq!(t.catalog.entities["jock02"].anim_set.as_deref(), Some("jock"));
         let m = &t.catalog.models["jock02"];
         assert_eq!((m.recipe.as_str(), m.voice, m.tints_a.len(), m.lod_near), ("male_jock_2", Some(55), 1, Some([45.0, 55.0])));
+        assert_eq!((m.tints_a[0], m.tints_b.len()), ([1.0, 0.5, 0.25, 1.0], 2));
         let set = &t.anim_sets["jock"];
         assert_eq!(set.entries[names::WALK][0].clip, "NPC_WNDR_WLK_N_0_CYC");
         assert_eq!(set.entries[names::WALK][0].windows, vec![(0.0, 0.051, 1), (0.4166, 0.584, -1)]);

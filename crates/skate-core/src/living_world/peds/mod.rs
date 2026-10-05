@@ -9,7 +9,9 @@
 //! - entity inside the census category: `sub_826B8B88` after the category roll; the draw is
 //!   `sub_826BB058` (world RNG u32 x 2^-32, `0x822F88F4`), the index
 //!   `trunc(draw x 100) % entities.len()` (`0x820ED57C` = 100) [code];
-//! - model tints: `sub_827B4170`: one rand `r`, `tints_a[r % na]` and `tints_b[r % nb]` [code];
+//! - model tints: `sub_827B4170`: one rand `r`, `secondary_colours[r % na]` (`tints_a`) and
+//!   `chassis_colours[r % nb]` (`tints_b`) [code]; the ped shaders recolour the atlas's mask
+//!   texels with them (`colorize`) [code, shader];
 //! - clips: `PedestrianSkeletonPres.abin`, additive over its `PEDESTRIAN_RIG_TPOSE` pose record
 //!   (the clips hold 6 of the rig's 10 parts: bones 0..=26) [data];
 //! - foot plants: the clips' `LEFTTOEDOWN` / `RIGHTTOEDOWN` attributes (phase windows), the
@@ -22,13 +24,18 @@
 
 pub mod anim;
 pub mod choice;
+pub mod colorize;
 pub mod crosswalk;
+pub mod fade;
 pub mod nav;
+pub mod obstacles;
 pub mod wander;
 
 pub use anim::{Locomotion, PedAnimPlayer, PedAnimSet, PedClip, PedEvaluator, PedFrame, PedRig};
 pub use choice::{PedCatalog, PedEntity, PedLook, PedModel, PedOverrides};
+pub use fade::{draw_alpha, PedFadeConfig};
 pub use nav::{NavMesh, NavMeshInput, NavPoint, NavPolyInput, NavRules};
+pub use obstacles::{Footprint, NavObstacles, ObstacleInput, ObstacleParams};
 pub use wander::{CrosswalkRule, Fan, NavOutput, NavWait, Neighbour, PedNav, PedRoute, WalkSignals, WanderParams};
 
 /// Map one rig's bone names onto another's by name (case-insensitive). Returns, per `target`
@@ -41,5 +48,7 @@ pub fn match_bones(target: &[String], source: &[String]) -> (Vec<Option<usize>>,
 
 #[cfg(test)]
 mod nav_tests;
+#[cfg(test)]
+mod obstacle_tests;
 #[cfg(test)]
 mod tests;

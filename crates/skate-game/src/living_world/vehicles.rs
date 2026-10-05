@@ -472,6 +472,12 @@ pub(crate) fn drive_traffic(
     for c in &traffic.cars {
         let id = LivingWorldId { kind: Kind::Vehicle, serial: c.key };
         let frame = c.cursor.frame(net);
+        if frame.position.iter().chain(&frame.forward).chain([&c.speed, &c.cursor.distance]).any(|x| !x.is_finite()) {
+            // Guard (engine): one broken car leaves on its own; it never reaches the census.
+            warn!("LIVING_WORLD traffic: car #{} has a non-finite state (position {:?}, speed {}, distance {}); removed", c.key, frame.position, c.speed, c.cursor.distance);
+            dead.push(c.key);
+            continue;
+        }
         st.world.update_position(id, frame.position);
         let (segment, lane, distance) = match c.cursor.place {
             Place::Lane { segment, lane } => (segment, lane, c.cursor.distance),
@@ -685,10 +691,9 @@ pub(crate) fn traffic_readout(traffic: &TrafficState) -> String {
 }
 
 fn log_traffic(settings: Res<LivingWorldSettings>, state: Res<PopulationState>, traffic: Res<TrafficState>, mut last: Local<u64>) {
-    if !settings.debug || state.world.tick() < *last + 300 {
+    if !settings.debug || !super::report_due(state.world.tick(), &mut last, 300) {
         return;
     }
-    *last = state.world.tick();
     info!("LIVING_WORLD {}", traffic_readout(&traffic));
 }
 

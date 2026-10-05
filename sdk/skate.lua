@@ -805,6 +805,44 @@ function sdk.audio.seed(n) end
 -- and the mod menu shows the conflict. Check it with `check_mod <package> --install <assets>`.
 -- Reference: docs/hails-additions/16-audio-modding.md.
 
+-- World tuning (capability `world_tuning`): typed patches while this mod runs (every field optional;
+-- an absent field keeps the shipped value; first writer wins per field; restored when the mod stops,
+-- fails or reloads). Domains:
+-- 'living_world': npc_draw_distance (0.25..4, 1 = retail), skater_fade {fade_in_seconds, fade_seconds,
+--   despawn_alpha} (retail 1, 1, 0.2), skater_line_chain {radius, max_candidates, blend_seconds, keep_facing} (NPC skater line end:
+--   continue on an unused line starting within radius m, retail 4 and 16; radius 0 = fade out at every
+--   line end; blend_seconds: the drawn skater moves onto the new line over this time after a branch or
+--   chain, default 0.2, 0 = cut; keep_facing: the skater keeps the way it faces, forward or fakie, across
+--   a branch or chain, retail true, false = take the new line's recorded facing), ped_fade {distance = {near, far} (45, 55; a model record's pair
+--   wins), fade_in_seconds (1), enabled}, skater_clips {[phase or 'phase.Style'] = stock clip name}
+--   (NPC skater clip per replay phase: rolling, crouched, air, air_trick, ground_trick, off_board;
+--   a clip whose name holds _CYC loops; an unknown clip falls back to the shipped pick; also
+--   'trick.<trick id name>' = a stock trick animation base, e.g. ['trick.kickflip'] = 'B_HEELFLIP_IN',
+--   played as <base>_G on the ground then <base>_A in the air, for every recorded trick slot of that trick),
+--   skater_blend_seconds {[phase or 'default'] = seconds} (NPC skater crossfade into a phase's clip,
+--   the player's graph transition curve; stock default 0.2, 0 = cut, max 10; 'trick_takeoff' 0.05 and
+--   'trick_air' 0.1 set the transitions into a trick's ground and air clips),
+--   ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height}
+--   (props and mod bodies as ped navigation obstacles; retail on, 0.2, 0.4, 0.25; ours 0.1, 0),
+--   npc_skater_props {enabled} (NPC skaters push dynamic props like the player; retail on).
+-- 'props': default and by_template[<MOBJ template name>] = {contact_padding, penetration_slop,
+--   penetration_correction, max_depenetration_per_tick, restitution_threshold, skater_push_mass,
+--   push_transfer, body_push_speed, board_push_speed, penetration_push_speed, stuck_release_ticks,
+--   collision_box = {center = {x,y,z}, half_extents = {x,y,z}}}; a template entry starts from the default.
+-- 'carry': grab_bit (28, RB), placement_bit (20, B), grab_range (2.0 m), and moving a held prop:
+--   push_speed (1.4 m/s), pull_speed (1.0 m/s), side_speed (0.8 m/s) at full left stick,
+--   turn_rate (1.6 rad/s) at full right stick X, grip_reach (0.35 m between the skater and the
+--   dragged prop's near face).
+sdk.world = {}
+---Set (a table) or restore (`nil`) this mod's patch of a world tuning domain.
+---@param domain 'living_world'|'props'|'carry'
+---@param patch table|nil
+function sdk.world.set_tuning(domain, patch) end
+---Request a domain as the game uses it now; read it as `sdk.commands.result(key).value`.
+---@param key string command result key
+---@param domain 'living_world'|'props'|'carry'
+function sdk.world.tuning(key, domain) end
+
 -- Audio tuning (capability `audio_tuning`): patch the game's typed tuning while this mod runs.
 -- Domains: 'player' (player_tuning: surfaces, grinds, seams, landing / collision materials, tricks,
 -- treatment, contacts), 'world' (world_tuning: traffic engine records, ped footsteps / objects,

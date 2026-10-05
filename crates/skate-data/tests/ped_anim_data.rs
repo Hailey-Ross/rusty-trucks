@@ -128,6 +128,35 @@ fn every_census_entity_resolves_a_look_and_animation() {
 }
 
 #[test]
+fn ped_tints_are_the_model_palettes_and_the_base_pair_is_the_identity() {
+    let Some(t) = tables() else {
+        eprintln!("skipped: needs tables.json under SKATE3_ASSET_ROOT");
+        return;
+    };
+    // The root record's pair turns the ped shader rule into the identity only as
+    // secondary -> red mask (tints_a), chassis -> blue mask (tints_b) [data].
+    let root = &t.catalog.models["default"];
+    assert_eq!((root.tints_a.as_slice(), root.tints_b.as_slice()), ([[1.0, 0.0, 0.0, 1.0]].as_slice(), [[0.0, 0.0, 1.0, 1.0]].as_slice()));
+    let o = PedOverrides::default();
+    let mut checked = 0;
+    for (entity, record) in &t.catalog.entities {
+        let Some(model) = record.model.as_ref().and_then(|m| t.catalog.models.get(m)) else { continue };
+        if model.recipe.is_empty() || model.recipe.starts_with("zprop") {
+            continue;
+        }
+        for draw in 0..20u32 {
+            let look = t.catalog.look_for(entity, draw, draw, &o).unwrap();
+            let m = &t.catalog.models[&look.model];
+            assert!(!m.tints_a.is_empty() && !m.tints_b.is_empty(), "{}: empty palette", look.model);
+            assert_eq!(look.tint_a, m.tints_a[draw as usize % m.tints_a.len()], "{entity}");
+            assert_eq!(look.tint_b, m.tints_b[draw as usize % m.tints_b.len()], "{entity}");
+        }
+        checked += 1;
+    }
+    assert!(checked > 20, "{checked} ped entities");
+}
+
+#[test]
 fn ped_glb_bones_match_the_animation_rig() {
     let Some(bank) = bank() else {
         eprintln!("skipped: needs the ped bank under SKATE3_ASSET_ROOT");
@@ -172,4 +201,63 @@ fn ped_glb_bones_match_the_animation_rig() {
     eprintln!("{checked} ped GLBs; worst bind vs reference distance {:.3} m ({})", worst.0, worst.1);
     assert!(checked >= 50);
     assert!(worst.0 < 0.15, "bind skeletons differ from the animation reference: {}", worst.1);
+}
+
+/// fix10 (peds rendered warped): every ped GLB's joint frames ARE the rig's reference-pose frames
+/// (rotation and position), so the skin is `bone global x inverse(GLB bind)` with no extra
+/// bone-local basis; the skater's basis would turn every bone 90 degrees.
+#[test]
+fn ped_glb_bind_frames_are_the_rig_reference_frames() {
+    let Some(bank) = bank() else {
+        eprintln!("skipped: needs the ped bank under SKATE3_ASSET_ROOT");
+        return;
+    };
+    let Some(models) = find("private/living_world/models") else {
+        eprintln!("skipped: needs private/living_world/models under SKATE3_ASSET_ROOT");
+        return;
+    };
+    let rig = &bank.rig;
+    let mut locals = rig.reference.clone();
+    locals[0] = skate_core::living_world::peds::anim::IDENTITY;
+    let globals = skate_core::living_world::peds::PedEvaluator::globals(rig, &locals);
+    // Angle between the reference global (row-vector native matrix, rows = bone axes) and the
+    // Rotation angle between the two frames, axes normalised (the reference carries small bone
+    // scales, e.g. hands about 0.996). GLB bind = inverse of the inverse bind = its transpose for
+    // the orthonormal bind rotations (column-major array).
+    let angle = |native: &[[f32; 4]; 4], ibm: &[f32; 16], basis: [[f32; 3]; 3]| {
+        // bind(r, c) = ibm[r * 4 + c]; reference(r, c) = sum_k native[k][r] * basis[k][c] (G x basis).
+        let reference = |r: usize, c: usize| (0..3).map(|k| native[k][r] * basis[k][c]).sum::<f32>();
+        let n_bind: [f32; 3] = std::array::from_fn(|c| (0..3).map(|r| ibm[r * 4 + c].powi(2)).sum::<f32>().sqrt().max(1e-12));
+        let n_ref: [f32; 3] = std::array::from_fn(|c| (0..3).map(|r| reference(r, c).powi(2)).sum::<f32>().sqrt().max(1e-12));
+        let trace: f32 = (0..3).flat_map(|r| (0..3).map(move |c| (r, c))).map(|(r, c)| reference(r, c) / n_ref[c] * ibm[r * 4 + c] / n_bind[c]).sum();
+        ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees()
+    };
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let skater = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+    let (mut worst, mut best_skater, mut checked) = ((0.0f32, String::new()), f32::INFINITY, 0);
+    for entry in std::fs::read_dir(&models).unwrap() {
+        let path = entry.unwrap().path();
+        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+        if stem.starts_with("zprop_") || path.extension().is_none_or(|e| e != "glb") {
+            continue;
+        }
+        let (joints, ibm) = glb_skin(&path);
+        let (map, _) = match_bones(&joints, &rig.names);
+        for ((j, m), inv) in joints.iter().zip(&map).zip(&ibm) {
+            let Some(i) = *m else { continue };
+            if !rig.animated[i] {
+                continue;
+            }
+            let a = angle(&globals[i], inv, identity);
+            if a > worst.0 {
+                worst = (a, format!("{stem} {j}"));
+            }
+            best_skater = best_skater.min(angle(&globals[i], inv, skater));
+        }
+        checked += 1;
+    }
+    eprintln!("{checked} ped GLBs; worst bind vs reference frame {:.2} deg ({}); with the skater basis at least {best_skater:.1} deg", worst.0, worst.1);
+    assert!(checked >= 50);
+    assert!(worst.0 < 2.0, "ped GLB bind frames differ from the rig reference: {} deg at {}", worst.0, worst.1);
+    assert!(best_skater > 45.0, "the skater basis must not fit the ped GLBs ({best_skater} deg)");
 }

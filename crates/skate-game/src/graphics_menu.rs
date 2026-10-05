@@ -41,6 +41,8 @@ struct GraphicsSettings {
     hour: f32,
     day_speed: u32,
     ambient_level: Option<u32>,
+    /// NPC draw distance multiplier (QoL, not retail): 1 = retail ranges.
+    npc_draw_distance: f32,
 }
 impl Default for GraphicsSettings {
     fn default() -> Self {
@@ -52,11 +54,15 @@ impl Default for GraphicsSettings {
             hour: 12.,
             day_speed: 60,
             ambient_level: None,
+            npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
         }
     }
 }
 impl GraphicsSettings {
     fn validated(mut self) -> Self {
+        if !skate_core::living_world::DrawDistance::MENU_STEPS.contains(&self.npc_draw_distance) {
+            self.npc_draw_distance = skate_core::living_world::DrawDistance::RETAIL;
+        }
         self.ambient_level = self.ambient_level.map(|level| level.min(100));
         self.hour = if self.hour.is_finite() { self.hour.rem_euclid(24.) } else { 12. };
         if !DAY_SPEEDS.contains(&self.day_speed) { self.day_speed = 60; }
@@ -153,7 +159,7 @@ impl Menu {
             0 => (1000..1000 + self.maps.len()).collect(),
             1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([8,10]).collect(),
             1 => vec![3, 8, 10],
-            2 => vec![0, 1, 2, 13, 16, 17, 18],
+            2 => vec![0, 1, 2, 13, 16, 17, 18, NPC_DRAW_DISTANCE_ROW],
             4 => vec![7, 11, 14],
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
@@ -215,6 +221,7 @@ fn setup(
     mut window: Single<&mut Window, With<PrimaryWindow>>,
     cameras: Query<Entity, With<Camera3d>>,
     mut time: ResMut<Time<Virtual>>,
+    living: Option<ResMut<crate::living_world::LivingWorldSettings>>,
 ) {
     let path = config
         .asset_root
@@ -229,6 +236,9 @@ fn setup(
         Err(_) => GraphicsSettings::default(),
     }
     .validated();
+    if let Some(mut living) = living {
+        living.set_user_draw_distance(settings.npc_draw_distance);
+    }
     window
         .resolution
         .set_physical_resolution(settings.width, settings.height);
@@ -288,7 +298,7 @@ fn setup(
                 body.spawn((Text::new(""),MenuSubtitle,TextFont {font_size:16.,..default()},TextColor(Color::srgb(0.65,0.72,0.72))));
                 body.spawn((Node {height:px(3),width:px(64),margin:UiRect::bottom(px(10)),..default()},BackgroundColor(Color::srgb(0.78,0.96,0.3))));
                 body.spawn((MenuScroll,ScrollPosition::default(),Node {flex_grow:1.,min_height:px(0),overflow:Overflow::scroll_y(),flex_direction:FlexDirection::Column,row_gap:px(8),..default()})).with_children(|list| {
-                    for i in (0..4).chain(300..337).chain(4..10).chain(11..19).chain(20..27).chain([10]).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
+                    for i in (0..4).chain(300..337).chain(4..10).chain(11..20).chain(20..27).chain([10]).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
                         list.spawn((Button,MenuRow(i),Node {flex_direction:if (300..335).contains(&i) {FlexDirection::Column} else {FlexDirection::Row},width:percent(100),min_height:px(56),flex_shrink:0.,padding:UiRect::axes(px(18),px(12)),align_items:AlignItems::Center,border_radius:BorderRadius::all(px(4)),..default()},BackgroundColor(Color::srgb(0.075,0.09,0.095))))
                             .with_children(|row| {
                                 row.spawn((MenuLabel(i),Text::new(""),TextFont {font_size:18.,..default()},TextColor(Color::WHITE)));
@@ -324,6 +334,12 @@ fn setup(
 }
 /// GRAPHICS-section rows for the game_audio volume settings.
 const AUDIO_ROWS: std::ops::Range<usize> = 16..19;
+/// GRAPHICS-section row of the NPC draw distance (QoL, not retail).
+const NPC_DRAW_DISTANCE_ROW: usize = 19;
+const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time.";
+fn draw_distance_label(multiplier: f32) -> String {
+    if multiplier == skate_core::living_world::DrawDistance::RETAIL { "Retail".into() } else { format!("{multiplier}x  (not retail)") }
+}
 fn audio_row(row: usize) -> crate::game_audio::AudioRow {
     use crate::game_audio::AudioRow;
     match row { 16 => AudioRow::Master, 17 => AudioRow::Ambience, _ => AudioRow::Effects }
@@ -360,7 +376,7 @@ pub(crate) fn interact(
     mut exit: MessageWriter<AppExit>,
     mut net: ResMut<crate::multiplayer::Multiplayer>,
     mut typing: MessageReader<bevy::input::keyboard::KeyboardInput>,
-    (mut updater, mut audio): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>),
+    (mut updater, mut audio, mut living): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>, ResMut<crate::living_world::LivingWorldSettings>),
     travel: Res<crate::teleport_menu::Travel>,
     mut mods: ResMut<crate::modding::ModMenu>,
 ) {
@@ -429,7 +445,7 @@ pub(crate) fn interact(
         if keys.just_pressed(KeyCode::ArrowDown) || nav.pressed & 2 != 0 {
             menu.selected = visible[(index + 1) % rows];
         }
-        let adjustable = (menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected)) || (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && (menu.selected < 4 || AUDIO_ROWS.contains(&menu.selected)));
+        let adjustable = (menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected)) || (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && (menu.selected < 4 || menu.selected == NPC_DRAW_DISTANCE_ROW || AUDIO_ROWS.contains(&menu.selected)));
         if adjustable && (keys.just_pressed(KeyCode::ArrowLeft) || nav.pressed & 4 != 0) {
             action = Some((menu.selected, -1));
         }
@@ -594,10 +610,15 @@ pub(crate) fn interact(
                 13 => { menu.daylight = true; menu.selected = 0; menu.status = "Custom maps: change time, cycle speed and ambient light. Retail lighting stays authored.".into(); },
                 14 => mods.begin(),
                 16..=18 => menu.status = audio.adjust(audio_row(row), direction),
+                NPC_DRAW_DISTANCE_ROW => {
+                    menu.settings.npc_draw_distance = cycle(&skate_core::living_world::DrawDistance::MENU_STEPS, menu.settings.npc_draw_distance, direction);
+                    living.set_user_draw_distance(menu.settings.npc_draw_distance);
+                }
                 _ => {}
             }
         }
-        if (row < 3 && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
+        let draw_distance_row = row == NPC_DRAW_DISTANCE_ROW && !menu.multiplayer && !menu.daylight && !day_action;
+        if ((row < 3 || draw_distance_row) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
             let save = (|| -> Result<(), String> {
                 std::fs::create_dir_all(menu.path.parent().unwrap()).map_err(|e| e.to_string())?;
                 std::fs::write(
@@ -610,6 +631,10 @@ pub(crate) fn interact(
                 Ok(()) => "Saved".into(),
                 Err(e) => format!("Could not save: {e}"),
             };
+            if draw_distance_row {
+                menu.status = format!("{NPC_DRAW_DISTANCE_HINT}
+{}", menu.status);
+            }
         }
     }
     if menu.open && !net.active() {
@@ -823,6 +848,7 @@ fn labels(
                 13 => "Day & night".into(),
                 14 => "Mods".into(),
                 16..=18 => audio.as_ref().map(|a| a.label(audio_row(label.0))).unwrap_or_default(),
+                NPC_DRAW_DISTANCE_ROW => format!("NPC draw distance     {}", draw_distance_label(s.npc_draw_distance)),
                 _ => "Multiplayer".into(),
             }
         };
@@ -1020,8 +1046,8 @@ mod tests {
             let rows = menu.rows();
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
-            // Spawned row ids: 0..19 (16..19 are the audio rows), 1000+ maps.
-            assert!(rows.iter().all(|id| *id < 19 || *id >= 1000));
+            // Spawned row ids: 0..20 (16..19 are the audio rows, 19 the NPC draw distance), 1000+ maps.
+            assert!(rows.iter().all(|id| *id < 20 || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,8,10]);
@@ -1056,7 +1082,7 @@ mod tests {
         assert!(!SECTIONS.iter().any(|(name,_)| matches!(*name,"SESSION"|"WORLD")));
         menu.select_section(2);
         assert!(!menu.multiplayer && !menu.browser);
-        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18]);
+        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,NPC_DRAW_DISTANCE_ROW]);
         menu.daylight = true;
         assert_eq!(menu.rows(), vec![0,1,2,3]);
     }

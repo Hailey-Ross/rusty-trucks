@@ -185,6 +185,13 @@ pub enum Command {
         #[serde(default)]
         patch: Option<Value>,
     },
+    /// World tuning extension 1: patch a typed living-world / props / carry domain while the mod
+    /// runs (`patch` absent = restore this mod's patch of the domain).
+    WorldSetTuning {
+        domain: String,
+        #[serde(default)]
+        patch: Option<Value>,
+    },
     /// Audio extension 4 (doc 16 L2): write one input of a retail MixMap controller (`value` absent
     /// = release it: the input gets back the value before this mod's first write).
     AudioSetMixmapInput {
@@ -470,7 +477,7 @@ impl Command {
         match self {
             Self::RigPart {index,options} => *index<26 && options.as_ref().is_none_or(|o|o.validate()),
             Self::GraphGate {graph,target,index,..} => matches!(graph.as_str(),"action"|"motion") && matches!(target.as_str(),"state"|"transition"|"behavior") && *index<65536,
-            Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog") || crate::audio_tuning::valid_inspect(system),
+            Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog") || crate::audio_tuning::valid_inspect(system) || crate::world_tuning::valid_inspect(system),
             Self::Request {key,command,token} => *token<=9_007_199_254_740_991 && crate::schema::valid_id(key) && !matches!(**command,Self::Request{..}) && command.validate(),
             Self::InputOverride {action,value} => (64..=81).contains(action) && value.is_none_or(|v|v.is_finite() && (-1.0..=1.0).contains(&v)),
             Self::NativeImpulse {body,impulse,point:p,..} => body.validate() && impulse.iter().all(|v|v.is_finite() && v.abs()<=100_000.) && p.as_ref().is_none_or(point),
@@ -502,6 +509,7 @@ impl Command {
             Self::AudioSetMixmapInput { slot, object, instance, input, value, float } => crate::audio::valid_symbol(slot) && *object <= 127 && *instance <= 31 && *input <= 15
                 && value.is_none_or(|v| v.is_finite() && (*float || (v.fract() == 0.0 && (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&v)))),
             Self::AudioSeed { .. } => true,
+            Self::WorldSetTuning { domain, patch } => crate::world_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::world_tuning::valid_patch(domain, p)),
             Self::AudioSetTuning { domain, patch } => crate::audio_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::audio_tuning::valid_patch(domain, p)),
             Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
                 && mixmap.len() <= crate::audio::MAX_WATCH && mixmap.iter().all(crate::audio::MixMapKey::validate),
@@ -767,6 +775,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::AudioRule { .. } => "audio_rule",
         Command::AudioSetMixmapInput { .. } => "audio_set_mixmap_input",
         Command::AudioSeed { .. } => "audio_seed",
+        Command::WorldSetTuning { .. } => "world_set_tuning",
         Command::WorldAudioSpawn { .. } => "world_audio_spawn",
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
@@ -1095,6 +1104,7 @@ impl Vm {
             capabilities.set("audio_events", 3)?;
             // Tuning writes at run time (`sdk.audio.set_tuning`: player / world / bus / reverb domains).
             capabilities.set("audio_tuning", 1)?;
+            capabilities.set("world_tuning", 1)?;
             sdk.set("_native_capabilities", capabilities)?;
             sdk.set("mod_id", manifest.id.clone())?;
             sdk.set(
@@ -2134,6 +2144,44 @@ mod world_audio_tests {
         assert!(cmds.iter().all(Command::validate));
         assert!(matches!(&cmds[1], Command::AudioSetTuning { patch: None, .. }), "nil restores");
         assert!(matches!(&cmds[2], Command::Request { command, .. } if matches!(&**command, Command::EngineInspect { system } if system == "audio_tuning:world/traffic_engine/c04_taxi01")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// World tuning extension 1: `world_set_tuning` validates per domain, the Lua wrappers submit
+    /// set / restore / read and `world_tuning` is advertised.
+    #[test]
+    fn world_tuning_commands_deserialize_and_validate() {
+        for (value, ok) in [
+            (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_draw_distance":2.0}}), true),
+            (json!({"kind":"world_set_tuning","domain":"carry"}), true),
+            (json!({"kind":"engine_inspect","system":"world_tuning:props"}), true),
+            (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"nope":1}}), false),
+            (json!({"kind":"world_set_tuning","domain":"roads","patch":{}}), false),
+        ] {
+            let c: Command = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(c.validate(), ok, "{value}");
+        }
+        let root = std::env::temp_dir().join(format!("skate-world-tuning-lua-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            local M = {}
+            function M.on_update()
+                assert(sdk.capabilities.world_tuning == 1, 'capability')
+                sdk.world.set_tuning('living_world', {skater_fade = {fade_seconds = 2}})
+                sdk.world.set_tuning('living_world', nil)
+                sdk.world.tuning('t', 'carry')
+            end
+            return M
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({
+            "id":"tests.world-tuning","api":2,"name":"World tuning","version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
+        let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
+        let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
+        assert_eq!(kinds, ["world_set_tuning", "world_set_tuning", "request"]);
+        assert!(cmds.iter().all(Command::validate));
+        assert!(matches!(&cmds[1], Command::WorldSetTuning { patch: None, .. }), "nil restores");
         let _ = std::fs::remove_dir_all(root);
     }
 

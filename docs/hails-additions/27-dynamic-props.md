@@ -31,9 +31,11 @@ that collide, can be pushed, grabbed, dragged and placed, with layouts saved per
 - **Phase 2, rigid bodies** (`physics/prop_dynamics.rs`): TU3 integrator, retail rounded-box mass properties,
   GP pair queries for box vs world / box / skater volumes, a compact impulse pass; moved instances rebake their
   triangle range (`BoardWorld::replace_triangles`, new in skate-core).
-- **Phase 3, grab and carry** (`physics/prop_carry.rs`): A on foot toggles grab of the nearest prop.
+- **Phase 3, grab and carry** (`physics/prop_carry.rs`): A on foot toggles grab of the nearest prop
+  (#15; since 2026-10-05 a held RB, the retail GrabWorld button, because A is retail sprint, see doc 26 "Props
+  pulled toward the player").
 - **Phase 4, placement and layouts** (`prop_carry.rs`, `prop_layout.rs`, `prop_carry_hud.rs`): B while carrying
-  enters placement (right stick distance / yaw, DPad height, A confirms); poses persist to
+  enters placement (right stick distance / yaw, DPad height; now releasing RB confirms); poses persist to
   `settings/prop-layouts/<map>.json` and reload on map load; a small HUD diamond.
 - **Later commits:** authored MOBJ physics (density, friction, restitution, damping, sleep flags), Skate 3 style
   drag carry, surface-distance and omnidirectional grab, momentum-style skater push, body-bump speed cap
@@ -80,6 +82,71 @@ changes.
   GLB test (gitignored model). Python: 177 setup tests OK (2 skipped).
 - Not yet: in-game checks (see open questions); `--validate-maps` needs installed assets and a refreshed setup.
 
+## Grabbing spins the player; dragging does not work (2026-10-05)
+
+**Problem.** User, verbatim: "when grabbing objects the player spun and had trouble with dragging them around as
+they should be able to". Video `2026-10-05 11-43-41.mp4`: 0:06 to 0:11.5 the skater holds a shopping cart (HUD
+diamond cyan), bent over it in the MovingObjectNew pose, and skater and cart circle round each other on the spot
+while the camera swings round; 0:43 to 1:14 the same with a bin.
+
+**Root cause [code].** In state 502 (OffBoardPushing) with a held prop, `biped_ground::update` rotated the carried
+OB_ObjectMv stick by the skater's current ground frame into a world direction and fed it to the walking
+controller (`ground_input::calculate`). That controller only walks forward and turns toward its stick
+(TurnVsStickAngle). A stick that is not straight ahead therefore always sits at the same angle from the facing:
+the skater turns, the target turns with them, and the turn never ends. Pulling back asks for a 180 degree turn
+every tick. #15's prop follow kept the prop on a world bearing, so the prop slid round the turning skater.
+
+**Retail [code][data].** The object-move inputs come from 8259C4B0, called by Fill825999F0 with the current
+RawControllerInput (raw left stick X/Y, right stick X):
+- angle a = atan2(x, -y) wrapped to (-pi, pi], curve key |a| / pi (constant 822F8610 = 1/pi);
+- OB_ObjectMvX = x * curve 1A1A7AC37A72DF87, OB_ObjectMvZ = y * curve 05BA8B52C23B3481 (inputlistener,
+  PointNegGraphData8; X gain is 1 everywhere, Z dips to about 0.54 on diagonals);
+- OB_ObjectMvRot = clamp(right X + sign(a) * curve 9ADFC2E222938C1E (16 points) * s, -1, 1) (clamp constants
+  8216DEE0 = -1, 8231A844 = 1). Every Y value of 9ADFC2E222938C1E is 0, so the left stick never turns the
+  skater and object; only the right stick does. The scale s (caller f21) is not resolved; it only multiplies
+  that zero curve.
+The stock MovingObjectNew graph picks MVOBJ push / pull / left / right clips from the OB_ObjectMv angle.
+Retail's physics state 502 (string `PhysState_OffBoardPushing`, 0x82080660) is not decoded, so how far retail
+moves the pair per second (likely the MVOBJ clips' root motion) is not known.
+
+**Change.**
+- `skate-core` `produce_object_move` ports 8259C4B0 with the three shipped curves (`ObjectMoveCurves`, loaded by
+  `PhysicsSettings` from the inputlistener collection) and publishes OB_ObjectMvRot from the right stick (was 0).
+- `biped_ground::update` (502 with a held prop): the walking stick stays idle (no turn toward the stick). The
+  pair's planar velocity comes from `prop_carry::object_move_motion` (left stick, skater frame: push, pull, side
+  step) through the controller's velocity override, so contacts and obstacle rejection still apply; the pair
+  turns only by OB_ObjectMvRot.
+- `PropCarry::follow`: the prop keeps its grab offset fixed in the carrier's frame (pulled in to 0.9 m) and turns
+  at the carrier's yaw rate (`PropDynamics::set_yaw_rate`), so it stays in front of the skater while turning.
+- Speeds are engine values until state 502 is decoded: push 1.4 m/s, pull 1.0 m/s, side 0.8 m/s, turn 1.6 rad/s
+  (`CarryLocomotion`). Mods: `sdk.world.set_tuning('carry', {push_speed, pull_speed, side_speed, turn_rate})`
+  next to `grab_bit`, `placement_bit`, `grab_range`; mod disable restores the defaults. All values are per tick
+  and deterministic (no wall clock, no randomness), ready for a later network authority.
+
+**Files.** `crates/skate-core/src/input/offboard_intentions.rs` (+ tests), `crates/skate-game/src/physics/`
+`biped_ground.rs`, `prop_carry.rs`, `prop_dynamics.rs` (set_yaw_rate, tests), `settings.rs`,
+`offboard/settings.rs`, `animation_phase.rs`; `crates/skate-game/src/modding/world_tuning.rs`,
+`crates/skate-mods/src/world_tuning.rs`, `crates/skate-mods/src/api.lua`, `sdk/skate.lua`, `sdk/GENERAL_API.md`.
+
+**Verification.**
+- `move_object_left_stick_never_turns_the_pair`: 16 left-stick directions for 240 ticks each, yaw rate exactly 0
+  and travel on a straight line in the stick's direction; right stick turn bounded by `turn_rate`.
+- `dragged_prop_follows_a_straight_push`: 180 ticks of a straight push, the prop stays within 5 cm of the push line
+  and 0.9 m ahead.
+- `turning_carrier_swings_the_held_prop_with_it`: a 90 degree turn leaves the prop in front (bearing 90 +/- 10
+  degrees); #15's world-bearing follow kept the prop at its old bearing (0 degrees).
+- `object_move_maps_left_stick_and_right_stick_rotation`, `object_move_z_gain_follows_the_stick_angle_curve`
+  (skate-core), `carry_move_object_speeds_set_and_reset` (Lua path and reset) and the skate-mods carry validation.
+- `cargo test --locked -p skate-game --bin skate3rust`: 482 pass, 1 known failure
+  (`pipelines_accept_valid_group_outputs_when_fingerprint_changes`). The asset-backed
+  `raw_x_offboard_jump_connects_input_ground_launch_air_and_landing` passes with the stock data (loads the new
+  curves; on-foot walking unchanged).
+- Not yet checked in game: hold RB next to the cart or a bin, push, pull, side step with the left stick, turn with
+  the right stick.
+
+**Open.** Decode state 502 (PhysState_OffBoardPushing) and the MVOBJ clip root motion to replace the engine
+speeds; the prop's retail grip point (hands on the handle) and whether heavy DMOs move slower.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with
@@ -87,4 +154,12 @@ changes.
   cull rings and safety areas. Planned as milestones D0 onward (dmo-plan).
 - Grind probes see only the static world (props not grindable yet), multiplayer is host-local (#15 known
   limitations); memory on DownTown is heavy (#15 notes).
-- The grab button (A) and placement (B) are #15's choices; retail's ObjectMove input is to be confirmed.
+- Board stuck inside a prop (bench near the Aletown spawn, frame drop): #15's push nudged a prop every tick while a
+  skater volume sat inside its render-AABB box, so a bench never slept and rebaked (and rebuilt the prop layer's
+  query index) every tick. Fixed 2026-10-05 with a bounded, data-driven push and depenetration (`PropTuning`,
+  per prop type overrides, resource `PropTuningSettings`); see doc 26 "Board stuck inside a prop". Still open: the
+  render-AABB box is solid under seats where the mesh is open; retail's collision for these DMOs is not recovered.
+- Grab button: A (#15's choice) was the retail sprint button and grabbed props while running; it is now a held RB
+  (GrabWorld, the gate of retail 82D324B0), release drops. Placement (B) is still #15's choice. See doc 26.
+- Move Object speeds (push / pull / side / turn) are engine values until retail state 502 is decoded; see
+  "Grabbing spins the player" above.

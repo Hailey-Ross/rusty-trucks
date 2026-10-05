@@ -244,21 +244,17 @@ pub(super) fn advance(
     //Teleport resets previous observations, but preserves this pending batch.
     skeleton_queries.publish(&mut skater.player_input.player);
     super::water::apply_board_drag(physics);
-    // Prop grab/place (Phases 3-4): rising edges of A (bit 21) and B (bit
-    // 20) from the derived controller; right stick and DPad levels from the
-    // sampled gameplay actions. Stock offboard graphs give A/B taps no action
-    // of their own; see prop_carry.
-    let controller_words = controls.controller.words();
-    let rising = |bit: u32| {
-        controller_words[13] & (1 << bit) != 0 && controller_words[6] & (1 << bit) == 0
-    };
-    let carry_tick = super::prop_carry::Tick {
-        grab: rising(21),
-        placement: rising(20),
-        yaw_axis: actions.value(67),
-        distance_axis: actions.value(68),
-        height_axis: actions.value(74) - actions.value(75),
-    };
+    // Prop grab/place (Phases 3-4): grab held on the retail GrabWorld button
+    // (RB), placement on a B rising edge, from the derived controller; right
+    // stick and DPad levels from the sampled gameplay actions. A is sprint
+    // and must not grab; see prop_carry.
+    let carry_tick = super::prop_carry::Tick::from_controller(
+        controls.controller.words(),
+        physics.prop_carry.buttons(),
+        actions.value(67),
+        actions.value(68),
+        actions.value(74) - actions.value(75),
+    );
     bevy::log::info_span!("fixed_collision_and_solve").in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets, carry_tick))?;
     super::offboard_audit_trace::stage(tick, "solve", physics, skater, controls);
     #[cfg(debug_assertions)]

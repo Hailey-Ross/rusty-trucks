@@ -280,3 +280,59 @@ fn avoidance_keeps_the_agent_radius() {
     assert!(separation_ok([0.2, 0.0, 0.0], [0.3, 0.0, 0.0], 1, &others, r));
     assert!(!separation_ok([0.3, 0.0, 0.0], [0.2, 0.0, 0.0], 1, &others, r));
 }
+
+/// fix 17: two NavPower tiles stop short of their shared border (a 0.28 m gap, linked by setup)
+/// and a wall-top island 3 m above the second tile. A ped walking across the seam must get over
+/// the gap (the old step rule snapped it back to the edge it left: walking in place), and no
+/// step may put it on the island (an unconnected layer).
+#[test]
+fn steps_cross_tile_seams_and_never_jump_layers() {
+    let sq = |x0: f32, z0: f32, x1: f32, z1: f32, y: f32| vec![[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]];
+    let input = NavMeshInput {
+        agent: [0.12, 0.35, 0.2, 1.6],
+        polygons: vec![
+            // Tile A z 0..9.86, tile B z 10.14..20 (edge 2 of A = top, edge 0 of B = bottom).
+            NavPolyInput { verts: sq(0.0, 0.0, 4.0, 9.86, 0.0), neighbours: vec![None, None, Some(1), None], area: AREA_DEFAULT },
+            NavPolyInput { verts: sq(0.0, 10.14, 4.0, 20.0, 0.0), neighbours: vec![Some(0), None, None, None], area: AREA_DEFAULT },
+            // Wall-top island over the seam, 3 m up, linked to nothing.
+            NavPolyInput { verts: sq(1.0, 9.0, 3.0, 11.0, 3.0), neighbours: vec![None; 4], area: AREA_DEFAULT },
+        ],
+    };
+    let m = mesh(&input);
+    // Old rule (locate the step's end on its own): stuck at the edge it left.
+    let old_walk = |m: &NavMesh| {
+        let (mut p, mut top) = ([2.0f32, 0.0, 9.5], 0.0f32);
+        for _ in 0..60 {
+            if let Some(n) = m.locate([p[0], p[1], p[2] + 0.044]) {
+                p = n.position;
+                top = top.max(p[1]);
+            }
+        }
+        (p, top)
+    };
+    let mut ground_only = input.clone();
+    ground_only.polygons.truncate(2);
+    let (stalled, _) = old_walk(&mesh(&ground_only));
+    assert!(stalled[2] < 9.9, "control: the old rule stalls at the seam ({stalled:?})");
+    // The point query itself keeps a point in the gap on its own layer (it used to pick the
+    // island, 3 m up, because the island's polygon is under the point and the ground's is not).
+    let gap = m.locate([2.0, 0.0, 10.0]).unwrap();
+    assert!(gap.position[1].abs() < 1e-4 && gap.poly != 2, "{gap:?}");
+    let (_, top) = old_walk(&m);
+    assert!(top < 1e-4);
+    // Surface moves: across the gap onto tile B, never onto the island.
+    let mut pos = [2.0f32, 0.0, 9.5];
+    for _ in 0..60 {
+        let (next, ok) = constrain_step(&m, pos, [pos[0], pos[1], pos[2] + 0.044]);
+        assert!(ok);
+        assert!(next[1].abs() < 1e-4, "stayed on the ground layer: {next:?}");
+        pos = next;
+    }
+    assert!(pos[2] > 11.5, "crossed the seam: {pos:?}");
+    // A ped on the ground under the island stays on the ground (the island contains the point too).
+    let (next, _) = constrain_step(&m, [2.0, 0.0, 10.5], [2.0, 2.5, 10.55]);
+    assert!(next[1].abs() < 1e-4, "{next:?}");
+    // A step into a boundary slides onto the edge (no progress beyond it).
+    let (edge, ok) = constrain_step(&m, [3.9, 0.0, 5.0], [4.2, 0.0, 5.0]);
+    assert!(ok && (edge[0] - 4.0).abs() < 1e-4);
+}

@@ -706,6 +706,17 @@ def parse_recipe(data: bytes) -> dict:
     return {'version': version, 'name': name, 'words': words, 'parts': parts, 'trailer_zero_words': zero_words}
 
 
+def recipe_shaders(xml: bytes) -> dict:
+    """Material id (16 hex digits, as ``parse_recipe`` writes them) -> material type from a recipe's
+    XML twin (``<mat id="0x..." type="pedestrian_high_stamp">``). The type picks the retail shader:
+    ``pedestrian_high_stamp`` / ``pedestrian_low`` are the ped body shaders that recolour the mask
+    texels with the model's tints, ``marquee_hair`` / ``marquee_cloth`` / ``cac_alpha`` do not [data]."""
+    import re
+    text = xml.decode('utf-8', 'replace')
+    return {m.group(1).lower().rjust(16, '0'): m.group(2)
+            for m in re.finditer(r'<mat\s+id="0x([0-9A-Fa-f]+)"\s+type="([^"]+)"', text)}
+
+
 def model_manifest(game_root: Path) -> dict:
     """models.json: every binary recipe under ``recipe/livingworld/`` with its arenas checked."""
     from tools.owned_game.big import BigArchive
@@ -732,8 +743,10 @@ def model_manifest(game_root: Path) -> dict:
                     if texture not in paths:
                         missing.append(texture)
         stem = Path(entry.path).stem
+        xml = paths.get(f'data/content/recipe/livingworld/{stem}.xml')
         recipes[stem] = {**recipe, 'kind': 'prop' if stem.startswith('zprop_') else 'ped',
-                         'xml': f'data/content/recipe/livingworld/{stem}.xml' in paths,
+                         'xml': xml is not None,
+                         'shaders': recipe_shaders(big.read(xml)) if xml is not None else {},
                          'missing': sorted(set(missing))}
     return {'version': VERSION, 'archive': 'data/content/livingworld.big', 'recipes': recipes, 'errors': errors,
             'peds': sorted(k for k, r in recipes.items() if r['kind'] == 'ped'),

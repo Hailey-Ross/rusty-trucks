@@ -238,3 +238,120 @@ fn vehicle_records_round_trip_through_the_wire_form() {
     let back: WireRecord = serde_json::from_str(&json).unwrap();
     assert_eq!(back.to_decision(), Some(record));
 }
+
+#[test]
+fn living_world_npc_draw_distance_setting_scales_population_and_mods_reset_to_the_players_choice() {
+    // Retail by default; the settings write the multiplier into the authority's config.
+    let s = LivingWorldSettings::default();
+    assert_eq!(s.npc_draw_distance, 1.0);
+    let mut config = PopulationConfig::retail();
+    s.apply(&mut config);
+    assert_eq!(config.draw_distance, 1.0);
+
+    // 1x explicitly set through the menu path: the same decision stream as the default.
+    let mut a = app(11, 8.0);
+    run(&mut a, 30.0, 60.0);
+    let mut b = app(11, 8.0);
+    b.world_mut().resource_mut::<LivingWorldSettings>().set_user_draw_distance(1.0);
+    run(&mut b, 30.0, 60.0);
+    assert_eq!(a.world().resource::<Collected>().0, b.world().resource::<Collected>().0);
+
+    // 2x: a still player gets 4x the peds (cap 15 x 4) and up to 4x the cars (limit 15 x 4).
+    let mut c = app(4, 0.0);
+    c.world_mut().resource_mut::<LivingWorldSettings>().set_user_draw_distance(2.0);
+    run(&mut c, 20.0, 60.0);
+    let w = &c.world().resource::<PopulationState>().world;
+    assert_eq!(w.count(Kind::Pedestrian), 60);
+    assert!(w.count(Kind::Vehicle) > 15 && w.count(Kind::Vehicle) <= 60, "cars {}", w.count(Kind::Vehicle));
+    // The retail data stays as loaded (the multiplier sits on top).
+    assert_eq!(w.config.draw_distance, 2.0);
+    assert_eq!(w.config.pedestrians.range, c.world().resource::<PopulationState>().data_config.pedestrians.range);
+
+    // A mod overrides it; disabling the mod restores the player's menu choice, not the mod's.
+    let mut s = LivingWorldSettings::default();
+    s.set_user_draw_distance(1.5);
+    s.npc_draw_distance = 3.0;
+    s.ped_fade.enabled = false;
+    s.reset_mod_overrides();
+    assert_eq!((s.npc_draw_distance, s.user_npc_draw_distance), (1.5, 1.5));
+    assert_eq!(s.ped_fade, skate_core::living_world::peds::PedFadeConfig::default());
+    // Bad values never reach the rules.
+    s.npc_draw_distance = f32::NAN;
+    assert!(s.draw_distance().is_retail());
+}
+
+#[test]
+fn living_world_ped_fade_scales_with_the_draw_distance() {
+    let mut s = LivingWorldSettings::default();
+    let a = |s: &LivingWorldSettings, d: f32| super::peds::ped_draw_alpha(s, Some([45.0, 55.0]), d, 10.0);
+    assert_eq!(a(&s, 50.0), skate_core::living_world::peds::draw_alpha(&s.ped_fade, Some([45.0, 55.0]), 50.0, 10.0));
+    assert_eq!(a(&s, 55.0), 0.0);
+    s.set_user_draw_distance(2.0);
+    assert_eq!(a(&s, 90.0), 1.0);
+    assert!((a(&s, 100.0) - 0.5).abs() < 1e-6);
+    assert_eq!(a(&s, 110.0), 0.0);
+    // Without a model pair the configured default (45 / 55) scales the same way.
+    assert!((super::peds::ped_draw_alpha(&s, None, 100.0, 10.0) - 0.5).abs() < 1e-6);
+}
+
+/// The walking player and the board left behind (session 2026-10-05, 17:45:02 to 17:45:15): the
+/// player walks along +x at `speed`, the deck lies 500 m away.
+const LEFT_DECK: [f32; 3] = [-400.0, 0.0, 300.0];
+
+fn walk_away_from_board(time: Res<Time>, mut path: ResMut<Path>, mut obs: ResMut<LivingWorldObservers>) {
+    path.t += time.delta_secs();
+    let player = ([-900.0 + path.t * path.speed, 0.0, 0.0], [path.speed, 0.0, 0.0]);
+    obs.observers = vec![local_focus(Some(player), (LEFT_DECK, [0.0; 3]))];
+    obs.player_slots = 1;
+}
+
+#[test]
+fn living_world_off_board_player_keeps_the_population_around_the_player_not_the_board() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    let settings = LivingWorldSettings { seed: 11, ..LivingWorldSettings::default() };
+    let mut state = PopulationState::default();
+    state.install("Test", 1, &settings, data());
+    app.insert_resource(settings).insert_resource(state).init_resource::<LivingWorldObservers>().init_resource::<Collected>();
+    app.insert_resource(Path { t: 0.0, speed: 1.5 });
+    app.add_message::<LivingWorldSpawn>().add_message::<LivingWorldDespawn>();
+    app.add_systems(Update, (walk_away_from_board, step_population, collect).chain());
+    run(&mut app, 20.0, 60.0);
+    let player = app.world().resource::<LivingWorldObservers>().observers[0].position;
+    let w = &app.world().resource::<PopulationState>().world;
+    assert!(w.count(Kind::Pedestrian) > 0 && w.count(Kind::Vehicle) > 0, "population around the player");
+    let flat = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    for k in [Kind::Pedestrian, Kind::Vehicle] {
+        for l in w.live(k) {
+            assert!(flat(l.position, player) <= 110.0 + 1.0, "{k:?} {} m from the player", flat(l.position, player));
+            assert!(flat(l.position, LEFT_DECK) > 200.0, "{k:?} spawned around the left board");
+        }
+    }
+    // Nothing was ever spawned around the board.
+    assert!(spawned(app.world().resource::<Collected>()).iter().all(|(_, p, _)| flat(*p, LEFT_DECK) > 200.0));
+}
+
+#[test]
+fn living_world_focus_is_the_character_and_still_velocity_is_zero() {
+    let deck = ([5.0, 0.0, 5.0], [9.0, 0.0, 0.0]);
+    let walking = local_focus(Some(([1.0, 2.0, 3.0], [1.2, 0.0, 0.0])), deck);
+    assert_eq!((walking.position, walking.velocity), ([1.0, 2.0, 3.0], [1.2, 0.0, 0.0]));
+    // No skater loaded: the board.
+    assert_eq!(local_focus(None, deck).position, [5.0, 0.0, 5.0]);
+    // |v|^2 <= 1e-4 counts as standing (retail `sub_826BE870`).
+    assert_eq!(local_focus(Some(([0.0; 3], [0.005, 0.0, 0.005])), deck).velocity, [0.0; 3]);
+    // A broken focus stays broken, so the census guard holds the population.
+    assert!(local_focus(Some(([f32::NAN, 0.0, 0.0], [0.0; 3])), deck).position[0].is_nan());
+}
+
+#[test]
+fn living_world_debug_summaries_restart_with_a_new_world() {
+    let mut last = 0;
+    assert!(!report_due(299, &mut last, 300));
+    assert!(report_due(300, &mut last, 300));
+    assert!(report_due(9_000, &mut last, 300));
+    // Map reload / respawn into a new generation: the world tick restarts at 0.
+    assert!(!report_due(10, &mut last, 300));
+    assert!(report_due(300, &mut last, 300), "the summary logs again 5 s into the new world");
+    assert_eq!(last, 300);
+}

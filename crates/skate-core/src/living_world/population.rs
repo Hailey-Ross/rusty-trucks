@@ -7,6 +7,7 @@ use super::census::{self, CensusMap, VehicleCatalog};
 use super::traffic::{spawn as placement, LaneCar, RoadNetwork, SegmentId};
 use super::clock::ConsoleClock;
 use super::config::{retail, CensusKindConfig, FreePlay, PopulationConfig};
+use super::draw_distance::DrawDistance;
 use super::rng::{derive, Rng};
 use super::skaters::{self, SkaterWorld};
 use super::{Decision, DespawnReason, DespawnRecord, Kind, LivingWorldId, Observer, SpawnChoice, SpawnRecord, Vec3};
@@ -322,15 +323,19 @@ impl LivingWorld {
         if !inputs.observers.is_empty() {
             let slot = (tick % retail::CENSUS_ROTATION as u64) as u32;
             let seed = self.seed;
-            if slot == self.config.pedestrians.rotation_slot {
-                let density = density(&self.config.pedestrians, inputs.free_play.map(|f| f.pedestrians));
-                census_pass(&self.config.pedestrians, &mut self.peds, inputs, tick, seed, density, &mut out);
+            // NPC draw distance (QoL, not retail): a scaled copy on top of the retail config, built
+            // only when the multiplier is not 1; retail runs `self.config` itself.
+            let scaled = DrawDistance::new(self.config.draw_distance).scaled(&self.config);
+            let config = scaled.as_ref().unwrap_or(&self.config);
+            if slot == config.pedestrians.rotation_slot {
+                let density = density(&config.pedestrians, inputs.free_play.map(|f| f.pedestrians));
+                census_pass(&config.pedestrians, &mut self.peds, inputs, tick, seed, density, &mut out);
             }
-            if slot == self.config.vehicles.rotation_slot {
-                let density = density(&self.config.vehicles, inputs.free_play.map(|f| f.traffic));
-                census_pass(&self.config.vehicles, &mut self.vehicles, inputs, tick, seed, density, &mut out);
+            if slot == config.vehicles.rotation_slot {
+                let density = density(&config.vehicles, inputs.free_play.map(|f| f.traffic));
+                census_pass(&config.vehicles, &mut self.vehicles, inputs, tick, seed, density, &mut out);
             }
-            skaters::tick(&self.config.skaters, &mut self.skaters, &mut self.skater_pool, inputs, tick, seed, &mut out);
+            skaters::tick(&config.skaters, &mut self.skaters, &mut self.skater_pool, inputs, tick, seed, &mut out);
         }
         self.tick += 1;
         out
@@ -354,7 +359,13 @@ pub(crate) fn census_pass(cfg: &CensusKindConfig, st: &mut KindState, inputs: &T
         st.despawn_all(tick, DespawnReason::FreePlayOff, out);
         return;
     }
-    let circles: Vec<_> = inputs.observers.iter().map(|o| range.around(o)).collect();
+    // Guard (engine, not retail; doc 26 "Cars flying off"): a focus with a non-finite position or
+    // speed gives no circle. An infinite centre would put every NPC beyond the cull and empty the
+    // whole population in one pass; without a usable circle this pass neither culls nor spawns.
+    let circles: Vec<_> = inputs.observers.iter().map(|o| range.around(o)).filter(|(c, centre)| c.cull.is_finite() && c.spawn_outer.is_finite() && centre.iter().all(|v| v.is_finite())).collect();
+    if circles.is_empty() {
+        return;
+    }
     let serials: Vec<u32> = st.live.iter().filter(|(_, l)| census::beyond_cull(l.position, &circles)).map(|(s, _)| *s).collect();
     for s in serials {
         if let Some(r) = st.despawn(s, tick, DespawnReason::Distance) {

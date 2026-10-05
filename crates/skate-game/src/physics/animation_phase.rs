@@ -323,6 +323,7 @@ pub(crate) fn advance(
     if physics.prop_carry.held().is_some() {
         for intent in skate_core::input::offboard_intentions::produce_object_move(
             &controls.controller,
+            &physics.settings.object_move,
         ) {
             action_intents.insert(intent.name, intent.value);
         }

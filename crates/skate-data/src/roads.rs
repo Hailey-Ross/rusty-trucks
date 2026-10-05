@@ -379,11 +379,27 @@ impl RoadGraph {
     /// their pieces, junctions with their approach / exit ends (end records of kind 1) and
     /// connectors. `flag_04` becomes `signalled`, `f32_50` the connector's entry speed.
     pub fn traffic_input(&self) -> skate_core::living_world::traffic::RoadInput {
+        self.traffic_input_where(&|_| true)
+    }
+
+    /// The traffic input of one district only (its segments and junctions; a junction end whose
+    /// segment belongs to another district becomes a map edge). The districts are separate
+    /// worlds that overlap in x / z [data: University roads lie 16-18 m above the DownTown walk
+    /// mesh, Industrial roads 47-59 m below it], so a world must only see its own roads; with the
+    /// whole graph a car placed or routed onto another district's road floats in the air or
+    /// drives under the ground. `None` when the graph has no district of that name.
+    pub fn district_traffic_input(&self, name: &str) -> Option<skate_core::living_world::traffic::RoadInput> {
+        let d = self.districts.iter().position(|d| d.name == name)? as u32;
+        Some(self.traffic_input_where(&|district| district == d))
+    }
+
+    fn traffic_input_where(&self, keep: &dyn Fn(u32) -> bool) -> skate_core::living_world::traffic::RoadInput {
         use skate_core::living_world::traffic as t;
         let curve = |c: &Curve| t::Curve { start: c.start, end: c.end, tangent_start: c.tangent_start, tangent_end: c.tangent_end, length: c.length, arc: c.arc };
         let segments = self
             .segments
             .iter()
+            .filter(|s| keep(s.district))
             .map(|s| t::SegmentInput {
                 id: t::SegmentId(s.id),
                 from_node: s.from_node,
@@ -404,6 +420,7 @@ impl RoadGraph {
         let junctions = self
             .junctions
             .iter()
+            .filter(|j| keep(j.district))
             .map(|j| {
                 let end = |k: usize| -> Option<t::EndInput> {
                     let e = &j.ends[k];
@@ -605,6 +622,34 @@ mod tests {
         assert_eq!(next.len(), 1);
         assert_eq!(net.segments[net.connector_exit(next[0]).unwrap()].id, SegmentId(2));
         assert_eq!(net.connectors[next[0]].entry_speed, 13.888889);
+    }
+
+    /// Doc 26 "Cars flying off": the districts are separate worlds overlapping in x / z. A world
+    /// gets only its own district's roads; another district's segment (here 17 m up, like the
+    /// University roads over DownTown) and the junction ends leading to it are left out, so the
+    /// census can neither place a car on it nor route one onto it.
+    #[test]
+    fn district_traffic_input_keeps_only_that_districts_roads() {
+        use skate_core::living_world::traffic::{RoadNetwork, SegmentId};
+        let mut g = synthetic();
+        g.segments[1].district = 1;
+        let p = &mut g.pieces[2];
+        for v in [&mut p.left_start, &mut p.right_start, &mut p.left_end, &mut p.right_end] {
+            v[1] = 17.0;
+        }
+        g.districts = vec![District { name: "Test".into(), segments: 0..1, junctions: 0..1 }, District { name: "Other".into(), segments: 1..2, junctions: 1..1 }];
+        let whole = RoadNetwork::build(&g.traffic_input()).unwrap();
+        assert!(whole.segment_index(SegmentId(2)).is_some(), "the whole file still holds both");
+        let net = RoadNetwork::build(&g.district_traffic_input("Test").unwrap()).unwrap();
+        assert!(net.segment_index(SegmentId(2)).is_none(), "another district's road joined the world");
+        let s1 = net.segment_index(SegmentId(1)).unwrap();
+        let next = net.next_connectors(s1, 0);
+        assert_eq!(next.len(), 1);
+        assert_eq!(net.connector_exit(next[0]), None, "the connector into the other district is a map edge");
+        let other = RoadNetwork::build(&g.district_traffic_input("Other").unwrap()).unwrap();
+        assert_eq!(other.segments.len(), 1);
+        assert!(other.junctions.is_empty());
+        assert!(g.district_traffic_input("NoSuchDistrict").is_none());
     }
 
     #[test]

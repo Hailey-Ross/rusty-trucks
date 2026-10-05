@@ -157,6 +157,21 @@ fn ped_circle_lerps_by_speed_like_sub_826b7d60() {
 }
 
 #[test]
+fn census_centre_follows_the_3d_velocity_like_sub_826b7530() {
+    // Down a 3-4-5 slope at 100 km/h: retail normalises the 3-D velocity, so the 20 m offset
+    // splits 12 m forward and 16 m down (the old horizontal direction put all 20 m forward).
+    let s = 100.0 / 3.6;
+    let (c, centre) = PEDS.around(&Observer { position: [1.0, 50.0, 2.0], velocity: [0.0, -0.8 * s, 0.6 * s] });
+    assert_eq!(c.forward_offset, 20.0);
+    assert!((centre[0] - 1.0).abs() < 1e-4, "{centre:?}");
+    assert!((centre[1] - 34.0).abs() < 1e-3, "{centre:?}");
+    assert!((centre[2] - 14.0).abs() < 1e-3, "{centre:?}");
+    // Falling straight down still moves the centre (horizontal speed 0).
+    let (_, centre) = PEDS.around(&Observer { position: [0.0; 3], velocity: [0.0, -s, 0.0] });
+    assert!((centre[1] + 20.0).abs() < 1e-3, "{centre:?}");
+}
+
+#[test]
 fn ring_points_stay_in_the_ring() {
     let mut rng = Rng::new(3);
     for _ in 0..5000 {
@@ -752,4 +767,158 @@ fn a_car_update_moves_its_lane_gap() {
     world.update_lane(first.id, lane.segment, lane.lane, lane.distance + 40.0, 12.0);
     let now = world.live(Kind::Vehicle).find(|l| l.id == first.id).unwrap().lane.unwrap();
     assert_eq!((now.distance, now.speed), (lane.distance + 40.0, 12.0));
+}
+
+// ---------------------------------------------------------------- guard: a broken focus
+
+/// Doc 26 "Cars flying off": an observer with a non-finite position (an infinite deck position
+/// put every NPC beyond the cull) or speed never empties the population; the pass neither culls
+/// nor spawns until the focus is usable again, then the rules run as before.
+#[test]
+fn a_non_finite_focus_never_empties_the_population() {
+    let m = map();
+    let mut w = LivingWorld::new(config(), 7);
+    let here = [still(0.0, 0.0)];
+    for _ in 0..600 {
+        w.step(&offline(&here, &m));
+    }
+    let (peds, cars) = (w.count(Kind::Pedestrian), w.count(Kind::Vehicle));
+    assert!(peds > 0 && cars > 0, "setup: peds {peds} cars {cars}");
+    for bad in [
+        Observer { position: [f32::INFINITY, 0.0, 0.0], velocity: [0.0; 3] },
+        Observer { position: [f32::NAN, 0.0, 0.0], velocity: [0.0; 3] },
+        Observer { position: [0.0; 3], velocity: [f32::INFINITY, 0.0, 0.0] },
+        Observer { position: [0.0; 3], velocity: [f32::NAN, 0.0, 0.0] },
+    ] {
+        let obs = [bad];
+        let mut out = Vec::new();
+        for _ in 0..120 {
+            out.extend(w.step(&offline(&obs, &m)));
+        }
+        assert!(out.is_empty(), "{bad:?}: {} decisions", out.len());
+        assert_eq!((w.count(Kind::Pedestrian), w.count(Kind::Vehicle)), (peds, cars), "{bad:?}");
+    }
+    // A real jump (teleport) still culls by the retail rules.
+    let far = [still(5000.0, 5000.0)];
+    let mut out = Vec::new();
+    for _ in 0..120 {
+        out.extend(w.step(&offline(&far, &m)));
+    }
+    assert_eq!(despawns(&out, Kind::Pedestrian).len(), peds);
+}
+
+
+// ---------------------------------------------------------------- NPC draw distance (QoL, not retail)
+
+fn run_world_with(seed: u64, config: PopulationConfig) -> (LivingWorld, Vec<Decision>) {
+    let map = map();
+    let data = skater_data();
+    let mut world = LivingWorld::new(config, seed);
+    let mut out = Vec::new();
+    for step in 0..6000u32 {
+        let t = (step as f64 / super::clock::RETAIL_TICK_HZ) as f32;
+        let a = t * 8.0 / 150.0;
+        let obs = [Observer { position: [150.0 * a.cos(), 0.0, 150.0 * a.sin()], velocity: [-8.0 * a.sin(), 0.0, 8.0 * a.cos()] }];
+        let mut inputs = offline(&obs, &map);
+        inputs.skater_world = Some(&data);
+        out.extend(world.step(&inputs));
+    }
+    (world, out)
+}
+
+#[test]
+fn draw_distance_retail_runs_the_unchanged_config() {
+    // 1x builds no scaled copy at all: the population runs the retail config itself.
+    assert!(DrawDistance::new(1.0).scaled(&config()).is_none());
+    // Bad values from a settings file or a mod fall back to retail or are clamped.
+    for bad in [f32::NAN, f32::INFINITY, 0.0, -2.0] {
+        assert!(DrawDistance::new(bad).is_retail(), "{bad}");
+    }
+    assert_eq!(DrawDistance::new(100.0).multiplier(), DrawDistance::MAX);
+    // Same seeded run (players, peds, cars, 100 s) with the field set explicitly to 1: identical
+    // decision stream (the pre-change stream was also diffed byte for byte, doc 26).
+    for seed in [1234u64, 99] {
+        let mut explicit = config();
+        explicit.draw_distance = 1.0;
+        assert_eq!(run_world_with(seed, explicit).1, run_world(seed).1);
+    }
+}
+
+#[test]
+fn draw_distance_2x_doubles_every_range_and_quadruples_the_caps() {
+    let base = config();
+    let s = DrawDistance::new(2.0).scaled(&base).expect("2x scales");
+    for (b, x) in [(&base.pedestrians, &s.pedestrians), (&base.vehicles, &s.vehicles)] {
+        let (br, xr) = (b.range.unwrap(), x.range.unwrap());
+        for (bc, xc) in [(br.slow, xr.slow), (br.fast, xr.fast)] {
+            assert_eq!(xc.spawn_inner, 2.0 * bc.spawn_inner);
+            assert_eq!(xc.spawn_outer, 2.0 * bc.spawn_outer);
+            assert_eq!(xc.cull, 2.0 * bc.cull);
+            assert_eq!(xc.forward_offset, 2.0 * bc.forward_offset);
+            assert_eq!(xc.speed_kmh, bc.speed_kmh, "speed keys stay");
+        }
+        assert_eq!(x.density, 4.0 * b.density);
+        assert_eq!(x.pool, b.pool.map(|p| 4 * p));
+        assert_eq!(x.initial_ring, (2.0 * b.initial_ring.0, 2.0 * b.initial_ring.1));
+        assert_eq!((x.attempts_per_pass, x.spawns_per_pass), (4 * b.attempts_per_pass, 4 * b.spawns_per_pass));
+    }
+    assert_eq!((s.skaters.spawn_inner, s.skaters.spawn_outer, s.skaters.cull), (120.0, 180.0, 240.0));
+    assert_eq!((s.skaters.desired, s.skaters.ai_cap, s.skaters.pool_size), (12, 20, 20));
+    assert_eq!(s.skaters.slots, 1 + 4 * (retail::SKATER_SLOTS - 1), "player slot 0 stays one slot");
+    // The retail config itself is untouched (the multiplier sits on top).
+    assert_eq!(base, config());
+
+    // Simulation: a still player in `aletown` (cap 15). Retail fills to 15 within 80 m; 2x fills
+    // to 4 x 15 = 60 within 160 m, the near area as busy as retail.
+    let map = map();
+    let obs = [still(0.0, 0.0)];
+    let inputs = offline(&obs, &map);
+    let mut counts = Vec::new();
+    for m in [1.0f32, 2.0] {
+        let mut c = config();
+        c.draw_distance = m;
+        let mut world = LivingWorld::new(c, 42);
+        let mut all = Vec::new();
+        for _ in 0..600 {
+            all.extend(world.step(&inputs));
+        }
+        let peds = spawns(&all, Kind::Pedestrian);
+        assert!(peds.iter().all(|s| h(s.position, obs[0].position) <= 80.0 * m + 1e-3));
+        let near = world.live(Kind::Pedestrian).filter(|l| h(l.position, obs[0].position) <= 80.0).count();
+        counts.push((world.count(Kind::Pedestrian), near));
+        // Cars: ring 80-100 m (x m), cap 30 x m^2 but the vehicle limit 15 x m^2.
+        let cars = spawns(&all, Kind::Vehicle);
+        assert!(cars.iter().filter(|s| !s.initial).all(|s| h(s.position, obs[0].position) <= 100.0 * m + 6.0));
+        assert!(world.count(Kind::Vehicle) as u32 <= retail::VEHICLE_LIMIT * (m * m) as u32);
+    }
+    assert_eq!(counts[0].0, 15);
+    assert_eq!(counts[1].0, 60, "2x range = 4x peds");
+    assert!(counts[1].1 >= 8, "the retail area keeps a retail-like share: {:?}", counts);
+}
+
+#[test]
+fn draw_distance_keeps_the_fade_before_the_cull_at_every_step() {
+    use super::peds::{draw_alpha, PedFadeConfig};
+    let fade = PedFadeConfig::default();
+    for m in DrawDistance::MENU_STEPS {
+        let dd = DrawDistance::new(m);
+        let mut c = config();
+        c.draw_distance = m;
+        let s = dd.scaled(&c).unwrap_or(c.clone());
+        let r = s.pedestrians.range.unwrap();
+        // The pair the engine draws with (model pair x m) against the near edge of either cull
+        // circle (cull - forward offset), with the camera up to 10 m nearer than the skater.
+        let pair = [dd.distance(45.0), dd.distance(55.0)];
+        for circle in [r.slow, r.fast] {
+            let edge = circle.cull - circle.forward_offset;
+            assert!(pair[1] < edge, "{m}x: fade ends at {} m, cull edge {edge} m", pair[1]);
+            for slack in [0.0f32, 5.0, 10.0] {
+                assert_eq!(draw_alpha(&fade, Some(pair), edge - slack, 10.0), 0.0, "{m}x slack {slack}");
+            }
+            assert!(circle.spawn_outer < circle.cull, "{m}x peds spawn inside the cull");
+        }
+        let v = s.vehicles.range.unwrap();
+        assert!(v.slow.spawn_outer < v.slow.cull && v.fast.spawn_outer < v.fast.cull, "{m}x cars");
+        assert!(s.skaters.spawn_outer < s.skaters.cull, "{m}x skaters spawn inside the cull");
+    }
 }
