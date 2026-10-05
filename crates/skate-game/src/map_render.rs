@@ -43,7 +43,7 @@ pub(crate) struct StagedAssets<A: Asset> {
 }
 
 impl<A: Asset> StagedAssets<A> {
-    fn new(world: &World) -> Self {
+    pub(crate) fn new(world: &World) -> Self {
         Self {
             provider: world.resource::<Assets<A>>().get_handle_provider(),
             pending: Vec::new(),
@@ -51,7 +51,7 @@ impl<A: Asset> StagedAssets<A> {
         }
     }
 
-    fn publish(&mut self, world: &mut World) {
+    pub(crate) fn publish(&mut self, world: &mut World) {
         let mut assets = world.resource_mut::<Assets<A>>();
         for (handle, asset) in self.pending.drain(..) {
             self.owned.push(handle.id());
@@ -98,6 +98,13 @@ impl SceneCommands {
         self.queue.push(move |world: &mut World| {
             world.spawn((bundle, MapEntity));
         });
+    }
+
+    /// Apply the queued spawns now (tests; production goes through
+    /// `PreparedScene::publish`).
+    #[cfg(test)]
+    pub(crate) fn apply(&mut self, world: &mut World) {
+        std::mem::take(&mut self.queue).apply(world);
     }
 
     /// A parent with children in one deferred command. Only the parent gets

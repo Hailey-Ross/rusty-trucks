@@ -367,6 +367,16 @@ pub(crate) fn load_prop_package(
             }
         }
     }
+    if objects.is_empty() {
+        // Packages written before MOBJ schema 4 bake every prop into one
+        // static mesh with no placements; setup groups maps/environment
+        // rewrite them.
+        warn!(
+            "SKATE_PROPS: {} has no prop placements; re-run setup (maps) to get movable props",
+            path.display()
+        );
+        return None;
+    }
     Some((map, objects))
 }
 
@@ -1269,5 +1279,56 @@ mod tests {
         let contacts = world.query_primitives(&volumes, query, retention);
         assert!(!contacts.is_empty());
         assert!(contacts.iter().all(|c| c.contact.normal.y > 0.9));
+    }
+
+    #[test]
+    fn prop_instances_spawn_one_placed_root_per_record_sharing_template_meshes() {
+        use crate::map_render::{MapEntity, StagedAssets};
+        let (map, objects) = prop_fixture();
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<Image>>();
+        world.init_resource::<Assets<WorldMaterial>>();
+        world.init_resource::<Assets<bevy::render::storage::ShaderStorageBuffer>>();
+        let mut meshes = StagedAssets::<Mesh>::new(&world);
+        let mut images = StagedAssets::<Image>::new(&world);
+        let mut materials = StagedAssets::<WorldMaterial>::new(&world);
+        let mut buffers = StagedAssets::<bevy::render::storage::ShaderStorageBuffer>::new(&world);
+        let mut commands = SceneCommands::default();
+        let spawned = spawn_instances(
+            &map,
+            &objects,
+            &crate::retail_render::MaterialTuning::default(),
+            &crate::retail_sky::SkyEnvironment::default(),
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            &mut buffers,
+        );
+        assert_eq!(spawned, 2);
+        meshes.publish(&mut world);
+        images.publish(&mut world);
+        materials.publish(&mut world);
+        buffers.publish(&mut world);
+        commands.apply(&mut world);
+        // Both records place the same range: one template mesh, built once.
+        assert_eq!(world.resource::<Assets<Mesh>>().len(), 1);
+        let mut roots: Vec<(u32, Transform, Vec<Entity>)> = world
+            .query::<(&PropInstance, &Transform, &Children)>()
+            .iter(&world)
+            .map(|(prop, transform, children)| (prop.id, *transform, children.to_vec()))
+            .collect();
+        roots.sort_by_key(|(id, ..)| *id);
+        assert_eq!(roots.iter().map(|(id, ..)| *id).collect::<Vec<_>>(), [7, 8]);
+        // Only the roots carry MapEntity; children go with their parent.
+        assert_eq!(world.query_filtered::<Entity, With<MapEntity>>().iter(&world).count(), 2);
+        assert!((roots[0].1.translation - Vec3::new(10., 5., 0.)).length() < 1e-5);
+        // Row-vector basis row 0 is (0, 0, 1): template +X maps to world +Z.
+        let tip = roots[1].1.transform_point(Vec3::X);
+        assert!((tip - Vec3::new(0., 0., -9.)).length() < 1e-5, "{tip}");
+        let mesh = |entity: Entity| world.get::<Mesh3d>(entity).unwrap().0.id();
+        assert_eq!(roots[0].2.len(), 1);
+        assert_eq!(mesh(roots[0].2[0]), mesh(roots[1].2[0]));
     }
 }
