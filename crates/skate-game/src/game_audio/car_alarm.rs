@@ -70,7 +70,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<WorldOwners>().init_resource::<crate::game_audio::npc_skaters::NpcSkaters>().init_resource::<WorldHeld>();
-        app.init_resource::<LivingWorldAudio>().init_resource::<WorldAudioStats>().init_resource::<world_bridge::Bridge>().init_resource::<CarAlarmRule>();
+        app.init_resource::<LivingWorldAudio>().init_resource::<WorldAudioStats>().init_resource::<world_bridge::Bridge>().init_resource::<crate::game_audio::mod_world::OwnWorldOwners>().init_resource::<CarAlarmRule>();
         app.add_message::<PedSpeechEvent>().add_message::<VehicleHorn>().add_message::<VehicleAlarm>().add_message::<PedTazerEvent>().add_message::<PedBodyFallEvent>().add_message::<NpcSkaterReactionEvent>();
         app.add_message::<VehicleImpact>().add_message::<VehicleAlarmStarted>();
         app.add_systems(Update, (react, world_bridge::publish).chain());
