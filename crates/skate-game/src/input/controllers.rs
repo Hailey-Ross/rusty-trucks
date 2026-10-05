@@ -1,6 +1,8 @@
 //! Persistent platform-input owner. Device collection runs on host frames;
 //! this does not choose the skater simulation clock or advance Derived input.
+use super::controller_kind::ControllerKind;
 use super::platform::{DeviceError, DevicePacket};
+use std::sync::Arc;
 use bevy::prelude::Resource;
 use skate_core::input::{
     controller::ActionMap,
@@ -27,6 +29,8 @@ pub(crate) struct ControllerInput {
     pads: [Pad; DEVICE_SLOTS],
     pub status: [ControllerStatus; DEVICE_SLOTS],
     pub packet_numbers: [Option<u32>; DEVICE_SLOTS],
+    /// Identity of each slot's controller (None while unavailable).
+    pub kinds: [Option<Arc<ControllerKind>>; DEVICE_SLOTS],
     pub mapped_actions: [[f32; 18]; DEVICE_SLOTS],
     pub publications: u64,
     pub consumed_batches: u64,
@@ -43,6 +47,7 @@ impl Default for ControllerInput {
             pads: std::array::from_fn(|_| Pad::new()),
             status: [ControllerStatus::Unpolled; DEVICE_SLOTS],
             packet_numbers: [None; DEVICE_SLOTS],
+            kinds: Default::default(),
             mapped_actions: [[0.0; 18]; DEVICE_SLOTS],
             publications: 0,
             consumed_batches: 0,
@@ -64,6 +69,13 @@ impl ControllerInput {
         let modifier = flags(8) & 0xff00 != 0;
         (modifier, modifier && flags(1) & 0xff00_0000 != 0,
             modifier && flags(0) & 0xff00 != 0)
+    }
+    /// The slot gameplay reads: the first ready one.
+    pub(crate) fn active_slot(&self) -> Option<usize> {
+        self.status.iter().position(|s| *s == ControllerStatus::Ready)
+    }
+    pub(crate) fn kind(&self, slot: usize) -> Option<&ControllerKind> {
+        self.kinds.get(slot)?.as_deref()
     }
     pub(crate) fn raw_input(&self) -> RawInput {
         self.status.iter().position(|s| *s == ControllerStatus::Ready)
@@ -115,12 +127,14 @@ impl ControllerInput {
                     let values = xbox::convert(&packet.state, u8::from(packet.subtype == 7));
                     self.cache[next][device] = HistoryRecord::new(&values);
                     self.packet_numbers[device] = Some(packet.number);
+                    self.kinds[device] = packet.kind;
                     self.status[device] = ControllerStatus::Ready;
                 }
                 Err(error) => {
                     self.raw[device] = RawInput::default();
                     self.cache[next][device].clear_count();
                     self.packet_numbers[device] = None;
+                    self.kinds[device] = None;
                     self.status[device] = ControllerStatus::Unavailable(error);
                 }
             }

@@ -11,6 +11,7 @@ impl ControllerInput {
                 number: self.publications as u32 + 1,
                 state,
                 subtype: 1,
+                kind: None,
             }),
             Err(DeviceError::Disconnected),
             Err(DeviceError::Disconnected),
@@ -30,6 +31,7 @@ fn packet(number: u32, buttons: u16, left: [i16; 2]) -> Result<DevicePacket, Dev
             right: [0; 2],
         },
         subtype: 1,
+        kind: None,
     })
 }
 
@@ -94,6 +96,7 @@ fn alternate_guitar_subtype_uses_verified_conversion_mask_and_errors_stay_visibl
             right: [-32768, 32767],
         },
         subtype: 7,
+        kind: None,
     };
     input.collect([
         Ok(special),
@@ -143,4 +146,37 @@ fn unavailable_controllers_publish_zero_gameplay_actions() {
     let snapshot = input.tick_input();
     assert!(!snapshot.controller_available());
     assert_eq!(*snapshot.actions().values(), [0.0; 18]);
+}
+
+#[test]
+fn controller_identity_is_metadata_and_never_changes_gameplay_actions() {
+    use crate::input::controller_kind::{from_xinput, XinputCaps};
+    let state = XboxState { buttons: 0x1000 | 0x0100, triggers: [255, 30], left: [20000, -12000], right: [-32768, 9000] };
+    let kind = std::sync::Arc::new(from_xinput(
+        XinputCaps { subtype: 1, flags: 0, vendor_product: Some((0x045e, 0x0b22)) }, &[]));
+    let run = |kind: Option<std::sync::Arc<crate::input::controller_kind::ControllerKind>>| {
+        let mut input = ControllerInput::default();
+        for number in 1..4 {
+            input.collect([
+                Ok(DevicePacket { number, state, subtype: 1, kind: kind.clone() }),
+                Err(DeviceError::Disconnected),
+                Err(DeviceError::Disconnected),
+                Err(DeviceError::Disconnected),
+            ]);
+            assert!(input.publish_actions());
+        }
+        input
+    };
+    let with = run(Some(kind.clone()));
+    let without = run(None);
+    let bits = |input: &ControllerInput| input.mapped_actions.map(|slot| slot.map(f32::to_bits));
+    assert_eq!(bits(&with), bits(&without));
+    assert_eq!(with.tick_input().actions().values().map(f32::to_bits), without.tick_input().actions().values().map(f32::to_bits));
+    assert_eq!(with.kind(0).map(|k| k.name.as_str()), Some("Xbox Elite Series 2 (Bluetooth LE)"));
+    assert_eq!(with.active_slot(), Some(0));
+    assert!(without.kind(0).is_none());
+    // A disconnect clears the identity with the slot.
+    let mut input = with;
+    input.collect(std::array::from_fn(|_| Err(DeviceError::Disconnected)));
+    assert!(input.kind(0).is_none());
 }

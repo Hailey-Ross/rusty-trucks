@@ -314,3 +314,61 @@ fn skyline_waits_for_spawn_receipt_and_reports_failure_without_disabling_mod() {
     );
     call("on_unload", &s);
 }
+
+#[test]
+fn input_reads_controller_identity_and_accepts_action_keys() {
+    let root = std::env::temp_dir().join(format!("skate-input-api-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("main.lua"),
+        r#"
+ return {
+ on_load=function()
+  assert(sdk.capabilities.controllers==1 and sdk.capabilities.action_ids==1)
+  assert(sdk.input.controller()==nil and sdk.input.controller(2)==nil)
+  assert(sdk.input.action_ids.a==80 and sdk.input.action_ids.left_stick_x==64 and sdk.input.action_ids.b==81)
+  sdk.input.override_action('a',1)
+  sdk.input.override_action('right_stick_y',-0.5)
+  sdk.input.override_action(78,nil)
+ end,
+ on_update=function()
+  local active=sdk.input.controller()
+  assert(active.family=='xbox_elite' and active.vendor_id==0x045e and active.product_id==0x0b22)
+  assert(active.paddles==0 and active.hardware_paddles==4 and active.backend=='sdl')
+  assert(active.face_labels[1]=='A' and active.summary~=nil)
+  assert(sdk.input.controller(0)==nil)
+  local all=sdk.input.controllers()
+  assert(all.active==1 and all.slots[2].family=='xbox_elite' and all.slots[1]==nil)
+  assert(sdk.engine.read('input').controllers.active==1)
+  assert(sdk.input.action('a')==0.25 and sdk.input.action(80)==0.25)
+ end,
+ on_event=function(e)
+  if e.bad=='key' then sdk.input.override_action('jump',1) end
+  if e.bad=='slot' then sdk.input.controller(4) end
+ end
+ }"#,
+    )
+    .unwrap();
+    let manifest:Manifest=serde_json::from_value(json!({"id":"tests.input","api":2,"name":"test","version":"1","author":"test","description":"test","entry":"main.lua"})).unwrap();
+    let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &json!({})).unwrap();
+    let commands = vm.call("on_load", json!({}), &json!({})).unwrap();
+    let overrides: Vec<_> = commands.iter().filter_map(|c| match c {
+        Command::InputOverride { action, value } => Some((*action, *value)),
+        _ => None,
+    }).collect();
+    assert_eq!(overrides, [(80, Some(1.0)), (68, Some(-0.5)), (78, None)]);
+    let mut actions = [0.0f32; 18];
+    actions[16] = 0.25;
+    let elite = json!({"family":"xbox_elite","name":"Xbox One Elite 2 Controller","vendor_id":0x045e,"product_id":0x0b22,
+        "backend":"sdl","driver":"XInput#0","paddles":0,"hardware_paddles":4,"prompt_style":"xbox",
+        "face_labels":["A","B","X","Y"],"summary":"Xbox One Elite 2 Controller [Xbox Elite]"});
+    vm.call("on_update", json!({"dt":0.016}),
+        &json!({"actions":actions,"controllers":{"active":1,"slots":[null,elite,null,null]}})).unwrap();
+    // An unknown action key and a slot outside 0..3 are Lua errors, not commands.
+    for bad in ["key", "slot"] {
+        let error = vm.call("on_event", json!({"bad":bad}), &json!({})).unwrap_err();
+        assert!(error.contains(if bad == "key" { "unknown action key jump" } else { "controller slot must be 0..3" }), "{error}");
+    }
+    std::fs::remove_file(root.join("main.lua")).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}

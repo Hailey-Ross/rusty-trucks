@@ -485,6 +485,7 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         .actions()
         .values();
     let pad = world.resource::<crate::input::ControllerInput>().raw_input();
+    let controllers = controllers_snapshot(world.resource::<crate::input::ControllerInput>());
     let net = network_snapshot(world, mods);
     let local_id = net
         .get("local_id")
@@ -542,6 +543,7 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
             "left": pad.left,
             "right": pad.right,
         },
+        "controllers": controllers,
         "paused": world.resource::<crate::graphics_menu::Menu>().open,
         "replay": world.resource::<crate::replay::Replay>().active,
         "camera": camera.map(|position| json!({"position": position})),
@@ -1682,6 +1684,23 @@ impl Mods {
         [sync, format!("MOD PACKAGES\n{}", if packages.is_empty() { "No packages installed" } else { &packages }),
             format!("MOD DIAGNOSTICS\n{}", if reports.is_empty() { "No mod multiplayer diagnostics reported" } else { &reports })]
     }
+}
+
+/// Read-only controller identity for `sdk.input.controller(s)`.
+pub(crate) fn controllers_snapshot(input: &crate::input::ControllerInput) -> Value {
+    json!({
+        "active": input.active_slot(),
+        "slots": input.kinds.iter()
+            .map(|kind| kind.as_deref().map_or(Value::Null, |kind| {
+                let mut value = serde_json::to_value(kind).unwrap_or(Value::Null);
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("summary".into(), json!(kind.summary()));
+                    object.insert("face_labels".into(), json!(kind.prompt_style.face_labels()));
+                }
+                value
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 pub(crate) fn override_actions(mods: Option<&Mods>, values: &mut [f32;18]) {
