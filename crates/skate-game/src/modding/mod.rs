@@ -971,6 +971,8 @@ fn apply_one(
         Command::AudioUpdate { key, options } => audio::update_voice(world, id, &key, options),
         Command::AudioStop { key, fade_out } => audio::stop(world, id, &key, fade_out),
         Command::AudioStopAll {} => audio::stop_owner(world, id, false),
+        Command::AudioFrontend { name } => audio::frontend(world, &name),
+        Command::AudioTeleportEffect { amount } => audio::teleport_effect(world, amount),
         Command::AudioPost { key, class, words } => audio_api(world, |api, native, _| api.post(native, id, &key, &class, &words))?,
         Command::AudioRedeliver { key, words } => audio_api(world, |api, _, _| api.redeliver(id, &key, &words))?,
         Command::AudioRelease { key } => audio_api(world, |api, _, _| {

@@ -209,6 +209,9 @@ pub(crate) struct Native {
     /// [`mixmap_tick`] (the ticks, the update): the world / NPC hosts' process runs in between, as
     /// retail runs every owner's process before its tick and the update after it.
     pub(crate) pending: Option<PendingPass>,
+    /// Retail's front-end audio object (the `fe` records: the session marker's sounds; None on
+    /// installs without them).
+    pub(crate) frontend: Option<super::frontend::FrontendHost>,
     /// Banks audio content overlays load at start and keep across map changes (`preload`).
     resident: Vec<String>,
     /// The overlays' Csis projects installed in the runtime: (file, content stamp, registry token).
@@ -326,6 +329,7 @@ impl Native {
             map_epoch: 0,
             world,
             pending: None,
+            frontend: None,
             resident: Vec::new(),
             mod_projects,
         };
@@ -377,6 +381,8 @@ impl Native {
         let runtime = native.shared.lock().map_err(|_| "audio lock poisoned")?;
         native.emitter_class = runtime.eval.class_id("c_emitter");
         drop(runtime);
+        // The front-end sounds (the session marker's cellphone UI; sk8_menu).
+        native.frontend = super::frontend::FrontendHost::load(&native, library);
         native.load_resident_banks(library);
         Ok(native)
     }
@@ -599,6 +605,7 @@ impl Native {
             map_epoch: 0,
             world: WorldInstances::RETAIL,
             pending: None,
+            frontend: None,
             resident: Vec::new(),
             mod_projects: Vec::new(),
         }
@@ -751,6 +758,7 @@ pub(super) fn mixmap_frame(
     menu: Option<Res<crate::graphics_menu::Menu>>,
     replay: Res<crate::replay::Replay>,
     cuts: (Option<Res<crate::presentation::Presentation>>, Option<Res<crate::map_transition::CurrentMap>>),
+    teleport: Option<Res<crate::ui_audio::TeleportEffect>>,
 ) {
     let _timing = super::timing::scope(&super::timing::MIXMAP_FRAME);
     let silenced = super::silenced(menu.as_deref(), &replay);
@@ -841,6 +849,8 @@ pub(super) fn mixmap_frame(
         let l = listener.single().ok().map(|t| player.listener(t.translation().to_array(), t.forward().as_vec3().to_array(), dt, &s));
         // SFXObj_Jitter's walk steps once per console evaluation (half 1's process).
         player.jitter_steps = Some(calls);
+        // The presentation block's teleport field as of this pass (Class_Treatment's update reads it).
+        player.teleport_effect = teleport.as_deref().and_then(crate::ui_audio::TeleportEffect::amount);
         player.write_inputs(m, &s, l.as_ref());
     }
     // With the native rolling layers the owner's surface routing (player::rolling) writes
@@ -1079,6 +1089,7 @@ mod tests {
             map_epoch: 0,
             world: WorldInstances::RETAIL,
             pending: None,
+            frontend: None,
             resident: Vec::new(),
             mod_projects: Vec::new(),
         }

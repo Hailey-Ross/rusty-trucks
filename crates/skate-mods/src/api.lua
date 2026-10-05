@@ -365,6 +365,10 @@ function sdk.audio.tuning(key, domain, path)
 end
 -- The tuning fields this mod owns, as applied at the last audio pass ("world_tuning/traffic_engine/...").
 function sdk.audio.tuned() return (audio_mine().tuning) or {} end
+-- The game's own front-end sounds (retail `fe` records by name, played as the game's UI plays them).
+function sdk.audio.frontend(name) submit{kind="audio_frontend",name=name} end
+-- The teleport effect (screen static + the skater's teleport crackle) at amount 0..1; send it every frame to hold it.
+function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",amount=amount} end
 
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and
 -- skaters to the game's retail world audio (the same path engine systems use). Keys are scoped

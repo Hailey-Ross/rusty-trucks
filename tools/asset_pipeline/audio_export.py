@@ -55,6 +55,9 @@ BANKS = (
     # Water emitters on the map's water (game_audio/water.rs) and splash tails.
     'water_lapping.abk', 'water_lapping_pond.abk', 'fountains_waterlaps_left.abk',
     'water_fountain.abk', 'ocean_wave_small.abk',
+    # The front-end sounds (class `fe` records, frontend_sounds below): the session marker's
+    # cellphone UI plays from this Splice bank.
+    'sk8_menu.bnk',
 )
 
 # vgmstream stops accepting input files somewhere between 600 and 1100 arguments.
@@ -215,6 +218,36 @@ def _resolved(collections: list[dict], cls: str, wanted: dict[str, str]) -> dict
 def emitter_attributes(collections: list[dict]) -> dict[int, dict]:
     """Each emitter sound's attributes by sound id, with inherited fields resolved."""
     return _resolved(collections, EMITTER_CLASS, EMITTER_FIELDS)
+
+
+# The front-end sounds: class `fe` (lookup8 `5831CB95F3E90598`), 237 records under `fe_sfx` (the
+# cellphone / session-marker UI, menus, challenges, scores). Retail's front-end audio object plays a
+# request (by record key) as a Splice start of the record's sk8_menu sound at the record's level
+# (recomp sub_824955B8 → sub_82495828 → sub_824958F0; docs/hails-additions/15-world-audio.md
+# "Session marker sounds"). `hom` (a HOM_Set_1 sound), `moment` (eMomentSFX) and `alt_bus` (output
+# to the second front-end bus instead of the mastering graph) are carried for completeness.
+FE_CLASSES = ('fe', 'Hash_5831CB95F3E90598')
+FE_FIELDS = {
+    'Hash_8FCC7EF9B9208858': 'id', 'Hash_875BA75341DC8391': 'level', 'Hash_845A10052522A2FB': 'hom',
+    'Hash_A4080FB65880E3C2': 'moment', 'Hash_BF45D439FAC71A2E': 'alt_bus',
+    'Hash_942AB8AEE4B414ED': 'name', 'Name': 'name',
+}
+FE_BANK = 'sk8_menu'
+
+
+def frontend_sounds(collections: list[dict]) -> dict:
+    """{bank, sounds: {key hex: {name, id, level, hom, moment, alt_bus}}} for every `fe` record
+    (inherited fields resolved); {} when the database has no such class."""
+    cls = next((c for c in FE_CLASSES if any(r['class'] == c for r in collections)), None)
+    if cls is None:
+        return {}
+    sounds = {}
+    for key, f in sorted(_resolved(collections, cls, FE_FIELDS).items()):
+        sounds['%016X' % key] = {
+            'name': f.get('name', ''), 'id': int(f.get('id', 0)), 'level': float(f.get('level', 1.0)),
+            'hom': int(f.get('hom', 0)), 'moment': int(f.get('moment', 0)), 'alt_bus': bool(f.get('alt_bus', 0)),
+        }
+    return {'bank': FE_BANK, 'sounds': sounds}
 
 
 # Zone ambience: the region layer `audio_ambience` holds `aud_wp_ambiences` keys. Each zone names
@@ -1143,6 +1176,7 @@ def convert(game_root: Path, private: Path, work: Path, vgmstream: Path, report,
     manifest['grain_player'] = grain_tuning(collections)
     manifest['player_tuning'] = player_tuning(collections)
     manifest['bus_tuning'] = bus_tuning(collections)
+    manifest['frontend'] = frontend_sounds(collections)
     attributes = emitter_attributes(collections)
     manifest['emitters'], placed = emitters(files, attributes)
     by_file = {Path(e.path).name.lower(): Path(e.path).name for e in files.entries}

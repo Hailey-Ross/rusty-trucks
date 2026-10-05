@@ -336,6 +336,10 @@ struct Manifest {
     /// `SKATE_SETUP_SPEECH=1`, the decoded takes; optional).
     #[serde(default)]
     speech: BTreeMap<String, SpeechEntry>,
+    /// The front-end sounds (`fe` records: the session marker's cellphone UI, menus; optional,
+    /// audio_export.frontend_sounds).
+    #[serde(default)]
+    frontend: FrontendJson,
     // Audio content overlays only (`skate_mods::audio_merge`; never in an install's manifest).
     /// Bank → S10A slot → the loop start (frames) of a mod WAV.
     #[serde(default)]
@@ -424,6 +428,32 @@ pub(crate) struct BoxJson {
     pub r#box: [f32; 4],
     pub key: String,
 }
+
+/// `audio_export.frontend_sounds`: the Splice bank and every `fe` record by key (16 hex digits).
+#[derive(Debug, Default, Deserialize)]
+struct FrontendJson {
+    #[serde(default)]
+    bank: String,
+    #[serde(default)]
+    sounds: BTreeMap<String, FeSoundJson>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FeSoundJson {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    id: i32,
+    #[serde(default = "one")]
+    level: f32,
+    #[serde(default)]
+    hom: i32,
+    #[serde(default)]
+    moment: i32,
+    #[serde(default)]
+    alt_bus: bool,
+}
+
 
 /// One speech archive's export: the index JSON and the folder of decoded takes (None: not decoded).
 #[derive(Debug, Default, Deserialize)]
@@ -1504,6 +1534,24 @@ impl Library {
 
     /// A Splice bank for the native player: its patch tree and its samples (stream n = WAV n), or
     /// None when the install lacks the tree or the WAVs don't match its sample count.
+    /// The front-end sounds (`fe` records by key) and their Splice bank; None on installs set up
+    /// before the export (the session marker's sounds are then silent).
+    pub(crate) fn frontend_sounds(&self) -> Option<skate_audio::frontend::FeTable> {
+        let f = &self.manifest.frontend;
+        if f.bank.is_empty() || f.sounds.is_empty() {
+            return None;
+        }
+        let sounds = f
+            .sounds
+            .iter()
+            .filter_map(|(k, s)| {
+                let key = u64::from_str_radix(k, 16).ok()?;
+                Some((key, skate_audio::frontend::FeSound { name: s.name.clone(), id: s.id, level: s.level, hom: s.hom, moment: s.moment, alt_bus: s.alt_bus }))
+            })
+            .collect();
+        Some(skate_audio::frontend::FeTable { bank: f.bank.clone(), sounds })
+    }
+
     pub(crate) fn splice_bank(&self, stem: &str) -> Option<(skate_audio::splice::SpliceBank, Vec<Option<Arc<skate_audio::mixer::Pcm>>>)> {
         let file = self.manifest.aems.splice.get(stem)?;
         let bank = skate_audio::splice::SpliceBank::parse(&self.read(file).ok()?).ok()?;

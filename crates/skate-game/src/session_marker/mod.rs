@@ -33,6 +33,9 @@ pub(crate) struct SessionMarker {
     blocked_until_release: bool,
     ui_time: f64,
     last_batch: u64,
+    /// The modifier (LB) as last seen: its press opens the marker menu (retail's cellphone
+    /// activate sound, `ui_audio::SessionMarkerAction::Opened`).
+    modifier: bool,
 }
 
 pub(crate) struct SessionMarkerPlugin;
@@ -59,7 +62,8 @@ impl Plugin for SessionMarkerPlugin {
                     .after(SimulationSet::Input)
                     .before(SimulationSet::Controls)
                     .run_if(crate::graphics_menu::gameplay_active),
-            );
+            )
+            .add_systems(Update, publish_teleport_effect.before(crate::ui_audio::UiAudioSet));
         hud::install(app);
         effect::install(app);
     }
@@ -91,6 +95,18 @@ fn suspend(
     }
 }
 
+/// The hold's teleport effect amount for the frame's readers (`ui_audio::TeleportEffect`: the screen
+/// static and the skater's Class_Treatment). PlayerUI sends `cMsgTeleportEffectAmount` on each UI tick
+/// of the hold and on the relocation tick and two more (progress 1); `progress` is 0 on every other
+/// tick, and the last tick's value holds until the next.
+fn publish_teleport_effect(session: Res<SessionMarker>, effect: Option<ResMut<crate::ui_audio::TeleportEffect>>) {
+    let Some(mut effect) = effect else { return };
+    let amount = (session.progress > 0.).then_some(session.progress);
+    if effect.engine != amount {
+        effect.engine = amount;
+    }
+}
+
 fn update(
     mut session: ResMut<SessionMarker>,
     input: Res<ControllerInput>,
@@ -99,16 +115,24 @@ fn update(
     mut skater: ResMut<SkaterRuntime>,
     validation: Res<validation::Validation>,
     replay: Res<crate::replay::Replay>,
+    mut events: MessageWriter<crate::ui_audio::SessionMarkerEvent>,
 ) {
+    use crate::ui_audio::{SessionMarkerAction, SessionMarkerEvent};
     if replay.active {
         return;
     }
     let (modifier, set, held) = input.session_marker_actions();
+    let pressed = modifier && !session.modifier;
+    session.modifier = modifier;
     if session.blocked_until_release {
         if !modifier {
             session.blocked_until_release = false;
         }
         return;
+    }
+    // The cellphone UI (sub_826682B0): LB opens the menu with its activate sound.
+    if pressed {
+        events.write(SessionMarkerEvent { action: SessionMarkerAction::Opened });
     }
     let p = &skater.player_input.physical;
     let processed = &skater.player_input.processed;
@@ -149,6 +173,8 @@ fn update(
     session.visible = modifier;
     // A retained Pad publication must not turn one .pressed into repeated sets.
     if set && session.last_batch != input.consumed_batches {
+        // sub_82898FC8: every Place Marker press sounds, the place sound when the marker went
+        // down, the error sound when it could not.
         if session.can_place {
             session.marker = Some(Marker {
                 transform,
@@ -156,6 +182,9 @@ fn update(
                 foot_forward: skater.animation.foot_forward(),
                 generation: map.generation,
             });
+            events.write(SessionMarkerEvent { action: SessionMarkerAction::Placed });
+        } else {
+            events.write(SessionMarkerEvent { action: SessionMarkerAction::Refused });
         }
     }
     session.last_batch = input.consumed_batches;
@@ -178,6 +207,8 @@ fn update(
             if let Some(target) = session.marker {
                 match skater.player_input.request_teleport(target.transform) {
                     Ok(()) => {
+                        // sub_82898FC8: the go-to sound in the relocation tick.
+                        events.write(SessionMarkerEvent { action: SessionMarkerAction::Returned });
                         skater.animation.restore_foot_forward(target.foot_forward);
                         skater
                             .teleport_state

@@ -162,6 +162,7 @@ fn load(
 fn present(
     mut runtime: ResMut<Runtime>,
     session: Res<super::SessionMarker>,
+    effect: Option<Res<crate::ui_audio::TeleportEffect>>,
     time: Res<Time<Real>>,
     window: Single<&Window>,
     mut materials: ResMut<Assets<Effect>>,
@@ -172,14 +173,19 @@ fn present(
         runtime.time -= 1. / 60.;
         runtime.noise.advance();
     }
+    // The hold's amount, or a mod's (`sdk.audio.teleport_effect`) when larger: the same
+    // `cMsgTeleportEffectAmount` the skater's Class_Treatment plays its crackle from.
+    let amount = effect
+        .and_then(|e| e.from_mod)
+        .map_or(session.progress, |(m, _)| session.progress.max(m));
     // Advance the native noise stream even while hidden, then publish the current
     // values on the first visible frame. Hidden assets need no GPU preparation.
-    if session.progress > 0. {
+    if amount > 0. {
         let params = Params {
             scroll: Vec4::from_array(runtime.noise.scroll),
             first: Vec4::from_array(Noise::weights(runtime.noise.phases[0])),
             second: Vec4::from_array(Noise::weights(runtime.noise.phases[1])),
-            fade: Vec4::new(session.progress, 0., 0., 0.),
+            fade: Vec4::new(amount, 0., 0., 0.),
         };
         if materials.get(&runtime.material).is_some_and(|m| m.params.bits() != params.bits()) {
             materials.get_mut(&runtime.material).unwrap().params = params;
@@ -190,7 +196,7 @@ fn present(
         if transform.scale != scale {
             transform.scale = scale;
         }
-        visibility.set_if_neq(if session.progress > 0. {
+        visibility.set_if_neq(if amount > 0. {
             Visibility::Inherited
         } else {
             Visibility::Hidden

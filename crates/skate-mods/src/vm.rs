@@ -132,6 +132,13 @@ pub enum Command {
         fade_out: f32,
     },
     AudioStopAll {},
+    /// Audio extension 1: play one of the game's front-end sounds (a retail `fe` record by name,
+    /// e.g. `cellphone_place_marker`, `challenge_count_go`), as the game's UI does.
+    AudioFrontend { name: String },
+    /// Audio extension 1: the game's teleport effect amount (0..=1) for the next few frames: the
+    /// screen static and the skater's teleport crackle (retail's `cMsgTeleportEffectAmount`, which the
+    /// session marker's Go To Marker hold ramps 0 → 1). Lapses unless sent again each frame.
+    AudioTeleportEffect { amount: f32 },
     /// Audio extension 2: a post to a retail class under a key (`sdk.audio.post`); a key's post
     /// replaces its last one.
     AudioPost {
@@ -484,6 +491,8 @@ impl Command {
                     && (0.0..=2.0).contains(fade_out)
             }
             Self::AudioStopAll {} => true,
+            Self::AudioFrontend { name } => crate::audio::valid_frontend_name(name),
+            Self::AudioTeleportEffect { amount } => amount.is_finite() && (0.0..=1.0).contains(amount),
             Self::AudioPost { key, class, words } => crate::schema::valid_id(key) && crate::audio::valid_symbol(class) && words.len() <= crate::audio::MAX_WORDS,
             Self::AudioRedeliver { key, words } => crate::schema::valid_id(key) && words.len() <= crate::audio::MAX_WORDS,
             Self::AudioRelease { key } => crate::schema::valid_id(key),
@@ -746,6 +755,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::AudioUpdate { .. } => "audio_update",
         Command::AudioStop { .. } => "audio_stop",
         Command::AudioStopAll {} => "audio_stop_all",
+        Command::AudioFrontend { .. } => "audio_frontend",
+        Command::AudioTeleportEffect { .. } => "audio_teleport_effect",
         Command::AudioPost { .. } => "audio_post",
         Command::AudioRedeliver { .. } => "audio_redeliver",
         Command::AudioRelease { .. } => "audio_release",
