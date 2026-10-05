@@ -4749,7 +4749,7 @@ below and not counted.
 | 7, 8 | first emitter start after a load; per-frame map-name / tuning clones | not touched: cosmetic or ≈ 0, as the baseline said | — |
 
 The rest of item 6 was left out: making every component's `Command { words: Vec<i32> }` allocation-free.
-`Command` is public API that the modding PR (#36) builds on, so it needs a fixed-size word array agreed with
+`Command` is public API that the audio modding (doc 16; former #36, now part of #32) builds on, so it needs a fixed-size word array agreed with
 that PR. The world host's ~100 allocations per evaluation are the same pattern.
 
 **Counts behind the choices** (local counters, `real_143434` / `real_215843` / `ollies_log`):
