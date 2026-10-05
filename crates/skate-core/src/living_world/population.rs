@@ -3,7 +3,8 @@
 //! census rotation (peds, vehicles) and the ambient skater cycle; and the scorer trait the kind
 //! rules use to rank candidates.
 
-use super::census::{self, CensusMap};
+use super::census::{self, CensusMap, VehicleCatalog};
+use super::traffic::{spawn as placement, LaneCar, RoadNetwork, SegmentId};
 use super::clock::ConsoleClock;
 use super::config::{retail, CensusKindConfig, FreePlay, PopulationConfig};
 use super::rng::{derive, Rng};
@@ -44,6 +45,18 @@ pub fn pick_highest<C, S: Scorer<C>>(candidates: &[C], scorer: &mut S, rng: &mut
     best.map(|(i, _)| i)
 }
 
+/// Where a live car is on the road now (spawn: the factory's lane, speed 0; the engine updates
+/// it as the car drives, [`LivingWorld::update_lane`]). The census placement test reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaneState {
+    pub segment: SegmentId,
+    pub lane: u8,
+    pub distance: f32,
+    pub speed: f32,
+    pub length: f32,
+    pub width: f32,
+}
+
 /// One live ambient entity as the core sees it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Live {
@@ -51,6 +64,8 @@ pub struct Live {
     pub position: Vec3,
     pub spawned_tick: u64,
     pub choice: SpawnChoice,
+    /// Cars only.
+    pub lane: Option<LaneState>,
 }
 
 /// Per-kind state: the roster (ordered by serial, so iteration is deterministic), the serial
@@ -83,7 +98,7 @@ impl KindState {
         let id = LivingWorldId { kind: self.kind, serial: self.next_serial };
         self.next_serial += 1;
         let seed = derive(session_seed, &[0x454E_5449_5459, self.kind as u64, id.serial as u64]);
-        self.live.insert(id.serial, Live { id, position, spawned_tick: tick, choice: choice.clone() });
+        self.live.insert(id.serial, Live { id, position, spawned_tick: tick, choice: choice.clone(), lane: None });
         SpawnRecord { id, tick, position, heading, seed, initial, choice }
     }
 
@@ -116,6 +131,10 @@ pub struct TickInputs<'a> {
     pub observers: &'a [Observer],
     pub census: Option<&'a CensusMap>,
     pub skater_world: Option<&'a dyn SkaterWorld>,
+    /// The road network of the loaded world (cars are placed on its lanes; none = no cars).
+    pub roads: Option<&'a RoadNetwork>,
+    /// Vehicle entities per category (`vehicles.json`; none = no cars).
+    pub vehicles: Option<&'a VehicleCatalog>,
     /// Online session (retail `0x830B7C2B` / `0x83082929`): no ambient spawns of any kind,
     /// culling runs, desired ambient skaters 0 [code].
     pub online: bool,
@@ -141,6 +160,8 @@ impl<'a> TickInputs<'a> {
             observers,
             census: None,
             skater_world: None,
+            roads: None,
+            vehicles: None,
             online: false,
             zombie: false,
             free_play: None,
@@ -226,6 +247,19 @@ impl LivingWorld {
         }
     }
 
+    /// Engine-side movement of a car along the road (V3 driving): the placement test of later
+    /// spawns keeps its gaps to the car's current lane, distance and speed.
+    pub fn update_lane(&mut self, id: LivingWorldId, segment: SegmentId, lane: u8, distance: f32, speed: f32) {
+        if let Some(l) = self.state_mut(id.kind).live.get_mut(&id.serial) {
+            if let Some(s) = l.lane.as_mut() {
+                s.segment = segment;
+                s.lane = lane;
+                s.distance = distance;
+                s.speed = speed;
+            }
+        }
+    }
+
     /// Remove one entity at the game's request (finished, mod cleanup).
     pub fn despawn(&mut self, id: LivingWorldId, reason: DespawnReason) -> Option<Decision> {
         let tick = self.tick;
@@ -261,7 +295,7 @@ impl LivingWorld {
             Decision::Spawn(r) => {
                 let st = self.state_mut(r.id.kind);
                 st.next_serial = st.next_serial.max(r.id.serial + 1);
-                st.live.insert(r.id.serial, Live { id: r.id, position: r.position, spawned_tick: r.tick, choice: r.choice.clone() });
+                st.live.insert(r.id.serial, Live { id: r.id, position: r.position, spawned_tick: r.tick, choice: r.choice.clone(), lane: None });
             }
             Decision::Despawn(r) => {
                 self.state_mut(r.id.kind).live.remove(&r.id.serial);
@@ -329,6 +363,10 @@ pub(crate) fn census_pass(cfg: &CensusKindConfig, st: &mut KindState, inputs: &T
     }
     let gate = !inputs.online && inputs.world_ready && (!inputs.zombie || cfg.spawn_in_zombie);
     let Some(map) = inputs.census.filter(|_| gate) else { return };
+    if let Some(rules) = cfg.placement {
+        vehicle_spawns(cfg, &rules, st, inputs, map, &circles, tick, seed, density, out);
+        return;
+    }
     // Several observers: the spawn pass rotates through them (one observer = retail).
     let (circle, centre) = circles[(st.passes % circles.len() as u64) as usize];
     st.passes += 1;
@@ -360,6 +398,95 @@ pub(crate) fn census_pass(cfg: &CensusKindConfig, st: &mut KindState, inputs: &T
         }
         let choice = SpawnChoice::Census { record: record_name.to_string(), category: category.name.clone() };
         out.push(Decision::Spawn(st.spawn(seed, tick, point, heading, initial, choice)));
+        left -= 1;
+    }
+}
+
+/// The vehicle spawn pass (`sub_826B9B90` -> `sub_826B8B88` -> census slot +8 `sub_826B83C8` ->
+/// factory `sub_82C36300`) [code]: per attempt a ring point (no heading draw), the cap at the
+/// point and the category and entity rolls, the vehicle limit (15), then the road placement
+/// (`traffic::spawn`): road under the point, 15 m from the segment ends, fitting lanes, a lane
+/// roll, the overlap check. Needs the roads and the vehicle catalog; without them no car spawns.
+#[allow(clippy::too_many_arguments)]
+fn vehicle_spawns(
+    cfg: &CensusKindConfig,
+    rules: &placement::PlacementRules,
+    st: &mut KindState,
+    inputs: &TickInputs,
+    map: &CensusMap,
+    circles: &[(census::CensusCircle, Vec3)],
+    tick: u64,
+    seed: u64,
+    density: f32,
+    out: &mut Vec<Decision>,
+) {
+    let (Some(net), Some(catalog)) = (inputs.roads, inputs.vehicles) else { return };
+    let (circle, centre) = circles[(st.passes % circles.len() as u64) as usize];
+    st.passes += 1;
+    let initial = std::mem::take(&mut st.initial_pending);
+    let (inner, outer, attempts, spawns) = census::pass_budget(cfg, &circle, initial);
+    let limit = if initial { cfg.initial_pool.or(cfg.pool) } else { cfg.pool };
+    let mut left = spawns;
+    for _ in 0..attempts {
+        if left == 0 {
+            break;
+        }
+        let point = census::ring_point(&mut st.rng, centre, inner, outer);
+        let found = map.record_at(&cfg.layer, point[0], point[2]);
+        let cap = census::cap_at(found.map(|(_, r)| r), density, inputs.zombie);
+        if cap == 0 {
+            continue;
+        }
+        let count = st.live.len() as u32;
+        if count >= cap {
+            continue;
+        }
+        let (record_name, record) = found.expect("cap > 0 has a record");
+        let Some(category) = census::pick_category(&mut st.rng, record) else { continue };
+        let Some(entity_name) = catalog.categories.get(&category.name).and_then(|list| census::pick_entity(&mut st.rng, list)) else { continue };
+        let Some(entity) = catalog.entities.get(entity_name) else { continue };
+        if limit.is_some_and(|p| count >= p) {
+            continue; // census slot +8: the vehicle limit
+        }
+        // Factory: the road under the point and the lanes a car fits on.
+        let cars_on = |segment: usize, lane: u8| -> Vec<LaneCar> {
+            let id = net.segments[segment].id;
+            st.live
+                .values()
+                .filter_map(|l| l.lane)
+                .filter(|s| s.segment == id && s.lane == lane)
+                .map(|s| LaneCar { distance: s.distance, length: s.length, speed: s.speed })
+                .collect()
+        };
+        let Some((segment, distance, lanes)) = placement::candidate_lanes(net, point, rules, &cars_on) else { continue };
+        let lane = placement::pick_lane(&lanes, st.rng.next_u32(), rules);
+        let frame = net.lane_frame(segment, lane as f32, distance);
+        // Overlap with the cars and the players near the new car.
+        let radius = 0.5 * entity.length.max(entity.width);
+        let mut obstacles: Vec<(Vec3, f32)> = st.live.values().map(|l| (l.position, l.lane.map_or(0.0, |s| 0.5 * s.length.max(s.width)))).collect();
+        obstacles.extend(inputs.observers.iter().map(|o| (o.position, 0.0)));
+        if placement::overlaps(frame.position, radius, &obstacles, rules) {
+            continue;
+        }
+        // Palette: the code read so far does not show the pick (open); the engine derives it from
+        // the session seed and the id, so the record alone recreates the car.
+        let palette_seed = derive(seed, &[0x5041_4C45_5454_45, Kind::Vehicle as u64, st.next_serial as u64]);
+        let choice = SpawnChoice::Vehicle {
+            record: record_name.to_string(),
+            category: category.name.clone(),
+            entity: entity_name.clone(),
+            model: entity.model.clone(),
+            chassis: (palette_seed % entity.chassis_colours.max(1) as u64) as u32,
+            secondary: ((palette_seed >> 32) % entity.secondary_colours.max(1) as u64) as u32,
+            segment: net.segments[segment].id.0,
+            lane,
+            distance,
+        };
+        let record = st.spawn(seed, tick, frame.position, frame.yaw(), initial, choice);
+        if let Some(l) = st.live.get_mut(&record.id.serial) {
+            l.lane = Some(LaneState { segment: net.segments[segment].id, lane, distance, speed: 0.0, length: entity.length, width: entity.width });
+        }
+        out.push(Decision::Spawn(record));
         left -= 1;
     }
 }

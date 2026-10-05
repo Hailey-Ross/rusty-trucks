@@ -29,6 +29,7 @@ pub mod cursor;
 pub mod graph;
 pub mod junction;
 pub mod signals;
+pub mod spawn;
 
 pub use cursor::{choose_connector, Advance, ConnectorChoice, LaneCursor, Place};
 pub use graph::{
@@ -37,6 +38,7 @@ pub use graph::{
 };
 pub use junction::{junction_entry, query_due, Entry, EntryInfo, EntryQuery, Occupancy, VehicleKey, VehicleSnapshot, Vehicles};
 pub use signals::{priority_end, Controller, Light, Phase, SignalChange, SignalClock, SignalTimings};
+pub use spawn::{LaneCar, LaneSpot, PlacementRules};
 
 #[cfg(test)]
 mod tests;

@@ -19,6 +19,36 @@ fn census() -> CensusMap {
     CensusMap { grids: vec![grid], records }
 }
 
+/// Synthetic roads (milestone V2 places cars on lanes): east-west road pairs every 100 m from
+/// z = -1100 to 1100, 2 lanes per direction, 8 m wide, 2.4 km long in 8 m pieces; and one
+/// entity per census category.
+fn roads_and_vehicles() -> (skate_core::living_world::traffic::RoadNetwork, skate_core::living_world::VehicleCatalog) {
+    use skate_core::living_world::traffic::{Curve, PieceInput, RoadInput, RoadNetwork, SegmentId, SegmentInput};
+    let mut segments = Vec::new();
+    for k in 0..23u64 {
+        let z = -1100.0 + k as f32 * 100.0;
+        for (dir, zc) in [(1.0f32, z + 5.0), (-1.0f32, z - 5.0)] {
+            let x0 = -1200.0 * dir;
+            let pieces = (0..300)
+                .map(|i| {
+                    let a = [x0 + dir * 8.0 * i as f32, 0.0, zc];
+                    let b = [x0 + dir * 8.0 * (i + 1) as f32, 0.0, zc];
+                    let side = |p: [f32; 3], s: f32| [p[0], 0.0, p[2] + s * dir * 4.0];
+                    PieceInput { end_distance: 8.0 * (i + 1) as f32, centre: Curve::straight(a, b), left_start: side(a, -1.0), right_start: side(a, 1.0), left_end: side(b, -1.0), right_end: side(b, 1.0) }
+                })
+                .collect();
+            let id = 1000 + k * 2 + (dir < 0.0) as u64;
+            segments.push(SegmentInput { id: SegmentId(id), from_node: id * 10, from_end: 0, to_node: id * 10 + 1, to_end: 0, length: 2400.0, speed_limit: 14.167, lanes: 2, district: 0, pieces });
+        }
+    }
+    let mut cat = skate_core::living_world::VehicleCatalog::default();
+    for c in ["sedans", "taxis"] {
+        cat.categories.insert(c.into(), vec![format!("{c}01")]);
+        cat.entities.insert(format!("{c}01"), skate_core::living_world::VehicleEntity { model: format!("vehicle_{c}01"), chassis_colours: 4, secondary_colours: 1, length: 4.5, width: 1.9 });
+    }
+    (RoadNetwork::build(&RoadInput { segments, junctions: Vec::new() }).unwrap(), cat)
+}
+
 fn data() -> LoadedData {
     let mut config = PopulationConfig::retail();
     let c = |i, o, cull, f, s| CensusCircle { spawn_inner: i, spawn_outer: o, cull, forward_offset: f, speed_kmh: s };
@@ -33,7 +63,8 @@ fn data() -> LoadedData {
         })
         .collect();
     let characters = (0..6).map(|i| SkaterCharacter { key: format!("pro_{i}"), pro_index: Some(i), capabilities: [false; 3], community: false }).collect();
-    LoadedData { config, census: Some(census()), skaters: Some(SkaterData { lines, characters }), npc: Default::default(), status: "test".into() }
+    let (roads, vehicles) = roads_and_vehicles();
+    LoadedData { config, census: Some(census()), skaters: Some(SkaterData { lines, characters }), roads: Some(roads), vehicles: Some(vehicles), npc: Default::default(), status: "test".into() }
 }
 
 #[derive(Resource, Default)]
@@ -98,14 +129,15 @@ fn living_world_population_follows_a_driving_player() {
         let obs = app.world().resource::<LivingWorldObservers>().observers[0].position;
         let w = &st.world;
         max = (max.0.max(w.count(Kind::Skater)), max.1.max(w.count(Kind::Pedestrian)), max.2.max(w.count(Kind::Vehicle)));
-        assert!(w.count(Kind::Skater) <= 3 && w.count(Kind::Pedestrian) <= 15 && w.count(Kind::Vehicle) <= 30);
+        assert!(w.count(Kind::Skater) <= 3 && w.count(Kind::Pedestrian) <= 15 && w.count(Kind::Vehicle) <= 15);
         // Census entities never outlive their cull radius by more than one rotation (4 ticks at 8 m/s).
         for l in w.live(Kind::Pedestrian) {
             let d = ((l.position[0] - obs[0]).powi(2) + (l.position[2] - obs[2]).powi(2)).sqrt();
             assert!(d <= 90.0 + 2.0, "ped at {d}");
         }
     }
-    assert_eq!(max, (3, 15, 30));
+    // Cars: the vehicle limit 15 under the census cap of 30 (milestone V2).
+    assert_eq!(max, (3, 15, 15));
     let c = app.world().resource::<Collected>();
     for (kind, p, initial) in spawned(c) {
         assert!(p[1] == 0.0);
@@ -177,4 +209,32 @@ fn living_world_settings_disable_and_density() {
     assert_eq!(w.count(Kind::Skater), 0);
     assert_eq!(w.count(Kind::Pedestrian), 15);
     assert!(readout(a.world().resource::<PopulationState>()).contains("vehicles 15"));
+}
+
+#[test]
+fn vehicle_records_round_trip_through_the_wire_form() {
+    use skate_core::living_world::{LivingWorldId, SpawnChoice, SpawnRecord};
+    let record = Decision::Spawn(SpawnRecord {
+        id: LivingWorldId { kind: Kind::Vehicle, serial: 4 },
+        tick: 120,
+        position: [1.0, 2.0, 3.0],
+        heading: 0.5,
+        seed: 77,
+        initial: true,
+        choice: SpawnChoice::Vehicle {
+            record: "dwntwn".into(),
+            category: "taxis".into(),
+            entity: "taxi01".into(),
+            model: "vehicle_taxi01".into(),
+            chassis: 1,
+            secondary: 0,
+            segment: 0x1234_5678_9ABC,
+            lane: 1,
+            distance: 42.0,
+        },
+    });
+    let wire = WireRecord::from_decision(&record);
+    let json = serde_json::to_string(&wire).unwrap();
+    let back: WireRecord = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.to_decision(), Some(record));
 }

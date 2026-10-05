@@ -5,8 +5,8 @@
 //!   seed, voice) + [`NpcReplay`] (the `skate_core::living_world::replay` cursor) + `Transform`.
 //!   The id map [`NpcSkaterIndex`] finds it again for the despawn.
 //! - **Motion** (`FixedUpdate`, after the population step): each cursor is kept at
-//!   `2 x (population tick - spawn tick)` recording frames (the 60 Hz lines at the console's 30 Hz
-//!   tick), so the state is a function of the spawn record and the tick; branch decisions use the
+//!   `population tick - spawn tick` recording frames (the 60 Hz lines at the retail 60 Hz world
+//!   tick, `skate_core::living_world::clock`), so the state is a function of the spawn record and the tick; branch decisions use the
 //!   retail score with the players and the other NPCs and are kept as records a client would
 //!   mirror. The NPC's position goes back into the population (culls, the 5 m rule). The end of a
 //!   line with no branch taken despawns the NPC (parked: retail behaviour not decoded).
@@ -35,8 +35,10 @@ use skate_core::living_world::{DespawnReason, Kind, LivingWorldId, SpawnChoice};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// Recording frames per console tick (60 Hz lines, 30 Hz world tick).
-pub(crate) const FRAMES_PER_TICK: u64 = 2;
+/// Recording frames per world tick: the lines are recorded at 60 Hz ([data], `RECORDING_HZ`) and
+/// the retail world tick that runs the skater manager is the 60 Hz fixed step
+/// (`skate_core::living_world::clock::RETAIL_TICK_HZ`) [code], so one frame per tick.
+pub(crate) const FRAMES_PER_TICK: u64 = 1;
 
 /// Lines and per-character data of the loaded district, shared with the population.
 #[derive(Clone, Default)]
@@ -274,7 +276,7 @@ pub(crate) fn lite_state(s: &ReplaySample, material: u32) -> AudioState {
         grind_material: if s.phase == ReplayPhase::GroundTrick { material } else { skate_audio::player::state::NO_MATERIAL },
         airborne,
         air_time: if airborne { s.phase_frames as f32 / 60.0 } else { 0.0 },
-        dt: 1.0 / 30.0,
+        dt: (1.0 / skate_core::living_world::clock::RETAIL_TICK_HZ) as f32,
     })
 }
 
@@ -399,8 +401,9 @@ pub(crate) fn present_pose(
     mut joints: Query<&mut Transform, Without<NpcReplay>>,
 ) {
     let lines = npc_lines(&state);
-    // Render interpolation: fraction of the next console tick (2 recording frames).
-    let ahead = (state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * 30.0).clamp(0.0, 1.0) as f32
+    // Render interpolation: fraction of the next world tick (FRAMES_PER_TICK recording frames).
+    let hz = state.world.clock().hz;
+    let ahead = (state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * hz).clamp(0.0, 1.0) as f32
         * FRAMES_PER_TICK as f32;
     for (replay, puppet, mut root) in &mut npcs {
         // A look-ahead of the cursor (no branching inside it; the next fixed step corrects).

@@ -213,6 +213,9 @@ pub struct Segment {
     pub lanes: u8,
     pub district: u32,
     pub pieces: Vec<Piece>,
+    /// Horizontal bounds of the road edges: min x, min z, max x, max z (engine helper for the
+    /// road-under-a-point query).
+    pub bounds: [f32; 4],
     /// The junction at the destination node (index into [`RoadNetwork::junctions`]), if any.
     pub to_junction: Option<usize>,
     /// The junction at the origin node, if any.
@@ -378,6 +381,10 @@ impl RoadNetwork {
                 speed_limit: s.speed_limit,
                 lanes: s.lanes,
                 district: s.district,
+                bounds: pieces.iter().flat_map(|p| [p.left_start, p.right_start, p.left_end, p.right_end]).fold(
+                    [f32::MAX, f32::MAX, f32::MIN, f32::MIN],
+                    |b, v| [b[0].min(v[0]), b[1].min(v[2]), b[2].max(v[0]), b[3].max(v[2])],
+                ),
                 pieces,
                 to_junction: net.junction_index.get(&JunctionId(s.to_node)).copied(),
                 from_junction: net.junction_index.get(&JunctionId(s.from_node)).copied(),

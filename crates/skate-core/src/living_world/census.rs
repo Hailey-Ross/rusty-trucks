@@ -189,3 +189,37 @@ pub fn pass_budget(cfg: &CensusKindConfig, circle: &CensusCircle, initial: bool)
         (circle.spawn_inner, circle.spawn_outer, cfg.attempts_per_pass, cfg.spawns_per_pass)
     }
 }
+
+/// One vehicle entity (`livingworld_entities`, vehicle category) as the census needs it, from the
+/// export (`vehicles.json`, stable names; a mod adds or overrides entries by the same keys).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct VehicleEntity {
+    /// `livingworld_models` record.
+    pub model: String,
+    /// Colours in the model's chassis / secondary palettes (`palette_ids` in `vehicles.json`).
+    pub chassis_colours: u32,
+    pub secondary_colours: u32,
+    /// Length (m): z of the model's size vector (`size_hint`) [data].
+    pub length: f32,
+    /// Width (m): x of the size vector [data].
+    pub width: f32,
+}
+
+/// The vehicle entities per census category (`vehicles.json` `census.<record>.categories`) and
+/// per entity. Iteration is sorted (BTreeMap), so the picks are machine independent.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct VehicleCatalog {
+    /// Category name -> entity names in retail list order.
+    pub categories: BTreeMap<String, Vec<String>>,
+    pub entities: BTreeMap<String, VehicleEntity>,
+}
+
+/// The entity pick inside a category (`sub_826B8B88` via `sub_826BB058`) [code]:
+/// `trunc(u32 x 2^-32 x 100) mod n`.
+pub fn pick_entity<'a>(rng: &mut Rng, entities: &'a [String]) -> Option<&'a String> {
+    if entities.is_empty() {
+        return None;
+    }
+    let roll = (rng.next_u32() as f64 / 4_294_967_296.0 * retail::ENTITY_ROLL as f64) as u32;
+    entities.get((roll % entities.len() as u32) as usize)
+}

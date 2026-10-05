@@ -54,6 +54,8 @@ fn data() -> LoadedData {
         config,
         census: None,
         skaters: Some(SkaterData { lines, characters }),
+        roads: None,
+        vehicles: None,
         npc: NpcData { lines: Arc::new(replay), voices },
         status: "npc test".into(),
     }

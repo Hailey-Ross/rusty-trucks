@@ -46,6 +46,58 @@ fn map() -> CensusMap {
     CensusMap { grids: vec![grid], records }
 }
 
+/// Synthetic roads over the test map: east-west roads every 100 m from z = -1000 to 1000, each a
+/// pair of directed 2-lane segments (eastbound 5 m north of the line, westbound 5 m south), 2 km
+/// long in 4 m pieces, 8 m wide. No junctions.
+pub(super) fn roads() -> &'static traffic::RoadNetwork {
+    use traffic::{Curve, PieceInput, RoadInput, SegmentId, SegmentInput};
+    static NET: std::sync::OnceLock<traffic::RoadNetwork> = std::sync::OnceLock::new();
+    NET.get_or_init(|| {
+        let mut segments = Vec::new();
+        for k in 0..21u64 {
+            let z = -1000.0 + k as f32 * 100.0;
+            for (dir, zc) in [(1.0f32, z + 5.0), (-1.0f32, z - 5.0)] {
+                let x0 = -1000.0 * dir;
+                let pieces = (0..500)
+                    .map(|i| {
+                        let a = [x0 + dir * 4.0 * i as f32, 0.0, zc];
+                        let b = [x0 + dir * 4.0 * (i + 1) as f32, 0.0, zc];
+                        // Facing +x the right side is +z (y up): left = -z.
+                        let side = |p: [f32; 3], s: f32| [p[0], 0.0, p[2] + s * dir * 4.0];
+                        PieceInput { end_distance: 4.0 * (i + 1) as f32, centre: Curve::straight(a, b), left_start: side(a, -1.0), right_start: side(a, 1.0), left_end: side(b, -1.0), right_end: side(b, 1.0) }
+                    })
+                    .collect();
+                let id = 1000 + k * 2 + (dir < 0.0) as u64;
+                segments.push(SegmentInput { id: SegmentId(id), from_node: id * 10, from_end: 0, to_node: id * 10 + 1, to_end: 0, length: 2000.0, speed_limit: 14.167, lanes: 2, district: 0, pieces });
+            }
+        }
+        traffic::RoadNetwork::build(&RoadInput { segments, junctions: Vec::new() }).unwrap()
+    })
+}
+
+/// The dwntwn vehicle categories with one entity each (4.5 x 1.9 m, 10 chassis colours).
+pub(super) fn catalog() -> &'static VehicleCatalog {
+    static CAT: std::sync::OnceLock<VehicleCatalog> = std::sync::OnceLock::new();
+    CAT.get_or_init(|| {
+        let mut c = VehicleCatalog::default();
+        for cat in ["hatchbacks", "minivans", "muscles", "sedans", "sports", "suvs", "taxis"] {
+            let entity = format!("{cat}01");
+            c.categories.insert(cat.to_string(), vec![entity.clone()]);
+            c.entities.insert(entity, VehicleEntity { model: format!("vehicle_{cat}01"), chassis_colours: 10, secondary_colours: 1, length: 4.5, width: 1.9 });
+        }
+        c
+    })
+}
+
+/// Offline inputs with the test census, roads and vehicle catalog.
+pub(super) fn offline<'a>(obs: &'a [Observer], map: &'a CensusMap) -> TickInputs<'a> {
+    let mut inputs = TickInputs::offline(obs);
+    inputs.census = Some(map);
+    inputs.roads = Some(roads());
+    inputs.vehicles = Some(catalog());
+    inputs
+}
+
 fn config() -> PopulationConfig {
     let mut c = PopulationConfig::retail();
     c.pedestrians.range = Some(PEDS);
@@ -140,8 +192,7 @@ fn category_roll_misses_when_weights_sum_below_one() {
 fn peds_initial_populate_then_one_spawn_per_pass_in_the_ring_up_to_the_cap() {
     let map = map();
     let obs = [still(0.0, 0.0)];
-    let mut inputs = TickInputs::offline(&obs);
-    inputs.census = Some(&map);
+    let mut inputs = offline(&obs, &map);
     let mut world = LivingWorld::new(config(), 42);
     // Tick 0 is the peds slot: initial populate (8-80 m), up to the cap of 15.
     let d = world.step(&inputs);
@@ -174,8 +225,7 @@ fn census_cull_at_the_cull_radius() {
     let map = map();
     let mut world = LivingWorld::new(config(), 1);
     let obs = [still(0.0, 0.0)];
-    let mut inputs = TickInputs::offline(&obs);
-    inputs.census = Some(&map);
+    let mut inputs = offline(&obs, &map);
     world.step(&inputs);
     let ids: Vec<_> = world.live(Kind::Pedestrian).map(|l| l.id).take(2).collect();
     world.update_position(ids[0], [69.9, 0.0, 0.0]);
@@ -203,8 +253,7 @@ fn census_cull_at_the_cull_radius() {
 fn unpainted_ground_spawns_no_peds() {
     let map = map();
     let obs = [still(800.0, 0.0)]; // the ring 8-80 m stays in x > 600: unpainted for peds
-    let mut inputs = TickInputs::offline(&obs);
-    inputs.census = Some(&map);
+    let mut inputs = offline(&obs, &map);
     let mut world = LivingWorld::new(config(), 5);
     for _ in 0..400 {
         world.step(&inputs);
@@ -217,8 +266,7 @@ fn unpainted_ground_spawns_no_peds() {
 fn vehicles_ring_80_100_cull_110_cap_30_rotation_slot_1() {
     let map = map();
     let obs = [still(0.0, 0.0)];
-    let mut inputs = TickInputs::offline(&obs);
-    inputs.census = Some(&map);
+    let mut inputs = offline(&obs, &map);
     let mut world = LivingWorld::new(config(), 77);
     let mut regular = 0;
     for _ in 0..4000 {
@@ -226,17 +274,19 @@ fn vehicles_ring_80_100_cull_110_cap_30_rotation_slot_1() {
         let d = world.step(&inputs);
         for s in spawns(&d, Kind::Vehicle) {
             assert_eq!(t % 4, 1);
+            // The car sits on the lane at the start of the piece under the ring point: up to
+            // 4 m back along the road and 6 m across from the point.
             let r = h(s.position, obs[0].position);
             if s.initial {
-                assert!((8.0 - 1e-3..=80.0 + 1e-3).contains(&r));
+                assert!(r <= 80.0 + 7.3, "{r}");
             } else {
                 regular += 1;
-                assert!((80.0 - 1e-3..=100.0 + 1e-3).contains(&r), "{r}");
+                assert!((80.0 - 7.3..=100.0 + 7.3).contains(&r), "{r}");
             }
         }
-        assert!(world.count(Kind::Vehicle) <= 30);
+        assert!(world.count(Kind::Vehicle) <= 15, "vehicle limit 15 under the cap of 30");
     }
-    assert_eq!(world.count(Kind::Vehicle), 30);
+    assert_eq!(world.count(Kind::Vehicle), 15);
     assert_eq!(regular, 0, "nothing culls a still observer's cars, so the cap stays full");
     let id = world.live(Kind::Vehicle).next().unwrap().id;
     world.update_position(id, [0.0, 0.0, 110.5]);
@@ -250,14 +300,13 @@ fn vehicles_ring_80_100_cull_110_cap_30_rotation_slot_1() {
 fn free_play_scales_caps_and_zero_removes_all_at_once() {
     let map = map();
     let obs = [still(0.0, 0.0)];
-    let mut inputs = TickInputs::offline(&obs);
-    inputs.census = Some(&map);
+    let mut inputs = offline(&obs, &map);
     inputs.free_play = Some(FreePlay { traffic: 0.5, pedestrians: 1.0, ai_skaters: true });
     let mut world = LivingWorld::new(config(), 8);
     for _ in 0..400 {
         world.step(&inputs);
     }
-    assert_eq!(world.count(Kind::Vehicle), 15); // trunc(30 x 0.5)
+    assert_eq!(world.count(Kind::Vehicle), 15); // trunc(30 x 0.5) = 15 = the vehicle limit
     assert_eq!(world.count(Kind::Pedestrian), 15);
     inputs.free_play = Some(FreePlay { traffic: 0.0, pedestrians: 0.0, ai_skaters: true });
     let mut gone = Vec::new();
@@ -270,12 +319,12 @@ fn free_play_scales_caps_and_zero_removes_all_at_once() {
     for _ in 0..200 {
         assert!(spawns(&world.step(&inputs), Kind::Pedestrian).is_empty());
     }
-    // Outside Free Play the option values do nothing (scale 1.0).
+    // Outside Free Play the option values do nothing (scale 1.0); the vehicle limit holds.
     inputs.free_play = None;
     for _ in 0..400 {
         world.step(&inputs);
     }
-    assert_eq!(world.count(Kind::Vehicle), 30);
+    assert_eq!(world.count(Kind::Vehicle), 15);
 }
 
 #[test]
@@ -284,8 +333,7 @@ fn online_spawns_nothing_but_still_culls() {
     let mut world = LivingWorld::new(config(), 11);
     let data = skater_data();
     let obs = [still(0.0, 0.0)];
-    let mut inputs = TickInputs::offline(&obs);
-    inputs.census = Some(&map);
+    let mut inputs = offline(&obs, &map);
     inputs.skater_world = Some(&data);
     for _ in 0..240 {
         world.step(&inputs);
@@ -310,8 +358,7 @@ fn zombie_mode_peds_ignore_the_cap_no_traffic_no_skaters() {
     let map = map();
     let data = skater_data();
     let obs = [still(0.0, 0.0)];
-    let mut inputs = TickInputs::offline(&obs);
-    inputs.census = Some(&map);
+    let mut inputs = offline(&obs, &map);
     inputs.skater_world = Some(&data);
     inputs.zombie = true;
     let mut world = LivingWorld::new(config(), 13);
@@ -327,8 +374,7 @@ fn zombie_mode_peds_ignore_the_cap_no_traffic_no_skaters() {
 fn disabled_kind_despawns_and_density_setting_scales() {
     let map = map();
     let obs = [still(0.0, 0.0)];
-    let mut inputs = TickInputs::offline(&obs);
-    inputs.census = Some(&map);
+    let mut inputs = offline(&obs, &map);
     let mut cfg = config();
     cfg.vehicles.density = 0.2;
     let mut world = LivingWorld::new(cfg, 2);
@@ -346,8 +392,7 @@ fn disabled_kind_despawns_and_density_setting_scales() {
 fn no_export_means_no_census_population() {
     let map = map();
     let obs = [still(0.0, 0.0)];
-    let mut inputs = TickInputs::offline(&obs);
-    inputs.census = Some(&map);
+    let mut inputs = offline(&obs, &map);
     let mut world = LivingWorld::new(PopulationConfig::retail(), 2);
     for _ in 0..100 {
         world.step(&inputs);
@@ -502,13 +547,12 @@ fn run_world(seed: u64) -> (LivingWorld, Vec<Decision>) {
     let data = skater_data();
     let mut world = LivingWorld::new(config(), seed);
     let mut out = Vec::new();
-    for step in 0..3000u32 {
-        // A player moving in a circle of 150 m at 8 m/s.
-        let t = step as f32 / 30.0;
+    for step in 0..6000u32 {
+        // A player moving in a circle of 150 m at 8 m/s (100 s of 60 Hz world ticks).
+        let t = (step as f64 / super::clock::RETAIL_TICK_HZ) as f32;
         let a = t * 8.0 / 150.0;
         let obs = [Observer { position: [150.0 * a.cos(), 0.0, 150.0 * a.sin()], velocity: [-8.0 * a.sin(), 0.0, 8.0 * a.cos()] }];
-        let mut inputs = TickInputs::offline(&obs);
-        inputs.census = Some(&map);
+        let mut inputs = offline(&obs, &map);
         inputs.skater_world = Some(&data);
         out.extend(world.step(&inputs));
     }
@@ -542,4 +586,170 @@ fn ids_are_stable_and_unique_and_a_client_can_mirror_the_records() {
         let y: Vec<_> = host.live(k).map(|l| l.id).collect();
         assert_eq!(x, y);
     }
+}
+
+// ---------------------------------------------------------------- vehicles (milestone V2)
+
+use super::traffic::spawn::{candidate_lanes, lane_fits, overlaps, pick_lane, road_under};
+use super::traffic::{LaneCar, PlacementRules};
+
+#[test]
+fn vehicle_code_constants() {
+    // Census +148 = 15 (sub_826B6D58) and the literal 15 of the initial populate (sub_826B83C8).
+    assert_eq!((retail::VEHICLE_LIMIT, retail::VEHICLE_INITIAL_LIMIT), (15, 15));
+    let v = config::CensusKindConfig::retail_vehicles();
+    assert_eq!((v.pool, v.initial_pool), (Some(15), Some(15)));
+    assert_eq!((v.attempts_per_pass, v.spawns_per_pass, v.initial_attempts, v.initial_spawns), (2, 1, 6000, 600));
+    assert_eq!(v.initial_ring, (8.0, 80.0));
+    assert!(!v.spawn_in_zombie);
+    assert_eq!(v.rotation_slot, 1);
+    // Factory placement (sub_82C36300 / sub_82E14928): 15 m margin, extra 0, half 0.5, 20 m
+    // overlap query, lane roll 100.
+    let r = PlacementRules::default();
+    assert_eq!((r.end_margin, r.extra_ahead, r.half, r.behind_seconds, r.clear_radius, r.lane_roll), (15.0, 0.0, 0.5, 1.0, 20.0, 100));
+    assert!(config::CensusKindConfig::retail_pedestrians().placement.is_none());
+}
+
+#[test]
+fn entity_and_lane_rolls_follow_the_code_formulas() {
+    // trunc(u32 x 100 / 2^32) mod n.
+    let lanes = [0u8, 1];
+    assert_eq!(pick_lane(&lanes, 0, &PlacementRules::default()), 0);
+    assert_eq!(pick_lane(&lanes, (4_294_967_296.0 * 0.015) as u32, &PlacementRules::default()), 1); // roll 1
+    assert_eq!(pick_lane(&lanes, (4_294_967_296.0 * 0.025) as u32, &PlacementRules::default()), 0); // roll 2
+    let mut rng = Rng::new(9);
+    let list: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..200 {
+        seen.insert(census::pick_entity(&mut rng, &list).unwrap().clone());
+    }
+    assert_eq!(seen.len(), 3);
+    assert!(census::pick_entity(&mut rng, &[]).is_none());
+}
+
+#[test]
+fn road_under_needs_the_road_surface() {
+    let net = roads();
+    // Eastbound road of the z = 0 line: centre z = 5, 8 m wide.
+    let (seg, d) = road_under(net, [10.0, 0.0, 6.0]).unwrap();
+    assert_eq!(net.segments[seg].id.0, 1000 + 10 * 2);
+    assert_eq!(d, 1008.0, "the start of the piece under the point");
+    assert!(road_under(net, [10.0, 0.0, 9.5]).is_none(), "beside the road");
+    assert!(road_under(net, [10.0, 0.0, 50.0]).is_none(), "between roads");
+}
+
+#[test]
+fn lane_fit_rules() {
+    let net = roads();
+    let seg = net.segment_index(traffic::SegmentId(1020)).unwrap();
+    let r = PlacementRules::default();
+    // 15 m from both segment ends.
+    assert!(!lane_fits(net, seg, 0, 14.9, &r, &[]));
+    assert!(lane_fits(net, seg, 0, 15.0, &r, &[]));
+    assert!(lane_fits(net, seg, 0, 1985.0, &r, &[]));
+    assert!(!lane_fits(net, seg, 0, 1985.1, &r, &[]));
+    assert!(!lane_fits(net, seg, 2, 500.0, &r, &[]), "no third lane");
+    // Ahead: its rear (distance - 0.5 x length) at least 15 m past the point.
+    let ahead = |d: f32| [LaneCar { distance: d, length: 4.0, speed: 0.0 }];
+    assert!(lane_fits(net, seg, 0, 500.0, &r, &ahead(517.0)));
+    assert!(!lane_fits(net, seg, 0, 500.0, &r, &ahead(516.9)));
+    // Behind: distance + length + speed x 1 s at most 7.5 m (half the margin) before the point.
+    let behind = |d: f32, v: f32| [LaneCar { distance: d, length: 4.0, speed: v }];
+    assert!(lane_fits(net, seg, 0, 500.0, &r, &behind(488.5, 0.0)));
+    assert!(!lane_fits(net, seg, 0, 500.0, &r, &behind(488.6, 0.0)));
+    assert!(!lane_fits(net, seg, 0, 500.0, &r, &behind(480.0, 10.0)), "a fast follower needs room");
+    // The other lane is independent.
+    let cars_on = |_: usize, l: u8| if l == 0 { ahead(510.0).to_vec() } else { Vec::new() };
+    let point = net.lane_frame(seg, 0.0, 500.0).position;
+    let (_, _, lanes) = candidate_lanes(net, point, &r, &cars_on).unwrap();
+    assert_eq!(lanes, vec![1]);
+    // Overlap check: radius sum, within the 20 m query.
+    assert!(overlaps([0.0; 3], 2.25, &[([4.0, 0.0, 0.0], 2.25)], &r));
+    assert!(!overlaps([0.0; 3], 2.25, &[([4.6, 0.0, 0.0], 2.25)], &r));
+}
+
+/// Live cars: every one on a real lane at a valid distance, facing its lane's direction, the
+/// record matching the lane point, and the lane gaps kept.
+fn check_cars(world: &LivingWorld, net: &traffic::RoadNetwork) {
+    let r = PlacementRules::default();
+    let mut by_lane: BTreeMap<(u64, u8), Vec<f32>> = BTreeMap::new();
+    for l in world.live(Kind::Vehicle) {
+        let SpawnChoice::Vehicle { segment, lane, distance, model, chassis, .. } = &l.choice else { panic!("vehicle record") };
+        let si = net.segment_index(traffic::SegmentId(*segment)).expect("a real segment");
+        let s = &net.segments[si];
+        assert!(*lane < s.lanes);
+        assert!(*distance >= r.end_margin && *distance <= s.length - r.end_margin);
+        let frame = net.lane_frame(si, *lane as f32, *distance);
+        assert!(h(frame.position, l.position) < 1e-3);
+        assert!(model.starts_with("vehicle_") && *chassis < 10);
+        by_lane.entry((*segment, *lane)).or_default().push(*distance);
+    }
+    for v in by_lane.values_mut() {
+        v.sort_by(f32::total_cmp);
+        for w in v.windows(2) {
+            // A new car behind keeps half the margin plus its length (the car-ahead rule is
+            // stricter, 15 m + half a length): the smaller one bounds every gap.
+            assert!(w[1] - w[0] >= 0.5 * r.end_margin + 4.5 - 1e-3, "gap {w:?}");
+        }
+    }
+}
+
+#[test]
+fn spawned_cars_sit_on_lanes_in_their_direction_with_gaps() {
+    let map = map();
+    let net = roads();
+    let obs = [still(0.0, 0.0)];
+    let inputs = offline(&obs, &map);
+    let mut world = LivingWorld::new(config(), 21);
+    let mut all = Vec::new();
+    for _ in 0..2000 {
+        all.extend(world.step(&inputs));
+        check_cars(&world, net);
+    }
+    assert_eq!(world.count(Kind::Vehicle), 15);
+    for s in spawns(&all, Kind::Vehicle) {
+        let SpawnChoice::Vehicle { segment, lane, distance, .. } = &s.choice else { panic!() };
+        let si = net.segment_index(traffic::SegmentId(*segment)).unwrap();
+        let frame = net.lane_frame(si, *lane as f32, *distance);
+        assert!((s.heading - frame.yaw()).abs() < 1e-5, "heading = the lane direction");
+        let along = net.segments[si].pieces[0].centre.derivative(0.0);
+        let east = along[0] > 0.0;
+        assert_eq!(east, *segment % 2 == 0, "eastbound segments carry eastbound cars");
+    }
+}
+
+#[test]
+fn no_roads_or_no_catalog_means_no_cars() {
+    let map = map();
+    let obs = [still(0.0, 0.0)];
+    for (roads_on, cat_on) in [(false, true), (true, false)] {
+        let mut inputs = offline(&obs, &map);
+        if !roads_on {
+            inputs.roads = None;
+        }
+        if !cat_on {
+            inputs.vehicles = None;
+        }
+        let mut world = LivingWorld::new(config(), 4);
+        for _ in 0..400 {
+            world.step(&inputs);
+        }
+        assert_eq!(world.count(Kind::Vehicle), 0);
+        assert!(world.count(Kind::Pedestrian) > 0);
+    }
+}
+
+#[test]
+fn a_car_update_moves_its_lane_gap() {
+    let map = map();
+    let obs = [still(0.0, 0.0)];
+    let inputs = offline(&obs, &map);
+    let mut world = LivingWorld::new(config(), 31);
+    world.step(&inputs);
+    world.step(&inputs); // tick 1: the vehicle initial populate
+    let first = world.live(Kind::Vehicle).next().unwrap().clone();
+    let lane = first.lane.unwrap();
+    world.update_lane(first.id, lane.segment, lane.lane, lane.distance + 40.0, 12.0);
+    let now = world.live(Kind::Vehicle).find(|l| l.id == first.id).unwrap().lane.unwrap();
+    assert_eq!((now.distance, now.speed), (lane.distance + 40.0, 12.0));
 }

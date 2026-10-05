@@ -14,7 +14,9 @@ use crate::aipath::AiPath;
 use serde_json::Value;
 use skate_core::living_world::census::CensusCategory;
 use skate_core::living_world::replay::{ReplayBranch, ReplayBranchGroup, ReplayJump, ReplayLine, ReplayNode};
-use skate_core::living_world::{CensusCircle, CensusGrid, CensusMap, CensusRange, CensusRecord, PopulationConfig, SkaterCharacter, SkaterLine};
+use skate_core::living_world::{
+    CensusCircle, CensusGrid, CensusMap, CensusRange, CensusRecord, PopulationConfig, SkaterCharacter, SkaterLine, VehicleCatalog, VehicleEntity,
+};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -245,6 +247,38 @@ pub fn replay_line(p: &AiPath) -> ReplayLine {
             })
             .collect(),
     }
+}
+
+/// `vehicles.json` (milestone V0) -> the census [`VehicleCatalog`] (milestone V2): the entities of
+/// every vehicle census category (`census.<record>.categories[].entities`, first listing wins)
+/// and per entity its model, palette sizes (`palette_ids`) and size (`size_hint` x / z).
+pub fn vehicle_catalog(json: &[u8]) -> Result<VehicleCatalog, LivingWorldError> {
+    let doc: Value = serde_json::from_slice(json).map_err(|e| LivingWorldError::Tables(format!("vehicles.json: {e}")))?;
+    let mut cat = VehicleCatalog::default();
+    for record in doc["census"].as_object().into_iter().flat_map(|m| m.values()) {
+        for c in record["categories"].as_array().into_iter().flatten() {
+            let Some(name) = c["category"].as_str() else { continue };
+            let list: Vec<String> = c["entities"].as_array().into_iter().flatten().filter_map(|e| e.as_str().map(str::to_string)).collect();
+            cat.categories.entry(name.to_string()).or_insert(list);
+        }
+    }
+    let models = &doc["models"];
+    for list in cat.categories.values() {
+        for e in list {
+            let Some(model) = doc["entities"][e]["model"].as_str() else { continue };
+            let m = &models[model];
+            if m.is_null() {
+                continue;
+            }
+            let count = |k: &str| m["palette_ids"][k].as_array().map_or(0, |a| a.len() as u32);
+            let size = |k: &str| m["size_hint"][k].as_f64().unwrap_or(0.0) as f32;
+            cat.entities.insert(
+                e.clone(),
+                VehicleEntity { model: model.to_string(), chassis_colours: count("chassis"), secondary_colours: count("secondary"), length: size("z"), width: size("x") },
+            );
+        }
+    }
+    Ok(cat)
 }
 
 #[cfg(test)]

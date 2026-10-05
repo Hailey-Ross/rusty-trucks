@@ -109,7 +109,11 @@ Change:
   `PopulationConfig` (code constants as defaults, `config::retail` with labels and addresses; census ranges and
   caps only from data), `census` (circle lerp, grid lookup, ring point, cap, category roll, cull), `skaters`
   (`SkaterWorld` trait, line and character scorers, pool, slots), `population` (rosters, `Scorer` trait,
-  `pick_lowest` / `pick_highest`, the census pass), `clock` (console ticks at 30 Hz from any engine step), `rng`
+  `pick_lowest` / `pick_highest`, the census pass), `clock` (retail's fixed 60 Hz world step from any engine step; first written as 30 Hz, corrected in
+  milestone V2: the census and the ambient skater manager run on the 60 Hz world step, `sub_8285C928` ->
+  `sub_82859E70` bit 0 -> `sub_8245A7E8` / `sub_826BDB50`, fixed 1/60 s at `0x820849C8` [code]; the lights in the
+  same update took 480 ticks for 8 s [trace]; the 60-tick skater cycle is 1 s, each census type passes 15 times
+  per second, the replay tier advances one 60 Hz recording frame per tick), `rng`
   (seeded PCG32, derived sub-seeds; no global state).
 - `skate-data::living_world`: `parse_census_grid`, `LivingWorldTables` (census records resolved through the
   category groups, ranges, `apply_to` the config), `skater_characters` (free-roam pool; unrecruited teammates
@@ -372,6 +376,24 @@ data-gated tests (shipped counts and 24 signalled junctions, connector endpoints
 cursors over the whole network, 4 controllers with the shipped timings, recorded timelines from the traces).
 
 **Open questions.** See the list below.
+
+## Change: milestone V2, the vehicle census
+Ported from the code: the census vehicle pass `sub_826B7760` / `sub_826B9B90` (ring 80-100 m, cull 110 m, 2 attempts /
+1 spawn per pass, initial 6000 / 600 in 8-80 m, cap per district x Free Play traffic, none online / in zombie mode /
+with the census enable bit clear), the entity roll (`sub_826B8B88`), the **vehicle limit of 15** (census `+148`,
+`sub_826B83C8`: DownTown's cap of 30 never fills; the recomp never showed more than 15 cars), and the factory's road
+placement (`sub_82C36300`): the car goes on the road surface under the ring point (point in a piece's road
+triangles, `sub_826B3B18`), at that piece's start, at least 15 m from both segment ends, on a lane where the next car
+ahead starts 15 m further and the car behind ends 7.5 m (plus 1 s of its speed) earlier (`sub_82E14928`), one fitting
+lane picked at random, then a 20 m overlap check. Cars drive their segment's direction; no heading is drawn.
+Spawn records (`SpawnChoice::Vehicle`) carry the census record, category, entity, model, palette indices
+(`vehicles.json` `palette_ids`), the retail segment id, lane and distance: everything a client needs. Rules are data
+(`PlacementRules`, `CensusKindConfig` limits) a mod can override; `LivingWorld::update_lane` is the V3 hook.
+Files: `skate-core/src/living_world/{traffic/spawn.rs, census.rs, config.rs, population.rs, mod.rs}`,
+`skate-data/src/living_world.rs` (`vehicle_catalog`), `skate-data/tests/vehicle_census_data.rs`,
+`skate-game/src/living_world/mod.rs`. Open: palette pick (not in the code read; seeded per id), spawn speed (0),
+the overlap extents formula (radius = half the larger side), the pool size behind the limit, the meaning of
+`FFE5E258BD468196` (census `+144`).
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).

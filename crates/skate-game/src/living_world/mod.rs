@@ -139,6 +139,8 @@ pub(crate) enum WireRecord {
 pub(crate) enum WireChoice {
     Census { record: String, category: String },
     Skater { line: String, character: String, slot: u8 },
+    /// Census car (milestone V2): stable names plus the lane (retail segment id, lane, distance).
+    Vehicle { record: String, category: String, entity: String, model: String, chassis: u32, secondary: u32, segment: u64, lane: u8, distance: f32 },
 }
 
 fn reason_name(r: DespawnReason) -> &'static str {
@@ -164,6 +166,17 @@ impl WireRecord {
                 initial: s.initial,
                 choice: match &s.choice {
                     SpawnChoice::Census { record, category } => WireChoice::Census { record: record.clone(), category: category.clone() },
+                    SpawnChoice::Vehicle { record, category, entity, model, chassis, secondary, segment, lane, distance } => WireChoice::Vehicle {
+                        record: record.clone(),
+                        category: category.clone(),
+                        entity: entity.clone(),
+                        model: model.clone(),
+                        chassis: *chassis,
+                        secondary: *secondary,
+                        segment: *segment,
+                        lane: *lane,
+                        distance: *distance,
+                    },
                     SpawnChoice::Skater { line, character, slot } => {
                         WireChoice::Skater { line: line.iter().map(|b| format!("{b:02x}")).collect(), character: character.clone(), slot: *slot }
                     }
@@ -184,6 +197,17 @@ impl WireRecord {
                 initial: *initial,
                 choice: match choice {
                     WireChoice::Census { record, category } => SpawnChoice::Census { record: record.clone(), category: category.clone() },
+                    WireChoice::Vehicle { record, category, entity, model, chassis, secondary, segment, lane, distance } => SpawnChoice::Vehicle {
+                        record: record.clone(),
+                        category: category.clone(),
+                        entity: entity.clone(),
+                        model: model.clone(),
+                        chassis: *chassis,
+                        secondary: *secondary,
+                        segment: *segment,
+                        lane: *lane,
+                        distance: *distance,
+                    },
                     WireChoice::Skater { line, character, slot } => {
                         let mut id = [0u8; 16];
                         for (i, b) in id.iter_mut().enumerate() {
@@ -214,6 +238,10 @@ pub(crate) struct PopulationState {
     pub world: LivingWorld,
     pub census: Option<CensusMap>,
     pub skaters: Option<SkaterData>,
+    /// Road network and vehicle entities of the loaded world (milestone V2: cars are placed on
+    /// lanes; none = no cars).
+    pub roads: Option<skate_core::living_world::traffic::RoadNetwork>,
+    pub vehicles: Option<skate_core::living_world::VehicleCatalog>,
     /// Replay-tier lines and voices of the loaded district (milestone 3).
     pub npc: npc_skaters::NpcData,
     /// The ranges from `tables.json` (re-applied after settings changes).
@@ -232,6 +260,8 @@ impl Default for PopulationState {
             world: LivingWorld::new(PopulationConfig::retail(), 0),
             census: None,
             skaters: None,
+            roads: None,
+            vehicles: None,
             npc: npc_skaters::NpcData::default(),
             data_config: PopulationConfig::retail(),
             loaded_for: None,
@@ -251,6 +281,8 @@ impl PopulationState {
         self.world = LivingWorld::new(self.data_config.clone(), seed);
         self.census = data.census;
         self.skaters = data.skaters;
+        self.roads = data.roads;
+        self.vehicles = data.vehicles;
         self.npc = data.npc;
         self.status = data.status;
         self.loaded_for = Some((map.to_string(), generation));
@@ -275,6 +307,8 @@ pub(crate) struct LoadedData {
     pub config: PopulationConfig,
     pub census: Option<CensusMap>,
     pub skaters: Option<SkaterData>,
+    pub roads: Option<skate_core::living_world::traffic::RoadNetwork>,
+    pub vehicles: Option<skate_core::living_world::VehicleCatalog>,
     pub npc: npc_skaters::NpcData,
     pub status: String,
 }
@@ -322,7 +356,19 @@ pub(crate) fn load_data(asset_root: &Path, district: &str) -> LoadedData {
             skaters.as_ref().map_or(0, |s| s.lines.len())
         ),
     );
-    LoadedData { config, census, skaters, npc, status: status.join("; ") }
+    // Roads and vehicle entities (milestone V2). The graph holds every district; the census
+    // places cars only where the district's vehicle layer is painted.
+    let roads = std::fs::read(dir.join("roads.bin")).ok().and_then(|b| {
+        let built = skate_data::roads::RoadGraph::parse(&b)
+            .map_err(|e| e.to_string())
+            .and_then(|g| skate_core::living_world::traffic::RoadNetwork::build(&g.traffic_input()).map_err(|e| e.to_string()));
+        built.map_err(|e| status.push(format!("roads: {e}"))).ok()
+    });
+    let vehicles = std::fs::read(dir.join("vehicles.json")).ok().and_then(|b| skate_data::living_world::vehicle_catalog(&b).map_err(|e| status.push(e.to_string())).ok());
+    if let Some(first) = status.first_mut() {
+        first.push_str(&format!(", roads {}, vehicle entities {}", roads.as_ref().map_or(0, |r| r.segments.len()), vehicles.as_ref().map_or(0, |v| v.entities.len())));
+    }
+    LoadedData { config, census, skaters, roads, vehicles, npc, status: status.join("; ") }
 }
 
 /// `characters_marquee` voice ids by character key (`skater_profiles.json` `characters.*.voice`).
@@ -406,6 +452,8 @@ pub(crate) fn step_population(
         observers: &observers.observers,
         census: state.census.as_ref(),
         skater_world: state.skaters.as_ref().map(|s| s as &dyn skate_core::living_world::SkaterWorld),
+        roads: state.roads.as_ref(),
+        vehicles: state.vehicles.as_ref(),
         online: observers.online,
         zombie: settings.zombie,
         free_play: settings.free_play,
@@ -427,7 +475,8 @@ pub(crate) fn step_population(
             }
         }
     }
-    if settings.debug && state.world.tick() >= state.last_report + 150 {
+    // Every 5 s of the 60 Hz world tick.
+    if settings.debug && state.world.tick() >= state.last_report + 300 {
         state.last_report = state.world.tick();
         info!("{}", readout(state));
     }
