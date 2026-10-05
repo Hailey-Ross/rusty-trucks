@@ -1169,18 +1169,54 @@ ended up parking on the side of the road and when I ran into the car alarm went 
 
 **Verification.** See "Proofs and tests (car alarm)" below.
 
-**Research hook (not run yet).** `VEHHIT` (every callback: flags before / after, the vector and its length, the
-contact point, the other object, the timers, the message bytes), `VEHALARMSTOP` (the alarm's end with its timer)
-and `VEHPARK` (StayingParked begin / end), category `traffic`, in the recomp fork's `src/research/hooks_traffic.cpp`
-(uncommitted; syntax-checked, not built). One short session answers the open questions: find a car that pulls
-over (taxis do), then (1) roll into it slowly on the board, (2) walk into it on foot, (3) bump it once and stay
-away for 10 s, (4) hit it fast on the board.
+**Research hook (run 2026-10-04 18:03).** `VEHHIT` (every callback: flags before / after, the vector and its
+length, the contact point, the other object, the timers, the message bytes), `VEHALARMSTOP` (the alarm's end with
+its timer) and `VEHPARK` (StayingParked begin / end), category `traffic`, in the recomp fork's
+`src/research/hooks_traffic.cpp`. Session `all_20261004_180303` (0 malformed; that build logged the timers before
+the call and gated lines at 100 ms per car unless the flags changed): a taxi (`47CB6660`) parked at 623.7 s and
+stood still at (103.81, 34.03, 200.33) to the end of the session; the user walked into it, hit it fast on the board
+(three times, with bails), rolled up to it slowly and stayed around it. Player state from `SKATEB` (the player's
+board `469434F0`: contacts, deck velocity, 4 Hz) and the screenshots; `msg+64` names the player's part
+(`469434F0` = the board, `4693BEB0` = the skater's body, the same `msg+76` = `40451020` for both).
+
+| Time (s) | Action (shot) | Part (`msg+64`) | Other's speed | Car | \|v48\| | Flags |
+|---|---|---|---|---|---|---|
+| 630.094 | on foot, walks into the rear with the board in hand (629.4) | board | 2.1-2.3 m/s (walking) | 0 | 2.652 | 80 → 90 (alarm) |
+| 630.312 | the same walk, the body follows | body | walking | 0 | 3.603 | 90 |
+| 644.508 | rides into the rear at 7.9 m/s, bails onto the boot (645.9) | body | 7.93 m/s (84 ms before) | 0 | 5.788 | 80 → 90 (alarm) |
+| 645.5-648.7 | lies on the boot (resting contact) | body | ~0 | 0 | 0.003-0.07 | 90, timer runs on |
+| 650.3-652.4 | rolls up at 1.1-1.6 m/s, stops short (652.1), steps off | - | - | - | no call | - |
+| 652.567 | the board swings into the bumper as it is picked up | board | ~4.6 m/s | 0 | 6.466 | 90, restart |
+| 666.736 | rides in at 8.5-9.4 m/s | body | 9.39 m/s (134 ms before) | 0 | 9.068 | 80 → 90 (alarm) |
+| 677.795 | a pedestrian (`47BAC700`, `PEDXYZ`) walks along the side | ped | 0.3-0.5 m/s | 0 | 0.225-0.99 | 80 → 90 (alarm) |
+| 721.732 | rides in at 8.7 m/s, bails beside the car (722.9) | body | 8.70 m/s | 0 | 6.698 | 80 → 90 (alarm) |
+| 722.06-723.37 | the riderless board rolls along the car, deck touching | board | 0.074-0.083 | 0 | 0.073-0.084 | 90, timer runs on (0.07 → 0.90 s) |
+| 723.53-725.34 | the same board speeds up | board | 0.18-0.41 | 0 | 0.150-0.401 | 90, restart each call |
+
+Same-moment pairs of the riderless board's deck speed (`SKATEB`) and \|v48\|: 0.0736 / 0.0737 (723.368),
+0.3313 / 0.3335 (725.120), 0.0783 / 0.0782, 0.2533 / 0.2590, 0.0700 / 0.0667, 0.2512 / 0.2635, 0.4099 / 0.4012.
+
+**Answers.**
+- `msg+48` is the relative velocity at the contact in m/s, the car's minus the other body's (a board rolling +x
+  gives -x, a pedestrian walking -x gives +x): its length equals the other's speed against the parked car to
+  0.01 m/s for a few-kg board, and a ~70 kg pedestrian at 0.3-0.5 m/s gives 0.2-0.5. An impulse would scale with
+  mass, and a body lying on the boot would carry its weight (tens of N·s per step); it gives 0.003-0.07. Not a
+  penetration depth either (it follows the speed while the contact stays the same). The port's reading (a speed,
+  `min_impact` 0.1) is right; nothing changes. The strict `> 0.1` shows too: 0.074-0.084 m/s against the car let
+  the alarm timer run on, 0.150 restarted it.
+- Every body reaches the callback: the board (carried, swung, riderless, during a bail), the skater's body and a
+  pedestrian; who hit the car is not tested (the pedestrian set the alarm off). A slow roll on the board did not
+  touch the car in this session (it stopped short and the user stepped off), so the 16:11 session's 0.2-0.3 m/s
+  roll without an alarm stays unexplained: either no contact (the board stopped at the bumper's lip) or the car
+  was not yet in StayingParked; the measured rule would have fired at that speed.
+- The alarm's end: all 6 `VEHALARMSTOP` lines come at 8.0333 s (241 console frames), as the port holds it. At
+  the end the state machine leaves StayingParked and re-enters it with the parked timer at 0 (`VEHPARK` 0 with the
+  flags `10`, then 1 with `80`), so every alarm restarts the parked time: the taxi stayed parked for the remaining
+  110 s while other cars pulled out after 20 / 30 s. The future traffic AI does this from `VehicleAlarmStarted`.
+- Three contacts with no other object (`msg+64` and `msg+76` 0) gave 2.2-5.9 during the walk and two hits; not
+  identified (probably a part with no owner); they changed nothing because the alarm was already sounding.
 
 **Open questions.**
-- What `msg+48` is (a contact velocity or an impulse) and whether a board's contact reaches the callback at all
-  (the slow roll against the bumper did not set the alarm off). The port reads it as a speed; at 0.1 any real
-  contact counts either way.
-- The alarm's end in the recomp: the session never let it end (`VEHALARMSTOP` will show the timer at the end).
 - Per-spec values: none shipped; the export keeps a `specs` map in case, the engine uses one rule for all cars.
 
 ### Proofs and tests (car alarm)
