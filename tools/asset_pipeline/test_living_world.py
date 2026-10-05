@@ -222,6 +222,8 @@ class Models(unittest.TestCase):
             def parse_rx2(path):
                 return {'bones': bones, 'meshes': [mesh]}
         recipe = lw.parse_recipe(recipe_bytes())
+        material = next(l['material'] for p in recipe['parts'] for l in p['lods'] if l['material'])
+        recipe['shaders'] = {material: 'pedestrian_high_stamp'}
         with tempfile.TemporaryDirectory() as temp:
             png = Path(temp)/'t.png'
             Image.new('RGBA', (4, 4), (10, 20, 30, 255)).save(png)
@@ -237,6 +239,14 @@ class Models(unittest.TestCase):
         self.assertEqual(names['Spine']['matrix'][13], 1.0)  # local = world relative to Hips
         self.assertEqual(len(doc['materials']), 1)  # both LODs share the material
         self.assertIn('normalTexture', doc['materials'][0])
+        self.assertEqual(doc['materials'][0].get('extras'), {'shader': 'pedestrian_high_stamp'})
+
+    def test_recipe_xml_material_types(self):
+        xml = (b'<compositeasset n="x"><mat id="0x0000313703E38817" type="pedestrian_high_stamp">'
+               b'<sp id="0x1" chn="diffuse" /></mat> <mat id="0x311f03e38817" type="marquee_hair"></mat>'
+               b'</compositeasset>')
+        self.assertEqual(lw.recipe_shaders(xml), {'0000313703e38817': 'pedestrian_high_stamp',
+                                                  '0000311f03e38817': 'marquee_hair'})
 
 
 class Group(unittest.TestCase):

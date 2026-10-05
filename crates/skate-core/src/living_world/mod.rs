@@ -20,14 +20,19 @@
 pub mod census;
 pub mod clock;
 pub mod config;
+pub mod draw_distance;
+pub mod leave_fade;
+pub mod peds;
 pub mod population;
+pub mod replay;
 pub mod rng;
 pub mod skaters;
 
-pub use census::{CensusCircle, CensusGrid, CensusMap, CensusRange, CensusRecord};
+pub use census::{CensusCircle, CensusGrid, CensusMap, CensusRange, CensusRecord, VehicleCatalog, VehicleEntity};
 pub use clock::ConsoleClock;
 pub use config::{CensusKindConfig, FreePlay, PopulationConfig, SkaterConfig};
-pub use population::{LivingWorld, TickInputs};
+pub use draw_distance::DrawDistance;
+pub use population::{LaneState, LivingWorld, TickInputs};
 pub use rng::Rng;
 pub use skaters::{SkaterCharacter, SkaterLine, SkaterWorld};
 
@@ -98,6 +103,21 @@ pub enum SpawnChoice {
     /// point and the `livingworld_entitycategories` category the weight roll picked. The
     /// concrete entity / model inside the category is picked from `seed` by the body milestone.
     Census { record: String, category: String },
+    /// Census vehicles (milestone V2): the census record and category, the entity the category
+    /// roll picked and its `livingworld_models` record, the palette indices (`vehicles.json`
+    /// `palette_ids`: `<model>/chassis/<i>`, `<model>/secondary/<i>`), and the lane the factory
+    /// placed it on: retail segment id, lane, distance along the segment (m). Speed at spawn 0.
+    Vehicle {
+        record: String,
+        category: String,
+        entity: String,
+        model: String,
+        chassis: u32,
+        secondary: u32,
+        segment: u64,
+        lane: u8,
+        distance: f32,
+    },
     /// NPC skaters: the recorded line (retail 16-byte id) and the `characters_marquee` key.
     Skater { line: [u8; 16], character: String, slot: u8 },
 }
@@ -152,3 +172,5 @@ pub(crate) fn dist2(a: Vec3, b: Vec3) -> f32 {
 
 #[cfg(test)]
 mod tests;
+
+pub mod traffic;

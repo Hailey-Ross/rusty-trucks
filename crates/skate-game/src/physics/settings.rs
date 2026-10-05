@@ -42,6 +42,8 @@ pub(crate) struct PhysicsSettings {
     pub standard_wheel_material: RetailContactMaterial,
     pub floor_material: RetailContactMaterial,
     pub input_magnitude_threshold: f32,
+    /// Object-move (Move Object mode) stick curves, inputlistener 8259C4B0.
+    pub object_move: skate_core::input::offboard_intentions::ObjectMoveCurves,
 }
 
 impl PhysicsSettings {
@@ -154,6 +156,7 @@ impl PhysicsSettings {
                 restitution: 1.0,
             },
             input_magnitude_threshold: f("inputlistener", "StickMagnitudeMinToCountHeld")?,
+            object_move: super::offboard::settings::load_object_move_curves(data)?,
         })
     }
 }

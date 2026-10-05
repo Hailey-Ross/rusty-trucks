@@ -23,3 +23,6 @@ pub mod ocean_pca;
 pub mod trigger_volumes;
 pub mod aipath;
 pub mod living_world;
+pub mod ped_anim;
+pub mod ped_nav;
+pub mod roads;

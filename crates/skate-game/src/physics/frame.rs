@@ -53,7 +53,7 @@ pub(super) fn advance(
     //results stay pending while PlayerInput consumes the preceding records.
     physics
         .riding
-        .start_wheel_queries(&physics.board, &physics.world)?;
+        .start_wheel_queries(&physics.board, &physics.world, physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world))?;
     let skeleton_queries = super::foot_ik_queries::query(&physics.world, &skater.skeleton)?;
     let animation = bevy::log::info_span!("fixed_animation_graphs").in_scope(|| animation_phase::advance(
         physics,
@@ -244,7 +244,18 @@ pub(super) fn advance(
     //Teleport resets previous observations, but preserves this pending batch.
     skeleton_queries.publish(&mut skater.player_input.player);
     super::water::apply_board_drag(physics);
-    bevy::log::info_span!("fixed_collision_and_solve").in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets))?;
+    // Prop grab/place (Phases 3-4): grab held on the retail GrabWorld button
+    // (RB), placement on a B rising edge, from the derived controller; right
+    // stick and DPad levels from the sampled gameplay actions. A is sprint
+    // and must not grab; see prop_carry.
+    let carry_tick = super::prop_carry::Tick::from_controller(
+        controls.controller.words(),
+        physics.prop_carry.buttons(),
+        actions.value(67),
+        actions.value(68),
+        actions.value(74) - actions.value(75),
+    );
+    bevy::log::info_span!("fixed_collision_and_solve").in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets, carry_tick))?;
     super::offboard_audit_trace::stage(tick, "solve", physics, skater, controls);
     #[cfg(debug_assertions)]
     super::dev_trace::checkpoint("solve", physics, skater);

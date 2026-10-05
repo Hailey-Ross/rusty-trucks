@@ -130,6 +130,7 @@ impl Owner {
     }
 }
 
+
 pub(crate) fn enter(_physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
     let p = &skater.player_input.processed;
     //82D30848 calls GetEffectiveRoot82BE3650 BEFORE Ground placement.
@@ -225,12 +226,37 @@ pub(crate) fn update(
         );
     }
     let frame = skater.biped_ground.ground.frame_80;
+    // Move Object (502): the stock graph swaps OBGround's locomotion
+    // AttachIntents for MovingObjectNew's OB_ObjectMv set. Retail's producer
+    // 8259C4B0 gives the left stick no share of OB_ObjectMvRot (shipped curve
+    // all zero): the left stick moves skater and object as one pair in the
+    // skater's frame and only the right stick turns them. The walking
+    // controller turns toward its stick, so feeding it the carried stick
+    // rebuilt from the current facing made every non-forward stick chase
+    // itself round (the spin in the 2026-10-05 video). The pair's velocity
+    // and turn come from prop_carry::object_move_motion instead; the walking
+    // stick stays idle.
+    let moving_object = (p.state_2508 == 502 && physics.prop_carry.held().is_some()).then(|| {
+        super::prop_carry::object_move_motion(
+            frame[0],
+            frame[2],
+            extra.object_move_x,
+            extra.object_move_z,
+            extra.object_move_rotation,
+            physics.prop_carry.locomotion(),
+        )
+    });
+    let (stick_x, stick_z) = if moving_object.is_some() {
+        (0.0, 0.0)
+    } else {
+        (extra.biped_world_x, extra.biped_world_z)
+    };
     let input = skate_core::player::offboard::ground_input::GroundInput {
         processed_flags_2472: p.flags_2472,
         processed_direct_2684: extra.offboard_magnitude,
         processed_direct_2680: extra.offboard_turn,
-        processed_stick_2692: extra.biped_world_x,
-        processed_stick_2688: extra.biped_world_z,
+        processed_stick_2692: stick_x,
+        processed_stick_2688: stick_z,
         processed_scale_2912: fields.magnitude_scale,
         processed_scale_2908: fields.turn_scale,
         frame_forward_112: [frame[2][0], frame[2][1], frame[2][2]],
@@ -242,7 +268,7 @@ pub(crate) fn update(
     );
     let third_line = p.line_tests_960_1008_1056[2];
     let owner = &mut skater.biped_ground;
-    let job = ground_job::prepare(
+    let mut job = ground_job::prepare(
         &mut owner.contact,
         &mut owner.ground.distance_164,
         ground_job::Input {
@@ -270,6 +296,36 @@ pub(crate) fn update(
         |input| Ok::<_, String>(owner.geometry.consume(input)),
     )?;
     owner.geometry_adjustment = Some(job.geometry);
+    if let Some((velocity, yaw_rate)) = moving_object {
+        // Turn the pair by the right stick only, before the step integrates.
+        let angle = yaw_rate * physics.settings.step.simulation.time_step;
+        if angle != 0.0 {
+            let motion = &mut owner.controller.state.motion;
+            motion.frame_0[0] = super::prop_carry::yaw_row(motion.frame_0[0], angle);
+            motion.frame_0[2] = super::prop_carry::yaw_row(motion.frame_0[2], angle);
+        }
+        // Drive the planar velocity through the controller's velocity
+        // override (gate >= 0, zero blend time: the target is taken as is),
+        // so contacts and obstacle rejection still apply. No stick: no turn.
+        if velocity[0] != 0.0 || velocity[2] != 0.0 {
+            job.job.requested_phase = 0.0;
+            job.job.override_duration = 0.0;
+            job.job.animation_velocity = velocity;
+            // NOT RETAIL YET (fix20, docs 26): the walking controller's
+            // approach (82D7F458..FDD0) steps toward the contact target
+            // projected onto the FACING line, budget |velocity| * dt, so a
+            // pull or side-step came out as a forward step at the same
+            // speed (the "always one direction" bug). Retail 502 is its own
+            // class (ctor 82D43B90, Player+1776) and the walking job
+            // 82D4E2F8 -> 82D7C818 is only submitted from BipedGround's
+            // update 82D30D30, so retail Move Object does not take that
+            // facing-line approach; its own movement is not decoded. Until
+            // it is, drop the target-contact bit (2) for this job only: the
+            // approach then steps by the velocity (support contact bit 1
+            // still keeps the feet on the ground; no 0.3 m step-up).
+            job.job.flags &= !2;
+        }
+    }
     let previous_position=owner.controller.state.position_368;
     let mut result=owner.run(job.job);
     super::solid_contacts::constrain_ground(owner,&mut result,previous_position,&physics.network_proxies.solids);

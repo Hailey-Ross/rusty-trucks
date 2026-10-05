@@ -371,3 +371,38 @@ fn shallow_water_is_solid_and_deep_water_is_not() {
     let mut deep = BoardWorld::new(vec![water_face(0.), floor(-2.)]);
     assert!(deep.query_primitives(&[sphere(0.15)], query, retention).is_empty());
 }
+
+/// fix15: a hidden board has every volume disabled. An empty query must give
+/// the same empty result and buffer state as before, without walking the
+/// whole world (candidate_ranges(None) is "every triangle").
+#[test]
+fn empty_volume_query_is_empty_and_resets_the_previous_result() {
+    let query = WorldContactSettings {
+        volume_padding: 0.05,
+        maximum_separating_distance: 0.1,
+        edge_cos_bend_normal_threshold: -1.,
+        convexity_epsilon: 0.,
+        is_object: false,
+    };
+    let retention = ContactRetentionSettings {
+        capacity: 100,
+        duplicate_distance_squared: 0.000001,
+        deferred_reduction: false,
+    };
+    let sphere = BoardWorldVolume {
+        body: CollisionBody::Board(BodyId::Deck),
+        primitive: ContactPrimitive::Sphere(Sphere {
+            center: Vector3::new(-1., 0.15, -1.),
+            radius: 0.2,
+        }),
+        linear_velocity: Vector3::new(0., -1., 0.),
+        material: material(),
+    };
+    let mut world = BoardWorld::new(vec![face(0., 17, 0.)]);
+    assert!(!world.query_primitives(&[sphere], query, retention).is_empty());
+    assert!(world.query_primitives(&[], query, retention).is_empty());
+    assert!(world.contacts().is_empty());
+    assert_eq!(world.dropped_contacts(), 0);
+    // A later real query is unaffected.
+    assert!(!world.query_primitives(&[sphere], query, retention).is_empty());
+}

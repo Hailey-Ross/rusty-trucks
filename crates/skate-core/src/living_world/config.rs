@@ -5,6 +5,7 @@
 //! restoring `PopulationConfig::retail()` (plus the data) undoes a mod.
 
 use super::census::CensusRange;
+use super::traffic::PlacementRules;
 
 /// Retail constants, one place. Tags: [code] read from the TU3 code / image at the address.
 pub mod retail {
@@ -20,10 +21,21 @@ pub mod retail {
     /// km/h per m/s for the range lerp key (`0x822F8628` = 3.6) [code].
     pub const KMH_PER_MS: f32 = 3.6;
     /// Census type rotation: the census tick runs one type per tick, peds 0, vehicles 1,
-    /// DMOs 2, props 3 (`sub_826B71F0`, census `+164`) [code].
+    /// DMOs 2, props 3 (`sub_826B71F0`, census `+164`, `(+164 + 1) % 4` at `0x826B7420`) [code].
+    /// At the 60 Hz world tick each type gets a cull + spawn pass 15 times per second. The
+    /// initial populate runs every type in the same tick (`0x826B7444` path) [code].
     pub const CENSUS_ROTATION: u32 = 4;
     pub const ROTATION_PEDS: u32 = 0;
     pub const ROTATION_VEHICLES: u32 = 1;
+    /// Vehicle limit: the census vehicle spawn (`sub_826B83C8`, census vtable `0x8230C638` slot
+    /// +8) refuses while the live vehicle count is not below census `+148` = 15 (constructor
+    /// `sub_826B6D58`); the initial populate compares with a literal 15 [code]. The recomp never
+    /// showed more than 15 cars at once in DownTown (cap 30) [trace proof1 / proof2, VEHSTATE].
+    pub const VEHICLE_LIMIT: u32 = 15;
+    pub const VEHICLE_INITIAL_LIMIT: u32 = 15;
+    /// Entity inside the picked category: `trunc(u32 x 2^-32 x 100) mod n` from the world RNG
+    /// (`sub_826B8B88` via `sub_826BB058`, `0x822F88F4` = 2^-32, `0x820ED57C` = 100) [code].
+    pub const ENTITY_ROLL: u32 = 100;
     /// Pedestrian memory stores sized for 31 (`sub_82E22DD8` → `sub_82970810`, count 31) [code].
     pub const PED_POOL: u32 = 31;
     /// Category roll: `rand() % 100 + 1` against the cumulative weight x 100 (`sub_826B8B88`,
@@ -33,7 +45,9 @@ pub mod retail {
     pub const DENSITY_EPSILON: f32 = 1.192_092_9e-7;
 
     /// Ambient skaters (`sub_8245BA28` and callees) [code].
-    pub const SKATER_CYCLE: u32 = 60; // tick mod 60 (0x88888889 multiply)
+    // tick mod 60 (0x88888889 multiply on mgr+584, bumped once per world tick by sub_8245A7E8):
+    // at the 60 Hz world tick one cycle is 1 s.
+    pub const SKATER_CYCLE: u32 = 60;
     pub const SKATER_PHASE_CULL: u32 = 0; // sub_8245D520
     pub const SKATER_PHASE_POOL: u32 = 15; // sub_8245B400
     pub const SKATER_PHASE_SPAWN: u32 = 30; // sub_8245C548
@@ -96,9 +110,15 @@ pub struct CensusKindConfig {
     pub initial_attempts: u32,
     pub initial_spawns: u32,
     pub initial_ring: (f32, f32),
-    /// Entity pool (factory refuses beyond it). Peds 31 [code]; vehicles: not read yet (open),
-    /// `None` = no pool limit beyond the census cap.
+    /// Entity limit (the factory refuses beyond it). Peds 31 [code]; vehicles 15 (census `+148`,
+    /// `retail::VEHICLE_LIMIT`) [code]. `None` = no limit beyond the census cap.
     pub pool: Option<u32>,
+    /// The limit the initial populate checks (vehicles: a literal 15 in `sub_826B83C8`); `None` =
+    /// `pool`.
+    pub initial_pool: Option<u32>,
+    /// Vehicles: the factory places the car on a road lane (`sub_82C36300`); the census pass draws
+    /// no heading for them (`sub_826B9B90`) [code]. `None` = peds (heading drawn, point used).
+    pub placement: Option<PlacementRules>,
     /// Spawns while the zombie cheat is on. Peds: yes and without the cap (`sub_826B8B88`);
     /// vehicles: no (`sub_826B7760`) [code].
     pub spawn_in_zombie: bool,
@@ -118,6 +138,8 @@ impl CensusKindConfig {
             initial_spawns: retail::INITIAL_SPAWNS,
             initial_ring: retail::INITIAL_RING,
             pool: Some(retail::PED_POOL),
+            initial_pool: None,
+            placement: None,
             spawn_in_zombie: true,
         }
     }
@@ -125,7 +147,9 @@ impl CensusKindConfig {
         Self {
             layer: "livingworld_vehicle_census".into(),
             rotation_slot: retail::ROTATION_VEHICLES,
-            pool: None,
+            pool: Some(retail::VEHICLE_LIMIT),
+            initial_pool: Some(retail::VEHICLE_INITIAL_LIMIT),
+            placement: Some(PlacementRules::default()),
             spawn_in_zombie: false,
             ..Self::retail_pedestrians()
         }
@@ -158,6 +182,13 @@ pub struct SkaterConfig {
     pub score_rand: u32,
     /// Community skaters may be offered (retail: only offline, `sub_8245B7A0`).
     pub allow_community_offline: bool,
+    /// How a skater appears and leaves: 1 s fade in after the spawn (`sub_825926F8`); 1 s fade out,
+    /// removed below opacity 0.2 (`sub_8246EA90`, `sub_8245A9B8`), only at a dead end of the
+    /// replay tier (fix 9: retail chains lines, see `line_chain`).
+    pub leave_fade: super::leave_fade::LeaveFadeConfig,
+    /// What a skater does at the end of its line: continue on a line starting within 4 m
+    /// (`sub_8246C7F8`, [data] `ai_skater` tunable), so it leaves only by the 120 m cull.
+    pub line_chain: super::replay::ChainConfig,
 }
 
 impl SkaterConfig {
@@ -182,6 +213,8 @@ impl SkaterConfig {
             near_radius2: SKATER_NEAR_RADIUS2,
             score_rand: SKATER_SCORE_RAND,
             allow_community_offline: true,
+            leave_fade: super::leave_fade::LeaveFadeConfig::retail(),
+            line_chain: super::replay::ChainConfig::retail(),
         }
     }
 
@@ -196,6 +229,10 @@ pub struct PopulationConfig {
     pub skaters: SkaterConfig,
     pub pedestrians: CensusKindConfig,
     pub vehicles: CensusKindConfig,
+    /// NPC draw distance (QoL, not retail; `draw_distance` module): every population distance x
+    /// this, caps x its square. 1.0 = retail (the config above runs unchanged). Owned by the
+    /// population authority; settings and mods set it through the engine's settings resource.
+    pub draw_distance: f32,
 }
 
 impl PopulationConfig {
@@ -205,6 +242,7 @@ impl PopulationConfig {
             skaters: SkaterConfig::retail(),
             pedestrians: CensusKindConfig::retail_pedestrians(),
             vehicles: CensusKindConfig::retail_vehicles(),
+            draw_distance: super::draw_distance::DrawDistance::RETAIL,
         }
     }
 }

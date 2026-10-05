@@ -19,6 +19,7 @@ mod session;
 mod volumes;
 mod world_audio;
 mod triggers;
+pub(crate) mod world_tuning;
 mod capture;
 pub(crate) mod player_physics;
 
@@ -756,6 +757,7 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     audio::clear(world);
     world_audio::clear(world);
     crate::game_audio::clear_mods_runtime(world);
+    world_tuning::clear_all(world);
     graphics_dynamic::clear(world);
     canvas::clear_owner(world, &mut mods.canvases, None);
     detach_player(world, mods, true);
@@ -826,6 +828,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         audio::stop_owner(world, id, true);
         world_audio::clear_owner(world, id);
         crate::game_audio::clear_mod(world, id);
+        world_tuning::clear_owner(world, id);
         graphics_dynamic::clear_owner(world, id);
         volumes::clear_owner(world, mods, id);
         triggers::clear_owner(world, id);
@@ -902,6 +905,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             audio::stop_owner(world, &id, true);
             world_audio::clear_owner(world, &id);
             crate::game_audio::clear_mod(world, &id);
+            world_tuning::clear_owner(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
             triggers::clear_owner(world, &id);
@@ -931,6 +935,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             audio::stop_owner(world, &id, true);
             world_audio::clear_owner(world, &id);
             crate::game_audio::clear_mod(world, &id);
+            world_tuning::clear_owner(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
             triggers::clear_owner(world, &id);
@@ -1024,6 +1029,7 @@ fn apply_one(
             crate::game_audio::set_mixmap_input(world, id, &slot, object, instance, input, value)?
         }
         Command::AudioSeed { seed } => crate::game_audio::set_seed(world, id, seed)?,
+        Command::WorldSetTuning { domain, patch } => world_tuning::set(world, id, &domain, patch)?,
         Command::AudioRule { key, rule } => crate::game_audio::set_rule(world, id, &key, rule, |world, path| audio::load_native_clip(world, mods, id, path))?,
         Command::WorldAudioSpawn { key, object, options } => world_audio::spawn(world, mods, id, key, object, options)?,
         Command::WorldAudioUpdate { key, options } => world_audio::update(world, mods, id, &key, options)?,

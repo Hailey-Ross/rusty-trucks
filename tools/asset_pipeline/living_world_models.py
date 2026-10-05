@@ -136,6 +136,9 @@ def write_glb(recipe: dict, arena_path, texture_path, output: Path, rx2) -> dict
                             'alphaMode': 'MASK' if 'alpha' in textures else 'OPAQUE'}
                 if 'alpha' in textures:
                     material['alphaCutoff'] = 0.5
+                shader = recipe.get('shaders', {}).get(lod['material'] or '')
+                if shader:  # the retail material type: the game recolours pedestrian_* mask texels
+                    material['extras'] = {'shader': shader}
                 if 'normal' in textures:
                     material['normalTexture'] = glb.texture(_normal_png(texture_path(textures['normal'])))
                 glb.doc['materials'].append(material)

@@ -370,6 +370,16 @@ function sdk.audio.frontend(name) submit{kind="audio_frontend",name=name} end
 -- The teleport effect (screen static + the skater's teleport crackle) at amount 0..1; send it every frame to hold it.
 function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",amount=amount} end
 
+-- World tuning (capability world_tuning): patch the living world ("living_world": npc_draw_distance,
+-- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, ped_obstacles, npc_skater_props), dynamic props ("props": default / by_template prop tuning, collision_box)
+-- or prop carrying ("carry": grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed,
+-- turn_rate, grip_reach) while this mod runs; nil restores
+-- this mod's patch of the domain, everything is restored when the mod stops. First writer wins.
+sdk.world = { version = 1 }
+function sdk.world.set_tuning(domain, patch) submit{kind="world_set_tuning",domain=domain,patch=patch} end
+-- Read a domain as the game uses it now: the value arrives as sdk.commands.result(key).value.
+function sdk.world.tuning(key, domain) sdk.engine.inspect(key, "world_tuning:" .. domain) end
+
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and
 -- skaters to the game's retail world audio (the same path engine systems use). Keys are scoped
 -- to the calling mod; 48 objects per mod, 128 in all; an object not updated for 0.5 s is parked;

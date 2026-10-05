@@ -1,0 +1,294 @@
+//! Synthetic-graph tests of the V3 lane follower. Data-gated runs on the user's export live in
+//! `skate-data/tests/traffic_follow_data.rs`.
+
+use super::*;
+use crate::living_world::traffic::graph::{ConnectorInput, Curve, EndInput, JunctionId, JunctionInput, PieceInput, RoadInput, SegmentId, SegmentInput};
+use crate::living_world::traffic::signals::{Light, SignalTimings};
+use crate::living_world::Vec3;
+
+const NODE: u64 = 0xA;
+const DT: f32 = 1.0 / 60.0;
+
+fn dir(end: u8) -> Vec3 {
+    match end & 3 {
+        0 => [0.0, 0.0, 1.0],
+        1 => [-1.0, 0.0, 0.0],
+        2 => [0.0, 0.0, -1.0],
+        _ => [1.0, 0.0, 0.0],
+    }
+}
+fn right_of(f: Vec3) -> Vec3 {
+    [-f[2], 0.0, f[0]]
+}
+fn add(a: Vec3, b: Vec3, s: f32) -> Vec3 {
+    [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s]
+}
+fn dist(a: Vec3, b: Vec3) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+fn segment(id: u64, from: (u64, u8), to: (u64, u8), a: Vec3, b: Vec3) -> SegmentInput {
+    let length = dist(a, b);
+    let f: Vec3 = std::array::from_fn(|i| (b[i] - a[i]) / length);
+    let r = right_of(f);
+    let mid = add(a, f, length * 0.5);
+    let piece = |s: Vec3, e: Vec3, end_distance: f32| PieceInput {
+        end_distance,
+        centre: Curve::straight(s, e),
+        left_start: add(s, r, -2.0),
+        right_start: add(s, r, 2.0),
+        left_end: add(e, r, -2.0),
+        right_end: add(e, r, 2.0),
+    };
+    SegmentInput {
+        id: SegmentId(id),
+        from_node: from.0,
+        from_end: from.1,
+        to_node: to.0,
+        to_end: to.1,
+        length,
+        speed_limit: 14.166_667,
+        lanes: 1,
+        district: 0,
+        pieces: vec![piece(a, mid, length * 0.5), piece(mid, b, length)],
+    }
+}
+
+/// A signalled (or not) 4-way junction at the origin, one-lane 92 m approaches (0x100 + k
+/// arriving at end k) and exits (0x200 + k), connectors left / straight / right (index 3 k +
+/// turn). The outer ends are dead ends.
+fn four_way(signalled: bool) -> RoadInput {
+    let mut segments = Vec::new();
+    let mut connectors = Vec::new();
+    let mut approaches: [Option<EndInput>; 4] = Default::default();
+    let mut exits: [Option<EndInput>; 4] = Default::default();
+    let mut into_exit: [Vec<u32>; 4] = Default::default();
+    let start = |k: u8| {
+        let d = dir(k);
+        add(add([0.0; 3], d, 8.0), right_of([-d[0], -d[1], -d[2]]), 2.0)
+    };
+    let finish = |k: u8| {
+        let d = dir(k);
+        add(add([0.0; 3], d, 8.0), right_of(d), 2.0)
+    };
+    for k in 0..4u8 {
+        let d = dir(k);
+        let ra = right_of([-d[0], -d[1], -d[2]]);
+        segments.push(segment(0x100 + k as u64, (0x10 + k as u64, 0), (NODE, k), add(add([0.0; 3], d, 100.0), ra, 2.0), start(k)));
+        let rx = right_of(d);
+        segments.push(segment(0x200 + k as u64, (NODE, k), (0x20 + k as u64, 0), finish(k), add(add([0.0; 3], d, 100.0), rx, 2.0)));
+    }
+    for f in 0..4u8 {
+        let mut list = Vec::new();
+        for (turn, delta) in [(0u32, 1u8), (1, 2), (2, 3)] {
+            let t = (f + delta) & 3;
+            let index = 3 * f as u32 + turn;
+            connectors.push(ConnectorInput { index, entry_speed: if delta == 2 { 14.166_667 } else { 2.0 }, from_end: f, from_lane: 0, to_end: t, to_lane: 0, curve: Curve::straight(start(f), finish(t)) });
+            list.push(index);
+            into_exit[t as usize].push(index);
+        }
+        approaches[f as usize] = Some(EndInput { lanes: 1, lane_connectors: vec![list] });
+    }
+    for t in 0..4 {
+        exits[t] = Some(EndInput { lanes: 1, lane_connectors: vec![into_exit[t].clone()] });
+    }
+    RoadInput { segments, junctions: vec![JunctionInput { id: JunctionId(NODE), signalled, speed: 14.166_667, approaches, exits, connectors }] }
+}
+
+fn timings() -> SignalTimings {
+    SignalTimings { green: 7.0, amber: 1.0, all_red: 0.5, walk_split: 0.4 }
+}
+
+/// Only the straight connectors exist in the choice (other lists emptied), so a car goes straight.
+fn net_straight(signalled: bool) -> RoadNetwork {
+    let mut input = four_way(signalled);
+    for j in &mut input.junctions {
+        for (f, a) in j.approaches.iter_mut().enumerate() {
+            if let Some(a) = a {
+                a.lane_connectors = vec![vec![3 * f as u32 + 1]];
+            }
+        }
+    }
+    RoadNetwork::build(&input).unwrap()
+}
+
+fn seg(net: &RoadNetwork, id: u64) -> usize {
+    net.segment_index(SegmentId(id)).unwrap()
+}
+
+fn car(net: &RoadNetwork, key: u32, segment: usize, distance: f32) -> Car {
+    let mut rng = Rng::new(1);
+    let cursor = LaneCursor::on_lane(net, segment, 0, distance, &mut |n, s, l| choose_connector(n, s, l, ConnectorChoice::LeastLoaded, &|_, _| 0.0, &mut rng));
+    Car::new(key, cursor, 4.5, FollowParams::default())
+}
+
+fn run(net: &RoadNetwork, clock: &mut SignalClock, cars: &mut [Car], ticks: u32) -> Vec<FollowEvent> {
+    let mut rng = Rng::new(7);
+    let mut out = Vec::new();
+    for _ in 0..ticks {
+        clock.tick(&mut Vec::new());
+        out.extend(step(net, clock, cars, DT, ConnectorChoice::LeastLoaded, &mut rng));
+        assert_no_overlap(net, cars);
+    }
+    out
+}
+
+fn assert_no_overlap(net: &RoadNetwork, cars: &[Car]) {
+    for a in cars {
+        for b in cars {
+            if a.key < b.key {
+                let (pa, pb) = (a.cursor.frame(net).position, b.cursor.frame(net).position);
+                assert!(dist(pa, pb) > 2.0, "cars {} and {} overlap at {pa:?} / {pb:?}", a.key, b.key);
+                if a.cursor.place == b.cursor.place {
+                    assert!((a.cursor.distance - b.cursor.distance).abs() >= (a.length + b.length) * 0.5, "cars {} / {} overlap on a lane", a.key, b.key);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn integrator_matches_retail_rules() {
+    // speed += accel x dt
+    assert_eq!(integrate(5.0, 2.0, 14.0, 0.5), (6.0, 2.0));
+    // accel forced to 0 above the cap, braking kept
+    assert_eq!(integrate(15.0, 2.0, 14.0, 0.5), (15.0, 0.0));
+    assert_eq!(integrate(15.0, -2.0, 14.0, 0.5), (14.0, -2.0));
+    // zeroed when tiny, never negative
+    assert_eq!(integrate(0.0005, 0.0, 14.0, 0.5), (0.0, 0.0));
+    assert_eq!(integrate(1.0, -10.0, 14.0, 0.5).0, 0.0);
+    // stop line: -v^2 / (2 (d - f2) + 0.001)
+    let a = stop_accel(10.0, 20.5, 0.5);
+    assert!((a + 100.0 / 40.001).abs() < 1e-5);
+    assert_eq!(stop_accel(10.0, 0.4, 0.5), f32::NEG_INFINITY);
+    // retail following term
+    let p = FollowParams::default();
+    let r = retail_follow_accel(&p, 14.0, 12.0, 30.0).unwrap();
+    assert!((r - (((12.0f32 - 20.0 / 3.6).powi(2) - 196.0) / 60.001)).abs() < 1e-4);
+    assert!(retail_follow_accel(&p, 4.0, 12.0, 30.0).is_none());
+}
+
+#[test]
+fn pulls_away_with_the_ramp_and_holds_the_lane_limit() {
+    let net = net_straight(false);
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x100);
+    let mut cars = vec![car(&net, 1, s, 0.0)];
+    run(&net, &mut clock, &mut cars, 15);
+    // 0.25 s: accel ramped by jerk x t (0.8 x 0.25 = 0.2 m/s^2).
+    assert!((cars[0].accel - 0.2).abs() < 0.02, "accel {}", cars[0].accel);
+    run(&net, &mut clock, &mut cars, 60 * 3);
+    assert!(cars[0].accel <= FollowParams::default().accel_max + 1e-4);
+    let mut cars2 = vec![car(&net, 1, s, 0.0)];
+    run(&net, &mut clock, &mut cars2, 60 * 12);
+    assert!(cars2[0].speed <= 14.166_667 + 1e-3);
+    assert!(cars2[0].speed > 13.5, "speed {}", cars2[0].speed);
+}
+
+#[test]
+fn follows_lanes_across_a_connector() {
+    let net = net_straight(false);
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x100);
+    let mut cars = vec![car(&net, 1, s, 50.0)];
+    let events = run(&net, &mut clock, &mut cars, 60 * 20);
+    let junction = events.iter().position(|e| matches!(e, FollowEvent::EnteredJunction { .. })).expect("entered the junction");
+    let lane = events.iter().position(|e| matches!(e, FollowEvent::EnteredLane { segment, .. } if *segment == seg(&net, 0x202))).expect("entered the exit lane");
+    assert!(junction < lane);
+    // An unsignalled junction is a stop sign: the car stopped (Approach to 0.1 m/s) before entering.
+    assert!(events.iter().any(|e| matches!(e, FollowEvent::Junction { entry: Entry::Approach, .. })));
+}
+
+#[test]
+fn stops_at_red_and_goes_on_green() {
+    let net = net_straight(true);
+    let mut clock = SignalClock::new(timings());
+    // Controller 0 (end 0) starts all-red then red 8 s: the car arrives on red.
+    let s = seg(&net, 0x100);
+    let mut cars = vec![car(&net, 1, s, 30.0)];
+    let mut stopped_on_red = false;
+    let mut rng = Rng::new(3);
+    let mut entered_light = None;
+    // Hold the lights on red for 20 s (a mod's freeze), then let them run.
+    clock.frozen = true;
+    for t in 0..60 * 50 {
+        if t == 60 * 20 {
+            clock.frozen = false;
+        }
+        clock.tick(&mut Vec::new());
+        let light = clock.controller_for_end(0).car().light;
+        for e in step(&net, &clock, &mut cars, DT, ConnectorChoice::LeastLoaded, &mut rng) {
+            if matches!(e, FollowEvent::EnteredJunction { .. }) {
+                entered_light = Some(light);
+            }
+        }
+        let c = &cars[0];
+        if let Place::Lane { segment, .. } = c.cursor.place {
+            if segment == s && light == Light::Red && c.speed < 0.05 && t > 60 * 15 {
+                let to_line = net.segments[s].length - c.cursor.distance - c.length * 0.5;
+                assert!((0.0..=2.0).contains(&to_line), "held {to_line} m before the line");
+                stopped_on_red = true;
+            }
+        }
+        if entered_light.is_some() {
+            break;
+        }
+    }
+    assert!(stopped_on_red, "the car waited at the red light");
+    assert_eq!(entered_light, Some(Light::Green), "it entered on green");
+}
+
+#[test]
+fn keeps_a_gap_and_queues_behind_a_stopped_car() {
+    let net = net_straight(true);
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x100);
+    let mut cars = vec![car(&net, 1, s, 70.0), car(&net, 2, s, 40.0), car(&net, 3, s, 10.0)];
+    // Lights held on red (end 0 starts red): everyone queues.
+    clock.frozen = true;
+    run(&net, &mut clock, &mut cars, 60 * 25);
+    let mut d: Vec<f32> = cars.iter().map(|c| c.cursor.distance).collect();
+    d.sort_by(|a, b| b.total_cmp(a));
+    for w in d.windows(2) {
+        let gap = w[0] - w[1] - 4.5;
+        assert!(gap >= FollowParams::default().min_gap * 0.5 - 1e-3, "gap {gap}");
+        assert!(gap < 6.0, "queued close: gap {gap}");
+    }
+    assert!(cars.iter().all(|c| c.speed < 0.5));
+    // On green the queue drains in step.
+    clock.frozen = false;
+    let events = run(&net, &mut clock, &mut cars, 60 * 20);
+    assert!(events.iter().filter(|e| matches!(e, FollowEvent::EnteredJunction { .. })).count() >= 2);
+}
+
+#[test]
+fn least_loaded_connector_choice_on_lane_entry() {
+    let net = RoadNetwork::build(&four_way(false)).unwrap();
+    let s = seg(&net, 0x100);
+    // Exit lanes: 0x203 (left of end 0 is end 1? use the list order) loaded with cars; the
+    // choice avoids the loaded exits.
+    let list = net.next_connectors(s, 0).to_vec();
+    let exits: Vec<usize> = list.iter().map(|&c| net.connector_exit(c).unwrap()).collect();
+    let mut cars = vec![car(&net, 9, exits[0], 50.0), car(&net, 8, exits[1], 50.0)];
+    cars.sort_by_key(|c| c.key);
+    let occ = occupancy(&cars);
+    let mut rng = Rng::new(1);
+    let c = choose_connector(&net, s, 0, ConnectorChoice::LeastLoaded, &|seg, lane| occ.lane_load(seg, lane), &mut rng).unwrap();
+    assert_eq!(net.connector_exit(c), Some(exits[2]));
+}
+
+#[test]
+fn motion_is_reproducible_from_the_spawn_state() {
+    let net = RoadNetwork::build(&four_way(true)).unwrap();
+    let mk = || {
+        let mut v: Vec<Car> = (0..4u8).map(|k| car(&net, k as u32 + 1, seg(&net, 0x100 + k as u64), 30.0 + 5.0 * k as f32)).collect();
+        v.sort_by_key(|c| c.key);
+        v
+    };
+    let (mut a, mut b) = (mk(), mk());
+    let (mut ca, mut cb) = (SignalClock::new(timings()), SignalClock::new(timings()));
+    let ea = run(&net, &mut ca, &mut a, 60 * 25);
+    let eb = run(&net, &mut cb, &mut b, 60 * 25);
+    assert_eq!(a, b);
+    assert_eq!(ea, eb);
+}

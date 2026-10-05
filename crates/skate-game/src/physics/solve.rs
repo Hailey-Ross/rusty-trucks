@@ -10,9 +10,9 @@ use skate_core::physics::{
     skeleton_body::PART_COUNT,
 };
 
-pub(super) fn advance(physics:&mut GamePhysics, skater:&mut SkaterRuntime,truck_targets:[f32;2])->Result<(),String> {
+pub(super) fn advance(physics:&mut GamePhysics, skater:&mut SkaterRuntime,truck_targets:[f32;2],carry_tick:super::prop_carry::Tick)->Result<(),String> {
     let restore=crate::modding::player_physics::apply_parts(skater);
-    let result=advance_inner(physics,skater,truck_targets);
+    let result=advance_inner(physics,skater,truck_targets,carry_tick);
     restore.restore(skater);
     result
 }
@@ -20,6 +20,7 @@ fn advance_inner(
     physics: &mut GamePhysics,
     skater: &mut SkaterRuntime,
     truck_targets: [f32; 2],
+    carry_tick: super::prop_carry::Tick,
 ) -> Result<(), String> {
     let mod_before = crate::modding::player_physics::before_solve(physics,skater);
     let before = diagnostics::snapshot(physics, skater);
@@ -47,11 +48,52 @@ fn advance_inner(
     skeleton_query.edge_cos_bend_normal_threshold = -1.0;
     let mut skeleton_world_volumes = skeleton_volumes.clone();
     skeleton_colliders::retain_world_volumes(&mut skeleton_world_volumes, &skater.skeleton_collision);
+    // Prop carry (Phase 3) steers the held body before pushes/integration so
+    // the follow velocity participates in this tick's contacts and rebake.
+    {
+        let root = skater.animated_skeleton.roots.animation_to_world;
+        let flat = skate_core::math::Vector3::new(root[2][0], 0.0, root[2][2]);
+        let length = (flat.x * flat.x + flat.z * flat.z).sqrt();
+        let forward = if length > 1e-3 {
+            skate_core::math::Vector3::new(flat.x / length, 0.0, flat.z / length)
+        } else {
+            skate_core::math::Vector3::new(0.0, 0.0, 1.0)
+        };
+        physics.update_prop_carry(
+            carry_tick,
+            super::prop_carry::Carrier {
+                state: skater.player_state.current(),
+                position: skate_core::math::Vector3::new(root[3][0], root[3][1], root[3][2]),
+                forward,
+                time_step: physics.settings.step.simulation.time_step,
+            },
+        );
+    }
+    // Dynamic props push back on the skater's live volumes before the queries
+    // below see the freshly re-baked prop triangles.
+    let push_volumes: Vec<_> = board_volumes
+        .iter()
+        .chain(&skeleton_world_volumes)
+        .copied()
+        .collect();
+    physics.step_props(&push_volumes);
     contacts.extend_from_slice(physics.world.query_primitives(
         &skeleton_world_volumes,
         skeleton_query,
         physics.retention,
     ));
+    // Static prop instances live in their own world; query the same volumes
+    // against it without disturbing the two native query records above.
+    let query = physics.query;
+    let retention = physics.retention;
+    if let Some(props) = physics.prop_world_mut() {
+        contacts.extend_from_slice(props.query_primitives(&board_volumes, query, retention));
+        contacts.extend_from_slice(props.query_primitives(
+            &skeleton_world_volumes,
+            skeleton_query,
+            retention,
+        ));
+    }
     assembly_contacts::append(
         &mut contacts,
         &board_volumes,

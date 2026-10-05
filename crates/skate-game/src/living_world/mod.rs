@@ -1,8 +1,7 @@
 //! Living world, engine side (doc `docs/hails-additions/26-living-world.md`, milestone 2: the
 //! population core). Runs `skate_core::living_world` around the local player at the console
-//! cadence and publishes spawn / despawn decisions as messages. No bodies or rendering yet:
-//! later milestones consume [`LivingWorldSpawn`] / [`LivingWorldDespawn`] and create the NPC
-//! skaters, peds and cars.
+//! cadence and publishes spawn / despawn decisions as messages. Consumers: the replay-tier NPC
+//! skaters ([`npc_skaters`], milestone 3); peds and cars come with their milestones.
 //!
 //! Data: the setup group `livingworld` export (`private/living_world/`): `tables.json`
 //! (census caps, ranges), `<District>.census.bin`, `skater_profiles.json`,
@@ -13,9 +12,10 @@
 //! ([`PopulationState::apply_records`]). Records serialise ([`WireRecord`]). Retail default:
 //! nothing ambient spawns in an online session (culling still runs).
 //!
-//! Mod surface (planned `sdk.living_world`, see doc 26): [`LivingWorldSettings`] is the one place
-//! settings and mods change per-kind enable / density and the ambient skater count; restoring
-//! `LivingWorldSettings::default()` undoes a mod.
+//! Mod surface (doc 26 "Modding"): [`LivingWorldSettings`] is the one place settings and mods
+//! change the living world; mods patch it through `sdk.world.set_tuning('living_world', ...)`
+//! (`modding::world_tuning`), and a mod that stops is undone with
+//! [`LivingWorldSettings::reset_mod_overrides`].
 // Messages and records for consumers the engine does not have yet.
 #![allow(dead_code)]
 
@@ -28,9 +28,22 @@ use skate_core::living_world::{
 };
 use std::path::Path;
 
+pub(crate) mod npc_skaters;
+pub(crate) mod peds;
+pub(crate) mod vehicles;
+
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "npc_tests.rs"]
+mod npc_tests;
+#[cfg(test)]
+#[path = "peds_tests.rs"]
+mod peds_tests;
+#[cfg(test)]
+#[path = "vehicles_tests.rs"]
+mod vehicles_tests;
 
 /// Who runs the population decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +79,42 @@ pub(crate) struct LivingWorldSettings {
     pub vehicles: KindSetting,
     /// Desired ambient NPC skaters offline (retail 3).
     pub ambient_skaters: u32,
+    /// NPC skater spawn fade in / leave fade (retail 1 s in, 1 s out, removed below 0.2). A mod
+    /// may change it; `LivingWorldSettings::default()` restores retail.
+    pub skater_fade: skate_core::living_world::leave_fade::LeaveFadeConfig,
+    /// What an NPC skater does at the end of its line (retail: continue on an unused line whose
+    /// start is within 4 m, `sub_8246C7F8`; radius 0 = fade out at every line end). A mod may
+    /// change it; `LivingWorldSettings::default()` restores retail.
+    pub skater_line_chain: skate_core::living_world::replay::ChainConfig,
+    /// Ped draw fade by camera distance and spawn fade in (retail: the model's 45 / 55 m pair,
+    /// 1 s in; `skate_core::living_world::peds::fade`). A mod may change or disable it.
+    pub ped_fade: skate_core::living_world::peds::PedFadeConfig,
+    /// Props and mod bodies as ped navigation obstacles (fix 11; retail DynamicObject NavPower
+    /// obstacles: 0.2 m minimum half extent, no cut above 0.4 m/s, re-cut after 0.25 x the
+    /// smallest half extent; `skate_core::living_world::peds::obstacles`). A mod may change or
+    /// disable it; `LivingWorldSettings::default()` restores retail.
+    pub ped_obstacles: skate_core::living_world::peds::ObstacleParams,
+    /// NPC skaters push dynamic props like the player's board and body (fix 19; retail NPC skaters
+    /// are full skaters). A mod may switch it off; `LivingWorldSettings::default()` restores retail.
+    pub npc_skater_props: npc_skaters::NpcSkaterPropContact,
+    /// NPC draw distance (QoL, not retail; `skate_core::living_world::draw_distance`): every
+    /// population range (census circles, ped draw fade, NPC skater ranges, cars) x this, caps x
+    /// its square. 1.0 = retail. The value in effect: the settings menu writes the player's choice
+    /// here and into [`Self::user_npc_draw_distance`]; a mod may set it, and
+    /// [`Self::reset_mod_overrides`] puts the player's choice back. Owned by the population
+    /// authority (it decides what exists); a client never feeds its own value into the rules.
+    pub npc_draw_distance: f32,
+    /// Mod overrides of the NPC skater puppet clip, keyed by the stable phase id
+    /// (`ReplayPhase::name`) or `<phase>.<style>`; empty = the shipped picks
+    /// (`npc_skaters::puppet_clip`). Cleared by [`Self::reset_mod_overrides`].
+    pub skater_clips: std::collections::BTreeMap<String, String>,
+    /// Mod overrides of the NPC skater puppet crossfade time (s) into a phase's clip, keyed by the
+    /// phase id or `default`; empty = the stock graph's default transition time
+    /// (`npc_skaters::RETAIL_BLEND_SECONDS`). Cleared by [`Self::reset_mod_overrides`].
+    pub skater_blend_seconds: std::collections::BTreeMap<String, f32>,
+    /// The player's menu choice (saved in `settings/graphics.json`), restored when a mod's
+    /// override is undone.
+    pub user_npc_draw_distance: f32,
     /// Free Play options (mode 3); `None` = career free roam (no scaling). The Free Play menu is
     /// a later milestone.
     pub free_play: Option<FreePlay>,
@@ -86,6 +135,15 @@ impl Default for LivingWorldSettings {
             pedestrians: KindSetting::default(),
             vehicles: KindSetting::default(),
             ambient_skaters: skate_core::living_world::config::retail::SKATER_DESIRED,
+            skater_fade: skate_core::living_world::leave_fade::LeaveFadeConfig::retail(),
+            skater_line_chain: skate_core::living_world::replay::ChainConfig::retail(),
+            ped_fade: skate_core::living_world::peds::PedFadeConfig::default(),
+            ped_obstacles: skate_core::living_world::peds::ObstacleParams::default(),
+            npc_skater_props: npc_skaters::NpcSkaterPropContact::default(),
+            npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
+            user_npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
+            skater_clips: Default::default(),
+            skater_blend_seconds: Default::default(),
             free_play: None,
             zombie: false,
             net_role: NetRole::Standalone,
@@ -105,10 +163,40 @@ impl LivingWorldSettings {
         }
     }
 
+    /// The draw distance in effect (sanitised: non-finite or non-positive = retail, clamped).
+    pub(crate) fn draw_distance(&self) -> skate_core::living_world::DrawDistance {
+        skate_core::living_world::DrawDistance::new(self.npc_draw_distance)
+    }
+
+    /// The settings menu: the player's choice, in effect at once.
+    pub(crate) fn set_user_draw_distance(&mut self, multiplier: f32) {
+        let m = skate_core::living_world::DrawDistance::new(multiplier).multiplier();
+        self.user_npc_draw_distance = m;
+        self.npc_draw_distance = m;
+    }
+
+    /// Undo every mod override (mod disabled): retail values for everything a mod may change,
+    /// keeping the player's own choices (menu draw distance) and the session flags (enabled,
+    /// debug, seed, network role).
+    pub(crate) fn reset_mod_overrides(&mut self) {
+        *self = Self {
+            enabled: self.enabled,
+            debug: self.debug,
+            seed: self.seed,
+            net_role: self.net_role,
+            npc_draw_distance: self.user_npc_draw_distance,
+            user_npc_draw_distance: self.user_npc_draw_distance,
+            ..Self::default()
+        };
+    }
+
     /// Write the settings into the core config (code defaults and data ranges stay).
     pub(crate) fn apply(&self, config: &mut PopulationConfig) {
+        config.draw_distance = self.draw_distance().multiplier();
         config.skaters.enabled = self.enabled && self.skaters.enabled;
         config.skaters.desired = (self.ambient_skaters as f32 * self.skaters.density.max(0.0)).round() as u32;
+        config.skaters.leave_fade = self.skater_fade;
+        config.skaters.line_chain = self.skater_line_chain;
         config.pedestrians.enabled = self.enabled && self.pedestrians.enabled;
         config.pedestrians.density = self.pedestrians.density;
         config.vehicles.enabled = self.enabled && self.vehicles.enabled;
@@ -135,6 +223,8 @@ pub(crate) enum WireRecord {
 pub(crate) enum WireChoice {
     Census { record: String, category: String },
     Skater { line: String, character: String, slot: u8 },
+    /// Census car (milestone V2): stable names plus the lane (retail segment id, lane, distance).
+    Vehicle { record: String, category: String, entity: String, model: String, chassis: u32, secondary: u32, segment: u64, lane: u8, distance: f32 },
 }
 
 fn reason_name(r: DespawnReason) -> &'static str {
@@ -160,6 +250,17 @@ impl WireRecord {
                 initial: s.initial,
                 choice: match &s.choice {
                     SpawnChoice::Census { record, category } => WireChoice::Census { record: record.clone(), category: category.clone() },
+                    SpawnChoice::Vehicle { record, category, entity, model, chassis, secondary, segment, lane, distance } => WireChoice::Vehicle {
+                        record: record.clone(),
+                        category: category.clone(),
+                        entity: entity.clone(),
+                        model: model.clone(),
+                        chassis: *chassis,
+                        secondary: *secondary,
+                        segment: *segment,
+                        lane: *lane,
+                        distance: *distance,
+                    },
                     SpawnChoice::Skater { line, character, slot } => {
                         WireChoice::Skater { line: line.iter().map(|b| format!("{b:02x}")).collect(), character: character.clone(), slot: *slot }
                     }
@@ -180,6 +281,17 @@ impl WireRecord {
                 initial: *initial,
                 choice: match choice {
                     WireChoice::Census { record, category } => SpawnChoice::Census { record: record.clone(), category: category.clone() },
+                    WireChoice::Vehicle { record, category, entity, model, chassis, secondary, segment, lane, distance } => SpawnChoice::Vehicle {
+                        record: record.clone(),
+                        category: category.clone(),
+                        entity: entity.clone(),
+                        model: model.clone(),
+                        chassis: *chassis,
+                        secondary: *secondary,
+                        segment: *segment,
+                        lane: *lane,
+                        distance: *distance,
+                    },
                     WireChoice::Skater { line, character, slot } => {
                         let mut id = [0u8; 16];
                         for (i, b) in id.iter_mut().enumerate() {
@@ -210,6 +322,12 @@ pub(crate) struct PopulationState {
     pub world: LivingWorld,
     pub census: Option<CensusMap>,
     pub skaters: Option<SkaterData>,
+    /// Road network and vehicle entities of the loaded world (milestone V2: cars are placed on
+    /// lanes; none = no cars).
+    pub roads: Option<skate_core::living_world::traffic::RoadNetwork>,
+    pub vehicles: Option<skate_core::living_world::VehicleCatalog>,
+    /// Replay-tier lines and voices of the loaded district (milestone 3).
+    pub npc: npc_skaters::NpcData,
     /// The ranges from `tables.json` (re-applied after settings changes).
     data_config: PopulationConfig,
     /// (map name, generation) the data was loaded for.
@@ -226,6 +344,9 @@ impl Default for PopulationState {
             world: LivingWorld::new(PopulationConfig::retail(), 0),
             census: None,
             skaters: None,
+            roads: None,
+            vehicles: None,
+            npc: npc_skaters::NpcData::default(),
             data_config: PopulationConfig::retail(),
             loaded_for: None,
             status: "no living-world data".into(),
@@ -244,6 +365,9 @@ impl PopulationState {
         self.world = LivingWorld::new(self.data_config.clone(), seed);
         self.census = data.census;
         self.skaters = data.skaters;
+        self.roads = data.roads;
+        self.vehicles = data.vehicles;
+        self.npc = data.npc;
         self.status = data.status;
         self.loaded_for = Some((map.to_string(), generation));
     }
@@ -267,6 +391,9 @@ pub(crate) struct LoadedData {
     pub config: PopulationConfig,
     pub census: Option<CensusMap>,
     pub skaters: Option<SkaterData>,
+    pub roads: Option<skate_core::living_world::traffic::RoadNetwork>,
+    pub vehicles: Option<skate_core::living_world::VehicleCatalog>,
+    pub npc: npc_skaters::NpcData,
     pub status: String,
 }
 
@@ -293,13 +420,16 @@ pub(crate) fn load_data(asset_root: &Path, district: &str) -> LoadedData {
             }
         }
     });
+    let mut npc = npc_skaters::NpcData::default();
     let skaters = (|| {
         let profiles = std::fs::read(dir.join("skater_profiles.json")).ok()?;
         let characters = skate_data::living_world::skater_characters(&profiles, &[]).ok()?;
+        npc.voices = npc_voices(&profiles);
         let pack = std::fs::read(dir.join("skater_paths").join(format!("{district}.bin"))).ok()?;
         let tiles = skate_data::aipath::parse_pack(&pack).ok()?;
         let (paths, _) = skate_data::aipath::district_paths(&tiles).ok()?;
         let lines = skate_data::living_world::skater_lines(paths.iter().map(|p| &p.path));
+        npc.lines = std::sync::Arc::new(paths.iter().filter(|p| p.path.id.is_ambient()).map(|p| (p.path.id.0, skate_data::living_world::replay_line(&p.path))).collect());
         Some(SkaterData { lines, characters })
     })();
     status.insert(
@@ -310,7 +440,32 @@ pub(crate) fn load_data(asset_root: &Path, district: &str) -> LoadedData {
             skaters.as_ref().map_or(0, |s| s.lines.len())
         ),
     );
-    LoadedData { config, census, skaters, status: status.join("; ") }
+    // Roads and vehicle entities (milestone V2). The file holds every district, but the districts
+    // are separate worlds overlapping in x / z (doc 26, "Cars flying off"): only the loaded
+    // district's roads join the network, or cars land on another district's road in the air.
+    let roads = std::fs::read(dir.join("roads.bin")).ok().and_then(|b| {
+        let built = skate_data::roads::RoadGraph::parse(&b).map_err(|e| e.to_string()).and_then(|g| match g.district_traffic_input(district) {
+            Some(input) => skate_core::living_world::traffic::RoadNetwork::build(&input).map(Some).map_err(|e| e.to_string()),
+            None => Ok(None),
+        });
+        built.map_err(|e| status.push(format!("roads: {e}"))).ok().flatten()
+    });
+    let vehicles = std::fs::read(dir.join("vehicles.json")).ok().and_then(|b| skate_data::living_world::vehicle_catalog(&b).map_err(|e| status.push(e.to_string())).ok());
+    if let Some(first) = status.first_mut() {
+        first.push_str(&format!(", roads {}, vehicle entities {}", roads.as_ref().map_or(0, |r| r.segments.len()), vehicles.as_ref().map_or(0, |v| v.entities.len())));
+    }
+    LoadedData { config, census, skaters, roads, vehicles, npc, status: status.join("; ") }
+}
+
+/// `characters_marquee` voice ids by character key (`skater_profiles.json` `characters.*.voice`).
+pub(crate) fn npc_voices(profiles: &[u8]) -> std::collections::BTreeMap<String, u32> {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(profiles) else { return Default::default() };
+    v["characters"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, c)| c["voice"].as_u64().map(|x| (k.clone(), x as u32)))
+        .collect()
 }
 
 /// The observers this frame: the local skater (deck position and velocity). Remote players join
@@ -323,15 +478,65 @@ pub(crate) struct LivingWorldObservers {
     pub online: bool,
 }
 
+/// Speed squared at or below which the census focus velocity is zero (retail `sub_826BE870`
+/// compares |v|^2 against `0x8209BE90` = 1e-4 [code]).
+const FOCUS_STILL_SPEED2: f32 = 1e-4;
+
+/// The census focus of one player: the player's character, not the board (retail
+/// `sub_826BDB50` -> `sub_826BE7D0` / `sub_826BE870` read the focused skater's `+52` component
+/// position and its velocity [code], `.local/research/npc/fix3-pedcull.md`). `position` /
+/// `velocity` are the skater's physical centre of mass and its velocity, valid on board, walking,
+/// in the air and in a bail; the deck stays wherever the board was left. Non-finite values pass
+/// through: the census skips such a focus (`population.rs` guard).
+pub(crate) fn player_focus(position: [f32; 3], velocity: [f32; 3]) -> Observer {
+    let still = velocity.iter().map(|v| v * v).sum::<f32>() <= FOCUS_STILL_SPEED2;
+    Observer { position, velocity: if still { [0.0; 3] } else { velocity } }
+}
+
+/// The local player's focus: the character (position, velocity) when a skater is loaded, else
+/// the board (tools and tests without a skater). The board is never preferred over the
+/// character: walking away from a left board keeps the population around the player.
+pub(crate) fn local_focus(character: Option<([f32; 3], [f32; 3])>, deck: ([f32; 3], [f32; 3])) -> Observer {
+    let (position, velocity) = character.unwrap_or(deck);
+    player_focus(position, velocity)
+}
+
+/// Whether a periodic debug line is due at world tick `tick` (every `period` ticks since `last`).
+/// A new world (map reload, respawn into another generation) restarts the tick at 0, so a `last`
+/// ahead of the tick belongs to the old world and is restarted with it.
+pub(crate) fn report_due(tick: u64, last: &mut u64, period: u64) -> bool {
+    if tick < *last {
+        *last = 0;
+    }
+    if tick < *last + period {
+        return false;
+    }
+    *last = tick;
+    true
+}
+
 fn gather_observers(
     physics: Res<crate::physics::GamePhysics>,
+    skater: Option<Res<crate::physics::SkaterRuntime>>,
     multiplayer: Option<Res<crate::multiplayer::Multiplayer>>,
     mut out: ResMut<LivingWorldObservers>,
 ) {
     use skate_core::physics::board::BodyId;
+    // The player's character (on board, walking or bailing): the skeleton's physical centre of
+    // mass (Skeleton16144/16160) and its velocity (Skeleton16176), as published each tick into
+    // the reckoning fields (`physics/render_pose.rs`).
+    let character = skater.as_ref().map(|s| {
+        let f = &s.animated_skeleton.board_frames;
+        ([f.centre_of_mass[0], f.centre_of_mass[1], f.centre_of_mass[2]], [f.com_velocity[0], f.com_velocity[1], f.com_velocity[2]])
+    });
     let deck = physics.board.bodies()[BodyId::Deck.index()].rates;
     let v = |x: skate_core::math::Vector3| [x.x, x.y, x.z];
-    out.observers = vec![Observer { position: v(deck.position), velocity: v(deck.linear_velocity) }];
+    let observer = local_focus(character, (v(deck.position), v(deck.linear_velocity)));
+    if observer.position.iter().chain(&observer.velocity).any(|x| !x.is_finite()) {
+        // The census skips a broken focus (no cull, no spawn) instead of emptying the world.
+        warn!("LIVING_WORLD census focus is not finite (position {:?}, velocity {:?}); population held", observer.position, observer.velocity);
+    }
+    out.observers = vec![observer];
     let online = multiplayer.as_ref().is_some_and(|m| m.active());
     out.online = online;
     out.player_slots = if online { multiplayer.map_or(1, |m| m.player_ids().len().max(1) as u32) } else { 1 };
@@ -343,6 +548,7 @@ fn load_for_map(
     settings: Res<LivingWorldSettings>,
     mut state: ResMut<PopulationState>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
+    audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
 ) {
     let key = (map.name.clone(), map.generation);
     if state.loaded_for.as_ref() == Some(&key) {
@@ -355,6 +561,10 @@ fn load_for_map(
     }
     let data = load_data(&config.asset_root, &map.name);
     info!("LIVING_WORLD data {}", data.status);
+    // NPC skaters will publish board audio and speech here: let the world banks decode early.
+    if let Some(mut audio) = audio {
+        audio.expected = settings.enabled && !data.npc.lines.is_empty();
+    }
     state.install(&map.name, map.generation, &settings, data);
 }
 
@@ -378,6 +588,8 @@ pub(crate) fn step_population(
         observers: &observers.observers,
         census: state.census.as_ref(),
         skater_world: state.skaters.as_ref().map(|s| s as &dyn skate_core::living_world::SkaterWorld),
+        roads: state.roads.as_ref(),
+        vehicles: state.vehicles.as_ref(),
         online: observers.online,
         zombie: settings.zombie,
         free_play: settings.free_play,
@@ -399,9 +611,10 @@ pub(crate) fn step_population(
             }
         }
     }
-    if settings.debug && state.world.tick() >= state.last_report + 150 {
-        state.last_report = state.world.tick();
-        info!("{}", readout(state));
+    // Every 5 s of the 60 Hz world tick (restarted with each new world).
+    if settings.debug && report_due(state.world.tick(), &mut state.last_report, 300) {
+        let focus: Vec<String> = observers.observers.iter().map(|o| format!("[{:.1}, {:.1}, {:.1}] {:.1} m/s", o.position[0], o.position[1], o.position[2], o.velocity.iter().map(|v| v * v).sum::<f32>().sqrt())).collect();
+        info!("{} focus {}", readout(state), focus.join(" / "));
     }
 }
 
@@ -434,5 +647,8 @@ impl Plugin for LivingWorldPlugin {
                 FixedUpdate,
                 (load_for_map, gather_observers, step_population).chain().after(crate::app::SimulationSet::Physics),
             );
+        npc_skaters::install(app);
+        peds::install(app);
+        vehicles::install(app);
     }
 }

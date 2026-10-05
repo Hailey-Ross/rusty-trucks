@@ -54,16 +54,17 @@ impl CensusRange {
     }
 
     /// Circle and centre for an observer: speed = |velocity| x 3.6 [code `0x822F8628`]; the centre
-    /// moves `forward_offset` along the horizontal velocity direction.
+    /// moves `forward_offset` along the 3-D velocity direction (`normalize3(velocity)`,
+    /// `sub_826B7530`) [code], so on a slope the centre also moves up or down the hill.
     pub fn around(&self, observer: &Observer) -> (CensusCircle, Vec3) {
         let v = observer.velocity;
         let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
         let circle = self.at(speed * retail::KMH_PER_MS);
         let mut centre = observer.position;
-        let h = (v[0] * v[0] + v[2] * v[2]).sqrt();
-        if h > 1e-6 && circle.forward_offset != 0.0 {
-            centre[0] += v[0] / h * circle.forward_offset;
-            centre[2] += v[2] / h * circle.forward_offset;
+        if speed > 1e-6 && circle.forward_offset != 0.0 {
+            for (c, d) in centre.iter_mut().zip(v) {
+                *c += d / speed * circle.forward_offset;
+            }
         }
         (circle, centre)
     }
@@ -188,4 +189,38 @@ pub fn pass_budget(cfg: &CensusKindConfig, circle: &CensusCircle, initial: bool)
     } else {
         (circle.spawn_inner, circle.spawn_outer, cfg.attempts_per_pass, cfg.spawns_per_pass)
     }
+}
+
+/// One vehicle entity (`livingworld_entities`, vehicle category) as the census needs it, from the
+/// export (`vehicles.json`, stable names; a mod adds or overrides entries by the same keys).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct VehicleEntity {
+    /// `livingworld_models` record.
+    pub model: String,
+    /// Colours in the model's chassis / secondary palettes (`palette_ids` in `vehicles.json`).
+    pub chassis_colours: u32,
+    pub secondary_colours: u32,
+    /// Length (m): z of the model's size vector (`size_hint`) [data].
+    pub length: f32,
+    /// Width (m): x of the size vector [data].
+    pub width: f32,
+}
+
+/// The vehicle entities per census category (`vehicles.json` `census.<record>.categories`) and
+/// per entity. Iteration is sorted (BTreeMap), so the picks are machine independent.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct VehicleCatalog {
+    /// Category name -> entity names in retail list order.
+    pub categories: BTreeMap<String, Vec<String>>,
+    pub entities: BTreeMap<String, VehicleEntity>,
+}
+
+/// The entity pick inside a category (`sub_826B8B88` via `sub_826BB058`) [code]:
+/// `trunc(u32 x 2^-32 x 100) mod n`.
+pub fn pick_entity<'a>(rng: &mut Rng, entities: &'a [String]) -> Option<&'a String> {
+    if entities.is_empty() {
+        return None;
+    }
+    let roll = (rng.next_u32() as f64 / 4_294_967_296.0 * retail::ENTITY_ROLL as f64) as u32;
+    entities.get((roll % entities.len() as u32) as usize)
 }

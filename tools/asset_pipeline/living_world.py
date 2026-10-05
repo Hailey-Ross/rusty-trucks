@@ -18,19 +18,24 @@ them, see ``living_world_skaters.py``):
     sampled on a regular grid (format: ``write_census_grid``). ``census.json`` lists per district the
     file, bounds, cell size, layers and record names.
 
-``roads.json`` + ``roads.bin``
-    The road network streams (RW object ``0x00EB0013``): per district the decoded header and segment
-    table (``parse_roads``), and every blob verbatim in ``roads.bin`` (same container as the skater
-    paths, magic ``LWROADS``) so the parts not decoded yet (nodes, lane samples, crossings) can be
-    read later without a new export.
+``roads.json`` + ``roads.bin`` + ``roads_raw.bin``
+    The road network streams (RW object ``0x00EB0013``), version 2: per district the decoded segments
+    (with ``to_node`` / ``from_node``, lanes, speed limit), junctions (approach / exit records, turn
+    connectors) and the tile objects; ``roads.bin`` is the little-endian graph with the lane pieces
+    (``living_world_roads.write_graph``, parsed by ``skate-data::roads``) and ``roads_raw.bin`` keeps
+    every blob verbatim (same container as the skater paths, magic ``LWROADS``).
 
 ``waypoints.json``
     Waypoint groups (RW object ``0x00EB001A``; ``parse_waypoints``): per group its box, ids, type
     (``waypoint_vendingmachine``, ``waypoint_usetrashbin``) and its waypoints (position, facing,
     locator name).
 
-``navmesh.json``
-    What NavPower data (``0x00EB0027``) the districts hold (counts and sizes only; decoding is M3).
+``navmesh.json`` + ``navmesh.bin``
+    The NavPower nav graphs (``0x00EB0027``) of each district, decoded and joined across tiles
+    (``living_world_navmesh``, peds M3); the JSON holds counts and the area histogram.
+
+``vehicles.json`` + ``vehicles/<recipe>.glb``
+    The car models, palettes, vehicle entities and vehicle census (``living_world_vehicles.py``).
 
 ``models.json`` + ``models/<recipe>.glb``
     The binary ``.recipe`` files of ``livingworld.big`` (``parse_recipe``): per recipe its parts,
@@ -50,6 +55,7 @@ import sys
 from pathlib import Path
 
 VERSION = 1
+ROADS_VERSION = 2  # roads.json / roads.bin: v2 adds lanes, junctions and connectors (living_world_roads)
 ROADDATA, WAYPOINTDATA, NAVPOWERDATA = 0x00EB0013, 0x00EB001A, 0x00EB0027
 CENSUS_LAYERS = ('livingworld_npc_census', 'livingworld_vehicle_census')
 CENSUS_CELL = 4.0  # m: the road network's lane spacing; leaf cells of the painter are larger
@@ -68,12 +74,20 @@ TABLE_CLASSES = (
     'livingworld_entity_takedown', 'livingworld_entity_headtracking', 'livingworld_handprops',
     'livingworld_handprops_usagecharacteristics', 'livingworld_conversations',
     'livingworld_conversation_categories', 'livingworld_conversation_category_groups',
-    'livingworld_load_groups', 'livingworld_props', 'physics_ai')
+    'livingworld_load_groups', 'livingworld_props', 'physics_ai',
+    'livingworld_vehicle_characteristics', 'livingworld_vehicle_drivers')
 
 # Readable names for fields the research identified (.claude/notes/npc-livingworld-re.md,
 # peds-re.md). Everything else keeps its Hash_ name. Tags: [data] read from the vault values,
 # [code] from the reading code site.
 FIELD_NAMES = {
+    'livingworld': {
+        # trafficlights record, read by sub_826B1540 for each of its 4 signal controllers [code]: phases
+        # all-red, green, amber, all-red, then red while the other light group runs green + amber.
+        'Hash_3836077DEFB6F008': 'signal_green',          # 7.0 s (phase state 2) [code + data]
+        'Hash_CFCA94D67E0B234E': 'signal_amber',          # 1.0 s (phase state 1) [code + data]
+        'Hash_2C0CE3766A0074CD': 'signal_all_red',        # 0.5 s (phase state 0) [code + data]
+    },
     'livingworld_census': {
         'Hash_98F6489E23ED2661': 'entry',                 # tLWCensusEntry: category group + max population [data]
         'Hash_FFE5E258BD468196': 'vehicle_extra',          # vehicles only, read at sub_826B7EE4 [code]
@@ -97,6 +111,23 @@ FIELD_NAMES = {
         'Hash_CA4D0AD4EA45965B': 'ai_graph',                 # state graph path, e.g. .../Pedestrian.xml [data]
         'Hash_46B836EE959C0238': 'handprop_odds',            # (livingworld_handprops, probability) pairs [data]
         'Hash_F89323E420A6AAA3': 'plugin_odds',              # (waypoint_* plugin entity, probability) pairs [data]
+        'Hash_023EF929823A3C50': 'driver',                   # vehicles: RefSpec livingworld_vehicle_drivers [data]
+        'Hash_92A043B4A11F1A2A': 'spec',                     # vehicles: RefSpec livingworld_vehicle_characteristics [data]
+        'Hash_E356ED00ABF1D7F0': 'scoring',                  # RefSpec scoring_entities (vehicles: car) [data]
+    },
+    'livingworld_vehicle_characteristics': {
+        'Hash_BA2DDD830C731EE4': 'engine_audio',             # RefSpec aud_traffic_engine (the traffic engine sound) [data]
+        'Hash_543475921FD9E04A': 'alarm_impulse',            # contact impulse that starts the alarm (sub_82C3C150) [code]
+        'Hash_E199FC7CEA222809': 'alarm_duration',           # alarm length in s (sub_82C3A4D0) [code]
+        'Hash_D20826F15FB15A2E': 'follow_min_speed_kmh',     # following rule only when both speeds exceed it (sub_82C3FA08) [code]
+        'Hash_3AB7FC7CF7A17C81': 'follow_speed_margin_kmh',  # lead speed minus this x 0.2778 (sub_82C3FA08) [code]
+    },
+    'livingworld_vehicle_drivers': {
+        'Hash_FE83E2E0A19A9AFE': 'honk_obstacle_time',       # obstacle ahead this long -> horn kind 2 (sub_82C40660) [code]
+        'Hash_BC1A827C21919C3B': 'honk_blocked_time',        # blocked this long -> horn kind 4 / 5 (sub_82C40660) [code]
+        'Hash_40540E1A0A5D447A': 'honk_approach_speed_kmh',  # approaching an obstacle faster -> horn kind 1 (sub_82C34190) [code]
+        'Hash_559BA807F95FF93E': 'pull_over_chance',         # per manoeuvre decision (sub_82C41CD0) [code]
+        'Hash_988BB0F6F043EB3D': 'parked_time',              # s parked before pulling out (sub_82C3A3A8) [code]
     },
     'livingworld_entities_chase': {
         'Hash_240EB11A0CB469C3': 'escape_distance',         # ChaseeEscaped sub_826AC668 [code]
@@ -110,8 +141,8 @@ FIELD_NAMES = {
         'Hash_62F7C585686F3371': 'recipe',                  # recipe name in livingworld.big [data]
         'Hash_3EB8E0CD15F0891C': 'voice',                   # Sk8::Audio::eSk8Characters (speech voice) [data]
         'Hash_F6897CC7B637850C': 'category',                # eLivingWorldModelCategory: 0 peds, 1 marquee, 2 props, 3 vehicles, 4 DMOs [data]
-        'Hash_DF76D7D773857EDB': 'tints_a',                 # Vector4 lists, probably tint colours (open)
-        'Hash_12026E2EED18CC8D': 'tints_b',
+        'Hash_DF76D7D773857EDB': 'secondary_colours',       # Vector4 list; base record (1, 0, 0) = the red mask channel [data]
+        'Hash_12026E2EED18CC8D': 'chassis_colours',         # Vector4 list (taxi: yellow, red); base (0, 0, 1) = the blue paint area [data]
     },
     'livingworld_entity_animation': {
         'Hash_541FFA2E9D81C947': 'knockdown_speed_a',        # kind 0 above this (sub_82E38FB8) [code]
@@ -488,19 +519,20 @@ def parse_roads(blob: bytes) -> dict:
 
     Layout (big-endian, offsets from the object start) [data, 82 objects on the disc]:
     +0x00 vec4 bbox min, +0x10 vec4 bbox max (x, y up, z, 1);
-    +0x20 u32 intersection count, u32 segment count, u32 segment count (again; one University tile
-    differs), u32 intersection table offset (stale pointer when the count is 0), u32 node table
-    offset, u32 segment table offset. Segments are 0x40 bytes: u64 id, u64 node A, u32 end A,
+    +0x20 u32 intersection count, u32 lane-run count, u32 segment count (they differ where a segment
+    has two lane runs in one tile: University cSim_150_250 has 3 runs for 2 segments; reading the run
+    count as the segment count made a phantom segment before V0), u32 intersection table offset (stale
+    pointer when the count is 0), u32 lane-run table offset, u32 segment table offset. Segments are 0x40 bytes: u64 id, u64 node A, u32 end A,
     pad, u64 node B, u32 end B, f32 length (m), f32 width A, f32 width B, f32 speed limit (m/s;
-    14.17 = 51 km/h), u32 word_52, u32 word_56 (probably the lane counts, 1-3; unverified), pad.
-    The node and intersection tables use self-relative offsets into lane-sample blocks (4 m
-    samples, crosswalk quads); they stay in ``roads.bin`` until M3 decodes them.
+    14.17 = 51 km/h), u32 word_52 = lane count (equal to the lane runs' lane count on every run),
+    u32 word_56 (2 or 3; meaning open), pad. Lanes run from node B to node A (A = destination).
+    The junction and lane-run tables are decoded by ``living_world_roads`` (roads v2).
     """
     if len(blob) < 0x38:
         raise ValueError('road network object too short')
     lo = struct.unpack_from('>4f', blob, 0)
     hi = struct.unpack_from('>4f', blob, 16)
-    intersections, segments, segments_again, intersection_at, nodes_at, segments_at = struct.unpack_from('>6I', blob, 0x20)
+    intersections, runs, segments, intersection_at, nodes_at, segments_at = struct.unpack_from('>6I', blob, 0x20)
     if segments_at + 0x40 * segments > len(blob):
         raise ValueError('road segment table runs past the object end')
     out = []
@@ -513,7 +545,7 @@ def parse_roads(blob: bytes) -> dict:
                     'width_a': _round(width_a), 'width_b': _round(width_b), 'speed_limit': _round(speed),
                     'word_52': word_52, 'word_56': word_56})
     return {'bbox': [[_round(v) for v in lo[:3]], [_round(v) for v in hi[:3]]],
-            'intersections': intersections, 'segment_count_b': segments_again,
+            'intersections': intersections, 'lane_runs': runs,
             'tables': {'intersections': intersection_at if intersections else None, 'nodes': nodes_at,
                        'segments': segments_at},
             'segments': out}
@@ -623,8 +655,9 @@ def parse_recipe(data: bytes) -> dict:
     """A binary ``.recipe`` (big-endian, unaligned) [data, all ped / prop / vehicle recipes]:
     u32 version (7), string name, u32 word_a, u32 word_b, u32 word_c, u32 part count; per part:
     string slot (Rostral / Hair / Accessory / Equipment), u32 word, u64 slot id, u32 LOD count; per
-    LOD: u64 id, u8 byte, u64 model arena id, u32 word, u32 material count (0 or 1), u64 material id and u32 texture count (both only if 1),
-    per texture string channel + u64 texture id. Trailer: zero padding to a
+    LOD: u64 id, u8 byte, u64 model arena id, u32 word = material instance count (1; 2 on reda_car's
+    wheels), then per instance u32 material count (0 or 1), u64 material id and u32 texture count (both
+    only if 1), per texture string channel + u64 texture id. Trailer: zero padding to a
     4-byte boundary, zero or one u32 0 (meaning open), then u32 = its own offset (file size - 4). Strings are u32 length + bytes
     (no NUL)."""
     c = _Cursor(data)
@@ -640,16 +673,25 @@ def parse_recipe(data: bytes) -> dict:
         slot_id = c.take('Q')
         lods = []
         for _ in range(c.take('I')):
-            lod_id, byte, model, lod_word, materials = c.take('QBQII')
-            if materials > 1:
-                raise ValueError(f'{name}/{slot}: {materials} materials in one LOD')
-            material = c.take('Q') if materials else None
-            textures = {}
-            for _ in range(c.take('I') if materials else 0):  # no texture list without a material
-                channel = c.text()
-                textures[channel] = f'{c.take("Q"):016x}'
-            lods.append({'id': f'{lod_id:016x}', 'byte': byte, 'model': f'{model:016x}', 'word': lod_word,
-                         'material': f'{material:016x}' if material is not None else None, 'textures': textures})
+            lod_id, byte, model, lod_word = c.take('QBQI')
+            if not 1 <= lod_word <= 8:
+                raise ValueError(f'{name}/{slot}: {lod_word} material instances in one LOD')
+            instances = []
+            for _ in range(lod_word):  # word = material instance count (2 on reda_car's wheels) [data]
+                materials = c.take('I')
+                if materials > 1:
+                    raise ValueError(f'{name}/{slot}: {materials} materials in one instance')
+                material = c.take('Q') if materials else None
+                textures = {}
+                for _ in range(c.take('I') if materials else 0):  # no texture list without a material
+                    channel = c.text()
+                    textures[channel] = f'{c.take("Q"):016x}'
+                instances.append({'material': f'{material:016x}' if material is not None else None,
+                                  'textures': textures})
+            lod = {'id': f'{lod_id:016x}', 'byte': byte, 'model': f'{model:016x}', 'word': lod_word, **instances[0]}
+            if lod_word > 1:
+                lod['instances'] = instances
+            lods.append(lod)
         parts.append({'slot': slot, 'word': word, 'id': f'{slot_id:016x}', 'lods': lods})
     padding = data[c.at:c.at + (-c.at % 4)]
     c.at += len(padding)
@@ -662,6 +704,17 @@ def parse_recipe(data: bytes) -> dict:
     if padding.strip(b'\0') or size != end or c.at != len(data):
         raise ValueError(f'{name}: recipe trailer {size} at {end:#x} of {len(data)}')
     return {'version': version, 'name': name, 'words': words, 'parts': parts, 'trailer_zero_words': zero_words}
+
+
+def recipe_shaders(xml: bytes) -> dict:
+    """Material id (16 hex digits, as ``parse_recipe`` writes them) -> material type from a recipe's
+    XML twin (``<mat id="0x..." type="pedestrian_high_stamp">``). The type picks the retail shader:
+    ``pedestrian_high_stamp`` / ``pedestrian_low`` are the ped body shaders that recolour the mask
+    texels with the model's tints, ``marquee_hair`` / ``marquee_cloth`` / ``cac_alpha`` do not [data]."""
+    import re
+    text = xml.decode('utf-8', 'replace')
+    return {m.group(1).lower().rjust(16, '0'): m.group(2)
+            for m in re.finditer(r'<mat\s+id="0x([0-9A-Fa-f]+)"\s+type="([^"]+)"', text)}
 
 
 def model_manifest(game_root: Path) -> dict:
@@ -690,8 +743,10 @@ def model_manifest(game_root: Path) -> dict:
                     if texture not in paths:
                         missing.append(texture)
         stem = Path(entry.path).stem
+        xml = paths.get(f'data/content/recipe/livingworld/{stem}.xml')
         recipes[stem] = {**recipe, 'kind': 'prop' if stem.startswith('zprop_') else 'ped',
-                         'xml': f'data/content/recipe/livingworld/{stem}.xml' in paths,
+                         'xml': xml is not None,
+                         'shaders': recipe_shaders(big.read(xml)) if xml is not None else {},
                          'missing': sorted(set(missing))}
     return {'version': VERSION, 'archive': 'data/content/livingworld.big', 'recipes': recipes, 'errors': errors,
             'peds': sorted(k for k, r in recipes.items() if r['kind'] == 'ped'),
@@ -789,6 +844,8 @@ def export(ctx) -> dict:
     report('Exporting living-world tables')
     collections = _collections(ctx, game_root, work)
     doc = tables(collections)
+    from .living_world_anim import collections_bin, resolve_anim_names
+    resolve_anim_names(doc, collections_bin(game_root, work))  # clip names for the ped remaps (M2)
     (output/'tables.json').write_text(json.dumps(doc, indent=1), encoding='utf-8')
 
     report('Reading living-world census layers, roads and waypoints')
@@ -798,6 +855,8 @@ def export(ctx) -> dict:
     roads: dict[str, list] = {}
     waypoints: dict[str, list] = {}
     navmesh: dict[str, dict] = {}
+    from . import living_world_navmesh
+    nav_graphs: dict[str, list] = {}
     for district, tile, asset_id, processor, data in district_assets(game_root, work):
         if processor == REGION_PROCESSOR:
             for layer in region_layers(data):
@@ -813,6 +872,9 @@ def export(ctx) -> dict:
             info['objects'] += 1
             info['bytes'] += len(blob)
             info['tiles'].add(tile)
+            graph = living_world_navmesh.parse_graph(blob)
+            if graph is not None:
+                nav_graphs.setdefault(district, []).append((tile, asset_id, graph))
 
     report('Writing living-world census grids')
     census_index = {'version': VERSION, 'cell': CENSUS_CELL, 'layers': list(CENSUS_LAYERS), 'districts': {}}
@@ -837,31 +899,39 @@ def export(ctx) -> dict:
     (output/'census.json').write_text(json.dumps(census_index, indent=1), encoding='utf-8')
 
     report('Writing the road network and waypoints')
-    road_doc = {'version': VERSION, 'districts': {}}
-    pack = []
+    from . import living_world_roads
+    road_doc = {'version': ROADS_VERSION, 'graph': 'roads.bin', 'raw': 'roads_raw.bin', 'districts': {}}
+    pack, graphs = [], {}
     for district, items in sorted(roads.items()):
         items.sort(key=lambda e: (e[1], e[0]))
-        objects, segments = [], {}
+        objects, tiles = [], {}
         for asset_id, tile, blob in items:
             parsed = parse_roads(blob)
             objects.append({'tile': tile, 'asset_id': f'{asset_id:016X}', 'bbox': parsed['bbox'],
                             'intersections': parsed['intersections'], 'segments': [s['id'] for s in parsed['segments']]})
             for segment in parsed['segments']:
-                known = segments.setdefault(segment['id'], {**segment, 'tiles': []})
-                known['tiles'].append(tile)
-                if {k: v for k, v in known.items() if k != 'tiles'} != segment:
-                    warnings.append(f'{district}: copies of road segment {segment["id"]} differ (first kept)')
+                tiles.setdefault(segment['id'], []).append(tile)
             pack.append((asset_id, f'{district[:3]}:{tile}', blob))
-        nodes = sorted({s['node_a'] for s in segments.values()} | {s['node_b'] for s in segments.values()})
-        road_doc['districts'][district] = {'objects': objects, 'segments': segments, 'nodes': nodes,
+        graph = graphs[district] = living_world_roads.build([blob for _, _, blob in items])
+        warnings += [f'{district}: road network: {problem}' for problem in graph['problems']]
+        view = living_world_roads.summary(graph)
+        for sid, segment in view['segments'].items():
+            segment['tiles'] = tiles.get(sid, [])
+        nodes = sorted({s['node_a'] for s in view['segments'].values()} | {s['node_b'] for s in view['segments'].values()})
+        road_doc['districts'][district] = {'objects': objects, 'segments': view['segments'], 'nodes': nodes,
+                                           'junctions': view['junctions'],
                                            'intersections': sum(o['intersections'] for o in objects)}
-    road_doc['pack'] = 'roads.bin'
-    (output/'roads.bin').write_bytes(write_pack(ROADS_MAGIC, pack))
+    (output/'roads.bin').write_bytes(living_world_roads.write_graph(graphs))
+    (output/'roads_raw.bin').write_bytes(write_pack(ROADS_MAGIC, pack))
     (output/'roads.json').write_text(json.dumps(road_doc, indent=1), encoding='utf-8')
     (output/'waypoints.json').write_text(json.dumps({'version': VERSION, 'districts': waypoints}, indent=1),
                                          encoding='utf-8')
-    (output/'navmesh.json').write_text(json.dumps({'version': VERSION, 'decoded': False, 'districts': {
-        d: {**i, 'tiles': len(i['tiles'])} for d, i in sorted(navmesh.items())}}, indent=1), encoding='utf-8')
+    meshes = {d: living_world_navmesh.merge_district([g for _, _, g in sorted(items, key=lambda e: (e[0], e[1]))])
+              for d, items in sorted(nav_graphs.items())}
+    (output/'navmesh.bin').write_bytes(living_world_navmesh.write_navmesh(meshes))
+    (output/'navmesh.json').write_text(json.dumps({'version': VERSION, 'decoded': True, 'file': 'navmesh.bin', 'districts': {
+        d: {**i, 'tiles': len(i['tiles']), **(living_world_navmesh.summary(meshes[d]) if d in meshes else {})}
+        for d, i in sorted(navmesh.items())}}, indent=1), encoding='utf-8')
 
     report('Reading pedestrian recipes')
     models = model_manifest(game_root)
@@ -875,6 +945,11 @@ def export(ctx) -> dict:
             warnings.append(f"model {name}: {result['error']}")
     (output/'models.json').write_text(json.dumps(models, indent=1), encoding='utf-8')
 
+    from . import living_world_vehicles
+    vehicle_records = sorted({r for i in census_index['districts'].values() for r in i['vehicle_records']})
+    vehicles = living_world_vehicles.export(game_root, output, work, doc, vehicle_records, report)
+    warnings += vehicles.pop('warnings')
+
     problems = validate(private)
     if problems:
         raise ValueError('living world data does not resolve: ' + '; '.join(problems[:5]))
@@ -883,6 +958,10 @@ def export(ctx) -> dict:
         'classes': {cls: len(rows) for cls, rows in doc['classes'].items()},
         'census': {d: {'records': len(i['names']), 'size': i['size']} for d, i in census_index['districts'].items()},
         'road_segments': {d: len(i['segments']) for d, i in road_doc['districts'].items()},
+        'road_junctions': {d: len(i['junctions']) for d, i in road_doc['districts'].items()},
+        'road_connectors': {d: sum(len(j['connectors']) for j in i['junctions'].values())
+                            for d, i in road_doc['districts'].items()},
+        'vehicles': vehicles,
         'waypoint_groups': {d: len(g) for d, g in waypoints.items()},
         'navmesh_objects': {d: i['objects'] for d, i in navmesh.items()},
         'recipes': {'peds': len(models['peds']), 'props': len(models['props'])},
