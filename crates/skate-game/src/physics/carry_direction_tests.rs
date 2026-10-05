@@ -23,6 +23,18 @@ fn root(skater: &SkaterRuntime) -> ([f32; 3], [f32; 3]) {
 #[test]
 #[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
 fn move_object_follows_the_left_stick_in_the_skater_frame() {
+    carry(false);
+}
+
+/// Same with the board dropped and hidden beyond the hide distance (board
+/// state 3) before the grab: the 2026-10-05 crash session carried that way.
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn move_object_with_the_board_hidden() {
+    carry(true);
+}
+
+fn carry(hide_board: bool) {
     let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
     let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
     let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
@@ -52,6 +64,22 @@ fn move_object_follows_the_left_stick_in_the_skater_frame() {
         step(&mut physics, &mut skater, &mut controls, &mut camera, pad(if t == 120 { 0x8000 } else { 0 }, [0; 2], [0; 2]));
     }
     assert_eq!(skater.player_state.current(), PhysicalStateId::BipedGround, "not on foot");
+    if hide_board {
+        // Drop the board (LT), then park it 50 m away until it hides.
+        for t in 0..60 {
+            step(&mut physics, &mut skater, &mut controls, &mut camera, pad(0, if t == 0 { [255, 0] } else { [0; 2] }, [0; 2]));
+        }
+        for _ in 0..120 {
+            if skater.skateboard_controller.fields.state_448 == 2 {
+                let at = skater.animated_skeleton.roots.animation_to_world[3];
+                let mut deck = physics.board.part_transforms()[BodyId::Deck.index()];
+                deck.translation = skate_core::math::Vector3::new(at[0] + 50.0, at[1] + 1.0, at[2]);
+                physics.board.set_transform(deck);
+            }
+            step(&mut physics, &mut skater, &mut controls, &mut camera, pad(0, [0; 2], [0; 2]));
+        }
+        assert_eq!(skater.skateboard_controller.fields.state_448, 3, "board not hidden");
+    }
     // Put the nearest map prop in front of the skater, end-on (its longest
     // box axis pointing at the skater, near face 1.5 m away, centre beyond
     // the 3.5 m hold limit for a bench), then hold RB.
@@ -155,4 +183,16 @@ fn move_object_follows_the_left_stick_in_the_skater_frame() {
         }
     }
     assert!(failures.is_empty(), "pair did not follow the stick: {failures:?}");
+    // Drop while still pulling (2026-10-05 crash: releasing RB with the stick
+    // held back-left left BipedGround's selection with no finite candidate,
+    // "SelectionSpace has no finite native minimum", and the game exited).
+    let pull = [-14770, -29250];
+    for _ in 0..45 {
+        step(&mut physics, &mut skater, &mut controls, &mut camera, pad(RB, [0; 2], pull));
+    }
+    for _ in 0..90 {
+        step(&mut physics, &mut skater, &mut controls, &mut camera, pad(0, [0; 2], pull));
+    }
+    assert_eq!(physics.prop_carry.held(), None, "prop still held after releasing RB");
+    assert_eq!(skater.player_state.current(), PhysicalStateId::BipedGround, "not back on foot after the drop");
 }
