@@ -147,6 +147,8 @@ impl AudioContent {
     }
 
     /// Request a rebuild at the next audio pass (tests; an engine importer that changed data).
+    /// Engine API: no in-game caller yet (the hot swap handles mod changes itself).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn invalidate(&mut self) {
         self.pending = true;
     }
