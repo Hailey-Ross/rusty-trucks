@@ -1,4 +1,6 @@
 import io
+import json
+import os
 import struct
 import tempfile
 import unittest
@@ -8,6 +10,9 @@ from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
+from unittest import mock
+
+from . import map_writer
 from .map_writer import SpawnSelector, write_textures
 
 
@@ -36,8 +41,62 @@ class MapWriterTests(unittest.TestCase):
                 expected.write(struct.pack('<5I',4,entry['height'],1,method,len(packed))+packed)
             actual=io.BytesIO();write_textures(actual,root,textures)
             self.assertEqual(actual.getvalue(),expected.getvalue())
+            # Same bytes whatever the worker count (setup_budget.job_threads).
+            for workers in (1,2,3,7):
+                actual=io.BytesIO();write_textures(actual,root,textures,workers)
+                self.assertEqual(actual.getvalue(),expected.getvalue(),workers)
             empty=io.BytesIO();write_textures(empty,root,{})
             self.assertEqual(empty.getvalue(),b'')
+
+    def test_stored_blob_layout_is_unchanged(self):
+        rng=np.random.default_rng(5)
+        for data in (b'',b'x',bytes(1000),rng.integers(0,256,4096,dtype=np.uint8).tobytes()):
+            packed=zlib.compress(data,1);method=1
+            if len(packed)>=len(data):packed=data;method=0
+            out=io.BytesIO();map_writer.stored(out,data)
+            self.assertEqual(out.getvalue(),struct.pack('<II',method,len(packed))+packed)
+            self.assertEqual(b''.join(map_writer.packed_blob(data)),out.getvalue())
+
+    def test_whole_map_is_identical_for_any_thread_count(self):
+        """write() compresses textures and the geometry/extension blobs on
+        threads; the file must not depend on how many (old code = 2 texture
+        workers, blobs inline)."""
+        with tempfile.TemporaryDirectory() as work:
+            root=Path(work);rng=np.random.default_rng(11);textures={}
+            for n in range(9):
+                name=f'0x{n:016x}';pixels=rng.integers(0,256,(8,8,4),dtype=np.uint8)
+                (root/(name+'.rgba')).write_bytes(pixels.tobytes())
+                textures[name]=dict(width=8,height=8,rgba=name+'.rgba')
+            arrays={};meshes=[]
+            for i in range(3):
+                arrays[f'vertices_{i}']=rng.normal(size=(30,3)).astype('<f4')
+                arrays[f'faces_{i}']=rng.integers(0,30,(20,3)).astype('<u4')
+                arrays[f'uvs_{i}']=rng.random((30,2)).astype('<f4')
+                meshes.append(dict(index=i,texture_id=f'0x{i:016x}',alpha_mode=i%3,source_offsets={}))
+            np.savez(root/'model.npz',**arrays)
+            manifest=dict(map_name='Synthetic',district_name='DIST_Synthetic',textures=textures,
+                          models=[dict(asset_id='0xabc',npz='model.npz',meshes=meshes)],
+                          normal_texture_policy=dict(excluded_texture_ids=[]),grind_splines=[],
+                          other_presentation_assets=[])
+            (root/'manifest.json').write_text(json.dumps(manifest))
+            (root/'collision.rwcmset').write_bytes(rng.integers(0,256,5000,dtype=np.uint8).tobytes())
+            outputs={}
+            for threads in (1,2,6):
+                for render_only in (False,True):
+                    with mock.patch.dict(os.environ,{'SKATE_SETUP_THREADS':str(threads)}):
+                        out=root/f'out-{threads}-{render_only}.skate'
+                        map_writer.write(root/'manifest.json',out,root/'collision.rwcmset',
+                                         render_only=render_only,prepared_spawn=(1.,2.,3.))
+                        outputs.setdefault(render_only,set()).add(out.read_bytes())
+            self.assertEqual(len(outputs[False]),1)
+            self.assertEqual(len(outputs[True]),1)
+            data=next(iter(outputs[False]))
+            # The tail is the extension list: RWCM then WMET, each a stored blob.
+            wmet=json.dumps(manifest,separators=(',',':')).encode()
+            packed=b''.join(map_writer.packed_blob(wmet))
+            self.assertTrue(data.endswith(b'WMET'+struct.pack('<II',1,len(wmet))+packed))
+            rwcm=(root/'collision.rwcmset').read_bytes()
+            self.assertIn(b'RWCM'+struct.pack('<II',1,len(rwcm))+b''.join(map_writer.packed_blob(rwcm)),data)
 
     def test_texture_failure_is_propagated(self):
         with tempfile.TemporaryDirectory() as work:

@@ -550,6 +550,8 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         "controllers": controllers,
         "paused": world.resource::<crate::graphics_menu::Menu>().open,
         "replay": world.resource::<crate::replay::Replay>().active,
+        // Read-only frame-time statistics (`frame_timing`); null before the plugin runs.
+        "frame": world.get_resource::<crate::frame_timing::FrameTiming>().map(|t| t.snapshot()),
         "camera": camera.map(|position| json!({"position": position})),
         "camera_angle": camera_angle_snapshot(world),
         "physics": {"bodies": {}, "contacts": []},
