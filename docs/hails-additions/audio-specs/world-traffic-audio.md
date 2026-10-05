@@ -162,13 +162,16 @@ over; the user ran into it on foot).
 - The user's words: "I found a taxi, so yeah, and I skitched on it too." / "it ended up parking on the side of the
   road and when I ran into the car alarm went off".
 
-**Open.**
-- What `m+48` is: a contact velocity (m/s) or an impulse. Retail's threshold (0.1) is tiny either way: any real
-  contact sets it off. The port treats it as a speed. The rolling touch at 0.2–0.3 m/s before the step-off did not
-  set it off; whether the board touched the bumper is not in the trace (the board's contacts may not reach the
-  vehicle's callback at all).
-- The hook `VEHHIT` (category `traffic`, `hooks_traffic.cpp`, with `VEHALARMSTOP` and `VEHPARK`) logs every
-  callback with the vector, the other object and the timers; one short session (below) answers both.
+**Answered (hook `VEHHIT`, the recomp, 2026-10-04 session with a parked taxi).**
+- `m+48` is the relative velocity at the contact in m/s (the car's minus the other body's), not an impulse: a
+  riderless board's deck speed and |m+48| at the same moment agree within about 0.01 m/s (0.0736 / 0.0737,
+  0.3313 / 0.3335), a walking pedestrian gives values of the same size as the light board, and a body resting on
+  the car gives about 0. The threshold is strict: 0.074–0.084 m/s did not restart the alarm, 0.150 did.
+- Every body reaches the callback (the board carried, swung, riderless or in a bail; the skater's body; a
+  pedestrian), and who hit the car is not tested: a passing pedestrian set it off too.
+- The alarm ends at exactly 241 console frames (8.0333 s) in all six recorded ends, and its end restarts the parked
+  time (StayingParked is left and entered again with the parked timer at 0), so an alarming car stays parked longer.
+- The port's reading (a speed, `min_impact` 0.1) is right as built.
 
 **Port.** `crate::world_audio`: `VehicleParked` (StayingParked), `VehicleImpact { vehicle, by, impact }` (the
 callback message), `CarAlarmRule` / `AlarmTuning` (`min_impact`, `seconds`, `enabled`; setup export

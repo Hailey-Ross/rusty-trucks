@@ -409,8 +409,9 @@ impl ImpactSource {
 
 /// Something touched a vehicle (retail: the vehicle's collision callback `sub_82C3C150`, slot +32
 /// of its contact interface at `+136`). `impact` is the callback message's vector at `+48`, whose
-/// length the rule tests (a contact velocity in m/s by our reading; the hook `VEHHIT` will settle
-/// whether it is that or an impulse). Send one per contact (or per frame while touching: a
+/// length the rule tests: the relative velocity at the contact in m/s (the vehicle's minus the
+/// other body's; measured with the hook `VEHHIT`, not mass-weighted: a board, the rider and a
+/// pedestrian each give their own speed against the car). Send one per contact (or per frame while touching: a
 /// repeat restarts the alarm, as in retail). Engine traffic does not exist yet; its collision
 /// handling will send this.
 #[derive(Message, Clone, Copy, Debug)]
