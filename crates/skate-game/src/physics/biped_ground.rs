@@ -308,7 +308,15 @@ pub(crate) fn update(
         // override (gate >= 0, zero blend time: the target is taken as is),
         // so contacts and obstacle rejection still apply. No stick: no turn.
         if velocity[0] != 0.0 || velocity[2] != 0.0 {
-            job.job.requested_phase = 0.0;
+            // The override gate is the job's requested phase (296), which the
+            // cadence 82D80720 also takes as a phase request over the
+            // requested duration (288). Request the phase the cadence is at
+            // over a positive duration: the walk cycle holds still while
+            // carrying. Phase 0 over the carry state's zero duration divided
+            // by zero (2026-10-05 crash: NaN CadenceStartPercent picked no
+            // walk-into-stand clip when the prop was let go).
+            job.job.requested_phase = owner.controller.state.cadence.phase.phase;
+            job.job.requested_duration = 1.0;
             job.job.override_duration = 0.0;
             job.job.animation_velocity = velocity;
             // NOT RETAIL YET (fix20, docs 26): the walking controller's
