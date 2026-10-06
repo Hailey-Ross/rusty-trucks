@@ -585,3 +585,33 @@ fn living_world_ped_tint_applies_to_ped_body_materials_only() {
     assert!(!ped_material_colorized(Some("Hair_000030fc03e38817"), None));
     assert!(!ped_material_colorized(None, None));
 }
+
+/// Floating peds (2026-10-06): the render ground probe took the first hit from one agent height
+/// (1.6 m) above the navmesh, so overhead geometry lifted peds into the air. Count, over the
+/// DownTown navmesh polygon centres, how far the drawn height would sit above the navmesh with
+/// the old window and with the step-height window.
+#[test]
+#[ignore = "requires an installed DownTown map and living_world navmesh (SKATE3_ASSET_ROOT, SKATE3_MAP)"]
+fn ped_render_ground_does_not_lift_onto_overhead_geometry() {
+    let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let physics = crate::physics::GamePhysics::load_with_difficulty(&root, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    let mut d = PedData::default();
+    d.load_nav(&root, "DownTown", &Default::default());
+    let mesh = d.nav.clone().expect("DownTown navmesh");
+    let (step, height) = (mesh.agent[2].max(0.05), mesh.agent[3].max(0.5));
+    let (mut old_lifted, mut new_lifted, mut probed) = (0, 0, 0);
+    for poly in &mesh.polys {
+        let n = poly.verts.len() as f32;
+        let c = poly.verts.iter().fold([0.0f32; 3], |a, v| [a[0] + v[0] / n, a[1] + v[1] / n, a[2] + v[2] / n]);
+        let at = Vec3::new(c[0], c[1], c[2]);
+        let old = ground(Some(&physics), at, height, height);
+        let new = ground(Some(&physics), at, step, height);
+        probed += 1;
+        if old.is_some_and(|y| y - at.y > 0.3) { old_lifted += 1; }
+        if new.is_some_and(|y| y - at.y > 0.3) { new_lifted += 1; }
+    }
+    eprintln!("PED_RENDER_GROUND polygons={probed} lifted_over_0.3m old={old_lifted} new={new_lifted} step={step} height={height}");
+    assert_eq!(new_lifted, 0, "peds would still be drawn above the navmesh");
+}

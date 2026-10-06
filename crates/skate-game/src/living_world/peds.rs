@@ -264,11 +264,12 @@ impl PedClips for PedData {
     }
 }
 
-/// Ground height below / near a point (a 9 m line from 3 m above), `None` when nothing is hit.
-fn ground(physics: Option<&crate::physics::GamePhysics>, at: Vec3, reach: f32) -> Option<f32> {
+/// Ground height near a point: the first hit of a line from `up` above to `down` below, `None`
+/// when nothing is hit. The first hit from the top wins, so `up` must not reach overhead geometry.
+pub(crate) fn ground(physics: Option<&crate::physics::GamePhysics>, at: Vec3, up: f32, down: f32) -> Option<f32> {
     use skate_core::math::Vector3;
     let p = physics?;
-    match p.world().query_thin_line(Vector3::new(at.x, at.y + reach, at.z), Vector3::new(at.x, at.y - reach, at.z)) {
+    match p.world().query_thin_line(Vector3::new(at.x, at.y + up, at.z), Vector3::new(at.x, at.y - down, at.z)) {
         Ok(Some(hit)) => Some(hit.geometry.position.y),
         _ => None,
     }
@@ -359,7 +360,7 @@ pub(crate) fn apply_ped_records(
                 nav.poly = Some(p.poly);
             }
             None => {
-                if let Some(y) = ground(physics.as_deref(), at, 3.0) {
+                if let Some(y) = ground(physics.as_deref(), at, 3.0, 3.0) {
                     at.y = y;
                 }
             }
@@ -425,6 +426,7 @@ pub(crate) fn advance_peds(
     obstacles: Res<PedObstacles>,
     mut peds: Query<(&Pedestrian, &mut PedBody, &mut Transform, &mut PedAudio)>,
     mut events: MessageWriter<PedEvent>,
+    mut floating_logged: Local<std::collections::HashMap<LivingWorldId, u64>>,
 ) {
     let obstacles = &obstacles.0;
     let tick = state.world.tick();
@@ -508,16 +510,39 @@ pub(crate) fn advance_peds(
                 events.write(PedEvent::State { id: ped.id, state: s });
             }
         }
-        // The render ground: a line query in a window round the navmesh height (one agent height
-        // up and down, the NavPower agent block [data]). It never feeds back into the navigation
-        // position, so geometry above the ped (a wall top, a ledge) cannot lift it onto another
-        // layer (fix 17).
+        // The render ground: a line query round the navmesh height. It never feeds back into the
+        // navigation position (fix 17). Upward it only searches the NavPower step height (agent
+        // block [2], 0.2 m [data]): NavPower keeps its polygons within one step of the walkable
+        // floor, and a window of one agent height (1.6 m) took the first hit from the top, so an
+        // awning, ledge, sign or invisible collision overhead drew the ped floating on it
+        // (2026-10-06 session, peds in the air all over DownTown). Downward one agent height.
+        // Not retail yet: retail's own ped render placement is not decoded.
         let mut shown = body.position;
-        let reach = data.nav.as_deref().map_or(3.0, |m| m.agent[3].max(0.5));
-        if let Some(y) = ground(physics.as_deref(), body.position, reach) {
+        let (up, down) = data.nav.as_deref().map_or((3.0, 3.0), |m| (m.agent[2].max(0.05), m.agent[3].max(0.5)));
+        if let Some(y) = ground(physics.as_deref(), body.position, up, down) {
             shown.y = y;
         }
         transform.translation = shown;
+        // Floating check, always on (2026-10-06: floating peds reported four times with nothing in
+        // the log). Every 2 s per ped, staggered: a deep probe finds the floor under the drawn ped;
+        // drawn more than 0.3 m above it, or over no floor, logs PED_FLOATING with the position,
+        // navmesh polygon and its area code (once per ped per 10 s).
+        if (body.ticks + ped.id.serial as u64) % 120 == 0 {
+            let floor = ground(physics.as_deref(), shown, 0.2, 30.0);
+            if floor.map_or(true, |y| shown.y - y > 0.3)
+                && floating_logged.get(&ped.id).map_or(true, |t| tick >= t + 600)
+            {
+                floating_logged.insert(ped.id, tick);
+                let area = body.nav.poly.and_then(|k| data.nav.as_deref().and_then(|m| m.polys.get(k as usize)).map(|p| p.area));
+                warn!(
+                    "PED_FLOATING ped=#{} model={} drawn=[{:.2}, {:.2}, {:.2}] nav_y={:.2} floor_y={} gap={} poly={:?} area={:?} tick={tick}",
+                    ped.id.serial, ped.model, shown.x, shown.y, shown.z, body.position.y,
+                    floor.map_or("none".to_string(), |y| format!("{y:.2}")),
+                    floor.map_or("none".to_string(), |y| format!("{:.2}", shown.y - y)),
+                    body.nav.poly, area,
+                );
+            }
+        }
         transform.rotation = Quat::from_rotation_y(body.heading);
         audio.feet_down = body.feet_down;
         audio.body_fall = body.body_fall;
@@ -844,12 +869,21 @@ pub(crate) fn ped_readout(peds: &[(LivingWorldId, String, Locomotion, Vec3)], pl
     }
 }
 
-fn log_ped_readout(settings: Res<LivingWorldSettings>, state: Res<PopulationState>, observers: Res<super::LivingWorldObservers>, peds: Query<(&Pedestrian, &PedBody)>, mut last: Local<u64>) {
-    if !settings.debug || !super::report_due(state.world.tick(), &mut last, 150) {
+fn log_ped_readout(state: Res<PopulationState>, observers: Res<super::LivingWorldObservers>, peds: Query<(&Pedestrian, &PedBody)>, mut last: Local<u64>) {
+    // Always on (was debug only, so sessions never had ped positions): every 2.5 s the count, the
+    // nearest ped and the player position, so a reported spot can be found in the log.
+    if !super::report_due(state.world.tick(), &mut last, 150) {
         return;
     }
     let list: Vec<_> = peds.iter().map(|(p, b)| (p.id, p.recipe.clone(), b.player.state, b.position)).collect();
-    info!("LIVING_WORLD {}", ped_readout(&list, observers.observers.first().map(|o| Vec3::from_array(o.position))));
+    let player = observers.observers.first().map(|o| Vec3::from_array(o.position));
+    let nearest = player.and_then(|at| list.iter().min_by(|a, b| a.3.distance(at).total_cmp(&b.3.distance(at))).map(|n| n.3));
+    info!(
+        "LIVING_WORLD {} player={:?} nearest_ped_at={:?}",
+        ped_readout(&list, player),
+        player.map(|p| [p.x, p.y, p.z]),
+        nearest.map(|p| [p.x, p.y, p.z]),
+    );
 }
 
 pub(crate) fn install(app: &mut App) {
