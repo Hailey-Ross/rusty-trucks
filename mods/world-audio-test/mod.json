@@ -1,0 +1,66 @@
+{
+  "id": "dev-world-audio-test",
+  "api": 2,
+  "name": "World Audio Test (dev)",
+  "version": "0.1.0",
+  "author": "Hails",
+  "description": "Dev only (PR #32), off by default: enable it in the mod menu, or run with SKATE3_MODS_ENABLE=dev-world-audio-test. Publishes traffic, pedestrians and a ghost NPC skater around the spot where it is enabled, through sdk.world_audio, so the retail world audio can be heard before the engine has a living world. Cars loop on four lanes (C00-C08 engine records) with honks and skids; F8 fires the parked car's alarm. Peds walk, jog and run, and react to you (warn, cheer, slam); the nearest ped zaps its tazer (F7), is knocked down (F6, a retail knock-down's fall sounds), takes a phone call (F5) or turns photographer (F4). The ghost replays one of your recorded audio state logs and speaks: it saw your trick (F3), or switches between its AI voice and a pro's and crashes (F2, the main-cast channel) (logs/<name>.tsv in this folder, or SKATE_AUDIO_STATE_LOGS). F9 re-centres everything on you. Boxes show who is audible (green) or not (grey).",
+  "entry": "main.lua",
+  "enabled_by_default": false,
+  "settings": {
+    "cars": {
+      "type": "boolean",
+      "label": "Cars",
+      "description": "Sixteen cars on four lanes (one parked, for the alarm).",
+      "default": true
+    },
+    "peds": {
+      "type": "boolean",
+      "label": "Pedestrians",
+      "description": "Twenty pedestrians walking, jogging and running on lines.",
+      "default": true
+    },
+    "own_slots": {
+      "type": "boolean",
+      "label": "Own instances",
+      "description": "Cars and peds on their own MixMap instances (the mod default since world audio 4) instead of retail's pools: all within reach are heard, up to 16 + 16. Off (this test's default) shows retail's limits.",
+      "default": false
+    },
+    "ghost": {
+      "type": "boolean",
+      "label": "Ghost skater",
+      "description": "A ghost NPC skater replaying a recorded audio state log.",
+      "default": true
+    },
+    "ghost_log": {
+      "type": "string",
+      "label": "Ghost log",
+      "description": "The state log's name without .tsv (logs/<name>.tsv here, or in SKATE_AUDIO_STATE_LOGS).",
+      "default": "state_20261003_143434"
+    },
+    "ghost_from": {
+      "type": "number",
+      "label": "Ghost window start (s)",
+      "description": "Where in the log the ghost's 20 s loop starts.",
+      "default": 30,
+      "min": 0,
+      "max": 3600,
+      "step": 5
+    },
+    "boxes": {
+      "type": "boolean",
+      "label": "Boxes",
+      "description": "Debug boxes: green = holds an audio instance (audible), grey = not.",
+      "default": true
+    },
+    "speed_scale": {
+      "type": "number",
+      "label": "Traffic speed",
+      "description": "Scales the cars' 8-15 m/s cruising speeds.",
+      "default": 1,
+      "min": 0.25,
+      "max": 2,
+      "step": 0.25
+    }
+  }
+}

@@ -12,7 +12,7 @@ use skate_core::{
 };
 
 /// The actual game camera call, after completed physical output conditioning.
-/// The user's selected normal High camera is graph type1. This custom world
+/// The Camera Angle setting selects graph type 0 (Low) or 1 (High). This custom world
 /// has no road/ledge/camera-volume annotations or other moving actors.
 pub(crate) fn advance(
     physics: &GamePhysics,
@@ -57,13 +57,18 @@ pub(crate) fn advance(
     )?;
     let snapshot = crate::camera::publish_camera_subject(physics, skater, &inputs)?;
     let environment = crate::camera::CameraGraphEnvironment {
-        camera_type: 1,
+        // The player's Camera Angle (or a mod's), synced by camera::angle::sync_runtime.
+        camera_type: camera.camera_type(),
         on_road: false,
         ledge_left: false,
         ledge_right: false,
         volumes: Vec::new(),
     };
     let gravity = physics.settings.step.simulation.gravity_acceleration;
+    // Water bail: the wipeout's special surface (physics/water.rs) and its height.
+    let water = (skater.player_state.current() == skate_core::player::state::PhysicalStateId::WipeoutGround
+        && skater.wipeout_state.state.special_surface)
+        .then_some(skater.wipeout_state.state.surface_height);
     camera
         .advance(
             physics.settings.step.simulation.time_step,
@@ -72,6 +77,7 @@ pub(crate) fn advance(
             [gravity.x, gravity.y, gravity.z, 0.0],
             &environment,
             &mut StaticWorld,
+            water,
         )
         .map(|_| ())
 }
@@ -214,3 +220,7 @@ fn offboard_output(
 #[cfg(test)]
 #[path = "camera_output_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "camera_angle_tests.rs"]
+mod angle_tests;

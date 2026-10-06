@@ -75,6 +75,66 @@ impl CameraRigOptions {
     }
 }
 
+/// Retail "Camera Angle" game setting (Game Settings > Control Settings): the stock
+/// camera graph's `IsCameraTypeActive` type 0 (Low) or 1 (High).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraAngle {
+    Low,
+    High,
+}
+
+/// Replacement values for one stock camera shot (`camera_shots` collection), named
+/// after the retail attributes and in their units (metres, degrees, seconds). Unset
+/// fields keep the stock value. Applies to every place the shot is used, including
+/// blend trees that name it as a child.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CameraShotTuning {
+    #[serde(rename = "PositionDistance")]
+    pub position_distance: Option<f32>,
+    #[serde(rename = "PositionElevation")]
+    pub position_elevation: Option<f32>,
+    #[serde(rename = "PositionHeading")]
+    pub position_heading: Option<f32>,
+    #[serde(rename = "FramingLensLength")]
+    pub framing_lens_length: Option<f32>,
+    #[serde(rename = "FramingRoll")]
+    pub framing_roll: Option<f32>,
+    #[serde(rename = "FramingYaw")]
+    pub framing_yaw: Option<f32>,
+    #[serde(rename = "FramingPitch")]
+    pub framing_pitch: Option<f32>,
+    #[serde(rename = "ReferenceBoardOffset")]
+    pub reference_board_offset: Option<f32>,
+    #[serde(rename = "SmoothingDirection")]
+    pub smoothing_direction: Option<f32>,
+    #[serde(rename = "SmoothingElevation")]
+    pub smoothing_elevation: Option<f32>,
+    #[serde(rename = "SmoothingYaw")]
+    pub smoothing_yaw: Option<f32>,
+    #[serde(rename = "SmoothingPitch")]
+    pub smoothing_pitch: Option<f32>,
+    #[serde(rename = "TransitionTime")]
+    pub transition_time: Option<f32>,
+}
+impl CameraShotTuning {
+    pub fn validate(&self) -> bool {
+        let ok = |v: Option<f32>, lo: f32, hi: f32| v.is_none_or(|v| range(v, lo, hi));
+        ok(self.position_distance, 0.0, 50.0)
+            && ok(self.position_elevation, -90.0, 90.0)
+            && ok(self.position_heading, -360.0, 360.0)
+            && ok(self.framing_lens_length, 1.0, 200.0)
+            && ok(self.framing_roll, -180.0, 180.0)
+            && ok(self.framing_yaw, -180.0, 180.0)
+            && ok(self.framing_pitch, -90.0, 90.0)
+            && ok(self.reference_board_offset, -5.0, 5.0)
+            && [self.smoothing_direction, self.smoothing_elevation, self.smoothing_yaw, self.smoothing_pitch]
+                .into_iter().all(|v| ok(v, 0.0, 100.0))
+            && ok(self.transition_time, 0.0, 10.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CanvasAnchor {
@@ -120,6 +180,7 @@ pub struct CanvasOptions {
     pub size: [f32; 2],
     pub scale: f32,
     pub visible: bool,
+    #[serde(deserialize_with = "crate::lua_list::list")]
     pub items: Vec<CanvasItem>,
 }
 impl Default for CanvasOptions {
@@ -158,6 +219,20 @@ mod tests {
         let mut o=CameraRigOptions::default(); o.fov=f32::NAN; assert!(!o.validate());
         o.fov=100.0; o.fov_gain=20.0; assert!(!o.validate());
         o.fov=55.0; o.near=0.0; assert!(!o.validate());
+    }
+    #[test]
+    fn camera_shot_tuning_uses_retail_names_and_rejects_bad_values() {
+        let t: CameraShotTuning = serde_json::from_str(r#"{"PositionDistance":2.5,"PositionElevation":-4}"#).unwrap();
+        assert_eq!(t.position_distance, Some(2.5));
+        assert_eq!(t.position_elevation, Some(-4.0));
+        assert!(t.validate());
+        assert!(serde_json::from_str::<CameraShotTuning>(r#"{"distance":2.5}"#).is_err());
+        let bad = CameraShotTuning { position_distance: Some(f32::NAN), ..Default::default() };
+        assert!(!bad.validate());
+        let far = CameraShotTuning { position_distance: Some(500.0), ..Default::default() };
+        assert!(!far.validate());
+        assert_eq!(serde_json::from_str::<CameraAngle>(r#""low""#).unwrap(), CameraAngle::Low);
+        assert!(serde_json::from_str::<CameraAngle>(r#""medium""#).is_err());
     }
     #[test]
     fn reject_duplicate_canvas_keys_and_out_of_bounds() {

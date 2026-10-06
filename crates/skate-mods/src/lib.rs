@@ -1,23 +1,30 @@
 //! Lua mod packages (API 2): low-level physics/graphics hooks, no Vehicle class.
 mod archive;
 pub mod audio;
+pub mod audio_content;
+pub mod audio_merge;
+pub mod audio_rules;
+pub mod audio_tuning;
+pub mod world_audio;
 pub mod graphics_dynamic;
 pub mod presentation;
 pub mod scene;
 mod assets;
+mod lua_list;
 pub mod model;
 mod query;
 mod schema;
 mod vm;
 pub mod extensions;
 
-pub use archive::{read_bounded, validate_package, Cache};
+pub use archive::{read_bounded, validate_package, validate_package_content, validate_package_content_at, Cache};
 pub use assets::convex_points_file;
 pub use model::model_shape_file;
 pub use query::{with_host, DynamicsHost, RaycastFilter, RaycastOptions};
 pub use schema::{Manifest, Setting, SettingValue};
 pub use vm::{
-    CaptureOptions, Command, TeleportOptions, VolumeOptions,
+    CaptureOptions, Command, TeleportOptions, TriggerBoxOptions, TriggerShapeOptions,
+    TriggerTrackOptions, VolumeOptions,
 };
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +34,12 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+
+/// `SKATE3_MODS_ENABLE=<id>[,<id>…]` lists mods that start enabled without a saved preference
+/// (dev and test mods whose manifest has `"enabled_by_default": false`). A saved preference wins.
+fn enabled_by_env(id: &str) -> bool {
+    std::env::var("SKATE3_MODS_ENABLE").is_ok_and(|v| v.split(',').any(|x| x.trim() == id))
+}
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,11 +58,34 @@ pub struct Package {
     vm: Option<vm::Vm>,
     fingerprint: u64,
     pending: Option<(u64, Instant)>,
+    /// The files of the running mod's `audio.json` (and `audio.json` itself): an edit of only these
+    /// reloads the audio content while the script keeps running (doc 16 L7).
+    audio_files: std::collections::BTreeSet<String>,
+    /// The files of the last audio-only reload, until the game takes them.
+    audio_changes: Option<Vec<String>>,
+    /// Files changed since the fingerprint last changed (debounced with `pending`).
+    changes: Vec<String>,
 }
 
 impl Package {
     pub fn content_fingerprint(&self) -> u64 {
         self.fingerprint
+    }
+    /// The files an audio-only reload changed (doc 16 L7: the package's `audio.json` or files it
+    /// names changed while the mod runs; the script was not restarted). Taken once.
+    pub fn take_audio_changes(&mut self) -> Option<Vec<String>> {
+        self.audio_changes.take()
+    }
+    /// The `audio.json` file set of a package (empty without one or with an unreadable one).
+    fn read_audio_files(root: &Path) -> std::collections::BTreeSet<String> {
+        let mut set = std::collections::BTreeSet::new();
+        if let Ok(bytes) = read_bounded(root, audio_content::FILE, audio_content::MAX_JSON_BYTES) {
+            set.insert(audio_content::FILE.to_owned());
+            if let Ok(o) = serde_json::from_slice::<audio_content::AudioOverlay>(&bytes) {
+                set.extend(o.files().into_iter().map(|(f, _)| f.to_owned()));
+            }
+        }
+        set
     }
     pub fn running(&self) -> bool {
         self.vm.is_some()
@@ -103,7 +139,7 @@ impl Manager {
         self.last_scan = Instant::now();
         if force {self.archives.invalidate();}
         self.diagnostics.clear();
-        let mut found = BTreeMap::<String, (PathBuf, Manifest, u64)>::new();
+        let mut found = BTreeMap::<String, (PathBuf, Manifest, (u64, Vec<String>))>::new();
         let mut duplicates = std::collections::BTreeSet::new();
         let dirs = match std::fs::read_dir(&self.root) {
             Ok(d) => d,
@@ -148,8 +184,8 @@ impl Manager {
                 let manifest: Manifest =
                     serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
                 manifest.validate()?;
-                let hash = self.fingerprints.get(&path,force)?;
-                Ok::<_, String>((manifest, hash))
+                let (hash, changed) = self.fingerprints.get_with_changes(&path,force)?;
+                Ok::<_, String>((manifest, (hash, changed)))
             })();
             match result {
                 Ok((manifest, hash)) => {
@@ -189,12 +225,14 @@ impl Manager {
             self.stop(&id);
             self.packages.remove(&id);
         }
-        for (id, (root, manifest, hash)) in found {
+        for (id, (root, manifest, (hash, changed))) in found {
             if let Some(p) = self.packages.get_mut(&id) {
                 if p.fingerprint == hash {
                     p.pending = None;
+                    p.changes.clear();
                     continue;
                 }
+                p.changes.extend(changed);
                 let ready = match p.pending {
                     Some((h, since)) if h == hash => since.elapsed() >= Duration::from_millis(750),
                     _ => {
@@ -204,6 +242,20 @@ impl Manager {
                 };
                 if !force && !ready {
                     continue;
+                }
+                // Doc 16 L7: only the running mod's audio content changed (its `audio.json` or files
+                // the old or the new `audio.json` names): the game reloads the audio content (a hot
+                // swap) and the script keeps running.
+                let changes = std::mem::take(&mut p.changes);
+                if !force && p.running() && serde_json::to_value(&manifest).ok() == serde_json::to_value(&p.manifest).ok() && !changes.is_empty() {
+                    let new_files = Package::read_audio_files(&root);
+                    if changes.iter().all(|c| p.audio_files.contains(c) || new_files.contains(c)) {
+                        p.fingerprint = hash;
+                        p.pending = None;
+                        p.audio_files = new_files;
+                        p.audio_changes.get_or_insert_with(Vec::new).extend(changes);
+                        continue;
+                    }
                 }
                 let enabled = p.enabled;
                 self.stop(&id);
@@ -231,7 +283,7 @@ impl Manager {
                     self.start(&id);
                 }
             } else {
-                let saved = self.read_preferences(&id);
+                let saved = self.read_preferences(&id, manifest.enabled_by_default);
                 let settings = manifest
                     .settings
                     .iter()
@@ -259,6 +311,9 @@ impl Manager {
                         settings,
                         enabled,
                         vm: None,
+                        audio_files: Default::default(),
+                        audio_changes: None,
+                        changes: Vec::new(),
                     },
                 );
                 if enabled {
@@ -268,7 +323,10 @@ impl Manager {
         }
     }
 
-    fn read_preferences(&mut self, id: &str) -> Preferences {
+    /// The saved preference of a mod; without one it starts enabled when its manifest says so
+    /// (`enabled_by_default`, default true) or when `SKATE3_MODS_ENABLE` lists its id.
+    fn read_preferences(&mut self, id: &str, enabled_by_default: bool) -> Preferences {
+        let fresh = enabled_by_default || enabled_by_env(id);
         match std::fs::read(self.preferences.join(format!("{id}.json"))) {
             Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
                 self.diagnostics
@@ -276,13 +334,13 @@ impl Manager {
                 Preferences::default()
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Preferences {
-                enabled: true,
+                enabled: fresh,
                 values: BTreeMap::new(),
             },
             Err(e) => {
                 self.diagnostics.push(format!("Settings {id}: {e}"));
                 Preferences {
-                    enabled: true,
+                    enabled: fresh,
                     values: BTreeMap::new(),
                 }
             }
@@ -340,6 +398,8 @@ impl Manager {
         match vm::Vm::new(&p.root, &p.manifest, &p.settings, &initial) {
             Ok(vm) => {
                 p.vm = Some(vm);
+                p.audio_files = Package::read_audio_files(&p.root);
+                p.audio_changes = None;
                 self.call_one(id, "on_load", Value::Null);
             }
             Err(e) => {

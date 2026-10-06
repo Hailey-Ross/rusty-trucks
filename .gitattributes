@@ -3,3 +3,4 @@
 sdk/examples/** text eol=lf
 sdk/examples/**/*.glb binary
 mods/*.zip binary
+sdk/examples/**/*.wav binary

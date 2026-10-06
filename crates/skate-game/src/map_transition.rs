@@ -24,12 +24,16 @@ pub(crate) struct CurrentMap {
     pub spawn: [f32; 3],
     pub heading: f32,
     pub generation: u64,
+    /// The map's own audio definition: its `AUDO` extension (schema 1, UTF-8 JSON;
+    /// `game_audio::map_audio`), if it has one.
+    pub audio_tag: Option<Arc<[u8]>>,
 }
 impl CurrentMap {
     fn from_package(path: Option<PathBuf>, map: Option<&skate_data::skate_map::SkateMap>) -> Self {
         Self { path, name: map.map_or_else(|| "Test world".into(), |m| m.name.clone()),
             spawn: map.map_or([0., crate::physics::ground::HEIGHT, 0.], |m| m.spawn),
-            heading: map.map_or(0., |m| m.heading), generation: 0 }
+            heading: map.map_or(0., |m| m.heading), generation: 0,
+            audio_tag: map.and_then(|m| m.extensions.iter().find(|e| e.tag == *b"AUDO" && e.schema == 1)).map(|e| Arc::from(&e.payload[..])) }
     }
 }
 
@@ -42,6 +46,7 @@ struct PreparedWorld {
     camera: crate::camera::CameraRuntime,
     metadata: CurrentMap,
     retail: bool,
+    triggers: crate::trigger_volumes::TriggerVolumes,
     difficulty: crate::difficulty::Difficulty,
 }
 
@@ -113,6 +118,7 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
         let validation_started = Instant::now();
         if let Some(map) = &map { crate::skate_world::validate_runtime(map)?; }
         let validation_time = validation_started.elapsed();
+        let triggers = crate::trigger_volumes::TriggerVolumes::load_or_warn(selected.path.as_deref(), map.as_ref());
         let metadata = CurrentMap::from_package(selected.path, map.as_ref());
         let retail = map.as_ref().is_some_and(|m| crate::retail_render::RetailScene::for_map(m));
         // Both builders only read the decoded package. Reserve render handles
@@ -151,7 +157,7 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
             simulation_time.as_millis(), render_time.as_millis(), started.elapsed().as_millis());
         // Drop the decoded package on this worker. Physics and rendering now
         // own their data; retaining it would double large-city CPU memory.
-        Ok(PreparedWorld { map_fingerprint, scene, physics, skater, controls, camera, metadata, retail, difficulty })
+        Ok(PreparedWorld { map_fingerprint, scene, physics, skater, controls, camera, metadata, retail, triggers, difficulty })
     }).map_err(|e| format!("Could not start map loader: {e}"))?;
     Ok(Phase::Loading { entry, progress, job })
 }
@@ -207,6 +213,9 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
     prepared.scene.publish(world);
     crate::camera::set_world_environment(world, prepared.retail);
     world.insert_resource(crate::retail_render::RetailScene(prepared.retail));
+    info!("SKATE_TRIGGERS map={:?} volumes={} source={}", prepared.metadata.name, prepared.triggers.map.len(), prepared.triggers.origin);
+    // Mod-added volumes and switches are world-scoped, like sdk.volumes.
+    world.insert_resource(prepared.triggers);
     world.insert_resource(crate::grind_world::GrindGeometry::for_world(prepared.metadata.path.is_none()));
     world.insert_resource(Time::<Fixed>::from_duration(prepared.physics.period()));
     let root_transform = Transform::from_matrix(crate::animation::native_matrix(

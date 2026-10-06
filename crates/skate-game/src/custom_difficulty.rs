@@ -102,7 +102,7 @@ impl Tuning {
         let fields=self.values.iter().map(|(key,&v)| {
             let o=OPTIONS.iter().find(|o|o.key==key).unwrap();
             (key.clone(),Field {type_name:if o.boolean {"EA::Reflection::Bool"}else{"EA::Reflection::Float"}.into(),
-                data:if o.boolean {format!("{:02X}",v as u8)}else{format!("{:08X}",v.to_bits())}})
+                data:if o.boolean {format!("{:02X}",v as u8)}else{format!("{:08X}",v.to_bits())},array:None})
         }).collect();
         data.override_profile("physics_mode","test","easy",fields)
     }

@@ -17,6 +17,8 @@ mod camera_stream;
 pub(crate) use participation::{player_suspended, peer_suspended};
 mod session;
 mod volumes;
+mod world_audio;
+mod triggers;
 mod capture;
 pub(crate) mod player_physics;
 
@@ -157,49 +159,14 @@ impl Plugin for ModdingPlugin {
                     .unwrap_or_else(|| std::path::Path::new("."))
                     .join("settings/mods")
             });
-        app.insert_resource(Mods {
-            manager: Manager::new(root, settings),
-            native_snapshot: None,
-            world: DynamicsWorld::default(),
-            bodies: BTreeMap::new(),
-            joints: BTreeMap::new(),
-            graphics: BTreeMap::new(),
-            overlays: BTreeMap::new(),
-            canvases: BTreeMap::new(),
-            attach: None,
-            detach_error: None,
-            detach_pending: None,
-            camera: CameraOverride::default(),
-            generation: u64::MAX,
-            graphics_serial: 0,
-            debug_owners: BTreeSet::new(),
-            ground_ready: false,
-            skater_proxies: BTreeMap::new(),
-            dyn_published: BTreeSet::new(),
-            replication: replication::State::default(),
-            net_states: BTreeMap::new(),
-            net_published: BTreeSet::new(),
-            net_remote: BTreeMap::new(),
-            net_remote_wire: BTreeMap::new(),
-            net_status: String::new(),
-            multiplayer_debug: BTreeMap::new(),
-            last_contacts: Vec::new(),
-            graph_gates: BTreeMap::new(),
-            command_results: BTreeMap::new(), input_overrides: BTreeMap::new(),
-            session: session::Runtime::default(),
-            skater_remote: BTreeMap::new(),
-            pending_remote_teleport: None,
-            volumes: BTreeMap::new(),
-            custom_menus: BTreeMap::new(),
-            suspended_by: BTreeSet::new(),
-            hidden_players: BTreeMap::new(),
-            remote_cameras: BTreeMap::new(),
-        })
+        app.insert_resource(Mods::new(Manager::new(root, settings)))
         .init_resource::<ModMenu>();
         menu::install(app);
         audio::install(app);
+        world_audio::install(app);
         graphics_dynamic::install(app);
         capture::install(app);
+        triggers::install(app);
         app.add_systems(
             PreUpdate,
             maintenance.after(crate::map_transition::MapTransitionSet),
@@ -216,6 +183,7 @@ impl Plugin for ModdingPlugin {
             FixedUpdate,
             fixed
                 .after(crate::app::SimulationSet::Physics)
+                .after(crate::trigger_volumes::TriggerSet)
                 .run_if(crate::graphics_menu::gameplay_active),
         )
         .add_systems(
@@ -433,9 +401,13 @@ fn maintenance(world: &mut World) {
                     .dispatch("on_event", json!({"name":"world_changed","map":map}));
             }
             mods.manager.scan(false);
+            audio_reloads(world, &mut mods);
+            sync_audio_content(world, &mods);
             return;
         }
         mods.manager.scan(false);
+        audio_reloads(world, &mut mods);
+        sync_audio_content(world, &mods);
         if !mods.runtime_busy() {
             return;
         }
@@ -443,6 +415,33 @@ fn maintenance(world: &mut World) {
         // packages and applies pending lifecycle/menu commands.
         apply(world, &mut mods);
     });
+}
+
+/// Doc 16 L7: a running mod whose only changed files are its `audio.json` and files it names keeps
+/// its script; its audio content is reloaded (the overlay is read again by `sync_audio_content`
+/// and hot-swapped, `game_audio::swap`). The native clips of the changed files are dropped (read
+/// again at the next play or rule compile); a changed file the script holds as a Bevy clip
+/// reloads the mod as before.
+fn audio_reloads(world: &mut World, mods: &mut Mods) {
+    let ids: Vec<String> = mods.manager.packages.iter().filter(|(_, p)| p.running()).map(|(id, _)| id.clone()).collect();
+    for id in ids {
+        let Some(changes) = mods.manager.packages.get_mut(&id).and_then(|p| p.take_audio_changes()) else { continue };
+        if audio::files_changed(world, &id, &changes) {
+            info!("Mods: {id}: audio content changed ({}): reloaded while the script keeps running", changes.join(", "));
+        } else {
+            info!("Mods: {id}: a changed file is a clip the script plays ({}): the mod reloads", changes.join(", "));
+            mods.manager.reload(&id);
+        }
+    }
+}
+
+/// Audio content overlays follow the running mods (`game_audio::AudioContent`): a mod that
+/// starts, changes, stops or fails changes the set, and the audio restarts once at the next pass.
+fn sync_audio_content(world: &mut World, mods: &Mods) {
+    let Some(mut content) = world.get_resource_mut::<crate::game_audio::AudioContent>() else { return };
+    let content = content.bypass_change_detection();
+    content.scanned = true;
+    content.sync(mods.manager.packages.iter().filter(|(_, p)| p.running()).map(|(id, p)| (id.as_str(), p.root.as_path(), p.content_fingerprint())));
 }
 
 fn camera_position(world: &mut World) -> Option<[f32; 3]> {
@@ -528,11 +527,16 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         "volumes": mods.manager.packages.keys().map(|owner| {
             (owner.clone(), volumes::snapshot(mods, owner, &local_id, &observation::local(world), &mods.skater_remote))
         }).collect::<serde_json::Map<String, Value>>(),
+        "world_audio": mods.manager.packages.keys().map(|owner| (owner.clone(), world_audio::snapshot(world, owner))).collect::<serde_json::Map<String, Value>>(),
+        "world_audio_info": world_audio::info(world),
+        "audio": mods.manager.packages.keys().map(|owner| (owner.clone(), crate::game_audio::mod_snapshot(world, owner))).filter(|(_, v)| !v.is_null()).collect::<serde_json::Map<String, Value>>(),
+        "audio_info": crate::game_audio::mod_info(world),
         "session": session::lua(mods, net.get("active").and_then(Value::as_bool).unwrap_or(false), &local_id, host, &host_id, &players),
         "attach": mods.attach.as_ref().map(|a| json!({"body": a.body, "owner": a.owner})),
         "detach_error": mods.detach_error,
         "detach_pending": mods.detach_pending.is_some(),
         "map": {"name": map.name, "generation": map.generation},
+        "triggers": triggers::snapshot(world),
         "tick": physics.ticks,
         "keys": keys,
         "actions": actions,
@@ -545,6 +549,7 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         "paused": world.resource::<crate::graphics_menu::Menu>().open,
         "replay": world.resource::<crate::replay::Replay>().active,
         "camera": camera.map(|position| json!({"position": position})),
+        "camera_angle": camera_angle_snapshot(world),
         "physics": {"bodies": {}, "contacts": []},
         "network": net,
     })
@@ -567,6 +572,8 @@ fn fixed(world: &mut World) {
         if let Err(e) = ensure_ground(world, &mut mods) {
             warn!("dynamics ground: {e}");
         }
+        // Enter/exit events of this tick's trigger update, before on_fixed_update.
+        triggers::dispatch(world, &mut mods);
         let ids: Vec<_> = mods
             .manager
             .packages
@@ -693,6 +700,7 @@ fn fixed(world: &mut World) {
             mods.world.step(dt as f32);
             mods.last_contacts = mods.world.drain_contacts();
         }
+        triggers::sync_tracked(world, &mods);
         sync_graphics(world, &mut mods);
         sync_attach(world, &mut mods);
         // Record native post-step poses for render interpolation, including hood view.
@@ -727,9 +735,23 @@ fn update(world: &mut World) {
     });
 }
 
+/// Camera Angle holds and shot tunings of one mod (`Some`) or of every mod (`None`).
+fn clear_camera_angle(world: &mut World, owner: Option<&str>) {
+    if let Some(mut settings) = world.get_resource_mut::<crate::camera::CameraAngleSettings>() {
+        settings.clear_owner(owner);
+    }
+}
+
+fn camera_angle_snapshot(world: &World) -> Value {
+    let shot = world.get_resource::<crate::camera::CameraRuntime>().map_or("", |c| c.selected_shot());
+    world.get_resource::<crate::camera::CameraAngleSettings>().map_or(Value::Null, |s| s.snapshot(shot))
+}
+
 fn clear_runtime(world: &mut World, mods: &mut Mods) {
     replication::reset(world,mods);
     audio::clear(world);
+    world_audio::clear(world);
+    crate::game_audio::clear_mods_runtime(world);
     graphics_dynamic::clear(world);
     canvas::clear_owner(world, &mut mods.canvases, None);
     detach_player(world, mods, true);
@@ -765,7 +787,9 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     mods.skater_remote.clear();
     mods.pending_remote_teleport = None;
     volumes::clear(world, mods);
+    triggers::clear(world);
     capture::clear(world);
+    clear_camera_angle(world, None);
     world.resource_mut::<crate::physics::GamePhysics>().set_external_queries(None);
     mods.world = DynamicsWorld::default();
     mods.ground_ready = false;
@@ -796,9 +820,13 @@ fn apply(world: &mut World, mods: &mut Mods) {
         mods.command_results.retain(|(owner,_),_|owner!=id);
         mods.input_overrides.retain(|_,(owner,_)|owner!=id);
         audio::stop_owner(world, id, true);
+        world_audio::clear_owner(world, id);
+        crate::game_audio::clear_mod(world, id);
         graphics_dynamic::clear_owner(world, id);
         volumes::clear_owner(world, mods, id);
+        triggers::clear_owner(world, id);
         capture::clear_owner(world, id);
+        clear_camera_angle(world, Some(id));
         player_physics::clear(world,Some(id));
         mods.custom_menus.retain(|(owner,_),_|owner!=id);
         canvas::clear_owner(world, &mut mods.canvases, Some(id));
@@ -868,9 +896,13 @@ fn apply(world: &mut World, mods: &mut Mods) {
             mods.manager.fail(&id, e);
             mods.input_overrides.retain(|_,(owner,_)|owner!=&id);
             audio::stop_owner(world, &id, true);
+            world_audio::clear_owner(world, &id);
+            crate::game_audio::clear_mod(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
+            triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
+            clear_camera_angle(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
             continue;
@@ -893,13 +925,18 @@ fn apply(world: &mut World, mods: &mut Mods) {
             mods.manager.fail(&id, e);
             mods.input_overrides.retain(|_,(owner,_)|owner!=&id);
             audio::stop_owner(world, &id, true);
+            world_audio::clear_owner(world, &id);
+            crate::game_audio::clear_mod(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
+            triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
+            clear_camera_angle(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
         }
     }
+    sync_audio_content(world, mods);
     let mut row = 0;
     for entity in mods.overlays.values() {
         if let Some(mut node) = world.get_mut::<Node>(*entity) {
@@ -962,6 +999,35 @@ fn apply_one(
         Command::AudioUpdate { key, options } => audio::update_voice(world, id, &key, options),
         Command::AudioStop { key, fade_out } => audio::stop(world, id, &key, fade_out),
         Command::AudioStopAll {} => audio::stop_owner(world, id, false),
+        Command::AudioFrontend { name } => audio::frontend(world, &name),
+        Command::AudioTeleportEffect { amount } => audio::teleport_effect(world, amount),
+        Command::AudioPost { key, class, words } => audio_api(world, |api, native, _| api.post(native, id, &key, &class, &words))?,
+        Command::AudioRedeliver { key, words } => audio_api(world, |api, _, _| api.redeliver(id, &key, &words))?,
+        Command::AudioRelease { key } => audio_api(world, |api, _, _| {
+            api.release(id, &key);
+            Ok(())
+        })?,
+        Command::AudioSetGlobal { name, value } => audio_api(world, |api, native, _| api.set_global(native, id, &name, value))?,
+        Command::AudioWatch { globals, mixmap } => {
+            let mixmap: Vec<_> = mixmap.into_iter().map(|k| (k.slot, k.object, k.instance, k.output)).collect();
+            audio_api(world, |api, native, _| api.watch(native, id, &globals, &mixmap))?
+        }
+        Command::AudioSubscribe { tags } => audio_api(world, |api, native, _| api.subscribe(id, tags, native))?,
+        Command::AudioSetTuning { domain, patch } => crate::game_audio::set_tuning(world, id, &domain, patch)?,
+        Command::AudioSetMixmapInput { slot, object, instance, input, value, float } => {
+            use crate::game_audio::mixmap_inputs::InputValue;
+            let value = value.map(|v| if float { InputValue::Float(v as f32) } else { InputValue::Word(v as i32) });
+            crate::game_audio::set_mixmap_input(world, id, &slot, object, instance, input, value)?
+        }
+        Command::AudioSeed { seed } => crate::game_audio::set_seed(world, id, seed)?,
+        Command::AudioRule { key, rule } => crate::game_audio::set_rule(world, id, &key, rule, |world, path| audio::load_native_clip(world, mods, id, path))?,
+        Command::WorldAudioSpawn { key, object, options } => world_audio::spawn(world, mods, id, key, object, options)?,
+        Command::WorldAudioUpdate { key, options } => world_audio::update(world, mods, id, &key, options)?,
+        Command::WorldAudioEvent { key, event, options } => world_audio::event(world, id, &key, &event, options)?,
+        Command::WorldAudioRemove { key } => world_audio::remove(world, id, &key),
+        Command::WorldAudioAnnouncer { character } => world_audio::announcer(world, id, character)?,
+        Command::WorldAudioAnnounce { event, options } => world_audio::announce(world, &event, options)?,
+        Command::WorldAudioAlarmRule { options } => world_audio::alarm_rule(world, id, options)?,
         Command::GraphicsMeshBuffer { key, options } => {
             graphics_dynamic::mesh_buffer(world, mods, id, key, options)?;
         }
@@ -1235,6 +1301,15 @@ fn apply_one(
             if suspended { mods.suspended_by.insert(id.to_owned()); }
             else { mods.suspended_by.remove(id); }
         }
+        Command::CameraAngle { angle } => {
+            world.resource_mut::<crate::camera::CameraAngleSettings>().force(id, angle.map(Into::into))?;
+        }
+        Command::CameraShotTune { shot, patch } => {
+            if !world.resource::<crate::camera::CameraRuntime>().has_shot(&shot) {
+                return Err(format!("unknown camera shot {shot}"));
+            }
+            world.resource_mut::<crate::camera::CameraAngleSettings>().tune(id, &shot, patch)?;
+        }
         Command::CameraWatch { peer } => {
             let empty = peer.as_deref().is_none_or(|p| p.is_empty());
             if empty {
@@ -1289,10 +1364,21 @@ fn apply_one(
         Command::SessionTeleport { peer, options } => session::teleport(world, mods, &peer, options)?,
         Command::VolumeBox { key, options } => volumes::set(world, mods, id, key, options)?,
         Command::VolumeRemove { key } => volumes::remove(world, mods, id, &key),
+        Command::TriggerBox { key, options } => triggers::set_box(world, id, key, options)?,
+        Command::TriggerRemove { key } => triggers::remove_box(world, id, &key),
+        Command::TriggerEnable { id: volume, enabled } => triggers::enable(world, id, &volume, enabled)?,
+        Command::TriggerTrack { key, options } => triggers::track(world, mods, id, key, options)?,
+        Command::TriggerUntrack { key } => triggers::untrack(world, id, &key),
+        Command::TriggerConfigure { options } => triggers::configure(world, id, options)?,
         Command::CameraCapture { key, options } => { capture::set(world, id, key, options)?; }
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
     Ok(())
+}
+
+/// The runtime audio API (`game_audio::mod_audio`) for a mod command.
+fn audio_api(world: &mut World, f: impl FnOnce(&mut crate::game_audio::mod_audio::AudioApi, Option<&crate::game_audio::Native>, u64) -> Result<(), String>) -> Result<(), String> {
+    crate::game_audio::with_api(world, f).unwrap_or_else(|| Err("game audio is unavailable".into()))
 }
 
 fn resolve_body(mods: &Mods, owner: &str, key: &str) -> Result<u64, String> {
@@ -1668,6 +1754,48 @@ fn watch_pose(world: &mut World, peer: u64, local_id: u64) -> Option<(Vec3, Quat
 }
 
 impl Mods {
+    /// A fresh host for a mod manager (the plugin's; tests build one over a temporary folder).
+    pub(crate) fn new(manager: Manager) -> Self {
+        Self {
+            manager,
+            native_snapshot: None,
+            world: DynamicsWorld::default(),
+            bodies: BTreeMap::new(),
+            joints: BTreeMap::new(),
+            graphics: BTreeMap::new(),
+            overlays: BTreeMap::new(),
+            canvases: BTreeMap::new(),
+            attach: None,
+            detach_error: None,
+            detach_pending: None,
+            camera: CameraOverride::default(),
+            generation: u64::MAX,
+            graphics_serial: 0,
+            debug_owners: BTreeSet::new(),
+            ground_ready: false,
+            skater_proxies: BTreeMap::new(),
+            dyn_published: BTreeSet::new(),
+            replication: replication::State::default(),
+            net_states: BTreeMap::new(),
+            net_published: BTreeSet::new(),
+            net_remote: BTreeMap::new(),
+            net_remote_wire: BTreeMap::new(),
+            net_status: String::new(),
+            multiplayer_debug: BTreeMap::new(),
+            last_contacts: Vec::new(),
+            graph_gates: BTreeMap::new(),
+            command_results: BTreeMap::new(), input_overrides: BTreeMap::new(),
+            session: session::Runtime::default(),
+            skater_remote: BTreeMap::new(),
+            pending_remote_teleport: None,
+            volumes: BTreeMap::new(),
+            custom_menus: BTreeMap::new(),
+            suspended_by: BTreeSet::new(),
+            hidden_players: BTreeMap::new(),
+            remote_cameras: BTreeMap::new(),
+        }
+    }
+
     pub(crate) fn multiplayer_debug_sections(&self) -> [String; 3] {
         let sync = format!("MOD REPLICATION\n{}\nLocal network keys: {} | Remote keys: {}\nPublished dynamics: {} | Local bodies: {} | Local scenes: {}",
             if self.net_status.is_empty() { "No active mod replication" } else { &self.net_status },
