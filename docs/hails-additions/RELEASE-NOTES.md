@@ -30,7 +30,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 **How to report:** open a report here: [**New test report**](https://github.com/Hailey-Ross/rusty-trucks/issues/new?title=Test%20report%3A%20&body=%2A%2ABuild%3A%2A%2A%20hails-additions%20rolling%20build%20%28number%20at%20the%20top%20of%20the%20release%29%0A%2A%2AMap%20and%20spot%3A%2A%2A%20%28for%20example%20DownTown%2C%20by%20the%20default%20spawn%2C%20near%20the%20road%20curb%29%0A%2A%2AWhat%20I%20did%3A%2A%2A%0A%2A%2AWhat%20happened%3A%2A%2A%0A%2A%2AWhat%20retail%20Skate%203%20does%20instead%3A%2A%2A%0A%2A%2AAbout%20when%20in%20the%20session%3A%2A%2A%20%28minutes%20in%2C%20or%20the%20time%20on%20your%20clock%29%0A%0AAttach%3A%0A-%20the%20session%20log%20logs%5Cgame-....stderr.log%20%28from%20PLAY-WITH-LOG.bat%29%0A-%20a%20crash%20report%20from%20%25LOCALAPPDATA%25%5CSkate3RustEngine%5CCrashReports%20if%20the%20game%20closed%0A-%20a%20short%20video%20if%20you%20have%20one%0A) (a form with the questions below is filled in for you). Attach the `.stderr.log`, the crash report if there is one, and a video if you have it. Say what retail Skate 3 does differently if you know.
 
 **Please test and send logs for**
-1. **Carrying props:** grab benches and bins (hold RB) and push, pull and side-step them in every direction. Does it go the way the stick points? Does the prop stay on the ground, especially near curbs and roads (DownTown default spawn)? Does letting go ever close the game? (One crash is known there; the new log line names the cause.)
+1. **Carrying props:** grab benches and bins (hold RB) and push, pull and side-step them in every direction. Does it go the way the stick points? Does the prop stay on the ground, especially near curbs and roads (DownTown default spawn)? Does letting go ever close the game? (That crash is fixed in this build; tell us if it comes back.)
 2. **NPC skaters:** follow one for a while. Do they ever ride backwards (facing one way, moving the other)? Do limbs pop between animations? Do their tricks look right?
 3. **Pedestrians:** anyone floating, stuck walking on the spot, walking through things, or looking wrong (body shape, clothing colours)?
 4. **Cars:** cars driving through things, flying, or vanishing; how being hit by a car feels compared with retail.
@@ -38,6 +38,11 @@ Every report with a log helps. Logs let us see exactly where and when something 
 6. **Frame rate:** any drops or stutter, with the Frame-time counter on (send a screenshot or video of it). Throwing the board far away used to drop the frame rate; does it still?
 7. **Audio:** sounds that are missing, late, doubled, too loud or quiet compared with retail.
 8. **Setup:** if the first conversion fails or stops, send the setup window's text and the folder the game is in (long paths and closing the console are handled now).
+
+## Fixed in this build
+
+- **Game closed when letting go of a carried prop:** while carrying, the walk cycle's timing was asked to reach a phase in zero seconds, which turned it into an invalid number; on letting go, the stand-up animation could not pick a clip and the game stopped. Carrying now holds the walk cycle still. Found from a tester log thanks to the new error line, which now names the broken animation input and the clips it was choosing between.
+- **Better crash logs:** any animation choice that gets an invalid input now names that input and the candidate clips in the session log.
 
 ## Added since main
 
@@ -81,7 +86,6 @@ Each item has a document in `docs/hails-additions/` and, where open, an upstream
 Being worked on now, ported from the retail game code (the rolling `hails-additions` build gets them first):
 - **NPC skaters riding backwards:** replacing our own "keep facing" rule with retail's line-chaining logic.
 - **Carried props:** retail's own carry movement (free movement in every direction, stepping up curbs) and grab placement, props falling through the ground near curbs, and dropping the board when you grab a prop.
-- **Crash when letting go of a carried prop:** the game now logs exactly which animation input broke; the fix follows from the next log.
 - **Pedestrians hit by cars:** retail's reaction (knock-down and ragdoll, then fading out or getting up and fleeing), confirmed from the game code first.
 - **Random grind bails** (also on upstream `main`), starting with the PCU Library rails.
 - **Better session logs:** carried prop position and ground height, NPC skater facing versus travel direction, warnings when a prop ends up below the ground or a skater moves backwards, and car contacts.
@@ -89,7 +93,6 @@ Being worked on now, ported from the retail game code (the rolling `hails-additi
 ## Known issues
 
 From the latest play tests:
-- **Game closes when letting go of a carried prop (seen once):** happened with the board thrown far away and the stick held back. Please send the log if it happens to you.
 - **Carrying props:** while holding a prop you get pushed forwards or slightly to the side and cannot move fully freely (carry movement is not retail's yet, and stepping up curbs while dragging is lost). The grab lands close to the prop's edge but not exactly on it. A dragged bench can fall through the ground, especially near the curb by the DownTown default spawn. Your skateboard stays with you when you grab a prop (retail drops it on the floor).
 - **NPC skaters:** after switching to another recorded line one can ride backwards (facing one way, moving the other), including through grinds. Some animations still look stiff, grabs show an ollie, and trick height, grind variety, landings, spins and fakie / goofy are not finished. They push props but do not steer round obstacles or bail on heavy props yet.
 - **Pedestrians:** one can stand idle in the air above the wide DownTown stairs; one model walks stiffly and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail.
