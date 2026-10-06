@@ -86,7 +86,9 @@ jobs:
         if: github.event_name != 'release' && inputs.release_tag == ''
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python tools/publish_branch.py --directory target --branch hails-additions
+        run: |
+          python tools/publish_branch.py --directory target --branch hails-additions --notes-file docs/hails-additions/RELEASE-NOTES.md
+          gh release upload hails-additions PLAY-WITH-LOG.bat --clobber
       - name: Attach release package
         if: github.event_name == 'release' || inputs.release_tag != ''
         env:

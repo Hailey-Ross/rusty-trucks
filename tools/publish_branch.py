@@ -47,7 +47,7 @@ def validate(directory):
     return meta, digest
 
 
-def publish(directory, branch):
+def publish(directory, branch, notes_file=None):
     branch = (branch or '').strip()
     if not BRANCH_RE.fullmatch(branch):
         raise ValueError('Invalid branch name')
@@ -77,7 +77,10 @@ def publish(directory, branch):
     notes = (f"Rolling build **{meta['build']}**, commit `{meta['revision'][:12]}`.\n\n"
              f"[Download Windows ZIP](https://github.com/{REPO}/releases/download/{branch}/{PACKAGE})\n\n"
              f"Choose **Branch** in the in-game Updates window and enter `{branch}`.\n\n"
-             "### Recent commits\n\n" + '\n'.join(
+             # Branch notes kept in the repository (setup, testing, known issues), so every
+             # rolling build keeps them instead of only the commit list.
+             + (Path(notes_file).read_text(encoding='utf-8').strip() + '\n\n' if notes_file else '')
+             + "### Recent commits\n\n" + '\n'.join(
                  f"- {c['sha'][:8]} {c['commit']['message'].splitlines()[0]}" for c in commits))
     api(f"releases/{release['id']}", 'PATCH', dict(
         name=branch,
@@ -95,4 +98,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--branch', required=True)
-    publish(parser.parse_args().directory, parser.parse_args().branch)
+    parser.add_argument('--notes-file', type=Path, help='Markdown placed above the commit list')
+    args = parser.parse_args()
+    publish(args.directory, args.branch, args.notes_file)
