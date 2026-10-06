@@ -160,6 +160,10 @@ fn carry(hide_board: bool) {
         let prop_start = physics.prop_dynamics().unwrap().position_of(id).unwrap();
         for _ in 0..45 {
             step(&mut physics, &mut skater, &mut controls, &mut camera, pad(RB, [0; 2], stick));
+            // The walk cadence must stay finite while carrying (a NaN here
+            // crashed the walk-into-stand selection on release, 2026-10-05).
+            let cadence = skater.biped_ground.controller.state.cadence.phase.phase;
+            assert!(cadence.is_finite(), "walk cadence phase {cadence} while carrying, stick {stick:?}");
         }
         let (end, _) = root(&skater);
         let d = [end[0] - start[0], end[2] - start[2]];
