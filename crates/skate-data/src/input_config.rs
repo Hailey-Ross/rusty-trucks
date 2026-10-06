@@ -1,6 +1,7 @@
 //! Compatibility check for the stock gameplay expressions specialized by
 //! skate-core's GameplayActions. This is not the full native expression VM.
 use crate::AssetError;
+use skate_core::input::gameplay_map::ACTIONS;
 use std::{collections::BTreeMap, fs, path::Path};
 
 pub const STOCK_INPUT_PATH: &str = "private/stock/data/config/input.cfg";
@@ -31,7 +32,7 @@ impl StockGameplayConfig {
                 continue;
             };
             let name = name.trim();
-            if BUTTON_NAMES.contains(&name) || GAMEPLAY.iter().any(|(key, _)| *key == name) {
+            if BUTTON_NAMES.contains(&name) || ACTIONS.iter().any(|action| action.name == name) {
                 let expression: String =
                     expression.chars().filter(|c| !c.is_whitespace()).collect();
                 if definitions.insert(name, expression).is_some() {
@@ -44,8 +45,8 @@ impl StockGameplayConfig {
         for (index, name) in BUTTON_NAMES.iter().enumerate() {
             require(&definitions, name, &format!("Button{index}"))?;
         }
-        for (name, expression) in GAMEPLAY {
-            require(&definitions, name, expression)?;
+        for action in &ACTIONS {
+            require(&definitions, action.name, action.expression)?;
         }
         Ok(Self)
     }
@@ -73,27 +74,8 @@ const BUTTON_NAMES: [&str; 24] = [
     "RStickR", "RStickL", "RStickU", "RStickD",
 ];
 
-// TU3 82697740 registers these eighteen actions at indices 64..81.
-const GAMEPLAY: [(&str, &str); 18] = [
-    ("GP_LStickX", "LStickR-LStickL"),
-    ("GP_LStickY", "LStickU-LStickD"),
-    ("GP_LStickIn", "LStick"),
-    ("GP_RStickX", "RStickR-RStickL"),
-    ("GP_RStickY", "RStickU-RStickD"),
-    ("GP_RStickIn", "RStick"),
-    ("GP_LTrigger", "LTrigger"),
-    ("GP_RTrigger", "RTrigger"),
-    ("GP_LBumper", "LBumper"),
-    ("GP_RBumper", "RBumper"),
-    ("GP_UDPad", "DPadU"),
-    ("GP_DDPad", "DPadD"),
-    ("GP_LDPad", "DPadL"),
-    ("GP_RDPad", "DPadR"),
-    ("GP_XFace", "X"),
-    ("GP_YFace", "Y"),
-    ("GP_AFace", "A"),
-    ("GP_BFace", "B"),
-];
+// TU3 82697740 registers eighteen actions at indices 64..81; their names and
+// expressions are `skate_core::input::gameplay_map::ACTIONS`.
 
 #[cfg(test)]
 #[path = "tests/input_config.rs"]

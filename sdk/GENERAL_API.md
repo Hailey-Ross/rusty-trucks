@@ -2,7 +2,7 @@
 
 Manifest API remains `2`. Feature discovery uses compiled `sdk.capabilities`:
 `engine_access=1`, `command_results=1`, `native_bodies=1`,
-`input_override=1`, `player_physics=2`, `player_overlap=1`, `landed_details=1`,
+`input_override=1`, `controllers=1`, `action_ids=1`, `player_physics=2`, `player_overlap=1`, `landed_details=1`,
 `audio=4` (1: the mod's own WAVs, `sdk.audio.preload / play / update / stop / stop_all`; 2: posts to retail
 classes, globals, MixMap / global watch, `sdk.audio.info`; 3: `sdk.audio.play` goes through the game's mixer by
 default, with the retail emitter distance law, reverb send and panner (`native = false` keeps the Bevy voice; a
@@ -40,7 +40,7 @@ reads the latest snapshot, without executing a new simulation step:
 | player | Mode, bail, stance, pose, velocity, scoring and transition counters | Existing player teleport, participation, attachment and gesture controls |
 | rig | Native bodies, anatomical joints, solver contacts and joint loads | `sdk.rig`, typed `sdk.bodies` impulses |
 | bodies | This mod's Rapier bodies and contacts | `sdk.physics` creation, geometry, forces, velocities, transforms, joints and motors |
-| input | Raw pad, keys and 18 mapped action values | `sdk.input.override_action` |
+| input | Raw pad, keys, 18 mapped action values and controller identity | `sdk.input.override_action` |
 | graphs | Live action/motion controller states, state times and active behavior IDs | `sdk.graphs.set_enabled` |
 | animation | Tick, pose generation and bone count | No arbitrary animation replacement or pose injection |
 | scoring | Current player scoring observations | No arbitrary native score/collector mutation |
@@ -204,6 +204,64 @@ This differs from `sdk.volumes`, which checks observed player root positions.
 with a value in `[-1,1]`; nil releases the slot. It applies at the next input
 publication and lasts until released or cleaned up. It leaves raw pad/key
 observations intact and respects menu/debug input suppression.
+`id` may also be a key of `sdk.input.action_ids` (`"a"`, `"left_stick_x"`, …);
+`sdk.input.action(id)` reads the current value the same way.
+
+### Gameplay action IDs
+
+The IDs are retail Skate 3's eighteen gameplay actions, registered in this
+order from the shipped `data/config/input.cfg` (the setup validates that file
+against this table). Values: sticks are −1..1 after the retail dead zone (right
+and up are positive); buttons are 0 or 1 (any non-zero value is pressed);
+triggers are 0..1, and ground grabs, board drop/throw and the bail request need
+exactly 1. The last column lists what the retail input listener publishes from
+the action (its intent names); the authored action/motion graphs then decide
+what that does in the current state. The main entries are checked by
+`skate-core` `input::gameplay_map::tests`, which drives each ID the way an
+override does and records the intents.
+
+| ID | Key | Retail action | Expression | Xbox 360 binding | Listener intents (meaning) |
+| --- | --- | --- | --- | --- | --- |
+| 64 | `left_stick_x` | `GP_LStickX` | `LStickR-LStickL` | Left stick X | Steer (`Turn`, `HardTurn`), `KickTurn`, `BodySpin`, powerslide (`LeftSlide`/`RightSlide` beyond 0.9 deflection), grind balance (`GrindBalanceX`, `PhysGrindTranslation`), off-board walking, `WipeoutControlX` |
+| 65 | `left_stick_y` | `GP_LStickY` | `LStickU-LStickD` | Left stick Y | Steering angle (with X), automatic push (profile option), off-board walking, `WipeoutControlY` |
+| 66 | `left_stick_click` | `GP_LStickIn` | `LStick` | Left stick click | `WipeOutRequest` (bail) with 69 and both triggers fully pressed |
+| 67 | `right_stick_x` | `GP_RStickX` | `RStickR-RStickL` | Right stick X | Flick-it trick gestures, `TweakX`, `BoardAdjustAngle`, `HandPlantTweakX`, `PhysGrindTranslation`, `OB_LookAtX`, `WipeoutGestureX` |
+| 68 | `right_stick_y` | `GP_RStickY` | `RStickU-RStickD` | Right stick Y | Flick-it trick gestures, `Manual` / `ManualBrake`, `TweakY`, `HandPlantTweakY`, `PhysGrindUpDown`, `OB_LookAtY` |
+| 69 | `right_stick_click` | `GP_RStickIn` | `RStick` | Right stick click | `WipeOutRequest` with 66 and both triggers; `OB_DoAirBodyTweak` |
+| 70 | `left_trigger` | `GP_LTrigger` | `LTrigger` | Left trigger | `LeftAirGrab` (> 0), `LeftGroundGrab` (= 1), `Crouch`; off board a full press is `OB_DropBoard` / `OB_RetrieveBoard`; part of `WipeOutRequest` |
+| 71 | `right_trigger` | `GP_RTrigger` | `RTrigger` | Right trigger | `RightAirGrab`, `RightGroundGrab`, `Crouch`; off board `OB_ThrowBoard`; `WipeOutPushOff`; part of `WipeOutRequest` |
+| 72 | `left_bumper` | `GP_LBumper` | `LBumper` | Left bumper | No intent of its own: wins over RB when both are pressed together; while held it suppresses the D-pad gestures and the board toggle (79) |
+| 73 | `right_bumper` | `GP_RBumper` | `RBumper` | Right bumper | `GrabWorld` (ledges, coping, handplants), `DarkCatch` / `NewDarkCatch`, `OB_DoAirBodyTweak`; suppresses D-pad gestures |
+| 74 | `dpad_up` | `GP_UDPad` | `DPadU` | D-pad up | `GestureUpStart` / `GestureUpHeld` |
+| 75 | `dpad_down` | `GP_DDPad` | `DPadD` | D-pad down | `GestureDownStart` / `GestureDownHeld` |
+| 76 | `dpad_left` | `GP_LDPad` | `DPadL` | D-pad left | `GestureLeftStart` / `GestureLeftHeld` |
+| 77 | `dpad_right` | `GP_RDPad` | `DPadR` | D-pad right | `GestureRightStart` / `GestureRightHeld` |
+| 78 | `x` | `GP_XFace` | `X` | X | `LeftPush` / `NewPush` / `Pushing`, `HandPlantOneFootLeft`, `OB_Jump` (off board), `WipeOutRecover` |
+| 79 | `y` | `GP_YFace` | `Y` | Y | `ToggleOffBoardState` / `NewToggleOffBoardState` (get off / back on the board) |
+| 80 | `a` | `GP_AFace` | `A` | A | `RightPush` / `NewPush` / `Pushing`, `HandPlantOneFootRight`, `OB_Sprint` (off board, while B is up), `WipeOutRecover` |
+| 81 | `b` | `GP_BFace` | `B` | B | `Brake`, `Dismount` / `NewDismount` (in the air the graphs choose dismount or a no-foot trick), `DarkCatch`, `HandPlantDismount`; blocks `OB_Sprint` |
+
+The session-marker combos (LB + D-pad) and the menus read the pad directly, not
+these actions. Example, a scripted ollie: `override_action('a', 1)` for 0.25 s,
+then `right_stick_y` −1 for 0.35 s and +1 for 0.25 s, then release both.
+
+### Controller identity
+
+`sdk.input.controller(slot)` returns the identity of the controller in slot
+0..3 (default: the slot gameplay reads) or nil; `sdk.input.controllers()`
+returns `{active, slots}`. Fields: `family` (`xbox360`, `xbox_one`,
+`xbox_elite`, `xinput_gamepad`, `playstation3/4/5`, `switch_pro`,
+`joycon_left/right/pair`, `standard`, XInput subtypes such as `wheel` or
+`guitar`, `unknown`), `name`, `vendor_id` / `product_id`, `backend` (`sdl` or
+`xinput`), `driver` (SDL device path, e.g. `XInput#0`), `xinput_subtype` and
+`wireless` (XInput only), `paddles` (reported by the driver) and
+`hardware_paddles` (the model has), `touchpad`, `misc_button`, `prompt_style`
+(`xbox`, `playstation`, `nintendo`), `face_labels` (printed names of the South,
+East, West and North buttons) and `summary`. It is read-only and does not
+change gameplay input: the button layout is positional for every pad (the
+South button is always the A action, also on Nintendo pads). Retail Skate 3
+only knew Xbox 360 pads, so the game's own prompts stay Xbox; a mod can use
+`face_labels` for its own UI.
 
 `sdk.graphs.read("action"|"motion")` reads the live controller.
 `sdk.graphs.set_enabled(graph, "state"|"transition"|"behavior", id, bool|nil)`

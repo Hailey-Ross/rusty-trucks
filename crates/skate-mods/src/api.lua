@@ -503,12 +503,44 @@ function sdk.triggers.untrack(key) submit{kind="trigger_untrack",key=key} end
 function sdk.triggers.configure(options) submit{kind="trigger_configure",options=non_empty(options)} end
 
 sdk.input = {}
+-- Mapped gameplay action IDs by stable key (retail input.cfg GP_* order, see
+-- sdk/GENERAL_API.md). Accepted wherever an action ID is.
+sdk.input.action_ids = {
+    left_stick_x=64, left_stick_y=65, left_stick_click=66,
+    right_stick_x=67, right_stick_y=68, right_stick_click=69,
+    left_trigger=70, right_trigger=71, left_bumper=72, right_bumper=73,
+    dpad_up=74, dpad_down=75, dpad_left=76, dpad_right=77,
+    x=78, y=79, a=80, b=81,
+}
+local function action_id(id)
+    if type(id)=='string' then
+        local mapped = sdk.input.action_ids[id]
+        assert(mapped~=nil,'unknown action key '..id)
+        return mapped
+    end
+    assert(type(id)=='number' and id%1==0 and id>=64 and id<=81,'action ID must be 64..81')
+    return id
+end
 function sdk.input.down(key)
     local keys = sdk.snapshot.keys
     return keys ~= nil and keys[key] == true
 end
+-- Identity of the controller in slot 0..3 (default: the slot gameplay reads),
+-- or nil when the slot is empty. Read-only.
+function sdk.input.controller(slot)
+    local c = as_table(sdk.snapshot.controllers) or {}
+    if slot == nil then slot = c.active end
+    if slot == nil then return nil end
+    assert(type(slot)=='number' and slot%1==0 and slot>=0 and slot<=3,'controller slot must be 0..3')
+    return (as_table(c.slots) or {})[slot+1]
+end
+function sdk.input.controllers()
+    local c = as_table(sdk.snapshot.controllers) or {}
+    local slots = as_table(c.slots) or {}
+    return {active=c.active, slots={slots[1],slots[2],slots[3],slots[4]}}
+end
 function sdk.input.action(id)
-    assert(type(id)=='number' and id%1==0 and id>=64 and id<=81,'action ID must be 64..81')
+    id = action_id(id)
     local actions = sdk.snapshot.actions
     return actions and actions[id-63] or 0.0
 end
@@ -580,7 +612,7 @@ function sdk.engine.systems() return (sdk.snapshot.engine or {}).systems or {} e
 function sdk.engine.inspect(key,system) sdk.commands.request(key,{kind="engine_inspect",system=system}) end
 function sdk.engine.read(system)
     local s=sdk.snapshot
-    if system=="input" then return {pad=s.pad,actions=s.actions,keys=s.keys} end
+    if system=="input" then return {pad=s.pad,actions=s.actions,keys=s.keys,controllers=s.controllers} end
     if system=="commands" then return (s.command_results or {})[sdk.mod_id] end
     local key=({player="player",rig="player_physics",bodies="physics",world="map",camera="camera",network="network",scoring="player"})[system]
     if key then return s[key] end
@@ -611,7 +643,10 @@ function sdk.bodies.angular_impulse(ref,value)
     if ref.kind=="mod" then sdk.physics.torque_impulse(ref.key,value)
     else submit{kind="native_impulse",body={kind=ref.kind,index=ref.index},impulse=value,angular=true} end
 end
-function sdk.input.override_action(id,value) submit{kind="input_override",action=id,value=value} end
+function sdk.input.override_action(id,value)
+    if type(id)=='string' then id=action_id(id) end
+    submit{kind="input_override",action=id,value=value}
+end
 
 sdk.graphs = {}
 function sdk.graphs.read(graph) return (sdk.engine.read("graphs") or {})[graph] end
