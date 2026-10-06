@@ -22,6 +22,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 
 **How to use logging**
 - Start the game with `PLAY-WITH-LOG.bat`. It saves the whole session to `logs\game-<date>-<time>.stderr.log` next to the exe and shows the file name when you quit. One file per session.
+- Peds are logged too: the log notes your position and the nearest ped every 2.5 s, and any ped drawn floating above the floor gets a `PED_FLOATING` line with its exact position, so a floating ped can be found from the log alone.
 - If the game closes on its own, it also writes a crash report to `%LOCALAPPDATA%\Skate3RustEngine\CrashReports` (paste that path into Explorer's address bar). The crash report is short; please attach the session log as well.
 - For frame rate problems, turn on **GRAPHICS > Frame-time counter** before you play. It shows the 1 % low, the worst frame and hitches (a plain FPS average hides stutter); include a screenshot or video of it with your report.
 - Try to keep one problem per session: start a session, reproduce it, quit. Note roughly when it happened (minutes in) and where (map and spot). A short video makes it much easier.
@@ -41,6 +42,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 
 ## Fixed in this build
 
+- **Peds floating in the air all over the map:** peds were stood on the first solid surface within 1.6 m above them (awnings, ledges, signs, invisible collision). They are now drawn on the floor under them: the search only reaches the navmesh step height (0.2 m) upward. On DownTown's navmesh this lifted peds at 195 spots before and none after.
 - **Game closed when letting go of a carried prop:** while carrying, the walk cycle's timing was asked to reach a phase in zero seconds, which turned it into an invalid number; on letting go, the stand-up animation could not pick a clip and the game stopped. Carrying now holds the walk cycle still. Found from a tester log thanks to the new error line, which now names the broken animation input and the clips it was choosing between.
 - **Better crash logs:** any animation choice that gets an invalid input now names that input and the candidate clips in the session log.
 
@@ -88,14 +90,15 @@ Being worked on now, ported from the retail game code (the rolling `hails-additi
 - **Carried props:** retail's own carry movement (free movement in every direction, stepping up curbs) and grab placement, dragged props getting pushed through the floor, and dropping the board when you grab a prop.
 - **Pedestrians hit by cars:** retail's reaction (knock-down and ragdoll, then fading out or getting up and fleeing), confirmed from the game code first.
 - **Random grind bails** (also on upstream `main`), starting with the PCU Library rails.
+- **Peds and moved props:** peds should walk round props after you move them.
 - **Better session logs:** carried prop position and ground height, NPC skater facing versus travel direction, warnings when a prop ends up below the ground or a skater moves backwards, and car contacts.
 
 ## Known issues
 
 From the latest play tests:
-- **Carrying props:** while holding a prop you get pushed forwards or slightly to the side and cannot move fully freely (carry movement is not retail's yet, and stepping up curbs while dragging is lost). The grab lands close to the prop's edge but not exactly on it. Dragged props (benches, trash cans, vending machines) can get pushed through the floor and drop into the void, and a dragged prop can pull back toward the spot it started at, dragging you with it. Your skateboard stays with you when you grab a prop (retail drops it on the floor).
+- **Carrying props:** while holding a prop you get pushed forwards or slightly to the side and cannot move fully freely (carry movement is not retail's yet, and stepping up curbs while dragging is lost). The grab lands close to the prop's edge but not exactly on it. Dragged props (benches, trash cans, vending machines) can get pushed through the floor and drop into the void, and a dragged prop can pull back toward the spot it started at, dragging you with it. Props still fall through the map very easily. Your skateboard stays with you when you grab a prop (retail drops it on the floor).
 - **NPC skaters:** after switching to another recorded line one can ride backwards (facing one way, moving the other), including through grinds. Some animations still look stiff, grabs show an ollie, and trick height, grind variety, landings, spins and fakie / goofy are not finished. They push props but do not steer round obstacles or bail on heavy props yet.
-- **Pedestrians:** one can stand idle in the air above the wide DownTown stairs; one model walks stiffly and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail.
+- **Pedestrians:** they walk through props you have moved; one model walks stiffly and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail.
 - **Cars:** pedestrians pass straight through cars (retail cars knock them down). A car can knock you over, but through general physics, not retail's own car-hit rules. Paint colours and glass are estimates (the vehicle shader is not decoded yet).
 - **NPC draw distance** (Esc > GRAPHICS) is a quality-of-life option, not retail; higher settings cost frame time.
 - **Grinding:** some grind locations make you bail at random, for example the rails at the PCU Library spawn. This also happens on upstream `main`, so it is not caused by this fork's changes.
