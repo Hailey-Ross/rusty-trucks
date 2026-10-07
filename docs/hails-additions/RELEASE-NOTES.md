@@ -49,40 +49,23 @@ Every report with a log helps. Logs let us see exactly where and when something 
 
 ## Added since main
 
-Each item has a document in `docs/hails-additions/` and, where open, an upstream PR.
+Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this fork's work (2026-10-06, upstream `b3c9679`). What this build adds on top of it:
 
-**Gameplay and world**
-- **Living world (early milestones, upstream draft #52):** ambient NPC skaters riding the retail recorded lines (they chain from line to line, blend between animations like the player, play their recorded tricks and leave beyond 120 m like retail), pedestrians with their retail models, tinted clothing, animation, fades and navigation on the retail navmesh (they walk round props), and traffic: road graph, traffic signals, the vehicle census and cars driving on screen. All from the disc data, seeded and multiplayer-ready, with a Lua mod API (`sdk.world.set_tuning`) and an NPC draw distance option.
-- **Movable objects (#15 follow-up):** grab, carry, drag and drop props on foot (hold RB, left stick moves the object, right stick turns), placement mode with saved layouts, authored prop physics; NPC skaters push props too.
-- **Water (#30):** retail water behaviour: shallow water is solid, deep water floats you and the board, bail in water, water camera and vignette, entry splash, animated water from the game.
-- **Retail map spawns (#27):** every map starts at its retail-authored start point and heading.
-- **Named trigger volumes (#50):** trigger volumes exported from the maps and tracked like retail, moddable.
-- **Camera Angle setting (#47):** the retail Low / High camera option, moddable.
-- **Board solver with retail's 50 constraint iterations (#35).**
+**Living world (upstream draft #52, still open)**
+- **Ambient NPC skaters** riding the retail recorded lines: they chain from line to line, blend between animations like the player, play their recorded tricks on body and board and leave beyond 120 m like retail; they push props too.
+- **Pedestrians** with their retail models, tinted clothing, animation, fades and navigation on the retail navmesh (they walk round props); drawn on the floor under them and never spawned in the air.
+- **Traffic:** road graph, traffic signals, the vehicle census and cars driving on screen.
+- **Movable objects (#15 follow-up):** grab, carry, drag and drop props on foot (hold RB, left stick moves the object, right stick turns), placement mode with saved layouts, authored prop physics.
+- All from the disc data, seeded and multiplayer-ready, with a Lua mod API (`sdk.world.set_tuning`), an NPC draw distance option, and always-on logging of ped positions and floating peds.
+- **Frame drop with the board thrown away fixed:** a hidden board no longer scans every collision triangle each tick.
 
-**Audio (upstream #32, one PR)**
-- A native port of Skate 3's retail audio engine: the AEMS patch programs, voice graph, MixMap mixer, buses, the granular rolling sound, board contacts, tricks, slides and every player sound component.
-- Retail world audio: map ambience zones, emitters, location one-shots, traffic, ped and NPC skater sounds, the car alarm, session marker sounds and the teleport crackle, the announcer channel.
-- Audio modding: an `audio.json` content overlay, custom map audio, mod voices, live tuning, mod emitters and sound rules, audio events for mods.
+**This fork's releases**
+- The release workflow builds, publishes and updates from this repository (the in-game updater follows `Hailey-Ross/rusty-trucks`), a rolling `hails-additions` build on every push, and `PLAY-WITH-LOG.bat` for session logs.
 
-**Input**
-- **SDL3 gamepad backend (#24):** wider controller support with exact XInput-shaped input and an XInput fallback (tested with an Xbox Elite Series 2).
-
-**Setup and tools**
-- **Windows long paths (#23):** setup enables long paths for the pro roster and relaunches when needed.
-- **Setup keeps converting when the console window is closed (#42).**
-- **Faster setup (#29, #51):** duplicate stream copies skipped, the character customiser runs in parallel, threaded map writing, below-normal priority and budget overrides.
-- **One map validator pass (#28):** all map checks stream through one `--validate-maps` process with spawn and start-up warnings.
-- **Published research and regression tools, and shareable development skills for working on the engine (#37).**
-- **Fork releases:** the release workflow builds, publishes and updates from the repository it runs in.
-
-**Fixes**
-- **Frame drop with the board thrown away:** a hidden board no longer scans every collision triangle each tick.
-- **Invisible walls (#25):** surfaceless zone and trigger boxes no longer act as collision.
-- **Offboard jump runaway (#40):** fixes the "Nonfinite BipedAir launch packet" crash (#10).
-- **Crash reports (#41):** keep the first panic, drop `<unknown>` frames, truncate long lines.
-- **Lua empty tables (#45):** empty tables read as empty lists in mod command list fields.
-- **Diagnostics (#51):** a frame-time counter and log, `sdk.snapshot.frame` for mods.
+**Now in upstream main** (shipped there, listed so nothing is lost; each has a document in `docs/hails-additions/`)
+- Retail audio engine port, world audio and audio modding (#32), water (#30), retail map spawns (#27), named trigger volumes (#50), Camera Angle Low / High (#47), retail's 50 solver iterations (#35), SDL3 gamepads (#24, #53).
+- Setup: Windows long paths (#23), keeps converting when the console closes (#42), faster setup (#29, #51), one map validator pass (#28).
+- Fixes and tools: invisible walls (#25), offboard jump crash (#40, issue #10), crash reports (#41), Lua empty tables (#45), frame-time diagnostics (#51), research and regression tools and shareable skills (#37).
 
 ## In progress
 
