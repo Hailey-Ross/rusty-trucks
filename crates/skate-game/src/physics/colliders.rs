@@ -30,6 +30,7 @@ pub(crate) fn world_volumes(
         let pose = poses[id.index()];
         let mut add = |primitive, material: RetailContactMaterial| {
             volumes.push(BoardWorldVolume {
+                collision_group: board.collision_group(),
                 body: CollisionBody::Board(id),
                 primitive,
                 material,

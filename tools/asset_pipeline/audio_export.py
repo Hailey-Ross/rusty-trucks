@@ -1042,6 +1042,13 @@ def player_tuning(collections: list[dict], image: bytes | None = None, image_bas
         for field, name in WHEEL_BUCKET.items():
             if field in wheel['fields']:
                 out[name] = _exact(wheel['fields'][field])
+    # Conditioner82772D30 reads the two jump-strength cutoffs (index1 first).
+    jump = resolve('Hash_A867FBE3454326FF', 'default', 'Hash_468752B0BEE65CDB')
+    if jump is not None:
+        values = [struct.unpack('>f', bytes.fromhex(x))[0] for x in jump['array']['items']]
+        if len(values) != 2:
+            raise ValueError('native jump-strength tuning must contain two thresholds')
+        out['jump_thresholds'] = values
     if TRICK_CLASS in by_class:
         for name, field in (('audio_tricks', TRICK_FIELD), ('audio_tricks_2', TRICK_FIELD_2)):
             tricks = {}

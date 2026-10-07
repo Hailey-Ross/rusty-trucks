@@ -107,6 +107,8 @@ pub struct WheelWorldSettings {
 /// One enabled moving primitive, with its owning solver body and material.
 #[derive(Clone, Copy, Debug)]
 pub struct BoardWorldVolume {
+    /// Native serialized VolumeData+212 (Part+92), not Volume+84.
+    pub collision_group: u32,
     pub body: CollisionBody,
     pub primitive: ContactPrimitive,
     pub linear_velocity: Vector3,
@@ -306,6 +308,7 @@ impl BoardWorld {
             .filter_map(|&id| {
                 let body = &board.bodies()[id.index()];
                 (body.state_flags != 1).then_some(BoardWorldVolume {
+                    collision_group: board.collision_group(),
                     body: CollisionBody::Board(id),
                     primitive: ContactPrimitive::Sphere(Sphere {
                         center: poses[id.index()].translation,
@@ -362,7 +365,6 @@ impl BoardWorld {
             .and_then(|b| Bounds::from_points(b.iter().flat_map(|b| [b.min, b.max])))
             .map(|b| b.expanded(padding));
         let ranges = self.candidate_ranges(bounds);
-        // Taken out so water contacts can run `&self` line queries below.
         let mut output = std::mem::take(&mut self.contacts);
         let mut publish = |records: &[ContactRecord]| {
             output.extend(records.iter().map(collision_from_record));
@@ -370,6 +372,12 @@ impl BoardWorld {
         'triangles: for index in ranges.into_iter().flatten() {
             let entry = self.triangles[index];
             for (volume, volume_bounds) in volumes.iter().zip(&volume_bounds) {
+                // GroundPipeline8277BC58 checks the group/surface exclusion
+                // table before running the geometric dispatcher. Its stock
+                // initializer82767D60 sets only (7,12) and (16,12).
+                if matches!(volume.collision_group, 7 | 16) && is_water_tag(entry.tag) {
+                    continue;
+                }
                 if self.query_metadata.is_some()
                     && volume_bounds.is_some_and(|b| !self.triangle_bounds[index].overlaps(b))
                 {
@@ -383,16 +391,6 @@ impl BoardWorld {
                 ) else {
                     continue;
                 };
-                // Project choice (docs/hails-additions/09-water.md): deep water
-                // is not solid; shallow water (a floor within FLOAT_DEPTH under
-                // the contact) is, as in retail. Ray and trajectory queries
-                // still see all water.
-                if is_water_tag(entry.tag)
-                    && manifold.count > 0
-                    && !self.water_shallow_at(manifold.points[0].b)
-                {
-                    continue;
-                }
                 let material = combine_contact_materials(volume.material, entry.material);
                 for pair in &manifold.points[..manifold.count] {
                     let contact = RetailContactInput {

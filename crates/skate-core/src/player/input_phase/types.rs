@@ -97,6 +97,16 @@ pub struct GroundOutputFields {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CollisionOutputFields {
     pub wheel_count_0: u32,
+    /// Board Fill surface vote, consumed by 82DB8120 in riding states.
+    pub surface_type_16: u32,
+    /// SkeletonCollision Fill82BD60C8: +4064/+4068/+4081.
+    pub surface_height_208: f32,
+    /// SkeletonCollision::Fill82BD60C8, consumed by bail scoring/audio packets.
+    pub body_response_196: f32,
+    pub force_response_200: f32,
+    pub contact_region_response_80: [f32; 8],
+    pub flag_214: u8,
+    pub flag_217: u8,
     pub scalar_28: f32,
     ///Offboard landing manager82D79498; reset82DE3290 clears this position.
     pub vector_48: RawVector,

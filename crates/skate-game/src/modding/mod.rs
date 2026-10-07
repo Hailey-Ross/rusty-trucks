@@ -18,8 +18,8 @@ pub(crate) use participation::{player_suspended, peer_suspended};
 mod session;
 mod volumes;
 mod world_audio;
-mod triggers;
 pub(crate) mod world_tuning;
+mod triggers;
 mod capture;
 pub(crate) mod player_physics;
 

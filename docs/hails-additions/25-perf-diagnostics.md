@@ -57,15 +57,16 @@ the lows and the hitch count are what describe stutter; a mean cannot.
     `worst 5 s`, `hitches`, `CPU main / physics`, and an 80-bar graph (4 s; green ≤ 16.7 ms, yellow above, red =
     hitch). Text updates at 4 Hz, the graph at 10 Hz; hidden = no UI work.
   - `SKATE_FPS_LOG` still prints the old `SKATE_FPS_SAMPLE` lines.
-- `log.rs`: `SKATE_FRAME_LOG=<file>` → one TSV row per frame, written by a background thread (`mpsc` channel,
-  flush every 250 ms and on drop, thread joined on drop). Unset: no thread, no file, no row work. Format v1:
+- `log.rs`: `SKATE_FRAME_LOG=<file>` → one TSV row per frame, written by a background thread with a bounded 4,096-row queue. Sending never blocks: a full queue drops
+  new rows, and the dropped count is reported on shutdown. The writer flushes after draining each batch
+  and on drop, and is joined on drop. Unset: no thread, no file, no row work. Format v1:
   ```
   # skate3rust frame log v1
   wall_unix_s  frame  frame_ms  fixed_steps  fixed_ms  main_ms  hitch  median_ms
   ```
   `wall_unix_s` (UTC) lines rows up with `logs\game-*.stderr.log` and the audio state log; `hitch` is `HITCH` or
   empty. Reading tool (fork-local): `.claude/skills/optimisation/tools/frame_log_summary.py`.
-- `graphics_menu.rs`: row 16 "Frame-time counter On/Off" in GRAPHICS (after Day & night), saved as
+- `graphics_menu.rs`: row 28 "Frame-time counter On/Off" in GRAPHICS (after the audio controls), saved as
   `frame_stats` in `settings/graphics.json`, **off by default** (old files load as off).
   On `hails-additions` (merge of 2026-10-04) the row id is 27 (`FRAME_STATS_ROW`): ids 16 to 18 are the
   audio volume rows there, 19 the controller row and 20 to 26 the multiplayer debug page. It still shows last in GRAPHICS.

@@ -1,0 +1,202 @@
+
+#include <rex/ppc/context.h>
+#include <rex/ppc/intrinsics.h>
+#include <windows.h>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+#define DEFINE_REX_FUNC(name) void name(PPCContext& ctx, uint8_t* base)
+const char*current_function="boot";
+#define REX_FUNC_PROLOGUE() current_function=__func__
+#define REX_RAW_ADDR(x) (base + uint32_t(x))
+#define REX_LOAD_U32(x) __builtin_bswap32(*(uint32_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U32(x,y) (*(uint32_t*)REX_RAW_ADDR(x)=__builtin_bswap32(y))
+
+#define REX_LOAD_U8(x) (*(uint8_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U16(x) __builtin_bswap16(*(uint16_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U64(x) __builtin_bswap64(*(uint64_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U8(x,y) (*(uint8_t*)REX_RAW_ADDR(x)=y)
+#define REX_STORE_U16(x,y) (*(uint16_t*)REX_RAW_ADDR(x)=__builtin_bswap16(y))
+#define REX_STORE_U64(x,y) (*(uint64_t*)REX_RAW_ADDR(x)=__builtin_bswap64(y))
+
+#include <cstdlib>
+void indirect(uint32_t,PPCContext&,uint8_t*);
+#define REX_CALL_INDIRECT_FUNC(a) indirect(a,ctx,base)
+DEFINE_REX_FUNC(__savegprlr_16){
+REX_STORE_U64(ctx.r1.u32+(-136),ctx.r16.u64);
+REX_STORE_U64(ctx.r1.u32+(-128),ctx.r17.u64);
+REX_STORE_U64(ctx.r1.u32+(-120),ctx.r18.u64);
+REX_STORE_U64(ctx.r1.u32+(-112),ctx.r19.u64);
+REX_STORE_U64(ctx.r1.u32+(-104),ctx.r20.u64);
+REX_STORE_U64(ctx.r1.u32+(-96),ctx.r21.u64);
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_16){
+ctx.r16.u64=REX_LOAD_U64(ctx.r1.u32+(-136));
+ctx.r17.u64=REX_LOAD_U64(ctx.r1.u32+(-128));
+ctx.r18.u64=REX_LOAD_U64(ctx.r1.u32+(-120));
+ctx.r19.u64=REX_LOAD_U64(ctx.r1.u32+(-112));
+ctx.r20.u64=REX_LOAD_U64(ctx.r1.u32+(-104));
+ctx.r21.u64=REX_LOAD_U64(ctx.r1.u32+(-96));
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+
+DEFINE_REX_FUNC(__savegprlr_22){
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_22){
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__savegprlr_24){
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_24){
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__savegprlr_27){
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_27){
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+
+
+DEFINE_REX_FUNC(__savegprlr_14){
+REX_STORE_U64(ctx.r1.u32+(-152),ctx.r14.u64);
+REX_STORE_U64(ctx.r1.u32+(-144),ctx.r15.u64);
+REX_STORE_U64(ctx.r1.u32+(-136),ctx.r16.u64);
+REX_STORE_U64(ctx.r1.u32+(-128),ctx.r17.u64);
+REX_STORE_U64(ctx.r1.u32+(-120),ctx.r18.u64);
+REX_STORE_U64(ctx.r1.u32+(-112),ctx.r19.u64);
+REX_STORE_U64(ctx.r1.u32+(-104),ctx.r20.u64);
+REX_STORE_U64(ctx.r1.u32+(-96),ctx.r21.u64);
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_14){
+ctx.r14.u64=REX_LOAD_U64(ctx.r1.u32+(-152));
+ctx.r15.u64=REX_LOAD_U64(ctx.r1.u32+(-144));
+ctx.r16.u64=REX_LOAD_U64(ctx.r1.u32+(-136));
+ctx.r17.u64=REX_LOAD_U64(ctx.r1.u32+(-128));
+ctx.r18.u64=REX_LOAD_U64(ctx.r1.u32+(-120));
+ctx.r19.u64=REX_LOAD_U64(ctx.r1.u32+(-112));
+ctx.r20.u64=REX_LOAD_U64(ctx.r1.u32+(-104));
+ctx.r21.u64=REX_LOAD_U64(ctx.r1.u32+(-96));
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+
+void indirect(uint32_t,PPCContext&,uint8_t*){abort();}
+// @RETAIL_FUNCTION_82BD60C8@
+LONG CALLBACK fault(EXCEPTION_POINTERS*p){fprintf(stderr,"contact fault %s code %08lx\n",current_function,p->ExceptionRecord->ExceptionCode);ExitProcess(8);return EXCEPTION_EXECUTE_HANDLER;}
+int main(int argc,char**argv){
+ SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,fault);
+ if(argc!=3)return 2;auto base=(uint8_t*)VirtualAlloc(nullptr,0x100000000ull,MEM_RESERVE,PAGE_READWRITE);
+ if(!base||!VirtualAlloc(base+0x82000000,0x11b0000,MEM_COMMIT,PAGE_READWRITE)||!VirtualAlloc(base+0x10000,0x80000,MEM_COMMIT,PAGE_READWRITE))return 3;
+ std::ifstream image(argv[1],std::ios::binary);image.read((char*)base+0x82000000,0x11b0000);if(!image)return 4;
+ FILE*out=fopen(argv[2],"w");if(!out)return 5;fprintf(out,"# TU3 bail_contact 82BD60C8; settings120/124/128/164 accumulators4036/4040 eight region inputs and ten outputs; f32 hex\n");
+ uint32_t seed=0x9142;auto rng=[&](){seed^=seed<<13;seed^=seed>>17;seed^=seed<<5;return seed;};
+ auto put=[&](uint32_t a,float f){REX_STORE_U32(a,std::bit_cast<uint32_t>(f));};
+ const uint32_t self=0x20000, phys=0x30000, collision=0x40000, record=0x50000, global=0x60000, holder=0x61000, tuning=0x62000;
+ REX_STORE_U32(0x830cfda4,global);REX_STORE_U32(global+268,holder);REX_STORE_U32(holder+4,tuning);
+ REX_STORE_U32(phys+24,collision);REX_STORE_U32(self+4016,record);
+ for(int tick=0;tick<4096;tick++){
+  float t120=(rng()%9)*0.25f,t124=(rng()%9)*0.5f,t128=100+(rng()%1000),t164=(rng()%6)*2.0f;
+  float a=(rng()%11)*0.1f,b=(rng()%11)*0.1f;
+  put(tuning+120,t120);put(tuning+124,t124);put(tuning+128,t128);put(tuning+164,t164);put(self+4036,a);put(self+4040,b);
+  fprintf(out,"%08x %08x %08x %08x %08x %08x",std::bit_cast<uint32_t>(t120),std::bit_cast<uint32_t>(t124),std::bit_cast<uint32_t>(t128),std::bit_cast<uint32_t>(t164),std::bit_cast<uint32_t>(a),std::bit_cast<uint32_t>(b));
+  for(int i=0;i<8;i++){
+   int part=(rng()%5==0)?-1:i+1;float force=(rng()%13)*0.125f,weight=(rng()%17)*0.03125f;
+   REX_STORE_U32(self+1200+4*i,part);put(self+944+4*i,force);put(record+4560+4*(i+1),weight);
+   fprintf(out," %d %08x %08x",part,std::bit_cast<uint32_t>(force),std::bit_cast<uint32_t>(weight));
+   for(int j=0;j<4;j++){float v=(int(rng()%65)-32)*0.03125f,n=(int(rng()%17)-8)*0.125f;if(tick&1){v=std::bit_cast<float>((rng()&0x807fffff)|0x3f000000);n=std::bit_cast<float>((rng()&0x807fffff)|0x3f000000);}put(record+4048+16*(i+1)+4*j,v);put(self+1008+16*i+4*j,n);fprintf(out," %08x %08x",std::bit_cast<uint32_t>(v),std::bit_cast<uint32_t>(n));}
+  }
+  PPCContext ctx{};ctx.fpscr.loadFromHost();ctx.r1.u32=0x80000;ctx.r3.u32=self;ctx.r4.u32=phys;sub_82BD60C8(ctx,base);
+  fprintf(out," %08x %08x",REX_LOAD_U32(collision+196),REX_LOAD_U32(collision+200));for(int i=0;i<8;i++)fprintf(out," %08x",REX_LOAD_U32(collision+80+4*i));fprintf(out,"\n");
+ }
+ fclose(out);return 0;
+}

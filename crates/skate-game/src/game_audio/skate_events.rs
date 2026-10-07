@@ -133,6 +133,7 @@ pub(crate) struct SkaterAudioMemory {
     com_speed_212: f32,
     /// The conditioner's step code (`+740`, `sub_827729B8`).
     step_code: skate_audio::player::footsteps::StepCode,
+    offboard_hold: skate_audio::player::bridge::OffboardHold,
 }
 
 fn vec(v: skate_core::math::Vector3) -> Vec3 {
@@ -242,6 +243,13 @@ fn build(physics: &GamePhysics, skater: &SkaterRuntime, memory: &mut SkaterAudio
         },
     });
     // `+216` = last tick's `+212`; the body poster applies the graph at it (`player::contacts`).
+    //82DB6EC0 copies Processed2480bit18 into OffBoard309;827A1B78 packs record164bit0.
+    //824B0DA8 applies the per-skater hold clock before advancing it by dt.
+    audio_state.offboard_310 = memory.offboard_hold.tick(
+        skater.player_input.processed.flags_2480 & (1 << 18) != 0,
+        audio_state.ground_speed,
+        dt,
+    );
     audio_state.com_speed_216 = memory.com_speed_212;
     memory.com_speed_212 = audio_state.com_speed();
     memory.started = true;
@@ -675,10 +683,12 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
         deck_material: if f.unridden { 143 } else { material_of_tag(ground.part_audio_surfaces[2]) },
         foot_speed_y: [toes[0][1].abs(), toes[1][1].abs()],
         foot_speed_xz: [xz(toes[0]), xz(toes[1])],
-        jump_bucket: 0,
+        // Common82DB6EC0 copies Processed2624 into Ground300;82772D30 buckets it.
+        jump_strength: skater.animation_input.extra.jump_strength,
+        jump_bucket: 0, // PlayerAudio::resolved uses the exported native thresholds.
         // `+352`: the host resolves it from the scorable (`PlayerTuning::audio_trick_2`).
         audio_trick_2: -1,
-        offboard_310: false,
+        offboard_310: false, // build applies the native bridge clock after publication.
         deck_spin_xy: f.deck_spin_xy,
         // `+240` / `+260`: KnownAir's predicted time until landing and jump height (Air+184 / +200).
         air_until_landing: p.air.scalar_184,

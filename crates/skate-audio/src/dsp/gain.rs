@@ -45,16 +45,13 @@ impl Gain {
     }
 }
 
-/// The de-click kernel: samples 0..63 × a gain ramping from `start` by `step`, the rest ×
-/// (start + 64·step). Lanes are built per group of 8 as (start + 8g·step) + m·step with plain
-/// (unfused) single-precision operations. Against the PoC's replay-verified kernel
-/// (tests/dsp_oracle.rs): the flat part and power-of-two steps are bit-exact; with an irregular
-/// step 11 of 64 ramp samples differ by 1 ulp (the exact lane arithmetic is not recovered).
+/// TU3 `82B3C098`: four initial lanes, advanced in two groups of 32 samples.
+/// The seeds for lanes 2/3, group advances and flat gain use fused operations.
+/// Each lane's first addition and the final sample multiply round separately.
+/// Expected samples are obtained by executing the native instruction translation,
+/// not by another implementation of this formula (`tests/retail_gain.rs`).
 pub fn ramp(samples: &mut [f32], start: f32, step: f32) {
-    let flat = start + 64.0 * step;
-    for (k, s) in samples.iter_mut().enumerate() {
-        *s *= if k < 64 { (start + (8 * (k / 8)) as f32 * step) + (k % 8) as f32 * step } else { flat };
-    }
+    skate_audio_fma::gain_ramp(samples, start, step);
 }
 
 #[cfg(test)]

@@ -36,6 +36,10 @@ fn validate(source: &str, extras: &[&str]) -> naga::Module {
     let mut composer = Composer::default().with_capabilities(naga::valid::Capabilities::all());
     let fixtures = [
         (
+            "fullscreen",
+            include_str!("../../../vendor/bevy_core_pipeline/src/fullscreen_vertex_shader/fullscreen.wgsl").to_string(),
+        ),
+        (
             "forward",
             include_str!("../../../vendor/bevy_pbr/src/render/forward_io.wgsl").to_string(),
         ),
@@ -246,4 +250,10 @@ fn world_vertex_inputs_match_the_pinned_attribute_locations() {
     }
     locations.sort_unstable();
     assert_eq!(locations, [0, 1, 2, 3, 4, 5, 6]);
+}
+
+#[test]
+fn exposure_and_tone_shaders_validate() {
+    validate(include_str!("retail_exposure.wgsl"), &[]);
+    validate(include_str!("retail_tone.wgsl"), &[]);
 }

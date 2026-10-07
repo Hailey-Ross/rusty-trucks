@@ -25,9 +25,8 @@
 //!
 //! **Not ported (no living-world data uses it):** external event conditions (`.evt` +7), record
 //! locals and clip parameters, header take-bits (`.hdr` +2 bit 7), the follow-up lists of event
-//! flags2 bit 4 and the per-channel request queue (16 slots, 8 streams, queue timeout = event +2;
-//! `sub_82971340` / `sub_82971890`). The recomp plays several living-world lines at once, so lines here
-//! start at once. Every case that is not ported fails closed (no line) instead of guessing.
+//! flags2 bit4. The host applies the shared16-slot request queue in `speech_player`;
+//! this module selects lines and takes. Unsupported selection modes fail closed.
 use std::collections::HashMap;
 
 use crate::eval::rng::Rng;
@@ -79,7 +78,7 @@ impl Record {
 pub struct Event {
     pub id: u16,
     pub name: String,
-    /// `+2`: how long a request may wait for its stream (the queue is not ported).
+    /// `+2`: how long a request may wait for its stream (zero disables expiration).
     pub queue_timeout: u16,
     /// `+4`: the queue priority.
     pub priority: u16,

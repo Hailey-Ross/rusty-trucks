@@ -1,0 +1,76 @@
+
+#include <rex/ppc/context.h>
+#include <rex/ppc/intrinsics.h>
+#include <windows.h>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+#define DEFINE_REX_FUNC(name) void name(PPCContext& ctx, uint8_t* base)
+const char*current_function="boot";
+#define REX_FUNC_PROLOGUE() current_function=__func__
+#define REX_RAW_ADDR(x) (base + uint32_t(x))
+#define REX_LOAD_U32(x) __builtin_bswap32(*(uint32_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U32(x,y) (*(uint32_t*)REX_RAW_ADDR(x)=__builtin_bswap32(y))
+
+#define REX_LOAD_U8(x) (*(uint8_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U16(x) __builtin_bswap16(*(uint16_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U64(x) __builtin_bswap64(*(uint64_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U8(x,y) (*(uint8_t*)REX_RAW_ADDR(x)=y)
+#define REX_STORE_U16(x,y) (*(uint16_t*)REX_RAW_ADDR(x)=__builtin_bswap16(y))
+#define REX_STORE_U64(x,y) (*(uint64_t*)REX_RAW_ADDR(x)=__builtin_bswap64(y))
+
+#include <cstdlib>
+void indirect(uint32_t,PPCContext&,uint8_t*);
+#define REX_CALL_INDIRECT_FUNC(a) indirect(a,ctx,base)
+DEFINE_REX_FUNC(__savegprlr_29){
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_29){
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+uint64_t desired;int input_word,start_bed,stop_bed,start_fade,stop_fade;
+void zone(uint8_t*base,uint64_t key){float out=key==1?2.f:key==2?0.25f:0.f,in=key==1?3.f:key==2?0.5f:0.f;REX_STORE_U32(0x28008,std::bit_cast<uint32_t>(out));REX_STORE_U32(0x2800c,std::bit_cast<uint32_t>(in));}
+void indirect(uint32_t a,PPCContext&ctx,uint8_t*base){switch(a){case 0x100:ctx.r3.u32=0x21300;return;case 0x104:ctx.r3.u32=0x21500;return;case 0x108:input_word=ctx.r5.s32;return;default:fprintf(stderr,"unexpected virtual %08x\n",a);abort();}}
+DEFINE_REX_FUNC(sub_824D4D40){} // resource readiness outside the phase machine under test
+DEFINE_REX_FUNC(sub_824D3E40){ctx.r3.u64=desired;} // supplied region query result
+DEFINE_REX_FUNC(sub_824D2F88){zone(base,ctx.r4.u64);REX_STORE_U32(ctx.r3.u32,0);REX_STORE_U32(ctx.r3.u32+4,0x28000);}
+DEFINE_REX_FUNC(sub_824D3590){start_bed++;REX_STORE_U32(ctx.r3.u32+60,1);}
+DEFINE_REX_FUNC(sub_824D3B40){stop_bed++;REX_STORE_U32(ctx.r3.u32+60,0);}
+DEFINE_REX_FUNC(sub_828E2730){ctx.r3.u32=0x29000;}
+DEFINE_REX_FUNC(sub_824D0F38){start_fade++;REX_STORE_U32(ctx.r3.u32,0);}
+DEFINE_REX_FUNC(sub_828E2C78){abort();}
+DEFINE_REX_FUNC(sub_828E27B0){stop_fade++;}
+DEFINE_REX_FUNC(sub_82B69978){fprintf(stderr,"unexpected zone handle %08x\n",ctx.r3.u32);abort();}
+DEFINE_REX_FUNC(sub_824D41E0);
+DEFINE_REX_FUNC(sub_824D3FE0);
+DEFINE_REX_FUNC(sub_824D3C28);
+// @RETAIL_FUNCTION_824D41E0@
+
+// @RETAIL_FUNCTION_824D3FE0@
+
+// @RETAIL_FUNCTION_824D3C28@
+
+LONG CALLBACK fault(EXCEPTION_POINTERS*p){fprintf(stderr,"ambience fault %s code %08lx\n",current_function,p->ExceptionRecord->ExceptionCode);ExitProcess(8);return EXCEPTION_EXECUTE_HANDLER;}
+int main(int argc,char**argv){AddVectoredExceptionHandler(1,fault);
+ SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
+ if(argc!=3)return 2;auto base=(uint8_t*)VirtualAlloc(nullptr,0x100000000ull,MEM_RESERVE,PAGE_READWRITE);
+ if(!base||!VirtualAlloc(base+0x82000000,0x11b0000,MEM_COMMIT,PAGE_READWRITE)||!VirtualAlloc(base+0x10000,0x40000,MEM_COMMIT,PAGE_READWRITE))return 3;
+ std::ifstream image(argv[1],std::ios::binary);image.read((char*)base+0x82000000,0x11b0000);if(!image)return 4;
+ REX_STORE_U32(0x83083c38,0x21000);REX_STORE_U32(0x21070,0x21100);REX_STORE_U32(0x21100,0x21200);REX_STORE_U32(0x21210,0x100);REX_STORE_U32(0x21300,0x21400);REX_STORE_U32(0x21404,0x104);
+ REX_STORE_U32(0x2000c,0x22000);REX_STORE_U32(0x22000,0x22100);REX_STORE_U32(0x22108,0x108);REX_STORE_U32(0x20070,1);REX_STORE_U32(0x20054,0x20054);
+ FILE*out=fopen(argv[2],"w");if(!out)return 5;fprintf(out,"# TU3 ambience 824D3C28 824D3FE0 824D41E0; desired dt current phase out_timer in_timer input start_bed stop_bed start_fade stop_fade\n");
+ for(int tick=0;tick<2048;tick++){
+  desired=tick<100?1:tick<130?2:tick<260?1:tick<420?2:tick<600?0:tick<700?3:tick<900?1:((tick/13)%4);
+  float dt=tick<1024?1.f/30:tick%4==0?0.f:tick%4==1?1.f/60:tick%4==2?0.1f:0.25f;
+  start_bed=stop_bed=start_fade=stop_fade=0;
+  PPCContext ctx{};ctx.fpscr.loadFromHost();ctx.r1.u32=0x40000;ctx.r3.u32=0x20000;ctx.f1.f64=dt;sub_824D3C28(ctx,base);
+  fprintf(out,"%llu %08x %llu %u %08x %08x %d %d %d %d %d\n",desired,std::bit_cast<uint32_t>(dt),REX_LOAD_U64(0x20030),REX_LOAD_U32(0x20040),REX_LOAD_U32(0x20044),REX_LOAD_U32(0x20048),input_word,start_bed,stop_bed,start_fade,stop_fade);
+ }
+ fclose(out);return 0;
+}

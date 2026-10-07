@@ -131,9 +131,22 @@ pub fn validate_package_content(path: &Path) -> Result<(Manifest, Option<crate::
     validate_package_content_at(path).map(|(manifest, audio, _)| (manifest, audio))
 }
 
-/// [`validate_package_content`], also returning the package's root folder (a zip is unpacked
-/// into the cache first), where its content files can be read.
-pub fn validate_package_content_at(path: &Path) -> Result<(Manifest, Option<crate::audio_content::Loaded>, std::path::PathBuf), String> {
+/// Owns a validated package's extraction for as long as callers read its files.
+pub struct PackageRoot {
+    path: PathBuf,
+    _cache: Cache,
+}
+impl PackageRoot {
+    pub fn as_path(&self) -> &Path { &self.path }
+}
+impl std::ops::Deref for PackageRoot {
+    type Target = Path;
+    fn deref(&self) -> &Path { &self.path }
+}
+
+/// [`validate_package_content`], also returning an owner of the package's root.
+/// A ZIP's extraction stays alive until the returned root is dropped.
+pub fn validate_package_content_at(path: &Path) -> Result<(Manifest, Option<crate::audio_content::Loaded>, PackageRoot), String> {
     let source = path.canonicalize().map_err(|e| e.to_string())?;
     let mut cache = Cache::default();
     let root = if source.is_dir() {
@@ -157,7 +170,7 @@ pub fn validate_package_content_at(path: &Path) -> Result<(Manifest, Option<crat
         .into_function()
         .map_err(|e| e.to_string())?;
     let audio = crate::audio_content::load(&root)?;
-    Ok((manifest, audio, root))
+    Ok((manifest, audio, PackageRoot { path: root, _cache: cache }))
 }
 
 pub fn read_bounded(root: &Path, relative: &str, limit: u64) -> Result<Vec<u8>, String> {
@@ -268,6 +281,25 @@ impl Fingerprints {
 #[cfg(test)]
 mod fingerprint_tests {
  use super::*;
+ #[test]
+ fn validated_zip_files_survive_until_the_returned_owner_is_dropped() {
+  let parent=std::env::temp_dir().join(format!("skate-validated-zip-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+  fs::create_dir_all(&parent).unwrap();
+  let archive=parent.join("test.zip");
+  let mut zip=zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+  zip.start_file("mod.json",zip::write::SimpleFileOptions::default()).unwrap();
+  zip.write_all(br#"{"id":"zip-lifetime","api":2,"name":"ZIP lifetime","version":"1.0.0","author":"test","description":"test","entry":"main.lua"}"#).unwrap();
+  zip.start_file("main.lua",zip::write::SimpleFileOptions::default()).unwrap();
+  zip.write_all(b"return {}").unwrap();
+  zip.finish().unwrap();
+  let (_,_,root)=validate_package_content_at(&archive).unwrap();
+  let extracted=root.as_path().to_owned();
+  assert_eq!(fs::read(root.join("main.lua")).unwrap(),b"return {}");
+  drop(root);
+  assert!(!extracted.exists());
+  fs::remove_dir_all(parent).unwrap();
+ }
+
  #[test]
  fn failed_changed_archive_is_not_cached_as_the_old_package() {
   let root=std::env::temp_dir().join(format!("skate-zip-stamp-{}",std::process::id()));

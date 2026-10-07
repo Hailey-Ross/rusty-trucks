@@ -25,9 +25,7 @@ def map_workers():
     available=available_memory()
     if available is not None:
         # Reserve memory for the desktop; each map and its loader can
-        # briefly hold several copies of geometry and textures. Measured
-        # (2026-10-04): DownTown's job peaks at 1.4 GiB committed, so 3 GiB
-        # per worker holds (maps are validated in one shared process).
+        # briefly hold several copies of geometry and textures.
         count=min(count,max(1,(available-2*GIB)//(3*GIB)))
     from .setup_budget import map_workers as budget
     return budget(count)
@@ -142,8 +140,7 @@ def dependency(cache,name,url,sha,report):
 
 def spawn(args,**popen):
     from .setup_budget import priority_class
-    # Conversion processes run below normal priority (SKATE_SETUP_PRIORITY
-    # overrides) so the machine stays usable; their own children inherit it.
+    # Child processes inherit the setup priority budget.
     kwargs={'creationflags':subprocess.CREATE_NO_WINDOW|priority_class()} if os.name=='nt' else {}
     external=os.name=='nt' and getattr(sys,'frozen',False) and Path(args[0]).resolve()!=Path(sys.executable).resolve()
     if external:
@@ -286,9 +283,26 @@ def convert_map(archive,work,maps,stage,game_exe,log,report):
         # deleted after conversion. Keep simulation and irradiance sources.
         write_render_sources=False)
     finished('prepare')
+    final=maps/(label+'.skate')
+    # Authored retail start (map_starts.py) when _install found one; else geometry.
+    starts=work/'map-starts.json'
+    start=json.loads(starts.read_text(encoding='utf-8')).get(district) if starts.is_file() else None
+    if start:report(f"{label}: authored start {start['locator']} ({start['source']})")
     from .dynamic_props import export as write_props
     caches=list((work/'dmo/cache').glob('DMO_*'))
     from .optional_content import CONTENT_ERRORS, note
+    # Named trigger volumes (0x00EB0019) beside the map, like .irradiance.
+    # Optional: a map without the sidecar simply has no trigger volumes.
+    from .map_volumes import export as write_triggers
+    triggers=final.with_suffix('.triggers')
+    try:
+        volumes=write_triggers(stream,triggers,label)
+        (stage/'assets/private/map-status'/(label+'-triggers-availability.json')).unlink(missing_ok=True)
+        report(f'{label}: {len(volumes)} trigger volumes')
+    except CONTENT_ERRORS as error:
+        triggers.unlink(missing_ok=True)
+        note(stage/'assets/private/map-status'/(label+'-triggers-availability.json'),label+' trigger volumes',error,report=report)
+    finished('triggers')
     props=stage/'assets/private/native-props'/(label+'.skate')
     def movable_props():
         try:
@@ -301,34 +315,17 @@ def convert_map(archive,work,maps,stage,game_exe,log,report):
             placed,unresolved=0,0
         return placed,unresolved
     # The props only read the prepared manifest and the DMO catalog, and write
-    # their own folder: build them beside the collision archive, the map and
-    # the trigger volumes. 'props' is then the time left waiting for them.
+    # their own folder: build them beside the collision archive and the map.
+    # 'props' is then the time left waiting for them after write_map.
     with ThreadPoolExecutor(max_workers=1) as background:
         pending_props=background.submit(movable_props)
         collision=district_work/'collision.rwcmset'
         build_archive(manifest_path,collision)
         finished('collision_archive')
-        final=maps/(label+'.skate')
-        # Authored retail start (map_starts.py) when _install found one; else geometry.
-        starts=work/'map-starts.json'
-        start=json.loads(starts.read_text(encoding='utf-8')).get(district) if starts.is_file() else None
-        if start:report(f"{label}: authored start {start['locator']} ({start['source']})")
         write_map(manifest_path,final,collision,report,
                   prepared_spawn=tuple(start['position']) if start else spawn.result(label),
                   prepared_heading=start['heading'] if start else 0.)
         finished('write_map')
-        # Named trigger volumes (0x00EB0019) beside the map, like .irradiance.
-        # Optional: a map without the sidecar simply has no trigger volumes.
-        from .map_volumes import export as write_triggers
-        triggers=final.with_suffix('.triggers')
-        try:
-            volumes=write_triggers(stream,triggers,label)
-            (stage/'assets/private/map-status'/(label+'-triggers-availability.json')).unlink(missing_ok=True)
-            report(f'{label}: {len(volumes)} trigger volumes')
-        except CONTENT_ERRORS as error:
-            triggers.unlink(missing_ok=True)
-            note(stage/'assets/private/map-status'/(label+'-triggers-availability.json'),label+' trigger volumes',error,report=report)
-        finished('triggers')
         placed,unresolved=pending_props.result()
     finished('props')
     report(f'{label}: placed {placed} authored DMO instances, {unresolved} unresolved templates')

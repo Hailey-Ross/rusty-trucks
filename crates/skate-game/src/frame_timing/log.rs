@@ -4,7 +4,10 @@
 use std::{
     io::Write,
     path::PathBuf,
-    sync::mpsc::{self, RecvTimeoutError, Sender},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, RecvTimeoutError, SyncSender, TrySendError},
+    },
     time::Duration,
 };
 
@@ -12,8 +15,10 @@ pub(crate) const ENV: &str = "SKATE_FRAME_LOG";
 /// First line of every log; bump the version when a column changes.
 pub(crate) const MAGIC: &str = "# skate3rust frame log v1";
 pub(crate) const HEADER: &str = "wall_unix_s\tframe\tframe_ms\tfixed_steps\tfixed_ms\tmain_ms\thitch\tmedian_ms";
-/// The writer flushes at least this often, so a crash loses at most this much.
+/// Maximum idle wait between writer checks.
 const FLUSH_EVERY: Duration = Duration::from_millis(250);
+/// Bound memory when storage cannot keep up; never stall the game thread.
+const QUEUE_CAPACITY: usize = 4096;
 
 /// One rendered frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,7 +85,8 @@ pub(crate) fn parse_row(line: &str) -> Option<Row> {
 
 /// Sends rows to the writer thread. Dropping it flushes and joins the thread.
 pub(crate) struct FrameLog {
-    sender: Option<Sender<Row>>,
+    sender: Option<SyncSender<Row>>,
+    dropped: AtomicU64,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -89,6 +95,10 @@ impl Drop for FrameLog {
         drop(self.sender.take());
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+        }
+        let dropped = self.dropped.load(Ordering::Relaxed);
+        if dropped != 0 {
+            eprintln!("{ENV}: dropped {dropped} rows because the frame-log queue was full");
         }
     }
 }
@@ -111,7 +121,7 @@ impl FrameLog {
             std::fs::create_dir_all(parent)?;
         }
         let file = std::fs::File::create(&path)?;
-        let (sender, receiver) = mpsc::channel::<Row>();
+        let (sender, receiver) = mpsc::sync_channel::<Row>(QUEUE_CAPACITY);
         let thread = std::thread::Builder::new()
             .name("frame-log".into())
             .spawn(move || {
@@ -137,13 +147,15 @@ impl FrameLog {
                 }
             })?;
         bevy::log::info!("Frame log: {}", path.display());
-        Ok(Self { sender: Some(sender), thread: Some(thread) })
+        Ok(Self { sender: Some(sender), dropped: AtomicU64::new(0), thread: Some(thread) })
     }
 
-    /// Never blocks; a closed writer is ignored.
+    /// Never blocks; a full queue drops the row, and a closed writer is ignored.
     pub(crate) fn send(&self, row: Row) {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(row);
+            if let Err(TrySendError::Full(_)) = sender.try_send(row) {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -154,6 +166,22 @@ mod tests {
 
     fn row(frame: u64, hitch: bool, median_ms: Option<f32>) -> Row {
         Row { wall_unix_s: 1_759_622_400.125, frame, frame_ms: 16.667, fixed_steps: 2, fixed_ms: 1.5, main_ms: 4.25, hitch, median_ms }
+    }
+
+    #[test]
+    fn a_stalled_writer_has_a_bounded_queue_and_does_not_block() {
+        let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
+        let log = FrameLog { sender: Some(sender), dropped: AtomicU64::new(0), thread: None };
+        for frame in 0..QUEUE_CAPACITY as u64 + 3 {
+            log.send(row(frame, false, None));
+        }
+        assert_eq!(log.dropped.load(Ordering::Relaxed), 3);
+        let queued: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(queued.len(), QUEUE_CAPACITY);
+        assert_eq!(queued.last().unwrap().frame, QUEUE_CAPACITY as u64 - 1);
+        drop(receiver);
+        log.send(row(9999, false, None));
+        assert_eq!(log.dropped.load(Ordering::Relaxed), 3);
     }
 
     #[test]

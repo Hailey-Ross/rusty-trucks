@@ -1,0 +1,138 @@
+
+#include <rex/ppc/context.h>
+#include <rex/ppc/intrinsics.h>
+#include <windows.h>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+#define DEFINE_REX_FUNC(name) void name(PPCContext& ctx, uint8_t* base)
+#define REX_FUNC_PROLOGUE()
+#define REX_RAW_ADDR(x) (base + uint32_t(x))
+#define REX_LOAD_U32(x) __builtin_bswap32(*(uint32_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U32(x,y) (*(uint32_t*)REX_RAW_ADDR(x)=__builtin_bswap32(y))
+
+#define REX_LOAD_U8(x) (*(uint8_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U16(x) __builtin_bswap16(*(uint16_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U64(x) __builtin_bswap64(*(uint64_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U8(x,y) (*(uint8_t*)REX_RAW_ADDR(x)=y)
+#define REX_STORE_U16(x,y) (*(uint16_t*)REX_RAW_ADDR(x)=__builtin_bswap16(y))
+#define REX_STORE_U64(x,y) (*(uint64_t*)REX_RAW_ADDR(x)=__builtin_bswap64(y))
+DEFINE_REX_FUNC(sub_8294F5E8);
+DEFINE_REX_FUNC(sub_82951658);
+DEFINE_REX_FUNC(sub_8294FC88);
+DEFINE_REX_FUNC(sub_82950250);
+DEFINE_REX_FUNC(sub_8294B668);
+DEFINE_REX_FUNC(__savegprlr_18) {
+REX_STORE_U64(ctx.r1.u32+(-120),ctx.r18.u64);
+REX_STORE_U64(ctx.r1.u32+(-112),ctx.r19.u64);
+REX_STORE_U64(ctx.r1.u32+(-104),ctx.r20.u64);
+REX_STORE_U64(ctx.r1.u32+(-96),ctx.r21.u64);
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_18) {
+ctx.r18.u64=REX_LOAD_U64(ctx.r1.u32+(-120));
+ctx.r19.u64=REX_LOAD_U64(ctx.r1.u32+(-112));
+ctx.r20.u64=REX_LOAD_U64(ctx.r1.u32+(-104));
+ctx.r21.u64=REX_LOAD_U64(ctx.r1.u32+(-96));
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__savegprlr_20) {
+REX_STORE_U64(ctx.r1.u32+(-104),ctx.r20.u64);
+REX_STORE_U64(ctx.r1.u32+(-96),ctx.r21.u64);
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_20) {
+ctx.r20.u64=REX_LOAD_U64(ctx.r1.u32+(-104));
+ctx.r21.u64=REX_LOAD_U64(ctx.r1.u32+(-96));
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__savegprlr_26) {
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_26) {
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(sub_8294AF70) { fprintf(stderr,"unexpected native call: sub_8294AF70\n"); abort(); }
+DEFINE_REX_FUNC(sub_8294B4D8) { fprintf(stderr,"unexpected native call: sub_8294B4D8\n"); abort(); }
+DEFINE_REX_FUNC(sub_82950D40) { fprintf(stderr,"unexpected native call: sub_82950D40\n"); abort(); }
+DEFINE_REX_FUNC(sub_82951148) { fprintf(stderr,"unexpected native call: sub_82951148\n"); abort(); }
+DEFINE_REX_FUNC(sub_82951440) { fprintf(stderr,"unexpected native call: sub_82951440\n"); abort(); }
+// @RETAIL_FUNCTION_8294F5E8@
+
+// @RETAIL_FUNCTION_8294FC88@
+
+// @RETAIL_FUNCTION_82950250@
+
+// @RETAIL_FUNCTION_82951658@
+
+// @RETAIL_FUNCTION_8294B668@
+
+int main(int argc,char**argv) {
+ SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
+ if(argc!=3) return 2;
+ auto base=(uint8_t*)VirtualAlloc(nullptr,0x100000000ull,MEM_RESERVE,PAGE_READWRITE);
+ if(!base || !VirtualAlloc(base+0x82000000,0x11b0000,MEM_COMMIT,PAGE_READWRITE) || !VirtualAlloc(base+0x10000,0x40000,MEM_COMMIT,PAGE_READWRITE)) return 3;
+ std::ifstream image(argv[1],std::ios::binary); image.read((char*)base+0x82000000,0x11b0000); if(!image)return 4;
+ FILE* out=fopen(argv[2],"w");if(!out)return 5;
+ fprintf(out,"# TU3 8294F5E8 input stage and 8294B668; kind input shape millibels\n");
+ REX_STORE_U32(0x20000+208,1);REX_STORE_U32(0x20000+388,0x20500);REX_STORE_U32(0x20500+4,0x20600);
+ for(uint32_t kind=0;kind<10;kind++)for(uint32_t x=0;x<32768;x++) {
+  PPCContext ctx{};ctx.fpscr.loadFromHost();ctx.r1.u32=0x40000;ctx.r3.u32=0x20000;ctx.r5.u32=0;ctx.f1.f64=1.0f/30;
+  REX_STORE_U8(0x20500,kind);REX_STORE_U32(0x20600,x);
+  sub_8294F5E8(ctx,base);
+  fprintf(out,"%u %u %d %d\n",kind,x,(int32_t)REX_LOAD_U32(0x20500+12),(int32_t)REX_LOAD_U32(0x20500+8));
+ }
+ fclose(out);VirtualFree(base,0,MEM_RELEASE);return 0;
+}

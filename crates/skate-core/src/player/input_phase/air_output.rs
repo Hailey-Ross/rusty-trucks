@@ -17,6 +17,8 @@ pub struct AirOutputFields {
     pub collision_normal_speed_188: f32,
     pub time_to_apex_196: f32,
     pub trajectory_index_220: i32,
+    /// ProcessOutput82DB7040: TrajectorySelector+9640.
+    pub surface_category_232: u32,
     pub selected_trajectory_240: [RawVector; 4],
     pub trajectory_plane_samples_336: [f32; 25],
     pub known_air_valid_437: u8,

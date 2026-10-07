@@ -230,6 +230,7 @@ fn attached_volume_contact_reaches_its_actual_solver_body() {
     attached.rates.linear_velocity.y = -1.0;
     let before = attached.rates.linear_velocity.y;
     let volume = BoardWorldVolume {
+        collision_group: 0,
         body: CollisionBody::Attached(0),
         primitive: ContactPrimitive::Sphere(Sphere {
             center: attached.rates.position,

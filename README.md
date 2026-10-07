@@ -50,8 +50,10 @@ starts University. The original scoring and session-marker HUD assets are also
 exported automatically during setup. No Blender, Python or Rust installation is needed.
 ISO extraction needs internet access. The first conversion can take a while.
 
-Use an XInput controller to play. Escape opens graphics, difficulty and map
-settings. Maps can be switched without restarting the game.
+Use a compatible gamepad to play. SDL3 supports Xbox/XInput, PlayStation,
+Switch and generic HID controllers; XInput remains available as a Windows
+fallback. Escape opens graphics, difficulty and map settings. Maps can be
+switched without restarting the game.
 
 **Skate 3 assets are not included.** Your converted files stay in
 the `data` folder beside your executable. Each freshly unpacked copy runs its
@@ -62,7 +64,7 @@ only changed asset groups.
 
 Requires Windows, Rust with the MSVC toolchain, and LLVM installed in its default
 location. Run `BUILD.bat` to build, then `PLAY.bat` to launch the test world.
-`PLAY.bat` opens your saved map (University by default); use the in-game menu to switch maps, or drag a `.skate` file onto `PLAY.bat`. An XInput controller is required for gameplay;
+`PLAY.bat` opens your saved map (University by default); use the in-game menu to switch maps, or drag a `.skate` file onto `PLAY.bat`. An SDL3-compatible gamepad is required for gameplay;
 Escape opens difficulty and graphics settings.
 
 Development builds use a prepared asset set in `assets/private/` or the

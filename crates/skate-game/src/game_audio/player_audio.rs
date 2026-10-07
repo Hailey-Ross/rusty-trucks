@@ -342,6 +342,7 @@ impl PlayerAudio {
         let name = usize::try_from(s.scorable).ok().and_then(|id| skate_core::scoring::catalog::IDENTIFIERS.get(id)).map(|(name, ..)| name);
         s.audio_trick = name.map_or(-1, |n| self.tuning.audio_trick(n));
         s.audio_trick_2 = name.map_or(-1, |n| self.tuning.audio_trick_2(n));
+        s.jump_bucket = self.tuning.jump_bucket(s.jump_strength);
         s
     }
 

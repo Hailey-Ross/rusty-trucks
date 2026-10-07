@@ -2618,6 +2618,7 @@ mod empty_table_lists {
                 subscribe_empty = function() sdk.audio.subscribe{tags={}} end,
                 subscribe_list = function() sdk.audio.subscribe{tags={'pop'}} end,
                 post_named_keys = function() sdk.audio.post('a', 'c_emitter', {x=1}) end,
+                mesh_named_keys = function() req('m', {kind='graphics_mesh', key='m', deform_nodes={x=1}}) end,
                 -- graphics (raw requests skip the api.lua wrappers that drop empty tables)
                 mesh_empty = function() req('m', {kind='graphics_mesh', key='m', deform_nodes={}}) end,
                 mesh_list = function() req('m', {kind='graphics_mesh', key='m', deform_nodes={'panel'}}) end,
@@ -2692,8 +2693,10 @@ mod empty_table_lists {
             assert!(e.contains("Invalid command arguments") && !e.contains("expected a sequence"), "{case}: {e}");
         }
         // A table that is not a list is still refused.
-        let e = run("post_named_keys").expect_err("named keys");
-        assert!(e.contains("expected a list"), "{e}");
+        for case in ["post_named_keys", "mesh_named_keys"] {
+            let e = run(case).expect_err("named keys");
+            assert!(e.contains("expected a list"), "{e}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

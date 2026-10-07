@@ -135,9 +135,6 @@ pub(crate) fn gameplay_active(menu: Option<Res<Menu>>) -> bool {
 
 /// Retail "Camera Angle" (Game Settings > Control Settings), in the SKATER section.
 const CAMERA_ANGLE_ROW: usize = 5;
-/// GRAPHICS "Frame-time counter" row (`frame_timing`). Ids 16..=18 are the audio volume rows
-/// and 19 the controller row; 20..=26 are the multiplayer debug page, so this row takes 27.
-const FRAME_STATS_ROW: usize = 27;
 const SECTIONS: &[(&str, &str)] = &[
     ("MAPS", "Choose a map, then pick your drop-in spot."),
     ("SKATER", "Make it yours."),
@@ -310,7 +307,7 @@ fn setup(
                 body.spawn((Text::new(""),MenuSubtitle,TextFont {font_size:16.,..default()},TextColor(Color::srgb(0.65,0.72,0.72))));
                 body.spawn((Node {height:px(3),width:px(64),margin:UiRect::bottom(px(10)),..default()},BackgroundColor(Color::srgb(0.78,0.96,0.3))));
                 body.spawn((MenuScroll,ScrollPosition::default(),Node {flex_grow:1.,min_height:px(0),overflow:Overflow::scroll_y(),flex_direction:FlexDirection::Column,row_gap:px(8),..default()})).with_children(|list| {
-                    for i in (0..4).chain(300..337).chain(4..10).chain(11..20).chain([FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW]).chain(20..27).chain([10]).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
+                    for i in (0..4).chain(300..337).chain(4..10).chain(11..20).chain(20..27).chain([10,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW]).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
                         list.spawn((Button,MenuRow(i),Node {flex_direction:if (300..335).contains(&i) {FlexDirection::Column} else {FlexDirection::Row},width:percent(100),min_height:px(56),flex_shrink:0.,padding:UiRect::axes(px(18),px(12)),align_items:AlignItems::Center,border_radius:BorderRadius::all(px(4)),..default()},BackgroundColor(Color::srgb(0.075,0.09,0.095))))
                             .with_children(|row| {
                                 row.spawn((MenuLabel(i),Text::new(""),TextFont {font_size:18.,..default()},TextColor(Color::WHITE)));
@@ -345,10 +342,10 @@ fn setup(
     });
 }
 /// GRAPHICS-section rows for the game_audio volume settings.
+const FRAME_STATS_ROW: usize = 28;
 const AUDIO_ROWS: std::ops::Range<usize> = 16..19;
-/// GRAPHICS-section row of the NPC draw distance (QoL, not retail). 19 is the controller row here
-/// and 27 the frame-time counter (both merged into hails-additions).
-const NPC_DRAW_DISTANCE_ROW: usize = 28;
+/// GRAPHICS-section row of the NPC draw distance (QoL, not retail).
+const NPC_DRAW_DISTANCE_ROW: usize = 29;
 const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time.";
 fn draw_distance_label(multiplier: f32) -> String {
     if multiplier == skate_core::living_world::DrawDistance::RETAIL { "Retail".into() } else { format!("{multiplier}x  (not retail)") }
@@ -1086,8 +1083,7 @@ mod tests {
             let rows = menu.rows();
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
-            // Spawned row ids: 0..20 (16..19 are the audio rows, 19 the controller row),
-            // FRAME_STATS_ROW (27), NPC_DRAW_DISTANCE_ROW (28), 1000+ maps.
+            // Audio, controller identity, and frame-time rows are spawned.
             assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id >= 1000));
         }
         menu.select_section(1);

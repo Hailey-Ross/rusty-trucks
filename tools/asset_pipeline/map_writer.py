@@ -251,7 +251,6 @@ def write(manifest_path,output,collision,report=lambda _:None, *, render_only=Fa
         geometry=[blobs.submit(packed_blob,data) for data in (vertices.getvalue(),indices.getvalue(),b'')]
         packed_extensions=[(tag,schema,len(data),blobs.submit(packed_blob,data)) for tag,schema,data in records]
         del vertices,indices,records
-        # Heading (radians about +Y; forward = (sin h, 0, cos h)) follows the spawn.
         f.write(b'SKATE14\0');u(f,0x12345678);string(f,m['map_name']);floats(f,*spawn,0. if render_only else prepared_heading,*environment)
         u(f,nm,len(ids),nv,ni,0,len(rails),0,0,0);f.write(mats.getvalue())
         write_textures(f,root,textures,threads)
