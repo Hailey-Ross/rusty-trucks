@@ -43,6 +43,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 - **Peds floating in the air all over the map:** peds were stood on the first solid surface within 1.6 m above them (awnings, ledges, signs, invisible collision). They are now drawn on the floor under them: the search only reaches the navmesh step height (0.2 m) upward. On DownTown's navmesh this lifted peds at 195 spots before and none after.
+- **Peds spawning in the air or under the ground:** a ped could spawn at your height where the floor was far above or below you (on ledges, ramps and roofs) and stay there. Those spawns are now skipped and the ped spawns somewhere else; a session after the fix logged no floating peds.
 - **Game closed when letting go of a carried prop:** while carrying, the walk cycle's timing was asked to reach a phase in zero seconds, which turned it into an invalid number; on letting go, the stand-up animation could not pick a clip and the game stopped. Carrying now holds the walk cycle still. Found from a tester log thanks to the new error line, which now names the broken animation input and the clips it was choosing between.
 - **Better crash logs:** any animation choice that gets an invalid input now names that input and the candidate clips in the session log.
 
