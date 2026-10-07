@@ -34,8 +34,11 @@ pub struct DrawDistance(f32);
 impl DrawDistance {
     /// Retail ranges (the default).
     pub const RETAIL: f32 = 1.0;
-    /// The steps the settings menu offers (Retail, 1.5x, 2x, 3x).
-    pub const MENU_STEPS: [f32; 4] = [1.0, 1.5, 2.0, 3.0];
+    /// The menu's "None" step (QoL, not retail): no ambient NPCs at all. Not a multiplier: the
+    /// engine turns the population off for it and keeps the ranges at retail.
+    pub const NONE: f32 = 0.0;
+    /// The steps the settings menu offers (None, Retail, 1.5x, 2x, 3x).
+    pub const MENU_STEPS: [f32; 5] = [Self::NONE, 1.0, 1.5, 2.0, 3.0];
     /// Accepted range for settings and mods; anything else falls back to retail or is clamped.
     pub const MIN: f32 = 0.25;
     pub const MAX: f32 = 4.0;

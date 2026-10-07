@@ -147,6 +147,53 @@ moves the pair per second (likely the MVOBJ clips' root motion) is not known.
 **Open.** Decode state 502 (PhysState_OffBoardPushing) and the MVOBJ clip root motion to replace the engine
 speeds; the prop's retail grip point (hands on the handle) and whether heavy DMOs move slower.
 
+## D9 research: the props' retail shader (2026-10-07, not built yet)
+
+**Problem.** Props look flat next to retail: the recomp shows dents, corrosion and grime highlights on dumpsters and
+trash bins that ours lack (user's comparison video, 2026-10-07). Our log says why: "40 of 40 world materials use an
+unsupported shader family and render as family 1: dynamicobject.alphatest 2, dynamicobject.default 38". The
+converter (`tools/asset_pipeline/retail_material.py` `_retail_shader_family`) has no entry for `dynamicobject.*`, so
+it stores family 0 and `MaterialTable::build` (`retail_render.rs`) falls back to family 1. The fallback has no
+lightmap for props (`lightmap_uv` is zero in `prop_dynamics.rs`) and its normal / detail / specular reads stay off.
+
+**What the prop materials carry [data].** Read from the converted `native-props/*.skate` material definitions (114
+unique prop materials over BlackBoxPark, DownTown, Industrial, MaloofMoneyCup, University):
+- Bindings `diffuse`, `normal`, `specular`, `detail` (+ `transparent` for `alphatest`), parameter
+  `detailNormalUVScale` (3 or 8 mostly; 4, 5, 10, 12, 15 a few).
+- 95 of 114 have their own normal map, all 114 their own specular map. The `detail` slot is a tiled detail NORMAL
+  map: `default_normal` (flat) on 100, `detail_normal_corroded` on 12, `detail_normal_grain` and
+  `detail_normal_pitted` on one each. So the "dents" are mostly the per-object normal maps plus specular, with the
+  corroded / pitted detail normals on some objects.
+
+**What the retail shader does [code, shader microcode].** `shaders_final.big` holds `dynamicobject_defaultPS` /
+`defaultVS` plus `simplePS` / `simpleVS`, `skateparkPS`, `foregroundPS`, `highlightPS`, `ghostPS`,
+`ghostSkateparkPS`, `heatmapPS`, `shadowPS`. `dynamicobject_defaultPS` (2428 bytes, ps_3_0) read with
+`.claude/skills/living-world/tools/eb_big_extract.py` + `xenos_disasm.py`:
+- Samplers `i_diffuse`, `i_normal`, `i_detail`, `i_specular`; constants `g_vLightDir`, `g_vViewPos`,
+  `g_envattributes`, `m_params`, `g_CSMSelfBias`, `CSM_Mat_Row0..2`, `WorldShadow_MatRow`; textures
+  `shadowAtlasDepth`, `shadowWorld`. VS: `g_matVP`, `i_detailNormalUVScale`, `i_partArray`, `g_FogColour`, `g_FogK1`.
+- Same lighting model as our ported `environment.default` (family 1 in `retail_world.wgsl`): the same literals
+  (tangent weights 0.58 / 0.62 / 0.39, scale 2.3956, specular colour 2.1 / 1.8 / 1.5, power 10 + 290 x spec.g),
+  detail normal added as `normal.xy*2 + detail.xy*2 - 2`, output `sqrt` (gamma 2). Differences: no lightmap (light
+  comes from `g_vLightDir` / `g_envattributes` constants instead), and two 4-tap shadow lookups: the cascaded shadow
+  map (`CSM_Mat_*`, `shadowAtlasDepth`) and a world shadow map (`WorldShadow_MatRow`, `shadowWorld`, 256 texel
+  steps), so a prop in a building's shade is darkened like the world.
+- `i_partArray` in the VS: props are drawn as parts with per-part transforms (check how our converter merges them).
+
+**Plan for D9 (retail port, no approximation).**
+1. Converter: classify `dynamicobject.default` / `.alphatest` (and the other variants if any map uses them) as their
+   own family; keep the bindings and `detailNormalUVScale`.
+2. Renderer: a `dynamicobject` branch that reuses family 1's normal / detail / specular code, with lighting from the
+   retail constants instead of the lightmap. Open: where the CPU fills `g_envattributes` and `m_params` (find the
+   parameter handles by name like fix18 did for the ped colours), and how `shadowWorld` is built (static world shadow
+   atlas) versus our layer-28 dynamic shadow map (also see the bridge car shadow item: the world casts nothing there).
+3. `highlightPS` is likely the Move Object highlight and `ghostPS` the placement ghost: check against the object
+   move state when D6 / placement work starts.
+4. Moddability: the family and its parameters stay data (per material), so a mod prop with the same bindings gets
+   the same look; mod graphics keep their own path.
+5. Tests: a converter test that the 114 materials classify as `dynamicobject`, a shader test like the existing
+   `retail_shader_tests.rs` ones; the user compares against the recomp in game.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with
