@@ -59,6 +59,18 @@ pub(super) fn publish(
         },
         &reports,
     );
+    let region_response = skater.collision_feedback.fill_response(
+        &skater.skeleton.record,
+        &skater.skeleton.definition.animation_masses.part_weights,
+    );
+    // SkeletonCollision Fill82BD60C8 -> Collision+80/+196/+200/+208/+214/+217.
+    let collision = &mut skater.player_input.physical.collision;
+    collision.contact_region_response_80 = region_response;
+    collision.body_response_196 = skater.collision_feedback.wipeout_times[0];
+    collision.force_response_200 = skater.collision_feedback.wipeout_times[1];
+    collision.surface_height_208 = skater.collision_feedback.material_12_height;
+    collision.flag_214 = u8::from(skater.collision_feedback.flags.material_6);
+    collision.flag_217 = u8::from(skater.collision_feedback.flags.material_12);
     skater.skeleton_collision.finish_contact_frame();
     skater.pose_errors.targets = skater.skeleton_input.extra_target_positions;
     skater.pose_errors.update(
@@ -84,9 +96,6 @@ pub(super) fn publish(
         physics.settings.step.simulation.time_step,
         p.flags_2472,
     );
-    // Water makes no contacts: classify the body from position instead,
-    // before the postphysics wipeout checks read this frame's feedback.
-    super::water::mark_skater(physics, skater);
 }
 
 fn publish_board_observations(

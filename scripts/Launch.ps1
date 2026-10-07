@@ -1,4 +1,4 @@
-param([string]$Map, [switch]$Trace, [string]$TraceFile)
+param([string]$Map, [switch]$Trace, [string]$TraceFile, [string]$Assets)
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 $ErrorActionPreference = 'Stop'
 Push-Location $ProjectRoot
@@ -12,31 +12,9 @@ try {
     $errorLog = [System.IO.Path]::ChangeExtension($log, 'stderr.log')
     # Start-Process ArgumentList arrays split on spaces on Windows PowerShell 5.1.
     # Pass one quoted command-line string so paths under "Ethans Desktop 2.0" stay intact.
-    $assetsPath = Join-Path $ProjectRoot 'assets'
-    if (-not (Test-Path -LiteralPath $assetsPath)) {
-        throw @"
-Prepared assets folder is missing:
-  $assetsPath
-
-Dev launch expects converted Skate 3 assets there (often via junction/symlink to an installed copy's assets).
-Release packages run setup from support\skate3setup.exe instead of --assets.
-"@
-    }
-    try {
-        $null = [System.IO.Directory]::EnumerateFileSystemEntries($assetsPath)
-    } catch {
-        $item = Get-Item -LiteralPath $assetsPath -Force
-        $target = if ($item.LinkType) { $item.Target } else { $assetsPath }
-        throw @"
-Assets path exists but cannot be opened (broken junction or missing target):
-  $assetsPath
-  -> $target
-
-Re-point assets to a valid installation, for example:
-  rmdir "$assetsPath"
-  mklink /J "$assetsPath" "C:\path\to\skate3rust-windows-x64\data\installations\<id>\assets"
-"@
-    }
+    . (Join-Path $PSScriptRoot 'Resolve-DevAssets.ps1')
+    $assetsPath = Resolve-DevAssets -ProjectRoot $ProjectRoot -Assets $Assets
+    Write-Host "Assets: $assetsPath"
     $argumentList = '--assets "' + $assetsPath + '"'
     if (-not $Map -and $env:SKATE_TRACE_MAP) { $Map = $env:SKATE_TRACE_MAP }
     if (-not $TraceFile -and $env:SKATE_TRACE_FILE) { $TraceFile = $env:SKATE_TRACE_FILE }

@@ -30,6 +30,7 @@ fn material() -> RetailContactMaterial {
 }
 fn volume(body: CollisionBody, x: f32) -> BoardWorldVolume {
     BoardWorldVolume {
+        collision_group: 0,
         body,
         primitive: ContactPrimitive::Sphere(Sphere {
             center: Vector3::new(x, 0.0, 0.0),

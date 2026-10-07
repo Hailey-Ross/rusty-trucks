@@ -1,0 +1,909 @@
+
+#include <rex/ppc/context.h>
+#include <rex/ppc/intrinsics.h>
+#include <windows.h>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+#define DEFINE_REX_FUNC(name) void name(PPCContext& ctx, uint8_t* base)
+const char* current_function="startup";
+#define REX_FUNC_PROLOGUE() current_function=__func__
+#define REX_FATAL(msg) do {fprintf(stderr,"%s\n",msg);abort();} while(0)
+uint8_t* checked(uint8_t*base,uint32_t x,int line){if(!((x>=0x10000&&x<0x1010000)||(x>=0x82000000&&x<0x831b0000))){fprintf(stderr,"unmapped guest %08x source line %d\n",x,line);ExitProcess(9);}return base+x;}
+#define REX_RAW_ADDR(x) checked(base,uint32_t(x),__LINE__)
+#define REX_LOAD_U32(x) __builtin_bswap32(*(uint32_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U32(x,y) (*(uint32_t*)REX_RAW_ADDR(x)=__builtin_bswap32(y))
+
+#define REX_LOAD_U8(x) (*(uint8_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U16(x) __builtin_bswap16(*(uint16_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U64(x) __builtin_bswap64(*(uint64_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U8(x,y) (*(uint8_t*)REX_RAW_ADDR(x)=y)
+#define REX_STORE_U16(x,y) (*(uint16_t*)REX_RAW_ADDR(x)=__builtin_bswap16(y))
+#define REX_STORE_U64(x,y) (*(uint64_t*)REX_RAW_ADDR(x)=__builtin_bswap64(y))
+
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <set>
+void indirect(uint32_t,PPCContext&,uint8_t*);
+#define REX_CALL_INDIRECT_FUNC(a) indirect(a,ctx,base)
+DEFINE_REX_FUNC(sub_8294AF70);
+DEFINE_REX_FUNC(sub_8294B000);
+DEFINE_REX_FUNC(sub_8294B040);
+DEFINE_REX_FUNC(sub_8294B1FC);
+DEFINE_REX_FUNC(sub_8294B2A4);
+DEFINE_REX_FUNC(sub_8294B2E4);
+DEFINE_REX_FUNC(sub_8294B304);
+DEFINE_REX_FUNC(sub_8294B324);
+DEFINE_REX_FUNC(sub_8294B344);
+DEFINE_REX_FUNC(sub_8294B4A0);
+DEFINE_REX_FUNC(sub_8294B4D8);
+DEFINE_REX_FUNC(sub_8294B5F8);
+DEFINE_REX_FUNC(sub_8294B668);
+DEFINE_REX_FUNC(sub_8294B6B4);
+DEFINE_REX_FUNC(sub_8294B6C8);
+DEFINE_REX_FUNC(sub_8294B724);
+DEFINE_REX_FUNC(sub_8294B744);
+DEFINE_REX_FUNC(sub_8294B794);
+DEFINE_REX_FUNC(sub_8294B7B4);
+DEFINE_REX_FUNC(sub_8294B7D0);
+DEFINE_REX_FUNC(sub_8294B7EC);
+DEFINE_REX_FUNC(sub_8294B808);
+DEFINE_REX_FUNC(sub_8294B824);
+DEFINE_REX_FUNC(sub_8294B858);
+DEFINE_REX_FUNC(sub_8294B8B0);
+DEFINE_REX_FUNC(sub_8294B918);
+DEFINE_REX_FUNC(sub_8294BA18);
+DEFINE_REX_FUNC(sub_8294BAE8);
+DEFINE_REX_FUNC(sub_8294BB50);
+DEFINE_REX_FUNC(sub_8294BBE8);
+DEFINE_REX_FUNC(sub_8294BBF0);
+DEFINE_REX_FUNC(sub_8294BC50);
+DEFINE_REX_FUNC(sub_8294BC68);
+DEFINE_REX_FUNC(sub_8294BCA0);
+DEFINE_REX_FUNC(sub_8294BCC0);
+DEFINE_REX_FUNC(sub_8294BD98);
+DEFINE_REX_FUNC(sub_8294BDB0);
+DEFINE_REX_FUNC(sub_8294BDC8);
+DEFINE_REX_FUNC(sub_8294BF40);
+DEFINE_REX_FUNC(sub_8294C0C0);
+DEFINE_REX_FUNC(sub_8294C190);
+DEFINE_REX_FUNC(sub_8294C348);
+DEFINE_REX_FUNC(sub_8294C430);
+DEFINE_REX_FUNC(sub_8294C500);
+DEFINE_REX_FUNC(sub_8294C548);
+DEFINE_REX_FUNC(sub_8294CB48);
+DEFINE_REX_FUNC(sub_8294CC48);
+DEFINE_REX_FUNC(sub_8294CC90);
+DEFINE_REX_FUNC(sub_8294CDE8);
+DEFINE_REX_FUNC(sub_8294D438);
+DEFINE_REX_FUNC(sub_8294DD20);
+DEFINE_REX_FUNC(sub_8294DE10);
+DEFINE_REX_FUNC(sub_8294DF08);
+DEFINE_REX_FUNC(sub_8294E008);
+DEFINE_REX_FUNC(sub_8294E120);
+DEFINE_REX_FUNC(sub_8294E970);
+DEFINE_REX_FUNC(sub_8294EDF8);
+DEFINE_REX_FUNC(sub_8294F228);
+DEFINE_REX_FUNC(sub_8294F528);
+DEFINE_REX_FUNC(sub_8294F5E8);
+DEFINE_REX_FUNC(sub_8294F65C);
+DEFINE_REX_FUNC(sub_8294F6EC);
+DEFINE_REX_FUNC(sub_8294F704);
+DEFINE_REX_FUNC(sub_8294F71C);
+DEFINE_REX_FUNC(sub_8294F734);
+DEFINE_REX_FUNC(sub_8294F74C);
+DEFINE_REX_FUNC(sub_8294F764);
+DEFINE_REX_FUNC(sub_8294F778);
+DEFINE_REX_FUNC(sub_8294F794);
+DEFINE_REX_FUNC(sub_8294F7B0);
+DEFINE_REX_FUNC(sub_8294F7CC);
+DEFINE_REX_FUNC(sub_8294F7E8);
+DEFINE_REX_FUNC(sub_8294F804);
+DEFINE_REX_FUNC(sub_8294F820);
+DEFINE_REX_FUNC(sub_8294F83C);
+DEFINE_REX_FUNC(sub_8294F858);
+DEFINE_REX_FUNC(sub_8294F870);
+DEFINE_REX_FUNC(sub_8294F924);
+DEFINE_REX_FUNC(sub_8294F93C);
+DEFINE_REX_FUNC(sub_8294F954);
+DEFINE_REX_FUNC(sub_8294F96C);
+DEFINE_REX_FUNC(sub_8294F984);
+DEFINE_REX_FUNC(sub_8294F99C);
+DEFINE_REX_FUNC(sub_8294F9B0);
+DEFINE_REX_FUNC(sub_8294F9CC);
+DEFINE_REX_FUNC(sub_8294F9E8);
+DEFINE_REX_FUNC(sub_8294FA04);
+DEFINE_REX_FUNC(sub_8294FA20);
+DEFINE_REX_FUNC(sub_8294FA3C);
+DEFINE_REX_FUNC(sub_8294FA58);
+DEFINE_REX_FUNC(sub_8294FA74);
+DEFINE_REX_FUNC(sub_8294FA90);
+DEFINE_REX_FUNC(sub_8294FAA8);
+DEFINE_REX_FUNC(sub_8294FC88);
+DEFINE_REX_FUNC(sub_8294FCD4);
+DEFINE_REX_FUNC(sub_8294FD14);
+DEFINE_REX_FUNC(sub_8294FE6C);
+DEFINE_REX_FUNC(sub_8294FE80);
+DEFINE_REX_FUNC(sub_8294FE98);
+DEFINE_REX_FUNC(sub_8294FEB0);
+DEFINE_REX_FUNC(sub_8294FEC8);
+DEFINE_REX_FUNC(sub_8294FEE0);
+DEFINE_REX_FUNC(sub_8294FEF8);
+DEFINE_REX_FUNC(sub_8294FF10);
+DEFINE_REX_FUNC(sub_8294FF28);
+DEFINE_REX_FUNC(sub_8294FF40);
+DEFINE_REX_FUNC(sub_8294FF58);
+DEFINE_REX_FUNC(sub_8294FF70);
+DEFINE_REX_FUNC(sub_8294FF88);
+DEFINE_REX_FUNC(sub_8294FFA0);
+DEFINE_REX_FUNC(sub_829500F4);
+DEFINE_REX_FUNC(sub_8295010C);
+DEFINE_REX_FUNC(sub_82950198);
+DEFINE_REX_FUNC(sub_82950250);
+DEFINE_REX_FUNC(sub_829502A4);
+DEFINE_REX_FUNC(sub_8295041C);
+DEFINE_REX_FUNC(sub_82950440);
+DEFINE_REX_FUNC(sub_82950464);
+DEFINE_REX_FUNC(sub_829506D0);
+DEFINE_REX_FUNC(sub_82950754);
+DEFINE_REX_FUNC(sub_8295076C);
+DEFINE_REX_FUNC(sub_82950784);
+DEFINE_REX_FUNC(sub_8295079C);
+DEFINE_REX_FUNC(sub_829507B4);
+DEFINE_REX_FUNC(sub_829507C8);
+DEFINE_REX_FUNC(sub_829508A8);
+DEFINE_REX_FUNC(sub_829508C0);
+DEFINE_REX_FUNC(sub_829508C4);
+DEFINE_REX_FUNC(sub_82950D40);
+DEFINE_REX_FUNC(sub_82951148);
+DEFINE_REX_FUNC(sub_82951440);
+DEFINE_REX_FUNC(sub_82951658);
+DEFINE_REX_FUNC(sub_8295177C);
+DEFINE_REX_FUNC(sub_82951A24);
+DEFINE_REX_FUNC(sub_82951A3C);
+DEFINE_REX_FUNC(sub_82951A54);
+DEFINE_REX_FUNC(sub_82951A6C);
+DEFINE_REX_FUNC(sub_82951A84);
+DEFINE_REX_FUNC(sub_82951A9C);
+DEFINE_REX_FUNC(sub_82951AB0);
+DEFINE_REX_FUNC(sub_82951ACC);
+DEFINE_REX_FUNC(sub_82951AE8);
+DEFINE_REX_FUNC(sub_82951B04);
+DEFINE_REX_FUNC(sub_82951B20);
+DEFINE_REX_FUNC(sub_82951B3C);
+DEFINE_REX_FUNC(sub_82951B58);
+DEFINE_REX_FUNC(sub_82951B74);
+DEFINE_REX_FUNC(sub_82951B90);
+DEFINE_REX_FUNC(sub_82951BA8);
+DEFINE_REX_FUNC(sub_82951D58);
+DEFINE_REX_FUNC(sub_82951DA0);
+DEFINE_REX_FUNC(sub_82951E00);
+DEFINE_REX_FUNC(sub_82951E80);
+DEFINE_REX_FUNC(sub_82952090);
+DEFINE_REX_FUNC(sub_829520AC);
+DEFINE_REX_FUNC(sub_829520CC);
+DEFINE_REX_FUNC(sub_829520EC);
+DEFINE_REX_FUNC(sub_8295210C);
+DEFINE_REX_FUNC(sub_8295212C);
+DEFINE_REX_FUNC(sub_8295222C);
+DEFINE_REX_FUNC(sub_82952314);
+DEFINE_REX_FUNC(sub_82952328);
+DEFINE_REX_FUNC(sub_82952340);
+DEFINE_REX_FUNC(sub_82952358);
+DEFINE_REX_FUNC(sub_82952370);
+DEFINE_REX_FUNC(sub_82952388);
+DEFINE_REX_FUNC(sub_829523A0);
+DEFINE_REX_FUNC(sub_829523B8);
+DEFINE_REX_FUNC(sub_829523D0);
+DEFINE_REX_FUNC(sub_829523E8);
+DEFINE_REX_FUNC(sub_8295248C);
+DEFINE_REX_FUNC(sub_82952498);
+DEFINE_REX_FUNC(sub_829524F0);
+DEFINE_REX_FUNC(sub_82952680);
+DEFINE_REX_FUNC(sub_829528A0);
+DEFINE_REX_FUNC(sub_8295292C);
+DEFINE_REX_FUNC(sub_82952B44);
+DEFINE_REX_FUNC(sub_82952BE4);
+DEFINE_REX_FUNC(sub_82952BF8);
+DEFINE_REX_FUNC(sub_82952C10);
+DEFINE_REX_FUNC(sub_82952C28);
+DEFINE_REX_FUNC(sub_82952C40);
+DEFINE_REX_FUNC(sub_82952C58);
+DEFINE_REX_FUNC(sub_82952C70);
+DEFINE_REX_FUNC(sub_82952C88);
+DEFINE_REX_FUNC(sub_82952CA0);
+DEFINE_REX_FUNC(sub_82952CB8);
+DEFINE_REX_FUNC(sub_82952CE8);
+DEFINE_REX_FUNC(sub_82952D00);
+DEFINE_REX_FUNC(sub_82952D18);
+DEFINE_REX_FUNC(sub_82952D44);
+DEFINE_REX_FUNC(sub_82952DD8);
+DEFINE_REX_FUNC(sub_82953080);
+DEFINE_REX_FUNC(sub_829531F8);
+DEFINE_REX_FUNC(sub_825E7458);
+DEFINE_REX_FUNC(sub_828AAF88);
+DEFINE_REX_FUNC(__restgprlr_16) {
+ctx.r16.u64=REX_LOAD_U64(ctx.r1.u32+(-136));
+ctx.r17.u64=REX_LOAD_U64(ctx.r1.u32+(-128));
+ctx.r18.u64=REX_LOAD_U64(ctx.r1.u32+(-120));
+ctx.r19.u64=REX_LOAD_U64(ctx.r1.u32+(-112));
+ctx.r20.u64=REX_LOAD_U64(ctx.r1.u32+(-104));
+ctx.r21.u64=REX_LOAD_U64(ctx.r1.u32+(-96));
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__restgprlr_18) {
+ctx.r18.u64=REX_LOAD_U64(ctx.r1.u32+(-120));
+ctx.r19.u64=REX_LOAD_U64(ctx.r1.u32+(-112));
+ctx.r20.u64=REX_LOAD_U64(ctx.r1.u32+(-104));
+ctx.r21.u64=REX_LOAD_U64(ctx.r1.u32+(-96));
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__restgprlr_20) {
+ctx.r20.u64=REX_LOAD_U64(ctx.r1.u32+(-104));
+ctx.r21.u64=REX_LOAD_U64(ctx.r1.u32+(-96));
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__restgprlr_21) {
+ctx.r21.u64=REX_LOAD_U64(ctx.r1.u32+(-96));
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__restgprlr_22) {
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__restgprlr_25) {
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__restgprlr_26) {
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__restgprlr_27) {
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__restgprlr_28) {
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__restgprlr_29) {
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__savegprlr_16) {
+REX_STORE_U64(ctx.r1.u32+(-136),ctx.r16.u64);
+REX_STORE_U64(ctx.r1.u32+(-128),ctx.r17.u64);
+REX_STORE_U64(ctx.r1.u32+(-120),ctx.r18.u64);
+REX_STORE_U64(ctx.r1.u32+(-112),ctx.r19.u64);
+REX_STORE_U64(ctx.r1.u32+(-104),ctx.r20.u64);
+REX_STORE_U64(ctx.r1.u32+(-96),ctx.r21.u64);
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__savegprlr_18) {
+REX_STORE_U64(ctx.r1.u32+(-120),ctx.r18.u64);
+REX_STORE_U64(ctx.r1.u32+(-112),ctx.r19.u64);
+REX_STORE_U64(ctx.r1.u32+(-104),ctx.r20.u64);
+REX_STORE_U64(ctx.r1.u32+(-96),ctx.r21.u64);
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__savegprlr_20) {
+REX_STORE_U64(ctx.r1.u32+(-104),ctx.r20.u64);
+REX_STORE_U64(ctx.r1.u32+(-96),ctx.r21.u64);
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__savegprlr_21) {
+REX_STORE_U64(ctx.r1.u32+(-96),ctx.r21.u64);
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__savegprlr_22) {
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__savegprlr_25) {
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__savegprlr_26) {
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__savegprlr_27) {
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__savegprlr_28) {
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__savegprlr_29) {
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+uint32_t bump=0x100000;
+// @RETAIL_FUNCTION_825E7458@
+DEFINE_REX_FUNC(sub_828AAF88){fprintf(stderr,"unexpected external 828AAF88\n");abort();}
+int counts[14]={1,2,1,10,4,15,5,5,5,3,3,0,5,7};
+DEFINE_REX_FUNC(sub_828DE848);
+// @RETAIL_FUNCTION_828DE848@
+std::vector<uint32_t> controllers;
+void indirect(uint32_t a,PPCContext&ctx,uint8_t*base){switch(a){
+case 0x828DE848:sub_828DE848(ctx,base);return;
+case 0x10c:controllers.push_back(ctx.r4.u32);return;
+case 0x100:ctx.r3.u32=counts[ctx.r4.u32];return;
+case 0x104:{auto size=REX_LOAD_U32(ctx.r5.u32),align=REX_LOAD_U32(ctx.r5.u32+4);if(align<16)align=16;bump=(bump+align-1)&~(align-1);REX_STORE_U32(ctx.r3.u32,bump);bump+=size;return;}
+case 0x108:return; // deallocate guest scratch block; private bump arena lasts the whole probe
+case 0x8294AF70:sub_8294AF70(ctx,base);return;
+case 0x8294B000:sub_8294B000(ctx,base);return;
+case 0x8294B040:sub_8294B040(ctx,base);return;
+case 0x8294B1FC:sub_8294B1FC(ctx,base);return;
+case 0x8294B2A4:sub_8294B2A4(ctx,base);return;
+case 0x8294B2E4:sub_8294B2E4(ctx,base);return;
+case 0x8294B304:sub_8294B304(ctx,base);return;
+case 0x8294B324:sub_8294B324(ctx,base);return;
+case 0x8294B344:sub_8294B344(ctx,base);return;
+case 0x8294B4A0:sub_8294B4A0(ctx,base);return;
+case 0x8294B4D8:sub_8294B4D8(ctx,base);return;
+case 0x8294B5F8:sub_8294B5F8(ctx,base);return;
+case 0x8294B668:sub_8294B668(ctx,base);return;
+case 0x8294B6B4:sub_8294B6B4(ctx,base);return;
+case 0x8294B6C8:sub_8294B6C8(ctx,base);return;
+case 0x8294B724:sub_8294B724(ctx,base);return;
+case 0x8294B744:sub_8294B744(ctx,base);return;
+case 0x8294B794:sub_8294B794(ctx,base);return;
+case 0x8294B7B4:sub_8294B7B4(ctx,base);return;
+case 0x8294B7D0:sub_8294B7D0(ctx,base);return;
+case 0x8294B7EC:sub_8294B7EC(ctx,base);return;
+case 0x8294B808:sub_8294B808(ctx,base);return;
+case 0x8294B824:sub_8294B824(ctx,base);return;
+case 0x8294B858:sub_8294B858(ctx,base);return;
+case 0x8294B8B0:sub_8294B8B0(ctx,base);return;
+case 0x8294B918:sub_8294B918(ctx,base);return;
+case 0x8294BA18:sub_8294BA18(ctx,base);return;
+case 0x8294BAE8:sub_8294BAE8(ctx,base);return;
+case 0x8294BB50:sub_8294BB50(ctx,base);return;
+case 0x8294BBE8:sub_8294BBE8(ctx,base);return;
+case 0x8294BBF0:sub_8294BBF0(ctx,base);return;
+case 0x8294BC50:sub_8294BC50(ctx,base);return;
+case 0x8294BC68:sub_8294BC68(ctx,base);return;
+case 0x8294BCA0:sub_8294BCA0(ctx,base);return;
+case 0x8294BCC0:sub_8294BCC0(ctx,base);return;
+case 0x8294BD98:sub_8294BD98(ctx,base);return;
+case 0x8294BDB0:sub_8294BDB0(ctx,base);return;
+case 0x8294BDC8:sub_8294BDC8(ctx,base);return;
+case 0x8294BF40:sub_8294BF40(ctx,base);return;
+case 0x8294C0C0:sub_8294C0C0(ctx,base);return;
+case 0x8294C190:sub_8294C190(ctx,base);return;
+case 0x8294C348:sub_8294C348(ctx,base);return;
+case 0x8294C430:sub_8294C430(ctx,base);return;
+case 0x8294C500:sub_8294C500(ctx,base);return;
+case 0x8294C548:sub_8294C548(ctx,base);return;
+case 0x8294CB48:sub_8294CB48(ctx,base);return;
+case 0x8294CC48:sub_8294CC48(ctx,base);return;
+case 0x8294CC90:sub_8294CC90(ctx,base);return;
+case 0x8294CDE8:sub_8294CDE8(ctx,base);return;
+case 0x8294D438:sub_8294D438(ctx,base);return;
+case 0x8294DD20:sub_8294DD20(ctx,base);return;
+case 0x8294DE10:sub_8294DE10(ctx,base);return;
+case 0x8294DF08:sub_8294DF08(ctx,base);return;
+case 0x8294E008:sub_8294E008(ctx,base);return;
+case 0x8294E120:sub_8294E120(ctx,base);return;
+case 0x8294E970:sub_8294E970(ctx,base);return;
+case 0x8294EDF8:sub_8294EDF8(ctx,base);return;
+case 0x8294F228:sub_8294F228(ctx,base);return;
+case 0x8294F528:sub_8294F528(ctx,base);return;
+case 0x8294F5E8:sub_8294F5E8(ctx,base);return;
+case 0x8294F65C:sub_8294F65C(ctx,base);return;
+case 0x8294F6EC:sub_8294F6EC(ctx,base);return;
+case 0x8294F704:sub_8294F704(ctx,base);return;
+case 0x8294F71C:sub_8294F71C(ctx,base);return;
+case 0x8294F734:sub_8294F734(ctx,base);return;
+case 0x8294F74C:sub_8294F74C(ctx,base);return;
+case 0x8294F764:sub_8294F764(ctx,base);return;
+case 0x8294F778:sub_8294F778(ctx,base);return;
+case 0x8294F794:sub_8294F794(ctx,base);return;
+case 0x8294F7B0:sub_8294F7B0(ctx,base);return;
+case 0x8294F7CC:sub_8294F7CC(ctx,base);return;
+case 0x8294F7E8:sub_8294F7E8(ctx,base);return;
+case 0x8294F804:sub_8294F804(ctx,base);return;
+case 0x8294F820:sub_8294F820(ctx,base);return;
+case 0x8294F83C:sub_8294F83C(ctx,base);return;
+case 0x8294F858:sub_8294F858(ctx,base);return;
+case 0x8294F870:sub_8294F870(ctx,base);return;
+case 0x8294F924:sub_8294F924(ctx,base);return;
+case 0x8294F93C:sub_8294F93C(ctx,base);return;
+case 0x8294F954:sub_8294F954(ctx,base);return;
+case 0x8294F96C:sub_8294F96C(ctx,base);return;
+case 0x8294F984:sub_8294F984(ctx,base);return;
+case 0x8294F99C:sub_8294F99C(ctx,base);return;
+case 0x8294F9B0:sub_8294F9B0(ctx,base);return;
+case 0x8294F9CC:sub_8294F9CC(ctx,base);return;
+case 0x8294F9E8:sub_8294F9E8(ctx,base);return;
+case 0x8294FA04:sub_8294FA04(ctx,base);return;
+case 0x8294FA20:sub_8294FA20(ctx,base);return;
+case 0x8294FA3C:sub_8294FA3C(ctx,base);return;
+case 0x8294FA58:sub_8294FA58(ctx,base);return;
+case 0x8294FA74:sub_8294FA74(ctx,base);return;
+case 0x8294FA90:sub_8294FA90(ctx,base);return;
+case 0x8294FAA8:sub_8294FAA8(ctx,base);return;
+case 0x8294FC88:sub_8294FC88(ctx,base);return;
+case 0x8294FCD4:sub_8294FCD4(ctx,base);return;
+case 0x8294FD14:sub_8294FD14(ctx,base);return;
+case 0x8294FE6C:sub_8294FE6C(ctx,base);return;
+case 0x8294FE80:sub_8294FE80(ctx,base);return;
+case 0x8294FE98:sub_8294FE98(ctx,base);return;
+case 0x8294FEB0:sub_8294FEB0(ctx,base);return;
+case 0x8294FEC8:sub_8294FEC8(ctx,base);return;
+case 0x8294FEE0:sub_8294FEE0(ctx,base);return;
+case 0x8294FEF8:sub_8294FEF8(ctx,base);return;
+case 0x8294FF10:sub_8294FF10(ctx,base);return;
+case 0x8294FF28:sub_8294FF28(ctx,base);return;
+case 0x8294FF40:sub_8294FF40(ctx,base);return;
+case 0x8294FF58:sub_8294FF58(ctx,base);return;
+case 0x8294FF70:sub_8294FF70(ctx,base);return;
+case 0x8294FF88:sub_8294FF88(ctx,base);return;
+case 0x8294FFA0:sub_8294FFA0(ctx,base);return;
+case 0x829500F4:sub_829500F4(ctx,base);return;
+case 0x8295010C:sub_8295010C(ctx,base);return;
+case 0x82950198:sub_82950198(ctx,base);return;
+case 0x82950250:sub_82950250(ctx,base);return;
+case 0x829502A4:sub_829502A4(ctx,base);return;
+case 0x8295041C:sub_8295041C(ctx,base);return;
+case 0x82950440:sub_82950440(ctx,base);return;
+case 0x82950464:sub_82950464(ctx,base);return;
+case 0x829506D0:sub_829506D0(ctx,base);return;
+case 0x82950754:sub_82950754(ctx,base);return;
+case 0x8295076C:sub_8295076C(ctx,base);return;
+case 0x82950784:sub_82950784(ctx,base);return;
+case 0x8295079C:sub_8295079C(ctx,base);return;
+case 0x829507B4:sub_829507B4(ctx,base);return;
+case 0x829507C8:sub_829507C8(ctx,base);return;
+case 0x829508A8:sub_829508A8(ctx,base);return;
+case 0x829508C0:sub_829508C0(ctx,base);return;
+case 0x829508C4:sub_829508C4(ctx,base);return;
+case 0x82950D40:sub_82950D40(ctx,base);return;
+case 0x82951148:sub_82951148(ctx,base);return;
+case 0x82951440:sub_82951440(ctx,base);return;
+case 0x82951658:sub_82951658(ctx,base);return;
+case 0x8295177C:sub_8295177C(ctx,base);return;
+case 0x82951A24:sub_82951A24(ctx,base);return;
+case 0x82951A3C:sub_82951A3C(ctx,base);return;
+case 0x82951A54:sub_82951A54(ctx,base);return;
+case 0x82951A6C:sub_82951A6C(ctx,base);return;
+case 0x82951A84:sub_82951A84(ctx,base);return;
+case 0x82951A9C:sub_82951A9C(ctx,base);return;
+case 0x82951AB0:sub_82951AB0(ctx,base);return;
+case 0x82951ACC:sub_82951ACC(ctx,base);return;
+case 0x82951AE8:sub_82951AE8(ctx,base);return;
+case 0x82951B04:sub_82951B04(ctx,base);return;
+case 0x82951B20:sub_82951B20(ctx,base);return;
+case 0x82951B3C:sub_82951B3C(ctx,base);return;
+case 0x82951B58:sub_82951B58(ctx,base);return;
+case 0x82951B74:sub_82951B74(ctx,base);return;
+case 0x82951B90:sub_82951B90(ctx,base);return;
+case 0x82951BA8:sub_82951BA8(ctx,base);return;
+case 0x82951D58:sub_82951D58(ctx,base);return;
+case 0x82951DA0:sub_82951DA0(ctx,base);return;
+case 0x82951E00:sub_82951E00(ctx,base);return;
+case 0x82951E80:sub_82951E80(ctx,base);return;
+case 0x82952090:sub_82952090(ctx,base);return;
+case 0x829520AC:sub_829520AC(ctx,base);return;
+case 0x829520CC:sub_829520CC(ctx,base);return;
+case 0x829520EC:sub_829520EC(ctx,base);return;
+case 0x8295210C:sub_8295210C(ctx,base);return;
+case 0x8295212C:sub_8295212C(ctx,base);return;
+case 0x8295222C:sub_8295222C(ctx,base);return;
+case 0x82952314:sub_82952314(ctx,base);return;
+case 0x82952328:sub_82952328(ctx,base);return;
+case 0x82952340:sub_82952340(ctx,base);return;
+case 0x82952358:sub_82952358(ctx,base);return;
+case 0x82952370:sub_82952370(ctx,base);return;
+case 0x82952388:sub_82952388(ctx,base);return;
+case 0x829523A0:sub_829523A0(ctx,base);return;
+case 0x829523B8:sub_829523B8(ctx,base);return;
+case 0x829523D0:sub_829523D0(ctx,base);return;
+case 0x829523E8:sub_829523E8(ctx,base);return;
+case 0x8295248C:sub_8295248C(ctx,base);return;
+case 0x82952498:sub_82952498(ctx,base);return;
+case 0x829524F0:sub_829524F0(ctx,base);return;
+case 0x82952680:sub_82952680(ctx,base);return;
+case 0x829528A0:sub_829528A0(ctx,base);return;
+case 0x8295292C:sub_8295292C(ctx,base);return;
+case 0x82952B44:sub_82952B44(ctx,base);return;
+case 0x82952BE4:sub_82952BE4(ctx,base);return;
+case 0x82952BF8:sub_82952BF8(ctx,base);return;
+case 0x82952C10:sub_82952C10(ctx,base);return;
+case 0x82952C28:sub_82952C28(ctx,base);return;
+case 0x82952C40:sub_82952C40(ctx,base);return;
+case 0x82952C58:sub_82952C58(ctx,base);return;
+case 0x82952C70:sub_82952C70(ctx,base);return;
+case 0x82952C88:sub_82952C88(ctx,base);return;
+case 0x82952CA0:sub_82952CA0(ctx,base);return;
+case 0x82952CB8:sub_82952CB8(ctx,base);return;
+case 0x82952CE8:sub_82952CE8(ctx,base);return;
+case 0x82952D00:sub_82952D00(ctx,base);return;
+case 0x82952D18:sub_82952D18(ctx,base);return;
+case 0x82952D44:sub_82952D44(ctx,base);return;
+case 0x82952DD8:sub_82952DD8(ctx,base);return;
+case 0x82953080:sub_82953080(ctx,base);return;
+case 0x829531F8:sub_829531F8(ctx,base);return;
+default:fprintf(stderr,"unexpected virtual %08x LR %llx\n",a,ctx.lr);abort();}}
+// @RETAIL_FUNCTION_8294AF70@
+// @RETAIL_FUNCTION_8294B000@
+// @RETAIL_FUNCTION_8294B040@
+// @RETAIL_FUNCTION_8294B1FC@
+// @RETAIL_FUNCTION_8294B2A4@
+// @RETAIL_FUNCTION_8294B2E4@
+// @RETAIL_FUNCTION_8294B304@
+// @RETAIL_FUNCTION_8294B324@
+// @RETAIL_FUNCTION_8294B344@
+// @RETAIL_FUNCTION_8294B4A0@
+// @RETAIL_FUNCTION_8294B4D8@
+// @RETAIL_FUNCTION_8294B5F8@
+// @RETAIL_FUNCTION_8294B668@
+// @RETAIL_FUNCTION_8294B6B4@
+// @RETAIL_FUNCTION_8294B6C8@
+// @RETAIL_FUNCTION_8294B724@
+// @RETAIL_FUNCTION_8294B744@
+// @RETAIL_FUNCTION_8294B794@
+// @RETAIL_FUNCTION_8294B7B4@
+// @RETAIL_FUNCTION_8294B7D0@
+// @RETAIL_FUNCTION_8294B7EC@
+// @RETAIL_FUNCTION_8294B808@
+// @RETAIL_FUNCTION_8294B824@
+// @RETAIL_FUNCTION_8294B858@
+// @RETAIL_FUNCTION_8294B8B0@
+// @RETAIL_FUNCTION_8294B918@
+// @RETAIL_FUNCTION_8294BA18@
+// @RETAIL_FUNCTION_8294BAE8@
+// @RETAIL_FUNCTION_8294BB50@
+// @RETAIL_FUNCTION_8294BBE8@
+// @RETAIL_FUNCTION_8294BBF0@
+// @RETAIL_FUNCTION_8294BC50@
+// @RETAIL_FUNCTION_8294BC68@
+// @RETAIL_FUNCTION_8294BCA0@
+// @RETAIL_FUNCTION_8294BCC0@
+// @RETAIL_FUNCTION_8294BD98@
+// @RETAIL_FUNCTION_8294BDB0@
+// @RETAIL_FUNCTION_8294BDC8@
+// @RETAIL_FUNCTION_8294BF40@
+// @RETAIL_FUNCTION_8294C0C0@
+// @RETAIL_FUNCTION_8294C190@
+// @RETAIL_FUNCTION_8294C348@
+// @RETAIL_FUNCTION_8294C430@
+// @RETAIL_FUNCTION_8294C500@
+// @RETAIL_FUNCTION_8294C548@
+// @RETAIL_FUNCTION_8294CB48@
+// @RETAIL_FUNCTION_8294CC48@
+// @RETAIL_FUNCTION_8294CC90@
+// @RETAIL_FUNCTION_8294CDE8@
+// @RETAIL_FUNCTION_8294D438@
+// @RETAIL_FUNCTION_8294DD20@
+// @RETAIL_FUNCTION_8294DE10@
+// @RETAIL_FUNCTION_8294DF08@
+// @RETAIL_FUNCTION_8294E008@
+// @RETAIL_FUNCTION_8294E120@
+// @RETAIL_FUNCTION_8294E970@
+// @RETAIL_FUNCTION_8294EDF8@
+// @RETAIL_FUNCTION_8294F228@
+// @RETAIL_FUNCTION_8294F528@
+// @RETAIL_FUNCTION_8294F5E8@
+// @RETAIL_FUNCTION_8294F65C@
+// @RETAIL_FUNCTION_8294F6EC@
+// @RETAIL_FUNCTION_8294F704@
+// @RETAIL_FUNCTION_8294F71C@
+// @RETAIL_FUNCTION_8294F734@
+// @RETAIL_FUNCTION_8294F74C@
+// @RETAIL_FUNCTION_8294F764@
+// @RETAIL_FUNCTION_8294F778@
+// @RETAIL_FUNCTION_8294F794@
+// @RETAIL_FUNCTION_8294F7B0@
+// @RETAIL_FUNCTION_8294F7CC@
+// @RETAIL_FUNCTION_8294F7E8@
+// @RETAIL_FUNCTION_8294F804@
+// @RETAIL_FUNCTION_8294F820@
+// @RETAIL_FUNCTION_8294F83C@
+// @RETAIL_FUNCTION_8294F858@
+// @RETAIL_FUNCTION_8294F870@
+// @RETAIL_FUNCTION_8294F924@
+// @RETAIL_FUNCTION_8294F93C@
+// @RETAIL_FUNCTION_8294F954@
+// @RETAIL_FUNCTION_8294F96C@
+// @RETAIL_FUNCTION_8294F984@
+// @RETAIL_FUNCTION_8294F99C@
+// @RETAIL_FUNCTION_8294F9B0@
+// @RETAIL_FUNCTION_8294F9CC@
+// @RETAIL_FUNCTION_8294F9E8@
+// @RETAIL_FUNCTION_8294FA04@
+// @RETAIL_FUNCTION_8294FA20@
+// @RETAIL_FUNCTION_8294FA3C@
+// @RETAIL_FUNCTION_8294FA58@
+// @RETAIL_FUNCTION_8294FA74@
+// @RETAIL_FUNCTION_8294FA90@
+// @RETAIL_FUNCTION_8294FAA8@
+// @RETAIL_FUNCTION_8294FC88@
+// @RETAIL_FUNCTION_8294FCD4@
+// @RETAIL_FUNCTION_8294FD14@
+// @RETAIL_FUNCTION_8294FE6C@
+// @RETAIL_FUNCTION_8294FE80@
+// @RETAIL_FUNCTION_8294FE98@
+// @RETAIL_FUNCTION_8294FEB0@
+// @RETAIL_FUNCTION_8294FEC8@
+// @RETAIL_FUNCTION_8294FEE0@
+// @RETAIL_FUNCTION_8294FEF8@
+// @RETAIL_FUNCTION_8294FF10@
+// @RETAIL_FUNCTION_8294FF28@
+// @RETAIL_FUNCTION_8294FF40@
+// @RETAIL_FUNCTION_8294FF58@
+// @RETAIL_FUNCTION_8294FF70@
+// @RETAIL_FUNCTION_8294FF88@
+// @RETAIL_FUNCTION_8294FFA0@
+// @RETAIL_FUNCTION_829500F4@
+// @RETAIL_FUNCTION_8295010C@
+// @RETAIL_FUNCTION_82950198@
+// @RETAIL_FUNCTION_82950250@
+// @RETAIL_FUNCTION_829502A4@
+// @RETAIL_FUNCTION_8295041C@
+// @RETAIL_FUNCTION_82950440@
+// @RETAIL_FUNCTION_82950464@
+// @RETAIL_FUNCTION_829506D0@
+// @RETAIL_FUNCTION_82950754@
+// @RETAIL_FUNCTION_8295076C@
+// @RETAIL_FUNCTION_82950784@
+// @RETAIL_FUNCTION_8295079C@
+// @RETAIL_FUNCTION_829507B4@
+// @RETAIL_FUNCTION_829507C8@
+// @RETAIL_FUNCTION_829508A8@
+// @RETAIL_FUNCTION_829508C0@
+// @RETAIL_FUNCTION_829508C4@
+// @RETAIL_FUNCTION_82950D40@
+// @RETAIL_FUNCTION_82951148@
+// @RETAIL_FUNCTION_82951440@
+// @RETAIL_FUNCTION_82951658@
+// @RETAIL_FUNCTION_8295177C@
+// @RETAIL_FUNCTION_82951A24@
+// @RETAIL_FUNCTION_82951A3C@
+// @RETAIL_FUNCTION_82951A54@
+// @RETAIL_FUNCTION_82951A6C@
+// @RETAIL_FUNCTION_82951A84@
+// @RETAIL_FUNCTION_82951A9C@
+// @RETAIL_FUNCTION_82951AB0@
+// @RETAIL_FUNCTION_82951ACC@
+// @RETAIL_FUNCTION_82951AE8@
+// @RETAIL_FUNCTION_82951B04@
+// @RETAIL_FUNCTION_82951B20@
+// @RETAIL_FUNCTION_82951B3C@
+// @RETAIL_FUNCTION_82951B58@
+// @RETAIL_FUNCTION_82951B74@
+// @RETAIL_FUNCTION_82951B90@
+// @RETAIL_FUNCTION_82951BA8@
+// @RETAIL_FUNCTION_82951D58@
+// @RETAIL_FUNCTION_82951DA0@
+// @RETAIL_FUNCTION_82951E00@
+// @RETAIL_FUNCTION_82951E80@
+// @RETAIL_FUNCTION_82952090@
+// @RETAIL_FUNCTION_829520AC@
+// @RETAIL_FUNCTION_829520CC@
+// @RETAIL_FUNCTION_829520EC@
+// @RETAIL_FUNCTION_8295210C@
+// @RETAIL_FUNCTION_8295212C@
+// @RETAIL_FUNCTION_8295222C@
+// @RETAIL_FUNCTION_82952314@
+// @RETAIL_FUNCTION_82952328@
+// @RETAIL_FUNCTION_82952340@
+// @RETAIL_FUNCTION_82952358@
+// @RETAIL_FUNCTION_82952370@
+// @RETAIL_FUNCTION_82952388@
+// @RETAIL_FUNCTION_829523A0@
+// @RETAIL_FUNCTION_829523B8@
+// @RETAIL_FUNCTION_829523D0@
+// @RETAIL_FUNCTION_829523E8@
+// @RETAIL_FUNCTION_8295248C@
+// @RETAIL_FUNCTION_82952498@
+// @RETAIL_FUNCTION_829524F0@
+// @RETAIL_FUNCTION_82952680@
+// @RETAIL_FUNCTION_829528A0@
+// @RETAIL_FUNCTION_8295292C@
+// @RETAIL_FUNCTION_82952B44@
+// @RETAIL_FUNCTION_82952BE4@
+// @RETAIL_FUNCTION_82952BF8@
+// @RETAIL_FUNCTION_82952C10@
+// @RETAIL_FUNCTION_82952C28@
+// @RETAIL_FUNCTION_82952C40@
+// @RETAIL_FUNCTION_82952C58@
+// @RETAIL_FUNCTION_82952C70@
+// @RETAIL_FUNCTION_82952C88@
+// @RETAIL_FUNCTION_82952CA0@
+// @RETAIL_FUNCTION_82952CB8@
+// @RETAIL_FUNCTION_82952CE8@
+// @RETAIL_FUNCTION_82952D00@
+// @RETAIL_FUNCTION_82952D18@
+// @RETAIL_FUNCTION_82952D44@
+// @RETAIL_FUNCTION_82952DD8@
+// @RETAIL_FUNCTION_82953080@
+// @RETAIL_FUNCTION_829531F8@
+LONG CALLBACK fault(EXCEPTION_POINTERS*p){fprintf(stderr,"probe fault in %s code %08lx guest-ref %llx\n",current_function,p->ExceptionRecord->ExceptionCode,p->ExceptionRecord->ExceptionInformation[1]);ExitProcess(8);return EXCEPTION_EXECUTE_HANDLER;}
+int main(int argc,char**argv){
+ SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,fault);
+ if(argc!=4)return 2;
+ auto base=(uint8_t*)VirtualAlloc(nullptr,0x100000000ull,MEM_RESERVE,PAGE_READWRITE);
+ if(!base||!VirtualAlloc(base+0x82000000,0x11b0000,MEM_COMMIT,PAGE_READWRITE)||!VirtualAlloc(base+0x10000,0x1000000,MEM_COMMIT,PAGE_READWRITE))return 3;
+ std::ifstream image(argv[1],std::ios::binary);image.read((char*)base+0x82000000,0x11b0000);if(!image)return 4;
+ std::ifstream mxb(argv[2],std::ios::binary|std::ios::ate);auto size=mxb.tellg();mxb.seekg(0);mxb.read((char*)base+0x80000,size);if(!mxb)return 5;
+ PPCContext ctx{};ctx.fpscr.loadFromHost();ctx.r1.u32=0x70000;
+ REX_STORE_U32(0x20000,0x20200);REX_STORE_U32(0x20208,0x100);REX_STORE_U32(0x20204,0x10c);REX_STORE_U32(0x20104,14);REX_STORE_U32(0x20108,0x20300);REX_STORE_U32(0x20300,0x20400);REX_STORE_U32(0x20418,0x104);REX_STORE_U32(0x2041c,0x108);
+ ctx.r3.u32=0x20000;ctx.r4.u32=0x20100;sub_8294B918(ctx,base);
+ fprintf(stderr,"initialized\n");
+ ctx.r3.u32=0x20000;ctx.r4.u32=0x80000;sub_8294BA18(ctx,base);
+ auto state=REX_LOAD_U32(0x20008),host=REX_LOAD_U32(state);fprintf(stderr,"built host %08x heap %08x\n",host,bump);
+
+ std::set<uint32_t> spatial;
+ auto records=REX_LOAD_U32(host+416);for(uint32_t i=0;i<REX_LOAD_U32(host+468);i++){auto s=REX_LOAD_U32(records+8*i+4);spatial.insert(REX_LOAD_U32(s+4));}
+ fprintf(stderr,"spatial blocks %zu\n",spatial.size());
+ FILE*out=fopen(argv[3],"wb");if(!out)return 6;
+ auto word=[&](uint32_t x){fwrite(&x,4,1,out);};
+ fwrite("TU3MXB01",8,1,out);word(controllers.size());word(1024);
+ for(auto c:controllers){word(REX_LOAD_U32(c+4));word(REX_LOAD_U32(c+12)!=0);}
+ uint32_t rng=0x31fa75c9;
+ for(int tick=0;tick<1024;tick++){
+  float dt=tick<512?1.0f/30:(tick%4==0?1.0f/60:tick%4==1?1.0f/30:tick%4==2?0.05f:0.1f);
+  uint32_t mode=tick<128?0xffffffff:uint32_t((tick/32)%16);word(std::bit_cast<uint32_t>(dt));word(mode);
+  for(auto c:controllers){
+   auto key=REX_LOAD_U32(c+4),input=REX_LOAD_U32(c+8),output=REX_LOAD_U32(c+12);
+   for(int id=0;id<16;id++){
+    rng=rng*1664525+1013904223;uint32_t v;
+    if(tick<64)v=0;else if(tick<128)v=32767;else if(tick<256)v=(tick/16)%2?32767:0;else v=(rng>>16)&32767;
+    if(spatial.contains(input)){
+      if(id<=1)v=std::bit_cast<uint32_t>((tick%200)*0.75f+id*2.5f);
+      else if(id==2||id==3)v=rng&65535;
+      else if(id==13||id==14)v=std::bit_cast<uint32_t>((int(tick%100)-50)*2.5f);
+      else if(id==15)v=(tick%41==40)?0:1;
+    }
+    word(v);if(input)REX_STORE_U32(input+4*id,v);
+   }
+   uint32_t enabled=tick%127!=126;word(enabled);if(output)REX_STORE_U32(output+60,enabled);
+  }
+  ctx.r1.u32=0x70000;ctx.r3.u32=host;ctx.r5.u32=mode;ctx.f1.f64=dt;sub_8294F5E8(ctx,base);
+  for(auto c:controllers){auto output=REX_LOAD_U32(c+12);for(int id=0;id<16;id++)word(output?REX_LOAD_U32(output+4*id):0);}
+ }
+ fclose(out);fprintf(stderr,"completed 1024 ticks, %zu controllers\n",controllers.size());return 0;
+}

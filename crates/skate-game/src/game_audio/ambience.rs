@@ -1,27 +1,14 @@
-//! Zone ambience beds, as retail plays them (TU3 SFXObj_Ambience; audio-specs/ems-emitters-re.md, doc 11):
-//! - the zone is the district's world-painter region layer `audio_ambience` at the skater's x, z,
-//!   an `aud_wp_ambiences` record naming its bed (ambience.big stream), volume and fade times;
-//! - one bed at a time: on a zone change the old bed fades out over the OLD zone's fade-out time and
-//!   stops, then the new bed starts and fades in over the NEW zone's fade-in time (linear); a return
-//!   to the old zone during the fade-out fades it back in; a change during a fade-in waits for it;
-//! - for the whole transition the map's crossfade bank (`Main_Ambience_Crossfade_DT/Ind/Uni` from the
-//!   map's database entry, `map_audio`)
-//!   plays the group of the zone pair (either order; group 1, level 1.0 if no pair): the looping
-//!   voices the bank's program opens for that group (retail's: four from fixed directions), or an
-//!   audio mod's declared layout (`crossfade_layouts.rs`); stopped when the fade-in ends.
-//! Beds are not positional (retail plays the channels as authored; ours are stereo downmixes).
-//! Installs without the zone data (manifest v3) keep the old per-map bed choice (`BEDS`).
+//! Native TU3 zone-bed phases and MixMap controls, with interim Bevy playback.
+//! The controller processes before the MixMap tick; gains/pitch read the actual outputs afterward.
+//! Beds still use exported stereo downmixes and Bevy voices; their multichannel/filter/release
+//! graph is not a 1:1 reproduction. Crossfade layouts come from the bank or mod declarations.
+//! Installs without zone data retain the explicitly approximate per-map fallback below.
 use super::{Category, Library, Play, Voices, library::Clip, voices::VoiceId};
 use bevy::prelude::*;
 
 /// Fallback bed level and fade for installs without zone data.
 const LEVEL: f32 = 0.6;
 const CROSSFADE: f32 = 2.0;
-/// The Ambience MixMap's bed level carries a −11 dB base before any ducking (audio-specs/mixmap-spec.md; out0).
-/// Verified against retail captures at four zones (dt_open, dt_main, dt_rez, indu_quarry): predicted
-/// with the base within 0.6 dB, without it 11 dB too loud (tools/check_bed_level.py). Our levels run at
-/// `voices::RETAIL_SCALE` × retail, so the bed gets the same scale to keep retail's balance.
-const BED_BASE: f32 = 0.281_838_3; // 10^(-11/20)
 /// Directional crossfade voices sit this far from the listener (Bevy attenuation stays 1).
 const PAN_DISTANCE: f32 = 8.0;
 
@@ -45,32 +32,11 @@ pub(super) fn bed_for(map: &str) -> Option<&'static str> {
 }
 
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Phase {
-    Silent,
-    FadeIn,
-    Steady,
-    FadeOut,
-}
-
-/// Attenuation 0 (full) .. 1 (silent) of the bed for a phase and its timer (retail's MixMap input 0).
-fn attenuation(phase: Phase, t: f32, fade_in: f32, fade_out: f32) -> f32 {
-    match phase {
-        Phase::Silent => 1.0,
-        Phase::Steady => 0.0,
-        Phase::FadeIn => 1.0 - (t / fade_in.max(1e-3)).clamp(0.0, 1.0),
-        Phase::FadeOut => (t / fade_out.max(1e-3)).clamp(0.0, 1.0),
-    }
-}
-
-#[derive(Default)]
+#[derive(Resource, Default)]
 pub(super) struct State {
     /// Map name, map generation, audio content generation.
     map: Option<(String, u64, u64)>,
-    /// Zone of the bed that plays (retail obj+48), its phase and timer.
-    current: u64,
-    phase: Option<Phase>,
-    t: f32,
+    control: skate_audio::world::ambience::Controller,
     bed: Option<(VoiceId, Clip)>,
     crossfade: Vec<(VoiceId, Clip, f32, f32)>,
     crossfade_level: f32,
@@ -86,15 +52,16 @@ pub(super) struct State {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update(
-    mut state: Local<State>,
+    mut state: ResMut<State>,
     mut commands: Commands,
     map: Res<crate::map_transition::CurrentMap>,
     library: Option<ResMut<Library>>,
     mut voices: ResMut<Voices>,
     mut assets: ResMut<Assets<AudioSource>>,
-    listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
     cues: Res<super::skate_events::Cues>,
     time: Res<Time<Real>>,
+    virtual_time: Res<Time<Virtual>>,
+    native: Option<ResMut<super::native::Native>>,
     content: Res<super::AudioContent>,
     audio: Res<super::map_audio::MapAudio>,
     mut api: ResMut<super::mod_audio::AudioApi>,
@@ -102,7 +69,7 @@ pub(super) fn update(
     let Some(mut library) = library else { return };
     let state = &mut *state;
     let now = time.elapsed_secs_f64();
-    let dt = time.delta_secs().clamp(0.0, 0.25);
+    let dt = virtual_time.delta_secs();
     // Free clips whose voices have finished fading.
     let fading = std::mem::take(&mut state.fading);
     for clip in fading {
@@ -144,80 +111,65 @@ pub(super) fn update(
         api.events.push(super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Zone, source: super::mod_audio::Source::Ambience, class: "", slot: "", id: 0, owner: desired });
     }
 
-    let phase = state.phase.unwrap_or(Phase::Silent);
-    let zone = library.zone(state.current).cloned();
+    let zone = library.zone(state.control.current).cloned();
     let (fade_in, fade_out) = zone.as_ref().map_or((1.0, 1.0), |z| (z.time_b, z.time_a));
-    match phase {
-        Phase::Silent => {
-            if desired != 0 {
-                let zone = library.zone(desired).cloned();
-                if let Some(bed) = zone.as_ref().and_then(|z| z.bed.clone()) {
-                    if let Some(clip) = library.ambience(&mut assets, &bed) {
-                        let play = Play { category: Category::Ambience, volume: 0.0, pitch: 1.0, position: None,
-                            looping: true, fade_in: 0.0, envelope: None };
-                        if let Some(id) = voices.play(&mut commands, &clip, play, now) {
-                            // A bed an audio mod replaced says whose file plays (`mod:<id>/<path>`).
-                            let from = if clip.key.starts_with(skate_mods::audio_merge::MOD_REF) { format!(" from {}", clip.key) } else { String::new() };
-                            info!("AUDIO_AMBIENCE zone {} bed {bed}{from}", zone.as_ref().and_then(|z| z.name.as_deref()).unwrap_or("?"));
-                            state.bed = Some((id, clip));
-                        } else {
-                            state.fading.push(clip);
-                        }
-                    }
-                }
-                state.current = desired;
-                state.phase = Some(Phase::FadeIn);
-                state.t = 0.0;
-            }
+    let ready = state.layouts.as_ref().is_some_and(|(bank, _, _)| bank.is_some());
+    let change = state.control.process(desired, dt, fade_in, fade_out, ready);
+    if change.stop_crossfade { stop_crossfade(state, &mut voices); }
+    if change.start_crossfade {
+        let layouts = state.layouts.take();
+        if let Some((Some(bank), _, layout)) = &layouts {
+            start_crossfade(state, bank, layout, desired, &mut commands, &mut library, &mut voices, &mut assets, now);
         }
-        Phase::FadeIn => {
-            state.t += dt;
-            if state.t >= fade_in {
-                state.phase = Some(Phase::Steady);
-                stop_crossfade(state, &mut voices);
-            }
+        state.layouts = layouts;
+    }
+    if change.stop_bed {
+        if let Some((id, clip)) = state.bed.take() {
+            voices.stop(id, 0.05);
+            state.fading.push(clip);
         }
-        Phase::Steady => {
-            if desired != state.current {
-                state.phase = Some(Phase::FadeOut);
-                state.t = 0.0;
-                stop_crossfade(state, &mut voices);
-                if desired != 0 {
-                    let layouts = state.layouts.take();
-                    if let Some((Some(bank), _, l)) = &layouts {
-                        start_crossfade(state, bank, l, desired, &mut commands, &mut library, &mut voices, &mut assets, now);
-                    }
-                    state.layouts = layouts;
-                }
-            }
-        }
-        Phase::FadeOut => {
-            state.t += dt;
-            if desired == state.current {
-                // Back into the zone that is fading out: fade the same bed back in.
-                state.t = (1.0 - state.t / fade_out.max(1e-3)).clamp(0.0, 1.0) * fade_in;
-                state.phase = Some(Phase::FadeIn);
-            } else if state.t >= fade_out {
-                if let Some((id, clip)) = state.bed.take() {
-                    voices.stop(id, 0.05);
-                    state.fading.push(clip);
-                }
-                state.current = 0;
-                state.phase = Some(Phase::Silent);
+    }
+    if change.start_bed {
+        let zone = library.zone(state.control.current).cloned();
+        if let Some(bed) = zone.as_ref().and_then(|z| z.bed.clone()) {
+            if let Some(clip) = library.ambience(&mut assets, &bed) {
+                let play = Play { category: Category::Ambience, volume: 0.0, pitch: 1.0, position: None,
+                    looping: true, fade_in: 0.0, envelope: None };
+                if let Some(id) = voices.play(&mut commands, &clip, play, now) {
+                    info!("AUDIO_AMBIENCE zone {} bed {bed}", zone.as_ref().and_then(|z| z.name.as_deref()).unwrap_or("?"));
+                    state.bed = Some((id, clip));
+                } else { state.fading.push(clip); }
             }
         }
     }
+    let zone = library.zone(state.control.current);
+    let (fade_in, fade_out) = zone.map_or((1.0, 1.0), |z| (z.time_b, z.time_a));
+    if let Some(mut native) = native {
+        if let Some(mixmap) = native.mixmap.as_mut() {
+            mixmap.set_input(skate_audio::mixmap::keys::AMBIENCE, 0, state.control.input(fade_in, fade_out));
+        }
+    }
+}
 
-    // Bed level and the crossfade voices' directions.
-    let phase = state.phase.unwrap_or(Phase::Silent);
-    let zone = library.zone(state.current).cloned();
-    if let (Some((id, _)), Some(zone)) = (&state.bed, &zone) {
-        let gain = zone.volume * BED_BASE * super::voices::RETAIL_SCALE * (1.0 - attenuation(phase, state.t, zone.time_b, zone.time_a));
-        voices.set(*id, gain, 1.0, None);
+/// Native 824D42C8 reads outputs after the MixMap tick. Bevy playback remains an interim host;
+/// its downmix, filter graph and release behavior are not certified by the phase comparison.
+pub(super) fn mixmap_output(
+    state: Res<State>, library: Option<Res<Library>>, mut voices: ResMut<Voices>,
+    native: Option<Res<super::native::Native>>,
+    listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
+) {
+    let (Some(library), Some(native)) = (library, native) else { return };
+    let Some(mixmap) = native.mixmap.as_ref() else { return };
+    let key = skate_audio::mixmap::keys::AMBIENCE;
+    if let (Some((id, _)), Some(zone)) = (&state.bed, library.zone(state.control.current)) {
+        let gain = (mixmap.level(key, 0) as f32 * skate_audio::dsp::INV_32767) * zone.volume;
+        let pitch = mixmap.pitch_4096(key, 2) as f32 / 4096.0;
+        voices.set(*id, gain * super::voices::RETAIL_SCALE, pitch, None);
     }
     if let Ok(ear) = listener.single() {
         let (forward, right, origin) = (ear.forward().as_vec3(), ear.right().as_vec3(), ear.translation());
-        let level = state.crossfade_level;
+        let word = ((mixmap.level(key, 1) as f32 * state.crossfade_level) as i32).clamp(0, 32767);
+        let level = word as f32 * skate_audio::dsp::INV_32767;
         for (id, _, pan, voice_level) in &state.crossfade {
             let angle = pan.to_radians();
             let at = origin + (forward * angle.cos() + right * angle.sin()) * PAN_DISTANCE;
@@ -231,12 +183,12 @@ fn start_crossfade(
     state: &mut State, bank: &str, layouts: &super::crossfade_layouts::Layouts, to: u64, commands: &mut Commands,
     library: &mut Library, voices: &mut Voices, assets: &mut Assets<AudioSource>, now: f64,
 ) {
-    let (group, level) = library.crossfade(state.current, to).map_or((1, 1.0), |c| (c.group, c.level));
+    let (group, level) = library.crossfade(state.control.current, to).map_or((1, 1.0), |c| (c.group, c.level));
     let Some(layout) = layouts.group(group) else {
         return;
     };
-    // w0 = clamp(MixMap out1 x level); out1 not decoded yet, taken as full scale.
-    state.crossfade_level = level.min(1.0);
+    // The native packet level is quantized from MixMap out1 in mixmap_output.
+    state.crossfade_level = level;
     for (sample, pan, voice_level) in layout {
         if let Some(clip) = library.sample(assets, bank, *sample) {
             let play = Play { category: Category::Ambience, volume: 0.0, pitch: 1.0, position: Some(Vec3::ZERO),
@@ -262,9 +214,7 @@ fn stop_all(state: &mut State, voices: &mut Voices, fade: f32) {
         voices.stop(id, fade);
         state.fading.push(clip);
     }
-    state.current = 0;
-    state.phase = None;
-    state.t = 0.0;
+    state.control = Default::default();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -298,15 +248,6 @@ mod tests {
             assert!(bed_for(map).is_some(), "{map}");
         }
         assert_eq!(bed_for("Test world"), None);
-    }
-
-    #[test]
-    fn fades_are_linear_and_one_bed_at_a_time() {
-        assert_eq!(attenuation(Phase::Silent, 0.0, 2.0, 3.0), 1.0);
-        assert_eq!(attenuation(Phase::Steady, 9.0, 2.0, 3.0), 0.0);
-        assert!((attenuation(Phase::FadeIn, 1.0, 2.0, 3.0) - 0.5).abs() < 1e-6);
-        assert!((attenuation(Phase::FadeOut, 1.5, 2.0, 3.0) - 0.5).abs() < 1e-6);
-        assert_eq!(attenuation(Phase::FadeOut, 5.0, 2.0, 3.0), 1.0);
     }
 
     /// A mod crossfade bank plays: an overlay adds a WAV bank with a declared layout, a zone pair
@@ -347,16 +288,19 @@ mod tests {
         world.insert_resource(crate::map_transition::CurrentMap { path: None, name: "MyMap".into(), spawn: [0.0; 3], heading: 0.0, generation: 1, audio_tag: None });
         world.insert_resource(super::super::skate_events::Cues::default());
         world.insert_resource(Time::<Real>::default());
+        world.insert_resource(Time::<Virtual>::default());
+        world.insert_resource(State::default());
         world.insert_resource(super::super::AudioContent::default());
         world.insert_resource(audio);
         world.insert_resource(super::super::mod_audio::AudioApi::default());
         world.spawn((GlobalTransform::default(), super::super::GameAudioListener));
-        // One system instance for the whole walk (its Local state is the ambience player's).
+        // One persistent ambience resource for the whole walk.
         let system = world.register_system(update);
         let start = std::time::Instant::now();
         let step = |world: &mut World, x: f32, t: f32| {
             world.resource_mut::<super::super::skate_events::Cues>().riding.board = Vec3::new(x, 0.0, 0.0);
             world.resource_mut::<Time<Real>>().update_with_instant(start + std::time::Duration::from_secs_f32(t));
+            world.resource_mut::<Time<Virtual>>().advance_by(std::time::Duration::from_secs_f32(0.1));
             world.run_system(system).unwrap();
         };
         // In the plaza until its bed has faded in (1 s), then across into the street.

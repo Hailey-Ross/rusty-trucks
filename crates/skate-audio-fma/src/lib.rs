@@ -176,6 +176,8 @@ macro_rules! kernels {
 }
 
 kernels! {
+    /// TU3 Gain four-lane de-click kernel (`82B3C098`).
+    fn gain_ramp(samples: &mut [f32], start: f32, step: f32);
     /// Direct Form I biquad over one block of one channel, in place; history {x1, x2, y1, y2}.
     fn biquad(k: &Coefficients, history: &mut [f32; 4], samples: &mut [f32]);
     /// The biquad's feedback loop with the feed-forward sum fixed at [`BIAS`] (silent input,

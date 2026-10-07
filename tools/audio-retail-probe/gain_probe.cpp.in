@@ -1,0 +1,43 @@
+
+#include <rex/ppc/context.h>
+#include <rex/ppc/intrinsics.h>
+#include <windows.h>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+#define DEFINE_REX_FUNC(name) void name(PPCContext& ctx, uint8_t* base)
+#define REX_FUNC_PROLOGUE()
+#define REX_RAW_ADDR(x) (base + uint32_t(x))
+#define REX_LOAD_U32(x) __builtin_bswap32(*(uint32_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U32(x,y) (*(uint32_t*)REX_RAW_ADDR(x)=__builtin_bswap32(y))
+// ABI spill/restore only; the caller discards all registers after each isolated kernel invocation.
+void __savegprlr_23(PPCContext&, uint8_t*) {}
+void __restgprlr_23(PPCContext&, uint8_t*) {}
+// @RETAIL_FUNCTION@
+
+int main(int argc,char**argv) {
+ SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
+ if(argc!=3) return 2;
+ auto base=(uint8_t*)VirtualAlloc(nullptr,0x100000000ull,MEM_RESERVE,PAGE_READWRITE);
+ if(!base || !VirtualAlloc(base+0x82000000,0x11b0000,MEM_COMMIT,PAGE_READWRITE) || !VirtualAlloc(base+0x10000,0x40000,MEM_COMMIT,PAGE_READWRITE)) return 3;
+ std::ifstream image(argv[1],std::ios::binary); image.read((char*)base+0x82000000,0x11b0000); if(!image) return 4;
+ FILE* out=fopen(argv[2],"w");if(!out)return 5;
+ fprintf(out,"# TU3 82B3C098 translated instruction execution; start step, then 256 input/output bit pairs\n");
+ uint32_t rng=0x731fe891;
+ for(int test=0;test<4096;test++) {
+  PPCContext ctx{};ctx.fpscr.loadFromHost();ctx.r1.u32=0x40000;ctx.r3.u32=0x20000;ctx.r4.u32=0x30000;
+  float start,step;
+  if(test==0){start=0.5f;step=-0.5f/64;}
+  else if(test==1){start=0.1234567f;step=0.00098765f;}
+  else if(test==2){start=1.0f;step=0;}
+  else {rng=rng*1664525+1013904223;start=float(int32_t(rng))/2147483648.0f; rng=rng*1664525+1013904223;step=float(int32_t(rng))/2147483648.0f/64;}
+  ctx.f1.f64=start;ctx.f2.f64=step;
+  fprintf(out,"%08x %08x",std::bit_cast<uint32_t>(start),std::bit_cast<uint32_t>(step));
+  uint32_t input[256];
+  for(int i=0;i<256;i++){rng=rng*1664525+1013904223;float x=float(int32_t(rng))/2147483648.0f; input[i]=std::bit_cast<uint32_t>(x);REX_STORE_U32(0x30000+4*i,input[i]);}
+  sub_82B3C098(ctx,base);
+  for(int i=0;i<256;i++)fprintf(out," %08x:%08x",input[i],REX_LOAD_U32(0x20000+4*i));
+  fprintf(out,"\n");
+ }
+ fclose(out);VirtualFree(base,0,MEM_RELEASE);return 0;
+}

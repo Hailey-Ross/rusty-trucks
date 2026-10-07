@@ -8,6 +8,8 @@ pub(super) type V = [f32; 4];
 #[derive(Clone, Copy, Debug)]
 pub struct SkeletonFeedbackSettings {
     pub body: SkeletonCollisionSettings,
+    /// Fixed physics_collision layout120/124/128/164 consumed by82BD60C8.
+    pub response: CollisionResponseSettings,
     pub small_object_mass: f32,
     pub ground_plane_max_distance: f32,
     pub ground_plane_max_angle: f32,
@@ -220,4 +222,74 @@ impl SkeletonCollisionFeedback {
         self.priority = self.settings.body.priority;
         self.compliant = self.settings.body.compliant;
     }
+}
+
+/// Fixed-layout physics_collision tuning for SkeletonCollision::Fill82BD60C8.
+#[derive(Clone, Copy, Debug)]
+pub struct CollisionResponseSettings {
+    pub force_scale: f32,
+    pub velocity_scale: f32,
+    pub divisor: f32,
+    pub region_scale: f32,
+}
+
+impl SkeletonCollisionFeedback {
+    /// Fill82BD60C8 accumulates these responses after contact traversal, then
+    /// publishes them to Collision196/200 and the eight normalized region words.
+    pub fn fill_response(
+        &mut self,
+        physical: &SkeletonPhysicalRecord,
+        weights: &[f32; 24],
+    ) -> [f32; 8] {
+        let velocities: &[[f32; 4]; 24] = physical.velocities[..24]
+            .try_into()
+            .expect("native24 velocities");
+        collision_response(
+            self.settings.response,
+            &mut self.wipeout_times,
+            &self.regions,
+            velocities,
+            weights,
+        )
+    }
+}
+
+/// The arithmetic block of82BD60C8. The fourth vector lane is not part of either dot.
+pub fn collision_response(
+    t: CollisionResponseSettings,
+    accumulated: &mut [f32; 3],
+    regions: &[ContactRegion; 8],
+    velocities: &[[f32; 4]; 24],
+    weights: &[f32; 24],
+) -> [f32; 8] {
+    // vmsum3fp128 pairs guest x/y, then adds guest z/zero. Each multiplication
+    // rounds before addition; fmadds below is independently fused.
+    let dot = |a: V, b: V| (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2];
+    let positive = |v: f32| if -v >= 0.0 { 0.0 } else { v };
+    let clamp = |v: f32| {
+        let v = positive(v);
+        if 1.0 - v >= 0.0 { v } else { 1.0 }
+    };
+    let output = std::array::from_fn(|i| {
+        let r = &regions[i];
+        let Some(part) = r.part else { return 0.0 };
+        let v = velocities[part];
+        let speed = if dot(v, v) <= f32::from_bits(0x3dcc_cccd) {
+            0.0
+        } else {
+            1.0
+        };
+        let force = if r.force <= 0.5 { 0.0 } else { 1.0 };
+        let inverse = 1.0 / t.divisor;
+        let normal_speed = dot(v, r.normal).abs();
+        accumulated[1] = ((inverse * t.force_scale) * force).mul_add(r.force, accumulated[1]);
+        accumulated[0] =
+            ((inverse * t.velocity_scale) * normal_speed).mul_add(speed, accumulated[0]);
+        let value = (normal_speed * weights[part]) * t.region_scale;
+        let floor = f32::from_bits(0x3a83_126f);
+        clamp(if floor - value >= 0.0 { floor } else { value })
+    });
+    accumulated[0] = clamp(accumulated[0]);
+    accumulated[1] = clamp(accumulated[1]);
+    output
 }

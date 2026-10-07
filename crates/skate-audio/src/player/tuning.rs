@@ -114,6 +114,8 @@ pub struct PlayerTuning {
     /// air factor (fields `0x6D3D91A9BA7ADCDC` = 0.5 → bucket 2, `0x2A70BB8A382574E4` = 0.31 → 1).
     pub wheel_bucket_high: f32,
     pub wheel_bucket_low: f32,
+    /// Conditioner82772D30: class A867FBE3454326FF/default, field468752B0BEE65CDB, indices0/1.
+    pub jump_thresholds: [f32; 2],
     /// eSk8AudioTricks (class `0x6918469984A8C596`, field `0x8C3025DB4D1761AF`): the audio trick id
     /// (state `+348`) by collection key = [`name_hash`] of the lowercase scorable name.
     pub audio_tricks: std::collections::HashMap<u64, i32>,
@@ -158,6 +160,7 @@ impl Default for PlayerTuning {
             landing_materials: Vec::new(),
             wheel_bucket_high: 0.5,
             wheel_bucket_low: f32::from_bits(0x3E9E_B852),
+            jump_thresholds: [f32::from_bits(0x3EE6_6666), f32::from_bits(0x3F40_0000)],
             audio_tricks: Default::default(),
             collision: Default::default(),
             seam_patterns: Vec::new(),
@@ -212,6 +215,13 @@ pub fn name_hash(bytes: &[u8]) -> u64 {
 }
 
 impl PlayerTuning {
+    /// Native82772D30 tests index1 first, then index0; both comparisons are strict.
+    pub fn jump_bucket(&self, strength: f32) -> u32 {
+        if strength > self.jump_thresholds[1] { 2 }
+        else if strength > self.jump_thresholds[0] { 1 }
+        else { 0 }
+    }
+
     /// The audio trick id of a scorable name (−1 without a record).
     pub fn audio_trick(&self, name: &str) -> i32 {
         self.audio_tricks.get(&name_hash(name.to_ascii_lowercase().as_bytes())).copied().unwrap_or(-1)

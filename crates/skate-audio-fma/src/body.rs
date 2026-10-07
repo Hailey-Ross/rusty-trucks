@@ -147,3 +147,28 @@ pub fn resample(out: &mut [f32], position: u64, frac: u32, step: u32, mut frame:
         }
     }
 }
+
+/// TU3 Gain's `82B3C098` kernel. Keep the native four-lane rounding order.
+#[inline(always)]
+pub fn gain_ramp(samples: &mut [f32], start: f32, step: f32) {
+    let mut lanes = [start, start + step, step.mul_add(2.0, start), step.mul_add(3.0, start)];
+    let stride = step * 4.0;
+    let flat = step.mul_add(64.0, start);
+    let ramp_len = samples.len().min(64);
+    for (block, group) in samples[..ramp_len].chunks_mut(32).enumerate() {
+        for (chunk, values) in group.chunks_mut(4).enumerate() {
+            for (lane, sample) in values.iter_mut().enumerate() {
+                let gain = if chunk == 0 { lanes[lane] } else { (chunk as f32).mul_add(stride, lanes[lane]) };
+                *sample *= gain;
+            }
+        }
+        if block == 0 {
+            for lane in &mut lanes {
+                *lane = 8.0f32.mul_add(stride, *lane);
+            }
+        }
+    }
+    for sample in samples.iter_mut().skip(64) {
+        *sample *= flat;
+    }
+}

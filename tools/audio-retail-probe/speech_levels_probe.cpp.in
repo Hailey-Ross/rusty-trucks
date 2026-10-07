@@ -1,0 +1,132 @@
+
+#include <rex/ppc/context.h>
+#include <rex/ppc/intrinsics.h>
+#include <windows.h>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+#define DEFINE_REX_FUNC(name) void name(PPCContext& ctx, uint8_t* base)
+const char*current_function="boot";
+#define REX_FUNC_PROLOGUE() current_function=__func__
+#define REX_RAW_ADDR(x) (base + uint32_t(x))
+#define REX_LOAD_U32(x) __builtin_bswap32(*(uint32_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U32(x,y) (*(uint32_t*)REX_RAW_ADDR(x)=__builtin_bswap32(y))
+
+#define REX_LOAD_U8(x) (*(uint8_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U16(x) __builtin_bswap16(*(uint16_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U64(x) __builtin_bswap64(*(uint64_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U8(x,y) (*(uint8_t*)REX_RAW_ADDR(x)=y)
+#define REX_STORE_U16(x,y) (*(uint16_t*)REX_RAW_ADDR(x)=__builtin_bswap16(y))
+#define REX_STORE_U64(x,y) (*(uint64_t*)REX_RAW_ADDR(x)=__builtin_bswap64(y))
+
+#include <cstdlib>
+void indirect(uint32_t,PPCContext&,uint8_t*);
+#define REX_CALL_INDIRECT_FUNC(a) indirect(a,ctx,base)
+DEFINE_REX_FUNC(__savegprlr_16){
+REX_STORE_U64(ctx.r1.u32+(-136),ctx.r16.u64);
+REX_STORE_U64(ctx.r1.u32+(-128),ctx.r17.u64);
+REX_STORE_U64(ctx.r1.u32+(-120),ctx.r18.u64);
+REX_STORE_U64(ctx.r1.u32+(-112),ctx.r19.u64);
+REX_STORE_U64(ctx.r1.u32+(-104),ctx.r20.u64);
+REX_STORE_U64(ctx.r1.u32+(-96),ctx.r21.u64);
+REX_STORE_U64(ctx.r1.u32+(-88),ctx.r22.u64);
+REX_STORE_U64(ctx.r1.u32+(-80),ctx.r23.u64);
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_16){
+ctx.r16.u64=REX_LOAD_U64(ctx.r1.u32+(-136));
+ctx.r17.u64=REX_LOAD_U64(ctx.r1.u32+(-128));
+ctx.r18.u64=REX_LOAD_U64(ctx.r1.u32+(-120));
+ctx.r19.u64=REX_LOAD_U64(ctx.r1.u32+(-112));
+ctx.r20.u64=REX_LOAD_U64(ctx.r1.u32+(-104));
+ctx.r21.u64=REX_LOAD_U64(ctx.r1.u32+(-96));
+ctx.r22.u64=REX_LOAD_U64(ctx.r1.u32+(-88));
+ctx.r23.u64=REX_LOAD_U64(ctx.r1.u32+(-80));
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+
+DEFINE_REX_FUNC(__savegprlr_25){
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_25){
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__savegprlr_28){
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_28){
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+
+DEFINE_REX_FUNC(sub_82481E10){ctx.f1.f64=0.;} // Peak curves not part of output-index comparison.
+DEFINE_REX_FUNC(sub_82B72420){ctx.r3.u32=0;}
+DEFINE_REX_FUNC(sub_82C5E1D8){abort();} // Active-playing byte stays zero: no cut path.
+DEFINE_REX_FUNC(sub_824D9AD8){} // Subsequent ped state process; no output index writes.
+void indirect(uint32_t a,PPCContext&ctx,uint8_t*){if(a<0x100||a>0x103)abort();ctx.r3.u32=1000+ctx.r4.u32;}
+// @RETAIL_FUNCTION_824D9370@
+// @RETAIL_FUNCTION_824DA300@
+LONG CALLBACK fault(EXCEPTION_POINTERS*p){fprintf(stderr,"speech levels fault %s code %08lx\n",current_function,p->ExceptionRecord->ExceptionCode);ExitProcess(8);return EXCEPTION_EXECUTE_HANDLER;}
+int main(int argc,char**argv){
+ SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,fault);
+ if(argc!=3)return 2;auto base=(uint8_t*)VirtualAlloc(nullptr,0x100000000ull,MEM_RESERVE,PAGE_READWRITE);
+ if(!base||!VirtualAlloc(base+0x82000000,0x11b0000,MEM_COMMIT,PAGE_READWRITE)||!VirtualAlloc(base+0x10000,0x40000,MEM_COMMIT,PAGE_READWRITE))return 3;
+ std::ifstream image(argv[1],std::ios::binary);image.read((char*)base+0x82000000,0x11b0000);if(!image)return 4;
+ REX_STORE_U32(0x830d0000-572,0x20000);REX_STORE_U32(0x830d0000-604,0x21000);
+ REX_STORE_U32(0x21000+44,0x22000);REX_STORE_U32(0x22000+4,0x23000);
+ uint32_t owner=0x24000,record=0x25000,vtable=0x26000;
+ REX_STORE_U32(owner,vtable);REX_STORE_U32(owner+32,record);
+ for(int i=0;i<4;i++)REX_STORE_U32(vtable+52+4*i,0x100+i);
+ FILE*out=fopen(argv[2],"w");if(!out)return 5;fprintf(out,"# TU3 speech_levels 824D9370 824DA300; kind s100 s104 s112 security event far_clip model focus_active focus_id speaker_id main second\n");
+ for(int tick=0;tick<4096;tick++){
+  int kind=tick%2,s100=(tick/2)%2,s104=(tick/4)%6,s112=(tick/24)%2,security=(tick/48)%2,event=(tick/96)%2?8277:8210,far_clip=(tick/192)%2,model=(tick/384)%4==0?29:(tick/384)%4==1?30:(tick/384)%4==2?40:41;
+  uint32_t speaker_id=43,focus_id=(tick/768)%2==0?(kind?model:speaker_id):999,active=(tick/1536)%2;
+  REX_STORE_U32(0x20000+1036,focus_id);REX_STORE_U8(0x20000+1053,active);
+  memset(base+owner+36,0,160);REX_STORE_U32(owner+32,record);
+  REX_STORE_U8(owner+(kind?117:113),far_clip);REX_STORE_U32(owner+(kind?152:156),1);
+  REX_STORE_U16(owner+100,event);
+  REX_STORE_U32(record+100,s100);REX_STORE_U32(record+104,s104);REX_STORE_U32(record+112,s112);
+  REX_STORE_U32(record+96,security?64:0);REX_STORE_U32(record+84,speaker_id);REX_STORE_U32(record+76,model);
+  PPCContext ctx{};ctx.fpscr.loadFromHost();ctx.r1.u32=0x40000;ctx.r3.u32=owner;
+  if(kind)sub_824DA300(ctx,base);else sub_824D9370(ctx,base);
+  fprintf(out,"%d %d %d %d %d %d %d %d %u %u %u %u %u\n",kind,s100,s104,s112,security,event,far_clip,model,active,focus_id,speaker_id,REX_LOAD_U32(owner+(kind?56:52))-1000,REX_LOAD_U32(owner+(kind?80:76))-1000);
+ }
+ fclose(out);return 0;
+}

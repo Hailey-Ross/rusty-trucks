@@ -293,6 +293,9 @@ pub struct LivingWorldAudio {
     /// request (retail: word 0 stays 0), so a pro's crash near the camera stays silent. A challenge
     /// mode sets it while it runs.
     pub announcer: Option<u32>,
+    /// Native speech-system1053, independently enabled by the challenge record.
+    /// When set, speech for the announcer model uses the focused output pair.
+    pub focus_speech: bool,
     /// The same named by a mod (`sdk.world_audio.announcer`; cleared when the mod stops). The
     /// engine's wins.
     pub mod_announcer: Option<u32>,

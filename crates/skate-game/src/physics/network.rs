@@ -334,6 +334,7 @@ impl Proxies {
             }
             let b = &self.bodies[body_start + i];
             self.volumes.push(BoardWorldVolume {
+                collision_group: template.collision_group,
                 body: CollisionBody::Attached(base + i),
                 primitive: transform(template.primitive, matrix(body_pose(b))),
                 linear_velocity: b.rates.linear_velocity,

@@ -236,6 +236,9 @@ pub(super) fn publish(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
         },
         last_grind_distance: skater.grind.last_grind_distance(),
     });
+    physical.collision.surface_type_16 = surface;
+    physical.air.surface_category_232 = skater.trajectory.selector.selection()
+        .map_or(0, |selection| selection.surface_category);
     physical.filtered_state_0 = filtered.category as u32;
     skater.player_state.filtered_output = Some(filtered);
     skater.player_state.ground_output = output;
@@ -247,5 +250,13 @@ pub(super) fn publish(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
             .teleport_state
             .publish_output(&mut skater.player_input.physical);
     }
+    // ProcessOutput calls 82DB8120 after component and selected-state Fill.
+    skate_core::player::input_phase::publish_special_surface(
+        &mut skater.player_input.physical,
+        &skater.player_input.processed,
+        &mut skater.player_state.state_flags,
+        physics.riding.ground.collision_flags,
+        physics.riding.ground.surface_twelve_height,
+    );
     Ok(())
 }

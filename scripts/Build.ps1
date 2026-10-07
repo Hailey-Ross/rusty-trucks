@@ -8,6 +8,8 @@ param(
 # Do NOT pass --no-default-features here — that static-links Bevy and takes many minutes.
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Ensure-Rust.ps1')
+. (Join-Path $PSScriptRoot 'Ensure-WindowsSdk.ps1')
 . (Join-Path $PSScriptRoot 'Ensure-CMake.ps1')
 $sw = [Diagnostics.Stopwatch]::StartNew()
 Push-Location $ProjectRoot
@@ -15,7 +17,7 @@ try {
     if (-not $StageOnly) {
         $packages = @('-p', 'skate-game')
         if ($WithRelay) { $packages += @('-p', 'skate-steam-relay') }
-        $buildArgs = @('build') + $packages + @('--bin', 'skate3rust', '--target-dir', $TargetDirectory)
+        $buildArgs = @('build', '--locked') + $packages + @('--bin', 'skate3rust', '--target-dir', $TargetDirectory)
         if (-not $Dev) { $buildArgs += '--release' }
         & cargo @buildArgs
         if ($LASTEXITCODE -ne 0) { throw 'Build failed; see the compiler output above.' }

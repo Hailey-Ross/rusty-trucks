@@ -75,3 +75,5 @@ pub fn clamp01(x: f32) -> f32 {
     let lo = if -x >= 0.0 { 0.0 } else { x };
     if 1.0 - lo >= 0.0 { lo } else { 1.0 }
 }
+
+pub mod bridge;

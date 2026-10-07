@@ -95,7 +95,9 @@ pub struct AudioState {
     /// `+280` / `+276`: max(|x|, |z|) of the same velocities (m/s, the physical board's frame).
     pub foot_speed_y: [f32; 2],
     pub foot_speed_xz: [f32; 2],
-    /// `+304` the jump bucket (0..2, B40+48; not published: 0).
+    /// Processed2624 -> Ground300 (82DB6EC0), consumed by conditioner82772D30.
+    pub jump_strength: f32,
+    /// `+304` the jump bucket (0..2, B40+48), resolved from jump_strength and vault thresholds.
     pub jump_bucket: u32,
     /// `+352` the scorable's second eSk8AudioTricks field (record `+184` = vault class
     /// `0x6918469984A8C596` field `0xA2C5C22C5BE725F8` at +172; −1 none): 28 for flips and most
@@ -104,7 +106,7 @@ pub struct AudioState {
     /// as the second cloth_trick when the trick ends.
     pub audio_trick_2: i32,
     /// `+310` the off-board hold has run out (record +164 bit 0 held longer than a speed-dependent
-    /// time, `sub_824B0DA8`); not published by the engine: false. With it on the ground the Tricks
+    /// time, `sub_824B0DA8`). The per-skater bridge clock publishes it. On the ground the Tricks
     /// component posts Class_Flips with trick id 34.
     pub offboard_310: bool,
     /// `+480` / `+484`: the deck's angular velocity about its Ri and Up rows (rad/s; `+488` is
@@ -230,6 +232,7 @@ impl Default for AudioState {
             deck_material: NO_MATERIAL,
             foot_speed_y: [0.0; 2],
             foot_speed_xz: [0.0; 2],
+            jump_strength: 0.0,
             jump_bucket: 0,
             audio_trick_2: -1,
             offboard_310: false,

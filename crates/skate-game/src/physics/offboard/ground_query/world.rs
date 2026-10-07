@@ -63,7 +63,6 @@ impl GroundQueryScene for WorldScene<'_> {
                 matching_group: source.matching_group,
                 triangles: &triangles[source.triangle_range.clone()],
                 surfaces: &metadata.packed_surfaces[source.triangle_range.clone()],
-                world: Some(self.world),
             });
         }
         super::lines::query_pools(

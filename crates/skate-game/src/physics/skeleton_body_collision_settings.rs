@@ -62,6 +62,12 @@ pub(super) fn feedback(
     };
     Ok(SkeletonFeedbackSettings {
         body,
+        response: skate_core::physics::skeleton_body::CollisionResponseSettings {
+            force_scale: value("Hash_FBF5CD7734E8AE5A")?, //120
+            velocity_scale: value("Hash_AD7ECC44569EBEF9")?, //124
+            divisor: value("Hash_06C10E1F5E1B4730")?, //128
+            region_scale: value("Hash_1430BD50F0A33475")?, //164
+        },
         small_object_mass: data.float("physics_skeleton", "default", "SmallObjectMassThreshold")?,
         ground_plane_max_distance: value("GroundPlaneMaxDist")?, //136
         ground_plane_max_angle: value("GroundPlaneMaxAngle")?,   //140

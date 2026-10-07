@@ -1,0 +1,92 @@
+
+#include <rex/ppc/context.h>
+#include <rex/ppc/intrinsics.h>
+#include <windows.h>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+#define DEFINE_REX_FUNC(name) void name(PPCContext& ctx, uint8_t* base)
+const char*current_function="boot";
+#define REX_FUNC_PROLOGUE() current_function=__func__
+#define REX_RAW_ADDR(x) (base + uint32_t(x))
+#define REX_LOAD_U32(x) __builtin_bswap32(*(uint32_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U32(x,y) (*(uint32_t*)REX_RAW_ADDR(x)=__builtin_bswap32(y))
+
+#define REX_LOAD_U8(x) (*(uint8_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U16(x) __builtin_bswap16(*(uint16_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U64(x) __builtin_bswap64(*(uint64_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U8(x,y) (*(uint8_t*)REX_RAW_ADDR(x)=y)
+#define REX_STORE_U16(x,y) (*(uint16_t*)REX_RAW_ADDR(x)=__builtin_bswap16(y))
+#define REX_STORE_U64(x,y) (*(uint64_t*)REX_RAW_ADDR(x)=__builtin_bswap64(y))
+
+#include <cstdlib>
+void indirect(uint32_t,PPCContext&,uint8_t*);
+#define REX_CALL_INDIRECT_FUNC(a) indirect(a,ctx,base)
+DEFINE_REX_FUNC(__savegprlr_24){
+REX_STORE_U64(ctx.r1.u32+(-72),ctx.r24.u64);
+REX_STORE_U64(ctx.r1.u32+(-64),ctx.r25.u64);
+REX_STORE_U64(ctx.r1.u32+(-56),ctx.r26.u64);
+REX_STORE_U64(ctx.r1.u32+(-48),ctx.r27.u64);
+REX_STORE_U64(ctx.r1.u32+(-40),ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_24){
+ctx.r24.u64=REX_LOAD_U64(ctx.r1.u32+(-72));
+ctx.r25.u64=REX_LOAD_U64(ctx.r1.u32+(-64));
+ctx.r26.u64=REX_LOAD_U64(ctx.r1.u32+(-56));
+ctx.r27.u64=REX_LOAD_U64(ctx.r1.u32+(-48));
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32+(-40));
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+DEFINE_REX_FUNC(__savefpr_28){
+REX_STORE_U64(ctx.r12.u32+0,ctx.f28.u64);
+REX_STORE_U64(ctx.r12.u32+8,ctx.f29.u64);
+REX_STORE_U64(ctx.r12.u32+16,ctx.f30.u64);
+REX_STORE_U64(ctx.r12.u32+24,ctx.f31.u64);
+}
+DEFINE_REX_FUNC(__restfpr_28){
+ctx.f28.u64=REX_LOAD_U64(ctx.r12.u32+0);
+ctx.f29.u64=REX_LOAD_U64(ctx.r12.u32+8);
+ctx.f30.u64=REX_LOAD_U64(ctx.r12.u32+16);
+ctx.f31.u64=REX_LOAD_U64(ctx.r12.u32+24);
+}
+
+// These callbacks are outside the hold-clock block; none reads or writes bytes309..319.
+DEFINE_REX_FUNC(sub_824B2430){} // scorable lookup
+DEFINE_REX_FUNC(sub_824B2350){} // per-wheel landing bucket
+DEFINE_REX_FUNC(sub_824B2088){} // listener-facing input
+DEFINE_REX_FUNC(sub_824B23C8){ctx.r3.u32=0;} // soft wheels
+DEFINE_REX_FUNC(sub_824B19C8){} // subsequent MixMap writer
+DEFINE_REX_FUNC(sub_82481E10){ctx.f1.f64=0.;} // body speed graph, after hold-clock block
+DEFINE_REX_FUNC(sub_82B72420){ctx.r3.u32=0;} // no wheel-bucket tuning in fixture
+DEFINE_REX_FUNC(sub_82F52B30){} // unrelated vector helper
+// @RETAIL_FUNCTION_824B0DA8@
+LONG CALLBACK fault(EXCEPTION_POINTERS*p){fprintf(stderr,"offboard fault %s code %08lx\n",current_function,p->ExceptionRecord->ExceptionCode);ExitProcess(8);return EXCEPTION_EXECUTE_HANDLER;}
+void indirect(uint32_t,PPCContext&,uint8_t*){abort();}
+int main(int argc,char**argv){
+ SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,fault);
+ if(argc!=3)return 2;auto base=(uint8_t*)VirtualAlloc(nullptr,0x100000000ull,MEM_RESERVE,PAGE_READWRITE);
+ if(!base||!VirtualAlloc(base+0x82000000,0x11b0000,MEM_COMMIT,PAGE_READWRITE)||!VirtualAlloc(base+0x10000,0x1000000,MEM_COMMIT,PAGE_READWRITE))return 3;
+ std::ifstream image(argv[1],std::ios::binary);image.read((char*)base+0x82000000,0x11b0000);if(!image)return 4;
+ REX_STORE_U32(0x83083c38,0x21000);REX_STORE_U32(0x20024,0x22000);REX_STORE_U32(0x22044,0);
+ REX_STORE_U32(0x21000+0x2f070+12,1);REX_STORE_U32(0x830d0000-556,0x23000);
+ REX_STORE_U32(0x830d0000-604,0x31000);REX_STORE_U32(0x31018,0x32000);REX_STORE_U32(0x31024,0x33000);REX_STORE_U32(0x33004,0x34000);
+ REX_STORE_U32(0x20010,0x35000);
+ FILE*out=fopen(argv[2],"w");if(!out)return 5;fprintf(out,"# TU3 offboard 824B0DA8; held speed_bits dt_bits expired latched clock_bits start_bits\n");
+ for(int tick=0;tick<4096;tick++){
+  bool held=tick<100?true:tick<110?false:tick<180?true:tick%71<62;
+  float speed=tick<100?0.f:tick<180?10.f:float(tick%41-20);
+  float dt=tick<256?1.f/60:tick%4==0?0.f:tick%4==1?1.f/60:tick%4==2?1.f/30:0.1f;
+  const uint32_t record=0x21000+0x2f070+240;
+  REX_STORE_U32(record+164,held);REX_STORE_U32(record+104,std::bit_cast<uint32_t>(speed));
+  PPCContext ctx{};ctx.fpscr.loadFromHost();ctx.r1.u32=0xf00000;ctx.r3.u32=0x20000;ctx.f1.f64=dt;sub_824B0DA8(ctx,base);
+  fprintf(out,"%d %08x %08x %u %u %08x %08x\n",held,std::bit_cast<uint32_t>(speed),std::bit_cast<uint32_t>(dt),REX_LOAD_U8(0x20000+310),REX_LOAD_U8(0x20000+311),REX_LOAD_U32(0x20000+312),REX_LOAD_U32(0x20000+316));
+ }
+ fclose(out);return 0;
+}
