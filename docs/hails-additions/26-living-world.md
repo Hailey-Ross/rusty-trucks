@@ -949,6 +949,11 @@ cheaper but needs proof that query order is unchanged).
 retail QoL feature". Decisions: one option "NPC draw distance" in the graphics settings, Retail (default) / 1.5x /
 2x / 3x, for peds, NPC skaters and cars together, keeping the density (caps scale with the covered area, so 2x
 range = up to 4x NPCs). Retail has no such option; this is an engine QoL setting, not a retail claim.
+User request, 2026-10-07: a step so no peds spawn; decision (user): a "None" step on this option, first in the
+list, which turns off NPC skaters, peds and cars together (`DrawDistance::NONE` = 0; `LivingWorldSettings::
+user_npcs_off` sets every kind's `enabled` false, so live NPCs despawn with reason Disabled; ranges stay retail;
+kept across mod resets like the draw distance; saved with the other graphics settings). Test: the draw distance
+test in `living_world/tests.rs` (config off, kept on mod reset, a running population spawns 0 / 0 / 0).
 
 **Change.**
 - `skate-core::living_world::draw_distance::DrawDistance` (new): one multiplier `m` on top of the retail
@@ -1728,6 +1733,11 @@ described, not copied.
 
 ## Open questions
 
+- Props look (todo, D9): all 40 prop materials use retail's `dynamicobject.default` / `dynamicobject.alphatest`
+  shader, which the renderer does not support yet (log: "40 of 40 world materials use an unsupported shader family
+  and render as family 1"). Retail draws an extra layer over the base texture (dents, grime, rust on dumpsters and
+  trash bins, recomp comparison 2026-10-07). Port the retail shader program. Research and plan: doc 27,
+  "D9 research".
 - Population core (milestone 2): retail reads the census count once per spawn pass (`r23` in `sub_826B9940`), so
   during the initial populate the cap would not bind and only the factory (pool 31) would; the recomp sessions show
   at most 15 peds in 15-cap areas, so we re-read the count per spawn (identical outside the initial populate). Also

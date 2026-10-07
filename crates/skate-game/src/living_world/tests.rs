@@ -278,6 +278,26 @@ fn living_world_npc_draw_distance_setting_scales_population_and_mods_reset_to_th
     // Bad values never reach the rules.
     s.npc_draw_distance = f32::NAN;
     assert!(s.draw_distance().is_retail());
+
+    // "None": every kind off (live NPCs despawn), ranges retail, kept across a mod reset, undone
+    // by picking a step again.
+    let mut s = LivingWorldSettings::default();
+    s.set_user_draw_distance(skate_core::living_world::DrawDistance::NONE);
+    let mut cfg = c.world().resource::<PopulationState>().data_config.clone();
+    s.apply(&mut cfg);
+    assert!(!cfg.skaters.enabled && !cfg.pedestrians.enabled && !cfg.vehicles.enabled);
+    assert!(s.draw_distance().is_retail());
+    s.reset_mod_overrides();
+    assert!(s.user_npcs_off);
+    s.set_user_draw_distance(1.0);
+    s.apply(&mut cfg);
+    assert!(cfg.skaters.enabled && cfg.pedestrians.enabled && cfg.vehicles.enabled);
+    // In a running population nothing spawns.
+    let mut d = app(4, 0.0);
+    d.world_mut().resource_mut::<LivingWorldSettings>().set_user_draw_distance(skate_core::living_world::DrawDistance::NONE);
+    run(&mut d, 20.0, 60.0);
+    let w = &d.world().resource::<PopulationState>().world;
+    assert_eq!((w.count(Kind::Pedestrian), w.count(Kind::Vehicle), w.count(Kind::Skater)), (0, 0, 0));
 }
 
 #[test]

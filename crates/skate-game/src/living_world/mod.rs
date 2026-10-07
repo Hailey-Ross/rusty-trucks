@@ -115,6 +115,10 @@ pub(crate) struct LivingWorldSettings {
     /// The player's menu choice (saved in `settings/graphics.json`), restored when a mod's
     /// override is undone.
     pub user_npc_draw_distance: f32,
+    /// The player picked "None" for NPC draw distance (QoL, not retail): no NPC skaters, peds or
+    /// cars spawn and the live ones despawn (reason Disabled). Kept across mod resets like the
+    /// draw distance; the ranges stay retail.
+    pub user_npcs_off: bool,
     /// Free Play options (mode 3); `None` = career free roam (no scaling). The Free Play menu is
     /// a later milestone.
     pub free_play: Option<FreePlay>,
@@ -142,6 +146,7 @@ impl Default for LivingWorldSettings {
             npc_skater_props: npc_skaters::NpcSkaterPropContact::default(),
             npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
             user_npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
+            user_npcs_off: false,
             skater_clips: Default::default(),
             skater_blend_seconds: Default::default(),
             free_play: None,
@@ -170,6 +175,7 @@ impl LivingWorldSettings {
 
     /// The settings menu: the player's choice, in effect at once.
     pub(crate) fn set_user_draw_distance(&mut self, multiplier: f32) {
+        self.user_npcs_off = multiplier == skate_core::living_world::DrawDistance::NONE;
         let m = skate_core::living_world::DrawDistance::new(multiplier).multiplier();
         self.user_npc_draw_distance = m;
         self.npc_draw_distance = m;
@@ -186,6 +192,7 @@ impl LivingWorldSettings {
             net_role: self.net_role,
             npc_draw_distance: self.user_npc_draw_distance,
             user_npc_draw_distance: self.user_npc_draw_distance,
+            user_npcs_off: self.user_npcs_off,
             ..Self::default()
         };
     }
@@ -193,13 +200,14 @@ impl LivingWorldSettings {
     /// Write the settings into the core config (code defaults and data ranges stay).
     pub(crate) fn apply(&self, config: &mut PopulationConfig) {
         config.draw_distance = self.draw_distance().multiplier();
-        config.skaters.enabled = self.enabled && self.skaters.enabled;
+        let on = self.enabled && !self.user_npcs_off;
+        config.skaters.enabled = on && self.skaters.enabled;
         config.skaters.desired = (self.ambient_skaters as f32 * self.skaters.density.max(0.0)).round() as u32;
         config.skaters.leave_fade = self.skater_fade;
         config.skaters.line_chain = self.skater_line_chain;
-        config.pedestrians.enabled = self.enabled && self.pedestrians.enabled;
+        config.pedestrians.enabled = on && self.pedestrians.enabled;
         config.pedestrians.density = self.pedestrians.density;
-        config.vehicles.enabled = self.enabled && self.vehicles.enabled;
+        config.vehicles.enabled = on && self.vehicles.enabled;
         config.vehicles.density = self.vehicles.density;
     }
 }

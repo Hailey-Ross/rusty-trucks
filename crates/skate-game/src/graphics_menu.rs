@@ -346,9 +346,9 @@ const FRAME_STATS_ROW: usize = 28;
 const AUDIO_ROWS: std::ops::Range<usize> = 16..19;
 /// GRAPHICS-section row of the NPC draw distance (QoL, not retail).
 const NPC_DRAW_DISTANCE_ROW: usize = 29;
-const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time.";
+const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time. None turns off all NPC skaters, peds and cars.";
 fn draw_distance_label(multiplier: f32) -> String {
-    if multiplier == skate_core::living_world::DrawDistance::RETAIL { "Retail".into() } else { format!("{multiplier}x  (not retail)") }
+    if multiplier == skate_core::living_world::DrawDistance::NONE { "None  (no NPCs, not retail)".into() } else if multiplier == skate_core::living_world::DrawDistance::RETAIL { "Retail".into() } else { format!("{multiplier}x  (not retail)") }
 }
 fn audio_row(row: usize) -> crate::game_audio::AudioRow {
     use crate::game_audio::AudioRow;
