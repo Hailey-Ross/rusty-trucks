@@ -397,6 +397,7 @@ fn empty_volume_query_is_empty_and_resets_the_previous_result() {
         deferred_reduction: false,
     };
     let sphere = BoardWorldVolume {
+        collision_group: 4,
         body: CollisionBody::Board(BodyId::Deck),
         primitive: ContactPrimitive::Sphere(Sphere {
             center: Vector3::new(-1., 0.15, -1.),

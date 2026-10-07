@@ -1382,6 +1382,7 @@ mod tests {
         let start_x = dynamics.bodies[0].rates.position.x;
         assert!(dynamics.bodies[0].asleep);
         let volumes = [BoardWorldVolume {
+            collision_group: 4,
             body: CollisionBody::Board(BodyId::Deck),
             primitive: ContactPrimitive::Sphere(Sphere {
                 center: Vector3::new(-0.55, REST_Y, 0.),
@@ -1431,6 +1432,7 @@ mod tests {
     /// render mesh is open but the render-AABB contact box is solid).
     fn parked_deck() -> [BoardWorldVolume; 1] {
         [BoardWorldVolume {
+            collision_group: 4,
             body: CollisionBody::Board(BodyId::Deck),
             primitive: ContactPrimitive::Capsule {
                 center: Vector3::new(0.1, super::super::ground::HEIGHT + 0.1, 0.05),
@@ -1541,6 +1543,7 @@ mod tests {
         for tick in 0..60 {
             let x = dynamics.bodies[0].rates.position.x - 0.55 - 0.05 + tick as f32 * 0.0;
             let volumes = [BoardWorldVolume {
+                collision_group: 4,
                 body: CollisionBody::Board(BodyId::Deck),
                 primitive: ContactPrimitive::Sphere(Sphere {
                     center: Vector3::new(x, REST_Y, 0.),
@@ -2139,6 +2142,7 @@ mod tests {
         let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 0.]);
         let far = crate::living_world::npc_skaters::prop_volumes(NPC, &npc_sample(-20.0, 5.0));
         let local = [BoardWorldVolume {
+            collision_group: 4,
             body: CollisionBody::Board(BodyId::Deck),
             primitive: ContactPrimitive::Sphere(Sphere { center: Vector3::new(-0.55, REST_Y, 0.), radius: 0.2 }),
             linear_velocity: Vector3::new(2., 0., 0.),
