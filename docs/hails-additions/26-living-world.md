@@ -1679,6 +1679,65 @@ has a launch velocity that could give the height). Grabs show the ollie (retail 
 (`spins` byte) and landing clips (`B_LAND_*`, 0.15 s) are not played; the per-skater `PROSKATER` selector takes the
 default branch.
 
+## Silent landings (NPC skater sounds filled the voice cap), 2026-10-07
+
+**Problem.** User: "landing was quiet randomly", "At the carvetron. had two silent landings", "there were several",
+and after the next session "last session had a silent landing near the end of the session".
+
+**Root cause.** The landing logic plays every touchdown (a headless replay of the last 95 s of the user's 46-minute
+session starts the touchdown voices on every landing). The in-game mixer, however, was full: it sat at its 96-voice cap
+(`Mixer::max_voices`) and refused new opens without an error, so a touchdown whose voices were all refused was silent.
+The voices leaked from NPC skaters: when an NPC skater lost its audio instance the host dropped its `NpcSkater` without
+releasing its Splice sounds (`world::skaters::NpcSkater::deactivate` assumed "the Splice one-shots end by
+themselves"). A Splice sound is only stepped, and its mixer voice only released, by its owner's update or release, so
+the dropped skater's touchdowns, pop, roll, taps, scuffs, hand-on-deck, grind on / off and clothing sounds kept their
+`SplicePlayer` slots and mixer voices for good. The mixer kept finished voices until released and counted them against
+the cap.
+
+**Evidence.** Session log of 2026-10-07 (AUDIO_TIMING `block_voices`): max 96 in 790 of 2789 s, from about 9 minutes
+in; 96 every second in the last ~105 s. The per-minute voice floor rose from 17 to 90, only while NPC skaters were
+released (58 after 63 releases, flat while none were released, 90 after 143), while the world at the end held
+`skaters 2/0`. 143 of the 621 landings fell in seconds at the cap. Full report:
+`.local/research/audio/silent-landings-2026-10-07.md` (local, not in the repo).
+
+**Change.**
+1. Retail parity (retail's release stops every layer): `NpcSkater::release` releases every Splice sound the skater
+   holds: `Contacts::release_all` (pop, roll, ollie, landing, touchdowns, second voice, manual landing, taps, scuffs,
+   plant / lift, and `StepOn::release_all` for the hands on deck), `Grind::release_sounds` (grind on / off, queued
+   starts dropped) and `Clothing::release_all` (stroke / plant foley). The NPC host calls it next to `stop_wheels`
+   when a skater loses its instance and for every skater on a map change (`NpcHost::reset`). Release is per owner id
+   and deterministic (multiplayer-ready). Peds (`PedObjects::release`) and mod voices (`ModVoices`: ended one-shots
+   are forgotten, `stop_owner` on mod disable) already released everything; checked, unchanged.
+2. Safety net in the mixer: at the cap, voices whose sample has ended (`done`; every owner query already reads them as
+   gone) are freed before the open is refused (`Mixer::make_room`, the same de-click fold as a release). Below the cap
+   nothing changes, so what plays is identical until the cap is reached. Retail does not keep finished voices
+   allocated (aems-voice-graph-spec 6.6).
+3. Diagnostics: `Mixer::refused_cap` and `Mixer::evicted`; the `AUDIO_TIMING` line shows them per second as
+   `voices_refused=` / `voices_evicted=` (only when not 0), so a future session shows refusals directly.
+
+**Moddability.** No new mod surface: mod-owned voices are already released on mod disable (`stop_owner`), mods' mute
+rules (`Observed`) see the same starts as before, and a released NPC frees its sounds whatever mod content its banks
+hold. The cap stays a plain `max_voices` field.
+
+**Files.** `crates/skate-audio/src/world/skaters.rs`, `crates/skate-audio/src/player/{contacts,step_on,clothing,components}.rs`,
+`crates/skate-audio/src/mixer.rs`, `crates/skate-audio/src/splice/mod.rs` (`sound_count`, diagnostics),
+`crates/skate-game/src/game_audio/npc_skaters.rs`, `crates/skate-game/src/game_audio/timing.rs`.
+
+**Verification.**
+- New tests: `releasing_an_npc_skater_frees_its_splice_sounds_and_mixer_voices` (an NPC ollie and landing holds its
+  sounds; after its release the Splice sound count and mixer voice count return to the start),
+  `two_hundred_claim_release_cycles_keep_the_voice_count_bounded` (0 / 0 after every cycle, no refused open),
+  `finished_voices_do_not_block_a_new_open_at_the_cap` (below the cap a finished voice stays as before; live voices
+  still refuse at the cap; finished ones make room).
+- `cargo test -p skate-audio --locked`: all pass. `cargo test -p skate-game --bin skate3rust --locked -- game_audio
+  living_world`: 124 passed.
+- Behaviour identity for the player: the e2e bench (`tools/audio-e2e/scenarios.py`, 12 scenarios, `E2E_FPS=60`)
+  rendered before and after the change: all 48 outputs (audio, voices, body, deck) byte-identical.
+
+**Open.** Confirm in the user's next session that `block_voices` stays flat and `voices_refused` stays absent. "No
+landing noise when landing in manual" is a separate report (by design the kind-2 touch is skipped while in a manual);
+check it against `sub_824BB330` if the user still hears it.
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).
