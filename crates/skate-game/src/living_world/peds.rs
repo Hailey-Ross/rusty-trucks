@@ -359,6 +359,17 @@ pub(crate) fn apply_ped_records(
                 at = Vec3::from_array(p.position);
                 nav.poly = Some(p.poly);
             }
+            // The census ring point carries the observer's height, not the floor's
+            // (census::ring_point). Where the navmesh has no floor within locate_height of it
+            // (the player on a ledge, ramp or roof), the ped kept that height and hung in the air
+            // or under the ground (2026-10-06 sessions: 32 of 34 and 44 of 44 PED_FLOATING peds had
+            // no navmesh polygon). Release the spawn like an unresolved look; the census tries
+            // another point next pass. Not retail yet: retail's spawn validation is not decoded.
+            None if data.nav.is_some() => {
+                events.write(PedEvent::Rejected { id: s.id, category: category.clone() });
+                rejected.0.push(s.id);
+                continue;
+            }
             None => {
                 if let Some(y) = ground(physics.as_deref(), at, 3.0, 3.0) {
                     at.y = y;
