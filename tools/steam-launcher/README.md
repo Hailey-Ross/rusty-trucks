@@ -1,7 +1,7 @@
 # Steam launcher (couch testing)
 
-Start any version of the engine (`main`, your branches, open PRs, work in progress) or the Skate 3 recomp with a
-tracing option, from Steam or Steam Link with a controller, and see after each session whether it went fine.
+Start any version of the engine (`main`, your branches, open PRs, work in progress), the Skate 3 recomp with a
+tracing option or the PS3 version of Skate 3 in RPCS3, from Steam or Steam Link with a controller, and see after each session whether it went fine.
 Built for testing from the couch: compare two versions back to back, try a PR exactly as it was pushed, record a
 recomp trace session, without touching a keyboard.
 
@@ -15,8 +15,13 @@ What it does:
 - **Recomp modes** (optional, for use with the Skate 3 recomp's research hooks:
   [Hailey-Ross/skate3recomp, branch `research-hooks`](https://github.com/Hailey-Ross/skate3recomp/tree/research-hooks)):
   start the recomp with trace categories, a sound recording and the pad recording, one session folder per run.
+- **RPCS3 modes** (optional, for the [RPCS3](https://rpcs3.net) PS3 emulator and your own PS3 copy of Skate 3):
+  start the game straight from the menu, fullscreen or in a window, as a retail reference for timing and cadence
+  (see `docs/hails-additions/29-rpcs3-reference.md`).
+- **Only what is set up shows:** the recomp modes only appear when `recomp.exe` exists, the RPCS3 modes only when
+  `rpcs3.exe` and `rpcs3.game` exist; with neither, the retail item is not in the menu at all.
 - **After each session** a short check: the game log's panics, the state log's or trace's malformed lines.
-- **One game at a time:** it starts nothing while `skate3rust.exe` or `skate3.exe` runs. While a game runs,
+- **One game at a time:** it starts nothing while `skate3rust.exe`, `skate3.exe` or `rpcs3.exe` runs. While a game runs,
   `PLAYING.txt` exists in the state folder, so other tools and scripts can wait for it.
 
 Windows only. Needs Windows PowerShell 5.1 (built in), git, the Rust toolchain and this repository's dev setup
@@ -31,7 +36,7 @@ Windows only. Needs Windows PowerShell 5.1 (built in), git, the Rust toolchain a
 | `launcher.bat` | Keyboard menu (`launcher.bat`), or `launcher.bat <entry> [label] [-Version <id>]`. |
 | `build.bat` | Builds `SkateLauncher.exe` with the C# compiler that ships with Windows. |
 | `versions.example.json` | Example version list. |
-| `config.example.json` | Example config for the recomp modes. |
+| `config.example.json` | Example config for the recomp and RPCS3 modes. |
 
 State and your own settings live in `.local\steam-launcher\` (gitignored): `versions.json`, `config.json`,
 `version.txt` (the selected version), `last_session.txt` (the last result, also readable remotely) and `PLAYING.txt`.
@@ -74,10 +79,17 @@ If you copy the launcher folder somewhere outside `tools\` (two levels below the
    `pad.txt`, `audio.f32`, `game.out`, `game.err`). `recomp.trace_check` can name a Python script that prints
    malformed-line counts for a trace; the result screen shows them. You build the recomp yourself from your own copy
    of the game; nothing from the game is included here.
-4. **Add it to Steam:** Steam → **Games → Add a Non-Steam Game to My Library → Browse** → pick
+4. **Optional, the RPCS3 modes:** in the same `config.json`, set `rpcs3.exe` (your RPCS3 install) and `rpcs3.game`
+   (the folder of your own Skate 3 PS3 copy that contains `PS3_GAME`, or its `PS3_GAME\USRDIR\EBOOT.BIN`), and
+   optionally `rpcs3.args` (default `--no-gui --fullscreen`). Each entry in `rpcs3_entries` becomes a mode: `id`
+   (starts with `rpcs3-`), `name`, `hint`, optional `args` overriding `rpcs3.args`. The example has `rpcs3-play`
+   (fullscreen) and `rpcs3-windowed` (`--no-gui`, for recording). RPCS3 uses its own per-game config and pads: set
+   them up once in the RPCS3 window. Close the game with Alt+F4 or Steam's **Exit game**; nothing is checked after
+   an RPCS3 session.
+5. **Add it to Steam:** Steam → **Games → Add a Non-Steam Game to My Library → Browse** → pick
    `tools\steam-launcher\SkateLauncher.exe` → **Add Selected Programs**. In the new entry's **Properties**, rename it
    and put an entry in **Launch options** (table below). Add the exe once per shortcut you want.
-5. **Controller:** leave Steam Input on its normal **Gamepad** layout; the games get the controller as usual.
+6. **Controller:** leave Steam Input on its normal **Gamepad** layout; the games get the controller as usual.
 
 ### Why one shortcut per mode
 
@@ -96,6 +108,7 @@ options need no menu: each starts straight away, shows the result for 10 s at th
 | Skate: my branch | `rust-play @my-branch` |
 | Skate: recomp | `recomp-play` |
 | Skate: recomp audio trace | `recomp-audio` |
+| Skate: RPCS3 | `rpcs3-play` |
 
 `version-next` plus the "selected version" shortcuts cover every version with a handful of shortcuts; the `@id`
 shortcuts are fixed, for back-to-back comparisons. A shortcut without launch options opens the full menu.
@@ -109,10 +122,13 @@ shortcuts are fixed, for back-to-back comparisons. A shortcut without launch opt
 | `rust-trace` | play + `SKATE_AUDIO_TRACE=1` (native sound starts in `logs\game-*.log`) |
 | `rust-devmods` | play with the version's `mods_enable` mod(s) on |
 | `rust-perf` | play + Bevy performance trace (`PLAY.bat -trace`) |
-| `recomp-*` | the modes from `config.json` |
+| `recomp-*` | the recomp modes from `config.json` (only when `recomp.exe` exists) |
+| `rpcs3-*` | the RPCS3 modes from `config.json` (only when `rpcs3.exe` and `rpcs3.game` exist) |
+
+A shortcut for a mode that is not set up shows one message saying which config value is missing, and starts nothing.
 
 Commands (`launcher.ps1 <command>`, or as launch options): `versions` (list with status), `version-next`,
-`version-prev`, `version-set <id>`, `notes [id]`, `build <id>`, `list` / `entries`, `pending` (checks a session that
+`version-prev`, `version-set <id>`, `notes [id]`, `build <id>`, `list` / `entries`, `hidden <id>` (why an entry is not available), `pending` (checks a session that
 was closed with Steam's **Exit game** before its check; the exe runs it at every start).
 
 ## Example

@@ -114,7 +114,7 @@ static class SkateLauncher {
 
     static string RunningGames() {
         string r = "";
-        foreach (var n in new[] { "skate3", "skate3rust" }) if (Process.GetProcessesByName(n).Length > 0) r += (r == "" ? "" : ", ") + n + ".exe";
+        foreach (var n in new[] { "skate3", "skate3rust", "rpcs3" }) if (Process.GetProcessesByName(n).Length > 0) r += (r == "" ? "" : ", ") + n + ".exe";
         return r;
     }
 
@@ -213,7 +213,11 @@ static class SkateLauncher {
         }
         string name = null;
         foreach (var e in Entries()) if (e[0] == entry) name = e[1];
-        if (name == null) { Timed("Unknown entry: " + entry + "\nCheck the shortcut's launch options (see README.md).", ConsoleColor.Red, 15); return 2; }
+        if (name == null) {
+            string why = Ps("hidden " + entry, true).Trim();
+            Timed(why != "" ? "Not started: " + why : "Unknown entry: " + entry + "\nCheck the shortcut's launch options (see README.md).", ConsoleColor.Red, 15);
+            return 2;
+        }
         string g = RunningGames();
         if (g != "") { Timed("Not started: already running " + g + ".\nOnly one game at a time.", ConsoleColor.Yellow, 12); return 3; }
         if (entry.StartsWith("rust-")) Timed("Starting: " + name + "\n\n" + Ps("notes" + VerArg(version), true), ConsoleColor.White, 8);
@@ -258,8 +262,14 @@ static class SkateLauncher {
         while (true) {
             var vers = Versions(); string curName = "?";
             foreach (var v in vers) if (v.Length > 3 && v[3] == "*") curName = v[1];
-            int top = Menu("Skate launcher", new[] { "Rust engine: " + curName, "Choose version", "What to test (this version)", "Recomp (Skate 3 retail)", "Last session result", "Exit" },
-                           new[] { "Our engine, the selected version.", "Any version in versions.json.", "", "The recompiled retail game, with or without tracing (config.json).", "", "" });
+            // The retail item only shows when launcher.ps1 lists a recomp or RPCS3 entry (their exe / game exist).
+            bool retail = false; var all = Entries();
+            foreach (var e in all) if (e[0].StartsWith("recomp-") || e[0].StartsWith("rpcs3-")) retail = true;
+            var items = new System.Collections.Generic.List<string> { "Rust engine: " + curName, "Choose version", "What to test (this version)", "Retail Skate 3 (recomp, RPCS3)", "Last session result", "Exit" };
+            var tips = new System.Collections.Generic.List<string> { "Our engine, the selected version.", "Any version in versions.json.", "", "The recompiled 360 game with or without tracing, or the PS3 version in RPCS3 (config.json).", "", "" };
+            if (!retail) { items.RemoveAt(3); tips.RemoveAt(3); }
+            int top = Menu("Skate launcher", items.ToArray(), tips.ToArray());
+            if (!retail && top >= 3) top++;
             if (top == -1 || top == 5) return 0;
             if (top == 1) {
                 var vnames = new string[vers.Length]; var vstat = new string[vers.Length];
@@ -277,12 +287,12 @@ static class SkateLauncher {
             }
             string prefix = top == 0 ? "rust-" : "recomp-";
             var keys = new System.Collections.Generic.List<string[]>();
-            foreach (var e in Entries()) if (e[0].StartsWith(prefix)) keys.Add(e);
-            if (keys.Count == 0) { Message("No recomp entries: add them to config.json (see README.md).", ConsoleColor.Yellow); continue; }
+            foreach (var e in all) if (e[0].StartsWith(prefix) || (top == 1 && e[0].StartsWith("rpcs3-"))) keys.Add(e);
+            if (keys.Count == 0) { Message("No recomp or RPCS3 entries: add them to config.json (see README.md).", ConsoleColor.Yellow); continue; }
             var names = new string[keys.Count]; var hints = new string[keys.Count];
             for (int n = 0; n < keys.Count; n++) { names[n] = keys[n][1]; hints[n] = keys[n][2]; }
             while (true) {
-                int pick = Menu(top == 0 ? "Rust engine" : "Recomp", names, hints);
+                int pick = Menu(top == 0 ? "Rust engine" : "Retail Skate 3", names, hints);
                 if (pick == -1) break;
                 var e = keys[pick]; string label = "";
                 if (e[3] == "1") {

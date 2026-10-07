@@ -20,7 +20,8 @@ game; none of them contain game code or data. Default work folders are under `.l
 | [`world-stream-inspect/`](world-stream-inspect/README.md) | List / extract `.big` archives; survey the RW4 arenas of the district simulation streams; dump named trigger volumes. |
 | [`vault-inspect/`](vault-inspect/README.md) | Look up fields in the attribute database (converted skater collections) and class layouts in the schema. |
 | [`recomp-code-search/`](recomp-code-search/README.md) | **For use with the Skate 3 recomp's research hooks** ([`research-hooks` branch](https://github.com/Hailey-Ross/skate3recomp/tree/research-hooks)): search the recompiled sources and the memory image. Reference only; you build the recomp and set up the paths yourself. |
-| [`steam-launcher/`](steam-launcher/README.md) | Couch testing from Steam / Steam Link with a controller: start any version (main, branches, PRs; each built in its own worktree on demand) in a chosen mode, or the recomp with trace options (for use with the recomp's research hooks); a result check after each session. |
+| [`rpcs3-reference/`](../docs/hails-additions/29-rpcs3-reference.md) | Timing reference from RPCS3 recordings of the PS3 game: effective game fps and frame pacing (`frame_times.py`), onset / end / duration of on-screen events in a region (`event_timer.py`), `selftest.py`. Python 3 and ffmpeg only. |
+| [`steam-launcher/`](steam-launcher/README.md) | Couch testing from Steam / Steam Link with a controller: start any version (main, branches, PRs; each built in its own worktree on demand) in a chosen mode, or the recomp with trace options (for use with the recomp's research hooks), or the PS3 game in RPCS3; a result check after each session. |
 
 `regression-checks/check_maps.py` uses the game's `--validate-maps` mode when the exe has it and falls back to `--check-assets` per map otherwise.
 

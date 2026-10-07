@@ -7,6 +7,17 @@
     "sessions": ".local/recomp/sessions",
     "trace_check": ""
   },
+  "rpcs3": {
+    "exe": "C:\\path\\to\\rpcs3.exe",
+    "game": "C:\\path\\to\\<folder containing PS3_GAME>",
+    "args": "--no-gui --fullscreen"
+  },
+  "rpcs3_entries": [
+    { "id": "rpcs3-play", "name": "RPCS3: Skate 3 (PS3)",
+      "hint": "Your own PS3 copy of Skate 3 in RPCS3, fullscreen, no RPCS3 window. Retail reference for timing and cadence." },
+    { "id": "rpcs3-windowed", "name": "RPCS3: Skate 3 (PS3), windowed", "args": "--no-gui",
+      "hint": "Same, in a window (for recording next to other windows)." }
+  ],
   "recomp_entries": [
     { "id": "recomp-play",   "name": "Recomp: play (no tracing)", "hint": "The recomp with no hooks logging." },
     { "id": "recomp-audio",  "name": "Recomp: audio trace", "trace": "audio", "capture": true,

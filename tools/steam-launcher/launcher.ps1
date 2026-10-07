@@ -1,5 +1,5 @@
-# Couch / Steam launcher: start any engine version (main, your branches, open PRs) or the recomp with a tracing
-# option, from the couch with a controller. Started by SkateLauncher.exe (or launcher.bat from a keyboard).
+# Couch / Steam launcher: start any engine version (main, your branches, open PRs) or retail Skate 3 (the recomp with a tracing
+# option, or the PS3 version in RPCS3), from the couch with a controller. Started by SkateLauncher.exe (or launcher.bat from a keyboard).
 # Windows PowerShell 5.1 compatible. See README.md.
 #   launcher.ps1 <entry> [label] [-Version <id>] [-NoPrompt]   run an entry
 #   launcher.ps1 entries                                      list the entries (id, name, hint; tab-separated)
@@ -193,7 +193,7 @@ function Show-Message([string]$Text, [string]$Color = 'White') {
     Focus-Console; [void](Read-Input)
 }
 
-function Running-Games { @(Get-Process skate3, skate3rust -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessName + '.exe' } | Sort-Object -Unique) }
+function Running-Games { @(Get-Process skate3, skate3rust, rpcs3 -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessName + '.exe' } | Sort-Object -Unique) }
 
 # Waits until no game runs (B cancels). True = clear to launch.
 function Wait-NoGame {
@@ -245,6 +245,17 @@ function Run-Recomp($RE, [string]$Lbl) {
         -RedirectStandardOutput (Join-Path $out 'game.out') -RedirectStandardError (Join-Path $out 'game.err')
 }
 
+# Starts RPCS3 straight into the game (config.json "rpcs3": exe, game = disc folder or EBOOT.BIN, args) and waits.
+function Run-Rpcs3($PE) {
+    $r = $Config.rpcs3
+    if (-not $r -or -not $r.exe -or -not (Test-Path -LiteralPath $r.exe)) { throw 'Set rpcs3.exe in config.json (see README.md).' }
+    if (-not $r.game -or -not (Test-Path -LiteralPath $r.game)) { throw 'Set rpcs3.game in config.json (see README.md).' }
+    $a = '--no-gui --fullscreen'
+    if ($r.args) { $a = $r.args }
+    if ($PE.args) { $a = $PE.args }
+    Start-Process -FilePath $r.exe -ArgumentList ($a + ' "' + $r.game + '"') -WorkingDirectory (Split-Path $r.exe) -Wait
+}
+
 # Checks the session written since $Since; returns a one-line summary.
 function Check-Session([string]$Kind, [datetime]$Since, $Ver) {
     if ($Kind -eq 'rust' -and $Ver) {
@@ -287,7 +298,7 @@ function Check-Session([string]$Kind, [datetime]$Since, $Ver) {
     return ''
 }
 
-# Entries: the engine modes, then the recomp modes from config.json (none without a config).
+# Entries: the engine modes, then the recomp and RPCS3 modes from config.json (none without a config).
 $Entries = [ordered]@{
     'rust-play'     = @{ Name = 'Rust engine: play';                        Kind = 'rust';     Hint = "The version's PLAY.bat." }
     'rust-statelog' = @{ Name = 'Rust engine: play + audio state log';      Kind = 'statelog'; Hint = 'Records the per-frame audio state (.local\audio-state-logs; builds with the native audio port).' }
@@ -295,16 +306,33 @@ $Entries = [ordered]@{
     'rust-devmods'  = @{ Name = 'Rust engine: play with the dev test mods'; Kind = 'rust';     Hint = "Turns on the version's dev test mod (mods_enable in versions.json)." }
     'rust-perf'     = @{ Name = 'Rust engine: play + performance trace';    Kind = 'rust';     Hint = 'Bevy performance trace (PLAY.bat -trace).' }
 }
+# Recomp entries only show when recomp.exe exists; RPCS3 entries only when rpcs3.exe and rpcs3.game exist.
+# A hidden entry started by id gets the reason from $Hidden instead of "Unknown entry".
+function Path-Exists($p) { if (-not $p) { return $false }; try { return [bool](Test-Path -LiteralPath $p) } catch { return $false } }
+$Hidden = @{}
+$RecompOk = $Config -and $Config.recomp -and (Path-Exists $Config.recomp.exe)
+$Rpcs3Ok = $Config -and $Config.rpcs3 -and (Path-Exists $Config.rpcs3.exe) -and (Path-Exists $Config.rpcs3.game)
 if ($Config -and $Config.recomp_entries) {
     foreach ($re in @($Config.recomp_entries | ForEach-Object { $_ })) {
+        if (-not $RecompOk) { $Hidden[$re.id] = "$($re.name) is not available: recomp.exe in config.json does not exist (see README.md)."; continue }
         $Entries[$re.id] = @{ Name = $re.name; Kind = $(if ($re.trace -or $re.bat) { 'recomp' } else { 'none' }); Hint = "$($re.hint)"; Recomp = $re }
+    }
+}
+# RPCS3 (PS3 retail) entries from config.json: "rpcs3" { exe, game, args } and "rpcs3_entries" [{ id, name, hint, args }].
+if ($Config -and $Config.rpcs3_entries) {
+    foreach ($pe in @($Config.rpcs3_entries | ForEach-Object { $_ })) {
+        if (-not $Rpcs3Ok) { $Hidden[$pe.id] = "$($pe.name) is not available: rpcs3.exe or rpcs3.game in config.json does not exist (see README.md)."; continue }
+        $Entries[$pe.id] = @{ Name = $pe.name; Kind = 'none'; Hint = "$($pe.hint)"; Rpcs3 = $pe }
     }
 }
 $Labels = @('session', 'ride', 'grind', 'bail', 'push', 'emit', 'carve', 'water', 'marker')
 
 function Launch([string]$Key, [string]$Lbl) {
     $e = $Entries[$Key]
-    if (-not $e) { if ($NoPrompt) { Set-Content -Path $LastSession -Value "Unknown entry: $Key" -Encoding UTF8 } else { Show-Message "Unknown entry: $Key" 'Red' }; return }
+    if (-not $e) {
+        $why = "Unknown entry: $Key"; if ($Hidden[$Key]) { $why = "Not started: $($Hidden[$Key])" }
+        if ($NoPrompt) { Set-Content -Path $LastSession -Value $why -Encoding UTF8 } else { Show-Message $why 'Red' }; return
+    }
     if ($NoPrompt) { if ((Running-Games).Count -gt 0) { Set-Content -Path $LastSession -Value 'Not started: another game is running.' -Encoding UTF8; return } }
     elseif (-not (Wait-NoGame)) { return }
     $ver = $null; $play = $null; $verText = ''
@@ -340,6 +368,7 @@ function Launch([string]$Key, [string]$Lbl) {
             'rust-devmods'  { $env:SKATE3_MODS_ENABLE = $ver.mods_enable; Run-Bat $play '' }
             'rust-perf'     { Run-Bat $play '-trace' }
             default {
+                if ($e.Rpcs3) { Run-Rpcs3 $e.Rpcs3; break }
                 $re = $e.Recomp
                 if ($re.label) { $Lbl = $re.label }
                 if ($re.bat) { Run-Bat (Resolve-Local $re.bat) $(if ($Lbl -and $Lbl -ne 'session') { $Lbl } else { "$($re.bat_args)" }) }
@@ -383,6 +412,7 @@ if ($Entry -eq 'entries') {
     foreach ($k in $Entries.Keys) { $ask = 0; if ($Entries[$k].Recomp -and $Entries[$k].Recomp.ask_label) { $ask = 1 }; "{0}`t{1}`t{2}`t{3}" -f $k, $Entries[$k].Name, $Entries[$k].Hint, $ask }
     exit 0
 }
+if ($Entry -eq 'hidden') { if ($Hidden[$Label]) { $Hidden[$Label] }; exit 0 }
 if ($Entry -eq 'versions') {
     $sel = (Get-Version '').id
     foreach ($v in $Versions) { "{0}`t{1}`t{2}`t{3}" -f $v.id, $v.name, (Version-Status $v), $(if ($v.id -eq $sel) { '*' } else { '' }) }
@@ -416,7 +446,13 @@ try { $Host.UI.RawUI.WindowTitle = 'Skate launcher' } catch {}
 Focus-Console
 while ($true) {
     $cv = Get-Version ''
-    $top = Show-Menu 'Skate launcher' @("Rust engine: $($cv.name)", 'Choose version', 'What to test (this version)', 'Recomp (Skate 3 retail)', 'Last session result', 'Exit') @('Our engine, the selected version.', '', '', 'The recompiled retail game, with or without tracing (config.json).', '', '')
+    # The retail item only shows when a recomp or RPCS3 entry is available.
+    $retail = @($Entries.Keys | Where-Object { $_.StartsWith('recomp-') -or $_.StartsWith('rpcs3-') }).Count -gt 0
+    $items = @("Rust engine: $($cv.name)", 'Choose version', 'What to test (this version)', 'Retail Skate 3 (recomp, RPCS3)', 'Last session result', 'Exit')
+    $hints = @('Our engine, the selected version.', '', '', 'The recompiled 360 game with or without tracing, or the PS3 version in RPCS3 (config.json).', '', '')
+    if (-not $retail) { $items = @($items[0..2] + $items[4..5]); $hints = @($hints[0..2] + $hints[4..5]) }
+    $top = Show-Menu 'Skate launcher' $items $hints
+    if (-not $retail -and $top -ge 3) { $top++ }
     if ($top -eq 5 -or $top -eq -1) { break }
     if ($top -eq 4) { $t = 'No session yet.'; if (Test-Path $LastSession) { $t = (Get-Content $LastSession) -join "`n" }; Show-Message $t; continue }
     if ($top -eq 1) {
@@ -426,10 +462,10 @@ while ($true) {
     }
     if ($top -eq 2) { Show-Message ("$($cv.name)`n`n" + $cv.notes); continue }
     $prefix = 'rust-'; if ($top -eq 3) { $prefix = 'recomp-' }
-    $keys = @($Entries.Keys | Where-Object { $_.StartsWith($prefix) })
-    if ($keys.Count -eq 0) { Show-Message 'No recomp entries: add them to config.json (see README.md).' 'Yellow'; continue }
+    $keys = @($Entries.Keys | Where-Object { $_.StartsWith($prefix) -or ($top -eq 3 -and $_.StartsWith('rpcs3-')) })
+    if ($keys.Count -eq 0) { Show-Message 'No recomp or RPCS3 entries: add them to config.json (see README.md).' 'Yellow'; continue }
     while ($true) {
-        $pick = Show-Menu (@('Rust engine', 'Recomp')[[int]($top -eq 3)]) ($keys | ForEach-Object { $Entries[$_].Name }) ($keys | ForEach-Object { $Entries[$_].Hint })
+        $pick = Show-Menu (@('Rust engine', 'Retail Skate 3')[[int]($top -eq 3)]) ($keys | ForEach-Object { $Entries[$_].Name }) ($keys | ForEach-Object { $Entries[$_].Hint })
         if ($pick -eq -1) { break }
         $key = $keys[$pick]; $lbl = ''
         if ($Entries[$key].Recomp -and $Entries[$key].Recomp.ask_label) {
