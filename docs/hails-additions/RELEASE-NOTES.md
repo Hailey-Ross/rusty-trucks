@@ -45,6 +45,8 @@ Every report with a log helps. Logs let us see exactly where and when something 
 - **Peds floating in the air all over the map:** peds were stood on the first solid surface within 1.6 m above them (awnings, ledges, signs, invisible collision). They are now drawn on the floor under them: the search only reaches the navmesh step height (0.2 m) upward. On DownTown's navmesh this lifted peds at 195 spots before and none after.
 - **Peds spawning in the air or under the ground:** a ped could spawn at your height where the floor was far above or below you (on ledges, ramps and roofs) and stay there. Those spawns are now skipped and the ped spawns somewhere else; a session after the fix logged no floating peds.
 - **Game closed when letting go of a carried prop:** while carrying, the walk cycle's timing was asked to reach a phase in zero seconds, which turned it into an invalid number; on letting go, the stand-up animation could not pick a clip and the game stopped. Carrying now holds the walk cycle still. Found from a tester log thanks to the new error line, which now names the broken animation input and the clips it was choosing between.
+- **No-NPC option:** NPC draw distance (Esc > GRAPHICS) has a **None** step that turns off all NPC skaters, peds and cars.
+- **Manual landing log:** every landing writes a `MANUAL_LANDING` line to the session log (stick position, whether a manual was asked for and whether it was granted, or why not), to check landings that should have gone into a manual.
 - **Better crash logs:** any animation choice that gets an invalid input now names that input and the candidate clips in the session log.
 
 ## Added since main
@@ -84,7 +86,7 @@ From the latest play tests:
 - **NPC skaters:** after switching to another recorded line one can ride backwards (facing one way, moving the other), including through grinds. Some animations still look stiff, grabs show an ollie, and trick height, grind variety, landings, spins and fakie / goofy are not finished. They push props but do not steer round obstacles or bail on heavy props yet.
 - **Pedestrians:** they walk through props you have moved; one model walks stiffly and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail.
 - **Cars:** pedestrians pass straight through cars (retail cars knock them down). A car can knock you over, but through general physics, not retail's own car-hit rules. Paint colours and glass are estimates (the vehicle shader is not decoded yet).
-- **NPC draw distance** (Esc > GRAPHICS) is a quality-of-life option, not retail; higher settings cost frame time.
+- **NPC draw distance** (Esc > GRAPHICS) is a quality-of-life option, not retail; higher settings cost frame time. None turns all NPCs off.
 - **Grinding:** some grind locations make you bail at random, for example the rails at the PCU Library spawn. This also happens on upstream `main`, so it is not caused by this fork's changes.
 - Known upstream test failures (also on `main`): `pipelines_accept_valid_group_outputs_when_fingerprint_changes` (skate-game), `a_moving_group_8_body_...` and `predictive_contacts_and_retention_...` (skate-core).
 
