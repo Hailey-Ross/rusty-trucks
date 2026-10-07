@@ -32,6 +32,7 @@
 //!
 //! Read from the TU3 recompilation (addresses in each item's docs); reference only, our own code.
 //! Spec notes: `audio-specs/world-traffic-audio.md`, `audio-specs/world-ped-audio.md`, `audio-specs/world-speech.md`.
+pub mod ambience;
 pub mod announcer;
 pub mod crossfade;
 pub mod keys;
@@ -112,3 +113,5 @@ impl<F: FnMut() -> u32> Draw for F {
         self()
     }
 }
+
+pub mod speech_queue;

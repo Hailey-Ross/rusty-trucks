@@ -201,6 +201,7 @@ fn predictive_contacts_and_retention_match_full_scan_for_every_primitive() {
             .iter()
             .enumerate()
             .map(|(i, &primitive)| BoardWorldVolume {
+                collision_group: 0,
                 body: CollisionBody::Attached(i),
                 primitive,
                 linear_velocity: Vector3::new(0., velocity, 0.),
@@ -258,9 +259,10 @@ fn water_face(height: f32) -> WorldTriangle {
 }
 
 #[test]
-fn water_is_not_solid_but_reports_its_surface() {
+fn excluded_water_still_reports_its_surface() {
     assert!(is_water_tag(0x637) && !is_water_tag(0x637 - 0x80));
     let sphere = |y: f32| BoardWorldVolume {
+        collision_group: 7,
         body: CollisionBody::Board(BodyId::Deck),
         primitive: ContactPrimitive::Sphere(Sphere {
             center: Vector3::new(-1., y, -1.),
@@ -337,7 +339,7 @@ fn water_is_shallow_only_over_a_nearby_floor() {
 }
 
 #[test]
-fn shallow_water_is_solid_and_deep_water_is_not() {
+fn water_collision_depends_on_native_group_not_floor_depth() {
     let floor = |y: f32| {
         WorldTriangle::from_vertices(
             [Vector3::new(-2., y, -2.), Vector3::new(-2., y, 2.), Vector3::new(2., y, -2.)],
@@ -350,6 +352,7 @@ fn shallow_water_is_solid_and_deep_water_is_not() {
         .unwrap()
     };
     let sphere = |y: f32| BoardWorldVolume {
+        collision_group: 0,
         body: CollisionBody::Board(BodyId::Deck),
         primitive: ContactPrimitive::Sphere(Sphere { center: Vector3::new(-1., y, -1.), radius: 0.2 }),
         linear_velocity: Vector3::new(0., -1., 0.),
@@ -363,13 +366,17 @@ fn shallow_water_is_solid_and_deep_water_is_not() {
         is_object: false,
     };
     let retention = ContactRetentionSettings { capacity: 100, duplicate_distance_squared: 0.000001, deferred_reduction: false };
-    // A channel 5 cm deep: the body rests on the water itself.
-    let mut shallow = BoardWorld::new(vec![water_face(0.), floor(-0.05)]);
-    let hits = shallow.query_primitives(&[sphere(0.15)], query, retention).to_vec();
-    assert!(hits.iter().any(|h| is_water_tag(h.contact.tag)));
-    // A pool 2 m deep: no contact with the water surface.
-    let mut deep = BoardWorld::new(vec![water_face(0.), floor(-2.)]);
-    assert!(deep.query_primitives(&[sphere(0.15)], query, retention).is_empty());
+    // 82767D60 has no depth test: the same exclusions apply with either floor.
+    for floor_y in [-0.05, -2.0] {
+        let mut world = BoardWorld::new(vec![water_face(0.), floor(floor_y)]);
+        for group in 0..21 {
+            let mut volume = sphere(0.15);
+            volume.collision_group = group;
+            let hits = world.query_primitives(&[volume], query, retention);
+            assert_eq!(hits.iter().any(|h| is_water_tag(h.contact.tag)),
+                !matches!(group, 7 | 16), "group {group}, floor {floor_y}");
+        }
+    }
 }
 
 /// fix15: a hidden board has every volume disabled. An empty query must give
@@ -390,6 +397,7 @@ fn empty_volume_query_is_empty_and_resets_the_previous_result() {
         deferred_reduction: false,
     };
     let sphere = BoardWorldVolume {
+        collision_group: 4,
         body: CollisionBody::Board(BodyId::Deck),
         primitive: ContactPrimitive::Sphere(Sphere {
             center: Vector3::new(-1., 0.15, -1.),

@@ -5,9 +5,9 @@ fn source() -> String {
         .iter()
         .enumerate()
         .map(|(i, name)| format!("{name} = Button{i};\n"));
-    let gameplay = GAMEPLAY
+    let gameplay = ACTIONS
         .iter()
-        .map(|(name, value)| format!("{name} = {value};\n"));
+        .map(|action| format!("{} = {};\n", action.name, action.expression));
     buttons.chain(gameplay).collect()
 }
 

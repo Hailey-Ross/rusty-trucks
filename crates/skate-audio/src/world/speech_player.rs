@@ -39,17 +39,15 @@
 //!   otherwise it waits in the library's 16-request queue until its event's queue timeout
 //!   (`.evt` `+2`) runs out. Its unit: the queue clock is `[[0x830CFD94]+16]`, the game's visual
 //!   tick (the `GetVisualGameTick` Lua binding, one per rendered frame); the port counts console
-//!   frames (the console renders at its ~30 fps cadence). Which of the two streams a request targets (`k`) is not traced: the
-//!   lower-priority one is taken (provisional).
+//!   frames (the console renders at its ~30 fps cadence). The target (`k`) is the requesting speaker's stored stream, with sentinel2 selecting stream0 (`824A73F0`).
 //! - **The cut** (`sub_824D9370`): while a line plays, a speaker whose main level stays at or below
 //!   200 (vault `6995C510258C9AF6`) for more than 60 console frames (`3D8CD05C962FF399`) has its
 //!   line stopped. A speaker that loses its MixMap instance stops its line too (deactivation
 //!   `sub_824D92B0` / `sub_824DA110`).
 //!
-//! Not modelled: the "focus speaker" levels (out24 / out16 by a game global), the echo graph's
-//! two-channel Pn21 / Sen0 routing gains (modelled as a mono unity tap) and which of the two
-//! streams a full channel targets.
-use std::collections::VecDeque;
+//! Not modelled: the echo graph's
+//! two-channel Pn21 / Sen0 routing gains (modelled as a mono unity tap) and native library compatibility/follow-up selection.
+use std::sync::{Arc, Mutex};
 
 use super::speech::{Line, SpeechIndex};
 use crate::player::Outputs;
@@ -82,7 +80,13 @@ pub struct PedLevelSelect {
 
 /// PedestrianSpeech's (main level, second level) output ids for a line (`sub_824D9370`).
 pub fn ped_level_ids(sel: PedLevelSelect, event: u16, far: bool) -> (usize, usize) {
+    ped_level_ids_focused(sel, event, far, false)
+}
+
+/// `824D9370`: matching global focus id overrides all ordinary ped level choices.
+pub fn ped_level_ids_focused(sel: PedLevelSelect, event: u16, far: bool, focused: bool) -> (usize, usize) {
     let b = usize::from(far);
+    if focused { return (24 + b, 26); }
     if sel.s100 != 0 {
         (9 + b, 19)
     } else if sel.s104 == 0 {
@@ -103,7 +107,13 @@ pub fn ped_level_ids(sel: PedLevelSelect, event: u16, far: bool) -> (usize, usiz
 /// PlayerSpeech's (main level, second level) output ids (`sub_824DA300`): by the skater's model
 /// (the pros below 30, 30–40, the living-world voices from 41).
 pub fn skater_level_ids(model: u32, far: bool) -> (usize, usize) {
+    skater_level_ids_focused(model, far, false)
+}
+
+/// `824DA300`: focus compares the global id with the skater model, not the owner id.
+pub fn skater_level_ids_focused(model: u32, far: bool, focused: bool) -> (usize, usize) {
     let b = usize::from(far);
+    if focused { return (16 + b, 18); }
     if model < 30 {
         (4 + b, 12)
     } else if model < 41 {
@@ -268,12 +278,23 @@ fn params(out: &dyn Outputs, ids: (usize, usize), send_a: usize, filters: [usize
 /// A ped speaker's values (`out` = a PedestrianSpeech snapshot with [`PED_SNAPSHOT_FILTERS`] read
 /// as filters; `scale` = the speaker's per-voice float).
 pub fn ped_outputs(out: &dyn Outputs, sel: PedLevelSelect, event: u16, far: bool, voice: &SpeechVoiceTuning, scale: f32) -> VoiceParams {
-    params(out, ped_level_ids(sel, event, far), PED_SEND_A, PED_FILTERS, PED_ECHO_FILTERS, voice, scale)
+    ped_outputs_focused(out, sel, event, far, false, voice, scale)
+}
+
+/// PedestrianSpeech update including the challenge's focus override.
+#[allow(clippy::too_many_arguments)]
+pub fn ped_outputs_focused(out: &dyn Outputs, sel: PedLevelSelect, event: u16, far: bool, focused: bool, voice: &SpeechVoiceTuning, scale: f32) -> VoiceParams {
+    params(out, ped_level_ids_focused(sel, event, far, focused), PED_SEND_A, PED_FILTERS, PED_ECHO_FILTERS, voice, scale)
 }
 
 /// A skater speaker's values (`out` = a PlayerSpeech snapshot with [`SKATER_SNAPSHOT_FILTERS`]).
 pub fn skater_outputs(out: &dyn Outputs, model: u32, far: bool, voice: &SpeechVoiceTuning, scale: f32) -> VoiceParams {
-    params(out, skater_level_ids(model, far), SKATER_SEND_A, SKATER_FILTERS, SKATER_ECHO_FILTERS, voice, scale)
+    skater_outputs_focused(out, model, far, false, voice, scale)
+}
+
+/// PlayerSpeech update including the challenge's focus override.
+pub fn skater_outputs_focused(out: &dyn Outputs, model: u32, far: bool, focused: bool, voice: &SpeechVoiceTuning, scale: f32) -> VoiceParams {
+    params(out, skater_level_ids_focused(model, far, focused), SKATER_SEND_A, SKATER_FILTERS, SKATER_ECHO_FILTERS, voice, scale)
 }
 
 /// The announcer's block constants (`sub_824A3C28`): the PEAK stays flat (centre `*(0x822F8920)`
@@ -329,11 +350,15 @@ pub struct Request {
     pub event: u16,
     /// The event's tuning `+16` and interrupt bytes `+13` / `+14`.
     pub priority: i32,
+    /// The independent `.evt`+4 library queue priority, not vault tuning+16.
+    pub queue_priority: u16,
+    /// `.evt` flags2 bit2 retains an older queued request after another line starts.
+    pub retain_queued: bool,
     pub interrupt: bool,
     pub interrupt_when_full: bool,
     /// The record's clips in order.
     pub lines: Vec<Line>,
-    /// The `.evt` queue timeout (console frames, provisional).
+    /// The `.evt` queue timeout in logical visual-game ticks (zero disables expiration).
     pub timeout: u32,
 }
 
@@ -372,6 +397,37 @@ pub enum Event {
     Expired { speaker: u64 },
 }
 
+struct PendingRequest {
+    request: Request,
+    channel: u8,
+    enqueued: u32,
+    sequence: u16,
+}
+#[derive(Default)]
+struct Pending {
+    slots: [Option<PendingRequest>; QUEUE],
+    clock: u32,
+    sequence: u16,
+    sequence_tick: u32,
+}
+impl Pending {
+    fn candidates(&self, tick: u32) -> [super::speech_queue::Candidate; QUEUE] {
+        std::array::from_fn(|i| match &self.slots[i] {
+            Some(q) => super::speech_queue::Candidate { active: true, channel: q.channel,
+                timeout: q.request.timeout.min(u32::from(u16::MAX)) as u16,
+                priority: q.request.queue_priority, age: tick.wrapping_sub(q.enqueued), sequence: q.sequence },
+            None => super::speech_queue::Candidate { active: false, channel: 0, timeout: 0,
+                priority: 0, age: 0, sequence: 0 },
+        })
+    }
+}
+impl std::fmt::Debug for Pending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pending").field("clock", &self.clock)
+            .field("queued", &self.slots.iter().flatten().count()).finish()
+    }
+}
+
 /// One speech channel's streams and queue.
 #[derive(Clone, Debug, Default)]
 pub struct SpeechPlayer {
@@ -379,7 +435,7 @@ pub struct SpeechPlayer {
     /// channel × 2 + k.
     pub channel: u8,
     streams: [Option<Stream>; STREAMS],
-    queue: VecDeque<(Request, u32)>,
+    queue: Arc<Mutex<Pending>>,
     /// Counters (diagnostics).
     pub started: u64,
     pub interrupted: u64,
@@ -398,6 +454,11 @@ impl SpeechPlayer {
         Self { channel, ..Default::default() }
     }
 
+    /// Another channel in the same native speech library shares its16 request slots.
+    pub fn with_queue_of(channel: u8, other: &Self) -> Self {
+        Self { channel, queue: other.queue.clone(), ..Self::default() }
+    }
+
     /// The speakers whose lines play now.
     pub fn speakers(&self) -> impl Iterator<Item = u64> + '_ {
         self.streams.iter().flatten().map(|s| s.req.speaker)
@@ -413,39 +474,66 @@ impl SpeechPlayer {
     }
 
     pub fn queued(&self) -> usize {
-        self.queue.len()
+        self.queue.lock().unwrap().slots.iter().flatten().filter(|q| q.channel == self.channel).count()
     }
 
     /// A line the manager started (see the module docs for the stream rule).
     pub fn request(&mut self, req: Request, voices: &mut dyn SpeechVoices) -> Outcome {
+        self.request_controlled(req, voices, None).0
+    }
+
+    ///824A62F0 considers both streams only for channel0. Paused host voices are
+    ///not exposed here; this snapshot describes the running stream player.
+    pub fn available(&self) -> bool {
+        super::speech_queue::channel_available(self.channel,
+            std::array::from_fn(|k| self.streams[k].is_some()), [false; 2])
+    }
+
+    ///824A73F0 preflight may control a different stream player. Living-world
+    ///824ABA18 passes control-channel0 and record-channel1. Return its stop
+    ///command to that host rather than stopping a living-world voice instead.
+    pub fn request_controlled(&mut self, req: Request, voices: &mut dyn SpeechVoices,
+        control_available: Option<bool>) -> (Outcome, Option<usize>) {
+        let owner_stream = self.streams.iter().position(|s|
+            s.as_ref().is_some_and(|s| s.req.speaker == req.speaker));
+        let target = owner_stream.map_or(2, |k| k as u32);
+        let stop = super::speech_queue::interrupt_target(target, owner_stream.is_some(),
+            req.interrupt, req.interrupt_when_full, req.priority,
+            std::array::from_fn(|k| self.streams[k].is_some()),
+            std::array::from_fn(|k| self.streams[k].as_ref().map_or(0, |s| s.req.priority)),
+            control_available.unwrap_or_else(|| self.available()));
+        let external_stop = if control_available.is_some() { stop } else { None };
+        if control_available.is_none() && let Some(k) = stop {
+            self.stop_stream(k, voices);
+            self.interrupted += 1;
+        }
         if let Some(k) = self.streams.iter().position(Option::is_none) {
             self.streams[k] = Some(Stream { req, at: 0, voice: None, low: 0 });
-            return Outcome::Playing(k);
+            return (if stop == Some(k) && control_available.is_none() {
+                Outcome::Interrupted(k)
+            } else { Outcome::Playing(k) }, external_stop);
         }
-        // Full: the lower-priority playing line, if the event may interrupt it.
-        let (k, lowest) = self
-            .streams
-            .iter()
-            .enumerate()
-            .filter_map(|(k, s)| s.as_ref().map(|s| (k, s.req.priority)))
-            .min_by_key(|&(k, p)| (p, k))
-            .expect("full");
-        if (req.interrupt || req.interrupt_when_full) && lowest < req.priority {
-            if let Some(old) = self.streams[k].take()
-                && let Some(v) = old.voice
-            {
-                voices.stop(v);
-            }
-            self.streams[k] = Some(Stream { req, at: 0, voice: None, low: 0 });
-            self.interrupted += 1;
-            return Outcome::Interrupted(k);
-        }
-        if self.queue.len() >= QUEUE {
+        let mut queue = self.queue.lock().unwrap();
+        let mut candidates = queue.candidates(queue.clock);
+        let Some(slot) = super::speech_queue::admission(&mut candidates, self.channel, req.queue_priority) else {
             self.dropped += 1;
-            return Outcome::Dropped;
+            return (Outcome::Dropped, external_stop);
+        };
+        // 82971480 restarts the serial at zero whenever the callback clock changes.
+        if queue.sequence_tick == queue.clock {
+            queue.sequence = queue.sequence.wrapping_add(1);
+        } else {
+            queue.sequence_tick = queue.clock;
+            queue.sequence = 0;
         }
-        self.queue.push_back((req, 0));
-        Outcome::Queued
+        let (enqueued, sequence) = (queue.clock, queue.sequence);
+        queue.slots[slot] = Some(PendingRequest { request: req, channel: self.channel, enqueued, sequence });
+        (Outcome::Queued, external_stop)
+    }
+
+    ///Native82C5E1D8 targets a stream index, including cross-channel preflight.
+    pub fn stop_stream(&mut self, k: usize, voices: &mut dyn SpeechVoices) {
+        if let Some(v) = self.streams[k].take().and_then(|s| s.voice) { voices.stop(v); }
     }
 
     /// Stop the line `speaker` plays (`sub_82C5E1D8` on the stream its block holds): the stream
@@ -466,28 +554,54 @@ impl SpeechPlayer {
                 voices.stop(v);
             }
         }
-        self.queue.clear();
+        for slot in &mut self.queue.lock().unwrap().slots {
+            if slot.as_ref().is_some_and(|q| q.channel == self.channel) { *slot = None; }
+        }
     }
 
     /// One console frame: the queue, then every stream: its speaker's values (`speaker(id, far,
     /// event)`, None = the speaker is gone), the cut, the next take of the line, the voice values.
     pub fn frame(&mut self, index: &SpeechIndex, speaker: &mut dyn FnMut(u64, bool, u16) -> Option<VoiceParams>, voices: &mut dyn SpeechVoices) -> Vec<Event> {
+        let tick = self.queue.lock().unwrap().clock.wrapping_add(1);
+        self.frame_at(index, speaker, voices, tick)
+    }
+
+    /// Process at the shared library's visual-game tick. Calling other channels at the same
+    /// tick must not age pending requests again.
+    pub fn frame_at(&mut self, index: &SpeechIndex, speaker: &mut dyn FnMut(u64, bool, u16) -> Option<VoiceParams>, voices: &mut dyn SpeechVoices, tick: u32) -> Vec<Event> {
         let mut events = Vec::new();
-        // The queue: age, expire, then fill free streams (highest priority first, then the newest).
-        for q in self.queue.iter_mut() {
-            q.1 += 1;
-        }
-        self.queue.retain(|(r, age)| {
-            let keep = *age <= r.timeout;
-            if !keep {
-                events.push(Event::Expired { speaker: r.speaker });
+        {
+            let mut queue = self.queue.lock().unwrap();
+            queue.clock = tick;
+            let mut candidates = queue.candidates(tick);
+            let retain: [bool; QUEUE] = std::array::from_fn(|i| queue.slots[i].as_ref().is_some_and(|q| q.request.retain_queued));
+            loop {
+                let best = super::speech_queue::select(&mut candidates, self.channel);
+                for (slot, candidate) in queue.slots.iter_mut().zip(&candidates) {
+                    if !candidate.active {
+                        if let Some(q) = slot.take() { events.push(Event::Expired { speaker: q.request.speaker }); }
+                    }
+                }
+                let Some(k) = self.streams.iter().position(Option::is_none) else { break };
+                let Some(best) = best else { break };
+                let q = queue.slots[best].take().expect("selected native queue slot");
+                //82971DA8 cancels older requests only after a successful start.
+                //A missing speaker or failed decoder must leave those requests eligible.
+                candidates[best].active = false;
+                let Some(&line) = q.request.lines.first() else { continue };
+                let far = index.clips.get(line.clip).is_some_and(|c| far_clip(&c.name));
+                let Some(mut p) = speaker(q.request.speaker, far, q.request.event) else { continue };
+                p.slot = self.channel * 2 + k as u8;
+                let Some(voice) = voices.open(line, &p) else { continue };
+                candidates[best].active = true;
+                super::speech_queue::consumed(&mut candidates, best, tick, &retain);
+                for (slot, candidate) in queue.slots.iter_mut().zip(&candidates) {
+                    if !candidate.active { *slot = None; }
+                }
+                self.started += 1;
+                events.push(Event::Started { k, speaker: q.request.speaker, line });
+                self.streams[k] = Some(Stream { req: q.request, at: 0, voice: Some(voice), low: 0 });
             }
-            keep
-        });
-        while let Some(k) = self.streams.iter().position(Option::is_none) {
-            let Some(best) = self.queue.iter().enumerate().max_by_key(|(i, (r, _))| (r.priority, *i)).map(|(i, _)| i) else { break };
-            let (req, _) = self.queue.remove(best).expect("index");
-            self.streams[k] = Some(Stream { req, at: 0, voice: None, low: 0 });
         }
         for k in 0..STREAMS {
             let Some(mut s) = self.streams[k].take() else { continue };
@@ -618,7 +732,7 @@ mod tests {
     }
 
     fn req(speaker: u64, clip: usize, priority: i32, interrupt: bool) -> Request {
-        Request { speaker, event: 8210, priority, interrupt, interrupt_when_full: false, lines: vec![Line { clip, take: 0, event: 501 }], timeout: 3 }
+        Request { speaker, event: 8210, priority, queue_priority: priority as u16, retain_queued: false, interrupt, interrupt_when_full: false, lines: vec![Line { clip, take: 0, event: 501 }], timeout: 3 }
     }
 
     #[test]
@@ -682,6 +796,29 @@ mod tests {
     }
 
     #[test]
+    fn zero_queue_timeout_waits_until_a_stream_becomes_free() {
+        // 82971890 skips the expiry test when event+2 is zero, rather than
+        // treating it as a request that expires on the following frame.
+        let ix = index();
+        let mut p = SpeechPlayer::default();
+        let mut v = Voices::default();
+        p.request(req(1, 0, 500, false), &mut v);
+        p.request(req(2, 0, 500, false), &mut v);
+        let mut waiting = req(3, 0, 500, false);
+        waiting.timeout = 0;
+        assert_eq!(p.request(waiting, &mut v), Outcome::Queued);
+        for _ in 0..80 {
+            let events = p.frame(&ix, &mut |_, _, _| Some(VoiceParams { level: 1000, ..Default::default() }), &mut v);
+            assert!(!events.iter().any(|e| matches!(e, Event::Expired { .. })));
+        }
+        assert_eq!(p.queued(), 1);
+        assert_eq!(p.stop_speaker(1, &mut v), Some(0));
+        let events = p.frame(&ix, &mut |_, _, _| Some(VoiceParams { level: 1000, ..Default::default() }), &mut v);
+        assert!(events.iter().any(|e| matches!(e, Event::Started { speaker: 3, .. })));
+        assert_eq!(p.queued(), 0);
+    }
+
+    #[test]
     fn two_streams_interrupts_queue_and_cut() {
         let ix = index();
         let mut p = SpeechPlayer::default();
@@ -689,7 +826,9 @@ mod tests {
         assert_eq!(p.request(req(1, 0, 500, false), &mut v), Outcome::Playing(0));
         assert_eq!(p.request(req(2, 1, 520, false), &mut v), Outcome::Playing(1));
         assert_eq!(p.request(req(3, 0, 510, false), &mut v), Outcome::Queued, "no interrupt byte: it waits");
-        assert_eq!(p.request(req(4, 0, 510, true), &mut v), Outcome::Interrupted(0), "beats the 500 line");
+        let mut full = req(4, 0, 510, false);
+        full.interrupt_when_full = true;
+        assert_eq!(p.request(full, &mut v), Outcome::Interrupted(0), "native no-owner sentinel targets stream0");
         let mut level = 9000;
         let ev = p.frame(&ix, &mut |_, _, _| Some(ped_outputs(&Out(level), PedLevelSelect::default(), 8210, false, &SpeechVoiceTuning::default(), 1.0)), &mut v);
         assert_eq!(ev.iter().filter(|e| matches!(e, Event::Started { .. })).count(), 2);
@@ -735,4 +874,69 @@ mod tests {
         p.frame(&ix, &mut |_, _, _| Some(ped_outputs(&Out(9000), PedLevelSelect::default(), 8210, false, &SpeechVoiceTuning::default(), 1.0)), &mut v);
         assert_eq!(p.speakers().collect::<Vec<_>>(), vec![7, 9]);
     }
+    #[test]
+    fn channels_share_capacity_and_expire_once_at_the_shared_clock() {
+        let mut a = SpeechPlayer::on_channel(0);
+        let mut b = SpeechPlayer::with_queue_of(1, &a);
+        let mut v = Voices::default();
+        for p in [&mut a, &mut b] {
+            p.request(req(1,0,900,false), &mut v);
+            p.request(req(2,0,900,false), &mut v);
+        }
+        // All sixteen slots filled by channel0; channel1 cannot overwrite them.
+        for i in 0..QUEUE { assert_eq!(a.request(req(100+i as u64,0,900,false), &mut v),Outcome::Queued); }
+        assert_eq!(b.request(req(500,0,900,false), &mut v),Outcome::Dropped);
+        assert_eq!((a.queued(),b.queued()),(16,0));
+        let ix=index();
+        for p in [&mut a, &mut b] { p.frame_at(&ix,&mut |_,_,_|Some(VoiceParams{level:1000,..Default::default()}),&mut v,3); }
+        assert_eq!(a.queued(),16,"timeout is strictly greater than three");
+        a.frame_at(&ix,&mut |_,_,_|Some(VoiceParams{level:1000,..Default::default()}),&mut v,4);
+        assert_eq!(a.queued(),0);
+    }
+
+    #[test]
+    fn queue_priority_and_newest_request_control_dequeue() {
+        let ix=index();let mut p=SpeechPlayer::default();let mut v=Voices::default();
+        p.request(req(1,0,900,false),&mut v);p.request(req(2,0,900,false),&mut v);
+        let mut older=req(3,0,800,false);older.queue_priority=10;older.timeout=0;
+        let mut newer=req(4,0,1,false);newer.queue_priority=10;newer.timeout=0;
+        p.request(older,&mut v);p.request(newer,&mut v);
+        p.stop_speaker(1,&mut v);
+        p.frame_at(&ix,&mut |_,_,_|Some(VoiceParams{level:1000,..Default::default()}),&mut v,1);
+        assert_eq!(p.speakers().collect::<Vec<_>>(),vec![4,2]);
+        assert_eq!(p.queued(),0,"older non-retained request is discarded on successful start");
+    }
+
+    #[test]
+    fn interruption_targets_owner_stream_instead_of_lowest_priority() {
+        let mut p=SpeechPlayer::default();let mut v=Voices::default();
+        p.request(req(1,0,500,false),&mut v);p.request(req(2,0,100,false),&mut v);
+        let mut incoming=req(3,0,200,false);incoming.interrupt_when_full=true;
+        assert_eq!(p.request(incoming,&mut v),Outcome::Queued,
+            "sentinel2 targets occupied stream0, whose priority is500; stream1 is irrelevant");
+        assert_eq!(p.request(req(2,0,200,true),&mut v),Outcome::Interrupted(1),
+            "an already-speaking owner targets its own stream1");
+    }
+
+    #[test]
+    fn living_preflight_returns_stop_for_control_channel_without_stopping_own_voice() {
+        let mut p=SpeechPlayer::on_channel(1);let mut v=Voices::default();
+        p.request(req(1,0,100,false),&mut v);p.request(req(2,0,500,false),&mut v);
+        let mut incoming=req(3,0,200,false);incoming.interrupt_when_full=true;
+        assert_eq!(p.request_controlled(incoming,&mut v,Some(false)),(Outcome::Queued,Some(0)));
+        assert_eq!(p.speakers().collect::<Vec<_>>(),vec![1,2],"record channel1 stays intact");
+    }
+
+    #[test]
+    fn unsuccessful_queued_start_preserves_older_request() {
+        let ix=index();let mut p=SpeechPlayer::default();let mut v=Voices::default();
+        p.request(req(1,0,900,false),&mut v);p.request(req(2,0,900,false),&mut v);
+        let mut older=req(3,0,800,false);older.queue_priority=10;older.timeout=0;
+        let mut newer=req(4,0,1,false);newer.queue_priority=10;newer.timeout=0;
+        p.request(older,&mut v);p.request(newer,&mut v);p.stop_speaker(1,&mut v);
+        p.frame_at(&ix,&mut |id,_,_| (id!=4).then_some(VoiceParams{level:1000,..Default::default()}),&mut v,1);
+        assert_eq!(p.speakers().collect::<Vec<_>>(),vec![3,2]);
+        assert_eq!(p.queued(),0,"failed newer request must not cancel the older playable line");
+    }
+
 }

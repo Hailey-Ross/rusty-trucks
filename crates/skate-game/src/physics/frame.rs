@@ -243,7 +243,6 @@ pub(super) fn advance(
     //World8275ECA4 ends skeleton tests after state/forces and before solving.
     //Teleport resets previous observations, but preserves this pending batch.
     skeleton_queries.publish(&mut skater.player_input.player);
-    super::water::apply_board_drag(physics);
     // Prop grab/place (Phases 3-4): grab held on the retail GrabWorld button
     // (RB), placement on a B rising edge, from the derived controller; right
     // stick and DPad levels from the sampled gameplay actions. A is sprint
@@ -275,9 +274,6 @@ pub(super) fn advance(
         .player_input
         .update_dynamic_normal(&physics.riding, simulation.gravity_acceleration);
     skater.player_input.publish_board(&physics.riding)?;
-    skater
-        .player_input
-        .publish_water(&physics.riding.ground, &skater.collision_feedback);
     skater.player_input.physical.skeleton.publish_deck_angles(
         skater.animated_skeleton.record.pose[0][2],
         skater.animation.packet.board_flipped,

@@ -1,7 +1,7 @@
-//! The MixMap mixer (`MixMapSK8.mxb`), our own port from `audio-specs/mixmap-spec.md`
-//! (and our reference evaluator `mxb_tool.py`, local and not published (it carries a name table from
-//! the game), which gives
-//! the same outputs as upstream PR #4's port on 73,800 golden cells).
+//! The MixMap mixer (`MixMapSK8.mxb`), ported from the TU3 functions and file data.
+//! `tests/retail_mixmap.rs` independently compares the native builder/tick instruction execution
+//! across state sequences; `retail_mixmap_input.rs` exhaustively checks input shaping/conversion.
+//! Earlier golden-cell tests compare two ports and are regression checks, not retail oracles.
 //!
 //! The game writes controller **inputs** (16 i32 words per controller: physics, 3-D positions,
 //! menu / pause / music flags), calls [`MixMap::tick`] once per evaluation (the console's 30 Hz
@@ -638,7 +638,11 @@ impl MixMap {
                 continue;
             }
             f.elapsed += self.dt_ms;
-            step_envelope(&self.t, f, trig);
+            // TU3 82950250 dispatches only AR (0), AHR (1), and ADSR (3).
+            // Other authored kinds retain their state/level; they do not enter an attack.
+            if matches!(f.kind, 0 | 1 | 3) {
+                step_envelope(&self.t, f, trig);
+            }
             let t = &self.t;
             f.mb = if f.linear {
                 t.lin_to_mb(f.level)

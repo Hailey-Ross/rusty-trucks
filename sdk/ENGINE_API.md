@@ -69,6 +69,51 @@ inside it. This is a point overlap query, not a collider or a skater hull test.
 Boxes belong to their creating mod, max 32 per mod; remove with
 `sdk.volumes.remove(key)`. Changes become observable on the next snapshot.
 
+## Trigger volumes (`sdk.triggers`, capability `triggers` 1)
+
+The engine tracks the map's named trigger volumes the way retail Skate 3 does:
+each fixed tick the local player (body `"player"`) and every tracked body get a
+query cylinder (retail: radius 0.34 m, spanning the skater from just below the
+feet to just above the head) which is tested against each volume's oriented box.
+Changes post `on_event` events before `on_fixed_update`:
+
+    {name="trigger_entered"|"trigger_exited", body="player"|"mod:<mod>:<key>",
+     volume=<id>, volume_name=<short name>, group="challenge"|"stairs"|"camera",
+     instance_id=<16 hex digits or nil>, link_guid=<16 hex digits or nil>}
+
+Retail map volumes come from the converted map (`maps/<Map>.triggers`, written by
+setup); their `id` is the retail instance id challenge scripts use (e.g.
+SkateSchool's map-wide `tut_sksc_reset_vol01` is `2c7017060025128f`). Custom maps
+carry their own in a `<Map>.triggers` sidecar or a `TVOL` extension (same JSON;
+see `docs/hails-additions/24-trigger-volumes.md`).
+
+- `sdk.triggers.list()` — every volume: `{id, name, full_name, group, source="map"|"mod",
+  owner, instance_id, link_guid, center, axes, rotation, half_extents, fatness,
+  aabb_min, aabb_max, enabled, inside={bodies}}`. `sdk.triggers.get(id_or_name)`.
+- `sdk.triggers.inside(body)` — volume ids the body (default `"player"`) is in.
+- `sdk.triggers.box(key, {center={x,y,z}, half_extents={x,y,z}, rotation={x,y,z,w},
+  name="...", group="challenge"})` — a mod volume with id `mod:<mod>:<key>`
+  (max 64 per mod); `sdk.triggers.remove(key)`.
+- `sdk.triggers.set_enabled(id, false)` switches a map volume off for everyone
+  until the same mod switches it on or stops.
+- `sdk.triggers.track(key, {radius=0.34, length=0})` follows one of the mod's
+  physics bodies (body id `mod:<mod>:<key>`, max 16); `sdk.triggers.untrack(key)`.
+  The cylinder stands on the body's position (like the player's feet) and
+  reaches `length` metres up, plus retail's pads (2 cm below, 8 cm above).
+  Positions are taken after the dynamics step, so their events lag one tick.
+- `sdk.triggers.configure({radius=, length_scale=, length_pad=, foot_pad=})` changes
+  the query-cylinder constants (one mod at a time); `configure()` restores retail.
+  The player's cylinder is built like retail's skater from its feet (ground
+  point), head and hips: radius 0.34, half-height `length_scale * |head - feet| +
+  length_pad` (0.5, 0.05), one end `foot_pad` (0.02) below the feet.
+- Only `challenge` volumes post `trigger_entered` / `trigger_exited`; retail's
+  `stairs` and `camera` groups have no tracked bodies (they are listed, not tracked).
+
+Removing a volume never posts an exit (retail); a body that stops being tracked
+exits everything it was in. Everything a mod set is undone when it stops; mod
+volumes, switches and tracked bodies are also cleared when the world changes
+(re-add them on `world_changed`).
+
 `sdk.camera.capture(key, {position={x,y,z}, look_at={x,y,z}, fov=radians,
 width=256, height=256})` creates or updates an offscreen camera. FOV defaults to
 70 degrees (in radians), range 0.2–2.5. Dimensions must be multiples of 16 between
@@ -185,6 +230,19 @@ return {on_fixed_update=function()
 end}
 ```
 
+## Frame-time statistics
+
+`sdk.snapshot.frame` is a read-only view of the engine's frame timing (the same
+numbers as the graphics menu's frame-time counter and the `SKATE_FRAME_LOG` log):
+`ms` (last frame), `fixed_steps` (physics steps run in that frame), `main_ms` /
+`fixed_ms` (CPU time of the engine's main thread / of the physics steps in that frame), `hitch`,
+and over the last `window_s` seconds `fps`, `mean_ms`, `median_ms`, `low_1_ms`
+(1 % low = 99th-percentile frame time), `low_01_ms` (0.1 % low), `worst_ms` and
+`hitches` (frames longer than twice the median of the previous 120). The window
+values refresh four times a second. Reading them costs nothing extra; mods cannot
+change them. Use them for adaptive effects (drop a costly effect while
+`low_1_ms` is high) or a custom performance HUD.
+
 ## UI updates during pause
 
 `on_ui_update({dt, paused})` runs every presentation update with a fresh snapshot,
@@ -209,6 +267,29 @@ engine imposes no game rules. Omit `section` to use the Mods menu. Menu removal 
 mod unload removes its entry; empty sections disappear. Back returns to the
 section that opened the menu. Limits: 8 custom sections, 64 section menus total,
 32 bytes per section name. `sdk.capabilities.menus >= 3` supports this placement.
+
+## Camera angle and stock shots
+
+The native gameplay camera is Skate 3's stock camera graph. Its **Camera Angle**
+setting (pause menu SKATER > Camera angle, `settings/camera.json`) picks the
+graph's Low or High branch, which choose different stock shots (`bl_chase` vs
+`bl_high_chase`, ...). With `sdk.capabilities.camera >= 4`:
+
+- `sdk.camera.angle()` returns `{selected, active, owner, shot, tuned}`: the
+  player's setting, the angle in use, the mod forcing it (or nil), the current
+  stock shot and a `shot -> mod` table of tuned shots.
+- `sdk.camera.set_angle("low" | "high")` forces an angle; `nil` hands it back to
+  the player's setting. One mod at a time; the player's saved choice is untouched.
+- `sdk.camera.tune_shot(shot, patch)` replaces stock values of one shot (and of
+  every blend tree using it). Keys are the retail attribute names in their units:
+  `PositionDistance` (m), `PositionElevation`, `PositionHeading`, `FramingRoll`,
+  `FramingYaw`, `FramingPitch` (degrees), `FramingLensLength`,
+  `ReferenceBoardOffset`, `SmoothingDirection`, `SmoothingElevation`,
+  `SmoothingYaw`, `SmoothingPitch`, `TransitionTime` (s). `nil` restores the stock
+  shot. One mod per shot; unknown shots, keys or out-of-range values fail the
+  command (use `sdk.commands.request` to get the error back).
+
+Disabling, failing or reloading the mod releases its angle and shot tunings.
 
 ## Local actor suspension and peer cameras
 

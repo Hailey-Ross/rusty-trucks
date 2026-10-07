@@ -24,7 +24,7 @@ mod collision_feedback;
 mod collision_update;
 mod collision_vector;
 mod collision_filter;
-pub use collision_feedback::{SkeletonFeedbackSettings, SkeletonContactBody,
+pub use collision_feedback::{CollisionResponseSettings, collision_response, SkeletonFeedbackSettings, SkeletonContactBody,
     SkeletonContactReport, SkeletonCollisionInput, BoneContact, ContactRegion,
     ContactPlane, SpecificContact, SkeletonContactFlags, SkeletonCollisionFeedback};
 mod errors;

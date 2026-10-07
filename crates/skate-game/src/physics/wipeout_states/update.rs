@@ -50,14 +50,7 @@ pub(crate) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
     let position = p.vectors_544_560_592_608[2].map(f32::from_bits);
     if state.special_surface {
         state.below_surface = position[1] - state.surface_height < 0.0;
-        // Buoyancy only where the water is deep enough to float in.
-        let floats: Vec<bool> = skater
-            .skeleton
-            .bodies()
-            .iter()
-            .map(|b| crate::physics::water::part_floats(&physics.world, b.rates.position))
-            .collect();
-        body::special_surface_where(&mut skater.skeleton, state.surface_height, |i| floats[i]);
+        body::special_surface(&mut skater.skeleton, state.surface_height);
     }
     let effective = p
         .effective_anim_transform_192

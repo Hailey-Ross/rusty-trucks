@@ -31,8 +31,12 @@ pub(crate) struct CameraRuntime {
     pub simulation_rate_requests: Vec<SimulationRateRequest>,
     pub manual_cam: ManualCam,
     pub manual_cam_settings: ManualCamSettings,
-    /// Keeps the camera above water while the skater is in it.
-    water: super::water::WaterView,
+    /// Stock camera graph `IsCameraTypeActive` value: 0 Low, 1 High (camera/angle.rs).
+    camera_type: u32,
+    /// `CameraAngleSettings` generation whose shot tunings are applied (0 = none yet).
+    tuning_generation: u64,
+    /// Reload the current shot tree once, after the shot tunings changed.
+    reselect_shot: bool,
 }
 
 #[cfg(test)]
@@ -65,7 +69,8 @@ impl CameraRuntime {
             simulation_rate_requests: Vec::new(),
             manual_cam: ManualCam::default(),
             manual_cam_settings: settings::manual_cam_settings(&data)?,
-            water: Default::default() })
+            camera_type: super::angle::CameraAngle::default().graph_type(),
+            tuning_generation: 0, reselect_shot: false })
     }
 
     /// Ignores a degenerate ratio rather than storing it.
@@ -75,17 +80,30 @@ impl CameraRuntime {
     /// view, which fails the non-finite frame check on every subsequent frame
     /// even after the window is restored. Keeping the last good ratio is
     /// correct: nothing is visible while minimized.
-    /// Water-shot vignette amount for the tone pass (0 when not in water).
-    pub fn water_vignette(&self) -> f32 {
-        self.water.vignette()
-    }
-
     pub fn set_aspect_ratio(&mut self, value: f32) {
         if value.is_finite() && value > 0.0 {
             self.manager.state.aspect_ratio = value;
         }
     }
     pub fn selected_shot(&self) -> &str { &self.manager.shots.current().name }
+
+    pub fn camera_type(&self) -> u32 { self.camera_type }
+    /// The graph re-evaluates `IsCameraTypeActive` on its next update and switches branch
+    /// through its own shot transitions.
+    pub fn set_camera_type(&mut self, value: u32) { self.camera_type = value; }
+
+    pub fn has_shot(&self, name: &str) -> bool { self.shots.contains(name) }
+    pub fn tuning_generation(&self) -> u64 { self.tuning_generation }
+
+    /// Replaces the mod shot tunings. The current shot tree is re-selected on the next
+    /// advance, so a tuned shot that is in use changes at once (through the normal shot
+    /// transition) instead of waiting for the graph's next choice.
+    pub fn set_shot_tunings<'a>(&mut self, generation: u64,
+        tunings: impl Iterator<Item = (&'a str, &'a skate_mods::presentation::CameraShotTuning)>) {
+        self.shots.set_tunings(tunings);
+        self.tuning_generation = generation;
+        self.reselect_shot = true;
+    }
 
     /// `GetMatrix` for presentation capture when manual cam may be active.
     pub fn presentation_frame(&self) -> Option<CameraFrame> {
@@ -94,9 +112,7 @@ impl CameraRuntime {
 
     pub fn advance(&mut self, dt: f32, snapshot: CameraSubjectSnapshot,
         world: &BoardWorld, query_gravity: [f32; 4], environment: &CameraGraphEnvironment,
-        moving: &mut impl MovingObstacleProvider,
-        // Water surface while the skater is in a water bail (camera/water.rs).
-        water: Option<f32>) -> Result<CameraFrame, String> {
+        moving: &mut impl MovingObstacleProvider) -> Result<CameraFrame, String> {
         if let Some(previous) = self.latest_subject.as_ref()
             && snapshot.tick <= previous.tick
         {
@@ -111,6 +127,12 @@ impl CameraRuntime {
         let requests = self.graph.update(dt, &mut self.manager, &subject,
             snapshot.graph, environment, &self.shots)?;
         self.simulation_rate_requests.extend(requests);
+        if std::mem::take(&mut self.reselect_shot) {
+            let current = self.manager.shots.current().name.clone();
+            if !current.is_empty() {
+                self.manager.set_shot(&current, true, &subject, &self.shots)?;
+            }
+        }
         let [a, b, c] = &mut self.trajectories;
         let mut trajectories = [a, b, c].map(|result| CameraTrajectory {
             world, gravity: query_gravity, result,
@@ -136,8 +158,7 @@ impl CameraRuntime {
                 subject.landing_position,
             ));
         }
-        let root = subject.rig.skeleton_root[3];
-        let frame = self.water.adjust(frame, world, [root[0], root[1], root[2]], water, dt);
+        // Present the recovered CameraMan82DFEE80 result directly.
         self.frame = Some(frame);
         Ok(frame)
     }

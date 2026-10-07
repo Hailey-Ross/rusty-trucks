@@ -183,6 +183,7 @@ pub(crate) struct WorldSpeech {
     /// The running challenge's announcer character (None: free skate) and the MixMap tick it was
     /// named at (the gate's challenge timer, retail system `+908`).
     pub(crate) announcer_character: Option<u32>,
+    focus_speech: bool,
     announcer_since: u64,
     /// `Announcer.in0` as last written.
     announcer_input: bool,
@@ -276,6 +277,7 @@ impl Default for WorldSpeech {
             announcer: None,
             announces: Vec::new(),
             announcer_character: None,
+            focus_speech: false,
             announcer_since: 0,
             announcer_input: false,
             announcer_asked: 0,
@@ -568,6 +570,7 @@ pub(super) fn frame(
 ) {
     let speech = &mut *speech;
     // The announcer: the running challenge's character, and this frame's requests.
+    speech.focus_speech = living.as_deref().is_some_and(|l| l.focus_speech);
     let character = living.as_deref().and_then(crate::world_audio::LivingWorldAudio::announcer_character);
     if character != speech.announcer_character {
         speech.announcer_character = character;
@@ -645,7 +648,7 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
             match load(&index, audio.clone(), &library.speech_mods("maincast")) {
                 Ok(data) => {
                     info!("AUDIO_WORLD main-cast speech {}: {} clips, {} events", if audio.is_some() { "on" } else { "chosen but silent (not decoded)" }, data.index.clips.len(), data.table.events.len());
-                    speech.cast = Some(MainCast { data, manager: SpeechManager::new(library.world_tuning().speech_tuning_bank(0)), player: SpeechPlayer::on_channel(0), loaded: VecDeque::new() });
+                    speech.cast = Some(MainCast { data, manager: SpeechManager::new(library.world_tuning().speech_tuning_bank(0)), player: SpeechPlayer::with_queue_of(0, &speech.player), loaded: VecDeque::new() });
                 }
                 Err(e) => warn!("AUDIO_WORLD main-cast speech off: {e}"),
             }
@@ -655,7 +658,7 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
             match load(&index, audio.clone(), &library.speech_mods("announcer")) {
                 Ok(data) => {
                     info!("AUDIO_WORLD announcer speech {}: {} clips, {} events", if audio.is_some() { "on" } else { "chosen but silent (not decoded)" }, data.index.clips.len(), data.table.events.len());
-                    let mut player = SpeechPlayer::on_channel(announcer::CHANNEL);
+                    let mut player = SpeechPlayer::with_queue_of(announcer::CHANNEL, &speech.player);
                     player.no_cut = true;
                     speech.announcer = Some(MainCast { data, manager: SpeechManager::new(library.world_tuning().speech_tuning_bank(announcer::BANK)), player, loaded: VecDeque::new() });
                 }
@@ -796,6 +799,9 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
     for (speaker, who, res, value, chan) in new {
         match res {
             Ok(line) => {
+                //824ABA18 preflight uses main-cast player0 with living-world records1.
+                let control_available = matches!(chan, Chan::Living)
+                    .then(|| speech.cast.as_ref().is_none_or(|c| c.player.available()));
                 let (d, manager, player, loaded, bank) = match (chan, speech.cast.as_mut(), speech.announcer.as_mut()) {
                     (Chan::Cast, Some(c), _) => (&c.data, &c.manager, &mut c.player, &mut c.loaded, MAIN_CAST_BANK),
                     (Chan::Announcer, _, Some(c)) => (&c.data, &c.manager, &mut c.player, &mut c.loaded, ANNOUNCER_BANK),
@@ -813,13 +819,19 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
                 let tuning = manager.tuning.get(&line.event).cloned().unwrap_or_default();
                 let timeout = d.table.event(line.event).map_or(60, |e| u32::from(e.queue_timeout));
                 let names: Vec<&str> = lines.iter().filter_map(|l| d.index.clips.get(l.clip).map(|c| c.name.as_str())).collect();
-                let req = Request { speaker, event: line.event, priority: tuning.priority, interrupt: tuning.interrupt, interrupt_when_full: tuning.interrupt_when_full, lines, timeout };
+                let req = Request { speaker, event: line.event, priority: tuning.priority, queue_priority: d.table.event(line.event).map_or(0, |e| e.priority), retain_queued: d.table.event(line.event).is_some_and(|e| e.flags2 & 4 != 0), interrupt: tuning.interrupt, interrupt_when_full: tuning.interrupt_when_full, lines, timeout };
                 let mut v = Voices { mixer: &mut rt.mixer, bank, data: d, loaded, missing: &mut missing, echo_delay: &mut speech.echo_delay };
-                let outcome = player.request(req, &mut v);
+                let (outcome, external_stop) = player.request_controlled(req, &mut v, control_available);
                 let channel = chan.name();
                 info!("AUDIO_WORLD speech ({channel}) owner={speaker} value={value} event={} line={} -> {outcome:?}", line.event, names.join("+"));
                 #[cfg(test)]
                 eprintln!("AUDIO_WORLD speech ({channel}) owner={speaker} value={value} event={} line={} -> {outcome:?}", line.event, names.join("+"));
+                if let Some(k) = external_stop && let Some(c) = speech.cast.as_mut() {
+                    let mut control = Voices { mixer: &mut rt.mixer, bank: MAIN_CAST_BANK,
+                        data: &c.data, loaded: &mut c.loaded, missing: &mut missing,
+                        echo_delay: &mut speech.echo_delay };
+                    c.player.stop_stream(k, &mut control);
+                }
                 if !matches!(outcome, Outcome::Dropped) {
                     speech.who.insert(speaker, who);
                 }
@@ -863,6 +875,7 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
     let world = library.world_tuning();
     let m_ref: &skate_audio::mixmap::MixMap = m;
     let challenge_flag = announcer_context.challenge_flag;
+    let focus = if speech.focus_speech { speech.announcer_character } else { None };
     let mut params = |speaker: u64, far: bool, event: u16| -> Option<VoiceParams> {
         // The announcer: the Global Announcer object's outputs, no position, no echo.
         if let Some(Who::Announcer(voice)) = who.get(&speaker) {
@@ -875,12 +888,12 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
             Who::Ped(sel) => {
                 let g = peds.iter().find(|(o, _)| *o == speaker)?.1;
                 let out = OutputsSnapshot::take(m_ref, keys::ped_speech(g), &speech_player::PED_SNAPSHOT_FILTERS);
-                speech_player::ped_outputs(&out, sel, event, far, &voice_tuning, scale)
+                speech_player::ped_outputs_focused(&out, sel, event, far, focus.is_some_and(|id| voices_of.get(&speaker) == Some(&id)), &voice_tuning, scale)
             }
             Who::Skater(voice) => {
                 let g = skater_slots.instance(speaker)? as u32 + 1;
                 let out = OutputsSnapshot::take(m_ref, keys::player_speech(g), &speech_player::SKATER_SNAPSHOT_FILTERS);
-                speech_player::skater_outputs(&out, voice, far, &voice_tuning, scale)
+                speech_player::skater_outputs_focused(&out, voice, far, focus == Some(voice), &voice_tuning, scale)
             }
             Who::Announcer(_) => return None,
         };
@@ -909,7 +922,7 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
     channels.push((data, &mut speech.player, &mut speech.loaded, SPEECH_BANK));
     for (d, player, loaded, bank) in channels {
         let mut v = Voices { mixer: &mut rt.mixer, bank, data: d, loaded, missing: &mut missing, echo_delay: &mut speech.echo_delay };
-        let events = player.frame(&d.index, &mut params, &mut v);
+        let events = player.frame_at(&d.index, &mut params, &mut v, m_ref.ticks as u32);
         for e in &events {
             match *e {
                 Event::Started { speaker, line, .. } => {

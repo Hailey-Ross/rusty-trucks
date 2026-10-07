@@ -565,6 +565,7 @@ struct PlayerTuningJson {
     landing_materials: Vec<u32>,
     wheel_bucket_high: Option<f32>,
     wheel_bucket_low: Option<f32>,
+    jump_thresholds: Option<[f32; 2]>,
     /// Name hash (16 hex digits) → audio trick id.
     #[serde(default)]
     audio_tricks: BTreeMap<String, i32>,
@@ -741,6 +742,7 @@ impl PlayerTuningJson {
             landing_materials: self.landing_materials.clone(),
             wheel_bucket_high: self.wheel_bucket_high.unwrap_or(d.wheel_bucket_high),
             wheel_bucket_low: self.wheel_bucket_low.unwrap_or(d.wheel_bucket_low),
+            jump_thresholds: self.jump_thresholds.unwrap_or(d.jump_thresholds),
             audio_tricks: self.audio_tricks.iter().filter_map(|(k, v)| Some((u64::from_str_radix(k, 16).ok()?, *v))).collect(),
             audio_tricks_2: self.audio_tricks_2.iter().filter_map(|(k, v)| Some((u64::from_str_radix(k, 16).ok()?, *v))).collect(),
             // The rolling layers', the Tricks component's and Class_Treatment's vault words: the

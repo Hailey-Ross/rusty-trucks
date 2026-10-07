@@ -1,0 +1,62 @@
+
+#include <rex/ppc/context.h>
+#include <rex/ppc/intrinsics.h>
+#include <windows.h>
+#include <cstdio>
+#include <fstream>
+#include <vector>
+#define DEFINE_REX_FUNC(name) void name(PPCContext& ctx, uint8_t* base)
+const char*current_function="boot";
+#define REX_FUNC_PROLOGUE() current_function=__func__
+#define REX_RAW_ADDR(x) (base + uint32_t(x))
+#define REX_LOAD_U32(x) __builtin_bswap32(*(uint32_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U32(x,y) (*(uint32_t*)REX_RAW_ADDR(x)=__builtin_bswap32(y))
+
+#define REX_LOAD_U8(x) (*(uint8_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U16(x) __builtin_bswap16(*(uint16_t*)REX_RAW_ADDR(x))
+#define REX_LOAD_U64(x) __builtin_bswap64(*(uint64_t*)REX_RAW_ADDR(x))
+#define REX_STORE_U8(x,y) (*(uint8_t*)REX_RAW_ADDR(x)=y)
+#define REX_STORE_U16(x,y) (*(uint16_t*)REX_RAW_ADDR(x)=__builtin_bswap16(y))
+#define REX_STORE_U64(x,y) (*(uint64_t*)REX_RAW_ADDR(x)=__builtin_bswap64(y))
+
+#include <cstdlib>
+void indirect(uint32_t,PPCContext&,uint8_t*);
+#define REX_CALL_INDIRECT_FUNC(a) indirect(a,ctx,base)
+DEFINE_REX_FUNC(__savegprlr_28){
+REX_STORE_U64(ctx.r1.u32-40,ctx.r28.u64);
+REX_STORE_U64(ctx.r1.u32+(-32),ctx.r29.u64);
+REX_STORE_U64(ctx.r1.u32+(-24),ctx.r30.u64);
+REX_STORE_U64(ctx.r1.u32+(-16),ctx.r31.u64);
+REX_STORE_U64(ctx.r1.u32-8,ctx.r12.u64);
+}
+DEFINE_REX_FUNC(__restgprlr_28){
+ctx.r28.u64=REX_LOAD_U64(ctx.r1.u32-40);
+ctx.r29.u64=REX_LOAD_U64(ctx.r1.u32+(-32));
+ctx.r30.u64=REX_LOAD_U64(ctx.r1.u32+(-24));
+ctx.r31.u64=REX_LOAD_U64(ctx.r1.u32+(-16));
+ctx.lr=REX_LOAD_U64(ctx.r1.u32-8);
+}
+
+DEFINE_REX_FUNC(sub_82B72420){
+ if(ctx.r4.u64!=0x468752b0bee65cdbull || ctx.r5.u32>1)abort();
+ ctx.r3.u32=0x29000+ctx.r5.u32*4;
+}
+// @RETAIL_FUNCTION_82772D30@
+LONG CALLBACK fault(EXCEPTION_POINTERS*p){fprintf(stderr,"jump fault %s code %08lx\n",current_function,p->ExceptionRecord->ExceptionCode);ExitProcess(8);return EXCEPTION_EXECUTE_HANDLER;}
+int main(int argc,char**argv){
+ SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);AddVectoredExceptionHandler(1,fault);
+ if(argc!=3)return 2;auto base=(uint8_t*)VirtualAlloc(nullptr,0x100000000ull,MEM_RESERVE,PAGE_READWRITE);
+ if(!base||!VirtualAlloc(base+0x82000000,0x11b0000,MEM_COMMIT,PAGE_READWRITE)||!VirtualAlloc(base+0x10000,0x40000,MEM_COMMIT,PAGE_READWRITE))return 3;
+ std::ifstream image(argv[1],std::ios::binary);image.read((char*)base+0x82000000,0x11b0000);if(!image)return 4;
+ // Supply the owned vault's exact two Float array words. The lookup asserts key and index.
+ REX_STORE_U32(0x830d0000-604,0x21000);REX_STORE_U32(0x21000+136,0x22000);REX_STORE_U32(0x22000,1);
+ REX_STORE_U32(0x20004,0x23000);REX_STORE_U32(0x23020,0x24000);REX_STORE_U32(0x23028,0x25000);
+ REX_STORE_U32(0x29000,0x3ee66666);REX_STORE_U32(0x29004,0x3f400000);
+ FILE*out=fopen(argv[2],"w");if(!out)return 5;fprintf(out,"# TU3 jump 82772D30; strength_bits bucket; vault 3ee66666 3f400000\n");
+ for(uint32_t i=0;i<4096;i++){
+  uint32_t bits=i<2048?std::bit_cast<uint32_t>((float(i)-512.f)/1024.f):i<3072?0x3ee66466+i-2048:0x3f3ffe00+i-3072;
+  REX_STORE_U32(0x24000+300,bits);PPCContext ctx{};ctx.fpscr.loadFromHost();ctx.r1.u32=0x40000;ctx.r3.u32=0x20000;sub_82772D30(ctx,base);
+  fprintf(out,"%08x %u\n",bits,REX_LOAD_U32(0x25000+48));
+ }
+ fclose(out);return 0;
+}

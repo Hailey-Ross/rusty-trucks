@@ -17,7 +17,7 @@ use crate::dsp::delay::Delay;
 use crate::{BLOCK, MIX_RATE};
 
 /// Echo slots: retail builds one per stream slot (3 speech channels × 2 streams).
-pub const SLOTS: usize = 6;
+pub const SLOTS: usize = 8;
 /// Del0's line length (s): the delay is posted at most 0.15 s (`0x820964B4`).
 pub const MAX_DELAY: f32 = 0.15;
 
@@ -124,7 +124,8 @@ mod tests {
         // The impulse comes out 480 samples (10 ms) later.
         let at = out.iter().position(|v| v.abs() > 0.5).unwrap();
         assert_eq!(at, 480);
-        assert!(e.slot(7).is_none());
+        assert!(e.slot(7).is_some());
+        assert!(e.slot(8).is_none());
         // A capped delay.
         e.slot(0).unwrap().set(&EchoParams { delay: Some(1.0), ..Default::default() });
         assert_eq!(e.slots[0].delay.delay, MAX_DELAY);

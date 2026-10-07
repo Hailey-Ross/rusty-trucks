@@ -19,6 +19,7 @@ mod session;
 mod volumes;
 mod world_audio;
 pub(crate) mod world_tuning;
+mod triggers;
 mod capture;
 pub(crate) mod player_physics;
 
@@ -166,6 +167,7 @@ impl Plugin for ModdingPlugin {
         world_audio::install(app);
         graphics_dynamic::install(app);
         capture::install(app);
+        triggers::install(app);
         app.add_systems(
             PreUpdate,
             maintenance.after(crate::map_transition::MapTransitionSet),
@@ -182,6 +184,7 @@ impl Plugin for ModdingPlugin {
             FixedUpdate,
             fixed
                 .after(crate::app::SimulationSet::Physics)
+                .after(crate::trigger_volumes::TriggerSet)
                 .run_if(crate::graphics_menu::gameplay_active),
         )
         .add_systems(
@@ -482,6 +485,7 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         .actions()
         .values();
     let pad = world.resource::<crate::input::ControllerInput>().raw_input();
+    let controllers = controllers_snapshot(world.resource::<crate::input::ControllerInput>());
     let net = network_snapshot(world, mods);
     let local_id = net
         .get("local_id")
@@ -534,6 +538,7 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         "detach_error": mods.detach_error,
         "detach_pending": mods.detach_pending.is_some(),
         "map": {"name": map.name, "generation": map.generation},
+        "triggers": triggers::snapshot(world),
         "tick": physics.ticks,
         "keys": keys,
         "actions": actions,
@@ -543,9 +548,13 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
             "left": pad.left,
             "right": pad.right,
         },
+        "controllers": controllers,
         "paused": world.resource::<crate::graphics_menu::Menu>().open,
         "replay": world.resource::<crate::replay::Replay>().active,
+        // Read-only frame-time statistics (`frame_timing`); null before the plugin runs.
+        "frame": world.get_resource::<crate::frame_timing::FrameTiming>().map(|t| t.snapshot()),
         "camera": camera.map(|position| json!({"position": position})),
+        "camera_angle": camera_angle_snapshot(world),
         "physics": {"bodies": {}, "contacts": []},
         "network": net,
     })
@@ -568,6 +577,8 @@ fn fixed(world: &mut World) {
         if let Err(e) = ensure_ground(world, &mut mods) {
             warn!("dynamics ground: {e}");
         }
+        // Enter/exit events of this tick's trigger update, before on_fixed_update.
+        triggers::dispatch(world, &mut mods);
         let ids: Vec<_> = mods
             .manager
             .packages
@@ -694,6 +705,7 @@ fn fixed(world: &mut World) {
             mods.world.step(dt as f32);
             mods.last_contacts = mods.world.drain_contacts();
         }
+        triggers::sync_tracked(world, &mods);
         sync_graphics(world, &mut mods);
         sync_attach(world, &mut mods);
         // Record native post-step poses for render interpolation, including hood view.
@@ -726,6 +738,18 @@ fn update(world: &mut World) {
             .is_some_and(|c| c.open);
         canvas::present(world, &mods.canvases, hidden);
     });
+}
+
+/// Camera Angle holds and shot tunings of one mod (`Some`) or of every mod (`None`).
+fn clear_camera_angle(world: &mut World, owner: Option<&str>) {
+    if let Some(mut settings) = world.get_resource_mut::<crate::camera::CameraAngleSettings>() {
+        settings.clear_owner(owner);
+    }
+}
+
+fn camera_angle_snapshot(world: &World) -> Value {
+    let shot = world.get_resource::<crate::camera::CameraRuntime>().map_or("", |c| c.selected_shot());
+    world.get_resource::<crate::camera::CameraAngleSettings>().map_or(Value::Null, |s| s.snapshot(shot))
 }
 
 fn clear_runtime(world: &mut World, mods: &mut Mods) {
@@ -769,7 +793,9 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     mods.skater_remote.clear();
     mods.pending_remote_teleport = None;
     volumes::clear(world, mods);
+    triggers::clear(world);
     capture::clear(world);
+    clear_camera_angle(world, None);
     world.resource_mut::<crate::physics::GamePhysics>().set_external_queries(None);
     mods.world = DynamicsWorld::default();
     mods.ground_ready = false;
@@ -805,7 +831,9 @@ fn apply(world: &mut World, mods: &mut Mods) {
         world_tuning::clear_owner(world, id);
         graphics_dynamic::clear_owner(world, id);
         volumes::clear_owner(world, mods, id);
+        triggers::clear_owner(world, id);
         capture::clear_owner(world, id);
+        clear_camera_angle(world, Some(id));
         player_physics::clear(world,Some(id));
         mods.custom_menus.retain(|(owner,_),_|owner!=id);
         canvas::clear_owner(world, &mut mods.canvases, Some(id));
@@ -880,7 +908,9 @@ fn apply(world: &mut World, mods: &mut Mods) {
             world_tuning::clear_owner(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
+            triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
+            clear_camera_angle(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
             continue;
@@ -908,7 +938,9 @@ fn apply(world: &mut World, mods: &mut Mods) {
             world_tuning::clear_owner(world, &id);
             graphics_dynamic::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
+            triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
+            clear_camera_angle(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
         }
@@ -1279,6 +1311,15 @@ fn apply_one(
             if suspended { mods.suspended_by.insert(id.to_owned()); }
             else { mods.suspended_by.remove(id); }
         }
+        Command::CameraAngle { angle } => {
+            world.resource_mut::<crate::camera::CameraAngleSettings>().force(id, angle.map(Into::into))?;
+        }
+        Command::CameraShotTune { shot, patch } => {
+            if !world.resource::<crate::camera::CameraRuntime>().has_shot(&shot) {
+                return Err(format!("unknown camera shot {shot}"));
+            }
+            world.resource_mut::<crate::camera::CameraAngleSettings>().tune(id, &shot, patch)?;
+        }
         Command::CameraWatch { peer } => {
             let empty = peer.as_deref().is_none_or(|p| p.is_empty());
             if empty {
@@ -1333,6 +1374,12 @@ fn apply_one(
         Command::SessionTeleport { peer, options } => session::teleport(world, mods, &peer, options)?,
         Command::VolumeBox { key, options } => volumes::set(world, mods, id, key, options)?,
         Command::VolumeRemove { key } => volumes::remove(world, mods, id, &key),
+        Command::TriggerBox { key, options } => triggers::set_box(world, id, key, options)?,
+        Command::TriggerRemove { key } => triggers::remove_box(world, id, &key),
+        Command::TriggerEnable { id: volume, enabled } => triggers::enable(world, id, &volume, enabled)?,
+        Command::TriggerTrack { key, options } => triggers::track(world, mods, id, key, options)?,
+        Command::TriggerUntrack { key } => triggers::untrack(world, id, &key),
+        Command::TriggerConfigure { options } => triggers::configure(world, id, options)?,
         Command::CameraCapture { key, options } => { capture::set(world, id, key, options)?; }
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
@@ -1773,6 +1820,23 @@ impl Mods {
         [sync, format!("MOD PACKAGES\n{}", if packages.is_empty() { "No packages installed" } else { &packages }),
             format!("MOD DIAGNOSTICS\n{}", if reports.is_empty() { "No mod multiplayer diagnostics reported" } else { &reports })]
     }
+}
+
+/// Read-only controller identity for `sdk.input.controller(s)`.
+pub(crate) fn controllers_snapshot(input: &crate::input::ControllerInput) -> Value {
+    json!({
+        "active": input.active_slot(),
+        "slots": input.kinds.iter()
+            .map(|kind| kind.as_deref().map_or(Value::Null, |kind| {
+                let mut value = serde_json::to_value(kind).unwrap_or(Value::Null);
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("summary".into(), json!(kind.summary()));
+                    object.insert("face_labels".into(), json!(kind.prompt_style.face_labels()));
+                }
+                value
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 pub(crate) fn override_actions(mods: Option<&Mods>, values: &mut [f32;18]) {

@@ -217,6 +217,7 @@ impl Plugin for GameAudioPlugin {
             .init_resource::<mod_voices::ModVoices>()
             .init_resource::<tuning::AudioTuning>()
             .init_resource::<mod_rules::AudioRules>()
+            .init_resource::<ambience::State>()
             .init_resource::<seed::AudioSeed>()
             .init_resource::<mixmap_inputs::MixMapInputs>()
             .init_resource::<mod_world::OwnWorldOwners>()
@@ -229,13 +230,13 @@ impl Plugin for GameAudioPlugin {
                 // The pass: inputs and the local player's process, the world / NPC owners' process,
                 // the ticks and the local update, then the beds (retail's process / tick / update).
                 // The front-end sounds (session marker) after the ticks, once per pass.
-                (content::frame, map_audio::update, mod_audio::events_frame, mod_rules::frame, mod_audio::drain, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, frontend::frame, mod_world::frame, mod_audio::readback, mod_voices::frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
+                (content::frame, map_audio::update, mod_audio::events_frame, mod_rules::frame, mod_audio::drain, ambience::update, native::mixmap_frame, world_sources::frame, npc_skaters::frame_pre, native::mixmap_tick, ambience::mixmap_output, frontend::frame, mod_world::frame, mod_audio::readback, mod_voices::frame, grain_bed::update, emitters::reverb_zones, native::reverb_frame)
                     .chain()
                     .before(CueSet)
                     .after(crate::app::FrameSet::Animation)
                     .after(crate::ui_audio::UiAudioSet),
             )
-            .add_systems(Update, (ambience::update, emitters::update, random_sets::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
+            .add_systems(Update, (emitters::update, random_sets::update).in_set(CueSet).after(crate::app::FrameSet::Animation))
             .add_systems(Update, voices::sync.after(CueSet))
             .add_systems(Update, timing::report)
             .add_plugins(native::register)

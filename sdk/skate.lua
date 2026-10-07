@@ -112,6 +112,23 @@
 ---@field triggers number[] LT, RT in 0..1
 ---@field left number[] stick XY
 ---@field right number[] stick XY
+---Identity of one controller slot (read-only; capability `controllers` = 1).
+---@class ControllerKind
+---@field family 'xbox360'|'xbox_one'|'xbox_elite'|'xinput_gamepad'|'playstation3'|'playstation4'|'playstation5'|'switch_pro'|'joycon_left'|'joycon_right'|'joycon_pair'|'standard'|'wheel'|'arcade_stick'|'flight_stick'|'dance_pad'|'guitar'|'drum_kit'|'arcade_pad'|'unknown'
+---@field name string device name (SDL) or model name
+---@field vendor_id? integer USB vendor id (e.g. 0x045e Microsoft)
+---@field product_id? integer USB product id (e.g. 0x0b22 Elite Series 2 over Bluetooth LE)
+---@field backend 'sdl'|'xinput'
+---@field driver string SDL device path ("XInput#0" = SDL's XInput driver) or "XInput"
+---@field xinput_subtype? integer XINPUT_DEVSUBTYPE_* (XInput backend only)
+---@field wireless? boolean XInput backend only
+---@field paddles integer back paddles the driver reports (usable in settings/controller.json)
+---@field hardware_paddles integer back paddles the model has (0 = none / unknown)
+---@field touchpad boolean
+---@field misc_button boolean Share / Capture / Mute button reported
+---@field prompt_style 'xbox'|'playstation'|'nintendo' printed face-button names (layout stays positional)
+---@field face_labels string[] printed names of the South, East, West, North buttons
+---@field summary string one-line description (as in the log and the Esc menu)
 ---@class NetworkInfo
 ---@field active boolean
 ---@field local_id string
@@ -120,6 +137,22 @@
 ---@field players string[]
 ---@field states table<string, table<string, table<string, any>>> mod_id → peer_id → key → value
 ---@field status string
+---@class FrameSnapshot read-only frame-time statistics of the presented frames (engine `frame_timing`)
+---@field frame integer presented frames since start
+---@field ms number last frame time (real time between frame starts)
+---@field fixed_steps integer physics (fixed 60 Hz) steps run in the last frame; >1 = catching up after a slow frame
+---@field main_ms number CPU time of the engine's main-thread schedules in the last frame (much less than `ms` = waiting on rendering/GPU)
+---@field fixed_ms number CPU time of the physics steps in the last frame
+---@field hitch boolean last frame took more than 2x the median of the previous 120 frames
+---@field window_s number seconds covered by the statistics below (5)
+---@field frames integer frames in that window
+---@field fps number mean frames per second over the window
+---@field mean_ms number
+---@field median_ms number
+---@field low_1_ms number 1 % low: the slowest 1 % of frames take at least this long (99th percentile)
+---@field low_01_ms number 0.1 % low (99.9th percentile)
+---@field worst_ms number longest frame in the window
+---@field hitches integer hitch frames in the window
 ---@class SDKSnapshot
 ---@field player PlayerSnapshot
 ---@field skaters table<string, PlayerSnapshot>
@@ -128,9 +161,12 @@
 ---@field keys table<string,boolean>
 ---@field actions number[]
 ---@field pad PadSnapshot
+---@field controllers {active?:integer, slots:(ControllerKind|nil)[]} slot 0..3 at index 1..4
 ---@field paused boolean
 ---@field replay boolean
+---@field frame FrameSnapshot frame-time statistics, read-only; refreshed 4x per second (ms/fixed_steps/hitch every frame)
 ---@field camera? {position:Vec3}
+---@field camera_angle? CameraAngleState
 ---@field attach? {body:string, owner:string}
 ---@field physics {bodies:table<string,BodySnapshot>, contacts:ContactEvent[], touching:TouchingPair[]}
 ---@field network? NetworkInfo
@@ -313,10 +349,40 @@ function sdk.camera.clear_follow() end
 function sdk.camera.set(position, look_at) end
 ---@param peer string|number|nil peer whose actual camera transform/FOV to mirror; nil restores native camera
 function sdk.camera.watch(peer) end
+---@class CameraAngleState
+---@field selected '"low"'|'"high"' the player's Camera Angle setting
+---@field active '"low"'|'"high"' the angle the stock camera graph uses now (a mod may force it)
+---@field owner string|nil mod forcing the angle
+---@field shot string current stock camera shot (e.g. "bl_chase" low, "bl_high_chase" high)
+---@field tuned table<string,string> tuned shot -> owning mod
+---@return CameraAngleState
+function sdk.camera.angle() end
+---Force the retail Camera Angle; nil hands it back to the player's setting (capability camera >= 4).
+---@param angle '"low"'|'"high"'|nil
+function sdk.camera.set_angle(angle) end
+---@class CameraShotTuning retail camera_shots attributes, in their units (metres, degrees, seconds)
+---@field PositionDistance? number
+---@field PositionElevation? number
+---@field PositionHeading? number
+---@field FramingLensLength? number
+---@field FramingRoll? number
+---@field FramingYaw? number
+---@field FramingPitch? number
+---@field ReferenceBoardOffset? number
+---@field SmoothingDirection? number
+---@field SmoothingElevation? number
+---@field SmoothingYaw? number
+---@field SmoothingPitch? number
+---@field TransitionTime? number
+---Replace stock values of one camera shot; nil restores it. Unknown shots fail the command.
+---@param shot string stock shot name, lower case
+---@param patch CameraShotTuning|nil
+function sdk.camera.tune_shot(shot, patch) end
 ---@param key string
 ---@return boolean
 function sdk.input.down(key) end
----@param id integer
+---Current value of a mapped gameplay action (ID 64..81 or a key of `sdk.input.action_ids`).
+---@param id integer|string
 ---@return number
 function sdk.input.action(id) end
 ---@return PadSnapshot
@@ -369,6 +435,51 @@ function sdk.volumes.remove(key) end
 ---@param key string
 ---@return {position:Vec3,size:Vec3,rotation:Quat,inside:string[]}|nil point overlaps, not physical collisions
 function sdk.volumes.read(key) end
+
+---@class TriggerVolume
+---@field id string retail instance id (16 hex digits), custom-map id or "mod:<mod>:<key>"
+---@field name string short name, e.g. "tut_sksc_reset_vol01"
+---@field full_name string|nil retail editor path
+---@field group "challenge"|"stairs"|"camera"
+---@field source "map"|"mod"
+---@field owner string|nil mod id for mod volumes
+---@field instance_id string|nil
+---@field link_guid string|nil
+---@field center Vec3
+---@field axes Vec3[] box axes in world space
+---@field rotation Quat
+---@field half_extents Vec3
+---@field fatness number
+---@field aabb_min Vec3
+---@field aabb_max Vec3
+---@field enabled boolean false while a mod switched it off
+---@field inside string[] tracked bodies inside ("player", "mod:<mod>:<key>")
+
+sdk.triggers = {}
+---@return TriggerVolume[]
+function sdk.triggers.list() end
+---@param id string id or short name
+---@return TriggerVolume|nil
+function sdk.triggers.get(id) end
+---@param body? string default "player"
+---@return string[] volume ids
+function sdk.triggers.inside(body) end
+---Events: on_event {name="trigger_entered"|"trigger_exited", body, volume, volume_name, group, instance_id, link_guid}.
+---@param key string mod-owned id; at most 64 per mod
+---@param options {center:Vec3, half_extents:Vec3, rotation?:Quat, name?:string, group?:"challenge"|"stairs"|"camera"}
+function sdk.triggers.box(key, options) end
+---@param key string
+function sdk.triggers.remove(key) end
+---@param id string map volume id; the switch ends when this mod stops
+---@param enabled boolean
+function sdk.triggers.set_enabled(id, enabled) end
+---@param key string one of this mod's physics bodies; at most 16
+---@param options? {radius?:number, length?:number}
+function sdk.triggers.track(key, options) end
+---@param key string
+function sdk.triggers.untrack(key) end
+---@param options? {radius?:number, length_scale?:number, length_pad?:number, foot_pad?:number} nil restores retail (0.34, 0.5, 0.05, 0.02)
+function sdk.triggers.configure(options) end
 
 ---@param key string mod-owned id; at most 2 per mod, 4 total
 ---@param options {position:Vec3,look_at:Vec3,fov?:number,width?:integer,height?:integer} fov radians [0.2,2.5]; sizes [64,512], multiples of 16
@@ -550,9 +661,41 @@ function sdk.rig.reset_part(index) end
 ---Restores all joint AND part overrides owned by this mod.
 function sdk.rig.reset() end
 
----@param id integer mapped gameplay action 64..81
----@param value? number [-1,1]; nil restores normal input
+---Overrides one mapped gameplay action (retail input.cfg GP_* actions; table in GENERAL_API.md):
+---64 left_stick_x  GP_LStickX  steer, kick-turn, body spin, powerslide, grind balance
+---65 left_stick_y  GP_LStickY  steering angle, automatic push, off-board walking
+---66 left_stick_click  GP_LStickIn  bail (with 69 and both triggers full)
+---67 right_stick_x  GP_RStickX  flick-it tricks, tweaks, grinds, off-board look
+---68 right_stick_y  GP_RStickY  flick-it tricks, manuals, tweaks, off-board look
+---69 right_stick_click  GP_RStickIn  bail (with 66), off-board air body tweak
+---70 left_trigger  GP_LTrigger  left-hand grab, crouch; full press off board drops the board
+---71 right_trigger  GP_RTrigger  right-hand grab, crouch; full press off board throws the board
+---72 left_bumper  GP_LBumper  wins over RB; held, blocks D-pad gestures and the board toggle
+---73 right_bumper  GP_RBumper  grab the world (ledges, handplants), dark catch
+---74..77 dpad_up / dpad_down / dpad_left / dpad_right  gameplay gestures
+---78 x  GP_XFace  push (left foot), off-board jump, recover after a bail
+---79 y  GP_YFace  get off / back on the board
+---80 a  GP_AFace  push (right foot), off-board sprint, recover after a bail
+---81 b  GP_BFace  brake, dismount / no-foot air, dark catch
+---@param id integer|string action ID 64..81 or a key of `sdk.input.action_ids`
+---@param value? number [-1,1] (buttons: 1 pressed; triggers 0..1, full = 1); nil restores normal input
 function sdk.input.override_action(id, value) end
+---Mapped gameplay action IDs by key (capability `action_ids` = 1).
+---@type table<string, integer>
+sdk.input.action_ids = {
+    left_stick_x = 64, left_stick_y = 65, left_stick_click = 66,
+    right_stick_x = 67, right_stick_y = 68, right_stick_click = 69,
+    left_trigger = 70, right_trigger = 71, left_bumper = 72, right_bumper = 73,
+    dpad_up = 74, dpad_down = 75, dpad_left = 76, dpad_right = 77,
+    x = 78, y = 79, a = 80, b = 81,
+}
+---Identity of the controller in a slot (capability `controllers` = 1). Read-only.
+---@param slot? integer 0..3; default = the slot gameplay reads
+---@return ControllerKind|nil nil when the slot is empty
+function sdk.input.controller(slot) end
+---All four slots and the slot gameplay reads.
+---@return {active?:integer, slots:(ControllerKind|nil)[]}
+function sdk.input.controllers() end
 sdk.graphs = {}
 ---@param graph 'action'|'motion'
 ---@return {current?:integer,previous?:integer,name?:string,dt:number,state_times:table,active_behaviors:integer[]}|nil

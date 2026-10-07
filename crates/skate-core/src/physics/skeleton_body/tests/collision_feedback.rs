@@ -41,6 +41,7 @@ fn settings() -> SkeletonFeedbackSettings {
             priority: [0.0; 24],
             effect_time: 0.25,
         },
+        response: CollisionResponseSettings { force_scale:0.5, velocity_scale:9.0, divisor:1000.0, region_scale:10.0 },
         small_object_mass: 5.5,
         ground_plane_max_distance: 0.3,
         ground_plane_max_angle: 0.8,

@@ -3,8 +3,9 @@
 //! axes/trigger bytes reach the TU3 converter without Bevy/gilrs deadzones or
 //! normalized-axis reconstruction. `SKATE3_INPUT=xinput` selects the original
 //! Windows XInput transport, which is also the fallback if SDL cannot start.
+use super::controller_kind::{ControllerKind, XinputCaps};
 use skate_core::input::xbox::XboxState;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// XInput `wButtons` bits, the layout `xbox::convert` consumes.
@@ -49,6 +50,8 @@ pub(crate) struct DevicePacket {
     pub number: u32,
     pub state: XboxState,
     pub subtype: u8,
+    /// Who is in the slot. Metadata only: gameplay reads `state`/`subtype`.
+    pub kind: Option<Arc<ControllerKind>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,30 +64,43 @@ pub(crate) enum DeviceError {
     Unavailable,
 }
 
+/// XInput capability identity of one slot: the subtype `xbox::convert` needs
+/// and the controller kind built from the same capability read.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct XinputIdentity {
+    pub subtype: u8,
+    pub kind: Arc<ControllerKind>,
+}
+
 /// Device identity is metadata; raw input is still sampled every host frame.
 /// Refresh periodically as well as after errors, so hot swaps cannot leave a
 /// subtype cached indefinitely even if Windows never exposes a disconnect.
-#[derive(Default)]
-pub(crate) struct CapabilityCache {
-    value: Option<(u8, std::time::Instant)>,
+pub(crate) struct CapabilityCache<T = XinputIdentity> {
+    value: Option<(T, std::time::Instant)>,
 }
-impl CapabilityCache {
+impl<T> Default for CapabilityCache<T> {
+    fn default() -> Self {
+        Self { value: None }
+    }
+}
+impl<T: Clone> CapabilityCache<T> {
     pub(crate) fn invalidate(&mut self) {
         self.value = None;
     }
+    #[cfg_attr(not(windows), allow(dead_code))]
     fn get(
         &mut self,
         now: std::time::Instant,
-        read: impl FnOnce() -> Result<u8, DeviceError>,
-    ) -> Result<u8, DeviceError> {
-        if let Some((subtype, expires)) = self.value {
-            if now < expires {
-                return Ok(subtype);
+        read: impl FnOnce() -> Result<T, DeviceError>,
+    ) -> Result<T, DeviceError> {
+        if let Some((subtype, expires)) = &self.value {
+            if now < *expires {
+                return Ok(subtype.clone());
             }
         }
         self.value = None;
         let subtype = read()?;
-        self.value = Some((subtype, now + std::time::Duration::from_secs(1)));
+        self.value = Some((subtype.clone(), now + std::time::Duration::from_secs(1)));
         Ok(subtype)
     }
 }
@@ -92,6 +108,7 @@ impl CapabilityCache {
 #[cfg(windows)]
 mod windows {
     use super::*;
+    use crate::input::controller_kind;
     use std::mem::MaybeUninit;
 
     // ABI from the installed Windows SDK Xinput.h. No OS-owned pointers are
@@ -127,11 +144,72 @@ mod windows {
     const _: () = assert!(size_of::<Gamepad>() == 12);
     const _: () = assert!(size_of::<State>() == 16);
     const _: () = assert!(size_of::<Capabilities>() == 20);
+    /// XINPUT_CAPABILITIES_EX as SDL declares it (xinput1_4 ordinal 108).
+    #[repr(C)]
+    struct CapabilitiesEx {
+        capabilities: Capabilities,
+        vendor_id: u16,
+        product_id: u16,
+        product_version: u16,
+        unknown1: u16,
+        unknown2: u32,
+    }
+    const _: () = assert!(size_of::<CapabilitiesEx>() == 32);
+    type GetCapabilitiesEx = unsafe extern "system" fn(u32, u32, u32, *mut CapabilitiesEx) -> u32;
 
     #[link(name = "xinput")]
     unsafe extern "system" {
         fn XInputGetState(index: u32, state: *mut State) -> u32;
         fn XInputGetCapabilities(index: u32, flags: u32, capabilities: *mut Capabilities) -> u32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut std::ffi::c_void;
+        fn GetProcAddress(module: *mut std::ffi::c_void, name: *const u8) -> *mut std::ffi::c_void;
+    }
+
+    /// Undocumented XInputGetCapabilitiesEx (Windows 8+ xinput1_4, ordinal
+    /// 108), which SDL also uses for vendor/product. None when absent.
+    fn capabilities_ex() -> Option<GetCapabilitiesEx> {
+        static FUNCTION: OnceLock<Option<GetCapabilitiesEx>> = OnceLock::new();
+        *FUNCTION.get_or_init(|| {
+            let name: Vec<u16> = "xinput1_4.dll\0".encode_utf16().collect();
+            // SAFETY: NUL-terminated wide string; the module is never freed.
+            let module = unsafe { LoadLibraryW(name.as_ptr()) };
+            if module.is_null() {
+                return None;
+            }
+            // SAFETY: ordinal lookup (MAKEINTRESOURCE(108)) in a loaded module.
+            let function = unsafe { GetProcAddress(module, 108usize as *const u8) };
+            // SAFETY: the export at ordinal 108 has SDL's declared signature.
+            (!function.is_null()).then(|| unsafe {
+                std::mem::transmute::<*mut std::ffi::c_void, GetCapabilitiesEx>(function)
+            })
+        })
+    }
+
+    /// Vendor/product of slot `index`, if XInputGetCapabilitiesEx exists and
+    /// reports one. Never affects the subtype gameplay uses.
+    fn vendor_product(index: u32) -> Option<(u16, u16)> {
+        let function = capabilities_ex()?;
+        let mut capabilities = MaybeUninit::<CapabilitiesEx>::zeroed();
+        // SAFETY: SDL's call shape (1, index, 0, out); read only on success.
+        let result = unsafe { function(1, index, 0, capabilities.as_mut_ptr()) };
+        if result != 0 {
+            return None;
+        }
+        // SAFETY: zero-initialised storage the successful call filled.
+        let capabilities = unsafe { capabilities.assume_init() };
+        (capabilities.vendor_id != 0).then_some((capabilities.vendor_id, capabilities.product_id))
+    }
+
+    fn kind(capabilities: &Capabilities, index: u32, user: &[controller_kind::Model]) -> ControllerKind {
+        let caps = XinputCaps {
+            subtype: capabilities.subtype,
+            flags: capabilities.flags,
+            vendor_product: vendor_product(index),
+        };
+        controller_kind::from_xinput(caps, user)
     }
 
     pub(super) fn poll(
@@ -150,14 +228,16 @@ mod windows {
         if result != 0 {
             return Err(DeviceError::State(result));
         }
-        let subtype = cache.get(std::time::Instant::now(), || {
+        let identity = cache.get(std::time::Instant::now(), || {
             let mut capabilities = MaybeUninit::<Capabilities>::uninit();
             // SAFETY: writable storage with the SDK ABI; read only on success.
             let result = unsafe { XInputGetCapabilities(index, 1, capabilities.as_mut_ptr()) };
             if result != 0 {
                 return Err(DeviceError::Capabilities(result));
             }
-            Ok(unsafe { capabilities.assume_init() }.subtype)
+            let capabilities = unsafe { capabilities.assume_init() };
+            let kind = kind(&capabilities, index, controller_kind::user_models());
+            Ok(XinputIdentity { subtype: capabilities.subtype, kind: Arc::new(kind) })
         })?;
         // SAFETY: successful XInputGetState initialized the complete structure.
         let state = unsafe { state.assume_init() };
@@ -169,13 +249,52 @@ mod windows {
                 left: [state.gamepad.left_x, state.gamepad.left_y],
                 right: [state.gamepad.right_x, state.gamepad.right_y],
             },
-            subtype,
+            subtype: identity.subtype,
+            kind: Some(identity.kind),
         })
     }
+
+    /// Identity of a slot without touching gameplay state (hardware test).
+    #[cfg(test)]
+    pub(crate) fn identity(index: u32) -> Option<ControllerKind> {
+        let mut capabilities = MaybeUninit::<Capabilities>::uninit();
+        // SAFETY: as in `poll`.
+        if unsafe { XInputGetCapabilities(index, 1, capabilities.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let capabilities = unsafe { capabilities.assume_init() };
+        Some(kind(&capabilities, index, &[]))
+    }
+
+    /// The undocumented export exists on this Windows and agrees with the
+    /// documented call about which slots hold a device.
+    #[test]
+    fn capabilities_ex_resolves_and_agrees_with_documented_call() {
+        let function = capabilities_ex().expect("xinput1_4 ordinal 108");
+        for index in 0..4 {
+            let mut ex = MaybeUninit::<CapabilitiesEx>::zeroed();
+            let mut plain = MaybeUninit::<Capabilities>::zeroed();
+            // SAFETY: as in `vendor_product` / `poll`.
+            let ex_result = unsafe { function(1, index, 0, ex.as_mut_ptr()) };
+            let plain_result = unsafe { XInputGetCapabilities(index, 0, plain.as_mut_ptr()) };
+            assert_eq!(ex_result == 0, plain_result == 0, "slot {index}: {ex_result} vs {plain_result}");
+            if ex_result == 0 {
+                let (ex, plain) = unsafe { (ex.assume_init(), plain.assume_init()) };
+                assert_eq!((ex.capabilities.device_type, ex.capabilities.subtype), (plain.device_type, plain.subtype));
+            }
+        }
+    }
+}
+
+/// XInput identity of a slot, for the hardware test.
+#[cfg(all(windows, test))]
+pub(crate) fn xinput_identity(index: u32) -> Option<ControllerKind> {
+    windows::identity(index)
 }
 
 mod sdl {
     use super::*;
+    use crate::input::controller_kind;
     use bevy::log::{info, warn};
     use sdl3::event::Event;
     use sdl3::gamepad::{Axis, Button, Gamepad};
@@ -197,9 +316,11 @@ mod sdl {
     const PADDLE_BUTTONS: [Button; 4] =
         [Button::RightPaddle1, Button::LeftPaddle1, Button::RightPaddle2, Button::LeftPaddle2];
 
-    /// Latest (packet number, state) per slot, like XInputGetState's snapshot.
+    type Published = Option<(u32, XboxState, Arc<ControllerKind>)>;
+
+    /// Latest (packet number, state, identity) per slot, like XInputGetState's snapshot.
     pub(super) struct Shared {
-        slots: Mutex<[Option<(u32, XboxState)>; 4]>,
+        slots: Mutex<[Published; 4]>,
     }
 
     struct Slot {
@@ -207,12 +328,13 @@ mod sdl {
         id: u32,
         number: u32,
         state: XboxState,
+        kind: Arc<ControllerKind>,
     }
 
     /// SDL must be pumped on the thread that initialised it, while Bevy runs
     /// systems on a pool; a dedicated thread owns SDL and publishes snapshots.
     pub(super) fn start() -> Result<&'static Shared, String> {
-        let shared: &'static Shared = Box::leak(Box::new(Shared { slots: Mutex::new([None; 4]) }));
+        let shared: &'static Shared = Box::leak(Box::new(Shared { slots: Mutex::new(Default::default()) }));
         let (ready, started) = mpsc::channel();
         std::thread::Builder::new()
             .name("sdl-gamepad".into())
@@ -225,7 +347,13 @@ mod sdl {
     pub(super) fn poll(shared: &Shared, index: usize) -> Result<DevicePacket, DeviceError> {
         let slots = shared.slots.lock().unwrap_or_else(|e| e.into_inner());
         slots[index]
-            .map(|(number, state)| DevicePacket { number, state, subtype: SUBTYPE_GAMEPAD })
+            .as_ref()
+            .map(|(number, state, kind)| DevicePacket {
+                number: *number,
+                state: *state,
+                subtype: SUBTYPE_GAMEPAD,
+                kind: Some(kind.clone()),
+            })
             .ok_or(DeviceError::Disconnected)
     }
 
@@ -269,7 +397,7 @@ mod sdl {
                 }
             }
             let paddles = paddles();
-            let mut published = [None; 4];
+            let mut published: [Published; 4] = Default::default();
             for (slot, output) in slots.iter_mut().zip(&mut published) {
                 let Some(slot) = slot else { continue };
                 let state = read(&slot.pad, paddles);
@@ -278,7 +406,7 @@ mod sdl {
                     slot.number = slot.number.wrapping_add(1);
                     slot.state = state;
                 }
-                *output = Some((slot.number, state));
+                *output = Some((slot.number, state, slot.kind.clone()));
             }
             *shared.slots.lock().unwrap_or_else(|e| e.into_inner()) = published;
             std::thread::sleep(POLL_INTERVAL);
@@ -308,7 +436,20 @@ mod sdl {
             if pad.has_button(Button::RightPaddle1) { "available" } else { "not reported" },
             pad.path().unwrap_or_default(),
         );
-        slots[index] = Some(Slot { pad, id: id.raw(), number: 0, state: XboxState::default() });
+        let kind = Arc::new(controller_kind::from_sdl(
+            controller_kind::SdlReport {
+                name: pad.name().unwrap_or_default(),
+                gamepad_type: pad.r#type(),
+                vendor_id: pad.vendor_id(),
+                product_id: pad.product_id(),
+                path: pad.path().unwrap_or_default(),
+                paddles: PADDLE_BUTTONS.iter().filter(|&&b| pad.has_button(b)).count() as u8,
+                touchpad: pad.touchpads_count() > 0,
+                misc_button: pad.has_button(Button::Misc1),
+            },
+            controller_kind::user_models(),
+        ));
+        slots[index] = Some(Slot { pad, id: id.raw(), number: 0, state: XboxState::default(), kind });
     }
 
     fn read(pad: &Gamepad, paddles: [u16; 4]) -> XboxState {
@@ -425,7 +566,7 @@ mod cache_tests {
     #[test]
     fn capability_cache_refreshes_and_never_caches_errors() {
         let start = std::time::Instant::now();
-        let mut cache = CapabilityCache::default();
+        let mut cache = CapabilityCache::<u8>::default();
         assert_eq!(cache.get(start, || Ok(1)), Ok(1));
         assert_eq!(
             cache.get(start + std::time::Duration::from_millis(999), || panic!(

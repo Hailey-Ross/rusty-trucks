@@ -1,7 +1,8 @@
-//! Our voice-graph modules against the PoC's replay-verified kernels (oracle vectors written by the
+//! Legacy comparisons against the PoC's replay-verified kernels (oracle vectors written by the
 //! local PoC probe `dsp_vectors.rs` (local, not published) into a vectors file: `SKATE_DSP_VECTORS`,
 //! else `$SKATE_AUDIO_RE_DIR/golden/dsp/vectors.txt`; ignored, and fails loudly when absent). Prints the
-//! agreement numbers.
+//! agreement numbers. These vectors come from another port, not direct TU3 instruction
+//! execution. Independent native Gain vectors are checked in `retail_gain.rs`.
 use std::path::PathBuf;
 
 use skate_audio::dsp::biquad::{Coefficients, Kind, coefficients, kernel, omega};
@@ -187,7 +188,7 @@ fn fit_biquad_association() {
 
 #[test]
 #[ignore = "needs the private install data"]
-fn gain_ramp_is_bit_exact_with_the_retail_kernel() {
+fn gain_ramp_matches_legacy_probe_within_one_ulp() {
     let Some(text) = vectors() else {
         panic!("missing private data: no oracle vectors");
     };

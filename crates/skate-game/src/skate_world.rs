@@ -532,6 +532,14 @@ pub(crate) fn validate_runtime(map: &SkateMap) -> Result<(), String> {
         if extension.tag == *b"RWCM" {
             continue;
         }
+        if extension.tag == skate_data::trigger_volumes::EXTENSION_TAG {
+            // Named trigger volumes (data only, never collision); see trigger_volumes.rs.
+            if extension.schema != skate_data::trigger_volumes::EXTENSION_SCHEMA {
+                return Err(format!("SKATE extension TVOL schema {} is not supported", extension.schema));
+            }
+            skate_data::trigger_volumes::parse(&extension.payload)?;
+            continue;
+        }
         if extension.tag == *b"MOBJ" {
             skate_data::skate_map::validate_static_objects(map, extension)?;
             continue;
@@ -1264,6 +1272,7 @@ mod tests {
         // A wheel sphere resting on the translated instance reports a contact.
         let (query, retention) = crate::physics::ground::query_settings();
         let volumes = [skate_core::physics::board_world::BoardWorldVolume {
+            collision_group: 4,
             body: skate_core::physics::board_step::CollisionBody::Board(
                 skate_core::physics::board::BodyId::Deck,
             ),

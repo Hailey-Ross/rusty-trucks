@@ -32,6 +32,78 @@ impl TeleportOptions {
     }
 }
 
+/// `sdk.triggers.box`: a mod-owned trigger volume (an oriented box) that
+/// takes part in the engine's enter/exit events like a map volume.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerBoxOptions {
+    pub center: [f32; 3],
+    pub half_extents: [f32; 3],
+    #[serde(default)]
+    pub rotation: Option<[f32; 4]>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+impl TriggerBoxOptions {
+    pub fn validate(&self) -> bool {
+        self.center.iter().all(|v| v.is_finite() && v.abs() <= 100_000.)
+            && self.half_extents.iter().all(|v| v.is_finite() && *v >= 0.005 && *v <= 5_000.)
+            && self.rotation.as_ref().is_none_or(crate::scene::valid_quaternion)
+            && self.name.as_ref().is_none_or(|n| n.len() <= 128 && !n.chars().any(char::is_control))
+            && self.group.as_deref().is_none_or(|g| matches!(g, "challenge" | "stairs" | "camera"))
+    }
+}
+
+/// `sdk.triggers.track`: follow one of the mod's physics bodies. The body's
+/// position is the top point of its query cylinder (retail shape by default).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerTrackOptions {
+    #[serde(default)]
+    pub radius: Option<f32>,
+    /// Distance from the top point to the bottom (retail "length" span).
+    #[serde(default)]
+    pub length: Option<f32>,
+}
+
+impl TriggerTrackOptions {
+    pub fn validate(&self) -> bool {
+        self.radius.is_none_or(|r| r.is_finite() && (0. ..=50.).contains(&r))
+            && self.length.is_none_or(|l| l.is_finite() && (0. ..=100.).contains(&l))
+    }
+}
+
+/// `sdk.triggers.configure`: the query-cylinder constants (retail: radius
+/// 0.34, length scale 0.5, length pad 0.05, foot pad 0.02). Omitted fields keep
+/// the retail value; `nil` options restore all of them.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerShapeOptions {
+    #[serde(default)]
+    pub radius: Option<f32>,
+    #[serde(default)]
+    pub length_scale: Option<f32>,
+    #[serde(default)]
+    pub length_pad: Option<f32>,
+    #[serde(default)]
+    pub foot_pad: Option<f32>,
+}
+
+impl TriggerShapeOptions {
+    pub fn validate(&self) -> bool {
+        [self.radius, self.length_scale, self.length_pad, self.foot_pad]
+            .iter().flatten().all(|v| v.is_finite() && v.abs() <= 100.)
+            && self.radius.is_none_or(|r| r >= 0.)
+    }
+}
+
+fn valid_trigger_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control)
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VolumeOptions {
@@ -101,6 +173,11 @@ impl CaptureOptions {
             && self.width % 16 == 0
             && self.height % 16 == 0
     }
+}
+
+/// Stock camera shot names are lower-case collection keys (`bl_chase`, `high_grind`, …).
+fn valid_shot_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 fn valid_peer(s: &str) -> bool {
@@ -400,6 +477,17 @@ pub enum Command {
         #[serde(default)]
         peer: Option<String>,
     },
+    /// Forces the retail Camera Angle (`low` / `high`); nil hands it back to the player's setting.
+    CameraAngle {
+        #[serde(default)]
+        angle: Option<crate::presentation::CameraAngle>,
+    },
+    /// Replaces stock values of one camera shot; nil restores the stock shot.
+    CameraShotTune {
+        shot: String,
+        #[serde(default)]
+        patch: Option<crate::presentation::CameraShotTuning>,
+    },
     NetworkState {
         key: String,
         #[serde(default)]
@@ -434,6 +522,29 @@ pub enum Command {
     },
     VolumeRemove {
         key: String,
+    },
+    TriggerBox {
+        key: String,
+        options: TriggerBoxOptions,
+    },
+    TriggerRemove {
+        key: String,
+    },
+    TriggerEnable {
+        id: String,
+        enabled: bool,
+    },
+    TriggerTrack {
+        key: String,
+        #[serde(default)]
+        options: Option<TriggerTrackOptions>,
+    },
+    TriggerUntrack {
+        key: String,
+    },
+    TriggerConfigure {
+        #[serde(default)]
+        options: Option<TriggerShapeOptions>,
     },
     CameraCapture {
         key: String,
@@ -718,6 +829,9 @@ impl Command {
             Self::CameraWatch { peer } => peer
                 .as_ref()
                 .is_none_or(|p| p.is_empty() || valid_peer(p)),
+            Self::CameraAngle { .. } => true,
+            Self::CameraShotTune { shot, patch } => valid_shot_name(shot)
+                && patch.as_ref().is_none_or(|p| p.validate()),
             Self::NetworkState { key, value } => {
                 crate::schema::valid_id(key)
                     && serde_json::to_vec(value).is_ok_and(|v| v.len() <= 512)
@@ -734,6 +848,13 @@ impl Command {
             Self::SessionTeleport { peer, options } => valid_peer(peer) && options.validate(),
             Self::VolumeBox { key, options } => crate::schema::valid_id(key) && options.validate(),
             Self::VolumeRemove { key } => crate::schema::valid_id(key),
+            Self::TriggerBox { key, options } => crate::schema::valid_id(key) && options.validate(),
+            Self::TriggerRemove { key } | Self::TriggerUntrack { key } => crate::schema::valid_id(key),
+            Self::TriggerEnable { id, .. } => valid_trigger_id(id),
+            Self::TriggerTrack { key, options } => {
+                crate::schema::valid_id(key) && options.as_ref().is_none_or(TriggerTrackOptions::validate)
+            }
+            Self::TriggerConfigure { options } => options.as_ref().is_none_or(TriggerShapeOptions::validate),
             Self::CameraCapture { key, options } => {
                 crate::schema::valid_id(key) && options.validate()
             }
@@ -814,6 +935,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::CameraFollow { .. } => "camera_follow",
         Command::CameraSet { .. } => "camera_set",
         Command::CameraWatch { .. } => "camera_watch",
+        Command::CameraAngle { .. } => "camera_angle",
+        Command::CameraShotTune { .. } => "camera_shot_tune",
         Command::NetworkState { .. } => "network_state",
         Command::UiMenu { .. } => "ui_menu",
         Command::UiRemoveMenu { .. } => "ui_remove_menu",
@@ -827,6 +950,12 @@ fn command_kind(command: &Command) -> &'static str {
         Command::SessionTeleport { .. } => "session_teleport",
         Command::VolumeBox { .. } => "volume_box",
         Command::VolumeRemove { .. } => "volume_remove",
+        Command::TriggerBox { .. } => "trigger_box",
+        Command::TriggerRemove { .. } => "trigger_remove",
+        Command::TriggerEnable { .. } => "trigger_enable",
+        Command::TriggerTrack { .. } => "trigger_track",
+        Command::TriggerUntrack { .. } => "trigger_untrack",
+        Command::TriggerConfigure { .. } => "trigger_configure",
         Command::CameraCapture { .. } => "camera_capture",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
@@ -906,6 +1035,7 @@ fn default_snapshot() -> Value {
             "players": ["0"]
         },
         "volumes": {},
+        "triggers": {"volumes": [], "bodies": {}},
         "attach": Value::Null,
         "detach_error": Value::Null,
         "detach_pending": false,
@@ -915,9 +1045,15 @@ fn default_snapshot() -> Value {
         // 18 gameplay actions, IDs 64..=81.
         "actions": vec![0.0f32; 18],
         "pad": {"buttons": 0, "triggers": [0.0, 0.0], "left": [0.0, 0.0], "right": [0.0, 0.0]},
+        // Identity per controller slot 0..3 (null = empty) and the slot gameplay reads.
+        "controllers": {"active": Value::Null, "slots": []},
         "paused": false,
         "replay": false,
+        "frame": {"frame": 0, "ms": 0.0, "fixed_steps": 0, "main_ms": 0.0, "fixed_ms": 0.0, "hitch": false, "window_s": 5.0, "frames": 0,
+                  "fps": 0.0, "mean_ms": 0.0, "median_ms": 0.0, "low_1_ms": 0.0, "low_01_ms": 0.0,
+                  "worst_ms": 0.0, "hitches": 0},
         "camera": Value::Null,
+        "camera_angle": {"selected": "high", "active": "high", "owner": Value::Null, "shot": "", "tuned": {}},
         "physics": {"bodies": {}, "contacts": []},
         "network": {
             "active": false,
@@ -1069,12 +1205,16 @@ impl Vm {
             capabilities.set("command_results", 1)?;
             capabilities.set("native_bodies", 1)?;
             capabilities.set("input_override", 1)?;
+            // sdk.input.controller(s) (read-only identity) and sdk.input.action_ids.
+            capabilities.set("controllers", 1)?;
+            capabilities.set("action_ids", 1)?;
             capabilities.set("player_overlap", 1)?;
             capabilities.set("landed_details", 1)?;
-            capabilities.set("camera", 3)?;
+            capabilities.set("camera", 4)?;
             capabilities.set("player_control", 1)?;
             capabilities.set("session", 1)?;
             capabilities.set("volumes", 1)?;
+            capabilities.set("triggers", 1)?;
             capabilities.set("capture", 1)?;
             capabilities.set("multiplayer_debug", 1)?;
             // 2 (2026-10-04, audio/moddability-2): the `emitter` and `reverb_zone` kinds.
@@ -1398,6 +1538,50 @@ mod driving_extension_tests {
         assert!(matches!(&out[6],Command::MultiplayerDebug{text,..} if text.is_empty()));
         drop(vm);std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn camera_angle_api_crosses_the_lua_boundary() {
+        use std::time::{SystemTime,UNIX_EPOCH};
+        let root=std::env::temp_dir().join(format!("skate-camera-angle-api-{}-{}",
+            std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            return { on_load=function()
+                assert(sdk.capabilities.camera >= 4)
+                local a = sdk.camera.angle()
+                assert(a.selected == "high" and a.active == "high" and a.owner == nil)
+                sdk.camera.set_angle("low")
+                sdk.camera.set_angle(nil)
+                sdk.camera.tune_shot("chase_flat_slow", {PositionDistance=1.4, FramingPitch=-6})
+                sdk.camera.tune_shot("chase_flat_slow", nil)
+            end }
+        "#).unwrap();
+        let manifest:Manifest=serde_json::from_value(json!({
+            "id":"tests.camera_angle","api":2,"name":"Camera angle test", "version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}
+        })).unwrap();
+        let snap=json!({});
+        let mut vm=Vm::new(&root,&manifest,&BTreeMap::new(),&snap).unwrap();
+        let out=vm.call("on_load",json!({}),&snap).unwrap();
+        assert_eq!(out.len(),4);
+        assert!(matches!(&out[0],Command::CameraAngle{angle:Some(crate::presentation::CameraAngle::Low)}));
+        assert!(matches!(&out[1],Command::CameraAngle{angle:None}));
+        match &out[2] { Command::CameraShotTune{shot,patch:Some(p)} => {
+            assert_eq!(shot,"chase_flat_slow");
+            assert_eq!(p.position_distance,Some(1.4));
+            assert_eq!(p.framing_pitch,Some(-6.0));
+            assert_eq!(p.position_elevation,None);
+        }, other => panic!("wrong tune command {other:?}") }
+        assert!(matches!(&out[3],Command::CameraShotTune{patch:None,..}));
+        // Unknown angles / attribute names fail to deserialize; bad shot names fail validation.
+        assert!(serde_json::from_value::<Command>(json!({"kind":"camera_angle","angle":"sideways"})).is_err());
+        assert!(serde_json::from_value::<Command>(json!({"kind":"camera_shot_tune","shot":"bl_chase","patch":{"distance":2}})).is_err());
+        let bad:Command=serde_json::from_value(json!({"kind":"camera_shot_tune","shot":"Bad Name","patch":{"PositionDistance":2}})).unwrap();
+        assert!(!bad.validate());
+        let far:Command=serde_json::from_value(json!({"kind":"camera_shot_tune","shot":"bl_chase","patch":{"PositionDistance":900}})).unwrap();
+        assert!(!far.validate());
+        drop(vm);std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 
@@ -1482,6 +1666,51 @@ mod model_collision_extension_tests {
     /// the first frame is `Value::Null`. Every snapshot reader must still work:
     /// mods legitimately check attachment state during startup cleanup.
     #[test]
+    fn trigger_api_crosses_the_lua_serde_boundary() {
+        let root = std::env::temp_dir().join(format!("skate-mods-triggers-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            return { on_load=function()
+                assert(sdk.capabilities.triggers == 1, 'capability')
+                local reset = sdk.triggers.get('tut_sksc_reset_vol01')
+                assert(reset and reset.id == '2c7017060025128f', 'get by name')
+                assert(sdk.triggers.get('2c7017060025128f').group == 'challenge', 'get by id')
+                assert(#sdk.triggers.list() == 1, 'list')
+                assert(sdk.triggers.inside()[1] == '2c7017060025128f', 'player inside')
+                assert(#sdk.triggers.inside('mod:x:ball') == 0, 'other body')
+                sdk.triggers.box('goal', {center={1,2,3}, half_extents={1,1,1}, rotation={0,0,0,1}, name='goal', group='stairs'})
+                sdk.triggers.remove('goal')
+                sdk.triggers.set_enabled('2c7017060025128f', false)
+                sdk.triggers.track('ball')
+                sdk.triggers.track('ball', {radius=0.5, length=0.2})
+                sdk.triggers.untrack('ball')
+                sdk.triggers.configure({radius=0.4})
+                sdk.triggers.configure()
+            end }
+        "#).unwrap();
+        let manifest: Manifest = serde_json::from_value(json!({"id":"tests.triggers","api":2,"name":"Triggers",
+            "version":"1.0.0","author":"test","description":"test","entry":"main.lua","settings":{}})).unwrap();
+        manifest.validate().unwrap();
+        let snap = json!({"triggers": {"volumes": [{"id": "2c7017060025128f", "name": "tut_sksc_reset_vol01",
+            "group": "challenge"}], "bodies": {"player": ["2c7017060025128f"]}}});
+        let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &snap).unwrap();
+        let out = vm.call("on_load", json!({}), &snap).unwrap();
+        assert_eq!(out.iter().map(command_kind).collect::<Vec<_>>(), vec!["trigger_box", "trigger_remove",
+            "trigger_enable", "trigger_track", "trigger_track", "trigger_untrack", "trigger_configure", "trigger_configure"]);
+        assert!(out.iter().all(Command::validate));
+        assert!(matches!(&out[2], Command::TriggerEnable { enabled: false, .. }));
+        assert!(matches!(&out[3], Command::TriggerTrack { options: None, .. }));
+        assert!(matches!(&out[4], Command::TriggerTrack { options: Some(o), .. } if o.radius == Some(0.5)));
+        assert!(matches!(&out[7], Command::TriggerConfigure { options: None }));
+        let bad = TriggerBoxOptions { center: [0.; 3], half_extents: [0., 1., 1.], rotation: None, name: None, group: None };
+        assert!(!bad.validate());
+        let lobby = TriggerBoxOptions { half_extents: [1.; 3], group: Some("lobby".into()), ..bad };
+        assert!(!lobby.validate());
+        drop(vm);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn snapshot_readers_work_before_the_host_has_built_a_snapshot() {
         let root = std::env::temp_dir().join(format!(
             "skate-mods-null-snapshot-{}",
@@ -1502,6 +1731,7 @@ mod model_collision_extension_tests {
                 assert(sdk.input.action(64) == 0.0, 'action')
                 assert(type(sdk.input.pad()) == 'table', 'pad')
                 assert(type(sdk.net.info()) == 'table', 'net')
+                assert(#sdk.triggers.list() == 0 and #sdk.triggers.inside() == 0, 'triggers')
             end}
         "#,
         )
@@ -1536,6 +1766,19 @@ mod model_collision_extension_tests {
         assert_eq!(filled["physics"]["bodies"], json!({}));
         assert!(filled["camera"].is_null());
         assert_eq!(complete(&Value::Null)["paused"], false);
+    }
+
+    /// `sdk.snapshot.frame` (frame-time statistics) is always readable: zeros
+    /// before the host publishes it, the host's values afterwards.
+    #[test]
+    fn frame_statistics_have_defaults_and_keep_host_values() {
+        let empty = complete(&Value::Null);
+        assert_eq!(empty["frame"]["fps"], 0.0);
+        assert_eq!(empty["frame"]["low_1_ms"], 0.0);
+        assert_eq!(empty["frame"]["hitches"], 0);
+        let live = complete(&json!({"frame": {"ms": 6.5, "worst_ms": 197.0, "hitches": 3}}));
+        assert_eq!(live["frame"]["worst_ms"], 197.0);
+        assert_eq!(live["frame"]["hitches"], 3);
     }
 }
 
@@ -2374,6 +2617,7 @@ mod empty_table_lists {
                 subscribe_empty = function() sdk.audio.subscribe{tags={}} end,
                 subscribe_list = function() sdk.audio.subscribe{tags={'pop'}} end,
                 post_named_keys = function() sdk.audio.post('a', 'c_emitter', {x=1}) end,
+                mesh_named_keys = function() req('m', {kind='graphics_mesh', key='m', deform_nodes={x=1}}) end,
                 -- graphics (raw requests skip the api.lua wrappers that drop empty tables)
                 mesh_empty = function() req('m', {kind='graphics_mesh', key='m', deform_nodes={}}) end,
                 mesh_list = function() req('m', {kind='graphics_mesh', key='m', deform_nodes={'panel'}}) end,
@@ -2448,8 +2692,10 @@ mod empty_table_lists {
             assert!(e.contains("Invalid command arguments") && !e.contains("expected a sequence"), "{case}: {e}");
         }
         // A table that is not a list is still refused.
-        let e = run("post_named_keys").expect_err("named keys");
-        assert!(e.contains("expected a list"), "{e}");
+        for case in ["post_named_keys", "mesh_named_keys"] {
+            let e = run(case).expect_err("named keys");
+            assert!(e.contains("expected a list"), "{e}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

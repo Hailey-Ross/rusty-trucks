@@ -21,7 +21,7 @@
 //!
 //! Which systems use it: the skater's sounds (`player_audio.rs`), the `.ems` world emitters
 //! (`emitters.rs`) and the granular rolling bed (`grain_bed.rs`). Location sets, zone beds and
-//! crossfades still play measured layers through Bevy voices.
+//! crossfades still use interim Bevy playback; the zone fades and gains use native MixMap controls.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
