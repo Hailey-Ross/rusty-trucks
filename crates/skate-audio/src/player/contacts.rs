@@ -409,6 +409,26 @@ fn start_block(dt: f32) -> [f32; 6] {
 }
 
 impl Contacts {
+    /// The owner's release (retail's release stops every layer): stop every held Splice sound
+    /// (pop, roll, ollie, landing, touchdowns, second voice, manual landing, taps, scuffs, plant /
+    /// lift and the hand-on-deck sounds). A dropped owner is never updated again, so a sound it
+    /// still held would keep its slot and mixer voices for good.
+    pub fn release_all(&mut self, host: &mut dyn SpliceHost) {
+        let mut held: Vec<SoundId> = Vec::new();
+        held.extend(self.pop.take().map(|p| p.0));
+        held.extend([self.roll.take(), self.ollie.take(), self.landing.take(), self.plant.take(), self.lift.take()].into_iter().flatten());
+        for t in self.touch.iter_mut().chain(std::iter::once(&mut self.second)).chain(std::iter::once(&mut self.manual)) {
+            held.extend(t.take().map(|t| t.sound));
+        }
+        for slot in self.taps.sounds.iter_mut().chain(self.scuffs.iter_mut()) {
+            held.extend(slot.take());
+        }
+        for sound in held {
+            host.release(sound);
+        }
+        self.step_on.release_all(host);
+    }
+
     /// `sub_824BA310`: 2 × hollow (AudioSurfaceMap word 2 of wheel 0's material) + soft wheels.
     pub fn tier(s: &AudioState, t: &PlayerTuning) -> usize {
         let material = s.wheel_material[0];

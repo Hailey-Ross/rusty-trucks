@@ -60,6 +60,12 @@ pub(crate) static BLOCK_INSTANCES: Gauge = Gauge::new("block_instances");
 pub(crate) static BLOCK_GRAINS: Gauge = Gauge::new("block_grains");
 static GAUGES: [&Gauge; 3] = [&BLOCK_VOICES, &BLOCK_INSTANCES, &BLOCK_GRAINS];
 
+/// The mixer's running totals of opens refused at the voice cap and of finished voices freed to
+/// make room (`Mixer::refused_cap` / `Mixer::evicted`), as of the last rendered block; the line
+/// shows them per second (`voices_refused` / `voices_evicted`, only when not 0).
+static MIXER_REFUSED_CAP: AtomicU64 = AtomicU64::new(0);
+static MIXER_EVICTED: AtomicU64 = AtomicU64::new(0);
+
 /// Record one rendered block's load (when the readout is on). Reads counters only: no allocation,
 /// no state change.
 pub(crate) fn block_load(rt: &skate_audio::runtime::Runtime) {
@@ -67,6 +73,8 @@ pub(crate) fn block_load(rt: &skate_audio::runtime::Runtime) {
         return;
     }
     BLOCK_VOICES.add(rt.mixer.voice_count() as u64);
+    MIXER_REFUSED_CAP.store(rt.mixer.refused_cap, Ordering::Relaxed);
+    MIXER_EVICTED.store(rt.mixer.evicted, Ordering::Relaxed);
     BLOCK_INSTANCES.add(rt.eval.instance_count() as u64);
     let npc = rt.npc_grains.as_deref().map_or(0, skate_audio::grain::GrainBed::voices);
     BLOCK_GRAINS.add((rt.grains.voices() + npc) as u64);
@@ -114,7 +122,7 @@ pub(crate) fn lock<'a, T>(m: &'a std::sync::Mutex<T>, stat: &'static Stat) -> st
 }
 
 /// Once per second: the `AUDIO_TIMING` line (max / average µs and count per stat).
-pub(crate) fn report(time: Res<Time<Real>>, mut clock: Local<f32>) {
+pub(crate) fn report(time: Res<Time<Real>>, mut clock: Local<f32>, mut last: Local<(u64, u64)>) {
     if !on() {
         return;
     }
@@ -136,6 +144,15 @@ pub(crate) fn report(time: Res<Time<Real>>, mut clock: Local<f32>) {
         if n > 0 {
             line.push_str(&format!(" {}={}/{:.1}×{}", g.name, max, sum as f64 / n as f64, n));
         }
+    }
+    let totals = (MIXER_REFUSED_CAP.load(Ordering::Relaxed), MIXER_EVICTED.load(Ordering::Relaxed));
+    let (refused, evicted) = (totals.0.saturating_sub(last.0), totals.1.saturating_sub(last.1));
+    *last = totals;
+    if refused > 0 {
+        line.push_str(&format!(" voices_refused={refused}"));
+    }
+    if evicted > 0 {
+        line.push_str(&format!(" voices_evicted={evicted}"));
     }
     let dropped = super::state_log::dropped();
     if dropped > 0 {
