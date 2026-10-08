@@ -643,7 +643,7 @@ fn living_world_npc_skater_prop_volumes_and_mod_switch() {
     let v = prop_volumes(id, &s);
     assert!(v.iter().all(|(actor, _)| *actor == PROXY_ID_TAG | id.to_u64()));
     assert!(v.iter().all(|(_, v)| matches!(v.body, CollisionBody::Board(_))), "a riding skater's hit, board cap");
-    assert_eq!(v[1].1.linear_velocity.x, s.velocity[0]);
+    assert_eq!(v[1].1.motion.linear_velocity.x, s.velocity[0]);
     assert_eq!(format!("{v:?}"), format!("{:?}", prop_volumes(id, &s)), "deterministic");
 
     let mut world = World::new();
