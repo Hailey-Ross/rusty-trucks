@@ -313,6 +313,15 @@ impl NavObstacles {
         self.cuts_near([p[0] - r, p[2] - r], [p[0] + r, p[2] + r]).iter().any(|(_, f)| f.applies(p[1], self.params.step_height) && f.contains(p, grow))
     }
 
+    /// Id of the obstacle (cut or moving, not carried) whose footprint grown by `grow` holds `p`
+    /// at its height, for diagnostics (lowest id first).
+    pub fn blocker_at(&self, p: Vec3, grow: f32) -> Option<u64> {
+        let r = grow + 0.01;
+        let sh = self.params.step_height;
+        let cut = self.cuts_near([p[0] - r, p[2] - r], [p[0] + r, p[2] + r]).into_iter().find(|(_, f)| f.applies(p[1], sh) && f.contains(p, grow)).map(|(id, _)| id);
+        cut.or_else(|| self.loose.iter().copied().find(|id| self.states.get(id).is_some_and(|s| s.now.applies(p[1], sh) && s.now.contains(p, grow))))
+    }
+
     /// The first cut (grown by `grow`) the leg `a`-`b` enters: (fraction, id, footprint).
     pub fn first_hit(&self, a: Vec3, b: Vec3, grow: f32) -> Option<(f32, u64, Footprint)> {
         let min = [a[0].min(b[0]) - grow, a[2].min(b[2]) - grow];

@@ -1404,6 +1404,13 @@ through a bin, bench or barrier.
   extents, velocity, carried) and every mod body (`modding::bridge::obstacle_solids`: world AABB, the attached
   body carried; ids above 2^40); `advance_peds` steps with `step_avoiding` and never steps into a body
   (`resolve_step` slides along its face or the ped stays, then re-plans after 3 s as before).
+- Open (2026-10-07): user report "Moving objects does not update the collision for peds, untested on skater
+  npc's". The sessions had no obstacle lines, so logging came first: `PED_OBSTACLE` (a prop more than 0.1 m from
+  where it was first seen: spawn, now, cut and cut centre, speed, moving, carried, footprint, version; on every
+  change), `PED_OBSTACLES` (inputs, props, cut, moving, carried, moved; every 2 s with a moved prop, else 10 s) and
+  `PED_BLOCKED` (a refused ped step into a body, or within 3 m of a moved prop's spawn spot; once per ped per
+  second). Core helper `NavObstacles::blocker_at`. Cause and fix pending the next session; todo
+  `ped-moved-prop-collision`.
 - Moddable: `LivingWorldSettings::ped_obstacles`, Lua `sdk.world.set_tuning('living_world', {ped_obstacles =
   {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height}})`, readable via
   `world_tuning:living_world`, reset to retail on mod disable. Mod-spawned bodies are obstacles like props.
