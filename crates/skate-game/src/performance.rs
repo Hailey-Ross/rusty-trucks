@@ -256,7 +256,14 @@ pub(crate) fn install(app: &mut App, performance: Performance) {
         // GPU timestamp/statistics queries add work of their own. Ordinary CPU
         // frame comparisons must not enable them implicitly.
         if std::env::var("SKATE_PERF_GPU").as_deref() == Ok("1") {
-            app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+            let every = gpu_sample_every();
+            info!("SKATE_PERF_GPU sample_every={every} frames ({ENV_GPU_EVERY}; 1 = every frame, 0 = off)");
+            if every > 0 {
+                app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+                if every > 1 {
+                    install_gpu_sampling(app, every, recorder_type(bevy::render::renderer::RenderContext::new));
+                }
+            }
         }
 
         // Phase-boundary systems serialize otherwise overlapping render work.
@@ -293,6 +300,82 @@ pub(crate) fn install(app: &mut App, performance: Performance) {
                 end_render_frame.after(RenderSystems::Cleanup),
             ),
         );
+}
+
+/// How often the GPU queries run, in rendered frames (`SKATE_PERF_GPU_EVERY`).
+pub(crate) const ENV_GPU_EVERY: &str = "SKATE_PERF_GPU_EVERY";
+/// Trace-all default: one frame in 30 (about one per second at 30 fps, two at 60).
+const TRACE_ALL_GPU_EVERY: u32 = 30;
+
+/// The GPU query interval: `SKATE_PERF_GPU_EVERY` when set (1 = every frame, the
+/// single report's behaviour; 0 = no GPU queries), otherwise 30 in trace-all and 1
+/// for the one-shot `SKATE_PERF_REPORT` benchmark.
+fn gpu_sample_every() -> u32 {
+    parse_gpu_sample_every(std::env::var(ENV_GPU_EVERY).ok().as_deref(), crate::trace_all::on())
+}
+
+fn parse_gpu_sample_every(value: Option<&str>, trace_all: bool) -> u32 {
+    let default = if trace_all { TRACE_ALL_GPU_EVERY } else { 1 };
+    match value.map(str::trim) {
+        Some(v) if !v.is_empty() => v.parse().unwrap_or_else(|_| {
+            warn!("{ENV_GPU_EVERY}={v:?} is not a frame count, using {default}");
+            default
+        }),
+        _ => default,
+    }
+}
+
+/// Whether render frame `frame` (counting from 0) records GPU queries.
+fn gpu_frame_sampled(frame: u64, every: u32) -> bool {
+    every > 0 && frame % u64::from(every) == 0
+}
+
+/// Names Bevy's diagnostics recorder type: the render world resource
+/// `RenderDiagnosticsPlugin` inserts is crate-private in bevy_render, but
+/// `RenderContext::new` takes it, so its type is inferred from that signature.
+fn recorder_type<R>(_new: fn(bevy::render::renderer::RenderDevice, Option<R>) -> bevy::render::renderer::RenderContext<'static>) -> std::marker::PhantomData<R> {
+    std::marker::PhantomData
+}
+
+/// The recorder while it is parked (frames without GPU queries).
+#[derive(Resource)]
+struct GpuSampleGate<R: Resource> {
+    every: u32,
+    frame: u64,
+    parked: Option<R>,
+}
+
+/// Bevy's render system records GPU queries only while the recorder resource is in the render
+/// world (it removes it, runs the graph, and puts it back). On frames that are not sampled the
+/// gate moves it aside, so those frames carry no timestamp or pipeline statistics queries.
+/// Readbacks still in flight complete on the GPU and are collected on the next sampled frame.
+fn install_gpu_sampling<R: Resource>(app: &mut App, every: u32, _recorder: std::marker::PhantomData<R>) {
+    use bevy::render::{Render, RenderApp, RenderSystems};
+    let Some(render) = app.get_sub_app_mut(RenderApp) else {
+        return;
+    };
+    render.insert_resource(GpuSampleGate::<R> { every, frame: 0, parked: None });
+    render.add_systems(
+        Render,
+        gate_gpu_queries::<R>
+            .after(RenderSystems::PrepareBindGroups)
+            .before(RenderSystems::Render),
+    );
+}
+
+fn gate_gpu_queries<R: Resource>(world: &mut World) {
+    let Some(mut gate) = world.get_resource_mut::<GpuSampleGate<R>>() else {
+        return;
+    };
+    let sampled = gpu_frame_sampled(gate.frame, gate.every);
+    gate.frame += 1;
+    if sampled {
+        if let Some(recorder) = gate.parked.take() {
+            world.insert_resource(recorder);
+        }
+    } else if let Some(recorder) = world.remove_resource::<R>() {
+        world.resource_mut::<GpuSampleGate<R>>().parked = Some(recorder);
+    }
 }
 
 fn begin_render_frame(phases: Res<RenderPhases>) {
@@ -478,8 +561,9 @@ fn write_rolling(path: &std::path::Path, latest: &Report, windows: &[serde_json:
         "warmup_seconds": WARMUP,
         "window_seconds": window_s,
         "gpu_queries_enabled": std::env::var("SKATE_PERF_GPU").as_deref() == Ok("1"),
+        "gpu_sample_every_frames": gpu_sample_every(),
         "render_phase_instrumentation": std::env::var("SKATE_PERF_RENDER").as_deref() == Ok("1"),
-        "note": "per-frame samples are in the SKATE_FRAME_LOG file",
+        "note":"per-frame samples are in the SKATE_FRAME_LOG file",
         "latest_render_diagnostics": latest.gpu.iter()
             .map(|(name, value)| serde_json::json!({ "name": name, "ms": value }))
             .collect::<Vec<_>>(),
@@ -564,8 +648,9 @@ fn write_report(path: &std::path::Path, report: &Report) -> std::io::Result<()> 
     let json = serde_json::json!({
         "frames": report.frames,
         "gpu_queries_enabled": std::env::var("SKATE_PERF_GPU").as_deref() == Ok("1"),
+        "gpu_sample_every_frames": gpu_sample_every(),
         "render_phase_instrumentation": std::env::var("SKATE_PERF_RENDER").as_deref() == Ok("1"),
-        "fps": report.fps,
+        "fps":report.fps,
         "fps_1_percent_low": report.fps_1_percent_low,
         "slowest_1_percent_ms_mean": report.slowest_1_percent_ms_mean,
         "frame_ms_mean": report.frame_ms_mean,
@@ -606,6 +691,42 @@ mod tests {
 
     fn frame(total_ms: f32) -> Frame {
         Frame { total_ms, ..default() }
+    }
+
+    #[test]
+    fn gpu_sample_interval_defaults_and_overrides() {
+        assert_eq!(parse_gpu_sample_every(None, true), 30);
+        assert_eq!(parse_gpu_sample_every(None, false), 1);
+        assert_eq!(parse_gpu_sample_every(Some("1"), true), 1);
+        assert_eq!(parse_gpu_sample_every(Some(" 0 "), true), 0);
+        assert_eq!(parse_gpu_sample_every(Some("120"), false), 120);
+        assert_eq!(parse_gpu_sample_every(Some("x"), true), 30);
+        assert_eq!(parse_gpu_sample_every(Some(""), false), 1);
+        let picked: Vec<u64> = (0..65).filter(|&f| gpu_frame_sampled(f, 30)).collect();
+        assert_eq!(picked, vec![0, 30, 60]);
+        assert!((0..10).all(|f| gpu_frame_sampled(f, 1)));
+        assert!(!(0..10).any(|f| gpu_frame_sampled(f, 0)));
+    }
+
+    /// The gate moves the recorder out on unsampled frames and back on sampled ones, and
+    /// never loses or duplicates it.
+    #[test]
+    fn gpu_gate_parks_and_restores_the_recorder() {
+        #[derive(Resource)]
+        struct Recorder(u32);
+        let mut world = World::new();
+        world.insert_resource(Recorder(7));
+        world.insert_resource(GpuSampleGate::<Recorder> { every: 3, frame: 0, parked: None });
+        let mut present = Vec::new();
+        for _ in 0..7 {
+            gate_gpu_queries::<Recorder>(&mut world);
+            let here = world.get_resource::<Recorder>().is_some();
+            let parked = world.resource::<GpuSampleGate<Recorder>>().parked.is_some();
+            assert!(here != parked, "exactly one copy of the recorder");
+            present.push(here);
+        }
+        assert_eq!(present, vec![true, false, false, true, false, false, true]);
+        assert_eq!(world.resource::<Recorder>().0, 7);
     }
 
     #[test]

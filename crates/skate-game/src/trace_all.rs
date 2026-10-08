@@ -10,7 +10,8 @@
 //!
 //! What trace-all does differently from the single switches, so a whole session stays cheap:
 //! the performance report rolls for the whole session instead of exiting after 25 s
-//! (`performance.rs`), GPU timestamp queries are used only when the adapter has them (`app.rs`),
+//! (`performance.rs`), GPU timestamp queries are used only when the adapter has them (`app.rs`)
+//! and only on one frame in `SKATE_PERF_GPU_EVERY` (30 by default, `performance.rs`),
 //! the render phase split is sampled in windows (`performance.rs`), every log line goes through a
 //! bounded writer thread instead of a blocking stderr write (`profiling.rs`), and a few
 //! per-session lines log more often (`HELD_PROP`).
