@@ -27,6 +27,7 @@ pub mod population;
 pub mod replay;
 pub mod rng;
 pub mod skaters;
+pub mod stance;
 
 pub use census::{CensusCircle, CensusGrid, CensusMap, CensusRange, CensusRecord, VehicleCatalog, VehicleEntity};
 pub use clock::ConsoleClock;

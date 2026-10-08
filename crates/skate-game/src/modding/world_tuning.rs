@@ -179,6 +179,13 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
     if let Some(m) = &p.skater_blend_seconds {
         s.skater_blend_seconds = m.iter().map(|(k, v)| (k.clone(), v.max(0.0))).collect();
     }
+    if let Some(m) = &p.skater_stance {
+        use skate_core::living_world::stance::NaturalStance;
+        s.skater_stance = m.iter().filter_map(|(k, v)| NaturalStance::parse(v).map(|v| (k.clone(), v))).collect();
+    }
+    if let Some(m) = &p.skater_stance_events {
+        s.skater_stance_events = m.clone();
+    }
 }
 
 fn prop_tuning(base: &PropTuning, p: &PropTuningPatch) -> PropTuning {
@@ -331,6 +338,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "ped_vehicle_contact": {"enabled": s.ped_vehicle_contact.enabled, "push": s.ped_vehicle_contact.push},
                 "skater_clips": s.skater_clips,
                 "skater_blend_seconds": s.skater_blend_seconds,
+                "skater_stance": s.skater_stance.iter().map(|(k, v)| (k.clone(), v.name())).collect::<std::collections::BTreeMap<_, _>>(),
+                "skater_stance_events": s.skater_stance_events,
             })
         }),
         "props" => world.get_resource::<PropTuningSettings>().map_or(Value::Null, |s| {
@@ -496,6 +505,41 @@ mod tests {
         use skate_core::living_world::replay::ReplayPhase as P;
         let names = [P::Rolling, P::Crouched, P::Air, P::AirTrick, P::GroundTrick, P::OffBoard].map(P::name);
         assert_eq!(names, skate_mods::world_tuning::NPC_SKATER_PHASES);
+    }
+
+    #[test]
+    fn npc_skater_stance_set_merge_and_reset() {
+        use crate::living_world::npc_skaters::npc_stance;
+        use skate_core::living_world::stance::NaturalStance as S;
+        let records: std::collections::BTreeMap<String, String> = [("deerman".to_owned(), "deerman_of_darkwoods".to_owned())].into();
+        let mut w = world();
+        let stance = |w: &World, key: &str| npc_stance(&records, &w.resource::<LivingWorldSettings>().skater_stance, key);
+        // Retail table by default (the character key resolves to its record).
+        assert_eq!((stance(&w, "josh_kalis"), stance(&w, "chris_cole"), stance(&w, "deerman")), (S::Goofy, S::Regular, S::Goofy));
+        set(&mut w, "dev.a", "living_world", Some(json!({"skater_stance": {"CD56C7FE01EBE665": "regular"}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"skater_stance": {"CD56C7FE01EBE665": "goofy", "deerman_of_darkwoods": "regular"}}))).unwrap();
+        assert_eq!((stance(&w, "josh_kalis"), stance(&w, "deerman"), stance(&w, "cuz")), (S::Regular, S::Regular, S::Goofy), "first writer wins, others merge");
+        assert_eq!(read(&w, "living_world")["skater_stance"]["deerman_of_darkwoods"], json!("regular"));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"skater_stance": {"josh_kalis": "switch"}}))).is_err());
+        clear_all(&mut w);
+        assert!(w.resource::<LivingWorldSettings>().skater_stance.is_empty());
+        assert_eq!((stance(&w, "josh_kalis"), stance(&w, "deerman")), (S::Goofy, S::Goofy), "reset = retail table");
+    }
+
+    #[test]
+    fn npc_skater_stance_events_set_merge_and_reset() {
+        use skate_core::living_world::stance::StanceEvents;
+        let mut w = world();
+        let events = |w: &World| StanceEvents::with_overrides(&w.resource::<LivingWorldSettings>().skater_stance_events);
+        assert_eq!(events(&w), StanceEvents::retail(), "retail by default");
+        set(&mut w, "dev.a", "living_world", Some(json!({"skater_stance_events": {"mirrored": "my_mirror"}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"skater_stance_events": {"mirrored": "other", "switch": ""}}))).unwrap();
+        let e = events(&w);
+        assert_eq!((e.board_backward.as_str(), e.mirrored.as_str(), e.switch.as_str()), ("animboardbackward", "my_mirror", ""), "first writer wins, others merge");
+        assert_eq!(read(&w, "living_world")["skater_stance_events"]["switch"], json!(""));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"skater_stance_events": {"fakie": "x"}}))).is_err());
+        clear_all(&mut w);
+        assert_eq!(events(&w), StanceEvents::retail(), "reset = retail");
     }
 
     #[test]

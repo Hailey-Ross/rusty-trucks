@@ -18,6 +18,11 @@
 //!   clip; stock graph default 0.2 s, 0 = cut; also `trick_takeoff` 0.05 s / `trick_air` 0.1 s),
 //!   `skater_clips["trick.<scorable name>"]` = a trick animation base (`<base>_G` / `<base>_A`),
 //!   `skater_clips["fakie_channel"]` = the stock tree overlaid while riding fakie (`B_FAKIE_CHANNEL`),
+//!   `skater_stance {[<record id hex> or <record name>] = "regular" | "goofy"}` (NPC skater natural
+//!   stance, read once at spawn; retail values from the measured table, unknown records goofy),
+//!   `skater_stance_events {board_backward, mirrored, switch = <clip attribute name>}` (the
+//!   trick clip attributes that toggle an NPC skater's stance bits; retail `animboardbackward` /
+//!   `mirrored` / `switch`, empty = that toggle off),
 //!   `ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin,
 //!   step_height}` (props and mod bodies as ped navigation obstacles; retail on / 0.2 / 0.4 / 0.25),
 //!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on),
@@ -66,6 +71,10 @@ pub const NPC_SKATER_FACING_RULES: [&str; 2] = ["riding_entry", "per_node"];
 /// Extra `skater_blend_seconds` keys: into a trick's ground clip (retail 0.05 s) and into its air
 /// clip when no ground clip ran before it (retail 0.1 s).
 pub const NPC_SKATER_TRICK_BLENDS: [&str; 2] = ["trick_takeoff", "trick_air"];
+/// `skater_stance` values (`skate_core::living_world::stance::NaturalStance::name`).
+pub const NPC_SKATER_STANCES: [&str; 2] = ["regular", "goofy"];
+/// `skater_stance_events` keys (`skate_core::living_world::stance::StanceEvents::KEYS`).
+pub const NPC_SKATER_STANCE_EVENTS: [&str; 3] = ["board_backward", "mirrored", "switch"];
 /// Longest NPC skater crossfade a mod may set (s).
 pub const MAX_BLEND_SECONDS: f32 = 10.0;
 /// Per-template entries one patch may carry.
@@ -103,6 +112,12 @@ pub struct LivingWorldPatch {
     pub skater_clips: Option<BTreeMap<String, String>>,
     /// NPC skater crossfade time (s) into a phase's clip, per phase id or `default`.
     pub skater_blend_seconds: Option<BTreeMap<String, f32>>,
+    /// NPC skater natural stance per character record id (16 hex digits) or record name:
+    /// `"regular"` or `"goofy"` (retail values from the stance table; read at spawn).
+    pub skater_stance: Option<BTreeMap<String, String>>,
+    /// Clip attribute name per NPC skater stance toggle (`board_backward` / `mirrored` /
+    /// `switch`); empty = off (retail `animboardbackward` / `mirrored` / `switch`).
+    pub skater_stance_events: Option<BTreeMap<String, String>>,
     /// Props and mod bodies as ped navigation obstacles (fix 11).
     pub ped_obstacles: Option<PedObstaclesPatch>,
     /// NPC skaters pushing dynamic props (fix 19).
@@ -417,6 +432,20 @@ impl Merge for LivingWorldPatch {
             (None, Some(b)) => self.skater_blend_seconds = Some(b.clone()),
             _ => {}
         }
+        match (self.skater_stance.as_mut(), &b.skater_stance) {
+            (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
+                a.entry(k.clone()).or_insert_with(|| v.clone());
+            }),
+            (None, Some(b)) => self.skater_stance = Some(b.clone()),
+            _ => {}
+        }
+        match (self.skater_stance_events.as_mut(), &b.skater_stance_events) {
+            (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
+                a.entry(k.clone()).or_insert_with(|| v.clone());
+            }),
+            (None, Some(b)) => self.skater_stance_events = Some(b.clone()),
+            _ => {}
+        }
     }
 }
 impl Merge for PropTuningPatch {
@@ -487,6 +516,13 @@ impl LivingWorldPatch {
             })
             && self.skater_blend_seconds.as_ref().is_none_or(|m| {
                 m.iter().all(|(k, v)| (k == "default" || NPC_SKATER_PHASES.contains(&k.as_str()) || NPC_SKATER_TRICK_BLENDS.contains(&k.as_str())) && v.is_finite() && (0.0..=MAX_BLEND_SECONDS).contains(v))
+            })
+            && self.skater_stance.as_ref().is_none_or(|m| {
+                m.len() <= MAX_TEMPLATES
+                    && m.iter().all(|(k, v)| !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic()) && NPC_SKATER_STANCES.contains(&v.as_str()))
+            })
+            && self.skater_stance_events.as_ref().is_none_or(|m| {
+                m.iter().all(|(k, v)| NPC_SKATER_STANCE_EVENTS.contains(&k.as_str()) && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_graphic()))
             })
     }
 }
@@ -641,6 +677,13 @@ mod tests {
         assert!(!valid_patch("living_world", &json!({"skater_line_chain": {"fakie_low_speed": -1.0}})));
         assert!(valid_patch("living_world", &json!({"skater_clips": {"fakie_channel": "B_FAKIE_CHANNEL"}})));
         assert!(!valid_patch("living_world", &json!({"skater_clips": {"fakie_channel": ""}})));
+        assert!(valid_patch("living_world", &json!({"skater_stance": {"CD56C7FE01EBE665": "regular", "danny_way": "goofy"}})));
+        assert!(!valid_patch("living_world", &json!({"skater_stance": {"josh_kalis": "sideways"}})));
+        assert!(!valid_patch("living_world", &json!({"skater_stance": {"": "goofy"}})));
+        assert!(!valid_patch("living_world", &json!({"skater_stance": {"josh_kalis": true}})));
+        assert!(valid_patch("living_world", &json!({"skater_stance_events": {"mirrored": "my_mirror", "switch": ""}})));
+        assert!(!valid_patch("living_world", &json!({"skater_stance_events": {"fakie": "x"}})));
+        assert!(!valid_patch("living_world", &json!({"skater_stance_events": {"mirrored": "a b"}})));
         assert!(!valid_patch("living_world", &json!({"draw": 2.0})));
         assert!(!valid_patch("living_world", &json!({"skater_fade": {"fade_seconds": 1e9}})));
         assert!(!valid_patch("props", &json!({"by_template": {"b": {"collision_box": {"center": [0, 0, 0], "half_extents": [0, 1, 1]}}}})));

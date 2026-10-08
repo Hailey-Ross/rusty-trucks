@@ -117,6 +117,15 @@ pub(crate) struct LivingWorldSettings {
     /// phase id or `default`; empty = the stock graph's default transition time
     /// (`npc_skaters::RETAIL_BLEND_SECONDS`). Cleared by [`Self::reset_mod_overrides`].
     pub skater_blend_seconds: std::collections::BTreeMap<String, f32>,
+    /// Mod overrides of an NPC skater's natural stance, keyed by character record id (16 hex
+    /// digits) or record name; empty = the retail table (`skate_core::living_world::stance`). Read
+    /// at spawn (retail sets it once from the record). Cleared by [`Self::reset_mod_overrides`].
+    pub skater_stance: std::collections::BTreeMap<String, skate_core::living_world::stance::NaturalStance>,
+    /// Mod renames of the clip attributes that toggle an NPC skater's stance bits, keyed by
+    /// `board_backward` / `mirrored` / `switch` (`skate_core::living_world::stance::StanceEvents`);
+    /// empty value = that toggle off; empty map = retail (`animboardbackward` / `mirrored` /
+    /// `switch`). Cleared by [`Self::reset_mod_overrides`].
+    pub skater_stance_events: std::collections::BTreeMap<String, String>,
     /// The player's menu choice (saved in `settings/graphics.json`), restored when a mod's
     /// override is undone.
     pub user_npc_draw_distance: f32,
@@ -155,6 +164,8 @@ impl Default for LivingWorldSettings {
             user_npcs_off: false,
             skater_clips: Default::default(),
             skater_blend_seconds: Default::default(),
+            skater_stance: Default::default(),
+            skater_stance_events: Default::default(),
             free_play: None,
             zombie: false,
             net_role: NetRole::Standalone,
@@ -439,6 +450,7 @@ pub(crate) fn load_data(asset_root: &Path, district: &str) -> LoadedData {
         let profiles = std::fs::read(dir.join("skater_profiles.json")).ok()?;
         let characters = skate_data::living_world::skater_characters(&profiles, &[]).ok()?;
         npc.voices = npc_voices(&profiles);
+        npc.records = npc_records(&profiles);
         let pack = std::fs::read(dir.join("skater_paths").join(format!("{district}.bin"))).ok()?;
         let tiles = skate_data::aipath::parse_pack(&pack).ok()?;
         let (paths, _) = skate_data::aipath::district_paths(&tiles).ok()?;
@@ -479,6 +491,19 @@ pub(crate) fn npc_voices(profiles: &[u8]) -> std::collections::BTreeMap<String, 
         .into_iter()
         .flatten()
         .filter_map(|(k, c)| c["voice"].as_u64().map(|x| (k.clone(), x as u32)))
+        .collect()
+}
+
+/// `characters_marquee` character record names by character key (`skater_profiles.json`
+/// `characters.*.recipe`, e.g. `deerman` -> `deerman_of_darkwoods`): the record the natural stance
+/// is read from (`skate_core::living_world::stance`).
+pub(crate) fn npc_records(profiles: &[u8]) -> std::collections::BTreeMap<String, String> {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(profiles) else { return Default::default() };
+    v["characters"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, c)| c["recipe"].as_str().filter(|r| !r.is_empty()).map(|r| (k.clone(), r.to_owned())))
         .collect()
 }
 
