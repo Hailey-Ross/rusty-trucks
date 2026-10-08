@@ -32,7 +32,9 @@
 //!   (grabbing a prop drops a carried board, retail true), `follow_step` (0.1 m), `hold_angle_limit` /
 //!   `hold_max_angle_to_horizontal` (80 / 50 deg), `hold_box_extents` ([0.9, 0.8, 1.01]),
 //!   `record_272_speed_scale` (2.0) and per template `record_272`. `grip_reach` sets the retail follow
-//!   reach (0.65 m).
+//!   reach (0.65 m). Contact material blocks: `commanded_material` ([0.03, 0.02] static / dynamic
+//!   friction), `upright_cos` (0.65) and per template `material_held`, `material_free`,
+//!   `material_free_upright`, `upright_pair`, `restitution`.
 //! - `shadows`: `world_floor = {r, g, b}`, the lightest a dynamic object's shadow can make the baked
 //!   world (each 0..=1, in the shader's squared lightmap space). Retail {0.05, 0.09, 0.13}: the
 //!   constant every retail world receiver shader adds to its shadow-map visibility before taking
@@ -223,8 +225,11 @@ pub struct CarryPatch {
     pub hold_box_extents: Option<[f32; 3]>,
     /// Target speed scale for prop types with record+272 set (retail 2.0).
     pub record_272_speed_scale: Option<f32>,
-    /// Parameter block `[a, b]` every held (commanded) prop switches to (retail [0.03, 0.02]).
+    /// Friction pair `[static, dynamic]` every held (commanded) prop switches to (retail [0.03, 0.02],
+    /// 82C53EF8); combined with the other side by max / max / min (82763078).
     pub commanded_material: Option<[f32; 2]>,
+    /// Upright test on the prop's up axis y for the upright free pair (retail 0.65, 82C54B00; -1..1).
+    pub upright_cos: Option<f32>,
     /// Linear command at the centre of mass (retail true; false = at the grip point, lever torque).
     pub apply_at_com: Option<bool>,
     /// Yaw command replaces the prop's angular accumulator (retail true; false = added).
@@ -238,14 +243,21 @@ pub struct CarryPatch {
     pub by_template: BTreeMap<String, CarryMaterialPatch>,
 }
 
-/// Per prop type parameter blocks `[a, b]` of `carry.by_template`.
+/// Per prop type contact material blocks of `carry.by_template` (friction pairs `[static, dynamic]`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CarryMaterialPatch {
-    /// Block while held (default: `commanded_material`).
+    /// Friction pair while held (default: `commanded_material`).
     pub material_held: Option<[f32; 2]>,
-    /// Block when let go (default: the prop's authored material).
+    /// Free friction pair (retail DMO data +320 / +328; default: the prop's authored friction).
     pub material_free: Option<[f32; 2]>,
+    /// Free friction pair while upright (retail DMO data +316 / +324; default: `material_free`),
+    /// used only when `upright_pair` is set.
+    pub material_free_upright: Option<[f32; 2]>,
+    /// The free pair depends on the upright test (retail DMO data +312 bit 0; default false).
+    pub upright_pair: Option<bool>,
+    /// Restitution of this type's blocks (retail DMO data +272; default: the authored restitution).
+    pub restitution: Option<f32>,
     /// Record+272 for this prop type: Move Object target speeds x `record_272_speed_scale`
     /// (retail per DMO type data +312, not extracted yet; default false).
     pub record_272: Option<bool>,
@@ -343,10 +355,10 @@ impl Merge for CarryPatch {
         merge_opts!(self, b; grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed, turn_rate, grip_reach,
             linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller, lever_rotation, lever_yaw,
             mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal,
-            hold_box_extents, record_272_speed_scale, commanded_material, apply_at_com, yaw_replaces_torque,
+            hold_box_extents, record_272_speed_scale, commanded_material, upright_cos, apply_at_com, yaw_replaces_torque,
             ignore_vertical, wake_on_command);
         for (k, v) in &b.by_template {
-            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, record_272); }).or_insert_with(|| v.clone());
+            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, material_free_upright, upright_pair, restitution, record_272); }).or_insert_with(|| v.clone());
         }
     }
 }
@@ -417,14 +429,18 @@ impl CarryPatch {
                 .all(|c| c.iter().flatten().all(|v| v.is_finite()) && c[0].windows(2).all(|p| p[0] <= p[1]))
             && self.hold_box_extents.is_none_or(|e| e.iter().all(|v| v.is_finite() && *v >= 0.0 && *v <= MAX_NUMBER))
             && self.commanded_material.is_none_or(material_block)
+            && self.upright_cos.is_none_or(|v| (-1.0..=1.0).contains(&v))
             && self.by_template.len() <= MAX_TEMPLATES
             && self.by_template.iter().all(|(k, v)| {
-                !k.is_empty() && k.len() <= 128 && v.material_held.is_none_or(material_block) && v.material_free.is_none_or(material_block)
+                !k.is_empty()
+                    && k.len() <= 128
+                    && [v.material_held, v.material_free, v.material_free_upright].into_iter().flatten().all(material_block)
+                    && v.restitution.is_none_or(|r| r.is_finite() && (0.0..=MAX_NUMBER).contains(&r))
             })
     }
 }
 
-/// A parameter block: two finite, non-negative values.
+/// A friction pair: two finite, non-negative values.
 fn material_block(b: [f32; 2]) -> bool {
     b.iter().all(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(v))
 }
@@ -506,6 +522,10 @@ mod tests {
         assert!(!valid_patch("carry", &json!({"grip_reach": -0.1})));
         assert!(valid_patch("carry", &json!({"commanded_material": [0.1, 0.02], "apply_at_com": false, "wake_on_command": true})));
         assert!(!valid_patch("carry", &json!({"commanded_material": [-0.1, 0.02]})));
+        assert!(valid_patch("carry", &json!({"upright_cos": 0.65, "by_template": {"t": {"material_free_upright": [0.9, 0.7], "upright_pair": true, "restitution": 0.2}}})));
+        assert!(!valid_patch("carry", &json!({"upright_cos": 1.5})));
+        assert!(!valid_patch("carry", &json!({"by_template": {"t": {"material_free_upright": [0.9, -0.7]}}})));
+        assert!(!valid_patch("carry", &json!({"by_template": {"t": {"restitution": -0.1}}})));
         assert!(valid_patch("carry", &json!({"by_template": {"bin": {"material_held": [0.2, 0.0], "material_free": [0.5, 0.1]}}})));
         assert!(!valid_patch("carry", &json!({"by_template": {"bin": {"material_held": [0.2]}}})));
         assert!(!valid_patch("carry", &json!({"by_template": {"bin": {"friction": 1.0}}})));

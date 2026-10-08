@@ -200,25 +200,43 @@ pub(crate) struct PropBody {
     commanded_block: bool,
 }
 
-/// One retail per-body parameter block pair `{a, b}` (component +48 / +52;
-/// the third float, DMO data +272, is per DMO type and not read yet).
-/// NOT RETAIL YET: the block's reader is not found (spec 7.6 item 1); as an
-/// interim `a` is used as the contact friction (static and dynamic) of this
-/// body's contacts, replacing the combined friction, and `b` is unused.
+/// Friction pair `[static, dynamic]` of a retail body contact material block.
+/// The block is three floats at physics component +48 / +52 / +56 = {static
+/// friction, dynamic friction, restitution (DMO data +272)}, written by
+/// 82C550A8 and pointed at by every body's +80; the collision-object builders
+/// 82DC3A68 / 82DC4158 / 82DC4588 copy it to CO +116..+124 and aaCollision
+/// 8277A508 combines two objects' blocks with 82763078 (static max, dynamic
+/// max, restitution min = [`combine_contact_materials`]).
 pub(crate) type MaterialBlock = [f32; 2];
 
-/// Retail commanded block {0.03 (0x8208EA80), 0.02 (0x821E9580)}.
+/// Retail commanded friction pair {0.03 (0x8208EA80), 0.02 (0x821E9580)}
+/// (82C53EF8 while DMO+4465 bit 0x02 is set).
 pub(crate) const RETAIL_COMMANDED_MATERIAL: MaterialBlock = [0.03, 0.02];
 
-/// Per prop type material blocks (MOBJ template name).
+/// Retail upright test of 82C54B00: the body's up axis (transform row 1) has
+/// y > 0.65 (0x820BB0EC); sets DMO+4465 bit 0x08.
+pub(crate) const RETAIL_UPRIGHT_COS: f32 = 0.65;
+
+/// Per prop type material data (MOBJ template name). Retail reads these from
+/// the DMO type data (DMO+4380 -> +4); the values per type are not extracted
+/// yet, so every `None` default reproduces the authored MOBJ material
+/// (NOT RETAIL YET: interim defaults, see doc 27).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PropMaterialBlocks {
-    /// Block while commanded; `None` = `MoveCommandRules::commanded_material`.
+    /// Friction pair while commanded; `None` = `MoveCommandRules::commanded_material`.
     pub held: Option<MaterialBlock>,
-    /// Block when commands stop; `None` = the authored MOBJ contact material
-    /// (retail restores the DMO's data pair +316 / +324 or +320 / +328, not
-    /// read yet).
+    /// Free friction pair (DMO data +320 / +328; also the only free pair when
+    /// `upright_pair` is off); `None` = authored MOBJ friction for both.
     pub free: Option<MaterialBlock>,
+    /// Free friction pair while upright (DMO data +316 / +324), used only when
+    /// `upright_pair` is set; `None` = `free`.
+    pub free_upright: Option<MaterialBlock>,
+    /// Type flag DMO data +312 bit 0 (-> DMO+4465 bit 0x10, ctor 82C51E28):
+    /// the free pair depends on the upright test. `None` = false.
+    pub upright_pair: Option<bool>,
+    /// Restitution of every block of this type (DMO data +272); `None` = the
+    /// authored MOBJ restitution.
+    pub restitution: Option<f32>,
     /// Record+272 of this prop type (Move Object speeds x
     /// `record_272_speed_scale`); `None` = false (retail per DMO type data
     /// +312, 82C4B960, not extracted yet).
@@ -231,8 +249,11 @@ pub(crate) struct PropMaterialBlocks {
 /// (`sdk.world.set_tuning('carry', ...)`), cleared on mod disable.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MoveCommandRules {
-    /// Block every commanded body switches to (retail {0.03, 0.02}).
+    /// Friction pair every commanded body switches to (retail {0.03, 0.02});
+    /// the block's restitution stays the type's (DMO data +272).
     pub commanded_material: MaterialBlock,
+    /// Upright test threshold on the body's up axis y (retail 0.65).
+    pub upright_cos: f32,
     /// Per prop type overrides of the held / free blocks.
     pub by_template: std::collections::BTreeMap<String, PropMaterialBlocks>,
     /// Linear command at the centre of mass (retail: accumulator +144, no
@@ -252,6 +273,7 @@ impl Default for MoveCommandRules {
     fn default() -> Self {
         Self {
             commanded_material: RETAIL_COMMANDED_MATERIAL,
+            upright_cos: RETAIL_UPRIGHT_COS,
             by_template: Default::default(),
             apply_at_com: true,
             yaw_replaces_torque: true,
@@ -262,12 +284,22 @@ impl Default for MoveCommandRules {
 }
 
 impl MoveCommandRules {
-    fn held_block(&self, template: &str) -> MaterialBlock {
-        self.by_template.get(template).and_then(|b| b.held).unwrap_or(self.commanded_material)
-    }
-
-    fn free_block(&self, template: &str) -> Option<MaterialBlock> {
-        self.by_template.get(template).and_then(|b| b.free)
+    /// The body's own contact material block (82C53EF8 / 82C54BF0 ->
+    /// 82C550A8): while commanded {held pair, restitution}; otherwise the free
+    /// pair, which for a type with the upright flag (data +312 bit 0) is the
+    /// upright pair while `up_y > upright_cos` (82C54B00) and the default pair
+    /// when tipped. Pure function of the commanded bit and the up axis.
+    pub(crate) fn body_material(&self, template: &str, authored: RetailContactMaterial, commanded: bool, up_y: f32) -> RetailContactMaterial {
+        let t = self.by_template.get(template);
+        let restitution = t.and_then(|b| b.restitution).unwrap_or(authored.restitution);
+        let [static_friction, dynamic_friction] = if commanded {
+            t.and_then(|b| b.held).unwrap_or(self.commanded_material)
+        } else {
+            let free = t.and_then(|b| b.free).unwrap_or([authored.static_friction, authored.dynamic_friction]);
+            let upright = t.and_then(|b| b.upright_pair).unwrap_or(false) && up_y > self.upright_cos;
+            if upright { t.and_then(|b| b.free_upright).unwrap_or(free) } else { free }
+        };
+        RetailContactMaterial { static_friction, dynamic_friction, restitution }
     }
 }
 
@@ -634,21 +666,17 @@ impl PropDynamics {
         self.move_rules = rules;
     }
 
-    /// Contact material of body `index` against a surface: the combined
-    /// material, with the friction replaced by the body's current parameter
-    /// block. NOT RETAIL YET: interim mapping of the retail block (reader not
-    /// found, spec 7.6 item 1): block `a` = contact friction.
-    fn contact_material(&self, index: usize, combined: RetailContactMaterial) -> RetailContactMaterial {
+    /// Body `index`'s own material block: what retail copies into its
+    /// collision objects (CO +116..+124) before the pair combine.
+    fn body_material(&self, index: usize) -> RetailContactMaterial {
         let body = &self.bodies[index];
-        let block = if body.commanded_block {
-            Some(self.move_rules.held_block(&body.template))
-        } else {
-            self.move_rules.free_block(&body.template)
-        };
-        match block {
-            Some([a, _]) if a.is_finite() && a >= 0.0 => RetailContactMaterial { static_friction: a, dynamic_friction: a, ..combined },
-            _ => combined,
-        }
+        self.move_rules.body_material(&body.template, body.material, body.commanded_block, body.rates.basis.columns[1][1])
+    }
+
+    /// Contact material of body `index` against a surface material: the
+    /// retail pair combine 82763078 of the body's block and the other side.
+    fn contact_material(&self, index: usize, other: RetailContactMaterial) -> RetailContactMaterial {
+        combine_contact_materials(self.body_material(index), other)
     }
 
     /// Current tuning table (defaults plus per prop type overrides).
@@ -1321,7 +1349,7 @@ impl PropDynamics {
         }
         let points: usize = manifolds.iter().map(|(m, _)| m.count.max(1)).sum();
         for (manifold, triangle_material) in &manifolds {
-            let material = self.contact_material(index, combine_contact_materials(self.bodies[index].material, *triangle_material));
+            let material = self.contact_material(index, *triangle_material);
             self.resolve_static(index, manifold, material, points as f32, &mut corrections);
         }
         let box_primitive = self.bodies[index].box_primitive();
@@ -1340,10 +1368,7 @@ impl PropDynamics {
                 continue;
             };
             contacts += 1;
-            let material = self.contact_material(
-                index,
-                combine_contact_materials(self.bodies[index].material, self.bodies[other].material),
-            );
+            let material = self.contact_material(index, self.body_material(other));
             if self.bodies[other].asleep {
                 // An asleep prop is an immovable support; a hard hit wakes it.
                 let closing = manifold.points[..manifold.count]
@@ -1630,6 +1655,14 @@ mod tests {
         }
     }
 
+    /// The static world material the game gives prop contacts
+    /// (`PhysicsSettings::floor_material`, agCollision 8277C5D8 context
+    /// 83034F34 / 38 / 3C): {0, 0, 1}, so the max / max / min combine keeps
+    /// the prop's own block.
+    fn floor_material() -> RetailContactMaterial {
+        RetailContactMaterial { static_friction: 0.0, dynamic_friction: 0.0, restitution: 1.0 }
+    }
+
     fn simulation() -> RetailSimulationStep {
         super::prop_simulation(RetailSimulationStep::fixed_60_hz(
             0,
@@ -1729,9 +1762,9 @@ mod tests {
             rails: vec![],
             physics: Default::default(),
         }];
-        let layer = build_prop_layer(&map, &objects, material()).unwrap().unwrap();
+        let layer = build_prop_layer(&map, &objects, floor_material()).unwrap().unwrap();
         let dynamics = PropDynamics::new(&objects, layer.instances(), simulation());
-        let world = super::super::ground::Terrain::Flat.world(material());
+        let world = super::super::ground::Terrain::Flat.world(floor_material());
         (world, layer, dynamics)
     }
 
@@ -2008,7 +2041,7 @@ mod tests {
         let (mut layer, dynamics) = crate::skate_world::load_prop_layer(
             &root,
             "DownTown",
-            material(),
+            floor_material(),
             simulation(),
         )
         .expect("DownTown props");
@@ -2781,7 +2814,7 @@ mod tests {
             routes: vec![],
             extensions: vec![],
         };
-        crate::skate_world::collision_world(&map, material()).unwrap()
+        crate::skate_world::collision_world(&map, floor_material()).unwrap()
     }
 
     /// Box sizes of the props the user dragged in the 2026-10-07 session
@@ -2980,34 +3013,88 @@ mod tests {
     }
 
     /// The commanded block (82C53EF8): a commanded body switches to it on its
-    /// next step and back to its free material on the step after the
-    /// commands stop; the interim mapping uses block `a` as contact friction.
-    /// Every command wakes the body, zero or not (82ADF7B8).
+    /// next step and back to its free block on the step after the commands
+    /// stop. The block is the body's own material, combined with the other
+    /// side by 82763078 (static max, dynamic max, restitution min); nothing
+    /// replaces the combined friction. Every command wakes the body, zero or
+    /// not (82ADF7B8).
     #[test]
     fn commanded_block_switches_with_the_command_and_zero_commands_wake() {
         let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 1.2]);
         assert!(dynamics.bodies[0].asleep);
-        let free = combine_contact_materials(dynamics.bodies[0].material, material());
+        let authored = dynamics.bodies[0].material;
+        let low = RetailContactMaterial { static_friction: 0.01, dynamic_friction: 0.005, restitution: 0.9 };
+        assert_eq!(dynamics.body_material(0), authored, "free block = authored material by default");
         assert!(dynamics.apply_move_command(7, Vector3::ZERO, 0.0, Vector3::ZERO, simulation().time_step));
         assert!(!dynamics.bodies[0].asleep, "a zero command must still wake the body");
         dynamics.step(&world, &mut layer, &[]);
-        let held = dynamics.contact_material(0, free);
-        assert_eq!((held.static_friction, held.dynamic_friction), (0.03, 0.03));
-        assert_eq!(held.restitution, free.restitution);
+        let held = dynamics.body_material(0);
+        assert_eq!((held.static_friction, held.dynamic_friction, held.restitution), (0.03, 0.02, authored.restitution));
+        // Combine, not replace: against a low-friction side the held block wins,
+        // against the floor material the higher friction wins (max / max / min).
+        let c = dynamics.contact_material(0, low);
+        assert_eq!((c.static_friction, c.dynamic_friction, c.restitution), (0.03, 0.02, authored.restitution.min(0.9)));
+        let floor = material();
+        let c = dynamics.contact_material(0, floor);
+        assert_eq!(c, combine_contact_materials(held, floor));
+        assert_eq!(c.dynamic_friction, floor.dynamic_friction.max(0.02));
         dynamics.step(&world, &mut layer, &[]);
-        assert_eq!(dynamics.contact_material(0, free), free, "block not restored after commands stopped");
+        assert_eq!(dynamics.body_material(0), authored, "block not restored after commands stopped");
         // Per prop type override (mod) and the old wake rule.
         let mut rules = MoveCommandRules::default();
-        rules.by_template.insert("template/crate".into(), PropMaterialBlocks { held: Some([0.4, 0.0]), free: Some([0.9, 0.0]), record_272: None });
+        rules.by_template.insert(
+            "template/crate".into(),
+            PropMaterialBlocks { held: Some([0.4, 0.3]), free: Some([0.9, 0.8]), restitution: Some(0.2), ..Default::default() },
+        );
         rules.wake_on_command = false;
         dynamics.set_move_rules(rules);
-        assert_eq!(dynamics.contact_material(0, free).dynamic_friction, 0.9);
+        assert_eq!(dynamics.body_material(0), RetailContactMaterial { static_friction: 0.9, dynamic_friction: 0.8, restitution: 0.2 });
         dynamics.bodies[0].asleep = true;
         dynamics.apply_move_command(7, Vector3::ZERO, 0.0, Vector3::ZERO, simulation().time_step);
         assert!(dynamics.bodies[0].asleep, "wake_on_command off: a zero command leaves the body asleep");
         dynamics.apply_move_command(7, Vector3::new(1.0, 0.0, 0.0), 0.0, Vector3::ZERO, simulation().time_step);
         dynamics.step(&world, &mut layer, &[]);
-        assert_eq!(dynamics.contact_material(0, free).dynamic_friction, 0.4);
+        assert_eq!(dynamics.body_material(0), RetailContactMaterial { static_friction: 0.4, dynamic_friction: 0.3, restitution: 0.2 });
+    }
+
+    /// Free pair choice (82C53EF8 / 82C54BF0 with 82C54B00): only a type with
+    /// the upright flag (data +312 bit 0) uses the upright pair, and only while
+    /// its up axis y > 0.65; tipped (or exactly 0.65) it uses the default pair.
+    /// The held block ignores the upright test.
+    #[test]
+    fn free_block_follows_the_upright_test() {
+        let authored = RetailContactMaterial { static_friction: 0.5, dynamic_friction: 0.5, restitution: 0.1 };
+        let blocks = PropMaterialBlocks {
+            free: Some([0.6, 0.5]),
+            free_upright: Some([0.9, 0.7]),
+            restitution: Some(0.3),
+            ..Default::default()
+        };
+        let mut rules = MoveCommandRules::default();
+        rules.by_template.insert("t".into(), blocks);
+        let pair = |r: &MoveCommandRules, commanded, up_y| {
+            let m = r.body_material("t", authored, commanded, up_y);
+            [m.static_friction, m.dynamic_friction, m.restitution]
+        };
+        // Flag off: the default pair whatever the pose.
+        assert_eq!(pair(&rules, false, 1.0), [0.6, 0.5, 0.3]);
+        assert_eq!(pair(&rules, false, 0.0), [0.6, 0.5, 0.3]);
+        rules.by_template.get_mut("t").unwrap().upright_pair = Some(true);
+        assert_eq!(pair(&rules, false, 1.0), [0.9, 0.7, 0.3]);
+        assert_eq!(pair(&rules, false, 0.66), [0.9, 0.7, 0.3]);
+        assert_eq!(pair(&rules, false, 0.65), [0.6, 0.5, 0.3], "strict > 0.65");
+        assert_eq!(pair(&rules, false, -1.0), [0.6, 0.5, 0.3]);
+        assert_eq!(pair(&rules, true, 1.0), [0.03, 0.02, 0.3]);
+        assert_eq!(pair(&rules, true, 0.0), [0.03, 0.02, 0.3]);
+        // Threshold is data.
+        rules.upright_cos = 0.9;
+        assert_eq!(pair(&rules, false, 0.8), [0.6, 0.5, 0.3]);
+        // No type data at all: authored material, held keeps the authored restitution.
+        let plain = MoveCommandRules::default();
+        assert_eq!(plain.body_material("other", authored, false, 1.0), authored);
+        assert_eq!(pair(&plain, true, 1.0)[2], 0.1);
+        // Deterministic: same inputs, same bits.
+        assert_eq!(pair(&rules, false, 0.95).map(f32::to_bits), pair(&rules, false, 0.95).map(f32::to_bits));
     }
 
     /// Slot 9 sinks (82D9CC78 / 82D9CCF0): the linear command adds L dt at the
@@ -3113,12 +3200,12 @@ mod tests {
         let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT"));
         let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").expect("set SKATE3_MAP"));
         let map = skate_data::skate_map::SkateMap::parse(&std::fs::read(&map_path).unwrap()).unwrap();
-        let world = crate::skate_world::collision_world(&map, material()).unwrap();
+        let world = crate::skate_world::collision_world(&map, floor_material()).unwrap();
         let ids = [3417526289u32, 880096370, 44597382, 3160070536, 788476715, 2198011218, 3116907260, 206220507];
         let dt = simulation().time_step;
         let mut failures = Vec::new();
         for id in ids {
-            let (mut layer, mut dynamics) = crate::skate_world::load_prop_layer(&root, "DownTown", material(), simulation()).expect("DownTown props");
+            let (mut layer, mut dynamics) = crate::skate_world::load_prop_layer(&root, "DownTown", floor_material(), simulation()).expect("DownTown props");
             let Some(spawn) = dynamics.position_of(id) else { println!("{id}: not in the package"); continue };
             let index = dynamics.by_id[&id];
             let half = dynamics.bodies[index].half_extents;

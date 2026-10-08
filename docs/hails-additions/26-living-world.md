@@ -2021,11 +2021,12 @@ Change:
    carried a lever-arm torque in the port (the lever only feeds the yaw command, as in 82D45318): nothing removed.
 3. Commanded block (82C53EF8): a commanded body switches to `{0.03, 0.02}` on its next step and back to its free
    material on the step after the commands stop (bits 0x02 / 0x01 of DMO+4465 as `commanded` /
-   `commanded_block`). NOT RETAIL YET: the block's reader is not found (spec 7.6 item 1); interim mapping: the
-   first float replaces the contact friction (static and dynamic) of that body's contacts after the material
-   combine (the combine takes the greater friction, so a body friction of 0.03 alone would change nothing); the
-   second float is unused; restitution unchanged. The free block is the authored MOBJ material (retail restores the
-   DMO data pair +316 / +324 or +320 / +328, not read yet). Damping and max speeds are untouched while held.
+   `commanded_block`). Superseded 2026-10-08 (doc 27, "Contact material blocks"): the reader is found; the block
+   is the body's own contact material {static friction 0.03, dynamic friction 0.02, restitution DMO data +272},
+   combined with the other side by 82763078 (max / max / min). The interim "replace the combined friction"
+   mapping described here is removed. Its reasoning ("the combine takes the greater friction, so 0.03 alone would
+   change nothing") held only against the 0.8 / 0.6 test floor; the game gives prop contacts the retail ground
+   material {0, 0, 1}, under which the body's own block decides. Damping and max speeds are untouched while held.
 4. Rest snap: kept off for a commanded (or held) body. Sleep: retail clears the sleep counter on every command, so
    a commanded body cannot sleep (retail). The snap itself is our engine rule (it zeroes velocities under 0.7 m/s
    while touching) and would eat the first ticks of the command (slew 4 m/s^2 per tick), so the exemption stays,
@@ -2035,8 +2036,9 @@ Change:
    a skater behind its long side. Still NOT RETAIL YET (DMO grab splines undecoded).
 6. Moddability: `sdk.world.set_tuning('carry', {...})` gains `commanded_material` ([0.03, 0.02]), `apply_at_com`,
    `yaw_replaces_torque`, `ignore_vertical`, `wake_on_command` (all true = retail) and
-   `by_template[<MOBJ template>] = {material_held, material_free}` (blocks `[a, b]`, validated finite and
-   non-negative, at most 256 templates). They live in `CarrySettings::move_rules` (`MoveCommandRules`), are pushed
+   `by_template[<MOBJ template>] = {material_held, material_free}` (friction pairs `[static, dynamic]`, validated
+   finite and non-negative, at most 256 templates; 2026-10-08 also `upright_cos`, `material_free_upright`,
+   `upright_pair`, `restitution`, see doc 27). They live in `CarrySettings::move_rules` (`MoveCommandRules`), are pushed
    into `PropDynamics` every tick (a map load keeps them), read back by `world_tuning:carry`, and go back to retail
    on mod disable. Multiplayer: the command is plain data (id, L, Y) applied once per fixed tick in the prop step;
    the per-body flags are two booleans; no wall clock.
@@ -2329,7 +2331,7 @@ When a mod stops, fails or reloads its patches go (`modding::world_tuning::clear
 |---|---|---|
 | `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing false}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep_facing: fix 16 facing carry-over, mod option, not retail), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0}` (props and mod bodies as ped obstacles), `npc_skater_props {enabled true}` (NPC skaters push dynamic props) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
 | `props` | `default` / `by_template[<MOBJ template>]`: every `PropTuning` field plus `collision_box {center, half_extents}`; a template entry starts from the patched default | `PropTuningSettings` |
-| `carry` | `grab_bit` (28, RB), `placement_bit` (20, B), `grab_range` (2.0 m); Move Object: `push_speed` / `pull_speed` / `side_speed` (3.0 / 2.0 / 2.5), `turn_rate`, `grip_reach`, `linear_clamp` (20), `yaw_clamp` (6), `relatch` (0.1), `slew_per_tick` (4), `linear_controller` / `yaw_controller` ([20, 0, 40, 0.1]), the four curves, `let_go_distance` (1.0); slot 9 application: `commanded_material` ([0.03, 0.02]), `apply_at_com`, `yaw_replaces_torque`, `ignore_vertical`, `wake_on_command` (true), `by_template[<MOBJ template>] = {material_held, material_free}` | `CarrySettings`, pushed into `PropCarry` and `PropDynamics` each tick (survives map loads) |
+| `carry` | `grab_bit` (28, RB), `placement_bit` (20, B), `grab_range` (2.0 m); Move Object: `push_speed` / `pull_speed` / `side_speed` (3.0 / 2.0 / 2.5), `turn_rate`, `grip_reach`, `linear_clamp` (20), `yaw_clamp` (6), `relatch` (0.1), `slew_per_tick` (4), `linear_controller` / `yaw_controller` ([20, 0, 40, 0.1]), the four curves, `let_go_distance` (1.0); slot 9 application: `commanded_material` ([0.03, 0.02] static / dynamic friction), `upright_cos` (0.65), `apply_at_com`, `yaw_replaces_torque`, `ignore_vertical`, `wake_on_command` (true), `by_template[<MOBJ template>] = {material_held, material_free, material_free_upright, upright_pair, restitution}` | `CarrySettings`, pushed into `PropCarry` and `PropDynamics` each tick (survives map loads) |
 
 Not exposed yet: road district selection for mod maps (the loader picks the district by map name), census range
 overrides (`data_config`), per-kind density / ambient skater count. The ped mirrored-animation fix has no values.

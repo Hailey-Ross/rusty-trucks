@@ -236,11 +236,22 @@ pub(crate) fn carry_settings(p: &CarryPatch) -> CarrySettings {
             let r = crate::physics::prop_dynamics::MoveCommandRules::default();
             crate::physics::prop_dynamics::MoveCommandRules {
                 commanded_material: p.commanded_material.unwrap_or(r.commanded_material),
+                upright_cos: p.upright_cos.unwrap_or(r.upright_cos),
                 by_template: p
                     .by_template
                     .iter()
                     .map(|(k, v)| {
-                        (k.clone(), crate::physics::prop_dynamics::PropMaterialBlocks { held: v.material_held, free: v.material_free, record_272: v.record_272 })
+                        (
+                            k.clone(),
+                            crate::physics::prop_dynamics::PropMaterialBlocks {
+                                held: v.material_held,
+                                free: v.material_free,
+                                free_upright: v.material_free_upright,
+                                upright_pair: v.upright_pair,
+                                restitution: v.restitution,
+                                record_272: v.record_272,
+                            },
+                        )
                     })
                     .collect(),
                 apply_at_com: p.apply_at_com.unwrap_or(r.apply_at_com),
@@ -299,7 +310,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             let by: serde_json::Map<String, Value> = r
                 .by_template
                 .iter()
-                .map(|(k, b)| (k.clone(), json!({"material_held": b.held, "material_free": b.free, "record_272": b.record_272})))
+                .map(|(k, b)| (k.clone(), json!({"material_held": b.held, "material_free": b.free, "material_free_upright": b.free_upright,
+                    "upright_pair": b.upright_pair, "restitution": b.restitution, "record_272": b.record_272})))
                 .collect();
             json!({"grab_bit": c.buttons.grab_bit, "placement_bit": c.buttons.placement_bit, "grab_range": c.grab_range,
                 "push_speed": m.push_speed, "pull_speed": m.pull_speed, "side_speed": m.side_speed, "turn_rate": l.turn_rate,
@@ -310,7 +322,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "follow_step": m.follow_step, "hold_angle_limit": m.hold_angle_limit,
                 "hold_max_angle_to_horizontal": m.hold_max_angle_to_horizontal, "hold_box_extents": m.hold_box_extents,
                 "record_272_speed_scale": m.record_272_speed_scale,
-                "commanded_material": r.commanded_material, "apply_at_com": r.apply_at_com,
+                "commanded_material": r.commanded_material, "upright_cos": r.upright_cos, "apply_at_com": r.apply_at_com,
                 "yaw_replaces_torque": r.yaw_replaces_torque, "ignore_vertical": r.ignore_vertical,
                 "wake_on_command": r.wake_on_command, "by_template": by})
         }),
@@ -490,12 +502,26 @@ mod tests {
         let mut w = world();
         assert_eq!(read(&w, "carry")["commanded_material"], json!(RETAIL_COMMANDED_MATERIAL));
         assert_eq!(read(&w, "carry")["apply_at_com"], json!(true));
+        assert_eq!(read(&w, "carry")["upright_cos"], json!(0.65f32));
         set(&mut w, "dev.a", "carry", Some(json!({"commanded_material": [0.2, 0.0], "apply_at_com": false, "wake_on_command": false,
-            "by_template": {"template/bin": {"material_held": [0.5, 0.0], "material_free": [0.9, 0.1]}}}))).unwrap();
+            "upright_cos": 0.8, "by_template": {"template/bin": {"material_held": [0.5, 0.0], "material_free": [0.9, 0.1],
+            "material_free_upright": [1.0, 0.9], "upright_pair": true, "restitution": 0.25}}}))).unwrap();
         let r = w.resource::<CarrySettings>().move_rules.clone();
         assert_eq!(r.commanded_material, [0.2, 0.0]);
         assert!(!r.apply_at_com && !r.wake_on_command && r.yaw_replaces_torque && r.ignore_vertical);
-        assert_eq!(r.by_template["template/bin"], PropMaterialBlocks { held: Some([0.5, 0.0]), free: Some([0.9, 0.1]), record_272: None });
+        assert_eq!(r.upright_cos, 0.8);
+        assert_eq!(
+            r.by_template["template/bin"],
+            PropMaterialBlocks {
+                held: Some([0.5, 0.0]),
+                free: Some([0.9, 0.1]),
+                free_upright: Some([1.0, 0.9]),
+                upright_pair: Some(true),
+                restitution: Some(0.25),
+                record_272: None
+            }
+        );
+        assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["upright_pair"], json!(true));
         assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["material_free"], json!([0.9f32, 0.1f32]));
         clear_owner(&mut w, "dev.a");
         assert_eq!(w.resource::<CarrySettings>().move_rules, MoveCommandRules::default(), "mod disable restores retail");

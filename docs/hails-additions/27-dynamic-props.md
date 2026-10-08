@@ -287,6 +287,87 @@ parse upgrade, `supported`, tests), `crates/skate-game/src/retail_world.wgsl`.
 - Changing `retail_material.py` marks the maps setup step stale, so the next refresh also re-exports maps; the load
   time upgrade means that re-export is not required for this change.
 
+## Contact material blocks, held and free (2026-10-08)
+
+**Problem.** The held prop's `{0.03, 0.02}` block was ported as "replace the combined contact friction with 0.03"
+(doc 26, Move Object item 3), labelled NOT RETAIL YET because its reader was not found. The free block was the
+authored MOBJ material, the upright / tipped choice retail makes was missing, and prop-vs-prop pairs combined the
+authored materials only.
+
+**Retail evidence** (TU3 recomp, re-read 2026-10-08; credit: skate3recomp, rexglue / Xenia based static
+recompilation, for the readable PPC):
+- 82C53EF8, on the tick the commanded bit changes: DMO+4465 bit 0x02 set -> f1 = 0.03 (0x8208EA80), f2 = 0.02
+  (0x821E9580); else bits 0x10 and 0x08 both set -> DMO data (DMO+4380 -> +4) +316 / +324; else +320 / +328. Then
+  82C550A8.
+- 82C550A8 stores f1, f2 and DMO data +272 to the physics component +48 / +52 / +56 and points every body's +80
+  (96-byte body records) at that block.
+- 82DC3A68, 82DC4158, 82DC4588 (collision-object builders) copy body +80 words 0 / 4 / 8 to the collision object
+  +116 / +120 / +124 (+212..+220 relative to the 82DC3A68 base).
+- aaCollision 8277A508 calls 82763078(out, CO_a +116, CO_b +116): out+0 = max (static friction), out+4 = max
+  (dynamic friction), out+8 = min (restitution). This is skate-core `combine_contact_materials`.
+- 82C54B00: DMO+4465 bit 0x08 = (current transform row 1 y > 0.65, 0x820BB0EC) AND (the passed pose's row 1 y >
+  0.65). DMO+4465 bit 0x10 comes from DMO data byte +312 bit 0 (ctor 82C51E28, from the parity review).
+- The ground side the game already uses for prop contacts is `PhysicsSettings::floor_material` = {0, 0, 1}
+  (agCollision 8277C5D8 context 83034F34 / 38 / 3C), so the max / max / min combine keeps the prop's own block.
+
+**Change.** `MoveCommandRules::body_material` builds the body's own block before the combine: commanded = {held
+pair (retail 0.03, 0.02), type restitution}; free = the type's free pair, or its upright pair while the type flag is
+set and the body's up axis y > `upright_cos` (0.65). `contact_material` is now only
+`combine_contact_materials(body block, other side)`; prop-vs-prop pairs combine both bodies' blocks. The path that
+replaced the combined friction is deleted. Pure function of the commanded bit, the template and the up axis
+(deterministic, no clock).
+
+Moddability: `carry` gains `upright_cos` and per template `material_free_upright`, `upright_pair`, `restitution`
+next to `material_held` / `material_free` / `commanded_material`; validated (pairs finite and non-negative,
+`upright_cos` in -1..1, restitution finite and non-negative), read back by `world_tuning:carry`, reset on mod disable
+(`carry_move_command_rules_set_and_reset`).
+
+In game the effect is small: against the {0, 0, 1} floor the held prop's dynamic friction goes from 0.03 to 0.02
+(retail's second float); a held prop touching another prop now gets max(0.03, the other prop's friction) instead of
+a flat 0.03.
+
+**NOT RETAIL YET.** The per-type DMO data values (+272 restitution, +312 bit 0 upright flag, +316 / +320 / +324 /
++328 friction pairs) are not extracted. Defaults reproduce today: free pair = authored MOBJ friction for both
+static and dynamic, upright flag off, restitution = authored MOBJ restitution. Missing extraction: the DMO type data
+block (DMO+4380 -> +4) per prop type, likely the `livingworld_dynamicobject_characteristics` records or the DMO
+setup data. The second upright condition (the passed pose in 82C54B00) is not modelled; we test the current pose
+only. Whether the existing per-template `record_272` flag (described as data +312, 82C4B960) is the same bit as the
+upright flag is open.
+
+**Verification.** Tests assert the retail math, not measured output: `commanded_block_switches_with_the_command_and_zero_commands_wake`
+(held block {0.03, 0.02, type restitution}; combine against a low side keeps the block, against the 0.8 / 0.6
+side takes the max; block restored when commands stop; per template overrides), `free_block_follows_the_upright_test`
+(flag off ignores the pose; flag on: upright pair above 0.65, default pair at exactly 0.65 and below; held ignores
+the pose; threshold as data; bit-identical repeat), `carry_move_command_rules_set_and_reset`, skate-mods
+`valid_patch` cases.
+
+The prop test fixture's static world used a 0.8 / 0.6 / 0 material, not the game's floor. With the combine in
+place that made a held prop's friction 0.6 and six Move Object tests failed (push speed 1.83 vs retail math 2.95 m/s,
+yaw rate 0.001 vs 1.97 rad/s, a straight push tipping the cube to up_y 0.984, the bin falling 43.7 m). The fixture
+world now uses the game's floor material {0, 0, 1}; no assert was changed. Under it two tests fail, with the old code
+as well as the new one (old code measured by putting the baseline file back with the same fixture):
+
+| Test | Old code, 0.8 / 0.6 floor | Old code, game floor | New code, game floor |
+|---|---|---|---|
+| `dragged_props_rest_on_the_floor_after_release` | pass (bench -0.025, bin -0.043, vending -0.078, rail -0.053 m) | FAIL: bench sinks 37.1 m (bin -0.040, vending -0.078, rail -0.053) | FAIL: vending -0.082 m (limit -0.08; bench -0.024, bin -0.045, rail -0.049) |
+| `placement_adjust_confirm_and_sleep` | pass | FAIL: placed prop never sleeps | FAIL: placed prop never sleeps |
+| `downtown_dragged_props_rest_on_the_floor` (ignored, assets) | FAIL: 5 props sank | FAIL: same 5 props | FAIL: same 5 props |
+
+Causes measured so far (new code, floor variants): the placement failure needs both the prop's own restitution
+(0.05) and its own friction (0.55) to survive the combine: floor {0, 0, 1} fails, {0, 0, 0} and {0.8, 0.6, 1}
+pass. After release the placed box
+settles into a rocking contact cycle at y 0.428 with v.y about -0.8 m/s after every step and kinetic energy about
+0.6, above our rest snap's 0.49 (0.7 m/s), so it never snaps or sleeps in 300 steps. The vending machine's 8 cm
+overlap is the known solver gap (parity review item 5: our single impulse pass with shared impulses, 40 %
+positional correction and the 5 cm per tick cap versus retail's 25-iteration row solver 82AE27D0); it moves between
+-0.078 and -0.082 m with the floor material and is not changed by the block. The 37 m bench sink with the old code
+is most likely the same solver gap (inference, not traced): a box whose centre passes the one-sided floor face is
+pushed further down; it is sensitive to small changes (gone with the 0.02 dynamic friction). Neither is a
+small retail fix: the retail answers are the row solver (item 5) and the retail sleep rule (item 4, no rest snap).
+The game uses this floor material and the same prop step, so the in-game builds up to 1e61fe0 most likely show the
+same behaviour (placed props can keep rocking without sleeping; a dragged prop can sink); not checked in a game
+run.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with
