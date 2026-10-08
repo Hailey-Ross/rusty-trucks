@@ -205,6 +205,22 @@ pub(crate) fn obstacle_inputs(physics: Option<&crate::physics::GamePhysics>, mod
     out
 }
 
+/// Diagnostics for moved props as ped obstacles (2026-10-07: "Moving objects does not update the
+/// collision for peds", and the sessions had no obstacle lines). Spawn = where an id was first seen.
+#[derive(Resource, Default)]
+pub(crate) struct PedObstacleTrace {
+    spawn: BTreeMap<u64, [f32; 3]>,
+    /// Ids now more than 0.1 m from their spawn, with the spawn centre.
+    pub moved: Vec<(u64, [f32; 3])>,
+    /// Last logged (cut, cut centre, held) of a moved id.
+    last: BTreeMap<u64, (bool, [f32; 3], bool)>,
+    next_summary: u64,
+}
+
+fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
 /// Retail's per-object obstacle update, once per population tick before the peds step. Only a
 /// changed cut bumps the version (resting props cost no rebuild).
 pub(crate) fn update_ped_obstacles(
@@ -213,6 +229,8 @@ pub(crate) fn update_ped_obstacles(
     physics: Option<Res<crate::physics::GamePhysics>>,
     mods: Option<Res<crate::modding::Mods>>,
     mut obstacles: ResMut<PedObstacles>,
+    state: Res<PopulationState>,
+    mut trace: ResMut<PedObstacleTrace>,
 ) {
     obstacles.0.set_params(settings.ped_obstacles.clone());
     if data.nav.is_none() {
@@ -224,6 +242,38 @@ pub(crate) fn update_ped_obstacles(
     let solids = mods.as_deref().map(crate::modding::bridge::obstacle_solids).unwrap_or_default();
     let inputs = obstacle_inputs(physics.as_deref(), &solids);
     obstacles.0.update(&inputs);
+    let tick = state.world.tick();
+    let hz = state.world.clock().hz as u64;
+    let trace = &mut *trace;
+    trace.moved.clear();
+    for input in &inputs {
+        let spawn = *trace.spawn.entry(input.id).or_insert(input.center);
+        if dist3(spawn, input.center) <= 0.1 && !trace.last.contains_key(&input.id) {
+            continue;
+        }
+        trace.moved.push((input.id, spawn));
+        let Some(s) = obstacles.0.states.get(&input.id) else { continue };
+        let now = (s.cut.is_some(), s.cut_at, s.inactive);
+        let changed = trace.last.get(&input.id).is_none_or(|l| l.0 != now.0 || l.2 != now.2 || (now.0 && dist3(l.1, now.1) > 0.05));
+        if changed {
+            trace.last.insert(input.id, now);
+            let speed = dist3(input.velocity, [0.0; 3]);
+            info!(
+                "PED_OBSTACLE id={} spawn=[{:.2}, {:.2}, {:.2}] now=[{:.2}, {:.2}, {:.2}] moved={:.2} cut={} cut_at=[{:.2}, {:.2}, {:.2}] speed={speed:.2} moving={} held={} half=[{:.2}, {:.2}] y=[{:.2}, {:.2}] version={} tick={tick}",
+                input.id, spawn[0], spawn[1], spawn[2], input.center[0], input.center[1], input.center[2], dist3(spawn, input.center),
+                now.0, now.1[0], now.1[1], now.1[2], s.moving, s.inactive, s.now.half[0], s.now.half[1], s.now.y_min, s.now.y_max, obstacles.0.version,
+            );
+        }
+    }
+    if tick >= trace.next_summary {
+        trace.next_summary = tick + hz * if trace.moved.is_empty() { 10 } else { 2 };
+        let o = &obstacles.0;
+        info!(
+            "PED_OBSTACLES inputs={} props={} states={} cut={} moving={} held={} moved={} version={} tick={tick}",
+            inputs.len(), inputs.iter().filter(|i| i.id < MOD_BODY_OBSTACLE_BASE).count(), o.states.len(), o.cut_count(),
+            o.states.values().filter(|s| s.moving).count(), o.states.values().filter(|s| s.inactive).count(), trace.moved.len(), o.version,
+        );
+    }
 }
 
 /// The simulated body: animation player, navigation, position and heading.
@@ -438,8 +488,11 @@ pub(crate) fn advance_peds(
     mut peds: Query<(&Pedestrian, &mut PedBody, &mut Transform, &mut PedAudio)>,
     mut events: MessageWriter<PedEvent>,
     mut floating_logged: Local<std::collections::HashMap<LivingWorldId, u64>>,
+    trace: Res<PedObstacleTrace>,
+    mut blocked_logged: Local<std::collections::HashMap<LivingWorldId, u64>>,
 ) {
     let obstacles = &obstacles.0;
+    let hz = state.world.clock().hz as u64;
     let tick = state.world.tick();
     let dt = tick_seconds(state.world.clock().hz);
     let mut list: Vec<_> = peds.iter_mut().collect();
@@ -496,6 +549,20 @@ pub(crate) fn advance_peds(
                         && progressed
                         && separation_ok(body.position.to_array(), next, me, &neighbours, mesh.agent[1])
                         && crosswalk_ok(mesh, nav_settings.crosswalk, signals, body.position.to_array(), next);
+                    // Moved-prop diagnostics: a refused step into a prop, or anywhere near the spot a
+                    // moved prop left (once per ped per second).
+                    if !ok && moving {
+                        let by = obstacles.blocker_at(to.to_array(), mesh.agent[1]);
+                        let near = trace.moved.iter().find(|(_, c)| (c[0] - from[0]).hypot(c[2] - from[2]) < 3.0).map(|(id, _)| *id);
+                        let now = state.world.tick();
+                        if (by.is_some() || near.is_some()) && blocked_logged.get(&ped.id).is_none_or(|t| now >= t + hz) {
+                            blocked_logged.insert(ped.id, now);
+                            info!(
+                                "PED_BLOCKED ped=#{} at=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] by={by:?} near_moved_spawn={near:?} on_mesh={on_mesh} clear={clear} progressed={progressed} tick={now}",
+                                ped.id.serial, from[0], from[1], from[2], to.x, to.y, to.z,
+                            );
+                        }
+                    }
                     if ok {
                         body.position = Vec3::from_array(next);
                         body.nav.poly = poly;
@@ -904,6 +971,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<PedRejected>()
         .init_resource::<PedNavSettings>()
         .init_resource::<PedObstacles>()
+        .init_resource::<PedObstacleTrace>()
         .add_message::<PedEvent>()
         .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, advance_peds, log_ped_readout).chain().after(super::step_population))
         .init_resource::<PedMaterials>()
