@@ -248,6 +248,10 @@ pub(crate) struct PropBody {
     /// the ground probe for HELD_PROP / PROP_BELOW_GROUND starts above it, so
     /// a body that sank under the floor still finds the floor it left.
     rest_y: f32,
+    /// Authored (spawn) template-origin pose: what a DMO reset returns the body to
+    /// (retail cMsgResetDMO, doc 27 "Object Dropper and reset").
+    spawn_origin: Vector3,
+    spawn_basis: Basis3,
     /// A Move Object command arrived for this body since its last step
     /// (retail DMO+4465 bit 0x02, set by the slot 9 sinks 82C52DC0 /
     /// 82C52E68).
@@ -591,6 +595,11 @@ impl PropBody {
     }
 }
 
+/// Pose tolerance for "moved" (metres / basis component). Ours: float noise
+/// of a body that slept at its authored pose; retail's per-DMO moved flag is a
+/// record field (sub_826666A8 reads it), not a distance. NOT RETAIL YET.
+const SPAWN_POSE_EPSILON: f32 = 1e-4;
+
 impl PropDynamics {
     /// One box body per collision-layer instance, asleep at its authored pose.
     /// Placement rows are the world images of the local axes; their lengths
@@ -663,6 +672,8 @@ impl PropDynamics {
                 baked: None,
                 contacts: 0,
                 rest_y: center.y,
+                spawn_origin: origin,
+                spawn_basis: basis,
                 commanded: false,
                 commanded_block: false,
                 rates: RetailBodyRates {
@@ -1139,6 +1150,45 @@ impl PropDynamics {
         body.rates.cool_down = cool_down;
         body.asleep = true;
         Some(body.instance)
+    }
+
+    /// Ids of bodies whose pose differs from the authored spawn pose, in id order.
+    /// Retail offers the per-object reset (cMsgResetDMO) only for a moved object
+    /// (sub_826666A8 gate); this is the engine-side list behind "reset moved objects".
+    pub(crate) fn moved_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self
+            .bodies
+            .iter()
+            .filter(|b| {
+                let o = b.origin();
+                let d = sub(o, b.spawn_origin);
+                d.x * d.x + d.y * d.y + d.z * d.z > SPAWN_POSE_EPSILON * SPAWN_POSE_EPSILON
+                    || b.rates.basis.columns.iter().zip(b.spawn_basis.columns.iter()).any(|(a, s)| {
+                        a.iter().zip(s.iter()).any(|(x, y)| (x - y).abs() > SPAWN_POSE_EPSILON)
+                    })
+            })
+            .map(|b| b.id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Authored spawn pose of one body (template origin, basis).
+    pub(crate) fn spawn_pose(&self, id: u32) -> Option<(Vector3, Basis3)> {
+        let body = self.bodies.get(*self.by_id.get(&id)?)?;
+        Some((body.spawn_origin, body.spawn_basis))
+    }
+
+    /// Return one body to its authored spawn pose, at rest and asleep (the
+    /// receiving end of retail's cMsgResetDMO; how retail moves it, teleport or
+    /// fade, is not decoded yet: NOT RETAIL YET, an instant teleport). Returns the
+    /// collision instance so the caller can rebake its triangles.
+    pub(crate) fn reset_to_spawn(&mut self, id: u32) -> Option<usize> {
+        let (origin, basis) = self.spawn_pose(id)?;
+        if self.held == Some(id) {
+            self.set_held(None);
+        }
+        self.teleport(id, origin, basis)
     }
 
     /// Advance awake bodies one tick; wake bodies the skater touches. Moved
@@ -2916,6 +2966,32 @@ mod tests {
             .unwrap();
         assert!((hit.geometry.position.y - (REST_Y + 1.)).abs() < 0.05);
         let _ = world;
+    }
+
+    /// "Reset moved objects": a moved body is listed, reset returns it to the
+    /// authored pose asleep and at rest, and the list empties.
+    #[test]
+    fn reset_to_spawn_returns_moved_body() {
+        let (_world, mut layer, mut dynamics) = fixture([0., REST_Y, 1.2]);
+        let (spawn_origin, spawn_basis) = dynamics.spawn_pose(7).unwrap();
+        assert_eq!(dynamics.pose(7).unwrap().0, spawn_origin);
+        assert!(dynamics.moved_ids().is_empty());
+        let basis = skate_core::math::Basis3 {
+            columns: [[0., 0., -1.], [0., 1., 0.], [1., 0., 0.]],
+        };
+        let instance = dynamics.teleport(7, Vector3::new(4., REST_Y + 0.5, -3.), basis).unwrap();
+        layer.rebake(instance, basis.columns, Vector3::new(4., REST_Y + 0.5, -3.)).unwrap();
+        assert_eq!(dynamics.moved_ids(), vec![7]);
+        let instance = dynamics.reset_to_spawn(7).unwrap();
+        layer.rebake(instance, spawn_basis.columns, spawn_origin).unwrap();
+        let (origin, basis) = dynamics.pose(7).unwrap();
+        let d = sub(origin, spawn_origin);
+        assert!(d.x.abs() + d.y.abs() + d.z.abs() < 1e-5);
+        assert_eq!(basis.columns, spawn_basis.columns);
+        assert!(dynamics.bodies[0].asleep);
+        assert_eq!(dynamics.bodies[0].rates.linear_velocity, Vector3::ZERO);
+        assert!(dynamics.moved_ids().is_empty());
+        assert!(dynamics.reset_to_spawn(99).is_none());
     }
 
     // NPC skaters against props (doc 26, fix 19).

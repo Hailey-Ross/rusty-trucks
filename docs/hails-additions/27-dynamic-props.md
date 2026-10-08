@@ -432,6 +432,105 @@ transfer, not solver rows. Held placement (`carry_to`) still bypasses sleep.
 cap inside 82AE27D0 (none found in the board port, the review's item 5 note); an in-game check that placed props now
 sleep and dragged props stay on the street.
 
+## Object Dropper and reset moved objects (2026-10-08, research milestone + reset port)
+
+**Problem.** The LB phone menu (session marker, `crates/skate-game/src/session_marker/`) draws the Object Dropper row
+at 0.3 opacity and does nothing with it; retail also lets the player put moved objects back. User: "add to the living
+world todo to also add the object spawner int he LB menu (it already contains the option, its just not linked to
+anything yet.) There is also an option to reset moved objects once you start moving them around in Retail we will
+want that."
+
+**Evidence** (TU3 recomp generated code and the TU3 image; reference only, credit skate3recomp / rexglue / Xenia).
+[code] = read in the recomp, [data] = image strings / descriptors.
+
+- Cellphone UI `sub_826682B0` (object ctor `sub_82666A20`, vtable 0x82305B70, state at +52): state 2 + FE input 4 =
+  open (`cellphone_activate`), state 3 = open menu. In state 3: FE input 8 closes; **FE input 256 = the Object Dropper
+  row**: gate `sub_826691D0`, then the fe sound `FF7F0396F338B735`, close the phone (`sub_82668998`), then the
+  manager at global 0x830854A8 vfunc +8 and its result's vfunc +20 (enter the dropper). FE 64 cycles the online
+  player list (only with >= 2 players, `sub_82669090`); FE 32768 / 16384 set bytes +1669 / +1670 of the object at
+  0x830CFDE4 with their own fe sounds (rows not identified). [code] That 256 is the B row comes from the row text
+  order and the recomp scripted-runs note (Object Dropper = LB + B), not from the FE code table. [inferred]
+- Dropper gate `sub_826691D0`: the game-mode object at 0x830B7AE8 must have mode (+0) 4 or 5, `sub_82511168(+48)`
+  true and byte +323 clear. [code] Which modes 4 / 5 are is not decoded.
+- The dropper itself is a full editor, not a spawn list: APT movies `objectdropper/objectdropper.swf` and
+  `objectdropper/objectquickmenu.swf`, screen modes FreeCam, Catalog, Manipulate, Next / Previous Category,
+  SubCategory, Item, Type, SnapObject, MoveOnLockedAxis, RotateObject, GroupSelect, Hide / ShowSelection, Delete,
+  RefreshFengShui, Duplicate, FineTune, Size, Info; quick menu Color, Branding, Style, Options (Snap, Collision,
+  Invert X / Y, Cursor speed), Copy, Paste, Undo, Redo; natives EnableObjectDropper, DisableObjectDropper,
+  Show / HideObjectDropperUI, HideObjectDropperCursor, object dropper input filters, IsObjectDropperEnabled,
+  IsInDropper, IsInCatalogMode, IsInQuickMenu, SetCatalogFilter, getCatalogMap, item record `ObjectDropperItemInfo`.
+  [data] Its catalogue source, placement, limits and removal are not decoded (next step: the 0x830854A8 manager's
+  vfuncs and the catalogue map).
+- Per-object phone actions, handler `sub_82666430` (vtable slot next to the cellphone's, context +12 = mode,
+  +48 = the DMO id): in mode 1, FE input 1 = **Upright** (`cMsgUprightDMO` 0x905C8249, gate `sub_82666748`),
+  FE input 2 = **Reset** (`cMsgResetDMO` 0x31806EF2, gate `sub_826666A8`), 16384 = `cMsgAddDMOToSessionMarker`
+  (0x573CEC45), 32768 = `cMsgRemoveDMOFromSessionMarker` (0x9E9C95A1); mode 2, input 1 = `cMsgTeleporterSignUp`.
+  Each plays its own fe sound (keys 7CA2E1082BDE9C0A, 36ABD583773962FD, 9CEBB54BBC07C945, 84F5799EF7C02DF1; names
+  not recovered). The reset gate reads a per-DMO record word (offline: manager 0x830854A8 vfunc +28 with the id;
+  online: table [[0x830CFD94]+260]+0x8720, record id x 96, word -20 == 0), i.e. the option exists only for an object
+  whose record says it can be reset. [code]
+- PlayerUI's constructor `sub_82897828` subscribes to cMsgResetDMO, cMsgUprightDMO, cMsgAdd / RemoveDMOToSessionMarker,
+  cMsgSetSessionMarker, cMsgClearSessionMarker, cMsgTeleport and the ownership messages (cMsgOwnershipRequest /
+  Release): the reset is handled next to the session marker, and moved objects can be attached to the marker. [code]
+- **The reset itself** [code]: PlayerUI's cMsgResetDMO handler `sub_8289A048` (online: sends net packet type 22
+  {player, DMO id, extra}; offline: the DMO manager at [[0x830CFD94]+212]+22416, vtable 0x82323254 (ctor
+  `sub_82C48C88`), slot +36 with (id, 0)). Manager reset `sub_82C4B5F0`: gathers the object's reset set
+  (`sub_82C4A788`: the object, skipping one whose spawn record has flag 0x02 unless asked; it then walks further DMOs
+  from the record's transform, recursion not fully read), tests the set's spawn volumes against the blocker lists
+  at +26512 / +26576 (`sub_82E0A8E0`) and, when something blocks, calls a player-side vfunc +124 (undecoded), then
+  runs the worker `sub_82C4B780`: per object, look up its spawn record by the object's 64-bit key (manager vfunc +8,
+  table vfunc +12); with a record, the table's vfunc +28 puts the object on the record's transform (record+64) in
+  one call (no fade or timer in this path); **without a record (an object that was not spawned from the world
+  data, e.g. a dropped one) the object's vfunc +12(0) is called, i.e. it is removed.** The phone gate
+  `sub_826666A8` -> manager slot +28 (`sub_82C4B000`) runs the same gather and blocker test and offers Reset only
+  when nothing blocks; it does **not** test "moved".
+- **Upright** [code]: handler `sub_8289A158` (online packet type 23; offline manager slot +40, `sub_82C4B8C0`): if
+  the object's vfunc +112 says it is not upright, set flag 0x40 at +4464 and float +4376 = 0.0 (0x82165A10); the
+  righting itself runs in the DMO update (undecoded). Not ported.
+- The DMO network sync loop `sub_82588380` posts cMsgResetDMO itself for an owned DMO whose sampled height is below a
+  constant (0x822272E0), then waits 46 ticks (+76): retail auto-resets objects that fell out of the world. [code]
+- Lua natives table at 0x823132F8: ResetMode, SerializeDMOs, DeserializeAndSaveState, RestoreFromSavedState,
+  ClearDMOs, Lock / UnlockDMOs, **ResetChallengeDMOs** (`sub_8283BA78`: online it posts one cMsgResetDMO, offline it
+  walks the challenge's DMO groups and calls the DMO manager's vfunc +32 per entry id), SetDMOOwnershipByGrabbing,
+  Request / ReleaseOwnershipOfAllDMOs. [code]
+- APT getters `GetPhoneListCanShowObjectDropperOption`, `GetPhoneListCanResetAllObjectsOption`,
+  `GetPhoneListCanShowPhotographerOption`, `GetPhoneListCanShowMusicOption` exist as strings (0x821F472C..) but no
+  direct pointer or lis/addi reference was found, so the "Reset All Objects" row's native handler is not located. [data]
+
+**Change (ported).** The per-object reset, deterministic, one authority:
+- `PropDynamics` keeps every body's authored spawn pose (our stand-in for retail's spawn record); `spawn_pose(id)`,
+  `reset_to_spawn(id)` (back to the spawn pose in one step, at rest, asleep), `moved_ids()` (id order).
+- `GamePhysics::reset_prop(id)` (decoded: instant re-place on the spawn transform) is the one authority: rebakes the
+  collision at the spawn pose, drops the id from the layout sidecar (`PropCarry::forget_layout`), logs
+  `SKATE_PROP_RESET id=..`. Ids are the stable map prop ids (multiplayer-ready payload).
+- `GamePhysics::reset_moved_props()`: mod convenience, `reset_prop` for every moved or placed prop. **Ours, NOT
+  RETAIL YET** (no retail reset-all code found).
+- Mod entry points: `sdk.world.reset_prop(id)` (`world_reset_prop`) and `sdk.world.reset_moved_props()`
+  (`world_reset_moved_props`). A reset is a one-shot world action that leaves nothing behind, so there is nothing to
+  clean up on mod disable.
+
+**NOT RETAIL YET.** The Object Dropper editor (catalogue, freecam, placement, snap, group select, delete, quick menu)
+is not ported: the row stays at 0.3 and LB + B is not wired, because pressing it in retail closes the phone and
+enters that editor. Decoded vs ours for the reset: the instant
+re-place on the spawn transform is decoded; ours are the authored map pose as the spawn record, refusing the held
+object (retail unknown), no blocker test (retail refuses / acts when the spawn spot is blocked), no reset set
+gathering (retail may reset further DMOs with the object), no removal of record-less objects (we have none: no
+dropper). "Moved" (pose differs from spawn by more than 1e-4) only feeds the reset-all convenience. No phone row for
+the per-object actions (the phone context's object source and row art are missing); Upright and Add / Remove to
+session marker are not ported.
+
+**Files.** `crates/skate-game/src/physics/prop_dynamics.rs`, `crates/skate-game/src/physics.rs`,
+`crates/skate-game/src/physics/prop_carry.rs`, `crates/skate-game/src/modding/mod.rs`, `crates/skate-mods/src/vm.rs`,
+`crates/skate-mods/src/api.lua`. Research helpers: `.local/research/object-dropper/` (message-name lookup,
+lookup8 name guesser, dispatcher dump).
+
+**Verification.** `reset_to_spawn_returns_moved_body` (moved list, pose, rest, sleep, unknown id);
+`world_tuning_commands_deserialize_and_validate` extended with both reset commands and their Lua wrappers.
+
+**Open questions.** The dropper catalogue source and limits (manager 0x830854A8, `getCatalogMap`); what game modes
+4 / 5 are; where the per-object phone context comes from (nearest or held DMO); retail's reset transition; the
+"Reset All Objects" row handler; the fe sound names.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with

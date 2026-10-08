@@ -386,6 +386,11 @@ sdk.world = { version = 1 }
 function sdk.world.set_tuning(domain, patch) submit{kind="world_set_tuning",domain=domain,patch=patch} end
 -- Read a domain as the game uses it now: the value arrives as sdk.commands.result(key).value.
 function sdk.world.tuning(key, domain) sdk.engine.inspect(key, "world_tuning:" .. domain) end
+-- Reset one dynamic prop (stable map id) to its authored pose, at rest; its saved layout entry is
+-- dropped (retail cMsgResetDMO; refused for the held prop). doc 27, Object Dropper and reset.
+function sdk.world.reset_prop(id) submit{kind="world_reset_prop",id=id} end
+-- Convenience (not a retail action): reset_prop for every moved or placed prop.
+function sdk.world.reset_moved_props() submit{kind="world_reset_moved_props"} end
 
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and
 -- skaters to the game's retail world audio (the same path engine systems use). Keys are scoped

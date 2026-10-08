@@ -269,6 +269,11 @@ pub enum Command {
         #[serde(default)]
         patch: Option<Value>,
     },
+    /// Reset moved objects (doc 27, Object Dropper and reset): every dynamic prop away from its
+    /// authored pose goes back to it (retail cMsgResetDMO per object).
+    WorldResetMovedProps {},
+    /// Reset one dynamic prop (stable map id) to its authored pose (retail cMsgResetDMO).
+    WorldResetProp { id: u32 },
     /// Audio extension 4 (doc 16 L2): write one input of a retail MixMap controller (`value` absent
     /// = release it: the input gets back the value before this mod's first write).
     AudioSetMixmapInput {
@@ -620,6 +625,8 @@ impl Command {
             Self::AudioSetMixmapInput { slot, object, instance, input, value, float } => crate::audio::valid_symbol(slot) && *object <= 127 && *instance <= 31 && *input <= 15
                 && value.is_none_or(|v| v.is_finite() && (*float || (v.fract() == 0.0 && (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&v)))),
             Self::AudioSeed { .. } => true,
+            Self::WorldResetMovedProps {} => true,
+            Self::WorldResetProp { .. } => true,
             Self::WorldSetTuning { domain, patch } => crate::world_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::world_tuning::valid_patch(domain, p)),
             Self::AudioSetTuning { domain, patch } => crate::audio_tuning::DOMAINS.contains(&domain.as_str()) && patch.as_ref().is_none_or(|p| crate::audio_tuning::valid_patch(domain, p)),
             Self::AudioWatch { globals, mixmap } => globals.len() <= crate::audio::MAX_WATCH && globals.iter().all(|g| crate::audio::valid_symbol(g))
@@ -897,6 +904,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::AudioSetMixmapInput { .. } => "audio_set_mixmap_input",
         Command::AudioSeed { .. } => "audio_seed",
         Command::WorldSetTuning { .. } => "world_set_tuning",
+        Command::WorldResetMovedProps {} => "world_reset_moved_props",
+        Command::WorldResetProp { .. } => "world_reset_prop",
         Command::WorldAudioSpawn { .. } => "world_audio_spawn",
         Command::WorldAudioUpdate { .. } => "world_audio_update",
         Command::WorldAudioEvent { .. } => "world_audio_event",
@@ -2400,6 +2409,8 @@ mod world_audio_tests {
             (json!({"kind":"engine_inspect","system":"world_tuning:props"}), true),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"nope":1}}), false),
             (json!({"kind":"world_set_tuning","domain":"roads","patch":{}}), false),
+            (json!({"kind":"world_reset_moved_props"}), true),
+            (json!({"kind":"world_reset_prop","id":7}), true),
         ] {
             let c: Command = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(c.validate(), ok, "{value}");
@@ -2413,6 +2424,8 @@ mod world_audio_tests {
                 sdk.world.set_tuning('living_world', {skater_fade = {fade_seconds = 2}})
                 sdk.world.set_tuning('living_world', nil)
                 sdk.world.tuning('t', 'carry')
+                sdk.world.reset_moved_props()
+                sdk.world.reset_prop(7)
             end
             return M
         "#).unwrap();
@@ -2422,7 +2435,7 @@ mod world_audio_tests {
         let mut vm = Vm::new(&root, &manifest, &BTreeMap::new(), &Value::Null).unwrap();
         let cmds = vm.call("on_update", json!({"dt": 0.016}), &json!({})).unwrap();
         let kinds: Vec<_> = cmds.iter().map(command_kind).collect();
-        assert_eq!(kinds, ["world_set_tuning", "world_set_tuning", "request"]);
+        assert_eq!(kinds, ["world_set_tuning", "world_set_tuning", "request", "world_reset_moved_props", "world_reset_prop"]);
         assert!(cmds.iter().all(Command::validate));
         assert!(matches!(&cmds[1], Command::WorldSetTuning { patch: None, .. }), "nil restores");
         let _ = std::fs::remove_dir_all(root);

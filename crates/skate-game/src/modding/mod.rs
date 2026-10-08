@@ -1030,6 +1030,16 @@ fn apply_one(
         }
         Command::AudioSeed { seed } => crate::game_audio::set_seed(world, id, seed)?,
         Command::WorldSetTuning { domain, patch } => world_tuning::set(world, id, &domain, patch)?,
+        Command::WorldResetProp { id } => {
+            if let Some(mut physics) = world.get_resource_mut::<crate::physics::GamePhysics>() {
+                physics.reset_prop(id);
+            }
+        }
+        Command::WorldResetMovedProps {} => {
+            if let Some(mut physics) = world.get_resource_mut::<crate::physics::GamePhysics>() {
+                physics.reset_moved_props();
+            }
+        }
         Command::AudioRule { key, rule } => crate::game_audio::set_rule(world, id, &key, rule, |world, path| audio::load_native_clip(world, mods, id, path))?,
         Command::WorldAudioSpawn { key, object, options } => world_audio::spawn(world, mods, id, key, object, options)?,
         Command::WorldAudioUpdate { key, options } => world_audio::update(world, mods, id, &key, options)?,

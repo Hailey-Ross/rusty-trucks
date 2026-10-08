@@ -577,6 +577,22 @@ impl PropCarry {
         Self { layout, layout_path, ..Self::default() }
     }
 
+    /// Drop saved placements (props reset to their spawn pose) and rewrite the sidecar.
+    pub(crate) fn forget_layout(&mut self, ids: &[u32]) {
+        let before = self.layout.len();
+        for id in ids {
+            self.layout.remove(id);
+        }
+        if self.layout.len() == before {
+            return;
+        }
+        if let Some(path) = &self.layout_path {
+            if let Err(error) = super::prop_layout::save(path, &self.layout) {
+                warn!("SKATE_PROP_LAYOUT: {}: {error}", path.display());
+            }
+        }
+    }
+
     /// Saved pose overrides, for load-time application.
     pub(crate) fn layout(&self) -> &BTreeMap<u32, super::prop_layout::PropPose> {
         &self.layout

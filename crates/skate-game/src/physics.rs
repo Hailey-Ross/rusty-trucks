@@ -284,6 +284,45 @@ impl GamePhysics {
         dynamics.step_with_actors(&self.world, layer, volumes, &self.actor_prop_volumes);
     }
 
+    /// Reset ONE object (retail cMsgResetDMO, doc 27 "Object Dropper and reset"): the phone's
+    /// per-object Reset posts it, PlayerUI's handler 8289A048 calls the DMO manager's reset
+    /// (vtable 0x82323254 slot +36, 82C4B5F0), whose worker 82C4B780 looks up the object's spawn
+    /// record and puts the object back on the record's transform in one step (no fade or
+    /// tween in that path). Ours: the authored pose, at rest and asleep, collision rebaked, the
+    /// saved layout entry dropped. Refused (false) for an unknown id and for the held object
+    /// (NOT RETAIL YET: retail's held case is undecoded). The single authority for resets.
+    pub(crate) fn reset_prop(&mut self, id: u32) -> bool {
+        if self.prop_carry.held() == Some(id) {
+            return false;
+        }
+        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut())
+        else {
+            return false;
+        };
+        let Some(instance) = dynamics.reset_to_spawn(id) else { return false };
+        if let Some((origin, basis)) = dynamics.spawn_pose(id) {
+            if let Err(error) = layer.rebake(instance, basis.columns, origin) {
+                warn!("SKATE_PROP_RESET: rebake {id}: {error}");
+            }
+        }
+        self.prop_carry.forget_layout(&[id]);
+        info!("SKATE_PROP_RESET id={id}");
+        true
+    }
+
+    /// Mod convenience: [`Self::reset_prop`] for every prop away from its authored pose or with a
+    /// saved placement, in id order. NOT RETAIL YET: no retail "reset all moved objects" code was
+    /// found (the phone getter GetPhoneListCanResetAllObjectsOption exists, its handler is not
+    /// located). Returns the reset ids.
+    pub(crate) fn reset_moved_props(&mut self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self.prop_dynamics.as_ref().map(|d| d.moved_ids()).unwrap_or_default();
+        ids.extend(self.prop_carry.layout().keys().copied());
+        ids.sort_unstable();
+        ids.dedup();
+        ids.retain(|&id| self.reset_prop(id));
+        ids
+    }
+
     /// Offboard grab/carry/place of dynamic props (Phases 3-4).
     pub(crate) fn update_prop_carry(&mut self, tick: prop_carry::Tick, carrier: prop_carry::Carrier) {
         let previous = self.prop_carry.held();
