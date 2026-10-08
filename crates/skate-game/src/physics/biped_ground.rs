@@ -310,9 +310,14 @@ pub(crate) fn update(
         }
         // Drive the planar velocity through the controller's velocity
         // override (gate >= 0, zero blend time: the target is taken as is),
-        // so contacts and obstacle rejection still apply. At the grab frame:
-        // no override.
-        if velocity[0].abs() > 1e-4 || velocity[2].abs() > 1e-4 {
+        // so contacts and obstacle rejection still apply. Every held tick,
+        // also a zero step: retail moves the character to the follow point
+        // each tick (82D44A10 -> 82BDF268), so a skater already at the point
+        // stays there. Gating a zero step out handed the root back to the
+        // walking approach, which walked the skater into a resting prop
+        // until the hold rule failed (2026-10-08, exposed by the retail row
+        // solver: a prop at rest no longer jitters the follow point).
+        {
             // The override gate is the job's requested phase (296), which the
             // cadence 82D80720 also takes as a phase request over the
             // requested duration (288). Request the phase the cadence is at

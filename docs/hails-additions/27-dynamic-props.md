@@ -432,6 +432,24 @@ transfer, not solver rows. Held placement (`carry_to`) still bypasses sleep.
 cap inside 82AE27D0 (none found in the board port, the review's item 5 note); an in-game check that placed props now
 sleep and dragged props stay on the street.
 
+**Regression and fix: Move Object carry (2026-10-08).** With this change the two asset carry tests
+(`carry_direction_tests`: `move_object_follows_the_left_stick_in_the_skater_frame`, `move_object_with_the_board_hidden`)
+failed with "state flipped 2 times while holding RB": the skater grabbed, then dropped on hold tick 19. The prop was
+not the cause: it stayed awake (commanded, sleep counter cleared), on the floor, still to 1e-9 m/s. The cause was a
+gate in `biped_ground` that applied the Move Object velocity override only when the follow step exceeded 1e-4 m/s.
+The row solver holds the resting prop perfectly still, so once the follow point (+416) reached its target the step
+was exactly 0. The gate then handed the root back to the walking approach, which walked the skater 0.04 to 0.07 m per
+tick into the prop (root x -254.86 to -255.42 m, grip edge at -255.50 m) until the hold rule (82E08EE8 via
+`still_holds`) failed. Under the old impulse pass the resting jitter (about 1e-5 m per tick of follow motion) kept
+the step above the gate by chance. Evidence: the same test passes with `row_solver = false`, also with the retail
+sleep values, and fails with the row solver and the old 0.5 / 30 sleep values. Fix (`crates/skate-game/src/physics/biped_ground.rs`): the override runs on every
+held tick, a zero step included. Retail moves the character to the follow point every tick (82D44A10 -> 82BDF268),
+so a skater already at the point stays there (82BDF268 itself is still NOT RETAIL YET, see doc 26). No asserts or
+constants changed. After the fix: both carry tests and `downtown_dragged_props_rest_on_the_floor` pass, and all
+prop tests (ignored included) pass. The only failure under that name filter is `player_voice_properties`, an audio
+test that needs private data the setup does not have. skate-game 549 pass + 1 known failure
+(`setup::pipelines_accept...`), skate-mods 102 pass.
+
 ## Object Dropper and reset moved objects (2026-10-08, research milestone + reset port)
 
 **Problem.** The LB phone menu (session marker, `crates/skate-game/src/session_marker/`) draws the Object Dropper row
