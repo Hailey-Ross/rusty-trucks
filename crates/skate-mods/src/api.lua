@@ -375,8 +375,9 @@ function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",a
 -- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, ped_obstacles, npc_skater_props), dynamic props ("props": default / by_template prop tuning, collision_box)
 -- or prop carrying ("carry": grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed,
 -- turn_rate, grip_reach, linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller,
--- lever_rotation, lever_yaw, mass_speed, inertia_yaw_gain, let_go_distance, commanded_material, apply_at_com,
--- yaw_replaces_torque, ignore_vertical, wake_on_command, by_template[<MOBJ template>] = {material_held, material_free})
+-- lever_rotation, lever_yaw, mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal, hold_box_extents,
+-- record_272_speed_scale, commanded_material, apply_at_com,
+-- yaw_replaces_torque, ignore_vertical, wake_on_command, by_template[<MOBJ template>] = {material_held, material_free, record_272})
 -- or the dynamic shadow floor on the baked world ("shadows": world_floor =
 -- {r, g, b}, each 0..1, retail {0.05, 0.09, 0.13}) while this mod runs; nil restores
 -- this mod's patch of the domain, everything is restored when the mod stops. First writer wins.

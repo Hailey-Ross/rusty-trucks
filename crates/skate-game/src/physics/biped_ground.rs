@@ -231,12 +231,14 @@ pub(crate) fn update(
     // the OBJECT from them (82D45318, prop_carry) while the skater follows the
     // object's grab edge: 82D45D30 builds the skater's target frame from the
     // grab record, 82D46218 / 82D463D8 blend toward it, 82BDF268 moves the
-    // character there. Here the skater is pulled onto the grab frame published
-    // by prop_carry (one tick behind the prop) and turned to face the edge.
-    // NOT RETAIL YET: 82BDF268 (character move, step-up) and the frame blend
-    // rate (+1168) are not decoded; the walking job's velocity override
-    // stands in for them (full catch-up per tick, capped at the linear clamp),
-    // the facing snaps to the edge normal. The walking stick stays idle.
+    // character there. The frame blend is a snap at retail data (it only
+    // blends when the frame jumps >= 60 m per tick: physics_state_offboard
+    // +448 = 1.0 x 60, 82D46218), so the facing snaps to the edge normal as
+    // in retail. The skater target is the root moved by the step of the
+    // retail follow point +416 published by prop_carry (the step is bounded
+    // there, 82BD41B0), one tick behind the prop. NOT RETAIL YET: 82BDF268 itself (character sweep,
+    // step-up, weight +1124); the walking job's velocity override moves the
+    // root onto the target each tick. The walking stick stays idle.
     let moving_object = (p.state_2508 == 502 && physics.prop_carry.held().is_some())
         .then(|| physics.prop_carry.skater_target())
         .flatten()
@@ -244,10 +246,7 @@ pub(crate) fn update(
             let root = skater.animated_skeleton.roots.animation_to_world[3];
             let dt = physics.settings.step.simulation.time_step.max(1e-4);
             let (dx, dz) = (target.x - root[0], target.z - root[2]);
-            let cap = physics.prop_carry.locomotion().move_object.linear_clamp;
-            let speed = (dx * dx + dz * dz).sqrt() / dt;
-            let k = if speed > cap && speed > 0.0 { cap / speed } else { 1.0 } / dt;
-            let velocity = [dx * k, 0.0, dz * k, 0.0];
+            let velocity = [dx / dt, 0.0, dz / dt, 0.0];
             let wrap = |a: f32| (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
             let turn = wrap(facing.x.atan2(facing.z) - frame[2][0].atan2(frame[2][2]));
             (velocity, turn)

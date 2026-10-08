@@ -225,6 +225,12 @@ pub(crate) fn carry_settings(p: &CarryPatch) -> CarrySettings {
             mass_speed: p.mass_speed,
             inertia_yaw_gain: p.inertia_yaw_gain,
             let_go_distance: p.let_go_distance,
+            drop_board: p.drop_board,
+            follow_step: p.follow_step,
+            hold_angle_limit: p.hold_angle_limit,
+            hold_max_angle_to_horizontal: p.hold_max_angle_to_horizontal,
+            hold_box_extents: p.hold_box_extents,
+            record_272_speed_scale: p.record_272_speed_scale,
         },
         move_rules: {
             let r = crate::physics::prop_dynamics::MoveCommandRules::default();
@@ -234,7 +240,7 @@ pub(crate) fn carry_settings(p: &CarryPatch) -> CarrySettings {
                     .by_template
                     .iter()
                     .map(|(k, v)| {
-                        (k.clone(), crate::physics::prop_dynamics::PropMaterialBlocks { held: v.material_held, free: v.material_free })
+                        (k.clone(), crate::physics::prop_dynamics::PropMaterialBlocks { held: v.material_held, free: v.material_free, record_272: v.record_272 })
                     })
                     .collect(),
                 apply_at_com: p.apply_at_com.unwrap_or(r.apply_at_com),
@@ -293,14 +299,17 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             let by: serde_json::Map<String, Value> = r
                 .by_template
                 .iter()
-                .map(|(k, b)| (k.clone(), json!({"material_held": b.held, "material_free": b.free})))
+                .map(|(k, b)| (k.clone(), json!({"material_held": b.held, "material_free": b.free, "record_272": b.record_272})))
                 .collect();
             json!({"grab_bit": c.buttons.grab_bit, "placement_bit": c.buttons.placement_bit, "grab_range": c.grab_range,
                 "push_speed": m.push_speed, "pull_speed": m.pull_speed, "side_speed": m.side_speed, "turn_rate": l.turn_rate,
-                "grip_reach": l.grip_reach, "linear_clamp": m.linear_clamp, "yaw_clamp": m.yaw_clamp, "relatch": m.relatch,
+                "grip_reach": m.follow_reach, "linear_clamp": m.linear_clamp, "yaw_clamp": m.yaw_clamp, "relatch": m.relatch,
                 "slew_per_tick": m.slew_per_tick, "yaw_rate_feedback": m.yaw_rate_feedback, "linear_controller": g(m.linear_controller), "yaw_controller": g(m.yaw_controller),
                 "lever_rotation": curve(m.lever_rotation), "lever_yaw": curve(m.lever_yaw), "mass_speed": curve(m.mass_speed),
-                "inertia_yaw_gain": curve(m.inertia_yaw_gain), "let_go_distance": l.let_go_distance,
+                "inertia_yaw_gain": curve(m.inertia_yaw_gain), "let_go_distance": l.let_go_distance, "drop_board": l.drop_board,
+                "follow_step": m.follow_step, "hold_angle_limit": m.hold_angle_limit,
+                "hold_max_angle_to_horizontal": m.hold_max_angle_to_horizontal, "hold_box_extents": m.hold_box_extents,
+                "record_272_speed_scale": m.record_272_speed_scale,
                 "commanded_material": r.commanded_material, "apply_at_com": r.apply_at_com,
                 "yaw_replaces_torque": r.yaw_replaces_torque, "ignore_vertical": r.ignore_vertical,
                 "wake_on_command": r.wake_on_command, "by_template": by})
@@ -486,7 +495,7 @@ mod tests {
         let r = w.resource::<CarrySettings>().move_rules.clone();
         assert_eq!(r.commanded_material, [0.2, 0.0]);
         assert!(!r.apply_at_com && !r.wake_on_command && r.yaw_replaces_torque && r.ignore_vertical);
-        assert_eq!(r.by_template["template/bin"], PropMaterialBlocks { held: Some([0.5, 0.0]), free: Some([0.9, 0.1]) });
+        assert_eq!(r.by_template["template/bin"], PropMaterialBlocks { held: Some([0.5, 0.0]), free: Some([0.9, 0.1]), record_272: None });
         assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["material_free"], json!([0.9f32, 0.1f32]));
         clear_owner(&mut w, "dev.a");
         assert_eq!(w.resource::<CarrySettings>().move_rules, MoveCommandRules::default(), "mod disable restores retail");

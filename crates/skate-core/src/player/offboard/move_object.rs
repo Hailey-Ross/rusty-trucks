@@ -116,6 +116,38 @@ pub struct MoveObjectTuning {
     /// subtracts from its target. Retail 60 = 1/dt, image 0x822F860C loaded at
     /// 0x82D45C08 [code]. 0 (mods only) turns the feedback off.
     pub yaw_rate_feedback: f32,
+    /// Target velocity scale while the held record's +272 is non-zero
+    /// (82D45318, `cmpwi` on state+992, 2.0 at image 0x82060C50) [code].
+    /// Record+272 comes from the DMO's type data (82C4B960: data+312 set ->
+    /// 1 or 2), see [`MoveObjectInput::record_272`].
+    pub record_272_speed_scale: f32,
+    /// Hold qualification while grabbing (82D44A10 -> 82E08EE8 at the grip
+    /// distance +1128), from physics_state_offboard `default` [data]: grab
+    /// box half extents GrabBoxSizeGrabbing (+0), its offset GrabBoxOffset
+    /// (+32), GrabSplineAngleLimitGrabbing (+452, degrees, approach angle) and
+    /// GrabSplineMaxAngleToHorizontalGrabbing (+436, degrees, edge slope).
+    pub hold_box_extents: [f32; 3],
+    pub hold_box_offset: [f32; 3],
+    pub hold_angle_limit: f32,
+    pub hold_max_angle_to_horizontal: f32,
+    /// Skater follow (82D44A10 before 82BDF268) [code]: the follow point
+    /// (+416) steps toward the target frame's edge point (+192) moved
+    /// `follow_reach` (0.65, image 0x820BB0EC) along the latched frame toward
+    /// the skater, at the skater root height plus `follow_height` (0.72,
+    /// 0x8220E144). The step is the anchor velocity (+624) x `tick` plus the
+    /// rest clamped to `follow_step` m (0.1, 0x820641A8; 82BD41B0).
+    pub follow_reach: f32,
+    pub follow_height: f32,
+    pub follow_step: f32,
+    /// Anchor velocity (+624, 82D46610) [code + data]: the anchor is the grip
+    /// point moved `anchor_reach` toward the skater (96ECC98838ECCC11 = 0.7,
+    /// this collection), y dropped; v = keep x v + new x (anchor change / tick)
+    /// with keep 0.85 (0x822250F8) and new 0.15 (0x820994B4).
+    pub anchor_reach: f32,
+    pub anchor_velocity_keep: f32,
+    pub anchor_velocity_new: f32,
+    /// Retail tick (1/60, image 0x820849C8) used by the follow step.
+    pub tick: f32,
 }
 
 const fn graph(x: [f32; 8], y: [f32; 8]) -> PointGraph<8> {
@@ -149,6 +181,18 @@ impl Default for MoveObjectTuning {
             lever_coupling: -0.25,
             turning_threshold: 0.1,
             yaw_rate_feedback: 60.0,
+            record_272_speed_scale: 2.0,
+            hold_box_extents: [0.9, 0.8, 1.01],
+            hold_box_offset: [0.0, 1.0, 0.1],
+            hold_angle_limit: 80.0,
+            hold_max_angle_to_horizontal: 50.0,
+            follow_reach: 0.65,
+            follow_height: 0.72,
+            follow_step: 0.1,
+            anchor_reach: 0.7,
+            anchor_velocity_keep: 0.85,
+            anchor_velocity_new: 0.15,
+            tick: 1.0 / 60.0,
         }
     }
 }
@@ -202,6 +246,18 @@ impl MoveObjectTuning {
             lever_coupling: fin(self.lever_coupling, fallback.lever_coupling),
             turning_threshold: ok(self.turning_threshold, fallback.turning_threshold),
             yaw_rate_feedback: ok(self.yaw_rate_feedback, fallback.yaw_rate_feedback),
+            record_272_speed_scale: ok(self.record_272_speed_scale, fallback.record_272_speed_scale),
+            hold_box_extents: if self.hold_box_extents.iter().all(|v| v.is_finite() && *v >= 0.0) { self.hold_box_extents } else { fallback.hold_box_extents },
+            hold_box_offset: if self.hold_box_offset.iter().all(|v| v.is_finite()) { self.hold_box_offset } else { fallback.hold_box_offset },
+            hold_angle_limit: ok(self.hold_angle_limit, fallback.hold_angle_limit),
+            hold_max_angle_to_horizontal: ok(self.hold_max_angle_to_horizontal, fallback.hold_max_angle_to_horizontal),
+            follow_reach: fin(self.follow_reach, fallback.follow_reach),
+            follow_height: fin(self.follow_height, fallback.follow_height),
+            follow_step: ok(self.follow_step, fallback.follow_step),
+            anchor_reach: fin(self.anchor_reach, fallback.anchor_reach),
+            anchor_velocity_keep: if (0.0..=1.0).contains(&self.anchor_velocity_keep) { self.anchor_velocity_keep } else { fallback.anchor_velocity_keep },
+            anchor_velocity_new: if (0.0..=1.0).contains(&self.anchor_velocity_new) { self.anchor_velocity_new } else { fallback.anchor_velocity_new },
+            tick: if self.tick.is_finite() && self.tick > 0.0 { self.tick } else { fallback.tick },
         }
     }
 }
@@ -305,6 +361,9 @@ pub struct MoveObjectInput {
     pub yaw_inertia: f32,
     /// Skater's own contact normal (Player+16304), zero when free.
     pub contact_normal: [f32; 3],
+    /// Held record +272 non-zero (DMO type data, 82C4B960): the target
+    /// velocity is scaled by `record_272_speed_scale`.
+    pub record_272: bool,
 }
 
 /// One tick's output: the command plus what HELD_PROP logs.
@@ -404,6 +463,11 @@ pub fn command(tuning: &MoveObjectTuning, state: &mut MoveObjectController, inpu
     // 6. World direction from the latched frame.
     let (f, s) = (state.latched_forward, state.latched_side);
     let mut v = [f[0] * along + s[0] * across, 0.0, f[2] * along + s[2] * across];
+    // Record+272 [code, 82D45318 `cmpwi` on +992]: non-zero doubles v
+    // (2.0 at 0x82060C50) before the blocking clip and +1196 = |v|.
+    if input.record_272 {
+        v = v.map(|c| c * tuning.record_272_speed_scale);
+    }
     // 7. Blocking normal (decay + skater contact normal) clips the into-wall part.
     let n = input.contact_normal.map(finite);
     state.blocking = std::array::from_fn(|i| tuning.blocked_decay * state.blocking[i] + tuning.blocked_gain * n[i]);
@@ -459,9 +523,235 @@ pub fn command(tuning: &MoveObjectTuning, state: &mut MoveObjectController, inpu
     }
 }
 
+/// What entering Move Object does to the skateboard (SkateboardController,
+/// the state object's +76 pointer, field +448).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardOnGrab {
+    /// `LetGoOfSkateboard` 82D75440, then +448 = 2 (free): the board is
+    /// released as a free physics body where it is, with its velocity.
+    LetGo,
+    /// 82D755E0 (hide: collision off, retrieval reset), then +448 = 3.
+    Hide,
+    /// +448 untouched (+444 untouched too).
+    Keep,
+}
+
+/// Board part of the Move Object enter 82D442D0 (0x82D44304..0x82D44364)
+/// [code, TU3 recomp]: a switch on SkateboardController+448 (`cmplwi 5`,
+/// above 5 skips). 0 (stopped), 1 (held) and 5 (on the ground at the feet)
+/// let go and become 2; 4 (being retrieved) hides and becomes 3; 2 (free) and
+/// 3 (hidden) are kept. +444 is zeroed before either call, the new state is
+/// written after it. So grabbing an object drops a carried board where it is.
+pub fn board_on_grab(state_448: u32) -> BoardOnGrab {
+    match state_448 {
+        0 | 1 | 5 => BoardOnGrab::LetGo,
+        4 => BoardOnGrab::Hide,
+        _ => BoardOnGrab::Keep,
+    }
+}
+
+/// A two-point grab record for a straight edge from `a` to `b` (world
+/// space) with the approach vector (record+96) `approach`, built by the
+/// retail record layout (82585F58 through `Record::from_geometry`, identity
+/// object frame). Used for props until their authored grab splines are
+/// loaded (DMO physics definition +136, see the Move Object research note).
+pub fn edge_record(id: u32, a: [f32; 3], b: [f32; 3], approach: [f32; 3]) -> Option<super::grab_scene::Record> {
+    use super::grab_scene::{Descriptor, Geometry, Record, RecordInput};
+    let geometry = Geometry {
+        id: id.max(1),
+        points: vec![[a[0], a[1], a[2], 1.0], [b[0], b[1], b[2], 1.0]],
+        approach_vectors: vec![[approach[0], approach[1], approach[2], 0.0]],
+        word_60: 0,
+    };
+    Record::from_geometry(RecordInput {
+        descriptor: Descriptor { kind: 2, id: id.max(1) },
+        geometry: std::sync::Arc::new(geometry),
+        frame: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+        object_vector_128: [0.0; 4],
+        assembly: None,
+        word_272: 0,
+    })
+    .ok()
+}
+
+/// Held re-qualification of 82D44A10 [code]: CanGrabSpline 82E08EE8 on the
+/// held record (state+720) at the grip distance (+1128) along it, from the
+/// skater reference point (+272, bone 23), with the grab box placed on the
+/// skater frame (Player+192) by 82D2E250 from GrabBoxSizeGrabbing /
+/// GrabBoxOffset and the *Grabbing angle limits in degrees (x 0x3C8EFA35).
+/// False = retail stops holding (flag 0x20 clears, no command is sent).
+/// `skater_frame` rows: right, up, forward, position.
+pub fn still_holds(
+    tuning: &MoveObjectTuning,
+    record: &super::grab_scene::Record,
+    reference: [f32; 3],
+    grip_distance: f32,
+    skater_frame: [[f32; 4]; 4],
+) -> bool {
+    let v4 = |v: [f32; 3], w: f32| [v[0], v[1], v[2], w];
+    let bounds = super::ground_sync::board_bounds(
+        skater_frame,
+        v4(tuning.hold_box_offset, 0.0),
+        v4(tuning.hold_box_extents, 0.0),
+    );
+    let radians = f32::from_bits(0x3c8e_fa35);
+    let limits = super::ground_sync::BoardLimits {
+        margin: 0.0,
+        angle_a: tuning.hold_angle_limit * radians,
+        angle_b: tuning.hold_max_angle_to_horizontal * radians,
+    };
+    super::grab_scene::qualify_at(record, v4(reference, 1.0), grip_distance, bounds, limits)
+}
+
+/// The skater side of the held update (82D44A10 / 82D46610): where the
+/// skater's body is moved to (82BDF268 target, state +416). Plain data per
+/// player slot, deterministic per retail tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SkaterFollow {
+    /// +416: follow point (starts at the body position Skeleton+15872).
+    pub point: [f32; 3],
+    /// +608: previous anchor (grip point moved toward the skater, y 0).
+    pub anchor: [f32; 3],
+    /// +624: smoothed anchor velocity (m/s, horizontal).
+    pub velocity: [f32; 3],
+}
+
+impl SkaterFollow {
+    fn anchor_of(tuning: &MoveObjectTuning, grip: [f32; 3], back: [f32; 3]) -> [f32; 3] {
+        [grip[0] + back[0] * tuning.anchor_reach, 0.0, grip[2] + back[2] * tuning.anchor_reach]
+    }
+
+    /// Grab: +416 = body position (82D442D0, Skeleton+15872), +624 = 0
+    /// (82D43D70 reset), +608 = anchor of the new grip (82D444A0 begin).
+    /// `back` is the latched frame row +368: horizontal, from the edge
+    /// toward the skater.
+    pub fn begin(tuning: &MoveObjectTuning, body: [f32; 3], grip: [f32; 3], back: [f32; 3]) -> Self {
+        Self { point: body, anchor: Self::anchor_of(tuning, grip, back), velocity: [0.0; 3] }
+    }
+
+    /// 82D46610 (before the object command, so `back` is the previous
+    /// tick's latch): v = keep v + new (anchor - previous anchor) / tick.
+    pub fn update_anchor(&mut self, tuning: &MoveObjectTuning, grip: [f32; 3], back: [f32; 3]) {
+        let anchor = Self::anchor_of(tuning, grip, back);
+        let inv = 1.0 / tuning.tick;
+        self.velocity = std::array::from_fn(|i| {
+            tuning.anchor_velocity_keep * self.velocity[i] + tuning.anchor_velocity_new * (anchor[i] - self.anchor[i]) * inv
+        });
+        self.anchor = anchor;
+    }
+
+    /// The follow step after the object command (82D44A10 0x82D45110..):
+    /// target = edge point (+192) + `follow_reach` x back (+368, this tick's
+    /// latch), y = skater root height + `follow_height`; step = v tick +
+    /// clamp_length(target - point - v tick, `follow_step`) (82BD41B0);
+    /// point += step. Returns the new point.
+    pub fn step(&mut self, tuning: &MoveObjectTuning, edge_point: [f32; 3], back: [f32; 3], root_y: f32) -> [f32; 3] {
+        let target = [
+            edge_point[0] + back[0] * tuning.follow_reach,
+            root_y + tuning.follow_height,
+            edge_point[2] + back[2] * tuning.follow_reach,
+        ];
+        let desired: [f32; 3] = std::array::from_fn(|i| target[i] - self.point[i]);
+        let previous = self.velocity.map(|v| v * tuning.tick);
+        let rest = clamp_length(std::array::from_fn(|i| desired[i] - previous[i]), tuning.follow_step);
+        self.point = std::array::from_fn(|i| self.point[i] + previous[i] + rest[i]);
+        self.point
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grabbing_lets_go_of_a_carried_board_and_hides_a_returning_one() {
+        // 82D442D0 switch over SkateboardController+448.
+        assert_eq!(board_on_grab(0), BoardOnGrab::LetGo);
+        assert_eq!(board_on_grab(1), BoardOnGrab::LetGo);
+        assert_eq!(board_on_grab(5), BoardOnGrab::LetGo);
+        assert_eq!(board_on_grab(4), BoardOnGrab::Hide);
+        assert_eq!(board_on_grab(2), BoardOnGrab::Keep);
+        assert_eq!(board_on_grab(3), BoardOnGrab::Keep);
+        assert_eq!(board_on_grab(6), BoardOnGrab::Keep, "above 5 skips the switch");
+    }
+
+    #[test]
+    fn record_272_doubles_the_target_velocity() {
+        // 82D45318: v x 2.0 (0x82060C50) when record+272 is non-zero.
+        let t = MoveObjectTuning::default();
+        let plain = command(&t, &mut MoveObjectController::default(), &input(1.0, 0.0, 0.0));
+        let flagged = command(&t, &mut MoveObjectController::default(), &MoveObjectInput { record_272: true, ..input(1.0, 0.0, 0.0) });
+        assert!((plain.target_velocity[2] - 3.0).abs() < 1e-6);
+        assert!((flagged.target_velocity[2] - 6.0).abs() < 1e-6);
+    }
+
+    fn skater_frame(position: [f32; 3], forward: [f32; 3]) -> [[f32; 4]; 4] {
+        let right = side_of(forward);
+        [
+            [right[0], right[1], right[2], 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [forward[0], forward[1], forward[2], 0.0],
+            [position[0], position[1], position[2], 1.0],
+        ]
+    }
+
+    #[test]
+    fn hold_qualification_follows_the_retail_box_and_angles() {
+        // A 1 m edge 0.65 m ahead at 0.5 m height, approach vector toward the
+        // skater; grab box GrabBoxSizeGrabbing (0.9, 0.8, 1.01) at
+        // GrabBoxOffset (0, 1, 0.1): z 0.1..2.12, y 0.2..1.8, x -0.9..0.9.
+        let t = MoveObjectTuning::default();
+        let r = edge_record(7, [-0.5, 0.5, 0.65], [0.5, 0.5, 0.65], [0.0, 0.0, -1.0]).unwrap();
+        let hold = |position: [f32; 3], forward: [f32; 3]| {
+            still_holds(&t, &r, [position[0], position[1] + 0.9, position[2]], 0.5, skater_frame(position, forward))
+        };
+        assert!(hold([0.0; 3], [0.0, 0.0, 1.0]), "facing the edge inside the box");
+        // Grip 3.65 m ahead: beyond the box's far end (2.12 m).
+        assert!(!hold([0.0, 0.0, -3.0], [0.0, 0.0, 1.0]), "too far behind");
+        // Facing along the edge: |dot(forward, edge)| = 1, not < 0.8.
+        assert!(!hold([0.0; 3], [1.0, 0.0, 0.0]), "facing along the edge");
+        // 1.5 m ahead (still in the box) but past the edge: the reach points
+        // away from -approach (180 deg > 80 deg).
+        assert!(!hold([0.0, 0.0, 1.5], [0.0, 0.0, -1.0]), "on the far side");
+        // 30 deg off the edge normal: within the 80 deg approach limit.
+        let (s, c) = 30f32.to_radians().sin_cos();
+        assert!(hold([0.0; 3], [s, 0.0, c]), "turned 30 deg");
+    }
+
+    #[test]
+    fn skater_follow_steps_at_most_0_1_m_beyond_the_anchor_velocity() {
+        let t = MoveObjectTuning::default();
+        let back = [0.0, 0.0, -1.0];
+        let grip = [0.0, 0.5, 0.0];
+        let mut f = SkaterFollow::begin(&t, [0.0, 0.9, -1.0], grip, back);
+        assert_eq!(f.anchor, [0.0, 0.0, -0.7]);
+        // Still prop: velocity stays 0, the point moves 0.1 m per tick toward
+        // edge - 0.65 back at root + 0.72 = (0, 0.72, -0.65).
+        f.update_anchor(&t, grip, back);
+        assert_eq!(f.velocity, [0.0; 3]);
+        let before = f.point;
+        let after = f.step(&t, grip, back, 0.0);
+        let moved = ((after[0] - before[0]).powi(2) + (after[1] - before[1]).powi(2) + (after[2] - before[2]).powi(2)).sqrt();
+        assert!((moved - 0.1).abs() < 1e-6, "first step {moved}");
+        for _ in 0..3 {
+            f.update_anchor(&t, grip, back);
+            f.step(&t, grip, back, 0.0);
+        }
+        // Distance was 0.3936 m: four ticks reach the target exactly.
+        let target = [0.0, 0.72, -0.65];
+        assert!(f.point.iter().zip(target).all(|(a, b)| (a - b).abs() < 1e-6), "{:?}", f.point);
+        // Prop moving at 3 m/s along +Z: anchor velocity 0.85 v + 0.15 x 3
+        // converges to 3 m/s and the point tracks the moving target.
+        let mut z = 0.0;
+        for _ in 0..600 {
+            z += 3.0 * t.tick;
+            let g = [0.0, 0.5, z];
+            f.update_anchor(&t, g, back);
+            f.step(&t, g, back, 0.0);
+        }
+        assert!((f.velocity[2] - 3.0).abs() < 1e-3, "anchor velocity {}", f.velocity[2]);
+        assert!((f.point[2] - (z - 0.65)).abs() < 1e-3, "tracks {} vs {}", f.point[2], z - 0.65);
+    }
 
     fn input(mz: f32, mx: f32, rot: f32) -> MoveObjectInput {
         MoveObjectInput {
@@ -476,6 +766,7 @@ mod tests {
             mass: 50.0,
             yaw_inertia: 5.0,
             contact_normal: [0.0; 3],
+            record_272: false,
         }
     }
 

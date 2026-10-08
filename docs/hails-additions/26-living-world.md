@@ -2174,6 +2174,56 @@ plus the two skate-core lib failures
 `collision_feedback_tests::a_moving_group_8_body_reaches_native_impact_feedback_for_a_stationary_actor`), which
 fail identically at HEAD 0489702 (temporary worktree, same target dir).
 
+**Board drop, hold rule, skater follow (2026-10-08, later).** Problem: grabbing a prop kept the board in hand; the
+grab was dropped by our 1.0 m distance rule instead of retail's; the skater was pulled 0.35 m behind the grip at up
+to 20 m/s. Retail evidence [code, TU3 recomp, each address re-read for this change]:
+1. Enter 82D442D0 (0x82D44304..0x82D44364): a `bdzf` switch on SkateboardController+448 (above 5 skips). 0, 1 and 5
+   zero +444, call LetGoOfSkateboard 82D75440 and write +448 = 2 (the board becomes a free body where it is and
+   keeps its velocity); 4 zeroes +444, calls 82D755E0 (hide) and writes 3; 2 and 3 are kept.
+2. Hold rule in 82D44A10: CanGrabSpline 82E08EE8(record +720, reference bone 23 +272, grip distance +1128 splatted,
+   box from 82D2E250 with GrabBoxSizeGrabbing (+0) and GrabBoxOffset (+32), angles +452 (GrabSplineAngleLimitGrabbing,
+   80 deg, first angle test: reach vs -approach) and +436 (GrabSplineMaxAngleToHorizontalGrabbing, 50 deg, slope),
+   both x the degree-to-radian constant at 0x8206D110). Failing it clears holding (0x20).
+3. Skater follow, 82D44A10 0x82D45110..: target = edge point (+192) + 0.65 (0x820BB0EC) x latched row +368, y =
+   Player+240 y + 0.72 (0x8220E144); 82BD41B0(target - +416, +624 x dt, 0.1 (0x820641A8)) returns v dt plus the
+   rest clamped to 0.1 m; +416 += that step, then 82BDF268 moves the character. +624 (82D46610) = 0.85 v + 0.15 x
+   (anchor change / dt), anchor = grip + 0.7 (96ECC98838ECCC11) x back, y dropped.
+4. Frame blend 82D46218: rate = distance (+192 to +256) / (physics_state_offboard +448 x 60); only a ratio >= 1
+   starts a blend (flag 0x08, 82D463D8); otherwise the frame is set at once. At retail data (1.0) that is a jump of
+   60 m or more, so the facing snap we have is retail. No change.
+5. Record+272 (from DMO type data +312, 82C4B960) doubles the target velocity in 82D45318 (2.0 at 0x82060C50).
+
+Change:
+1. `move_object::board_on_grab` + `ground_board::enter_move_object` (called from the 502 enter in
+   `player_state/transition.rs`) let go / hide the board as above; `board_manager::Owner::hide`.
+2. `move_object::still_holds` (82E08EE8 through `grab_scene::qualify_at`, the 82E08DB8 tests at a given arc
+   distance) replaces the 1.0 m rule, also for the grab itself; `let_go_distance` stays as a mod-only engine rule,
+   default 0 = off.
+3. `move_object::SkaterFollow` (+416 / +608 / +624) replaces `grip_reach`; prop_carry publishes the root moved by
+   this tick's follow step (the displacement 82BDF268 gets); biped_ground applies it without the 20 m/s cap. A first
+   version targeted the follow point minus the live body (COM) offset: the COM swings with the animation and fed
+   back until the skater wiped out (asset-backed test, DownTown).
+4. Record+272: `MoveObjectInput::record_272`, per prop type `by_template[...].record_272` (default false: NOT
+   RETAIL YET, the DMO type data is not extracted), scale `record_272_speed_scale` (2.0).
+5. Interim grab record (NOT RETAIL YET): the held face's straight top edge (centre-height edges fell below the
+   grabbing box's y range, 0.2 to 1.8 m above the root, and dropped a bench at once). Retail grab splines come
+   from the DMO physics assembly definition +136 table, not in our assets: addresses recorded, no port.
+6. Moddability: `set_tuning('carry')` gains `drop_board`, `follow_step`, `hold_angle_limit`,
+   `hold_max_angle_to_horizontal`, `hold_box_extents`, `record_272_speed_scale`, per template `record_272`;
+   `grip_reach` now sets the follow reach (0.65). Box, offset and angles load from physics_state_offboard
+   `default`, anchor reach from the Move Object collection; all restored on mod disable.
+7. Leaving 502: unchanged; the selector leaves when the grab byte (OffBoard304 -> Processed2476 bit 21) clears on
+   every drop path; the asset-backed test checks BipedGround after the release.
+
+Verification: `cargo test -p skate-core move_object` 15 / 15 (board switch, record+272, hold box and angles, follow
+step and anchor velocity); `cargo test -p skate-game --bin skate3rust` 546 pass, 1 known
+(`setup::pipelines_accept_valid_group_outputs_when_fingerprint_changes`); asset-backed
+`carry_direction_tests` (DownTown, `--ignored`) 2 / 2 pass, including the new board state check (2 when carried,
+3 when hidden); `skate-mods` passes except the known `skyline_physics` (asset missing).
+
+Open: 82BDF268 (sweep, step-up, weight +1124) not decoded; the follow begins at the board-frame COM (our stand-in
+for Skeleton+15872); per prop type record+272 and grab splines need the DMO data.
+
 ## Car shadows from a bridge printed on the ground below, 2026-10-08
 
 **Problem.** Session 2026-10-07 12:14 (DownTown, player about [42.6, 15.8, 353]). User: "I did find a spot where

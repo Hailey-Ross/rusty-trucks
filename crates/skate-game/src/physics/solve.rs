@@ -72,6 +72,22 @@ fn advance_inner(
                 position: skate_core::math::Vector3::new(root[3][0], root[3][1], root[3][2]),
                 forward,
                 time_step: physics.settings.step.simulation.time_step,
+                // Retail Move Object inputs: Player+192, bone 23 (+272),
+                // Skeleton+15872 (+416 at the grab).
+                skeleton: Some(super::prop_carry::CarrierSkeleton {
+                    frame: skater.player_input.processed.effective_anim_transform_192.map(|v| v.map(f32::from_bits)),
+                    reference: {
+                        let b = skate_core::physics::skeleton_animation_record::compose_affine(
+                            &skater.animated_skeleton.roots.animation_to_world,
+                            &skater.animated_skeleton.record.pose[23],
+                        )[3];
+                        skate_core::math::Vector3::new(b[0], b[1], b[2])
+                    },
+                    body: {
+                        let c = skater.animated_skeleton.board_frames.com_frame[3];
+                        skate_core::math::Vector3::new(c[0], c[1], c[2])
+                    },
+                }),
             },
         );
     }

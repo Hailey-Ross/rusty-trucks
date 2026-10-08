@@ -219,6 +219,10 @@ pub(crate) struct PropMaterialBlocks {
     /// (retail restores the DMO's data pair +316 / +324 or +320 / +328, not
     /// read yet).
     pub free: Option<MaterialBlock>,
+    /// Record+272 of this prop type (Move Object speeds x
+    /// `record_272_speed_scale`); `None` = false (retail per DMO type data
+    /// +312, 82C4B960, not extracted yet).
+    pub record_272: Option<bool>,
 }
 
 /// How a Move Object command reaches the held body (retail interface slot 9
@@ -910,6 +914,7 @@ impl PropDynamics {
             velocity: body.rates.linear_velocity,
             mass: if body.inertia.inverse_mass > 0.0 { 1.0 / body.inertia.inverse_mass } else { f32::INFINITY },
             yaw_inertia: if inverse_yaw > 0.0 { 1.0 / inverse_yaw } else { f32::INFINITY },
+            record_272: self.move_rules.by_template.get(&body.template).and_then(|b| b.record_272).unwrap_or(false),
         })
     }
 
@@ -2038,6 +2043,7 @@ mod tests {
             position: Vector3::new(0., super::super::ground::HEIGHT + 0.9, z),
             forward: Vector3::new(0., 0., 1.),
             time_step: simulation().time_step,
+            skeleton: None,
         }
     }
 
@@ -2197,6 +2203,7 @@ mod tests {
                     mass,
                     yaw_inertia: 1.0,
                     contact_normal: [0.0; 3],
+                    record_272: false,
                 };
                 v += command(&t, &mut state, &input).linear[2] * dt;
                 z += v * dt;
@@ -2815,6 +2822,7 @@ mod tests {
             position: Vector3::new(0., SIDEWALK_Y + 0.9, -(half[2] + 0.6)),
             forward: Vector3::new(0., 0., 1.),
             time_step: dt,
+            skeleton: None,
         };
         carry.update(&mut dynamics, tick(), at);
         assert_eq!(carry.held(), Some(id), "grab failed");
@@ -2903,6 +2911,7 @@ mod tests {
             position: Vector3::new(0.3, STREET_Y + 0.9, CURB_Z + 1.2 + half[2] + 0.6),
             forward: Vector3::new(0., 0., -1.),
             time_step: dt,
+            skeleton: None,
         };
         carry.update(&mut dynamics, tick(), at);
         assert_eq!(carry.held(), Some(id), "grab failed");
@@ -2946,6 +2955,7 @@ mod tests {
                 position: Vector3::new(0., SIDEWALK_Y + 0.9, -4.0 - (half[2] + 0.6)),
                 forward: Vector3::new(0., 0., 1.),
                 time_step: dt,
+                skeleton: None,
             };
             carry.update(&mut dynamics, tick(), at);
             assert_eq!(carry.held(), Some(id), "{name}: grab failed");
@@ -2988,7 +2998,7 @@ mod tests {
         assert_eq!(dynamics.contact_material(0, free), free, "block not restored after commands stopped");
         // Per prop type override (mod) and the old wake rule.
         let mut rules = MoveCommandRules::default();
-        rules.by_template.insert("template/crate".into(), PropMaterialBlocks { held: Some([0.4, 0.0]), free: Some([0.9, 0.0]) });
+        rules.by_template.insert("template/crate".into(), PropMaterialBlocks { held: Some([0.4, 0.0]), free: Some([0.9, 0.0]), record_272: None });
         rules.wake_on_command = false;
         dynamics.set_move_rules(rules);
         assert_eq!(dynamics.contact_material(0, free).dynamic_friction, 0.9);
@@ -3122,6 +3132,7 @@ mod tests {
                 position: Vector3::new(spawn.x, floor + 0.9, z),
                 forward,
                 time_step: dt,
+                skeleton: None,
             };
             use skate_core::player::state::PhysicalStateId::{BipedGround, OffBoardPushing};
             let mut carry = crate::physics::prop_carry::PropCarry::default();

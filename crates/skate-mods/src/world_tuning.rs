@@ -28,7 +28,11 @@
 //!   change times this is the measured yaw rate the yaw controller tracks; 0 = off),
 //!   `linear_controller` / `yaw_controller`
 //!   (`[p, filtered, d, filter]`, 20 / 0 / 40 / 0.1), the curves `lever_rotation`, `lever_yaw`,
-//!   `mass_speed`, `inertia_yaw_gain` (`[[8 x], [8 y]]`) and `let_go_distance` (m).
+//!   `mass_speed`, `inertia_yaw_gain` (`[[8 x], [8 y]]`), `let_go_distance` (m, 0 = off = retail), `drop_board`
+//!   (grabbing a prop drops a carried board, retail true), `follow_step` (0.1 m), `hold_angle_limit` /
+//!   `hold_max_angle_to_horizontal` (80 / 50 deg), `hold_box_extents` ([0.9, 0.8, 1.01]),
+//!   `record_272_speed_scale` (2.0) and per template `record_272`. `grip_reach` sets the retail follow
+//!   reach (0.65 m).
 //! - `shadows`: `world_floor = {r, g, b}`, the lightest a dynamic object's shadow can make the baked
 //!   world (each 0..=1, in the shader's squared lightmap space). Retail {0.05, 0.09, 0.13}: the
 //!   constant every retail world receiver shader adds to its shadow-map visibility before taking
@@ -205,8 +209,20 @@ pub struct CarryPatch {
     pub mass_speed: Option<[[f32; 8]; 2]>,
     /// Curve yaw inertia -> yaw gain.
     pub inertia_yaw_gain: Option<[[f32; 8]; 2]>,
-    /// Metres the skater may fall behind its grab point before letting go (engine default 1.0).
+    /// Metres the skater may fall behind its grab point before letting go (engine rule for mods; default 0 = off, retail lets go by record qualification).
     pub let_go_distance: Option<f32>,
+    /// Grabbing a prop drops a carried board (retail true, 82D442D0 -> LetGoOfSkateboard 82D75440).
+    pub drop_board: Option<bool>,
+    /// Max change of the skater follow step per tick in m (retail 0.1, 82BD41B0 in 82D44A10).
+    pub follow_step: Option<f32>,
+    /// Hold qualification approach angle limit in degrees (retail GrabSplineAngleLimitGrabbing 80).
+    pub hold_angle_limit: Option<f32>,
+    /// Hold qualification edge slope limit in degrees (retail GrabSplineMaxAngleToHorizontalGrabbing 50).
+    pub hold_max_angle_to_horizontal: Option<f32>,
+    /// Hold qualification grab box half extents (retail GrabBoxSizeGrabbing 0.9, 0.8, 1.01).
+    pub hold_box_extents: Option<[f32; 3]>,
+    /// Target speed scale for prop types with record+272 set (retail 2.0).
+    pub record_272_speed_scale: Option<f32>,
     /// Parameter block `[a, b]` every held (commanded) prop switches to (retail [0.03, 0.02]).
     pub commanded_material: Option<[f32; 2]>,
     /// Linear command at the centre of mass (retail true; false = at the grip point, lever torque).
@@ -230,6 +246,9 @@ pub struct CarryMaterialPatch {
     pub material_held: Option<[f32; 2]>,
     /// Block when let go (default: the prop's authored material).
     pub material_free: Option<[f32; 2]>,
+    /// Record+272 for this prop type: Move Object target speeds x `record_272_speed_scale`
+    /// (retail per DMO type data +312, not extracted yet; default false).
+    pub record_272: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -323,10 +342,11 @@ impl Merge for CarryPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed, turn_rate, grip_reach,
             linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller, lever_rotation, lever_yaw,
-            mass_speed, inertia_yaw_gain, let_go_distance, commanded_material, apply_at_com, yaw_replaces_torque,
+            mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal,
+            hold_box_extents, record_272_speed_scale, commanded_material, apply_at_com, yaw_replaces_torque,
             ignore_vertical, wake_on_command);
         for (k, v) in &b.by_template {
-            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free); }).or_insert_with(|| v.clone());
+            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, record_272); }).or_insert_with(|| v.clone());
         }
     }
 }
@@ -383,7 +403,8 @@ impl CarryPatch {
             && self.placement_bit.is_none_or(|b| b < 32)
             && finite(self.grab_range)
             && [self.push_speed, self.pull_speed, self.side_speed, self.turn_rate, self.grip_reach,
-                self.linear_clamp, self.yaw_clamp, self.relatch, self.slew_per_tick, self.yaw_rate_feedback, self.let_go_distance]
+                self.linear_clamp, self.yaw_clamp, self.relatch, self.slew_per_tick, self.yaw_rate_feedback, self.let_go_distance,
+                self.follow_step, self.hold_angle_limit, self.hold_max_angle_to_horizontal, self.record_272_speed_scale]
                 .into_iter()
                 .all(|v| finite(v) && v.is_none_or(|v| v >= 0.0))
             && [self.linear_controller, self.yaw_controller]
@@ -394,6 +415,7 @@ impl CarryPatch {
                 .into_iter()
                 .flatten()
                 .all(|c| c.iter().flatten().all(|v| v.is_finite()) && c[0].windows(2).all(|p| p[0] <= p[1]))
+            && self.hold_box_extents.is_none_or(|e| e.iter().all(|v| v.is_finite() && *v >= 0.0 && *v <= MAX_NUMBER))
             && self.commanded_material.is_none_or(material_block)
             && self.by_template.len() <= MAX_TEMPLATES
             && self.by_template.iter().all(|(k, v)| {

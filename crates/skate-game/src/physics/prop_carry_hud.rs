@@ -86,6 +86,7 @@ fn present(
                 skate_core::math::Vector3::new(0.0, 0.0, 1.0)
             },
             time_step: physics.period().as_secs_f32(),
+            skeleton: None,
         };
         physics
             .prop_dynamics()

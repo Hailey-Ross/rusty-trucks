@@ -67,6 +67,13 @@ impl Owner {
             .let_go(fields, observation, &self.settings, effects);
     }
 
+    /// 82D755E0 (hide): collision off, alignment cleared, hand drive off,
+    /// retrieval restarted from the board frame, angular-only animation.
+    /// Does not assign state448 (the caller writes 3 after it).
+    pub(crate) fn hide(&mut self, observation: &Observation, effects: &mut Effects<'_>) {
+        self.state.hide(observation, effects);
+    }
+
     pub(crate) fn stop(
         &mut self,
         fields: &mut SkateboardControllerFields,
