@@ -234,7 +234,6 @@ Multiplayer: an NPC is reproducible from its spawn record, the console tick and 
 Moddability: lines are keyed by retail id in a shared map a content overlay can extend or patch; looks by character
 key (`NpcSkaterLooks`); NPC events are messages; spawn / despawn go through the population (stable ids). The
 `sdk.living_world` NPC surface is designed below (open items) and comes with the mod milestone.
-```
 
 ## Change: peds milestone M2, the ped body
 
@@ -300,7 +299,6 @@ Multiplayer: the look is a function of the spawn record; the body steps once per
 tick; a client rebuilds the same ped from the same record. Moddability: `PedLooks` (category entity lists,
 entity model / animation set, recipe GLB), `PedEvent`; restoring `PedLooks::default()` undoes a mod for new
 spawns. `sdk.living_world` ped calls come with the mod milestone.
-```
 
 Plan line for doc 26 (milestone table): "peds M2 ped body: done (looks, animation player, foot plants; TestPath
 until M3)". Open-questions additions: the 4 parked items below.
@@ -364,7 +362,6 @@ Python 4.
 
 Credits: NavPower v23 constants cross-checked against DumbadsSkate3ModdingTools by Ethanw05 (credits there to
 SunJay, Dumbad, RenderWareGavin, Tuukkas); recomp: skate3recomp / rexglue / Xenia (code reading and PEDXYZ traces).
-```
 
 Plan line for doc 26: "peds M3 navigation: done (NavPower navmesh decoded, retail NoRoad wander, avoidance;
 crosswalk rule as mod option since retail never uses it)". Open-questions additions: items 1-5 below.
