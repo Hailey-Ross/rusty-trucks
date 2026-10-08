@@ -55,13 +55,13 @@ pub(super) fn advance(
         .riding
         .start_wheel_queries(&physics.board, &physics.world, physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world))?;
     let skeleton_queries = super::foot_ik_queries::query(&physics.world, &skater.skeleton)?;
-    let animation = bevy::log::info_span!("fixed_animation_graphs").in_scope(|| animation_phase::advance(
+    let animation = crate::frame_timing::hitch::phase(crate::frame_timing::hitch::PHASE_ANIM_GRAPHS, || bevy::log::info_span!("fixed_animation_graphs").in_scope(|| animation_phase::advance(
         physics,
         skater,
         controls,
         graphs,
         &physics.animation_profile,
-    ))
+    )))
     .map_err(|e| format!("Animation tick{}: {e}", physics.ticks))?;
     super::offboard_audit_trace::stage(tick, "animation", physics, skater, controls);
     #[cfg(debug_assertions)]
@@ -254,7 +254,7 @@ pub(super) fn advance(
         actions.value(68),
         actions.value(74) - actions.value(75),
     );
-    bevy::log::info_span!("fixed_collision_and_solve").in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets, carry_tick))?;
+    crate::frame_timing::hitch::phase(crate::frame_timing::hitch::PHASE_SOLVE, || bevy::log::info_span!("fixed_collision_and_solve").in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets, carry_tick)))?;
     super::offboard_audit_trace::stage(tick, "solve", physics, skater, controls);
     #[cfg(debug_assertions)]
     super::dev_trace::checkpoint("solve", physics, skater);
@@ -263,7 +263,7 @@ pub(super) fn advance(
     //ProcessOutput82DB6EE8 resets the packet before its component publishers.
     //All consumers of the preceding output have completed this frame's input.
     super::player_input::reset_outputs(&mut skater.player_input.physical);
-    bevy::log::info_span!("fixed_finish_skater").in_scope(|| physics.finish_skater(skater))?;
+    crate::frame_timing::hitch::phase(crate::frame_timing::hitch::PHASE_FINISH, || bevy::log::info_span!("fixed_finish_skater").in_scope(|| physics.finish_skater(skater)))?;
     super::offboard_audit_trace::stage(tick, "finish", physics, skater, controls);
     #[cfg(debug_assertions)]
     super::dev_trace::checkpoint("finish", physics, skater);
@@ -337,7 +337,8 @@ pub(super) fn advance(
     // velocity, not the independently rotating physical deck's velocity.
     let velocity = skater.centre_of_mass_output.velocity;
     let filtered = skater.player_state.filtered_output;
-    skater.scoring.advance(crate::scoring_runtime::Frame {
+    let scoring_started = std::time::Instant::now();
+    let scoring = skater.scoring.advance(crate::scoring_runtime::Frame {
         tick: tick as u32, dt: simulation.time_step,
         category: filtered.map_or(Default::default(), |f|f.category),
         state: skater.player_state.current() as u32,
@@ -356,7 +357,9 @@ pub(super) fn advance(
         landing:skater.landing_quality,teleported,
         // Revert Fill publishes its active lifetime in State66. State70 is unset.
         reverting:skater.player_input.physical.state.flag_66 != 0,
-    })?;
+    });
+    crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_SCORING, scoring_started);
+    scoring?;
     super::climbing::approach::advance(physics, skater, controls);
     skater.animation_input.finish_output_publication();
     skater.player_input.player.update_count_1316 =

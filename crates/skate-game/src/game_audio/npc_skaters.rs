@@ -101,14 +101,14 @@ impl NpcHost {
                     }
                     let muted = self.rules.as_deref().is_some_and(|r| {
                         let (name, index) = super::mod_audio::player_slot(&slot);
-                        r.mutes(&super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Post, source: super::mod_audio::Source::Npc, class, slot: name, id: index, owner })
+                        r.mutes(&super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Post, source: super::mod_audio::Source::Npc, class, slot: name, id: index, owner, hit: None })
                     });
                     if !muted {
                         self.nodes.insert((owner, slot), rt.post(id, &words));
                     }
                     if self.events.is_some() {
                         let (name, index) = super::mod_audio::player_slot(&slot);
-                        super::mod_audio::record(&mut self.events, super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Post, source: super::mod_audio::Source::Npc, class, slot: name, id: index, owner });
+                        super::mod_audio::record(&mut self.events, super::mod_audio::EventRow { kind: super::mod_audio::EventKind::Post, source: super::mod_audio::Source::Npc, class, slot: name, id: index, owner, hit: None });
                     }
                 }
                 Command::Redeliver { slot, words } => {
@@ -319,6 +319,7 @@ pub(crate) fn pre(host: &mut NpcHost, published: &NpcSkaters, native: &mut Nativ
         npc.loose_board = p.loose_board;
         let cmds = npc.process(m, &s, tuning, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut host.events, super::mod_audio::Source::Npc, id).rules(host.rules.as_deref()));
         host.apply(rt, id, cmds);
+        super::player_audio::body_hits(npc.body_hits(), super::mod_audio::Source::Npc, id, Some(cam), &mut host.events);
         // The routing's binds wait for the bed's step after the ticks (dropped without a bed).
         if !host.beds.contains_key(&id) {
             npc.routed.grains.clear();

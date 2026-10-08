@@ -324,7 +324,8 @@ function sdk.audio.mixmap(slot, object, instance, output)
 end
 -- Audio events (capability audio_events): subscribe{tags={'pop','land',...}} (empty = every row),
 -- subscribe(nil) stops. Tags: pop, land, grind_start, grind_end, footstep, horn, alarm, tazer,
--- body_fall, emitter, zone_change, speech. Observe only, one frame late; at most 256 rows a frame.
+-- body_fall, emitter, zone_change, speech, body_impact (a skater's body region hit: region, impact, tier,
+-- material, position). Observe only, one frame late; at most 256 rows a frame.
 function sdk.audio.subscribe(opts)
     if opts == nil then submit{kind="audio_subscribe"} else submit{kind="audio_subscribe",tags=opts.tags or {}} end
 end
@@ -371,14 +372,27 @@ function sdk.audio.frontend(name) submit{kind="audio_frontend",name=name} end
 function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",amount=amount} end
 
 -- World tuning (capability world_tuning): patch the living world ("living_world": npc_draw_distance,
--- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, ped_obstacles, npc_skater_props), dynamic props ("props": default / by_template prop tuning, collision_box)
+-- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, ped_obstacles, npc_skater_props, ped_vehicle_contact), dynamic props ("props": default / by_template prop tuning, collision_box)
 -- or prop carrying ("carry": grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed,
--- turn_rate, grip_reach) while this mod runs; nil restores
+-- turn_rate, grip_reach, linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller,
+-- lever_rotation, lever_yaw, mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal, hold_box_extents,
+-- record_272_speed_scale, commanded_material, upright_cos, apply_at_com,
+-- yaw_replaces_torque, ignore_vertical, wake_on_command, by_template[<MOBJ template>] = {material_held, material_free,
+-- material_free_upright, upright_pair, restitution, record_272})
+-- or the dynamic shadow floor on the baked world ("shadows": world_floor =
+-- {r, g, b}, each 0..1, retail {0.05, 0.09, 0.13}) while this mod runs; nil restores
 -- this mod's patch of the domain, everything is restored when the mod stops. First writer wins.
 sdk.world = { version = 1 }
 function sdk.world.set_tuning(domain, patch) submit{kind="world_set_tuning",domain=domain,patch=patch} end
 -- Read a domain as the game uses it now: the value arrives as sdk.commands.result(key).value.
 function sdk.world.tuning(key, domain) sdk.engine.inspect(key, "world_tuning:" .. domain) end
+-- Reset one dynamic prop (stable map id) to its authored pose, at rest; its saved layout entry is
+-- dropped (retail cMsgResetDMO; refused for the held prop). doc 27, Object Dropper and reset.
+function sdk.world.reset_prop(id) submit{kind="world_reset_prop",id=id} end
+-- Upright one prop (retail phone Upright, cMsgUprightDMO): 2 s self-righting window.
+function sdk.world.upright_prop(id) submit{kind="world_upright_prop",id=id} end
+-- Convenience (not a retail action): reset_prop for every moved or placed prop.
+function sdk.world.reset_moved_props() submit{kind="world_reset_moved_props"} end
 
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and
 -- skaters to the game's retail world audio (the same path engine systems use). Keys are scoped

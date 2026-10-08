@@ -376,6 +376,7 @@ fn update(
     mut materials: ResMut<Assets<CharacterMaterial>>,
     mut customiser: ResMut<Assets<crate::customiser_material::SkaterMaterial>>,
     mut shadow: ResMut<crate::retail_render::FrameStateData>,
+    shadow_settings: Option<Res<crate::retail_render::WorldShadowSettings>>,
     time: Res<Time>,
 ) {
     let Some(mut lighting) = lighting else {
@@ -402,8 +403,9 @@ fn update(
             &mut customiser,
         );
         lighting.display_sh = Some(displayed);
-        // Adapter floor: the local probe's direction-independent ambient term.
-        shadow.approach(sh[0].truncate(), time.delta_secs());
+        // Retail world shadow floor (a constant in every world receiver shader),
+        // not the local probe's ambient term: see RETAIL_WORLD_SHADOW_FLOOR.
+        shadow.enable_world_shadows(shadow_settings.map_or(crate::retail_render::RETAIL_WORLD_SHADOW_FLOOR, |s| s.floor));
     }
     for (remote, root) in &remote_roots {
         let sh = lighting.probes.sample(root.translation, fallback);

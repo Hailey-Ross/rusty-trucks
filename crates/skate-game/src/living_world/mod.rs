@@ -30,6 +30,7 @@ use std::path::Path;
 
 pub(crate) mod npc_skaters;
 pub(crate) mod peds;
+pub(crate) mod vehicle_contacts;
 pub(crate) mod vehicles;
 
 #[cfg(test)]
@@ -94,6 +95,10 @@ pub(crate) struct LivingWorldSettings {
     /// smallest half extent; `skate_core::living_world::peds::obstacles`). A mod may change or
     /// disable it; `LivingWorldSettings::default()` restores retail.
     pub ped_obstacles: skate_core::living_world::peds::ObstacleParams,
+    /// Traffic cars touching peds (retail: on, the ped is pushed out of the car and walks on; no
+    /// knock-down: `skate_core::living_world::peds::vehicle_contact`). A mod may switch the
+    /// detection or the push off; `LivingWorldSettings::default()` restores retail.
+    pub ped_vehicle_contact: skate_core::living_world::peds::VehicleContactParams,
     /// NPC skaters push dynamic props like the player's board and body (fix 19; retail NPC skaters
     /// are full skaters). A mod may switch it off; `LivingWorldSettings::default()` restores retail.
     pub npc_skater_props: npc_skaters::NpcSkaterPropContact,
@@ -143,6 +148,7 @@ impl Default for LivingWorldSettings {
             skater_line_chain: skate_core::living_world::replay::ChainConfig::retail(),
             ped_fade: skate_core::living_world::peds::PedFadeConfig::default(),
             ped_obstacles: skate_core::living_world::peds::ObstacleParams::default(),
+            ped_vehicle_contact: skate_core::living_world::peds::VehicleContactParams::default(),
             npc_skater_props: npc_skaters::NpcSkaterPropContact::default(),
             npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
             user_npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
@@ -658,5 +664,6 @@ impl Plugin for LivingWorldPlugin {
         npc_skaters::install(app);
         peds::install(app);
         vehicles::install(app);
+        vehicle_contacts::install(app);
     }
 }

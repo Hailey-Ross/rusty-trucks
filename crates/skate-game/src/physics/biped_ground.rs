@@ -227,25 +227,30 @@ pub(crate) fn update(
     }
     let frame = skater.biped_ground.ground.frame_80;
     // Move Object (502): the stock graph swaps OBGround's locomotion
-    // AttachIntents for MovingObjectNew's OB_ObjectMv set. Retail's producer
-    // 8259C4B0 gives the left stick no share of OB_ObjectMvRot (shipped curve
-    // all zero): the left stick moves skater and object as one pair in the
-    // skater's frame and only the right stick turns them. The walking
-    // controller turns toward its stick, so feeding it the carried stick
-    // rebuilt from the current facing made every non-forward stick chase
-    // itself round (the spin in the 2026-10-05 video). The pair's velocity
-    // and turn come from prop_carry::object_move_motion instead; the walking
-    // stick stays idle.
-    let moving_object = (p.state_2508 == 502 && physics.prop_carry.held().is_some()).then(|| {
-        super::prop_carry::object_move_motion(
-            frame[0],
-            frame[2],
-            extra.object_move_x,
-            extra.object_move_z,
-            extra.object_move_rotation,
-            physics.prop_carry.locomotion(),
-        )
-    });
+    // AttachIntents for MovingObjectNew's OB_ObjectMv set, and retail moves
+    // the OBJECT from them (82D45318, prop_carry) while the skater follows the
+    // object's grab edge: 82D45D30 builds the skater's target frame from the
+    // grab record, 82D46218 / 82D463D8 blend toward it, 82BDF268 moves the
+    // character there. The frame blend is a snap at retail data (it only
+    // blends when the frame jumps >= 60 m per tick: physics_state_offboard
+    // +448 = 1.0 x 60, 82D46218), so the facing snaps to the edge normal as
+    // in retail. The skater target is the root moved by the step of the
+    // retail follow point +416 published by prop_carry (the step is bounded
+    // there, 82BD41B0), one tick behind the prop. NOT RETAIL YET: 82BDF268 itself (character sweep,
+    // step-up, weight +1124); the walking job's velocity override moves the
+    // root onto the target each tick. The walking stick stays idle.
+    let moving_object = (p.state_2508 == 502 && physics.prop_carry.held().is_some())
+        .then(|| physics.prop_carry.skater_target())
+        .flatten()
+        .map(|(target, facing)| {
+            let root = skater.animated_skeleton.roots.animation_to_world[3];
+            let dt = physics.settings.step.simulation.time_step.max(1e-4);
+            let (dx, dz) = (target.x - root[0], target.z - root[2]);
+            let velocity = [dx / dt, 0.0, dz / dt, 0.0];
+            let wrap = |a: f32| (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            let turn = wrap(facing.x.atan2(facing.z) - frame[2][0].atan2(frame[2][2]));
+            (velocity, turn)
+        });
     let (stick_x, stick_z) = if moving_object.is_some() {
         (0.0, 0.0)
     } else {
@@ -296,9 +301,8 @@ pub(crate) fn update(
         |input| Ok::<_, String>(owner.geometry.consume(input)),
     )?;
     owner.geometry_adjustment = Some(job.geometry);
-    if let Some((velocity, yaw_rate)) = moving_object {
-        // Turn the pair by the right stick only, before the step integrates.
-        let angle = yaw_rate * physics.settings.step.simulation.time_step;
+    if let Some((velocity, angle)) = moving_object {
+        // Face the grab edge (the prop's turn carries the skater round).
         if angle != 0.0 {
             let motion = &mut owner.controller.state.motion;
             motion.frame_0[0] = super::prop_carry::yaw_row(motion.frame_0[0], angle);
@@ -306,8 +310,14 @@ pub(crate) fn update(
         }
         // Drive the planar velocity through the controller's velocity
         // override (gate >= 0, zero blend time: the target is taken as is),
-        // so contacts and obstacle rejection still apply. No stick: no turn.
-        if velocity[0] != 0.0 || velocity[2] != 0.0 {
+        // so contacts and obstacle rejection still apply. Every held tick,
+        // also a zero step: retail moves the character to the follow point
+        // each tick (82D44A10 -> 82BDF268), so a skater already at the point
+        // stays there. Gating a zero step out handed the root back to the
+        // walking approach, which walked the skater into a resting prop
+        // until the hold rule failed (2026-10-08, exposed by the retail row
+        // solver: a prop at rest no longer jitters the follow point).
+        {
             // The override gate is the job's requested phase (296), which the
             // cadence 82D80720 also takes as a phase request over the
             // requested duration (288). Request the phase the cadence is at
@@ -319,18 +329,15 @@ pub(crate) fn update(
             job.job.requested_duration = 1.0;
             job.job.override_duration = 0.0;
             job.job.animation_velocity = velocity;
-            // NOT RETAIL YET (fix20, docs 26): the walking controller's
-            // approach (82D7F458..FDD0) steps toward the contact target
-            // projected onto the FACING line, budget |velocity| * dt, so a
-            // pull or side-step came out as a forward step at the same
-            // speed (the "always one direction" bug). Retail 502 is its own
-            // class (ctor 82D43B90, Player+1776) and the walking job
-            // 82D4E2F8 -> 82D7C818 is only submitted from BipedGround's
-            // update 82D30D30, so retail Move Object does not take that
-            // facing-line approach; its own movement is not decoded. Until
-            // it is, drop the target-contact bit (2) for this job only: the
-            // approach then steps by the velocity (support contact bit 1
-            // still keeps the feet on the ground; no 0.3 m step-up).
+            // NOT RETAIL YET (part of the follow move above): the walking
+            // controller's approach (82D7F458..FDD0) steps toward the
+            // contact target projected onto the FACING line, so following a
+            // prop that slides along its edge would come out as a forward
+            // step. Retail 502 never runs that job (82D4E2F8 is only
+            // submitted from BipedGround 82D30D30); it moves the character
+            // with 82BDF268, not decoded. Until it is, the follow move drops
+            // the target-contact bit (2) for this job only (support contact
+            // bit 1 still keeps the feet on the ground; no 0.3 m step-up).
             job.job.flags &= !2;
         }
     }

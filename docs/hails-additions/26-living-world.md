@@ -779,7 +779,7 @@ pair through the walking controller's velocity override. The OB_ObjectMv inputs 
 a pull or side step came out as a forward step at the same speed. Walking never shows this because the walker
 turns to face its velocity.
 
-**Retail.** [code] State 502 is its own class: ctor 82D43B90 (1216 bytes, vtable 0x82317364), stored at
+**Retail.** [code] State 502 is its own class: ctor 82D43B90 (1216 bytes, vtable 0x82327364; an earlier note had 0x82317364, a typo), stored at
 Player+1776 by the player constructor (82DB2DFC); BipedGround's object (ctor 82D305D8) sits at Player+1764. The
 walking controller job 82D4E2F8 (the only caller of the ground controller 82D7C818) is submitted only from
 BipedGround's update 82D30D30, so retail Move Object does not take the facing-line approach. Its own movement
@@ -1333,9 +1333,353 @@ passed (tuning test covers `keep_facing`), skate-mods `world_tuning` 3 passed. D
 `npc_skater_keeps_its_facing_across_switches_on_the_exported_lines`: 212 rides, 882 switches, 130 kept by a flip,
 0 spins (130 without `keep_facing`), deterministic. Not seen in game yet.
 
+**Superseded (fix 23, 2026-10-08):** the flip is now a mod option, off by default; see "NPC skaters riding
+backwards" below.
+
 **Open.** The replay puppet plays one forward clip per phase; retail plays fakie riding clips while fakie and the
 character's stance (regular or goofy) mirrors them. Recorded in-line facing changes on the ground without air (about
 12 in DownTown) still turn the root within a node, where retail performs a revert. Both belong to the simulated tier.
+
+## NPC skaters riding backwards (fix 23), 2026-10-08
+
+**Problem.** User (test 6, 2026-10-05): "near the end of the session the skater randomly changed directions he was
+skating while still facing the original direction and skated backwards, grinded a ledge and then skated away
+backwards." Test 7: "Skating backward npcs is still a thing, you know that." The readout of test 6 showed the NPC
+switching lines (...9b79 node 57, ...9a7c node 102, ...9b79 node 87, ...9ab6 node 8) and staying backwards.
+
+**Root cause.** Two parts.
+1. The fix 16 rule (`begin_switch`): at a switch, when the new line's recorded skater faced more than 90 deg away
+   from the drawn skater, the cursor toggled `facing_flipped` and rode the whole new line turned 180 deg. Once the
+   drawn skater was backwards (a recorded fakie or switch stretch), every later switch kept it backwards on lines
+   recorded forward. Not retail: an own heuristic.
+2. The puppet root was the recorded skater quaternion. [data] On the exported lines (DownTown, Industrial,
+   University; 1,620 lines, 142,042 nodes moving at 1 m/s or more) that frame faces against the travel (more than
+   135 deg) on 28,102 nodes, while retail's path frame (below) faces against it (more than 90 deg) on only 11,598.
+   The two frames agree within 30 deg on 111,240 nodes and are about 180 deg apart on 24,251 (13,864 of them on
+   board-flipped nodes, 10,387 on clear ones), in 69 lines for most of their length and 382 lines in stretches:
+   the recorder rode switch (body turned round, board rolling nose first). The puppet has one stance, so those
+   stretches were drawn riding backwards even without a switch.
+
+**Evidence (retail).**
+- [code] `sub_8246C7F8` (line end, called from `sub_8246D3C0` on the last node): `sub_82458968` lists up to 16
+  lines, one is taken as is, several go through `sub_8246C1C8`; then it stores the line id (`+592/+600`), calls
+  `sub_82468AC8`, stores the node (`+816`) and the line pointer (`+800`, `sub_824587E8`). No facing, stance or flip
+  state is written at the switch. The branch choice `sub_8246BEE0` likewise stores line and node. (Corrected
+  2026-10-08: retail does keep a facing state, the flip at controller `+927`; the switch only leaves it alone. See
+  "Fix 23 corrected" below.)
+- [code] `sub_8246D560` (controller update) calls `sub_8246D3C0`, then rebuilds the path frame at controller `+144`
+  every update from the current line and node: `sub_8245A1A0` on node 0, else `sub_824734A8` (interpolated between
+  nodes), both through `sub_82453A58`: the node's board orientation (`sub_82453970`, node `+0x18`) with its X and Z
+  rows negated (turned 180 deg about up) when flags `+0x28` bit 0 (`m_IsBoardFlipped`) is set. The frame depends on
+  the current node only, never on an earlier line.
+- [data] That path frame faces the travel on 92 % of moving nodes (fakie on the rest), the recorded skater frame on
+  80 %. The node holds no switch or stance flag (flags bits 0..3: board flipped, crouched, airborne, off board).
+- [code] The one skater-frame reader decoded so far, `sub_8246B1F8` (node copy at controller `+712`, called from
+  `sub_8246A700`), takes the board frame's yaw (`sub_82453970`, no flip turn) minus the skater frame's yaw
+  (`sub_82453B70`, node `+28`), wraps it to +-180 deg and folds it by 180 deg into +-90 deg (constants read as pi,
+  2 pi and pi / 2 from the fold pattern, not from data), then stores it (`+856`, `+860`, flag `+931`): the half turn
+  between body and board is dropped there. Not yet read: the other readers `sub_82453C58`, `sub_82454648`,
+  `sub_8245A018`, `sub_82454B28`, the consumers of `+856/+860/+931`, and how the body and stance follow the path
+  frame.
+
+**Change.** Part 1 follows the retail code. Part 2 (`drawn_skater`) is NOT RETAIL YET: it is backed by the data and
+by one decoded retail reader (below), not by a full port of how retail's skater body follows the path frame.
+- `skate-core::living_world::replay`: `path_frame(node)` ports `sub_82453A58`. `drawn_skater(line, i)` (NOT RETAIL
+  YET): the recorded
+  skater frame (pitch, roll, air attitude) turned 180 deg about its own up axis when its forward is more than
+  90 deg (yaw) from the path frame's forward; airborne nodes take the turn of the last grounded node before them (a
+  shove-it spins the board in the air; only the landing node carries the final flip bit). `sample` and the switch
+  blend draw `drawn_skater`, so a switch-stance recorder is drawn riding forward and a fakie recorder fakie, like
+  retail's target frame.
+- `ChainConfig::keep_facing` (the fix 16 rule) defaults to `false` (not retail: retail never compares the old and new line at a switch; its facing state is the
+  latched flip `+927`, see "Fix 23 corrected" below); it stays as a mod
+  option (`sdk.world.set_tuning('living_world', {skater_line_chain = {keep_facing = true}})`, validated, first writer
+  wins, read back, reset to `false` on mod disable). Docs in `sdk/skate.lua` and `skate-mods` say it is not retail.
+- Logging: `NPC_SKATER_BACKWARDS #id character line node heading velocity_yaw off deg m/s recorded_fakie
+  facing_flipped phase pos` (warn, always on, at most one line per NPC every 2 s) when the drawn heading is more
+  than 135 deg from the velocity yaw at 1 m/s or more (`facing_check`, `facing_diagnostic`: diagnostic constants,
+  not retail values). `recorded_fakie true` means the line's own path frame opposes travel there (retail fakie). The
+  `SKATE_LIVING_WORLD_DEBUG` readout now also prints `heading` and `velocity_yaw`.
+- Multiplayer: everything is a pure function of the lines, the node and the branch records; a client mirroring the
+  records draws the same frames (tested). No new state.
+
+**Files.** `crates/skate-core/src/living_world/replay.rs`, `replay_tests.rs`;
+`crates/skate-game/src/living_world/npc_skaters.rs` (`backwards_line`, `log_backwards`, readout), `npc_tests.rs`,
+`peds_tests.rs` (test app gets `PedObstacleTrace`), `crates/skate-game/src/modding/world_tuning.rs`;
+`crates/skate-mods/src/world_tuning.rs`; `crates/skate-data/tests/living_world_data.rs`; `sdk/skate.lua`.
+
+**Verification.**
+- skate-core `living_world` 118 passed. New: `npc_skater_never_rides_a_forward_recorded_line_backwards_across_switches`
+  (forward line, chain onto a line recorded fakie then reverting, chain onto a forward line: never backwards outside
+  the recorded fakie stretch once the blend settles, line 3 forward, client mirror identical; the fix 16 option
+  reproduces the bug on more than 300 frames), `path_frame_turns_the_board_when_the_node_is_board_flipped_like_sub_82453a58`,
+  `drawn_skater_faces_the_retail_path_frame_direction` (switch stance drawn forward, flip bit, air keeps the grounded
+  turn, fakie drawn fakie), `facing_check_flags_heading_against_velocity`.
+- skate-game `living_world world_tuning` 58 passed (1 ignored). New headless
+  `living_world_npc_skaters_never_ride_backwards_across_line_switches`: 40 s, every chain joins a line recorded the
+  other way round, switch-stance stretches on the rest; 0 forward-recorded frames ridden backwards, recorded fakie
+  reported as `recorded_fakie true`, deterministic; the fix 16 option rides more than 100 such frames backwards.
+- skate-mods `world_tuning` 3 passed.
+- Data-gated (`SKATE3_ASSET_ROOT`): `npc_skater_keeps_its_facing_across_switches_on_the_exported_lines`, 212 seeded
+  rides, 882 switches, 474,412 judged settled frames: forward-recorded frames drawn backwards 353 (retail rule) vs
+  70,740 with the raw skater frame before this change and 16,026 with the fix 16 option; spins at a switch 29 (was
+  130 without fix 16). All 8 data tests pass.
+- Not seen in game yet (to playtest).
+
+**Open questions.**
+- How retail's full skater consumes the path frame (`AIPhysicsInput` filled in `sub_82463C08`, `sub_82464000`,
+  `sub_82464448`, `sub_82465578`, input struct at controller `+8`, e.g. `+6007` from controller bytes `+796/+797`):
+  whether it reverts or 180s to match a path frame that flips at a switch. The 29 remaining switch spins are switches
+  onto a line whose path frame is fakie; retail's target frame flips there too.
+- The 353 remaining frames (breakdown on the exported lines): 236 in the air (recorded spins against the travel, 166
+  of them before a fakie landing), 105 on ground segments where the turn decision changes between two nodes (96 of
+  them entering a recorded fakie stretch, the nlerp passing 90 deg), 12 other.
+- Switch riders are drawn riding forward in the character's stance; retail shows switch with its own clips and stance
+  mirroring. Port the rest of the skater-frame readers before calling `drawn_skater` retail.
+- Follow-up (in this order): read `sub_82453C58`, `sub_82454648`, `sub_8245A018`, `sub_82454B28` and the consumers of
+  controller `+856/+860/+931`; port how the body and stance follow the path frame; then the switch-stance mirror for
+  the puppet (switch and fakie clips, stance mirroring).
+- To playtest: follow an NPC skater through several line switches in DownTown; watch for backwards riding, spins at a
+  switch, switch riders drawn forward; check the log for `NPC_SKATER_BACKWARDS` with `recorded_fakie false`.
+- Retail plays fakie and switch clips and mirrors for stance; the replay puppet plays forward regular clips.
+
+### Fix 23 corrected (2026-10-08)
+
+**Problem.** Fix 23 said "retail keeps no facing state" and replaced the fix 16 rule with our own per-node fold
+(`drawn_skater`: the recorded skater frame turned wherever it faces more than 90 deg from the path frame). The retail
+parity review (`.local/research/retail-parity-review-2026-10-08.md`, item 6) found both wrong: retail keeps one latched
+flip, and its target is the whole recorded skater frame, not a per-node fold against the board frame.
+
+**Retail evidence** (re-verified in the recomp source before porting).
+- [code] `sub_8246D560` rebuilds controller `+144..+207` (path frame) and `+208..+271` (recorded skater frame
+  interpolated between the two nodes: `sub_8245A088` -> `sub_82454CD0` -> `sub_82454B28`; `sub_82454B28` reads the
+  nodes' skater quaternions at node `+28` and slerps with shortest-arc sign selection).
+- [code] `sub_8246B358` (AI input): loads the target from controller `+208`; when byte `+927` is set it negates rows 0
+  and 2 (`vxor` with the sign mask: 180 deg about up). The yaw error (`sub_824536C8`) goes to `sub_82471188`, which
+  reads the `ai_skater` tunable `DD8843F793462295` (2.0 deg dead zone) and `281F55D7BB965ADC` (10.0 deg full steer):
+  steer = clamp((|e| - 2) / 8, 0, 1), sign opposite to the error.
+- [code] `sub_8246A700`: `+928` = the skater state object's `+438` (set by `sub_82DB6EC0` while the player state id is
+  in 200..299, inferred: riding). Only on the rising edge of `+928` it reads the current node's skater frame
+  (`sub_82453B70` on controller `+608`) and the character matrix row 2 (`+400`), and stores `+927` = 1 when their 3D
+  dot product is below 0 (`vcmpgtfp` against 0.0), else 0. `sub_8246C7F8` / `sub_8246BEE0` never touch `+927`, so it
+  is held across branches and chains.
+- [code] New in this pass: the spawn `sub_8245C548` builds the character's frame with `sub_82453C58` (node world
+  frame: the skater frame on off-board nodes, the path frame on the others) and passes it to `sub_8245DA78`. So the
+  first latch compares the recorded skater frame against the path frame at the spawn node.
+
+**Change.**
+- `skate-core::living_world::replay`: `FacingRule { RidingEntry, PerNode }`. `RidingEntry` is the retail rule:
+  `target_skater` (slerp of the recorded skater frames, `slerp` with shortest-arc sign; the nlerp threshold 0.9995 is
+  ours, retail's is not decoded), turned 180 deg (`turn_about_up`) while `LineCursor::flip`. The cursor latches
+  `flip` with `flip_test` (retail's dot test) at spawn against `node_world_frame` and on every riding entry
+  (`node_riding`: landing = airborne -> grounded node, back on the board = off board -> on board) against the
+  drawn skater of the previous frame, and holds it across branches and chains. `riding` is the edge detector. Both
+  are plain public fields, a pure function of the lines, the spawn and the branch records (a mirroring client derives
+  the same values; tested).
+- **Default drawing stays the fix 23 per-node fold (`PerNode`), NOT RETAIL YET** (decision of the main session
+  until the user decides). Reason, measured: drawing the retail target without retail's fakie / switch clips and
+  stance mirror shows every stretch retail rides fakie or switch (character forward against travel) as riding
+  backwards, the bug the user reported. `riding_entry` is a mod option and the target default once the stance mirror
+  lands. The cursor latches the flip under either rule.
+- `steer_input` + `ChainConfig::steer_dead_zone_deg` / `steer_full_deg` (2 / 10 deg): data with retail defaults for
+  the simulated tier. The replay tier has no steering; nothing calls it there.
+- Mods: `skater_line_chain {facing_rule = 'per_node' | 'riding_entry', steer_dead_zone_deg, steer_full_deg}`
+  (validated, first writer wins, read back, reset on mod disable; tested). `keep_facing` (fix 16) stays a mod option,
+  off.
+- Log: `NPC_SKATER_BACKWARDS` now also prints `flip`.
+
+**Files.** `crates/skate-core/src/living_world/replay.rs`, `replay_tests.rs`;
+`crates/skate-game/src/living_world/npc_skaters.rs`, `npc_tests.rs`, `crates/skate-game/src/modding/world_tuning.rs`;
+`crates/skate-mods/src/world_tuning.rs`; `crates/skate-data/tests/living_world_data.rs`; `sdk/skate.lua`.
+
+**Verification.**
+- New skate-core tests (the rule's math, not measured output): `retail_flip_latches_at_spawn_against_the_node_world_frame`
+  (switch stance at the spawn node sets the flip, drawn = recorded frame turned; forward node, air and off-board
+  spawns do not latch; a recorded revert while riding turns the drawn body with it),
+  `retail_flip_is_held_across_a_switch_and_relatched_on_landing` (held across a ground chain; a chain onto a line
+  starting in the air relatches on landing against the body: set when the landing comes inside the 0.2 s blend,
+  clear when the body already shows the new line; a mirroring client agrees frame by frame),
+  `slerp_takes_the_short_arc_and_the_steer_ramp_matches_the_ai_skater_defaults`.
+- Data-gated `npc_skater_facing_rules_on_the_exported_lines` (212 seeded 40 s rides, 882 switches, 474,412 judged
+  settled frames; frames drawn more than 135 deg against travel where the path frame does not oppose travel, i.e.
+  `NPC_SKATER_BACKWARDS` with `recorded_fakie false`; spins after a switch):
+
+  | Rule | Backwards frames | Spins |
+  |---|---|---|
+  | `per_node` (fix 23, default, NOT RETAIL YET) | 353 | 29 |
+  | `per_node` + `keep_facing` (fix 16, mod option) | 16,026 | 3 |
+  | `riding_entry` (retail, mod option) | 84,776 | 128 |
+
+  The `per_node` and fix 16 numbers equal the fix 23 numbers above (behaviour unchanged by default). Under the retail
+  rule the flip was set at spawn on 19 of 212 rides and changed 2 times later. The counts are reported, not tuned.
+
+**Open questions.**
+- **Stance mirror (next task).** Retail draws the frames counted above for `riding_entry` with fakie riding clips and
+  a mirrored stance; the replay puppet plays one forward regular clip set. What exists already: the player's
+  animation host carries the same bits (`skate-game` `skater_animation.rs`: `state.fakie()` / `state.mirrored()`,
+  leading foot `sub_82592B68` = (natural stance == relative stance) xor fakie, `Initialize82B97E38` mirror bits,
+  `IsRidingGoofy` from PhysOutAnimation 157/158; `graph_host/motion_channels.rs` `FakieHead`
+  (`FakieHeadChannel82BAC778`, channel `B_FAKIE_CHANNEL`)). Not read: what sets the AI skater's fakie / relative
+  stance bits (the physics side of `sub_8246B358` -> `AIPhysicsInput`), and which pro natural stance each NPC has.
+  Port: per replay sample derive fakie = the drawn retail target's forward against the board's riding direction
+  (path frame), mirrored from the character's natural stance; feed both to the puppet's clip pick / playback context
+  (`is_mirrored`) and the fakie channel. Estimate: one agent run (about 60 min) to read the AI fakie/stance source
+  and wire the two bits into the puppet with tests, a second for the clip set if the stock clips lack fakie variants.
+  Then switch the default to `riding_entry`.
+- The `node_riding` mapping (air and off board leave riding) is inferred; whether retail's grind / manual states are
+  inside 200..299 is not read.
+- Retail's nlerp threshold inside `sub_82454B28` is not decoded.
+
+### NPC skater fakie drawing (stance port, 2026-10-08)
+
+**Problem.** Under retail's facing rule (`riding_entry`, "Fix 23 corrected") the puppet drew every stretch where the
+recorded skater frame faces against the travel with the forward riding clip, which reads as riding backwards. Retail
+draws those stretches riding fakie. The open question was what sets the AI skater's fakie and stance bits.
+
+**Retail evidence** (recomp source).
+- [code] The AI input side sets no stance bit. `sub_8246B358` turns the target into analog steer only:
+  `sub_824536C8` (yaw error) -> `sub_82471188` (steer slot) and, when `+930` / `+931`, `sub_82471008` (two floats
+  through the slot accessor `sub_82471818`). The AI drives the ordinary character, so its stance bits come from the
+  character's own animation, like the player's.
+- [code] `sub_8246ACF0` calls `sub_8246B358` (the flip-applying target steer) only while the state object's `+438`
+  (riding) is set; otherwise it sends `sub_82471070` with controller `+824`. So the latched flip `+927` is not applied
+  off the board.
+- [code] The fakie bit (SkaterAnim flags `0x20000000`) is written by the motion graph's `UpdateRidingFakie`
+  (`UpdateRidingFakie82BB2330`, already ported as `skate_core::animation::riding_fakie`): on the ground and outside a
+  trick it sets when `dot(velocity, board axis) < -0.5` above `highSpeedThreshold`, or above `lowSpeedThreshold` for
+  longer than `timeSlowlyRollingBackwardsThreshold`; it clears in the air and off the board, holds during tricks and
+  stays clear for `timeFromTeleportThreshold` after a teleport. [data] The stock motion graph has one such node:
+  1.0 m/s, 0.5 m/s, 0.2 s, 1.0 s (checked by a data-gated test).
+- [code] What the bit draws: `FakieHeadChannel82BAC778` starts channel `fakie` with `B_FAKIE_CHANNEL` (blend in / out
+  0.3 s, transition 0.1 s) on the rising edge and ends it when the bit clears, setting `torso` toward 1.0 while
+  manualing, 0.0 while power sliding, else 0.5. The riding clip below it stays the same. [data] `B_FAKIE_CHANNEL` is a
+  phase blend of `FAKIE_MANUAL_CHANNEL_CYC`, `FAKIE_CHANNEL_CYC`, `FAKIE_HEAD_CHANNEL_CYC`; at `torso` 0.5 it plays
+  `FAKIE_CHANNEL_CYC`, which turns 19 of the 36 skeleton bones (spine, neck, head, arms). So the stock set has no
+  separate fakie riding clips: retail draws fakie as the body turned round plus this channel, which the puppet now does.
+- [code] Natural stance: `GetCACSettings` (`sub_82590B50`) returns natural stance = 1 (goofy) when byte `+120` of the
+  character's 168-byte CAS record is 0, else 0; `Initialize82B97E38` / `set_customisation` turn it into the mirror
+  bits. Switch (relative stance) and the mirror bit are toggled by the `switch` / `mirrored` attributes of trick clips
+  (`apply_stance_events`). Which CAS record an AI pro uses was not found.
+
+**Change.**
+- `skate-core::living_world::replay`: `LineCursor::fakie` runs retail's `riding_fakie::State` every 60 Hz step on the
+  body as drawn (board axis = the drawn root's +Z, the puppet's board is part of its rig; velocity = segment velocity;
+  ground = riding node, trick = open trick span on the ground). `fakie_since` / `fakie_previous_since` drive
+  `fakie_channel_weight` (linear 0.3 s fade in and out, `ChannelPlayback`). `ReplaySample::fakie`,
+  `FacingCheck::drawn_fakie`. `ChainConfig::fakie` holds the thresholds (`retail::FAKIE`, the stock values).
+- `rule_skater` under `riding_entry` no longer turns off-board nodes (`sub_8246ACF0` above); stepping on or off the
+  board slerps between the per-node targets.
+- Puppet (`npc_skaters.rs`): while the channel weight is above 0, the stock `B_FAKIE_CHANNEL` tree is built from the
+  stock metadata (`graph_host::motion::tree_commands`, `torso` 0.5) and blended over the layered riding pose with
+  `PoseCommand::ChannelBlend` at the channel weight, like `MotionChannels::evaluate`. `NpcPuppetClip::fakie` shows it.
+- `NPC_SKATER_BACKWARDS` prints `drawn_fakie`.
+- Mods: `skater_line_chain {fakie_high_speed, fakie_low_speed, fakie_slow_seconds, fakie_spawn_seconds}` (validated,
+  first writer wins, read back, reset on disable; a very high speed turns the fakie drawing off) and
+  `skater_clips["fakie_channel"]` (the overlaid stock tree; a tree that does not build is left out).
+- Multiplayer: the bit, its clocks and its change frames are plain cursor fields, a pure function of the lines, the
+  spawn, the branch records and the tuning; a mirroring client steps the same cursor and gets the same bits (no
+  serialisation added; a snapshot would carry them as plain values).
+
+**Files.** `crates/skate-core/src/living_world/replay.rs`, `replay_tests.rs`, `crates/skate-core/src/animation/riding_fakie.rs`;
+`crates/skate-game/src/living_world/npc_skaters.rs`, `npc_tests.rs`, `crates/skate-game/src/graph_host/motion.rs`,
+`crates/skate-game/src/modding/world_tuning.rs`, `crates/skate-game/src/physics/prop_dynamics.rs` (test literal);
+`crates/skate-mods/src/world_tuning.rs`; `crates/skate-data/tests/living_world_data.rs`; `sdk/skate.lua`.
+
+**Verification.**
+- `retail_fakie_bit_follows_the_drawn_body_against_travel` (skate-core): set when the drawn body turns against travel,
+  not inside the spawn window, cleared in the air, set again after the landing, 0.3 s fades, deterministic, never set
+  under `per_node`, a mod can turn it off.
+- `living_world_npc_fakie_rule_and_channel_match_the_stock_graph` (skate-game, data-gated): the stock graph's
+  `UpdateRidingFakie` equals `retail::FAKIE`; the channel tree builds, its clips evaluate, it changes the riding
+  pose, weight 0 leaves it unchanged; the mod key replaces the tree.
+- Headless `living_world_npc_skaters_never_ride_backwards_across_line_switches` (retail rule): 1191 switch-stance
+  samples drawn against travel, all 1191 drawn fakie; no forward-recorded line ridden backwards outside them.
+- Data test `npc_skater_facing_rules_on_the_exported_lines` (212 rides, 882 switches, 474,412 judged frames), frames
+  drawn more than 135 deg against travel where the path frame does not oppose travel, split by drawn stance:
+
+  | Rule | Backwards | Drawn fakie | Air after a fakie takeoff | Air | Off board | Ground trick | First 1 s | Other | Spins |
+  |---|---|---|---|---|---|---|---|---|---|
+  | `riding_entry` (retail) | 85,525 | 72,825 | 10,188 | 305 | 2,009 | 78 | 112 | 8 | 128 |
+  | `per_node` (fix 23) | 353 | 9 | 72 | 164 | 103 | 5 | 0 | 0 | 29 |
+  | `per_node` + `keep_facing` (fix 16) | 16,026 | 12,628 | 2,412 | 253 | 653 | 80 | 0 | 0 | 3 |
+
+  Under the retail rule 97.1 % of the frames against travel are drawn the way retail draws them (fakie on the ground
+  with the fakie channel, or an air that took off fakie, where retail's bit is clear too). The counts are reported,
+  not tuned.
+
+**NOT RETAIL YET.**
+- The mirror bits: the AI pros' natural stance (which CAS record, byte `+120`) is not decoded, so every NPC keeps the
+  default goofy stance; switch / mirrored trick events are not collected by the puppet. This is left / right only; it
+  does not change which way the body faces.
+- The category mapping of the fakie rule (riding node = ground; grinds and manuals are trick spans, retail allows
+  grind state 503), board axis = drawn root +Z, ground speed = horizontal segment speed; `torso` fixed at the riding
+  value (no manual / powerslide state in the replay).
+- Off-board nodes draw the recorded frame (retail sends `sub_82471070` there; decoded in the next subsection, a
+  walking-character steer): 2,009 frames.
+- Spins after a switch (128 vs 29): retail's body yaw is emergent from the character physics (next subsection); the
+  puppet turns within the 0.2 s switch blend.
+
+**Default switched to `riding_entry`** (separate commit). With the fakie bit and channel ported, 97.1 % of the frames
+the retail rule draws against travel are drawn the way retail draws them, so the retail rule is the default;
+`per_node` (fix 23) and `keep_facing` (fix 16) stay mod options. What this does not cover is listed above: the mirror
+bits (left / right only), off-board frames, and the spins after a switch that a turn rate would soften. Reverting the
+default is one line (`ChainConfig::retail().facing_rule`).
+
+### NPC skater turn rate, pro stance and off-board steer (research, 2026-10-08)
+
+**Problem.** Two gaps left by the stance port: the drawn body spins after a switch under the retail facing rule (128
+switches turn the body, 29 under `per_node`), and every NPC uses the default goofy stance. A third: off-board frames
+are drawn as recorded.
+
+**Evidence: the turn rate is not a tunable [code + data].**
+- `sub_82471188` (on board) computes steer = clamp((|e| - dead zone) / (full - dead zone), 0, 1), sign opposite to e,
+  with the `ai_skater` tunables `DD8843F793462295` = 2.0 deg and `281F55D7BB965ADC` = 10.0 deg
+  (`skater_profiles.json`, `ai_skater.default`). It then writes that one value through `sub_82471818` (a hashed
+  name-to-slot lookup) into three input channels of the character: `0x830BFD74`, `0x830BE600`, `0x830BE1E0`. Their
+  names come from the static initialisers `sub_82F84BE0` / `sub_82F84A30` / `sub_82F84BC8`: `Turn` (`0x820DB088`),
+  `BodySpin` (`0x820DAF88`) and `KickTurn` (`0x820DB07C`).
+- So the AI drives the same channels as the player's stick (`Turn` is the intention of `sub_825999F0`,
+  `skate_core::input::steering_intentions`). On the ground the body yaw follows from steering tilt `sub_82D92440`
+  (`skate_core::riding::steering::calculate_tilt`), truck targets `sub_82C040F0` and `SetTruckDriveFrames`
+  `sub_82C0B9C0` (`skate_core::physics::truck_frames`), and the rigid-body wheel solve. There is no turn rate or yaw
+  response constant on the AI side to port into the replay puppet; the rate is whatever the board physics produces.
+- Decision (main, 2026-10-08): no fitted turn rate for the puppet. The 0.2 s switch blend stays, labelled NOT RETAIL
+  YET in `ChainConfig::blend_seconds`. The faithful fix is the simulated NPC tier (PR #52 checklist item), where the
+  AI steer drives the ported riding physics.
+
+**Evidence: off-board steer `sub_82471070` [code + data].** `sub_8246ACF0` calls it with controller `+824` when the
+state object's `+438` (riding) is clear. Steer = clamp(|e| / full, 0, 1), sign opposite to e, no dead zone, with
+`ai_skater` tunable `FED24A60BD8606F7` = 18.0 deg; the same three channels (`Turn`, `BodySpin`, `KickTurn`). `+824` is
+written by `sub_8246AA00`: a yaw error (`sub_824536C8`) toward a look-ahead target (`sub_82468FC0`, `sub_82592A00`,
+`sub_82592990`, avoidance `sub_82467FC8`), stored raw or as (e + previous) * 0.5 (`0x8209975C` = 0.5) depending on
+`+828` / `+933` / `+945`. The off-board body is the walking character, so its yaw is the Move Object controller's
+response (`skate_core::player::offboard::move_object`), again physics, not a puppet rate. The off-board flip is never
+applied (`+927` is only read by `sub_8246B358`), which the replay already does. Off-board frames stay drawn as
+recorded (2,009 frames), NOT RETAIL YET until the simulated tier.
+
+**Evidence: pro natural stance, not found (about 25 min) [code + data].** Checked:
+- `GetCACSettings` `sub_82590B50`: record = table at `0x83067060` (`+8` pointer) + index * 168; byte `+120` == 0 gives
+  goofy. Its only callers are `sub_82590DC0` (the `Actor` constructor, allocation tag `Actor` at `0x82224AA8`; index =
+  its `r5` argument), `sub_825922C0` (no direct caller, a vtable entry) and `sub_825947C0` (from `sub_827D8450`).
+  `sub_82590DC0` is reached from `sub_82598600` / `sub_82598748`, which are reached only from `sub_82597A70` /
+  `sub_82597AE0`, both called indirectly. Which index an AI pro's actor gets was not traced.
+- `marquee.big` pro recipes (`data/content/recipe/marquee/<pro>.recipe` + `.xml`): geometry and materials only, no
+  stance field.
+- `skater_profiles.json` `characters` (layout bits `+8` / `+9` / `+16` / `+17` and the hashed fields) and
+  `ai_skater_profiles` (bool / int fields): no field separates the pros into two stance groups consistently; the
+  varying ones (`+16`, `6DBAF7AD6CDE6A16`, `782E7345CDF39DFD`) put pros who ride the same stance in real life into
+  both groups (`+16`: eric_koston false, andrew_reynolds true; `6DBAF7AD6CDE6A16`: koston true, dyrdek false), so
+  they are not stance. (Real-life stance is only a sanity check here, not retail evidence.)
+- `createacharacter.big`, `db.big` names: no per-pro CAS or stance entries.
+Next step: trace (recomp hook on `sub_82590B50`) the index passed for spawned AI pros, then read the 168-byte table
+it points at; the table is filled at runtime, so this needs a recomp run. Until then every NPC keeps the default
+goofy stance (left / right only).
+
+**Change.** Documentation and the `ChainConfig::blend_seconds` NOT RETAIL YET note only; no behaviour change, so the
+counts above are unchanged (riding_entry: 128 spins after a switch, per_node 29, keep_facing 3).
+
+**Open questions.** The AI pro CAS index; whether a simulated-tier NPC reproduces retail's switch behaviour (it should,
+since the steer and the physics are both ported); `+930` / `+931` gating of `sub_82471008`.
 
 ## Frame drop with the board thrown away (hidden board scanned the whole map), 2026-10-05
 
@@ -1409,8 +1753,10 @@ through a bin, bench or barrier.
   where it was first seen: spawn, now, cut and cut centre, speed, moving, carried, footprint, version; on every
   change), `PED_OBSTACLES` (inputs, props, cut, moving, carried, moved; every 2 s with a moved prop, else 10 s) and
   `PED_BLOCKED` (a refused ped step into a body, or within 3 m of a moved prop's spawn spot; once per ped per
-  second). Core helper `NavObstacles::blocker_at`. Cause and fix pending the next session; todo
-  `ped-moved-prop-collision`.
+  second). Core helper `NavObstacles::blocker_at`. Session 2026-10-07 22:57 answered it: 7 of 8 moved props fell
+  through the floor once released (13 m to 8-10 m at 7-9 m/s) and never rested, so they were never cut; the one
+  that stayed on the floor was re-cut at its new spot (moved 1.12 m, speed 0) and the user saw "the peds stopped
+  and then pathed around it". The ped side works; the cause is props sinking (open, prop dynamics).
 - Moddable: `LivingWorldSettings::ped_obstacles`, Lua `sdk.world.set_tuning('living_world', {ped_obstacles =
   {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height}})`, readable via
   `world_tuning:living_world`, reset to retail on mod disable. Mod-spawned bodies are obstacles like props.
@@ -1745,6 +2091,524 @@ hold. The cap stays a plain `max_voices` field.
 landing noise when landing in manual" is a separate report (by design the kind-2 touch is skipped while in a manual);
 check it against `sub_824BB330` if the user still hears it.
 
+## Dragged props sinking through the floor, 2026-10-07
+
+**Problem.** User: "the shit with them falling through the ground is SO annoying. its a top priority fix". Earlier:
+"Dragged props sink through the floor and pull back toward their start spot". Props moved with Move Object (RB:
+bench, bin, rail, vending machine) fell through the floor and kept sinking; peds then ignored them (a moving prop is
+never cut into the navmesh, see "Peds walking through props").
+
+**Evidence [trace].** `logs/game-20261007-225751` (DownTown, `PED_OBSTACLE`): 7 of 8 moved props went from a bottom
+of about 12.6 m (spawn) to 8-10 m within 1-3 s at 7-9 m/s (free fall) and stayed `moving`; one (206220507, moved
+1.12 m) rested normally. The sinking starts while the prop is still held: bench 3417526289 was already 0.6 m low at
+the release sample (centre 11.47 against a spawn of 12.07) and its height span had grown from 0.81 m to 0.92 m,
+i.e. the box was tilted. Every obstacle footprint grows after release (bin 44597382: [0.28, 0.27] -> [0.39, 0.32]).
+
+**Root cause [code].**
+1. `PropDynamics::drag_to` (and `set_yaw_rate`) overwrite the held body's angular velocity every tick, but the
+   step still integrated the contact corrections' angular part: the floor friction on a box pushed along the ground
+   (a spin about its bottom edge) was added to the orientation every tick and never undone, so pitch and roll built
+   up over the drag. The drag doc comment already said "Rotation stays frozen"; only the velocity was frozen.
+2. A tilted box digs a corner into the floor; once its centre passes the floor plane, the separating axis points
+   down and the retail triangle fixup (`fix_up_triangle`, 82AD3130) rejects the contact on a one-sided face
+   (`ONE_SIDED`, projection < 0). From then on nothing holds the box and it falls forever (the 7-9 m/s in the log).
+   District collision is one-sided (`portable_world` / the retail archive flags), so this is permanent.
+3. Not the cause: the prop's own triangles. Props collide with the map's `collision_world` only; their own layer
+   triangles are parked at `HELD_PARK` while held and are not part of the prop step's world.
+
+**Retail [code, partial].** Move Object is state 502 (ctor 82D43B90). Its update 82D44A10 calls 82D444A0, 82D45D30,
+82D463D8 and 82D46218; 82D45D30's direct accesses are the state's own fields (+8, +16, +1128, +1200) and its
+helpers 82BE3220 / 82D2D2B0 / 82D448D8 call nothing further (math or state helpers); no rigid-body write was found. 82D463D8 blends a 4x4 transform toward a target through 82E0A570
+(row lerp plus renormalise 82BD3150) on the state's +1164 timer; whether that transform is the held DMO's is not
+confirmed. So how retail holds the dragged object's orientation is NOT decoded. Not retail yet, labelled in code.
+
+**Change (first interim, REMOVED 2026-10-08).** A yaw-only rule for the held body's contact rotation; the user
+rejected it (props must tip) and the Move Object port below replaced it. What stays from the interim:
+Diagnostics:
+- `HELD_PROP` (held prop every second, released prop every second for 3 s): id, phase, template, centre, local up
+  axis Y, velocity, ground height under it, gap (box bottom minus ground), contact manifolds, asleep, tick.
+- `PROP_BELOW_GROUND` (any awake prop whose centre is more than its half height below the floor under it, checked
+  twice a second, once per prop per 10 s): centre, half height, ground, last rest height, velocity, up Y, held,
+  contacts, tick. The ground probe starts above the prop's last rest height, so a sunk prop still finds the floor
+  it fell through.
+- A sunk body is logged, not recovered: retail's handling of a DMO under the world is not decoded and no heuristic
+  teleport was added.
+
+**Files.** `crates/skate-game/src/physics/prop_dynamics.rs` (held constraint, `PropGroundProbe`, `ground_probe`,
+diagnostics, tests).
+
+**Verification.** Pending (see todo `ped-moved-prop-collision`): `dragged_props_rest_on_the_floor_after_release`
+(bench, bin, vending and rail boxes from the log's half extents, pushed 5 s over a DownTown-like street of 1 m
+one-sided tiles with a 0.15 m curb, released, 3 s settle: upright while held, never more than 8 cm into the floor,
+resting on the street, no slide back toward the spawn), `ground_probe_flags_a_body_under_the_floor`, and the
+data-gated `downtown_dragged_props_rest_on_the_floor` (the session's prop ids on the real DownTown collision).
+
+**Open.** The "pull back toward the start spot" part of the first report is not reproduced; the next session's
+`HELD_PROP` lines will show it if it remains. Retail Move Object object transform (82D463D8 and callers) to decode.
+Placement mode (`carry_to_pose`) snaps the orientation and is unaffected.
+
+**Update (2026-10-07, late).** User on the interim: "props should still be able to tip.. they do in retail", then
+"we should try to solve how retail handles the whole system as the source of truth, because its not a problem in
+the original game". The yaw-only held rule is rejected and will be removed. Retail [code]: every held tick
+82D45318 sends the held DMO a bounded command through the player DMO interface (vtable slot 9): a horizontal
+linear term and a yaw term only (vertical gain 0, no pitch or roll), from two controllers on the velocity error
+against the DMO velocity (gains [20, 0, 40, 0.1], 82D4E118; linear clamp 20, rate 4 per tick, yaw clamp 6.0),
+minus the push into a smoothed blocking normal. So tipping, gravity and floor contacts stay free physics and the
+push never beats the floor solver. The prop leads; the skater follows its grab edge (82D45D30, grab record at
+state+720); stick input is object-relative. Retail values [data] attribute class 3EDA5B140604613D (push 3.0, pull
+2.0, side 2.5, mass and yaw-inertia curves), per 60 Hz tick. Port plan and open points: research spec (local) and
+todo. The interim test `dragged_props_rest_on_the_floor_after_release` failed ("the push dropped the prop": the
+synthetic push lost the grab); the port replaces it.
+
+### Move Object port (2026-10-08)
+
+**Change.** Retail Move Object as the source of truth (research spec `move-object-retail.md`, local):
+1. `skate_core::player::offboard::move_object` (new, pure, `#![forbid(unsafe_code)]` crate): `command()` is a port
+   of 82D45318 steps 1 to 10: lever arm along the grab edge, rotation demand (E4FF0185DA44CDBD), yaw-rate target
+   (BFB3BEF0BB2661C0 x yaw gain EABFCC79873A2859), push / pull / side targets x mass speed scale (57D37D696363167E),
+   lever coupling -0.25 (0x8208ED00), heading latch (0.1 rad, 557FA142008FD7CE), smoothed blocking normal (0.95 /
+   0.5), the PhysicsControllerData update [code, 82D4E118, re-read for this port]: `filtered = 0.9 filtered + 0.1
+   e`, `out += 20 e + 0 filtered + 40 (e - previous)`, the accumulator is not clamped; the clamp (20, 82BD3D90) and
+   the slew (4 per tick, 0x82257308) act on the sent copy (+672), as in 82D45318. Yaw: `out += ...` on `w - drift x
+   60`, clamped to 6. No vertical, pitch or roll term. `MoveObjectController` is the whole per-slot state, plain
+   `Copy` data with a flat `to_array` / `from_array` form (multiplayer-ready, deterministic, fixed tick).
+2. `PropDynamics::apply_move_command` replaces `drag_to` / `set_yaw_rate`: the command is ADDED to the held body's
+   horizontal velocity and yaw rate before contacts. NOT RETAIL YET: the DMO side of interface slot 9 is not
+   decoded; the command is applied as an acceleration (m/s^2, rad/s^2) for one tick. The yaw-only rule is gone; the
+   held body is a normal rigid body (gravity, contacts, tipping).
+3. The prop leads, the skater follows: `PropCarry` publishes the grab frame (grip point on the held face, edge
+   normal, skater spot `grip_reach` back); `biped_ground` pulls the skater onto it through the walking job's
+   velocity override (capped at the linear clamp) and turns it to face the edge. NOT RETAIL YET: 82BDF268 and the
+   frame blend rate are not decoded. The old follow, `MAX_HOLD_DISTANCE`, `DRAG_HOLD` and `MAX_DRAG_SPEED` are gone.
+   The fix20 target-contact bit drop stays, now as part of the follow move (removing it would turn a follow along
+   the edge into a forward step; retail never runs that job in 502).
+4. Interim grab record (NOT RETAIL YET: DMO grab-spline source undecoded): the vertical box face toward the skater
+   at grab time, grip along its edge clamped 0.25 m inside the ends, kept in the prop's frame. Let go (NOT RETAIL
+   YET, retail: the record stops qualifying, 82E08DB8 / 82E08EE8): the skater falls more than `let_go_distance`
+   (1.0 m) behind the closest it got to its grab spot, or leaves the on-foot states, or RB.
+5. Tuning as data: `load_move_object_tuning` reads class `Hash_3EDA5B140604613D` from the stock collection into
+   `PhysicsSettings::move_object` (built-in stock values only if the collection lacks it, with a warning); the
+   live carry gets it as its base on map load. Mod entry `sdk.world.set_tuning('carry', {...})` gains
+   `linear_clamp`, `yaw_clamp`, `relatch`, `slew_per_tick`, `linear_controller`, `yaw_controller`, the four curves
+   and `let_go_distance`; `push_speed` / `pull_speed` / `side_speed` now default to retail 3.0 / 2.0 / 2.5;
+   `turn_rate` now means a constant yaw gain replacing the inertia curve. Overrides sit on the setup-data base and
+   are cleared on mod disable; `world_tuning:carry` reads the values in effect.
+6. HELD_PROP gains `stick=[x, z, rot]` (OB_ObjectMv), `command`, `yaw_cmd`, `lever`, `rot`, `blocked`, `drift`.
+7. Held body never rest-snaps or sleeps while held (engine rule, retail keeps the held DMO through interface slot
+   10; its sleep rule is not decoded): the prop rest snap zeroes any velocity under sqrt(0.5) = 0.7 m/s while
+   touching, which ate every tick of the command and pinned the prop.
+8. Static contact impulse shared over ALL simultaneous points (prop step, `contact_corrections`): each touching
+   floor triangle resolved the full closing impulse from the same velocity, so a box edge on ~10 tiles got ~10x
+   the impulse. Trace: a tipping bench was launched at 15 m/s upward and 17 rad/s, then fell through the floor
+   ([trace] test street drag, 2026-10-08). Shared, the bench no longer leaves the floor (worst gap -0.03 m).
+
+**Verification (2026-10-08).** `cargo test -p skate-core move_object`: 8 pass (stock curves, centre push, off-centre
+turn sense, controller step response hand-computed, blocking normal, heading latch, state round trip and
+determinism, mod value fallback). `cargo test -p skate-game --bin skate3rust -- prop_ carry world_tuning`: all pass
+except `dragged_props_rest_on_the_floor_after_release`: bench, vending and rail stay on the floor (worst gap -0.03 /
+-0.08 / -0.05 m) and rest; the bin still falls through (open 2) and the vending machine ends 0.4 m nearer its spawn
+because it fell over backwards; all four tipped over under the saturated push (open 1); `pushing_a_tall_prop_into_the_curb_can_tip_it` passes (tipping kept). Four sim tests are
+`#[ignore]` with the reason "blocked on the DMO interface decode": straight push speed, left stick in the edge frame,
+right stick turn, push distance. Full `skate-game` run: the other failures (7 ped tests: `PedObstacleTrace` resource
+missing in those test apps; `setup::pipelines_accept_valid_group_outputs_when_fingerprint_changes`) are in code this
+change does not touch.
+
+**Open.**
+1. RESOLVED (see "Slot 9 applied" below: anti-windup write-back, commanded block). Was: slot 9 semantics decide everything left: read as an acceleration at the centre of mass, the integrating
+   controller (no anti-windup in 82D4E118 / 82D45318) saturates at 20 m/s^2 within two ticks for ANY stick, so it
+   overshoots the target speed (4.1 m/s for a 3 m/s target), tips a 1 m cube (tips above g x half width / half
+   height) and makes the yaw latch oscillate (0.66 rad of drift from the left stick alone). Retail props do not
+   behave like that, so this reading is probably wrong. Next: the first-pass hook at the `bctrl` in 82D45318 (spec
+   section 6.1) to name the DMO interface and the command units. No values were tuned around it.
+2. Contact gap: FIXED for the lying box (see "Contact gap" below). The bin still falls during the held drag because
+   the current command application tumbles it corner-first (open 1). Resolved by "Slot 9 applied": the bin stays
+   on the floor (worst gap -0.039 m).
+3. A tipped prop is still "held" (interim grab record ignores tilt); retail's record would stop qualifying.
+4. Skater contact normal (Player+16304) is not wired into the blocking normal yet (zero).
+5. The rest-snap exemption (7) and impulse sharing (8) are engine rules, not decoded retail.
+
+**Slot 9 applied (2026-10-08, later).** Problem: with the command applied as a plain velocity add and the
+controller accumulating without bound, a full push overshot (4.1 m/s for a 3 m/s target) and tipped every prop;
+the user: dragged props sink ("its not a problem in the original game") and "props should still be able to tip..
+they do in retail" (from obstacles, not from every push).
+
+Root causes [code, TU3 recomp, read for this change]:
+1. Anti-windup missed in the port. 82D45318 stores the clamped and slewed sent command (+672) back over the linear
+   controller output (+1008 +16 = +1024, `stvx128 v0,r31,r4` with r4 = 1024 right after the slew), and stores the
+   clamped yaw command back over the yaw controller output (+1088 +16 = +1104). The earlier port read "the running
+   output is never clamped"; with that reading the retail controller math alone predicts a 9.7 m/s peak on a free
+   3 m/s push. The overshoot was the port, not slot 9 and not the one-tick-old record velocity.
+2. The commanded parameter block was not applied (spec 7.4 item 4): with the authored floor friction (0.5 to 0.6)
+   every push tripped the prop over its base.
+3. Two signs dropped in the yaw term: the code has `lever = dot(-edge (+320, sign-flipped by vxor), centre (+880)
+   - grip (+256))` and `w = -(curve BFB3BEF0BB2661C0(|lever|) x rot x gain +1160)` (`fneg f24,f13`); the port had
+   neither minus, which cancels for the lever-driven turn but flips OB_ObjectMvRot. The coupling
+   (`fnmsubs`: fwd = fwd - lever x w x (-0.25)) was already equivalent and is now written as in the code.
+
+Change:
+1. `skate_core::player::offboard::move_object::command`: anti-windup write-back for both controllers; lever and
+   yaw target with the code's signs. Edge direction (+320) taken as `side_of(forward)`: retail builds it from the
+   hand points (82D45D30) and its sense is not traced; it is the only choice for which an off-centre push turns the
+   object the way its push torque does (r x F about +Y). NOT RETAIL YET: the edge sense. Our integrator is
+   right-handed about +Y like the slot 9 angular sink (`(0, out, 0)`), checked by
+   `positive_yaw_rate_turns_local_z_toward_plus_x`.
+2. `PropDynamics::apply_move_command(id, linear, yaw, grip, dt)`, per 60 Hz step, before the contact solve
+   (spec 7.5): unknown or massless body skipped (props have no lock state yet, retail gate DMO+4464 bit 0x08); wakes
+   the body and clears its sleep counter on EVERY command, zero or not (82ADF7B8); `v += L dt` at the centre of mass,
+   no mass factor, no torque, vertical dropped (82C4C370 passes only &linear); the yaw command replaces the angular
+   accumulator (`torque_acceleration` zeroed, `w += (0, Y, 0) dt`, no inertia factor; contacts still change pitch
+   and roll). Gravity stays in our integrator for every prop (retail resets the linear accumulator to the island's
+   gravity, the same quantity). Our prop step runs once per tick, so the command acts for one step. The push never
+   carried a lever-arm torque in the port (the lever only feeds the yaw command, as in 82D45318): nothing removed.
+3. Commanded block (82C53EF8): a commanded body switches to `{0.03, 0.02}` on its next step and back to its free
+   material on the step after the commands stop (bits 0x02 / 0x01 of DMO+4465 as `commanded` /
+   `commanded_block`). Superseded 2026-10-08 (doc 27, "Contact material blocks"): the reader is found; the block
+   is the body's own contact material {static friction 0.03, dynamic friction 0.02, restitution DMO data +272},
+   combined with the other side by 82763078 (max / max / min). The interim "replace the combined friction"
+   mapping described here is removed. Its reasoning ("the combine takes the greater friction, so 0.03 alone would
+   change nothing") held only against the 0.8 / 0.6 test floor; the game gives prop contacts the retail ground
+   material {0, 0, 1}, under which the body's own block decides. Damping and max speeds are untouched while held.
+4. Rest snap: kept off for a commanded (or held) body. Sleep: retail clears the sleep counter on every command, so
+   a commanded body cannot sleep (retail). The snap itself is our engine rule (it zeroes velocities under 0.7 m/s
+   while touching) and would eat the first ticks of the command (slew 4 m/s^2 per tick), so the exemption stays,
+   now tied to the command; held still covers placement (`carry_to`).
+5. Interim grab record fix: the face toward the skater is now the face whose plane the skater is furthest outside
+   of (projection minus half extent), not the largest raw projection, which picked the end face of a long bench for
+   a skater behind its long side. Still NOT RETAIL YET (DMO grab splines undecoded).
+6. Moddability: `sdk.world.set_tuning('carry', {...})` gains `commanded_material` ([0.03, 0.02]), `apply_at_com`,
+   `yaw_replaces_torque`, `ignore_vertical`, `wake_on_command` (all true = retail) and
+   `by_template[<MOBJ template>] = {material_held, material_free}` (friction pairs `[static, dynamic]`, validated
+   finite and non-negative, at most 256 templates; 2026-10-08 also `upright_cos`, `material_free_upright`,
+   `upright_pair`, `restitution`, see doc 27). They live in `CarrySettings::move_rules` (`MoveCommandRules`), are pushed
+   into `PropDynamics` every tick (a map load keeps them), read back by `world_tuning:carry`, and go back to retail
+   on mod disable. Multiplayer: the command is plain data (id, L, Y) applied once per fixed tick in the prop step;
+   the per-body flags are two booleans; no wall clock.
+
+Verification (2026-10-08): `cargo test -p skate-core`: lib 762 pass / 2 fail (the two known HEAD failures),
+integration 155 pass; `move_object` 9 pass (new: yaw write-back; the step response is hand-computed with the
+write-back: 4, 8, ..., 20, then 16 at the target speed). `cargo test -p skate-mods`: lib 102 pass / 2 ignored;
+`skyline_physics` fails (asset missing, as before). `cargo test -p skate-game --bin skate3rust`: 544 pass /
+2 fail / 184 ignored (before: 535 / 2 / 187); new passing tests: `dragged_prop_follows_a_straight_push` (2.950 m/s at 3 s, retail math
+2.951, target 2.951; peak 3.259 vs retail math 3.251), `grabbed_prop_moves_with_the_stick` (2.686 m in 1 s, retail
+math 2.685 m), `move_object_left_stick_moves_the_prop_in_the_edge_frame`,
+`right_stick_turns_the_held_prop_and_the_skater_follows` (sign from the code), `off_centre_push_turns_a_long_prop`
+(turns with its torque), `straight_push_on_flat_ground_does_not_tip_a_cube_or_the_bin` (up_y min 0.9996 / 0.9970),
+`commanded_block_switches_with_the_command_and_zero_commands_wake`,
+`move_command_is_an_acceleration_at_the_centre_of_mass`, `positive_yaw_rate_turns_local_z_toward_plus_x`,
+`carry_move_command_rules_set_and_reset`; `pushing_a_tall_prop_into_the_curb_can_tip_it` still passes (up_y min
+-0.08: tipping from obstacles stays). The "retail math" reference is `predicted_centre_push`: the ported
+controller alone on a free point mass with our timing (velocity read before the step, command applied in it).
+`dragged_props_rest_on_the_floor_after_release`: bench, bin and rail pass every check (worst gap -0.033 / -0.039 /
+-0.052 m, the bin no longer falls through); the vending machine fails by 0.07 mm (worst gap -0.0801 m, limit
+-0.08, not loosened): the overlap happens after release, not while held. It is let go at about 3 m/s, the free
+block (authored friction) returns on the next step, it trips (friction 0.5 against half depth / half height 0.47)
+and lands on its back at 1.6 m/s with 7 manifolds; the box overlaps the floor up to 8 cm for a few ticks and then
+rests at gap 0, asleep. Residual prop solver gap (impulse shared over all simultaneous points, 40 % positional
+correction, no speculative contacts), not the Move Object command and not the 0.03 interim.
+
+NOT RETAIL YET (this change): the block mapping (friction only), the free block source, the edge direction sense,
+the rest-snap exemption (engine rule), the grab-face choice. Still from the port: skater follow move (82BDF268),
+interim grab record and let-go distance, skater contact normal not wired, impulse sharing.
+
+Open:
+1. RESOLVED (see "Yaw-rate feedback" below). Was: heading latch while turning: the port measures the drift only while |w| < 0.1 and lets the latch follow the
+   object otherwise, so the yaw controller has no rate feedback while turning and pins at the 6 rad/s^2 clamp (a
+   held right stick spins a 1 m cube to 6.4 rad/s in 1.5 s; the off-centre bench turns 10 rad in 2 s). In the code
+   both the turning branch (0x82D45714) and the small-drift branch (0x82D4570C) store the latch (+368 / +400) every
+   tick, and a second wrapped angle is built from the stored drift with 8296EC98 (+384) before the yaw error; that
+   is probably the rate feedback. Not decoded; `held_right_stick_turn_rate_stays_bounded` is ignored until it is.
+2. The block's reader (spec 7.6 item 1) and the DMO free pairs (7.6 item 2).
+3. The prop landing overlap above (solver).
+
+**Yaw-rate feedback (2026-10-08, later).** Problem: a held right stick spun a 1 m cube up to 6.4 rad/s in 1.5 s
+and an off-centre push turned the bench 10 rad in 2 s: the yaw controller had no feedback while turning and sat at
+the 6 rad/s^2 clamp. Retail props turn at a controlled rate.
+
+Root cause [code, TU3 recomp, 82D45318, static reading]: the spec's "error = w - drift x 60" was a misreading. The
+drift against the heading latch (+368) only decides the re-latch; the yaw error uses a different angle:
+1. Latch (0x82D455E0..0x82D4573C): turning (|w| >= 0.1, 0x820641A8) stores the latch (+368 / +400) every tick
+   (0x82D45714). Not turning: drift = wrapped angle between the facing and +368 (8296EBB0, wrap with 1 / 2 pi
+   0x82139A60 and 2 pi 0x82139A50); above 557FA142008FD7CE (0.1 rad) [data] the latch is stored, below it the
+   store is skipped (0x82D4570C sets only the "turning" flag r23 = 0, which feeds the +1172 idle timer). So the
+   small-drift branch does NOT store; the port's latch was already right. The drift is not read again (v127 is
+   reused for the height error before the yaw part).
+2. Rate (call returning at 0x82D45BC8): `8296EC98(out, +384, facing now, axis (0, 1, 0) at 0x82139A20)`, then +384 =
+   facing now (0x82D45C0C), every tick, in every branch. 8296EC98 [code]: both vectors normalised (refined rsqrt); if either
+   |v|^2 <= 1e-4 (0x8209BE90) the result is 0 (0x82165A10); else a = acos(clamp(dot, -1, 1)) (82453298) and, when
+   cross(+384, now) . axis < 0, 2 pi - a (2 pi at 0x821647F0). The result is wrapped to [-pi, pi) as above and
+   multiplied by 60 (0x822F860C, loaded at 0x82D45C08): the measured yaw rate (|rate| stored at +1192).
+3. Yaw controller (0x82D45C3C..0x82D45CD0): error = w - rate (`fsubs f7,f24,f10` at 0x82D45C3C), then the same
+   PhysicsControllerData update as before (gains +1088..+1100 = B46764285AD1DC5F [data] 20 / 0 / 40 / 0.1, output
+   +1104, previous +1108, filtered +1112, derivative +1116), clamp +-6 (AD327350D151B1E3 [data]), clamped value
+   written back to +1104 and sent through slot 9.
+   With the output accumulating, the loop is PI on the yaw rate: on a free yaw body it spins up at 0.1 rad/s per
+   tick (clamp 6 / 60), peaks 0.6 % above |w| and settles at |w| with zero steady error.
+
+Change:
+1. `move_object::command`: yaw error = w - 60 x wrap(heading - previous heading); the previous facing (+384) is new
+   controller state (`facing_yaw`, `facing_valid`; first held tick measures 0 like retail's zero vector), stored
+   every tick. The latch drift no longer enters the yaw error. `MoveObjectCommand::yaw_rate` added; HELD_PROP logs
+   `yaw_rate=`. Flat controller form grows to 33 floats (31 / 32 = facing).
+2. The factor 60 is the tuning field `yaw_rate_feedback` (was the unused-elsewhere `tick_rate`), mod knob
+   `sdk.world.set_tuning('carry', {yaw_rate_feedback = ...})` (validated finite, >= 0; 0 turns the feedback off;
+   read back by `world_tuning:carry`; back to 60 on mod disable).
+3. The port measures the heading change about +Y (`HeldBody::heading`, atan2 of local +Z); retail measures the
+   signed 3D angle between successive facing vectors with the sign from +Y. Identical for an upright object;
+   differs only while the prop is tipped far over (NOT RETAIL YET in that case, minor).
+
+Edge direction (+320): not settled by this code. 82D45318 only reads +320 for the lever (step 1); its sense comes
+from 82D45D30 (hand points) and stays `side_of(forward)`, NOT RETAIL YET.
+
+Verification (2026-10-08): `cargo test -p skate-core --lib`: 764 pass / 2 fail (the two known HEAD failures);
+`move_object` 11 pass (new: `yaw_error_is_target_minus_measured_rate` hand-computed: tick 1 rate 0, -120 -> -6;
+tick 2 at the target rate: 0 + 40 x 2 = 74 -> +6; wrap across +-pi; `yaw_rate_feedback_settles_at_the_target_rate`:
+0.1 rad/s per tick for 10 ticks, settles at -2 within 1e-3, peak < 2.02). `cargo test -p skate-game --bin
+skate3rust`: 546 pass / 1 fail (`setup::tests::pipelines_accept_valid_group_outputs_when_fingerprint_changes`,
+unrelated) / 183 ignored; `held_right_stick_turn_rate_stays_bounded` un-ignored and passing: 1.961 rad/s after 3 s,
+peak 1.969, retail target |w| = 1.966 (expectation: within 5 % of |w| and peak < 1.05 |w|, from the retail math,
+not fitted); `off_centre_push_turns_a_long_prop` turns -1.29 rad in 2 s (was about -10). `cargo test -p skate-mods
+--lib` 102 pass / 2 ignored; `world_tuning` 9 pass (`carry_move_object_speeds_set_and_reset` covers the new knob).
+
+To playtest: right stick while holding a prop (steady turn, no runaway spin), off-centre push on the bench (turns
+and stops turning when the push stops), let go while turning.
+
+Open: the edge sense (+320, 82D45D30); whether a tipped prop's facing vector (+176 source) is the box's local axis
+or the grab frame (the port uses the box's local +Z heading).
+
+**Contact gap (2026-10-08).** Problem: a box lying on its side, rolled 1 to 8 degrees, 2 to 5 cm into the tiled
+one-sided street floor got no floor manifold at all, so the dragged bin fell through.
+
+Root cause [instrumented test, every floor triangle under the box traced]: the narrow phase did not miss the
+geometry. For every tile the SAT found an axis and the prism produced points; triangle fixup (82AD3130) then rejected
+all of them. The per-triangle SAT (82ACF950) prefers the tilted box face (or an edge cross) by a fraction of a
+millimetre over the floor normal, e.g. roll +3 deg, depth 5 cm: floor normal overlap 0.050 m, box face axis
+0.0486 m. That normal is 1 to 8 degrees off the floor, so fixup classifies it as an edge or vertex region of a
+welded flat edge (street flags 0xf10: one-sided, edge cosines, no convex bits, cosine 1, vertices disabled). The
+props called the GP volume-pair query 82AD43A8 (`primitive_pair_contacts`), which hard-codes fixup's object flag to
+false; on that path a flat non-convex edge with cosine 1 is above the bend threshold (0.999) and is dropped, and a
+disabled vertex is dropped. Every tile dropped its contact.
+
+Change: prop volumes against static world triangles now use the physics/world query 8277B720 (dispatch 8277BC58,
+`primitive_triangle_world_contacts`), the retail routine for a moving volume against world triangles, with the query
+context object byte (+61, read at 8277BC58 and forwarded to fixup as r9) set for props. On the object path fixup
+accepts a flat edge while projection + convexity_epsilon >= cosine, i.e. a normal within acos(1 - 0.01) = 8.1 deg of
+the face, which is exactly the window that failed, and does not reject disabled vertices. The limit is the body's
+own padding (the gap the prop resolver accepts) with no velocity prediction (the prop solver has no speculative
+rows; `maximum_separating_distance` 0). No new tolerance, no change in skate-core: the narrow-phase code is the
+existing port. `PropDynamics::world_query_for`, `contact_corrections` in `crates/skate-game/src/physics/prop_dynamics.rs`.
+
+Retail evidence level: the world query and the +61 byte are code facts; that retail props run with +61 set is
+inferred from the flag's role ("is_object") and not traced (writers seen at 82715960 / 8271CCE8 set 1, 82722098
+clears it; which query owners they serve is open). A body-level welding fallback (face-normal contact when fixup
+drops a flat feature and no coplanar triangle publishes) was tried and removed: it is not retail and the object path
+alone fixes the repro.
+
+Verification: `lying_tilted_box_keeps_floor_contacts` un-ignored and passing (all 108 poses get floor contacts,
+lowest floor normal up 0.990; it also asserts the old pair query still drops 11 poses so the repro stays honest).
+Bench, vending and rail runs in `dragged_props_rest_on_the_floor_after_release` are bit-identical to before (they
+never hit the gap); the bin still falls: it tumbles corner-first under the current command (compound tilt past
+8.1 deg into flat vertex regions, where retail fixup also drops the contact), which the slot 9 recipe replaces.
+Full runs: `skate-game --bin skate3rust` before 527 pass / 9 fail / 188 ignored, after 535 / 2 / 187 (the repro
+un-ignored; the 7 ped tests fixed by inserting `PedObstacleTrace` in the test app). `skate-core` unchanged: lib
+761 / 2, integration 155 / 0. Remaining failures: `dragged_props...` (bin, above; it passes at HEAD 0489702,
+which predates the Move Object port), and `setup::pipelines_accept_valid_group_outputs_when_fingerprint_changes`
+plus the two skate-core lib failures
+(`broadphase_tests::predictive_contacts_and_retention_match_full_scan_for_every_primitive`,
+`collision_feedback_tests::a_moving_group_8_body_reaches_native_impact_feedback_for_a_stationary_actor`), which
+fail identically at HEAD 0489702 (temporary worktree, same target dir).
+
+**Board drop, hold rule, skater follow (2026-10-08, later).** Problem: grabbing a prop kept the board in hand; the
+grab was dropped by our 1.0 m distance rule instead of retail's; the skater was pulled 0.35 m behind the grip at up
+to 20 m/s. Retail evidence [code, TU3 recomp, each address re-read for this change]:
+1. Enter 82D442D0 (0x82D44304..0x82D44364): a `bdzf` switch on SkateboardController+448 (above 5 skips). 0, 1 and 5
+   zero +444, call LetGoOfSkateboard 82D75440 and write +448 = 2 (the board becomes a free body where it is and
+   keeps its velocity); 4 zeroes +444, calls 82D755E0 (hide) and writes 3; 2 and 3 are kept.
+2. Hold rule in 82D44A10: CanGrabSpline 82E08EE8(record +720, reference bone 23 +272, grip distance +1128 splatted,
+   box from 82D2E250 with GrabBoxSizeGrabbing (+0) and GrabBoxOffset (+32), angles +452 (GrabSplineAngleLimitGrabbing,
+   80 deg, first angle test: reach vs -approach) and +436 (GrabSplineMaxAngleToHorizontalGrabbing, 50 deg, slope),
+   both x the degree-to-radian constant at 0x8206D110). Failing it clears holding (0x20).
+3. Skater follow, 82D44A10 0x82D45110..: target = edge point (+192) + 0.65 (0x820BB0EC) x latched row +368, y =
+   Player+240 y + 0.72 (0x8220E144); 82BD41B0(target - +416, +624 x dt, 0.1 (0x820641A8)) returns v dt plus the
+   rest clamped to 0.1 m; +416 += that step, then 82BDF268 moves the character. +624 (82D46610) = 0.85 v + 0.15 x
+   (anchor change / dt), anchor = grip + 0.7 (96ECC98838ECCC11) x back, y dropped.
+4. Frame blend 82D46218: rate = distance (+192 to +256) / (physics_state_offboard +448 x 60); only a ratio >= 1
+   starts a blend (flag 0x08, 82D463D8); otherwise the frame is set at once. At retail data (1.0) that is a jump of
+   60 m or more, so the facing snap we have is retail. No change.
+5. Record+272 (from DMO type data +312, 82C4B960) doubles the target velocity in 82D45318 (2.0 at 0x82060C50).
+
+Change:
+1. `move_object::board_on_grab` + `ground_board::enter_move_object` (called from the 502 enter in
+   `player_state/transition.rs`) let go / hide the board as above; `board_manager::Owner::hide`.
+2. `move_object::still_holds` (82E08EE8 through `grab_scene::qualify_at`, the 82E08DB8 tests at a given arc
+   distance) replaces the 1.0 m rule, also for the grab itself; `let_go_distance` stays as a mod-only engine rule,
+   default 0 = off.
+3. `move_object::SkaterFollow` (+416 / +608 / +624) replaces `grip_reach`; prop_carry publishes the root moved by
+   this tick's follow step (the displacement 82BDF268 gets); biped_ground applies it without the 20 m/s cap. A first
+   version targeted the follow point minus the live body (COM) offset: the COM swings with the animation and fed
+   back until the skater wiped out (asset-backed test, DownTown).
+4. Record+272: `MoveObjectInput::record_272`, per prop type `by_template[...].record_272` (default false: NOT
+   RETAIL YET, the DMO type data is not extracted), scale `record_272_speed_scale` (2.0).
+5. Interim grab record (NOT RETAIL YET): the held face's straight top edge (centre-height edges fell below the
+   grabbing box's y range, 0.2 to 1.8 m above the root, and dropped a bench at once). Retail grab splines come
+   from the DMO physics assembly definition +136 table, not in our assets: addresses recorded, no port.
+6. Moddability: `set_tuning('carry')` gains `drop_board`, `follow_step`, `hold_angle_limit`,
+   `hold_max_angle_to_horizontal`, `hold_box_extents`, `record_272_speed_scale`, per template `record_272`;
+   `grip_reach` now sets the follow reach (0.65). Box, offset and angles load from physics_state_offboard
+   `default`, anchor reach from the Move Object collection; all restored on mod disable.
+7. Leaving 502: unchanged; the selector leaves when the grab byte (OffBoard304 -> Processed2476 bit 21) clears on
+   every drop path; the asset-backed test checks BipedGround after the release.
+
+Verification: `cargo test -p skate-core move_object` 15 / 15 (board switch, record+272, hold box and angles, follow
+step and anchor velocity); `cargo test -p skate-game --bin skate3rust` 546 pass, 1 known
+(`setup::pipelines_accept_valid_group_outputs_when_fingerprint_changes`); asset-backed
+`carry_direction_tests` (DownTown, `--ignored`) 2 / 2 pass, including the new board state check (2 when carried,
+3 when hidden); `skate-mods` passes except the known `skyline_physics` (asset missing).
+
+Open: 82BDF268 (sweep, step-up, weight +1124) not decoded; the follow begins at the board-frame COM (our stand-in
+for Skeleton+15872); per prop type record+272 and grab splines need the DMO data.
+
+## Car shadows from a bridge printed on the ground below, 2026-10-08
+
+**Problem.** Session 2026-10-07 12:14 (DownTown, player about [42.6, 15.8, 353]). User: "I did find a spot where
+vehicle shadows from the bridge overhead were appearing below".
+
+**Root cause.** Dynamic objects (skaters, traffic cars on layer 28, mod graphics) cast into one dynamic shadow map
+that the baked world receives (`retail_character.rs` "Dynamic object shadows onto baked world", upstream ddc3028).
+The world receiver keeps the darker of the baked lightmap and `visibility + floor`. Our floor was an adapter: the
+player's nearest irradiance probe `sh[0]` (eased over 0.35 s). Under that bridge the probe is (0.0157, 0.0196, 0.0275),
+3 to 5 times darker than retail's constant, so a car on the bridge darkened the bridge's baked shade below it.
+
+**Retail evidence.**
+- [code, shader microcode] `data/big/shaders_final.big`, read with `.claude/skills/living-world/tools/eb_big_extract.py`
+  and `xenos_disasm.py`. Every world receiver pixel shader samples one blurred shadow atlas (`shadowAtlasBlurred`,
+  `CSM_Mat_Row0..2`, `g_CSMBlurBias`): `defaultenvironment_defaultPS`, `environmentdiffuse_defaultPS`,
+  `baseterrain_defaultPS`, `baseenvironment*`, `decal*environment*`, `transparent*`, `building_*`, `advertisement`,
+  `water_defaultPS`, `flowingwater_defaultPS`. Each computes visibility = saturate(depth step + 1 - blurred value),
+  adds the literal set {0.05, 0.09, 0.13} per channel and takes the minimum with the squared lightmap (e.g.
+  `environmentdiffuse_defaultPS` instructions 24 to 31, `defaultenvironment_defaultPS` 62 and 64). Following the
+  register swizzles back to the lightmap fetch gives R 0.05, G 0.09, B 0.13 in every one of them, including the water
+  shaders, whose lightmap sits in G,B,R registers so the literal pool reads 0.09, 0.13, 0.05.
+- [code] No height cut-off, receiver depth window or per-caster range in the receiver: one constant for every caster
+  and receiver. The city world shaders (`defaultenvironment`, `environmentdiffuse`, `baseterrain`, ...) have no
+  `shadow` technique, so the world never occludes the dynamic map; casters are `vehicle*_shadowPS`, character, ped,
+  `dynamicobject_shadowPS`, `environmentpark*_shadowPS` and `videoscreen_shadowPS`.
+- [code] Peds and dynamic objects additionally read a static world shadow map (`shadowWorld`, `WorldShadow_MatRow`,
+  drawn by `WorldShadow_defaultVS/PS`, TU3 strings "World Shadow generation" / "DrawWorldShadowCasterInstances" at
+  0x821A02D4 / 0x821A02EC). That is a receiver map for objects, not an occluder for the world.
+- So retail's answer to the bridge is the floor: a dynamic shadow falling into baked shade at or below
+  (0.05, 0.09, 0.13) leaves no mark.
+
+**Change.** The world shadow floor is the retail constant `RETAIL_WORLD_SHADOW_FLOOR` (0.05, 0.09, 0.13) for every
+receiver (lightmapped families, flowing water and water), held as data in `WorldShadowSettings`. The probe adapter
+and its easing are gone. The water floor (family 33) was the literal in register order (0.09, 0.13, 0.05) applied to
+RGB; it now uses the same RGB floor. Character shading, the two directional lights, their cascades and biases, the
+layer-28 caster set and the shader's visibility term are unchanged (the character shader never read this floor).
+
+**Moddability.** `sdk.world.set_tuning('shadows', {world_floor = {r, g, b}})` (each 0..1; 0 = full-strength dynamic
+shadows), first writer wins, rebuilt to retail when the mod stops; `sdk.world.tuning(key, 'shadows')` reads it. Engine
+systems use `modding::world_tuning::set` with the same domain.
+
+**Files.** `crates/skate-game/src/retail_render.rs` (constant, `WorldShadowSettings`, `enable_world_shadows`, tests),
+`crates/skate-game/src/retail_character.rs`, `crates/skate-game/src/retail_world.wgsl`,
+`crates/skate-game/src/modding/world_tuning.rs`, `crates/skate-mods/src/world_tuning.rs`,
+`crates/skate-mods/src/api.lua`, `sdk/skate.lua`.
+
+**Verification.**
+- Tests: `world_shadow_floor_is_the_retail_constant`, `baked_shade_at_the_floor_hides_a_dynamic_shadow_and_sunlit_ground_takes_it`
+  (the retail receiver expression: shade at the floor is untouched by a full shadow, the old probe floor darkened it,
+  sunlit ground still darkens to the floor), `every_world_shadow_read_uses_the_shared_floor` (shader source),
+  `world_shadow_floor_defaults_to_retail_set_and_reset` (mod patch, first writer, reset), schema cases in
+  `skate-mods` `patches_parse_validate_and_reject_unknown_fields`; existing shader validation tests
+  (`retail_shader_tests.rs`) still pass.
+- To playtest (rendering not checked by eye): DownTown under the bridge at about [42.6, 15.8, 353] with traffic on the
+  bridge: no car shadows on the shaded ground. Elsewhere: the skater's and cars' shadows on sunlit ground are now a
+  little lighter and bluish (retail floor instead of the local probe), and in deep baked shade they fade out as in
+  retail. Compare with the recomp at the same spot if they look off.
+
+**Open questions.**
+- The retail visibility term (depth step plus `1 - blurred` from an exponential-blurred atlas, two cascades) is still
+  Bevy's PCF lookup in ours; only the floor is ported here. The sign convention of the scalar-constant subtract was
+  read as constant minus register (the only reading that leaves unshadowed receivers at full light).
+- Retail's cascade extent and which vehicles are submitted to the shadow pass (CPU side, "Shadow Map Cascade" /
+  "DrawShadowCasterInstances") were not traced; ours keeps one 24 m cascade.
+
+## Cars hit peds: retail reaction, 2026-10-08
+
+**Problem.** Traffic cars drove straight through peds: nothing tested a car against a ped. The user remembered (from
+long ago, "user's memory is old, confirm in code") that a ped hit by a car ragdolls, then fades out or gets up and
+flees.
+
+**Retail evidence** [code, TU3; addresses are evidence only, nothing copied].
+- Every contact on a ped's collision body goes through the ped's contact callback `sub_82E38FB8` (ped vtable
+  `0x8232BE80`). It first asks vtable slot +164, `sub_82E38400`, for a contact kind 0..5. That classifier takes the
+  other body's owner (`[[contact+76]+32]`) and runs the interface cast `sub_82965630` with the type getter
+  `0x82C34050`, which returns `0x823220B8`, the type record named `IVehicle` (string at `0x823220B8`, `vehicle` at
+  `0x823220C4`). A vehicle owner returns kind **2** at once: no speed, angle or flag test.
+- The callback's switch (`0x82E39230`) sends kinds 1 and 2 to one block (`0x82E3926C`): it reads the pose of the
+  ped's collision body (`sub_82585CB0`), subtracts the body-to-root offset (`[ped+5756]+19872`) when the ped's slot
+  +180 says so, keeps the root's own height (the `vrlimi` keeps y), skips the result if it is not finite or out of
+  range (`0x822F88D4`), and writes it as the ped's root position. That is all: no reaction kind or direction
+  (`ped+2496` / `+2500`), no `Collision` intent (`PedestrianColliding`), no knock-down speech, no brain flag (the
+  `+3196` bit 0x80 at the top is set only for kinds 4 and 5).
+- The knock-down / stumble path (3.0 / 6.0 thresholds, `Collision.Knockdown` motion graph, animated, not ragdoll) is
+  kind **5**, an `IActor` owner (type getter `0x82586478` -> `0x823000F0`, `IActor`), i.e. the skater; kind 4 is an
+  actor contact on body part 1 or 2 (acted on only while `[ped+5756]+140` is 7); kind 3 (the object at `ped+5916`) sets `+3278` bit 0x80.
+- The car side, `sub_82C3C150` (the vehicle collision interface at `+136`): a parked car's alarm test on the contact
+  impulse; for an `IActor` toucher a bit in the "hit by" mask `+4248` and, for a contact ahead of the car, `+4401` bit
+  0x20. It does not stop, honk or post a sound there.
+- Peds run from cars only through the horn: the horn decider `sub_82C40660` honks (kind 2) after an obstacle has been
+  ahead for 2 s and notifies the obstacle (the honked-at input, `RunFromHonker`, at most 30 s); doc 26 V4, not ported.
+
+**Verdict.** The user's memory is refuted for TU3 (confidence high for the ped side: the classifier and the switch
+are read end to end; medium that no other system adds a reaction, no other `IVehicle` test was found in the ped
+code). A car shoves a ped out of its way (the car is kinematic with infinite mass, the ped's body is pushed, its root
+follows) and the ped walks on. No ragdoll, no knock-down, no fade, no flee from the contact itself. Not checked in a
+recomp run (no hook placed; peds rarely stand in a lane).
+
+**Change.**
+- `skate-core::living_world::peds::vehicle_contact`: `RetailContactKind` and `retail_response` (the classifier's
+  kinds and the callback's switch), `VehicleContactParams` (retail defaults `enabled = true`, `push = true`),
+  `detect` (a ped cylinder against a car's oriented box: overlap depth, normal and the pushed feet position with the
+  height kept), `closing_speed`.
+- `skate-game::living_world::vehicle_contacts`: `ped_vehicle_contacts` (`FixedUpdate`, after `advance_peds` and
+  `drive_traffic`) tests every ped against every car's box (`car_box`: the GLB bounds, the same box as the car's skater
+  proxy), peds and cars in id order; a contact pushes the ped out and keeps it on its navmesh (`constrain_move`), moves
+  the drawn ped in the ground plane only, publishes `VehicleContactEvent` (tick, car and ped `LivingWorldId::to_u64`,
+  car speed, closing speed, position, normal, depth, reaction; `Serialize` / `Deserialize`) and logs
+  `VEHICLE_CONTACT car=#.. ped=#.. speed= closing= at=[..] normal=[..] depth= reaction= tick=` once per car and ped per
+  second.
+- Multiplayer: one system decides; it is a pure function of the ped and car states, which already follow from the
+  spawn records and the tick, so a host and a client compute the same pushes; the event is the record a host would
+  send.
+
+**Moddability.** `sdk.world.set_tuning('living_world', {ped_vehicle_contact = {enabled, push}})`: `enabled = false`
+turns the detection, event and log off; `push = false` reports the contact (`reaction = reported`) without moving
+the ped, so a mod can react itself. First writer wins per field; the domain is rebuilt to retail when the mod stops.
+`VehicleContactEvent` is the hook the planned `sdk.living_world` events read.
+
+**NOT RETAIL YET.** The ped body is a cylinder of the NavPower agent radius and height (0.35 / 1.6 m [data]); retail's
+Havok ped shape (`sub_82E26430`) is not decoded. The push is the smallest separation in the ground plane; Havok's
+penetration recovery is not decoded. The navmesh stands in for the world collision of the pushed body. The car side
+(hit-by mask, the planner stopping for an obstacle ahead, the horn and the ped's `RunFromHonker`) is V4.
+
+**Files.** `crates/skate-core/src/living_world/peds/vehicle_contact.rs`, `crates/skate-core/src/living_world/peds/mod.rs`,
+`crates/skate-game/src/living_world/vehicle_contacts.rs`, `crates/skate-game/src/living_world/mod.rs`,
+`crates/skate-game/src/living_world/peds_tests.rs`, `crates/skate-game/src/modding/world_tuning.rs`,
+`crates/skate-mods/src/world_tuning.rs`.
+
+**Verification.** skate-core: `retail_vehicle_contact_follows_the_body_and_never_knocks_down`,
+`a_ped_in_front_of_the_bumper_is_pushed_forward`, `a_ped_beside_or_clear_of_the_car_is_not_touched`,
+`a_ped_inside_the_box_leaves_through_the_nearest_side`, `a_turned_car_pushes_along_its_own_axes`. skate-game:
+`living_world_cars_push_peds_out_of_the_way_and_report_the_contact` (push, event fields, determinism, serialisation,
+the two mod options), `living_world_car_box_matches_the_car_proxy`,
+`ped_vehicle_contact_is_mod_reachable_and_reset_on_disable`. Not playtested.
+
+**Open questions.**
+- Whether retail ped bodies are actually displaced by a kinematic car in the Havok solve (the callback only follows
+  the body); a recomp hook on `sub_82E38FB8` with kind 2 would show it. Peds seldom stand in a lane, which is why the
+  user may remember a different game.
+- The skater's car-hit bail rules (vehicle contact term `0x820CFF14`, 9.0 limits) are V5.
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).
@@ -1783,9 +2647,9 @@ When a mod stops, fails or reloads its patches go (`modding::world_tuning::clear
 
 | Domain | Fields (shipped value) | Resource |
 |---|---|---|
-| `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing true}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep the skater's facing across switches), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0}` (props and mod bodies as ped obstacles), `npc_skater_props {enabled true}` (NPC skaters push dynamic props) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
+| `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing false}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep_facing: fix 16 facing carry-over, mod option, not retail), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0}` (props and mod bodies as ped obstacles), `npc_skater_props {enabled true}` (NPC skaters push dynamic props), `ped_vehicle_contact {enabled true, push true}` (traffic cars push peds out of the way; no knock-down in retail) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
 | `props` | `default` / `by_template[<MOBJ template>]`: every `PropTuning` field plus `collision_box {center, half_extents}`; a template entry starts from the patched default | `PropTuningSettings` |
-| `carry` | `grab_bit` (28, RB), `placement_bit` (20, B), `grab_range` (2.0 m) | `CarrySettings`, pushed into `PropCarry` each tick (survives map loads) |
+| `carry` | `grab_bit` (28, RB), `placement_bit` (20, B), `grab_range` (2.0 m); Move Object: `push_speed` / `pull_speed` / `side_speed` (3.0 / 2.0 / 2.5), `turn_rate`, `grip_reach`, `linear_clamp` (20), `yaw_clamp` (6), `relatch` (0.1), `slew_per_tick` (4), `linear_controller` / `yaw_controller` ([20, 0, 40, 0.1]), the four curves, `let_go_distance` (1.0); slot 9 application: `commanded_material` ([0.03, 0.02] static / dynamic friction), `upright_cos` (0.65), `apply_at_com`, `yaw_replaces_torque`, `ignore_vertical`, `wake_on_command` (true), `by_template[<MOBJ template>] = {material_held, material_free, material_free_upright, upright_pair, restitution}` | `CarrySettings`, pushed into `PropCarry` and `PropDynamics` each tick (survives map loads) |
 
 Not exposed yet: road district selection for mod maps (the loader picks the district by map name), census range
 overrides (`data_config`), per-kind density / ambient skater count. The ped mirrored-animation fix has no values.
@@ -1799,11 +2663,11 @@ described, not copied.
 
 ## Open questions
 
-- Props look (todo, D9): all 40 prop materials use retail's `dynamicobject.default` / `dynamicobject.alphatest`
-  shader, which the renderer does not support yet (log: "40 of 40 world materials use an unsupported shader family
-  and render as family 1"). Retail draws an extra layer over the base texture (dents, grime, rust on dumpsters and
-  trash bins, recomp comparison 2026-10-07). Port the retail shader program. Research and plan: doc 27,
-  "D9 research".
+- Props look (D9, ported 2026-10-08, to playtest): the props' `dynamicobject.default` / `dynamicobject.alphatest`
+  materials now render with their own family 15, a port of `dynamicobject_defaultPS` (sun N.L with the dynamic
+  shadow, `m_params` ambient, tangent-space specular, detail normal). Needs a setup refresh (environment step) for the
+  `m_params` rows; without them the old family 1 fallback and log line remain. Open: retail's static world shadow map
+  (`shadowWorld`) has no engine pass yet, so props in building shade stay sunlit. Details: doc 27, "D9".
 - Population core (milestone 2): retail reads the census count once per spawn pass (`r23` in `sub_826B9940`), so
   during the initial populate the cap would not bind and only the factory (pool 31) would; the recomp sessions show
   at most 15 peds in 15-cap areas, so we re-read the count per spawn (identical outside the initial populate). Also

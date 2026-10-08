@@ -362,6 +362,12 @@ impl NpcSkater {
         self.board.deck_calls = calls;
     }
 
+    /// The body poster's hits of the last [`Self::process`] (`Contacts::body_hits`: the host's
+    /// diagnostic line and the mods' `body_impact` event, as the local player's).
+    pub fn body_hits(&self) -> &[contacts::BodyHit] {
+        &self.board.body_hits
+    }
+
     /// The collision messages this skater's contacts posted (hand them to the collision manager
     /// before its process, like the local player's).
     pub fn take_collisions(&mut self) -> Vec<Message> {

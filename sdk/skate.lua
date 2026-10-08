@@ -807,13 +807,18 @@ function sdk.audio.stop_all() end
 ---@field globals? string[] up to 16 retail globals
 ---@field mixmap? AudioWatchKey[] up to 16 MixMap outputs
 ---@class AudioEvent
----@field kind "post"|"release"|"splice"|"emitter_start"|"emitter_stop"|"zone"|"speech"
+---@field kind "post"|"release"|"splice"|"emitter_start"|"emitter_stop"|"zone"|"speech"|"body_impact"
 ---@field source "player"|"world"|"npc"|"emitter"|"ambience"|"speech"
 ---@field class string retail class (posts), bank (Splice starts, emitters), "speech" / "maincast" (speech lines) or ""
 ---@field slot string the poster's slot (`grind`, `footstep`, `horn`, `ped_tazer`, `body_fall`, `ring`, …) or ""
 ---@field id integer Splice sound id, emitter patch, slot index, speech event
 ---@field owner string world / NPC object, zone key, speaker ("0" for the local player)
----@field tag? "pop"|"land"|"grind_start"|"grind_end"|"footstep"|"horn"|"alarm"|"tazer"|"body_fall"|"emitter"|"zone_change"|"speech"
+---@field tag? "pop"|"land"|"grind_start"|"grind_end"|"footstep"|"horn"|"alarm"|"tazer"|"body_fall"|"emitter"|"zone_change"|"speech"|"body_impact"
+---@field region? integer body_impact: the body region (0 head, 1 torso, 2 / 3 arms, 4 / 5 legs)
+---@field impact? number body_impact: the impact the body poster read (after the speed graph)
+---@field tier? integer[] body_impact: the pair's tiers {body material, surface} (0..2, 3 = none)
+---@field material? integer[] body_impact: {body material, surface material} (143 = none)
+---@field position? number[] body_impact: {x, y, z} where the hit plays (the skater's body point)
 ---@class AudioInfo
 ---@field native boolean the native audio runtime runs
 ---@field map_epoch? integer
@@ -952,13 +957,25 @@ function sdk.audio.seed(n) end
 -- an absent field keeps the shipped value; first writer wins per field; restored when the mod stops,
 -- fails or reloads). Domains:
 -- 'living_world': npc_draw_distance (0.25..4, 1 = retail), skater_fade {fade_in_seconds, fade_seconds,
---   despawn_alpha} (retail 1, 1, 0.2), skater_line_chain {radius, max_candidates, blend_seconds, keep_facing} (NPC skater line end:
+--   despawn_alpha} (retail 1, 1, 0.2), skater_line_chain {radius, max_candidates, blend_seconds, keep_facing,
+--   facing_rule, steer_dead_zone_deg, steer_full_deg, fakie_high_speed, fakie_low_speed, fakie_slow_seconds,
+--   fakie_spawn_seconds} (NPC skater line end:
 --   continue on an unused line starting within radius m, retail 4 and 16; radius 0 = fade out at every
 --   line end; blend_seconds: the drawn skater moves onto the new line over this time after a branch or
---   chain, default 0.2, 0 = cut; keep_facing: the skater keeps the way it faces, forward or fakie, across
---   a branch or chain, retail true, false = take the new line's recorded facing), ped_fade {distance = {near, far} (45, 55; a model record's pair
+--   chain, default 0.2, 0 = cut; keep_facing: mod option, not retail, default false: the skater keeps the
+--   way it faces, forward or fakie, across a branch or chain by riding the new line turned round;
+--   facing_rule: 'riding_entry' (default, retail: the recorded skater frame, turned while a flip
+--   latched on landing / spawn / getting on the board is set, held across switches; a body drawn
+--   against its travel on the ground is drawn riding fakie with the stock fakie channel, like retail)
+--   or 'per_node' (not retail: each node folded onto the board's riding direction); steer_dead_zone_deg / steer_full_deg: retail AI
+--   steer ramp, 2 and 10, kept for the simulated tier, unused by the replay tier; fakie_high_speed,
+--   fakie_low_speed (m/s), fakie_slow_seconds, fakie_spawn_seconds: retail's riding-fakie rule (stock
+--   1, 0.5, 0.2, 1): drawn fakie when rolling against the board's forward above the high speed, or above
+--   the low speed for longer than the slow time, never in the first spawn seconds; a very high speed
+--   turns the fakie drawing off), ped_fade {distance = {near, far} (45, 55; a model record's pair
 --   wins), fade_in_seconds (1), enabled}, skater_clips {[phase or 'phase.Style'] = stock clip name}
 --   (NPC skater clip per replay phase: rolling, crouched, air, air_trick, ground_trick, off_board;
+--   also 'fakie_channel' = the stock tree overlaid while riding fakie, default 'B_FAKIE_CHANNEL';
 --   a clip whose name holds _CYC loops; an unknown clip falls back to the shipped pick; also
 --   'trick.<trick id name>' = a stock trick animation base, e.g. ['trick.kickflip'] = 'B_HEELFLIP_IN',
 --   played as <base>_G on the ground then <base>_A in the air, for every recorded trick slot of that trick),
@@ -967,7 +984,8 @@ function sdk.audio.seed(n) end
 --   'trick_air' 0.1 set the transitions into a trick's ground and air clips),
 --   ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height}
 --   (props and mod bodies as ped navigation obstacles; retail on, 0.2, 0.4, 0.25; ours 0.1, 0),
---   npc_skater_props {enabled} (NPC skaters push dynamic props like the player; retail on).
+--   npc_skater_props {enabled} (NPC skaters push dynamic props like the player; retail on),
+--   ped_vehicle_contact {enabled, push} (traffic cars push peds out of the way; retail on / on, no knock-down).
 -- 'props': default and by_template[<MOBJ template name>] = {contact_padding, penetration_slop,
 --   penetration_correction, max_depenetration_per_tick, restitution_threshold, skater_push_mass,
 --   push_transfer, body_push_speed, board_push_speed, penetration_push_speed, stuck_release_ticks,
@@ -976,14 +994,18 @@ function sdk.audio.seed(n) end
 --   push_speed (1.4 m/s), pull_speed (1.0 m/s), side_speed (0.8 m/s) at full left stick,
 --   turn_rate (1.6 rad/s) at full right stick X, grip_reach (0.35 m between the skater and the
 --   dragged prop's near face).
+-- 'shadows': world_floor = {r, g, b} (each 0..1; retail {0.05, 0.09, 0.13}): the lightest a dynamic
+--   object's shadow (skaters, cars, props, mod graphics) can leave on the baked world. Retail adds it
+--   to the shadow map and keeps the darker of that and the baked lightmap, so shadows that fall into
+--   baked shade (a car on a bridge over shaded ground) leave no mark; 0 = full-strength shadows.
 sdk.world = {}
 ---Set (a table) or restore (`nil`) this mod's patch of a world tuning domain.
----@param domain 'living_world'|'props'|'carry'
+---@param domain 'living_world'|'props'|'carry'|'shadows'
 ---@param patch table|nil
 function sdk.world.set_tuning(domain, patch) end
 ---Request a domain as the game uses it now; read it as `sdk.commands.result(key).value`.
 ---@param key string command result key
----@param domain 'living_world'|'props'|'carry'
+---@param domain 'living_world'|'props'|'carry'|'shadows'
 function sdk.world.tuning(key, domain) end
 
 -- Audio tuning (capability `audio_tuning`): patch the game's typed tuning while this mod runs.

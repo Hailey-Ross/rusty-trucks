@@ -50,6 +50,17 @@
 //! and [`LineCursor::render_sample`] interpolates from the cursor one tick back with the recorded
 //! branch decisions (the player's previous-to-current scheme), never guessing a branch.
 //!
+//! **Facing** (fix 23 corrected, 2026-10-08): retail's AI target frame is the recorded skater
+//! frame slerped between nodes, turned 180 deg while the latched flip ([`LineCursor::flip`],
+//! controller `+927`) is set; the flip is latched only on entering riding and held across
+//! switches ([`FacingRule::RidingEntry`]). Retail's full skater steers its body toward that
+//! target ([`steer_input`], 2 / 10 deg) and shows fakie / switch with its own clips and stance
+//! mirror. The cursor always latches the flip; the puppet draws the retail target only under the
+//! default `riding_entry` rule; the cursor runs retail's riding-fakie rule on the drawn body
+//! ([`LineCursor::fakie`]) and the puppet overlays the stock fakie channel like retail, so a body
+//! against its travel is drawn riding fakie. The fix 23 per-node fold ([`FacingRule::PerNode`],
+//! not retail) stays a mod option.
+//!
 //! Multiplayer: between branches the cursor is a pure function of (line, start node, frames);
 //! a branch decision is a record ([`BranchRecord`]) a client mirrors ([`LineCursor::step`] with a
 //! mirroring decider), so a client reproduces the host's NPC from its spawn record, the frame
@@ -107,6 +118,72 @@ pub mod retail {
     /// Line end fallback (`sub_82458968` mode 1): the nearest valid start wins over a nearer
     /// invalid one only while its squared distance is below this (`0x822F94F4` = 36).
     pub const CHAIN_FALLBACK_VALID_D2: f32 = 36.0;
+    /// AI steer input (`sub_8246B358` -> `sub_82471188`): no steer below this yaw error (deg),
+    /// [data] `ai_skater` default tunable `DD8843F793462295` = 2.0.
+    pub const STEER_DEAD_ZONE_DEG: f32 = 2.0;
+    /// Full steer at this yaw error (deg), [data] `ai_skater` default tunable `281F55D7BB965ADC` = 10.0.
+    pub const STEER_FULL_DEG: f32 = 10.0;
+    /// The riding-fakie rule's thresholds (`UpdateRidingFakie82BB2330`, [`LineCursor::fakie`]):
+    /// the stock motion graph's `UpdateRidingFakie` node [data] (checked by the data-gated
+    /// `living_world_npc_fakie_rule_and_channel_match_the_stock_graph`).
+    pub const FAKIE: crate::animation::riding_fakie::Settings = crate::animation::riding_fakie::Settings {
+        high_speed: 1.0,
+        low_speed: 0.5,
+        slowly_backwards_seconds: 0.2,
+        after_teleport_seconds: 1.0,
+    };
+    /// The fakie channel's fade in and out (s): `FakieHeadChannel82BAC778` blend in / out
+    /// `0x3e99999a` = 0.3 [code].
+    pub const FAKIE_CHANNEL_FADE_SECONDS: f32 = 0.3;
+}
+
+/// Which way the replay draws the NPC skater's body (the puppet root orientation).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FacingRule {
+    /// Retail (default): the target frame is the recorded SKATER frame slerped between the two
+    /// nodes ([code] controller `+208`, `sub_8246D560` -> `sub_8245A088` -> `sub_82454CD0` ->
+    /// `sub_82454B28`), turned 180 deg about its up axis while the cursor's latched
+    /// [`LineCursor::flip`] is set ([code] `sub_8246B358`: rows 0 and 2 of `+208` negated while
+    /// controller `+927`). The flip is latched only when the skater enters riding
+    /// ([code] `sub_8246A700`, rising edge of `+928`) and held across branches and chains.
+    /// The default (`riding_entry`): a body drawn against its travel on the ground is drawn riding
+    /// fakie ([`LineCursor::fakie`], the stock fakie channel), as retail draws it.
+    #[default]
+    RidingEntry,
+    /// NOT RETAIL, mod option (`per_node`, the fix 23 rule): per node, the recorded skater frame
+    /// turned 180 deg wherever it faces more than 90 deg away from the node's path frame
+    /// ([`drawn_skater`]); no state. A switch or fakie stretch is drawn riding forward.
+    PerNode,
+}
+
+impl FacingRule {
+    /// Stable mod-facing names (`skater_line_chain.facing_rule`).
+    pub const NAMES: [&'static str; 2] = ["riding_entry", "per_node"];
+    pub fn name(self) -> &'static str {
+        match self {
+            FacingRule::RidingEntry => "riding_entry",
+            FacingRule::PerNode => "per_node",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "riding_entry" => Some(FacingRule::RidingEntry),
+            "per_node" => Some(FacingRule::PerNode),
+            _ => None,
+        }
+    }
+}
+
+/// Retail AI steer input from a signed yaw error (radians, character forward to target forward
+/// about up, [code] `sub_824536C8`), as `sub_82471188` computes it: 0 below `dead_zone_deg`,
+/// rising linearly to full at `full_deg`, sign opposite to the error. Data for the simulated
+/// tier: the replay tier draws the target frame directly and has no steering, so nothing in the
+/// replay tier calls this.
+pub fn steer_input(yaw_error: f32, dead_zone_deg: f32, full_deg: f32) -> f32 {
+    let e = yaw_error.abs().to_degrees();
+    let span = full_deg - dead_zone_deg;
+    let m = if span > 0.0 { ((e - dead_zone_deg) / span).clamp(0.0, 1.0) } else if e > dead_zone_deg { 1.0 } else { 0.0 };
+    -m * yaw_error.signum()
 }
 
 /// How a skater continues at the end of its line (retail `sub_8246D3C0` -> `sub_8246C7F8`):
@@ -123,13 +200,34 @@ pub struct ChainConfig {
     /// value: its full skater never jumps, it steers onto the new line (`sub_8246D3C0` /
     /// `sub_8246C7F8` only store the new line and node, `AIPhysicsInput` steers). The replay tier
     /// stands in with [`SWITCH_BLEND_SECONDS`]. 0 = cut.
+    ///
+    /// NOT RETAIL YET (switch spins, 2026-10-08): retail has no turn rate to port here. The AI
+    /// steer of `sub_82471188` (on board) and `sub_82471070` (off board) is written to three named
+    /// input channels of the normal character, `Turn`, `BodySpin` and `KickTurn` ([code] slots
+    /// `0x830BFD74` / `0x830BE600` / `0x830BE1E0`, names from static inits `sub_82F84BE0` /
+    /// `sub_82F84A30` / `sub_82F84BC8`), so the body yaw comes out of the player chain: steering
+    /// tilt `sub_82D92440` -> truck targets `sub_82C040F0` / `sub_82C0B9C0` -> the rigid-body
+    /// wheel solve. It is emergent, not a tunable; the faithful fix is the simulated NPC tier.
+    /// With [`FacingRule::RidingEntry`] the puppet turns a switch's facing change within this
+    /// blend (128 spins after a switch on the exported lines, 29 under [`FacingRule::PerNode`]).
     pub blend_seconds: f32,
-    /// Keep the skater's facing (stance side, forward or fakie) across a branch or chain
-    /// ([`LineCursor::facing_flipped`]). Retail `true`: the full skater carries its own facing onto
-    /// the new line (the switch stores only line and node, see above); only a recorded trick or
-    /// revert on the line turns it. `false` = take the new line's recorded facing (the skater may
-    /// spin round at the switch).
+    /// Mod option, not retail (default `false`): carry the drawn facing across a branch or chain
+    /// by riding the new line turned 180 deg ([`LineCursor::facing_flipped`], the fix 16 rule).
+    /// Retail's facing state is the latched flip ([`FacingRule::RidingEntry`], controller `+927`),
+    /// which a switch leaves alone (a switch stores only line and node, [code] `sub_8246C7F8`
+    /// `+592/+600/+816`, `sub_8246BEE0`); it never compares the old and new line at a switch.
+    /// Kept on, this turn carries on across later lines and the skater can ride a
+    /// forward-recorded line backwards (user test 6, 2026-10-05).
     pub keep_facing: bool,
+    /// How the body is drawn ([`FacingRule`]; default and retail [`FacingRule::RidingEntry`]; the
+    /// fix 23 [`FacingRule::PerNode`] is a mod option).
+    pub facing_rule: FacingRule,
+    /// Retail AI steer ramp ([`steer_input`]; `ai_skater` defaults 2 / 10 deg). Data for the
+    /// simulated tier; the replay tier does not steer.
+    pub steer_dead_zone_deg: f32,
+    pub steer_full_deg: f32,
+    /// Retail riding-fakie rule thresholds ([`LineCursor::fakie`], [`retail::FAKIE`]).
+    pub fakie: crate::animation::riding_fakie::Settings,
 }
 
 /// Default switch blend (engine stand-in, see [`ChainConfig::blend_seconds`]): the stock motion
@@ -138,8 +236,18 @@ pub struct ChainConfig {
 pub const SWITCH_BLEND_SECONDS: f32 = 0.2;
 
 impl ChainConfig {
+    /// Retail values, except the engine `blend_seconds`.
     pub fn retail() -> Self {
-        Self { radius: retail::CHAIN_RADIUS, max_candidates: retail::CHAIN_MAX_CANDIDATES, blend_seconds: SWITCH_BLEND_SECONDS, keep_facing: true }
+        Self {
+            radius: retail::CHAIN_RADIUS,
+            max_candidates: retail::CHAIN_MAX_CANDIDATES,
+            blend_seconds: SWITCH_BLEND_SECONDS,
+            keep_facing: false,
+            facing_rule: FacingRule::RidingEntry,
+            steer_dead_zone_deg: retail::STEER_DEAD_ZONE_DEG,
+            steer_full_deg: retail::STEER_FULL_DEG,
+            fakie: retail::FAKIE,
+        }
     }
 }
 
@@ -275,6 +383,160 @@ pub fn rotate(q: [f32; 4], v: Vec3) -> Vec3 {
     [v[0] + w * t[0] + (y * t[2] - z * t[1]), v[1] + w * t[1] + (z * t[0] - x * t[2]), v[2] + w * t[2] + (x * t[1] - y * t[0])]
 }
 
+/// The retail path frame of a node ([code] `sub_82453A58`): the board orientation (node `+0x18`,
+/// `sub_82453970`) turned 180 deg about its up axis when the node is flagged `m_IsBoardFlipped`
+/// (flags `+0x28` bit 0, [`node_flags::BOARD_FLIPPED`]). The controller rebuilds it from the
+/// current node every update (`sub_8246D560` -> `sub_824734A8`, interpolated between nodes), so it
+/// depends on the line and node only, never on an earlier line.
+pub fn path_frame(node: &ReplayNode) -> [f32; 4] {
+    let q = decode_orientation(node.board);
+    if node.flags & node_flags::BOARD_FLIPPED != 0 { turn_about_up(q) } else { q }
+}
+
+/// The node world frame retail spawns the character with ([code] `sub_82453C58`, called by the
+/// spawn `sub_8245C548` before `sub_8245DA78`): the recorded skater frame on off-board nodes
+/// (flags bit 0x08), the path frame ([`path_frame`]) on every other node.
+pub fn node_world_frame(node: &ReplayNode) -> [f32; 4] {
+    if node.flags & node_flags::OFF_BOARD != 0 { decode_orientation(node.skater) } else { path_frame(node) }
+}
+
+/// Whether a node counts as riding for the flip latch: neither airborne nor off board.
+/// Retail latches on the rising edge of controller `+928` = the skater state object's `+438`,
+/// which [code] `sub_82DB6EC0` sets while the player state id is in `200..300` (inferred: riding
+/// on the board; the state ids behind it are not decoded). The replay tier has no player state,
+/// so this maps it to the recorded node flags: landing (airborne -> grounded) and getting back on
+/// the board (off board -> on board) are the riding entries. NOT RETAIL YET in that mapping
+/// (ground tricks count as riding here; whether retail's grind / manual states are in 200..299
+/// is not read).
+pub fn node_riding(flags: u8) -> bool {
+    flags & (node_flags::AIRBORNE | node_flags::OFF_BOARD) == 0
+}
+
+/// Retail flip test ([code] `sub_8246A700`): the recorded skater frame of the current node faces
+/// away from the character's forward, `dot(row 2, row 2) < 0` (3D, `vmsum3fp128`).
+pub fn flip_test(node: &ReplayNode, character: [f32; 4]) -> bool {
+    let a = rotate(decode_orientation(node.skater), [0.0, 0.0, 1.0]);
+    let b = rotate(character, [0.0, 0.0, 1.0]);
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2] < 0.0
+}
+
+/// Shortest-arc slerp of two unit quaternions (x, y, z, w), like [code] `sub_82454B28` (sign
+/// selection by the dot product, normalised lerp when the two are close; the closeness threshold
+/// is not decoded, 0.9995 here is ours).
+pub fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    let mut dot: f32 = (0..4).map(|i| a[i] * b[i]).sum();
+    let b = if dot < 0.0 {
+        dot = -dot;
+        b.map(|c| -c)
+    } else {
+        b
+    };
+    if dot > 0.9995 {
+        return nlerp(a, b, t);
+    }
+    let theta = dot.min(1.0).acos();
+    let s = theta.sin();
+    let (wa, wb) = (((1.0 - t) * theta).sin() / s, (t * theta).sin() / s);
+    std::array::from_fn(|i| a[i] * wa + b[i] * wb)
+}
+
+/// Retail target frame between nodes `i` and `j` at fraction `t` (controller `+208`): the
+/// recorded skater frames slerped ([`slerp`]), before the flip.
+pub fn target_skater(line: &ReplayLine, i: usize, j: usize, t: f32) -> [f32; 4] {
+    let (Some(a), Some(b)) = (line.nodes.get(i), line.nodes.get(j)) else { return [0.0, 0.0, 0.0, 1.0] };
+    slerp(decode_orientation(a.skater), decode_orientation(b.skater), t)
+}
+
+/// NOT RETAIL (fix 23 rule, kept as the [`FacingRule::PerNode`] mod option; the default is
+/// [`FacingRule::RidingEntry`]). Whether the replay draws node `i`'s
+/// recorded skater frame turned 180 deg about its up axis: its
+/// forward lies more than 90 deg (yaw) from the forward of the retail path frame ([`path_frame`],
+/// the riding direction retail's controller steers by). [data] On the exported lines (3 districts,
+/// 142,042 moving nodes) the recorded skater frame and the path frame agree within 30 deg on
+/// 111,240 nodes and are about 180 deg apart on 24,251 (switch stance: the body turned round while
+/// the board rolls nose first); the skater frame faces against the travel on 28,102 nodes, the path
+/// frame on 11,598 (fakie). Airborne nodes keep the turn of the last grounded node before them:
+/// a shove-it spins the board about its up axis in the air, and only its landing node carries the
+/// final `m_IsBoardFlipped` state.
+///
+/// Retail does not do this: the full review (2026-10-08, doc 26 "Fix 23 corrected") found that
+/// retail's AI target is the recorded skater frame slerped between nodes, turned as a whole by
+/// one latched flip (controller `+927`, [`FacingRule::RidingEntry`]), not folded per node
+/// against the path frame. The node holds no switch or stance flag (flags bits 0..3 = board
+/// flipped, crouched, airborne, off board [data]); `sub_8246B1F8` folds the body-board yaw into
+/// +-90 deg for a separate input (`+856/+860`). Retail plays switch with its own clips and stance
+/// mirroring; the replay puppet has one stance, so this rule draws a switch rider as riding
+/// forward in the character's stance.
+fn skater_turned(line: &ReplayLine, i: usize) -> bool {
+    let mut k = i.min(line.nodes.len().saturating_sub(1));
+    while k > 0 && line.nodes[k].flags & node_flags::AIRBORNE != 0 {
+        k -= 1;
+    }
+    let Some(n) = line.nodes.get(k) else { return false };
+    let f = rotate(decode_orientation(n.skater), [0.0, 0.0, 1.0]);
+    let g = rotate(path_frame(n), [0.0, 0.0, 1.0]);
+    f[0].hypot(f[2]) > 1e-3 && g[0].hypot(g[2]) > 1e-3 && yaw_angle(f, g).abs() > std::f32::consts::FRAC_PI_2
+}
+
+/// NOT RETAIL ([`FacingRule::PerNode`] mod option, see [`skater_turned`]). The skater orientation
+/// that rule draws at node `i` (the puppet root): the recorded skater frame
+/// (its pitch, roll and air attitude) facing the retail path frame's riding direction, i.e. turned
+/// 180 deg about its own up axis where [`skater_turned`]. The puppet has one stance, so a recorder
+/// riding switch is drawn riding forward, and a recorder riding fakie (the path frame itself against
+/// the travel) is drawn fakie like retail's target frame.
+pub fn drawn_skater(line: &ReplayLine, i: usize) -> [f32; 4] {
+    let Some(n) = line.nodes.get(i) else { return [0.0, 0.0, 0.0, 1.0] };
+    let q = decode_orientation(n.skater);
+    if skater_turned(line, i) { turn_about_up(q) } else { q }
+}
+
+/// Diagnostic thresholds for [`facing_check`] (engine constants for the `NPC_SKATER_BACKWARDS`
+/// log, not retail values).
+pub mod facing_diagnostic {
+    /// Drawn heading this far (radians, 135 deg) from the velocity yaw counts as riding backwards.
+    pub const BACKWARDS_ANGLE: f32 = 135.0 * std::f32::consts::PI / 180.0;
+    /// Below this ground speed (m/s) the velocity yaw is too noisy to judge.
+    pub const MIN_SPEED: f32 = 1.0;
+}
+
+/// Drawn heading against the direction of travel at one sample (the `NPC_SKATER_BACKWARDS` log).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FacingCheck {
+    /// Yaw of the drawn skater's +Z about +Y (radians, 0 = +Z).
+    pub heading_yaw: f32,
+    /// Yaw of the velocity (radians).
+    pub velocity_yaw: f32,
+    /// |heading - velocity| wrapped to 0..pi.
+    pub angle: f32,
+    /// The line's own retail path frame ([`path_frame`]) faces away from the travel by more than
+    /// 90 deg here: the recorder rode fakie, so retail's target frame opposes travel too.
+    pub recorded_fakie: bool,
+    /// The body is drawn riding fakie here ([`ReplaySample::fakie`]: retail's fakie bit, the
+    /// fakie channel plays): a heading against travel with this set is retail's fakie drawing,
+    /// not a skater riding backwards in a forward pose.
+    pub drawn_fakie: bool,
+    pub backwards: bool,
+}
+
+/// [`FacingCheck`] for a sample of `line`; `None` when the ground speed is below
+/// [`facing_diagnostic::MIN_SPEED`] or the heading is vertical.
+pub fn facing_check(line: &ReplayLine, s: &ReplaySample) -> Option<FacingCheck> {
+    let v = s.velocity;
+    if v[0].hypot(v[2]) < facing_diagnostic::MIN_SPEED {
+        return None;
+    }
+    let f = rotate(s.skater, [0.0, 0.0, 1.0]);
+    if f[0].hypot(f[2]) < 1e-3 {
+        return None;
+    }
+    let angle = yaw_angle(f, v).abs();
+    let recorded_fakie = line.nodes.get(s.node as usize).is_some_and(|n| {
+        let g = rotate(path_frame(n), [0.0, 0.0, 1.0]);
+        g[0].hypot(g[2]) > 1e-3 && yaw_angle(g, v).abs() > std::f32::consts::FRAC_PI_2
+    });
+    Some(FacingCheck { heading_yaw: f[0].atan2(f[2]), velocity_yaw: v[0].atan2(v[2]), angle, recorded_fakie, drawn_fakie: s.fakie, backwards: angle > facing_diagnostic::BACKWARDS_ANGLE })
+}
+
 /// `q` turned 180 deg about its own +Y: `q * (0, 1, 0, 0)` (x, y, z, w), i.e. the frame's X and Z
 /// axes negated, as retail does for a board-flipped node ([code] `sub_82453A58`).
 pub fn turn_about_up(q: [f32; 4]) -> [f32; 4] {
@@ -383,6 +645,8 @@ pub struct ReplaySample {
     /// The render fraction (0..1) of the next 60 Hz frame this sample was taken at: clip and blend
     /// times are `(frames + sub_frame) / 60`, so the pose moves with the root between ticks.
     pub sub_frame: f32,
+    /// Retail's riding-fakie bit of the drawn body ([`LineCursor::fakie`]).
+    pub fakie: bool,
 }
 
 /// The drawn root at a branch or chain: where the skater was drawn on the old line, decayed onto
@@ -628,8 +892,37 @@ pub struct LineCursor {
     /// at a branch or chain when [`LineCursor::keep_facing`] is on; a pure function of the lines
     /// and the branch records, so a client derives the same value.
     pub facing_flipped: bool,
-    /// Keep the facing across switches (host and client set it from [`ChainConfig::keep_facing`]).
+    /// Keep the facing across switches (mod option, not retail; host and client set it from
+    /// [`ChainConfig::keep_facing`]).
     pub keep_facing: bool,
+    /// Retail's latched switch / fakie flip (controller `+927`, [`FacingRule::RidingEntry`]): the
+    /// drawn skater is the recorded skater frame turned 180 deg about up while set. Latched by
+    /// [`flip_test`] only when the skater enters riding ([`node_riding`]: spawn, landing, back on
+    /// the board), held across branches and chains. A pure function of the lines, the spawn and
+    /// the branch records (deterministic; a snapshot carries it as a plain bool).
+    pub flip: bool,
+    /// Whether the current node counted as riding at the last step (the latch's edge detector,
+    /// controller `+928`).
+    pub riding: bool,
+    /// How the body is drawn (host and client set it from [`ChainConfig::facing_rule`]).
+    pub facing_rule: FacingRule,
+    /// Retail's riding-fakie bit of the drawn body (SkaterAnim flags `0x20000000`, set by the
+    /// motion graph's `UpdateRidingFakie82BB2330` [code], [`crate::animation::riding_fakie`]):
+    /// on the ground, outside a trick, the travel runs against the board's forward
+    /// (`dot(velocity, board axis) < -0.5`) above the high speed, or above the low speed for
+    /// longer than the slow time; cleared in the air and off the board, held during a trick, never
+    /// set in the first `after_teleport_seconds` after spawn. The board axis is the drawn root's
+    /// +Z (the puppet's board is part of its rig). Updated every step after the facing rule, so it
+    /// describes the body as drawn; a pure function of the lines, the spawn and the branch records.
+    pub fakie: bool,
+    /// Frame the fakie bit last changed and the frame the change before it happened (the fakie
+    /// channel's fade in / out, [`LineCursor::fakie_channel_weight`]).
+    pub fakie_since: u64,
+    pub fakie_previous_since: u64,
+    /// The rule's two clocks (`UpdateRidingFakie` instance state).
+    pub fakie_clock: crate::animation::riding_fakie::State,
+    /// Thresholds (host and client set them from [`ChainConfig::fakie`]).
+    pub fakie_settings: crate::animation::riding_fakie::Settings,
 }
 
 /// How a cursor takes branches: the host decides, a client mirrors records.
@@ -644,16 +937,25 @@ pub enum Decider<'a> {
 
 impl LineCursor {
     pub fn new(line: [u8; 16], node: u32) -> Self {
-        Self { line, node, frame_in_segment: 0, frames: 0, finished: false, trick_open: false, trick: -1, history: [None; PHASE_HISTORY], phase: None, phase_since: 0, previous_phase: None, previous_since: 0, switch: None, switch_blend_seconds: SWITCH_BLEND_SECONDS, facing_flipped: false, keep_facing: true }
+        Self { line, node, frame_in_segment: 0, frames: 0, finished: false, trick_open: false, trick: -1, history: [None; PHASE_HISTORY], phase: None, phase_since: 0, previous_phase: None, previous_since: 0, switch: None, switch_blend_seconds: SWITCH_BLEND_SECONDS, facing_flipped: false, keep_facing: false, flip: false, riding: false, facing_rule: FacingRule::RidingEntry, fakie: false, fakie_since: 0, fakie_previous_since: 0, fakie_clock: Default::default(), fakie_settings: retail::FAKIE }
     }
 
     /// Spawn on a line at a node (retail spawns at node 0, `sub_8245DA78`).
+    ///
+    /// Retail places the character with the node world frame ([code] `sub_8245C548` ->
+    /// `sub_82453C58` -> `sub_8245DA78`, [`node_world_frame`]); when the spawn node is riding, the
+    /// first controller update sees `+928` rise and latches the flip against that frame
+    /// ([`flip_test`]): set when the recorded skater frame faces away from the path frame.
     pub fn spawn(lines: &dyn LineSource, line: [u8; 16], node: u32) -> Self {
         let mut c = Self::new(line, node);
         if let Some(l) = lines.line(&line) {
             c.set_trick(l, node);
             c.phase = l.nodes.get(node as usize).map(|n| ReplayPhase::of(n.flags, c.trick_open));
             c.history[0] = c.phase.map(|phase| PhaseEntry { phase, since: 0, trick: c.trick });
+            if let Some(n) = l.nodes.get(node as usize) {
+                c.riding = node_riding(n.flags);
+                c.flip = c.riding && flip_test(n, node_world_frame(n));
+            }
         } else {
             c.finished = true;
         }
@@ -670,6 +972,9 @@ impl LineCursor {
             out.push(CursorEvent::Finished);
             return;
         };
+        // The character's forward before this frame (the drawn skater), for the flip latch; only
+        // needed while not riding (a rising edge can follow).
+        let before = (!self.riding).then(|| self.drawn_skater(line, 0.0));
         if self.node as usize + 1 >= line.nodes.len() {
             // On the last node (spawned there, or a mirrored record not yet seen): look for the
             // next line once more, else the line is over.
@@ -744,6 +1049,15 @@ impl LineCursor {
             }
         }
         if let Some(n) = line.nodes.get(self.node as usize) {
+            // Retail flip latch (`sub_8246A700`): only on entering riding, against the
+            // character's forward; held otherwise (also across the switches above).
+            let riding = node_riding(n.flags);
+            if riding && !self.riding {
+                if let Some(q) = before {
+                    self.flip = flip_test(n, q);
+                }
+            }
+            self.riding = riding;
             let phase = ReplayPhase::of(n.flags, self.trick_open);
             if self.phase != Some(phase) {
                 if let Some(old) = self.phase {
@@ -759,6 +1073,52 @@ impl LineCursor {
         // A finished switch blend is dropped (the weight only grows from here).
         if self.switch.as_ref().is_some_and(|sw| self.switch_weight(sw, self.frames as f64) >= 1.0) {
             self.switch = None;
+        }
+        self.update_fakie(line);
+    }
+
+    /// One step of retail's riding-fakie rule ([`LineCursor::fakie`]) on the body as drawn now.
+    /// Category mapping (NOT RETAIL YET, the replay has no physics state): grounded on the board
+    /// = ground (1), airborne or off the board = any other category (the bit clears); a trick
+    /// span on the ground = `doing_trick` (the bit holds; retail allows grinds in state 503).
+    /// Ground-projected speed = horizontal speed of the segment.
+    fn update_fakie(&mut self, line: &ReplayLine) {
+        let Some(n) = line.nodes.get(self.node as usize) else { return };
+        let v = segment_velocity(line, self.node);
+        let f = rotate(self.drawn_skater(line, 0.0), [0.0, 0.0, 1.0]);
+        let category = if node_riding(n.flags) { 1 } else { 3 };
+        let physical = crate::animation::riding_fakie::Physical {
+            category,
+            grind_state: 0,
+            doing_trick: self.trick_open,
+            board_axis: [f[0], f[1], f[2], 0.0],
+            deck_velocity: [v[0], v[1], v[2], 0.0],
+            external_velocity: [v[0], v[1], v[2], 0.0],
+            ground_projected_speed: v[0].hypot(v[2]),
+        };
+        if let Some(fakie) = self.fakie_clock.update(physical, (1.0 / RECORDING_HZ) as f32, self.fakie_settings) {
+            if fakie != self.fakie {
+                self.fakie = fakie;
+                self.fakie_previous_since = self.fakie_since;
+                self.fakie_since = self.frames;
+            }
+        }
+    }
+
+    /// Weight of the fakie channel (`B_FAKIE_CHANNEL`, `FakieHeadChannel82BAC778`) `alpha` of the
+    /// next frame: fades in over 0.3 s from the frame the bit set, out over 0.3 s from the frame it
+    /// cleared (linear, `ChannelPlayback`; the fade out starts from the weight reached).
+    pub fn fakie_channel_weight(&self, alpha: f32) -> f32 {
+        let fade = retail::FAKIE_CHANNEL_FADE_SECONDS;
+        let since = (self.frames - self.fakie_since.min(self.frames)) as f32 + alpha.clamp(0.0, 1.0);
+        let t = since / RECORDING_HZ as f32;
+        if self.fakie {
+            (t / fade).clamp(0.0, 1.0)
+        } else if self.fakie_since > 0 {
+            let held = (self.fakie_since - self.fakie_previous_since.min(self.fakie_since)) as f32 / RECORDING_HZ as f32;
+            (held / fade).clamp(0.0, 1.0).min((1.0 - t / fade).clamp(0.0, 1.0))
+        } else {
+            0.0
         }
     }
 
@@ -829,7 +1189,11 @@ impl LineCursor {
     /// skater is drawn now (including a switch blend still running) so the root moves onto the
     /// new line instead of jumping. Deterministic: from the lines and the record alone.
     ///
-    /// Facing (fix 16): with [`LineCursor::keep_facing`] the skater keeps the way it faces. When the
+    /// Facing, retail: nothing else. The switch stores line and node only (`sub_8246C7F8`,
+    /// `sub_8246BEE0`), so the latched [`LineCursor::flip`] (`+927`) is held and the new line's
+    /// recorded skater frame is drawn turned by it; the root blend above stands in for the full
+    /// skater steering onto it. With [`LineCursor::keep_facing`] (mod option,
+    /// not retail; fix 16) the skater keeps the way it faces. When the
     /// new line's recorded skater faces more than 90 deg away from the drawn one about +Y (its
     /// recorder rode the other way round there: fakie against forward), the cursor flips
     /// [`LineCursor::facing_flipped`] so the line is ridden turned 180 deg about the skater's up
@@ -837,10 +1201,12 @@ impl LineCursor {
     /// `m_IsBoardFlipped` ([code] `sub_82453A58`, `sub_824734A8`: negate the frame's X and Z rows).
     fn begin_switch(&mut self, old: &ReplayLine, next: &ReplayLine, to_node: u32) {
         let (Some(a), Some(b)) = (old.nodes.get(self.node as usize), next.nodes.get(to_node as usize)) else { return };
-        let (p, skater, board) = self.drawn(a.position, self.facing(decode_orientation(a.skater)), self.facing(decode_orientation(a.board)), self.frames as f64);
+        let i = self.node as usize;
+        let (p, skater, board) = self.drawn(a.position, self.facing(self.rule_skater(old, i, i, 0.0)), self.facing(decode_orientation(a.board)), self.frames as f64);
         if self.keep_facing {
             let f = rotate(skater, [0.0, 0.0, 1.0]);
-            let g = rotate(self.facing(decode_orientation(b.skater)), [0.0, 0.0, 1.0]);
+            let j = to_node as usize;
+            let g = rotate(self.facing(self.rule_skater(next, j, j, 0.0)), [0.0, 0.0, 1.0]);
             if f[0].hypot(f[2]) > 1e-3 && g[0].hypot(g[2]) > 1e-3 && yaw_angle(f, g).abs() > std::f32::consts::FRAC_PI_2 {
                 self.facing_flipped = !self.facing_flipped;
             }
@@ -854,6 +1220,51 @@ impl LineCursor {
     /// (`q * (0, 1, 0, 0)`) while [`LineCursor::facing_flipped`].
     pub fn facing(&self, q: [f32; 4]) -> [f32; 4] {
         if self.facing_flipped { turn_about_up(q) } else { q }
+    }
+
+    /// The skater frame the facing rule gives between nodes `i` and `j` of `line` at fraction
+    /// `t` (before [`LineCursor::facing`] and the switch blend).
+    pub fn rule_skater(&self, line: &ReplayLine, i: usize, j: usize, t: f32) -> [f32; 4] {
+        match self.facing_rule {
+            FacingRule::RidingEntry => {
+                // [code] `sub_8246ACF0` calls the flip-applying target steer (`sub_8246B358`) only
+                // while the state object's `+438` (riding) is set; otherwise it sends
+                // `sub_82471070` with controller `+824` and the flip is not applied. Off-board
+                // nodes therefore show the recorded frame as recorded (walking forward). In the
+                // air retail's physics body keeps the heading it took off with; the puppet keeps
+                // the flip there (NOT RETAIL YET: no air physics in the replay tier).
+                let off = |k: usize| line.nodes.get(k).is_some_and(|n| n.flags & node_flags::OFF_BOARD != 0);
+                if !self.flip {
+                    target_skater(line, i, j, t)
+                } else if !off(i) && !off(j) {
+                    turn_about_up(target_skater(line, i, j, t))
+                } else {
+                    // Stepping on or off the board: slerp between the per-node targets.
+                    let node = |k: usize| {
+                        let q = line.nodes.get(k).map_or([0.0, 0.0, 0.0, 1.0], |n| decode_orientation(n.skater));
+                        if off(k) { q } else { turn_about_up(q) }
+                    };
+                    slerp(node(i), node(j), t)
+                }
+            }
+            FacingRule::PerNode => nlerp(drawn_skater(line, i), drawn_skater(line, j), t),
+        }
+    }
+
+    /// Segment nodes and fraction at `alpha` of the next frame: `(i, j, t)`.
+    fn segment_at(&self, line: &ReplayLine, alpha: f32) -> (usize, usize, f32) {
+        let i = self.node as usize;
+        let seg = if !self.finished && i + 1 < line.nodes.len() { line.segment_frames(self.node) } else { 0 };
+        let t = if seg > 0 { ((self.frame_in_segment as f32 + alpha.clamp(0.0, 1.0)) / seg as f32).min(1.0) } else { 0.0 };
+        (i, if seg > 0 { i + 1 } else { i }, t)
+    }
+
+    /// The drawn skater orientation now (`alpha` of the next frame): the facing rule, the fix 16
+    /// turn and the running switch blend, as [`LineCursor::sample`] draws it.
+    pub fn drawn_skater(&self, line: &ReplayLine, alpha: f32) -> [f32; 4] {
+        let (i, j, t) = self.segment_at(line, alpha);
+        let a = if self.finished { 0.0 } else { alpha.clamp(0.0, 1.0) };
+        self.drawn([0.0; 3], self.facing(self.rule_skater(line, i, j, t)), [0.0, 0.0, 0.0, 1.0], self.frames as f64 + f64::from(a)).1
     }
 
     /// Advance `frames` 60 Hz frames.
@@ -876,7 +1287,8 @@ impl LineCursor {
         let position = std::array::from_fn(|k| a.position[k] + (b.position[k] - a.position[k]) * t);
         let velocity = segment_velocity(line, self.node);
         let alpha = if self.finished { 0.0 } else { alpha.clamp(0.0, 1.0) };
-        let skater = self.facing(nlerp(decode_orientation(a.skater), decode_orientation(b.skater), t));
+        let j = if seg > 0 { i + 1 } else { i };
+        let skater = self.facing(self.rule_skater(line, i, j, t));
         let board = self.facing(nlerp(decode_orientation(a.board), decode_orientation(b.board), t));
         let (position, skater, board) = self.drawn(position, skater, board, self.frames as f64 + f64::from(alpha));
         let heading = if velocity[0].hypot(velocity[2]) > 0.05 {
@@ -901,6 +1313,7 @@ impl LineCursor {
             previous_phase: self.previous_phase,
             previous_phase_frames: self.frames - self.previous_since.min(self.frames),
             sub_frame: alpha,
+            fakie: self.fakie,
         })
     }
 

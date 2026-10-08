@@ -147,7 +147,7 @@ moves the pair per second (likely the MVOBJ clips' root motion) is not known.
 **Open.** Decode state 502 (PhysState_OffBoardPushing) and the MVOBJ clip root motion to replace the engine
 speeds; the prop's retail grip point (hands on the handle) and whether heavy DMOs move slower.
 
-## D9 research: the props' retail shader (2026-10-07, not built yet)
+## D9 research: the props' retail shader (2026-10-07; ported 2026-10-08, see D9 port below)
 
 **Problem.** Props look flat next to retail: the recomp shows dents, corrosion and grime highlights on dumpsters and
 trash bins that ours lack (user's comparison video, 2026-10-07). Our log says why: "40 of 40 world materials use an
@@ -193,6 +193,422 @@ unique prop materials over BlackBoxPark, DownTown, Industrial, MaloofMoneyCup, U
    the same look; mod graphics keep their own path.
 5. Tests: a converter test that the 114 materials classify as `dynamicobject`, a shader test like the existing
    `retail_shader_tests.rs` ones; the user compares against the recomp in game.
+
+## D9 port: dynamicobject_defaultPS as family 15 (2026-10-08)
+
+**Problem.** See "D9 research" above: props rendered as family 1 with no lightmap (the absent lightmap reads as
+white), so every face was evenly lit and the normal maps only moved the small kd term. Retail lights props with the
+sun, so the relief of the per-object normal maps, the corroded / pitted detail normals and the specular maps reads as
+dents and grime, and faces turned from the sun drop close to black (recomp video 2026-10-07: the dumpster side in
+its own shade is very dark, the lit edge bright).
+
+**Retail evidence.**
+- [code, shader microcode] `dynamicobject_defaultPS.fpo` (2428 bytes) and `dynamicobject_defaultVS.vpo` (1140
+  bytes) from `shaders_final.big`. Constant table (D3D CTAB at 0x94 in the PS): c0..c2 `CSM_Mat_Row0`, c3
+  `CSM_Mat_Row1`, c4 `CSM_Mat_Row2`, c5..c7 `WorldShadow_MatRow`, c8 `g_CSMSelfBias`, c9 `g_vLightDir`, c10
+  `g_vViewPos`, c11..c13 `g_envattributes`, c14..c15 `m_params`; samplers s0 `shadowAtlasDepth`, s1 `shadowWorld`,
+  s3 `i_detail`, s4 `i_diffuse`, s5 `i_specular`, s6 `i_normal`. VS: c0..c3 `g_matVP`, c4 `g_vViewPos`, c5
+  `g_FogK1`, c6 `g_FogColour`, c7 `i_detailNormalUVScale`, c8 onward `i_partArray`.
+- [code] Instruction numbers are ALU slots of the PS. 10..14: detail fetched at uv x `detailNormalUVScale` (passed by
+  the VS in interpolator 6). 20..24: raw normal = (2 n.xy + 2 detail.xy - 2, 2 n.z - 1); 25..28 normalised (vnd);
+  29..34: world normal from the interpolated frame. 35..37: N.L with c9 and the step N.L >= 0. 58..60, 72..81: signs
+  of the light in the unperturbed tangent frame times (0.58, 0.62). 86..88, 96: kd = (vnd . (0.58 sx, 0.62 sy,
+  0.39)) x 2.3956 (same literals as `environment.default`).
+- [code] Shadow: 53..56 four CSM depth taps at texel offsets (+-1, +-1), 66, 70..82 depth compare and bilinear
+  weights; 49..52 four `shadowWorld` taps, 65, 67, 69..82 the same for the world map; 84..85
+  S = min(step(N.L) x csm, max(world, `g_CSMSelfBias.w`)).
+- [code] Light: 57, 64, 68, 88: a counter light, saturate(N . (-L.x, L.y, -L.z)) x `m_params[1].w`; 92..95, 97:
+  light = saturate(N.L) x S + counter + `m_params[1].rgb`; colour = kd x light x diffuse^2 (diffuse squared at 34..36).
+- [code] Specular: 61..63, 70, 81, 83 view direction in the tangent frame; 89..91 the pseudo light (0.58 sx, 0.62 sy,
+  0.39) reflected about vnd; 66, 71, 92..95 power 10 + 290 x specular.g; 96, 98..100 x (2.1, 1.8, 1.5) x S x
+  specular.r. Unlike `environment.default` (world-space light (-0.14, 0.5, 0.9) times lightmap.g) this one is
+  tangent-space and shadowed.
+- [code] 98, 101: the result is scaled by `m_params[0].y` x the VS fog alpha (1 + `g_FogColour.w` x f), 102 adds the
+  fog colour, 103..112 the retail tone curve with `g_envattributes[2].x` and `sqrt`, identical to the tail of
+  `defaultenvironment_defaultPS` (70..79), so the engine's tone pass covers it as for the world. c11 and c12 are not
+  read.
+- [data] `m_params` is authored in the attribulator class `material_dynamicobject` (keys `default` and `alphatest`,
+  no parent): row 0 (0.4, 1.0, 0, 0), row 1 (0.04, 0.04, 0.04, 0.0). So the ambient is 0.04 and the counter light is
+  off in retail.
+- [code] There is no `dynamicobject_alphatestPS`: alpha-tested props use the same pixel shader with the alpha test.
+- [code] `shadowWorld` is drawn at runtime by `WorldShadow_defaultVS/PS` ("World Shadow generation",
+  "DrawWorldShadowCasterInstances", doc 26 car-shadow section). `g_CSMSelfBias` is set by the engine; its value was
+  not traced (the name exists only inside the shader objects; `material_envattributes` at 0x821A0390 is the
+  attribulator class behind `g_envattributes`).
+- Disassembly notes for the next reader: the scalar ops take operand a from swizzle slot 3 and b from slot 0
+  (checked on the bilinear lerps 70/71 and 79/80), scalar ops with an empty write mask still set the previous-scalar
+  register (27, 83, 89, 99), and fetch source swizzles are absolute, not relative.
+
+**Change.**
+- Converter: `_retail_shader_family` classifies `dynamicobject.*` as family 15; `render_parameters.py` exports the
+  `material_dynamicobject` `m_params` rows as `dynamicobject.default` / `dynamicobject.alphatest` into
+  `private/render-parameters.json` (other rows unchanged, checked against the stock collections).
+- Renderer: `Definition::parse` upgrades packages that stored 0 for `dynamicobject.*` (no map re-export needed);
+  `supported()` accepts family 15 only when both `m_params` rows are present, otherwise the existing family 1
+  fallback and log line stay (no invented constants). The rows land in `WorldParams.water[0..1]` like the other
+  families' `m_params`. `retail_world.wgsl` has a `fam==15u` branch with the expressions above; `g_vLightDir` is the
+  authored sun direction (`sun_direction`, as for the character); the CSM is the engine's dynamic shadow map read
+  with the same caster light as the world receivers (`fetch_directional_shadow`, flags & 5), gated by
+  `frame_state.shadow.w`. Normal maps are now sampled for family 15. The world shadow floor (0.05, 0.09, 0.13) is a
+  lightmapped-receiver rule and is not applied: dynamicobject has its own `max(world, g_CSMSelfBias.w)` term.
+- Other families: only the normal-map sampling condition gained `|| fam == 15u` and the fog multiplier a new
+  `fam == 15u` line; no other family's expressions changed.
+
+**Moddability.** The family and both `m_params` rows are data per material shader (setup data in
+`private/render-parameters.json`, read at map load); a mod prop with the same shader name and bindings gets the same
+look. There is no mod content layer for world / prop materials yet. Entry point to add: a mod-supplied overlay over
+the `MaterialTuning` rows (keyed by shader name) and per-material texture overrides applied in `MaterialTable::build`
+before page packing, with the stock rows restored when the mod is disabled.
+
+**Files.** `tools/asset_pipeline/retail_material.py`, `tools/asset_pipeline/render_parameters.py`,
+`tools/asset_pipeline/test_environment.py`, `crates/skate-game/src/retail_render.rs` (`DYNAMIC_OBJECT_FAMILY`,
+parse upgrade, `supported`, tests), `crates/skate-game/src/retail_world.wgsl`.
+
+**Verification.**
+- Python: `test_props_classify_as_their_own_family`, `test_dynamicobject_m_params_are_exported_per_variant`; the
+  existing environment, map writer and versions tests pass.
+- Rust: `dynamic_object_materials_take_their_own_family`, `dynamic_object_needs_the_retail_m_params_rows`,
+  `dynamic_object_request_carries_m_params_and_detail_scale`, `dynamic_object_branch_reads_its_data_not_literals`;
+  shader validation (`retail_shader_tests.rs`) and the world shadow floor tests pass unchanged.
+- To playtest (needs a setup refresh first so `render-parameters.json` has the two rows; the log line "40 of 40 world
+  materials use an unsupported shader family" must be gone): the dumpsters and trash bins in DownTown (recomp video
+  2026-10-07, 0 to 58 s). Expect sun-facing sides lit with visible dents and corrosion from the normal / detail maps,
+  sides away from the sun much darker (ambient 0.04), specular glints on metal, the player's shadow on props.
+
+**Open questions.**
+- `shadowWorld` (static world shadow map) has no engine pass yet: props in a building's or bridge's shade are lit as
+  if in sun. Building it means a world-geometry depth pass from the sun (retail `WorldShadow_defaultVS/PS`) and the
+  `g_CSMSelfBias.w` floor value from the recomp.
+- Props do not cast into the dynamic shadow map, so retail's prop self-shadowing is missing.
+- The retail CSM is a 4-tap atlas (three cascades in 1/6 atlas columns); ours uses Bevy's cascade lookup, as for the
+  world receivers.
+- The `transparent` binding of `dynamicobject.alphatest` is not read by the shader; the alpha test uses the diffuse
+  alpha (as before). Check the 2 alpha-tested materials in game.
+- Changing `retail_material.py` marks the maps setup step stale, so the next refresh also re-exports maps; the load
+  time upgrade means that re-export is not required for this change.
+
+## Contact material blocks, held and free (2026-10-08)
+
+**Problem.** The held prop's `{0.03, 0.02}` block was ported as "replace the combined contact friction with 0.03"
+(doc 26, Move Object item 3), labelled NOT RETAIL YET because its reader was not found. The free block was the
+authored MOBJ material, the upright / tipped choice retail makes was missing, and prop-vs-prop pairs combined the
+authored materials only.
+
+**Retail evidence** (TU3 recomp, re-read 2026-10-08; credit: skate3recomp, rexglue / Xenia based static
+recompilation, for the readable PPC):
+- 82C53EF8, on the tick the commanded bit changes: DMO+4465 bit 0x02 set -> f1 = 0.03 (0x8208EA80), f2 = 0.02
+  (0x821E9580); else bits 0x10 and 0x08 both set -> DMO data (DMO+4380 -> +4) +316 / +324; else +320 / +328. Then
+  82C550A8.
+- 82C550A8 stores f1, f2 and DMO data +272 to the physics component +48 / +52 / +56 and points every body's +80
+  (96-byte body records) at that block.
+- 82DC3A68, 82DC4158, 82DC4588 (collision-object builders) copy body +80 words 0 / 4 / 8 to the collision object
+  +116 / +120 / +124 (+212..+220 relative to the 82DC3A68 base).
+- aaCollision 8277A508 calls 82763078(out, CO_a +116, CO_b +116): out+0 = max (static friction), out+4 = max
+  (dynamic friction), out+8 = min (restitution). This is skate-core `combine_contact_materials`.
+- 82C54B00: DMO+4465 bit 0x08 = (current transform row 1 y > 0.65, 0x820BB0EC) AND (the passed pose's row 1 y >
+  0.65). DMO+4465 bit 0x10 comes from DMO data byte +312 bit 0 (ctor 82C51E28, from the parity review).
+- The ground side the game already uses for prop contacts is `PhysicsSettings::floor_material` = {0, 0, 1}
+  (agCollision 8277C5D8 context 83034F34 / 38 / 3C), so the max / max / min combine keeps the prop's own block.
+
+**Change.** `MoveCommandRules::body_material` builds the body's own block before the combine: commanded = {held
+pair (retail 0.03, 0.02), type restitution}; free = the type's free pair, or its upright pair while the type flag is
+set and the body's up axis y > `upright_cos` (0.65). `contact_material` is now only
+`combine_contact_materials(body block, other side)`; prop-vs-prop pairs combine both bodies' blocks. The path that
+replaced the combined friction is deleted. Pure function of the commanded bit, the template and the up axis
+(deterministic, no clock).
+
+Moddability: `carry` gains `upright_cos` and per template `material_free_upright`, `upright_pair`, `restitution`
+next to `material_held` / `material_free` / `commanded_material`; validated (pairs finite and non-negative,
+`upright_cos` in -1..1, restitution finite and non-negative), read back by `world_tuning:carry`, reset on mod disable
+(`carry_move_command_rules_set_and_reset`).
+
+In game the effect is small: against the {0, 0, 1} floor the held prop's dynamic friction goes from 0.03 to 0.02
+(retail's second float); a held prop touching another prop now gets max(0.03, the other prop's friction) instead of
+a flat 0.03.
+
+**NOT RETAIL YET.** The per-type DMO data values (+272 restitution, +312 bit 0 upright flag, +316 / +320 / +324 /
++328 friction pairs) are not extracted. Defaults reproduce today: free pair = authored MOBJ friction for both
+static and dynamic, upright flag off, restitution = authored MOBJ restitution. Missing extraction: the DMO type data
+block (DMO+4380 -> +4) per prop type, likely the `livingworld_dynamicobject_characteristics` records or the DMO
+setup data. The second upright condition (the passed pose in 82C54B00) is not modelled; we test the current pose
+only. Whether the existing per-template `record_272` flag (described as data +312, 82C4B960) is the same bit as the
+upright flag is open.
+
+**Verification.** Tests assert the retail math, not measured output: `commanded_block_switches_with_the_command_and_zero_commands_wake`
+(held block {0.03, 0.02, type restitution}; combine against a low side keeps the block, against the 0.8 / 0.6
+side takes the max; block restored when commands stop; per template overrides), `free_block_follows_the_upright_test`
+(flag off ignores the pose; flag on: upright pair above 0.65, default pair at exactly 0.65 and below; held ignores
+the pose; threshold as data; bit-identical repeat), `carry_move_command_rules_set_and_reset`, skate-mods
+`valid_patch` cases.
+
+The prop test fixture's static world used a 0.8 / 0.6 / 0 material, not the game's floor. With the combine in
+place that made a held prop's friction 0.6 and six Move Object tests failed (push speed 1.83 vs retail math 2.95 m/s,
+yaw rate 0.001 vs 1.97 rad/s, a straight push tipping the cube to up_y 0.984, the bin falling 43.7 m). The fixture
+world now uses the game's floor material {0, 0, 1}; no assert was changed. Under it two tests fail, with the old code
+as well as the new one (old code measured by putting the baseline file back with the same fixture):
+
+| Test | Old code, 0.8 / 0.6 floor | Old code, game floor | New code, game floor |
+|---|---|---|---|
+| `dragged_props_rest_on_the_floor_after_release` | pass (bench -0.025, bin -0.043, vending -0.078, rail -0.053 m) | FAIL: bench sinks 37.1 m (bin -0.040, vending -0.078, rail -0.053) | FAIL: vending -0.082 m (limit -0.08; bench -0.024, bin -0.045, rail -0.049) |
+| `placement_adjust_confirm_and_sleep` | pass | FAIL: placed prop never sleeps | FAIL: placed prop never sleeps |
+| `downtown_dragged_props_rest_on_the_floor` (ignored, assets) | FAIL: 5 props sank | FAIL: same 5 props | FAIL: same 5 props |
+
+Causes measured so far (new code, floor variants): the placement failure needs both the prop's own restitution
+(0.05) and its own friction (0.55) to survive the combine: floor {0, 0, 1} fails, {0, 0, 0} and {0.8, 0.6, 1}
+pass. After release the placed box
+settles into a rocking contact cycle at y 0.428 with v.y about -0.8 m/s after every step and kinetic energy about
+0.6, above our rest snap's 0.49 (0.7 m/s), so it never snaps or sleeps in 300 steps. The vending machine's 8 cm
+overlap is the known solver gap (parity review item 5: our single impulse pass with shared impulses, 40 %
+positional correction and the 5 cm per tick cap versus retail's 25-iteration row solver 82AE27D0); it moves between
+-0.078 and -0.082 m with the floor material and is not changed by the block. The 37 m bench sink with the old code
+is most likely the same solver gap (inference, not traced): a box whose centre passes the one-sided floor face is
+pushed further down; it is sensitive to small changes (gone with the 0.02 dynamic friction). Neither is a
+small retail fix: the retail answers are the row solver (item 5) and the retail sleep rule (item 4, no rest snap).
+The game uses this floor material and the same prop step, so the in-game builds up to 1e61fe0 most likely show the
+same behaviour (placed props can keep rocking without sleeping; a dragged prop can sink); not checked in a game
+run.
+
+## Retail contact solver and sleep rule for props (2026-10-08)
+
+**Problem.** With the game's real floor material {0, 0, 1} (previous section) three prop tests failed: a placed prop
+rocked forever and never slept, the dragged vending machine sank 8.2 cm into the street, and six DownTown props sank
+15 to 21 cm after a drag. Root cause (measured): our own contact pass (one impulse pass with shared impulses, 40 %
+positional correction, 5 mm slop, 5 cm per tick cap) leaves resting jitter and overlap, and our own rest snap and
+30-step cool-down hid part of that. Neither exists in retail (parity review items 4 and 5).
+
+**Retail evidence** [code, recomp TU3]:
+- Sleep rule. Integrator 82AE6590 (already ported as skate-core `integrate_body_rates` / `dynamic_update_packed`):
+  after damping and the speed caps, E = |v|^2 + s * m^-1 * |w|^2; the counter (body +172) resets to 0 when
+  E >= island +172, otherwise it counts up only if E did not rise, capped at island +168. Sleep pass 82DC3130
+  (re-read): every active body with counter >= sim +204 moves to the sleeping list, its counter set to island +168,
+  at most 100 bodies per call. No rest snap anywhere.
+- DMO island values: the DMO simulation ctor 82DC2840 (re-read) copies its parameter block +16 -> island +176
+  (solver iterations), +32 -> island +172 (sleep energy), +36 -> island +168; the block from 8275DCC8 holds 25,
+  1e-5 (0x8219B100) and 2 (parity review item 4, code + data).
+- Solver. The contact stage 82DC30A8 runs 82AE27D0 with island +176 iterations (25 for DMOs) over rows built by
+  ContactBatchBuild 82AE10C8, whose targets are displacements (predicted separation v dt + separation + a dt^2,
+  restitution -v dt e); position error has its own position-only lane, so an overlap is removed without creating
+  velocity. This is the same skate-core path the board already uses (`build_contact_jacobian` with the native
+  `vrefp` reciprocal, then `solve_constraints`), so props reuse it unchanged.
+
+**Change** (`crates/skate-game/src/physics/prop_dynamics.rs`):
+- Every awake prop's contacts go into one shared row solve per step: one row per manifold point (A = the prop,
+  B = the static triangle, another prop, or an asleep prop as an immovable support), built with
+  `generate_contact` + `build_contact_jacobian` and solved with `solve_constraints` for `iterations` passes; then
+  every awake body integrates with its correction buffers (BatchIntegrator order). Pairs of awake props are built
+  once, from the lower index. Body order is the iteration order (deterministic).
+- Sleep: the integrator's own counter with the DMO values (energy 1e-5, cap 2) and the sleep pass (counter >= 2,
+  at most 100 per step). The rest snap and our 0.5 / 30 values are gone from the default path.
+- New `PropSolverSettings` (in `PropTuningTable`, resource `PropTuningSettings`): `row_solver` (true),
+  `iterations` (25), `sleep_energy` (1e-5), `sleep_frames` (2), `max_sleeps_per_step` (100), `rest_snap` (false).
+  Mods set them with `sdk.world.set_tuning('props', {solver = {...}})` (skate-mods `PropSolverPatch`: validated,
+  iterations 1..=256, sleep_frames 1..=10000, sleep_energy 0..=100000, max_sleeps_per_step >= 1, unknown keys
+  rejected), read back with `world_tuning:props`, reset on mod disable. `row_solver = false` keeps the engine's older
+  impulse pass (with its slop / fraction / cap knobs), `rest_snap = true` its snap.
+
+**Verification** (unit tests, no game run; asserts unchanged):
+
+| Test | Before (72bf058) | Step A only (retail sleep, old contact pass) | Step A + B (this change) |
+|---|---|---|---|
+| `dragged_props_rest_on_the_floor_after_release` | FAIL: vending -0.082 m | FAIL: vending -0.082 m (bench -0.036, bin -0.058, rail -0.049), none asleep | pass: worst gap 0.000 m for bench, bin, vending, rail; all asleep |
+| `placement_adjust_confirm_and_sleep` | FAIL: never slept | FAIL: never slept | pass |
+| `downtown_dragged_props_rest_on_the_floor` (ignored, assets) | FAIL: 5 props sank | FAIL: 6 props sank 0.146 to 0.212 m, none asleep | pass: 6 props measured, worst gap 0.000 m, all asleep (2 of the 8 ids grab a neighbouring prop and are skipped) |
+
+Step A alone answers the question "does the rocking remain": yes. Without the snap, the old pass's resting jitter
+keeps every prop above E = 1e-5, so nothing sleeps (it also broke four sleep tests); the sleep rule needs the row
+solver. Behaviour changes in other tests: `depenetration_is_bounded_per_tick` tested a knob of the old pass and now
+runs with `row_solver = false`; the new `retail_rows_push_a_deep_box_out_and_it_settles` shows the retail result:
+a box 0.4 m deep in the floor is moved out in one step with zero vertical velocity (position-only lane) and sleeps
+on step 2. All other prop tests pass unchanged (push speed caps, no tipping on flat ground, curb tip, yaw rate,
+Move Object, NPC pushes, layout); `prop_solver_settings_set_validate_and_reset` covers the mod knobs. skate-game
+549 pass, 1 known failure (`setup::pipelines_accept...`); skate-mods 102 pass.
+
+**NOT RETAIL YET.** An asleep prop touched by an awake one is an immovable support and wakes only on a hit closing
+faster than 1 m/s (ours; retail merges touching bodies into the island). Contacts are not passed through the
+agCollision retention buffer the board uses (8277C23C duplicate removal). Skater pushes are still our impulse
+transfer, not solver rows. Held placement (`carry_to`) still bypasses sleep.
+
+**Open questions.** Whether retail wakes a sleeping DMO on any contact (island merge rule not read); per-row slop or
+cap inside 82AE27D0 (none found in the board port, the review's item 5 note); an in-game check that placed props now
+sleep and dragged props stay on the street.
+
+**Regression and fix: Move Object carry (2026-10-08).** With this change the two asset carry tests
+(`carry_direction_tests`: `move_object_follows_the_left_stick_in_the_skater_frame`, `move_object_with_the_board_hidden`)
+failed with "state flipped 2 times while holding RB": the skater grabbed, then dropped on hold tick 19. The prop was
+not the cause: it stayed awake (commanded, sleep counter cleared), on the floor, still to 1e-9 m/s. The cause was a
+gate in `biped_ground` that applied the Move Object velocity override only when the follow step exceeded 1e-4 m/s.
+The row solver holds the resting prop perfectly still, so once the follow point (+416) reached its target the step
+was exactly 0. The gate then handed the root back to the walking approach, which walked the skater 0.04 to 0.07 m per
+tick into the prop (root x -254.86 to -255.42 m, grip edge at -255.50 m) until the hold rule (82E08EE8 via
+`still_holds`) failed. Under the old impulse pass the resting jitter (about 1e-5 m per tick of follow motion) kept
+the step above the gate by chance. Evidence: the same test passes with `row_solver = false`, also with the retail
+sleep values, and fails with the row solver and the old 0.5 / 30 sleep values. Fix (`crates/skate-game/src/physics/biped_ground.rs`): the override runs on every
+held tick, a zero step included. Retail moves the character to the follow point every tick (82D44A10 -> 82BDF268),
+so a skater already at the point stays there (82BDF268 itself is still NOT RETAIL YET, see doc 26). No asserts or
+constants changed. After the fix: both carry tests and `downtown_dragged_props_rest_on_the_floor` pass, and all
+prop tests (ignored included) pass. The only failure under that name filter is `player_voice_properties`, an audio
+test that needs private data the setup does not have. skate-game 549 pass + 1 known failure
+(`setup::pipelines_accept...`), skate-mods 102 pass.
+
+## Object Dropper and reset moved objects (2026-10-08, research milestone + reset port)
+
+**Problem.** The LB phone menu (session marker, `crates/skate-game/src/session_marker/`) draws the Object Dropper row
+at 0.3 opacity and does nothing with it; retail also lets the player put moved objects back. User: "add to the living
+world todo to also add the object spawner int he LB menu (it already contains the option, its just not linked to
+anything yet.) There is also an option to reset moved objects once you start moving them around in Retail we will
+want that."
+
+**Evidence** (TU3 recomp generated code and the TU3 image; reference only, credit skate3recomp / rexglue / Xenia).
+[code] = read in the recomp, [data] = image strings / descriptors.
+
+- Cellphone UI `sub_826682B0` (object ctor `sub_82666A20`, vtable 0x82305B70, state at +52): state 2 + FE input 4 =
+  open (`cellphone_activate`), state 3 = open menu. In state 3: FE input 8 closes; **FE input 256 = the Object Dropper
+  row**: gate `sub_826691D0`, then the fe sound `FF7F0396F338B735`, close the phone (`sub_82668998`), then the
+  manager at global 0x830854A8 vfunc +8 and its result's vfunc +20 (enter the dropper). FE 64 cycles the online
+  player list (only with >= 2 players, `sub_82669090`); FE 32768 / 16384 set bytes +1669 / +1670 of the object at
+  0x830CFDE4 with their own fe sounds (rows not identified). [code] That 256 is the B row comes from the row text
+  order and the recomp scripted-runs note (Object Dropper = LB + B), not from the FE code table. [inferred]
+- Dropper gate `sub_826691D0`: the game-mode object at 0x830B7AE8 must have mode (+0) 4 or 5, `sub_82511168(+48)`
+  true and byte +323 clear. [code] Which modes 4 / 5 are is not decoded.
+- The dropper itself is a full editor, not a spawn list: APT movies `objectdropper/objectdropper.swf` and
+  `objectdropper/objectquickmenu.swf`, screen modes FreeCam, Catalog, Manipulate, Next / Previous Category,
+  SubCategory, Item, Type, SnapObject, MoveOnLockedAxis, RotateObject, GroupSelect, Hide / ShowSelection, Delete,
+  RefreshFengShui, Duplicate, FineTune, Size, Info; quick menu Color, Branding, Style, Options (Snap, Collision,
+  Invert X / Y, Cursor speed), Copy, Paste, Undo, Redo; natives EnableObjectDropper, DisableObjectDropper,
+  Show / HideObjectDropperUI, HideObjectDropperCursor, object dropper input filters, IsObjectDropperEnabled,
+  IsInDropper, IsInCatalogMode, IsInQuickMenu, SetCatalogFilter, getCatalogMap, item record `ObjectDropperItemInfo`.
+  [data] Its catalogue source, placement, limits and removal are not decoded (next step: the 0x830854A8 manager's
+  vfuncs and the catalogue map).
+- Per-object phone actions, handler `sub_82666430` (vtable slot next to the cellphone's, context +12 = mode,
+  +48 = the DMO id): in mode 1, FE input 1 = **Upright** (`cMsgUprightDMO` 0x905C8249, gate `sub_82666748`),
+  FE input 2 = **Reset** (`cMsgResetDMO` 0x31806EF2, gate `sub_826666A8`), 16384 = `cMsgAddDMOToSessionMarker`
+  (0x573CEC45), 32768 = `cMsgRemoveDMOFromSessionMarker` (0x9E9C95A1); mode 2, input 1 = `cMsgTeleporterSignUp`.
+  Each plays its own fe sound (keys 7CA2E1082BDE9C0A, 36ABD583773962FD, 9CEBB54BBC07C945, 84F5799EF7C02DF1; names
+  not recovered). The reset gate reads a per-DMO record word (offline: manager 0x830854A8 vfunc +28 with the id;
+  online: table [[0x830CFD94]+260]+0x8720, record id x 96, word -20 == 0), i.e. the option exists only for an object
+  whose record says it can be reset. [code]
+- PlayerUI's constructor `sub_82897828` subscribes to cMsgResetDMO, cMsgUprightDMO, cMsgAdd / RemoveDMOToSessionMarker,
+  cMsgSetSessionMarker, cMsgClearSessionMarker, cMsgTeleport and the ownership messages (cMsgOwnershipRequest /
+  Release): the reset is handled next to the session marker, and moved objects can be attached to the marker. [code]
+- **The reset itself** [code]: PlayerUI's cMsgResetDMO handler `sub_8289A048` (online: sends net packet type 22
+  {player, DMO id, extra}; offline: the DMO manager at [[0x830CFD94]+212]+22416, vtable 0x82323254 (ctor
+  `sub_82C48C88`), slot +36 with (id, 0)). Manager reset `sub_82C4B5F0`: gathers the object's reset set
+  (`sub_82C4A788`: the object, skipping one whose spawn record has flag 0x02 unless asked; it then walks further DMOs
+  from the record's transform, recursion not fully read), tests the set's spawn volumes against the blocker lists
+  at +26512 / +26576 (`sub_82E0A8E0`) and, when something blocks, calls a player-side vfunc +124 (undecoded), then
+  runs the worker `sub_82C4B780`: per object, look up its spawn record by the object's 64-bit key (manager vfunc +8,
+  table vfunc +12); with a record, the table's vfunc +28 puts the object on the record's transform (record+64) in
+  one call (no fade or timer in this path); **without a record (an object that was not spawned from the world
+  data, e.g. a dropped one) the object's vfunc +12(0) is called, i.e. it is removed.** The phone gate
+  `sub_826666A8` -> manager slot +28 (`sub_82C4B000`) runs the same gather and blocker test and offers Reset only
+  when nothing blocks; it does **not** test "moved".
+- **Upright** [code]: handler `sub_8289A158` (online packet type 23; offline manager slot +40, `sub_82C4B8C0`): sets
+  flag 0x40 at +4464 and float +4376 = 0.0 (0x82165A10) when the DMO's slot 28 test returns 0; the righting runs in
+  the DMO update. Decoded and ported in "Upright (self-righting)" below.
+- The DMO network sync loop `sub_82588380` posts cMsgResetDMO itself for an owned DMO whose sampled height is below a
+  constant (0x822272E0), then waits 46 ticks (+76): retail auto-resets objects that fell out of the world. [code]
+- Lua natives table at 0x823132F8: ResetMode, SerializeDMOs, DeserializeAndSaveState, RestoreFromSavedState,
+  ClearDMOs, Lock / UnlockDMOs, **ResetChallengeDMOs** (`sub_8283BA78`: online it posts one cMsgResetDMO, offline it
+  walks the challenge's DMO groups and calls the DMO manager's vfunc +32 per entry id), SetDMOOwnershipByGrabbing,
+  Request / ReleaseOwnershipOfAllDMOs. [code]
+- APT getters `GetPhoneListCanShowObjectDropperOption`, `GetPhoneListCanResetAllObjectsOption`,
+  `GetPhoneListCanShowPhotographerOption`, `GetPhoneListCanShowMusicOption` exist as strings (0x821F472C..) but no
+  direct pointer or lis/addi reference was found, so the "Reset All Objects" row's native handler is not located. [data]
+
+**Change (ported).** The per-object reset, deterministic, one authority:
+- `PropDynamics` keeps every body's authored spawn pose (our stand-in for retail's spawn record); `spawn_pose(id)`,
+  `reset_to_spawn(id)` (back to the spawn pose in one step, at rest, asleep), `moved_ids()` (id order).
+- `GamePhysics::reset_prop(id)` (decoded: instant re-place on the spawn transform) is the one authority: rebakes the
+  collision at the spawn pose, drops the id from the layout sidecar (`PropCarry::forget_layout`), logs
+  `SKATE_PROP_RESET id=..`. Ids are the stable map prop ids (multiplayer-ready payload).
+- `GamePhysics::reset_moved_props()`: mod convenience, `reset_prop` for every moved or placed prop. **Ours, NOT
+  RETAIL YET** (no retail reset-all code found).
+- Mod entry points: `sdk.world.reset_prop(id)` (`world_reset_prop`) and `sdk.world.reset_moved_props()`
+  (`world_reset_moved_props`). A reset is a one-shot world action that leaves nothing behind, so there is nothing to
+  clean up on mod disable.
+
+**NOT RETAIL YET.** The Object Dropper editor (catalogue, freecam, placement, snap, group select, delete, quick menu)
+is not ported: the row stays at 0.3 and LB + B is not wired, because pressing it in retail closes the phone and
+enters that editor. Decoded vs ours for the reset: the instant
+re-place on the spawn transform is decoded; ours are the authored map pose as the spawn record, refusing the held
+object (retail unknown), no blocker test (retail refuses / acts when the spawn spot is blocked), no reset set
+gathering (retail may reset further DMOs with the object), no removal of record-less objects (we have none: no
+dropper). "Moved" (pose differs from spawn by more than 1e-4) only feeds the reset-all convenience. No phone row for
+the per-object actions (the phone context's object source and row art are missing); Upright and Add / Remove to
+session marker are not ported (Upright is, see below).
+
+**Files.** `crates/skate-game/src/physics/prop_dynamics.rs`, `crates/skate-game/src/physics.rs`,
+`crates/skate-game/src/physics/prop_carry.rs`, `crates/skate-game/src/modding/mod.rs`, `crates/skate-mods/src/vm.rs`,
+`crates/skate-mods/src/api.lua`. Research helpers: `.local/research/object-dropper/` (message-name lookup,
+lookup8 name guesser).
+
+**Verification.** `reset_to_spawn_returns_moved_body` (moved list, pose, rest, sleep, unknown id);
+`world_tuning_commands_deserialize_and_validate` extended with both reset commands and their Lua wrappers.
+
+**Open questions.** The dropper catalogue source and limits (manager 0x830854A8, `getCatalogMap`); what game modes
+4 / 5 are; where the per-object phone context comes from (nearest or held DMO); retail's reset transition; the
+"Reset All Objects" row handler; the fe sound names.
+
+## Upright (self-righting) (2026-10-08)
+
+**Problem.** The phone's per-object Upright (cMsgUprightDMO) was decoded only as far as the flag it sets; the
+righting itself, its limits and its effect on Move Object commands were unknown, and the engine had no Upright.
+
+**Evidence** [code] (TU3 recomp generated code and image constants; reference only, credit skate3recomp / rexglue /
+Xenia):
+- Start: DMO manager slot +40 `sub_82C4B8C0` resolves the object to its DMO (slot 6) and, when the DMO's slot 28
+  (`sub_82C564D8`: physics component -> body, returns body field +28) is 0, sets DMO+4464 |= 0x40 and timer
+  DMO+4376 = 0.0. The phone gate `sub_82666748` (offline: manager slot +32 `sub_82C4B578`) offers Upright on the same
+  slot 28 test; online it reads the DMO record word -12. It does not test the tilt.
+- Window: DMO update `sub_82C56780`, while 0x40: timer += 1/60 (0x820849C8); timer > 2.0 (0x82060C50) clears 0x40
+  (that update still runs). Then, with a dynamic body, `sub_82C573D0(body, pose, out)`.
+- Righting `sub_82C573D0`: angle between the pose's up row and world up (0, 1, 0) (0x82139A20, `sub_8296EBB0`), in
+  degrees (x 57.2958, 0x82084620). Under 10 deg (0x821963E4) it returns 0 and the update clears 0x40 and the timer.
+  Otherwise: axis = normalize(up x world up); if that is degenerate (every component <= 1.19e-7, 0x820BA9C0) or the
+  tilt is above 120 deg (0x82256FE0), the axis is the body's own X (0x82139A10) when A.x > A.z, else its Z
+  (0x82139A30), A = the vector at the physics state block +72. Capped tilt = min(tilt, 70 deg) (**the constant 70**
+  at 0x820BB1E0 x 0.0174533 at 0x8206D110: a 70 degree cap). Gain = lerp(3 (0x82063B08), 5 (0x821F1790), t),
+  t = clamp(|A| - 0.1 (0x820641A8) - 1.0 (0x8231A844), 0, 1). Target spin = axis x gain x max(capped - 5 deg
+  (0x820BB1D8), 0). Command = (target - w_axis - 0.1 w_perp) x 60 (0x821FF080), w = body angular velocity (state
+  block +76, +48) split along / across the axis.
+- The command goes through the DMO's own angular slot 37 `sub_82C52EE0` (skipped while the slot 27 lock is set or the
+  body has no dynamics) -> `sub_82D9CCF0`: wake (82ADF7B8), write the angular accumulator +160; DMO+4465 |= 0x02
+  (commanded, so the commanded material block applies).
+- Move Object: the yaw sink `sub_82C52E68` refuses the angular command while 0x40 is set; the linear sink
+  `sub_82C52DC0` is not gated.
+
+**Change.**
+- `PropUprightSettings` (props tuning domain, `sdk.world.set_tuning('props', {upright = {...}})`): window_seconds 2.0,
+  tick_seconds 1/60, stop_angle_deg 10, max_angle_deg 70, dead_band_deg 5, gain_min 3, gain_max 5,
+  gain_blend_start 1.1, off_axis_spin 0.1, command_rate 60, fallback_angle_deg 120, block_yaw true; validated (finite,
+  >= 0, window and tick > 0), reset on mod disable with the rest of the domain.
+- `upright_command(basis, w, a, settings)`: the 82C573D0 arithmetic as a pure function.
+- `PropDynamics::upright(id)` opens the window (per-body plain-data timer, `Option<f32>`); the prop step runs the
+  82C56780 pass first (before the skater pushes and the retail row solve), for sleeping bodies too: timer, timeout,
+  stop under 10 deg, else wake, mark commanded, replace the angular accumulator and integrate `w += C dt` like the
+  Move Object yaw command. `apply_move_command` drops the yaw part while the window is open.
+- `GamePhysics::upright_prop(id)` is the one authority (logs `SKATE_PROP_UPRIGHT id=..`); mod entry
+  `sdk.world.upright_prop(id)` (`world_upright_prop`). One-shot action; the window ends by itself within 2 s.
+
+**NOT RETAIL YET.** The slot 28 gate (body field +28) is not decoded: ours refuses only an unknown id or a body without
+dynamics. The vector A at state block +72 is not identified: ours uses the body-space inverse inertia diagonal (it
+picks the fallback axis and the gain blend). The angle helper `sub_8296EBB0` is read as acos of the normalised dot.
+The phone row is not wired (same as Reset).
+
+**Files.** `crates/skate-game/src/physics/prop_dynamics.rs`, `crates/skate-game/src/physics.rs`,
+`crates/skate-game/src/modding/mod.rs`, `crates/skate-game/src/modding/world_tuning.rs`,
+`crates/skate-mods/src/world_tuning.rs`, `crates/skate-mods/src/vm.rs`, `crates/skate-mods/src/api.lua`.
+
+**Verification.** `upright_command_matches_retail_constants` (10 deg stop, 70 deg cap, 5 deg dead band, gains 3 / 5,
+x 60, 0.1 off-axis, X / Z fallback above 120 deg); `upright_rights_a_tipped_box_within_the_window` (a cube on its
+side rights and the window closes under 10 deg before 2 s, still upright 4 s later);
+`upright_window_times_out_at_two_seconds` (gains 0: closes after the retail number of 1/60 updates);
+`upright_blocks_move_object_yaw_during_the_window` (yaw refused, linear applied, `block_yaw` knob, yaw back after
+the window); `prop_upright_settings_set_validate_and_reset`; `world_tuning_commands_deserialize_and_validate`
+extended. Existing prop tests unchanged.
+
+**Open questions.** Body field +28 (Upright gate) and the state block +72 vector; whether the integrator scales the
++160 accumulator by inverse inertia (our port treats it as an angular acceleration, as for the Move Object yaw).
 
 ## Open questions
 

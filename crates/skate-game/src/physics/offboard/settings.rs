@@ -22,6 +22,50 @@ pub(crate) fn load_object_move_curves(
     })
 }
 
+/// Move Object tuning, attribute class `3EDA5B140604613D` key `default`
+/// (read by 82D444A0 / 82D45318). Image constants keep their defaults.
+pub(crate) fn load_move_object_tuning(
+    data: &Collections,
+) -> Result<skate_core::player::offboard::move_object::MoveObjectTuning, String> {
+    use skate_core::player::offboard::move_object::{ControllerGains, MoveObjectTuning};
+    const CLASS: &str = "Hash_3EDA5B140604613D";
+    let f = |name: &str| data.float(CLASS, "default", name);
+    let curve = |name: &str| curves::load::<8>(data, CLASS, name).map(|c| c.0);
+    let gains = |name: &str| data.words::<4>(CLASS, "default", name).map(ControllerGains::from_words);
+    Ok(MoveObjectTuning {
+        push_speed: f("Hash_2258076B612569A9")?,
+        pull_speed: f("Hash_F1C038722EC7D0C6")?,
+        side_speed: f("Hash_096A4FA6489E5541")?,
+        lever_rotation: curve("Hash_E4FF0185DA44CDBD")?,
+        lever_yaw: curve("Hash_BFB3BEF0BB2661C0")?,
+        mass_speed: curve("Hash_57D37D696363167E")?,
+        inertia_yaw_gain: curve("Hash_EABFCC79873A2859")?,
+        yaw_clamp: f("Hash_AD327350D151B1E3")?,
+        linear_clamp: f("Hash_791421DDAF54C2D5")?,
+        relatch: f("Hash_557FA142008FD7CE")?,
+        lift_gain: f("Hash_FDE807D9B85A6AC2")?,
+        linear_controller: gains("Hash_DF79539DBDA006EE")?,
+        yaw_controller: gains("Hash_B46764285AD1DC5F")?,
+        // 82D46610 / 82D43B20: anchor reach from this collection.
+        anchor_reach: f("Hash_96ECC98838ECCC11")?,
+        // Hold qualification (82D44A10 -> 82E08EE8): physics_state_offboard
+        // `default` +0 / +32 / +452 / +436 (the settings at state+56).
+        hold_box_extents: offboard_vector(data, "GrabBoxSizeGrabbing")?,
+        hold_box_offset: offboard_vector(data, "GrabBoxOffset")?,
+        hold_angle_limit: data.float("physics_state_offboard", "default", "GrabSplineAngleLimitGrabbing")?,
+        hold_max_angle_to_horizontal: data.float("physics_state_offboard", "default", "GrabSplineMaxAngleToHorizontalGrabbing")?,
+        ..MoveObjectTuning::default()
+    })
+}
+
+fn offboard_vector(data: &Collections, name: &str) -> Result<[f32; 3], String> {
+    let v = data.words::<4>("physics_state_offboard", "default", name)?.map(f32::from_bits);
+    if v.iter().any(|x| !x.is_finite()) {
+        return Err(format!("{name}: non-finite vector"));
+    }
+    Ok([v[0], v[1], v[2]])
+}
+
 pub(crate) struct Settings {
     pub controller: controller::Settings,
     pub board: skate_core::player::offboard::ground_sync::BoardSettings,

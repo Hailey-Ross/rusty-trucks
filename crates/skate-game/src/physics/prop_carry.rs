@@ -14,12 +14,14 @@
 //! which the input listener emits while raw flag bit 28 (action 73, RB) is
 //! held (8259AF68): a held button, not a toggle.
 //!
-//! Carry is a Skate 3 style drag, not a floating hold: the prop stays on the
-//! ground at the offset it was grabbed at, fixed in the carrier's frame, and
-//! is pulled along (`PropDynamics::drag_to`) and turned with the carrier
-//! (`PropDynamics::set_yaw_rate`), so it slides with its authored friction,
-//! bumps over curbs and never lifts off or swings through the carrier by
-//! itself. The held prop neither receives skater pushes nor pushes the
+//! Carry is retail Move Object (state 502, research note
+//! move-object-retail.md): the held prop stays a normal dynamic body (gravity,
+//! contacts, tipping) and every fixed tick receives one bounded command, a
+//! horizontal linear term plus a yaw term from two velocity-tracking
+//! controllers (82D45318, `skate_core::player::offboard::move_object`), through
+//! `PropDynamics::apply_move_command`. The prop leads and the skater follows
+//! its grab edge (82D45D30): [`PropCarry::skater_target`] is read by
+//! `biped_ground`. The held prop neither receives skater pushes nor pushes the
 //! skater back: `PropDynamics::set_held` exempts it from volume pushes and
 //! its collision-layer triangles stay parked at `HELD_PARK` until the drop
 //! rebakes them.
@@ -39,46 +41,41 @@
 //! a map teleports saved bodies to their stored poses before the first sync.
 //!
 //! Restrictions: grabbing requires `BipedGround`; a single prop at a time;
-//! auto-drop beyond `MAX_HOLD_DISTANCE` or when leaving the on-foot states
+//! the grab is kept while the held grab record qualifies (retail 82D44A10 ->
+//! CanGrabSpline 82E08EE8 at the grip, see `still_holds`), and dropped when it
+//! stops qualifying or when leaving the on-foot states
 //! (`BipedGround`/`OffBoardPushing`; never saves). While held, the retail
 //! grab-object byte (`OffBoard304`, published in `player_state/publication.rs`)
 //! keeps the selector in `OffBoardPushing` and the MotionGraph in
 //! MovingObjectNew, so carrying must not treat state 502 as leaving the ground. Drop keeps the current velocity, so releasing while moving throws
 //! gently; re-sleep is the natural cool-down.
 //!
-//! Locomotion while holding (Move Object, state 502): retail's producer
-//! 8259C4B0 turns the raw left stick into OB_ObjectMvX/Z in the skater's
-//! frame and the right stick X into OB_ObjectMvRot; the shipped curve for a
-//! left-stick share of the rotation is all zero. So the left stick moves the
-//! pair (push, pull, side step) without turning it and only the right stick
-//! turns it. `biped_ground::update` applies that through [`object_move_motion`]
-//! with the speeds of [`CarryLocomotion`]. Before this, the carried stick was
-//! fed to the walking controller as a world direction rebuilt from the
-//! current facing, so any stick not straight ahead turned the skater, which
-//! turned the target with it: the skater and prop spun in place.
+//! Locomotion while holding: retail's producer 8259C4B0 turns the raw left
+//! stick into OB_ObjectMvX/Z and the right stick X into OB_ObjectMvRot. The
+//! command reads them in the prop's latched grab-edge frame: Z pushes / pulls
+//! along the edge normal, X slides along the edge, an off-centre push turns
+//! the prop through the lever-arm curves, the right stick turns it.
 //!
-//! Multiplayer: prop bodies and layouts are host-local; skate-net would need
-//! to replicate held id, body poses/velocities and layout writes. Not
-//! implemented.
-use skate_core::{math::Vector3, player::state::PhysicalStateId};
+//! Multiplayer: a `PropCarry` is one player slot's state; its Move Object
+//! controller is plain data (`controller_snapshot`), the command is a pure
+//! function per fixed tick. Prop bodies and layouts are host-local; a host
+//! would replicate held id, body poses / velocities and layout writes. No
+//! transport is implemented.
+use skate_core::{
+    math::Vector3,
+    player::offboard::move_object::{MoveObjectCommand, MoveObjectController, MoveObjectInput, MoveObjectTuning, SkaterFollow},
+    player::state::PhysicalStateId,
+};
 use bevy::prelude::warn;
 use std::collections::BTreeMap;
 
 use super::prop_dynamics::PropDynamics;
 
-/// Pickup reach from the carrier's root, measured to the prop's surface.
+//// Pickup reach from the carrier's root, measured to the prop's surface.
 /// Omnidirectional: retail grabbing does not require facing the prop.
 const GRAB_RADIUS: f32 = 2.0;
-/// Drag hold distance: the prop keeps the side it was grabbed from, this far
-/// from the carrier.
-const DRAG_HOLD: f32 = 0.9;
-/// Drag speed cap; above this the prop lags behind instead of snapping.
-/// Roughly a fast walk, so sprinting leaves a heavy prop trailing.
-const MAX_DRAG_SPEED: f32 = 4.0;
 /// Placement follow cap; above this the prop lags instead of snapping.
 const MAX_CARRY_SPEED: f32 = 6.0;
-/// Auto-drop distance: the prop is stuck or was left behind.
-const MAX_HOLD_DISTANCE: f32 = 3.5;
 /// Placement adjust rates and clamps.
 const PLACE_YAW_RATE: f32 = 2.5;
 const PLACE_DISTANCE_RATE: f32 = 2.0;
@@ -86,87 +83,211 @@ const PLACE_HEIGHT_RATE: f32 = 1.5;
 const PLACE_DISTANCE: std::ops::Range<f32> = 0.3..4.0;
 const PLACE_HEIGHT: std::ops::Range<f32> = 0.0..2.5;
 
-/// Speeds of the skater and held prop moving as one pair (Move Object,
-/// state 502). Retail moves the pair with the MovingObjectNew animations from
-/// the OB_ObjectMv inputs; that physics state (PhysState_OffBoardPushing) is
-/// not decoded yet, so these are engine values a mod may change.
+/// Move Object (state 502) tuning in effect: the retail command tuning
+/// (attribute class 3EDA5B140604613D, loaded from the stock collection) plus
+/// the engine values that stand in for still-undecoded retail parts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct CarryLocomotion {
-    /// m/s at full stick pushing forward (OB_ObjectMvZ > 0).
-    pub push_speed: f32,
-    /// m/s at full stick pulling back (OB_ObjectMvZ < 0).
-    pub pull_speed: f32,
-    /// m/s at full stick sideways (OB_ObjectMvX).
-    pub side_speed: f32,
-    /// rad/s at full OB_ObjectMvRot (right stick X).
-    pub turn_rate: f32,
-    /// m kept between the skater's root and the prop's near face while
-    /// dragging (fix20): the hold distance is never shorter than the prop's
-    /// extent toward the skater plus this, so a long prop (bench) is held
-    /// by its edge instead of pulling its centre into the skater. NOT RETAIL
-    /// YET: engine value. Retail's grab offset probably comes from the DMO
-    /// characteristics (per-object grab data) and the MovingObjectNew /
-    /// MVOBJ clips' hand positions (UpdateObjectGrabbing 0x821BCDB4,
-    /// IsGrabbingDMO 0x820B757C), not decoded.
-    pub grip_reach: f32,
+    /// Retail 82D45318 tuning (speeds, curves, controllers, clamps).
+    pub move_object: MoveObjectTuning,
+    /// Optional constant yaw gain replacing the inertia curve
+    /// (EABFCC79873A2859) for a mod; `None` = retail curve.
+    pub turn_rate: Option<f32>,
+    /// Optional engine rule for a mod: m the skater may fall behind its
+    /// follow point (beyond the closest it got) before the prop is let go;
+    /// 0 = off (retail: only the record qualification, `still_holds`).
+    pub let_go_distance: f32,
+    /// Half the hand spread kept from the edge ends when choosing the grip
+    /// point (82D444A0 clamps the grip to [d/2, length - d/2] with d from the
+    /// hand bones 3 / 7). NOT RETAIL YET: engine value.
+    pub hand_half_spread: f32,
+    /// Entering Move Object drops a carried board (retail 82D442D0 lets go
+    /// of it, 82D75440; true). A mod may keep the board in hand (false).
+    pub drop_board: bool,
 }
 
 impl Default for CarryLocomotion {
     fn default() -> Self {
-        Self { push_speed: 1.4, pull_speed: 1.0, side_speed: 0.8, turn_rate: 1.6, grip_reach: 0.35 }
+        Self::from_tuning(MoveObjectTuning::default())
     }
 }
 
 impl CarryLocomotion {
-    /// Non-finite or negative values fall back to the default per field.
-    pub(crate) fn sanitized(self) -> Self {
-        let d = Self::default();
+    /// Defaults over a retail tuning loaded from the setup data.
+    pub(crate) fn from_tuning(move_object: MoveObjectTuning) -> Self {
+        Self { move_object, turn_rate: None, let_go_distance: 0.0, hand_half_spread: 0.25, drop_board: true }
+    }
+
+    /// Non-finite or negative values fall back to `base` per field.
+    pub(crate) fn sanitized(self, base: &Self) -> Self {
         let ok = |v: f32, d: f32| if v.is_finite() && v >= 0.0 { v } else { d };
         Self {
-            push_speed: ok(self.push_speed, d.push_speed),
-            pull_speed: ok(self.pull_speed, d.pull_speed),
-            side_speed: ok(self.side_speed, d.side_speed),
-            turn_rate: ok(self.turn_rate, d.turn_rate),
-            grip_reach: ok(self.grip_reach, d.grip_reach),
+            move_object: self.move_object.sanitized(&base.move_object),
+            turn_rate: self.turn_rate.filter(|v| v.is_finite() && *v >= 0.0),
+            let_go_distance: ok(self.let_go_distance, base.let_go_distance),
+            hand_half_spread: ok(self.hand_half_spread, base.hand_half_spread),
+            drop_board: self.drop_board,
         }
+    }
+
+    /// The command tuning with the mod's constant turn rate folded in.
+    fn command_tuning(&self) -> MoveObjectTuning {
+        let mut t = self.move_object;
+        if let Some(rate) = self.turn_rate {
+            t.inertia_yaw_gain = skate_core::point_graph::PointGraph { x: [0.0; 8], y: [rate; 8] };
+        }
+        t
     }
 }
 
-/// One tick of Move Object locomotion from the OB_ObjectMv inputs: the
-/// world velocity of the pair and its yaw rate (rad/s, positive turns the
-/// facing toward the frame's right). `right`/`forward` are the skater's
-/// ground-frame rows. The left stick never contributes to the yaw rate
-/// (retail curve 9ADFC2E222938C1E is all zero), which is what keeps the
-/// pair from chasing its own stick direction.
-pub(crate) fn object_move_motion(
-    right: [f32; 4],
-    forward: [f32; 4],
-    move_x: f32,
-    move_z: f32,
-    rotation: f32,
-    locomotion: CarryLocomotion,
-) -> ([f32; 4], f32) {
-    let flat = |v: [f32; 4]| {
-        let l = (v[0] * v[0] + v[2] * v[2]).sqrt();
-        if l > 1e-6 { [v[0] / l, v[2] / l] } else { [0.0, 0.0] }
-    };
-    let (r, f) = (flat(right), flat(forward));
-    let finite = |v: f32| if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 };
-    let (x, z, rot) = (finite(move_x), finite(move_z), finite(rotation));
-    let along = z * if z >= 0.0 { locomotion.push_speed } else { locomotion.pull_speed };
-    let side = x * locomotion.side_speed;
-    let velocity = [r[0] * side + f[0] * along, 0.0, r[1] * side + f[1] * along, 0.0];
-    (velocity, rot * locomotion.turn_rate)
+/// Mod overrides of [`CarryLocomotion`] (`sdk.world.set_tuning('carry', ...)`):
+/// every field optional, applied over the tuning loaded from the setup data,
+/// so disabling the mod restores the retail values.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct LocomotionOverrides {
+    pub push_speed: Option<f32>,
+    pub pull_speed: Option<f32>,
+    pub side_speed: Option<f32>,
+    pub turn_rate: Option<f32>,
+    pub grip_reach: Option<f32>,
+    pub linear_clamp: Option<f32>,
+    pub yaw_clamp: Option<f32>,
+    pub relatch: Option<f32>,
+    pub slew_per_tick: Option<f32>,
+    pub yaw_rate_feedback: Option<f32>,
+    pub linear_controller: Option<[f32; 4]>,
+    pub yaw_controller: Option<[f32; 4]>,
+    pub lever_rotation: Option<[[f32; 8]; 2]>,
+    pub lever_yaw: Option<[[f32; 8]; 2]>,
+    pub mass_speed: Option<[[f32; 8]; 2]>,
+    pub inertia_yaw_gain: Option<[[f32; 8]; 2]>,
+    pub let_go_distance: Option<f32>,
+    pub drop_board: Option<bool>,
+    pub follow_step: Option<f32>,
+    pub hold_angle_limit: Option<f32>,
+    pub hold_max_angle_to_horizontal: Option<f32>,
+    pub hold_box_extents: Option<[f32; 3]>,
+    pub record_272_speed_scale: Option<f32>,
 }
 
-/// Rotate a ground-frame row about world +Y by `angle` (positive turns +Z
-/// toward +X, the same sense as [`object_move_motion`]'s yaw rate).
-pub(crate) fn yaw_row(v: [f32; 4], angle: f32) -> [f32; 4] {
-    let (sin, cos) = angle.sin_cos();
-    [v[0] * cos + v[2] * sin, v[1], -v[0] * sin + v[2] * cos, v[3]]
+impl LocomotionOverrides {
+    pub(crate) fn apply(&self, base: CarryLocomotion) -> CarryLocomotion {
+        let mut l = base;
+        let m = &mut l.move_object;
+        let gains = |g: [f32; 4]| skate_core::player::offboard::move_object::ControllerGains {
+            proportional: g[0],
+            filtered: g[1],
+            derivative: g[2],
+            filter: g[3],
+        };
+        let curve = |c: [[f32; 8]; 2]| skate_core::point_graph::PointGraph { x: c[0], y: c[1] };
+        if let Some(v) = self.push_speed { m.push_speed = v; }
+        if let Some(v) = self.pull_speed { m.pull_speed = v; }
+        if let Some(v) = self.side_speed { m.side_speed = v; }
+        if let Some(v) = self.linear_clamp { m.linear_clamp = v; }
+        if let Some(v) = self.yaw_clamp { m.yaw_clamp = v; }
+        if let Some(v) = self.relatch { m.relatch = v; }
+        if let Some(v) = self.slew_per_tick { m.slew_per_tick = v; }
+        if let Some(v) = self.yaw_rate_feedback { m.yaw_rate_feedback = v; }
+        if let Some(v) = self.linear_controller { m.linear_controller = gains(v); }
+        if let Some(v) = self.yaw_controller { m.yaw_controller = gains(v); }
+        if let Some(v) = self.lever_rotation { m.lever_rotation = curve(v); }
+        if let Some(v) = self.lever_yaw { m.lever_yaw = curve(v); }
+        if let Some(v) = self.mass_speed { m.mass_speed = curve(v); }
+        if let Some(v) = self.inertia_yaw_gain { m.inertia_yaw_gain = curve(v); }
+        // `grip_reach` (the old engine reach) now sets the retail follow
+        // reach (0.65 m, 82D44A10) between the edge point and the body.
+        if let Some(v) = self.grip_reach { m.follow_reach = v; }
+        if let Some(v) = self.let_go_distance { l.let_go_distance = v; }
+        if let Some(v) = self.drop_board { l.drop_board = v; }
+        let m = &mut l.move_object;
+        if let Some(v) = self.follow_step { m.follow_step = v; }
+        if let Some(v) = self.hold_angle_limit { m.hold_angle_limit = v; }
+        if let Some(v) = self.hold_max_angle_to_horizontal { m.hold_max_angle_to_horizontal = v; }
+        if let Some(v) = self.hold_box_extents { m.hold_box_extents = v; }
+        if let Some(v) = self.record_272_speed_scale { m.record_272_speed_scale = v; }
+        l.turn_rate = self.turn_rate.or(base.turn_rate);
+        l.sanitized(&base)
+    }
 }
 
-/// Which raw controller flag bits drive carrying. The bits index the packed
+/// The interim grab record of a held prop: which vertical box face is held
+/// (local axis index and side) and the grip position along its edge, both in
+/// the prop's own frame so the grip turns with the prop. NOT RETAIL YET:
+/// retail reads the DMO's authored grab splines (record layout 82585DD8,
+/// source undecoded); until then the face toward the skater at grab time is
+/// the grab edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GrabEdge {
+    /// Local box axis of the face normal (0 or 2) and its sign.
+    pub axis: usize,
+    pub side: f32,
+    /// Grip position along the edge (local axis `2 - axis`), metres from the centre.
+    pub grip: f32,
+}
+
+/// The held prop's grab frame this tick (world space).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GrabFrame {
+    /// Grip point on the grab face (centre height).
+    pub grip: Vector3,
+    /// Horizontal unit normal from the skater into the prop.
+    pub forward: Vector3,
+    /// Where the skater's root belongs: the root moved by this tick's step
+    /// of the retail follow point +416; `grip` until the first command.
+    pub skater: Vector3,
+    /// The grab edge as a straight segment (start, end) and the grip's arc
+    /// distance from its start: the interim grab record's geometry.
+    pub ends: [Vector3; 2],
+    pub grip_distance: f32,
+}
+
+fn grab_frame(body: &HeldBody, edge: GrabEdge) -> Option<GrabFrame> {
+    let axis = body.basis.columns[edge.axis];
+    let along = body.basis.columns[2 - edge.axis];
+    let half = [body.half_extents.x, body.half_extents.y, body.half_extents.z];
+    let out = flat_unit(Vector3::new(axis[0] * edge.side, 0.0, axis[2] * edge.side))?;
+    let edge_dir = flat_unit(Vector3::new(along[0], 0.0, along[2]))?;
+    let face = add(body.center, scale(out, half[edge.axis] * flat_len(Vector3::new(axis[0], 0.0, axis[2]))));
+    let grip = add(face, scale(edge_dir, edge.grip));
+    let forward = scale(out, -1.0);
+    let half_along = half[2 - edge.axis] * flat_len(Vector3::new(along[0], 0.0, along[2]));
+    // The interim record lies on the face's top edge (NOT RETAIL YET: a
+    // prop's authored grab splines, DMO physics definition +136, are not
+    // loaded); the box's vertical half height over its centre.
+    let top = (0..3).map(|i| (half[i] * body.basis.columns[i][1]).abs()).sum::<f32>();
+    let lift = Vector3::new(0.0, top, 0.0);
+    let ends = [add(add(face, scale(edge_dir, -half_along)), lift), add(add(face, scale(edge_dir, half_along)), lift)];
+    Some(GrabFrame { grip, forward, skater: grip, ends, grip_distance: half_along + edge.grip })
+}
+
+/// The face of the held box toward `point` and the grip along it, clamped
+/// `hand_half_spread` inside the edge ends (82D444A0's grip clamp).
+fn choose_edge(body: &HeldBody, point: Vector3, hand_half_spread: f32) -> GrabEdge {
+    let to = sub(point, body.center);
+    let halves = [body.half_extents.x, body.half_extents.y, body.half_extents.z];
+    let mut best = (0usize, 1.0f32, f32::NEG_INFINITY);
+    for axis in [0usize, 2] {
+        let a = body.basis.columns[axis];
+        let Some(n) = flat_unit(Vector3::new(a[0], 0.0, a[2])) else { continue };
+        for side in [1.0f32, -1.0] {
+            // Distance of the point outside this face's plane (not the raw
+            // projection, which picks the end face of a long bench for a
+            // skater standing behind its long side).
+            let score = side * dot(n, to) - halves[axis] * flat_len(Vector3::new(a[0], 0.0, a[2]));
+            if score > best.2 {
+                best = (axis, side, score);
+            }
+        }
+    }
+    let along = body.basis.columns[2 - best.0];
+    let half = [body.half_extents.x, body.half_extents.y, body.half_extents.z][2 - best.0];
+    let edge_dir = flat_unit(Vector3::new(along[0], 0.0, along[2])).unwrap_or(Vector3::new(1.0, 0.0, 0.0));
+    let limit = (half - hand_half_spread).max(0.0);
+    GrabEdge { axis: best.0, side: best.1, grip: dot(to, edge_dir).clamp(-limit, limit) }
+}
+
+// Which raw controller flag bits drive carrying. The bits index the packed
 /// button word of `DerivedControllerInput` (word 6 previous, word 13 current;
 /// bit = 101 - action for actions 74..81, bits 28..31 for actions 73..66).
 /// Defaults are the retail buttons; a host setting or mod may rebind them.
@@ -199,6 +320,11 @@ pub(crate) struct Tick {
     pub yaw_axis: f32,
     pub distance_axis: f32,
     pub height_axis: f32,
+    /// OB_ObjectMvX / OB_ObjectMvZ / OB_ObjectMvRot (8259C4B0) this tick.
+    pub object_move: [f32; 3],
+    /// Skater's own contact normal (retail Player+16304) for the blocking
+    /// normal; zero when free. NOT WIRED YET: the engine passes zero.
+    pub contact_normal: Vector3,
 }
 
 impl Tick {
@@ -218,11 +344,13 @@ impl Tick {
             yaw_axis,
             distance_axis,
             height_axis,
+            object_move: [0.0; 3],
+            contact_normal: Vector3::ZERO,
         }
     }
 }
 
-/// Per-tick carrier observation from the skater runtime.
+//// Per-tick carrier observation from the skater runtime.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Carrier {
     pub state: PhysicalStateId,
@@ -230,6 +358,20 @@ pub(crate) struct Carrier {
     /// Horizontal facing direction, normalized.
     pub forward: Vector3,
     pub time_step: f32,
+    /// Retail skater observations for Move Object; `None` (host tests, the
+    /// HUD) skips the record qualification and uses `position` as body.
+    pub skeleton: Option<CarrierSkeleton>,
+}
+
+/// The skater inputs retail Move Object reads, from the skater runtime.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CarrierSkeleton {
+    /// Player+192 effective frame (rows right, up, forward, position).
+    pub frame: [[f32; 4]; 4],
+    /// Bone 23 world position (state +272, 82BE3220 in 82D444A0).
+    pub reference: Vector3,
+    /// Body position Skeleton+15872 (state +416 at the grab, 82D442D0).
+    pub body: Vector3,
 }
 
 impl Carrier {
@@ -246,6 +388,38 @@ enum Mode {
     Placement { distance: f32, height: f32, yaw: f32 },
 }
 
+/// The held prop as Move Object sees it (from `PropDynamics::held_body`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HeldBody {
+    pub center: Vector3,
+    /// Box axes as rows (`columns[i]` = local axis i in world space).
+    pub basis: skate_core::math::Basis3,
+    pub half_extents: Vector3,
+    pub velocity: Vector3,
+    pub mass: f32,
+    /// Inertia about the box's up axis (1 / inverse tensor y).
+    pub yaw_inertia: f32,
+    /// Record+272 for this prop type (82C4B960 from DMO data +312; per
+    /// template `carry.by_template[...].record_272`, default false: the DMO
+    /// type data is not extracted yet).
+    pub record_272: bool,
+}
+
+impl HeldBody {
+    /// Heading of the box's local +Z about world +Y, in the sense of the
+    /// body's angular velocity (a positive yaw rate turns +Z toward +X and
+    /// increases it; test `positive_yaw_rate_turns_local_z_toward_plus_x`),
+    /// so the yaw-rate feedback of the yaw controller is negative as in 82D45318.
+    fn heading(&self) -> f32 {
+        let z = self.basis.columns[2];
+        f32::atan2(z[0], z[2])
+    }
+}
+
+/// One player slot's carry state (this whole struct is per slot; the local
+/// player is slot 0). Authority: the prop simulation applies this slot's
+/// command in one place ([`PropDynamics::apply_move_command`]) once per fixed
+/// physics tick; nothing here reads a wall clock.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PropCarry {
     held: Option<u32>,
@@ -257,29 +431,49 @@ pub(crate) struct PropCarry {
     buttons: CarryButtons,
     /// Pickup reach (`GRAB_RADIUS` unless [`CarrySettings`] changes it).
     grab_range: Option<f32>,
-    /// Move Object speeds (host setting or mod).
+    /// Move Object tuning loaded from the setup data (mod-free base).
+    base: CarryLocomotion,
+    /// Move Object tuning in effect (base + mod overrides).
     locomotion: CarryLocomotion,
-    /// Held prop's offset in the carrier's frame (right, forward), fixed at
-    /// grab time so the pair moves and turns as one, and the box's extent
-    /// toward the carrier (added to `MAX_HOLD_DISTANCE`).
-    grip: Option<(f32, f32, f32)>,
-    /// Carrier facing yaw on the previous carry tick, for the prop's turn.
-    last_yaw: Option<f32>,
+    /// Retail controller state of this slot (serialisable plain data).
+    controller: MoveObjectController,
+    /// Interim grab record of the held prop.
+    edge: Option<GrabEdge>,
+    /// Grab frame of the held prop after this tick's command: where the
+    /// skater is pulled to and which way it faces (read by `biped_ground`).
+    frame: Option<GrabFrame>,
+    /// Closest the skater got to its follow point (optional mod let-go rule).
+    closest: f32,
+    /// Retail skater follow state (+416 / +608 / +624); `None` until the
+    /// first held tick.
+    follow: Option<SkaterFollow>,
+    /// Last command, for HELD_PROP.
+    last: MoveObjectCommand,
+    last_input: [f32; 3],
 }
 
 /// Carry settings a host setting or a mod (`sdk.world.set_tuning('carry', ...)`) changes:
-/// the buttons and the pickup reach. `default()` = shipped values (mod disable). Pushed into the
-/// live [`PropCarry`] before each physics tick, so a map load (new `PropCarry`) keeps them.
-#[derive(bevy::prelude::Resource, Clone, Copy, Debug, PartialEq)]
+/// the buttons, the pickup reach and Move Object overrides. `default()` = shipped values (mod
+/// disable). Pushed into the live [`PropCarry`] before each physics tick, so a map load (new
+/// `PropCarry`) keeps them.
+#[derive(bevy::prelude::Resource, Clone, Debug, PartialEq)]
 pub(crate) struct CarrySettings {
     pub buttons: CarryButtons,
     pub grab_range: f32,
-    pub locomotion: CarryLocomotion,
+    pub locomotion: LocomotionOverrides,
+    /// How the Move Object command reaches the held prop (retail defaults;
+    /// pushed into [`PropDynamics`], so a map load keeps them).
+    pub move_rules: super::prop_dynamics::MoveCommandRules,
 }
 
 impl Default for CarrySettings {
     fn default() -> Self {
-        Self { buttons: CarryButtons::default(), grab_range: GRAB_RADIUS, locomotion: CarryLocomotion::default() }
+        Self {
+            buttons: CarryButtons::default(),
+            grab_range: GRAB_RADIUS,
+            locomotion: LocomotionOverrides::default(),
+            move_rules: Default::default(),
+        }
     }
 }
 
@@ -288,16 +482,22 @@ impl CarrySettings {
     pub(crate) fn apply_to(&self, carry: &mut PropCarry) {
         carry.buttons = self.buttons;
         carry.grab_range = (self.grab_range.is_finite() && self.grab_range > 0.0 && self.grab_range != GRAB_RADIUS).then_some(self.grab_range);
-        carry.locomotion = self.locomotion.sanitized();
+        carry.locomotion = self.locomotion.apply(carry.base);
     }
 }
 
 pub(crate) fn apply_carry_settings(settings: bevy::prelude::Res<CarrySettings>, mut physics: bevy::prelude::ResMut<super::GamePhysics>) {
-    if physics.prop_carry.buttons != settings.buttons
-        || physics.prop_carry.grab_range() != settings.grab_range
-        || physics.prop_carry.locomotion != settings.locomotion.sanitized()
+    let carry = &physics.prop_carry;
+    if carry.buttons != settings.buttons
+        || carry.grab_range() != settings.grab_range
+        || carry.locomotion != settings.locomotion.apply(carry.base)
     {
         settings.apply_to(&mut physics.prop_carry);
+    }
+    if let Some(dynamics) = physics.prop_dynamics_mut() {
+        if *dynamics.move_rules() != settings.move_rules {
+            dynamics.set_move_rules(settings.move_rules.clone());
+        }
     }
 }
 
@@ -316,9 +516,41 @@ impl PropCarry {
         self.buttons
     }
 
-    /// Move Object speeds in effect.
+    /// Move Object tuning in effect.
     pub(crate) fn locomotion(&self) -> CarryLocomotion {
         self.locomotion
+    }
+
+    /// Tuning from the setup data before mod overrides.
+    pub(crate) fn base_locomotion(&self) -> CarryLocomotion {
+        self.base
+    }
+
+    /// Set the tuning loaded from the setup data (map load); mod overrides
+    /// are re-applied on the next `apply_carry_settings`.
+    pub(crate) fn set_base_tuning(&mut self, tuning: MoveObjectTuning) {
+        self.base = CarryLocomotion::from_tuning(tuning);
+        self.locomotion = self.base;
+    }
+
+    /// Where the skater belongs while holding (Move Object: the skater follows
+    /// the prop's grab edge, 82D45D30), as (root position, facing).
+    pub(crate) fn skater_target(&self) -> Option<(Vector3, Vector3)> {
+        self.held?;
+        self.frame.map(|f| (f.skater, f.forward))
+    }
+
+    /// Snapshot of this slot's Move Object state: held id and the flat
+    /// controller state (multiplayer-ready; no transport here).
+    #[allow(dead_code)]
+    pub(crate) fn controller_snapshot(&self) -> Option<(u32, [f32; skate_core::player::offboard::move_object::CONTROLLER_FLOATS])> {
+        Some((self.held?, self.controller.to_array()))
+    }
+
+    /// Last command sent and the stick that produced it (HELD_PROP).
+    #[allow(dead_code)]
+    pub(crate) fn last_command(&self) -> Option<(MoveObjectCommand, [f32; 3])> {
+        self.held.map(|_| (self.last, self.last_input))
     }
 
     /// Pickup reach in effect.
@@ -342,16 +574,22 @@ impl PropCarry {
         layout: BTreeMap<u32, super::prop_layout::PropPose>,
         layout_path: Option<std::path::PathBuf>,
     ) -> Self {
-        Self {
-            held: None,
-            mode: Mode::Carry,
-            layout,
-            layout_path,
-            buttons: CarryButtons::default(),
-            grab_range: None,
-            locomotion: CarryLocomotion::default(),
-            grip: None,
-            last_yaw: None,
+        Self { layout, layout_path, ..Self::default() }
+    }
+
+    /// Drop saved placements (props reset to their spawn pose) and rewrite the sidecar.
+    pub(crate) fn forget_layout(&mut self, ids: &[u32]) {
+        let before = self.layout.len();
+        for id in ids {
+            self.layout.remove(id);
+        }
+        if self.layout.len() == before {
+            return;
+        }
+        if let Some(path) = &self.layout_path {
+            if let Err(error) = super::prop_layout::save(path, &self.layout) {
+                warn!("SKATE_PROP_LAYOUT: {}: {error}", path.display());
+            }
         }
     }
 
@@ -367,7 +605,40 @@ impl PropCarry {
         if self.held.is_some() || carrier.state != PhysicalStateId::BipedGround {
             return None;
         }
-        dynamics.nearest_body(carrier.position, self.grab_range()).map(|(id, _)| id)
+        let (id, _) = dynamics.nearest_body(carrier.position, self.grab_range())?;
+        let body = dynamics.held_body(id)?;
+        let edge = choose_edge(&body, carrier.position, self.locomotion.hand_half_spread);
+        let frame = grab_frame(&body, edge)?;
+        self.qualifies(id, &frame, carrier).then_some(id)
+    }
+
+    /// Retail hold rule (82D44A10): the held record must pass CanGrabSpline
+    /// 82E08EE8 at the grip with the grabbing box and angles. The record is
+    /// the interim straight edge (NOT RETAIL YET: props' authored grab
+    /// splines are not loaded). Without skater observations (tests) it holds.
+    fn qualifies(&self, id: u32, frame: &GrabFrame, carrier: Carrier) -> bool {
+        let Some(skeleton) = carrier.skeleton else { return true };
+        let v3 = |v: Vector3| [v.x, v.y, v.z];
+        let out = scale(frame.forward, -1.0);
+        let Some(record) = skate_core::player::offboard::move_object::edge_record(id, v3(frame.ends[0]), v3(frame.ends[1]), v3(out)) else {
+            return false;
+        };
+        skate_core::player::offboard::move_object::still_holds(
+            &self.locomotion.move_object,
+            &record,
+            v3(skeleton.reference),
+            frame.grip_distance,
+            skeleton.frame,
+        )
+    }
+
+    fn let_go(&mut self) {
+        self.held = None;
+        self.mode = Mode::Carry;
+        self.edge = None;
+        self.frame = None;
+        self.follow = None;
+        self.controller = MoveObjectController::default();
     }
 
     pub(crate) fn update(&mut self, dynamics: &mut PropDynamics, tick: Tick, carrier: Carrier) {
@@ -378,37 +649,24 @@ impl PropCarry {
         let Some(id) = self.held else {
             if tick.grab {
                 if let Some(id) = self.candidate(dynamics, carrier) {
+                    self.let_go();
                     self.held = Some(id);
-                    self.grip = None;
-                    self.last_yaw = None;
-                    self.follow(dynamics, id, carrier);
+                    self.closest = f32::INFINITY;
+                    self.hold(dynamics, id, tick, carrier);
                 }
             }
             return;
         };
-        let position = dynamics.position_of(id);
-        // Measured from the near face like the grab reach (fix20): a long
-        // prop grabbed by its end has its centre beyond MAX_HOLD_DISTANCE,
-        // and a centre test dropped it the tick after every grab (the
-        // BipedGround <-> OffBoardPushing flip each tick in the 14:46 log).
-        let limit = MAX_HOLD_DISTANCE + self.grip.map_or(0.0, |g| g.2);
-        let too_far = position.is_some_and(|p| {
-            let d = sub(p, carrier.position);
-            dot(d, d) > limit * limit
-        });
-        if !on_foot || position.is_none() || too_far {
+        if !on_foot || dynamics.position_of(id).is_none() {
             // Auto-drop: never a confirmed placement, so nothing is saved.
-            self.held = None;
-            self.mode = Mode::Carry;
-            self.grip = None;
+            self.let_go();
             return;
         }
         match self.mode {
             Mode::Carry => {
                 if !tick.grab {
                     // Velocity is kept: releasing while moving throws gently.
-                    self.held = None;
-                    self.grip = None;
+                    self.let_go();
                     return;
                 }
                 if tick.placement {
@@ -424,9 +682,10 @@ impl PropCarry {
                         height: offset.y.clamp(PLACE_HEIGHT.start, PLACE_HEIGHT.end),
                         yaw: 0.0,
                     };
+                    self.frame = None;
                     return;
                 }
-                self.follow(dynamics, id, carrier);
+                self.hold(dynamics, id, tick, carrier);
             }
             Mode::Placement {
                 mut distance,
@@ -435,15 +694,15 @@ impl PropCarry {
             } => {
                 if !tick.grab {
                     self.confirm(dynamics, id);
-                    self.held = None;
-                    self.grip = None;
-                    self.mode = Mode::Carry;
+                    self.let_go();
                     return;
                 }
                 if tick.placement {
                     self.mode = Mode::Carry;
-                    self.grip = None;
-                    self.last_yaw = None;
+                    self.edge = None;
+                    self.follow = None;
+                    self.controller = MoveObjectController::default();
+                    self.closest = f32::INFINITY;
                     return;
                 }
                 let dt = carrier.time_step;
@@ -463,50 +722,101 @@ impl PropCarry {
         }
     }
 
-    /// Plain carry: drag the prop along the ground at the offset it was
-    /// grabbed at, fixed in the carrier's frame (right, forward), so walking
-    /// pulls or pushes it and turning swings it round with the carrier
-    /// instead of leaving it on a world bearing. The grab distance is pulled
-    /// in to `DRAG_HOLD` (at least 0.5 m). Height and vertical velocity stay
-    /// physical; the prop turns at the carrier's yaw rate.
-    fn follow(&mut self, dynamics: &mut PropDynamics, id: u32, carrier: Carrier) {
-        let Some(position) = dynamics.position_of(id) else {
+    /// Move Object hold (retail state 502 update 82D44A10): the grab record is
+    /// refreshed from the prop's current pose, the retail command (82D45318)
+    /// goes to the prop through `apply_move_command`, and the grab frame the
+    /// skater follows (82D45D30) is published for `biped_ground`. The prop
+    /// leads; the skater follows it.
+    fn hold(&mut self, dynamics: &mut PropDynamics, id: u32, tick: Tick, carrier: Carrier) {
+        let Some(body) = dynamics.held_body(id) else {
+            self.let_go();
             return;
         };
-        let forward = carrier.forward;
-        // Right of the facing: (0,0,1) -> (1,0,0), as in the ground frame.
-        let right = Vector3::new(forward.z, 0.0, -forward.x);
-        let reach = self.locomotion.grip_reach;
-        let (grip_right, grip_forward, _) = *self.grip.get_or_insert_with(|| {
-            let offset = sub(position, carrier.position);
-            let flat = Vector3::new(offset.x, 0.0, offset.z);
-            let distance = dot(flat, flat).sqrt();
-            let bearing = if distance > 1e-3 { scale(flat, 1.0 / distance) } else { forward };
-            // Hold by the near face: never closer than the box's extent
-            // toward the skater plus the grip reach (a bench's centre at
-            // DRAG_HOLD put the skater inside it).
-            let extent = dynamics
-                .obstacle_boxes()
-                .into_iter()
-                .find(|b| b.0 == id)
-                .map_or(0.0, |(_, _, basis, half, _, _)| box_extent(basis, half, bearing));
-            let hold = distance.clamp(0.5, DRAG_HOLD).max(extent + reach);
-            (dot(bearing, right) * hold, dot(bearing, forward) * hold, extent)
-        });
-        let target = Vector3::new(
-            carrier.position.x + right.x * grip_right + forward.x * grip_forward,
-            position.y,
-            carrier.position.z + right.z * grip_right + forward.z * grip_forward,
-        );
-        dynamics.drag_to(id, target, MAX_DRAG_SPEED, carrier.time_step);
-        let yaw = carrier.facing_yaw();
-        let rate = self.last_yaw.map_or(0.0, |last| {
-            let pi = std::f32::consts::PI;
-            let delta = (yaw - last + pi).rem_euclid(std::f32::consts::TAU) - pi;
-            delta / carrier.time_step.max(1e-4)
-        });
-        self.last_yaw = Some(yaw);
-        dynamics.set_yaw_rate(id, rate);
+        let locomotion = self.locomotion;
+        let tuning = locomotion.command_tuning();
+        let edge = *self.edge.get_or_insert_with(|| choose_edge(&body, carrier.position, locomotion.hand_half_spread));
+        let Some(mut frame) = grab_frame(&body, edge) else {
+            self.let_go();
+            return;
+        };
+        // Let go: retail stops holding when the held record no longer
+        // qualifies (82D44A10 -> 82E08EE8).
+        if !self.qualifies(id, &frame, carrier) {
+            self.let_go();
+            return;
+        }
+        let v3 = |v: Vector3| [v.x, v.y, v.z];
+        let body_position = carrier.skeleton.map_or(carrier.position, |s| s.body);
+        // +368 is the latched frame row pointing from the edge toward the
+        // skater (minus our "into the object" forward).
+        let into = v3(frame.forward);
+        let back_of = |c: &MoveObjectController| {
+            let f = if c.latched { c.latched_forward } else { into };
+            [-f[0], 0.0, -f[2]]
+        };
+        // 82D442D0 / 82D444A0: follow point = body, anchor from the new grip.
+        let follow = self
+            .follow
+            .get_or_insert_with(|| SkaterFollow::begin(&tuning, v3(body_position), v3(frame.grip), back_of(&MoveObjectController::default())));
+        // 82D46610 runs before the command with the previous tick's latch.
+        follow.update_anchor(&tuning, v3(frame.grip), back_of(&self.controller));
+        let input = MoveObjectInput {
+            move_z: tick.object_move[1],
+            move_x: tick.object_move[0],
+            move_rotation: tick.object_move[2],
+            forward: v3(frame.forward),
+            grip: v3(frame.grip),
+            center: v3(body.center),
+            velocity: v3(body.velocity),
+            heading: body.heading(),
+            mass: body.mass,
+            yaw_inertia: body.yaw_inertia,
+            contact_normal: v3(tick.contact_normal),
+            record_272: body.record_272,
+        };
+        let command = skate_core::player::offboard::move_object::command(&tuning, &mut self.controller, &input);
+        // Follow step after the command (this tick's latch): +416 steps
+        // toward the edge and that step is the displacement handed to the
+        // character move (82D44A10 -> 82BDF268). NOT RETAIL YET: 82BDF268
+        // itself (sweep, step-up, weight +1124); here the skater root is
+        // moved by the same step (the walking job's velocity override in
+        // biped_ground), so the live body offset never feeds back.
+        let back = back_of(&self.controller);
+        let root_y = carrier.skeleton.map_or(carrier.position.y, |s| s.frame[3][1]);
+        let step = self
+            .follow
+            .as_mut()
+            .map(|f| {
+                let before = f.point;
+                let after = f.step(&tuning, v3(frame.grip), back, root_y);
+                [after[0] - before[0], after[2] - before[2]]
+            })
+            .unwrap_or([0.0, 0.0]);
+        frame.skater = Vector3::new(carrier.position.x + step[0], carrier.position.y, carrier.position.z + step[1]);
+        // Optional engine let-go for a mod (`let_go_distance` > 0).
+        if locomotion.let_go_distance > 0.0 {
+            let behind = flat_len(sub(frame.skater, carrier.position));
+            self.closest = self.closest.min(behind);
+            if behind > self.closest + locomotion.let_go_distance {
+                self.let_go();
+                return;
+            }
+        }
+        let linear = Vector3::new(command.linear[0], command.linear[1], command.linear[2]);
+        dynamics.apply_move_command(id, linear, command.yaw, frame.grip, carrier.time_step);
+        dynamics.set_move_diagnostics(Some(super::prop_dynamics::MoveDiagnostics {
+            stick: tick.object_move,
+            linear: command.linear,
+            yaw: command.yaw,
+            lever: command.lever,
+            rotation: command.rotation_demand,
+            blocked: command.blocked,
+            drift: command.drift,
+            yaw_rate: command.yaw_rate,
+        }));
+        self.last = command;
+        self.last_input = tick.object_move;
+        self.frame = Some(frame);
     }
 
     /// Record the confirmed pose and rewrite the layout sidecar.
@@ -529,14 +839,6 @@ impl PropCarry {
             }
         }
     }
-}
-
-/// Half-length of a box (rows of `basis` are its axes, as in
-/// `PropDynamics::nearest_body`) along the flat direction `bearing`.
-fn box_extent(basis: skate_core::math::Basis3, half: Vector3, bearing: Vector3) -> f32 {
-    let b = basis.columns;
-    let along = |i: usize| (bearing.x * b[i][0] + bearing.y * b[i][1] + bearing.z * b[i][2]).abs();
-    along(0) * half.x + along(1) * half.y + along(2) * half.z
 }
 
 /// Ghost pose: `distance` ahead of the carrier along facing+yaw, `height`
@@ -573,4 +875,20 @@ fn scale(v: Vector3, s: f32) -> Vector3 {
 
 fn dot(a: Vector3, b: Vector3) -> f32 {
     a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+fn flat_len(v: Vector3) -> f32 {
+    (v.x * v.x + v.z * v.z).sqrt()
+}
+
+fn flat_unit(v: Vector3) -> Option<Vector3> {
+    let l = flat_len(v);
+    (l > 1e-6).then(|| Vector3::new(v.x / l, 0.0, v.z / l))
+}
+
+/// Rotate a ground-frame row about world +Y by `angle` (positive turns +Z
+/// toward +X).
+pub(crate) fn yaw_row(v: [f32; 4], angle: f32) -> [f32; 4] {
+    let (sin, cos) = angle.sin_cos();
+    [v[0] * cos + v[2] * sin, v[1], -v[0] * sin + v[2] * cos, v[3]]
 }

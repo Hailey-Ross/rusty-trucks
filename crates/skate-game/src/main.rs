@@ -58,6 +58,7 @@ pub(crate) mod world_audio;
 pub(crate) mod ui_audio;
 mod living_world;
 mod trigger_volumes;
+mod trace_all;
 
 fn main() -> bevy::app::AppExit {
     match updater::recover() {
@@ -70,10 +71,13 @@ fn main() -> bevy::app::AppExit {
     // a failed (non-zero) extraction.
     if let Some(code) = extract_ocean_pca() { std::process::exit(code); }
     if let Some(code) = crash_report::entry() { std::process::exit(code); }
+    // Before any thread and the log subscriber: `SKATE_TRACE_ALL=1` turns every diagnostic on.
+    trace_all::apply();
     let _trace = match profiling::init() {
         Ok(guard) => guard,
         Err(error) => { eprintln!("{error}"); return bevy::app::AppExit::error(); }
     };
+    trace_all::announce();
     let _startup = bevy::log::info_span!("startup").entered();
     eprintln!("REPORT_META stage=configuration_and_installation");
     let config = match bevy::log::info_span!("load_configuration_and_map").in_scope(config::Config::from_env) {

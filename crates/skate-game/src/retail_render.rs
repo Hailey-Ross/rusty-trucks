@@ -135,6 +135,50 @@ fn pack_slot(class: usize, layer: usize, clamp: bool) -> u32 {
     (u32::from(clamp) << 31) | ((class as u32) << 16) | layer as u32
 }
 
+/// Retail dynamic-shadow floor on the baked world, RGB. Every retail world
+/// receiver shader (`defaultenvironment_defaultPS`, `environmentdiffuse_defaultPS`,
+/// `baseterrain_defaultPS`, the decal / reflective / transparent variants and
+/// `water_defaultPS` / `flowingwater_defaultPS` in `shaders_final.big`) computes
+/// `min(lightmap^2, csm_visibility + (0.05, 0.09, 0.13))`: the same constant for
+/// every caster and receiver, with no per-caster height or depth window. A
+/// shadow that lands in baked shade darker than this floor therefore leaves no
+/// mark, which is what keeps a car on a bridge from printing its shadow onto the
+/// shaded ground below (the city geometry itself casts nothing into this map).
+pub(crate) const RETAIL_WORLD_SHADOW_FLOOR: Vec3 = Vec3::new(0.05, 0.09, 0.13);
+
+/// Shader family of the props' retail `dynamicobject.default` /
+/// `dynamicobject.alphatest` materials (`dynamicobject_defaultPS` in
+/// `shaders_final.big`): no lightmap, lit by the sun direction with the dynamic
+/// shadow and the material's `m_params` rows (ambient, multiplier), see the
+/// `fam==15u` branch of `retail_world.wgsl` and doc 27 "D9".
+pub(crate) const DYNAMIC_OBJECT_FAMILY: u32 = 15;
+
+/// Engine-side setting for the world shadow floor: retail by default, patched by
+/// mods through `sdk.world.set_tuning('shadows', {world_floor = {r, g, b}})` and
+/// rebuilt from the default when the mod stops (`modding::world_tuning`).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WorldShadowSettings {
+    pub floor: Vec3,
+}
+
+/// `WORLD_SHADOW_FLOOR` when the floor is set or a mod changes it (car shadows under bridges are
+/// diagnosable from the log: retail floor or a mod's value).
+fn log_world_shadow_floor(settings: Res<WorldShadowSettings>) {
+    if settings.is_changed() {
+        let f = settings.floor;
+        info!(
+            "WORLD_SHADOW_FLOOR rgb=[{:.3}, {:.3}, {:.3}] retail={}",
+            f.x, f.y, f.z, f == RETAIL_WORLD_SHADOW_FLOOR
+        );
+    }
+}
+
+impl Default for WorldShadowSettings {
+    fn default() -> Self {
+        Self { floor: RETAIL_WORLD_SHADOW_FLOOR }
+    }
+}
+
 /// Shared frame state, matching `FrameState` in the bindings module: 144 bytes.
 ///
 /// `shadow.w` gates every dynamic-shadow read in the world shader. Shadows are
@@ -150,20 +194,11 @@ pub(crate) struct FrameStateData {
 impl FrameStateData {
     const SIZE: usize = 9 * 16;
 
-    /// Eases the shadow floor towards the local probe's ambient term. Carried
-    /// over with the character lighting that feeds it.
-    pub(crate) fn approach(&mut self, target: Vec3, dt: f32) {
-        let target = target.clamp(Vec3::ZERO, Vec3::ONE);
-        let value = if self.shadow.w == 0. {
-            target
-        } else {
-            // Adapter smoothing, not a recovered native constant. Cap a hitch's
-            // contribution so one long frame cannot cause a darkness step.
-            self.shadow
-                .truncate()
-                .lerp(target, 1. - (-dt.clamp(0., 0.05) / 0.35).exp())
-        };
-        self.shadow = value.extend(1.);
+    /// Turns the world's dynamic-shadow reads on with `floor` as the lightest
+    /// value a dynamic shadow can leave on the baked world (see
+    /// [`RETAIL_WORLD_SHADOW_FLOOR`]).
+    pub(crate) fn enable_world_shadows(&mut self, floor: Vec3) {
+        self.shadow = floor.clamp(Vec3::ZERO, Vec3::ONE).extend(1.);
     }
 
     fn encode(&self) -> Vec<u8> {
@@ -467,6 +502,10 @@ impl Definition {
             "water.default" | "water.alpha" | "water.skatepark"
         ) {
             33
+        } else if stored_family == 0 && shader.starts_with("dynamicobject.") {
+            // Prop packages exported before the converter knew this family
+            // stored 0 with complete bindings; classify them on load.
+            DYNAMIC_OBJECT_FAMILY
         } else {
             stored_family
         };
@@ -537,6 +576,11 @@ impl Definition {
                         && tuning.rows.get(&self.shader).is_some_and(|r| r.len() == 3)
                 }
                 30 => tuning.rows.get(&self.shader).is_some_and(|r| r.len() == 4),
+                // Both `m_params` rows (c14, c15) come from setup data
+                // (`material_dynamicobject` in the attribulator collections).
+                DYNAMIC_OBJECT_FAMILY => {
+                    tuning.rows.get(&self.shader).is_some_and(|r| r.len() == 2)
+                }
                 33 => {
                     tuning.pca_available
                         && self.bindings.contains_key("normal")
@@ -778,6 +822,7 @@ impl MaterialTable {
         let mut requests: Vec<Option<Request>> = Vec::with_capacity(map.materials.len());
         let mut unsupported = 0usize;
         let mut unsupported_shaders = std::collections::BTreeMap::<String, usize>::new();
+        let mut families = std::collections::BTreeMap::<u32, usize>::new();
         for material in &map.materials {
             let definition = material
                 .retail_definition
@@ -794,6 +839,7 @@ impl MaterialTable {
                     .or_default() += 1;
                 definition.family = 1;
             }
+            *families.entry(definition.family).or_default() += 1;
             requests.push(Some(Request::new(
                 material,
                 &definition,
@@ -803,6 +849,13 @@ impl MaterialTable {
                 map,
             )));
         }
+        // One line per table (logs must diagnose props / car shadows: which shader family each
+        // material ended up in, e.g. 15 = dynamicobject (D9), 1 = the plain fallback).
+        info!(
+            "RETAIL_MATERIAL_FAMILIES materials={} families={families:?} unsupported={unsupported} dynamic_object_rows={}",
+            map.materials.len(),
+            tuning.rows.get("dynamicobject.default").map_or(0, |r| r.len())
+        );
         if unsupported > 0 {
             warn!(
                 "{unsupported} of {} world materials use an unsupported shader family and render as family 1: {unsupported_shaders:?}",
@@ -1008,6 +1061,9 @@ impl Request {
         let cutout = material.alpha_mode == 1;
         let class = RenderClass::new(blended, cutout, definition.flags & 4 != 0);
 
+        // The shader's authored `m_params` rows from setup data. For
+        // `dynamicobject.*` that is c14 (x unused by the pixel shader, y the
+        // material multiplier) and c15 (ambient rgb, w the counter-light weight).
         let mut water = [Vec4::ZERO; 4];
         if let Some(rows) = tuning.rows.get(&definition.shader) {
             for (to, from) in water.iter_mut().zip(rows) {
@@ -1480,6 +1536,8 @@ impl Plugin for RetailRenderPlugin {
         embedded_asset!(app, "retail_sky.wgsl");
         bevy::shader::load_shader_library!(app, "retail_material_bindings.wgsl");
         app.init_resource::<FrameStateData>()
+            .init_resource::<WorldShadowSettings>()
+            .add_systems(Update, log_world_shadow_floor)
             .add_plugins((
                 MaterialPlugin::<WorldMaterial>::default(),
                 MaterialPlugin::<crate::retail_sky::SkyMaterial>::default(),
@@ -1815,5 +1873,206 @@ mod tests {
                 "{class:?} must report Opaque exactly when it drops the discard"
             );
         }
+    }
+
+    /// The retail world receiver expression (every world `*_defaultPS`):
+    /// `min(lightmap^2, csm_visibility + floor)`.
+    fn receive(lightmap_sq: Vec3, visibility: f32, floor: Vec3) -> Vec3 {
+        lightmap_sq.min(Vec3::splat(visibility) + floor)
+    }
+
+    #[test]
+    fn world_shadow_floor_is_the_retail_constant() {
+        assert_eq!(RETAIL_WORLD_SHADOW_FLOOR, Vec3::new(0.05, 0.09, 0.13));
+        assert_eq!(WorldShadowSettings::default().floor, RETAIL_WORLD_SHADOW_FLOOR);
+        let mut state = FrameStateData::default();
+        state.enable_world_shadows(RETAIL_WORLD_SHADOW_FLOOR);
+        assert_eq!(state.shadow, RETAIL_WORLD_SHADOW_FLOOR.extend(1.), "w gates the shader reads");
+        state.enable_world_shadows(Vec3::new(-1., 0.5, 2.));
+        assert_eq!(state.shadow, Vec4::new(0., 0.5, 1., 1.), "a mod value is clamped to 0..1");
+    }
+
+    #[test]
+    fn baked_shade_at_the_floor_hides_a_dynamic_shadow_and_sunlit_ground_takes_it() {
+        let floor = RETAIL_WORLD_SHADOW_FLOOR;
+        // Ground in a bridge's baked shade (squared lightmap at or below the
+        // floor): a car on the bridge above (visibility 0) leaves no mark.
+        let shade = Vec3::new(0.04, 0.08, 0.12);
+        assert_eq!(receive(shade, 0., floor), shade);
+        // The old adapter floor (DownTown probe sh[0] at the reported spot
+        // under the bridge, [42.6, 15.8, 353]) darkened that shade.
+        let old_floor = Vec3::new(0.0157, 0.0196, 0.0275);
+        assert!(receive(shade, 0., old_floor).cmplt(shade).all());
+        // Sunlit ground still takes a full-strength shadow down to the floor,
+        // and unshadowed ground keeps its baked light.
+        let sun = Vec3::new(0.6, 0.55, 0.5);
+        assert_eq!(receive(sun, 0., floor), floor);
+        assert_eq!(receive(sun, 1., floor), sun);
+    }
+
+    /// A material definition blob as the map exporter writes it.
+    fn definition_bytes(shader: &str, family: u32, bindings: &[&str], params: &[(&str, &str)]) -> Vec<u8> {
+        fn text(out: &mut Vec<u8>, value: &str) {
+            out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            out.extend_from_slice(value.as_bytes());
+        }
+        let mut out = vec![0u8; 16];
+        text(&mut out, shader);
+        out.extend_from_slice(&family.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(bindings.len() as u32).to_le_bytes());
+        for (i, role) in bindings.iter().enumerate() {
+            text(&mut out, role);
+            for value in [i as u32 + 1, 0, 0, 0] {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&(params.len() as u32).to_le_bytes());
+        for (name, value) in params {
+            text(&mut out, name);
+            out.extend_from_slice(&1u32.to_le_bytes());
+            text(&mut out, value);
+        }
+        text(&mut out, "");
+        out
+    }
+
+    /// `material_dynamicobject` m_params rows as setup exports them.
+    fn dynamic_object_tuning() -> MaterialTuning {
+        let rows = vec![[0.4, 1., 0., 0.], [0.04, 0.04, 0.04, 0.]];
+        MaterialTuning {
+            rows: BTreeMap::from([
+                ("dynamicobject.default".to_string(), rows.clone()),
+                ("dynamicobject.alphatest".to_string(), rows),
+            ]),
+            pca_available: false,
+        }
+    }
+
+    #[test]
+    fn dynamic_object_materials_take_their_own_family() {
+        let roles = ["diffuse", "normal", "specular", "detail"];
+        for shader in ["dynamicobject.default", "dynamicobject.alphatest"] {
+            // Packages exported before the converter knew the family stored 0.
+            for stored in [0, DYNAMIC_OBJECT_FAMILY] {
+                let bytes = definition_bytes(shader, stored, &roles, &[("detailNormalUVScale", "8")]);
+                let definition = Definition::parse(&bytes).expect("parses");
+                assert_eq!(definition.family, DYNAMIC_OBJECT_FAMILY, "{shader} stored {stored}");
+                assert_eq!(definition.scalar("detailNormalUVScale"), Some(8.));
+                assert!(definition.supported(&dynamic_object_tuning()));
+            }
+        }
+        // Other families keep their stored value, and an unknown shader stays
+        // unknown (and so falls back to family 1 in the table as before).
+        let world = Definition::parse(&definition_bytes("environment.default", 1, &roles, &[])).unwrap();
+        assert_eq!(world.family, 1);
+        let unknown = Definition::parse(&definition_bytes("vehicle.default", 0, &roles, &[])).unwrap();
+        assert_eq!(unknown.family, 0);
+        assert!(!unknown.supported(&dynamic_object_tuning()));
+    }
+
+    #[test]
+    fn dynamic_object_needs_the_retail_m_params_rows() {
+        let bytes = definition_bytes("dynamicobject.default", 0, &["diffuse"], &[]);
+        let definition = Definition::parse(&bytes).unwrap();
+        // An install without the exported rows keeps the old family 1 fallback
+        // rather than shading with invented constants.
+        assert!(!definition.supported(&MaterialTuning::default()));
+        let mut short = dynamic_object_tuning();
+        short.rows.insert("dynamicobject.default".into(), vec![[0.4, 1., 0., 0.]]);
+        assert!(!definition.supported(&short));
+        assert!(definition.supported(&dynamic_object_tuning()));
+    }
+
+    #[test]
+    fn dynamic_object_request_carries_m_params_and_detail_scale() {
+        let bytes = definition_bytes(
+            "dynamicobject.default",
+            0,
+            &["diffuse", "detail"],
+            &[("detailNormalUVScale", "3")],
+        );
+        let definition = Definition::parse(&bytes).unwrap();
+        let make = || skate_data::skate_map::Material {
+            name: "prop".into(),
+            flags: 0,
+            friction: 0.5,
+            restitution: 0.1,
+            color: [1.; 3],
+            roughness: 0.5,
+            emissive: 0.,
+            textures: [0; 5],
+            indirect_strength: 0.,
+            alpha_mode: 0,
+            alpha_cutoff: 0.5,
+            audio: 3,
+            physics: 1,
+            pattern: 0,
+            depth_layer: None,
+            retail_definition: Some(bytes.clone()),
+        };
+        let material = make();
+        let map = SkateMap {
+            version: 14,
+            name: "props".into(),
+            spawn: [0.; 3],
+            heading: 0.,
+            environment: vec![0.; 45],
+            materials: vec![make()],
+            textures: vec![],
+            geometry: skate_data::skate_map::Geometry {
+                vertices: vec![],
+                indices: vec![],
+                collision: vec![],
+            },
+            rails: vec![],
+            doors: vec![],
+            lights: vec![],
+            routes: vec![],
+            extensions: vec![],
+        };
+        let request = Request::new(
+            &material,
+            &definition,
+            &dynamic_object_tuning(),
+            &crate::retail_sky::SkyEnvironment::default(),
+            &canonical_texture_ids(&map.textures),
+            &map,
+        );
+        let p = &request.params;
+        assert_eq!(p.mode.x, DYNAMIC_OBJECT_FAMILY as f32);
+        assert_eq!(p.mode.z, -1., "opaque: no cutoff");
+        assert_eq!(p.mode.w, 2.5, "same exposure baseline as the world");
+        assert_eq!(p.surface.z, 3., "detailNormalUVScale from the material");
+        // c14 / c15 exactly as authored: multiplier m_params[0].y, ambient
+        // m_params[1].rgb, counter-light weight m_params[1].w.
+        assert_eq!(p.water[0], Vec4::new(0.4, 1., 0., 0.));
+        assert_eq!(p.water[1], Vec4::new(0.04, 0.04, 0.04, 0.));
+        assert_eq!(p.water[2], Vec4::ZERO);
+        assert_eq!(request.class, RenderClass::Opaque);
+    }
+
+    #[test]
+    fn dynamic_object_branch_reads_its_data_not_literals() {
+        let src = include_str!("retail_world.wgsl");
+        let start = src.find("} else if fam == 15u {").expect("dynamicobject branch");
+        let branch = &src[start..start + src[start..].find("    } else {").unwrap()];
+        // Ambient and counter light from m_params[1]; no lightmap read.
+        assert!(branch.contains("p.water[1].xyz") && branch.contains("p.water[1].w"));
+        assert!(!branch.contains("sample_lightmap") && !branch.contains("baked"));
+        // The dynamic shadow uses the same caster light as the world receivers,
+        // and the world floor constant stays a lightmapped-receiver rule.
+        assert!(branch.contains("fetch_directional_shadow") && branch.contains("& 5u)==5u"));
+        assert!(!branch.contains("frame_state.shadow.rgb"));
+        assert!(src.contains("if fam == 15u { fog_a *= p.water[0].y; }"));
+        // Normal maps are sampled for this family.
+        assert!(src.contains("(fam <= 6u || fam == 13u || fam == 15u)"));
+    }
+
+    #[test]
+    fn every_world_shadow_read_uses_the_shared_floor() {
+        let src = include_str!("retail_world.wgsl");
+        assert_eq!(src.matches("+frame_state.shadow.rgb").count(), 2, "lightmapped and water receivers");
+        assert!(!src.contains("0.09,0.13,0.05"), "no per-family hard-coded floor");
     }
 }

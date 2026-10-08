@@ -122,6 +122,13 @@ fn carry(hide_board: bool) {
     assert_eq!(flips, 1, "state flipped {flips} times while holding RB");
     assert_eq!(physics.prop_carry.held(), Some(id), "prop {id} not grabbed");
     assert_eq!(skater.player_state.current(), PhysicalStateId::OffBoardPushing, "not in Move Object");
+    // Move Object enter 82D442D0: a carried board is let go (82D75440,
+    // SkateboardController+448 = 2) where it is; a hidden board stays hidden (3).
+    assert_eq!(
+        skater.skateboard_controller.fields.state_448,
+        if hide_board { 3 } else { 2 },
+        "board state after the grab"
+    );
     // Held by its near face, not pulled into the skater (fix20).
     let gap = |physics: &GamePhysics, skater: &SkaterRuntime| {
         let (at, _) = root(skater);
