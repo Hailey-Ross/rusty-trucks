@@ -579,13 +579,13 @@ fn npc_skater_render_is_smooth_on_a_seeded_line_network() {
     }
 }
 
-/// Fix 16 (stance flips): a skater keeps the way it faces across a chain or branch. Line 2 was
-/// recorded riding the other way round (its skater frame faces -Z while it travels +Z, fakie), and
-/// then turns forward again with a recorded revert. Retail's full skater carries its own facing onto
-/// the new line (the switch stores only line and node), so the NPC keeps facing +Z there and only
-/// the recorded revert turns it (into fakie, the revert done from its stance). `keep_facing = false`
-/// takes the recorded facing (the old behaviour: a 180 deg spin at the chain). Deterministic: a
-/// client mirroring the record derives the same flip.
+/// Fix 16 rule, now a mod option (`keep_facing = true`, not retail): the skater keeps the way it
+/// faces across a chain or branch. Line 2 was recorded riding the other way round (its skater
+/// frame faces -Z while it travels +Z, fakie), and then turns forward again with a recorded revert.
+/// With the option the NPC keeps facing +Z there and the recorded revert turns it into fakie (the
+/// source of the backwards riding, see the next test). Retail default (`keep_facing = false`): the
+/// recorded facing, the path frame of the node. Deterministic: a client mirroring the record derives
+/// the same flip.
 #[test]
 fn npc_skater_keeps_its_facing_across_a_line_switch() {
     const BACKWARD: [u8; 4] = [128, 255, 128, 128]; // (0, 1, 0, 0): +Z turned to -Z.
@@ -610,7 +610,7 @@ fn npc_skater_keeps_its_facing_across_a_line_switch() {
         }
         (c, ev)
     };
-    assert!(ChainConfig::retail().keep_facing && LineCursor::new(id(1), 0).keep_facing, "retail keeps the facing");
+    assert!(!ChainConfig::retail().keep_facing && !LineCursor::new(id(1), 0).keep_facing, "retail keeps no facing state");
     // Before the chain: forward. Right after it (blend over) on the fakie stretch: still forward.
     let (before, _) = run(true, 150);
     assert!(forward_z(&before.sample(&ls, 0.0).unwrap()) > 0.99);
@@ -621,6 +621,7 @@ fn npc_skater_keeps_its_facing_across_a_line_switch() {
     assert!(forward_z(&s) > 0.99 && board_z(&s) > 0.99, "kept facing: {:?}", s.skater);
     // Facing +Z on every frame through the chain and its blend (no spin), mirrored on a client.
     let (mut c, mut last) = (LineCursor::spawn(&ls, id(1), 0), forward_z(&before.sample(&ls, 0.0).unwrap()));
+    c.keep_facing = true;
     let records: Vec<BranchRecord> = ev.iter().filter_map(|e| if let CursorEvent::Branch(b) = e { Some(b.clone()) } else { None }).collect();
     for _ in 0..260 {
         c.step(&ls, &mut Decider::Mirror(&records), &mut Vec::new());
@@ -632,12 +633,186 @@ fn npc_skater_keeps_its_facing_across_a_line_switch() {
     // The recorded revert on line 2 (node 15) still turns the skater, now into fakie.
     let (late, _) = run(true, 420);
     assert!(late.node > 16 && forward_z(&late.sample(&ls, 0.0).unwrap()) < -0.99);
-    // Mod switch off: the recorded facing (spun round at the chain).
+    // Retail (option off): the recorded facing (turned round at the chain by the root blend).
     let (raw, _) = run(false, 260);
     assert!(!raw.facing_flipped && forward_z(&raw.sample(&ls, 0.0).unwrap()) < -0.99);
     // The flip is retail's board-flip turn: +Z to -Z about the frame's own up, up kept.
     let q = turn_about_up(decode_orientation(IDENTITY));
     assert!((rotate(q, [0.0, 0.0, 1.0])[2] + 1.0).abs() < 1e-5 && (rotate(q, [0.0, 1.0, 0.0])[1] - 1.0).abs() < 1e-5);
+}
+
+/// Fix 23 (NPC skaters riding backwards, user test 6): retail keeps no facing state across a
+/// switch ([code] `sub_8246C7F8` stores line `+592/+600` and node `+816` only; the path frame is
+/// rebuilt from the current node every update, `sub_8246D560` -> `sub_824734A8` ->
+/// `sub_82453A58`). Ride: line 1 forward, chain onto line 2 (recorded fakie for 15 nodes, then a
+/// recorded revert to forward), chain onto line 3 (forward). With the retail rule the drawn skater
+/// never faces against its travel outside a recorded fakie stretch, on any frame once the switch
+/// blend is over, and it rides line 3 forward. The fix 16 option reproduces the bug: it carries the
+/// turn on and rides the forward-recorded part of line 2 and all of line 3 backwards. Host and a
+/// mirroring client agree frame by frame.
+#[test]
+fn npc_skater_never_rides_a_forward_recorded_line_backwards_across_switches() {
+    const BACKWARD: [u8; 4] = [128, 255, 128, 128];
+    let mut fakie = along(2, [0.0, 0.0, 21.0], [0.0, 1.0], 31);
+    for n in &mut fakie.nodes[..15] {
+        n.skater = BACKWARD;
+        n.board = BACKWARD;
+    }
+    let ls = lines(vec![along(1, [0.0; 3], [0.0, 1.0], 21), fakie, along(3, [0.0, 0.0, 52.0], [0.0, 1.0], 31)]);
+    let players: [Vec3; 0] = [];
+    let blend_frames = (SWITCH_BLEND_SECONDS * 60.0).ceil() as u64 + 1;
+    // (frame, line, blend settled, facing check) per frame plus the branch records.
+    let ride = |keep: bool| {
+        let chain = ChainConfig { keep_facing: keep, ..ChainConfig::retail() };
+        let mut c = LineCursor::spawn(&ls, id(1), 0);
+        c.keep_facing = keep;
+        let (mut ev, mut seen) = (Vec::new(), Vec::new());
+        for _ in 0..800 {
+            let s = c.sample(&ls, 0.0).unwrap();
+            let x = BranchContext { forward: s.velocity, chain, ..ctx(s.position, &players) };
+            c.step(&ls, &mut Decider::Decide(x), &mut ev);
+            if c.finished {
+                break;
+            }
+            let s = c.sample(&ls, 0.0).unwrap();
+            seen.push((c.frames, c.line, c.switch.is_none(), facing_check(&ls[&c.line], &s)));
+        }
+        let records: Vec<BranchRecord> = ev.iter().filter_map(|e| if let CursorEvent::Branch(b) = e { Some(b.clone()) } else { None }).collect();
+        (c, seen, records)
+    };
+    let (host, seen, records) = ride(false);
+    assert_eq!(records.iter().map(|r| r.to_line).collect::<Vec<_>>(), vec![id(2), id(3)], "two chains");
+    let mut on_line3 = 0;
+    for (frame, line, settled, check) in &seen {
+        let Some(check) = check else { continue };
+        if *settled && !check.recorded_fakie {
+            assert!(!check.backwards && check.angle < 0.1, "frame {frame} line {}: rides backwards ({} rad)", line[0], check.angle);
+        }
+        if *line == id(3) && *settled {
+            on_line3 += 1;
+            assert!(check.angle < 0.01, "line 3 is ridden forward");
+        }
+    }
+    assert!(on_line3 > 200 && !host.facing_flipped, "line 3 frames {on_line3}");
+    // Inside the recorded fakie stretch the line's own frame opposes travel (retail target frame).
+    assert!(seen.iter().any(|(_, l, settled, c)| *l == id(2) && *settled && c.is_some_and(|c| c.recorded_fakie && c.backwards)));
+    // Every switch blend settles within the blend time.
+    for r in &records {
+        assert!(seen.iter().any(|(f, _, settled, _)| *f == r.frame + blend_frames && *settled), "blend after frame {}", r.frame);
+    }
+    // A client mirroring the records draws the same frames.
+    let mut client = LineCursor::spawn(&ls, id(1), 0);
+    for (frame, line, _, check) in &seen {
+        client.step(&ls, &mut Decider::Mirror(&records), &mut Vec::new());
+        assert_eq!((client.frames, client.line), (*frame, *line));
+        assert_eq!(facing_check(&ls[&client.line], &client.sample(&ls, 0.0).unwrap()), *check);
+    }
+    // The fix 16 option (mod only) reproduces the reported bug: backwards on forward-recorded nodes.
+    let (_, old, _) = ride(true);
+    let bad = old.iter().filter(|(_, _, settled, c)| *settled && c.is_some_and(|c| c.backwards && !c.recorded_fakie)).count();
+    assert!(bad > 300, "fix 16 rode {bad} forward-recorded frames backwards");
+    assert!(old.iter().filter(|(_, l, settled, c)| *l == id(3) && *settled && c.is_some_and(|c| c.backwards)).count() > 200);
+}
+
+/// The retail path frame ([code] `sub_82453A58`): the node's board orientation, turned 180 deg
+/// about its up axis (X and Z rows negated) when `m_IsBoardFlipped` (flags bit 0) is set.
+#[test]
+fn path_frame_turns_the_board_when_the_node_is_board_flipped_like_sub_82453a58() {
+    let mut n = straight(1, [0.0; 3], 2, 10, 1.0).nodes[1].clone();
+    let yaw90: [u8; 4] = [128, 128 + 90, 128, 128 + 90]; // ~(0, 0.707, 0, 0.707): +Z to +X.
+    n.board = yaw90;
+    n.skater = IDENTITY;
+    let f = rotate(path_frame(&n), [0.0, 0.0, 1.0]);
+    assert!((f[0] - 1.0).abs() < 1e-3, "board frame, flag clear: {f:?}");
+    n.flags = node_flags::BOARD_FLIPPED | node_flags::CROUCHED;
+    let f = rotate(path_frame(&n), [0.0, 0.0, 1.0]);
+    let up = rotate(path_frame(&n), [0.0, 1.0, 0.0]);
+    assert!((f[0] + 1.0).abs() < 1e-3 && (up[1] - 1.0).abs() < 1e-3, "flipped: {f:?} up {up:?}");
+    // Other flag bits do not turn it.
+    n.flags = node_flags::CROUCHED | node_flags::AIRBORNE;
+    assert!((rotate(path_frame(&n), [0.0, 0.0, 1.0])[0] - 1.0).abs() < 1e-3);
+}
+
+/// Fix 23: the drawn skater faces the retail path frame's riding direction. A recorder riding
+/// switch (skater frame turned round, board rolling nose first, flag clear) is drawn forward; a
+/// board-flipped node (board turned round, flag set, skater forward) stays forward; a recorded fakie
+/// node (path frame against travel) is drawn fakie. Airborne nodes keep the last grounded turn, so a
+/// shove-it spinning the board in the air does not turn the skater. A cursor ride over a switch
+/// stretch is never drawn against its travel.
+#[test]
+fn drawn_skater_faces_the_retail_path_frame_direction() {
+    const BACKWARD: [u8; 4] = [128, 255, 128, 128];
+    let fz = |q: [f32; 4]| rotate(q, [0.0, 0.0, 1.0])[2];
+    let mut l = along(1, [0.0; 3], [0.0, 1.0], 40);
+    // Nodes 5..15: switch stance (skater frame turned, board forward).
+    for n in &mut l.nodes[5..15] {
+        n.skater = BACKWARD;
+    }
+    // Nodes 15..20: board turned round and flagged board-flipped, skater forward.
+    for n in &mut l.nodes[15..20] {
+        n.board = BACKWARD;
+        n.flags = node_flags::BOARD_FLIPPED;
+    }
+    // Nodes 20..24: airborne, the board spins (shove-it) and the skater is turned round in the air.
+    for (k, n) in l.nodes[20..24].iter_mut().enumerate() {
+        n.flags = node_flags::AIRBORNE;
+        n.skater = BACKWARD;
+        n.board = if k % 2 == 0 { BACKWARD } else { IDENTITY };
+    }
+    // Nodes 30..35: recorded fakie (skater and board frame against travel, no flag).
+    for n in &mut l.nodes[30..35] {
+        n.skater = BACKWARD;
+        n.board = BACKWARD;
+    }
+    for i in 0..30 {
+        if (20..24).contains(&i) {
+            continue;
+        }
+        assert!(fz(drawn_skater(&l, i)) > 0.99, "node {i} drawn forward");
+    }
+    // Air after a board-flipped grounded node 19 (skater forward there): the switch skater frame
+    // in the air is turned like node 19's decision (none), so it is drawn as recorded.
+    assert!(fz(drawn_skater(&l, 21)) < -0.99 && fz(drawn_skater(&l, 22)) < -0.99, "air keeps the grounded turn");
+    for i in 30..35 {
+        assert!(fz(drawn_skater(&l, i)) < -0.99, "node {i} recorded fakie is drawn fakie");
+    }
+    // Raw skater frame unchanged where it agrees with the path frame.
+    assert_eq!(drawn_skater(&l, 2), decode_orientation(IDENTITY));
+    let ls = lines(vec![l.clone()]);
+    let mut c = LineCursor::spawn(&ls, id(1), 0);
+    while c.node < 19 {
+        c.step(&ls, &mut Decider::Stay, &mut Vec::new());
+        let s = c.sample(&ls, 0.0).unwrap();
+        let check = facing_check(&l, &s).unwrap();
+        assert!(!check.backwards && !check.recorded_fakie, "node {} drawn backwards", c.node);
+    }
+}
+
+/// `NPC_SKATER_BACKWARDS` check: heading vs velocity yaw, the diagnostic 135 deg threshold, no
+/// verdict below 1 m/s, and whether the line itself was recorded fakie there.
+#[test]
+fn facing_check_flags_heading_against_velocity() {
+    const BACKWARD: [u8; 4] = [128, 255, 128, 128];
+    let mut l = along(1, [0.0; 3], [0.0, 1.0], 10);
+    let ls = lines(vec![l.clone()]);
+    let mut s = LineCursor::spawn(&ls, id(1), 0).sample(&ls, 0.0).unwrap();
+    s.velocity = [0.0, 0.0, 6.0];
+    let c = facing_check(&l, &s).unwrap();
+    assert!(!c.backwards && c.angle.abs() < 1e-5 && !c.recorded_fakie && c.heading_yaw.abs() < 1e-5);
+    // Drawn turned round, line recorded forward: backwards, not recorded fakie.
+    s.skater = turn_about_up(s.skater);
+    let c = facing_check(&l, &s).unwrap();
+    assert!(c.backwards && !c.recorded_fakie && (c.angle - std::f32::consts::PI).abs() < 1e-3);
+    // Recorded fakie node (board frame opposes travel).
+    l.nodes[0].board = BACKWARD;
+    assert!(facing_check(&l, &s).unwrap().recorded_fakie);
+    // 120 deg off: under the 135 deg threshold.
+    s.velocity = [6.0 * 120f32.to_radians().sin(), 0.0, 6.0 * 120f32.to_radians().cos()];
+    s.skater = decode_orientation(IDENTITY);
+    assert!(!facing_check(&l, &s).unwrap().backwards);
+    // Too slow to judge.
+    s.velocity = [0.0, 0.0, 0.5];
+    assert_eq!(facing_check(&l, &s), None);
 }
 
 /// Fix 21: the cursor keeps the recent phases (newest first) with the recorded trick of their

@@ -1333,9 +1333,112 @@ passed (tuning test covers `keep_facing`), skate-mods `world_tuning` 3 passed. D
 `npc_skater_keeps_its_facing_across_switches_on_the_exported_lines`: 212 rides, 882 switches, 130 kept by a flip,
 0 spins (130 without `keep_facing`), deterministic. Not seen in game yet.
 
+**Superseded (fix 23, 2026-10-08):** the flip is now a mod option, off by default; see "NPC skaters riding
+backwards" below.
+
 **Open.** The replay puppet plays one forward clip per phase; retail plays fakie riding clips while fakie and the
 character's stance (regular or goofy) mirrors them. Recorded in-line facing changes on the ground without air (about
 12 in DownTown) still turn the root within a node, where retail performs a revert. Both belong to the simulated tier.
+
+## NPC skaters riding backwards (fix 23), 2026-10-08
+
+**Problem.** User (test 6, 2026-10-05): "near the end of the session the skater randomly changed directions he was
+skating while still facing the original direction and skated backwards, grinded a ledge and then skated away
+backwards." Test 7: "Skating backward npcs is still a thing, you know that." The readout of test 6 showed the NPC
+switching lines (...9b79 node 57, ...9a7c node 102, ...9b79 node 87, ...9ab6 node 8) and staying backwards.
+
+**Root cause.** Two parts.
+1. The fix 16 rule (`begin_switch`): at a switch, when the new line's recorded skater faced more than 90 deg away
+   from the drawn skater, the cursor toggled `facing_flipped` and rode the whole new line turned 180 deg. Once the
+   drawn skater was backwards (a recorded fakie or switch stretch), every later switch kept it backwards on lines
+   recorded forward. Not retail: an own heuristic.
+2. The puppet root was the recorded skater quaternion. [data] On the exported lines (DownTown, Industrial,
+   University; 1,620 lines, 142,042 nodes moving at 1 m/s or more) that frame faces against the travel (more than
+   135 deg) on 28,102 nodes, while retail's path frame (below) faces against it (more than 90 deg) on only 11,598.
+   The two frames agree within 30 deg on 111,240 nodes and are about 180 deg apart on 24,251 (13,864 of them on
+   board-flipped nodes, 10,387 on clear ones), in 69 lines for most of their length and 382 lines in stretches:
+   the recorder rode switch (body turned round, board rolling nose first). The puppet has one stance, so those
+   stretches were drawn riding backwards even without a switch.
+
+**Evidence (retail).**
+- [code] `sub_8246C7F8` (line end, called from `sub_8246D3C0` on the last node): `sub_82458968` lists up to 16
+  lines, one is taken as is, several go through `sub_8246C1C8`; then it stores the line id (`+592/+600`), calls
+  `sub_82468AC8`, stores the node (`+816`) and the line pointer (`+800`, `sub_824587E8`). No facing, stance or flip
+  state is written. The branch choice `sub_8246BEE0` likewise stores line and node.
+- [code] `sub_8246D560` (controller update) calls `sub_8246D3C0`, then rebuilds the path frame at controller `+144`
+  every update from the current line and node: `sub_8245A1A0` on node 0, else `sub_824734A8` (interpolated between
+  nodes), both through `sub_82453A58`: the node's board orientation (`sub_82453970`, node `+0x18`) with its X and Z
+  rows negated (turned 180 deg about up) when flags `+0x28` bit 0 (`m_IsBoardFlipped`) is set. The frame depends on
+  the current node only, never on an earlier line.
+- [data] That path frame faces the travel on 92 % of moving nodes (fakie on the rest), the recorded skater frame on
+  80 %. The node holds no switch or stance flag (flags bits 0..3: board flipped, crouched, airborne, off board).
+- [code] The one skater-frame reader decoded so far, `sub_8246B1F8` (node copy at controller `+712`, called from
+  `sub_8246A700`), takes the board frame's yaw (`sub_82453970`, no flip turn) minus the skater frame's yaw
+  (`sub_82453B70`, node `+28`), wraps it to +-180 deg and folds it by 180 deg into +-90 deg (constants read as pi,
+  2 pi and pi / 2 from the fold pattern, not from data), then stores it (`+856`, `+860`, flag `+931`): the half turn
+  between body and board is dropped there. Not yet read: the other readers `sub_82453C58`, `sub_82454648`,
+  `sub_8245A018`, `sub_82454B28`, the consumers of `+856/+860/+931`, and how the body and stance follow the path
+  frame.
+
+**Change.** Part 1 follows the retail code. Part 2 (`drawn_skater`) is NOT RETAIL YET: it is backed by the data and
+by one decoded retail reader (below), not by a full port of how retail's skater body follows the path frame.
+- `skate-core::living_world::replay`: `path_frame(node)` ports `sub_82453A58`. `drawn_skater(line, i)` (NOT RETAIL
+  YET): the recorded
+  skater frame (pitch, roll, air attitude) turned 180 deg about its own up axis when its forward is more than
+  90 deg (yaw) from the path frame's forward; airborne nodes take the turn of the last grounded node before them (a
+  shove-it spins the board in the air; only the landing node carries the final flip bit). `sample` and the switch
+  blend draw `drawn_skater`, so a switch-stance recorder is drawn riding forward and a fakie recorder fakie, like
+  retail's target frame.
+- `ChainConfig::keep_facing` (the fix 16 rule) defaults to `false` (retail keeps no facing state); it stays as a mod
+  option (`sdk.world.set_tuning('living_world', {skater_line_chain = {keep_facing = true}})`, validated, first writer
+  wins, read back, reset to `false` on mod disable). Docs in `sdk/skate.lua` and `skate-mods` say it is not retail.
+- Logging: `NPC_SKATER_BACKWARDS #id character line node heading velocity_yaw off deg m/s recorded_fakie
+  facing_flipped phase pos` (warn, always on, at most one line per NPC every 2 s) when the drawn heading is more
+  than 135 deg from the velocity yaw at 1 m/s or more (`facing_check`, `facing_diagnostic`: diagnostic constants,
+  not retail values). `recorded_fakie true` means the line's own path frame opposes travel there (retail fakie). The
+  `SKATE_LIVING_WORLD_DEBUG` readout now also prints `heading` and `velocity_yaw`.
+- Multiplayer: everything is a pure function of the lines, the node and the branch records; a client mirroring the
+  records draws the same frames (tested). No new state.
+
+**Files.** `crates/skate-core/src/living_world/replay.rs`, `replay_tests.rs`;
+`crates/skate-game/src/living_world/npc_skaters.rs` (`backwards_line`, `log_backwards`, readout), `npc_tests.rs`,
+`peds_tests.rs` (test app gets `PedObstacleTrace`), `crates/skate-game/src/modding/world_tuning.rs`;
+`crates/skate-mods/src/world_tuning.rs`; `crates/skate-data/tests/living_world_data.rs`; `sdk/skate.lua`.
+
+**Verification.**
+- skate-core `living_world` 118 passed. New: `npc_skater_never_rides_a_forward_recorded_line_backwards_across_switches`
+  (forward line, chain onto a line recorded fakie then reverting, chain onto a forward line: never backwards outside
+  the recorded fakie stretch once the blend settles, line 3 forward, client mirror identical; the fix 16 option
+  reproduces the bug on more than 300 frames), `path_frame_turns_the_board_when_the_node_is_board_flipped_like_sub_82453a58`,
+  `drawn_skater_faces_the_retail_path_frame_direction` (switch stance drawn forward, flip bit, air keeps the grounded
+  turn, fakie drawn fakie), `facing_check_flags_heading_against_velocity`.
+- skate-game `living_world world_tuning` 58 passed (1 ignored). New headless
+  `living_world_npc_skaters_never_ride_backwards_across_line_switches`: 40 s, every chain joins a line recorded the
+  other way round, switch-stance stretches on the rest; 0 forward-recorded frames ridden backwards, recorded fakie
+  reported as `recorded_fakie true`, deterministic; the fix 16 option rides more than 100 such frames backwards.
+- skate-mods `world_tuning` 3 passed.
+- Data-gated (`SKATE3_ASSET_ROOT`): `npc_skater_keeps_its_facing_across_switches_on_the_exported_lines`, 212 seeded
+  rides, 882 switches, 474,412 judged settled frames: forward-recorded frames drawn backwards 353 (retail rule) vs
+  70,740 with the raw skater frame before this change and 16,026 with the fix 16 option; spins at a switch 29 (was
+  130 without fix 16). All 8 data tests pass.
+- Not seen in game yet (to playtest).
+
+**Open questions.**
+- How retail's full skater consumes the path frame (`AIPhysicsInput` filled in `sub_82463C08`, `sub_82464000`,
+  `sub_82464448`, `sub_82465578`, input struct at controller `+8`, e.g. `+6007` from controller bytes `+796/+797`):
+  whether it reverts or 180s to match a path frame that flips at a switch. The 29 remaining switch spins are switches
+  onto a line whose path frame is fakie; retail's target frame flips there too.
+- The 353 remaining frames (breakdown on the exported lines): 236 in the air (recorded spins against the travel, 166
+  of them before a fakie landing), 105 on ground segments where the turn decision changes between two nodes (96 of
+  them entering a recorded fakie stretch, the nlerp passing 90 deg), 12 other.
+- Switch riders are drawn riding forward in the character's stance; retail shows switch with its own clips and stance
+  mirroring. Port the rest of the skater-frame readers before calling `drawn_skater` retail.
+- Follow-up (in this order): read `sub_82453C58`, `sub_82454648`, `sub_8245A018`, `sub_82454B28` and the consumers of
+  controller `+856/+860/+931`; port how the body and stance follow the path frame; then the switch-stance mirror for
+  the puppet (switch and fakie clips, stance mirroring).
+- To playtest: follow an NPC skater through several line switches in DownTown; watch for backwards riding, spins at a
+  switch, switch riders drawn forward; check the log for `NPC_SKATER_BACKWARDS` with `recorded_fakie false`.
+- Retail plays fakie and switch clips and mirrors for stance; the replay puppet plays forward regular clips.
 
 ## Frame drop with the board thrown away (hidden board scanned the whole map), 2026-10-05
 
@@ -2174,7 +2277,7 @@ When a mod stops, fails or reloads its patches go (`modding::world_tuning::clear
 
 | Domain | Fields (shipped value) | Resource |
 |---|---|---|
-| `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing true}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep the skater's facing across switches), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0}` (props and mod bodies as ped obstacles), `npc_skater_props {enabled true}` (NPC skaters push dynamic props) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
+| `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing false}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep_facing: fix 16 facing carry-over, mod option, not retail), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0}` (props and mod bodies as ped obstacles), `npc_skater_props {enabled true}` (NPC skaters push dynamic props) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
 | `props` | `default` / `by_template[<MOBJ template>]`: every `PropTuning` field plus `collision_box {center, half_extents}`; a template entry starts from the patched default | `PropTuningSettings` |
 | `carry` | `grab_bit` (28, RB), `placement_bit` (20, B), `grab_range` (2.0 m); Move Object: `push_speed` / `pull_speed` / `side_speed` (3.0 / 2.0 / 2.5), `turn_rate`, `grip_reach`, `linear_clamp` (20), `yaw_clamp` (6), `relatch` (0.1), `slew_per_tick` (4), `linear_controller` / `yaw_controller` ([20, 0, 40, 0.1]), the four curves, `let_go_distance` (1.0); slot 9 application: `commanded_material` ([0.03, 0.02]), `apply_at_com`, `yaw_replaces_torque`, `ignore_vertical`, `wake_on_command` (true), `by_template[<MOBJ template>] = {material_held, material_free}` | `CarrySettings`, pushed into `PropCarry` and `PropDynamics` each tick (survives map loads) |
 

@@ -124,11 +124,13 @@ pub struct ChainConfig {
     /// `sub_8246C7F8` only store the new line and node, `AIPhysicsInput` steers). The replay tier
     /// stands in with [`SWITCH_BLEND_SECONDS`]. 0 = cut.
     pub blend_seconds: f32,
-    /// Keep the skater's facing (stance side, forward or fakie) across a branch or chain
-    /// ([`LineCursor::facing_flipped`]). Retail `true`: the full skater carries its own facing onto
-    /// the new line (the switch stores only line and node, see above); only a recorded trick or
-    /// revert on the line turns it. `false` = take the new line's recorded facing (the skater may
-    /// spin round at the switch).
+    /// Mod option, not retail (default `false`): carry the drawn facing across a branch or chain
+    /// by riding the new line turned 180 deg ([`LineCursor::facing_flipped`], the fix 16 rule).
+    /// Retail keeps no such state: a switch stores only line and node ([code] `sub_8246C7F8`
+    /// `+592/+600/+816`, `sub_8246BEE0`), and every controller update rebuilds the path frame
+    /// from the current node alone ([code] `sub_8246D560` -> `sub_824734A8` / `sub_8245A1A0` ->
+    /// `sub_82453A58`, see [`path_frame`]). Kept on, the turn carries on across later lines and
+    /// the skater can ride a forward-recorded line backwards (user test 6, 2026-10-05).
     pub keep_facing: bool,
 }
 
@@ -139,7 +141,7 @@ pub const SWITCH_BLEND_SECONDS: f32 = 0.2;
 
 impl ChainConfig {
     pub fn retail() -> Self {
-        Self { radius: retail::CHAIN_RADIUS, max_candidates: retail::CHAIN_MAX_CANDIDATES, blend_seconds: SWITCH_BLEND_SECONDS, keep_facing: true }
+        Self { radius: retail::CHAIN_RADIUS, max_candidates: retail::CHAIN_MAX_CANDIDATES, blend_seconds: SWITCH_BLEND_SECONDS, keep_facing: false }
     }
 }
 
@@ -273,6 +275,104 @@ pub fn rotate(q: [f32; 4], v: Vec3) -> Vec3 {
     let [x, y, z, w] = q;
     let t = [2.0 * (y * v[2] - z * v[1]), 2.0 * (z * v[0] - x * v[2]), 2.0 * (x * v[1] - y * v[0])];
     [v[0] + w * t[0] + (y * t[2] - z * t[1]), v[1] + w * t[1] + (z * t[0] - x * t[2]), v[2] + w * t[2] + (x * t[1] - y * t[0])]
+}
+
+/// The retail path frame of a node ([code] `sub_82453A58`): the board orientation (node `+0x18`,
+/// `sub_82453970`) turned 180 deg about its up axis when the node is flagged `m_IsBoardFlipped`
+/// (flags `+0x28` bit 0, [`node_flags::BOARD_FLIPPED`]). The controller rebuilds it from the
+/// current node every update (`sub_8246D560` -> `sub_824734A8`, interpolated between nodes), so it
+/// depends on the line and node only, never on an earlier line.
+pub fn path_frame(node: &ReplayNode) -> [f32; 4] {
+    let q = decode_orientation(node.board);
+    if node.flags & node_flags::BOARD_FLIPPED != 0 { turn_about_up(q) } else { q }
+}
+
+/// NOT RETAIL YET (partly backed by retail code, see below). Whether the replay draws node `i`'s
+/// recorded skater frame turned 180 deg about its up axis: its
+/// forward lies more than 90 deg (yaw) from the forward of the retail path frame ([`path_frame`],
+/// the riding direction retail's controller steers by). [data] On the exported lines (3 districts,
+/// 142,042 moving nodes) the recorded skater frame and the path frame agree within 30 deg on
+/// 111,240 nodes and are about 180 deg apart on 24,251 (switch stance: the body turned round while
+/// the board rolls nose first); the skater frame faces against the travel on 28,102 nodes, the path
+/// frame on 11,598 (fakie). Airborne nodes keep the turn of the last grounded node before them:
+/// a shove-it spins the board about its up axis in the air, and only its landing node carries the
+/// final `m_IsBoardFlipped` state.
+///
+/// Retail evidence so far: the node holds no switch or stance flag (flags bits 0..3 = board flipped,
+/// crouched, airborne, off board [data]); the only skater-frame reader decoded, [code]
+/// `sub_8246B1F8` (node copy at controller `+712`, called from `sub_8246A700`), takes the yaw of
+/// the board frame (`sub_82453970`) minus the yaw of the skater frame (`sub_82453B70`, node `+28`),
+/// wraps it to +-180 deg and then folds it by 180 deg into +-90 deg (constants read as pi, 2 pi,
+/// pi / 2 from the fold pattern, not from data) before storing it (`+856`, `+860`, flag `+931`):
+/// the half turn between body and board is dropped there. Not yet read: the other skater-frame
+/// readers `sub_82453C58`, `sub_82454648`, `sub_8245A018`, `sub_82454B28`, the consumers of
+/// `+856/+860/+931`, and how the full skater's body and stance follow the path frame. Retail
+/// plays switch and fakie with its own clips and stance mirroring; the replay puppet has one
+/// stance, so this rule draws a switch rider as riding forward in the character's stance.
+fn skater_turned(line: &ReplayLine, i: usize) -> bool {
+    let mut k = i.min(line.nodes.len().saturating_sub(1));
+    while k > 0 && line.nodes[k].flags & node_flags::AIRBORNE != 0 {
+        k -= 1;
+    }
+    let Some(n) = line.nodes.get(k) else { return false };
+    let f = rotate(decode_orientation(n.skater), [0.0, 0.0, 1.0]);
+    let g = rotate(path_frame(n), [0.0, 0.0, 1.0]);
+    f[0].hypot(f[2]) > 1e-3 && g[0].hypot(g[2]) > 1e-3 && yaw_angle(f, g).abs() > std::f32::consts::FRAC_PI_2
+}
+
+/// NOT RETAIL YET (see [`skater_turned`]). The skater orientation the replay draws at node `i` (the
+/// puppet root): the recorded skater frame
+/// (its pitch, roll and air attitude) facing the retail path frame's riding direction, i.e. turned
+/// 180 deg about its own up axis where [`skater_turned`]. The puppet has one stance, so a recorder
+/// riding switch is drawn riding forward, and a recorder riding fakie (the path frame itself against
+/// the travel) is drawn fakie like retail's target frame.
+pub fn drawn_skater(line: &ReplayLine, i: usize) -> [f32; 4] {
+    let Some(n) = line.nodes.get(i) else { return [0.0, 0.0, 0.0, 1.0] };
+    let q = decode_orientation(n.skater);
+    if skater_turned(line, i) { turn_about_up(q) } else { q }
+}
+
+/// Diagnostic thresholds for [`facing_check`] (engine constants for the `NPC_SKATER_BACKWARDS`
+/// log, not retail values).
+pub mod facing_diagnostic {
+    /// Drawn heading this far (radians, 135 deg) from the velocity yaw counts as riding backwards.
+    pub const BACKWARDS_ANGLE: f32 = 135.0 * std::f32::consts::PI / 180.0;
+    /// Below this ground speed (m/s) the velocity yaw is too noisy to judge.
+    pub const MIN_SPEED: f32 = 1.0;
+}
+
+/// Drawn heading against the direction of travel at one sample (the `NPC_SKATER_BACKWARDS` log).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FacingCheck {
+    /// Yaw of the drawn skater's +Z about +Y (radians, 0 = +Z).
+    pub heading_yaw: f32,
+    /// Yaw of the velocity (radians).
+    pub velocity_yaw: f32,
+    /// |heading - velocity| wrapped to 0..pi.
+    pub angle: f32,
+    /// The line's own retail path frame ([`path_frame`]) faces away from the travel by more than
+    /// 90 deg here: the recorder rode fakie, so retail's target frame opposes travel too.
+    pub recorded_fakie: bool,
+    pub backwards: bool,
+}
+
+/// [`FacingCheck`] for a sample of `line`; `None` when the ground speed is below
+/// [`facing_diagnostic::MIN_SPEED`] or the heading is vertical.
+pub fn facing_check(line: &ReplayLine, s: &ReplaySample) -> Option<FacingCheck> {
+    let v = s.velocity;
+    if v[0].hypot(v[2]) < facing_diagnostic::MIN_SPEED {
+        return None;
+    }
+    let f = rotate(s.skater, [0.0, 0.0, 1.0]);
+    if f[0].hypot(f[2]) < 1e-3 {
+        return None;
+    }
+    let angle = yaw_angle(f, v).abs();
+    let recorded_fakie = line.nodes.get(s.node as usize).is_some_and(|n| {
+        let g = rotate(path_frame(n), [0.0, 0.0, 1.0]);
+        g[0].hypot(g[2]) > 1e-3 && yaw_angle(g, v).abs() > std::f32::consts::FRAC_PI_2
+    });
+    Some(FacingCheck { heading_yaw: f[0].atan2(f[2]), velocity_yaw: v[0].atan2(v[2]), angle, recorded_fakie, backwards: angle > facing_diagnostic::BACKWARDS_ANGLE })
 }
 
 /// `q` turned 180 deg about its own +Y: `q * (0, 1, 0, 0)` (x, y, z, w), i.e. the frame's X and Z
@@ -628,7 +728,8 @@ pub struct LineCursor {
     /// at a branch or chain when [`LineCursor::keep_facing`] is on; a pure function of the lines
     /// and the branch records, so a client derives the same value.
     pub facing_flipped: bool,
-    /// Keep the facing across switches (host and client set it from [`ChainConfig::keep_facing`]).
+    /// Keep the facing across switches (mod option, not retail; host and client set it from
+    /// [`ChainConfig::keep_facing`]).
     pub keep_facing: bool,
 }
 
@@ -644,7 +745,7 @@ pub enum Decider<'a> {
 
 impl LineCursor {
     pub fn new(line: [u8; 16], node: u32) -> Self {
-        Self { line, node, frame_in_segment: 0, frames: 0, finished: false, trick_open: false, trick: -1, history: [None; PHASE_HISTORY], phase: None, phase_since: 0, previous_phase: None, previous_since: 0, switch: None, switch_blend_seconds: SWITCH_BLEND_SECONDS, facing_flipped: false, keep_facing: true }
+        Self { line, node, frame_in_segment: 0, frames: 0, finished: false, trick_open: false, trick: -1, history: [None; PHASE_HISTORY], phase: None, phase_since: 0, previous_phase: None, previous_since: 0, switch: None, switch_blend_seconds: SWITCH_BLEND_SECONDS, facing_flipped: false, keep_facing: false }
     }
 
     /// Spawn on a line at a node (retail spawns at node 0, `sub_8245DA78`).
@@ -829,7 +930,10 @@ impl LineCursor {
     /// skater is drawn now (including a switch blend still running) so the root moves onto the
     /// new line instead of jumping. Deterministic: from the lines and the record alone.
     ///
-    /// Facing (fix 16): with [`LineCursor::keep_facing`] the skater keeps the way it faces. When the
+    /// Facing, retail: nothing else. The switch stores line and node only (`sub_8246C7F8`,
+    /// `sub_8246BEE0`) and the new line's path frame follows from its node ([`path_frame`]); the
+    /// root blend above moves the drawn root onto it. With [`LineCursor::keep_facing`] (mod option,
+    /// not retail; fix 16) the skater keeps the way it faces. When the
     /// new line's recorded skater faces more than 90 deg away from the drawn one about +Y (its
     /// recorder rode the other way round there: fakie against forward), the cursor flips
     /// [`LineCursor::facing_flipped`] so the line is ridden turned 180 deg about the skater's up
@@ -837,10 +941,10 @@ impl LineCursor {
     /// `m_IsBoardFlipped` ([code] `sub_82453A58`, `sub_824734A8`: negate the frame's X and Z rows).
     fn begin_switch(&mut self, old: &ReplayLine, next: &ReplayLine, to_node: u32) {
         let (Some(a), Some(b)) = (old.nodes.get(self.node as usize), next.nodes.get(to_node as usize)) else { return };
-        let (p, skater, board) = self.drawn(a.position, self.facing(decode_orientation(a.skater)), self.facing(decode_orientation(a.board)), self.frames as f64);
+        let (p, skater, board) = self.drawn(a.position, self.facing(drawn_skater(old, self.node as usize)), self.facing(decode_orientation(a.board)), self.frames as f64);
         if self.keep_facing {
             let f = rotate(skater, [0.0, 0.0, 1.0]);
-            let g = rotate(self.facing(decode_orientation(b.skater)), [0.0, 0.0, 1.0]);
+            let g = rotate(self.facing(drawn_skater(next, to_node as usize)), [0.0, 0.0, 1.0]);
             if f[0].hypot(f[2]) > 1e-3 && g[0].hypot(g[2]) > 1e-3 && yaw_angle(f, g).abs() > std::f32::consts::FRAC_PI_2 {
                 self.facing_flipped = !self.facing_flipped;
             }
@@ -876,7 +980,8 @@ impl LineCursor {
         let position = std::array::from_fn(|k| a.position[k] + (b.position[k] - a.position[k]) * t);
         let velocity = segment_velocity(line, self.node);
         let alpha = if self.finished { 0.0 } else { alpha.clamp(0.0, 1.0) };
-        let skater = self.facing(nlerp(decode_orientation(a.skater), decode_orientation(b.skater), t));
+        let j = if seg > 0 { i + 1 } else { i };
+        let skater = self.facing(nlerp(drawn_skater(line, i), drawn_skater(line, j), t));
         let board = self.facing(nlerp(decode_orientation(a.board), decode_orientation(b.board), t));
         let (position, skater, board) = self.drawn(position, skater, board, self.frames as f64 + f64::from(alpha));
         let heading = if velocity[0].hypot(velocity[2]) > 0.05 {

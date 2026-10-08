@@ -330,14 +330,17 @@ fn npc_skater_render_is_smooth_on_the_exported_lines() {
     assert!(worst.3 > 100 && worst.0 < worst.2, "the blend removes the switch jumps");
 }
 
-/// Fix 16 (stance flips): on the exported lines, a branch or chain onto a line whose recorder
-/// faced the other way (fakie against forward) spun the NPC round within the 0.2 s switch blend.
-/// With the retail rule (`keep_facing`, the skater keeps its own facing) no switch turns the
-/// drawn skater by more than 90 deg within the 14 ticks after it, except where the new line itself
-/// turns that much (counted from the raw lines); without it the spins come back. Seeded, deterministic.
+/// Fix 16 / fix 23 on the exported lines. A branch or chain onto a line whose recorder faced the
+/// other way (fakie against forward) turns the drawn NPC round within the 0.2 s switch blend with
+/// the retail rule (no facing state across a switch, [code] `sub_8246C7F8`; the path frame comes
+/// from the node, `sub_82453A58`). The fix 16 mod option (`keep_facing`) avoids that turn but
+/// carries it on: frames drawn against the travel where the line was recorded forward
+/// (`facing_check`: more than 135 deg, not `recorded_fakie`) are counted for both rules; with the
+/// retail rule and the drawn skater facing the path frame direction (`drawn_skater`) they stay
+/// below 0.1 % of the judged frames. Seeded, deterministic.
 #[test]
 fn npc_skater_keeps_its_facing_across_switches_on_the_exported_lines() {
-    use skate_core::living_world::replay::{rotate, BranchContext, ChainConfig, CursorEvent, Decider, LineCursor, ReplayLine};
+    use skate_core::living_world::replay::{drawn_skater, facing_check, rotate, BranchContext, ChainConfig, CursorEvent, Decider, LineCursor, ReplayLine};
     use std::collections::BTreeMap;
     let Some(paths) = find("skater_paths") else {
         eprintln!("skipped: set SKATE3_ASSET_ROOT to an export with skater_paths");
@@ -355,7 +358,7 @@ fn npc_skater_keeps_its_facing_across_switches_on_the_exported_lines() {
         let chain = ChainConfig { keep_facing: keep, ..ChainConfig::retail() };
         let mut c = LineCursor::spawn(lines, id, 0);
         c.keep_facing = keep;
-        let (mut switches, mut flips, mut spins) = (0usize, 0usize, 0usize);
+        let (mut switches, mut flips, mut spins, mut backwards, mut judged) = (0usize, 0usize, 0usize, 0usize, 0usize);
         let mut watch: Option<(u64, f32, f32)> = None; // (switch frame, drawn yaw before, raw yaw at the new node)
         for _ in 0..(40 * 60) {
             if c.finished {
@@ -370,14 +373,21 @@ fn npc_skater_keeps_its_facing_across_switches_on_the_exported_lines() {
             if ev.iter().any(|e| matches!(e, CursorEvent::Branch(_))) {
                 switches += 1;
                 flips += usize::from(c.facing_flipped != was);
-                let raw = lines[&c.line].nodes[c.node as usize].skater;
-                watch = Some((c.frames, yaw(s.skater), yaw(skate_core::living_world::replay::decode_orientation(raw))));
+                watch = Some((c.frames, yaw(s.skater), yaw(drawn_skater(&lines[&c.line], c.node as usize))));
+            }
+            if c.switch.is_none() && !c.finished {
+                if let Some(now) = c.sample(lines, 0.0) {
+                    if let Some(f) = facing_check(&lines[&c.line], &now) {
+                        judged += 1;
+                        backwards += usize::from(f.backwards && !f.recorded_fakie);
+                    }
+                }
             }
             if let Some((at, before, raw0)) = watch {
                 if c.frames - at > 14 {
                     watch = None;
                 } else if let Some(now) = c.sample(lines, 0.0) {
-                    let raw_now = yaw(skate_core::living_world::replay::decode_orientation(lines[&c.line].nodes[c.node as usize].skater));
+                    let raw_now = yaw(drawn_skater(&lines[&c.line], c.node as usize));
                     if turn(yaw(now.skater), before) > std::f32::consts::FRAC_PI_2 + turn(raw_now, raw0) {
                         spins += 1;
                         watch = None;
@@ -385,19 +395,24 @@ fn npc_skater_keeps_its_facing_across_switches_on_the_exported_lines() {
                 }
             }
         }
-        (switches, flips, spins, c)
+        (switches, flips, spins, c, backwards, judged)
     };
-    let mut total = [0usize; 5];
+    let mut total = [0usize; 9];
     for district in ["DownTown", "Industrial", "University"] {
         let pack = std::fs::read(paths.join(format!("{district}.bin"))).unwrap();
         let tiles = aipath::parse_pack(&pack).unwrap();
         let (unique, _) = aipath::district_paths(&tiles).unwrap();
         let lines: BTreeMap<[u8; 16], ReplayLine> = unique.iter().map(|p| (p.path.id.0, living_world::replay_line(&p.path))).collect();
         for &id in lines.keys().step_by(8) {
-            let (n, flips, spins, c) = ride(&lines, id, true);
-            assert_eq!(spins, 0, "{district} {:02x?}: the skater spun round at a switch", &id[..8]);
+            let (n, flips, kept_spins, c, kept_backwards, _) = ride(&lines, id, true);
             assert_eq!(ride(&lines, id, true).3, c, "deterministic");
-            let (_, _, raw_spins, _) = ride(&lines, id, false);
+            let (_, _, raw_spins, retail, retail_backwards, judged) = ride(&lines, id, false);
+            total[7] += kept_spins;
+            total[8] += judged;
+            assert_eq!(ride(&lines, id, false).3, retail, "deterministic");
+            assert!(!retail.facing_flipped);
+            total[5] += retail_backwards;
+            total[6] += kept_backwards;
             total[0] += n;
             total[1] += flips;
             total[2] += raw_spins;
@@ -405,8 +420,13 @@ fn npc_skater_keeps_its_facing_across_switches_on_the_exported_lines() {
             total[4] += usize::from(c.facing_flipped);
         }
     }
-    eprintln!("facing: {} rides, {} switches, {} kept by a flip, rides ending flipped {}, spins without keep_facing {}", total[3], total[0], total[1], total[4], total[2]);
-    assert!(total[0] > 100 && total[2] > 0, "the exported lines hold switches that used to spin the skater");
+    eprintln!(
+        "facing: {} rides, {} switches, {} kept by a flip (keep_facing), rides ending flipped {}, spins: retail {}, keep_facing {}; of {} judged settled frames, backwards on forward-recorded nodes: retail {}, keep_facing {}",
+        total[3], total[0], total[1], total[4], total[2], total[7], total[8], total[5], total[6]
+    );
+    assert!(total[0] > 100 && total[8] > 100_000, "the exported lines hold switches");
+    assert!(total[5] * 1000 < total[8], "retail rule: forward-recorded frames ridden backwards {} of {}", total[5], total[8]);
+    assert!(total[5] < total[6], "the fix 16 option rides more forward-recorded frames backwards ({} vs {})", total[5], total[6]);
 }
 
 /// Fix 21 (NPC skater pops and tricks): on the exported lines the trick slots hold `EScorableID`s
@@ -463,3 +483,4 @@ fn npc_skater_trick_slots_and_phase_changes_on_the_exported_lines() {
     assert_eq!(top[0].1, 128, "ollie is the most common recorded trick");
     assert!(short * 3 > changes, "many phases are shorter than a crossfade ({short} of {changes})");
 }
+

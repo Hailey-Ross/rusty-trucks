@@ -289,6 +289,74 @@ fn living_world_npc_skaters_chain_lines_and_fade_only_at_a_dead_end() {
     assert!(seen.iter().any(|e| matches!(e, NpcSkaterEvent::Despawned { reason: DespawnReason::External, .. })));
 }
 
+/// Fix 23 (NPC skaters riding backwards, user test 6), headless: every line chains onto the line
+/// starting at its end (line i -> i + 6), and lines 6..11, 18..23, ... were recorded fakie for their
+/// first 50 nodes (skater and board frame facing -x while travelling +x), so every chain joins a
+/// line the other way round from the one it left; the other lines hold a switch-stance stretch
+/// (nodes 150..250: skater frame turned round, board forward), drawn forward (`drawn_skater`). Retail keeps no facing state across a switch
+/// ([code] `sub_8246C7F8`, the path frame comes from the node, `sub_82453A58`): with the retail
+/// default no NPC is drawn against its travel outside a recorded fakie stretch once the switch blend
+/// is over, and `NPC_SKATER_BACKWARDS` reports the recorded fakie stretches as such. The fix 16 mod
+/// option (`keep_facing`) reproduces the reported bug: forward-recorded lines ridden backwards.
+#[test]
+fn living_world_npc_skaters_never_ride_backwards_across_line_switches() {
+    const FAKIE: [u8; 4] = [128, 38, 128, 218]; // -90 deg about +y: +Z onto -x.
+    let ride = |keep_facing: bool| {
+        let mut a = app(5);
+        let mut d = data();
+        let mut lines = (*d.npc.lines).clone();
+        for (k, l) in lines.values_mut().enumerate() {
+            if k % 12 >= 6 {
+                for n in &mut l.nodes[..50] {
+                    n.skater = FAKIE;
+                    n.board = FAKIE;
+                }
+            } else {
+                // Switch stance: the recorder's body turned round, the board rolling nose first.
+                for n in &mut l.nodes[150..250] {
+                    n.skater = FAKIE;
+                }
+            }
+        }
+        d.npc.lines = Arc::new(lines.clone());
+        let settings = LivingWorldSettings { seed: 5, skater_line_chain: skate_core::living_world::replay::ChainConfig { keep_facing, ..Default::default() }, ..LivingWorldSettings::default() };
+        let mut state = PopulationState::default();
+        state.install("Test", 1, &settings, d);
+        a.insert_resource(settings).insert_resource(state);
+        let (mut forward_backwards, mut fakie_logged, mut checked) = (0usize, 0usize, 0usize);
+        for _ in 0..(40 * 60) {
+            run(&mut a, 0.0, 60.0);
+            let mut q = a.world_mut().query::<(&NpcSkater, &NpcReplay)>();
+            for (n, r) in q.iter(a.world()) {
+                let Some(s) = r.last.as_ref() else { continue };
+                let Some(line) = lines.get(&s.line) else { continue };
+                if r.cursor.switch.is_some() {
+                    continue;
+                }
+                checked += 1;
+                if let Some(text) = backwards_line(n.id, &n.character, line, &r.cursor, s) {
+                    assert!(text.starts_with("NPC_SKATER_BACKWARDS #") && text.contains("velocity_yaw"), "{text}");
+                    if text.contains("recorded_fakie true") {
+                        fakie_logged += 1;
+                    } else {
+                        forward_backwards += 1;
+                    }
+                }
+            }
+        }
+        let chains = a.world().resource::<Seen>().0.iter().filter(|e| matches!(e, NpcSkaterEvent::Branch { record, .. } if record.from_node == NODES - 1)).count();
+        (forward_backwards, fakie_logged, checked, chains)
+    };
+    let (bad, fakie, checked, chains) = ride(false);
+    assert!(chains >= 2 && checked > 1000, "chains {chains}, checked {checked}");
+    assert_eq!(bad, 0, "retail: no NPC rides a forward-recorded line backwards");
+    assert!(fakie > 0, "the recorded fakie stretches are reported as recorded_fakie");
+    // Deterministic: the same run gives the same counts.
+    assert_eq!(ride(false), (bad, fakie, checked, chains));
+    let (old_bad, ..) = ride(true);
+    assert!(old_bad > 100, "the fix 16 option rides forward-recorded lines backwards ({old_bad})");
+}
+
 #[test]
 fn living_world_npc_skaters_fade_in_from_transparent_with_blended_copies() {
     // Retail `sub_825926F8` / `sub_82594488`: opacity 0 at the spawn, 1 after 1 s. While fading the

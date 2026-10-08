@@ -488,7 +488,7 @@ pub(crate) fn advance(
         let mut out = Vec::new();
         // The switch blend time (branch / chain root blend) is a tuning value, the same on a client.
         replay.cursor.switch_blend_seconds = chain.blend_seconds;
-        // Keep the skater's facing across switches (fix 16, retail on); a tuning value like the blend.
+        // Keep the facing across switches (fix 16 rule, mod option, retail off); a tuning value.
         replay.cursor.keep_facing = chain.keep_facing;
         while replay.cursor.frames < target && !replay.cursor.finished {
             if replay.cursor.frames + FRAMES_PER_TICK >= target {
@@ -1026,16 +1026,72 @@ pub(crate) fn npc_readout(npcs: &[(LivingWorldId, String, Option<ReplaySample>)]
     });
     match nearest {
         Some((id, c, s, d)) => format!(
-            "npc skaters {} nearest #{} {c} {:.0} m line {} node {} {} {:.1} m/s",
+            "npc skaters {} nearest #{} {c} {:.0} m line {} node {} {} {:.1} m/s heading {:.0} velocity_yaw {:.0}",
             npcs.len(),
             id.serial,
             d,
             s.line.iter().map(|b| format!("{b:02x}")).collect::<String>(),
             s.node,
             s.phase.name(),
-            length(s.velocity)
+            length(s.velocity),
+            {
+                let f = skate_core::living_world::replay::rotate(s.skater, [0.0, 0.0, 1.0]);
+                f[0].atan2(f[2]).to_degrees()
+            },
+            s.velocity[0].atan2(s.velocity[2]).to_degrees()
         ),
         None => format!("npc skaters {}", npcs.len()),
+    }
+}
+
+/// World ticks between two `NPC_SKATER_BACKWARDS` lines for one NPC (2 s at 30 ticks/s).
+pub(crate) const BACKWARDS_LOG_TICKS: u64 = 60;
+
+/// The `NPC_SKATER_BACKWARDS` line for one NPC sample, `None` when it is not riding backwards
+/// (`skate_core::living_world::replay::facing_check`: drawn heading more than 135 deg from the
+/// velocity yaw at 1 m/s or more; a diagnostic threshold). `recorded_fakie` says the line's own
+/// retail path frame opposes travel there (the recorder rode fakie: retail's target frame does
+/// too); `facing_flipped` is the fix 16 mod option's turn.
+pub(crate) fn backwards_line(id: LivingWorldId, character: &str, line: &ReplayLine, cursor: &LineCursor, s: &ReplaySample) -> Option<String> {
+    let c = skate_core::living_world::replay::facing_check(line, s)?;
+    if !c.backwards {
+        return None;
+    }
+    Some(format!(
+        "NPC_SKATER_BACKWARDS #{} {character} line {} node {} heading {:.0} velocity_yaw {:.0} off {:.0} deg {:.1} m/s recorded_fakie {} facing_flipped {} phase {} pos {:.1} {:.1} {:.1}",
+        id.serial,
+        s.line.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        s.node,
+        c.heading_yaw.to_degrees(),
+        c.velocity_yaw.to_degrees(),
+        c.angle.to_degrees(),
+        length(s.velocity),
+        c.recorded_fakie,
+        cursor.facing_flipped,
+        s.phase.name(),
+        s.position[0],
+        s.position[1],
+        s.position[2],
+    ))
+}
+
+/// Logs NPC skaters whose drawn heading opposes their travel (always on, rate limited per NPC to
+/// one line per [`BACKWARDS_LOG_TICKS`]), so a reported "rides backwards" can be found in the log.
+pub(crate) fn log_backwards(state: Res<PopulationState>, npcs: Query<(&NpcSkater, &NpcReplay)>, mut last: Local<BTreeMap<LivingWorldId, u64>>) {
+    let tick = state.world.tick();
+    let lines = npc_lines(&state);
+    last.retain(|id, _| npcs.iter().any(|(n, _)| n.id == *id));
+    for (npc, replay) in &npcs {
+        let (Some(s), Some(line)) = (replay.last.as_ref(), lines.get(&replay.cursor.line)) else { continue };
+        if s.line != replay.cursor.line {
+            continue;
+        }
+        let Some(text) = backwards_line(npc.id, &npc.character, line, &replay.cursor, s) else { continue };
+        let due = last.get(&npc.id).is_none_or(|t| tick < *t || tick >= t + BACKWARDS_LOG_TICKS);
+        if due {
+            last.insert(npc.id, tick);
+            warn!("{text}");
+        }
     }
 }
 
@@ -1052,7 +1108,7 @@ pub(crate) fn install(app: &mut App) {
     app.init_resource::<NpcSkaterIndex>()
         .init_resource::<NpcSkaterLooks>()
         .add_message::<NpcSkaterEvent>()
-        .add_systems(FixedUpdate, (apply_records, advance, log_readout).chain().after(super::step_population))
+        .add_systems(FixedUpdate, (apply_records, advance, log_backwards, log_readout).chain().after(super::step_population))
         .add_systems(
             FixedUpdate,
             push_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),

@@ -345,7 +345,7 @@ mod tests {
         set(&mut w, "dev.a", "living_world", Some(json!({
             "npc_draw_distance": 3.0,
             "skater_fade": {"fade_in_seconds": 0.0, "fade_seconds": 2.5, "despawn_alpha": 0.05},
-            "skater_line_chain": {"radius": 0.0, "blend_seconds": 0.6, "keep_facing": false},
+            "skater_line_chain": {"radius": 0.0, "blend_seconds": 0.6, "keep_facing": true},
             "ped_fade": {"distance": [90.0, 110.0], "fade_in_seconds": 2.0, "enabled": false},
         }))).unwrap();
         {
@@ -356,17 +356,18 @@ mod tests {
             assert_eq!((s.ped_fade.distance, s.ped_fade.fade_in_seconds, s.ped_fade.enabled), ([90.0, 110.0], 2.0, false));
             assert_eq!((s.skater_line_chain.radius, s.skater_line_chain.max_candidates), (0.0, 16), "absent fields keep retail");
             assert_eq!(s.skater_line_chain.blend_seconds, 0.6);
-            assert!(!s.skater_line_chain.keep_facing);
+            assert!(s.skater_line_chain.keep_facing, "the fix 16 option is mod-reachable");
         }
         assert_eq!(read(&w, "living_world")["skater_line_chain"]["radius"], json!(0.0));
         assert!((read(&w, "living_world")["skater_line_chain"]["blend_seconds"].as_f64().unwrap() - 0.6).abs() < 1e-6);
-        assert_eq!(read(&w, "living_world")["skater_line_chain"]["keep_facing"], json!(false));
+        assert_eq!(read(&w, "living_world")["skater_line_chain"]["keep_facing"], json!(true));
         assert_eq!(read(&w, "living_world")["skater_fade"]["fade_seconds"], json!(2.5));
         clear_owner(&mut w, "dev.a");
         let s = w.resource::<LivingWorldSettings>();
         assert_eq!(s.npc_draw_distance, 1.5, "disable restores the player's menu choice");
         let retail = LivingWorldSettings::default();
         assert_eq!((s.skater_fade, s.ped_fade, s.skater_line_chain), (retail.skater_fade, retail.ped_fade, retail.skater_line_chain));
+        assert!(!s.skater_line_chain.keep_facing, "disable returns to retail (no facing state)");
     }
 
     #[test]

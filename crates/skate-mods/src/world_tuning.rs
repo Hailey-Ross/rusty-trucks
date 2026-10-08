@@ -119,8 +119,9 @@ pub struct PedObstaclesPatch {
 /// line whose start node is within `radius` m (retail 4.0; 0 = fade out at every line end), among
 /// at most `max_candidates` (retail 16); `blend_seconds`: the drawn root moves onto the new line
 /// over this time after a branch or chain (engine default 0.2 s, 0 = cut, at most 10 s);
-/// `keep_facing`: the skater keeps the way it faces (stance side, forward or fakie) across a
-/// branch or chain (retail true); false takes the new line's recorded facing.
+/// `keep_facing`: mod option, not retail (default false): the skater keeps the way it faces
+/// (forward or fakie) across a branch or chain by riding the new line turned round; retail keeps
+/// no facing state and takes the new line's recorded facing (its path frame).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkaterLineChainPatch {

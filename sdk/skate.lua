@@ -960,8 +960,9 @@ function sdk.audio.seed(n) end
 --   despawn_alpha} (retail 1, 1, 0.2), skater_line_chain {radius, max_candidates, blend_seconds, keep_facing} (NPC skater line end:
 --   continue on an unused line starting within radius m, retail 4 and 16; radius 0 = fade out at every
 --   line end; blend_seconds: the drawn skater moves onto the new line over this time after a branch or
---   chain, default 0.2, 0 = cut; keep_facing: the skater keeps the way it faces, forward or fakie, across
---   a branch or chain, retail true, false = take the new line's recorded facing), ped_fade {distance = {near, far} (45, 55; a model record's pair
+--   chain, default 0.2, 0 = cut; keep_facing: mod option, not retail, default false: the skater keeps the
+--   way it faces, forward or fakie, across a branch or chain by riding the new line turned round;
+--   retail takes the new line's recorded facing), ped_fade {distance = {near, far} (45, 55; a model record's pair
 --   wins), fade_in_seconds (1), enabled}, skater_clips {[phase or 'phase.Style'] = stock clip name}
 --   (NPC skater clip per replay phase: rolling, crouched, air, air_trick, ground_trick, off_board;
 --   a clip whose name holds _CYC loops; an unknown clip falls back to the shipped pick; also
