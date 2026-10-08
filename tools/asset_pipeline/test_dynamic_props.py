@@ -5,7 +5,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import numpy as np
 
-from .dynamic_props import locators, transform_mesh, template_meshes, save_catalog, load_catalog, mobj_extension
+import json
+import os
+import sys
+
+from .dynamic_props import (locators, transform_mesh, template_meshes, save_catalog, load_catalog, mobj_extension,
+                            characteristics_key, records)
 
 
 def resource(kind, payload):
@@ -103,6 +108,55 @@ class DynamicPropsTests(unittest.TestCase):
         struct.pack_into('>I', payload, 160, 100)
         with self.assertRaisesRegex(ValueError, 'model reference'):
             template_meshes(resource(0xEB000D, payload))
+
+
+# Fields of livingworld_dynamicobject_characteristics the DMO reads (layout
+# offsets from the schema; doc 26 "Per-type DMO data").
+TYPE_FIELDS = ('Hash_5CCD5998E03C299B', 'Hash_C4D8A03586A31915', 'Hash_E0101A9DFD63DEE9',
+               'Hash_6E0BB4F5881A4841', 'Hash_CDA7A31C5EDBEB6E', 'Hash_086956BCA2187458')
+
+
+class DmoTypeDataTests(unittest.TestCase):
+    def test_characteristics_key_is_the_record_at_120(self):
+        payload = bytearray(160)
+        struct.pack_into('>Q', payload, 120, 0x028BDAC3B6F3A059)
+        self.assertEqual(characteristics_key(payload, 0), 'Hash_028BDAC3B6F3A059')
+        self.assertIsNone(characteristics_key(bytearray(160), 0))
+
+    @unittest.skipUnless(os.environ.get('SKATE3_DISC'), 'set SKATE3_DISC (extracted disc) and SKATE3_ASSET_ROOT (set-up assets)')
+    def test_every_disc_dmo_type_has_vault_type_data(self):
+        from tools.owned_game.big import BigArchive
+        disc = Path(os.environ['SKATE3_DISC'])
+        assets = Path(os.environ.get('SKATE3_ASSET_ROOT', Path(__file__).resolve().parents[2]/'assets'))
+        stock = assets/'private/stock/skater-collections.json'
+        collections = json.loads(stock.read_text(encoding='utf-8'))['collections']
+        vault = {c['key']: c for c in collections if c['class'] == 'livingworld_dynamicobject_characteristics'}
+        from .vlt import hash64
+        by_id = {f'Hash_{hash64(k):016X}': k for k in vault}
+        def field(key, name):
+            while key:
+                if name in vault[key]['fields']:
+                    return vault[key]['fields'][name]
+                key = vault[key]['parent']
+            return None
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/university/tools/vanilla_map_extraction/tools'))
+        import skate3_streams
+        templates = {}
+        with TemporaryDirectory() as work:
+            archive = BigArchive(disc/'data/content/worlddmo.big')
+            archive.extract_entries(archive.entries, Path(work))
+            for stream in (Path(work)/'data/content/world/dmo').iterdir():
+                for asset in skate3_streams.load_global_stream(stream, 'Pres', stream.name):
+                    if asset.record.asset_type != skate3_streams.ASSET_TYPE_MODEL:
+                        continue
+                    for _, at, _ in records(asset.data, 0xEB000D, 160):
+                        tid = struct.unpack_from('>Q', asset.data, at+104)[0]
+                        templates[tid] = characteristics_key(asset.data, at)
+        self.assertGreater(len(templates), 100)
+        for tid, key in templates.items():
+            self.assertIn(key, by_id, f'template {tid:016X}')
+            for name in TYPE_FIELDS:
+                self.assertIsNotNone(field(by_id[key], name), f'{by_id[key]} {name}')
 
 
 if __name__ == '__main__':

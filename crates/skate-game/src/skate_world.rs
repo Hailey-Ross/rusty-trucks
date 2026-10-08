@@ -1009,6 +1009,53 @@ pub(crate) fn build_prop_layer(
     }))
 }
 
+/// Retail per-type DMO data for the district's props: setup writes the map
+/// from template id to the type's vault record (`types` in
+/// `private/native-props/<map>.json`, from the template's EB000D +120); the
+/// values come from the installation's stock vault
+/// (`livingworld_dynamicobject_characteristics`,
+/// [`crate::physics::prop_dynamics::dmo_type_blocks`]). `None` when the
+/// sidecar has no type map (setup older than the type data): the props keep
+/// their authored material (NOT RETAIL YET there; re-run setup group maps).
+pub(crate) fn load_dmo_types(
+    asset_root: &std::path::Path,
+    map_name: &str,
+) -> Option<std::collections::BTreeMap<String, crate::physics::prop_dynamics::DmoType>> {
+    use crate::physics::prop_dynamics::{dmo_type_blocks, DmoType, DMO_TYPE_CLASS};
+    let path = asset_root.join("private").join("native-props").join(format!("{map_name}.json"));
+    let sidecar: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+    let map = sidecar.get("types")?.as_object()?;
+    if map.is_empty() {
+        return None;
+    }
+    let collections = match skate_data::collections::Collections::load(asset_root) {
+        Ok(c) => c,
+        Err(error) => {
+            warn!("SKATE_PROP_TYPES: {map_name}: {error}");
+            return None;
+        }
+    };
+    let names: std::collections::HashMap<String, &str> = collections
+        .entries()
+        .iter()
+        .filter(|c| c.class_name == DMO_TYPE_CLASS)
+        .map(|c| (skate_data::attrib_hash::numeric_name(&c.key), c.key.as_str()))
+        .collect();
+    let mut types = std::collections::BTreeMap::new();
+    for (template, record) in map {
+        let Some(record) = record.as_str() else { continue };
+        let id = skate_data::attrib_hash::numeric_name(record);
+        let key = names.get(&id).map_or(record, |name| *name);
+        match dmo_type_blocks(&collections, key) {
+            Ok(blocks) => {
+                types.insert(template.clone(), DmoType { key: key.to_owned(), blocks });
+            }
+            Err(error) => warn!("SKATE_PROP_TYPES: {map_name} template {template}: {error}"),
+        }
+    }
+    Some(types)
+}
+
 /// Load the district's prop package and build its collision layer plus the
 /// dynamic bodies for every instance. The package is a presentation
 /// supplement: missing or invalid files leave props uncollidable rather than
@@ -1053,11 +1100,15 @@ pub(crate) fn load_prop_layer(
                 objects.len(),
                 layer.world().triangles().len()
             );
-            let dynamics = crate::physics::prop_dynamics::PropDynamics::new(
+            let mut dynamics = crate::physics::prop_dynamics::PropDynamics::new(
                 &objects,
                 layer.instances(),
                 simulation,
             );
+            if let Some(types) = load_dmo_types(asset_root, map_name) {
+                let typed = dynamics.set_type_data(&types);
+                info!("SKATE_PROP_TYPES: {map_name} types={} props_with_type_data={typed}/{}", types.len(), objects.len());
+            }
             Some((layer, dynamics))
         }
         Ok(None) => None,
@@ -1071,6 +1122,53 @@ pub(crate) fn load_prop_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every prop type in a set-up map's type map resolves to retail type
+    /// data from the stock vault, and the values are the retail record's
+    /// (the default record: restitution 0.5, free pair 0.8 / 0.6).
+    /// `SKATE3_ASSET_ROOT` = set-up assets (setup group maps run with the
+    /// type map), `SKATE3_PROP_MAP` = map name (default DownTown).
+    #[test]
+    #[ignore = "Requires private installed assets"]
+    fn installed_map_props_resolve_retail_type_data() {
+        let root = std::path::PathBuf::from(std::env::var("SKATE3_ASSET_ROOT").expect("SKATE3_ASSET_ROOT"));
+        let map = std::env::var("SKATE3_PROP_MAP").unwrap_or_else(|_| "DownTown".into());
+        let sidecar: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("private/native-props").join(format!("{map}.json"))).unwrap(),
+        )
+        .unwrap();
+        let expected = sidecar["types"].as_object().expect("type map (re-run setup group maps)").len();
+        let types = load_dmo_types(&root, &map).expect("type data");
+        assert!(expected > 0);
+        assert_eq!(types.len(), expected, "every template's record resolved");
+        for (template, t) in &types {
+            let b = t.blocks;
+            for v in [b.restitution.unwrap(), b.free.unwrap()[0], b.free.unwrap()[1]] {
+                assert!((0.0..=1.0).contains(&v), "{template} {} {v}", t.key);
+            }
+            assert_eq!(b.upright_pair, b.record_272);
+            for v in [b.linear_drag.unwrap(), b.angular_drag.unwrap()] {
+                assert!((0.0..=1.0).contains(&v), "{template} {} drag {v}", t.key);
+            }
+            // Body data of 82C4E568: mass +304, caps +292 / +296, inertia box +16 / +32.
+            assert!(b.mass.unwrap() > 0.0, "{template} {} mass", t.key);
+            assert!(b.maximum_linear_velocity.unwrap() > 0.0 && b.maximum_angular_velocity.unwrap() > 0.0);
+            assert!(b.inertia_scale.is_some() && b.inertia_offset.is_some());
+        }
+        let collections = skate_data::collections::Collections::load(&root).unwrap();
+        let default = crate::physics::prop_dynamics::dmo_type_blocks(&collections, "default").unwrap();
+        assert_eq!((default.restitution, default.free, default.upright_pair), (Some(0.5), Some([0.8, 0.6]), Some(false)));
+        assert_eq!((default.linear_drag, default.angular_drag), (Some(0.0), Some(0.0)));
+        assert_eq!((default.mass, default.maximum_linear_velocity, default.maximum_angular_velocity), (Some(100.0), Some(100.0), Some(100.0)));
+        assert_eq!((default.inertia_scale, default.inertia_offset), (Some([1.2, 1.2, 1.2]), Some([0.0; 3])));
+        for (template, t) in &types {
+            let b = t.blocks;
+            eprintln!("{template} {} mass={:?} caps={:?}/{:?} box={:?}+{:?}", t.key, b.mass, b.maximum_linear_velocity, b.maximum_angular_velocity, b.inertia_scale, b.inertia_offset);
+        }
+        let mut keys: Vec<_> = types.values().map(|t| t.key.as_str()).collect();
+        keys.dedup();
+        eprintln!("{map}: {} templates, types {:?}", types.len(), keys);
+    }
 
     /// Measures the static draw budget on a real installed map. This is the
     /// check that the whole architecture exists to pass, so it reports the class

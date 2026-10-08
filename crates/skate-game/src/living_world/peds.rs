@@ -185,24 +185,28 @@ pub(crate) struct PedObstacles(pub NavObstacles);
 /// Obstacle id of a mod body (props keep their prop id; mod bodies live above 2^40).
 pub(crate) const MOD_BODY_OBSTACLE_BASE: u64 = 1 << 40;
 
-/// The obstacle list of this tick: prop boxes (current pose, carried flag) and mod bodies
-/// (world AABBs, the attached one carried).
+/// The obstacle list of this tick: prop boxes (current pose, held flag) and mod bodies (world
+/// AABBs, the attached one held). Held is not the retail obstacle-off gate (that word is never set by
+/// Move Object), so a held prop stays an obstacle (`ObstacleParams::held_is_obstacle`, retail on).
 pub(crate) fn obstacle_inputs(physics: Option<&crate::physics::GamePhysics>, mod_solids: &[(u64, [f32; 3], [f32; 3], [f32; 3], bool)]) -> Vec<ObstacleInput> {
-    let mut out = Vec::new();
-    if let Some(d) = physics.and_then(|p| p.prop_dynamics()) {
-        for (id, c, basis, h, v, held) in d.obstacle_boxes() {
-            out.push(ObstacleInput { id: id as u64, center: [c.x, c.y, c.z], axes: basis.columns, half_extents: [h.x, h.y, h.z], velocity: [v.x, v.y, v.z], inactive: held });
-        }
-    }
+    let mut out = physics.and_then(|p| p.prop_dynamics()).map(prop_obstacle_inputs).unwrap_or_default();
     for (id, min, max, v, attached) in mod_solids {
         let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5, (min[2] + max[2]) * 0.5];
         let half = [(max[0] - min[0]) * 0.5, (max[1] - min[1]) * 0.5, (max[2] - min[2]) * 0.5];
         if !half.iter().all(|h| h.is_finite()) {
             continue;
         }
-        out.push(ObstacleInput { id: MOD_BODY_OBSTACLE_BASE | id, center, axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], half_extents: half, velocity: *v, inactive: *attached });
+        out.push(ObstacleInput { id: MOD_BODY_OBSTACLE_BASE | id, center, axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], half_extents: half, velocity: *v, inactive: false, held: *attached });
     }
     out
+}
+
+/// The prop boxes of this tick as obstacle inputs (current pose and velocity, held flag).
+pub(crate) fn prop_obstacle_inputs(d: &crate::physics::prop_dynamics::PropDynamics) -> Vec<ObstacleInput> {
+    d.obstacle_boxes()
+        .into_iter()
+        .map(|(id, c, basis, h, v, held)| ObstacleInput { id: id as u64, center: [c.x, c.y, c.z], axes: basis.columns, half_extents: [h.x, h.y, h.z], velocity: [v.x, v.y, v.z], inactive: false, held })
+        .collect()
 }
 
 /// Diagnostics for moved props as ped obstacles (2026-10-07: "Moving objects does not update the
@@ -212,8 +216,8 @@ pub(crate) struct PedObstacleTrace {
     spawn: BTreeMap<u64, [f32; 3]>,
     /// Ids now more than 0.1 m from their spawn, with the spawn centre.
     pub moved: Vec<(u64, [f32; 3])>,
-    /// Last logged (cut, cut centre, held) of a moved id.
-    last: BTreeMap<u64, (bool, [f32; 3], bool)>,
+    /// Last logged (cut, cut centre, off, held, moving, tick) of a moved id.
+    last: BTreeMap<u64, (bool, [f32; 3], bool, bool, bool, u64)>,
     next_summary: u64,
 }
 
@@ -253,15 +257,20 @@ pub(crate) fn update_ped_obstacles(
         }
         trace.moved.push((input.id, spawn));
         let Some(s) = obstacles.0.states.get(&input.id) else { continue };
-        let now = (s.cut.is_some(), s.cut_at, s.inactive);
-        let changed = trace.last.get(&input.id).is_none_or(|l| l.0 != now.0 || l.2 != now.2 || (now.0 && dist3(l.1, now.1) > 0.05));
+        let now = (s.cut.is_some(), s.cut_at, s.inactive, s.held, s.moving, tick);
+        // A state change, a re-cut, or once a second while held (the body pose of a dragged prop
+        // next to its cut pose: "peds walk through the prop I am holding", 2026-10-08).
+        let changed = trace.last.get(&input.id).is_none_or(|l| {
+            l.0 != now.0 || l.2 != now.2 || l.3 != now.3 || l.4 != now.4 || (now.0 && dist3(l.1, now.1) > 0.05) || (now.3 && tick >= l.5 + hz)
+        });
         if changed {
             trace.last.insert(input.id, now);
             let speed = dist3(input.velocity, [0.0; 3]);
+            let role = if s.inactive { "off" } else if s.cut.is_some() { "cut" } else if obstacles.0.params.moving_solid { "solid" } else { "none" };
             info!(
-                "PED_OBSTACLE id={} spawn=[{:.2}, {:.2}, {:.2}] now=[{:.2}, {:.2}, {:.2}] moved={:.2} cut={} cut_at=[{:.2}, {:.2}, {:.2}] speed={speed:.2} moving={} held={} half=[{:.2}, {:.2}] y=[{:.2}, {:.2}] version={} tick={tick}",
+                "PED_OBSTACLE id={} spawn=[{:.2}, {:.2}, {:.2}] now=[{:.2}, {:.2}, {:.2}] moved={:.2} cut={} cut_at=[{:.2}, {:.2}, {:.2}] cut_off={:.2} speed={speed:.2} moving={} held={} off={} role={role} half=[{:.2}, {:.2}] y=[{:.2}, {:.2}] version={} tick={tick}",
                 input.id, spawn[0], spawn[1], spawn[2], input.center[0], input.center[1], input.center[2], dist3(spawn, input.center),
-                now.0, now.1[0], now.1[1], now.1[2], s.moving, s.inactive, s.now.half[0], s.now.half[1], s.now.y_min, s.now.y_max, obstacles.0.version,
+                now.0, now.1[0], now.1[1], now.1[2], if now.0 { dist3(now.1, input.center) } else { -1.0 }, s.moving, s.held, s.inactive, s.now.half[0], s.now.half[1], s.now.y_min, s.now.y_max, obstacles.0.version,
             );
         }
     }
@@ -269,9 +278,9 @@ pub(crate) fn update_ped_obstacles(
         trace.next_summary = tick + hz * if trace.moved.is_empty() { 10 } else { 2 };
         let o = &obstacles.0;
         info!(
-            "PED_OBSTACLES inputs={} props={} states={} cut={} moving={} held={} moved={} version={} tick={tick}",
+            "PED_OBSTACLES inputs={} props={} states={} cut={} moving={} held={} off={} moved={} version={} tick={tick}",
             inputs.len(), inputs.iter().filter(|i| i.id < MOD_BODY_OBSTACLE_BASE).count(), o.states.len(), o.cut_count(),
-            o.states.values().filter(|s| s.moving).count(), o.states.values().filter(|s| s.inactive).count(), trace.moved.len(), o.version,
+            o.states.values().filter(|s| s.moving).count(), o.states.values().filter(|s| s.held).count(), o.states.values().filter(|s| s.inactive).count(), trace.moved.len(), o.version,
         );
     }
 }

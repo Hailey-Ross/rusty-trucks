@@ -2443,8 +2443,9 @@ Change:
    this tick's follow step (the displacement 82BDF268 gets); biped_ground applies it without the 20 m/s cap. A first
    version targeted the follow point minus the live body (COM) offset: the COM swings with the animation and fed
    back until the skater wiped out (asset-backed test, DownTown).
-4. Record+272: `MoveObjectInput::record_272`, per prop type `by_template[...].record_272` (default false: NOT
-   RETAIL YET, the DMO type data is not extracted), scale `record_272_speed_scale` (2.0).
+4. Record+272: `MoveObjectInput::record_272`, per prop type `by_template[...].record_272`, scale
+   `record_272_speed_scale` (2.0). Superseded 2026-10-08: the default is now the type's retail data +312 (doc 27,
+   [Per-type DMO data](27-dynamic-props.md#per-type-dmo-data-2026-10-08)).
 5. Interim grab record (NOT RETAIL YET): the held face's straight top edge (centre-height edges fell below the
    grabbing box's y range, 0.2 to 1.8 m above the root, and dropped a bench at once). Retail grab splines come
    from the DMO physics assembly definition +136 table, not in our assets: addresses recorded, no port.
@@ -2606,6 +2607,87 @@ the two mod options), `living_world_car_box_matches_the_car_proxy`,
   user may remember a different game.
 - The skater's car-hit bail rules (vehicle contact term `0x820CFF14`, 9.0 limits) are V5.
 
+## Peds walking through a held prop, 2026-10-08
+
+**Problem.** User, verbatim: "Moving objects does not update the collision for peds, untested on skater npc's",
+then (2026-10-08) "I wasn't recreating the issue last night, that may have just been while I was holding the
+object, which is still wrong". So peds walk through a prop while the player holds it with Move Object.
+
+**Cause.** The port treated "held" as retail's obstacle-off gate (the state word below), so a held prop was
+neither cut into the walkable area nor solid for a ped's step. The retail code says otherwise.
+
+**Evidence (retail, [code], TU3 recompilation as reference).**
+- The obstacle-off gate is DynamicObject slot +88 `sub_82C48648`: off while the component at `+144` reports
+  `+4252 == 1` (component vtable `0x82322ED8` slot 31 `sub_82C56AE8`). That word is set to 1 only by component
+  slot 32 `sub_82C56B00`, which also moves every collision element of the object to collision group 13; slots 33
+  `sub_82C56BA0` / 34 `sub_82C56C70` set it back to 0 (group 12 or 14 by a per-type value). No direct caller of
+  slot 32 was found; what state 1 means is still not decoded.
+- The Move Object hold does not touch it. Each held tick the state calls interface slot 10 (keep-alive, type 2
+  record), flushed to the DMO handler's slot 6 `sub_82C4C450`, which calls component slot 30 `sub_82C485D0` with 1:
+  that only sets the held bit `DMO+4464 & 0x20` (getter slot 29 `sub_82C485C0`). The obstacle update
+  (`sub_82595298` -> `sub_82C477B0`) never reads that bit; its "force moving" input is DMO slot +104 = 0.
+- So in retail a held prop stays an obstacle: while it moves faster than 0.4 m/s (`0x82181B90`) its cut is
+  removed and NavPower's moving avoider takes over (`sub_82E99998`: an 88-byte record in the planner's obstacle
+  database with position, velocity and a radius of 0.35 x a planner-wide value, independent of the box; moved every
+  tick by `sub_82E998C8`, removed by `sub_82E99BB0`); held still (or slower) it is cut where it lies, and re-cut
+  after it moved more than 0.25 x its smallest half extent. After release the same rule cuts it where it rests.
+- How NavPower's bots steer round a moving avoider is middleware internals (the database is only reached through
+  generic query functions in `0x82EA8000..0x82EAC000` from NavPower code, no Skate-side reader); not decoded.
+
+**Change.**
+- `skate-core::living_world::peds::obstacles`: `ObstacleInput::held` (separate from `inactive`, which stays the
+  retail off word), `ObstacleState::held`, `ObstacleParams::held_is_obstacle` (retail true: a held prop or an
+  attached mod body stays an obstacle; false = the earlier "held is ignored" rule, mod option).
+- `ObstacleParams::moving_solid` (default true), NOT RETAIL YET: stands in for the NavPower moving avoider. A
+  moving object is solid for a ped's step (`step_ok` / `resolve_step`: slide along its face or stay, then re-plan),
+  it does not bend paths. False = moving objects do not block a ped's step; this is the switch a decoded avoider
+  port replaces.
+- `skate-game::living_world::peds`: `prop_obstacle_inputs` (props: held = `PropDynamics::held`, never inactive);
+  mod bodies: the attached body is held, not inactive.
+- Logging: `PED_OBSTACLE` now prints `held`, `off` (the retail off word), `role` (`cut`, `solid`, `none`, `off`)
+  and `cut_off` (distance from the cut centre to the body centre, -1 without a cut), on every change of cut /
+  moving / held / off, on a re-cut, and once a second while held, so a dragged prop's body pose shows next to its
+  cut pose. `PED_OBSTACLES` adds `off=` next to `held=`. `PED_BLOCKED by=` names a held prop that refused a step.
+- Moddable: `ped_obstacles {held_is_obstacle, moving_solid}` in the `living_world` tuning (Lua
+  `sdk.world.set_tuning`), readable via `world_tuning:living_world`, reset on mod disable.
+- Multiplayer: plain data by stable id; the held flag comes from the authority's carry state.
+
+**NPC skaters and moved props.** Retail AI skaters are full skaters: their board and body hit a DynamicObject
+by the same rigid-body contact as the player (fix 19 ported this: our puppets push props, a moved prop is pushed
+where it lies now). Their `AIController` also runs an `ObstacleAvoider` (controller +80) with four gatherers;
+2026-10-08 they read three pools of one world container (globals `0x8308549C` = container +16 for the 8 m
+gatherer `sub_82463C08`, `0x830854A0` = +2704 for the 20 m `sub_82464000`, `0x830854A8` = +22416 for the 16 m
+`sub_82464448`; filled by `sub_826BBC40`); which object kinds those pools hold and what the avoider's modes do is
+NOT decoded, so a moved prop does not change an NPC skater's line in our port (NOT RETAIL YET; no speculative
+slow-down added).
+
+**Files.** `crates/skate-core/src/living_world/peds/{obstacles,obstacle_tests}.rs`,
+`crates/skate-game/src/living_world/{peds,peds_tests}.rs`, `crates/skate-game/src/physics/prop_dynamics.rs`
+(test), `crates/skate-game/src/modding/world_tuning.rs`, `crates/skate-mods/src/world_tuning.rs`, `sdk/skate.lua`.
+
+**Verification.**
+- New test `physics::prop_dynamics::tests::peds_do_not_walk_through_a_held_prop_and_see_it_where_it_rests`
+  (headless, real Move Object carry path on the street fixture): a bin (half 0.35 x 0.5 x 0.35) is dragged
+  toward a ped walking head-on along its line for 1 s, held still 3 s, released and left 3 s; obstacles come from
+  `obstacle_boxes` through the game's input mapping each tick, the ped steps with `resolve_step`. Retail rule:
+  0 ped steps deeper into the prop (past the 0.25 x 0.35 m re-cut tolerance); control (`held_is_obstacle = false`,
+  the earlier rule): 8. Held and moving faster than 0.4 m/s for 65 ticks (solid), held and cut for 173 ticks.
+  After release the bin rests 2.94 m from its spawn, cut at its new spot (cut centre 0.022 m from the body,
+  inside the 0.0875 m re-cut tolerance), obstacle version 3; the new spot blocks and a path leg through it hits the
+  cut, the old spot is free and a leg through it does not.
+- New core test `living_world::peds::obstacle_tests::held_prop_stays_an_obstacle` (held still = cut, dragged at
+  1 m/s = no cut but solid, `moving_solid = false` and `held_is_obstacle = false` switches).
+- `living_world_ped_obstacle_inputs_and_mod_tuning`: the attached mod body is held (not off); the Lua patch sets
+  `held_is_obstacle` / `moving_solid` and mod disable restores the defaults.
+- Suites (`--release --locked -j 4`): skate-game `living_world physics::prop modding::world_tuning` 108 passed,
+  3 ignored (asset tests); skate-core `living_world` 128 passed; skate-mods `world_tuning` 3 passed. Not run in
+  game.
+
+**Open questions.** NavPower's moving avoider (how bots steer round it) is not ported; ours blocks the ped's step
+instead. The meaning of the off word (state 1, collision group 13) is not decoded. The NPC skater
+`ObstacleAvoider` pools and modes are not decoded. Not seen in game yet: drag a prop into a ped's walk in DownTown
+and check the `PED_OBSTACLE` lines (`held=true role=solid` while dragging, `role=cut` held still and after it rests).
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).
@@ -2644,7 +2726,7 @@ When a mod stops, fails or reloads its patches go (`modding::world_tuning::clear
 
 | Domain | Fields (shipped value) | Resource |
 |---|---|---|
-| `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing false}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep_facing: fix 16 facing carry-over, mod option, not retail), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0}` (props and mod bodies as ped obstacles), `npc_skater_props {enabled true}` (NPC skaters push dynamic props), `ped_vehicle_contact {enabled true, push true}` (traffic cars push peds out of the way; no knock-down in retail) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
+| `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing false}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep_facing: fix 16 facing carry-over, mod option, not retail), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0, held_is_obstacle true, moving_solid true}` (props and mod bodies as ped obstacles; a held prop stays one, retail; `moving_solid` is the NOT RETAIL YET stand-in for the NavPower moving avoider), `npc_skater_props {enabled true}` (NPC skaters push dynamic props), `ped_vehicle_contact {enabled true, push true}` (traffic cars push peds out of the way; no knock-down in retail) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
 | `props` | `default` / `by_template[<MOBJ template>]`: every `PropTuning` field plus `collision_box {center, half_extents}`; a template entry starts from the patched default | `PropTuningSettings` |
 | `carry` | `grab_bit` (28, RB), `placement_bit` (20, B), `grab_range` (2.0 m); Move Object: `push_speed` / `pull_speed` / `side_speed` (3.0 / 2.0 / 2.5), `turn_rate`, `grip_reach`, `linear_clamp` (20), `yaw_clamp` (6), `relatch` (0.1), `slew_per_tick` (4), `linear_controller` / `yaw_controller` ([20, 0, 40, 0.1]), the four curves, `let_go_distance` (1.0); slot 9 application: `commanded_material` ([0.03, 0.02] static / dynamic friction), `upright_cos` (0.65), `apply_at_com`, `yaw_replaces_torque`, `ignore_vertical`, `wake_on_command` (true), `by_template[<MOBJ template>] = {material_held, material_free, material_free_upright, upright_pair, restitution}` | `CarrySettings`, pushed into `PropCarry` and `PropDynamics` each tick (survives map loads) |
 

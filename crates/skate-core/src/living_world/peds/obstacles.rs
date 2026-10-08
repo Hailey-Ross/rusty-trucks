@@ -11,8 +11,13 @@
 //!   (slot +76 `sub_82C57268`, record ctor `sub_82C46778`, record vtable `0x82322D10`). The box
 //!   comes from its collision body (slot +96 `sub_82C486F8` -> body vfunc 160 = half extents;
 //!   slot +92 `sub_82C48688` = orientation from the collision shape). Slot +88 `sub_82C48648`
-//!   switches the obstacle off while the object's state word `+144+4252` equals 1 (meaning not
-//!   decoded; we use "carried").
+//!   switches the obstacle off while the object's state word `+144+4252` equals 1. That word is set
+//!   to 1 only by the component's slot 32 (`sub_82C56B00`, which also moves every collision element
+//!   of the object to collision group 13; slots 33/34 set it back to 0 with group 12 or 14); its
+//!   meaning is not decoded. It is NOT the Move Object hold: the hold's keep-alive (interface slot
+//!   10 -> DMO handler slot 6 `sub_82C4C450` -> component slot 30 `sub_82C485D0`) only sets the
+//!   held bit `DMO+4464 & 0x20`, which the obstacle code never reads. So a held prop stays an
+//!   obstacle: cut while slower than 0.4 m/s, a moving avoider while faster (2026-10-08).
 //! - Placement `sub_82C477B0`, called on every update: half extents below 0.2 m are raised to
 //!   0.2 (`0x82099280`); while the object moves faster than 0.4 m/s (`0x82181B90`, slot +24 =
 //!   velocity) its cut is removed and NavPower's moving avoider (`+64`, `sub_82E99998`) takes
@@ -21,7 +26,8 @@
 //!   0.25 (`0x820C6D98`) x its smallest half extent from where it was cut.
 //! - NavPower then plans every bot's path on the cut mesh (`dynAreas` in its planner), so a
 //!   resting prop is walked round, a prop the player moved counts where it lies now, and
-//!   a carried or rolling prop is not part of the mesh.
+//!   a rolling prop (or a held one being moved faster than 0.4 m/s) is not part of the mesh but a
+//!   NavPower moving avoider.
 //!
 //! Ours (stated): NavPower's polygon cutting and its moving avoider are not decoded. A cut is an
 //! oriented rectangle in xz (the box projected onto the ground); a path leg that crosses a cut
@@ -60,11 +66,22 @@ pub struct ObstacleParams {
     /// Objects whose box top (after the 0.2 m minimum) is no higher than this above the ped's feet
     /// are stepped over (ours; 0 = every box counts, as retail's ground cut has no height test).
     pub step_height: f32,
+    /// A held prop (Move Object) or an attached mod body stays an obstacle (retail: yes, the hold
+    /// does not set the obstacle-off word, see the module docs). `false` = the earlier port's rule
+    /// (held objects are ignored), kept as a mod option.
+    pub held_is_obstacle: bool,
+    /// A moving (uncut) object is solid for a ped's step ([`NavObstacles::step_ok`]). NOT RETAIL
+    /// YET: retail hands a moving object to NavPower's moving avoider instead (`sub_82E99998`:
+    /// an 88-byte record in the planner's obstacle database, position and velocity refreshed every
+    /// tick by `sub_82E998C8`, radius = 0.35 x a planner-wide value, independent of the box); how
+    /// NavPower's bots steer round it is middleware internals, not decoded. `false` = moving
+    /// objects do not block a ped's step (the switch a decoded avoider port would replace).
+    pub moving_solid: bool,
 }
 
 impl Default for ObstacleParams {
     fn default() -> Self {
-        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, step_height: 0.0 }
+        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, step_height: 0.0, held_is_obstacle: true, moving_solid: true }
     }
 }
 
@@ -79,8 +96,11 @@ pub struct ObstacleInput {
     pub axes: [Vec3; 3],
     pub half_extents: Vec3,
     pub velocity: Vec3,
-    /// Not an obstacle right now (carried / attached; retail state word `== 1`).
+    /// Not an obstacle right now (retail state word `+144+4252 == 1`, meaning not decoded).
     pub inactive: bool,
+    /// Held by the player (Move Object) or an attached mod body; an obstacle unless
+    /// [`ObstacleParams::held_is_obstacle`] is off.
+    pub held: bool,
 }
 
 /// A box's ground footprint: an oriented rectangle in xz plus its height span.
@@ -186,6 +206,8 @@ pub struct ObstacleState {
     /// Moving faster than [`ObstacleParams::moving_speed`] (retail: moving avoider instead).
     pub moving: bool,
     pub inactive: bool,
+    /// Held this tick (diagnostics; an obstacle unless `held_is_obstacle` is off).
+    pub held: bool,
 }
 
 const CELL: f32 = 4.0;
@@ -236,11 +258,12 @@ impl NavObstacles {
             let now = Footprint::of(input, p.min_half_extent);
             let speed = (input.velocity[0].powi(2) + input.velocity[1].powi(2) + input.velocity[2].powi(2)).sqrt();
             let moving = speed > p.moving_speed;
-            let inactive = input.inactive || !p.enabled;
-            let state = self.states.entry(input.id).or_insert(ObstacleState { cut: None, cut_at: input.center, now, moving, inactive });
+            let inactive = input.inactive || (input.held && !p.held_is_obstacle) || !p.enabled;
+            let state = self.states.entry(input.id).or_insert(ObstacleState { cut: None, cut_at: input.center, now, moving, inactive, held: input.held });
             state.now = now;
             state.moving = moving;
             state.inactive = inactive;
+            state.held = input.held;
             let want_cut = !inactive && !moving;
             let recut = state.cut.is_some_and(|_| {
                 let d = [input.center[0] - state.cut_at[0], input.center[1] - state.cut_at[1], input.center[2] - state.cut_at[2]];
@@ -267,7 +290,7 @@ impl NavObstacles {
         if changed || before != self.states.len() {
             self.rebuild_grid();
         }
-        self.loose = self.states.iter().filter(|(_, s)| s.cut.is_none() && !s.inactive).map(|(id, _)| *id).collect();
+        self.loose = if p.moving_solid { self.states.iter().filter(|(_, s)| s.cut.is_none() && !s.inactive).map(|(id, _)| *id).collect() } else { Vec::new() };
         if changed {
             self.version += 1;
         }
