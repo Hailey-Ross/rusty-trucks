@@ -88,6 +88,8 @@ pub(super) fn advance(
     skater.ground_settings = skater.ground_profiles.select(skater.player_input.processed.state_variant_index_2528, skater.player_input.processed.surface_mode_2540)?;
     if teleported {
         skater.respawn.reset_measurements();
+        //825926F8 place-skater: count the placement (+1864); the fade-in restarts from it.
+        skater.respawn.placements = skater.respawn.placements.wrapping_add(1);
         #[cfg(test)]
         super::offboard_root_trace::trace(tick, "teleport", skater);
         //82DB93B0..CC: complete pending queries and clear contact history.

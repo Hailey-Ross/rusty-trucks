@@ -8,7 +8,12 @@
 //!   menu draw distance comes back when no mod sets one),
 //! - `props` -> `PropTuningSettings`,
 //! - `carry` -> `CarrySettings`,
-//! - `shadows` -> `retail_render::WorldShadowSettings` (dynamic shadow floor on the baked world).
+//! - `shadows` -> `retail_render::WorldShadowSettings` (dynamic shadow floor on the baked world),
+//! - `backdrop` -> `retail_backdrop::BackdropSettings` (the district's global presentation model),
+//! - `respawn` -> `physics::respawn::RespawnSettings` (air timeout before the checkpoint respawn),
+//! - `exposure` -> `retail_exposure::ExposureMeter` (auto-exposure meter weights and scale).
+//! - `ghost` -> `skater_ghost::GhostTuning` (skater fade-in after placements).
+//! - `decals` -> `retail_render::DecalSettings` (strength of every world decal, live).
 //! A mod that stops, fails or reloads loses its patches ([`clear_owner`]); [`clear_all`] when every
 //! mod goes.
 
@@ -18,7 +23,11 @@ use skate_core::math::Vector3;
 use skate_mods::world_tuning::{parse, CarryPatch, LivingWorldPatch, Merge, Patch, PropTuningPatch, PropsPatch, DOMAINS};
 
 use crate::living_world::LivingWorldSettings;
-use crate::retail_render::{WorldShadowSettings, RETAIL_WORLD_SHADOW_FLOOR};
+use crate::physics::respawn::RespawnSettings;
+use crate::retail_backdrop::BackdropSettings;
+use crate::retail_exposure::ExposureMeter;
+use crate::skater_ghost::GhostTuning;
+use crate::retail_render::{DecalSettings, WorldShadowSettings, RETAIL_WORLD_SHADOW_FLOOR};
 use crate::physics::prop_carry::{CarryButtons, CarrySettings, LocomotionOverrides};
 use crate::physics::prop_dynamics::{PropBox, PropTuning, PropTuningSettings, PropTuningTable};
 
@@ -116,6 +125,62 @@ fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
             let p = t.merged(domain, |p| if let Patch::Shadows(p) = p { Some(p) } else { None });
             let s = WorldShadowSettings { floor: p.world_floor.map_or(RETAIL_WORLD_SHADOW_FLOOR, Vec3::from_array) };
             match world.get_resource_mut::<WorldShadowSettings>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "backdrop" => {
+            let p = t.merged(domain, |p| if let Patch::Backdrop(p) = p { Some(p) } else { None });
+            let retail = BackdropSettings::default();
+            let s = BackdropSettings {
+                visible: p.visible.unwrap_or(retail.visible),
+                proxy_terrain: p.proxy_terrain.unwrap_or(retail.proxy_terrain),
+            };
+            match world.get_resource_mut::<BackdropSettings>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "respawn" => {
+            let p = t.merged(domain, |p| if let Patch::Respawn(p) = p { Some(p) } else { None });
+            let retail = RespawnSettings::default();
+            let s = RespawnSettings {
+                air_timeout_ticks: p.air_timeout_ticks.map_or(retail.air_timeout_ticks, |t| t as i32),
+            };
+            match world.get_resource_mut::<RespawnSettings>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "ghost" => {
+            let p = t.merged(domain, |p| if let Patch::Ghost(p) = p { Some(p) } else { None });
+            let retail = skate_core::player::ghost::GhostSettings::default();
+            let s = GhostTuning(skate_core::player::ghost::GhostSettings {
+                enabled: p.enabled.unwrap_or(retail.enabled),
+                fade_in_seconds: p.fade_in_seconds.unwrap_or(retail.fade_in_seconds),
+                hold_alpha: p.hold_alpha.unwrap_or(retail.hold_alpha),
+            });
+            match world.get_resource_mut::<GhostTuning>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "decals" => {
+            let p = t.merged(domain, |p| if let Patch::Decals(p) = p { Some(p) } else { None });
+            let s = DecalSettings { opacity: p.opacity.unwrap_or(DecalSettings::default().opacity) };
+            match world.get_resource_mut::<DecalSettings>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "exposure" => {
+            let p = t.merged(domain, |p| if let Patch::Exposure(p) = p { Some(p) } else { None });
+            let retail = ExposureMeter::default();
+            let s = ExposureMeter {
+                weights: p.meter_weights.map_or(retail.weights, Vec3::from_array),
+                scale: p.meter_scale.unwrap_or(retail.scale),
+            };
+            match world.get_resource_mut::<ExposureMeter>() {
                 Some(mut r) => *r = s,
                 None => world.insert_resource(s),
             }
@@ -378,6 +443,11 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "wake_on_command": r.wake_on_command, "by_template": by})
         }),
         "shadows" => world.get_resource::<WorldShadowSettings>().map_or(Value::Null, |s| json!({"world_floor": s.floor.to_array()})),
+        "backdrop" => world.get_resource::<BackdropSettings>().map_or(Value::Null, |s| json!({"visible": s.visible, "proxy_terrain": s.proxy_terrain})),
+        "respawn" => world.get_resource::<RespawnSettings>().map_or(Value::Null, |s| json!({"air_timeout_ticks": s.air_timeout_ticks})),
+        "exposure" => world.get_resource::<ExposureMeter>().map_or(Value::Null, |s| json!({"meter_weights": s.weights.to_array(), "meter_scale": s.scale})),
+        "decals" => world.get_resource::<DecalSettings>().map_or(Value::Null, |s| json!({"opacity": s.opacity})),
+        "ghost" => world.get_resource::<GhostTuning>().map_or(Value::Null, |s| json!({"enabled": s.0.enabled, "fade_in_seconds": s.0.fade_in_seconds, "hold_alpha": s.0.hold_alpha})),
         _ => Value::Null,
     }
 }
@@ -392,7 +462,109 @@ mod tests {
         w.init_resource::<PropTuningSettings>();
         w.init_resource::<CarrySettings>();
         w.init_resource::<WorldShadowSettings>();
+        w.init_resource::<BackdropSettings>();
+        w.init_resource::<RespawnSettings>();
+        w.init_resource::<ExposureMeter>();
+        w.init_resource::<GhostTuning>();
+        w.init_resource::<DecalSettings>();
         w
+    }
+
+    #[test]
+    fn decals_default_to_retail_set_and_reset_on_disable() {
+        let mut w = world();
+        assert_eq!(read(&w, "decals"), json!({"opacity": 1.0f32}), "retail blends decals at full strength");
+        set(&mut w, "dev.a", "decals", Some(json!({"opacity": 0.35}))).unwrap();
+        set(&mut w, "dev.b", "decals", Some(json!({"opacity": 0.8}))).unwrap();
+        assert_eq!(w.resource::<DecalSettings>().opacity, 0.35, "first writer wins");
+        assert!(set(&mut w, "dev.a", "decals", Some(json!({"opacity": 1.5}))).is_err());
+        assert!(set(&mut w, "dev.a", "decals", Some(json!({"strength": 1}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<DecalSettings>().opacity, 0.8);
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<DecalSettings>(), DecalSettings::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn ghost_fade_defaults_to_retail_set_and_reset_on_disable() {
+        let mut w = world();
+        assert_eq!(read(&w, "ghost"), json!({"enabled": true, "fade_in_seconds": 1.0f32, "hold_alpha": 0.68f32}));
+        set(&mut w, "dev.a", "ghost", Some(json!({"fade_in_seconds": 2.5}))).unwrap();
+        set(&mut w, "dev.b", "ghost", Some(json!({"fade_in_seconds": 0.5, "enabled": false}))).unwrap();
+        let g = w.resource::<GhostTuning>().0;
+        assert_eq!(g.fade_in_seconds, 2.5, "first writer wins");
+        assert!(!g.enabled, "unset field from the next writer");
+        assert!(set(&mut w, "dev.a", "ghost", Some(json!({"fade_in_seconds": -1.0}))).is_err());
+        assert!(set(&mut w, "dev.a", "ghost", Some(json!({"hold_alpha": 2.0}))).is_err());
+        assert!(set(&mut w, "dev.a", "ghost", Some(json!({"colour": 1}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<GhostTuning>().0.fade_in_seconds, 0.5);
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<GhostTuning>(), GhostTuning::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn exposure_meter_defaults_to_retail_set_and_reset_on_disable() {
+        let mut w = world();
+        assert_eq!(*w.resource::<ExposureMeter>(), ExposureMeter { weights: Vec3::new(0.3, 0.4, 0.3), scale: 2.515 });
+        set(&mut w, "dev.a", "exposure", Some(json!({"meter_weights": [0.2126, 0.7152, 0.0722]}))).unwrap();
+        set(&mut w, "dev.b", "exposure", Some(json!({"meter_weights": [1.0, 0.0, 0.0], "meter_scale": 3.0}))).unwrap();
+        let m = *w.resource::<ExposureMeter>();
+        assert_eq!(m.weights, Vec3::new(0.2126, 0.7152, 0.0722), "first writer wins");
+        assert_eq!(m.scale, 3.0, "unset field from the next writer");
+        assert_eq!(read(&w, "exposure")["meter_scale"], json!(3.0f32));
+        assert!(set(&mut w, "dev.a", "exposure", Some(json!({"meter_scale": -2.0}))).is_err());
+        clear_owner(&mut w, "dev.b");
+        assert_eq!(w.resource::<ExposureMeter>().scale, 2.515);
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<ExposureMeter>(), ExposureMeter::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn respawn_air_timeout_defaults_to_retail_set_and_reset_on_disable() {
+        let mut w = world();
+        assert_eq!(w.resource::<RespawnSettings>().air_timeout_ticks, 300, "retail count > 300");
+        assert_eq!(read(&w, "respawn"), json!({"air_timeout_ticks": 300}));
+        set(&mut w, "dev.a", "respawn", Some(json!({"air_timeout_ticks": 120}))).unwrap();
+        set(&mut w, "dev.b", "respawn", Some(json!({"air_timeout_ticks": 600}))).unwrap();
+        assert_eq!(w.resource::<RespawnSettings>().air_timeout_ticks, 120, "first writer wins");
+        assert!(set(&mut w, "dev.a", "respawn", Some(json!({"air_timeout_ticks": 0}))).is_err());
+        assert_eq!(w.resource::<RespawnSettings>().air_timeout_ticks, 120, "a rejected patch keeps the old one");
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<RespawnSettings>().air_timeout_ticks, 600, "the next mod's patch applies");
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<RespawnSettings>(), RespawnSettings::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn backdrop_visible_by_default_set_and_reset_on_disable() {
+        let mut w = world();
+        assert!(w.resource::<BackdropSettings>().visible, "retail draws the backdrop");
+        set(&mut w, "dev.a", "backdrop", Some(json!({"visible": false}))).unwrap();
+        set(&mut w, "dev.b", "backdrop", Some(json!({"visible": true}))).unwrap();
+        assert!(!w.resource::<BackdropSettings>().visible, "first writer wins");
+        assert_eq!(read(&w, "backdrop"), json!({"visible": false, "proxy_terrain": true}));
+        assert!(set(&mut w, "dev.a", "backdrop", Some(json!({"visible": "no"}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert!(w.resource::<BackdropSettings>().visible);
+        set(&mut w, "dev.a", "backdrop", Some(json!({"visible": false}))).unwrap();
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<BackdropSettings>(), BackdropSettings::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn proxy_terrain_defaults_to_retail_set_and_reset_on_disable() {
+        let mut w = world();
+        assert!(w.resource::<BackdropSettings>().proxy_terrain, "retail draws the unpaired proxy cells");
+        set(&mut w, "dev.a", "backdrop", Some(json!({"proxy_terrain": false}))).unwrap();
+        set(&mut w, "dev.b", "backdrop", Some(json!({"proxy_terrain": true, "visible": false}))).unwrap();
+        let s = *w.resource::<BackdropSettings>();
+        assert!(!s.proxy_terrain && !s.visible, "first writer per field");
+        assert!(set(&mut w, "dev.a", "backdrop", Some(json!({"proxy_terrain": 1}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert!(w.resource::<BackdropSettings>().proxy_terrain, "mod stop restores retail");
+        clear_owner(&mut w, "dev.b");
+        assert_eq!(*w.resource::<BackdropSettings>(), BackdropSettings::default());
     }
 
     #[test]

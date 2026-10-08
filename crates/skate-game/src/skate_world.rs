@@ -67,7 +67,10 @@ struct Triangle {
     class: RenderClass,
 }
 
-pub(crate) fn spawn(
+/// Static geometry of one package, partitioned into draws; `tag` goes on
+/// every draw.
+#[allow(clippy::too_many_arguments)]
+fn spawn_static<T: Bundle + Clone>(
     map: &SkateMap,
     tuning: &crate::retail_render::MaterialTuning,
     environment: &crate::retail_sky::SkyEnvironment,
@@ -76,8 +79,8 @@ pub(crate) fn spawn(
     materials: &mut impl AssetSink<WorldMaterial>,
     images: &mut impl AssetSink<Image>,
     buffers: &mut impl AssetSink<bevy::render::storage::ShaderStorageBuffer>,
-) -> SceneStats {
-    let _span = info_span!("spawn_world").entered();
+    tag: T,
+) -> (SceneStats, [usize; RenderClass::ALL.len()]) {
     let table = MaterialTable::build(map, tuning, environment, materials, images, buffers);
 
     let mut triangles: Vec<Triangle> = Vec::with_capacity(map.geometry.indices.len() / 3);
@@ -128,11 +131,67 @@ pub(crate) fn spawn(
                 // Precomputed so Bevy's CalculateBounds never walks this mesh
                 // (RFC 1 D4). The extents were already computed while merging.
                 aabb,
+                tag.clone(),
             ));
             stats.draws += 1;
         }
     }
+    (stats, per_class)
+}
 
+/// The district's global presentation model (`private/native-backdrops/<map>.skate`:
+/// ocean surfaces, distant tree walls, far sea planes), drawn through the same
+/// retail material path as the district. Every draw carries
+/// [`crate::retail_backdrop::Backdrop`] so its visibility follows
+/// `BackdropSettings` (mod-reachable). No lights, no collision.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_backdrop(
+    map: &SkateMap,
+    tuning: &crate::retail_render::MaterialTuning,
+    environment: &crate::retail_sky::SkyEnvironment,
+    commands: &mut SceneCommands,
+    meshes: &mut impl AssetSink<Mesh>,
+    materials: &mut impl AssetSink<WorldMaterial>,
+    images: &mut impl AssetSink<Image>,
+    buffers: &mut impl AssetSink<bevy::render::storage::ShaderStorageBuffer>,
+) -> SceneStats {
+    let _span = info_span!("spawn_backdrop").entered();
+    let tag = crate::retail_backdrop::Backdrop;
+    spawn_static(map, tuning, environment, commands, meshes, materials, images, buffers, tag).0
+}
+
+/// The unpaired far-proxy cells (`private/native-backdrops/<map>.proxy.skate`,
+/// see [`crate::retail_backdrop`]): every draw carries
+/// [`crate::retail_backdrop::ProxyTerrain`]. No lights, no collision.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_proxy_terrain(
+    map: &SkateMap,
+    tuning: &crate::retail_render::MaterialTuning,
+    environment: &crate::retail_sky::SkyEnvironment,
+    commands: &mut SceneCommands,
+    meshes: &mut impl AssetSink<Mesh>,
+    materials: &mut impl AssetSink<WorldMaterial>,
+    images: &mut impl AssetSink<Image>,
+    buffers: &mut impl AssetSink<bevy::render::storage::ShaderStorageBuffer>,
+) -> SceneStats {
+    let _span = info_span!("spawn_proxy_terrain").entered();
+    let tag = crate::retail_backdrop::ProxyTerrain;
+    spawn_static(map, tuning, environment, commands, meshes, materials, images, buffers, tag).0
+}
+
+pub(crate) fn spawn(
+    map: &SkateMap,
+    tuning: &crate::retail_render::MaterialTuning,
+    environment: &crate::retail_sky::SkyEnvironment,
+    commands: &mut SceneCommands,
+    meshes: &mut impl AssetSink<Mesh>,
+    materials: &mut impl AssetSink<WorldMaterial>,
+    images: &mut impl AssetSink<Image>,
+    buffers: &mut impl AssetSink<bevy::render::storage::ShaderStorageBuffer>,
+) -> SceneStats {
+    let _span = info_span!("spawn_world").entered();
+    let (stats, per_class) =
+        spawn_static(map, tuning, environment, commands, meshes, materials, images, buffers, ());
     spawn_lights(map, commands);
     eprintln!(
         "SKATE_RENDER_READY draws={} triangles={} slabs={} materials={} \

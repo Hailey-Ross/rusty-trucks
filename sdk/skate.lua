@@ -998,14 +998,31 @@ function sdk.audio.seed(n) end
 --   object's shadow (skaters, cars, props, mod graphics) can leave on the baked world. Retail adds it
 --   to the shadow map and keeps the darker of that and the baked lightmap, so shadows that fall into
 --   baked shade (a car on a bridge over shaded ground) leave no mark; 0 = full-strength shadows.
+-- 'backdrop': visible (retail true): the district's global presentation model (Industrial's sea
+--   around the docks and harbour, the far sea planes, distant tree walls); false hides it.
+--   proxy_terrain (retail true): the far-proxy hills retail draws where no full-detail cell
+--   replaces them (Industrial's south hills under the tree wall); false hides them.
+-- 'respawn': air_timeout_ticks (retail 300, integer 1..216000): fixed 1/60 s ticks a skater may stay
+--   in the air before the game sends them to the last safe checkpoint (retail: 5 s, e.g. falling off
+--   the map). The wipeout auto reset keeps its own vault times.
+-- 'exposure': the auto-exposure meter. meter_weights = {r, g, b} (each 0..1; retail {0.3, 0.4, 0.3}):
+--   how much each channel of the tone-mapped frame counts towards its brightness; meter_scale (0..100;
+--   retail 2.515): the factor on the centre-weighted average before it is compared with the area's
+--   target. A higher reading lowers the exposure.
+-- 'ghost': the skater fades in after every placement (checkpoint respawn, teleport, session marker
+--   return, spawn). enabled (retail true); fade_in_seconds (retail 1.0, 0..60, 0 = no fade): seconds from
+--   placement to fully solid; hold_alpha (retail 0.68, 0..1): the opacity retail waits at while its hold
+--   condition is set (not decoded yet, so it has no effect now).
+-- 'decals': opacity (retail 1.0, 0..1): strength of every world decal (stains, wear, graphics) over its
+--   surface. Retail blends each decal at its own texture alpha; lower values fade them. Applies at once.
 sdk.world = {}
 ---Set (a table) or restore (`nil`) this mod's patch of a world tuning domain.
----@param domain 'living_world'|'props'|'carry'|'shadows'
+---@param domain 'living_world'|'props'|'carry'|'shadows'|'backdrop'|'respawn'|'exposure'|'ghost'|'decals'
 ---@param patch table|nil
 function sdk.world.set_tuning(domain, patch) end
 ---Request a domain as the game uses it now; read it as `sdk.commands.result(key).value`.
 ---@param key string command result key
----@param domain 'living_world'|'props'|'carry'|'shadows'
+---@param domain 'living_world'|'props'|'carry'|'shadows'|'backdrop'|'respawn'|'exposure'|'ghost'|'decals'
 function sdk.world.tuning(key, domain) end
 
 -- Audio tuning (capability `audio_tuning`): patch the game's typed tuning while this mod runs.

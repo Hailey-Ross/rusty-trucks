@@ -380,7 +380,15 @@ function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",a
 -- yaw_replaces_torque, ignore_vertical, wake_on_command, by_template[<MOBJ template>] = {material_held, material_free,
 -- material_free_upright, upright_pair, restitution, record_272})
 -- or the dynamic shadow floor on the baked world ("shadows": world_floor =
--- {r, g, b}, each 0..1, retail {0.05, 0.09, 0.13}) while this mod runs; nil restores
+-- {r, g, b}, each 0..1, retail {0.05, 0.09, 0.13}) or the district backdrop ("backdrop": visible,
+-- retail true: Industrial's sea, far sea planes, tree walls; proxy_terrain, retail true: the far-proxy hills
+-- under Industrial's south tree wall) or the checkpoint respawn ("respawn": air_timeout_ticks, retail 300 =
+-- 5 s of 1/60 s ticks in the air before the skater is sent to the last checkpoint, 1..216000) or the
+-- auto-exposure meter ("exposure": meter_weights, retail {0.3, 0.4, 0.3}; meter_scale, retail 2.515) or the skater
+-- fade-in after every placement ("ghost": enabled, retail true; fade_in_seconds, retail 1.0, 0..60; hold_alpha,
+-- retail 0.68, 0..1) or the world decals ("decals": opacity, retail 1.0, 0..1: strength of every decal over
+-- its surface, applied at once) while this mod
+-- runs; nil restores
 -- this mod's patch of the domain, everything is restored when the mod stops. First writer wins.
 sdk.world = { version = 1 }
 function sdk.world.set_tuning(domain, patch) submit{kind="world_set_tuning",domain=domain,patch=patch} end

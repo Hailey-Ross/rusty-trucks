@@ -258,12 +258,19 @@ pub(super) fn publish(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
             .publish_output(&mut skater.player_input.physical);
     }
     // ProcessOutput calls 82DB8120 after component and selected-state Fill.
-    skate_core::player::input_phase::publish_special_surface(
+    let boundary = skate_core::player::input_phase::publish_special_surface(
         &mut skater.player_input.physical,
         &skater.player_input.processed,
         &mut skater.player_state.state_flags,
         physics.riding.ground.collision_flags,
         physics.riding.ground.surface_twelve_height,
     );
+    if let Some(contact) = boundary {
+        // Type-6 `physics_unrideable` raised +69: the checkpoint reset is a boundary reset.
+        let position = skater.animated_skeleton.roots.animation_to_world[3];
+        skater
+            .respawn
+            .note_boundary(contact, [position[0], position[1], position[2]]);
+    }
     Ok(())
 }
