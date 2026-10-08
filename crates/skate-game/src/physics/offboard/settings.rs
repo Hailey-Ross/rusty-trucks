@@ -22,6 +22,34 @@ pub(crate) fn load_object_move_curves(
     })
 }
 
+/// Move Object tuning, attribute class `3EDA5B140604613D` key `default`
+/// (read by 82D444A0 / 82D45318). Image constants keep their defaults.
+pub(crate) fn load_move_object_tuning(
+    data: &Collections,
+) -> Result<skate_core::player::offboard::move_object::MoveObjectTuning, String> {
+    use skate_core::player::offboard::move_object::{ControllerGains, MoveObjectTuning};
+    const CLASS: &str = "Hash_3EDA5B140604613D";
+    let f = |name: &str| data.float(CLASS, "default", name);
+    let curve = |name: &str| curves::load::<8>(data, CLASS, name).map(|c| c.0);
+    let gains = |name: &str| data.words::<4>(CLASS, "default", name).map(ControllerGains::from_words);
+    Ok(MoveObjectTuning {
+        push_speed: f("Hash_2258076B612569A9")?,
+        pull_speed: f("Hash_F1C038722EC7D0C6")?,
+        side_speed: f("Hash_096A4FA6489E5541")?,
+        lever_rotation: curve("Hash_E4FF0185DA44CDBD")?,
+        lever_yaw: curve("Hash_BFB3BEF0BB2661C0")?,
+        mass_speed: curve("Hash_57D37D696363167E")?,
+        inertia_yaw_gain: curve("Hash_EABFCC79873A2859")?,
+        yaw_clamp: f("Hash_AD327350D151B1E3")?,
+        linear_clamp: f("Hash_791421DDAF54C2D5")?,
+        relatch: f("Hash_557FA142008FD7CE")?,
+        lift_gain: f("Hash_FDE807D9B85A6AC2")?,
+        linear_controller: gains("Hash_DF79539DBDA006EE")?,
+        yaw_controller: gains("Hash_B46764285AD1DC5F")?,
+        ..MoveObjectTuning::default()
+    })
+}
+
 pub(crate) struct Settings {
     pub controller: controller::Settings,
     pub board: skate_core::player::offboard::ground_sync::BoardSettings,

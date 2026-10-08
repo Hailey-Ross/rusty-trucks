@@ -422,6 +422,7 @@ impl GamePhysics {
                 prop_carry = prop_carry::PropCarry::with_layout(layout, Some(path));
             }
         }
+        prop_carry.set_base_tuning(settings.move_object);
         let grind_world = std::sync::Arc::new(if map.is_none() && terrain == ground::Terrain::Course {
             crate::grind_world::StaticProvider::authored(&crate::grind_world::test_rails())?
         } else { crate::grind_world::StaticProvider::new(map)? });

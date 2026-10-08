@@ -17,7 +17,7 @@ use skate_core::math::Vector3;
 use skate_mods::world_tuning::{parse, CarryPatch, LivingWorldPatch, Merge, Patch, PropTuningPatch, PropsPatch, DOMAINS};
 
 use crate::living_world::LivingWorldSettings;
-use crate::physics::prop_carry::{CarryButtons, CarryLocomotion, CarrySettings};
+use crate::physics::prop_carry::{CarryButtons, CarrySettings, LocomotionOverrides};
 use crate::physics::prop_dynamics::{PropBox, PropTuning, PropTuningSettings, PropTuningTable};
 
 /// Per-owner patches, in arrival order (a re-set keeps the owner's place).
@@ -197,14 +197,42 @@ pub(crate) fn carry_settings(p: &CarryPatch) -> CarrySettings {
     CarrySettings {
         buttons: CarryButtons { grab_bit: p.grab_bit.unwrap_or(d.buttons.grab_bit), placement_bit: p.placement_bit.unwrap_or(d.buttons.placement_bit) },
         grab_range: p.grab_range.filter(|r| *r > 0.0).unwrap_or(d.grab_range),
-        locomotion: CarryLocomotion {
-            push_speed: p.push_speed.unwrap_or(d.locomotion.push_speed),
-            pull_speed: p.pull_speed.unwrap_or(d.locomotion.pull_speed),
-            side_speed: p.side_speed.unwrap_or(d.locomotion.side_speed),
-            turn_rate: p.turn_rate.unwrap_or(d.locomotion.turn_rate),
-            grip_reach: p.grip_reach.unwrap_or(d.locomotion.grip_reach),
-        }
-        .sanitized(),
+        locomotion: LocomotionOverrides {
+            push_speed: p.push_speed,
+            pull_speed: p.pull_speed,
+            side_speed: p.side_speed,
+            turn_rate: p.turn_rate,
+            grip_reach: p.grip_reach,
+            linear_clamp: p.linear_clamp,
+            yaw_clamp: p.yaw_clamp,
+            relatch: p.relatch,
+            slew_per_tick: p.slew_per_tick,
+            yaw_rate_feedback: p.yaw_rate_feedback,
+            linear_controller: p.linear_controller,
+            yaw_controller: p.yaw_controller,
+            lever_rotation: p.lever_rotation,
+            lever_yaw: p.lever_yaw,
+            mass_speed: p.mass_speed,
+            inertia_yaw_gain: p.inertia_yaw_gain,
+            let_go_distance: p.let_go_distance,
+        },
+        move_rules: {
+            let r = crate::physics::prop_dynamics::MoveCommandRules::default();
+            crate::physics::prop_dynamics::MoveCommandRules {
+                commanded_material: p.commanded_material.unwrap_or(r.commanded_material),
+                by_template: p
+                    .by_template
+                    .iter()
+                    .map(|(k, v)| {
+                        (k.clone(), crate::physics::prop_dynamics::PropMaterialBlocks { held: v.material_held, free: v.material_free })
+                    })
+                    .collect(),
+                apply_at_com: p.apply_at_com.unwrap_or(r.apply_at_com),
+                yaw_replaces_torque: p.yaw_replaces_torque.unwrap_or(r.yaw_replaces_torque),
+                ignore_vertical: p.ignore_vertical.unwrap_or(r.ignore_vertical),
+                wake_on_command: p.wake_on_command.unwrap_or(r.wake_on_command),
+            }
+        },
     }
 }
 
@@ -242,10 +270,30 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             json!({"default": tuning(&s.0.default), "by_template": by})
         }),
         "carry" => world.get_resource::<CarrySettings>().map_or(Value::Null, |c| {
-            let l = c.locomotion;
+            // The tuning in effect: the live carry's base (setup data) with this patch applied.
+            let base = world.get_resource::<crate::physics::GamePhysics>().map_or_else(
+                crate::physics::prop_carry::CarryLocomotion::default,
+                |p| p.prop_carry.base_locomotion(),
+            );
+            let l = c.locomotion.apply(base);
+            let m = l.move_object;
+            let g = |g: skate_core::player::offboard::move_object::ControllerGains| json!([g.proportional, g.filtered, g.derivative, g.filter]);
+            let curve = |c: skate_core::point_graph::PointGraph<8>| json!([c.x, c.y]);
+            let r = &c.move_rules;
+            let by: serde_json::Map<String, Value> = r
+                .by_template
+                .iter()
+                .map(|(k, b)| (k.clone(), json!({"material_held": b.held, "material_free": b.free})))
+                .collect();
             json!({"grab_bit": c.buttons.grab_bit, "placement_bit": c.buttons.placement_bit, "grab_range": c.grab_range,
-                "push_speed": l.push_speed, "pull_speed": l.pull_speed, "side_speed": l.side_speed, "turn_rate": l.turn_rate,
-                "grip_reach": l.grip_reach})
+                "push_speed": m.push_speed, "pull_speed": m.pull_speed, "side_speed": m.side_speed, "turn_rate": l.turn_rate,
+                "grip_reach": l.grip_reach, "linear_clamp": m.linear_clamp, "yaw_clamp": m.yaw_clamp, "relatch": m.relatch,
+                "slew_per_tick": m.slew_per_tick, "yaw_rate_feedback": m.yaw_rate_feedback, "linear_controller": g(m.linear_controller), "yaw_controller": g(m.yaw_controller),
+                "lever_rotation": curve(m.lever_rotation), "lever_yaw": curve(m.lever_yaw), "mass_speed": curve(m.mass_speed),
+                "inertia_yaw_gain": curve(m.inertia_yaw_gain), "let_go_distance": l.let_go_distance,
+                "commanded_material": r.commanded_material, "apply_at_com": r.apply_at_com,
+                "yaw_replaces_torque": r.yaw_replaces_torque, "ignore_vertical": r.ignore_vertical,
+                "wake_on_command": r.wake_on_command, "by_template": by})
         }),
         _ => Value::Null,
     }
@@ -368,34 +416,65 @@ mod tests {
 
     #[test]
     fn carry_move_object_speeds_set_and_reset() {
+        use crate::physics::prop_carry::CarryLocomotion;
         let mut w = world();
-        set(&mut w, "dev.a", "carry", Some(json!({"push_speed": 2.5, "turn_rate": 0.4}))).unwrap();
-        let c = *w.resource::<CarrySettings>();
-        let d = CarryLocomotion::default();
-        assert_eq!((c.locomotion.push_speed, c.locomotion.turn_rate), (2.5, 0.4));
-        assert_eq!((c.locomotion.pull_speed, c.locomotion.side_speed), (d.pull_speed, d.side_speed), "unset fields keep defaults");
+        set(&mut w, "dev.a", "carry", Some(json!({"push_speed": 2.5, "turn_rate": 0.4, "yaw_controller": [10.0, 0.0, 20.0, 0.2], "yaw_rate_feedback": 0.0,
+            "mass_speed": [[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]]}))).unwrap();
+        let c = w.resource::<CarrySettings>().clone();
+        assert_eq!((c.locomotion.push_speed, c.locomotion.turn_rate), (Some(2.5), Some(0.4)));
+        assert_eq!(c.locomotion.pull_speed, None, "unset fields stay unset");
         let mut carry = crate::physics::prop_carry::PropCarry::default();
+        // Base from the setup data (a mod-changed base proves the overrides sit on top of it).
+        let mut base = skate_core::player::offboard::move_object::MoveObjectTuning::default();
+        base.pull_speed = 1.75;
+        carry.set_base_tuning(base);
         c.apply_to(&mut carry);
-        assert_eq!(carry.locomotion().push_speed, 2.5);
+        let l = carry.locomotion();
+        assert_eq!((l.move_object.push_speed, l.move_object.pull_speed, l.turn_rate), (2.5, 1.75, Some(0.4)));
+        assert_eq!(l.move_object.yaw_controller.derivative, 20.0);
+        assert_eq!(l.move_object.yaw_rate_feedback, 0.0, "a mod may switch the yaw-rate feedback off");
+        assert_eq!(l.move_object.mass_speed.y, [1.0; 8]);
         assert_eq!(read(&w, "carry")["turn_rate"], json!(0.4f32));
         clear_owner(&mut w, "dev.a");
-        let reset = *w.resource::<CarrySettings>();
-        assert_eq!(reset, CarrySettings::default(), "mod disable restores the engine speeds");
+        let reset = w.resource::<CarrySettings>().clone();
+        assert_eq!(reset, CarrySettings::default(), "mod disable restores the retail tuning");
         reset.apply_to(&mut carry);
-        assert_eq!(carry.locomotion(), d);
+        assert_eq!(carry.locomotion(), CarryLocomotion::from_tuning(base));
+        // Invalid values are rejected by the patch validation.
+        assert!(set(&mut w, "dev.a", "carry", Some(json!({"linear_controller": [1.0, 0.0, 1.0, 2.0]}))).is_err());
+        assert!(set(&mut w, "dev.a", "carry", Some(json!({"yaw_rate_feedback": -1.0}))).is_err());
+    }
+
+    /// The Move Object command rules (retail defaults) are mod knobs, per prop
+    /// type blocks included, and go back to retail on mod disable.
+    #[test]
+    fn carry_move_command_rules_set_and_reset() {
+        use crate::physics::prop_dynamics::{MoveCommandRules, PropMaterialBlocks, RETAIL_COMMANDED_MATERIAL};
+        let mut w = world();
+        assert_eq!(read(&w, "carry")["commanded_material"], json!(RETAIL_COMMANDED_MATERIAL));
+        assert_eq!(read(&w, "carry")["apply_at_com"], json!(true));
+        set(&mut w, "dev.a", "carry", Some(json!({"commanded_material": [0.2, 0.0], "apply_at_com": false, "wake_on_command": false,
+            "by_template": {"template/bin": {"material_held": [0.5, 0.0], "material_free": [0.9, 0.1]}}}))).unwrap();
+        let r = w.resource::<CarrySettings>().move_rules.clone();
+        assert_eq!(r.commanded_material, [0.2, 0.0]);
+        assert!(!r.apply_at_com && !r.wake_on_command && r.yaw_replaces_torque && r.ignore_vertical);
+        assert_eq!(r.by_template["template/bin"], PropMaterialBlocks { held: Some([0.5, 0.0]), free: Some([0.9, 0.1]) });
+        assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["material_free"], json!([0.9f32, 0.1f32]));
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<CarrySettings>().move_rules, MoveCommandRules::default(), "mod disable restores retail");
     }
 
     #[test]
     fn carry_buttons_and_grab_range_set_and_reset() {
         let mut w = world();
         set(&mut w, "dev.a", "carry", Some(json!({"grab_bit": 21, "placement_bit": 22, "grab_range": 3.5}))).unwrap();
-        let c = *w.resource::<CarrySettings>();
+        let c = w.resource::<CarrySettings>().clone();
         assert_eq!((c.buttons.grab_bit, c.buttons.placement_bit, c.grab_range), (21, 22, 3.5));
         let mut carry = crate::physics::prop_carry::PropCarry::default();
         c.apply_to(&mut carry);
         assert_eq!((carry.buttons().grab_bit, carry.grab_range()), (21, 3.5));
         clear_owner(&mut w, "dev.a");
-        let d = *w.resource::<CarrySettings>();
+        let d = w.resource::<CarrySettings>().clone();
         assert_eq!(d, CarrySettings::default());
         d.apply_to(&mut carry);
         assert_eq!((carry.buttons(), carry.grab_range()), (CarryButtons::default(), 2.0));

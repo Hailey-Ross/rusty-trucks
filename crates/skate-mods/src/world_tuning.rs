@@ -19,10 +19,16 @@
 //!   step_height}` (props and mod bodies as ped navigation obstacles; retail on / 0.2 / 0.4 / 0.25),
 //!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on).
 //! - `props`: `default` and `by_template[<MOBJ template name>]`, each a [`PropTuningPatch`].
-//! - `carry`: `grab_bit`, `placement_bit`, `grab_range`, and the Move Object speeds while
-//!   holding a prop: `push_speed`, `pull_speed`, `side_speed` (m/s at full left stick) and
-//!   `turn_rate` (rad/s at full right stick X), and `grip_reach` (m between the skater and the
-//!   dragged prop's near face).
+//! - `carry`: `grab_bit`, `placement_bit`, `grab_range`, and the Move Object tuning while
+//!   holding a prop (retail defaults from attribute class 3EDA5B140604613D): `push_speed`,
+//!   `pull_speed`, `side_speed` (target m/s at full left stick, retail 3.0 / 2.0 / 2.5),
+//!   `turn_rate` (constant yaw gain replacing the retail inertia curve), `grip_reach` (m between
+//!   the grab edge and the skater), `linear_clamp` / `yaw_clamp` (command clamps, 20 / 6),
+//!   `relatch` (rad, 0.1), `slew_per_tick` (4), `yaw_rate_feedback` (60: the per-tick facing
+//!   change times this is the measured yaw rate the yaw controller tracks; 0 = off),
+//!   `linear_controller` / `yaw_controller`
+//!   (`[p, filtered, d, filter]`, 20 / 0 / 40 / 0.1), the curves `lever_rotation`, `lever_yaw`,
+//!   `mass_speed`, `inertia_yaw_gain` (`[[8 x], [8 y]]`) and `let_go_distance` (m).
 
 use std::collections::BTreeMap;
 
@@ -169,8 +175,56 @@ pub struct CarryPatch {
     pub side_speed: Option<f32>,
     /// Move Object turn, rad/s at full right stick X (engine default 1.6).
     pub turn_rate: Option<f32>,
-    /// Gap in metres between the skater and the dragged prop's near face (engine default 0.35).
+    /// Gap in metres between the grab edge and the skater (engine default 0.35).
     pub grip_reach: Option<f32>,
+    /// Linear command clamp (retail 20).
+    pub linear_clamp: Option<f32>,
+    /// Yaw command clamp (retail 6).
+    pub yaw_clamp: Option<f32>,
+    /// Heading re-latch threshold in rad (retail 0.1).
+    pub relatch: Option<f32>,
+    /// Max change of the linear command per tick (retail 4).
+    pub slew_per_tick: Option<f32>,
+    /// Yaw-rate feedback factor (retail 60 = 1/dt, 0x822F860C): facing change per
+    /// tick x this = measured yaw rate subtracted from the yaw target; 0 = off.
+    pub yaw_rate_feedback: Option<f32>,
+    /// Linear controller `[p, filtered, d, filter]` (retail 20, 0, 40, 0.1).
+    pub linear_controller: Option<[f32; 4]>,
+    /// Yaw controller `[p, filtered, d, filter]` (retail 20, 0, 40, 0.1).
+    pub yaw_controller: Option<[f32; 4]>,
+    /// Curve |lever| -> rotation demand, `[[8 x], [8 y]]`.
+    pub lever_rotation: Option<[[f32; 8]; 2]>,
+    /// Curve |lever| -> yaw-rate factor.
+    pub lever_yaw: Option<[[f32; 8]; 2]>,
+    /// Curve mass -> speed scale.
+    pub mass_speed: Option<[[f32; 8]; 2]>,
+    /// Curve yaw inertia -> yaw gain.
+    pub inertia_yaw_gain: Option<[[f32; 8]; 2]>,
+    /// Metres the skater may fall behind its grab point before letting go (engine default 1.0).
+    pub let_go_distance: Option<f32>,
+    /// Parameter block `[a, b]` every held (commanded) prop switches to (retail [0.03, 0.02]).
+    pub commanded_material: Option<[f32; 2]>,
+    /// Linear command at the centre of mass (retail true; false = at the grip point, lever torque).
+    pub apply_at_com: Option<bool>,
+    /// Yaw command replaces the prop's angular accumulator (retail true; false = added).
+    pub yaw_replaces_torque: Option<bool>,
+    /// Vertical command dropped (retail true).
+    pub ignore_vertical: Option<bool>,
+    /// Every command wakes the prop (retail true; false = only a non-zero command).
+    pub wake_on_command: Option<bool>,
+    /// Per prop type (MOBJ template name) held / free parameter blocks.
+    #[serde(default)]
+    pub by_template: BTreeMap<String, CarryMaterialPatch>,
+}
+
+/// Per prop type parameter blocks `[a, b]` of `carry.by_template`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CarryMaterialPatch {
+    /// Block while held (default: `commanded_material`).
+    pub material_held: Option<[f32; 2]>,
+    /// Block when let go (default: the prop's authored material).
+    pub material_free: Option<[f32; 2]>,
 }
 
 /// Field-wise "first writer wins": `self` keeps its fields, `later` fills the gaps.
@@ -255,7 +309,13 @@ impl Merge for PropsPatch {
 }
 impl Merge for CarryPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed, turn_rate, grip_reach);
+        merge_opts!(self, b; grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed, turn_rate, grip_reach,
+            linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller, lever_rotation, lever_yaw,
+            mass_speed, inertia_yaw_gain, let_go_distance, commanded_material, apply_at_com, yaw_replaces_torque,
+            ignore_vertical, wake_on_command);
+        for (k, v) in &b.by_template {
+            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free); }).or_insert_with(|| v.clone());
+        }
     }
 }
 
@@ -304,10 +364,29 @@ impl CarryPatch {
         self.grab_bit.is_none_or(|b| b < 32)
             && self.placement_bit.is_none_or(|b| b < 32)
             && finite(self.grab_range)
-            && [self.push_speed, self.pull_speed, self.side_speed, self.turn_rate, self.grip_reach]
+            && [self.push_speed, self.pull_speed, self.side_speed, self.turn_rate, self.grip_reach,
+                self.linear_clamp, self.yaw_clamp, self.relatch, self.slew_per_tick, self.yaw_rate_feedback, self.let_go_distance]
                 .into_iter()
                 .all(|v| finite(v) && v.is_none_or(|v| v >= 0.0))
+            && [self.linear_controller, self.yaw_controller]
+                .into_iter()
+                .flatten()
+                .all(|g| g.iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(&g[3]))
+            && [self.lever_rotation, self.lever_yaw, self.mass_speed, self.inertia_yaw_gain]
+                .into_iter()
+                .flatten()
+                .all(|c| c.iter().flatten().all(|v| v.is_finite()) && c[0].windows(2).all(|p| p[0] <= p[1]))
+            && self.commanded_material.is_none_or(material_block)
+            && self.by_template.len() <= MAX_TEMPLATES
+            && self.by_template.iter().all(|(k, v)| {
+                !k.is_empty() && k.len() <= 128 && v.material_held.is_none_or(material_block) && v.material_free.is_none_or(material_block)
+            })
     }
+}
+
+/// A parameter block: two finite, non-negative values.
+fn material_block(b: [f32; 2]) -> bool {
+    b.iter().all(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(v))
 }
 
 /// A parsed patch of one domain.
@@ -376,6 +455,12 @@ mod tests {
         assert!(!valid_patch("carry", &json!({"pull_speed": -1.0})));
         assert!(valid_patch("carry", &json!({"grip_reach": 0.5})));
         assert!(!valid_patch("carry", &json!({"grip_reach": -0.1})));
+        assert!(valid_patch("carry", &json!({"commanded_material": [0.1, 0.02], "apply_at_com": false, "wake_on_command": true})));
+        assert!(!valid_patch("carry", &json!({"commanded_material": [-0.1, 0.02]})));
+        assert!(valid_patch("carry", &json!({"by_template": {"bin": {"material_held": [0.2, 0.0], "material_free": [0.5, 0.1]}}})));
+        assert!(!valid_patch("carry", &json!({"by_template": {"bin": {"material_held": [0.2]}}})));
+        assert!(!valid_patch("carry", &json!({"by_template": {"bin": {"friction": 1.0}}})));
+        assert!(!valid_patch("carry", &json!({"apply_at_com": 1})));
         assert!(!valid_patch("roads", &json!({})));
         assert!(valid_inspect("world_tuning:carry") && !valid_inspect("world_tuning:x"));
     }

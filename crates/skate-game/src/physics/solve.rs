@@ -59,6 +59,12 @@ fn advance_inner(
         } else {
             skate_core::math::Vector3::new(0.0, 0.0, 1.0)
         };
+        // OB_ObjectMvX / Z / Rot (8259C4B0) drive the held prop's command.
+        let extra = &skater.animation_input.extra;
+        let carry_tick = super::prop_carry::Tick {
+            object_move: [extra.object_move_x, extra.object_move_z, extra.object_move_rotation],
+            ..carry_tick
+        };
         physics.update_prop_carry(
             carry_tick,
             super::prop_carry::Carrier {

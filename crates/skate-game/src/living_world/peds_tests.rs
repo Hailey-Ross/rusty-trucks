@@ -101,6 +101,8 @@ fn app(hz: f32) -> App {
         .init_resource::<PedRejected>()
         .init_resource::<PedNavSettings>()
         .init_resource::<PedObstacles>()
+        // Registered by the plugin next to PedObstacles (PED_OBSTACLE logging).
+        .init_resource::<PedObstacleTrace>()
         .init_resource::<Seen>()
         .add_message::<LivingWorldSpawn>()
         .add_message::<LivingWorldDespawn>()
