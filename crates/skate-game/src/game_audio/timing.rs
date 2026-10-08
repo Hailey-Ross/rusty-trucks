@@ -69,6 +69,9 @@ static MIXER_EVICTED: AtomicU64 = AtomicU64::new(0);
 /// Record one rendered block's load (when the readout is on). Reads counters only: no allocation,
 /// no state change.
 pub(crate) fn block_load(rt: &skate_audio::runtime::Runtime) {
+    // Always on (two relaxed stores per block): the `FRAME_HITCH` line's voice counts.
+    LAST_BLOCK_VOICES.store(rt.mixer.voice_count() as u64, Ordering::Relaxed);
+    LAST_BLOCK_INSTANCES.store(rt.eval.instance_count() as u64, Ordering::Relaxed);
     if !on() {
         return;
     }
@@ -112,14 +115,27 @@ pub(crate) fn scope(stat: &'static Stat) -> Scope {
 
 /// Lock `m`, recording the wait into `stat`.
 pub(crate) fn lock<'a, T>(m: &'a std::sync::Mutex<T>, stat: &'static Stat) -> std::sync::LockResult<std::sync::MutexGuard<'a, T>> {
-    if !on() {
+    if !on() && !std::ptr::eq(stat, &GAME_LOCK) {
         return m.lock();
     }
     let t = Instant::now();
     let g = m.lock();
-    stat.add(t.elapsed().as_micros() as u64);
+    let us = t.elapsed().as_micros() as u64;
+    if std::ptr::eq(stat, &GAME_LOCK) {
+        // Always on for the game thread: the `FRAME_HITCH` line's wait for the audio render.
+        FRAME_GAME_LOCK_US.fetch_add(us, Ordering::Relaxed);
+    }
+    if on() {
+        stat.add(us);
+    }
     g
 }
+
+/// Mixer voices and live AEMS instances of the last rendered block (always kept, `FRAME_HITCH`).
+pub(crate) static LAST_BLOCK_VOICES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static LAST_BLOCK_INSTANCES: AtomicU64 = AtomicU64::new(0);
+/// The game thread's wait for the native runtime's lock since the frame log last took it (µs).
+pub(crate) static FRAME_GAME_LOCK_US: AtomicU64 = AtomicU64::new(0);
 
 /// Once per second: the `AUDIO_TIMING` line (max / average µs and count per stat).
 pub(crate) fn report(time: Res<Time<Real>>, mut clock: Local<f32>, mut last: Local<(u64, u64)>) {

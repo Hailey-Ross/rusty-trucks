@@ -441,17 +441,30 @@ fn advance(
     if hud.failed || hud.generation != map.generation {
         return;
     }
-    if let Err(error) = hud.runtime.update(
+    let started = std::time::Instant::now();
+    let updated = hud.runtime.update(
         skater.scoring.hud_input(),
         skater.scoring.new_trick,
         skater.scoring.modified_trick,
         skater.scoring.close_tricks,
-    ) {
+    );
+    crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_HUD_ADVANCE, started);
+    if let Err(error) = updated {
         error!("Original scoring HUD stopped: {error}");
         hud.failed = true;
     }
 }
 fn render(
+    commands: Commands,
+    hud: Option<ResMut<Hud>>,
+    meshes: ResMut<Assets<Mesh>>,
+    materials: ResMut<Assets<HudMaterial>>,
+) {
+    let started = std::time::Instant::now();
+    render_draws(commands, hud, meshes, materials);
+    crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_HUD_RENDER, started);
+}
+fn render_draws(
     mut commands: Commands,
     hud: Option<ResMut<Hud>>,
     mut meshes: ResMut<Assets<Mesh>>,

@@ -807,13 +807,18 @@ function sdk.audio.stop_all() end
 ---@field globals? string[] up to 16 retail globals
 ---@field mixmap? AudioWatchKey[] up to 16 MixMap outputs
 ---@class AudioEvent
----@field kind "post"|"release"|"splice"|"emitter_start"|"emitter_stop"|"zone"|"speech"
+---@field kind "post"|"release"|"splice"|"emitter_start"|"emitter_stop"|"zone"|"speech"|"body_impact"
 ---@field source "player"|"world"|"npc"|"emitter"|"ambience"|"speech"
 ---@field class string retail class (posts), bank (Splice starts, emitters), "speech" / "maincast" (speech lines) or ""
 ---@field slot string the poster's slot (`grind`, `footstep`, `horn`, `ped_tazer`, `body_fall`, `ring`, …) or ""
 ---@field id integer Splice sound id, emitter patch, slot index, speech event
 ---@field owner string world / NPC object, zone key, speaker ("0" for the local player)
----@field tag? "pop"|"land"|"grind_start"|"grind_end"|"footstep"|"horn"|"alarm"|"tazer"|"body_fall"|"emitter"|"zone_change"|"speech"
+---@field tag? "pop"|"land"|"grind_start"|"grind_end"|"footstep"|"horn"|"alarm"|"tazer"|"body_fall"|"emitter"|"zone_change"|"speech"|"body_impact"
+---@field region? integer body_impact: the body region (0 head, 1 torso, 2 / 3 arms, 4 / 5 legs)
+---@field impact? number body_impact: the impact the body poster read (after the speed graph)
+---@field tier? integer[] body_impact: the pair's tiers {body material, surface} (0..2, 3 = none)
+---@field material? integer[] body_impact: {body material, surface material} (143 = none)
+---@field position? number[] body_impact: {x, y, z} where the hit plays (the skater's body point)
 ---@class AudioInfo
 ---@field native boolean the native audio runtime runs
 ---@field map_epoch? integer

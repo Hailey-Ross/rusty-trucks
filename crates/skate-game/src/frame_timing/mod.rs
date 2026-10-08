@@ -19,6 +19,7 @@
 //! Observation only: these systems read clocks and write only this module's own
 //! resource and its overlay entities (test `systems_touch_only_their_own_state`),
 //! so gameplay is identical with the readout and the log on or off.
+pub(crate) mod hitch;
 pub(crate) mod log;
 pub(crate) mod stats;
 
@@ -59,6 +60,8 @@ pub(crate) struct FrameTiming {
     steps_pending: u32,
     last_main_ms: f32,
     last_fixed_ms: f32,
+    last_median_ms: Option<f32>,
+    last_now_s: f64,
     origin: Instant,
     /// Start of the current frame: monotonic and wall clock.
     frame_started: Option<(Instant, f64)>,
@@ -87,6 +90,8 @@ impl Default for FrameTiming {
             steps_pending: 0,
             last_main_ms: 0.0,
             last_fixed_ms: 0.0,
+            last_median_ms: None,
+            last_now_s: 0.0,
             origin: Instant::now(),
             frame_started: None,
             fixed_started: None,
@@ -150,6 +155,8 @@ impl FrameTiming {
         self.last_steps = steps;
         self.last_main_ms = main_ms;
         self.last_fixed_ms = fixed_ms;
+        self.last_median_ms = median;
+        self.last_now_s = now_s;
         if self.history.len() == stats::HITCH_HISTORY {
             self.history.pop_front();
         }
@@ -177,6 +184,19 @@ impl FrameTiming {
         self.hitches = self.window.iter().filter(|s| s.hitch).count();
         self.shown = std::mem::take(&mut self.interval);
         true
+    }
+
+    /// The frame `begin_frame` closed last (the `FRAME_HITCH` line's numbers).
+    pub(crate) fn closed(&self) -> hitch::ClosedFrame {
+        hitch::ClosedFrame {
+            frame: self.frame,
+            ms: self.last_ms,
+            median_ms: self.last_median_ms,
+            main_ms: self.last_main_ms,
+            fixed_ms: self.last_fixed_ms,
+            steps: self.last_steps,
+            now_s: self.last_now_s,
+        }
     }
 
     fn now_s(&self) -> f64 {
@@ -249,6 +269,7 @@ impl Plugin for FrameTimingPlugin {
             .add_systems(RunFixedMainLoop, end_fixed.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
             .add_systems(bevy::app::FixedFirst, count_fixed_step)
             .add_systems(Last, (record, show).chain());
+        hitch::register(app);
     }
 }
 

@@ -710,6 +710,10 @@ mod water_drop_tests;
 mod audio_state_capture_tests;
 
 #[cfg(test)]
+#[path = "tests/flip_hitch_timing.rs"]
+mod flip_hitch_timing_tests;
+
+#[cfg(test)]
 #[path = "tests/trigger_points.rs"]
 mod trigger_points_tests;
 

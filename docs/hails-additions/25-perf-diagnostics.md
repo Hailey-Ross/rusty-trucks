@@ -88,6 +88,49 @@ Diagnostics only; nothing in retail Skate 3 to match. The proof obligation is th
 `cargo test -p skate-game --release --bin skate3rust -- frame_timing graphics_menu`, plus skate-mods
 `frame_statistics_have_defaults_and_keep_host_values`. Listed in "Verification" below.
 
+### `FRAME_HITCH` log line (2026-10-08)
+
+Problem: the user reported "considerable frametime lags while flipping in the air on large jumps", then
+"yes on every large jump when flipping" (session 2026-10-07 13:09, spillway after the observatory). The
+game log had no frame times (the counter only drew the overlay, `SKATE_FRAME_LOG` was off), so the hitch
+could not be placed or attributed afterwards.
+
+Change: `frame_timing/hitch.rs` writes one `FRAME_HITCH` line per hitch frame, always on, rate-limited:
+frame ms, median, main-thread CPU, physics loop ms and steps, wait outside the schedules (render thread,
+GPU, present, OS), the game thread's wait for the audio render lock, the wall time of the stages (fixed
+input / controls / physics; frame assets / present / animation / audio pass), the phases inside the
+physics tick (animation graphs, collision and solve, finish, scoring) and the scoring HUD (fixed advance,
+frame render), the slowest of them, the player (state, airborne, wheels, body flip, trick name and
+sequence, board position, tick), the entity count and the audio load (mixer voices and AEMS instances of
+the last rendered block), plus how many hitch frames the rate limit skipped.
+
+- Thresholds are data with defaults (`HitchConfig`: factor 2.0 x median, floor 50 ms, at most one line
+  per 0.5 s), overridable without a rebuild: `SKATE_FRAME_HITCH=off` or
+  `SKATE_FRAME_HITCH=factor=2,floor_ms=50,interval_s=0.5`. No mod tuning path exists for the frame
+  diagnostics (the snapshot's `frame` section is read-only), see open questions.
+- Observation only: the marker systems write only `HitchSpans`; the phase timers are relaxed atomics
+  around existing calls; the audio counters are two stores per rendered block and one clock pair per game
+  thread lock. Test `systems_write_only_their_own_state`, and the existing
+  `game_is_identical_with_diagnostics_on_or_off`.
+
+Measurements so far (headless, 2026-10-08, optimised test build):
+
+- `flip_hitch_timing` (new, data-gated, `tests/flip_hitch_timing.rs`): scripted ollies, kickflips,
+  heelflips and late flips through the real `frame::advance`, on normal airs and on large airs (upward
+  speed added on the first airborne tick, ~5 s of air), first use and repeated. Worst physics tick 2.8 ms,
+  median about 1 ms; animation graphs at most 0.5 ms, scoring 0.0 ms. No tick spikes on a flip, first or
+  repeated. Stock clips decode lazily on first use (`animation_frames/native.rs`), but that costs well
+  under a millisecond and happens once per clip, so it cannot cause a hitch on every flip.
+- `e2e_render` with `E2E_TIMING=1` on 70 s of the 13:58 session's audio state log with 12 airs of 1.2-2.2 s
+  with spins (rows 77000-81200 of `state_20261007_135825.tsv`), all player layers including tricks and
+  treatment: game-thread audio at most 0.18 ms per frame, render at most 0.5 ms per 256-frame block
+  (budget 5.3 ms). A ground-riding window of the same session gives the same numbers. The trick and
+  treatment banks are loaded and decoded at boot (`native.rs` `load_optional_player_banks`), so a flip
+  reads nothing from disk.
+- So the player's physics, animation graphs, scoring and player audio are not the cause. Not measurable
+  headlessly: the frame-side animation present / skinning, the camera, the HUD render and the renderer;
+  the `FRAME_HITCH` line separates those in the next session.
+
 ---
 
 ## Part 2: setup speed, phases 4–5
@@ -200,6 +243,10 @@ combined, the pairs have to be recomputed for the combined tree (as for F + G).
   `graphics_menu.rs`, `modding/mod.rs`; `crates/skate-mods/src/vm.rs`; `sdk/ENGINE_API.md`, `sdk/skate.lua`.
 - `tools/asset_pipeline/setup_budget.py` (new), `install.py`, `map_writer.py`, `pipeline-equivalence.json`;
   tests `test_setup_budget.py` (new), `test_map_writer.py`.
+- `FRAME_HITCH`: `frame_timing/hitch.rs` (new), `frame_timing/mod.rs`, `physics/frame.rs`
+  (phase timers), `scoring_hud.rs` (HUD phases), `game_audio/timing.rs` (voice and lock counters),
+  `game_audio/mod.rs` (`timing`, `CueSet` visible to the crate), `tests/flip_hitch_timing.rs` (new),
+  `physics.rs` (test module).
 
 ## Open questions
 
@@ -210,3 +257,6 @@ combined, the pairs have to be recomputed for the combined tree (as for F + G).
   (`TRACE_PLAY.bat`) for that; not built into the counter.
 - Phase 5 leftovers in vendored parsers (above), and `hash_and_cleanup` (~3 s, I/O).
 - Default on/off of the counter: off (todo); the user may prefer on.
+- `FRAME_HITCH`: the cause of the flip hitch on large airs is not found yet; the next session with the line
+  names the stage. Thresholds are env-tunable only; a mod-facing setter (and reset on mod disable) would
+  need a writable frame-diagnostics section in the mod API.
