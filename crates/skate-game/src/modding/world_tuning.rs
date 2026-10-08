@@ -165,6 +165,11 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.detour_margin = f.detour_margin.map_or(c.detour_margin, |v| v.max(0.0));
         c.step_height = f.step_height.map_or(c.step_height, |v| v.max(0.0));
     }
+    if let Some(f) = &p.ped_vehicle_contact {
+        let c = &mut s.ped_vehicle_contact;
+        c.enabled = f.enabled.unwrap_or(c.enabled);
+        c.push = f.push.unwrap_or(c.push);
+    }
     if let Some(f) = &p.npc_skater_props {
         s.npc_skater_props.enabled = f.enabled.unwrap_or(s.npc_skater_props.enabled);
     }
@@ -323,6 +328,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                     "moving_speed": s.ped_obstacles.moving_speed, "recut_fraction": s.ped_obstacles.recut_fraction,
                     "detour_margin": s.ped_obstacles.detour_margin, "step_height": s.ped_obstacles.step_height},
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
+                "ped_vehicle_contact": {"enabled": s.ped_vehicle_contact.enabled, "push": s.ped_vehicle_contact.push},
                 "skater_clips": s.skater_clips,
                 "skater_blend_seconds": s.skater_blend_seconds,
             })
@@ -402,6 +408,20 @@ mod tests {
         assert_eq!(w.resource::<WorldShadowSettings>().floor, Vec3::splat(0.5));
         clear_all(&mut w);
         assert_eq!(*w.resource::<WorldShadowSettings>(), WorldShadowSettings::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn ped_vehicle_contact_is_mod_reachable_and_reset_on_disable() {
+        let mut w = world();
+        let retail = LivingWorldSettings::default().ped_vehicle_contact;
+        assert!(retail.enabled && retail.push, "retail: cars push peds out of the way");
+        assert_eq!(read(&w, "living_world")["ped_vehicle_contact"], json!({"enabled": true, "push": true}));
+        set(&mut w, "dev.a", "living_world", Some(json!({"ped_vehicle_contact": {"push": false}}))).unwrap();
+        let s = w.resource::<LivingWorldSettings>().ped_vehicle_contact;
+        assert!(s.enabled && !s.push, "absent fields keep retail");
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_vehicle_contact": {"knockdown": true}}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<LivingWorldSettings>().ped_vehicle_contact, retail, "mod disable restores retail");
     }
 
     #[test]

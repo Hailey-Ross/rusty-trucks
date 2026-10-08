@@ -20,7 +20,9 @@
 //!   `skater_clips["fakie_channel"]` = the stock tree overlaid while riding fakie (`B_FAKIE_CHANNEL`),
 //!   `ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin,
 //!   step_height}` (props and mod bodies as ped navigation obstacles; retail on / 0.2 / 0.4 / 0.25),
-//!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on).
+//!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on),
+//!   `ped_vehicle_contact {enabled, push}` (traffic cars touching peds; retail on / on: the ped is
+//!   pushed out of the car, no knock-down).
 //! - `props`: `default` and `by_template[<MOBJ template name>]`, each a [`PropTuningPatch`].
 //! - `carry`: `grab_bit`, `placement_bit`, `grab_range`, and the Move Object tuning while
 //!   holding a prop (retail defaults from attribute class 3EDA5B140604613D): `push_speed`,
@@ -105,6 +107,17 @@ pub struct LivingWorldPatch {
     pub ped_obstacles: Option<PedObstaclesPatch>,
     /// NPC skaters pushing dynamic props (fix 19).
     pub npc_skater_props: Option<NpcSkaterPropsPatch>,
+    /// Traffic cars touching peds (`skate_core::living_world::peds::VehicleContactParams`).
+    pub ped_vehicle_contact: Option<PedVehicleContactPatch>,
+}
+
+/// Traffic cars touching peds: `enabled` (detection, the event and the log; retail on), `push`
+/// (the ped is shoved out of the car's box; retail on, the only response retail has).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PedVehicleContactPatch {
+    pub enabled: Option<bool>,
+    pub push: Option<bool>,
 }
 
 /// NPC skaters against dynamic props: their board and body push a prop by the prop's own push
@@ -354,6 +367,11 @@ impl Merge for PedObstaclesPatch {
         merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height);
     }
 }
+impl Merge for PedVehicleContactPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; enabled, push);
+    }
+}
 impl Merge for NpcSkaterPropsPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; enabled);
@@ -384,6 +402,7 @@ impl Merge for LivingWorldPatch {
         merge_nested(&mut self.ped_fade, &b.ped_fade);
         merge_nested(&mut self.ped_obstacles, &b.ped_obstacles);
         merge_nested(&mut self.npc_skater_props, &b.npc_skater_props);
+        merge_nested(&mut self.ped_vehicle_contact, &b.ped_vehicle_contact);
         match (self.skater_clips.as_mut(), &b.skater_clips) {
             (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
                 a.entry(k.clone()).or_insert_with(|| v.clone());

@@ -984,7 +984,8 @@ function sdk.audio.seed(n) end
 --   'trick_air' 0.1 set the transitions into a trick's ground and air clips),
 --   ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height}
 --   (props and mod bodies as ped navigation obstacles; retail on, 0.2, 0.4, 0.25; ours 0.1, 0),
---   npc_skater_props {enabled} (NPC skaters push dynamic props like the player; retail on).
+--   npc_skater_props {enabled} (NPC skaters push dynamic props like the player; retail on),
+--   ped_vehicle_contact {enabled, push} (traffic cars push peds out of the way; retail on / on, no knock-down).
 -- 'props': default and by_template[<MOBJ template name>] = {contact_padding, penetration_slop,
 --   penetration_correction, max_depenetration_per_tick, restitution_threshold, skater_push_mass,
 --   push_transfer, body_push_speed, board_push_speed, penetration_push_speed, stuck_release_ticks,

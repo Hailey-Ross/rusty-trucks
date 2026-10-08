@@ -617,3 +617,81 @@ fn ped_render_ground_does_not_lift_onto_overhead_geometry() {
     eprintln!("PED_RENDER_GROUND polygons={probed} lifted_over_0.3m old={old_lifted} new={new_lifted} step={step} height={height}");
     assert_eq!(new_lifted, 0, "peds would still be drawn above the navmesh");
 }
+
+/// A ped body standing at `at` (no animation needed for the contact).
+fn standing_body(at: Vec3) -> PedBody {
+    let d = data();
+    PedBody {
+        player: PedAnimPlayer::new(&d.anim_sets["default"], 5).unwrap(),
+        path: skate_core::living_world::peds::anim::TestPath::new(5),
+        nav: Default::default(),
+        blocked: 0.0,
+        position: at,
+        heading: 0.0,
+        ticks: 0,
+        feet_down: [false; 2],
+        body_fall: 0.0,
+    }
+}
+
+#[test]
+fn living_world_cars_push_peds_out_of_the_way_and_report_the_contact() {
+    use super::vehicle_contacts::resolve;
+    use skate_core::living_world::peds::{CarBox, NavMesh, VehicleContactParams};
+    let mesh = NavMesh::build(&plaza(), Default::default());
+    // A 1.8 x 1.5 x 4.4 m car at (5, 0, 5) facing +z at 8 m/s; peds: one 0.25 m into the front
+    // bumper zone, one clear of the car.
+    let car = CarBox { center: [5.0, 0.75, 5.0], forward: [0.0, 1.0], half: [0.9, 0.75, 2.2] };
+    let cars = [(77u64, car, Vec3::new(0.0, 0.0, 8.0))];
+    let run = |params: VehicleContactParams| {
+        let (mut a, mut b) = (standing_body(Vec3::new(5.0, 0.0, 7.3)), standing_body(Vec3::new(9.0, 0.0, 5.0)));
+        let mut peds = [(1u64, &mut a), (2u64, &mut b)];
+        let events = resolve(&params, 40, Some(&mesh), &cars, &mut peds);
+        (events, a.position, b.position)
+    };
+    // Retail: an IVehicle contact only moves the ped with its pushed body (no knock-down).
+    let (events, a, b) = run(VehicleContactParams::default());
+    assert_eq!(events.len(), 1, "{events:?}");
+    let e = &events[0];
+    assert_eq!((e.car, e.ped, e.tick, e.reaction.as_str()), (77, 1, 40, "push"));
+    assert!((e.depth - 0.25).abs() < 1e-4, "agent radius 0.35 [data] minus 0.1 m gap");
+    assert!((e.car_speed - 8.0).abs() < 1e-5 && (e.closing - 8.0).abs() < 1e-5);
+    assert!((a - Vec3::new(5.0, 0.0, 7.55)).length() < 1e-4, "pushed off the bumper: {a}");
+    assert_eq!(b, Vec3::new(9.0, 0.0, 5.0), "a ped clear of the car is untouched");
+    // Same inputs, same result (deterministic), and the event serialises for a host.
+    let (again, a2, _) = run(VehicleContactParams::default());
+    assert_eq!((again, a2), (events.clone(), a));
+    let wire = serde_json::to_string(&events[0]).unwrap();
+    assert_eq!(serde_json::from_str::<super::vehicle_contacts::VehicleContactEvent>(&wire).unwrap(), events[0]);
+    // Mod options: report only (no push), or no contact at all.
+    let (events, a, _) = run(VehicleContactParams { enabled: true, push: false });
+    assert_eq!((events.len(), events[0].reaction.as_str(), a), (1, "reported", Vec3::new(5.0, 0.0, 7.3)));
+    let (events, a, _) = run(VehicleContactParams { enabled: false, push: true });
+    assert!(events.is_empty() && a == Vec3::new(5.0, 0.0, 7.3));
+}
+
+#[test]
+fn living_world_car_box_matches_the_car_proxy() {
+    use super::vehicle_contacts::car_box;
+    let car = super::vehicles::TrafficCar {
+        id: LivingWorldId { kind: Kind::Vehicle, serial: 3 },
+        entity: String::new(),
+        model: String::new(),
+        glb: String::new(),
+        chassis_id: String::new(),
+        secondary_id: String::new(),
+        chassis: [1.0; 4],
+        secondary: [1.0; 4],
+        engine: String::new(),
+        paint_gain: 1.0,
+        wheel_radius: 0.3,
+        bounds: [[-1.0, 0.0, -2.0], [1.0, 1.4, 2.6]],
+        spawn_tick: 0,
+    };
+    let pose = Transform::from_translation(Vec3::new(10.0, 2.0, 3.0)).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    let b = car_box(&car, &pose);
+    // Facing +x after a quarter turn; the bounds' 0.3 m forward offset moves the centre along +x.
+    assert!((b.forward[0] - 1.0).abs() < 1e-5 && b.forward[1].abs() < 1e-5);
+    assert!((b.center[0] - 10.3).abs() < 1e-5 && (b.center[1] - 2.7).abs() < 1e-5 && (b.center[2] - 3.0).abs() < 1e-5);
+    assert_eq!(b.half, [1.0, 0.7, 2.3]);
+}

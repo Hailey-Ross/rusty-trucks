@@ -29,6 +29,7 @@ pub mod crosswalk;
 pub mod fade;
 pub mod nav;
 pub mod obstacles;
+pub mod vehicle_contact;
 pub mod wander;
 
 pub use anim::{Locomotion, PedAnimPlayer, PedAnimSet, PedClip, PedEvaluator, PedFrame, PedRig};
@@ -36,6 +37,7 @@ pub use choice::{PedCatalog, PedEntity, PedLook, PedModel, PedOverrides};
 pub use fade::{draw_alpha, PedFadeConfig};
 pub use nav::{NavMesh, NavMeshInput, NavPoint, NavPolyInput, NavRules};
 pub use obstacles::{Footprint, NavObstacles, ObstacleInput, ObstacleParams};
+pub use vehicle_contact::{CarBox, PedCylinder, VehicleContact, VehicleContactParams, VehicleContactReaction};
 pub use wander::{CrosswalkRule, Fan, NavOutput, NavWait, Neighbour, PedNav, PedRoute, WalkSignals, WanderParams};
 
 /// Map one rig's bone names onto another's by name (case-insensitive). Returns, per `target`

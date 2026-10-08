@@ -2532,6 +2532,83 @@ systems use `modding::world_tuning::set` with the same domain.
 - Retail's cascade extent and which vehicles are submitted to the shadow pass (CPU side, "Shadow Map Cascade" /
   "DrawShadowCasterInstances") were not traced; ours keeps one 24 m cascade.
 
+## Cars hit peds: retail reaction, 2026-10-08
+
+**Problem.** Traffic cars drove straight through peds: nothing tested a car against a ped. The user remembered (from
+long ago, "user's memory is old, confirm in code") that a ped hit by a car ragdolls, then fades out or gets up and
+flees.
+
+**Retail evidence** [code, TU3; addresses are evidence only, nothing copied].
+- Every contact on a ped's collision body goes through the ped's contact callback `sub_82E38FB8` (ped vtable
+  `0x8232BE80`). It first asks vtable slot +164, `sub_82E38400`, for a contact kind 0..5. That classifier takes the
+  other body's owner (`[[contact+76]+32]`) and runs the interface cast `sub_82965630` with the type getter
+  `0x82C34050`, which returns `0x823220B8`, the type record named `IVehicle` (string at `0x823220B8`, `vehicle` at
+  `0x823220C4`). A vehicle owner returns kind **2** at once: no speed, angle or flag test.
+- The callback's switch (`0x82E39230`) sends kinds 1 and 2 to one block (`0x82E3926C`): it reads the pose of the
+  ped's collision body (`sub_82585CB0`), subtracts the body-to-root offset (`[ped+5756]+19872`) when the ped's slot
+  +180 says so, keeps the root's own height (the `vrlimi` keeps y), skips the result if it is not finite or out of
+  range (`0x822F88D4`), and writes it as the ped's root position. That is all: no reaction kind or direction
+  (`ped+2496` / `+2500`), no `Collision` intent (`PedestrianColliding`), no knock-down speech, no brain flag (the
+  `+3196` bit 0x80 at the top is set only for kinds 4 and 5).
+- The knock-down / stumble path (3.0 / 6.0 thresholds, `Collision.Knockdown` motion graph, animated, not ragdoll) is
+  kind **5**, an `IActor` owner (type getter `0x82586478` -> `0x823000F0`, `IActor`), i.e. the skater; kind 4 is an
+  actor contact on body part 1 or 2 (acted on only while `[ped+5756]+140` is 7); kind 3 (the object at `ped+5916`) sets `+3278` bit 0x80.
+- The car side, `sub_82C3C150` (the vehicle collision interface at `+136`): a parked car's alarm test on the contact
+  impulse; for an `IActor` toucher a bit in the "hit by" mask `+4248` and, for a contact ahead of the car, `+4401` bit
+  0x20. It does not stop, honk or post a sound there.
+- Peds run from cars only through the horn: the horn decider `sub_82C40660` honks (kind 2) after an obstacle has been
+  ahead for 2 s and notifies the obstacle (the honked-at input, `RunFromHonker`, at most 30 s); doc 26 V4, not ported.
+
+**Verdict.** The user's memory is refuted for TU3 (confidence high for the ped side: the classifier and the switch
+are read end to end; medium that no other system adds a reaction, no other `IVehicle` test was found in the ped
+code). A car shoves a ped out of its way (the car is kinematic with infinite mass, the ped's body is pushed, its root
+follows) and the ped walks on. No ragdoll, no knock-down, no fade, no flee from the contact itself. Not checked in a
+recomp run (no hook placed; peds rarely stand in a lane).
+
+**Change.**
+- `skate-core::living_world::peds::vehicle_contact`: `RetailContactKind` and `retail_response` (the classifier's
+  kinds and the callback's switch), `VehicleContactParams` (retail defaults `enabled = true`, `push = true`),
+  `detect` (a ped cylinder against a car's oriented box: overlap depth, normal and the pushed feet position with the
+  height kept), `closing_speed`.
+- `skate-game::living_world::vehicle_contacts`: `ped_vehicle_contacts` (`FixedUpdate`, after `advance_peds` and
+  `drive_traffic`) tests every ped against every car's box (`car_box`: the GLB bounds, the same box as the car's skater
+  proxy), peds and cars in id order; a contact pushes the ped out and keeps it on its navmesh (`constrain_move`), moves
+  the drawn ped in the ground plane only, publishes `VehicleContactEvent` (tick, car and ped `LivingWorldId::to_u64`,
+  car speed, closing speed, position, normal, depth, reaction; `Serialize` / `Deserialize`) and logs
+  `VEHICLE_CONTACT car=#.. ped=#.. speed= closing= at=[..] normal=[..] depth= reaction= tick=` once per car and ped per
+  second.
+- Multiplayer: one system decides; it is a pure function of the ped and car states, which already follow from the
+  spawn records and the tick, so a host and a client compute the same pushes; the event is the record a host would
+  send.
+
+**Moddability.** `sdk.world.set_tuning('living_world', {ped_vehicle_contact = {enabled, push}})`: `enabled = false`
+turns the detection, event and log off; `push = false` reports the contact (`reaction = reported`) without moving
+the ped, so a mod can react itself. First writer wins per field; the domain is rebuilt to retail when the mod stops.
+`VehicleContactEvent` is the hook the planned `sdk.living_world` events read.
+
+**NOT RETAIL YET.** The ped body is a cylinder of the NavPower agent radius and height (0.35 / 1.6 m [data]); retail's
+Havok ped shape (`sub_82E26430`) is not decoded. The push is the smallest separation in the ground plane; Havok's
+penetration recovery is not decoded. The navmesh stands in for the world collision of the pushed body. The car side
+(hit-by mask, the planner stopping for an obstacle ahead, the horn and the ped's `RunFromHonker`) is V4.
+
+**Files.** `crates/skate-core/src/living_world/peds/vehicle_contact.rs`, `crates/skate-core/src/living_world/peds/mod.rs`,
+`crates/skate-game/src/living_world/vehicle_contacts.rs`, `crates/skate-game/src/living_world/mod.rs`,
+`crates/skate-game/src/living_world/peds_tests.rs`, `crates/skate-game/src/modding/world_tuning.rs`,
+`crates/skate-mods/src/world_tuning.rs`.
+
+**Verification.** skate-core: `retail_vehicle_contact_follows_the_body_and_never_knocks_down`,
+`a_ped_in_front_of_the_bumper_is_pushed_forward`, `a_ped_beside_or_clear_of_the_car_is_not_touched`,
+`a_ped_inside_the_box_leaves_through_the_nearest_side`, `a_turned_car_pushes_along_its_own_axes`. skate-game:
+`living_world_cars_push_peds_out_of_the_way_and_report_the_contact` (push, event fields, determinism, serialisation,
+the two mod options), `living_world_car_box_matches_the_car_proxy`,
+`ped_vehicle_contact_is_mod_reachable_and_reset_on_disable`. Not playtested.
+
+**Open questions.**
+- Whether retail ped bodies are actually displaced by a kinematic car in the Havok solve (the callback only follows
+  the body); a recomp hook on `sub_82E38FB8` with kind 2 would show it. Peds seldom stand in a lane, which is why the
+  user may remember a different game.
+- The skater's car-hit bail rules (vehicle contact term `0x820CFF14`, 9.0 limits) are V5.
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).
@@ -2570,7 +2647,7 @@ When a mod stops, fails or reloads its patches go (`modding::world_tuning::clear
 
 | Domain | Fields (shipped value) | Resource |
 |---|---|---|
-| `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing false}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep_facing: fix 16 facing carry-over, mod option, not retail), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0}` (props and mod bodies as ped obstacles), `npc_skater_props {enabled true}` (NPC skaters push dynamic props) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
+| `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing false}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep_facing: fix 16 facing carry-over, mod option, not retail), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0}` (props and mod bodies as ped obstacles), `npc_skater_props {enabled true}` (NPC skaters push dynamic props), `ped_vehicle_contact {enabled true, push true}` (traffic cars push peds out of the way; no knock-down in retail) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
 | `props` | `default` / `by_template[<MOBJ template>]`: every `PropTuning` field plus `collision_box {center, half_extents}`; a template entry starts from the patched default | `PropTuningSettings` |
 | `carry` | `grab_bit` (28, RB), `placement_bit` (20, B), `grab_range` (2.0 m); Move Object: `push_speed` / `pull_speed` / `side_speed` (3.0 / 2.0 / 2.5), `turn_rate`, `grip_reach`, `linear_clamp` (20), `yaw_clamp` (6), `relatch` (0.1), `slew_per_tick` (4), `linear_controller` / `yaw_controller` ([20, 0, 40, 0.1]), the four curves, `let_go_distance` (1.0); slot 9 application: `commanded_material` ([0.03, 0.02] static / dynamic friction), `upright_cos` (0.65), `apply_at_com`, `yaw_replaces_torque`, `ignore_vertical`, `wake_on_command` (true), `by_template[<MOBJ template>] = {material_held, material_free, material_free_upright, upright_pair, restitution}` | `CarrySettings`, pushed into `PropCarry` and `PropDynamics` each tick (survives map loads) |
 
