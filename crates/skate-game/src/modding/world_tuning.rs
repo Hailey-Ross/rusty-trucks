@@ -199,6 +199,17 @@ pub(crate) fn props_table(p: &PropsPatch) -> PropTuningTable {
         let entry = prop_tuning(&t.default, patch);
         t.by_template.insert(name.clone(), entry);
     }
+    if let Some(v) = &p.solver {
+        let d = t.solver;
+        t.solver = crate::physics::prop_dynamics::PropSolverSettings {
+            row_solver: v.row_solver.unwrap_or(d.row_solver),
+            iterations: v.iterations.map_or(d.iterations, |n| n.clamp(1, 256)),
+            sleep_energy: v.sleep_energy.map_or(d.sleep_energy, |e| e.max(0.0)),
+            sleep_frames: v.sleep_frames.map_or(d.sleep_frames, |n| n.max(1)),
+            max_sleeps_per_step: v.max_sleeps_per_step.map_or(d.max_sleeps_per_step, |n| n.max(1)),
+            rest_snap: v.rest_snap.unwrap_or(d.rest_snap),
+        };
+    }
     t
 }
 
@@ -294,7 +305,11 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
         }),
         "props" => world.get_resource::<PropTuningSettings>().map_or(Value::Null, |s| {
             let by: serde_json::Map<String, Value> = s.0.by_template.iter().map(|(k, t)| (k.clone(), tuning(t))).collect();
-            json!({"default": tuning(&s.0.default), "by_template": by})
+            let v = s.0.solver;
+            json!({"default": tuning(&s.0.default), "by_template": by, "solver": {
+                "row_solver": v.row_solver, "iterations": v.iterations, "sleep_energy": v.sleep_energy,
+                "sleep_frames": v.sleep_frames, "max_sleeps_per_step": v.max_sleeps_per_step, "rest_snap": v.rest_snap,
+            }})
         }),
         "carry" => world.get_resource::<CarrySettings>().map_or(Value::Null, |c| {
             // The tuning in effect: the live carry's base (setup data) with this patch applied.
@@ -461,6 +476,27 @@ mod tests {
         assert_eq!(read(&w, "props")["by_template"]["bench01"]["collision_box"]["half_extents"], json!([1.0f32, 0.4f32, 0.3f32]));
         clear_owner(&mut w, "dev.a");
         assert_eq!(*w.resource::<PropTuningSettings>(), PropTuningSettings::default());
+    }
+
+    #[test]
+    fn prop_solver_settings_set_validate_and_reset() {
+        use crate::physics::prop_dynamics::PropSolverSettings;
+        let mut w = world();
+        let retail = PropSolverSettings::default();
+        assert_eq!((retail.row_solver, retail.iterations, retail.sleep_energy, retail.sleep_frames, retail.max_sleeps_per_step, retail.rest_snap),
+            (true, 25, 1e-5, 2, 100, false), "retail DMO island defaults");
+        set(&mut w, "dev.a", "props", Some(json!({"solver": {"iterations": 10, "sleep_energy": 0.5, "sleep_frames": 30, "rest_snap": true}}))).unwrap();
+        {
+            let v = w.resource::<PropTuningSettings>().0.solver;
+            assert_eq!((v.row_solver, v.iterations, v.sleep_energy, v.sleep_frames, v.max_sleeps_per_step, v.rest_snap), (true, 10, 0.5, 30, 100, true));
+        }
+        assert_eq!(read(&w, "props")["solver"]["iterations"], json!(10));
+        assert!(set(&mut w, "dev.b", "props", Some(json!({"solver": {"iterations": 0}}))).is_err());
+        assert!(set(&mut w, "dev.b", "props", Some(json!({"solver": {"sleep_energy": -1.0}}))).is_err());
+        assert!(set(&mut w, "dev.b", "props", Some(json!({"solver": {"sleep_frames": 0}}))).is_err());
+        assert!(set(&mut w, "dev.b", "props", Some(json!({"solver": {"unknown": 1}}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<PropTuningSettings>().0.solver, retail);
     }
 
     #[test]

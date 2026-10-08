@@ -10,9 +10,11 @@
 //!
 //! Narrowphase uses the recovered GP pair query (`primitive_pair_contacts`):
 //! box vs static-world triangles, box vs box for other props, and box vs the
-//! skater's board/skeleton volumes for pushes. Contact response is a compact
-//! impulse pass producing `RetailReactionCorrections`; the retail compiled-row
-//! contact solver is explicitly not gameplay-ready (`build_contact_jacobian`).
+//! skater's board/skeleton volumes for pushes. Contact response is the retail
+//! row solver the board uses (ContactBatchBuild 82AE10C8 rows, 25 iterations
+//! of 82AE27D0, `PropSolverSettings`); the engine's older impulse pass stays
+//! selectable as a mod option. Sleep is the retail counter (integrator
+//! 82AE6590, sleep pass 82DC3130) with the DMO island values.
 //!
 //! Props start asleep and cost one AABB test per skater volume per tick. A
 //! skater contact or a moving prop wakes them. Moved instances re-bake their
@@ -25,12 +27,18 @@ use skate_core::{
     math::{Basis3, Vector3},
     physics::{
         board_world::{BoardWorld, BoardWorldVolume},
-        contact::{RetailContactMaterial, combine_contact_materials},
+        contact::{
+            RetailContactBodyState, RetailContactInput, RetailContactMaterial,
+            combine_contact_materials, generate_contact,
+        },
+        contact_solver::{ACTIVE_BODY, RetailContactJacobian, build_contact_jacobian},
         mass::{RETAIL_UNBOUNDED_VELOCITY, primitive_mass_properties},
         rigid_body::{
             RetailInertiaDynamics, RetailQuaternion, RetailReactionCorrections, RetailBodyRates,
-            RetailSimulationStep, integrate_body_rates, world_inverse_inertia,
+            RetailSimulationStep, integrate_body_rates, pack_world_inverse_inertia,
+            world_inverse_inertia,
         },
+        solver::solve_constraints,
         collision::WorldContactSettings,
         world_contact::{
             ContactPrimitive, PrimitiveContactManifold, PrimitivePairSettings,
@@ -56,15 +64,19 @@ pub(crate) struct PropBox {
 pub(crate) struct PropTuning {
     /// Contact band of the prop pair queries (m).
     pub contact_padding: f32,
-    /// Penetration ignored by the positional correction (m).
+    /// Penetration ignored by the positional correction (m; older impulse
+    /// pass only, `PropSolverSettings::row_solver` off).
     pub penetration_slop: f32,
-    /// Fraction of the penetration removed per tick (Baumgarte).
+    /// Fraction of the penetration removed per tick (Baumgarte; older
+    /// impulse pass only).
     pub penetration_correction: f32,
-    /// Upper bound on the positional correction of one body in one tick (m).
+    /// Upper bound on the positional correction of one body in one tick (m;
+    /// older impulse pass only, retail rows have no cap).
     /// A body deep inside geometry comes out over several ticks instead of
     /// being thrown out in one.
     pub max_depenetration_per_tick: f32,
-    /// Restitution applies only above this closing speed (m/s); below it
+    /// Older impulse pass only: restitution applies only above this closing
+    /// speed (m/s); below it
     /// contacts are inelastic so resting stacks settle.
     pub restitution_threshold: f32,
     /// Effective skater mass (kg) for prop pushes.
@@ -113,6 +125,51 @@ impl Default for PropTuning {
 pub(crate) struct PropTuningTable {
     pub default: PropTuning,
     pub by_template: std::collections::BTreeMap<String, PropTuning>,
+    /// Island settings shared by every prop (one DMO simulation in retail).
+    pub solver: PropSolverSettings,
+}
+
+/// Island settings of the DMO simulation. Retail 8275DCC8 passes a 52-byte
+/// block to the simulation ctor 82DC2840, which copies +16 -> island +176
+/// (solver iterations), +32 -> island +172 (sleep energy) and +36 -> island
+/// +168 (sleep counter cap; also the sleep pass threshold sim +204). The
+/// defaults are those retail values; every field is a mod knob
+/// (`sdk.world.set_tuning('props', {solver = {...}})`), reset on mod disable.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PropSolverSettings {
+    /// Contact solve: true = the retail row solver (rows built by
+    /// ContactBatchBuild 82AE10C8, iterated by 82AE27D0, the same skate-core
+    /// path the board uses); false = the engine's older impulse pass with
+    /// penetration slop / fraction / cap (NOT RETAIL, kept as a mod option).
+    pub row_solver: bool,
+    /// Row solver iterations per step (retail 25).
+    pub iterations: u32,
+    /// Sleep energy threshold on E = |v|^2 + s * m^-1 * |w|^2 after damping
+    /// and the speed caps (integrator 82AE6590; retail 1e-5, 0x8219B100).
+    pub sleep_energy: f32,
+    /// Steps with E below `sleep_energy` and not rising before the sleep
+    /// pass (82DC3130) puts a body to sleep; also the counter cap (retail 2).
+    pub sleep_frames: u32,
+    /// Bodies the sleep pass puts to sleep per step at most (retail 100).
+    pub max_sleeps_per_step: u32,
+    /// The engine's rest snap (NOT RETAIL): zero the velocities of a touching
+    /// body whose energy is below `sleep_energy`. Retail has no snap; off by
+    /// default, kept as a mod option (with the old 0.5 / 30 sleep values it
+    /// reproduces the pre-2026-10-08 settling).
+    pub rest_snap: bool,
+}
+
+impl Default for PropSolverSettings {
+    fn default() -> Self {
+        Self {
+            row_solver: true,
+            iterations: 25,
+            sleep_energy: 1e-5,
+            sleep_frames: 2,
+            max_sleeps_per_step: 100,
+            rest_snap: false,
+        }
+    }
 }
 
 impl PropTuningTable {
@@ -136,17 +193,18 @@ pub(crate) const LOCAL_PUSHER: u64 = 0;
 /// cannot see them while it is carried.
 pub(crate) const HELD_PARK: Vector3 = Vector3::new(0.0, -10000.0, 0.0);
 
-/// Props get their own simulation step: the board's simulation carries
-/// cool_down = 0 (the host never sleeps it), which would freeze props after a
-/// single tick, and its FreezingEnergy threshold is tuned for a ~kg-scale
-/// board, while props are density-100 boxes (energy scales with mass, so
-/// resting contact jitter alone keeps a prop above the board's threshold).
+/// Props get their own simulation step (retail: the DMO simulation, its own
+/// island settings, 8275DCC8 -> 82DC2840): sleep counter cap 2 and sleep
+/// energy 1e-5 ([`PropSolverSettings`] defaults; the step applies the live
+/// settings). The board's simulation carries cool_down = 0 (the host never
+/// sleeps it).
 pub(crate) fn prop_simulation(
     base: skate_core::physics::rigid_body::RetailSimulationStep,
 ) -> skate_core::physics::rigid_body::RetailSimulationStep {
+    let solver = PropSolverSettings::default();
     skate_core::physics::rigid_body::RetailSimulationStep {
-        cool_down: 30,
-        minimum_energy: 0.5,
+        cool_down: solver.sleep_frames,
+        minimum_energy: solver.sleep_energy,
         ..base
     }
 }
@@ -1068,7 +1126,7 @@ impl PropDynamics {
     /// Teleport a body to a saved layout pose, asleep. Returns the collision
     /// instance index so the caller can rebake its triangles.
     pub(crate) fn teleport(&mut self, id: u32, origin: Vector3, basis: Basis3) -> Option<usize> {
-        let cool_down = self.simulation.cool_down;
+        let cool_down = self.step_simulation().cool_down;
         let body = self.bodies.get_mut(*self.by_id.get(&id)?)?;
         body.rates.basis = basis;
         body.rates.orientation = quaternion_from_basis(basis);
@@ -1159,41 +1217,48 @@ impl PropDynamics {
                     0
                 };
             }
-            if self.bodies[index].asleep {
-                continue;
-            }
-            self.stats.awake += 1;
-            // Parameter block swap (82C53EF8): a body commanded since its last
-            // step runs on the commanded block, otherwise on its free block;
-            // the switch happens on the step the commanded bit changes. The
-            // command flag lasts one step (retail shifts 0x02 -> 0x01).
-            let commanded = {
-                let body = &mut self.bodies[index];
-                let commanded = body.commanded;
-                body.commanded_block = commanded;
-                body.commanded = false;
-                commanded
-            };
+        }
+        let solver = self.tuning.solver;
+        let simulation = self.step_simulation();
+        // Awake bodies in body order (deterministic; plain indices).
+        let awake: Vec<usize> = (0..self.bodies.len()).filter(|&i| !self.bodies[i].asleep).collect();
+        self.stats.awake = awake.len() as u32;
+        // Parameter block swap (82C53EF8): a body commanded since its last
+        // step runs on the commanded block, otherwise on its free block;
+        // the switch happens on the step the commanded bit changes. The
+        // command flag lasts one step (retail shifts 0x02 -> 0x01).
+        let mut commanded_now = vec![false; self.bodies.len()];
+        for &index in &awake {
+            let body = &mut self.bodies[index];
+            commanded_now[index] = body.commanded;
+            body.commanded_block = body.commanded;
+            body.commanded = false;
+        }
+        // Retail: every awake body's contact rows go through one shared row
+        // solve (contact stage 82DC30A8 -> 82AE27D0, island +176 iterations)
+        // and only then does any body integrate (BatchIntegrator).
+        let rows = solver.row_solver.then(|| self.row_corrections(world, &awake, solver.iterations));
+        let mut sleeps = 0u32;
+        for &index in &awake {
+            let held = self.is_held(index);
+            let commanded = commanded_now[index];
             // The held prop is a normal dynamic body: pitch, roll, gravity
             // and contacts stay with the simulation (retail Move Object sends
             // only a horizontal + yaw command, 82D45318), so it can tip and
             // the floor holds it.
-            let corrections = self.contact_corrections(index, world);
+            let corrections = match &rows {
+                Some(rows) => rows[index],
+                None => self.contact_corrections(index, world),
+            };
             // A commanded (or held) body never snaps to rest or sleeps.
             // Sleep: retail clears the sleep counter on every command
             // (82ADF7B8 in both slot 9 sinks), so a commanded body cannot
-            // freeze. Rest snap: our engine's snap zeroes any velocity under
-            // sqrt(minimum_energy) while touching (0.7 m/s for props); the
-            // command adds at most 4 m/s^2 x dt on its first ticks (slew), so
-            // the snap would eat it and pin the prop. The snap is not retail
-            // (retail has only the sleep counter), so a commanded body is
-            // simply kept out of it; held covers placement (`carry_to`).
+            // freeze. Held covers placement (`carry_to`, NOT RETAIL).
             let body_sleep_capable = self.bodies[index].enable_sleep && !held && !commanded;
-            // Snap to rest below the sleep threshold, but only while something
-            // is actually touching the body: without the contact gate the snap
-            // zeroes the first ticks of a fall (g·dt is far below the sleep
-            // threshold) and the prop descends at g·dt² per tick forever.
-            let resting = body_sleep_capable
+            // Rest snap (NOT RETAIL, mod option `rest_snap`): only while
+            // something is touching the body, so it never zeroes a fall.
+            let resting = solver.rest_snap
+                && body_sleep_capable
                 && (dot(corrections.linear_displacement, corrections.linear_displacement)
                     > 0.0
                     || dot(corrections.position_displacement, corrections.position_displacement)
@@ -1201,21 +1266,28 @@ impl PropDynamics {
                     || dot(corrections.angular_displacement, corrections.angular_displacement)
                         > 0.0);
             let body = &mut self.bodies[index];
-            let step = integrate_body_rates(body.rates, body.inertia, self.simulation, corrections);
+            // Integrator 82AE6590: E = |v|^2 + s m^-1 |w|^2 after damping and
+            // the caps; counter = 0 when E >= island +172, else +1 if E did
+            // not rise, capped at island +168.
+            let step = integrate_body_rates(body.rates, body.inertia, simulation, corrections);
             body.rates = step.state;
-            if resting && body.rates.kinetic_energy < self.simulation.minimum_energy {
+            if resting && body.rates.kinetic_energy < simulation.minimum_energy {
                 body.rates.linear_velocity = Vector3::ZERO;
                 body.rates.angular_velocity = Vector3::ZERO;
                 body.rates.kinetic_energy = 0.0;
-                // The snap zeroes the energy the integrator compares against
-                // its previous value, so its own cool-down counter stalls
-                // (post-gravity energy is always greater than zero). Count
-                // snapped resting ticks here instead.
-                body.rates.cool_down =
-                    (body.rates.cool_down + 1).min(self.simulation.cool_down);
+                // The snap zeroes the energy the integrator compares against,
+                // so its counter stalls; count snapped resting ticks here.
+                body.rates.cool_down = (body.rates.cool_down + 1).min(simulation.cool_down);
             }
-            if body_sleep_capable && body.rates.cool_down >= self.simulation.cool_down {
+            // Sleep pass 82DC3130: counter >= sim +204 (= island +168) moves
+            // the body to the sleeping list, at most 100 bodies per call.
+            if body_sleep_capable
+                && body.rates.cool_down >= solver.sleep_frames
+                && sleeps < solver.max_sleeps_per_step
+            {
+                sleeps += 1;
                 body.asleep = true;
+                body.rates.cool_down = simulation.cool_down;
                 body.rest_y = body.rates.position.y;
             }
             // The held prop's triangles stay parked (set_held/HELD_PARK) so
@@ -1316,8 +1388,176 @@ impl PropDynamics {
         contact
     }
 
+    /// The simulation step with the live island settings (sleep energy and
+    /// counter cap from [`PropSolverSettings`]).
+    fn step_simulation(&self) -> RetailSimulationStep {
+        let solver = self.tuning.solver;
+        RetailSimulationStep {
+            cool_down: solver.sleep_frames,
+            minimum_energy: solver.sleep_energy,
+            ..self.simulation
+        }
+    }
+
+    /// Solver-side state of an awake prop (reaction slot = body index).
+    fn row_body(&self, index: usize) -> RetailContactBodyState {
+        let body = &self.bodies[index];
+        let inertia = pack_world_inverse_inertia(body.rates.world_inverse_inertia);
+        RetailContactBodyState {
+            contact_body_id: index as u32,
+            reaction_id: index as u32,
+            center_of_mass: body.rates.position,
+            inverse_inertia_full: inertia.full,
+            inverse_inertia_split: inertia.split,
+            inverse_mass: body.inertia.inverse_mass,
+            state: ACTIVE_BODY,
+            force_acceleration: body.rates.force_acceleration,
+            torque_acceleration: body.rates.torque_acceleration,
+            linear_velocity: body.rates.linear_velocity,
+            angular_velocity: body.rates.angular_velocity,
+            kinetic_energy: body.rates.kinetic_energy,
+            cool_down: body.rates.cool_down,
+        }
+    }
+
+    /// Solver-side state of an immovable support: the static world, or an
+    /// asleep prop (inactive, so the row solver gives it no response).
+    fn row_support(&self, world_reaction: usize, center: Vector3) -> RetailContactBodyState {
+        RetailContactBodyState {
+            contact_body_id: u32::MAX,
+            reaction_id: world_reaction as u32,
+            center_of_mass: center,
+            inverse_inertia_full: Vector3::ZERO,
+            inverse_inertia_split: Vector3::ZERO,
+            inverse_mass: 0.0,
+            state: 0,
+            force_acceleration: Vector3::ZERO,
+            torque_acceleration: Vector3::ZERO,
+            linear_velocity: Vector3::ZERO,
+            angular_velocity: Vector3::ZERO,
+            kinetic_energy: 0.0,
+            cool_down: 0,
+        }
+    }
+
+    /// Retail contact solve for every awake prop at once: one row per
+    /// manifold point (A = the prop, B = the triangle or the other prop,
+    /// normal from B toward A as the pair queries return it), built by the
+    /// retail ContactBatchBuild (82AE10C8: targets in displacement units,
+    /// predicted separation v dt + separation + a dt^2, restitution -v dt e)
+    /// and iterated `iterations` times by 82AE27D0 (contacts only). Returns
+    /// the per-body correction buffers, indexed by body (the integrator turns
+    /// the +0 / +32 pair into velocity, +16 / +48 into position only).
+    /// No slop, no correction fraction, no per-tick cap (retail has none).
+    fn row_corrections(
+        &mut self,
+        world: &BoardWorld,
+        awake: &[usize],
+        iterations: u32,
+    ) -> Vec<RetailReactionCorrections> {
+        let count = self.bodies.len();
+        let world_reaction = count;
+        let dt = self.simulation.time_step;
+        let mut rows = Vec::new();
+        let mut wake = Vec::new();
+        for &index in awake {
+            self.bodies[index].contacts = 0;
+        }
+        let push_rows = |rows: &mut Vec<RetailContactJacobian>,
+                             manifold: &PrimitiveContactManifold,
+                             material: RetailContactMaterial,
+                             a: RetailContactBodyState,
+                             b: RetailContactBodyState| {
+            for pair in &manifold.points[..manifold.count] {
+                let contact = generate_contact(
+                    RetailContactInput {
+                        position_on_a: pair.a,
+                        position_on_b: pair.b,
+                        normal: manifold.normal,
+                        restitution: material.restitution,
+                        static_friction: material.static_friction,
+                        dynamic_friction: material.dynamic_friction,
+                        tag: 0,
+                    },
+                    a,
+                    b,
+                );
+                rows.push(build_contact_jacobian(contact, dt));
+            }
+        };
+        for &index in awake {
+            let tuning = self.bodies[index].tuning;
+            let box_primitive = self.bodies[index].box_primitive();
+            let world_query = self.world_query_for(index);
+            let pair_settings = self.pair_for(index);
+            let bounds = self.bodies[index].bounds().expanded(tuning.contact_padding + 0.05);
+            let a = self.row_body(index);
+            let support = self.row_support(world_reaction, Vector3::ZERO);
+            for range in world.candidate_ranges(Some(bounds)) {
+                for triangle in &world.triangles()[range] {
+                    let Some(manifold) = primitive_triangle_world_contacts(
+                        box_primitive,
+                        triangle.triangle,
+                        Vector3::ZERO,
+                        world_query,
+                    ) else {
+                        continue;
+                    };
+                    self.bodies[index].contacts += 1;
+                    let material = self.contact_material(index, triangle.material);
+                    push_rows(&mut rows, &manifold, material, a, support);
+                }
+            }
+            for other in 0..count {
+                let other_awake = !self.bodies[other].asleep;
+                // Each awake pair once, from its lower index.
+                if other == index || (other_awake && other < index) {
+                    continue;
+                }
+                if !self.bodies[index].bounds().overlaps(self.bodies[other].bounds().expanded(tuning.contact_padding)) {
+                    continue;
+                }
+                let Some(manifold) = primitive_pair_contacts(
+                    box_primitive,
+                    self.bodies[other].box_primitive(),
+                    pair_settings,
+                ) else {
+                    continue;
+                };
+                self.bodies[index].contacts += 1;
+                let material = self.contact_material(index, self.body_material(other));
+                let b = if other_awake {
+                    self.bodies[other].contacts += 1;
+                    self.row_body(other)
+                } else {
+                    // An asleep prop is an immovable support; a hard hit
+                    // (closing faster than 1 m/s) wakes it for the next step
+                    // (NOT RETAIL YET: retail merges touching bodies into the
+                    // island; the wake rule is ours).
+                    let closing = manifold.points[..manifold.count]
+                        .iter()
+                        .map(|pair| dot(self.bodies[index].velocity_at(pair.a), manifold.normal))
+                        .fold(0.0_f32, f32::min);
+                    if closing < -1.0 {
+                        wake.push(other);
+                    }
+                    self.row_support(world_reaction, self.bodies[other].rates.position)
+                };
+                push_rows(&mut rows, &manifold, material, a, b);
+            }
+        }
+        let mut reactions = vec![RetailReactionCorrections::default(); count + 1];
+        solve_constraints(&mut rows, &mut [], &mut [], &mut reactions, iterations);
+        for other in wake {
+            self.bodies[other].wake();
+        }
+        reactions.truncate(count);
+        reactions
+    }
+
     /// Impulse and positional corrections for one awake body against the
     /// static world and every other prop box (asleep props are immovable).
+    /// The engine's older pass (NOT RETAIL), used when `row_solver` is off.
     fn contact_corrections(&mut self, index: usize, world: &BoardWorld) -> RetailReactionCorrections {
         let mut corrections = RetailReactionCorrections::default();
         let box_primitive = self.bodies[index].box_primitive();
@@ -1979,12 +2219,17 @@ mod tests {
         assert!(fastest > 0.1, "push still applies: {fastest}");
     }
 
-    /// Depenetration is bounded per tick: a box dropped deep into the floor
-    /// rises at most `max_depenetration_per_tick` per tick from the
+    /// Depenetration in the engine's older impulse pass (mod option
+    /// `row_solver = false`) is bounded per tick: a box dropped deep into the
+    /// floor rises at most `max_depenetration_per_tick` per tick from the
     /// positional correction.
     #[test]
     fn depenetration_is_bounded_per_tick() {
         let (world, mut layer, mut dynamics) = fixture([0., REST_Y - 0.4, 0.]);
+        dynamics.set_tuning(PropTuningTable {
+            solver: PropSolverSettings { row_solver: false, ..Default::default() },
+            ..Default::default()
+        });
         dynamics.bodies[0].wake();
         let cap = dynamics.tuning().default.max_depenetration_per_tick;
         let mut previous = dynamics.bodies[0].rates.position.y;
@@ -1996,6 +2241,34 @@ mod tests {
             previous = y;
         }
         assert!(previous > REST_Y - 0.4 + 0.05, "the box still comes out: {previous}");
+    }
+
+    /// The retail row solver has no per-tick cap: a box 0.4 m deep in the
+    /// floor comes out on the full predicted-separation target and settles.
+    #[test]
+    fn retail_rows_push_a_deep_box_out_and_it_settles() {
+        let (world, mut layer, mut dynamics) = fixture([0., REST_Y - 0.4, 0.]);
+        dynamics.bodies[0].wake();
+        let mut previous = dynamics.bodies[0].rates.position.y;
+        let mut largest_rise = 0.0f32;
+        let mut fastest = 0.0f32;
+        let mut highest = previous;
+        let mut slept_at = None;
+        for tick in 0..240 {
+            dynamics.step(&world, &mut layer, &[]);
+            let body = &dynamics.bodies[0];
+            let y = body.rates.position.y;
+            largest_rise = largest_rise.max(y - previous);
+            fastest = fastest.max(body.rates.linear_velocity.y);
+            highest = highest.max(y);
+            if slept_at.is_none() && body.asleep {
+                slept_at = Some(tick);
+            }
+            previous = y;
+        }
+        println!("deep box: largest rise {largest_rise:.4} m/tick, fastest up {fastest:.3} m/s, highest {:.4} over rest, end {:.4} over rest, slept at {slept_at:?}", highest - REST_Y, previous - REST_Y);
+        assert!((previous - REST_Y).abs() < 0.02, "the box rests on the floor: {}", previous - REST_Y);
+        assert!(slept_at.is_some(), "the box sleeps");
     }
 
     /// Per prop type tuning: an override keyed by template name applies to

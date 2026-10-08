@@ -167,6 +167,24 @@ pub struct PropsPatch {
     pub default: Option<PropTuningPatch>,
     #[serde(default)]
     pub by_template: BTreeMap<String, PropTuningPatch>,
+    /// Island settings shared by every prop (retail DMO simulation block).
+    pub solver: Option<PropSolverPatch>,
+}
+
+/// Prop contact solver and sleep rule (retail DMO simulation, 8275DCC8 ->
+/// 82DC2840): `row_solver` true = retail row solver (false = the engine's older
+/// impulse pass); `iterations` (retail 25, 1..=256); `sleep_energy` (retail 1e-5);
+/// `sleep_frames` (retail 2, 1..=10000); `max_sleeps_per_step` (retail 100);
+/// `rest_snap` (engine snap, not retail, default false).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropSolverPatch {
+    pub row_solver: Option<bool>,
+    pub iterations: Option<u32>,
+    pub sleep_energy: Option<f32>,
+    pub sleep_frames: Option<u32>,
+    pub max_sleeps_per_step: Option<u32>,
+    pub rest_snap: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -342,9 +360,15 @@ impl Merge for PropTuningPatch {
             penetration_push_speed, stuck_release_ticks, collision_box);
     }
 }
+impl Merge for PropSolverPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; row_solver, iterations, sleep_energy, sleep_frames, max_sleeps_per_step, rest_snap);
+    }
+}
 impl Merge for PropsPatch {
     fn merge(&mut self, b: &Self) {
         merge_nested(&mut self.default, &b.default);
+        merge_nested(&mut self.solver, &b.solver);
         for (k, v) in &b.by_template {
             self.by_template.entry(k.clone()).and_modify(|a| a.merge(v)).or_insert_with(|| v.clone());
         }
@@ -402,9 +426,18 @@ impl PropTuningPatch {
             })
     }
 }
+impl PropSolverPatch {
+    pub fn validate(&self) -> bool {
+        self.iterations.is_none_or(|n| (1..=256).contains(&n))
+            && self.sleep_energy.is_none_or(|e| e.is_finite() && (0.0..=MAX_NUMBER).contains(&e))
+            && self.sleep_frames.is_none_or(|n| (1..=10_000).contains(&n))
+            && self.max_sleeps_per_step.is_none_or(|n| n >= 1)
+    }
+}
 impl PropsPatch {
     pub fn validate(&self) -> bool {
         self.default.as_ref().is_none_or(PropTuningPatch::validate)
+            && self.solver.as_ref().is_none_or(PropSolverPatch::validate)
             && self.by_template.len() <= MAX_TEMPLATES
             && self.by_template.iter().all(|(k, v)| !k.is_empty() && k.len() <= 128 && v.validate())
     }

@@ -368,6 +368,70 @@ The game uses this floor material and the same prop step, so the in-game builds 
 same behaviour (placed props can keep rocking without sleeping; a dragged prop can sink); not checked in a game
 run.
 
+## Retail contact solver and sleep rule for props (2026-10-08)
+
+**Problem.** With the game's real floor material {0, 0, 1} (previous section) three prop tests failed: a placed prop
+rocked forever and never slept, the dragged vending machine sank 8.2 cm into the street, and six DownTown props sank
+15 to 21 cm after a drag. Root cause (measured): our own contact pass (one impulse pass with shared impulses, 40 %
+positional correction, 5 mm slop, 5 cm per tick cap) leaves resting jitter and overlap, and our own rest snap and
+30-step cool-down hid part of that. Neither exists in retail (parity review items 4 and 5).
+
+**Retail evidence** [code, recomp TU3]:
+- Sleep rule. Integrator 82AE6590 (already ported as skate-core `integrate_body_rates` / `dynamic_update_packed`):
+  after damping and the speed caps, E = |v|^2 + s * m^-1 * |w|^2; the counter (body +172) resets to 0 when
+  E >= island +172, otherwise it counts up only if E did not rise, capped at island +168. Sleep pass 82DC3130
+  (re-read): every active body with counter >= sim +204 moves to the sleeping list, its counter set to island +168,
+  at most 100 bodies per call. No rest snap anywhere.
+- DMO island values: the DMO simulation ctor 82DC2840 (re-read) copies its parameter block +16 -> island +176
+  (solver iterations), +32 -> island +172 (sleep energy), +36 -> island +168; the block from 8275DCC8 holds 25,
+  1e-5 (0x8219B100) and 2 (parity review item 4, code + data).
+- Solver. The contact stage 82DC30A8 runs 82AE27D0 with island +176 iterations (25 for DMOs) over rows built by
+  ContactBatchBuild 82AE10C8, whose targets are displacements (predicted separation v dt + separation + a dt^2,
+  restitution -v dt e); position error has its own position-only lane, so an overlap is removed without creating
+  velocity. This is the same skate-core path the board already uses (`build_contact_jacobian` with the native
+  `vrefp` reciprocal, then `solve_constraints`), so props reuse it unchanged.
+
+**Change** (`crates/skate-game/src/physics/prop_dynamics.rs`):
+- Every awake prop's contacts go into one shared row solve per step: one row per manifold point (A = the prop,
+  B = the static triangle, another prop, or an asleep prop as an immovable support), built with
+  `generate_contact` + `build_contact_jacobian` and solved with `solve_constraints` for `iterations` passes; then
+  every awake body integrates with its correction buffers (BatchIntegrator order). Pairs of awake props are built
+  once, from the lower index. Body order is the iteration order (deterministic).
+- Sleep: the integrator's own counter with the DMO values (energy 1e-5, cap 2) and the sleep pass (counter >= 2,
+  at most 100 per step). The rest snap and our 0.5 / 30 values are gone from the default path.
+- New `PropSolverSettings` (in `PropTuningTable`, resource `PropTuningSettings`): `row_solver` (true),
+  `iterations` (25), `sleep_energy` (1e-5), `sleep_frames` (2), `max_sleeps_per_step` (100), `rest_snap` (false).
+  Mods set them with `sdk.world.set_tuning('props', {solver = {...}})` (skate-mods `PropSolverPatch`: validated,
+  iterations 1..=256, sleep_frames 1..=10000, sleep_energy 0..=100000, max_sleeps_per_step >= 1, unknown keys
+  rejected), read back with `world_tuning:props`, reset on mod disable. `row_solver = false` keeps the engine's older
+  impulse pass (with its slop / fraction / cap knobs), `rest_snap = true` its snap.
+
+**Verification** (unit tests, no game run; asserts unchanged):
+
+| Test | Before (72bf058) | Step A only (retail sleep, old contact pass) | Step A + B (this change) |
+|---|---|---|---|
+| `dragged_props_rest_on_the_floor_after_release` | FAIL: vending -0.082 m | FAIL: vending -0.082 m (bench -0.036, bin -0.058, rail -0.049), none asleep | pass: worst gap 0.000 m for bench, bin, vending, rail; all asleep |
+| `placement_adjust_confirm_and_sleep` | FAIL: never slept | FAIL: never slept | pass |
+| `downtown_dragged_props_rest_on_the_floor` (ignored, assets) | FAIL: 5 props sank | FAIL: 6 props sank 0.146 to 0.212 m, none asleep | pass: 6 props measured, worst gap 0.000 m, all asleep (2 of the 8 ids grab a neighbouring prop and are skipped) |
+
+Step A alone answers the question "does the rocking remain": yes. Without the snap, the old pass's resting jitter
+keeps every prop above E = 1e-5, so nothing sleeps (it also broke four sleep tests); the sleep rule needs the row
+solver. Behaviour changes in other tests: `depenetration_is_bounded_per_tick` tested a knob of the old pass and now
+runs with `row_solver = false`; the new `retail_rows_push_a_deep_box_out_and_it_settles` shows the retail result:
+a box 0.4 m deep in the floor is moved out in one step with zero vertical velocity (position-only lane) and sleeps
+on step 2. All other prop tests pass unchanged (push speed caps, no tipping on flat ground, curb tip, yaw rate,
+Move Object, NPC pushes, layout); `prop_solver_settings_set_validate_and_reset` covers the mod knobs. skate-game
+549 pass, 1 known failure (`setup::pipelines_accept...`); skate-mods 102 pass.
+
+**NOT RETAIL YET.** An asleep prop touched by an awake one is an immovable support and wakes only on a hit closing
+faster than 1 m/s (ours; retail merges touching bodies into the island). Contacts are not passed through the
+agCollision retention buffer the board uses (8277C23C duplicate removal). Skater pushes are still our impulse
+transfer, not solver rows. Held placement (`carry_to`) still bypasses sleep.
+
+**Open questions.** Whether retail wakes a sleeping DMO on any contact (island merge rule not read); per-row slop or
+cap inside 82AE27D0 (none found in the board port, the review's item 5 note); an in-game check that placed props now
+sleep and dragged props stay on the street.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with
