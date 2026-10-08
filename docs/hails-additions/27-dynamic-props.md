@@ -147,7 +147,7 @@ moves the pair per second (likely the MVOBJ clips' root motion) is not known.
 **Open.** Decode state 502 (PhysState_OffBoardPushing) and the MVOBJ clip root motion to replace the engine
 speeds; the prop's retail grip point (hands on the handle) and whether heavy DMOs move slower.
 
-## D9 research: the props' retail shader (2026-10-07, not built yet)
+## D9 research: the props' retail shader (2026-10-07; ported 2026-10-08, see D9 port below)
 
 **Problem.** Props look flat next to retail: the recomp shows dents, corrosion and grime highlights on dumpsters and
 trash bins that ours lack (user's comparison video, 2026-10-07). Our log says why: "40 of 40 world materials use an
@@ -193,6 +193,99 @@ unique prop materials over BlackBoxPark, DownTown, Industrial, MaloofMoneyCup, U
    the same look; mod graphics keep their own path.
 5. Tests: a converter test that the 114 materials classify as `dynamicobject`, a shader test like the existing
    `retail_shader_tests.rs` ones; the user compares against the recomp in game.
+
+## D9 port: dynamicobject_defaultPS as family 15 (2026-10-08)
+
+**Problem.** See "D9 research" above: props rendered as family 1 with no lightmap (the absent lightmap reads as
+white), so every face was evenly lit and the normal maps only moved the small kd term. Retail lights props with the
+sun, so the relief of the per-object normal maps, the corroded / pitted detail normals and the specular maps reads as
+dents and grime, and faces turned from the sun drop close to black (recomp video 2026-10-07: the dumpster side in
+its own shade is very dark, the lit edge bright).
+
+**Retail evidence.**
+- [code, shader microcode] `dynamicobject_defaultPS.fpo` (2428 bytes) and `dynamicobject_defaultVS.vpo` (1140
+  bytes) from `shaders_final.big`. Constant table (D3D CTAB at 0x94 in the PS): c0..c2 `CSM_Mat_Row0`, c3
+  `CSM_Mat_Row1`, c4 `CSM_Mat_Row2`, c5..c7 `WorldShadow_MatRow`, c8 `g_CSMSelfBias`, c9 `g_vLightDir`, c10
+  `g_vViewPos`, c11..c13 `g_envattributes`, c14..c15 `m_params`; samplers s0 `shadowAtlasDepth`, s1 `shadowWorld`,
+  s3 `i_detail`, s4 `i_diffuse`, s5 `i_specular`, s6 `i_normal`. VS: c0..c3 `g_matVP`, c4 `g_vViewPos`, c5
+  `g_FogK1`, c6 `g_FogColour`, c7 `i_detailNormalUVScale`, c8 onward `i_partArray`.
+- [code] Instruction numbers are ALU slots of the PS. 10..14: detail fetched at uv x `detailNormalUVScale` (passed by
+  the VS in interpolator 6). 20..24: raw normal = (2 n.xy + 2 detail.xy - 2, 2 n.z - 1); 25..28 normalised (vnd);
+  29..34: world normal from the interpolated frame. 35..37: N.L with c9 and the step N.L >= 0. 58..60, 72..81: signs
+  of the light in the unperturbed tangent frame times (0.58, 0.62). 86..88, 96: kd = (vnd . (0.58 sx, 0.62 sy,
+  0.39)) x 2.3956 (same literals as `environment.default`).
+- [code] Shadow: 53..56 four CSM depth taps at texel offsets (+-1, +-1), 66, 70..82 depth compare and bilinear
+  weights; 49..52 four `shadowWorld` taps, 65, 67, 69..82 the same for the world map; 84..85
+  S = min(step(N.L) x csm, max(world, `g_CSMSelfBias.w`)).
+- [code] Light: 57, 64, 68, 88: a counter light, saturate(N . (-L.x, L.y, -L.z)) x `m_params[1].w`; 92..95, 97:
+  light = saturate(N.L) x S + counter + `m_params[1].rgb`; colour = kd x light x diffuse^2 (diffuse squared at 34..36).
+- [code] Specular: 61..63, 70, 81, 83 view direction in the tangent frame; 89..91 the pseudo light (0.58 sx, 0.62 sy,
+  0.39) reflected about vnd; 66, 71, 92..95 power 10 + 290 x specular.g; 96, 98..100 x (2.1, 1.8, 1.5) x S x
+  specular.r. Unlike `environment.default` (world-space light (-0.14, 0.5, 0.9) times lightmap.g) this one is
+  tangent-space and shadowed.
+- [code] 98, 101: the result is scaled by `m_params[0].y` x the VS fog alpha (1 + `g_FogColour.w` x f), 102 adds the
+  fog colour, 103..112 the retail tone curve with `g_envattributes[2].x` and `sqrt`, identical to the tail of
+  `defaultenvironment_defaultPS` (70..79), so the engine's tone pass covers it as for the world. c11 and c12 are not
+  read.
+- [data] `m_params` is authored in the attribulator class `material_dynamicobject` (keys `default` and `alphatest`,
+  no parent): row 0 (0.4, 1.0, 0, 0), row 1 (0.04, 0.04, 0.04, 0.0). So the ambient is 0.04 and the counter light is
+  off in retail.
+- [code] There is no `dynamicobject_alphatestPS`: alpha-tested props use the same pixel shader with the alpha test.
+- [code] `shadowWorld` is drawn at runtime by `WorldShadow_defaultVS/PS` ("World Shadow generation",
+  "DrawWorldShadowCasterInstances", doc 26 car-shadow section). `g_CSMSelfBias` is set by the engine; its value was
+  not traced (the name exists only inside the shader objects; `material_envattributes` at 0x821A0390 is the
+  attribulator class behind `g_envattributes`).
+- Disassembly notes for the next reader: the scalar ops take operand a from swizzle slot 3 and b from slot 0
+  (checked on the bilinear lerps 70/71 and 79/80), scalar ops with an empty write mask still set the previous-scalar
+  register (27, 83, 89, 99), and fetch source swizzles are absolute, not relative.
+
+**Change.**
+- Converter: `_retail_shader_family` classifies `dynamicobject.*` as family 15; `render_parameters.py` exports the
+  `material_dynamicobject` `m_params` rows as `dynamicobject.default` / `dynamicobject.alphatest` into
+  `private/render-parameters.json` (other rows unchanged, checked against the stock collections).
+- Renderer: `Definition::parse` upgrades packages that stored 0 for `dynamicobject.*` (no map re-export needed);
+  `supported()` accepts family 15 only when both `m_params` rows are present, otherwise the existing family 1
+  fallback and log line stay (no invented constants). The rows land in `WorldParams.water[0..1]` like the other
+  families' `m_params`. `retail_world.wgsl` has a `fam==15u` branch with the expressions above; `g_vLightDir` is the
+  authored sun direction (`sun_direction`, as for the character); the CSM is the engine's dynamic shadow map read
+  with the same caster light as the world receivers (`fetch_directional_shadow`, flags & 5), gated by
+  `frame_state.shadow.w`. Normal maps are now sampled for family 15. The world shadow floor (0.05, 0.09, 0.13) is a
+  lightmapped-receiver rule and is not applied: dynamicobject has its own `max(world, g_CSMSelfBias.w)` term.
+- Other families: only the normal-map sampling condition gained `|| fam == 15u` and the fog multiplier a new
+  `fam == 15u` line; no other family's expressions changed.
+
+**Moddability.** The family and both `m_params` rows are data per material shader (setup data in
+`private/render-parameters.json`, read at map load); a mod prop with the same shader name and bindings gets the same
+look. There is no mod content layer for world / prop materials yet. Entry point to add: a mod-supplied overlay over
+the `MaterialTuning` rows (keyed by shader name) and per-material texture overrides applied in `MaterialTable::build`
+before page packing, with the stock rows restored when the mod is disabled.
+
+**Files.** `tools/asset_pipeline/retail_material.py`, `tools/asset_pipeline/render_parameters.py`,
+`tools/asset_pipeline/test_environment.py`, `crates/skate-game/src/retail_render.rs` (`DYNAMIC_OBJECT_FAMILY`,
+parse upgrade, `supported`, tests), `crates/skate-game/src/retail_world.wgsl`.
+
+**Verification.**
+- Python: `test_props_classify_as_their_own_family`, `test_dynamicobject_m_params_are_exported_per_variant`; the
+  existing environment, map writer and versions tests pass.
+- Rust: `dynamic_object_materials_take_their_own_family`, `dynamic_object_needs_the_retail_m_params_rows`,
+  `dynamic_object_request_carries_m_params_and_detail_scale`, `dynamic_object_branch_reads_its_data_not_literals`;
+  shader validation (`retail_shader_tests.rs`) and the world shadow floor tests pass unchanged.
+- To playtest (needs a setup refresh first so `render-parameters.json` has the two rows; the log line "40 of 40 world
+  materials use an unsupported shader family" must be gone): the dumpsters and trash bins in DownTown (recomp video
+  2026-10-07, 0 to 58 s). Expect sun-facing sides lit with visible dents and corrosion from the normal / detail maps,
+  sides away from the sun much darker (ambient 0.04), specular glints on metal, the player's shadow on props.
+
+**Open questions.**
+- `shadowWorld` (static world shadow map) has no engine pass yet: props in a building's or bridge's shade are lit as
+  if in sun. Building it means a world-geometry depth pass from the sun (retail `WorldShadow_defaultVS/PS`) and the
+  `g_CSMSelfBias.w` floor value from the recomp.
+- Props do not cast into the dynamic shadow map, so retail's prop self-shadowing is missing.
+- The retail CSM is a 4-tap atlas (three cascades in 1/6 atlas columns); ours uses Bevy's cascade lookup, as for the
+  world receivers.
+- The `transparent` binding of `dynamicobject.alphatest` is not read by the shader; the alpha test uses the diffuse
+  alpha (as before). Check the 2 alpha-tested materials in game.
+- Changing `retail_material.py` marks the maps setup step stale, so the next refresh also re-exports maps; the load
+  time upgrade means that re-export is not required for this change.
 
 ## Open questions
 

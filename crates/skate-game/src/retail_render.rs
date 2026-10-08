@@ -146,6 +146,13 @@ fn pack_slot(class: usize, layer: usize, clamp: bool) -> u32 {
 /// shaded ground below (the city geometry itself casts nothing into this map).
 pub(crate) const RETAIL_WORLD_SHADOW_FLOOR: Vec3 = Vec3::new(0.05, 0.09, 0.13);
 
+/// Shader family of the props' retail `dynamicobject.default` /
+/// `dynamicobject.alphatest` materials (`dynamicobject_defaultPS` in
+/// `shaders_final.big`): no lightmap, lit by the sun direction with the dynamic
+/// shadow and the material's `m_params` rows (ambient, multiplier), see the
+/// `fam==15u` branch of `retail_world.wgsl` and doc 27 "D9".
+pub(crate) const DYNAMIC_OBJECT_FAMILY: u32 = 15;
+
 /// Engine-side setting for the world shadow floor: retail by default, patched by
 /// mods through `sdk.world.set_tuning('shadows', {world_floor = {r, g, b}})` and
 /// rebuilt from the default when the mod stops (`modding::world_tuning`).
@@ -483,6 +490,10 @@ impl Definition {
             "water.default" | "water.alpha" | "water.skatepark"
         ) {
             33
+        } else if stored_family == 0 && shader.starts_with("dynamicobject.") {
+            // Prop packages exported before the converter knew this family
+            // stored 0 with complete bindings; classify them on load.
+            DYNAMIC_OBJECT_FAMILY
         } else {
             stored_family
         };
@@ -553,6 +564,11 @@ impl Definition {
                         && tuning.rows.get(&self.shader).is_some_and(|r| r.len() == 3)
                 }
                 30 => tuning.rows.get(&self.shader).is_some_and(|r| r.len() == 4),
+                // Both `m_params` rows (c14, c15) come from setup data
+                // (`material_dynamicobject` in the attribulator collections).
+                DYNAMIC_OBJECT_FAMILY => {
+                    tuning.rows.get(&self.shader).is_some_and(|r| r.len() == 2)
+                }
                 33 => {
                     tuning.pca_available
                         && self.bindings.contains_key("normal")
@@ -1024,6 +1040,9 @@ impl Request {
         let cutout = material.alpha_mode == 1;
         let class = RenderClass::new(blended, cutout, definition.flags & 4 != 0);
 
+        // The shader's authored `m_params` rows from setup data. For
+        // `dynamicobject.*` that is c14 (x unused by the pixel shader, y the
+        // material multiplier) and c15 (ambient rgb, w the counter-light weight).
         let mut water = [Vec4::ZERO; 4];
         if let Some(rows) = tuning.rows.get(&definition.shader) {
             for (to, from) in water.iter_mut().zip(rows) {
@@ -1867,6 +1886,165 @@ mod tests {
         let sun = Vec3::new(0.6, 0.55, 0.5);
         assert_eq!(receive(sun, 0., floor), floor);
         assert_eq!(receive(sun, 1., floor), sun);
+    }
+
+    /// A material definition blob as the map exporter writes it.
+    fn definition_bytes(shader: &str, family: u32, bindings: &[&str], params: &[(&str, &str)]) -> Vec<u8> {
+        fn text(out: &mut Vec<u8>, value: &str) {
+            out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            out.extend_from_slice(value.as_bytes());
+        }
+        let mut out = vec![0u8; 16];
+        text(&mut out, shader);
+        out.extend_from_slice(&family.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(bindings.len() as u32).to_le_bytes());
+        for (i, role) in bindings.iter().enumerate() {
+            text(&mut out, role);
+            for value in [i as u32 + 1, 0, 0, 0] {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        out.extend_from_slice(&(params.len() as u32).to_le_bytes());
+        for (name, value) in params {
+            text(&mut out, name);
+            out.extend_from_slice(&1u32.to_le_bytes());
+            text(&mut out, value);
+        }
+        text(&mut out, "");
+        out
+    }
+
+    /// `material_dynamicobject` m_params rows as setup exports them.
+    fn dynamic_object_tuning() -> MaterialTuning {
+        let rows = vec![[0.4, 1., 0., 0.], [0.04, 0.04, 0.04, 0.]];
+        MaterialTuning {
+            rows: BTreeMap::from([
+                ("dynamicobject.default".to_string(), rows.clone()),
+                ("dynamicobject.alphatest".to_string(), rows),
+            ]),
+            pca_available: false,
+        }
+    }
+
+    #[test]
+    fn dynamic_object_materials_take_their_own_family() {
+        let roles = ["diffuse", "normal", "specular", "detail"];
+        for shader in ["dynamicobject.default", "dynamicobject.alphatest"] {
+            // Packages exported before the converter knew the family stored 0.
+            for stored in [0, DYNAMIC_OBJECT_FAMILY] {
+                let bytes = definition_bytes(shader, stored, &roles, &[("detailNormalUVScale", "8")]);
+                let definition = Definition::parse(&bytes).expect("parses");
+                assert_eq!(definition.family, DYNAMIC_OBJECT_FAMILY, "{shader} stored {stored}");
+                assert_eq!(definition.scalar("detailNormalUVScale"), Some(8.));
+                assert!(definition.supported(&dynamic_object_tuning()));
+            }
+        }
+        // Other families keep their stored value, and an unknown shader stays
+        // unknown (and so falls back to family 1 in the table as before).
+        let world = Definition::parse(&definition_bytes("environment.default", 1, &roles, &[])).unwrap();
+        assert_eq!(world.family, 1);
+        let unknown = Definition::parse(&definition_bytes("vehicle.default", 0, &roles, &[])).unwrap();
+        assert_eq!(unknown.family, 0);
+        assert!(!unknown.supported(&dynamic_object_tuning()));
+    }
+
+    #[test]
+    fn dynamic_object_needs_the_retail_m_params_rows() {
+        let bytes = definition_bytes("dynamicobject.default", 0, &["diffuse"], &[]);
+        let definition = Definition::parse(&bytes).unwrap();
+        // An install without the exported rows keeps the old family 1 fallback
+        // rather than shading with invented constants.
+        assert!(!definition.supported(&MaterialTuning::default()));
+        let mut short = dynamic_object_tuning();
+        short.rows.insert("dynamicobject.default".into(), vec![[0.4, 1., 0., 0.]]);
+        assert!(!definition.supported(&short));
+        assert!(definition.supported(&dynamic_object_tuning()));
+    }
+
+    #[test]
+    fn dynamic_object_request_carries_m_params_and_detail_scale() {
+        let bytes = definition_bytes(
+            "dynamicobject.default",
+            0,
+            &["diffuse", "detail"],
+            &[("detailNormalUVScale", "3")],
+        );
+        let definition = Definition::parse(&bytes).unwrap();
+        let make = || skate_data::skate_map::Material {
+            name: "prop".into(),
+            flags: 0,
+            friction: 0.5,
+            restitution: 0.1,
+            color: [1.; 3],
+            roughness: 0.5,
+            emissive: 0.,
+            textures: [0; 5],
+            indirect_strength: 0.,
+            alpha_mode: 0,
+            alpha_cutoff: 0.5,
+            audio: 3,
+            physics: 1,
+            pattern: 0,
+            depth_layer: None,
+            retail_definition: Some(bytes.clone()),
+        };
+        let material = make();
+        let map = SkateMap {
+            version: 14,
+            name: "props".into(),
+            spawn: [0.; 3],
+            heading: 0.,
+            environment: vec![0.; 45],
+            materials: vec![make()],
+            textures: vec![],
+            geometry: skate_data::skate_map::Geometry {
+                vertices: vec![],
+                indices: vec![],
+                collision: vec![],
+            },
+            rails: vec![],
+            doors: vec![],
+            lights: vec![],
+            routes: vec![],
+            extensions: vec![],
+        };
+        let request = Request::new(
+            &material,
+            &definition,
+            &dynamic_object_tuning(),
+            &crate::retail_sky::SkyEnvironment::default(),
+            &canonical_texture_ids(&map.textures),
+            &map,
+        );
+        let p = &request.params;
+        assert_eq!(p.mode.x, DYNAMIC_OBJECT_FAMILY as f32);
+        assert_eq!(p.mode.z, -1., "opaque: no cutoff");
+        assert_eq!(p.mode.w, 2.5, "same exposure baseline as the world");
+        assert_eq!(p.surface.z, 3., "detailNormalUVScale from the material");
+        // c14 / c15 exactly as authored: multiplier m_params[0].y, ambient
+        // m_params[1].rgb, counter-light weight m_params[1].w.
+        assert_eq!(p.water[0], Vec4::new(0.4, 1., 0., 0.));
+        assert_eq!(p.water[1], Vec4::new(0.04, 0.04, 0.04, 0.));
+        assert_eq!(p.water[2], Vec4::ZERO);
+        assert_eq!(request.class, RenderClass::Opaque);
+    }
+
+    #[test]
+    fn dynamic_object_branch_reads_its_data_not_literals() {
+        let src = include_str!("retail_world.wgsl");
+        let start = src.find("} else if fam == 15u {").expect("dynamicobject branch");
+        let branch = &src[start..start + src[start..].find("    } else {").unwrap()];
+        // Ambient and counter light from m_params[1]; no lightmap read.
+        assert!(branch.contains("p.water[1].xyz") && branch.contains("p.water[1].w"));
+        assert!(!branch.contains("sample_lightmap") && !branch.contains("baked"));
+        // The dynamic shadow uses the same caster light as the world receivers,
+        // and the world floor constant stays a lightmapped-receiver rule.
+        assert!(branch.contains("fetch_directional_shadow") && branch.contains("& 5u)==5u"));
+        assert!(!branch.contains("frame_state.shadow.rgb"));
+        assert!(src.contains("if fam == 15u { fog_a *= p.water[0].y; }"));
+        // Normal maps are sampled for this family.
+        assert!(src.contains("(fam <= 6u || fam == 13u || fam == 15u)"));
     }
 
     #[test]

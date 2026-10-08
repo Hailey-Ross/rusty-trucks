@@ -2190,11 +2190,11 @@ described, not copied.
 
 ## Open questions
 
-- Props look (todo, D9): all 40 prop materials use retail's `dynamicobject.default` / `dynamicobject.alphatest`
-  shader, which the renderer does not support yet (log: "40 of 40 world materials use an unsupported shader family
-  and render as family 1"). Retail draws an extra layer over the base texture (dents, grime, rust on dumpsters and
-  trash bins, recomp comparison 2026-10-07). Port the retail shader program. Research and plan: doc 27,
-  "D9 research".
+- Props look (D9, ported 2026-10-08, to playtest): the props' `dynamicobject.default` / `dynamicobject.alphatest`
+  materials now render with their own family 15, a port of `dynamicobject_defaultPS` (sun N.L with the dynamic
+  shadow, `m_params` ambient, tangent-space specular, detail normal). Needs a setup refresh (environment step) for the
+  `m_params` rows; without them the old family 1 fallback and log line remain. Open: retail's static world shadow map
+  (`shadowWorld`) has no engine pass yet, so props in building shade stay sunlit. Details: doc 27, "D9".
 - Population core (milestone 2): retail reads the census count once per spawn pass (`r23` in `sub_826B9940`), so
   during the initial populate the cap would not bind and only the factory (pool 31) would; the recomp sessions show
   at most 15 peds in 15-cap areas, so we re-read the count per spawn (identical outside the initial populate). Also
