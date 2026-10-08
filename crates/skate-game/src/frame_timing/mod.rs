@@ -542,6 +542,91 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// The same game with every trace-all diagnostic that runs per frame on the game thread: the
+    /// frame timing plugin, the frame log and the rolling performance report (short windows, so
+    /// several are handed to the writer thread during the run).
+    fn run_trace_all(dir: &std::path::Path, frames: u64) -> (Sim, std::time::Duration) {
+        use bevy::time::TimeUpdateStrategy;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins).init_resource::<Sim>().add_systems(FixedUpdate, sim);
+        app.add_plugins(FrameTimingPlugin);
+        app.insert_resource(FrameLogSink(log::FrameLog::open(dir.join("frames.tsv")).unwrap()));
+        app.init_resource::<bevy::diagnostic::DiagnosticsStore>();
+        crate::performance::install(
+            &mut app,
+            crate::performance::Performance::rolling(dir.join("perf.json"), 0.02).with_warmup(0.0),
+        );
+        let started = std::time::Instant::now();
+        for i in 0..frames {
+            let ms = if i % 97 == 0 { 120 } else { 3 + i % 5 * 4 };
+            app.insert_resource(TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(ms)));
+            app.update();
+        }
+        let elapsed = started.elapsed();
+        let sim = app.world().resource::<Sim>().clone();
+        app.world_mut().remove_resource::<FrameLogSink>();
+        (sim, elapsed)
+    }
+
+    /// Trace-all on or off: the simulated game sees the same fixed steps and deltas, bit for bit,
+    /// and the rolling report keeps writing windows instead of exiting the app.
+    #[test]
+    fn game_is_identical_with_trace_all_on_or_off() {
+        let (plain, _) = run_app(false, None);
+        let dir = std::env::temp_dir().join(format!("skate-trace-all-app-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (traced, _) = run_trace_all(&dir, 600);
+        assert_eq!(plain, traced);
+        assert_eq!(plain.state.to_bits(), traced.state.to_bits());
+        // The writer thread rewrites the report after each window; give it a moment.
+        let report = dir.join("perf.json");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !report.exists() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+        assert_eq!(json["mode"], "rolling");
+        assert!(!json["windows"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Per-frame game-thread cost of the trace-all diagnostics (run with `--ignored --nocapture`):
+    /// the same 3000-frame app with and without them, interleaved, best of 5 each.
+    #[test]
+    #[ignore = "timing measurement, run by hand"]
+    fn trace_all_overhead() {
+        use bevy::time::TimeUpdateStrategy;
+        let frames = 3000u64;
+        let plain = || {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins).init_resource::<Sim>().add_systems(FixedUpdate, sim);
+            let started = std::time::Instant::now();
+            for i in 0..frames {
+                let ms = if i % 97 == 0 { 120 } else { 3 + i % 5 * 4 };
+                app.insert_resource(TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(ms)));
+                app.update();
+            }
+            started.elapsed()
+        };
+        let dir = std::env::temp_dir().join(format!("skate-trace-all-cost-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut off, mut on) = (Vec::new(), Vec::new());
+        for _ in 0..5 {
+            off.push(plain());
+            on.push(run_trace_all(&dir, frames).1);
+        }
+        let per_frame = |v: &[std::time::Duration]| v.iter().min().unwrap().as_secs_f64() * 1e6 / frames as f64;
+        let spread = |v: &[std::time::Duration]| {
+            let us: Vec<f64> = v.iter().map(|d| d.as_secs_f64() * 1e6 / frames as f64).collect();
+            us.iter().cloned().fold(f64::MIN, f64::max) - us.iter().cloned().fold(f64::MAX, f64::min)
+        };
+        eprintln!(
+            "TRACE_ALL_OVERHEAD frames={frames} off_us_per_frame={:.2} (spread {:.2}) on_us_per_frame={:.2} (spread {:.2}) delta_us={:.2}",
+            per_frame(&off), spread(&off), per_frame(&on), spread(&on), per_frame(&on) - per_frame(&off)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// Diagnostics never change the game: no system here writes any resource
     /// but `FrameTiming`, and only `show` writes components (UI nodes, text and
     /// colours, filtered to this module's overlay markers).

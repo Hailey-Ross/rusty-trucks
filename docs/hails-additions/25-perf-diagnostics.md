@@ -260,3 +260,39 @@ combined, the pairs have to be recomputed for the combined tree (as for F + G).
 - `FRAME_HITCH`: the cause of the flip hitch on large airs is not found yet; the next session with the line
   names the stage. Thresholds are env-tunable only; a mod-facing setter (and reset on mod disable) would
   need a writable frame-diagnostics section in the mod API.
+
+## Trace-all mode (`SKATE_TRACE_ALL=1`)
+
+Status: work in progress on `world/trace-all` (first compile pending at this commit).
+
+Problem: one play session should capture every trace the engine has, and the name has to mean what it says. Before, trace-all only meant whatever the launcher remembered to set, and two of those switches were unsafe for a whole session: `SKATE_PERF_REPORT` exits the game after 25 s, and `SKATE_GPU_TIMING` makes device creation fail on an adapter without timestamp queries.
+
+Change (`crates/skate-game/src/trace_all.rs`): `apply()` runs first in the game process, before any thread or the log subscriber, and sets every session diagnostic switch that is not already on. Every existing reader (including the `OnceLock` caches in audio and physics) then sees it unchanged. Paths the launcher did not set go next to the ones it did set (fallback `<exe dir>/logs/trace-all-<unix seconds>`). One `TRACE_ACTIVE` startup line lists every active trace and where it writes.
+
+| Switch | Output |
+|---|---|
+| `SKATE_FRAME_LOG` | `frames.tsv`, one row per frame (writer thread) |
+| `SKATE_AUDIO_STATE_LOG` | `audio_state.tsv`, one row per audio frame (writer thread; rows are now copied as values and formatted on the writer thread) |
+| `SKATE_PERF_REPORT` | `perf.json`, rolling: 15 s windows for the whole session, rewritten by the `perf-report` thread after every window (write then rename), one `SKATE_PERF window=` line per window; never exits |
+| `SKATE_PERF_GPU` | render diagnostics in the report (GPU pass times when supported) |
+| `SKATE_PERF_RENDER` | render phase split in the report, reset per window |
+| `SKATE_GPU_TIMING` | in trace-all the features are not forced: Bevy's default `Functionality` priority already requests every feature the adapter has, so timestamps are on when supported and device creation cannot fail; `GPU_TIMING timestamp_query=yes/no` logged once |
+| `SKATE_AUDIO_TRACE` | log: `AUDIO_NATIVE` post/release, `AUDIO_EVENT` brake/push/grind |
+| `SKATE_AUDIO_TIMING` | log: audio cost once per second |
+| `SKATE_LIVING_WORLD_DEBUG` | log: population / NPC / traffic readout every 5 s |
+| `SKATE_FPS_LOG` | log: `SKATE_FPS_SAMPLE` lines |
+| Chrome trace (`--trace`) | armed for F9 / F10 to `chrome-trace.json` next to the report (nothing timed or written until F9; field-less spans no longer allocate a label) |
+
+Not included on purpose: test or tool switches (`SKATE_BUDGET_MAP`, `SKATE_VERIFY_*`, `SKATE_RETAIL_*_VECTORS`, data roots) and switches that change the game (`SKATE_AUDIO_MORE_AUDIBLE`, `SKATE_FIXED_EXPOSURE`). `SKATE_AEMS` (still set by the launcher) has no reader any more.
+
+Log writer: with trace-all every log line goes through a bounded queue (16384 lines) to a `log-writer` thread instead of a blocking stderr write on the calling thread (the crash supervisor relays stderr through a pipe). A full queue drops and counts (`LOG_DROPPED`), never blocks. A panic or clean exit waits for the queue to drain first.
+
+`SKATE_PERF_RENDER` cost: the seven marker systems sit between render sets that Bevy already chains (`ExtractCommands, PrepareAssets, PrepareMeshes, ManageViews, Queue, PhaseSort, Prepare, Render, Cleanup`), so they add no ordering beyond what exists; each does one atomic swap.
+
+New or changed log lines (always on unless noted, all edge-triggered or rate-limited):
+- `MANUAL_LANDING` per landing (ported from the hails-only line), now with `engage_time` (the motion graph's `ManualEngageTime` intent at touchdown), `graph_state` (motion graph state id and name) and `clip`.
+- `PROP_HELD from=... to=...` on every grab / release edge; `HELD_PROP` at 5 per second in trace-all (1 per second otherwise).
+- `BOARD_POSSESSION hold / let_go` on the board hand edges (board dropped to grab a prop).
+- `RETAIL_MATERIAL_FAMILIES` once per material table load (family counts, 15 = dynamicobject D9).
+
+Still to do at this commit: compile and fix, tests (`game_is_identical_with_trace_all_on_or_off`, `trace_all` unit tests), the overhead measurement (`trace_all_overhead`, `state_log_row_cost`, both `#[ignore]`), car shadow state line.

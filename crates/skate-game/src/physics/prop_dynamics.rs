@@ -483,6 +483,9 @@ pub(crate) fn move_fields(mv: Option<MoveDiagnostics>) -> String {
 
 /// Seconds a released prop keeps logging HELD_PROP lines.
 const RELEASE_LOG_SECONDS: f32 = 3.0;
+/// HELD_PROP lines per second with trace-all (1 otherwise): a short push, pull, side step or
+/// turn of a held prop lasts well under a second.
+const HELD_PROP_HZ_TRACE_ALL: u64 = 5;
 /// Minimum seconds between two PROP_BELOW_GROUND lines for one prop.
 const BELOW_GROUND_LOG_SECONDS: f32 = 10.0;
 
@@ -1008,6 +1011,14 @@ impl PropDynamics {
             return;
         }
         self.move_diagnostics = None;
+        // PROP_HELD: the grab / release edge itself (the HELD_PROP lines are periodic).
+        let describe = |id: Option<u32>| {
+            id.and_then(|id| self.by_id.get(&id).map(|&i| (id, &self.bodies[i]))).map_or("none".to_string(), |(id, b)| {
+                let (p, v) = (b.rates.position, b.rates.linear_velocity);
+                format!("#{id} {} at=[{:.2}, {:.2}, {:.2}] velocity=[{:.2}, {:.2}, {:.2}]", b.template, p.x, p.y, p.z, v.x, v.y, v.z)
+            })
+        };
+        info!("PROP_HELD from={} to={} tick={}", describe(self.held), describe(held), self.tick);
         if let Some(previous) = self.held {
             let ticks = (RELEASE_LOG_SECONDS / self.simulation.time_step.max(1e-4)).ceil() as u64;
             self.released = Some((previous, self.tick + ticks));
@@ -1054,7 +1065,8 @@ impl PropDynamics {
         if self.released.is_some_and(|(_, until)| self.tick > until) {
             self.released = None;
         }
-        if self.tick % per_second == 0 {
+        let held_every = if crate::trace_all::on() { (per_second / HELD_PROP_HZ_TRACE_ALL).max(1) } else { per_second };
+        if self.tick % held_every == 0 {
             let watched = [self.held.map(|id| (id, "held")), self.released.map(|(id, _)| (id, "released"))];
             for (id, phase) in watched.into_iter().flatten() {
                 let Some(&index) = self.by_id.get(&id) else { continue };

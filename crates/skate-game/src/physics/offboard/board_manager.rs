@@ -172,6 +172,8 @@ impl<'a, 'board> Transition<'a, 'board> {
 
 impl SkateboardControllerActions for Transition<'_, '_> {
     fn hold_skateboard(&mut self) {
+        // BOARD_POSSESSION: hand edges (board picked up / let go, e.g. dropped to grab a prop).
+        bevy::log::info!("BOARD_POSSESSION hold");
         self.previous.word_444 = 0;
         self.owner
             .hold(&mut self.previous, self.observation, self.effects);
@@ -179,6 +181,7 @@ impl SkateboardControllerActions for Transition<'_, '_> {
     }
 
     fn let_go_of_skateboard(&mut self) {
+        bevy::log::info!("BOARD_POSSESSION let_go");
         self.previous.word_444 = 0;
         self.owner
             .let_go(&mut self.previous, self.observation, self.effects);

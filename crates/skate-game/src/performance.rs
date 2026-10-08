@@ -1,6 +1,13 @@
 //! Frame timing harness. Active only when `SKATE_PERF_REPORT` names an output
 //! path: warms up, samples a fixed window, writes JSON, then exits.
 //!
+//! With trace-all (`SKATE_TRACE_ALL=1`) it never exits: it rolls for the whole
+//! session in windows of [`ROLLING_WINDOW`] seconds and a writer thread rewrites
+//! the JSON after every window (every window's summary, plus the newest window's
+//! render diagnostics; per-frame samples are in the frame log). The game thread
+//! only pushes one sample per frame into a preallocated buffer and hands the full
+//! buffer over once per window.
+//!
 //! The `Performance` resource is absent in normal play, which is why callers
 //! take it as `Option<ResMut<_>>` — instrumentation must never cost anything in
 //! a shipping session.
@@ -19,6 +26,8 @@ use std::{
 const WARMUP: f32 = 10.0;
 /// Seconds of samples retained.
 const SAMPLE: f32 = 15.0;
+/// Seconds per window of the rolling (trace-all) report.
+pub(crate) const ROLLING_WINDOW: f32 = 15.0;
 /// A frame slower than this is counted separately: at 300 FPS the budget is
 /// 3.33 ms, so 8 ms is an unambiguous hitch rather than jitter.
 const HITCH_MS: f32 = 8.0;
@@ -123,9 +132,30 @@ struct Frame {
     triangles: u32,
 }
 
+/// One finished window handed to the report writer thread.
+struct Window {
+    index: u64,
+    started_s: f32,
+    window_s: f32,
+    samples: Vec<Frame>,
+    draws: DrawStats,
+    render_phase_ms: [f32; 6],
+    gpu: Vec<(String, f64)>,
+}
+
+/// The rolling report (trace-all): window bookkeeping and the writer thread's queue.
+struct Rolling {
+    warmup: f32,
+    window: f32,
+    index: u64,
+    window_started: f32,
+    sender: std::sync::mpsc::SyncSender<Window>,
+}
+
 #[derive(Resource)]
 pub(crate) struct Performance {
     output: PathBuf,
+    rolling: Option<Rolling>,
     started: Instant,
     frame_started: Option<Instant>,
     main_elapsed: Duration,
@@ -139,6 +169,7 @@ impl Performance {
     fn new(output: PathBuf) -> Self {
         Self {
             output,
+            rolling: None,
             started: Instant::now(),
             frame_started: None,
             main_elapsed: Duration::ZERO,
@@ -155,6 +186,46 @@ impl Performance {
     pub(crate) fn physics(&mut self, elapsed: Duration) {
         self.physics_elapsed += elapsed;
     }
+
+    /// The rolling report: windows of `window` seconds after the warmup, summarised and written
+    /// by the `perf-report` thread.
+    pub(crate) fn rolling(output: PathBuf, window: f32) -> Self {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Window>(4);
+        let path = output.clone();
+        let _ = std::thread::Builder::new().name("perf-report".into()).spawn(move || {
+            let mut windows: Vec<serde_json::Value> = Vec::new();
+            while let Ok(window) = receiver.recv() {
+                let mut report = summarise(&window.samples, &window.draws);
+                report.render_phase_ms = window.render_phase_ms;
+                report.gpu = window.gpu;
+                report.samples.clear();
+                info!(
+                    "SKATE_PERF window={} t={:.0}s fps={:.1} low1={:.1} frame_ms_mean={:.3} p99={:.3} max={:.1} main={:.3} physics={:.3} hitches={} draws={}",
+                    window.index, window.started_s, report.fps, report.fps_1_percent_low, report.frame_ms_mean,
+                    report.frame_ms_p99, report.frame_ms_max, report.main_schedule_ms_mean, report.physics_ms_mean,
+                    report.frames_over_hitch, report.draw_calls
+                );
+                windows.push(window_summary(&report, window.index, window.started_s));
+                if let Err(error) = write_rolling(&path, &report, &windows, window.window_s) {
+                    error!("SKATE_PERF_REPORT could not be written: {error}");
+                }
+            }
+        });
+        let mut performance = Self::new(output);
+        // One window at a generous 600 FPS; a full buffer is handed over once per window.
+        performance.samples = Vec::with_capacity((window * 600.0) as usize);
+        performance.rolling = Some(Rolling { warmup: WARMUP, window, index: 0, window_started: 0.0, sender });
+        performance
+    }
+
+    /// The rolling report with another warmup (tests).
+    #[cfg(test)]
+    pub(crate) fn with_warmup(mut self, warmup: f32) -> Self {
+        if let Some(rolling) = self.rolling.as_mut() {
+            rolling.warmup = warmup;
+        }
+        self
+    }
 }
 
 pub(crate) struct PerformancePlugin;
@@ -163,9 +234,21 @@ impl Plugin for PerformancePlugin {
         let Some(output) = std::env::var_os("SKATE_PERF_REPORT").map(PathBuf::from) else {
             return;
         };
-        info!("SKATE_PERF starting: warmup={WARMUP}s sample={SAMPLE}s output={output:?}");
+        let performance = if crate::trace_all::on() {
+            info!("SKATE_PERF starting (rolling, trace-all): warmup={WARMUP}s window={ROLLING_WINDOW}s output={output:?}");
+            Performance::rolling(output, ROLLING_WINDOW)
+        } else {
+            info!("SKATE_PERF starting: warmup={WARMUP}s sample={SAMPLE}s output={output:?}");
+            Performance::new(output)
+        };
+        install(app, performance);
+    }
+}
+
+/// The report's systems and, on request, the GPU diagnostics and the render phase split.
+pub(crate) fn install(app: &mut App, performance: Performance) {
         let phases = RenderPhases::default();
-        app.insert_resource(Performance::new(output))
+        app.insert_resource(performance)
             .init_resource::<DrawStats>()
             .insert_resource(phases.clone())
             .add_systems(First, frame_begin)
@@ -210,7 +293,6 @@ impl Plugin for PerformancePlugin {
                 end_render_frame.after(RenderSystems::Cleanup),
             ),
         );
-    }
 }
 
 fn begin_render_frame(phases: Res<RenderPhases>) {
@@ -263,7 +345,7 @@ fn frame_end(
     }
     let elapsed = performance.started.elapsed().as_secs_f32();
     if !performance.sampling {
-        if elapsed < WARMUP {
+        if elapsed < performance.rolling.as_ref().map_or(WARMUP, |r| r.warmup) {
             return;
         }
         performance.sampling = true;
@@ -288,6 +370,30 @@ fn frame_end(
         triangles: draws.world_triangles + draws.mod_triangles,
     });
 
+    if let Some(rolling) = performance.rolling.as_mut() {
+        if elapsed < rolling.warmup + rolling.window_started + rolling.window {
+            return;
+        }
+        let window_s = rolling.window;
+        let started_s = rolling.warmup + rolling.window_started;
+        rolling.window_started += rolling.window;
+        rolling.index += 1;
+        let index = rolling.index;
+        let render_phase_ms = phases.means();
+        phases.reset();
+        // Once per window, not per frame: the full buffer goes to the writer thread (which sorts
+        // and formats) and a fresh one of the same size takes its place.
+        let capacity = performance.samples.capacity();
+        let samples = std::mem::replace(&mut performance.samples, Vec::with_capacity(capacity));
+        let window = Window { index, started_s, window_s, samples, draws: *draws, render_phase_ms, gpu: gpu_diagnostics(&diagnostics) };
+        if let Some(rolling) = performance.rolling.as_ref() {
+            if rolling.sender.try_send(window).is_err() {
+                warn!("SKATE_PERF window {index} dropped (report writer busy)");
+            }
+        }
+        return;
+    }
+
     if elapsed < WARMUP + SAMPLE {
         return;
     }
@@ -296,13 +402,7 @@ fn frame_end(
     report.render_phase_ms = phases.means();
     // Every render diagnostic, so GPU pass costs land in the report without
     // this module needing to know the pass names the render graph happens to use.
-    report.gpu = diagnostics
-        .iter()
-        .filter(|d| d.path().as_str().starts_with("render/"))
-        .filter_map(|d| d.smoothed().map(|v| (d.path().to_string(), v)))
-        .filter(|(_, v)| *v > 0.0)
-        .collect();
-    report.gpu.sort_by(|a, b| b.1.total_cmp(&a.1));
+    report.gpu = gpu_diagnostics(&diagnostics);
     match write_report(&performance.output, &report) {
         Ok(()) => info!("SKATE_PERF_REPORT written to {:?}", performance.output),
         Err(error) => error!("SKATE_PERF_REPORT could not be written: {error}"),
@@ -335,6 +435,60 @@ fn frame_end(
         eprintln!("SKATE_PERF_GPU {name} {value:.0}");
     }
     exit.write(AppExit::Success);
+}
+
+/// Every render diagnostic, highest first.
+fn gpu_diagnostics(diagnostics: &bevy::diagnostic::DiagnosticsStore) -> Vec<(String, f64)> {
+    let mut gpu: Vec<(String, f64)> = diagnostics
+        .iter()
+        .filter(|d| d.path().as_str().starts_with("render/"))
+        .filter_map(|d| d.smoothed().map(|v| (d.path().to_string(), v)))
+        .filter(|(_, v)| *v > 0.0)
+        .collect();
+    gpu.sort_by(|a, b| b.1.total_cmp(&a.1));
+    gpu
+}
+
+/// One window's entry in the rolling report.
+fn window_summary(report: &Report, index: u64, started_s: f32) -> serde_json::Value {
+    serde_json::json!({
+        "window": index,
+        "start_s": started_s,
+        "frames": report.frames,
+        "fps": report.fps,
+        "fps_1_percent_low": report.fps_1_percent_low,
+        "frame_ms_mean": report.frame_ms_mean,
+        "frame_ms_median": report.frame_ms_median,
+        "frame_ms_p95": report.frame_ms_p95,
+        "frame_ms_p99": report.frame_ms_p99,
+        "frame_ms_max": report.frame_ms_max,
+        "frames_over_8ms": report.frames_over_hitch,
+        "main_schedule_ms_mean": report.main_schedule_ms_mean,
+        "physics_ms_mean": report.physics_ms_mean,
+        "draw_calls": report.draw_calls,
+        "triangles": report.triangles,
+        "render_phase_ms": report.render_phase_ms,
+    })
+}
+
+/// The rolling report: every window so far, and the newest window's render diagnostics.
+fn write_rolling(path: &std::path::Path, latest: &Report, windows: &[serde_json::Value], window_s: f32) -> std::io::Result<()> {
+    let json = serde_json::json!({
+        "mode": "rolling",
+        "warmup_seconds": WARMUP,
+        "window_seconds": window_s,
+        "gpu_queries_enabled": std::env::var("SKATE_PERF_GPU").as_deref() == Ok("1"),
+        "render_phase_instrumentation": std::env::var("SKATE_PERF_RENDER").as_deref() == Ok("1"),
+        "note": "per-frame samples are in the SKATE_FRAME_LOG file",
+        "latest_render_diagnostics": latest.gpu.iter()
+            .map(|(name, value)| serde_json::json!({ "name": name, "ms": value }))
+            .collect::<Vec<_>>(),
+        "windows": windows,
+    });
+    // Write then rename, so a reader (or a crash mid-write) never sees half a file.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&json)?)?;
+    std::fs::rename(&tmp, path)
 }
 
 struct Report {

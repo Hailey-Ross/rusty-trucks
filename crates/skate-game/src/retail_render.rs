@@ -810,6 +810,7 @@ impl MaterialTable {
         let mut requests: Vec<Option<Request>> = Vec::with_capacity(map.materials.len());
         let mut unsupported = 0usize;
         let mut unsupported_shaders = std::collections::BTreeMap::<String, usize>::new();
+        let mut families = std::collections::BTreeMap::<u32, usize>::new();
         for material in &map.materials {
             let definition = material
                 .retail_definition
@@ -826,6 +827,7 @@ impl MaterialTable {
                     .or_default() += 1;
                 definition.family = 1;
             }
+            *families.entry(definition.family).or_default() += 1;
             requests.push(Some(Request::new(
                 material,
                 &definition,
@@ -835,6 +837,13 @@ impl MaterialTable {
                 map,
             )));
         }
+        // One line per table (logs must diagnose props / car shadows: which shader family each
+        // material ended up in, e.g. 15 = dynamicobject (D9), 1 = the plain fallback).
+        info!(
+            "RETAIL_MATERIAL_FAMILIES materials={} families={families:?} unsupported={unsupported} dynamic_object_rows={}",
+            map.materials.len(),
+            tuning.rows.get("dynamicobject.default").map_or(0, |r| r.len())
+        );
         if unsupported > 0 {
             warn!(
                 "{unsupported} of {} world materials use an unsupported shader family and render as family 1: {unsupported_shaders:?}",

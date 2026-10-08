@@ -11,6 +11,7 @@ pub(crate) mod camera_output;
 mod clock;
 pub(crate) mod colliders;
 mod controls;
+mod manual_landing_log;
 mod foot_ik;
 mod footplant;
 mod climbing;
@@ -591,6 +592,7 @@ impl Plugin for PhysicsPlugin {
                 prop_carry::apply_carry_settings.before(SimulationSet::Physics),
             )
             .add_systems(FixedUpdate, advance.in_set(SimulationSet::Physics))
+            .add_systems(FixedUpdate, manual_landing_log::log_manual_landings.after(SimulationSet::Physics))
             .add_systems(Update, present.in_set(FrameSet::Physics))
             .add_systems(Update, prop_dynamics::sync_prop_transforms.after(FrameSet::Physics));
         prop_carry_hud::install(app);
