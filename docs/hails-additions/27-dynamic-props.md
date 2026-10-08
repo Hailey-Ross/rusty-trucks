@@ -484,9 +484,9 @@ want that."
   data, e.g. a dropped one) the object's vfunc +12(0) is called, i.e. it is removed.** The phone gate
   `sub_826666A8` -> manager slot +28 (`sub_82C4B000`) runs the same gather and blocker test and offers Reset only
   when nothing blocks; it does **not** test "moved".
-- **Upright** [code]: handler `sub_8289A158` (online packet type 23; offline manager slot +40, `sub_82C4B8C0`): if
-  the object's vfunc +112 says it is not upright, set flag 0x40 at +4464 and float +4376 = 0.0 (0x82165A10); the
-  righting itself runs in the DMO update (undecoded). Not ported.
+- **Upright** [code]: handler `sub_8289A158` (online packet type 23; offline manager slot +40, `sub_82C4B8C0`): sets
+  flag 0x40 at +4464 and float +4376 = 0.0 (0x82165A10) when the DMO's slot 28 test returns 0; the righting runs in
+  the DMO update. Decoded and ported in "Upright (self-righting)" below.
 - The DMO network sync loop `sub_82588380` posts cMsgResetDMO itself for an owned DMO whose sampled height is below a
   constant (0x822272E0), then waits 46 ticks (+76): retail auto-resets objects that fell out of the world. [code]
 - Lua natives table at 0x823132F8: ResetMode, SerializeDMOs, DeserializeAndSaveState, RestoreFromSavedState,
@@ -517,12 +517,12 @@ object (retail unknown), no blocker test (retail refuses / acts when the spawn s
 gathering (retail may reset further DMOs with the object), no removal of record-less objects (we have none: no
 dropper). "Moved" (pose differs from spawn by more than 1e-4) only feeds the reset-all convenience. No phone row for
 the per-object actions (the phone context's object source and row art are missing); Upright and Add / Remove to
-session marker are not ported.
+session marker are not ported (Upright is, see below).
 
 **Files.** `crates/skate-game/src/physics/prop_dynamics.rs`, `crates/skate-game/src/physics.rs`,
 `crates/skate-game/src/physics/prop_carry.rs`, `crates/skate-game/src/modding/mod.rs`, `crates/skate-mods/src/vm.rs`,
 `crates/skate-mods/src/api.lua`. Research helpers: `.local/research/object-dropper/` (message-name lookup,
-lookup8 name guesser, dispatcher dump).
+lookup8 name guesser).
 
 **Verification.** `reset_to_spawn_returns_moved_body` (moved list, pose, rest, sleep, unknown id);
 `world_tuning_commands_deserialize_and_validate` extended with both reset commands and their Lua wrappers.
@@ -530,6 +530,67 @@ lookup8 name guesser, dispatcher dump).
 **Open questions.** The dropper catalogue source and limits (manager 0x830854A8, `getCatalogMap`); what game modes
 4 / 5 are; where the per-object phone context comes from (nearest or held DMO); retail's reset transition; the
 "Reset All Objects" row handler; the fe sound names.
+
+## Upright (self-righting) (2026-10-08)
+
+**Problem.** The phone's per-object Upright (cMsgUprightDMO) was decoded only as far as the flag it sets; the
+righting itself, its limits and its effect on Move Object commands were unknown, and the engine had no Upright.
+
+**Evidence** [code] (TU3 recomp generated code and image constants; reference only, credit skate3recomp / rexglue /
+Xenia):
+- Start: DMO manager slot +40 `sub_82C4B8C0` resolves the object to its DMO (slot 6) and, when the DMO's slot 28
+  (`sub_82C564D8`: physics component -> body, returns body field +28) is 0, sets DMO+4464 |= 0x40 and timer
+  DMO+4376 = 0.0. The phone gate `sub_82666748` (offline: manager slot +32 `sub_82C4B578`) offers Upright on the same
+  slot 28 test; online it reads the DMO record word -12. It does not test the tilt.
+- Window: DMO update `sub_82C56780`, while 0x40: timer += 1/60 (0x820849C8); timer > 2.0 (0x82060C50) clears 0x40
+  (that update still runs). Then, with a dynamic body, `sub_82C573D0(body, pose, out)`.
+- Righting `sub_82C573D0`: angle between the pose's up row and world up (0, 1, 0) (0x82139A20, `sub_8296EBB0`), in
+  degrees (x 57.2958, 0x82084620). Under 10 deg (0x821963E4) it returns 0 and the update clears 0x40 and the timer.
+  Otherwise: axis = normalize(up x world up); if that is degenerate (every component <= 1.19e-7, 0x820BA9C0) or the
+  tilt is above 120 deg (0x82256FE0), the axis is the body's own X (0x82139A10) when A.x > A.z, else its Z
+  (0x82139A30), A = the vector at the physics state block +72. Capped tilt = min(tilt, 70 deg) (**the constant 70**
+  at 0x820BB1E0 x 0.0174533 at 0x8206D110: a 70 degree cap). Gain = lerp(3 (0x82063B08), 5 (0x821F1790), t),
+  t = clamp(|A| - 0.1 (0x820641A8) - 1.0 (0x8231A844), 0, 1). Target spin = axis x gain x max(capped - 5 deg
+  (0x820BB1D8), 0). Command = (target - w_axis - 0.1 w_perp) x 60 (0x821FF080), w = body angular velocity (state
+  block +76, +48) split along / across the axis.
+- The command goes through the DMO's own angular slot 37 `sub_82C52EE0` (skipped while the slot 27 lock is set or the
+  body has no dynamics) -> `sub_82D9CCF0`: wake (82ADF7B8), write the angular accumulator +160; DMO+4465 |= 0x02
+  (commanded, so the commanded material block applies).
+- Move Object: the yaw sink `sub_82C52E68` refuses the angular command while 0x40 is set; the linear sink
+  `sub_82C52DC0` is not gated.
+
+**Change.**
+- `PropUprightSettings` (props tuning domain, `sdk.world.set_tuning('props', {upright = {...}})`): window_seconds 2.0,
+  tick_seconds 1/60, stop_angle_deg 10, max_angle_deg 70, dead_band_deg 5, gain_min 3, gain_max 5,
+  gain_blend_start 1.1, off_axis_spin 0.1, command_rate 60, fallback_angle_deg 120, block_yaw true; validated (finite,
+  >= 0, window and tick > 0), reset on mod disable with the rest of the domain.
+- `upright_command(basis, w, a, settings)`: the 82C573D0 arithmetic as a pure function.
+- `PropDynamics::upright(id)` opens the window (per-body plain-data timer, `Option<f32>`); the prop step runs the
+  82C56780 pass first (before the skater pushes and the retail row solve), for sleeping bodies too: timer, timeout,
+  stop under 10 deg, else wake, mark commanded, replace the angular accumulator and integrate `w += C dt` like the
+  Move Object yaw command. `apply_move_command` drops the yaw part while the window is open.
+- `GamePhysics::upright_prop(id)` is the one authority (logs `SKATE_PROP_UPRIGHT id=..`); mod entry
+  `sdk.world.upright_prop(id)` (`world_upright_prop`). One-shot action; the window ends by itself within 2 s.
+
+**NOT RETAIL YET.** The slot 28 gate (body field +28) is not decoded: ours refuses only an unknown id or a body without
+dynamics. The vector A at state block +72 is not identified: ours uses the body-space inverse inertia diagonal (it
+picks the fallback axis and the gain blend). The angle helper `sub_8296EBB0` is read as acos of the normalised dot.
+The phone row is not wired (same as Reset).
+
+**Files.** `crates/skate-game/src/physics/prop_dynamics.rs`, `crates/skate-game/src/physics.rs`,
+`crates/skate-game/src/modding/mod.rs`, `crates/skate-game/src/modding/world_tuning.rs`,
+`crates/skate-mods/src/world_tuning.rs`, `crates/skate-mods/src/vm.rs`, `crates/skate-mods/src/api.lua`.
+
+**Verification.** `upright_command_matches_retail_constants` (10 deg stop, 70 deg cap, 5 deg dead band, gains 3 / 5,
+x 60, 0.1 off-axis, X / Z fallback above 120 deg); `upright_rights_a_tipped_box_within_the_window` (a cube on its
+side rights and the window closes under 10 deg before 2 s, still upright 4 s later);
+`upright_window_times_out_at_two_seconds` (gains 0: closes after the retail number of 1/60 updates);
+`upright_blocks_move_object_yaw_during_the_window` (yaw refused, linear applied, `block_yaw` knob, yaw back after
+the window); `prop_upright_settings_set_validate_and_reset`; `world_tuning_commands_deserialize_and_validate`
+extended. Existing prop tests unchanged.
+
+**Open questions.** Body field +28 (Upright gate) and the state block +72 vector; whether the integrator scales the
++160 accumulator by inverse inertia (our port treats it as an angular acceleration, as for the Move Object yaw).
 
 ## Open questions
 

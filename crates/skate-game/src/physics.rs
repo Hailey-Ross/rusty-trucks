@@ -310,6 +310,21 @@ impl GamePhysics {
         true
     }
 
+    /// Upright ONE object (retail cMsgUprightDMO, doc 27 "Upright"): the phone's per-object
+    /// Upright posts it and the DMO manager slot +40 (82C4B8C0) opens the DMO's 2 s
+    /// self-righting window; the prop step then turns the body back toward world up through the
+    /// retail solver path ([`PropUprightSettings`](crate::physics::prop_dynamics::PropUprightSettings)).
+    /// Refused (false) for an unknown id or a body without dynamics. The single authority for
+    /// uprights.
+    pub(crate) fn upright_prop(&mut self, id: u32) -> bool {
+        let Some(dynamics) = self.prop_dynamics.as_mut() else { return false };
+        let started = dynamics.upright(id);
+        if started {
+            info!("SKATE_PROP_UPRIGHT id={id}");
+        }
+        started
+    }
+
     /// Mod convenience: [`Self::reset_prop`] for every prop away from its authored pose or with a
     /// saved placement, in id order. NOT RETAIL YET: no retail "reset all moved objects" code was
     /// found (the phone getter GetPhoneListCanResetAllObjectsOption exists, its handler is not

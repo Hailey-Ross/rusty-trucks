@@ -169,6 +169,29 @@ pub struct PropsPatch {
     pub by_template: BTreeMap<String, PropTuningPatch>,
     /// Island settings shared by every prop (retail DMO simulation block).
     pub solver: Option<PropSolverPatch>,
+    /// Self-righting window of Upright (retail cMsgUprightDMO, 82C4B8C0 / 82C56780 / 82C573D0).
+    pub upright: Option<PropUprightPatch>,
+}
+
+/// Upright self-righting (doc 27, Upright); retail defaults: `window_seconds` 2.0,
+/// `tick_seconds` 1/60, `stop_angle_deg` 10, `max_angle_deg` 70, `dead_band_deg` 5, `gain_min` 3,
+/// `gain_max` 5, `gain_blend_start` 1.1, `off_axis_spin` 0.1, `command_rate` 60,
+/// `fallback_angle_deg` 120, `block_yaw` true. Numbers finite and >= 0; the window and tick > 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropUprightPatch {
+    pub window_seconds: Option<f32>,
+    pub tick_seconds: Option<f32>,
+    pub stop_angle_deg: Option<f32>,
+    pub max_angle_deg: Option<f32>,
+    pub dead_band_deg: Option<f32>,
+    pub gain_min: Option<f32>,
+    pub gain_max: Option<f32>,
+    pub gain_blend_start: Option<f32>,
+    pub off_axis_spin: Option<f32>,
+    pub command_rate: Option<f32>,
+    pub fallback_angle_deg: Option<f32>,
+    pub block_yaw: Option<bool>,
 }
 
 /// Prop contact solver and sleep rule (retail DMO simulation, 8275DCC8 ->
@@ -365,10 +388,17 @@ impl Merge for PropSolverPatch {
         merge_opts!(self, b; row_solver, iterations, sleep_energy, sleep_frames, max_sleeps_per_step, rest_snap);
     }
 }
+impl Merge for PropUprightPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; window_seconds, tick_seconds, stop_angle_deg, max_angle_deg, dead_band_deg, gain_min, gain_max,
+            gain_blend_start, off_axis_spin, command_rate, fallback_angle_deg, block_yaw);
+    }
+}
 impl Merge for PropsPatch {
     fn merge(&mut self, b: &Self) {
         merge_nested(&mut self.default, &b.default);
         merge_nested(&mut self.solver, &b.solver);
+        merge_nested(&mut self.upright, &b.upright);
         for (k, v) in &b.by_template {
             self.by_template.entry(k.clone()).and_modify(|a| a.merge(v)).or_insert_with(|| v.clone());
         }
@@ -434,10 +464,23 @@ impl PropSolverPatch {
             && self.max_sleeps_per_step.is_none_or(|n| n >= 1)
     }
 }
+impl PropUprightPatch {
+    pub fn validate(&self) -> bool {
+        let ok = |v: Option<f32>| v.is_none_or(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(&v));
+        let positive = |v: Option<f32>| v.is_none_or(|v| v.is_finite() && v > 0.0 && v <= MAX_NUMBER);
+        positive(self.window_seconds)
+            && positive(self.tick_seconds)
+            && [self.stop_angle_deg, self.max_angle_deg, self.dead_band_deg, self.gain_min, self.gain_max,
+                self.gain_blend_start, self.off_axis_spin, self.command_rate, self.fallback_angle_deg]
+                .into_iter()
+                .all(ok)
+    }
+}
 impl PropsPatch {
     pub fn validate(&self) -> bool {
         self.default.as_ref().is_none_or(PropTuningPatch::validate)
             && self.solver.as_ref().is_none_or(PropSolverPatch::validate)
+            && self.upright.as_ref().is_none_or(PropUprightPatch::validate)
             && self.by_template.len() <= MAX_TEMPLATES
             && self.by_template.iter().all(|(k, v)| !k.is_empty() && k.len() <= 128 && v.validate())
     }

@@ -389,6 +389,8 @@ function sdk.world.tuning(key, domain) sdk.engine.inspect(key, "world_tuning:" .
 -- Reset one dynamic prop (stable map id) to its authored pose, at rest; its saved layout entry is
 -- dropped (retail cMsgResetDMO; refused for the held prop). doc 27, Object Dropper and reset.
 function sdk.world.reset_prop(id) submit{kind="world_reset_prop",id=id} end
+-- Upright one prop (retail phone Upright, cMsgUprightDMO): 2 s self-righting window.
+function sdk.world.upright_prop(id) submit{kind="world_upright_prop",id=id} end
 -- Convenience (not a retail action): reset_prop for every moved or placed prop.
 function sdk.world.reset_moved_props() submit{kind="world_reset_moved_props"} end
 

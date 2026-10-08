@@ -1035,6 +1035,11 @@ fn apply_one(
                 physics.reset_prop(id);
             }
         }
+        Command::WorldUprightProp { id } => {
+            if let Some(mut physics) = world.get_resource_mut::<crate::physics::GamePhysics>() {
+                physics.upright_prop(id);
+            }
+        }
         Command::WorldResetMovedProps {} => {
             if let Some(mut physics) = world.get_resource_mut::<crate::physics::GamePhysics>() {
                 physics.reset_moved_props();

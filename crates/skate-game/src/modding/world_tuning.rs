@@ -210,6 +210,23 @@ pub(crate) fn props_table(p: &PropsPatch) -> PropTuningTable {
             rest_snap: v.rest_snap.unwrap_or(d.rest_snap),
         };
     }
+    if let Some(v) = &p.upright {
+        let d = t.upright;
+        t.upright = crate::physics::prop_dynamics::PropUprightSettings {
+            window_seconds: v.window_seconds.unwrap_or(d.window_seconds),
+            tick_seconds: v.tick_seconds.unwrap_or(d.tick_seconds),
+            stop_angle_deg: v.stop_angle_deg.unwrap_or(d.stop_angle_deg),
+            max_angle_deg: v.max_angle_deg.unwrap_or(d.max_angle_deg),
+            dead_band_deg: v.dead_band_deg.unwrap_or(d.dead_band_deg),
+            gain_min: v.gain_min.unwrap_or(d.gain_min),
+            gain_max: v.gain_max.unwrap_or(d.gain_max),
+            gain_blend_start: v.gain_blend_start.unwrap_or(d.gain_blend_start),
+            off_axis_spin: v.off_axis_spin.unwrap_or(d.off_axis_spin),
+            command_rate: v.command_rate.unwrap_or(d.command_rate),
+            fallback_angle_deg: v.fallback_angle_deg.unwrap_or(d.fallback_angle_deg),
+            block_yaw: v.block_yaw.unwrap_or(d.block_yaw),
+        };
+    }
     t
 }
 
@@ -306,9 +323,15 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
         "props" => world.get_resource::<PropTuningSettings>().map_or(Value::Null, |s| {
             let by: serde_json::Map<String, Value> = s.0.by_template.iter().map(|(k, t)| (k.clone(), tuning(t))).collect();
             let v = s.0.solver;
+            let u = s.0.upright;
             json!({"default": tuning(&s.0.default), "by_template": by, "solver": {
                 "row_solver": v.row_solver, "iterations": v.iterations, "sleep_energy": v.sleep_energy,
                 "sleep_frames": v.sleep_frames, "max_sleeps_per_step": v.max_sleeps_per_step, "rest_snap": v.rest_snap,
+            }, "upright": {
+                "window_seconds": u.window_seconds, "tick_seconds": u.tick_seconds, "stop_angle_deg": u.stop_angle_deg,
+                "max_angle_deg": u.max_angle_deg, "dead_band_deg": u.dead_band_deg, "gain_min": u.gain_min, "gain_max": u.gain_max,
+                "gain_blend_start": u.gain_blend_start, "off_axis_spin": u.off_axis_spin, "command_rate": u.command_rate,
+                "fallback_angle_deg": u.fallback_angle_deg, "block_yaw": u.block_yaw,
             }})
         }),
         "carry" => world.get_resource::<CarrySettings>().map_or(Value::Null, |c| {
@@ -497,6 +520,25 @@ mod tests {
         assert!(set(&mut w, "dev.b", "props", Some(json!({"solver": {"unknown": 1}}))).is_err());
         clear_owner(&mut w, "dev.a");
         assert_eq!(w.resource::<PropTuningSettings>().0.solver, retail);
+    }
+
+    #[test]
+    fn prop_upright_settings_set_validate_and_reset() {
+        let mut w = world();
+        let retail = crate::physics::prop_dynamics::PropUprightSettings::default();
+        assert_eq!((retail.window_seconds, retail.stop_angle_deg, retail.max_angle_deg, retail.dead_band_deg, retail.gain_min, retail.gain_max, retail.command_rate, retail.fallback_angle_deg, retail.block_yaw),
+            (2.0, 10.0, 70.0, 5.0, 3.0, 5.0, 60.0, 120.0, true));
+        set(&mut w, "dev.a", "props", Some(json!({"upright": {"window_seconds": 4.0, "block_yaw": false}}))).unwrap();
+        {
+            let u = w.resource::<PropTuningSettings>().0.upright;
+            assert_eq!((u.window_seconds, u.block_yaw, u.gain_min), (4.0, false, 3.0));
+        }
+        assert_eq!(read(&w, "props")["upright"]["window_seconds"], json!(4.0));
+        assert!(set(&mut w, "dev.b", "props", Some(json!({"upright": {"window_seconds": 0.0}}))).is_err());
+        assert!(set(&mut w, "dev.b", "props", Some(json!({"upright": {"gain_max": -1.0}}))).is_err());
+        assert!(set(&mut w, "dev.b", "props", Some(json!({"upright": {"unknown": 1}}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<PropTuningSettings>().0.upright, retail);
     }
 
     #[test]

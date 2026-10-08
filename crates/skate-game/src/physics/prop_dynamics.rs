@@ -127,6 +127,107 @@ pub(crate) struct PropTuningTable {
     pub by_template: std::collections::BTreeMap<String, PropTuning>,
     /// Island settings shared by every prop (one DMO simulation in retail).
     pub solver: PropSolverSettings,
+    /// Self-righting window of the phone's per-object Upright (cMsgUprightDMO).
+    pub upright: PropUprightSettings,
+}
+
+/// Retail DMO self-righting ("Upright", doc 27 "Upright"). The phone's
+/// per-object Upright posts cMsgUprightDMO; the DMO manager slot +40 82C4B8C0
+/// sets DMO+4464 bit 0x40 and zeroes the timer DMO+4376. While the bit is set
+/// the DMO update 82C56780 adds `tick_seconds` to the timer and clears the bit
+/// once it exceeds `window_seconds`, then (same update) 82C573D0 measures the
+/// angle between the body's up row and world up: below `stop_angle_deg` the
+/// bit and timer are cleared; otherwise it builds an angular command that the
+/// DMO's own angular slot 37 (82C52EE0 -> 82D9CCF0) writes into the body's
+/// angular accumulator (+160), waking the body and marking it commanded.
+/// External yaw commands (82C52E68) are refused while the bit is set; the
+/// linear Move Object command (82C52DC0) is not gated. The defaults are the
+/// retail constants; every field is a mod knob
+/// (`sdk.world.set_tuning('props', {upright = {...}})`), reset on mod disable.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PropUprightSettings {
+    /// Window length (retail 2.0 s, 0x82060C50).
+    pub window_seconds: f32,
+    /// Timer increment per update (retail 1/60, 0x820849C8: a fixed per-frame
+    /// step, matching our 60 Hz prop step).
+    pub tick_seconds: f32,
+    /// Tilt below which the window ends (retail 10 deg, 0x821963E4).
+    pub stop_angle_deg: f32,
+    /// Tilt cap of the righting speed (retail 70 deg: 70 (0x820BB1E0) x
+    /// 0.0174533 (0x8206D110)).
+    pub max_angle_deg: f32,
+    /// Dead band subtracted from the capped tilt (retail 5 deg, 0x820BB1D8).
+    pub dead_band_deg: f32,
+    /// Righting gain (1/s) at the low end of the blend (retail 3, 0x82063B08).
+    pub gain_min: f32,
+    /// Righting gain at the high end of the blend (retail 5, 0x821F1790).
+    pub gain_max: f32,
+    /// Blend weight t = clamp(|A| - gain_blend_start, 0, 1) on the body
+    /// vector A (state block +72); retail 0.1 (0x820641A8) + 1.0 (0x8231A844).
+    pub gain_blend_start: f32,
+    /// Fraction of the off-axis spin the command removes per update (retail
+    /// 0.1, 0x820641A8: the command targets w_axis + 0.1 w_perp).
+    pub off_axis_spin: f32,
+    /// Command scale (retail 60, 0x821FF080: one 60 Hz step to the target).
+    pub command_rate: f32,
+    /// Above this tilt (or with a degenerate axis) the body's own X or Z axis
+    /// is used instead of up x world-up (retail 120 deg, 0x82256FE0).
+    pub fallback_angle_deg: f32,
+    /// External yaw commands refused while righting (retail 82C52E68).
+    pub block_yaw: bool,
+}
+
+impl Default for PropUprightSettings {
+    fn default() -> Self {
+        Self {
+            window_seconds: 2.0,
+            tick_seconds: 1.0 / 60.0,
+            stop_angle_deg: 10.0,
+            max_angle_deg: 70.0,
+            dead_band_deg: 5.0,
+            gain_min: 3.0,
+            gain_max: 5.0,
+            gain_blend_start: 1.1,
+            off_axis_spin: 0.1,
+            command_rate: 60.0,
+            fallback_angle_deg: 120.0,
+            block_yaw: true,
+        }
+    }
+}
+
+/// The righting command of 82C573D0 for a body with orientation `basis`,
+/// angular velocity `w` and body vector `a` (retail: the vector at the
+/// physics state block +72; which body quantity that is has not been
+/// identified, see [`PropDynamics::upright_vector`]). `None` = tilt below
+/// `stop_angle_deg` (window ends). Pure and deterministic.
+pub(crate) fn upright_command(basis: Basis3, w: Vector3, a: Vector3, s: &PropUprightSettings) -> Option<Vector3> {
+    let up = mul_basis(basis, Vector3::new(0.0, 1.0, 0.0));
+    let up_len = length(up);
+    let cos = if up_len > 0.0 { (up.y / up_len).clamp(-1.0, 1.0) } else { 1.0 };
+    let angle = cos.acos();
+    let degrees = angle.to_degrees();
+    if degrees < s.stop_angle_deg {
+        return None;
+    }
+    let normalize = |v: Vector3| {
+        let l = length(v);
+        if l > 0.0 { scale(v, 1.0 / l) } else { Vector3::ZERO }
+    };
+    let mut axis = normalize(cross(up, Vector3::new(0.0, 1.0, 0.0)));
+    let degenerate = axis.x.abs() <= f32::EPSILON && axis.y.abs() <= f32::EPSILON && axis.z.abs() <= f32::EPSILON;
+    if degenerate || degrees > s.fallback_angle_deg {
+        let local = if a.x > a.z { Vector3::new(1.0, 0.0, 0.0) } else { Vector3::new(0.0, 0.0, 1.0) };
+        axis = normalize(mul_basis(basis, local));
+    }
+    let capped = angle.min(s.max_angle_deg.to_radians());
+    let t = (length(a) - s.gain_blend_start).clamp(0.0, 1.0);
+    let gain = (1.0 - t) * s.gain_min + t * s.gain_max;
+    let speed = gain * (capped - s.dead_band_deg.to_radians()).max(0.0);
+    let along = scale(axis, dot(axis, w));
+    let across = sub(w, along);
+    let keep = add(along, scale(across, s.off_axis_spin));
+    Some(scale(sub(scale(axis, speed), keep), s.command_rate))
 }
 
 /// Island settings of the DMO simulation. Retail 8275DCC8 passes a 52-byte
@@ -260,6 +361,9 @@ pub(crate) struct PropBody {
     /// 0x01: the previous tick's commanded bit; 82C53EF8 swaps the block when
     /// the two differ).
     commanded_block: bool,
+    /// Self-righting window timer (retail DMO+4376; `Some` = DMO+4464 bit
+    /// 0x40 set, [`PropUprightSettings`]).
+    upright_timer: Option<f32>,
 }
 
 /// Friction pair `[static, dynamic]` of a retail body contact material block.
@@ -676,6 +780,7 @@ impl PropDynamics {
                 spawn_basis: basis,
                 commanded: false,
                 commanded_block: false,
+                upright_timer: None,
                 rates: RetailBodyRates {
                     orientation: quaternion_from_basis(basis),
                     basis,
@@ -1049,7 +1154,10 @@ impl PropDynamics {
         }
         let vertical = if rules.ignore_vertical { 0.0 } else { finite(linear.y) };
         let l = Vector3::new(finite(linear.x), vertical, finite(linear.z));
-        let yaw = finite(yaw);
+        // 82C52E68 refuses the angular command while the righting window
+        // (DMO+4464 0x40) is open; the linear sink 82C52DC0 is not gated.
+        let yaw_blocked = body.upright_timer.is_some() && self.tuning.upright.block_yaw;
+        let yaw = if yaw_blocked { 0.0 } else { finite(yaw) };
         if rules.wake_on_command || l != Vector3::ZERO || yaw != 0.0 {
             body.wake();
         }
@@ -1063,12 +1171,80 @@ impl PropDynamics {
             let spin = mul_basis(body.rates.world_inverse_inertia, cross(r, scale(l, mass)));
             body.rates.angular_velocity = add(body.rates.angular_velocity, scale(spin, time_step));
         }
+        if yaw_blocked {
+            return true;
+        }
         if rules.yaw_replaces_torque {
             body.rates.torque_acceleration = Vector3::ZERO;
         }
         let w = body.rates.angular_velocity;
         body.rates.angular_velocity = Vector3::new(w.x, w.y + yaw * time_step, w.z);
         true
+    }
+
+    /// Start the self-righting window of one body (retail cMsgUprightDMO ->
+    /// DMO manager slot +40 82C4B8C0: DMO+4464 |= 0x40, timer DMO+4376 = 0).
+    /// Retail sets it only when the DMO's slot 28 test (82C564D8, physics body
+    /// field +28) returns 0, the same test that offers Upright on the phone
+    /// (82666748 -> 82C4B578); that field is not decoded, so ours refuses only
+    /// an unknown id or a body without dynamics (NOT RETAIL YET). Restarting an
+    /// open window zeroes the timer, as retail does. Returns false if refused.
+    pub(crate) fn upright(&mut self, id: u32) -> bool {
+        let Some(&index) = self.by_id.get(&id) else {
+            return false;
+        };
+        let body = &mut self.bodies[index];
+        if body.inertia.inverse_mass <= 0.0 {
+            return false;
+        }
+        body.upright_timer = Some(0.0);
+        true
+    }
+
+    /// True while the body's righting window is open (DMO+4464 bit 0x40).
+    pub(crate) fn is_uprighting(&self, id: u32) -> bool {
+        self.by_id.get(&id).is_some_and(|&i| self.bodies[i].upright_timer.is_some())
+    }
+
+    /// Body vector A of 82C573D0 (retail: the vector at the physics state
+    /// block +72; it scales the gain blend and picks the fallback axis by
+    /// A.x > A.z). Which body quantity that block holds is not identified;
+    /// ours uses the body-space inverse inertia diagonal (NOT RETAIL YET).
+    fn upright_vector(body: &PropBody) -> Vector3 {
+        body.inertia.inverse_tensor
+    }
+
+    /// The DMO update's righting pass (82C56780), once per step before the
+    /// contact solve, for every body with an open window (asleep or not): the
+    /// timer advances and closes the window past `window_seconds` (that
+    /// update still sends its command); a tilt under `stop_angle_deg` closes
+    /// it and zeroes the timer; otherwise the command goes through the DMO's
+    /// angular slot 37 (82C52EE0): skipped for a body without dynamics, else
+    /// wake, mark commanded (DMO+4465 0x02) and replace the angular
+    /// accumulator (82D9CCF0 writes +160), integrated like the Move Object
+    /// yaw command (`w += C dt`).
+    fn apply_upright(&mut self, time_step: f32) {
+        let settings = self.tuning.upright;
+        let replaces = self.move_rules.yaw_replaces_torque;
+        for body in &mut self.bodies {
+            let Some(timer) = body.upright_timer else { continue };
+            let timer = timer + settings.tick_seconds;
+            body.upright_timer = (timer <= settings.window_seconds).then_some(timer);
+            let a = Self::upright_vector(body);
+            let Some(command) = upright_command(body.rates.basis, body.rates.angular_velocity, a, &settings) else {
+                body.upright_timer = None;
+                continue;
+            };
+            if body.inertia.inverse_mass <= 0.0 {
+                continue;
+            }
+            body.wake();
+            body.commanded = true;
+            if replaces {
+                body.rates.torque_acceleration = Vector3::ZERO;
+            }
+            body.rates.angular_velocity = add(body.rates.angular_velocity, scale(command, time_step));
+        }
     }
 
     /// Move Object values for the HELD_PROP line (stick, command, lever,
@@ -1214,6 +1390,8 @@ impl PropDynamics {
         others: &[(u64, BoardWorldVolume)],
     ) {
         self.stats = PropStepStats::default();
+        let time_step = self.step_simulation().time_step;
+        self.apply_upright(time_step);
         for index in 0..self.bodies.len() {
             let held = self.is_held(index);
             // Skater push: cheap bounds reject, then the retail pair query.
@@ -2992,6 +3170,146 @@ mod tests {
         assert_eq!(dynamics.bodies[0].rates.linear_velocity, Vector3::ZERO);
         assert!(dynamics.moved_ids().is_empty());
         assert!(dynamics.reset_to_spawn(99).is_none());
+    }
+
+    // Upright (retail cMsgUprightDMO, doc 27 "Upright").
+
+    /// Basis rotated by `degrees` about world Z (local Y tips toward -X).
+    fn tilted_about_z(degrees: f32) -> skate_core::math::Basis3 {
+        let (s, c) = degrees.to_radians().sin_cos();
+        skate_core::math::Basis3 { columns: [[c, s, 0.], [-s, c, 0.], [0., 0., 1.]] }
+    }
+
+    fn tilt_degrees(basis: skate_core::math::Basis3) -> f32 {
+        let up = mul_basis(basis, Vector3::new(0., 1., 0.));
+        (up.y / length(up)).clamp(-1., 1.).acos().to_degrees()
+    }
+
+    /// 82C573D0 values: stop under 10 deg, axis up x world-up, speed
+    /// 3 x (min(tilt, 70 deg) - 5 deg) for |A| <= 1.1, command
+    /// (target - w_axis - 0.1 w_perp) x 60, fallback to the body's X / Z axis
+    /// above 120 deg.
+    #[test]
+    fn upright_command_matches_retail_constants() {
+        let s = PropUprightSettings::default();
+        let a = Vector3::ZERO;
+        assert!(upright_command(tilted_about_z(0.), Vector3::ZERO, a, &s).is_none());
+        assert!(upright_command(tilted_about_z(9.9), Vector3::ZERO, a, &s).is_none());
+        // 30 deg: up = (-sin, cos, 0); up x Y = (0, 0, -sin) -> axis -Z.
+        let c = upright_command(tilted_about_z(30.), Vector3::ZERO, a, &s).unwrap();
+        let speed = 3.0 * (30f32.to_radians() - 5f32.to_radians());
+        assert!((c.z - (-speed * 60.)).abs() < 1e-3 && c.x.abs() < 1e-5 && c.y.abs() < 1e-5, "{c:?}");
+        // 90 deg: capped at 70 deg.
+        let c = upright_command(tilted_about_z(90.), Vector3::ZERO, a, &s).unwrap();
+        let speed = 3.0 * (70f32.to_radians() - 5f32.to_radians());
+        assert!((c.z + speed * 60.).abs() < 1e-3, "{c:?}");
+        // Spin: along the axis replaced, 10% of the off-axis spin removed.
+        let w = Vector3::new(2.0, 0.0, -1.0);
+        let c = upright_command(tilted_about_z(90.), w, a, &s).unwrap();
+        assert!((c.z - (-speed - (-1.0)) * 60.).abs() < 1e-3, "{c:?}");
+        assert!((c.x - (-0.1 * 2.0 * 60.)).abs() < 1e-3, "{c:?}");
+        // Gain blend: |A| >= 2.1 -> gain 5.
+        let c = upright_command(tilted_about_z(30.), Vector3::ZERO, Vector3::new(0., 3., 0.), &s).unwrap();
+        let speed = 5.0 * (30f32.to_radians() - 5f32.to_radians());
+        assert!((c.z + speed * 60.).abs() < 1e-3, "{c:?}");
+        // Above 120 deg: the body's own Z axis (A.x <= A.z) or X axis (A.x > A.z).
+        let basis = tilted_about_z(150.);
+        let c = upright_command(basis, Vector3::ZERO, a, &s).unwrap();
+        assert!(c.x.abs() < 1e-5 && c.y.abs() < 1e-5 && c.z > 0., "{c:?}");
+        let c = upright_command(basis, Vector3::ZERO, Vector3::new(1., 0., 0.), &s).unwrap();
+        let x = mul_basis(basis, Vector3::new(1., 0., 0.));
+        let along = dot(c, x) / length(c);
+        assert!((along - 1.0).abs() < 1e-4, "{c:?}");
+    }
+
+    /// A box lying on its side, uprighted, turns back within the 2 s window;
+    /// the window closes when the tilt drops under 10 deg.
+    #[test]
+    fn upright_rights_a_tipped_box_within_the_window() {
+        let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 0.]);
+        let instance = dynamics.teleport(7, Vector3::new(0., REST_Y + 0.05, 0.), tilted_about_z(90.)).unwrap();
+        layer.rebake(instance, tilted_about_z(90.).columns, Vector3::new(0., REST_Y + 0.05, 0.)).unwrap();
+        assert!(!dynamics.upright(99));
+        assert!(dynamics.upright(7));
+        assert!(dynamics.is_uprighting(7));
+        let mut closed_at = None;
+        for step in 1..=120 {
+            dynamics.step(&world, &mut layer, &[]);
+            if !dynamics.is_uprighting(7) {
+                closed_at = Some(step);
+                break;
+            }
+        }
+        let tilt = tilt_degrees(dynamics.bodies[0].rates.basis);
+        let step = closed_at.expect("window should close by tilt before the 2 s timeout");
+        assert!(tilt < 10.0, "closed at step {step} with tilt {tilt}");
+        for _ in 0..240 {
+            dynamics.step(&world, &mut layer, &[]);
+        }
+        let tilt = tilt_degrees(dynamics.bodies[0].rates.basis);
+        assert!(tilt < 10.0, "settled tilt {tilt}");
+    }
+
+    /// With no righting gain the window times out after 2.0 s of 1/60 s
+    /// updates (82C56780: open while timer <= 2.0).
+    #[test]
+    fn upright_window_times_out_at_two_seconds() {
+        let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 0.]);
+        dynamics.teleport(7, Vector3::new(0., REST_Y, 0.), tilted_about_z(90.)).unwrap();
+        let mut table = PropTuningTable::default();
+        table.upright.gain_min = 0.0;
+        table.upright.gain_max = 0.0;
+        dynamics.set_tuning(table);
+        let s = PropUprightSettings::default();
+        let mut expected = 0u32;
+        let mut t = 0f32;
+        while t <= s.window_seconds {
+            t += s.tick_seconds;
+            expected += 1;
+        }
+        assert!((120..=121).contains(&expected));
+        assert!(dynamics.upright(7));
+        let mut closed_at = None;
+        for step in 1..=200 {
+            dynamics.step(&world, &mut layer, &[]);
+            if !dynamics.is_uprighting(7) {
+                closed_at = Some(step);
+                break;
+            }
+        }
+        assert_eq!(closed_at, Some(expected));
+        assert!(tilt_degrees(dynamics.bodies[0].rates.basis) > 10.0);
+    }
+
+    /// 82C52E68 refuses Move Object yaw while the window is open; the linear
+    /// command still applies. After the window closes yaw applies again.
+    #[test]
+    fn upright_blocks_move_object_yaw_during_the_window() {
+        let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 0.]);
+        dynamics.teleport(7, Vector3::new(0., REST_Y, 0.), tilted_about_z(90.)).unwrap();
+        assert!(dynamics.upright(7));
+        let dt = dynamics.step_simulation().time_step;
+        let w0 = dynamics.bodies[0].rates.angular_velocity;
+        let v0 = dynamics.bodies[0].rates.linear_velocity;
+        assert!(dynamics.apply_move_command(7, Vector3::new(3., 0., 0.), 5.0, Vector3::ZERO, dt));
+        assert_eq!(dynamics.bodies[0].rates.angular_velocity, w0, "yaw refused");
+        assert!((dynamics.bodies[0].rates.linear_velocity.x - (v0.x + 3. * dt)).abs() < 1e-6, "linear applied");
+        // Mod knob: block_yaw off lets the yaw through.
+        let mut table = PropTuningTable::default();
+        table.upright.block_yaw = false;
+        dynamics.set_tuning(table);
+        assert!(dynamics.apply_move_command(7, Vector3::ZERO, 5.0, Vector3::ZERO, dt));
+        assert!((dynamics.bodies[0].rates.angular_velocity.y - (w0.y + 5. * dt)).abs() < 1e-6);
+        dynamics.set_tuning(PropTuningTable::default());
+        // An upright body closes the window on its first update; yaw applies again.
+        let (world2, mut layer2, mut upright) = fixture([0., REST_Y, 0.]);
+        assert!(upright.upright(7));
+        upright.step(&world2, &mut layer2, &[]);
+        assert!(!upright.is_uprighting(7));
+        let w = upright.bodies[0].rates.angular_velocity;
+        assert!(upright.apply_move_command(7, Vector3::ZERO, 5.0, Vector3::ZERO, dt));
+        assert!((upright.bodies[0].rates.angular_velocity.y - (w.y + 5. * dt)).abs() < 1e-6);
+        let _ = (world, &mut layer);
     }
 
     // NPC skaters against props (doc 26, fix 19).
