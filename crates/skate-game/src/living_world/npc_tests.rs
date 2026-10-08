@@ -293,15 +293,20 @@ fn living_world_npc_skaters_chain_lines_and_fade_only_at_a_dead_end() {
 /// starting at its end (line i -> i + 6), and lines 6..11, 18..23, ... were recorded fakie for their
 /// first 50 nodes (skater and board frame facing -x while travelling +x), so every chain joins a
 /// line the other way round from the one it left; the other lines hold a switch-stance stretch
-/// (nodes 150..250: skater frame turned round, board forward), drawn forward (`drawn_skater`). Retail keeps no facing state across a switch
-/// ([code] `sub_8246C7F8`, the path frame comes from the node, `sub_82453A58`): with the retail
-/// default no NPC is drawn against its travel outside a recorded fakie stretch once the switch blend
-/// is over, and `NPC_SKATER_BACKWARDS` reports the recorded fakie stretches as such. The fix 16 mod
-/// option (`keep_facing`) reproduces the reported bug: forward-recorded lines ridden backwards.
+/// (nodes 150..250: skater frame turned round, board forward). Retail rule (fix 23 corrected,
+/// `FacingRule::RidingEntry`, mod option until the stance mirror lands): the recorded skater frame, turned only while the flip latched at a
+/// riding entry is set (clear here: every spawn node's skater frame agrees with its path frame), held
+/// across switches. With it no NPC is drawn against its travel outside a recorded fakie or
+/// switch-stance stretch once the switch blend is over; the switch-stance stretch is drawn as
+/// recorded, body against travel (the puppet has no stance mirror: NOT RETAIL YET), and
+/// `NPC_SKATER_BACKWARDS` reports the recorded fakie stretches as such. The fix 23 rule (`per_node`,
+/// the default, NOT RETAIL YET) draws the switch stance forward; the fix 16 mod option (`keep_facing`) reproduces the
+/// reported bug: forward-recorded lines ridden backwards.
 #[test]
 fn living_world_npc_skaters_never_ride_backwards_across_line_switches() {
     const FAKIE: [u8; 4] = [128, 38, 128, 218]; // -90 deg about +y: +Z onto -x.
-    let ride = |keep_facing: bool| {
+    use skate_core::living_world::replay::FacingRule;
+    let ride = |keep_facing: bool, facing_rule: FacingRule| {
         let mut a = app(5);
         let mut d = data();
         let mut lines = (*d.npc.lines).clone();
@@ -319,11 +324,11 @@ fn living_world_npc_skaters_never_ride_backwards_across_line_switches() {
             }
         }
         d.npc.lines = Arc::new(lines.clone());
-        let settings = LivingWorldSettings { seed: 5, skater_line_chain: skate_core::living_world::replay::ChainConfig { keep_facing, ..Default::default() }, ..LivingWorldSettings::default() };
+        let settings = LivingWorldSettings { seed: 5, skater_line_chain: skate_core::living_world::replay::ChainConfig { keep_facing, facing_rule, ..Default::default() }, ..LivingWorldSettings::default() };
         let mut state = PopulationState::default();
         state.install("Test", 1, &settings, d);
         a.insert_resource(settings).insert_resource(state);
-        let (mut forward_backwards, mut fakie_logged, mut checked) = (0usize, 0usize, 0usize);
+        let (mut forward_backwards, mut fakie_logged, mut checked, mut stance) = (0usize, 0usize, 0usize, 0usize);
         for _ in 0..(40 * 60) {
             run(&mut a, 0.0, 60.0);
             let mut q = a.world_mut().query::<(&NpcSkater, &NpcReplay)>();
@@ -338,6 +343,8 @@ fn living_world_npc_skaters_never_ride_backwards_across_line_switches() {
                     assert!(text.starts_with("NPC_SKATER_BACKWARDS #") && text.contains("velocity_yaw"), "{text}");
                     if text.contains("recorded_fakie true") {
                         fakie_logged += 1;
+                    } else if (149..=250).contains(&s.node) && lines.keys().position(|k| *k == s.line).is_some_and(|k| k % 12 < 6) {
+                        stance += 1;
                     } else {
                         forward_backwards += 1;
                     }
@@ -345,15 +352,18 @@ fn living_world_npc_skaters_never_ride_backwards_across_line_switches() {
             }
         }
         let chains = a.world().resource::<Seen>().0.iter().filter(|e| matches!(e, NpcSkaterEvent::Branch { record, .. } if record.from_node == NODES - 1)).count();
-        (forward_backwards, fakie_logged, checked, chains)
+        (forward_backwards, fakie_logged, checked, chains, stance)
     };
-    let (bad, fakie, checked, chains) = ride(false);
+    let (bad, fakie, checked, chains, stance) = ride(false, FacingRule::RidingEntry);
     assert!(chains >= 2 && checked > 1000, "chains {chains}, checked {checked}");
-    assert_eq!(bad, 0, "retail: no NPC rides a forward-recorded line backwards");
+    assert_eq!(bad, 0, "retail: no NPC rides a forward-recorded line backwards outside switch stance");
     assert!(fakie > 0, "the recorded fakie stretches are reported as recorded_fakie");
+    println!("retail rule: {stance} switch-stance samples drawn against travel (no stance mirror), {fakie} recorded fakie, {checked} checked");
     // Deterministic: the same run gives the same counts.
-    assert_eq!(ride(false), (bad, fakie, checked, chains));
-    let (old_bad, ..) = ride(true);
+    assert_eq!(ride(false, FacingRule::RidingEntry), (bad, fakie, checked, chains, stance));
+    let (per_node_bad, _, _, _, per_node_stance) = ride(false, FacingRule::PerNode);
+    assert_eq!((per_node_bad, per_node_stance), (0, 0), "the fix 23 option draws switch stance forward");
+    let (old_bad, ..) = ride(true, FacingRule::PerNode);
     assert!(old_bad > 100, "the fix 16 option rides forward-recorded lines backwards ({old_bad})");
 }
 

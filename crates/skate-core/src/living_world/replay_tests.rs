@@ -610,7 +610,7 @@ fn npc_skater_keeps_its_facing_across_a_line_switch() {
         }
         (c, ev)
     };
-    assert!(!ChainConfig::retail().keep_facing && !LineCursor::new(id(1), 0).keep_facing, "retail keeps no facing state");
+    assert!(!ChainConfig::retail().keep_facing && !LineCursor::new(id(1), 0).keep_facing, "the fix 16 option is off by default");
     // Before the chain: forward. Right after it (blend over) on the fakie stretch: still forward.
     let (before, _) = run(true, 150);
     assert!(forward_z(&before.sample(&ls, 0.0).unwrap()) > 0.99);
@@ -641,10 +641,10 @@ fn npc_skater_keeps_its_facing_across_a_line_switch() {
     assert!((rotate(q, [0.0, 0.0, 1.0])[2] + 1.0).abs() < 1e-5 && (rotate(q, [0.0, 1.0, 0.0])[1] - 1.0).abs() < 1e-5);
 }
 
-/// Fix 23 (NPC skaters riding backwards, user test 6): retail keeps no facing state across a
-/// switch ([code] `sub_8246C7F8` stores line `+592/+600` and node `+816` only; the path frame is
-/// rebuilt from the current node every update, `sub_8246D560` -> `sub_824734A8` ->
-/// `sub_82453A58`). Ride: line 1 forward, chain onto line 2 (recorded fakie for 15 nodes, then a
+/// Fix 23 (NPC skaters riding backwards, user test 6), now under the retail rule (fix 23
+/// corrected): a switch stores line `+592/+600` and node `+816` only ([code] `sub_8246C7F8`) and
+/// leaves the latched flip alone; spawned forward, the flip is clear on every line here. Ride:
+/// line 1 forward, chain onto line 2 (recorded fakie for 15 nodes, then a
 /// recorded revert to forward), chain onto line 3 (forward). With the retail rule the drawn skater
 /// never faces against its travel outside a recorded fakie stretch, on any frame once the switch
 /// blend is over, and it rides line 3 forward. The fix 16 option reproduces the bug: it carries the
@@ -693,7 +693,7 @@ fn npc_skater_never_rides_a_forward_recorded_line_backwards_across_switches() {
             assert!(check.angle < 0.01, "line 3 is ridden forward");
         }
     }
-    assert!(on_line3 > 200 && !host.facing_flipped, "line 3 frames {on_line3}");
+    assert!(on_line3 > 200 && !host.facing_flipped && !host.flip, "line 3 frames {on_line3}");
     // Inside the recorded fakie stretch the line's own frame opposes travel (retail target frame).
     assert!(seen.iter().any(|(_, l, settled, c)| *l == id(2) && *settled && c.is_some_and(|c| c.recorded_fakie && c.backwards)));
     // Every switch blend settles within the blend time.
@@ -733,7 +733,8 @@ fn path_frame_turns_the_board_when_the_node_is_board_flipped_like_sub_82453a58()
     assert!((rotate(path_frame(&n), [0.0, 0.0, 1.0])[0] - 1.0).abs() < 1e-3);
 }
 
-/// Fix 23: the drawn skater faces the retail path frame's riding direction. A recorder riding
+/// Fix 23 rule, now the NOT RETAIL [`FacingRule::PerNode`] mod option: the drawn skater faces the
+/// path frame's riding direction per node. A recorder riding
 /// switch (skater frame turned round, board rolling nose first, flag clear) is drawn forward; a
 /// board-flipped node (board turned round, flag set, skater forward) stays forward; a recorded fakie
 /// node (path frame against travel) is drawn fakie. Airborne nodes keep the last grounded turn, so a
@@ -780,12 +781,155 @@ fn drawn_skater_faces_the_retail_path_frame_direction() {
     assert_eq!(drawn_skater(&l, 2), decode_orientation(IDENTITY));
     let ls = lines(vec![l.clone()]);
     let mut c = LineCursor::spawn(&ls, id(1), 0);
+    assert_eq!(c.facing_rule, FacingRule::PerNode, "the default (NOT RETAIL YET)");
+    let mut retail = LineCursor::spawn(&ls, id(1), 0);
+    retail.facing_rule = FacingRule::RidingEntry;
+    let mut retail_backwards = 0;
     while c.node < 19 {
         c.step(&ls, &mut Decider::Stay, &mut Vec::new());
         let s = c.sample(&ls, 0.0).unwrap();
         let check = facing_check(&l, &s).unwrap();
         assert!(!check.backwards && !check.recorded_fakie, "node {} drawn backwards", c.node);
+        // The retail rule (spawned forward, flip clear) draws the recorded switch stance as
+        // recorded: body against travel (the puppet has no stance mirror, NOT RETAIL YET).
+        retail.step(&ls, &mut Decider::Stay, &mut Vec::new());
+        retail_backwards += usize::from(facing_check(&l, &retail.sample(&ls, 0.0).unwrap()).unwrap().backwards);
     }
+    assert!(!retail.flip && retail_backwards > 50, "{retail_backwards}");
+}
+
+/// Retail facing rule (fix 23 corrected, [`FacingRule::RidingEntry`], a mod option until the stance
+/// mirror lands): spawn latch. The character
+/// spawns with the node world frame ([code] `sub_8245C548` -> `sub_82453C58`, the path frame on
+/// a riding node) and the flip latches on that first riding entry ([code] `sub_8246A700`:
+/// `dot(recorded skater row 2, character row 2) < 0`). A recorder riding switch at the spawn node
+/// (skater frame turned round, board forward) sets the flip; the drawn skater is the recorded
+/// frame turned 180 deg about up (rows 0 and 2 negated, [code] `sub_8246B358`). Spawned in the
+/// air or off board, nothing is latched yet.
+#[test]
+fn retail_flip_latches_at_spawn_against_the_node_world_frame() {
+    const BACKWARD: [u8; 4] = [128, 255, 128, 128];
+    let fz = |q: [f32; 4]| rotate(q, [0.0, 0.0, 1.0])[2];
+    let mut l = along(1, [0.0; 3], [0.0, 1.0], 30);
+    for n in &mut l.nodes[..10] {
+        n.skater = BACKWARD;
+    }
+    let ls = lines(vec![l.clone()]);
+    let mut c = LineCursor::spawn(&ls, id(1), 0);
+    c.facing_rule = FacingRule::RidingEntry;
+    assert!(c.flip && c.riding);
+    assert!(flip_test(&l.nodes[0], node_world_frame(&l.nodes[0])));
+    let s = c.sample(&ls, 0.0).unwrap();
+    assert_eq!(s.skater, turn_about_up(target_skater(&l, 0, 1, 0.0)));
+    assert!(fz(s.skater) > 0.99, "switch stance drawn on the board's side");
+    // Same line spawned on a forward node: no flip.
+    assert!(!LineCursor::spawn(&ls, id(1), 12).flip);
+    // Spawned in the air or off board: not riding, nothing latched.
+    for flag in [node_flags::AIRBORNE, node_flags::OFF_BOARD] {
+        let mut m = l.clone();
+        m.nodes[0].flags = flag;
+        let ms = lines(vec![m]);
+        let c = LineCursor::spawn(&ms, id(1), 0);
+        assert!(!c.flip && !c.riding);
+    }
+    // The flip holds while riding: the recorded revert at node 10 turns the drawn body round with
+    // it (now against travel), no per-node fold.
+    let mut c = LineCursor::spawn(&ls, id(1), 0);
+    c.facing_rule = FacingRule::RidingEntry;
+    c.advance(12 * 10, &ls, &mut Decider::Stay, &mut Vec::new());
+    assert!(c.flip && fz(c.sample(&ls, 0.0).unwrap().skater) < -0.99);
+}
+
+/// Retail facing rule: the flip is held across a line switch ([code] `sub_8246C7F8` /
+/// `sub_8246BEE0` store line and node only) and latched again only on a riding entry (here: a
+/// chain onto a line that starts in the air, then the landing), against the character's forward
+/// (the drawn body, still mid switch blend when the landing comes quickly). Host and a mirroring
+/// client agree on the flip frame by frame.
+#[test]
+fn retail_flip_is_held_across_a_switch_and_relatched_on_landing() {
+    const BACKWARD: [u8; 4] = [128, 255, 128, 128];
+    let fz = |q: [f32; 4]| rotate(q, [0.0, 0.0, 1.0])[2];
+    let players: [Vec3; 0] = [];
+    let ride = |ls: &BTreeMap<[u8; 16], ReplayLine>, frames: u32| {
+        let mut c = LineCursor::spawn(ls, id(1), 0);
+        c.facing_rule = FacingRule::RidingEntry;
+        let (mut ev, mut flips) = (Vec::new(), Vec::new());
+        for _ in 0..frames {
+            let s = c.sample(ls, 0.0).unwrap();
+            let x = BranchContext { forward: s.velocity, ..ctx(s.position, &players) };
+            c.step(ls, &mut Decider::Decide(x), &mut ev);
+            flips.push((c.frames, c.line, c.node, c.flip));
+        }
+        let records: Vec<BranchRecord> = ev.iter().filter_map(|e| if let CursorEvent::Branch(b) = e { Some(b.clone()) } else { None }).collect();
+        (c, flips, records)
+    };
+    // Held: line 1 switch stance throughout (flip set at spawn), chain on the ground onto line 2
+    // recorded forward. The flip stays; line 2 is drawn turned (against travel), as retail's target.
+    let mut a = along(1, [0.0; 3], [0.0, 1.0], 21);
+    a.nodes.iter_mut().for_each(|n| n.skater = BACKWARD);
+    let ls = lines(vec![a.clone(), along(2, [0.0, 0.0, 21.0], [0.0, 1.0], 31)]);
+    let (c, flips, records) = ride(&ls, 260);
+    assert_eq!((c.line, records.len()), (id(2), 1));
+    assert!(flips.iter().all(|f| f.3), "held across the switch");
+    assert_eq!(c.sample(&ls, 0.0).unwrap().skater, turn_about_up(target_skater(&ls[&id(2)], c.node as usize, c.node as usize + 1, c.frame_in_segment as f32 / 10.0)));
+    assert!(fz(c.sample(&ls, 0.0).unwrap().skater) < -0.99);
+    // Relatched on landing: line 1 forward, chain onto line 3 whose first nodes are airborne and
+    // recorded turned round (the recorder jumped in fakie). Landing fast (1 frame per air node),
+    // the body still faces the old way (+Z) inside the 0.2 s blend: dot < 0 sets the flip and the
+    // landed line is drawn on the body's side. Landing late (blend over, the body drawn as line 3
+    // records it): the flip stays clear.
+    let air_line = |frames: u8| {
+        let mut l = along(3, [0.0, 0.0, 21.0], [0.0, 1.0], 31);
+        for (k, n) in l.nodes.iter_mut().enumerate() {
+            n.skater = BACKWARD;
+            n.board = BACKWARD;
+            if k < 3 {
+                n.flags = node_flags::AIRBORNE;
+            }
+            if (1..=3).contains(&k) {
+                n.frames = frames;
+            }
+        }
+        l
+    };
+    for (frames, latched) in [(1u8, true), (20u8, false)] {
+        let ls = lines(vec![along(1, [0.0; 3], [0.0, 1.0], 21), air_line(frames)]);
+        let (c, flips, records) = ride(&ls, 300);
+        assert_eq!(c.line, id(3));
+        let landed = flips.iter().find(|f| f.1 == id(3) && f.2 >= 3).unwrap();
+        assert_eq!(landed.3, latched, "landing {frames} frames per air node");
+        assert_eq!(c.flip, latched, "held after the landing");
+        if latched {
+            assert!(fz(c.sample(&ls, 0.0).unwrap().skater) > 0.99, "drawn on the body's side");
+        }
+        // A client mirroring the records derives the same flip on every frame.
+        let mut m = LineCursor::spawn(&ls, id(1), 0);
+        m.facing_rule = FacingRule::RidingEntry;
+        for f in &flips {
+            m.step(&ls, &mut Decider::Mirror(&records), &mut Vec::new());
+            assert_eq!((m.frames, m.flip), (f.0, f.3));
+        }
+    }
+}
+
+/// Slerp with shortest-arc sign selection like [code] `sub_82454B28`, and the retail AI steer
+/// ramp ([code] `sub_82471188`, `ai_skater` defaults 2 / 10 deg): data for the simulated tier.
+#[test]
+fn slerp_takes_the_short_arc_and_the_steer_ramp_matches_the_ai_skater_defaults() {
+    let id_q = [0.0, 0.0, 0.0, 1.0];
+    let y90 = [0.0, std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2];
+    let neg = y90.map(|c: f32| -c);
+    let h = slerp(id_q, neg, 0.5);
+    let f = rotate(h, [0.0, 0.0, 1.0]);
+    assert!((f[0].atan2(f[2]).to_degrees() - 45.0).abs() < 1e-3, "{f:?}");
+    assert_eq!(slerp(id_q, y90, 0.0), id_q);
+    let c = ChainConfig::retail();
+    assert_eq!((c.steer_dead_zone_deg, c.steer_full_deg, c.facing_rule), (2.0, 10.0, FacingRule::PerNode));
+    let st = |deg: f32| steer_input(deg.to_radians(), c.steer_dead_zone_deg, c.steer_full_deg);
+    assert_eq!(st(1.5), 0.0);
+    assert!((st(6.0) + 0.5).abs() < 1e-5 && (st(-6.0) - 0.5).abs() < 1e-5);
+    assert_eq!((st(10.0), st(90.0), st(-170.0)), (-1.0, -1.0, 1.0));
+    assert_eq!(FacingRule::NAMES.map(|n| FacingRule::from_name(n).unwrap().name()), FacingRule::NAMES);
 }
 
 /// `NPC_SKATER_BACKWARDS` check: heading vs velocity yaw, the diagnostic 135 deg threshold, no

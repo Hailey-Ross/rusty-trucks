@@ -1364,7 +1364,9 @@ switching lines (...9b79 node 57, ...9a7c node 102, ...9b79 node 87, ...9ab6 nod
 - [code] `sub_8246C7F8` (line end, called from `sub_8246D3C0` on the last node): `sub_82458968` lists up to 16
   lines, one is taken as is, several go through `sub_8246C1C8`; then it stores the line id (`+592/+600`), calls
   `sub_82468AC8`, stores the node (`+816`) and the line pointer (`+800`, `sub_824587E8`). No facing, stance or flip
-  state is written. The branch choice `sub_8246BEE0` likewise stores line and node.
+  state is written at the switch. The branch choice `sub_8246BEE0` likewise stores line and node. (Corrected
+  2026-10-08: retail does keep a facing state, the flip at controller `+927`; the switch only leaves it alone. See
+  "Fix 23 corrected" below.)
 - [code] `sub_8246D560` (controller update) calls `sub_8246D3C0`, then rebuilds the path frame at controller `+144`
   every update from the current line and node: `sub_8245A1A0` on node 0, else `sub_824734A8` (interpolated between
   nodes), both through `sub_82453A58`: the node's board orientation (`sub_82453970`, node `+0x18`) with its X and Z
@@ -1389,7 +1391,8 @@ by one decoded retail reader (below), not by a full port of how retail's skater 
   shove-it spins the board in the air; only the landing node carries the final flip bit). `sample` and the switch
   blend draw `drawn_skater`, so a switch-stance recorder is drawn riding forward and a fakie recorder fakie, like
   retail's target frame.
-- `ChainConfig::keep_facing` (the fix 16 rule) defaults to `false` (retail keeps no facing state); it stays as a mod
+- `ChainConfig::keep_facing` (the fix 16 rule) defaults to `false` (not retail: retail never compares the old and new line at a switch; its facing state is the
+  latched flip `+927`, see "Fix 23 corrected" below); it stays as a mod
   option (`sdk.world.set_tuning('living_world', {skater_line_chain = {keep_facing = true}})`, validated, first writer
   wins, read back, reset to `false` on mod disable). Docs in `sdk/skate.lua` and `skate-mods` say it is not retail.
 - Logging: `NPC_SKATER_BACKWARDS #id character line node heading velocity_yaw off deg m/s recorded_fakie
@@ -1439,6 +1442,93 @@ by one decoded retail reader (below), not by a full port of how retail's skater 
 - To playtest: follow an NPC skater through several line switches in DownTown; watch for backwards riding, spins at a
   switch, switch riders drawn forward; check the log for `NPC_SKATER_BACKWARDS` with `recorded_fakie false`.
 - Retail plays fakie and switch clips and mirrors for stance; the replay puppet plays forward regular clips.
+
+### Fix 23 corrected (2026-10-08)
+
+**Problem.** Fix 23 said "retail keeps no facing state" and replaced the fix 16 rule with our own per-node fold
+(`drawn_skater`: the recorded skater frame turned wherever it faces more than 90 deg from the path frame). The retail
+parity review (`.local/research/retail-parity-review-2026-10-08.md`, item 6) found both wrong: retail keeps one latched
+flip, and its target is the whole recorded skater frame, not a per-node fold against the board frame.
+
+**Retail evidence** (re-verified in the recomp source before porting).
+- [code] `sub_8246D560` rebuilds controller `+144..+207` (path frame) and `+208..+271` (recorded skater frame
+  interpolated between the two nodes: `sub_8245A088` -> `sub_82454CD0` -> `sub_82454B28`; `sub_82454B28` reads the
+  nodes' skater quaternions at node `+28` and slerps with shortest-arc sign selection).
+- [code] `sub_8246B358` (AI input): loads the target from controller `+208`; when byte `+927` is set it negates rows 0
+  and 2 (`vxor` with the sign mask: 180 deg about up). The yaw error (`sub_824536C8`) goes to `sub_82471188`, which
+  reads the `ai_skater` tunable `DD8843F793462295` (2.0 deg dead zone) and `281F55D7BB965ADC` (10.0 deg full steer):
+  steer = clamp((|e| - 2) / 8, 0, 1), sign opposite to the error.
+- [code] `sub_8246A700`: `+928` = the skater state object's `+438` (set by `sub_82DB6EC0` while the player state id is
+  in 200..299, inferred: riding). Only on the rising edge of `+928` it reads the current node's skater frame
+  (`sub_82453B70` on controller `+608`) and the character matrix row 2 (`+400`), and stores `+927` = 1 when their 3D
+  dot product is below 0 (`vcmpgtfp` against 0.0), else 0. `sub_8246C7F8` / `sub_8246BEE0` never touch `+927`, so it
+  is held across branches and chains.
+- [code] New in this pass: the spawn `sub_8245C548` builds the character's frame with `sub_82453C58` (node world
+  frame: the skater frame on off-board nodes, the path frame on the others) and passes it to `sub_8245DA78`. So the
+  first latch compares the recorded skater frame against the path frame at the spawn node.
+
+**Change.**
+- `skate-core::living_world::replay`: `FacingRule { RidingEntry, PerNode }`. `RidingEntry` is the retail rule:
+  `target_skater` (slerp of the recorded skater frames, `slerp` with shortest-arc sign; the nlerp threshold 0.9995 is
+  ours, retail's is not decoded), turned 180 deg (`turn_about_up`) while `LineCursor::flip`. The cursor latches
+  `flip` with `flip_test` (retail's dot test) at spawn against `node_world_frame` and on every riding entry
+  (`node_riding`: landing = airborne -> grounded node, back on the board = off board -> on board) against the
+  drawn skater of the previous frame, and holds it across branches and chains. `riding` is the edge detector. Both
+  are plain public fields, a pure function of the lines, the spawn and the branch records (a mirroring client derives
+  the same values; tested).
+- **Default drawing stays the fix 23 per-node fold (`PerNode`), NOT RETAIL YET** (decision of the main session
+  until the user decides). Reason, measured: drawing the retail target without retail's fakie / switch clips and
+  stance mirror shows every stretch retail rides fakie or switch (character forward against travel) as riding
+  backwards, the bug the user reported. `riding_entry` is a mod option and the target default once the stance mirror
+  lands. The cursor latches the flip under either rule.
+- `steer_input` + `ChainConfig::steer_dead_zone_deg` / `steer_full_deg` (2 / 10 deg): data with retail defaults for
+  the simulated tier. The replay tier has no steering; nothing calls it there.
+- Mods: `skater_line_chain {facing_rule = 'per_node' | 'riding_entry', steer_dead_zone_deg, steer_full_deg}`
+  (validated, first writer wins, read back, reset on mod disable; tested). `keep_facing` (fix 16) stays a mod option,
+  off.
+- Log: `NPC_SKATER_BACKWARDS` now also prints `flip`.
+
+**Files.** `crates/skate-core/src/living_world/replay.rs`, `replay_tests.rs`;
+`crates/skate-game/src/living_world/npc_skaters.rs`, `npc_tests.rs`, `crates/skate-game/src/modding/world_tuning.rs`;
+`crates/skate-mods/src/world_tuning.rs`; `crates/skate-data/tests/living_world_data.rs`; `sdk/skate.lua`.
+
+**Verification.**
+- New skate-core tests (the rule's math, not measured output): `retail_flip_latches_at_spawn_against_the_node_world_frame`
+  (switch stance at the spawn node sets the flip, drawn = recorded frame turned; forward node, air and off-board
+  spawns do not latch; a recorded revert while riding turns the drawn body with it),
+  `retail_flip_is_held_across_a_switch_and_relatched_on_landing` (held across a ground chain; a chain onto a line
+  starting in the air relatches on landing against the body: set when the landing comes inside the 0.2 s blend,
+  clear when the body already shows the new line; a mirroring client agrees frame by frame),
+  `slerp_takes_the_short_arc_and_the_steer_ramp_matches_the_ai_skater_defaults`.
+- Data-gated `npc_skater_facing_rules_on_the_exported_lines` (212 seeded 40 s rides, 882 switches, 474,412 judged
+  settled frames; frames drawn more than 135 deg against travel where the path frame does not oppose travel, i.e.
+  `NPC_SKATER_BACKWARDS` with `recorded_fakie false`; spins after a switch):
+
+  | Rule | Backwards frames | Spins |
+  |---|---|---|
+  | `per_node` (fix 23, default, NOT RETAIL YET) | 353 | 29 |
+  | `per_node` + `keep_facing` (fix 16, mod option) | 16,026 | 3 |
+  | `riding_entry` (retail, mod option) | 84,776 | 128 |
+
+  The `per_node` and fix 16 numbers equal the fix 23 numbers above (behaviour unchanged by default). Under the retail
+  rule the flip was set at spawn on 19 of 212 rides and changed 2 times later. The counts are reported, not tuned.
+
+**Open questions.**
+- **Stance mirror (next task).** Retail draws the frames counted above for `riding_entry` with fakie riding clips and
+  a mirrored stance; the replay puppet plays one forward regular clip set. What exists already: the player's
+  animation host carries the same bits (`skate-game` `skater_animation.rs`: `state.fakie()` / `state.mirrored()`,
+  leading foot `sub_82592B68` = (natural stance == relative stance) xor fakie, `Initialize82B97E38` mirror bits,
+  `IsRidingGoofy` from PhysOutAnimation 157/158; `graph_host/motion_channels.rs` `FakieHead`
+  (`FakieHeadChannel82BAC778`, channel `B_FAKIE_CHANNEL`)). Not read: what sets the AI skater's fakie / relative
+  stance bits (the physics side of `sub_8246B358` -> `AIPhysicsInput`), and which pro natural stance each NPC has.
+  Port: per replay sample derive fakie = the drawn retail target's forward against the board's riding direction
+  (path frame), mirrored from the character's natural stance; feed both to the puppet's clip pick / playback context
+  (`is_mirrored`) and the fakie channel. Estimate: one agent run (about 60 min) to read the AI fakie/stance source
+  and wire the two bits into the puppet with tests, a second for the clip set if the stock clips lack fakie variants.
+  Then switch the default to `riding_entry`.
+- The `node_riding` mapping (air and off board leave riding) is inferred; whether retail's grind / manual states are
+  inside 200..299 is not read.
+- Retail's nlerp threshold inside `sub_82454B28` is not decoded.
 
 ## Frame drop with the board thrown away (hidden board scanned the whole map), 2026-10-05
 

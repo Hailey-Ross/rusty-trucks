@@ -957,12 +957,17 @@ function sdk.audio.seed(n) end
 -- an absent field keeps the shipped value; first writer wins per field; restored when the mod stops,
 -- fails or reloads). Domains:
 -- 'living_world': npc_draw_distance (0.25..4, 1 = retail), skater_fade {fade_in_seconds, fade_seconds,
---   despawn_alpha} (retail 1, 1, 0.2), skater_line_chain {radius, max_candidates, blend_seconds, keep_facing} (NPC skater line end:
+--   despawn_alpha} (retail 1, 1, 0.2), skater_line_chain {radius, max_candidates, blend_seconds, keep_facing,
+--   facing_rule, steer_dead_zone_deg, steer_full_deg} (NPC skater line end:
 --   continue on an unused line starting within radius m, retail 4 and 16; radius 0 = fade out at every
 --   line end; blend_seconds: the drawn skater moves onto the new line over this time after a branch or
 --   chain, default 0.2, 0 = cut; keep_facing: mod option, not retail, default false: the skater keeps the
 --   way it faces, forward or fakie, across a branch or chain by riding the new line turned round;
---   retail takes the new line's recorded facing), ped_fade {distance = {near, far} (45, 55; a model record's pair
+--   facing_rule: 'per_node' (default, not retail yet: each node folded onto the board's riding
+--   direction, standing in for the missing switch / fakie clips) or 'riding_entry' (retail: the recorded
+--   skater frame, turned while a flip latched on landing / spawn / getting on the board is set, held
+--   across switches; without switch / fakie clips it looks like riding backwards); steer_dead_zone_deg / steer_full_deg: retail AI
+--   steer ramp, 2 and 10, kept for the simulated tier, unused by the replay tier), ped_fade {distance = {near, far} (45, 55; a model record's pair
 --   wins), fade_in_seconds (1), enabled}, skater_clips {[phase or 'phase.Style'] = stock clip name}
 --   (NPC skater clip per replay phase: rolling, crouched, air, air_trick, ground_trick, off_board;
 --   a clip whose name holds _CYC loops; an unknown clip falls back to the shipped pick; also

@@ -490,6 +490,8 @@ pub(crate) fn advance(
         replay.cursor.switch_blend_seconds = chain.blend_seconds;
         // Keep the facing across switches (fix 16 rule, mod option, retail off); a tuning value.
         replay.cursor.keep_facing = chain.keep_facing;
+        // Facing rule (fix 23 per-node fold by default, NOT RETAIL YET; retail riding-entry flip as an option).
+        replay.cursor.facing_rule = chain.facing_rule;
         while replay.cursor.frames < target && !replay.cursor.finished {
             if replay.cursor.frames + FRAMES_PER_TICK >= target {
                 replay.previous = Some(replay.cursor.clone());
@@ -1051,14 +1053,15 @@ pub(crate) const BACKWARDS_LOG_TICKS: u64 = 60;
 /// (`skate_core::living_world::replay::facing_check`: drawn heading more than 135 deg from the
 /// velocity yaw at 1 m/s or more; a diagnostic threshold). `recorded_fakie` says the line's own
 /// retail path frame opposes travel there (the recorder rode fakie: retail's target frame does
-/// too); `facing_flipped` is the fix 16 mod option's turn.
+/// too); `flip` is retail's latched switch / fakie flip (controller `+927`); `facing_flipped` is
+/// the fix 16 mod option's turn.
 pub(crate) fn backwards_line(id: LivingWorldId, character: &str, line: &ReplayLine, cursor: &LineCursor, s: &ReplaySample) -> Option<String> {
     let c = skate_core::living_world::replay::facing_check(line, s)?;
     if !c.backwards {
         return None;
     }
     Some(format!(
-        "NPC_SKATER_BACKWARDS #{} {character} line {} node {} heading {:.0} velocity_yaw {:.0} off {:.0} deg {:.1} m/s recorded_fakie {} facing_flipped {} phase {} pos {:.1} {:.1} {:.1}",
+        "NPC_SKATER_BACKWARDS #{} {character} line {} node {} heading {:.0} velocity_yaw {:.0} off {:.0} deg {:.1} m/s recorded_fakie {} flip {} facing_flipped {} phase {} pos {:.1} {:.1} {:.1}",
         id.serial,
         s.line.iter().map(|b| format!("{b:02x}")).collect::<String>(),
         s.node,
@@ -1067,6 +1070,7 @@ pub(crate) fn backwards_line(id: LivingWorldId, character: &str, line: &ReplayLi
         c.angle.to_degrees(),
         length(s.velocity),
         c.recorded_fakie,
+        cursor.flip,
         cursor.facing_flipped,
         s.phase.name(),
         s.position[0],

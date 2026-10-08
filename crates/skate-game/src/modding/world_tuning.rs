@@ -142,6 +142,9 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.max_candidates = f.max_candidates.map_or(c.max_candidates, |v| v as usize);
         c.blend_seconds = f.blend_seconds.map_or(c.blend_seconds, |v| v.max(0.0));
         c.keep_facing = f.keep_facing.unwrap_or(c.keep_facing);
+        c.facing_rule = f.facing_rule.as_deref().and_then(skate_core::living_world::replay::FacingRule::from_name).unwrap_or(c.facing_rule);
+        c.steer_dead_zone_deg = f.steer_dead_zone_deg.map_or(c.steer_dead_zone_deg, |v| v.max(0.0));
+        c.steer_full_deg = f.steer_full_deg.map_or(c.steer_full_deg, |v| v.max(0.0));
     }
     if let Some(f) = &p.ped_fade {
         let c = &mut s.ped_fade;
@@ -310,7 +313,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "npc_draw_distance": s.npc_draw_distance,
                 "user_npc_draw_distance": s.user_npc_draw_distance,
                 "skater_fade": {"fade_in_seconds": s.skater_fade.fade_in_seconds, "fade_seconds": s.skater_fade.fade_seconds, "despawn_alpha": s.skater_fade.despawn_alpha},
-                "skater_line_chain": {"radius": s.skater_line_chain.radius, "max_candidates": s.skater_line_chain.max_candidates, "blend_seconds": s.skater_line_chain.blend_seconds, "keep_facing": s.skater_line_chain.keep_facing},
+                "skater_line_chain": {"radius": s.skater_line_chain.radius, "max_candidates": s.skater_line_chain.max_candidates, "blend_seconds": s.skater_line_chain.blend_seconds, "keep_facing": s.skater_line_chain.keep_facing, "facing_rule": s.skater_line_chain.facing_rule.name(), "steer_dead_zone_deg": s.skater_line_chain.steer_dead_zone_deg, "steer_full_deg": s.skater_line_chain.steer_full_deg},
                 "ped_fade": {"distance": s.ped_fade.distance, "fade_in_seconds": s.ped_fade.fade_in_seconds, "enabled": s.ped_fade.enabled},
                 "ped_obstacles": {"enabled": s.ped_obstacles.enabled, "min_half_extent": s.ped_obstacles.min_half_extent,
                     "moving_speed": s.ped_obstacles.moving_speed, "recut_fraction": s.ped_obstacles.recut_fraction,
@@ -404,7 +407,7 @@ mod tests {
         set(&mut w, "dev.a", "living_world", Some(json!({
             "npc_draw_distance": 3.0,
             "skater_fade": {"fade_in_seconds": 0.0, "fade_seconds": 2.5, "despawn_alpha": 0.05},
-            "skater_line_chain": {"radius": 0.0, "blend_seconds": 0.6, "keep_facing": true},
+            "skater_line_chain": {"radius": 0.0, "blend_seconds": 0.6, "keep_facing": true, "facing_rule": "riding_entry", "steer_full_deg": 12.0},
             "ped_fade": {"distance": [90.0, 110.0], "fade_in_seconds": 2.0, "enabled": false},
         }))).unwrap();
         {
@@ -416,17 +419,22 @@ mod tests {
             assert_eq!((s.skater_line_chain.radius, s.skater_line_chain.max_candidates), (0.0, 16), "absent fields keep retail");
             assert_eq!(s.skater_line_chain.blend_seconds, 0.6);
             assert!(s.skater_line_chain.keep_facing, "the fix 16 option is mod-reachable");
+            assert_eq!(s.skater_line_chain.facing_rule, skate_core::living_world::replay::FacingRule::RidingEntry, "the retail rule is mod-reachable");
+            assert_eq!((s.skater_line_chain.steer_dead_zone_deg, s.skater_line_chain.steer_full_deg), (2.0, 12.0));
         }
         assert_eq!(read(&w, "living_world")["skater_line_chain"]["radius"], json!(0.0));
         assert!((read(&w, "living_world")["skater_line_chain"]["blend_seconds"].as_f64().unwrap() - 0.6).abs() < 1e-6);
         assert_eq!(read(&w, "living_world")["skater_line_chain"]["keep_facing"], json!(true));
+        assert_eq!(read(&w, "living_world")["skater_line_chain"]["facing_rule"], json!("riding_entry"));
         assert_eq!(read(&w, "living_world")["skater_fade"]["fade_seconds"], json!(2.5));
         clear_owner(&mut w, "dev.a");
         let s = w.resource::<LivingWorldSettings>();
         assert_eq!(s.npc_draw_distance, 1.5, "disable restores the player's menu choice");
         let retail = LivingWorldSettings::default();
         assert_eq!((s.skater_fade, s.ped_fade, s.skater_line_chain), (retail.skater_fade, retail.ped_fade, retail.skater_line_chain));
-        assert!(!s.skater_line_chain.keep_facing, "disable returns to retail (no facing state)");
+        assert!(!s.skater_line_chain.keep_facing, "disable turns the fix 16 option off");
+        assert_eq!(s.skater_line_chain.facing_rule, skate_core::living_world::replay::FacingRule::PerNode, "disable returns to the default rule");
+        assert_eq!((s.skater_line_chain.steer_dead_zone_deg, s.skater_line_chain.steer_full_deg), (2.0, 10.0));
     }
 
     #[test]
