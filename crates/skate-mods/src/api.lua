@@ -376,7 +376,9 @@ function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",a
 -- or prop carrying ("carry": grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed,
 -- turn_rate, grip_reach, linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller,
 -- lever_rotation, lever_yaw, mass_speed, inertia_yaw_gain, let_go_distance, commanded_material, apply_at_com,
--- yaw_replaces_torque, ignore_vertical, wake_on_command, by_template[<MOBJ template>] = {material_held, material_free}) while this mod runs; nil restores
+-- yaw_replaces_torque, ignore_vertical, wake_on_command, by_template[<MOBJ template>] = {material_held, material_free})
+-- or the dynamic shadow floor on the baked world ("shadows": world_floor =
+-- {r, g, b}, each 0..1, retail {0.05, 0.09, 0.13}) while this mod runs; nil restores
 -- this mod's patch of the domain, everything is restored when the mod stops. First writer wins.
 sdk.world = { version = 1 }
 function sdk.world.set_tuning(domain, patch) submit{kind="world_set_tuning",domain=domain,patch=patch} end

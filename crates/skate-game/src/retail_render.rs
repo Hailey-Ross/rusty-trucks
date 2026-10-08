@@ -135,6 +135,31 @@ fn pack_slot(class: usize, layer: usize, clamp: bool) -> u32 {
     (u32::from(clamp) << 31) | ((class as u32) << 16) | layer as u32
 }
 
+/// Retail dynamic-shadow floor on the baked world, RGB. Every retail world
+/// receiver shader (`defaultenvironment_defaultPS`, `environmentdiffuse_defaultPS`,
+/// `baseterrain_defaultPS`, the decal / reflective / transparent variants and
+/// `water_defaultPS` / `flowingwater_defaultPS` in `shaders_final.big`) computes
+/// `min(lightmap^2, csm_visibility + (0.05, 0.09, 0.13))`: the same constant for
+/// every caster and receiver, with no per-caster height or depth window. A
+/// shadow that lands in baked shade darker than this floor therefore leaves no
+/// mark, which is what keeps a car on a bridge from printing its shadow onto the
+/// shaded ground below (the city geometry itself casts nothing into this map).
+pub(crate) const RETAIL_WORLD_SHADOW_FLOOR: Vec3 = Vec3::new(0.05, 0.09, 0.13);
+
+/// Engine-side setting for the world shadow floor: retail by default, patched by
+/// mods through `sdk.world.set_tuning('shadows', {world_floor = {r, g, b}})` and
+/// rebuilt from the default when the mod stops (`modding::world_tuning`).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WorldShadowSettings {
+    pub floor: Vec3,
+}
+
+impl Default for WorldShadowSettings {
+    fn default() -> Self {
+        Self { floor: RETAIL_WORLD_SHADOW_FLOOR }
+    }
+}
+
 /// Shared frame state, matching `FrameState` in the bindings module: 144 bytes.
 ///
 /// `shadow.w` gates every dynamic-shadow read in the world shader. Shadows are
@@ -150,20 +175,11 @@ pub(crate) struct FrameStateData {
 impl FrameStateData {
     const SIZE: usize = 9 * 16;
 
-    /// Eases the shadow floor towards the local probe's ambient term. Carried
-    /// over with the character lighting that feeds it.
-    pub(crate) fn approach(&mut self, target: Vec3, dt: f32) {
-        let target = target.clamp(Vec3::ZERO, Vec3::ONE);
-        let value = if self.shadow.w == 0. {
-            target
-        } else {
-            // Adapter smoothing, not a recovered native constant. Cap a hitch's
-            // contribution so one long frame cannot cause a darkness step.
-            self.shadow
-                .truncate()
-                .lerp(target, 1. - (-dt.clamp(0., 0.05) / 0.35).exp())
-        };
-        self.shadow = value.extend(1.);
+    /// Turns the world's dynamic-shadow reads on with `floor` as the lightest
+    /// value a dynamic shadow can leave on the baked world (see
+    /// [`RETAIL_WORLD_SHADOW_FLOOR`]).
+    pub(crate) fn enable_world_shadows(&mut self, floor: Vec3) {
+        self.shadow = floor.clamp(Vec3::ZERO, Vec3::ONE).extend(1.);
     }
 
     fn encode(&self) -> Vec<u8> {
@@ -1480,6 +1496,7 @@ impl Plugin for RetailRenderPlugin {
         embedded_asset!(app, "retail_sky.wgsl");
         bevy::shader::load_shader_library!(app, "retail_material_bindings.wgsl");
         app.init_resource::<FrameStateData>()
+            .init_resource::<WorldShadowSettings>()
             .add_plugins((
                 MaterialPlugin::<WorldMaterial>::default(),
                 MaterialPlugin::<crate::retail_sky::SkyMaterial>::default(),
@@ -1815,5 +1832,47 @@ mod tests {
                 "{class:?} must report Opaque exactly when it drops the discard"
             );
         }
+    }
+
+    /// The retail world receiver expression (every world `*_defaultPS`):
+    /// `min(lightmap^2, csm_visibility + floor)`.
+    fn receive(lightmap_sq: Vec3, visibility: f32, floor: Vec3) -> Vec3 {
+        lightmap_sq.min(Vec3::splat(visibility) + floor)
+    }
+
+    #[test]
+    fn world_shadow_floor_is_the_retail_constant() {
+        assert_eq!(RETAIL_WORLD_SHADOW_FLOOR, Vec3::new(0.05, 0.09, 0.13));
+        assert_eq!(WorldShadowSettings::default().floor, RETAIL_WORLD_SHADOW_FLOOR);
+        let mut state = FrameStateData::default();
+        state.enable_world_shadows(RETAIL_WORLD_SHADOW_FLOOR);
+        assert_eq!(state.shadow, RETAIL_WORLD_SHADOW_FLOOR.extend(1.), "w gates the shader reads");
+        state.enable_world_shadows(Vec3::new(-1., 0.5, 2.));
+        assert_eq!(state.shadow, Vec4::new(0., 0.5, 1., 1.), "a mod value is clamped to 0..1");
+    }
+
+    #[test]
+    fn baked_shade_at_the_floor_hides_a_dynamic_shadow_and_sunlit_ground_takes_it() {
+        let floor = RETAIL_WORLD_SHADOW_FLOOR;
+        // Ground in a bridge's baked shade (squared lightmap at or below the
+        // floor): a car on the bridge above (visibility 0) leaves no mark.
+        let shade = Vec3::new(0.04, 0.08, 0.12);
+        assert_eq!(receive(shade, 0., floor), shade);
+        // The old adapter floor (DownTown probe sh[0] at the reported spot
+        // under the bridge, [42.6, 15.8, 353]) darkened that shade.
+        let old_floor = Vec3::new(0.0157, 0.0196, 0.0275);
+        assert!(receive(shade, 0., old_floor).cmplt(shade).all());
+        // Sunlit ground still takes a full-strength shadow down to the floor,
+        // and unshadowed ground keeps its baked light.
+        let sun = Vec3::new(0.6, 0.55, 0.5);
+        assert_eq!(receive(sun, 0., floor), floor);
+        assert_eq!(receive(sun, 1., floor), sun);
+    }
+
+    #[test]
+    fn every_world_shadow_read_uses_the_shared_floor() {
+        let src = include_str!("retail_world.wgsl");
+        assert_eq!(src.matches("+frame_state.shadow.rgb").count(), 2, "lightmapped and water receivers");
+        assert!(!src.contains("0.09,0.13,0.05"), "no per-family hard-coded floor");
     }
 }

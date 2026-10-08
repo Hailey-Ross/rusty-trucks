@@ -7,7 +7,8 @@
 //! - `living_world` -> `LivingWorldSettings` (rebuilt with `reset_mod_overrides`, so the player's
 //!   menu draw distance comes back when no mod sets one),
 //! - `props` -> `PropTuningSettings`,
-//! - `carry` -> `CarrySettings`.
+//! - `carry` -> `CarrySettings`,
+//! - `shadows` -> `retail_render::WorldShadowSettings` (dynamic shadow floor on the baked world).
 //! A mod that stops, fails or reloads loses its patches ([`clear_owner`]); [`clear_all`] when every
 //! mod goes.
 
@@ -17,6 +18,7 @@ use skate_core::math::Vector3;
 use skate_mods::world_tuning::{parse, CarryPatch, LivingWorldPatch, Merge, Patch, PropTuningPatch, PropsPatch, DOMAINS};
 
 use crate::living_world::LivingWorldSettings;
+use crate::retail_render::{WorldShadowSettings, RETAIL_WORLD_SHADOW_FLOOR};
 use crate::physics::prop_carry::{CarryButtons, CarrySettings, LocomotionOverrides};
 use crate::physics::prop_dynamics::{PropBox, PropTuning, PropTuningSettings, PropTuningTable};
 
@@ -108,6 +110,14 @@ fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
             match world.get_resource_mut::<CarrySettings>() {
                 Some(mut s) => *s = c,
                 None => world.insert_resource(c),
+            }
+        }
+        "shadows" => {
+            let p = t.merged(domain, |p| if let Patch::Shadows(p) = p { Some(p) } else { None });
+            let s = WorldShadowSettings { floor: p.world_floor.map_or(RETAIL_WORLD_SHADOW_FLOOR, Vec3::from_array) };
+            match world.get_resource_mut::<WorldShadowSettings>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
             }
         }
         _ => {}
@@ -295,6 +305,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "yaw_replaces_torque": r.yaw_replaces_torque, "ignore_vertical": r.ignore_vertical,
                 "wake_on_command": r.wake_on_command, "by_template": by})
         }),
+        "shadows" => world.get_resource::<WorldShadowSettings>().map_or(Value::Null, |s| json!({"world_floor": s.floor.to_array()})),
         _ => Value::Null,
     }
 }
@@ -308,7 +319,23 @@ mod tests {
         w.insert_resource(LivingWorldSettings::default());
         w.init_resource::<PropTuningSettings>();
         w.init_resource::<CarrySettings>();
+        w.init_resource::<WorldShadowSettings>();
         w
+    }
+
+    #[test]
+    fn world_shadow_floor_defaults_to_retail_set_and_reset() {
+        let mut w = world();
+        assert_eq!(w.resource::<WorldShadowSettings>().floor, Vec3::new(0.05, 0.09, 0.13));
+        set(&mut w, "dev.a", "shadows", Some(json!({"world_floor": [0.0, 0.0, 0.0]}))).unwrap();
+        set(&mut w, "dev.b", "shadows", Some(json!({"world_floor": [0.5, 0.5, 0.5]}))).unwrap();
+        assert_eq!(w.resource::<WorldShadowSettings>().floor, Vec3::ZERO, "first writer wins");
+        assert_eq!(read(&w, "shadows")["world_floor"], json!([0.0f32, 0.0f32, 0.0f32]));
+        assert!(set(&mut w, "dev.a", "shadows", Some(json!({"world_floor": [2.0, 0.0, 0.0]}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<WorldShadowSettings>().floor, Vec3::splat(0.5));
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<WorldShadowSettings>(), WorldShadowSettings::default(), "mod disable restores retail");
     }
 
     #[test]

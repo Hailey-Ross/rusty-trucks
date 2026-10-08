@@ -29,13 +29,17 @@
 //!   `linear_controller` / `yaw_controller`
 //!   (`[p, filtered, d, filter]`, 20 / 0 / 40 / 0.1), the curves `lever_rotation`, `lever_yaw`,
 //!   `mass_speed`, `inertia_yaw_gain` (`[[8 x], [8 y]]`) and `let_go_distance` (m).
+//! - `shadows`: `world_floor = {r, g, b}`, the lightest a dynamic object's shadow can make the baked
+//!   world (each 0..=1, in the shader's squared lightmap space). Retail {0.05, 0.09, 0.13}: the
+//!   constant every retail world receiver shader adds to its shadow-map visibility before taking
+//!   the minimum with the baked lightmap.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const DOMAINS: [&str; 3] = ["living_world", "props", "carry"];
+pub const DOMAINS: [&str; 4] = ["living_world", "props", "carry", "shadows"];
 /// Upper bound for every number (keeps a typo from building a 1e30 m fade range).
 pub const MAX_NUMBER: f32 = 100_000.0;
 /// Stable NPC skater replay phase ids (`skate_core::living_world::replay::ReplayPhase::name`).
@@ -227,6 +231,13 @@ pub struct CarryMaterialPatch {
     pub material_free: Option<[f32; 2]>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShadowsPatch {
+    /// Dynamic shadow floor on the baked world, RGB 0..=1 (retail 0.05, 0.09, 0.13).
+    pub world_floor: Option<[f32; 3]>,
+}
+
 /// Field-wise "first writer wins": `self` keeps its fields, `later` fills the gaps.
 pub trait Merge {
     fn merge(&mut self, later: &Self);
@@ -319,6 +330,12 @@ impl Merge for CarryPatch {
     }
 }
 
+impl Merge for ShadowsPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; world_floor);
+    }
+}
+
 impl LivingWorldPatch {
     pub fn validate(&self) -> bool {
         finite(self.npc_draw_distance)
@@ -389,12 +406,19 @@ fn material_block(b: [f32; 2]) -> bool {
     b.iter().all(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(v))
 }
 
+impl ShadowsPatch {
+    pub fn validate(&self) -> bool {
+        self.world_floor.is_none_or(|c| c.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)))
+    }
+}
+
 /// A parsed patch of one domain.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Patch {
     LivingWorld(LivingWorldPatch),
     Props(PropsPatch),
     Carry(CarryPatch),
+    Shadows(ShadowsPatch),
 }
 
 /// Parse and validate a patch for `domain` (`None` = unknown domain, unknown field or bad value).
@@ -403,12 +427,14 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         "living_world" => Patch::LivingWorld(serde_json::from_value(patch.clone()).ok()?),
         "props" => Patch::Props(serde_json::from_value(patch.clone()).ok()?),
         "carry" => Patch::Carry(serde_json::from_value(patch.clone()).ok()?),
+        "shadows" => Patch::Shadows(serde_json::from_value(patch.clone()).ok()?),
         _ => return None,
     };
     let ok = match &p {
         Patch::LivingWorld(p) => p.validate(),
         Patch::Props(p) => p.validate(),
         Patch::Carry(p) => p.validate(),
+        Patch::Shadows(p) => p.validate(),
     };
     ok.then_some(p)
 }
@@ -461,6 +487,10 @@ mod tests {
         assert!(!valid_patch("carry", &json!({"by_template": {"bin": {"material_held": [0.2]}}})));
         assert!(!valid_patch("carry", &json!({"by_template": {"bin": {"friction": 1.0}}})));
         assert!(!valid_patch("carry", &json!({"apply_at_com": 1})));
+        assert!(valid_patch("shadows", &json!({"world_floor": [0.05, 0.09, 0.13]})));
+        assert!(!valid_patch("shadows", &json!({"world_floor": [0.05, 0.09]})));
+        assert!(!valid_patch("shadows", &json!({"world_floor": [0.05, 0.09, 1.5]})));
+        assert!(!valid_patch("shadows", &json!({"floor": [0.0, 0.0, 0.0]})));
         assert!(!valid_patch("roads", &json!({})));
         assert!(valid_inspect("world_tuning:carry") && !valid_inspect("world_tuning:x"));
     }

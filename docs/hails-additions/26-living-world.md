@@ -2071,6 +2071,71 @@ plus the two skate-core lib failures
 `collision_feedback_tests::a_moving_group_8_body_reaches_native_impact_feedback_for_a_stationary_actor`), which
 fail identically at HEAD 0489702 (temporary worktree, same target dir).
 
+## Car shadows from a bridge printed on the ground below, 2026-10-08
+
+**Problem.** Session 2026-10-07 12:14 (DownTown, player about [42.6, 15.8, 353]). User: "I did find a spot where
+vehicle shadows from the bridge overhead were appearing below".
+
+**Root cause.** Dynamic objects (skaters, traffic cars on layer 28, mod graphics) cast into one dynamic shadow map
+that the baked world receives (`retail_character.rs` "Dynamic object shadows onto baked world", upstream ddc3028).
+The world receiver keeps the darker of the baked lightmap and `visibility + floor`. Our floor was an adapter: the
+player's nearest irradiance probe `sh[0]` (eased over 0.35 s). Under that bridge the probe is (0.0157, 0.0196, 0.0275),
+3 to 5 times darker than retail's constant, so a car on the bridge darkened the bridge's baked shade below it.
+
+**Retail evidence.**
+- [code, shader microcode] `data/big/shaders_final.big`, read with `.claude/skills/living-world/tools/eb_big_extract.py`
+  and `xenos_disasm.py`. Every world receiver pixel shader samples one blurred shadow atlas (`shadowAtlasBlurred`,
+  `CSM_Mat_Row0..2`, `g_CSMBlurBias`): `defaultenvironment_defaultPS`, `environmentdiffuse_defaultPS`,
+  `baseterrain_defaultPS`, `baseenvironment*`, `decal*environment*`, `transparent*`, `building_*`, `advertisement`,
+  `water_defaultPS`, `flowingwater_defaultPS`. Each computes visibility = saturate(depth step + 1 - blurred value),
+  adds the literal set {0.05, 0.09, 0.13} per channel and takes the minimum with the squared lightmap (e.g.
+  `environmentdiffuse_defaultPS` instructions 24 to 31, `defaultenvironment_defaultPS` 62 and 64). Following the
+  register swizzles back to the lightmap fetch gives R 0.05, G 0.09, B 0.13 in every one of them, including the water
+  shaders, whose lightmap sits in G,B,R registers so the literal pool reads 0.09, 0.13, 0.05.
+- [code] No height cut-off, receiver depth window or per-caster range in the receiver: one constant for every caster
+  and receiver. The city world shaders (`defaultenvironment`, `environmentdiffuse`, `baseterrain`, ...) have no
+  `shadow` technique, so the world never occludes the dynamic map; casters are `vehicle*_shadowPS`, character, ped,
+  `dynamicobject_shadowPS`, `environmentpark*_shadowPS` and `videoscreen_shadowPS`.
+- [code] Peds and dynamic objects additionally read a static world shadow map (`shadowWorld`, `WorldShadow_MatRow`,
+  drawn by `WorldShadow_defaultVS/PS`, TU3 strings "World Shadow generation" / "DrawWorldShadowCasterInstances" at
+  0x821A02D4 / 0x821A02EC). That is a receiver map for objects, not an occluder for the world.
+- So retail's answer to the bridge is the floor: a dynamic shadow falling into baked shade at or below
+  (0.05, 0.09, 0.13) leaves no mark.
+
+**Change.** The world shadow floor is the retail constant `RETAIL_WORLD_SHADOW_FLOOR` (0.05, 0.09, 0.13) for every
+receiver (lightmapped families, flowing water and water), held as data in `WorldShadowSettings`. The probe adapter
+and its easing are gone. The water floor (family 33) was the literal in register order (0.09, 0.13, 0.05) applied to
+RGB; it now uses the same RGB floor. Character shading, the two directional lights, their cascades and biases, the
+layer-28 caster set and the shader's visibility term are unchanged (the character shader never read this floor).
+
+**Moddability.** `sdk.world.set_tuning('shadows', {world_floor = {r, g, b}})` (each 0..1; 0 = full-strength dynamic
+shadows), first writer wins, rebuilt to retail when the mod stops; `sdk.world.tuning(key, 'shadows')` reads it. Engine
+systems use `modding::world_tuning::set` with the same domain.
+
+**Files.** `crates/skate-game/src/retail_render.rs` (constant, `WorldShadowSettings`, `enable_world_shadows`, tests),
+`crates/skate-game/src/retail_character.rs`, `crates/skate-game/src/retail_world.wgsl`,
+`crates/skate-game/src/modding/world_tuning.rs`, `crates/skate-mods/src/world_tuning.rs`,
+`crates/skate-mods/src/api.lua`, `sdk/skate.lua`.
+
+**Verification.**
+- Tests: `world_shadow_floor_is_the_retail_constant`, `baked_shade_at_the_floor_hides_a_dynamic_shadow_and_sunlit_ground_takes_it`
+  (the retail receiver expression: shade at the floor is untouched by a full shadow, the old probe floor darkened it,
+  sunlit ground still darkens to the floor), `every_world_shadow_read_uses_the_shared_floor` (shader source),
+  `world_shadow_floor_defaults_to_retail_set_and_reset` (mod patch, first writer, reset), schema cases in
+  `skate-mods` `patches_parse_validate_and_reject_unknown_fields`; existing shader validation tests
+  (`retail_shader_tests.rs`) still pass.
+- To playtest (rendering not checked by eye): DownTown under the bridge at about [42.6, 15.8, 353] with traffic on the
+  bridge: no car shadows on the shaded ground. Elsewhere: the skater's and cars' shadows on sunlit ground are now a
+  little lighter and bluish (retail floor instead of the local probe), and in deep baked shade they fade out as in
+  retail. Compare with the recomp at the same spot if they look off.
+
+**Open questions.**
+- The retail visibility term (depth step plus `1 - blurred` from an exponential-blurred atlas, two cascades) is still
+  Bevy's PCF lookup in ours; only the floor is ported here. The sign convention of the scalar-constant subtract was
+  read as constant minus register (the only reading that leaves unshadowed receivers at full light).
+- Retail's cascade extent and which vehicles are submitted to the shadow pass (CPU side, "Shadow Map Cascade" /
+  "DrawShadowCasterInstances") were not traced; ours keeps one 24 m cascade.
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).

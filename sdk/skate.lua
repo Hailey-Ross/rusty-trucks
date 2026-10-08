@@ -981,14 +981,18 @@ function sdk.audio.seed(n) end
 --   push_speed (1.4 m/s), pull_speed (1.0 m/s), side_speed (0.8 m/s) at full left stick,
 --   turn_rate (1.6 rad/s) at full right stick X, grip_reach (0.35 m between the skater and the
 --   dragged prop's near face).
+-- 'shadows': world_floor = {r, g, b} (each 0..1; retail {0.05, 0.09, 0.13}): the lightest a dynamic
+--   object's shadow (skaters, cars, props, mod graphics) can leave on the baked world. Retail adds it
+--   to the shadow map and keeps the darker of that and the baked lightmap, so shadows that fall into
+--   baked shade (a car on a bridge over shaded ground) leave no mark; 0 = full-strength shadows.
 sdk.world = {}
 ---Set (a table) or restore (`nil`) this mod's patch of a world tuning domain.
----@param domain 'living_world'|'props'|'carry'
+---@param domain 'living_world'|'props'|'carry'|'shadows'
 ---@param patch table|nil
 function sdk.world.set_tuning(domain, patch) end
 ---Request a domain as the game uses it now; read it as `sdk.commands.result(key).value`.
 ---@param key string command result key
----@param domain 'living_world'|'props'|'carry'
+---@param domain 'living_world'|'props'|'carry'|'shadows'
 function sdk.world.tuning(key, domain) end
 
 -- Audio tuning (capability `audio_tuning`): patch the game's typed tuning while this mod runs.

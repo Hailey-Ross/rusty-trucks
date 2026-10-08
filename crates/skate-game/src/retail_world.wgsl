@@ -232,8 +232,10 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             let vz=(frame::view.view_from_world*i.world_position).z;
             for(var id=0u;id<frame::lights.n_directional_lights;id+=1u) {
                 if (frame::lights.directional_lights[id].flags & 5u)==5u {
-                    let floor=select(frame_state.shadow.rgb,vec3<f32>(0.09,0.13,0.05),fam==33u);
-                    lml=min(lml,vec3<f32>(fetch_directional_shadow(id,i.world_position,wn,vz))+floor); break;
+                    // water_defaultPS / flowingwater_defaultPS use the same RGB floor as
+                    // the other world receivers (their lightmap sits in G,B,R registers,
+                    // so the literal reads 0.09, 0.13, 0.05 in register order).
+                    lml=min(lml,vec3<f32>(fetch_directional_shadow(id,i.world_position,wn,vz))+frame_state.shadow.rgb); break;
                 }
             }
         }
