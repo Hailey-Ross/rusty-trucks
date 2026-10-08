@@ -964,11 +964,10 @@ function sdk.audio.seed(n) end
 --   line end; blend_seconds: the drawn skater moves onto the new line over this time after a branch or
 --   chain, default 0.2, 0 = cut; keep_facing: mod option, not retail, default false: the skater keeps the
 --   way it faces, forward or fakie, across a branch or chain by riding the new line turned round;
---   facing_rule: 'per_node' (default, not retail yet: each node folded onto the board's riding
---   direction, standing in for the missing switch / fakie clips) or 'riding_entry' (retail: the recorded
---   skater frame, turned while a flip latched on landing / spawn / getting on the board is set, held
---   across switches; a body drawn against its travel on the ground is drawn riding fakie with the stock
---   fakie channel, like retail); steer_dead_zone_deg / steer_full_deg: retail AI
+--   facing_rule: 'riding_entry' (default, retail: the recorded skater frame, turned while a flip
+--   latched on landing / spawn / getting on the board is set, held across switches; a body drawn
+--   against its travel on the ground is drawn riding fakie with the stock fakie channel, like retail)
+--   or 'per_node' (not retail: each node folded onto the board's riding direction); steer_dead_zone_deg / steer_full_deg: retail AI
 --   steer ramp, 2 and 10, kept for the simulated tier, unused by the replay tier; fakie_high_speed,
 --   fakie_low_speed (m/s), fakie_slow_seconds, fakie_spawn_seconds: retail's riding-fakie rule (stock
 --   1, 0.5, 0.2, 1): drawn fakie when rolling against the board's forward above the high speed, or above

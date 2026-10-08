@@ -1618,6 +1618,12 @@ draws those stretches riding fakie. The open question was what sets the AI skate
 - Spins after a switch (128 vs 29): retail steers the body round at the character's turn rate (not decoded); the
   puppet turns within the 0.2 s switch blend.
 
+**Default switched to `riding_entry`** (separate commit). With the fakie bit and channel ported, 97.1 % of the frames
+the retail rule draws against travel are drawn the way retail draws them, so the retail rule is the default;
+`per_node` (fix 23) and `keep_facing` (fix 16) stay mod options. What this does not cover is listed above: the mirror
+bits (left / right only), off-board frames, and the spins after a switch that a turn rate would soften. Reverting the
+default is one line (`ChainConfig::retail().facing_rule`).
+
 ## Frame drop with the board thrown away (hidden board scanned the whole map), 2026-10-05
 
 - **Problem:** throwing the board and walking away dropped the frame rate to 4 to 20 FPS; calling the board back

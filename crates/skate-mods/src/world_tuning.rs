@@ -135,11 +135,10 @@ pub struct PedObstaclesPatch {
 /// over this time after a branch or chain (engine default 0.2 s, 0 = cut, at most 10 s);
 /// `keep_facing`: mod option, not retail (default false): the skater keeps the way it faces
 /// (forward or fakie) across a branch or chain by riding the new line turned round (fix 16).
-/// `facing_rule`: one of [`NPC_SKATER_FACING_RULES`]: `per_node` (default, NOT RETAIL YET, the fix 23
-/// rule: each node folded onto the board's riding direction, standing in for the missing stance
-/// mirror) or `riding_entry` (retail: the recorded skater frame, turned while a flip latched on
-/// entering riding is set, held across switches; drawn without fakie / switch clips it shows
-/// retail's fakie and switch riding as backwards riding). `steer_dead_zone_deg` / `steer_full_deg`: retail AI
+/// `facing_rule`: one of [`NPC_SKATER_FACING_RULES`]: `riding_entry` (default, retail: the recorded
+/// skater frame, turned while a flip latched on entering riding is set, held across switches; a
+/// body against its travel on the ground is drawn riding fakie with the stock fakie channel) or
+/// `per_node` (not retail, the fix 23 rule: each node folded onto the board's riding direction). `steer_dead_zone_deg` / `steer_full_deg`: retail AI
 /// steer ramp (`ai_skater` 2 / 10 deg), data for the simulated tier (the replay tier does not steer).
 /// `fakie_high_speed` / `fakie_low_speed` (m/s), `fakie_slow_seconds`, `fakie_spawn_seconds` (s):
 /// retail's riding-fakie rule (stock motion graph `UpdateRidingFakie`: 1.0 / 0.5 / 0.2 / 1.0): the

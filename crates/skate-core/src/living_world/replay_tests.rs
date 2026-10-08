@@ -781,7 +781,8 @@ fn drawn_skater_faces_the_retail_path_frame_direction() {
     assert_eq!(drawn_skater(&l, 2), decode_orientation(IDENTITY));
     let ls = lines(vec![l.clone()]);
     let mut c = LineCursor::spawn(&ls, id(1), 0);
-    assert_eq!(c.facing_rule, FacingRule::PerNode, "the default (NOT RETAIL YET)");
+    assert_eq!(c.facing_rule, FacingRule::RidingEntry, "the default (retail)");
+    c.facing_rule = FacingRule::PerNode;
     let mut retail = LineCursor::spawn(&ls, id(1), 0);
     retail.facing_rule = FacingRule::RidingEntry;
     let mut retail_backwards = 0;
@@ -924,7 +925,7 @@ fn slerp_takes_the_short_arc_and_the_steer_ramp_matches_the_ai_skater_defaults()
     assert!((f[0].atan2(f[2]).to_degrees() - 45.0).abs() < 1e-3, "{f:?}");
     assert_eq!(slerp(id_q, y90, 0.0), id_q);
     let c = ChainConfig::retail();
-    assert_eq!((c.steer_dead_zone_deg, c.steer_full_deg, c.facing_rule), (2.0, 10.0, FacingRule::PerNode));
+    assert_eq!((c.steer_dead_zone_deg, c.steer_full_deg, c.facing_rule), (2.0, 10.0, FacingRule::RidingEntry));
     let st = |deg: f32| steer_input(deg.to_radians(), c.steer_dead_zone_deg, c.steer_full_deg);
     assert_eq!(st(1.5), 0.0);
     assert!((st(6.0) + 0.5).abs() < 1e-5 && (st(-6.0) - 0.5).abs() < 1e-5);

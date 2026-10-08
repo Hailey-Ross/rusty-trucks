@@ -427,9 +427,9 @@ fn npc_skater_facing_rules_on_the_exported_lines() {
         }
         (switches, spins, c, backwards, judged, flip_changes, spawn_flip, stance)
     };
-    let per_node = ChainConfig::retail();
-    assert_eq!(per_node.facing_rule, FacingRule::PerNode, "the default");
-    let retail = ChainConfig { facing_rule: FacingRule::RidingEntry, ..per_node };
+    let retail = ChainConfig::retail();
+    assert_eq!(retail.facing_rule, FacingRule::RidingEntry, "the default");
+    let per_node = ChainConfig { facing_rule: FacingRule::PerNode, ..retail };
     let keep = ChainConfig { keep_facing: true, ..per_node };
     // [rides, switches, judged, spawn flips, later flip changes, then (backwards, spins) per rule]
     let mut total = [0usize; 11];

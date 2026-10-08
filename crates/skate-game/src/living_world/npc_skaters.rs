@@ -535,7 +535,7 @@ pub(crate) fn advance(
         replay.cursor.switch_blend_seconds = chain.blend_seconds;
         // Keep the facing across switches (fix 16 rule, mod option, retail off); a tuning value.
         replay.cursor.keep_facing = chain.keep_facing;
-        // Facing rule (fix 23 per-node fold by default, NOT RETAIL YET; retail riding-entry flip as an option).
+        // Facing rule (retail riding-entry flip by default; the fix 23 per-node fold as a mod option).
         replay.cursor.facing_rule = chain.facing_rule;
         // Retail riding-fakie thresholds (data, stock graph values by default).
         replay.cursor.fakie_settings = chain.fakie;

@@ -56,8 +56,10 @@
 //! switches ([`FacingRule::RidingEntry`]). Retail's full skater steers its body toward that
 //! target ([`steer_input`], 2 / 10 deg) and shows fakie / switch with its own clips and stance
 //! mirror. The cursor always latches the flip; the puppet draws the retail target only under the
-//! `riding_entry` option. The default stays the fix 23 per-node fold ([`FacingRule::PerNode`],
-//! NOT RETAIL YET) until the puppet has the stance mirror.
+//! default `riding_entry` rule; the cursor runs retail's riding-fakie rule on the drawn body
+//! ([`LineCursor::fakie`]) and the puppet overlays the stock fakie channel like retail, so a body
+//! against its travel is drawn riding fakie. The fix 23 per-node fold ([`FacingRule::PerNode`],
+//! not retail) stays a mod option.
 //!
 //! Multiplayer: between branches the cursor is a pure function of (line, start node, frames);
 //! a branch decision is a record ([`BranchRecord`]) a client mirrors ([`LineCursor::step`] with a
@@ -144,15 +146,13 @@ pub enum FacingRule {
     /// [`LineCursor::flip`] is set ([code] `sub_8246B358`: rows 0 and 2 of `+208` negated while
     /// controller `+927`). The flip is latched only when the skater enters riding
     /// ([code] `sub_8246A700`, rising edge of `+928`) and held across branches and chains.
-    /// Mod option for now (`riding_entry`); the target default once the puppet has retail's
-    /// fakie / switch clips and stance mirror: without them the frames retail rides fakie or
-    /// switch (character forward against travel) are drawn as riding backwards.
-    RidingEntry,
-    /// NOT RETAIL YET, the engine default for now (fix 23): per node, the recorded skater frame
-    /// turned 180 deg wherever it faces more than 90 deg away from the node's path frame
-    /// ([`drawn_skater`]); no state. It stands in for the missing stance mirror: a switch or
-    /// fakie stretch is drawn riding forward in the character's stance.
+    /// The default (`riding_entry`): a body drawn against its travel on the ground is drawn riding
+    /// fakie ([`LineCursor::fakie`], the stock fakie channel), as retail draws it.
     #[default]
+    RidingEntry,
+    /// NOT RETAIL, mod option (`per_node`, the fix 23 rule): per node, the recorded skater frame
+    /// turned 180 deg wherever it faces more than 90 deg away from the node's path frame
+    /// ([`drawn_skater`]); no state. A switch or fakie stretch is drawn riding forward.
     PerNode,
 }
 
@@ -209,8 +209,8 @@ pub struct ChainConfig {
     /// Kept on, this turn carries on across later lines and the skater can ride a
     /// forward-recorded line backwards (user test 6, 2026-10-05).
     pub keep_facing: bool,
-    /// How the body is drawn ([`FacingRule`]; default [`FacingRule::PerNode`], NOT RETAIL YET
-    /// until the stance mirror lands; retail is [`FacingRule::RidingEntry`]).
+    /// How the body is drawn ([`FacingRule`]; default and retail [`FacingRule::RidingEntry`]; the
+    /// fix 23 [`FacingRule::PerNode`] is a mod option).
     pub facing_rule: FacingRule,
     /// Retail AI steer ramp ([`steer_input`]; `ai_skater` defaults 2 / 10 deg). Data for the
     /// simulated tier; the replay tier does not steer.
@@ -226,15 +226,14 @@ pub struct ChainConfig {
 pub const SWITCH_BLEND_SECONDS: f32 = 0.2;
 
 impl ChainConfig {
-    /// Retail values, except `facing_rule` (the fix 23 [`FacingRule::PerNode`] default, NOT
-    /// RETAIL YET, until the puppet has the stance mirror) and the engine `blend_seconds`.
+    /// Retail values, except the engine `blend_seconds`.
     pub fn retail() -> Self {
         Self {
             radius: retail::CHAIN_RADIUS,
             max_candidates: retail::CHAIN_MAX_CANDIDATES,
             blend_seconds: SWITCH_BLEND_SECONDS,
             keep_facing: false,
-            facing_rule: FacingRule::PerNode,
+            facing_rule: FacingRule::RidingEntry,
             steer_dead_zone_deg: retail::STEER_DEAD_ZONE_DEG,
             steer_full_deg: retail::STEER_FULL_DEG,
             fakie: retail::FAKIE,
@@ -928,7 +927,7 @@ pub enum Decider<'a> {
 
 impl LineCursor {
     pub fn new(line: [u8; 16], node: u32) -> Self {
-        Self { line, node, frame_in_segment: 0, frames: 0, finished: false, trick_open: false, trick: -1, history: [None; PHASE_HISTORY], phase: None, phase_since: 0, previous_phase: None, previous_since: 0, switch: None, switch_blend_seconds: SWITCH_BLEND_SECONDS, facing_flipped: false, keep_facing: false, flip: false, riding: false, facing_rule: FacingRule::PerNode, fakie: false, fakie_since: 0, fakie_previous_since: 0, fakie_clock: Default::default(), fakie_settings: retail::FAKIE }
+        Self { line, node, frame_in_segment: 0, frames: 0, finished: false, trick_open: false, trick: -1, history: [None; PHASE_HISTORY], phase: None, phase_since: 0, previous_phase: None, previous_since: 0, switch: None, switch_blend_seconds: SWITCH_BLEND_SECONDS, facing_flipped: false, keep_facing: false, flip: false, riding: false, facing_rule: FacingRule::RidingEntry, fakie: false, fakie_since: 0, fakie_previous_since: 0, fakie_clock: Default::default(), fakie_settings: retail::FAKIE }
     }
 
     /// Spawn on a line at a node (retail spawns at node 0, `sub_8245DA78`).
