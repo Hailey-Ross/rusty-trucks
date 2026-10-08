@@ -131,6 +131,67 @@ Measurements so far (headless, 2026-10-08, optimised test build):
   headlessly: the frame-side animation present / skinning, the camera, the HUD render and the renderer;
   the `FRAME_HITCH` line separates those in the next session.
 
+### Scoring HUD asset churn (2026-10-08, branch `world/hud-hitch`)
+
+Problem: lead for the flip hitch: the phases named for it include `hud_advance` and `hud_render`, and the
+scoring HUD looked like it rebuilt its meshes and materials every frame.
+
+Root cause found in the code: `scoring_hud::render` does keep one retained slot (entity, mesh, material)
+per draw, so it does not add new assets per frame. But for every slot, every frame, it called
+`Assets::get_mut` on the mesh and the material and replaced them, and inserted `Visibility` on every slot
+entity. `get_mut` marks the asset modified whether or not anything changed (the same trap the HUD target
+resize hit earlier), so every HUD glyph and shape was re-extracted, its vertex buffer re-uploaded and its
+material bind group rebuilt in the render world every frame. The number of draws grows with the trick text
+on screen, so the churn is highest exactly while a trick name and score are shown in the air.
+
+Evidence (headless, optimised test build, the real scoring runtime and the real HUD movie;
+`scoring_hud::draw_tests::hud_writer_is_identical_and_skips_unchanged_assets`, 2400 frames: ten 2.5 s airs
+with three flips each, multiplier 3 from the second air, a bail; two runs, same numbers):
+
+| | old writer | new writer |
+|---|---|---|
+| Mesh `Modified` events per frame (mean) | 21.9 | 1.3 |
+| Material `Modified` events per frame (mean) | 21.9 | 2.3 |
+| Worst frame (mesh + material events) | 80 (40 draws on screen) | 50 (frames where the trick text changes) |
+| Writer cost, main thread, p50 / p99 | 9.8-10.1 / 19.1-19.6 us | 4.4 / 22.6-23.9 us |
+
+Other main-thread HUD costs in the same run: `hud_runtime::update` (the `hud_advance` phase) p50 15 us,
+p99 130 us; `apt_scene::draw` p50 20 us, p99 35 us. Maxima (35-260 us) moved between runs and are noise.
+So on the main thread the HUD costs well under a millisecond with either writer and cannot by itself
+make a frame twice the median; `hud_advance` / `hud_render` naming a hitch would point elsewhere. The cost
+the fix removes lands in the render world (extract, mesh allocator, bind groups: up to 80 asset
+re-preparations per frame on trick frames), which headless tests cannot time; in a `FRAME_HITCH` line it
+shows as `wait` outside the schedules, not as `hud_render`.
+
+Change (`crates/skate-game/src/scoring_hud.rs`): `apply_draws` writes a slot's mesh only when its
+positions, UVs or normals differ bit for bit (`to_bits`, so -0.0 / +0.0 and NaN payloads count as
+changes) from what the mesh already holds, its material only when the colour transform bits or the atlas
+handle differ, and its `Visibility` only when it differs from the value it last inserted (`Slot::visibility`,
+`None` until the first insert so a new slot keeps the spawn default `Inherited` for its first frame, as
+before). New slots are spawned exactly as before. Slot order, z, render layer and the panic-free
+behaviour on a missing texture are unchanged. The main-thread p99 is about 4 us higher (the comparison
+runs before a rebuild on frames where a slot changes); traded for removing ~40 render-world re-uploads per
+frame on average.
+
+Verification:
+- Identity: the old writer is kept verbatim as a test-only reference; the test drives both with the same
+  draws every frame and asserts, after every frame, that every slot is identical: entity, `Visibility`,
+  `Transform` z bits, `RenderLayers`, mesh and material handle bindings, topology, indices, asset usage,
+  every attribute's bytes, colour transform bits and atlas texture. Passes on all 2400 frames, twice.
+- `skate-game` suite: 561 passed, 1 failed in the binary (`setup::tests::pipelines_accept_valid_group_outputs_when_fingerprint_changes`,
+  the known pre-existing failure), the existing `hud_target_changes_only_on_resize_and_refreshes_composite` passes.
+- Retail parity: the HUD look cannot change; the render world receives the same asset contents, only
+  fewer redundant change notices. Moddability: mods only read the HUD's trick names
+  (`modding::observation`); no mod writes HUD geometry, so there is nothing to reset on mod disable.
+  Deterministic, no networking.
+
+Open questions (need a user session with `FRAME_HITCH`, or trace-all with `SKATE_PERF_RENDER`):
+- Whether this churn was the flip hitch: compare `wait` and the render phase split (`PrepareAssets`,
+  `PrepareMeshes`) on large flips before and after this branch.
+- If hitches remain with `hud_render` or `hud_advance` as the slowest phase, the cause is not their own
+  cost (sub-millisecond headless); look at what the frame waited on.
+- `hud_runtime::update` p99 130 us is the largest HUD cost left; not a hitch, not changed here.
+
 ---
 
 ## Part 2: setup speed, phases 4–5
@@ -257,7 +318,7 @@ combined, the pairs have to be recomputed for the combined tree (as for F + G).
   (`TRACE_PLAY.bat`) for that; not built into the counter.
 - Phase 5 leftovers in vendored parsers (above), and `hash_and_cleanup` (~3 s, I/O).
 - Default on/off of the counter: off (todo); the user may prefer on.
-- `FRAME_HITCH`: the cause of the flip hitch on large airs is not found yet; the next session with the line
+- `FRAME_HITCH`: the cause of the flip hitch on large airs is not found yet (the scoring HUD asset churn, removed on `world/hud-hitch`, is the first candidate, see above); the next session with the line
   names the stage. Thresholds are env-tunable only; a mod-facing setter (and reset on mod disable) would
   need a writable frame-diagnostics section in the mod API.
 
