@@ -999,3 +999,51 @@ fn replay_cursor_keeps_a_phase_history_with_the_span_trick() {
     d.advance(29, &ls, &mut Decider::Stay, &mut Vec::new());
     assert_eq!(c, d);
 }
+
+/// Retail riding-fakie bit on the drawn body (`UpdateRidingFakie82BB2330`): a body drawn against
+/// travel on the ground sets it once the spawn window (`after_teleport_seconds`) is over, the air
+/// clears it, the landing sets it again; the fakie channel fades in and out over 0.3 s. The
+/// per-node rule draws the same line forward and never sets it. Settings are data.
+#[test]
+fn retail_fakie_bit_follows_the_drawn_body_against_travel() {
+    const BACKWARD: [u8; 4] = [128, 255, 128, 128];
+    let mut l = along(1, [0.0; 3], [0.0, 1.0], 80);
+    for n in &mut l.nodes[..10] {
+        n.skater = BACKWARD;
+    }
+    for n in &mut l.nodes[40..45] {
+        n.flags = node_flags::AIRBORNE;
+    }
+    let ls = lines(vec![l]);
+    let run = |rule: FacingRule, settings: crate::animation::riding_fakie::Settings| {
+        let mut c = LineCursor::spawn(&ls, id(1), 0);
+        c.facing_rule = rule;
+        c.fakie_settings = settings;
+        let mut bits = Vec::new();
+        for _ in 0..700 {
+            c.step(&ls, &mut Decider::Stay, &mut Vec::new());
+            let s = c.sample(&ls, 0.0).unwrap();
+            assert_eq!(s.fakie, c.fakie);
+            bits.push((c.fakie, c.fakie_channel_weight(0.0), s.phase));
+        }
+        bits
+    };
+    let retail = run(FacingRule::RidingEntry, retail::FAKIE);
+    // Node 10 (frame 100) turns the drawn body against travel, after the 1 s spawn window.
+    let first = retail.iter().position(|b| b.0).unwrap();
+    assert!((90..=100).contains(&first), "set when the body turns against travel ({first})");
+    // With a longer spawn window the bit waits for its end.
+    let late = run(FacingRule::RidingEntry, crate::animation::riding_fakie::Settings { after_teleport_seconds: 3.0, ..retail::FAKIE });
+    let late_first = late.iter().position(|b| b.0).unwrap();
+    assert!((180..=182).contains(&late_first), "no fakie inside the spawn window ({late_first})");
+    assert!((retail[first + 9].1 - 0.5).abs() < 0.02 && retail[first + 18].1 == 1.0, "0.3 s fade in");
+    let air = retail.iter().position(|b| b.2 == ReplayPhase::Air).unwrap();
+    assert!(!retail[air].0, "the air clears the bit");
+    assert!(retail[air + 1].1 < 1.0 && retail[air + 18].1 == 0.0, "0.3 s fade out");
+    let landed = retail.iter().skip(air).position(|b| b.2 == ReplayPhase::Rolling).unwrap() + air;
+    assert!(retail[landed].0, "set again on the ground after the landing (flip relatched against the body)");
+    assert_eq!(run(FacingRule::RidingEntry, retail::FAKIE), retail, "deterministic");
+    assert!(run(FacingRule::PerNode, retail::FAKIE).iter().all(|b| !b.0), "drawn forward: never fakie");
+    let off = crate::animation::riding_fakie::Settings { high_speed: 1000.0, low_speed: 1000.0, ..retail::FAKIE };
+    assert!(run(FacingRule::RidingEntry, off).iter().all(|b| !b.0), "a mod can turn the fakie drawing off");
+}

@@ -343,7 +343,7 @@ fn npc_skater_render_is_smooth_on_the_exported_lines() {
 /// the fix 16 option rides more forward-recorded frames backwards than the fix 23 rule.
 #[test]
 fn npc_skater_facing_rules_on_the_exported_lines() {
-    use skate_core::living_world::replay::{facing_check, rotate, BranchContext, ChainConfig, CursorEvent, Decider, FacingRule, LineCursor, ReplayLine};
+    use skate_core::living_world::replay::{facing_check, rotate, BranchContext, ChainConfig, CursorEvent, Decider, FacingRule, LineCursor, ReplayLine, ReplayPhase};
     use std::collections::BTreeMap;
     let Some(paths) = find("skater_paths") else {
         eprintln!("skipped: set SKATE3_ASSET_ROOT to an export with skater_paths");
@@ -361,7 +361,13 @@ fn npc_skater_facing_rules_on_the_exported_lines() {
         let mut c = LineCursor::spawn(lines, id, 0);
         c.keep_facing = chain.keep_facing;
         c.facing_rule = chain.facing_rule;
+        c.fakie_settings = chain.fakie;
         let (mut switches, mut spins, mut backwards, mut judged, mut flip_changes) = (0usize, 0usize, 0usize, 0usize, 0usize);
+        // Backwards frames by drawn stance: [drawn fakie (retail's fakie drawing), then not fakie
+        // because: airborne, off board, ground trick span (bit held), first 3 s after spawn, other].
+        let mut stance = [0usize; 7];
+        // The fakie bit on the last ground frame (an air after a fakie takeoff is a fakie air).
+        let mut ground_fakie = false;
         let mut watch: Option<(u64, f32, f32)> = None; // (switch frame, drawn yaw before, rule yaw at the new node)
         let spawn_flip = c.flip;
         for _ in 0..(40 * 60) {
@@ -382,9 +388,28 @@ fn npc_skater_facing_rules_on_the_exported_lines() {
             }
             if c.switch.is_none() && !c.finished {
                 if let Some(now) = c.sample(lines, 0.0) {
+                    if matches!(now.phase, ReplayPhase::Rolling | ReplayPhase::Crouched) {
+                        ground_fakie = now.fakie;
+                    }
                     if let Some(f) = facing_check(&lines[&c.line], &now) {
                         judged += 1;
-                        backwards += usize::from(f.backwards && !f.recorded_fakie);
+                        if f.backwards && !f.recorded_fakie {
+                            backwards += 1;
+                            let k = if f.drawn_fakie {
+                                0
+                            } else if matches!(now.phase, ReplayPhase::Air | ReplayPhase::AirTrick) {
+                                if ground_fakie { 6 } else { 1 }
+                            } else if now.phase == ReplayPhase::OffBoard {
+                                2
+                            } else if now.phase == ReplayPhase::GroundTrick {
+                                3
+                            } else if (c.frames as f32) < chain.fakie.after_teleport_seconds * 60.0 {
+                                4
+                            } else {
+                                5
+                            };
+                            stance[k] += 1;
+                        }
                     }
                 }
             }
@@ -400,7 +425,7 @@ fn npc_skater_facing_rules_on_the_exported_lines() {
                 }
             }
         }
-        (switches, spins, c, backwards, judged, flip_changes, spawn_flip)
+        (switches, spins, c, backwards, judged, flip_changes, spawn_flip, stance)
     };
     let per_node = ChainConfig::retail();
     assert_eq!(per_node.facing_rule, FacingRule::PerNode, "the default");
@@ -408,6 +433,8 @@ fn npc_skater_facing_rules_on_the_exported_lines() {
     let keep = ChainConfig { keep_facing: true, ..per_node };
     // [rides, switches, judged, spawn flips, later flip changes, then (backwards, spins) per rule]
     let mut total = [0usize; 11];
+    // Backwards frames by drawn stance per rule (see `stance` in `ride`).
+    let mut stances = [[0usize; 7]; 3];
     for district in ["DownTown", "Industrial", "University"] {
         let pack = std::fs::read(paths.join(format!("{district}.bin"))).unwrap();
         let tiles = aipath::parse_pack(&pack).unwrap();
@@ -427,6 +454,9 @@ fn npc_skater_facing_rules_on_the_exported_lines() {
             for (j, x) in [&r, &p, &k].into_iter().enumerate() {
                 total[5 + 2 * j] += x.3;
                 total[6 + 2 * j] += x.1;
+                for (a, b) in stances[j].iter_mut().zip(x.7) {
+                    *a += b;
+                }
             }
         }
     }
@@ -434,6 +464,12 @@ fn npc_skater_facing_rules_on_the_exported_lines() {
         "facing: {} rides, {} switches, {} judged settled frames (retail rule), retail flip set at spawn on {} rides and changed {} times later; backwards on forward-recorded nodes / spins after a switch: retail riding_entry {} / {}, per_node (fix 23) {} / {}, per_node + keep_facing (fix 16) {} / {}",
         total[0], total[1], total[2], total[3], total[4], total[5], total[6], total[7], total[8], total[9], total[10]
     );
+    for (name, st) in ["retail riding_entry", "per_node (fix 23)", "per_node + keep_facing (fix 16)"].iter().zip(stances) {
+        eprintln!(
+            "drawn stance of the backwards frames, {name}: drawn fakie {}, airborne after a fakie takeoff {}, not fakie: airborne {}, off board {}, ground trick span {}, first {} s after spawn {}, other {}",
+            st[0], st[6], st[1], st[2], st[3], ChainConfig::retail().fakie.after_teleport_seconds, st[4], st[5]
+        );
+    }
     assert!(total[1] > 100 && total[2] > 100_000, "the exported lines hold switches");
     assert!(total[7] * 1000 < total[2], "fix 23 rule: forward-recorded frames ridden backwards {} of {}", total[7], total[2]);
     assert!(total[7] < total[9], "the fix 16 option rides more forward-recorded frames backwards ({} vs {})", total[7], total[9]);

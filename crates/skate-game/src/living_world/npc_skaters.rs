@@ -397,6 +397,51 @@ pub(crate) struct NpcPuppetClip {
     pub layers: Vec<PuppetLayer>,
     /// Whether the last frame posed the skeleton from it (false until the look is bound).
     pub posed: bool,
+    /// Retail's fakie overlay while it shows ([`fakie_channel_layer`]): the channel tree, its time
+    /// and its channel weight.
+    pub fakie: Option<PuppetLayer>,
+}
+
+/// The stock tree retail overlays while the skater rides fakie: [code] `FakieHeadChannel82BAC778`
+/// starts channel `"fakie"` with `B_FAKIE_CHANNEL` (blend in / out 0.3 s, transition 0.1 s) on
+/// the rising edge of the riding-fakie bit and ends it when the bit clears; the riding clip below
+/// it is unchanged. A mod may replace it (`skater_clips["fakie_channel"]`).
+pub(crate) const FAKIE_CHANNEL: &str = "B_FAKIE_CHANNEL";
+
+/// The fakie channel tree in effect: a mod's `skater_clips["fakie_channel"]`, else [`FAKIE_CHANNEL`].
+pub(crate) fn resolve_fakie_channel(overrides: &BTreeMap<String, String>) -> &str {
+    overrides.get("fakie_channel").map_or(FAKIE_CHANNEL, String::as_str)
+}
+
+/// The `torso` value the fakie channel holds while riding: [code] `FakieHeadChannel82BAC778`
+/// targets 1.0 while manualing, 0.0 while power sliding, else 0.5 (and starts at its target).
+/// The replay has no manual / powerslide state, so the puppet always uses the riding value (NOT
+/// RETAIL YET for recorded manuals and powerslides).
+pub(crate) const FAKIE_TORSO_RIDING: f32 = 0.5;
+
+/// The fakie channel layer of a cursor `alpha` of the next frame: `clip` = the channel tree
+/// (`B_FAKIE_CHANNEL`, a stock phase blend on `torso`), its time since the bit set (the channel
+/// keeps that clock while it fades out) and its weight ([`LineCursor::fakie_channel_weight`]);
+/// `None` while the weight is 0.
+pub(crate) fn fakie_channel_layer(cursor: &LineCursor, alpha: f32, tree: &str) -> Option<PuppetLayer> {
+    let weight = cursor.fakie_channel_weight(alpha);
+    if weight <= 0.0 {
+        return None;
+    }
+    let began = if cursor.fakie { cursor.fakie_since } else { cursor.fakie_previous_since };
+    let time = (cursor.frames - began.min(cursor.frames)) as f32 / 60.0 + alpha.clamp(0.0, 1.0) / 60.0;
+    Some(PuppetLayer { clip: tree.to_owned(), time, weight })
+}
+
+/// The fakie channel tree's parameters: `torso` = [`FAKIE_TORSO_RIDING`] (pass to
+/// `graph_host::motion::tree_commands` with the layer's tree and time).
+pub(crate) fn fakie_channel_attributes() -> [skate_core::animation::playback_parameters::SettableAttribute; 1] {
+    [skate_core::animation::playback_parameters::SettableAttribute {
+        name: skate_core::animation::skeleton_input::name::encode(b"torso"),
+        value: FAKIE_TORSO_RIDING,
+        normalized: false,
+        sequence_id: -1,
+    }]
 }
 
 pub(crate) const PUPPET_CLIPS: [&str; 8] =
@@ -492,6 +537,8 @@ pub(crate) fn advance(
         replay.cursor.keep_facing = chain.keep_facing;
         // Facing rule (fix 23 per-node fold by default, NOT RETAIL YET; retail riding-entry flip as an option).
         replay.cursor.facing_rule = chain.facing_rule;
+        // Retail riding-fakie thresholds (data, stock graph values by default).
+        replay.cursor.fakie_settings = chain.fakie;
         while replay.cursor.frames < target && !replay.cursor.finished {
             if replay.cursor.frames + FRAMES_PER_TICK >= target {
                 replay.previous = Some(replay.cursor.clone());
@@ -834,9 +881,14 @@ pub(crate) fn present_pose(
             let from = &layers[layers.len() - 2];
             PuppetBlend { from: from.clip.clone(), from_time: from.time, weight: top.weight }
         });
+        let fakie = fakie_channel_layer(&cursor, frac, resolve_fakie_channel(&settings.skater_clips));
         let bound = skater.as_deref().zip(puppet.and_then(|p| p.bindings.as_ref()));
         let posed = bound.and_then(|(skater, bindings)| {
-            let globals = puppet_layers_pose(&skater.animation.evaluator, &layers)?;
+            // A channel tree that does not build (a mod's bad name) is left out.
+            let channel = fakie.as_ref().and_then(|f| {
+                crate::graph_host::motion::tree_commands(&skater.animation.motion.animation, &f.clip, &fakie_channel_attributes(), f.time).ok().map(|c| (c, f.weight))
+            });
+            let globals = puppet_pose_with_channel(&skater.animation.evaluator, &layers, channel.as_ref().map(|(c, w)| (c.as_slice(), *w)))?;
             for (joint, local) in bindings.pose_transforms(&globals) {
                 if let Ok(mut t) = joints.get_mut(joint) {
                     *t = local;
@@ -844,7 +896,7 @@ pub(crate) fn present_pose(
             }
             Some(())
         });
-        let next = NpcPuppetClip { phase: s.phase, clip: clip.to_owned(), time, blend, layers, posed: posed.is_some() };
+        let next = NpcPuppetClip { phase: s.phase, clip: clip.to_owned(), time, blend, layers, posed: posed.is_some(), fakie };
         match current {
             Some(mut c) => {
                 if *c != next {
@@ -963,6 +1015,13 @@ pub(crate) fn puppet_blend_pose(evaluator: &crate::animation_pose::PoseEvaluator
 /// graph transition whose outgoing tree is the running transition. A layer whose clip does not
 /// evaluate is skipped (an outgoing one) or fails the pose (the newest one).
 pub(crate) fn puppet_layers_pose(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer]) -> Option<Vec<Mat4>> {
+    puppet_pose_with_channel(evaluator, layers, None)
+}
+
+/// [`puppet_layers_pose`] with a channel overlay on top of the layers (the fakie channel): the
+/// channel tree's pose commands blended over the layered pose with `PoseCommand::ChannelBlend`
+/// (its per-bone channel weights, like `MotionChannels::evaluate`) at the channel's weight.
+pub(crate) fn puppet_pose_with_channel(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer], channel: Option<(&[skate_core::animation::playback_tree::PoseCommand], f32)>) -> Option<Vec<Mat4>> {
     use skate_core::animation::playback_tree::PoseCommand;
     let sample = |clip: &str, time: f32| -> Option<PoseCommand> {
         let (clip, time) = sequence_part(evaluator, clip, time)?;
@@ -985,6 +1044,10 @@ pub(crate) fn puppet_layers_pose(evaluator: &crate::animation_pose::PoseEvaluato
     commands.push(to);
     if !base {
         commands.push(PoseCommand::Blend { weight: top.weight });
+    }
+    if let Some((tree, weight)) = channel.filter(|c| !c.0.is_empty() && c.1 > 0.0) {
+        commands.extend_from_slice(tree);
+        commands.push(PoseCommand::ChannelBlend { weight, use_channels_from_weights: false });
     }
     commands.extend([PoseCommand::Pose { name: "RIG_TPOSE".into() }, PoseCommand::Add { motion_is_a: true }]);
     let pose = evaluator.evaluate(&commands).ok()?;
@@ -1061,7 +1124,7 @@ pub(crate) fn backwards_line(id: LivingWorldId, character: &str, line: &ReplayLi
         return None;
     }
     Some(format!(
-        "NPC_SKATER_BACKWARDS #{} {character} line {} node {} heading {:.0} velocity_yaw {:.0} off {:.0} deg {:.1} m/s recorded_fakie {} flip {} facing_flipped {} phase {} pos {:.1} {:.1} {:.1}",
+        "NPC_SKATER_BACKWARDS #{} {character} line {} node {} heading {:.0} velocity_yaw {:.0} off {:.0} deg {:.1} m/s recorded_fakie {} drawn_fakie {} flip {} facing_flipped {} phase {} pos {:.1} {:.1} {:.1}",
         id.serial,
         s.line.iter().map(|b| format!("{b:02x}")).collect::<String>(),
         s.node,
@@ -1070,6 +1133,7 @@ pub(crate) fn backwards_line(id: LivingWorldId, character: &str, line: &ReplayLi
         c.angle.to_degrees(),
         length(s.velocity),
         c.recorded_fakie,
+        c.drawn_fakie,
         cursor.flip,
         cursor.facing_flipped,
         s.phase.name(),

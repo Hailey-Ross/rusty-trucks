@@ -9,13 +9,15 @@
 //! Domains:
 //! - `living_world`: `npc_draw_distance`, `skater_fade {fade_in_seconds, fade_seconds,
 //!   despawn_alpha}`, `skater_line_chain {radius, max_candidates, blend_seconds, keep_facing, facing_rule,
-//!   steer_dead_zone_deg, steer_full_deg}` (NPC skater line end: retail
+//!   steer_dead_zone_deg, steer_full_deg, fakie_high_speed, fakie_low_speed, fakie_slow_seconds,
+//!   fakie_spawn_seconds}` (NPC skater line end: retail
 //!   4 m / 16; root blend onto the new line after a branch or chain, engine default 0.2 s, 0 = cut), `ped_fade {distance = {near, far}, fade_in_seconds, enabled}`,
 //!   `skater_clips {[<phase> or <phase>.<style>] = <stock clip name>}` (NPC skater puppet clip per
 //!   replay phase; phases in [`NPC_SKATER_PHASES`]; a clip whose name holds `_CYC` loops),
 //!   `skater_blend_seconds {[<phase> or default] = seconds}` (NPC skater crossfade into a phase's
 //!   clip; stock graph default 0.2 s, 0 = cut; also `trick_takeoff` 0.05 s / `trick_air` 0.1 s),
 //!   `skater_clips["trick.<scorable name>"]` = a trick animation base (`<base>_G` / `<base>_A`),
+//!   `skater_clips["fakie_channel"]` = the stock tree overlaid while riding fakie (`B_FAKIE_CHANNEL`),
 //!   `ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin,
 //!   step_height}` (props and mod bodies as ped navigation obstacles; retail on / 0.2 / 0.4 / 0.25),
 //!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on).
@@ -54,6 +56,9 @@ pub const NPC_SKATER_PHASES: [&str; 6] = ["rolling", "crouched", "air", "air_tri
 /// `skater_clips` key group for a recorded trick's animation: `trick.<EScorableID name>` (e.g.
 /// `trick.kickflip`) = an animation base the NPC plays as `<base>_G` / `<base>_A` (fix 21).
 pub const NPC_SKATER_TRICK_GROUP: &str = "trick";
+/// `skater_clips` key for the stock tree the NPC overlays while riding fakie (retail
+/// `B_FAKIE_CHANNEL`, `FakieHeadChannel82BAC778`).
+pub const NPC_SKATER_FAKIE_CHANNEL: &str = "fakie_channel";
 /// `skater_line_chain.facing_rule` values (`skate_core::living_world::replay::FacingRule::NAMES`).
 pub const NPC_SKATER_FACING_RULES: [&str; 2] = ["riding_entry", "per_node"];
 /// Extra `skater_blend_seconds` keys: into a trick's ground clip (retail 0.05 s) and into its air
@@ -136,6 +141,11 @@ pub struct PedObstaclesPatch {
 /// entering riding is set, held across switches; drawn without fakie / switch clips it shows
 /// retail's fakie and switch riding as backwards riding). `steer_dead_zone_deg` / `steer_full_deg`: retail AI
 /// steer ramp (`ai_skater` 2 / 10 deg), data for the simulated tier (the replay tier does not steer).
+/// `fakie_high_speed` / `fakie_low_speed` (m/s), `fakie_slow_seconds`, `fakie_spawn_seconds` (s):
+/// retail's riding-fakie rule (stock motion graph `UpdateRidingFakie`: 1.0 / 0.5 / 0.2 / 1.0): the
+/// NPC is drawn riding fakie (the stock fakie channel over its riding clip) when it rolls against
+/// its board's forward above the high speed, or above the low speed for longer than the slow time,
+/// never in the first spawn seconds. A very high speed turns the fakie drawing off.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkaterLineChainPatch {
@@ -146,6 +156,10 @@ pub struct SkaterLineChainPatch {
     pub facing_rule: Option<String>,
     pub steer_dead_zone_deg: Option<f32>,
     pub steer_full_deg: Option<f32>,
+    pub fakie_high_speed: Option<f32>,
+    pub fakie_low_speed: Option<f32>,
+    pub fakie_slow_seconds: Option<f32>,
+    pub fakie_spawn_seconds: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -348,7 +362,7 @@ impl Merge for NpcSkaterPropsPatch {
 }
 impl Merge for SkaterLineChainPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; radius, max_candidates, blend_seconds, keep_facing, facing_rule, steer_dead_zone_deg, steer_full_deg);
+        merge_opts!(self, b; radius, max_candidates, blend_seconds, keep_facing, facing_rule, steer_dead_zone_deg, steer_full_deg, fakie_high_speed, fakie_low_speed, fakie_slow_seconds, fakie_spawn_seconds);
     }
 }
 impl Merge for PedFadePatch {
@@ -440,7 +454,8 @@ impl LivingWorldPatch {
             && self.skater_fade.as_ref().is_none_or(|f| finite(f.fade_in_seconds) && finite(f.fade_seconds) && finite(f.despawn_alpha))
             && self.skater_line_chain.as_ref().is_none_or(|c| finite(c.radius) && c.max_candidates.is_none_or(|n| n <= 256) && c.blend_seconds.is_none_or(|v| v.is_finite() && (0.0..=10.0).contains(&v))
                 && c.facing_rule.as_deref().is_none_or(|r| NPC_SKATER_FACING_RULES.contains(&r))
-                && [c.steer_dead_zone_deg, c.steer_full_deg].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=180.0).contains(&v))))
+                && [c.steer_dead_zone_deg, c.steer_full_deg].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=180.0).contains(&v)))
+                && [c.fakie_high_speed, c.fakie_low_speed, c.fakie_slow_seconds, c.fakie_spawn_seconds].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(&v))))
             && self.ped_fade.as_ref().is_none_or(|f| finite(f.fade_in_seconds) && f.distance.is_none_or(|d| d.iter().all(|v| finite(Some(*v)))))
             && self.ped_obstacles.as_ref().is_none_or(|o| {
                 [o.min_half_extent, o.moving_speed, o.recut_fraction, o.detour_margin, o.step_height].into_iter().all(finite)
@@ -449,7 +464,7 @@ impl LivingWorldPatch {
                 m.len() <= MAX_TEMPLATES
                     && m.iter().all(|(k, v)| {
                         let phase = k.split_once('.').map_or(k.as_str(), |(p, style)| if style.is_empty() || style.len() > 64 { "" } else { p });
-                        (NPC_SKATER_PHASES.contains(&phase) || (phase == NPC_SKATER_TRICK_GROUP && k.contains('.'))) && !v.is_empty() && v.len() <= 128 && v.bytes().all(|b| b.is_ascii_graphic())
+                        (NPC_SKATER_PHASES.contains(&phase) || k == NPC_SKATER_FAKIE_CHANNEL || (phase == NPC_SKATER_TRICK_GROUP && k.contains('.'))) && !v.is_empty() && v.len() <= 128 && v.bytes().all(|b| b.is_ascii_graphic())
                     })
             })
             && self.skater_blend_seconds.as_ref().is_none_or(|m| {
@@ -604,6 +619,10 @@ mod tests {
         assert!(valid_patch("living_world", &json!({"skater_line_chain": {"facing_rule": "per_node", "steer_dead_zone_deg": 2.0, "steer_full_deg": 10.0}})));
         assert!(!valid_patch("living_world", &json!({"skater_line_chain": {"facing_rule": "backwards"}})));
         assert!(!valid_patch("living_world", &json!({"skater_line_chain": {"steer_full_deg": -1.0}})));
+        assert!(valid_patch("living_world", &json!({"skater_line_chain": {"fakie_high_speed": 2.0, "fakie_low_speed": 1.0, "fakie_slow_seconds": 0.5, "fakie_spawn_seconds": 0.0}})));
+        assert!(!valid_patch("living_world", &json!({"skater_line_chain": {"fakie_low_speed": -1.0}})));
+        assert!(valid_patch("living_world", &json!({"skater_clips": {"fakie_channel": "B_FAKIE_CHANNEL"}})));
+        assert!(!valid_patch("living_world", &json!({"skater_clips": {"fakie_channel": ""}})));
         assert!(!valid_patch("living_world", &json!({"draw": 2.0})));
         assert!(!valid_patch("living_world", &json!({"skater_fade": {"fade_seconds": 1e9}})));
         assert!(!valid_patch("props", &json!({"by_template": {"b": {"collision_box": {"center": [0, 0, 0], "half_extents": [0, 1, 1]}}}})));

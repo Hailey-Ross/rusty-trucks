@@ -958,7 +958,8 @@ function sdk.audio.seed(n) end
 -- fails or reloads). Domains:
 -- 'living_world': npc_draw_distance (0.25..4, 1 = retail), skater_fade {fade_in_seconds, fade_seconds,
 --   despawn_alpha} (retail 1, 1, 0.2), skater_line_chain {radius, max_candidates, blend_seconds, keep_facing,
---   facing_rule, steer_dead_zone_deg, steer_full_deg} (NPC skater line end:
+--   facing_rule, steer_dead_zone_deg, steer_full_deg, fakie_high_speed, fakie_low_speed, fakie_slow_seconds,
+--   fakie_spawn_seconds} (NPC skater line end:
 --   continue on an unused line starting within radius m, retail 4 and 16; radius 0 = fade out at every
 --   line end; blend_seconds: the drawn skater moves onto the new line over this time after a branch or
 --   chain, default 0.2, 0 = cut; keep_facing: mod option, not retail, default false: the skater keeps the
@@ -966,10 +967,16 @@ function sdk.audio.seed(n) end
 --   facing_rule: 'per_node' (default, not retail yet: each node folded onto the board's riding
 --   direction, standing in for the missing switch / fakie clips) or 'riding_entry' (retail: the recorded
 --   skater frame, turned while a flip latched on landing / spawn / getting on the board is set, held
---   across switches; without switch / fakie clips it looks like riding backwards); steer_dead_zone_deg / steer_full_deg: retail AI
---   steer ramp, 2 and 10, kept for the simulated tier, unused by the replay tier), ped_fade {distance = {near, far} (45, 55; a model record's pair
+--   across switches; a body drawn against its travel on the ground is drawn riding fakie with the stock
+--   fakie channel, like retail); steer_dead_zone_deg / steer_full_deg: retail AI
+--   steer ramp, 2 and 10, kept for the simulated tier, unused by the replay tier; fakie_high_speed,
+--   fakie_low_speed (m/s), fakie_slow_seconds, fakie_spawn_seconds: retail's riding-fakie rule (stock
+--   1, 0.5, 0.2, 1): drawn fakie when rolling against the board's forward above the high speed, or above
+--   the low speed for longer than the slow time, never in the first spawn seconds; a very high speed
+--   turns the fakie drawing off), ped_fade {distance = {near, far} (45, 55; a model record's pair
 --   wins), fade_in_seconds (1), enabled}, skater_clips {[phase or 'phase.Style'] = stock clip name}
 --   (NPC skater clip per replay phase: rolling, crouched, air, air_trick, ground_trick, off_board;
+--   also 'fakie_channel' = the stock tree overlaid while riding fakie, default 'B_FAKIE_CHANNEL';
 --   a clip whose name holds _CYC loops; an unknown clip falls back to the shipped pick; also
 --   'trick.<trick id name>' = a stock trick animation base, e.g. ['trick.kickflip'] = 'B_HEELFLIP_IN',
 --   played as <base>_G on the ground then <base>_A in the air, for every recorded trick slot of that trick),

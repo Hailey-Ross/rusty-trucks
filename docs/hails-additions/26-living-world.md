@@ -1530,6 +1530,94 @@ flip, and its target is the whole recorded skater frame, not a per-node fold aga
   inside 200..299 is not read.
 - Retail's nlerp threshold inside `sub_82454B28` is not decoded.
 
+### NPC skater fakie drawing (stance port, 2026-10-08)
+
+**Problem.** Under retail's facing rule (`riding_entry`, "Fix 23 corrected") the puppet drew every stretch where the
+recorded skater frame faces against the travel with the forward riding clip, which reads as riding backwards. Retail
+draws those stretches riding fakie. The open question was what sets the AI skater's fakie and stance bits.
+
+**Retail evidence** (recomp source).
+- [code] The AI input side sets no stance bit. `sub_8246B358` turns the target into analog steer only:
+  `sub_824536C8` (yaw error) -> `sub_82471188` (steer slot) and, when `+930` / `+931`, `sub_82471008` (two floats
+  through the slot accessor `sub_82471818`). The AI drives the ordinary character, so its stance bits come from the
+  character's own animation, like the player's.
+- [code] `sub_8246ACF0` calls `sub_8246B358` (the flip-applying target steer) only while the state object's `+438`
+  (riding) is set; otherwise it sends `sub_82471070` with controller `+824`. So the latched flip `+927` is not applied
+  off the board.
+- [code] The fakie bit (SkaterAnim flags `0x20000000`) is written by the motion graph's `UpdateRidingFakie`
+  (`UpdateRidingFakie82BB2330`, already ported as `skate_core::animation::riding_fakie`): on the ground and outside a
+  trick it sets when `dot(velocity, board axis) < -0.5` above `highSpeedThreshold`, or above `lowSpeedThreshold` for
+  longer than `timeSlowlyRollingBackwardsThreshold`; it clears in the air and off the board, holds during tricks and
+  stays clear for `timeFromTeleportThreshold` after a teleport. [data] The stock motion graph has one such node:
+  1.0 m/s, 0.5 m/s, 0.2 s, 1.0 s (checked by a data-gated test).
+- [code] What the bit draws: `FakieHeadChannel82BAC778` starts channel `fakie` with `B_FAKIE_CHANNEL` (blend in / out
+  0.3 s, transition 0.1 s) on the rising edge and ends it when the bit clears, setting `torso` toward 1.0 while
+  manualing, 0.0 while power sliding, else 0.5. The riding clip below it stays the same. [data] `B_FAKIE_CHANNEL` is a
+  phase blend of `FAKIE_MANUAL_CHANNEL_CYC`, `FAKIE_CHANNEL_CYC`, `FAKIE_HEAD_CHANNEL_CYC`; at `torso` 0.5 it plays
+  `FAKIE_CHANNEL_CYC`, which turns 19 of the 36 skeleton bones (spine, neck, head, arms). So the stock set has no
+  separate fakie riding clips: retail draws fakie as the body turned round plus this channel, which the puppet now does.
+- [code] Natural stance: `GetCACSettings` (`sub_82590B50`) returns natural stance = 1 (goofy) when byte `+120` of the
+  character's 168-byte CAS record is 0, else 0; `Initialize82B97E38` / `set_customisation` turn it into the mirror
+  bits. Switch (relative stance) and the mirror bit are toggled by the `switch` / `mirrored` attributes of trick clips
+  (`apply_stance_events`). Which CAS record an AI pro uses was not found.
+
+**Change.**
+- `skate-core::living_world::replay`: `LineCursor::fakie` runs retail's `riding_fakie::State` every 60 Hz step on the
+  body as drawn (board axis = the drawn root's +Z, the puppet's board is part of its rig; velocity = segment velocity;
+  ground = riding node, trick = open trick span on the ground). `fakie_since` / `fakie_previous_since` drive
+  `fakie_channel_weight` (linear 0.3 s fade in and out, `ChannelPlayback`). `ReplaySample::fakie`,
+  `FacingCheck::drawn_fakie`. `ChainConfig::fakie` holds the thresholds (`retail::FAKIE`, the stock values).
+- `rule_skater` under `riding_entry` no longer turns off-board nodes (`sub_8246ACF0` above); stepping on or off the
+  board slerps between the per-node targets.
+- Puppet (`npc_skaters.rs`): while the channel weight is above 0, the stock `B_FAKIE_CHANNEL` tree is built from the
+  stock metadata (`graph_host::motion::tree_commands`, `torso` 0.5) and blended over the layered riding pose with
+  `PoseCommand::ChannelBlend` at the channel weight, like `MotionChannels::evaluate`. `NpcPuppetClip::fakie` shows it.
+- `NPC_SKATER_BACKWARDS` prints `drawn_fakie`.
+- Mods: `skater_line_chain {fakie_high_speed, fakie_low_speed, fakie_slow_seconds, fakie_spawn_seconds}` (validated,
+  first writer wins, read back, reset on disable; a very high speed turns the fakie drawing off) and
+  `skater_clips["fakie_channel"]` (the overlaid stock tree; a tree that does not build is left out).
+- Multiplayer: the bit, its clocks and its change frames are plain cursor fields, a pure function of the lines, the
+  spawn, the branch records and the tuning; a mirroring client steps the same cursor and gets the same bits (no
+  serialisation added; a snapshot would carry them as plain values).
+
+**Files.** `crates/skate-core/src/living_world/replay.rs`, `replay_tests.rs`, `crates/skate-core/src/animation/riding_fakie.rs`;
+`crates/skate-game/src/living_world/npc_skaters.rs`, `npc_tests.rs`, `crates/skate-game/src/graph_host/motion.rs`,
+`crates/skate-game/src/modding/world_tuning.rs`, `crates/skate-game/src/physics/prop_dynamics.rs` (test literal);
+`crates/skate-mods/src/world_tuning.rs`; `crates/skate-data/tests/living_world_data.rs`; `sdk/skate.lua`.
+
+**Verification.**
+- `retail_fakie_bit_follows_the_drawn_body_against_travel` (skate-core): set when the drawn body turns against travel,
+  not inside the spawn window, cleared in the air, set again after the landing, 0.3 s fades, deterministic, never set
+  under `per_node`, a mod can turn it off.
+- `living_world_npc_fakie_rule_and_channel_match_the_stock_graph` (skate-game, data-gated): the stock graph's
+  `UpdateRidingFakie` equals `retail::FAKIE`; the channel tree builds, its clips evaluate, it changes the riding
+  pose, weight 0 leaves it unchanged; the mod key replaces the tree.
+- Headless `living_world_npc_skaters_never_ride_backwards_across_line_switches` (retail rule): 1191 switch-stance
+  samples drawn against travel, all 1191 drawn fakie; no forward-recorded line ridden backwards outside them.
+- Data test `npc_skater_facing_rules_on_the_exported_lines` (212 rides, 882 switches, 474,412 judged frames), frames
+  drawn more than 135 deg against travel where the path frame does not oppose travel, split by drawn stance:
+
+  | Rule | Backwards | Drawn fakie | Air after a fakie takeoff | Air | Off board | Ground trick | First 1 s | Other | Spins |
+  |---|---|---|---|---|---|---|---|---|---|
+  | `riding_entry` (retail) | 85,525 | 72,825 | 10,188 | 305 | 2,009 | 78 | 112 | 8 | 128 |
+  | `per_node` (fix 23) | 353 | 9 | 72 | 164 | 103 | 5 | 0 | 0 | 29 |
+  | `per_node` + `keep_facing` (fix 16) | 16,026 | 12,628 | 2,412 | 253 | 653 | 80 | 0 | 0 | 3 |
+
+  Under the retail rule 97.1 % of the frames against travel are drawn the way retail draws them (fakie on the ground
+  with the fakie channel, or an air that took off fakie, where retail's bit is clear too). The counts are reported,
+  not tuned.
+
+**NOT RETAIL YET.**
+- The mirror bits: the AI pros' natural stance (which CAS record, byte `+120`) is not decoded, so every NPC keeps the
+  default goofy stance; switch / mirrored trick events are not collected by the puppet. This is left / right only; it
+  does not change which way the body faces.
+- The category mapping of the fakie rule (riding node = ground; grinds and manuals are trick spans, retail allows
+  grind state 503), board axis = drawn root +Z, ground speed = horizontal segment speed; `torso` fixed at the riding
+  value (no manual / powerslide state in the replay).
+- Off-board nodes draw the recorded frame (retail sends `sub_82471070` there, not decoded): 2,009 frames.
+- Spins after a switch (128 vs 29): retail steers the body round at the character's turn rate (not decoded); the
+  puppet turns within the 0.2 s switch blend.
+
 ## Frame drop with the board thrown away (hidden board scanned the whole map), 2026-10-05
 
 - **Problem:** throwing the board and walking away dropped the frame rate to 4 to 20 FPS; calling the board back

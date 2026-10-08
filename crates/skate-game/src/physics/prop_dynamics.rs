@@ -3344,6 +3344,7 @@ mod tests {
             previous_phase: None,
             previous_phase_frames: 0,
             sub_frame: 0.0,
+            fakie: false,
         }
     }
 

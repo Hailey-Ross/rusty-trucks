@@ -328,7 +328,7 @@ fn living_world_npc_skaters_never_ride_backwards_across_line_switches() {
         let mut state = PopulationState::default();
         state.install("Test", 1, &settings, d);
         a.insert_resource(settings).insert_resource(state);
-        let (mut forward_backwards, mut fakie_logged, mut checked, mut stance) = (0usize, 0usize, 0usize, 0usize);
+        let (mut forward_backwards, mut fakie_logged, mut checked, mut stance, mut stance_fakie) = (0usize, 0usize, 0usize, 0usize, 0usize);
         for _ in 0..(40 * 60) {
             run(&mut a, 0.0, 60.0);
             let mut q = a.world_mut().query::<(&NpcSkater, &NpcReplay)>();
@@ -345,6 +345,7 @@ fn living_world_npc_skaters_never_ride_backwards_across_line_switches() {
                         fakie_logged += 1;
                     } else if (149..=250).contains(&s.node) && lines.keys().position(|k| *k == s.line).is_some_and(|k| k % 12 < 6) {
                         stance += 1;
+                        stance_fakie += usize::from(text.contains("drawn_fakie true"));
                     } else {
                         forward_backwards += 1;
                     }
@@ -352,16 +353,17 @@ fn living_world_npc_skaters_never_ride_backwards_across_line_switches() {
             }
         }
         let chains = a.world().resource::<Seen>().0.iter().filter(|e| matches!(e, NpcSkaterEvent::Branch { record, .. } if record.from_node == NODES - 1)).count();
-        (forward_backwards, fakie_logged, checked, chains, stance)
+        (forward_backwards, fakie_logged, checked, chains, stance, stance_fakie)
     };
-    let (bad, fakie, checked, chains, stance) = ride(false, FacingRule::RidingEntry);
+    let (bad, fakie, checked, chains, stance, stance_fakie) = ride(false, FacingRule::RidingEntry);
     assert!(chains >= 2 && checked > 1000, "chains {chains}, checked {checked}");
     assert_eq!(bad, 0, "retail: no NPC rides a forward-recorded line backwards outside switch stance");
     assert!(fakie > 0, "the recorded fakie stretches are reported as recorded_fakie");
-    println!("retail rule: {stance} switch-stance samples drawn against travel (no stance mirror), {fakie} recorded fakie, {checked} checked");
+    println!("retail rule: {stance} switch-stance samples drawn against travel, {stance_fakie} of them drawn fakie (retail's fakie bit, fakie channel), {fakie} recorded fakie, {checked} checked");
+    assert!(stance == 0 || stance_fakie > 0, "the switch-stance stretch drawn against travel gets retail's fakie bit");
     // Deterministic: the same run gives the same counts.
-    assert_eq!(ride(false, FacingRule::RidingEntry), (bad, fakie, checked, chains, stance));
-    let (per_node_bad, _, _, _, per_node_stance) = ride(false, FacingRule::PerNode);
+    assert_eq!(ride(false, FacingRule::RidingEntry), (bad, fakie, checked, chains, stance, stance_fakie));
+    let (per_node_bad, _, _, _, per_node_stance, _) = ride(false, FacingRule::PerNode);
     assert_eq!((per_node_bad, per_node_stance), (0, 0), "the fix 23 option draws switch stance forward");
     let (old_bad, ..) = ride(true, FacingRule::PerNode);
     assert!(old_bad > 100, "the fix 16 option rides forward-recorded lines backwards ({old_bad})");
@@ -636,7 +638,7 @@ fn living_world_npc_skater_prop_volumes_and_mod_switch() {
     let s = skate_core::living_world::replay::ReplaySample {
         line: [0; 16], node: 0, position: [1.0, 2.0, 3.0], velocity: [4.0, 0.0, 1.0], heading: 0.5,
         board: [q.x, q.y, q.z, q.w], skater: [q.x, q.y, q.z, q.w], flags: 0, phase: ReplayPhase::Rolling,
-        jump: None, phase_frames: 0, previous_phase: None, previous_phase_frames: 0, sub_frame: 0.0,
+        jump: None, phase_frames: 0, previous_phase: None, previous_phase_frames: 0, sub_frame: 0.0, fakie: false,
     };
     let v = prop_volumes(id, &s);
     assert!(v.iter().all(|(actor, _)| *actor == PROXY_ID_TAG | id.to_u64()));
@@ -833,3 +835,61 @@ fn living_world_npc_trick_jump_has_no_pose_pop() {
     assert!(worst.1 > 0.05, "the old blend popped on this timeline ({} m)", worst.1);
 }
 
+
+/// Data-gated (stance port): the puppet's fakie rule is the stock motion graph's
+/// `UpdateRidingFakie` (every node carries the thresholds `ChainConfig::retail().fakie` uses), and
+/// the fakie channel tree resolves to a playable clip that changes the riding pose when overlaid.
+#[test]
+fn living_world_npc_fakie_rule_and_channel_match_the_stock_graph() {
+    let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from).filter(|r| r.join("private/stock/data/anim/OnBoard.abin").exists()) else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+        return;
+    };
+    let assets = skate_data::GameAssets::load(&root).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(&root, &assets).unwrap();
+    let settings = crate::graph_host::motion::stock_riding_fakie_settings(&graphs.motion).unwrap();
+    eprintln!("stock UpdateRidingFakie: {settings:?}");
+    assert!(!settings.is_empty(), "the stock motion graph has UpdateRidingFakie");
+    for s in &settings {
+        assert_eq!(*s, skate_core::living_world::replay::ChainConfig::retail().fakie, "retail thresholds");
+    }
+    let (evaluator, meta) = stock_evaluator().unwrap();
+    {
+        use skate_data::animation_metadata::TreeMetadata;
+        let kind = match meta.tree(FAKIE_CHANNEL) {
+            Ok(TreeMetadata::Clip(c)) => format!("clip {}", c.name),
+            Ok(TreeMetadata::Selector(s)) => format!("selector on {} default {} of {:?}", s.parameter, s.default, s.children),
+            Ok(TreeMetadata::PhaseBlend(p)) => format!("phase blend of {:?}", p.children),
+            Ok(TreeMetadata::BlendSpace(_)) => "blend space".into(),
+            Ok(TreeMetadata::SelectionSpace(_)) => "selection space".into(),
+            Err(e) => format!("missing: {e}"),
+        };
+        eprintln!("{FAKIE_CHANNEL}: {kind}");
+    }
+    let animation = crate::graph_host::motion::metadata_animation(meta);
+    let tree = crate::graph_host::motion::tree_commands(&animation, FAKIE_CHANNEL, &fakie_channel_attributes(), 0.5).expect("the fakie channel tree builds");
+    let clips: Vec<String> = tree.iter().filter_map(|c| match c {
+        skate_core::animation::playback_tree::PoseCommand::Clip { name, .. } => Some(name.clone()),
+        _ => None,
+    }).collect();
+    eprintln!("{FAKIE_CHANNEL} at torso {FAKIE_TORSO_RIDING}: {} commands, clips {clips:?}", tree.len());
+    assert!(clips.iter().all(|c| evaluator.clip_length(c).is_ok()), "every channel clip evaluates");
+    let base = [PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0 }];
+    let plain = puppet_layers_pose(&evaluator, &base).unwrap();
+    let fakie = puppet_pose_with_channel(&evaluator, &base, Some((&tree, 1.0))).unwrap();
+    let moved: Vec<&str> = plain
+        .iter()
+        .zip(&fakie)
+        .enumerate()
+        .filter(|(_, (a, b))| Quat::from_mat4(a).angle_between(Quat::from_mat4(b)) > 0.02)
+        .map(|(i, _)| evaluator.frames.bone_names[i].as_str())
+        .collect();
+    eprintln!("fakie channel turns {} of {} bones: {moved:?}", moved.len(), plain.len());
+    assert!(!moved.is_empty(), "the overlay changes the pose");
+    assert_eq!(puppet_pose_with_channel(&evaluator, &base, Some((&tree, 0.0))).unwrap(), plain, "weight 0 = no overlay");
+    // The cursor side: the layer carries the tree name, the mod key replaces it.
+    let mut clips = BTreeMap::new();
+    assert_eq!(resolve_fakie_channel(&clips), FAKIE_CHANNEL);
+    clips.insert("fakie_channel".to_owned(), "B_OTHER".to_owned());
+    assert_eq!(resolve_fakie_channel(&clips), "B_OTHER");
+}
