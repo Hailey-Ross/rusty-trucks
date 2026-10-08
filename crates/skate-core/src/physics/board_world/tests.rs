@@ -204,7 +204,10 @@ fn predictive_contacts_and_retention_match_full_scan_for_every_primitive() {
                 collision_group: 0,
                 body: CollisionBody::Attached(i),
                 primitive,
-                linear_velocity: Vector3::new(0., velocity, 0.),
+                motion: crate::physics::board_world::VolumeMotion {
+            linear_velocity: Vector3::new(0., velocity, 0.),
+            ..Default::default()
+        },
                 material: material(),
             })
             .collect();
@@ -268,7 +271,10 @@ fn excluded_water_still_reports_its_surface() {
             center: Vector3::new(-1., y, -1.),
             radius: 0.2,
         }),
-        linear_velocity: Vector3::new(0., -1., 0.),
+        motion: crate::physics::board_world::VolumeMotion {
+            linear_velocity: Vector3::new(0., -1., 0.),
+            ..Default::default()
+        },
         material: material(),
     };
     let query = WorldContactSettings {
@@ -355,7 +361,10 @@ fn water_collision_depends_on_native_group_not_floor_depth() {
         collision_group: 0,
         body: CollisionBody::Board(BodyId::Deck),
         primitive: ContactPrimitive::Sphere(Sphere { center: Vector3::new(-1., y, -1.), radius: 0.2 }),
-        linear_velocity: Vector3::new(0., -1., 0.),
+        motion: crate::physics::board_world::VolumeMotion {
+            linear_velocity: Vector3::new(0., -1., 0.),
+            ..Default::default()
+        },
         material: material(),
     };
     let query = WorldContactSettings {
@@ -377,4 +386,56 @@ fn water_collision_depends_on_native_group_not_floor_depth() {
                 !matches!(group, 7 | 16), "group {group}, floor {floor_y}");
         }
     }
+}
+
+#[test]
+fn volume_query_bounds_follow_82777e70() {
+    let close = |a: f32, b: f32| assert!((a - b).abs() < 1e-5, "{a} != {b}");
+    let sphere = ContactPrimitive::Sphere(Sphere {
+        center: Vector3::ZERO,
+        radius: 0.1,
+    });
+    let bounds = |primitive, motion| {
+        volume_query_bounds(primitive, motion, VOLUME_QUERY_STEP, VOLUME_QUERY_SCALE).unwrap()
+    };
+    // At rest: the shape bounds scaled by 1.05 about their centre, no padding.
+    let b = bounds(sphere, VolumeMotion::default());
+    close(b.min.y, -0.105);
+    close(b.max.x, 0.105);
+    // One 1/60 step of linear motion is unioned in before the scale.
+    let moving = VolumeMotion {
+        linear_velocity: Vector3::new(6., 0., 0.),
+        ..Default::default()
+    };
+    let b = bounds(sphere, moving);
+    close(b.min.x, 0.05 - 0.15 * 1.05);
+    close(b.max.x, 0.05 + 0.15 * 1.05);
+    close(b.min.y, -0.105);
+    // An acceleration only counts while it points along the step.
+    let braking = VolumeMotion {
+        force_acceleration: Vector3::new(-600., 0., 0.),
+        ..moving
+    };
+    let braked = bounds(sphere, braking);
+    assert_eq!((braked.min, braked.max), (b.min, b.max));
+    // Rotation pads by the largest extent difference times min(|step|, 1);
+    // a sphere has equal extents, a long box does not.
+    let spinning = VolumeMotion {
+        angular_velocity: Vector3::new(0., 30., 0.),
+        ..Default::default()
+    };
+    let (spun, rest) = (bounds(sphere, spinning), bounds(sphere, VolumeMotion::default()));
+    assert_eq!((spun.min, spun.max), (rest.min, rest.max));
+    let long = ContactPrimitive::RoundedBox {
+        center: Vector3::ZERO,
+        basis: Basis3 {
+            columns: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
+        },
+        half_extents: Vector3::new(0.4, 0.05, 0.1),
+        radius: 0.,
+    };
+    let b = bounds(long, spinning);
+    let pad = 0.7 * 0.5; // (0.8 - 0.1) * min(30/60, 1)
+    close(b.max.x, (0.4 + pad) * 1.05);
+    close(b.min.y, -(0.05 + pad) * 1.05);
 }

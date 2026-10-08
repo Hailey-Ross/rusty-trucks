@@ -147,3 +147,36 @@ fn grind_bail_trace() {
         eprintln!("=== rail {i}: first wipeout tick {bailed}");
     }
 }
+
+/// Regression for doc 30: with the retail per-volume query box (82777E70,
+/// tested per triangle in 8277BC58), the deck no longer gets a predictive
+/// contact with the post below the bottom bend of the library handrail
+/// (owner 0x688), so boardslide and 50-50 grind off the end without a wipeout.
+/// The uphill boardslide on the same rail stays clean.
+#[test]
+#[ignore = "requires private assets and a converted University map"]
+fn library_handrail_bend_grinds_through() {
+    let root = std::env::var_os("SKATE3_ASSET_ROOT").expect("set SKATE3_ASSET_ROOT");
+    let root = std::path::Path::new(&root);
+    let map_path = std::env::var_os("SKATE3_GRIND_MAP").expect("set SKATE3_GRIND_MAP");
+    let map = skate_data::skate_map::SkateMap::load(std::path::Path::new(&map_path)).unwrap();
+    let listing = GamePhysics::load_with_world(root, ground::Terrain::Course, Some(&map)).unwrap();
+    let rails = rails_near(&listing.grind_world, [266., 74.5, -429.], 12.);
+    drop(listing);
+    let points = &rails.iter().find(|(owner, _)| *owner == 0x688).expect("rail 0x688").1;
+    for (reverse, slide, lead, grind) in [
+        (true, true, 3., "GrindBoardslide"),
+        (true, false, 3., "GrindFiftyFifty"),
+        (false, true, 1.5, "GrindBoardslide"),
+    ] {
+        let (a, b) = if reverse { (points[points.len() - 1], points[0]) } else { (points[0], points[points.len() - 1]) };
+        let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let dir = d.map(|x| x / len);
+        let start = [a[0] + dir[0] * lead, a[1] + dir[1] * lead + 0.35, a[2] + dir[2] * lead];
+        let (bailed, log) = run(root, &map, start, dir, slide, 8.);
+        let grind_ticks = log.iter().filter(|l| l.contains(grind)).count();
+        assert!(grind_ticks >= 50, "reverse {reverse} slide {slide}: only {grind_ticks} {grind} ticks");
+        assert_eq!(bailed, 0, "reverse {reverse} slide {slide}: wipeout at tick {bailed}");
+    }
+}

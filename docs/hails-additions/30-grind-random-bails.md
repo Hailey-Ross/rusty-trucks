@@ -1,9 +1,10 @@
-# 30. Grinds: random bails at some rails (investigation, not fixed yet)
+# 30. Grinds: random bails at some rails (handrail bend fixed; corners open)
 
-Branch `fix/grind-random-bails` (from `main` b3c9679). Status: **cause chain found and reproduced headlessly;
-the rule that differs from retail is not identified yet, so no gameplay code is changed.** The second pass
-(below) finds no support for candidates 2 and 3 in the static code and narrows it to the spline end
-(candidate 1). This document holds the evidence so the next step starts from it.
+Branch `fix/grind-random-bails` (from `main` b3c9679). Status: **the handrail bend bail is fixed by porting
+retail's per-volume world-query box (third pass, below).** The first two passes found the cause chain and
+ruled out candidates 2 and 3; the third pass found the rule that differs from retail: the box every world
+triangle is tested against before the pair query. The 90 degree corners (`0x656`, `0x694`) still bail; they are
+real wheel hits and stay open.
 
 ## Problem
 
@@ -207,13 +208,109 @@ Library rail into its 90 degree corner and the stair handrail off its bottom ben
 tick with the headless traces above: does retail switch owner `0x656` to `0x694` (or leave 400) before the
 corner, where are the wheels relative to the tube top, and does any wheel or deck report exceed 6 m/s.
 
+## Third pass: the per-volume query box (fix, 2026-10-08)
+
+### Retail (TU3, instruction level)
+
+- `82777E70` builds one box per volume before the triangle dispatch (stored at context +12, 32 bytes each).
+  In my own words:
+  - It calls the volume's bounds method (vtable at volume +64, slot +4, with the volume transform). For a
+    triangle volume that method is `82ADDC40` (TriangleVolume::GetBBox): vertex min/max minus/plus the shape
+    fatness (volume +80). The flag argument is not read there, and the +112 padding (volume base +112) is not
+    used. So the bounds are the shape plus its radius/fatness, nothing more.
+  - Linear step = v * dt + clamp(dot(v * dt, a * dt^2), 0, 1) * a * dt^2, from body +32 (velocity) and +144
+    (force acceleration); dt is the data constant at 0x820849C8 (1/60).
+  - Angular step, same form, from body +48 and +160. Rotation pad = max(|ex - ey|, |ey - ez|, |ez - ex|) of the
+    bounds extents, times min(|angular step|, 1).
+  - Box = (min - pad, max + pad) unioned with itself moved by the linear step, then scaled about its centre by
+    the data constant at 0x821659FC (1.05).
+  - There is no maximum-separation (0.5) or padding (0.05) term.
+- `8277BC58` BE94..BF38 then tests, for every (triangle, volume) pair, the min/max of the triangle's three
+  vertices (no fatness) against that box; a pair disjoint on any axis is skipped before `8277B720` runs.
+- The port used `conservative_bounds(shape bounds, 0.05 + 0.5 + maximum fatness)` for this test, and only when
+  the world had query metadata: up to 55 cm more on every axis, in every direction.
+
+### Headless check before porting
+
+Rail `0x688`, boardslide downhill, lead 3, the deck contacts around the bend (ticks 96 to 99): every contact
+with the post triangles below the rail end failed the retail box test. Example: deck boxes y 72.97..73.21, post
+triangle vertex boxes y 72.47..72.94. The stopping contact (17 cm below the deck) is therefore never queried
+in retail; the port admitted it only through the 0.55 m pad.
+
+### Change
+
+- `skate-core/src/physics/board_world/broadphase.rs`: `volume_query_bounds` (port of `82777E70`),
+  `VolumeMotion` (the four body rates the box sweeps over), `VOLUME_QUERY_STEP` / `VOLUME_QUERY_SCALE` (the two
+  data constants).
+- `BoardWorldVolume` carries `motion: VolumeMotion` instead of only `linear_velocity`; every builder (board
+  colliders, skater skeleton, network/attached bodies, the sphere convenience query) fills it from the body
+  rates.
+- `BoardWorld::query_primitives`: the per-triangle box test uses the retail box and runs for every triangle,
+  as in `8277BC58`. The BVH cluster preselection stays conservative (union of the old padded box and the retail
+  box), so it can only add candidates.
+
+### Results (headless, 8 m/s, same test, before -> after)
+
+| Run | Before | After |
+|---|---|---|
+| `0x688` boardslide downhill, lead 3 | 53 grind ticks, wipeout tick 101 | 55 grind ticks, grinds off the end, lands, rolls (no wipeout in 260 ticks) |
+| `0x688` 50-50 downhill, lead 3 | wipeout tick 103 | 50-50 then 5-0 to the end, lands, rolls (no wipeout) |
+| `0x688` boardslide uphill (index 26, lead 1.5) | 214 grind ticks, no bail | 126 grind ticks, no bail |
+| `0x63c` straight (index 10) | 166 grind ticks, wipeout 213 (after the grind) | 164 grind ticks, wipeout 214 |
+| `0x656` corner (index 14) | 70 grind ticks, wipeout 118 | 70 grind ticks, wipeout 121 |
+| `0x694` corner (index 28) | 42 grind ticks, wipeout 92 | 42 grind ticks, wipeout 92 |
+| `0x677` stair edge (index 23) | 49 grind ticks, wipeout 137 | 82 grind ticks, no wipeout |
+
+All 29 splines near the library, boardslide, lead 1.5 (index: grind ticks / wipeout tick, before -> after):
+0: 89/0 -> 0/66, 2: 97/189 -> 0/0, 7: 86/0 -> 0/0, 11: 89/0 -> 0/0, 12: 93/0 -> 0/0, 15: 87/0 -> 0/0,
+20: 87/0 -> 0/69, 25: 0/0 -> 93/0, 9: 213/0 -> 119/0; the others within a few ticks.
+Most stair-edge starts do not land on the edge: the skater drops down the stairs and the grind (if any) comes
+later, so these runs diverge at the landing, not at a rail.
+
+### The stair landing speed (main open risk)
+
+Index 2, landing at ticks 60 to 62: before, the board lost speed on landing (horizontal 7.5 -> 4.1 m/s by
+tick 64); after, it keeps about 7.1 m/s and rolls on, so it never reaches the later grind. With temporary
+prints (removed again) the contacts the retail box now culls on those ticks were listed, and two diagnostic
+runs re-admitted one class each:
+
+- culled contacts with a ground-like normal (y > 0.8; the ground 15 to 17 cm below the falling deck at tick 61):
+  same outcome as after (6.8 m/s at ticks 62 to 64, rolls on);
+- culled contacts with a wall-like normal (y <= 0.8; mainly a side face with normal (-0.42, 0.16, -0.90),
+  1 to 4 cm from the deck, the board moving away from it at about 3 m/s): the speed loss comes back
+  (4.5 -> 3.4 m/s by tick 66) and that run even wipes out.
+
+So the old landing slowdown came from predictive contacts with a nearby side face the board was moving away
+from. The retail box sweeps only along the motion, so retail does not query that face either; by the ported
+rule the new landing is the retail one. Not measured in retail: a recomp stair landing (deck speed per tick)
+would settle it.
+
+### Test changed: `approaching_velocity_padding_and_world_fatness_control_real_contact_acceptance`
+
+Old assertions (sphere 0.01 above a plane triangle, `maximum_separating_distance` 0.004):
+
+- moving up at 1 m/s with `volume_padding` 0.02: 4 contacts;
+- moving up at 1 m/s, padding 0, triangle fatness 0.02: 4 contacts, contact point at y 0.02.
+
+Both scenarios are culled by retail before the pair query: the triangle's vertex box is y 0 (no fatness,
+`8277BC58` BE94..BF38) and the volume box starts at y 0.01 and sweeps only upward (`82777E70`; the bounds
+method adds the shape fatness but not the +112 padding, see `82ADDC40`). New assertions: the same padding and
+fatness cases while approaching at 1 m/s (the 0.004 limit alone is still too small, so padding / fatness are
+what admit the pair): 4 contacts each, fatness point at y 0.02; and the rising case with padding 0.02 now
+asserts 0 contacts. The production world triangles have fatness 0 (`skate-game/src/physics/ground.rs`), so
+the fat-triangle case is synthetic. Evidence strength: the triangle box read is direct (vertex loads, compare,
+skip); the "no +112 padding" read rests on `82ADDC40` only; the bounds methods of the sphere, capsule and box
+volumes were not read and are assumed to follow the same pattern (shape plus radius).
+
 ## Change
 
 - New diagnostic test `crates/skate-game/src/tests/grind_bail.rs` (registered in `crates/skate-game/src/physics.rs`
   as `grind_bail_tests`), ignored and data-gated like `water_drop`. It lists the splines near a point
   (`SKATE3_GRIND_NEAR`), runs one approach per spline, prints the state per tick and the first wipeout tick,
   and dumps the collision triangles around a point (`SKATE3_GRIND_TRIS=x,y,z,r`) with their edge flags.
-- No gameplay code changed.
+- Third pass: the retail per-volume query box (above). New tests: `volume_query_bounds_follow_82777e70`
+  (skate-core, formula cases) and `library_handrail_bend_grinds_through` (skate-game, ignored, private data:
+  `0x688` boardslide and 50-50 downhill and boardslide uphill each grind 50+ ticks without a wipeout).
 
 ## Verification
 
@@ -228,18 +325,41 @@ corner, where are the wheels relative to the tube top, and does any wheel or dec
   prints in the diagnostic test (removed again); the prints did not change the outcome (corner, lead 1.5:
   wipeout tick 118 with and without them; handrail boardslide, lead 3: 101 as in the first pass).
 
+- Third pass (box port), same target dir, before -> after:
+  - skate-core full suite: 2 known failures on main (`predictive_contacts_and_retention_match_full_scan_for_every_primitive`,
+    `a_moving_group_8_body...`) -> 793 passed, 1 failed (`a_moving_group_8_body...`, known). The
+    predictive/full-scan test now passes: the per-volume test is the same with and without query metadata.
+  - skate-game `--bin skate3rust`: 447 passed, 1 failed (`setup::tests::pipelines_accept_valid_group_outputs_when_fingerprint_changes`, known).
+  - Ignored data tests, before and after identical: physics air / powerslide / recorded / startup / wipeout
+    (4 pass, 8 fail in both; the failures are data/environment), climbing (3 fail in both), offboard jump
+    playbacks and scoring runtime pass. Water drop (University): settled part speed mean 0.080 -> 0.079 m/s.
+  - `library_handrail_bend_grinds_through` passes after; before, the same runs wipe out (tick 101 / 103).
+
 ## Open questions
+
+- Stair landing speed (third pass): the port now keeps about 7 m/s where it used to drop to about 4 m/s; by
+  the ported rule this is retail, but it is not measured in the recomp. Watch landings next to walls/stair
+  sides in play.
+- Bounds methods (`82777E70` vtable slot +4) of the sphere, capsule and rounded-box volumes were not read;
+  assumed to be shape plus radius like `82ADDC40`.
+- The rotation pad uses a refined reciprocal square root in retail; the port uses `sqrt` (same value to float
+  precision, not bit-checked).
 
 - Which rule retail applies at the spline end (second pass: candidates 2 and 3 are not supported by the static
   code; candidate 1 remains). Needs the instruction-level read of `82D8A828` / `82D875A8` at a spline end or
   the recomp trace planned above (the recomp is reference, not a console measurement).
 - Does retail boardslide through the PCU Library flat rail's 90 degree corner, or does the board also stop
   there? (To ask the user before more research on the corner.)
-- Handrail bottom: retail's contacts for the deck sliding off the bent rail end (the post triangle 17 cm below
-  the deck); the BRDREP hook of the trace plan answers this.
-- Stair-edge spline 23 (`0x677`) bails after 49 grind ticks; not analysed yet (which request, where).
+- Handrail bottom: fixed by the box port; a recomp BRDREP trace would still confirm retail has no deck/post
+  contact there.
+- Stair-edge spline 23 (`0x677`) no longer bails after the box port (82 grind ticks, no wipeout); its old bail
+  was not analysed.
 
 ## Moddability
 
-Nothing to expose yet. When the rule is found, its values (ride height, link hand-over) come from the
-setup data as retail defaults, like the existing grind settings.
+The box port takes its step and scale as arguments (`volume_query_bounds(primitive, motion, step, scale)`),
+with the retail data values as the named defaults `VOLUME_QUERY_STEP` / `VOLUME_QUERY_SCALE`, and it reads the
+same body rates a mod-driven body already has, so modded bodies and volumes get the same culling without extra
+work. Exposing the two values through the physics settings / Lua SDK is not done (no setup-data source for
+them yet); open for the moddability pass. Corner rules, when found, come from the setup data as retail
+defaults, like the existing grind settings.

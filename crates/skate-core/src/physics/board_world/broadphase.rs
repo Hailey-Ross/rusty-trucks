@@ -180,3 +180,79 @@ pub(super) fn conservative_bounds(bounds: Bounds, padding: f32) -> Bounds {
     .fold(1., f32::max);
     bounds.expanded(padding + scale * (8. * f32::EPSILON))
 }
+
+/// Data 0x820849C8: the fixed 1/60 step the world query predicts over.
+pub const VOLUME_QUERY_STEP: f32 = f32::from_bits(0x3C88_8889);
+/// Data 0x821659FC: scale applied to the swept box about its centre.
+pub const VOLUME_QUERY_SCALE: f32 = 1.05;
+
+/// Body motion the per-volume query box sweeps over (body +32, +48, +144, +160).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VolumeMotion {
+    pub linear_velocity: Vector3,
+    pub angular_velocity: Vector3,
+    pub force_acceleration: Vector3,
+    pub torque_acceleration: Vector3,
+}
+
+impl VolumeMotion {
+    pub fn of(rates: &crate::physics::rigid_body::RetailBodyRates) -> Self {
+        Self {
+            linear_velocity: rates.linear_velocity,
+            angular_velocity: rates.angular_velocity,
+            force_acceleration: rates.force_acceleration,
+            torque_acceleration: rates.torque_acceleration,
+        }
+    }
+}
+
+fn v3(f: impl Fn(usize) -> f32) -> Vector3 {
+    Vector3::new(f(0), f(1), f(2))
+}
+
+fn axis(v: Vector3, i: usize) -> f32 {
+    [v.x, v.y, v.z][i]
+}
+
+/// Step = rate * dt + clamp(dot(rate * dt, accel * dt^2), 0, 1) * accel * dt^2.
+fn motion_step(rate: Vector3, acceleration: Vector3, dt: f32) -> Vector3 {
+    let first = v3(|i| axis(rate, i) * dt);
+    let second = v3(|i| axis(acceleration, i) * dt * dt);
+    let factor = (0..3)
+        .map(|i| axis(first, i) * axis(second, i))
+        .sum::<f32>()
+        .max(0.)
+        .min(1.);
+    v3(|i| axis(rate, i).mul_add(dt, axis(acceleration, i) * factor * dt * dt))
+}
+
+/// 82777E70: the box every world triangle's vertex box is tested against in
+/// 8277BC58 (BE94..BF38) before the pair query. Primitive bounds (radius
+/// included, no padding or separation term), padded by the largest extent
+/// difference times min(|angular step|, 1), unioned with itself moved by the
+/// linear step, then scaled about its centre.
+pub fn volume_query_bounds(
+    primitive: ContactPrimitive,
+    motion: VolumeMotion,
+    step: f32,
+    scale: f32,
+) -> Option<Bounds> {
+    let b = primitive_bounds(primitive)?;
+    let e = v3(|i| axis(b.max, i) - axis(b.min, i));
+    let extent_pad = (e.x - e.y).abs().max((e.y - e.z).abs()).max((e.z - e.x).abs());
+    let angular = motion_step(motion.angular_velocity, motion.torque_acceleration, step);
+    let length = (0..3).map(|i| axis(angular, i) * axis(angular, i)).sum::<f32>().sqrt();
+    let pad = extent_pad * length.min(1.);
+    let linear = motion_step(motion.linear_velocity, motion.force_acceleration, step);
+    let min = v3(|i| axis(b.min, i) - pad);
+    let max = v3(|i| axis(b.max, i) + pad);
+    let min = v3(|i| axis(min, i).min(axis(min, i) + axis(linear, i)));
+    let max = v3(|i| axis(max, i).max(axis(max, i) + axis(linear, i)));
+    let centre = v3(|i| (axis(max, i) + axis(min, i)) * 0.5);
+    let half = v3(|i| (axis(max, i) - axis(centre, i)) * scale);
+    let out = Bounds {
+        min: v3(|i| axis(centre, i) - axis(half, i)),
+        max: v3(|i| axis(centre, i) + axis(half, i)),
+    };
+    out.valid().then_some(out)
+}
