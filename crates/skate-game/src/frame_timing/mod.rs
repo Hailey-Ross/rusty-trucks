@@ -591,7 +591,8 @@ mod tests {
     }
 
     /// Per-frame game-thread cost of the trace-all diagnostics (run with `--ignored --nocapture`):
-    /// the same 3000-frame app with and without them, interleaved, best of 5 each.
+    /// the same 3000-frame app as normal play has it (the frame timing plugin is always on) and with
+    /// the trace-all additions (frame log, rolling perf report), interleaved, best of 5 each.
     #[test]
     #[ignore = "timing measurement, run by hand"]
     fn trace_all_overhead() {
@@ -600,6 +601,7 @@ mod tests {
         let plain = || {
             let mut app = App::new();
             app.add_plugins(MinimalPlugins).init_resource::<Sim>().add_systems(FixedUpdate, sim);
+            app.add_plugins(FrameTimingPlugin);
             let started = std::time::Instant::now();
             for i in 0..frames {
                 let ms = if i % 97 == 0 { 120 } else { 3 + i % 5 * 4 };
@@ -611,7 +613,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("skate-trace-all-cost-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (mut off, mut on) = (Vec::new(), Vec::new());
-        for _ in 0..5 {
+        for _ in 0..7 {
             off.push(plain());
             on.push(run_trace_all(&dir, frames).1);
         }

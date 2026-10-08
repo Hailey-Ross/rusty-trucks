@@ -139,7 +139,7 @@ pub(crate) fn announce() {
         return;
     }
     bevy::log::info!(
-        "TRACE_ACTIVE trace_all={} log_writer={} chrome_trace={} traces=[{}] always_on=[FRAME_HITCH, HELD_PROP, PROP_BELOW_GROUND, PROP_HELD, AUDIO_LANDING, AUDIO_EVENT body impact, MANUAL_LANDING, NPC_SKATER_BACKWARDS, PED_*, RETAIL_MATERIAL_FAMILIES]",
+        "TRACE_ACTIVE trace_all={} log_writer={} chrome_trace={} traces=[{}] always_on=[FRAME_HITCH, HELD_PROP, PROP_BELOW_GROUND, PROP_HELD, AUDIO_LANDING, AUDIO_EVENT body impact, MANUAL_LANDING, NPC_SKATER_BACKWARDS, PED_*, RETAIL_MATERIAL_FAMILIES, WORLD_SHADOW_FLOOR, BOARD_POSSESSION, GPU_TIMING]",
         on(),
         if crate::profiling::log_writer_threaded() { "thread (bounded, non-blocking)" } else { "stderr (direct)" },
         crate::profiling::chrome_trace_state(),

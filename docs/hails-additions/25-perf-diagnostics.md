@@ -263,7 +263,7 @@ combined, the pairs have to be recomputed for the combined tree (as for F + G).
 
 ## Trace-all mode (`SKATE_TRACE_ALL=1`)
 
-Status: work in progress on `world/trace-all` (first compile pending at this commit).
+Status: done on `world/trace-all` (not yet played).
 
 Problem: one play session should capture every trace the engine has, and the name has to mean what it says. Before, trace-all only meant whatever the launcher remembered to set, and two of those switches were unsafe for a whole session: `SKATE_PERF_REPORT` exits the game after 25 s, and `SKATE_GPU_TIMING` makes device creation fail on an adapter without timestamp queries.
 
@@ -294,5 +294,34 @@ New or changed log lines (always on unless noted, all edge-triggered or rate-lim
 - `PROP_HELD from=... to=...` on every grab / release edge; `HELD_PROP` at 5 per second in trace-all (1 per second otherwise).
 - `BOARD_POSSESSION hold / let_go` on the board hand edges (board dropped to grab a prop).
 - `RETAIL_MATERIAL_FAMILIES` once per material table load (family counts, 15 = dynamicobject D9).
+- `WORLD_SHADOW_FLOOR rgb=[...] retail=true/false` at startup and whenever a mod changes the floor (car shadows under bridges).
+- `GPU_TIMING timestamp_query=yes/no ...` once at startup (trace-all or `SKATE_GPU_TIMING`).
 
-Still to do at this commit: compile and fix, tests (`game_is_identical_with_trace_all_on_or_off`, `trace_all` unit tests), the overhead measurement (`trace_all_overhead`, `state_log_row_cost`, both `#[ignore]`), car shadow state line.
+Already diagnosable and left as they are: `AUDIO_LANDING`, `AUDIO_EVENT body impact` (a silent fall shows as air / bail / region impact columns in the audio state log with no body impact line), `NPC_SKATER_BACKWARDS`, `PED_*`, `FRAME_HITCH` plus the frame log.
+
+### Measured overhead
+
+`frame_timing::tests::trace_all_overhead` (`--ignored --nocapture`): a 3000-frame headless app with the always-on frame timing plugin, against the same app plus the trace-all per-frame work on the game thread (frame log row, rolling perf sample and window handover), best of 7 interleaved runs, two runs:
+
+| Run | off (us/frame) | on (us/frame) | delta |
+|---|---|---|---|
+| 1 | 28.85 (spread 3.17) | 34.10 (spread 4.50) | 5.25 us |
+| 2 | 28.76 (spread 2.52) | 35.27 (spread 2.81) | 6.52 us |
+
+About 6 us per frame, 0.04 % of a 16.7 ms frame and inside the run-to-run spread. `game_audio::state_log::tests::state_log_row_cost`: formatting a state log row costs 1.81 us; the game thread now only copies it into the queue, 0.03 us. Log lines in trace-all cost one small buffer and a `try_send` on the calling thread instead of a stderr write. GPU timestamp query cost cannot be measured headless (needs the game window); it is only on when the adapter supports it.
+
+### Tests
+
+- `trace_all::tests` (every switch turned on, launcher paths kept, already-on switches left alone).
+- `frame_timing::tests::game_is_identical_with_trace_all_on_or_off`: the fixed-step game is bit-identical with the trace-all per-frame diagnostics, and the rolling report writes windows instead of exiting. The existing `game_is_identical_with_diagnostics_on_or_off` still passes.
+- Full `skate-game` suite: 563 passed, 1 failed (`setup::tests::pipelines_accept_valid_group_outputs_when_fingerprint_changes`, the known pre-existing failure).
+
+### Files
+
+`crates/skate-game/src/trace_all.rs` (new), `main.rs`, `app.rs`, `performance.rs`, `profiling.rs`, `game_audio/state_log.rs`, `physics/manual_landing_log.rs` (new), `physics.rs`, `physics/prop_dynamics.rs`, `physics/offboard/board_manager.rs`, `retail_render.rs`, `frame_timing/mod.rs`.
+
+### Open questions
+
+- The Chrome trace is armed with F9 / F10 on the keyboard only; a couch session with a pad will not start it.
+- The launcher still sets `SKATE_AEMS=1`, which nothing reads.
+- `BOARD_POSSESSION` lines come from the shared board controller; if NPC or remote skaters drive it the line has no owner field yet.

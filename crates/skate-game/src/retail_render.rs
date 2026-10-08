@@ -161,6 +161,18 @@ pub(crate) struct WorldShadowSettings {
     pub floor: Vec3,
 }
 
+/// `WORLD_SHADOW_FLOOR` when the floor is set or a mod changes it (car shadows under bridges are
+/// diagnosable from the log: retail floor or a mod's value).
+fn log_world_shadow_floor(settings: Res<WorldShadowSettings>) {
+    if settings.is_changed() {
+        let f = settings.floor;
+        info!(
+            "WORLD_SHADOW_FLOOR rgb=[{:.3}, {:.3}, {:.3}] retail={}",
+            f.x, f.y, f.z, f == RETAIL_WORLD_SHADOW_FLOOR
+        );
+    }
+}
+
 impl Default for WorldShadowSettings {
     fn default() -> Self {
         Self { floor: RETAIL_WORLD_SHADOW_FLOOR }
@@ -1525,6 +1537,7 @@ impl Plugin for RetailRenderPlugin {
         bevy::shader::load_shader_library!(app, "retail_material_bindings.wgsl");
         app.init_resource::<FrameStateData>()
             .init_resource::<WorldShadowSettings>()
+            .add_systems(Update, log_world_shadow_floor)
             .add_plugins((
                 MaterialPlugin::<WorldMaterial>::default(),
                 MaterialPlugin::<crate::retail_sky::SkyMaterial>::default(),
