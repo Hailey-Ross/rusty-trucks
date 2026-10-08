@@ -200,6 +200,16 @@ pub struct ChainConfig {
     /// value: its full skater never jumps, it steers onto the new line (`sub_8246D3C0` /
     /// `sub_8246C7F8` only store the new line and node, `AIPhysicsInput` steers). The replay tier
     /// stands in with [`SWITCH_BLEND_SECONDS`]. 0 = cut.
+    ///
+    /// NOT RETAIL YET (switch spins, 2026-10-08): retail has no turn rate to port here. The AI
+    /// steer of `sub_82471188` (on board) and `sub_82471070` (off board) is written to three named
+    /// input channels of the normal character, `Turn`, `BodySpin` and `KickTurn` ([code] slots
+    /// `0x830BFD74` / `0x830BE600` / `0x830BE1E0`, names from static inits `sub_82F84BE0` /
+    /// `sub_82F84A30` / `sub_82F84BC8`), so the body yaw comes out of the player chain: steering
+    /// tilt `sub_82D92440` -> truck targets `sub_82C040F0` / `sub_82C0B9C0` -> the rigid-body
+    /// wheel solve. It is emergent, not a tunable; the faithful fix is the simulated NPC tier.
+    /// With [`FacingRule::RidingEntry`] the puppet turns a switch's facing change within this
+    /// blend (128 spins after a switch on the exported lines, 29 under [`FacingRule::PerNode`]).
     pub blend_seconds: f32,
     /// Mod option, not retail (default `false`): carry the drawn facing across a branch or chain
     /// by riding the new line turned 180 deg ([`LineCursor::facing_flipped`], the fix 16 rule).

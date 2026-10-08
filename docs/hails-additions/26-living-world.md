@@ -1614,8 +1614,9 @@ draws those stretches riding fakie. The open question was what sets the AI skate
 - The category mapping of the fakie rule (riding node = ground; grinds and manuals are trick spans, retail allows
   grind state 503), board axis = drawn root +Z, ground speed = horizontal segment speed; `torso` fixed at the riding
   value (no manual / powerslide state in the replay).
-- Off-board nodes draw the recorded frame (retail sends `sub_82471070` there, not decoded): 2,009 frames.
-- Spins after a switch (128 vs 29): retail steers the body round at the character's turn rate (not decoded); the
+- Off-board nodes draw the recorded frame (retail sends `sub_82471070` there; decoded in the next subsection, a
+  walking-character steer): 2,009 frames.
+- Spins after a switch (128 vs 29): retail's body yaw is emergent from the character physics (next subsection); the
   puppet turns within the 0.2 s switch blend.
 
 **Default switched to `riding_entry`** (separate commit). With the fakie bit and channel ported, 97.1 % of the frames
@@ -1623,6 +1624,62 @@ the retail rule draws against travel are drawn the way retail draws them, so the
 `per_node` (fix 23) and `keep_facing` (fix 16) stay mod options. What this does not cover is listed above: the mirror
 bits (left / right only), off-board frames, and the spins after a switch that a turn rate would soften. Reverting the
 default is one line (`ChainConfig::retail().facing_rule`).
+
+### NPC skater turn rate, pro stance and off-board steer (research, 2026-10-08)
+
+**Problem.** Two gaps left by the stance port: the drawn body spins after a switch under the retail facing rule (128
+switches turn the body, 29 under `per_node`), and every NPC uses the default goofy stance. A third: off-board frames
+are drawn as recorded.
+
+**Evidence: the turn rate is not a tunable [code + data].**
+- `sub_82471188` (on board) computes steer = clamp((|e| - dead zone) / (full - dead zone), 0, 1), sign opposite to e,
+  with the `ai_skater` tunables `DD8843F793462295` = 2.0 deg and `281F55D7BB965ADC` = 10.0 deg
+  (`skater_profiles.json`, `ai_skater.default`). It then writes that one value through `sub_82471818` (a hashed
+  name-to-slot lookup) into three input channels of the character: `0x830BFD74`, `0x830BE600`, `0x830BE1E0`. Their
+  names come from the static initialisers `sub_82F84BE0` / `sub_82F84A30` / `sub_82F84BC8`: `Turn` (`0x820DB088`),
+  `BodySpin` (`0x820DAF88`) and `KickTurn` (`0x820DB07C`).
+- So the AI drives the same channels as the player's stick (`Turn` is the intention of `sub_825999F0`,
+  `skate_core::input::steering_intentions`). On the ground the body yaw follows from steering tilt `sub_82D92440`
+  (`skate_core::riding::steering::calculate_tilt`), truck targets `sub_82C040F0` and `SetTruckDriveFrames`
+  `sub_82C0B9C0` (`skate_core::physics::truck_frames`), and the rigid-body wheel solve. There is no turn rate or yaw
+  response constant on the AI side to port into the replay puppet; the rate is whatever the board physics produces.
+- Decision (main, 2026-10-08): no fitted turn rate for the puppet. The 0.2 s switch blend stays, labelled NOT RETAIL
+  YET in `ChainConfig::blend_seconds`. The faithful fix is the simulated NPC tier (PR #52 checklist item), where the
+  AI steer drives the ported riding physics.
+
+**Evidence: off-board steer `sub_82471070` [code + data].** `sub_8246ACF0` calls it with controller `+824` when the
+state object's `+438` (riding) is clear. Steer = clamp(|e| / full, 0, 1), sign opposite to e, no dead zone, with
+`ai_skater` tunable `FED24A60BD8606F7` = 18.0 deg; the same three channels (`Turn`, `BodySpin`, `KickTurn`). `+824` is
+written by `sub_8246AA00`: a yaw error (`sub_824536C8`) toward a look-ahead target (`sub_82468FC0`, `sub_82592A00`,
+`sub_82592990`, avoidance `sub_82467FC8`), stored raw or as (e + previous) * 0.5 (`0x8209975C` = 0.5) depending on
+`+828` / `+933` / `+945`. The off-board body is the walking character, so its yaw is the Move Object controller's
+response (`skate_core::player::offboard::move_object`), again physics, not a puppet rate. The off-board flip is never
+applied (`+927` is only read by `sub_8246B358`), which the replay already does. Off-board frames stay drawn as
+recorded (2,009 frames), NOT RETAIL YET until the simulated tier.
+
+**Evidence: pro natural stance, not found (about 25 min) [code + data].** Checked:
+- `GetCACSettings` `sub_82590B50`: record = table at `0x83067060` (`+8` pointer) + index * 168; byte `+120` == 0 gives
+  goofy. Its only callers are `sub_82590DC0` (the `Actor` constructor, allocation tag `Actor` at `0x82224AA8`; index =
+  its `r5` argument), `sub_825922C0` (no direct caller, a vtable entry) and `sub_825947C0` (from `sub_827D8450`).
+  `sub_82590DC0` is reached from `sub_82598600` / `sub_82598748`, which are reached only from `sub_82597A70` /
+  `sub_82597AE0`, both called indirectly. Which index an AI pro's actor gets was not traced.
+- `marquee.big` pro recipes (`data/content/recipe/marquee/<pro>.recipe` + `.xml`): geometry and materials only, no
+  stance field.
+- `skater_profiles.json` `characters` (layout bits `+8` / `+9` / `+16` / `+17` and the hashed fields) and
+  `ai_skater_profiles` (bool / int fields): no field separates the pros into two stance groups consistently; the
+  varying ones (`+16`, `6DBAF7AD6CDE6A16`, `782E7345CDF39DFD`) put pros who ride the same stance in real life into
+  both groups (`+16`: eric_koston false, andrew_reynolds true; `6DBAF7AD6CDE6A16`: koston true, dyrdek false), so
+  they are not stance. (Real-life stance is only a sanity check here, not retail evidence.)
+- `createacharacter.big`, `db.big` names: no per-pro CAS or stance entries.
+Next step: trace (recomp hook on `sub_82590B50`) the index passed for spawned AI pros, then read the 168-byte table
+it points at; the table is filled at runtime, so this needs a recomp run. Until then every NPC keeps the default
+goofy stance (left / right only).
+
+**Change.** Documentation and the `ChainConfig::blend_seconds` NOT RETAIL YET note only; no behaviour change, so the
+counts above are unchanged (riding_entry: 128 spins after a switch, per_node 29, keep_facing 3).
+
+**Open questions.** The AI pro CAS index; whether a simulated-tier NPC reproduces retail's switch behaviour (it should,
+since the steer and the physics are both ported); `+930` / `+931` gating of `sub_82471008`.
 
 ## Frame drop with the board thrown away (hidden board scanned the whole map), 2026-10-05
 
