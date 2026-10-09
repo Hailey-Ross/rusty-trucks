@@ -29,7 +29,14 @@
 //!   stand-in for NavPower's moving avoider, default on),
 //!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on),
 //!   `ped_vehicle_contact {enabled, push}` (traffic cars touching peds; retail on / on: the ped is
-//!   pushed out of the car, no knock-down).
+//!   pushed out of the car, no knock-down),
+//!   `npc_tricks {mode, gate_window, min_air_frames}` (the trick an NPC skater does at a recorded
+//!   ollie / flip slot: `"profile"` = retail, re-picked from the character's profile table when
+//!   the recorded air is long enough; `"recorded"` = the line's own trick; `"none"` = no ollies /
+//!   flips; retail windows 300 / 50 recorded 60 Hz frames),
+//!   `skater_trick_profiles {[<character key> or <ai_skater_profiles name>] = {regular, nollie}}`
+//!   (each a list of `{trick = <EScorableID 0..332>, weight}`; replaces that table, an absent table
+//!   keeps the disc's; a character key wins over a profile name).
 //! - `props`: `default` and `by_template[<MOBJ template name>]`, each a [`PropTuningPatch`].
 //! - `carry`: `grab_bit`, `placement_bit`, `grab_range`, and the Move Object tuning while
 //!   holding a prop (retail defaults from attribute class 3EDA5B140604613D): `push_speed`,
@@ -97,6 +104,12 @@ pub const NPC_SKATER_FACING_RULES: [&str; 2] = ["riding_entry", "per_node"];
 /// Extra `skater_blend_seconds` keys: into a trick's ground clip (retail 0.05 s) and into its air
 /// clip when no ground clip ran before it (retail 0.1 s).
 pub const NPC_SKATER_TRICK_BLENDS: [&str; 2] = ["trick_takeoff", "trick_air"];
+/// `npc_tricks.mode` values (`skate_core::living_world::npc_tricks::TrickMode::name`).
+pub const NPC_SKATER_TRICK_MODES: [&str; 3] = ["recorded", "profile", "none"];
+/// Entries one trick table may carry.
+pub const MAX_TRICK_TABLE: usize = 64;
+/// Longest trick gate window a mod may set (recorded 60 Hz frames).
+pub const MAX_TRICK_WINDOW: u32 = 36_000;
 /// `skater_stance` values (`skate_core::living_world::stance::NaturalStance::name`).
 pub const NPC_SKATER_STANCES: [&str; 2] = ["regular", "goofy"];
 /// `skater_stance_events` keys (`skate_core::living_world::stance::StanceEvents::KEYS`).
@@ -150,6 +163,45 @@ pub struct LivingWorldPatch {
     pub npc_skater_props: Option<NpcSkaterPropsPatch>,
     /// Traffic cars touching peds (`skate_core::living_world::peds::VehicleContactParams`).
     pub ped_vehicle_contact: Option<PedVehicleContactPatch>,
+    /// NPC skater trick choice (`skate_core::living_world::npc_tricks`).
+    pub npc_tricks: Option<NpcTricksPatch>,
+    /// NPC skater trick tables per character key or `ai_skater_profiles` name.
+    pub skater_trick_profiles: Option<BTreeMap<String, TrickTablesPatch>>,
+}
+
+/// NPC skater trick choice: `mode` (one of [`NPC_SKATER_TRICK_MODES`], retail `"profile"`),
+/// `gate_window` / `min_air_frames` (retail 300 / 50 recorded 60 Hz frames).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NpcTricksPatch {
+    pub mode: Option<String>,
+    pub gate_window: Option<u32>,
+    pub min_air_frames: Option<u32>,
+}
+
+/// One trick table entry.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrickWeight {
+    pub trick: i16,
+    pub weight: f32,
+}
+
+/// A character's trick tables: `regular` (flips and the ollie) and `nollie` (nollie flips and the
+/// nollie); an absent table keeps the disc's.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrickTablesPatch {
+    pub regular: Option<Vec<TrickWeight>>,
+    pub nollie: Option<Vec<TrickWeight>>,
+}
+
+impl TrickTablesPatch {
+    pub fn validate(&self) -> bool {
+        [&self.regular, &self.nollie].into_iter().flatten().all(|t| {
+            t.len() <= MAX_TRICK_TABLE && t.iter().all(|e| (0..332).contains(&e.trick) && e.weight.is_finite() && (0.0..=MAX_NUMBER).contains(&e.weight))
+        })
+    }
 }
 
 /// Traffic cars touching peds: `enabled` (detection, the event and the log; retail on), `push`
@@ -531,6 +583,14 @@ impl Merge for LivingWorldPatch {
         merge_nested(&mut self.ped_obstacles, &b.ped_obstacles);
         merge_nested(&mut self.npc_skater_props, &b.npc_skater_props);
         merge_nested(&mut self.ped_vehicle_contact, &b.ped_vehicle_contact);
+        merge_nested(&mut self.npc_tricks, &b.npc_tricks);
+        match (self.skater_trick_profiles.as_mut(), &b.skater_trick_profiles) {
+            (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
+                a.entry(k.clone()).or_insert_with(|| v.clone());
+            }),
+            (None, Some(b)) => self.skater_trick_profiles = Some(b.clone()),
+            _ => {}
+        }
         match (self.skater_clips.as_mut(), &b.skater_clips) {
             (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
                 a.entry(k.clone()).or_insert_with(|| v.clone());
@@ -602,6 +662,12 @@ impl Merge for CarryPatch {
     }
 }
 
+impl Merge for NpcTricksPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; mode, gate_window, min_air_frames);
+    }
+}
+
 impl Merge for BackdropPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; visible, proxy_terrain);
@@ -666,6 +732,13 @@ impl LivingWorldPatch {
             })
             && self.skater_stance_events.as_ref().is_none_or(|m| {
                 m.iter().all(|(k, v)| NPC_SKATER_STANCE_EVENTS.contains(&k.as_str()) && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_graphic()))
+            })
+            && self.npc_tricks.as_ref().is_none_or(|t| {
+                t.mode.as_deref().is_none_or(|m| NPC_SKATER_TRICK_MODES.contains(&m))
+                    && [t.gate_window, t.min_air_frames].into_iter().all(|v| v.is_none_or(|v| v <= MAX_TRICK_WINDOW))
+            })
+            && self.skater_trick_profiles.as_ref().is_none_or(|m| {
+                m.len() <= MAX_TEMPLATES && m.iter().all(|(k, v)| !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic()) && v.validate())
             })
     }
 }

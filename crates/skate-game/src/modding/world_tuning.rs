@@ -253,6 +253,16 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
     if let Some(m) = &p.skater_stance_events {
         s.skater_stance_events = m.clone();
     }
+    if let Some(f) = &p.npc_tricks {
+        let t = &mut s.npc_tricks;
+        t.mode = f.mode.as_deref().and_then(skate_core::living_world::npc_tricks::TrickMode::from_name).unwrap_or(t.mode);
+        t.params.gate_window = f.gate_window.unwrap_or(t.params.gate_window);
+        t.params.min_air_frames = f.min_air_frames.unwrap_or(t.params.min_air_frames);
+    }
+    if let Some(m) = &p.skater_trick_profiles {
+        let table = |t: &Option<Vec<skate_mods::world_tuning::TrickWeight>>| t.as_ref().map(|t| t.iter().map(|e| (e.trick, e.weight.max(0.0))).collect());
+        s.skater_trick_profiles = m.iter().map(|(k, v)| (k.clone(), crate::living_world::npc_skaters::NpcTrickTables { regular: table(&v.regular), nollie: table(&v.nollie) })).collect();
+    }
 }
 
 fn prop_tuning(base: &PropTuning, p: &PropTuningPatch) -> PropTuning {
@@ -415,6 +425,11 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "skater_blend_seconds": s.skater_blend_seconds,
                 "skater_stance": s.skater_stance.iter().map(|(k, v)| (k.clone(), v.name())).collect::<std::collections::BTreeMap<_, _>>(),
                 "skater_stance_events": s.skater_stance_events,
+                "npc_tricks": {"mode": s.npc_tricks.mode.name(), "gate_window": s.npc_tricks.params.gate_window, "min_air_frames": s.npc_tricks.params.min_air_frames},
+                "skater_trick_profiles": s.skater_trick_profiles.iter().map(|(k, v)| {
+                    let table = |t: &Option<Vec<(i16, f32)>>| t.as_ref().map(|t| t.iter().map(|e| json!({"trick": e.0, "weight": e.1})).collect::<Vec<_>>());
+                    (k.clone(), json!({"regular": table(&v.regular), "nollie": table(&v.nollie)}))
+                }).collect::<serde_json::Map<_, _>>(),
             })
         }),
         "props" => world.get_resource::<PropTuningSettings>().map_or(Value::Null, |s| {
@@ -709,6 +724,33 @@ mod tests {
         clear_all(&mut w);
         assert!(w.resource::<LivingWorldSettings>().skater_stance.is_empty());
         assert_eq!((stance(&w, "josh_kalis"), stance(&w, "deerman")), (S::Goofy, S::Goofy), "reset = retail table");
+    }
+
+    #[test]
+    fn npc_skater_trick_choice_set_merge_and_reset() {
+        use crate::living_world::npc_skaters::npc_trick_profile;
+        use skate_core::living_world::npc_tricks::{TrickMode, TrickProfile};
+        let mut w = world();
+        let mut data = skate_data::living_world::SkaterTrickProfiles::default();
+        data.profiles.insert("default".into(), TrickProfile { regular: vec![(96, 1.0)], nollie: vec![(117, 1.0)] });
+        data.profiles.insert("street_medium".into(), TrickProfile { regular: vec![(92, 1.0)], nollie: vec![] });
+        data.character_profile.insert("jake".into(), "street_medium".into());
+        let profile = |w: &World, key: &str| npc_trick_profile(&data, &w.resource::<LivingWorldSettings>().skater_trick_profiles, key);
+        assert_eq!(read(&w, "living_world")["npc_tricks"], json!({"mode": "profile", "gate_window": 300, "min_air_frames": 50}), "retail by default");
+        assert_eq!(profile(&w, "jake").unwrap().regular, [(92, 1.0)], "the character's aiprofile");
+        set(&mut w, "dev.a", "living_world", Some(json!({"npc_tricks": {"mode": "recorded"}, "skater_trick_profiles": {"street_medium": {"regular": [{"trick": 128, "weight": 2.0}]}}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"npc_tricks": {"mode": "none", "min_air_frames": 20}, "skater_trick_profiles": {"jake": {"nollie": [{"trick": 127, "weight": 1.0}]}}}))).unwrap();
+        let t = w.resource::<LivingWorldSettings>().npc_tricks;
+        assert_eq!((t.mode, t.params.min_air_frames, t.params.gate_window), (TrickMode::Recorded, 20, 300), "first writer wins, others merge");
+        // The character key's table wins per table; the profile name's fills the other.
+        assert_eq!(profile(&w, "jake").unwrap(), TrickProfile { regular: vec![(128, 2.0)], nollie: vec![(127, 1.0)] });
+        assert_eq!(profile(&w, "cuz").unwrap().regular, [(96, 1.0)], "others keep the disc's default");
+        assert_eq!(read(&w, "living_world")["skater_trick_profiles"]["jake"]["nollie"][0]["trick"], json!(127));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"npc_tricks": {"mode": "scripted"}}))).is_err());
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"skater_trick_profiles": {"jake": {"regular": [{"trick": 332, "weight": 1.0}]}}}))).is_err());
+        clear_all(&mut w);
+        assert_eq!(w.resource::<LivingWorldSettings>().npc_tricks, Default::default());
+        assert_eq!(profile(&w, "jake").unwrap().regular, [(92, 1.0)], "reset = the disc's tables");
     }
 
     #[test]

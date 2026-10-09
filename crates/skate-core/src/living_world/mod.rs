@@ -22,6 +22,7 @@ pub mod clock;
 pub mod config;
 pub mod draw_distance;
 pub mod leave_fade;
+pub mod npc_tricks;
 pub mod peds;
 pub mod population;
 pub mod replay;

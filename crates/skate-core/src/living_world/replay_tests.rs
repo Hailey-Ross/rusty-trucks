@@ -34,7 +34,7 @@ fn lines(v: Vec<ReplayLine>) -> BTreeMap<[u8; 16], ReplayLine> {
 }
 
 fn ctx<'a>(position: Vec3, players: &'a [Vec3]) -> BranchContext<'a> {
-    BranchContext { position, forward: [0.0, 0.0, 1.0], speed: 8.0, players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail() }
+    BranchContext { position, forward: [0.0, 0.0, 1.0], speed: 8.0, players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default() }
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn replay_branch_taken_only_when_it_scores_lower_and_mirrors_on_a_client() {
         let mut ev = Vec::new();
         for _ in 0..30 {
             let s = c.sample(&ls, 0.0).unwrap();
-            let ctx = BranchContext { position: s.position, forward: [0.0, 0.0, 1.0], speed: 9.0, players, others: &[], in_use, preferred_skill: -1, online: false, chain: ChainConfig::retail() };
+            let ctx = BranchContext { position: s.position, forward: [0.0, 0.0, 1.0], speed: 9.0, players, others: &[], in_use, preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default() };
             c.step(&ls, &mut Decider::Decide(ctx), &mut ev);
         }
         (c, ev)
@@ -213,7 +213,7 @@ fn replay_branch_taken_only_when_it_scores_lower_and_mirrors_on_a_client() {
     // A client mirrors the host's records without scoring and ends in the same state.
     let mut m = LineCursor::spawn(&ls, id(1), 0);
     let mut mev = Vec::new();
-    m.advance(30, &ls, &mut Decider::Mirror(&branches), &mut mev);
+    m.advance(30, &ls, &mut Decider::Mirror(&branches, &[]), &mut mev);
     assert_eq!(m, c);
     assert_eq!(m.sample(&ls, 0.3), c.sample(&ls, 0.3));
 }
@@ -305,7 +305,7 @@ fn npc_skater_chains_to_a_line_starting_within_4_m_like_sub_8246c7f8() {
     assert!(!c.finished && !ev.iter().any(|e| matches!(e, CursorEvent::Finished)));
     // A client mirrors the record and ends in the same state.
     let mut m = LineCursor::spawn(&ls, id(1), 0);
-    m.advance(250, &ls, &mut Decider::Mirror(&chained), &mut Vec::new());
+    m.advance(250, &ls, &mut Decider::Mirror(&chained, &[]), &mut Vec::new());
     assert_eq!(m, c);
     // The only near line in use by another skater: dead end (line 3 is beyond the radius).
     let (busy, bev) = run(ChainConfig::retail(), &[id(2)]);
@@ -487,7 +487,7 @@ fn render_ride(ls: &BTreeMap<[u8; 16], ReplayLine>, start: [u8; 16], records: Op
             prev = c.clone();
             let mut ev = Vec::new();
             match records {
-                Some(r) => c.step(ls, &mut Decider::Mirror(r), &mut ev),
+                Some(r) => c.step(ls, &mut Decider::Mirror(r, &[]), &mut ev),
                 None => {
                     let s = c.sample(ls, 0.0).unwrap();
                     let x = BranchContext { forward: s.velocity, ..ctx(s.position, &players) };
@@ -496,7 +496,7 @@ fn render_ride(ls: &BTreeMap<[u8; 16], ReplayLine>, start: [u8; 16], records: Op
             }
             made.extend(ev.into_iter().filter_map(|e| if let CursorEvent::Branch(b) = e { Some(b) } else { None }));
         }
-        let s = if tick == 0 { c.sample(ls, 0.0) } else { prev.render_sample(ls, &made, (t - tick as f64) as f32) }.unwrap();
+        let s = if tick == 0 { c.sample(ls, 0.0) } else { prev.render_sample(ls, &made, &[], (t - tick as f64) as f32) }.unwrap();
         if let Some(l) = &last {
             let d = sub(s.position, l.position);
             max_move = max_move.max((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt());
@@ -624,7 +624,7 @@ fn npc_skater_keeps_its_facing_across_a_line_switch() {
     c.keep_facing = true;
     let records: Vec<BranchRecord> = ev.iter().filter_map(|e| if let CursorEvent::Branch(b) = e { Some(b.clone()) } else { None }).collect();
     for _ in 0..260 {
-        c.step(&ls, &mut Decider::Mirror(&records), &mut Vec::new());
+        c.step(&ls, &mut Decider::Mirror(&records, &[]), &mut Vec::new());
         let z = forward_z(&c.sample(&ls, 0.0).unwrap());
         assert!(z > 0.99, "turned at frame {}: {z} (was {last})", c.frames);
         last = z;
@@ -703,7 +703,7 @@ fn npc_skater_never_rides_a_forward_recorded_line_backwards_across_switches() {
     // A client mirroring the records draws the same frames.
     let mut client = LineCursor::spawn(&ls, id(1), 0);
     for (frame, line, _, check) in &seen {
-        client.step(&ls, &mut Decider::Mirror(&records), &mut Vec::new());
+        client.step(&ls, &mut Decider::Mirror(&records, &[]), &mut Vec::new());
         assert_eq!((client.frames, client.line), (*frame, *line));
         assert_eq!(facing_check(&ls[&client.line], &client.sample(&ls, 0.0).unwrap()), *check);
     }
@@ -907,7 +907,7 @@ fn retail_flip_is_held_across_a_switch_and_relatched_on_landing() {
         let mut m = LineCursor::spawn(&ls, id(1), 0);
         m.facing_rule = FacingRule::RidingEntry;
         for f in &flips {
-            m.step(&ls, &mut Decider::Mirror(&records), &mut Vec::new());
+            m.step(&ls, &mut Decider::Mirror(&records, &[]), &mut Vec::new());
             assert_eq!((m.frames, m.flip), (f.0, f.3));
         }
     }

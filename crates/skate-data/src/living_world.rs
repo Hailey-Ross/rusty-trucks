@@ -6,13 +6,15 @@
 //!   `write_census_grid`);
 //! - `tables.json` → [`LivingWorldTables`]: `livingworld_census` records resolved through their
 //!   category group, and the `livingworld_census_ranges` circles;
-//! - `skater_profiles.json` → [`SkaterCharacter`]s of the free-roam pool;
+//! - `skater_profiles.json` → [`SkaterCharacter`]s of the free-roam pool and the AI profiles'
+//!   trick tables ([`skater_trick_profiles`]);
 //! - decoded AIPATH lines (`aipath`) → [`SkaterLine`]s (population) and [`ReplayLine`]s (the
 //!   replay-tier cursor, milestone 3).
 
 use crate::aipath::AiPath;
 use serde_json::Value;
 use skate_core::living_world::census::CensusCategory;
+use skate_core::living_world::npc_tricks::TrickProfile;
 use skate_core::living_world::replay::{ReplayBranch, ReplayBranchGroup, ReplayJump, ReplayLine, ReplayNode};
 use skate_core::living_world::{
     CensusCircle, CensusGrid, CensusMap, CensusRange, CensusRecord, PopulationConfig, SkaterCharacter, SkaterLine, VehicleCatalog, VehicleEntity,
@@ -190,6 +192,59 @@ pub fn skater_characters(json: &[u8], bound: &[&str]) -> Result<Vec<SkaterCharac
     Ok(out)
 }
 
+/// `ai_skater_profiles` field of the regular-stance table (flips + ollie; runtime profile +0,
+/// layout +4, [code] `sub_8245FFD8`).
+pub const PROFILE_REGULAR_TRICKS: &str = "Hash_E580B6284639E03F";
+/// `ai_skater_profiles` field of the nollie table (nollie flips + nollie; profile +8, layout +164).
+pub const PROFILE_NOLLIE_TRICKS: &str = "Hash_BB901D68361E9833";
+
+/// The AI skater profiles' trick tables, and which profile each character uses.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SkaterTrickProfiles {
+    /// Trick tables by `ai_skater_profiles` record name (`default`, `street_medium`, ...), raw disc
+    /// weights (the export resolves the records' inheritance).
+    pub profiles: BTreeMap<String, TrickProfile>,
+    /// `characters.*.aiprofile` by character key.
+    pub character_profile: BTreeMap<String, String>,
+}
+
+impl SkaterTrickProfiles {
+    /// The table of a character: its `aiprofile` record, else `default`.
+    pub fn for_character(&self, key: &str) -> Option<&TrickProfile> {
+        self.character_profile.get(key).and_then(|p| self.profiles.get(p)).or_else(|| self.profiles.get("default"))
+    }
+}
+
+/// One exported trick table (`[{trick, weight}]`): entries with a trick id in 0..332.
+fn trick_table(v: &Value) -> Vec<(i16, f32)> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let trick = i16::try_from(e["trick"].as_i64()?).ok().filter(|t| (0..332).contains(t))?;
+            Some((trick, e["weight"].as_f64()? as f32))
+        })
+        .collect()
+}
+
+/// The AI profiles' trick tables and each character's profile from `skater_profiles.json`
+/// (`ai_skater_profiles.*.fields`, `characters.*.aiprofile`).
+pub fn skater_trick_profiles(json: &[u8]) -> Result<SkaterTrickProfiles, LivingWorldError> {
+    let doc: Value = serde_json::from_slice(json).map_err(|e| LivingWorldError::Profiles(e.to_string()))?;
+    let records = doc["ai_skater_profiles"].as_object().ok_or_else(|| LivingWorldError::Profiles("no ai_skater_profiles".into()))?;
+    let profiles = records
+        .iter()
+        .map(|(name, r)| (name.clone(), TrickProfile { regular: trick_table(&r["fields"][PROFILE_REGULAR_TRICKS]), nollie: trick_table(&r["fields"][PROFILE_NOLLIE_TRICKS]) }))
+        .collect();
+    let character_profile = doc["characters"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, c)| c["aiprofile"].as_str().filter(|p| !p.is_empty()).map(|p| (k.clone(), p.to_owned())))
+        .collect();
+    Ok(SkaterTrickProfiles { profiles, character_profile })
+}
+
 /// Population view of decoded lines: ambient lines only, start = node 0, heading from node 0
 /// towards the next node that is apart from it (the node orientation's component order is not
 /// confirmed yet).
@@ -284,6 +339,20 @@ pub fn vehicle_catalog(json: &[u8]) -> Result<VehicleCatalog, LivingWorldError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trick_profiles_read_both_tables_and_the_character_profile() {
+        let json = br#"{"ai_skater_profiles": {
+            "default": {"fields": {"Hash_E580B6284639E03F": [{"trick": 96, "weight": 1.0}, {"trick": 999, "weight": 1.0}],
+                                   "Hash_BB901D68361E9833": [{"trick": 117, "weight": 0.5}]}},
+            "danny_way": {"fields": {"Hash_E580B6284639E03F": [{"trick": 92, "weight": 0.1}]}}},
+            "characters": {"danny_way": {"aiprofile": "danny_way"}, "jake": {"aiprofile": ""}}}"#;
+        let t = skater_trick_profiles(json).unwrap();
+        assert_eq!(t.profiles["default"], TrickProfile { regular: vec![(96, 1.0)], nollie: vec![(117, 0.5)] }, "ids outside 0..332 are dropped");
+        assert_eq!(t.for_character("danny_way").unwrap().regular, [(92, 0.1)]);
+        assert_eq!(t.for_character("jake"), t.profiles.get("default"), "no profile: default");
+        assert!(skater_trick_profiles(b"{}").is_err());
+    }
 
     /// A synthetic grid in the exporter's layout (mirrors `write_census_grid`).
     pub(crate) fn synth_grid(names: &[&str], layers: &[(&str, Vec<u16>)], w: u32, h: u32) -> Vec<u8> {

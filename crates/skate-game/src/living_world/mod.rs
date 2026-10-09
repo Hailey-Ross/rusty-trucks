@@ -126,6 +126,15 @@ pub(crate) struct LivingWorldSettings {
     /// empty value = that toggle off; empty map = retail (`animboardbackward` / `mirrored` /
     /// `switch`). Cleared by [`Self::reset_mod_overrides`].
     pub skater_stance_events: std::collections::BTreeMap<String, String>,
+    /// The trick an NPC skater does at a recorded ollie / flip slot (retail: re-picked from the
+    /// character's profile table when the recorded air is long enough;
+    /// `skate_core::living_world::npc_tricks`). A mod may change the mode and the gate windows;
+    /// `LivingWorldSettings::default()` restores retail.
+    pub npc_tricks: npc_skaters::NpcTrickSettings,
+    /// Mod trick tables per character key or `ai_skater_profiles` name (a key wins over a profile
+    /// name; an absent table keeps the disc's); empty = the disc's tables. Read at each slot.
+    /// Cleared by [`Self::reset_mod_overrides`].
+    pub skater_trick_profiles: std::collections::BTreeMap<String, npc_skaters::NpcTrickTables>,
     /// The player's menu choice (saved in `settings/graphics.json`), restored when a mod's
     /// override is undone.
     pub user_npc_draw_distance: f32,
@@ -166,6 +175,8 @@ impl Default for LivingWorldSettings {
             skater_blend_seconds: Default::default(),
             skater_stance: Default::default(),
             skater_stance_events: Default::default(),
+            npc_tricks: Default::default(),
+            skater_trick_profiles: Default::default(),
             free_play: None,
             zombie: false,
             net_role: NetRole::Standalone,
@@ -451,6 +462,7 @@ pub(crate) fn load_data(asset_root: &Path, district: &str) -> LoadedData {
         let characters = skate_data::living_world::skater_characters(&profiles, &[]).ok()?;
         npc.voices = npc_voices(&profiles);
         npc.records = npc_records(&profiles);
+        npc.tricks = std::sync::Arc::new(skate_data::living_world::skater_trick_profiles(&profiles).unwrap_or_default());
         let pack = std::fs::read(dir.join("skater_paths").join(format!("{district}.bin"))).ok()?;
         let tiles = skate_data::aipath::parse_pack(&pack).ok()?;
         let (paths, _) = skate_data::aipath::district_paths(&tiles).ok()?;

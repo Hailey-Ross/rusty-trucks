@@ -2845,6 +2845,94 @@ instead. The meaning of the off word (state 1, collision group 13) is not decode
 `ObstacleAvoider` pools and modes are not decoded. Not seen in game yet: drag a prop into a ped's walk in DownTown
 and check the `PED_OBSTACLE` lines (`held=true role=solid` while dragging, `role=cut` held still and after it rests).
 
+## NPC skater trick choice (M5 port, 2026-10-08)
+
+**Problem.** The replay tier always did the trick recorded on the line. Retail's ambient NPC skaters do not: in
+their default behaviour an ollie or flip slot is re-picked from the character's AI profile, so the same line shows
+different flips from different skaters and from one pass to the next. Not play-tested yet.
+
+**What retail does** [code, TU3; read in the recomp disassembly, reference only]:
+- The PathController's dispatcher `sub_8246A2E0` runs on every start-trick node (event 1) the skater passes. The
+  trick's category comes from the static trick table `0x820862A8` (+16). Ollie / nollie (1) and flip (2) slots go to
+  `sub_8246A080`; every other category (grinds, grabs, manuals, slides, reverts, plants) does the recorded trick.
+- A higher chain level (heelflip2 / 3 / 4, kickflip2 / 3 / 4 and the nollie forms: table +8 base is another trick and
+  not the ollie 128) takes no action: the base trick already running covers it. The late flips have the ollie as
+  base and are not chain levels.
+- Behaviour mode (behaviour context +60; `sub_824733A0` creates the ambient behaviour with mode 1):
+  - 0: the recorded trick. `sub_82469FA8` walks the next start nodes within 120 frames whose trick's previous level
+    (+4) is the current id, but it assigns that previous level each time, which is the id it already holds, so it
+    always returns the recorded trick (an earlier research note read this as "takes the highest level"; the code
+    does not).
+  - 1 (ambient default): when the gate passes, a weighted pick from the profile, else the recorded trick.
+  - 2: a scripted list (not ported, see Open questions). 3 and up: no ollie / flip.
+- Gate `sub_82469C60`: walk forward from the slot summing each node's frames (+0x24) until 300. A start node first:
+  pass only when it is an ollie / flip (jump table `0x82469D5C`: categories 1 and 2) whose previous level is the
+  recorded trick, else fail. A landing (the airborne flag seen, then a node without it): fail when the next node is a
+  start node, else pass only when more than 50 frames passed (the landing node's frames included; `subfc` / `eqv` /
+  `addze` = signed `frames > 50`). The window end or the line end passes.
+- Pick `sub_82469A28` -> `sub_8245FE58`: the nollie table (runtime profile +8) when the recorded trick's name
+  starts with `n` / `N` (`sub_82469048`), else the regular table (+0). `u = rand32 / 2^32`; walk the 8-byte entries
+  (weight, trick) adding weights (normalised to sum 1 at load, `sub_824720C8`) and take the first with `u < sum`,
+  else entry 0. `sub_82469A28` also keeps the recorded trick when the trick's attribute record has no family entries
+  in the per-category list; those records are not decoded, every recorded ollie / flip is taken to have them
+  [inferred].
+
+**Data.** The profile tables are already in the `livingworld` export (`skater_profiles.json`,
+`ai_skater_profiles.*.fields`: `Hash_E580B6284639E03F` regular, `Hash_BB901D68361E9833` nollie, inheritance
+resolved by `tools/asset_pipeline/living_world_skaters.py`) with each character's `aiprofile`; no setup re-run is
+needed. The trick table's chain links (+4 previous level, +8 base) are 18 numeric rows in
+`skate_core::scoring::catalog::LINKS`, read from the TU3 image and checked against the catalog (+0 = index and the
++12 / +16 columns match all 332 rows).
+
+**Change.**
+- `skate_core::living_world::npc_tricks`: `TrickMode` (recorded / profile / none), `TrickParams` (gate window 300,
+  more than 50 frames), `TrickProfile`, `gate`, `pick_weighted`, `choose`.
+- The line cursor asks `choose` at every start-trick node (`BranchContext.tricks`), keeps the running trick at a
+  chain level, and emits `CursorEvent::Trick(TrickRecord {frame, line, node, recorded, chosen})`. `Decider::Mirror`
+  takes the trick records next to the branch records, so a client (and the render look-ahead) applies the host's
+  choices and never decides.
+- Determinism choice (not retail): retail draws `rand32` from the skater's random source in tick order. Ours is
+  `derive(npc seed, [line, node, frame])`: the same distribution, but a pure function of the NPC's seed and the slot.
+- `skate-data`: `skater_trick_profiles` (tables by profile name, profile by character; `default` when a character
+  has none).
+- `skate-game`: each NPC's tables are its `aiprofile`'s, with mod tables applied; `NPC_SKATER_TRICK #id character
+  node frame recorded chosen mode` in the log for every slot, `NpcSkaterEvent::Trick` for engine systems and the
+  planned `sdk.living_world` events, `NpcReplay.tricks` holds the records a host would send. The puppet reads
+  the cursor's trick (`resolve_trick_anim`), so the chosen flip's clip plays.
+- Mod surface (`sdk.world.set_tuning("living_world", ...)`): `npc_tricks {mode, gate_window, min_air_frames}` and
+  `skater_trick_profiles {[character key or profile name] = {regular, nollie}}` (lists of `{trick, weight}`; a key
+  wins over a profile name per table; an absent table keeps the disc's). Cleared when the mod stops.
+
+**Files.** `crates/skate-core/src/living_world/{npc_tricks.rs, npc_tricks_tests.rs, replay.rs}`,
+`crates/skate-core/src/scoring/catalog.rs`, `crates/skate-data/src/living_world.rs`,
+`crates/skate-game/src/living_world/{mod.rs, npc_skaters.rs, npc_tests.rs}`,
+`crates/skate-game/src/modding/world_tuning.rs`, `crates/skate-mods/src/{world_tuning.rs, vm.rs, api.lua}`,
+`sdk/skate.lua`.
+
+**Verification.**
+- skate-core `living_world::npc_tricks` 9 tests: the pick at the cumulative boundaries and the entry-0 fallback,
+  the gate at 40 / 50 / 60 frames and with a mod window, a start node after the landing, the 300-frame window and
+  the line end, chain continuation, nollie table only for `n*` tricks, other categories and modes, catalog links,
+  the cursor emitting one record per slot (none at the chain level) and a mirrored client showing the same tricks,
+  and the spread over 4,000 seeds (about 3 in 4 for a 1 : 3 table).
+- skate-data: a unit test on synthetic JSON; data-gated on the user's export: all 193 profiles, every table entry is
+  an ollie / flip (category 1 or 2) with a weight of at least 0, every pool character resolves to a non-empty table.
+- skate-game: `living_world_npc_skaters_pick_tricks_from_their_profile_and_clients_mirror_them` (an ollie slot
+  with 80 frames of air on every fixture line: picks only from the profile, both entries come up, a client cursor
+  rebuilt from the records shows the host's trick; mode `recorded` keeps the ollie; the reset restores retail) and
+  `npc_skater_trick_choice_set_merge_and_reset` (domain read, first writer wins, key over profile, invalid mode or
+  trick id rejected, reset). skate-mods `world_tuning_commands_deserialize_and_validate` gains 4 cases.
+- In game (muted DownTown run, 2026-10-08): 12 slots in the first NPC seconds; `360popshuvit` -> `kickflip` and
+  `ollie` -> `fs360popshuvit` re-picked; grinds, grabs, manuals and short-air ollies kept the recorded trick.
+- Full workspace run (`--lib --bins --tests`): only the 4 known upstream failures.
+
+**Open questions.**
+1. Mode 2 (scripted list, `sub_82469E10`) and who sets modes 0 / 2 (challenge or scripted AI skaters).
+2. The trick attribute records' family entries (`sub_8245F120`, list at `*(0x830CFE64) + (category + 583) * 16`).
+3. Profile byte +51 (grab / fingerflip / boneless allowed; one of the two unnamed bools) and the gesture-start
+   percent (+36): only matter once the simulated tier sends ActionGraph signals.
+4. Skater vfunc +36: whether retail's draw is a per-skater stream or the global generator.
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).
@@ -2883,7 +2971,7 @@ When a mod stops, fails or reloads its patches go (`modding::world_tuning::clear
 
 | Domain | Fields (shipped value) | Resource |
 |---|---|---|
-| `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_stance {[record id hex or record name] = regular or goofy}` (empty = the measured retail table; unknown records goofy; read at spawn), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing false}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep_facing: fix 16 facing carry-over, mod option, not retail), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0, held_is_obstacle true, moving_solid true}` (props and mod bodies as ped obstacles; a held prop stays one, retail; `moving_solid` is the NOT RETAIL YET stand-in for the NavPower moving avoider), `npc_skater_props {enabled true}` (NPC skaters push dynamic props), `ped_vehicle_contact {enabled true, push true}` (traffic cars push peds out of the way; no knock-down in retail) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
+| `living_world` | `npc_draw_distance` (1.0, 0.25..4), `skater_fade {fade_in_seconds 1, fade_seconds 1, despawn_alpha 0.2}`, `ped_fade {distance {45, 55}, fade_in_seconds 1, enabled true}` (a model record's own pair still wins), `skater_clips {[phase or phase.Style] = clip}` (empty = shipped picks), `skater_clips["trick.<scorable name>"] = trick animation base` (empty = Tricks.xml picks), `skater_blend_seconds {[phase or default or trick_takeoff or trick_air] = s}` (empty = 0.2 s; tricks 0.05 / 0.1 s), `skater_stance {[record id hex or record name] = regular or goofy}` (empty = the measured retail table; unknown records goofy; read at spawn), `skater_line_chain {radius 4, max_candidates 16, blend_seconds 0.2, keep_facing false}` (line end chaining; root blend onto the new line after a branch or chain, 0 = cut; keep_facing: fix 16 facing carry-over, mod option, not retail), `ped_obstacles {enabled true, min_half_extent 0.2, moving_speed 0.4, recut_fraction 0.25, detour_margin 0.1, step_height 0, held_is_obstacle true, moving_solid true}` (props and mod bodies as ped obstacles; a held prop stays one, retail; `moving_solid` is the NOT RETAIL YET stand-in for the NavPower moving avoider), `npc_skater_props {enabled true}` (NPC skaters push dynamic props), `ped_vehicle_contact {enabled true, push true}` (traffic cars push peds out of the way; no knock-down in retail), `npc_tricks {mode profile, gate_window 300, min_air_frames 50}` (NPC ollie / flip slots re-picked from the profile, or `recorded` / `none`), `skater_trick_profiles {[character key or profile name] = {regular, nollie}}` (empty = the disc's tables) | `LivingWorldSettings`, rebuilt via `reset_mod_overrides()` so the player's menu draw distance returns |
 | `props` | `default` / `by_template[<MOBJ template>]`: every `PropTuning` field plus `collision_box {center, half_extents}`; a template entry starts from the patched default | `PropTuningSettings` |
 | `carry` | `grab_bit` (28, RB), `placement_bit` (20, B), `grab_range` (2.0 m); Move Object: `push_speed` / `pull_speed` / `side_speed` (3.0 / 2.0 / 2.5), `turn_rate`, `grip_reach`, `linear_clamp` (20), `yaw_clamp` (6), `relatch` (0.1), `slew_per_tick` (4), `linear_controller` / `yaw_controller` ([20, 0, 40, 0.1]), the four curves, `let_go_distance` (1.0); slot 9 application: `commanded_material` ([0.03, 0.02] static / dynamic friction), `upright_cos` (0.65), `apply_at_com`, `yaw_replaces_torque`, `ignore_vertical`, `wake_on_command` (true), `by_template[<MOBJ template>] = {material_held, material_free, material_free_upright, upright_pair, restitution}` | `CarrySettings`, pushed into `PropCarry` and `PropDynamics` each tick (survives map loads) |
 

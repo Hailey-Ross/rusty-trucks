@@ -986,7 +986,14 @@ function sdk.audio.seed(n) end
 --   held_is_obstacle, moving_solid} (props and mod bodies as ped navigation obstacles; retail on, 0.2, 0.4,
 --   0.25, held props stay obstacles (true); ours 0.1, 0, moving objects block a ped's step (true)),
 --   npc_skater_props {enabled} (NPC skaters push dynamic props like the player; retail on),
---   ped_vehicle_contact {enabled, push} (traffic cars push peds out of the way; retail on / on, no knock-down).
+--   ped_vehicle_contact {enabled, push} (traffic cars push peds out of the way; retail on / on, no knock-down),
+--   npc_tricks {mode, gate_window, min_air_frames} (the trick an NPC skater does at a recorded ollie / flip
+--   slot: "profile" = retail, re-picked from the character's profile table when the recorded air lasts more
+--   than min_air_frames before the landing; "recorded" = the line's own trick; "none" = no ollies / flips;
+--   retail windows 300 / 50 recorded 60 Hz frames),
+--   skater_trick_profiles {[<character key> or <ai_skater_profiles name>] = {regular = {{trick = <id 0..331>,
+--   weight}, ...}, nollie = {...}}} (replaces that table; an absent table keeps the disc's; a character key
+--   wins over a profile name).
 -- 'props': default and by_template[<MOBJ template name>] = {contact_padding, penetration_slop,
 --   penetration_correction, max_depenetration_per_tick, restitution_threshold, skater_push_mass,
 --   push_transfer, body_push_speed, board_push_speed, penetration_push_speed, stuck_release_ticks,

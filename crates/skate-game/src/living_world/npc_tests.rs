@@ -57,7 +57,7 @@ fn data() -> LoadedData {
         roads: None,
         vehicles: None,
         // Two characters carry a stance-table record (regular / goofy); the rest are unmapped.
-        npc: NpcData { lines: Arc::new(replay), voices, records: [("pro_0".to_owned(), "chris_cole".to_owned()), ("pro_1".to_owned(), "josh_kalis".to_owned())].into() },
+        npc: NpcData { lines: Arc::new(replay), voices, records: [("pro_0".to_owned(), "chris_cole".to_owned()), ("pro_1".to_owned(), "josh_kalis".to_owned())].into(), tricks: Default::default() },
         status: "npc test".into(),
     }
 }
@@ -83,11 +83,15 @@ fn collect(mut ev: MessageReader<NpcSkaterEvent>, mut seen: ResMut<Seen>) {
 }
 
 fn app(seed: u64) -> App {
+    app_with(seed, data())
+}
+
+fn app_with(seed: u64, data: LoadedData) -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins);
     let settings = LivingWorldSettings { seed, ..LivingWorldSettings::default() };
     let mut state = PopulationState::default();
-    state.install("Test", 1, &settings, data());
+    state.install("Test", 1, &settings, data);
     app.insert_resource(settings).insert_resource(state).init_resource::<LivingWorldObservers>().init_resource::<NpcSkaterIndex>().init_resource::<Seen>();
     app.insert_resource(Drive { t: 0.0, speed: 8.0 });
     app.add_message::<LivingWorldSpawn>().add_message::<LivingWorldDespawn>().add_message::<NpcSkaterEvent>();
@@ -132,7 +136,7 @@ fn living_world_npc_skaters_ride_their_lines_from_the_spawn_record() {
         max = max.max(list.len());
         let lines = st.npc.lines.clone();
         let mut rq = a.world_mut().query::<(&NpcSkater, &NpcReplay)>();
-        let records: BTreeMap<LivingWorldId, Vec<skate_core::living_world::replay::BranchRecord>> = rq.iter(a.world()).map(|(n, r)| (n.id, r.branches.clone())).collect();
+        let records: BTreeMap<LivingWorldId, (Vec<skate_core::living_world::replay::BranchRecord>, Vec<skate_core::living_world::replay::TrickRecord>)> = rq.iter(a.world()).map(|(n, r)| (n.id, (r.branches.clone(), r.tricks.clone()))).collect();
         for (nid, pos, character, voice, vel, frames, start) in &list {
             // The state is a function of the spawn record, the tick and the host's line choices
             // (branches and line-end chains, fix 9): rebuild the cursor as a client would.
@@ -142,7 +146,7 @@ fn living_world_npc_skaters_ride_their_lines_from_the_spawn_record() {
             });
             assert!(spawn_tick.is_some());
             let mut c = LineCursor::spawn(&*lines, *start, 0);
-            c.advance(*frames as u32, &*lines, &mut skate_core::living_world::replay::Decider::Mirror(&records[nid]), &mut Vec::new());
+            c.advance(*frames as u32, &*lines, &mut skate_core::living_world::replay::Decider::Mirror(&records[nid].0, &records[nid].1), &mut Vec::new());
             let s = c.sample(&*lines, 0.0).unwrap();
             assert_eq!(s.position, *pos, "npc {nid:?} at tick {tick}");
             assert_eq!(live.iter().find(|l| l.0 == *nid).unwrap().1, *pos);
@@ -668,7 +672,7 @@ fn living_world_npc_skaters_render_smoothly_between_ticks_and_across_chains() {
             assert_eq!(prev.frames + FRAMES_PER_TICK, r.cursor.frames, "previous is one tick back");
             assert_eq!(r.cursor.switch_blend_seconds, 0.3, "the tuning reaches the cursor");
             blended += r.cursor.switch.is_some() as usize;
-            let s = prev.render_sample(&*lines, &r.branches, frac).unwrap();
+            let s = prev.render_sample(&*lines, &r.branches, &r.tricks, frac).unwrap();
             let time = (s.phase_frames as f32 + s.sub_frame) / 60.0;
             if let Some((p, t)) = last.get(&n.id) {
                 let d = ((s.position[0] - p[0]).powi(2) + (s.position[1] - p[1]).powi(2) + (s.position[2] - p[2]).powi(2)).sqrt();
@@ -1140,4 +1144,60 @@ fn living_world_npc_trick_clips_toggle_the_board_bit() {
     let bone = evaluator.frames.bone_names.iter().position(|n| n.eq_ignore_ascii_case("Skateboard_Root")).expect("board bone");
     assert!(alone[bone].w_axis.distance(blended[bone].w_axis) < 1e-3, "weight 1 = the newest layer's pose");
     assert_eq!(flags_root_turn(turned), Quat::IDENTITY, "the board bit alone does not turn the body");
+}
+
+/// Trick choice (M5, `skate_core::living_world::npc_tricks`): every line gets an ollie slot with
+/// 80 frames of air. The host re-picks it from the character's profile table (retail mode), sends
+/// a `Trick` event per slot and keeps the record; a client cursor mirroring the branch and trick
+/// records shows the same trick. A mod's `recorded` mode keeps the line's ollie; the reset
+/// restores the profile pick.
+#[test]
+fn living_world_npc_skaters_pick_tricks_from_their_profile_and_clients_mirror_them() {
+    use skate_core::living_world::npc_tricks::TrickProfile;
+    use skate_core::living_world::replay::{node_events, node_flags, ReplayJump, TrickRecord};
+    const OLLIE: i16 = 128;
+    const KICKFLIP: i16 = 96;
+    const HEELFLIP: i16 = 92;
+    let with_slots = || {
+        let mut d = data();
+        let mut lines = (*d.npc.lines).clone();
+        for l in lines.values_mut() {
+            l.jumps = vec![ReplayJump { start_position: [0.0; 3], start_velocity: [0.0; 3], offset: [0.0; 3], trick: OLLIE, spins: 0, flags: 0 }];
+            for (n, node) in l.nodes.iter_mut().enumerate() {
+                node.flags = if (100..120).contains(&n) { node_flags::AIRBORNE } else { 0 };
+            }
+            l.nodes[100].event = node_events::START_TRICK;
+            l.nodes[100].jump = Some(0);
+            l.nodes[120].event = node_events::END_TRICK;
+        }
+        d.npc.lines = Arc::new(lines);
+        let mut t = skate_data::living_world::SkaterTrickProfiles::default();
+        t.profiles.insert("default".into(), TrickProfile { regular: vec![(KICKFLIP, 1.0), (HEELFLIP, 1.0)], nollie: vec![] });
+        d.npc.tricks = Arc::new(t);
+        d
+    };
+    let tricks = |a: &App| a.world().resource::<Seen>().0.iter().filter_map(|e| if let NpcSkaterEvent::Trick { record, .. } = e { Some(record.clone()) } else { None }).collect::<Vec<TrickRecord>>();
+    let mut a = app_with(11, with_slots());
+    run(&mut a, 20.0, 60.0);
+    let seen = tricks(&a);
+    assert!(seen.len() >= 3, "trick slots passed: {}", seen.len());
+    assert!(seen.iter().all(|r| r.recorded == OLLIE && (r.chosen == KICKFLIP || r.chosen == HEELFLIP)), "{seen:?}");
+    assert!(seen.iter().any(|r| r.chosen == KICKFLIP) && seen.iter().any(|r| r.chosen == HEELFLIP), "both table entries come up: {seen:?}");
+    // A client rebuilding each cursor from the records shows the host's trick.
+    let lines = a.world().resource::<PopulationState>().npc.lines.clone();
+    let mut q = a.world_mut().query::<(&NpcSkater, &NpcReplay)>();
+    for (n, r) in q.iter(a.world()) {
+        let mut c = LineCursor::spawn(&*lines, n.start_line, 0);
+        c.advance(r.cursor.frames as u32, &*lines, &mut skate_core::living_world::replay::Decider::Mirror(&r.branches, &r.tricks), &mut Vec::new());
+        assert_eq!(c.current_trick(), r.cursor.current_trick(), "npc {:?}", n.id);
+        assert_eq!(c.frames, r.cursor.frames);
+    }
+    // A mod's recorded mode: the line's ollie.
+    let mut a = app_with(11, with_slots());
+    a.world_mut().resource_mut::<LivingWorldSettings>().npc_tricks.mode = skate_core::living_world::npc_tricks::TrickMode::Recorded;
+    run(&mut a, 20.0, 60.0);
+    let seen = tricks(&a);
+    assert!(!seen.is_empty() && seen.iter().all(|r| r.chosen == OLLIE), "{seen:?}");
+    a.world_mut().resource_mut::<LivingWorldSettings>().reset_mod_overrides();
+    assert_eq!(a.world().resource::<LivingWorldSettings>().npc_tricks, Default::default());
 }
