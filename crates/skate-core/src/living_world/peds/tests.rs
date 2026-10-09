@@ -387,3 +387,35 @@ fn the_mirrored_turn_mirrors_the_full_pose_and_never_flips_the_hips() {
     assert!(angle(r[2].rotation, rig.reference[2].rotation) > 0.1 && angle(r[3].rotation, rig.reference[3].rotation) < 1e-4);
     assert!(angle(l[3].rotation, rig.reference[3].rotation) > 0.1 && angle(l[2].rotation, rig.reference[2].rotation) < 1e-4);
 }
+
+#[test]
+fn a_knock_down_falls_lies_for_the_ground_time_gets_up_and_walks_on() {
+    use super::skater_contact::{reaction_steps, ReactionDirection, ReactionKind};
+    let (_, mut set, mut clips) = fixture();
+    let r = |c: &str| vec![RemapClip { clip: c.into(), windows: vec![] }];
+    for (name, frames, looping) in [("FALL", 31, false), ("GROUND", 21, true), ("GETUP", 31, false)] {
+        clips.insert(name.into(), clip(name, frames, 0.0, 0.0, looping, 0.0, vec![]));
+    }
+    set.entries.insert("WipeoutBackFall".into(), r("FALL"));
+    set.entries.insert("WipeoutBackGroundCyc".into(), r("GROUND"));
+    set.entries.insert("WipeoutBackGetUp".into(), r("GETUP"));
+    let mut p = PedAnimPlayer::new(&set, 3).unwrap();
+    assert!(p.react(&set, reaction_steps(ReactionKind::Knockdown, ReactionDirection::FromFront), 1.5));
+    assert!(!p.react(&set, reaction_steps(ReactionKind::Standing, ReactionDirection::FromFront), 1.5), "no second reaction while one runs");
+    let mut log = Vec::new();
+    let dt = 1.0 / 60.0;
+    for _ in 0..(6.0 / dt) as usize {
+        p.intent = Intent::Walk;
+        p.step(dt, &set, &clips);
+        log.push((p.state, p.current_clip().to_owned()));
+    }
+    let first = |c: &str| log.iter().position(|(_, x)| x == c).unwrap_or_else(|| panic!("{c} never played"));
+    let (fall, ground, getup) = (first("FALL"), first("GROUND"), first("GETUP"));
+    assert!(fall < ground && ground < getup);
+    // The fall clip is 1 s; the ground cycle lasts the set's ground time (1.5 s at 60 Hz).
+    let ground_frames = getup - ground;
+    assert!((89..=91).contains(&ground_frames), "{ground_frames} frames on the ground");
+    assert!(log[..getup].iter().all(|(s, _)| *s == Locomotion::Reaction), "no walking while reacting");
+    assert!(log.iter().skip(getup).any(|(s, _)| *s != Locomotion::Reaction), "back to locomotion after the get-up");
+    assert_eq!(p.reaction_anim(), None);
+}

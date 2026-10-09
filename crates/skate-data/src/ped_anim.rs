@@ -236,6 +236,19 @@ impl PedTables {
                     }
                 }
             }
+            // Collision values (`sub_82E38FB8`, `sub_8269A990`) [code + data]; the export names the
+            // speeds, the raw hash keys are accepted too; a missing value keeps the stock default.
+            let f = &row["fields"];
+            let num = |name: &str, hash: &str| f.get(name).or_else(|| f.get(hash)).and_then(Value::as_f64).map(|v| v as f32);
+            let d = set.collision;
+            set.collision = skate_core::living_world::peds::skater_contact::CollisionRules {
+                knockdown_speed: [
+                    num("knockdown_speed_a", "Hash_541FFA2E9D81C947").unwrap_or(d.knockdown_speed[0]),
+                    num("knockdown_speed_b", "Hash_7C5E39ECE5A5572E").unwrap_or(d.knockdown_speed[1]),
+                ],
+                can_knock_down: f.get("Hash_5B92564B352A9FAA").and_then(Value::as_bool).unwrap_or(d.can_knock_down),
+                ground_seconds: num("ground_seconds", "Hash_AD3C483F0C9DAD67").unwrap_or(d.ground_seconds),
+            };
             t.anim_sets.insert(k.clone(), set);
         }
         if t.catalog.categories.is_empty() || t.catalog.models.is_empty() {

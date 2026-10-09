@@ -138,6 +138,31 @@ fn population_on_the_exported_downtown_census_respects_caps_and_radii() {
 }
 
 #[test]
+fn skater_trick_profiles_hold_ollies_and_flips_for_every_pool_character() {
+    let Some(profiles) = find("skater_profiles.json") else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to an export with skater_profiles.json");
+        return;
+    };
+    let bytes = std::fs::read(profiles).unwrap();
+    let t = living_world::skater_trick_profiles(&bytes).unwrap();
+    // 193 `ai_skater_profiles` records [data].
+    assert_eq!(t.profiles.len(), 193);
+    for (name, p) in &t.profiles {
+        // Retail's re-pick only reads these tables for ollie / flip slots (category 1 / 2).
+        for &(trick, w) in p.regular.iter().chain(&p.nollie) {
+            assert!(matches!(skate_core::scoring::catalog::category(trick), Some(1 | 2)), "{name}: trick {trick}");
+            assert!(w >= 0.0, "{name}: weight {w}");
+        }
+    }
+    let d = &t.profiles["default"];
+    assert!(!d.regular.is_empty() && !d.nollie.is_empty());
+    for c in living_world::skater_characters(&bytes, &[]).unwrap() {
+        let p = t.for_character(&c.key).unwrap_or_else(|| panic!("{} has no profile", c.key));
+        assert!(!p.regular.is_empty(), "{}", c.key);
+    }
+}
+
+#[test]
 fn skater_pool_and_lines_load() {
     let (Some(profiles), Some(paths)) = (find("skater_profiles.json"), find("skater_paths")) else {
         eprintln!("skipped: set SKATE3_ASSET_ROOT to an export with skater_profiles.json and skater_paths");
@@ -198,7 +223,7 @@ fn replay_cursor_rides_every_exported_line() {
             while !c.finished && frames < 60 * 60 * 2 {
                 let s = c.sample(&lines, 0.0).unwrap();
                 let speed = (s.velocity[0].powi(2) + s.velocity[1].powi(2) + s.velocity[2].powi(2)).sqrt();
-                let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail() };
+                let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default() };
                 c.step(&lines, &mut Decider::Decide(ctx), &mut ev);
                 frames += 1;
                 let p = c.sample(&lines, 0.0).unwrap().position;
@@ -266,7 +291,7 @@ fn npc_skater_render_is_smooth_on_the_exported_lines() {
                 prev = c.clone();
                 let s = c.sample(lines, 0.0).unwrap();
                 let speed = (s.velocity[0].powi(2) + s.velocity[1].powi(2) + s.velocity[2].powi(2)).sqrt();
-                let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail() };
+                let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain: ChainConfig::retail(), tricks: Default::default() };
                 let mut ev = Vec::new();
                 c.step(lines, &mut Decider::Decide(ctx), &mut ev);
                 if ev.iter().any(|e| matches!(e, CursorEvent::Branch(_))) {
@@ -277,7 +302,7 @@ fn npc_skater_render_is_smooth_on_the_exported_lines() {
             if c.finished {
                 break;
             }
-            let s = if tick == 0 { c.sample(lines, 0.0) } else { prev.render_sample(lines, &made, (t - tick as f64) as f32) }.unwrap();
+            let s = if tick == 0 { c.sample(lines, 0.0) } else { prev.render_sample(lines, &made, &[], (t - tick as f64) as f32) }.unwrap();
             if let Some(l) = &last {
                 let d = dist(s.position, l.position);
                 // A render step while a switch blends (0.2 s = 12 ticks, plus the tick of render lag)
@@ -376,7 +401,7 @@ fn npc_skater_facing_rules_on_the_exported_lines() {
             }
             let s = c.sample(lines, 0.0).unwrap();
             let speed = (s.velocity[0].powi(2) + s.velocity[1].powi(2) + s.velocity[2].powi(2)).sqrt();
-            let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain };
+            let ctx = BranchContext { position: s.position, forward: s.velocity, speed, players: &players, others: &[], in_use: &[], preferred_skill: -1, online: false, chain, tricks: Default::default() };
             let was = c.flip;
             let mut ev = Vec::new();
             c.step(lines, &mut Decider::Decide(ctx), &mut ev);

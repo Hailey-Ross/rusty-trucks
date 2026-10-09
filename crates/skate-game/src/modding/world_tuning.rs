@@ -253,6 +253,39 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
     if let Some(m) = &p.skater_stance_events {
         s.skater_stance_events = m.clone();
     }
+    if let Some(f) = &p.npc_tricks {
+        let t = &mut s.npc_tricks;
+        t.mode = f.mode.as_deref().and_then(skate_core::living_world::npc_tricks::TrickMode::from_name).unwrap_or(t.mode);
+        t.params.gate_window = f.gate_window.unwrap_or(t.params.gate_window);
+        t.params.min_air_frames = f.min_air_frames.unwrap_or(t.params.min_air_frames);
+    }
+    for (patch, kind) in [(&p.skaters, &mut s.skaters), (&p.pedestrians, &mut s.pedestrians), (&p.vehicles, &mut s.vehicles)] {
+        if let Some(f) = patch {
+            kind.enabled = f.enabled.unwrap_or(kind.enabled);
+            kind.density = f.density.unwrap_or(kind.density);
+        }
+    }
+    if let Some(n) = p.ambient_skaters {
+        s.ambient_skaters = n;
+    }
+    if let Some(f) = &p.free_play {
+        let d = skate_core::living_world::FreePlay::default();
+        s.free_play = Some(skate_core::living_world::FreePlay {
+            traffic: f.traffic.unwrap_or(d.traffic),
+            pedestrians: f.pedestrians.unwrap_or(d.pedestrians),
+            ai_skaters: f.ai_skaters.unwrap_or(d.ai_skaters),
+        });
+    }
+    if let Some(f) = &p.npc_simulated {
+        let n = &mut s.npc_simulated;
+        n.enabled = f.enabled.unwrap_or(n.enabled);
+        n.radius = f.radius.unwrap_or(n.radius);
+        n.max = f.max.map_or(n.max, |m| m as usize);
+    }
+    if let Some(m) = &p.skater_trick_profiles {
+        let table = |t: &Option<Vec<skate_mods::world_tuning::TrickWeight>>| t.as_ref().map(|t| t.iter().map(|e| (e.trick, e.weight.max(0.0))).collect());
+        s.skater_trick_profiles = m.iter().map(|(k, v)| (k.clone(), crate::living_world::npc_skaters::NpcTrickTables { regular: table(&v.regular), nollie: table(&v.nollie) })).collect();
+    }
 }
 
 fn prop_tuning(base: &PropTuning, p: &PropTuningPatch) -> PropTuning {
@@ -415,6 +448,17 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "skater_blend_seconds": s.skater_blend_seconds,
                 "skater_stance": s.skater_stance.iter().map(|(k, v)| (k.clone(), v.name())).collect::<std::collections::BTreeMap<_, _>>(),
                 "skater_stance_events": s.skater_stance_events,
+                "skaters": {"enabled": s.skaters.enabled, "density": s.skaters.density},
+                "pedestrians": {"enabled": s.pedestrians.enabled, "density": s.pedestrians.density},
+                "vehicles": {"enabled": s.vehicles.enabled, "density": s.vehicles.density},
+                "ambient_skaters": s.ambient_skaters,
+                "free_play": s.free_play.map(|f| json!({"traffic": f.traffic, "pedestrians": f.pedestrians, "ai_skaters": f.ai_skaters})),
+                "npc_simulated": {"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max},
+                "npc_tricks": {"mode": s.npc_tricks.mode.name(), "gate_window": s.npc_tricks.params.gate_window, "min_air_frames": s.npc_tricks.params.min_air_frames},
+                "skater_trick_profiles": s.skater_trick_profiles.iter().map(|(k, v)| {
+                    let table = |t: &Option<Vec<(i16, f32)>>| t.as_ref().map(|t| t.iter().map(|e| json!({"trick": e.0, "weight": e.1})).collect::<Vec<_>>());
+                    (k.clone(), json!({"regular": table(&v.regular), "nollie": table(&v.nollie)}))
+                }).collect::<serde_json::Map<_, _>>(),
             })
         }),
         "props" => world.get_resource::<PropTuningSettings>().map_or(Value::Null, |s| {
@@ -709,6 +753,53 @@ mod tests {
         clear_all(&mut w);
         assert!(w.resource::<LivingWorldSettings>().skater_stance.is_empty());
         assert_eq!((stance(&w, "josh_kalis"), stance(&w, "deerman")), (S::Goofy, S::Goofy), "reset = retail table");
+    }
+
+    #[test]
+    fn living_world_density_counts_and_free_play_set_merge_and_reset() {
+        let mut w = world();
+        assert_eq!(read(&w, "living_world")["free_play"], json!(null), "career free roam by default");
+        set(&mut w, "dev.a", "living_world", Some(json!({"free_play": {"traffic": 0.3}, "pedestrians": {"density": 2.0}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"free_play": {"traffic": 0.9, "ai_skaters": false}, "ambient_skaters": 5}))).unwrap();
+        let s = w.resource::<LivingWorldSettings>();
+        let f = s.free_play.expect("Free Play on");
+        assert_eq!((f.traffic, f.pedestrians, f.ai_skaters), (0.3, 1.0, false), "first writer wins per field, unset = reset value");
+        assert_eq!((s.pedestrians.density, s.ambient_skaters), (2.0, 5));
+        // The settings reach the population config.
+        let mut config = skate_core::living_world::PopulationConfig::retail();
+        s.apply(&mut config);
+        assert_eq!((config.pedestrians.density, config.skaters.desired), (2.0, 5));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"free_play": {"pedestrians": 2.0}}))).is_err());
+        clear_all(&mut w);
+        let s = w.resource::<LivingWorldSettings>();
+        assert_eq!((s.free_play, s.pedestrians.density, s.ambient_skaters), (None, 1.0, 3));
+    }
+
+    #[test]
+    fn npc_skater_trick_choice_set_merge_and_reset() {
+        use crate::living_world::npc_skaters::npc_trick_profile;
+        use skate_core::living_world::npc_tricks::{TrickMode, TrickProfile};
+        let mut w = world();
+        let mut data = skate_data::living_world::SkaterTrickProfiles::default();
+        data.profiles.insert("default".into(), TrickProfile { regular: vec![(96, 1.0)], nollie: vec![(117, 1.0)] });
+        data.profiles.insert("street_medium".into(), TrickProfile { regular: vec![(92, 1.0)], nollie: vec![] });
+        data.character_profile.insert("jake".into(), "street_medium".into());
+        let profile = |w: &World, key: &str| npc_trick_profile(&data, &w.resource::<LivingWorldSettings>().skater_trick_profiles, key);
+        assert_eq!(read(&w, "living_world")["npc_tricks"], json!({"mode": "profile", "gate_window": 300, "min_air_frames": 50}), "retail by default");
+        assert_eq!(profile(&w, "jake").unwrap().regular, [(92, 1.0)], "the character's aiprofile");
+        set(&mut w, "dev.a", "living_world", Some(json!({"npc_tricks": {"mode": "recorded"}, "skater_trick_profiles": {"street_medium": {"regular": [{"trick": 128, "weight": 2.0}]}}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"npc_tricks": {"mode": "none", "min_air_frames": 20}, "skater_trick_profiles": {"jake": {"nollie": [{"trick": 127, "weight": 1.0}]}}}))).unwrap();
+        let t = w.resource::<LivingWorldSettings>().npc_tricks;
+        assert_eq!((t.mode, t.params.min_air_frames, t.params.gate_window), (TrickMode::Recorded, 20, 300), "first writer wins, others merge");
+        // The character key's table wins per table; the profile name's fills the other.
+        assert_eq!(profile(&w, "jake").unwrap(), TrickProfile { regular: vec![(128, 2.0)], nollie: vec![(127, 1.0)] });
+        assert_eq!(profile(&w, "cuz").unwrap().regular, [(96, 1.0)], "others keep the disc's default");
+        assert_eq!(read(&w, "living_world")["skater_trick_profiles"]["jake"]["nollie"][0]["trick"], json!(127));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"npc_tricks": {"mode": "scripted"}}))).is_err());
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"skater_trick_profiles": {"jake": {"regular": [{"trick": 332, "weight": 1.0}]}}}))).is_err());
+        clear_all(&mut w);
+        assert_eq!(w.resource::<LivingWorldSettings>().npc_tricks, Default::default());
+        assert_eq!(profile(&w, "jake").unwrap().regular, [(92, 1.0)], "reset = the disc's tables");
     }
 
     #[test]

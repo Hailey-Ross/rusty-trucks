@@ -115,6 +115,8 @@ pub struct RemapClip {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PedAnimSet {
     pub entries: BTreeMap<String, Vec<RemapClip>>,
+    /// The set's collision values (knock-down speeds, whether it allows knock-downs, ground time).
+    pub collision: super::skater_contact::CollisionRules,
 }
 
 /// The logical names M2 plays (`MotionGraph_Pedestrian.xml` includes) [data].
@@ -129,6 +131,11 @@ pub mod names {
         "IdleBasicCyc", "FwdWalkCyc", "FwdBriskWalkCyc", "Stand2Walk", "Walk2Stand", "StandTurnR45", "StandTurnR90", "StandTurnR135",
         "StandTurnR180", "StandTurnR180Out", "WalkTurnR45", "WalkTurnR90", "WalkTurnR135", "WalkTurnR180", "WalkTurnR180Out", "FwdShuffleCyc",
         "Stand2Shuffle", "Shuffle2Stand",
+        // Collision reactions (`super::skater_contact::REACTION_ANIMS`).
+        "CollisionBackStanding", "CollisionFwdStanding", "CollisionLeftStanding",
+        "WipeoutBackFall", "WipeoutBackGroundCyc", "WipeoutBackGetUp",
+        "WipeoutFwdFall", "WipeoutFwdGroundCyc", "WipeoutFwdGetUp",
+        "WipeoutLeftFall", "WipeoutLeftGroundCyc", "WipeoutLeftGetUp",
     ];
 }
 
@@ -152,6 +159,8 @@ pub enum Locomotion {
     Stop,
     TurnRight,
     TurnLeft,
+    /// A collision reaction (`Collision` state of the motion graph): no locomotion until it ends.
+    Reaction,
 }
 
 impl Locomotion {
@@ -163,6 +172,7 @@ impl Locomotion {
             Locomotion::Stop => "stop",
             Locomotion::TurnRight => "turn_right",
             Locomotion::TurnLeft => "turn_left",
+            Locomotion::Reaction => "reaction",
         }
     }
 }
@@ -215,6 +225,15 @@ pub struct PedAnimPlayer {
     rng: Rng,
     pub intent: Intent,
     plays: u32,
+    reaction: Option<ReactionRun>,
+}
+
+/// A running collision reaction: its steps, the current one and the ground time left.
+#[derive(Clone, Debug, PartialEq)]
+struct ReactionRun {
+    steps: Vec<super::skater_contact::ReactionStep>,
+    index: usize,
+    ground_left: f32,
 }
 
 /// Seed label of the animation sub-RNG.
@@ -247,6 +266,7 @@ impl PedAnimPlayer {
             rng,
             intent: Intent::Idle,
             plays: 0,
+            reaction: None,
         })
     }
 
@@ -276,6 +296,25 @@ impl PedAnimPlayer {
         self.state = state;
         self.plays += 1;
         true
+    }
+
+    /// Start a collision reaction ([`super::skater_contact::reaction_steps`]); `false` when the set
+    /// has none of its first animation or a reaction is already running.
+    pub fn react(&mut self, set: &PedAnimSet, steps: Vec<super::skater_contact::ReactionStep>, ground_seconds: f32) -> bool {
+        if self.reaction.is_some() || steps.is_empty() {
+            return false;
+        }
+        let first = steps[0];
+        if !self.play(set, first.anim, first.blend, first.mirror, Locomotion::Reaction) {
+            return false;
+        }
+        self.reaction = Some(ReactionRun { steps, index: 0, ground_left: ground_seconds });
+        true
+    }
+
+    /// The running reaction's current logical animation, if any.
+    pub fn reaction_anim(&self) -> Option<&'static str> {
+        self.reaction.as_ref().map(|r| r.steps[r.index].anim)
     }
 
     fn in_branch_window(&self) -> bool {
@@ -358,6 +397,36 @@ impl PedAnimPlayer {
             Locomotion::Stop | Locomotion::TurnRight | Locomotion::TurnLeft => {
                 if remaining <= timing::TRANSITION_EXIT {
                     self.play(set, names::IDLE, timing::IDLE_BLEND, false, Locomotion::Idle);
+                }
+            }
+            Locomotion::Reaction => {
+                // [data] `WillExpire InTime=0.01` ends a clip step; the ground cycle runs until the
+                // AI's `Recover` (the set's ground time); then back to locomotion (idle).
+                let next = match self.reaction.as_mut() {
+                    Some(r) if r.steps[r.index].cycle => {
+                        r.ground_left -= dt;
+                        r.ground_left <= 0.0
+                    }
+                    Some(_) => remaining <= 0.01,
+                    None => true,
+                };
+                if next {
+                    let following = self.reaction.as_mut().and_then(|r| {
+                        r.index += 1;
+                        r.steps.get(r.index).copied()
+                    });
+                    match following {
+                        Some(step) => {
+                            if !self.play(set, step.anim, step.blend, step.mirror, Locomotion::Reaction) {
+                                self.reaction = None;
+                                self.play(set, names::IDLE, timing::IDLE_BLEND, false, Locomotion::Idle);
+                            }
+                        }
+                        None => {
+                            self.reaction = None;
+                            self.play(set, names::IDLE, timing::IDLE_BLEND, false, Locomotion::Idle);
+                        }
+                    }
                 }
             }
         }

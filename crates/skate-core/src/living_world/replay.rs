@@ -261,6 +261,10 @@ impl Default for ChainConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReplayNode {
     pub position: Vec3,
+    /// Recorded displacement per 60 Hz frame (node `+0x0C`, "direction"; measured on the export:
+    /// |step| x frames = the segment length, median ratio 1.000). The AI record's target velocity
+    /// is this x 60 ([code] `sub_8246DE38`).
+    pub step: Vec3,
     /// Board and skater orientation, 4 biased bytes each (`(b - 128) / 127`, x y z w).
     pub board: [u8; 4],
     pub skater: [u8; 4],
@@ -673,11 +677,25 @@ pub struct BranchRecord {
     pub to_node: u32,
 }
 
+/// A trick choice at a start-trick node (host side) or the record a client mirrors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrickRecord {
+    /// Cursor frame (60 Hz frames since spawn) of the node.
+    pub frame: u64,
+    pub line: [u8; 16],
+    pub node: u32,
+    /// The trick recorded on the line and the one started (`-1` = none).
+    pub recorded: i16,
+    pub chosen: i16,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum CursorEvent {
     /// The cursor reached a node (event and flags of that node; mods and speech read these).
     Node { line: [u8; 16], node: u32, event: u8, flags: u8 },
     Branch(BranchRecord),
+    /// The trick chosen at a start-trick node ([`super::npc_tricks::choose`]).
+    Trick(TrickRecord),
     /// End of the line with no next line within the chain radius (replay tier only: retail's
     /// full skater would steer to the nearest start node at any distance).
     Finished,
@@ -702,6 +720,8 @@ pub struct BranchContext<'a> {
     pub online: bool,
     /// What happens at the end of a line ([`choose_next_line`]).
     pub chain: ChainConfig,
+    /// The trick choice at start-trick nodes ([`super::npc_tricks`]).
+    pub tricks: super::npc_tricks::TrickContext<'a>,
 }
 
 /// Signed angle from `a` to `b` about +Y (radians), like `sub_824536C8` with the up axis.
@@ -932,8 +952,9 @@ pub struct LineCursor {
 pub enum Decider<'a> {
     /// Retail branch choice with this context; decisions are appended to the cursor events.
     Decide(BranchContext<'a>),
-    /// Apply recorded decisions (matched by frame and from-node); never decides.
-    Mirror(&'a [BranchRecord]),
+    /// Apply recorded decisions (branches matched by frame and from-node, tricks by frame and
+    /// node; a slot without a record keeps its recorded trick); never decides.
+    Mirror(&'a [BranchRecord], &'a [TrickRecord]),
     /// Never branch (tests, a mod that pins a line).
     Stay,
 }
@@ -1006,8 +1027,28 @@ impl LineCursor {
             let n = &line.nodes[self.node as usize];
             match n.event {
                 node_events::START_TRICK => {
+                    let recorded = line.node_trick(n);
+                    let open = self.trick_open && self.trick >= 0;
+                    let chosen = match decider {
+                        Decider::Decide(ctx) => match super::npc_tricks::choose(line, self.node, self.frames, &ctx.tricks) {
+                            super::npc_tricks::TrickChoice::Start(t) => Some(t),
+                            super::npc_tricks::TrickChoice::Continue if open => None,
+                            super::npc_tricks::TrickChoice::Continue => Some(recorded),
+                        },
+                        Decider::Mirror(_, tricks) => match tricks.iter().find(|r| r.frame == self.frames && r.line == self.line && r.node == self.node) {
+                            Some(r) => Some(r.chosen),
+                            None if open && crate::scoring::catalog::is_chain_level(recorded) => None,
+                            None => Some(recorded),
+                        },
+                        Decider::Stay => Some(recorded),
+                    };
                     self.trick_open = true;
-                    self.trick = line.node_trick(n);
+                    if let Some(t) = chosen {
+                        self.trick = t;
+                        if matches!(decider, Decider::Decide(_)) {
+                            out.push(CursorEvent::Trick(TrickRecord { frame: self.frames, line: self.line, node: self.node, recorded, chosen: t }));
+                        }
+                    }
                 }
                 node_events::END_TRICK => {
                     self.trick_open = false;
@@ -1029,7 +1070,7 @@ impl LineCursor {
                         }
                         choose_branch(lines, line, self.node, group, &here)
                     }
-                    Decider::Mirror(records) => records.iter().find(|r| r.frame == self.frames && r.from_line == self.line && r.from_node == self.node).map(|r| (r.to_line, r.to_node)),
+                    Decider::Mirror(records, _) => records.iter().find(|r| r.frame == self.frames && r.from_line == self.line && r.from_node == self.node).map(|r| (r.to_line, r.to_node)),
                     Decider::Stay => None,
                 };
                 if let Some((to_line, to_node)) = choice {
@@ -1140,7 +1181,7 @@ impl LineCursor {
                 }
                 choose_next_line(lines, line, &here)?
             }
-            Decider::Mirror(records) => records.iter().find(|r| r.frame == self.frames && r.from_line == self.line && r.from_node == self.node).map(|r| (r.to_line, r.to_node))?,
+            Decider::Mirror(records, _) => records.iter().find(|r| r.frame == self.frames && r.from_line == self.line && r.from_node == self.node).map(|r| (r.to_line, r.to_node))?,
             Decider::Stay => return None,
         };
         let next = lines.line(&to_line)?;
@@ -1164,6 +1205,16 @@ impl LineCursor {
 
     /// The phases this cursor entered, newest first, with the 60 Hz frames since each began
     /// (the puppet's nested crossfade and trick clips; fix 21). A pure function of the cursor.
+    /// The trick of the open trick span (`-1` outside a span or without one): the recorded
+    /// trick, or the one the trick choice started ([`super::npc_tricks`]).
+    pub fn current_trick(&self) -> i16 {
+        if self.trick_open {
+            self.trick
+        } else {
+            -1
+        }
+    }
+
     pub fn phase_history(&self) -> impl Iterator<Item = (PhaseEntry, u64)> + '_ {
         self.history.iter().flatten().map(|e| (*e, self.frames - e.since.min(self.frames)))
     }
@@ -1278,6 +1329,22 @@ impl LineCursor {
     }
 
     /// The state now, `alpha` (0..1) of the way to the next 60 Hz frame (render interpolation).
+    /// The raw recorded pose the AI steers to ([`super::ai_record`]): the position and path frame
+    /// ([`path_frame`]) interpolated along the current segment, and the segment's per-frame
+    /// displacement (the next node's `step`). No switch blend, facing or fakie drawing.
+    pub fn line_target(&self, lines: &dyn LineSource) -> Option<super::ai_record::LineTarget> {
+        let line = lines.line(&self.line)?;
+        let i = self.node as usize;
+        let a = line.nodes.get(i)?;
+        let seg = line.segment_frames(self.node);
+        let (b, t) = match line.nodes.get(i + 1) {
+            Some(b) if seg > 0 && !self.finished => (b, (self.frame_in_segment as f32 / seg as f32).min(1.0)),
+            _ => (a, 0.0),
+        };
+        let position = core::array::from_fn(|k| a.position[k] + (b.position[k] - a.position[k]) * t);
+        Some(super::ai_record::LineTarget { position, frame: nlerp(path_frame(a), path_frame(b), t), step: b.step })
+    }
+
     pub fn sample(&self, lines: &dyn LineSource, alpha: f32) -> Option<ReplaySample> {
         let line = lines.line(&self.line)?;
         let i = self.node as usize;
@@ -1323,22 +1390,22 @@ impl LineCursor {
     /// The drawn state `frames_ahead` 60 Hz frames after this cursor, for render interpolation
     /// between fixed steps (the player's scheme: this cursor is the state one tick back, the
     /// fraction comes from the fixed-step overstep). Whole frames are stepped with the branch
-    /// records the host made (or mirrored) up to now, so the look-ahead never guesses a branch;
+    /// and trick records the host made (or mirrored) up to now, so the look-ahead never guesses a branch;
     /// the rest is the segment fraction and the clip sub-frame. A pure function of the cursor,
     /// the records and the fraction: a client draws the same pose.
-    pub fn render_sample(&self, lines: &dyn LineSource, records: &[BranchRecord], frames_ahead: f32) -> Option<ReplaySample> {
-        let (c, frac) = self.render_cursor(lines, records, frames_ahead);
+    pub fn render_sample(&self, lines: &dyn LineSource, records: &[BranchRecord], tricks: &[TrickRecord], frames_ahead: f32) -> Option<ReplaySample> {
+        let (c, frac) = self.render_cursor(lines, records, tricks, frames_ahead);
         c.sample(lines, frac)
     }
 
     /// The cursor [`LineCursor::render_sample`] samples (whole frames stepped with the records)
     /// and the remaining fraction; its [`LineCursor::phase_history`] drives the puppet's clips.
-    pub fn render_cursor(&self, lines: &dyn LineSource, records: &[BranchRecord], frames_ahead: f32) -> (LineCursor, f32) {
+    pub fn render_cursor(&self, lines: &dyn LineSource, records: &[BranchRecord], tricks: &[TrickRecord], frames_ahead: f32) -> (LineCursor, f32) {
         let ahead = if frames_ahead.is_finite() { frames_ahead.max(0.0) } else { 0.0 };
         let whole = ahead.floor();
         let mut c = self.clone();
         if whole > 0.0 {
-            c.advance(whole as u32, lines, &mut Decider::Mirror(records), &mut Vec::new());
+            c.advance(whole as u32, lines, &mut Decider::Mirror(records, tricks), &mut Vec::new());
         }
         (c, ahead - whole)
     }

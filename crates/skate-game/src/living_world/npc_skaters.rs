@@ -58,7 +58,8 @@
 use super::{LivingWorldDespawn, LivingWorldObservers, LivingWorldSettings, LivingWorldSpawn, NetRole, PopulationState};
 use crate::world_audio::{AudioState, AudioVelocity, LiteSkater, NpcSkaterAudio};
 use bevy::prelude::*;
-use skate_core::living_world::replay::{BranchContext, BranchRecord, CursorEvent, Decider, LineCursor, PhaseEntry, ReplayLine, ReplayPhase, ReplaySample};
+use skate_core::living_world::replay::{BranchContext, BranchRecord, CursorEvent, Decider, LineCursor, PhaseEntry, ReplayLine, ReplayPhase, ReplaySample, TrickRecord};
+use skate_core::living_world::npc_tricks::{TrickContext, TrickProfile};
 use skate_core::living_world::leave_fade::LeaveFade;
 use skate_core::living_world::stance::{StanceEvents, StanceFlags};
 use skate_core::living_world::{DespawnReason, Kind, LivingWorldId, SpawnChoice};
@@ -79,6 +80,46 @@ pub(crate) struct NpcData {
     /// Character record name per character key (`skater_profiles.json` `recipe`); a key without
     /// one is its own record name.
     pub records: BTreeMap<String, String>,
+    /// The AI profiles' trick tables and each character's profile (`skater_profiles.json`).
+    pub tricks: Arc<skate_data::living_world::SkaterTrickProfiles>,
+}
+
+/// The NPC skater trick choice in effect (`skate_core::living_world::npc_tricks`; retail: mode
+/// profile, gate windows 300 / 50 frames).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct NpcTrickSettings {
+    pub mode: skate_core::living_world::npc_tricks::TrickMode,
+    pub params: skate_core::living_world::npc_tricks::TrickParams,
+}
+
+/// A mod's trick tables for a character or profile; `None` keeps the disc's table.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct NpcTrickTables {
+    pub regular: Option<Vec<(i16, f32)>>,
+    pub nollie: Option<Vec<(i16, f32)>>,
+}
+
+/// The trick tables an NPC uses: the disc's table of its `aiprofile` (else `default`), each table
+/// replaced by a mod's for the character key, else for the profile name.
+pub(crate) fn npc_trick_profile(data: &skate_data::living_world::SkaterTrickProfiles, overrides: &BTreeMap<String, NpcTrickTables>, character: &str) -> Option<TrickProfile> {
+    let base = data.for_character(character).cloned();
+    if overrides.is_empty() {
+        return base;
+    }
+    let profile_name = data.character_profile.get(character).map_or("default", String::as_str);
+    let by_key = overrides.get(character);
+    let by_profile = overrides.get(profile_name);
+    let pick = |f: fn(&NpcTrickTables) -> &Option<Vec<(i16, f32)>>, disc: Option<&Vec<(i16, f32)>>| {
+        by_key.and_then(|o| f(o).clone()).or_else(|| by_profile.and_then(|o| f(o).clone())).or_else(|| disc.cloned())
+    };
+    let regular = pick(|o| &o.regular, base.as_ref().map(|b| &b.regular));
+    let nollie = pick(|o| &o.nollie, base.as_ref().map(|b| &b.nollie));
+    (regular.is_some() || nollie.is_some()).then(|| TrickProfile { regular: regular.unwrap_or_default(), nollie: nollie.unwrap_or_default() })
+}
+
+/// A trick id for logs: the catalog name, `none` for -1.
+pub(crate) fn trick_name(trick: i16) -> String {
+    usize::try_from(trick).ok().and_then(|i| skate_core::scoring::catalog::IDENTIFIERS.get(i)).map_or_else(|| if trick < 0 { "none".to_owned() } else { trick.to_string() }, |t| t.0.to_owned())
 }
 
 /// The shipped natural stance table (`skate_core::living_world::stance::RETAIL_TABLE`), parsed once.
@@ -115,6 +156,8 @@ pub(crate) struct NpcReplay {
     pub cursor: LineCursor,
     /// Branch decisions so far (what a host would send).
     pub branches: Vec<BranchRecord>,
+    /// Trick choices so far (what a host would send; a client applies them).
+    pub tricks: Vec<TrickRecord>,
     pub last: Option<ReplaySample>,
     /// The cursor one world tick back: the render draws from it towards `cursor` by the fixed-step
     /// fraction (the player's previous-to-current interpolation), so it never guesses a branch.
@@ -150,6 +193,8 @@ pub(crate) enum NpcSkaterEvent {
     Despawned { id: LivingWorldId, reason: DespawnReason },
     Node { id: LivingWorldId, line: [u8; 16], node: u32, event: u8, flags: u8 },
     Branch { id: LivingWorldId, record: BranchRecord },
+    /// The trick chosen at a start-trick node (`record.recorded` = the line's own).
+    Trick { id: LivingWorldId, record: TrickRecord },
     LineEnd { id: LivingWorldId },
 }
 
@@ -612,7 +657,7 @@ pub(crate) fn track_stance(
 pub(crate) const PUPPET_CLIPS: [&str; 8] =
     ["R_IDLE_RIDE_N_0_CYC", "R_IDLE_RIDE_AGGR_0_CYC", "R_IDLE_RIDE_LOOSE_0_CYC", "R_IDLE_LCOM_000", "IA_IDLE_N_N_0_CYC", "IA_IDLE_LO_N_0_CYC", "G_5050_FS_LOW_0_CYC", "BR_STAND_0_CYC"];
 
-fn npc_lines(state: &PopulationState) -> Arc<BTreeMap<[u8; 16], ReplayLine>> {
+pub(crate) fn npc_lines(state: &PopulationState) -> Arc<BTreeMap<[u8; 16], ReplayLine>> {
     state.npc.lines.clone()
 }
 
@@ -659,7 +704,7 @@ pub(crate) fn apply_records(
                 Name::new(format!("NPC skater {} ({character})", s.id.serial)),
                 Transform::from_translation(at).with_rotation(Quat::from_rotation_y(s.heading)),
                 Visibility::Inherited,
-                NpcReplay { cursor, branches: Vec::new(), last: sample, previous: None },
+                NpcReplay { cursor, branches: Vec::new(), tricks: Vec::new(), last: sample, previous: None },
                 NpcFade { alpha: state.world.config.skaters.leave_fade.fade_in_alpha(0), ..NpcFade::default() },
                 NpcSkaterAudio { list_order: u32::from(*slot), voice: npc.voice, ..Default::default() },
                 NpcStanceTrack::new(npc.stance),
@@ -707,6 +752,8 @@ pub(crate) fn advance(
         replay.cursor.facing_rule = chain.facing_rule;
         // Retail riding-fakie thresholds (data, stock graph values by default).
         replay.cursor.fakie_settings = chain.fakie;
+        // The NPC's trick tables (disc profile, mod overrides), read at its trick slots.
+        let trick_profile = npc_trick_profile(&state.npc.tricks, &settings.skater_trick_profiles, &npc.character);
         while replay.cursor.frames < target && !replay.cursor.finished {
             if replay.cursor.frames + FRAMES_PER_TICK >= target {
                 replay.previous = Some(replay.cursor.clone());
@@ -715,9 +762,11 @@ pub(crate) fn advance(
             let others: Vec<([u8; 16], u32)> = order.iter().filter(|o| o.0 != npc.id).map(|o| (o.1, o.2)).collect();
             let in_use: Vec<[u8; 16]> = others.iter().map(|o| o.0).collect();
             let (position, forward, speed) = s.as_ref().map_or(([0.0; 3], [0.0, 0.0, 1.0], 0.0), |s| (s.position, s.velocity, length(s.velocity)));
-            let ctx = BranchContext { position, forward, speed, players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online, chain };
+            let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_ref(), seed: npc.seed };
+            let ctx = BranchContext { position, forward, speed, players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online, chain, tricks };
             let records = replay.branches.clone();
-            let mut decider = if mirror { Decider::Mirror(&records) } else { Decider::Decide(ctx) };
+            let trick_records = replay.tricks.clone();
+            let mut decider = if mirror { Decider::Mirror(&records, &trick_records) } else { Decider::Decide(ctx) };
             replay.cursor.step(&*lines, &mut decider, &mut out);
             if let Some(o) = order.iter_mut().find(|o| o.0 == npc.id) {
                 o.1 = replay.cursor.line;
@@ -736,6 +785,22 @@ pub(crate) fn advance(
                         replay.branches.push(record.clone());
                     }
                     events.write(NpcSkaterEvent::Branch { id: npc.id, record });
+                }
+                CursorEvent::Trick(record) => {
+                    info!(
+                        "NPC_SKATER_TRICK #{} {} node {} frame {} recorded {} chosen {} mode {}",
+                        npc.id.serial,
+                        npc.character,
+                        record.node,
+                        record.frame,
+                        trick_name(record.recorded),
+                        trick_name(record.chosen),
+                        settings.npc_tricks.mode.name()
+                    );
+                    if !mirror {
+                        replay.tricks.push(record.clone());
+                    }
+                    events.write(NpcSkaterEvent::Trick { id: npc.id, record });
                 }
                 CursorEvent::Finished => {
                     events.write(NpcSkaterEvent::LineEnd { id: npc.id });
@@ -998,7 +1063,7 @@ pub(crate) fn present_pose(
     settings: Res<LivingWorldSettings>,
     state: Res<PopulationState>,
     fixed: Res<Time<Fixed>>,
-    mut npcs: Query<(Entity, &NpcSkater, &NpcReplay, Option<&NpcPuppet>, Option<&mut NpcPuppetClip>, &mut Transform, Option<&NpcStanceTrack>)>,
+    mut npcs: Query<(Entity, &NpcSkater, &NpcReplay, Option<&NpcPuppet>, Option<&mut NpcPuppetClip>, &mut Transform, Option<&NpcStanceTrack>, Option<&super::npc_sim::NpcSim>)>,
     mut joints: Query<&mut Transform, Without<NpcReplay>>,
 ) {
     let lines = npc_lines(&state);
@@ -1010,9 +1075,23 @@ pub(crate) fn present_pose(
     let hz = state.world.clock().hz;
     let ahead = (state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * hz).clamp(0.0, 1.0) as f32
         * FRAMES_PER_TICK as f32;
-    for (e, npc, replay, puppet, current, mut root, stance) in &mut npcs {
+    for (e, npc, replay, puppet, current, mut root, stance, sim) in &mut npcs {
+        // A simulated NPC skater is drawn from its own physics pose, like the player: its
+        // render pose is in world space, so the puppet root sits at the origin.
+        if let Some(sim) = sim {
+            *root = Transform::IDENTITY;
+            if let Some(bindings) = puppet.and_then(|p| p.bindings.as_ref()) {
+                let pose: Vec<Mat4> = sim.render_pose().iter().copied().map(crate::animation::native_matrix).collect();
+                for (joint, local) in bindings.pose_transforms(&pose) {
+                    if let Ok(mut t) = joints.get_mut(joint) {
+                        *t = local;
+                    }
+                }
+            }
+            continue;
+        }
         let (cursor, frac) = match &replay.previous {
-            Some(previous) if !replay.cursor.finished => previous.render_cursor(&*lines, &replay.branches, ahead),
+            Some(previous) if !replay.cursor.finished => previous.render_cursor(&*lines, &replay.branches, &replay.tricks, ahead),
             _ => (replay.cursor.clone(), 0.0),
         };
         let sample = cursor.sample(&*lines, frac);
@@ -1426,7 +1505,7 @@ pub(crate) fn install(app: &mut App) {
     app.init_resource::<NpcSkaterIndex>()
         .init_resource::<NpcSkaterLooks>()
         .add_message::<NpcSkaterEvent>()
-        .add_systems(FixedUpdate, (apply_records, advance, track_stance, log_backwards, log_readout).chain().after(super::step_population))
+        .add_systems(FixedUpdate, (apply_records, advance, super::npc_sim::simulate, track_stance, log_backwards, log_readout).chain().after(super::step_population))
         .add_systems(
             FixedUpdate,
             push_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),

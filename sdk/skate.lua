@@ -501,6 +501,92 @@ function sdk.ui.menu(key, options) end
 ---@param key string
 function sdk.ui.remove_menu(key) end
 
+-- Retail menus (capability `retail_menus` = 1; docs/hails-additions/31-retail-menus.md).
+-- The pause menu (crossbar) and Game Settings come from the retail tables extracted at setup.
+-- Entries are keyed by retail internal names: categories (tabs) `SinglePlayer`, `Multiplayer`,
+-- `Create`, `Learn`, `Options`; items `ChallengeMap`, `GameSettings`, `SkateFeed`, ...; settings
+-- rows `ID_GAMESETTINGS_SFXVOLUME`, .... Modes: `Career`, `CareerPark`, `FreePlay`,
+-- `FreePlayPark`, `FreeSkateRestricted` (and the lobby / challenge modes). Every retail entry
+-- exists; one without a handler is greyed. New entries a mod adds are named `<mod id>.<name>`.
+-- Handled entries send on_event {name="menu_select"|"menu_highlight"|"menu_value",
+-- entry=kind, id=id, mode=mode key, value=new value (menu_value)}. All edits, handlers and
+-- values of a mod are removed when it stops.
+sdk.menus = {}
+
+---@class MenuEntryOptions
+---@field label? string language string id or plain text
+---@field icon? string a retail icon label (map, settings, skatefeed, replay, profile, extras, ...)
+---@field image? string an image inside the mod (wins over icon; drawn once the menus render)
+---@field help? string helper text
+---@field category? string item: the tab it goes into (required for a new item)
+---@field modes? string[] mode keys; empty = every mode
+---@field position? integer 0-based position in the tab / screen / tab bar
+---@field widget? 'option'|'slider'|'selector' setting: required for a new row
+---@field screen? integer setting: settings screen index (0..12 retail; required for a new row)
+
+---@alias MenuRule boolean|{fact?:string, eq?:number, ne?:number, lt?:number, le?:number, gt?:number, ge?:number, modes?:string[], all?:MenuRule[], any?:MenuRule[], not?:MenuRule}
+
+---@class MenuHandleOptions
+---@field select? boolean receive menu_select (default true); this enables the entry
+---@field highlight? boolean receive menu_highlight
+---@field value? boolean|number a settings row's value, kept by the game (menu_value on change)
+---@field enabled? MenuRule when the entry is enabled (over retail's rule)
+---@field visible? MenuRule when the entry is shown (over retail's rule)
+---@field confirm? {title:string, description?:string, yes?:string, no?:string, when?:MenuRule} ask before select
+---@field rule? {kind:"slider"|"toggle"|"cycle", min?:number, max?:number, step?:number, snap?:number, bars?:number, count?:integer, labels?:string[]} Left / Right rule for a settings row (retail rules are the default; reverted on disable)
+
+---@param id string
+---@param options? MenuEntryOptions
+function sdk.menus.category(id, options) end
+---@param id string
+---@param options? MenuEntryOptions
+function sdk.menus.item(id, options) end
+---@param id string
+---@param options? MenuEntryOptions
+function sdk.menus.setting(id, options) end
+---@param entry 'category'|'item'|'setting'
+---@param id string
+---@param modes? string[] empty = everywhere
+function sdk.menus.hide(entry, id, modes) end
+---@param entry 'category'|'item'|'setting'
+---@param id string
+---@param options? MenuHandleOptions
+function sdk.menus.handle(entry, id, options) end
+---@param entry 'category'|'item'|'setting'
+---@param id string
+function sdk.menus.unhandle(entry, id) end
+--- Set a settings row's value. On the mod's own bound row it acts like a menu change (menu_value
+--- event). On any other row (an engine setting such as a volume, Camera Angle or Play Mode, or
+--- another mod's row) the value goes into this mod's own layer on top: shown and applied while the
+--- mod runs, never saved to the player's settings, and removed when the mod stops, so the previous
+--- value comes back. The last mod to write wins.
+---@param id string a settings row
+---@param value boolean|number
+function sdk.menus.set_value(id, value) end
+---@param id string a settings row
+---@return boolean|number|nil
+function sdk.menus.value(id) end
+---@return {mode:string, loaded:boolean, values:table<string, boolean|number>}
+function sdk.menus.info() end
+
+---Supply or replace a front-end APT movie by its retail import name (e.g. 'source/controls/panel')
+---with a JSON file in the mod's folder, in the format setup exports to assets/private/menu-movies
+---(movies/<name>.json). Menus importing it are relinked; the newest mod wins; removed when the mod
+---stops. Loaded state: sdk.menus.info().movies (loaded, imports, failures, mods).
+---@param name string
+---@param path string
+function sdk.menus.movie(name, path) end
+
+---Replace one bitmap of a front-end APT movie by its stable id: the movie's import name (e.g.
+---'source/screens/main/core_menu') plus the bitmap character id (listed in
+---sdk.menus.info().movies.bitmaps), with a PNG in the mod's folder (up to 2048 x 2048). The image
+---covers the same fill area as the retail bitmap (same UVs, sampled clamped or wrapped as the retail
+---unit is). The newest mod wins; removed when the mod stops.
+---@param movie string
+---@param bitmap integer
+---@param path string
+function sdk.menus.bitmap(movie, bitmap, path) end
+
 ---@class NativeContact
 ---@field a {kind:string,index?:integer} board, skater, external, or world
 ---@field b {kind:string,index?:integer}
@@ -986,7 +1072,24 @@ function sdk.audio.seed(n) end
 --   held_is_obstacle, moving_solid} (props and mod bodies as ped navigation obstacles; retail on, 0.2, 0.4,
 --   0.25, held props stay obstacles (true); ours 0.1, 0, moving objects block a ped's step (true)),
 --   npc_skater_props {enabled} (NPC skaters push dynamic props like the player; retail on),
---   ped_vehicle_contact {enabled, push} (traffic cars push peds out of the way; retail on / on, no knock-down).
+--   ped_vehicle_contact {enabled, push} (traffic cars push peds out of the way; retail on / on, no knock-down),
+--   npc_tricks {mode, gate_window, min_air_frames} (the trick an NPC skater does at a recorded ollie / flip
+--   slot: "profile" = retail, re-picked from the character's profile table when the recorded air lasts more
+--   than min_air_frames before the landing; "recorded" = the line's own trick; "none" = no ollies / flips;
+--   retail windows 300 / 50 recorded 60 Hz frames),
+--   skater_trick_profiles {[<character key> or <ai_skater_profiles name>] = {regular = {{trick = <id 0..331>,
+--   weight}, ...}, nollie = {...}}} (replaces that table; an absent table keeps the disc's; a character key
+--   wins over a profile name),
+--   npc_simulated {enabled, radius, max} (NPC skaters near the player as full physics skaters driven by their
+--   AI record; default off until play-tested, 40 m, 3),
+--   skaters / pedestrians / vehicles {enabled, density} (density 1 = retail, 0..4, scales the census caps),
+--   ambient_skaters (NPC skaters offline, retail 3, 0..8),
+--   free_play {traffic, pedestrians, ai_skaters} (retail Free Play mode: traffic / peds 0..1, 0 removes them at once;
+--   ai_skaters on / off; leaving it out keeps career free roam).
+--   Events: on_event {name = "living_world", event = "spawn" | "despawn" (record = kind, id, tick, position,
+--   heading, seed, choice / reason), "npc_trick" (id, line, node, recorded, chosen), "npc_line_end" (id),
+--   "vehicle_contact" (contact = car, ped, speeds, position, normal, depth, reaction), "ped_hit" (id, kind =
+--   "Knockdown" | "Standing", direction = "FromFront" | "FromBack" | "FromLeft" | "FromRight", closing m/s)}.
 -- 'props': default and by_template[<MOBJ template name>] = {contact_padding, penetration_slop,
 --   penetration_correction, max_depenetration_per_tick, restitution_threshold, skater_push_mass,
 --   push_transfer, body_push_speed, board_push_speed, penetration_push_speed, stuck_release_ticks,

@@ -337,6 +337,9 @@ pub(crate) fn advance(
         &mut output.reset,
     )?;
     output.publish(&skater.animation.packet, profile, controls.actor_flags);
+    if let Some(source) = skater.ai_physics.as_mut() {
+        output.publish_ai_physics(source);
+    }
     if let Some(reply) = skater.teleport_state.take_reply() {
         output.publish_external_reset(reply);
     }

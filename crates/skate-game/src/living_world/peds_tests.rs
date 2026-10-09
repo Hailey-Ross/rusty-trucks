@@ -36,6 +36,8 @@ fn data() -> PedData {
         clip("START", 28, 0.8, false, vec![]),
         clip("STOP", 30, 0.5, false, vec![]),
         clip("TURN", 43, 0.0, false, vec![]),
+        clip("HIT", 31, 0.0, false, vec![]),
+        clip("GROUND", 21, 0.0, true, vec![]),
     ]
     .into_iter()
     .map(|c| (c.name.clone(), c))
@@ -44,6 +46,9 @@ fn data() -> PedData {
     let mut set = PedAnimSet::default();
     for (n, c) in [(names::IDLE, "IDLE"), (names::WALK, "WALK"), (names::START, "START"), (names::STOP, "STOP"), (names::TURN_180, "TURN")] {
         set.entries.insert(n.into(), r(c));
+    }
+    for n in skate_core::living_world::peds::skater_contact::REACTION_ANIMS {
+        set.entries.insert((*n).into(), r(if n.contains("GroundCyc") { "GROUND" } else { "HIT" }));
     }
     let mut catalog = PedCatalog::default();
     catalog.categories.insert("aletown".into(), vec!["jock02".into(), "bum02".into()]);
@@ -698,4 +703,28 @@ fn living_world_car_box_matches_the_car_proxy() {
     assert!((b.forward[0] - 1.0).abs() < 1e-5 && b.forward[1].abs() < 1e-5);
     assert!((b.center[0] - 10.3).abs() < 1e-5 && (b.center[1] - 2.7).abs() < 1e-5 && (b.center[2] - 3.0).abs() < 1e-5);
     assert_eq!(b.half, [1.0, 0.7, 2.3]);
+}
+
+/// A skater running into a ped (retail `sub_82E38FB8` kind 5, doc 26 "Skater hits peds"): fast =
+/// knock-down (fall, ground, get-up), slow = standing stumble; the ped reacts once, then walks on.
+#[test]
+fn living_world_a_skater_knocks_a_ped_down_or_makes_it_stumble() {
+    use skate_core::living_world::peds::skater_contact::ReactionKind;
+    use skate_core::living_world::Observer;
+    for (speed, expected) in [(6.0f32, ReactionKind::Knockdown), (1.0, ReactionKind::Standing)] {
+        let mut a = app(60.0);
+        spawn_at_tick(&mut a, record(1, "aletown", 9, 0));
+        run(&mut a, 0.2, 60.0);
+        let at = peds(&mut a)[0].2;
+        a.world_mut().resource_mut::<LivingWorldObservers>().observers = vec![Observer { position: [at.x - 0.5, at.y, at.z], velocity: [speed, 0.0, 0.0] }];
+        run(&mut a, 0.1, 60.0);
+        let hits: Vec<_> = a.world().resource::<Seen>().0.iter().filter_map(|e| if let PedEvent::Hit { kind, closing, .. } = e { Some((*kind, *closing)) } else { None }).collect();
+        assert_eq!(hits.len(), 1, "one reaction while touching: {hits:?}");
+        assert_eq!(hits[0].0, expected, "at {speed} m/s");
+        assert_eq!(peds(&mut a)[0].4, Locomotion::Reaction);
+        // The skater leaves; the reaction ends and the ped is back to locomotion.
+        a.world_mut().resource_mut::<LivingWorldObservers>().observers.clear();
+        run(&mut a, 5.0, 60.0);
+        assert_ne!(peds(&mut a)[0].4, Locomotion::Reaction);
+    }
 }

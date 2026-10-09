@@ -29,6 +29,7 @@ pub mod crosswalk;
 pub mod fade;
 pub mod nav;
 pub mod obstacles;
+pub mod skater_contact;
 pub mod vehicle_contact;
 pub mod wander;
 

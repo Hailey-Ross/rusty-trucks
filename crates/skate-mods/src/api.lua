@@ -372,7 +372,7 @@ function sdk.audio.frontend(name) submit{kind="audio_frontend",name=name} end
 function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",amount=amount} end
 
 -- World tuning (capability world_tuning): patch the living world ("living_world": npc_draw_distance,
--- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, skater_stance, skater_stance_events, ped_obstacles, npc_skater_props, ped_vehicle_contact), dynamic props ("props": default / by_template prop tuning, collision_box)
+-- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, skater_stance, skater_stance_events, ped_obstacles, npc_skater_props, ped_vehicle_contact, npc_tricks, skater_trick_profiles, npc_simulated, skaters, pedestrians, vehicles, ambient_skaters, free_play), dynamic props ("props": default / by_template prop tuning, collision_box)
 -- or prop carrying ("carry": grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed,
 -- turn_rate, grip_reach, linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller,
 -- lever_rotation, lever_yaw, mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal, hold_box_extents,
@@ -687,3 +687,29 @@ function sdk.graphs.set_enabled(graph,target,index,enabled) submit{kind="graph_g
 
 function sdk.rig.configure_part(index,options) submit{kind="rig_part",index=index,options=options} end
 function sdk.rig.reset_part(index) sdk.rig.configure_part(index,nil) end
+
+-- Retail menus (capability retail_menus = 1): the pause menu and Game Settings structure.
+-- Entries: kind 'category' | 'item' | 'setting', keyed by retail internal names; new ones
+-- are named '<mod id>.<name>'. Events arrive in on_event (name menu_select / menu_highlight /
+-- menu_value). Everything is removed when the mod stops.
+sdk.menus = { version = 1 }
+local function menu_info() return as_table(sdk.snapshot.menus) or {} end
+function sdk.menus.category(id, options) submit{kind="menu_category",id=id,options=options} end
+function sdk.menus.item(id, options) submit{kind="menu_item",id=id,options=options} end
+function sdk.menus.setting(id, options) submit{kind="menu_setting",id=id,options=options} end
+function sdk.menus.hide(entry, id, modes) submit{kind="menu_hide",entry=entry,id=id,modes=modes} end
+function sdk.menus.handle(entry, id, options) submit{kind="menu_handle",entry=entry,id=id,options=options} end
+function sdk.menus.unhandle(entry, id) submit{kind="menu_unhandle",entry=entry,id=id} end
+-- set_value: the mod's own top layer takes it as a menu change; on any other row (engine settings,
+-- other mods) it is held in this mod's own layer on top, applied but never saved, removed on stop.
+function sdk.menus.set_value(id, value) submit{kind="menu_set_value",id=id,value=value} end
+function sdk.menus.value(id) return (as_table(menu_info().values) or {})[id] end
+function sdk.menus.info() return menu_info() end
+-- Supply or replace a front-end APT movie by its retail import name (e.g. 'source/controls/panel')
+-- with a JSON file in the mod's folder (the format setup exports to assets/private/menu-movies).
+-- Every menu importing it is relinked; the newest mod wins; removed when the mod stops.
+function sdk.menus.movie(name, path) submit{kind="menu_movie",name=name,path=path} end
+-- Replace one bitmap of a menu movie by its stable id: the movie's import name plus the bitmap
+-- character id (sdk.menus.info().movies.bitmaps lists them), with a PNG in the mod's folder. The
+-- image covers the same fill area as the retail bitmap; newest mod wins; removed when the mod stops.
+function sdk.menus.bitmap(movie, bitmap, path) submit{kind="menu_bitmap",movie=movie,bitmap=bitmap,path=path} end

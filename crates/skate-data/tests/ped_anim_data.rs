@@ -105,6 +105,14 @@ fn every_census_entity_resolves_a_look_and_animation() {
         .flatten()
         .collect();
     eprintln!("unresolved remap entries: {}", t.unresolved);
+    // Collision values [data]: knock-downs above 3.0, allowed except for the marquee sets, 1.5 s on
+    // the ground (security 0.5 s); the reaction animations are named in every regular set.
+    let c = |k: &str| t.anim_sets[k].collision;
+    assert_eq!((c("default").knockdown_speed, c("default").can_knock_down, c("default").ground_seconds), ([3.0, 3.0], true, 1.5));
+    assert!(!c("marquee").can_knock_down && c("security01").ground_seconds == 0.5);
+    for name in skate_core::living_world::peds::skater_contact::REACTION_ANIMS {
+        assert!(t.anim_sets["default"].entries.contains_key(*name), "default set: {name} missing");
+    }
     let o = PedOverrides::default();
     let mut recipes = std::collections::BTreeSet::new();
     for entity in &used {
@@ -122,6 +130,12 @@ fn every_census_entity_resolves_a_look_and_animation() {
                 }
             }
             assert!(PedAnimPlayer::new(set, draw as u64).is_some());
+            // Collision reactions: every reaction animation resolves to clips in the bank.
+            for name in skate_core::living_world::peds::skater_contact::REACTION_ANIMS {
+                for c in set.entries.get(*name).into_iter().flatten() {
+                    assert!(clips.contains(&c.clip), "{}: {name} -> {} not in the bank", look.anim_set, c.clip);
+                }
+            }
         }
     }
     eprintln!("{} census entities, {} recipes", used.len(), recipes.len());

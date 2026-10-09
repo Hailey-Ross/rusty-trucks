@@ -27,6 +27,10 @@ use std::path::Path;
 
 #[derive(Resource)]
 pub(crate) struct SkaterRuntime {
+    /// The AI controller's physics record (an NPC skater; `None` for the local player). Retail:
+    /// AIPhysicsInput `*(skater+1840)`, written by the PathController, with the actor's "input
+    /// fresh" bit (`1904` bit 27) and the controller pointer (`1828`).
+    pub ai_physics: Option<AiPhysicsSource>,
     pub scoring: crate::scoring_runtime::Runtime,
     pub climbing: super::climbing::Runtime,
     /// Completed physical pose in native animation space, read by rendering.
@@ -266,6 +270,7 @@ impl SkaterRuntime {
             initial_targets.following_com,
         ];
         Ok(Self {
+            ai_physics: None,
             respawn,
             scoring: crate::scoring_runtime::Runtime::load(&data)?,
             climbing: super::climbing::Runtime::load(asset_root, &animation.evaluator.frames.bone_names)?,
@@ -358,4 +363,13 @@ impl SkaterRuntime {
             )?,
         })
     }
+}
+
+/// An NPC skater's AI physics record for the next tick (doc 26, "Simulated NPC skaters").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AiPhysicsSource {
+    /// The record (`skate_core::riding::grounded::state::board_path` reads +32 / +48 / +64 / +160).
+    pub record: skate_core::animation::output::actor_packet::ExternalPhysicsInput,
+    /// Set when the AI wrote `record` this tick (`1904` bit 27); the next packet consumes it.
+    pub fresh: bool,
 }

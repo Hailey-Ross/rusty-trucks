@@ -315,6 +315,44 @@ pub(crate) enum PedEvent {
     Rejected { id: LivingWorldId, category: String },
     Despawned { id: LivingWorldId, reason: DespawnReason },
     State { id: LivingWorldId, state: Locomotion },
+    /// A skater knocked the ped down or made it stumble (`skate_core::living_world::peds::skater_contact`).
+    Hit {
+        id: LivingWorldId,
+        kind: skate_core::living_world::peds::skater_contact::ReactionKind,
+        direction: skate_core::living_world::peds::skater_contact::ReactionDirection,
+        /// The skater's speed into the ped, m/s (our stand-in for the ped body's speed).
+        closing: f32,
+    },
+}
+
+/// Skater against ped contact (doc 26, "Skater hits peds"). NOT RETAIL YET: the skater is a
+/// vertical cylinder at the observer (the board) of this radius and 2 m tall, and the ped body's
+/// speed after the contact (retail: the Havok solve) is the skater's speed into the ped.
+pub(crate) const SKATER_CONTACT_RADIUS: f32 = 0.35;
+
+/// The retail reaction to a skater at `skater` moving at `velocity` touching the ped at `ped`
+/// facing `heading`: `None` when not touching, not moving into it, or no reaction.
+pub(crate) fn skater_hit(
+    ped: Vec3,
+    heading: f32,
+    ped_radius: f32,
+    skater: [f32; 3],
+    velocity: [f32; 3],
+    rules: &skate_core::living_world::peds::skater_contact::CollisionRules,
+) -> Option<(skate_core::living_world::peds::skater_contact::ReactionKind, skate_core::living_world::peds::skater_contact::ReactionDirection, f32)> {
+    use skate_core::living_world::peds::skater_contact::{reaction_direction, skater_reaction};
+    let d = [ped.x - skater[0], ped.z - skater[2]];
+    let dist = (d[0] * d[0] + d[1] * d[1]).sqrt();
+    if dist >= ped_radius + SKATER_CONTACT_RADIUS || (ped.y - skater[1]).abs() > 2.0 || dist <= 1e-4 {
+        return None;
+    }
+    let n = [d[0] / dist, d[1] / dist];
+    let closing = velocity[0] * n[0] + velocity[2] * n[1];
+    if closing <= 0.0 {
+        return None;
+    }
+    let kind = skater_reaction([closing, 0.0], [0.0, 0.0], rules, false)?;
+    Some((kind, reaction_direction(n, [heading.sin(), heading.cos()]), closing))
 }
 
 impl PedClips for PedData {
@@ -499,6 +537,7 @@ pub(crate) fn advance_peds(
     mut floating_logged: Local<std::collections::HashMap<LivingWorldId, u64>>,
     trace: Res<PedObstacleTrace>,
     mut blocked_logged: Local<std::collections::HashMap<LivingWorldId, u64>>,
+    observers: Res<super::LivingWorldObservers>,
 ) {
     let obstacles = &obstacles.0;
     let hz = state.world.clock().hz as u64;
@@ -520,7 +559,19 @@ pub(crate) fn advance_peds(
         let me = id_order(ped.id);
         while body.ticks < target {
             let mut turn = 0.0;
+            // A skater running into the ped (retail `sub_82E38FB8` kind 5).
+            if body.player.state != Locomotion::Reaction {
+                let radius = data.nav.as_deref().map_or(super::vehicle_contacts::FALLBACK_PED_RADIUS, |m| m.agent[1]);
+                if let Some((kind, direction, closing)) = observers.observers.iter().find_map(|o| skater_hit(body.position, body.heading, radius, o.position, o.velocity, &set.collision)) {
+                    let steps = skate_core::living_world::peds::skater_contact::reaction_steps(kind, direction);
+                    if body.player.react(set, steps, set.collision.ground_seconds) {
+                        info!("PED_SKATER_CONTACT ped=#{} kind={} direction={} closing={closing:.2} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, kind.name(), direction.name(), body.position.x, body.position.y, body.position.z);
+                        events.write(PedEvent::Hit { id: ped.id, kind, direction, closing });
+                    }
+                }
+            }
             match data.nav.as_deref() {
+                _ if body.player.state == Locomotion::Reaction => body.player.intent = skate_core::living_world::peds::anim::Intent::Idle,
                 Some(mesh) => {
                     let out = body.nav.step_avoiding(mesh, &nav_settings.wander, nav_settings.crosswalk, signals, me, body.position.to_array(), body.heading, body.player.state, &neighbours, Some(obstacles), dt);
                     body.player.intent = out.intent;

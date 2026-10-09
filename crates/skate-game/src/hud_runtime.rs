@@ -118,7 +118,7 @@ impl Host for Bindings {
             ("Tricks", "GetCurrentTrickStance") => array(vm, self.input.stance.map(Value::Bool)),
             ("Tricks", "GetCurrentTrickName") => Ok(Value::Text(format!(
                 "#{}",
-                crate::scoring_hud::localize_trick(
+                crate::apt_text::localize_trick(
                     &self.input.trick_name,
                     Some(&self.movie.text_assets)
                 )
@@ -127,7 +127,7 @@ impl Host for Bindings {
                 let mut metrics = self.input.trick_metrics.clone();
                 metrics[0] = Value::Text(format!(
                     "#{}",
-                    crate::scoring_hud::localize_trick(
+                    crate::apt_text::localize_trick(
                         &self.input.trick_name,
                         Some(&self.movie.text_assets)
                     )
@@ -195,13 +195,12 @@ impl Runtime {
     }
     fn drain(&mut self) -> Result<(), String> {
         let mut calls = 0;
-        while let Some((object, offset)) = self.bindings.movie.pending.pop_front() {
+        while let Some(crate::apt_movie::Pending { object, offset, .. }) =
+            self.bindings.movie.next_action()
+        {
             calls += 1;
             if calls > 4096 {
                 return Err("HUD frame action limit".into());
-            }
-            if !self.bindings.movie.instances.contains_key(&object) {
-                continue;
             }
             let code = self
                 .bindings

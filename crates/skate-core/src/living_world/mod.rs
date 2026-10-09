@@ -1,4 +1,4 @@
-//! Living world population core (doc `docs/hails-additions/26-living-world.md`, milestone 2).
+//! Living world population core (doc `docs/hails-additions/26b-living-world-population.md`, milestone 2).
 //!
 //! One census engine for every ambient kind: NPC skaters, pedestrians and vehicles (props and
 //! dynamic objects later). Pure and engine-independent: no ECS, no I/O, no rendering. The game
@@ -17,11 +17,13 @@
 //! needed to recreate the entity on another machine, including the seed of its own sub-RNG.
 //! Decisions never depend on hash-map iteration order or frame time.
 
+pub mod ai_record;
 pub mod census;
 pub mod clock;
 pub mod config;
 pub mod draw_distance;
 pub mod leave_fade;
+pub mod npc_tricks;
 pub mod peds;
 pub mod population;
 pub mod replay;
