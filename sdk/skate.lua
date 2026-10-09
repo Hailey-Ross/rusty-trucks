@@ -982,8 +982,9 @@ function sdk.audio.seed(n) end
 --   skater_blend_seconds {[phase or 'default'] = seconds} (NPC skater crossfade into a phase's clip,
 --   the player's graph transition curve; stock default 0.2, 0 = cut, max 10; 'trick_takeoff' 0.05 and
 --   'trick_air' 0.1 set the transitions into a trick's ground and air clips),
---   ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height}
---   (props and mod bodies as ped navigation obstacles; retail on, 0.2, 0.4, 0.25; ours 0.1, 0),
+--   ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height,
+--   held_is_obstacle, moving_solid} (props and mod bodies as ped navigation obstacles; retail on, 0.2, 0.4,
+--   0.25, held props stay obstacles (true); ours 0.1, 0, moving objects block a ped's step (true)),
 --   npc_skater_props {enabled} (NPC skaters push dynamic props like the player; retail on),
 --   ped_vehicle_contact {enabled, push} (traffic cars push peds out of the way; retail on / on, no knock-down).
 -- 'props': default and by_template[<MOBJ template name>] = {contact_padding, penetration_slop,
@@ -993,19 +994,42 @@ function sdk.audio.seed(n) end
 -- 'carry': grab_bit (28, RB), placement_bit (20, B), grab_range (2.0 m), and moving a held prop:
 --   push_speed (1.4 m/s), pull_speed (1.0 m/s), side_speed (0.8 m/s) at full left stick,
 --   turn_rate (1.6 rad/s) at full right stick X, grip_reach (0.35 m between the skater and the
---   dragged prop's near face).
+--   dragged prop's near face). Per prop type: by_template[<MOBJ template name or type record name,
+--   e.g. 'dt_garbagebin' (HELD_PROP type=)>] = {material_held, material_free, material_free_upright,
+--   upright_pair, restitution, record_272, linear_drag, angular_drag (per second), mass (kg),
+--   maximum_linear_velocity (m/s), maximum_angular_velocity (rad/s), inertia_scale = {x,y,z},
+--   inertia_offset = {x,y,z} (box inertia from the half extents x scale + offset)}; unset fields
+--   keep the type's retail values (the disc's livingworld_dynamicobject_characteristics record),
+--   restored when the mod is disabled.
 -- 'shadows': world_floor = {r, g, b} (each 0..1; retail {0.05, 0.09, 0.13}): the lightest a dynamic
 --   object's shadow (skaters, cars, props, mod graphics) can leave on the baked world. Retail adds it
 --   to the shadow map and keeps the darker of that and the baked lightmap, so shadows that fall into
 --   baked shade (a car on a bridge over shaded ground) leave no mark; 0 = full-strength shadows.
+-- 'backdrop': visible (retail true): the district's global presentation model (Industrial's sea
+--   around the docks and harbour, the far sea planes, distant tree walls); false hides it.
+--   proxy_terrain (retail true): the far-proxy hills retail draws where no full-detail cell
+--   replaces them (Industrial's south hills under the tree wall); false hides them.
+-- 'respawn': air_timeout_ticks (retail 300, integer 1..216000): fixed 1/60 s ticks a skater may stay
+--   in the air before the game sends them to the last safe checkpoint (retail: 5 s, e.g. falling off
+--   the map). The wipeout auto reset keeps its own vault times.
+-- 'exposure': the auto-exposure meter. meter_weights = {r, g, b} (each 0..1; retail {0.3, 0.4, 0.3}):
+--   how much each channel of the tone-mapped frame counts towards its brightness; meter_scale (0..100;
+--   retail 2.515): the factor on the centre-weighted average before it is compared with the area's
+--   target. A higher reading lowers the exposure.
+-- 'ghost': the skater fades in after every placement (checkpoint respawn, teleport, session marker
+--   return, spawn). enabled (retail true); fade_in_seconds (retail 1.0, 0..60, 0 = no fade): seconds from
+--   placement to fully solid; hold_alpha (retail 0.68, 0..1): the opacity retail waits at while its hold
+--   condition is set (not decoded yet, so it has no effect now).
+-- 'decals': opacity (retail 1.0, 0..1): strength of every world decal (stains, wear, graphics) over its
+--   surface. Retail blends each decal at its own texture alpha; lower values fade them. Applies at once.
 sdk.world = {}
 ---Set (a table) or restore (`nil`) this mod's patch of a world tuning domain.
----@param domain 'living_world'|'props'|'carry'|'shadows'
+---@param domain 'living_world'|'props'|'carry'|'shadows'|'backdrop'|'respawn'|'exposure'|'ghost'|'decals'
 ---@param patch table|nil
 function sdk.world.set_tuning(domain, patch) end
 ---Request a domain as the game uses it now; read it as `sdk.commands.result(key).value`.
 ---@param key string command result key
----@param domain 'living_world'|'props'|'carry'|'shadows'
+---@param domain 'living_world'|'props'|'carry'|'shadows'|'backdrop'|'respawn'|'exposure'|'ghost'|'decals'
 function sdk.world.tuning(key, domain) end
 
 -- Audio tuning (capability `audio_tuning`): patch the game's typed tuning while this mod runs.

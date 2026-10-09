@@ -347,7 +347,7 @@ Change (`crates/skate-game/src/trace_all.rs`): `apply()` runs first in the game 
 | `SKATE_FRAME_LOG` | `frames.tsv`, one row per frame (writer thread) |
 | `SKATE_AUDIO_STATE_LOG` | `audio_state.tsv`, one row per audio frame (writer thread; rows are now copied as values and formatted on the writer thread) |
 | `SKATE_PERF_REPORT` | `perf.json`, rolling: 15 s windows for the whole session, rewritten by the `perf-report` thread after every window (write then rename), one `SKATE_PERF window=` line per window; never exits |
-| `SKATE_PERF_GPU` | render diagnostics in the report (GPU pass times when supported) |
+| `SKATE_PERF_GPU` | render diagnostics in the report (GPU pass times when supported); in trace-all the GPU queries run on one frame in 30 (`SKATE_PERF_GPU_EVERY`, see [GPU queries sampled](#gpu-queries-sampled-skate_perf_gpu_every)) |
 | `SKATE_PERF_RENDER` | render phase split in the report, reset per window |
 | `SKATE_GPU_TIMING` | in trace-all the features are not forced: Bevy's default `Functionality` priority already requests every feature the adapter has, so timestamps are on when supported and device creation cannot fail; `GPU_TIMING timestamp_query=yes/no` logged once |
 | `SKATE_AUDIO_TRACE` | log: `AUDIO_NATIVE` post/release, `AUDIO_EVENT` brake/push/grind |
@@ -392,6 +392,35 @@ About 6 us per frame, 0.04 % of a 16.7 ms frame and inside the run-to-run spread
 ### Files
 
 `crates/skate-game/src/trace_all.rs` (new), `main.rs`, `app.rs`, `performance.rs`, `profiling.rs`, `game_audio/state_log.rs`, `physics/manual_landing_log.rs` (new), `physics.rs`, `physics/prop_dynamics.rs`, `physics/offboard/board_manager.rs`, `retail_render.rs`, `frame_timing/mod.rs`.
+
+### GPU queries sampled (`SKATE_PERF_GPU_EVERY`)
+
+Status: done in the `world/living-world` worktree (2026-10-08), uncommitted, not yet played.
+
+Problem: after a trace-all session (University, 2026-10-08 09:58) the user said "ooooof the fps and lag on the trace all is ROUGH." The perf report showed every window at a 33.6 ms median (p95 about 34.6 ms) with the main schedule at about 9 ms, physics about 3 ms, render CPU about 3 ms and the GPU passes about 9.5 ms in total. The suspect was the per-pass GPU timestamp and pipeline statistics queries that `SKATE_PERF_GPU` adds (Bevy `RenderDiagnosticsPlugin`) on every pass of every frame.
+
+Root cause of the 33.6 ms: not the queries. The settings file every launcher version shares (`data/installations/<id>/settings/graphics.json`, written 2026-10-07 23:20) has `"fps": 30`, the graphics menu's FPS limit, and `graphics_menu::pace` sleeps every frame up to 1/30 s. The game runs with `PresentMode::AutoNoVsync`, so nothing else locks the frame rate. The session's frame log agrees: frame median 33.56 ms against a main thread median of 8.76 ms, and `AUDIO_TIMING frame=33.6 ms`. The missing ~24 ms per frame is the limiter's sleep. Turning Esc > GRAPHICS > FPS limit back to Off brings the frame rate back.
+
+The queries still cost something, so they are sampled now. Bevy's readback is asynchronous (`map_async`, collected on a later frame), so the queries never stall the CPU; their cost is GPU work and resolve copies on every pass.
+
+Change (`crates/skate-game/src/performance.rs`):
+- `SKATE_PERF_GPU_EVERY=<frames>`: how often the GPU queries run. Default 30 in trace-all, 1 (every frame, the old behaviour) for the one-shot `SKATE_PERF_REPORT` benchmark; 0 turns the GPU queries off while every other trace stays on. A launcher version or user can set it like any other switch (`versions.json` `env`). The value is logged at startup (`SKATE_PERF_GPU sample_every=`) and written into the report (`gpu_sample_every_frames`).
+- Bevy's render system only records GPU queries while its diagnostics recorder resource is in the render world (it removes it, runs the graph, puts it back). A render world system right before `RenderSystems::Render` moves the recorder aside on frames that are not sampled and back on sampled ones. The recorder type is crate-private in bevy_render, so it is named through the public `RenderContext::new` signature; no vendoring.
+- Bevy smooths render diagnostics over about 0.1 s, so with every frame sampled the report already held roughly the newest frames; with one frame in 30 it holds the newest sampled frame. Readbacks in flight are collected on the next sampled frame, so values arrive up to one interval late.
+- Nothing else changes: frame log, audio state log, perf windows, render phase split and log lines are written by the same code as before.
+
+Measured (release build, same build and scene for every mode: University spawn, idle, muted, windowed 1280x800, FPS limit off through a separate settings folder, RTX 4080 SUPER, Vulkan; 60 s per run, first 25 s dropped; two rounds, the second in reverse order; tool `.local/research/traceall-gpu-bench.ps1`):
+
+| Mode | Round 1 frame ms median / p95 | Round 2 frame ms median / p95 | Main ms median (r1 / r2) |
+|---|---|---|---|
+| no trace (frame log only) | 2.46 / 4.67 | 3.27 / 5.94 | 2.03 / 2.56 |
+| trace-all, GPU queries off (`EVERY=0`) | 2.60 / 4.86 | 2.79 / 4.99 | 2.10 / 2.21 |
+| trace-all, sampled (default, 30) | 3.54 / 5.99 | 2.95 / 5.28 | 2.72 / 2.32 |
+| trace-all, every frame (`EVERY=1`, old) | 3.83 / 6.20 | 4.01 / 6.29 | 2.81 / 2.92 |
+
+Every-frame queries cost about 1.2 ms per frame here (median 3.92 against 2.70 with them off, both rounds averaged), about 40 % of a frame in this light scene. Sampled costs 0.16 to 0.94 ms over off, inside the run-to-run spread (the no-trace runs differ by 0.8 ms between rounds). At the user's 30 fps limit none of this was visible; it matters once the limit is off.
+
+Identical traces: in all six trace-all runs the audio state log has the same 88-column header and 0 malformed rows, the frame log the same header and 0 malformed rows, and `perf.json` the same keys with 3 windows. Sampled and every-frame reports both hold the 17 `elapsed_gpu` entries. The sampled report lists 76 render diagnostics against 82: six invocation counts of the transparent 2D/3D passes were zero on every sampled frame, and the report already leaves out zero values. Use `SKATE_PERF_GPU_EVERY=1` to catch passes that only run now and then. Tests: `performance::tests::gpu_sample_interval_defaults_and_overrides`, `performance::tests::gpu_gate_parks_and_restores_the_recorder` (the recorder is never lost or doubled), and the existing `frame_timing::tests::game_is_identical_with_trace_all_on_or_off` / `..._with_diagnostics_on_or_off` pass (28 passed in `performance::`, `frame_timing::`, `trace_all::`).
 
 ### Open questions
 

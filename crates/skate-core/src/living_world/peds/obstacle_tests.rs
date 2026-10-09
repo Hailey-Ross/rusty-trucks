@@ -28,7 +28,7 @@ fn grid(nx: i32, nz: i32, cell: f32) -> NavMesh {
 const AXES: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 fn bin(id: u64, x: f32, z: f32) -> ObstacleInput {
-    ObstacleInput { id, center: [x, 0.5, z], axes: AXES, half_extents: [0.35, 0.5, 0.35], velocity: [0.0; 3], inactive: false }
+    ObstacleInput { id, center: [x, 0.5, z], axes: AXES, half_extents: [0.35, 0.5, 0.35], velocity: [0.0; 3], inactive: false, held: false }
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn retail_cut_rules_rest_move_recut_and_carry() {
     assert!(o.update(&[ObstacleInput { center: [1.06, 0.5, 0.0], ..slow }]), "0.06 m re-cuts");
     assert_eq!(o.states[&7].cut.unwrap().center, [1.06, 0.0]);
     assert!(o.version > v1 && v1 > v0);
-    // Carried (retail state word 1): no obstacle; gone from the list: removed.
+    // Retail obstacle-off word (+144+4252 == 1, meaning not decoded): no obstacle; gone from the list: removed.
     assert!(o.update(&[ObstacleInput { inactive: true, ..slow }]));
     assert!(o.states[&7].cut.is_none());
     assert!(o.update(&[bin(8, 3.0, 3.0)]));
@@ -72,18 +72,18 @@ fn retail_cut_rules_rest_move_recut_and_carry() {
 fn footprint_follows_the_box_orientation() {
     // A bench 2 m long along x, turned 90 degrees about y: long along z.
     let (s, c) = (std::f32::consts::FRAC_PI_2.sin(), std::f32::consts::FRAC_PI_2.cos());
-    let turned = ObstacleInput { id: 1, center: [0.0, 0.4, 0.0], axes: [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]], half_extents: [1.0, 0.4, 0.3], velocity: [0.0; 3], inactive: false };
+    let turned = ObstacleInput { id: 1, center: [0.0, 0.4, 0.0], axes: [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]], half_extents: [1.0, 0.4, 0.3], velocity: [0.0; 3], inactive: false, held: false };
     let f = Footprint::of(&turned, 0.2);
     assert!(f.contains([0.0, 0.0, 0.9], 0.0) && !f.contains([0.9, 0.0, 0.0], 0.0), "{f:?}");
     assert!((f.y_min - 0.0).abs() < 1e-5 && (f.y_max - 0.8).abs() < 1e-5);
     // A flat thing below the step height does not block; a ped on a different level is not blocked.
     let mut o = NavObstacles::new(ObstacleParams::default());
-    o.update(&[ObstacleInput { id: 2, center: [5.0, 0.05, 5.0], axes: AXES, half_extents: [0.5, 0.05, 0.5], velocity: [0.0; 3], inactive: false }, turned]);
+    o.update(&[ObstacleInput { id: 2, center: [5.0, 0.05, 5.0], axes: AXES, half_extents: [0.5, 0.05, 0.5], velocity: [0.0; 3], inactive: false, held: false }, turned]);
     assert!(o.blocked([5.0, 0.0, 5.0], 0.35), "retail cuts every box, a flat board too (raised to 0.2 m)");
     assert!(o.blocked([0.0, 0.0, 0.9], 0.35));
     assert!(!o.blocked([0.0, 5.0, 0.9], 0.35), "a ped on a ledge above");
     o.set_params(ObstacleParams { step_height: 0.3, ..ObstacleParams::default() });
-    o.update(&[ObstacleInput { id: 2, center: [5.0, 0.05, 5.0], axes: AXES, half_extents: [0.5, 0.05, 0.5], velocity: [0.0; 3], inactive: false }, turned]);
+    o.update(&[ObstacleInput { id: 2, center: [5.0, 0.05, 5.0], axes: AXES, half_extents: [0.5, 0.05, 0.5], velocity: [0.0; 3], inactive: false, held: false }, turned]);
     assert!(!o.blocked([5.0, 0.0, 5.0], 0.35), "a mod's step height steps over it");
 }
 
@@ -216,4 +216,34 @@ fn step_check_lets_a_ped_out_of_a_prop_pushed_onto_it() {
     // Carried props do not block.
     o.update(&[ObstacleInput { inactive: true, ..bin(1, 0.0, 0.0) }]);
     assert!(o.step_ok([1.0, 0.0, 0.0], [0.5, 0.0, 0.0], 0.35));
+}
+
+/// A prop held by Move Object stays an obstacle (retail: the hold only sets DMO+4464 bit 0x20, which
+/// the obstacle code never reads; the off gate is the separate word +144+4252): cut while held
+/// still, solid for a ped's step while dragged faster than 0.4 m/s, and the mod switch restores
+/// the earlier "held = ignored" rule.
+#[test]
+fn held_prop_stays_an_obstacle() {
+    let mut o = NavObstacles::new(ObstacleParams::default());
+    assert!(ObstacleParams::default().held_is_obstacle, "retail default");
+    let held_still = ObstacleInput { held: true, ..bin(1, 0.0, 0.0) };
+    assert!(o.update(&[held_still]));
+    assert!(o.states[&1].cut.is_some() && o.states[&1].held && !o.states[&1].inactive);
+    assert!(o.blocked([0.0, 0.0, 0.0], 0.35));
+    // Dragged at 1 m/s: no cut (moving), but a ped cannot step into it.
+    let dragged = ObstacleInput { center: [0.5, 0.5, 0.0], velocity: [1.0, 0.0, 0.0], ..held_still };
+    assert!(o.update(&[dragged]));
+    assert!(o.states[&1].cut.is_none() && o.states[&1].moving);
+    assert!(!o.step_ok([-0.5, 0.0, 0.0], [0.3, 0.0, 0.0], 0.35), "a ped walks into the dragged prop");
+    assert!(o.step_ok([-1.5, 0.0, 0.0], [-1.4, 0.0, 0.0], 0.35), "clear of it");
+    // Stand-in switch (NOT RETAIL YET, retail = NavPower moving avoider): off = not solid.
+    o.set_params(ObstacleParams { moving_solid: false, ..ObstacleParams::default() });
+    o.update(&[dragged]);
+    assert!(o.step_ok([-0.5, 0.0, 0.0], [0.3, 0.0, 0.0], 0.35));
+    // Mod switch off: held = ignored (the earlier port's rule).
+    o.set_params(ObstacleParams { held_is_obstacle: false, ..ObstacleParams::default() });
+    o.update(&[dragged]);
+    assert!(o.states[&1].inactive && o.step_ok([-0.5, 0.0, 0.0], [0.3, 0.0, 0.0], 0.35));
+    o.update(&[held_still]);
+    assert!(o.cut_count() == 0 && !o.blocked([0.0, 0.0, 0.0], 0.35));
 }

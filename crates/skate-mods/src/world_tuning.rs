@@ -18,8 +18,15 @@
 //!   clip; stock graph default 0.2 s, 0 = cut; also `trick_takeoff` 0.05 s / `trick_air` 0.1 s),
 //!   `skater_clips["trick.<scorable name>"]` = a trick animation base (`<base>_G` / `<base>_A`),
 //!   `skater_clips["fakie_channel"]` = the stock tree overlaid while riding fakie (`B_FAKIE_CHANNEL`),
+//!   `skater_stance {[<record id hex> or <record name>] = "regular" | "goofy"}` (NPC skater natural
+//!   stance, read once at spawn; retail values from the measured table, unknown records goofy),
+//!   `skater_stance_events {board_backward, mirrored, switch = <clip attribute name>}` (the
+//!   trick clip attributes that toggle an NPC skater's stance bits; retail `animboardbackward` /
+//!   `mirrored` / `switch`, empty = that toggle off),
 //!   `ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin,
-//!   step_height}` (props and mod bodies as ped navigation obstacles; retail on / 0.2 / 0.4 / 0.25),
+//!   step_height, held_is_obstacle, moving_solid}` (props and mod bodies as ped navigation
+//!   obstacles; retail on / 0.2 / 0.4 / 0.25 / held props stay obstacles; `moving_solid` is our
+//!   stand-in for NavPower's moving avoider, default on),
 //!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on),
 //!   `ped_vehicle_contact {enabled, push}` (traffic cars touching peds; retail on / on: the ped is
 //!   pushed out of the car, no knock-down).
@@ -39,18 +46,42 @@
 //!   `record_272_speed_scale` (2.0) and per template `record_272`. `grip_reach` sets the retail follow
 //!   reach (0.65 m). Contact material blocks: `commanded_material` ([0.03, 0.02] static / dynamic
 //!   friction), `upright_cos` (0.65) and per template `material_held`, `material_free`,
-//!   `material_free_upright`, `upright_pair`, `restitution`.
+//!   `material_free_upright`, `upright_pair`, `restitution`, `linear_drag`, `angular_drag` (per
+//!   second, retail DMO data +308 / +336 of the type), `mass` (kg, +304), `maximum_linear_velocity` /
+//!   `maximum_angular_velocity` (+292 / +296) and `inertia_scale` / `inertia_offset` (+16 / +32).
 //! - `shadows`: `world_floor = {r, g, b}`, the lightest a dynamic object's shadow can make the baked
 //!   world (each 0..=1, in the shader's squared lightmap space). Retail {0.05, 0.09, 0.13}: the
 //!   constant every retail world receiver shader adds to its shadow-map visibility before taking
 //!   the minimum with the baked lightmap.
+//! - `backdrop`: `visible` (bool), the district's global presentation model (Industrial's sea, the
+//!   far sea planes, distant tree walls). Retail draws it (true). `proxy_terrain` (bool), the
+//!   far-proxy hills retail leaves drawn where no full-detail cell pairs with them (Industrial's
+//!   south hills under the tree wall). Retail true.
+//! - `respawn`: `air_timeout_ticks` (integer, 1..=[`MAX_AIR_TIMEOUT_TICKS`]), the fixed 1/60 s
+//!   ticks a skater may spend in the air before the checkpoint respawn (retail 300 = 5 s,
+//!   `CalcSuggestedState` `count > 300`), e.g. after falling off the map.
+//! - `exposure`: the auto-exposure meter. `meter_weights = {r, g, b}` (each 0..=1; retail
+//!   {0.3, 0.4, 0.3}, the channel weights retail's bloom downsample dots its tone-mapped value with)
+//!   and `meter_scale` (0..=[`MAX_METER_SCALE`]; retail 2.515, the evaluator's average scale).
+//! - `ghost`: the skater fade-in after every placement (respawn, teleport, marker return, spawn).
+//!   `enabled` (bool, retail true), `fade_in_seconds` (0..=[`MAX_GHOST_FADE_IN_SECONDS`], retail
+//!   1.0; 0 = no fade) and `hold_alpha` (0..=1, retail 0.68, the opacity the fade waits at while
+//!   retail's hold condition is set; that condition is not decoded yet, so it has no effect now).
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const DOMAINS: [&str; 4] = ["living_world", "props", "carry", "shadows"];
+pub const DOMAINS: [&str; 9] = ["living_world", "props", "carry", "shadows", "backdrop", "respawn", "exposure", "ghost", "decals"];
+
+/// Longest skater fade-in after a placement a mod may set (s).
+pub const MAX_GHOST_FADE_IN_SECONDS: f32 = 60.0;
+
+/// Largest accepted exposure `meter_scale`.
+pub const MAX_METER_SCALE: f32 = 100.0;
+/// Longest air timeout a mod may set: one hour of 1/60 s ticks.
+pub const MAX_AIR_TIMEOUT_TICKS: u32 = 216_000;
 /// Upper bound for every number (keeps a typo from building a 1e30 m fade range).
 pub const MAX_NUMBER: f32 = 100_000.0;
 /// Stable NPC skater replay phase ids (`skate_core::living_world::replay::ReplayPhase::name`).
@@ -66,6 +97,10 @@ pub const NPC_SKATER_FACING_RULES: [&str; 2] = ["riding_entry", "per_node"];
 /// Extra `skater_blend_seconds` keys: into a trick's ground clip (retail 0.05 s) and into its air
 /// clip when no ground clip ran before it (retail 0.1 s).
 pub const NPC_SKATER_TRICK_BLENDS: [&str; 2] = ["trick_takeoff", "trick_air"];
+/// `skater_stance` values (`skate_core::living_world::stance::NaturalStance::name`).
+pub const NPC_SKATER_STANCES: [&str; 2] = ["regular", "goofy"];
+/// `skater_stance_events` keys (`skate_core::living_world::stance::StanceEvents::KEYS`).
+pub const NPC_SKATER_STANCE_EVENTS: [&str; 3] = ["board_backward", "mirrored", "switch"];
 /// Longest NPC skater crossfade a mod may set (s).
 pub const MAX_BLEND_SECONDS: f32 = 10.0;
 /// Per-template entries one patch may carry.
@@ -103,6 +138,12 @@ pub struct LivingWorldPatch {
     pub skater_clips: Option<BTreeMap<String, String>>,
     /// NPC skater crossfade time (s) into a phase's clip, per phase id or `default`.
     pub skater_blend_seconds: Option<BTreeMap<String, f32>>,
+    /// NPC skater natural stance per character record id (16 hex digits) or record name:
+    /// `"regular"` or `"goofy"` (retail values from the stance table; read at spawn).
+    pub skater_stance: Option<BTreeMap<String, String>>,
+    /// Clip attribute name per NPC skater stance toggle (`board_backward` / `mirrored` /
+    /// `switch`); empty = off (retail `animboardbackward` / `mirrored` / `switch`).
+    pub skater_stance_events: Option<BTreeMap<String, String>>,
     /// Props and mod bodies as ped navigation obstacles (fix 11).
     pub ped_obstacles: Option<PedObstaclesPatch>,
     /// NPC skaters pushing dynamic props (fix 19).
@@ -130,7 +171,9 @@ pub struct NpcSkaterPropsPatch {
 
 /// Ped obstacle rules (`skate_core::living_world::peds::ObstacleParams`; retail: on, 0.2 m minimum
 /// half extent, no cut above 0.4 m/s, re-cut after 0.25 x the smallest half extent; ours: 0.1 m
-/// detour margin, 0 m step height).
+/// detour margin, 0 m step height). `held_is_obstacle`: a prop held by Move Object (or an attached
+/// mod body) stays an obstacle (retail true). `moving_solid`: a moving object blocks a ped's step
+/// (NOT RETAIL YET stand-in for NavPower's moving avoider; default true).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PedObstaclesPatch {
@@ -140,6 +183,8 @@ pub struct PedObstaclesPatch {
     pub recut_fraction: Option<f32>,
     pub detour_margin: Option<f32>,
     pub step_height: Option<f32>,
+    pub held_is_obstacle: Option<bool>,
+    pub moving_solid: Option<bool>,
 }
 
 /// NPC skater line end (`skate_core::living_world::replay::ChainConfig`): continue on an unused
@@ -316,7 +361,10 @@ pub struct CarryPatch {
     pub ignore_vertical: Option<bool>,
     /// Every command wakes the prop (retail true; false = only a non-zero command).
     pub wake_on_command: Option<bool>,
-    /// Per prop type (MOBJ template name) held / free parameter blocks.
+    /// Per prop type held / free parameter blocks, keyed by the MOBJ template name or by the
+    /// type's vault record name (`livingworld_dynamicobject_characteristics`, e.g.
+    /// `dt_garbagebin`, logged as `type=` in HELD_PROP); the template name entry wins. Each
+    /// field overrides the type's retail value; unset fields keep it.
     #[serde(default)]
     pub by_template: BTreeMap<String, CarryMaterialPatch>,
 }
@@ -327,18 +375,35 @@ pub struct CarryPatch {
 pub struct CarryMaterialPatch {
     /// Friction pair while held (default: `commanded_material`).
     pub material_held: Option<[f32; 2]>,
-    /// Free friction pair (retail DMO data +320 / +328; default: the prop's authored friction).
+    /// Free friction pair (retail DMO data +320 / +328 of the type; the prop's authored friction
+    /// only when its type data is missing).
     pub material_free: Option<[f32; 2]>,
     /// Free friction pair while upright (retail DMO data +316 / +324; default: `material_free`),
     /// used only when `upright_pair` is set.
     pub material_free_upright: Option<[f32; 2]>,
-    /// The free pair depends on the upright test (retail DMO data +312 bit 0; default false).
+    /// The free pair depends on the upright test (retail DMO data +312 of the type).
     pub upright_pair: Option<bool>,
-    /// Restitution of this type's blocks (retail DMO data +272; default: the authored restitution).
+    /// Restitution of this type's blocks (retail DMO data +272 of the type; the authored
+    /// restitution only when its type data is missing).
     pub restitution: Option<f32>,
     /// Record+272 for this prop type: Move Object target speeds x `record_272_speed_scale`
-    /// (retail per DMO type data +312, not extracted yet; default false).
+    /// (retail: set when the type's DMO data +312 is set, 82C4B960).
     pub record_272: Option<bool>,
+    /// Linear drag of this prop type's body, per second (retail DMO data +308 `LinearDrag`; the
+    /// integrator keeps `1 - drag * dt` of the velocity each fixed step, 60 or more stops it).
+    pub linear_drag: Option<f32>,
+    /// Angular drag, per second (retail DMO data +336 `AngularDrag`, same rule).
+    pub angular_drag: Option<f32>,
+    /// Body mass in kg (retail DMO data +304 of the type; the box inertia follows it).
+    pub mass: Option<f32>,
+    /// Linear speed cap in m/s (retail DMO data +292; the integrator shortens faster velocities).
+    pub maximum_linear_velocity: Option<f32>,
+    /// Angular speed cap in rad/s (retail DMO data +296, same rule).
+    pub maximum_angular_velocity: Option<f32>,
+    /// Box inertia shape: the body's half extents x `inertia_scale` + `inertia_offset` (retail DMO
+    /// data +16 / +32 of the type; class default 1.2 / 0).
+    pub inertia_scale: Option<[f32; 3]>,
+    pub inertia_offset: Option<[f32; 3]>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -346,6 +411,69 @@ pub struct CarryMaterialPatch {
 pub struct ShadowsPatch {
     /// Dynamic shadow floor on the baked world, RGB 0..=1 (retail 0.05, 0.09, 0.13).
     pub world_floor: Option<[f32; 3]>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackdropPatch {
+    /// Draw the district's global presentation model (retail true).
+    pub visible: Option<bool>,
+    /// Draw the unpaired far-proxy terrain cells (retail true).
+    pub proxy_terrain: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposurePatch {
+    /// Meter channel weights R, G, B, each 0..=1 (retail 0.3, 0.4, 0.3).
+    pub meter_weights: Option<[f32; 3]>,
+    /// Meter average scale (retail 2.515).
+    pub meter_scale: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GhostPatch {
+    /// Fade the skater in after placements (retail true).
+    pub enabled: Option<bool>,
+    /// Seconds to fully opaque (retail 1.0).
+    pub fade_in_seconds: Option<f32>,
+    /// Opacity held while the hold condition is set (retail 0.68).
+    pub hold_alpha: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecalsPatch {
+    /// Strength of every world decal over its base surface, 0..=1 (retail 1.0: the decal programs
+    /// blend at the decal texture's own alpha).
+    pub opacity: Option<f32>,
+}
+
+impl DecalsPatch {
+    pub fn validate(&self) -> bool {
+        self.opacity.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+    }
+}
+
+impl GhostPatch {
+    pub fn validate(&self) -> bool {
+        self.fade_in_seconds.is_none_or(|v| v.is_finite() && (0.0..=MAX_GHOST_FADE_IN_SECONDS).contains(&v))
+            && self.hold_alpha.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RespawnPatch {
+    /// Air ticks before the checkpoint respawn (retail 300).
+    pub air_timeout_ticks: Option<u32>,
+}
+
+impl RespawnPatch {
+    pub fn validate(&self) -> bool {
+        self.air_timeout_ticks.is_none_or(|t| (1..=MAX_AIR_TIMEOUT_TICKS).contains(&t))
+    }
 }
 
 /// Field-wise "first writer wins": `self` keeps its fields, `later` fills the gaps.
@@ -364,7 +492,7 @@ impl Merge for SkaterFadePatch {
 }
 impl Merge for PedObstaclesPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height);
+        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height, held_is_obstacle, moving_solid);
     }
 }
 impl Merge for PedVehicleContactPatch {
@@ -417,6 +545,20 @@ impl Merge for LivingWorldPatch {
             (None, Some(b)) => self.skater_blend_seconds = Some(b.clone()),
             _ => {}
         }
+        match (self.skater_stance.as_mut(), &b.skater_stance) {
+            (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
+                a.entry(k.clone()).or_insert_with(|| v.clone());
+            }),
+            (None, Some(b)) => self.skater_stance = Some(b.clone()),
+            _ => {}
+        }
+        match (self.skater_stance_events.as_mut(), &b.skater_stance_events) {
+            (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
+                a.entry(k.clone()).or_insert_with(|| v.clone());
+            }),
+            (None, Some(b)) => self.skater_stance_events = Some(b.clone()),
+            _ => {}
+        }
     }
 }
 impl Merge for PropTuningPatch {
@@ -455,8 +597,38 @@ impl Merge for CarryPatch {
             hold_box_extents, record_272_speed_scale, commanded_material, upright_cos, apply_at_com, yaw_replaces_torque,
             ignore_vertical, wake_on_command);
         for (k, v) in &b.by_template {
-            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, material_free_upright, upright_pair, restitution, record_272); }).or_insert_with(|| v.clone());
+            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, material_free_upright, upright_pair, restitution, record_272, linear_drag, angular_drag, mass, maximum_linear_velocity, maximum_angular_velocity, inertia_scale, inertia_offset); }).or_insert_with(|| v.clone());
         }
+    }
+}
+
+impl Merge for BackdropPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; visible, proxy_terrain);
+    }
+}
+
+impl Merge for RespawnPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; air_timeout_ticks);
+    }
+}
+
+impl Merge for ExposurePatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; meter_weights, meter_scale);
+    }
+}
+
+impl Merge for DecalsPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; opacity);
+    }
+}
+
+impl Merge for GhostPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; enabled, fade_in_seconds, hold_alpha);
     }
 }
 
@@ -487,6 +659,13 @@ impl LivingWorldPatch {
             })
             && self.skater_blend_seconds.as_ref().is_none_or(|m| {
                 m.iter().all(|(k, v)| (k == "default" || NPC_SKATER_PHASES.contains(&k.as_str()) || NPC_SKATER_TRICK_BLENDS.contains(&k.as_str())) && v.is_finite() && (0.0..=MAX_BLEND_SECONDS).contains(v))
+            })
+            && self.skater_stance.as_ref().is_none_or(|m| {
+                m.len() <= MAX_TEMPLATES
+                    && m.iter().all(|(k, v)| !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic()) && NPC_SKATER_STANCES.contains(&v.as_str()))
+            })
+            && self.skater_stance_events.as_ref().is_none_or(|m| {
+                m.iter().all(|(k, v)| NPC_SKATER_STANCE_EVENTS.contains(&k.as_str()) && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_graphic()))
             })
     }
 }
@@ -557,7 +736,9 @@ impl CarryPatch {
                 !k.is_empty()
                     && k.len() <= 128
                     && [v.material_held, v.material_free, v.material_free_upright].into_iter().flatten().all(material_block)
-                    && v.restitution.is_none_or(|r| r.is_finite() && (0.0..=MAX_NUMBER).contains(&r))
+                    && [v.restitution, v.linear_drag, v.angular_drag, v.maximum_linear_velocity, v.maximum_angular_velocity].into_iter().flatten().all(|r| r.is_finite() && (0.0..=MAX_NUMBER).contains(&r))
+                    && v.mass.is_none_or(|m| m.is_finite() && m > 0.0 && m <= MAX_NUMBER)
+                    && [v.inertia_scale, v.inertia_offset].into_iter().flatten().flatten().all(|x| x.is_finite() && x.abs() <= MAX_NUMBER)
             })
     }
 }
@@ -565,6 +746,13 @@ impl CarryPatch {
 /// A friction pair: two finite, non-negative values.
 fn material_block(b: [f32; 2]) -> bool {
     b.iter().all(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(v))
+}
+
+impl ExposurePatch {
+    pub fn validate(&self) -> bool {
+        self.meter_weights.is_none_or(|c| c.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)))
+            && self.meter_scale.is_none_or(|v| v.is_finite() && (0.0..=MAX_METER_SCALE).contains(&v))
+    }
 }
 
 impl ShadowsPatch {
@@ -580,6 +768,11 @@ pub enum Patch {
     Props(PropsPatch),
     Carry(CarryPatch),
     Shadows(ShadowsPatch),
+    Backdrop(BackdropPatch),
+    Respawn(RespawnPatch),
+    Exposure(ExposurePatch),
+    Ghost(GhostPatch),
+    Decals(DecalsPatch),
 }
 
 /// Parse and validate a patch for `domain` (`None` = unknown domain, unknown field or bad value).
@@ -589,6 +782,11 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         "props" => Patch::Props(serde_json::from_value(patch.clone()).ok()?),
         "carry" => Patch::Carry(serde_json::from_value(patch.clone()).ok()?),
         "shadows" => Patch::Shadows(serde_json::from_value(patch.clone()).ok()?),
+        "backdrop" => Patch::Backdrop(serde_json::from_value(patch.clone()).ok()?),
+        "respawn" => Patch::Respawn(serde_json::from_value(patch.clone()).ok()?),
+        "exposure" => Patch::Exposure(serde_json::from_value(patch.clone()).ok()?),
+        "ghost" => Patch::Ghost(serde_json::from_value(patch.clone()).ok()?),
+        "decals" => Patch::Decals(serde_json::from_value(patch.clone()).ok()?),
         _ => return None,
     };
     let ok = match &p {
@@ -596,6 +794,11 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         Patch::Props(p) => p.validate(),
         Patch::Carry(p) => p.validate(),
         Patch::Shadows(p) => p.validate(),
+        Patch::Backdrop(_) => true,
+        Patch::Respawn(p) => p.validate(),
+        Patch::Exposure(p) => p.validate(),
+        Patch::Ghost(p) => p.validate(),
+        Patch::Decals(p) => p.validate(),
     };
     ok.then_some(p)
 }
@@ -641,6 +844,13 @@ mod tests {
         assert!(!valid_patch("living_world", &json!({"skater_line_chain": {"fakie_low_speed": -1.0}})));
         assert!(valid_patch("living_world", &json!({"skater_clips": {"fakie_channel": "B_FAKIE_CHANNEL"}})));
         assert!(!valid_patch("living_world", &json!({"skater_clips": {"fakie_channel": ""}})));
+        assert!(valid_patch("living_world", &json!({"skater_stance": {"CD56C7FE01EBE665": "regular", "danny_way": "goofy"}})));
+        assert!(!valid_patch("living_world", &json!({"skater_stance": {"josh_kalis": "sideways"}})));
+        assert!(!valid_patch("living_world", &json!({"skater_stance": {"": "goofy"}})));
+        assert!(!valid_patch("living_world", &json!({"skater_stance": {"josh_kalis": true}})));
+        assert!(valid_patch("living_world", &json!({"skater_stance_events": {"mirrored": "my_mirror", "switch": ""}})));
+        assert!(!valid_patch("living_world", &json!({"skater_stance_events": {"fakie": "x"}})));
+        assert!(!valid_patch("living_world", &json!({"skater_stance_events": {"mirrored": "a b"}})));
         assert!(!valid_patch("living_world", &json!({"draw": 2.0})));
         assert!(!valid_patch("living_world", &json!({"skater_fade": {"fade_seconds": 1e9}})));
         assert!(!valid_patch("props", &json!({"by_template": {"b": {"collision_box": {"center": [0, 0, 0], "half_extents": [0, 1, 1]}}}})));
@@ -663,6 +873,24 @@ mod tests {
         assert!(!valid_patch("shadows", &json!({"world_floor": [0.05, 0.09]})));
         assert!(!valid_patch("shadows", &json!({"world_floor": [0.05, 0.09, 1.5]})));
         assert!(!valid_patch("shadows", &json!({"floor": [0.0, 0.0, 0.0]})));
+        assert!(valid_patch("exposure", &json!({"meter_weights": [0.3, 0.4, 0.3], "meter_scale": 2.515})));
+        assert!(!valid_patch("exposure", &json!({"meter_weights": [0.3, 0.4]})));
+        assert!(!valid_patch("exposure", &json!({"meter_weights": [0.3, 1.4, 0.3]})));
+        assert!(!valid_patch("exposure", &json!({"meter_scale": -1.0})));
+        assert!(!valid_patch("exposure", &json!({"target": 0.25})));
+        assert!(valid_patch("backdrop", &json!({"visible": false})));
+        assert!(!valid_patch("backdrop", &json!({"visible": 0})));
+        assert!(valid_patch("backdrop", &json!({"proxy_terrain": false})));
+        assert!(!valid_patch("backdrop", &json!({"proxy_terrain": "off"})));
+        assert!(!valid_patch("backdrop", &json!({"hidden": true})));
+        assert!(valid_patch("respawn", &json!({"air_timeout_ticks": 300})));
+        assert!(valid_patch("respawn", &json!({"air_timeout_ticks": 216_000})));
+        assert!(!valid_patch("respawn", &json!({"air_timeout_ticks": 0})));
+        assert!(!valid_patch("respawn", &json!({"air_timeout_ticks": 216_001})));
+        assert!(!valid_patch("respawn", &json!({"air_timeout_ticks": 2.5})));
+        assert!(!valid_patch("respawn", &json!({"air_timeout_ticks": -1})));
+        assert!(!valid_patch("respawn", &json!({"air_timeout": 300})));
+        assert!(valid_inspect("world_tuning:respawn"));
         assert!(!valid_patch("roads", &json!({})));
         assert!(valid_inspect("world_tuning:carry") && !valid_inspect("world_tuning:x"));
     }

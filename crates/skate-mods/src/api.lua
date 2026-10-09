@@ -372,15 +372,24 @@ function sdk.audio.frontend(name) submit{kind="audio_frontend",name=name} end
 function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",amount=amount} end
 
 -- World tuning (capability world_tuning): patch the living world ("living_world": npc_draw_distance,
--- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, ped_obstacles, npc_skater_props, ped_vehicle_contact), dynamic props ("props": default / by_template prop tuning, collision_box)
+-- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, skater_stance, skater_stance_events, ped_obstacles, npc_skater_props, ped_vehicle_contact), dynamic props ("props": default / by_template prop tuning, collision_box)
 -- or prop carrying ("carry": grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed,
 -- turn_rate, grip_reach, linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller,
 -- lever_rotation, lever_yaw, mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal, hold_box_extents,
 -- record_272_speed_scale, commanded_material, upright_cos, apply_at_com,
 -- yaw_replaces_torque, ignore_vertical, wake_on_command, by_template[<MOBJ template>] = {material_held, material_free,
--- material_free_upright, upright_pair, restitution, record_272})
+-- material_free_upright, upright_pair, restitution, record_272, linear_drag, angular_drag, mass,
+-- maximum_linear_velocity, maximum_angular_velocity, inertia_scale, inertia_offset})
 -- or the dynamic shadow floor on the baked world ("shadows": world_floor =
--- {r, g, b}, each 0..1, retail {0.05, 0.09, 0.13}) while this mod runs; nil restores
+-- {r, g, b}, each 0..1, retail {0.05, 0.09, 0.13}) or the district backdrop ("backdrop": visible,
+-- retail true: Industrial's sea, far sea planes, tree walls; proxy_terrain, retail true: the far-proxy hills
+-- under Industrial's south tree wall) or the checkpoint respawn ("respawn": air_timeout_ticks, retail 300 =
+-- 5 s of 1/60 s ticks in the air before the skater is sent to the last checkpoint, 1..216000) or the
+-- auto-exposure meter ("exposure": meter_weights, retail {0.3, 0.4, 0.3}; meter_scale, retail 2.515) or the skater
+-- fade-in after every placement ("ghost": enabled, retail true; fade_in_seconds, retail 1.0, 0..60; hold_alpha,
+-- retail 0.68, 0..1) or the world decals ("decals": opacity, retail 1.0, 0..1: strength of every decal over
+-- its surface, applied at once) while this mod
+-- runs; nil restores
 -- this mod's patch of the domain, everything is restored when the mod stops. First writer wins.
 sdk.world = { version = 1 }
 function sdk.world.set_tuning(domain, patch) submit{kind="world_set_tuning",domain=domain,patch=patch} end

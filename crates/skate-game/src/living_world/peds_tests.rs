@@ -510,9 +510,9 @@ fn living_world_peds_walk_round_props_deterministically() {
     use skate_core::living_world::peds::{NavObstacles, ObstacleInput, ObstacleParams};
     let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let mut props: Vec<ObstacleInput> = (0..12)
-        .map(|k| ObstacleInput { id: k, center: [6.0 + (k % 4) as f32 * 8.0, 0.5, 9.0 + (k / 4) as f32 * 10.0], axes, half_extents: [0.35, 0.5, 0.35], velocity: [0.0; 3], inactive: false })
+        .map(|k| ObstacleInput { id: k, center: [6.0 + (k % 4) as f32 * 8.0, 0.5, 9.0 + (k / 4) as f32 * 10.0], axes, half_extents: [0.35, 0.5, 0.35], velocity: [0.0; 3], inactive: false, held: false })
         .collect();
-    props.push(ObstacleInput { id: 50, center: [20.0, 0.4, 7.0], axes, half_extents: [1.6, 0.4, 0.5], velocity: [0.0; 3], inactive: false });
+    props.push(ObstacleInput { id: 50, center: [20.0, 0.4, 7.0], axes, half_extents: [1.6, 0.4, 0.5], velocity: [0.0; 3], inactive: false, held: false });
     let mut finals = Vec::new();
     for _ in 0..2 {
         let mut a = app(60.0);
@@ -560,7 +560,7 @@ fn living_world_ped_obstacle_inputs_and_mod_tuning() {
     assert_eq!(inputs[0].id, MOD_BODY_OBSTACLE_BASE | 7);
     assert_eq!(inputs[0].center, [1.5, 0.5, 3.0]);
     assert_eq!(inputs[0].half_extents, [0.5, 0.5, 1.0]);
-    assert!(!inputs[0].inactive && inputs[1].inactive);
+    assert!(!inputs[0].inactive && !inputs[0].held && inputs[1].held && !inputs[1].inactive, "the attached body is held, not switched off");
 
     let mut world = World::new();
     world.insert_resource(LivingWorldSettings::default());
@@ -568,6 +568,10 @@ fn living_world_ped_obstacle_inputs_and_mod_tuning() {
     crate::modding::world_tuning::set(&mut world, "mod_a", "living_world", Some(patch)).unwrap();
     let s = world.resource::<LivingWorldSettings>().ped_obstacles.clone();
     assert!(!s.enabled && s.moving_speed == 1.0 && s.min_half_extent == 0.2);
+    assert!(s.held_is_obstacle && s.moving_solid, "retail / stand-in defaults kept");
+    crate::modding::world_tuning::set(&mut world, "mod_a", "living_world", Some(serde_json::json!({"ped_obstacles": {"held_is_obstacle": false, "moving_solid": false}}))).unwrap();
+    let s = world.resource::<LivingWorldSettings>().ped_obstacles.clone();
+    assert!(!s.held_is_obstacle && !s.moving_solid);
     assert!(crate::modding::world_tuning::set(&mut world, "mod_a", "living_world", Some(serde_json::json!({"ped_obstacles": {"moving_speed": "fast"}}))).is_err());
     crate::modding::world_tuning::clear_owner(&mut world, "mod_a");
     assert_eq!(world.resource::<LivingWorldSettings>().ped_obstacles, skate_core::living_world::peds::ObstacleParams::default(), "mod disable restores retail");

@@ -4,9 +4,11 @@
 //! (`integrate_body_rates`): gravity and cool-down/sleep come from the retail
 //! simulation step; the mass properties are the retail rounded-box finalize
 //! path (`primitive_mass_properties`) with the instance's scaled template AABB.
-//! Density, friction, restitution and damping are the authored MOBJ per-object
-//! values (`ObjectPhysics`, schema 3+); the project defaults are density
-//! 100 kg/m³, friction 0.55, restitution 0.05 and damping 0.05/0.15.
+//! Density is the authored MOBJ per-object value (`ObjectPhysics`, schema 3+);
+//! friction, restitution and linear / angular drag come from the prop type's
+//! retail DMO data ([`PropDynamics::set_type_data`]), with the authored MOBJ
+//! values (project defaults friction 0.55, restitution 0.05, damping
+//! 0.05/0.15) only for props whose type data is missing.
 //!
 //! Narrowphase uses the recovered GP pair query (`primitive_pair_contacts`):
 //! box vs static-world triangles, box vs box for other props, and box vs the
@@ -32,7 +34,7 @@ use skate_core::{
             combine_contact_materials, generate_contact,
         },
         contact_solver::{ACTIVE_BODY, RetailContactJacobian, build_contact_jacobian},
-        mass::{RETAIL_UNBOUNDED_VELOCITY, primitive_mass_properties},
+        mass::{DmoBodyData, RETAIL_UNBOUNDED_VELOCITY, dmo_body_inertia, primitive_mass_properties},
         rigid_body::{
             RetailInertiaDynamics, RetailQuaternion, RetailReactionCorrections, RetailBodyRates,
             RetailSimulationStep, integrate_body_rates, pack_world_inverse_inertia,
@@ -318,13 +320,21 @@ pub(crate) struct PropBody {
     local_center: Vector3,
     half_extents: Vector3,
     rates: RetailBodyRates,
+    /// Effective Inertia ([`PropDynamics::body_inertia`], refreshed when the
+    /// type data or mod rules change).
     inertia: RetailInertiaDynamics,
+    /// Inertia from the authored MOBJ block (density x box volume, damping),
+    /// the fallback for fields the type data and mods leave unset.
+    authored_inertia: RetailInertiaDynamics,
     /// Authored MOBJ contact material (friction/restitution).
     material: RetailContactMaterial,
     enable_sleep: bool,
     asleep: bool,
     /// MOBJ template name: the prop type key of `PropTuningTable`.
     template: String,
+    /// Retail type data of this prop (vault record name and values,
+    /// [`PropDynamics::set_type_data`]); `None` = not resolved.
+    type_data: Option<DmoType>,
     /// Resolved tuning of this prop type.
     tuning: PropTuning,
     /// Box derived from the render AABB (scale folded in), kept so a
@@ -383,10 +393,14 @@ pub(crate) const RETAIL_COMMANDED_MATERIAL: MaterialBlock = [0.03, 0.02];
 /// y > 0.65 (0x820BB0EC); sets DMO+4465 bit 0x08.
 pub(crate) const RETAIL_UPRIGHT_COS: f32 = 0.65;
 
-/// Per prop type material data (MOBJ template name). Retail reads these from
-/// the DMO type data (DMO+4380 -> +4); the values per type are not extracted
-/// yet, so every `None` default reproduces the authored MOBJ material
-/// (NOT RETAIL YET: interim defaults, see doc 27).
+/// Per prop type material data. Retail reads these from the DMO type data
+/// (DMO+4380 -> +4, ctor 82C51E28): the layout of the type's vault record of
+/// class `livingworld_dynamicobject_characteristics` (see [`dmo_type_blocks`]).
+/// Each body carries the retail values of its type (resolved at map load from
+/// the installation's stock vault); a mod's `carry.by_template` entry
+/// overrides them field by field. A `None` left after both falls back to the
+/// authored MOBJ material (only props whose type record is missing, e.g. an
+/// older setup without the type map: NOT RETAIL YET there).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PropMaterialBlocks {
     /// Friction pair while commanded; `None` = `MoveCommandRules::commanded_material`.
@@ -404,9 +418,112 @@ pub(crate) struct PropMaterialBlocks {
     /// authored MOBJ restitution.
     pub restitution: Option<f32>,
     /// Record+272 of this prop type (Move Object speeds x
-    /// `record_272_speed_scale`); `None` = false (retail per DMO type data
-    /// +312, 82C4B960, not extracted yet).
+    /// `record_272_speed_scale`): retail 82C4B960 sets it (1 or 2) only when
+    /// DMO data +312 is set. `None` = false.
     pub record_272: Option<bool>,
+    /// Linear drag of this prop type's rigid body (DMO data +308 `LinearDrag`,
+    /// copied to Inertia +32 by 82C4E568). Per second: the integrator 82AE6590
+    /// rebuilds velocity as displacement x max(frequency - drag, 0), i.e.
+    /// `v *= 1 - drag dt` per fixed step. `None` = the authored MOBJ damping.
+    pub linear_drag: Option<f32>,
+    /// Angular drag (DMO data +336 `AngularDrag` -> Inertia +36, same rule).
+    /// `None` = the authored MOBJ damping.
+    pub angular_drag: Option<f32>,
+    /// Body mass in kg (DMO data +304; 82C4E568 stores 1 / mass at Inertia
+    /// +16 and builds the box inertia from it). `None` = the authored MOBJ
+    /// density x box volume.
+    pub mass: Option<f32>,
+    /// Linear speed cap in m/s (DMO data +292 -> Inertia +24; the integrator
+    /// 82AE6590 scales v down to this length after drag). `None` = unbounded.
+    pub maximum_linear_velocity: Option<f32>,
+    /// Angular speed cap in rad/s (DMO data +296 -> Inertia +28, same rule).
+    /// `None` = unbounded.
+    pub maximum_angular_velocity: Option<f32>,
+    /// Box inertia shape (DMO data +16 scale, +32 offset): 82C4E568 takes the
+    /// body's AABB half extents x scale + offset as the box 82C47FC8 fills
+    /// the inverse tensor from. `None` = the class default record's
+    /// [`DMO_DEFAULT_INERTIA_SCALE`] / zero when another body field is set,
+    /// else the authored box inertia.
+    pub inertia_scale: Option<[f32; 3]>,
+    pub inertia_offset: Option<[f32; 3]>,
+}
+
+/// Box inertia scale of the class's `default` record (DMO data +16), used
+/// for a mod's mass on a prop without type data.
+pub(crate) const DMO_DEFAULT_INERTIA_SCALE: [f32; 3] = [1.2, 1.2, 1.2];
+
+impl PropMaterialBlocks {
+    /// Field by field: this block's value where set, else `base`'s.
+    pub(crate) fn over(&self, base: &PropMaterialBlocks) -> PropMaterialBlocks {
+        PropMaterialBlocks {
+            held: self.held.or(base.held),
+            free: self.free.or(base.free),
+            free_upright: self.free_upright.or(base.free_upright),
+            upright_pair: self.upright_pair.or(base.upright_pair),
+            restitution: self.restitution.or(base.restitution),
+            record_272: self.record_272.or(base.record_272),
+            linear_drag: self.linear_drag.or(base.linear_drag),
+            angular_drag: self.angular_drag.or(base.angular_drag),
+            mass: self.mass.or(base.mass),
+            maximum_linear_velocity: self.maximum_linear_velocity.or(base.maximum_linear_velocity),
+            maximum_angular_velocity: self.maximum_angular_velocity.or(base.maximum_angular_velocity),
+            inertia_scale: self.inertia_scale.or(base.inertia_scale),
+            inertia_offset: self.inertia_offset.or(base.inertia_offset),
+        }
+    }
+}
+
+/// Vault class of the per-type DMO data.
+pub(crate) const DMO_TYPE_CLASS: &str = "livingworld_dynamicobject_characteristics";
+
+/// Retail values of one DMO type, read from its record of
+/// [`DMO_TYPE_CLASS`] (parents included). The DMO constructor 82C51E28 keeps
+/// the record's layout at DMO+4380 -> +4; schema layout offsets (skaterschema):
+/// +272 restitution (`Hash_5CCD5998E03C299B`), +312 upright flag
+/// (`Hash_C4D8A03586A31915`, -> DMO+4465 bit 0x10 and 82C4B960's record+272),
+/// +316 / +324 upright pair (`Hash_E0101A9DFD63DEE9` / `Hash_CDA7A31C5EDBEB6E`),
+/// +320 / +328 default pair (`Hash_6E0BB4F5881A4841` / `Hash_086956BCA2187458`),
+/// read by 82C53EF8 / 82C550A8; +308 `LinearDrag` and +336 `AngularDrag`,
+/// read by 82C4E568 into the body's Inertia (+32 / +36), with +304 mass
+/// (`Hash_E5778CDD4576D890`), +292 / +296 velocity caps
+/// (`Hash_4890392C91829954` / `Hash_BAA01E2BA1237455`) and the +16 / +32
+/// inertia box scale / offset vectors (`Hash_F4D1C84C36A854AC` /
+/// `Hash_D3CDE380DBB3ADC0`). The held pair is the retail constant
+/// (`commanded_material`), not type data.
+pub(crate) fn dmo_type_blocks(
+    collections: &skate_data::collections::Collections,
+    record: &str,
+) -> Result<PropMaterialBlocks, String> {
+    let f = |name: &str| collections.float(DMO_TYPE_CLASS, record, name);
+    let upright = collections.boolean(DMO_TYPE_CLASS, record, "Hash_C4D8A03586A31915")?;
+    let v = |name: &str| -> Result<[f32; 3], String> {
+        let w = collections.words::<4>(DMO_TYPE_CLASS, record, name)?;
+        let out = [f32::from_bits(w[0]), f32::from_bits(w[1]), f32::from_bits(w[2])];
+        if out.iter().all(|x| x.is_finite()) { Ok(out) } else { Err(format!("Non-finite {record}/{name}")) }
+    };
+    Ok(PropMaterialBlocks {
+        held: None,
+        free: Some([f("Hash_6E0BB4F5881A4841")?, f("Hash_086956BCA2187458")?]),
+        free_upright: Some([f("Hash_E0101A9DFD63DEE9")?, f("Hash_CDA7A31C5EDBEB6E")?]),
+        upright_pair: Some(upright),
+        restitution: Some(f("Hash_5CCD5998E03C299B")?),
+        record_272: Some(upright),
+        linear_drag: Some(f("LinearDrag")?),
+        angular_drag: Some(f("AngularDrag")?),
+        mass: Some(f("Hash_E5778CDD4576D890")?),
+        maximum_linear_velocity: Some(f("Hash_4890392C91829954")?),
+        maximum_angular_velocity: Some(f("Hash_BAA01E2BA1237455")?),
+        inertia_scale: Some(v("Hash_F4D1C84C36A854AC")?),
+        inertia_offset: Some(v("Hash_D3CDE380DBB3ADC0")?),
+    })
+}
+
+/// One prop type's retail data for [`PropDynamics::set_type_data`]: the vault
+/// record's name (the mod-facing type key, e.g. `dt_garbagebin`) and values.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DmoType {
+    pub key: String,
+    pub blocks: PropMaterialBlocks,
 }
 
 /// How a Move Object command reaches the held body (retail interface slot 9
@@ -456,14 +573,26 @@ impl MoveCommandRules {
     /// upright pair while `up_y > upright_cos` (82C54B00) and the default pair
     /// when tipped. Pure function of the commanded bit and the up axis.
     pub(crate) fn body_material(&self, template: &str, authored: RetailContactMaterial, commanded: bool, up_y: f32) -> RetailContactMaterial {
-        let t = self.by_template.get(template);
-        let restitution = t.and_then(|b| b.restitution).unwrap_or(authored.restitution);
+        self.typed_body_material(&self.blocks(template, None, &PropMaterialBlocks::default()), authored, commanded, up_y)
+    }
+
+    /// A body's effective type blocks: the mod entry for its MOBJ template
+    /// name, else for its type key (vault record name), over the retail type
+    /// data.
+    pub(crate) fn blocks(&self, template: &str, type_key: Option<&str>, retail: &PropMaterialBlocks) -> PropMaterialBlocks {
+        let modded = self.by_template.get(template).or_else(|| type_key.and_then(|k| self.by_template.get(k)));
+        modded.map_or(*retail, |m| m.over(retail))
+    }
+
+    /// [`Self::body_material`] on resolved blocks.
+    pub(crate) fn typed_body_material(&self, blocks: &PropMaterialBlocks, authored: RetailContactMaterial, commanded: bool, up_y: f32) -> RetailContactMaterial {
+        let restitution = blocks.restitution.unwrap_or(authored.restitution);
         let [static_friction, dynamic_friction] = if commanded {
-            t.and_then(|b| b.held).unwrap_or(self.commanded_material)
+            blocks.held.unwrap_or(self.commanded_material)
         } else {
-            let free = t.and_then(|b| b.free).unwrap_or([authored.static_friction, authored.dynamic_friction]);
-            let upright = t.and_then(|b| b.upright_pair).unwrap_or(false) && up_y > self.upright_cos;
-            if upright { t.and_then(|b| b.free_upright).unwrap_or(free) } else { free }
+            let free = blocks.free.unwrap_or([authored.static_friction, authored.dynamic_friction]);
+            let upright = blocks.upright_pair.unwrap_or(false) && up_y > self.upright_cos;
+            if upright { blocks.free_upright.unwrap_or(free) } else { free }
         };
         RetailContactMaterial { static_friction, dynamic_friction, restitution }
     }
@@ -770,6 +899,7 @@ impl PropDynamics {
                 local_center,
                 half_extents,
                 template: object.name.clone(),
+                type_data: None,
                 tuning: PropTuning::default(),
                 authored_center: local_center,
                 authored_half_extents: half_extents,
@@ -800,6 +930,7 @@ impl PropDynamics {
                     cool_down: simulation.cool_down,
                 },
                 inertia,
+                authored_inertia: inertia,
                 material: RetailContactMaterial {
                     static_friction: authored.friction,
                     dynamic_friction: authored.friction,
@@ -841,13 +972,98 @@ impl PropDynamics {
     /// retail on mod disable).
     pub(crate) fn set_move_rules(&mut self, rules: MoveCommandRules) {
         self.move_rules = rules;
+        self.refresh_inertia();
     }
 
     /// Body `index`'s own material block: what retail copies into its
     /// collision objects (CO +116..+124) before the pair combine.
     fn body_material(&self, index: usize) -> RetailContactMaterial {
         let body = &self.bodies[index];
-        self.move_rules.body_material(&body.template, body.material, body.commanded_block, body.rates.basis.columns[1][1])
+        self.move_rules.typed_body_material(&self.body_blocks(body), body.material, body.commanded_block, body.rates.basis.columns[1][1])
+    }
+
+    /// Effective type blocks of a body: mod entry over its retail type data.
+    fn body_blocks(&self, body: &PropBody) -> PropMaterialBlocks {
+        let (key, retail) = match &body.type_data {
+            Some(t) => (Some(t.key.as_str()), t.blocks),
+            None => (None, PropMaterialBlocks::default()),
+        };
+        self.move_rules.blocks(&body.template, key, &retail)
+    }
+
+    /// Body `index`'s Inertia (82C4E568, filled once when retail builds the
+    /// body and never switched by the commanded block): with type data, mass
+    /// (data +304), velocity caps (+292 / +296), drag (+308 / +336) and the box
+    /// inertia of the AABB half extents x +16 + +32 ([`dmo_body_inertia`]); a
+    /// mod's `carry.by_template` fields over it. Fields neither sets keep the
+    /// authored MOBJ values (density mass, box inertia, damping, no caps: NOT
+    /// RETAIL YET, only without type data). Pure function of the type data,
+    /// the mod rules and the authored box, so every peer gets the same.
+    fn body_inertia(&self, index: usize) -> RetailInertiaDynamics {
+        let body = &self.bodies[index];
+        let blocks = self.body_blocks(body);
+        let authored = body.authored_inertia;
+        let mut inertia = if blocks.mass.is_some() || blocks.inertia_scale.is_some() || blocks.inertia_offset.is_some() {
+            let v = |a: [f32; 3]| Vector3::new(a[0], a[1], a[2]);
+            dmo_body_inertia(
+                body.authored_half_extents,
+                DmoBodyData {
+                    mass: blocks.mass.unwrap_or(1.0 / authored.inverse_mass),
+                    maximum_linear_velocity: authored.maximum_linear_velocity,
+                    maximum_angular_velocity: authored.maximum_angular_velocity,
+                    linear_drag: authored.linear_drag,
+                    angular_drag: authored.angular_drag,
+                    inertia_scale: v(blocks.inertia_scale.unwrap_or(DMO_DEFAULT_INERTIA_SCALE)),
+                    inertia_offset: v(blocks.inertia_offset.unwrap_or([0.0; 3])),
+                },
+            )
+        } else {
+            authored
+        };
+        if let Some(cap) = blocks.maximum_linear_velocity {
+            inertia.maximum_linear_velocity = cap;
+        }
+        if let Some(cap) = blocks.maximum_angular_velocity {
+            inertia.maximum_angular_velocity = cap;
+        }
+        if let Some(drag) = blocks.linear_drag {
+            inertia.linear_drag = drag;
+        }
+        if let Some(drag) = blocks.angular_drag {
+            inertia.angular_drag = drag;
+        }
+        inertia
+    }
+
+    /// Store every body's effective Inertia ([`Self::body_inertia`]) and its
+    /// world inverse inertia: after type data or mod rules change (mod
+    /// disable restores retail through `MoveCommandRules::default()`).
+    fn refresh_inertia(&mut self) {
+        for index in 0..self.bodies.len() {
+            let inertia = self.body_inertia(index);
+            let body = &mut self.bodies[index];
+            body.inertia = inertia;
+            body.rates.world_inverse_inertia = world_inverse_inertia(body.rates.basis, inertia.inverse_tensor);
+        }
+    }
+
+    /// Attach the retail per-type data, keyed by template id (the MOBJ name's
+    /// part before '/'). Bodies whose template is not in `types` keep their
+    /// authored material. Returns how many bodies got type data.
+    pub(crate) fn set_type_data(&mut self, types: &std::collections::BTreeMap<String, DmoType>) -> usize {
+        let mut count = 0;
+        for body in &mut self.bodies {
+            let id = body.template.split('/').next().unwrap_or_default();
+            body.type_data = types.get(id).cloned();
+            count += usize::from(body.type_data.is_some());
+        }
+        self.refresh_inertia();
+        count
+    }
+
+    /// Vault record name of a body's prop type (diagnostics, mod keys).
+    pub(crate) fn type_key(&self, id: u32) -> Option<&str> {
+        self.bodies.get(*self.by_id.get(&id)?)?.type_data.as_ref().map(|t| t.key.as_str())
     }
 
     /// Contact material of body `index` against a surface material: the
@@ -1076,8 +1292,8 @@ impl PropDynamics {
                 let up = body.rates.basis.columns[1];
                 let mv = if phase == "held" { self.move_diagnostics } else { None };
                 info!(
-                    "HELD_PROP id={id} phase={phase} template={} center=[{:.2}, {:.2}, {:.2}] up_y={:.3} velocity=[{:.2}, {:.2}, {:.2}] ground={} gap={} contacts={} asleep={} {} tick={}",
-                    body.template, probe.center.x, probe.center.y, probe.center.z, up[1], v.x, v.y, v.z,
+                    "HELD_PROP id={id} phase={phase} template={} type={} center=[{:.2}, {:.2}, {:.2}] up_y={:.3} velocity=[{:.2}, {:.2}, {:.2}] ground={} gap={} contacts={} asleep={} {} tick={}",
+                    body.template, self.type_key(id).unwrap_or("none"), probe.center.x, probe.center.y, probe.center.z, up[1], v.x, v.y, v.z,
                     probe.ground.map_or("none".into(), |g| format!("{g:.2}")),
                     probe.gap().map_or("none".into(), |g| format!("{g:.2}")),
                     body.contacts, body.asleep, move_fields(mv), self.tick
@@ -1128,7 +1344,7 @@ impl PropDynamics {
             velocity: body.rates.linear_velocity,
             mass: if body.inertia.inverse_mass > 0.0 { 1.0 / body.inertia.inverse_mass } else { f32::INFINITY },
             yaw_inertia: if inverse_yaw > 0.0 { 1.0 / inverse_yaw } else { f32::INFINITY },
-            record_272: self.move_rules.by_template.get(&body.template).and_then(|b| b.record_272).unwrap_or(false),
+            record_272: self.body_blocks(body).record_272.unwrap_or(false),
         })
     }
 
@@ -1505,11 +1721,12 @@ impl PropDynamics {
                         > 0.0
                     || dot(corrections.angular_displacement, corrections.angular_displacement)
                         > 0.0);
+            let inertia = self.body_inertia(index);
             let body = &mut self.bodies[index];
             // Integrator 82AE6590: E = |v|^2 + s m^-1 |w|^2 after damping and
             // the caps; counter = 0 when E >= island +172, else +1 if E did
             // not rise, capped at island +168.
-            let step = integrate_body_rates(body.rates, body.inertia, simulation, corrections);
+            let step = integrate_body_rates(body.rates, inertia, simulation, corrections);
             body.rates = step.state;
             if resting && body.rates.kinetic_energy < simulation.minimum_energy {
                 body.rates.linear_velocity = Vector3::ZERO;
@@ -3579,6 +3796,111 @@ mod tests {
         }
     }
 
+    /// One ped walking back and forth along z (x = 0, head-on) while a bin is dragged toward it by
+    /// the real carry path (Move Object) for 1 s, held still for 3 s, then released and left 3 s. Obstacles come from
+    /// `obstacle_boxes` through the game's input mapping; the ped steps with
+    /// `NavObstacles::resolve_step` (the rule `advance_peds` uses). Returns (ped steps that went deeper into
+    /// the prop, past the re-cut tolerance, ticks held + cut, ticks held + moving, the obstacles after rest, spawn, rest).
+    fn ped_vs_dragged_bin(params: skate_core::living_world::peds::ObstacleParams) -> (u32, u32, u32, skate_core::living_world::peds::NavObstacles, Vector3, Vector3) {
+        use skate_core::living_world::peds::NavObstacles;
+        let half = [0.35, 0.5, 0.35];
+        let world = street_world();
+        let (_, mut layer, mut dynamics) = box_fixture([0., SIDEWALK_Y + half[1], 0.], half);
+        let id = dynamics.bodies[0].id;
+        let spawn = dynamics.position_of(id).unwrap();
+        let dt = simulation().time_step;
+        let mut carry = crate::physics::prop_carry::PropCarry::default();
+        use skate_core::player::state::PhysicalStateId::{BipedGround, OffBoardPushing};
+        let mut at = crate::physics::prop_carry::Carrier {
+            state: BipedGround,
+            position: Vector3::new(0., SIDEWALK_Y + 0.9, -(half[2] + 0.6)),
+            forward: Vector3::new(0., 0., 1.),
+            time_step: dt,
+            skeleton: None,
+        };
+        carry.update(&mut dynamics, tick(), at);
+        assert_eq!(carry.held(), Some(id), "grab failed");
+        dynamics.set_held(carry.held());
+        at.state = OffBoardPushing;
+        let mut o = NavObstacles::new(params);
+        let (radius, speed) = (0.35f32, 1.4f32);
+        let mut ped = [0.0f32, SIDEWALK_Y, 3.5];
+        let mut dir = -1.0f32;
+        let (mut entered, mut held_cut, mut held_moving) = (0u32, 0u32, 0u32);
+        let push_ticks = (1.0 / dt) as u32;
+        let hold_ticks = push_ticks + (3.0 / dt) as u32;
+        let rest_ticks = (3.0 / dt) as u32;
+        for k in 0..hold_ticks + rest_ticks {
+            if k < hold_ticks {
+                at = follow(&carry, at);
+                carry.update(&mut dynamics, if k < push_ticks { stick(0., 1., 0.) } else { stick(0., 0., 0.) }, at);
+            } else if k == hold_ticks {
+                carry.update(&mut dynamics, release(), at);
+            }
+            dynamics.set_held(carry.held());
+            dynamics.step(&world, &mut layer, &[]);
+            o.update(&crate::living_world::peds::prop_obstacle_inputs(&dynamics));
+            let s = &o.states[&(id as u64)];
+            if s.held && s.cut.is_some() {
+                held_cut += 1;
+            }
+            if s.held && s.moving {
+                held_moving += 1;
+            }
+            if ped[2] < -1.0 || ped[2] > 4.0 {
+                dir = if ped[2] < -1.0 { 1.0 } else { -1.0 };
+            }
+            let to = [ped[0], ped[1], ped[2] + dir * speed * dt];
+            let next = o.resolve_step(ped, to, radius).unwrap_or(ped);
+            let body = s.now;
+            // Deeper than the cut may lag the body (retail re-cut tolerance 0.25 x 0.35 m).
+            let grow = radius - 0.25 * 0.35;
+            let d = |p: [f32; 3]| (p[0] - body.center[0]).hypot(p[2] - body.center[1]);
+            if body.applies(ped[1], 0.0) && body.contains(next, grow) && d(next) < d(ped) - 1e-6 {
+                entered += 1;
+            }
+            ped = next;
+        }
+        assert_eq!(carry.held(), None);
+        (entered, held_cut, held_moving, o, spawn, dynamics.position_of(id).unwrap())
+    }
+
+    /// Peds vs a prop held by Move Object (user 2026-10-08: peds walk through it while it is held).
+    /// Retail [code]: the hold sets only DMO+4464 bit 0x20; the obstacle-off gate is a different
+    /// word (+144+4252), so a held prop stays a NavPower obstacle (cut when slower than 0.4 m/s,
+    /// moving avoider when faster). Ours: cut, or solid for the ped's step while moving. The
+    /// earlier rule (held = ignored) is the control: the ped then walks into the prop.
+    #[test]
+    fn peds_do_not_walk_through_a_held_prop_and_see_it_where_it_rests() {
+        use skate_core::living_world::peds::ObstacleParams;
+        let (entered, held_cut, held_moving, o, spawn, rest) = ped_vs_dragged_bin(ObstacleParams::default());
+        let (control, ..) = ped_vs_dragged_bin(ObstacleParams { held_is_obstacle: false, ..ObstacleParams::default() });
+        let s = o.states.values().next().unwrap();
+        let cut = s.cut.expect("the released bin rests and is cut");
+        let cut_at = Vector3::new(s.cut_at[0], s.cut_at[1], s.cut_at[2]);
+        let moved = ((rest.x - spawn.x).powi(2) + (rest.z - spawn.z).powi(2)).sqrt();
+        let dist = |a: Vector3, b: Vector3| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt();
+        println!(
+            "held: entered {entered} (control {control}), ticks held+cut {held_cut}, held+moving {held_moving}; rest {rest:?} moved {moved:.2} m from {spawn:?}; cut centre {:?} (body {:.3} m away), version {}",
+            cut.center,
+            dist(cut_at, rest),
+            o.version
+        );
+        assert_eq!(entered, 0, "a ped never steps deeper into the held prop");
+        assert!(control > 0, "control: with held props ignored the ped walks into it ({control})");
+        assert!(held_moving > 0, "the drag moved it faster than 0.4 m/s at times");
+        assert!(held_cut > 0, "held still, it is cut where it is (retail: below 0.4 m/s)");
+        assert!(moved > 0.5, "dragged away from the spawn: {moved}");
+        // Re-cut where it rests (within the 0.25 x 0.35 m re-cut tolerance), not at the spawn.
+        assert!(dist(cut_at, rest) <= 0.25 * 0.35 + 1e-4);
+        let at = |p: Vector3| [p.x, SIDEWALK_Y, p.z];
+        assert!(o.blocked(at(rest), 0.35), "the new spot blocks");
+        assert!(!o.blocked(at(spawn), 0.35), "the old spot is free");
+        // A path leg through the new spot hits the cut (a detour), one through the old spot does not.
+        let leg = |p: Vector3| o.first_hit([p.x - 3.0, SIDEWALK_Y, p.z], [p.x + 3.0, SIDEWALK_Y, p.z], 0.45);
+        assert!(leg(rest).is_some() && leg(spawn).is_none());
+    }
+
     /// Prop sinking (2026-10-07): every dragged template stays on the floor
     /// (box bottom never more than a few cm into it), rests on the street
     /// after release and does not slide back toward its spawn. Tipping is
@@ -3735,6 +4057,179 @@ mod tests {
         dynamics.apply_move_command(7, Vector3::new(1.0, 0.0, 0.0), 0.0, Vector3::ZERO, simulation().time_step);
         dynamics.step(&world, &mut layer, &[]);
         assert_eq!(dynamics.body_material(0), RetailContactMaterial { static_friction: 0.4, dynamic_friction: 0.3, restitution: 0.2 });
+    }
+
+    /// Per-type DMO data from the vault record (DMO+4380 -> +4 layout of
+    /// `livingworld_dynamicobject_characteristics`): +272 restitution, +312
+    /// flag, +316 / +324 upright pair, +320 / +328 default pair, inherited from
+    /// the parent record like retail's layout.
+    #[test]
+    fn dmo_type_blocks_read_the_characteristics_record_with_parents() {
+        let field = |t: &str, d: &str| serde_json::json!({"type": t, "data": d});
+        let float = |v: f32| field("EA::Reflection::Float", &format!("{:08X}", v.to_bits()));
+        let vector = |v: [f32; 3]| field("EA::Reflection::Vector3",
+            &format!("{:08X}{:08X}{:08X}00000000", v[0].to_bits(), v[1].to_bits(), v[2].to_bits()));
+        let json = serde_json::json!({"version": 1, "collections": [
+            {"class": DMO_TYPE_CLASS, "key": "default", "parent": "", "source": "", "sha256": "", "fields": {
+                "Hash_5CCD5998E03C299B": float(0.5), "Hash_C4D8A03586A31915": field("EA::Reflection::Bool", "00"),
+                "Hash_E0101A9DFD63DEE9": float(0.0), "Hash_6E0BB4F5881A4841": float(0.8),
+                "Hash_CDA7A31C5EDBEB6E": float(0.0), "Hash_086956BCA2187458": float(0.6),
+                "LinearDrag": float(0.0), "AngularDrag": float(0.0),
+                "Hash_E5778CDD4576D890": float(100.0), "Hash_4890392C91829954": float(100.0),
+                "Hash_BAA01E2BA1237455": float(100.0), "Hash_F4D1C84C36A854AC": vector([1.2; 3]),
+                "Hash_D3CDE380DBB3ADC0": vector([0.0; 3])}},
+            {"class": DMO_TYPE_CLASS, "key": "cart", "parent": "default", "source": "", "sha256": "", "fields": {
+                "Hash_C4D8A03586A31915": field("EA::Reflection::Bool", "01"),
+                "Hash_E0101A9DFD63DEE9": float(0.2), "Hash_6E0BB4F5881A4841": float(0.35),
+                "Hash_CDA7A31C5EDBEB6E": float(0.175), "Hash_086956BCA2187458": float(0.25),
+                "AngularDrag": float(0.35), "Hash_E5778CDD4576D890": float(20.0),
+                "Hash_D3CDE380DBB3ADC0": vector([0.0, 0.2, 0.0])}},
+        ]});
+        let collections: skate_data::collections::Collections = serde_json::from_value(json).unwrap();
+        let plain = dmo_type_blocks(&collections, "default").unwrap();
+        assert_eq!(plain, PropMaterialBlocks {
+            held: None, free: Some([0.8, 0.6]), free_upright: Some([0.0, 0.0]),
+            upright_pair: Some(false), restitution: Some(0.5), record_272: Some(false),
+            linear_drag: Some(0.0), angular_drag: Some(0.0), mass: Some(100.0),
+            maximum_linear_velocity: Some(100.0), maximum_angular_velocity: Some(100.0),
+            inertia_scale: Some([1.2; 3]), inertia_offset: Some([0.0; 3]),
+        });
+        let cart = dmo_type_blocks(&collections, "cart").unwrap();
+        assert_eq!(cart.free, Some([0.35, 0.25]));
+        assert_eq!(cart.free_upright, Some([0.2, 0.175]));
+        assert_eq!((cart.upright_pair, cart.record_272, cart.restitution), (Some(true), Some(true), Some(0.5)));
+        assert_eq!((cart.linear_drag, cart.angular_drag), (Some(0.0), Some(0.35)), "drag inherits per field");
+        assert_eq!((cart.mass, cart.maximum_linear_velocity, cart.maximum_angular_velocity), (Some(20.0), Some(100.0), Some(100.0)));
+        assert_eq!((cart.inertia_scale, cart.inertia_offset), (Some([1.2; 3]), Some([0.0, 0.2, 0.0])), "vectors inherit per field");
+        assert!(dmo_type_blocks(&collections, "missing").is_err());
+    }
+
+    /// Retail type data drives the free block, the upright pair and
+    /// record+272; a mod entry keyed by the type's record name (or the MOBJ
+    /// template name) overrides single fields; clearing the mod rules
+    /// (mod disable) restores the retail values.
+    #[test]
+    fn retail_type_data_is_the_default_and_mods_override_it() {
+        let (_, _, mut dynamics) = fixture([0., REST_Y, 1.2]);
+        let authored = dynamics.bodies[0].material;
+        let retail = PropMaterialBlocks {
+            held: None, free: Some([0.35, 0.25]), free_upright: Some([0.2, 0.175]),
+            upright_pair: Some(true), restitution: Some(0.5), record_272: Some(true),
+            ..Default::default()
+        };
+        let mut types = std::collections::BTreeMap::new();
+        types.insert("other".to_owned(), DmoType { key: "x".into(), blocks: PropMaterialBlocks::default() });
+        assert_eq!(dynamics.set_type_data(&types), 0, "no type for this template id");
+        assert_eq!(dynamics.body_material(0), authored);
+        types.insert("template".to_owned(), DmoType { key: "cart".into(), blocks: retail });
+        assert_eq!(dynamics.set_type_data(&types), 1);
+        assert_eq!(dynamics.type_key(7), Some("cart"));
+        // Upright fixture body: the upright pair.
+        assert_eq!(dynamics.body_material(0), RetailContactMaterial { static_friction: 0.2, dynamic_friction: 0.175, restitution: 0.5 });
+        assert!(dynamics.held_body(7).unwrap().record_272);
+        let mut rules = MoveCommandRules::default();
+        rules.by_template.insert("cart".into(), PropMaterialBlocks { free_upright: Some([0.9, 0.8]), record_272: Some(false), ..Default::default() });
+        dynamics.set_move_rules(rules.clone());
+        assert_eq!(dynamics.body_material(0), RetailContactMaterial { static_friction: 0.9, dynamic_friction: 0.8, restitution: 0.5 });
+        assert!(!dynamics.held_body(7).unwrap().record_272);
+        // The template name entry wins over the type entry.
+        rules.by_template.insert("template/crate".into(), PropMaterialBlocks { upright_pair: Some(false), ..Default::default() });
+        dynamics.set_move_rules(rules);
+        assert_eq!(dynamics.body_material(0), RetailContactMaterial { static_friction: 0.35, dynamic_friction: 0.25, restitution: 0.5 });
+        dynamics.set_move_rules(MoveCommandRules::default());
+        assert_eq!(dynamics.body_material(0), RetailContactMaterial { static_friction: 0.2, dynamic_friction: 0.175, restitution: 0.5 });
+        assert!(dynamics.held_body(7).unwrap().record_272);
+    }
+
+    /// Type drag (DMO data +308 / +336 -> Inertia +32 / +36, 82C4E568) is the
+    /// body's drag; the integrator 82AE6590 applies it per second
+    /// (`v *= max(frequency - drag, 0) dt` each fixed step, so 60 Hz and 30 Hz
+    /// steps lose the same speed per second to first order). A mod entry
+    /// overrides one field; mod disable restores retail; without type data the
+    /// authored damping stays.
+    #[test]
+    fn type_drag_is_the_body_drag_and_mods_override_it() {
+        let (_, _, mut dynamics) = fixture([0., REST_Y, 1.2]);
+        let authored = dynamics.bodies[0].inertia;
+        assert_eq!(dynamics.body_inertia(0), authored, "no type data: authored damping");
+        let mut types = std::collections::BTreeMap::new();
+        types.insert("template".to_owned(), DmoType { key: "lw_props".into(), blocks: PropMaterialBlocks {
+            linear_drag: Some(0.1), angular_drag: Some(0.35), ..Default::default() } });
+        assert_eq!(dynamics.set_type_data(&types), 1);
+        let inertia = dynamics.body_inertia(0);
+        assert_eq!((inertia.linear_drag, inertia.angular_drag), (0.1, 0.35));
+        assert_eq!(inertia.inverse_mass, authored.inverse_mass, "drag only");
+        // Applied by the retail integrator: one free step scales v and w by
+        // (frequency - drag) dt.
+        let simulation = dynamics.simulation;
+        let mut rates = dynamics.bodies[0].rates;
+        rates.linear_velocity = Vector3::new(2.0, 0.0, -1.0);
+        rates.angular_velocity = Vector3::new(0.0, 3.0, 0.0);
+        rates.force_acceleration = Vector3::ZERO;
+        let step = integrate_body_rates(rates, inertia, simulation, RetailReactionCorrections::default());
+        let k = |drag: f32| (simulation.frequency - drag) * simulation.time_step;
+        let v = step.state.linear_velocity;
+        assert!((v.x - 2.0 * k(0.1)).abs() < 1e-5 && (v.z + k(0.1)).abs() < 1e-5, "{v:?}");
+        assert!((step.state.angular_velocity.y - 3.0 * k(0.35)).abs() < 1e-5);
+        // Mod override, field-wise, by type record name; reset on disable.
+        let mut rules = MoveCommandRules::default();
+        rules.by_template.insert("lw_props".into(), PropMaterialBlocks { angular_drag: Some(5.0), ..Default::default() });
+        dynamics.set_move_rules(rules);
+        let modded = dynamics.body_inertia(0);
+        assert_eq!((modded.linear_drag, modded.angular_drag), (0.1, 5.0));
+        dynamics.set_move_rules(MoveCommandRules::default());
+        assert_eq!(dynamics.body_inertia(0).angular_drag, 0.35);
+    }
+
+    /// Type body data (82C4E568): mass +304 -> inverse mass, caps +292 / +296,
+    /// box inertia from the AABB half extents x +16 + +32 (82C47FC8); the
+    /// integrator 82AE6590 shortens faster velocities to the caps. A mod entry
+    /// overrides one field (mass alone keeps the type's box); mod disable
+    /// restores retail; without type data the authored mass stays.
+    #[test]
+    fn type_body_data_sets_mass_inertia_and_caps() {
+        let (_, _, mut dynamics) = fixture([0., REST_Y, 1.2]);
+        let authored = dynamics.bodies[0].inertia;
+        let h = dynamics.bodies[0].authored_half_extents;
+        let mut types = std::collections::BTreeMap::new();
+        types.insert("template".to_owned(), DmoType { key: "dt_keg".into(), blocks: PropMaterialBlocks {
+            mass: Some(150.0), maximum_linear_velocity: Some(20.0), maximum_angular_velocity: Some(10.0),
+            inertia_scale: Some([1.2; 3]), inertia_offset: Some([0.0, 0.5, 0.0]), ..Default::default() } });
+        assert_eq!(dynamics.set_type_data(&types), 1);
+        let inertia = dynamics.bodies[0].inertia;
+        assert_eq!(inertia, dynamics.body_inertia(0));
+        assert_eq!(inertia.inverse_mass, 1.0 / 150.0);
+        assert_eq!((inertia.maximum_linear_velocity, inertia.maximum_angular_velocity), (20.0, 10.0));
+        let b = Vector3::new(h.x * 1.2, h.y * 1.2 + 0.5, h.z * 1.2);
+        let k = 150.0 / 3.0;
+        let expect = [(b.y * b.y + b.z * b.z) * k, (b.x * b.x + b.z * b.z) * k, (b.x * b.x + b.y * b.y) * k];
+        for (got, want) in [inertia.inverse_tensor.x, inertia.inverse_tensor.y, inertia.inverse_tensor.z].into_iter().zip(expect) {
+            assert!((got * want - 1.0).abs() < 1e-5, "{got} vs 1/{want}");
+        }
+        assert_ne!(inertia.inverse_tensor, authored.inverse_tensor);
+        // The world inverse inertia used by contacts follows the new tensor.
+        let world = world_inverse_inertia(dynamics.bodies[0].rates.basis, inertia.inverse_tensor);
+        assert_eq!(dynamics.bodies[0].rates.world_inverse_inertia, world);
+        // Caps in the retail integrator: speed above the cap comes out at it.
+        let mut rates = dynamics.bodies[0].rates;
+        rates.linear_velocity = Vector3::new(30.0, 0.0, 40.0);
+        rates.angular_velocity = Vector3::new(0.0, 25.0, 0.0);
+        rates.force_acceleration = Vector3::ZERO;
+        let step = integrate_body_rates(rates, inertia, dynamics.simulation, RetailReactionCorrections::default());
+        assert!((length(step.state.linear_velocity) - 20.0).abs() < 1e-3, "{:?}", step.state.linear_velocity);
+        assert!((length(step.state.angular_velocity) - 10.0).abs() < 1e-3);
+        // Mod: mass only, by type record name; the type's box and caps stay.
+        let mut rules = MoveCommandRules::default();
+        rules.by_template.insert("dt_keg".into(), PropMaterialBlocks { mass: Some(300.0), ..Default::default() });
+        dynamics.set_move_rules(rules);
+        let modded = dynamics.bodies[0].inertia;
+        assert_eq!(modded.inverse_mass, 1.0 / 300.0);
+        assert_eq!(modded.maximum_linear_velocity, 20.0);
+        assert!((modded.inverse_tensor.x * 2.0 - inertia.inverse_tensor.x).abs() < 1e-6);
+        dynamics.set_move_rules(MoveCommandRules::default());
+        assert_eq!(dynamics.bodies[0].inertia, inertia, "mod disable restores retail");
+        dynamics.set_type_data(&std::collections::BTreeMap::new());
+        assert_eq!(dynamics.bodies[0].inertia, authored, "no type data: authored");
     }
 
     /// Free pair choice (82C53EF8 / 82C54BF0 with 82C54B00): only a type with
@@ -3928,8 +4423,11 @@ mod tests {
             }
             let end = dynamics.ground_probe(id, &world).unwrap();
             println!(
-                "{id} {}: spawn {spawn:?} floor {floor:.2} worst gap {worst:.3} held up_y min {up_min:.4} end {end:?} asleep {}",
-                dynamics.bodies[index].template, dynamics.bodies[index].asleep
+                "{id} {} type {:?} mass {:.1}: spawn {spawn:?} floor {floor:.2} worst gap {worst:.3} held up_y min {up_min:.4} end {end:?} asleep {}",
+                dynamics.bodies[index].template,
+                dynamics.type_key(id),
+                1.0 / dynamics.bodies[index].inertia.inverse_mass,
+                dynamics.bodies[index].asleep
             );
             if end.below_ground() || worst < -0.1 {
                 failures.push(id);

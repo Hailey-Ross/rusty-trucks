@@ -60,6 +60,7 @@ use crate::world_audio::{AudioState, AudioVelocity, LiteSkater, NpcSkaterAudio};
 use bevy::prelude::*;
 use skate_core::living_world::replay::{BranchContext, BranchRecord, CursorEvent, Decider, LineCursor, PhaseEntry, ReplayLine, ReplayPhase, ReplaySample};
 use skate_core::living_world::leave_fade::LeaveFade;
+use skate_core::living_world::stance::{StanceEvents, StanceFlags};
 use skate_core::living_world::{DespawnReason, Kind, LivingWorldId, SpawnChoice};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -75,6 +76,24 @@ pub(crate) struct NpcData {
     pub lines: Arc<BTreeMap<[u8; 16], ReplayLine>>,
     /// `characters_marquee` voice per character key (`skater_profiles.json`).
     pub voices: BTreeMap<String, u32>,
+    /// Character record name per character key (`skater_profiles.json` `recipe`); a key without
+    /// one is its own record name.
+    pub records: BTreeMap<String, String>,
+}
+
+/// The shipped natural stance table (`skate_core::living_world::stance::RETAIL_TABLE`), parsed once.
+pub(crate) fn stance_table() -> &'static [skate_core::living_world::stance::StanceRow] {
+    static TABLE: std::sync::OnceLock<Vec<skate_core::living_world::stance::StanceRow>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(skate_core::living_world::stance::retail_table)
+}
+
+/// An NPC's natural stance at spawn (retail: once, from its character record, `82590DC0` ->
+/// `Initialize82B97E38`): the record of the character key, a mod override, the table, else the
+/// engine default. A function of the spawn record's character and the overrides, so a client
+/// derives the host's value.
+pub(crate) fn npc_stance(records: &BTreeMap<String, String>, overrides: &BTreeMap<String, skate_core::living_world::stance::NaturalStance>, character: &str) -> skate_core::living_world::stance::NaturalStance {
+    let record = records.get(character).map_or(character, String::as_str);
+    skate_core::living_world::stance::resolve(stance_table(), overrides, record)
 }
 
 /// One replay-tier NPC skater.
@@ -87,6 +106,8 @@ pub(crate) struct NpcSkater {
     pub voice: Option<u32>,
     pub spawn_tick: u64,
     pub start_line: [u8; 16],
+    /// Natural stance, set once at spawn ([`npc_stance`]); regular draws the puppet mirrored.
+    pub stance: skate_core::living_world::stance::NaturalStance,
 }
 
 #[derive(Component, Clone, Debug)]
@@ -321,6 +342,9 @@ pub(crate) struct PuppetLayer {
     /// Seconds since the clip began (its phase start, or the first of the phases it continues).
     pub time: f32,
     pub weight: f32,
+    /// Cursor frame the layer began (its phase entry's `since`): the layer's identity, which
+    /// keys the stance bits it was built with ([`NpcStanceTrack`]). 0 where no cursor drives it.
+    pub since: u64,
 }
 
 /// The puppet's layers, oldest first, from the cursor's phases (`history`: newest first, seconds
@@ -329,12 +353,12 @@ pub(crate) struct PuppetLayer {
 /// start: a trick's air clip runs on after its span closes). Layers stop at the first one fully
 /// blended in: older ones no longer show. Pure: same history, same layers.
 pub(crate) fn puppet_layers(history: &[(PhaseEntry, f32)], resolve: impl Fn(PhaseEntry, Option<PhaseEntry>) -> (String, f32)) -> Vec<PuppetLayer> {
-    let resolved: Vec<(String, f32, f32)> = history
+    let resolved: Vec<(String, f32, f32, u64)> = history
         .iter()
         .enumerate()
         .map(|(i, (e, t))| {
             let (clip, seconds) = resolve(*e, history.get(i + 1).map(|h| h.0));
-            (clip, seconds, *t)
+            (clip, seconds, *t, e.since)
         })
         .collect();
     let mut out = Vec::new();
@@ -346,9 +370,9 @@ pub(crate) fn puppet_layers(history: &[(PhaseEntry, f32)], resolve: impl Fn(Phas
         while j + 1 < resolved.len() && (resolved[j + 1].0 == resolved[j].0 || resolved[j + 1].0.ends_with(&format!("+{}", resolved[j].0))) {
             j += 1;
         }
-        let (ref clip, seconds, time) = resolved[j];
+        let (ref clip, seconds, time, since) = resolved[j];
         let weight = skate_core::animation::playback_transition::transition_weight(time, seconds);
-        out.push(PuppetLayer { clip: clip.clone(), time, weight });
+        out.push(PuppetLayer { clip: clip.clone(), time, weight, since });
         if weight >= 1.0 {
             break;
         }
@@ -430,7 +454,7 @@ pub(crate) fn fakie_channel_layer(cursor: &LineCursor, alpha: f32, tree: &str) -
     }
     let began = if cursor.fakie { cursor.fakie_since } else { cursor.fakie_previous_since };
     let time = (cursor.frames - began.min(cursor.frames)) as f32 / 60.0 + alpha.clamp(0.0, 1.0) / 60.0;
-    Some(PuppetLayer { clip: tree.to_owned(), time, weight })
+    Some(PuppetLayer { clip: tree.to_owned(), time, weight, since: began })
 }
 
 /// The fakie channel tree's parameters: `torso` = [`FAKIE_TORSO_RIDING`] (pass to
@@ -442,6 +466,147 @@ pub(crate) fn fakie_channel_attributes() -> [skate_core::animation::playback_par
         normalized: false,
         sequence_id: -1,
     }]
+}
+
+/// The puppet's layers for a cursor (`sub_frame` = the render fraction, 0 on a fixed step): the
+/// phase history resolved to clips ([`puppet_layer_clip`] with the mods' clips and blend times,
+/// the shipped pick where a clip does not evaluate) and folded into layers ([`puppet_layers`]).
+/// Empty before the first phase. Without the skater runtime every clip counts as playable.
+pub(crate) fn npc_puppet_layers(settings: &LivingWorldSettings, style: &str, skater: Option<&crate::physics::SkaterRuntime>, cursor: &LineCursor, sub_frame: f32) -> Vec<PuppetLayer> {
+    let evaluates = |clip: &str| skater.is_none_or(|k| k.animation.evaluator.clip_length(clip).is_ok());
+    let meta = skater.map(|k| k.animation.motion.animation.metadata());
+    let stock = |name: &str| match meta {
+        Some(m) => stock_tree_leaf(m, name).filter(|c| evaluates(c)),
+        None => Some(name.to_owned()),
+    };
+    let resolve = |e: PhaseEntry, older: Option<PhaseEntry>| puppet_layer_clip(&settings.skater_clips, &settings.skater_blend_seconds, style, &evaluates, &stock, e, older);
+    let history: Vec<(PhaseEntry, f32)> = cursor.phase_history().map(|(e, frames)| (e, (frames as f32 + sub_frame) / 60.0)).collect();
+    puppet_layers(&history, resolve)
+}
+
+/// Layer starts an NPC remembers (its puppet shows at most a few layers at once).
+const STANCE_STARTS: usize = 8;
+
+/// An NPC skater's stance bits (retail SkaterAnim flags bits 31 / 30 and the relative stance,
+/// [`StanceFlags`]): the natural stance's start bits, toggled by the stance events of the clip its
+/// newest layer plays, like retail's `82593230` -> `82B98980` for every actor. Each layer keeps
+/// the bits current when it began (retail bakes them into the tree's bind pose at construction).
+/// Simulation state, updated on the fixed step from the cursor and the clip data only
+/// ([`track_stance`]), so a client derives the host's bits; plain data for a snapshot.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub(crate) struct NpcStanceTrack {
+    /// Current bits (what a tree built now would get).
+    pub flags: StanceFlags,
+    /// The newest layer (clip, start frame) and its clip time at the last step.
+    pub top: Option<(String, u64, f32)>,
+    /// Layer start frame -> the bits it was built with, oldest first (at most [`STANCE_STARTS`]).
+    pub starts: Vec<(u64, StanceFlags)>,
+    /// The natural stance's start bits (layers older than every remembered start).
+    pub natural: StanceFlags,
+}
+
+impl NpcStanceTrack {
+    pub fn new(stance: skate_core::living_world::stance::NaturalStance) -> Self {
+        let natural = StanceFlags::natural(stance);
+        Self { flags: natural, top: None, starts: Vec::new(), natural }
+    }
+
+    /// The bits the layer that began at `since` was built with: its own start, else the newest
+    /// start before it, else the natural bits.
+    pub fn flags_for(&self, since: u64) -> StanceFlags {
+        self.starts.iter().rev().find(|(s, _)| *s <= since).map_or(self.natural, |(_, f)| *f)
+    }
+
+    /// One fixed step with the newest layer `top`: a new layer (clip or start changed) records the
+    /// current bits as its own and plays from its clip start; then every stance event in the
+    /// clip's attributes collected over the advanced window (`attributes(clip, previous_time,
+    /// time)`, names) toggles its bit ([`StanceFlags::apply`]). Returns whether a bit changed.
+    pub fn step(&mut self, top: &PuppetLayer, events: &StanceEvents, attributes: impl Fn(&str, f32, f32) -> Vec<String>) -> bool {
+        let fresh = !matches!(&self.top, Some((clip, since, _)) if *clip == top.clip && *since == top.since);
+        let previous_time = match &self.top {
+            Some((_, _, t)) if !fresh => *t,
+            _ => 0.0,
+        };
+        if fresh {
+            if self.starts.last().is_none_or(|(s, _)| *s != top.since) {
+                self.starts.push((top.since, self.flags));
+            }
+            if self.starts.len() > STANCE_STARTS {
+                self.starts.remove(0);
+            }
+        }
+        self.top = Some((top.clip.clone(), top.since, top.time));
+        let names = attributes(&top.clip, previous_time, top.time);
+        let before = self.flags;
+        // Names compare as the engine's attribute names (`encode`: the banks spell them in
+        // upper case, `ANIMBOARDBACKWARD`), like the player's `apply_stance_events`.
+        use skate_core::animation::skeleton_input::name::encode;
+        self.flags.apply(events, |n| names.iter().any(|x| encode(x.as_bytes()) == encode(n.as_bytes())));
+        before != self.flags
+    }
+}
+
+/// The attribute names of a (`+`-joined) clip collected over `previous_time..time` s of its
+/// playback ([`skate_core::living_world::stance::attribute_in_window`] per part: parts play back
+/// to back, a part entered in the window plays from its start, the last part holds at its end).
+/// `clip_data(part)` = the part's length (s) and its attributes (name, begin, end; normalised).
+pub(crate) fn sequence_attributes(clip: &str, previous_time: f32, time: f32, clip_data: impl Fn(&str) -> Option<(f32, Vec<(String, f32, f32)>)>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut offset = 0.0f32;
+    let mut parts = clip.split('+').peekable();
+    while let Some(part) = parts.next() {
+        let last = parts.peek().is_none();
+        let Some((length, attributes)) = clip_data(part) else { break };
+        let end = offset + length;
+        let reached = time >= offset;
+        let left = !last && previous_time >= end;
+        if reached && !left {
+            let p = (previous_time - offset).clamp(0.0, length);
+            let t = (time - offset).clamp(0.0, length);
+            out.extend(attributes.iter().filter(|(_, b, e)| skate_core::living_world::stance::attribute_in_window(*b, *e, length, p, t)).map(|(n, ..)| n.clone()));
+        }
+        if !reached {
+            break;
+        }
+        offset = end;
+    }
+    out
+}
+
+/// Fixed step after [`advance`]: each NPC's stance bits from the clip its newest layer plays
+/// ([`NpcStanceTrack::step`]); the clip data come from the stock banks of the skater runtime
+/// (without it no clip carries events and the bits stay natural). Logs every change.
+pub(crate) fn track_stance(
+    settings: Res<LivingWorldSettings>,
+    skater: Option<Res<crate::physics::SkaterRuntime>>,
+    state: Res<PopulationState>,
+    mut npcs: Query<(&NpcSkater, &NpcReplay, Option<&NpcPuppet>, &mut NpcStanceTrack)>,
+) {
+    let lines = npc_lines(&state);
+    let events = StanceEvents::with_overrides(&settings.skater_stance_events);
+    let skater = skater.as_deref();
+    let clip_data = |part: &str| -> Option<(f32, Vec<(String, f32, f32)>)> {
+        let k = skater?;
+        let length = k.animation.evaluator.clip_length(part).ok()?;
+        let meta = k.animation.motion.animation.metadata().clip(part).ok()?;
+        Some((length, meta.attributes.iter().map(|a| (a.name.clone(), f32::from_bits(a.begin_bits), f32::from_bits(a.end_bits))).collect()))
+    };
+    for (npc, replay, puppet, mut track) in &mut npcs {
+        let style = puppet.map_or_else(|| crate::custom_models::native_animation_style(&npc.character), |p| p.style);
+        let mut layers = npc_puppet_layers(&settings, style, skater, &replay.cursor, 0.0);
+        // Before the first remembered phase: the phase's own clip (as `present_pose` draws it).
+        if layers.is_empty() {
+            let Some(s) = replay.cursor.sample(&*lines, 0.0) else { continue };
+            let clip = resolve_puppet_clip(&settings.skater_clips, s.phase, style);
+            let clip = if skater.is_none_or(|k| k.animation.evaluator.clip_length(clip).is_ok()) { clip } else { puppet_clip(s.phase, style) };
+            layers.push(PuppetLayer { clip: clip.to_owned(), time: s.phase_frames as f32 / 60.0, weight: 1.0, since: replay.cursor.frames.saturating_sub(s.phase_frames) });
+        }
+        let Some(top) = layers.last() else { continue };
+        let before = track.flags;
+        if track.step(top, &events, |clip, p, t| sequence_attributes(clip, p, t, &clip_data)) {
+            info!("LIVING_WORLD npc stance #{} {} clip {} t {:.2}: {:?} -> {:?} board_flipped {} fakie {}", npc.id.serial, npc.character, top.clip, top.time, before, track.flags, track.flags.board_flipped(), replay.cursor.fakie);
+        }
+    }
 }
 
 pub(crate) const PUPPET_CLIPS: [&str; 8] =
@@ -457,6 +622,7 @@ pub(crate) fn apply_records(
     mut spawns: MessageReader<LivingWorldSpawn>,
     mut despawns: MessageReader<LivingWorldDespawn>,
     state: Res<PopulationState>,
+    settings: Res<LivingWorldSettings>,
     mut index: ResMut<NpcSkaterIndex>,
     mut events: MessageWriter<NpcSkaterEvent>,
 ) {
@@ -484,6 +650,7 @@ pub(crate) fn apply_records(
             voice: state.npc.voices.get(character).copied(),
             spawn_tick: s.tick,
             start_line: *line,
+            stance: npc_stance(&state.npc.records, &settings.skater_stance, character),
         };
         let sample = cursor.sample(&*lines, 0.0);
         let at = sample.as_ref().map_or(Vec3::from_array(s.position), |x| Vec3::from_array(x.position));
@@ -495,6 +662,7 @@ pub(crate) fn apply_records(
                 NpcReplay { cursor, branches: Vec::new(), last: sample, previous: None },
                 NpcFade { alpha: state.world.config.skaters.leave_fade.fade_in_alpha(0), ..NpcFade::default() },
                 NpcSkaterAudio { list_order: u32::from(*slot), voice: npc.voice, ..Default::default() },
+                NpcStanceTrack::new(npc.stance),
                 npc,
             ))
             .id();
@@ -810,7 +978,7 @@ pub(crate) fn present_looks(
                     }
                 }
                 commands.entity(scene).insert(Visibility::Inherited);
-                info!("LIVING_WORLD npc look bound #{} {}", npc.id.serial, npc.character);
+                info!("LIVING_WORLD npc look bound #{} {} stance {}", npc.id.serial, npc.character, npc.stance.name());
                 puppet.bindings = Some(b);
             }
             Err(err) => {
@@ -830,7 +998,7 @@ pub(crate) fn present_pose(
     settings: Res<LivingWorldSettings>,
     state: Res<PopulationState>,
     fixed: Res<Time<Fixed>>,
-    mut npcs: Query<(Entity, &NpcSkater, &NpcReplay, Option<&NpcPuppet>, Option<&mut NpcPuppetClip>, &mut Transform)>,
+    mut npcs: Query<(Entity, &NpcSkater, &NpcReplay, Option<&NpcPuppet>, Option<&mut NpcPuppetClip>, &mut Transform, Option<&NpcStanceTrack>)>,
     mut joints: Query<&mut Transform, Without<NpcReplay>>,
 ) {
     let lines = npc_lines(&state);
@@ -842,7 +1010,7 @@ pub(crate) fn present_pose(
     let hz = state.world.clock().hz;
     let ahead = (state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * hz).clamp(0.0, 1.0) as f32
         * FRAMES_PER_TICK as f32;
-    for (e, npc, replay, puppet, current, mut root) in &mut npcs {
+    for (e, npc, replay, puppet, current, mut root, stance) in &mut npcs {
         let (cursor, frac) = match &replay.previous {
             Some(previous) if !replay.cursor.finished => previous.render_cursor(&*lines, &replay.branches, ahead),
             _ => (replay.cursor.clone(), 0.0),
@@ -850,7 +1018,6 @@ pub(crate) fn present_pose(
         let sample = cursor.sample(&*lines, frac);
         let Some(s) = sample.or_else(|| replay.last.clone()) else { continue };
         root.translation = Vec3::from_array(s.position);
-        root.rotation = root_rotation(&s);
         let style = puppet.map_or_else(|| crate::custom_models::native_animation_style(&npc.character), |p| p.style);
         // A mod's clip that does not evaluate falls back to the shipped pick (also the outgoing
         // clip of a crossfade).
@@ -861,19 +1028,16 @@ pub(crate) fn present_pose(
                 _ => clip,
             }
         };
-        let evaluates = |clip: &str| skater.as_deref().is_none_or(|k| k.animation.evaluator.clip_length(clip).is_ok());
-        let meta = skater.as_deref().map(|k| k.animation.motion.animation.metadata());
-        let stock = |name: &str| match meta {
-            Some(m) => stock_tree_leaf(m, name).filter(|c| evaluates(c)),
-            None => Some(name.to_owned()),
-        };
-        let resolve = |e: PhaseEntry, older: Option<PhaseEntry>| puppet_layer_clip(&settings.skater_clips, &settings.skater_blend_seconds, style, &evaluates, &stock, e, older);
         // Clip and blend time include the render sub-frame (no 60 Hz stair steps under a smooth root).
-        let history: Vec<(PhaseEntry, f32)> = cursor.phase_history().map(|(e, frames)| (e, (frames as f32 + s.sub_frame) / 60.0)).collect();
-        let mut layers = puppet_layers(&history, resolve);
+        let mut layers = npc_puppet_layers(&settings, style, skater.as_deref(), &cursor, s.sub_frame);
         if layers.is_empty() {
-            layers.push(PuppetLayer { clip: usable(s.phase).to_owned(), time: (s.phase_frames as f32 + s.sub_frame) / 60.0, weight: 1.0 });
+            layers.push(PuppetLayer { clip: usable(s.phase).to_owned(), time: (s.phase_frames as f32 + s.sub_frame) / 60.0, weight: 1.0, since: cursor.frames.saturating_sub(s.phase_frames) });
         }
+        // The stance bits each layer was built with (natural stance, toggled by trick clips).
+        let natural = StanceFlags::natural(npc.stance);
+        let layer_flags: Vec<StanceFlags> = layers.iter().map(|l| stance.map_or(natural, |t| t.flags_for(l.since))).collect();
+        let top_flags = *layer_flags.last().expect("one layer");
+        root.rotation = root_rotation(&s) * flags_root_turn(top_flags);
         let top = layers.last().cloned().expect("one layer");
         let clip = top.clip.as_str();
         let time = top.time;
@@ -888,7 +1052,7 @@ pub(crate) fn present_pose(
             let channel = fakie.as_ref().and_then(|f| {
                 crate::graph_host::motion::tree_commands(&skater.animation.motion.animation, &f.clip, &fakie_channel_attributes(), f.time).ok().map(|c| (c, f.weight))
             });
-            let globals = puppet_pose_with_channel(&skater.animation.evaluator, &layers, channel.as_ref().map(|(c, w)| (c.as_slice(), *w)))?;
+            let globals = puppet_pose_in_flags(&skater.animation.evaluator, &layers, &layer_flags, channel.as_ref().map(|(c, w)| (c.as_slice(), *w)))?;
             for (joint, local) in bindings.pose_transforms(&globals) {
                 if let Ok(mut t) = joints.get_mut(joint) {
                     *t = local;
@@ -1004,9 +1168,9 @@ pub(crate) fn evaluator_pose(evaluator: &crate::animation_pose::PoseEvaluator, c
 pub(crate) fn puppet_blend_pose(evaluator: &crate::animation_pose::PoseEvaluator, clip: &str, time: f32, blend: Option<&PuppetBlend>) -> Option<Vec<Mat4>> {
     let mut layers = Vec::with_capacity(2);
     if let Some(b) = blend {
-        layers.push(PuppetLayer { clip: b.from.clone(), time: b.from_time, weight: 1.0 });
+        layers.push(PuppetLayer { clip: b.from.clone(), time: b.from_time, weight: 1.0, since: 0 });
     }
-    layers.push(PuppetLayer { clip: clip.to_owned(), time, weight: blend.map_or(1.0, |b| b.weight) });
+    layers.push(PuppetLayer { clip: clip.to_owned(), time, weight: blend.map_or(1.0, |b| b.weight), since: 0 });
     puppet_layers_pose(evaluator, &layers)
 }
 
@@ -1022,18 +1186,92 @@ pub(crate) fn puppet_layers_pose(evaluator: &crate::animation_pose::PoseEvaluato
 /// channel tree's pose commands blended over the layered pose with `PoseCommand::ChannelBlend`
 /// (its per-bone channel weights, like `MotionChannels::evaluate`) at the channel's weight.
 pub(crate) fn puppet_pose_with_channel(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer], channel: Option<(&[skate_core::animation::playback_tree::PoseCommand], f32)>) -> Option<Vec<Mat4>> {
+    puppet_pose_in_stance(evaluator, layers, channel, false)
+}
+
+/// The puppet root's extra turn for a natural stance (`flags_root_turn` of its start bits).
+pub(crate) fn stance_root_turn(stance: skate_core::living_world::stance::NaturalStance) -> Quat {
+    flags_root_turn(StanceFlags::natural(stance))
+}
+
+/// The puppet root's extra turn for the stance bits of the newest layer. The regular bind pose
+/// ([`bind_pose_tail`]) draws the board turned round (`BOARD_BACKWARDS`, nose along root -Z) and
+/// the body mirrored; retail's physical board follows the animated board (`publish_deck_angles`
+/// with `board_flipped = bit31 ^ mirror`, false for both natural stances), so a regular
+/// character's frame is half a turn from its board's. The replay root is the frame the goofy
+/// puppet rides nose first with (the facing rule and the fakie rule work on that board axis), so
+/// a mirrored puppet turns its root half a turn: the board keeps its world heading and the left
+/// foot leads. The turn follows the mirror bit alone: a trick clip that toggles only
+/// `animboardbackward` (the board turned under the body) ends with the board turned in the clip,
+/// and the next layer's `BOARD_BACKWARDS` keeps it turned without moving the body.
+pub(crate) fn flags_root_turn(flags: StanceFlags) -> Quat {
+    if flags.mirrored { Quat::from_rotation_y(std::f32::consts::PI) } else { Quat::IDENTITY }
+}
+
+/// [`stance_tail`] for a natural stance's start bits (`mirrored` = regular).
+pub(crate) fn bind_pose_tail(mirrored: bool) -> Vec<skate_core::animation::playback_tree::PoseCommand> {
+    stance_tail(StanceFlags { board_backward: mirrored, mirrored, switch: false })
+}
+
+/// The commands retail's bind pose appends to every tree it plays (`MotionAnimation::add_bind_pose`,
+/// the player's path, from the SkaterAnim flags at the tree's construction): the reference pose
+/// added, `BOARD_BACKWARDS` / `BOARD_BACKWARDS_IK` for bit 31, a mode 2 mirror for bit 30. The
+/// switch bit adds nothing.
+pub(crate) fn stance_tail(flags: StanceFlags) -> Vec<skate_core::animation::playback_tree::PoseCommand> {
+    use skate_core::animation::playback_tree::PoseCommand;
+    let mut out = vec![PoseCommand::Pose { name: "RIG_TPOSE".into() }, PoseCommand::Add { motion_is_a: true }];
+    if flags.board_backward {
+        out.extend([
+            PoseCommand::Pose { name: "BOARD_BACKWARDS".into() },
+            PoseCommand::Add { motion_is_a: false },
+            PoseCommand::Pose { name: "BOARD_BACKWARDS_IK".into() },
+            PoseCommand::Add { motion_is_a: true },
+        ]);
+    }
+    if flags.mirrored {
+        out.push(PoseCommand::Mirror { trajectory_mode: 2 });
+    }
+    out
+}
+
+/// [`puppet_pose_with_channel`] in a natural stance (`mirrored` = regular): every layer with the
+/// stance's start bits ([`puppet_pose_in_flags`]).
+pub(crate) fn puppet_pose_in_stance(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer], channel: Option<(&[skate_core::animation::playback_tree::PoseCommand], f32)>, mirrored: bool) -> Option<Vec<Mat4>> {
+    let flags = StanceFlags { board_backward: mirrored, mirrored, switch: false };
+    puppet_pose_in_flags(evaluator, layers, &vec![flags; layers.len()], channel)
+}
+
+/// The puppet pose with each layer in the stance bits it was built with (`flags[i]` for
+/// `layers[i]`; retail bakes the bits into a tree's bind pose at construction, so a transition
+/// blends two trees each closed with its own tail). While every layer shares the bits, the
+/// layers blend first and one tail closes the result (with no bits set: the commands every NPC
+/// drew before the stance port; with the regular bits: the natural stance port); once a newer
+/// layer's bits differ, every layer is closed with its own tail before it blends in. The channel
+/// tree (fakie) is closed with the newest layer's bits, like the player's channel tree built with
+/// the current flags.
+pub(crate) fn puppet_pose_in_flags(evaluator: &crate::animation_pose::PoseEvaluator, layers: &[PuppetLayer], flags: &[StanceFlags], channel: Option<(&[skate_core::animation::playback_tree::PoseCommand], f32)>) -> Option<Vec<Mat4>> {
     use skate_core::animation::playback_tree::PoseCommand;
     let sample = |clip: &str, time: f32| -> Option<PoseCommand> {
         let (clip, time) = sequence_part(evaluator, clip, time)?;
         let time = puppet_clip_time(clip, time, evaluator.clip_length(clip).ok()?);
         Some(PoseCommand::Clip { name: clip.to_owned(), previous_time: time, time, loops: 0 })
     };
+    let flag = |i: usize| flags.get(i).copied().unwrap_or_default();
     let (top, older) = layers.split_last()?;
-    let mut commands = Vec::with_capacity(layers.len() * 2 + 2);
-    for l in older {
+    let top_flags = flag(layers.len() - 1);
+    let mixed = (0..layers.len()).any(|i| flag(i) != top_flags);
+    let mut commands = Vec::with_capacity(layers.len() * 8 + 8);
+    // Per-layer tails once the bits differ (each layer closed before it blends in).
+    let closed = |commands: &mut Vec<PoseCommand>, i: usize| {
+        if mixed {
+            commands.extend(stance_tail(flag(i)));
+        }
+    };
+    for (i, l) in older.iter().enumerate() {
         if let Some(c) = sample(&l.clip, l.time) {
             let base = commands.is_empty();
             commands.push(c);
+            closed(&mut commands, i);
             if !base {
                 commands.push(PoseCommand::Blend { weight: l.weight });
             }
@@ -1042,14 +1280,26 @@ pub(crate) fn puppet_pose_with_channel(evaluator: &crate::animation_pose::PoseEv
     let to = sample(&top.clip, top.time)?;
     let base = commands.is_empty();
     commands.push(to);
+    closed(&mut commands, layers.len() - 1);
     if !base {
         commands.push(PoseCommand::Blend { weight: top.weight });
     }
+    // Shared bits: one tail for the blended layers. A tail that mirrors (or turns the board)
+    // closes before the channel tree, which gets its own (as the player's channel tree).
+    let shaped = top_flags.board_backward || top_flags.mirrored;
+    if !mixed && shaped {
+        commands.extend(stance_tail(top_flags));
+    }
     if let Some((tree, weight)) = channel.filter(|c| !c.0.is_empty() && c.1 > 0.0) {
         commands.extend_from_slice(tree);
+        if mixed || shaped {
+            commands.extend(stance_tail(top_flags));
+        }
         commands.push(PoseCommand::ChannelBlend { weight, use_channels_from_weights: false });
     }
-    commands.extend([PoseCommand::Pose { name: "RIG_TPOSE".into() }, PoseCommand::Add { motion_is_a: true }]);
+    if !mixed && !shaped {
+        commands.extend(stance_tail(top_flags));
+    }
     let pose = evaluator.evaluate(&commands).ok()?;
     let locals: Vec<Mat4> = pose.iter().copied().map(skate_core::animation::output::sqt_to_matrix).map(crate::animation::native_matrix).collect();
     let parents = &evaluator.frames.parents;
@@ -1176,7 +1426,7 @@ pub(crate) fn install(app: &mut App) {
     app.init_resource::<NpcSkaterIndex>()
         .init_resource::<NpcSkaterLooks>()
         .add_message::<NpcSkaterEvent>()
-        .add_systems(FixedUpdate, (apply_records, advance, log_backwards, log_readout).chain().after(super::step_population))
+        .add_systems(FixedUpdate, (apply_records, advance, track_stance, log_backwards, log_readout).chain().after(super::step_population))
         .add_systems(
             FixedUpdate,
             push_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),

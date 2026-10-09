@@ -326,13 +326,124 @@ In game the effect is small: against the {0, 0, 1} floor the held prop's dynamic
 (retail's second float); a held prop touching another prop now gets max(0.03, the other prop's friction) instead of
 a flat 0.03.
 
-**NOT RETAIL YET.** The per-type DMO data values (+272 restitution, +312 bit 0 upright flag, +316 / +320 / +324 /
-+328 friction pairs) are not extracted. Defaults reproduce today: free pair = authored MOBJ friction for both
-static and dynamic, upright flag off, restitution = authored MOBJ restitution. Missing extraction: the DMO type data
-block (DMO+4380 -> +4) per prop type, likely the `livingworld_dynamicobject_characteristics` records or the DMO
-setup data. The second upright condition (the passed pose in 82C54B00) is not modelled; we test the current pose
-only. Whether the existing per-template `record_272` flag (described as data +312, 82C4B960) is the same bit as the
-upright flag is open.
+**NOT RETAIL YET (updated 2026-10-08, see "Per-type DMO data" below).** The per-type values are now retail data.
+Still open: the second upright condition (the passed pose in 82C54B00) is not modelled; we test the current pose
+only. A prop whose type data is missing (setup older than the type map) keeps the authored MOBJ material.
+
+### Per-type DMO data (2026-10-08)
+
+**Problem.** The restitution, upright flag and free friction pairs of every prop type were stand-ins (authored MOBJ
+friction 0.55 for both, restitution 0.05, flag off), marked NOT RETAIL YET above; record+272 per type was off.
+
+**Root cause / retail source.**
+- [code] The DMO constructor 82C51E28 looks the type up through the manager at 0x830854B0 (vtable slot 2, key =
+  create params +24) and stores result +204 at DMO+4380; DMO+4380 -> +4 is the type's data block. It reads data
+  +312 bit 0 into DMO+4465 bit 0x10 and data +237 into DMO+4466 bit 0x80; 82C4A130 reads data +208 as a 64-bit id.
+- [data] That block is the layout of the type's vault record of class `livingworld_dynamicobject_characteristics`
+  (skaterschema layout size 352). The schema's field offsets match every read: +208 `Priority` (16-byte ref, the
+  id 82C4A130 loads), +237 bool, +272 float (restitution, default 0.5), +312 bool (upright flag), +316 / +324
+  floats (upright pair, default 0 / 0), +320 / +328 floats (default pair, default 0.8 / 0.6), +308 `LinearDrag`,
+  +336 `AngularDrag`.
+- [data] Which record a prop type uses: the template record (RX2 EB000D, 160 bytes, in the `worlddmo.big` model
+  assets) holds the template id at +104, the vault class's `default` collection id at +112 and the record key at
+  +120. All 136 templates on the disc resolve (0 missing); 40 DownTown, 28 Industrial and 42 University templates
+  are placed.
+- [code] 82C4B960 sets the Move Object record +272 (stored by 82585F58) to 0 when data +312 is clear, else 1 or 2
+  (data +236 set / clear): record+272 non-zero is the same flag as the upright pair.
+
+Values (examples, from the disc): `default` / benches / bins: restitution 0.5, pair 0.8 / 0.6, flag off;
+`dumpster_wheeled` 0.3, upright pair 0.2 / 0.1, default pair 0.6 / 0.5, flag on; `shopping_cart_wheeled` 0.5,
+upright 0.2 / 0.175, default 0.35 / 0.25, flag on; `basketball` 0.85, 0.85 / 0.8; `us_mailbox` 0.2, 0.7 / 0.6;
+`dt_ballstainlesssteel` 0.15, 0.8 / 0.3. Only the two wheeled types carry the upright flag.
+
+**Change.**
+- Setup (`tools/asset_pipeline/dynamic_props.py`): the DMO catalog keeps each template's record key
+  (`characteristics_key`, EB000D +120) and the props export writes `types` {template id -> record key} into
+  `private/native-props/<map>.json`. Only the key is exported; the values stay in the installation's stock vault.
+- Engine: `skate_world::load_dmo_types` resolves each key in `private/stock/skater-collections.json`
+  (`prop_dynamics::dmo_type_blocks`, parents included) at map load and `PropDynamics::set_type_data` attaches
+  `DmoType {key, blocks}` to every body by its template id. The body's free block, upright pair, restitution and
+  record+272 come from it; the held pair stays the retail constant {0.03, 0.02}. Log `SKATE_PROP_TYPES: <map>
+  types=N props_with_type_data=M/T`; HELD_PROP gains `type=<record name>`.
+- Mods: `set_tuning('carry', {by_template = {...}})` entries are keyed by the MOBJ template name or by the type's
+  record name (e.g. `dt_garbagebin`); the template name entry wins; each field overrides the retail value, unset
+  fields keep it; mod disable restores the retail values (the rules reset, the type data stays on the body).
+- Multiplayer: the type data is a pure function of the installation's data and the template id (stable keys,
+  plain values); no runtime state.
+
+**Files.** `tools/asset_pipeline/dynamic_props.py`, `tools/asset_pipeline/test_dynamic_props.py`,
+`crates/skate-game/src/physics/prop_dynamics.rs`, `crates/skate-game/src/skate_world.rs`,
+`crates/skate-mods/src/world_tuning.rs` (docs), `sdk/skate.lua` (docs).
+
+**Verification.**
+- Pipeline: `test_characteristics_key_is_the_record_at_120`; `test_every_disc_dmo_type_has_vault_type_data`
+  (`SKATE3_DISC`, `SKATE3_ASSET_ROOT`): every disc template has a record with all six fields. 8 / 8 pass.
+- skate-game: `dmo_type_blocks_read_the_characteristics_record_with_parents`,
+  `retail_type_data_is_the_default_and_mods_override_it` (type data drives the upright pair and record+272; a
+  record-name mod entry overrides one field, a template-name entry wins, reset restores retail); full bin 579 pass,
+  1 known (`setup::pipelines_accept_valid_group_outputs_when_fingerprint_changes`).
+- Asset-backed (`--ignored`): `installed_map_props_resolve_retail_type_data` passes on DownTown (40), Industrial
+  (28) and University (42) with a type map built from the disc; `downtown_dragged_props_rest_on_the_floor` passes
+  with and without the type data (all six props rest at gap 0.000 and sleep).
+- Not run: in game. The installed assets need setup group `maps` re-run to get the type map; until then props
+  keep the authored material.
+
+**Open questions.**
+- `LinearDrag` (+308) / `AngularDrag` (+336): wired, see "Per-type drag" below. Mass +304, maximum velocities
+  +292 / +296 and the inertia scale / offset vectors +16 / +32 (same reader, 82C4E568): wired, see "Per-type mass,
+  inertia and velocity caps" below. +228 / +232 are not read.
+- Data +237 (DMO+4466 bit 0x80) and +236 (record+272 = 1 vs 2) meanings are not decoded; record+272 is used as a
+  flag (any non-zero doubles the target speed, 82D45318). +236 also selects one of two stacked vectors in
+  82C54BF0 (at 82C54DA4) and is read by 827A3FD8 (a caller outside the DMO block); what it means is still open.
+
+### Per-type drag (2026-10-08)
+
+**Problem.** Prop bodies used the authored MOBJ damping (0.05 linear / 0.15 angular per second in the project
+defaults), labelled NOT RETAIL YET, although the type record carries `LinearDrag` and `AngularDrag`.
+
+**Retail mechanism.**
+- [code] 82C4E568 (called twice by the DMO physics component builder 82C4DA40, once per body build, guarded by a
+  -1 / -2 "set once" word) reads the type block through component +208 and writes the body's `rw::physics::Inertia`
+  (component +88 -> +0 -> +16): +16 = 1 / data +304 (inverse mass), +24 = data +292 and +28 = data +296 (maximum
+  linear / angular velocity), +32 = data +308 (`LinearDrag`), +36 = data +336 (`AngularDrag`), then the box inertia
+  from the AABB half extents x data +16 + data +32 (82C47FC8). The same function copies the default friction pair
+  (data +320 / +328) and restitution (+272) into the material block. The values are stored as they are: no
+  multiply by the simulation frequency (unlike the deck's `DeckAngularDrag` x 60 and the ragdoll's
+  `AngularDrag` x 60).
+- [code] None of the DMO functions that load the type block (the 13 readers of DMO+4380, incl. the commanded /
+  free switch 82C53EF8 / 82C54BF0 -> 82C550A8) write Inertia +32 / +36; the switch swaps only the friction block
+  (a full write scan of the image was not done). Held, thrown and free props use the same drag; a sleeping
+  prop is not integrated at all.
+- [code] The integrator RigidBody::DynamicUpdate 82AE6590 (already ported, `dynamic_update_packed`) rebuilds the
+  velocity from the step displacement: `v = (v dt) x max(frequency - drag, 0)`, so `v *= 1 - drag dt` per fixed
+  step, drag in 1/s, clamped so 60 or more stops the body. The DMO simulation steps at the fixed 60 Hz
+  (dt 0x3C888889); ours runs the prop step in FixedUpdate with the same `RetailSimulationStep`, so render fps does
+  not change it and the per-second unit is retail's own normalisation.
+- [data] Values (stock vault, parents included): most types 0 / 0; `lw_props` and its children (bottles, cans,
+  bags, phones, papers) 0.1 / 0.35 (purse 0.5, popcan 0.4, taser_gun 0 / 0.35); `garbagebag` 0 / 0.5; barrels and
+  spools (`metal_keg`, `oildrum`, `cable_spool`) 0 / 0.25; `pylon` 0 / 0.2, `drum_pylon` 0.4 / 0.35;
+  `concrete_pipe` 0.5 / 0.5; `pj_garbagebin` 0.2 / 0.2; several bins 0 / 0.5..0.6; balls 0 / 0.107..0.15.
+
+**Change.** `PropMaterialBlocks` gains `linear_drag` / `angular_drag` (`dmo_type_blocks` reads `LinearDrag` /
+`AngularDrag`); `PropDynamics::body_inertia` gives the integrator the body's mass properties with the type drag, a
+mod's `carry.by_template` drag over it (field-wise, by MOBJ template name or type record name, reset on mod
+disable), else the authored damping (only props without type data). Pure function of type data, mod rules and
+template id. Mod fields `linear_drag` / `angular_drag` (finite, >= 0) in skate-mods `CarryMaterialPatch`,
+`sdk/skate.lua` and `api.lua`.
+
+**Files.** `crates/skate-game/src/physics/prop_dynamics.rs`, `crates/skate-game/src/modding/world_tuning.rs`,
+`crates/skate-game/src/skate_world.rs` (asset test), `crates/skate-mods/src/world_tuning.rs`,
+`crates/skate-mods/src/api.lua`, `sdk/skate.lua`.
+
+**Verification.** `type_drag_is_the_body_drag_and_mods_override_it` (type drag reaches the Inertia, one integrator
+step scales v and w by (60 - drag) / 60, mod override per field, reset), `dmo_type_blocks_read_the_characteristics_record_with_parents`
+(drag inherits per field), `carry_move_command_rules_set_and_reset` (mod `angular_drag`). skate-game 580 pass, 1
+known failure (setup fingerprint); skate-mods unit tests pass (the asset-gated `skyline_physics` test needs the
+Skyline package). `downtown_dragged_props_rest_on_the_floor` (assets) passes; the installed assets have no type map
+yet (setup group `maps` not re-run), so it ran with the authored fallback and `installed_map_props_resolve_retail_type_data`
+stops at "type map". Not run in game.
+- Move Object grab splines (DMO physics assembly definition +136) are a separate structure, not this record; not
+  ported.
 
 **Verification.** Tests assert the retail math, not measured output: `commanded_block_switches_with_the_command_and_zero_commands_wake`
 (held block {0.03, 0.02, type restitution}; combine against a low side keeps the block, against the 0.8 / 0.6
@@ -367,6 +478,78 @@ small retail fix: the retail answers are the row solver (item 5) and the retail 
 The game uses this floor material and the same prop step, so the in-game builds up to 1e61fe0 most likely show the
 same behaviour (placed props can keep rocking without sleeping; a dragged prop can sink); not checked in a game
 run.
+
+### Per-type mass, inertia and velocity caps (2026-10-08)
+
+**Problem.** Prop bodies took their mass from the authored MOBJ density x box volume, their inertia from that box,
+and had no velocity caps (NOT RETAIL YET), although the same reader that sets the type drag fills the whole
+`rw::physics::Inertia` from the type record.
+
+**Retail mechanism.**
+- [code] 82C4E568 (DMO physics component, run once per body build by 82C4DA40 for single-part assemblies): with
+  r30 = Inertia (component +88 -> +0 -> +16) and the type block at component +208:
+  - if any lane of the current inverse tensor is +inf (0x82FB4D70) it is first reset to (1, 1, 1) by 82AE6A00;
+  - 82C4E448 writes the body's centre-of-mass frame from data +48 (negated translation, see open items);
+  - Inertia +16 = 1.0 / data +304 (`fdivs`, inverse mass); +32 / +36 = data +308 / +336 (drag, section above);
+    +24 = data +292 (maximum linear velocity), +28 = data +296 (maximum angular velocity); friction pair +320 /
+    +328 and restitution +272 into the material block;
+  - box: `h = 0.5 (aabb_max - aabb_min) * data[+16] + data[+32]` per lane (`vmaddfp`, fused), the AABB being the
+    component's +48 / +64 vectors (filled in 82C4DA40 from the physics assembly definition's bounds, definition
+    +128); if not all of h.x, h.y, h.z are > 0 (the 0x830BDB40 permute mask, set to 00 04 08 08 by 82F83450, ANDs
+    the three lane results) h = (1000, 1000, 1000) (0x82256FE8);
+  - 82C47FC8(Inertia, h): `k = (1/3) / inverse mass` (0x822F87B8 = 1/3), inverse tensor = reciprocal (vrefp plus two
+    Newton steps) of `k (h.y^2 + h.z^2, h.x^2 + h.z^2, h.x^2 + h.y^2)` (the 0x822FB890 permute plus `vrlimi`), and
+    Inertia +20 = 1 / the smallest inverse moment (ordered compares, as in ComputeMassProperties).
+  So h is the half extent of the box (a solid box of half extents h has I = m/3 (h.y^2 + h.z^2)); the type scales
+  the AABB by +16 (default 1.2) and adds +32.
+- [code] The caps are applied by the integrator RigidBody::DynamicUpdate 82AE6590 after the drag: angular velocity
+  `|w|^2 > (Inertia +28)^2` -> `w *= sqrt(cap^2 / |w|^2)` (vrsqrtefp plus two Newton steps), then linear velocity the
+  same with Inertia +24; the capped squared speeds also feed the sleep energy. This is already ported
+  (`dynamic_update_packed`, `cap`), so wiring the values is enough; the fixed 60 Hz step keeps it fps-independent.
+- [data] Schema layout (skaterschema class `livingworld_dynamicobject_characteristics`, layout 352): +16
+  `Hash_F4D1C84C36A854AC` and +32 `Hash_D3CDE380DBB3ADC0` (Vector3), +48 `Hash_D266C6ACE12C4C87` (Vector3), +292
+  `Hash_4890392C91829954`, +296 `Hash_BAA01E2BA1237455`, +304 `Hash_E5778CDD4576D890` (floats). Default record:
+  mass 100, caps 100 / 100, scale 1.2, offset 0. Across the 230 records: mass 100 (71), 300 (17), 200 (15), 150
+  (14), 125 (11), 20, 10, 15, 50, 4, 0.5 ...; caps 100 / 100 on 222 records, 10000 on 5, a few 10..150; scale 1.2
+  on 224; offset 0 on 218 (a few lift y by 0.2 or 0.5); +48 non-zero on 76 records (y -0.1 .. -1.5).
+
+**Change.** skate-core `mass::dmo_body_inertia(half_extents, DmoBodyData)` is the 82C4E568 / 82C47FC8 fill (pure,
+deterministic). `PropMaterialBlocks` gains `mass`, `maximum_linear_velocity`, `maximum_angular_velocity`,
+`inertia_scale`, `inertia_offset`, read by `dmo_type_blocks` (parents included). `PropDynamics::body_inertia`
+builds the Inertia from the type data and a mod's `carry.by_template` fields over it; fields neither sets keep the
+authored values (a mod mass on a prop without type data uses the class default scale 1.2 / offset 0). The result
+is stored per body (`refresh_inertia`, with the world inverse inertia) whenever the type data or the mod rules
+change, so contacts, carry and the integrator all use the same mass; mod disable restores retail via
+`MoveCommandRules::default()`. The box is the body's authored AABB (`authored_half_extents`), so a mod
+`collision_box` override does not change the mass properties. Mod fields (skate-mods `CarryMaterialPatch`):
+`mass` (> 0), `maximum_linear_velocity` / `maximum_angular_velocity` (>= 0), `inertia_scale` / `inertia_offset`
+({x, y, z}, finite); `sdk/skate.lua`, `api.lua` and the read-back list them. Multiplayer: a pure function of the
+type record, the mod rules and the authored box, applied on every peer the same way.
+
+**Files.** `crates/skate-core/src/physics/mass.rs`, `crates/skate-game/src/physics/prop_dynamics.rs`,
+`crates/skate-game/src/modding/world_tuning.rs`, `crates/skate-game/src/skate_world.rs` (asset test),
+`crates/skate-mods/src/world_tuning.rs`, `crates/skate-mods/src/api.lua`, `sdk/skate.lua`.
+
+**Verification.** skate-core `dmo_body_inertia_is_the_scaled_box_and_falls_back_to_1000` (inverse mass,
+moments of the scaled box, +20 = the largest moment, the 1000 fallback); skate-game
+`type_body_data_sets_mass_inertia_and_caps`, `dmo_type_blocks_read_the_characteristics_record_with_parents` (mass,
+caps and both vectors inherit per field), `carry_move_command_rules_set_and_reset`; skate-mods unit tests (102 pass).
+skate-game 581 pass, 1 known failure (setup fingerprint); skate-core 783 pass, 2 failures in code this change does not
+touch (`predictive_contacts_and_retention_match_full_scan_for_every_primitive`,
+`a_moving_group_8_body_reaches_native_impact_feedback_for_a_stationary_actor`). Asset tests on a copy of the
+installed assets whose prop sidecars got the type map from the disc's `worlddmo.big` (the pipeline's own
+`template_meshes`; setup group `maps` not re-run): `installed_map_props_resolve_retail_type_data` passes on DownTown
+(40 templates), Industrial (28) and University (42), all with mass > 0 and caps > 0;
+`downtown_dragged_props_rest_on_the_floor` passes with the type data (benches 100 kg, bin 20 kg, newspaper boxes
+15 kg, worst gap -0.001 m; two of the eight ids grab a neighbouring prop, as before). Not run in game.
+
+**Still NOT RETAIL YET.**
+- Centre-of-mass offset data +48 (82C4E448 writes it into the body's mass frame): not ported; our body centre is
+  the box centre.
+- The AABB: retail uses the physics assembly definition's bounds (definition +128); ours is the AABB of the prop's
+  collision instance points. Expected to be the same box for single-box props, not checked per template.
+- Multi-part assemblies (82C4DA40's part loop) do not go through 82C4E568; we build every prop as one box.
+- Props without type data (older setup without the type map) keep the authored density mass and no caps.
 
 ## Retail contact solver and sleep rule for props (2026-10-08)
 

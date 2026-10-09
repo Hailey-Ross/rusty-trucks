@@ -97,8 +97,22 @@ def template_meshes(raw):
         if key in result:
             raise ValueError('Duplicate DMO template ID')
         result[key] = dict(mesh_info=mesh_info, matrix=matrix(raw, at),
-                          model_matrix=matrix(raw, base+struct.unpack_from('>I', raw, base+32)[0]))
+                          model_matrix=matrix(raw, base+struct.unpack_from('>I', raw, base+32)[0]),
+                          characteristics=characteristics_key(raw, at))
     return result
+
+
+def characteristics_key(raw, at):
+    """Per-type DMO data record of one EB000D template.
+
+    +112 is the vault class's 'default' collection id and +120 the record key
+    of class livingworld_dynamicobject_characteristics: the record whose
+    layout the DMO constructor 82C51E28 keeps at DMO+4380 -> +4 (+272
+    restitution, +312 upright flag, +316..+328 friction pairs). Only the key is
+    exported; the values stay in the installation's stock vault.
+    """
+    record = struct.unpack_from('>Q', raw, at+120)[0]
+    return f'Hash_{record:016X}' if record else None
 
 
 def transform_mesh(arrays, index, transform):
@@ -218,7 +232,8 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
             if key in placements and placements[key] != item:
                 raise ValueError('Conflicting DMO locator '+key)
             placements[key] = item
-    report = dict(map=district['map_name'], instances=[], unresolved=[], simulation='initial placement only')
+    report = dict(map=district['map_name'], instances=[], unresolved=[], simulation='initial placement only',
+                  types={})
     with tempfile.TemporaryDirectory(prefix='skate-dmo-') as work:
         root = Path(work); models = []; records = []; used = set(); positions = {}
         for item in placements.values():
@@ -245,6 +260,8 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
             transform = template['model_matrix'] @ template['matrix'] @ np.array(item['matrix'])
             records.append((item, positions[key], transform))
             report['instances'].append(dict(item, model_asset=template['asset_id'], meshes=len(template['meshes'])))
+            if template.get('characteristics'):
+                report['types'][key] = template['characteristics']
         if models:
             manifest = dict(map_name=district['map_name'], district_name=district['district_name'],
                 models=models, textures={key:textures[key] for key in sorted(used)},

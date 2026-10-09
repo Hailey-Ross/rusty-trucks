@@ -45,6 +45,10 @@ mod biped_ground;
 #[cfg(test)]
 mod board_away_tests;
 #[cfg(test)]
+mod air_timeout_tests;
+#[cfg(test)]
+mod boundary_tests;
+#[cfg(test)]
 mod carry_direction_tests;
 mod frame;
 pub(crate) mod startup_check;
@@ -77,7 +81,7 @@ mod skeleton_grind_air;
 mod teleport_state;
 mod wipeout;
 mod wipeout_states;
-mod respawn;
+pub(crate) mod respawn;
 //TEMPORARY opt-in observations for the bottom-up source audit.
 mod biped_air;
 mod known_air;
@@ -591,7 +595,14 @@ impl Plugin for PhysicsPlugin {
                 FixedUpdate,
                 prop_carry::apply_carry_settings.before(SimulationSet::Physics),
             )
+            .init_resource::<respawn::RespawnSettings>()
+            .add_message::<respawn::PlayerRespawn>()
+            .add_systems(
+                FixedUpdate,
+                respawn::apply_respawn_settings.before(SimulationSet::Physics),
+            )
             .add_systems(FixedUpdate, advance.in_set(SimulationSet::Physics))
+            .add_systems(FixedUpdate, respawn::emit_respawns.after(SimulationSet::Physics))
             .add_systems(FixedUpdate, manual_landing_log::log_manual_landings.after(SimulationSet::Physics))
             .add_systems(Update, present.in_set(FrameSet::Physics))
             .add_systems(Update, prop_dynamics::sync_prop_transforms.after(FrameSet::Physics));

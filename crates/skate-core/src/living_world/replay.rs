@@ -912,7 +912,10 @@ pub struct LineCursor {
     /// (`dot(velocity, board axis) < -0.5`) above the high speed, or above the low speed for
     /// longer than the slow time; cleared in the air and off the board, held during a trick, never
     /// set in the first `after_teleport_seconds` after spawn. The board axis is the drawn root's
-    /// +Z (the puppet's board is part of its rig). Updated every step after the facing rule, so it
+    /// +Z: retail reads the effective root (`GetEffectiveRoot82BE3650`, root Z negated iff the
+    /// mirror bit, [`crate::living_world::stance::StanceFlags::fakie_board_axis`]), which for the
+    /// puppet root (drawn frame turned half a turn iff mirrored) is the drawn frame for any stance
+    /// bits; the board bit 31 (a shove-it) is not an input. Updated every step after the facing rule, so it
     /// describes the body as drawn; a pure function of the lines, the spawn and the branch records.
     pub fakie: bool,
     /// Frame the fakie bit last changed and the frame the change before it happened (the fakie

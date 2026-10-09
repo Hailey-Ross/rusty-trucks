@@ -8,7 +8,12 @@
 //!   menu draw distance comes back when no mod sets one),
 //! - `props` -> `PropTuningSettings`,
 //! - `carry` -> `CarrySettings`,
-//! - `shadows` -> `retail_render::WorldShadowSettings` (dynamic shadow floor on the baked world).
+//! - `shadows` -> `retail_render::WorldShadowSettings` (dynamic shadow floor on the baked world),
+//! - `backdrop` -> `retail_backdrop::BackdropSettings` (the district's global presentation model),
+//! - `respawn` -> `physics::respawn::RespawnSettings` (air timeout before the checkpoint respawn),
+//! - `exposure` -> `retail_exposure::ExposureMeter` (auto-exposure meter weights and scale).
+//! - `ghost` -> `skater_ghost::GhostTuning` (skater fade-in after placements).
+//! - `decals` -> `retail_render::DecalSettings` (strength of every world decal, live).
 //! A mod that stops, fails or reloads loses its patches ([`clear_owner`]); [`clear_all`] when every
 //! mod goes.
 
@@ -18,7 +23,11 @@ use skate_core::math::Vector3;
 use skate_mods::world_tuning::{parse, CarryPatch, LivingWorldPatch, Merge, Patch, PropTuningPatch, PropsPatch, DOMAINS};
 
 use crate::living_world::LivingWorldSettings;
-use crate::retail_render::{WorldShadowSettings, RETAIL_WORLD_SHADOW_FLOOR};
+use crate::physics::respawn::RespawnSettings;
+use crate::retail_backdrop::BackdropSettings;
+use crate::retail_exposure::ExposureMeter;
+use crate::skater_ghost::GhostTuning;
+use crate::retail_render::{DecalSettings, WorldShadowSettings, RETAIL_WORLD_SHADOW_FLOOR};
 use crate::physics::prop_carry::{CarryButtons, CarrySettings, LocomotionOverrides};
 use crate::physics::prop_dynamics::{PropBox, PropTuning, PropTuningSettings, PropTuningTable};
 
@@ -120,6 +129,62 @@ fn rebuild(world: &mut World, t: &WorldTuning, domain: &str) {
                 None => world.insert_resource(s),
             }
         }
+        "backdrop" => {
+            let p = t.merged(domain, |p| if let Patch::Backdrop(p) = p { Some(p) } else { None });
+            let retail = BackdropSettings::default();
+            let s = BackdropSettings {
+                visible: p.visible.unwrap_or(retail.visible),
+                proxy_terrain: p.proxy_terrain.unwrap_or(retail.proxy_terrain),
+            };
+            match world.get_resource_mut::<BackdropSettings>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "respawn" => {
+            let p = t.merged(domain, |p| if let Patch::Respawn(p) = p { Some(p) } else { None });
+            let retail = RespawnSettings::default();
+            let s = RespawnSettings {
+                air_timeout_ticks: p.air_timeout_ticks.map_or(retail.air_timeout_ticks, |t| t as i32),
+            };
+            match world.get_resource_mut::<RespawnSettings>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "ghost" => {
+            let p = t.merged(domain, |p| if let Patch::Ghost(p) = p { Some(p) } else { None });
+            let retail = skate_core::player::ghost::GhostSettings::default();
+            let s = GhostTuning(skate_core::player::ghost::GhostSettings {
+                enabled: p.enabled.unwrap_or(retail.enabled),
+                fade_in_seconds: p.fade_in_seconds.unwrap_or(retail.fade_in_seconds),
+                hold_alpha: p.hold_alpha.unwrap_or(retail.hold_alpha),
+            });
+            match world.get_resource_mut::<GhostTuning>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "decals" => {
+            let p = t.merged(domain, |p| if let Patch::Decals(p) = p { Some(p) } else { None });
+            let s = DecalSettings { opacity: p.opacity.unwrap_or(DecalSettings::default().opacity) };
+            match world.get_resource_mut::<DecalSettings>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
+        "exposure" => {
+            let p = t.merged(domain, |p| if let Patch::Exposure(p) = p { Some(p) } else { None });
+            let retail = ExposureMeter::default();
+            let s = ExposureMeter {
+                weights: p.meter_weights.map_or(retail.weights, Vec3::from_array),
+                scale: p.meter_scale.unwrap_or(retail.scale),
+            };
+            match world.get_resource_mut::<ExposureMeter>() {
+                Some(mut r) => *r = s,
+                None => world.insert_resource(s),
+            }
+        }
         _ => {}
     }
 }
@@ -164,6 +229,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.recut_fraction = f.recut_fraction.map_or(c.recut_fraction, |v| v.max(0.0));
         c.detour_margin = f.detour_margin.map_or(c.detour_margin, |v| v.max(0.0));
         c.step_height = f.step_height.map_or(c.step_height, |v| v.max(0.0));
+        c.held_is_obstacle = f.held_is_obstacle.unwrap_or(c.held_is_obstacle);
+        c.moving_solid = f.moving_solid.unwrap_or(c.moving_solid);
     }
     if let Some(f) = &p.ped_vehicle_contact {
         let c = &mut s.ped_vehicle_contact;
@@ -178,6 +245,13 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
     }
     if let Some(m) = &p.skater_blend_seconds {
         s.skater_blend_seconds = m.iter().map(|(k, v)| (k.clone(), v.max(0.0))).collect();
+    }
+    if let Some(m) = &p.skater_stance {
+        use skate_core::living_world::stance::NaturalStance;
+        s.skater_stance = m.iter().filter_map(|(k, v)| NaturalStance::parse(v).map(|v| (k.clone(), v))).collect();
+    }
+    if let Some(m) = &p.skater_stance_events {
+        s.skater_stance_events = m.clone();
     }
 }
 
@@ -290,6 +364,13 @@ pub(crate) fn carry_settings(p: &CarryPatch) -> CarrySettings {
                                 upright_pair: v.upright_pair,
                                 restitution: v.restitution,
                                 record_272: v.record_272,
+                                linear_drag: v.linear_drag,
+                                angular_drag: v.angular_drag,
+                                mass: v.mass,
+                                maximum_linear_velocity: v.maximum_linear_velocity,
+                                maximum_angular_velocity: v.maximum_angular_velocity,
+                                inertia_scale: v.inertia_scale,
+                                inertia_offset: v.inertia_offset,
                             },
                         )
                     })
@@ -326,11 +407,14 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "ped_fade": {"distance": s.ped_fade.distance, "fade_in_seconds": s.ped_fade.fade_in_seconds, "enabled": s.ped_fade.enabled},
                 "ped_obstacles": {"enabled": s.ped_obstacles.enabled, "min_half_extent": s.ped_obstacles.min_half_extent,
                     "moving_speed": s.ped_obstacles.moving_speed, "recut_fraction": s.ped_obstacles.recut_fraction,
-                    "detour_margin": s.ped_obstacles.detour_margin, "step_height": s.ped_obstacles.step_height},
+                    "detour_margin": s.ped_obstacles.detour_margin, "step_height": s.ped_obstacles.step_height,
+                    "held_is_obstacle": s.ped_obstacles.held_is_obstacle, "moving_solid": s.ped_obstacles.moving_solid},
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
                 "ped_vehicle_contact": {"enabled": s.ped_vehicle_contact.enabled, "push": s.ped_vehicle_contact.push},
                 "skater_clips": s.skater_clips,
                 "skater_blend_seconds": s.skater_blend_seconds,
+                "skater_stance": s.skater_stance.iter().map(|(k, v)| (k.clone(), v.name())).collect::<std::collections::BTreeMap<_, _>>(),
+                "skater_stance_events": s.skater_stance_events,
             })
         }),
         "props" => world.get_resource::<PropTuningSettings>().map_or(Value::Null, |s| {
@@ -362,7 +446,10 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 .by_template
                 .iter()
                 .map(|(k, b)| (k.clone(), json!({"material_held": b.held, "material_free": b.free, "material_free_upright": b.free_upright,
-                    "upright_pair": b.upright_pair, "restitution": b.restitution, "record_272": b.record_272})))
+                    "upright_pair": b.upright_pair, "restitution": b.restitution, "record_272": b.record_272,
+                    "linear_drag": b.linear_drag, "angular_drag": b.angular_drag, "mass": b.mass,
+                    "maximum_linear_velocity": b.maximum_linear_velocity, "maximum_angular_velocity": b.maximum_angular_velocity,
+                    "inertia_scale": b.inertia_scale, "inertia_offset": b.inertia_offset})))
                 .collect();
             json!({"grab_bit": c.buttons.grab_bit, "placement_bit": c.buttons.placement_bit, "grab_range": c.grab_range,
                 "push_speed": m.push_speed, "pull_speed": m.pull_speed, "side_speed": m.side_speed, "turn_rate": l.turn_rate,
@@ -378,6 +465,11 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "wake_on_command": r.wake_on_command, "by_template": by})
         }),
         "shadows" => world.get_resource::<WorldShadowSettings>().map_or(Value::Null, |s| json!({"world_floor": s.floor.to_array()})),
+        "backdrop" => world.get_resource::<BackdropSettings>().map_or(Value::Null, |s| json!({"visible": s.visible, "proxy_terrain": s.proxy_terrain})),
+        "respawn" => world.get_resource::<RespawnSettings>().map_or(Value::Null, |s| json!({"air_timeout_ticks": s.air_timeout_ticks})),
+        "exposure" => world.get_resource::<ExposureMeter>().map_or(Value::Null, |s| json!({"meter_weights": s.weights.to_array(), "meter_scale": s.scale})),
+        "decals" => world.get_resource::<DecalSettings>().map_or(Value::Null, |s| json!({"opacity": s.opacity})),
+        "ghost" => world.get_resource::<GhostTuning>().map_or(Value::Null, |s| json!({"enabled": s.0.enabled, "fade_in_seconds": s.0.fade_in_seconds, "hold_alpha": s.0.hold_alpha})),
         _ => Value::Null,
     }
 }
@@ -392,7 +484,109 @@ mod tests {
         w.init_resource::<PropTuningSettings>();
         w.init_resource::<CarrySettings>();
         w.init_resource::<WorldShadowSettings>();
+        w.init_resource::<BackdropSettings>();
+        w.init_resource::<RespawnSettings>();
+        w.init_resource::<ExposureMeter>();
+        w.init_resource::<GhostTuning>();
+        w.init_resource::<DecalSettings>();
         w
+    }
+
+    #[test]
+    fn decals_default_to_retail_set_and_reset_on_disable() {
+        let mut w = world();
+        assert_eq!(read(&w, "decals"), json!({"opacity": 1.0f32}), "retail blends decals at full strength");
+        set(&mut w, "dev.a", "decals", Some(json!({"opacity": 0.35}))).unwrap();
+        set(&mut w, "dev.b", "decals", Some(json!({"opacity": 0.8}))).unwrap();
+        assert_eq!(w.resource::<DecalSettings>().opacity, 0.35, "first writer wins");
+        assert!(set(&mut w, "dev.a", "decals", Some(json!({"opacity": 1.5}))).is_err());
+        assert!(set(&mut w, "dev.a", "decals", Some(json!({"strength": 1}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<DecalSettings>().opacity, 0.8);
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<DecalSettings>(), DecalSettings::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn ghost_fade_defaults_to_retail_set_and_reset_on_disable() {
+        let mut w = world();
+        assert_eq!(read(&w, "ghost"), json!({"enabled": true, "fade_in_seconds": 1.0f32, "hold_alpha": 0.68f32}));
+        set(&mut w, "dev.a", "ghost", Some(json!({"fade_in_seconds": 2.5}))).unwrap();
+        set(&mut w, "dev.b", "ghost", Some(json!({"fade_in_seconds": 0.5, "enabled": false}))).unwrap();
+        let g = w.resource::<GhostTuning>().0;
+        assert_eq!(g.fade_in_seconds, 2.5, "first writer wins");
+        assert!(!g.enabled, "unset field from the next writer");
+        assert!(set(&mut w, "dev.a", "ghost", Some(json!({"fade_in_seconds": -1.0}))).is_err());
+        assert!(set(&mut w, "dev.a", "ghost", Some(json!({"hold_alpha": 2.0}))).is_err());
+        assert!(set(&mut w, "dev.a", "ghost", Some(json!({"colour": 1}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<GhostTuning>().0.fade_in_seconds, 0.5);
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<GhostTuning>(), GhostTuning::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn exposure_meter_defaults_to_retail_set_and_reset_on_disable() {
+        let mut w = world();
+        assert_eq!(*w.resource::<ExposureMeter>(), ExposureMeter { weights: Vec3::new(0.3, 0.4, 0.3), scale: 2.515 });
+        set(&mut w, "dev.a", "exposure", Some(json!({"meter_weights": [0.2126, 0.7152, 0.0722]}))).unwrap();
+        set(&mut w, "dev.b", "exposure", Some(json!({"meter_weights": [1.0, 0.0, 0.0], "meter_scale": 3.0}))).unwrap();
+        let m = *w.resource::<ExposureMeter>();
+        assert_eq!(m.weights, Vec3::new(0.2126, 0.7152, 0.0722), "first writer wins");
+        assert_eq!(m.scale, 3.0, "unset field from the next writer");
+        assert_eq!(read(&w, "exposure")["meter_scale"], json!(3.0f32));
+        assert!(set(&mut w, "dev.a", "exposure", Some(json!({"meter_scale": -2.0}))).is_err());
+        clear_owner(&mut w, "dev.b");
+        assert_eq!(w.resource::<ExposureMeter>().scale, 2.515);
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<ExposureMeter>(), ExposureMeter::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn respawn_air_timeout_defaults_to_retail_set_and_reset_on_disable() {
+        let mut w = world();
+        assert_eq!(w.resource::<RespawnSettings>().air_timeout_ticks, 300, "retail count > 300");
+        assert_eq!(read(&w, "respawn"), json!({"air_timeout_ticks": 300}));
+        set(&mut w, "dev.a", "respawn", Some(json!({"air_timeout_ticks": 120}))).unwrap();
+        set(&mut w, "dev.b", "respawn", Some(json!({"air_timeout_ticks": 600}))).unwrap();
+        assert_eq!(w.resource::<RespawnSettings>().air_timeout_ticks, 120, "first writer wins");
+        assert!(set(&mut w, "dev.a", "respawn", Some(json!({"air_timeout_ticks": 0}))).is_err());
+        assert_eq!(w.resource::<RespawnSettings>().air_timeout_ticks, 120, "a rejected patch keeps the old one");
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<RespawnSettings>().air_timeout_ticks, 600, "the next mod's patch applies");
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<RespawnSettings>(), RespawnSettings::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn backdrop_visible_by_default_set_and_reset_on_disable() {
+        let mut w = world();
+        assert!(w.resource::<BackdropSettings>().visible, "retail draws the backdrop");
+        set(&mut w, "dev.a", "backdrop", Some(json!({"visible": false}))).unwrap();
+        set(&mut w, "dev.b", "backdrop", Some(json!({"visible": true}))).unwrap();
+        assert!(!w.resource::<BackdropSettings>().visible, "first writer wins");
+        assert_eq!(read(&w, "backdrop"), json!({"visible": false, "proxy_terrain": true}));
+        assert!(set(&mut w, "dev.a", "backdrop", Some(json!({"visible": "no"}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert!(w.resource::<BackdropSettings>().visible);
+        set(&mut w, "dev.a", "backdrop", Some(json!({"visible": false}))).unwrap();
+        clear_all(&mut w);
+        assert_eq!(*w.resource::<BackdropSettings>(), BackdropSettings::default(), "mod disable restores retail");
+    }
+
+    #[test]
+    fn proxy_terrain_defaults_to_retail_set_and_reset_on_disable() {
+        let mut w = world();
+        assert!(w.resource::<BackdropSettings>().proxy_terrain, "retail draws the unpaired proxy cells");
+        set(&mut w, "dev.a", "backdrop", Some(json!({"proxy_terrain": false}))).unwrap();
+        set(&mut w, "dev.b", "backdrop", Some(json!({"proxy_terrain": true, "visible": false}))).unwrap();
+        let s = *w.resource::<BackdropSettings>();
+        assert!(!s.proxy_terrain && !s.visible, "first writer per field");
+        assert!(set(&mut w, "dev.a", "backdrop", Some(json!({"proxy_terrain": 1}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert!(w.resource::<BackdropSettings>().proxy_terrain, "mod stop restores retail");
+        clear_owner(&mut w, "dev.b");
+        assert_eq!(*w.resource::<BackdropSettings>(), BackdropSettings::default());
     }
 
     #[test]
@@ -496,6 +690,41 @@ mod tests {
         use skate_core::living_world::replay::ReplayPhase as P;
         let names = [P::Rolling, P::Crouched, P::Air, P::AirTrick, P::GroundTrick, P::OffBoard].map(P::name);
         assert_eq!(names, skate_mods::world_tuning::NPC_SKATER_PHASES);
+    }
+
+    #[test]
+    fn npc_skater_stance_set_merge_and_reset() {
+        use crate::living_world::npc_skaters::npc_stance;
+        use skate_core::living_world::stance::NaturalStance as S;
+        let records: std::collections::BTreeMap<String, String> = [("deerman".to_owned(), "deerman_of_darkwoods".to_owned())].into();
+        let mut w = world();
+        let stance = |w: &World, key: &str| npc_stance(&records, &w.resource::<LivingWorldSettings>().skater_stance, key);
+        // Retail table by default (the character key resolves to its record).
+        assert_eq!((stance(&w, "josh_kalis"), stance(&w, "chris_cole"), stance(&w, "deerman")), (S::Goofy, S::Regular, S::Goofy));
+        set(&mut w, "dev.a", "living_world", Some(json!({"skater_stance": {"CD56C7FE01EBE665": "regular"}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"skater_stance": {"CD56C7FE01EBE665": "goofy", "deerman_of_darkwoods": "regular"}}))).unwrap();
+        assert_eq!((stance(&w, "josh_kalis"), stance(&w, "deerman"), stance(&w, "cuz")), (S::Regular, S::Regular, S::Goofy), "first writer wins, others merge");
+        assert_eq!(read(&w, "living_world")["skater_stance"]["deerman_of_darkwoods"], json!("regular"));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"skater_stance": {"josh_kalis": "switch"}}))).is_err());
+        clear_all(&mut w);
+        assert!(w.resource::<LivingWorldSettings>().skater_stance.is_empty());
+        assert_eq!((stance(&w, "josh_kalis"), stance(&w, "deerman")), (S::Goofy, S::Goofy), "reset = retail table");
+    }
+
+    #[test]
+    fn npc_skater_stance_events_set_merge_and_reset() {
+        use skate_core::living_world::stance::StanceEvents;
+        let mut w = world();
+        let events = |w: &World| StanceEvents::with_overrides(&w.resource::<LivingWorldSettings>().skater_stance_events);
+        assert_eq!(events(&w), StanceEvents::retail(), "retail by default");
+        set(&mut w, "dev.a", "living_world", Some(json!({"skater_stance_events": {"mirrored": "my_mirror"}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"skater_stance_events": {"mirrored": "other", "switch": ""}}))).unwrap();
+        let e = events(&w);
+        assert_eq!((e.board_backward.as_str(), e.mirrored.as_str(), e.switch.as_str()), ("animboardbackward", "my_mirror", ""), "first writer wins, others merge");
+        assert_eq!(read(&w, "living_world")["skater_stance_events"]["switch"], json!(""));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"skater_stance_events": {"fakie": "x"}}))).is_err());
+        clear_all(&mut w);
+        assert_eq!(events(&w), StanceEvents::retail(), "reset = retail");
     }
 
     #[test]
@@ -619,7 +848,8 @@ mod tests {
         assert_eq!(read(&w, "carry")["upright_cos"], json!(0.65f32));
         set(&mut w, "dev.a", "carry", Some(json!({"commanded_material": [0.2, 0.0], "apply_at_com": false, "wake_on_command": false,
             "upright_cos": 0.8, "by_template": {"template/bin": {"material_held": [0.5, 0.0], "material_free": [0.9, 0.1],
-            "material_free_upright": [1.0, 0.9], "upright_pair": true, "restitution": 0.25}}}))).unwrap();
+            "material_free_upright": [1.0, 0.9], "upright_pair": true, "restitution": 0.25, "angular_drag": 0.5,
+            "mass": 40.0, "maximum_angular_velocity": 20.0, "inertia_offset": [0.0, 0.1, 0.0]}}}))).unwrap();
         let r = w.resource::<CarrySettings>().move_rules.clone();
         assert_eq!(r.commanded_material, [0.2, 0.0]);
         assert!(!r.apply_at_com && !r.wake_on_command && r.yaw_replaces_torque && r.ignore_vertical);
@@ -632,10 +862,18 @@ mod tests {
                 free_upright: Some([1.0, 0.9]),
                 upright_pair: Some(true),
                 restitution: Some(0.25),
-                record_272: None
+                record_272: None,
+                linear_drag: None,
+                angular_drag: Some(0.5),
+                mass: Some(40.0),
+                maximum_linear_velocity: None,
+                maximum_angular_velocity: Some(20.0),
+                inertia_scale: None,
+                inertia_offset: Some([0.0, 0.1, 0.0]),
             }
         );
         assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["upright_pair"], json!(true));
+        assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["angular_drag"], json!(0.5f32));
         assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["material_free"], json!([0.9f32, 0.1f32]));
         clear_owner(&mut w, "dev.a");
         assert_eq!(w.resource::<CarrySettings>().move_rules, MoveCommandRules::default(), "mod disable restores retail");

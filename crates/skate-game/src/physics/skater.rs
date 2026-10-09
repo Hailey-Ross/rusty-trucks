@@ -129,6 +129,11 @@ impl SkaterRuntime {
         Ok(())
     }
 
+    /// Completed placements of this skater (retail place-skater counter +1864).
+    pub(crate) fn placements(&self) -> u32 {
+        self.respawn.placements
+    }
+
     pub(crate) fn travel_to(&mut self, transform: [[f32; 4]; 4]) -> Result<(), String> {
         self.travel(transform, None)
     }

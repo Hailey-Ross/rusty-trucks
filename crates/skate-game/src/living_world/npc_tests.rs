@@ -56,7 +56,8 @@ fn data() -> LoadedData {
         skaters: Some(SkaterData { lines, characters }),
         roads: None,
         vehicles: None,
-        npc: NpcData { lines: Arc::new(replay), voices },
+        // Two characters carry a stance-table record (regular / goofy); the rest are unmapped.
+        npc: NpcData { lines: Arc::new(replay), voices, records: [("pro_0".to_owned(), "chris_cole".to_owned()), ("pro_1".to_owned(), "josh_kalis".to_owned())].into() },
         status: "npc test".into(),
     }
 }
@@ -90,7 +91,7 @@ fn app(seed: u64) -> App {
     app.insert_resource(settings).insert_resource(state).init_resource::<LivingWorldObservers>().init_resource::<NpcSkaterIndex>().init_resource::<Seen>();
     app.insert_resource(Drive { t: 0.0, speed: 8.0 });
     app.add_message::<LivingWorldSpawn>().add_message::<LivingWorldDespawn>().add_message::<NpcSkaterEvent>();
-    app.add_systems(Update, (drive, step_population, apply_records, advance, collect).chain());
+    app.add_systems(Update, (drive, step_population, apply_records, advance, track_stance, collect).chain());
     app
 }
 
@@ -163,6 +164,65 @@ fn living_world_npc_skaters_ride_their_lines_from_the_spawn_record() {
     let alive = npcs(&mut a);
     assert!(despawned.iter().all(|d| !alive.iter().any(|n| n.0 == *d)));
     assert_eq!(a.world().resource::<NpcSkaterIndex>().0.len(), alive.len());
+}
+
+/// Natural stance port: every NPC gets its stance once at spawn from its character record (the
+/// retail table: `chris_cole` regular, `josh_kalis` goofy, unmapped records the goofy default); a
+/// mod override by record name or id wins for later spawns and is gone after the reset.
+#[test]
+fn living_world_npc_skaters_take_the_natural_stance_of_their_record() {
+    use skate_core::living_world::stance::NaturalStance as S;
+    let stances = |a: &mut App| {
+        let mut q = a.world_mut().query::<&NpcSkater>();
+        q.iter(a.world()).map(|n| (n.character.clone(), n.stance)).collect::<Vec<_>>()
+    };
+    let mut seen = BTreeMap::new();
+    let mut a = app(11);
+    for _ in 0..30 {
+        run(&mut a, 1.0, 60.0);
+        for (c, s) in stances(&mut a) {
+            assert_eq!(*seen.entry(c.clone()).or_insert(s), s, "{c}: the stance never changes");
+        }
+    }
+    eprintln!("stances by character: {seen:?}");
+    assert!(seen.len() >= 2, "several characters spawned");
+    for (c, s) in &seen {
+        assert_eq!(*s, if c == "pro_0" { S::Regular } else { S::Goofy }, "{c}");
+    }
+    // Overrides: by record name for the unmapped keys, by record id for josh_kalis (pro_1).
+    let mut b = app(11);
+    {
+        let mut st = b.world_mut().resource_mut::<LivingWorldSettings>();
+        for i in 2..6 {
+            st.skater_stance.insert(format!("pro_{i}"), S::Regular);
+        }
+        st.skater_stance.insert("CD56C7FE01EBE665".into(), S::Regular);
+        st.skater_stance.insert("chris_cole".into(), S::Goofy);
+    }
+    let mut overridden = BTreeMap::new();
+    for _ in 0..30 {
+        run(&mut b, 1.0, 60.0);
+        overridden.extend(stances(&mut b));
+    }
+    assert_eq!(overridden.keys().collect::<Vec<_>>(), seen.keys().collect::<Vec<_>>(), "same spawns: the stance does not change population decisions");
+    for (c, s) in &overridden {
+        assert_eq!(*s, if c == "pro_0" { S::Goofy } else { S::Regular }, "{c} overridden");
+    }
+    b.world_mut().resource_mut::<LivingWorldSettings>().reset_mod_overrides();
+    assert!(b.world().resource::<LivingWorldSettings>().skater_stance.is_empty());
+    // Every NPC carries its stance bits from the natural stance; without the stock banks no clip
+    // fires an event, so the bits stay natural.
+    let mut q = b.world_mut().query::<(&NpcSkater, &NpcStanceTrack)>();
+    let tracks: Vec<_> = q.iter(b.world()).map(|(n, t)| (n.stance, t.clone())).collect();
+    assert!(!tracks.is_empty());
+    for (s, t) in &tracks {
+        let natural = skate_core::living_world::stance::StanceFlags::natural(*s);
+        assert_eq!((t.natural, t.flags), (natural, natural));
+    }
+    // (an NPC spawned this tick has no phase yet)
+    assert!(tracks.iter().any(|(_, t)| t.top.is_some()), "the tracker follows the newest layer");
+    let records = b.world().resource::<PopulationState>().npc.records.clone();
+    assert_eq!(npc_stance(&records, &BTreeMap::new(), "pro_0"), S::Regular, "reset = retail table");
 }
 
 #[test]
@@ -874,7 +934,7 @@ fn living_world_npc_fakie_rule_and_channel_match_the_stock_graph() {
     }).collect();
     eprintln!("{FAKIE_CHANNEL} at torso {FAKIE_TORSO_RIDING}: {} commands, clips {clips:?}", tree.len());
     assert!(clips.iter().all(|c| evaluator.clip_length(c).is_ok()), "every channel clip evaluates");
-    let base = [PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0 }];
+    let base = [PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0, since: 0 }];
     let plain = puppet_layers_pose(&evaluator, &base).unwrap();
     let fakie = puppet_pose_with_channel(&evaluator, &base, Some((&tree, 1.0))).unwrap();
     let moved: Vec<&str> = plain
@@ -892,4 +952,192 @@ fn living_world_npc_fakie_rule_and_channel_match_the_stock_graph() {
     assert_eq!(resolve_fakie_channel(&clips), FAKIE_CHANNEL);
     clips.insert("fakie_channel".to_owned(), "B_OTHER".to_owned());
     assert_eq!(resolve_fakie_channel(&clips), "B_OTHER");
+}
+
+/// The bind pose tail per stance: goofy = the reference pose only (the commands every NPC drew
+/// before the stance port), regular = the player's orientation + mirror bits path.
+#[test]
+fn living_world_npc_bind_pose_tail_per_stance() {
+    use skate_core::animation::playback_tree::PoseCommand as P;
+    assert_eq!(bind_pose_tail(false), vec![P::Pose { name: "RIG_TPOSE".into() }, P::Add { motion_is_a: true }]);
+    let regular = bind_pose_tail(true);
+    assert_eq!(regular[..2], bind_pose_tail(false)[..]);
+    assert_eq!(regular.last(), Some(&P::Mirror { trajectory_mode: 2 }));
+    assert!(regular.contains(&P::Pose { name: "BOARD_BACKWARDS".into() }) && regular.contains(&P::Pose { name: "BOARD_BACKWARDS_IK".into() }));
+}
+
+/// Data-gated (natural stance port): a goofy NPC's puppet pose is unchanged by the port, a regular
+/// NPC's is the player's mirrored bind pose (left and right swap sides), with and without the
+/// fakie channel.
+#[test]
+fn living_world_npc_regular_puppet_is_mirrored() {
+    let Some((evaluator, meta)) = stock_evaluator() else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+        return;
+    };
+    let base = [PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0, since: 0 }];
+    let goofy = puppet_pose_in_stance(&evaluator, &base, None, false).unwrap();
+    assert_eq!(goofy, puppet_layers_pose(&evaluator, &base).unwrap(), "goofy = the pre-port pose");
+    let regular = puppet_pose_in_stance(&evaluator, &base, None, true).unwrap();
+    let names = &evaluator.frames.bone_names;
+    let at = |pose: &[Mat4], name: &str| pose[names.iter().position(|n| n == name).unwrap_or_else(|| panic!("{name} in {names:?}"))].w_axis.truncate();
+    let pair = names
+        .iter()
+        .find_map(|n| {
+            let r = n.replacen("LEFT", "RIGHT", 1);
+            (n.starts_with("LEFT") && n.contains("FOOT") && names.contains(&r)).then(|| (n.clone(), r))
+        })
+        .expect("a left / right foot pair");
+    let (gl, gr) = (at(&goofy, &pair.0), at(&goofy, &pair.1));
+    let (rl, rr) = (at(&regular, &pair.0), at(&regular, &pair.1));
+    eprintln!("{} / {}: goofy {gl} / {gr}, regular {rl} / {rr}", pair.0, pair.1);
+    // Mirror (mode 2, z reflected) with the bones swapped: each regular foot is the other goofy
+    // foot reflected.
+    let reflect = |v: Vec3| Vec3::new(v.x, v.y, -v.z);
+    assert!(rl.distance(reflect(gr)) < 1e-3 && rr.distance(reflect(gl)) < 1e-3, "mirrored feet");
+    // Drawn with the root turned half a turn (`stance_root_turn`): the board keeps its heading
+    // (nose truck where the goofy one is) and the left foot leads along root +Z where goofy leads
+    // with the right.
+    let turn = Mat4::from_quat(stance_root_turn(skate_core::living_world::stance::NaturalStance::Regular));
+    let drawn = |pose: &[Mat4], name: &str| turn.transform_point3(at(pose, name));
+    assert!(drawn(&regular, "TRUCK_FRONT").distance(at(&goofy, "TRUCK_FRONT")) < 1e-3, "board heading kept");
+    assert!(gr.z > gl.z, "goofy: right foot leads");
+    assert!(drawn(&regular, &pair.0).z > drawn(&regular, &pair.1).z, "regular: left foot leads");
+    assert_eq!(stance_root_turn(skate_core::living_world::stance::NaturalStance::Goofy), Quat::IDENTITY);
+    // The fakie channel goes through the same tail (as the player's channel tree).
+    let animation = crate::graph_host::motion::metadata_animation(meta);
+    let tree = crate::graph_host::motion::tree_commands(&animation, FAKIE_CHANNEL, &fakie_channel_attributes(), 0.5).unwrap();
+    let fakie_regular = puppet_pose_in_stance(&evaluator, &base, Some((&tree, 1.0)), true).unwrap();
+    assert_ne!(fakie_regular, regular, "the overlay changes the regular pose");
+    assert_eq!(puppet_pose_in_stance(&evaluator, &base, Some((&tree, 0.0)), true).unwrap(), regular, "weight 0 = no overlay");
+}
+
+/// Trick-clip stance toggles (retail `82593230` -> `82B98980` per actor): the newest layer's clip
+/// events toggle the NPC's bits once (point events, collected over each step's window, across
+/// `+` sequence parts); a layer keeps the bits it began with, newer layers get the toggled ones;
+/// a mod's rename turns a toggle off; the start list stays bounded.
+#[test]
+fn living_world_npc_stance_track_follows_trick_clip_events() {
+    use skate_core::living_world::stance::{NaturalStance, StanceEvents, StanceFlags};
+    // Stock spelling (upper case) and a point event 0.3 into a 1 s clip, like `POPSHUVIT_HIGH_A`.
+    let data = |part: &str| -> Option<(f32, Vec<(String, f32, f32)>)> {
+        match part {
+            "SHUV_A" => Some((1.0, vec![("ANIMBOARDBACKWARD".into(), 0.3, 0.3), ("OTHER".into(), -1.0, -1.0)])),
+            "RIDE" => Some((0.5, vec![])),
+            _ => None,
+        }
+    };
+    let layer = |clip: &str, since: u64, time: f32| PuppetLayer { clip: clip.into(), time, weight: 1.0, since };
+    let retail = StanceEvents::retail();
+    for stance in [NaturalStance::Goofy, NaturalStance::Regular] {
+        let natural = StanceFlags::natural(stance);
+        let mut t = NpcStanceTrack::new(stance);
+        let mut toggles = 0;
+        for i in 0..40 {
+            toggles += usize::from(t.step(&layer("SHUV_A", 100, i as f32 / 30.0), &retail, |c, p, n| sequence_attributes(c, p, n, data)));
+        }
+        assert_eq!(toggles, 1, "{stance:?}: one toggle over the clip");
+        let flipped = StanceFlags { board_backward: !natural.board_backward, ..natural };
+        assert_eq!(t.flags, flipped);
+        assert_eq!(t.flags_for(100), natural, "the trick's own tree keeps its start bits");
+        assert!(!t.step(&layer("RIDE", 140, 0.0), &retail, |c, p, n| sequence_attributes(c, p, n, data)));
+        assert_eq!((t.flags_for(140), t.flags_for(100), t.flags_for(5)), (flipped, natural, natural), "newer layers built with the toggled bits");
+        // A second shove-it turns the board back.
+        for i in 0..40 {
+            t.step(&layer("SHUV_A", 200, i as f32 / 30.0), &retail, |c, p, n| sequence_attributes(c, p, n, data));
+        }
+        assert_eq!(t.flags, natural);
+    }
+    // Sequences: the event of a later part fires when the window enters it, once.
+    assert_eq!(sequence_attributes("RIDE+SHUV_A", 0.4, 0.85, data), vec!["ANIMBOARDBACKWARD".to_owned(), "OTHER".to_owned()]);
+    assert_eq!(sequence_attributes("RIDE+SHUV_A", 0.85, 0.9, data), vec!["OTHER".to_owned()]);
+    assert_eq!(sequence_attributes("RIDE+SHUV_A", 0.0, 0.1, data), Vec::<String>::new(), "later parts not reached");
+    assert_eq!(sequence_attributes("SHUV_A", 1.0, 2.0, data), vec!["OTHER".to_owned()], "the last part holds: no repeat");
+    // Mod: the board toggle renamed to nothing = off.
+    let off = StanceEvents::with_overrides(&[("board_backward".to_owned(), String::new())].into());
+    let mut t = NpcStanceTrack::new(NaturalStance::Goofy);
+    for i in 0..40 {
+        assert!(!t.step(&layer("SHUV_A", 1, i as f32 / 30.0), &off, |c, p, n| sequence_attributes(c, p, n, data)));
+    }
+    // Bounded memory: oldest starts drop off.
+    let mut t = NpcStanceTrack::new(NaturalStance::Goofy);
+    for since in 0..20 {
+        t.step(&layer("RIDE", since, 0.0), &retail, |c, p, n| sequence_attributes(c, p, n, data));
+    }
+    assert!(t.starts.len() <= 8 && t.starts.last().unwrap().0 == 19);
+}
+
+/// The fakie rule after a shove-it: the NPC's board-flipped state is retail's bit 31 xor bit 30
+/// (`82B985E8`), and the board axis retail's fakie rule reads (`GetEffectiveRoot82BE3650`: the
+/// root's Z, negated iff mirrored) of the puppet root (drawn frame * [`flags_root_turn`]) is the
+/// drawn frame the cursor's fakie rule uses, for the natural bits and after the shove-it alike.
+#[test]
+fn living_world_npc_fakie_axis_after_a_shove_it_is_retails() {
+    use skate_core::living_world::stance::{NaturalStance, StanceEvents, StanceFlags};
+    let data = |part: &str| -> Option<(f32, Vec<(String, f32, f32)>)> { (part == "SHUV_A").then(|| (1.0, vec![("ANIMBOARDBACKWARD".into(), 0.3, 0.3)])) };
+    let drawn = Quat::from_rotation_y(0.7) * Quat::from_rotation_x(0.1);
+    let drawn_z = drawn * Vec3::Z;
+    for stance in [NaturalStance::Goofy, NaturalStance::Regular] {
+        let mut t = NpcStanceTrack::new(stance);
+        assert!(!t.flags.board_flipped(), "{stance:?}: natural bits ride the board unflipped");
+        for i in 0..40 {
+            t.step(&PuppetLayer { clip: "SHUV_A".into(), time: i as f32 / 30.0, weight: 1.0, since: 1 }, &StanceEvents::retail(), |c, p, n| sequence_attributes(c, p, n, data));
+        }
+        assert_eq!(t.flags.board_flipped(), t.flags.board_backward ^ t.flags.mirrored);
+        assert!(t.flags.board_flipped(), "{stance:?}: after the shove-it the board is flipped");
+        for flags in [StanceFlags::natural(stance), t.flags] {
+            let root_z = (drawn * flags_root_turn(flags)) * Vec3::Z;
+            let axis = flags.fakie_board_axis([root_z.x, root_z.y, root_z.z, 0.0]);
+            assert!(Vec3::new(axis[0], axis[1], axis[2]).distance(drawn_z) < 1e-5, "{stance:?} {flags:?}: fakie axis = the drawn frame");
+        }
+    }
+}
+
+/// Data-gated: in the stock banks the trick clips an NPC plays toggle only the board bit
+/// (`ANIMBOARDBACKWARD` point events: shove-it, varial, hardflip, inward heelflip families);
+/// `MIRRORED` / `SWITCH` sit on switch riding and bail dismount clips, which the puppet does not
+/// play. Layers with mixed bits pose differently from uniform ones, uniform bits are the stance
+/// pose unchanged.
+#[test]
+fn living_world_npc_trick_clips_toggle_the_board_bit() {
+    use skate_core::living_world::stance::StanceFlags;
+    let Some((evaluator, meta)) = stock_evaluator() else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+        return;
+    };
+    let has = |clip: &str, name: &str| meta.clip(clip).is_ok_and(|c| c.attributes.iter().any(|a| a.name.eq_ignore_ascii_case(name)));
+    let mut board = Vec::new();
+    for t in 0..332i16 {
+        let Some(base) = retail_trick_anim(t) else { continue };
+        for part in [format!("{base}_G"), trick_air_sequence(&base, t)].iter().flat_map(|n| n.split('+').map(str::to_owned).collect::<Vec<_>>()) {
+            let Some(clip) = stock_tree_leaf(&meta, &part) else { continue };
+            assert!(!has(&clip, "MIRRORED") && !has(&clip, "SWITCH"), "{clip}: trick clips carry no mirror / switch events");
+            if has(&clip, "ANIMBOARDBACKWARD") {
+                board.push((t, clip));
+            }
+        }
+    }
+    board.sort();
+    board.dedup();
+    eprintln!("trick clips with the board event: {board:?}");
+    assert!(!board.is_empty(), "some recorded tricks turn the board (shove-it family)");
+    assert!(has("POPSHUVIT_HIGH_A", "ANIMBOARDBACKWARD") && has("R_SWITCH_RIDE_N_0_N", "MIRRORED") && has("R_SWITCH_RIDE_N_0_N", "SWITCH"));
+    let a = PuppetLayer { clip: "R_IDLE_RIDE_N_0_CYC".into(), time: 0.5, weight: 1.0, since: 0 };
+    let b = PuppetLayer { clip: "POPSHUVIT_HIGH_A".into(), time: 0.2, weight: 0.5, since: 10 };
+    let layers = [a, b];
+    let goofy = StanceFlags::default();
+    let turned = StanceFlags { board_backward: true, ..goofy };
+    assert_eq!(puppet_pose_in_flags(&evaluator, &layers, &[goofy, goofy], None), puppet_pose_in_stance(&evaluator, &layers, None, false), "uniform goofy = the stance pose");
+    let regular = StanceFlags::natural(skate_core::living_world::stance::NaturalStance::Regular);
+    assert_eq!(puppet_pose_in_flags(&evaluator, &layers, &[regular, regular], None), puppet_pose_in_stance(&evaluator, &layers, None, true), "uniform regular = the stance pose");
+    let mixed = puppet_pose_in_flags(&evaluator, &layers, &[goofy, turned], None);
+    assert!(mixed.is_some());
+    assert_ne!(mixed, puppet_pose_in_stance(&evaluator, &layers, None, false), "the newer layer's board bit shows");
+    // Fully blended in: the newest layer alone, with its own tail.
+    let full = [layers[0].clone(), PuppetLayer { weight: 1.0, ..layers[1].clone() }];
+    let alone = puppet_pose_in_flags(&evaluator, &full[1..], &[turned], None).unwrap();
+    let blended = puppet_pose_in_flags(&evaluator, &full, &[goofy, turned], None).unwrap();
+    let bone = evaluator.frames.bone_names.iter().position(|n| n.eq_ignore_ascii_case("Skateboard_Root")).expect("board bone");
+    assert!(alone[bone].w_axis.distance(blended[bone].w_axis) < 1e-3, "weight 1 = the newest layer's pose");
+    assert_eq!(flags_root_turn(turned), Quat::IDENTITY, "the board bit alone does not turn the body");
 }
