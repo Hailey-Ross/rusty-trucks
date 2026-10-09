@@ -48,6 +48,9 @@ mod board_away_tests;
 mod air_timeout_tests;
 #[cfg(test)]
 mod boundary_tests;
+mod board_path;
+#[cfg(test)]
+mod board_path_tests;
 #[cfg(test)]
 mod carry_direction_tests;
 mod frame;
@@ -717,6 +720,8 @@ impl GamePhysics {
             grind::post(self, skater)?;
         }
         wipeout::check_after_physics(self, skater)?;
+        // Ground / Slide UpdatePostPhysics 82D387A8: the AI board path follows the wipeout check.
+        board_path::post_physics(self, skater);
         if skater.player_state.current() == skate_core::player::state::PhysicalStateId::PhysicsAirSecondary {
             grind_trick::post_velocity(self, skater);
         }

@@ -47,6 +47,8 @@ pub(crate) struct PhysicsSettings {
     /// Move Object command tuning (class 3EDA5B140604613D); the stock
     /// fallback only when the collection lacks it.
     pub move_object: skate_core::player::offboard::move_object::MoveObjectTuning,
+    /// `physics_ai` `default`: the AI board path gains (`82C05EC0`).
+    pub physics_ai: skate_core::riding::grounded::state::board_path::PhysicsAiTuning,
 }
 
 impl PhysicsSettings {
@@ -162,6 +164,10 @@ impl PhysicsSettings {
             object_move: super::offboard::settings::load_object_move_curves(data)?,
             move_object: super::offboard::settings::load_move_object_tuning(data).unwrap_or_else(|error| {
                 bevy::log::warn!("SKATE_MOVE_OBJECT: stock tuning missing ({error}); using built-in stock values");
+                Default::default()
+            }),
+            physics_ai: super::board_path::load_physics_ai(data).unwrap_or_else(|error| {
+                bevy::log::warn!("SKATE_PHYSICS_AI: stock physics_ai missing ({error}); using the default record's values");
                 Default::default()
             }),
         })

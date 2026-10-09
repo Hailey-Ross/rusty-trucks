@@ -2845,6 +2845,59 @@ instead. The meaning of the off word (state 1, collision group 13) is not decode
 `ObstacleAvoider` pools and modes are not decoded. Not seen in game yet: drag a prop into a ped's walk in DownTown
 and check the `PED_OBSTACLE` lines (`held=true role=solid` while dragging, `role=cut` held still and after it rests).
 
+## NPC skater steering: the AI board path (M5 port, 2026-10-08)
+
+**Problem.** Retail's NPC skaters are full physics skaters. Their AI (the PathController) writes a steering
+record every tick, and the physics nudges the board toward it. Our engine had the record's path into the physics
+input (`ProcessedPhysicsInput.external_physics_1616`) but not the step that acts on it, so a physics-bodied NPC
+could not be steered. This change ports that step; NPCs still use the replay tier until they get a physics body
+(the simulated tier, next).
+
+**What retail does** [code, TU3; recomp disassembly as reference]:
+- The record goes from the AIPhysicsInput component into the skater's physics state (`82593640`, +10512, "use
+  external physics" +10688) and from there into the physics frame (`82DB4048` -> +1616, flags +1776; already
+  ported as `publish_external_physics`).
+- `UpdatePostPhysics 82D387A8` of `PHYSICS_STATE_PHYSICS_GROUND` (100) and `PHYSICS_STATE_SLIDE_GROUND` (101) runs
+  the ground wipeout check `82D8F9E0`, then, while record flag bit 31 is set, the board path `82C05EC0`:
+  - bit 30, position `82C056B0`: `d = (target - deck) * gain`; the deck (part 6 alone, `82D9C8C8` -> `82BD4318`,
+    waking a frozen body with `82ADF7B8`) moves by `min(|d|, max_step)` along `d` when `|d| > 1e-6`
+    (`0x830BD350`, initialised to 1e-6 by `82F826F8`);
+  - bit 28, velocity `82C05868`: the deck body's linear velocity approaches the target velocity the same way;
+  - bit 29, facing `82C05988`: the target forward in the ground frame (`controller+292` -> `+752`), y dropped,
+    normalised, its signed angle from +Z about +Y (`8296EC98`) wrapped to [-pi, pi], times the gain, clamped to the
+    maximum (degrees, `0x8206D110` = pi/180); the deck rotation becomes `D * F^T * Ry * F` and the whole board is set
+    (`82C0B2C8`).
+- Gains: the `physics_ai` vault record (`*(*(0x830CFDA4)+272)+4`, holder `8289D5C8` -> `8289D2E8`, class
+  `527C93F55CFC663D`), `default`: velocity max change 0.2 m/s and gain 0.5 (+0 / +4), position max step 0.02 m and
+  gain 1 (+8 / +12), facing max 2 degrees and gain 0.5 (+16 / +20) per tick. An `unstreamed` record (10 m, 1000 m/s,
+  0.2) also exists; what selects it is not found yet.
+- `PHYSICS_STATE_FOLLOW_PATH` (105) is a separate kinematic state (`82D43118` -> `82C05D78`: velocity from the
+  position error, 40 m/s cap, 5 m/s change per tick); not ported yet. Jumps along the recorded trajectory:
+  `82D682E8` / `82D67B50` / `82D67A00`, not ported yet.
+
+**Change.**
+- `skate_core::riding::grounded::state::board_path`: `PhysicsAiTuning`, `SteerTarget`, `approach`,
+  `facing_step`, `rotate_about_ground_up`, `update_board_path` (retail order position, velocity, facing).
+- `BoardRuntime::set_single_part_transform` (`82D9C8C8`: one part alone, frozen parts woken).
+- `skate-game` `physics/board_path.rs`: runs after the ground wipeout check in PhysicsGround / SlideGround when the
+  record's bit 31 is set; `physics_ai` loaded from the setup collections into `PhysicsSettings`
+  (`SKATE_PHYSICS_AI` warning and the `default` record's values if the class is missing).
+- The player's record never has bit 31 (its "use external physics" byte is 0), so the player's physics is
+  unchanged.
+
+**Files.** `crates/skate-core/src/riding/grounded/state/{board_path.rs, board_path_tests.rs, mod.rs}`,
+`crates/skate-core/src/physics/board_runtime.rs`, `crates/skate-game/src/physics/{board_path.rs,
+board_path_tests.rs, settings.rs}`, `crates/skate-game/src/physics.rs`.
+
+**Verification.** skate-core `board_path` 4 tests (position and velocity steps and caps, the 1e-6 gate, facing
+sign / wrap / clamp / gain / ground frame, the rotation about the ground up keeping the position, retail order and
+per-flag gating). Data-gated skate-game test on DownTown (`SKATE3_ASSET_ROOT`, `SKATE3_MAP`): `physics_ai` loads from
+the setup collections and equals the `default` record; 240 riding ticks with the player's record never steering;
+a steering record on the riding board moves the deck 2 cm and its velocity 0.2 m/s toward the target, the wheels
+untouched; without bit 31 nothing runs.
+
+**Open questions.** The `unstreamed` switch; `physics_ai` +24 (0.95); FOLLOW_PATH and the recorded-trajectory jump.
+
 ## NPC skater trick choice (M5 port, 2026-10-08)
 
 **Problem.** The replay tier always did the trick recorded on the line. Retail's ambient NPC skaters do not: in
