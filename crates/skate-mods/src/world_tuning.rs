@@ -37,6 +37,10 @@
 //!   `skater_trick_profiles {[<character key> or <ai_skater_profiles name>] = {regular, nollie}}`
 //!   (each a list of `{trick = <EScorableID 0..332>, weight}`; replaces that table, an absent table
 //!   keeps the disc's; a character key wins over a profile name),
+//!   `skaters` / `pedestrians` / `vehicles {enabled, density}` (per kind; density 1 = retail, 0..=4,
+//!   scales the census caps), `ambient_skaters` (NPC skaters offline, retail 3, 0..=8),
+//!   `free_play {traffic, pedestrians, ai_skaters}` (retail Free Play mode: traffic and peds 0..1 scale
+//!   the caps, 0 removes them at once, `ai_skaters` on / off; absent = career free roam),
 //!   `npc_simulated {enabled, radius, max}` (NPC skaters near the player as full physics skaters
 //!   driven by their AI record; default off until play-tested, 40 m, 3).
 //! - `props`: `default` and `by_template[<MOBJ template name>]`, each a [`PropTuningPatch`].
@@ -171,6 +175,32 @@ pub struct LivingWorldPatch {
     pub skater_trick_profiles: Option<BTreeMap<String, TrickTablesPatch>>,
     /// Simulated NPC skaters (`skate-game` `living_world::npc_sim`).
     pub npc_simulated: Option<NpcSimulatedPatch>,
+    /// Per-kind switch and density.
+    pub skaters: Option<KindPatch>,
+    pub pedestrians: Option<KindPatch>,
+    pub vehicles: Option<KindPatch>,
+    /// NPC skaters offline (retail 3).
+    pub ambient_skaters: Option<u32>,
+    /// Retail Free Play options (`skate_core::living_world::FreePlay`).
+    pub free_play: Option<FreePlayPatch>,
+}
+
+/// One living-world kind: `enabled`, `density` (0..=4, 1 = retail).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KindPatch {
+    pub enabled: Option<bool>,
+    pub density: Option<f32>,
+}
+
+/// Free Play: `traffic` and `pedestrians` 0..=1 (retail steps of 0.1 behind No / Low / Medium / High),
+/// `ai_skaters`. An absent field is the mode block's reset value (1, 1, on).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FreePlayPatch {
+    pub traffic: Option<f32>,
+    pub pedestrians: Option<f32>,
+    pub ai_skaters: Option<bool>,
 }
 
 /// Simulated NPC skaters: `enabled`, `radius` (m, 0..=500), `max` (0..=16).
@@ -598,6 +628,11 @@ impl Merge for LivingWorldPatch {
         merge_nested(&mut self.ped_vehicle_contact, &b.ped_vehicle_contact);
         merge_nested(&mut self.npc_tricks, &b.npc_tricks);
         merge_nested(&mut self.npc_simulated, &b.npc_simulated);
+        merge_nested(&mut self.skaters, &b.skaters);
+        merge_nested(&mut self.pedestrians, &b.pedestrians);
+        merge_nested(&mut self.vehicles, &b.vehicles);
+        merge_nested(&mut self.free_play, &b.free_play);
+        merge_opts!(self, b; ambient_skaters);
         match (self.skater_trick_profiles.as_mut(), &b.skater_trick_profiles) {
             (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
                 a.entry(k.clone()).or_insert_with(|| v.clone());
@@ -673,6 +708,18 @@ impl Merge for CarryPatch {
         for (k, v) in &b.by_template {
             self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, material_free_upright, upright_pair, restitution, record_272, linear_drag, angular_drag, mass, maximum_linear_velocity, maximum_angular_velocity, inertia_scale, inertia_offset); }).or_insert_with(|| v.clone());
         }
+    }
+}
+
+impl Merge for KindPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; enabled, density);
+    }
+}
+
+impl Merge for FreePlayPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; traffic, pedestrians, ai_skaters);
     }
 }
 
@@ -757,6 +804,9 @@ impl LivingWorldPatch {
                 t.mode.as_deref().is_none_or(|m| NPC_SKATER_TRICK_MODES.contains(&m))
                     && [t.gate_window, t.min_air_frames].into_iter().all(|v| v.is_none_or(|v| v <= MAX_TRICK_WINDOW))
             })
+            && [&self.skaters, &self.pedestrians, &self.vehicles].into_iter().flatten().all(|k| k.density.is_none_or(|d| d.is_finite() && (0.0..=4.0).contains(&d)))
+            && self.ambient_skaters.is_none_or(|n| n <= 8)
+            && self.free_play.as_ref().is_none_or(|f| [f.traffic, f.pedestrians].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))))
             && self.npc_simulated.as_ref().is_none_or(|n| {
                 n.radius.is_none_or(|r| r.is_finite() && (0.0..=500.0).contains(&r)) && n.max.is_none_or(|m| m <= 16)
             })

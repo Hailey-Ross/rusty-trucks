@@ -259,6 +259,23 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         t.params.gate_window = f.gate_window.unwrap_or(t.params.gate_window);
         t.params.min_air_frames = f.min_air_frames.unwrap_or(t.params.min_air_frames);
     }
+    for (patch, kind) in [(&p.skaters, &mut s.skaters), (&p.pedestrians, &mut s.pedestrians), (&p.vehicles, &mut s.vehicles)] {
+        if let Some(f) = patch {
+            kind.enabled = f.enabled.unwrap_or(kind.enabled);
+            kind.density = f.density.unwrap_or(kind.density);
+        }
+    }
+    if let Some(n) = p.ambient_skaters {
+        s.ambient_skaters = n;
+    }
+    if let Some(f) = &p.free_play {
+        let d = skate_core::living_world::FreePlay::default();
+        s.free_play = Some(skate_core::living_world::FreePlay {
+            traffic: f.traffic.unwrap_or(d.traffic),
+            pedestrians: f.pedestrians.unwrap_or(d.pedestrians),
+            ai_skaters: f.ai_skaters.unwrap_or(d.ai_skaters),
+        });
+    }
     if let Some(f) = &p.npc_simulated {
         let n = &mut s.npc_simulated;
         n.enabled = f.enabled.unwrap_or(n.enabled);
@@ -431,6 +448,11 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "skater_blend_seconds": s.skater_blend_seconds,
                 "skater_stance": s.skater_stance.iter().map(|(k, v)| (k.clone(), v.name())).collect::<std::collections::BTreeMap<_, _>>(),
                 "skater_stance_events": s.skater_stance_events,
+                "skaters": {"enabled": s.skaters.enabled, "density": s.skaters.density},
+                "pedestrians": {"enabled": s.pedestrians.enabled, "density": s.pedestrians.density},
+                "vehicles": {"enabled": s.vehicles.enabled, "density": s.vehicles.density},
+                "ambient_skaters": s.ambient_skaters,
+                "free_play": s.free_play.map(|f| json!({"traffic": f.traffic, "pedestrians": f.pedestrians, "ai_skaters": f.ai_skaters})),
                 "npc_simulated": {"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max},
                 "npc_tricks": {"mode": s.npc_tricks.mode.name(), "gate_window": s.npc_tricks.params.gate_window, "min_air_frames": s.npc_tricks.params.min_air_frames},
                 "skater_trick_profiles": s.skater_trick_profiles.iter().map(|(k, v)| {
@@ -731,6 +753,26 @@ mod tests {
         clear_all(&mut w);
         assert!(w.resource::<LivingWorldSettings>().skater_stance.is_empty());
         assert_eq!((stance(&w, "josh_kalis"), stance(&w, "deerman")), (S::Goofy, S::Goofy), "reset = retail table");
+    }
+
+    #[test]
+    fn living_world_density_counts_and_free_play_set_merge_and_reset() {
+        let mut w = world();
+        assert_eq!(read(&w, "living_world")["free_play"], json!(null), "career free roam by default");
+        set(&mut w, "dev.a", "living_world", Some(json!({"free_play": {"traffic": 0.3}, "pedestrians": {"density": 2.0}}))).unwrap();
+        set(&mut w, "dev.b", "living_world", Some(json!({"free_play": {"traffic": 0.9, "ai_skaters": false}, "ambient_skaters": 5}))).unwrap();
+        let s = w.resource::<LivingWorldSettings>();
+        let f = s.free_play.expect("Free Play on");
+        assert_eq!((f.traffic, f.pedestrians, f.ai_skaters), (0.3, 1.0, false), "first writer wins per field, unset = reset value");
+        assert_eq!((s.pedestrians.density, s.ambient_skaters), (2.0, 5));
+        // The settings reach the population config.
+        let mut config = skate_core::living_world::PopulationConfig::retail();
+        s.apply(&mut config);
+        assert_eq!((config.pedestrians.density, config.skaters.desired), (2.0, 5));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"free_play": {"pedestrians": 2.0}}))).is_err());
+        clear_all(&mut w);
+        let s = w.resource::<LivingWorldSettings>();
+        assert_eq!((s.free_play, s.pedestrians.density, s.ambient_skaters), (None, 1.0, 3));
     }
 
     #[test]

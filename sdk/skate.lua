@@ -995,7 +995,14 @@ function sdk.audio.seed(n) end
 --   weight}, ...}, nollie = {...}}} (replaces that table; an absent table keeps the disc's; a character key
 --   wins over a profile name),
 --   npc_simulated {enabled, radius, max} (NPC skaters near the player as full physics skaters driven by their
---   AI record; default off until play-tested, 40 m, 3).
+--   AI record; default off until play-tested, 40 m, 3),
+--   skaters / pedestrians / vehicles {enabled, density} (density 1 = retail, 0..4, scales the census caps),
+--   ambient_skaters (NPC skaters offline, retail 3, 0..8),
+--   free_play {traffic, pedestrians, ai_skaters} (retail Free Play mode: traffic / peds 0..1, 0 removes them at once;
+--   ai_skaters on / off; leaving it out keeps career free roam).
+--   Events: on_event {name = "living_world", event = "spawn" | "despawn" (record = kind, id, tick, position,
+--   heading, seed, choice / reason), "npc_trick" (id, line, node, recorded, chosen), "npc_line_end" (id),
+--   "vehicle_contact" (contact = car, ped, speeds, position, normal, depth, reaction)}.
 -- 'props': default and by_template[<MOBJ template name>] = {contact_padding, penetration_slop,
 --   penetration_correction, max_depenetration_per_tick, restitution_threshold, skater_push_mass,
 --   push_transfer, body_push_speed, board_push_speed, penetration_push_speed, stuck_release_ticks,

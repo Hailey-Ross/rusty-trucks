@@ -20,6 +20,7 @@ mod volumes;
 mod world_audio;
 pub(crate) mod world_tuning;
 mod triggers;
+mod living_world_events;
 mod capture;
 pub(crate) mod player_physics;
 
@@ -168,6 +169,7 @@ impl Plugin for ModdingPlugin {
         graphics_dynamic::install(app);
         capture::install(app);
         triggers::install(app);
+        living_world_events::install(app);
         app.add_systems(
             PreUpdate,
             maintenance.after(crate::map_transition::MapTransitionSet),
