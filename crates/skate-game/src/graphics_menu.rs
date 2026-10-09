@@ -43,6 +43,9 @@ struct GraphicsSettings {
     ambient_level: Option<u32>,
     /// On-screen frame-time counter (`frame_timing`); off by default.
     frame_stats: bool,
+    /// With the counter on: the small readout (fps, frame time, 1 % low, worst and a tiny spike
+    /// graph) instead of the verbose one. Older settings files lack it and stay verbose.
+    frame_stats_simple: bool,
     /// NPC draw distance multiplier (QoL, not retail): 1 = retail ranges.
     npc_draw_distance: f32,
 }
@@ -57,6 +60,7 @@ impl Default for GraphicsSettings {
             day_speed: 60,
             ambient_level: None,
             frame_stats: false,
+            frame_stats_simple: false,
             npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
         }
     }
@@ -120,6 +124,10 @@ impl Menu {
     /// Whether the frame-time counter is shown (graphics menu row, saved).
     pub(crate) fn frame_stats_visible(&self) -> bool {
         self.settings.frame_stats
+    }
+    /// The counter is on in its simplified form (graphics menu row, saved).
+    pub(crate) fn frame_stats_simple(&self) -> bool {
+        self.settings.frame_stats && self.settings.frame_stats_simple
     }
     pub(crate) fn diagnostic_settings(&self) -> String {
         format!("{:?}", self.settings)
@@ -631,7 +639,13 @@ pub(crate) fn interact(
                 13 => { menu.daylight = true; menu.selected = 0; menu.status = "Custom maps: change time, cycle speed and ambient light. Retail lighting stays authored.".into(); },
                 14 => mods.begin(),
                 16..=18 => menu.status = audio.adjust(audio_row(row), direction),
-                FRAME_STATS_ROW => menu.settings.frame_stats = !menu.settings.frame_stats,
+                FRAME_STATS_ROW => {
+                    // Off, Simple, Verbose (the original readout).
+                    let modes = [(false, false), (true, true), (true, false)];
+                    let s = &mut menu.settings;
+                    let now = if s.frame_stats { (true, s.frame_stats_simple) } else { (false, false) };
+                    (s.frame_stats, s.frame_stats_simple) = cycle(&modes, now, direction);
+                }
                 NPC_DRAW_DISTANCE_ROW => {
                     menu.settings.npc_draw_distance = cycle(&skate_core::living_world::DrawDistance::MENU_STEPS, menu.settings.npc_draw_distance, direction);
                     living.set_user_draw_distance(menu.settings.npc_draw_distance);
@@ -884,7 +898,7 @@ fn labels(
                 14 => "Mods".into(),
                 16..=18 => audio.as_ref().map(|a| a.label(audio_row(label.0))).unwrap_or_default(),
                 19 => controller_label(&debug.3),
-                FRAME_STATS_ROW => format!("Frame-time counter    {}", if s.frame_stats { "On" } else { "Off" }),
+                FRAME_STATS_ROW => format!("Frame-time counter    {}", if !s.frame_stats { "Off" } else if s.frame_stats_simple { "Simple" } else { "Verbose" }),
                 NPC_DRAW_DISTANCE_ROW => format!("NPC draw distance     {}", draw_distance_label(s.npc_draw_distance)),
                 _ => "Multiplayer".into(),
             }
@@ -1132,6 +1146,12 @@ mod tests {
         let on = GraphicsSettings { frame_stats: true, ..default() };
         let saved: GraphicsSettings = serde_json::from_slice(&serde_json::to_vec(&on).unwrap()).unwrap();
         assert!(saved.validated().frame_stats);
+        // A counter saved as on before Simple existed opens as Verbose.
+        let old_on: GraphicsSettings = serde_json::from_str(r#"{"frame_stats":true}"#).unwrap();
+        assert!(old_on.frame_stats && !old_on.frame_stats_simple);
+        let simple = GraphicsSettings { frame_stats: true, frame_stats_simple: true, ..default() };
+        let saved: GraphicsSettings = serde_json::from_slice(&serde_json::to_vec(&simple).unwrap()).unwrap();
+        assert!(saved.frame_stats && saved.frame_stats_simple);
     }
     #[test]
     fn invalid_saved_values_fall_back() {

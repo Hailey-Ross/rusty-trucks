@@ -1439,7 +1439,7 @@ mod tests {
                     radius: 0.1,
                 },
             ),
-            linear_velocity: Vector3::ZERO,
+            motion: skate_core::physics::board_world::VolumeMotion { linear_velocity: Vector3::ZERO, ..Default::default() },
             material: material(),
         }];
         let contacts = world.query_primitives(&volumes, query, retention);

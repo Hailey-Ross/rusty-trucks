@@ -956,7 +956,7 @@ pub(crate) fn prop_volumes(id: LivingWorldId, s: &ReplaySample) -> [(u64, skate_
         collision_group: 4,
         body: hit,
         primitive: ContactPrimitive::Capsule { center: at([0.0, 0.9, 0.0]), axis: v(q * Vec3::Y), half_length: 0.65, radius: 0.25 },
-        linear_velocity: velocity,
+        motion: skate_core::physics::board_world::VolumeMotion { linear_velocity: velocity, ..Default::default() },
         material,
     };
     let board = BoardWorldVolume {
@@ -964,7 +964,7 @@ pub(crate) fn prop_volumes(id: LivingWorldId, s: &ReplaySample) -> [(u64, skate_
         body: hit,
         // The proxy's 0.8 x 0.1 x 0.2 m board box as a capsule along the deck (0.4 m to each end).
         primitive: ContactPrimitive::Capsule { center: at([0.0, 0.08, 0.0]), axis: v(q * Vec3::Z), half_length: 0.3, radius: 0.1 },
-        linear_velocity: velocity,
+        motion: skate_core::physics::board_world::VolumeMotion { linear_velocity: velocity, ..Default::default() },
         material,
     };
     [(actor, body), (actor, board)]
