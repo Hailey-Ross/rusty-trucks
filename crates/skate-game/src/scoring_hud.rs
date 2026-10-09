@@ -182,14 +182,14 @@ fn setup(
         let shapes: apt_scene::Shapes =
             serde_json::from_value(source["shapes"].clone()).map_err(|e| e.to_string())?;
         let mut files = BTreeMap::new();
-        for shape in shapes.values().flatten() {
-            files.insert(
-                shape.texture.rgba.clone(),
-                [shape.texture.width, shape.texture.height],
-            );
+        for texture in shapes.values().flatten().filter_map(|s| s.texture.as_ref()) {
+            files.insert(texture.rgba.clone(), [texture.width, texture.height]);
         }
         for font in runtime.bindings.movie.text_assets.fonts.values() {
             files.insert(font.texture.clone(), font.size);
+            if let Some(fg) = &font.foreground {
+                files.insert(fg.texture.clone(), fg.size);
+            }
         }
         let mut textures = BTreeMap::new();
         for (path, size) in files {
