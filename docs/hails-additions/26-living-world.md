@@ -3011,6 +3011,32 @@ DownTown: 300 ticks of the player pushing off, alone and again with a second ska
 to the side, same input) ticking after the player every tick: the player's deck position and velocity bits are
 identical on every tick; the second skater rode more than 1 m on its own board without falling through.
 
+## Simulated NPC skaters: the AI record drives the physics (M7 step 2, 2026-10-08)
+
+**Change.** A simulated skater gets its AI physics record through `SkaterRuntime.ai_physics` (`None` for the
+player): the animation packet publishes it like retail `82593640` (record copied with the high flag bits only,
+`82592810`; "use external physics" = the AI's fresh bit, "externally controlled" set), and the existing ported
+publication puts it into `ProcessedPhysicsInput.external_physics_1616`. The record is built from the recorded line
+(`skate_core::living_world::ai_record`, retail `sub_8246DB50` / `sub_8246DE38`): target = the path frame
+(`path_frame`, board orientation, turned on board-flipped nodes) and position along the current segment
+(`LineCursor::line_target`, no drawing blends), target velocity = the node's per-frame displacement x 60 (new
+`ReplayNode::step`, node `+0x0C`; measured on the DownTown export: |step| x frames = segment length, median ratio
+1.000 over 47,087 segments) clamped to 99.9 m/s, the frame's Ri / At negated when the skater faces the other way,
+and the flags: bit 25 = on-board steering (seeded by `8246DB50` from `pc+922`), bits 31..28 from the state bytes as
+decoded. Bit 25 matters: the ported state selector sends a skater whose record steers without it to
+`PHYSICS_STATE_FOLLOW_PATH` (105), which is not ported yet; with it the skater stays in `PhysicsGround` and the
+board path steers it.
+
+**Verification.** skate-core `ai_record` 2 tests (flag rules incl. bit 25, target pose and speed, facing flip,
+clamp). Data-gated `a_simulated_skater_rides_a_recorded_line_from_its_ai_record` on DownTown: a skater with only the
+record (neutral pad) spawned on the first ground NPC line stays in `PhysicsGround` for 300 ticks and rides more than
+5 m along the line. The player identity test still passes.
+
+**Open.** It falls behind the recorded speed (tracking error median 9.5 m, 19.7 m after 5 s): the gentle board-path
+controllers alone do not hold the recorded speed in our ground solve. Next: find what keeps a retail NPC at speed
+(the ground solve overriding the deck velocity, ActionGraph push / speed signals from the AI, or the speed shape
+inputs), then FOLLOW_PATH (105) and the recorded-trajectory jump.
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).

@@ -17,6 +17,7 @@
 //! needed to recreate the entity on another machine, including the seed of its own sub-RNG.
 //! Decisions never depend on hash-map iteration order or frame time.
 
+pub mod ai_record;
 pub mod census;
 pub mod clock;
 pub mod config;

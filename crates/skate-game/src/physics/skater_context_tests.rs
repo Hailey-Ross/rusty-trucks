@@ -2,6 +2,7 @@
 //! player's simulation is bit-identical with or without an NPC skater ticking in between.
 use super::*;
 use skate_core::physics::board::BodyId;
+use skate_core::player::state::PhysicalStateId;
 
 fn pad() -> skate_core::input::xbox::XboxState {
     skate_core::input::xbox::XboxState::default()
@@ -86,4 +87,62 @@ fn the_player_is_bit_identical_with_a_simulated_npc_skater_in_the_same_world() {
     assert!(moved > 1.0 && (end.y - start.y).abs() < 2.0, "npc board {start:?} -> {end:?}");
     assert!(!context.failed && context.owns_props == false && shared.owns_props);
     assert_eq!(context.ticks, 300);
+}
+
+/// Steps a + b of the simulated tier: a skater with only the AI record (no pad) rides a recorded
+/// DownTown NPC line on its own physics, steered by the ground states' board path.
+#[test]
+#[ignore = "requires private stock graphs, the living-world export and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn a_simulated_skater_rides_a_recorded_line_from_its_ai_record() {
+    use skate_core::living_world::replay::{path_frame, Decider, LineCursor, ReplayLine};
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let rig = Rig { graphs: crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap(), root_dir: root_dir.clone() };
+    let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    let pack = std::fs::read(root_dir.join("private/living_world/skater_paths/DownTown.bin")).unwrap();
+    let tiles = skate_data::aipath::parse_pack(&pack).unwrap();
+    let (paths, _) = skate_data::aipath::district_paths(&tiles).unwrap();
+    let lines: std::collections::BTreeMap<[u8; 16], ReplayLine> =
+        paths.iter().filter(|p| p.path.id.is_ambient()).map(|p| (p.path.id.0, skate_data::living_world::replay_line(&p.path))).collect();
+    let which = std::env::var("LINE_INDEX").ok().and_then(|v| v.parse().ok()).unwrap_or(0usize);
+    // A line rolling on the ground for its first 300 frames.
+    let line = lines.values().filter(|l| l.duration_frames() > 600 && l.nodes.iter().take(40).all(|n| n.flags & 0x0e == 0)).nth(which).expect("a ground line");
+    let node = &line.nodes[0];
+    let q = path_frame(node);
+    let basis = skate_core::physics::rigid_body::basis_from_quaternion(skate_core::physics::rigid_body::RetailQuaternion { x: q[0], y: q[1], z: q[2], w: q[3] });
+    let spawn = RetailAffineTransform { basis, translation: skate_core::math::Vector3::new(node.position[0], node.position[1], node.position[2]) };
+    let mut context = physics.new_skater_context(spawn).unwrap();
+    physics.swap_skater_context(&mut context);
+    let mut npc = rig.skater(&physics);
+    let mut cursor = LineCursor::spawn(&lines, line.id, 0);
+    let mut errors = Vec::new();
+    let start = physics.board.part_transforms()[BodyId::Deck.index()].translation;
+    for tick in 0..300 {
+        let target = cursor.line_target(&lines).unwrap();
+        let deck = physics.board.part_transforms()[BodyId::Deck.index()];
+        let forward = [deck.basis.columns[2][0], deck.basis.columns[2][1], deck.basis.columns[2][2]];
+        let record = skate_core::living_world::ai_record::build(&target, forward, &Default::default());
+        npc.runtime.ai_physics = Some(super::skater::AiPhysicsSource { record, fresh: true });
+        rig.step(&mut physics, &mut npc, pad());
+        assert_eq!(npc.runtime.player_state.current(), PhysicalStateId::PhysicsGround, "on-board steering (bit 25) keeps the skater in ground physics, tick {tick}");
+        cursor.step(&lines, &mut Decider::Stay, &mut Vec::new());
+        let deck = physics.board.part_transforms()[BodyId::Deck.index()].translation;
+        let e = ((deck.x - target.position[0]).powi(2) + (deck.z - target.position[2]).powi(2)).sqrt();
+        errors.push(e);
+        if tick % 30 == 0 {
+            eprintln!("tick {tick} state {:?} deck {:?} target {:?} error {e:.2}", npc.runtime.player_state.current(), deck, target.position);
+        }
+    }
+    let end = physics.board.part_transforms()[BodyId::Deck.index()].translation;
+    physics.swap_skater_context(&mut context);
+    let mut sorted = errors.clone();
+    sorted.sort_by(f32::total_cmp);
+    eprintln!("error median {:.3} p90 {:.3} max {:.3}", sorted[150], sorted[270], sorted[299]);
+    // It rides along the line's direction on the ground. Open (doc 26): it falls behind the
+    // recorded speed (about 20 m after 5 s on the first ground line), so the speed source of
+    // retail NPCs is still missing.
+    let moved = ((end.x - start.x).powi(2) + (end.z - start.z).powi(2)).sqrt();
+    assert!(moved > 5.0 && (end.y - start.y).abs() < 1.0, "{start:?} -> {end:?}");
 }

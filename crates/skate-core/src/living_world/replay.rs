@@ -261,6 +261,10 @@ impl Default for ChainConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReplayNode {
     pub position: Vec3,
+    /// Recorded displacement per 60 Hz frame (node `+0x0C`, "direction"; measured on the export:
+    /// |step| x frames = the segment length, median ratio 1.000). The AI record's target velocity
+    /// is this x 60 ([code] `sub_8246DE38`).
+    pub step: Vec3,
     /// Board and skater orientation, 4 biased bytes each (`(b - 128) / 127`, x y z w).
     pub board: [u8; 4],
     pub skater: [u8; 4],
@@ -1325,6 +1329,22 @@ impl LineCursor {
     }
 
     /// The state now, `alpha` (0..1) of the way to the next 60 Hz frame (render interpolation).
+    /// The raw recorded pose the AI steers to ([`super::ai_record`]): the position and path frame
+    /// ([`path_frame`]) interpolated along the current segment, and the segment's per-frame
+    /// displacement (the next node's `step`). No switch blend, facing or fakie drawing.
+    pub fn line_target(&self, lines: &dyn LineSource) -> Option<super::ai_record::LineTarget> {
+        let line = lines.line(&self.line)?;
+        let i = self.node as usize;
+        let a = line.nodes.get(i)?;
+        let seg = line.segment_frames(self.node);
+        let (b, t) = match line.nodes.get(i + 1) {
+            Some(b) if seg > 0 && !self.finished => (b, (self.frame_in_segment as f32 / seg as f32).min(1.0)),
+            _ => (a, 0.0),
+        };
+        let position = core::array::from_fn(|k| a.position[k] + (b.position[k] - a.position[k]) * t);
+        Some(super::ai_record::LineTarget { position, frame: nlerp(path_frame(a), path_frame(b), t), step: b.step })
+    }
+
     pub fn sample(&self, lines: &dyn LineSource, alpha: f32) -> Option<ReplaySample> {
         let line = lines.line(&self.line)?;
         let i = self.node as usize;

@@ -28,7 +28,7 @@ fn line(nodes: &[(u8, u8, bool, i16)]) -> ReplayLine {
                 jumps.push(ReplayJump { start_position: [0.0; 3], start_velocity: [0.0; 3], offset: [0.0; 3], trick, spins: 0, flags: 0 });
                 jumps.len() as u32 - 1
             });
-            ReplayNode { position: [0.0, 0.0, i as f32], board: [128, 128, 128, 255], skater: [128, 128, 128, 255], frames, event, flags: if air { node_flags::AIRBORNE } else { 0 }, jump }
+            ReplayNode { position: [0.0, 0.0, i as f32], step: [0.0, 0.0, 0.0], board: [128, 128, 128, 255], skater: [128, 128, 128, 255], frames, event, flags: if air { node_flags::AIRBORNE } else { 0 }, jump }
         })
         .collect();
     ReplayLine { id: [7; 16], flags: 4, skill: 0, nodes, jumps, groups: vec![] }

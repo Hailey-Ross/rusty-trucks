@@ -273,6 +273,7 @@ pub fn replay_line(p: &AiPath) -> ReplayLine {
             .iter()
             .map(|n| ReplayNode {
                 position: n.position,
+                step: n.direction,
                 board: n.board_orientation,
                 skater: n.skater_orientation,
                 frames: n.frames_since_last_node,

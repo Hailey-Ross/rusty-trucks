@@ -18,6 +18,7 @@ fn straight(n: u8, origin: Vec3, count: u32, frames: u8, step: f32) -> ReplayLin
     let nodes = (0..count)
         .map(|i| ReplayNode {
             position: [origin[0], origin[1], origin[2] + i as f32 * step],
+            step: [0.0; 3],
             board: IDENTITY,
             skater: IDENTITY,
             frames: if i == 0 { 0 } else { frames },

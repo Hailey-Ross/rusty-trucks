@@ -36,6 +36,7 @@ fn data() -> LoadedData {
             let nodes = (0..NODES)
                 .map(|n| ReplayNode {
                     position: [s[0] + n as f32 * STEP, s[1], s[2]],
+                    step: [STEP / FRAMES as f32, 0.0, 0.0],
                     // Heading +x: 90 deg about +y.
                     board: [128, 218, 128, 218],
                     skater: [128, 218, 128, 218],
