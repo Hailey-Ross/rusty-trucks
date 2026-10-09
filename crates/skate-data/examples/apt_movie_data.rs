@@ -3,6 +3,8 @@
 mod apt_display;
 #[path = "../../skate-game/src/apt_movie.rs"]
 mod apt_movie;
+#[path = "../../skate-game/src/apt_imports.rs"]
+mod apt_imports;
 #[path = "../../skate-game/src/apt_text.rs"]
 mod apt_text;
 #[path = "../../skate-game/src/apt_vm.rs"]
