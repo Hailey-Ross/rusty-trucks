@@ -101,6 +101,21 @@ pub fn build(target: &LineTarget, forward: Vec3, state: &SteerState) -> External
     ExternalPhysicsInput { vectors, flags: state.flags() }
 }
 
+/// The spawn push (`sub_824701F8` hold branch): while the skater is still within 0.01 m
+/// (`0x820D71E8`; 0.05 m `0x82165A00` when the cursor's node `pc+816` is not 0) of its node in the
+/// ground plane, every board part gets the node's per-frame displacement x 60 x 0.75
+/// (`0x821814A0`; x 0.5 `0x8209975C` for AI kind 1 outside motion states 19 / 20) as its velocity
+/// (`82C04168`). `None` once it has left the node.
+pub fn spawn_push(skater: Vec3, node: Vec3, step: Vec3, first_node: bool, ai_kind_1_slow: bool) -> Option<Vec3> {
+    let limit: f32 = if first_node { 0.01 } else { 0.05 };
+    let (dx, dz) = (skater[0] - node[0], skater[2] - node[2]);
+    if dx * dx + dz * dz >= limit * limit {
+        return None;
+    }
+    let scale = if ai_kind_1_slow { 0.5 } else { 0.75 };
+    Some(step.map(|x| x * FRAMES_PER_SECOND * scale))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +136,15 @@ mod tests {
         assert_eq!(SteerState { trick_category: 9, ..s }.flags(), 0xF000_0000 | ON_BOARD);
         assert_eq!(SteerState { byte_933: true, ..SteerState::default() }.flags(), ON_BOARD | 1 << 31);
         assert_eq!(SteerState { on_board_steering: false, byte_933: true, ..SteerState::default() }.flags(), 0xF000_0000);
+    }
+
+    #[test]
+    fn the_spawn_push_starts_near_line_speed_only_on_the_node() {
+        let v = spawn_push([0.0; 3], [0.005, 9.0, 0.0], [0.0, 0.0, 0.1], true, false).unwrap();
+        assert!((v[2] - 4.5).abs() < 1e-5, "0.1 m/frame x 60 x 0.75");
+        assert!((spawn_push([0.0; 3], [0.0; 3], [0.0, 0.0, 0.1], true, true).unwrap()[2] - 3.0).abs() < 1e-5);
+        assert_eq!(spawn_push([0.02, 0.0, 0.0], [0.0; 3], [0.0, 0.0, 0.1], true, false), None);
+        assert!(spawn_push([0.02, 0.0, 0.0], [0.0; 3], [0.0, 0.0, 0.1], false, false).is_some());
     }
 
     #[test]

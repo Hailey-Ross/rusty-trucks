@@ -3030,12 +3030,22 @@ board path steers it.
 **Verification.** skate-core `ai_record` 2 tests (flag rules incl. bit 25, target pose and speed, facing flip,
 clamp). Data-gated `a_simulated_skater_rides_a_recorded_line_from_its_ai_record` on DownTown: a skater with only the
 record (neutral pad) spawned on the first ground NPC line stays in `PhysicsGround` for 300 ticks and rides more than
-5 m along the line. The player identity test still passes.
+5 m along the line, tracking it (median under 0.5 m, max under 1 m on the default line). The player identity test
+still passes. skate-core `ai_record` also tests the spawn push (scale, kind 1, the node radius).
 
-**Open.** It falls behind the recorded speed (tracking error median 9.5 m, 19.7 m after 5 s): the gentle board-path
-controllers alone do not hold the recorded speed in our ground solve. Next: find what keeps a retail NPC at speed
-(the ground solve overriding the deck velocity, ActionGraph push / speed signals from the AI, or the speed shape
-inputs), then FOLLOW_PATH (105) and the recorded-trajectory jump.
+**Spawn push (retail, ported).** The first run fell behind the recorded speed (tracking error median 9.5 m, and the
+slow board hit geometry). Retail starts a fresh NPC near line speed: `sub_824701F8` (hold branch) sets every board
+part's velocity (`82C04168`) to the node's per-frame displacement x 60 x 0.75 (`0x821814A0`; x 0.5 `0x8209975C` for AI
+kind 1 outside motion states 19 / 20) while the skater is within 0.01 m (`0x820D71E8`; 0.05 m `0x82165A00` past node
+0) of its node in the ground plane (`ai_record::spawn_push`). With it, on the first seven DownTown ground lines the
+simulated skater holds the recorded line over 5 s on its own physics: median error 0.06 to 0.2 m, max under 0.6 m, at
+the recorded speed (about 8 m/s), except line 5.
+
+**Open.** Line 5: around (-147.9, 10.18, 436.2) the board's contacts climb from 22 to 92, it rides about 3 cm up and
+nearly stops, then recovers (max error 3.7 m) while the recording rolls through on the ground (no airborne node):
+a ground-physics or collision difference at that spot (a curb, a prop, or our wheel solve), not the AI. Then:
+FOLLOW_PATH (105), the recorded-trajectory jump (`82D682E8` / `82D67A00`), spawning simulated NPCs in the game and
+drawing them from their physics.
 
 ## Verification
 

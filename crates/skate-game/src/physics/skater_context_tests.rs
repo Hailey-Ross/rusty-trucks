@@ -125,6 +125,14 @@ fn a_simulated_skater_rides_a_recorded_line_from_its_ai_record() {
         let forward = [deck.basis.columns[2][0], deck.basis.columns[2][1], deck.basis.columns[2][2]];
         let record = skate_core::living_world::ai_record::build(&target, forward, &Default::default());
         npc.runtime.ai_physics = Some(super::skater::AiPhysicsSource { record, fresh: true });
+        // Retail spawn push while still on the start node (824701F8 -> 82C04168, every part).
+        let node = &line.nodes[cursor.node as usize];
+        let deck_at = [deck.translation.x, deck.translation.y, deck.translation.z];
+        if let Some(v) = skate_core::living_world::ai_record::spawn_push(deck_at, node.position, target.step, cursor.node == 0, false) {
+            for body in physics.board.bodies_mut() {
+                body.rates.linear_velocity = skate_core::math::Vector3::new(v[0], v[1], v[2]);
+            }
+        }
         rig.step(&mut physics, &mut npc, pad());
         assert_eq!(npc.runtime.player_state.current(), PhysicalStateId::PhysicsGround, "on-board steering (bit 25) keeps the skater in ground physics, tick {tick}");
         cursor.step(&lines, &mut Decider::Stay, &mut Vec::new());
@@ -132,7 +140,10 @@ fn a_simulated_skater_rides_a_recorded_line_from_its_ai_record() {
         let e = ((deck.x - target.position[0]).powi(2) + (deck.z - target.position[2]).powi(2)).sqrt();
         errors.push(e);
         if tick % 30 == 0 {
-            eprintln!("tick {tick} state {:?} deck {:?} target {:?} error {e:.2}", npc.runtime.player_state.current(), deck, target.position);
+            let v = physics.board.bodies()[BodyId::Deck.index()].rates.linear_velocity;
+            let speed = (v.x * v.x + v.z * v.z).sqrt();
+            let want = (target.step[0].powi(2) + target.step[2].powi(2)).sqrt() * 60.0;
+            eprintln!("tick {tick} state {:?} speed {speed:.2} target speed {want:.2} error {e:.2}", npc.runtime.player_state.current());
         }
     }
     let end = physics.board.part_transforms()[BodyId::Deck.index()].translation;
@@ -140,9 +151,12 @@ fn a_simulated_skater_rides_a_recorded_line_from_its_ai_record() {
     let mut sorted = errors.clone();
     sorted.sort_by(f32::total_cmp);
     eprintln!("error median {:.3} p90 {:.3} max {:.3}", sorted[150], sorted[270], sorted[299]);
-    // It rides along the line's direction on the ground. Open (doc 26): it falls behind the
-    // recorded speed (about 20 m after 5 s on the first ground line), so the speed source of
-    // retail NPCs is still missing.
+    // With the retail spawn push it holds the recorded line: on DownTown lines 0..6 the median
+    // error is 0.06..0.2 m (max under 0.6 m) except line 5, where the board loses speed on ground
+    // geometry the recording rolls through (open, doc 26).
+    if std::env::var_os("LINE_INDEX").is_none() {
+        assert!(sorted[299] < 1.0 && sorted[150] < 0.5, "tracking: median {} max {}", sorted[150], sorted[299]);
+    }
     let moved = ((end.x - start.x).powi(2) + (end.z - start.z).powi(2)).sqrt();
     assert!(moved > 5.0 && (end.y - start.y).abs() < 1.0, "{start:?} -> {end:?}");
 }
