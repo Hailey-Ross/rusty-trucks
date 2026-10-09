@@ -2986,6 +2986,31 @@ needed. The trick table's chain links (+4 previous level, +8 base) are 18 numeri
    percent (+36): only matter once the simulated tier sends ActionGraph signals.
 4. Skater vfunc +36: whether retail's draw is a per-skater stream or the global generator.
 
+## Simulated NPC skaters: per-skater physics context (M7 step 1, 2026-10-08)
+
+**Problem.** Retail runs every ambient NPC skater as a full physics skater (the same physics states and board as
+the player, steered by its AI record; see "NPC skater steering"). Our physics (`GamePhysics`) held exactly one
+skater: its board, riding outputs and clock sat next to the shared world. About 800 places read those fields, so
+splitting them out would be a large change with a regression risk for the player.
+
+**Change.** A simulated skater's own parts are a `SkaterPhysicsContext` (board, riding outputs, clock, exchange,
+tick count, carry, wipeout flags). An NPC skater keeps one and swaps it into `GamePhysics` around its own tick
+(`swap_skater_context`, a plain swap of those fields); the collision world, props, grind world, settings and network
+proxies stay shared, so moved props and every map change reach every skater. `new_skater_context(spawn)` builds one
+from the same setup collections (kept in `GamePhysics`). Only the local player steps the dynamic props
+(`owns_props`); NPC skaters push props through `actor_prop_volumes` as before, so props still step once per tick.
+The world's query buffers are cleared on every query (no state carried between skaters).
+
+Not yet: spawning simulated NPC skaters from the population, their AI record and pad, drawing them from their
+simulated pose, the distance switch between replay and simulated, skater-to-skater collision.
+
+**Files.** `crates/skate-game/src/physics.rs`, `crates/skate-game/src/physics/skater_context_tests.rs`.
+
+**Verification.** Data-gated `the_player_is_bit_identical_with_a_simulated_npc_skater_in_the_same_world` on
+DownTown: 300 ticks of the player pushing off, alone and again with a second skater (own context and runtime, 6 m
+to the side, same input) ticking after the player every tick: the player's deck position and velocity bits are
+identical on every tick; the second skater rode more than 1 m on its own board without falling through.
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).

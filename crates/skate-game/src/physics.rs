@@ -52,6 +52,8 @@ mod board_path;
 #[cfg(test)]
 mod board_path_tests;
 #[cfg(test)]
+mod skater_context_tests;
+#[cfg(test)]
 mod carry_direction_tests;
 mod frame;
 pub(crate) mod startup_check;
@@ -90,6 +92,7 @@ mod biped_air;
 mod known_air;
 mod landing_on_deck;
 mod offboard_audit_trace;
+use skate_data::collections::Collections;
 use crate::{
     app::{FrameSet, SimulationSet},
     world::PlayerRoot,
@@ -146,6 +149,35 @@ pub(crate) struct GamePhysics {
     pub processed_flags_2468: u32,
     /// Toolkit ctor82C0680C clears8384bit7; wipeout entry/exit owns changes.
     pub board_wiping_out: bool,
+    /// The setup collections the per-skater parts load from (a simulated NPC skater's riding
+    /// outputs at spawn, [`Self::new_skater_context`]).
+    // Read once simulated NPC skaters spawn (next living-world step).
+    #[cfg_attr(not(test), allow(dead_code))]
+    collections: std::sync::Arc<Collections>,
+    /// Whether the skater in the context steps the dynamic props (the local player). A simulated
+    /// NPC skater's context does not: the props step once per tick, the NPCs push them through
+    /// [`Self::actor_prop_volumes`].
+    owns_props: bool,
+}
+
+/// The parts of [`GamePhysics`] each simulated skater owns (doc 26, "Simulated NPC skaters"):
+/// its board, riding outputs, clock and exchange. A simulated NPC skater keeps one and swaps it in
+/// around its own tick ([`GamePhysics::swap_skater_context`]); the world, props, grind world,
+/// settings and network proxies stay shared.
+// Constructed once simulated NPC skaters spawn (next living-world step).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct SkaterPhysicsContext {
+    clock: clock::SimulationClock,
+    board: BoardRuntime,
+    riding: RidingOutputs,
+    prop_carry: prop_carry::PropCarry,
+    ticks: u64,
+    contact_count: usize,
+    failed: bool,
+    exchange: SimulationExchange,
+    processed_flags_2468: u32,
+    board_wiping_out: bool,
+    owns_props: bool,
 }
 
 /// Cross-phase records for the current fixed tick. Subsystems retain their
@@ -285,6 +317,9 @@ impl GamePhysics {
     /// `volumes` are the skater's board and skeleton world volumes; the NPC skaters' volumes
     /// ([`Self::actor_prop_volumes`]) push props by the same rule.
     pub(crate) fn step_props(&mut self, volumes: &[BoardWorldVolume]) {
+        if !self.owns_props {
+            return;
+        }
         let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut())
         else {
             return;
@@ -529,7 +564,49 @@ impl GamePhysics {
             exchange: SimulationExchange::new(0),
             processed_flags_2468,
             board_wiping_out: false,
+            collections: std::sync::Arc::new(data),
+            owns_props: true,
         })
+    }
+
+    /// A fresh skater context at `spawn` (a simulated NPC skater): a new board, riding outputs from
+    /// the same collections, a clock and exchange at tick 0; it does not step the props.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn new_skater_context(&self, spawn: RetailAffineTransform) -> Result<SkaterPhysicsContext, String> {
+        let board = BoardRuntime::new(self.settings.masses, self.settings.authored, spawn, self.settings.step.simulation, BoardMotion::Active);
+        let processed_flags_2468 = 0x2000;
+        let riding = RidingOutputs::load(&self.collections, &board, processed_flags_2468)?;
+        let mut prop_carry = prop_carry::PropCarry::default();
+        prop_carry.set_base_tuning(self.settings.move_object);
+        Ok(SkaterPhysicsContext {
+            clock: clock::SimulationClock::default(),
+            board,
+            riding,
+            prop_carry,
+            ticks: 0,
+            contact_count: 0,
+            failed: false,
+            exchange: SimulationExchange::new(0),
+            processed_flags_2468,
+            board_wiping_out: false,
+            owns_props: false,
+        })
+    }
+
+    /// Swap the per-skater parts with `context` (call again with the same context to swap back).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn swap_skater_context(&mut self, context: &mut SkaterPhysicsContext) {
+        std::mem::swap(&mut self.clock, &mut context.clock);
+        std::mem::swap(&mut self.board, &mut context.board);
+        std::mem::swap(&mut self.riding, &mut context.riding);
+        std::mem::swap(&mut self.prop_carry, &mut context.prop_carry);
+        std::mem::swap(&mut self.ticks, &mut context.ticks);
+        std::mem::swap(&mut self.contact_count, &mut context.contact_count);
+        std::mem::swap(&mut self.failed, &mut context.failed);
+        std::mem::swap(&mut self.exchange, &mut context.exchange);
+        std::mem::swap(&mut self.processed_flags_2468, &mut context.processed_flags_2468);
+        std::mem::swap(&mut self.board_wiping_out, &mut context.board_wiping_out);
+        std::mem::swap(&mut self.owns_props, &mut context.owns_props);
     }
 
     #[cfg(test)]
