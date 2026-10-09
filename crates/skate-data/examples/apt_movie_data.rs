@@ -37,13 +37,10 @@ impl Host for Audit {
 }
 fn drain(vm: &mut Vm, host: &mut Audit) -> Result<(), String> {
     let mut count = 0;
-    while let Some((object, offset)) = host.movie.pending.pop_front() {
+    while let Some(apt_movie::Pending { object, offset, .. }) = host.movie.next_action() {
         count += 1;
         if count > 4096 {
             return Err("Frame action limit".into());
-        }
-        if !host.movie.instances.contains_key(&object) {
-            continue;
         }
         let code = host
             .movie
