@@ -39,8 +39,9 @@ struct VertexOutput {
 fn vertex(v: Vertex) -> VertexOutput {
     var out: VertexOutput;
     let world_from_local = mesh_functions::get_world_from_local(v.instance_index);
+    let sway = bindings::flag_sway(v.material_index, v.color);
     out.world_position = mesh_functions::mesh_position_local_to_world(
-        world_from_local, vec4<f32>(v.position, 1.0));
+        world_from_local, vec4<f32>(v.position + sway, 1.0));
     out.clip_position = position_world_to_clip(out.world_position.xyz);
     out.world_normal = mesh_functions::mesh_normal_local_to_world(v.normal, v.instance_index);
     out.uv = v.uv;
@@ -68,12 +69,25 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     let g_decal = bindings::gradients(i.color.xy);
     let g_detail = bindings::gradients_scaled(g, p.surface.z);
     let g_macro = bindings::gradients_scaled(g, p.surface.x);
+    let g_b = bindings::gradients(i.uv_b);
 
     var diffuse_uv=i.uv;
+    var g_diffuse=g;
     // The scroll offset is constant across the primitive, so gradients are unchanged.
     if fam==14u { diffuse_uv+=fract(frame_state.clock.x*p.water[1].xy*vec2<f32>(1.0,-1.0)); }
-    let a = bindings::sample_diffuse(slot, diffuse_uv, g);
-    let lm = bindings::sample_lightmap(slot, i.uv_b, 0.0).rgb;
+    // trafficlight_one/two vertex programs: the lamp slot floor(4 * uvA.z)
+    // (exported as decal.x, here color.x) picks a component of
+    // g_TrafficLightsStatus_1/_2; above 1 the vertex uses its second UV set
+    // (exported as the lightmap UVs, here uv_b), the lamp's "on" texels.
+    if fam==19u || fam==20u {
+        let lamp=min(u32(floor(4.0*i.color.x)),3u);
+        if frame_state.traffic_lights[fam-19u][lamp]>1.0 { diffuse_uv=i.uv_b; g_diffuse=g_b; }
+    }
+    let a = bindings::sample_diffuse(slot, diffuse_uv, g_diffuse);
+    var lm = bindings::sample_lightmap(slot, i.uv_b, 0.0).rgb;
+    // Trees, proxy, incandescent and ocean programs take one tap; so does the
+    // unknown-shader fallback (0), whose retail programs vary.
+    if (fam >= 1u && fam <= 8u) || fam == 13u || fam == 16u || fam == 17u { lm = bindings::sample_lightmap_box(slot, i.uv_b); }
     // Sample before alpha rejection: gradients must stay uniform.
     var nm = vec3<f32>(0.5,0.5,1.0);
     var detail = vec2<f32>(0.5);
@@ -119,7 +133,7 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     var alpha = 1.0;
     var lin = vec3<f32>(0.0);
     var baked = lm*lm;
-    if frame_state.shadow.w>0.0 && (fam<=8u || fam==13u || fam==16u) {
+    if frame_state.shadow.w>0.0 && (fam<=8u || fam==13u || fam==16u || fam==17u) {
         let view_z=(frame::view.view_from_world*i.world_position).z;
         for (var light_id=0u; light_id<frame::lights.n_directional_lights; light_id+=1u) {
             // The lightmapped receiver source contains only player/board casters.
@@ -217,16 +231,8 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             vn=water_n;
         }
         let water_lm_uv=i.uv_b+0.01*vn.xz*vec2<f32>(1.0,-1.0);
-        var wlm=bindings::sample_lightmap(slot,water_lm_uv,0.0).rgb;
-        if fam==33u {
-            // Native tf3 fetches at all four half-texel corners, averages,
-            // then squares. Squaring each tap would change baked lighting.
-            let texel=0.5/vec2<f32>(bindings::lightmap_dimensions(slot));
-            wlm=(bindings::sample_lightmap(slot,water_lm_uv+texel,0.0).rgb
-                +bindings::sample_lightmap(slot,water_lm_uv-texel,0.0).rgb
-                +bindings::sample_lightmap(slot,water_lm_uv+texel*vec2<f32>(-1.0,1.0),0.0).rgb
-                +bindings::sample_lightmap(slot,water_lm_uv+texel*vec2<f32>(1.0,-1.0),0.0).rgb)*0.25;
-        }
+        // water_defaultPS 96..99 and flowingwater_defaultPS 60..63, 67..70.
+        let wlm=bindings::sample_lightmap_box(slot,water_lm_uv);
         var lml=wlm*wlm;
         if frame_state.shadow.w>0.0 {
             let vz=(frame::view.view_from_world*i.world_position).z;
@@ -254,12 +260,25 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         lin=(lml*kd*d+spec)*p.water[0].y;
         alpha=max(spec.g,p.water[3].w);
     } else if fam == 9u || fam == 10u {
-        lin = d * max(lm*lm,vec3<f32>(p.family.y)) * p.family.x;
+        // tree_defaultPS / treeanimate_defaultPS 6..7: max(lm, g_ViewDotLight.y) * g_ViewDotLight.x.
+        lin = d * max(lm*lm,vec3<f32>(frame_state.view_dot_light.y)) * frame_state.view_dot_light.x;
         if fam == 9u { lin *= p.family.z; }
         alpha = a.a;
-    } else if fam == 11u || fam == 12u {
+    } else if fam == 21u {
+        // vertexanimate_defaultPS 5..8, 18: lightmap^2 * g_ViewDotLight.x * diffuse^2;
+        // one lightmap tap, no shadow, no m_params; alpha = diffuse alpha.
+        lin = d*(lm*lm)*frame_state.view_dot_light.x;
+        alpha = a.a;
+    } else if fam == 19u || fam == 20u {
+        // trafficlight_*_defaultPS 3, 13: unsquared diffuse * m_params; alpha out
+        // (masked by the RGB-only blend state 26).
+        lin = a.rgb;
+        alpha = a.a;
+    } else if fam == 11u || fam == 12u || fam == 18u {
         lin = d;
         if fam == 11u { lin *= p.family.w; }
+        // transparentincandescent_defaultPS 14: output alpha = diffuse alpha.
+        if fam == 18u { alpha = a.a; }
     } else {
         if (fam == 3u || fam == 4u) && (flags & 8u) != 0u && (flags & 512u) == 0u { d = mix(d,art.rgb*art.rgb,art.a*p.decal.x); }
         if (flags & 4u) != 0u && fam < 13u && (flags & 256u) == 0u { d *= saturate((overlay_sample-0.5)*p.surface.y+0.5); }
@@ -286,6 +305,8 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             kd = (vnd.x*0.58*sign(dot(kt,sun))+vnd.y*0.62*sign(dot(kb,sun))+vnd.z*0.39)*2.39562;
         }
         var lml = baked;
+        // advertisement_defaultPS 32: max with g_ViewDotLight.z; 33: no kd.
+        if fam == 17u { lml = max(lml,vec3<f32>(frame_state.view_dot_light.z)); kd = 1.0; }
         lin = lml*kd*d;
         // transparentenvironment_defaultPS 39, 43: diffuse^2 * lightmap * alpha, no kd.
         if fam == 13u || fam == 16u { lin = lml*d*a.a; }
@@ -311,16 +332,18 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
     var f = saturate(length(rpos)*p.fog_ramp.x+p.fog_ramp.y);
     if p.fog_ramp.z != 1.0 { f = pow(max(f,1e-6),p.fog_ramp.z); }
     var fog_a = 1.0+p.fog_color.a*f;
-    if fam <= 8u || fam == 13u || fam == 16u { fog_a *= p.surface.w; }
+    if fam <= 8u || fam == 12u || fam == 13u || (fam >= 16u && fam <= 20u) { fog_a *= p.surface.w; }
     var xe = max((lin*fog_a+p.fog_color.rgb*f)*p.mode.w,vec3<f32>(0.0));
     // Reduced curve is the full curve with the linear input capped at one.
-    if fam == 8u { xe = min(xe,vec3<f32>(1.0)); }
+    // advertisement_defaultPS 36..41 use the same reduced curve.
+    if fam == 8u || fam == 17u { xe = min(xe,vec3<f32>(1.0)); }
     if p.foliage_debug.w != 0.0 { return vec4<f32>(p.foliage_debug.rgb, 1.0); }
     // Compiled only for the classes whose materials carry a cutoff. The opaque
     // classes leave it out so the hardware can write depth before shading and
     // reject what is hidden; see RenderClass.
 #ifdef WORLD_ALPHA_CUTOFF
-    if a.a < p.mode.z { discard; }
+    // The retail fence state tests the output alpha (diffuse alpha squared).
+    if select(a.a, alpha, fam == 16u) < p.mode.z { discard; }
 #endif
     return vec4<f32>(xe,alpha);
 }

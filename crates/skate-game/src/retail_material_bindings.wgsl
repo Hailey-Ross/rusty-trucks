@@ -17,7 +17,7 @@ struct WorldParams {
     mode: vec4<f32>, foliage_debug: vec4<f32>, surface: vec4<f32>, family: vec4<f32>,
     fog_ramp: vec4<f32>, fog_color: vec4<f32>, shadow_color: vec4<f32>, sun_direction: vec4<f32>, decal: vec4<f32>, water: array<vec4<f32>, 4>,
 }
-struct FrameState { shadow: vec4<f32>, clock: vec4<f32>, pca: array<vec4<f32>, 7> }
+struct FrameState { shadow: vec4<f32>, clock: vec4<f32>, pca: array<vec4<f32>, 7>, view_dot_light: vec4<f32>, traffic_lights: array<vec4<f32>, 2> }
 
 /// Where each texture channel of one material lives.
 ///
@@ -186,6 +186,37 @@ fn sample_specular_map(slot: u32, uv: vec2<f32>, g: Gradients) -> vec4<f32> {
 
 fn sample_lightmap(slot: u32, uv: vec2<f32>, level: f32) -> vec4<f32> {
     return sample_page_level(slots[slot].lightmap, uv, level);
+}
+
+/// Cloth sway of the retail `animated.flag` (family 21), vertexanimate_defaultVS
+/// slots 7..17: per axis `w * amplitude * sin((t - w) * frequency + phase)`, with
+/// the weights from TEXCOORD1 zw (exported as the decal UVs, `color.xy`, V
+/// flipped: zw = (color.x, 1 - color.y)) and `m_params` c8..c10 in `water[0..2]`
+/// (amplitudes c8.w / c9.w / c10.w, frequencies c9.xyz, phases c10.xyz). Zero for
+/// every other family.
+fn flag_sway(slot: u32, color: vec4<f32>) -> vec3<f32> {
+    let p = params[slot];
+    if u32(p.mode.x) != 21u { return vec3<f32>(0.0); }
+    let t = frame_state().clock.x;
+    let w = vec3<f32>(color.x - 0.5, 0.5 - color.y, color.y - color.x);
+    let c8 = p.water[0];
+    let c9 = p.water[1];
+    let c10 = p.water[2];
+    return vec3<f32>(
+        w.x * c8.w * sin((t - w.x) * c9.x + c10.x),
+        w.y * c9.w * sin((t - w.y) * c9.y + c10.y),
+        w.z * c10.w * sin((t - w.z) * c9.z + c10.z));
+}
+
+/// The lightmapped retail world programs (environment, decal, reflective,
+/// transparent, water) fetch tf3 at the four half-texel corners and average
+/// before squaring. Squaring each tap would change baked lighting.
+fn sample_lightmap_box(slot: u32, uv: vec2<f32>) -> vec3<f32> {
+    let texel = 0.5 / vec2<f32>(lightmap_dimensions(slot));
+    return (sample_lightmap(slot, uv + texel, 0.0).rgb
+        + sample_lightmap(slot, uv - texel, 0.0).rgb
+        + sample_lightmap(slot, uv + texel * vec2<f32>(-1.0, 1.0), 0.0).rgb
+        + sample_lightmap(slot, uv + texel * vec2<f32>(1.0, -1.0), 0.0).rgb) * 0.25;
 }
 
 fn load_detail(slot: u32, uv: vec2<i32>, level: i32) -> vec4<f32> {

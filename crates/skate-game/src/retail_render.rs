@@ -21,7 +21,7 @@ use bevy::{
         renderer::RenderQueue,
         storage::GpuShaderStorageBuffer,
         render_resource::{
-            AsBindGroup, BufferUsages, Extent3d, Face, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+            AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, BufferUsages, ColorWrites, Extent3d, Face, RenderPipelineDescriptor, SpecializedMeshPipelineError,
             TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
         },
         storage::ShaderStorageBuffer,
@@ -54,6 +54,40 @@ const ALPHA_REF: f32 = 30. / 255.;
 /// map and no `kd`; the output alpha is the diffuse alpha squared (ALU 53). See
 /// the `fam == 16u` terms of `retail_world.wgsl`.
 pub(crate) const TRANSPARENT_ENVIRONMENT_FAMILY: u32 = 16;
+
+/// Alpha test reference of the retail `environment.transparent` blend state
+/// (state 27 built in `sub_82CF5A10`, chosen by the technique setter
+/// `sub_82CEC170`): GREATEREQUAL 16, tested against the output alpha.
+const TRANSPARENT_ALPHA_REF: f32 = 16. / 255.;
+
+/// Shader family of the retail `advertisement.default` materials
+/// (`advertisement_defaultPS`): billboards. Diffuse^2 times the boxed, shadowed
+/// lightmap (slots 19..31), raised to a global light floor (slot 32), times
+/// `m_params` (slot 34); no `kd`, no normal or specular map, plain opaque state,
+/// and the reduced output curve of `environmentdiffuse` (slots 36..41).
+pub(crate) const ADVERTISEMENT_FAMILY: u32 = 17;
+
+/// Shader family of the retail `incandescent.transparent` materials
+/// (`transparentincandescent_defaultPS`): lit signs. Diffuse^2 times `m_params`
+/// (slots 3..4), fog, the full output curve, output alpha = diffuse alpha (slot
+/// 14); no lightmap or shadow. Drawn with blend state 24: blended, depth write
+/// on, all four channels written, no alpha test (technique setter `sub_82CED6D8`).
+pub(crate) const INCANDESCENT_TRANSPARENT_FAMILY: u32 = 18;
+
+/// Shader families of the retail `trafficlight.one` / `trafficlight.two`
+/// materials (DownTown). Byte-identical pixel programs: unsquared diffuse times
+/// `m_params` (slot 3), fog, the full output curve; the vertex programs pick
+/// each lamp's UV set from `g_TrafficLightsStatus_1` / `_2`. Opaque blend state
+/// 26 (RGB writes), depth state 2, rasterizer state 0 (no culling).
+pub(crate) const TRAFFIC_LIGHT_ONE_FAMILY: u32 = 19;
+pub(crate) const TRAFFIC_LIGHT_TWO_FAMILY: u32 = 20;
+
+/// Shader family of the retail `animated.flag` material (DownTown memorial
+/// flag): `vertexanimate_defaultPS` (lightmap^2 * diffuse^2 * g_ViewDotLight.x,
+/// fog, full curve, alpha = diffuse alpha) with the cloth sway of
+/// `vertexanimate_defaultVS` (`m_params` c8..c10 in `water[0..2]`, weights in the
+/// decal UV set). Blend state 1 (alpha test, ref 30), rasterizer 0 (two-sided).
+pub(crate) const ANIMATED_FLAG_FAMILY: u32 = 21;
 
 /// Shared per-frame state: shadow floor, animation clock and authored ocean PCA.
 /// Map-independent, so it is a fixed handle rather than a staged asset.
@@ -143,20 +177,89 @@ fn pack_slot(class: usize, layer: usize, clamp: bool) -> u32 {
     (u32::from(clamp) << 31) | ((class as u32) << 16) | layer as u32
 }
 
-/// Shared frame state, matching `FrameState` in the bindings module: 144 bytes.
+/// Shared frame state, matching `FrameState` in the bindings module: 192 bytes.
 ///
 /// `shadow.w` gates every dynamic-shadow read in the world shader. Shadows are
 /// out of scope for v1 (RFC 1 D5), so it stays zero and the shader never touches
 /// the cascade bindings; re-enabling them is a write to this field.
-#[derive(Resource, Clone, Default, ExtractResource)]
+#[derive(Resource, Clone, ExtractResource)]
 pub(crate) struct FrameStateData {
     pub shadow: Vec4,
     pub clock: Vec4,
     pub pca: [Vec4; 7],
+    /// Retail world constant `g_ViewDotLight`, shared by every draw (bound by
+    /// name hash 0xE552F1C3 in `sub_826DD6B8` to `*(0x83083C60)+0x44370`),
+    /// written each frame by `advance_view_dot_light` from `ViewDotLightParams`.
+    /// .x scales and .y floors the tree lightmap, .z is the billboard floor.
+    pub view_dot_light: Vec4,
+    /// Retail `g_TrafficLightsStatus_1` / `_2`: one component per lamp slot of
+    /// the `trafficlight.one` / `.two` meshes; above 1 a lamp shows its "on"
+    /// texels. Who drives them in retail (the light cycle) is not ported yet,
+    /// so every lamp stays off until something writes these rows.
+    pub traffic_lights: [Vec4; 2],
+}
+
+impl Default for FrameStateData {
+    fn default() -> Self {
+        Self {
+            shadow: Vec4::ZERO,
+            clock: Vec4::ZERO,
+            pca: [Vec4::ZERO; 7],
+            view_dot_light: RETAIL_VIEW_DOT_LIGHT,
+            traffic_lights: [Vec4::ZERO; 2],
+        }
+    }
+}
+
+/// Retail `g_ViewDotLight` before the first camera frame: `.x` at a view
+/// perpendicular to the light (see `ViewDotLightParams`).
+const RETAIL_VIEW_DOT_LIGHT: Vec4 = Vec4::new(0.5, 0.02, 0.4, 0.);
+
+/// Inputs of `g_ViewDotLight`, from the VLT `rendering` row `default` (the same in
+/// every district): `sub_828012D0` stores
+/// `(bias + scale * dot(camera forward, light), tree_floor, light_floor, 0)`
+/// (`stvx` at view + 0x44370; the four values looked up by hash). Checked in the
+/// recomp on 2026-10-09: the logged .x matches the camera's view direction with
+/// this formula. Loaded from `render-parameters.json` (`rendering.default`), so a
+/// mod can change them; the retail values are the fallback.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ViewDotLightParams {
+    pub light: Vec3,
+    pub bias: f32,
+    pub scale: f32,
+    pub tree_floor: f32,
+    pub light_floor: f32,
+}
+
+impl Default for ViewDotLightParams {
+    fn default() -> Self {
+        Self { light: Vec3::new(0.5, 0., -0.879), bias: 0.5, scale: 0.2, tree_floor: 0.02, light_floor: 0.4 }
+    }
+}
+
+impl ViewDotLightParams {
+    /// From the `rendering.default` rows: light direction, (bias, scale), (tree
+    /// floor, light floor).
+    fn from_rows(rows: &[[f32; 4]]) -> Option<Self> {
+        let [light, factors, floors] = rows else { return None };
+        let params = Self {
+            light: Vec3::new(light[0], light[1], light[2]),
+            bias: factors[0],
+            scale: factors[1],
+            tree_floor: floors[0],
+            light_floor: floors[1],
+        };
+        let values = [params.light.x, params.light.y, params.light.z, params.bias, params.scale, params.tree_floor, params.light_floor];
+        values.iter().all(|v| v.is_finite()).then_some(params)
+    }
+
+    pub(crate) fn value(&self, forward: Vec3) -> Vec4 {
+        Vec4::new(self.bias + self.scale * forward.dot(self.light), self.tree_floor, self.light_floor, 0.)
+    }
 }
 
 impl FrameStateData {
-    const SIZE: usize = 9 * 16;
+    const SIZE: usize = 12 * 16;
 
     /// Eases the shadow floor towards the local probe's ambient term. Carried
     /// over with the character lighting that feeds it.
@@ -179,6 +282,8 @@ impl FrameStateData {
         for row in std::iter::once(self.shadow)
             .chain(std::iter::once(self.clock))
             .chain(self.pca)
+            .chain(std::iter::once(self.view_dot_light))
+            .chain(self.traffic_lights)
         {
             for component in row.to_array() {
                 out.extend_from_slice(&component.to_le_bytes());
@@ -222,6 +327,14 @@ pub(crate) enum RenderClass {
     CutoutTwoSided,
     Blended,
     BlendedTwoSided,
+    /// Retail `environment.transparent` (fences): blended, but with depth write
+    /// on, colour writes to RGB only and one-sided culling (depth state 2,
+    /// blend state 27, rasterizer state 1 in `sub_82CEC170`).
+    BlendedDepthWrite,
+    /// Retail `incandescent.transparent` (lit signs): blended with depth write
+    /// on like the fences, but writing alpha too and without an alpha test
+    /// (blend state 24 instead of 27).
+    BlendedDepthWriteRgba,
 }
 
 impl RenderClass {
@@ -260,17 +373,34 @@ impl RenderClass {
             // `Mask` so Bevy sets MAY_DISCARD; the threshold is per-material in
             // `mode.z`.
             Self::Cutout | Self::CutoutTwoSided => AlphaMode::Mask(ALPHA_REF),
-            Self::Blended | Self::BlendedTwoSided => AlphaMode::Blend,
+            Self::Blended
+            | Self::BlendedTwoSided
+            | Self::BlendedDepthWrite
+            | Self::BlendedDepthWriteRgba => AlphaMode::Blend,
         }
     }
 
-    pub(crate) const ALL: [Self; 6] = [
+    /// Whether this class's pipeline turns depth write on over Bevy's blended
+    /// state (retail depth state 2).
+    fn retail_depth_write(self) -> bool {
+        matches!(self, Self::BlendedDepthWrite | Self::BlendedDepthWriteRgba)
+    }
+
+    /// Whether the colour target's alpha channel is masked off (retail blend
+    /// state 27 writes RGB only).
+    fn masks_alpha(self) -> bool {
+        self == Self::BlendedDepthWrite
+    }
+
+    pub(crate) const ALL: [Self; 8] = [
         Self::Opaque,
         Self::OpaqueTwoSided,
         Self::Cutout,
         Self::CutoutTwoSided,
         Self::Blended,
         Self::BlendedTwoSided,
+        Self::BlendedDepthWrite,
+        Self::BlendedDepthWriteRgba,
     ];
 }
 
@@ -348,6 +478,8 @@ impl WorldMaterial {
 pub(crate) struct WorldMaterialKey {
     two_sided: bool,
     discards: bool,
+    retail_depth_write: bool,
+    masks_alpha: bool,
 }
 
 impl From<&WorldMaterial> for WorldMaterialKey {
@@ -355,6 +487,8 @@ impl From<&WorldMaterial> for WorldMaterialKey {
         Self {
             two_sided: material.class.two_sided(),
             discards: material.class.discards(),
+            retail_depth_write: material.class.retail_depth_write(),
+            masks_alpha: material.class.masks_alpha(),
         }
     }
 }
@@ -422,6 +556,32 @@ impl Material for WorldMaterial {
         {
             fragment.shader_defs.push("WORLD_ALPHA_CUTOFF".into());
         }
+        // Bevy's blended pipeline leaves depth write off; the retail fence and
+        // lit-sign states write depth, and the fence state only colour.
+        if key.bind_group_data.retail_depth_write {
+            if let Some(depth) = &mut descriptor.depth_stencil {
+                depth.depth_write_enabled = true;
+            }
+            // Blend states 24 and 27: SRC_ALPHA / INV_SRC_ALPHA / ADD for colour
+            // and alpha alike (Bevy's ALPHA_BLENDING uses ONE for source alpha).
+            let over = BlendComponent {
+                src_factor: BlendFactor::SrcAlpha,
+                dst_factor: BlendFactor::OneMinusSrcAlpha,
+                operation: BlendOperation::Add,
+            };
+            if let Some(fragment) = &mut descriptor.fragment {
+                for target in fragment.targets.iter_mut().flatten() {
+                    target.blend = Some(BlendState { color: over, alpha: over });
+                }
+            }
+        }
+        if key.bind_group_data.masks_alpha {
+            if let Some(fragment) = &mut descriptor.fragment {
+                for target in fragment.targets.iter_mut().flatten() {
+                    target.write_mask = ColorWrites::COLOR;
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -479,6 +639,19 @@ impl Definition {
             // Map packages exported before the converter knew this family
             // stored 0 and drew as opaque family 1; classify them on load.
             TRANSPARENT_ENVIRONMENT_FAMILY
+        } else if stored_family == 0 && shader == "advertisement.default" {
+            ADVERTISEMENT_FAMILY
+        } else if stored_family == 0 && shader == "incandescent.videoscreen" {
+            // videoscreen_defaultPS is byte-identical to baseincandescent_defaultPS.
+            12
+        } else if stored_family == 0 && shader == "incandescent.transparent" {
+            INCANDESCENT_TRANSPARENT_FAMILY
+        } else if stored_family == 0 && shader == "animated.flag" {
+            ANIMATED_FLAG_FAMILY
+        } else if stored_family == 0 && shader == "trafficlight.one" {
+            TRAFFIC_LIGHT_ONE_FAMILY
+        } else if stored_family == 0 && shader == "trafficlight.two" {
+            TRAFFIC_LIGHT_TWO_FAMILY
         } else {
             stored_family
         };
@@ -543,6 +716,10 @@ impl Definition {
     pub(crate) fn supported(&self, tuning: &MaterialTuning) -> bool {
         (1..=13).contains(&self.family)
             || self.family == TRANSPARENT_ENVIRONMENT_FAMILY
+            || self.family == ADVERTISEMENT_FAMILY
+            || self.family == INCANDESCENT_TRANSPARENT_FAMILY
+            || self.family == TRAFFIC_LIGHT_ONE_FAMILY
+            || self.family == TRAFFIC_LIGHT_TWO_FAMILY
             || match self.family {
                 14 | 32 => tuning.rows.get(&self.shader).is_some_and(|r| !r.is_empty()),
                 31 => {
@@ -550,6 +727,9 @@ impl Definition {
                         && tuning.rows.get(&self.shader).is_some_and(|r| r.len() == 3)
                 }
                 30 => tuning.rows.get(&self.shader).is_some_and(|r| r.len() == 4),
+                // Without its m_params rows (setup data before the export) the flag
+                // stays on the fallback rather than swaying with zero amplitude.
+                ANIMATED_FLAG_FAMILY => tuning.rows.get(&self.shader).is_some_and(|r| r.len() == 3),
                 33 => {
                     tuning.pca_available
                         && self.bindings.contains_key("normal")
@@ -934,6 +1114,54 @@ struct Channel {
     cube: bool,
 }
 
+/// Retail `m_params.y` of the VLT `material_advertisement` row: the billboards'
+/// multiplier (advertisement_defaultPS slot 34). Used when the install's
+/// `render-parameters.json` predates the advertisement export.
+const ADVERTISEMENT_M_PARAMS_Y: f32 = 0.35;
+
+/// `m_params.y`, the lit-colour multiplier the world shader reads as
+/// `surface.w`. The environment classes carry 1.0 in retail
+/// (`.local/research/world-m-params.md`); billboards (0.35), lit signs and the
+/// incandescent family 12 (videoscreens 0.25) take theirs from the setup data
+/// (`render-parameters.json`), so a mod can change it.
+fn material_multiplier(family: u32, tuning: &MaterialTuning, shader: &str) -> f32 {
+    let fallback = match family {
+        ADVERTISEMENT_FAMILY => ADVERTISEMENT_M_PARAMS_Y,
+        12 | INCANDESCENT_TRANSPARENT_FAMILY => 1.,
+        _ => return 1.,
+    };
+    tuning
+        .rows
+        .get(shader)
+        .and_then(|rows| rows.first())
+        .map(|row| row[1])
+        .filter(|y| y.is_finite())
+        .unwrap_or(fallback)
+}
+
+/// Pipeline class and alpha cutoff (`mode.z`) of one material. The retail
+/// fence technique blends, alpha-tests and writes depth whatever the material's
+/// own alpha mode says. A cutoff of -1 is one no alpha can fall under.
+fn class_and_cutoff(blended: bool, cutout: bool, two_sided: bool, family: u32) -> (RenderClass, f32) {
+    if family == TRANSPARENT_ENVIRONMENT_FAMILY {
+        return (RenderClass::BlendedDepthWrite, TRANSPARENT_ALPHA_REF);
+    }
+    if family == INCANDESCENT_TRANSPARENT_FAMILY {
+        return (RenderClass::BlendedDepthWriteRgba, -1.);
+    }
+    // Traffic light techniques: opaque blend state 26 with rasterizer state 0,
+    // which does not cull (cull word 4 against the world's 5).
+    if family == TRAFFIC_LIGHT_ONE_FAMILY || family == TRAFFIC_LIGHT_TWO_FAMILY {
+        return (RenderClass::OpaqueTwoSided, -1.);
+    }
+    // vertexanimate: blend state 1 (alpha test, the world reference) and the
+    // non-culling rasterizer state 0.
+    if family == ANIMATED_FLAG_FAMILY {
+        return (RenderClass::CutoutTwoSided, ALPHA_REF);
+    }
+    (RenderClass::new(blended, cutout, two_sided), if cutout { ALPHA_REF } else { -1. })
+}
+
 impl Request {
     fn new(
         material: &skate_data::skate_map::Material,
@@ -1019,7 +1247,8 @@ impl Request {
         // cutoff of -1, which no sampled alpha can fall under, so its class must
         // not compile the `discard`.
         let cutout = material.alpha_mode == 1;
-        let class = RenderClass::new(blended, cutout, definition.flags & 4 != 0);
+        let (class, cutoff) =
+            class_and_cutoff(blended, cutout, definition.flags & 4 != 0, definition.family);
 
         let mut water = [Vec4::ZERO; 4];
         if let Some(rows) = tuning.rows.get(&definition.shader) {
@@ -1041,11 +1270,16 @@ impl Request {
                 mode: Vec4::new(
                     definition.family as f32,
                     flags as f32,
-                    if cutout { ALPHA_REF } else { -1. },
+                    cutoff,
                     2.5,
                 ),
                 foliage_debug: Vec4::ZERO,
-                surface: Vec4::new(macro_scale, macro_opacity, detail_scale, 1.),
+                surface: Vec4::new(
+                    macro_scale,
+                    macro_opacity,
+                    detail_scale,
+                    material_multiplier(definition.family, tuning, &definition.shader),
+                ),
                 family: Vec4::new(0.3435, 0.02, 1., 0.45),
                 // Authored by the map's sky package; the defaults evaluate to no
                 // fog at all, so a map without one is unchanged.
@@ -1422,6 +1656,87 @@ fn advance_frame_state(
     }
 }
 
+/// The lamp states the retail renderer uploads as `g_TrafficLightsStatus_1` /
+/// `_2`: one row per crossing direction, one component per lamp slot (0 red,
+/// 1 amber, 2 green, 3 lit together with green), 2.0 = on.
+///
+/// Read in the recomp (2026-10-09, DownTown Aletown, `.local/research/
+/// traffic-light-status/`): a 17 s cycle, direction 1 green 7 s, amber 1 s, all
+/// red 0.5 s, then the same for direction 2, matching the `trafficlights`
+/// controller timing in the living-world notes. Every traffic light shares the
+/// two rows, so all crossings show the same phase. A resource so a mod, or the
+/// traffic controllers once they drive cars, can replace the table or the clock.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub(crate) struct TrafficLightCycle {
+    /// (duration in seconds, status_1, status_2), played in order and looped.
+    pub phases: Vec<(f32, [Vec4; 2])>,
+    pub time: f32,
+}
+
+impl Default for TrafficLightCycle {
+    fn default() -> Self {
+        const ON: f32 = 2.;
+        let red = Vec4::new(ON, 0., 0., 0.);
+        let amber = Vec4::new(0., ON, 0., 0.);
+        let green = Vec4::new(0., 0., ON, ON);
+        Self {
+            phases: vec![
+                (7., [green, red]),
+                (1., [amber, red]),
+                (0.5, [red, red]),
+                (7., [red, green]),
+                (1., [red, amber]),
+                (0.5, [red, red]),
+            ],
+            time: 0.,
+        }
+    }
+}
+
+impl TrafficLightCycle {
+    /// The two status rows at the cycle's current time.
+    pub(crate) fn status(&self) -> [Vec4; 2] {
+        let period: f32 = self.phases.iter().map(|(duration, _)| duration.max(0.)).sum();
+        if period <= 0. {
+            return [Vec4::ZERO; 2];
+        }
+        let mut t = self.time.rem_euclid(period);
+        for (duration, status) in &self.phases {
+            if t < *duration {
+                return *status;
+            }
+            t -= duration.max(0.);
+        }
+        self.phases.last().map_or([Vec4::ZERO; 2], |(_, status)| *status)
+    }
+}
+
+fn load_view_dot_light(mut commands: Commands, config: Res<crate::config::Config>) {
+    let rows = MaterialTuning::load(&config.asset_root).rows.remove("rendering.default");
+    commands.insert_resource(rows.as_deref().and_then(ViewDotLightParams::from_rows).unwrap_or_default());
+}
+
+/// `g_ViewDotLight` for this frame from the retail camera's forward axis.
+fn advance_view_dot_light(
+    params: Option<Res<ViewDotLightParams>>,
+    mut state: ResMut<FrameStateData>,
+    cameras: Query<&GlobalTransform, With<RetailTone>>,
+) {
+    let params = params.map(|p| *p).unwrap_or_default();
+    if let Some(camera) = cameras.iter().next() {
+        state.view_dot_light = params.value(camera.forward().as_vec3());
+    }
+}
+
+fn advance_traffic_lights(
+    mut cycle: ResMut<TrafficLightCycle>,
+    mut state: ResMut<FrameStateData>,
+    time: Res<Time>,
+) {
+    cycle.time += time.delta_secs();
+    state.traffic_lights = cycle.status();
+}
+
 /// The timing branch of TU3 0x82790858; initialization is 0x827905B0.
 /// The scroll clock advances per update, independently of the supplied dt.
 /// The value is published before the >5 reset. PCA advances at most once
@@ -1500,8 +1815,9 @@ impl Plugin for RetailRenderPlugin {
                 crate::retail_exposure::RetailExposurePlugin,
             ))
             .add_plugins(ExtractResourcePlugin::<FrameStateData>::default())
-            .add_systems(Startup, (initialize_frame_state, load_pca))
-            .add_systems(Update, advance_frame_state);
+            .add_systems(Startup, (initialize_frame_state, load_pca, load_view_dot_light))
+            .init_resource::<TrafficLightCycle>()
+            .add_systems(Update, (advance_frame_state, advance_traffic_lights, advance_view_dot_light));
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
                 Render,
@@ -1811,7 +2127,26 @@ mod tests {
         assert!(RenderClass::OpaqueTwoSided.two_sided());
         assert!(RenderClass::CutoutTwoSided.two_sided());
         assert!(!RenderClass::Cutout.two_sided());
-        assert_eq!(RenderClass::ALL.len(), 6);
+        assert_eq!(RenderClass::ALL.len(), 8);
+        assert!(RenderClass::BlendedDepthWrite.retail_depth_write());
+        assert!(!RenderClass::BlendedDepthWrite.two_sided());
+        assert!(RenderClass::ALL.iter().filter(|c| c.retail_depth_write()).count() == 2);
+        assert!(RenderClass::BlendedDepthWrite.masks_alpha());
+        assert!(!RenderClass::BlendedDepthWriteRgba.masks_alpha());
+        // incandescent.transparent: blend state 24, depth write on, no alpha test.
+        assert_eq!(
+            class_and_cutoff(true, false, false, INCANDESCENT_TRANSPARENT_FAMILY),
+            (RenderClass::BlendedDepthWriteRgba, -1.)
+        );
+        // environment.transparent: retail blend state 27 whatever the stored alpha mode.
+        for (blended, cutout) in [(false, false), (false, true), (true, false)] {
+            assert_eq!(
+                class_and_cutoff(blended, cutout, false, TRANSPARENT_ENVIRONMENT_FAMILY),
+                (RenderClass::BlendedDepthWrite, 16. / 255.)
+            );
+        }
+        assert_eq!(class_and_cutoff(true, false, false, 1), (RenderClass::Blended, -1.));
+        assert_eq!(class_and_cutoff(false, true, true, 1), (RenderClass::CutoutTwoSided, ALPHA_REF));
     }
 
     /// The whole point of the split: only the opaque classes may drop the
@@ -1866,7 +2201,7 @@ mod tests {
         // Other shaders keep their stored family.
         let reflective = Definition::parse(&transparent_definition("environment.reflective_trans", 13)).unwrap();
         assert_eq!(reflective.family, 13);
-        let unknown = Definition::parse(&transparent_definition("incandescent.transparent", 0)).unwrap();
+        let unknown = Definition::parse(&transparent_definition("model_default", 0)).unwrap();
         assert_eq!(unknown.family, 0);
     }
 
@@ -1878,10 +2213,171 @@ mod tests {
         assert!(src.contains("if fam == 13u || fam == 16u { alpha *= alpha; }"));
         assert!(src.contains("if fam >= 7u { alpha = a.a; }"));
         // Shadowed lightmap and the m_params multiplier like the other world families.
-        assert!(src.contains("(fam<=8u || fam==13u || fam==16u)"));
-        assert!(src.contains("if fam <= 8u || fam == 13u || fam == 16u { fog_a *= p.surface.w; }"));
+        assert!(src.contains("(fam<=8u || fam==13u || fam==16u || fam==17u)"));
+        assert!(src.contains("if fam <= 8u || fam == 12u || fam == 13u || (fam >= 16u && fam <= 20u) { fog_a *= p.surface.w; }"));
         // No normal map read: the retail program fetches none.
         let normal_read = src.lines().find(|l| l.contains("sample_normal_map(slot,i.uv,g)")).unwrap();
         assert!(!normal_read.contains("16u"), "{normal_read}");
+    }
+
+    #[test]
+    fn lightmapped_world_families_average_four_lightmap_taps() {
+        // Every lightmapped environment/decal/reflective/transparent/water program
+        // fetches tf3 at the (+-0.5, +-0.5) texel corners and scales the sum by 0.25.
+        let bindings = include_str!("retail_material_bindings.wgsl");
+        let body = bindings.split("fn sample_lightmap_box").nth(1).expect("box helper");
+        let body = &body[..body.find("\n}").unwrap()];
+        assert!(body.contains("0.5 / vec2<f32>(lightmap_dimensions(slot))"));
+        assert_eq!(body.matches("sample_lightmap(slot, uv").count(), 4);
+        assert!(body.contains("* 0.25"));
+        let world = include_str!("retail_world.wgsl");
+        assert!(world.contains(
+            "if (fam >= 1u && fam <= 8u) || fam == 13u || fam == 16u || fam == 17u { lm = bindings::sample_lightmap_box(slot, i.uv_b); }"
+        ));
+        // Families 30 and 33 share the water lightmap fetch.
+        assert!(world.contains("let wlm=bindings::sample_lightmap_box(slot,water_lm_uv);"));
+        // Trees (9, 10) keep the single tap that tree_defaultPS takes.
+        assert!(world.contains(
+            "lin = d * max(lm*lm,vec3<f32>(frame_state.view_dot_light.y)) * frame_state.view_dot_light.x;"
+        ));
+    }
+
+    #[test]
+    fn view_dot_light_follows_the_camera_like_retail() {
+        let params = ViewDotLightParams::default();
+        // Recomp reading 2026-10-09: camera view direction -> logged .x.
+        for (forward, logged) in [
+            (Vec3::new(0.034, -0.594, 0.804), 0.3621),
+            (Vec3::new(0.102, -0.806, 0.584), 0.4075),
+            (Vec3::new(0.995, 0.083, 0.049), 0.5908),
+        ] {
+            let value = params.value(forward);
+            assert!((value.x - logged).abs() < 1e-3, "{forward} -> {value}");
+            assert_eq!((value.y, value.z, value.w), (0.02, 0.4, 0.));
+        }
+        // Setup data rows: light, (bias, scale), (tree floor, light floor).
+        let rows = [[0.5, 0., -0.879, 0.], [0.5, 0.2, 0., 0.], [0.02, 0.4, 0., 0.]];
+        assert_eq!(ViewDotLightParams::from_rows(&rows), Some(params));
+        assert_eq!(ViewDotLightParams::from_rows(&rows[..2]), None);
+    }
+
+    #[test]
+    fn advertisement_takes_its_own_family() {
+        // Packages exported before the converter knew the shader stored 0.
+        for stored in [0, ADVERTISEMENT_FAMILY] {
+            let definition = Definition::parse(&transparent_definition("advertisement.default", stored)).unwrap();
+            assert_eq!(definition.family, ADVERTISEMENT_FAMILY, "stored {stored}");
+            assert!(definition.supported(&MaterialTuning::default()));
+        }
+        // advertisement_defaultPS: opaque state (blend state 0), so the class follows the material.
+        assert_eq!(class_and_cutoff(false, false, false, ADVERTISEMENT_FAMILY), (RenderClass::Opaque, -1.));
+        let world = include_str!("retail_world.wgsl");
+        // Slot 33: no kd. Slots 36..41: the reduced output curve.
+        assert!(world.contains("if fam == 17u { lml = max(lml,vec3<f32>(frame_state.view_dot_light.z)); kd = 1.0; }"));
+        // Slot 34: m_params.y from the setup data, retail 0.35 when the install lacks the row.
+        let mut tuning = MaterialTuning::default();
+        assert_eq!(material_multiplier(ADVERTISEMENT_FAMILY, &tuning, "advertisement.default"), 0.35);
+        tuning.rows.insert("advertisement.default".into(), vec![[0.4, 0.5, 0., 0.]]);
+        assert_eq!(material_multiplier(ADVERTISEMENT_FAMILY, &tuning, "advertisement.default"), 0.5);
+        assert_eq!(material_multiplier(1, &tuning, "environment.default"), 1.);
+        // baseincandescent / videoscreen (family 12): m_params.y from the row.
+        tuning.rows.insert("incandescent.videoscreen".into(), vec![[0., 0.25, 0., 0.]]);
+        assert_eq!(material_multiplier(12, &tuning, "incandescent.videoscreen"), 0.25);
+        assert_eq!(material_multiplier(12, &tuning, "incandescent.default"), 1.);
+        let videoscreen = Definition::parse(&transparent_definition("incandescent.videoscreen", 0)).unwrap();
+        assert_eq!(videoscreen.family, 12);
+        assert!(include_str!("retail_world.wgsl").contains("if fam <= 8u || fam == 12u || fam == 13u || (fam >= 16u && fam <= 20u) { fog_a *= p.surface.w; }"));
+        assert_eq!(FrameStateData::default().view_dot_light, Vec4::new(0.5, 0.02, 0.4, 0.));
+        assert!(world.contains("if fam == 8u || fam == 17u { xe = min(xe,vec3<f32>(1.0)); }"));
+    }
+
+    #[test]
+    fn incandescent_transparent_takes_its_own_family() {
+        for stored in [0, INCANDESCENT_TRANSPARENT_FAMILY] {
+            let definition = Definition::parse(&transparent_definition("incandescent.transparent", stored)).unwrap();
+            assert_eq!(definition.family, INCANDESCENT_TRANSPARENT_FAMILY, "stored {stored}");
+            assert!(definition.supported(&MaterialTuning::default()));
+        }
+        let world = include_str!("retail_world.wgsl");
+        // transparentincandescent_defaultPS 3..4, 14: diffuse^2 * m_params, alpha = diffuse alpha.
+        assert!(world.contains("} else if fam == 11u || fam == 12u || fam == 18u {"));
+        assert!(world.contains("if fam == 18u { alpha = a.a; }"));
+        assert!(world.contains("fam == 12u || fam == 13u || (fam >= 16u && fam <= 20u) { fog_a *= p.surface.w; }"));
+    }
+
+    #[test]
+    fn traffic_lights_take_their_own_families() {
+        for (shader, family) in [
+            ("trafficlight.one", TRAFFIC_LIGHT_ONE_FAMILY),
+            ("trafficlight.two", TRAFFIC_LIGHT_TWO_FAMILY),
+        ] {
+            for stored in [0, family] {
+                let definition = Definition::parse(&transparent_definition(shader, stored)).unwrap();
+                assert_eq!(definition.family, family, "{shader} stored {stored}");
+                assert!(definition.supported(&MaterialTuning::default()));
+            }
+            // Blend state 26 is opaque; rasterizer state 0 does not cull.
+            assert_eq!(class_and_cutoff(false, false, false, family), (RenderClass::OpaqueTwoSided, -1.));
+        }
+        let world = include_str!("retail_world.wgsl");
+        // Vertex programs: lamp slot floor(4 * uvA.z) (color.x), "on" UVs above 1.
+        assert!(world.contains("let lamp=min(u32(floor(4.0*i.color.x)),3u);"));
+        assert!(world.contains(
+            "if frame_state.traffic_lights[fam-19u][lamp]>1.0 { diffuse_uv=i.uv_b; g_diffuse=g_b; }"
+        ));
+        // Pixel program slot 3: the diffuse is not squared.
+        assert!(world.contains("} else if fam == 19u || fam == 20u {"));
+        assert!(world.contains("        lin = a.rgb;\n        alpha = a.a;"));
+        // Lamps are off until the light cycle writes the status rows.
+        assert_eq!(FrameStateData::default().traffic_lights, [Vec4::ZERO; 2]);
+    }
+
+    #[test]
+    fn animated_flag_takes_its_own_family() {
+        let mut tuning = MaterialTuning::default();
+        let definition = Definition::parse(&transparent_definition("animated.flag", 0)).unwrap();
+        assert_eq!(definition.family, ANIMATED_FLAG_FAMILY);
+        // Needs its three m_params rows from the setup data.
+        assert!(!definition.supported(&tuning));
+        tuning.rows.insert(
+            "animated.flag".into(),
+            vec![[0., 1., 0., 0.1], [10., 9., 5., 0.1], [1., 6., 5., 0.2]],
+        );
+        assert!(definition.supported(&tuning));
+        assert_eq!(class_and_cutoff(true, false, false, ANIMATED_FLAG_FAMILY), (RenderClass::CutoutTwoSided, ALPHA_REF));
+        let world = include_str!("retail_world.wgsl");
+        let bindings = include_str!("retail_material_bindings.wgsl");
+        // vertexanimate_defaultPS 5..8, 18; vertexanimate_defaultVS sway in both vertex stages.
+        assert!(world.contains("lin = d*(lm*lm)*frame_state.view_dot_light.x;"));
+        assert!(bindings.contains("fn flag_sway("));
+        assert!(world.contains("bindings::flag_sway("));
+        assert!(include_str!("retail_depth.wgsl").contains("bindings::flag_sway("));
+    }
+
+    #[test]
+    fn traffic_light_cycle_matches_the_recomp_reading() {
+        let (red, amber, green) = (
+            Vec4::new(2., 0., 0., 0.),
+            Vec4::new(0., 2., 0., 0.),
+            Vec4::new(0., 0., 2., 2.),
+        );
+        let mut cycle = TrafficLightCycle::default();
+        let total: f32 = cycle.phases.iter().map(|(d, _)| d).sum();
+        assert_eq!(total, 17.);
+        for (time, expected) in [
+            (0., [green, red]),
+            (6.9, [green, red]),
+            (7.5, [amber, red]),
+            (8.2, [red, red]),
+            (8.6, [red, green]),
+            (15.6, [red, amber]),
+            (16.8, [red, red]),
+            (17.1, [green, red]),
+        ] {
+            cycle.time = time;
+            assert_eq!(cycle.status(), expected, "t = {time}");
+        }
+        // Lamps switch above 1.0 in the vertex programs; on is 2.0.
+        assert!(cycle.status()[0].z > 1.);
     }
 }

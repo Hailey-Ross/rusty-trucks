@@ -137,7 +137,7 @@ pub(crate) fn spawn(
     eprintln!(
         "SKATE_RENDER_READY draws={} triangles={} slabs={} materials={} \
          opaque={} opaque_two_sided={} cutout={} cutout_two_sided={} \
-         blended={} blended_two_sided={}",
+         blended={} blended_two_sided={} blended_depth_write={} blended_depth_write_rgba={}",
         stats.draws,
         stats.triangles,
         stats.slabs,
@@ -148,6 +148,8 @@ pub(crate) fn spawn(
         per_class[RenderClass::CutoutTwoSided as usize],
         per_class[RenderClass::Blended as usize],
         per_class[RenderClass::BlendedTwoSided as usize],
+        per_class[RenderClass::BlendedDepthWrite as usize],
+        per_class[RenderClass::BlendedDepthWriteRgba as usize],
     );
     stats
 }
