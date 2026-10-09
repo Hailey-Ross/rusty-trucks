@@ -3069,6 +3069,41 @@ screen yet and not play-tested. skate-mods validation gains 2 cases; player iden
 a simulated NPC rolls through its jumps); skater-to-skater collision; how the board and look appear when drawn from
 the simulated pose; render interpolation (drawn at the 60 Hz tick).
 
+## Skater hits peds: knock-down or stumble (2026-10-08)
+
+**Problem.** Skating into a ped did nothing. Retail peds fall over (animated knock-down, then get up) or stumble.
+
+**What retail does** [code, TU3; recomp disassembly as reference; `.local/research/peds/skater-ped-contact.md`]: the ped
+contact callback `sub_82E38FB8`, kind 5 (an `IActor` toucher such as the skater):
+- inputs: the length of the ped body's linear and angular velocity after the contact solve, gated by entity
+  `C04236FB548697D0` / `797AA1D5F828819B` (0 for every stock entity);
+- knock-down when the ped's animation set allows it (field `5B92564B352A9FAA`, off for the four marquee sets) and a
+  speed is above `541FFA2E9D81C947` / `7C5E39ECE5A5572E` (3.0 / 3.0); otherwise a standing stumble unless the brain's
+  `+3277` bit 0x10 makes it immune. The 6.0 thresholds and the "no reaction" cases belong to a ped touching a ped
+  (toucher cast to `IPedestrian`, `sub_826C2C70`);
+- direction: the contact normal (flat) against the ped's forward, `acos`, negated when `cross(forward, normal).y > 0`,
+  in degrees: FromBack within 35, FromLeft 35..145, FromRight -145..-35, FromFront beyond (constants `0x8206D148`,
+  `0x822F9428..30`; names from the table `0x830218B0`);
+- reaction [data, `motiongraph_collision.xml`, `template/knockdown.xml`]: a stumble plays CollisionBack / Fwd /
+  LeftStanding (FromLeft mirrored, 0.3 s blend); a knock-down plays WipeoutBack / Fwd / LeftFall (0.4 s), the ground
+  cycle until the AI's `Recover`, then the get-up (0.1 s). Ground time: animation-set field `AD3C483F0C9DAD67` (1.5 s,
+  security 0.5 s), read by `sub_8269A990` in `PedestrianColliding`'s update.
+
+**Change.** `skate_core::living_world::peds::skater_contact` (decision, direction, reaction steps);
+`PedAnimPlayer::react` and the `Reaction` locomotion state (steps in order, the ground cycle for the ground time, then
+idle; no navigation meanwhile); `PedAnimSet.collision` filled from the export; `advance_peds` checks every observer
+against every ped, logs `PED_SKATER_CONTACT` and sends `PedEvent::Hit` (mods: `on_event` `ped_hit`).
+NOT RETAIL YET: the skater is a 0.35 m cylinder at the observer (2 m tall) and the ped body's post-contact speed is
+the skater's speed into the ped (no Havok ped body); the normal is taken as pointing into the ped; where the ground
+timer starts is not pinned (here: on reaching the ground cycle); the ped is not pushed aside.
+
+**Verification.** skate-core: 3 `skater_contact` tests (buckets, 3.0 rule, marquee, immune, steps) and
+`a_knock_down_falls_lies_for_the_ground_time_gets_up_and_walks_on` (90 frames on the ground at 60 Hz). Data-gated on
+the user's export: default 3.0 / 3.0, allowed, 1.5 s; marquee not allowed; security 0.5 s; all 12 reaction animations
+resolve to clips in the ped bank. skate-game `living_world_a_skater_knocks_a_ped_down_or_makes_it_stumble` (6 m/s
+knock-down, 1 m/s stumble, one reaction, back to locomotion), `living_world_messages_become_mod_events` (`ped_hit`).
+Not play-tested yet.
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).

@@ -1002,7 +1002,8 @@ function sdk.audio.seed(n) end
 --   ai_skaters on / off; leaving it out keeps career free roam).
 --   Events: on_event {name = "living_world", event = "spawn" | "despawn" (record = kind, id, tick, position,
 --   heading, seed, choice / reason), "npc_trick" (id, line, node, recorded, chosen), "npc_line_end" (id),
---   "vehicle_contact" (contact = car, ped, speeds, position, normal, depth, reaction)}.
+--   "vehicle_contact" (contact = car, ped, speeds, position, normal, depth, reaction), "ped_hit" (id, kind =
+--   "Knockdown" | "Standing", direction = "FromFront" | "FromBack" | "FromLeft" | "FromRight", closing m/s)}.
 -- 'props': default and by_template[<MOBJ template name>] = {contact_padding, penetration_slop,
 --   penetration_correction, max_depenetration_per_tick, restitution_threshold, skater_push_mass,
 --   push_transfer, body_push_speed, board_push_speed, penetration_push_speed, stuck_release_ticks,

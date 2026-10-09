@@ -6,13 +6,16 @@
 //! - `npc_trick`: an NPC skater's trick choice (`id`, `line`, `node`, `recorded`, `chosen` as
 //!   catalog names);
 //! - `npc_line_end`: an NPC skater ran out of line;
-//! - `vehicle_contact`: a car pushed a ped (`VehicleContactEvent`).
+//! - `vehicle_contact`: a car pushed a ped (`VehicleContactEvent`);
+//! - `ped_hit`: a skater knocked a ped down or made it stumble (`id`, `kind` Knockdown / Standing,
+//!   `direction` FromFront / FromBack / FromLeft / FromRight, `closing` m/s).
 //!
 //! Engine-facing first: the same messages drive the engine systems; this only forwards them. Extends
 //! engine modding; there is no retail to match.
 
 use super::Mods;
 use crate::living_world::npc_skaters::{trick_name, NpcSkaterEvent};
+use crate::living_world::peds::PedEvent;
 use crate::living_world::vehicle_contacts::VehicleContactEvent;
 use crate::living_world::{LivingWorldDespawn, LivingWorldSpawn, WireRecord};
 use bevy::prelude::*;
@@ -33,6 +36,7 @@ pub(crate) fn payloads(
     despawns: impl IntoIterator<Item = LivingWorldDespawn>,
     npc: impl IntoIterator<Item = NpcSkaterEvent>,
     contacts: impl IntoIterator<Item = VehicleContactEvent>,
+    peds: impl IntoIterator<Item = PedEvent>,
 ) -> Vec<Value> {
     let mut out = Vec::new();
     let record = |d: Decision| serde_json::to_value(WireRecord::from_decision(&d)).unwrap_or(Value::Null);
@@ -52,6 +56,11 @@ pub(crate) fn payloads(
             _ => {}
         }
     }
+    for p in peds {
+        if let PedEvent::Hit { id, kind, direction, closing } = p {
+            out.push(json!({"name": "living_world", "event": "ped_hit", "id": id.to_u64(), "kind": kind.name(), "direction": direction.name(), "closing": closing}));
+        }
+    }
     for c in contacts {
         out.push(json!({"name": "living_world", "event": "vehicle_contact", "contact": serde_json::to_value(&c).unwrap_or(Value::Null)}));
     }
@@ -64,15 +73,17 @@ fn forward(
     mut despawns: MessageReader<LivingWorldDespawn>,
     mut npc: MessageReader<NpcSkaterEvent>,
     mut contacts: MessageReader<VehicleContactEvent>,
+    mut peds: MessageReader<PedEvent>,
 ) {
     let Some(mut mods) = mods else {
         spawns.clear();
         despawns.clear();
         npc.clear();
         contacts.clear();
+        peds.clear();
         return;
     };
-    for payload in payloads(spawns.read().cloned(), despawns.read().cloned(), npc.read().cloned(), contacts.read().cloned()) {
+    for payload in payloads(spawns.read().cloned(), despawns.read().cloned(), npc.read().cloned(), contacts.read().cloned(), peds.read().cloned()) {
         mods.manager.dispatch("on_event", payload);
     }
 }
@@ -93,8 +104,15 @@ mod tests {
                 record: skate_core::living_world::replay::TrickRecord { frame: 3, line: [0xab; 16], node: 9, recorded: 128, chosen: 96 },
             }],
             [],
+            [PedEvent::Hit {
+                id: LivingWorldId { kind: Kind::Pedestrian, serial: 4 },
+                kind: skate_core::living_world::peds::skater_contact::ReactionKind::Knockdown,
+                direction: skate_core::living_world::peds::skater_contact::ReactionDirection::FromBack,
+                closing: 6.5,
+            }],
         );
-        assert_eq!(out.len(), 2);
+        assert_eq!(out.len(), 3);
+        assert_eq!((out[2]["event"].as_str(), out[2]["kind"].as_str(), out[2]["direction"].as_str()), (Some("ped_hit"), Some("Knockdown"), Some("FromBack")));
         assert_eq!(out[0]["event"], "despawn");
         assert_eq!(out[0]["name"], "living_world");
         assert!(out[0]["record"].is_object(), "{}", out[0]);
