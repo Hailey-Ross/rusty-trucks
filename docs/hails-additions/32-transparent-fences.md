@@ -33,8 +33,7 @@ mesh with the background visible through it.
 ## Evidence (retail program)
 
 `transparentenvironment_defaultPS.fpo` from `data/big/shaders_final.big`, read
-with the Xenos disassembler in `.claude/skills/living-world/tools/xenos_disasm.py`
-(ALU slot numbers):
+with a Xenos shader microcode disassembler (ALU slot numbers):
 
 - 23..26, 28, 31, 33, 34: four lightmap taps averaged (x 0.25); 36..38:
   `min(lm^2, shadow + (0.05, 0.09, 0.13))`, the same shadowed lightmap as the
