@@ -102,24 +102,13 @@ pub(super) fn primitive_bounds(primitive: ContactPrimitive) -> Option<Bounds> {
             if !radius.is_finite() {
                 return None;
             }
-            let offset = Vector3::new(
-                axis.x * half_length,
-                axis.y * half_length,
-                axis.z * half_length,
-            );
+            // 82AD97A0: centre +- fma(|axis|, half length +68, radius +80).
+            let extent = |a: f32| a.abs().mul_add(half_length, radius.abs());
+            let e = Vector3::new(extent(axis.x), extent(axis.y), extent(axis.z));
             return Bounds::from_points([
-                Vector3::new(
-                    center.x - offset.x,
-                    center.y - offset.y,
-                    center.z - offset.z,
-                ),
-                Vector3::new(
-                    center.x + offset.x,
-                    center.y + offset.y,
-                    center.z + offset.z,
-                ),
-            ])
-            .map(|b| b.expanded(radius.abs()));
+                Vector3::new(center.x - e.x, center.y - e.y, center.z - e.z),
+                Vector3::new(center.x + e.x, center.y + e.y, center.z + e.z),
+            ]);
         }
         ContactPrimitive::RoundedBox {
             center,
@@ -130,15 +119,19 @@ pub(super) fn primitive_bounds(primitive: ContactPrimitive) -> Option<Bounds> {
             if !radius.is_finite() {
                 return None;
             }
-            let half = [half_extents.x, half_extents.y, half_extents.z];
+            // 82AD9558: per world axis, |axis 1| * h1, then fma |axis 0| * h0,
+            // then fma |axis 2| * h2, then + radius (+80) as a separate add.
+            let [c0, c1, c2] = basis.columns;
+            let (h0, h1, h2) = (
+                half_extents.x.abs(),
+                half_extents.y.abs(),
+                half_extents.z.abs(),
+            );
             let extent: [f32; 3] = std::array::from_fn(|axis| {
-                radius.abs()
-                    + basis
-                        .columns
-                        .iter()
-                        .zip(half)
-                        .map(|(column, h)| h.abs() * column[axis].abs())
-                        .sum::<f32>()
+                c2[axis]
+                    .abs()
+                    .mul_add(h2, c0[axis].abs().mul_add(h0, c1[axis].abs() * h1))
+                    + radius.abs()
             });
             return Bounds::from_points([
                 Vector3::new(
@@ -227,8 +220,10 @@ fn motion_step(rate: Vector3, acceleration: Vector3, dt: f32) -> Vector3 {
 }
 
 /// 82777E70: the box every world triangle's vertex box is tested against in
-/// 8277BC58 (BE94..BF38) before the pair query. Primitive bounds (radius
-/// included, no padding or separation term), padded by the largest extent
+/// 8277BC58 (BE94..BF38) before the pair query. Primitive bounds from the
+/// shape's bounds slot (+4, flag 1; sphere 82ADD738, capsule 82AD97A0,
+/// triangle 82ADDC40, box 82AD9558: shape plus radius/fatness +80 only, no
+/// +112 padding, no separation term), padded by the largest extent
 /// difference times min(|angular step|, 1), unioned with itself moved by the
 /// linear step, then scaled about its centre.
 pub fn volume_query_bounds(
@@ -241,7 +236,9 @@ pub fn volume_query_bounds(
     let e = v3(|i| axis(b.max, i) - axis(b.min, i));
     let extent_pad = (e.x - e.y).abs().max((e.y - e.z).abs()).max((e.z - e.x).abs());
     let angular = motion_step(motion.angular_velocity, motion.torque_acceleration, step);
-    let length = (0..3).map(|i| axis(angular, i) * axis(angular, i)).sum::<f32>().sqrt();
+    // vmsum3fp128, vrsqrtefp128 and two Newton refinements, length = x * y,
+    // zero for a zero step: the same sequence as board_motion_output::length.
+    let length = crate::physics::board_motion_output::length(angular);
     let pad = extent_pad * length.min(1.);
     let linear = motion_step(motion.linear_velocity, motion.force_acceleration, step);
     let min = v3(|i| axis(b.min, i) - pad);

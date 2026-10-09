@@ -300,7 +300,76 @@ what admit the pair): 4 contacts each, fatness point at y 0.02; and the rising c
 asserts 0 contacts. The production world triangles have fatness 0 (`skate-game/src/physics/ground.rs`), so
 the fat-triangle case is synthetic. Evidence strength: the triangle box read is direct (vertex loads, compare,
 skip); the "no +112 padding" read rests on `82ADDC40` only; the bounds methods of the sphere, capsule and box
-volumes were not read and are assumed to follow the same pattern (shape plus radius).
+volumes were not read and are assumed to follow the same pattern (shape plus radius). (Fourth pass: now read,
+see below.)
+
+## Fourth pass: shape bounds, rotation pad arithmetic, stair landing (2026-10-08)
+
+### Retail (TU3, instruction level)
+
+- **Shape descriptors.** Volume +64 points at a per-shape table: word 0 is the shape kind, +4 the bounds
+  method that `82777E70` calls with flag 1. The tables sit together in the image at `0x82FD57A8..0x82FD5848`:
+  sphere (kind 1) `82ADD738`, capsule (kind 2) `82AD97A0`, triangle (kind 3) `82ADDC40`, box (kind 4)
+  `82AD9558`, and kind 5 `82ADA578` (not used by the board or skater). The kinds match the port's projection
+  callbacks (sphere `82ADD800`, capsule `82AD99C8`, box `82AD8508` sit next to their bounds methods).
+- **All four bounds methods ignore the flag and add only the radius / fatness at +80.** None reads the +112
+  padding or any separation term. With a transform (r4) they first move the shape into it; the port's
+  primitives are already in world space.
+  - Sphere: centre (+48) minus / plus radius (+80).
+  - Capsule: per world axis, extent = fma(|axis (+32)|, half length (+68), radius (+80)); bounds = centre
+    (+48) minus / plus extent.
+  - Box: per world axis, |axis 1 (+16)| * h (+72), then fma |axis 0 (+0)| * h (+68), then fma |axis 2 (+32)| *
+    h (+76), then + radius (+80) as a separate add; bounds = centre (+48) minus / plus that.
+  - Triangle: min / max of the three vertices, then minus / plus fatness (+80) (third pass).
+- **Rotation pad length.** `82777E70` takes the angular step's length as: x = vmsum3fp128(step, step); y =
+  vrsqrtefp128(x); two refinements y = fma(y * 0.5, fnma(x, y * y, 1), y); length = x * y, selected to 0 when
+  x == 0 (vcmpeqfp + vsel); then min(length, 1). It is the same sequence as the port's
+  `board_motion_output::length`.
+- The rest of `82777E70` was re-checked against the port: the step terms (rate * dt fused with
+  ((acceleration * factor) * dt) * dt, factor = min(max(dot(rate * dt, (acceleration * dt) * dt), 0), 1)), the
+  extent-difference maximum, the pad, the swept union and the 1.05 scale about the centre (centre = (max + min)
+  * 0.5, half = (max - centre) * 1.05) are in the same operation order.
+
+### Change
+
+- `primitive_bounds` (`board_world/broadphase.rs`): capsule and rounded box now compute their extent in
+  retail's operation order (the fused multiply-adds above). Same values to float precision as before; only
+  the last bit can differ. Sphere and triangle were already the same.
+- `volume_query_bounds`: the rotation pad length uses `board_motion_output::length` (refined reciprocal
+  square root) instead of `sqrt`.
+- New skate-core tests: `volume_query_rotation_pad_uses_refined_reciprocal_square_root` (a 3.09 rad/s spin:
+  the refined length is `0x3D52F1AB`, host `sqrt` gives `0x3D52F1AA`; the test checks the box bits use the
+  refined one) and `volume_query_shape_bounds_follow_the_retail_bounds_slots` (capsule and box bits).
+- Bit identity limit: the estimate itself (`vrsqrtefp128`) comes from `native_arithmetic`, which uses the
+  host 1/sqrt, not the Xenon estimate table (project rule for all callers). With two refinements the result
+  equals the console's whenever the two estimates refine to the same value; this was not checked against the
+  hardware table.
+
+### Results (before -> after this pass)
+
+All identical: the 29-spline sweep near the library (boardslide, lead 1.5; per-tick logs at 2 decimals
+identical for every spline), `0x688` boardslide and 50-50 downhill (lead 3: 55 / 57 grind ticks, no
+wipeout), 47 data-gated physics / scoring / water drop / handrail tests (same pass / fail set, same output;
+water drop mean 0.079 m/s), skate-core and skate-game unit suites (see Verification).
+
+### The stair landing side face (static read with numbers)
+
+Spline index 2 (lead 1.5, boardslide), landing ticks 58 to 68, with a temporary print (removed again) of
+every pair the box culls although the pair query would return a contact. The side face from the third pass
+is triangle 637472, normal (-0.417, 0.156, -0.895): a 3.4 cm high strip (vertex box y 72.420 to 72.454,
+x 245.17 to 246.07, z -430.66 to -430.23), so a stair nosing / riser face. The board volumes (group 4)
+overlap it in x and z on every tick; only y separates them. Gap from the face's top to the bottom of the
+board volume's box (which already includes the downward 1/60 sweep and the 1.05 scale):
+
+| Tick | 58 | 59 | 60 | 61 | 62 | 63 | 64 | 65 | 66 | 67 | 68 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Smallest y gap (cm) | 52.9 | 39.4 | 26.1 | 9.4 | 3.4 | 8.4 | 11.5 | 15.8 | 16.3 | 14.7 | 14.2 |
+
+So retail's box, by the rule now ported for every shape, does not admit this face on any landing tick: the
+closest miss is 3.4 cm at tick 62. It would be admitted only if retail's board were at least 3.4 cm lower on
+that tick (or its downward velocity at least about 2 m/s larger, since one 1/60 step of sweep is
+v / 60), i.e. a different pose, not a different rule. The old slowdown came from the 0.55 m conservative
+pad, which reached the strip. Not measured in the recomp.
 
 ## Change
 
@@ -311,6 +380,9 @@ volumes were not read and are assumed to follow the same pattern (shape plus rad
 - Third pass: the retail per-volume query box (above). New tests: `volume_query_bounds_follow_82777e70`
   (skate-core, formula cases) and `library_handrail_bend_grinds_through` (skate-game, ignored, private data:
   `0x688` boardslide and 50-50 downhill and boardslide uphill each grind 50+ ticks without a wipeout).
+- Fourth pass: capsule / box bounds in retail operation order and the refined reciprocal square root for the
+  rotation pad (`board_world/broadphase.rs`); tests `volume_query_rotation_pad_uses_refined_reciprocal_square_root`
+  and `volume_query_shape_bounds_follow_the_retail_bounds_slots` (skate-core).
 
 ## Verification
 
@@ -335,15 +407,27 @@ volumes were not read and are assumed to follow the same pattern (shape plus rad
     playbacks and scoring runtime pass. Water drop (University): settled part speed mean 0.080 -> 0.079 m/s.
   - `library_handrail_bend_grinds_through` passes after; before, the same runs wipe out (tick 101 / 103).
 
+- Fourth pass (shape bounds order, refined rsqrt), same target dir, before -> after:
+  - skate-core full suite: 793 passed + 1 known failure (`a_moving_group_8_body...`) -> 795 passed (2 new)
+    + the same known failure.
+  - skate-game `--bin skate3rust`: 447 passed, 1 known failure, both before and after.
+  - `grind_bail_trace` (29 splines, boardslide, lead 1.5; `0x688` boardslide and 50-50, lead 3): identical
+    per-tick logs. 47 ignored data tests (`physics::air_tests`, `climbing`, `offboard*`, `powerslide`,
+    `recorded`, `water_drop`, `wipeout*`, `scoring_runtime`, `library_handrail_bend_grinds_through`): 38 pass,
+    9 fail (data / environment, same set) with identical output before and after.
+
 ## Open questions
 
 - Stair landing speed (third pass): the port now keeps about 7 m/s where it used to drop to about 4 m/s; by
   the ported rule this is retail, but it is not measured in the recomp. Watch landings next to walls/stair
   sides in play.
-- Bounds methods (`82777E70` vtable slot +4) of the sphere, capsule and rounded-box volumes were not read;
-  assumed to be shape plus radius like `82ADDC40`.
-- The rotation pad uses a refined reciprocal square root in retail; the port uses `sqrt` (same value to float
-  precision, not bit-checked).
+- Bounds methods of the sphere, capsule and box volumes: read in the fourth pass (shape plus radius +80, no
+  padding); closed.
+- Rotation pad: the refined reciprocal square root is ported (fourth pass). Open: the `vrsqrtefp128` estimate
+  is the host 1/sqrt (project-wide), so the last bit can still differ from the console in rare cases.
+- Stair landing (fourth pass): the side face misses the retail box by 3.4 cm or more on every landing tick,
+  so the speed kept on landing follows from the rule; whether retail's board pose on those ticks is the same
+  is not measured.
 
 - Which rule retail applies at the spline end (second pass: candidates 2 and 3 are not supported by the static
   code; candidate 1 remains). Needs the instruction-level read of `82D8A828` / `82D875A8` at a spline end or
