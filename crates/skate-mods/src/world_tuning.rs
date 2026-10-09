@@ -24,7 +24,9 @@
 //!   trick clip attributes that toggle an NPC skater's stance bits; retail `animboardbackward` /
 //!   `mirrored` / `switch`, empty = that toggle off),
 //!   `ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin,
-//!   step_height}` (props and mod bodies as ped navigation obstacles; retail on / 0.2 / 0.4 / 0.25),
+//!   step_height, held_is_obstacle, moving_solid}` (props and mod bodies as ped navigation
+//!   obstacles; retail on / 0.2 / 0.4 / 0.25 / held props stay obstacles; `moving_solid` is our
+//!   stand-in for NavPower's moving avoider, default on),
 //!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on),
 //!   `ped_vehicle_contact {enabled, push}` (traffic cars touching peds; retail on / on: the ped is
 //!   pushed out of the car, no knock-down).
@@ -44,7 +46,9 @@
 //!   `record_272_speed_scale` (2.0) and per template `record_272`. `grip_reach` sets the retail follow
 //!   reach (0.65 m). Contact material blocks: `commanded_material` ([0.03, 0.02] static / dynamic
 //!   friction), `upright_cos` (0.65) and per template `material_held`, `material_free`,
-//!   `material_free_upright`, `upright_pair`, `restitution`.
+//!   `material_free_upright`, `upright_pair`, `restitution`, `linear_drag`, `angular_drag` (per
+//!   second, retail DMO data +308 / +336 of the type), `mass` (kg, +304), `maximum_linear_velocity` /
+//!   `maximum_angular_velocity` (+292 / +296) and `inertia_scale` / `inertia_offset` (+16 / +32).
 //! - `shadows`: `world_floor = {r, g, b}`, the lightest a dynamic object's shadow can make the baked
 //!   world (each 0..=1, in the shader's squared lightmap space). Retail {0.05, 0.09, 0.13}: the
 //!   constant every retail world receiver shader adds to its shadow-map visibility before taking
@@ -145,7 +149,9 @@ pub struct NpcSkaterPropsPatch {
 
 /// Ped obstacle rules (`skate_core::living_world::peds::ObstacleParams`; retail: on, 0.2 m minimum
 /// half extent, no cut above 0.4 m/s, re-cut after 0.25 x the smallest half extent; ours: 0.1 m
-/// detour margin, 0 m step height).
+/// detour margin, 0 m step height). `held_is_obstacle`: a prop held by Move Object (or an attached
+/// mod body) stays an obstacle (retail true). `moving_solid`: a moving object blocks a ped's step
+/// (NOT RETAIL YET stand-in for NavPower's moving avoider; default true).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PedObstaclesPatch {
@@ -155,6 +161,8 @@ pub struct PedObstaclesPatch {
     pub recut_fraction: Option<f32>,
     pub detour_margin: Option<f32>,
     pub step_height: Option<f32>,
+    pub held_is_obstacle: Option<bool>,
+    pub moving_solid: Option<bool>,
 }
 
 /// NPC skater line end (`skate_core::living_world::replay::ChainConfig`): continue on an unused
@@ -331,7 +339,10 @@ pub struct CarryPatch {
     pub ignore_vertical: Option<bool>,
     /// Every command wakes the prop (retail true; false = only a non-zero command).
     pub wake_on_command: Option<bool>,
-    /// Per prop type (MOBJ template name) held / free parameter blocks.
+    /// Per prop type held / free parameter blocks, keyed by the MOBJ template name or by the
+    /// type's vault record name (`livingworld_dynamicobject_characteristics`, e.g.
+    /// `dt_garbagebin`, logged as `type=` in HELD_PROP); the template name entry wins. Each
+    /// field overrides the type's retail value; unset fields keep it.
     #[serde(default)]
     pub by_template: BTreeMap<String, CarryMaterialPatch>,
 }
@@ -342,18 +353,35 @@ pub struct CarryPatch {
 pub struct CarryMaterialPatch {
     /// Friction pair while held (default: `commanded_material`).
     pub material_held: Option<[f32; 2]>,
-    /// Free friction pair (retail DMO data +320 / +328; default: the prop's authored friction).
+    /// Free friction pair (retail DMO data +320 / +328 of the type; the prop's authored friction
+    /// only when its type data is missing).
     pub material_free: Option<[f32; 2]>,
     /// Free friction pair while upright (retail DMO data +316 / +324; default: `material_free`),
     /// used only when `upright_pair` is set.
     pub material_free_upright: Option<[f32; 2]>,
-    /// The free pair depends on the upright test (retail DMO data +312 bit 0; default false).
+    /// The free pair depends on the upright test (retail DMO data +312 of the type).
     pub upright_pair: Option<bool>,
-    /// Restitution of this type's blocks (retail DMO data +272; default: the authored restitution).
+    /// Restitution of this type's blocks (retail DMO data +272 of the type; the authored
+    /// restitution only when its type data is missing).
     pub restitution: Option<f32>,
     /// Record+272 for this prop type: Move Object target speeds x `record_272_speed_scale`
-    /// (retail per DMO type data +312, not extracted yet; default false).
+    /// (retail: set when the type's DMO data +312 is set, 82C4B960).
     pub record_272: Option<bool>,
+    /// Linear drag of this prop type's body, per second (retail DMO data +308 `LinearDrag`; the
+    /// integrator keeps `1 - drag * dt` of the velocity each fixed step, 60 or more stops it).
+    pub linear_drag: Option<f32>,
+    /// Angular drag, per second (retail DMO data +336 `AngularDrag`, same rule).
+    pub angular_drag: Option<f32>,
+    /// Body mass in kg (retail DMO data +304 of the type; the box inertia follows it).
+    pub mass: Option<f32>,
+    /// Linear speed cap in m/s (retail DMO data +292; the integrator shortens faster velocities).
+    pub maximum_linear_velocity: Option<f32>,
+    /// Angular speed cap in rad/s (retail DMO data +296, same rule).
+    pub maximum_angular_velocity: Option<f32>,
+    /// Box inertia shape: the body's half extents x `inertia_scale` + `inertia_offset` (retail DMO
+    /// data +16 / +32 of the type; class default 1.2 / 0).
+    pub inertia_scale: Option<[f32; 3]>,
+    pub inertia_offset: Option<[f32; 3]>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -379,7 +407,7 @@ impl Merge for SkaterFadePatch {
 }
 impl Merge for PedObstaclesPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height);
+        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height, held_is_obstacle, moving_solid);
     }
 }
 impl Merge for PedVehicleContactPatch {
@@ -484,7 +512,7 @@ impl Merge for CarryPatch {
             hold_box_extents, record_272_speed_scale, commanded_material, upright_cos, apply_at_com, yaw_replaces_torque,
             ignore_vertical, wake_on_command);
         for (k, v) in &b.by_template {
-            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, material_free_upright, upright_pair, restitution, record_272); }).or_insert_with(|| v.clone());
+            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, material_free_upright, upright_pair, restitution, record_272, linear_drag, angular_drag, mass, maximum_linear_velocity, maximum_angular_velocity, inertia_scale, inertia_offset); }).or_insert_with(|| v.clone());
         }
     }
 }
@@ -593,7 +621,9 @@ impl CarryPatch {
                 !k.is_empty()
                     && k.len() <= 128
                     && [v.material_held, v.material_free, v.material_free_upright].into_iter().flatten().all(material_block)
-                    && v.restitution.is_none_or(|r| r.is_finite() && (0.0..=MAX_NUMBER).contains(&r))
+                    && [v.restitution, v.linear_drag, v.angular_drag, v.maximum_linear_velocity, v.maximum_angular_velocity].into_iter().flatten().all(|r| r.is_finite() && (0.0..=MAX_NUMBER).contains(&r))
+                    && v.mass.is_none_or(|m| m.is_finite() && m > 0.0 && m <= MAX_NUMBER)
+                    && [v.inertia_scale, v.inertia_offset].into_iter().flatten().flatten().all(|x| x.is_finite() && x.abs() <= MAX_NUMBER)
             })
     }
 }

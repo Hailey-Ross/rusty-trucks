@@ -982,8 +982,9 @@ function sdk.audio.seed(n) end
 --   skater_blend_seconds {[phase or 'default'] = seconds} (NPC skater crossfade into a phase's clip,
 --   the player's graph transition curve; stock default 0.2, 0 = cut, max 10; 'trick_takeoff' 0.05 and
 --   'trick_air' 0.1 set the transitions into a trick's ground and air clips),
---   ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height}
---   (props and mod bodies as ped navigation obstacles; retail on, 0.2, 0.4, 0.25; ours 0.1, 0),
+--   ped_obstacles {enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height,
+--   held_is_obstacle, moving_solid} (props and mod bodies as ped navigation obstacles; retail on, 0.2, 0.4,
+--   0.25, held props stay obstacles (true); ours 0.1, 0, moving objects block a ped's step (true)),
 --   npc_skater_props {enabled} (NPC skaters push dynamic props like the player; retail on),
 --   ped_vehicle_contact {enabled, push} (traffic cars push peds out of the way; retail on / on, no knock-down).
 -- 'props': default and by_template[<MOBJ template name>] = {contact_padding, penetration_slop,
@@ -993,7 +994,13 @@ function sdk.audio.seed(n) end
 -- 'carry': grab_bit (28, RB), placement_bit (20, B), grab_range (2.0 m), and moving a held prop:
 --   push_speed (1.4 m/s), pull_speed (1.0 m/s), side_speed (0.8 m/s) at full left stick,
 --   turn_rate (1.6 rad/s) at full right stick X, grip_reach (0.35 m between the skater and the
---   dragged prop's near face).
+--   dragged prop's near face). Per prop type: by_template[<MOBJ template name or type record name,
+--   e.g. 'dt_garbagebin' (HELD_PROP type=)>] = {material_held, material_free, material_free_upright,
+--   upright_pair, restitution, record_272, linear_drag, angular_drag (per second), mass (kg),
+--   maximum_linear_velocity (m/s), maximum_angular_velocity (rad/s), inertia_scale = {x,y,z},
+--   inertia_offset = {x,y,z} (box inertia from the half extents x scale + offset)}; unset fields
+--   keep the type's retail values (the disc's livingworld_dynamicobject_characteristics record),
+--   restored when the mod is disabled.
 -- 'shadows': world_floor = {r, g, b} (each 0..1; retail {0.05, 0.09, 0.13}): the lightest a dynamic
 --   object's shadow (skaters, cars, props, mod graphics) can leave on the baked world. Retail adds it
 --   to the shadow map and keeps the darker of that and the baked lightmap, so shadows that fall into

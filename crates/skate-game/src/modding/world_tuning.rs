@@ -164,6 +164,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.recut_fraction = f.recut_fraction.map_or(c.recut_fraction, |v| v.max(0.0));
         c.detour_margin = f.detour_margin.map_or(c.detour_margin, |v| v.max(0.0));
         c.step_height = f.step_height.map_or(c.step_height, |v| v.max(0.0));
+        c.held_is_obstacle = f.held_is_obstacle.unwrap_or(c.held_is_obstacle);
+        c.moving_solid = f.moving_solid.unwrap_or(c.moving_solid);
     }
     if let Some(f) = &p.ped_vehicle_contact {
         let c = &mut s.ped_vehicle_contact;
@@ -297,6 +299,13 @@ pub(crate) fn carry_settings(p: &CarryPatch) -> CarrySettings {
                                 upright_pair: v.upright_pair,
                                 restitution: v.restitution,
                                 record_272: v.record_272,
+                                linear_drag: v.linear_drag,
+                                angular_drag: v.angular_drag,
+                                mass: v.mass,
+                                maximum_linear_velocity: v.maximum_linear_velocity,
+                                maximum_angular_velocity: v.maximum_angular_velocity,
+                                inertia_scale: v.inertia_scale,
+                                inertia_offset: v.inertia_offset,
                             },
                         )
                     })
@@ -333,7 +342,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "ped_fade": {"distance": s.ped_fade.distance, "fade_in_seconds": s.ped_fade.fade_in_seconds, "enabled": s.ped_fade.enabled},
                 "ped_obstacles": {"enabled": s.ped_obstacles.enabled, "min_half_extent": s.ped_obstacles.min_half_extent,
                     "moving_speed": s.ped_obstacles.moving_speed, "recut_fraction": s.ped_obstacles.recut_fraction,
-                    "detour_margin": s.ped_obstacles.detour_margin, "step_height": s.ped_obstacles.step_height},
+                    "detour_margin": s.ped_obstacles.detour_margin, "step_height": s.ped_obstacles.step_height,
+                    "held_is_obstacle": s.ped_obstacles.held_is_obstacle, "moving_solid": s.ped_obstacles.moving_solid},
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
                 "ped_vehicle_contact": {"enabled": s.ped_vehicle_contact.enabled, "push": s.ped_vehicle_contact.push},
                 "skater_clips": s.skater_clips,
@@ -371,7 +381,10 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 .by_template
                 .iter()
                 .map(|(k, b)| (k.clone(), json!({"material_held": b.held, "material_free": b.free, "material_free_upright": b.free_upright,
-                    "upright_pair": b.upright_pair, "restitution": b.restitution, "record_272": b.record_272})))
+                    "upright_pair": b.upright_pair, "restitution": b.restitution, "record_272": b.record_272,
+                    "linear_drag": b.linear_drag, "angular_drag": b.angular_drag, "mass": b.mass,
+                    "maximum_linear_velocity": b.maximum_linear_velocity, "maximum_angular_velocity": b.maximum_angular_velocity,
+                    "inertia_scale": b.inertia_scale, "inertia_offset": b.inertia_offset})))
                 .collect();
             json!({"grab_bit": c.buttons.grab_bit, "placement_bit": c.buttons.placement_bit, "grab_range": c.grab_range,
                 "push_speed": m.push_speed, "pull_speed": m.pull_speed, "side_speed": m.side_speed, "turn_rate": l.turn_rate,
@@ -663,7 +676,8 @@ mod tests {
         assert_eq!(read(&w, "carry")["upright_cos"], json!(0.65f32));
         set(&mut w, "dev.a", "carry", Some(json!({"commanded_material": [0.2, 0.0], "apply_at_com": false, "wake_on_command": false,
             "upright_cos": 0.8, "by_template": {"template/bin": {"material_held": [0.5, 0.0], "material_free": [0.9, 0.1],
-            "material_free_upright": [1.0, 0.9], "upright_pair": true, "restitution": 0.25}}}))).unwrap();
+            "material_free_upright": [1.0, 0.9], "upright_pair": true, "restitution": 0.25, "angular_drag": 0.5,
+            "mass": 40.0, "maximum_angular_velocity": 20.0, "inertia_offset": [0.0, 0.1, 0.0]}}}))).unwrap();
         let r = w.resource::<CarrySettings>().move_rules.clone();
         assert_eq!(r.commanded_material, [0.2, 0.0]);
         assert!(!r.apply_at_com && !r.wake_on_command && r.yaw_replaces_torque && r.ignore_vertical);
@@ -676,10 +690,18 @@ mod tests {
                 free_upright: Some([1.0, 0.9]),
                 upright_pair: Some(true),
                 restitution: Some(0.25),
-                record_272: None
+                record_272: None,
+                linear_drag: None,
+                angular_drag: Some(0.5),
+                mass: Some(40.0),
+                maximum_linear_velocity: None,
+                maximum_angular_velocity: Some(20.0),
+                inertia_scale: None,
+                inertia_offset: Some([0.0, 0.1, 0.0]),
             }
         );
         assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["upright_pair"], json!(true));
+        assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["angular_drag"], json!(0.5f32));
         assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["material_free"], json!([0.9f32, 0.1f32]));
         clear_owner(&mut w, "dev.a");
         assert_eq!(w.resource::<CarrySettings>().move_rules, MoveCommandRules::default(), "mod disable restores retail");
