@@ -16,6 +16,13 @@ local SPOTS = {
     water = { label = "DownTown fountain (water 18.72 m)", position = { 44.3, 20.72, 241.5 }, heading = 0 },
     view = { label = "DownTown fountain, view", position = { 44.2, 19.49, 247.9 }, heading = 3.120 },
   },
+  -- PCU Library flat rail (University, grind fix): spots BESIDE the rail on the top level (2 m to the spawn
+  -- side), never on it. The rail runs along the spawn heading 11.8 m right of the spawn line; its 90 deg
+  -- corner is near (263.1, 74.9, -430.1).
+  F8 = {
+    water = { label = "PCU Library flat rail, 20 m before its corner (University)", position = { 281.95, 74.6, -437.06 }, heading = -1.117 },
+    view = { label = "PCU Library flat rail corner, view (University)", position = { 269.36, 74.6, -430.93 }, heading = -1.439 },
+  },
   F7 = {
     water = { label = "DownTown Aletown canal (water 8.93 m, 1.1 m deep)", position = { -182.3, 10.93, 465.9 }, heading = 0 },
     view = { label = "DownTown Aletown spawn, facing the canal", position = { -183.4, 12.76, 433.2 }, heading = 0.034 },
