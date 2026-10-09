@@ -66,7 +66,7 @@ Not play-tested yet; tell us if any of these still happen.
 
 ## Added since main
 
-Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this fork's work (2026-10-06, upstream `b3c9679`). What this build adds on top of it:
+Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this fork's work (latest 2026-10-09, upstream `2e16697`). This build includes all of it. What this build adds on top of it:
 
 **Living world (upstream draft #52, still open)**
 - **Ambient NPC skaters** riding the retail recorded lines: they chain from line to line, blend between animations like the player, play their recorded tricks on body and board and leave beyond 120 m like retail; they push props too.
@@ -82,6 +82,7 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 **Now in upstream main** (shipped there, listed so nothing is lost; each has a document in `docs/hails-additions/`)
 - Retail audio engine port, world audio and audio modding (#32), water (#30), retail map spawns (#27), named trigger volumes (#50), Camera Angle Low / High (#47), retail's 50 solver iterations (#35), SDL3 gamepads (#24, #53).
 - Setup: Windows long paths (#23), keeps converting when the console closes (#42), faster setup (#29, #51), one map validator pass (#28).
+- Merged 2026-10-09: grind bails at rail bends (retail per-volume query box, #57), see-through fences and grates (#58), the retail menus foundation (menu data, hooks, mod API, settings values and menu movies, #59), the Frame-time counter's Simple / Verbose modes (#60), and upstream's APT example fixes.
 - Fixes and tools: invisible walls (#25), offboard jump crash (#40, issue #10), crash reports (#41), Lua empty tables (#45), frame-time diagnostics (#51), research and regression tools and shareable skills (#37).
 
 ## In progress
