@@ -317,9 +317,12 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         // Alpha-tested props test the diffuse alpha (WORLD_ALPHA_CUTOFF).
         alpha = 1.0;
     } else {
-        if (fam == 3u || fam == 4u) && (flags & 8u) != 0u && (flags & 512u) == 0u { d = mix(d,art.rgb*art.rgb,art.a*p.decal.x); }
+        if (fam == 3u || fam == 4u) && (flags & 8u) != 0u && (flags & 512u) == 0u { d = mix(d,art.rgb*art.rgb,art.a*p.decal.x*frame_state.clock.w); }
         if (flags & 4u) != 0u && fam < 13u && (flags & 256u) == 0u { d *= saturate((overlay_sample-0.5)*p.surface.y+0.5); }
-        var kd = 0.93429;
+        // Flat-normal kd (0.39 * 2.39562) of the normal-mapped programs. Families
+        // 7 / 8 (alphatestdefaultenvironment_defaultPS 27-34, environmentdiffuse_defaultPS
+        // 26-34) have no kd term: lin = min(lightmap^2, vis + floor) * diffuse^2 * m_params[0].y.
+        var kd = select(0.93429, 1.0, fam == 7u || fam == 8u);
         if (fam <= 6u || fam == 13u) && (flags & 1u) != 0u {
             var dxy = vec2<f32>(0.5);
             if (flags & 2u) != 0u && fam != 2u { dxy = detail; }

@@ -72,7 +72,7 @@ pub(crate) struct WorldParams {
     pub fog_color: Vec4,
     pub shadow_color: Vec4,
     pub sun_direction: Vec4,
-    /// Wear-only visual tuning; artwork retains unit opacity.
+    /// x: per-material decal strength (retail 1.0 for every decal).
     pub decal: Vec4,
     pub water: [Vec4; 4],
 }
@@ -170,6 +170,24 @@ fn log_world_shadow_floor(settings: Res<WorldShadowSettings>) {
             "WORLD_SHADOW_FLOOR rgb=[{:.3}, {:.3}, {:.3}] retail={}",
             f.x, f.y, f.z, f == RETAIL_WORLD_SHADOW_FLOOR
         );
+    }
+}
+
+/// Retail world decal strength: the decal programs blend at the decal texture's own alpha.
+pub(crate) const RETAIL_DECAL_OPACITY: f32 = 1.0;
+
+/// Engine-side strength of every world decal over its base surface: retail by default, patched by
+/// mods through `sdk.world.set_tuning('decals', {opacity = 0..1})` and rebuilt from the default when
+/// the mod stops (`modding::world_tuning`). Published every frame as `frame_state.clock.w`, so a
+/// change applies at once without rebuilding the map's materials.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DecalSettings {
+    pub opacity: f32,
+}
+
+impl Default for DecalSettings {
+    fn default() -> Self {
+        Self { opacity: RETAIL_DECAL_OPACITY }
     }
 }
 
@@ -589,28 +607,6 @@ impl Definition {
                 }
                 _ => false,
             }
-    }
-}
-
-// The source labels distinguish weathering from graphics. This is an explicit
-// visual tuning choice, not a recovered native material constant. Keep arrows,
-// logos, paint, scratches and edge wear at their authored alpha.
-fn stain_opacity(texture_label: &str) -> f32 {
-    let label = texture_label.to_ascii_lowercase();
-    if [
-        "grime",
-        "grunge",
-        "stain",
-        "oildirt",
-        "drainage",
-        "ground_decals",
-    ]
-    .iter()
-    .any(|word| label.contains(word))
-    {
-        0.35
-    } else {
-        1.
     }
 }
 
@@ -1096,19 +1092,10 @@ impl Request {
                 fog_color: sky.fog_color,
                 shadow_color: Vec4::ZERO,
                 sun_direction: sky.sun_direction,
-                decal: Vec4::new(
-                    stain_opacity(
-                        definition
-                            .parameters
-                            .get("decal")
-                            .and_then(|v| v.first())
-                            .map(String::as_str)
-                            .unwrap_or(""),
-                    ),
-                    0.,
-                    0.,
-                    0.,
-                ),
+                // Retail decalenvironment_defaultPS (shaders_final.big) blends the decal at its own
+                // texel alpha, mix(d, art^2, art.a), with no material constant; the live strength
+                // for mods is frame_state.clock.w (`DecalSettings`).
+                decal: Vec4::new(1., 0., 0., 0.),
                 water,
             },
             class,
@@ -1454,9 +1441,11 @@ fn advance_frame_state(
     mut state: ResMut<FrameStateData>,
     time: Res<Time>,
     pca: Option<Res<OceanPca>>,
+    decals: Option<Res<DecalSettings>>,
     mut animation: Local<WaterAnimation>,
 ) {
     state.clock.x = time.elapsed_secs();
+    state.clock.w = decals.map_or(RETAIL_DECAL_OPACITY, |d| d.opacity.clamp(0., 1.));
     state.clock.z = animation.presentation_frame(time.elapsed_secs_f64());
     if let Some(pca) = pca {
         let frame = usize::from(animation.frame) % pca.frames.len();
@@ -1537,12 +1526,14 @@ impl Plugin for RetailRenderPlugin {
         bevy::shader::load_shader_library!(app, "retail_material_bindings.wgsl");
         app.init_resource::<FrameStateData>()
             .init_resource::<WorldShadowSettings>()
+            .init_resource::<DecalSettings>()
             .add_systems(Update, log_world_shadow_floor)
             .add_plugins((
                 MaterialPlugin::<WorldMaterial>::default(),
                 MaterialPlugin::<crate::retail_sky::SkyMaterial>::default(),
                 crate::retail_character::CharacterLightingPlugin,
                 crate::retail_exposure::RetailExposurePlugin,
+                crate::skater_ghost::GhostPlugin,
             ))
             .add_plugins(ExtractResourcePlugin::<FrameStateData>::default())
             .add_systems(Startup, (initialize_frame_state, load_pca))
@@ -1812,23 +1803,10 @@ mod tests {
     }
 
     #[test]
-    fn weathering_tuning_preserves_artwork() {
-        for name in [
-            "decal_WEAR_WaterStain_01",
-            "subway_grunge03",
-            "decal_GrimePuddle",
-            "OT_Ground_decals",
-        ] {
-            assert_eq!(stain_opacity(name), 0.35);
-        }
-        for name in [
-            "decal_Graphic_SP_UN_Shark_01",
-            "decal_other_sp_arrowramps_01",
-            "decal_Wear_GL_UN_MPedge_01",
-            "",
-        ] {
-            assert_eq!(stain_opacity(name), 1.);
-        }
+    fn world_decals_default_to_retail_full_strength() {
+        // decalenvironment_defaultPS: mix(d, art^2, art.a), no strength constant.
+        assert_eq!(RETAIL_DECAL_OPACITY, 1.0);
+        assert_eq!(DecalSettings::default().opacity, RETAIL_DECAL_OPACITY);
     }
 
     #[test]

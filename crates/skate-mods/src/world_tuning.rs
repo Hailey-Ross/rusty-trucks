@@ -53,13 +53,35 @@
 //!   world (each 0..=1, in the shader's squared lightmap space). Retail {0.05, 0.09, 0.13}: the
 //!   constant every retail world receiver shader adds to its shadow-map visibility before taking
 //!   the minimum with the baked lightmap.
+//! - `backdrop`: `visible` (bool), the district's global presentation model (Industrial's sea, the
+//!   far sea planes, distant tree walls). Retail draws it (true). `proxy_terrain` (bool), the
+//!   far-proxy hills retail leaves drawn where no full-detail cell pairs with them (Industrial's
+//!   south hills under the tree wall). Retail true.
+//! - `respawn`: `air_timeout_ticks` (integer, 1..=[`MAX_AIR_TIMEOUT_TICKS`]), the fixed 1/60 s
+//!   ticks a skater may spend in the air before the checkpoint respawn (retail 300 = 5 s,
+//!   `CalcSuggestedState` `count > 300`), e.g. after falling off the map.
+//! - `exposure`: the auto-exposure meter. `meter_weights = {r, g, b}` (each 0..=1; retail
+//!   {0.3, 0.4, 0.3}, the channel weights retail's bloom downsample dots its tone-mapped value with)
+//!   and `meter_scale` (0..=[`MAX_METER_SCALE`]; retail 2.515, the evaluator's average scale).
+//! - `ghost`: the skater fade-in after every placement (respawn, teleport, marker return, spawn).
+//!   `enabled` (bool, retail true), `fade_in_seconds` (0..=[`MAX_GHOST_FADE_IN_SECONDS`], retail
+//!   1.0; 0 = no fade) and `hold_alpha` (0..=1, retail 0.68, the opacity the fade waits at while
+//!   retail's hold condition is set; that condition is not decoded yet, so it has no effect now).
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const DOMAINS: [&str; 4] = ["living_world", "props", "carry", "shadows"];
+pub const DOMAINS: [&str; 9] = ["living_world", "props", "carry", "shadows", "backdrop", "respawn", "exposure", "ghost", "decals"];
+
+/// Longest skater fade-in after a placement a mod may set (s).
+pub const MAX_GHOST_FADE_IN_SECONDS: f32 = 60.0;
+
+/// Largest accepted exposure `meter_scale`.
+pub const MAX_METER_SCALE: f32 = 100.0;
+/// Longest air timeout a mod may set: one hour of 1/60 s ticks.
+pub const MAX_AIR_TIMEOUT_TICKS: u32 = 216_000;
 /// Upper bound for every number (keeps a typo from building a 1e30 m fade range).
 pub const MAX_NUMBER: f32 = 100_000.0;
 /// Stable NPC skater replay phase ids (`skate_core::living_world::replay::ReplayPhase::name`).
@@ -391,6 +413,69 @@ pub struct ShadowsPatch {
     pub world_floor: Option<[f32; 3]>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackdropPatch {
+    /// Draw the district's global presentation model (retail true).
+    pub visible: Option<bool>,
+    /// Draw the unpaired far-proxy terrain cells (retail true).
+    pub proxy_terrain: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposurePatch {
+    /// Meter channel weights R, G, B, each 0..=1 (retail 0.3, 0.4, 0.3).
+    pub meter_weights: Option<[f32; 3]>,
+    /// Meter average scale (retail 2.515).
+    pub meter_scale: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GhostPatch {
+    /// Fade the skater in after placements (retail true).
+    pub enabled: Option<bool>,
+    /// Seconds to fully opaque (retail 1.0).
+    pub fade_in_seconds: Option<f32>,
+    /// Opacity held while the hold condition is set (retail 0.68).
+    pub hold_alpha: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecalsPatch {
+    /// Strength of every world decal over its base surface, 0..=1 (retail 1.0: the decal programs
+    /// blend at the decal texture's own alpha).
+    pub opacity: Option<f32>,
+}
+
+impl DecalsPatch {
+    pub fn validate(&self) -> bool {
+        self.opacity.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+    }
+}
+
+impl GhostPatch {
+    pub fn validate(&self) -> bool {
+        self.fade_in_seconds.is_none_or(|v| v.is_finite() && (0.0..=MAX_GHOST_FADE_IN_SECONDS).contains(&v))
+            && self.hold_alpha.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RespawnPatch {
+    /// Air ticks before the checkpoint respawn (retail 300).
+    pub air_timeout_ticks: Option<u32>,
+}
+
+impl RespawnPatch {
+    pub fn validate(&self) -> bool {
+        self.air_timeout_ticks.is_none_or(|t| (1..=MAX_AIR_TIMEOUT_TICKS).contains(&t))
+    }
+}
+
 /// Field-wise "first writer wins": `self` keeps its fields, `later` fills the gaps.
 pub trait Merge {
     fn merge(&mut self, later: &Self);
@@ -517,6 +602,36 @@ impl Merge for CarryPatch {
     }
 }
 
+impl Merge for BackdropPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; visible, proxy_terrain);
+    }
+}
+
+impl Merge for RespawnPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; air_timeout_ticks);
+    }
+}
+
+impl Merge for ExposurePatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; meter_weights, meter_scale);
+    }
+}
+
+impl Merge for DecalsPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; opacity);
+    }
+}
+
+impl Merge for GhostPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; enabled, fade_in_seconds, hold_alpha);
+    }
+}
+
 impl Merge for ShadowsPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; world_floor);
@@ -633,6 +748,13 @@ fn material_block(b: [f32; 2]) -> bool {
     b.iter().all(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(v))
 }
 
+impl ExposurePatch {
+    pub fn validate(&self) -> bool {
+        self.meter_weights.is_none_or(|c| c.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)))
+            && self.meter_scale.is_none_or(|v| v.is_finite() && (0.0..=MAX_METER_SCALE).contains(&v))
+    }
+}
+
 impl ShadowsPatch {
     pub fn validate(&self) -> bool {
         self.world_floor.is_none_or(|c| c.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)))
@@ -646,6 +768,11 @@ pub enum Patch {
     Props(PropsPatch),
     Carry(CarryPatch),
     Shadows(ShadowsPatch),
+    Backdrop(BackdropPatch),
+    Respawn(RespawnPatch),
+    Exposure(ExposurePatch),
+    Ghost(GhostPatch),
+    Decals(DecalsPatch),
 }
 
 /// Parse and validate a patch for `domain` (`None` = unknown domain, unknown field or bad value).
@@ -655,6 +782,11 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         "props" => Patch::Props(serde_json::from_value(patch.clone()).ok()?),
         "carry" => Patch::Carry(serde_json::from_value(patch.clone()).ok()?),
         "shadows" => Patch::Shadows(serde_json::from_value(patch.clone()).ok()?),
+        "backdrop" => Patch::Backdrop(serde_json::from_value(patch.clone()).ok()?),
+        "respawn" => Patch::Respawn(serde_json::from_value(patch.clone()).ok()?),
+        "exposure" => Patch::Exposure(serde_json::from_value(patch.clone()).ok()?),
+        "ghost" => Patch::Ghost(serde_json::from_value(patch.clone()).ok()?),
+        "decals" => Patch::Decals(serde_json::from_value(patch.clone()).ok()?),
         _ => return None,
     };
     let ok = match &p {
@@ -662,6 +794,11 @@ pub fn parse(domain: &str, patch: &Value) -> Option<Patch> {
         Patch::Props(p) => p.validate(),
         Patch::Carry(p) => p.validate(),
         Patch::Shadows(p) => p.validate(),
+        Patch::Backdrop(_) => true,
+        Patch::Respawn(p) => p.validate(),
+        Patch::Exposure(p) => p.validate(),
+        Patch::Ghost(p) => p.validate(),
+        Patch::Decals(p) => p.validate(),
     };
     ok.then_some(p)
 }
@@ -736,6 +873,24 @@ mod tests {
         assert!(!valid_patch("shadows", &json!({"world_floor": [0.05, 0.09]})));
         assert!(!valid_patch("shadows", &json!({"world_floor": [0.05, 0.09, 1.5]})));
         assert!(!valid_patch("shadows", &json!({"floor": [0.0, 0.0, 0.0]})));
+        assert!(valid_patch("exposure", &json!({"meter_weights": [0.3, 0.4, 0.3], "meter_scale": 2.515})));
+        assert!(!valid_patch("exposure", &json!({"meter_weights": [0.3, 0.4]})));
+        assert!(!valid_patch("exposure", &json!({"meter_weights": [0.3, 1.4, 0.3]})));
+        assert!(!valid_patch("exposure", &json!({"meter_scale": -1.0})));
+        assert!(!valid_patch("exposure", &json!({"target": 0.25})));
+        assert!(valid_patch("backdrop", &json!({"visible": false})));
+        assert!(!valid_patch("backdrop", &json!({"visible": 0})));
+        assert!(valid_patch("backdrop", &json!({"proxy_terrain": false})));
+        assert!(!valid_patch("backdrop", &json!({"proxy_terrain": "off"})));
+        assert!(!valid_patch("backdrop", &json!({"hidden": true})));
+        assert!(valid_patch("respawn", &json!({"air_timeout_ticks": 300})));
+        assert!(valid_patch("respawn", &json!({"air_timeout_ticks": 216_000})));
+        assert!(!valid_patch("respawn", &json!({"air_timeout_ticks": 0})));
+        assert!(!valid_patch("respawn", &json!({"air_timeout_ticks": 216_001})));
+        assert!(!valid_patch("respawn", &json!({"air_timeout_ticks": 2.5})));
+        assert!(!valid_patch("respawn", &json!({"air_timeout_ticks": -1})));
+        assert!(!valid_patch("respawn", &json!({"air_timeout": 300})));
+        assert!(valid_inspect("world_tuning:respawn"));
         assert!(!valid_patch("roads", &json!({})));
         assert!(valid_inspect("world_tuning:carry") && !valid_inspect("world_tuning:x"));
     }

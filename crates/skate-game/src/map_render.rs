@@ -203,6 +203,37 @@ impl PreparedScene {
             &mut self.images,
             &mut self.params,
         );
+        // The district's global presentation model (ocean, far sea planes,
+        // tree walls): retail districts only. Dropped by the renderer rewrite
+        // (upstream e2b85b64) together with the props; restored here.
+        if self.retail {
+            if let Some(backdrop) = crate::retail_backdrop::load_package(asset_root, &map.name) {
+                crate::skate_world::spawn_backdrop(
+                    &backdrop,
+                    &tuning,
+                    &environment,
+                    &mut self.commands,
+                    &mut self.meshes,
+                    &mut self.world_materials,
+                    &mut self.images,
+                    &mut self.params,
+                );
+            }
+            // Unpaired far-proxy cells (Industrial's south hills under the
+            // tree wall), as retail's per-cell proxy swap leaves them.
+            if let Some(proxy) = crate::retail_backdrop::load_proxy_package(asset_root, &map.name) {
+                crate::skate_world::spawn_proxy_terrain(
+                    &proxy,
+                    &tuning,
+                    &environment,
+                    &mut self.commands,
+                    &mut self.meshes,
+                    &mut self.world_materials,
+                    &mut self.images,
+                    &mut self.params,
+                );
+            }
+        }
         // Movable props (SK8-ENGINE PR #15): retail districts only, as before
         // the renderer rewrite.
         if self.retail {
