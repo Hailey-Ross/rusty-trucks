@@ -274,7 +274,13 @@ pub struct ReplayNode {
     pub flags: u8,
     /// Index into [`ReplayLine::jumps`].
     pub jump: Option<u32>,
+    /// Path width left / right of the line, node bytes `+0x25/+0x26`; metres = byte / 50
+    /// ([`WIDTH_SCALE`]). The obstacle avoider reads them ([`super::avoid`]).
+    pub width: [u8; 2],
 }
+
+/// Node width byte to metres: `1 / 50` (`sub_82F71580`: 1.0 / `0x8302EE0C`).
+pub const WIDTH_SCALE: f32 = 1.0 / 50.0;
 
 /// A recorded jump / trick slot (`tAIPathNodeExtData`).
 #[derive(Clone, Debug, PartialEq)]
@@ -1428,6 +1434,46 @@ pub fn segment_velocity(line: &ReplayLine, node: u32) -> Vec3 {
         }
         i -= 1;
     }
+}
+
+/// The nearest point of `line` to `p`, searching the segments from `from` forward until
+/// `max_distance` metres of line (the avoider's path projection, `sub_82462C18` ->
+/// `sub_82455E88` / `sub_824563D8` / `sub_82459F68`: node pair, fraction, interpolated position
+/// and widths; the search window of retail's projection is not decoded, the gather radius is
+/// used). The direction is the segment's.
+pub fn project_on_line(line: &ReplayLine, from: u32, p: Vec3, max_distance: f32) -> Option<super::avoid::PathPoint> {
+    let n = line.nodes.len();
+    if n == 0 {
+        return None;
+    }
+    let mut best: Option<(f32, super::avoid::PathPoint)> = None;
+    let mut walked = 0.0f32;
+    let mut i = (from as usize).min(n - 1);
+    loop {
+        let a = &line.nodes[i];
+        let (b, j) = if i + 1 < n { (&line.nodes[i + 1], i + 1) } else { (a, i) };
+        let ab = sub(b.position, a.position);
+        let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+        let ap = sub(p, a.position);
+        let t = if l2 > 1e-8 { ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let q: Vec3 = core::array::from_fn(|k| a.position[k] + ab[k] * t);
+        let d = sub(p, q);
+        let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        if best.as_ref().is_none_or(|b| d2 < b.0) {
+            // Segment direction; a zero-length segment falls back to the line's recorded motion.
+            let raw = if l2 > 1e-8 { ab } else { segment_velocity(line, i as u32) };
+            let rl = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+            let direction = if rl > 1e-6 { raw.map(|c| c / rl) } else { [0.0, 0.0, 1.0] };
+            let w = |k: usize| (f32::from(a.width[k]) + (f32::from(b.width[k]) - f32::from(a.width[k])) * t) * WIDTH_SCALE;
+            best = Some((d2, super::avoid::PathPoint { point: q, direction, width_left: w(0), width_right: w(1), node: i as u32, t }));
+        }
+        walked += l2.sqrt();
+        if j == i || walked > max_distance {
+            break;
+        }
+        i = j;
+    }
+    best.map(|b| b.1)
 }
 
 #[cfg(test)]

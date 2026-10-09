@@ -340,6 +340,11 @@ pub(crate) fn advance(
     if let Some(source) = skater.ai_physics.as_mut() {
         output.publish_ai_physics(source);
     }
+    if let Some(mut t) = skater.takedown {
+        output.publish_takedown(t.direction);
+        t.age += physics.settings.step.simulation.time_step;
+        skater.takedown = (t.age <= super::skater::TAKEDOWN_LATCH_SECONDS).then_some(t);
+    }
     if let Some(reply) = skater.teleport_state.take_reply() {
         output.publish_external_reset(reply);
     }

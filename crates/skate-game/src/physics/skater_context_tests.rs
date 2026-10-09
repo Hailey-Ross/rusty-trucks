@@ -160,3 +160,38 @@ fn a_simulated_skater_rides_a_recorded_line_from_its_ai_record() {
     let moved = ((end.x - start.x).powi(2) + (end.z - start.z).powi(2)).sqrt();
     assert!(moved > 5.0 && (end.y - start.y).abs() < 1.0, "{start:?} -> {end:?}");
 }
+
+/// A ped takedown on the player (`82592390`: actor `1904` bit 30 + direction) is published as the
+/// packet's external impulse; retail's motion graph enters WipeOut on `IsPhysicsWiping` (b15).
+/// Prints whether our skater reaches WipeoutGround (retail's switch is not proven statically).
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn a_ped_takedown_publishes_the_external_impulse_and_wipes_the_skater_out() {
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let rig = Rig { graphs: crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap(), root_dir: root_dir.clone() };
+    let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    let mut player = rig.skater(&physics);
+    let input = |t: u32| skate_core::input::xbox::XboxState { buttons: if t < 60 { 0x1000 } else { 0 }, ..pad() };
+    for t in 0..120 {
+        rig.step(&mut physics, &mut player, input(t));
+    }
+    assert_eq!(player.runtime.player_state.current(), PhysicalStateId::PhysicsGround);
+    // The chaser hits from behind: 1 m against the board's motion.
+    let deck = physics.board.bodies()[BodyId::Deck.index()].rates;
+    let v = deck.linear_velocity;
+    let speed = (v.x * v.x + v.z * v.z).sqrt().max(1e-3);
+    let at = [deck.position.x, deck.position.y, deck.position.z];
+    let chaser = [at[0] - v.x / speed, at[1], at[2] - v.z / speed];
+    player.runtime.takedown = Some(super::skater::Takedown::from_positions(at, chaser));
+    let mut states = Vec::new();
+    for _ in 0..90 {
+        rig.step(&mut physics, &mut player, pad());
+        states.push(player.runtime.player_state.current());
+    }
+    eprintln!("takedown states: {:?}", states.iter().map(|s| *s as u32).collect::<Vec<_>>());
+    assert!(states.contains(&PhysicalStateId::WipeoutGround), "no wipeout within 3 s of the takedown");
+    assert!(player.runtime.takedown.is_none(), "the latch is used by WipeoutGround Enter");
+}

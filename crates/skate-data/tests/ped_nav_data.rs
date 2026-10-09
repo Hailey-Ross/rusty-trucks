@@ -92,7 +92,7 @@ fn run(m: &NavMesh, bodies: &mut [Body], ticks: u32, rule: CrosswalkRule, signal
             let out = b.nav.step(m, &p, rule, signals, b.id, b.pos, b.heading, b.state, &others, dt);
             b.heading += out.turn;
             match out.intent {
-                Intent::Walk => {
+                Intent::Walk | Intent::Run => {
                     b.state = Locomotion::Walk;
                     let f = forward(b.heading);
                     let (next, ok) = constrain_step(m, b.pos, [b.pos[0] + f[0] * 1.325 * dt, b.pos[1], b.pos[2] + f[1] * 1.325 * dt]);
@@ -301,7 +301,7 @@ fn downtown_peds_at_the_ramp_never_walk_in_place() {
             let out = x.b.nav.step(&m, &params, CrosswalkRule::Off, &NoSignals, x.b.id, x.b.pos, x.b.heading, x.b.state, &others, dt);
             x.b.heading += out.turn;
             match out.intent {
-                Intent::Walk => {
+                Intent::Walk | Intent::Run => {
                     x.b.state = Locomotion::Walk;
                     let f = forward(x.b.heading);
                     let to = [x.b.pos[0] + f[0] * 1.325 * dt, x.b.pos[1], x.b.pos[2] + f[1] * 1.325 * dt];

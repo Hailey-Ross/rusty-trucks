@@ -126,11 +126,14 @@ pub mod names {
     pub const START: &str = "Stand2Walk";
     pub const STOP: &str = "Walk2Stand";
     pub const TURN_180: &str = "StandTurnR180";
+    /// The chase / flee run cycle (stock `*_CHASE_RUN_N_0_CYC`, logical name hash
+    /// `7746273E01422734`).
+    pub const RUN: &str = "FwdChaseRunCyc";
     /// Every logical name the loader resolves (more for later milestones; a mod may add).
     pub const ALL: &[&str] = &[
         "IdleBasicCyc", "FwdWalkCyc", "FwdBriskWalkCyc", "Stand2Walk", "Walk2Stand", "StandTurnR45", "StandTurnR90", "StandTurnR135",
         "StandTurnR180", "StandTurnR180Out", "WalkTurnR45", "WalkTurnR90", "WalkTurnR135", "WalkTurnR180", "WalkTurnR180Out", "FwdShuffleCyc",
-        "Stand2Shuffle", "Shuffle2Stand",
+        "Stand2Shuffle", "Shuffle2Stand", "FwdChaseRunCyc",
         // Collision reactions (`super::skater_contact::REACTION_ANIMS`).
         "CollisionBackStanding", "CollisionFwdStanding", "CollisionLeftStanding",
         "WipeoutBackFall", "WipeoutBackGroundCyc", "WipeoutBackGetUp",
@@ -156,6 +159,10 @@ pub enum Locomotion {
     Idle,
     Start,
     Walk,
+    /// Running (flee / chase): the run cycle. The run's own start, stop and turn clips are not
+    /// wired (ours until the motion graph runs): it enters from standing or walking and stops
+    /// through the walk stop.
+    Run,
     Stop,
     TurnRight,
     TurnLeft,
@@ -169,6 +176,7 @@ impl Locomotion {
             Locomotion::Idle => "idle",
             Locomotion::Start => "start",
             Locomotion::Walk => "walk",
+            Locomotion::Run => "run",
             Locomotion::Stop => "stop",
             Locomotion::TurnRight => "turn_right",
             Locomotion::TurnLeft => "turn_left",
@@ -182,6 +190,7 @@ impl Locomotion {
 pub enum Intent {
     Idle,
     Walk,
+    Run,
     TurnRight,
     TurnLeft,
 }
@@ -372,6 +381,11 @@ impl PedAnimPlayer {
                 Intent::Walk => {
                     self.play(set, names::START, timing::START_BLEND, false, Locomotion::Start);
                 }
+                Intent::Run => {
+                    if !self.play(set, names::RUN, timing::START_BLEND, false, Locomotion::Run) {
+                        self.play(set, names::START, timing::START_BLEND, false, Locomotion::Start);
+                    }
+                }
                 Intent::TurnRight => {
                     self.play(set, names::TURN_180, timing::TRANSITION_BLEND, false, Locomotion::TurnRight);
                 }
@@ -385,12 +399,21 @@ impl PedAnimPlayer {
                 }
             },
             Locomotion::Start => {
-                if remaining <= timing::START_EXIT {
+                if remaining <= timing::START_EXIT && !(self.intent == Intent::Run && self.play(set, names::RUN, timing::WALK_BLEND, false, Locomotion::Run)) {
                     self.play(set, names::WALK, timing::WALK_BLEND, false, Locomotion::Walk);
                 }
             }
             Locomotion::Walk => {
-                if self.intent != Intent::Walk && self.in_branch_window() {
+                if self.intent == Intent::Run && self.in_branch_window() {
+                    self.play(set, names::RUN, timing::WALK_BLEND, false, Locomotion::Run);
+                } else if self.intent != Intent::Walk && self.intent != Intent::Run && self.in_branch_window() {
+                    self.play(set, names::STOP, timing::TRANSITION_BLEND, false, Locomotion::Stop);
+                }
+            }
+            Locomotion::Run => {
+                if self.intent == Intent::Walk && self.in_branch_window() {
+                    self.play(set, names::WALK, timing::WALK_BLEND, false, Locomotion::Walk);
+                } else if self.intent != Intent::Run && self.intent != Intent::Walk && self.in_branch_window() {
                     self.play(set, names::STOP, timing::TRANSITION_BLEND, false, Locomotion::Stop);
                 }
             }

@@ -28,8 +28,11 @@ use skate_core::living_world::{
 };
 use std::path::Path;
 
+pub(crate) mod npc_avoid;
 pub(crate) mod npc_sim;
 pub(crate) mod npc_skaters;
+pub(crate) mod ped_graph;
+pub(crate) mod ped_mood;
 pub(crate) mod peds;
 pub(crate) mod vehicle_contacts;
 pub(crate) mod vehicles;
@@ -140,6 +143,12 @@ pub(crate) struct LivingWorldSettings {
     /// Off by default until play-tested (`SKATE_NPC_SIM=1`); a mod may switch it and change the
     /// radius and count. `LivingWorldSettings::default()` restores the default.
     pub npc_simulated: npc_sim::SimulatedTierSettings,
+    /// The NPC skaters' retail obstacle avoider (`skate_core::living_world::avoid`, doc 26 "NPC
+    /// skater obstacle avoider"); retail values by default, mod-tunable (`npc_avoid`).
+    pub npc_avoid: skate_core::living_world::avoid::AvoidSettings,
+    /// The ped behaviour runtime: the stock ped AI graph on each ped's brain (doc 26 "Ped
+    /// behaviour runtime"); retail values, mod-tunable (`ped_brain`).
+    pub ped_brain: PedBrainSettings,
     /// The player's menu choice (saved in `settings/graphics.json`), restored when a mod's
     /// override is undone.
     pub user_npc_draw_distance: f32,
@@ -183,6 +192,8 @@ impl Default for LivingWorldSettings {
             npc_tricks: Default::default(),
             skater_trick_profiles: Default::default(),
             npc_simulated: Default::default(),
+            npc_avoid: Default::default(),
+            ped_brain: Default::default(),
             free_play: None,
             zombie: false,
             net_role: NetRole::Standalone,
@@ -708,5 +719,22 @@ impl Plugin for LivingWorldPlugin {
         peds::install(app);
         vehicles::install(app);
         vehicle_contacts::install(app);
+    }
+}
+
+/// The ped behaviour runtime's switch and values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PedBrainSettings {
+    pub enabled: bool,
+    /// The mood system raises wants from the stock mood tables.
+    pub mood: bool,
+    /// Where a fleeing ped runs (retail values).
+    pub flee: skate_core::living_world::peds::flee::FleeParams,
+    pub values: skate_core::living_world::peds::brain::BrainSettings,
+}
+
+impl Default for PedBrainSettings {
+    fn default() -> Self {
+        Self { enabled: true, mood: true, flee: Default::default(), values: Default::default() }
     }
 }

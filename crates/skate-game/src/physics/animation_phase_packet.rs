@@ -164,6 +164,13 @@ impl AnimationPhaseOutput {
         self.reset.externally_controlled = true;
         source.fresh = false;
     }
+    /// A ped takedown (`82593640` copies actor `1904` bit 30 to P+10496 and the direction to
+    /// P+10480; `82DB5BE0` maps them to Processed +2468 bit 2 and +1520).
+    pub(super) fn publish_takedown(&mut self, direction: [f32; 3]) {
+        self.publication.flags_10375_10496_10784[1] = 1;
+        self.publication.vector_10480 = [direction[0], direction[1], direction[2], 0.0].map(f32::to_bits);
+        self.reset.external_impulse_active = true;
+    }
     pub(super) fn publish_external_reset(
         &mut self,
         reply: skate_core::animation::output::actor_packet::ExternalReset,

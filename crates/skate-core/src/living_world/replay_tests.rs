@@ -25,6 +25,7 @@ fn straight(n: u8, origin: Vec3, count: u32, frames: u8, step: f32) -> ReplayLin
             event: 0,
             flags: 0,
             jump: None,
+            width: [50, 50],
         })
         .collect();
     ReplayLine { id: id(n), flags: 4, skill: 0, nodes, jumps: vec![], groups: vec![] }

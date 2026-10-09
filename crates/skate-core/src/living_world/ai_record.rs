@@ -116,12 +116,174 @@ pub fn spawn_push(skater: Vec3, node: Vec3, step: Vec3, first_node: bool, ai_kin
     Some(step.map(|x| x * FRAMES_PER_SECOND * scale))
 }
 
+/// Gravity of a recorded jump's arc (`0x822F8B40`, the player's value).
+pub const TRAJECTORY_GRAVITY: f32 = -9.8;
+/// Record flag bits (`+160`): 26 = carries a recorded trajectory, 27 = it lands in a grind / slide.
+pub const FLAG_TRAJECTORY: u32 = 1 << 26;
+pub const FLAG_LANDS_IN_GRIND: u32 = 1 << 27;
+/// The ext data's HasTrajectory bit (ext byte `+39` bit 0).
+pub const EXT_HAS_TRAJECTORY: u8 = 1;
+
+/// `sub_8246DA18` / `sub_82453870`: put a recorded jump into the record: +80 start position, +96
+/// start velocity, +112 gravity (0, -9.8, 0), +128 the -1 splat, +144 the recorded offset; bit 26,
+/// and bit 27 when it lands in a grind or slide ([`lands_in_grind`]). Nothing without the
+/// HasTrajectory bit.
+pub fn with_trajectory(record: &mut ExternalPhysicsInput, jump: &super::replay::ReplayJump, lands_in_grind: bool) {
+    if jump.flags & EXT_HAS_TRAJECTORY == 0 {
+        return;
+    }
+    record.vectors[5] = words(jump.start_position, 0.0);
+    record.vectors[6] = words(jump.start_velocity, 0.0);
+    record.vectors[7] = words([0.0, TRAJECTORY_GRAVITY, 0.0], 0.0);
+    record.vectors[8] = [(-1.0f32).to_bits(); 4];
+    record.vectors[9] = words(jump.offset, 0.0);
+    record.flags |= FLAG_TRAJECTORY;
+    if lands_in_grind {
+        record.flags |= FLAG_LANDS_IN_GRIND;
+    }
+}
+
+/// The take-off node the record's trajectory comes from: the first node from `from` on that
+/// carries a recorded trajectory, looking over ground nodes only (once the line is airborne the
+/// jump has started). Retail reads the PathController's current ext entry (`pc+692`, its cursor
+/// is not decoded); the selector's accept rule (2 m of the recorded start) guards the choice.
+pub fn upcoming_trajectory(line: &super::replay::ReplayLine, from: u32) -> Option<(u32, &super::replay::ReplayJump)> {
+    for (i, n) in line.nodes.iter().enumerate().skip(from as usize) {
+        if let Some(j) = n.jump.and_then(|j| line.jumps.get(j as usize)).filter(|j| j.flags & EXT_HAS_TRAJECTORY != 0) {
+            return Some((i as u32, j));
+        }
+        if n.flags & super::replay::node_flags::AIRBORNE != 0 {
+            return None;
+        }
+    }
+    None
+}
+
+/// `sub_824551C0(path, node)`: whether the recorded jump after `from` lands in a grind or slide.
+/// From the first node carrying a trajectory on, it walks the line summing the recorded frames:
+/// a start-trick of category 5 (grind / slide, `catalog::category`, `sub_824545F0`) answers yes;
+/// category 8 / 9 (manual / powerslide), incidental air, an end-trick on the ground, another
+/// trajectory more than 60 frames later or more than 600 frames in all answer no; after an
+/// airborne end-trick the first ground node answers yes only when the next node starts a
+/// category-5 trick.
+pub fn lands_in_grind(line: &super::replay::ReplayLine, from: u32) -> bool {
+    use super::replay::{node_events, node_flags};
+    let category = |n: &super::replay::ReplayNode| crate::scoring::catalog::category(line.node_trick(n)).unwrap_or(0);
+    let has_trajectory = |n: &super::replay::ReplayNode| n.jump.and_then(|j| line.jumps.get(j as usize)).is_some_and(|j| j.flags & EXT_HAS_TRAJECTORY != 0);
+    let (mut seen, mut frames, mut landed_from_air) = (false, 0u32, false);
+    for i in from as usize..line.nodes.len() {
+        let n = &line.nodes[i];
+        if !seen {
+            seen = has_trajectory(n);
+            continue;
+        }
+        frames += u32::from(n.frames);
+        if has_trajectory(n) {
+            if frames > 60 {
+                return false;
+            }
+            frames = 0;
+        }
+        match n.event {
+            node_events::START_TRICK => match category(n) {
+                5 => return true,
+                8 | 9 => return false,
+                _ => {}
+            },
+            node_events::END_TRICK => {
+                if n.flags & node_flags::AIRBORNE == 0 {
+                    return false;
+                }
+                landed_from_air = true;
+            }
+            node_events::INCIDENTAL_AIR => return false,
+            _ => {}
+        }
+        if landed_from_air && n.flags & node_flags::AIRBORNE == 0 {
+            return line.nodes.get(i + 1).is_some_and(|next| next.event == node_events::START_TRICK && category(next) == 5);
+        }
+        if frames > 600 {
+            return false;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::riding::grounded::state::board_path::{flags, SteerTarget};
 
     const IDENTITY: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+    use crate::living_world::replay::{node_events as ev, node_flags as nf, ReplayJump, ReplayLine, ReplayNode};
+
+    /// A line from (event, flags, frames, jump) rows; jump 0 = the recorded trajectory, 1 = a
+    /// grind slot (5050), 2 = a manual slot (nosemanual), 3 = a flip slot (360flip).
+    fn line(rows: &[(u8, u8, u8, Option<u32>)]) -> ReplayLine {
+        let jump = |trick: i16, flags: u8| ReplayJump { start_position: [1.0, 2.0, 3.0], start_velocity: [0.0, 4.0, 8.0], offset: [0.0, 0.1, 0.0], trick, spins: 0, flags };
+        ReplayLine {
+            id: [0; 16],
+            flags: 4,
+            skill: 0,
+            nodes: rows
+                .iter()
+                .enumerate()
+                .map(|(i, &(event, flags, frames, jump))| ReplayNode { position: [0.0, 0.0, i as f32], step: [0.0; 3], board: [128, 128, 128, 255], skater: [128, 128, 128, 255], frames, event, flags, jump, width: [50, 50] })
+                .collect(),
+            jumps: vec![jump(1, EXT_HAS_TRAJECTORY), jump(39, 0), jump(2, 0), jump(85, 0)],
+            groups: vec![],
+        }
+    }
+
+    #[test]
+    fn a_recorded_jump_lands_in_a_grind_only_per_retails_scan() {
+        let take_off = (0, 0, 4, Some(0));
+        let air = (0, nf::AIRBORNE, 4, None);
+        let ground = (0, 0, 4, None);
+        // Straight into a grind.
+        assert!(lands_in_grind(&line(&[ground, take_off, air, (ev::START_TRICK, nf::AIRBORNE, 4, Some(1))]), 0));
+        // Into a manual: no.
+        assert!(!lands_in_grind(&line(&[ground, take_off, air, (ev::START_TRICK, 0, 4, Some(2))]), 0));
+        // A flip ending in the air, the first ground node, then a grind starts: yes; a flip after it: no.
+        let flip = (ev::START_TRICK, nf::AIRBORNE, 4, Some(3));
+        let end = (ev::END_TRICK, nf::AIRBORNE, 4, None);
+        assert!(lands_in_grind(&line(&[take_off, flip, end, ground, (ev::START_TRICK, 0, 4, Some(1))]), 0));
+        assert!(!lands_in_grind(&line(&[take_off, flip, end, ground, (ev::START_TRICK, 0, 4, Some(3))]), 0));
+        // An end-trick on the ground, incidental air: no.
+        assert!(!lands_in_grind(&line(&[take_off, flip, (ev::END_TRICK, 0, 4, None)]), 0));
+        assert!(!lands_in_grind(&line(&[take_off, (ev::INCIDENTAL_AIR, nf::AIRBORNE, 4, None), (ev::START_TRICK, 0, 4, Some(1))]), 0));
+        // More than 600 recorded frames before the grind: no; nothing before the trajectory counts.
+        let mut rows = vec![take_off];
+        rows.extend(std::iter::repeat_n((0, 0, 60, None), 11));
+        rows.push((ev::START_TRICK, 0, 4, Some(1)));
+        assert!(!lands_in_grind(&line(&rows), 0));
+        assert!(!lands_in_grind(&line(&[(ev::START_TRICK, 0, 4, Some(1)), ground]), 0));
+    }
+
+    #[test]
+    fn a_recorded_trajectory_fills_the_record_block() {
+        let l = line(&[(0, 0, 4, Some(0))]);
+        let mut r = build(&LineTarget { position: [0.0; 3], frame: IDENTITY, step: [0.0, 0.0, 0.1] }, [0.0, 0.0, 1.0], &SteerState::default());
+        let base = r.flags;
+        with_trajectory(&mut r, &l.jumps[0], true);
+        let f = |i: usize| r.vectors[i].map(f32::from_bits);
+        assert_eq!(f(5)[..3], [1.0, 2.0, 3.0]);
+        assert_eq!(f(6)[..3], [0.0, 4.0, 8.0]);
+        assert_eq!(f(7)[..3], [0.0, -9.8, 0.0]);
+        assert_eq!(f(8), [-1.0; 4]);
+        assert_eq!(f(9)[..3], [0.0, 0.1, 0.0]);
+        assert_eq!(r.flags, base | FLAG_TRAJECTORY | FLAG_LANDS_IN_GRIND);
+        // The take-off ahead of the cursor, none once airborne.
+        let l2 = line(&[(0, 0, 4, None), (0, 0, 4, Some(0)), (0, nf::AIRBORNE, 4, None), (0, 0, 4, Some(0))]);
+        assert_eq!(upcoming_trajectory(&l2, 0).map(|t| t.0), Some(1));
+        assert_eq!(upcoming_trajectory(&l2, 2).map(|t| t.0), None);
+        // A slot without HasTrajectory adds nothing.
+        let mut plain = build(&LineTarget { position: [0.0; 3], frame: IDENTITY, step: [0.0, 0.0, 0.1] }, [0.0, 0.0, 1.0], &SteerState::default());
+        let before = plain.clone();
+        with_trajectory(&mut plain, &l.jumps[1], true);
+        assert_eq!(plain, before);
+    }
 
     #[test]
     fn riding_defaults_steer_on_every_axis() {

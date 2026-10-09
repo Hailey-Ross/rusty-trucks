@@ -25,12 +25,39 @@ use skate_core::physics::{
 use skate_data::collections::Collections;
 use std::path::Path;
 
+/// A pending ped takedown on the skater (see [`SkaterRuntime::takedown`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Takedown {
+    /// Unit direction from the chaser to the skater (zero when they coincide).
+    pub direction: [f32; 3],
+    /// Seconds the latch has been set.
+    pub age: f32,
+}
+
+impl Takedown {
+    /// `82592390`: normalize(skater - chaser), zero when coincident.
+    pub fn from_positions(skater: [f32; 3], chaser: [f32; 3]) -> Self {
+        let d = [skater[0] - chaser[0], skater[1] - chaser[1], skater[2] - chaser[2]];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let direction = if l > 1e-6 { [d[0] / l, d[1] / l, d[2] / l] } else { [0.0; 3] };
+        Self { direction, age: 0.0 }
+    }
+}
+
+/// How long a takedown latch waits for the wipeout before it is dropped, s. NOT RETAIL: retail's
+/// clear of `1904` bit 30 is not found (b15); this keeps a missed wipeout from holding the flag.
+pub(crate) const TAKEDOWN_LATCH_SECONDS: f32 = 2.0;
+
 #[derive(Resource)]
 pub(crate) struct SkaterRuntime {
     /// The AI controller's physics record (an NPC skater; `None` for the local player). Retail:
     /// AIPhysicsInput `*(skater+1840)`, written by the PathController, with the actor's "input
     /// fresh" bit (`1904` bit 27) and the controller pointer (`1828`).
     pub ai_physics: Option<AiPhysicsSource>,
+    /// A ped took this skater down (retail `82592390`: actor `1904` bit 30 and the direction
+    /// away from the chaser at `*(actor+1832)`), published as the packet's external impulse until
+    /// WipeoutGround Enter used it.
+    pub takedown: Option<Takedown>,
     pub scoring: crate::scoring_runtime::Runtime,
     pub climbing: super::climbing::Runtime,
     /// Completed physical pose in native animation space, read by rendering.
@@ -271,6 +298,7 @@ impl SkaterRuntime {
         ];
         Ok(Self {
             ai_physics: None,
+            takedown: None,
             respawn,
             scoring: crate::scoring_runtime::Runtime::load(&data)?,
             climbing: super::climbing::Runtime::load(asset_root, &animation.evaluator.frames.bone_names)?,

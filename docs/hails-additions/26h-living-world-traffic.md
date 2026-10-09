@@ -414,3 +414,38 @@ the two mod options), `living_world_car_box_matches_the_car_proxy`,
   the body); a recomp hook on `sub_82E38FB8` with kind 2 would show it. Peds seldom stand in a lane, which is why the
   user may remember a different game.
 - The skater's car-hit bail rules (vehicle contact term `0x820CFF14`, 9.0 limits) are V5.
+
+## Skitching: research and the tow spring (2026-10-09, groundwork)
+
+**Retail [code] (`.local/research/npc/b26-skitching.md`, `b27-skitch-state.md`, `b30-skitch-pull-release.md`; main
+checked the state id, the vault keys of the spring, its constants and the update gate).** Cars carry grab splines;
+the grab query (`GrabSplineQueryManager`) publishes grab records at ProcessedPhysIn +1888 / +2176 (ours:
+`player/post_input.rs:180` `publish_candidates_82d740f8`); with the hand flag (+2476 bit 21, not the animation's
+GrabWorld bit 22) and a ready record the selector enters Skitching (104; ours: `player/selector/ground.rs:48`). The
+state's update (`sub_82D477C0`, vtable `0x82327398`) runs only while +2480 bit 22 is set and holds the skater to
+the car with a velocity-target spring (`sub_82D4B500`, board force tag 6), not a pin; release is the selector's
+(hand flag lost -> 100, vehicle contact > 9.0 -> 300, off the ground -> 100). The car side receives a per-frame
+"held" message (`sub_82C361E8`: +20 % speed cap, a latch for the player).
+
+**Change (groundwork only).** skate-core `riding::skitching`: `SkitchSpringSettings` (vault
+`physics_state_skitching/default` retail values) and `tow_spring` (`sub_82D4B500`); `SkitchSubMode` (`sub_82D49580`,
+`b31-skitch-submode-hold.md`, main checked its vault getters): modes 0 settle, 1 inside the grab range, 2 at the
+edge, 3 stepping off, 4 let go (readings inferred), with the 0.5 s settle timers, the 0.4 m edge band, the stick
+toward / outward tests and the outward car-acceleration push time; the riding skater's skitch query
+(`sub_82D39D98`, `b33-skitch-wiring.md`, main checked our publication of the hand flag): time to a candidate spline
+`max(0, (ahead - 1.0) / max(closing, 0.5))`, latch below 0.1 s, the re-grab cooldown that skips the last car
+(`SkitchQuerySettings`, `choose_skitch`). The hand flag (2476 bit 21) is already published from the ground state's
+latch byte (`player/input_phase/publication.rs:262`, `riding/grounded/state/output.rs:159`); nothing sets the latch
+yet. The car grab splines are authored on the disc (`b34`, `b35`: RW4 GRABDATA `0x00EB001F` in the
+vehicle model-part `.rx2` files of `livingworld.big`; main ran the parser over the disc: 17 car models, one rear-edge
+Bezier spline each, 12 to 24 control points, direction (0, 0, -1), z -1.93 to -3.12 m in the model frame; grab
+record type 1): `tools/asset_pipeline/grab_data.py` parses them (not yet called by the vehicle exporter). Not wired: no state-104 handler,
+no hand-flag producer, no car grab splines yet.
+
+**Verification.** skate-core `the_tow_spring_follows_the_speed_curve_and_is_capped`,
+`the_sub_mode_tracks_the_grab_range`, `the_skitch_query_latches_the_first_spline_within_reach`; pipeline
+`test_grab_data` (synthetic RX2).
+
+**Open.** The skitch frame (`sub_82D48148`, research b32 running) and the state fields' meanings, the along-car hold
+chain (`82D48C98`: car acceleration + stick + rest servo -> offset target; b31 decoded the arithmetic), the car grab splines (research b34), the latch wiring in the ground update (`ground_runtime/update.rs:117`,
+gated by owner +12836 bit 0x40, open) and the car-side hook.

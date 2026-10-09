@@ -280,6 +280,7 @@ pub fn replay_line(p: &AiPath) -> ReplayLine {
                 event: n.event,
                 flags: n.flags,
                 jump: n.extended.map(|e| e as u32),
+                width: [n.width_left, n.width_right],
             })
             .collect(),
         jumps: p

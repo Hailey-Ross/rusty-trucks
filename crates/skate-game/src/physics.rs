@@ -37,6 +37,7 @@ pub(crate) mod solid_contacts;
 pub(crate) mod network;
 pub(crate) use skater::SkaterRuntime;
 pub(crate) use skater::AiPhysicsSource;
+pub(crate) use skater::Takedown;
 pub(crate) use input_phase::facing_from_visual;
 mod animation_feedback;
 mod animation_feedback_settings;
@@ -615,12 +616,21 @@ impl GamePhysics {
         controls: &mut PlayerControls,
         graphs: &crate::graph_runtime::StockGraphs,
         camera: &mut crate::camera::CameraRuntime,
+        ai_intents: &[(String, f32)],
     ) -> Result<(), String> {
         self.swap_skater_context(context);
         let mut actions = skate_core::input::tick::TickInput::new(0, skate_core::input::gameplay_map::GameplayActions::from_values([0.0; 18]), true).actions();
-        let result = controls
-            .update_for_physics(&mut actions, self, skater, camera)
-            .and_then(|()| frame::advance(self, skater, controls, graphs, &mut actions, true, camera));
+        let result = controls.update_for_physics(&mut actions, self, skater, camera).and_then(|()| {
+            // The AI's ActionGraph signals (`skate_core::living_world::ai_signals`) go where the
+            // player's gestures go (`publish_gestures`).
+            for (name, value) in ai_intents {
+                controls.action_intents.insert(name, *value);
+                if value.abs() > 0.01 {
+                    controls.named_intents.insert(name.clone(), *value);
+                }
+            }
+            frame::advance(self, skater, controls, graphs, &mut actions, true, camera)
+        });
         self.swap_skater_context(context);
         result
     }

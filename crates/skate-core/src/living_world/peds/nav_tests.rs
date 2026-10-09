@@ -153,7 +153,7 @@ fn run(m: &NavMesh, bodies: &mut [Body], ticks: u32, rule: CrosswalkRule, signal
             let out = b.nav.step(m, &p, rule, signals, b.id, b.pos, b.heading, b.state, &others, dt);
             b.heading += out.turn;
             match out.intent {
-                Intent::Walk => {
+                Intent::Walk | Intent::Run => {
                     b.state = Locomotion::Walk;
                     let f = forward(b.heading);
                     let to = [b.pos[0] + f[0] * 1.325 * dt, b.pos[1], b.pos[2] + f[1] * 1.325 * dt];

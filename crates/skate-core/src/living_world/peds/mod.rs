@@ -23,10 +23,17 @@
 //! the spawn record and the tick.
 
 pub mod anim;
+pub mod brain;
+pub mod chase;
+pub mod conversation;
+pub mod perception;
+pub mod takedown;
 pub mod choice;
 pub mod colorize;
 pub mod crosswalk;
 pub mod fade;
+pub mod flee;
+pub mod mood;
 pub mod nav;
 pub mod obstacles;
 pub mod skater_contact;
