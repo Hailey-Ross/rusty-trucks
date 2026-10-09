@@ -3047,6 +3047,28 @@ a ground-physics or collision difference at that spot (a curb, a prop, or our wh
 FOLLOW_PATH (105), the recorded-trajectory jump (`82D682E8` / `82D67A00`), spawning simulated NPCs in the game and
 drawing them from their physics.
 
+## Simulated NPC skaters in the game (M7 step 3, 2026-10-08)
+
+**Change.** `living_world::npc_sim`: an NPC skater within 40 m of the player, on the ground and not in a trick,
+becomes a simulated skater (`NpcSim`: its own board context, `SkaterRuntime`, controls and camera runtime, loaded
+from the setup data at the switch); beyond 44 m (1.1 x), at the end of its line or on a physics error it goes back to
+the replay tier (only while on the ground). Each tick after the cursors advance: the AI record from the cursor, the
+retail spawn push while on its node, then `GamePhysics::advance_npc_skater` (the player's frame with a neutral pad,
+in its own context). It is drawn from its simulated pose like the player (`render_pose`, puppet root at the origin);
+its population position and audio still follow the cursor. At most 3 at once; only the authority simulates.
+Engine choices (retail simulates every ambient skater and never hands over): the distance switch and the handover at
+the line's speed. Off by default until play-tested: `SKATE_NPC_SIM=1`, or the mod value `npc_simulated {enabled,
+radius, max}`. Log: `NPC_SKATER_SIM` on every switch and every 2 s per replay-tier NPC with the reason it waits.
+
+**Verification.** Muted DownTown run with `SKATE_NPC_SIM=1` (40 s): andrew_reynolds switched at 39.9 m and stayed
+simulated for the rest of the run (about 30 s, through its tricks) without a physics error; the fixed physics step
+went from about 2.3 ms to 4.4 ms with one simulated skater. The others waited "too far" (51 to 122 m). Not seen on
+screen yet and not play-tested. skate-mods validation gains 2 cases; player identity and line tests still pass.
+
+**Open.** Its recorded ollies and tricks are not performed yet (no trajectory launch, no ActionGraph trick signals:
+a simulated NPC rolls through its jumps); skater-to-skater collision; how the board and look appear when drawn from
+the simulated pose; render interpolation (drawn at the 60 Hz tick).
+
 ## Verification
 
 - `cargo test -p skate-data --lib --tests --locked`: all pass (line format unit tests on synthetic blobs).

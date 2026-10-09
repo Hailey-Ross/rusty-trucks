@@ -993,7 +993,9 @@ function sdk.audio.seed(n) end
 --   retail windows 300 / 50 recorded 60 Hz frames),
 --   skater_trick_profiles {[<character key> or <ai_skater_profiles name>] = {regular = {{trick = <id 0..331>,
 --   weight}, ...}, nollie = {...}}} (replaces that table; an absent table keeps the disc's; a character key
---   wins over a profile name).
+--   wins over a profile name),
+--   npc_simulated {enabled, radius, max} (NPC skaters near the player as full physics skaters driven by their
+--   AI record; default off until play-tested, 40 m, 3).
 -- 'props': default and by_template[<MOBJ template name>] = {contact_padding, penetration_slop,
 --   penetration_correction, max_depenetration_per_tick, restitution_threshold, skater_push_mass,
 --   push_transfer, body_push_speed, board_push_speed, penetration_push_speed, stuck_release_ticks,

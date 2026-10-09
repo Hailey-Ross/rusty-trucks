@@ -259,6 +259,12 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         t.params.gate_window = f.gate_window.unwrap_or(t.params.gate_window);
         t.params.min_air_frames = f.min_air_frames.unwrap_or(t.params.min_air_frames);
     }
+    if let Some(f) = &p.npc_simulated {
+        let n = &mut s.npc_simulated;
+        n.enabled = f.enabled.unwrap_or(n.enabled);
+        n.radius = f.radius.unwrap_or(n.radius);
+        n.max = f.max.map_or(n.max, |m| m as usize);
+    }
     if let Some(m) = &p.skater_trick_profiles {
         let table = |t: &Option<Vec<skate_mods::world_tuning::TrickWeight>>| t.as_ref().map(|t| t.iter().map(|e| (e.trick, e.weight.max(0.0))).collect());
         s.skater_trick_profiles = m.iter().map(|(k, v)| (k.clone(), crate::living_world::npc_skaters::NpcTrickTables { regular: table(&v.regular), nollie: table(&v.nollie) })).collect();
@@ -425,6 +431,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "skater_blend_seconds": s.skater_blend_seconds,
                 "skater_stance": s.skater_stance.iter().map(|(k, v)| (k.clone(), v.name())).collect::<std::collections::BTreeMap<_, _>>(),
                 "skater_stance_events": s.skater_stance_events,
+                "npc_simulated": {"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max},
                 "npc_tricks": {"mode": s.npc_tricks.mode.name(), "gate_window": s.npc_tricks.params.gate_window, "min_air_frames": s.npc_tricks.params.min_air_frames},
                 "skater_trick_profiles": s.skater_trick_profiles.iter().map(|(k, v)| {
                     let table = |t: &Option<Vec<(i16, f32)>>| t.as_ref().map(|t| t.iter().map(|e| json!({"trick": e.0, "weight": e.1})).collect::<Vec<_>>());

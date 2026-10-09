@@ -36,7 +36,9 @@
 //!   flips; retail windows 300 / 50 recorded 60 Hz frames),
 //!   `skater_trick_profiles {[<character key> or <ai_skater_profiles name>] = {regular, nollie}}`
 //!   (each a list of `{trick = <EScorableID 0..332>, weight}`; replaces that table, an absent table
-//!   keeps the disc's; a character key wins over a profile name).
+//!   keeps the disc's; a character key wins over a profile name),
+//!   `npc_simulated {enabled, radius, max}` (NPC skaters near the player as full physics skaters
+//!   driven by their AI record; default off until play-tested, 40 m, 3).
 //! - `props`: `default` and `by_template[<MOBJ template name>]`, each a [`PropTuningPatch`].
 //! - `carry`: `grab_bit`, `placement_bit`, `grab_range`, and the Move Object tuning while
 //!   holding a prop (retail defaults from attribute class 3EDA5B140604613D): `push_speed`,
@@ -167,6 +169,17 @@ pub struct LivingWorldPatch {
     pub npc_tricks: Option<NpcTricksPatch>,
     /// NPC skater trick tables per character key or `ai_skater_profiles` name.
     pub skater_trick_profiles: Option<BTreeMap<String, TrickTablesPatch>>,
+    /// Simulated NPC skaters (`skate-game` `living_world::npc_sim`).
+    pub npc_simulated: Option<NpcSimulatedPatch>,
+}
+
+/// Simulated NPC skaters: `enabled`, `radius` (m, 0..=500), `max` (0..=16).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NpcSimulatedPatch {
+    pub enabled: Option<bool>,
+    pub radius: Option<f32>,
+    pub max: Option<u32>,
 }
 
 /// NPC skater trick choice: `mode` (one of [`NPC_SKATER_TRICK_MODES`], retail `"profile"`),
@@ -584,6 +597,7 @@ impl Merge for LivingWorldPatch {
         merge_nested(&mut self.npc_skater_props, &b.npc_skater_props);
         merge_nested(&mut self.ped_vehicle_contact, &b.ped_vehicle_contact);
         merge_nested(&mut self.npc_tricks, &b.npc_tricks);
+        merge_nested(&mut self.npc_simulated, &b.npc_simulated);
         match (self.skater_trick_profiles.as_mut(), &b.skater_trick_profiles) {
             (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
                 a.entry(k.clone()).or_insert_with(|| v.clone());
@@ -662,6 +676,12 @@ impl Merge for CarryPatch {
     }
 }
 
+impl Merge for NpcSimulatedPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; enabled, radius, max);
+    }
+}
+
 impl Merge for NpcTricksPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; mode, gate_window, min_air_frames);
@@ -736,6 +756,9 @@ impl LivingWorldPatch {
             && self.npc_tricks.as_ref().is_none_or(|t| {
                 t.mode.as_deref().is_none_or(|m| NPC_SKATER_TRICK_MODES.contains(&m))
                     && [t.gate_window, t.min_air_frames].into_iter().all(|v| v.is_none_or(|v| v <= MAX_TRICK_WINDOW))
+            })
+            && self.npc_simulated.as_ref().is_none_or(|n| {
+                n.radius.is_none_or(|r| r.is_finite() && (0.0..=500.0).contains(&r)) && n.max.is_none_or(|m| m <= 16)
             })
             && self.skater_trick_profiles.as_ref().is_none_or(|m| {
                 m.len() <= MAX_TEMPLATES && m.iter().all(|(k, v)| !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic()) && v.validate())

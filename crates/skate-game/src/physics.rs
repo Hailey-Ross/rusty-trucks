@@ -36,6 +36,7 @@ mod solve;
 pub(crate) mod solid_contacts;
 pub(crate) mod network;
 pub(crate) use skater::SkaterRuntime;
+pub(crate) use skater::AiPhysicsSource;
 pub(crate) use input_phase::facing_from_visual;
 mod animation_feedback;
 mod animation_feedback_settings;
@@ -151,8 +152,6 @@ pub(crate) struct GamePhysics {
     pub board_wiping_out: bool,
     /// The setup collections the per-skater parts load from (a simulated NPC skater's riding
     /// outputs at spawn, [`Self::new_skater_context`]).
-    // Read once simulated NPC skaters spawn (next living-world step).
-    #[cfg_attr(not(test), allow(dead_code))]
     collections: std::sync::Arc<Collections>,
     /// Whether the skater in the context steps the dynamic props (the local player). A simulated
     /// NPC skater's context does not: the props step once per tick, the NPCs push them through
@@ -164,8 +163,6 @@ pub(crate) struct GamePhysics {
 /// its board, riding outputs, clock and exchange. A simulated NPC skater keeps one and swaps it in
 /// around its own tick ([`GamePhysics::swap_skater_context`]); the world, props, grind world,
 /// settings and network proxies stay shared.
-// Constructed once simulated NPC skaters spawn (next living-world step).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct SkaterPhysicsContext {
     clock: clock::SimulationClock,
     board: BoardRuntime,
@@ -571,7 +568,6 @@ impl GamePhysics {
 
     /// A fresh skater context at `spawn` (a simulated NPC skater): a new board, riding outputs from
     /// the same collections, a clock and exchange at tick 0; it does not step the props.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new_skater_context(&self, spawn: RetailAffineTransform) -> Result<SkaterPhysicsContext, String> {
         let board = BoardRuntime::new(self.settings.masses, self.settings.authored, spawn, self.settings.step.simulation, BoardMotion::Active);
         let processed_flags_2468 = 0x2000;
@@ -594,7 +590,53 @@ impl GamePhysics {
     }
 
     /// Swap the per-skater parts with `context` (call again with the same context to swap back).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// A simulated NPC skater's runtime, loaded against its own context (`SkaterRuntime::load` reads
+    /// the board it starts on).
+    pub(crate) fn load_skater_in_context(
+        &mut self,
+        context: &mut SkaterPhysicsContext,
+        asset_root: &std::path::Path,
+        graphs: &crate::graph_runtime::StockGraphs,
+        difficulty: &str,
+    ) -> Result<SkaterRuntime, String> {
+        self.swap_skater_context(context);
+        let result = SkaterRuntime::load(asset_root, graphs, self, difficulty);
+        self.swap_skater_context(context);
+        result
+    }
+
+    /// One tick of a simulated NPC skater in its own context: its controls with a neutral pad
+    /// (retail's AI presses no pad buttons for riding; its record steers), then the same frame
+    /// advance as the player. The context is swapped back on error too.
+    pub(crate) fn advance_npc_skater(
+        &mut self,
+        context: &mut SkaterPhysicsContext,
+        skater: &mut SkaterRuntime,
+        controls: &mut PlayerControls,
+        graphs: &crate::graph_runtime::StockGraphs,
+        camera: &mut crate::camera::CameraRuntime,
+    ) -> Result<(), String> {
+        self.swap_skater_context(context);
+        let mut actions = skate_core::input::tick::TickInput::new(0, skate_core::input::gameplay_map::GameplayActions::from_values([0.0; 18]), true).actions();
+        let result = controls
+            .update_for_physics(&mut actions, self, skater, camera)
+            .and_then(|()| frame::advance(self, skater, controls, graphs, &mut actions, true, camera));
+        self.swap_skater_context(context);
+        result
+    }
+
+    /// The deck of a context (the simulated NPC skater's board) without swapping it in.
+    pub(crate) fn context_deck(context: &SkaterPhysicsContext) -> RetailAffineTransform {
+        context.board.part_transforms()[skate_core::physics::board::BodyId::Deck.index()]
+    }
+
+    /// Every part of a context's board at `velocity` (`82C04168`, the AI spawn push).
+    pub(crate) fn set_context_velocity(context: &mut SkaterPhysicsContext, velocity: [f32; 3]) {
+        for body in context.board.bodies_mut() {
+            body.rates.linear_velocity = Vector3::new(velocity[0], velocity[1], velocity[2]);
+        }
+    }
+
     pub(crate) fn swap_skater_context(&mut self, context: &mut SkaterPhysicsContext) {
         std::mem::swap(&mut self.clock, &mut context.clock);
         std::mem::swap(&mut self.board, &mut context.board);

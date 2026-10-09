@@ -657,7 +657,7 @@ pub(crate) fn track_stance(
 pub(crate) const PUPPET_CLIPS: [&str; 8] =
     ["R_IDLE_RIDE_N_0_CYC", "R_IDLE_RIDE_AGGR_0_CYC", "R_IDLE_RIDE_LOOSE_0_CYC", "R_IDLE_LCOM_000", "IA_IDLE_N_N_0_CYC", "IA_IDLE_LO_N_0_CYC", "G_5050_FS_LOW_0_CYC", "BR_STAND_0_CYC"];
 
-fn npc_lines(state: &PopulationState) -> Arc<BTreeMap<[u8; 16], ReplayLine>> {
+pub(crate) fn npc_lines(state: &PopulationState) -> Arc<BTreeMap<[u8; 16], ReplayLine>> {
     state.npc.lines.clone()
 }
 
@@ -1063,7 +1063,7 @@ pub(crate) fn present_pose(
     settings: Res<LivingWorldSettings>,
     state: Res<PopulationState>,
     fixed: Res<Time<Fixed>>,
-    mut npcs: Query<(Entity, &NpcSkater, &NpcReplay, Option<&NpcPuppet>, Option<&mut NpcPuppetClip>, &mut Transform, Option<&NpcStanceTrack>)>,
+    mut npcs: Query<(Entity, &NpcSkater, &NpcReplay, Option<&NpcPuppet>, Option<&mut NpcPuppetClip>, &mut Transform, Option<&NpcStanceTrack>, Option<&super::npc_sim::NpcSim>)>,
     mut joints: Query<&mut Transform, Without<NpcReplay>>,
 ) {
     let lines = npc_lines(&state);
@@ -1075,7 +1075,21 @@ pub(crate) fn present_pose(
     let hz = state.world.clock().hz;
     let ahead = (state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * hz).clamp(0.0, 1.0) as f32
         * FRAMES_PER_TICK as f32;
-    for (e, npc, replay, puppet, current, mut root, stance) in &mut npcs {
+    for (e, npc, replay, puppet, current, mut root, stance, sim) in &mut npcs {
+        // A simulated NPC skater is drawn from its own physics pose, like the player: its
+        // render pose is in world space, so the puppet root sits at the origin.
+        if let Some(sim) = sim {
+            *root = Transform::IDENTITY;
+            if let Some(bindings) = puppet.and_then(|p| p.bindings.as_ref()) {
+                let pose: Vec<Mat4> = sim.render_pose().iter().copied().map(crate::animation::native_matrix).collect();
+                for (joint, local) in bindings.pose_transforms(&pose) {
+                    if let Ok(mut t) = joints.get_mut(joint) {
+                        *t = local;
+                    }
+                }
+            }
+            continue;
+        }
         let (cursor, frac) = match &replay.previous {
             Some(previous) if !replay.cursor.finished => previous.render_cursor(&*lines, &replay.branches, &replay.tricks, ahead),
             _ => (replay.cursor.clone(), 0.0),
@@ -1491,7 +1505,7 @@ pub(crate) fn install(app: &mut App) {
     app.init_resource::<NpcSkaterIndex>()
         .init_resource::<NpcSkaterLooks>()
         .add_message::<NpcSkaterEvent>()
-        .add_systems(FixedUpdate, (apply_records, advance, track_stance, log_backwards, log_readout).chain().after(super::step_population))
+        .add_systems(FixedUpdate, (apply_records, advance, super::npc_sim::simulate, track_stance, log_backwards, log_readout).chain().after(super::step_population))
         .add_systems(
             FixedUpdate,
             push_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),

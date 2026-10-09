@@ -372,7 +372,7 @@ function sdk.audio.frontend(name) submit{kind="audio_frontend",name=name} end
 function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",amount=amount} end
 
 -- World tuning (capability world_tuning): patch the living world ("living_world": npc_draw_distance,
--- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, skater_stance, skater_stance_events, ped_obstacles, npc_skater_props, ped_vehicle_contact, npc_tricks, skater_trick_profiles), dynamic props ("props": default / by_template prop tuning, collision_box)
+-- skater_fade, skater_line_chain, ped_fade, skater_clips, skater_blend_seconds, skater_stance, skater_stance_events, ped_obstacles, npc_skater_props, ped_vehicle_contact, npc_tricks, skater_trick_profiles, npc_simulated), dynamic props ("props": default / by_template prop tuning, collision_box)
 -- or prop carrying ("carry": grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed,
 -- turn_rate, grip_reach, linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller,
 -- lever_rotation, lever_yaw, mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal, hold_box_extents,

@@ -28,6 +28,7 @@ use skate_core::living_world::{
 };
 use std::path::Path;
 
+pub(crate) mod npc_sim;
 pub(crate) mod npc_skaters;
 pub(crate) mod peds;
 pub(crate) mod vehicle_contacts;
@@ -135,6 +136,10 @@ pub(crate) struct LivingWorldSettings {
     /// name; an absent table keeps the disc's); empty = the disc's tables. Read at each slot.
     /// Cleared by [`Self::reset_mod_overrides`].
     pub skater_trick_profiles: std::collections::BTreeMap<String, npc_skaters::NpcTrickTables>,
+    /// Simulated NPC skaters near the player (full physics driven by their AI record; doc 26 M7).
+    /// Off by default until play-tested (`SKATE_NPC_SIM=1`); a mod may switch it and change the
+    /// radius and count. `LivingWorldSettings::default()` restores the default.
+    pub npc_simulated: npc_sim::SimulatedTierSettings,
     /// The player's menu choice (saved in `settings/graphics.json`), restored when a mod's
     /// override is undone.
     pub user_npc_draw_distance: f32,
@@ -177,6 +182,7 @@ impl Default for LivingWorldSettings {
             skater_stance_events: Default::default(),
             npc_tricks: Default::default(),
             skater_trick_profiles: Default::default(),
+            npc_simulated: Default::default(),
             free_play: None,
             zombie: false,
             net_role: NetRole::Standalone,

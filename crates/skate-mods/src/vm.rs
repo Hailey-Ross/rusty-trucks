@@ -2415,6 +2415,8 @@ mod world_audio_tests {
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"nope":1}}), false),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_tricks":{"mode":"recorded","min_air_frames":30},"skater_trick_profiles":{"default":{"regular":[{"trick":96,"weight":1.0}]}}}}), true),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_tricks":{"mode":"scripted"}}}), false),
+            (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_simulated":{"enabled":true,"radius":30.0,"max":2}}}), true),
+            (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"npc_simulated":{"radius":-1.0}}}), false),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"skater_trick_profiles":{"default":{"regular":[{"trick":400,"weight":1.0}]}}}}), false),
             (json!({"kind":"world_set_tuning","domain":"living_world","patch":{"skater_trick_profiles":{"default":{"nollie":[{"trick":117,"weight":-1.0}]}}}}), false),
             (json!({"kind":"world_set_tuning","domain":"roads","patch":{}}), false),
