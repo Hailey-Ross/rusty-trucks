@@ -1,4 +1,4 @@
-//! Living world population core (doc `docs/hails-additions/26-living-world.md`, milestone 2).
+//! Living world population core (doc `docs/hails-additions/26b-living-world-population.md`, milestone 2).
 //!
 //! One census engine for every ambient kind: NPC skaters, pedestrians and vehicles (props and
 //! dynamic objects later). Pure and engine-independent: no ECS, no I/O, no rendering. The game

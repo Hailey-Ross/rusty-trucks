@@ -1,4 +1,4 @@
-//! Living world, engine side (doc `docs/hails-additions/26-living-world.md`, milestone 2: the
+//! Living world, engine side (doc `docs/hails-additions/26b-living-world-population.md`, milestone 2: the
 //! population core). Runs `skate_core::living_world` around the local player at the console
 //! cadence and publishes spawn / despawn decisions as messages. Consumers: the replay-tier NPC
 //! skaters ([`npc_skaters`], milestone 3); peds and cars come with their milestones.

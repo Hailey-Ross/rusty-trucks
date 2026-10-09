@@ -1,5 +1,5 @@
 //! Living-world traffic, milestone V1: the road graph, the lane cursor, the traffic signals and
-//! the junction entry query (doc `docs/hails-additions/26-living-world.md`, design
+//! the junction entry query (doc `docs/hails-additions/26h-living-world-traffic.md`, design
 //! `docs/hails-additions/living-world/vehicles-design.md`).
 //!
 //! Pure and engine-independent like the population core: no I/O, no ECS, no rendering. The data
