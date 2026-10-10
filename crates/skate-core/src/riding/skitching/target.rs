@@ -85,7 +85,7 @@ pub struct TargetInput {
     pub side_origin: Vec3,
     pub side_axis: Vec3,
     pub up: Vec3,
-    /// The skater's position (`[S+16]+176`) and facing (`+160`, read as forward [inferred]).
+    /// The skater's position (`[S+16]+176`) and facing (`+160`): rows 3 and 2 of the effective board transform (b68).
     pub position: Vec3,
     pub facing: Vec3,
     /// The hand's along coordinate (864) and the skater's (836).

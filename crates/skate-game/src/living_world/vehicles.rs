@@ -499,15 +499,18 @@ pub(crate) fn drive_traffic(
     mut events: MessageWriter<TrafficEvent>,
     (observers, peds, ped_obstacles): (Res<super::LivingWorldObservers>, Query<(&super::peds::Pedestrian, &super::peds::PedBody)>, Option<Res<super::peds::PedObstacles>>),
     skater: Option<Res<crate::physics::SkaterRuntime>>,
+    npc_sims: Query<&super::npc_sim::NpcSim>,
 ) {
     let st = &mut *state;
     let traffic = &mut *traffic;
     let Some(net) = st.roads.as_ref() else { return };
     // The held bits are cleared and set again every tick (82C34CD0 / 82C361E8; b57): the local player's state 104.
     let held = skater.as_deref().filter(|s| s.player_state.current() == skate_core::player::state::PhysicalStateId::Skitching).and_then(|s| s.skitch_state.held_car());
+    // Simulated NPC skaters hold cars too (82C361E8 sets +4402 0x02 for any holder; 0x80 only for the player).
+    let npc_held: Vec<u32> = npc_sims.iter().filter_map(|s| s.held_car()).collect();
     for car in &mut traffic.cars {
-        car.held = Some(car.key) == held;
-        car.player_held = car.held;
+        car.player_held = Some(car.key) == held;
+        car.held = car.player_held || npc_held.contains(&car.key);
     }
     look_ahead(traffic, &cars_q, &observers, &peds, ped_obstacles.as_deref(), held.is_some());
     let now = st.world.tick();

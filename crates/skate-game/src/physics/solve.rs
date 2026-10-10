@@ -87,6 +87,12 @@ fn advance_inner(
                         let c = skater.animated_skeleton.board_frames.com_frame[3];
                         skate_core::math::Vector3::new(c[0], c[1], c[2])
                     },
+                    hand_span: {
+                        let pose = &skater.animated_skeleton.record.pose;
+                        let (a, b) = (pose[3][3], pose[7][3]);
+                        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+                    },
+                    collision_flag: skater.player_input.processed.flags_2484 & 0x0400_0000 != 0,
                 }),
             },
         );

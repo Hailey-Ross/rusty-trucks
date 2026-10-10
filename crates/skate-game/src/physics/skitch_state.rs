@@ -3,8 +3,8 @@
 //! `skate_core::riding::skitching` (frame, sub-mode, hold, shimmy, target, spring); this module composes it in
 //! retail order (`.local/research/npc/b50-skitch-prestep-update.md` section 1, b51 sections 1-3).
 //! Reached only with `SKATE_SKITCH=1` for now (`ground_runtime::skitch::latch_enabled`).
-//! NOT RETAIL YET: the grab point is the point on the record's chord; the board forward is the deck
-//! forward; the sub-mode's hard event comes from the shimmy state.
+//! NOT RETAIL YET: the grab point is the point on the record's chord; the sub-mode's hard event comes from the
+//! shimmy state.
 use super::{GamePhysics, SkaterRuntime};
 use skate_core::physics::force_queue::QueuedPointForce;
 use skate_core::math::Vector3;
@@ -73,8 +73,11 @@ pub(crate) struct SkitchState {
     pub grab_height: f32,
     pub absorb: f32,
     pub along_ratio: f32,
-    /// 996 (`82D47BD8`, b61): the tow speed plus up to 200 m/s^2 x dt (cap 3.5 per update) toward 8 m/s.
+    /// 996 (`82D47BD8`, b61 / b67): the tow speed plus up to 200 x the held record's inverse mass (cap 3.5) toward 8 m/s.
     pub push_speed: f32,
+    /// 1345 bit 0x10 (`82D47BD8`, b67): set while the animation carries PushContact (Processed2488 bit 29); while
+    /// set, 996 keeps its value.
+    pub push_latched: bool,
     /// 940 (the target step's lean yaw, kept across sub-mode 4 frames) and 944 (the smoothed lean angle).
     pub lean_yaw: f32,
     pub lean: f32,
@@ -108,6 +111,7 @@ pub(crate) fn enter(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Re
     s.spring_force = [0.0; 3];
     s.lean_yaw = 0.0;
     s.push_speed = 0.0;
+    s.push_latched = false;
     s.lean = 0.0;
     Ok(())
 }
@@ -122,7 +126,10 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     let words = p.grab_records_1888_2176[0];
     let t = skater.player_input.toolkit.as_ref().ok_or("Skitching requires current BoardToolkit")?;
     let mass = t.total_mass;
-    let forward = [t.deck[2][0], t.deck[2][1], t.deck[2][2]];
+    // Processed+128..+191 = the effective board transform (82C013F0 / 82C01BF8; b68): row 0 side, row 2 forward,
+    // row 3 the deck position.
+    let row = |i: usize| [t.effective[i][0], t.effective[i][1], t.effective[i][2]];
+    let (board_side, forward, board_position) = (row(0), row(2), row(3));
     let position = v4(p.vectors_544_560_592_608[2]);
     let up = v4(p.vectors_464_480_496_512_528[0]);
     let fields = &skater.animation_input.fields;
@@ -161,7 +168,7 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         let half_range = f32::from_bits(words[45]);
         let mid = [(endpoints[0][0] + endpoints[1][0]) * 0.5, (endpoints[0][1] + endpoints[1][1]) * 0.5, (endpoints[0][2] + endpoints[1][2]) * 0.5];
         let chord = move |t: f32| [mid[0] + direction[0] * t, mid[1] + direction[1] * t, mid[2] + direction[2] * t];
-        let input = frame::FrameInput { endpoints, direction, half_range, up, position, board_forward: forward, shimmy_velocity: s.shimmy.velocity };
+        let input = frame::FrameInput { endpoints, direction, half_range, up, position, board_side, shimmy_velocity: s.shimmy.velocity };
         let f = frame::step(&input, &mut s.frame, &settings.frame, &chord);
         s.tows_fast = f.tows_fast;
         // Sub-mode 82D49580 and its release bits.
@@ -179,8 +186,18 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         let fr = s.frame.frames[1];
         s.grab_height = fr[3][1] + fr[0][1] * s.hold.posed - position[1];
         s.absorb = -f.axis_distance_rate;
-        // 82D47BD8 (1345 bit 0x10, which holds it, is not ported: always updated).
-        s.push_speed = f.tow_speed + (8.0 - f.tow_speed).max(0.0).min((200.0 * dt).min(3.5));
+        // 82D47BD8 (b67): unless latched, 996 moves toward 8 m/s by 200 x state+1264 (= the held record's +240,
+        // its inverse mass: 82D477C0 copies the record to state+1024), cap 3.5; the PushContact animation attribute
+        // (Processed2488 bit 29) latches it until the attribute drops. The reel-in / let-out forces of the same
+        // function go to the held object, which retail drops for cars (kind 1, b50): not applied.
+        let push_contact = p.flags_2488 & 0x2000_0000 != 0;
+        if !s.push_latched {
+            let inverse_mass = f32::from_bits(words[60]);
+            s.push_speed = f.tow_speed + (8.0 - f.tow_speed).max(0.0).min((200.0 * inverse_mass).min(3.5));
+            s.push_latched = push_contact;
+        } else if !push_contact {
+            s.push_latched = false;
+        }
         // Along chain 82D48C98: the grab point's along displacement over the last frame (frames 128 vs 64, after
         // the shift) times 7199.999 (0x822F8BDC; b55).
         let [old, prev, _] = s.frame.frames;
@@ -238,7 +255,7 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
                     side_origin: [s.frame.frames[1][3][0] + s.frame.frames[1][2][0] * settings.frame.side_push, s.frame.frames[1][3][1] + s.frame.frames[1][2][1] * settings.frame.side_push, s.frame.frames[1][3][2] + s.frame.frames[1][2][2] * settings.frame.side_push],
                     side_axis: s.frame.frames[1][0],
                     up,
-                    position,
+                    position: board_position,
                     facing: forward,
                     hand_along: s.shimmy.target,
                     along: f.along,

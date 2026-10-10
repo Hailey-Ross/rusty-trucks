@@ -204,11 +204,9 @@ pub(crate) fn avoid(
             let rate = out.shape_speed(speed, false) / speed;
             a.lag = (a.lag + (1.0 - rate) * super::npc_skaters::FRAMES_PER_TICK as f32).max(0.0);
         }
-        // Steering: towards the gap (or the skitch target), back to the line otherwise.
+        // Steering: towards the gap (mode 3) or the skitch entry (mode 4, `+5976`; b65), back to the line otherwise.
         let goal = match out.mode {
-            AvoidMode::Steer | AvoidMode::Skitch if riding => out
-                .steer_target
-                .or(out.skitch_target)
+            AvoidMode::Steer | AvoidMode::Skitch if riding => (if out.mode == AvoidMode::Skitch { out.skitch_target } else { out.steer_target })
                 .and_then(|id| out.entries.iter().find(|e| e.id == id))
                 .and_then(|e| e.path)
                 .map_or(0.0, |p| out.lateral * if out.lateral < 0.0 { p.width_left } else { p.width_right }),

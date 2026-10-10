@@ -615,7 +615,7 @@ half spread") even when the prop has authored grab splines (step 1) that are alr
 **Engine choices / NOT RETAIL YET.** Still opt-in with `SKATE_PROP_GRAB=1` (shared gate `prop_dynamics::prop_grab_enabled`
 for the grab scene and the carry). The bound record comes from the prop's own splines (best from the skater position),
 not from the player's published best record (Player+1888); path A refreshes by descriptor, not from Player+1888. Not
-ported yet: path B re-grab and its frame blend (`82D46218`), the hand points (grip +/- 0.5 x |bone3 - bone7|, 0x8209975C at 82D45DAC; b62 said 0.68, corrected by b64 and main), `82D43B20`.
+ported in this step (see step 3b): path B re-grab and its frame blend (`82D46218`), the hand points (grip +/- 0.5 x |bone3 - bone7|, 0x8209975C at 82D45DAC; b62 said 0.68, corrected by b64 and main), `82D43B20`.
 
 **Multiplayer.** `HeldGrip` is the whole per-skater record state (plain `Copy` data); the record is rebuilt from the
 host's prop pose every tick.
@@ -624,3 +624,29 @@ host's prop pose every tick.
 a flip keeps the world grip point, mode 1 skips the held descriptor); skate-game
 `a_prop_with_grab_splines_is_carried_by_its_authored_record` (bound grip, facing from the approach vector, a 1 s push
 keeps the binding). Not play-tested yet.
+
+## Move Object step 3b: the rebind block, re-grab and hand points (opt-in, 2026-10-09)
+
+**Retail [code] (`.local/research/npc/b64-move-object-regrab.md`; main checked the 0.5 hand factor at 82D45DAC and
+that `82D43B20` is the getter of `96ECC98838ECCC11`, our `anchor_reach`).** Each tick of the held update `82D44A10`:
+the collision timer +1176 counts 1/60 steps while Player+2484 bit 26 is set (else 0) and a push latch (+1200 bit 0x02)
+sets once |Player+736|^2 > 0.04. The rebind block needs the hand flag, the timer at most 0.4 s and the latch clear;
+path A (CanGrabSpline on the held record at the grip) refreshes the record; path B (`82D4D150` mode 1 without the held
+descriptor, then `82E08DB8` with the end exclusion) re-grabs with a new grip, zeroes the anchor velocity and seeds the
+anchor from the new record's nearest point; anything else drops the hold. The frame blend `82D46218` only runs for
+jumps of 60 m or more (a snap otherwise). `82D45D30` places the hands at grip +/- 0.5 x |hand bone 3 - hand bone 7|
+along the record, clamped to [0, length] (b62 said 0.68: corrected).
+
+**Change.** skate-core `move_object::held_update`: `RebindTuning` (0.4, 0.04, 0.5, 1e-4, 60), `RebindState` (`tick`,
+`decide` -> Refresh / Regrab / Lost), `hand_points`, `FrameBlend` (start / step), `seed_anchor`; `move_object::can_regrab`
+(82E08DB8 with the grabbing box and the end exclusion). skate-game: `CarrierSkeleton` carries the hand span and the
+collision flag (`solve.rs`); `PropCarry::hold` runs the block for an authored record held since last tick, re-grabs
+through `regrab_candidate`, reseeds the follow anchor, and keeps the hand points.
+
+**NOT RETAIL YET.** The push latch input (Player+736) is not identified (never set); path B's candidates are the held
+prop's own records (retail: the owner's validated records), owner flag 0x40 and the held record's +196 / +216 are taken
+as set; the hand points have no consumer yet (the hand IK weight's enable bit +1200 0x40 is not identified); the frame
+blend is ported in skate-core but not wired (it only fires for 60 m jumps).
+
+**Verification.** skate-core `held_update` tests (hand points and clamps, every rebind gate incl. the timer and the
+latch, snap vs blend, anchor seed); skate-game prop / carry / skitch / living_world 136 pass. Not play-tested.

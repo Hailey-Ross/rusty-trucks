@@ -73,6 +73,11 @@ pub(crate) struct NpcSim {
 }
 
 impl NpcSim {
+    /// The traffic car this simulated skater holds in state 104 (the car side's held bit, b57 / b65).
+    pub(crate) fn held_car(&self) -> Option<u32> {
+        (self.runtime.player_state.current() == skate_core::player::state::PhysicalStateId::Skitching).then(|| self.runtime.skitch_state.held_car()).flatten()
+    }
+
     pub(crate) fn render_pose(&self) -> &[skate_core::animation::output::NativeMatrix] {
         &self.runtime.render_pose
     }
@@ -237,6 +242,16 @@ pub(crate) fn simulate(
                     }
                     None => Vec::new(),
                 };
+                // Mode 4 (skitch; b65, main checked 0x8246FC78): GrabWorld every tick on the ground, no tricks.
+                let state = sim.runtime.player_state.current();
+                let mut intents = intents;
+                skate_core::living_world::ai_signals::apply_skitch_mode(
+                    &mut intents,
+                    &rules.signals,
+                    avoid.last.mode == skate_core::living_world::avoid::AvoidMode::Skitch,
+                    (200..300).contains(&(state as u32)),
+                    state == skate_core::player::state::PhysicalStateId::Skitching,
+                );
                 sim.last_node = Some(replay.cursor.node);
                 if let Err(error) = physics.advance_npc_skater(&mut sim.context, &mut sim.runtime, &mut sim.controls, &graphs, &mut sim.camera, &intents) {
                     warn!("NPC_SKATER_SIM #{} {}: physics error, back to replay: {error}", npc.id.serial, npc.character);

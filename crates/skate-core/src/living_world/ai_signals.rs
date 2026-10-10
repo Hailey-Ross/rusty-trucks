@@ -32,11 +32,13 @@ pub struct SignalSettings {
     pub anticipation_heading: f32,
     /// Event nodes are skipped when the cursor crossed more nodes than this in one tick (3).
     pub max_crossed_nodes: u32,
+    /// Mode 4 (skitch): the GrabWorld value posted every tick (`sub_8246FA30`, `0x8231A844`, 1.0; b65).
+    pub skitch_grab: f32,
 }
 
 impl Default for SignalSettings {
     fn default() -> Self {
-        Self { anticipation_distance: 3.0, anticipation_frames: 60, anticipation_heading: core::f32::consts::FRAC_PI_4, max_crossed_nodes: 3 }
+        Self { anticipation_distance: 3.0, anticipation_frames: 60, anticipation_heading: core::f32::consts::FRAC_PI_4, max_crossed_nodes: 3, skitch_grab: 1.0 }
     }
 }
 
@@ -116,8 +118,40 @@ pub fn signals(line: &ReplayLine, s: &SignalSettings, input: &SignalInput, chose
     out
 }
 
+/// Mode 4 of the obstacle avoider (`sub_8246FA30` at 0x8246FC78; b65): while the skater is not airborne the
+/// controller posts GrabWorld every tick (the player's grab intent, so the riding skitch query and state 104 follow);
+/// while it posts it or the skater is skitching (state 104) the trick dispatch is skipped (its signals dropped).
+pub fn apply_skitch_mode(out: &mut Vec<Signal>, s: &SignalSettings, skitch_mode: bool, airborne: bool, skitching: bool) {
+    let grab = skitch_mode && !airborne;
+    if grab || skitching {
+        if let Some(i) = out.iter().position(|x| x.0 == "Trick") {
+            out.truncate(i);
+        }
+    }
+    if grab {
+        out.push(("GrabWorld".into(), s.skitch_grab));
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mode_4_grabs_and_skips_the_trick_dispatch() {
+        let s = super::SignalSettings::default();
+        let base: Vec<super::Signal> = vec![("Crouch".into(), 1.0), ("Trick".into(), 1.0), ("360flip".into(), 1.0), ("GestureSpeed".into(), 1.0)];
+        let mut v = base.clone();
+        super::apply_skitch_mode(&mut v, &s, true, false, false);
+        assert_eq!(v, vec![("Crouch".into(), 1.0), ("GrabWorld".into(), 1.0)]);
+        // Airborne: no grab, tricks kept.
+        let mut v = base.clone();
+        super::apply_skitch_mode(&mut v, &s, true, true, false);
+        assert_eq!(v, base);
+        // Skitching without mode 4: tricks dropped, no grab.
+        let mut v = base.clone();
+        super::apply_skitch_mode(&mut v, &s, false, false, true);
+        assert_eq!(v, vec![("Crouch".into(), 1.0)]);
+    }
+
     use super::*;
     use crate::living_world::replay::{ReplayJump, ReplayNode};
 

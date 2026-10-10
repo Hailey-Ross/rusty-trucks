@@ -67,8 +67,9 @@ pub struct FrameInput {
     /// Up `n` (state+800) and the skater position `P` (state+592).
     pub up: Vec3,
     pub position: Vec3,
-    /// The board's forward (`[state+16]+128`), for the re-orient.
-    pub board_forward: Vec3,
+    /// The board's side axis (`[state+16]+128`, row 0 of the effective board transform written by 82C013F0; b68:
+    /// not the forward), for the re-orient.
+    pub board_side: Vec3,
     /// The shimmy velocity along the bumper (`892`, the along chain's output of the last update).
     pub shimmy_velocity: f32,
 }
@@ -156,7 +157,7 @@ pub fn step(input: &FrameInput, state: &mut FrameState, s: &FrameSettings, grab_
     // 1. Re-orient.
     let mut endpoints = input.endpoints;
     let mut d = input.direction;
-    let reoriented = dot(input.board_forward, d) < 0.0;
+    let reoriented = dot(input.board_side, d) < 0.0;
     if reoriented {
         endpoints.swap(0, 1);
         d = scale(d, -1.0);
@@ -232,7 +233,7 @@ mod tests {
             half_range: 0.8,
             up: [0.0, 1.0, 0.0],
             position: [0.3, 0.0, -1.0],
-            board_forward: [1.0, 0.0, 0.0],
+            board_side: [1.0, 0.0, 0.0],
             shimmy_velocity: 0.0,
         }
     }
@@ -276,7 +277,7 @@ mod tests {
     fn a_board_facing_the_other_way_swaps_the_endpoints() {
         let mut st = FrameState::default();
         let mut i = input(0.0);
-        i.board_forward = [-1.0, 0.0, 0.0];
+        i.board_side = [-1.0, 0.0, 0.0];
         let o = step(&i, &mut st, &FrameSettings::default(), &|t: f32| [-t, 0.9, 0.0]);
         assert!(o.reoriented);
         assert_eq!(st.frames[2][0], [-1.0, 0.0, 0.0]);

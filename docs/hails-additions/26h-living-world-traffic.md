@@ -885,3 +885,58 @@ actor order must be stable (last match wins).
 **Verification.** skate-core `skater_scan` tests (rear zone hit / miss / range / held / skitching, last match and the
 sticky bit, open far edge, FAR / NEAR / grace / slow / cap formulas, 150-step grace); traffic 40 and skate-game
 living_world 71 pass. Not play-tested yet.
+
+## Skitching step 4i: PushSpeed's latch and step (2026-10-09)
+
+**Retail [code] (`.local/research/npc/b67-skitch-reel-in-decode.md`; main decoded `82D47BD8` and checked that the
+state-104 update `82D477C0` copies Player+1888 to state+1024).** PushSpeed (state+996, published as ground+308) moves
+toward 8 m/s by min(200 x state+1264, 3.5) per update unless state+1345 bit 0x10 is set. state+1264 is the held
+record's +240, the held object's inverse mass, not the step time (b30 / b61 read it as dt). The bit latches while the
+animation carries the PushContact attribute (Processed2488 bit 29, set by `82BDA0D0`) and clears when it drops. The
+same function queues a reel-in force (D x 60 x clamp(T - D.V, 0, 1.5), length 50, plus a yaw torque) and a let-out
+force (minus the spring force x inverse mass, first 0.2 s of the state) on the held object; retail drops held-object
+forces for cars (kind 1, b50), so they do nothing while skitching.
+
+**Change.** `skitch_state.rs`: the step uses the held record's word 60 (inverse mass); `SkitchState.push_latched`
+holds PushSpeed while PushContact is set; reset on enter. The held-object forces are not applied (cars).
+
+**Open.** What a car writes at record+240 in retail (ours: the record default 1.0); whether the skitch push clips
+author PushContact. Tests: skate-game skitch / living_world pass. Not play-tested.
+
+## Skitching step 4j: the board's effective transform rows (2026-10-09)
+
+**Problem.** The state-104 code read Processed+128 (the "board forward" of the re-orient test) as the deck's forward
+row and fed the target step the deck forward and Processed+592 where retail reads Processed+160 / +176.
+
+**Retail [code] (`.local/research/npc/b68-processed-128-matrix.md`; main checked the reader at the start of
+`82D48148`: `lvx [state+16]+128`, dot with the bumper direction state+1136, flip when negative).** Processed+128..+191
+is the effective board transform that `82C013F0` (PrepareBoardToolkit, our `physics::board_toolkit`) stores each
+frame: row 0 the side axis, row 1 up, row 2 forward, row 3 the deck position (rows 0 and 2 negated by the stance bit).
+
+**Change.** `frame::FrameInput.board_forward` is now `board_side` (= `toolkit.effective[0]`); the target step's
+facing / position are `effective[2]` / `effective[3]`. The frame step's own skater position (state+592) is unchanged
+(its source is still Processed+592; open whether retail copies it from there).
+
+**Verification.** skate-core skitching 16 and skate-game skitch / living_world / npc 87 pass. Not play-tested.
+
+## Skitching step 7: NPC skaters skitch (opt-in, 2026-10-09)
+
+**Retail [code] (`.local/research/npc/b65-npc-skitch-mode4.md`; main checked `sub_8246FA30` at 0x8246FC78: not
+airborne (+928) and avoider mode ([ctrl+8]+6000) == 4 posts the intent at key 0x830BE780 with 1.0).** An AI skater in
+avoider mode 4 posts GrabWorld every tick (no timer), which reaches Processed2476 bit 22 like the player's grab, so the
+riding skitch query and state 104 run unchanged; while it posts it or skitches, the trick dispatch is skipped. It lets
+go when mode 4 ends (the skitch candidate fails: car turned, passed, too slow, airborne). Steering in mode 4 aims at
+the skitch entry. Cars count any holder as held (+4402 bit 0x02); only the player's hold skips lights (0x80).
+
+**Change.** skate-core `ai_signals::apply_skitch_mode` (+ `SignalSettings.skitch_grab`, 1.0); skate-game
+`npc_sim` applies it to the simulated skater's intents; `npc_avoid` aims mode 4 at the skitch target and mode 3 at the
+steer target; `NpcSim::held_car` and `drive_traffic` mark cars held by simulated NPC skaters (`player_held` stays the
+local player's).
+
+**NOT RETAIL YET / open.** Needs `SKATE_SKITCH=1` and the simulated tier (`SKATE_NPC_SIM=1`); the controller gates
+`ctrl+568 != 4`, `ctrl+800` and the skater's +1904 bit 26 are not modelled; recorded node action 6 (also GrabWorld)
+is not handled; the candidate's skater direction uses the sample velocity (retail: the recorded step 3 nodes ahead
+when `ctrl+920` is set).
+
+**Verification.** skate-core `mode_4_grabs_and_skips_the_trick_dispatch`; skate-game npc / living_world pass. Not
+play-tested.

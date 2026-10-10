@@ -24,6 +24,8 @@ use crate::point_graph::PointGraph;
 
 mod held_record;
 pub use held_record::{HeldGrip, RecordFrame, begin_grip, continue_grip, record_frame};
+mod held_update;
+pub use held_update::{FrameBlend, Rebind, RebindInput, RebindState, RebindTuning, hand_points, seed_anchor};
 
 /// `Sk8::Physics::PhysicsControllerData`: four floats. 82D4E118 [code]:
 /// `filtered = (1 - filter) * filtered + filter * error`;
@@ -610,6 +612,31 @@ pub fn still_holds(
         angle_b: tuning.hold_max_angle_to_horizontal * radians,
     };
     super::grab_scene::qualify_at(record, v4(reference, 1.0), grip_distance, bounds, limits)
+}
+
+/// Path B of 82D44A10 (b64): the mode-1 candidate must pass CanGrabSpline
+/// 82E08DB8 from the skater reference, its grip clamped by
+/// GrabSplineEndExclusion, with the same grabbing box and angles as
+/// [`still_holds`].
+pub fn can_regrab(
+    tuning: &MoveObjectTuning,
+    record: &super::grab_scene::Record,
+    reference: [f32; 3],
+    skater_frame: [[f32; 4]; 4],
+) -> bool {
+    let v4 = |v: [f32; 3], w: f32| [v[0], v[1], v[2], w];
+    let bounds = super::ground_sync::board_bounds(
+        skater_frame,
+        v4(tuning.hold_box_offset, 0.0),
+        v4(tuning.hold_box_extents, 0.0),
+    );
+    let radians = f32::from_bits(0x3c8e_fa35);
+    let limits = super::ground_sync::BoardLimits {
+        margin: tuning.grab_end_exclusion,
+        angle_a: tuning.hold_angle_limit * radians,
+        angle_b: tuning.hold_max_angle_to_horizontal * radians,
+    };
+    super::grab_scene::qualify(record, v4(reference, 1.0), bounds, limits)
 }
 
 /// The skater side of the held update (82D44A10 / 82D46610): where the
