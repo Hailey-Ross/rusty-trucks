@@ -79,7 +79,7 @@ pub struct Draw {
     /// Shapes: the unit's render type (clamp or wrap addressing); text draws are `TextureClamped`.
     pub fill: Fill,
 }
-fn compose(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
+pub fn compose(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
     [
         a[0] * b[0] + a[2] * b[1],
         a[1] * b[0] + a[3] * b[1],
@@ -99,17 +99,21 @@ fn transform(m: [f32; 6], v: &Vertex) -> Vertex {
     }
 }
 pub fn draw(movie: &Movie, vm: &Vm, shapes: &dyn ShapeSource) -> Result<Vec<Draw>, String> {
+    draw_from(movie, vm, shapes, IDENTITY, [1.; 4], [0.; 4])
+}
+pub const IDENTITY: [f32; 6] = [1., 0., 0., 1., 0., 0.];
+/// Draws a movie whose root sits under `parent` (a movie loaded into a clip of another movie on the
+/// front-end stage), with the parent's colour transform.
+pub fn draw_from(
+    movie: &Movie,
+    vm: &Vm,
+    shapes: &dyn ShapeSource,
+    parent: [f32; 6],
+    multiply: [f32; 4],
+    add: [f32; 4],
+) -> Result<Vec<Draw>, String> {
     let mut draws = Vec::new();
-    visit(
-        movie,
-        vm,
-        shapes,
-        movie.root,
-        [1., 0., 0., 1., 0., 0.],
-        [1.; 4],
-        [0.; 4],
-        &mut draws,
-    )?;
+    visit(movie, vm, shapes, movie.root, parent, multiply, add, &mut draws)?;
     Ok(draws)
 }
 fn visit(
@@ -135,8 +139,11 @@ fn visit(
     let matrix = compose(parent, matrix);
     if matrix.iter().any(|x| !x.is_finite()) {
         return Err(format!(
-            "Nonfinite HUD transform on character {}",
-            instance.character
+            "Nonfinite HUD transform on character {} ({} _x {} _y {})",
+            instance.character,
+            instance.placement.as_ref().map_or("", |p| p.name.as_str()),
+            vm.get(id, "_x").text(),
+            vm.get(id, "_y").text()
         ));
     }
     let color = instance

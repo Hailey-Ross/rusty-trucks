@@ -135,12 +135,86 @@ impl CoreMenu<'_> {
     }
 }
 
+/// The front-end host objects on the stage (retail sub_825A2190 creates them): CoreMenu answered from the
+/// registry and crossbar state; Game's screen callbacks are recorded for the screen stack (next milestone).
+pub struct FrontEnd<'a> {
+    pub registry: &'a MenuRegistry,
+    pub context: &'a MenuContext,
+    pub view: RegistryView,
+    pub state: CrossbarState,
+    /// The language table (label id -> text) and number separators for FELanguage.
+    pub language: &'a std::collections::BTreeMap<String, String>,
+    pub numbers: crate::fe_language::NumberFormat,
+    /// Game / Audio / FELanguage calls not handled yet, in order (diagnostics, tests).
+    pub calls: Vec<String>,
+}
+
+impl<'a> FrontEnd<'a> {
+    pub fn new(
+        registry: &'a MenuRegistry,
+        context: &'a MenuContext,
+        language: &'a std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        let view = RegistryView::new(registry, context, Default::default());
+        let state = CrossbarState::open(&view);
+        Self { registry, context, view, state, language, numbers: Default::default(), calls: Vec::new() }
+    }
+}
+
+impl crate::apt_stage::StageNatives for FrontEnd<'_> {
+    fn objects(&self) -> Vec<String> {
+        ["Game", "CoreMenu", "Audio", "FELanguage"].map(String::from).to_vec()
+    }
+    fn call(&mut self, vm: &mut Vm, object: &str, method: &str, args: Vec<Value>) -> Result<Value, String> {
+        if object == "CoreMenu" {
+            let mut core = CoreMenu { registry: self.registry, context: self.context, view: &self.view, state: &mut self.state };
+            return core.call(vm, method, &args);
+        }
+        if object == "FELanguage" {
+            use crate::fe_language::*;
+            let arg = |v: &Value| match v {
+                Value::Number(n) => Arg::Number(*n),
+                Value::Bool(b) => Arg::Bool(*b),
+                Value::Text(t) => Arg::Text(t.clone()),
+                _ => Arg::Undefined,
+            };
+            let text = |i: usize| args.get(i).map(Value::text).unwrap_or_default();
+            match method {
+                "GetLocalizedFormatNumberString" => {
+                    let decimals = args.get(1).map(|d| crate::apt_vm::to_integer(d).max(0) as usize);
+                    let value = args.first().map_or(Arg::Undefined, arg);
+                    return Ok(Value::Text(number_string(&self.numbers, &value, decimals)));
+                }
+                "GetLocalizedFormatString" => {
+                    // (id, count, args...)
+                    let id = text(0);
+                    let count = args.get(1).map_or(0, |c| crate::apt_vm::to_integer(c).max(0) as usize);
+                    let values: Vec<Arg> = args.iter().skip(2).take(count.min(6)).map(arg).collect();
+                    return Ok(Value::Text(format_string(&self.numbers, template(self.language, &id), &values)));
+                }
+                "GetLocalizedFormatStringCustom" => {
+                    let id = text(0);
+                    return Ok(Value::Text(format_string_custom(&self.numbers, template(self.language, &id), &text(1))));
+                }
+                _ => {}
+            }
+        }
+        self.calls.push(format!("{object}.{method}({})", args.iter().map(Value::text).collect::<Vec<_>>().join(",")));
+        Ok(Value::Undefined)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_registry() -> MenuRegistry {
+    tests::registry()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use skate_core::menus::{Category, Item, MenuData, Mode, Tab};
 
-    fn registry() -> MenuRegistry {
+    pub(super) fn registry() -> MenuRegistry {
         let item = |id: &str, kind: i32| Item {
             id: id.into(),
             label: format!("ID_{id}"),

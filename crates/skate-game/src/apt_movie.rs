@@ -254,6 +254,10 @@ impl Movie {
         let width = font.width(&value, height);
         vm.set(id, "textWidth", Value::Number(width as f64))?;
         let bounds = character.bounds.ok_or("Missing text bounds")?;
+        // The field's authored height (core_menu centres its DLC label with `_height`).
+        // NOT RETAIL YET: retail's autosize height (line height vs field) is not decoded; single-line labels
+        // keep the field height here.
+        vm.set(id, "_height", Value::Number((bounds[3] - bounds[1]) as f64))?;
         let autosize = vm.get(id, "autoSize").text();
         vm.set(
             id,

@@ -175,6 +175,13 @@ impl RetailMenuMovies {
         self.failures.clear();
         let mut all_shapes = BTreeMap::new();
         let mut images = BTreeMap::new();
+        // Font atlases: text draws name them (apt_text), so they resolve like bitmaps.
+        for font in self.shared.get("fonts").and_then(Value::as_object).into_iter().flat_map(|f| f.values()) {
+            let size = &font["definition"]["textures"][0];
+            if let (Some(path), Some(w), Some(h)) = (font["texture"].as_str(), size["width"].as_u64(), size["height"].as_u64()) {
+                images.insert(path.to_string(), [w as u32, h as u32]);
+            }
+        }
         let mut decls = BTreeMap::new();
         let mut libraries = BTreeMap::new();
         for key in &keys {

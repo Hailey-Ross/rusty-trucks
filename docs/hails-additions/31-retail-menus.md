@@ -750,6 +750,23 @@ no-op).
   rules from the menu registry, so mods change the rows).
 - `skate-game/src/crossbar_host.rs` (new): the 21 CoreMenu members over the registry and the crossbar state.
 
+### Drawing and FELanguage (same milestone)
+- `Stage::draw` gives each loaded movie's draws under the clip it was loaded into (ancestor matrices, visibility,
+  alpha); `apt_scene::draw_from`. Font atlases join the menu image map (`RetailMenuMovies::image`). The open pause
+  menu gives 24 draws (22 textured), all textures resolved (data-gated test).
+- Text fields get `_height` (field height; core_menu centres its DLC label with it). NOT RETAIL YET: retail's
+  autosize height rule is not decoded.
+- `fe_language.rs` (new): FELanguage GetLocalizedFormatNumberString / FormatString / FormatStringCustom
+  (registrar 825AA5E8; research `.local/research/felanguage.md`; main-checked the example strings
+  `ID_CROSSBAR_BOARD_SALES_MILESTONE` "Board Sales Milestone {0:d}/{1:d}" and `ID_COMMON_PERCENT` "{0:d}%" in the
+  exported language table). Placeholders `{N:type[.P]}`, `{{` literal, separators as data (`NumberFormat`,
+  retail `. , 3`). NOT RETAIL YET: int vs float is taken from integrality (our VM has only f64); typed formats
+  other than d / f are not decoded.
+- `crossbar_host::FrontEnd`: the stage's host objects (CoreMenu, FELanguage; Game / Audio calls recorded).
+- [data, main-checked] Sub-option label table 0x83027958 and helper table at +168 (7 kinds x 6 pointers; kind 0
+  labels NEW_PARK .. TUTORIAL against helpers MY_PARKS .. PARK_EDITOR, retail pairs them by index); research
+  `.local/research/menu-subtables.md` (extraction next).
+
 ### Open
 - Sub-option label and helper tables (0x83027958 / 0x83027A00) are not extracted: GetSubOptionName returns `#`.
 - Label overrides (SignIn / sign out, ReplayEditor instant replay, PartyPlay literal) and the online team pending
@@ -758,7 +775,7 @@ no-op).
 
 ## Files
 - Milestone 6: `crates/skate-core/src/crossbar.rs` (new), `lib.rs`; `crates/skate-game/src/crossbar_host.rs`
-  (new), `apt_stage.rs`, `main.rs`
+  (new), `fe_language.rs` (new), `apt_stage.rs`, `apt_scene.rs`, `apt_movie.rs`, `retail_menu_movies.rs`, `main.rs`
 - Milestone 5a: `crates/skate-game/src/apt_stage.rs` (new), `apt_movie.rs`, `apt_vm.rs`, `main.rs` (module)
 - `crates/skate-data/src/menu_tables.rs` (extractor, JSON, conversion), `crates/skate-data/tests/menu_tables.rs`
 - `crates/skate-core/src/menus.rs`, `menus_tests.rs` (registry), `menu_values.rs` (value rules, milestone 2)

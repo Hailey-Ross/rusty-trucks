@@ -544,6 +544,60 @@ impl Stage {
         }
         Ok(())
     }
+    /// Placement of the clip a level's root is loaded into, from its ancestors (each an instance of another
+    /// level or a script-made clip): matrix, alpha factor, and whether every ancestor is visible.
+    fn parent_of(&self, root: usize) -> ([f32; 6], f32, bool) {
+        let mut matrix = crate::apt_scene::IDENTITY;
+        let mut alpha = 1.0;
+        let mut current = self.vm.get(root, "_parent");
+        for _ in 0..64 {
+            let Value::Object(id) = current else { break };
+            if !self.vm.get(id, "_visible").truth() {
+                return (matrix, alpha, false);
+            }
+            let mut m = self
+                .state
+                .levels
+                .iter()
+                .find_map(|l| l.movie.instances.get(&id)?.placement.as_ref().map(|p| p.matrix))
+                .unwrap_or(crate::apt_scene::IDENTITY);
+            m[4] = self.vm.get(id, "_x").number() as f32;
+            m[5] = self.vm.get(id, "_y").number() as f32;
+            matrix = crate::apt_scene::compose(m, matrix);
+            alpha *= (self.vm.get(id, "_alpha").number() as f32 / 100.).clamp(0., 1.);
+            current = self.vm.get(id, "_parent");
+        }
+        (matrix, alpha, true)
+    }
+    /// Draws every level in load order (FE_root, the screen manager, then screens in the order they opened),
+    /// each under the clip it was loaded into. `scene` gives a level's shapes and textures.
+    /// NOT RETAIL YET (order): retail draws one display tree by depth; screens sit at depth 600 + template
+    /// index under the screen manager, so load order matches it for the screens opened so far.
+    pub fn draw<'s, S: crate::apt_scene::ShapeSource>(
+        &'s self,
+        scene: impl Fn(&'s str, &'s Movie) -> S,
+    ) -> Result<Vec<crate::apt_scene::Draw>, String> {
+        let mut out = Vec::new();
+        for level in &self.state.levels {
+            if level.key.ends_with("#unloading") {
+                continue;
+            }
+            let (matrix, alpha, visible) = self.parent_of(level.movie.root);
+            if !visible || alpha <= 0.0 {
+                continue;
+            }
+            let shapes = scene(&level.key, &level.movie);
+            out.extend(crate::apt_scene::draw_from(
+                &level.movie,
+                &self.vm,
+                &shapes,
+                matrix,
+                [1., 1., 1., alpha],
+                [0.; 4],
+            )?);
+        }
+        Ok(out)
+    }
     fn notify(
         &mut self,
         loader: usize,
@@ -570,18 +624,6 @@ impl Stage {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Default)]
-    struct Game(Vec<String>);
-    impl StageNatives for Game {
-        fn objects(&self) -> Vec<String> {
-            vec!["Game".into()]
-        }
-        fn call(&mut self, _: &mut Vm, object: &str, method: &str, args: Vec<Value>) -> Result<Value, String> {
-            self.0.push(format!("{object}.{method}({})", args.iter().map(Value::text).collect::<Vec<_>>().join(",")));
-            Ok(Value::Undefined)
-        }
-    }
 
     #[test]
     fn stage_string_and_array_builtins() {
@@ -630,7 +672,13 @@ mod tests {
         }
         let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
         let movies = set.movies.clone();
-        let mut game = Game::default();
+        let registry = crate::crossbar_host::test_registry();
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies
+            .get("source/screens/main/core_menu")
+            .map(|m| m.text_assets.language.clone())
+            .unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
         let mut stage = Stage::new(&game).unwrap();
         let fe = stage.load_root("source/screens/main/FE_root", &movies, &mut game).unwrap();
         // FE_root's own script (retail: "FE_ROOT SETUP!").
@@ -663,22 +711,32 @@ mod tests {
             stage.update(16.0, &movies, &mut game).unwrap();
         }
         eprintln!("levels: {:?}", stage.levels().iter().map(|l| &l.key).collect::<Vec<_>>());
-        eprintln!("game calls: {:?}", game.0);
+        eprintln!("game calls: {:?}", game.calls);
         eprintln!("unhandled: {:?}", stage.unhandled());
         assert!(stage.levels().iter().any(|l| l.key == "source/screens/main/core_menu"));
+        // The open pause menu draws, and every texture it names resolves in the exported set.
+        let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
+        let missing: Vec<_> = draws
+            .iter()
+            .filter(|d| d.fill.textured() && set.image(&d.texture).is_none())
+            .map(|d| d.texture.clone())
+            .collect();
+        eprintln!("draws: {} (textured {})", draws.len(), draws.iter().filter(|d| d.fill.textured()).count());
+        assert!(!draws.is_empty());
+        assert!(missing.is_empty(), "missing textures {missing:?}");
         if !close {
             return;
         }
         // Retail CloseScreen (sub_82D09298) passes the AS id as "%d"; the screen plays its outro
         // and reports OutroComplete.
-        game.0.clear();
+        game.calls.clear();
         stage
             .call_path("_global.ScreenManager.CloseScreen", vec![Value::Text("600".into())], &mut game)
             .unwrap();
         for _ in 0..60 {
             stage.update(16.0, &movies, &mut game).unwrap();
         }
-        eprintln!("after close: {:?}", game.0);
-        assert!(game.0.iter().any(|c| c == "Game.OnScreenOutroComplete(600)"), "{:?}", game.0);
+        eprintln!("after close: {:?}", game.calls);
+        assert!(game.calls.iter().any(|c| c == "Game.OnScreenOutroComplete(600)"), "{:?}", game.calls);
     }
 }
