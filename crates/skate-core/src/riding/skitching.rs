@@ -11,10 +11,12 @@
 //! dv    = (v - damping * (-state+856)) / cd   damping 0.2
 //! F     = n * dv * mass / dt, length-clamped to 500
 //! ```
-//! The meaning of the state fields (+624, +832, +848, +852, +856) and of p+2612 / +2820 is the
-//! skitch frame `sub_82D48148` (partly decoded); this module keeps the formula with named inputs.
+//! The state fields (+624, +832, +848, +852, +856) come from the skitch frame step `sub_82D48148`
+//! ([`frame`]); this module keeps the spring formula with named inputs.
 
 use crate::point_graph::PointGraph;
+
+pub mod frame;
 
 /// `physics_state_skitching/default` values the spring reads (vault data).
 #[derive(Clone, Copy, Debug, PartialEq)]

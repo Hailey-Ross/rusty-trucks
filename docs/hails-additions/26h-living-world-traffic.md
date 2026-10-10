@@ -575,3 +575,30 @@ query's provider slots: `82760508` treats the mode as a bitmask (0x02 the provid
 whether a car record carries an assembly. Then the riding skitch query, state 104 (registry, dispatch, a no-op exit
 like retail's `82B61BB8`, its own publication) and the car side.
 
+## Skitching step 4a: the state-104 frame step, and the GRABDATA header fix (2026-10-09)
+
+**Retail [code] (`.local/research/npc/b32-skitch-frame.md` section 1, `b47-skitch-frame-transforms.md` section 1).**
+`sub_82D48148` re-orients the grab record to the board, keeps a three-frame history of the grab edge (direction,
+up, side, midpoint), measures the skater's along-edge coordinate in the previous frame and builds the axis point
+from it (b47 corrects b32: no relative transform there), maps the current grab point into the previous pose with
+`inv(current) * previous`, and derives the car velocity at the grab location (two-frame difference), the tow speed,
+the distances and rates the tow spring reads, the side target (0.5 m along the side axis) and the "tows fast" gate
+(`Hash_1F85F500908C5E17`, 3.0).
+
+**Change.** skate-core `riding::skitching::frame` (`FrameInput`, `FrameState`, `FrameOutput`, `FrameSettings`,
+`step`; `to_world` / `to_local`); the car-motion frame (256 = 448) is kept for the hand targets, 384 (identity in
+retail) is left out. `tools/asset_pipeline/grab_data.py`: GRABDATA header +12 is the count of enabled entries (byte
++70 non-zero, the length of the direction array), not the entry count again; 3 parkassets props with disabled
+entries failed before (main re-ran all 102 with GRABDATA: all parse).
+
+**Engine choices.** A zero vector normalises to zero (retail's epsilon vector at `0x830BD350` is not read).
+
+**Verification.** skate-core `a_standing_car_gives_the_axis_point_and_no_tow`,
+`a_car_pulling_away_tows_and_the_grab_point_is_compared_in_the_previous_pose`,
+`a_board_facing_the_other_way_swaps_the_endpoints`; Python grab_data tests (disabled-entry header case added).
+
+**Open.** Not wired: the state-104 handler (pre-step gate, sub-mode, along chain, forces, publication) and the car
+provider. The grab providers are now known from `82857FB0` (b49, in progress): scene `+4084` (mode bit 0x04) is the
+type-2 world-object provider (or the DMO manager on the alternate path), `+4088` (bit 0x02) the vehicle provider
+(vtable `0x82322514`: `82C36068` single, `82C35B98` box, `82C35840` radius), so cars answer only mode 255 queries.
+

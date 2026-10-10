@@ -10,7 +10,7 @@ def grabdata(points, enabled=1):
     n = len(points)
     size = 112 + n * 16 + 16
     raw = bytearray(size)
-    struct.pack_into('>7I', raw, 0, 1, n, 0, 1, 32, 112, 112 + n * 16)
+    struct.pack_into('>7I', raw, 0, 1, n, 0, 1 if enabled else 0, 32, 112, 112 + n * 16)
     struct.pack_into('>3f', raw, 32, -0.8, 0.9, -1.9)
     struct.pack_into('>3f', raw, 48, 0.8, 0.9, -1.7)
     struct.pack_into('>I', raw, 32 + 48, 112)
@@ -41,3 +41,7 @@ class GrabDataTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             grab_splines(resource(GRABDATA, grabdata(points[:3])))
         self.assertEqual(grab_splines(resource(0xEB001D, grabdata(points))), [])
+        wrong = bytearray(grabdata(points, enabled=0))
+        struct.pack_into('>I', wrong, 12, 1)
+        with self.assertRaises(ValueError):
+            grab_splines(resource(GRABDATA, bytes(wrong)))

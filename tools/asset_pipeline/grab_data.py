@@ -4,8 +4,8 @@ Retail uses them for skitching (car model parts in livingworld.big, one rear-edg
 grab record type 1) and for DMO props (parkassets.big). Layout (`.local/research/npc/b35-car-definition-resource.md`;
 the in-place fixup is `0x82961590`), offsets relative to the section:
 
-- header: +0 entry count, +4 total control points, +12 entry count again, +16 entries, +20 points,
-  +24 directions;
+- header: +0 entry count, +4 total control points, +12 count of enabled entries (byte +70 non-zero; only those
+  have a direction: 3 parkassets props have disabled entries), +16 entries, +20 points, +24 directions;
 - entry (80 bytes): +0 box min (vec4), +16 box max (vec4), +48 points offset, +56 direction offset,
   +60 flags, +68 u8 control-point count, +70 u8 (retail skips an entry with +68 or +70 zero);
 - points: vec4 f32, chains of cubic Bezier segments (4 control points each); straight runs repeat
@@ -29,9 +29,11 @@ def grab_splines(raw):
             continue
         if offset + 28 > len(raw) or offset + size > len(raw):
             raise ValueError('Truncated GRABDATA section')
-        count, total, _, count_again, entries, points, directions = struct.unpack_from('>7I', raw, offset)
-        if count != count_again or entries + count * ENTRY_SIZE > size or points + total * 16 > size or directions + count * 16 > size:
+        count, total, _, enabled_count, entries, points, directions = struct.unpack_from('>7I', raw, offset)
+        if enabled_count > count or entries + count * ENTRY_SIZE > size or points + total * 16 > size or directions + enabled_count * 16 > size:
             raise ValueError('Unexpected GRABDATA header')
+        if sum(1 for index in range(count) if raw[offset + entries + index * ENTRY_SIZE + 70]) != enabled_count:
+            raise ValueError('GRABDATA enabled count does not match its entries')
         for index in range(count):
             at = offset + entries + index * ENTRY_SIZE
             bmin = struct.unpack_from('>3f', raw, at)
