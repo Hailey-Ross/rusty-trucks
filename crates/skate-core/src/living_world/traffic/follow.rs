@@ -15,10 +15,9 @@
 //!   junction speed) on a connector.
 //! - stop line (`sub_82C3FA08`): `accel = -v^2 / (2 (d - f2) + 0.001)` with `d` the distance to
 //!   the line and `f2` the stop distance [code]. [`stop_accel`].
-//! - following a lead (`sub_82C3FA08`, `+4403` bit 0x10, both speeds above
-//!   `follow_min_speed_kmh` 20): `accel = (max(v_lead - margin x 0.2778, 0)^2 - v^2) /
-//!   (2 gap + 0.001)` with `margin` = `follow_speed_margin_kmh` 20 [code + data]; kept as
-//!   [`retail_follow_accel`] for V4, V3 uses the plain [`follow_accel`].
+//! - a skater coming up behind (`sub_82C3FA08`, `+4403` bit 0x10 from the skater scan, limiter
+//!   kind free): the car brakes toward the skater's speed minus 20 km/h and never accelerates
+//!   ([`super::skater_scan`], b63; this was misread as a lead-following rule before).
 //! - the junction query (`sub_82E11E90`, V1 [`junction_entry`]) runs once the stop line is within
 //!   `look_ahead + speed`; Go enters, Approach slows to the connector's entry speed, Signal /
 //!   Yield / Blocked hold the car at the line [code].
@@ -74,10 +73,8 @@ pub struct FollowParams {
     pub min_gap: f32,
     /// Stop distance before the line (`f2` of the stop-line rule), m. Engine value: 0.5.
     pub stop_margin: f32,
-    /// Following rule gate and margin (spec `follow_min_speed_kmh`, `follow_speed_margin_kmh`,
-    /// 20 / 20 km/h) [data + code `sub_82C3FA08`], in m/s.
-    pub follow_min_speed: f32,
-    pub follow_margin: f32,
+    /// The skater-behind rule (scan range, speeds, braking distances, release grace; b63).
+    pub skater: super::skater_scan::SkaterFollowParams,
     /// Multiplier on the lane cap (`f2` of the integrator's cap; 1.0 = retail; a mod or the
     /// skitch milestone raises it).
     pub cap_scale: f32,
@@ -98,8 +95,7 @@ impl Default for FollowParams {
             hard_brake: 7.3,
             min_gap: 2.0,
             stop_margin: 0.5,
-            follow_min_speed: 20.0 / 3.6,
-            follow_margin: 20.0 / 3.6,
+            skater: Default::default(),
             cap_scale: 1.0,
             held_cap_add: 0.2,
             horn: super::horn::HornParams::default(),
@@ -142,11 +138,17 @@ pub struct Car {
     /// holder is the player (`+4403` bit 0x80: the car skips lights, `82C344D0`; b57). Host-set each tick.
     pub held: bool,
     pub player_held: bool,
+    /// Held on the previous step (`+4402` bit 0x01) and the release grace (`+3728`, s; -1 = none), stepped
+    /// after every car ([`super::skater_scan::grace_step`]).
+    pub held_last: bool,
+    pub release_grace: f32,
+    /// The skater scan of this tick (`sub_82C414A8`; set by the host before [`step`], like `obstacle`).
+    pub skater: super::skater_scan::SkaterScan,
 }
 
 impl Car {
     pub fn new(key: VehicleKey, cursor: LaneCursor, length: f32, params: FollowParams) -> Self {
-        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false }
+        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE }
     }
 
     /// Look-ahead distance (m): comfortable stopping distance (V3 stand-in for `+3516`).
@@ -217,23 +219,15 @@ pub fn reach_accel(speed: f32, target: f32, distance: f32) -> f32 {
 }
 
 /// Following a lead `gap` metres ahead (rear of the lead to the front of this car): brake to the
-/// lead's speed by `min_gap` behind it. V3 simplification: retail's following rule (lead speed
-/// minus the 20 km/h margin, above 20 km/h, over the gap fields `+3756` / `+3760` / `+3728`
-/// that are not read yet) is V4; [`retail_follow_accel`] holds the formula for it.
+/// lead's speed by `min_gap` behind it. NOT RETAIL YET: retail's lead handling lives in the
+/// planner's standoff part (`sub_82C41120`); `+3756` / `+3760` / `+3728` belong to the skater
+/// scan, not to a lead (b63).
 pub fn follow_accel(p: &FollowParams, speed: f32, lead_speed: f32, gap: f32) -> f32 {
     let gap = gap - p.min_gap;
     if gap <= 0.0 {
         return f32::NEG_INFINITY;
     }
     reach_accel(speed, lead_speed, gap)
-}
-
-/// Retail's following term (`sub_82C3FA08`): `(max(v_lead - margin, 0)^2 - v^2) / (2 gap +
-/// 0.001)` when both speeds exceed `follow_min_speed`; `None` otherwise. Not used by the V3
-/// follower (its gap input is V4 work); kept so the V4 planner and its tests start from it.
-pub fn retail_follow_accel(p: &FollowParams, speed: f32, lead_speed: f32, gap: f32) -> Option<f32> {
-    (speed > p.follow_min_speed && lead_speed > p.follow_min_speed)
-        .then(|| ((lead_speed - p.follow_margin).max(0.0).powi(2) - speed * speed) / (2.0 * gap + 0.001))
 }
 
 /// The speed cap of the car's current place.
@@ -430,6 +424,14 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             // Never closer than half the minimum gap (no overlaps whatever the braking).
             limit = Some(me.cursor.distance + (gap - p.min_gap * 0.5).max(0.0));
         }
+        // A skater coming up behind (`sub_82C3FA08`, limiter kind still free; the skater scan ran
+        // before the step). Engine choice: the result is a min with our lead / junction terms,
+        // which our planner folds into the same pass (retail keeps them apart by the kind).
+        if kind == super::horn::limiter::FREE {
+            if let Some(a) = super::skater_scan::skater_follow(&p.skater, me.speed, &me.skater, me.release_grace, accel) {
+                accel = accel.min(a);
+            }
+        }
         // The obstacle ahead (`sub_82C412D8` -> `sub_82C3FA08`, standoff = the car's min gap).
         let accel = match me.obstacle.and_then(|o| super::obstacles::obstacle_accel(me.speed, o.distance, p.min_gap)) {
             Some(a) => accel.min(a),
@@ -493,6 +495,11 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             car.accel = 0.0;
             events.push(FollowEvent::DeadEnd { key: car.key });
         }
+    }
+    // `sub_82C34B30` after the car loop: the release grace, then the held edge for the next step.
+    for car in cars.iter_mut() {
+        car.release_grace = super::skater_scan::grace_step(car.release_grace, car.held_last, car.held, dt, &car.params.skater);
+        car.held_last = car.held;
     }
     events
 }

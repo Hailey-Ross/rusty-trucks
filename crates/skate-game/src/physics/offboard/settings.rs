@@ -54,6 +54,8 @@ pub(crate) fn load_move_object_tuning(
         hold_box_offset: offboard_vector(data, "GrabBoxOffset")?,
         hold_angle_limit: data.float("physics_state_offboard", "default", "GrabSplineAngleLimitGrabbing")?,
         hold_max_angle_to_horizontal: data.float("physics_state_offboard", "default", "GrabSplineMaxAngleToHorizontalGrabbing")?,
+        // 82D444A0 grip clamp: physics_state_offboard `default` +444.
+        grab_end_exclusion: data.float("physics_state_offboard", "default", "GrabSplineEndExclusion")?,
         ..MoveObjectTuning::default()
     })
 }

@@ -181,11 +181,30 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
             if let Some(v) = num("Hash_758229215579C6D1") {
                 params.plan_decel = v;
             }
+            // The skater-behind rule (b63). Older exports name 3AB7FC7C `follow_speed_margin_kmh` (it is the FAR
+            // braking distance) and keep the others as raw hashes.
+            let either = |a: &str, b: &str| num(a).or_else(|| num(b));
+            let s = &mut params.skater;
             if let Some(v) = num("follow_min_speed_kmh") {
-                params.follow_min_speed = v / 3.6;
+                s.min_speed = v / 3.6;
             }
-            if let Some(v) = num("follow_speed_margin_kmh") {
-                params.follow_margin = v / 3.6;
+            if let Some(v) = either("skater_follow_margin_kmh", "Hash_256A412E350A2659") {
+                s.margin = v / 3.6;
+            }
+            if let Some(v) = either("skater_far_distance", "follow_speed_margin_kmh") {
+                s.far_distance = v;
+            }
+            if let Some(v) = either("skater_scan_range", "Hash_33466832D8178EAF") {
+                s.range = v;
+            }
+            if let Some(v) = either("skater_near_range", "Hash_D49FC49019181EE5") {
+                s.near_range = v;
+            }
+            if let Some(v) = either("skater_near_distance", "Hash_F682D359CDBC4D12") {
+                s.near_distance = v;
+            }
+            if let Some(v) = either("release_grace", "Hash_4727CF785EF735C8") {
+                s.release_grace = v;
             }
             if let Some(k) = f.pointer("/engine_audio/key").and_then(|v| v.as_str()) {
                 engine = k.to_string();
@@ -490,7 +509,7 @@ pub(crate) fn drive_traffic(
         car.held = Some(car.key) == held;
         car.player_held = car.held;
     }
-    look_ahead(traffic, &cars_q, &observers, &peds, ped_obstacles.as_deref());
+    look_ahead(traffic, &cars_q, &observers, &peds, ped_obstacles.as_deref(), held.is_some());
     let now = st.world.tick();
     let from = traffic.last_tick.unwrap_or(now);
     traffic.last_tick = Some(now);
@@ -667,13 +686,28 @@ fn look_ahead(
     observers: &super::LivingWorldObservers,
     peds: &Query<(&super::peds::Pedestrian, &super::peds::PedBody)>,
     props: Option<&super::peds::PedObstacles>,
+    local_skitching: bool,
 ) {
     use skate_core::living_world::traffic::horn::ObstacleHit;
+    use skate_core::living_world::traffic::skater_scan::{rear_zone_quad, scan, ScanActor};
     use skate_core::living_world::traffic::obstacles::{look_ahead_quad, nearest, CarFrame, LookAheadParams, Obstacle};
     let params = LookAheadParams::default();
     let mut list: Vec<Obstacle> = observers.observers.iter().map(|o| Obstacle { position: o.position, radius: 0.0, soft: true, id: None }).collect();
     list.extend(peds.iter().map(|(p, b)| Obstacle { position: b.position.to_array(), radius: super::vehicle_contacts::FALLBACK_PED_RADIUS, soft: true, id: Some(p.id.to_u64()) }));
-    let cars: Vec<(u32, CarFrame)> = cars_q
+    // The skater scan's list (82C414A8 walks the skater manager's actors, b63): our observers (index 0 = the local
+    // player, skipped while skitching). NOT RETAIL YET: the facing is the velocity heading (retail: the actor
+    // matrix row +32), and the NEAR flag byte `[[state+52]+55]` is not identified (false: no NEAR rule).
+    let actors: Vec<ScanActor> = observers
+        .observers
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let l = (o.velocity[0] * o.velocity[0] + o.velocity[2] * o.velocity[2]).sqrt();
+            let forward = if l > 1e-6 { [o.velocity[0] / l, o.velocity[2] / l] } else { [0.0, 0.0] };
+            ScanActor { position: o.position, velocity: o.velocity, forward, skitching: i == 0 && local_skitching, near_flag: false }
+        })
+        .collect();
+    let cars: Vec<(u32, CarFrame, [f32; 3])> = cars_q
         .iter()
         .map(|(car, motion, ..)| {
             let r = motion.curr.rotation;
@@ -691,7 +725,7 @@ fn look_ahead(
                 half_width: (hi[0] - lo[0]) * 0.5,
                 half_length: (hi[2] - lo[2]) * 0.5,
             };
-            (car.id.serial, frame)
+            (car.id.serial, frame, [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]])
         })
         .collect();
     // Props: active (not obstacle-off) DMOs; mod bodies live above `MOD_BODY_OBSTACLE_BASE` and are not DMOs.
@@ -701,11 +735,15 @@ fn look_ahead(
         soft: false,
         id: None,
     }));
-    for (serial, frame) in &cars {
+    for (serial, frame, size) in &cars {
         let Some(car) = traffic.cars.iter_mut().find(|c| c.key == *serial) else { continue };
         let quad = look_ahead_quad(frame, car.speed, car.params.min_gap, 0.0, None, &params);
         // 82C344D0: a car the player holds skips the slow-speed soft records (b57).
         car.obstacle = nearest(frame, &quad, &list, car.speed, !car.player_held, &params).map(|(i, d)| ObstacleHit { distance: d, soft: list[i].soft, id: list[i].id });
+        // 82C414A8 after the look-ahead: quad B with the same widths as quad A (speed ratio 0, see above).
+        let w = frame.half_width * (1.0 + params.base_widen);
+        let zone = rear_zone_quad(frame, w, w, car.params.skater.range);
+        car.skater = scan(frame, *size, car.held, &zone, &actors, &car.params.skater);
     }
 }
 

@@ -185,8 +185,8 @@ Census cars become visible, moving traffic that obeys the lights and is heard th
   least-loaded rule (V1). Cars at a dead end leave.
 - **V3 simplifications until V4**: cars are the only obstacles (skater, NPCs, peds are V4 / V5); the look-ahead is the
   comfortable stopping distance (retail `+3516` not read); following is "brake to the lead's speed by `min_gap`
-  (2 m, engine value)" instead of retail's lead-minus-20-km/h term (kept as `retail_follow_accel` for V4; its gap
-  inputs `+3756` / `+3760` / `+3728` are not read); a car that got Go and can no longer stop comfortably commits
+  (2 m, engine value)" (the "lead-minus-20-km/h term" read here is in fact the skater-behind rule, see
+  "Skitching step 6"); a car that got Go and can no longer stop comfortably commits
   (amber dilemma zone); no lane changes, overtakes, horns, parking, skids.
 - **Engine-side safeguard, not retail**: two lanes of one approach merging into one exit lane. Retail's junction
   query never scans the car's own approach (`sub_82E11E90` passes only ends from_end + 1 / + 2 / + 3 to
@@ -838,3 +838,50 @@ contents are not in the stock assets); the push speed's hold bit (1345 bit 0x10)
 the stock graph loads with the new conditions (`stock_motion_host_loads_graph_settings_and_authored_riding_tree`, run
 against the user's install); graph host tests (74).
 
+
+## Skitching step 6: cars slow down for a skater behind them (2026-10-09)
+
+**Problem.** Traffic never reacted to a skater coming up from behind, and the earlier V3 notes read retail's
+"following" rule as a lead-car rule (`follow::retail_follow_accel`), which it is not.
+
+**Retail [code + data] (`.local/research/npc/b63-traffic-skater-scan.md`; main re-read the scan's resets
+0x82165A10 / 0x8216DEE0, the state-104 skip, the 0.5 size factor, the quad B builder `82C400A8` (corners at +3520 to
++3568, the back corners pushed `Hash_33466832` metres along their side edges) and the planner's five vault hashes).**
+- Skater scan `82C414A8` (per car, after the look-ahead, before the horn): nothing while a skater holds the car;
+  else every actor of the skater list that is not skitching, with `|p - car| - 0.5 x size` under 40 m
+  (`Hash_33466832D8178EAF`) and inside the REAR zone (quad B: from the front bumper back past the car and 40 m
+  further; the far edge is not tested), writes distance and speed; one facing the car's way sets bit 0x10. Last match
+  wins.
+- Planner `82C3FA08`, limiter kind free only: with bit 0x10 and both speeds above 20 km/h (`D20826F1`) the
+  acceleration cap is 0 and the car brakes toward the skater's speed minus 20 km/h (`256A412E`):
+  `(max(vs - m, 0)^2 - v^2) / (2 D + 0.001)`, D = 20 m (`3AB7FC7C`) once the release grace is over (FAR), or D = 5 m
+  (`F682D359`) within 20 m (`D49FC490`) when the skater's NEAR flag is set (not gated by the grace).
+- Release edge `82C34B30`, once per traffic step after every car: a car let go this step gets 2.5 s
+  (`4727CF78`), otherwise the grace drops by the step and sits at -1 once negative.
+- So a car slows until a skater catching up from behind can reach it: the setup for skitching.
+
+**Change.**
+- skate-core `traffic/skater_scan.rs`: `SkaterFollowParams` (retail defaults), `rear_zone_quad`,
+  `in_quad_three_edges`, `scan`, `skater_follow`, `grace_step`. `follow::Car` gains `held_last`, `release_grace`,
+  `skater`; `FollowParams.skater` replaces `follow_min_speed` / `follow_margin`; `follow::step` applies the rule while
+  the limiter kind is free and steps the grace after the car loop. `retail_follow_accel` removed.
+- skate-game `vehicles.rs`: the look-ahead builds quad B and runs the scan per car over the observers (the local
+  player, skipped while skitching); the spec loader fills the new params.
+- Setup: `living_world.py` names the hashes (`skater_follow_margin_kmh`, `skater_far_distance`, `skater_scan_range`,
+  `skater_near_range`, `skater_near_distance`, `release_grace`). `3AB7FC7C` was labelled `follow_speed_margin_kmh`; it
+  is the FAR braking distance (same value, 20, in every stock spec, so nothing changed in play). The loader reads the
+  old label and the raw hashes too, so older exports keep working.
+
+**Engine choices / NOT RETAIL YET.** The skater rule is a min with our lead / junction terms (our planner folds them
+into one pass; retail keeps them apart by the limiter kind). The actor facing is the velocity heading (retail: the
+actor matrix row +32); the NEAR flag byte (`[[state+52]+55]` bit 0) is not identified, so the NEAR rule never fires;
+the scan's list is our observers (whether retail's list holds NPC skaters too is open); `car+36` vt+172 is taken as
+the car's full extents (open); quad B uses the speed ratio 0 like our quad A. Mod access: the values live in the
+per-car `FollowParams` (`VehicleOverrides.params`); the Lua surface comes with V8.
+
+**Multiplayer.** Per car: `held`, `held_last`, `release_grace`, the scan result; host-authoritative, plain data. The
+actor order must be stable (last match wins).
+
+**Verification.** skate-core `skater_scan` tests (rear zone hit / miss / range / held / skitching, last match and the
+sticky bit, open far edge, FAR / NEAR / grace / slow / cap formulas, 150-step grace); traffic 40 and skate-game
+living_world 71 pass. Not play-tested yet.

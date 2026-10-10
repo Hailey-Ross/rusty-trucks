@@ -161,11 +161,6 @@ fn integrator_matches_retail_rules() {
     let a = stop_accel(10.0, 20.5, 0.5);
     assert!((a + 100.0 / 40.001).abs() < 1e-5);
     assert_eq!(stop_accel(10.0, 0.4, 0.5), f32::NEG_INFINITY);
-    // retail following term
-    let p = FollowParams::default();
-    let r = retail_follow_accel(&p, 14.0, 12.0, 30.0).unwrap();
-    assert!((r - (((12.0f32 - 20.0 / 3.6).powi(2) - 196.0) / 60.001)).abs() < 1e-4);
-    assert!(retail_follow_accel(&p, 4.0, 12.0, 30.0).is_none());
 }
 
 #[test]

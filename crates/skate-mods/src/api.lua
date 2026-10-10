@@ -376,7 +376,7 @@ function sdk.audio.teleport_effect(amount) submit{kind="audio_teleport_effect",a
 -- or prop carrying ("carry": grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed,
 -- turn_rate, grip_reach, linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller,
 -- lever_rotation, lever_yaw, mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal, hold_box_extents,
--- record_272_speed_scale, commanded_material, upright_cos, apply_at_com,
+-- record_272_speed_scale, grab_end_exclusion, commanded_material, upright_cos, apply_at_com,
 -- yaw_replaces_torque, ignore_vertical, wake_on_command, by_template[<MOBJ template>] = {material_held, material_free,
 -- material_free_upright, upright_pair, restitution, record_272, linear_drag, angular_drag, mass,
 -- maximum_linear_velocity, maximum_angular_velocity, inertia_scale, inertia_offset})

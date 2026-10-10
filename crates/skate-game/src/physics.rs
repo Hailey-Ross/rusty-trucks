@@ -277,8 +277,7 @@ impl GamePhysics {
     /// This tick's props in the grab scene (`PropDynamics::grab_objects`). Opt-in with `SKATE_PROP_GRAB=1` until
     /// Move Object reads the authored record (doc 26i "Move Object step 2"); off, the scene holds no props.
     pub(crate) fn refresh_grab_props(&mut self) -> Result<(), String> {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if !*ON.get_or_init(|| std::env::var("SKATE_PROP_GRAB").is_ok_and(|v| v == "1")) {
+        if !prop_dynamics::prop_grab_enabled() {
             return Ok(());
         }
         let props = self.prop_dynamics.as_ref().map(|d| d.grab_objects()).unwrap_or_default();

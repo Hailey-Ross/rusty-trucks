@@ -67,6 +67,7 @@ use skate_core::{
     player::state::PhysicalStateId,
 };
 use bevy::prelude::warn;
+use skate_core::player::offboard::grab_scene::Record;
 use std::collections::BTreeMap;
 
 use super::prop_dynamics::PropDynamics;
@@ -168,6 +169,7 @@ pub(crate) struct LocomotionOverrides {
     pub hold_max_angle_to_horizontal: Option<f32>,
     pub hold_box_extents: Option<[f32; 3]>,
     pub record_272_speed_scale: Option<f32>,
+    pub grab_end_exclusion: Option<f32>,
 }
 
 impl LocomotionOverrides {
@@ -206,6 +208,7 @@ impl LocomotionOverrides {
         if let Some(v) = self.hold_max_angle_to_horizontal { m.hold_max_angle_to_horizontal = v; }
         if let Some(v) = self.hold_box_extents { m.hold_box_extents = v; }
         if let Some(v) = self.record_272_speed_scale { m.record_272_speed_scale = v; }
+        if let Some(v) = self.grab_end_exclusion { m.grab_end_exclusion = v; }
         l.turn_rate = self.turn_rate.or(base.turn_rate);
         l.sanitized(&base)
     }
@@ -214,9 +217,10 @@ impl LocomotionOverrides {
 /// The interim grab record of a held prop: which vertical box face is held
 /// (local axis index and side) and the grip position along its edge, both in
 /// the prop's own frame so the grip turns with the prop. NOT RETAIL YET:
-/// retail reads the DMO's authored grab splines (record layout 82585DD8,
-/// source undecoded); until then the face toward the skater at grab time is
-/// the grab edge.
+/// the stand-in for props without authored grab splines (and for every prop
+/// while `SKATE_PROP_GRAB` is off); props with splines carry by their
+/// authored record ([`PropCarry::frame_for`]). The face toward the skater at
+/// grab time is the grab edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GrabEdge {
     /// Local box axis of the face normal (0 or 2) and its sign.
@@ -259,6 +263,17 @@ fn grab_frame(body: &HeldBody, edge: GrabEdge) -> Option<GrabFrame> {
     let lift = Vector3::new(0.0, top, 0.0);
     let ends = [add(add(face, scale(edge_dir, -half_along)), lift), add(add(face, scale(edge_dir, half_along)), lift)];
     Some(GrabFrame { grip, forward, skater: grip, ends, grip_distance: half_along + edge.grip })
+}
+
+/// The authored grab records of prop `id` from its current pose; `None`
+/// without grab splines or when `enabled` is false.
+fn authored_records(dynamics: &PropDynamics, id: u32, enabled: bool) -> Option<Vec<Record>> {
+    if !enabled {
+        return None;
+    }
+    let object = dynamics.grab_object(id)?;
+    let records: Vec<_> = object.splines.iter().filter_map(|s| object.record(s).ok()).collect();
+    (!records.is_empty()).then_some(records)
 }
 
 /// The face of the held box toward `point` and the grip along it, clamped
@@ -437,8 +452,13 @@ pub(crate) struct PropCarry {
     locomotion: CarryLocomotion,
     /// Retail controller state of this slot (serialisable plain data).
     controller: MoveObjectController,
-    /// Interim grab record of the held prop.
+    /// Interim grab record of the held prop (props without authored grab splines).
     edge: Option<GrabEdge>,
+    /// Held authored record (descriptor, grip +1128, reversed bit) for props
+    /// with grab splines (82D444A0, Move Object step 3).
+    bound: Option<skate_core::player::offboard::move_object::HeldGrip>,
+    /// Carry by authored records: `None` = `SKATE_PROP_GRAB=1` (tests set it).
+    authored: Option<bool>,
     /// Grab frame of the held prop after this tick's command: where the
     /// skater is pulled to and which way it faces (read by `biped_ground`).
     frame: Option<GrabFrame>,
@@ -564,6 +584,18 @@ impl PropCarry {
         self.buttons = buttons;
     }
 
+    /// Force carrying by authored records on or off (tests).
+    #[cfg(test)]
+    pub(crate) fn set_authored_records(&mut self, on: bool) {
+        self.authored = Some(on);
+    }
+
+    /// The held authored record state (tests, diagnostics).
+    #[allow(dead_code)]
+    pub(crate) fn held_grip(&self) -> Option<skate_core::player::offboard::move_object::HeldGrip> {
+        self.bound
+    }
+
     pub fn placing(&self) -> bool {
         matches!(self.mode, Mode::Placement { .. })
     }
@@ -607,25 +639,73 @@ impl PropCarry {
         }
         let (id, _) = dynamics.nearest_body(carrier.position, self.grab_range())?;
         let body = dynamics.held_body(id)?;
-        let edge = choose_edge(&body, carrier.position, self.locomotion.hand_half_spread);
-        let frame = grab_frame(&body, edge)?;
-        self.qualifies(id, &frame, carrier).then_some(id)
+        let (frame, record) = self.frame_for(dynamics, id, &body, carrier, &mut None, &mut None)?;
+        self.holds(&record, &frame, carrier).then_some(id)
+    }
+
+    /// The grab frame and record of prop `id` this tick. Props with authored
+    /// grab splines (with `SKATE_PROP_GRAB=1`): the records are rebuilt from
+    /// the body's current pose (82D44A10 path A); without a binding (`bound`
+    /// `None`) the best record from the skater position (82D4D150 mode 0) is
+    /// bound with a new grip (82D444A0 full), with one the record of the same
+    /// descriptor keeps its grip (82D444A0 continue); the frame is the record
+    /// at the grip (82D45D30). Other props: the interim box edge `edge` (the
+    /// face toward the skater when `None`). Bindings are updated in place.
+    fn frame_for(
+        &self,
+        dynamics: &PropDynamics,
+        id: u32,
+        body: &HeldBody,
+        carrier: Carrier,
+        bound: &mut Option<skate_core::player::offboard::move_object::HeldGrip>,
+        edge: &mut Option<GrabEdge>,
+    ) -> Option<(GrabFrame, Record)> {
+        use skate_core::player::offboard::{grab_scene::best_spline, move_object};
+        let v3 = |v: Vector3| [v.x, v.y, v.z];
+        let v = |a: [f32; 3]| Vector3::new(a[0], a[1], a[2]);
+        if let Some(records) = authored_records(dynamics, id, self.authored.unwrap_or_else(super::prop_dynamics::prop_grab_enabled)) {
+            let reference = v3(carrier.skeleton.map_or(carrier.position, |s| s.reference));
+            let (record, held) = match *bound {
+                None => {
+                    let p = carrier.position;
+                    let mut record = best_spline(&records, [p.x, p.y, p.z, 1.0])?;
+                    let held = move_object::begin_grip(&mut record, reference, self.locomotion.move_object.grab_end_exclusion);
+                    (record, held)
+                }
+                Some(mut held) => {
+                    let mut record = records.into_iter().find(|r| (r.0[47], r.0[48]) == held.descriptor)?;
+                    move_object::continue_grip(&mut record, reference, &mut held);
+                    (record, held)
+                }
+            };
+            *bound = Some(held);
+            let at = move_object::record_frame(&record, held.grip);
+            let grip = v(at.point);
+            let frame = GrabFrame {
+                grip,
+                forward: flat_unit(scale(v(at.approach), -1.0))?,
+                skater: grip,
+                ends: [v(at.ends[0]), v(at.ends[1])],
+                grip_distance: held.grip,
+            };
+            return Some((frame, record));
+        }
+        let edge = *edge.get_or_insert_with(|| choose_edge(body, carrier.position, self.locomotion.hand_half_spread));
+        let frame = grab_frame(body, edge)?;
+        let out = scale(frame.forward, -1.0);
+        let record = move_object::edge_record(id, v3(frame.ends[0]), v3(frame.ends[1]), v3(out))?;
+        Some((frame, record))
     }
 
     /// Retail hold rule (82D44A10): the held record must pass CanGrabSpline
-    /// 82E08EE8 at the grip with the grabbing box and angles. The record is
-    /// the interim straight edge (NOT RETAIL YET: props' authored grab
-    /// splines are not loaded). Without skater observations (tests) it holds.
-    fn qualifies(&self, id: u32, frame: &GrabFrame, carrier: Carrier) -> bool {
+    /// 82E08EE8 at the grip with the grabbing box and angles. Without skater
+    /// observations (tests) it holds.
+    fn holds(&self, record: &Record, frame: &GrabFrame, carrier: Carrier) -> bool {
         let Some(skeleton) = carrier.skeleton else { return true };
         let v3 = |v: Vector3| [v.x, v.y, v.z];
-        let out = scale(frame.forward, -1.0);
-        let Some(record) = skate_core::player::offboard::move_object::edge_record(id, v3(frame.ends[0]), v3(frame.ends[1]), v3(out)) else {
-            return false;
-        };
         skate_core::player::offboard::move_object::still_holds(
             &self.locomotion.move_object,
-            &record,
+            record,
             v3(skeleton.reference),
             frame.grip_distance,
             skeleton.frame,
@@ -636,6 +716,7 @@ impl PropCarry {
         self.held = None;
         self.mode = Mode::Carry;
         self.edge = None;
+        self.bound = None;
         self.frame = None;
         self.follow = None;
         self.controller = MoveObjectController::default();
@@ -700,6 +781,7 @@ impl PropCarry {
                 if tick.placement {
                     self.mode = Mode::Carry;
                     self.edge = None;
+                    self.bound = None;
                     self.follow = None;
                     self.controller = MoveObjectController::default();
                     self.closest = f32::INFINITY;
@@ -734,14 +816,15 @@ impl PropCarry {
         };
         let locomotion = self.locomotion;
         let tuning = locomotion.command_tuning();
-        let edge = *self.edge.get_or_insert_with(|| choose_edge(&body, carrier.position, locomotion.hand_half_spread));
-        let Some(mut frame) = grab_frame(&body, edge) else {
+        let (mut bound, mut edge) = (self.bound, self.edge);
+        let Some((mut frame, record)) = self.frame_for(dynamics, id, &body, carrier, &mut bound, &mut edge) else {
             self.let_go();
             return;
         };
+        (self.bound, self.edge) = (bound, edge);
         // Let go: retail stops holding when the held record no longer
         // qualifies (82D44A10 -> 82E08EE8).
-        if !self.qualifies(id, &frame, carrier) {
+        if !self.holds(&record, &frame, carrier) {
             self.let_go();
             return;
         }

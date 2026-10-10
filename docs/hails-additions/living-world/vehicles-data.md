@@ -28,8 +28,10 @@ meaning, `Hash_*` otherwise (`field_names` maps both ways):
 - `livingworld_entities`: `driver` (`Hash_023EF929823A3C50`, RefSpec drivers), `spec` (`Hash_92A043B4A11F1A2A`, RefSpec
   characteristics), `scoring` (`Hash_E356ED00ABF1D7F0`, RefSpec `scoring_entities`, vehicles: `car`) [data].
 - `livingworld_vehicle_characteristics`: `engine_audio` (RefSpec `aud_traffic_engine`) [data]; `alarm_impulse` 0.1
-  (`sub_82C3C150`), `alarm_duration` 8 (`sub_82C3A4D0`), `follow_min_speed_kmh` 20 and `follow_speed_margin_kmh` 20
-  (`sub_82C3FA08`) [code]. Records: default, family01, minivan01, sports01, taxi01, truck01.
+  (`sub_82C3C150`), `alarm_duration` 8 (`sub_82C3A4D0`), `follow_min_speed_kmh` 20, `skater_follow_margin_kmh` 20,
+  `skater_far_distance` 20, `skater_scan_range` 40, `skater_near_range` 20, `skater_near_distance` 5, `release_grace`
+  2.5 (`sub_82C3FA08` / `sub_82C414A8` / `sub_82C34B30`, b63; exports before 2026-10-09 call `skater_far_distance`
+  `follow_speed_margin_kmh`) [code]. Records: default, family01, minivan01, sports01, taxi01, truck01.
 - `livingworld_vehicle_drivers`: `honk_obstacle_time` 2, `honk_blocked_time` 4 (taxi 1) (`sub_82C40660`),
   `honk_approach_speed_kmh` 5 (taxi 10) (`sub_82C34190`), `pull_over_chance` 0.02 (taxi 0.04) (`sub_82C41CD0`),
   `parked_time` 30 (taxi 20) (`sub_82C3A3A8`) [code]. Records: default, driver_normal, driver_fast, driver_reckless,

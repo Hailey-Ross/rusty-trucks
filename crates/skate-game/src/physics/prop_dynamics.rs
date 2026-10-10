@@ -312,6 +312,13 @@ pub(crate) fn prop_simulation(
     }
 }
 
+/// Props in the grab scene and Move Object on their authored grab records: opt-in with `SKATE_PROP_GRAB=1`
+/// (doc 26i "Move Object step 3"); off, the scene holds no props and carrying uses the box stand-in edge.
+pub(crate) fn prop_grab_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SKATE_PROP_GRAB").is_ok_and(|v| v == "1"))
+}
+
 /// Grab-scene id tag of props (cars use `living_world::vehicles::CAR_GRAB_TAG`, the high bit).
 pub(crate) const PROP_GRAB_TAG: u32 = 0x4000_0000;
 
@@ -1085,11 +1092,19 @@ impl PropDynamics {
     /// `PROP_GRAB_TAG | body id`, spline / geometry `PROP_GRAB_TAG | body id << 6 | index`. NOT RETAIL YET: the
     /// assembly is a stand-in with the object id (the `+172` object is not identified).
     pub(crate) fn grab_objects(&self) -> Vec<skate_core::player::offboard::grab_scene::Object> {
+        self.bodies.iter().filter_map(Self::grab_object_of).collect()
+    }
+
+    /// One prop's grab-scene object (see [`Self::grab_objects`]) from its current pose; `None` without
+    /// authored grab splines. Move Object rebuilds the held record from it every tick (82D44A10 path A).
+    pub(crate) fn grab_object(&self, id: u32) -> Option<skate_core::player::offboard::grab_scene::Object> {
+        Self::grab_object_of(self.bodies.get(*self.by_id.get(&id)?)?)
+    }
+
+    fn grab_object_of(b: &PropBody) -> Option<skate_core::player::offboard::grab_scene::Object> {
         use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry, Object, Provider, Spline};
-        self.bodies
-            .iter()
-            .filter(|b| !b.grab_splines.is_empty() && b.id < (1 << 24))
-            .map(|b| {
+        (!b.grab_splines.is_empty() && b.id < (1 << 24))
+            .then(|| {
                 let id = PROP_GRAB_TAG | b.id;
                 let o = b.origin();
                 let c = b.rates.basis.columns;
@@ -1123,7 +1138,6 @@ impl PropDynamics {
                         .collect(),
                 }
             })
-            .collect()
     }
 
     /// Vault record name of a body's prop type (diagnostics, mod keys).
@@ -3078,6 +3092,45 @@ mod tests {
             let lag = ((target.x - at.position.x).powi(2) + (target.z - at.position.z).powi(2)).sqrt();
             assert!(lag < 0.2, "skater fell {lag} m behind the grab frame");
         }
+    }
+
+    /// Move Object step 3: a prop with an authored grab spline is carried by
+    /// that record (82D444A0 / 82D45D30), not the box stand-in: the grip sits
+    /// on the spline, the facing is minus its approach vector, and the grip
+    /// arc stays bound while the prop is pushed.
+    #[test]
+    fn a_prop_with_grab_splines_is_carried_by_its_authored_record() {
+        let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 1.2]);
+        let mut splines = std::collections::BTreeMap::new();
+        // Spline on the -Z face (toward the skater), off centre along X.
+        splines.insert("template".to_owned(), vec![crate::living_world::vehicles::CarGrabSpline { points: vec![[-0.4, 0.3, -0.5], [0.0, 0.3, -0.5], [0.4, 0.3, -0.5]], direction: [0.0, 0.0, -1.0], flags: 0 }]);
+        assert_eq!(dynamics.set_grab_splines(&splines), 1);
+        let mut carry = crate::physics::prop_carry::PropCarry::default();
+        carry.set_authored_records(true);
+        let mut at = carrier(skate_core::player::state::PhysicalStateId::BipedGround, 0.);
+        at.position.x = 0.35;
+        carry.update(&mut dynamics, tick(), at);
+        assert_eq!(carry.held(), Some(7));
+        let grip = carry.held_grip().expect("bound to the authored record");
+        let scale = dynamics.bodies[0].axis_scale;
+        let length = 0.8 * scale.x;
+        // Grip clamped by the end exclusion (0.25) from the skater's x.
+        let expected = (0.35f32 + 0.4 * scale.x).min(length - 0.25);
+        let arc = if grip.reversed { length - grip.grip } else { grip.grip };
+        assert!((arc - expected).abs() < 1e-3, "{grip:?} expected arc {expected}");
+        let (_, forward) = carry.skater_target().unwrap();
+        assert!((forward.z - 1.0).abs() < 1e-4, "{forward:?}");
+        dynamics.set_held(Some(7));
+        at.state = skate_core::player::state::PhysicalStateId::OffBoardPushing;
+        for _ in 0..60 {
+            at = follow(&carry, at);
+            carry.update(&mut dynamics, stick(0., 1., 0.), at);
+            dynamics.set_held(carry.held());
+            dynamics.step(&world, &mut layer, &[]);
+        }
+        assert_eq!(carry.held(), Some(7), "the push dropped the prop");
+        assert_eq!(carry.held_grip().unwrap().descriptor, grip.descriptor);
+        assert!(dynamics.position_of(7).unwrap().z > 1.25, "the prop did not move");
     }
 
     /// A straight push moves the prop along the grab-edge normal at about the

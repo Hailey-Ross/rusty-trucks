@@ -22,6 +22,9 @@
 //! deterministic function of (tuning, state, input), run once per fixed tick.
 use crate::point_graph::PointGraph;
 
+mod held_record;
+pub use held_record::{HeldGrip, RecordFrame, begin_grip, continue_grip, record_frame};
+
 /// `Sk8::Physics::PhysicsControllerData`: four floats. 82D4E118 [code]:
 /// `filtered = (1 - filter) * filtered + filter * error`;
 /// `output += proportional * error + filtered_gain * filtered + derivative * (error - previous)`.
@@ -130,6 +133,10 @@ pub struct MoveObjectTuning {
     pub hold_box_offset: [f32; 3],
     pub hold_angle_limit: f32,
     pub hold_max_angle_to_horizontal: f32,
+    /// Grip end exclusion (82D444A0 full begin) [data]: the grip on the held
+    /// record is clamped to [h, length - h], h = min(this, length / 2);
+    /// physics_state_offboard `default` GrabSplineEndExclusion (+444, 0.25).
+    pub grab_end_exclusion: f32,
     /// Skater follow (82D44A10 before 82BDF268) [code]: the follow point
     /// (+416) steps toward the target frame's edge point (+192) moved
     /// `follow_reach` (0.65, image 0x820BB0EC) along the latched frame toward
@@ -186,6 +193,7 @@ impl Default for MoveObjectTuning {
             hold_box_offset: [0.0, 1.0, 0.1],
             hold_angle_limit: 80.0,
             hold_max_angle_to_horizontal: 50.0,
+            grab_end_exclusion: 0.25,
             follow_reach: 0.65,
             follow_height: 0.72,
             follow_step: 0.1,
@@ -251,6 +259,7 @@ impl MoveObjectTuning {
             hold_box_offset: if self.hold_box_offset.iter().all(|v| v.is_finite()) { self.hold_box_offset } else { fallback.hold_box_offset },
             hold_angle_limit: ok(self.hold_angle_limit, fallback.hold_angle_limit),
             hold_max_angle_to_horizontal: ok(self.hold_max_angle_to_horizontal, fallback.hold_max_angle_to_horizontal),
+            grab_end_exclusion: ok(self.grab_end_exclusion, fallback.grab_end_exclusion),
             follow_reach: fin(self.follow_reach, fallback.follow_reach),
             follow_height: fin(self.follow_height, fallback.follow_height),
             follow_step: ok(self.follow_step, fallback.follow_step),

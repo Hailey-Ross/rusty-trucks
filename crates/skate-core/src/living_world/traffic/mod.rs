@@ -32,6 +32,7 @@ pub mod horn;
 pub mod junction;
 pub mod obstacles;
 pub mod signals;
+pub mod skater_scan;
 pub mod spawn;
 
 pub use cursor::{choose_connector, Advance, ConnectorChoice, LaneCursor, Place};

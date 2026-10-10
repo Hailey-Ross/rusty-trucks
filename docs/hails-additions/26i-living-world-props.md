@@ -581,3 +581,46 @@ stand-in with the object id; the record vector is the linear velocity.
 **Verification.** skate-game `a_prop_with_grab_splines_is_a_world_object_in_the_grab_scene` (168 prop / living_world /
 offboard tests pass). Needs a setup refresh (or the next one) for the export field.
 
+
+## Move Object step 3: carrying a prop by its authored grab record (opt-in, 2026-10-09)
+
+**Problem.** Props carried by a stand-in edge (the box face toward the skater, top edge, grip clamped by an engine "hand
+half spread") even when the prop has authored grab splines (step 1) that are already in the grab scene (step 2).
+
+**Retail [code] (`.local/research/npc/b62-move-object-record.md`, main checked).**
+- Record choice `82D4D150` is our `best_spline` (mode 0: from the skater position). Mode 1 (the held update's path B
+  re-grab) skips records whose descriptor (+188 kind, +192 id) equals the held one.
+- `82D444A0(state, full)`: `full` (enter `82D442D0`, path B) copies the record's reversed bit (+200 bit 0x20) into
+  +1200 bit 0x04 and puts the grip (+1128) at the nearest arc distance of the skater reference (bone 23, +272) along the
+  polyline (`82D2CFE8`), clamped to [h, length - h], h = min(`GrabSplineEndExclusion`, length / 2). So the clamp is the
+  vault's end exclusion (physics_state_offboard `default` +444, 0.25), not a hand spread. Always: side test
+  c = cross(rec+80 - ref, rec+64 - ref).y; c < 0 swaps the ends, negates the edge direction (+112) and toggles the
+  reversed bit; if that bit then differs from +1200 bit 0x04 the grip is mirrored (length - grip), so it stays on the
+  same point of the edge.
+- Path A of the held update `82D44A10` refreshes the held record from the object's current pose every tick and runs
+  `82D444A0` without `full` (grip kept). `82D45D30` evaluates the record at the grip (`82D2D2B0`).
+
+**Change.**
+- skate-core: `grab_scene::nearest_distance` / `at_distance` are public; `best_spline_excluding` (mode 1);
+  `move_object::held_record` with `HeldGrip` (descriptor, grip, reversed), `begin_grip` (full), `continue_grip` (path
+  A) and `record_frame`; `MoveObjectTuning::grab_end_exclusion` (0.25, loaded from `GrabSplineEndExclusion`).
+- skate-game: `PropDynamics::grab_object(id)` (one prop's grab-scene object from its current pose);
+  `PropCarry::frame_for`: a prop with authored splines binds the best record from the skater position at the grab
+  (`begin_grip`), then each tick rebuilds its records, finds the bound descriptor and keeps the grip (`continue_grip`);
+  the grab frame is the record at the grip (forward = minus the flattened approach vector, ends = record ends,
+  grip distance = the grip). The hold rule (`still_holds`, 82E08EE8 at the grip) runs on that record. Props without
+  splines keep the box stand-in.
+- Mod: `sdk.world.set_tuning('carry', { grab_end_exclusion = ... })` (m, retail 0.25).
+
+**Engine choices / NOT RETAIL YET.** Still opt-in with `SKATE_PROP_GRAB=1` (shared gate `prop_dynamics::prop_grab_enabled`
+for the grab scene and the carry). The bound record comes from the prop's own splines (best from the skater position),
+not from the player's published best record (Player+1888); path A refreshes by descriptor, not from Player+1888. Not
+ported yet: path B re-grab and its frame blend (`82D46218`), the hand points (grip +/- 0.5 x |bone3 - bone7|, 0x8209975C at 82D45DAC; b62 said 0.68, corrected by b64 and main), `82D43B20`.
+
+**Multiplayer.** `HeldGrip` is the whole per-skater record state (plain `Copy` data); the record is rebuilt from the
+host's prop pose every tick.
+
+**Verification.** skate-core `move_object::held_record` tests (projected grip, end exclusion clamp incl. length / 2,
+a flip keeps the world grip point, mode 1 skips the held descriptor); skate-game
+`a_prop_with_grab_splines_is_carried_by_its_authored_record` (bound grip, facing from the approach vector, a 1 s push
+keeps the binding). Not play-tested yet.
