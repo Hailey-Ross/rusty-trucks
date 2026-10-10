@@ -67,6 +67,10 @@ pub(crate) struct SkitchState {
     pub hands_off: [bool; 2],
     /// 816: the last spring force.
     pub spring_force: [f32; 3],
+    /// The published grab height (280), closing rate (956 -> 284) and along ratio (936 -> 288).
+    pub grab_height: f32,
+    pub absorb: f32,
+    pub along_ratio: f32,
     /// 940 (the target step's lean yaw, kept across sub-mode 4 frames) and 944 (the smoothed lean angle).
     pub lean_yaw: f32,
     pub lean: f32,
@@ -163,6 +167,11 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
             _ => {}
         }
         s.hold.step(f.along, f.along_rate, f.along_limit, stick, &settings.hold, dt);
+        // 82D49AB8's 936 and the publication's grab height (previous frame at the posed hand, minus the skater).
+        s.along_ratio = (f.along / half_range.max(1e-6)).clamp(-1.0, 1.0);
+        let fr = s.frame.frames[1];
+        s.grab_height = fr[3][1] + fr[0][1] * s.hold.posed - position[1];
+        s.absorb = -f.axis_distance_rate;
         // Along chain 82D48C98: the grab point's along displacement over the last frame (frames 128 vs 64, after
         // the shift) times 7199.999 (0x822F8BDC; b55).
         let [old, prev, _] = s.frame.frames;
@@ -340,6 +349,10 @@ pub(crate) struct SkitchOutput {
     pub counter_36: u32,
     pub skitch_value_40: u32,
     pub scalar_292: f32,
+    pub grab_height_280: f32,
+    pub absorb_284: f32,
+    pub along_288: f32,
+    pub shimmy_136: f32,
 }
 
 impl SkitchState {
@@ -354,6 +367,15 @@ impl SkitchState {
     /// `82D4C078`: flag_304 only while ready and not released; the rest every frame.
     pub(crate) fn output(&self) -> SkitchOutput {
         let car = self.car.unwrap_or(Descriptor { kind: 0, id: 0 });
-        SkitchOutput { flag_304: self.ready && !self.hold.released(), counter_36: car.kind, skitch_value_40: car.id, scalar_292: self.hold.regrab_block }
+        SkitchOutput {
+            flag_304: self.ready && !self.hold.released(),
+            counter_36: car.kind,
+            skitch_value_40: car.id,
+            scalar_292: self.hold.regrab_block,
+            grab_height_280: self.grab_height,
+            absorb_284: self.absorb,
+            along_288: self.along_ratio,
+            shimmy_136: self.hold.posed_step * 60.0,
+        }
     }
 }

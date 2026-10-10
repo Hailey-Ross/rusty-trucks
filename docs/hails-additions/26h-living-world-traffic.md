@@ -785,7 +785,9 @@ skate-game `skitch_state` keeps 940 / 944 and refreshes the board offset each ga
 
 **Verification.** skate-core `the_lean_eases_in_two_degrees_at_most_and_writes_past_the_threshold`.
 
-**Open (outputs, b58 part 2).** The skitch graph nodes read animation 132 (988) / 136 (912 x 60, IsSkitchShimmying,
-SkitchShimmyingBehaviour) / 140 (984 hand bitmask, SkitchingPosition) and ground 280 (Crouch) / 284 (absorbspeed,
-IsSkitchingWithAbsorb) / 308 (PushSpeed); 984 / 988 come from the hand-target step `82D4A378` (not ported).
+**Outputs (b58 part 2).** Published now: animation 136 (`skitch_shimmy_136` = the posed hand's step x 60), ground 280
+(`skitch_grab_height_280`), 284 (`skitch_absorb_284` = 956) and 288 (`skitch_along_288` = 936). Their readers are the
+skitch graph nodes (IsSkitchShimmying, SkitchShimmyingBehaviour, SkitchingBehaviour "Crouch" / "absorbspeed",
+IsSkitchingWithAbsorb), not evaluated by our graph host yet. Open: animation 132 (988) / 140 (984) and ground 308 (996)
+from the hand-target step `82D4A378` (b59 decoding), state byte 53.
 

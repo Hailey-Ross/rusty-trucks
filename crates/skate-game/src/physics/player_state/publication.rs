@@ -190,6 +190,10 @@ pub(super) fn publish(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
         physical.state.counter_36 = out.counter_36;
         physical.state.skitch_value_40 = out.skitch_value_40;
         physical.ground.scalar_292 = out.scalar_292;
+        physical.ground.skitch_grab_height_280 = out.grab_height_280;
+        physical.ground.skitch_absorb_284 = out.absorb_284;
+        physical.ground.skitch_along_288 = out.along_288;
+        physical.animation.skitch_shimmy_136 = out.shimmy_136;
     } else if state == PhysicalStateId::PhysicsAir {
         let air = skate_core::air::state::fill_physics_output(&skater.air_state);
         physical.air.landing_normal_144 = air.landing_normal.map(f32::to_bits);
