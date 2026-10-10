@@ -30,6 +30,7 @@ pub mod follow;
 pub mod graph;
 pub mod horn;
 pub mod junction;
+pub mod manoeuvre;
 pub mod passage;
 pub mod obstacles;
 pub mod signals;
