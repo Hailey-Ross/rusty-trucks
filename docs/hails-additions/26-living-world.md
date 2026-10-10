@@ -119,6 +119,7 @@ the file of their topic (and get a line here).
 - [Skitching step 2: cars in the grab scene (2026-10-09)](26h-living-world-traffic.md#skitching-step-2-cars-in-the-grab-scene-2026-10-09)
 - [Skitching step 3: the riding skitch query (2026-10-09)](26h-living-world-traffic.md#skitching-step-3-the-riding-skitch-query-2026-10-09)
 - [Skitching step 4b: the hold target and the release impulses (2026-10-09)](26h-living-world-traffic.md#skitching-step-4b-the-hold-target-and-the-release-impulses-2026-10-09)
+- [Skitching step 4c: the hold step and the release (2026-10-09)](26h-living-world-traffic.md#skitching-step-4c-the-hold-step-and-the-release-2026-10-09)
 
 ### 26i: Props
 

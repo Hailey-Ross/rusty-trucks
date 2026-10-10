@@ -682,3 +682,25 @@ the vault values, `wrap`, `yaw`).
 **Verification.** skate-core `facing_the_target_needs_no_yaw`, `a_target_to_the_side_turns_at_most_the_rate_cap`,
 `release_impulses_pull_in_never_outward_and_push_off`. Not wired: state 104's handler is next.
 
+## Skitching step 4c: the hold step and the release (2026-10-09)
+
+**Retail [code + data] (`.local/research/npc/b53-skitch-hold-step.md`, b51 section 2; main checked the 1344 masks in
+`82D49580`: the per-frame clear is 0x60, b31's 0x18 was wrong).** `82D49D70` keeps the hand's along target (904):
+while 1344 bit 0x08 is set it follows the clamped position, or ratchets with a stick past +-0.5; the bit clears when
+the skater rests near the posed hand and sets again when the hand is 0.2 m off or after 2 s; the posed hand (908)
+chases the target with a step of 0.25 x the error, changing by at most 0.03 per tick. `82D49580` sets the release
+bits per sub-mode (1 pull in, 2 / 3 push off; 2 -> 4 clears them, 3 -> 4 keeps push off). The tail `82D4AFB8` lets go
+(sub-mode 4) without the grab input or, in sub-modes 1 / 2, with both hands off once the 0.5 s hold timer ran out;
+in sub-mode 4 it queues the impulse on the first frame, ends the state after three, and refills the 0.5 s re-grab
+block.
+
+**Change.** skate-core `riding::skitching::hold` (`HoldState::{reset, step, mode_bits, tail, released}`,
+`HoldSettings` with the eight vault values and the release frame count, `Impulse`).
+
+**Verification.** skate-core `the_posed_hand_eases_toward_the_target_in_capped_steps`,
+`the_stick_ratchets_the_target_and_rest_clears_the_bit`, `release_queues_one_impulse_then_ends_after_three_frames`.
+Not wired: state 104's handler (registry, dispatch, enter / exit, forces, publication) is next.
+
+**Open.** The meaning of 2476 bit 22 in the tail (the grab input, read as such), why reset skips 872, the vector at
+1168 in the tail.
+
