@@ -72,7 +72,7 @@ Not play-tested yet; tell us if any of these still happen.
 
 Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this fork's work (latest 2026-10-09, upstream `2e16697`). This build includes all of it. What this build adds on top of it:
 
-**Living world (upstream draft #52, still open)**
+**Living world (upstream draft #52: feature complete, being play-tested before review)**
 - **Ambient NPC skaters** riding the retail recorded lines: they chain from line to line, blend between animations like the player, play their recorded tricks on body and board and leave beyond 120 m like retail; they push props too.
 - **Pedestrians** with their retail models, tinted clothing, animation, fades and navigation on the retail navmesh (they walk round props); drawn on the floor under them and never spawned in the air.
 - **Traffic:** road graph, traffic signals, the vehicle census and cars driving on screen. New: cars brake and honk for skaters, peds and props in their way (peds run off the road from a honk), knock you down when they hit you, change lanes, pull over, park and pull out again, and a parked car's alarm goes off when you run into it (it stays parked while the alarm sounds).
@@ -97,7 +97,7 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 ## In progress
 
 Being worked on now, ported from the retail game code (the rolling `hails-additions` build gets them first):
-- **NPC skaters:** each pro's own stance (goofy or regular) from the game data; turning speed at line switches needs the full skater physics.
+- **Living world:** feature complete for its pull request (#52) and now being play-tested. Anything that looks or plays wrong with NPC skaters, peds, traffic, props or zombie mode: please send a log (see **Testing and reports**). Later additions (pros at their challenge spots, the Free Play menu and the zombie cheat screen with the menu work, more mod hooks) come in separate updates.
 - **Grinding:** the two flat-rail corners at the PCU Library spawn.
 - **Object Dropper:** the LB phone menu's Object Dropper is a full editor in retail (catalogue, free camera, snapping); research has started. Resetting and uprighting a single object already works for mods.
 - **Peds and moved props:** peds should walk round props after you move them.
@@ -118,7 +118,7 @@ From the latest play tests and the overnight work (not play-tested yet):
 - **NPC skaters:** full skater physics and bails on by default (opt-in for now), grabs, grind variety, landings, spins.
 - **Pedestrians:** spectating and looking at you, ATMs and water fountains (placement not found yet).
 - **Traffic:** roof landings and following a lead car the retail way; skitching is opt-in while it is tested.
-- **Movable objects:** retail object streaming by distance, per-type physics values from the game data, the Object Dropper editor, the phone rows for Reset and Upright, grindable props.
+- **Movable objects:** the Object Dropper editor, the phone rows for Reset and Upright, grindable props.
 - **Modes:** the Free Play menu (Traffic, Pedestrians, A.I. Skaters), the zombie cheat entry (zombie mode itself works with `SKATE_ZOMBIE=1`), the pros at their challenge spots.
 - **Multiplayer for the living world:** built ready for it, no networking yet.
 - **Teammate recruit menu:** teammate looks come from `settings/living_world_teammates.json` until the menu system exists.
