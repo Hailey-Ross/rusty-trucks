@@ -547,3 +547,28 @@ fn collision_and_mood_switches_restore_at_end() {
     assert!(!brain.heavy_collision_disabled && !brain.collision_sliding_disabled);
     assert!(brain.moods_disabled, "restored to the value before the behaviour");
 }
+
+/// Monitored packets as retail (`826A2600` / `826A27D0` / `826ACF90` / `826A2770`, b84): stage names from the XML,
+/// Increment only moves the stage, HasMonitoredIntent reads the active flag, the Create End removes the packet.
+#[test]
+fn monitored_packets_follow_retail() {
+    let behaviors = ops(&[("CreateSimpleMonitoredIntent", &[("intentName", "Sit"), ("numberOfStages", "2"), ("stage2Name", "StandUp")]), ("IncrementMonitoredPacketStage", &[("intentName", "Sit")])]);
+    let conditions = ops(&[("HasMonitoredIntent", &[("intentName", "Sit")])]);
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let f = frame();
+    let mut brain = PedBrain::default();
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    h.begin(0, [0; 6], &f);
+    assert_eq!(h.brain.monitored["Sit"].current(), Some("Sit"));
+    h.begin(1, [0; 6], &f);
+    assert_eq!(h.brain.monitored["Sit"].current(), Some("StandUp"));
+    assert_eq!(h.condition_activation(0, &f), 1, "still active: the motion side ends it");
+    // A ported motion state keeps it until its clips end; an unported one ends at the last stage (fallback).
+    h.brain.settle_packets(&|name| name == "Sit");
+    assert_eq!(h.condition_activation(0, &f), 1);
+    h.brain.settle_packets(&|_| false);
+    assert_eq!(h.condition_activation(0, &f), 0);
+    h.end(0, [0; 6], &f);
+    assert!(!h.brain.monitored.contains_key("Sit"));
+}

@@ -367,7 +367,7 @@ pub enum PedOp {
     IsFacingWaypointOrientation { fov: f32 },
     UnlockWaypoint,
     /// Monitored intents (`intentName`, `numberOfStages`): created, stepped, present.
-    CreateSimpleMonitoredIntent { intent: String, stages: u8 },
+    CreateSimpleMonitoredIntent { intent: String, stages: u8, names: Vec<String> },
     /// `DisableHeavyCollision` (`826A30D0` / `826A30E8`): `brain+3277` bit 0x20 while active.
     DisableHeavyCollision,
     /// `DisableCollisionSliding` (`826A3140` / `826A3158`): ped `+5936` bit 0x40 (collision sliding) off while active.
@@ -560,7 +560,13 @@ impl PedOp {
             "TurnToFaceWaypointOrientation" => PedOp::TurnToFaceWaypointOrientation,
             "IsFacingWaypointOrientation" => PedOp::IsFacingWaypointOrientation { fov: float("FOVAngle").unwrap_or(0.3) },
             "UnlockWaypoint" => PedOp::UnlockWaypoint,
-            "CreateSimpleMonitoredIntent" => PedOp::CreateSimpleMonitoredIntent { intent: text("intentName").unwrap_or_default(), stages: float("numberOfStages").unwrap_or(1.0) as u8 },
+            "CreateSimpleMonitoredIntent" => {
+                let intent = text("intentName").unwrap_or_default();
+                let stages = float("numberOfStages").unwrap_or(1.0).max(1.0) as u8;
+                // Stage 1 is the packet name, stage n its `stage<n>Name` (b84, `826A2600`).
+                let names = (1..=stages).map(|n| if n == 1 { intent.clone() } else { text(&format!("stage{n}Name")).unwrap_or_default() }).collect();
+                PedOp::CreateSimpleMonitoredIntent { intent, stages, names }
+            }
             "IncrementMonitoredPacketStage" => PedOp::IncrementMonitoredPacketStage { intent: text("intentName").unwrap_or_default() },
             "SetSitTimer" => PedOp::SetSitTimer,
             "OwnPluginObject" => PedOp::OwnPluginObject,
@@ -616,6 +622,27 @@ impl Default for SitValues {
     }
 }
 
+/// A monitored packet (`brain+2188` map, lookup `82E40F10`; b84): one intent per stage, the current stage (`+452`,
+/// from 1), active (`+456`: `HasMonitoredIntent` reads it; the motion side clears it when the packet's last motion
+/// step completes).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Packet {
+    pub stages: Vec<String>,
+    pub stage: u8,
+    pub active: bool,
+}
+
+impl Packet {
+    pub fn new(stages: Vec<String>) -> Self {
+        Self { stages, stage: 1, active: true }
+    }
+
+    /// The intent of the current stage (`None` past the last one).
+    pub fn current(&self) -> Option<&str> {
+        self.stages.get(usize::from(self.stage).checked_sub(1)?).map(String::as_str)
+    }
+}
+
 /// What a ped's brain knows and decided (host-owned, serialisable plain data).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PedBrain {
@@ -659,7 +686,7 @@ pub struct PedBrain {
     pub plugin_avoid_override: bool,
     /// The explicit turn direction the locomotion turns to (`ped+5888` +2080 with +2100 bit 0x20).
     pub explicit_turn: Option<Vec3>,
-    pub monitored: BTreeMap<String, (u8, u8)>,
+    pub monitored: BTreeMap<String, Packet>,
     pub turn_passed: bool,
     /// What the ped knows about and sees (`brain+624`; KnowAboutWantTarget's `82E42868`).
     pub perceptions: super::perception::Perceptions,
@@ -847,6 +874,17 @@ impl PedBrain {
         self.rng.get_or_insert_with(|| crate::living_world::Rng::new(0))
     }
 
+    /// The motion side's end of a packet whose motion state is not ported (`motion_handles` false): taken as done once
+    /// the packet reaches its last stage, so it goes inactive. NOT RETAIL: retail's motion graph clears `+456` when the
+    /// state's last clip completes (`MajorIntentComplete`, b84).
+    pub fn settle_packets(&mut self, motion_handles: &dyn Fn(&str) -> bool) {
+        for (name, p) in self.monitored.iter_mut() {
+            if !motion_handles(name) && p.stages.len() > 1 && usize::from(p.stage) >= p.stages.len() {
+                p.active = false;
+            }
+        }
+    }
+
     /// `GoingToStandBackUp`'s roll.
     pub fn roll_stand_up(&mut self) -> bool {
         let chance = self.sit.stand_up_chance;
@@ -979,7 +1017,7 @@ impl BrainHost<'_> {
             PedOp::CanSeeChasee => b.chasee.and_then(|c| b.perceptions.get(c)).is_some_and(|e| e.visible || e.told),
             PedOp::HasTakeDownTargetable => b.takedown_target.is_some(),
             PedOp::CanAttemptTakeDownTargetable => b.takedown_target.is_some_and(|t| (self.target_position)(t).is_some()) && b.takedown_choice.is_some(),
-            PedOp::HasMonitoredIntent { intent } => (intent == "ActiveTakedown" && b.takedown_active) || b.monitored.contains_key(intent),
+            PedOp::HasMonitoredIntent { intent } => (intent == "ActiveTakedown" && b.takedown_active) || b.monitored.get(intent).is_some_and(|p| p.active),
             PedOp::TakeDownAttemptSuccessful => b.takedown_result == Some(2),
             PedOp::TakeDownAttemptFailed => b.takedown_result == Some(3),
             PedOp::ChaserShouldGiveUpDueToTakedowns => self.chase.record.and_then(|r| r.give_up_after_takedowns()).is_some_and(|n| b.takedowns >= n),
@@ -1123,16 +1161,13 @@ impl Host for BrainHost<'_> {
                 let t = v.min_seconds + b.rng().unit() * (v.max_seconds - v.min_seconds);
                 b.set_timer(timers::SIT, t);
             }
-            PedOp::CreateSimpleMonitoredIntent { intent, stages } => {
-                b.monitored.insert(intent.clone(), (1, (*stages).max(1)));
+            PedOp::CreateSimpleMonitoredIntent { intent, names, .. } => {
+                b.monitored.insert(intent.clone(), Packet::new(names.clone()));
             }
+            // `826A27D0`: only the stage counter moves; the motion side ends the packet.
             PedOp::IncrementMonitoredPacketStage { intent } => {
-                if let Some((stage, stages)) = b.monitored.get(intent).copied() {
-                    if stage >= stages {
-                        b.monitored.remove(intent);
-                    } else {
-                        b.monitored.insert(intent.clone(), (stage + 1, stages));
-                    }
+                if let Some(p) = b.monitored.get_mut(intent) {
+                    p.stage = p.stage.saturating_add(1);
                 }
             }
             PedOp::ConversationSignalInPosition => b.chase_requests.push(ChaseRequest::SignalInPosition),
@@ -1279,7 +1314,7 @@ impl Host for BrainHost<'_> {
             PedOp::TakedownTauntVictim => {
                 if let Some(target) = b.wants.get("taunt").map(|w| w.target) {
                     b.face = (self.target_position)(target);
-                    b.monitored.insert("SGIntent".to_string(), (1, 1));
+                    b.monitored.insert("SGIntent".to_string(), Packet::new(vec!["SGIntent".to_string()]));
                     b.chase_requests.push(ChaseRequest::Taunt { target });
                 }
             }
@@ -1443,6 +1478,10 @@ impl Host for BrainHost<'_> {
         let b = &mut *self.brain;
         match op {
             PedOp::OwnPluginObject => b.own_plugin_object = false,
+            // `826A2770`: the Create behaviour's End removes its packet.
+            PedOp::CreateSimpleMonitoredIntent { intent, .. } => {
+                b.monitored.remove(intent);
+            }
             PedOp::DisableHeavyCollision => b.heavy_collision_disabled = false,
             PedOp::DisableCollisionSliding => b.collision_sliding_disabled = false,
             PedOp::DisableAllMoods => b.moods_disabled = b.moods_saved.remove(&behavior).unwrap_or(false),

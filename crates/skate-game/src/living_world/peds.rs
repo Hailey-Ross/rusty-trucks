@@ -1560,6 +1560,8 @@ pub(crate) fn think_peds(
                     mind.plugin_state = None;
                 }
             }
+            // Packets whose motion state is not ported end at their last stage (the taunt clip ends its own).
+            mind.brain.settle_packets(&|name| name == "SGIntent");
             // Group changes, in the order the graph asked for them.
             for request in std::mem::take(&mut mind.brain.chase_requests) {
                 use skate_core::living_world::peds::brain::ChaseRequest;
