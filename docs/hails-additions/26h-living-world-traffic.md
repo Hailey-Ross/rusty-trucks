@@ -771,3 +771,21 @@ calls (vt+84 / vt+88), the entered-on-red flag (`+3424` bit 0x04, `82C3B500`), N
 
 **Verification.** skate-core `a_held_car_drives_up_to_twelve_tenths_of_the_cap_and_the_player_skips_the_light`.
 
+## Skitching step 4f: the lean (2026-10-09)
+
+**Retail [code + data] (`.local/research/npc/b58-skitch-lean-outputs.md` part 1; main re-read the constants).**
+`82D4A0C0` turns the target step's lean yaw (940) into a lean angle (944): target = the sign of 940 times the curve
+`30FDFCE185CD3D4F` of |940| in degrees (0 while Processed 2488 bit 0x00800000), approached at 0.25 per update but at
+most 2 degrees; past 2 degrees the skeleton's board-offset orientation (Skeleton+15696) becomes a rotation of 944 about
+Y for 15 updates (+16389 = 1, +16392 = 15), the height channel untouched. `82BDD630` (ours `SkateboardOffset`) blends
+it out.
+
+**Change.** skate-core `riding::skitching::lean` (`step`, `LeanSettings`), `SkateboardOffset::refresh_orientation`;
+skate-game `skitch_state` keeps 940 / 944 and refreshes the board offset each gated frame.
+
+**Verification.** skate-core `the_lean_eases_in_two_degrees_at_most_and_writes_past_the_threshold`.
+
+**Open (outputs, b58 part 2).** The skitch graph nodes read animation 132 (988) / 136 (912 x 60, IsSkitchShimmying,
+SkitchShimmyingBehaviour) / 140 (984 hand bitmask, SkitchingPosition) and ground 280 (Crouch) / 284 (absorbspeed,
+IsSkitchingWithAbsorb) / 308 (PushSpeed); 984 / 988 come from the hand-target step `82D4A378` (not ported).
+

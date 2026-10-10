@@ -123,6 +123,7 @@ the file of their topic (and get a line here).
 - [Skitching step 4d: the along-the-bumper hand chain (2026-10-09)](26h-living-world-traffic.md#skitching-step-4d-the-along-the-bumper-hand-chain-2026-10-09)
 - [Skitching step 4e: state 104 in the game (2026-10-09)](26h-living-world-traffic.md#skitching-step-4e-state-104-in-the-game-2026-10-09)
 - [Skitching step 5: the held car (2026-10-09)](26h-living-world-traffic.md#skitching-step-5-the-held-car-2026-10-09)
+- [Skitching step 4f: the lean (2026-10-09)](26h-living-world-traffic.md#skitching-step-4f-the-lean-2026-10-09)
 
 ### 26i: Props
 

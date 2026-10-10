@@ -4,13 +4,13 @@
 //! retail order (`.local/research/npc/b50-skitch-prestep-update.md` section 1, b51 sections 1-3).
 //! Reached only with `SKATE_SKITCH=1` for now (`ground_runtime::skitch::latch_enabled`).
 //! NOT RETAIL YET: the grab point is the point on the record's chord; the board forward is the deck
-//! forward; the lean (`82D4A0C0`) is not composed yet; the sub-mode's hard event comes from the shimmy state.
+//! forward; the sub-mode's hard event comes from the shimmy state.
 use super::{GamePhysics, SkaterRuntime};
 use skate_core::physics::force_queue::QueuedPointForce;
 use skate_core::math::Vector3;
 use skate_core::player::offboard::grab_scene::Descriptor;
 use skate_core::player::selector::conditions::{condition_is_off_ground_skitching, BoardBodyState, TwoStageThresholds};
-use skate_core::riding::skitching::{frame, hold, shimmy, target, SkitchSpringInput, SkitchSpringSettings, SkitchSubMode, SkitchSubModeInput, SkitchSubModeSettings};
+use skate_core::riding::skitching::{frame, hold, lean, shimmy, target, SkitchSpringInput, SkitchSpringSettings, SkitchSubMode, SkitchSubModeInput, SkitchSubModeSettings};
 
 /// Frames the hands, forearms and head stay out of collision each update (`82D91298(state+28, 5)`).
 const CONTACT_OFF_FRAMES: u32 = 5;
@@ -24,6 +24,7 @@ pub(crate) struct SkitchSettings {
     pub target: target::TargetSettings,
     pub hold: hold::HoldSettings,
     pub shimmy: shimmy::ShimmySettings,
+    pub lean: lean::LeanSettings,
     /// The pre-step's off-ground test (`82D47FC0`: `40AAD3FD99B464F4` 0.1, `F178F963558D24A0` 0.05,
     /// `03A59CDFA0B0B967` 0.1).
     pub off_ground: TwoStageThresholds,
@@ -38,6 +39,7 @@ impl Default for SkitchSettings {
             target: Default::default(),
             hold: Default::default(),
             shimmy: Default::default(),
+            lean: Default::default(),
             off_ground: TwoStageThresholds { field_856_primary: 0.1, field_856_secondary: 0.05, field_7692: 0.1 },
         }
     }
@@ -65,6 +67,9 @@ pub(crate) struct SkitchState {
     pub hands_off: [bool; 2],
     /// 816: the last spring force.
     pub spring_force: [f32; 3],
+    /// 940 (the target step's lean yaw, kept across sub-mode 4 frames) and 944 (the smoothed lean angle).
+    pub lean_yaw: f32,
+    pub lean: f32,
 }
 
 fn v(words: &[u32; 72], offset: usize) -> [f32; 3] {
@@ -89,6 +94,8 @@ pub(crate) fn enter(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Re
     s.time = 0.0;
     s.hands_off = [true; 2];
     s.spring_force = [0.0; 3];
+    s.lean_yaw = 0.0;
+    s.lean = 0.0;
     Ok(())
 }
 
@@ -126,6 +133,8 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     s.ready = ready;
     let mut forces: Vec<QueuedPointForce> = Vec::new();
     let mut board: Option<BoardStep> = None;
+    let mut lean_override = None;
+    let suppress_lean = p.flags_2488 & 0x0080_0000 != 0;
     if ready {
         // Pre-step 82D47FC0.
         s.off_ground = condition_is_off_ground_skitching(body, settings.off_ground);
@@ -202,11 +211,16 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
                 &settings.target,
             );
             s.target_dir = tgt.target_dir;
+            s.lean_yaw = tgt.lean_yaw;
             s.spring_force = spring;
             board = Some(BoardStep { spring: Some(spring), yaw: f.tows_fast.then_some(tgt.yaw_correction) });
             s.time += dt;
         } else {
             board = Some(BoardStep { spring: None, yaw: None });
+        }
+        // Lean 82D4A0C0: the board offset's orientation channel.
+        if let Some(m) = lean::step(&mut s.lean, s.lean_yaw, suppress_lean, &settings.lean) {
+            lean_override = Some(m);
         }
         // Tail 82D4AFB8.
         let (mode, impulse) = s.hold.tail(s.sub.mode, grab_input, s.hands_off[0] && s.hands_off[1], &settings.hold, dt);
@@ -222,6 +236,9 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     }
     if let Some(step) = board {
         compose_board(physics, skater, step)?;
+    }
+    if let Some(m) = lean_override {
+        skater.animated_skeleton.board_offset.refresh_orientation(m);
     }
     let q = physics.board.forces_mut();
     for force in forces {
