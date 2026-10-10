@@ -38,7 +38,8 @@ Every report with a log helps. Logs let us see exactly where and when something 
 5. **Grinding:** the stair handrail at the **PCU Library** spawn should no longer throw you off at its bottom bend. The two corners of the flat rail there still bail. Tell us any other spot where you bail for no reason.
 6. **Frame rate:** big flips on the Spillway jumps used to hitch; the trick text no longer rebuilds itself every frame. Play with the Frame-time counter on and send a screenshot or video.
 7. **Audio:** sounds that are missing, late, doubled, too loud or quiet compared with retail.
-8. **Setup:** if the first conversion fails or stops, send the setup window's text and the folder the game is in (long paths and closing the console are handled now).
+8. **Living world:** cars honking, braking, pulling over and parking; run into a parked car (its alarm should sound for about 8 s and the car should not drive off meanwhile); bump the same pedestrian two or three times (warning, then a chase). With the opt-in switches: skitching (`SKATE_SKITCH=1`) and grabbing props (`SKATE_PROP_GRAB=1`, watch the hands).
+9. **Setup:** if the first conversion fails or stops, send the setup window's text and the folder the game is in (long paths and closing the console are handled now).
 
 ## Fixed in this build
 
@@ -51,6 +52,7 @@ Not play-tested yet; tell us if any of these still happen.
 - **Grind bails at the PCU Library handrail:** the board no longer catches a post under the bottom bend (retail's tighter collision query box).
 - **Car shadows under bridges:** traffic on a bridge no longer casts a shadow onto the street below (retail's world shadow floor).
 - **Props look like retail:** benches, bins and other props use retail's prop shader (dents, grime, rust) after a setup refresh.
+- **Rolling on grass and dirt:** uses retail's sound routing for those surfaces instead of a stand-in grain sound.
 - **Frame hitches from the trick text:** the trick and score text no longer rebuilds its graphics every frame.
 - **Better logs:** a body hit while skating is heard again (and logged), every landing logs its sound, frame hitches are logged with their cause, and a trace-all mode turns on every log at once for test sessions.
 
@@ -71,7 +73,10 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 **Living world (upstream draft #52, still open)**
 - **Ambient NPC skaters** riding the retail recorded lines: they chain from line to line, blend between animations like the player, play their recorded tricks on body and board and leave beyond 120 m like retail; they push props too.
 - **Pedestrians** with their retail models, tinted clothing, animation, fades and navigation on the retail navmesh (they walk round props); drawn on the floor under them and never spawned in the air.
-- **Traffic:** road graph, traffic signals, the vehicle census and cars driving on screen.
+- **Traffic:** road graph, traffic signals, the vehicle census and cars driving on screen. New: cars brake and honk for skaters, peds and props in their way (peds run off the road from a honk), knock you down when they hit you, change lanes, pull over, park and pull out again, and a parked car's alarm goes off when you run into it (it stays parked while the alarm sounds).
+- **Pedestrians react to you:** hit the same ped twice and they stop and warn you, three times and they chase you (with friends joining in and security tazers); a caught skater gets taken down and taunted. Peds greet each other, gather and hold conversations.
+- **NPC skaters** steer, slow down or stop for peds, cars, props and you.
+- **Opt-in, still being tested** (off by default; set the variable before starting, for example `set SKATE_SKITCH=1` in a command window, then run `PLAY-WITH-LOG.bat` from it): **skitching** on traffic cars (`SKATE_SKITCH=1`: ride behind a car and hold grab), **carrying props by their real handles** with the hands placed on the edge (`SKATE_PROP_GRAB=1`), **NPC skaters with full physics** near you (`SKATE_NPC_SIM=1`).
 - **Movable objects (#15 follow-up):** grab, carry, drag and drop props on foot (hold RB, left stick moves the object, right stick turns), placement mode with saved layouts, authored prop physics.
 - All from the disc data, seeded and multiplayer-ready, with a Lua mod API (`sdk.world.set_tuning`), an NPC draw distance option, and always-on logging of ped positions and floating peds.
 - **Frame drop with the board thrown away fixed:** a hidden board no longer scans every collision triangle each tick.
