@@ -754,3 +754,28 @@ machine `CD3BB21DBDF4C550` at tick 10, walks 10 m, slides to 0.019 m, faces it, 
 leaves (tick 1098) and is offered it again once its 30 s memory runs out. Not play-tested. Open: the conversation's
 Speak / TurnToFace flicker (conversation waypoints have no orientation).
 
+## Ped plugins on world props: benches, bins and newspaper boxes from the model hotpoints (2026-10-10)
+
+**Retail [code + data] (`.local/research/peds/b86-dmo-hotpoints.md`, main checked the parse on the user's disc).** A dynamic
+object's seats, bin and newspaper-box points are hotpoints in its model RX2 in `parkassets.big` (RW type 0x00EB001E
+HOTPOINTDATA: count, entries at +16, 112-byte records with a row-vector matrix whose row 3 is the position and row 2 the
+facing axis, +96 the type). `82C4E128` makes one one-waypoint group per hotpoint when the object spawns: type 0 is the root,
+8 is skipped, 1 a trash bin, 2 a newspaper box, any other type a seat. On the disc: 22 templates, 30 seats, 7 newspaper-box
+points, 5 bin points (e.g. a flat bench has 4 seats, a picnic table 4, a patio chair 1).
+
+**Change.** Setup: `tools/asset_pipeline/hotpoint_data.py` (strict parser, the class map as data) reads parkassets.big in
+`prepare_catalog` (`hotpoints.json`); the map's props report gains `hotpoints`, `hotpoint_classes` and `plugin_props` (each
+placed object's hotpoints with a class, through the same transform as its geometry). Game: `ped_plugins::map_props` adds
+them to the map's plugin props (id = DMO instance id with the hotpoint index in the top byte); `PED_PLUGINS <map>: N
+hotpoint props` log. Brain: `DisableCollisionsWithBehaviourSource` (`826A7378` / `826A7410`).
+
+**NOT RETAIL YET / open.** Needs the `maps` setup group re-run (the current install has no `plugin_props` yet, so benches
+are not offered until then). Seats follow the initial placement (a moved bench keeps its seats where it stood); the ped is
+not yet exempt from its plugin prop's navmesh cut (the DMO instance to prop id mapping is open), which a seat inside the
+bench's cut needs; the EMBEDDEDDATA list that links a template to its hotpoint records is not decoded (one section per
+RX2 makes the template join safe); 13 of the 22 templates are not placed through worlddmo.
+
+**Verification.** Python `test_hotpoint_data` (parse, header / matrix checks, the placement transform and the class map),
+`test_dynamic_props`; skate-game `hotpoint_props_load_with_stable_ids`, living world / ped 103. The disc parse: 22
+templates, types {6: 30, 2: 7, 1: 5, 0: 1}. Not play-tested.
+

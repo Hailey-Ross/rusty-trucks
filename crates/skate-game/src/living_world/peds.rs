@@ -503,7 +503,11 @@ fn load_ped_data(
         Err(error) => warn!("PED_MOOD tables not loaded (no mood reactions): {error}"),
     }
     match super::ped_plugins::PluginData::load(&config.asset_root) {
-        Ok(p) => {
+        Ok(mut p) => {
+            // The map's DMO hotpoint props (benches, bins, newspaper boxes) beside the placed waypoint groups.
+            let seats = super::ped_plugins::map_props(&config.asset_root, &map.name);
+            info!("PED_PLUGINS {}: {} hotpoint props ({} seats)", map.name, seats.len(), seats.iter().filter(|s| s.class == "waypoint_sit").count());
+            p.placed.entry(map.name.clone()).or_default().extend(seats);
             info!(
                 "PED_PLUGINS {} prop classes ({} with descriptors), {} ped types with plugin_odds, placed props {:?}",
                 p.classes.len(),

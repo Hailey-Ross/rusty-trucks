@@ -101,6 +101,36 @@ fn placed(waypoints: &Value) -> BTreeMap<String, Vec<PluginProp>> {
     out
 }
 
+/// The map's DMO hotpoint plugin props (`native-props/<map>.json` `plugin_props`, setup `hotpoint_data`): one
+/// one-waypoint prop per hotpoint of each placed bench, bin or newspaper box (`82C4E128`), at the initial placement.
+/// The id is the DMO instance id with the hotpoint index in its top byte (stable for a host). NOT RETAIL YET: a prop the
+/// player moves keeps its seats where it was placed.
+pub(crate) fn map_props(root: &Path, map: &str) -> Vec<PluginProp> {
+    let path = root.join("private/native-props").join(format!("{map}.json"));
+    let Some(report) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { return Vec::new() };
+    let v3 = |v: &Value| -> Option<[f32; 3]> {
+        let a = v.as_array()?;
+        Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32, a.get(2)?.as_f64()? as f32])
+    };
+    report
+        .get("plugin_props")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|h| {
+            let instance = u64::from_str_radix(h.get("instance_id")?.as_str()?, 16).ok()?;
+            let index = h.get("index")?.as_u64()?;
+            Some(PluginProp {
+                id: instance ^ ((index + 1) << 56),
+                class: h.get("class")?.as_str()?.to_string(),
+                waypoints: vec![PluginWaypoint { position: v3(h.get("position")?)?, facing: v3(h.get("facing")?)?, occupant: None }],
+                cooldown: 0.0,
+                cooldown_reset: 0.0,
+            })
+        })
+        .collect()
+}
+
 impl PluginData {
     /// Load from the asset root (`private/living_world/tables.json` and `waypoints.json`, the stock descriptors).
     pub fn load(root: &Path) -> Result<Self, String> {
@@ -165,6 +195,24 @@ mod tests {
         assert_eq!(p["DownTown"][0].id, 0x99FA4D88899F3731);
         assert_eq!(p["DownTown"][0].class, "waypoint_vendingmachine");
         assert_eq!(p["DownTown"][0].waypoints[0].position, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn hotpoint_props_load_with_stable_ids() {
+        let dir = std::env::temp_dir().join(format!("skate-plugin-props-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("private/native-props")).unwrap();
+        std::fs::write(
+            dir.join("private/native-props/Test.json"),
+            r#"{"plugin_props": [{"instance_id": "BBDDDCD5E794B3CE", "template_id": "T", "index": 1, "type": 6, "class": "waypoint_sit", "position": [10.25, 1.0, 19.5], "facing": [1.0, 0.0, 0.0]}]}"#,
+        )
+        .unwrap();
+        let props = map_props(&dir, "Test");
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(props.len(), 1);
+        assert_eq!(props[0].id, 0xBBDDDCD5E794B3CE ^ (2 << 56));
+        assert_eq!(props[0].class, "waypoint_sit");
+        assert_eq!(props[0].waypoints[0].position, [10.25, 1.0, 19.5]);
+        assert!(map_props(std::path::Path::new("Z:/nowhere"), "Test").is_empty());
     }
 
     /// The stock descriptors parse: sit's transfer tree and the conversation's 3 participants.

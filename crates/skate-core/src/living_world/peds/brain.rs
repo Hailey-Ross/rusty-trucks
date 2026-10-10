@@ -398,6 +398,10 @@ pub enum PedOp {
     OwnPluginObject,
     /// `IgnoreStandingCollisions` (`826A3108` / `826A3120`): `brain+3277` bit 0x10 while active.
     IgnoreStandingCollisions,
+    /// `DisableCollisionsWithBehaviourSource` (`826A7378` / `826A7410`): `brain+3277` bit 0x01 and the plugin prop as an
+    /// object the ped's collision ignores (`82E3DB68`, `ped+5916`) while active. NOT RETAIL YET: the host does not yet
+    /// exempt that prop from the ped's obstacle step (the DMO instance to prop id mapping is open).
+    DisableCollisionsWithBehaviourSource,
     /// `SetExplicitTurnDirectionToWaypointOrientation` (`826A2988` / `826A29F0`): while active the locomotion turns to
     /// the locked waypoint's orientation (`ped+5888` +2080, flag +2100 bit 0x20); nothing without a waypoint.
     SetExplicitTurnDirectionToWaypointOrientation,
@@ -585,6 +589,7 @@ impl PedOp {
             "IsAtWaypoint" => PedOp::IsAtWaypoint { radius: float("radius").unwrap_or(3.0) },
             "InSkaterRadius" => PedOp::InSkaterRadius { radius: float("radius").unwrap_or(0.0) },
             "IgnoreStandingCollisions" => PedOp::IgnoreStandingCollisions,
+            "DisableCollisionsWithBehaviourSource" => PedOp::DisableCollisionsWithBehaviourSource,
             "SetExplicitTurnDirectionToWaypointOrientation" => PedOp::SetExplicitTurnDirectionToWaypointOrientation,
             "GoingToStandBackUp" => PedOp::GoingToStandBackUp,
             "ConversationSignalInPosition" => PedOp::ConversationSignalInPosition,
@@ -679,6 +684,8 @@ pub struct PedBrain {
     /// `brain+3277` bits 0x01 (OwnPluginObject) and 0x10 (IgnoreStandingCollisions).
     pub own_plugin_object: bool,
     pub ignore_standing_collisions: bool,
+    /// `ped+5916`: the plugin prop is ignored by the ped's collision (DisableCollisionsWithBehaviourSource).
+    pub ignore_source_collision: bool,
     /// `brain+3277` bit 0x20, ped `+5936` bit 0x40 cleared, `brain+3278` bit 0x08 (with each DisableAllMoods
     /// behaviour's saved value), `brain+3200` / `+3201`.
     pub heavy_collision_disabled: bool,
@@ -1145,6 +1152,10 @@ impl Host for BrainHost<'_> {
                 b.locked_at = Some(self.position);
             }
             PedOp::OwnPluginObject => b.own_plugin_object = true,
+            PedOp::DisableCollisionsWithBehaviourSource => {
+                b.own_plugin_object = true;
+                b.ignore_source_collision = true;
+            }
             PedOp::DisableHeavyCollision => b.heavy_collision_disabled = true,
             PedOp::DisableCollisionSliding => b.collision_sliding_disabled = true,
             PedOp::DisableAllMoods => {
@@ -1496,6 +1507,10 @@ impl Host for BrainHost<'_> {
         let b = &mut *self.brain;
         match op {
             PedOp::OwnPluginObject => b.own_plugin_object = false,
+            PedOp::DisableCollisionsWithBehaviourSource => {
+                b.own_plugin_object = false;
+                b.ignore_source_collision = false;
+            }
             // `826A2770`: the Create behaviour's End removes its packet.
             PedOp::CreateSimpleMonitoredIntent { intent, .. } => {
                 b.monitored.remove(intent);
