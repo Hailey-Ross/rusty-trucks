@@ -553,3 +553,25 @@ path request, and skips the navmesh cast the flee legs use.
 the steering type's speed quantisation (6 stays 6, 3 becomes 2 in type 0); `IsOnRoad` / `IsOnIntersection`
 (absent, answer false, so Wander's on-road test never holds the honk back); the driver bits' other uses (0x04, 0x10).
 
+## Skitching step 1: car grab splines in the vehicle data (2026-10-09)
+
+**Retail [code + data] (`.local/research/npc/b34-car-grab-splines.md`, `b35-car-definition-resource.md`; main ran the
+parser over the disc).** Car grab splines are authored per model: RW4 GRABDATA (`0x00EB001F`) in the first part arena
+of the recipe that has one (`82C2A8C8`), registered as grab records of type 1. On the disc 17 of the 18 car recipes
+have exactly one rear-edge spline (Bezier chains of 12 to 24 control points at z -1.7 to -3.1, direction (0, 0, -1));
+`reda_car` has none.
+
+**Change.** `tools/asset_pipeline/living_world_vehicles.py` `recipe_grab_splines` writes `vehicles.json
+models.<record>.grab_splines = [{points, direction, bounds, flags}]` (model space, the GLB's frame; exporter VERSION
+2); skate-game `VehicleModel.grab_splines` (`CarGrabSpline`), a spline that is not whole Bezier segments is dropped.
+
+**Verification.** Python `GrabSplines.test_the_first_part_arena_with_grabdata_gives_the_splines` (+ the grab_data
+tests); skate-game `grab_splines_and_driver_horn_values_load`. The dev install's vehicles.json got the field by hand
+(same function) until the next setup refresh.
+
+**Open (next steps, `.local/research/npc/b46-skitch-port-map.md`, `b47-skitch-frame-transforms.md`).** The grab
+query's provider slots: `82760508` treats the mode as a bitmask (0x02 the provider at scene `+4088`, 0x04 the one at
+`+4084`; our offboard port is the 0x04 one); which provider enumerates cars and its gates are not decoded yet, nor
+whether a car record carries an assembly. Then the riding skitch query, state 104 (registry, dispatch, a no-op exit
+like retail's `82B61BB8`, its own publication) and the car side.
+

@@ -152,6 +152,22 @@ class Recipes(unittest.TestCase):
         self.assertEqual(veh.material_types(xml), {'000031a303e38817': 'vehicle_glass', '000031a903e38817': 'vehicle_chassis'})
 
 
+class GrabSplines(unittest.TestCase):
+    def test_the_first_part_arena_with_grabdata_gives_the_splines(self):
+        from tools.asset_pipeline.grab_data import GRABDATA
+        from tools.asset_pipeline.test_dynamic_props import resource
+        from tools.asset_pipeline.test_grab_data import grabdata
+        points = [(-0.8, 0.9, -1.7), (-0.8, 0.9, -1.7), (0.8, 0.9, -1.7), (0.8, 0.9, -1.7)]
+        arenas = {'body': resource(0x2F0000, b'\0' * 16), 'acc': resource(GRABDATA, grabdata(points)),
+                  'later': resource(GRABDATA, grabdata([(0.0, 0.0, 0.0)] * 4))}
+        recipe = {'parts': [{'lods': [{'arena': 'body'}]}, {'lods': [{'arena': 'acc'}]}, {'lods': [{'arena': 'later'}]}]}
+        found = veh.recipe_grab_splines(recipe, arenas.__getitem__)
+        self.assertEqual(len(found), 1)
+        np.testing.assert_allclose(found[0]['points'][2], points[2], rtol=1e-6)
+        self.assertEqual(found[0]['direction'], [0.0, 0.0, -1.0])
+        self.assertEqual(veh.recipe_grab_splines({'parts': [{'lods': [{'arena': 'body'}]}]}, arenas.__getitem__), [])
+
+
 class FakeRx2:
     TYPE_RAW_BUFFER = 0x10031
 

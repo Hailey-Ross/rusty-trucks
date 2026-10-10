@@ -80,6 +80,17 @@ pub(crate) struct VehicleModel {
     pub wheel_radius: f32,
     /// Mesh bounds, model space (min, max).
     pub bounds: [[f32; 3]; 2],
+    /// The skitch grab splines (RW4 GRABDATA of the first part arena that has one, b35; one rear-edge spline per
+    /// stock car, none on `reda_car`). Empty = the car cannot be skitched (retail).
+    pub grab_splines: Vec<CarGrabSpline>,
+}
+
+/// One authored grab spline, model space: chains of cubic Bezier segments (4 control points each) and the grab
+/// direction (stock cars: (0, 0, -1), backwards).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CarGrabSpline {
+    pub points: Vec<[f32; 3]>,
+    pub direction: [f32; 3],
 }
 
 /// What a car entity drives with (`livingworld_entities` -> spec record).
@@ -129,6 +140,15 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                 secondary_ids: ids("secondary"),
                 wheel_radius,
                 bounds,
+                grab_splines: m["grab_splines"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|g| {
+                        let points: Vec<[f32; 3]> = g["points"].as_array()?.iter().map(vec3).collect::<Option<_>>()?;
+                        (!points.is_empty() && points.len() % 4 == 0).then_some(CarGrabSpline { points, direction: vec3(&g["direction"])? })
+                    })
+                    .collect(),
             },
         );
     }

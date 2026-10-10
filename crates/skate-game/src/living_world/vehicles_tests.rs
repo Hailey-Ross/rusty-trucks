@@ -62,11 +62,15 @@ fn data() -> VehicleData {
     let vehicles = br#"{"models": {"vehicle_taxi01": {"glb": "vehicles/taxi_sedan_01.glb",
         "chassis_colours": [[0.86, 0.79, 0.08, 1.0], [0.55, 0.1, 0.1, 1.0]], "secondary_colours": [[0.22, 0.22, 0.22, 1.0]],
         "palette_ids": {"chassis": ["vehicle_taxi01/chassis/0", "vehicle_taxi01/chassis/1"], "secondary": ["vehicle_taxi01/secondary/0"]},
-        "wheel_hint": 0.3, "mesh_bounds": [[-0.9, 0.0, -2.2], [0.9, 1.5, 2.1]]}},
-        "entities": {"taxi01": {"model": "vehicle_taxi01", "spec": "vehicle_spec_taxi01"}}}"#;
+        "wheel_hint": 0.3, "mesh_bounds": [[-0.9, 0.0, -2.2], [0.9, 1.5, 2.1]],
+        "grab_splines": [{"points": [[0.78, 0.93, -2.39], [0.3, 0.93, -2.39], [-0.3, 0.93, -2.39], [-0.78, 0.93, -2.39]], "direction": [0.0, 0.0, -1.0]},
+            {"points": [[0.0, 0.0, 0.0]], "direction": [0.0, 0.0, -1.0]}]}},
+        "entities": {"taxi01": {"model": "vehicle_taxi01", "spec": "vehicle_spec_taxi01", "driver": "driver_taxi"}}}"#;
     let tables = br#"{"classes": {"livingworld": {"trafficlights": {"fields": {"signal_green": 7.0, "signal_amber": 1.0, "signal_all_red": 0.5, "Hash_5E41C959D17527CC": 0.4}}},
         "livingworld_vehicle_characteristics": {"vehicle_spec_taxi01": {"fields": {"Hash_328B9F4685A14018": 3.0, "Hash_758229215579C6D1": 2.5,
-        "follow_min_speed_kmh": 20.0, "follow_speed_margin_kmh": 20.0, "engine_audio": {"class": "aud_traffic_engine", "key": "c04_taxi01"}}}}}}"#;
+        "follow_min_speed_kmh": 20.0, "follow_speed_margin_kmh": 20.0, "engine_audio": {"class": "aud_traffic_engine", "key": "c04_taxi01"}}}},
+        "livingworld_vehicle_drivers": {"driver_taxi": {"fields": {"honk_blocked_time": 1.0, "honk_obstacle_time": 2.0, "honk_approach_speed_kmh": 10.0,
+        "Hash_B5C60C1D43899F74": 0.2, "Hash_7C6B48BD9ADF8E6E": 1.0}}}}}"#;
     parse_vehicle_data(vehicles, Some(tables)).unwrap()
 }
 
@@ -299,4 +303,17 @@ fn living_world_traffic_proxy_is_the_model_box() {
     let at = p.colliders[0].pose.translation;
     assert!((at.x - 1.0).abs() < 1e-5 && (at.y - 0.75).abs() < 1e-5 && (at.z - (2.0 - 0.05)).abs() < 1e-5);
     let _ = SignalTimings { green: 7.0, amber: 1.0, all_red: 0.5, walk_split: 0.4 };
+}
+
+#[test]
+fn grab_splines_and_driver_horn_values_load() {
+    let d = data();
+    let m = &d.models["vehicle_taxi01"];
+    assert_eq!(m.grab_splines.len(), 1, "a spline that is not whole Bezier segments is dropped");
+    assert_eq!((m.grab_splines[0].points.len(), m.grab_splines[0].direction), (4, [0.0, 0.0, -1.0]));
+    let spec = &d.specs["taxi01"];
+    assert_eq!(spec.driver, "driver_taxi");
+    let h = spec.params.horn;
+    assert_eq!((h.blocked_time, h.enabled_chance), (1.0, 0.2));
+    assert!((h.approach_speed - 10.0 / 3.6).abs() < 1e-6);
 }

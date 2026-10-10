@@ -114,6 +114,7 @@ the file of their topic (and get a line here).
 - [Cars knock the skater down, and brake when hit (V5 start, 2026-10-09)](26h-living-world-traffic.md#cars-knock-the-skater-down-and-brake-when-hit-v5-start-2026-10-09)
 - [Traffic: obstacles ahead (V4 look-ahead, 2026-10-09)](26h-living-world-traffic.md#traffic-obstacles-ahead-v4-look-ahead-2026-10-09)
 - [Traffic: the horn, and peds running from it (V4, 2026-10-09)](26h-living-world-traffic.md#traffic-the-horn-and-peds-running-from-it-v4-2026-10-09)
+- [Skitching step 1: car grab splines in the vehicle data (2026-10-09)](26h-living-world-traffic.md#skitching-step-1-car-grab-splines-in-the-vehicle-data-2026-10-09)
 
 ### 26i: Props
 
