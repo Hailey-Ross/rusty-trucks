@@ -36,6 +36,9 @@ pub struct Pending {
     pub offset: u32,
     pub event: u32,
 }
+/// `Pending::event` of a registerClass constructor call (not a clip event bit; the stage runs
+/// the class function on the clip instead of an action stream).
+pub const CLASS_CONSTRUCTOR: u32 = 1 << 31;
 #[derive(Clone)]
 pub struct Movie {
     pub characters: BTreeMap<i32, Character>,
@@ -54,6 +57,17 @@ pub struct Movie {
     /// Shape characters copied in by `link_imports`: local id -> (library key, id there). Their GEO
     /// units and bitmaps stay in the library movie (doc 31, Milestone 4).
     pub shape_origins: BTreeMap<i32, (String, i32)>,
+    /// Root timeline rate from the movie header (`milliseconds_per_frame` of character 0),
+    /// when the export carries it; every movie keeps its own rate (core_menu 16 ms, dimmer 83 ms).
+    pub milliseconds_per_frame: Option<f32>,
+    /// Linkage names (import and export records) -> character id; `Object.registerClass` binds
+    /// a class to a clip by this name.
+    pub linkage: BTreeMap<String, i32>,
+    /// Library movie keys this movie imports from, in record order.
+    pub import_files: Vec<String>,
+    /// Classes bound by registerClass: character -> class function object. A new clip of that
+    /// character gets the class prototype and a constructor call (`CLASS_CONSTRUCTOR`).
+    pub classes: BTreeMap<i32, usize>,
     states: BTreeMap<i32, Vec<DisplayList>>,
 }
 fn display_states(c: &Character) -> Result<Vec<DisplayList>, String> {
@@ -84,11 +98,41 @@ impl Movie {
             root: usize::MAX,
             text_assets: crate::apt_text::TextAssets::load(json)?,
             shape_origins: BTreeMap::new(),
+            milliseconds_per_frame: json["characters"]
+                .as_array()
+                .and_then(|c| c.iter().find(|c| c["id"] == 0))
+                .and_then(|c| c["movie"]["milliseconds_per_frame"].as_f64())
+                .filter(|ms| *ms > 0.0)
+                .map(|ms| ms as f32),
+            linkage: ["imports", "exports"]
+                .iter()
+                .flat_map(|k| json[*k].as_array().into_iter().flatten())
+                .filter_map(|r| Some((r["name"].as_str()?.to_string(), r["character_id"].as_i64()? as i32)))
+                .collect(),
+            import_files: {
+                let mut files: Vec<String> = Vec::new();
+                for r in json["imports"].as_array().into_iter().flatten() {
+                    if let Some(f) = r["file"].as_str() {
+                        let key = crate::apt_imports::library_key(f);
+                        if !files.contains(&key) {
+                            files.push(key);
+                        }
+                    }
+                }
+                files
+            },
+            classes: BTreeMap::new(),
             states,
         })
     }
     pub fn initialize(&mut self, vm: &mut Vm) -> Result<(), String> {
-        self.root = self.create(vm, 0, None, 0, &[])?;
+        self.initialize_into(vm, None)
+    }
+    /// Builds the root timeline. With `into`, the root reuses that script object (a clip a
+    /// MovieClipLoader loads this movie into keeps its identity, name and parent, so script
+    /// references to it, like ScreenManager.mMovieClipList, still reach the loaded screen).
+    pub fn initialize_into(&mut self, vm: &mut Vm, into: Option<usize>) -> Result<(), String> {
+        self.root = self.create_into(vm, 0, None, 0, &[], into)?;
         vm.set(self.root, "_root", Value::Object(self.root))?;
         // Every clip sees the same authored root, including unnamed children.
         for id in self.instances.keys() {
@@ -104,6 +148,17 @@ impl Movie {
         depth: usize,
         events: &[ClipAction],
     ) -> Result<usize, String> {
+        self.create_into(vm, character, parent, depth, events, None)
+    }
+    fn create_into(
+        &mut self,
+        vm: &mut Vm,
+        character: i32,
+        parent: Option<usize>,
+        depth: usize,
+        events: &[ClipAction],
+        into: Option<usize>,
+    ) -> Result<usize, String> {
         if depth > 32 || self.instances.len() > 2048 {
             return Err("APT movie hierarchy limit".into());
         }
@@ -112,7 +167,14 @@ impl Movie {
             .get(&character)
             .ok_or("APT unknown character")?
             .clone();
-        let id = vm.object(ObjectKind::Native(format!("movie:{character}")));
+        let kind = ObjectKind::Native(format!("movie:{character}"));
+        let id = match into {
+            Some(id) => {
+                vm.objects.get_mut(id).ok_or("Invalid APT load target")?.kind = kind;
+                id
+            }
+            None => vm.object(kind),
+        };
         if self.root != usize::MAX {
             vm.set(id, "_root", Value::Object(self.root))?;
         }
@@ -147,6 +209,19 @@ impl Movie {
         if sprite {
             self.queue_events(id, events, clip_event::INITIALIZE, true);
             self.queue_events(id, events, clip_event::CONSTRUCT, true);
+        }
+        // registerClass: the clip takes the class prototype now; its constructor runs right
+        // after the initialize / construct handlers, before the clip's first frame actions.
+        // NOT RETAIL YET (order): retail's point for the constructor is not decoded.
+        if let Some(class) = self.classes.get(&character).copied() {
+            if let Value::Object(proto) = vm.get(class, "prototype") {
+                vm.objects[id].prototype = Some(proto);
+            }
+            self.immediate.push_back(Pending {
+                object: id,
+                offset: 0,
+                event: CLASS_CONSTRUCTOR,
+            });
         }
         if !c.frames.is_empty() {
             self.seek(vm, id, 0, depth + 1)?;
@@ -226,6 +301,12 @@ impl Movie {
             if p.event == clip_event::UNLOAD || self.instances.contains_key(&p.object) {
                 return Some(p);
             }
+        }
+    }
+    /// Removes every clip of this movie (unload handlers queued as for a removal).
+    pub fn unload(&mut self, vm: &mut Vm) {
+        if self.root != usize::MAX {
+            self.remove(vm, self.root);
         }
     }
     fn remove(&mut self, vm: &mut Vm, id: usize) {

@@ -144,6 +144,8 @@ pub struct Vm {
     /// State of the script `random` generator (opcode 0x30). Seeded, so a run
     /// is deterministic (replays, multiplayer); see `seed_random`.
     random_state: u64,
+    /// Opcode and offset of the instruction executed last (error reports).
+    pub last_instruction: (u8, u32),
 }
 
 /// Retail ToInteger (82E5F2A8): int as is, float clamped to the i32 range
@@ -215,6 +217,63 @@ pub fn to_number(value: &Value) -> Value {
                 Value::Number(t.parse::<f32>().map_or(f64::NAN, |n| n as f64))
             }
         }
+    }
+}
+/// Built-in String methods (standard AS2 semantics, indices in characters). The menu
+/// movies use them on clip names, e.g. screenmanager.OnLoaded takes the screen id from
+/// `Screen_<id>` with indexOf + substring.
+fn string_method(s: &str, method: &str, args: &[Value]) -> Value {
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len() as i64;
+    let arg = |i: usize| args.get(i).filter(|v| **v != Value::Undefined);
+    let int = |i: usize, default: i64| arg(i).map_or(default, |v| to_integer(v) as i64);
+    let text = |a: i64, b: i64| -> Value { Value::Text(chars[a as usize..b as usize].iter().collect()) };
+    let find = |needle: &str, from: i64, last: bool| -> f64 {
+        let needle: Vec<char> = needle.chars().collect();
+        let n = needle.len() as i64;
+        let hit = |i: i64| chars[i as usize..(i + n) as usize] == needle[..];
+        let found = if last {
+            (0..=(len - n).min(from)).rev().find(|i| hit(*i))
+        } else {
+            (from.max(0)..=len - n).find(|i| hit(*i))
+        };
+        found.map_or(-1.0, |i| i as f64)
+    };
+    match method {
+        "indexOf" => Value::Number(find(&arg(0).map_or("undefined".into(), Value::text), int(1, 0), false)),
+        "lastIndexOf" => Value::Number(find(&arg(0).map_or("undefined".into(), Value::text), int(1, len), true)),
+        "substring" => {
+            let a = int(0, 0).clamp(0, len);
+            let b = int(1, len).clamp(0, len);
+            text(a.min(b), a.max(b))
+        }
+        "substr" => {
+            let mut a = int(0, 0);
+            if a < 0 {
+                a = (len + a).max(0);
+            }
+            let a = a.min(len);
+            let n = int(1, len - a).clamp(0, len - a);
+            text(a, a + n)
+        }
+        "slice" => {
+            let at = |v: i64| if v < 0 { (len + v).max(0) } else { v.min(len) };
+            let a = at(int(0, 0));
+            let b = at(int(1, len)).max(a);
+            text(a, b)
+        }
+        "charAt" => {
+            let i = int(0, 0);
+            if (0..len).contains(&i) { text(i, i + 1) } else { Value::Text(String::new()) }
+        }
+        "charCodeAt" => {
+            let i = int(0, 0);
+            Value::Number(if (0..len).contains(&i) { chars[i as usize] as u32 as f64 } else { f64::NAN })
+        }
+        "toUpperCase" => Value::Text(s.to_uppercase()),
+        "toLowerCase" => Value::Text(s.to_lowercase()),
+        "toString" | "valueOf" => Value::Text(s.into()),
+        _ => Value::Undefined,
     }
 }
 impl Vm {
@@ -375,7 +434,145 @@ impl Vm {
                 return self.invoke(*index, object, args, host);
             }
         }
+        if let Some(value) = self.array_method(object, method, &args)? {
+            return Ok(value);
+        }
         host.call(self, object, method, args)
+    }
+    /// Calls the script function object `function` with `this` (registerClass constructors).
+    pub fn call_function(
+        &mut self,
+        function: usize,
+        this: usize,
+        args: Vec<Value>,
+        host: &mut impl Host,
+    ) -> Result<Value, String> {
+        match self.objects.get(function).map(|o| o.kind.clone()) {
+            Some(ObjectKind::Function(index)) => self.invoke(index, this, args, host),
+            _ => Ok(Value::Undefined),
+        }
+    }
+    /// Built-in Array methods (standard AS2 semantics; the menu movies keep lists such as
+    /// ScreenManager.mMovieClipList in arrays). Applies to objects with a numeric `length`
+    /// that do not define the method themselves; everything else goes to the host.
+    fn array_method(
+        &mut self,
+        id: usize,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Option<Value>, String> {
+        let Value::Number(length) = self.get(id, "length") else {
+            return Ok(None);
+        };
+        let len = length.max(0.0) as usize;
+        let items: Vec<Value> = (0..len).map(|i| self.get(id, &i.to_string())).collect();
+        let store = |vm: &mut Self, items: &[Value]| -> Result<(), String> {
+            for i in items.len()..len {
+                vm.objects[id].fields.remove(&i.to_string());
+            }
+            for (i, v) in items.iter().enumerate() {
+                vm.set(id, i.to_string(), v.clone())?;
+            }
+            vm.set(id, "length", Value::Number(items.len() as f64))
+        };
+        let index = |v: Option<&Value>, default: usize| -> usize {
+            match v {
+                None | Some(Value::Undefined) => default,
+                Some(v) => {
+                    let n = to_integer(v) as i64;
+                    if n < 0 {
+                        (len as i64 + n).max(0) as usize
+                    } else {
+                        (n as usize).min(len)
+                    }
+                }
+            }
+        };
+        let mut items = items;
+        let value = match method {
+            "push" => {
+                items.extend(args.iter().cloned());
+                store(self, &items)?;
+                Value::Number(items.len() as f64)
+            }
+            "unshift" => {
+                items.splice(0..0, args.iter().cloned());
+                store(self, &items)?;
+                Value::Number(items.len() as f64)
+            }
+            "pop" | "shift" => {
+                let v = if items.is_empty() {
+                    Value::Undefined
+                } else if method == "pop" {
+                    items.pop().unwrap()
+                } else {
+                    items.remove(0)
+                };
+                store(self, &items)?;
+                v
+            }
+            "splice" => {
+                let start = index(args.first(), 0);
+                let count = match args.get(1) {
+                    None => len - start,
+                    Some(v) => (to_integer(v).max(0) as usize).min(len - start),
+                };
+                let removed: Vec<Value> = items
+                    .splice(start..start + count, args.iter().skip(2).cloned())
+                    .collect();
+                store(self, &items)?;
+                Value::Object(self.array(removed)?)
+            }
+            "slice" => {
+                let start = index(args.first(), 0);
+                let end = index(args.get(1), len).max(start);
+                Value::Object(self.array(items[start..end].to_vec())?)
+            }
+            "concat" => {
+                for a in args {
+                    match a {
+                        Value::Object(o) if matches!(self.get(*o, "length"), Value::Number(_)) => {
+                            let n = self.get(*o, "length").number().max(0.0) as usize;
+                            for i in 0..n {
+                                items.push(self.get(*o, &i.to_string()));
+                            }
+                        }
+                        v => items.push(v.clone()),
+                    }
+                }
+                Value::Object(self.array(items)?)
+            }
+            "reverse" => {
+                items.reverse();
+                store(self, &items)?;
+                Value::Object(id)
+            }
+            "join" | "toString" => {
+                let sep = match args.first() {
+                    Some(v) if method == "join" && *v != Value::Undefined => v.text(),
+                    _ => ",".into(),
+                };
+                Value::Text(
+                    items
+                        .iter()
+                        .map(|v| if *v == Value::Undefined { String::new() } else { v.text() })
+                        .collect::<Vec<_>>()
+                        .join(&sep),
+                )
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(value))
+    }
+    /// A new script array holding `items`.
+    pub fn array(&mut self, items: Vec<Value>) -> Result<usize, String> {
+        let id = self.object(ObjectKind::Plain);
+        let n = items.len();
+        for (i, v) in items.into_iter().enumerate() {
+            self.set(id, i.to_string(), v)?;
+        }
+        self.set(id, "length", Value::Number(n as f64))?;
+        Ok(id)
     }
     fn invoke(
         &mut self,
@@ -478,6 +675,7 @@ impl Vm {
             self.remaining -= 1;
             pc += 1;
             let op = i.opcode;
+            self.last_instruction = (op, i.offset);
             let operand = i.operand.as_u64().unwrap_or(0) as usize;
             let constant = |k: usize| {
                 constants
@@ -506,8 +704,11 @@ impl Vm {
                         vec![],
                     )?;
                 }
+                // Retail pop (82E6D048) releases the top only while the stack is above its
+                // base; on an empty stack it does nothing. Retail movies rely on it
+                // (screenmanager.apt pops after a setMember that left nothing).
                 0x17 => {
-                    pop(&mut stack)?;
+                    stack.pop();
                 }
                 0x12 => {
                     let a = pop(&mut stack)?;
@@ -619,10 +820,12 @@ impl Vm {
                     }
                     .text();
                     let obj = pop(&mut stack)?;
-                    stack.push(if let Value::Object(id) = obj {
-                        self.get(id, &name)
-                    } else {
-                        Value::Undefined
+                    stack.push(match obj {
+                        Value::Object(id) => self.get(id, &name),
+                        Value::Text(s) if name == "length" => {
+                            Value::Number(s.chars().count() as f64)
+                        }
+                        _ => Value::Undefined,
                     });
                 }
                 0x4f => {
@@ -777,10 +980,10 @@ impl Vm {
                     let args = (0..count)
                         .map(|_| pop(&mut stack))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let value = if let Value::Object(id) = object {
-                        self.call_method(id, &method.text(), args, host)?
-                    } else {
-                        Value::Undefined
+                    let value = match object {
+                        Value::Object(id) => self.call_method(id, &method.text(), args, host)?,
+                        Value::Text(s) => string_method(&s, &method.text(), &args),
+                        _ => Value::Undefined,
                     };
                     if matches!(op, 0xb1 | 0xb3) {
                         return Ok(value);

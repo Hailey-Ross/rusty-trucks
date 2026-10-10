@@ -6,6 +6,7 @@ mod multiplayer;
 mod apt_vm;
 mod apt_display;
 mod apt_movie;
+mod apt_stage;
 mod apt_text;
 mod apt_scene;
 mod apt_imports;

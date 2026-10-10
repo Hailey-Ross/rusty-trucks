@@ -669,7 +669,66 @@ one.
 - Drawing the menus on screen comes with the screen manager milestone (the renderer maps `Draw.texture` through
   `RetailMenuMovies::image`).
 
+## Milestone 5a: the front-end stage (2026-10-10)
+Branch `ui/retail-menus-2` (after #59 merged). Retail's screen manager is a script (`helper/screenmanager.apt`);
+the C++ only calls it by name and answers its callbacks. So the port runs the retail movies themselves on one stage.
+
+### Problem
+The player ran one movie per VM (the HUD). The menus need FE_root, the screen manager and each screen movie in ONE
+script VM sharing `_global`, screens loaded into clips at runtime (MovieClipLoader), clips created by script
+(createEmptyMovieClip), component classes bound by `Object.registerClass`, and each movie at its own frame rate.
+
+### Evidence
+- [code] C++ calls the AS by path string: names at 0x8302C608 + index * 4 (OpenScreen 6, CloseScreen 8,
+  DestroyScreen 9, SetScreenState 10, UpdateInput 11, ShowScreen 12, RegisterTemplate 16), via sub_825D3B38 /
+  sub_8263F320. Template table 0x8302F1A8 (133 records of 16 bytes: name, swf path, type, -1), e.g. 69 CrossBar
+  `main/core_menu.swf`, 90 Options, 131 TipsLoader. OpenScreen (sub_82D09140) passes ("source/screens/" + path,
+  layer, "0"/"1", template name). Callbacks OnScreenLoaded / IntroComplete / OutroComplete (825A4A70 / 825A4AF8 /
+  825A4B70) index their slot with id - 600 (AS id = 600 + template index, the AS hands out depths from 600).
+  Research notes: `.local/research/fe-screen-stack.md`.
+- [code] Retail pop (opcode 0x17, handler 82E6D048) pops only above the stack base; on an empty stack it does
+  nothing. screenmanager.apt relies on it (a pop after a setMember at 0x875).
+- [data] Libraries declare their component classes in their ROOT init actions
+  (`Object.registerClass("Menu_Picker_Component", menu_picker)` in menu_picker.apt); importers name the clip by
+  that linkage name (core_menu imports character 166 as Menu_Picker_Component). Retail loads every library before
+  linking (sub_82E7E8C0), so those init actions run.
+
+### Change
+- `apt_stage.rs` (new): `Stage` = one `Vm` + loaded movies (`Level`), `StageNatives` (the C++ host objects: Game,
+  CoreMenu, ...), `MovieSource` (linked movies with mod overrides). MovieClipLoader (addListener, loadClip queued to
+  the next update like retail's load queue, unloadClip, onLoadStart / Complete / Init), createEmptyMovieClip,
+  removeMovieClip, getDepth, `Object.registerClass`, library root init actions once per stage, `call_path` for the
+  C++ calls (`_global.ScreenManager.OpenScreen`), per-movie `milliseconds_per_frame` (header of character 0).
+  Retail `.swf` template paths map to the packed `.apt` key.
+- `apt_movie.rs`: `initialize_into` (a loaded movie's root reuses the target clip's object, so script references
+  such as ScreenManager.mMovieClipList stay valid), `unload`, `milliseconds_per_frame`, `linkage`,
+  `import_files`, `classes` + `CLASS_CONSTRUCTOR` (clip gets the class prototype; constructor runs after its
+  initialize / construct handlers; the exact retail point is not decoded).
+- `apt_vm.rs`: retail pop rule; String methods (length, indexOf, lastIndexOf, substring, substr, slice, charAt,
+  charCodeAt, case) and Array methods (push, pop, shift, unshift, splice, slice, concat, reverse, join), standard
+  AS2 semantics; `call_function`; `last_instruction` for error reports.
+
+### Verification
+`cargo test -p skate-game apt_` (23 passed, 1 ignored). `retail_screen_manager_opens_a_screen` (data-gated, the
+exported set): FE_root traces "FE_ROOT SETUP!", screenmanager registers `_global.ScreenManager` (currentDepth 600),
+RegisterTemplate("CrossBar"), OpenScreen with the retail CrossBar arguments, the next update loads core_menu
+with its imported components, and the movie calls Game.OnScreenLoaded(600) then Game.OnScreenIntroComplete(600).
+The only call left without a target is `screen_class.OnLoaded()` on core_menu's class, which defines none (an AS2
+no-op).
+
+### Open
+- Root timeline loop: screenmanager.apt has 2 frames and no stop(); ours loops and re-runs
+  `new screenmanager(this)`, resetting mMovieClipList, so CloseScreen finds nothing
+  (`retail_screen_manager_closes_a_screen`, ignored). Retail tick 82E5B640 tests clip flag +20 bit 0x40 and
+  definition flag +24 bit 0x08000000 before advancing; being decoded.
+- Library init order relative to the importer's own init actions, and the registerClass constructor point.
+- `_root` of a loaded movie (ours: its own root; Flash: `_level0` unless locked).
+- Drawing the stage (levels with their parent clip transforms) and the C++ host (CoreMenu, Game) are next.
+- Input repeat timing (`.repeat` actions in input.cfg) is not statically findable; a guarded recomp hook is
+  proposed in `.local/research/input-repeat.md`.
+
 ## Files
+- Milestone 5a: `crates/skate-game/src/apt_stage.rs` (new), `apt_movie.rs`, `apt_vm.rs`, `main.rs` (module)
 - `crates/skate-data/src/menu_tables.rs` (extractor, JSON, conversion), `crates/skate-data/tests/menu_tables.rs`
 - `crates/skate-core/src/menus.rs`, `menus_tests.rs` (registry), `menu_values.rs` (value rules, milestone 2)
 - `crates/skate-game/src/apt_vm.rs` (milestone 3a opcodes, tests)
