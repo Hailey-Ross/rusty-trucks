@@ -963,3 +963,21 @@ the pull-over approach factor (`82C3CDD0`). Behaviour unchanged for now (their v
 acceleration); the real acceleration chain (spec+60 `Hash_03F46E22E52C0002` 0.2 per tick, cap `+3676`) is next.
 
 **Verification.** skate-core traffic 46 pass.
+
+## Traffic: the horn's driver fields corrected (2026-10-09)
+
+**Problem.** The horn's per-car driver bits read the wrong vault fields: "horn enabled" from `Hash_B5C60C1D43899F74`
+and "blocked kind 4 vs 5" from `Hash_7C6B48BD9ADF8E6E`. The offsets came from b41's field order, which was the
+exported JSON sorted by hash, not the schema.
+
+**Retail [code + data] (b74 in `.local/research/npc/b69-traffic-manoeuvres.md`; main read the bit roller
+`82C42348` at .78.cpp:7866: `[car+4116]` +20 -> bit 0x02, hash C423B7E0 -> 0x08, +12 -> 0x04, +16 -> 0x10, +36 -> 0x01,
+then hash 99083122 -> +4402 0x80; schema offsets from `vault_layout.py 02AA3F538D6C188A`).** Horn enabled = +36
+`Hash_50E084076390A573` (1.0 in every stock driver); blocked long = +20 `Hash_20E9C6487FDDBDE8` (0.5, normal 0.3,
+reckless 0.8). `7C6B48BD` (+24) is the lane-change direction roll, `52CF2CF3` (+28) the lane-change go roll.
+
+**Change.** `vehicles.rs` loads +36 / +20; `HornParams` docs and default (blocked long 0.5) updated; mod doc updated.
+In play: taxis now honk like every other car (the old 0.2 gate was not retail), and the blocked horn picks kind 4
+or 5 by the driver's 0.3 to 0.8 chance instead of almost always kind 4.
+
+**Verification.** skate-core traffic 47, skate-game vehicles / living_world 71 pass. Not play-tested.

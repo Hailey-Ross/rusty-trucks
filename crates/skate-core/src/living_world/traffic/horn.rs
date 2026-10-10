@@ -38,16 +38,19 @@ pub struct HornParams {
     pub approach_speed: f32,
     /// Time to the obstacle under which the approach horn sounds, s (`0x82060C50`, 2.0).
     pub approach_ttc: f32,
-    /// Driver bit 0x01 chance (`Hash_B5C60C1D43899F74`): the horn is enabled. 1.0, taxi 0.2.
+    /// Driver bit 0x01 chance (driver block +36, `Hash_50E084076390A573`; `82C42348`, b74, main checked): the horn
+    /// is enabled. 1.0 in every stock driver.
     pub enabled_chance: f32,
-    /// Driver bit 0x02 chance (`Hash_7C6B48BD9ADF8E6E`): blocked horn kind 4 (else 5). 1.0, fast 0.0, reckless 0.5.
+    /// Driver bit 0x02 chance (driver block +20, `Hash_20E9C6487FDDBDE8`): blocked horn kind 4 (else 5). 0.5, normal
+    /// 0.3, reckless 0.8. (Before b74 these two read `B5C60C1D` (+12, bit 0x04) and `7C6B48BD` (+24, the lane
+    /// change direction roll): b41's field order was the hash-sorted JSON, not the schema.)
     pub blocked_long_chance: f32,
 }
 
 impl Default for HornParams {
     /// The `default` driver record.
     fn default() -> Self {
-        Self { blocked_time: 4.0, obstacle_time: 2.0, approach_speed: 5.0 / 3.6, approach_ttc: 2.0, enabled_chance: 1.0, blocked_long_chance: 1.0 }
+        Self { blocked_time: 4.0, obstacle_time: 2.0, approach_speed: 5.0 / 3.6, approach_ttc: 2.0, enabled_chance: 1.0, blocked_long_chance: 0.5 }
     }
 }
 

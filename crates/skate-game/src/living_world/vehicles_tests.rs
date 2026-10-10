@@ -70,7 +70,7 @@ fn data() -> VehicleData {
         "livingworld_vehicle_characteristics": {"vehicle_spec_taxi01": {"fields": {"Hash_328B9F4685A14018": 3.0, "Hash_758229215579C6D1": 2.5,
         "follow_min_speed_kmh": 20.0, "follow_speed_margin_kmh": 20.0, "engine_audio": {"class": "aud_traffic_engine", "key": "c04_taxi01"}}}},
         "livingworld_vehicle_drivers": {"driver_taxi": {"fields": {"honk_blocked_time": 1.0, "honk_obstacle_time": 2.0, "honk_approach_speed_kmh": 10.0,
-        "Hash_B5C60C1D43899F74": 0.2, "Hash_7C6B48BD9ADF8E6E": 1.0}}}}}"#;
+        "Hash_50E084076390A573": 0.2, "Hash_20E9C6487FDDBDE8": 1.0}}}}}"#;
     parse_vehicle_data(vehicles, Some(tables)).unwrap()
 }
 

@@ -304,8 +304,8 @@ pub struct PedBrainPatch {
 
 /// One traffic driver's horn: `blocked_time`, `obstacle_time` (s, retail 4 / taxi 1, 2), `approach_speed_kmh`
 /// (retail 5, taxi 10), `approach_seconds` (time to the obstacle for the approach horn, retail 2), each 0..=100;
-/// `enabled_chance` / `blocked_long_chance` (0..=1, the per-car rolls of driver bits 0x01 / 0x02; retail 1.0 / 1.0,
-/// taxi 0.2 enabled, fast 0.0 and reckless 0.5 long). Read when a car spawns.
+/// `enabled_chance` / `blocked_long_chance` (0..=1, the per-car rolls of driver bits 0x01 / 0x02; retail 1.0 / 0.5,
+/// normal 0.3 and reckless 0.8 long). Read when a car spawns.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrafficHornPatch {

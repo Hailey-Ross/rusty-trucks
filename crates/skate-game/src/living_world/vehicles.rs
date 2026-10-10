@@ -170,8 +170,9 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
             h.blocked_time = num("honk_blocked_time").unwrap_or(h.blocked_time);
             h.obstacle_time = num("honk_obstacle_time").unwrap_or(h.obstacle_time);
             h.approach_speed = num("honk_approach_speed_kmh").map_or(h.approach_speed, |v| v / 3.6);
-            h.enabled_chance = num("Hash_B5C60C1D43899F74").unwrap_or(h.enabled_chance);
-            h.blocked_long_chance = num("Hash_7C6B48BD9ADF8E6E").unwrap_or(h.blocked_long_chance);
+            // Driver block +36 / +20 (`82C42348`, b74).
+            h.enabled_chance = num("Hash_50E084076390A573").unwrap_or(h.enabled_chance);
+            h.blocked_long_chance = num("Hash_20E9C6487FDDBDE8").unwrap_or(h.blocked_long_chance);
         }
         if let Some(f) = class("livingworld_vehicle_characteristics", spec_name) {
             let num = |k: &str| f.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
