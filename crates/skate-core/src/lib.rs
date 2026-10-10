@@ -11,6 +11,7 @@ pub mod graph;
 pub mod input;
 pub mod math;
 pub mod menu_values;
+pub mod crossbar;
 pub mod menus;
 pub mod physics;
 pub mod player;

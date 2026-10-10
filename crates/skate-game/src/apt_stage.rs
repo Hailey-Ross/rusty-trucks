@@ -386,6 +386,13 @@ impl Stage {
             .collect();
         movie.initialize_into(&mut self.vm, into)?;
         let root = movie.root;
+        // Retail load completion (sub_82E7EF28) gives a loaded root clip flag 0x80, not the playing flag 0x40
+        // (set only by play(), action 0x06 82E6BCC8); the tick (82E5B640) advances 0x80 clips only when the APT
+        // config byte [0x83037510+64] is set, which Skate 3's init leaves 0. So a loaded root runs its frame-0
+        // actions once and stays there until its script calls play(); its child sprites play as usual.
+        if let Some(instance) = movie.instances.get_mut(&root) {
+            instance.playing = false;
+        }
         self.state.levels.push(Level { key: key.into(), movie, elapsed: 0.0 });
         self.drain(natives)?;
         Ok(root)
@@ -606,12 +613,9 @@ mod tests {
         retail_screen_manager(false);
     }
 
-    /// OPEN (doc 31 "Milestone 5a"): the screen manager's root timeline has 2 frames and no
-    /// stop(), so ours loops it and re-runs `new screenmanager(this)`, which resets
-    /// mMovieClipList and CloseScreen finds no screen. Retail must not re-run it; the rule
-    /// (tick 82E5B640: clip flag +20 bit 0x40, definition flag +24 bit 0x08000000) is being decoded.
+    /// CloseScreen after many updates: the screen manager's 2-frame root must not loop (loaded roots do not
+    /// play, doc 31 "Milestone 5a"), or `new screenmanager(this)` would reset mMovieClipList.
     #[test]
-    #[ignore = "open: retail root-timeline loop rule (doc 31 Milestone 5a)"]
     fn retail_screen_manager_closes_a_screen() {
         retail_screen_manager(true);
     }

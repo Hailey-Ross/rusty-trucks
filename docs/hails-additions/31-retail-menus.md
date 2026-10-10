@@ -717,17 +717,48 @@ The only call left without a target is `screen_class.OnLoaded()` on core_menu's 
 no-op).
 
 ### Open
-- Root timeline loop: screenmanager.apt has 2 frames and no stop(); ours loops and re-runs
-  `new screenmanager(this)`, resetting mMovieClipList, so CloseScreen finds nothing
-  (`retail_screen_manager_closes_a_screen`, ignored). Retail tick 82E5B640 tests clip flag +20 bit 0x40 and
-  definition flag +24 bit 0x08000000 before advancing; being decoded.
+- Root timeline loop: RESOLVED in Milestone 6 (below): loaded roots do not play.
 - Library init order relative to the importer's own init actions, and the registerClass constructor point.
 - `_root` of a loaded movie (ours: its own root; Flash: `_level0` unless locked).
 - Drawing the stage (levels with their parent clip transforms) and the C++ host (CoreMenu, Game) are next.
 - Input repeat timing (`.repeat` actions in input.cfg) is not statically findable; a guarded recomp hook is
   proposed in `.local/research/input-repeat.md`.
 
+## Milestone 6: pause menu navigation and the CoreMenu object (2026-10-10, in progress)
+
+### Evidence
+- [code] Loaded movie roots do not play: load completion sub_82E7EF28 gives the root clip flag 0x80, not the
+  playing flag 0x40 (set only by play(), action 0x06 handler 82E6BCC8, main-checked; stop 0x07 82E6BDB8 clears it).
+  The tick 82E5B640 advances 0x80 clips only when the APT config byte [0x83037510+64] is set; Skate 3's init
+  (sub_825D39F0 -> sub_82E654A0) leaves it 0. So screenmanager.apt's 2-frame root runs `new screenmanager(this)`
+  once (research `.local/research/apt-root-loop.md`; how frame 0 is first entered is not traced).
+- [code] Crossbar handler sub_8261B560 (research `.local/research/crossbar-nav.md`; main-checked: the eight fe sound
+  keys against fe_callers.txt, the six-entry SetState registration in 8261B9C8, the row walk 8261F0E8 read in full):
+  up / down move the row with wrap and walk to an enabled row (two passes, else row 0 and no sound / SetState),
+  tab left / right wrap, reset the row and post RefreshMenu (0), select opens the sub column (SetState 3) for items
+  with a sub-option kind or runs the item, back at level 1 closes the pause menu (FE id 56), at level 2 returns to
+  level 1. Sounds crossbar_up / down / left / right, core_a / b / x_button.
+- [code] CoreMenu: 21 native members (registrar sub_825B68E0; research `.local/research/coremenu-host.md`), all
+  read-only views of the crossbar screen and the mode menu except SetOnlineTeamSubOptionDone.
+
+### Change
+- `apt_stage.rs`: loaded roots start stopped (above); `retail_screen_manager_closes_a_screen` now passes
+  (OnScreenOutroComplete(600) after CloseScreen("600")).
+- `skate-core/src/crossbar.rs` (new): `CrossbarState` (the screen fields, serialisable), `CrossbarView`,
+  `NavEvent` (retail key indices), `CrossbarRules` (sounds and SetState numbers as data, retail defaults),
+  `handle` (port of sub_8261B560 / 8261F0E8 / 8261D9F8 / 8261BC30 / 8261DA58), `RegistryView` (rows and enabled
+  rules from the menu registry, so mods change the rows).
+- `skate-game/src/crossbar_host.rs` (new): the 21 CoreMenu members over the registry and the crossbar state.
+
+### Open
+- Sub-option label and helper tables (0x83027958 / 0x83027A00) are not extracted: GetSubOptionName returns `#`.
+- Label overrides (SignIn / sign out, ReplayEditor instant replay, PartyPlay literal) and the online team pending
+  path are not ported. GetProgressionData reads context facts (`progression_*`), -1 (panel hidden) by default.
+- Hooking CoreMenu and the handler into the stage, the Game natives, drawing, input and the FE screen stack are next.
+
 ## Files
+- Milestone 6: `crates/skate-core/src/crossbar.rs` (new), `lib.rs`; `crates/skate-game/src/crossbar_host.rs`
+  (new), `apt_stage.rs`, `main.rs`
 - Milestone 5a: `crates/skate-game/src/apt_stage.rs` (new), `apt_movie.rs`, `apt_vm.rs`, `main.rs` (module)
 - `crates/skate-data/src/menu_tables.rs` (extractor, JSON, conversion), `crates/skate-data/tests/menu_tables.rs`
 - `crates/skate-core/src/menus.rs`, `menus_tests.rs` (registry), `menu_values.rs` (value rules, milestone 2)
