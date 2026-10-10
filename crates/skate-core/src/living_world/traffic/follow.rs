@@ -82,6 +82,13 @@ pub struct FollowParams {
     pub passage_factor: f32,
     pub passage: super::passage::PassageParams,
     pub spots: super::spots::SpotParams,
+    /// Pull-over (b73 / b77): approach length = ext x the spec's approach factor (spec+36 `Hash_758229215579C6D1`,
+    /// `+3672`), the stop slack 0.1 (`0x820641A8`), the crawl speed that starts the pull-over (1.0 m/s,
+    /// `0x8231A844`) and the parked time before pulling out (driver `Hash_988BB0F6F043EB3D`, 30 s, taxi 20).
+    pub approach_factor: f32,
+    pub pull_over_slack: f32,
+    pub pull_over_speed: f32,
+    pub parked_time: f32,
     /// Multiplier on the lane cap (`f2` of the integrator's cap; 1.0 = retail; a mod or the
     /// skitch milestone raises it).
     pub cap_scale: f32,
@@ -107,6 +114,10 @@ impl Default for FollowParams {
             passage_factor: 2.0,
             passage: Default::default(),
             spots: Default::default(),
+            approach_factor: 3.0,
+            pull_over_slack: 0.1,
+            pull_over_speed: 1.0,
+            parked_time: 30.0,
             cap_scale: 1.0,
             held_cap_add: 0.2,
             horn: super::horn::HornParams::default(),
@@ -158,17 +169,26 @@ pub struct Car {
     /// The manoeuvre decider (`+3632` timer, `+4396` pending) and the running lane change (`+4353`, passage block).
     pub decider: super::manoeuvre::DeciderState,
     pub passage: Option<super::passage::Passage>,
+    /// Pulling over, parked, pulling out (b73); lane changes stay `Following` with a passage.
+    pub manoeuvre: super::manoeuvre::Manoeuvre,
 }
 
 impl Car {
     pub fn new(key: VehicleKey, cursor: LaneCursor, length: f32, params: FollowParams) -> Self {
-        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE, decider: Default::default(), passage: None }
+        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE, decider: Default::default(), passage: None, manoeuvre: Default::default() }
     }
 
     /// On `place` for the lane lists: its own place, or the target lane of a running lane change (retail registers
     /// the car on the target lane when the passage starts, `82E14FC0`).
     pub fn on_place(&self, place: Place) -> bool {
-        self.cursor.place == place
+        // Parked, or past the middle of the pull-over curve (`82C38C70`: progress - ext / 2 > length / 2): off the
+        // outer lane, on the kerb slot.
+        let off_lane = match (self.manoeuvre, self.passage) {
+            (super::manoeuvre::Manoeuvre::Parked { .. }, _) => true,
+            (super::manoeuvre::Manoeuvre::PullingOver { .. }, Some(p)) => p.progress - 0.25 * self.length > 0.5 * p.length(),
+            _ => false,
+        };
+        (self.cursor.place == place && !off_lane)
             || self.passage.is_some_and(|p| matches!((self.cursor.place, place), (Place::Lane { segment: a, .. }, Place::Lane { segment: b, lane }) if a == b && lane == p.to_lane))
     }
 
@@ -179,7 +199,11 @@ impl Car {
                 let (position, forward) = p.sample();
                 super::graph::Frame { position, forward }
             }
-            None => self.cursor.frame(net),
+            None => match (self.manoeuvre, self.cursor.place) {
+                // Parked on the kerb slot (lane n, one lane past the outer lane, b73).
+                (super::manoeuvre::Manoeuvre::Parked { .. }, Place::Lane { segment, .. }) => net.lane_frame(segment, net.segments[segment].lanes as f32, self.cursor.distance),
+                _ => self.cursor.frame(net),
+            },
         }
     }
 
@@ -216,6 +240,9 @@ pub enum FollowEvent {
     DeadEnd { key: VehicleKey },
     /// A lane change started (`82C3A9E0`): from lane `from` to `to` of `segment`.
     LaneChange { key: VehicleKey, segment: usize, from: u8, to: u8 },
+    /// The car pulls over to its spot (`82C3ACF8`) / pulls out again (`82C3AFB8`).
+    PullingOver { key: VehicleKey, segment: usize, spot: f32 },
+    PullingOut { key: VehicleKey, segment: usize },
 }
 
 /// `sub_82C3FF38`: one integrator step. Returns the new (speed, accel).
@@ -384,6 +411,7 @@ pub fn lead(net: &RoadNetwork, cars: &[Car], i: usize, range: f32) -> Option<(us
 /// One follower step of every car (`cars` sorted by key; the caller keeps them so). Cars update
 /// in that order. Returns the events.
 pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32, choice: ConnectorChoice, rng: &mut Rng) -> Vec<FollowEvent> {
+    use super::manoeuvre::{Manoeuvre, Pending};
     let mut events = Vec::new();
     if !(dt > 0.0) {
         return events;
@@ -394,25 +422,67 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let me = cars[i];
         let p = me.params;
         let mut decider = me.decider;
-        // The manoeuvre decider (`sub_82C41CD0`), on a lane with no lane change running. Pull-over is not wired
-        // yet (its approach braking is b77): the road's pull-over bit is passed as off.
-        if let (Place::Lane { segment, lane }, None) = (me.cursor.place, me.passage) {
+        let mut manoeuvre = me.manoeuvre;
+        let approach = me.length * 0.5 * p.approach_factor;
+        // Parked (`82C39138`): standing, the parked time runs; `IsRequiredToPullOut` (`82C3A3A8`) after the parked
+        // time when the end of the approach is still on this road: the passage back to the outer lane
+        // (`82C3AFB8`: d1 = d + approach, from the kerb slot to lane n - 1; the spot is released).
+        if let (Manoeuvre::Parked { spot, time }, Place::Lane { segment, lane }) = (manoeuvre, me.cursor.place) {
+            let time = time + dt;
+            let d = me.cursor.distance;
+            let seg = &net.segments[segment];
+            let mut passage = None;
+            if time > p.parked_time && d + approach < seg.length {
+                let from = net.lane_frame(segment, seg.lanes as f32, d);
+                let to = net.lane_frame(segment, lane as f32, d + approach);
+                passage = super::passage::Passage::begin(seg.lanes, lane, d, d + approach, (from.position, from.forward), (to.position, to.forward), &p.passage);
+            }
+            let car = &mut cars[i];
+            car.speed = 0.0;
+            car.accel = 0.0;
+            match passage {
+                Some(pass) => {
+                    car.passage = Some(pass);
+                    car.manoeuvre = Manoeuvre::PullingOut;
+                    events.push(FollowEvent::PullingOut { key: car.key, segment });
+                }
+                None => car.manoeuvre = Manoeuvre::Parked { spot, time },
+            }
+            continue;
+        }
+        // The manoeuvre decider (`sub_82C41CD0`), on a lane with no manoeuvre running.
+        if let (Place::Lane { segment, lane }, None, Manoeuvre::Following) = (me.cursor.place, me.passage, manoeuvre) {
             let seg = &net.segments[segment];
             let load = |l: u8| cars.iter().filter(|c| c.on_place(Place::Lane { segment, lane: l })).map(|c| c.length).sum::<f32>();
             let gap = |l: u8| lane_change_gap(net, cars, i, segment, l);
-            let no_spot = || None;
+            // Reservations: every other car on this road holding a spot (pending, pulling over or parked).
+            let spot_search = || {
+                let mut r = super::spots::Reservations::default();
+                for (j, c) in cars.iter().enumerate() {
+                    let held = match c.decider.pending {
+                        Pending::PullOver { spot } => Some(spot),
+                        _ => c.manoeuvre.spot(),
+                    };
+                    if let (true, Some(stop), Place::Lane { segment: s, .. }) = (j != i, held, c.cursor.place) {
+                        if s == segment {
+                            r.reserve(super::spots::Reservation { car: c.key, stop, length: c.length });
+                        }
+                    }
+                }
+                r.find_spot(seg.length, me.cursor.distance, me.length, me.speed, &p.spots)
+            };
             let input = super::manoeuvre::DeciderInput {
                 dt,
                 lane,
                 lane_count: seg.lanes,
                 lane_changes_allowed: seg.manoeuvres & 0x02 != 0,
-                pull_over_allowed: false,
+                pull_over_allowed: seg.manoeuvres & 0x01 != 0,
                 held: me.held,
                 at_junction: false,
                 lane_load: &load,
                 gap_free: &gap,
-                find_spot: &no_spot,
-                spot_min: 0.0,
+                find_spot: &spot_search,
+                spot_min: me.cursor.distance + approach,
             };
             let mut unit = || rng.next_u32() as f32 * 2.328_306_4e-10_f32;
             super::manoeuvre::decide(&mut decider, &p.manoeuvre, &input, &mut unit);
@@ -485,6 +555,25 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             // Never closer than half the minimum gap (no overlaps whatever the braking).
             limit = Some(me.cursor.distance + (gap - p.min_gap * 0.5).max(0.0));
         }
+        // A pending pull-over (`82C376E8`, b77): the spot is a stop target (kind 2, standoff = the approach length).
+        if let (Pending::PullOver { spot }, Manoeuvre::Following) = (decider.pending, manoeuvre) {
+            if let Some(x) = super::manoeuvre::pull_over_stop(spot, me.cursor.distance, me.speed, approach, p.pull_over_slack) {
+                if x < best {
+                    best = x;
+                    kind = super::horn::limiter::STOP_POINT;
+                    accel = accel.min(stop_accel(me.speed, x, approach));
+                }
+            }
+        }
+        // Pulling over (`82C38C70`): once the car would pass the curve's end within a second, it brakes to stop there.
+        if let (Manoeuvre::PullingOver { .. }, Some(pass)) = (manoeuvre, me.passage) {
+            let rem = (pass.length() - pass.progress).max(0.0);
+            if me.speed > rem {
+                best = rem;
+                kind = super::horn::limiter::STOP_POINT;
+                accel = accel.min(stop_accel(me.speed, rem, 0.0));
+            }
+        }
         // A skater coming up behind (`sub_82C3FA08`, limiter kind still free; the skater scan ran
         // before the step). Engine choice: the result is a min with our lead / junction terms,
         // which our planner folds into the same pass (retail keeps them apart by the kind).
@@ -505,6 +594,21 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         // is faster than h, the free distance ahead (`+3752`) exceeds h, d > ext, d + pass ends before the road end
         // minus ext and the target lane passes the gap check. Then the passage starts (`82C3A9E0` / `82C3F540`).
         let mut passage = me.passage;
+        // `IsRequiredToPullOver` (`82C3A270`, b77): the passage to the kerb slot (lane n, `82C3ACF8`: d1 = the spot).
+        if let (Pending::PullOver { spot }, Place::Lane { segment, lane }, Manoeuvre::Following) = (decider.pending, me.cursor.place, manoeuvre) {
+            let seg = &net.segments[segment];
+            let d = me.cursor.distance;
+            if spot <= seg.length && super::manoeuvre::is_required_to_pull_over(spot, d, me.speed, approach, p.pull_over_speed) {
+                let from = net.lane_frame(segment, lane as f32, d);
+                let to = net.lane_frame(segment, seg.lanes as f32, spot);
+                if let Some(pass) = super::passage::Passage::begin(lane, seg.lanes, d, spot, (from.position, from.forward), (to.position, to.forward), &p.passage) {
+                    passage = Some(pass);
+                    manoeuvre = Manoeuvre::PullingOver { spot };
+                    decider.pending = Pending::None;
+                    events.push(FollowEvent::PullingOver { key: me.key, segment, spot });
+                }
+            }
+        }
         if let (super::manoeuvre::Pending::LaneChange { lane: target }, Place::Lane { segment, lane }) = (decider.pending, me.cursor.place) {
             let ext = me.length * 0.5;
             let pass = ext * p.passage_factor + me.speed;
@@ -551,6 +655,7 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         car.speed = speed;
         car.accel = accel;
         car.decider = decider;
+        car.manoeuvre = manoeuvre;
         if speed <= 0.0 {
             car.hit_brake = false;
         }
@@ -568,10 +673,22 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             let done = pass.advance(speed, false, dt);
             car.cursor.distance = pass.distance();
             if done {
-                car.cursor.set_lane(net, pass.to_lane, &mut choose);
                 car.passage = None;
-                if let Place::Lane { segment, lane } = car.cursor.place {
-                    events.push(FollowEvent::EnteredLane { key: car.key, segment, lane });
+                match car.manoeuvre {
+                    // `ToStayingParked` (`82C3AE78`): standing at the kerb, the spot stays reserved.
+                    Manoeuvre::PullingOver { spot } => {
+                        car.manoeuvre = Manoeuvre::Parked { spot, time: 0.0 };
+                        car.speed = 0.0;
+                        car.accel = 0.0;
+                    }
+                    // Back on the outer lane (`FromChangingLaneToFollowingLane`).
+                    Manoeuvre::PullingOut => car.manoeuvre = Manoeuvre::Following,
+                    _ => {
+                        car.cursor.set_lane(net, pass.to_lane, &mut choose);
+                        if let Place::Lane { segment, lane } = car.cursor.place {
+                            events.push(FollowEvent::EnteredLane { key: car.key, segment, lane });
+                        }
+                    }
                 }
             } else {
                 car.passage = Some(pass);

@@ -1014,3 +1014,35 @@ lengths (retail: extent + safety distance).
 
 **Verification.** skate-core `a_car_changes_lane_along_its_passage` (lane 0 to 1, sideways on the way) and traffic
 51; skate-game vehicles / living_world 71 pass. Not play-tested.
+
+## Traffic: cars pull over, park and pull out (2026-10-09)
+
+**Retail [code + data] (b73 / b74 / b76 / b77 in `.local/research/npc/b69-traffic-manoeuvres.md`; main checked the
+three passage builders' callers and the road record copy).** When the lane timer fires and no lane change starts, a car
+on the outer lane of a road whose `word_56` has bit 0x01 rolls the pull-over chance (driver `Hash_559BA807`, 0.02, taxi
+0.04; 0 while a skater holds it unless it has the "pulls over while held" trait, taxi 0.2) and reserves a stop spot
+(the road's middle when free, else the middle of the first long enough gap ahead within 0.75 of the road, at least the
+approach length ahead; approach = ext x spec+36). FollowingLane then treats spot - d + 0.1 as a stop target (kind 2,
+standoff = approach), so the car crawls to it; below 1 m/s within the approach length it rides the Hermite passage to
+the kerb slot (one lane past the outer lane), leaving the outer lane halfway, and parks there with the spot still
+reserved. After the parked time (driver `Hash_988BB0F6`, 30 s, taxi 20) it rides a passage of one approach length back
+to the outer lane and the spot is freed.
+
+**Change.** skate-core: `manoeuvre::Manoeuvre` (Following / PullingOver / Parked / PullingOut), `pull_over_stop`,
+`is_required_to_pull_over`; `follow::step` passes the road's pull-over bit and a spot search over the other cars'
+spots (pending, pulling over, parked) to the decider, adds the spot stop target, starts the pull-over passage,
+brakes to the curve's end, parks, times the stay and starts the pull-out; `Car::on_place` takes a parked car (and one
+past the middle of its pull-over) off the outer lane; `Car::pose` draws a parked car on the kerb slot;
+`FollowEvent::PullingOver / PullingOut`. `FollowParams` gains `approach_factor` (spec+36), `pull_over_slack`,
+`pull_over_speed`, `parked_time`. skate-game loads spec+40 / +36 / +48, the driver's lane-change, overtake,
+pull-over, held-pull-over and parked-time values, rolls the trait at spawn and emits `TrafficEvent::PullingOver /
+PullingOut`.
+
+**NOT RETAIL YET / open.** The reservations are derived from the cars each tick (same set as retail's list); the car
+alarm does not hold a parked car (retail: the alarm pauses the parked timer); before halfway retail only follows a car
+ahead that is itself in a passage (ours follows any); retail has no position clamp at the spot (ours keeps the
+follower's clamps); the acceleration chain is the old one (todo).
+
+**Verification.** skate-core `a_car_pulls_over_parks_and_pulls_out` (spot 200 m on a 400 m road, kerb slot 4 m
+aside, parked at 0 m/s, back on the lane past the spot), `pull_over_tests`, traffic 53; skate-game vehicles /
+living_world 71. Not play-tested.

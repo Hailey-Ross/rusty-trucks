@@ -173,6 +173,14 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
             // Driver block +36 / +20 (`82C42348`, b74).
             h.enabled_chance = num("Hash_50E084076390A573").unwrap_or(h.enabled_chance);
             h.blocked_long_chance = num("Hash_20E9C6487FDDBDE8").unwrap_or(h.blocked_long_chance);
+            // The manoeuvre decider's driver values (b74: driver block +28 go, +24 least loaded; hashed fields).
+            let m = &mut params.manoeuvre;
+            m.lane_change_chance = num("Hash_52CF2CF346699CA1").unwrap_or(m.lane_change_chance);
+            m.least_loaded_chance = num("Hash_7C6B48BD9ADF8E6E").unwrap_or(m.least_loaded_chance);
+            m.overtake_chance = num("Hash_9366C67755A24D89").unwrap_or(m.overtake_chance);
+            m.pull_over_chance = num("pull_over_chance").or_else(|| num("Hash_559BA807F95FF93E")).unwrap_or(m.pull_over_chance);
+            m.held_pull_over_chance = num("Hash_99083122A1B7116A").unwrap_or(m.held_pull_over_chance);
+            params.parked_time = num("parked_time").or_else(|| num("Hash_988BB0F6F043EB3D")).unwrap_or(params.parked_time);
         }
         if let Some(f) = class("livingworld_vehicle_characteristics", spec_name) {
             let num = |k: &str| f.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
@@ -181,6 +189,18 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
             }
             if let Some(v) = num("Hash_758229215579C6D1") {
                 params.plan_decel = v;
+            }
+            // Retail reads spec+40 (`328B9F46`) as the lane-change passage factor and spec+48 (`90AB56A5`) as the lane
+            // timer (b72 / b74); the follower's accel / decel reads above are todo traffic-accel-fields-mislabelled.
+            if let Some(v) = num("Hash_328B9F4685A14018") {
+                params.passage_factor = v;
+            }
+            // spec+36: the pull-over approach factor (`+3672` = ext x it, b71 / b77).
+            if let Some(v) = num("Hash_758229215579C6D1") {
+                params.approach_factor = v;
+            }
+            if let Some(v) = num("Hash_90AB56A5DDCF2A3A") {
+                params.manoeuvre.lane_timer = v;
             }
             // The skater-behind rule (b63). Older exports name 3AB7FC7C `follow_speed_margin_kmh` (it is the FAR
             // braking distance) and keep the others as raw hashes.
@@ -273,6 +293,9 @@ pub(crate) enum TrafficEvent {
     EnteredLane { id: LivingWorldId, segment: u64, lane: u8 },
     /// A lane change started on `segment` from lane `from` to `to` (`82C3A9E0`; b69 / b74).
     LaneChange { id: LivingWorldId, segment: u64, from: u8, to: u8 },
+    /// The car pulls over to its spot / pulls out again (b73).
+    PullingOver { id: LivingWorldId, segment: u64, spot: f32 },
+    PullingOut { id: LivingWorldId, segment: u64 },
     /// The horn state changed (`+3420`: 0 silent, 1..=5 the decider's kinds; horn.rs).
     Horn { id: LivingWorldId, kind: u8 },
     /// Horn kind 2 at a ped (`sub_82C40660` -> vt+100 `sub_82E3C3D0`): the ped's honker is this car. Sent every
@@ -402,6 +425,8 @@ pub(crate) fn car_from_record(
     let mut car = Car::new(record.id.serial, cursor, length, params);
     let mut horn_rng = Rng::new(skate_core::living_world::rng::derive(record.seed, &[0x484f_524e]));
     car.driver = skate_core::living_world::traffic::horn::DriverBits::roll(&params.horn, &mut || horn_rng.unit());
+    // `+4402` bit 0x80 (`82C42348`, the last roll): pulls over even while a skater holds the car.
+    car.params.manoeuvre.pulls_over_while_held = skate_core::living_world::traffic::horn::percent_roll(params.manoeuvre.held_pull_over_chance, horn_rng.unit());
     let audio = TrafficAudio { engine: spec.engine.clone(), speed: Some(0.0), load: Some(0.0), ..TrafficAudio::new(spec.engine.clone()) };
     let glb = overrides.glbs.get(model_key).cloned().unwrap_or(m.glb.clone());
     Some((
@@ -564,6 +589,12 @@ pub(crate) fn drive_traffic(
                 }
                 FollowEvent::LaneChange { key, segment, from, to } => {
                     events.write(TrafficEvent::LaneChange { id: id(key), segment: net.segments[segment].id.0, from, to });
+                }
+                FollowEvent::PullingOver { key, segment, spot } => {
+                    events.write(TrafficEvent::PullingOver { id: id(key), segment: net.segments[segment].id.0, spot });
+                }
+                FollowEvent::PullingOut { key, segment } => {
+                    events.write(TrafficEvent::PullingOut { id: id(key), segment: net.segments[segment].id.0 });
                 }
                 FollowEvent::DeadEnd { key } => dead.push(key),
             }

@@ -25,13 +25,15 @@ pub struct DeciderParams {
     pub lane_change_chance: f32,
     pub least_loaded_chance: f32,
     pub pull_over_chance: f32,
-    /// `+4402` bit 0x80 (rolled at spawn from `Hash_99083122A1B7116A`).
+    /// `+4402` bit 0x80, rolled at spawn (`82C42348`) with `held_pull_over_chance` (`Hash_99083122A1B7116A`, 0, taxi
+    /// 0.2).
     pub pulls_over_while_held: bool,
+    pub held_pull_over_chance: f32,
 }
 
 impl Default for DeciderParams {
     fn default() -> Self {
-        Self { overtake_chance: 0.0, lane_timer: 10.0, lane_change_chance: 0.1, least_loaded_chance: 1.0, pull_over_chance: 0.02, pulls_over_while_held: false }
+        Self { overtake_chance: 0.0, lane_timer: 10.0, lane_change_chance: 0.1, least_loaded_chance: 1.0, pull_over_chance: 0.02, pulls_over_while_held: false, held_pull_over_chance: 0.0 }
     }
 }
 
@@ -200,5 +202,53 @@ mod tests {
         };
         decide(&mut s, &DeciderParams::default(), &i, &mut rand);
         assert_eq!((s.pending, draws.get()), (Pending::None, 1));
+    }
+}
+
+/// The car's manoeuvre state (Vehicle.xml states, b74): following its lane (lane changes included, see
+/// `Car::passage`), pulling over to its reserved spot, parked there, pulling out again.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Manoeuvre {
+    #[default]
+    Following,
+    PullingOver { spot: f32 },
+    Parked { spot: f32, time: f32 },
+    PullingOut,
+}
+
+impl Manoeuvre {
+    /// The reserved spot (from the decider's reservation until the pull-out starts, `82E15368`).
+    pub fn spot(&self) -> Option<f32> {
+        match *self {
+            Manoeuvre::PullingOver { spot } | Manoeuvre::Parked { spot, .. } => Some(spot),
+            _ => None,
+        }
+    }
+}
+
+/// FollowingLane's spot term (`82C376E8`, b77): the stop distance x = spot - d + slack (0.1, `0x820641A8`) when the
+/// spot is within speed + the approach length; the planner then brakes to stop `approach` short of x (kind 2).
+pub fn pull_over_stop(spot: f32, d: f32, speed: f32, approach: f32, slack: f32) -> Option<f32> {
+    let x = spot - d + slack;
+    (x > 0.0 && x <= speed + approach).then_some(x)
+}
+
+/// `IsRequiredToPullOver` (`82C3A270`, b77): the spot ahead within the approach length and the car below
+/// `max_speed` (1.0 m/s, `0x8231A844`).
+pub fn is_required_to_pull_over(spot: f32, d: f32, speed: f32, approach: f32, max_speed: f32) -> bool {
+    spot >= 0.0 && spot > d && spot - d <= approach && speed < max_speed
+}
+
+#[cfg(test)]
+mod pull_over_tests {
+    use super::*;
+
+    #[test]
+    fn the_spot_becomes_a_stop_target_and_the_pull_over_needs_a_crawl() {
+        assert_eq!(pull_over_stop(50.0, 30.0, 10.0, 12.0, 0.1), Some(20.1));
+        assert_eq!(pull_over_stop(50.0, 20.0, 10.0, 12.0, 0.1), None);
+        assert!(is_required_to_pull_over(50.0, 40.0, 0.5, 12.0, 1.0));
+        assert!(!is_required_to_pull_over(50.0, 40.0, 1.5, 12.0, 1.0));
+        assert!(!is_required_to_pull_over(50.0, 30.0, 0.5, 12.0, 1.0));
     }
 }

@@ -399,3 +399,42 @@ fn a_car_changes_lane_along_its_passage() {
     assert!((end_x - start_x).abs() > 1.5, "{start_x} -> {end_x}");
     assert!((mid_x - start_x).abs() > 0.1 && (mid_x - start_x).abs() < (end_x - start_x).abs(), "{start_x} {mid_x} {end_x}");
 }
+
+/// Pull-over (b73 / b77): on a one-lane road that allows it, the car reserves the road's middle, brakes to a crawl
+/// short of it, rides to the kerb slot, parks for the parked time, pulls out and drives on along the road.
+#[test]
+fn a_car_pulls_over_parks_and_pulls_out() {
+    let mut input = RoadInput { segments: vec![segment(0x300, (0x1, 0), (0x2, 0), [0.0; 3], [0.0, 0.0, 400.0])], junctions: vec![] };
+    input.segments[0].manoeuvres = 3;
+    let net = RoadNetwork::build(&input).unwrap();
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x300);
+    let mut c = car(&net, 1, s, 20.0);
+    c.speed = 10.0;
+    c.params.manoeuvre = crate::living_world::traffic::manoeuvre::DeciderParams { lane_timer: 0.5, lane_change_chance: 0.0, pull_over_chance: 1.0, ..Default::default() };
+    c.params.parked_time = 2.0;
+    let mut cars = vec![c];
+    let lane_x = cars[0].pose(&net).position[0];
+    let mut rng = Rng::new(7);
+    let mut events = Vec::new();
+    let mut parked_x = None;
+    for _ in 0..60 * 120 {
+        clock.tick(&mut Vec::new());
+        events.extend(step(&net, &clock, &mut cars, DT, ConnectorChoice::LeastLoaded, &mut rng));
+        if let crate::living_world::traffic::manoeuvre::Manoeuvre::Parked { .. } = cars[0].manoeuvre {
+            parked_x.get_or_insert(cars[0].pose(&net).position[0]);
+            assert_eq!(cars[0].speed, 0.0);
+        }
+        if events.iter().any(|e| matches!(e, FollowEvent::PullingOut { .. })) && cars[0].manoeuvre == crate::living_world::traffic::manoeuvre::Manoeuvre::Following {
+            break;
+        }
+    }
+    let over = events.iter().find_map(|e| if let FollowEvent::PullingOver { spot, .. } = e { Some(*spot) } else { None }).expect("pulled over");
+    assert!((over - 200.0).abs() < 1e-3, "{over}");
+    let px = parked_x.expect("parked");
+    // The kerb slot is one lane width (4 m on this one-lane road) beside the lane.
+    assert!((px - lane_x).abs() > 3.0, "{lane_x} -> {px}");
+    assert_eq!(cars[0].manoeuvre, crate::living_world::traffic::manoeuvre::Manoeuvre::Following);
+    assert!((cars[0].pose(&net).position[0] - lane_x).abs() < 1e-3);
+    assert!(cars[0].cursor.distance > over);
+}
