@@ -77,6 +77,8 @@ pub mod nav_modifier {
 pub mod timers {
     /// ChannelWarnWantTarget's warn time (`InterestTimer`).
     pub const WARN: i32 = 36;
+    /// SetSitTimer's timer (`SitTimer`).
+    pub const SIT: i32 = 24;
     /// The graph's timer names by index (`sub_82E42B08` compares in this order).
     pub const NAMES: [&str; 47] = [
         "NextWarnTimer",
@@ -366,6 +368,11 @@ pub enum PedOp {
     UnlockWaypoint,
     /// Monitored intents (`intentName`, `numberOfStages`): created, stepped, present.
     CreateSimpleMonitoredIntent { intent: String, stages: u8 },
+    /// `SetSitTimer` Begin `826A2898`: SitTimer (24) = min + rand x 2^-32 x (max - min), the ped type's sit times.
+    SetSitTimer,
+    /// `GoingToStandBackUp` `826AD1F0` -> `8269A588`: d100 roll (`rand() % 100 + 1`) at most the ped type's
+    /// stand-up chance x 100 (`0x820ED57C` 100.0); rolls on every evaluation.
+    GoingToStandBackUp,
     IncrementMonitoredPacketStage { intent: String },
     /// Conversation ops: in position (vf44), am I the speaker (vf12), speak for the turn time
     /// then pass the turn (vf48), face the speaker, complete (vf36).
@@ -524,6 +531,8 @@ impl PedOp {
             "UnlockWaypoint" => PedOp::UnlockWaypoint,
             "CreateSimpleMonitoredIntent" => PedOp::CreateSimpleMonitoredIntent { intent: text("intentName").unwrap_or_default(), stages: float("numberOfStages").unwrap_or(1.0) as u8 },
             "IncrementMonitoredPacketStage" => PedOp::IncrementMonitoredPacketStage { intent: text("intentName").unwrap_or_default() },
+            "SetSitTimer" => PedOp::SetSitTimer,
+            "GoingToStandBackUp" => PedOp::GoingToStandBackUp,
             "ConversationSignalInPosition" => PedOp::ConversationSignalInPosition,
             "ConversationThisParticipantIsSpeaker" => PedOp::ConversationThisParticipantIsSpeaker,
             "ConversationSpeak" => PedOp::ConversationSpeak,
@@ -547,9 +556,27 @@ pub struct Want {
     pub needs_addressing: bool,
 }
 
+/// The ped type's sit values (`ped+5696` attribute collection; `livingworld_entities`): sit time min / max (s,
+/// `1190326371F1A684` 30.0 / `69F67C678B2673C9` 60.0) and the stand-up chance (`B040D387ABA6E24D` 0.5).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SitValues {
+    pub min_seconds: f32,
+    pub max_seconds: f32,
+    pub stand_up_chance: f32,
+}
+
+impl Default for SitValues {
+    fn default() -> Self {
+        Self { min_seconds: 30.0, max_seconds: 60.0, stand_up_chance: 0.5 }
+    }
+}
+
 /// What a ped's brain knows and decided (host-owned, serialisable plain data).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PedBrain {
+    /// The ped's own rolls (host-seeded; `None` = seed 0) and its type's sit values.
+    pub rng: Option<crate::living_world::Rng>,
+    pub sit: SitValues,
     pub wants: BTreeMap<String, Want>,
     pub timers: BTreeMap<i32, f32>,
     pub scatter: bool,
@@ -756,6 +783,17 @@ impl PedBrain {
     }
     /// `sub_82E40940`: a length at or below 0 stops the timer; a new timer is dropped when
     /// [`timers::CAPACITY`] are running.
+    fn rng(&mut self) -> &mut crate::living_world::Rng {
+        self.rng.get_or_insert_with(|| crate::living_world::Rng::new(0))
+    }
+
+    /// `GoingToStandBackUp`'s roll.
+    pub fn roll_stand_up(&mut self) -> bool {
+        let chance = self.sit.stand_up_chance;
+        let k = self.rng().modulo(100) + 1;
+        chance * 100.0 >= k as f32
+    }
+
     pub fn set_timer(&mut self, timer: i32, seconds: f32) {
         if seconds <= 0.0 {
             self.timers.remove(&timer);
@@ -895,6 +933,9 @@ impl BrainHost<'_> {
 
 impl ConditionHost for BrainHost<'_> {
     fn condition_activation(&mut self, condition: usize, _frame: &Frame) -> u32 {
+        if let Some(PedOp::GoingToStandBackUp) = self.conditions.get(condition) {
+            return u32::from(self.brain.roll_stand_up());
+        }
         u32::from(self.conditions.get(condition).is_some_and(|op| self.evaluate(op)))
     }
 }
@@ -988,6 +1029,11 @@ impl Host for BrainHost<'_> {
                 b.approach = None;
                 b.position_locked = true;
                 b.locked_at = Some(self.position);
+            }
+            PedOp::SetSitTimer => {
+                let v = b.sit;
+                let t = v.min_seconds + b.rng().unit() * (v.max_seconds - v.min_seconds);
+                b.set_timer(timers::SIT, t);
             }
             PedOp::CreateSimpleMonitoredIntent { intent, stages } => {
                 b.monitored.insert(intent.clone(), (1, (*stages).max(1)));

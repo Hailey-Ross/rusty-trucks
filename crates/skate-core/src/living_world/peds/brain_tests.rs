@@ -447,3 +447,28 @@ fn the_taunt_faces_the_victim_holds_the_intent_and_unsets_the_want() {
     h.end(0, [0; 6], &f);
     assert!(!h.brain.wants.contains_key("taunt") && h.brain.face.is_none() && !h.brain.monitored.contains_key("SGIntent"));
 }
+
+/// The sit plugin's ops (`826A2898` SetSitTimer, `826AD1F0` GoingToStandBackUp): the sit time lies between the ped type's
+/// min and max, the stand-up roll follows its chance, and timer 24 is retail's SitTimer.
+#[test]
+fn the_sit_timer_and_the_stand_up_roll_follow_the_ped_type() {
+    assert_eq!(timers::NAMES[timers::SIT as usize], "SitTimer");
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    for seed in 0..20u64 {
+        let mut brain = PedBrain { rng: Some(crate::living_world::Rng::new(seed)), ..Default::default() };
+        let behaviors = [PedOp::SetSitTimer];
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+        h.begin(0, [0; 6], &frame());
+        let t = brain.timers[&timers::SIT];
+        assert!((30.0..60.0).contains(&t), "{t}");
+    }
+    let rate = |chance: f32| {
+        let mut brain = PedBrain { rng: Some(crate::living_world::Rng::new(3)), sit: SitValues { stand_up_chance: chance, ..Default::default() }, ..Default::default() };
+        (0..1000).filter(|_| brain.roll_stand_up()).count()
+    };
+    assert_eq!(rate(0.0), 0);
+    assert_eq!(rate(1.0), 1000);
+    let half = rate(0.5);
+    assert!((430..570).contains(&half), "{half}");
+}

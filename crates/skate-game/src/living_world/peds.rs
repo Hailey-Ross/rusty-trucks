@@ -95,6 +95,8 @@ pub(crate) struct PedData {
     /// The conversation plugin graph (`plugin/conversation.stategraph`) and the conversation tables.
     pub conversation_graph: Option<Arc<super::ped_graph::PedGraph>>,
     pub conversations: Arc<super::ped_mood::ConversationTables>,
+    /// The sit plugin's values by entity type (`ped_mood::sit_values`).
+    pub sit: Arc<BTreeMap<String, skate_core::living_world::peds::brain::SitValues>>,
     /// Each entity type's vision test ranges (`ped_mood::sight`).
     pub sight: Arc<BTreeMap<String, skate_core::living_world::peds::perception::Sight>>,
     /// Each entity type's takedown table (`ped_mood::takedown_tables`).
@@ -464,8 +466,8 @@ fn load_ped_data(
         }
         Err(error) => warn!("PED_GRAPH not loaded (peds keep wandering without the behaviour graph): {error}"),
     }
-    match std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| Ok((super::ped_mood::parse(&b)?, super::ped_mood::reaction_sets(&b), super::ped_mood::chase_records(&b), super::ped_mood::takedown_tables(&b), super::ped_mood::sight(&b), super::ped_mood::conversation_tables(&b)))) {
-        Ok((tables, sets, (chase, global), takedowns, sight, conversations)) => {
+    match std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| Ok((super::ped_mood::parse(&b)?, super::ped_mood::reaction_sets(&b), super::ped_mood::chase_records(&b), super::ped_mood::takedown_tables(&b), super::ped_mood::sight(&b), super::ped_mood::conversation_tables(&b), super::ped_mood::sit_values(&b)))) {
+        Ok((tables, sets, (chase, global), takedowns, sight, conversations, sit)) => {
             info!(
                 "PED_MOOD tables: {} categories, {} results, {} reaction sets, {} entity types, {} chase records (global {})",
                 tables.categories.len(),
@@ -482,6 +484,7 @@ fn load_ped_data(
             loaded.takedowns = Arc::new(takedowns);
             loaded.sight = Arc::new(sight);
             loaded.conversations = Arc::new(conversations);
+            loaded.sit = Arc::new(sit);
         }
         Err(error) => warn!("PED_MOOD tables not loaded (no mood reactions): {error}"),
     }
@@ -1404,6 +1407,11 @@ pub(crate) fn think_peds(
                     continue;
                 }
                 mind.mood.post(MoodEvent { category: category.into(), instigator, second: Some(hit), position: at }, magnitude(category));
+            }
+            // The brain's own rolls (sit time, stand-up) and its type's sit values, once per ped.
+            if mind.brain.rng.is_none() {
+                mind.brain.rng = Some(skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(world_seed, &[0x4252_4e52, me])));
+                mind.brain.sit = entity(me).and_then(|(name, _)| data.sit.get(name.as_str()).copied()).unwrap_or_default();
             }
             let rng = mind.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(world_seed, &[0x4d4f_4f44, me])));
             let ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy };

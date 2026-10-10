@@ -395,7 +395,9 @@ pub(crate) fn simulate(
                     Some("client")
                 } else if count >= rules.max {
                     Some("at max")
-                } else if distance > rules.radius {
+                } else if distance > rules.radius && !(rules.walk_back && replay.avoid.last.mode == skate_core::living_world::avoid::AvoidMode::StepOff) {
+                    // Retail simulates every ambient skater: one a prop blocks (mode 7) is simulated at any distance so
+                    // it can step off and walk round (controller B); our distance switch is an engine cost choice.
                     Some("too far")
                 } else if flags & (node_flags::AIRBORNE | node_flags::OFF_BOARD) != 0 || replay.cursor.current_trick() >= 0 {
                     Some("in the air, off board or in a trick")
@@ -410,7 +412,8 @@ pub(crate) fn simulate(
                 }
                 match spawn_sim(&mut physics, &config, &graphs, &target) {
                     Ok(sim) => {
-                        info!("NPC_SKATER_SIM #{} {} <- replay (distance {distance:.1} m)", npc.id.serial, npc.character);
+                        let why = if replay.avoid.last.mode == skate_core::living_world::avoid::AvoidMode::StepOff { ", blocked by a prop (mode 7)" } else { "" };
+                        info!("NPC_SKATER_SIM #{} {} <- replay (distance {distance:.1} m{why})", npc.id.serial, npc.character);
                         commands.entity(e).insert(sim);
                         count += 1;
                     }

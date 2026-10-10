@@ -234,6 +234,27 @@ pub(crate) struct ConversationTables {
     pub by_entity: BTreeMap<String, Vec<(f32, Vec<usize>)>>,
 }
 
+/// The sit plugin's values per entity type (`livingworld_entities`, parents merged): sit time min / max
+/// (`Hash_1190326371F1A684` / `Hash_69F67C678B2673C9`) and the stand-up chance (`Hash_B040D387ABA6E24D`), read by
+/// SetSitTimer `826A2898` and GoingToStandBackUp `826AD1F0`; a missing field keeps the retail default.
+pub(crate) fn sit_values(bytes: &[u8]) -> BTreeMap<String, skate_core::living_world::peds::brain::SitValues> {
+    let Ok(root) = serde_json::from_slice::<Value>(bytes) else { return Default::default() };
+    let Some(entities) = root.pointer("/classes/livingworld_entities").and_then(Value::as_object) else { return Default::default() };
+    let e = Class(entities);
+    let d = skate_core::living_world::peds::brain::SitValues::default();
+    entities
+        .keys()
+        .map(|k| {
+            let v = skate_core::living_world::peds::brain::SitValues {
+                min_seconds: e.f32(k, "Hash_1190326371F1A684").unwrap_or(d.min_seconds),
+                max_seconds: e.f32(k, "Hash_69F67C678B2673C9").unwrap_or(d.max_seconds),
+                stand_up_chance: e.f32(k, "Hash_B040D387ABA6E24D").unwrap_or(d.stand_up_chance),
+            };
+            (k.clone(), v)
+        })
+        .collect()
+}
+
 pub(crate) fn conversation_tables(bytes: &[u8]) -> ConversationTables {
     let Ok(root) = serde_json::from_slice::<Value>(bytes) else { return Default::default() };
     let class = |n: &str| root.pointer(&format!("/classes/{n}")).and_then(Value::as_object);

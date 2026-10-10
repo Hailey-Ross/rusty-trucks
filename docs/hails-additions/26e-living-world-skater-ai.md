@@ -430,7 +430,12 @@ re-spawns the line cursor at the node on the hand-back and resets the sub-mode; 
 neutral pad's analog fill from overwriting the AI's `OB_Mag`. Logs `NPC_STEP_OFF`, `NPC_WALK_BACK`; mod event
 `npc_walk_back {id, node, started}`; mod values `npc_simulated {walk_back, walk_arrive_distance, walk_stuck_ticks}`.
 
-**NOT RETAIL YET / open.** Simulated skaters only (opt-in `SKATE_NPC_SIM=1`); replay-tier skaters still just stop. Our
+Retail simulates every ambient skater, so a replay-tier skater that a prop blocks (mode 7) becomes a simulated skater
+at any distance (within the tier's cap) and walks round; it goes back to the replay tier once it rides again out of
+range (`NPC_SKATER_SIM ... blocked by a prop (mode 7)` log).
+
+**NOT RETAIL YET / open.** Needs the simulated tier (opt-in `SKATE_NPC_SIM=1` until play-tested); with it off, a
+blocked skater still just stops. Our
 path elements are funnel corners (retail's 56-byte elements carry two points per portal); B's heading `B+112` is the
 skater root's forward and P the root position ([inference] for `[rec+20]+0` / `+416`); the "can move" terms
 `[rec+72]+308 / +309` are not identified; the reposition clock is our tick count (retail's clock unit is open).
