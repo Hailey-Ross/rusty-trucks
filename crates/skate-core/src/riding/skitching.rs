@@ -19,6 +19,7 @@ use crate::point_graph::PointGraph;
 pub mod frame;
 pub mod target;
 pub mod hold;
+pub mod shimmy;
 
 /// `physics_state_skitching/default` values the spring reads (vault data).
 #[derive(Clone, Copy, Debug, PartialEq)]

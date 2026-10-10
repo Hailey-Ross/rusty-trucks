@@ -704,3 +704,20 @@ Not wired: state 104's handler (registry, dispatch, enter / exit, forces, public
 **Open.** The meaning of 2476 bit 22 in the tail (the grab input, read as such), why reset skips 872, the vector at
 1168 in the tail.
 
+## Skitching step 4d: the along-the-bumper hand chain (2026-10-09)
+
+**Retail [code + data] (`.local/research/npc/b30-skitch-pull-release.md` section 4, `b31-skitch-submode-hold.md`
+section 2).** `82D48C98` low-passes the car's acceleration along the grab edge (0.9 / 0.1), turns it into a hard event
+past 40 and an excess over a dead-band curve, adds the stick's push (10) or, without stick or event, a velocity servo to
+rest, integrates the hand's velocity (capped at 1, or the stick gain against an opposing event; unbounded in the
+event's direction) and moves the hand target along the edge, clamped to the range and snapped onto the latched edge
+point when it crosses it.
+
+**Change.** skate-core `riding::skitching::shimmy` (`ShimmyState::step`, `ShimmySettings` with the five vault values).
+
+**Open.** The car acceleration `a` is an input: its derivation from the frame history (b30's reading predates b47's
+frame layout) is being re-read (b55), as are the tow spring's body-height term and the stick axis 924.
+
+**Verification.** skate-core `the_stick_moves_the_hand_along_the_bumper_at_most_one_unit_per_second`,
+`a_hard_car_acceleration_is_an_event_and_the_gate_resets`.
+
