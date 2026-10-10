@@ -472,3 +472,78 @@ fn the_sit_timer_and_the_stand_up_roll_follow_the_ped_type() {
     let half = rate(0.5);
     assert!((430..570).contains(&half), "{half}");
 }
+
+/// The plugin flags (`826A7498`, `826A3108`, `826A2988` and their Ends): set while the behaviour runs, cleared at its
+/// end; the explicit turn takes the locked waypoint's orientation, and nothing without a waypoint.
+#[test]
+fn plugin_flags_hold_while_their_behaviours_run() {
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let behaviors = [PedOp::OwnPluginObject, PedOp::IgnoreStandingCollisions, PedOp::SetExplicitTurnDirectionToWaypointOrientation];
+    let mut brain = PedBrain::default();
+    {
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+        for i in 0..3 {
+            h.begin(i, [0; 6], &frame());
+        }
+    }
+    assert!(brain.own_plugin_object && brain.ignore_standing_collisions);
+    assert_eq!(brain.explicit_turn, None, "no waypoint locked");
+    brain.waypoint = Some([1.0, 0.0, 0.0]);
+    brain.waypoint_facing = Some([0.0, 0.0, -1.0]);
+    {
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+        h.begin(2, [0; 6], &frame());
+    }
+    assert_eq!(brain.explicit_turn, Some([0.0, 0.0, -1.0]));
+    {
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+        for i in 0..3 {
+            h.end(i, [0; 6], &frame());
+        }
+    }
+    assert!(!brain.own_plugin_object && !brain.ignore_standing_collisions && brain.explicit_turn.is_none());
+}
+
+/// IsOnRoad (the stub, always false), SimpleRandom (percentage x 0.01 against a roll), IsAtWaypoint (3 m horizontal
+/// by default) and InSkaterRadius (3D).
+#[test]
+fn plugin_conditions_follow_retail() {
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let conditions = [PedOp::IsOnRoad, PedOp::SimpleRandom { chance: 0.2 }, PedOp::IsAtWaypoint { radius: 3.0 }, PedOp::InSkaterRadius { radius: 25.0 }];
+    let mut brain = PedBrain { rng: Some(crate::living_world::Rng::new(5)), waypoint: Some([2.9, 10.0, 0.0]), ..Default::default() };
+    let mut h = BrainHost { behaviors: &[], conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: Some(([0.0, 24.0, 5.0], [0.0; 3])), target_position: &none, chase: Default::default() };
+    let f = frame();
+    assert_eq!(h.condition_activation(0, &f), 0);
+    let hits: u32 = (0..1000).map(|_| h.condition_activation(1, &f)).sum();
+    assert!((150..250).contains(&hits), "{hits}");
+    assert_eq!(h.condition_activation(2, &f), 1, "10 m above but 2.9 m away horizontally");
+    assert_eq!(h.condition_activation(3, &f), 1, "24.5 m");
+    h.skater = Some(([0.0, 25.0, 5.0], [0.0; 3]));
+    assert_eq!(h.condition_activation(3, &f), 0, "25.5 m");
+    h.brain.waypoint = None;
+    assert_eq!(h.condition_activation(2, &f), 0);
+}
+
+/// The collision / mood switches hold while their behaviours run; DisableAllMoods restores what it saved.
+#[test]
+fn collision_and_mood_switches_restore_at_end() {
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let behaviors = [PedOp::DisableHeavyCollision, PedOp::DisableCollisionSliding, PedOp::DisableAllMoods, PedOp::OverridePluginCollision, PedOp::OverridePluginAvoid];
+    let conditions = [PedOp::IsPluginCollisionOverride, PedOp::IsPluginAvoidOverride];
+    let mut brain = PedBrain { moods_disabled: true, ..Default::default() };
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    let f = frame();
+    for i in 0..5 {
+        h.begin(i, [0; 6], &f);
+    }
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f)), (1, 1));
+    for i in 0..5 {
+        h.end(i, [0; 6], &f);
+    }
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f)), (0, 0));
+    assert!(!brain.heavy_collision_disabled && !brain.collision_sliding_disabled);
+    assert!(brain.moods_disabled, "restored to the value before the behaviour");
+}

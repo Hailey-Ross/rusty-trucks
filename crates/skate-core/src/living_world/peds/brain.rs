@@ -368,6 +368,37 @@ pub enum PedOp {
     UnlockWaypoint,
     /// Monitored intents (`intentName`, `numberOfStages`): created, stepped, present.
     CreateSimpleMonitoredIntent { intent: String, stages: u8 },
+    /// `DisableHeavyCollision` (`826A30D0` / `826A30E8`): `brain+3277` bit 0x20 while active.
+    DisableHeavyCollision,
+    /// `DisableCollisionSliding` (`826A3140` / `826A3158`): ped `+5936` bit 0x40 (collision sliding) off while active.
+    DisableCollisionSliding,
+    /// `DisableAllMoods` (`826A5A20` / `826A5A50`): `brain+3278` bit 0x08 on while active; End restores the value
+    /// saved at Begin.
+    DisableAllMoods,
+    /// `OverridePluginCollision` / `OverridePluginAvoid` (`8269AC98` / `8269ACE8`, `8269AD38` / `8269AD88`):
+    /// `brain+3200` / `+3201` = 1 while active, 0 at End; read by `IsPluginCollisionOverride` (`8269ADD8`) and
+    /// `IsPluginAvoidOverride` (`8269AE38`).
+    OverridePluginCollision,
+    OverridePluginAvoid,
+    IsPluginCollisionOverride,
+    IsPluginAvoidOverride,
+    /// `IsOnRoad` (graph condition, vtable slot 12 = the `li r3,0` stub `8274CA90`): always false.
+    IsOnRoad,
+    /// `SimpleRandom` (`826AB540`, factory `826CCEF0`: `percentage` x 0.01): true when the chance >= a uniform roll in
+    /// [0, 1); rolls on every evaluation.
+    SimpleRandom { chance: f32 },
+    /// `IsAtWaypoint` (`826AB880`, factory `826CDEE8` default `0x82063B08` 3.0): the locked waypoint within `radius`
+    /// horizontally; false without one.
+    IsAtWaypoint { radius: f32 },
+    /// `InSkaterRadius` (`826AAAF8`): the skater within `radius` (3D).
+    InSkaterRadius { radius: f32 },
+    /// `OwnPluginObject` (`826A7498` / `826A74B0`): `brain+3277` bit 0x01 while active.
+    OwnPluginObject,
+    /// `IgnoreStandingCollisions` (`826A3108` / `826A3120`): `brain+3277` bit 0x10 while active.
+    IgnoreStandingCollisions,
+    /// `SetExplicitTurnDirectionToWaypointOrientation` (`826A2988` / `826A29F0`): while active the locomotion turns to
+    /// the locked waypoint's orientation (`ped+5888` +2080, flag +2100 bit 0x20); nothing without a waypoint.
+    SetExplicitTurnDirectionToWaypointOrientation,
     /// `SetSitTimer` Begin `826A2898`: SitTimer (24) = min + rand x 2^-32 x (max - min), the ped type's sit times.
     SetSitTimer,
     /// `GoingToStandBackUp` `826AD1F0` -> `8269A588`: d100 roll (`rand() % 100 + 1`) at most the ped type's
@@ -532,6 +563,20 @@ impl PedOp {
             "CreateSimpleMonitoredIntent" => PedOp::CreateSimpleMonitoredIntent { intent: text("intentName").unwrap_or_default(), stages: float("numberOfStages").unwrap_or(1.0) as u8 },
             "IncrementMonitoredPacketStage" => PedOp::IncrementMonitoredPacketStage { intent: text("intentName").unwrap_or_default() },
             "SetSitTimer" => PedOp::SetSitTimer,
+            "OwnPluginObject" => PedOp::OwnPluginObject,
+            "IsOnRoad" => PedOp::IsOnRoad,
+            "DisableHeavyCollision" => PedOp::DisableHeavyCollision,
+            "DisableCollisionSliding" => PedOp::DisableCollisionSliding,
+            "DisableAllMoods" => PedOp::DisableAllMoods,
+            "OverridePluginCollision" => PedOp::OverridePluginCollision,
+            "OverridePluginAvoid" => PedOp::OverridePluginAvoid,
+            "IsPluginCollisionOverride" => PedOp::IsPluginCollisionOverride,
+            "IsPluginAvoidOverride" => PedOp::IsPluginAvoidOverride,
+            "SimpleRandom" => PedOp::SimpleRandom { chance: float("percentage").unwrap_or(0.0) * 0.01 },
+            "IsAtWaypoint" => PedOp::IsAtWaypoint { radius: float("radius").unwrap_or(3.0) },
+            "InSkaterRadius" => PedOp::InSkaterRadius { radius: float("radius").unwrap_or(0.0) },
+            "IgnoreStandingCollisions" => PedOp::IgnoreStandingCollisions,
+            "SetExplicitTurnDirectionToWaypointOrientation" => PedOp::SetExplicitTurnDirectionToWaypointOrientation,
             "GoingToStandBackUp" => PedOp::GoingToStandBackUp,
             "ConversationSignalInPosition" => PedOp::ConversationSignalInPosition,
             "ConversationThisParticipantIsSpeaker" => PedOp::ConversationThisParticipantIsSpeaker,
@@ -599,6 +644,21 @@ pub struct PedBrain {
     pub in_plugin: bool,
     pub in_conversation: bool,
     pub waypoint: Option<Vec3>,
+    /// The locked waypoint's orientation (a world prop's waypoint facing; host-set with the lock).
+    pub waypoint_facing: Option<Vec3>,
+    /// `brain+3277` bits 0x01 (OwnPluginObject) and 0x10 (IgnoreStandingCollisions).
+    pub own_plugin_object: bool,
+    pub ignore_standing_collisions: bool,
+    /// `brain+3277` bit 0x20, ped `+5936` bit 0x40 cleared, `brain+3278` bit 0x08 (with each DisableAllMoods
+    /// behaviour's saved value), `brain+3200` / `+3201`.
+    pub heavy_collision_disabled: bool,
+    pub collision_sliding_disabled: bool,
+    pub moods_disabled: bool,
+    pub moods_saved: BTreeMap<usize, bool>,
+    pub plugin_collision_override: bool,
+    pub plugin_avoid_override: bool,
+    /// The explicit turn direction the locomotion turns to (`ped+5888` +2080 with +2100 bit 0x20).
+    pub explicit_turn: Option<Vec3>,
     pub monitored: BTreeMap<String, (u8, u8)>,
     pub turn_passed: bool,
     /// What the ped knows about and sees (`brain+624`; KnowAboutWantTarget's `82E42868`).
@@ -783,7 +843,7 @@ impl PedBrain {
     }
     /// `sub_82E40940`: a length at or below 0 stops the timer; a new timer is dropped when
     /// [`timers::CAPACITY`] are running.
-    fn rng(&mut self) -> &mut crate::living_world::Rng {
+    pub fn rng(&mut self) -> &mut crate::living_world::Rng {
         self.rng.get_or_insert_with(|| crate::living_world::Rng::new(0))
     }
 
@@ -855,6 +915,17 @@ impl BrainHost<'_> {
     fn evaluate(&self, op: &PedOp) -> bool {
         let b = &*self.brain;
         match op {
+            PedOp::IsOnRoad | PedOp::SimpleRandom { .. } => false,
+            PedOp::IsPluginCollisionOverride => b.plugin_collision_override,
+            PedOp::IsPluginAvoidOverride => b.plugin_avoid_override,
+            PedOp::IsAtWaypoint { radius } => self.brain.waypoint.is_some_and(|w| {
+                let (dx, dz) = (w[0] - self.position[0], w[2] - self.position[2]);
+                (dx * dx + dz * dz).sqrt() < *radius
+            }),
+            PedOp::InSkaterRadius { radius } => self.skater.is_some_and(|(p, _)| {
+                let d = [p[0] - self.position[0], p[1] - self.position[1], p[2] - self.position[2]];
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() < *radius
+            }),
             PedOp::HasWantToAddress { want } => b.wants.get(want).is_some_and(|w| w.needs_addressing),
             PedOp::NeedsToBeginColliding => b.begin_colliding,
             PedOp::IsColliding => b.colliding,
@@ -933,8 +1004,10 @@ impl BrainHost<'_> {
 
 impl ConditionHost for BrainHost<'_> {
     fn condition_activation(&mut self, condition: usize, _frame: &Frame) -> u32 {
-        if let Some(PedOp::GoingToStandBackUp) = self.conditions.get(condition) {
-            return u32::from(self.brain.roll_stand_up());
+        match self.conditions.get(condition) {
+            Some(PedOp::GoingToStandBackUp) => return u32::from(self.brain.roll_stand_up()),
+            Some(PedOp::SimpleRandom { chance }) => return u32::from(*chance >= self.brain.rng().unit()),
+            _ => {}
         }
         u32::from(self.conditions.get(condition).is_some_and(|op| self.evaluate(op)))
     }
@@ -1029,6 +1102,21 @@ impl Host for BrainHost<'_> {
                 b.approach = None;
                 b.position_locked = true;
                 b.locked_at = Some(self.position);
+            }
+            PedOp::OwnPluginObject => b.own_plugin_object = true,
+            PedOp::DisableHeavyCollision => b.heavy_collision_disabled = true,
+            PedOp::DisableCollisionSliding => b.collision_sliding_disabled = true,
+            PedOp::DisableAllMoods => {
+                b.moods_saved.insert(behavior, b.moods_disabled);
+                b.moods_disabled = true;
+            }
+            PedOp::OverridePluginCollision => b.plugin_collision_override = true,
+            PedOp::OverridePluginAvoid => b.plugin_avoid_override = true,
+            PedOp::IgnoreStandingCollisions => b.ignore_standing_collisions = true,
+            PedOp::SetExplicitTurnDirectionToWaypointOrientation => {
+                if b.waypoint.is_some() {
+                    b.explicit_turn = b.waypoint_facing;
+                }
             }
             PedOp::SetSitTimer => {
                 let v = b.sit;
@@ -1354,6 +1442,14 @@ impl Host for BrainHost<'_> {
         let Some(op) = self.behaviors.get(behavior) else { return };
         let b = &mut *self.brain;
         match op {
+            PedOp::OwnPluginObject => b.own_plugin_object = false,
+            PedOp::DisableHeavyCollision => b.heavy_collision_disabled = false,
+            PedOp::DisableCollisionSliding => b.collision_sliding_disabled = false,
+            PedOp::DisableAllMoods => b.moods_disabled = b.moods_saved.remove(&behavior).unwrap_or(false),
+            PedOp::OverridePluginCollision => b.plugin_collision_override = false,
+            PedOp::OverridePluginAvoid => b.plugin_avoid_override = false,
+            PedOp::IgnoreStandingCollisions => b.ignore_standing_collisions = false,
+            PedOp::SetExplicitTurnDirectionToWaypointOrientation => b.explicit_turn = None,
             PedOp::SuggestVelocity { .. } => b.speed_suggestion = None,
             PedOp::UnsetWantOnEnd { want } => b.unset_want(want),
             PedOp::Flee => b.flee_from = None,
