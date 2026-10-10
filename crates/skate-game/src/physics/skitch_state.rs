@@ -73,6 +73,8 @@ pub(crate) struct SkitchState {
     pub grab_height: f32,
     pub absorb: f32,
     pub along_ratio: f32,
+    /// 996 (`82D47BD8`, b61): the tow speed plus up to 200 m/s^2 x dt (cap 3.5 per update) toward 8 m/s.
+    pub push_speed: f32,
     /// 940 (the target step's lean yaw, kept across sub-mode 4 frames) and 944 (the smoothed lean angle).
     pub lean_yaw: f32,
     pub lean: f32,
@@ -105,6 +107,7 @@ pub(crate) fn enter(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Re
     s.hands = hands::HandState::default();
     s.spring_force = [0.0; 3];
     s.lean_yaw = 0.0;
+    s.push_speed = 0.0;
     s.lean = 0.0;
     Ok(())
 }
@@ -176,6 +179,8 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         let fr = s.frame.frames[1];
         s.grab_height = fr[3][1] + fr[0][1] * s.hold.posed - position[1];
         s.absorb = -f.axis_distance_rate;
+        // 82D47BD8 (1345 bit 0x10, which holds it, is not ported: always updated).
+        s.push_speed = f.tow_speed + (8.0 - f.tow_speed).max(0.0).min((200.0 * dt).min(3.5));
         // Along chain 82D48C98: the grab point's along displacement over the last frame (frames 128 vs 64, after
         // the shift) times 7199.999 (0x822F8BDC; b55).
         let [old, prev, _] = s.frame.frames;
@@ -388,6 +393,7 @@ pub(crate) struct SkitchOutput {
     pub grab_height_280: f32,
     pub absorb_284: f32,
     pub along_288: f32,
+    pub push_308: f32,
     pub shimmy_136: f32,
     pub grip_132: f32,
     pub hands_140: u32,
@@ -413,6 +419,7 @@ impl SkitchState {
             grab_height_280: self.grab_height,
             absorb_284: self.absorb,
             along_288: self.along_ratio,
+            push_308: self.push_speed,
             shimmy_136: self.hold.posed_step * 60.0,
             grip_132: self.hands.grip_height,
             hands_140: self.hands.mask,

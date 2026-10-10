@@ -29,6 +29,7 @@ pub struct GameplayConditions {
     /// State 104 outputs (b58 / b60): ground 280 / 284, animation 136 / 140.
     pub skitch_grab_height: f32,
     pub skitch_absorb: f32,
+    pub skitch_push: f32,
     pub skitch_shimmy: f32,
     pub skitch_hands: u32,
     /// TimeToLand82BA7250: PhysOutAir+184, gated by byte437.
@@ -286,9 +287,15 @@ impl GameplayCondition {
         }
         Ok(match self {
             Self::SkitchingWithAbsorb => p.state == 104 && host.skitching.absorb_target(p.skitch_absorb) > 0.0,
-            // NOT RETAIL YET: the mirror term (anim+157 / +158) and the shimmy flip are false.
-            Self::SkitchingPosition { side } => super::motion_skitching::skitching_position(p.skitch_hands, false) == *side,
-            Self::SkitchShimmying { direction } => super::motion_skitching::shimmy_direction(p.skitch_shimmy, false) == *direction,
+            // m = (anim+158 natural regular) == (anim+157 switch); the shimmy flip is the mirrored bit (b61).
+            Self::SkitchingPosition { side } => {
+                let m = (host.animation.natural_stance == 0) == (host.animation.relative_stance == 1);
+                super::motion_skitching::skitching_position(p.skitch_hands, m) == *side
+            }
+            Self::SkitchShimmying { direction } => {
+                let flipped = host.animation.skater_animation_flags.is_some_and(|f| f & 0x4000_0000 != 0);
+                super::motion_skitching::shimmy_direction(p.skitch_shimmy, flipped) == *direction
+            }
             //82BA5F60: Offboard322 or the actual RetrieveBoard channel.
             Self::DroppingBoard => p.dropping_board || host.animation.channels.has("RetrieveBoard"),
             // MovingObjectNew quadrants: the physical byte gates the mode, the

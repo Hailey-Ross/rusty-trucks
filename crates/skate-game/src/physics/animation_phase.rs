@@ -149,6 +149,7 @@ pub(crate) fn advance(
             skitch_transition_time: profile.skitch_transition_time,
             skitch_grab_height: physical.ground.skitch_grab_height_280,
             skitch_absorb: physical.ground.skitch_absorb_284,
+            skitch_push: physical.ground.skitch_push_308,
             skitch_shimmy: physical.animation.skitch_shimmy_136,
             skitch_hands: physical.animation.skitch_hands_140,
             time_to_land: physical.air.scalar_184,

@@ -495,8 +495,7 @@ pub(super) fn execute(
                             if let Instance::Skitching(state) = instance {
                                 let absorb = state.update(&host.skitching, p.skitch_absorb);
                                 host.animation.set_attribute(SettableAttribute { name: encode(b"absorbspeed"), value: absorb, normalized: false, sequence_id: -1 });
-                                // NOT RETAIL YET: PushSpeed = ground+308 (state+996) is not ported.
-                                host.animation.set_attribute(SettableAttribute { name: encode(b"PushSpeed"), value: 0.0, normalized: false, sequence_id: -1 });
+                                host.animation.set_attribute(SettableAttribute { name: encode(b"PushSpeed"), value: p.skitch_push, normalized: false, sequence_id: -1 });
                             }
                         }
                     }

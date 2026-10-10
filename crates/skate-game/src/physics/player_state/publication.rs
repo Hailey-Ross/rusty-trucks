@@ -193,6 +193,7 @@ pub(super) fn publish(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
         physical.ground.skitch_grab_height_280 = out.grab_height_280;
         physical.ground.skitch_absorb_284 = out.absorb_284;
         physical.ground.skitch_along_288 = out.along_288;
+        physical.ground.skitch_push_308 = out.push_308;
         physical.animation.skitch_shimmy_136 = out.shimmy_136;
         physical.animation.skitch_grip_132 = out.grip_132;
         physical.animation.skitch_hands_140 = out.hands_140;

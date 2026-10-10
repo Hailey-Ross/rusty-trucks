@@ -1,16 +1,18 @@
 //! The skitch motion graph nodes (doc 26h "Skitching step 4h"). Retail (TU3, evidence only; re-implemented;
 //! `.local/research/npc/b60-skitch-graph-nodes.md`, b58 part 2; main read the `anim_skitching/default` record):
 //! - the behaviours bind `anim_skitching/default` (`8289D550`): +0 a PointNegGraphData8 (the absorb curve over the
-//!   closing rate, ground+284), then six floats at +80..+100 (`LongSkitchIntoReachTime` is +96, so the floats are in
-//!   field-hash order [inferred]: +80 0.05, +84 0.121, +88 0.1, +92 0.25, +96 0.83, +100 0.85);
+//!   closing rate, ground+284), then six floats at +80..+100 in the schema's fixed layout (read with
+//!   `.claude/skills/aems-port/tools/vault_layout.py 07D39B41AACEE50F`): +80 0.1, +84 0.25, +88 0.85, +92 0.05,
+//!   +96 0.83 (`LongSkitchIntoReachTime`), +100 0.121;
 //! - SkitchingBehaviour (`82BBC390`) each update: "Crouch" = ground+280 + rec+100, "PushSpeed" = ground+308,
 //!   "absorbspeed" toward graph(ground+284) by at most 0.04;
 //! - EnterSkitchingBehaviour (`82BBC538`): "Crouch" the same way (its "reachspeed" is not ported yet);
 //! - IsSkitchingWithAbsorb (`82BBBD00`): state 104 and graph(ground+284) > 0;
 //! - IsSkitchShimmying (`82BBC1A0`, attribute `direction` left 1 / right 2): anim+136 (negated by the flip) > 0.25 is 1,
 //!   < -0.25 is 2.
-//! NOT RETAIL YET: "PushSpeed" reads 0 (state+996 is not ported), the shimmy behaviour's channels (keys unresolved) and
-//! "reachspeed" are not written, SkitchingPosition's mirror term and the shimmy flip are taken as false.
+//! SkitchingPosition's mirror term is (natural stance regular) == (riding switch) and the shimmy flip the mirrored
+//! animation bit (b61). NOT RETAIL YET: the shimmy behaviour's channels (keys unresolved) and "reachspeed" are not
+//! written.
 use skate_core::point_graph::PointGraph;
 use skate_data::collections::Collections;
 
@@ -18,7 +20,7 @@ use skate_data::collections::Collections;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Settings {
     pub absorb_curve: PointGraph<8>,
-    /// The record floats +80..+100 in field-hash order.
+    /// The record floats +80..+100 in layout order.
     pub floats: [f32; 6],
 }
 
@@ -26,12 +28,13 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             absorb_curve: PointGraph { x: [0.0, 2.8339, 5.57, 7.4593, 8.8274, 9.9349, 11.9218, 14.9837], y: [0.0, 0.0, 0.1286, 0.3429, 0.5571, 0.7643, 0.9214, 1.0] },
-            floats: [0.05, 0.121, 0.1, 0.25, 0.83, 0.85],
+            floats: [0.1, 0.25, 0.85, 0.05, 0.83, 0.121],
         }
     }
 }
 
-const FLOAT_FIELDS: [&str; 6] = ["Hash_1C7DF104E24101FF", "Hash_6E6EFE7CF9BEF4B8", "Hash_8738E31E171E2A87", "Hash_B2D3A764E1D86D13", "LongSkitchIntoReachTime", "Hash_F146CFA3B03529A5"];
+/// The fields at +80..+100 in layout order.
+const FLOAT_FIELDS: [&str; 6] = ["Hash_8738E31E171E2A87", "Hash_B2D3A764E1D86D13", "Hash_F146CFA3B03529A5", "Hash_1C7DF104E24101FF", "LongSkitchIntoReachTime", "Hash_6E6EFE7CF9BEF4B8"];
 
 impl Settings {
     /// The record's values where present, else the stock defaults.
@@ -109,7 +112,7 @@ mod tests {
         }
         assert!((st.absorb - 1.0).abs() < 1e-5);
         assert_eq!(s.absorb_target(2.0), 0.0, "no absorb below the curve's first rise");
-        assert!((s.crouch(0.1) - 0.95).abs() < 1e-6);
+        assert!((s.crouch(0.1) - 0.221).abs() < 1e-6, "rec+100 is 0.121");
     }
 
     #[test]

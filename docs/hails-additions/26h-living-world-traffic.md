@@ -816,17 +816,19 @@ and loaded the stock graph).** The stock ground motion graph (`ground.xml`, `Ski
 `skitchbrake.xml`) uses EnterSkitchingBehaviour / SkitchingBehaviour / SkitchShimmyingBehaviour and the conditions
 IsSkitchingWithAbsorb / SkitchingPosition / IsSkitchShimmying. Before this step our graph host returned an error on the
 behaviours (graph execution stopped once the skater skitched) and did not parse the conditions. The behaviours bind
-`anim_skitching/default`: an absorb curve over the closing rate and six floats (hash order, `LongSkitchIntoReachTime`
-at +96 as the known layout says). SkitchingBehaviour sets "Crouch" (grab height + 0.85), "PushSpeed" and "absorbspeed"
-(toward the curve by 0.04 per update); EnterSkitchingBehaviour sets "Crouch".
+`anim_skitching/default`: an absorb curve over the closing rate and six floats in the schema's fixed layout (+80 0.1,
++84 0.25, +88 0.85, +92 0.05, +96 0.83 `LongSkitchIntoReachTime`, +100 0.121; read with the vault layout tool, b61
+corrects b60's hash-order guess). SkitchingBehaviour sets "Crouch" (grab height + 0.121), "PushSpeed" (state+996:
+the tow speed plus up to 200 m/s^2 x dt, at most 3.5 per update, toward 8 m/s; `82D47BD8`, b61) and "absorbspeed"
+(toward the curve by 0.04 per update); EnterSkitchingBehaviour sets "Crouch". SkitchingPosition's mirror term is
+(natural stance regular) == (riding switch), the shimmy flip the mirrored animation bit (b61).
 
 **Change.** skate-game `graph_host::motion_skitching` (settings from the record with the stock values as defaults, the
 absorb instance, the condition results); the three conditions parse and evaluate; the behaviours run (instance
 `Instance::Skitching`); `GameplayConditions` carries the 104 outputs (280 / 284 / 136 / 140).
 
-**Engine choices.** NOT RETAIL YET: "PushSpeed" is 0 (state+996 not ported), EnterSkitching's "reachspeed" and the
-shimmy behaviour's channels (keys unresolved) are not written, the SkitchingPosition mirror term and the shimmy flip
-are false.
+**Engine choices.** NOT RETAIL YET: EnterSkitching's "reachspeed" and the shimmy behaviour's channels (keys
+unresolved) are not written; the push speed's hold bit (1345 bit 0x10) is not ported (always updated).
 
 **Verification.** skate-game `absorb_follows_the_curve_at_most_four_hundredths_per_update`, `shimmy_and_position_results`;
 the stock graph loads with the new conditions (`stock_motion_host_loads_graph_settings_and_authored_riding_tree`, run
