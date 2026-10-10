@@ -770,22 +770,22 @@ pub(crate) fn collision_world(
     portable_world(&map.geometry.collision, &map.materials, material)
 }
 
-/// Portable triangle world: 1 mm vertex welding, reconstructed adjacency and
-/// contiguous-range broadphase metadata. Shared by the playable map and by
-/// static prop instances, which supply already-placed world-space triangles.
-fn portable_world(
-    collision: &[skate_data::skate_map::Collision],
-    materials: &[skate_data::skate_map::Material],
-    material: RetailContactMaterial,
-) -> Result<BoardWorld, String> {
+/// Welded vertices and reconstructed edge features (flags, cosines) of a
+/// triangle soup: the 1 mm welding and edge pairing shared by the portable map
+/// world and prop instances created mid-game. `reconstruct` = false keeps the
+/// default features (fully native maps decode theirs per triangle).
+fn welded_edge_features(
+    triangles: &[[[f32; 3]; 3]],
+    reconstruct: bool,
+) -> Result<(Vec<Vec3>, Vec<[usize; 3]>, Vec<u32>, Vec<[f32; 3]>), String> {
     // Match the reference RW mesh compiler's 1 mm vertex welding and reversed
     // edge pairing. Triangle diagonals are adjacency, never authored ledges.
     let mut welded = HashMap::<[i64; 3], usize>::new();
     let mut positions = Vec::<Vec3>::new();
     let mut vertices = Vec::new();
     let mut normals = Vec::new();
-    for tri in collision {
-        let ids = tri.points.map(|p| {
+    for points in triangles {
+        let ids = points.map(|p| {
             let inverse = 1.0 / f64::from(0.001_f32);
             let key = p.map(|v| (f64::from(v) * inverse).round() as i64);
             *welded.entry(key).or_insert_with(|| {
@@ -794,7 +794,7 @@ fn portable_world(
                 id
             })
         });
-        let [a, b, c] = tri.points.map(Vec3::from_array);
+        let [a, b, c] = points.map(Vec3::from_array);
         let normal = (b - a)
             .cross(c - a)
             .try_normalize()
@@ -807,10 +807,7 @@ fn portable_world(
         vec![TriangleFeature::ONE_SIDED | TriangleFeature::USE_EDGE_COSINES | 0xe0; vertices.len()];
     // Fully native maps need no reconstructed adjacency. Mixed maps still
     // include every face when finding neighbors for their authored geometry.
-    if collision
-        .iter()
-        .any(|t| t.native_edges.is_none())
-    {
+    if reconstruct {
         let mut open = HashMap::<(usize, usize), (usize, usize)>::new();
         for (i, ids) in vertices.iter().enumerate() {
             for edge in 0..3 {
@@ -854,6 +851,20 @@ fn portable_world(
             }
         }
     }
+    Ok((positions, vertices, flags, cosines))
+}
+
+/// Portable triangle world: 1 mm vertex welding, reconstructed adjacency and
+/// contiguous-range broadphase metadata. Shared by the playable map and by
+/// static prop instances, which supply already-placed world-space triangles.
+fn portable_world(
+    collision: &[skate_data::skate_map::Collision],
+    materials: &[skate_data::skate_map::Material],
+    material: RetailContactMaterial,
+) -> Result<BoardWorld, String> {
+    let points: Vec<_> = collision.iter().map(|t| t.points).collect();
+    let (positions, vertices, mut flags, mut cosines) =
+        welded_edge_features(&points, collision.iter().any(|t| t.native_edges.is_none()))?;
     let mut triangles = Vec::with_capacity(vertices.len());
     let mut packed_surfaces = Vec::with_capacity(vertices.len());
     for (i, source) in collision.iter().enumerate() {
@@ -915,7 +926,8 @@ fn portable_world(
 /// invariance of adjacency flags and edge cosines lets `rebake` skip welding.
 pub(crate) struct PropCollisionInstance {
     pub id: u32,
-    /// Index of the originating MOBJ record.
+    /// Index of the originating MOBJ record; `usize::MAX` for an instance
+    /// added mid-game ([`PropCollisionLayer::add_instance`]).
     pub object: usize,
     pub range: std::ops::Range<usize>,
     local: Vec<[Vector3; 3]>,
@@ -934,6 +946,9 @@ pub(crate) struct PropCollisionLayer {
     world: BoardWorld,
     instances: Vec<PropCollisionInstance>,
     contact_material: RetailContactMaterial,
+    /// Instances added mid-game and retired since; their parked triangle
+    /// ranges are reused by the next instance of the same size.
+    retired: Vec<usize>,
 }
 
 impl PropCollisionLayer {
@@ -983,6 +998,113 @@ impl PropCollisionLayer {
         self.world
             .replace_triangles(entry.range.clone(), &triangles)
             .map_err(str::to_owned)
+    }
+
+    /// A layer with no instances yet (a map without placed props, which can
+    /// still get props created mid-game).
+    pub fn empty(material: RetailContactMaterial) -> Result<Self, String> {
+        let metadata = QueryMetadata {
+            packed_surfaces: vec![],
+            meshes: vec![],
+            static_edges: vec![],
+            island_flags: 0,
+        };
+        Ok(Self {
+            world: BoardWorld::with_query_metadata(vec![], metadata).map_err(str::to_owned)?,
+            instances: Vec::new(),
+            contact_material: material,
+            retired: Vec::new(),
+        })
+    }
+
+    /// Add one instance mid-game (a released hand prop, a mod's prop): `local`
+    /// are template-space triangles with scale folded in, baked at `basis` /
+    /// `translation` like [`Self::rebake`]; `surface` is the packed surface code
+    /// (tag) of every triangle. Edge features come from the instance's own
+    /// triangles (load-time instances also pair edges with touching neighbours).
+    /// A retired slot with the same triangle count is reused, so repeated
+    /// spawns of one template do not grow the world. Returns the instance index.
+    pub fn add_instance(
+        &mut self,
+        id: u32,
+        local: Vec<[Vector3; 3]>,
+        surface: u32,
+        basis: [[f32; 3]; 3],
+        translation: Vector3,
+    ) -> Result<usize, String> {
+        let local: Vec<[Vector3; 3]> = local
+            .into_iter()
+            .filter(|t| {
+                let [a, b, c] = t.map(|p| Vec3::new(p.x, p.y, p.z));
+                (b - a).cross(c - a).length_squared() > 0.
+            })
+            .collect();
+        if local.is_empty() {
+            return Err("Prop instance has no valid triangles".into());
+        }
+        let transform = |p: Vector3| {
+            [
+                p.x * basis[0][0] + p.y * basis[1][0] + p.z * basis[2][0] + translation.x,
+                p.x * basis[0][1] + p.y * basis[1][1] + p.z * basis[2][1] + translation.y,
+                p.x * basis[0][2] + p.y * basis[1][2] + p.z * basis[2][2] + translation.z,
+            ]
+        };
+        let points: Vec<[[f32; 3]; 3]> = local.iter().map(|t| t.map(transform)).collect();
+        let (_, _, flags, cosines) = welded_edge_features(&points, true)?;
+        let mut triangles = Vec::with_capacity(points.len());
+        for (i, p) in points.iter().enumerate() {
+            triangles.push(
+                WorldTriangle::from_vertices(
+                    p.map(|p| Vector3::new(p[0], p[1], p[2])),
+                    self.contact_material,
+                    surface,
+                    flags[i],
+                    cosines[i],
+                    0.,
+                )
+                .ok_or("Prop instance triangle is invalid")?,
+            );
+        }
+        let reuse = self
+            .retired
+            .iter()
+            .position(|&slot| self.instances[slot].range.len() == triangles.len());
+        let index = match reuse {
+            Some(position) => {
+                let slot = self.retired.remove(position);
+                self.world
+                    .replace_triangles(self.instances[slot].range.clone(), &triangles)
+                    .map_err(str::to_owned)?;
+                slot
+            }
+            None => {
+                let range = self
+                    .world
+                    .append_triangles(&triangles, &vec![surface as u16; triangles.len()])
+                    .map_err(str::to_owned)?;
+                self.instances.push(PropCollisionInstance { id, object: usize::MAX, range, local: Vec::new() });
+                self.instances.len() - 1
+            }
+        };
+        let entry = &mut self.instances[index];
+        entry.id = id;
+        entry.local = local;
+        Ok(index)
+    }
+
+    /// Retire an instance added with [`Self::add_instance`] (the released prop is
+    /// removed): its triangles are parked far below the world and the slot is
+    /// kept for the next instance of the same size.
+    pub fn retire_instance(&mut self, instance: usize, park: Vector3) -> Result<(), String> {
+        if instance >= self.instances.len() || self.retired.contains(&instance) {
+            return Err("Unknown or already retired prop instance".into());
+        }
+        if self.instances[instance].object != usize::MAX {
+            return Err("Map prop instances are not retired".into());
+        }
+        self.rebake(instance, [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]], park)?;
+        self.retired.push(instance);
+        Ok(())
     }
 }
 
@@ -1065,6 +1187,7 @@ pub(crate) fn build_prop_layer(
         world: portable_world(&collision, &map.materials, material)?,
         instances,
         contact_material: material,
+        retired: Vec::new(),
     }))
 }
 

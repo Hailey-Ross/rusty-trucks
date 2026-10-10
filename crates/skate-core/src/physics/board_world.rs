@@ -522,6 +522,65 @@ impl BoardWorld {
         Ok(())
     }
 
+    /// Append triangles after the existing ones (a prop body created mid-game).
+    /// Existing triangle indices, order and query meshes are unchanged; the new
+    /// range gets its own query meshes (64-triangle chunks, the portable world's
+    /// grouping) so its bounds never widen an existing chunk. `packed_surfaces`
+    /// holds one authored surface code per triangle (required when the world has
+    /// query metadata). Returns the new range.
+    pub fn append_triangles(
+        &mut self,
+        triangles: &[WorldTriangle],
+        packed_surfaces: &[u16],
+    ) -> Result<std::ops::Range<usize>, &'static str> {
+        let start = self.triangles.len();
+        let mut bounds = Vec::with_capacity(triangles.len());
+        for entry in triangles {
+            bounds.push(Bounds::from_points(entry.triangle.vertices).ok_or("invalid triangle bounds")?);
+        }
+        if self.query_metadata.is_some() && packed_surfaces.len() != triangles.len() {
+            return Err("appended triangles need one packed surface each");
+        }
+        self.triangles.extend_from_slice(triangles);
+        for (i, entry) in triangles.iter().enumerate() {
+            let fatness = if entry.triangle.fatness.is_finite() && entry.triangle.fatness >= 0. {
+                entry.triangle.fatness
+            } else {
+                f32::INFINITY
+            };
+            self.maximum_fatness = self.maximum_fatness.max(fatness);
+            let b = bounds[i];
+            let span = (b.max.x - b.min.x).max(b.max.y - b.min.y).max(b.max.z - b.min.z);
+            self.maximum_triangle_margin = self.maximum_triangle_margin.max(span * (2. * broadphase::THIN_MARGIN));
+            if is_water_tag(entry.tag) {
+                self.water.push(start + i);
+            }
+        }
+        self.triangle_bounds.extend(bounds);
+        let end = self.triangles.len();
+        if let Some(metadata) = &mut self.query_metadata {
+            metadata.packed_surfaces.extend_from_slice(packed_surfaces);
+            for chunk in (start..end).step_by(64) {
+                let chunk_end = (chunk + 64).min(end);
+                metadata.meshes.push(query_metadata::QueryMesh {
+                    triangle_range: chunk..chunk_end,
+                    local_to_world: crate::physics::drive_frames::RetailAffineTransform::IDENTITY,
+                    world_to_local: crate::physics::drive_frames::RetailAffineTransform::IDENTITY,
+                    local_bounds: Bounds::from_points(
+                        self.triangles[chunk..chunk_end].iter().flat_map(|t| t.triangle.vertices),
+                    )
+                    .ok_or("invalid query mesh bounds")?,
+                    matching_group: -1,
+                    rejection_flags: 0,
+                    geometry: 0,
+                    pool: query_metadata::QueryPool::Ground,
+                });
+            }
+            self.query_index = query_index::QueryIndex::new(&metadata.meshes);
+        }
+        Ok(start..end)
+    }
+
     pub fn dropped_contacts(&self) -> u32 {
         self.buffer.dropped
     }

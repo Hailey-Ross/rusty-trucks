@@ -2,6 +2,7 @@
 mod audio;
 mod canvas;
 mod graphics_dynamic;
+mod world_props;
 mod vehicle_camera;
 pub(crate) mod bridge;
 pub(crate) mod replication;
@@ -167,6 +168,7 @@ impl Plugin for ModdingPlugin {
         audio::install(app);
         world_audio::install(app);
         graphics_dynamic::install(app);
+        world_props::install(app);
         capture::install(app);
         triggers::install(app);
         living_world_events::install(app);
@@ -762,6 +764,7 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     crate::game_audio::clear_mods_runtime(world);
     world_tuning::clear_all(world);
     graphics_dynamic::clear(world);
+    world_props::clear(world);
     canvas::clear_owner(world, &mut mods.canvases, None);
     detach_player(world, mods, true);
     let keys: Vec<_> = mods.graphics.keys().cloned().collect();
@@ -834,6 +837,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         crate::game_audio::clear_mod(world, id);
         world_tuning::clear_owner(world, id);
         graphics_dynamic::clear_owner(world, id);
+        world_props::clear_owner(world, id);
         volumes::clear_owner(world, mods, id);
         triggers::clear_owner(world, id);
         capture::clear_owner(world, id);
@@ -912,6 +916,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             crate::game_audio::clear_mod(world, &id);
             world_tuning::clear_owner(world, &id);
             graphics_dynamic::clear_owner(world, &id);
+            world_props::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
             triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
@@ -943,6 +948,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             crate::game_audio::clear_mod(world, &id);
             world_tuning::clear_owner(world, &id);
             graphics_dynamic::clear_owner(world, &id);
+            world_props::clear_owner(world, &id);
             volumes::clear_owner(world, mods, &id);
             triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
@@ -1051,6 +1057,10 @@ fn apply_one(
                 physics.upright_prop(id);
             }
         }
+        Command::WorldSpawnProp { key, from, position, yaw, velocity, spin } => {
+            world_props::spawn(world, id, key, from, position, yaw, velocity, spin)?
+        }
+        Command::WorldRemoveProp { key } => world_props::remove(world, id, &key),
         Command::WorldResetMovedProps {} => {
             if let Some(mut physics) = world.get_resource_mut::<crate::physics::GamePhysics>() {
                 physics.reset_moved_props();

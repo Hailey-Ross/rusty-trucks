@@ -402,6 +402,15 @@ function sdk.world.reset_prop(id) submit{kind="world_reset_prop",id=id} end
 function sdk.world.upright_prop(id) submit{kind="world_upright_prop",id=id} end
 -- Convenience (not a retail action): reset_prop for every moved or placed prop.
 function sdk.world.reset_moved_props() submit{kind="world_reset_moved_props"} end
+-- Create a dynamic prop mid-game: a copy of map prop `from` (stable map id: model, collision,
+-- physics) at opts.position {x, y, z}, turned opts.yaw radians, thrown at opts.velocity {x, y, z}
+-- m/s with opts.spin {x, y, z} rad/s (arrays). The same key again replaces it; the mod's props go on disable.
+-- doc 27, Props created mid-game.
+function sdk.world.spawn_prop(key, from, opts)
+  opts = opts or {}
+  submit{kind="world_spawn_prop",key=key,from=from,position=opts.position,yaw=opts.yaw,velocity=opts.velocity,spin=opts.spin}
+end
+function sdk.world.remove_prop(key) submit{kind="world_remove_prop",key=key} end
 
 -- World audio extension 1 (backward-compatible with API 2): publish traffic vehicles, peds and
 -- skaters to the game's retail world audio (the same path engine systems use). Keys are scoped
