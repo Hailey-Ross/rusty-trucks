@@ -29,8 +29,11 @@ impl Default for PassageParams {
     }
 }
 
+/// Most arc-table chords a passage keeps (plain `Copy` data; retail uses 10).
+pub const MAX_CHORDS: usize = 32;
+
 /// One lane change in progress.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Passage {
     pub from_lane: u8,
     pub to_lane: u8,
@@ -41,8 +44,9 @@ pub struct Passage {
     pub p1: Vec3,
     pub t0: Vec3,
     pub t1: Vec3,
-    /// Running chord lengths at parameters k / chords (k = 0..=chords); the last is the length.
-    pub table: Vec<f32>,
+    /// Running chord lengths at parameters k / chords (k = 0..=chords); entry `chords` is the length.
+    pub table: [f32; MAX_CHORDS + 1],
+    pub chords: u8,
 }
 
 fn hermite(p0: Vec3, p1: Vec3, t0: Vec3, t1: Vec3, t: f32) -> Vec3 {
@@ -69,21 +73,20 @@ impl Passage {
         if p.chords < 2 {
             return None;
         }
+        let n = p.chords.min(MAX_CHORDS as u32);
         let scale = (d1 - d0) * p.tangent_scale;
         let (p0, p1) = (from.0, to.0);
         let (t0, t1) = (from.1.map(|v| v * scale), to.1.map(|v| v * scale));
-        let n = p.chords;
-        let mut table = Vec::with_capacity(n as usize + 1);
-        table.push(0.0);
+        let mut table = [0.0; MAX_CHORDS + 1];
         let mut prev = p0;
         let mut total = 0.0;
         for i in 1..=n {
             let q = hermite(p0, p1, t0, t1, i as f32 / n as f32);
             total += length([q[0] - prev[0], q[1] - prev[1], q[2] - prev[2]]);
-            table.push(total);
+            table[i as usize] = total;
             prev = q;
         }
-        Some(Self { from_lane, to_lane, d0, d1, progress: 0.0, p0, p1, t0, t1, table })
+        Some(Self { from_lane, to_lane, d0, d1, progress: 0.0, p0, p1, t0, t1, table, chords: n as u8 })
     }
 
     /// d1 = d0 + ext x passage factor + speed (one second of travel).
@@ -92,7 +95,7 @@ impl Passage {
     }
 
     pub fn length(&self) -> f32 {
-        *self.table.last().unwrap_or(&0.0)
+        self.table[self.chords as usize]
     }
 
     /// `sub_82C3C3C0` (one 60 Hz step of `step` seconds); true when done (`sub_82C3A5A8`).
@@ -110,7 +113,7 @@ impl Passage {
 
     /// The curve parameter at the current progress (arc table, linear within a chord).
     pub fn parameter(&self) -> f32 {
-        let n = self.table.len() - 1;
+        let n = self.chords as usize;
         let s = self.progress.clamp(0.0, self.length());
         for k in 1..=n {
             if s <= self.table[k] {

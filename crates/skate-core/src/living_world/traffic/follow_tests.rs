@@ -364,3 +364,38 @@ fn a_held_car_drives_up_to_twelve_tenths_of_the_cap_and_the_player_skips_the_lig
     assert!(events.iter().any(|e| matches!(e, FollowEvent::EnteredJunction { .. })), "the player-held car crossed on red");
     assert!(player[0].snapshot().flagged);
 }
+
+/// Manoeuvres (b69 / b74, `82C39F78` read by main): with the go roll certain and a short lane timer, a car on a
+/// two-lane road changes lane along its passage and ends on the other lane, moving sideways on the way.
+#[test]
+fn a_car_changes_lane_along_its_passage() {
+    let mut input = RoadInput { segments: vec![segment(0x300, (0x1, 0), (0x2, 0), [0.0; 3], [0.0, 0.0, 400.0])], junctions: vec![] };
+    input.segments[0].lanes = 2;
+    let net = RoadNetwork::build(&input).unwrap();
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x300);
+    let mut c = car(&net, 1, s, 30.0);
+    c.speed = 12.0;
+    c.params.manoeuvre = crate::living_world::traffic::manoeuvre::DeciderParams { lane_timer: 0.5, lane_change_chance: 1.0, least_loaded_chance: 0.0, ..Default::default() };
+    let mut cars = vec![c];
+    let start_x = cars[0].pose(&net).position[0];
+    let mut mid_x = start_x;
+    let mut rng = Rng::new(7);
+    let mut events = Vec::new();
+    for _ in 0..60 * 8 {
+        clock.tick(&mut Vec::new());
+        events.extend(step(&net, &clock, &mut cars, DT, ConnectorChoice::LeastLoaded, &mut rng));
+        if cars[0].passage.is_some() {
+            mid_x = cars[0].pose(&net).position[0];
+        }
+        if events.iter().any(|e| matches!(e, FollowEvent::EnteredLane { .. })) {
+            break;
+        }
+    }
+    assert!(events.iter().any(|e| matches!(e, FollowEvent::LaneChange { from: 0, to: 1, .. })), "{events:?}");
+    assert!(matches!(cars[0].cursor.place, Place::Lane { lane: 1, .. }), "{:?}", cars[0].cursor.place);
+    assert!(cars[0].passage.is_none());
+    let end_x = cars[0].pose(&net).position[0];
+    assert!((end_x - start_x).abs() > 1.5, "{start_x} -> {end_x}");
+    assert!((mid_x - start_x).abs() > 0.1 && (mid_x - start_x).abs() < (end_x - start_x).abs(), "{start_x} {mid_x} {end_x}");
+}

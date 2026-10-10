@@ -271,6 +271,8 @@ pub(crate) enum TrafficEvent {
     Junction { id: LivingWorldId, junction: u64, connector: u32, entry: Entry },
     EnteredJunction { id: LivingWorldId, junction: u64, connector: u32 },
     EnteredLane { id: LivingWorldId, segment: u64, lane: u8 },
+    /// A lane change started on `segment` from lane `from` to `to` (`82C3A9E0`; b69 / b74).
+    LaneChange { id: LivingWorldId, segment: u64, from: u8, to: u8 },
     /// The horn state changed (`+3420`: 0 silent, 1..=5 the decider's kinds; horn.rs).
     Horn { id: LivingWorldId, kind: u8 },
     /// Horn kind 2 at a ped (`sub_82C40660` -> vt+100 `sub_82E3C3D0`): the ped's honker is this car. Sent every
@@ -307,8 +309,9 @@ pub(crate) fn car_rotation(forward: [f32; 3]) -> Quat {
     Quat::from_mat3(&Mat3::from_cols(x, y, f))
 }
 
-fn car_transform(net: &RoadNetwork, cursor: &LaneCursor) -> Transform {
-    let frame = cursor.frame(net);
+/// The car's pose: on its lane-change curve while one runs (`Car::pose`), else its cursor frame.
+fn car_transform(net: &RoadNetwork, car: &Car) -> Transform {
+    let frame = car.pose(net);
     Transform::from_translation(Vec3::from_array(frame.position)).with_rotation(car_rotation(frame.forward))
 }
 
@@ -468,7 +471,7 @@ pub(crate) fn apply_vehicle_records(
             continue;
         };
         choose_first(net, &traffic.cars, &mut car, overrides.connector_choice, &mut traffic.rng);
-        let t = car_transform(net, &car.cursor);
+        let t = car_transform(net, &car);
         events.write(TrafficEvent::Spawned { id: s.id, entity: meta.entity.clone(), model: meta.model.clone(), chassis: meta.chassis_id.clone() });
         let e = commands
             .spawn((
@@ -520,7 +523,7 @@ pub(crate) fn drive_traffic(
     let mut travelled: BTreeMap<u32, f32> = BTreeMap::new();
     let mut prev_pose: BTreeMap<u32, Transform> = BTreeMap::new();
     for c in &traffic.cars {
-        prev_pose.insert(c.key, car_transform(net, &c.cursor));
+        prev_pose.insert(c.key, car_transform(net, c));
     }
     let mut dead = Vec::new();
     let dt = (1.0 / skate_core::living_world::clock::RETAIL_TICK_HZ) as f32;
@@ -559,6 +562,9 @@ pub(crate) fn drive_traffic(
                 FollowEvent::EnteredLane { key, segment, lane } => {
                     events.write(TrafficEvent::EnteredLane { id: id(key), segment: net.segments[segment].id.0, lane });
                 }
+                FollowEvent::LaneChange { key, segment, from, to } => {
+                    events.write(TrafficEvent::LaneChange { id: id(key), segment: net.segments[segment].id.0, from, to });
+                }
                 FollowEvent::DeadEnd { key } => dead.push(key),
             }
         }
@@ -584,7 +590,7 @@ pub(crate) fn drive_traffic(
         st.world.update_lane(id, net.segments[segment].id, lane, distance, c.speed);
         let Some((e, _)) = traffic.index.get(&c.key) else { continue };
         let Ok((meta, mut motion, mut audio, mut velocity)) = cars_q.get_mut(*e) else { continue };
-        let t = car_transform(net, &c.cursor);
+        let t = car_transform(net, c);
         motion.prev = prev_pose.get(&c.key).copied().unwrap_or(t);
         motion.curr = t;
         motion.wheel_prev = motion.wheel;

@@ -989,3 +989,28 @@ In play: taxis now honk like every other car (the old 0.2 gate was not retail), 
 or 5 by the driver's 0.3 to 0.8 chance instead of almost always kind 4.
 
 **Verification.** skate-core traffic 47, skate-game vehicles / living_world 71 pass. Not play-tested.
+
+## Traffic: cars change lane (2026-10-09)
+
+**Retail [code + data] (b69 / b71 / b72 / b74 / b76 in `.local/research/npc/b69-traffic-manoeuvres.md`; main read
+`IsRequiredToChangeLane` `82C39F78`).** On a lane, the decider rolls a lane change every lane-timer period (spec+48,
+10 s; go chance driver +28: 0.1 default, 0.4 taxi, 0 for fast / normal / reckless drivers) on roads whose `word_56`
+has bit 0x02. The change starts when pass = ext x the passage factor (spec+40) + speed and h = pass / 2 satisfy:
+speed > h, free distance ahead > h, d > ext, d + pass before the road end minus ext, and the gap check on the target
+lane passes. The car is registered on the target lane at once, rides the Hermite passage at its speed and faces its
+tangent, and takes the target lane when the passage ends.
+
+**Change.** skate-core `follow::step` runs `manoeuvre::decide` for cars on a lane (pull-over passed as off for now),
+starts the passage on the retail conditions, advances it instead of the cursor, sets the lane at the end
+(`FollowEvent::LaneChange`, then `EnteredLane`); `Car` keeps `decider` and `passage`, `Car::on_place` puts a changing
+car on its target lane for the lane lists and the lead scan, `Car::pose` draws it on the curve; `FollowParams` gains
+`manoeuvre`, `passage_factor` (2.0 until the loader maps spec+40), `passage`, `spots`. skate-game draws cars from
+`Car::pose` and emits `TrafficEvent::LaneChange`. `Passage` is plain `Copy` data (fixed 32-chord table).
+
+**NOT RETAIL YET / open.** ext = half the car length (inferred); the decider's per-car values still use the defaults
+(the spec / driver loader for spec+40, spec+48, driver +24 / +28 comes with the pull-over wiring); the follower's
+acceleration chain is still the old one (todo `traffic-accel-fields-mislabelled`); the lane load sums our car
+lengths (retail: extent + safety distance).
+
+**Verification.** skate-core `a_car_changes_lane_along_its_passage` (lane 0 to 1, sideways on the way) and traffic
+51; skate-game vehicles / living_world 71 pass. Not play-tested.

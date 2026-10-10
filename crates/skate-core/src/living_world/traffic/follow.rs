@@ -75,6 +75,13 @@ pub struct FollowParams {
     pub stop_margin: f32,
     /// The skater-behind rule (scan range, speeds, braking distances, release grace; b63).
     pub skater: super::skater_scan::SkaterFollowParams,
+    /// The manoeuvre decider's values (spec / driver records; b69 / b74) and the lane-change passage: the spec's
+    /// passage factor (`Hash_328B9F4685A14018`, spec+40, `+3692`), the road network's curve values and the spot /
+    /// gap-check constants.
+    pub manoeuvre: super::manoeuvre::DeciderParams,
+    pub passage_factor: f32,
+    pub passage: super::passage::PassageParams,
+    pub spots: super::spots::SpotParams,
     /// Multiplier on the lane cap (`f2` of the integrator's cap; 1.0 = retail; a mod or the
     /// skitch milestone raises it).
     pub cap_scale: f32,
@@ -96,6 +103,10 @@ impl Default for FollowParams {
             min_gap: 2.0,
             stop_margin: 0.5,
             skater: Default::default(),
+            manoeuvre: Default::default(),
+            passage_factor: 2.0,
+            passage: Default::default(),
+            spots: Default::default(),
             cap_scale: 1.0,
             held_cap_add: 0.2,
             horn: super::horn::HornParams::default(),
@@ -144,11 +155,32 @@ pub struct Car {
     pub release_grace: f32,
     /// The skater scan of this tick (`sub_82C414A8`; set by the host before [`step`], like `obstacle`).
     pub skater: super::skater_scan::SkaterScan,
+    /// The manoeuvre decider (`+3632` timer, `+4396` pending) and the running lane change (`+4353`, passage block).
+    pub decider: super::manoeuvre::DeciderState,
+    pub passage: Option<super::passage::Passage>,
 }
 
 impl Car {
     pub fn new(key: VehicleKey, cursor: LaneCursor, length: f32, params: FollowParams) -> Self {
-        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE }
+        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE, decider: Default::default(), passage: None }
+    }
+
+    /// On `place` for the lane lists: its own place, or the target lane of a running lane change (retail registers
+    /// the car on the target lane when the passage starts, `82E14FC0`).
+    pub fn on_place(&self, place: Place) -> bool {
+        self.cursor.place == place
+            || self.passage.is_some_and(|p| matches!((self.cursor.place, place), (Place::Lane { segment: a, .. }, Place::Lane { segment: b, lane }) if a == b && lane == p.to_lane))
+    }
+
+    /// Where the car is drawn: on the lane-change curve while it runs (`sub_82C3F0C8`), else the cursor's frame.
+    pub fn pose(&self, net: &RoadNetwork) -> super::graph::Frame {
+        match self.passage {
+            Some(p) => {
+                let (position, forward) = p.sample();
+                super::graph::Frame { position, forward }
+            }
+            None => self.cursor.frame(net),
+        }
     }
 
     /// Look-ahead distance (m): comfortable stopping distance (V3 stand-in for `+3516`).
@@ -182,6 +214,8 @@ pub enum FollowEvent {
     EnteredLane { key: VehicleKey, segment: usize, lane: u8 },
     /// The car stands at the end of a lane with nowhere to go.
     DeadEnd { key: VehicleKey },
+    /// A lane change started (`82C3A9E0`): from lane `from` to `to` of `segment`.
+    LaneChange { key: VehicleKey, segment: usize, from: u8, to: u8 },
 }
 
 /// `sub_82C3FF38`: one integrator step. Returns the new (speed, accel).
@@ -252,6 +286,9 @@ fn places(cars: &[Car]) -> BTreeMap<Place, Vec<(f32, usize)>> {
     let mut m: BTreeMap<Place, Vec<(f32, usize)>> = BTreeMap::new();
     for (i, c) in cars.iter().enumerate() {
         m.entry(c.cursor.place).or_default().push((c.cursor.distance, i));
+        if let (Some(p), Place::Lane { segment, .. }) = (c.passage, c.cursor.place) {
+            m.entry(Place::Lane { segment, lane: p.to_lane }).or_default().push((c.cursor.distance, i));
+        }
     }
     for v in m.values_mut() {
         v.sort_by(|a, b| a.0.total_cmp(&b.0).then(cars[a.1].key.cmp(&cars[b.1].key)));
@@ -282,7 +319,7 @@ pub fn lead(net: &RoadNetwork, cars: &[Car], i: usize, range: f32) -> Option<(us
     let scan = |place: Place, offset: f32, same: bool| -> Option<(usize, f32, f32)> {
         let mut best: Option<(usize, f32, f32)> = None;
         for (j, o) in cars.iter().enumerate() {
-            if j == i || o.cursor.place != place {
+            if j == i || !o.on_place(place) {
                 continue;
             }
             if same && !(o.cursor.distance > me.cursor.distance || (o.cursor.distance == me.cursor.distance && o.key > me.key)) {
@@ -356,6 +393,30 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let snaps: BTreeMap<VehicleKey, VehicleSnapshot> = cars.iter().map(|c| (c.key, c.snapshot())).collect();
         let me = cars[i];
         let p = me.params;
+        let mut decider = me.decider;
+        // The manoeuvre decider (`sub_82C41CD0`), on a lane with no lane change running. Pull-over is not wired
+        // yet (its approach braking is b77): the road's pull-over bit is passed as off.
+        if let (Place::Lane { segment, lane }, None) = (me.cursor.place, me.passage) {
+            let seg = &net.segments[segment];
+            let load = |l: u8| cars.iter().filter(|c| c.on_place(Place::Lane { segment, lane: l })).map(|c| c.length).sum::<f32>();
+            let gap = |l: u8| lane_change_gap(net, cars, i, segment, l);
+            let no_spot = || None;
+            let input = super::manoeuvre::DeciderInput {
+                dt,
+                lane,
+                lane_count: seg.lanes,
+                lane_changes_allowed: seg.manoeuvres & 0x02 != 0,
+                pull_over_allowed: false,
+                held: me.held,
+                at_junction: false,
+                lane_load: &load,
+                gap_free: &gap,
+                find_spot: &no_spot,
+                spot_min: 0.0,
+            };
+            let mut unit = || rng.next_u32() as f32 * 2.328_306_4e-10_f32;
+            super::manoeuvre::decide(&mut decider, &p.manoeuvre, &input, &mut unit);
+        }
         let cap_now = cap(net, me.cursor.place) * (p.cap_scale + if me.held { p.held_cap_add } else { 0.0 });
         // Free road: ramp up to accel_max, never past the cap.
         let ramp = (me.accel.max(0.0) + p.jerk * dt).min(p.accel_max);
@@ -440,6 +501,27 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         if me.obstacle.is_some_and(|o| o.distance < best) {
             kind = super::horn::limiter::OBSTACLE;
         }
+        // `IsRequiredToChangeLane` (`82C39F78`, main read): pass = ext x passage factor + speed, h = pass / 2; the car
+        // is faster than h, the free distance ahead (`+3752`) exceeds h, d > ext, d + pass ends before the road end
+        // minus ext and the target lane passes the gap check. Then the passage starts (`82C3A9E0` / `82C3F540`).
+        let mut passage = me.passage;
+        if let (super::manoeuvre::Pending::LaneChange { lane: target }, Place::Lane { segment, lane }) = (decider.pending, me.cursor.place) {
+            let ext = me.length * 0.5;
+            let pass = ext * p.passage_factor + me.speed;
+            let h = 0.5 * pass;
+            let d = me.cursor.distance;
+            let d1 = d + pass;
+            let seg_len = net.segments[segment].length;
+            if me.speed > h && best > h && d > ext && d1 < seg_len - ext && lane_change_gap(net, cars, i, segment, target) {
+                let from = net.lane_frame(segment, lane as f32, d);
+                let to = net.lane_frame(segment, target as f32, d1);
+                passage = super::passage::Passage::begin(lane, target, d, d1, (from.position, from.forward), (to.position, to.forward), &p.passage);
+                if passage.is_some() {
+                    decider.pending = super::manoeuvre::Pending::None;
+                    events.push(FollowEvent::LaneChange { key: me.key, segment, from: lane, to: target });
+                }
+            }
+        }
         // The horn timers and decider (`sub_82C41120`, `sub_82C412D8`, `sub_82C40660`).
         let mut timers = me.horn_timers;
         timers.update(&p.horn, kind, lead_close, me.obstacle.is_some(), me.speed, dt);
@@ -468,6 +550,7 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let car = &mut cars[i];
         car.speed = speed;
         car.accel = accel;
+        car.decider = decider;
         if speed <= 0.0 {
             car.hit_brake = false;
         }
@@ -479,6 +562,22 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         car.honk_target = honk_target;
         let loads = &occ;
         let mut choose = |n: &RoadNetwork, s: usize, l: u8| choose_connector(n, s, l, choice, &|seg, lane| loads.lane_load(seg, lane), rng);
+        // A running lane change moves the car along its passage (`82C3C3C0`, 60 Hz steps) instead of the cursor;
+        // the passage ends before the road end, so no place change happens meanwhile.
+        if let Some(mut pass) = passage {
+            let done = pass.advance(speed, false, dt);
+            car.cursor.distance = pass.distance();
+            if done {
+                car.cursor.set_lane(net, pass.to_lane, &mut choose);
+                car.passage = None;
+                if let Place::Lane { segment, lane } = car.cursor.place {
+                    events.push(FollowEvent::EnteredLane { key: car.key, segment, lane });
+                }
+            } else {
+                car.passage = Some(pass);
+            }
+            continue;
+        }
         let adv = car.cursor.advance(net, ds, &mut choose);
         for place in adv.entered {
             match place {
@@ -502,6 +601,21 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         car.held_last = car.held;
     }
     events
+}
+
+/// `sub_82E14928` for car `i` onto `lane` of `segment`: ext = half the car's length (inferred, b71), the cars on
+/// that lane (incl. those changing into it) by distance.
+fn lane_change_gap(net: &RoadNetwork, cars: &[Car], i: usize, segment: usize, lane: u8) -> bool {
+    let me = &cars[i];
+    let seg = &net.segments[segment];
+    let mut list: Vec<super::spots::LaneCar> = cars
+        .iter()
+        .enumerate()
+        .filter(|(j, c)| *j != i && c.on_place(Place::Lane { segment, lane }))
+        .map(|(_, c)| super::spots::LaneCar { distance: c.cursor.distance, length: c.length, speed: c.speed })
+        .collect();
+    list.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+    super::spots::gap_free(seg.length, seg.lanes >= 2 && lane < seg.lanes, me.cursor.distance, me.length * 0.5, me.speed, &list, &me.params.spots)
 }
 
 #[cfg(test)]
