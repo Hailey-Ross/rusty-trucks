@@ -32,7 +32,13 @@ pub(crate) fn load_move_object_tuning(
     let f = |name: &str| data.float(CLASS, "default", name);
     let curve = |name: &str| curves::load::<8>(data, CLASS, name).map(|c| c.0);
     let gains = |name: &str| data.words::<4>(CLASS, "default", name).map(ControllerGains::from_words);
+    // 82D46610 hand IK window: the larger x end (bounds[2]) of the two enter curves.
+    let (hand_ik_curve, ik_bounds) = curves::load::<8>(data, CLASS, "Hash_702F25BA3A5AAA56")?;
+    let (_, weight_bounds) = curves::load::<8>(data, CLASS, "Hash_1348E9A1F213B42D")?;
     Ok(MoveObjectTuning {
+        hand_ik_enter: f("Hash_5E35DB02BE697A58")?,
+        hand_ik_window: ik_bounds[2].max(weight_bounds[2]),
+        hand_ik_curve,
         push_speed: f("Hash_2258076B612569A9")?,
         pull_speed: f("Hash_F1C038722EC7D0C6")?,
         side_speed: f("Hash_096A4FA6489E5541")?,

@@ -427,6 +427,10 @@ pub(crate) fn carry_settings(p: &CarryPatch) -> CarrySettings {
             hold_box_extents: p.hold_box_extents,
             record_272_speed_scale: p.record_272_speed_scale,
             grab_end_exclusion: p.grab_end_exclusion,
+            hand_ik_enter: p.hand_ik_enter,
+            hand_ik_curve: p.hand_ik_curve,
+            hand_ik_rate: p.hand_ik_rate,
+            hand_ik_reach: p.hand_ik_reach,
         },
         move_rules: {
             let r = crate::physics::prop_dynamics::MoveCommandRules::default();
@@ -557,6 +561,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "follow_step": m.follow_step, "hold_angle_limit": m.hold_angle_limit,
                 "hold_max_angle_to_horizontal": m.hold_max_angle_to_horizontal, "hold_box_extents": m.hold_box_extents,
                 "record_272_speed_scale": m.record_272_speed_scale, "grab_end_exclusion": m.grab_end_exclusion,
+                "hand_ik_enter": m.hand_ik_enter, "hand_ik_curve": curve(m.hand_ik_curve), "hand_ik_rate": m.hand_ik_rate, "hand_ik_reach": m.hand_ik_reach,
                 "commanded_material": r.commanded_material, "upright_cos": r.upright_cos, "apply_at_com": r.apply_at_com,
                 "yaw_replaces_torque": r.yaw_replaces_torque, "ignore_vertical": r.ignore_vertical,
                 "wake_on_command": r.wake_on_command, "by_template": by})

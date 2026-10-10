@@ -63,7 +63,8 @@
 //!   `mass_speed`, `inertia_yaw_gain` (`[[8 x], [8 y]]`), `let_go_distance` (m, 0 = off = retail), `drop_board`
 //!   (grabbing a prop drops a carried board, retail true), `follow_step` (0.1 m), `hold_angle_limit` /
 //!   `hold_max_angle_to_horizontal` (80 / 50 deg), `hold_box_extents` ([0.9, 0.8, 1.01]),
-//!   `record_272_speed_scale` (2.0), `grab_end_exclusion` (0.25 m) and per template `record_272`. `grip_reach` sets the retail follow
+//!   `record_272_speed_scale` (2.0), `grab_end_exclusion` (0.25 m), the hand IK `hand_ik_enter` (0.7216, 0 = never), `hand_ik_curve` (`[[8 x], [8 y]]`), `hand_ik_rate`
+//!   (0.2 per tick), `hand_ik_reach` (0.65 m) and per template `record_272`. `grip_reach` sets the retail follow
 //!   reach (0.65 m). Contact material blocks: `commanded_material` ([0.03, 0.02] static / dynamic
 //!   friction), `upright_cos` (0.65) and per template `material_held`, `material_free`,
 //!   `material_free_upright`, `upright_pair`, `restitution`, `linear_drag`, `angular_drag` (per
@@ -557,6 +558,14 @@ pub struct CarryPatch {
     pub record_272_speed_scale: Option<f32>,
     /// Grip end exclusion on a prop's authored grab record in m (retail GrabSplineEndExclusion 0.25, 82D444A0).
     pub grab_end_exclusion: Option<f32>,
+    /// Hand IK enter value (retail 5E35DB02BE697A58 = 0.7216; 0 = the hands never go to IK, 82D46610).
+    pub hand_ik_enter: Option<f32>,
+    /// Hand IK curve over the state time (retail 702F25BA3A5AAA56): IK turns on once 1 - y passes 0.1.
+    pub hand_ik_curve: Option<[[f32; 8]; 2]>,
+    /// Hand IK weight change per tick (retail 0.2, 82D45008).
+    pub hand_ik_rate: Option<f32>,
+    /// Hand IK reach around the animated hands in m (retail 0.65, 82BD9728).
+    pub hand_ik_reach: Option<f32>,
     /// Friction pair `[static, dynamic]` every held (commanded) prop switches to (retail [0.03, 0.02],
     /// 82C53EF8); combined with the other side by max / max / min (82763078).
     pub commanded_material: Option<[f32; 2]>,
@@ -826,8 +835,8 @@ impl Merge for CarryPatch {
         merge_opts!(self, b; grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed, turn_rate, grip_reach,
             linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller, lever_rotation, lever_yaw,
             mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal,
-            hold_box_extents, record_272_speed_scale, grab_end_exclusion, commanded_material, upright_cos, apply_at_com, yaw_replaces_torque,
-            ignore_vertical, wake_on_command);
+            hold_box_extents, record_272_speed_scale, grab_end_exclusion, hand_ik_enter, hand_ik_curve, hand_ik_rate, hand_ik_reach, commanded_material, upright_cos,
+            apply_at_com, yaw_replaces_torque, ignore_vertical, wake_on_command);
         for (k, v) in &b.by_template {
             self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, material_free_upright, upright_pair, restitution, record_272, linear_drag, angular_drag, mass, maximum_linear_velocity, maximum_angular_velocity, inertia_scale, inertia_offset); }).or_insert_with(|| v.clone());
         }
@@ -1011,14 +1020,15 @@ impl CarryPatch {
             && finite(self.grab_range)
             && [self.push_speed, self.pull_speed, self.side_speed, self.turn_rate, self.grip_reach,
                 self.linear_clamp, self.yaw_clamp, self.relatch, self.slew_per_tick, self.yaw_rate_feedback, self.let_go_distance,
-                self.follow_step, self.hold_angle_limit, self.hold_max_angle_to_horizontal, self.record_272_speed_scale, self.grab_end_exclusion]
+                self.follow_step, self.hold_angle_limit, self.hold_max_angle_to_horizontal, self.record_272_speed_scale, self.grab_end_exclusion,
+                self.hand_ik_enter, self.hand_ik_rate, self.hand_ik_reach]
                 .into_iter()
                 .all(|v| finite(v) && v.is_none_or(|v| v >= 0.0))
             && [self.linear_controller, self.yaw_controller]
                 .into_iter()
                 .flatten()
                 .all(|g| g.iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(&g[3]))
-            && [self.lever_rotation, self.lever_yaw, self.mass_speed, self.inertia_yaw_gain]
+            && [self.lever_rotation, self.lever_yaw, self.mass_speed, self.inertia_yaw_gain, self.hand_ik_curve]
                 .into_iter()
                 .flatten()
                 .all(|c| c.iter().flatten().all(|v| v.is_finite()) && c[0].windows(2).all(|p| p[0] <= p[1]))

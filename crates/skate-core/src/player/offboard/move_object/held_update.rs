@@ -112,6 +112,32 @@ pub fn hand_points(record: &Record, grip: f32, a: [f32; 3], b: [f32; 3], t: &Reb
     (e > t.edge_epsilon_sq).then_some([p, m])
 }
 
+/// The hand IK of the held update: +1200 bit 0x40 (`enabled`) and the weight +1132. 82D46610 (82D469C8..82D46C9C)
+/// sets the bit during the grab's enter window ([`super::MoveObjectTuning`] `hand_ik_*`); only 82D444A0 full (a grab
+/// or a path B re-grab) clears it, so a re-grab after the window leaves the hands without IK, as in retail. 82D45008
+/// moves the weight toward 1 while on, toward 0 while off. Plain per-skater data.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HandIk {
+    pub enabled: bool,
+    pub weight: f32,
+}
+
+impl HandIk {
+    /// 82D444A0 full: clear the bit (the weight keeps easing out).
+    pub fn begin_grab(&mut self) {
+        self.enabled = false;
+    }
+
+    /// One tick: the 82D46610 gate at `state_time` (Player+2664), then the 82D45008 weight step.
+    pub fn tick(&mut self, t: &super::MoveObjectTuning, state_time: f32) {
+        if t.hand_ik_enter > 0.0 && state_time <= t.hand_ik_window && 1.0 - t.hand_ik_curve.evaluate(state_time) > t.hand_ik_threshold {
+            self.enabled = true;
+        }
+        let step = if self.enabled { t.hand_ik_rate } else { -t.hand_ik_rate };
+        self.weight = (self.weight + step).clamp(0.0, 1.0);
+    }
+}
+
 /// +1164 / +1168 / +1200 bit 0x08 and the start frame (+80 position row, hands +464 / +512).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FrameBlend {
@@ -169,6 +195,31 @@ pub fn seed_anchor(nearest: [f32; 3], push_row: [f32; 3], anchor_reach: f32) -> 
 mod tests {
     use super::*;
     use crate::player::offboard::move_object::edge_record;
+
+    #[test]
+    fn hand_ik_turns_on_in_the_enter_window_and_stays_until_the_next_grab() {
+        let t = crate::player::offboard::move_object::MoveObjectTuning::default();
+        let mut ik = HandIk::default();
+        // Stock curve: 1 - y passes 0.1 between 0.0969 s (0.0786) and 0.1562 s (0.2929).
+        ik.tick(&t, 0.05);
+        assert!(!ik.enabled && ik.weight == 0.0);
+        ik.tick(&t, 0.15);
+        assert!(ik.enabled);
+        assert!((ik.weight - 0.2).abs() < 1e-6);
+        for k in 0..10 {
+            ik.tick(&t, 2.0 + k as f32);
+        }
+        assert!(ik.enabled && ik.weight == 1.0, "past the window it stays on");
+        // A re-grab after the window: off for good, the weight eases out.
+        ik.begin_grab();
+        ik.tick(&t, 3.0);
+        assert!(!ik.enabled && (ik.weight - 0.8).abs() < 1e-6);
+        // No enter value (a mod sets 0): never on.
+        let off = crate::player::offboard::move_object::MoveObjectTuning { hand_ik_enter: 0.0, ..t };
+        let mut ik = HandIk::default();
+        ik.tick(&off, 0.5);
+        assert!(!ik.enabled);
+    }
 
     #[test]
     fn hand_points_sit_half_the_hand_span_around_the_grip() {

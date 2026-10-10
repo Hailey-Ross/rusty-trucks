@@ -645,8 +645,39 @@ through `regrab_candidate`, reseeds the follow anchor, and keeps the hand points
 
 **NOT RETAIL YET.** The push latch input (Player+736) is not identified (never set); path B's candidates are the held
 prop's own records (retail: the owner's validated records), owner flag 0x40 and the held record's +196 / +216 are taken
-as set; the hand points have no consumer yet (the hand IK weight's enable bit +1200 0x40 is not identified); the frame
+as set (the hand IK on the hand points: step 3c below); the frame
 blend is ported in skate-core but not wired (it only fires for 60 m jumps).
 
 **Verification.** skate-core `held_update` tests (hand points and clamps, every rebind gate incl. the timer and the
 latch, snap vs blend, anchor seed); skate-game prop / carry / skitch / living_world 136 pass. Not play-tested.
+
+## Move Object step 3c: the hand IK (opt-in, 2026-10-10)
+
+**Retail [code + data] (decoded by main in the TU3 recomp, 82D46610 at 82D469C8..82D46C9C; consumer 82D45008 from
+research b64).** The held update's hand IK bit (+1200 0x40) is set in 82D46610, never cleared there; only 82D444A0
+full (a grab, or a path B re-grab) clears it (0xC0). The set needs all three:
+- the enter value +1180 (`5E35DB02BE697A58`, 0.7216) above 0;
+- the state time (Player+2664) at most the larger x end (`bounds[2]`) of the curves `1348E9A1F213B42D` (x 0.5..1.0)
+  and `702F25BA3A5AAA56` (x 0..0.35), i.e. 1.0 s with the stock data;
+- 1 - curve `702F25BA3A5AAA56`(state time) above 0.1 (0x820641A8, 0.1): with the stock curve from about 0.1 s.
+
+So the hands go to IK about 0.1 s into Move Object and stay on; a re-grab after the first second leaves them off. 82D45008
+moves the weight +1132 by 0.2 per tick toward 1 (on) or 0 (off) and calls 82BD9728 / 82BD97D0 (hand A / B) with the
+reach 0.65 (0x820BB0EC) and the targets +560 / +576 (82D46610 from the hand points +496 / +544).
+
+**Change.** skate-core `move_object::HandIk` (`tick`: the gate then the weight step; `begin_grab`), `MoveObjectTuning`
+`hand_ik_enter`, `hand_ik_window`, `hand_ik_curve`, `hand_ik_threshold`, `hand_ik_rate`, `hand_ik_reach` (loaded from the
+attribute collection: the enter value, curve 702F and the window from both curves' bounds). skate-game: `CarrierSkeleton`
+carries the state time (`state_timer_2664`), `PropCarry` steps the hand IK after the hand points (cleared on a re-grab and
+on let go), and the solve phase writes the two hand points as IK targets into the handplant hand slots (limbs 2 / 3),
+clamped to the reach around the animated hand targets as 82BD9728 does. Mod: `sdk.world.set_tuning('carry', {
+hand_ik_enter, hand_ik_curve, hand_ik_rate, hand_ik_reach })` (enter 0 = the hands never go to IK).
+
+**NOT RETAIL YET / open.** The targets are the hand points in world space (retail goes through the frame-local +480 /
++528 and the frame blend, which only differs during a 60 m blend); hand A = p+ (grip + half span), as retail's slot order;
+a mod's curve does not move the window (it stays the disc curves' end). Only props with authored grab splines
+(`SKATE_PROP_GRAB=1`) have hand points.
+
+**Verification.** skate-core `hand_ik_turns_on_in_the_enter_window_and_stays_until_the_next_grab`, move_object 24;
+skate-mods 105; skate-game prop / carry / world_tuning / modding / skitch / handplant 122. Not play-tested (grab a prop
+with `SKATE_PROP_GRAB=1`: the hands should settle onto the edge).

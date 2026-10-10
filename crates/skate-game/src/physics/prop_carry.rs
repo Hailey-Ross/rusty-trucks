@@ -170,6 +170,10 @@ pub(crate) struct LocomotionOverrides {
     pub hold_box_extents: Option<[f32; 3]>,
     pub record_272_speed_scale: Option<f32>,
     pub grab_end_exclusion: Option<f32>,
+    pub hand_ik_enter: Option<f32>,
+    pub hand_ik_curve: Option<[[f32; 8]; 2]>,
+    pub hand_ik_rate: Option<f32>,
+    pub hand_ik_reach: Option<f32>,
 }
 
 impl LocomotionOverrides {
@@ -209,6 +213,10 @@ impl LocomotionOverrides {
         if let Some(v) = self.hold_box_extents { m.hold_box_extents = v; }
         if let Some(v) = self.record_272_speed_scale { m.record_272_speed_scale = v; }
         if let Some(v) = self.grab_end_exclusion { m.grab_end_exclusion = v; }
+        if let Some(v) = self.hand_ik_enter { m.hand_ik_enter = v; }
+        if let Some(v) = self.hand_ik_curve { m.hand_ik_curve = curve(v); }
+        if let Some(v) = self.hand_ik_rate { m.hand_ik_rate = v; }
+        if let Some(v) = self.hand_ik_reach { m.hand_ik_reach = v; }
         l.turn_rate = self.turn_rate.or(base.turn_rate);
         l.sanitized(&base)
     }
@@ -400,6 +408,8 @@ pub(crate) struct CarrierSkeleton {
     pub hand_span: f32,
     /// Collision flag Player+2484 bit 26 (`flag_215`): drives the rebind timer +1176 (82D44A10).
     pub collision_flag: bool,
+    /// Time in the current player state, s (Player+2664; the 82D46610 hand IK gate).
+    pub state_time: f32,
 }
 
 impl Carrier {
@@ -477,6 +487,8 @@ pub(crate) struct PropCarry {
     rebind: skate_core::player::offboard::move_object::RebindState,
     rebind_tuning: skate_core::player::offboard::move_object::RebindTuning,
     hands: Option<[[f32; 3]; 2]>,
+    /// Hand IK bit +1200 0x40 and weight +1132 (82D46610 / 82D45008) on the hand points.
+    hand_ik: skate_core::player::offboard::move_object::HandIk,
     /// Grab frame of the held prop after this tick's command: where the
     /// skater is pulled to and which way it faces (read by `biped_ground`).
     frame: Option<GrabFrame>,
@@ -610,6 +622,12 @@ impl PropCarry {
 
     /// The held authored record state (tests, diagnostics).
     #[allow(dead_code)]
+    /// The hand IK targets (hand A = p+, hand B = p-; 82BD9728 / 82BD97D0) and weight, while the weight is above 0.
+    pub(crate) fn hand_ik_targets(&self) -> Option<([[f32; 3]; 2], f32)> {
+        let hands = self.hands?;
+        (self.hand_ik.weight > 0.0).then_some((hands, self.hand_ik.weight))
+    }
+
     pub(crate) fn held_grip(&self) -> Option<skate_core::player::offboard::move_object::HeldGrip> {
         self.bound
     }
@@ -750,6 +768,7 @@ impl PropCarry {
         self.bound = None;
         self.rebind = Default::default();
         self.hands = None;
+        self.hand_ik = Default::default();
         self.frame = None;
         self.follow = None;
         self.controller = MoveObjectController::default();
@@ -888,12 +907,18 @@ impl PropCarry {
             },
         };
         (self.bound, self.edge) = (bound, edge);
-        // 82D45D30 hand points on the authored record (no consumer yet: the
-        // hand IK weight's enable bit +1200 0x40 is not identified, b64).
+        // 82D45D30 hand points on the authored record; 82D46610 / 82D45008 the
+        // hand IK (a path B re-grab is 82D444A0 full: the bit clears).
         self.hands = match (self.bound, carrier.skeleton) {
             (Some(held), Some(s)) => skate_core::player::offboard::move_object::hand_points(&record, held.grip, [0.0; 3], [s.hand_span, 0.0, 0.0], &self.rebind_tuning),
             _ => None,
         };
+        if regrabbed {
+            self.hand_ik.begin_grab();
+        }
+        if let Some(s) = carrier.skeleton {
+            self.hand_ik.tick(&self.locomotion.move_object, s.state_time);
+        }
         let v3 = |v: Vector3| [v.x, v.y, v.z];
         let body_position = carrier.skeleton.map_or(carrier.position, |s| s.body);
         // +368 is the latched frame row pointing from the edge toward the

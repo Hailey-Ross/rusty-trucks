@@ -25,7 +25,7 @@ use crate::point_graph::PointGraph;
 mod held_record;
 pub use held_record::{HeldGrip, RecordFrame, begin_grip, continue_grip, record_frame};
 mod held_update;
-pub use held_update::{FrameBlend, Rebind, RebindInput, RebindState, RebindTuning, hand_points, seed_anchor};
+pub use held_update::{FrameBlend, HandIk, Rebind, RebindInput, RebindState, RebindTuning, hand_points, seed_anchor};
 
 /// `Sk8::Physics::PhysicsControllerData`: four floats. 82D4E118 [code]:
 /// `filtered = (1 - filter) * filtered + filter * error`;
@@ -157,6 +157,18 @@ pub struct MoveObjectTuning {
     pub anchor_velocity_new: f32,
     /// Retail tick (1/60, image 0x820849C8) used by the follow step.
     pub tick: f32,
+    /// Hand IK of the held update (82D46610 sets +1200 bit 0x40, 82D45008 steps the weight +1132) [code + data]:
+    /// on once `hand_ik_enter` (+1180, 5E35DB02BE697A58 = 0.7216) > 0, the state time is at most `hand_ik_window`
+    /// (the larger x end of curves 1348E9A1F213B42D / 702F25BA3A5AAA56, 1.0) and 1 - `hand_ik_curve`
+    /// (702F25BA3A5AAA56) at the state time exceeds `hand_ik_threshold` (0.1, 0x820641A8). The weight moves
+    /// `hand_ik_rate` (0.2, 0x82099280) per tick; the targets are clamped to `hand_ik_reach` (0.65, 0x820BB0EC)
+    /// around the animated hands (82BD9728 / 82BD97D0).
+    pub hand_ik_enter: f32,
+    pub hand_ik_window: f32,
+    pub hand_ik_curve: PointGraph<8>,
+    pub hand_ik_threshold: f32,
+    pub hand_ik_rate: f32,
+    pub hand_ik_reach: f32,
 }
 
 const fn graph(x: [f32; 8], y: [f32; 8]) -> PointGraph<8> {
@@ -203,6 +215,12 @@ impl Default for MoveObjectTuning {
             anchor_velocity_keep: 0.85,
             anchor_velocity_new: 0.15,
             tick: 1.0 / 60.0,
+            hand_ik_enter: 0.7216,
+            hand_ik_window: 1.0,
+            hand_ik_curve: graph([0.0, 0.0205, 0.0969, 0.1562, 0.2018, 0.2736, 0.3169, 0.35], [1.0, 1.0, 0.9214, 0.7071, 0.5071, 0.1786, 0.0393, 0.0]),
+            hand_ik_threshold: 0.1,
+            hand_ik_rate: 0.2,
+            hand_ik_reach: 0.65,
         }
     }
 }
@@ -269,6 +287,12 @@ impl MoveObjectTuning {
             anchor_velocity_keep: if (0.0..=1.0).contains(&self.anchor_velocity_keep) { self.anchor_velocity_keep } else { fallback.anchor_velocity_keep },
             anchor_velocity_new: if (0.0..=1.0).contains(&self.anchor_velocity_new) { self.anchor_velocity_new } else { fallback.anchor_velocity_new },
             tick: if self.tick.is_finite() && self.tick > 0.0 { self.tick } else { fallback.tick },
+            hand_ik_enter: fin(self.hand_ik_enter, fallback.hand_ik_enter),
+            hand_ik_window: fin(self.hand_ik_window, fallback.hand_ik_window),
+            hand_ik_curve: curve(self.hand_ik_curve, fallback.hand_ik_curve),
+            hand_ik_threshold: fin(self.hand_ik_threshold, fallback.hand_ik_threshold),
+            hand_ik_rate: ok(self.hand_ik_rate, fallback.hand_ik_rate),
+            hand_ik_reach: ok(self.hand_ik_reach, fallback.hand_ik_reach),
         }
     }
 }

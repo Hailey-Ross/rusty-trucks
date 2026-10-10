@@ -138,3 +138,4 @@ the file of their topic (and get a line here).
   - [Move Object port (2026-10-08)](26i-living-world-props.md#move-object-port-2026-10-08)
 - [Move Object step 1: props' authored grab splines in the export (2026-10-09)](26i-living-world-props.md#move-object-step-1-props-authored-grab-splines-in-the-export-2026-10-09)
 - [Move Object step 2: props in the grab scene (opt-in, 2026-10-09)](26i-living-world-props.md#move-object-step-2-props-in-the-grab-scene-opt-in-2026-10-09)
+- [Move Object step 3c: the hand IK (opt-in, 2026-10-10)](26i-living-world-props.md#move-object-step-3c-the-hand-ik-opt-in-2026-10-10)
