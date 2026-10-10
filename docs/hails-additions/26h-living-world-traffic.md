@@ -602,3 +602,32 @@ provider. The grab providers are now known from `82857FB0` (b49, in progress): s
 type-2 world-object provider (or the DMO manager on the alternate path), `+4088` (bit 0x02) the vehicle provider
 (vtable `0x82322514`: `82C36068` single, `82C35B98` box, `82C35840` radius), so cars answer only mode 255 queries.
 
+## Skitching step 2: cars in the grab scene (2026-10-09)
+
+**Retail [code] (`.local/research/npc/b49-grab-providers.md`; main checked the provider vtable against the image and
+the gates in `82C35B98`).** `82857FB0` fills the grab scene's two provider slots: `+4084` (query mode bit 0x04) gets
+the type-2 world-object provider (or the DMO manager on an alternate path), `+4088` (bit 0x02) the vehicle provider
+(vtable `0x82322514`: `82C36068` single record, `82C35B98` box query, `82C35840` radius query). `82760508` treats the
+query mode as that bitmask, so only mode 255 (the riding skitch query) reaches cars. The vehicle box query gates each
+car by a sphere (query radius + 15 m around the car's origin) only, walks the car's spline list (`car+200`, count
+`+212`), needs byte +68 > 1 and +70 != 0, a segment hit (`82ADD910`, segments of 1e-5 or less skipped) and the car's
+assembly (`car+172` chain), then builds a type-1 record (`82585F58`) with the car matrix and velocity and keeps it if
+CanGrabSpline passes.
+
+**Change.** skate-core `grab_scene`: `Provider::Vehicle`, `query` takes the mode as a provider bitmask (cars first,
+then the existing world-object loop), the registry insists car records are type 1. skate-game: `Registry::set_cars` /
+`GamePhysics::set_grab_cars`, `living_world::vehicles::push_vehicle_grab_splines` (each fixed tick before physics:
+every car's splines with its current transform and velocity; ids `CAR_GRAB_TAG | serial`, spline ids
+`CAR_GRAB_TAG | serial << 3 | index`), `CarGrabSpline.flags` into the record's word 60 [inferred].
+
+**Engine choices.** NOT RETAIL YET: the car's assembly is a stand-in carrying the car's id (the `car+172` object is
+not identified); spline ids are stable per car instead of retail's global counter; the box query and CanGrabSpline
+are applied as in the world-object loop (whether the skitch query takes the box or the radius path is open).
+
+**Verification.** skate-core `cars_answer_only_the_vehicle_bit_and_world_objects_only_the_other`,
+`a_car_needs_its_assembly_and_must_be_within_the_sphere`; skate-game
+`a_car_enters_the_grab_scene_with_its_rear_spline_in_world_space` (115 living_world / offboard tests pass).
+
+**Open.** The riding skitch query (`82D39BB8`) that submits mode 255 and latches a car, state 104's handler, the car
+side (held flag, tow reaction), flag `0x83082929` (which maps take the DMO path).
+

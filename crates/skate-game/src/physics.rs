@@ -269,6 +269,10 @@ mod exchange_tests {
 }
 
 impl GamePhysics {
+    /// This tick's traffic cars in the grab scene (`living_world::vehicles::push_vehicle_grab_splines`).
+    pub(crate) fn set_grab_cars(&mut self, cars: Vec<skate_core::player::offboard::grab_scene::Object>) -> Result<(), String> {
+        self.offboard_grab_scene.set_cars(cars)
+    }
     pub(crate) fn set_gesture_preferences(&mut self, gestures: Option<[u32; 4]>) {
         self.animation_profile.gesture_selections = Some(gestures.filter(|g| g.iter().all(|v| *v < 37)).unwrap_or([0, 1, 2, 3]));
     }

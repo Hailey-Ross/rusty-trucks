@@ -317,3 +317,22 @@ fn grab_splines_and_driver_horn_values_load() {
     assert_eq!((h.blocked_time, h.enabled_chance), (1.0, 0.2));
     assert!((h.approach_speed - 10.0 / 3.6).abs() < 1e-6);
 }
+
+#[test]
+fn a_car_enters_the_grab_scene_with_its_rear_spline_in_world_space() {
+    let d = data();
+    let net = road();
+    let (car, ..) = car_from_record(&net, &d, &VehicleOverrides::default(), &std::collections::BTreeMap::new(), &record(7, 0, 50.0, 0), 0.0).unwrap();
+    let t = Transform::from_xyz(1.0, 0.0, 2.0).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    let motion = CarMotion { prev: t, curr: t, wheel_prev: 0.0, wheel: 0.0, velocity: Vec3::new(5.0, 0.0, 0.0) };
+    let o = car_grab_object(&car, &motion, &d).unwrap();
+    assert_eq!(o.id, CAR_GRAB_TAG | 7);
+    assert!(matches!(o.provider, skate_core::player::offboard::grab_scene::Provider::Vehicle));
+    let s = &o.splines[0];
+    assert_eq!((s.descriptor.kind, s.descriptor.id), (1, CAR_GRAB_TAG | 7 << 3));
+    // The record puts the rear-edge end (model (0.78, 0.93, -2.39)) behind the car: yaw 90 deg maps -z to -x and +x to -z.
+    let r = o.record(s).unwrap();
+    let [start, _] = r.endpoints();
+    assert!((start[0] - (1.0 - 2.39)).abs() < 1e-4 && (start[1] - 0.93).abs() < 1e-4 && (start[2] - (2.0 - 0.78)).abs() < 1e-4, "{start:?}");
+    assert!(skate_core::player::offboard::grab_scene::Registry::new(vec![o]).is_ok());
+}

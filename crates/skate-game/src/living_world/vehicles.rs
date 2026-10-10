@@ -91,6 +91,8 @@ pub(crate) struct VehicleModel {
 pub(crate) struct CarGrabSpline {
     pub points: Vec<[f32; 3]>,
     pub direction: [f32; 3],
+    /// Entry +60 (0x3E4 on stock cars; meaning open), the record's word 60 [inferred].
+    pub flags: u32,
 }
 
 /// What a car entity drives with (`livingworld_entities` -> spec record).
@@ -146,7 +148,7 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                     .flatten()
                     .filter_map(|g| {
                         let points: Vec<[f32; 3]> = g["points"].as_array()?.iter().map(vec3).collect::<Option<_>>()?;
-                        (!points.is_empty() && points.len() % 4 == 0).then_some(CarGrabSpline { points, direction: vec3(&g["direction"])? })
+                        (!points.is_empty() && points.len() % 4 == 0).then_some(CarGrabSpline { points, direction: vec3(&g["direction"])?, flags: g["flags"].as_u64().unwrap_or(0) as u32 })
                     })
                     .collect(),
             },
@@ -714,6 +716,71 @@ pub(crate) fn push_vehicle_proxies(
     physics.network_proxies = proxies;
 }
 
+/// Grab-scene ids of the cars: object `CAR_GRAB_TAG | serial`, spline / geometry `CAR_GRAB_TAG | serial << 3 | index`
+/// (ours: stable per car; retail numbers splines from a global counter, b34).
+pub(crate) const CAR_GRAB_TAG: u32 = 0x8000_0000;
+
+/// The cars' authored grab splines into the grab scene each tick (retail: the vehicle provider `82C35B98`, scene
+/// slot `+4088`, answering the riding skitch query's mode 255; b49). The car's world transform is the record frame,
+/// its velocity the record vector. NOT RETAIL YET: the assembly is a stand-in with the car's id (retail reads it
+/// from the car's `+172` interface, object open).
+pub(crate) fn push_vehicle_grab_splines(
+    cars: Query<(&TrafficCar, &CarMotion)>,
+    traffic: Res<TrafficState>,
+    mut physics: ResMut<crate::physics::GamePhysics>,
+    replay: Res<crate::replay::Replay>,
+) {
+    if replay.active {
+        return;
+    }
+    let mut list: Vec<_> = cars.iter().collect();
+    list.sort_by_key(|(c, _)| c.id);
+    let objects: Vec<_> = list.into_iter().filter_map(|(car, motion)| car_grab_object(car, motion, &traffic.data)).collect();
+    if let Err(e) = physics.set_grab_cars(objects) {
+        warn!("LIVING_WORLD traffic: car grab splines rejected: {e}");
+    }
+}
+
+/// One car as a grab-scene object (pure; the engine and the tests use it).
+pub(crate) fn car_grab_object(car: &TrafficCar, motion: &CarMotion, data: &VehicleData) -> Option<skate_core::player::offboard::grab_scene::Object> {
+    use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry, Object, Provider, Spline};
+    let splines = &data.models.get(&car.model)?.grab_splines;
+    let serial = car.id.serial & 0x0FFF_FFFF;
+    let id = CAR_GRAB_TAG | serial;
+    let t = &motion.curr;
+    let axis = |v: Vec3| {
+        let w = t.rotation * v;
+        [w.x, w.y, w.z, 0.0]
+    };
+    Some(Object {
+        id,
+        provider: Provider::Vehicle,
+        disabled: false,
+        assembly_ready: true,
+        assembly: Some(AssemblyData { identity: id, first_part: None }),
+        frame: [axis(Vec3::X), axis(Vec3::Y), axis(Vec3::Z), [t.translation.x, t.translation.y, t.translation.z, 1.0]],
+        object_vector_128: [motion.velocity.x, motion.velocity.y, motion.velocity.z, 0.0],
+        splines: splines
+            .iter()
+            .take(8)
+            .enumerate()
+            .map(|(i, s)| {
+                let key = CAR_GRAB_TAG | serial << 3 | i as u32;
+                Spline {
+                    descriptor: Descriptor { kind: 1, id: key },
+                    geometry: std::sync::Arc::new(Geometry {
+                        id: key,
+                        points: s.points.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect(),
+                        approach_vectors: vec![[s.direction[0], s.direction[1], s.direction[2], 0.0]],
+                        word_60: s.flags,
+                    }),
+                    word_272: 0,
+                }
+            })
+            .collect(),
+    })
+}
+
 /// The render side of one car.
 #[derive(Component, Default)]
 pub(crate) struct CarLook {
@@ -857,7 +924,12 @@ pub(crate) fn install(app: &mut App) {
         .add_systems(FixedUpdate, (load_traffic_data, apply_vehicle_records, apply_vehicle_hits, drive_traffic, log_traffic).chain().after(super::step_population))
         .add_systems(
             FixedUpdate,
-            push_vehicle_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),
+            (
+                push_vehicle_proxies.after(crate::multiplayer::prepare),
+                push_vehicle_grab_splines,
+            )
+                .after(crate::app::SimulationSet::Controls)
+                .before(crate::app::SimulationSet::Physics),
         )
         .add_systems(Update, (present_car_looks, present_car_pose).chain().after(crate::app::FrameSet::Animation));
 }
