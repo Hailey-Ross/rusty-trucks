@@ -940,3 +940,26 @@ when `ctrl+920` is set).
 
 **Verification.** skate-core `mode_4_grabs_and_skips_the_trick_dispatch`; skate-game npc / living_world pass. Not
 play-tested.
+
+## Manoeuvres groundwork: lane-change passage, stop spots, gap check (2026-10-09)
+
+**Retail [code + data] (`.local/research/npc/b69-traffic-manoeuvres.md` with the b71 / b72 extensions; main checked
+the progress step `82C3C3C0` (speed x +/-1 x 1/60), the road-network values 1.3 / 10 in the exported tables and the
+vehicle-characteristics fixed layout).** The manoeuvre decider `82C41CD0` tries an overtake (never with stock data:
+`Hash_9366C67755A24D89` is 0), a lane change on a timer and a pull-over. A lane change is a passage: a cubic Hermite
+curve from the car's lane point at d0 to the target lane at d1 = d0 + ext x `Hash_328B9F4685A14018` + speed, tangents
+= lane direction x (d1 - d0) x 1.3 (`Hash_D2C11CC10C9E0E49`), a 10-chord arc table (`Hash_E35079BDD5BAE286`); the car
+advances along it at its speed and faces its tangent. Pulling over reserves a stop spot (`82E151D0`): the middle of
+the road when free, else the middle of the first long enough gap ahead within 0.75 of the road (`82E14CF8`). A lane
+change needs one second of travel clear of the cars ahead and behind on the target lane (`82E14928`).
+
+**Change.** skate-core `traffic/passage.rs` (`Passage::begin / advance / distance / sample`, `PassageParams`) and
+`traffic/spots.rs` (`Reservations`, `find_spot`, `gap_free`, `SpotParams`), pure and tested. Not wired yet: the
+decider, the pull-over / parked / pull-out states (b73) and the follower / transform integration follow.
+
+**Found on the way (todo `traffic-accel-fields-mislabelled`).** The follower loads `Hash_328B9F46` as its max
+acceleration and `Hash_75822921` as its comfortable braking; retail uses them as the lane-change passage factor and
+the pull-over approach factor (`82C3CDD0`). Behaviour unchanged for now (their values sit near the recomp's measured
+acceleration); the real acceleration chain (spec+60 `Hash_03F46E22E52C0002` 0.2 per tick, cap `+3676`) is next.
+
+**Verification.** skate-core traffic 46 pass.

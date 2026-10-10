@@ -30,9 +30,11 @@ pub mod follow;
 pub mod graph;
 pub mod horn;
 pub mod junction;
+pub mod passage;
 pub mod obstacles;
 pub mod signals;
 pub mod skater_scan;
+pub mod spots;
 pub mod spawn;
 
 pub use cursor::{choose_connector, Advance, ConnectorChoice, LaneCursor, Place};
