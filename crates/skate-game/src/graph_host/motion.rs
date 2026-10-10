@@ -115,6 +115,8 @@ pub struct MotionHost {
     pub flags: super::motion_landing::Flags,
     hippy_jump: super::motion_hippy_jump::Settings,
     finger_flip: super::motion_finger_flip::Settings,
+    /// `anim_skitching/default` for the skitch nodes.
+    pub(crate) skitching: super::motion_skitching::Settings,
     pub landing_physical: Option<super::motion_landing::Physical>,
     pub wipeout_physical: Option<super::motion_wipeout::Physical>,
     pub wipeout_controls: super::motion_wipeout::Controls,
@@ -332,6 +334,7 @@ impl MotionHost {
             manual: super::motion_manual::settings(data)?,
             hippy_jump: super::motion_hippy_jump::Settings::load(data)?,
             finger_flip: super::motion_finger_flip::Settings::load(data)?,
+            skitching: super::motion_skitching::Settings::load(data),
             next_instance: 1,
         })
     }

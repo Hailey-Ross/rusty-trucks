@@ -809,3 +809,26 @@ the per-sub-mode stand-in), writes the hand IK through the handplant's slots (li
 **Verification.** skate-core `hands_grip_the_edge_and_let_go_when_out_of_reach`; skate-game skitch / handplant /
 animated tests. Not seen in game yet.
 
+## Skitching step 4h: the skitch animation graph nodes (2026-10-09)
+
+**Retail [code + data] (`.local/research/npc/b60-skitch-graph-nodes.md`; main read the `anim_skitching/default` record
+and loaded the stock graph).** The stock ground motion graph (`ground.xml`, `Skitching/skitchpush.xml`,
+`skitchbrake.xml`) uses EnterSkitchingBehaviour / SkitchingBehaviour / SkitchShimmyingBehaviour and the conditions
+IsSkitchingWithAbsorb / SkitchingPosition / IsSkitchShimmying. Before this step our graph host returned an error on the
+behaviours (graph execution stopped once the skater skitched) and did not parse the conditions. The behaviours bind
+`anim_skitching/default`: an absorb curve over the closing rate and six floats (hash order, `LongSkitchIntoReachTime`
+at +96 as the known layout says). SkitchingBehaviour sets "Crouch" (grab height + 0.85), "PushSpeed" and "absorbspeed"
+(toward the curve by 0.04 per update); EnterSkitchingBehaviour sets "Crouch".
+
+**Change.** skate-game `graph_host::motion_skitching` (settings from the record with the stock values as defaults, the
+absorb instance, the condition results); the three conditions parse and evaluate; the behaviours run (instance
+`Instance::Skitching`); `GameplayConditions` carries the 104 outputs (280 / 284 / 136 / 140).
+
+**Engine choices.** NOT RETAIL YET: "PushSpeed" is 0 (state+996 not ported), EnterSkitching's "reachspeed" and the
+shimmy behaviour's channels (keys unresolved) are not written, the SkitchingPosition mirror term and the shimmy flip
+are false.
+
+**Verification.** skate-game `absorb_follows_the_curve_at_most_four_hundredths_per_update`, `shimmy_and_position_results`;
+the stock graph loads with the new conditions (`stock_motion_host_loads_graph_settings_and_authored_riding_tree`, run
+against the user's install); graph host tests (74).
+

@@ -35,6 +35,7 @@ pub(super) enum Instance {
     AirDismounting(super::super::motion_air_dismounting::State),
     ///82BB5930 initializes byte8 once per allocated behavior instance.
     JumpInto { first_update: bool },
+    Skitching(super::super::motion_skitching::SkitchingState),
 }
 impl Instance {
     pub(super) fn new(operation: &MotionOperation) -> Self {
@@ -103,6 +104,9 @@ impl Instance {
             MotionOperation::StockGameplay(
                 super::super::motion_stock_gameplay::Operation::JumpInto { .. },
             ) => Self::JumpInto { first_update: true },
+            MotionOperation::StockGameplay(
+                super::super::motion_stock_gameplay::Operation::SkitchingBehaviour,
+            ) => Self::Skitching(Default::default()),
             MotionOperation::StockGameplay(
                 super::super::motion_stock_gameplay::Operation::AirDismounting,
             ) => Self::AirDismounting(Default::default()),

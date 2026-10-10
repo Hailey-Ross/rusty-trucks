@@ -484,6 +484,24 @@ pub(super) fn execute(
                             _ => unreachable!(),
                         }
                     }
+                    // Skitch nodes (`82BBC538` / `82BBC390` / `82BBC7C8`; motion_skitching.rs).
+                    crate::graph_host::motion_stock_gameplay::Operation::EnterSkitchingBehaviour
+                    | crate::graph_host::motion_stock_gameplay::Operation::SkitchingBehaviour => {
+                        if phase != 2 {
+                            let p = host.gameplay_conditions
+                                .ok_or("Skitching behaviours require the physical publication")?;
+                            let crouch = host.skitching.crouch(p.skitch_grab_height);
+                            host.animation.set_attribute(SettableAttribute { name: encode(b"Crouch"), value: crouch, normalized: false, sequence_id: -1 });
+                            if let Instance::Skitching(state) = instance {
+                                let absorb = state.update(&host.skitching, p.skitch_absorb);
+                                host.animation.set_attribute(SettableAttribute { name: encode(b"absorbspeed"), value: absorb, normalized: false, sequence_id: -1 });
+                                // NOT RETAIL YET: PushSpeed = ground+308 (state+996) is not ported.
+                                host.animation.set_attribute(SettableAttribute { name: encode(b"PushSpeed"), value: 0.0, normalized: false, sequence_id: -1 });
+                            }
+                        }
+                    }
+                    // NOT RETAIL YET: the shimmy channels (keys unresolved) are not started.
+                    crate::graph_host::motion_stock_gameplay::Operation::SkitchShimmyingBehaviour => {}
                     other => {
                         return Err(format!(
                             "MotionGraph stock gameplay producer {other:?} is not implemented"
