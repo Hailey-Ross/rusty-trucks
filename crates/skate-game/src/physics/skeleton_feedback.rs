@@ -16,7 +16,8 @@ pub(super) fn publish(
     skater: &mut SkaterRuntime,
     request_partial_ragdoll: bool,
 ) {
-    let reports = collect(physics, skater);
+    let (reports, vehicle_hits) = collect(physics, skater);
+    skater.vehicle_hits = vehicle_hits;
     let p = &skater.player_input.processed;
     let deck = deck_frame(&physics.board);
     skater.skeleton_output.correction.observe_board(
@@ -113,7 +114,8 @@ fn publish_board_observations(
     frames.publish_centre_of_mass(physical_com, dt, flags_2472);
 }
 
-fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> Vec<SkeletonContactReport> {
+fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> (Vec<SkeletonContactReport>, Vec<(u64, [f32; 3])>) {
+    let mut vehicle_hits = Vec::new();
     let rows = physics.board.solved_contacts();
     let mut storage: Vec<_> = rows
         .iter()
@@ -165,6 +167,11 @@ fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> Vec<SkeletonContact
             let destination=if matches!(other,CollisionBody::Attached(index)
                 if physics.network_proxies.solids.iter().any(|(i,_)|*i==index)) { &mut mod_reports } else { &mut reports };
             let vehicle = other_group == 8;
+            if let CollisionBody::Attached(index) = other {
+                if let Some((_, solid)) = physics.network_proxies.solids.iter().find(|(i, _)| *i == index).filter(|_| vehicle) {
+                    vehicle_hits.push((solid.id, [point[0], point[1], point[2]]));
+                }
+            }
             destination.push(SkeletonContactReport {
                 part,
                 normal,
@@ -196,7 +203,7 @@ fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> Vec<SkeletonContact
     // group; the physical solve above still receives EVERY contact.
     mod_reports.extend(reports);
     mod_reports.truncate(16);
-    mod_reports
+    (mod_reports, vehicle_hits)
 }
 fn is_mod_solid_contact(id: u32, physics: &GamePhysics) -> bool {
     matches!(

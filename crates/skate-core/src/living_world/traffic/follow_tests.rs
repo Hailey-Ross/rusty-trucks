@@ -292,3 +292,27 @@ fn motion_is_reproducible_from_the_spawn_state() {
     assert_eq!(a, b);
     assert_eq!(ea, eb);
 }
+
+#[test]
+fn a_car_hit_by_the_skater_ahead_brakes_to_a_stop_then_drives_on() {
+    let net = net_straight(false);
+    let mut clock = SignalClock::new(timings());
+    let mut cars = vec![car(&net, 1, seg(&net, 0x100), 0.0)];
+    run(&net, &mut clock, &mut cars, 180);
+    let cruising = cars[0].speed;
+    assert!(cruising > 1.0, "{cruising}");
+    cars[0].hit_brake = true;
+    // accel = -speed: the speed decays and the latch clears when the car stands.
+    let mut stopped_at = None;
+    for t in 0..600 {
+        run(&net, &mut clock, &mut cars, 1);
+        if cars[0].speed <= 0.0 {
+            stopped_at = Some(t);
+            break;
+        }
+    }
+    assert!(stopped_at.is_some(), "the hit brake stops the car");
+    assert!(!cars[0].hit_brake);
+    run(&net, &mut clock, &mut cars, 60);
+    assert!(cars[0].speed > 0.0, "it drives on afterwards");
+}

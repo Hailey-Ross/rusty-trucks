@@ -117,11 +117,18 @@ pub struct Car {
     pub entry: Option<Entry>,
     /// The car got Go and can no longer stop comfortably: it goes through.
     pub committed: bool,
+    /// An actor (the skater) hit the car ahead of it (retail `+4401` bit 0x20, `sub_82C3C150`): the
+    /// planner brakes hard (`sub_82C3FA08` at `0x82C3FE44`: accel = -speed) until the car stands,
+    /// then the integrator clears it (`sub_82C3FF38`).
+    pub hit_brake: bool,
+    /// The nearest obstacle's free distance in the look-ahead (`obstacles::nearest`; set by the host each frame,
+    /// retail `sub_82C40B70` -> `+3584..+3620`).
+    pub obstacle: Option<f32>,
 }
 
 impl Car {
     pub fn new(key: VehicleKey, cursor: LaneCursor, length: f32, params: FollowParams) -> Self {
-        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false }
+        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None }
     }
 
     /// Look-ahead distance (m): comfortable stopping distance (V3 stand-in for `+3516`).
@@ -385,6 +392,12 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             // Never closer than half the minimum gap (no overlaps whatever the braking).
             limit = Some(me.cursor.distance + (gap - p.min_gap * 0.5).max(0.0));
         }
+        // The obstacle ahead (`sub_82C412D8` -> `sub_82C3FA08`, standoff = the car's min gap).
+        let accel = match me.obstacle.and_then(|d| super::obstacles::obstacle_accel(me.speed, d, p.min_gap)) {
+            Some(a) => accel.min(a),
+            None => accel,
+        };
+        let accel = if me.hit_brake { accel.min(-me.speed) } else { accel };
         let accel = accel.max(-p.hard_brake * 4.0).max(-me.speed / dt);
         let (mut speed, accel) = integrate(me.speed, accel, cap_now, dt);
         let mut ds = speed * dt;
@@ -408,6 +421,9 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let car = &mut cars[i];
         car.speed = speed;
         car.accel = accel;
+        if speed <= 0.0 {
+            car.hit_brake = false;
+        }
         car.entry = entry;
         car.committed = committed;
         let loads = &occ;

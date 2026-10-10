@@ -38,6 +38,7 @@ pub(crate) mod network;
 pub(crate) use skater::SkaterRuntime;
 pub(crate) use skater::AiPhysicsSource;
 pub(crate) use skater::Takedown;
+pub(crate) use offboard::mod_solid_ground::VEHICLE_GROUP;
 pub(crate) use input_phase::facing_from_visual;
 mod animation_feedback;
 mod animation_feedback_settings;

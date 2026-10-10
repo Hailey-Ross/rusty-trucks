@@ -58,6 +58,9 @@ pub(crate) struct SkaterRuntime {
     /// away from the chaser at `*(actor+1832)`), published as the packet's external impulse until
     /// WipeoutGround Enter used it.
     pub takedown: Option<Takedown>,
+    /// The vehicle-group solids (traffic car proxies, mod vehicles) the skeleton touched in the last
+    /// solve: (solid id, contact point). The living world maps them to cars (the hit brake).
+    pub vehicle_hits: Vec<(u64, [f32; 3])>,
     pub scoring: crate::scoring_runtime::Runtime,
     pub climbing: super::climbing::Runtime,
     /// Completed physical pose in native animation space, read by rendering.
@@ -299,6 +302,7 @@ impl SkaterRuntime {
         Ok(Self {
             ai_physics: None,
             takedown: None,
+            vehicle_hits: Vec::new(),
             respawn,
             scoring: crate::scoring_runtime::Runtime::load(&data)?,
             climbing: super::climbing::Runtime::load(asset_root, &animation.evaluator.frames.bone_names)?,

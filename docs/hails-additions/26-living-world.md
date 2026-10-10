@@ -110,6 +110,8 @@ the file of their topic (and get a line here).
 - [Car shadows from a bridge printed on the ground below, 2026-10-08](26h-living-world-traffic.md#car-shadows-from-a-bridge-printed-on-the-ground-below-2026-10-08)
 - [Cars hit peds: retail reaction, 2026-10-08](26h-living-world-traffic.md#cars-hit-peds-retail-reaction-2026-10-08)
 - [Skitching: research and the tow spring (2026-10-09, groundwork)](26h-living-world-traffic.md#skitching-research-and-the-tow-spring-2026-10-09-groundwork)
+- [Cars knock the skater down, and brake when hit (V5 start, 2026-10-09)](26h-living-world-traffic.md#cars-knock-the-skater-down-and-brake-when-hit-v5-start-2026-10-09)
+- [Traffic: obstacles ahead (V4 look-ahead, 2026-10-09)](26h-living-world-traffic.md#traffic-obstacles-ahead-v4-look-ahead-2026-10-09)
 
 ### 26i: Props
 

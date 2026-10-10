@@ -291,6 +291,8 @@ fn living_world_traffic_proxy_is_the_model_box() {
     let p = proxy(&car, &t, Vec3::new(0.0, 0.0, 5.0));
     assert_eq!(p.id, PROXY_ID_TAG | car.id.to_u64());
     assert_eq!(p.inverse_mass, 0.0);
+    // The retail vehicle contact group: the skater's car-hit bail reads contacts against it.
+    assert_eq!(p.contact_group, crate::physics::VEHICLE_GROUP);
     assert_eq!((p.linvel.x, p.linvel.y, p.linvel.z), (0.0, 0.0, 5.0));
     let c = p.colliders[0].shape.as_cuboid().unwrap().half_extents;
     assert!((c.x - 0.9).abs() < 1e-5 && (c.y - 0.75).abs() < 1e-5 && (c.z - 2.15).abs() < 1e-5);

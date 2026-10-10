@@ -195,3 +195,58 @@ fn a_ped_takedown_publishes_the_external_impulse_and_wipes_the_skater_out() {
     assert!(states.contains(&PhysicalStateId::WipeoutGround), "no wipeout within 3 s of the takedown");
     assert!(player.runtime.takedown.is_none(), "the latch is used by WipeoutGround Enter");
 }
+
+/// Retail's car-hit bail (`sub_82D90C98`, b37): the skeleton's largest relative normal speed
+/// against a vehicle-group body above `Wipeout_GroundVehicleContact` (9.0) wipes the skater
+/// out. A traffic car (kinematic box in the vehicle group, as `living_world::vehicles::proxy`)
+/// driving into the standing skater at 12 m/s knocks them down at once.
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn a_traffic_car_knocks_the_skater_down_above_the_contact_limit() {
+    use skate_dynamics::rapier3d::prelude::{Pose, Rotation, SharedShape, Vector};
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let rig = Rig { graphs: crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap(), root_dir: root_dir.clone() };
+    let run = |speed: f32, group: u32| {
+        let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+        let mut player = rig.skater(&physics);
+        for _ in 0..30 {
+            rig.step(&mut physics, &mut player, pad());
+        }
+        let deck = physics.board.bodies()[BodyId::Deck.index()].rates.position;
+        // The car starts 4 m to the skater's +x and drives at them along -x.
+        let mut x = deck.x + 4.0;
+        let mut states = Vec::new();
+        for _ in 0..60 {
+            x -= speed / 60.0;
+            let centre = Vector::new(x, deck.y + 0.75, deck.z);
+            let solid = skate_dynamics::SolidBody {
+                id: 0x7E57_0000_0000_0001,
+                pose: Pose::from_parts(centre, Rotation::IDENTITY),
+                center_of_mass: centre,
+                inertia_rotation: Rotation::IDENTITY,
+                inverse_mass: 0.0,
+                inverse_inertia: Vector::new(0.0, 0.0, 0.0),
+                linvel: Vector::new(-speed, 0.0, 0.0),
+                angvel: Vector::new(0.0, 0.0, 0.0),
+                contact_group: group,
+                colliders: vec![skate_dynamics::SolidCollider { shape: SharedShape::cuboid(2.15, 0.75, 0.9), pose: Pose::from_parts(centre, Rotation::IDENTITY), friction: 0.5 }],
+            };
+            let mut proxies = network::Proxies::default();
+            proxies.append_solid(solid, &physics, &player.runtime, false);
+            physics.network_proxies = proxies;
+            rig.step(&mut physics, &mut player, pad());
+            states.push(player.runtime.player_state.current());
+        }
+        states
+    };
+    let first = |v: &[PhysicalStateId]| v.iter().position(|s| *s == PhysicalStateId::WipeoutGround);
+    // 2026-10-09 (DownTown): 12 m/s group 8 -> tick 6, group 0 -> tick 7; 4 m/s group 8 -> tick 22 (this
+    // box never brakes, unlike a retail car that hit an actor; the vehicle scalar 0.35 shrinks the other
+    // limits while touching it), group 0 -> none.
+    let fast = first(&run(12.0, VEHICLE_GROUP));
+    eprintln!("12 m/s: first wipeout tick {fast:?}");
+    assert!(fast.is_some_and(|t| t < 10), "a 12 m/s car hit wipes the skater out at once");
+}

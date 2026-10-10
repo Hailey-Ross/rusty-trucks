@@ -415,10 +415,12 @@ pub(crate) fn drive_traffic(
     mut cars_q: Query<(&TrafficCar, &mut CarMotion, &mut TrafficAudio, &mut AudioVelocity)>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
     mut events: MessageWriter<TrafficEvent>,
+    (observers, peds, ped_obstacles): (Res<super::LivingWorldObservers>, Query<&super::peds::PedBody>, Option<Res<super::peds::PedObstacles>>),
 ) {
     let st = &mut *state;
     let traffic = &mut *traffic;
     let Some(net) = st.roads.as_ref() else { return };
+    look_ahead(traffic, &cars_q, &observers, &peds, ped_obstacles.as_deref());
     let now = st.world.tick();
     let from = traffic.last_tick.unwrap_or(now);
     traffic.last_tick = Some(now);
@@ -534,12 +536,93 @@ pub(crate) fn proxy(car: &TrafficCar, pose: &Transform, velocity: Vec3) -> skate
         inverse_inertia: Vector::new(0.0, 0.0, 0.0),
         linvel: p(velocity),
         angvel: Vector::new(0.0, 0.0, 0.0),
-        contact_group: 0,
+        // Retail's vehicle contact group (8; the skeleton contact pass keeps the largest
+        // relative normal speed against it for the car-hit bail, `sub_82BD4A30` / `sub_82D90C98`).
+        contact_group: crate::physics::VEHICLE_GROUP,
         colliders: vec![skate_dynamics::SolidCollider {
             shape: SharedShape::cuboid(half[0].max(0.1), half[1].max(0.1), half[2].max(0.1)),
             pose: Pose::from_parts(p(centre), rotation),
             friction: 0.5,
         }],
+    }
+}
+
+/// The skater's body hit a car (`sub_82C3C150`, actor branch): a contact ahead of the car (ours:
+/// along its velocity; retail's axis is the car's vtable +24, inferred forward) latches the hit
+/// brake on the follower car. Logs `VEHICLE_HIT`.
+pub(crate) fn apply_vehicle_hits(
+    mut skater: Option<ResMut<crate::physics::SkaterRuntime>>,
+    cars: Query<(&TrafficCar, &CarMotion)>,
+    mut traffic: ResMut<TrafficState>,
+) {
+    let Some(skater) = skater.as_deref_mut() else { return };
+    for (id, point) in std::mem::take(&mut skater.vehicle_hits) {
+        if id & PROXY_ID_TAG != PROXY_ID_TAG {
+            continue;
+        }
+        let Some((car, motion)) = cars.iter().find(|(c, _)| (PROXY_ID_TAG | c.id.to_u64()) == id) else { continue };
+        let at = motion.curr.translation;
+        let v = motion.velocity;
+        let ahead = (Vec3::from_array(point) - at).dot(v) > 0.0;
+        let serial = car.id.serial;
+        if let Some(f) = traffic.cars.iter_mut().find(|c| c.key == serial) {
+            if ahead && !f.hit_brake && f.speed > 0.0 {
+                f.hit_brake = true;
+                info!("VEHICLE_HIT car=#{serial} speed={:.1} at=[{:.1}, {:.1}, {:.1}]", f.speed, point[0], point[1], point[2]);
+            }
+        }
+    }
+}
+
+/// V4 look-ahead (`skate_core::living_world::traffic::obstacles`): the obstacle lists (`sub_826B2EE0`: skaters
+/// radius 0 and peds, soft; movable props (DMOs) radius half their smallest extent, hard; traffic cars add nothing,
+/// `b42`) against each car's look-ahead quad from last frame's pose; the nearest free distance goes to the follower
+/// car. Ours: the ped radius is the fallback ped radius (retail 0.5 x the body extents' z, the per-ped value is
+/// collision data), props carry no corner points, a bailing skater's four extra points are not added, and the
+/// turn widening is off (the turn side `+3748` is open; threshold 0.025).
+fn look_ahead(
+    traffic: &mut TrafficState,
+    cars_q: &Query<(&TrafficCar, &mut CarMotion, &mut TrafficAudio, &mut AudioVelocity)>,
+    observers: &super::LivingWorldObservers,
+    peds: &Query<&super::peds::PedBody>,
+    props: Option<&super::peds::PedObstacles>,
+) {
+    use skate_core::living_world::traffic::obstacles::{look_ahead_quad, nearest, CarFrame, LookAheadParams, Obstacle};
+    let params = LookAheadParams::default();
+    let mut list: Vec<Obstacle> = observers.observers.iter().map(|o| Obstacle { position: o.position, radius: 0.0, soft: true, id: None }).collect();
+    list.extend(peds.iter().map(|b| Obstacle { position: b.position.to_array(), radius: super::vehicle_contacts::FALLBACK_PED_RADIUS, soft: true, id: None }));
+    let cars: Vec<(u32, CarFrame)> = cars_q
+        .iter()
+        .map(|(car, motion, ..)| {
+            let r = motion.curr.rotation;
+            let f = r * Vec3::Z;
+            let s = r * Vec3::X;
+            let flat = |v: Vec3| {
+                let l = (v.x * v.x + v.z * v.z).sqrt().max(1e-6);
+                [v.x / l, v.z / l]
+            };
+            let [lo, hi] = car.bounds;
+            let frame = CarFrame {
+                position: motion.curr.translation.to_array(),
+                forward: flat(f),
+                side: flat(s),
+                half_width: (hi[0] - lo[0]) * 0.5,
+                half_length: (hi[2] - lo[2]) * 0.5,
+            };
+            (car.id.serial, frame)
+        })
+        .collect();
+    // Props: active (not obstacle-off) DMOs; mod bodies live above `MOD_BODY_OBSTACLE_BASE` and are not DMOs.
+    list.extend(props.into_iter().flat_map(|p| p.0.states.iter()).filter(|(id, st)| **id < super::peds::MOD_BODY_OBSTACLE_BASE && !st.inactive).map(|(_, st)| Obstacle {
+        position: [st.now.center[0], st.now.y_min, st.now.center[1]],
+        radius: st.now.half[0].min(st.now.half[1]),
+        soft: false,
+        id: None,
+    }));
+    for (serial, frame) in &cars {
+        let Some(car) = traffic.cars.iter_mut().find(|c| c.key == *serial) else { continue };
+        let quad = look_ahead_quad(frame, car.speed, car.params.min_gap, 0.0, None, &params);
+        car.obstacle = nearest(frame, &quad, &list, car.speed, true, &params).map(|(_, d)| d);
     }
 }
 
@@ -702,7 +785,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<VehicleOverrides>()
         .init_resource::<CarMaterials>()
         .add_message::<TrafficEvent>()
-        .add_systems(FixedUpdate, (load_traffic_data, apply_vehicle_records, drive_traffic, log_traffic).chain().after(super::step_population))
+        .add_systems(FixedUpdate, (load_traffic_data, apply_vehicle_records, apply_vehicle_hits, drive_traffic, log_traffic).chain().after(super::step_population))
         .add_systems(
             FixedUpdate,
             push_vehicle_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),

@@ -449,3 +449,54 @@ no hand-flag producer, no car grab splines yet.
 **Open.** The skitch frame (`sub_82D48148`, research b32 running) and the state fields' meanings, the along-car hold
 chain (`82D48C98`: car acceleration + stick + rest servo -> offset target; b31 decoded the arithmetic), the car grab splines (research b34), the latch wiring in the ground update (`ground_runtime/update.rs:117`,
 gated by owner +12836 bit 0x40, open) and the car-side hook.
+
+## Cars knock the skater down, and brake when hit (V5 start, 2026-10-09)
+
+**Retail [code] (`.local/research/npc/b37-traffic-v5-car-hits.md`; main checked the contact debug string and our
+vehicle group).** The skeleton contact pass (`sub_82BD4A30`) keeps the largest relative normal speed against
+vehicle-group (8) bodies; the Ground / Air wipeout checks (`sub_82D90C98`) bail the skater (reason 7, WipeoutGround)
+above `Wipeout_GroundVehicleContact` (9.0; `Wipeout_GroundSkitchingContact` while skitching), and touching a vehicle
+shrinks the other wipeout limits (`Wipeout_GroundVehicleScalar` 0.35). The car side (`sub_82C3C150`): an actor (the
+skater; peds are not actors) hitting the car ahead of it latches `+4401` bit 0x20 and the planner brakes hard
+(accel = -speed) until the car stands; a parked car's alarm needs `alarm_impulse` (0.1).
+
+**Change.** The traffic car proxy was in contact group 0 (static world), so the already-ported car-hit bail never
+fired: it is now `VEHICLE_GROUP` (8). The skeleton contact collector also returns the vehicle-group solids the body
+touched (`SkaterRuntime::vehicle_hits`); `apply_vehicle_hits` maps them to the follower car and latches
+`Car::hit_brake` when the contact is ahead of the car (ours: along its velocity; retail's axis, the car's vtable
++24, is inferred forward); `follow::step` brakes at -speed and clears the latch at a stop. Log `VEHICLE_HIT`.
+
+**Verification.** skate-game data-gated `a_traffic_car_knocks_the_skater_down_above_the_contact_limit` (DownTown,
+a kinematic car box: 12 m/s group 8 bails at tick 6 (group 0: tick 7 through the generic limits); 4 m/s group 8
+bails at tick 22 because that box never brakes, group 0 never); `living_world_traffic_proxy_is_the_model_box`
+asserts the group; skate-core `a_car_hit_by_the_skater_ahead_brakes_to_a_stop_then_drives_on`. Not play-tested.
+
+**Open.** Roofs (no roof code found; the car is a moving surface in group 8 now), the parked-car alarm (no parked
+cars yet), the hit-by mask's reader, a board-only car contact.
+
+## Traffic: obstacles ahead (V4 look-ahead, 2026-10-09)
+
+**Retail [code] (`.local/research/npc/b36-traffic-v4-driver.md`, `b41-v4-obstacles-corridor.md`,
+`b42-v4-leftovers.md`; main checked the characteristics / driver values, 0.68 and 0.025).** Every frame the traffic
+manager refills two obstacle lists (`sub_826B2EE0`): skaters (radius 0, soft) and world actors (peds radius 0.5 x
+body extents z, soft; movable props radius half their smallest extent, hard; traffic cars add nothing). Each car's
+look-ahead quad (`sub_82C400A8`) runs from its centre to the bumper plus speed + standoff, flared on the turning side
+(`02A6` 2.0 x speed ratio); a record touching its side / front edges or inside it is in the way
+(`sub_82C41BD0`, `sub_82C41A90`); its free distance is `|pos - car| - radius - 0.68 x speed`; soft records count
+below 20 km/h only for opted-in drivers (all stock drivers). The planner brakes for the nearest one:
+`-v^2 / (2 (d - standoff) + 0.001)` within one second of travel plus the standoff, `-v` inside it.
+
+**Change.** skate-core `living_world::traffic::obstacles` (`Obstacle`, `CarFrame`, `look_ahead_quad`, `in_quad`,
+`in_the_way`, `nearest`, `obstacle_accel`); `Car::obstacle` (the free distance) feeds `follow::step`; skate-game
+`look_ahead` builds the lists from the observers, the peds and the active DMO footprints (`PedObstacles`) and sets
+each car's nearest obstacle once per frame before the ticks.
+
+**Engine choices.** The ped radius is our fallback ped radius (0.35; retail's per-ped extents are collision data),
+props carry no corner points, a bailing skater's four extra points are not added, the turn widening is off (the
+turn side `+3748` is open), the standoff is the car's `min_gap`, and the lists use last frame's poses.
+
+**Verification.** skate-core `the_look_ahead_reaches_speed_plus_standoff_beyond_the_bumper`,
+`the_nearest_obstacle_brakes_the_car`; skate-game living_world tests (69). Not play-tested.
+
+**Open.** The horn (`sub_82C40660`, decoded in b36: kinds 1 to 6, timers) and the honked-at ped notify
+(`RunFromHonker`), the turn side, the per-ped radius, the skater-behind zone (quad B, 40 m).
