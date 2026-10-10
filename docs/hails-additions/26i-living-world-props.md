@@ -559,3 +559,25 @@ cars).
 **Verification.** Python dynamic_props / grab_data tests; over all 119 parkassets DMO RX2s the per-template splines
 equal the whole-file parse (main's run, 2026-10-09). The game does not read the field yet.
 
+## Move Object step 2: props in the grab scene (opt-in, 2026-10-09)
+
+**Retail [code] (`.local/research/npc/b54-dmo-grab-provider.md`; main checked `82C4BE80` emits type-2 records).** In
+single-player worlds the world-object provider (`82C4BE80` box / `82C4BB08` radius, scene `+4084`, query mode bit 0x04)
+answers props: disabled gate, a sphere around the object (radius + 15 m), per spline byte +68 > 1 and +70 != 0, a
+segment hit, the assembly chain, then a type-2 record with the object's matrix and a vector (vtable +120), then
+CanGrabSpline. Our `Provider::LivingWorld` query loop already ports these gates.
+
+**Change.** skate-game: `skate_world::load_dmo_grab_splines` reads the export's `grab_splines`;
+`PropDynamics::set_grab_splines` gives each body its template's splines; `PropDynamics::grab_objects` builds
+`Provider::LivingWorld` objects (template origin and basis as the frame, points scaled like the body, linear velocity as
+the vector, type-2 records, ids `PROP_GRAB_TAG | body id`); `GamePhysics::refresh_grab_props` replaces them in the grab
+registry before the queries run each tick. `parse_grab_splines` is shared with the cars. Log `SKATE_PROP_GRAB`.
+
+**Engine choices.** Opt-in with `SKATE_PROP_GRAB=1` until Move Object reads the authored record instead of its
+stand-in edge (`prop_carry.rs` `grab_frame` / `choose_edge`; record choice `82D4D150` open): with the props live, the
+biped grab query (mode 4) would bind authored records that the carry does not use yet. NOT RETAIL YET: the assembly is a
+stand-in with the object id; the record vector is the linear velocity.
+
+**Verification.** skate-game `a_prop_with_grab_splines_is_a_world_object_in_the_grab_scene` (168 prop / living_world /
+offboard tests pass). Needs a setup refresh (or the next one) for the export field.
+

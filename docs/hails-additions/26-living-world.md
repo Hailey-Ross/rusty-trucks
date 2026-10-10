@@ -132,3 +132,4 @@ the file of their topic (and get a line here).
 - [Dragged props sinking through the floor, 2026-10-07](26i-living-world-props.md#dragged-props-sinking-through-the-floor-2026-10-07)
   - [Move Object port (2026-10-08)](26i-living-world-props.md#move-object-port-2026-10-08)
 - [Move Object step 1: props' authored grab splines in the export (2026-10-09)](26i-living-world-props.md#move-object-step-1-props-authored-grab-splines-in-the-export-2026-10-09)
+- [Move Object step 2: props in the grab scene (opt-in, 2026-10-09)](26i-living-world-props.md#move-object-step-2-props-in-the-grab-scene-opt-in-2026-10-09)

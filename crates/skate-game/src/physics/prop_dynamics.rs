@@ -312,6 +312,9 @@ pub(crate) fn prop_simulation(
     }
 }
 
+/// Grab-scene id tag of props (cars use `living_world::vehicles::CAR_GRAB_TAG`, the high bit).
+pub(crate) const PROP_GRAB_TAG: u32 = 0x4000_0000;
+
 pub(crate) struct PropBody {
     /// Index into the collision layer's instance list (and its rebake target).
     instance: usize,
@@ -337,6 +340,8 @@ pub(crate) struct PropBody {
     type_data: Option<DmoType>,
     /// Resolved tuning of this prop type.
     tuning: PropTuning,
+    /// The template's authored grab splines (template space; `set_grab_splines`).
+    grab_splines: Vec<crate::living_world::vehicles::CarGrabSpline>,
     /// Box derived from the render AABB (scale folded in), kept so a
     /// `collision_box` override can be removed again.
     authored_center: Vector3,
@@ -900,6 +905,7 @@ impl PropDynamics {
                 half_extents,
                 template: object.name.clone(),
                 type_data: None,
+                grab_splines: Vec::new(),
                 tuning: PropTuning::default(),
                 authored_center: local_center,
                 authored_half_extents: half_extents,
@@ -1059,6 +1065,65 @@ impl PropDynamics {
         }
         self.refresh_inertia();
         count
+    }
+
+    /// The authored grab splines per template id (`native-props/<map>.json` `grab_splines`). Returns the props that
+    /// got splines.
+    pub(crate) fn set_grab_splines(&mut self, splines: &std::collections::BTreeMap<String, Vec<crate::living_world::vehicles::CarGrabSpline>>) -> usize {
+        let mut count = 0;
+        for body in &mut self.bodies {
+            let id = body.template.split('/').next().unwrap_or_default();
+            body.grab_splines = splines.get(id).cloned().unwrap_or_default();
+            count += usize::from(!body.grab_splines.is_empty());
+        }
+        count
+    }
+
+    /// Every prop with grab splines as a grab-scene object of the world-object provider (scene `+4084`, query mode
+    /// bit 0x04; single-player worlds use it, not the DMO provider, b54): template origin and basis as the frame,
+    /// points scaled like the body, linear velocity as the record vector, type-2 records. Ids: object
+    /// `PROP_GRAB_TAG | body id`, spline / geometry `PROP_GRAB_TAG | body id << 6 | index`. NOT RETAIL YET: the
+    /// assembly is a stand-in with the object id (the `+172` object is not identified).
+    pub(crate) fn grab_objects(&self) -> Vec<skate_core::player::offboard::grab_scene::Object> {
+        use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry, Object, Provider, Spline};
+        self.bodies
+            .iter()
+            .filter(|b| !b.grab_splines.is_empty() && b.id < (1 << 24))
+            .map(|b| {
+                let id = PROP_GRAB_TAG | b.id;
+                let o = b.origin();
+                let c = b.rates.basis.columns;
+                let s = b.axis_scale;
+                Object {
+                    id,
+                    provider: Provider::LivingWorld,
+                    disabled: false,
+                    assembly_ready: true,
+                    assembly: Some(AssemblyData { identity: id, first_part: None }),
+                    frame: [[c[0][0], c[0][1], c[0][2], 0.0], [c[1][0], c[1][1], c[1][2], 0.0], [c[2][0], c[2][1], c[2][2], 0.0], [o.x, o.y, o.z, 1.0]],
+                    object_vector_128: [b.rates.linear_velocity.x, b.rates.linear_velocity.y, b.rates.linear_velocity.z, 0.0],
+                    splines: b
+                        .grab_splines
+                        .iter()
+                        .take(64)
+                        .enumerate()
+                        .map(|(i, g)| {
+                            let key = PROP_GRAB_TAG | (b.id << 6) | i as u32;
+                            Spline {
+                                descriptor: Descriptor { kind: 2, id: key },
+                                geometry: std::sync::Arc::new(Geometry {
+                                    id: key,
+                                    points: g.points.iter().map(|p| [p[0] * s.x, p[1] * s.y, p[2] * s.z, 1.0]).collect(),
+                                    approach_vectors: vec![[g.direction[0], g.direction[1], g.direction[2], 0.0]],
+                                    word_60: g.flags,
+                                }),
+                                word_272: 0,
+                            }
+                        })
+                        .collect(),
+                }
+            })
+            .collect()
     }
 
     /// Vault record name of a body's prop type (diagnostics, mod keys).
@@ -4102,6 +4167,25 @@ mod tests {
         assert_eq!((cart.mass, cart.maximum_linear_velocity, cart.maximum_angular_velocity), (Some(20.0), Some(100.0), Some(100.0)));
         assert_eq!((cart.inertia_scale, cart.inertia_offset), (Some([1.2; 3]), Some([0.0, 0.2, 0.0])), "vectors inherit per field");
         assert!(dmo_type_blocks(&collections, "missing").is_err());
+    }
+
+    /// The template's authored grab splines become a world-object grab record that moves with the prop.
+    #[test]
+    fn a_prop_with_grab_splines_is_a_world_object_in_the_grab_scene() {
+        let (_, _, mut dynamics) = fixture([0., REST_Y, 1.2]);
+        let mut splines = std::collections::BTreeMap::new();
+        splines.insert("template".to_owned(), vec![crate::living_world::vehicles::CarGrabSpline { points: vec![[-0.5, 0.3, 0.0], [-0.2, 0.3, 0.0], [0.2, 0.3, 0.0], [0.5, 0.3, 0.0]], direction: [0.0, 0.0, -1.0], flags: 0x3E4 }]);
+        assert_eq!(dynamics.set_grab_splines(&splines), 1);
+        let objects = dynamics.grab_objects();
+        assert_eq!(objects.len(), 1);
+        let o = &objects[0];
+        assert!(matches!(o.provider, skate_core::player::offboard::grab_scene::Provider::LivingWorld));
+        assert_eq!(o.splines[0].descriptor.kind, 2);
+        let origin = dynamics.bodies[0].origin();
+        let [start, end] = o.record(&o.splines[0]).unwrap().endpoints();
+        let scale = dynamics.bodies[0].axis_scale;
+        assert!((start[0] - (origin.x - 0.5 * scale.x)).abs() < 1e-5 && (end[1] - (origin.y + 0.3 * scale.y)).abs() < 1e-5, "{start:?} {end:?} {origin:?}");
+        assert!(skate_core::player::offboard::grab_scene::Registry::new(objects).is_ok());
     }
 
     /// Retail type data drives the free block, the upright pair and

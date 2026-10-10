@@ -85,7 +85,19 @@ pub(crate) struct VehicleModel {
     pub grab_splines: Vec<CarGrabSpline>,
 }
 
-/// One authored grab spline, model space: chains of cubic Bezier segments (4 control points each) and the grab
+/// The exported `grab_splines` list (cars and props): a spline that is not whole Bezier segments is dropped.
+pub(crate) fn parse_grab_splines(list: &serde_json::Value) -> Vec<CarGrabSpline> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|g| {
+            let points: Vec<[f32; 3]> = g["points"].as_array()?.iter().map(vec3).collect::<Option<_>>()?;
+            (!points.is_empty() && points.len() % 4 == 0).then_some(CarGrabSpline { points, direction: vec3(&g["direction"])?, flags: g["flags"].as_u64().unwrap_or(0) as u32 })
+        })
+        .collect()
+}
+
+/// One authored grab spline (cars and props), model space: chains of cubic Bezier segments (4 control points each) and the grab
 /// direction (stock cars: (0, 0, -1), backwards).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CarGrabSpline {
@@ -142,15 +154,7 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                 secondary_ids: ids("secondary"),
                 wheel_radius,
                 bounds,
-                grab_splines: m["grab_splines"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|g| {
-                        let points: Vec<[f32; 3]> = g["points"].as_array()?.iter().map(vec3).collect::<Option<_>>()?;
-                        (!points.is_empty() && points.len() % 4 == 0).then_some(CarGrabSpline { points, direction: vec3(&g["direction"])?, flags: g["flags"].as_u64().unwrap_or(0) as u32 })
-                    })
-                    .collect(),
+                grab_splines: parse_grab_splines(&m["grab_splines"]),
             },
         );
     }

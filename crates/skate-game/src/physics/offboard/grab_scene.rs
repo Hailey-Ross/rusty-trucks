@@ -48,6 +48,13 @@ impl Registry {
         self.objects = native::Registry::new(objects).map_err(str::to_owned)?;
         Ok(())
     }
+    /// Replace the props (`Provider::LivingWorld`, the scene's `+4084` world-object provider) with this tick's.
+    pub(crate) fn set_props(&mut self, props: Vec<Object>) -> Result<(), String> {
+        let mut objects: Vec<Object> = self.objects.objects.iter().filter(|o| !matches!(o.provider, native::Provider::LivingWorld)).cloned().collect();
+        objects.extend(props);
+        self.objects = native::Registry::new(objects).map_err(str::to_owned)?;
+        Ok(())
+    }
     fn assembly(&self, mesh: u32) -> Option<u32> {
         self.mesh_assemblies
             .iter()
