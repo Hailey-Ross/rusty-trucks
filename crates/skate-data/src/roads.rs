@@ -409,6 +409,7 @@ impl RoadGraph {
                 length: s.length,
                 speed_limit: s.speed_limit,
                 lanes: s.lanes as u8,
+                manoeuvres: s.word_56,
                 district: s.district,
                 pieces: self
                     .segment_pieces(s)

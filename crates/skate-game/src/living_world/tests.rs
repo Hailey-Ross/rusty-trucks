@@ -38,7 +38,7 @@ fn roads_and_vehicles() -> (skate_core::living_world::traffic::RoadNetwork, skat
                 })
                 .collect();
             let id = 1000 + k * 2 + (dir < 0.0) as u64;
-            segments.push(SegmentInput { id: SegmentId(id), from_node: id * 10, from_end: 0, to_node: id * 10 + 1, to_end: 0, length: 2400.0, speed_limit: 14.167, lanes: 2, district: 0, pieces });
+            segments.push(SegmentInput { id: SegmentId(id), from_node: id * 10, from_end: 0, to_node: id * 10 + 1, to_end: 0, length: 2400.0, speed_limit: 14.167, lanes: 2, manoeuvres: 2, district: 0, pieces });
         }
     }
     let mut cat = skate_core::living_world::VehicleCatalog::default();

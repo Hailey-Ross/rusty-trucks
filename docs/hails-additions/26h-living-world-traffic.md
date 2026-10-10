@@ -954,8 +954,16 @@ the road when free, else the middle of the first long enough gap ahead within 0.
 change needs one second of travel clear of the cars ahead and behind on the target lane (`82E14928`).
 
 **Change.** skate-core `traffic/passage.rs` (`Passage::begin / advance / distance / sample`, `PassageParams`) and
-`traffic/spots.rs` (`Reservations`, `find_spot`, `gap_free`, `SpotParams`), pure and tested. Not wired yet: the
-decider, the pull-over / parked / pull-out states (b73) and the follower / transform integration follow.
+`traffic/spots.rs` (`Reservations`, `find_spot`, `gap_free`, `SpotParams`), pure and tested; then
+`traffic/manoeuvre.rs` (`decide`: the held-car cancel, the overtake roll, the lane timer with the go / least-loaded
+rolls and the adjacent-lane pick, the pull-over roll and spot reservation; driver fields per b74: go +28
+`Hash_52CF2CF3`, least loaded +24 `Hash_7C6B48BD`, lane timer spec+48 `Hash_90AB56A5`). Retail road +64 is the disc
+segment's `word_56` (`82E14158` copies the 64-byte record to road+8; b76): bit 0x02 (every segment) allows lane
+changes, bit 0x01 (some 1-lane roads, value 3) allows pull-over and adds a kerb lane slot; road +136 is the summed
+occupancy length per lane (`82E14FC0` / `82E15110`). `SegmentInput` / `Segment` now carry it as `manoeuvres` (from
+`skate-data` `word_56`). DownTown: 22 one-lane roads with 3, 3 one-lane and 21 two-lane roads with 2, so lane changes
+happen on two-lane roads and pull-overs on those one-lane roads. Not wired yet: the occupancy length sums, then the
+state machine (ChangingLane, PullingOver, StayingParked, PullingOut; edges per b74) and the follower / transform.
 
 **Found on the way (todo `traffic-accel-fields-mislabelled`).** The follower loads `Hash_328B9F46` as its max
 acceleration and `Hash_75822921` as its comfortable braking; retail uses them as the lane-change passage factor and

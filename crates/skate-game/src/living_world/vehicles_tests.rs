@@ -32,6 +32,7 @@ fn seg(id: u64, from: (u64, u8), to: (u64, u8), a: [f32; 3], b: [f32; 3]) -> Seg
         length,
         speed_limit: 14.166_667,
         lanes: 1,
+        manoeuvres: 2,
         district: 0,
         pieces: vec![piece(a, mid, length * 0.5), piece(mid, b, length)],
     }

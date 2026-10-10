@@ -68,7 +68,7 @@ pub(super) fn roads() -> &'static traffic::RoadNetwork {
                     })
                     .collect();
                 let id = 1000 + k * 2 + (dir < 0.0) as u64;
-                segments.push(SegmentInput { id: SegmentId(id), from_node: id * 10, from_end: 0, to_node: id * 10 + 1, to_end: 0, length: 2000.0, speed_limit: 14.167, lanes: 2, district: 0, pieces });
+                segments.push(SegmentInput { id: SegmentId(id), from_node: id * 10, from_end: 0, to_node: id * 10 + 1, to_end: 0, length: 2000.0, speed_limit: 14.167, lanes: 2, manoeuvres: 2, district: 0, pieces });
             }
         }
         traffic::RoadNetwork::build(&RoadInput { segments, junctions: Vec::new() }).unwrap()
