@@ -715,3 +715,42 @@ sit test; skate-game `ped_plugins` (parsing) and the data-gated `stock_descripto
 the conversation's 3 participants, adult_female01's sit odds 0.7, placed props DownTown 27 / Industrial 10 /
 University 37).
 
+## Ped plugins on world props: motion states and the wiring (2026-10-10)
+
+**Retail [code + data] (`.local/research/peds/b84-plugin-intent-animation.md`, `b85-packet-completion-and-clips.md`;
+main checked the packet ops `826A2600` / `826A27D0` / `826ACF90` / `826A2770`, `LockFirstWaypoint` `826A0580` and the
+motion XML).** The plugin body graph creates a monitored packet (one intent per stage, e.g. Sit then StandUp); the
+AI side only moves its stage; the ped motion graph plays a state per packet (Sit: Stand2Sit, SitIdleCyc held until
+StandUp, Sit2Stand; ATM: insert card, select, collect money, collect card; vending; water fountain until
+FinishDrinking; newspaper box) and ends the packet (`IntentStageComplete decrement` on the machines,
+`MajorIntentComplete` clears the active flag). The clip behind each logical name is the ped's anim set remap (sit per
+set: NPC / FEM / BUM / GRAN; the machines shared). `LockFirstWaypoint` locks the prop's first free waypoint.
+
+**Change.** skate-core: monitored packets as retail (stage names, active flag, the Create End removes the packet),
+`plugin_motion` (the five plugin states as step tables), `PedAnimPlayer::release_hold`, the plugin clip names in the
+loader list, `LockFirstWaypoint`. skate-game: each class's plugin graph loads from its descriptor; `PedPluginProps`
+holds the map's placed props (waypoints.json), runs `plugins::offer` every 11th world tick with the class radius and the
+ped type's `plugin_odds` (seeded), releases waypoints of peds that left; a ped that took a prop has HasPlugin, its
+plugin view is the prop's waypoint (facing point along its orientation) and its plugin graph is the class's; ExitPlugin
+releases the waypoint. The motion side plays the front active packet (`PED_PLUGIN_MOTION`) and ends it; Converse keeps
+the last-stage fallback. Logs `PED_PLUGINS`, `PED_GRAPH plugin <class>`, `PED_PLUGIN_PROP`.
+
+**NOT RETAIL YET / open.** Benches (DMO hotpoint seats) are not exported yet, so only the placed vending machines and
+trash bins are offered; the offer's own tests (vfuncs 9 / 10 / 18) and the radius source are open (radius = the class
+field `E2101F2B17A0E6B5`, inference); the step tables stand in for the motion graph; hand props (vending can,
+newspaper, trash throw), the sit-avoid states and the Collision exits are not ported; the packet queue is one packet
+per name (retail queues them).
+
+Two body rules came out of the run: within TargetWaypoint's slide distance the body stands while the slide moves it
+(it used to wander off before reaching 0.025 m), and a ped standing on its waypoint keeps turning to the explicit turn
+direction that SetExplicitTurnDirectionToWaypointOrientation and TurnToFaceWaypointOrientation set (`826A0DC8`); without it
+the facing test flickered at its 0.3 rad edge and restarted the interaction. Logs `PED_PLUGIN` (with the distance to the
+waypoint and the position) and `PED_PLUGIN_WAIT` (every 2.5 s while on a prop).
+
+**Verification.** skate-core peds (packets, the sit sequence's hold and release, plugin motion names), plugins (6),
+living_world 255; skate-game living world / ped / npc / modding 159; data-gated `placed_plugin_waypoints_against_the_navmesh`
+(every placed waypoint on the mesh or unlocated). Muted Industrial run with the release build: ped #2 takes the vending
+machine `CD3BB21DBDF4C550` at tick 10, walks 10 m, slides to 0.019 m, faces it, plays the vending clips (8 s), says its line,
+leaves (tick 1098) and is offered it again once its 30 s memory runs out. Not play-tested. Open: the conversation's
+Speak / TurnToFace flicker (conversation waypoints have no orientation).
+

@@ -359,6 +359,8 @@ pub enum PedOp {
     /// walk to it at `speed`, stand, turn to its orientation (ours: towards the plugin centre),
     /// facing it within `FOVAngle` (radians), release it.
     LockClosestWaypoint,
+    /// `LockFirstWaypoint` (`826A0580`): with no waypoint locked, lock the plugin's first waypoint if it is free.
+    LockFirstWaypoint,
     HasWaypointLocked,
     DistanceFromWaypointXZ { less_equal: Option<f32>, greater: Option<f32>, y_tolerance: f32 },
     TargetWaypoint { speed: f32, slide_distance: f32, slide_speed: f32 },
@@ -553,6 +555,7 @@ impl PedOp {
             "PedestrianInConversation" => PedOp::PedestrianInConversation,
             "PedestrianIsInConversation" => PedOp::PedestrianIsInConversation,
             "LockClosestWaypoint" => PedOp::LockClosestWaypoint,
+            "LockFirstWaypoint" => PedOp::LockFirstWaypoint,
             "HasWaypointLocked" => PedOp::HasWaypointLocked,
             "DistanceFromWaypointXZ" => PedOp::DistanceFromWaypointXZ { less_equal: float("lessEqual"), greater: float("greater"), y_tolerance: float("yTolerance").unwrap_or(f32::MAX) },
             "TargetWaypoint" => PedOp::TargetWaypoint { speed: float("speed").unwrap_or(1.0), slide_distance: float("slideDistance").unwrap_or(0.0), slide_speed: float("slideSpeed").unwrap_or(0.0) },
@@ -1220,6 +1223,15 @@ impl Host for BrainHost<'_> {
                 }
             }
             PedOp::StartInvestigateTimer => b.set_timer(INVESTIGATE_TIMER, self.chase.record.map_or(0.0, |r| r.investigate_time())),
+            PedOp::LockFirstWaypoint => {
+                if self.brain.waypoint.is_none() {
+                    if let Some(w) = self.chase.conversation.and_then(|c| c.free_waypoints.first().copied()) {
+                        self.brain.waypoint = Some(w);
+                        self.brain.chase_requests.push(ChaseRequest::LockWaypoint { at: w });
+                    }
+                }
+                return;
+            }
             PedOp::LockClosestWaypoint => {
                 // `82E1CBC0`: the nearest free waypoint, locked now (the host records the lock).
                 let at = self.position;
@@ -1348,7 +1360,13 @@ impl Host for BrainHost<'_> {
                     b.speed_suggestion = Some(*speed);
                 }
             }
-            PedOp::TurnToFaceWaypointOrientation => b.face = self.chase.conversation.map(|c| c.center),
+            // `826A0DC8`: also the locomotion's explicit turn to the waypoint's orientation (`+2080`, `+2100` bit 0x20).
+            PedOp::TurnToFaceWaypointOrientation => {
+                b.face = self.chase.conversation.map(|c| c.center);
+                if b.waypoint.is_some() && b.waypoint_facing.is_some() {
+                    b.explicit_turn = b.waypoint_facing;
+                }
+            }
             PedOp::ConversationSpeak => {
                 if !b.turn_passed && b.timer(SPEAK_TIMER) <= 0.0 {
                     b.turn_passed = true;
@@ -1511,7 +1529,11 @@ impl Host for BrainHost<'_> {
             PedOp::UnsetIsReactingToMoodEventFlagOnEnd => b.reacting_to_mood = false,
             PedOp::Plugin => b.in_plugin = false,
             PedOp::PedestrianInConversation => b.in_conversation = false,
-            PedOp::TurnToFaceWaypointOrientation => b.face = None,
+            // `826A0F50` clears the explicit turn flag.
+            PedOp::TurnToFaceWaypointOrientation => {
+                b.face = None;
+                b.explicit_turn = None;
+            }
             PedOp::ConversationListenToSpeaker => b.listen_to = None,
             PedOp::AlertToWantTarget { .. } => {
                 b.look_at.pop();

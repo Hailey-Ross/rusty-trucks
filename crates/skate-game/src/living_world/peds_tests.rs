@@ -860,3 +860,23 @@ fn living_world_ped_plugin_graphs_load() {
         eprintln!("plugin {name}: {} behaviours, {} conditions, pending {:?}", g.behaviors.len(), g.conditions.len(), g.pending());
     }
 }
+
+/// Where the placed plugin waypoints sit against the navmesh: the horizontal gap from each waypoint to its located
+/// navmesh point (a waypoint off the mesh cannot be reached by the route; the template's slide covers 1 m).
+#[test]
+#[ignore = "requires the installed living-world export (SKATE3_ASSET_ROOT)"]
+fn placed_plugin_waypoints_against_the_navmesh() {
+    let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let plugins = super::ped_plugins::PluginData::load(&root).unwrap();
+    for (district, props) in &plugins.placed {
+        let mut d = PedData::default();
+        d.load_nav(&root, district, &Default::default());
+        let Some(mesh) = d.nav.clone() else { continue };
+        for p in props {
+            for w in &p.waypoints {
+                let gap = mesh.locate(w.position).map(|n| ((n.position[0] - w.position[0]).powi(2) + (n.position[2] - w.position[2]).powi(2)).sqrt());
+                eprintln!("PLUGIN_WP {district} {} {:016X} at [{:.2}, {:.2}, {:.2}] mesh gap {:?}", p.class, p.id, w.position[0], w.position[1], w.position[2], gap.map(|g| (g * 100.0).round() / 100.0));
+            }
+        }
+    }
+}

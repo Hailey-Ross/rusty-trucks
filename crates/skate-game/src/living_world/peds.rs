@@ -94,6 +94,8 @@ pub(crate) struct PedData {
     pub chase_global: Option<Arc<skate_core::living_world::peds::chase::ChaseRecord>>,
     /// The conversation plugin graph (`plugin/conversation.stategraph`) and the conversation tables.
     pub conversation_graph: Option<Arc<super::ped_graph::PedGraph>>,
+    /// The world-prop plugin graphs by prop class (each descriptor's `file`, compiled).
+    pub plugin_graphs: BTreeMap<String, Arc<super::ped_graph::PedGraph>>,
     pub conversations: Arc<super::ped_mood::ConversationTables>,
     /// Ped plugins on world props: classes, descriptors, `plugin_odds`, placed props (`ped_plugins`).
     pub plugins: Arc<super::ped_plugins::PluginData>,
@@ -509,6 +511,18 @@ fn load_ped_data(
                 p.odds.len(),
                 p.placed.iter().map(|(k, v)| (k.clone(), v.len())).collect::<Vec<_>>()
             );
+            // Each class's plugin graph (`plugin/<name>.xml` compiled to `.stategraph`).
+            for (class, c) in &p.classes {
+                let Some(d) = c.descriptor.as_ref().filter(|d| !d.graph.is_empty() && class != "waypoint_conversation") else { continue };
+                let relative = format!("private/stock/data/{}", d.graph.replace('\\', "/").trim_end_matches(".xml").to_string() + ".stategraph");
+                match super::ped_graph::PedGraph::load(&config.asset_root, &relative) {
+                    Ok(g) => {
+                        info!("PED_GRAPH plugin {class}: {} behaviours, {} conditions; not ported yet: {:?}", g.behaviors.len(), g.conditions.len(), g.pending().keys().collect::<Vec<_>>());
+                        loaded.plugin_graphs.insert(class.clone(), Arc::new(g));
+                    }
+                    Err(error) => warn!("PED_GRAPH plugin {class} not loaded: {error}"),
+                }
+            }
             loaded.plugins = Arc::new(p);
         }
         Err(error) => warn!("PED_PLUGINS not loaded (no plugin props): {error}"),
@@ -719,9 +733,29 @@ pub(crate) fn advance_peds(
             let face = mind.filter(|m| m.brain.speed_suggestion == Some(0.0)).and_then(|m| m.brain.face);
             // LockToCurrentPosition: stand where the ped is (turning only for a face point).
             let locked = mind.is_some_and(|m| m.brain.position_locked);
+            // TargetWaypoint's slide: within the slide distance the think step moves the ped onto the point; the body
+            // stands (no wander target while the route is off).
+            let sliding = mind.is_some_and(|m| {
+                m.brain.approach.zip(m.brain.approach_slide).is_some_and(|((p, _), (slide, _))| (p[0] - body.position.x).hypot(p[2] - body.position.z) <= slide)
+            });
             match data.nav.as_deref() {
                 _ if body.player.state == Locomotion::Reaction => body.player.intent = skate_core::living_world::peds::anim::Intent::Idle,
-                _ if locked && face.is_none() => body.player.intent = skate_core::living_world::peds::anim::Intent::Idle,
+                _ if (locked || sliding) && face.is_none() => {
+                    body.player.intent = skate_core::living_world::peds::anim::Intent::Idle;
+                    // The explicit turn direction (`+2100` bit 0x20): a ped standing on its waypoint keeps turning to
+                    // the waypoint's orientation.
+                    if let Some(dir) = mind.and_then(|m| m.brain.explicit_turn).filter(|d| d[0] * d[0] + d[2] * d[2] > 1e-6) {
+                        let mut error = dir[0].atan2(dir[2]) - body.heading;
+                        while error > std::f32::consts::PI {
+                            error -= std::f32::consts::TAU;
+                        }
+                        while error < -std::f32::consts::PI {
+                            error += std::f32::consts::TAU;
+                        }
+                        let step = nav_settings.wander.turn_rate * dt;
+                        turn = error.clamp(-step, step);
+                    }
+                }
                 _ if face.is_some() => {
                     let p = face.unwrap_or_default();
                     let d = [p[0] - body.position.x, p[2] - body.position.z];
@@ -1209,6 +1243,7 @@ pub(crate) fn install(app: &mut App) {
         .add_message::<SkaterTakedownRequest>()
         .init_resource::<PedChaseGroups>()
         .init_resource::<PedConversations>()
+        .init_resource::<PedPluginProps>()
         .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, apply_skater_takedowns, advance_peds, log_ped_readout).chain().after(super::step_population))
         .init_resource::<PedMaterials>()
         .add_systems(Update, (present_ped_looks, present_ped_tints, present_ped_pose).chain().after(crate::app::FrameSet::Animation).before(super::npc_skaters::present_fade));
@@ -1238,6 +1273,21 @@ pub(crate) struct PedMind {
     /// Population ticks run so far.
     ticks: u64,
     state: Option<usize>,
+    /// The world prop the ped took (index in `PedPluginProps`, prop id, waypoint) and the props it refused (`82E40BD0`).
+    prop: Option<(usize, u64, usize)>,
+    refusals: skate_core::living_world::peds::plugins::RefusalMemory,
+}
+
+/// The world props offering ped plugins on the current map (host-owned; `skate_core::living_world::peds::plugins`).
+#[derive(Resource, Default)]
+pub(crate) struct PedPluginProps {
+    pub key: Option<(String, u64)>,
+    pub props: Vec<skate_core::living_world::peds::plugins::PluginProp>,
+    pub settings: skate_core::living_world::peds::plugins::PluginSettings,
+    /// World ticks since the last offer scan (`826C0058` every 11th tick) and the last world tick seen.
+    pub scan_ticks: u32,
+    pub last_tick: Option<u64>,
+    pub rng: Option<skate_core::living_world::Rng>,
 }
 
 /// The live conversations by id (host-owned plain data, `skate_core::living_world::peds::conversation`).
@@ -1307,7 +1357,7 @@ pub(crate) fn think_peds(
     // same message in one system conflict).
     mut events: ResMut<bevy::ecs::message::Messages<PedEvent>>,
     mut cursor: Local<Option<bevy::ecs::message::MessageCursor<PedEvent>>>,
-    (mut traffic_events, cars): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>),
+    (mut traffic_events, cars, mut plugin_props): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>),
 ) {
     // Horn kind 2 at a ped (`sub_82E3C3D0`: the honker id into brain `+3232`; the last car wins).
     let honked: BTreeMap<u64, u64> = traffic_events.read().filter_map(|e| match e { super::vehicles::TrafficEvent::HonkedAt { id, ped } => Some((*ped, id.to_u64())), _ => None }).collect();
@@ -1335,6 +1385,69 @@ pub(crate) fn think_peds(
         .map(|(_, p, b, _)| (p.id.to_u64(), (p.entity.clone(), b.position.to_array())))
         .chain(players.iter().enumerate().map(|(i, p)| (PLAYER_TARGET_BASE + i as u64, ("skater".to_string(), *p))))
         .collect();
+    // World-prop plugins: the map's props, then the offer scan every 11th world tick (`826C0058` -> `826BFE18`).
+    {
+        let pp = &mut *plugin_props;
+        let key = data.loaded_for.clone();
+        if pp.key != key {
+            pp.props = key.as_ref().and_then(|k| data.plugins.placed.get(&k.0)).cloned().unwrap_or_default();
+            pp.key = key;
+            pp.scan_ticks = 0;
+            info!("PED_PLUGINS props on this map: {}", pp.props.len());
+        }
+        let seed = state.world.seed();
+        let rng = pp.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(seed, &[0x504c_5547])));
+        let elapsed = pp.last_tick.map_or(1, |t| tick.saturating_sub(t)) as u32;
+        pp.last_tick = Some(tick);
+        pp.scan_ticks += elapsed;
+        // Waypoints held by peds that are gone or no longer on the prop are released.
+        let holding: Vec<(u64, u64)> = list.iter().filter_map(|(_, p, _, m)| m.prop.map(|(_, id, _)| (p.id.to_u64(), id))).collect();
+        for prop in &mut pp.props {
+            for w in &mut prop.waypoints {
+                if let Some(o) = w.occupant.filter(|o| !holding.contains(&(*o, prop.id))) {
+                    info!("PED_PLUGIN_PROP {} {:016X} released: ped {o} gone tick={tick}", prop.class, prop.id);
+                    w.occupant = None;
+                }
+            }
+        }
+        while pp.scan_ticks >= pp.settings.scan_period.max(1) {
+            pp.scan_ticks -= pp.settings.scan_period.max(1);
+            let mut attaches = Vec::new();
+            {
+                let mut offer_peds: Vec<skate_core::living_world::peds::plugins::OfferPed> = list
+                    .iter_mut()
+                    .map(|(_, p, b, m)| {
+                        let m = &mut **m;
+                        skate_core::living_world::peds::plugins::OfferPed {
+                            id: p.id.to_u64(),
+                            position: b.position.to_array(),
+                            has_plugin: m.brain.has_plugin || m.prop.is_some(),
+                            odds: data.plugins.odds.get(&p.entity).map(Vec::as_slice).unwrap_or(&[]),
+                            memory: &mut m.refusals,
+                        }
+                    })
+                    .collect();
+                for (index, prop) in pp.props.iter_mut().enumerate() {
+                    if !data.plugin_graphs.contains_key(&prop.class) {
+                        continue;
+                    }
+                    let class = data.plugins.classes.get(&prop.class);
+                    // [inference] the offer radius: the class field E2101F2B17A0E6B5 (10 sit / 5 bin / 15 ATM).
+                    let radius = class.and_then(|c| c.numbers.get("Hash_E2101F2B17A0E6B5").copied()).unwrap_or(10.0);
+                    let max = class.and_then(|c| c.descriptor.as_ref()).map_or(1, |d| d.max_participants);
+                    for a in skate_core::living_world::peds::plugins::offer(prop, radius, max, &mut offer_peds, &mut |_, _| true, &pp.settings, rng) {
+                        attaches.push((index, a));
+                    }
+                }
+            }
+            for (index, a) in attaches {
+                if let Some((_, p, _, m)) = list.iter_mut().find(|(_, p, ..)| p.id.to_u64() == a.ped) {
+                    m.prop = Some((index, a.prop, a.waypoint));
+                    info!("PED_PLUGIN_PROP ped=#{} takes {} {:016X} waypoint {} tick={tick}", p.id.serial, pp.props[index].class, a.prop, a.waypoint);
+                }
+            }
+        }
+    }
     let entity = |id: u64| entities.get(&id).cloned();
     let target = |id: u64| entities.get(&id).map(|e| e.1);
     let player_list: Vec<(u64, [f32; 3])> = players.iter().enumerate().map(|(i, p)| (PLAYER_TARGET_BASE + i as u64, *p)).collect();
@@ -1537,10 +1650,29 @@ pub(crate) fn think_peds(
             if mind.brain.plugin.is_none_or(|id| !conversations.map.get(&id).is_some_and(|c| c.members.iter().any(|m| m.ped == me))) {
                 mind.brain.plugin = conversations.map.values().find(|c| c.members.iter().any(|m| m.ped == me)).map(|c| c.id);
             }
-            mind.brain.has_plugin = mind.brain.plugin.is_some();
+            mind.refusals.tick(dt, &plugin_props.settings);
+            // HasPlugin: a conversation member, or a ped that took a world prop.
+            let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id).and_then(|p| p.waypoints.get(w)).copied());
+            if mind.prop.is_some() && prop_wp.is_none() {
+                mind.prop = None;
+            }
+            mind.brain.has_plugin = mind.brain.plugin.is_some() || mind.prop.is_some();
             let conv = mind.brain.plugin.and_then(|id| conversations.map.get(&id));
-            let free: Vec<[f32; 3]> = conv.map(|c| c.waypoints.iter().filter(|w| w.1.is_none()).map(|w| w.0).collect()).unwrap_or_default();
-            let conversation = conv.map(|c| skate_core::living_world::peds::brain::ConversationInfo { complete: c.is_complete(), speaker: c.speaker(), center: c.center, free_waypoints: &free, speech: c.turn_speech() });
+            let free: Vec<[f32; 3]> = match (conv, prop_wp) {
+                (Some(c), _) => c.waypoints.iter().filter(|w| w.1.is_none()).map(|w| w.0).collect(),
+                (None, Some(w)) => vec![w.position],
+                _ => Vec::new(),
+            };
+            // A world prop's view: its waypoint (reserved at the offer) and a facing point along its orientation.
+            let conversation = match (conv, prop_wp) {
+                (Some(c), _) => Some(skate_core::living_world::peds::brain::ConversationInfo { complete: c.is_complete(), speaker: c.speaker(), center: c.center, free_waypoints: &free, speech: c.turn_speech() }),
+                (None, Some(w)) => {
+                    mind.brain.waypoint_facing = Some(w.facing);
+                    let center = [w.position[0] + w.facing[0] * 10.0, w.position[1], w.position[2] + w.facing[2] * 10.0];
+                    Some(skate_core::living_world::peds::brain::ConversationInfo { complete: false, speaker: None, center, free_waypoints: &free, speech: None })
+                }
+                _ => None,
+            };
             let groups_now = &chase_groups.0;
             let groups = |chasee: u64| groups_now.get(&chasee).map(|g| g.info(max_chasers(chasee)));
             // UpdateBlockPrediction (`82D99540`): the chasee radius `G+1648` has no known writer: 0.0.
@@ -1562,7 +1694,11 @@ pub(crate) fn think_peds(
             };
             controller.update(program, dt, &mut host);
             // The Plugin state runs the plugin's own graph on the same brain (`8269F248`).
-            match (mind.brain.in_plugin, data.conversation_graph.as_deref()) {
+            let plugin_graph = match mind.prop {
+                Some((i, ..)) => plugin_props.props.get(i).and_then(|p| data.plugin_graphs.get(&p.class)).map(|g| &**g),
+                None => data.conversation_graph.as_deref(),
+            };
+            match (mind.brain.in_plugin, plugin_graph) {
                 (true, Some(pg)) => {
                     let pc = mind.plugin_controller.get_or_insert_with(|| skate_core::graph::controller::Controller::new(pg.graph.runtime.program.topology.states.len()));
                     let mut host = skate_core::living_world::peds::brain::BrainHost {
@@ -1577,9 +1713,16 @@ pub(crate) fn think_peds(
                         chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation },
                     };
                     pc.update(&pg.graph.runtime.program, dt, &mut host);
+                    if mind.prop.is_some() && pc.frame.current == mind.plugin_state && tick % 150 == 0 {
+                        // Progress of a ped on a world prop (logs must diagnose a stall).
+                        let name = |s: Option<usize>| s.and_then(|s| pg.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
+                        let dist = mind.brain.waypoint.map(|w| ((w[0] - body.position.x).powi(2) + (w[2] - body.position.z).powi(2)).sqrt());
+                        info!("PED_PLUGIN_WAIT ped=#{} in {} dist={:?} at=[{:.2}, {:.2}, {:.2}] approach={:?} slide={:?} route={} tick={tick}", ped.id.serial, name(pc.frame.current), dist.map(|d| (d * 1000.0).round() / 1000.0), body.position.x, body.position.y, body.position.z, mind.brain.approach.map(|a| a.1), mind.brain.approach_slide, body.nav.route.is_some());
+                    }
                     if pc.frame.current != mind.plugin_state {
                         let name = |s: Option<usize>| s.and_then(|s| pg.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
-                        info!("PED_PLUGIN ped=#{} {} -> {} waypoint={:?} tick={tick}", ped.id.serial, name(mind.plugin_state), name(pc.frame.current), mind.brain.waypoint.map(|w| [w[0].round(), w[2].round()]));
+                        let dist = mind.brain.waypoint.map(|w| ((w[0] - body.position.x).powi(2) + (w[2] - body.position.z).powi(2)).sqrt());
+                        info!("PED_PLUGIN ped=#{} {} -> {} waypoint={:?} dist={:?} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, name(mind.plugin_state), name(pc.frame.current), mind.brain.waypoint.map(|w| [w[0].round(), w[2].round()]), dist.map(|d| (d * 1000.0).round() / 1000.0), body.position.x, body.position.y, body.position.z);
                         mind.plugin_state = pc.frame.current;
                     }
                 }
@@ -1720,6 +1863,20 @@ pub(crate) fn think_peds(
                         if let Some(c) = mind.brain.plugin.and_then(|id| conversations.map.get_mut(&id)) {
                             c.unlock_waypoint(me);
                         }
+                        continue;
+                    }
+                    ChaseRequest::ExitPlugin if mind.prop.is_some() => {
+                        if let Some((i, id, _)) = mind.prop.take() {
+                            if let Some(p) = plugin_props.props.get_mut(i).filter(|p| p.id == id) {
+                                p.release(me);
+                                info!("PED_PLUGIN_PROP ped=#{} leaves {} {:016X} tick={tick}", ped.id.serial, p.class, id);
+                            }
+                        }
+                        mind.brain.has_plugin = false;
+                        mind.brain.waypoint = None;
+                        mind.brain.waypoint_facing = None;
+                        mind.plugin_controller = None;
+                        mind.plugin_state = None;
                         continue;
                     }
                     ChaseRequest::ExitPlugin => {
