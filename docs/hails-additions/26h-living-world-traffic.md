@@ -721,3 +721,27 @@ frame layout) is being re-read (b55), as are the tow spring's body-height term a
 **Verification.** skate-core `the_stick_moves_the_hand_along_the_bumper_at_most_one_unit_per_second`,
 `a_hard_car_acceleration_is_an_event_and_the_gate_resets`.
 
+## Skitching step 4e: state 104 in the game (2026-10-09)
+
+**Retail [code] (`.local/research/npc/b50-skitch-prestep-update.md`, `b51-skitch-forces-publish.md`, `b55-skitch-inputs.md`;
+main checked the publication gate, the 7199.999 constant and the skeleton load in the spring).** State 104 (vtable
+`0x82327398`): Enter `82D47278` + reset, an empty Exit, Update `82D477C0` (hands / forearms / head out of collision for
+5 frames, the gated body: record copy, off-ground pre-step, stick 924, frame step, sub-mode, hold step, along chain,
+forces, then the tail; always the reckoning and the skeleton ground update), publication `82D4C078`. b55 settled the
+along chain's input (the grab point's along displacement over the last frame x 7199.999, frames 128 vs 64 after the
+shift), the stick (turn and spin, sign-asymmetric) and the spring's height (z of the skeleton's raw part-0 global,
+Skeleton+14208).
+
+**Change.** skate-game `physics::skitch_state` (`SkitchState`, `SkitchSettings`, `enter`, `update`, `output`); the
+state registry supports 104 with transitions to and from the other states; `frame.rs` dispatches it; the transition
+enters / exits it; the publication writes flag 304 (ready and not released), the car handle (36 / 40) and the re-grab
+timer (292); `AnimatedSkeleton.raw_part0_global` keeps the raw part-0 global for the spring.
+
+**Engine choices.** NOT RETAIL YET: the grab point is the point on the record's chord; the board forward is the deck
+forward; the slide friction, speed wobble, anti-flip, heading, manual and lean (`82D4A0C0`) terms and the extra output
+fields (animation 132 / 136 / 140, ground 280 / 284 / 288 / 308, state byte 53) are not composed yet. The riding latch
+stays held back (`ground_runtime::skitch::LATCH_ENABLED = false`), so state 104 is not entered in game yet.
+
+**Verification.** skate-game `skitching_is_connected_to_ground_and_back`; the skate-core skitching tests; skate-game
+bin 664 pass (only the known setup fingerprint failure).
+

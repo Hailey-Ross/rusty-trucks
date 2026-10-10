@@ -211,6 +211,9 @@ pub(super) fn advance(
         skate_core::player::state::PhysicalStateId::SlideGround => {
             super::slide_state::update(physics, skater)?
         }
+        skate_core::player::state::PhysicalStateId::Skitching => {
+            super::skitch_state::update(physics, skater)?
+        }
         skate_core::player::state::PhysicalStateId::WipeoutGround => {
             super::wipeout_states::advance(physics, skater)?
         }

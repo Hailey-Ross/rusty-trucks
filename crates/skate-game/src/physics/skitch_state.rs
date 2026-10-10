@@ -1,0 +1,251 @@
+//! PhysicsSkitching 104 (TU3 vtable `0x82327398`; doc 26h "Skitching step 4e"). Enter `82D47278` + reset
+//! `82D47318`, Exit `82B61BB8` (empty), Update `82D477C0`, publication `82D4C078`. The maths lives in
+//! `skate_core::riding::skitching` (frame, sub-mode, hold, shimmy, target, spring); this module composes it in
+//! retail order (`.local/research/npc/b50-skitch-prestep-update.md` section 1, b51 sections 1-3).
+//! Not reachable in game yet: the riding latch is held back (`ground_runtime::skitch::LATCH_ENABLED`).
+//! NOT RETAIL YET: the grab point is the point on the record's chord; the board forward is the deck
+//! forward; the slide friction, speed wobble, anti-flip, heading, manual and lean (`82D4A0C0`) terms are not
+//! composed yet; the sub-mode's hard event comes from the shimmy state.
+use super::{GamePhysics, SkaterRuntime};
+use skate_core::physics::force_queue::QueuedPointForce;
+use skate_core::math::Vector3;
+use skate_core::player::offboard::grab_scene::Descriptor;
+use skate_core::player::selector::conditions::{condition_is_off_ground_skitching, BoardBodyState, TwoStageThresholds};
+use skate_core::riding::skitching::{frame, hold, shimmy, target, SkitchSpringInput, SkitchSpringSettings, SkitchSubMode, SkitchSubModeInput, SkitchSubModeSettings};
+
+/// Frames the hands, forearms and head stay out of collision each update (`82D91298(state+28, 5)`).
+const CONTACT_OFF_FRAMES: u32 = 5;
+
+/// The state-104 settings (`physics_state_skitching/default`; retail values as defaults, mod-overridable).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SkitchSettings {
+    pub spring: SkitchSpringSettings,
+    pub sub_mode: SkitchSubModeSettings,
+    pub frame: frame::FrameSettings,
+    pub target: target::TargetSettings,
+    pub hold: hold::HoldSettings,
+    pub shimmy: shimmy::ShimmySettings,
+    /// The pre-step's off-ground test (`82D47FC0`: `40AAD3FD99B464F4` 0.1, `F178F963558D24A0` 0.05,
+    /// `03A59CDFA0B0B967` 0.1).
+    pub off_ground: TwoStageThresholds,
+}
+
+impl Default for SkitchSettings {
+    fn default() -> Self {
+        Self {
+            spring: Default::default(),
+            sub_mode: Default::default(),
+            frame: Default::default(),
+            target: Default::default(),
+            hold: Default::default(),
+            shimmy: Default::default(),
+            off_ground: TwoStageThresholds { field_856_primary: 0.1, field_856_secondary: 0.05, field_7692: 0.1 },
+        }
+    }
+}
+
+/// The per-skater state 104 (state offsets in the field docs; serialisable plain data).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SkitchState {
+    pub settings: SkitchSettings,
+    pub frame: frame::FrameState,
+    pub sub: SkitchSubMode,
+    pub hold: hold::HoldState,
+    pub shimmy: shimmy::ShimmyState,
+    /// The car's grab record (1312 type / 1316 id).
+    pub car: Option<Descriptor>,
+    /// 1344 bit 0x80 (the record is ready: Processed 2480 bit 22), 1345 bits 0x20 (board off the ground) / 0x40
+    /// (tows fast).
+    pub ready: bool,
+    pub off_ground: bool,
+    pub tows_fast: bool,
+    /// 992: time in the state; 784: last frame's target direction (the spring reads it before the target step).
+    pub time: f32,
+    pub target_dir: [f32; 3],
+    /// 1328 / 1332: the hands are off the edge (set per sub-mode, b52 section 3).
+    pub hands_off: [bool; 2],
+    /// 816: the last spring force.
+    pub spring_force: [f32; 3],
+}
+
+fn v(words: &[u32; 72], offset: usize) -> [f32; 3] {
+    let i = offset / 4;
+    [f32::from_bits(words[i]), f32::from_bits(words[i + 1]), f32::from_bits(words[i + 2])]
+}
+fn v4(r: [u32; 4]) -> [f32; 3] {
+    [f32::from_bits(r[0]), f32::from_bits(r[1]), f32::from_bits(r[2])]
+}
+
+/// Enter `82D47278` + reset `82D47318` (b53 section 4).
+pub(crate) fn enter(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
+    physics.board.hook_mut().drive.disable_animation(&mut skater.ground_lifecycle.board_animated_290);
+    let words = skater.player_input.processed.grab_records_1888_2176[0];
+    let s = &mut skater.skitch_state;
+    let settings = s.settings;
+    s.frame = frame::FrameState::default();
+    s.sub = SkitchSubMode::default();
+    s.hold.reset(&settings.hold);
+    s.shimmy = shimmy::ShimmyState::default();
+    s.car = Some(Descriptor { kind: words[47], id: words[48] });
+    s.time = 0.0;
+    s.hands_off = [true; 2];
+    s.spring_force = [0.0; 3];
+    Ok(())
+}
+
+/// `82D477C0`.
+pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
+    skater.skeleton_collision.disable_handplant_contacts(CONTACT_OFF_FRAMES);
+    let p = &skater.player_input.processed;
+    let dt = skate_core::riding::skitching::DT;
+    let grab_input = p.flags_2476 & 0x0040_0000 != 0;
+    let ready = p.flags_2480 & 0x0040_0000 != 0;
+    let words = p.grab_records_1888_2176[0];
+    let t = skater.player_input.toolkit.as_ref().ok_or("Skitching requires current BoardToolkit")?;
+    let mass = t.total_mass;
+    let forward = [t.deck[2][0], t.deck[2][1], t.deck[2][2]];
+    let position = v4(p.vectors_544_560_592_608[2]);
+    let up = v4(p.vectors_464_480_496_512_528[0]);
+    let fields = &skater.animation_input.fields;
+    // 924 (`82D47834` / `82D478B0`, b55): with turn (2676) and spin (2672) not of opposite signs, the larger
+    // magnitude on turn's side (s = +1 only for turn > 0); else turn.
+    let (turn, spin) = (fields.turn, fields.spin);
+    let stick = if turn == 0.0 || spin == 0.0 || turn.signum() == spin.signum() {
+        let s = if turn > 0.0 { 1.0 } else { -1.0 };
+        s * (s * turn).max(s * spin)
+    } else {
+        turn
+    };
+    let world_grab_z = skater.animation_input.extra.world_grab_z;
+    // 82D4B500: z of Skeleton+14208 (part 0's raw global translation; b55).
+    let body_height = skater.animated_skeleton.raw_part0_global[3][2];
+    let board_speed = p.scalar_2612;
+    let negate_height = p.flags_2476 & 0x4 != 0;
+    let body = BoardBodyState { field_856: physics.riding.wheel_lines.minimum_distance, field_7692: physics.riding.ground.time_without_wheel_contact };
+    let s = &mut skater.skitch_state;
+    let settings = s.settings;
+    s.ready = ready;
+    let mut forces: Vec<QueuedPointForce> = Vec::new();
+    if ready {
+        // Pre-step 82D47FC0.
+        s.off_ground = condition_is_off_ground_skitching(body, settings.off_ground);
+        // Frame step 82D48148 (record copied from Processed+1888 by 82762AB0).
+        let endpoints = [v(&words, 64), v(&words, 80)];
+        let direction = v(&words, 112);
+        let half_range = f32::from_bits(words[45]);
+        let mid = [(endpoints[0][0] + endpoints[1][0]) * 0.5, (endpoints[0][1] + endpoints[1][1]) * 0.5, (endpoints[0][2] + endpoints[1][2]) * 0.5];
+        let chord = move |t: f32| [mid[0] + direction[0] * t, mid[1] + direction[1] * t, mid[2] + direction[2] * t];
+        let input = frame::FrameInput { endpoints, direction, half_range, up, position, board_forward: forward, shimmy_velocity: s.shimmy.velocity };
+        let f = frame::step(&input, &mut s.frame, &settings.frame, &chord);
+        s.tows_fast = f.tows_fast;
+        // Sub-mode 82D49580 and its release bits.
+        let from = s.sub.mode;
+        s.sub.step(
+            &SkitchSubModeInput { position: f.along, half_length: half_range, stick, event: s.shimmy.event, car_accel: s.shimmy.car_accel, ready_a: f32::from(u8::from(!s.hands_off[0])), ready_b: f32::from(u8::from(!s.hands_off[1])) },
+            &settings.sub_mode,
+            dt,
+        );
+        s.hold.mode_bits(from, s.sub.mode, s.sub.switched);
+        // 82D49AB8: hands per sub-mode, then the hold step 82D49D70.
+        match s.sub.mode {
+            1 => s.hands_off = [false, false],
+            2 => s.hands_off = if f.along > 0.0 { [true, false] } else { [false, true] },
+            3 => s.hands_off = [true, true],
+            _ => {}
+        }
+        s.hold.step(f.along, f.along_rate, f.along_limit, stick, &settings.hold, dt);
+        // Along chain 82D48C98: the grab point's along displacement over the last frame (frames 128 vs 64, after
+        // the shift) times 7199.999 (0x822F8BDC; b55).
+        let [old, prev, _] = s.frame.frames;
+        let at = |fr: &frame::Frame| [fr[3][0] + fr[0][0] * f.along, fr[3][1] + fr[0][1] * f.along, fr[3][2] + fr[0][2] * f.along];
+        let (a, b) = (at(&prev), at(&old));
+        let accel = f32::from_bits(0x45e0_fffe) * ((a[0] - b[0]) * prev[0][0] + (a[1] - b[1]) * prev[0][1] + (a[2] - b[2]) * prev[0][2]);
+        s.shimmy.step(
+            &shimmy::ShimmyInput { accel, stick, sub_mode: s.sub.mode, tows_fast: f.tows_fast, along: f.along, edge_point: s.hold.target, limit: f.along_limit, tow_speed: f.tow_speed, side_distance: f.side_distance, dt },
+            &settings.shimmy,
+        );
+        // Forces 82D4AC38 (sub-mode 4: steering only, nothing queued).
+        if s.sub.mode != 4 {
+            let spring = skate_core::riding::skitching::tow_spring(
+                &SkitchSpringInput {
+                    target_dir: s.target_dir,
+                    side_dir: f.side_dir,
+                    grab_side_offset: f.grab_side_offset,
+                    axis_distance: f.axis_distance,
+                    tow_speed: f.tow_speed,
+                    axis_distance_rate: f.axis_distance_rate,
+                    board_speed,
+                    world_grab_z,
+                    body_height,
+                    negate_height,
+                    sub_mode: s.sub.mode,
+                    mass,
+                },
+                &settings.spring,
+            );
+            let tgt = target::step(
+                &target::TargetInput {
+                    side_origin: [s.frame.frames[1][3][0] + s.frame.frames[1][2][0] * settings.frame.side_push, s.frame.frames[1][3][1] + s.frame.frames[1][2][1] * settings.frame.side_push, s.frame.frames[1][3][2] + s.frame.frames[1][2][2] * settings.frame.side_push],
+                    side_axis: s.frame.frames[1][0],
+                    up,
+                    position,
+                    facing: forward,
+                    hand_along: s.shimmy.target,
+                    along: f.along,
+                    side_dir: f.side_dir,
+                    tows_fast: f.tows_fast,
+                    skitch_time: s.time,
+                    tow_speed: f.tow_speed,
+                    shimmy_by_velocity: s.shimmy.by_velocity,
+                    dt,
+                },
+                &settings.target,
+            );
+            s.target_dir = tgt.target_dir;
+            s.spring_force = spring;
+            forces.push(QueuedPointForce { tag: 6, force_world: Vector3::new(spring[0], spring[1], spring[2]), point_body: Vector3::ZERO });
+            if f.tows_fast {
+                let y = tgt.yaw_correction;
+                skater.ground_runtime.apply_angular_target(&mut physics.board, [y[0], y[1], y[2], 0.0]);
+            }
+            s.time += dt;
+        }
+        // Tail 82D4AFB8.
+        let (mode, impulse) = s.hold.tail(s.sub.mode, grab_input, s.hands_off[0] && s.hands_off[1], &settings.hold, dt);
+        s.sub.mode = mode;
+        let impulse_force = match impulse {
+            Some(hold::Impulse::PullIn) => Some(target::pull_in_force(f.side_dir, f.axis_distance_rate, f.tow_speed, mass, dt, &settings.target)),
+            Some(hold::Impulse::PushOff) => Some(target::push_off_force(f.side_dir, f.axis_distance_rate, mass, dt, &settings.target)),
+            None => None,
+        };
+        if let Some(fv) = impulse_force {
+            forces.push(QueuedPointForce { tag: 6, force_world: Vector3::new(fv[0], fv[1], fv[2]), point_body: Vector3::ZERO });
+        }
+    }
+    let q = physics.board.forces_mut();
+    for force in forces {
+        q.append(force);
+    }
+    // Always: reckoning (82D8E5C0 / 82D8C8F0) and the skeleton ground update (82BDF530), as Slide does.
+    let p = &skater.player_input.processed;
+    let t = skater.player_input.toolkit.as_ref().ok_or("Skitching requires current BoardToolkit")?;
+    physics.riding.update_slide_reckoning(p, t, skater.animation_input.extra.physical_body_spin, skater.animation_input.fields.balance);
+    super::input_phase::update_ground(physics, skater)
+}
+
+/// What `82D4C078` publishes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SkitchOutput {
+    pub flag_304: bool,
+    pub counter_36: u32,
+    pub skitch_value_40: u32,
+    pub scalar_292: f32,
+}
+
+impl SkitchState {
+    /// `82D4C078`: flag_304 only while ready and not released; the rest every frame.
+    pub(crate) fn output(&self) -> SkitchOutput {
+        let car = self.car.unwrap_or(Descriptor { kind: 0, id: 0 });
+        SkitchOutput { flag_304: self.ready && !self.hold.released(), counter_36: car.kind, skitch_value_40: car.id, scalar_292: self.hold.regrab_block }
+    }
+}

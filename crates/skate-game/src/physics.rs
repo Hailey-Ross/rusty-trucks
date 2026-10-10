@@ -71,6 +71,7 @@ mod grind_materials;
 mod ground_animation;
 mod grind_trick;
 mod slide_state;
+mod skitch_state;
 mod revert_state;
 mod ground_exit;
 mod ground_phase;
