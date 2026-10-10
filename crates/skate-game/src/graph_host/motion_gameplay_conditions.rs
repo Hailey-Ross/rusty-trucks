@@ -26,6 +26,12 @@ pub struct GameplayConditions {
     pub footplant_contact_time: f32,
     pub time_to_skitch: f32,
     pub skitch_transition_time: f32,
+    /// State 104 outputs (b58 / b60): ground 280 / 284, animation 136 / 140.
+    pub skitch_grab_height: f32,
+    pub skitch_absorb: f32,
+    pub skitch_push: f32,
+    pub skitch_shimmy: f32,
+    pub skitch_hands: u32,
     /// TimeToLand82BA7250: PhysOutAir+184, gated by byte437.
     pub time_to_land: f32,
     pub time_to_land_valid: bool,
@@ -87,6 +93,12 @@ pub enum GameplayCondition {
     PlayHandplant { phase: usize },
     EnteringSkitch,
     Skitching,
+    /// `82BBBD00`.
+    SkitchingWithAbsorb,
+    /// `82BBC068`: attribute `side` (front 1, back 2, both 3).
+    SkitchingPosition { side: u32 },
+    /// `82BBC1A0`: attribute `direction` (left 1, right 2).
+    SkitchShimmying { direction: u32 },
     IsMovingObject {
         angle_start: f32,
         angle_end: f32,
@@ -137,6 +149,9 @@ impl GameplayCondition {
                 | "ShouldPlayHandPlantAnim"
                 | "IsEnteringSkitch"
                 | "IsSkitching"
+                | "IsSkitchingWithAbsorb"
+                | "SkitchingPosition"
+                | "IsSkitchShimmying"
                 | "IsMovingObject"
         )
     }
@@ -161,6 +176,22 @@ impl GameplayCondition {
             "OkToDoTrickOnStairs" => Self::OkToDoTrickOnStairs,
             "IsEnteringSkitch" => Self::EnteringSkitch,
             "IsSkitching" => Self::Skitching,
+            "IsSkitchingWithAbsorb" => Self::SkitchingWithAbsorb,
+            "SkitchingPosition" => Self::SkitchingPosition {
+                side: match a.text("side").unwrap_or("") {
+                    "front" => 1,
+                    "back" => 2,
+                    "both" => 3,
+                    value => return Err(format!("SkitchingPosition has unauthored side {value:?}")),
+                },
+            },
+            "IsSkitchShimmying" => Self::SkitchShimmying {
+                direction: match a.text("direction").unwrap_or("") {
+                    "left" => 1,
+                    "right" => 2,
+                    value => return Err(format!("IsSkitchShimmying has unauthored direction {value:?}")),
+                },
+            },
             "IsFootPlanting" => Self::FootPlanting,
             "ShouldPrepareOneFootAirForFootplant" => Self::PrepareFootplant,
             "HasNewHandPlantPos" => Self::NewHandplantPosition,
@@ -238,6 +269,9 @@ impl GameplayCondition {
             | Self::UnderflipRequested
             | Self::DarkCatchRequested
             | Self::IsMovingObject { .. }
+            | Self::SkitchingWithAbsorb
+            | Self::SkitchingPosition { .. }
+            | Self::SkitchShimmying { .. }
             | Self::CanEnterSlide { .. } => return None,
         })
     }
@@ -252,6 +286,16 @@ impl GameplayCondition {
             return Ok(result);
         }
         Ok(match self {
+            Self::SkitchingWithAbsorb => p.state == 104 && host.skitching.absorb_target(p.skitch_absorb) > 0.0,
+            // m = (anim+158 natural regular) == (anim+157 switch); the shimmy flip is the mirrored bit (b61).
+            Self::SkitchingPosition { side } => {
+                let m = (host.animation.natural_stance == 0) == (host.animation.relative_stance == 1);
+                super::motion_skitching::skitching_position(p.skitch_hands, m) == *side
+            }
+            Self::SkitchShimmying { direction } => {
+                let flipped = host.animation.skater_animation_flags.is_some_and(|f| f & 0x4000_0000 != 0);
+                super::motion_skitching::shimmy_direction(p.skitch_shimmy, flipped) == *direction
+            }
             //82BA5F60: Offboard322 or the actual RetrieveBoard channel.
             Self::DroppingBoard => p.dropping_board || host.animation.channels.has("RetrieveBoard"),
             // MovingObjectNew quadrants: the physical byte gates the mode, the

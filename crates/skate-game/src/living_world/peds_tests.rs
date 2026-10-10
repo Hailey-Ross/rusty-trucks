@@ -191,6 +191,7 @@ fn living_world_ped_motion_follows_from_the_record_and_tick_at_any_frame_rate() 
             ticks: 0,
             feet_down: [false; 2],
             body_fall: 0.0,
+            taunt: Default::default(),
         };
         for _ in 0..ticks {
             body.player.intent = body.path.intent(tick_seconds(60.0), body.player.state);
@@ -259,6 +260,7 @@ fn living_world_ped_mod_overrides_and_render_helpers() {
         ticks: 0,
         feet_down: [false; 2],
         body_fall: 0.0,
+        taunt: Default::default(),
     };
     let g = ped_globals(&d.rig, &body, &d, 0.0, &f).unwrap();
     assert!((g[1].w_axis.y - 0.92).abs() < 1e-5);
@@ -316,7 +318,7 @@ fn living_world_ped_data_loads_from_the_export() {
     assert!(d.clips.len() > 50);
     let look = d.catalog.choose("aletown", 1, &PedOverrides::default()).unwrap();
     let set = &d.anim_sets[&look.anim_set];
-    let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
+    let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default() };
     let g = ped_globals(&d.rig, &body, &d, 0.0, &[]).unwrap();
     assert!((0.8..1.1).contains(&g[1].w_axis.y), "hips height {}", g[1].w_axis.y);
 }
@@ -354,7 +356,7 @@ fn living_world_ped_pose_dump_for_a_render_check() {
         "bones": reference.iter().map(|m| m.to_cols_array().to_vec()).collect::<Vec<_>>()})];
     for (set_name, model) in &looks {
         let set = &d.anim_sets[set_name];
-        let mut body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
+        let mut body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default() };
         // Scripted intents: idle 0.5 s, walk to 4 s, stop, turn right, then turn left.
         let mut captures: Vec<(u32, String)> = Vec::new();
         let mut turned = 0;
@@ -640,6 +642,7 @@ fn standing_body(at: Vec3) -> PedBody {
         ticks: 0,
         feet_down: [false; 2],
         body_fall: 0.0,
+        taunt: Default::default(),
     }
 }
 
@@ -726,5 +729,131 @@ fn living_world_a_skater_knocks_a_ped_down_or_makes_it_stumble() {
         a.world_mut().resource_mut::<LivingWorldObservers>().observers.clear();
         run(&mut a, 5.0, 60.0);
         assert_ne!(peds(&mut a)[0].4, Locomotion::Reaction);
+    }
+}
+
+/// Ped behaviour runtime step 1 (data-gated): the stock ped AI and motion graphs load, bind and
+/// compile on the shared graph runtime; the AI graph runs on the ped brain host, wanders on its
+/// own and leaves wander for flee when a flee want is raised.
+#[test]
+fn living_world_ped_ai_graph_runs_on_the_brain() {
+    use skate_core::graph::controller::Controller;
+    use skate_core::living_world::peds::brain::{motion, BrainHost, BrainSettings, PedBrain};
+    let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from).filter(|r| r.join(super::ped_graph::AI_GRAPH).exists()) else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+        return;
+    };
+    let ai = super::ped_graph::PedGraph::load(&root, super::ped_graph::AI_GRAPH).expect("ped AI graph");
+    crate::graph_runtime::load_graph(&root, super::ped_graph::MOTION_GRAPH).expect("ped motion graph");
+    let pending = ai.pending();
+    eprintln!("ped AI graph: {} behaviours, {} conditions, pending {:?}", ai.behaviors.len(), ai.conditions.len(), pending);
+    let program = &ai.graph.runtime.program;
+    let mut controller = Controller::new(program.topology.states.len());
+    let mut brain = PedBrain::default();
+    let settings = BrainSettings::default();
+    let skater = std::cell::Cell::new([5.0f32, 0.0, 0.0]);
+    let at = |_: u64| Some(skater.get());
+    let state_name = |c: &Controller| c.frame.current.map(|s| ai.graph.binding.states[s].name.clone());
+    for _ in 0..30 {
+        brain.tick_timers(1.0 / 30.0);
+        let mut host = BrainHost { behaviors: &ai.behaviors, conditions: &ai.conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &at, chase: Default::default() };
+        controller.update(program, 1.0 / 30.0, &mut host);
+    }
+    eprintln!("idle state {:?}, intent {:?}", state_name(&controller), brain.motion_intent);
+    assert_eq!(brain.motion_intent, Some(motion::WANDER), "an idle ped wanders");
+    brain.set_want("flee", 1);
+    for _ in 0..30 {
+        brain.tick_timers(1.0 / 30.0);
+        let mut host = BrainHost { behaviors: &ai.behaviors, conditions: &ai.conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &at, chase: Default::default() };
+        controller.update(program, 1.0 / 30.0, &mut host);
+    }
+    eprintln!("flee state {:?}, intent {:?}, flee_from {:?}", state_name(&controller), brain.motion_intent, brain.flee_from);
+    assert_eq!(brain.motion_intent, Some(motion::FLEE), "a flee want makes it flee");
+    // Farther than 15 m from the skater: the flee ends (DistanceToWantTarget greater 15).
+    skater.set([20.0, 0.0, 0.0]);
+    for _ in 0..30 {
+        let mut host = BrainHost { behaviors: &ai.behaviors, conditions: &ai.conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &at, chase: Default::default() };
+        controller.update(program, 1.0 / 30.0, &mut host);
+    }
+    eprintln!("after flee state {:?}, intent {:?}, wants {:?}", state_name(&controller), brain.motion_intent, brain.wants);
+    assert_eq!(brain.flee_from, None);
+    // A warn want: the ped stops and faces the skater (StopAndFaceWantTarget / watching).
+    skater.set([3.0, 0.0, 0.0]);
+    brain.set_want("warn", 1);
+    let mut faced = false;
+    for _ in 0..30 {
+        brain.tick_timers(1.0 / 30.0);
+        let mut host = BrainHost { behaviors: &ai.behaviors, conditions: &ai.conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: Some(([3.0, 0.0, 0.0], [0.0; 3])), target_position: &at, chase: Default::default() };
+        controller.update(program, 1.0 / 30.0, &mut host);
+        faced |= brain.face == Some([3.0, 0.0, 0.0]) && brain.speed_suggestion == Some(0.0);
+    }
+    eprintln!("warn state {:?}, face {:?}, speed {:?}, wants {:?}", state_name(&controller), brain.face, brain.speed_suggestion, brain.wants);
+    assert!(faced, "warning stops and faces the skater");
+}
+
+/// Mood system on the stock tables (data-gated): an adult male hit by the skater does nothing on
+/// the first hit, warns on the second (Nth 2) and chases on the third (Nth 3).
+#[test]
+fn living_world_ped_mood_tables_warn_then_chase_on_collisions() {
+    use skate_core::living_world::peds::mood::{MoodContext, MoodEvent, MoodStore};
+    let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from).filter(|r| r.join("private/living_world/tables.json").exists()) else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+        return;
+    };
+    let bytes = std::fs::read(root.join("private/living_world/tables.json")).unwrap();
+    let tables = super::ped_mood::parse(&bytes).expect("mood tables");
+    let sets = super::ped_mood::reaction_sets(&bytes);
+    eprintln!("{} categories, {} results, {} reaction sets, {} entity types", tables.categories.len(), tables.results.len(), tables.reactions.len(), sets.len());
+    assert_eq!(tables.results.len(), 88);
+    assert_eq!(sets.get("adult_male01").map(String::as_str), Some("adult_male"));
+    assert_eq!(tables.categories["presence"].magnitude, 0.5);
+    assert_eq!(tables.categories["collision"].magnitude, 0.0);
+    const PED: u64 = 1;
+    const PLAYER: u64 = 2;
+    let entity = |id: u64| match id {
+        PED => Some(("adult_male01".to_string(), [0.0; 3])),
+        PLAYER => Some(("skater".to_string(), [1.0, 0.0, 0.0])),
+        _ => None,
+    };
+    let ctx = MoodContext { ped: PED, ped_type: "adult_male", position: [0.0; 3], entity: &entity, zombie: false, busy: &|_| false };
+    let mut store = MoodStore::default();
+    let mut rng = skate_core::living_world::Rng::new(5);
+    let hit = || MoodEvent { category: "collision".into(), instigator: Some(PLAYER), second: Some(PED), position: [0.0; 3] };
+    store.post(hit(), 0.0);
+    let first = tables.produce(&mut store, &ctx, false, &|_| 0, &|_| false, &mut rng);
+    eprintln!("first hit: {first:?}");
+    assert!(first.is_none_or(|r| !r.wants.iter().any(|w| w.want == "warn" || w.want == "angrychase")));
+    store.post(hit(), 0.0);
+    let second = tables.produce(&mut store, &ctx, false, &|_| 0, &|_| false, &mut rng).expect("a reaction to the second hit");
+    eprintln!("second hit: {second:?}");
+    assert_eq!(second.result, "skatercollisionwarn");
+    assert!(second.wants.iter().any(|w| w.want == "warn" && w.target == PLAYER));
+    store.tick(10.0, &|_| 30.0);
+    store.post(hit(), 0.0);
+    let third = tables.produce(&mut store, &ctx, false, &|_| 1, &|_| false, &mut rng).expect("a reaction to the third hit");
+    eprintln!("third hit: {third:?}");
+    assert_eq!(third.result, "skatercollisionchase");
+    // A bystander records nearbycollision, not collision (the "ped itself" prerequisite).
+    let other = MoodEvent { second: Some(77), ..hit() };
+    let mut bystander = MoodStore::default();
+    for _ in 0..3 {
+        bystander.post(other.clone(), 0.0);
+    }
+    let r = tables.produce(&mut bystander, &ctx, false, &|_| 0, &|_| false, &mut rng);
+    assert!(r.as_ref().is_none_or(|r| r.result != "skatercollisionwarn" && r.result != "skatercollisionchase"), "{r:?}");
+}
+
+/// The stock plugin graphs (conversation, sit, lookat, spectate) load on the same runtime as the
+/// ped AI graph (b23); prints what each still needs.
+#[test]
+fn living_world_ped_plugin_graphs_load() {
+    let Some(root) = std::env::var_os("SKATE3_ASSET_ROOT").map(std::path::PathBuf::from).filter(|r| r.join(super::ped_graph::AI_GRAPH).exists()) else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT to the converted assets");
+        return;
+    };
+    for name in ["conversation", "sit", "lookat", "actortracker_spectate"] {
+        let path = format!("private/stock/data/state/livingworldentities/pedestrian/plugin/{name}.stategraph");
+        let g = super::ped_graph::PedGraph::load(&root, &path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        eprintln!("plugin {name}: {} behaviours, {} conditions, pending {:?}", g.behaviors.len(), g.conditions.len(), g.pending());
     }
 }

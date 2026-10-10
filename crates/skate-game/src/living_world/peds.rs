@@ -83,6 +83,22 @@ pub(crate) struct PedData {
     pub nav_input: Option<Arc<skate_core::living_world::peds::NavMeshInput>>,
     /// Signalled junction arms of the loaded roads (mod crosswalk rule).
     pub arms: Arc<Vec<(usize, u8, [f32; 3])>>,
+    /// The stock ped AI graph on the shared graph runtime (behaviour runtime; `None` when the
+    /// install has none).
+    pub graph: Option<Arc<super::ped_graph::PedGraph>>,
+    /// The stock mood tables and each entity type's reaction set (`ped_mood`).
+    pub mood: Option<Arc<skate_core::living_world::peds::mood::MoodTables>>,
+    pub reaction_sets: Arc<BTreeMap<String, String>>,
+    /// Each entity type's chase record and the chase manager's `global` record (`ped_mood::chase_records`).
+    pub chase: Arc<BTreeMap<String, skate_core::living_world::peds::chase::ChaseRecord>>,
+    pub chase_global: Option<Arc<skate_core::living_world::peds::chase::ChaseRecord>>,
+    /// The conversation plugin graph (`plugin/conversation.stategraph`) and the conversation tables.
+    pub conversation_graph: Option<Arc<super::ped_graph::PedGraph>>,
+    pub conversations: Arc<super::ped_mood::ConversationTables>,
+    /// Each entity type's vision test ranges (`ped_mood::sight`).
+    pub sight: Arc<BTreeMap<String, skate_core::living_world::peds::perception::Sight>>,
+    /// Each entity type's takedown table (`ped_mood::takedown_tables`).
+    pub takedowns: Arc<BTreeMap<String, skate_core::living_world::peds::takedown::TakedownTable>>,
     loaded_for: Option<(String, u64)>,
 }
 
@@ -301,6 +317,19 @@ pub(crate) struct PedBody {
     pub ticks: u64,
     pub feet_down: [bool; 2],
     pub body_fall: f32,
+    /// The taunt clip (motiongraph_taunt): requested by TakedownTauntVictim, playing, finished (the brain then
+    /// drops its "SGIntent").
+    pub taunt: TauntClip,
+}
+
+/// Where a ped's taunt clip is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TauntClip {
+    #[default]
+    None,
+    Requested,
+    Playing,
+    Done,
 }
 
 /// LivingWorldId -> entity.
@@ -315,6 +344,9 @@ pub(crate) enum PedEvent {
     Rejected { id: LivingWorldId, category: String },
     Despawned { id: LivingWorldId, reason: DespawnReason },
     State { id: LivingWorldId, state: Locomotion },
+    /// The mood system picked a reaction (`skate_core::living_world::peds::mood`); `wants` were
+    /// raised when `passed`.
+    Mood { id: LivingWorldId, result: String, passed: bool, wants: Vec<String> },
     /// A skater knocked the ped down or made it stumble (`skate_core::living_world::peds::skater_contact`).
     Hit {
         id: LivingWorldId,
@@ -323,6 +355,17 @@ pub(crate) enum PedEvent {
         /// The skater's speed into the ped, m/s (our stand-in for the ped body's speed).
         closing: f32,
     },
+    /// A chase group changed (`kind`: join, join_refused, leave, primary, group_end); `chasee` is
+    /// the chased id (players: `PLAYER_TARGET_BASE + n`).
+    Chase { id: LivingWorldId, chasee: u64, kind: &'static str, reason: Option<i32> },
+    /// A ped's tazer hit `target` (the takedown's knock-down).
+    Taze { id: LivingWorldId, target: u64 },
+    /// A ped's takedown attempt ended (`success`: the target is knocked down).
+    Takedown { id: LivingWorldId, target: u64, success: bool },
+    /// The ped's AI graph changed its speech value (`SendSpeechEvent` / the warn); `state` is the
+    /// graph state that sent it.
+    /// `topic`: a conversation turn's variant and row value (`ped+2472` / `+2476`).
+    Speech { id: LivingWorldId, value: i32, topic: Option<(u8, i32)>, state: String },
 }
 
 /// Skater against ped contact (doc 26, "Skater hits peds"). NOT RETAIL YET: the skater is a
@@ -400,6 +443,48 @@ fn load_ped_data(
     }
     let mut loaded = PedData::load(&config.asset_root);
     loaded.load_nav(&config.asset_root, &map.name, &nav.rules);
+    match super::ped_graph::PedGraph::load(&config.asset_root, super::ped_graph::AI_GRAPH) {
+        Ok(graph) => {
+            let pending = graph.pending();
+            info!(
+                "PED_GRAPH loaded: {} behaviours, {} conditions; {} operation names not ported yet: {}",
+                graph.behaviors.len(),
+                graph.conditions.len(),
+                pending.len(),
+                pending.keys().cloned().collect::<Vec<_>>().join(", ")
+            );
+            loaded.graph = Some(Arc::new(graph));
+            match super::ped_graph::PedGraph::load(&config.asset_root, super::ped_graph::CONVERSATION_GRAPH) {
+                Ok(g) => {
+                    info!("PED_GRAPH conversation plugin: {} behaviours, {} conditions; not ported yet: {:?}", g.behaviors.len(), g.conditions.len(), g.pending().keys().collect::<Vec<_>>());
+                    loaded.conversation_graph = Some(Arc::new(g));
+                }
+                Err(error) => warn!("PED_GRAPH conversation plugin not loaded (no conversations): {error}"),
+            }
+        }
+        Err(error) => warn!("PED_GRAPH not loaded (peds keep wandering without the behaviour graph): {error}"),
+    }
+    match std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| Ok((super::ped_mood::parse(&b)?, super::ped_mood::reaction_sets(&b), super::ped_mood::chase_records(&b), super::ped_mood::takedown_tables(&b), super::ped_mood::sight(&b), super::ped_mood::conversation_tables(&b)))) {
+        Ok((tables, sets, (chase, global), takedowns, sight, conversations)) => {
+            info!(
+                "PED_MOOD tables: {} categories, {} results, {} reaction sets, {} entity types, {} chase records (global {})",
+                tables.categories.len(),
+                tables.results.len(),
+                tables.reactions.len(),
+                sets.len(),
+                chase.len(),
+                global.is_some()
+            );
+            loaded.mood = Some(Arc::new(tables));
+            loaded.reaction_sets = Arc::new(sets);
+            loaded.chase = Arc::new(chase);
+            loaded.chase_global = global.map(Arc::new);
+            loaded.takedowns = Arc::new(takedowns);
+            loaded.sight = Arc::new(sight);
+            loaded.conversations = Arc::new(conversations);
+        }
+        Err(error) => warn!("PED_MOOD tables not loaded (no mood reactions): {error}"),
+    }
     info!("LIVING_WORLD {}", loaded.status);
     loaded.loaded_for = Some(key);
     if let Some(mut audio) = audio {
@@ -486,7 +571,7 @@ pub(crate) fn apply_ped_records(
             tint_a: look.tint_a,
             tint_b: look.tint_b,
         };
-        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
+        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: TauntClip::None };
         let e = commands
             .spawn((
                 Name::new(format!("Pedestrian {} ({})", s.id.serial, look.recipe)),
@@ -496,6 +581,7 @@ pub(crate) fn apply_ped_records(
                 // Spawn fade in starts at 0 (retail `+576`); `present_ped_pose` raises it.
                 super::npc_skaters::NpcFade { alpha: 0.0, ..Default::default() },
                 body,
+                PedMind::default(),
                 ped,
             ))
             .id();
@@ -532,7 +618,7 @@ pub(crate) fn advance_peds(
     traffic: Option<Res<super::vehicles::TrafficState>>,
     physics: Option<Res<crate::physics::GamePhysics>>,
     obstacles: Res<PedObstacles>,
-    mut peds: Query<(&Pedestrian, &mut PedBody, &mut Transform, &mut PedAudio)>,
+    mut peds: Query<(&Pedestrian, &mut PedBody, &mut Transform, &mut PedAudio, Option<&PedMind>)>,
     mut events: MessageWriter<PedEvent>,
     mut floating_logged: Local<std::collections::HashMap<LivingWorldId, u64>>,
     trace: Res<PedObstacleTrace>,
@@ -552,13 +638,23 @@ pub(crate) fn advance_peds(
         Some(s) => s,
         None => &NoSignals,
     };
-    for (k, (ped, mut body, mut transform, mut audio)) in list.into_iter().enumerate() {
+    for (k, (ped, mut body, mut transform, mut audio, mind)) in list.into_iter().enumerate() {
         let Some(set) = data.anim_sets.get(&ped.anim_set).or_else(|| data.anim_sets.get("default")) else { continue };
         let target = tick.saturating_sub(ped.spawn_tick);
         let body = &mut *body;
         let me = id_order(ped.id);
         while body.ticks < target {
             let mut turn = 0.0;
+            // The taunt clip (motiongraph_taunt `PlayTaunt`: the remapped "Taunt" once, blend 0.1, then
+            // `MajorIntentComplete`); a set without the clip completes at once.
+            match body.taunt {
+                TauntClip::Requested if body.player.state != Locomotion::Reaction => {
+                    let step = skate_core::living_world::peds::skater_contact::ReactionStep { anim: "Taunt", mirror: false, blend: 0.1, cycle: false };
+                    body.taunt = if body.player.react(set, vec![step], 0.0) { TauntClip::Playing } else { TauntClip::Done };
+                }
+                TauntClip::Playing if body.player.state != Locomotion::Reaction => body.taunt = TauntClip::Done,
+                _ => {}
+            }
             // A skater running into the ped (retail `sub_82E38FB8` kind 5).
             if body.player.state != Locomotion::Reaction {
                 let radius = data.nav.as_deref().map_or(super::vehicle_contacts::FALLBACK_PED_RADIUS, |m| m.agent[1]);
@@ -570,11 +666,41 @@ pub(crate) fn advance_peds(
                     }
                 }
             }
+            // The behaviour graph stops the ped and faces a point (StopAndFaceWantTarget,
+            // watching, StandAndWatchSkater: speed suggestion 0.0 and the face point): stand and
+            // turn towards it at the nav's turn rate (ours until the motion graph's turn
+            // branches run), instead of the wander step.
+            let face = mind.filter(|m| m.brain.speed_suggestion == Some(0.0)).and_then(|m| m.brain.face);
+            // LockToCurrentPosition: stand where the ped is (turning only for a face point).
+            let locked = mind.is_some_and(|m| m.brain.position_locked);
             match data.nav.as_deref() {
                 _ if body.player.state == Locomotion::Reaction => body.player.intent = skate_core::living_world::peds::anim::Intent::Idle,
+                _ if locked && face.is_none() => body.player.intent = skate_core::living_world::peds::anim::Intent::Idle,
+                _ if face.is_some() => {
+                    let p = face.unwrap_or_default();
+                    let d = [p[0] - body.position.x, p[2] - body.position.z];
+                    body.player.intent = skate_core::living_world::peds::anim::Intent::Idle;
+                    if d[0] * d[0] + d[1] * d[1] > 1e-6 {
+                        let desired = d[0].atan2(d[1]);
+                        let mut error = desired - body.heading;
+                        while error > std::f32::consts::PI {
+                            error -= std::f32::consts::TAU;
+                        }
+                        while error < -std::f32::consts::PI {
+                            error += std::f32::consts::TAU;
+                        }
+                        let step = nav_settings.wander.turn_rate * dt;
+                        turn = error.clamp(-step, step);
+                    }
+                }
                 Some(mesh) => {
-                    let out = body.nav.step_avoiding(mesh, &nav_settings.wander, nav_settings.crosswalk, signals, me, body.position.to_array(), body.heading, body.player.state, &neighbours, Some(obstacles), dt);
-                    body.player.intent = out.intent;
+                    // The graph's Pedestrian nav modifier off (a chase): no avoiding other peds.
+                    let avoid_peds = mind.is_none_or(|m| m.brain.nav_modifier(skate_core::living_world::peds::brain::nav_modifier::PEDESTRIAN));
+                    let neighbours_now: &[_] = if avoid_peds { &neighbours } else { &[] };
+                    let out = body.nav.step_avoiding(mesh, &nav_settings.wander, nav_settings.crosswalk, signals, me, body.position.to_array(), body.heading, body.player.state, neighbours_now, Some(obstacles), dt);
+                    // Fleeing: run (the chase run cycle) where the nav walks.
+                    let fleeing = mind.is_some_and(|m| m.flee_goal.is_some() || m.chase_goal.is_some());
+                    body.player.intent = if fleeing && out.intent == skate_core::living_world::peds::anim::Intent::Walk { skate_core::living_world::peds::anim::Intent::Run } else { out.intent };
                     turn = out.turn;
                 }
                 None => body.player.intent = body.path.intent(dt, body.player.state),
@@ -1033,7 +1159,695 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<PedObstacles>()
         .init_resource::<PedObstacleTrace>()
         .add_message::<PedEvent>()
-        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, advance_peds, log_ped_readout).chain().after(super::step_population))
+        .add_message::<crate::world_audio::PedSpeechEvent>()
+        .add_message::<SkaterTakedownRequest>()
+        .init_resource::<PedChaseGroups>()
+        .init_resource::<PedConversations>()
+        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, apply_skater_takedowns, advance_peds, log_ped_readout).chain().after(super::step_population))
         .init_resource::<PedMaterials>()
         .add_systems(Update, (present_ped_looks, present_ped_tints, present_ped_pose).chain().after(crate::app::FrameSet::Animation).before(super::npc_skaters::present_fade));
+}
+
+/// A ped's behaviour brain and its controller on the stock ped AI graph (behaviour runtime,
+/// doc 26). Host-owned plain data.
+#[derive(Component, Default)]
+pub(crate) struct PedMind {
+    pub brain: skate_core::living_world::peds::brain::PedBrain,
+    pub mood: skate_core::living_world::peds::mood::MoodStore,
+    /// The current flee leg's goal (`skate_core::living_world::peds::flee`).
+    pub flee_goal: Option<[f32; 3]>,
+    /// The current intercept goal (`skate_core::living_world::peds::chase::intercept`).
+    pub chase_goal: Option<[f32; 3]>,
+    /// Where the body was at the last think (the ped's speed for the takedown window).
+    last_at: Option<[f32; 3]>,
+    presence_timer: f32,
+    rng: Option<skate_core::living_world::Rng>,
+    controller: Option<skate_core::graph::controller::Controller>,
+    /// The plugin graph's controller while the main graph runs the Plugin state.
+    plugin_controller: Option<skate_core::graph::controller::Controller>,
+    plugin_state: Option<usize>,
+    /// The speech value last sent to the audio side (`PedestrianSpeech` requests a line only when
+    /// the value changes; a fresh ped holds the constructor's 68).
+    spoken: Option<i32>,
+    /// Population ticks run so far.
+    ticks: u64,
+    state: Option<usize>,
+}
+
+/// The live conversations by id (host-owned plain data, `skate_core::living_world::peds::conversation`).
+#[derive(Resource, Default, Debug)]
+pub(crate) struct PedConversations {
+    pub map: BTreeMap<u64, skate_core::living_world::peds::conversation::Conversation>,
+    pub next_id: u64,
+    rng: Option<skate_core::living_world::Rng>,
+}
+
+/// The chase groups by chasee id (host-owned; retail keeps one on every chasee: the player's
+/// actor and each ped).
+#[derive(Resource, Default, Debug)]
+pub(crate) struct PedChaseGroups(pub BTreeMap<u64, skate_core::living_world::peds::chase::ChaseGroup>);
+
+/// A ped took player `player` down from `chaser` (retail `T.vfn20(chaser position)`, `82592390`):
+/// the skater's takedown latch. Host-owned; a mod can write it too.
+#[derive(Message, Clone, Copy, Debug)]
+pub(crate) struct SkaterTakedownRequest {
+    pub player: usize,
+    pub chaser: [f32; 3],
+}
+
+/// Set the skater's takedown latch (direction from the chaser to the deck).
+pub(crate) fn apply_skater_takedowns(
+    mut requests: MessageReader<SkaterTakedownRequest>,
+    skater: Option<ResMut<crate::physics::SkaterRuntime>>,
+    physics: Option<Res<crate::physics::GamePhysics>>,
+) {
+    let (Some(mut skater), Some(physics)) = (skater, physics) else {
+        requests.clear();
+        return;
+    };
+    for r in requests.read() {
+        // Local play: player 0 is the simulated skater.
+        if r.player != 0 {
+            continue;
+        }
+        let deck = physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()].rates.position;
+        skater.takedown = Some(crate::physics::Takedown::from_positions([deck.x, deck.y, deck.z], r.chaser));
+        info!("SKATER_TAKEDOWN from=[{:.1}, {:.1}, {:.1}]", r.chaser[0], r.chaser[1], r.chaser[2]);
+    }
+}
+
+/// Obstacle / want target ids of the players (above every living-world id).
+pub(crate) const PLAYER_TARGET_BASE: u64 = u64::MAX - 64;
+
+/// Run every ped's AI graph once per population tick (before the bodies step), in id order.
+/// Wants come from the mood system (not ported yet) or a mod; without them a ped wanders as
+/// before. Logs `PED_BRAIN` on every state change.
+pub(crate) fn think_peds(
+    state: Res<PopulationState>,
+    data: Res<PedData>,
+    settings: Res<super::LivingWorldSettings>,
+    observers: Res<super::LivingWorldObservers>,
+    mut peds: Query<(Entity, &Pedestrian, &mut PedBody, &mut PedMind)>,
+    mut speech: MessageWriter<crate::world_audio::PedSpeechEvent>,
+    mut chase_groups: ResMut<PedChaseGroups>,
+    mut conversations: ResMut<PedConversations>,
+    mut skater_takedowns: MessageWriter<SkaterTakedownRequest>,
+    mut tazers: MessageWriter<crate::world_audio::PedTazerEvent>,
+    // `greeted` events for other peds' mood stores (posted when the target thinks next).
+    mut greeted: Local<Vec<(u64, u64, [f32; 3])>>,
+    // Conversation listeners that get the speech value 41 when they think next (`82E3DAD8`).
+    mut listening: Local<Vec<u64>>,
+    // One store for reading the hits and writing mood events (a reader and a writer of the
+    // same message in one system conflict).
+    mut events: ResMut<bevy::ecs::message::Messages<PedEvent>>,
+    mut cursor: Local<Option<bevy::ecs::message::MessageCursor<PedEvent>>>,
+    (mut traffic_events, cars): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>),
+) {
+    // Horn kind 2 at a ped (`sub_82E3C3D0`: the honker id into brain `+3232`; the last car wins).
+    let honked: BTreeMap<u64, u64> = traffic_events.read().filter_map(|e| match e { super::vehicles::TrafficEvent::HonkedAt { id, ped } => Some((*ped, id.to_u64())), _ => None }).collect();
+    let Some(graph) = data.graph.as_deref() else { return };
+    // The honking cars' pose for RunFromHonker (`826A1358` looks the car up every frame): position and forward.
+    let car_pose: BTreeMap<u64, ([f32; 3], [f32; 3])> = cars.iter().map(|(c, m)| (c.id.to_u64(), (m.curr.translation.to_array(), (m.curr.rotation * Vec3::Z).to_array()))).collect();
+    // Collisions from the skater contact of the last steps (`PedEvent::Hit`): retail posts
+    // `collision` to every receiver (broadcast radius 0 = unlimited); a ped that was not the one
+    // hit fails its "ped itself" prerequisite and records `nearbycollision` instead
+    // (`sub_82E41060`). The instigator is the first player (local play; per player later).
+    let cursor = cursor.get_or_insert_with(|| events.get_cursor());
+    let collisions: Vec<u64> = cursor.read(&events).filter_map(|e| match e { PedEvent::Hit { id, .. } => Some(id.to_u64()), _ => None }).collect();
+    if settings.net_role == super::NetRole::Client || !settings.ped_brain.enabled {
+        return;
+    }
+    let program = &graph.graph.runtime.program;
+    let dt = tick_seconds(state.world.clock().hz);
+    let tick = state.world.tick();
+    let players: Vec<[f32; 3]> = observers.observers.iter().map(|o| o.position).collect();
+    let mut list: Vec<_> = peds.iter_mut().collect();
+    list.sort_by_key(|(_, p, ..)| p.id);
+    // Entity type and position of every id this tick (players are the `skater` type).
+    let entities: BTreeMap<u64, (String, [f32; 3])> = list
+        .iter()
+        .map(|(_, p, b, _)| (p.id.to_u64(), (p.entity.clone(), b.position.to_array())))
+        .chain(players.iter().enumerate().map(|(i, p)| (PLAYER_TARGET_BASE + i as u64, ("skater".to_string(), *p))))
+        .collect();
+    let entity = |id: u64| entities.get(&id).cloned();
+    let target = |id: u64| entities.get(&id).map(|e| e.1);
+    let player_list: Vec<(u64, [f32; 3])> = players.iter().enumerate().map(|(i, p)| (PLAYER_TARGET_BASE + i as u64, *p)).collect();
+    let world_seed = state.world.seed();
+    // Live peds for the presence scan (`sub_82E3CA20`: every spawned, not torn-down ped counts).
+    let ped_list: Vec<(u64, [f32; 3])> = list.iter().map(|(_, p, b, _)| (p.id.to_u64(), b.position.to_array())).collect();
+    let greeted_now = std::mem::take(&mut *greeted);
+    // Who is busy this tick (check 8 of the mood results; players: not busy, unverified).
+    let busy_now: BTreeMap<u64, bool> = list.iter().map(|(_, p, _, m)| (p.id.to_u64(), m.brain.busy())).collect();
+    let busy = |id: u64| busy_now.get(&id).copied().unwrap_or(false);
+    // Chasers that left the world leave their groups (the ped's destruction; retail removes it
+    // with the chaser component).
+    for g in chase_groups.0.values_mut() {
+        g.chasers.retain(|c| entities.contains_key(c));
+    }
+    chase_groups.0.retain(|chasee, g| !g.chasers.is_empty() && entities.contains_key(chasee));
+    // Conversations: members that left the world leave (an unfinished conversation aborts); an
+    // empty one is gone (every area is spawned: `82E1BD08` removes it).
+    for c in conversations.map.values_mut() {
+        let gone: Vec<u64> = c.members.iter().map(|m| m.ped).filter(|p| !entities.contains_key(p)).collect();
+        for p in gone {
+            c.leave(p);
+        }
+    }
+    conversations.map.retain(|_, c| !c.members.is_empty());
+    listening.retain(|p| entities.contains_key(p));
+    let conversations = &mut *conversations;
+    let conv_rng_seed = world_seed;
+    let conv_rng = conversations.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(conv_rng_seed, &[0x434f_4e56])));
+    let mut conv_rand = || conv_rng.unit();
+    let conv_params = skate_core::living_world::peds::conversation::ConversationParams {
+        turn_seconds: settings.ped_brain.values.conversation_turn_seconds,
+        gather_seconds: settings.ped_brain.values.conversation_gather_seconds,
+        ..Default::default()
+    };
+    // The gather timer (`82E1EB10`): a conversation starts with whoever is there when it runs out.
+    for c in conversations.map.values_mut() {
+        if c.tick(dt, &data.conversations.rows, &mut conv_rand) {
+            info!("PED_CONVERSATION id={} gather_timeout state={} members={} tick={tick}", c.id, c.state, c.members.len());
+        }
+    }
+    // How many chasers a chasee takes: its type's chase record; the player's group reads the
+    // `global` record (inferred: the actor's record is not decoded).
+    let max_chasers = |chasee: u64| {
+        let record = if chasee >= PLAYER_TARGET_BASE { data.chase_global.as_deref() } else { entities.get(&chasee).and_then(|e| data.chase.get(&e.0)) };
+        skate_core::living_world::peds::chase::ChaseRecord::max_chasers(record)
+    };
+    for (entity_id, ped, mut body, mut mind) in list {
+        let mind = &mut *mind;
+        let body = &mut *body;
+        let me = ped.id.to_u64();
+        let at = body.position.to_array();
+        // Perception (`82E418E8`): memory, age and suppression run, the vision test from the eye
+        // (ours: 1.6 m above the feet; retail's eye point is set elsewhere) along the heading; the
+        // line of sight is our navmesh line (retail: a physics ray).
+        {
+            let steps = tick.saturating_sub(ped.spawn_tick).saturating_sub(mind.ticks) as f32;
+            if steps > 0.0 && !mind.brain.perceptions.entries.is_empty() {
+                use skate_core::living_world::peds::perception;
+                let sight = data.sight.get(&ped.entity).copied();
+                let eye = [at[0], at[1] + 1.6, at[2]];
+                let forward = [body.heading.sin(), 0.0, body.heading.cos()];
+                let here = data.nav.as_deref().and_then(|m| m.locate(at).map(|h| (m, h)));
+                let los = |_: [f32; 3], t: [f32; 3]| here.is_none_or(|(m, h)| m.clear_line(h, t));
+                let look = |t: u64| {
+                    let p = target(t)?;
+                    let v = observers.observers.get(t.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
+                    Some((p, v, sight.is_some_and(|s| perception::sees(at, eye, forward, p, &s, &los))))
+                };
+                mind.brain.perceptions.tick(dt * steps, &look);
+            }
+        }
+        // Mood: tick the records, post presence and collisions, produce wants.
+        if let (Some(tables), true) = (data.mood.as_deref(), settings.ped_brain.mood) {
+            use skate_core::living_world::peds::mood::{self, MoodContext, MoodEvent};
+            let set = data.reaction_sets.get(&ped.entity).cloned().unwrap_or_else(|| "default".into());
+            let magnitude = |c: &str| tables.categories.get(c).map_or(0.0, |c| c.magnitude);
+            let lifetime = |c: &str| tables.categories.get(c).map_or(30.0, |c| c.lifetime);
+            let steps = tick.saturating_sub(ped.spawn_tick).saturating_sub(mind.ticks) as f32;
+            if steps > 0.0 {
+                mind.mood.tick(dt * steps, &lifetime);
+                mind.presence_timer -= dt * steps;
+                if mind.presence_timer <= 0.0 {
+                    mind.presence_timer = magnitude(mood::category::PRESENCE).max(dt);
+                    // `sub_82E41060` drops a post whose prerequisites fail (presence: within 12 m in
+                    // the stock sets). Ours applies it to presence only so far.
+                    let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy };
+                    for e in mood::presence(me, at, &ped_list, &player_list) {
+                        // A suppressed entity raises no mood (perception `+64`).
+                        if !e.instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i)) && tables.accepts(&set, &e, &post_ctx) {
+                            mind.mood.post(e, magnitude(mood::category::PRESENCE));
+                        }
+                    }
+                }
+            }
+            if let Some(&car) = honked.get(&me) {
+                mind.brain.honker = Some(car);
+            }
+            if let Some(i) = listening.iter().position(|&p| p == me) {
+                listening.swap_remove(i);
+                mind.brain.speech = Some(skate_core::living_world::peds::conversation::LISTENER_SPEECH);
+            }
+            // ChannelGreetWantTarget's `greeted` (magnitude 1.0, `8269FAC0`).
+            for &(_, instigator, position) in greeted_now.iter().filter(|g| g.0 == me) {
+                if !mind.brain.perceptions.suppressed(instigator) {
+                    mind.mood.post(MoodEvent { category: mood::category::GREETED.into(), instigator: Some(instigator), second: Some(me), position }, 1.0);
+                }
+            }
+            for &hit in &collisions {
+                let category = if hit == me { mood::category::COLLISION } else { mood::category::NEARBY_COLLISION };
+                let instigator = player_list.first().map(|p| p.0);
+                if instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i)) {
+                    continue;
+                }
+                mind.mood.post(MoodEvent { category: category.into(), instigator, second: Some(hit), position: at }, magnitude(category));
+            }
+            let rng = mind.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(world_seed, &[0x4d4f_4f44, me])));
+            let ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy };
+            let brain = &mind.brain;
+            let outstanding = |id: u64| brain.wants.values().filter(|w| w.target == id).count() as u32;
+            let pending = |w: &str| brain.wants.get(w).is_some_and(|x| x.needs_addressing);
+            // `sub_82E41B98` does nothing for a busy ped (`sub_82E3BF70`); a pass sets WaitingToReact.
+            let produced = if brain.busy() { None } else { tables.produce(&mut mind.mood, &ctx, false, &outstanding, &pending, rng) };
+            if let Some(reaction) = produced {
+                info!(
+                    "PED_MOOD ped=#{} {} result={} category={} roll={:?} passed={} wants={:?} tick={tick}",
+                    ped.id.serial,
+                    set,
+                    reaction.result,
+                    reaction.category,
+                    reaction.rolled,
+                    reaction.passed,
+                    reaction.wants.iter().map(|w| w.want.as_str()).collect::<Vec<_>>()
+                );
+                if reaction.passed {
+                    mind.brain.waiting_to_react = true;
+                }
+                for w in &reaction.wants {
+                    mind.brain.set_want(&w.want, w.target);
+                }
+                events.write(PedEvent::Mood { id: ped.id, result: reaction.result.clone(), passed: reaction.passed, wants: reaction.wants.iter().map(|w| w.want.clone()).collect() });
+            }
+        }
+        let due = tick.saturating_sub(ped.spawn_tick);
+        let controller = mind.controller.get_or_insert_with(|| skate_core::graph::controller::Controller::new(program.topology.states.len()));
+        let record = data.chase.get(&ped.entity);
+        let ped_speed = mind.last_at.map_or(0.0, |l| ((at[0] - l[0]).powi(2) + (at[2] - l[2]).powi(2)).sqrt() / (dt * tick.saturating_sub(ped.spawn_tick).saturating_sub(mind.ticks).max(1) as f32));
+        mind.last_at = Some(at);
+        // The takedown contact (`82E38FB8` records a touch of the takedown target and counts it,
+        // `brain+3248`): our skater cylinder against the ped while the takedown plays.
+        if mind.brain.takedown_active && !mind.brain.takedown_contact {
+            let ped_radius = data.nav.as_deref().map_or(super::vehicle_contacts::FALLBACK_PED_RADIUS, |m| m.agent[1]);
+            if let Some(p) = mind.brain.takedown_target.filter(|t| *t >= PLAYER_TARGET_BASE).and_then(|t| target(t)) {
+                let d = ((p[0] - at[0]).powi(2) + (p[2] - at[2]).powi(2)).sqrt();
+                if d < ped_radius + SKATER_CONTACT_RADIUS && (p[1] - at[1]).abs() <= 2.0 {
+                    mind.brain.takedown_contact = true;
+                    mind.brain.takedowns += 1;
+                }
+            }
+        }
+        // HasLineOfSightToTazeTarget (`+3280` bit 0x10, retail's batched ray pass `82E23D68`):
+        // ours is the navmesh line to the tazer want's target while the tazer is out.
+        if mind.brain.tazer_drawn_requested {
+            let goal = mind.brain.tazer_want.as_ref().and_then(|w| mind.brain.wants.get(w)).and_then(|w| target(w.target));
+            mind.brain.tazer_line_of_sight = match (goal, data.nav.as_deref()) {
+                (Some(g), Some(mesh)) => mesh.locate(at).is_some_and(|h| mesh.clear_line(h, g)),
+                (Some(_), None) => true,
+                _ => false,
+            };
+        }
+        let takedown_table = data.takedowns.get(&ped.entity);
+        let forward = [body.heading.sin(), body.heading.cos()];
+        let choose = |t: u64| {
+            let (table, p) = (takedown_table?, target(t)?);
+            let v = observers.observers.get(t.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
+            skate_core::living_world::peds::takedown::choose(table, at, forward, ped_speed, p, v)
+        };
+        // LockToCurrentPosition: the body stays on the locked point (root motion does not move it).
+        if let Some(p) = mind.brain.locked_at {
+            body.position.x = p[0];
+            body.position.z = p[2];
+        }
+        while mind.ticks < due {
+            mind.ticks += 1;
+            mind.brain.tick_timers(dt);
+            // The taunt clip ended (`MajorIntentComplete`): the intent goes, the graph leaves DoTaunt.
+            if body.taunt == TauntClip::Done {
+                body.taunt = TauntClip::None;
+                mind.brain.monitored.remove("SGIntent");
+            }
+            // ApproachWantTarget sets its goal each tick it runs.
+            mind.brain.approach = None;
+            mind.brain.approach_slide = None;
+            // HasPlugin (`826A99C0`): the ped is a participant of a live conversation.
+            if mind.brain.plugin.is_none_or(|id| !conversations.map.get(&id).is_some_and(|c| c.members.iter().any(|m| m.ped == me))) {
+                mind.brain.plugin = conversations.map.values().find(|c| c.members.iter().any(|m| m.ped == me)).map(|c| c.id);
+            }
+            mind.brain.has_plugin = mind.brain.plugin.is_some();
+            let conv = mind.brain.plugin.and_then(|id| conversations.map.get(&id));
+            let free: Vec<[f32; 3]> = conv.map(|c| c.waypoints.iter().filter(|w| w.1.is_none()).map(|w| w.0).collect()).unwrap_or_default();
+            let conversation = conv.map(|c| skate_core::living_world::peds::brain::ConversationInfo { complete: c.is_complete(), speaker: c.speaker(), center: c.center, free_waypoints: &free, speech: c.turn_speech() });
+            let groups_now = &chase_groups.0;
+            let groups = |chasee: u64| groups_now.get(&chasee).map(|g| g.info(max_chasers(chasee)));
+            // UpdateBlockPrediction (`82D99540`): the chasee radius `G+1648` has no known writer: 0.0.
+            let block = |chasee: u64| {
+                let (r, q, g) = (record?, target(chasee)?, groups_now.get(&chasee)?);
+                let v = observers.observers.get(chasee.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
+                Some((skate_core::living_world::peds::chase::should_block(at, q, v, 0.0, r), g.formation_point(me, q)))
+            };
+            let mut host = skate_core::living_world::peds::brain::BrainHost {
+                behaviors: &graph.behaviors,
+                conditions: &graph.conditions,
+                brain: &mut mind.brain,
+                settings: &settings.ped_brain.values,
+                position: body.position.to_array(),
+                heading: body.heading,
+                skater: observers.observers.first().map(|o| (o.position, o.velocity)),
+                target_position: &target,
+                chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation },
+            };
+            controller.update(program, dt, &mut host);
+            // The Plugin state runs the plugin's own graph on the same brain (`8269F248`).
+            match (mind.brain.in_plugin, data.conversation_graph.as_deref()) {
+                (true, Some(pg)) => {
+                    let pc = mind.plugin_controller.get_or_insert_with(|| skate_core::graph::controller::Controller::new(pg.graph.runtime.program.topology.states.len()));
+                    let mut host = skate_core::living_world::peds::brain::BrainHost {
+                        behaviors: &pg.behaviors,
+                        conditions: &pg.conditions,
+                        brain: &mut mind.brain,
+                        settings: &settings.ped_brain.values,
+                        position: body.position.to_array(),
+                        heading: body.heading,
+                        skater: observers.observers.first().map(|o| (o.position, o.velocity)),
+                        target_position: &target,
+                        chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation },
+                    };
+                    pc.update(&pg.graph.runtime.program, dt, &mut host);
+                    if pc.frame.current != mind.plugin_state {
+                        let name = |s: Option<usize>| s.and_then(|s| pg.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
+                        info!("PED_PLUGIN ped=#{} {} -> {} waypoint={:?} tick={tick}", ped.id.serial, name(mind.plugin_state), name(pc.frame.current), mind.brain.waypoint.map(|w| [w[0].round(), w[2].round()]));
+                        mind.plugin_state = pc.frame.current;
+                    }
+                }
+                _ => {
+                    mind.plugin_controller = None;
+                    mind.plugin_state = None;
+                }
+            }
+            // Group changes, in the order the graph asked for them.
+            for request in std::mem::take(&mut mind.brain.chase_requests) {
+                use skate_core::living_world::peds::brain::ChaseRequest;
+                let (chasee, kind, reason) = match request {
+                    ChaseRequest::Join { chasee } => {
+                        // The formation offset: chaser - chasee at the join (`82D96C38`).
+                        let offset = target(chasee).map_or([0.0; 3], |q| [at[0] - q[0], at[1] - q[1], at[2] - q[2]]);
+                        let joined = chase_groups.0.entry(chasee).or_default().add(me, offset);
+                        if !joined && mind.brain.chasee == Some(chasee) {
+                            mind.brain.chasee = None;
+                        }
+                        (chasee, if joined { "join" } else { "join_refused" }, None)
+                    }
+                    ChaseRequest::Leave { chasee } => {
+                        if let Some(g) = chase_groups.0.get_mut(&chasee) {
+                            g.remove(me);
+                        }
+                        (chasee, "leave", None)
+                    }
+                    ChaseRequest::GiveUpPrimary { chasee } => {
+                        chase_groups.0.get_mut(&chasee).map(|g| g.give_up_primary(me));
+                        (chasee, "primary", None)
+                    }
+                    // Only a player gets the marker message (`vfn92` "is a player").
+                    ChaseRequest::StateMessage { target, state } => {
+                        if target >= PLAYER_TARGET_BASE {
+                            let kind = ["state_warn", "state_chase", "state_tired", "state_giveup", "state_other"][usize::from(state.min(4))];
+                            info!("PED_CHASE ped=#{} {kind} chasee={target} tick={tick}", ped.id.serial);
+                            events.write(PedEvent::Chase { id: ped.id, chasee: target, kind, reason: None });
+                        }
+                        continue;
+                    }
+                    ChaseRequest::Takedown { target } | ChaseRequest::TakedownFailed { target } => {
+                        let success = matches!(request, ChaseRequest::Takedown { .. });
+                        let player = target >= PLAYER_TARGET_BASE;
+                        if success {
+                            // `826A4E50`: speech 65 when the player was taken down, else 19.
+                            mind.brain.speech = Some(if player { 65 } else { 19 });
+                            if player {
+                                skater_takedowns.write(SkaterTakedownRequest { player: (target - PLAYER_TARGET_BASE) as usize, chaser: at });
+                            }
+                        }
+                        info!("PED_TAKEDOWN ped=#{} target={target} success={success} entry={:?} takedowns={} tick={tick}", ped.id.serial, mind.brain.takedown_choice.map(|c| c.entry), mind.brain.takedowns);
+                        events.write(PedEvent::Takedown { id: ped.id, target, success });
+                        continue;
+                    }
+                    // `826A8420`: `T.vfn20(ped position)`, the takedown's latch on the skater.
+                    ChaseRequest::Taze { target } => {
+                        if target >= PLAYER_TARGET_BASE {
+                            skater_takedowns.write(SkaterTakedownRequest { player: (target - PLAYER_TARGET_BASE) as usize, chaser: at });
+                        }
+                        info!("PED_TAZE ped=#{} target={target} tick={tick}", ped.id.serial);
+                        events.write(PedEvent::Taze { id: ped.id, target });
+                        continue;
+                    }
+                    // The tazer's burst sound for the state graph's TazerCycTime (2.0 s).
+                    ChaseRequest::TazerOn => {
+                        tazers.write(crate::world_audio::PedTazerEvent { ped: entity_id, seconds: None });
+                        continue;
+                    }
+                    ChaseRequest::Greeted { target } => {
+                        greeted.push((target, me, at));
+                        info!("PED_GREET ped=#{} target={target} tick={tick}", ped.id.serial);
+                        continue;
+                    }
+                    // SpawnConversationArea (`826A6CD8`): none within 50 m of another; 3 m ahead;
+                    // the starter and its target join.
+                    ChaseRequest::SpawnConversation { target: partner } => {
+                        let near = conversations.map.values().any(|c| (c.center[0] - at[0]).powi(2) + (c.center[2] - at[2]).powi(2) < conv_params.exclusion * conv_params.exclusion);
+                        if !near && target(partner).is_some() {
+                            let center = [at[0] + body.heading.sin() * conv_params.ahead, at[1], at[2] + body.heading.cos() * conv_params.ahead];
+                            // The group's category by probability, its rows the candidates.
+                            let cats = data.conversations.by_entity.get(&ped.entity).cloned().unwrap_or_default();
+                            let total: f32 = cats.iter().map(|c| c.0).sum();
+                            let mut pick = conv_rand() * total;
+                            let candidates = cats.iter().find(|c| {
+                                pick -= c.0;
+                                pick < 0.0
+                            }).or(cats.last()).map(|c| c.1.clone()).unwrap_or_default();
+                            conversations.next_id += 1;
+                            let id = conversations.next_id;
+                            let mut c = skate_core::living_world::peds::conversation::Conversation::new(id, center, candidates, &conv_params, &mut conv_rand);
+                            c.join(me);
+                            c.join(partner);
+                            info!("PED_CONVERSATION id={id} start ped=#{} with={partner} center=[{:.1}, {:.1}, {:.1}] tick={tick}", ped.id.serial, center[0], center[1], center[2]);
+                            conversations.map.insert(id, c);
+                            mind.brain.plugin = Some(id);
+                        }
+                        continue;
+                    }
+                    ChaseRequest::LockWaypoint { at: w } => {
+                        if let Some(c) = mind.brain.plugin.and_then(|id| conversations.map.get_mut(&id)) {
+                            c.lock_closest_waypoint(me, w);
+                        }
+                        continue;
+                    }
+                    ChaseRequest::UnlockWaypoint => {
+                        if let Some(c) = mind.brain.plugin.and_then(|id| conversations.map.get_mut(&id)) {
+                            c.unlock_waypoint(me);
+                        }
+                        continue;
+                    }
+                    ChaseRequest::ExitPlugin => {
+                        if let Some(id) = mind.brain.plugin.take() {
+                            use skate_core::living_world::peds::conversation::Left;
+                            let left = conversations.map.get_mut(&id).map(|c| (c.is_complete(), c.leave(me)));
+                            let how = match left {
+                                Some((false, Left::Remaining)) => "abort",
+                                Some((_, Left::Empty)) => "empty",
+                                _ => "leave",
+                            };
+                            if matches!(left, Some((_, Left::Empty))) {
+                                conversations.map.remove(&id);
+                            }
+                            info!("PED_CONVERSATION id={id} leave ped=#{} result={how} tick={tick}", ped.id.serial);
+                        }
+                        mind.brain.has_plugin = false;
+                        mind.brain.waypoint = None;
+                        continue;
+                    }
+                    ChaseRequest::SignalInPosition => {
+                        if let Some(c) = mind.brain.plugin.and_then(|id| conversations.map.get_mut(&id)) {
+                            let rows = &data.conversations.rows;
+                            let before = c.state;
+                            c.signal_in_position(me, rows, &mut conv_rand);
+                            if before < 2 && c.state == 2 {
+                                info!("PED_CONVERSATION id={} begins row={:?} value={:?} tick={tick}", c.id, c.row.and_then(|r| rows.get(r)).map(|r| r.name.as_str()), c.value);
+                            }
+                        }
+                        continue;
+                    }
+                    ChaseRequest::PassTurn => {
+                        if let Some(c) = mind.brain.plugin.and_then(|id| conversations.map.get_mut(&id)) {
+                            c.pass_turn(&mut conv_rand);
+                            info!("PED_CONVERSATION id={} turn state={} speaker={:?} tick={tick}", c.id, c.state, c.speaker());
+                        }
+                        continue;
+                    }
+                    ChaseRequest::Spoke => {
+                        if let Some(c) = mind.brain.plugin.and_then(|id| conversations.map.get(&id)) {
+                            listening.extend(c.listeners());
+                        }
+                        continue;
+                    }
+                    // TakedownTauntVictim (`826A70E0`): speech 65 when the victim is the player, else 19.
+                    ChaseRequest::Taunt { target } => {
+                        mind.brain.speech = Some(if target >= PLAYER_TARGET_BASE { 65 } else { 19 });
+                        body.taunt = TauntClip::Requested;
+                        info!("PED_TAUNT ped=#{} target={target} tick={tick}", ped.id.serial);
+                        continue;
+                    }
+                    ChaseRequest::MoodReset { target } => {
+                        mind.mood.forget(target);
+                        continue;
+                    }
+                    ChaseRequest::GroupEnd { chasee, reason } => {
+                        if let Some(g) = chase_groups.0.get_mut(&chasee) {
+                            g.end_reason = Some(reason);
+                        }
+                        (chasee, "group_end", Some(reason))
+                    }
+                };
+                info!("PED_CHASE ped=#{} {kind} chasee={chasee} reason={reason:?} group={:?} tick={tick}", ped.id.serial, chase_groups.0.get(&chasee).map(|g| &g.chasers));
+                events.write(PedEvent::Chase { id: ped.id, chasee, kind, reason });
+            }
+        }
+        // Intercept: each tick a new goal from the solver (`826A3BF0`): the chasee must be
+        // reachable (`sub_82C465A8`, our navmesh line) and the goal on the mesh (`sub_82C460E0`).
+        // A locked ped drops its route (the plugin's waypoint walk is over).
+        if mind.brain.position_locked && body.nav.route.is_some() {
+            body.nav.set_route(None);
+        }
+        use skate_core::living_world::peds::brain::ChaseSteer;
+        let one_point = |p: [f32; 3]| Some(skate_core::living_world::peds::PedRoute { points: vec![p], looped: false });
+        match (mind.brain.motion_intent, mind.brain.chasee, data.nav.as_deref()) {
+            // LostChasee: walk to the last known position (a one-point route).
+            _ if mind.brain.search_point.is_some() => {
+                let p = mind.brain.search_point.unwrap_or_default();
+                if mind.chase_goal.take().is_some() || body.nav.route.as_ref().is_none_or(|r| r.points.first() != Some(&p)) {
+                    body.nav.set_route(one_point(p));
+                }
+            }
+            // ApproachWantTarget (`8269FDF0`): walk to the want's target.
+            _ if mind.brain.approach.is_some() => {
+                let p = mind.brain.approach.map(|a| a.0).unwrap_or_default();
+                mind.chase_goal = None;
+                let d = [p[0] - at[0], p[2] - at[2]];
+                let dist = (d[0] * d[0] + d[1] * d[1]).sqrt();
+                match mind.brain.approach_slide {
+                    // TargetWaypoint's slide (`slideDistance` / `slideSpeed`): the last stretch
+                    // moves the body straight onto the point (ours: no slide clip).
+                    Some((slide, speed)) if dist <= slide => {
+                        body.nav.set_route(None);
+                        if dist > 1e-4 {
+                            let step = (speed * dt).min(dist);
+                            body.position.x += d[0] / dist * step;
+                            body.position.z += d[1] / dist * step;
+                        }
+                    }
+                    _ => body.nav.set_route(one_point(p)),
+                }
+            }
+            // PursueChasee (`826A43B0`): run to the formation point.
+            (Some(skate_core::living_world::peds::brain::motion::INTERCEPT), Some(chasee), Some(_)) if mind.brain.chase_steer == Some(ChaseSteer::Pursue) => {
+                if let (Some(q), Some(g)) = (target(chasee), chase_groups.0.get(&chasee)) {
+                    let p = g.formation_point(me, q);
+                    body.nav.set_route(one_point(p));
+                    mind.chase_goal = Some(p);
+                }
+            }
+            // BlockChasee (`826A40E8`): walk to the block point; at it the brain stands and faces.
+            (Some(skate_core::living_world::peds::brain::motion::INTERCEPT), Some(_), Some(_)) if matches!(mind.brain.chase_steer, Some(ChaseSteer::Block { .. })) => {
+                mind.chase_goal = None;
+                match mind.brain.block_point.filter(|_| mind.brain.speed_suggestion != Some(0.0)) {
+                    Some(p) => body.nav.set_route(one_point(p)),
+                    None => body.nav.set_route(None),
+                }
+            }
+            (Some(skate_core::living_world::peds::brain::motion::INTERCEPT), Some(chasee), Some(mesh)) => {
+                use skate_core::living_world::peds::chase;
+                if let (Some(q), Some(here)) = (target(chasee), mesh.locate(at)) {
+                    let velocity = observers.observers.get(chasee.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
+                    let speed = record.and_then(|r| r.run_speed()).unwrap_or(0.0);
+                    // No record: the max lead time reads 0.0, so no goal.
+                    let max_lead = record.map_or(0.0, |r| r.max_lead_time());
+                    let goal = mesh.clear_line(here, q).then(|| chase::intercept(at, q, velocity, speed, max_lead, chase::predict_angle(data.chase_global.as_deref()))).flatten().filter(|i| mesh.locate(i.point).is_some());
+                    if let Some(i) = goal {
+                        if mind.chase_goal.is_none() {
+                            info!("PED_INTERCEPT ped=#{} chasee={chasee} goal=[{:.1}, {:.1}, {:.1}] leads={} t={:.2} tick={tick}", ped.id.serial, i.point[0], i.point[1], i.point[2], i.leads, i.time);
+                        }
+                        body.nav.set_route(Some(skate_core::living_world::peds::PedRoute { points: vec![i.point], looped: false }));
+                        mind.chase_goal = Some(i.point);
+                    }
+                }
+            }
+            _ => {
+                if mind.chase_goal.take().is_some() {
+                    body.nav.set_route(None);
+                }
+            }
+        }
+        // Flee movement: 15 m legs away from the threat, a new one within 2 m of the goal; the
+        // leg goes to the nav as a one-point route (cleared when the flee ends).
+        let flee = settings.ped_brain.flee;
+        match (mind.brain.motion_intent, mind.brain.flee_from, data.nav.as_deref()) {
+            (Some(skate_core::living_world::peds::brain::motion::FLEE), Some(threat), Some(mesh)) => {
+                if mind.flee_goal.is_none_or(|g| skate_core::living_world::peds::flee::arrived(at, g, &flee)) {
+                    if let Some(threat_at) = target(threat) {
+                        let velocity = observers.observers.get(threat.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
+                        let mut goal = skate_core::living_world::peds::flee::goal(at, threat_at, velocity, &flee);
+                        // The navmesh cast (`sub_82C465A8`): a blocked leg ends at the last clear
+                        // point along it (`sub_82C46208`'s rewrite, inferred).
+                        if let Some(here) = mesh.locate(at) {
+                            if !mesh.clear_line(here, goal) {
+                                let (mut lo, mut hi) = (0.0f32, 1.0f32);
+                                for _ in 0..8 {
+                                    let mid = (lo + hi) * 0.5;
+                                    let p = [at[0] + (goal[0] - at[0]) * mid, at[1], at[2] + (goal[2] - at[2]) * mid];
+                                    if mesh.clear_line(here, p) {
+                                        lo = mid;
+                                    } else {
+                                        hi = mid;
+                                    }
+                                }
+                                goal = [at[0] + (goal[0] - at[0]) * lo, at[1], at[2] + (goal[2] - at[2]) * lo];
+                            }
+                        }
+                        body.nav.set_route(Some(skate_core::living_world::peds::PedRoute { points: vec![goal], looped: false }));
+                        mind.flee_goal = Some(goal);
+                        info!("PED_FLEE ped=#{} from={} goal=[{:.1}, {:.1}, {:.1}] tick={tick}", ped.id.serial, threat, goal[0], goal[1], goal[2]);
+                    }
+                }
+            }
+            // RunFromHonker (`826A1358`): every frame while the car exists, a goal 10 m sideways of its line; a
+            // car that is gone leaves the last goal (retail keeps it).
+            (Some(skate_core::living_world::peds::brain::motion::RUN_FROM_HONKER), _, _) => {
+                if let Some((car_at, dir)) = mind.brain.honker.and_then(|c| car_pose.get(&c)) {
+                    if let Some((goal, speed)) = skate_core::living_world::peds::honk::run_goal(at, *car_at, *dir, &settings.ped_brain.run_from_honker) {
+                        if mind.flee_goal.is_none() {
+                            info!("PED_HONKED ped=#{} car={:?} goal=[{:.1}, {:.1}, {:.1}] tick={tick}", ped.id.serial, mind.brain.honker, goal[0], goal[1], goal[2]);
+                        }
+                        body.nav.set_route(Some(skate_core::living_world::peds::PedRoute { points: vec![goal], looped: false }));
+                        mind.flee_goal = Some(goal);
+                        mind.brain.speed_suggestion = Some(speed);
+                    }
+                }
+            }
+            _ => {
+                if mind.flee_goal.take().is_some() {
+                    body.nav.set_route(None);
+                }
+            }
+        }
+        // Speech: the brain stores the value on the ped (`ped+2468`); PedestrianSpeech speaks when
+        // it changes, so only a change goes to the audio side (a state re-sending its value stays
+        // silent, as in retail).
+        if mind.brain.speech != mind.spoken {
+            mind.spoken = mind.brain.speech;
+            // A conversation turn's variant and row value go with its line only.
+            let topic = mind.brain.speech_topic.take();
+            if let Some(value) = mind.brain.speech {
+                let state = controller.frame.current.and_then(|s| graph.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
+                info!("PED_SPEECH ped=#{} value={value} topic={topic:?} state={state} tick={tick}", ped.id.serial);
+                speech.write(crate::world_audio::PedSpeechEvent { ped: entity_id, value: crate::world_audio::SpeechValue(value), topic });
+                events.write(PedEvent::Speech { id: ped.id, value, topic, state: state.to_string() });
+            }
+        }
+        if controller.frame.current != mind.state {
+            let name = |s: Option<usize>| s.and_then(|s| graph.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
+            info!("PED_BRAIN ped=#{} {} -> {} intent={:?} wants={:?} tick={tick}", ped.id.serial, name(mind.state), name(controller.frame.current), mind.brain.motion_intent, mind.brain.wants.keys().collect::<Vec<_>>());
+            mind.state = controller.frame.current;
+        }
+    }
 }

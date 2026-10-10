@@ -67,6 +67,7 @@ use skate_core::{
     player::state::PhysicalStateId,
 };
 use bevy::prelude::warn;
+use skate_core::player::offboard::grab_scene::Record;
 use std::collections::BTreeMap;
 
 use super::prop_dynamics::PropDynamics;
@@ -168,6 +169,11 @@ pub(crate) struct LocomotionOverrides {
     pub hold_max_angle_to_horizontal: Option<f32>,
     pub hold_box_extents: Option<[f32; 3]>,
     pub record_272_speed_scale: Option<f32>,
+    pub grab_end_exclusion: Option<f32>,
+    pub hand_ik_enter: Option<f32>,
+    pub hand_ik_curve: Option<[[f32; 8]; 2]>,
+    pub hand_ik_rate: Option<f32>,
+    pub hand_ik_reach: Option<f32>,
 }
 
 impl LocomotionOverrides {
@@ -206,6 +212,11 @@ impl LocomotionOverrides {
         if let Some(v) = self.hold_max_angle_to_horizontal { m.hold_max_angle_to_horizontal = v; }
         if let Some(v) = self.hold_box_extents { m.hold_box_extents = v; }
         if let Some(v) = self.record_272_speed_scale { m.record_272_speed_scale = v; }
+        if let Some(v) = self.grab_end_exclusion { m.grab_end_exclusion = v; }
+        if let Some(v) = self.hand_ik_enter { m.hand_ik_enter = v; }
+        if let Some(v) = self.hand_ik_curve { m.hand_ik_curve = curve(v); }
+        if let Some(v) = self.hand_ik_rate { m.hand_ik_rate = v; }
+        if let Some(v) = self.hand_ik_reach { m.hand_ik_reach = v; }
         l.turn_rate = self.turn_rate.or(base.turn_rate);
         l.sanitized(&base)
     }
@@ -214,9 +225,10 @@ impl LocomotionOverrides {
 /// The interim grab record of a held prop: which vertical box face is held
 /// (local axis index and side) and the grip position along its edge, both in
 /// the prop's own frame so the grip turns with the prop. NOT RETAIL YET:
-/// retail reads the DMO's authored grab splines (record layout 82585DD8,
-/// source undecoded); until then the face toward the skater at grab time is
-/// the grab edge.
+/// the stand-in for props without authored grab splines (and for every prop
+/// while `SKATE_PROP_GRAB` is off); props with splines carry by their
+/// authored record ([`PropCarry::frame_for`]). The face toward the skater at
+/// grab time is the grab edge.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GrabEdge {
     /// Local box axis of the face normal (0 or 2) and its sign.
@@ -259,6 +271,26 @@ fn grab_frame(body: &HeldBody, edge: GrabEdge) -> Option<GrabFrame> {
     let lift = Vector3::new(0.0, top, 0.0);
     let ends = [add(add(face, scale(edge_dir, -half_along)), lift), add(add(face, scale(edge_dir, half_along)), lift)];
     Some(GrabFrame { grip, forward, skater: grip, ends, grip_distance: half_along + edge.grip })
+}
+
+/// The grab frame of an authored record at the grip (82D45D30): grip point,
+/// facing minus the flattened approach vector, the record's ends.
+fn authored_frame(record: &Record, held: &skate_core::player::offboard::move_object::HeldGrip) -> Option<GrabFrame> {
+    let at = skate_core::player::offboard::move_object::record_frame(record, held.grip);
+    let v = |a: [f32; 3]| Vector3::new(a[0], a[1], a[2]);
+    let grip = v(at.point);
+    Some(GrabFrame { grip, forward: flat_unit(scale(v(at.approach), -1.0))?, skater: grip, ends: [v(at.ends[0]), v(at.ends[1])], grip_distance: held.grip })
+}
+
+/// The authored grab records of prop `id` from its current pose; `None`
+/// without grab splines or when `enabled` is false.
+fn authored_records(dynamics: &PropDynamics, id: u32, enabled: bool) -> Option<Vec<Record>> {
+    if !enabled {
+        return None;
+    }
+    let object = dynamics.grab_object(id)?;
+    let records: Vec<_> = object.splines.iter().filter_map(|s| object.record(s).ok()).collect();
+    (!records.is_empty()).then_some(records)
 }
 
 /// The face of the held box toward `point` and the grip along it, clamped
@@ -372,6 +404,12 @@ pub(crate) struct CarrierSkeleton {
     pub reference: Vector3,
     /// Body position Skeleton+15872 (state +416 at the grab, 82D442D0).
     pub body: Vector3,
+    /// Distance between the hand bones 3 and 7 (82D45D30 hand points).
+    pub hand_span: f32,
+    /// Collision flag Player+2484 bit 26 (`flag_215`): drives the rebind timer +1176 (82D44A10).
+    pub collision_flag: bool,
+    /// Time in the current player state, s (Player+2664; the 82D46610 hand IK gate).
+    pub state_time: f32,
 }
 
 impl Carrier {
@@ -437,8 +475,20 @@ pub(crate) struct PropCarry {
     locomotion: CarryLocomotion,
     /// Retail controller state of this slot (serialisable plain data).
     controller: MoveObjectController,
-    /// Interim grab record of the held prop.
+    /// Interim grab record of the held prop (props without authored grab splines).
     edge: Option<GrabEdge>,
+    /// Held authored record (descriptor, grip +1128, reversed bit) for props
+    /// with grab splines (82D444A0, Move Object step 3).
+    bound: Option<skate_core::player::offboard::move_object::HeldGrip>,
+    /// Carry by authored records: `None` = `SKATE_PROP_GRAB=1` (tests set it).
+    authored: Option<bool>,
+    /// Rebind block state (+1176 timer, +1200 bit 0x02 latch) and the hand
+    /// points of the held record (82D45D30), for authored records.
+    rebind: skate_core::player::offboard::move_object::RebindState,
+    rebind_tuning: skate_core::player::offboard::move_object::RebindTuning,
+    hands: Option<[[f32; 3]; 2]>,
+    /// Hand IK bit +1200 0x40 and weight +1132 (82D46610 / 82D45008) on the hand points.
+    hand_ik: skate_core::player::offboard::move_object::HandIk,
     /// Grab frame of the held prop after this tick's command: where the
     /// skater is pulled to and which way it faces (read by `biped_ground`).
     frame: Option<GrabFrame>,
@@ -564,6 +614,24 @@ impl PropCarry {
         self.buttons = buttons;
     }
 
+    /// Force carrying by authored records on or off (tests).
+    #[cfg(test)]
+    pub(crate) fn set_authored_records(&mut self, on: bool) {
+        self.authored = Some(on);
+    }
+
+    /// The held authored record state (tests, diagnostics).
+    #[allow(dead_code)]
+    /// The hand IK targets (hand A = p+, hand B = p-; 82BD9728 / 82BD97D0) and weight, while the weight is above 0.
+    pub(crate) fn hand_ik_targets(&self) -> Option<([[f32; 3]; 2], f32)> {
+        let hands = self.hands?;
+        (self.hand_ik.weight > 0.0).then_some((hands, self.hand_ik.weight))
+    }
+
+    pub(crate) fn held_grip(&self) -> Option<skate_core::player::offboard::move_object::HeldGrip> {
+        self.bound
+    }
+
     pub fn placing(&self) -> bool {
         matches!(self.mode, Mode::Placement { .. })
     }
@@ -607,35 +675,100 @@ impl PropCarry {
         }
         let (id, _) = dynamics.nearest_body(carrier.position, self.grab_range())?;
         let body = dynamics.held_body(id)?;
-        let edge = choose_edge(&body, carrier.position, self.locomotion.hand_half_spread);
-        let frame = grab_frame(&body, edge)?;
-        self.qualifies(id, &frame, carrier).then_some(id)
+        let (frame, record) = self.frame_for(dynamics, id, &body, carrier, &mut None, &mut None)?;
+        self.holds(&record, &frame, carrier).then_some(id)
+    }
+
+    /// The grab frame and record of prop `id` this tick. Props with authored
+    /// grab splines (with `SKATE_PROP_GRAB=1`): the records are rebuilt from
+    /// the body's current pose (82D44A10 path A); without a binding (`bound`
+    /// `None`) the best record from the skater position (82D4D150 mode 0) is
+    /// bound with a new grip (82D444A0 full), with one the record of the same
+    /// descriptor keeps its grip (82D444A0 continue); the frame is the record
+    /// at the grip (82D45D30). Other props: the interim box edge `edge` (the
+    /// face toward the skater when `None`). Bindings are updated in place.
+    fn frame_for(
+        &self,
+        dynamics: &PropDynamics,
+        id: u32,
+        body: &HeldBody,
+        carrier: Carrier,
+        bound: &mut Option<skate_core::player::offboard::move_object::HeldGrip>,
+        edge: &mut Option<GrabEdge>,
+    ) -> Option<(GrabFrame, Record)> {
+        use skate_core::player::offboard::{grab_scene::best_spline, move_object};
+        let v3 = |v: Vector3| [v.x, v.y, v.z];
+        if let Some(records) = authored_records(dynamics, id, self.authored_enabled()) {
+            let reference = v3(carrier.skeleton.map_or(carrier.position, |s| s.reference));
+            let (record, held) = match *bound {
+                None => {
+                    let p = carrier.position;
+                    let mut record = best_spline(&records, [p.x, p.y, p.z, 1.0])?;
+                    let held = move_object::begin_grip(&mut record, reference, self.locomotion.move_object.grab_end_exclusion);
+                    (record, held)
+                }
+                Some(mut held) => {
+                    let mut record = records.into_iter().find(|r| (r.0[47], r.0[48]) == held.descriptor)?;
+                    move_object::continue_grip(&mut record, reference, &mut held);
+                    (record, held)
+                }
+            };
+            *bound = Some(held);
+            return Some((authored_frame(&record, &held)?, record));
+        }
+        let edge = *edge.get_or_insert_with(|| choose_edge(body, carrier.position, self.locomotion.hand_half_spread));
+        let frame = grab_frame(body, edge)?;
+        let out = scale(frame.forward, -1.0);
+        let record = move_object::edge_record(id, v3(frame.ends[0]), v3(frame.ends[1]), v3(out))?;
+        Some((frame, record))
     }
 
     /// Retail hold rule (82D44A10): the held record must pass CanGrabSpline
-    /// 82E08EE8 at the grip with the grabbing box and angles. The record is
-    /// the interim straight edge (NOT RETAIL YET: props' authored grab
-    /// splines are not loaded). Without skater observations (tests) it holds.
-    fn qualifies(&self, id: u32, frame: &GrabFrame, carrier: Carrier) -> bool {
+    /// 82E08EE8 at the grip with the grabbing box and angles. Without skater
+    /// observations (tests) it holds.
+    fn holds(&self, record: &Record, frame: &GrabFrame, carrier: Carrier) -> bool {
         let Some(skeleton) = carrier.skeleton else { return true };
         let v3 = |v: Vector3| [v.x, v.y, v.z];
-        let out = scale(frame.forward, -1.0);
-        let Some(record) = skate_core::player::offboard::move_object::edge_record(id, v3(frame.ends[0]), v3(frame.ends[1]), v3(out)) else {
-            return false;
-        };
         skate_core::player::offboard::move_object::still_holds(
             &self.locomotion.move_object,
-            &record,
+            record,
             v3(skeleton.reference),
             frame.grip_distance,
             skeleton.frame,
         )
     }
 
+    fn authored_enabled(&self) -> bool {
+        self.authored.unwrap_or_else(super::prop_dynamics::prop_grab_enabled)
+    }
+
+    /// Path B of 82D44A10: the prop's best other record from the skater
+    /// reference (82D4D150 mode 1 without the held descriptor) that passes
+    /// 82E08DB8, bound with a new grip (82D444A0 full). NOT RETAIL YET: the
+    /// candidates are the held prop's own records (retail asks the owner's
+    /// validated records), owner flag 0x40 and the held record's +196 / +216
+    /// are taken as set.
+    fn regrab_candidate(&self, dynamics: &PropDynamics, id: u32, skeleton: CarrierSkeleton, held: skate_core::player::offboard::move_object::HeldGrip) -> Option<(GrabFrame, Record, skate_core::player::offboard::move_object::HeldGrip)> {
+        use skate_core::player::offboard::{grab_scene::best_spline_excluding, move_object};
+        let records = authored_records(dynamics, id, self.authored_enabled())?;
+        let r = skeleton.reference;
+        let mut record = best_spline_excluding(&records, [r.x, r.y, r.z, 1.0], Some(held.descriptor))?;
+        let tuning = &self.locomotion.move_object;
+        if !move_object::can_regrab(tuning, &record, [r.x, r.y, r.z], skeleton.frame) {
+            return None;
+        }
+        let new = move_object::begin_grip(&mut record, [r.x, r.y, r.z], tuning.grab_end_exclusion);
+        Some((authored_frame(&record, &new)?, record, new))
+    }
+
     fn let_go(&mut self) {
         self.held = None;
         self.mode = Mode::Carry;
         self.edge = None;
+        self.bound = None;
+        self.rebind = Default::default();
+        self.hands = None;
+        self.hand_ik = Default::default();
         self.frame = None;
         self.follow = None;
         self.controller = MoveObjectController::default();
@@ -700,6 +833,7 @@ impl PropCarry {
                 if tick.placement {
                     self.mode = Mode::Carry;
                     self.edge = None;
+                    self.bound = None;
                     self.follow = None;
                     self.controller = MoveObjectController::default();
                     self.closest = f32::INFINITY;
@@ -734,16 +868,56 @@ impl PropCarry {
         };
         let locomotion = self.locomotion;
         let tuning = locomotion.command_tuning();
-        let edge = *self.edge.get_or_insert_with(|| choose_edge(&body, carrier.position, locomotion.hand_half_spread));
-        let Some(mut frame) = grab_frame(&body, edge) else {
-            self.let_go();
-            return;
+        let was_bound = self.bound;
+        let (mut bound, mut edge) = (self.bound, self.edge);
+        let found = self.frame_for(dynamics, id, &body, carrier, &mut bound, &mut edge);
+        let holds = found.as_ref().is_some_and(|(f, r)| self.holds(r, f, carrier));
+        let mut regrabbed = false;
+        let (mut frame, record) = match (was_bound, carrier.skeleton) {
+            // An authored record held since last tick: the rebind block (82D44A10, b64).
+            (Some(held), Some(skeleton)) => {
+                use skate_core::player::offboard::move_object::{Rebind, RebindInput};
+                let rt = self.rebind_tuning;
+                // The push latch input (|Player+736|^2) is not identified: never set here.
+                self.rebind.tick(&rt, 0.0, skeleton.collision_flag, tuning.tick);
+                let candidate = if found.is_some() && holds { None } else { self.regrab_candidate(dynamics, id, skeleton, held) };
+                let input = RebindInput { hand_flag: tick.grab, has_best: found.is_some(), still_holds: holds, owner_ready: true, candidate: candidate.is_some(), held_fields: true, was_holding: true };
+                match self.rebind.decide(&rt, &input) {
+                    Rebind::Refresh => found.expect("refresh needs the held record"),
+                    Rebind::Regrab { .. } => {
+                        let (f, r, new) = candidate.expect("regrab needs a candidate");
+                        bound = Some(new);
+                        regrabbed = true;
+                        (f, r)
+                    }
+                    Rebind::Lost => {
+                        self.let_go();
+                        return;
+                    }
+                }
+            }
+            // Box stand-in, the grab tick, or no skater observations: the
+            // held record must keep qualifying (82D44A10 -> 82E08EE8).
+            _ => match found {
+                Some(x) if holds => x,
+                _ => {
+                    self.let_go();
+                    return;
+                }
+            },
         };
-        // Let go: retail stops holding when the held record no longer
-        // qualifies (82D44A10 -> 82E08EE8).
-        if !self.qualifies(id, &frame, carrier) {
-            self.let_go();
-            return;
+        (self.bound, self.edge) = (bound, edge);
+        // 82D45D30 hand points on the authored record; 82D46610 / 82D45008 the
+        // hand IK (a path B re-grab is 82D444A0 full: the bit clears).
+        self.hands = match (self.bound, carrier.skeleton) {
+            (Some(held), Some(s)) => skate_core::player::offboard::move_object::hand_points(&record, held.grip, [0.0; 3], [s.hand_span, 0.0, 0.0], &self.rebind_tuning),
+            _ => None,
+        };
+        if regrabbed {
+            self.hand_ik.begin_grab();
+        }
+        if let Some(s) = carrier.skeleton {
+            self.hand_ik.tick(&self.locomotion.move_object, s.state_time);
         }
         let v3 = |v: Vector3| [v.x, v.y, v.z];
         let body_position = carrier.skeleton.map_or(carrier.position, |s| s.body);
@@ -758,6 +932,21 @@ impl PropCarry {
         let follow = self
             .follow
             .get_or_insert_with(|| SkaterFollow::begin(&tuning, v3(body_position), v3(frame.grip), back_of(&MoveObjectController::default())));
+        // Path B (82D444A0 full after a re-grab): anchor velocity +624 = 0 and
+        // the anchor seeded from the new record's nearest point (82D43B20).
+        // The frame blend 82D46218 only runs for jumps of 60 m or more: a
+        // snap here, as for the grab.
+        if regrabbed {
+            if let (Some(s), Some(_)) = (carrier.skeleton, self.bound) {
+                use skate_core::player::offboard::grab_scene::{at_distance, nearest_distance};
+                let r = s.reference;
+                let s_near = nearest_distance(&record, [r.x, r.y, r.z, 1.0]);
+                let near = at_distance(&record, s_near);
+                let back = back_of(&self.controller);
+                follow.anchor = skate_core::player::offboard::move_object::seed_anchor([near[0], near[1], near[2]], back, tuning.anchor_reach);
+                follow.velocity = [0.0; 3];
+            }
+        }
         // 82D46610 runs before the command with the previous tick's latch.
         follow.update_anchor(&tuning, v3(frame.grip), back_of(&self.controller));
         let input = MoveObjectInput {

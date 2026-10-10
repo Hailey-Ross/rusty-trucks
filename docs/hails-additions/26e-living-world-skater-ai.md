@@ -225,3 +225,175 @@ screen yet and not play-tested. skate-mods validation gains 2 cases; player iden
 **Open.** Its recorded ollies and tricks are not performed yet (no trajectory launch, no ActionGraph trick signals:
 a simulated NPC rolls through its jumps); skater-to-skater collision; how the board and look appear when drawn from
 the simulated pose; render interpolation (drawn at the 60 Hz tick).
+
+## NPC skater obstacle avoider (M5 port, 2026-10-09)
+
+**Problem.** NPC skaters rode through peds, cars, props and the player standing on their line: retail's
+`ObstacleAvoider` (AI controller `+80`) was not ported.
+
+**Retail [code] (static decode, `.local/research/npc/m5-obstacle-avoider.md`).** Once per tick in the PathController
+advance `sub_8246D560`: own speed, floor 0, cap FLT_MAX, mode 0; when the global avoidance switch is clear, four
+gatherers add obstacles: skaters 64 m (`sub_82464968`, type 3), peds 8 m (`sub_82463C08`, type 2), vehicles 20 m
+(`sub_82464000`, type 4), props 16 m (`sub_82464448`, type 5). The entry add `sub_82463A40` keeps an obstacle inside
+40 deg of the facing (`0x822F91B4`), or inside 88 deg (`0x822F9554`) when closer than 1.8 m (`0x8208EB60`), at most
+16. The fill `sub_824636B0`:
+- closing rate and time to contact from the distance one 1/60 s step later (`sub_82462D00`);
+- the lateral interval it blocks on the skater's path, in path widths: a circle of extent / 2 + skater radius
+  (`sub_824629A8`), or the 8 box corners for vehicles and props (`sub_82462448`). Path widths are node bytes
+  `+0x25/+0x26` / 50 (`sub_82F71580`);
+- for a moving obstacle that blocks: a floor = speed to cross its line before it arrives + margin, and a cap = speed
+  to arrive after it passed - margin (`sub_82463200`; margin [data] `ai_skater` `C373BAC23C5881FA` = 1.0, skater
+  radius `8EF4FB9D11A9358A` = 0.5);
+- a close blocker: gap < 2.2 m (`0x822570E0`), or < 6.0 m (`0x8208F74C`) inside 18 deg (`0x822F9284`); props 5.0 m;
+- a skitch candidate: a car ahead moving the skater's way (both cosines > 0.8, `sub_82462ED0`).
+
+Aggregation `sub_82464FA8`: highest floor, lowest cap; an entry without one invalidates it, and a close blocker
+without a cap stops (cap 0); a floor more than 5.0 above the own speed is dropped. Targets: the earliest blocking
+entry along the path, the skitch target with a 60-tick cooldown (`sub_824650A0`, `sub_82465198`), free gaps of the
+path (`sub_82461DC8`). Mode `sub_82465578`: 4 skitch (`GrabWorld` signal), 3 steer when the path is split (the gap
+nearest the skater's lateral position, its centre, `sub_82465280`; the target moves that far across the path,
+`sub_82464E30`, controller `+933`), 1 speed up to the floor, else 2 slow to the cap; low props (under 0.8 m) give 6
+when contact is within 1 s, a stop in front of a prop gives 7 within 1.5 s. The speed shape (`sub_82470830`) floors
+(mode 1) or caps (mode 2) the AI record speed.
+
+**Change.** skate-core `living_world::avoid` (pure, every value in `AvoidSettings`, retail defaults);
+`replay::project_on_line` (nearest line point with the interpolated widths; `ReplayNode::width` from the disc).
+skate-game `living_world::npc_avoid` runs before the cursors advance, on the host only: peds (NavPower agent radius
+and height, velocity from the last tick), traffic cars (model bounds around the pose), props (collision boxes), the
+players and the other NPC skaters. Replay tier: the cursor is held back by the missing recorded frames (a cap of 0
+stops the skater; a floor only catches up held frames, a recording is never played faster), and the drawn skater
+moves across the line towards the chosen gap at retail's AI board path step, 2 cm a tick (`82C05EC0`), back to the
+line when clear. Air, off-board and trick spans are never held or moved. Simulated tier: the same cap / floor on the
+AI record speed, the target moved across, controller `+933` set while steering. Log `NPC_AVOID` on every mode change
+(mode, target kind and id, time to contact, cap, floor, lateral, lag); mod event `living_world` `npc_avoid`; mod
+values `npc_avoid {...}` (all thresholds, radii, cones, margin, switch).
+
+**Engine choices.** Retail has no replay tier: holding the cursor back and offsetting the drawn skater stand in for
+the physics following the capped record. Retail's gather order is kept; the projection window of retail's path
+search is not decoded (the gather radius is used). The skater obstacle size 0.75 (`0x821814A0`, read by the skater
+gatherer) is inferred.
+
+**Verification.** skate-core `avoid` tests (8): stop for a standing ped, cone and radius, speed up for a slow car
+crossing (floor 9.0 m/s from the worked numbers), a floor over the headroom falls back to the cap, skitch target and
+cooldown, free gaps, steering into the nearer gap and its offset, switch off. skate-game
+`living_world_npc_skater_stops_for_a_player_standing_on_its_line`: a player standing 3 m ahead, 0.5 m right of the
+line stops the NPC (under 3 m in 3 s instead of 22 m, `npc_avoid` slow_down event), which rides on once the player
+leaves. skate-mods validation cases for `npc_avoid`. Not play-tested.
+
+**Open.** Mode 6 / 7 consumers (low prop ollie, stepping off: logged only), skitching itself (mode 4 raises nothing
+yet), the prop gate `sub_82464350`, an entry-add offset term reading controller `+128`, retail's path search window.
+
+## NPC skater proxies in retail's collision groups (2026-10-09)
+
+**Problem.** The NPC proxies used contact group 0 (world), so the player's skeleton contact pass treated an NPC like
+a wall: no `SkaterSkeletonScalar` (0.5) on the force and no `SkaterSkaterThresholdScalar` (1.5) on the player's
+thresholds, so the player bailed about 3x too easily against NPC skaters.
+
+**Retail [code] (`.local/research/npc/m7-skater-collision.md`).** Skater against skater is an ordinary skeleton
+contact: `sub_82BD4A30` branches on the other body's group (5 skater, 8 vehicle, 4 ignored) at `0x82BD5388`; group 5
+scales the force by `AISkeletonScalar` 1.0 (AI) or `SkaterSkeletonScalar` 0.5 and keeps the other skater's id; the
+player's ground thresholds rise by `SkaterSkaterThresholdScalar` 1.5. Already ported
+(`skeleton_body/collision_update.rs`, `player/wipeout/ground.rs`); the multiplayer peers' proxies already use it.
+
+**Change.** `npc_skaters::proxy` returns two solids like the peers: the body capsule in group 5, the board box in
+group 4 (`PROXY_BOARD_BIT` on its id). Test `living_world_npc_proxy_audio_and_clips` checks the groups.
+
+**Open.** The NPC side of the contact (retail: its own skeleton contact and wipeout check with the AI scalar): only a
+simulated NPC can bail; the replay tier does not react. The other skater id in the feedback block is not filled.
+
+## Simulated NPC skaters bail and respawn (M7, 2026-10-09)
+
+**Retail [code] (`.local/research/npc/m5-ai-bail-trigger.md`, `m5-path-respawner.md`; main checked the key
+addresses).** The physics step writes `flags2468` bit 18 (the "Wipeout" graph attribute) to skater component `+59`
+(`sub_82DB6EC0`); the PathController copies it into `pc+924` each tick (`sub_8246EF78`); the rising edge enters the
+respawn (`sub_8246EE30`): delay 5.0 s for ambient AI (`0x821F1790`), clamped to 1.5 (`0x822249B4`) to 7.9
+(`0x822572EC`) s; after it the skater is placed at a node of its current path (path state 8) and the spawn push
+applies; no fade. Skater+1904 bit 0x02000000 is not a bail flag ("an object spawned on me this frame",
+`sub_826C09E0`); `m5-path-controller.md` called it "bailing", corrected.
+
+**Change.** `npc_sim`: a simulated NPC whose wipeout bit rises bails; its line waits (the cursor is held back) and
+after the delay a fresh simulated skater is placed at the line target (placement and spawn push as at the switch).
+Mod values `npc_simulated {respawn_seconds, respawn_min, respawn_max}`; events `npc_bail` / `npc_respawn`; logs
+`NPC_SKATER_BAIL` / `NPC_SKATER_RESPAWN`. Test `living_world_npc_respawn_delay_is_retails_and_clamped`.
+
+**Open.** Retail's node choice `sub_8246ED68` is only partly read (we resume at the cursor's place); the "prepare"
+step 1 s before the respawn (freezes the ragdoll, `pc+29`); not seen in a game run yet (the simulated tier is opt-in).
+
+## Simulated NPC skaters do their recorded jumps and tricks (M7, 2026-10-09)
+
+**Problem.** A simulated NPC skater rolled through the jumps and tricks on its line: its pad is neutral and nothing
+told its graph to pop, and the physics had no recorded arc.
+
+**Retail [code] (`.local/research/npc/m7-ai-recorded-jumps.md`, `m7-ai-trick-signals.md`; main re-read
+`sub_824551C0`, `sub_824691A0`, `sub_82D682E8`, `sub_82D67B50`, `sub_82D67A00`, `sub_82D68C80`).**
+- Signals, not pad input: the PathController writes named ActionGraph signals into the intent map the player's pad
+  listener fills. Anticipation (`sub_824691A0`, every tick): within 3.0 m of the line (`0x82063B08`) it looks up to
+  60 recorded frames ahead for a start-trick node; an ollie or flip there (category 1 / 2) gives `AnticMag` 1.0 and
+  `AnticAngle` 0, or pi for a nollie (the recorded trick); `sub_824696B8` posts them while the skater faces along the
+  line (`Crouch` on crouched nodes, `Manual` before a manual). Dispatch (`sub_8246A2E0`): on the tick the committed
+  cursor reaches the start-trick node, `Trick`, the trick's scorable name, `GestureSpeed`, `TrickHeight` and
+  `DontMirrorTrick` = 1.0; only the newest event node, none when more than 3 nodes were crossed in one tick.
+- The record (`sub_8246DA18`): a node whose ext data has HasTrajectory puts its arc into the AI record: +80 start
+  position, +96 start velocity, +112 gravity (0, -9.8, 0) (`0x822F8B40`), +128 the -1 splat, +144 offset; bit 26;
+  bit 27 when the jump lands in a grind or slide (`sub_824551C0`: walks on from the trajectory node, category 5
+  start-trick yes; manual / powerslide, incidental air, a ground end-trick, another trajectory more than 60 frames on
+  or more than 600 frames in all no; after an airborne end-trick the first ground node answers by its next node).
+- Take-off (`sub_82D682E8`): with an AI record (`F+2472` 0x20000000) the selector first tries the recorded arc
+  (`sub_82D67B50`): the board one step after take-off within 2 m of the recorded start (4.0 m^2, `0x82257308`), moving
+  with the recorded velocity, speed ratio 0.333 to 3.0 (`0x82093DA0`, `0x82063B08`; unchecked below 0.0001 m/s). If
+  accepted it casts that one arc (`sub_82D67A00`: count 1, flag 9659, `TrajectoryRadius`, start and end error 1.0
+  (`0x8231A844`; the research file named the word 8 bytes off), duration max_time); the computed start velocity
+  stays. `sub_82D68C80` then returns at once: no grind-to-middle lock, no second pass. Otherwise the normal computed
+  arcs. Landing: a recorded jump that does not lead into a grind may not lock to a grind middle (already ported,
+  `air/trajectory/scoring.rs`).
+
+**Change.** skate-core `living_world::ai_signals` (anticipation, crouch, manual, dispatch of the cursor's chosen
+trick, `SignalSettings`); `ai_record::{with_trajectory, lands_in_grind, upcoming_trajectory}`;
+`air::trajectory::RecordedArc` in `SelectorInput` (only with an AI record and bit 26, so the player's path is
+unchanged), `launch::accepts_recorded` and the one-arc batch, the selector skips the grind lock and the second pass
+after a recorded arc; settings `recorded_arc_*` (code constants kept as data). skate-game: `npc_sim` builds the
+signals each tick and `GamePhysics::advance_npc_skater` inserts them where the player's gestures go; the record
+carries the next recorded take-off ahead of the cursor. Mod values `npc_simulated {anticipation_distance,
+anticipation_frames, max_crossed_nodes}`. Log `NPC_SKATER_SIM_TRICK` (trick, node, physics state).
+
+**Engine choices.** Retail reads the take-off from the PathController's current ext entry (`pc+692`, cursor not
+decoded); we use the next take-off node ahead of the cursor over ground nodes, guarded by the 2 m accept rule. The
+posting gates of `sub_824696B8` (heading `pc+824`, `pc+926`) are taken as "facing along the line" (inferred).
+
+**Verification.** skate-core tests: `a_recorded_jump_lands_in_a_grind_only_per_retails_scan`,
+`a_recorded_trajectory_fills_the_record_block`, `a_recorded_arc_is_accepted_only_near_its_start_and_speed`, the three
+`ai_signals` tests. Full skate-core and skate-game runs: only the known pre-existing failures.
+Muted DownTown run with `SKATE_NPC_SIM=1` (120 s): 11 tricks dispatched to simulated skaters (andrew_reynolds:
+fs360popshuvit, tailmanual, ollie, nosemanual, bsrevert, n_heelflip; lucas_puig: n_360inwardheelflip, kickflip,
+kickflip_underflip), the skater in `KnownAir` within half a second of an ollie (it popped); one bail (andrew_reynolds)
+and its respawn on the line 5.00 s later at node 52, then tricks again; no panic, error or physics error; 81
+`NPC_AVOID` lines. Whether each take-off cast the recorded arc is not logged yet. Not play-tested (opt-in tier).
+
+**Open.** The meaning of `pc+824` / `pc+926` / node flag 0x02 in the posting gate, which `SetTrickHeight` branch
+`TrickHeight` 1.0 takes, which velocity the body leaves the ground with on a recorded arc, timing against a trace.
+
+## Avoider modes 6 and 7: the controller sub-modes (2026-10-09)
+
+**Retail [code] (`.local/research/npc/b66-npc-modes-6-7.md`, `b70-npc-submode-reposition.md`; main checked
+`sub_8246F818` cases 3 / 5 and that the line reset `sub_82468AC8` writes 0 to `ctrl+568`).**
+- Mode 6 (a prop lower than 0.8 within 1 s): `sub_8246D560` sets controller sub-mode 4. While 4 the recorded node
+  action is dropped, the speed shape is skipped and no grab or trick is posted; the skater keeps driving at its
+  target. Nothing ends it except a line reset (the line's end, a junction switch to another line, no line), mode 7 on
+  a later tick, a reposition or a full controller reset.
+- Mode 7 (blocked by a prop within 1.5 s, cap under 0.1) is NOT a step-off walk: tick 1 sets sub-mode 3 and a one-shot
+  reposition request; a reposition hands the skater to a second, path-planning controller that rides it to a safe node
+  on its line (`sub_824661A8`, `sub_82455728`: the first of 3 calm nodes); if that plan fails, a second tick in mode 7
+  sets sub-mode 5 and posts `WipeOutRequest` once (the skater bails).
+
+**Change.** skate-core `living_world::ai_controller` (sub-mode values, `enter_low_prop`, `step_off`,
+`reposition_node`, `take_reposition`, `reposition_done`; retail values as `ControllerSettings`) and
+`ai_signals::drop_trick_dispatch`. skate-game: `NpcAvoid` keeps the controller state and resets it on a line change or
+the line's end; mode 6 enters sub-mode 4, which skips the speed shape (replay and simulated tiers) and drops the
+simulated skater's trick dispatch.
+
+**NOT RETAIL YET / not wired.** Mode 7 is not wired: without retail's second controller (path planning to the safe
+node, `sub_82466CA8` and the path service) every step-off would end in a bail. The replay tier keeps its recorded
+tricks in sub-mode 4. The chooser's mode-7 gates `S+71` and `+6007` are not modelled.
+
+**Verification.** skate-core `ai_controller` (4) and `ai_signals` tests; skate-game npc / living_world 80 pass. Not
+play-tested.

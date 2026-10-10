@@ -281,6 +281,54 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         n.enabled = f.enabled.unwrap_or(n.enabled);
         n.radius = f.radius.unwrap_or(n.radius);
         n.max = f.max.map_or(n.max, |m| m as usize);
+        n.respawn_seconds = f.respawn_seconds.unwrap_or(n.respawn_seconds);
+        n.respawn_min = f.respawn_min.unwrap_or(n.respawn_min);
+        n.respawn_max = f.respawn_max.unwrap_or(n.respawn_max);
+        n.signals.anticipation_distance = f.anticipation_distance.unwrap_or(n.signals.anticipation_distance);
+        n.signals.anticipation_frames = f.anticipation_frames.unwrap_or(n.signals.anticipation_frames);
+        n.signals.max_crossed_nodes = f.max_crossed_nodes.unwrap_or(n.signals.max_crossed_nodes);
+    }
+    if let Some(m) = &p.traffic_horn {
+        s.traffic_horn = m.clone();
+    }
+    if let Some(f) = &p.ped_brain {
+        let b = &mut s.ped_brain;
+        b.enabled = f.enabled.unwrap_or(b.enabled);
+        b.mood = f.mood.unwrap_or(b.mood);
+        b.values.wander_speed = f.wander_speed.unwrap_or(b.values.wander_speed);
+        b.values.warn_seconds = f.warn_seconds.unwrap_or(b.values.warn_seconds);
+        b.values.know_about_seconds = f.know_about_seconds.unwrap_or(b.values.know_about_seconds);
+        b.values.conversation_turn_seconds = f.conversation_turn_seconds.unwrap_or(b.values.conversation_turn_seconds);
+        b.values.conversation_gather_seconds = f.conversation_gather_seconds.unwrap_or(b.values.conversation_gather_seconds);
+        b.values.warn_speech = f.warn_speech.unwrap_or(b.values.warn_speech);
+        b.run_from_honker.side_distance = f.run_from_honker_distance.unwrap_or(b.run_from_honker.side_distance);
+        b.run_from_honker.run_speed = f.run_from_honker_speed.unwrap_or(b.run_from_honker.run_speed);
+    }
+    if let Some(f) = &p.npc_avoid {
+        let a = &mut s.npc_avoid;
+        a.enabled = f.enabled.unwrap_or(a.enabled);
+        a.max_entries = f.max_entries.map_or(a.max_entries, |n| n as usize);
+        a.skitch_cooldown_ticks = f.skitch_cooldown_ticks.unwrap_or(a.skitch_cooldown_ticks);
+        a.radius_skater = f.radius_skater.unwrap_or(a.radius_skater);
+        a.radius_pedestrian = f.radius_pedestrian.unwrap_or(a.radius_pedestrian);
+        a.radius_vehicle = f.radius_vehicle.unwrap_or(a.radius_vehicle);
+        a.radius_prop = f.radius_prop.unwrap_or(a.radius_prop);
+        a.cone = f.cone.unwrap_or(a.cone);
+        a.wide_cone = f.wide_cone.unwrap_or(a.wide_cone);
+        a.wide_cone_distance = f.wide_cone_distance.unwrap_or(a.wide_cone_distance);
+        a.skater_radius = f.skater_radius.unwrap_or(a.skater_radius);
+        a.speed_margin = f.speed_margin.unwrap_or(a.speed_margin);
+        a.stop_gap = f.stop_gap.unwrap_or(a.stop_gap);
+        a.stop_gap_far = f.stop_gap_far.unwrap_or(a.stop_gap_far);
+        a.stop_cone = f.stop_cone.unwrap_or(a.stop_cone);
+        a.stop_gap_prop = f.stop_gap_prop.unwrap_or(a.stop_gap_prop);
+        a.side_on_angle = f.side_on_angle.unwrap_or(a.side_on_angle);
+        a.floor_headroom = f.floor_headroom.unwrap_or(a.floor_headroom);
+        a.skitch_cos = f.skitch_cos.unwrap_or(a.skitch_cos);
+        a.low_prop_height = f.low_prop_height.unwrap_or(a.low_prop_height);
+        a.low_prop_time = f.low_prop_time.unwrap_or(a.low_prop_time);
+        a.step_off_cap = f.step_off_cap.unwrap_or(a.step_off_cap);
+        a.step_off_time = f.step_off_time.unwrap_or(a.step_off_time);
     }
     if let Some(m) = &p.skater_trick_profiles {
         let table = |t: &Option<Vec<skate_mods::world_tuning::TrickWeight>>| t.as_ref().map(|t| t.iter().map(|e| (e.trick, e.weight.max(0.0))).collect());
@@ -378,6 +426,11 @@ pub(crate) fn carry_settings(p: &CarryPatch) -> CarrySettings {
             hold_max_angle_to_horizontal: p.hold_max_angle_to_horizontal,
             hold_box_extents: p.hold_box_extents,
             record_272_speed_scale: p.record_272_speed_scale,
+            grab_end_exclusion: p.grab_end_exclusion,
+            hand_ik_enter: p.hand_ik_enter,
+            hand_ik_curve: p.hand_ik_curve,
+            hand_ik_rate: p.hand_ik_rate,
+            hand_ik_reach: p.hand_ik_reach,
         },
         move_rules: {
             let r = crate::physics::prop_dynamics::MoveCommandRules::default();
@@ -432,6 +485,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
     };
     match domain {
         "living_world" => world.get_resource::<LivingWorldSettings>().map_or(Value::Null, |s| {
+            // Separate (the json! macro's recursion limit).
+            let npc_avoid = json!({"enabled": s.npc_avoid.enabled, "max_entries": s.npc_avoid.max_entries, "skitch_cooldown_ticks": s.npc_avoid.skitch_cooldown_ticks, "radius_skater": s.npc_avoid.radius_skater, "radius_pedestrian": s.npc_avoid.radius_pedestrian, "radius_vehicle": s.npc_avoid.radius_vehicle, "radius_prop": s.npc_avoid.radius_prop, "cone": s.npc_avoid.cone, "wide_cone": s.npc_avoid.wide_cone, "wide_cone_distance": s.npc_avoid.wide_cone_distance, "skater_radius": s.npc_avoid.skater_radius, "speed_margin": s.npc_avoid.speed_margin, "stop_gap": s.npc_avoid.stop_gap, "stop_gap_far": s.npc_avoid.stop_gap_far, "stop_cone": s.npc_avoid.stop_cone, "stop_gap_prop": s.npc_avoid.stop_gap_prop, "side_on_angle": s.npc_avoid.side_on_angle, "floor_headroom": s.npc_avoid.floor_headroom, "skitch_cos": s.npc_avoid.skitch_cos, "low_prop_height": s.npc_avoid.low_prop_height, "low_prop_time": s.npc_avoid.low_prop_time, "step_off_cap": s.npc_avoid.step_off_cap, "step_off_time": s.npc_avoid.step_off_time});
             json!({
                 "npc_draw_distance": s.npc_draw_distance,
                 "user_npc_draw_distance": s.user_npc_draw_distance,
@@ -453,7 +508,9 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "vehicles": {"enabled": s.vehicles.enabled, "density": s.vehicles.density},
                 "ambient_skaters": s.ambient_skaters,
                 "free_play": s.free_play.map(|f| json!({"traffic": f.traffic, "pedestrians": f.pedestrians, "ai_skaters": f.ai_skaters})),
-                "npc_simulated": {"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max},
+                "npc_simulated": {"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max, "respawn_seconds": s.npc_simulated.respawn_seconds, "respawn_min": s.npc_simulated.respawn_min, "respawn_max": s.npc_simulated.respawn_max, "anticipation_distance": s.npc_simulated.signals.anticipation_distance, "anticipation_frames": s.npc_simulated.signals.anticipation_frames, "max_crossed_nodes": s.npc_simulated.signals.max_crossed_nodes},
+                "npc_avoid": npc_avoid,
+                "ped_brain": {"enabled": s.ped_brain.enabled, "mood": s.ped_brain.mood, "wander_speed": s.ped_brain.values.wander_speed, "warn_seconds": s.ped_brain.values.warn_seconds, "know_about_seconds": s.ped_brain.values.know_about_seconds, "conversation_turn_seconds": s.ped_brain.values.conversation_turn_seconds, "conversation_gather_seconds": s.ped_brain.values.conversation_gather_seconds, "run_from_honker_distance": s.ped_brain.run_from_honker.side_distance, "run_from_honker_speed": s.ped_brain.run_from_honker.run_speed, "warn_speech": s.ped_brain.values.warn_speech},
                 "npc_tricks": {"mode": s.npc_tricks.mode.name(), "gate_window": s.npc_tricks.params.gate_window, "min_air_frames": s.npc_tricks.params.min_air_frames},
                 "skater_trick_profiles": s.skater_trick_profiles.iter().map(|(k, v)| {
                     let table = |t: &Option<Vec<(i16, f32)>>| t.as_ref().map(|t| t.iter().map(|e| json!({"trick": e.0, "weight": e.1})).collect::<Vec<_>>());
@@ -503,7 +560,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "inertia_yaw_gain": curve(m.inertia_yaw_gain), "let_go_distance": l.let_go_distance, "drop_board": l.drop_board,
                 "follow_step": m.follow_step, "hold_angle_limit": m.hold_angle_limit,
                 "hold_max_angle_to_horizontal": m.hold_max_angle_to_horizontal, "hold_box_extents": m.hold_box_extents,
-                "record_272_speed_scale": m.record_272_speed_scale,
+                "record_272_speed_scale": m.record_272_speed_scale, "grab_end_exclusion": m.grab_end_exclusion,
+                "hand_ik_enter": m.hand_ik_enter, "hand_ik_curve": curve(m.hand_ik_curve), "hand_ik_rate": m.hand_ik_rate, "hand_ik_reach": m.hand_ik_reach,
                 "commanded_material": r.commanded_material, "upright_cos": r.upright_cos, "apply_at_com": r.apply_at_com,
                 "yaw_replaces_torque": r.yaw_replaces_torque, "ignore_vertical": r.ignore_vertical,
                 "wake_on_command": r.wake_on_command, "by_template": by})

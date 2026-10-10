@@ -183,6 +183,20 @@ pub(super) fn publish(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
         physical.ground.flag_318 = u8::from(output.ground_32.is_pinning);
         physical.off_board.flag_304 = u8::from(output.is_grabbing_object_72_304);
         physical.animation.manual_opposition_168 = u8::from(output.manual_opposition_56_168);
+    } else if state == PhysicalStateId::Skitching {
+        //82D4C078: flag_304 only while the record is ready and not released; the rest every frame.
+        let out = skater.skitch_state.output();
+        physical.off_board.flag_304 = u8::from(out.flag_304);
+        physical.state.counter_36 = out.counter_36;
+        physical.state.skitch_value_40 = out.skitch_value_40;
+        physical.ground.scalar_292 = out.scalar_292;
+        physical.ground.skitch_grab_height_280 = out.grab_height_280;
+        physical.ground.skitch_absorb_284 = out.absorb_284;
+        physical.ground.skitch_along_288 = out.along_288;
+        physical.ground.skitch_push_308 = out.push_308;
+        physical.animation.skitch_shimmy_136 = out.shimmy_136;
+        physical.animation.skitch_grip_132 = out.grip_132;
+        physical.animation.skitch_hands_140 = out.hands_140;
     } else if state == PhysicalStateId::PhysicsAir {
         let air = skate_core::air::state::fill_physics_output(&skater.air_state);
         physical.air.landing_normal_144 = air.landing_normal.map(f32::to_bits);

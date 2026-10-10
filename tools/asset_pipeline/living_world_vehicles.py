@@ -35,7 +35,7 @@ from pathlib import Path
 
 import numpy as np
 
-VERSION = 1
+VERSION = 2
 ARCHIVE = 'data/content/livingworld.big'
 RECIPE_DIR = 'data/content/recipe/vehicle/'
 FLOAT16_4 = 0x001A2360  # Xenos vertex format of the car positions (4 x half float); the shared rx2 reader skips it
@@ -231,6 +231,19 @@ def _r(value: float) -> float:
     return round(float(value), 4)
 
 
+def recipe_grab_splines(recipe: dict, read) -> list[dict]:
+    """The skitch grab splines of a recipe: the first part arena (recipe order) that has GRABDATA
+    (retail `82C2A8C8`; b35 section 6). A recipe without one has none (no skitching on it)."""
+    from .grab_data import grab_splines
+    for part in recipe['parts']:
+        for lod in part['lods']:
+            found = grab_splines(read(lod['arena']))
+            if found:
+                return [{'points': s['control_points'], 'direction': s['direction'], 'bounds': s['bounds'],
+                         'flags': s['flags']} for s in found]
+    return []
+
+
 def export_models(game_root: Path, manifest: dict, output: Path, work: Path, report=print) -> dict:
     """Convert every recipe of ``manifest``. Returns {recipe: {status, file?, stats?, error?}}; a
     failed recipe does not stop the others."""
@@ -259,7 +272,8 @@ def export_models(game_root: Path, manifest: dict, output: Path, work: Path, rep
     for name, recipe in sorted(manifest['recipes'].items()):
         try:
             stats = write_glb(recipe, lambda lod: extract(lod['arena']), texture, output/f'{name}.glb', RX2)
-            results[name] = {'status': 'ready', 'file': f'vehicles/{name}.glb', **stats}
+            results[name] = {'status': 'ready', 'file': f'vehicles/{name}.glb', **stats,
+                             'grab_splines': recipe_grab_splines(recipe, lambda arena: extract(arena).read_bytes())}
         except (ValueError, KeyError, RuntimeError, IndexError, struct.error, OSError) as error:
             if isinstance(error, OSError) and not isinstance(error, FileNotFoundError):
                 raise  # disk full / permissions abort setup
@@ -293,7 +307,8 @@ def vehicle_doc(doc: dict, manifest: dict, census_records: list[str]) -> dict:
             'palette_ids': {'chassis': [f'{key}/chassis/{i}' for i in range(len(chassis))],
                             'secondary': [f'{key}/secondary/{i}' for i in range(len(secondary))]},
             'size_hint': f.get('Hash_F983F2518B335286'), 'wheel_hint': f.get('Hash_FD7A66142F16B9CC'),
-            'mesh_bounds': built.get('bounds'), 'wheel_bones': built.get('wheels')}
+            'mesh_bounds': built.get('bounds'), 'wheel_bones': built.get('wheels'),
+            'grab_splines': built.get('grab_splines', [])}
     entities = {}
     for key, record in sorted(c['livingworld_entities'].items()):
         f = record['fields']

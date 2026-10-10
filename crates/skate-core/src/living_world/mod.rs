@@ -18,6 +18,9 @@
 //! Decisions never depend on hash-map iteration order or frame time.
 
 pub mod ai_record;
+pub mod ai_controller;
+pub mod ai_signals;
+pub mod avoid;
 pub mod census;
 pub mod clock;
 pub mod config;

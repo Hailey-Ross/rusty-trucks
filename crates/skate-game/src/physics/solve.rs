@@ -87,9 +87,33 @@ fn advance_inner(
                         let c = skater.animated_skeleton.board_frames.com_frame[3];
                         skate_core::math::Vector3::new(c[0], c[1], c[2])
                     },
+                    hand_span: {
+                        let pose = &skater.animated_skeleton.record.pose;
+                        let (a, b) = (pose[3][3], pose[7][3]);
+                        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+                    },
+                    collision_flag: skater.player_input.processed.flags_2484 & 0x0400_0000 != 0,
+                    state_time: skater.player_input.processed.state_timer_2664,
                 }),
             },
         );
+        // 82D45008 -> 82BD9728 / 82BD97D0: the held prop's hand points as hand IK targets (limbs 2 / 3, the
+        // handplant hand slots), clamped to the reach around the animated hand targets, at the hand IK weight.
+        if let Some((hands, weight)) = physics.prop_carry.hand_ik_targets() {
+            let reach = physics.prop_carry.locomotion().move_object.hand_ik_reach;
+            let animated = &skater.animated_skeleton;
+            for (h, target) in hands.iter().enumerate() {
+                let limb = 2 + h;
+                let o = super::footplant::math::point(&animated.roots.animation_to_world, animated.targets[limb][3]);
+                let d = [target[0] - o[0], target[1] - o[1], target[2] - o[2]];
+                let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                let k = if l > reach { reach / l } else { 1.0 };
+                let p = [o[0] + d[0] * k, o[1] + d[1] * k, o[2] + d[2] * k, 1.0];
+                skater.foot_ik.state.external_targets[limb].world_position = p;
+                skater.foot_ik.state.limbs[limb].external_target_set = true;
+                skater.foot_ik.state.limbs[limb].target_blend = weight;
+            }
+        }
     }
     // Dynamic props push back on the skater's live volumes before the queries
     // below see the freshly re-baked prop triangles.

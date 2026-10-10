@@ -132,6 +132,9 @@ pub struct SegmentInput {
     /// m/s [data].
     pub speed_limit: f32,
     pub lanes: u8,
+    /// Retail road +64 (the disc segment's `word_56`, copied by `82E14158`; b76): bit 0x02 lane changes allowed,
+    /// bit 0x01 pull-over allowed (and an extra kerb lane slot).
+    pub manoeuvres: u32,
     /// Index into the caller's district list (informational).
     pub district: u32,
     /// In order along the segment.
@@ -211,6 +214,8 @@ pub struct Segment {
     pub length: f32,
     pub speed_limit: f32,
     pub lanes: u8,
+    /// See [`SegmentInput::manoeuvres`].
+    pub manoeuvres: u32,
     pub district: u32,
     pub pieces: Vec<Piece>,
     /// Horizontal bounds of the road edges: min x, min z, max x, max z (engine helper for the
@@ -380,6 +385,7 @@ impl RoadNetwork {
                 length: s.length,
                 speed_limit: s.speed_limit,
                 lanes: s.lanes,
+                manoeuvres: s.manoeuvres,
                 district: s.district,
                 bounds: pieces.iter().flat_map(|p| [p.left_start, p.right_start, p.left_end, p.right_end]).fold(
                     [f32::MAX, f32::MAX, f32::MIN, f32::MIN],

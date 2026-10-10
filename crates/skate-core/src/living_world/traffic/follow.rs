@@ -7,7 +7,7 @@
 //!
 //! Retail [code, TU3; addresses are evidence only, behaviour re-implemented, not copied]:
 //! - integrator `sub_82C3FF38`: `speed (+3412) += accel (+3408) x dt`; the accel is forced to 0
-//!   while the speed is above the cap `+3688` (= `+3680` (+ `+3684` while skitched) x f2); speed
+//!   while the speed is above the cap `+3688` (= (1.0 + `+3680` (+ `+3684` while held)) x f2, b57); speed
 //!   and accel are zeroed when both are tiny. [`integrate`] is that step.
 //! - the cap: the lane's speed limit (14.167 / 13.889 m/s [data]); the recomp shows `+3688` =
 //!   14.167 on a 51 km/h road and 17.0 while skitched (`+3684` = 0.2) [trace, `npc-livingworld-re`
@@ -15,10 +15,9 @@
 //!   junction speed) on a connector.
 //! - stop line (`sub_82C3FA08`): `accel = -v^2 / (2 (d - f2) + 0.001)` with `d` the distance to
 //!   the line and `f2` the stop distance [code]. [`stop_accel`].
-//! - following a lead (`sub_82C3FA08`, `+4403` bit 0x10, both speeds above
-//!   `follow_min_speed_kmh` 20): `accel = (max(v_lead - margin x 0.2778, 0)^2 - v^2) /
-//!   (2 gap + 0.001)` with `margin` = `follow_speed_margin_kmh` 20 [code + data]; kept as
-//!   [`retail_follow_accel`] for V4, V3 uses the plain [`follow_accel`].
+//! - a skater coming up behind (`sub_82C3FA08`, `+4403` bit 0x10 from the skater scan, limiter
+//!   kind free): the car brakes toward the skater's speed minus 20 km/h and never accelerates
+//!   ([`super::skater_scan`], b63; this was misread as a lead-following rule before).
 //! - the junction query (`sub_82E11E90`, V1 [`junction_entry`]) runs once the stop line is within
 //!   `look_ahead + speed`; Go enters, Approach slows to the connector's entry speed, Signal /
 //!   Yield / Blocked hold the car at the line [code].
@@ -74,13 +73,29 @@ pub struct FollowParams {
     pub min_gap: f32,
     /// Stop distance before the line (`f2` of the stop-line rule), m. Engine value: 0.5.
     pub stop_margin: f32,
-    /// Following rule gate and margin (spec `follow_min_speed_kmh`, `follow_speed_margin_kmh`,
-    /// 20 / 20 km/h) [data + code `sub_82C3FA08`], in m/s.
-    pub follow_min_speed: f32,
-    pub follow_margin: f32,
+    /// The skater-behind rule (scan range, speeds, braking distances, release grace; b63).
+    pub skater: super::skater_scan::SkaterFollowParams,
+    /// The manoeuvre decider's values (spec / driver records; b69 / b74) and the lane-change passage: the spec's
+    /// passage factor (`Hash_328B9F4685A14018`, spec+40, `+3692`), the road network's curve values and the spot /
+    /// gap-check constants.
+    pub manoeuvre: super::manoeuvre::DeciderParams,
+    pub passage_factor: f32,
+    pub passage: super::passage::PassageParams,
+    pub spots: super::spots::SpotParams,
+    /// Pull-over (b73 / b77): approach length = ext x the spec's approach factor (spec+36 `Hash_758229215579C6D1`,
+    /// `+3672`), the stop slack 0.1 (`0x820641A8`), the crawl speed that starts the pull-over (1.0 m/s,
+    /// `0x8231A844`) and the parked time before pulling out (driver `Hash_988BB0F6F043EB3D`, 30 s, taxi 20).
+    pub approach_factor: f32,
+    pub pull_over_slack: f32,
+    pub pull_over_speed: f32,
+    pub parked_time: f32,
     /// Multiplier on the lane cap (`f2` of the integrator's cap; 1.0 = retail; a mod or the
     /// skitch milestone raises it).
     pub cap_scale: f32,
+    /// Added to the cap scale while a skater holds the car (`+3684`, 0.2 in the recomp trace; b57).
+    pub held_cap_add: f32,
+    /// The driver record's horn values (`livingworld_vehicle_drivers`).
+    pub horn: super::horn::HornParams,
 }
 
 impl Default for FollowParams {
@@ -94,9 +109,18 @@ impl Default for FollowParams {
             hard_brake: 7.3,
             min_gap: 2.0,
             stop_margin: 0.5,
-            follow_min_speed: 20.0 / 3.6,
-            follow_margin: 20.0 / 3.6,
+            skater: Default::default(),
+            manoeuvre: Default::default(),
+            passage_factor: 2.0,
+            passage: Default::default(),
+            spots: Default::default(),
+            approach_factor: 3.0,
+            pull_over_slack: 0.1,
+            pull_over_speed: 1.0,
+            parked_time: 30.0,
             cap_scale: 1.0,
+            held_cap_add: 0.2,
+            horn: super::horn::HornParams::default(),
         }
     }
 }
@@ -117,11 +141,74 @@ pub struct Car {
     pub entry: Option<Entry>,
     /// The car got Go and can no longer stop comfortably: it goes through.
     pub committed: bool,
+    /// An actor (the skater) hit the car ahead of it (retail `+4401` bit 0x20, `sub_82C3C150`): the
+    /// planner brakes hard (`sub_82C3FA08` at `0x82C3FE44`: accel = -speed) until the car stands,
+    /// then the integrator clears it (`sub_82C3FF38`).
+    pub hit_brake: bool,
+    /// The nearest obstacle in the look-ahead (`obstacles::nearest`; set by the host each frame, retail
+    /// `sub_82C40B70` -> `+3584..+3620`).
+    pub obstacle: Option<super::horn::ObstacleHit>,
+    /// The rolled driver bits (`+4401` 0x01 / 0x02; the host rolls them at spawn).
+    pub driver: super::horn::DriverBits,
+    /// The limiter kind of the last step (`+4392`, [`super::horn::limiter`]).
+    pub limiter: u8,
+    pub horn_timers: super::horn::HornTimers,
+    /// The horn state of the last step (`+3420`, 0 = silent) and its honked-at target (kind 2, a ped).
+    pub horn: u8,
+    pub honk_target: Option<u64>,
+    /// A skater holds the car this tick (`+4402` bit 0x02, set by `82C361E8` from the skater's state 104) and the
+    /// holder is the player (`+4403` bit 0x80: the car skips lights, `82C344D0`; b57). Host-set each tick.
+    pub held: bool,
+    pub player_held: bool,
+    /// Held on the previous step (`+4402` bit 0x01) and the release grace (`+3728`, s; -1 = none), stepped
+    /// after every car ([`super::skater_scan::grace_step`]).
+    pub held_last: bool,
+    pub release_grace: f32,
+    /// The skater scan of this tick (`sub_82C414A8`; set by the host before [`step`], like `obstacle`).
+    pub skater: super::skater_scan::SkaterScan,
+    /// The manoeuvre decider (`+3632` timer, `+4396` pending) and the running lane change (`+4353`, passage block).
+    pub decider: super::manoeuvre::DeciderState,
+    pub passage: Option<super::passage::Passage>,
+    /// Pulling over, parked, pulling out (b73); lane changes stay `Following` with a passage.
+    pub manoeuvre: super::manoeuvre::Manoeuvre,
+    /// The car alarm sounds (`+3424` bit 0x10; set by a contact while parked, `sub_82C3C150`, cleared by
+    /// StopAlarming `82C3A4D0`). Host-set each tick from the alarm rule. While it is on, StayingParked
+    /// (`82C39138`) holds the parked time `+3712` at 0 and `IsRequiredToPullOut` (`82C3A3A8`) is false.
+    pub alarming: bool,
 }
 
 impl Car {
     pub fn new(key: VehicleKey, cursor: LaneCursor, length: f32, params: FollowParams) -> Self {
-        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false }
+        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE, decider: Default::default(), passage: None, manoeuvre: Default::default(), alarming: false }
+    }
+
+    /// On `place` for the lane lists: its own place, or the target lane of a running lane change (retail registers
+    /// the car on the target lane when the passage starts, `82E14FC0`).
+    pub fn on_place(&self, place: Place) -> bool {
+        // Parked, or past the middle of the pull-over curve (`82C38C70`: progress - ext / 2 > length / 2): off the
+        // outer lane, on the kerb slot.
+        let off_lane = match (self.manoeuvre, self.passage) {
+            (super::manoeuvre::Manoeuvre::Parked { .. }, _) => true,
+            (super::manoeuvre::Manoeuvre::PullingOver { .. }, Some(p)) => p.progress - 0.25 * self.length > 0.5 * p.length(),
+            _ => false,
+        };
+        (self.cursor.place == place && !off_lane)
+            || self.passage.is_some_and(|p| matches!((self.cursor.place, place), (Place::Lane { segment: a, .. }, Place::Lane { segment: b, lane }) if a == b && lane == p.to_lane))
+    }
+
+    /// Where the car is drawn: on the lane-change curve while it runs (`sub_82C3F0C8`), else the cursor's frame.
+    pub fn pose(&self, net: &RoadNetwork) -> super::graph::Frame {
+        match self.passage {
+            Some(p) => {
+                let (position, forward) = p.sample();
+                super::graph::Frame { position, forward }
+            }
+            None => match (self.manoeuvre, self.cursor.place) {
+                // Parked on the kerb slot (lane n, one lane past the outer lane, b73).
+                (super::manoeuvre::Manoeuvre::Parked { .. }, Place::Lane { segment, .. }) => net.lane_frame(segment, net.segments[segment].lanes as f32, self.cursor.distance),
+                _ => self.cursor.frame(net),
+            },
+        }
     }
 
     /// Look-ahead distance (m): comfortable stopping distance (V3 stand-in for `+3516`).
@@ -138,7 +225,8 @@ impl Car {
             distance: self.cursor.distance,
             look_ahead: self.look_ahead(),
             min_gap: self.params.min_gap,
-            flagged: false,
+            // Mover getter 82C34598: +3424 bit 0x04 or held (+4402 bit 0x02); the entered-on-red half is open.
+            flagged: self.held,
         }
     }
 }
@@ -154,6 +242,11 @@ pub enum FollowEvent {
     EnteredLane { key: VehicleKey, segment: usize, lane: u8 },
     /// The car stands at the end of a lane with nowhere to go.
     DeadEnd { key: VehicleKey },
+    /// A lane change started (`82C3A9E0`): from lane `from` to `to` of `segment`.
+    LaneChange { key: VehicleKey, segment: usize, from: u8, to: u8 },
+    /// The car pulls over to its spot (`82C3ACF8`) / pulls out again (`82C3AFB8`).
+    PullingOver { key: VehicleKey, segment: usize, spot: f32 },
+    PullingOut { key: VehicleKey, segment: usize },
 }
 
 /// `sub_82C3FF38`: one integrator step. Returns the new (speed, accel).
@@ -191,23 +284,15 @@ pub fn reach_accel(speed: f32, target: f32, distance: f32) -> f32 {
 }
 
 /// Following a lead `gap` metres ahead (rear of the lead to the front of this car): brake to the
-/// lead's speed by `min_gap` behind it. V3 simplification: retail's following rule (lead speed
-/// minus the 20 km/h margin, above 20 km/h, over the gap fields `+3756` / `+3760` / `+3728`
-/// that are not read yet) is V4; [`retail_follow_accel`] holds the formula for it.
+/// lead's speed by `min_gap` behind it. NOT RETAIL YET: retail's lead handling lives in the
+/// planner's standoff part (`sub_82C41120`); `+3756` / `+3760` / `+3728` belong to the skater
+/// scan, not to a lead (b63).
 pub fn follow_accel(p: &FollowParams, speed: f32, lead_speed: f32, gap: f32) -> f32 {
     let gap = gap - p.min_gap;
     if gap <= 0.0 {
         return f32::NEG_INFINITY;
     }
     reach_accel(speed, lead_speed, gap)
-}
-
-/// Retail's following term (`sub_82C3FA08`): `(max(v_lead - margin, 0)^2 - v^2) / (2 gap +
-/// 0.001)` when both speeds exceed `follow_min_speed`; `None` otherwise. Not used by the V3
-/// follower (its gap input is V4 work); kept so the V4 planner and its tests start from it.
-pub fn retail_follow_accel(p: &FollowParams, speed: f32, lead_speed: f32, gap: f32) -> Option<f32> {
-    (speed > p.follow_min_speed && lead_speed > p.follow_min_speed)
-        .then(|| ((lead_speed - p.follow_margin).max(0.0).powi(2) - speed * speed) / (2.0 * gap + 0.001))
 }
 
 /// The speed cap of the car's current place.
@@ -232,6 +317,9 @@ fn places(cars: &[Car]) -> BTreeMap<Place, Vec<(f32, usize)>> {
     let mut m: BTreeMap<Place, Vec<(f32, usize)>> = BTreeMap::new();
     for (i, c) in cars.iter().enumerate() {
         m.entry(c.cursor.place).or_default().push((c.cursor.distance, i));
+        if let (Some(p), Place::Lane { segment, .. }) = (c.passage, c.cursor.place) {
+            m.entry(Place::Lane { segment, lane: p.to_lane }).or_default().push((c.cursor.distance, i));
+        }
     }
     for v in m.values_mut() {
         v.sort_by(|a, b| a.0.total_cmp(&b.0).then(cars[a.1].key.cmp(&cars[b.1].key)));
@@ -262,7 +350,7 @@ pub fn lead(net: &RoadNetwork, cars: &[Car], i: usize, range: f32) -> Option<(us
     let scan = |place: Place, offset: f32, same: bool| -> Option<(usize, f32, f32)> {
         let mut best: Option<(usize, f32, f32)> = None;
         for (j, o) in cars.iter().enumerate() {
-            if j == i || o.cursor.place != place {
+            if j == i || !o.on_place(place) {
                 continue;
             }
             if same && !(o.cursor.distance > me.cursor.distance || (o.cursor.distance == me.cursor.distance && o.key > me.key)) {
@@ -327,6 +415,7 @@ pub fn lead(net: &RoadNetwork, cars: &[Car], i: usize, range: f32) -> Option<(us
 /// One follower step of every car (`cars` sorted by key; the caller keeps them so). Cars update
 /// in that order. Returns the events.
 pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32, choice: ConnectorChoice, rng: &mut Rng) -> Vec<FollowEvent> {
+    use super::manoeuvre::{Manoeuvre, Pending};
     let mut events = Vec::new();
     if !(dt > 0.0) {
         return events;
@@ -336,23 +425,100 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let snaps: BTreeMap<VehicleKey, VehicleSnapshot> = cars.iter().map(|c| (c.key, c.snapshot())).collect();
         let me = cars[i];
         let p = me.params;
-        let cap_now = cap(net, me.cursor.place) * p.cap_scale;
+        let mut decider = me.decider;
+        let mut manoeuvre = me.manoeuvre;
+        let approach = me.length * 0.5 * p.approach_factor;
+        // Parked (`82C39138`): standing, the parked time runs; `IsRequiredToPullOut` (`82C3A3A8`) after the parked
+        // time when the end of the approach is still on this road: the passage back to the outer lane
+        // (`82C3AFB8`: d1 = d + approach, from the kerb slot to lane n - 1; the spot is released).
+        // A sounding alarm holds the parked time at 0 and blocks the pull-out (`82C39138`, `82C3A3A8`).
+        if let (Manoeuvre::Parked { spot, time }, Place::Lane { segment, lane }) = (manoeuvre, me.cursor.place) {
+            let time = if me.alarming { 0.0 } else { time + dt };
+            let d = me.cursor.distance;
+            let seg = &net.segments[segment];
+            let mut passage = None;
+            if !me.alarming && time > p.parked_time && d + approach < seg.length {
+                let from = net.lane_frame(segment, seg.lanes as f32, d);
+                let to = net.lane_frame(segment, lane as f32, d + approach);
+                passage = super::passage::Passage::begin(seg.lanes, lane, d, d + approach, (from.position, from.forward), (to.position, to.forward), &p.passage);
+            }
+            let car = &mut cars[i];
+            car.speed = 0.0;
+            car.accel = 0.0;
+            match passage {
+                Some(pass) => {
+                    car.passage = Some(pass);
+                    car.manoeuvre = Manoeuvre::PullingOut;
+                    events.push(FollowEvent::PullingOut { key: car.key, segment });
+                }
+                None => car.manoeuvre = Manoeuvre::Parked { spot, time },
+            }
+            continue;
+        }
+        // The manoeuvre decider (`sub_82C41CD0`), on a lane with no manoeuvre running.
+        if let (Place::Lane { segment, lane }, None, Manoeuvre::Following) = (me.cursor.place, me.passage, manoeuvre) {
+            let seg = &net.segments[segment];
+            let load = |l: u8| cars.iter().filter(|c| c.on_place(Place::Lane { segment, lane: l })).map(|c| c.length).sum::<f32>();
+            let gap = |l: u8| lane_change_gap(net, cars, i, segment, l);
+            // Reservations: every other car on this road holding a spot (pending, pulling over or parked).
+            let spot_search = || {
+                let mut r = super::spots::Reservations::default();
+                for (j, c) in cars.iter().enumerate() {
+                    let held = match c.decider.pending {
+                        Pending::PullOver { spot } => Some(spot),
+                        _ => c.manoeuvre.spot(),
+                    };
+                    if let (true, Some(stop), Place::Lane { segment: s, .. }) = (j != i, held, c.cursor.place) {
+                        if s == segment {
+                            r.reserve(super::spots::Reservation { car: c.key, stop, length: c.length });
+                        }
+                    }
+                }
+                r.find_spot(seg.length, me.cursor.distance, me.length, me.speed, &p.spots)
+            };
+            let input = super::manoeuvre::DeciderInput {
+                dt,
+                lane,
+                lane_count: seg.lanes,
+                lane_changes_allowed: seg.manoeuvres & 0x02 != 0,
+                pull_over_allowed: seg.manoeuvres & 0x01 != 0,
+                held: me.held,
+                at_junction: false,
+                lane_load: &load,
+                gap_free: &gap,
+                find_spot: &spot_search,
+                spot_min: me.cursor.distance + approach,
+            };
+            let mut unit = || rng.next_u32() as f32 * 2.328_306_4e-10_f32;
+            super::manoeuvre::decide(&mut decider, &p.manoeuvre, &input, &mut unit);
+        }
+        let cap_now = cap(net, me.cursor.place) * (p.cap_scale + if me.held { p.held_cap_add } else { 0.0 });
         // Free road: ramp up to accel_max, never past the cap.
         let ramp = (me.accel.max(0.0) + p.jerk * dt).min(p.accel_max);
         let mut accel = ramp.min((cap_now - me.speed) / dt);
         // Stop line / junction.
         let mut hold_at: Option<f32> = None;
+        // The limiter kind and the nearest limit (`+4392`, best distance; horn.rs).
+        let mut kind = super::horn::limiter::FREE;
+        let mut best = f32::INFINITY;
         let mut entry = me.entry;
         let mut committed = me.committed;
         if let (Place::Lane { segment, .. }, Some(c)) = (me.cursor.place, me.cursor.next) {
             let to_line = net.segments[segment].length - (me.cursor.distance + me.length * 0.5);
             let snap = me.snapshot();
             if query_due(&snap, to_line) || to_line <= p.min_gap {
-                let info = junction_entry(&EntryQuery { net, signals, occupancy: &occ, vehicles: &snaps, me: &snap, connector: c, check_lights: true });
+                let info = junction_entry(&EntryQuery { net, signals, occupancy: &occ, vehicles: &snaps, me: &snap, connector: c, check_lights: !me.player_held });
                 if entry != Some(info.entry) {
                     events.push(FollowEvent::Junction { key: me.key, connector: c, entry: info.entry });
                 }
                 entry = Some(info.entry);
+                // FollowingLane stores the answer in the same field as the limiter kind (`+4392`: 1 signal,
+                // 2 approach, 3 yield, 4 blocked, 5 a yield to a flagged car); a car behind one waiting at a light
+                // (1) or a flagged yield (5) counts as waiting itself and does not get the blocked horn.
+                if info.entry != Entry::Go {
+                    kind = if info.blocker_flagged { super::horn::limiter::JUNCTION_WAIT } else { info.entry as u8 };
+                    best = to_line;
+                }
                 let comfortable = me.speed * me.speed / (2.0 * p.plan_decel.max(0.1));
                 let hard = me.speed * me.speed / (2.0 * p.hard_brake.max(0.1));
                 match info.entry {
@@ -380,11 +546,96 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         // The car ahead.
         let range = me.look_ahead() + me.speed + p.min_gap + 10.0;
         let mut limit: Option<f32> = None; // max distance the centre may reach along the current place
-        if let Some((_, gap, lead_speed)) = lead(net, cars, i, range) {
+        let mut lead_close = None;
+        if let Some((l, gap, lead_speed)) = lead(net, cars, i, range) {
             accel = accel.min(follow_accel(&p, me.speed, lead_speed, gap));
+            // `sub_82C41120`: inside one second of travel plus the standoff the lead limits; "close" = inside
+            // the standoff (ours: our follower settles at `min_gap`, so the stop margin is the tolerance).
+            lead_close = Some(gap <= p.min_gap + p.stop_margin);
+            if gap <= me.speed + p.min_gap && gap < best {
+                best = gap;
+                use super::horn::limiter::{BEHIND_LEAD, BEHIND_WAITING_LEAD, JUNCTION_WAIT};
+                kind = if matches!(cars[l].limiter, BEHIND_WAITING_LEAD | JUNCTION_WAIT) { BEHIND_WAITING_LEAD } else { BEHIND_LEAD };
+            }
             // Never closer than half the minimum gap (no overlaps whatever the braking).
             limit = Some(me.cursor.distance + (gap - p.min_gap * 0.5).max(0.0));
         }
+        // A pending pull-over (`82C376E8`, b77): the spot is a stop target (kind 2, standoff = the approach length).
+        if let (Pending::PullOver { spot }, Manoeuvre::Following) = (decider.pending, manoeuvre) {
+            if let Some(x) = super::manoeuvre::pull_over_stop(spot, me.cursor.distance, me.speed, approach, p.pull_over_slack) {
+                if x < best {
+                    best = x;
+                    kind = super::horn::limiter::STOP_POINT;
+                    accel = accel.min(stop_accel(me.speed, x, approach));
+                }
+            }
+        }
+        // Pulling over (`82C38C70`): once the car would pass the curve's end within a second, it brakes to stop there.
+        if let (Manoeuvre::PullingOver { .. }, Some(pass)) = (manoeuvre, me.passage) {
+            let rem = (pass.length() - pass.progress).max(0.0);
+            if me.speed > rem {
+                best = rem;
+                kind = super::horn::limiter::STOP_POINT;
+                accel = accel.min(stop_accel(me.speed, rem, 0.0));
+            }
+        }
+        // A skater coming up behind (`sub_82C3FA08`, limiter kind still free; the skater scan ran
+        // before the step). Engine choice: the result is a min with our lead / junction terms,
+        // which our planner folds into the same pass (retail keeps them apart by the kind).
+        if kind == super::horn::limiter::FREE {
+            if let Some(a) = super::skater_scan::skater_follow(&p.skater, me.speed, &me.skater, me.release_grace, accel) {
+                accel = accel.min(a);
+            }
+        }
+        // The obstacle ahead (`sub_82C412D8` -> `sub_82C3FA08`, standoff = the car's min gap).
+        let accel = match me.obstacle.and_then(|o| super::obstacles::obstacle_accel(me.speed, o.distance, p.min_gap)) {
+            Some(a) => accel.min(a),
+            None => accel,
+        };
+        if me.obstacle.is_some_and(|o| o.distance < best) {
+            kind = super::horn::limiter::OBSTACLE;
+        }
+        // `IsRequiredToChangeLane` (`82C39F78`, main read): pass = ext x passage factor + speed, h = pass / 2; the car
+        // is faster than h, the free distance ahead (`+3752`) exceeds h, d > ext, d + pass ends before the road end
+        // minus ext and the target lane passes the gap check. Then the passage starts (`82C3A9E0` / `82C3F540`).
+        let mut passage = me.passage;
+        // `IsRequiredToPullOver` (`82C3A270`, b77): the passage to the kerb slot (lane n, `82C3ACF8`: d1 = the spot).
+        if let (Pending::PullOver { spot }, Place::Lane { segment, lane }, Manoeuvre::Following) = (decider.pending, me.cursor.place, manoeuvre) {
+            let seg = &net.segments[segment];
+            let d = me.cursor.distance;
+            if spot <= seg.length && super::manoeuvre::is_required_to_pull_over(spot, d, me.speed, approach, p.pull_over_speed) {
+                let from = net.lane_frame(segment, lane as f32, d);
+                let to = net.lane_frame(segment, seg.lanes as f32, spot);
+                if let Some(pass) = super::passage::Passage::begin(lane, seg.lanes, d, spot, (from.position, from.forward), (to.position, to.forward), &p.passage) {
+                    passage = Some(pass);
+                    manoeuvre = Manoeuvre::PullingOver { spot };
+                    decider.pending = Pending::None;
+                    events.push(FollowEvent::PullingOver { key: me.key, segment, spot });
+                }
+            }
+        }
+        if let (super::manoeuvre::Pending::LaneChange { lane: target }, Place::Lane { segment, lane }) = (decider.pending, me.cursor.place) {
+            let ext = me.length * 0.5;
+            let pass = ext * p.passage_factor + me.speed;
+            let h = 0.5 * pass;
+            let d = me.cursor.distance;
+            let d1 = d + pass;
+            let seg_len = net.segments[segment].length;
+            if me.speed > h && best > h && d > ext && d1 < seg_len - ext && lane_change_gap(net, cars, i, segment, target) {
+                let from = net.lane_frame(segment, lane as f32, d);
+                let to = net.lane_frame(segment, target as f32, d1);
+                passage = super::passage::Passage::begin(lane, target, d, d1, (from.position, from.forward), (to.position, to.forward), &p.passage);
+                if passage.is_some() {
+                    decider.pending = super::manoeuvre::Pending::None;
+                    events.push(FollowEvent::LaneChange { key: me.key, segment, from: lane, to: target });
+                }
+            }
+        }
+        // The horn timers and decider (`sub_82C41120`, `sub_82C412D8`, `sub_82C40660`).
+        let mut timers = me.horn_timers;
+        timers.update(&p.horn, kind, lead_close, me.obstacle.is_some(), me.speed, dt);
+        let (horn, honk_target) = super::horn::decide(&p.horn, me.driver, kind, &timers, me.obstacle, me.speed);
+        let accel = if me.hit_brake { accel.min(-me.speed) } else { accel };
         let accel = accel.max(-p.hard_brake * 4.0).max(-me.speed / dt);
         let (mut speed, accel) = integrate(me.speed, accel, cap_now, dt);
         let mut ds = speed * dt;
@@ -408,10 +659,47 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let car = &mut cars[i];
         car.speed = speed;
         car.accel = accel;
+        car.decider = decider;
+        car.manoeuvre = manoeuvre;
+        if speed <= 0.0 {
+            car.hit_brake = false;
+        }
         car.entry = entry;
         car.committed = committed;
+        car.limiter = kind;
+        car.horn_timers = timers;
+        car.horn = horn;
+        car.honk_target = honk_target;
         let loads = &occ;
         let mut choose = |n: &RoadNetwork, s: usize, l: u8| choose_connector(n, s, l, choice, &|seg, lane| loads.lane_load(seg, lane), rng);
+        // A running lane change moves the car along its passage (`82C3C3C0`, 60 Hz steps) instead of the cursor;
+        // the passage ends before the road end, so no place change happens meanwhile.
+        if let Some(mut pass) = passage {
+            let done = pass.advance(speed, false, dt);
+            car.cursor.distance = pass.distance();
+            if done {
+                car.passage = None;
+                match car.manoeuvre {
+                    // `ToStayingParked` (`82C3AE78`): standing at the kerb, the spot stays reserved.
+                    Manoeuvre::PullingOver { spot } => {
+                        car.manoeuvre = Manoeuvre::Parked { spot, time: 0.0 };
+                        car.speed = 0.0;
+                        car.accel = 0.0;
+                    }
+                    // Back on the outer lane (`FromChangingLaneToFollowingLane`).
+                    Manoeuvre::PullingOut => car.manoeuvre = Manoeuvre::Following,
+                    _ => {
+                        car.cursor.set_lane(net, pass.to_lane, &mut choose);
+                        if let Place::Lane { segment, lane } = car.cursor.place {
+                            events.push(FollowEvent::EnteredLane { key: car.key, segment, lane });
+                        }
+                    }
+                }
+            } else {
+                car.passage = Some(pass);
+            }
+            continue;
+        }
         let adv = car.cursor.advance(net, ds, &mut choose);
         for place in adv.entered {
             match place {
@@ -429,7 +717,27 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             events.push(FollowEvent::DeadEnd { key: car.key });
         }
     }
+    // `sub_82C34B30` after the car loop: the release grace, then the held edge for the next step.
+    for car in cars.iter_mut() {
+        car.release_grace = super::skater_scan::grace_step(car.release_grace, car.held_last, car.held, dt, &car.params.skater);
+        car.held_last = car.held;
+    }
     events
+}
+
+/// `sub_82E14928` for car `i` onto `lane` of `segment`: ext = half the car's length (inferred, b71), the cars on
+/// that lane (incl. those changing into it) by distance.
+fn lane_change_gap(net: &RoadNetwork, cars: &[Car], i: usize, segment: usize, lane: u8) -> bool {
+    let me = &cars[i];
+    let seg = &net.segments[segment];
+    let mut list: Vec<super::spots::LaneCar> = cars
+        .iter()
+        .enumerate()
+        .filter(|(j, c)| *j != i && c.on_place(Place::Lane { segment, lane }))
+        .map(|(_, c)| super::spots::LaneCar { distance: c.cursor.distance, length: c.length, speed: c.speed })
+        .collect();
+    list.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+    super::spots::gap_free(seg.length, seg.lanes >= 2 && lane < seg.lanes, me.cursor.distance, me.length * 0.5, me.speed, &list, &me.params.spots)
 }
 
 #[cfg(test)]

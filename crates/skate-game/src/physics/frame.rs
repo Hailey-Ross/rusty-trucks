@@ -116,6 +116,7 @@ pub(super) fn advance(
     //them. Host execution is synchronous; no current-state submission exists
     //yet, preserving next-tick visibility and later PreState82DB60EC consumption.
     {
+        physics.refresh_grab_props()?;
         let scene =
             super::offboard::grab_scene::Scene::new(&physics.world, &physics.offboard_grab_scene);
         skater.offboard_grab.execute_queries(&scene)?;
@@ -210,6 +211,9 @@ pub(super) fn advance(
         }
         skate_core::player::state::PhysicalStateId::SlideGround => {
             super::slide_state::update(physics, skater)?
+        }
+        skate_core::player::state::PhysicalStateId::Skitching => {
+            super::skitch_state::update(physics, skater)?
         }
         skate_core::player::state::PhysicalStateId::WipeoutGround => {
             super::wipeout_states::advance(physics, skater)?

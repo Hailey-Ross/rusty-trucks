@@ -46,7 +46,7 @@
 //! a mod; the spec / palette defaults come from the export (`tables.json`, `vehicles.json`).
 
 use super::{LivingWorldDespawn, LivingWorldSettings, LivingWorldSpawn, NetRole, PopulationState};
-use crate::world_audio::{AudioVelocity, TrafficAudio};
+use crate::world_audio::{AudioVelocity, HornState, TrafficAudio};
 use bevy::prelude::*;
 use skate_core::living_world::rng::Rng;
 use skate_core::living_world::traffic::follow::{self, Car, FollowEvent, FollowParams};
@@ -80,6 +80,31 @@ pub(crate) struct VehicleModel {
     pub wheel_radius: f32,
     /// Mesh bounds, model space (min, max).
     pub bounds: [[f32; 3]; 2],
+    /// The skitch grab splines (RW4 GRABDATA of the first part arena that has one, b35; one rear-edge spline per
+    /// stock car, none on `reda_car`). Empty = the car cannot be skitched (retail).
+    pub grab_splines: Vec<CarGrabSpline>,
+}
+
+/// The exported `grab_splines` list (cars and props): a spline that is not whole Bezier segments is dropped.
+pub(crate) fn parse_grab_splines(list: &serde_json::Value) -> Vec<CarGrabSpline> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|g| {
+            let points: Vec<[f32; 3]> = g["points"].as_array()?.iter().map(vec3).collect::<Option<_>>()?;
+            (!points.is_empty() && points.len() % 4 == 0).then_some(CarGrabSpline { points, direction: vec3(&g["direction"])?, flags: g["flags"].as_u64().unwrap_or(0) as u32 })
+        })
+        .collect()
+}
+
+/// One authored grab spline (cars and props), model space: chains of cubic Bezier segments (4 control points each) and the grab
+/// direction (stock cars: (0, 0, -1), backwards).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CarGrabSpline {
+    pub points: Vec<[f32; 3]>,
+    pub direction: [f32; 3],
+    /// Entry +60 (0x3E4 on stock cars; meaning open), the record's word 60 [inferred].
+    pub flags: u32,
 }
 
 /// What a car entity drives with (`livingworld_entities` -> spec record).
@@ -88,6 +113,8 @@ pub(crate) struct VehicleSpec {
     /// `aud_traffic_engine` record (spec `engine_audio`).
     pub engine: String,
     pub params: FollowParams,
+    /// The entity's driver record (`livingworld_vehicle_drivers`; the horn values are in `params.horn`).
+    pub driver: String,
 }
 
 /// Car data of the loaded world.
@@ -127,6 +154,7 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                 secondary_ids: ids("secondary"),
                 wheel_radius,
                 bounds,
+                grab_splines: parse_grab_splines(&m["grab_splines"]),
             },
         );
     }
@@ -135,6 +163,25 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
         let spec_name = e["spec"].as_str().unwrap_or("default");
         let mut params = FollowParams::default();
         let mut engine = "default".to_string();
+        let driver = e["driver"].as_str().unwrap_or("default").to_string();
+        if let Some(f) = class("livingworld_vehicle_drivers", &driver) {
+            let num = |k: &str| f.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
+            let h = &mut params.horn;
+            h.blocked_time = num("honk_blocked_time").unwrap_or(h.blocked_time);
+            h.obstacle_time = num("honk_obstacle_time").unwrap_or(h.obstacle_time);
+            h.approach_speed = num("honk_approach_speed_kmh").map_or(h.approach_speed, |v| v / 3.6);
+            // Driver block +36 / +20 (`82C42348`, b74).
+            h.enabled_chance = num("Hash_50E084076390A573").unwrap_or(h.enabled_chance);
+            h.blocked_long_chance = num("Hash_20E9C6487FDDBDE8").unwrap_or(h.blocked_long_chance);
+            // The manoeuvre decider's driver values (b74: driver block +28 go, +24 least loaded; hashed fields).
+            let m = &mut params.manoeuvre;
+            m.lane_change_chance = num("Hash_52CF2CF346699CA1").unwrap_or(m.lane_change_chance);
+            m.least_loaded_chance = num("Hash_7C6B48BD9ADF8E6E").unwrap_or(m.least_loaded_chance);
+            m.overtake_chance = num("Hash_9366C67755A24D89").unwrap_or(m.overtake_chance);
+            m.pull_over_chance = num("pull_over_chance").or_else(|| num("Hash_559BA807F95FF93E")).unwrap_or(m.pull_over_chance);
+            m.held_pull_over_chance = num("Hash_99083122A1B7116A").unwrap_or(m.held_pull_over_chance);
+            params.parked_time = num("parked_time").or_else(|| num("Hash_988BB0F6F043EB3D")).unwrap_or(params.parked_time);
+        }
         if let Some(f) = class("livingworld_vehicle_characteristics", spec_name) {
             let num = |k: &str| f.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
             if let Some(v) = num("Hash_328B9F4685A14018") {
@@ -143,17 +190,48 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
             if let Some(v) = num("Hash_758229215579C6D1") {
                 params.plan_decel = v;
             }
-            if let Some(v) = num("follow_min_speed_kmh") {
-                params.follow_min_speed = v / 3.6;
+            // Retail reads spec+40 (`328B9F46`) as the lane-change passage factor and spec+48 (`90AB56A5`) as the lane
+            // timer (b72 / b74); the follower's accel / decel reads above are todo traffic-accel-fields-mislabelled.
+            if let Some(v) = num("Hash_328B9F4685A14018") {
+                params.passage_factor = v;
             }
-            if let Some(v) = num("follow_speed_margin_kmh") {
-                params.follow_margin = v / 3.6;
+            // spec+36: the pull-over approach factor (`+3672` = ext x it, b71 / b77).
+            if let Some(v) = num("Hash_758229215579C6D1") {
+                params.approach_factor = v;
+            }
+            if let Some(v) = num("Hash_90AB56A5DDCF2A3A") {
+                params.manoeuvre.lane_timer = v;
+            }
+            // The skater-behind rule (b63). Older exports name 3AB7FC7C `follow_speed_margin_kmh` (it is the FAR
+            // braking distance) and keep the others as raw hashes.
+            let either = |a: &str, b: &str| num(a).or_else(|| num(b));
+            let s = &mut params.skater;
+            if let Some(v) = num("follow_min_speed_kmh") {
+                s.min_speed = v / 3.6;
+            }
+            if let Some(v) = either("skater_follow_margin_kmh", "Hash_256A412E350A2659") {
+                s.margin = v / 3.6;
+            }
+            if let Some(v) = either("skater_far_distance", "follow_speed_margin_kmh") {
+                s.far_distance = v;
+            }
+            if let Some(v) = either("skater_scan_range", "Hash_33466832D8178EAF") {
+                s.range = v;
+            }
+            if let Some(v) = either("skater_near_range", "Hash_D49FC49019181EE5") {
+                s.near_range = v;
+            }
+            if let Some(v) = either("skater_near_distance", "Hash_F682D359CDBC4D12") {
+                s.near_distance = v;
+            }
+            if let Some(v) = either("release_grace", "Hash_4727CF785EF735C8") {
+                s.release_grace = v;
             }
             if let Some(k) = f.pointer("/engine_audio/key").and_then(|v| v.as_str()) {
                 engine = k.to_string();
             }
         }
-        data.specs.insert(name.clone(), VehicleSpec { engine, params });
+        data.specs.insert(name.clone(), VehicleSpec { engine, params, driver });
     }
     Ok(data)
 }
@@ -213,6 +291,16 @@ pub(crate) enum TrafficEvent {
     Junction { id: LivingWorldId, junction: u64, connector: u32, entry: Entry },
     EnteredJunction { id: LivingWorldId, junction: u64, connector: u32 },
     EnteredLane { id: LivingWorldId, segment: u64, lane: u8 },
+    /// A lane change started on `segment` from lane `from` to `to` (`82C3A9E0`; b69 / b74).
+    LaneChange { id: LivingWorldId, segment: u64, from: u8, to: u8 },
+    /// The car pulls over to its spot / pulls out again (b73).
+    PullingOver { id: LivingWorldId, segment: u64, spot: f32 },
+    PullingOut { id: LivingWorldId, segment: u64 },
+    /// The horn state changed (`+3420`: 0 silent, 1..=5 the decider's kinds; horn.rs).
+    Horn { id: LivingWorldId, kind: u8 },
+    /// Horn kind 2 at a ped (`sub_82C40660` -> vt+100 `sub_82E3C3D0`): the ped's honker is this car. Sent every
+    /// frame while it lasts, as in retail.
+    HonkedAt { id: LivingWorldId, ped: u64 },
 }
 
 /// The traffic of the loaded world.
@@ -244,8 +332,9 @@ pub(crate) fn car_rotation(forward: [f32; 3]) -> Quat {
     Quat::from_mat3(&Mat3::from_cols(x, y, f))
 }
 
-fn car_transform(net: &RoadNetwork, cursor: &LaneCursor) -> Transform {
-    let frame = cursor.frame(net);
+/// The car's pose: on its lane-change curve while one runs (`Car::pose`), else its cursor frame.
+fn car_transform(net: &RoadNetwork, car: &Car) -> Transform {
+    let frame = car.pose(net);
     Transform::from_translation(Vec3::from_array(frame.position)).with_rotation(car_rotation(frame.forward))
 }
 
@@ -291,11 +380,22 @@ pub(crate) fn load_traffic_data(mut commands: Commands, config: Res<crate::confi
     info!("LIVING_WORLD traffic models {} specs {} lights {}", traffic.data.models.len(), traffic.data.specs.len(), traffic.clock.is_some());
 }
 
+/// A mod's horn values over the driver record's.
+fn apply_horn_patch(h: &skate_mods::world_tuning::TrafficHornPatch, p: &mut skate_core::living_world::traffic::horn::HornParams) {
+    p.blocked_time = h.blocked_time.unwrap_or(p.blocked_time);
+    p.obstacle_time = h.obstacle_time.unwrap_or(p.obstacle_time);
+    p.approach_speed = h.approach_speed_kmh.map_or(p.approach_speed, |v| v / 3.6);
+    p.approach_ttc = h.approach_seconds.unwrap_or(p.approach_ttc);
+    p.enabled_chance = h.enabled_chance.unwrap_or(p.enabled_chance);
+    p.blocked_long_chance = h.blocked_long_chance.unwrap_or(p.blocked_long_chance);
+}
+
 /// Build a car from a spawn record (pure; the engine and the tests use it).
 pub(crate) fn car_from_record(
     net: &RoadNetwork,
     data: &VehicleData,
     overrides: &VehicleOverrides,
+    horn_patches: &BTreeMap<String, skate_mods::world_tuning::TrafficHornPatch>,
     record: &skate_core::living_world::SpawnRecord,
     length: f32,
 ) -> Option<(TrafficCar, Car, TrafficAudio)> {
@@ -309,14 +409,24 @@ pub(crate) fn car_from_record(
     };
     let (chassis_id, chassis_c) = pick(&m.chassis_ids, &m.chassis, *chassis, [0.0, 0.0, 1.0, 1.0]);
     let (secondary_id, secondary_c) = pick(&m.secondary_ids, &m.secondary, *secondary, [1.0, 0.0, 0.0, 1.0]);
-    let spec = data.specs.get(entity).cloned().unwrap_or(VehicleSpec { engine: "default".into(), params: FollowParams::default() });
-    let params = overrides.params.get(entity).copied().unwrap_or(spec.params);
+    let spec = data.specs.get(entity).cloned().unwrap_or(VehicleSpec { engine: "default".into(), params: FollowParams::default(), driver: "default".into() });
+    let mut params = overrides.params.get(entity).copied().unwrap_or(spec.params);
+    // Mod horn values per driver record (`traffic_horn`), then the driver bits rolled from the spawn seed.
+    for key in ["all", spec.driver.as_str()] {
+        if let Some(h) = horn_patches.get(key) {
+            apply_horn_patch(h, &mut params.horn);
+        }
+    }
     let si = net.segment_index(SegmentId(*segment))?;
     // The connector is chosen on the first step from the live occupancy (cursor next = None here
     // is replaced at once by the engine with the loads of that tick).
     let cursor = LaneCursor { place: Place::Lane { segment: si, lane: (*lane).min(net.segments[si].lanes - 1) }, distance: distance.clamp(0.0, net.segments[si].length), next: None, lane_shift: 0.0 };
     let length = if length > 0.5 { length } else { (m.bounds[1][2] - m.bounds[0][2]).max(3.0) };
-    let car = Car::new(record.id.serial, cursor, length, params);
+    let mut car = Car::new(record.id.serial, cursor, length, params);
+    let mut horn_rng = Rng::new(skate_core::living_world::rng::derive(record.seed, &[0x484f_524e]));
+    car.driver = skate_core::living_world::traffic::horn::DriverBits::roll(&params.horn, &mut || horn_rng.unit());
+    // `+4402` bit 0x80 (`82C42348`, the last roll): pulls over even while a skater holds the car.
+    car.params.manoeuvre.pulls_over_while_held = skate_core::living_world::traffic::horn::percent_roll(params.manoeuvre.held_pull_over_chance, horn_rng.unit());
     let audio = TrafficAudio { engine: spec.engine.clone(), speed: Some(0.0), load: Some(0.0), ..TrafficAudio::new(spec.engine.clone()) };
     let glb = overrides.glbs.get(model_key).cloned().unwrap_or(m.glb.clone());
     Some((
@@ -357,6 +467,7 @@ pub(crate) fn apply_vehicle_records(
     mut despawns: MessageReader<LivingWorldDespawn>,
     state: Res<PopulationState>,
     overrides: Res<VehicleOverrides>,
+    settings: Res<LivingWorldSettings>,
     mut traffic: ResMut<TrafficState>,
     mut events: MessageWriter<TrafficEvent>,
 ) {
@@ -380,12 +491,12 @@ pub(crate) fn apply_vehicle_records(
             continue;
         }
         let length = state.world.live(Kind::Vehicle).find(|l| l.id == s.id).and_then(|l| l.lane).map_or(0.0, |l| l.length);
-        let Some((meta, mut car, audio)) = car_from_record(net, &traffic.data, &overrides, s, length) else {
+        let Some((meta, mut car, audio)) = car_from_record(net, &traffic.data, &overrides, &settings.traffic_horn, s, length) else {
             warn!("LIVING_WORLD traffic: car #{} has no lane on this road network", s.id.serial);
             continue;
         };
         choose_first(net, &traffic.cars, &mut car, overrides.connector_choice, &mut traffic.rng);
-        let t = car_transform(net, &car.cursor);
+        let t = car_transform(net, &car);
         events.write(TrafficEvent::Spawned { id: s.id, entity: meta.entity.clone(), model: meta.model.clone(), chassis: meta.chassis_id.clone() });
         let e = commands
             .spawn((
@@ -415,17 +526,41 @@ pub(crate) fn drive_traffic(
     mut cars_q: Query<(&TrafficCar, &mut CarMotion, &mut TrafficAudio, &mut AudioVelocity)>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
     mut events: MessageWriter<TrafficEvent>,
+    (observers, peds, ped_obstacles): (Res<super::LivingWorldObservers>, Query<(&super::peds::Pedestrian, &super::peds::PedBody)>, Option<Res<super::peds::PedObstacles>>),
+    skater: Option<Res<crate::physics::SkaterRuntime>>,
+    npc_sims: Query<&super::npc_sim::NpcSim>,
+    (alarms, parked_q): (Option<Res<crate::game_audio::world_bridge::Bridge>>, Query<Has<crate::world_audio::VehicleParked>>),
 ) {
     let st = &mut *state;
     let traffic = &mut *traffic;
     let Some(net) = st.roads.as_ref() else { return };
+    // The car alarm (`+3424` bit 0x10) is the alarm rule's (game_audio::car_alarm): read back every tick.
+    for car in &mut traffic.cars {
+        let on = match (alarms.as_deref(), traffic.index.get(&car.key)) {
+            (Some(b), Some((e, _))) => b.alarm_left(*e).is_some(),
+            _ => false,
+        };
+        if on != car.alarming {
+            info!("VEHICLE_ALARM car=#{} on={on} manoeuvre={:?}", car.key, car.manoeuvre);
+        }
+        car.alarming = on;
+    }
+    // The held bits are cleared and set again every tick (82C34CD0 / 82C361E8; b57): the local player's state 104.
+    let held = skater.as_deref().filter(|s| s.player_state.current() == skate_core::player::state::PhysicalStateId::Skitching).and_then(|s| s.skitch_state.held_car());
+    // Simulated NPC skaters hold cars too (82C361E8 sets +4402 0x02 for any holder; 0x80 only for the player).
+    let npc_held: Vec<u32> = npc_sims.iter().filter_map(|s| s.held_car()).collect();
+    for car in &mut traffic.cars {
+        car.player_held = Some(car.key) == held;
+        car.held = car.player_held || npc_held.contains(&car.key);
+    }
+    look_ahead(traffic, &cars_q, &observers, &peds, ped_obstacles.as_deref(), held.is_some());
     let now = st.world.tick();
     let from = traffic.last_tick.unwrap_or(now);
     traffic.last_tick = Some(now);
     let mut travelled: BTreeMap<u32, f32> = BTreeMap::new();
     let mut prev_pose: BTreeMap<u32, Transform> = BTreeMap::new();
     for c in &traffic.cars {
-        prev_pose.insert(c.key, car_transform(net, &c.cursor));
+        prev_pose.insert(c.key, car_transform(net, c));
     }
     let mut dead = Vec::new();
     let dt = (1.0 / skate_core::living_world::clock::RETAIL_TICK_HZ) as f32;
@@ -464,6 +599,15 @@ pub(crate) fn drive_traffic(
                 FollowEvent::EnteredLane { key, segment, lane } => {
                     events.write(TrafficEvent::EnteredLane { id: id(key), segment: net.segments[segment].id.0, lane });
                 }
+                FollowEvent::LaneChange { key, segment, from, to } => {
+                    events.write(TrafficEvent::LaneChange { id: id(key), segment: net.segments[segment].id.0, from, to });
+                }
+                FollowEvent::PullingOver { key, segment, spot } => {
+                    events.write(TrafficEvent::PullingOver { id: id(key), segment: net.segments[segment].id.0, spot });
+                }
+                FollowEvent::PullingOut { key, segment } => {
+                    events.write(TrafficEvent::PullingOut { id: id(key), segment: net.segments[segment].id.0 });
+                }
                 FollowEvent::DeadEnd { key } => dead.push(key),
             }
         }
@@ -488,8 +632,17 @@ pub(crate) fn drive_traffic(
         };
         st.world.update_lane(id, net.segments[segment].id, lane, distance, c.speed);
         let Some((e, _)) = traffic.index.get(&c.key) else { continue };
+        // StayingParked (`82C39120` begin / `82C391F0` end, `+3424` bit 0x80): only a parked car's contacts alarm.
+        let parked = matches!(c.manoeuvre, skate_core::living_world::traffic::manoeuvre::Manoeuvre::Parked { .. });
+        if parked_q.get(*e).is_ok_and(|has| has != parked) {
+            if parked {
+                commands.entity(*e).insert(crate::world_audio::VehicleParked);
+            } else {
+                commands.entity(*e).remove::<crate::world_audio::VehicleParked>();
+            }
+        }
         let Ok((meta, mut motion, mut audio, mut velocity)) = cars_q.get_mut(*e) else { continue };
-        let t = car_transform(net, &c.cursor);
+        let t = car_transform(net, c);
         motion.prev = prev_pose.get(&c.key).copied().unwrap_or(t);
         motion.curr = t;
         motion.wheel_prev = motion.wheel;
@@ -498,6 +651,17 @@ pub(crate) fn drive_traffic(
         velocity.0 = motion.velocity;
         audio.speed = Some(c.speed);
         audio.load = Some(c.accel);
+        // The horn state every frame (the sound side keeps a mod's `VehicleHorn` on top); the alarm is not ours.
+        if audio.horn != HornState::Alarm {
+            let horn = if c.horn == 0 { HornState::None } else { HornState::Honk(c.horn) };
+            if audio.horn != horn {
+                events.write(TrafficEvent::Horn { id, kind: c.horn });
+            }
+            audio.horn = horn;
+        }
+        if let Some(ped) = c.honk_target {
+            events.write(TrafficEvent::HonkedAt { id, ped });
+        }
     }
     // Dead ends: the car leaves (hosts decide; a client waits for the host's record).
     if settings.net_role != NetRole::Client {
@@ -534,12 +698,121 @@ pub(crate) fn proxy(car: &TrafficCar, pose: &Transform, velocity: Vec3) -> skate
         inverse_inertia: Vector::new(0.0, 0.0, 0.0),
         linvel: p(velocity),
         angvel: Vector::new(0.0, 0.0, 0.0),
-        contact_group: 0,
+        // Retail's vehicle contact group (8; the skeleton contact pass keeps the largest
+        // relative normal speed against it for the car-hit bail, `sub_82BD4A30` / `sub_82D90C98`).
+        contact_group: crate::physics::VEHICLE_GROUP,
         colliders: vec![skate_dynamics::SolidCollider {
             shape: SharedShape::cuboid(half[0].max(0.1), half[1].max(0.1), half[2].max(0.1)),
             pose: Pose::from_parts(p(centre), rotation),
             friction: 0.5,
         }],
+    }
+}
+
+/// The skater's body hit a car (`sub_82C3C150`, actor branch): a contact ahead of the car (ours:
+/// along its velocity; retail's axis is the car's vtable +24, inferred forward) latches the hit
+/// brake on the follower car. Logs `VEHICLE_HIT`. Every contact also goes to the car alarm rule as a
+/// [`VehicleImpact`](crate::world_audio::VehicleImpact) (relative speed at the contact; the rule sets a
+/// parked car's alarm off).
+pub(crate) fn apply_vehicle_hits(
+    mut skater: Option<ResMut<crate::physics::SkaterRuntime>>,
+    cars: Query<(Entity, &TrafficCar, &CarMotion)>,
+    mut traffic: ResMut<TrafficState>,
+    mut impacts: Option<MessageWriter<crate::world_audio::VehicleImpact>>,
+) {
+    use crate::world_audio::{ImpactSource, VehicleImpact};
+    let Some(skater) = skater.as_deref_mut() else { return };
+    for (id, point, speed) in std::mem::take(&mut skater.vehicle_hits) {
+        if id & PROXY_ID_TAG != PROXY_ID_TAG {
+            continue;
+        }
+        let Some((entity, car, motion)) = cars.iter().find(|(_, c, _)| (PROXY_ID_TAG | c.id.to_u64()) == id) else { continue };
+        if let Some(w) = impacts.as_mut() {
+            w.write(VehicleImpact::speed(entity, ImpactSource::Player, speed));
+        }
+        let at = motion.curr.translation;
+        let v = motion.velocity;
+        let ahead = (Vec3::from_array(point) - at).dot(v) > 0.0;
+        let serial = car.id.serial;
+        if let Some(f) = traffic.cars.iter_mut().find(|c| c.key == serial) {
+            if ahead && !f.hit_brake && f.speed > 0.0 {
+                f.hit_brake = true;
+                info!("VEHICLE_HIT car=#{serial} speed={:.1} at=[{:.1}, {:.1}, {:.1}]", f.speed, point[0], point[1], point[2]);
+            }
+        }
+    }
+}
+
+/// V4 look-ahead (`skate_core::living_world::traffic::obstacles`): the obstacle lists (`sub_826B2EE0`: skaters
+/// radius 0 and peds, soft; movable props (DMOs) radius half their smallest extent, hard; traffic cars add nothing,
+/// `b42`) against each car's look-ahead quad from last frame's pose; the nearest free distance goes to the follower
+/// car. Ours: the ped radius is the fallback ped radius (retail 0.5 x the body extents' z, the per-ped value is
+/// collision data), props carry no corner points, a bailing skater's four extra points are not added, and the
+/// turn widening is off (the turn side `+3748` is open; threshold 0.025).
+fn look_ahead(
+    traffic: &mut TrafficState,
+    cars_q: &Query<(&TrafficCar, &mut CarMotion, &mut TrafficAudio, &mut AudioVelocity)>,
+    observers: &super::LivingWorldObservers,
+    peds: &Query<(&super::peds::Pedestrian, &super::peds::PedBody)>,
+    props: Option<&super::peds::PedObstacles>,
+    local_skitching: bool,
+) {
+    use skate_core::living_world::traffic::horn::ObstacleHit;
+    use skate_core::living_world::traffic::skater_scan::{rear_zone_quad, scan, ScanActor};
+    use skate_core::living_world::traffic::obstacles::{look_ahead_quad, nearest, CarFrame, LookAheadParams, Obstacle};
+    let params = LookAheadParams::default();
+    let mut list: Vec<Obstacle> = observers.observers.iter().map(|o| Obstacle { position: o.position, radius: 0.0, soft: true, id: None }).collect();
+    list.extend(peds.iter().map(|(p, b)| Obstacle { position: b.position.to_array(), radius: super::vehicle_contacts::FALLBACK_PED_RADIUS, soft: true, id: Some(p.id.to_u64()) }));
+    // The skater scan's list (82C414A8 walks the skater manager's actors, b63): our observers (index 0 = the local
+    // player, skipped while skitching). NOT RETAIL YET: the facing is the velocity heading (retail: the actor
+    // matrix row +32), and the NEAR flag byte `[[state+52]+55]` is not identified (false: no NEAR rule).
+    let actors: Vec<ScanActor> = observers
+        .observers
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let l = (o.velocity[0] * o.velocity[0] + o.velocity[2] * o.velocity[2]).sqrt();
+            let forward = if l > 1e-6 { [o.velocity[0] / l, o.velocity[2] / l] } else { [0.0, 0.0] };
+            ScanActor { position: o.position, velocity: o.velocity, forward, skitching: i == 0 && local_skitching, near_flag: false }
+        })
+        .collect();
+    let cars: Vec<(u32, CarFrame, [f32; 3])> = cars_q
+        .iter()
+        .map(|(car, motion, ..)| {
+            let r = motion.curr.rotation;
+            let f = r * Vec3::Z;
+            let s = r * Vec3::X;
+            let flat = |v: Vec3| {
+                let l = (v.x * v.x + v.z * v.z).sqrt().max(1e-6);
+                [v.x / l, v.z / l]
+            };
+            let [lo, hi] = car.bounds;
+            let frame = CarFrame {
+                position: motion.curr.translation.to_array(),
+                forward: flat(f),
+                side: flat(s),
+                half_width: (hi[0] - lo[0]) * 0.5,
+                half_length: (hi[2] - lo[2]) * 0.5,
+            };
+            (car.id.serial, frame, [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]])
+        })
+        .collect();
+    // Props: active (not obstacle-off) DMOs; mod bodies live above `MOD_BODY_OBSTACLE_BASE` and are not DMOs.
+    list.extend(props.into_iter().flat_map(|p| p.0.states.iter()).filter(|(id, st)| **id < super::peds::MOD_BODY_OBSTACLE_BASE && !st.inactive).map(|(_, st)| Obstacle {
+        position: [st.now.center[0], st.now.y_min, st.now.center[1]],
+        radius: st.now.half[0].min(st.now.half[1]),
+        soft: false,
+        id: None,
+    }));
+    for (serial, frame, size) in &cars {
+        let Some(car) = traffic.cars.iter_mut().find(|c| c.key == *serial) else { continue };
+        let quad = look_ahead_quad(frame, car.speed, car.params.min_gap, 0.0, None, &params);
+        // 82C344D0: a car the player holds skips the slow-speed soft records (b57).
+        car.obstacle = nearest(frame, &quad, &list, car.speed, !car.player_held, &params).map(|(i, d)| ObstacleHit { distance: d, soft: list[i].soft, id: list[i].id });
+        // 82C414A8 after the look-ahead: quad B with the same widths as quad A (speed ratio 0, see above).
+        let w = frame.half_width * (1.0 + params.base_widen);
+        let zone = rear_zone_quad(frame, w, w, car.params.skater.range);
+        car.skater = scan(frame, *size, car.held, &zone, &actors, &car.params.skater);
     }
 }
 
@@ -560,6 +833,71 @@ pub(crate) fn push_vehicle_proxies(
         proxies.append_solid(proxy(car, &motion.curr, motion.velocity), &physics, &skater, false);
     }
     physics.network_proxies = proxies;
+}
+
+/// Grab-scene ids of the cars: object `CAR_GRAB_TAG | serial`, spline / geometry `CAR_GRAB_TAG | serial << 3 | index`
+/// (ours: stable per car; retail numbers splines from a global counter, b34).
+pub(crate) const CAR_GRAB_TAG: u32 = 0x8000_0000;
+
+/// The cars' authored grab splines into the grab scene each tick (retail: the vehicle provider `82C35B98`, scene
+/// slot `+4088`, answering the riding skitch query's mode 255; b49). The car's world transform is the record frame,
+/// its velocity the record vector. NOT RETAIL YET: the assembly is a stand-in with the car's id (retail reads it
+/// from the car's `+172` interface, object open).
+pub(crate) fn push_vehicle_grab_splines(
+    cars: Query<(&TrafficCar, &CarMotion)>,
+    traffic: Res<TrafficState>,
+    mut physics: ResMut<crate::physics::GamePhysics>,
+    replay: Res<crate::replay::Replay>,
+) {
+    if replay.active {
+        return;
+    }
+    let mut list: Vec<_> = cars.iter().collect();
+    list.sort_by_key(|(c, _)| c.id);
+    let objects: Vec<_> = list.into_iter().filter_map(|(car, motion)| car_grab_object(car, motion, &traffic.data)).collect();
+    if let Err(e) = physics.set_grab_cars(objects) {
+        warn!("LIVING_WORLD traffic: car grab splines rejected: {e}");
+    }
+}
+
+/// One car as a grab-scene object (pure; the engine and the tests use it).
+pub(crate) fn car_grab_object(car: &TrafficCar, motion: &CarMotion, data: &VehicleData) -> Option<skate_core::player::offboard::grab_scene::Object> {
+    use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry, Object, Provider, Spline};
+    let splines = &data.models.get(&car.model)?.grab_splines;
+    let serial = car.id.serial & 0x0FFF_FFFF;
+    let id = CAR_GRAB_TAG | serial;
+    let t = &motion.curr;
+    let axis = |v: Vec3| {
+        let w = t.rotation * v;
+        [w.x, w.y, w.z, 0.0]
+    };
+    Some(Object {
+        id,
+        provider: Provider::Vehicle,
+        disabled: false,
+        assembly_ready: true,
+        assembly: Some(AssemblyData { identity: id, first_part: None }),
+        frame: [axis(Vec3::X), axis(Vec3::Y), axis(Vec3::Z), [t.translation.x, t.translation.y, t.translation.z, 1.0]],
+        object_vector_128: [motion.velocity.x, motion.velocity.y, motion.velocity.z, 0.0],
+        splines: splines
+            .iter()
+            .take(8)
+            .enumerate()
+            .map(|(i, s)| {
+                let key = CAR_GRAB_TAG | serial << 3 | i as u32;
+                Spline {
+                    descriptor: Descriptor { kind: 1, id: key },
+                    geometry: std::sync::Arc::new(Geometry {
+                        id: key,
+                        points: s.points.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect(),
+                        approach_vectors: vec![[s.direction[0], s.direction[1], s.direction[2], 0.0]],
+                        word_60: s.flags,
+                    }),
+                    word_272: 0,
+                }
+            })
+            .collect(),
+    })
 }
 
 /// The render side of one car.
@@ -702,10 +1040,15 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<VehicleOverrides>()
         .init_resource::<CarMaterials>()
         .add_message::<TrafficEvent>()
-        .add_systems(FixedUpdate, (load_traffic_data, apply_vehicle_records, drive_traffic, log_traffic).chain().after(super::step_population))
+        .add_systems(FixedUpdate, (load_traffic_data, apply_vehicle_records, apply_vehicle_hits, drive_traffic, log_traffic).chain().after(super::step_population))
         .add_systems(
             FixedUpdate,
-            push_vehicle_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),
+            (
+                push_vehicle_proxies.after(crate::multiplayer::prepare),
+                push_vehicle_grab_splines,
+            )
+                .after(crate::app::SimulationSet::Controls)
+                .before(crate::app::SimulationSet::Physics),
         )
         .add_systems(Update, (present_car_looks, present_car_pose).chain().after(crate::app::FrameSet::Animation));
 }

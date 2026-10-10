@@ -37,6 +37,8 @@ pub(crate) mod solid_contacts;
 pub(crate) mod network;
 pub(crate) use skater::SkaterRuntime;
 pub(crate) use skater::AiPhysicsSource;
+pub(crate) use skater::Takedown;
+pub(crate) use offboard::mod_solid_ground::VEHICLE_GROUP;
 pub(crate) use input_phase::facing_from_visual;
 mod animation_feedback;
 mod animation_feedback_settings;
@@ -69,6 +71,7 @@ mod grind_materials;
 mod ground_animation;
 mod grind_trick;
 mod slide_state;
+mod skitch_state;
 mod revert_state;
 mod ground_exit;
 mod ground_phase;
@@ -267,6 +270,19 @@ mod exchange_tests {
 }
 
 impl GamePhysics {
+    /// This tick's traffic cars in the grab scene (`living_world::vehicles::push_vehicle_grab_splines`).
+    pub(crate) fn set_grab_cars(&mut self, cars: Vec<skate_core::player::offboard::grab_scene::Object>) -> Result<(), String> {
+        self.offboard_grab_scene.set_cars(cars)
+    }
+    /// This tick's props in the grab scene (`PropDynamics::grab_objects`). Opt-in with `SKATE_PROP_GRAB=1` until
+    /// Move Object reads the authored record (doc 26i "Move Object step 2"); off, the scene holds no props.
+    pub(crate) fn refresh_grab_props(&mut self) -> Result<(), String> {
+        if !prop_dynamics::prop_grab_enabled() {
+            return Ok(());
+        }
+        let props = self.prop_dynamics.as_ref().map(|d| d.grab_objects()).unwrap_or_default();
+        self.offboard_grab_scene.set_props(props)
+    }
     pub(crate) fn set_gesture_preferences(&mut self, gestures: Option<[u32; 4]>) {
         self.animation_profile.gesture_selections = Some(gestures.filter(|g| g.iter().all(|v| *v < 37)).unwrap_or([0, 1, 2, 3]));
     }
@@ -615,12 +631,21 @@ impl GamePhysics {
         controls: &mut PlayerControls,
         graphs: &crate::graph_runtime::StockGraphs,
         camera: &mut crate::camera::CameraRuntime,
+        ai_intents: &[(String, f32)],
     ) -> Result<(), String> {
         self.swap_skater_context(context);
         let mut actions = skate_core::input::tick::TickInput::new(0, skate_core::input::gameplay_map::GameplayActions::from_values([0.0; 18]), true).actions();
-        let result = controls
-            .update_for_physics(&mut actions, self, skater, camera)
-            .and_then(|()| frame::advance(self, skater, controls, graphs, &mut actions, true, camera));
+        let result = controls.update_for_physics(&mut actions, self, skater, camera).and_then(|()| {
+            // The AI's ActionGraph signals (`skate_core::living_world::ai_signals`) go where the
+            // player's gestures go (`publish_gestures`).
+            for (name, value) in ai_intents {
+                controls.action_intents.insert(name, *value);
+                if value.abs() > 0.01 {
+                    controls.named_intents.insert(name.clone(), *value);
+                }
+            }
+            frame::advance(self, skater, controls, graphs, &mut actions, true, camera)
+        });
         self.swap_skater_context(context);
         result
     }

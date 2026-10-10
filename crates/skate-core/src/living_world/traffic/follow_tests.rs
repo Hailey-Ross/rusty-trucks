@@ -49,6 +49,7 @@ fn segment(id: u64, from: (u64, u8), to: (u64, u8), a: Vec3, b: Vec3) -> Segment
         length,
         speed_limit: 14.166_667,
         lanes: 1,
+        manoeuvres: 2,
         district: 0,
         pieces: vec![piece(a, mid, length * 0.5), piece(mid, b, length)],
     }
@@ -161,11 +162,6 @@ fn integrator_matches_retail_rules() {
     let a = stop_accel(10.0, 20.5, 0.5);
     assert!((a + 100.0 / 40.001).abs() < 1e-5);
     assert_eq!(stop_accel(10.0, 0.4, 0.5), f32::NEG_INFINITY);
-    // retail following term
-    let p = FollowParams::default();
-    let r = retail_follow_accel(&p, 14.0, 12.0, 30.0).unwrap();
-    assert!((r - (((12.0f32 - 20.0 / 3.6).powi(2) - 196.0) / 60.001)).abs() < 1e-4);
-    assert!(retail_follow_accel(&p, 4.0, 12.0, 30.0).is_none());
 }
 
 #[test]
@@ -291,4 +287,188 @@ fn motion_is_reproducible_from_the_spawn_state() {
     let eb = run(&net, &mut cb, &mut b, 60 * 25);
     assert_eq!(a, b);
     assert_eq!(ea, eb);
+}
+
+#[test]
+fn a_car_hit_by_the_skater_ahead_brakes_to_a_stop_then_drives_on() {
+    let net = net_straight(false);
+    let mut clock = SignalClock::new(timings());
+    let mut cars = vec![car(&net, 1, seg(&net, 0x100), 0.0)];
+    run(&net, &mut clock, &mut cars, 180);
+    let cruising = cars[0].speed;
+    assert!(cruising > 1.0, "{cruising}");
+    cars[0].hit_brake = true;
+    // accel = -speed: the speed decays and the latch clears when the car stands.
+    let mut stopped_at = None;
+    for t in 0..600 {
+        run(&net, &mut clock, &mut cars, 1);
+        if cars[0].speed <= 0.0 {
+            stopped_at = Some(t);
+            break;
+        }
+    }
+    assert!(stopped_at.is_some(), "the hit brake stops the car");
+    assert!(!cars[0].hit_brake);
+    run(&net, &mut clock, &mut cars, 60);
+    assert!(cars[0].speed > 0.0, "it drives on afterwards");
+}
+
+#[test]
+fn a_car_stuck_behind_a_standing_car_honks_but_a_red_light_queue_does_not() {
+    let net = net_straight(true);
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x100);
+    // A lead that never drives (cap 0) in mid-lane: the car behind is blocked (kind 3).
+    let mut lead = car(&net, 1, s, 40.0);
+    lead.params.cap_scale = 0.0;
+    let mut cars = vec![lead, car(&net, 2, s, 10.0)];
+    clock.frozen = true;
+    run(&net, &mut clock, &mut cars, 60 * 20);
+    assert_eq!(cars[1].limiter, super::super::horn::limiter::BEHIND_LEAD);
+    assert_eq!(cars[1].horn, 4, "blocked over 4 s: horn kind 4 (driver bit 0x02); gap {} timers {:?} speed {}", cars[0].cursor.distance - cars[1].cursor.distance - 4.5, cars[1].horn_timers, cars[1].speed);
+    assert_eq!(cars[0].horn, 0);
+    // The red-light queue: the first car waits at the light (1), the ones behind wait with it.
+    let mut cars = vec![car(&net, 1, s, 70.0), car(&net, 2, s, 40.0), car(&net, 3, s, 10.0)];
+    run(&net, &mut clock, &mut cars, 60 * 25);
+    assert!(cars.iter().all(|c| c.speed < 0.5));
+    assert_eq!(cars[0].limiter, Entry::Signal as u8);
+    assert!(cars[1..].iter().all(|c| c.limiter == super::super::horn::limiter::BEHIND_WAITING_LEAD), "{:?}", cars.iter().map(|c| c.limiter).collect::<Vec<_>>());
+    assert!(cars.iter().all(|c| c.horn == 0));
+}
+
+#[test]
+fn a_held_car_drives_up_to_twelve_tenths_of_the_cap_and_the_player_skips_the_light() {
+    let net = net_straight(true);
+    let s = seg(&net, 0x100);
+    // Top speed over the run (the junction ahead slows both later).
+    let top = |held: bool| {
+        let mut clock = SignalClock::new(timings());
+        let mut cars = vec![car(&net, 1, s, 0.0)];
+        cars[0].held = held;
+        let mut best = 0.0f32;
+        for _ in 0..60 * 15 {
+            run(&net, &mut clock, &mut cars, 1);
+            best = best.max(cars[0].speed);
+        }
+        best
+    };
+    let (free, held) = (top(false), top(true));
+    assert!(held > free * 1.15, "{held} vs {free}");
+    // A player-held car ignores the red light (82C344D0); an NPC-held one stops.
+    let mut clock = SignalClock::new(timings());
+    clock.frozen = true;
+    let mut player = vec![car(&net, 1, s, 40.0)];
+    player[0].held = true;
+    player[0].player_held = true;
+    let events = run(&net, &mut clock, &mut player, 60 * 20);
+    assert!(events.iter().any(|e| matches!(e, FollowEvent::EnteredJunction { .. })), "the player-held car crossed on red");
+    assert!(player[0].snapshot().flagged);
+}
+
+/// Manoeuvres (b69 / b74, `82C39F78` read by main): with the go roll certain and a short lane timer, a car on a
+/// two-lane road changes lane along its passage and ends on the other lane, moving sideways on the way.
+#[test]
+fn a_car_changes_lane_along_its_passage() {
+    let mut input = RoadInput { segments: vec![segment(0x300, (0x1, 0), (0x2, 0), [0.0; 3], [0.0, 0.0, 400.0])], junctions: vec![] };
+    input.segments[0].lanes = 2;
+    let net = RoadNetwork::build(&input).unwrap();
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x300);
+    let mut c = car(&net, 1, s, 30.0);
+    c.speed = 12.0;
+    c.params.manoeuvre = crate::living_world::traffic::manoeuvre::DeciderParams { lane_timer: 0.5, lane_change_chance: 1.0, least_loaded_chance: 0.0, ..Default::default() };
+    let mut cars = vec![c];
+    let start_x = cars[0].pose(&net).position[0];
+    let mut mid_x = start_x;
+    let mut rng = Rng::new(7);
+    let mut events = Vec::new();
+    for _ in 0..60 * 8 {
+        clock.tick(&mut Vec::new());
+        events.extend(step(&net, &clock, &mut cars, DT, ConnectorChoice::LeastLoaded, &mut rng));
+        if cars[0].passage.is_some() {
+            mid_x = cars[0].pose(&net).position[0];
+        }
+        if events.iter().any(|e| matches!(e, FollowEvent::EnteredLane { .. })) {
+            break;
+        }
+    }
+    assert!(events.iter().any(|e| matches!(e, FollowEvent::LaneChange { from: 0, to: 1, .. })), "{events:?}");
+    assert!(matches!(cars[0].cursor.place, Place::Lane { lane: 1, .. }), "{:?}", cars[0].cursor.place);
+    assert!(cars[0].passage.is_none());
+    let end_x = cars[0].pose(&net).position[0];
+    assert!((end_x - start_x).abs() > 1.5, "{start_x} -> {end_x}");
+    assert!((mid_x - start_x).abs() > 0.1 && (mid_x - start_x).abs() < (end_x - start_x).abs(), "{start_x} {mid_x} {end_x}");
+}
+
+/// Pull-over (b73 / b77): on a one-lane road that allows it, the car reserves the road's middle, brakes to a crawl
+/// short of it, rides to the kerb slot, parks for the parked time, pulls out and drives on along the road.
+#[test]
+fn a_car_pulls_over_parks_and_pulls_out() {
+    let mut input = RoadInput { segments: vec![segment(0x300, (0x1, 0), (0x2, 0), [0.0; 3], [0.0, 0.0, 400.0])], junctions: vec![] };
+    input.segments[0].manoeuvres = 3;
+    let net = RoadNetwork::build(&input).unwrap();
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x300);
+    let mut c = car(&net, 1, s, 20.0);
+    c.speed = 10.0;
+    c.params.manoeuvre = crate::living_world::traffic::manoeuvre::DeciderParams { lane_timer: 0.5, lane_change_chance: 0.0, pull_over_chance: 1.0, ..Default::default() };
+    c.params.parked_time = 2.0;
+    let mut cars = vec![c];
+    let lane_x = cars[0].pose(&net).position[0];
+    let mut rng = Rng::new(7);
+    let mut events = Vec::new();
+    let mut parked_x = None;
+    for _ in 0..60 * 120 {
+        clock.tick(&mut Vec::new());
+        events.extend(step(&net, &clock, &mut cars, DT, ConnectorChoice::LeastLoaded, &mut rng));
+        if let crate::living_world::traffic::manoeuvre::Manoeuvre::Parked { .. } = cars[0].manoeuvre {
+            parked_x.get_or_insert(cars[0].pose(&net).position[0]);
+            assert_eq!(cars[0].speed, 0.0);
+        }
+        if events.iter().any(|e| matches!(e, FollowEvent::PullingOut { .. })) && cars[0].manoeuvre == crate::living_world::traffic::manoeuvre::Manoeuvre::Following {
+            break;
+        }
+    }
+    let over = events.iter().find_map(|e| if let FollowEvent::PullingOver { spot, .. } = e { Some(*spot) } else { None }).expect("pulled over");
+    assert!((over - 200.0).abs() < 1e-3, "{over}");
+    let px = parked_x.expect("parked");
+    // The kerb slot is one lane width (4 m on this one-lane road) beside the lane.
+    assert!((px - lane_x).abs() > 3.0, "{lane_x} -> {px}");
+    assert_eq!(cars[0].manoeuvre, crate::living_world::traffic::manoeuvre::Manoeuvre::Following);
+    assert!((cars[0].pose(&net).position[0] - lane_x).abs() < 1e-3);
+    assert!(cars[0].cursor.distance > over);
+}
+
+/// A sounding car alarm (`+3424` bit 0x10): StayingParked (`82C39138`) holds the parked time at 0 and the car never
+/// pulls out (`82C3A3A8`); once the alarm stops, the parked time runs again from 0.
+#[test]
+fn an_alarming_parked_car_holds_its_parked_time_and_stays() {
+    use crate::living_world::traffic::manoeuvre::Manoeuvre;
+    let input = RoadInput { segments: vec![segment(0x300, (0x1, 0), (0x2, 0), [0.0; 3], [0.0, 0.0, 400.0])], junctions: vec![] };
+    let net = RoadNetwork::build(&input).unwrap();
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x300);
+    let mut c = car(&net, 1, s, 200.0);
+    c.params.parked_time = 2.0;
+    c.manoeuvre = Manoeuvre::Parked { spot: 200.0, time: 1.5 };
+    c.alarming = true;
+    let mut cars = vec![c];
+    let mut rng = Rng::new(7);
+    let mut events = Vec::new();
+    for _ in 0..60 * 10 {
+        clock.tick(&mut Vec::new());
+        events.extend(step(&net, &clock, &mut cars, DT, ConnectorChoice::LeastLoaded, &mut rng));
+    }
+    assert_eq!(cars[0].manoeuvre, Manoeuvre::Parked { spot: 200.0, time: 0.0 }, "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, FollowEvent::PullingOut { .. })));
+    cars[0].alarming = false;
+    let mut ticks = 0;
+    while !events.iter().any(|e| matches!(e, FollowEvent::PullingOut { .. })) {
+        clock.tick(&mut Vec::new());
+        events.extend(step(&net, &clock, &mut cars, DT, ConnectorChoice::LeastLoaded, &mut rng));
+        ticks += 1;
+        assert!(ticks < 60 * 5, "no pull-out after the alarm");
+    }
+    // The full parked time again (2 s), not the 0.5 s left before the alarm.
+    assert!((ticks as f32 * DT - 2.0).abs() < 2.0 * DT, "{ticks}");
 }

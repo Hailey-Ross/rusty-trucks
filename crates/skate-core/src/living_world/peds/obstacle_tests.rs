@@ -109,7 +109,7 @@ fn run(m: &NavMesh, o: &mut NavObstacles, props: &mut [ObstacleInput], bodies: &
             let out = b.nav.step_avoiding(m, &p, CrosswalkRule::Off, &NoSignals, b.id, b.pos, b.heading, b.state, &others, Some(o), dt);
             b.heading += out.turn;
             match out.intent {
-                Intent::Walk => {
+                Intent::Walk | Intent::Run => {
                     b.state = Locomotion::Walk;
                     let f = forward(b.heading);
                     let to = [b.pos[0] + f[0] * 1.325 * dt, b.pos[1], b.pos[2] + f[1] * 1.325 * dt];

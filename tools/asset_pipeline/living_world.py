@@ -120,7 +120,12 @@ FIELD_NAMES = {
         'Hash_543475921FD9E04A': 'alarm_impulse',            # contact impulse that starts the alarm (sub_82C3C150) [code]
         'Hash_E199FC7CEA222809': 'alarm_duration',           # alarm length in s (sub_82C3A4D0) [code]
         'Hash_D20826F15FB15A2E': 'follow_min_speed_kmh',     # following rule only when both speeds exceed it (sub_82C3FA08) [code]
-        'Hash_3AB7FC7CF7A17C81': 'follow_speed_margin_kmh',  # lead speed minus this x 0.2778 (sub_82C3FA08) [code]
+        'Hash_256A412E350A2659': 'skater_follow_margin_kmh',  # skater speed minus this x 0.2778 (sub_82C3FA08, b63) [code]
+        'Hash_3AB7FC7CF7A17C81': 'skater_far_distance',      # FAR rule braking distance, m (2 x D + 0.001; b63) [code]
+        'Hash_33466832D8178EAF': 'skater_scan_range',        # skater scan range and rear zone length, m (sub_82C414A8) [code]
+        'Hash_D49FC49019181EE5': 'skater_near_range',        # NEAR rule range, m (sub_82C3FA08) [code]
+        'Hash_F682D359CDBC4D12': 'skater_near_distance',     # NEAR rule braking distance, m [code]
+        'Hash_4727CF785EF735C8': 'release_grace',            # s without the FAR rule after a skitch release (sub_82C34B30) [code]
     },
     'livingworld_vehicle_drivers': {
         'Hash_FE83E2E0A19A9AFE': 'honk_obstacle_time',       # obstacle ahead this long -> horn kind 2 (sub_82C40660) [code]

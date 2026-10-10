@@ -237,3 +237,445 @@ the user's export: default 3.0 / 3.0, allowed, 1.5 s; marquee not allowed; secur
 resolve to clips in the ped bank. skate-game `living_world_a_skater_knocks_a_ped_down_or_makes_it_stumble` (6 m/s
 knock-down, 1 m/s stumble, one reaction, back to locomotion), `living_world_messages_become_mod_events` (`ped_hit`).
 Not play-tested yet.
+
+## Ped behaviour runtime: the stock ped AI graph on each ped (2026-10-09)
+
+**Problem.** Peds only wandered and reacted to contact; retail peds also warn, flee, observe, chase and take
+the skater down. That behaviour is mostly data: the stock ped AI graph and the mood tables.
+
+**Retail [code] [data] (`.local/research/peds/b1-ped-behaviour-runtime.md` to `b5-ped-mood-events.md`; main
+checked the key addresses).** Retail runs the ped AI graph on the same dynamic controller as the skater's graphs
+(vtable `0x82321EA8`, ctor `82C12E88`, created through `82C12DD0`); every ped condition goes through the masked
+activation gate `82C12D48`; behaviour slots 13 / 14 / 15 are Begin / Update / End. The shipped
+`Pedestrian.stategraph` is already compiled (includes and templates expanded). The ped brain holds wants
+(`brain+412+want*12`: target, flag 0x80 "needs addressing"), timers (`82E40940` / `82E40A80`), the honker
+(`+3232`) and the scatter bit (`+3281` 0x80). Wants come from the mood system: per-ped mood records (presence of a
+player within 35 m every 0.5 s, collisions, tricks; `sub_82E41060`, at most 10 records) and the producer
+`sub_82E41B98` that rolls the ped type's moodresults (`rand() % 100 + 1` against the probability,
+`sub_8269A588`).
+
+**Change (step 1 of the runtime).**
+- skate-core `living_world::peds::brain`: `PedBrain` (wants, timers, flags, outputs) and `BrainHost`, the
+  graph host. Ported operations: `HasSpecificWantThatNeedsToBeAddressed`, `NeedsToBeginColliding`,
+  `IsPedestrianColliding`, `ShouldScatter`, `IsBeingHonkedAt`, `IsZombieMode`, `HasPlugin`,
+  `DistanceToWantTarget` (squared compare), `Wander` (`8269F380` / `8269F410`: motion intent 6, 2.0 m/s),
+  `NoRoadWander` (`826A2FB8`), `SuggestVelocity`, `KnowAboutWantTarget` (30.0), `UnsetWant`, `UnsetWantOnEnd`,
+  `ChannelWarnWantTarget` (`8269F7B0` / `8269F980`: warn timer 36 = 3.5 s, `0x82063AB8`, then the want goes),
+  `Flee` (`826A3530` / `826A3760`: motion intent 4, the flee target), markers. Every other name is `Pending`:
+  false / no effect, listed at load (`PED_GRAPH loaded: ... not ported yet: ...`).
+- skate-core `living_world::peds::mood`: the mood record store (post / bump / at most 10 / tick / expiry) and the
+  presence scan (35 m). Not wired yet: the field binding for magnitudes and lifetimes is still open.
+- skate-game `living_world::ped_graph` loads the stock ped AI graph with the ped data; `think_peds` runs each
+  ped's graph once per population tick before the bodies step (host only), logging `PED_BRAIN` on every state
+  change. Mod values `ped_brain {enabled, wander_speed, warn_seconds, know_about_seconds}`.
+
+**What changes in game now.** Nothing visible yet: no want is produced until the mood system is wired, so every
+ped runs the graph into its wander state (`NoRoad`) and the body keeps its current navigation.
+
+**Verification.** skate-core `brain` tests (4) and `mood` tests (3). Data-gated
+`living_world_ped_ai_graph_runs_on_the_brain`: the stock graph loads, binds and compiles (202 behaviours, 149
+conditions); an idle ped reaches `NoRoad` with the wander intent; a flee want takes it to `Fleeing` (intent 4,
+fleeing from the target); once the target is more than 15 m away it releases the want and wanders again.
+Muted DownTown run (90 s): `PED_GRAPH loaded: 202 behaviours, 149 conditions; 115 operation names not ported yet`; all 36
+peds went `InitialState -> NoRoad` with the wander intent; no panic or error.
+
+**Open.** The flee movement (`826A35F8` is a chain of navmesh calls with 1/6, `0x822F8604`; until it is decoded
+the body does not run away), the mood field binding and the want producer, the rest of the operations (chase,
+takedown, taze, observe, speech events, crosswalk and road ops), the ped motion graph's own operations.
+
+## Ped mood system: wants from the stock mood tables (2026-10-09)
+
+**Retail [code] [data] (`.local/research/peds/b4-ped-want-producer.md`, `b5-ped-mood-events.md`,
+`b6-ped-mood-fields.md`; main checked the producer call sites, the roll, the presence constants, the magnitude
+getter hash and its fallback).** Peds keep mood records (`brain+1040`, at most 10, keyed by instigator, second
+entity and category): presence of a player within 35 m posts every 0.5 s (`sub_82E3CA20`, category field `B1DD`,
+which is also the per-post magnitude), a collision posts `collision` to the hit ped and `nearbycollision` to the
+others (`sub_82E41060` rewrites the category when the "ped itself" prerequisite fails). Records age and expire
+after the category's lifetime (`A379`, 30 s); magnitude and count never decay. The producer (`sub_82E41B98`,
+evaluator `sub_82E41EB0`) takes the ped type's reaction results by priority and checks, in order: target,
+category, instigator type, magnitude (`C404`/`8239`), Nth bump (`B1A9`/`0982`), second-entity type, hand prop,
+two target checks, outstanding reactions (`7FF7`), cooldown, prerequisites, no pending want; the winner is rolled
+(`rand() % 100 + 1`), every roll starts its cooldown, and a pass raises its wants on the target and suppresses
+the record (`4EC2`). Discrete categories have no `B1DD`: the attribute default at `0x830D0850` is 0.0 (the field
+research named 0x820D0850 and 3.5e13; corrected).
+
+**Change.** skate-core `living_world::peds::mood`: tables, store, presence scan, prerequisites and the producer,
+all values from the tables. skate-game `living_world::ped_mood` reads them from setup data (`tables.json`, parents
+resolved; each entity type's reaction set by field `712E`); `think_peds` ticks each ped's records, posts presence
+and the skater collisions (`PedEvent::Hit`), runs the producer with a per-ped seeded RNG and raises the wants on
+the ped's brain before its graph runs. Log `PED_MOOD` (result, category, roll, wants), `PedEvent::Mood`; mod switch
+`ped_brain.mood` (setting, mod patch later).
+
+**Engine choices / inferred.** Prerequisite kind 3 measures to the instigator, kind 6 asks whether the second
+entity is the ped (consistent with the collision rewrite); the undecoded target checks, hand-prop bit and
+ped-state prerequisites answer false; the outstanding count is the number of raised wants about the instigator;
+the sight test is not applied; collisions name the first player as instigator; the evicted record when full is
+the oldest.
+
+**Verification.** skate-core `mood` tests (4). Data-gated `living_world_ped_mood_tables_warn_then_chase_on_collisions`
+on the stock tables (27 categories, 88 results, 17 reaction sets): an adult male hit by the skater does nothing
+on the first hit, raises `warn` on the second (`skatercollisionwarn`, Nth 2) and `angrychase` on the third
+(`skatercollisionchase`, Nth 3); a bystander gets neither.
+Muted DownTown run (120 s, the player standing at the spawn): `PED_MOOD tables: 27 categories, 88 results, 17
+reaction sets, 110 entity types`, 45 peds wandering, no reaction (a default ped's presence results need about 10 s
+within 12 m or a hand prop; the rest are ped-to-ped greets, whose presence posting between peds is not done yet).
+
+**Warning stops the ped and faces the skater.** Ported from `.local/research/peds/b7-ped-reaction-movement.md`
+(main checked the constants): `StopAndFaceWantTarget` (Begin saves the speed suggestion; Update faces the want
+target flat, speed 0.0 `0x82165A10`; End restores), `WatchWantTargetWithoutInterruptingLocomotion` (keeps walking
+while the target is within 55 deg of the facing, `0x821DBCF4`, else latches into stop and face until End),
+`TurnToFaceSkater`, `StandAndWatchSkater` (watch point 4 m ahead, `0x82257308`; jumps to the skater's position +
+velocity x `predictTime` 2.0 when the directions differ, dot < `maxAngle` 0.4), `IsFacingSkater` (dot > `FOVAngle`).
+The body stands and turns toward the face point while the speed suggestion is 0 (turn rate: our nav's 45 deg/s
+until the motion graph's turn branches run). Data-gated graph test: a warn want takes the ped to
+`PedestrianDoWarning`, speed 0, facing the skater. So in game: a ped hit twice by the skater stops and faces them
+for 3.5 s; hit a third time it raises a chase (chase movement not ported yet).
+
+**Open.** Flee movement (the steering goal provider, research running), chase movement, speech events, the
+undecoded checks above, presence posting between peds (greets, conversations), other posters (trick, slam, chase,
+noise, greeted).
+
+## Fleeing peds run away from the threat (2026-10-09)
+
+**Retail [code] (`.local/research/peds/b8-ped-flee-steering.md`; main checked the 15 m leg `0x820BD16C`, the 1 m/s
+speed gate `0x8231A844` and the 0.5 blend `0x8209975C` in `sub_82E318F8`).** The Flee intent installs a goal
+provider (`sub_82E35E80`) with a 2.0 m arrival radius. Each leg goes 15 m from the ped: straight away from the
+threat when the threat moves slower than 1 m/s or the ped is behind its motion, else `0.5 x (side + away)` (side =
+the threat's motion x up, on the ped's side; not renormalised), then a navmesh cast. A new leg starts when the ped
+is within 2 m of its goal (`sub_82E2BC70`). The speed is the ped type's chase record field `CD65` (11 for
+pedestrians), sent to the motion graph as a run gait (`sub_82E2D260`).
+
+**Change.** skate-core `living_world::peds::flee` (direction, goal, arrival; `FleeParams` with the retail values);
+the ped animation gains the run gait (`Intent::Run`, `Locomotion::Run`, logical clip `FwdChaseRunCyc`, the stock
+`*_CHASE_RUN_N_0_CYC`, hash `7746273E01422734`). `think_peds` turns a fleeing brain into nav legs (a one-point
+route per leg, cleared when the flee ends; a blocked leg ends at the last clear point along it, our stand-in for
+`sub_82C46208`), logged `PED_FLEE`; `advance_peds` runs where the nav walks while fleeing. Settings
+`ped_brain.flee` (retail values).
+
+**Engine choices.** The run's own start, stop and turn clips are not wired (it enters from standing or walking and
+stops through the walk stop) until the motion graph runs; the speed is the run clip's root motion, not the chase
+field; a mod route on a fleeing ped is replaced by the flee legs and cleared after.
+
+**Verification.** skate-core `flee` tests (2: straight away 15 m with arrival at 2 m; blended to the side for a
+threat coming at the ped, straight away from behind it). Full workspace run: only the 4 known pre-existing
+failures. Not seen in a game run yet (a ped flees only on a raised flee want; for default peds that comes from the
+female reaction set's `fleeperp` after repeated hits).
+
+**Open.** Which stock reactions raise `flee` for which ped types in practice (play-test), the run start / stop
+clips, retail's exact blocked-goal rewrite.
+
+## Peds speak from their AI graph (2026-10-09)
+
+**Retail [code] (`.local/research/peds/b9-ped-speech-events.md`; main checked every address below in the TU3
+recomp).** A graph speech value is not a sound request. `SendSpeechEvent` Begin (`sub_826A3508`) calls ped vfunc
++204 with the op's `speechvalue` (float attribute truncated to an int; `speechevent` is only a label); that virtual
+(`sub_82E22798`) stores it at `ped+2468`. The ped constructor (`sub_82E33198`) starts the field at 68, which no line
+uses. `ChannelWarnWantTarget` Begin (`sub_8269F7B0`) sends 53 through the same virtual (54 when the ped's `+2000`
+component answers non-zero; that query is open). The audio side's PedestrianSpeech asks for a line only when the
+value changes, so a state re-sending the same value stays silent. `SendChaseStateMessage` and
+`EmotionalResponseToGivingWarning` post game messages and do not speak.
+
+**Change.** skate-core brain: `PedOp::SendSpeech { value }`, `PedBrain::speech` (the `ped+2468` value, `None` = the
+constructor's 68), the warn op writes `BrainSettings::warn_speech` (53). `think_peds` sends a changed value as
+`PedSpeechEvent` to the audio side (which already ports value -> line, cooldowns and the pick), logs `PED_SPEECH`
+and posts `PedEvent::Speech`. Mods: `ped_brain.warn_speech` (0..=127) and the living-world event `ped_speech` (`id`,
+`value`, `state`).
+
+**Engine choices.** Only a change is sent, so the audio bridge's "repeat through 0" rule (kept for the Lua `speech`
+call) never fires for graph speech. The listener-side gating (15 nearest peds within 50 m) stays in the audio port.
+
+**Verification.** skate-core `speech_ops_store_the_value_on_the_ped` (truncation, default 0, Begin only, warn 53);
+skate-mods patch validation for `warn_speech`; `living_world_messages_become_mod_events` covers `ped_speech`.
+skate-game living-world tests: 67 passed. Not heard in a game run yet.
+
+**Open.** The `ped+2000` query (53 vs 54); value 55 (most likely a speech value from StartChase Update `826A3780`, inferred) has no mapping in our
+speech manager; value 15 from NewChasee (`826A37F0`) maps to 607_chase_join and arrives with the chase port.
+
+### Graph timers: SetSimpleTimer and SimpleTimerExpired (2026-10-09)
+
+**Retail [code] (main read these in the TU3 recomp).** `SetSimpleTimer` (factory `826C9E88`, Begin `826A2810`) and
+`SimpleTimerExpired` (factory `826CFA50`, condition `826ACFF0`) read `timerName` (default "TimedRangeRandom") and
+`length` (default 0.0). The name maps to one of 47 timer indices (`sub_82E42B08`, e.g. 21 StartChase, 42
+TargetUnreachableTimer; unknown name = 47). The brain's timer map (`sub_82E40940`) removes a timer set to 0 or less
+and drops a new timer when 14 are running; reading a timer that is not running gives 0 (`sub_82E40A80`), so it
+counts as expired. These ops are used 13 and 16 times in the stock graph (chase hold, alert, sit, wander waits).
+
+**Change.** skate-core brain: `timers::NAMES` / `timers::index`, `PedBrain::set_timer` / `timer`, ops
+`PedOp::SetSimpleTimer` and `PedOp::SimpleTimerExpired`; the warn op uses the same timer rules.
+
+**Verification.** skate-core `simple_timers_follow_the_retail_timer_map`.
+
+## Ped chases: chase record, chase groups and the intercept (2026-10-09)
+
+**Retail [code] (`.local/research/peds/b10-ped-chase-takedown.md`, `b11-ped-intercept-takedown.md`,
+`b12-ped-chase-group.md`; main checked the addresses named here).**
+- Chase record: each ped type points at a `livingworld_entities_chase` record (entity field `FBC4...`; escape
+  distance 65 m for pedestrians, 500 m security, run speed `CD65` 11 m/s, max lead time `47C9` 6 s, give up after
+  `78E2` takedowns). The chase manager (`*0x830854B8`) holds the `global` record (predict angle `5D48` 22.5 deg,
+  max chasers `CEA5` 5) and the "chases allowed" switch (`+6332` bit 0x10, on at init `826B41B0`).
+- Chase group: every chasee (the player's actor and every ped) has a group of up to 25 chasers in join order; entry
+  0 is the primary chaser (`82D97078`). Joining (`82D96C38`) refuses duplicates and full groups and resets the end
+  reason on the first join; leaving the last chaser resets it too (`82D96E88`). `GiveUpBeingPrimaryChaser` swaps
+  entry 0 with entry 1 and holds timer 29 at max(itself, `timeout`) (`82D97108`).
+- Ops: `IsChasing` (`826AC470`), `ChaseeEscaped` (`826AC668`, 3D distance past the escape distance),
+  `CanNewChaseStart` (`826AAC08`), `CanChaseeAddNewChaser` (`826ACAC8`), `IsPrimaryChaser`, `IsChaserEndingChase`
+  (group reason, else the chaser's own), `ChaserShouldGiveUpDueToTakedowns` (`826AD690`), `NewChasee` (`826A37F0`:
+  speech 15, takedowns 0, join the angrychase target's group), `StartChase` Update (speech 55), `ChaserEndChase` /
+  `ChaserGroupEndChase` (reason: default 0, aggressivecapture 1, returntopatrolzone 2, lostinterest 3 via
+  `sub_82BFEF30`, inferred), `EndChase` (`826A53F0`: leave, forget the chasee, steering speed 0).
+  `ChaseeHasProtector` and `ChasersAreScared` answer false (only the actor has a protector interface, contents open;
+  scared is never true in retail).
+- Intercept (`826A3BF0` / solver `sub_82E3D4D8`): each tick, if the chasee is reachable, the flat intercept time
+  `t` with `|Q + V t - P| = run speed x t`; no solution or `t` not below the max lead time gives no new goal. When
+  the angle between (chaser - chasee) and the chasee's velocity is strictly between the predict angle and 180 deg
+  minus it, the goal leads the chasee (`Q + V t`), else it is the chasee. Goal height = the higher of the two; nav
+  speed = run speed, arrival 0.5 m.
+- `ActivateRelatedWant` (`826A6210`): copies the original want's slot (`originalWant`) to `relatedWant` and flags
+  it (`82E42A58(brain, want, 1)` writes the 0x80 needs-addressing bit); with `deactivateOriginalWant` (default
+  true) the original's bit is cleared (joinchase -> angrychase). `ChangeNavModifierSetting` (factory `826A74C8`,
+  Begin `826A75D8` saves the ped's setting and sets `set_to`, End `826A7658` restores it; modifiers ChaseGlue 0,
+  Pedestrian 1, SkaterAvoidance 2, VehicleAvoidance 3).
+
+**Change.** skate-core `living_world::peds::chase` (`ChaseRecord`, `ChaseGroup`, `intercept`, `escaped`, end
+reasons); brain ops for all of the above with `ChaseRequest`s the host applies in order and a `ChaseView` (own id,
+record, groups); `BrainSettings` gains `chases_enabled`, `start_chase_speech` (55), `new_chasee_speech` (15).
+skate-game: `PedData.chase` / `chase_global` from `tables.json`, the host-owned `PedChaseGroups` resource keyed by
+chasee id (chasers that leave the world leave their groups), `think_peds` applies the requests (log `PED_CHASE`,
+`PedEvent::Chase` -> mod event `ped_chase`) and steers intercepting peds to the solver's goal with the run gait (log
+`PED_INTERCEPT`). Brain ops `ActivateRelatedWant` and `ChangeNavModifierSetting` (`PedBrain::nav_modifier`); the
+nav skips ped avoidance while the Pedestrian modifier is off.
+
+**Engine choices.** The player's group reads the `global` record for its max chasers (the actor's own record is
+not decoded). The solver takes the smallest positive root (`sub_82E15CD0`'s choice between two roots is not
+decoded). The intercept's reachability and projection use our navmesh line and locate. GiveUpPrimary's trailing
+reorder after the swap is not decoded. Nav modifiers default to on (per-type defaults open); only Pedestrian is
+applied (ChaseGlue, SkaterAvoidance and VehicleAvoidance are kept but not used by our nav yet).
+
+**Verification.** skate-core: `crossing_chasee_is_led_and_one_running_away_is_chased_directly`,
+`record_fallbacks_and_escape`, `groups_keep_join_order_and_hand_over_the_primary`,
+`chase_conditions_read_the_chasee_and_the_record`, `chase_group_ops_ask_the_host_and_read_the_group`; skate-game
+`chase_records_merge_parents_per_entity_type` and the mod event test. Not seen in a game run yet; the takedown
+itself (contact, success, the skater's bail) is not ported.
+
+**Open.** Takedown (`b13-takedown-skater-side.md`: success sets a pending flag and direction on the player's actor;
+the bail it causes is being researched), the takedown entry choice `82E3C000`, LostChasee / perception
+(CanSeeChasee), RestFromChase, BlockChasee / PursueChasee, the protector, value 55's line.
+
+## Ped takedowns and chase exhaustion (2026-10-09)
+
+**Retail [code] (`.local/research/peds/b13` to `b17`; main checked the addresses named here and the setup data).**
+- Choice (`82E3C000`, each tick from TakeDownTargetablePredictions): the ped type's `livingworld_entity_takedown`
+  list (`generic_male` 7 entries) in priority order; approach side from `normalize(ped - target) . target
+  velocity`; per entry the target `lead + 0.06` s ahead, at most 1.25 m above or below, distance from the reach point
+  `ped + 0.2 x forward` inside `(min + 0.2 + 0.06 s, reach + 0.2 + 0.06 s]`, signed bearing inside the entry's
+  angles (or mirrored). The first fit wins.
+- Attempt (`pedestrian_attempttakedowntargetable.xml`): sustained by the ActiveTakedown intent, timer 16 = 3.0 s,
+  speech 17; AttemptTakeDownTargetable Update (`826A4BE8`) succeeds when the ped touched its target during the
+  takedown (the contact callback `82E38FB8` records the touch and counts it at `brain+3248`); success
+  (`826A4E50`) calls the target's `vfn20(chaser position)`: on the player's actor (`82592390`) that sets `1904` bit
+  30 and the direction away from the chaser (main checked; the actor always accepts, `8281DD70` returns 1). Speech
+  65 for the player, else 19. Failure: speech 18.
+- On the skater: the flag reaches the animation packet (P+10496, +10480; `82593640`), Processed +2468 bits 2 and 18
+  (`82DB5BE0`, `82BDA0D0`); bit 18 is phys-out byte 59, which the stock motion graph reads (`IsPhysicsWiping`,
+  `onboard.xml`) to enter WipeOut; WipeoutGround Enter (`82D3B5E8`) pushes skeleton part 12 along the direction
+  scaled by the vault value `LivingWorldPushForce`.
+- Exhaustion (`b17`): a float at `brain+3220` grows by the tick in InterceptChasee / PursueChasee; NeedToRest is
+  `accumulator > exhaustion_limit` (`82E3D7B0`: peds 30 s) or resting and not rested (timer 4 still running).
+  RestFromChase: accumulator 0, resting, timer 4 = rest time (`5960`, 5 s); End: not resting. ClearExhaustionTimer:
+  accumulator 0. Investigate: timer 1 = investigate time (`1AE2`, peds 10 s), End sets 0, exceeded at 0.
+
+**Change.** skate-core `living_world::peds::takedown` (`TakedownTable`, `choose`); brain ops
+ChaserEvaluateWhoToTakeDown, TakeDownTargetablePredictions, HasTakeDownTargetable, CanAttemptTakeDownTargetable,
+HasMonitoredIntent (ActiveTakedown), AttemptTakeDownTargetable, TakeDownAttemptSuccessful / Failed,
+TakeDownTargetableSuccess / Failure, TakedownTargetableClearOnEnd, NeedToRest, RestFromChase, ClearExhaustionTimer,
+Start / EndInvestigateTimer, InvestigateTimeExceeded; `ChaseRecord` exhaustion / rest / investigate getters.
+skate-game: takedown tables from `tables.json`; the contact (our skater cylinder against the ped while the takedown
+plays) sets the brain's contact and counts the takedown; a success writes `SkaterTakedownRequest` and
+`apply_skater_takedowns` sets the skater's takedown latch, which the animation packet publishes as the external
+impulse (flags 10496, vector 10480) until WipeoutGround Enter uses it. Logs `PED_TAKEDOWN`, `SKATER_TAKEDOWN`; mod
+event `ped_takedown` (`id`, `target`, `success`).
+
+**Engine choices.** No takedown clips play yet: the ped stands (SuggestVelocity 0) and the takedown intent ends
+with the decision; the contact is our skater cylinder, not the ped body's Havok hit (`*(ped+2032)`, its installer
+not found); the target never vetoes (`T.vfn24` byte +59 open); the latch drops after 2 s if no wipeout used it
+(retail's clear of bit 30 not found); the ped's speed for the window is its position change.
+
+**Verification.** skate-core `first_fitting_takedown_wins`, `a_takedown_attempt_succeeds_on_contact_with_the_target`,
+`chasing_exhausts_and_resting_recovers`; skate-game data-gated
+`a_ped_takedown_publishes_the_external_impulse_and_wipes_the_skater_out` (DownTown: our skater is in WipeoutGround
+from the first tick after the latch, and the latch is used). Not play-tested.
+
+**Open.** The takedown clips and the ped's own stumble on failure; the perception (CanSeeChasee, LostChasee) and
+SetAltTargetToChaseePosition / mood suppression ops (research b18 running); Pursue / Block for secondary chasers.
+
+## Ped perception, secondary chasers and tazers (2026-10-09)
+
+**Retail [code] (`.local/research/peds/b17` to `b20`; main checked the setup data and the key addresses).**
+- Perception (`b17`, `b18`): at most 5 entries per ped (`brain+624`), a new one evicts the oldest and starts "just
+  told"; each tick memory and suppression run down, age up, the vision test (`82E27240`) sets "visible" and refreshes
+  the last position: seen within 1 m (2 m height), or within the near range (20 m x the type's `D036`), or within the
+  far range (30 m x `D238`) inside the 120 deg cone (`7435`) with a clear line of sight. CanSeeChasee = visible or
+  just told; KnowAboutChasee = 30 s memory; SuppressMoodAboutChasee / UnsetWantAndSuppressMoodForATime block mood
+  events about the target; MoodResetAboutChasee forgets them; LostChasee walks to the last known position.
+- Secondary chasers (`b19`): every non-primary chaser runs UpdateBlockPrediction each tick; it blocks when the
+  chasee is within 20 m and touching (1 m) or running at it faster than 5 m/s inside 45 deg (record fields
+  `8BAE` / `F3E7` / `670A` / `E48B`); BlockChasee walks to the block point at 2 m/s and stands there facing the
+  chasee (recovering exhaustion); else PursueChasee runs to its formation point = the chasee plus the offset it
+  joined at.
+- Tazers (`b20`): DrawTazer (0.133 s draw), TazeWantTarget (speech 66, after 0.3 s one hit through the target's
+  `vfn20`: the same knock-down as a takedown, `826A8420`), RegisterTazer (live tazer), EndTaze (speech 67); the
+  stock graph tazes within 20 deg and 10 m (IsFacingWantTarget: `826AA1B8`, half the angle either side, flat
+  distance) with a line of sight.
+
+**Change.** skate-core `living_world::peds::perception` (`Perceptions`, `sees`, `Sight`); `ChaseGroup` formation
+offsets and `chase::should_block`; brain ops for all of the above (`ChaseSteer` Intercept / Pursue / Block),
+`MoodStore::forget`. skate-game: per-type sight from `tables.json`, the perception tick in `think_peds` (eye 1.6 m
+above the feet, line of sight = our navmesh line), suppressed instigators post no mood, Pursue / Block / LostChasee
+routes, the taze hit writes the takedown's `SkaterTakedownRequest`, RegisterTazer plays the tazer burst
+(`PedTazerEvent`). Logs `PED_TAZE`; mod event `ped_taze`.
+
+**Engine choices.** The eye point, the line-of-sight ray (retail: physics rays) and the chasee radius (`G+1648`, 0.0)
+are ours; the tazer is drawn when timer 37 ends (retail: the draw clip) and the `tazr` hand prop is not attached;
+CanTazeUnreachableTargets and CannotReachChaseTarget stay Pending (their per-type byte and nav-result writer are
+open), so the unreachable-taze branch does not run.
+
+**Verification.** skate-core `entries_follow_the_retail_list_rules`, `vision_has_touch_near_and_a_cone_with_line_of_sight`,
+`secondary_chasers_block_a_chasee_running_at_them`, `a_tazer_is_drawn_then_hits_its_target_once` (+ the earlier chase
+tests). Not play-tested.
+
+**Open.** Greets and conversations between peds (presence about other peds is retail, `sub_82E3CA20`, 35 m; waits for
+the greet ops, research b22), the taunt after a takedown, hand props.
+
+## Peds greet each other (2026-10-09)
+
+**Retail [code] (`.local/research/peds/b21-ped-greets-conversations.md`, `b22-ped-greet-ops.md`; main checked the
+radius constants and the greet speech).** Every 0.5 s a ped posts presence about the other live peds within 35 m (at
+most 30, `sub_82E3CA20`) and then about players within 35 m. The stock greet results fire on presence (gated on the
+other ped's type, probability 0.5, cooldown 20 s) and raise `greet`. ChannelGreetWantTarget (`8269FAC0` /
+`8269FC30`): greet timer 3.5 s, posts `greeted` into the greeted ped's mood store (which raises `returngreet` there),
+speech 56 (63 for the return greet), unsets the want when the timer runs out (`deactivateWant`; the graph's
+`unsetWant` attribute is never read). ApproachWantTarget walks to the target at `speed` (2.0); AlertToWantTarget
+pushes the target on the look-at stack. Correction to our warn op: ChannelWarnWantTarget unsets its want only with
+`deactivateWant` (the unreachable chase keeps it).
+
+**Change.** `mood::presence` takes the other peds (35 m, 30); brain ops ChannelGreetWantTarget, ApproachWantTarget,
+AlertToWantTarget; `ChaseRequest::Greeted` queued into the greeted ped's store on its next think (log `PED_GREET`);
+ChannelWarnWantTarget gains `deactivate`.
+
+**Engine choices.** (The temporary hold-back of the `startconversation` results that this section first had was removed the same day, once the retail mood gate and the conversation plugin were ported: see "Ped conversations".) The world query order for the 30-ped cap is ours (id order); the
+look-at stack has no head-tracking consumer yet; `greeted` reaches the target one think later.
+
+**Verification.** skate-core `presence_posts_other_peds_then_players`,
+`a_greet_posts_greeted_once_and_speaks_until_the_timer_runs_out`. Muted DownTown live run (25 s): 13 greets, return
+greets answered, no ped held, 68 mood lines.
+
+**Open.** Conversations (SpawnConversationArea, the conversation plugin and tables), the presence filter's exact
+meaning (`ped+2020`), the `ped+2480` speech tag.
+
+## Ped conversations: the plugin runner and the conversation object (2026-10-09)
+
+**Retail [code] (`.local/research/peds/b23-ped-plugins-conversations.md`, `b24-conversation-object.md`; main checked
+the spawn constants, the setup data chain, the conversation vtable and its completion state).** A conversation is a
+waypoint plugin: SpawnConversationArea (`826A6CD8`) spawns one 3 m ahead of the starter unless another is within
+50 m, and adds the starter and the greeted ped. In the main graph, HasPlugin moves a member into the Plugin state,
+whose op runs the plugin's own graph (`plugin/conversation.stategraph`) on the same brain. The conversation object
+(vtable `0x8232B868`): 3 member slots, 3 waypoints on a 1.5 m circle 120 deg apart; a member locks the nearest free
+waypoint, walks onto it (`template/moveontowaypoint.xml`: 2.0 m/s, then 1.0 m/s, 0.1 m), turns to it, signals in
+position; when all are in position it starts (fewer than 2 members ends it), picks a candidate row
+(`livingworld_conversations`, via the entity's conversation group and weighted categories) and one value from the
+row's list; 5 turns of 3.0 s round-robin (state 2 to 7), then complete; members unlock and exit the plugin.
+
+**Change.** skate-core `living_world::peds::conversation` (`Conversation`, `ConversationRow`,
+`ConversationParams`); brain ops Plugin, ExitPlugin, SpawnConversationArea, PedestrianInConversation /
+PedestrianIsInConversation, LockClosestWaypoint, HasWaypointLocked, DistanceFromWaypointXZ, TargetWaypoint,
+LockToCurrentPosition, TurnToFaceWaypointOrientation, IsFacingWaypointOrientation, UnlockWaypoint,
+CreateSimpleMonitoredIntent, IncrementMonitoredPacketStage, HasMonitoredIntent (any intent), ConversationSignalInPosition,
+ConversationThisParticipantIsSpeaker, ConversationSpeak, ConversationListenToSpeaker, ConversationIsComplete.
+skate-game: the conversation plugin graph and tables load with the ped data, `PedConversations` (host-owned, seeded
+RNG), the plugin graph runs on the brain while the main graph is in Plugin, requests applied in `think_peds` (log
+`PED_CONVERSATION`).
+
+**Mood gate (`b28`, `b29`, main checked `sub_82E3BF70` and the producer's `ori 32`).** The mood producer
+(`sub_82E41B98`) does nothing for a busy ped (`sub_82E3BF70`: WaitingToReact `brain+3278` 0x20, IsReactingToMoodEvent
+0x10, `brain+3277` 0x04 (written by PedestrianColliding), `*(ped+96)`); a pass sets WaitingToReact itself; the want
+groups in `pedestrian_addresswants.xml` clear it when they begin (and set / unset IsReactingToMoodEvent). Check 8 of
+a result (`D44E`) compares the target's busy state. A post whose reaction-set prerequisites fail is dropped
+(`sub_82E41060`; presence: within 12 m in the stock sets). Ported: the four flag ops, `PedBrain::busy` (ours: the two
+open terms are a plugin membership), the gate in `think_peds`, check 8 (`MoodContext::busy`), prerequisites at post
+time for presence (`MoodTables::accepts`). By the code (`b29`) a ped whose conversation spawn is refused (another
+within 50 m) raises the want again on its next pass, as in retail; we keep that (no heuristic stop).
+
+**Engine choices.** Waypoint orientation = towards the centre; TargetWaypoint's slide moves the body straight onto
+the point (no slide clip); LockToCurrentPosition pins the body to where it stood (an origin-locked trajectory: root
+motion does not move it) and drops the route; ConversationListenToSpeaker only records the speaker to look at (no
+body turn: the body keeps the waypoint orientation; no head tracking consumer yet); the waypoints have no navmesh probe; players are never busy for check 8
+(unverified).
+
+**Live run (muted DownTown, 45 s).** Three conversations spawned; one ran its 5 turns with alternating speakers and
+completed (logs `PED_CONVERSATION ... turn state=3..7`, `PED_PLUGIN`). Open from that run: two conversations whose
+members never all arrived, a facing jitter between TurnToFaceWaypointOrientation and the converse states (the 0.3
+rad check at the threshold), and about 30 mood lines a second from peds whose spawn was refused (retail-identical
+loop by the code).
+
+**Verification.** skate-core `a_conversation_gathers_starts_and_runs_five_turns`,
+`a_lone_member_ends_the_conversation` (and the tests of the next section); skate-game data-gated `living_world_ped_plugin_graphs_load` (conversation, sit,
+lookat, spectate graphs load on the runtime).
+
+**Open.** The facing jitter (above), prerequisite kinds 2 and 8 (OwnPluginObject / DisableCollisionsWithBehaviourSource flag,
+`brain+540`), the other plugins (sit, ATM, vending, ...).
+
+## Conversation speech, gather timer and abort (2026-10-09)
+
+**Retail [code] (`.local/research/peds/b43-conversation-speech-slots.md`; main re-read `82E3DAD8`).**
+- Start (`82E1EBC0`) and every advance (`82E1ECB0`) store the turn's line id (`82E1EA98`: state 2 -> 0 or 1, 3 -> 3,
+  4 -> 5, 5 -> 6, 6 -> 7, at `D+1168`) and re-roll the variant (`D+1156`, uniform [0, 2) by `82E17478`) once per turn.
+- ConversationSpeak Begin (`826A66B8`) calls `82E3DAD8`: the speaker's speech value (`ped+2468`, the channel of every
+  ped speech) becomes line id + 33 (33 / 34 intro short / question, 36 opinion, 38 question, 39 answer, 40 outro),
+  with the variant at `ped+2472` and the row's value at `ped+2476`; every listener (vf32 `82E1E800`: members other
+  than the speaker) gets 41, which no audio event uses. Because PedestrianSpeech speaks on a change, the 41 makes the
+  next line of the same value audible.
+- The first join (`82E1D380`) sets state 1 and a 30.0 s gather timer (`D+1136`, `0x820D4924`); `82E1EB10` counts it
+  down and starts the conversation when it runs out, even if not every member signalled in position (fewer than 2
+  members then ends it, vf52 `82E1E998`: state 7, no speaker).
+- A member leaving (`82E1D470`) aborts an unfinished conversation (vf52); the last one leaving resets it, and a
+  spawned area (destroy-when-empty, set by SpawnConversationArea) is removed (`82E1BD08`).
+
+**Change.** skate-core `conversation.rs`: `line` / `variant` per turn, `TurnSpeech` (`turn_speech()`), `listeners()`,
+`tick(dt)` (gather timer), `leave` returns `Left` (NotMember / Remaining / Empty) and aborts, `pass_turn` takes the
+seeded rand; `ConversationParams.gather_seconds`. Brain: ConversationSpeak Begin writes the speaker's value and
+`PedBrain.speech_topic` (variant, row value) and posts `ChaseRequest::Spoke`; the host gives the listeners 41 when
+they think next. `PedSpeechEvent.topic` and the mod event `ped_speech` (`variant`, `list_value`) carry the topic.
+Logs: `PED_CONVERSATION ... gather_timeout`, `leave ... result=abort|empty|leave`, `PED_SPEECH ... topic=`. Mod values
+`ped_brain.conversation_turn_seconds` (3.0) and `ped_brain.conversation_gather_seconds` (30.0), 0..=100.
+
+**Engine choices.** Every conversation area is spawned (no placed map areas yet), so an empty one is removed; the
+leaver's slot key is not kept (retail keeps it for a re-join by the same entity type); a listener whose think already
+ran this tick gets its 41 on the next tick.
+
+**Verification.** skate-core `the_line_and_variant_are_rolled_once_per_turn`,
+`the_gather_timer_starts_with_whoever_is_there`, `a_member_leaving_aborts_and_the_last_one_empties_it`, and the five
+turns test now checks the values 33, 36, 38, 39, 40 and the listeners; skate-game `living_world` tests pass.
+
+**Open.** What the variant and row value select on the audio side (readers of `ped+2472` / `+2476` not found); the
+waypoint vfunc 24 body.
+
+## Peds taunt after a takedown (2026-10-09)
+
+**Retail [code + data] (`.local/research/peds/b25-ped-taunt-handprops.md` sections 1-2; main checked the 65 / 19 speech
+values).** After a successful takedown (or an aggressive capture) the graph turns the angry-chase want into a taunt
+want; `TakedownTauntVictim` (`826A70E0`) speaks 65 when the victim is the player and 19 otherwise, faces the victim,
+pushes attention and posts the "Taunt" motion intent: `motiongraph_taunt` plays the ped type's remapped "Taunt" clip
+once (blend 0.1) and completes the intent; the graph holds `DoTaunt` while the intent lives. End (`826A72F0`) releases
+the face and the intent and unsets the taunt want.
+
+**Change.** skate-core brain op `TakedownTauntVictim` (Begin: face the target, monitored "SGIntent", `ChaseRequest::Taunt`;
+End: face off, intent off, want unset); "Taunt" in the logical animation names. skate-game `think_peds` speaks 65 / 19
+and requests the clip (`PedBody.taunt`), the body step plays it through the reaction path and the intent is dropped
+when it ends (a set without the clip completes at once). Log `PED_TAUNT`.
+
+**Engine choices.** The attention push (`sub_82E27A08`, priority 2) is not modelled; the clip plays through the collision
+reaction player (no locomotion while it runs), as the motion graph's state is non-interruptable.
+
+**Verification.** skate-core `the_taunt_faces_the_victim_holds_the_intent_and_unsets_the_want`; skate-game living_world
+(71). Not seen in game yet. Open: the hand props (throw / drop), which our peds do not carry.
+

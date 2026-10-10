@@ -162,6 +162,8 @@ pub(crate) struct NpcReplay {
     /// The cursor one world tick back: the render draws from it towards `cursor` by the fixed-step
     /// fraction (the player's previous-to-current interpolation), so it never guesses a branch.
     pub previous: Option<LineCursor>,
+    /// The obstacle avoider's state: cursor lag and lateral offset ([`super::npc_avoid`]).
+    pub avoid: super::npc_avoid::NpcAvoid,
 }
 
 /// The NPC's leave fade and its opacity now (1 = solid). Engine systems and mods read `alpha` to
@@ -196,6 +198,12 @@ pub(crate) enum NpcSkaterEvent {
     /// The trick chosen at a start-trick node (`record.recorded` = the line's own).
     Trick { id: LivingWorldId, record: TrickRecord },
     LineEnd { id: LivingWorldId },
+    /// A simulated NPC skater bailed; it is placed back on its line after `respawn_seconds`.
+    Bail { id: LivingWorldId, respawn_seconds: f32 },
+    /// The bail respawn placed it back on its line at `node`.
+    Respawned { id: LivingWorldId, node: u32 },
+    /// The obstacle avoider changed mode (target: obstacle kind and id).
+    Avoid { id: LivingWorldId, mode: skate_core::living_world::avoid::AvoidMode, target: Option<(skate_core::living_world::avoid::ObstacleKind, u64)> },
 }
 
 /// The stock clip a replay NPC shows per phase ([data]: names checked against the decoded stock
@@ -704,7 +712,7 @@ pub(crate) fn apply_records(
                 Name::new(format!("NPC skater {} ({character})", s.id.serial)),
                 Transform::from_translation(at).with_rotation(Quat::from_rotation_y(s.heading)),
                 Visibility::Inherited,
-                NpcReplay { cursor, branches: Vec::new(), tricks: Vec::new(), last: sample, previous: None },
+                NpcReplay { cursor, branches: Vec::new(), tricks: Vec::new(), last: sample, previous: None, avoid: Default::default() },
                 NpcFade { alpha: state.world.config.skaters.leave_fade.fade_in_alpha(0), ..NpcFade::default() },
                 NpcSkaterAudio { list_order: u32::from(*slot), voice: npc.voice, ..Default::default() },
                 NpcStanceTrack::new(npc.stance),
@@ -742,7 +750,9 @@ pub(crate) fn advance(
     let fade_cfg = state.world.config.skaters.leave_fade;
     let chain = state.world.config.skaters.line_chain;
     for (e, npc, mut replay, mut transform, mut audio, mut fade) in sorted {
-        let target = tick.saturating_sub(npc.spawn_tick) * FRAMES_PER_TICK;
+        let elapsed = tick.saturating_sub(npc.spawn_tick) * FRAMES_PER_TICK;
+        // The obstacle avoider holds the cursor back (`npc_avoid`); the fade keeps the spawn clock.
+        let target = elapsed.saturating_sub(replay.avoid.held_frames());
         let mut out = Vec::new();
         // The switch blend time (branch / chain root blend) is a tuning value, the same on a client.
         replay.cursor.switch_blend_seconds = chain.blend_seconds;
@@ -814,16 +824,16 @@ pub(crate) fn advance(
         // running after the cursor stops, so clients derive the same alpha from the same spawn
         // record and tick.
         fade.fade.update(&replay.cursor, &*lines, &fade_cfg);
-        let alpha = fade.fade.alpha(target, &fade_cfg);
+        let alpha = fade.fade.alpha(elapsed, &fade_cfg);
         if fade.alpha != alpha {
             fade.alpha = alpha;
         }
-        if fade.fade.should_despawn(target, &fade_cfg) {
+        if fade.fade.should_despawn(elapsed, &fade_cfg) {
             finished.push((npc.id, e));
         }
         let Some(s) = replay.cursor.sample(&*lines, 0.0) else { continue };
         state.world.update_position(npc.id, s.position);
-        transform.translation = Vec3::from_array(s.position);
+        transform.translation = Vec3::from_array(s.position) + Vec3::from_array(super::npc_avoid::right_of(s.velocity)) * replay.avoid.offset;
         transform.rotation = root_rotation(&s);
         let material = physics.as_deref().map_or(skate_audio::player::state::NO_MATERIAL, |p| crate::game_audio::world_bridge::ground_material(p, transform.translation));
         audio.voice = npc.voice;
@@ -883,8 +893,19 @@ pub(crate) fn lite_state(s: &ReplaySample, material: u32) -> AudioState {
 /// Solid ids of NPC proxies: a tag in the top bits keeps them apart from mod bodies.
 pub(crate) const PROXY_ID_TAG: u64 = 0x4E50_0000_0000_0000;
 
-/// The kinematic collision proxy of one NPC (body capsule + board box), world space.
-pub(crate) fn proxy(id: LivingWorldId, s: &ReplaySample) -> skate_dynamics::SolidBody {
+/// The board half of an NPC proxy carries this bit on top of the body's id.
+pub(crate) const PROXY_BOARD_BIT: u64 = 1 << 47;
+
+/// Retail collision groups: skater skeleton parts 5 (the skeleton contact pass scales a group-5
+/// force by `SkaterSkeletonScalar` and raises the player's thresholds by
+/// `SkaterSkaterThresholdScalar`, `sub_82BD4A30` at `0x82BD53D0`), board 4 (ignored by that
+/// pass). The multiplayer peers' proxies use the same split (`physics/network.rs`).
+pub(crate) const PROXY_BODY_GROUP: u32 = 5;
+pub(crate) const PROXY_BOARD_GROUP: u32 = 4;
+
+/// The kinematic collision proxies of one NPC (body capsule in the skater group, board box in
+/// the board group), world space.
+pub(crate) fn proxy(id: LivingWorldId, s: &ReplaySample) -> [skate_dynamics::SolidBody; 2] {
     use skate_dynamics::rapier3d::prelude::{Pose, Rotation, SharedShape, Vector};
     let [x, y, z, w] = s.skater;
     let rotation = Rotation::from_xyzw(x, y, z, w).normalize();
@@ -897,21 +918,24 @@ pub(crate) fn proxy(id: LivingWorldId, s: &ReplaySample) -> skate_dynamics::Soli
     let body = SharedShape::capsule_y(0.65, 0.25);
     let board = SharedShape::cuboid(0.1, 0.05, 0.4);
     let com = at([0.0, 0.9, 0.0]);
-    skate_dynamics::SolidBody {
-        id: PROXY_ID_TAG | id.to_u64(),
+    let deck = at([0.0, 0.08, 0.0]);
+    let solid = |id: u64, group: u32, centre: Vec3, collider: skate_dynamics::SolidCollider| skate_dynamics::SolidBody {
+        id,
         pose: Pose::from_parts(p(Vec3::from_array(s.position)), rotation),
-        center_of_mass: p(com),
+        center_of_mass: p(centre),
         inertia_rotation: rotation,
         inverse_mass: 0.0,
         inverse_inertia: Vector::new(0.0, 0.0, 0.0),
         linvel: Vector::new(s.velocity[0], s.velocity[1], s.velocity[2]),
         angvel: Vector::new(0.0, 0.0, 0.0),
-        contact_group: 0,
-        colliders: vec![
-            skate_dynamics::SolidCollider { shape: body, pose: Pose::from_parts(p(com), rotation), friction: 0.5 },
-            skate_dynamics::SolidCollider { shape: board, pose: Pose::from_parts(p(at([0.0, 0.08, 0.0])), rotation), friction: 0.5 },
-        ],
-    }
+        contact_group: group,
+        colliders: vec![collider],
+    };
+    let base = PROXY_ID_TAG | id.to_u64();
+    [
+        solid(base, PROXY_BODY_GROUP, com, skate_dynamics::SolidCollider { shape: body, pose: Pose::from_parts(p(com), rotation), friction: 0.5 }),
+        solid(base | PROXY_BOARD_BIT, PROXY_BOARD_GROUP, deck, skate_dynamics::SolidCollider { shape: board, pose: Pose::from_parts(p(deck), rotation), friction: 0.5 }),
+    ]
 }
 
 /// NPC skaters against dynamic props (DMOs), doc 26 fix 19. Retail NPC skaters are full skaters
@@ -987,7 +1011,9 @@ pub(crate) fn push_proxies(
     let mut list: Vec<_> = npcs.iter().filter_map(|(n, r)| r.last.as_ref().map(|s| (n.id, s))).collect();
     list.sort_by_key(|x| x.0);
     for &(id, s) in &list {
-        proxies.append_solid(proxy(id, s), &physics, &skater, false);
+        for solid in proxy(id, s) {
+            proxies.append_solid(solid, &physics, &skater, false);
+        }
     }
     physics.network_proxies = proxies;
     if settings.npc_skater_props.enabled {
@@ -1096,7 +1122,9 @@ pub(crate) fn present_pose(
         };
         let sample = cursor.sample(&*lines, frac);
         let Some(s) = sample.or_else(|| replay.last.clone()) else { continue };
-        root.translation = Vec3::from_array(s.position);
+        // The avoider's lateral offset, interpolated like the cursor.
+        let offset = replay.avoid.offset_at(ahead / FRAMES_PER_TICK as f32);
+        root.translation = Vec3::from_array(s.position) + Vec3::from_array(super::npc_avoid::right_of(s.velocity)) * offset;
         let style = puppet.map_or_else(|| crate::custom_models::native_animation_style(&npc.character), |p| p.style);
         // A mod's clip that does not evaluate falls back to the shipped pick (also the outgoing
         // clip of a crossfade).
@@ -1504,8 +1532,9 @@ pub(crate) fn log_readout(settings: Res<LivingWorldSettings>, state: Res<Populat
 pub(crate) fn install(app: &mut App) {
     app.init_resource::<NpcSkaterIndex>()
         .init_resource::<NpcSkaterLooks>()
+        .init_resource::<super::npc_avoid::AvoidTrack>()
         .add_message::<NpcSkaterEvent>()
-        .add_systems(FixedUpdate, (apply_records, advance, super::npc_sim::simulate, track_stance, log_backwards, log_readout).chain().after(super::step_population))
+        .add_systems(FixedUpdate, (apply_records, super::npc_avoid::avoid, advance, super::npc_sim::simulate, track_stance, log_backwards, log_readout).chain().after(super::step_population))
         .add_systems(
             FixedUpdate,
             push_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),

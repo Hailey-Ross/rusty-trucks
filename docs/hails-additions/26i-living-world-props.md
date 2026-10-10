@@ -540,3 +540,144 @@ step and anchor velocity); `cargo test -p skate-game --bin skate3rust` 546 pass,
 
 Open: 82BDF268 (sweep, step-up, weight +1124) not decoded; the follow begins at the board-frame COM (our stand-in
 for Skeleton+15872); per prop type record+272 and grab splines need the DMO data.
+
+## Move Object step 1: props' authored grab splines in the export (2026-10-09)
+
+**Retail [data] (`.local/research/npc/b48-prop-grab-splines-port-map.md`, `b54-dmo-grab-provider.md`; main checked the
+GRABDATA header against parkassets and the per-template link below).** DMO templates carry authored grab splines (RW4
+GRABDATA): 102 of the 136 worlddmo templates have one section. In a multi-template worlddmo arena the section sits
+between the template's EB0001 model and the next template's model (the retail link `*(R+136)` is not decoded; the
+positional rule matches parkassets' single-template copies byte for byte). In single-player worlds props answer the
+grab query through the type-2 world-object provider (`82C4BE80`), not the DMO provider (`82589130`, used only in an
+online session, b54).
+
+**Change.** `tools/asset_pipeline/grab_data.py` `section_splines` (one section); `dynamic_props.template_meshes`
+links each template's section by position and keeps `grab_splines`; the native-props export writes
+`grab_splines[<template id>] = [{points, direction, bounds, flags}]` next to `types` (model frame, same fields as the
+cars).
+
+**Verification.** Python dynamic_props / grab_data tests; over all 119 parkassets DMO RX2s the per-template splines
+equal the whole-file parse (main's run, 2026-10-09). The game does not read the field yet.
+
+## Move Object step 2: props in the grab scene (opt-in, 2026-10-09)
+
+**Retail [code] (`.local/research/npc/b54-dmo-grab-provider.md`; main checked `82C4BE80` emits type-2 records).** In
+single-player worlds the world-object provider (`82C4BE80` box / `82C4BB08` radius, scene `+4084`, query mode bit 0x04)
+answers props: disabled gate, a sphere around the object (radius + 15 m), per spline byte +68 > 1 and +70 != 0, a
+segment hit, the assembly chain, then a type-2 record with the object's matrix and a vector (vtable +120), then
+CanGrabSpline. Our `Provider::LivingWorld` query loop already ports these gates.
+
+**Change.** skate-game: `skate_world::load_dmo_grab_splines` reads the export's `grab_splines`;
+`PropDynamics::set_grab_splines` gives each body its template's splines; `PropDynamics::grab_objects` builds
+`Provider::LivingWorld` objects (template origin and basis as the frame, points scaled like the body, linear velocity as
+the vector, type-2 records, ids `PROP_GRAB_TAG | body id`); `GamePhysics::refresh_grab_props` replaces them in the grab
+registry before the queries run each tick. `parse_grab_splines` is shared with the cars. Log `SKATE_PROP_GRAB`.
+
+**Engine choices.** Opt-in with `SKATE_PROP_GRAB=1` until Move Object reads the authored record instead of its
+stand-in edge (`prop_carry.rs` `grab_frame` / `choose_edge`; record choice `82D4D150` open): with the props live, the
+biped grab query (mode 4) would bind authored records that the carry does not use yet. NOT RETAIL YET: the assembly is a
+stand-in with the object id; the record vector is the linear velocity.
+
+**Verification.** skate-game `a_prop_with_grab_splines_is_a_world_object_in_the_grab_scene` (168 prop / living_world /
+offboard tests pass). Needs a setup refresh (or the next one) for the export field.
+
+
+## Move Object step 3: carrying a prop by its authored grab record (opt-in, 2026-10-09)
+
+**Problem.** Props carried by a stand-in edge (the box face toward the skater, top edge, grip clamped by an engine "hand
+half spread") even when the prop has authored grab splines (step 1) that are already in the grab scene (step 2).
+
+**Retail [code] (`.local/research/npc/b62-move-object-record.md`, main checked).**
+- Record choice `82D4D150` is our `best_spline` (mode 0: from the skater position). Mode 1 (the held update's path B
+  re-grab) skips records whose descriptor (+188 kind, +192 id) equals the held one.
+- `82D444A0(state, full)`: `full` (enter `82D442D0`, path B) copies the record's reversed bit (+200 bit 0x20) into
+  +1200 bit 0x04 and puts the grip (+1128) at the nearest arc distance of the skater reference (bone 23, +272) along the
+  polyline (`82D2CFE8`), clamped to [h, length - h], h = min(`GrabSplineEndExclusion`, length / 2). So the clamp is the
+  vault's end exclusion (physics_state_offboard `default` +444, 0.25), not a hand spread. Always: side test
+  c = cross(rec+80 - ref, rec+64 - ref).y; c < 0 swaps the ends, negates the edge direction (+112) and toggles the
+  reversed bit; if that bit then differs from +1200 bit 0x04 the grip is mirrored (length - grip), so it stays on the
+  same point of the edge.
+- Path A of the held update `82D44A10` refreshes the held record from the object's current pose every tick and runs
+  `82D444A0` without `full` (grip kept). `82D45D30` evaluates the record at the grip (`82D2D2B0`).
+
+**Change.**
+- skate-core: `grab_scene::nearest_distance` / `at_distance` are public; `best_spline_excluding` (mode 1);
+  `move_object::held_record` with `HeldGrip` (descriptor, grip, reversed), `begin_grip` (full), `continue_grip` (path
+  A) and `record_frame`; `MoveObjectTuning::grab_end_exclusion` (0.25, loaded from `GrabSplineEndExclusion`).
+- skate-game: `PropDynamics::grab_object(id)` (one prop's grab-scene object from its current pose);
+  `PropCarry::frame_for`: a prop with authored splines binds the best record from the skater position at the grab
+  (`begin_grip`), then each tick rebuilds its records, finds the bound descriptor and keeps the grip (`continue_grip`);
+  the grab frame is the record at the grip (forward = minus the flattened approach vector, ends = record ends,
+  grip distance = the grip). The hold rule (`still_holds`, 82E08EE8 at the grip) runs on that record. Props without
+  splines keep the box stand-in.
+- Mod: `sdk.world.set_tuning('carry', { grab_end_exclusion = ... })` (m, retail 0.25).
+
+**Engine choices / NOT RETAIL YET.** Still opt-in with `SKATE_PROP_GRAB=1` (shared gate `prop_dynamics::prop_grab_enabled`
+for the grab scene and the carry). The bound record comes from the prop's own splines (best from the skater position),
+not from the player's published best record (Player+1888); path A refreshes by descriptor, not from Player+1888. Not
+ported in this step (see step 3b): path B re-grab and its frame blend (`82D46218`), the hand points (grip +/- 0.5 x |bone3 - bone7|, 0x8209975C at 82D45DAC; b62 said 0.68, corrected by b64 and main), `82D43B20`.
+
+**Multiplayer.** `HeldGrip` is the whole per-skater record state (plain `Copy` data); the record is rebuilt from the
+host's prop pose every tick.
+
+**Verification.** skate-core `move_object::held_record` tests (projected grip, end exclusion clamp incl. length / 2,
+a flip keeps the world grip point, mode 1 skips the held descriptor); skate-game
+`a_prop_with_grab_splines_is_carried_by_its_authored_record` (bound grip, facing from the approach vector, a 1 s push
+keeps the binding). Not play-tested yet.
+
+## Move Object step 3b: the rebind block, re-grab and hand points (opt-in, 2026-10-09)
+
+**Retail [code] (`.local/research/npc/b64-move-object-regrab.md`; main checked the 0.5 hand factor at 82D45DAC and
+that `82D43B20` is the getter of `96ECC98838ECCC11`, our `anchor_reach`).** Each tick of the held update `82D44A10`:
+the collision timer +1176 counts 1/60 steps while Player+2484 bit 26 is set (else 0) and a push latch (+1200 bit 0x02)
+sets once |Player+736|^2 > 0.04. The rebind block needs the hand flag, the timer at most 0.4 s and the latch clear;
+path A (CanGrabSpline on the held record at the grip) refreshes the record; path B (`82D4D150` mode 1 without the held
+descriptor, then `82E08DB8` with the end exclusion) re-grabs with a new grip, zeroes the anchor velocity and seeds the
+anchor from the new record's nearest point; anything else drops the hold. The frame blend `82D46218` only runs for
+jumps of 60 m or more (a snap otherwise). `82D45D30` places the hands at grip +/- 0.5 x |hand bone 3 - hand bone 7|
+along the record, clamped to [0, length] (b62 said 0.68: corrected).
+
+**Change.** skate-core `move_object::held_update`: `RebindTuning` (0.4, 0.04, 0.5, 1e-4, 60), `RebindState` (`tick`,
+`decide` -> Refresh / Regrab / Lost), `hand_points`, `FrameBlend` (start / step), `seed_anchor`; `move_object::can_regrab`
+(82E08DB8 with the grabbing box and the end exclusion). skate-game: `CarrierSkeleton` carries the hand span and the
+collision flag (`solve.rs`); `PropCarry::hold` runs the block for an authored record held since last tick, re-grabs
+through `regrab_candidate`, reseeds the follow anchor, and keeps the hand points.
+
+**NOT RETAIL YET.** The push latch input (Player+736) is not identified (never set); path B's candidates are the held
+prop's own records (retail: the owner's validated records), owner flag 0x40 and the held record's +196 / +216 are taken
+as set (the hand IK on the hand points: step 3c below); the frame
+blend is ported in skate-core but not wired (it only fires for 60 m jumps).
+
+**Verification.** skate-core `held_update` tests (hand points and clamps, every rebind gate incl. the timer and the
+latch, snap vs blend, anchor seed); skate-game prop / carry / skitch / living_world 136 pass. Not play-tested.
+
+## Move Object step 3c: the hand IK (opt-in, 2026-10-10)
+
+**Retail [code + data] (decoded by main in the TU3 recomp, 82D46610 at 82D469C8..82D46C9C; consumer 82D45008 from
+research b64).** The held update's hand IK bit (+1200 0x40) is set in 82D46610, never cleared there; only 82D444A0
+full (a grab, or a path B re-grab) clears it (0xC0). The set needs all three:
+- the enter value +1180 (`5E35DB02BE697A58`, 0.7216) above 0;
+- the state time (Player+2664) at most the larger x end (`bounds[2]`) of the curves `1348E9A1F213B42D` (x 0.5..1.0)
+  and `702F25BA3A5AAA56` (x 0..0.35), i.e. 1.0 s with the stock data;
+- 1 - curve `702F25BA3A5AAA56`(state time) above 0.1 (0x820641A8, 0.1): with the stock curve from about 0.1 s.
+
+So the hands go to IK about 0.1 s into Move Object and stay on; a re-grab after the first second leaves them off. 82D45008
+moves the weight +1132 by 0.2 per tick toward 1 (on) or 0 (off) and calls 82BD9728 / 82BD97D0 (hand A / B) with the
+reach 0.65 (0x820BB0EC) and the targets +560 / +576 (82D46610 from the hand points +496 / +544).
+
+**Change.** skate-core `move_object::HandIk` (`tick`: the gate then the weight step; `begin_grab`), `MoveObjectTuning`
+`hand_ik_enter`, `hand_ik_window`, `hand_ik_curve`, `hand_ik_threshold`, `hand_ik_rate`, `hand_ik_reach` (loaded from the
+attribute collection: the enter value, curve 702F and the window from both curves' bounds). skate-game: `CarrierSkeleton`
+carries the state time (`state_timer_2664`), `PropCarry` steps the hand IK after the hand points (cleared on a re-grab and
+on let go), and the solve phase writes the two hand points as IK targets into the handplant hand slots (limbs 2 / 3),
+clamped to the reach around the animated hand targets as 82BD9728 does. Mod: `sdk.world.set_tuning('carry', {
+hand_ik_enter, hand_ik_curve, hand_ik_rate, hand_ik_reach })` (enter 0 = the hands never go to IK).
+
+**NOT RETAIL YET / open.** The targets are the hand points in world space (retail goes through the frame-local +480 /
++528 and the frame blend, which only differs during a 60 m blend); hand A = p+ (grip + half span), as retail's slot order;
+a mod's curve does not move the window (it stays the disc curves' end). Only props with authored grab splines
+(`SKATE_PROP_GRAB=1`) have hand points.
+
+**Verification.** skate-core `hand_ik_turns_on_in_the_enter_window_and_stays_until_the_next_grab`, move_object 24;
+skate-mods 105; skate-game prop / carry / world_tuning / modding / skitch / handplant 122. Not play-tested (grab a prop
+with `SKATE_PROP_GRAB=1`: the hands should settle onto the edge).

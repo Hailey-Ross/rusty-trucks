@@ -22,6 +22,11 @@
 //! deterministic function of (tuning, state, input), run once per fixed tick.
 use crate::point_graph::PointGraph;
 
+mod held_record;
+pub use held_record::{HeldGrip, RecordFrame, begin_grip, continue_grip, record_frame};
+mod held_update;
+pub use held_update::{FrameBlend, HandIk, Rebind, RebindInput, RebindState, RebindTuning, hand_points, seed_anchor};
+
 /// `Sk8::Physics::PhysicsControllerData`: four floats. 82D4E118 [code]:
 /// `filtered = (1 - filter) * filtered + filter * error`;
 /// `output += proportional * error + filtered_gain * filtered + derivative * (error - previous)`.
@@ -130,6 +135,10 @@ pub struct MoveObjectTuning {
     pub hold_box_offset: [f32; 3],
     pub hold_angle_limit: f32,
     pub hold_max_angle_to_horizontal: f32,
+    /// Grip end exclusion (82D444A0 full begin) [data]: the grip on the held
+    /// record is clamped to [h, length - h], h = min(this, length / 2);
+    /// physics_state_offboard `default` GrabSplineEndExclusion (+444, 0.25).
+    pub grab_end_exclusion: f32,
     /// Skater follow (82D44A10 before 82BDF268) [code]: the follow point
     /// (+416) steps toward the target frame's edge point (+192) moved
     /// `follow_reach` (0.65, image 0x820BB0EC) along the latched frame toward
@@ -148,6 +157,18 @@ pub struct MoveObjectTuning {
     pub anchor_velocity_new: f32,
     /// Retail tick (1/60, image 0x820849C8) used by the follow step.
     pub tick: f32,
+    /// Hand IK of the held update (82D46610 sets +1200 bit 0x40, 82D45008 steps the weight +1132) [code + data]:
+    /// on once `hand_ik_enter` (+1180, 5E35DB02BE697A58 = 0.7216) > 0, the state time is at most `hand_ik_window`
+    /// (the larger x end of curves 1348E9A1F213B42D / 702F25BA3A5AAA56, 1.0) and 1 - `hand_ik_curve`
+    /// (702F25BA3A5AAA56) at the state time exceeds `hand_ik_threshold` (0.1, 0x820641A8). The weight moves
+    /// `hand_ik_rate` (0.2, 0x82099280) per tick; the targets are clamped to `hand_ik_reach` (0.65, 0x820BB0EC)
+    /// around the animated hands (82BD9728 / 82BD97D0).
+    pub hand_ik_enter: f32,
+    pub hand_ik_window: f32,
+    pub hand_ik_curve: PointGraph<8>,
+    pub hand_ik_threshold: f32,
+    pub hand_ik_rate: f32,
+    pub hand_ik_reach: f32,
 }
 
 const fn graph(x: [f32; 8], y: [f32; 8]) -> PointGraph<8> {
@@ -186,6 +207,7 @@ impl Default for MoveObjectTuning {
             hold_box_offset: [0.0, 1.0, 0.1],
             hold_angle_limit: 80.0,
             hold_max_angle_to_horizontal: 50.0,
+            grab_end_exclusion: 0.25,
             follow_reach: 0.65,
             follow_height: 0.72,
             follow_step: 0.1,
@@ -193,6 +215,12 @@ impl Default for MoveObjectTuning {
             anchor_velocity_keep: 0.85,
             anchor_velocity_new: 0.15,
             tick: 1.0 / 60.0,
+            hand_ik_enter: 0.7216,
+            hand_ik_window: 1.0,
+            hand_ik_curve: graph([0.0, 0.0205, 0.0969, 0.1562, 0.2018, 0.2736, 0.3169, 0.35], [1.0, 1.0, 0.9214, 0.7071, 0.5071, 0.1786, 0.0393, 0.0]),
+            hand_ik_threshold: 0.1,
+            hand_ik_rate: 0.2,
+            hand_ik_reach: 0.65,
         }
     }
 }
@@ -251,6 +279,7 @@ impl MoveObjectTuning {
             hold_box_offset: if self.hold_box_offset.iter().all(|v| v.is_finite()) { self.hold_box_offset } else { fallback.hold_box_offset },
             hold_angle_limit: ok(self.hold_angle_limit, fallback.hold_angle_limit),
             hold_max_angle_to_horizontal: ok(self.hold_max_angle_to_horizontal, fallback.hold_max_angle_to_horizontal),
+            grab_end_exclusion: ok(self.grab_end_exclusion, fallback.grab_end_exclusion),
             follow_reach: fin(self.follow_reach, fallback.follow_reach),
             follow_height: fin(self.follow_height, fallback.follow_height),
             follow_step: ok(self.follow_step, fallback.follow_step),
@@ -258,6 +287,12 @@ impl MoveObjectTuning {
             anchor_velocity_keep: if (0.0..=1.0).contains(&self.anchor_velocity_keep) { self.anchor_velocity_keep } else { fallback.anchor_velocity_keep },
             anchor_velocity_new: if (0.0..=1.0).contains(&self.anchor_velocity_new) { self.anchor_velocity_new } else { fallback.anchor_velocity_new },
             tick: if self.tick.is_finite() && self.tick > 0.0 { self.tick } else { fallback.tick },
+            hand_ik_enter: fin(self.hand_ik_enter, fallback.hand_ik_enter),
+            hand_ik_window: fin(self.hand_ik_window, fallback.hand_ik_window),
+            hand_ik_curve: curve(self.hand_ik_curve, fallback.hand_ik_curve),
+            hand_ik_threshold: fin(self.hand_ik_threshold, fallback.hand_ik_threshold),
+            hand_ik_rate: ok(self.hand_ik_rate, fallback.hand_ik_rate),
+            hand_ik_reach: ok(self.hand_ik_reach, fallback.hand_ik_reach),
         }
     }
 }
@@ -601,6 +636,31 @@ pub fn still_holds(
         angle_b: tuning.hold_max_angle_to_horizontal * radians,
     };
     super::grab_scene::qualify_at(record, v4(reference, 1.0), grip_distance, bounds, limits)
+}
+
+/// Path B of 82D44A10 (b64): the mode-1 candidate must pass CanGrabSpline
+/// 82E08DB8 from the skater reference, its grip clamped by
+/// GrabSplineEndExclusion, with the same grabbing box and angles as
+/// [`still_holds`].
+pub fn can_regrab(
+    tuning: &MoveObjectTuning,
+    record: &super::grab_scene::Record,
+    reference: [f32; 3],
+    skater_frame: [[f32; 4]; 4],
+) -> bool {
+    let v4 = |v: [f32; 3], w: f32| [v[0], v[1], v[2], w];
+    let bounds = super::ground_sync::board_bounds(
+        skater_frame,
+        v4(tuning.hold_box_offset, 0.0),
+        v4(tuning.hold_box_extents, 0.0),
+    );
+    let radians = f32::from_bits(0x3c8e_fa35);
+    let limits = super::ground_sync::BoardLimits {
+        margin: tuning.grab_end_exclusion,
+        angle_a: tuning.hold_angle_limit * radians,
+        angle_b: tuning.hold_max_angle_to_horizontal * radians,
+    };
+    super::grab_scene::qualify(record, v4(reference, 1.0), bounds, limits)
 }
 
 /// The skater side of the held update (82D44A10 / 82D46610): where the

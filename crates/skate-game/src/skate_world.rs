@@ -1076,6 +1076,16 @@ pub(crate) fn build_prop_layer(
 /// [`crate::physics::prop_dynamics::dmo_type_blocks`]). `None` when the
 /// sidecar has no type map (setup older than the type data): the props keep
 /// their authored material (NOT RETAIL YET there; re-run setup group maps).
+/// The authored grab splines per DMO template id (`native-props/<map>.json` `grab_splines`, doc 26i "Move Object
+/// step 1"); `None` when the export has none.
+pub(crate) fn load_dmo_grab_splines(asset_root: &std::path::Path, map_name: &str) -> Option<std::collections::BTreeMap<String, Vec<crate::living_world::vehicles::CarGrabSpline>>> {
+    let path = asset_root.join("private").join("native-props").join(format!("{map_name}.json"));
+    let sidecar: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+    let map = sidecar.get("grab_splines")?.as_object()?;
+    let splines: std::collections::BTreeMap<_, _> = map.iter().map(|(k, v)| (k.clone(), crate::living_world::vehicles::parse_grab_splines(v))).filter(|(_, v): &(String, Vec<_>)| !v.is_empty()).collect();
+    (!splines.is_empty()).then_some(splines)
+}
+
 pub(crate) fn load_dmo_types(
     asset_root: &std::path::Path,
     map_name: &str,
@@ -1167,6 +1177,10 @@ pub(crate) fn load_prop_layer(
             if let Some(types) = load_dmo_types(asset_root, map_name) {
                 let typed = dynamics.set_type_data(&types);
                 info!("SKATE_PROP_TYPES: {map_name} types={} props_with_type_data={typed}/{}", types.len(), objects.len());
+            }
+            if let Some(splines) = load_dmo_grab_splines(asset_root, map_name) {
+                let with = dynamics.set_grab_splines(&splines);
+                info!("SKATE_PROP_GRAB: {map_name} templates={} props_with_grab_splines={with}/{}", splines.len(), objects.len());
             }
             Some((layer, dynamics))
         }

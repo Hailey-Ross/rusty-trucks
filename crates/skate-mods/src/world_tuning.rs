@@ -41,8 +41,15 @@
 //!   scales the census caps), `ambient_skaters` (NPC skaters offline, retail 3, 0..=8),
 //!   `free_play {traffic, pedestrians, ai_skaters}` (retail Free Play mode: traffic and peds 0..1 scale
 //!   the caps, 0 removes them at once, `ai_skaters` on / off; absent = career free roam),
-//!   `npc_simulated {enabled, radius, max}` (NPC skaters near the player as full physics skaters
-//!   driven by their AI record; default off until play-tested, 40 m, 3).
+//!   `npc_simulated {enabled, radius, max, respawn_seconds, respawn_min, respawn_max}` (NPC
+//!   skaters near the player as full physics skaters driven by their AI record; default off
+//!   until play-tested, 40 m, 3; bail respawn after 5 s clamped to 1.5..7.9 s),
+//!   `npc_avoid {enabled, max_entries, skitch_cooldown_ticks, radius_skater, radius_pedestrian,
+//!   radius_vehicle, radius_prop, cone, wide_cone, wide_cone_distance, skater_radius,
+//!   speed_margin, stop_gap, stop_gap_far, stop_cone, stop_gap_prop, side_on_angle,
+//!   floor_headroom, skitch_cos, low_prop_height, low_prop_time, step_off_cap, step_off_time}`
+//!   (the NPC skaters' retail obstacle avoider, `skate_core::living_world::avoid`; metres,
+//!   radians, m/s, seconds).
 //! - `props`: `default` and `by_template[<MOBJ template name>]`, each a [`PropTuningPatch`].
 //! - `carry`: `grab_bit`, `placement_bit`, `grab_range`, and the Move Object tuning while
 //!   holding a prop (retail defaults from attribute class 3EDA5B140604613D): `push_speed`,
@@ -56,7 +63,8 @@
 //!   `mass_speed`, `inertia_yaw_gain` (`[[8 x], [8 y]]`), `let_go_distance` (m, 0 = off = retail), `drop_board`
 //!   (grabbing a prop drops a carried board, retail true), `follow_step` (0.1 m), `hold_angle_limit` /
 //!   `hold_max_angle_to_horizontal` (80 / 50 deg), `hold_box_extents` ([0.9, 0.8, 1.01]),
-//!   `record_272_speed_scale` (2.0) and per template `record_272`. `grip_reach` sets the retail follow
+//!   `record_272_speed_scale` (2.0), `grab_end_exclusion` (0.25 m), the hand IK `hand_ik_enter` (0.7216, 0 = never), `hand_ik_curve` (`[[8 x], [8 y]]`), `hand_ik_rate`
+//!   (0.2 per tick), `hand_ik_reach` (0.65 m) and per template `record_272`. `grip_reach` sets the retail follow
 //!   reach (0.65 m). Contact material blocks: `commanded_material` ([0.03, 0.02] static / dynamic
 //!   friction), `upright_cos` (0.65) and per template `material_held`, `material_free`,
 //!   `material_free_upright`, `upright_pair`, `restitution`, `linear_drag`, `angular_drag` (per
@@ -175,6 +183,13 @@ pub struct LivingWorldPatch {
     pub skater_trick_profiles: Option<BTreeMap<String, TrickTablesPatch>>,
     /// Simulated NPC skaters (`skate-game` `living_world::npc_sim`).
     pub npc_simulated: Option<NpcSimulatedPatch>,
+    /// The NPC skaters' obstacle avoider (retail values by default).
+    pub npc_avoid: Option<NpcAvoidPatch>,
+    /// The ped behaviour runtime (stock ped AI graph on each ped's brain).
+    pub ped_brain: Option<PedBrainPatch>,
+    /// Traffic horn values per driver record (`default`, `driver_fast`, `driver_normal`, `driver_reckless`,
+    /// `driver_taxi`, or `all`, applied first).
+    pub traffic_horn: Option<BTreeMap<String, TrafficHornPatch>>,
     /// Per-kind switch and density.
     pub skaters: Option<KindPatch>,
     pub pedestrians: Option<KindPatch>,
@@ -203,13 +218,111 @@ pub struct FreePlayPatch {
     pub ai_skaters: Option<bool>,
 }
 
-/// Simulated NPC skaters: `enabled`, `radius` (m, 0..=500), `max` (0..=16).
+/// Simulated NPC skaters: `enabled`, `radius` (m, 0..=500), `max` (0..=16), the bail respawn
+/// delay `respawn_seconds` and its clamp `respawn_min` / `respawn_max` (s, 0..=60; retail 5.0,
+/// 1.5, 7.9).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NpcSimulatedPatch {
     pub enabled: Option<bool>,
     pub radius: Option<f32>,
     pub max: Option<u32>,
+    pub respawn_seconds: Option<f32>,
+    pub respawn_min: Option<f32>,
+    pub respawn_max: Option<f32>,
+    /// AI trick signals: anticipation distance (m, 0..=50), look-ahead (recorded frames,
+    /// 0..=600), max nodes crossed per tick for an event (0..=60); retail 3.0, 60, 3.
+    pub anticipation_distance: Option<f32>,
+    pub anticipation_frames: Option<u32>,
+    pub max_crossed_nodes: Option<u32>,
+}
+
+/// The NPC skaters' obstacle avoider (`skate_core::living_world::avoid::AvoidSettings`): every
+/// value optional; distances 0..=500 m, angles 0..=pi, speeds and times 0..=100.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NpcAvoidPatch {
+    pub enabled: Option<bool>,
+    pub max_entries: Option<u32>,
+    pub skitch_cooldown_ticks: Option<u32>,
+    pub radius_skater: Option<f32>,
+    pub radius_pedestrian: Option<f32>,
+    pub radius_vehicle: Option<f32>,
+    pub radius_prop: Option<f32>,
+    pub cone: Option<f32>,
+    pub wide_cone: Option<f32>,
+    pub wide_cone_distance: Option<f32>,
+    pub skater_radius: Option<f32>,
+    pub speed_margin: Option<f32>,
+    pub stop_gap: Option<f32>,
+    pub stop_gap_far: Option<f32>,
+    pub stop_cone: Option<f32>,
+    pub stop_gap_prop: Option<f32>,
+    pub side_on_angle: Option<f32>,
+    pub floor_headroom: Option<f32>,
+    pub skitch_cos: Option<f32>,
+    pub low_prop_height: Option<f32>,
+    pub low_prop_time: Option<f32>,
+    pub step_off_cap: Option<f32>,
+    pub step_off_time: Option<f32>,
+}
+
+impl NpcAvoidPatch {
+    /// Every float field with its name (validation, application).
+    pub fn floats(&self) -> [(&'static str, Option<f32>); 20] {
+        [("radius_skater", self.radius_skater), ("radius_pedestrian", self.radius_pedestrian), ("radius_vehicle", self.radius_vehicle), ("radius_prop", self.radius_prop), ("cone", self.cone), ("wide_cone", self.wide_cone), ("wide_cone_distance", self.wide_cone_distance), ("skater_radius", self.skater_radius), ("speed_margin", self.speed_margin), ("stop_gap", self.stop_gap), ("stop_gap_far", self.stop_gap_far), ("stop_cone", self.stop_cone), ("stop_gap_prop", self.stop_gap_prop), ("side_on_angle", self.side_on_angle), ("floor_headroom", self.floor_headroom), ("skitch_cos", self.skitch_cos), ("low_prop_height", self.low_prop_height), ("low_prop_time", self.low_prop_time), ("step_off_cap", self.step_off_cap), ("step_off_time", self.step_off_time)]
+    }
+    pub fn validate(&self) -> bool {
+        self.max_entries.is_none_or(|n| n <= 64)
+            && self.skitch_cooldown_ticks.is_none_or(|n| n <= 3600)
+            && self.floats().into_iter().all(|(name, v)| {
+                v.is_none_or(|v| {
+                    let max = if name.starts_with("radius") || name.contains("gap") || name.ends_with("distance") { 500.0 } else if name.contains("cone") || name.ends_with("angle") { core::f32::consts::PI } else { 100.0 };
+                    v.is_finite() && (0.0..=max).contains(&v)
+                })
+            })
+    }
+}
+
+/// The ped behaviour runtime: `enabled`, `mood` (the mood system raises wants), `wander_speed` (m/s), `warn_seconds`,
+/// `know_about_seconds`, `conversation_turn_seconds`, `conversation_gather_seconds` (s); 0..=100 each (retail 2.0,
+/// 3.5, 30.0, 3.0, 30.0); `run_from_honker_distance` (m sideways of a honking car's line) and
+/// `run_from_honker_speed` (m/s), 0..=100 (retail 10.0, 6.0); `warn_speech`, the warn's speech value 0..=127 (retail 53).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PedBrainPatch {
+    pub enabled: Option<bool>,
+    pub mood: Option<bool>,
+    pub wander_speed: Option<f32>,
+    pub warn_seconds: Option<f32>,
+    pub know_about_seconds: Option<f32>,
+    pub conversation_turn_seconds: Option<f32>,
+    pub conversation_gather_seconds: Option<f32>,
+    pub run_from_honker_distance: Option<f32>,
+    pub run_from_honker_speed: Option<f32>,
+    pub warn_speech: Option<i32>,
+}
+
+/// One traffic driver's horn: `blocked_time`, `obstacle_time` (s, retail 4 / taxi 1, 2), `approach_speed_kmh`
+/// (retail 5, taxi 10), `approach_seconds` (time to the obstacle for the approach horn, retail 2), each 0..=100;
+/// `enabled_chance` / `blocked_long_chance` (0..=1, the per-car rolls of driver bits 0x01 / 0x02; retail 1.0 / 0.5,
+/// normal 0.3 and reckless 0.8 long). Read when a car spawns.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrafficHornPatch {
+    pub blocked_time: Option<f32>,
+    pub obstacle_time: Option<f32>,
+    pub approach_speed_kmh: Option<f32>,
+    pub approach_seconds: Option<f32>,
+    pub enabled_chance: Option<f32>,
+    pub blocked_long_chance: Option<f32>,
+}
+
+impl TrafficHornPatch {
+    pub fn validate(&self) -> bool {
+        [self.blocked_time, self.obstacle_time, self.approach_speed_kmh, self.approach_seconds].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
+            && [self.enabled_chance, self.blocked_long_chance].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v)))
+    }
 }
 
 /// NPC skater trick choice: `mode` (one of [`NPC_SKATER_TRICK_MODES`], retail `"profile"`),
@@ -443,6 +556,16 @@ pub struct CarryPatch {
     pub hold_box_extents: Option<[f32; 3]>,
     /// Target speed scale for prop types with record+272 set (retail 2.0).
     pub record_272_speed_scale: Option<f32>,
+    /// Grip end exclusion on a prop's authored grab record in m (retail GrabSplineEndExclusion 0.25, 82D444A0).
+    pub grab_end_exclusion: Option<f32>,
+    /// Hand IK enter value (retail 5E35DB02BE697A58 = 0.7216; 0 = the hands never go to IK, 82D46610).
+    pub hand_ik_enter: Option<f32>,
+    /// Hand IK curve over the state time (retail 702F25BA3A5AAA56): IK turns on once 1 - y passes 0.1.
+    pub hand_ik_curve: Option<[[f32; 8]; 2]>,
+    /// Hand IK weight change per tick (retail 0.2, 82D45008).
+    pub hand_ik_rate: Option<f32>,
+    /// Hand IK reach around the animated hands in m (retail 0.65, 82BD9728).
+    pub hand_ik_reach: Option<f32>,
     /// Friction pair `[static, dynamic]` every held (commanded) prop switches to (retail [0.03, 0.02],
     /// 82C53EF8); combined with the other side by max / max / min (82763078).
     pub commanded_material: Option<[f32; 2]>,
@@ -628,11 +751,20 @@ impl Merge for LivingWorldPatch {
         merge_nested(&mut self.ped_vehicle_contact, &b.ped_vehicle_contact);
         merge_nested(&mut self.npc_tricks, &b.npc_tricks);
         merge_nested(&mut self.npc_simulated, &b.npc_simulated);
+        merge_nested(&mut self.npc_avoid, &b.npc_avoid);
+        merge_nested(&mut self.ped_brain, &b.ped_brain);
         merge_nested(&mut self.skaters, &b.skaters);
         merge_nested(&mut self.pedestrians, &b.pedestrians);
         merge_nested(&mut self.vehicles, &b.vehicles);
         merge_nested(&mut self.free_play, &b.free_play);
         merge_opts!(self, b; ambient_skaters);
+        match (self.traffic_horn.as_mut(), &b.traffic_horn) {
+            (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
+                a.entry(k.clone()).or_insert_with(|| v.clone());
+            }),
+            (None, Some(b)) => self.traffic_horn = Some(b.clone()),
+            _ => {}
+        }
         match (self.skater_trick_profiles.as_mut(), &b.skater_trick_profiles) {
             (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
                 a.entry(k.clone()).or_insert_with(|| v.clone());
@@ -703,8 +835,8 @@ impl Merge for CarryPatch {
         merge_opts!(self, b; grab_bit, placement_bit, grab_range, push_speed, pull_speed, side_speed, turn_rate, grip_reach,
             linear_clamp, yaw_clamp, relatch, slew_per_tick, yaw_rate_feedback, linear_controller, yaw_controller, lever_rotation, lever_yaw,
             mass_speed, inertia_yaw_gain, let_go_distance, drop_board, follow_step, hold_angle_limit, hold_max_angle_to_horizontal,
-            hold_box_extents, record_272_speed_scale, commanded_material, upright_cos, apply_at_com, yaw_replaces_torque,
-            ignore_vertical, wake_on_command);
+            hold_box_extents, record_272_speed_scale, grab_end_exclusion, hand_ik_enter, hand_ik_curve, hand_ik_rate, hand_ik_reach, commanded_material, upright_cos,
+            apply_at_com, yaw_replaces_torque, ignore_vertical, wake_on_command);
         for (k, v) in &b.by_template {
             self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, material_free_upright, upright_pair, restitution, record_272, linear_drag, angular_drag, mass, maximum_linear_velocity, maximum_angular_velocity, inertia_scale, inertia_offset); }).or_insert_with(|| v.clone());
         }
@@ -725,7 +857,19 @@ impl Merge for FreePlayPatch {
 
 impl Merge for NpcSimulatedPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, radius, max);
+        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, anticipation_distance, anticipation_frames, max_crossed_nodes);
+    }
+}
+
+impl Merge for PedBrainPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, conversation_turn_seconds, conversation_gather_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech);
+    }
+}
+
+impl Merge for NpcAvoidPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; enabled, max_entries, skitch_cooldown_ticks, radius_skater, radius_pedestrian, radius_vehicle, radius_prop, cone, wide_cone, wide_cone_distance, skater_radius, speed_margin, stop_gap, stop_gap_far, stop_cone, stop_gap_prop, side_on_angle, floor_headroom, skitch_cos, low_prop_height, low_prop_time, step_off_cap, step_off_time);
     }
 }
 
@@ -808,7 +952,20 @@ impl LivingWorldPatch {
             && self.ambient_skaters.is_none_or(|n| n <= 8)
             && self.free_play.as_ref().is_none_or(|f| [f.traffic, f.pedestrians].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))))
             && self.npc_simulated.as_ref().is_none_or(|n| {
-                n.radius.is_none_or(|r| r.is_finite() && (0.0..=500.0).contains(&r)) && n.max.is_none_or(|m| m <= 16)
+                n.radius.is_none_or(|r| r.is_finite() && (0.0..=500.0).contains(&r))
+                    && n.max.is_none_or(|m| m <= 16)
+                    && [n.respawn_seconds, n.respawn_min, n.respawn_max].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=60.0).contains(&v)))
+                    && n.anticipation_distance.is_none_or(|v| v.is_finite() && (0.0..=50.0).contains(&v))
+                    && n.anticipation_frames.is_none_or(|v| v <= 600)
+                    && n.max_crossed_nodes.is_none_or(|v| v <= 60)
+            })
+            && self.npc_avoid.as_ref().is_none_or(NpcAvoidPatch::validate)
+            && self.ped_brain.as_ref().is_none_or(|p| {
+                [p.wander_speed, p.warn_seconds, p.know_about_seconds, p.conversation_turn_seconds, p.conversation_gather_seconds, p.run_from_honker_distance, p.run_from_honker_speed].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
+                    && p.warn_speech.is_none_or(|v| (0..=127).contains(&v))
+            })
+            && self.traffic_horn.as_ref().is_none_or(|m| {
+                m.len() <= 16 && m.iter().all(|(k, v)| !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic()) && v.validate())
             })
             && self.skater_trick_profiles.as_ref().is_none_or(|m| {
                 m.len() <= MAX_TEMPLATES && m.iter().all(|(k, v)| !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic()) && v.validate())
@@ -863,14 +1020,15 @@ impl CarryPatch {
             && finite(self.grab_range)
             && [self.push_speed, self.pull_speed, self.side_speed, self.turn_rate, self.grip_reach,
                 self.linear_clamp, self.yaw_clamp, self.relatch, self.slew_per_tick, self.yaw_rate_feedback, self.let_go_distance,
-                self.follow_step, self.hold_angle_limit, self.hold_max_angle_to_horizontal, self.record_272_speed_scale]
+                self.follow_step, self.hold_angle_limit, self.hold_max_angle_to_horizontal, self.record_272_speed_scale, self.grab_end_exclusion,
+                self.hand_ik_enter, self.hand_ik_rate, self.hand_ik_reach]
                 .into_iter()
                 .all(|v| finite(v) && v.is_none_or(|v| v >= 0.0))
             && [self.linear_controller, self.yaw_controller]
                 .into_iter()
                 .flatten()
                 .all(|g| g.iter().all(|v| v.is_finite()) && (0.0..=1.0).contains(&g[3]))
-            && [self.lever_rotation, self.lever_yaw, self.mass_speed, self.inertia_yaw_gain]
+            && [self.lever_rotation, self.lever_yaw, self.mass_speed, self.inertia_yaw_gain, self.hand_ik_curve]
                 .into_iter()
                 .flatten()
                 .all(|c| c.iter().flatten().all(|v| v.is_finite()) && c[0].windows(2).all(|p| p[0] <= p[1]))
@@ -968,6 +1126,23 @@ mod tests {
         assert!(valid_patch("living_world", &json!({"npc_draw_distance": 2.0, "skater_fade": {"fade_seconds": 3.0}, "ped_fade": {"distance": [80, 100], "enabled": false}})));
         assert!(valid_patch("props", &json!({"default": {"push_transfer": 0.5}, "by_template": {"bench01": {"collision_box": {"center": [0, 0.4, 0], "half_extents": [1, 0.4, 0.3]}}}})));
         assert!(valid_patch("carry", &json!({"grab_bit": 21, "grab_range": 3.5})));
+        // The NPC skaters' obstacle avoider.
+        assert!(valid_patch("living_world", &json!({"npc_avoid": {"enabled": false, "speed_margin": 2.0, "radius_pedestrian": 12.0, "cone": 1.0, "max_entries": 8}})));
+        assert!(!valid_patch("living_world", &json!({"npc_avoid": {"cone": 4.0}})));
+        assert!(valid_patch("living_world", &json!({"ped_brain": {"warn_speech": 54}})));
+        assert!(valid_patch("living_world", &json!({"traffic_horn": {"driver_taxi": {"enabled_chance": 0.0, "blocked_time": 2.0}}})));
+        assert!(!valid_patch("living_world", &json!({"traffic_horn": {"all": {"enabled_chance": 2.0}}})));
+        assert!(!valid_patch("living_world", &json!({"traffic_horn": {"all": {"honk": 1}}})));
+        assert!(!valid_patch("living_world", &json!({"ped_brain": {"warn_speech": 128}})));
+        assert!(!valid_patch("living_world", &json!({"npc_avoid": {"radius_vehicle": -1.0}})));
+        assert!(!valid_patch("living_world", &json!({"npc_avoid": {"max_entries": 100}})));
+        assert!(!valid_patch("living_world", &json!({"npc_avoid": {"swerve": 1.0}})));
+        assert!(valid_patch("living_world", &json!({"ped_brain": {"enabled": false, "warn_seconds": 5.0}})));
+        assert!(!valid_patch("living_world", &json!({"ped_brain": {"wander_speed": -1.0}})));
+        assert!(valid_patch("living_world", &json!({"npc_simulated": {"respawn_seconds": 3.0, "respawn_min": 0.0}})));
+        assert!(!valid_patch("living_world", &json!({"npc_simulated": {"respawn_seconds": 90.0}})));
+        assert!(valid_patch("living_world", &json!({"npc_simulated": {"anticipation_distance": 5.0, "anticipation_frames": 90, "max_crossed_nodes": 4}})));
+        assert!(!valid_patch("living_world", &json!({"npc_simulated": {"anticipation_frames": 9000}})));
         assert!(valid_patch("living_world", &json!({"skater_clips": {"rolling": "R_IDLE_RIDE_N_0_CYC", "rolling.Aggressive": "X"}})));
         assert!(!valid_patch("living_world", &json!({"skater_clips": {"flying": "X"}})));
         assert!(!valid_patch("living_world", &json!({"skater_clips": {"air": ""}})));

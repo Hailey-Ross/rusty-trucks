@@ -147,6 +147,11 @@ pub(crate) fn advance(
             footplant_contact_time: physical.air.footplant_contact_time_208,
             time_to_skitch: physical.ground.scalar_276,
             skitch_transition_time: profile.skitch_transition_time,
+            skitch_grab_height: physical.ground.skitch_grab_height_280,
+            skitch_absorb: physical.ground.skitch_absorb_284,
+            skitch_push: physical.ground.skitch_push_308,
+            skitch_shimmy: physical.animation.skitch_shimmy_136,
+            skitch_hands: physical.animation.skitch_hands_140,
             time_to_land: physical.air.scalar_184,
             time_to_land_valid: physical.air.known_air_valid_437 != 0,
             offboard_trajectory_time: physical.off_board.trajectory_time_120,
@@ -339,6 +344,11 @@ pub(crate) fn advance(
     output.publish(&skater.animation.packet, profile, controls.actor_flags);
     if let Some(source) = skater.ai_physics.as_mut() {
         output.publish_ai_physics(source);
+    }
+    if let Some(mut t) = skater.takedown {
+        output.publish_takedown(t.direction);
+        t.age += physics.settings.step.simulation.time_step;
+        skater.takedown = (t.age <= super::skater::TAKEDOWN_LATCH_SECONDS).then_some(t);
     }
     if let Some(reply) = skater.teleport_state.take_reply() {
         output.publish_external_reset(reply);

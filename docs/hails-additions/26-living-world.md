@@ -68,6 +68,10 @@ the file of their topic (and get a line here).
 - [Simulated NPC skaters: per-skater physics context (M7 step 1, 2026-10-08)](26e-living-world-skater-ai.md#simulated-npc-skaters-per-skater-physics-context-m7-step-1-2026-10-08)
 - [Simulated NPC skaters: the AI record drives the physics (M7 step 2, 2026-10-08)](26e-living-world-skater-ai.md#simulated-npc-skaters-the-ai-record-drives-the-physics-m7-step-2-2026-10-08)
 - [Simulated NPC skaters in the game (M7 step 3, 2026-10-08)](26e-living-world-skater-ai.md#simulated-npc-skaters-in-the-game-m7-step-3-2026-10-08)
+- [NPC skater obstacle avoider (M5 port, 2026-10-09)](26e-living-world-skater-ai.md#npc-skater-obstacle-avoider-m5-port-2026-10-09)
+- [NPC skater proxies in retail's collision groups (2026-10-09)](26e-living-world-skater-ai.md#npc-skater-proxies-in-retails-collision-groups-2026-10-09)
+- [Simulated NPC skaters bail and respawn (M7, 2026-10-09)](26e-living-world-skater-ai.md#simulated-npc-skaters-bail-and-respawn-m7-2026-10-09)
+- [Simulated NPC skaters do their recorded jumps and tricks (M7, 2026-10-09)](26e-living-world-skater-ai.md#simulated-npc-skaters-do-their-recorded-jumps-and-tricks-m7-2026-10-09)
 
 ### 26f: Pedestrians: body, navigation and look
 
@@ -86,6 +90,18 @@ the file of their topic (and get a line here).
 - [Peds walking through a held prop, 2026-10-08](26g-living-world-ped-interactions.md#peds-walking-through-a-held-prop-2026-10-08)
 - [Skater hits peds: knock-down or stumble (2026-10-08)](26g-living-world-ped-interactions.md#skater-hits-peds-knock-down-or-stumble-2026-10-08)
 
+- [Ped behaviour runtime: the stock ped AI graph on each ped (2026-10-09)](26g-living-world-ped-interactions.md#ped-behaviour-runtime-the-stock-ped-ai-graph-on-each-ped-2026-10-09)
+- [Ped mood system: wants from the stock mood tables (2026-10-09)](26g-living-world-ped-interactions.md#ped-mood-system-wants-from-the-stock-mood-tables-2026-10-09)
+- [Fleeing peds run away from the threat (2026-10-09)](26g-living-world-ped-interactions.md#fleeing-peds-run-away-from-the-threat-2026-10-09)
+- [Peds speak from their AI graph (2026-10-09)](26g-living-world-ped-interactions.md#peds-speak-from-their-ai-graph-2026-10-09)
+  - [Graph timers: SetSimpleTimer and SimpleTimerExpired (2026-10-09)](26g-living-world-ped-interactions.md#graph-timers-setsimpletimer-and-simpletimerexpired-2026-10-09)
+- [Ped chases: chase record, chase groups and the intercept (2026-10-09)](26g-living-world-ped-interactions.md#ped-chases-chase-record-chase-groups-and-the-intercept-2026-10-09)
+- [Ped takedowns and chase exhaustion (2026-10-09)](26g-living-world-ped-interactions.md#ped-takedowns-and-chase-exhaustion-2026-10-09)
+- [Ped perception, secondary chasers and tazers (2026-10-09)](26g-living-world-ped-interactions.md#ped-perception-secondary-chasers-and-tazers-2026-10-09)
+- [Peds greet each other (2026-10-09)](26g-living-world-ped-interactions.md#peds-greet-each-other-2026-10-09)
+- [Ped conversations: the plugin runner and the conversation object (2026-10-09)](26g-living-world-ped-interactions.md#ped-conversations-the-plugin-runner-and-the-conversation-object-2026-10-09)
+- [Conversation speech, gather timer and abort (2026-10-09)](26g-living-world-ped-interactions.md#conversation-speech-gather-timer-and-abort-2026-10-09)
+- [Peds taunt after a takedown (2026-10-09)](26g-living-world-ped-interactions.md#peds-taunt-after-a-takedown-2026-10-09)
 ### 26h: Traffic
 
 - [Change: milestone V0, vehicle data](26h-living-world-traffic.md#change-milestone-v0-vehicle-data)
@@ -95,6 +111,23 @@ the file of their topic (and get a line here).
 - [Cars flying off, population gone, 2026-10-05](26h-living-world-traffic.md#cars-flying-off-population-gone-2026-10-05)
 - [Car shadows from a bridge printed on the ground below, 2026-10-08](26h-living-world-traffic.md#car-shadows-from-a-bridge-printed-on-the-ground-below-2026-10-08)
 - [Cars hit peds: retail reaction, 2026-10-08](26h-living-world-traffic.md#cars-hit-peds-retail-reaction-2026-10-08)
+- [Skitching: research and the tow spring (2026-10-09, groundwork)](26h-living-world-traffic.md#skitching-research-and-the-tow-spring-2026-10-09-groundwork)
+- [Cars knock the skater down, and brake when hit (V5 start, 2026-10-09)](26h-living-world-traffic.md#cars-knock-the-skater-down-and-brake-when-hit-v5-start-2026-10-09)
+- [Traffic: obstacles ahead (V4 look-ahead, 2026-10-09)](26h-living-world-traffic.md#traffic-obstacles-ahead-v4-look-ahead-2026-10-09)
+- [Traffic: the horn, and peds running from it (V4, 2026-10-09)](26h-living-world-traffic.md#traffic-the-horn-and-peds-running-from-it-v4-2026-10-09)
+- [Skitching step 1: car grab splines in the vehicle data (2026-10-09)](26h-living-world-traffic.md#skitching-step-1-car-grab-splines-in-the-vehicle-data-2026-10-09)
+- [Skitching step 4a: the state-104 frame step, and the GRABDATA header fix (2026-10-09)](26h-living-world-traffic.md#skitching-step-4a-the-state-104-frame-step-and-the-grabdata-header-fix-2026-10-09)
+- [Skitching step 2: cars in the grab scene (2026-10-09)](26h-living-world-traffic.md#skitching-step-2-cars-in-the-grab-scene-2026-10-09)
+- [Skitching step 3: the riding skitch query (2026-10-09)](26h-living-world-traffic.md#skitching-step-3-the-riding-skitch-query-2026-10-09)
+- [Skitching step 4b: the hold target and the release impulses (2026-10-09)](26h-living-world-traffic.md#skitching-step-4b-the-hold-target-and-the-release-impulses-2026-10-09)
+- [Skitching step 4c: the hold step and the release (2026-10-09)](26h-living-world-traffic.md#skitching-step-4c-the-hold-step-and-the-release-2026-10-09)
+- [Skitching step 4d: the along-the-bumper hand chain (2026-10-09)](26h-living-world-traffic.md#skitching-step-4d-the-along-the-bumper-hand-chain-2026-10-09)
+- [Skitching step 4e: state 104 in the game (2026-10-09)](26h-living-world-traffic.md#skitching-step-4e-state-104-in-the-game-2026-10-09)
+- [Skitching step 5: the held car (2026-10-09)](26h-living-world-traffic.md#skitching-step-5-the-held-car-2026-10-09)
+- [Skitching step 4f: the lean (2026-10-09)](26h-living-world-traffic.md#skitching-step-4f-the-lean-2026-10-09)
+- [Skitching step 4g: the hands (2026-10-09)](26h-living-world-traffic.md#skitching-step-4g-the-hands-2026-10-09)
+- [Skitching step 4h: the skitch animation graph nodes (2026-10-09)](26h-living-world-traffic.md#skitching-step-4h-the-skitch-animation-graph-nodes-2026-10-09)
+- [Traffic: the car alarm on parked cars (2026-10-10)](26h-living-world-traffic.md#traffic-the-car-alarm-on-parked-cars-2026-10-10)
 
 ### 26i: Props
 
@@ -103,3 +136,6 @@ the file of their topic (and get a line here).
 - [Board stuck inside a prop, 2026-10-05](26i-living-world-props.md#board-stuck-inside-a-prop-2026-10-05)
 - [Dragged props sinking through the floor, 2026-10-07](26i-living-world-props.md#dragged-props-sinking-through-the-floor-2026-10-07)
   - [Move Object port (2026-10-08)](26i-living-world-props.md#move-object-port-2026-10-08)
+- [Move Object step 1: props' authored grab splines in the export (2026-10-09)](26i-living-world-props.md#move-object-step-1-props-authored-grab-splines-in-the-export-2026-10-09)
+- [Move Object step 2: props in the grab scene (opt-in, 2026-10-09)](26i-living-world-props.md#move-object-step-2-props-in-the-grab-scene-opt-in-2026-10-09)
+- [Move Object step 3c: the hand IK (opt-in, 2026-10-10)](26i-living-world-props.md#move-object-step-3c-the-hand-ik-opt-in-2026-10-10)

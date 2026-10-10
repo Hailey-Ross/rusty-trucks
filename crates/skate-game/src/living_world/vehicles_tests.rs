@@ -32,6 +32,7 @@ fn seg(id: u64, from: (u64, u8), to: (u64, u8), a: [f32; 3], b: [f32; 3]) -> Seg
         length,
         speed_limit: 14.166_667,
         lanes: 1,
+        manoeuvres: 2,
         district: 0,
         pieces: vec![piece(a, mid, length * 0.5), piece(mid, b, length)],
     }
@@ -62,11 +63,15 @@ fn data() -> VehicleData {
     let vehicles = br#"{"models": {"vehicle_taxi01": {"glb": "vehicles/taxi_sedan_01.glb",
         "chassis_colours": [[0.86, 0.79, 0.08, 1.0], [0.55, 0.1, 0.1, 1.0]], "secondary_colours": [[0.22, 0.22, 0.22, 1.0]],
         "palette_ids": {"chassis": ["vehicle_taxi01/chassis/0", "vehicle_taxi01/chassis/1"], "secondary": ["vehicle_taxi01/secondary/0"]},
-        "wheel_hint": 0.3, "mesh_bounds": [[-0.9, 0.0, -2.2], [0.9, 1.5, 2.1]]}},
-        "entities": {"taxi01": {"model": "vehicle_taxi01", "spec": "vehicle_spec_taxi01"}}}"#;
+        "wheel_hint": 0.3, "mesh_bounds": [[-0.9, 0.0, -2.2], [0.9, 1.5, 2.1]],
+        "grab_splines": [{"points": [[0.78, 0.93, -2.39], [0.3, 0.93, -2.39], [-0.3, 0.93, -2.39], [-0.78, 0.93, -2.39]], "direction": [0.0, 0.0, -1.0]},
+            {"points": [[0.0, 0.0, 0.0]], "direction": [0.0, 0.0, -1.0]}]}},
+        "entities": {"taxi01": {"model": "vehicle_taxi01", "spec": "vehicle_spec_taxi01", "driver": "driver_taxi"}}}"#;
     let tables = br#"{"classes": {"livingworld": {"trafficlights": {"fields": {"signal_green": 7.0, "signal_amber": 1.0, "signal_all_red": 0.5, "Hash_5E41C959D17527CC": 0.4}}},
         "livingworld_vehicle_characteristics": {"vehicle_spec_taxi01": {"fields": {"Hash_328B9F4685A14018": 3.0, "Hash_758229215579C6D1": 2.5,
-        "follow_min_speed_kmh": 20.0, "follow_speed_margin_kmh": 20.0, "engine_audio": {"class": "aud_traffic_engine", "key": "c04_taxi01"}}}}}}"#;
+        "follow_min_speed_kmh": 20.0, "follow_speed_margin_kmh": 20.0, "engine_audio": {"class": "aud_traffic_engine", "key": "c04_taxi01"}}}},
+        "livingworld_vehicle_drivers": {"driver_taxi": {"fields": {"honk_blocked_time": 1.0, "honk_obstacle_time": 2.0, "honk_approach_speed_kmh": 10.0,
+        "Hash_50E084076390A573": 0.2, "Hash_20E9C6487FDDBDE8": 1.0}}}}}"#;
     parse_vehicle_data(vehicles, Some(tables)).unwrap()
 }
 
@@ -286,15 +291,76 @@ fn living_world_traffic_tint_rule() {
 fn living_world_traffic_proxy_is_the_model_box() {
     let d = data();
     let net = road();
-    let (car, ..) = car_from_record(&net, &d, &VehicleOverrides::default(), &record(7, 0, 50.0, 0), 0.0).unwrap();
+    let (car, ..) = car_from_record(&net, &d, &VehicleOverrides::default(), &std::collections::BTreeMap::new(), &record(7, 0, 50.0, 0), 0.0).unwrap();
     let t = Transform::from_xyz(1.0, 0.0, 2.0);
     let p = proxy(&car, &t, Vec3::new(0.0, 0.0, 5.0));
     assert_eq!(p.id, PROXY_ID_TAG | car.id.to_u64());
     assert_eq!(p.inverse_mass, 0.0);
+    // The retail vehicle contact group: the skater's car-hit bail reads contacts against it.
+    assert_eq!(p.contact_group, crate::physics::VEHICLE_GROUP);
     assert_eq!((p.linvel.x, p.linvel.y, p.linvel.z), (0.0, 0.0, 5.0));
     let c = p.colliders[0].shape.as_cuboid().unwrap().half_extents;
     assert!((c.x - 0.9).abs() < 1e-5 && (c.y - 0.75).abs() < 1e-5 && (c.z - 2.15).abs() < 1e-5);
     let at = p.colliders[0].pose.translation;
     assert!((at.x - 1.0).abs() < 1e-5 && (at.y - 0.75).abs() < 1e-5 && (at.z - (2.0 - 0.05)).abs() < 1e-5);
     let _ = SignalTimings { green: 7.0, amber: 1.0, all_red: 0.5, walk_split: 0.4 };
+}
+
+#[test]
+fn grab_splines_and_driver_horn_values_load() {
+    let d = data();
+    let m = &d.models["vehicle_taxi01"];
+    assert_eq!(m.grab_splines.len(), 1, "a spline that is not whole Bezier segments is dropped");
+    assert_eq!((m.grab_splines[0].points.len(), m.grab_splines[0].direction), (4, [0.0, 0.0, -1.0]));
+    let spec = &d.specs["taxi01"];
+    assert_eq!(spec.driver, "driver_taxi");
+    let h = spec.params.horn;
+    assert_eq!((h.blocked_time, h.enabled_chance), (1.0, 0.2));
+    assert!((h.approach_speed - 10.0 / 3.6).abs() < 1e-6);
+}
+
+#[test]
+fn a_car_enters_the_grab_scene_with_its_rear_spline_in_world_space() {
+    let d = data();
+    let net = road();
+    let (car, ..) = car_from_record(&net, &d, &VehicleOverrides::default(), &std::collections::BTreeMap::new(), &record(7, 0, 50.0, 0), 0.0).unwrap();
+    let t = Transform::from_xyz(1.0, 0.0, 2.0).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    let motion = CarMotion { prev: t, curr: t, wheel_prev: 0.0, wheel: 0.0, velocity: Vec3::new(5.0, 0.0, 0.0) };
+    let o = car_grab_object(&car, &motion, &d).unwrap();
+    assert_eq!(o.id, CAR_GRAB_TAG | 7);
+    assert!(matches!(o.provider, skate_core::player::offboard::grab_scene::Provider::Vehicle));
+    let s = &o.splines[0];
+    assert_eq!((s.descriptor.kind, s.descriptor.id), (1, CAR_GRAB_TAG | 7 << 3));
+    // The record puts the rear-edge end (model (0.78, 0.93, -2.39)) behind the car: yaw 90 deg maps -z to -x and +x to -z.
+    let r = o.record(s).unwrap();
+    let [start, _] = r.endpoints();
+    assert!((start[0] - (1.0 - 2.39)).abs() < 1e-4 && (start[1] - 0.93).abs() < 1e-4 && (start[2] - (2.0 - 0.78)).abs() < 1e-4, "{start:?}");
+    assert!(skate_core::player::offboard::grab_scene::Registry::new(vec![o]).is_ok());
+}
+
+/// StayingParked (`82C39120` / `82C391F0`): a parked car carries `VehicleParked` (only then do contacts set its
+/// alarm off), loses it when it leaves the parked state, and with no alarm rule present it never alarms.
+#[test]
+fn a_parked_car_is_marked_for_the_car_alarm() {
+    use skate_core::living_world::traffic::manoeuvre::Manoeuvre;
+    let has = |a: &mut App| {
+        let mut q = a.world_mut().query_filtered::<(), (With<TrafficCar>, With<crate::world_audio::VehicleParked>)>();
+        q.iter(a.world()).count()
+    };
+    let mut a = app();
+    spawn(&mut a, record(1, 0, 40.0, 0));
+    run(&mut a, 0.1, 60.0);
+    assert_eq!(has(&mut a), 0, "a driving car is not parked");
+    {
+        let mut t = a.world_mut().resource_mut::<TrafficState>();
+        let d = t.cars[0].cursor.distance;
+        t.cars[0].manoeuvre = Manoeuvre::Parked { spot: d, time: 0.0 };
+    }
+    run(&mut a, 0.1, 60.0);
+    assert_eq!(has(&mut a), 1);
+    let c = a.world().resource::<TrafficState>().cars[0];
+    assert!(!c.alarming && matches!(c.manoeuvre, Manoeuvre::Parked { time, .. } if time > 0.0), "{:?}", c.manoeuvre);
+    a.world_mut().resource_mut::<TrafficState>().cars[0].manoeuvre = Manoeuvre::Following;
+    run(&mut a, 0.1, 60.0);
+    assert_eq!(has(&mut a), 0);
 }
