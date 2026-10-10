@@ -737,10 +737,15 @@ state registry supports 104 with transitions to and from the other states; `fram
 enters / exits it; the publication writes flag 304 (ready and not released), the car handle (36 / 40) and the re-grab
 timer (292); `AnimatedSkeleton.raw_part0_global` keeps the raw part-0 global for the spring.
 
+**Board forces (b56, main checked the Ground call sites).** `skitch_state::compose_board` composes `82D4AC38` with the
+Ground input builder: capture, tow spring (tag 6), slide friction (tag 1, heading time = the sub-mode time), tilt
+without history (0 off the ground), speed wobble (Ground's COM height; skipped off the ground), anti-flip, truck
+targets, heading (balance and spin both set), manual (powersliding off), the manual and anti-flip displacements and the
+yaw correction through the axis displacement `82C07328`; sub-mode 4 only tilt, wobble and truck targets.
+
 **Engine choices.** NOT RETAIL YET: the grab point is the point on the record's chord; the board forward is the deck
-forward; the slide friction, speed wobble, anti-flip, heading, manual and lean (`82D4A0C0`) terms and the extra output
-fields (animation 132 / 136 / 140, ground 280 / 284 / 288 / 308, state byte 53) are not composed yet. The riding latch
-stays held back (`ground_runtime::skitch::LATCH_ENABLED = false`), so state 104 is not entered in game yet.
+forward; the lean (`82D4A0C0`) and the extra output fields (animation 132 / 136 / 140, ground 280 / 284 / 288 / 308,
+state byte 53) are not composed yet. The riding latch is opt-in: start the game with `SKATE_SKITCH=1` to try it.
 
 **Verification.** skate-game `skitching_is_connected_to_ground_and_back`; the skate-core skitching tests; skate-game
 bin 664 pass (only the known setup fingerprint failure).

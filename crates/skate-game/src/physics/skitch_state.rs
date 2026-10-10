@@ -4,8 +4,7 @@
 //! retail order (`.local/research/npc/b50-skitch-prestep-update.md` section 1, b51 sections 1-3).
 //! Reached only with `SKATE_SKITCH=1` for now (`ground_runtime::skitch::latch_enabled`).
 //! NOT RETAIL YET: the grab point is the point on the record's chord; the board forward is the deck
-//! forward; the slide friction, speed wobble, anti-flip, heading, manual and lean (`82D4A0C0`) terms are not
-//! composed yet; the sub-mode's hard event comes from the shimmy state.
+//! forward; the lean (`82D4A0C0`) is not composed yet; the sub-mode's hard event comes from the shimmy state.
 use super::{GamePhysics, SkaterRuntime};
 use skate_core::physics::force_queue::QueuedPointForce;
 use skate_core::math::Vector3;
@@ -126,6 +125,7 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     let settings = s.settings;
     s.ready = ready;
     let mut forces: Vec<QueuedPointForce> = Vec::new();
+    let mut board: Option<BoardStep> = None;
     if ready {
         // Pre-step 82D47FC0.
         s.off_ground = condition_is_off_ground_skitching(body, settings.off_ground);
@@ -203,12 +203,10 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
             );
             s.target_dir = tgt.target_dir;
             s.spring_force = spring;
-            forces.push(QueuedPointForce { tag: 6, force_world: Vector3::new(spring[0], spring[1], spring[2]), point_body: Vector3::ZERO });
-            if f.tows_fast {
-                let y = tgt.yaw_correction;
-                skater.ground_runtime.apply_angular_target(&mut physics.board, [y[0], y[1], y[2], 0.0]);
-            }
+            board = Some(BoardStep { spring: Some(spring), yaw: f.tows_fast.then_some(tgt.yaw_correction) });
             s.time += dt;
+        } else {
+            board = Some(BoardStep { spring: None, yaw: None });
         }
         // Tail 82D4AFB8.
         let (mode, impulse) = s.hold.tail(s.sub.mode, grab_input, s.hands_off[0] && s.hands_off[1], &settings.hold, dt);
@@ -222,6 +220,9 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
             forces.push(QueuedPointForce { tag: 6, force_world: Vector3::new(fv[0], fv[1], fv[2]), point_body: Vector3::ZERO });
         }
     }
+    if let Some(step) = board {
+        compose_board(physics, skater, step)?;
+    }
     let q = physics.board.forces_mut();
     for force in forces {
         q.append(force);
@@ -231,6 +232,88 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     let t = skater.player_input.toolkit.as_ref().ok_or("Skitching requires current BoardToolkit")?;
     physics.riding.update_slide_reckoning(p, t, skater.animation_input.extra.physical_body_spin, skater.animation_input.fields.balance);
     super::input_phase::update_ground(physics, skater)
+}
+
+/// What the gated body hands to the board composition: the spring force (None in sub-mode 4) and the yaw
+/// correction (only while towing fast).
+struct BoardStep {
+    spring: Option<[f32; 3]>,
+    yaw: Option<[f32; 3]>,
+}
+
+struct Angle;
+impl skate_core::physics::manual::controller::ManualAngleMeasurement for Angle {
+    type Error = std::convert::Infallible;
+    fn angle_between(&mut self, a: [f32; 4], b: [f32; 4], c: [f32; 4]) -> Result<f32, Self::Error> {
+        let v = |x: [f32; 4]| Vector3::new(x[0], x[1], x[2]);
+        Ok(skate_core::riding::collision_response::signed_angle(v(a), v(b), v(c)))
+    }
+}
+
+/// `82D4AC38` (b51 section 2, arguments b56): capture, spring (tag 6), slide friction (tag 1, heading time = the
+/// sub-mode time 948), tilt (no push / damped-turn history; 0 while the board is off the ground), speed wobble
+/// (skipped off the ground), anti-flip, truck targets, heading (when balance and spin are both set), manual
+/// (powersliding off), the manual and anti-flip displacements, the yaw correction (`82C07328`) while towing fast.
+/// Sub-mode 4: tilt, wobble and truck targets only.
+fn compose_board(physics: &mut GamePhysics, skater: &mut SkaterRuntime, step: BoardStep) -> Result<(), String> {
+    use skate_core::physics::manual::controller;
+    use skate_core::riding::{anti_flip, heading, slide_friction, speed_wobble, steering};
+    let target = skater.animated_skeleton.board_frames.animation_target;
+    skater.skeleton_air.capture_physics_error(&physics.board, &target);
+    let p = &skater.player_input.processed;
+    let t = skater.player_input.toolkit.as_ref().ok_or("Skitching requires current BoardToolkit")?;
+    let edge = skater.ground_lifecycle.edge;
+    let mut input = skater.ground_settings.input(
+        t,
+        p,
+        &skater.animation_input,
+        &skater.ground.pumping,
+        skater.ground.pumping_settings.mode(p.state_variant_index_2528)?.unintentional_scalar,
+        &physics.riding,
+        &skater.animated_skeleton,
+        physics.settings.step.base_truck_transforms,
+        super::ground_runtime::GroundInputObservations {
+            manual_drag_2724: skater.ground_lifecycle.manual_drag_2724,
+            trajectory_state_bits: p.external_physics_1616.flags,
+            edge_flags: edge.map_or(0, |e| e.flags),
+            edge_point: edge.map_or([0.0; 4], |e| e.point),
+        },
+    );
+    let settings = skater.ground_settings.board();
+    let off_ground = skater.skitch_state.off_ground;
+    let mut tilt = if off_ground { 0.0 } else { steering::calculate_tilt(settings.steering, input.steering, None, None) };
+    if !off_ground {
+        input.speed_wobble.tilt = tilt;
+        input.speed_wobble.center_of_mass_height = skate_core::riding::ground_correction_math::center_of_mass_height(skater.animated_skeleton.record.com_to_deck_world);
+        tilt = speed_wobble::calculate(&mut skater.ground.wobble, settings.speed_wobble, input.speed_wobble);
+    }
+    let Some(spring) = step.spring else {
+        skater.ground.steering.update(tilt, settings.steering.tilt_blending, p.flags_2468, p.flags_2472);
+        return Ok(());
+    };
+    input.slide_friction.heading_time = skater.skitch_state.sub.time;
+    let friction = slide_friction::calculate(settings.slide_friction, &input.slide_friction);
+    let anti = anti_flip::calculate(settings.anti_flip, &input.anti_flip);
+    skater.ground.steering.update(tilt, settings.steering.tilt_blending, p.flags_2468, p.flags_2472);
+    if skater.animation_input.fields.balance != 0.0 && p.spin_input_2672 != 0.0 {
+        let h = heading::calculate(settings.heading, &input.heading, &mut skater.ground.heading_previous);
+        skater.ground_runtime.apply_angular_target(&mut physics.board, h);
+    }
+    input.manual.powersliding = false;
+    let manual = controller::calculate(&mut skater.ground.manual, settings.manual, settings.manual_mode, &input.manual, &mut Angle)
+        .map_err(|e| format!("Skitching manual controller: {e:?}"))?;
+    skater.ground_runtime.apply_angular_displacement(&mut physics.board, manual.angular_displacement);
+    skater.ground_runtime.apply_angular_displacement(&mut physics.board, anti);
+    if let Some(y) = step.yaw {
+        skate_core::physics::deck_angular_correction::apply_axis_displacement(
+            &mut physics.board.bodies_mut()[skate_core::physics::board::BodyId::Deck.index()].rates,
+            Vector3::new(y[0], y[1], y[2]),
+        );
+    }
+    let q = physics.board.forces_mut();
+    q.append(QueuedPointForce { tag: 6, force_world: Vector3::new(spring[0], spring[1], spring[2]), point_body: Vector3::ZERO });
+    q.append(QueuedPointForce { tag: 1, force_world: Vector3::new(friction[0], friction[1], friction[2]), point_body: Vector3::new(friction[4], friction[5], friction[6]) });
+    Ok(())
 }
 
 /// What `82D4C078` publishes.
