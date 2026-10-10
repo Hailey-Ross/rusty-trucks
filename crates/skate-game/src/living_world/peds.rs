@@ -708,7 +708,9 @@ pub(crate) fn advance_peds(
         None => &NoSignals,
     };
     for (k, (ped, mut body, mut transform, mut audio, mind)) in list.into_iter().enumerate() {
-        let Some(set) = data.anim_sets.get(&ped.anim_set).or_else(|| data.anim_sets.get("default")) else { continue };
+        // OverrideAnimData (zombie mode: the `zombie` set) wins over the ped's own set while its state runs.
+        let anim_set = mind.and_then(|m| m.brain.anim_override.as_deref()).filter(|n| data.anim_sets.contains_key(*n)).unwrap_or(&ped.anim_set);
+        let Some(set) = data.anim_sets.get(anim_set).or_else(|| data.anim_sets.get("default")) else { continue };
         let target = tick.saturating_sub(ped.spawn_tick);
         let body = &mut *body;
         let me = id_order(ped.id);
@@ -725,10 +727,11 @@ pub(crate) fn advance_peds(
                 TauntClip::Playing if body.player.state != Locomotion::Reaction => body.taunt = TauntClip::Done,
                 _ => {}
             }
-            // A hand prop throw clip (`82E3E648`, ped vfunc +240): played once over what runs.
+            // A hand prop throw clip (`82E3E648`, ped vfunc +240 = the channel request `82E3A418`): a channel clip (its
+            // weights pick the upper body, b99), played once over locomotion; it replaces the carry pose, which comes back
+            // once the slot is free and the prop is still held.
             if let Some((clip, blend)) = body.plugin_motion.throw_clip.take() {
-                let step = skate_core::living_world::peds::skater_contact::ReactionStep { anim: clip, mirror: false, blend, cycle: false };
-                if !body.player.react(set, vec![step], 0.0) {
+                if !body.player.channel_request(set, clip, blend, blend) {
                     info!("PED_HAND_PROP ped=#{} no clip {clip} tick={tick}", ped.id.serial);
                 }
             }
@@ -825,6 +828,19 @@ pub(crate) fn advance_peds(
                     turn = out.turn;
                 }
                 None => body.player.intent = body.path.intent(dt, body.player.state),
+            }
+            // The carry pose (`82E3F048`): while the hand prop is held and the channel is free, its record's carry
+            // animation is requested again (blend 0.2); a released or dropped prop stops it with a 0.2 s fade (unlink
+            // `82E3FAE0`). Retail requests it only while the prop is linked; ours: while held.
+            if let Some(h) = mind.map(|m| &m.brain.hand_prop) {
+                let carry = h.key.as_ref().and_then(|k| data.hand_props.props.get(k)).and_then(|r| r.carry_channel.as_deref());
+                match (h.holding, carry) {
+                    (true, Some(name)) if body.player.channel_idle() => {
+                        body.player.channel_request(set, name, 0.2, 0.2);
+                    }
+                    (false, _) if body.player.channel_clip().is_some_and(|c| c.starts_with("NPC_CARRY")) => body.player.channel_stop(0.2),
+                    _ => {}
+                }
             }
             let out = body.player.step(dt, set, &*data);
             body.heading += turn;
@@ -1440,8 +1456,12 @@ pub(crate) fn think_peds(
     // same message in one system conflict).
     mut events: ResMut<bevy::ecs::message::Messages<PedEvent>>,
     mut cursor: Local<Option<bevy::ecs::message::MessageCursor<PedEvent>>>,
-    (mut traffic_events, cars, mut plugin_props): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>),
+    (mut traffic_events, cars, mut plugin_props, physics): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>, Option<Res<crate::physics::GamePhysics>>),
 ) {
+    // Streamed-out props (DMO streaming): their plugins are not offered and a ped using one lets go. A world prop's
+    // plugin id carries its DMO body id in the low 32 bits (`ped_plugins::map_props`).
+    let dormant = physics.as_ref().and_then(|p| p.prop_dynamics()).map(|d| d.dormant_ids()).unwrap_or_default();
+    let streamed_out = |plugin_id: u64| dormant.contains(&(plugin_id as u32));
     // Horn kind 2 at a ped (`sub_82E3C3D0`: the honker id into brain `+3232`; the last car wins).
     let honked: BTreeMap<u64, u64> = traffic_events.read().filter_map(|e| match e { super::vehicles::TrafficEvent::HonkedAt { id, ped } => Some((*ped, id.to_u64())), _ => None }).collect();
     let Some(graph) = data.graph.as_deref() else { return };
@@ -1526,7 +1546,7 @@ pub(crate) fn think_peds(
                     })
                     .collect();
                 for (index, prop) in pp.props.iter_mut().enumerate() {
-                    if !data.plugin_graphs.contains_key(&prop.class) {
+                    if !data.plugin_graphs.contains_key(&prop.class) || streamed_out(prop.id) {
                         continue;
                     }
                     let class = data.plugins.classes.get(&prop.class);
@@ -1768,7 +1788,7 @@ pub(crate) fn think_peds(
             }
             mind.refusals.tick(dt, &plugin_props.settings);
             // HasPlugin: a conversation member, or a ped that took a world prop.
-            let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id).and_then(|p| p.waypoints.get(w)).copied());
+            let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id && !streamed_out(id)).and_then(|p| p.waypoints.get(w)).copied());
             if mind.prop.is_some() && prop_wp.is_none() {
                 mind.prop = None;
             }
@@ -1800,6 +1820,7 @@ pub(crate) fn think_peds(
                 let v = observers.observers.get(chasee.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
                 Some((skate_core::living_world::peds::chase::should_block(at, q, v, 0.0, r), g.formation_point(me, q)))
             };
+            mind.brain.zombie = settings.zombie;
             let mut host = skate_core::living_world::peds::brain::BrainHost {
                 behaviors: &graph.behaviors,
                 conditions: &graph.conditions,
@@ -2103,6 +2124,14 @@ pub(crate) fn think_peds(
             _ if mind.brain.search_point.is_some() => {
                 let p = mind.brain.search_point.unwrap_or_default();
                 if mind.chase_goal.take().is_some() || body.nav.route.as_ref().is_none_or(|r| r.points.first() != Some(&p)) {
+                    body.nav.set_route(one_point(p));
+                }
+            }
+            // ZombieFollow (`826A9250`): walk / run to the brain's goal (the player or a point of the ring round them).
+            (Some(skate_core::living_world::peds::brain::motion::ZOMBIE_FOLLOW), ..) if mind.brain.zombie_goal.is_some() => {
+                let p = mind.brain.zombie_goal.unwrap_or_default();
+                mind.chase_goal = None;
+                if body.nav.route.as_ref().is_none_or(|r| r.points.first() != Some(&p)) {
                     body.nav.set_route(one_point(p));
                 }
             }

@@ -28,6 +28,7 @@ use skate_core::living_world::{
 };
 use std::path::Path;
 
+pub(crate) mod dmo_stream;
 pub(crate) mod npc_avoid;
 pub(crate) mod npc_sim;
 pub(crate) mod npc_skaters;
@@ -166,6 +167,8 @@ pub(crate) struct LivingWorldSettings {
     pub free_play: Option<FreePlay>,
     /// The zombie cheat (later milestone; peds without cap, no traffic, no NPC skaters).
     pub zombie: bool,
+    /// DMO streaming of the placed props (doc 27 "DMO streaming"; on as in retail, `SKATE_DMO_STREAM=0` turns it off).
+    pub dmo_stream: dmo_stream::DmoStreamGameSettings,
     pub net_role: NetRole,
     /// Session seed (0 = derive from the map name).
     pub seed: u64,
@@ -201,7 +204,9 @@ impl Default for LivingWorldSettings {
             ped_brain: Default::default(),
             traffic_horn: Default::default(),
             free_play: None,
-            zombie: false,
+            // The zombie cheat; no cheat screen yet: `SKATE_ZOMBIE=1` or the mod value `zombie`.
+            zombie: std::env::var("SKATE_ZOMBIE").ok().as_deref() == Some("1"),
+            dmo_stream: Default::default(),
             net_role: NetRole::Standalone,
             seed: 0,
             debug: false,
@@ -715,11 +720,12 @@ impl Plugin for LivingWorldPlugin {
         app.insert_resource(LivingWorldSettings::from_env())
             .init_resource::<PopulationState>()
             .init_resource::<LivingWorldObservers>()
+            .init_resource::<dmo_stream::DmoStreamState>()
             .add_message::<LivingWorldSpawn>()
             .add_message::<LivingWorldDespawn>()
             .add_systems(
                 FixedUpdate,
-                (load_for_map, gather_observers, step_population).chain().after(crate::app::SimulationSet::Physics),
+                (load_for_map, gather_observers, step_population, dmo_stream::stream_dmos).chain().after(crate::app::SimulationSet::Physics),
             );
         npc_skaters::install(app);
         peds::install(app);

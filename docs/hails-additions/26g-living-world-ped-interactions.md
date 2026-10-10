@@ -849,8 +849,9 @@ world prop descriptors' transfer gates were not ported, so `usetrashbin.xml` exi
 - A thrown prop hitting the skater has no special effect: the DMO class posts nothing and the skater contact switch treats
   groups 12 / 13 / 14 as an ordinary prop contact [code, b92].
 
-**Change.** Core `peds/hand_prop.rs`: `HandPropSettings` (retail defaults, in `BrainSettings.hand_prop`, so the
-`ped_brain` mod domain reaches them), `launch`, `flat_angle`, `light_throw_clip`, `PedBrain::start_light_throw` /
+**Change.** Core `peds/hand_prop.rs`: `HandPropSettings` (retail defaults, in `BrainSettings.hand_prop`; mod keys in the
+`ped_brain` domain since the zombie step: `attack_throw_speed`, `attack_throw_lead_seconds`, `attack_throw_jitter`,
+`attack_throw_lift`, `light_throw_speed`, `hand_prop_skater_contact`, `starting_hand_props`), `launch`, `flat_angle`, `light_throw_clip`, `PedBrain::start_light_throw` /
 `drop_hand_prop` / `update_hand_prop_release` / `update_hand_prop_link`. Brain: `HandProp` gets `linked`, `throw` and the
 record bools; ops `ThrowHandPropAtTrashBin`, `DropHandProp`, `DisallowHandPropActions` (flag); conditions
 `HasDisposableHandProp`, `CanSitWithHandProp`, `CanAttackThrowHandProp`; requests `HandPropClip` / `HandPropReleased`;
@@ -876,6 +877,54 @@ vending / sit gates `HasFirstWaypointAvailable` / `InFrontOfFirstWaypoint`, whic
 vending machine, created `pop` at tick 1051 and sat on a bench with it (pop allows sitting); no ped took a bin in the run,
 so the throw is not seen in game yet.
 
+### Zombie mode: the ped side
+
+**Problem.** The zombie cheat (free skate: peds chase and attack the skater) had only its census rules; the brain's
+`IsZombieMode` read a flag nobody set, and the stock graph's `ZombieFollow` / `OverrideAnimData` ops were not ported.
+
+**Evidence** (research b95; main-checked: the ZombieFollow update `826A9250` distances and speeds, constants
+`0x82099250` 8.0, `0x820BD16C` 15.0, `0x8231A844` 1.0, `0x82063B08` 3.0):
+- Stock graph [data]: `Wander` -> `ZombieFollow` when `IsZombieMode`; the state runs `OverrideAnimData overrideEntityName="zombie"`,
+  `DropHandProp`, `ZombieFollow`, and leaves to Colliding / AddressWants, or to Wander when the mode is off. Scatter, the
+  chase start timer, the primary-only intercept, rest and the taunt are all gated off in zombie mode by the stock graphs.
+- ZombieFollow [code]: Begin `826A91A8` motion intent 0, goal = the player. Update: beyond 8 m the goal is the player;
+  inside, once the goal is reached (steering vfunc +124, inferred), a random point 1..8 m round the player
+  (`82E17508`, the same jitter as the attack throw); speed 8 m/s beyond 15 m, else 3 m/s. End `826A9518` resets.
+- `SendSpeechEvent` Begin `826A77A8` sends nothing in zombie mode [code, b95].
+
+**Change.** Core: ops `ZombieFollow` and `OverrideAnimData { entity }` (cleared on End, inferred),
+`IgnoreTakedownTargetNavRigVolume` as a marker; `ZombieFollowSettings` (retail defaults); brain `zombie_goal`,
+`anim_override`; no ped speech in zombie mode. Game: the brain's `zombie` flag follows `LivingWorldSettings.zombie`
+each tick; the body walks a one-point route to the zombie goal at the brain's speed; the anim set override picks the
+`zombie` set. Toggle (no cheat screen yet): `SKATE_ZOMBIE=1` or the mod value `living_world.zombie`; mod keys
+`ped_brain.zombie_follow_distance`, `zombie_sprint_distance`, `zombie_ring_min`, `zombie_ring_max`,
+`zombie_sprint_speed`, `zombie_walk_speed`.
+
+**The yellow screen (research b100 / b101; values main-checked in the stock collections).** `827F4D28` sets post FX
+bit 0x2000 while the zombie query is true and `827F5450` then builds the near and far colour matrices from the `post_fx`
+record `colour_matrix_zombiemode` (`827F13D8`: `multiply * Sat_s(contrast * (x - midpoint) + midpoint + add)`, luma
+0.3 / 0.6 / 0.1) instead of the identity `colour_matrix`, a full replace with no fade [code]. Values [data]: multiply
+(2.0, 1.4, 1.0), saturation 0.5, contrast 1.3 near / 1.5 far, add 0 near / -0.4 far, midpoint 0.5, distances 50 / 100.
+`postfx_visualfxPS` applies them after the tone curve: near rows c7..c9, far rows c10..c12, mixed linearly in view
+depth (`827F3D20`: full near to 50 m, full far from 100 m) [code / data]. Ours: skate-core `colour_matrix` (builder),
+skate-game `colour_matrix` (stock records, `ColourGrade` picked by the zombie flag, the camera's near plane), the retail
+tone pass reads the view depth (gameplay camera depth now sampleable; a 1x1 fallback when it is not) and applies the
+grade before its clamp. The base record is the identity, so the picture is unchanged outside zombie mode (DownTown
+captures with the mode off and on). Open: the shader's own luma (0.3 / 0.5 / 0.2) desaturate step with the bloom colour,
+the tint lookup texture and the stencil mask term (b101) are not modelled.
+
+**NOT RETAIL YET / open.** The cheat screen entry belongs to the UI work. The "goal
+reached" radius (0.5 m) and "ZombieChannel" (`ped.vfn240`, 0.2 / 0.2 / 1.0) are not read; how peds in a plugin become
+zombies is open. Retail aims every zombie at the single local player; a host picking per ped is not retail.
+
+**Traffic.** Retail's vehicle cull `826BAAB8` despawns a car beyond the cull radius OR whenever the zombie query is true
+[code, main-read], so turning the mode on empties the streets; ours: `CensusKindConfig::cull_in_zombie` (vehicles true,
+peds false), reason `Disabled`; test `zombie_mode_culls_the_live_traffic`.
+
+**Verification.** skate-core `zombies_follow_the_player_and_mill_round_them`; skate-game data-gated
+`living_world_zombie_mode_runs_zombie_follow_on_the_stock_graph` (stock graph: ZombieFollow, intent 0, goal the player,
+8 m/s, `zombie` set, prop dropped; back to wander when off); skate-mods patch validation. Not seen in game yet.
+
 ### Peds that start out carrying a hand prop
 
 **Problem.** Only peds that used a vending machine or a newspaper box ever held a prop; retail also gives walking peds a
@@ -899,6 +948,36 @@ sets it is not found (all our ambient peds roll). Retail's rolls come from its g
 
 **Verification.** skate-core `the_starting_hand_prop_follows_the_chance_and_the_running_total`; skate-game
 `starting_hand_props_load_the_chance_and_the_list`. Not seen in game yet.
+
+### Ped carry poses and the ped channel
+
+**Problem.** A ped holding a can, a bag or a newspaper kept its walk pose: the arm swung through the prop.
+
+**Evidence** (research b99; main-checked: the clip channel weights from the bank, the logical names in the anim set):
+- Retail plays the carry pose on the ped's one channel slot ("PedChannel", the skeleton controller at
+  `skeleton+17936`) [code]: ped vfunc +240 (`82E3A418`) looks the logical name up in the ped's anim set and requests it
+  (`82E32878`: blend in / out); the per-frame state machine `82E3A5A0` plays it, fades it and frees the slot (state 7).
+  While a prop is linked and held, the update `82E3F048` re-requests the record's carry name whenever the slot is free
+  (0.2 s blends); the unlink `82E3FAE0` stops it with a 0.2 s fade. The same slot plays the throws, the tazer and the
+  greet / warn gestures; a request replaces what plays.
+- Which bones a channel clip takes over is in the clip data [data, main-read]: the clip parts' channel weight tables.
+  All four carry clips (`NPC_CARRY_{SML,BIG,PAPER,WINE}_RH_0_CYC`, logical names `CarrySmallRHChannel` /
+  `CarryBigRHChannel` / `CarryPaperRHChannel` / `CarryWineRHChannel`) weigh exactly the right arm chain (shoulder, arm,
+  forearm, hand, hand prop bone) 1.0 and every other bone 0; the throw and tazer clips weigh 17 upper-body bones; walk
+  cycles have no table. The blend is retail's `ACSChannelBlend` (already ported, `pose_blend::channel_blend_sample`):
+  per bone, coefficient = channel fade x the bone's weight.
+
+**Change.** skate-data: `PedClip.channel_weights` from the parts' weight tables. Core `peds/anim.rs`: the channel slot
+(`channel_request` by logical name, `channel_stop`, `channel_idle`; fades during `step`; one-shot clips fade out at
+their end) blended over locomotion in `pose`; the carry names join the clip list. Game: while a hand prop is held and
+the slot is free, its record's carry name is requested (0.2 / 0.2); a released prop stops a carry pose with a 0.2 s fade;
+the throw clips now play on the channel (upper body over the walk), as retail.
+
+**NOT RETAIL YET / open.** Retail requests the carry while the prop is linked; ours while held. The tazer, greet and
+warn gestures do not use the channel yet; `StopChannel` (Avoid / Collision states) is not ported. Not seen in game yet.
+
+**Verification.** skate-data data-gated `carry_clips_carry_per_bone_channel_weights` (the four carry clips: 5 of 50
+bones, the right arm chain; throws / tazer 17); skate-core `the_channel_overrides_only_its_weighted_bones_and_fades`.
 
 ### Ped attack throw at the skater
 
@@ -926,7 +1005,7 @@ facing the skater and never threw.
 **Change.** Core `peds/hand_prop.rs`: `intercept`, `jitter`, `AttackAim`, `attack_point`, `attack_throw_clip`,
 `PedBrain::start_attack_throw` (the aim and its 3 RNG draws come first, as retail, from the brain's seeded RNG, so a host
 decides them); settings `attack_lead_seconds`, `intercept_epsilon`, `jitter_min` / `jitter_max`, `aim_lift` (retail
-defaults, `ped_brain` mod domain). Brain: op `ThrowHandPropAtWantTarget { want }` (Begin / Update), `ChaseView.velocity`
+defaults; mod keys `ped_brain.attack_throw_*`, see the bin throw section). Brain: op `ThrowHandPropAtWantTarget { want }` (Begin / Update), `ChaseView.velocity`
 (target velocities by id) and `own_velocity`. Game: `PedBody.velocity` (last console tick's movement), the velocity map
 of peds and players passed to the brain; the attack clips in the ped clip list. The release, flight and link reuse the
 bin throw's path above.
