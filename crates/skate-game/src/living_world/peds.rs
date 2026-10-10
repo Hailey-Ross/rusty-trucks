@@ -320,6 +320,8 @@ pub(crate) struct PedBody {
     /// Seconds the body's steps have been refused (walls, other peds, the crosswalk rule).
     pub blocked: f32,
     pub position: Vec3,
+    /// The last console tick's movement over its length, m/s (the attack throw's look-ahead, `82E3E960`).
+    pub velocity: Vec3,
     pub heading: f32,
     /// Console ticks stepped since the spawn.
     pub ticks: u64,
@@ -635,7 +637,7 @@ pub(crate) fn apply_ped_records(
             tint_a: look.tint_a,
             tint_b: look.tint_b,
         };
-        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: TauntClip::None, plugin_motion: PluginMotionRun::default() };
+        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, velocity: Vec3::ZERO, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: TauntClip::None, plugin_motion: PluginMotionRun::default() };
         let e = commands
             .spawn((
                 Name::new(format!("Pedestrian {} ({})", s.id.serial, look.recipe)),
@@ -709,6 +711,7 @@ pub(crate) fn advance_peds(
         let me = id_order(ped.id);
         while body.ticks < target {
             let mut turn = 0.0;
+            let step_from = body.position;
             // The taunt clip (motiongraph_taunt `PlayTaunt`: the remapped "Taunt" once, blend 0.1, then
             // `MajorIntentComplete`); a set without the clip completes at once.
             match body.taunt {
@@ -884,6 +887,7 @@ pub(crate) fn advance_peds(
             body.heading += out.root.yaw;
             body.feet_down = out.feet_down;
             body.body_fall = out.body_fall;
+            body.velocity = (body.position - step_from) / dt;
             body.ticks += 1;
             if let Some(s) = out.entered {
                 events.write(PedEvent::State { id: ped.id, state: s });
@@ -1461,6 +1465,13 @@ pub(crate) fn think_peds(
         .map(|(_, p, b, _)| (p.id.to_u64(), (p.entity.clone(), b.position.to_array())))
         .chain(players.iter().enumerate().map(|(i, p)| (PLAYER_TARGET_BASE + i as u64, ("skater".to_string(), *p))))
         .collect();
+    // Velocity of every id this tick (the attack throw's look-ahead).
+    let velocities: BTreeMap<u64, [f32; 3]> = list
+        .iter()
+        .map(|(_, p, b, _)| (p.id.to_u64(), b.velocity.to_array()))
+        .chain(observers.observers.iter().enumerate().map(|(i, o)| (PLAYER_TARGET_BASE + i as u64, o.velocity)))
+        .collect();
+    let velocity_of = |id: u64| velocities.get(&id).copied();
     // World-prop plugins: the map's props, then the offer scan every 11th world tick (`826C0058` -> `826BFE18`).
     {
         let pp = &mut *plugin_props;
@@ -1781,7 +1792,7 @@ pub(crate) fn think_peds(
                 heading: body.heading,
                 skater: observers.observers.first().map(|o| (o.position, o.velocity)),
                 target_position: &target,
-                chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation },
+                chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array() },
             };
             controller.update(program, dt, &mut host);
             // The Plugin state runs the plugin's own graph on the same brain (`8269F248`).
@@ -1801,7 +1812,7 @@ pub(crate) fn think_peds(
                         heading: body.heading,
                         skater: observers.observers.first().map(|o| (o.position, o.velocity)),
                         target_position: &target,
-                        chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation },
+                        chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array() },
                     };
                     pc.update(&pg.graph.runtime.program, dt, &mut host);
                     if mind.prop.is_some() && pc.frame.current == mind.plugin_state && tick % 150 == 0 {

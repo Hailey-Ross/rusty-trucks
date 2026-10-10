@@ -1413,6 +1413,13 @@ impl PropDynamics {
         out
     }
 
+    /// One body's box centre, basis, half extents, linear and angular velocity and effective inertia (a solid proxy
+    /// in the skater's contact solve).
+    pub(crate) fn body_state(&self, id: u32) -> Option<(Vector3, Basis3, Vector3, Vector3, Vector3, RetailInertiaDynamics)> {
+        let b = self.bodies.get(*self.by_id.get(&id)?)?;
+        Some((b.rates.position, b.rates.basis, b.half_extents, b.rates.linear_velocity, b.rates.angular_velocity, b.inertia))
+    }
+
     /// World position of one body's box centre.
     pub(crate) fn position_of(&self, id: u32) -> Option<Vector3> {
         Some(self.bodies.get(*self.by_id.get(&id)?)?.rates.position)

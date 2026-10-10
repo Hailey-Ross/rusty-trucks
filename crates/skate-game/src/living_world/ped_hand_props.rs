@@ -219,6 +219,62 @@ pub(crate) fn sync_hand_props(
     });
 }
 
+/// The released hand props in the skater's body contact solve (b94): each one is a solid proxy with its box, mass and
+/// velocity in contact group 12 (heavy) or 14 (small), so a hit goes through the ordinary skeleton contact: the relative
+/// normal speed (halved for small objects) feeds the region forces and the usual wipeout checks (`82BD4A30` ->
+/// `82BD88A0`). Retail has no hand-prop hit code (b92 Q2). The prop's own reaction stays the prop step's skater push.
+pub(crate) fn push_hand_prop_proxies(
+    released: Res<ReleasedHandProps>,
+    settings: Res<super::LivingWorldSettings>,
+    mut physics: ResMut<crate::physics::GamePhysics>,
+    skater: Res<crate::physics::SkaterRuntime>,
+    replay: Res<crate::replay::Replay>,
+) {
+    let s = settings.ped_brain.values.hand_prop;
+    if replay.active || released.0.is_empty() || !s.skater_contact {
+        return;
+    }
+    let small_mass = skater.collision_feedback.settings.small_object_mass;
+    let solids: Vec<_> = {
+        let Some(dynamics) = physics.prop_dynamics() else { return };
+        released.0.iter().filter_map(|&(id, _)| dynamics.body_state(id).map(|b| hand_prop_proxy(id, b, small_mass, &s))).collect()
+    };
+    let mut proxies = std::mem::take(&mut physics.network_proxies);
+    for solid in solids {
+        proxies.append_solid(solid, &physics, &skater, false);
+    }
+    physics.network_proxies = proxies;
+}
+
+/// Proxy ids of released hand props: `HAND_PROP_PROXY_TAG | body id`.
+pub(crate) const HAND_PROP_PROXY_TAG: u64 = 0x4850_0000_0000_0000;
+
+type BodyState = (skate_core::math::Vector3, skate_core::math::Basis3, skate_core::math::Vector3, skate_core::math::Vector3, skate_core::math::Vector3, skate_core::physics::rigid_body::RetailInertiaDynamics);
+
+fn hand_prop_proxy(id: u32, (c, basis, half, v, w, inertia): BodyState, small_mass: f32, s: &skate_core::living_world::peds::hand_prop::HandPropSettings) -> skate_dynamics::SolidBody {
+    use skate_dynamics::rapier3d::prelude::{Pose, Rotation, SharedShape, Vector};
+    let q = Quat::from_mat3(&Mat3::from_cols_array_2d(&basis.columns)).normalize();
+    let rotation = Rotation::from_xyzw(q.x, q.y, q.z, q.w).normalize();
+    let p = |v: skate_core::math::Vector3| Vector::new(v.x, v.y, v.z);
+    let mass = if inertia.inverse_mass > 0.0 { 1.0 / inertia.inverse_mass } else { f32::INFINITY };
+    skate_dynamics::SolidBody {
+        id: HAND_PROP_PROXY_TAG | u64::from(id),
+        pose: Pose::from_parts(p(c), rotation),
+        center_of_mass: p(c),
+        inertia_rotation: rotation,
+        inverse_mass: inertia.inverse_mass,
+        inverse_inertia: p(inertia.inverse_tensor),
+        linvel: p(v),
+        angvel: p(w),
+        contact_group: if mass >= small_mass { s.heavy_group } else { s.small_group },
+        colliders: vec![skate_dynamics::SolidCollider {
+            shape: SharedShape::cuboid(half.x.max(0.01), half.y.max(0.01), half.z.max(0.01)),
+            pose: Pose::from_parts(p(c), rotation),
+            friction: 0.5,
+        }],
+    }
+}
+
 /// Turn the held object into a prop body at its world pose moving at `velocity`: collision from its meshes (in the
 /// object's frame, scale folded in), the default physics block (NOT RETAIL YET: the template's
 /// `livingworld_dynamicobject_characteristics` record is not resolved for hand prop templates, b91), and its model
@@ -284,6 +340,21 @@ fn mesh_triangles(mesh: &Mesh) -> Vec<[Vec3; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A released prop's skater-contact proxy: its box, velocity and mass, group 14 below the small-object mass
+    /// (5.5) and 12 at or above it (`82C56BA0`).
+    #[test]
+    fn hand_prop_proxy_group_by_mass() {
+        use skate_core::math::{Basis3, Vector3};
+        let s = skate_core::living_world::peds::hand_prop::HandPropSettings::default();
+        let identity = Basis3 { columns: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
+        let inertia = |mass: f32| skate_core::physics::rigid_body::RetailInertiaDynamics { inverse_tensor: Vector3::ZERO, inverse_mass: 1.0 / mass, spherical: 0.0, maximum_linear_velocity: 100.0, maximum_angular_velocity: 100.0, linear_drag: 0.0, angular_drag: 0.0 };
+        let state = |mass| (Vector3::new(1.0, 2.0, 3.0), identity, Vector3::new(0.03, 0.06, 0.03), Vector3::new(10.0, 1.0, 0.0), Vector3::ZERO, inertia(mass));
+        let can = hand_prop_proxy(7, state(0.4), 5.5, &s);
+        assert_eq!((can.id, can.contact_group, can.inverse_mass), (HAND_PROP_PROXY_TAG | 7, 14, 2.5));
+        assert_eq!((can.linvel.x, can.center_of_mass.y), (10.0, 2.0));
+        assert_eq!(hand_prop_proxy(7, state(5.5), 5.5, &s).contact_group, 12);
+    }
 
     #[test]
     fn record_offset_is_translation_then_rotation() {

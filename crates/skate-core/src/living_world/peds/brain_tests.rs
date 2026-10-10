@@ -448,6 +448,39 @@ fn the_taunt_faces_the_victim_holds_the_intent_and_unsets_the_want() {
     assert!(!h.brain.wants.contains_key("taunt") && h.brain.face.is_none() && !h.brain.monitored.contains_key("SGIntent"));
 }
 
+/// ThrowHandPropAtWantTarget (`826A7A58` / `826A7AA8`): Begin aims at the want's target with its velocity and plays the
+/// attack clip; Update keeps the want while the prop is held and through the flight (timer 35), then unsets it.
+#[test]
+fn the_attack_throw_aims_at_the_want_target_and_unsets_the_want_after_the_flight() {
+    use crate::living_world::peds::hand_prop::THROW_REACTION_TIMER;
+    let behaviors = ops(&[("ThrowHandPropAtWantTarget", &[("want", "throwhandprop")])]);
+    assert_eq!(behaviors[0], PedOp::ThrowHandPropAtWantTarget { want: "throwhandprop".into() });
+    let mut brain = PedBrain::default();
+    brain.set_want("throwhandprop", 7);
+    brain.hand_prop.holding = true;
+    let settings = BrainSettings { hand_prop: crate::living_world::peds::hand_prop::HandPropSettings { jitter_max: 0.0, ..Default::default() }, ..Default::default() };
+    let at = |id: u64| (id == 7).then_some([0.0, 0.0, 8.0]);
+    let velocity = |id: u64| (id == 7).then_some([0.0, 0.0, 3.0]);
+    let f = frame();
+    let chase = ChaseView { velocity: Some(&velocity), ..Default::default() };
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &at, chase };
+    h.begin(0, [0; 6], &f);
+    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::HandPropClip { clip: "HandPropAttackThrow" }]);
+    // Straight ahead and running away: the target 2.5 m further after 0.8333 s, then the 10 m/s prop's catch-up time.
+    let target = h.brain.hand_prop.throw.expect("throw started").target;
+    let t = 10.5 / 7.0;
+    assert!(target[0] == 0.0 && (target[2] - (10.5 + 3.0 * t)).abs() < 1e-3 && target[1] == 1.0, "{target:?}");
+    h.update(0, [0; 6], &f);
+    assert!(h.brain.wants.contains_key("throwhandprop"), "still held");
+    h.brain.tick_timers(0.84);
+    assert!(h.brain.update_hand_prop_release(&settings.hand_prop, [0.2, 1.2, 0.3]).is_some());
+    h.update(0, [0; 6], &f);
+    assert!(h.brain.timer(THROW_REACTION_TIMER) > 0.0 && h.brain.wants.contains_key("throwhandprop"), "in flight");
+    h.brain.tick_timers(5.0);
+    h.update(0, [0; 6], &f);
+    assert!(!h.brain.wants.contains_key("throwhandprop"));
+}
+
 /// The sit plugin's ops (`826A2898` SetSitTimer, `826AD1F0` GoingToStandBackUp): the sit time lies between the ped type's
 /// min and max, the stand-up roll follows its chance, and timer 24 is retail's SitTimer.
 #[test]

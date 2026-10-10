@@ -867,8 +867,7 @@ release time; ours runs timer 34 out (equal if the query is the time remaining, 
 velocity in retail; ours is zero. The released body uses the default physics block and box: the hand prop template's
 `livingworld_dynamicobject_characteristics` record is not resolved (b91), collision groups 12 / 13 / 14 are not modelled.
 The pool and cull are counted over released hand props only (retail's pool holds every live DMO). The flat angle's sign is
-inferred from the clip names. `IsNearCrossWalk` answers false. The attack throw (`ThrowHandPropAtWantTarget`: intercept
-solve, jitter of 3 RNG draws up to 0.25 m, +1 m) is next (b92, b93).
+inferred from the clip names. `IsNearCrossWalk` answers false. The attack throw: see the next section.
 
 **Verification.** skate-core `launch_reaches_the_target`, `light_throw_clip_by_angle`, `bin_throw_releases_then_unlinks`,
 `drop_releases_with_zero_velocity`, `world_prop_transfer_reads_the_hand_prop`; skate-game data-gated
@@ -876,3 +875,63 @@ solve, jitter of 3 RNG draws up to 0.25 m, +1 m) is next (b92, b93).
 vending / sit gates `HasFirstWaypointAvailable` / `InFrontOfFirstWaypoint`, which the first run showed): ped #2 took the
 vending machine, created `pop` at tick 1051 and sat on a bench with it (pop allows sitting); no ped took a bin in the run,
 so the throw is not seen in game yet.
+
+### Ped attack throw at the skater
+
+**Problem.** An angry ped holding a can (`pedestrian_wanttothrowhandprop.xml`: want `throwhandprop`, `CanAttackThrowHandProp`,
+`IsFacingWantTarget angle=120 distance=20`) reached `ThrowHandPropAtWantTarget`, which was not ported: the ped stood
+facing the skater and never threw.
+
+**Evidence** [code] (TU3 recomp, reference only; research b25 §5, b92, b93; clip thresholds and names main-read):
+- Begin `826A7A58` -> `sub_82E3E960(ped, want target)`: the target and the ped's own body are both predicted 0.8333 s ahead
+  (`0x82063BE4`, position + velocity x time); the XZ intercept solve `sub_82E15CD0` at 10.0 m/s (`0x82063BF0`) along the
+  dominant axis (strict, so equal |dx| and |dz| have no solution) returns the target's point at the earliest
+  non-negative time; with no solution the aim is the PED'S OWN predicted position (b93 B4). The solve's term is
+  `v_minor + k * v_major` as read (an exact intercept would subtract; ported as read).
+- Then the jitter `sub_82E17508` (3 draws: z, x in [-0.5, 0.5), a length in [0.0, 0.25) m, `0x82165A10` / `0x820C6D98`,
+  a horizontal offset along the normalised (x, z)), then +1.0 m up (`0x82139A20` x `0x8231A844`), then `82E3E648(ped, point,
+  attack 1)`: holding required, launch speed 10.0, release after 0.8333 s (timer 34).
+- The attack clip by the flat angle to the point: below 0.5236 (`0x82063B38`) or above 5.7596 (`0x822F9138`)
+  `HandPropAttackThrow`, below 2.618 (`0x822F913C`) `HandPropAttackThrowLeft`, below 3.6652 (`0x822F9140`)
+  `HandPropAttackThrow` again (behind), else `HandPropAttackThrowRight` (names `0x820649A4..0x820649E4`).
+- Update `826A7AA8`: nothing while held; once released, the want is unset when timer 35 (the flight time) runs out.
+- A thrown can hitting the skater is an ordinary prop contact: no hand-prop hit, bail, speech or score code in the DMO
+  class, and the skater contact switch (`sub_82BD4A30`, `0x82BD5388`) gives groups 12 / 13 / 14 only the generic
+  non-board contact and the region forces (b92 Q2).
+
+**Change.** Core `peds/hand_prop.rs`: `intercept`, `jitter`, `AttackAim`, `attack_point`, `attack_throw_clip`,
+`PedBrain::start_attack_throw` (the aim and its 3 RNG draws come first, as retail, from the brain's seeded RNG, so a host
+decides them); settings `attack_lead_seconds`, `intercept_epsilon`, `jitter_min` / `jitter_max`, `aim_lift` (retail
+defaults, `ped_brain` mod domain). Brain: op `ThrowHandPropAtWantTarget { want }` (Begin / Update), `ChaseView.velocity`
+(target velocities by id) and `own_velocity`. Game: `PedBody.velocity` (last console tick's movement), the velocity map
+of peds and players passed to the brain; the attack clips in the ped clip list. The release, flight and link reuse the
+bin throw's path above.
+
+**NOT RETAIL YET / open.** The intercept epsilon: the image word at `0x82195100` does not read as a float, 1.19e-7 is
+inferred. Retail's jitter draws come from its global generator, ours from the ped's seeded RNG. A zero-length (x, z)
+draw keeps the point (retail normalises it, unread).
+
+**The hit (b94, main-checked `82C56BA0`, `skeleton_feedback.rs:208`).** Before this change our skater body never collided
+with any prop: the prop layer is only queried by the wheels (`physics.rs:754`) and props take a one-way push from the
+skater volumes (`prop_dynamics.rs` `push_from_skater`). Retail's skater contact (`82BD4A30`) handles a DMO like any other
+body: the relative normal speed (halved below `SmallObjectMassThreshold` 5.5) goes into the per-bucket force maxima that
+the regional wipeout check `82BD88A0` reads against the setup `Wipeout_*SkeletonMaxContact[Arms]` limits; we already port
+both (`skate-core/src/player/wipeout/common.rs:19`, `skeleton_body/collision_update.rs:95`). A released hand prop's group
+is 12 at or above the small-object mass and 14 below it (`82C56BA0` [code]). So `ped_hand_props::push_hand_prop_proxies`
+adds every released hand prop to the skater solve as a solid proxy (box, mass, inertia, velocity, group 12 / 14; ids
+`HAND_PROP_PROXY_TAG | body`), the way cars join it (group 8); settings `skater_contact` (mod opt-out), `heavy_group`,
+`small_group`. Measured (DownTown, data-gated test): a 0.4 kg can at 10 m/s into a standing skater's chest peaks at region
+force 3.49 and does not bail them.
+
+**NOT RETAIL YET / open (hit).** The group-pair filter is not found (b94: probably inside the physics middleware; the
+contact recorder `827682B0` has no group test, only same-body and same-owner rejects), so 12 / 14 colliding with the
+skater is [inferred, medium-high]; a recomp trace at `0x82BD5388` would prove it. Retail's solve is two-way (inferred from
+the reduced-mass factor); ours keeps the prop's reaction in the prop step (the proxy is not owned, its solver reaction is
+dropped). Placed (ordinary) DMOs are still not in the skater body contact: their group comes from data (not found), and
+adding every prop changes riding into all props on every map, so it waits for the user's go and a regression pass. No
+mod event for a prop hitting the skater yet.
+
+**Verification.** skate-core `intercept_solve`, `jitter_is_horizontal_and_bounded`, `attack_throw_clip_by_angle`,
+`attack_throw_aims_and_releases`, brain `the_attack_throw_aims_at_the_want_target_and_unsets_the_want_after_the_flight`;
+skate-game `hand_prop_proxy_group_by_mass`, data-gated `a_thrown_can_reaches_the_skater_region_forces` (with
+`a_traffic_car_knocks_the_skater_down_above_the_contact_limit` unchanged: wipeout at tick 6). Not seen in game yet.

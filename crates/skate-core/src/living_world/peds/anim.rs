@@ -147,6 +147,8 @@ pub mod names {
         // The light hand prop throw (`super::hand_prop::light_throw_clip`).
         "HandPropThrowLightForward", "HandPropThrowLightL45", "HandPropThrowLightL90", "HandPropThrowLightR180",
         "HandPropThrowLightR90", "HandPropThrowLightR45",
+        // The attack throw (`super::hand_prop::attack_throw_clip`).
+        "HandPropAttackThrow", "HandPropAttackThrowLeft", "HandPropAttackThrowRight",
     ];
 }
 

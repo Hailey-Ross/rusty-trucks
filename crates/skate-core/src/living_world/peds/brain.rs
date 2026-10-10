@@ -441,6 +441,9 @@ pub enum PedOp {
     /// `826A7998` Begin: the light throw (`82E3E648` attack 0) at the plugin object's hotpoint 0 (b87 §3, b90 §1);
     /// the release follows in the per-ped step ([`PedBrain::update_hand_prop_release`]).
     ThrowHandPropAtTrashBin,
+    /// `826A7A58` Begin: the aimed attack throw at the want's target (`82E3E960` -> `82E3E648` attack 1, b25 §5,
+    /// b92 / b93). `826A7AA8` Update: once the prop is released and timer 35 has run out, the want is unset.
+    ThrowHandPropAtWantTarget { want: String },
     /// `826A8730` Begin: `82E3EBE0(ped, 0, zero)`, the held prop is released in place (b25 §6).
     DropHandProp,
     /// `826A7900` Begin / `826A7918` End: `brain+3279` bit 0x10 for the behaviour's life (b25 §3).
@@ -620,6 +623,7 @@ impl PedOp {
             "ConversationListenToSpeaker" => PedOp::ConversationListenToSpeaker,
             "ConversationIsComplete" => PedOp::ConversationIsComplete,
             "ThrowHandPropAtTrashBin" => PedOp::ThrowHandPropAtTrashBin,
+            "ThrowHandPropAtWantTarget" => PedOp::ThrowHandPropAtWantTarget { want: want() },
             "DropHandProp" => PedOp::DropHandProp,
             "DisallowHandPropActions" => PedOp::DisallowHandPropActions,
             "HasDisposableHandProp" => PedOp::HasDisposableHandProp,
@@ -955,6 +959,9 @@ pub struct ChaseView<'a> {
     pub block: Option<&'a dyn Fn(u64) -> Option<(bool, Vec3)>>,
     /// The takedown that fits now against a target (`82E3C000`).
     pub takedowns: Option<&'a dyn Fn(u64) -> Option<super::takedown::TakedownChoice>>,
+    /// Target velocities by id and the ped's own velocity, m/s (the attack throw's prediction, `82E3E960`).
+    pub velocity: Option<&'a dyn Fn(u64) -> Option<Vec3>>,
+    pub own_velocity: Vec3,
 }
 
 impl ChaseView<'_> {
@@ -1180,6 +1187,16 @@ impl Host for BrainHost<'_> {
             PedOp::ThrowHandPropAtTrashBin => {
                 if let Some(target) = b.plugin_target {
                     if let Some(clip) = b.start_light_throw(&s.hand_prop, self.heading, self.position, target) {
+                        b.chase_requests.push(ChaseRequest::HandPropClip { clip });
+                    }
+                }
+            }
+            PedOp::ThrowHandPropAtWantTarget { want } => {
+                let target = b.wants.get(want).map(|w| w.target);
+                let motion = target.and_then(|t| Some(((self.target_position)(t)?, self.chase.velocity.and_then(|v| v(t)).unwrap_or([0.0; 3]))));
+                if let Some((at, velocity)) = motion {
+                    let aim = super::hand_prop::AttackAim { position: self.position, velocity: self.chase.own_velocity, target: at, target_velocity: velocity };
+                    if let Some(clip) = b.start_attack_throw(&s.hand_prop, self.heading, aim) {
                         b.chase_requests.push(ChaseRequest::HandPropClip { clip });
                     }
                 }
@@ -1474,6 +1491,11 @@ impl Host for BrainHost<'_> {
         let b = &mut *self.brain;
         match op {
             PedOp::Wander => b.speed_suggestion = Some(s.wander_speed),
+            PedOp::ThrowHandPropAtWantTarget { want } => {
+                if !b.hand_prop.holding && b.timer(super::hand_prop::THROW_REACTION_TIMER) <= 0.0 {
+                    b.unset_want(want);
+                }
+            }
             PedOp::StartChase => b.speech = Some(s.start_chase_speech),
             PedOp::ChaserEvaluateWhoToTakeDown => b.takedown_target = b.chasee,
             PedOp::TargetWaypoint { speed, slide_distance, slide_speed } => {

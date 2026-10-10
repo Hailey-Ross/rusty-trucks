@@ -187,6 +187,7 @@ fn living_world_ped_motion_follows_from_the_record_and_tick_at_any_frame_rate() 
             player: PedAnimPlayer::new(set, 77).unwrap(),
             path: skate_core::living_world::peds::anim::TestPath::new(77), nav: Default::default(), blocked: 0.0,
             position: Vec3::new(3.0, 0.0, 10.0),
+            velocity: Vec3::ZERO,
             heading: 0.5,
             ticks: 0,
             feet_down: [false; 2],
@@ -257,6 +258,7 @@ fn living_world_ped_mod_overrides_and_render_helpers() {
         player: PedAnimPlayer::new(&d.anim_sets["default"], 1).unwrap(),
         path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0,
         position: Vec3::ZERO,
+        velocity: Vec3::ZERO,
         heading: 0.0,
         ticks: 0,
         feet_down: [false; 2],
@@ -322,7 +324,7 @@ fn living_world_ped_data_loads_from_the_export() {
     assert!(d.clips.len() > 50);
     let look = d.catalog.choose("aletown", 1, &PedOverrides::default()).unwrap();
     let set = &d.anim_sets[&look.anim_set];
-    let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default(), plugin_motion: Default::default() };
+    let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, velocity: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default(), plugin_motion: Default::default() };
     let g = ped_globals(&d.rig, &body, &d, 0.0, &[]).unwrap();
     assert!((0.8..1.1).contains(&g[1].w_axis.y), "hips height {}", g[1].w_axis.y);
     // The hand prop bone hangs off the right hand, a few centimetres away (rig reference local).
@@ -365,7 +367,7 @@ fn living_world_ped_pose_dump_for_a_render_check() {
         "bones": reference.iter().map(|m| m.to_cols_array().to_vec()).collect::<Vec<_>>()})];
     for (set_name, model) in &looks {
         let set = &d.anim_sets[set_name];
-        let mut body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default(), plugin_motion: Default::default() };
+        let mut body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, velocity: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default(), plugin_motion: Default::default() };
         // Scripted intents: idle 0.5 s, walk to 4 s, stop, turn right, then turn left.
         let mut captures: Vec<(u32, String)> = Vec::new();
         let mut turned = 0;
@@ -647,6 +649,7 @@ fn standing_body(at: Vec3) -> PedBody {
         nav: Default::default(),
         blocked: 0.0,
         position: at,
+        velocity: Vec3::ZERO,
         heading: 0.0,
         ticks: 0,
         feet_down: [false; 2],

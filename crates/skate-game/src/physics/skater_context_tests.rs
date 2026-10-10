@@ -251,6 +251,55 @@ fn a_traffic_car_knocks_the_skater_down_above_the_contact_limit() {
     assert!(fast.is_some_and(|t| t < 10), "a 12 m/s car hit wipes the skater out at once");
 }
 
+/// A ped's thrown can (`living_world::ped_hand_props::push_hand_prop_proxies`: a small finite-mass box in group 14)
+/// hitting the standing skater's chest at the attack throw's 10 m/s is an ordinary contact (b92 Q2, b94): it reaches the
+/// region forces (halved as a small object below 5.5 kg) and the usual wipeout check decides. Logs the outcome.
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn a_thrown_can_reaches_the_skater_region_forces() {
+    use skate_dynamics::rapier3d::prelude::{Pose, Rotation, SharedShape, Vector};
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let rig = Rig { graphs: crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap(), root_dir: root_dir.clone() };
+    let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    let mut player = rig.skater(&physics);
+    for _ in 0..30 {
+        rig.step(&mut physics, &mut player, pad());
+    }
+    let deck = physics.board.bodies()[BodyId::Deck.index()].rates.position;
+    let (speed, mass) = (10.0_f32, 0.4_f32);
+    let mut x = deck.x + 1.5;
+    let (mut peak, mut wipeout) = (0.0_f32, None);
+    for tick in 0..30 {
+        x -= speed / 60.0;
+        let centre = Vector::new(x, deck.y + 1.3, deck.z);
+        let solid = skate_dynamics::SolidBody {
+            id: 0x7E57_0000_0000_0002,
+            pose: Pose::from_parts(centre, Rotation::IDENTITY),
+            center_of_mass: centre,
+            inertia_rotation: Rotation::IDENTITY,
+            inverse_mass: 1.0 / mass,
+            inverse_inertia: Vector::new(500.0, 500.0, 500.0),
+            linvel: Vector::new(-speed, 0.0, 0.0),
+            angvel: Vector::new(0.0, 0.0, 0.0),
+            contact_group: 14,
+            colliders: vec![skate_dynamics::SolidCollider { shape: SharedShape::cuboid(0.04, 0.07, 0.04), pose: Pose::from_parts(centre, Rotation::IDENTITY), friction: 0.5 }],
+        };
+        let mut proxies = network::Proxies::default();
+        proxies.append_solid(solid, &physics, &player.runtime, false);
+        physics.network_proxies = proxies;
+        rig.step(&mut physics, &mut player, pad());
+        peak = player.runtime.collision_feedback.regions.iter().map(|r| r.force).fold(peak, f32::max);
+        if wipeout.is_none() && player.runtime.player_state.current() == PhysicalStateId::WipeoutGround {
+            wipeout = Some(tick);
+        }
+    }
+    eprintln!("thrown can {speed} m/s {mass} kg: peak region force {peak:.2}, wipeout tick {wipeout:?}");
+    assert!(peak > 1.0, "the can's contact reaches the region forces: {peak}");
+}
+
 /// Mode 7's controller B (NavMeshController, b78 to b80) on a simulated skater: B's intents alone (no pad, the AI
 /// source present but not fresh) make it press the off-board toggle, step off, turn on foot through `OB_Steer` ->
 /// `ob_Turn` (Processed +2680 = -OB_Steer) and line up with the node direction, then hand back (arrived).
