@@ -2,7 +2,7 @@
 //! `82D47318`, Exit `82B61BB8` (empty), Update `82D477C0`, publication `82D4C078`. The maths lives in
 //! `skate_core::riding::skitching` (frame, sub-mode, hold, shimmy, target, spring); this module composes it in
 //! retail order (`.local/research/npc/b50-skitch-prestep-update.md` section 1, b51 sections 1-3).
-//! Not reachable in game yet: the riding latch is held back (`ground_runtime::skitch::LATCH_ENABLED`).
+//! Reached only with `SKATE_SKITCH=1` for now (`ground_runtime::skitch::latch_enabled`).
 //! NOT RETAIL YET: the grab point is the point on the record's chord; the board forward is the deck
 //! forward; the slide friction, speed wobble, anti-flip, heading, manual and lean (`82D4A0C0`) terms are not
 //! composed yet; the sub-mode's hard event comes from the shimmy state.

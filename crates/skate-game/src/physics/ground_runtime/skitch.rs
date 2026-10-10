@@ -27,10 +27,12 @@ fn sub(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2], 0.0]
 }
 
-/// Until state 104 has its handler (skitching step 4) the latch is computed but not written: the selector would
-/// request a state the registry refuses (`player_state::transition` returns an error). The query, the bind and the
-/// time (`+2664`) still run.
-pub(crate) const LATCH_ENABLED: bool = false;
+/// The latch is opt-in until state 104's force composition is complete (`SKATE_SKITCH=1`; doc 26h "Skitching
+/// step 4e"). Without it the query, the bind and the time (`+2664`) still run, but the skater never latches.
+pub(crate) fn latch_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SKATE_SKITCH").is_ok_and(|v| v == "1"))
+}
 
 /// What `82D39D98` decided this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -102,7 +104,7 @@ pub(crate) fn query(state: &mut PhysicsGroundState, owner: &mut Owner, p: &Proce
         if let Some(d) = decision.bound {
             owner.request_primary(d);
         }
-        if let (Some((kind, id)), true) = (decision.latch, LATCH_ENABLED) {
+        if let (Some((kind, id)), true) = (decision.latch, latch_enabled()) {
             state.flag_2729 = true;
             state.word_2560 = kind;
             state.word_2564 = id;
