@@ -475,10 +475,17 @@ pub(crate) fn drive_traffic(
     mut despawns: MessageWriter<LivingWorldDespawn>,
     mut events: MessageWriter<TrafficEvent>,
     (observers, peds, ped_obstacles): (Res<super::LivingWorldObservers>, Query<(&super::peds::Pedestrian, &super::peds::PedBody)>, Option<Res<super::peds::PedObstacles>>),
+    skater: Option<Res<crate::physics::SkaterRuntime>>,
 ) {
     let st = &mut *state;
     let traffic = &mut *traffic;
     let Some(net) = st.roads.as_ref() else { return };
+    // The held bits are cleared and set again every tick (82C34CD0 / 82C361E8; b57): the local player's state 104.
+    let held = skater.as_deref().filter(|s| s.player_state.current() == skate_core::player::state::PhysicalStateId::Skitching).and_then(|s| s.skitch_state.held_car());
+    for car in &mut traffic.cars {
+        car.held = Some(car.key) == held;
+        car.player_held = car.held;
+    }
     look_ahead(traffic, &cars_q, &observers, &peds, ped_obstacles.as_deref());
     let now = st.world.tick();
     let from = traffic.last_tick.unwrap_or(now);
@@ -693,7 +700,8 @@ fn look_ahead(
     for (serial, frame) in &cars {
         let Some(car) = traffic.cars.iter_mut().find(|c| c.key == *serial) else { continue };
         let quad = look_ahead_quad(frame, car.speed, car.params.min_gap, 0.0, None, &params);
-        car.obstacle = nearest(frame, &quad, &list, car.speed, true, &params).map(|(i, d)| ObstacleHit { distance: d, soft: list[i].soft, id: list[i].id });
+        // 82C344D0: a car the player holds skips the slow-speed soft records (b57).
+        car.obstacle = nearest(frame, &quad, &list, car.speed, !car.player_held, &params).map(|(i, d)| ObstacleHit { distance: d, soft: list[i].soft, id: list[i].id });
     }
 }
 

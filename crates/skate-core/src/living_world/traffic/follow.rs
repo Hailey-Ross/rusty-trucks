@@ -7,7 +7,7 @@
 //!
 //! Retail [code, TU3; addresses are evidence only, behaviour re-implemented, not copied]:
 //! - integrator `sub_82C3FF38`: `speed (+3412) += accel (+3408) x dt`; the accel is forced to 0
-//!   while the speed is above the cap `+3688` (= `+3680` (+ `+3684` while skitched) x f2); speed
+//!   while the speed is above the cap `+3688` (= (1.0 + `+3680` (+ `+3684` while held)) x f2, b57); speed
 //!   and accel are zeroed when both are tiny. [`integrate`] is that step.
 //! - the cap: the lane's speed limit (14.167 / 13.889 m/s [data]); the recomp shows `+3688` =
 //!   14.167 on a 51 km/h road and 17.0 while skitched (`+3684` = 0.2) [trace, `npc-livingworld-re`
@@ -81,6 +81,8 @@ pub struct FollowParams {
     /// Multiplier on the lane cap (`f2` of the integrator's cap; 1.0 = retail; a mod or the
     /// skitch milestone raises it).
     pub cap_scale: f32,
+    /// Added to the cap scale while a skater holds the car (`+3684`, 0.2 in the recomp trace; b57).
+    pub held_cap_add: f32,
     /// The driver record's horn values (`livingworld_vehicle_drivers`).
     pub horn: super::horn::HornParams,
 }
@@ -99,6 +101,7 @@ impl Default for FollowParams {
             follow_min_speed: 20.0 / 3.6,
             follow_margin: 20.0 / 3.6,
             cap_scale: 1.0,
+            held_cap_add: 0.2,
             horn: super::horn::HornParams::default(),
         }
     }
@@ -135,11 +138,15 @@ pub struct Car {
     /// The horn state of the last step (`+3420`, 0 = silent) and its honked-at target (kind 2, a ped).
     pub horn: u8,
     pub honk_target: Option<u64>,
+    /// A skater holds the car this tick (`+4402` bit 0x02, set by `82C361E8` from the skater's state 104) and the
+    /// holder is the player (`+4403` bit 0x80: the car skips lights, `82C344D0`; b57). Host-set each tick.
+    pub held: bool,
+    pub player_held: bool,
 }
 
 impl Car {
     pub fn new(key: VehicleKey, cursor: LaneCursor, length: f32, params: FollowParams) -> Self {
-        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None }
+        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false }
     }
 
     /// Look-ahead distance (m): comfortable stopping distance (V3 stand-in for `+3516`).
@@ -156,7 +163,8 @@ impl Car {
             distance: self.cursor.distance,
             look_ahead: self.look_ahead(),
             min_gap: self.params.min_gap,
-            flagged: false,
+            // Mover getter 82C34598: +3424 bit 0x04 or held (+4402 bit 0x02); the entered-on-red half is open.
+            flagged: self.held,
         }
     }
 }
@@ -354,7 +362,7 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let snaps: BTreeMap<VehicleKey, VehicleSnapshot> = cars.iter().map(|c| (c.key, c.snapshot())).collect();
         let me = cars[i];
         let p = me.params;
-        let cap_now = cap(net, me.cursor.place) * p.cap_scale;
+        let cap_now = cap(net, me.cursor.place) * (p.cap_scale + if me.held { p.held_cap_add } else { 0.0 });
         // Free road: ramp up to accel_max, never past the cap.
         let ramp = (me.accel.max(0.0) + p.jerk * dt).min(p.accel_max);
         let mut accel = ramp.min((cap_now - me.speed) / dt);
@@ -369,7 +377,7 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             let to_line = net.segments[segment].length - (me.cursor.distance + me.length * 0.5);
             let snap = me.snapshot();
             if query_due(&snap, to_line) || to_line <= p.min_gap {
-                let info = junction_entry(&EntryQuery { net, signals, occupancy: &occ, vehicles: &snaps, me: &snap, connector: c, check_lights: true });
+                let info = junction_entry(&EntryQuery { net, signals, occupancy: &occ, vehicles: &snaps, me: &snap, connector: c, check_lights: !me.player_held });
                 if entry != Some(info.entry) {
                     events.push(FollowEvent::Junction { key: me.key, connector: c, entry: info.entry });
                 }

@@ -326,6 +326,14 @@ pub(crate) struct SkitchOutput {
 }
 
 impl SkitchState {
+    /// The traffic car this skater holds this tick (`82C361E8` runs every gated frame): its serial, decoded from
+    /// the car's grab spline id (`living_world::vehicles::CAR_GRAB_TAG | serial << 3 | index`).
+    pub(crate) fn held_car(&self) -> Option<u32> {
+        let car = self.car?;
+        (self.ready && car.kind == 1 && car.id & crate::living_world::vehicles::CAR_GRAB_TAG != 0)
+            .then_some((car.id & !crate::living_world::vehicles::CAR_GRAB_TAG) >> 3)
+    }
+
     /// `82D4C078`: flag_304 only while ready and not released; the rest every frame.
     pub(crate) fn output(&self) -> SkitchOutput {
         let car = self.car.unwrap_or(Descriptor { kind: 0, id: 0 });

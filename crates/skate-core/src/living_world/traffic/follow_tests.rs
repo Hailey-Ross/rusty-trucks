@@ -339,3 +339,32 @@ fn a_car_stuck_behind_a_standing_car_honks_but_a_red_light_queue_does_not() {
     assert!(cars[1..].iter().all(|c| c.limiter == super::super::horn::limiter::BEHIND_WAITING_LEAD), "{:?}", cars.iter().map(|c| c.limiter).collect::<Vec<_>>());
     assert!(cars.iter().all(|c| c.horn == 0));
 }
+
+#[test]
+fn a_held_car_drives_up_to_twelve_tenths_of_the_cap_and_the_player_skips_the_light() {
+    let net = net_straight(true);
+    let s = seg(&net, 0x100);
+    // Top speed over the run (the junction ahead slows both later).
+    let top = |held: bool| {
+        let mut clock = SignalClock::new(timings());
+        let mut cars = vec![car(&net, 1, s, 0.0)];
+        cars[0].held = held;
+        let mut best = 0.0f32;
+        for _ in 0..60 * 15 {
+            run(&net, &mut clock, &mut cars, 1);
+            best = best.max(cars[0].speed);
+        }
+        best
+    };
+    let (free, held) = (top(false), top(true));
+    assert!(held > free * 1.15, "{held} vs {free}");
+    // A player-held car ignores the red light (82C344D0); an NPC-held one stops.
+    let mut clock = SignalClock::new(timings());
+    clock.frozen = true;
+    let mut player = vec![car(&net, 1, s, 40.0)];
+    player[0].held = true;
+    player[0].player_held = true;
+    let events = run(&net, &mut clock, &mut player, 60 * 20);
+    assert!(events.iter().any(|e| matches!(e, FollowEvent::EnteredJunction { .. })), "the player-held car crossed on red");
+    assert!(player[0].snapshot().flagged);
+}

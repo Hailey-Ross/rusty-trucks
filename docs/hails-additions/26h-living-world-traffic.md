@@ -750,3 +750,24 @@ state byte 53) are not composed yet. The riding latch is opt-in: start the game 
 **Verification.** skate-game `skitching_is_connected_to_ground_and_back`; the skate-core skitching tests; skate-game
 bin 664 pass (only the known setup fingerprint failure).
 
+## Skitching step 5: the held car (2026-10-09)
+
+**Retail [code + trace] (`.local/research/npc/b57-held-car.md`; main checked the cap reads in `82C3FF38`).** Every gated
+state-104 frame `82C361E8` marks the car held (`+4402` bit 0x02; `+4403` bit 0x80 when the holder is the player);
+`82C34CD0` moves both to their "last tick" bits and clears them every tick. A held car's speed cap is
+`(1.0 + 3680 + 3684) x the lane cap` (3684 = 0.2 in the recomp trace, so 1.2x); a player-held car skips traffic lights
+in its junction query and the slow-speed soft obstacles in its look-ahead (`82C344D0`); junctions treat a held car as
+flagged (mover getter `82C34598`).
+
+**Change.** skate-core `Car::held` / `player_held` and `FollowParams::held_cap_add` (0.2): the cap scale gains the add
+while held, the junction query's light check is off while the player holds the car, the snapshot's `flagged` is the
+held bit. skate-game: `drive_traffic` clears and sets the bits every tick from the local skater's state 104
+(`SkitchState::held_car`, decoded from the grab spline id) and the look-ahead's soft opt-in is off for a player-held
+car.
+
+**Open (not ported).** The skater scan's skip while held, the 2.5 s no-follow grace after a release (`82C34B30`,
+characteristics `4727CF78`), no pull-over while held (`82C41CD0` / `82C3D830`), the traffic manager's held start / end
+calls (vt+84 / vt+88), the entered-on-red flag (`+3424` bit 0x04, `82C3B500`), NPC skaters as holders.
+
+**Verification.** skate-core `a_held_car_drives_up_to_twelve_tenths_of_the_cap_and_the_player_skips_the_light`.
+
