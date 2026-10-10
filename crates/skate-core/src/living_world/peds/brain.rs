@@ -50,6 +50,8 @@ pub struct BrainSettings {
     pub greet_seconds: f32,
     /// A conversation turn, s (ConversationSpeak timer 30, 3.0).
     pub conversation_turn_seconds: f32,
+    /// A conversation's gather timer, s (`D+1136`, 30.0; `conversation.rs`).
+    pub conversation_gather_seconds: f32,
     pub greet_speech: i32,
     pub return_greet_speech: i32,
     /// StartChase Update's and NewChasee Begin's speech values (`826A3780` 55, `826A37F0` 15).
@@ -59,7 +61,7 @@ pub struct BrainSettings {
 
 impl Default for BrainSettings {
     fn default() -> Self {
-        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, start_chase_speech: 55, new_chasee_speech: 15 }
+        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, start_chase_speech: 55, new_chasee_speech: 15 }
     }
 }
 
@@ -141,6 +143,8 @@ pub mod motion {
     pub const FLEE: u8 = 4;
     /// InterceptChasee (`826A3B10`; name open).
     pub const INTERCEPT: u8 = 3;
+    /// RunFromHonker (`826A1330`).
+    pub const RUN_FROM_HONKER: u8 = 5;
 }
 
 /// One graph operation, parsed from its name and attributes.
@@ -156,6 +160,9 @@ pub enum PedOp {
     ShouldScatter,
     /// `826ABF98`: a honker is set.
     IsBeingHonkedAt,
+    /// `826A1330` Begin: motion intent 5; `826A1358` Update: the host runs the ped sideways of the honking
+    /// car's line (`peds/honk.rs`). The `timeout` attribute is never read in retail.
+    RunFromHonker,
     /// `826AD7B0`: the zombie game mode.
     IsZombieMode,
     /// `826A99C0`: the ped has a plugin component.
@@ -391,6 +398,7 @@ impl PedOp {
             "IsPedestrianColliding" => PedOp::IsColliding,
             "ShouldScatter" => PedOp::ShouldScatter,
             "IsBeingHonkedAt" => PedOp::IsBeingHonkedAt,
+            "RunFromHonker" => PedOp::RunFromHonker,
             "IsZombieMode" => PedOp::IsZombieMode,
             "HasPlugin" => PedOp::HasPlugin,
             "DistanceToWantTarget" => PedOp::DistanceToWantTarget { want: want(), greater: float("greater"), less: float("less") },
@@ -602,6 +610,9 @@ pub struct PedBrain {
     /// The ped's speech value (`ped+2468`); `None` = the constructor's 68 (`82E33198`), which no
     /// line uses. The game sends it to the audio side when it changes.
     pub speech: Option<i32>,
+    /// The variant and row value a conversation turn stores with the speech (`ped+2472` /
+    /// `+2476`, `82E3DAD8`); no known audio meaning yet, carried with the speech event.
+    pub speech_topic: Option<(u8, i32)>,
     /// The chasee's id (`brain+3204`, the chaser component's handle).
     pub chasee: Option<u64>,
     /// This chaser's end reason (`brain+2176`).
@@ -673,6 +684,8 @@ pub enum ChaseRequest {
     ExitPlugin,
     SignalInPosition,
     PassTurn,
+    /// ConversationSpeak Begin: the host gives every listener the speech value 41.
+    Spoke,
     /// TazeWantTarget's hit: knock `target` down (the takedown's skater path).
     Taze { target: u64 },
     /// RegisterTazer: the tazer is live (audio burst).
@@ -692,6 +705,8 @@ pub struct ConversationInfo<'a> {
     pub speaker: Option<u64>,
     pub center: Vec3,
     pub free_waypoints: &'a [Vec3],
+    /// This turn's speech for the speaker (`82E3DAD8`).
+    pub speech: Option<super::conversation::TurnSpeech>,
 }
 
 /// ConversationSpeak's turn timer (timer 30 ConversationSpeakingTimer).
@@ -978,9 +993,15 @@ impl Host for BrainHost<'_> {
                 }
             }
             PedOp::ConversationSignalInPosition => b.chase_requests.push(ChaseRequest::SignalInPosition),
+            // `826A66B8` -> `82E3DAD8`: the speaker's line, listeners 41 (host).
             PedOp::ConversationSpeak => {
                 b.set_timer(SPEAK_TIMER, s.conversation_turn_seconds);
                 b.turn_passed = false;
+                if let Some(t) = self.chase.conversation.and_then(|c| c.speech) {
+                    b.speech = Some(t.value);
+                    b.speech_topic = Some((t.variant, t.list_value));
+                    b.chase_requests.push(ChaseRequest::Spoke);
+                }
             }
             PedOp::DrawTazer { want } => {
                 b.tazer_state = Some(1);
@@ -1111,6 +1132,7 @@ impl Host for BrainHost<'_> {
                     b.motion_intent = None;
                 }
             }
+            PedOp::RunFromHonker => b.motion_intent = Some(motion::RUN_FROM_HONKER),
             PedOp::Flee => {
                 b.motion_intent = Some(motion::FLEE);
                 b.flee_from = b.wants.get("flee").map(|w| w.target);

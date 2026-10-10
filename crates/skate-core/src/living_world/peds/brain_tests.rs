@@ -416,3 +416,17 @@ fn a_greet_posts_greeted_once_and_speaks_until_the_timer_runs_out() {
     h.update(2, [0; 6], &f);
     assert!(h.brain.wants.contains_key("angrychase"));
 }
+
+#[test]
+fn run_from_honker_posts_its_intent_and_keeps_the_honker() {
+    let behaviors = ops(&[("RunFromHonker", &[("timeout", "30")])]);
+    let mut brain = PedBrain { honker: Some(4), ..Default::default() };
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let f = frame();
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    h.begin(0, [0; 6], &f);
+    h.update(0, [0; 6], &f);
+    h.end(0, [0; 6], &f);
+    assert_eq!((h.brain.motion_intent, h.brain.honker), (Some(motion::RUN_FROM_HONKER), Some(4)), "only Wander clears the honker");
+}

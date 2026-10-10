@@ -33,6 +33,7 @@ pub mod colorize;
 pub mod crosswalk;
 pub mod fade;
 pub mod flee;
+pub mod honk;
 pub mod mood;
 pub mod nav;
 pub mod obstacles;

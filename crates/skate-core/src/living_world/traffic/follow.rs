@@ -81,6 +81,8 @@ pub struct FollowParams {
     /// Multiplier on the lane cap (`f2` of the integrator's cap; 1.0 = retail; a mod or the
     /// skitch milestone raises it).
     pub cap_scale: f32,
+    /// The driver record's horn values (`livingworld_vehicle_drivers`).
+    pub horn: super::horn::HornParams,
 }
 
 impl Default for FollowParams {
@@ -97,6 +99,7 @@ impl Default for FollowParams {
             follow_min_speed: 20.0 / 3.6,
             follow_margin: 20.0 / 3.6,
             cap_scale: 1.0,
+            horn: super::horn::HornParams::default(),
         }
     }
 }
@@ -121,14 +124,22 @@ pub struct Car {
     /// planner brakes hard (`sub_82C3FA08` at `0x82C3FE44`: accel = -speed) until the car stands,
     /// then the integrator clears it (`sub_82C3FF38`).
     pub hit_brake: bool,
-    /// The nearest obstacle's free distance in the look-ahead (`obstacles::nearest`; set by the host each frame,
-    /// retail `sub_82C40B70` -> `+3584..+3620`).
-    pub obstacle: Option<f32>,
+    /// The nearest obstacle in the look-ahead (`obstacles::nearest`; set by the host each frame, retail
+    /// `sub_82C40B70` -> `+3584..+3620`).
+    pub obstacle: Option<super::horn::ObstacleHit>,
+    /// The rolled driver bits (`+4401` 0x01 / 0x02; the host rolls them at spawn).
+    pub driver: super::horn::DriverBits,
+    /// The limiter kind of the last step (`+4392`, [`super::horn::limiter`]).
+    pub limiter: u8,
+    pub horn_timers: super::horn::HornTimers,
+    /// The horn state of the last step (`+3420`, 0 = silent) and its honked-at target (kind 2, a ped).
+    pub horn: u8,
+    pub honk_target: Option<u64>,
 }
 
 impl Car {
     pub fn new(key: VehicleKey, cursor: LaneCursor, length: f32, params: FollowParams) -> Self {
-        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None }
+        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None }
     }
 
     /// Look-ahead distance (m): comfortable stopping distance (V3 stand-in for `+3516`).
@@ -349,6 +360,9 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let mut accel = ramp.min((cap_now - me.speed) / dt);
         // Stop line / junction.
         let mut hold_at: Option<f32> = None;
+        // The limiter kind and the nearest limit (`+4392`, best distance; horn.rs).
+        let mut kind = super::horn::limiter::FREE;
+        let mut best = f32::INFINITY;
         let mut entry = me.entry;
         let mut committed = me.committed;
         if let (Place::Lane { segment, .. }, Some(c)) = (me.cursor.place, me.cursor.next) {
@@ -360,6 +374,13 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
                     events.push(FollowEvent::Junction { key: me.key, connector: c, entry: info.entry });
                 }
                 entry = Some(info.entry);
+                // FollowingLane stores the answer in the same field as the limiter kind (`+4392`: 1 signal,
+                // 2 approach, 3 yield, 4 blocked, 5 a yield to a flagged car); a car behind one waiting at a light
+                // (1) or a flagged yield (5) counts as waiting itself and does not get the blocked horn.
+                if info.entry != Entry::Go {
+                    kind = if info.blocker_flagged { super::horn::limiter::JUNCTION_WAIT } else { info.entry as u8 };
+                    best = to_line;
+                }
                 let comfortable = me.speed * me.speed / (2.0 * p.plan_decel.max(0.1));
                 let hard = me.speed * me.speed / (2.0 * p.hard_brake.max(0.1));
                 match info.entry {
@@ -387,16 +408,32 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         // The car ahead.
         let range = me.look_ahead() + me.speed + p.min_gap + 10.0;
         let mut limit: Option<f32> = None; // max distance the centre may reach along the current place
-        if let Some((_, gap, lead_speed)) = lead(net, cars, i, range) {
+        let mut lead_close = None;
+        if let Some((l, gap, lead_speed)) = lead(net, cars, i, range) {
             accel = accel.min(follow_accel(&p, me.speed, lead_speed, gap));
+            // `sub_82C41120`: inside one second of travel plus the standoff the lead limits; "close" = inside
+            // the standoff (ours: our follower settles at `min_gap`, so the stop margin is the tolerance).
+            lead_close = Some(gap <= p.min_gap + p.stop_margin);
+            if gap <= me.speed + p.min_gap && gap < best {
+                best = gap;
+                use super::horn::limiter::{BEHIND_LEAD, BEHIND_WAITING_LEAD, JUNCTION_WAIT};
+                kind = if matches!(cars[l].limiter, BEHIND_WAITING_LEAD | JUNCTION_WAIT) { BEHIND_WAITING_LEAD } else { BEHIND_LEAD };
+            }
             // Never closer than half the minimum gap (no overlaps whatever the braking).
             limit = Some(me.cursor.distance + (gap - p.min_gap * 0.5).max(0.0));
         }
         // The obstacle ahead (`sub_82C412D8` -> `sub_82C3FA08`, standoff = the car's min gap).
-        let accel = match me.obstacle.and_then(|d| super::obstacles::obstacle_accel(me.speed, d, p.min_gap)) {
+        let accel = match me.obstacle.and_then(|o| super::obstacles::obstacle_accel(me.speed, o.distance, p.min_gap)) {
             Some(a) => accel.min(a),
             None => accel,
         };
+        if me.obstacle.is_some_and(|o| o.distance < best) {
+            kind = super::horn::limiter::OBSTACLE;
+        }
+        // The horn timers and decider (`sub_82C41120`, `sub_82C412D8`, `sub_82C40660`).
+        let mut timers = me.horn_timers;
+        timers.update(&p.horn, kind, lead_close, me.obstacle.is_some(), me.speed, dt);
+        let (horn, honk_target) = super::horn::decide(&p.horn, me.driver, kind, &timers, me.obstacle, me.speed);
         let accel = if me.hit_brake { accel.min(-me.speed) } else { accel };
         let accel = accel.max(-p.hard_brake * 4.0).max(-me.speed / dt);
         let (mut speed, accel) = integrate(me.speed, accel, cap_now, dt);
@@ -426,6 +463,10 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         }
         car.entry = entry;
         car.committed = committed;
+        car.limiter = kind;
+        car.horn_timers = timers;
+        car.horn = horn;
+        car.honk_target = honk_target;
         let loads = &occ;
         let mut choose = |n: &RoadNetwork, s: usize, l: u8| choose_connector(n, s, l, choice, &|seg, lane| loads.lane_load(seg, lane), rng);
         let adv = car.cursor.advance(net, ds, &mut choose);

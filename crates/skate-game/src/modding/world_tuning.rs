@@ -288,6 +288,9 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         n.signals.anticipation_frames = f.anticipation_frames.unwrap_or(n.signals.anticipation_frames);
         n.signals.max_crossed_nodes = f.max_crossed_nodes.unwrap_or(n.signals.max_crossed_nodes);
     }
+    if let Some(m) = &p.traffic_horn {
+        s.traffic_horn = m.clone();
+    }
     if let Some(f) = &p.ped_brain {
         let b = &mut s.ped_brain;
         b.enabled = f.enabled.unwrap_or(b.enabled);
@@ -295,7 +298,11 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         b.values.wander_speed = f.wander_speed.unwrap_or(b.values.wander_speed);
         b.values.warn_seconds = f.warn_seconds.unwrap_or(b.values.warn_seconds);
         b.values.know_about_seconds = f.know_about_seconds.unwrap_or(b.values.know_about_seconds);
+        b.values.conversation_turn_seconds = f.conversation_turn_seconds.unwrap_or(b.values.conversation_turn_seconds);
+        b.values.conversation_gather_seconds = f.conversation_gather_seconds.unwrap_or(b.values.conversation_gather_seconds);
         b.values.warn_speech = f.warn_speech.unwrap_or(b.values.warn_speech);
+        b.run_from_honker.side_distance = f.run_from_honker_distance.unwrap_or(b.run_from_honker.side_distance);
+        b.run_from_honker.run_speed = f.run_from_honker_speed.unwrap_or(b.run_from_honker.run_speed);
     }
     if let Some(f) = &p.npc_avoid {
         let a = &mut s.npc_avoid;
@@ -498,7 +505,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "free_play": s.free_play.map(|f| json!({"traffic": f.traffic, "pedestrians": f.pedestrians, "ai_skaters": f.ai_skaters})),
                 "npc_simulated": {"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max, "respawn_seconds": s.npc_simulated.respawn_seconds, "respawn_min": s.npc_simulated.respawn_min, "respawn_max": s.npc_simulated.respawn_max, "anticipation_distance": s.npc_simulated.signals.anticipation_distance, "anticipation_frames": s.npc_simulated.signals.anticipation_frames, "max_crossed_nodes": s.npc_simulated.signals.max_crossed_nodes},
                 "npc_avoid": npc_avoid,
-                "ped_brain": {"enabled": s.ped_brain.enabled, "mood": s.ped_brain.mood, "wander_speed": s.ped_brain.values.wander_speed, "warn_seconds": s.ped_brain.values.warn_seconds, "know_about_seconds": s.ped_brain.values.know_about_seconds, "warn_speech": s.ped_brain.values.warn_speech},
+                "ped_brain": {"enabled": s.ped_brain.enabled, "mood": s.ped_brain.mood, "wander_speed": s.ped_brain.values.wander_speed, "warn_seconds": s.ped_brain.values.warn_seconds, "know_about_seconds": s.ped_brain.values.know_about_seconds, "conversation_turn_seconds": s.ped_brain.values.conversation_turn_seconds, "conversation_gather_seconds": s.ped_brain.values.conversation_gather_seconds, "run_from_honker_distance": s.ped_brain.run_from_honker.side_distance, "run_from_honker_speed": s.ped_brain.run_from_honker.run_speed, "warn_speech": s.ped_brain.values.warn_speech},
                 "npc_tricks": {"mode": s.npc_tricks.mode.name(), "gate_window": s.npc_tricks.params.gate_window, "min_air_frames": s.npc_tricks.params.min_air_frames},
                 "skater_trick_profiles": s.skater_trick_profiles.iter().map(|(k, v)| {
                     let table = |t: &Option<Vec<(i16, f32)>>| t.as_ref().map(|t| t.iter().map(|e| json!({"trick": e.0, "weight": e.1})).collect::<Vec<_>>());

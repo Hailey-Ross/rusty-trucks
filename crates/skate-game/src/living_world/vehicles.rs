@@ -46,7 +46,7 @@
 //! a mod; the spec / palette defaults come from the export (`tables.json`, `vehicles.json`).
 
 use super::{LivingWorldDespawn, LivingWorldSettings, LivingWorldSpawn, NetRole, PopulationState};
-use crate::world_audio::{AudioVelocity, TrafficAudio};
+use crate::world_audio::{AudioVelocity, HornState, TrafficAudio};
 use bevy::prelude::*;
 use skate_core::living_world::rng::Rng;
 use skate_core::living_world::traffic::follow::{self, Car, FollowEvent, FollowParams};
@@ -88,6 +88,8 @@ pub(crate) struct VehicleSpec {
     /// `aud_traffic_engine` record (spec `engine_audio`).
     pub engine: String,
     pub params: FollowParams,
+    /// The entity's driver record (`livingworld_vehicle_drivers`; the horn values are in `params.horn`).
+    pub driver: String,
 }
 
 /// Car data of the loaded world.
@@ -135,6 +137,16 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
         let spec_name = e["spec"].as_str().unwrap_or("default");
         let mut params = FollowParams::default();
         let mut engine = "default".to_string();
+        let driver = e["driver"].as_str().unwrap_or("default").to_string();
+        if let Some(f) = class("livingworld_vehicle_drivers", &driver) {
+            let num = |k: &str| f.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
+            let h = &mut params.horn;
+            h.blocked_time = num("honk_blocked_time").unwrap_or(h.blocked_time);
+            h.obstacle_time = num("honk_obstacle_time").unwrap_or(h.obstacle_time);
+            h.approach_speed = num("honk_approach_speed_kmh").map_or(h.approach_speed, |v| v / 3.6);
+            h.enabled_chance = num("Hash_B5C60C1D43899F74").unwrap_or(h.enabled_chance);
+            h.blocked_long_chance = num("Hash_7C6B48BD9ADF8E6E").unwrap_or(h.blocked_long_chance);
+        }
         if let Some(f) = class("livingworld_vehicle_characteristics", spec_name) {
             let num = |k: &str| f.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
             if let Some(v) = num("Hash_328B9F4685A14018") {
@@ -153,7 +165,7 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                 engine = k.to_string();
             }
         }
-        data.specs.insert(name.clone(), VehicleSpec { engine, params });
+        data.specs.insert(name.clone(), VehicleSpec { engine, params, driver });
     }
     Ok(data)
 }
@@ -213,6 +225,11 @@ pub(crate) enum TrafficEvent {
     Junction { id: LivingWorldId, junction: u64, connector: u32, entry: Entry },
     EnteredJunction { id: LivingWorldId, junction: u64, connector: u32 },
     EnteredLane { id: LivingWorldId, segment: u64, lane: u8 },
+    /// The horn state changed (`+3420`: 0 silent, 1..=5 the decider's kinds; horn.rs).
+    Horn { id: LivingWorldId, kind: u8 },
+    /// Horn kind 2 at a ped (`sub_82C40660` -> vt+100 `sub_82E3C3D0`): the ped's honker is this car. Sent every
+    /// frame while it lasts, as in retail.
+    HonkedAt { id: LivingWorldId, ped: u64 },
 }
 
 /// The traffic of the loaded world.
@@ -291,11 +308,22 @@ pub(crate) fn load_traffic_data(mut commands: Commands, config: Res<crate::confi
     info!("LIVING_WORLD traffic models {} specs {} lights {}", traffic.data.models.len(), traffic.data.specs.len(), traffic.clock.is_some());
 }
 
+/// A mod's horn values over the driver record's.
+fn apply_horn_patch(h: &skate_mods::world_tuning::TrafficHornPatch, p: &mut skate_core::living_world::traffic::horn::HornParams) {
+    p.blocked_time = h.blocked_time.unwrap_or(p.blocked_time);
+    p.obstacle_time = h.obstacle_time.unwrap_or(p.obstacle_time);
+    p.approach_speed = h.approach_speed_kmh.map_or(p.approach_speed, |v| v / 3.6);
+    p.approach_ttc = h.approach_seconds.unwrap_or(p.approach_ttc);
+    p.enabled_chance = h.enabled_chance.unwrap_or(p.enabled_chance);
+    p.blocked_long_chance = h.blocked_long_chance.unwrap_or(p.blocked_long_chance);
+}
+
 /// Build a car from a spawn record (pure; the engine and the tests use it).
 pub(crate) fn car_from_record(
     net: &RoadNetwork,
     data: &VehicleData,
     overrides: &VehicleOverrides,
+    horn_patches: &BTreeMap<String, skate_mods::world_tuning::TrafficHornPatch>,
     record: &skate_core::living_world::SpawnRecord,
     length: f32,
 ) -> Option<(TrafficCar, Car, TrafficAudio)> {
@@ -309,14 +337,22 @@ pub(crate) fn car_from_record(
     };
     let (chassis_id, chassis_c) = pick(&m.chassis_ids, &m.chassis, *chassis, [0.0, 0.0, 1.0, 1.0]);
     let (secondary_id, secondary_c) = pick(&m.secondary_ids, &m.secondary, *secondary, [1.0, 0.0, 0.0, 1.0]);
-    let spec = data.specs.get(entity).cloned().unwrap_or(VehicleSpec { engine: "default".into(), params: FollowParams::default() });
-    let params = overrides.params.get(entity).copied().unwrap_or(spec.params);
+    let spec = data.specs.get(entity).cloned().unwrap_or(VehicleSpec { engine: "default".into(), params: FollowParams::default(), driver: "default".into() });
+    let mut params = overrides.params.get(entity).copied().unwrap_or(spec.params);
+    // Mod horn values per driver record (`traffic_horn`), then the driver bits rolled from the spawn seed.
+    for key in ["all", spec.driver.as_str()] {
+        if let Some(h) = horn_patches.get(key) {
+            apply_horn_patch(h, &mut params.horn);
+        }
+    }
     let si = net.segment_index(SegmentId(*segment))?;
     // The connector is chosen on the first step from the live occupancy (cursor next = None here
     // is replaced at once by the engine with the loads of that tick).
     let cursor = LaneCursor { place: Place::Lane { segment: si, lane: (*lane).min(net.segments[si].lanes - 1) }, distance: distance.clamp(0.0, net.segments[si].length), next: None, lane_shift: 0.0 };
     let length = if length > 0.5 { length } else { (m.bounds[1][2] - m.bounds[0][2]).max(3.0) };
-    let car = Car::new(record.id.serial, cursor, length, params);
+    let mut car = Car::new(record.id.serial, cursor, length, params);
+    let mut horn_rng = Rng::new(skate_core::living_world::rng::derive(record.seed, &[0x484f_524e]));
+    car.driver = skate_core::living_world::traffic::horn::DriverBits::roll(&params.horn, &mut || horn_rng.unit());
     let audio = TrafficAudio { engine: spec.engine.clone(), speed: Some(0.0), load: Some(0.0), ..TrafficAudio::new(spec.engine.clone()) };
     let glb = overrides.glbs.get(model_key).cloned().unwrap_or(m.glb.clone());
     Some((
@@ -357,6 +393,7 @@ pub(crate) fn apply_vehicle_records(
     mut despawns: MessageReader<LivingWorldDespawn>,
     state: Res<PopulationState>,
     overrides: Res<VehicleOverrides>,
+    settings: Res<LivingWorldSettings>,
     mut traffic: ResMut<TrafficState>,
     mut events: MessageWriter<TrafficEvent>,
 ) {
@@ -380,7 +417,7 @@ pub(crate) fn apply_vehicle_records(
             continue;
         }
         let length = state.world.live(Kind::Vehicle).find(|l| l.id == s.id).and_then(|l| l.lane).map_or(0.0, |l| l.length);
-        let Some((meta, mut car, audio)) = car_from_record(net, &traffic.data, &overrides, s, length) else {
+        let Some((meta, mut car, audio)) = car_from_record(net, &traffic.data, &overrides, &settings.traffic_horn, s, length) else {
             warn!("LIVING_WORLD traffic: car #{} has no lane on this road network", s.id.serial);
             continue;
         };
@@ -415,7 +452,7 @@ pub(crate) fn drive_traffic(
     mut cars_q: Query<(&TrafficCar, &mut CarMotion, &mut TrafficAudio, &mut AudioVelocity)>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
     mut events: MessageWriter<TrafficEvent>,
-    (observers, peds, ped_obstacles): (Res<super::LivingWorldObservers>, Query<&super::peds::PedBody>, Option<Res<super::peds::PedObstacles>>),
+    (observers, peds, ped_obstacles): (Res<super::LivingWorldObservers>, Query<(&super::peds::Pedestrian, &super::peds::PedBody)>, Option<Res<super::peds::PedObstacles>>),
 ) {
     let st = &mut *state;
     let traffic = &mut *traffic;
@@ -500,6 +537,17 @@ pub(crate) fn drive_traffic(
         velocity.0 = motion.velocity;
         audio.speed = Some(c.speed);
         audio.load = Some(c.accel);
+        // The horn state every frame (the sound side keeps a mod's `VehicleHorn` on top); the alarm is not ours.
+        if audio.horn != HornState::Alarm {
+            let horn = if c.horn == 0 { HornState::None } else { HornState::Honk(c.horn) };
+            if audio.horn != horn {
+                events.write(TrafficEvent::Horn { id, kind: c.horn });
+            }
+            audio.horn = horn;
+        }
+        if let Some(ped) = c.honk_target {
+            events.write(TrafficEvent::HonkedAt { id, ped });
+        }
     }
     // Dead ends: the car leaves (hosts decide; a client waits for the host's record).
     if settings.net_role != NetRole::Client {
@@ -584,13 +632,14 @@ fn look_ahead(
     traffic: &mut TrafficState,
     cars_q: &Query<(&TrafficCar, &mut CarMotion, &mut TrafficAudio, &mut AudioVelocity)>,
     observers: &super::LivingWorldObservers,
-    peds: &Query<&super::peds::PedBody>,
+    peds: &Query<(&super::peds::Pedestrian, &super::peds::PedBody)>,
     props: Option<&super::peds::PedObstacles>,
 ) {
+    use skate_core::living_world::traffic::horn::ObstacleHit;
     use skate_core::living_world::traffic::obstacles::{look_ahead_quad, nearest, CarFrame, LookAheadParams, Obstacle};
     let params = LookAheadParams::default();
     let mut list: Vec<Obstacle> = observers.observers.iter().map(|o| Obstacle { position: o.position, radius: 0.0, soft: true, id: None }).collect();
-    list.extend(peds.iter().map(|b| Obstacle { position: b.position.to_array(), radius: super::vehicle_contacts::FALLBACK_PED_RADIUS, soft: true, id: None }));
+    list.extend(peds.iter().map(|(p, b)| Obstacle { position: b.position.to_array(), radius: super::vehicle_contacts::FALLBACK_PED_RADIUS, soft: true, id: Some(p.id.to_u64()) }));
     let cars: Vec<(u32, CarFrame)> = cars_q
         .iter()
         .map(|(car, motion, ..)| {
@@ -622,7 +671,7 @@ fn look_ahead(
     for (serial, frame) in &cars {
         let Some(car) = traffic.cars.iter_mut().find(|c| c.key == *serial) else { continue };
         let quad = look_ahead_quad(frame, car.speed, car.params.min_gap, 0.0, None, &params);
-        car.obstacle = nearest(frame, &quad, &list, car.speed, true, &params).map(|(_, d)| d);
+        car.obstacle = nearest(frame, &quad, &list, car.speed, true, &params).map(|(i, d)| ObstacleHit { distance: d, soft: list[i].soft, id: list[i].id });
     }
 }
 

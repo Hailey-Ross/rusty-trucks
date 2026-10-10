@@ -351,7 +351,8 @@ pub(crate) enum PedEvent {
     Takedown { id: LivingWorldId, target: u64, success: bool },
     /// The ped's AI graph changed its speech value (`SendSpeechEvent` / the warn); `state` is the
     /// graph state that sent it.
-    Speech { id: LivingWorldId, value: i32, state: String },
+    /// `topic`: a conversation turn's variant and row value (`ped+2472` / `+2476`).
+    Speech { id: LivingWorldId, value: i32, topic: Option<(u8, i32)>, state: String },
 }
 
 /// Skater against ped contact (doc 26, "Skater hits peds"). NOT RETAIL YET: the skater is a
@@ -1231,12 +1232,19 @@ pub(crate) fn think_peds(
     mut tazers: MessageWriter<crate::world_audio::PedTazerEvent>,
     // `greeted` events for other peds' mood stores (posted when the target thinks next).
     mut greeted: Local<Vec<(u64, u64, [f32; 3])>>,
+    // Conversation listeners that get the speech value 41 when they think next (`82E3DAD8`).
+    mut listening: Local<Vec<u64>>,
     // One store for reading the hits and writing mood events (a reader and a writer of the
     // same message in one system conflict).
     mut events: ResMut<bevy::ecs::message::Messages<PedEvent>>,
     mut cursor: Local<Option<bevy::ecs::message::MessageCursor<PedEvent>>>,
+    (mut traffic_events, cars): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>),
 ) {
+    // Horn kind 2 at a ped (`sub_82E3C3D0`: the honker id into brain `+3232`; the last car wins).
+    let honked: BTreeMap<u64, u64> = traffic_events.read().filter_map(|e| match e { super::vehicles::TrafficEvent::HonkedAt { id, ped } => Some((*ped, id.to_u64())), _ => None }).collect();
     let Some(graph) = data.graph.as_deref() else { return };
+    // The honking cars' pose for RunFromHonker (`826A1358` looks the car up every frame): position and forward.
+    let car_pose: BTreeMap<u64, ([f32; 3], [f32; 3])> = cars.iter().map(|(c, m)| (c.id.to_u64(), (m.curr.translation.to_array(), (m.curr.rotation * Vec3::Z).to_array()))).collect();
     // Collisions from the skater contact of the last steps (`PedEvent::Hit`): retail posts
     // `collision` to every receiver (broadcast radius 0 = unlimited); a ped that was not the one
     // hit fails its "ped itself" prerequisite and records `nearbycollision` instead
@@ -1274,7 +1282,8 @@ pub(crate) fn think_peds(
         g.chasers.retain(|c| entities.contains_key(c));
     }
     chase_groups.0.retain(|chasee, g| !g.chasers.is_empty() && entities.contains_key(chasee));
-    // Conversations: members that left the world leave; an empty one is gone.
+    // Conversations: members that left the world leave (an unfinished conversation aborts); an
+    // empty one is gone (every area is spawned: `82E1BD08` removes it).
     for c in conversations.map.values_mut() {
         let gone: Vec<u64> = c.members.iter().map(|m| m.ped).filter(|p| !entities.contains_key(p)).collect();
         for p in gone {
@@ -1282,11 +1291,22 @@ pub(crate) fn think_peds(
         }
     }
     conversations.map.retain(|_, c| !c.members.is_empty());
+    listening.retain(|p| entities.contains_key(p));
     let conversations = &mut *conversations;
     let conv_rng_seed = world_seed;
     let conv_rng = conversations.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(conv_rng_seed, &[0x434f_4e56])));
     let mut conv_rand = || conv_rng.unit();
-    let conv_params = skate_core::living_world::peds::conversation::ConversationParams::default();
+    let conv_params = skate_core::living_world::peds::conversation::ConversationParams {
+        turn_seconds: settings.ped_brain.values.conversation_turn_seconds,
+        gather_seconds: settings.ped_brain.values.conversation_gather_seconds,
+        ..Default::default()
+    };
+    // The gather timer (`82E1EB10`): a conversation starts with whoever is there when it runs out.
+    for c in conversations.map.values_mut() {
+        if c.tick(dt, &data.conversations.rows, &mut conv_rand) {
+            info!("PED_CONVERSATION id={} gather_timeout state={} members={} tick={tick}", c.id, c.state, c.members.len());
+        }
+    }
     // How many chasers a chasee takes: its type's chase record; the player's group reads the
     // `global` record (inferred: the actor's record is not decoded).
     let max_chasers = |chasee: u64| {
@@ -1340,6 +1360,13 @@ pub(crate) fn think_peds(
                         }
                     }
                 }
+            }
+            if let Some(&car) = honked.get(&me) {
+                mind.brain.honker = Some(car);
+            }
+            if let Some(i) = listening.iter().position(|&p| p == me) {
+                listening.swap_remove(i);
+                mind.brain.speech = Some(skate_core::living_world::peds::conversation::LISTENER_SPEECH);
             }
             // ChannelGreetWantTarget's `greeted` (magnitude 1.0, `8269FAC0`).
             for &(_, instigator, position) in greeted_now.iter().filter(|g| g.0 == me) {
@@ -1434,7 +1461,7 @@ pub(crate) fn think_peds(
             mind.brain.has_plugin = mind.brain.plugin.is_some();
             let conv = mind.brain.plugin.and_then(|id| conversations.map.get(&id));
             let free: Vec<[f32; 3]> = conv.map(|c| c.waypoints.iter().filter(|w| w.1.is_none()).map(|w| w.0).collect()).unwrap_or_default();
-            let conversation = conv.map(|c| skate_core::living_world::peds::brain::ConversationInfo { complete: c.is_complete(), speaker: c.speaker(), center: c.center, free_waypoints: &free });
+            let conversation = conv.map(|c| skate_core::living_world::peds::brain::ConversationInfo { complete: c.is_complete(), speaker: c.speaker(), center: c.center, free_waypoints: &free, speech: c.turn_speech() });
             let groups_now = &chase_groups.0;
             let groups = |chasee: u64| groups_now.get(&chasee).map(|g| g.info(max_chasers(chasee)));
             // UpdateBlockPrediction (`82D99540`): the chasee radius `G+1648` has no known writer: 0.0.
@@ -1586,10 +1613,17 @@ pub(crate) fn think_peds(
                     }
                     ChaseRequest::ExitPlugin => {
                         if let Some(id) = mind.brain.plugin.take() {
-                            if let Some(c) = conversations.map.get_mut(&id) {
-                                c.leave(me);
+                            use skate_core::living_world::peds::conversation::Left;
+                            let left = conversations.map.get_mut(&id).map(|c| (c.is_complete(), c.leave(me)));
+                            let how = match left {
+                                Some((false, Left::Remaining)) => "abort",
+                                Some((_, Left::Empty)) => "empty",
+                                _ => "leave",
+                            };
+                            if matches!(left, Some((_, Left::Empty))) {
+                                conversations.map.remove(&id);
                             }
-                            info!("PED_CONVERSATION id={id} leave ped=#{} tick={tick}", ped.id.serial);
+                            info!("PED_CONVERSATION id={id} leave ped=#{} result={how} tick={tick}", ped.id.serial);
                         }
                         mind.brain.has_plugin = false;
                         mind.brain.waypoint = None;
@@ -1608,8 +1642,14 @@ pub(crate) fn think_peds(
                     }
                     ChaseRequest::PassTurn => {
                         if let Some(c) = mind.brain.plugin.and_then(|id| conversations.map.get_mut(&id)) {
-                            c.pass_turn();
+                            c.pass_turn(&mut conv_rand);
                             info!("PED_CONVERSATION id={} turn state={} speaker={:?} tick={tick}", c.id, c.state, c.speaker());
+                        }
+                        continue;
+                    }
+                    ChaseRequest::Spoke => {
+                        if let Some(c) = mind.brain.plugin.and_then(|id| conversations.map.get(&id)) {
+                            listening.extend(c.listeners());
                         }
                         continue;
                     }
@@ -1735,6 +1775,20 @@ pub(crate) fn think_peds(
                     }
                 }
             }
+            // RunFromHonker (`826A1358`): every frame while the car exists, a goal 10 m sideways of its line; a
+            // car that is gone leaves the last goal (retail keeps it).
+            (Some(skate_core::living_world::peds::brain::motion::RUN_FROM_HONKER), _, _) => {
+                if let Some((car_at, dir)) = mind.brain.honker.and_then(|c| car_pose.get(&c)) {
+                    if let Some((goal, speed)) = skate_core::living_world::peds::honk::run_goal(at, *car_at, *dir, &settings.ped_brain.run_from_honker) {
+                        if mind.flee_goal.is_none() {
+                            info!("PED_HONKED ped=#{} car={:?} goal=[{:.1}, {:.1}, {:.1}] tick={tick}", ped.id.serial, mind.brain.honker, goal[0], goal[1], goal[2]);
+                        }
+                        body.nav.set_route(Some(skate_core::living_world::peds::PedRoute { points: vec![goal], looped: false }));
+                        mind.flee_goal = Some(goal);
+                        mind.brain.speed_suggestion = Some(speed);
+                    }
+                }
+            }
             _ => {
                 if mind.flee_goal.take().is_some() {
                     body.nav.set_route(None);
@@ -1746,11 +1800,13 @@ pub(crate) fn think_peds(
         // silent, as in retail).
         if mind.brain.speech != mind.spoken {
             mind.spoken = mind.brain.speech;
+            // A conversation turn's variant and row value go with its line only.
+            let topic = mind.brain.speech_topic.take();
             if let Some(value) = mind.brain.speech {
                 let state = controller.frame.current.and_then(|s| graph.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
-                info!("PED_SPEECH ped=#{} value={value} state={state} tick={tick}", ped.id.serial);
-                speech.write(crate::world_audio::PedSpeechEvent { ped: entity_id, value: crate::world_audio::SpeechValue(value) });
-                events.write(PedEvent::Speech { id: ped.id, value, state: state.to_string() });
+                info!("PED_SPEECH ped=#{} value={value} topic={topic:?} state={state} tick={tick}", ped.id.serial);
+                speech.write(crate::world_audio::PedSpeechEvent { ped: entity_id, value: crate::world_audio::SpeechValue(value), topic });
+                events.write(PedEvent::Speech { id: ped.id, value, topic, state: state.to_string() });
             }
         }
         if controller.frame.current != mind.state {

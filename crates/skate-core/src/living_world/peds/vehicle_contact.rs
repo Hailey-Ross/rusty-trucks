@@ -22,7 +22,8 @@
 //! - The car side (`sub_82C3C150`, vehicle collision interface `+136`) records an `IActor`
 //!   toucher in its "hit by" mask `+4248` and sets `+4401` bit 0x20 for a contact ahead of the
 //!   car; it does not stop or honk there. Peds flee from cars only through the horn
-//!   (`sub_82C40660` kind 2, the honked-at input, `RunFromHonker`), which is the V4 driver work.
+//!   (`sub_82C40660` kind 2, the honked-at input, `RunFromHonker`; `traffic/horn.rs` sets the
+//!   ped's honker, the RunFromHonker op is not ported yet).
 //!
 //! Ours (stated, NOT RETAIL YET where marked): the car is our kinematic box (GLB bounds), the
 //! ped body is a vertical cylinder of the NavPower agent radius and height (retail's Havok ped

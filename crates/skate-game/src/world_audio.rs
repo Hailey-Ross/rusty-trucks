@@ -408,6 +408,9 @@ impl SpeechValue {
 pub struct PedSpeechEvent {
     pub ped: Entity,
     pub value: SpeechValue,
+    /// A conversation turn's variant and row value (`ped+2472` / `+2476`); no known audio
+    /// meaning yet (b43), carried for a later port.
+    pub topic: Option<(u8, i32)>,
 }
 
 /// Hold horn kind `kind` (1..=5) for `seconds` (the AI's choice; not retail data), then back to

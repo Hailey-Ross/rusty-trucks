@@ -498,5 +498,58 @@ turn side `+3748` is open), the standoff is the car's `min_gap`, and the lists u
 **Verification.** skate-core `the_look_ahead_reaches_speed_plus_standoff_beyond_the_bumper`,
 `the_nearest_obstacle_brakes_the_car`; skate-game living_world tests (69). Not play-tested.
 
-**Open.** The horn (`sub_82C40660`, decoded in b36: kinds 1 to 6, timers) and the honked-at ped notify
-(`RunFromHonker`), the turn side, the per-ped radius, the skater-behind zone (quad B, 40 m).
+**Open.** The turn side, the per-ped radius, the skater-behind zone (quad B, 40 m). The horn: next section.
+
+## Traffic: the horn, and peds running from it (V4, 2026-10-09)
+
+**Retail [code] (`.local/research/npc/b36-traffic-v4-driver.md` sections 2, 4, 5, 8, `b41-v4-obstacles-corridor.md`
+section 3, `b44-horn-honker.md`, `.local/research/peds/b45-runfromhonker-flee-timeout.md`; main re-read the honk
+receiver `sub_82E3C3D0` and the shape of `826A1358`).**
+- Limiter kind `+4392`: each driving-state update sets 0 (free) or 2 (stop point), the lead check 1 (behind a lead
+  whose own kind is 1 or 5) or 3 (any other lead), the look-ahead 4 (obstacle); the nearest limit wins. The junction
+  answer goes into the same field (1 signal, 2 approach, 3 yield, 4 blocked, 5 a yield to a flagged car), so a car
+  queued behind one waiting at a red light counts as waiting itself.
+- Timers: blocked `+3704` grows while inside the standoff behind a kind-3 lead and slower than
+  `honk_approach_speed_kmh` (else 0 or held); obstacle `+3708` grows while the limiter is the obstacle, not inside a
+  lead's standoff, and slow (no obstacle: 0).
+- Horn decider `sub_82C40660`, every frame, first match: horn disabled (driver bit 0x01) 0; junction wait (5) kind 3;
+  blocked > `honk_blocked_time` kind 4 (driver bit 0x02) or 5; an obstacle with record flag 0 (skater / ped):
+  obstacle timer > `honk_obstacle_time` kind 2 plus the honked-at notify to the record's handle, else under 2 s to it
+  and faster than the approach speed kind 1. The horn sounds while the decider returns a kind; the sound per kind is
+  the `Traffic_Horn` AEMS program's (our native evaluator runs it).
+- Driver bits (`sub_82C42348`): percent rolls `rand() % 100 + 1 <= chance x 100` on the driver record
+  (`Hash_B5C60C1D43899F74` enabled: 1.0, taxi 0.2; `Hash_7C6B48BD9ADF8E6E` long: 1.0, fast 0.0, reckless 0.5).
+- The notify `sub_82E3C3D0` only writes the car id into the ped brain's honker (`+3232`; peds only, the skater's and
+  cars' records carry no handle). `IsBeingHonkedAt` takes Wander (off the road / at intersections) and WanderFollow
+  into RunFromHonker: Begin motion intent 5; Update every frame while the car exists: goal 10 m sideways of the car's
+  line on the ped's side (strict `dot > 0`, a tie goes to the minus side), speed 6.0 (3.0 within 2 m). The op's
+  `timeout` 30 is never read; only Wander's Begin clears the honker.
+
+**Change.** skate-core `traffic::horn` (`HornParams`, `DriverBits::roll`, `HornTimers::update`, `decide`, limiter
+kinds), `Car` gets `driver`, `limiter`, `horn_timers`, `horn`, `honk_target`, and `obstacle` is now an `ObstacleHit`
+(distance, soft, ped id); `follow::step` sets the limiter kind (junction answer, lead, obstacle), runs the timers
+and the decider. `FollowParams.horn` comes from the entity's driver record (`livingworld_vehicle_drivers` in
+tables.json). skate-core `peds::honk::run_goal`, brain op `RunFromHonker` (intent 5). skate-game: the look-ahead
+records carry ped ids; the driver bits are rolled from the spawn seed; `TrafficAudio.horn` gets the horn state every
+frame (a mod's `VehicleHorn` still plays on top; the car alarm is untouched); `TrafficEvent::Horn` on a change and
+`TrafficEvent::HonkedAt` every frame of kind 2; `think_peds` sets the honker and runs the ped to the goal (run gait,
+log `PED_HONKED`). Mod values: `living_world.traffic_horn {[<driver record> or all] = {blocked_time, obstacle_time,
+approach_speed_kmh, approach_seconds, enabled_chance, blocked_long_chance}}` (read at spawn) and
+`ped_brain.run_from_honker_distance` / `run_from_honker_speed`.
+
+**Engine choices.** "Inside the standoff behind a lead" is `gap <= min_gap + stop_margin` (our follower settles at
+`min_gap`, retail stops exactly at the standoff); the junction answer is applied before the lead and obstacle
+checks (retail's order between FollowingLane and the limiter step is not traced); RunFromHonker uses the car's
+forward axis (retail reads `[car+164]+144`, velocity or an axis, open), sets the route every frame like retail's
+path request, and skips the navmesh cast the flee legs use.
+
+**Verification.** skate-core horn tests (`a_car_stuck_behind_a_lead_honks_after_the_blocked_time`,
+`an_obstacle_gets_the_approach_horn_then_the_long_one_with_a_notify`, `a_disabled_horn_and_the_junction_wait`,
+`the_percent_roll_matches_retail_bounds`), follower test
+`a_car_stuck_behind_a_standing_car_honks_but_a_red_light_queue_does_not`, `the_ped_runs_ten_metres_sideways_on_its_own_side`,
+`run_from_honker_posts_its_intent_and_keeps_the_honker`; skate-mods `traffic_horn` validation. Not heard in game yet.
+
+**Open.** What packs `+3420` into the audio list entry (`sub_82C485A8` caller); the car vector RunFromHonker reads;
+the steering type's speed quantisation (6 stays 6, 3 becomes 2 in type 0); `IsOnRoad` / `IsOnIntersection`
+(absent, answer false, so Wander's on-road test never holds the honk back); the driver bits' other uses (0x04, 0x10).
+

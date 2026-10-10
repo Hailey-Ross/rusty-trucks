@@ -149,6 +149,9 @@ pub(crate) struct LivingWorldSettings {
     /// The ped behaviour runtime: the stock ped AI graph on each ped's brain (doc 26 "Ped
     /// behaviour runtime"); retail values, mod-tunable (`ped_brain`).
     pub ped_brain: PedBrainSettings,
+    /// Mod horn values per traffic driver record (`livingworld_vehicle_drivers` name, or `all` first), read at
+    /// spawn (`traffic_horn`); empty = the disc's values.
+    pub traffic_horn: std::collections::BTreeMap<String, skate_mods::world_tuning::TrafficHornPatch>,
     /// The player's menu choice (saved in `settings/graphics.json`), restored when a mod's
     /// override is undone.
     pub user_npc_draw_distance: f32,
@@ -194,6 +197,7 @@ impl Default for LivingWorldSettings {
             npc_simulated: Default::default(),
             npc_avoid: Default::default(),
             ped_brain: Default::default(),
+            traffic_horn: Default::default(),
             free_play: None,
             zombie: false,
             net_role: NetRole::Standalone,
@@ -730,11 +734,13 @@ pub(crate) struct PedBrainSettings {
     pub mood: bool,
     /// Where a fleeing ped runs (retail values).
     pub flee: skate_core::living_world::peds::flee::FleeParams,
+    /// RunFromHonker's goal and speeds (`826A1358`).
+    pub run_from_honker: skate_core::living_world::peds::honk::RunFromHonkerParams,
     pub values: skate_core::living_world::peds::brain::BrainSettings,
 }
 
 impl Default for PedBrainSettings {
     fn default() -> Self {
-        Self { enabled: true, mood: true, flee: Default::default(), values: Default::default() }
+        Self { enabled: true, mood: true, flee: Default::default(), run_from_honker: Default::default(), values: Default::default() }
     }
 }

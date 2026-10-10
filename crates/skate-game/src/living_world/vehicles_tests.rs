@@ -286,7 +286,7 @@ fn living_world_traffic_tint_rule() {
 fn living_world_traffic_proxy_is_the_model_box() {
     let d = data();
     let net = road();
-    let (car, ..) = car_from_record(&net, &d, &VehicleOverrides::default(), &record(7, 0, 50.0, 0), 0.0).unwrap();
+    let (car, ..) = car_from_record(&net, &d, &VehicleOverrides::default(), &std::collections::BTreeMap::new(), &record(7, 0, 50.0, 0), 0.0).unwrap();
     let t = Transform::from_xyz(1.0, 0.0, 2.0);
     let p = proxy(&car, &t, Vec3::new(0.0, 0.0, 5.0));
     assert_eq!(p.id, PROXY_ID_TAG | car.id.to_u64());

@@ -608,8 +608,7 @@ within 50 m) raises the want again on its next pass, as in retail; we keep that 
 **Engine choices.** Waypoint orientation = towards the centre; TargetWaypoint's slide moves the body straight onto
 the point (no slide clip); LockToCurrentPosition pins the body to where it stood (an origin-locked trajectory: root
 motion does not move it) and drops the route; ConversationListenToSpeaker only records the speaker to look at (no
-body turn: the body keeps the waypoint orientation; no head tracking consumer yet); no conversation speech lines yet
-(the line ids' meaning is open); the waypoints have no navmesh probe; players are never busy for check 8
+body turn: the body keeps the waypoint orientation; no head tracking consumer yet); the waypoints have no navmesh probe; players are never busy for check 8
 (unverified).
 
 **Live run (muted DownTown, 45 s).** Three conversations spawned; one ran its 5 turns with alternating speakers and
@@ -619,9 +618,43 @@ rad check at the threshold), and about 30 mood lines a second from peds whose sp
 loop by the code).
 
 **Verification.** skate-core `a_conversation_gathers_starts_and_runs_five_turns`,
-`a_lone_member_ends_the_conversation`; skate-game data-gated `living_world_ped_plugin_graphs_load` (conversation, sit,
+`a_lone_member_ends_the_conversation` (and the tests of the next section); skate-game data-gated `living_world_ped_plugin_graphs_load` (conversation, sit,
 lookat, spectate graphs load on the runtime).
 
-**Open.** The slot fill from the chosen row, vf32 / vf52, conversation speech, the facing jitter and the members
-that never arrive (above), prerequisite kinds 2 and 8 (OwnPluginObject / DisableCollisionsWithBehaviourSource flag,
+**Open.** The facing jitter (above), prerequisite kinds 2 and 8 (OwnPluginObject / DisableCollisionsWithBehaviourSource flag,
 `brain+540`), the other plugins (sit, ATM, vending, ...).
+
+## Conversation speech, gather timer and abort (2026-10-09)
+
+**Retail [code] (`.local/research/peds/b43-conversation-speech-slots.md`; main re-read `82E3DAD8`).**
+- Start (`82E1EBC0`) and every advance (`82E1ECB0`) store the turn's line id (`82E1EA98`: state 2 -> 0 or 1, 3 -> 3,
+  4 -> 5, 5 -> 6, 6 -> 7, at `D+1168`) and re-roll the variant (`D+1156`, uniform [0, 2) by `82E17478`) once per turn.
+- ConversationSpeak Begin (`826A66B8`) calls `82E3DAD8`: the speaker's speech value (`ped+2468`, the channel of every
+  ped speech) becomes line id + 33 (33 / 34 intro short / question, 36 opinion, 38 question, 39 answer, 40 outro),
+  with the variant at `ped+2472` and the row's value at `ped+2476`; every listener (vf32 `82E1E800`: members other
+  than the speaker) gets 41, which no audio event uses. Because PedestrianSpeech speaks on a change, the 41 makes the
+  next line of the same value audible.
+- The first join (`82E1D380`) sets state 1 and a 30.0 s gather timer (`D+1136`, `0x820D4924`); `82E1EB10` counts it
+  down and starts the conversation when it runs out, even if not every member signalled in position (fewer than 2
+  members then ends it, vf52 `82E1E998`: state 7, no speaker).
+- A member leaving (`82E1D470`) aborts an unfinished conversation (vf52); the last one leaving resets it, and a
+  spawned area (destroy-when-empty, set by SpawnConversationArea) is removed (`82E1BD08`).
+
+**Change.** skate-core `conversation.rs`: `line` / `variant` per turn, `TurnSpeech` (`turn_speech()`), `listeners()`,
+`tick(dt)` (gather timer), `leave` returns `Left` (NotMember / Remaining / Empty) and aborts, `pass_turn` takes the
+seeded rand; `ConversationParams.gather_seconds`. Brain: ConversationSpeak Begin writes the speaker's value and
+`PedBrain.speech_topic` (variant, row value) and posts `ChaseRequest::Spoke`; the host gives the listeners 41 when
+they think next. `PedSpeechEvent.topic` and the mod event `ped_speech` (`variant`, `list_value`) carry the topic.
+Logs: `PED_CONVERSATION ... gather_timeout`, `leave ... result=abort|empty|leave`, `PED_SPEECH ... topic=`. Mod values
+`ped_brain.conversation_turn_seconds` (3.0) and `ped_brain.conversation_gather_seconds` (30.0), 0..=100.
+
+**Engine choices.** Every conversation area is spawned (no placed map areas yet), so an empty one is removed; the
+leaver's slot key is not kept (retail keeps it for a re-join by the same entity type); a listener whose think already
+ran this tick gets its 41 on the next tick.
+
+**Verification.** skate-core `the_line_and_variant_are_rolled_once_per_turn`,
+`the_gather_timer_starts_with_whoever_is_there`, `a_member_leaving_aborts_and_the_last_one_empties_it`, and the five
+turns test now checks the values 33, 36, 38, 39, 40 and the listeners; skate-game `living_world` tests pass.
+
+**Open.** What the variant and row value select on the audio side (readers of `ped+2472` / `+2476` not found); the
+waypoint vfunc 24 body.

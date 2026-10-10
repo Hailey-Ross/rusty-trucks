@@ -316,3 +316,26 @@ fn a_car_hit_by_the_skater_ahead_brakes_to_a_stop_then_drives_on() {
     run(&net, &mut clock, &mut cars, 60);
     assert!(cars[0].speed > 0.0, "it drives on afterwards");
 }
+
+#[test]
+fn a_car_stuck_behind_a_standing_car_honks_but_a_red_light_queue_does_not() {
+    let net = net_straight(true);
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x100);
+    // A lead that never drives (cap 0) in mid-lane: the car behind is blocked (kind 3).
+    let mut lead = car(&net, 1, s, 40.0);
+    lead.params.cap_scale = 0.0;
+    let mut cars = vec![lead, car(&net, 2, s, 10.0)];
+    clock.frozen = true;
+    run(&net, &mut clock, &mut cars, 60 * 20);
+    assert_eq!(cars[1].limiter, super::super::horn::limiter::BEHIND_LEAD);
+    assert_eq!(cars[1].horn, 4, "blocked over 4 s: horn kind 4 (driver bit 0x02); gap {} timers {:?} speed {}", cars[0].cursor.distance - cars[1].cursor.distance - 4.5, cars[1].horn_timers, cars[1].speed);
+    assert_eq!(cars[0].horn, 0);
+    // The red-light queue: the first car waits at the light (1), the ones behind wait with it.
+    let mut cars = vec![car(&net, 1, s, 70.0), car(&net, 2, s, 40.0), car(&net, 3, s, 10.0)];
+    run(&net, &mut clock, &mut cars, 60 * 25);
+    assert!(cars.iter().all(|c| c.speed < 0.5));
+    assert_eq!(cars[0].limiter, Entry::Signal as u8);
+    assert!(cars[1..].iter().all(|c| c.limiter == super::super::horn::limiter::BEHIND_WAITING_LEAD), "{:?}", cars.iter().map(|c| c.limiter).collect::<Vec<_>>());
+    assert!(cars.iter().all(|c| c.horn == 0));
+}

@@ -186,6 +186,9 @@ pub struct LivingWorldPatch {
     pub npc_avoid: Option<NpcAvoidPatch>,
     /// The ped behaviour runtime (stock ped AI graph on each ped's brain).
     pub ped_brain: Option<PedBrainPatch>,
+    /// Traffic horn values per driver record (`default`, `driver_fast`, `driver_normal`, `driver_reckless`,
+    /// `driver_taxi`, or `all`, applied first).
+    pub traffic_horn: Option<BTreeMap<String, TrafficHornPatch>>,
     /// Per-kind switch and density.
     pub skaters: Option<KindPatch>,
     pub pedestrians: Option<KindPatch>,
@@ -281,8 +284,9 @@ impl NpcAvoidPatch {
 }
 
 /// The ped behaviour runtime: `enabled`, `mood` (the mood system raises wants), `wander_speed` (m/s), `warn_seconds`,
-/// `know_about_seconds` (s); 0..=100 each (retail 2.0, 3.5, 30.0); `warn_speech`, the warn's speech value 0..=127
-/// (retail 53).
+/// `know_about_seconds`, `conversation_turn_seconds`, `conversation_gather_seconds` (s); 0..=100 each (retail 2.0,
+/// 3.5, 30.0, 3.0, 30.0); `run_from_honker_distance` (m sideways of a honking car's line) and
+/// `run_from_honker_speed` (m/s), 0..=100 (retail 10.0, 6.0); `warn_speech`, the warn's speech value 0..=127 (retail 53).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PedBrainPatch {
@@ -291,7 +295,33 @@ pub struct PedBrainPatch {
     pub wander_speed: Option<f32>,
     pub warn_seconds: Option<f32>,
     pub know_about_seconds: Option<f32>,
+    pub conversation_turn_seconds: Option<f32>,
+    pub conversation_gather_seconds: Option<f32>,
+    pub run_from_honker_distance: Option<f32>,
+    pub run_from_honker_speed: Option<f32>,
     pub warn_speech: Option<i32>,
+}
+
+/// One traffic driver's horn: `blocked_time`, `obstacle_time` (s, retail 4 / taxi 1, 2), `approach_speed_kmh`
+/// (retail 5, taxi 10), `approach_seconds` (time to the obstacle for the approach horn, retail 2), each 0..=100;
+/// `enabled_chance` / `blocked_long_chance` (0..=1, the per-car rolls of driver bits 0x01 / 0x02; retail 1.0 / 1.0,
+/// taxi 0.2 enabled, fast 0.0 and reckless 0.5 long). Read when a car spawns.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrafficHornPatch {
+    pub blocked_time: Option<f32>,
+    pub obstacle_time: Option<f32>,
+    pub approach_speed_kmh: Option<f32>,
+    pub approach_seconds: Option<f32>,
+    pub enabled_chance: Option<f32>,
+    pub blocked_long_chance: Option<f32>,
+}
+
+impl TrafficHornPatch {
+    pub fn validate(&self) -> bool {
+        [self.blocked_time, self.obstacle_time, self.approach_speed_kmh, self.approach_seconds].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
+            && [self.enabled_chance, self.blocked_long_chance].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v)))
+    }
 }
 
 /// NPC skater trick choice: `mode` (one of [`NPC_SKATER_TRICK_MODES`], retail `"profile"`),
@@ -717,6 +747,13 @@ impl Merge for LivingWorldPatch {
         merge_nested(&mut self.vehicles, &b.vehicles);
         merge_nested(&mut self.free_play, &b.free_play);
         merge_opts!(self, b; ambient_skaters);
+        match (self.traffic_horn.as_mut(), &b.traffic_horn) {
+            (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
+                a.entry(k.clone()).or_insert_with(|| v.clone());
+            }),
+            (None, Some(b)) => self.traffic_horn = Some(b.clone()),
+            _ => {}
+        }
         match (self.skater_trick_profiles.as_mut(), &b.skater_trick_profiles) {
             (Some(a), Some(b)) => b.iter().for_each(|(k, v)| {
                 a.entry(k.clone()).or_insert_with(|| v.clone());
@@ -815,7 +852,7 @@ impl Merge for NpcSimulatedPatch {
 
 impl Merge for PedBrainPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, warn_speech);
+        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, conversation_turn_seconds, conversation_gather_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech);
     }
 }
 
@@ -913,8 +950,11 @@ impl LivingWorldPatch {
             })
             && self.npc_avoid.as_ref().is_none_or(NpcAvoidPatch::validate)
             && self.ped_brain.as_ref().is_none_or(|p| {
-                [p.wander_speed, p.warn_seconds, p.know_about_seconds].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
+                [p.wander_speed, p.warn_seconds, p.know_about_seconds, p.conversation_turn_seconds, p.conversation_gather_seconds, p.run_from_honker_distance, p.run_from_honker_speed].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
                     && p.warn_speech.is_none_or(|v| (0..=127).contains(&v))
+            })
+            && self.traffic_horn.as_ref().is_none_or(|m| {
+                m.len() <= 16 && m.iter().all(|(k, v)| !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic()) && v.validate())
             })
             && self.skater_trick_profiles.as_ref().is_none_or(|m| {
                 m.len() <= MAX_TEMPLATES && m.iter().all(|(k, v)| !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic()) && v.validate())
@@ -1078,6 +1118,9 @@ mod tests {
         assert!(valid_patch("living_world", &json!({"npc_avoid": {"enabled": false, "speed_margin": 2.0, "radius_pedestrian": 12.0, "cone": 1.0, "max_entries": 8}})));
         assert!(!valid_patch("living_world", &json!({"npc_avoid": {"cone": 4.0}})));
         assert!(valid_patch("living_world", &json!({"ped_brain": {"warn_speech": 54}})));
+        assert!(valid_patch("living_world", &json!({"traffic_horn": {"driver_taxi": {"enabled_chance": 0.0, "blocked_time": 2.0}}})));
+        assert!(!valid_patch("living_world", &json!({"traffic_horn": {"all": {"enabled_chance": 2.0}}})));
+        assert!(!valid_patch("living_world", &json!({"traffic_horn": {"all": {"honk": 1}}})));
         assert!(!valid_patch("living_world", &json!({"ped_brain": {"warn_speech": 128}})));
         assert!(!valid_patch("living_world", &json!({"npc_avoid": {"radius_vehicle": -1.0}})));
         assert!(!valid_patch("living_world", &json!({"npc_avoid": {"max_entries": 100}})));

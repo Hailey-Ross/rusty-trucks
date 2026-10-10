@@ -28,6 +28,7 @@
 pub mod cursor;
 pub mod follow;
 pub mod graph;
+pub mod horn;
 pub mod junction;
 pub mod obstacles;
 pub mod signals;

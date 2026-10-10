@@ -15,7 +15,8 @@
 //!   returntopatrolzone, 3 lostinterest);
 //! - `ped_taze`: a ped's tazer hit `target` (`id`, `target`);
 //! - `ped_takedown`: a ped's takedown attempt ended (`id`, `target`, `success`);
-//! - `ped_speech`: a ped's AI graph changed its speech value (`id`, `value`, `state`: the graph state).
+//! - `ped_speech`: a ped's AI graph changed its speech value (`id`, `value`, `state`: the graph state;
+//!   `variant` / `list_value`: a conversation turn's, else null).
 //!
 //! Engine-facing first: the same messages drive the engine systems; this only forwards them. Extends
 //! engine modding; there is no retail to match.
@@ -77,7 +78,7 @@ pub(crate) fn payloads(
             PedEvent::Chase { id, chasee, kind, reason } => out.push(json!({"name": "living_world", "event": "ped_chase", "id": id.to_u64(), "chasee": chasee, "kind": kind, "reason": reason})),
             PedEvent::Taze { id, target } => out.push(json!({"name": "living_world", "event": "ped_taze", "id": id.to_u64(), "target": target})),
             PedEvent::Takedown { id, target, success } => out.push(json!({"name": "living_world", "event": "ped_takedown", "id": id.to_u64(), "target": target, "success": success})),
-            PedEvent::Speech { id, value, state } => out.push(json!({"name": "living_world", "event": "ped_speech", "id": id.to_u64(), "value": value, "state": state})),
+            PedEvent::Speech { id, value, topic, state } => out.push(json!({"name": "living_world", "event": "ped_speech", "id": id.to_u64(), "value": value, "variant": topic.map(|t| t.0), "list_value": topic.map(|t| t.1), "state": state})),
             _ => {}
         }
     }
@@ -129,7 +130,7 @@ mod tests {
                 kind: skate_core::living_world::peds::skater_contact::ReactionKind::Knockdown,
                 direction: skate_core::living_world::peds::skater_contact::ReactionDirection::FromBack,
                 closing: 6.5,
-            }, PedEvent::Speech { id: LivingWorldId { kind: Kind::Pedestrian, serial: 4 }, value: 53, state: "Warn".into() }, PedEvent::Chase { id: LivingWorldId { kind: Kind::Pedestrian, serial: 4 }, chasee: 9, kind: "group_end", reason: Some(1) }],
+            }, PedEvent::Speech { id: LivingWorldId { kind: Kind::Pedestrian, serial: 4 }, value: 53, topic: None, state: "Warn".into() }, PedEvent::Chase { id: LivingWorldId { kind: Kind::Pedestrian, serial: 4 }, chasee: 9, kind: "group_end", reason: Some(1) }],
         );
         assert_eq!(out.len(), 5);
         assert_eq!((out[4]["event"].as_str(), out[4]["kind"].as_str(), out[4]["reason"].as_i64()), (Some("ped_chase"), Some("group_end"), Some(1)));
