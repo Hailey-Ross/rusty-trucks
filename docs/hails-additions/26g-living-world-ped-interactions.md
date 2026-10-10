@@ -876,6 +876,30 @@ vending / sit gates `HasFirstWaypointAvailable` / `InFrontOfFirstWaypoint`, whic
 vending machine, created `pop` at tick 1051 and sat on a bench with it (pop allows sitting); no ped took a bin in the run,
 so the throw is not seen in game yet.
 
+### Peds that start out carrying a hand prop
+
+**Problem.** Only peds that used a vending machine or a newspaper box ever held a prop; retail also gives walking peds a
+starting prop (grocery bags, purses, briefcases, coffee, skateboards, maps, ...), and the angry throw needs one.
+
+**Evidence** [code, main-read]: the ped constructor `82E33198` rolls `8269A588` with the entity's field
+`Hash_3DB019A08284F45C` (chance; `rand() % 100 + 1 <= chance x 100`), then walks its `handprop_odds` list (field
+`Hash_46B836EE959C0238`, at most 32 entries of {handprop, probability}): a second `rand() % 100 + 1` roll picks the first
+entry whose running total x 100 (`0x820ED57C` = 100.0) reaches it, and `82E3DDA0` stores the record and sets the request
+bit (no pick: the bit is cleared). The weights are not normalised. Stock [data]: 0.65 for adult women and grannies,
+0.6 for adult / business / worker men and skaters, 0.5 jocks and teens, 0.75 bums, 0.1 security (coffee), 0 for pros.
+
+**Change.** Core `HandProp::starting_pick(chance, list, chance_roll, pick_roll)`; setting `hand_prop.starting_props`
+(mod opt-out). Game: `ped_mood::starting_hand_props` loads the chance and list per entity type into
+`PedData.starting_props`; each ped rolls once with its seeded brain RNG when its brain is first set up, and the request
+goes through the existing create path (`PED_HAND_PROP ... requested <key> at spawn`).
+
+**NOT RETAIL YET / open.** The constructor also needs bit 0x80 of byte +112 of the spawn description before rolling; who
+sets it is not found (all our ambient peds roll). Retail's rolls come from its global generator. The carry channels
+(`CarrySmallRHChannel` etc., record +56 applied in pose state 7) are not played yet, so the arm keeps the walk pose.
+
+**Verification.** skate-core `the_starting_hand_prop_follows_the_chance_and_the_running_total`; skate-game
+`starting_hand_props_load_the_chance_and_the_list`. Not seen in game yet.
+
 ### Ped attack throw at the skater
 
 **Problem.** An angry ped holding a can (`pedestrian_wanttothrowhandprop.xml`: want `throwhandprop`, `CanAttackThrowHandProp`,

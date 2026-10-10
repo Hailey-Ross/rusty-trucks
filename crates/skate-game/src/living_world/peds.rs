@@ -101,6 +101,8 @@ pub(crate) struct PedData {
     pub plugins: Arc<super::ped_plugins::PluginData>,
     /// Hand props: records and models (`ped_hand_props`).
     pub hand_props: Arc<super::ped_hand_props::HandPropData>,
+    /// Each entity type's starting hand prop chance and list (`ped_mood::starting_hand_props`).
+    pub starting_props: Arc<BTreeMap<String, (f32, Vec<(String, f32)>)>>,
     /// The sit plugin's values by entity type (`ped_mood::sit_values`).
     pub sit: Arc<BTreeMap<String, skate_core::living_world::peds::brain::SitValues>>,
     /// Each entity type's vision test ranges (`ped_mood::sight`).
@@ -492,8 +494,8 @@ fn load_ped_data(
         }
         Err(error) => warn!("PED_GRAPH not loaded (peds keep wandering without the behaviour graph): {error}"),
     }
-    match std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| Ok((super::ped_mood::parse(&b)?, super::ped_mood::reaction_sets(&b), super::ped_mood::chase_records(&b), super::ped_mood::takedown_tables(&b), super::ped_mood::sight(&b), super::ped_mood::conversation_tables(&b), super::ped_mood::sit_values(&b)))) {
-        Ok((tables, sets, (chase, global), takedowns, sight, conversations, sit)) => {
+    match std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| Ok((super::ped_mood::parse(&b)?, super::ped_mood::reaction_sets(&b), super::ped_mood::chase_records(&b), super::ped_mood::takedown_tables(&b), super::ped_mood::sight(&b), super::ped_mood::conversation_tables(&b), super::ped_mood::sit_values(&b), super::ped_mood::starting_hand_props(&b)))) {
+        Ok((tables, sets, (chase, global), takedowns, sight, conversations, sit, starting_props)) => {
             info!(
                 "PED_MOOD tables: {} categories, {} results, {} reaction sets, {} entity types, {} chase records (global {})",
                 tables.categories.len(),
@@ -511,6 +513,7 @@ fn load_ped_data(
             loaded.sight = Arc::new(sight);
             loaded.conversations = Arc::new(conversations);
             loaded.sit = Arc::new(sit);
+            loaded.starting_props = Arc::new(starting_props);
         }
         Err(error) => warn!("PED_MOOD tables not loaded (no mood reactions): {error}"),
     }
@@ -1663,6 +1666,20 @@ pub(crate) fn think_peds(
             if mind.brain.rng.is_none() {
                 mind.brain.rng = Some(skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(world_seed, &[0x4252_4e52, me])));
                 mind.brain.sit = entity(me).and_then(|(name, _)| data.sit.get(name.as_str()).copied()).unwrap_or_default();
+                // The starting hand prop (ped constructor `82E33198`): the type's chance, then its weighted list.
+                let start = entity(me).and_then(|(name, _)| data.starting_props.get(name.as_str()));
+                if let (Some((chance, list)), true) = (start, settings.ped_brain.values.hand_prop.starting_props) {
+                    let r = mind.brain.rng.as_mut().expect("seeded above");
+                    let (a, b) = (r.modulo(100) + 1, r.modulo(100) + 1);
+                    if let Some(key) = skate_core::living_world::peds::brain::HandProp::starting_pick(*chance, list, a, b).map(str::to_string) {
+                        mind.brain.hand_prop.request(&key);
+                        if let Some(r) = data.hand_props.props.get(&key) {
+                            let h = &mut mind.brain.hand_prop;
+                            (h.disposable, h.can_sit, h.can_attack_throw) = (r.disposable, r.can_sit, r.can_attack_throw);
+                        }
+                        info!("PED_HAND_PROP ped=#{} requested {key} at spawn tick={tick}", ped.id.serial);
+                    }
+                }
             }
             let rng = mind.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(world_seed, &[0x4d4f_4f44, me])));
             let ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy };

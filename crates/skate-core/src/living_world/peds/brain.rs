@@ -732,6 +732,22 @@ impl HandProp {
         list.iter().rev().find(|(_, p)| *p > 0.0).map(|(k, _)| k.as_str())
     }
 
+    /// The ped's starting prop (ped constructor `82E33198` [code]): `chance_roll` and `pick_roll` are retail's two
+    /// `rand() % 100 + 1` rolls (1..=100). The ped carries something when `chance * 100 >= chance_roll` (`8269A588`, the
+    /// entity's `Hash_3DB019A08284F45C`); then the first entry of its `handprop_odds` list whose running total x 100
+    /// reaches `pick_roll` (weights are not normalised: a list summing below 1 can give nothing).
+    pub fn starting_pick(chance: f32, list: &[(String, f32)], chance_roll: u32, pick_roll: u32) -> Option<&str> {
+        if chance * 100.0 < chance_roll as f32 {
+            return None;
+        }
+        let mut total = 0.0;
+        list.iter().find(|(_, p)| {
+            total += p;
+            pick_roll as f32 <= total * 100.0
+        })
+        .map(|(k, _)| k.as_str())
+    }
+
     /// The object is gone (thrown, dropped, despawned).
     pub fn clear(&mut self) {
         *self = HandProp::default();

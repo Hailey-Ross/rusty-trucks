@@ -481,6 +481,20 @@ fn the_attack_throw_aims_at_the_want_target_and_unsets_the_want_after_the_flight
     assert!(!h.brain.wants.contains_key("throwhandprop"));
 }
 
+/// The starting hand prop (`82E33198`): the chance roll first (`8269A588`: chance x 100 >= roll), then the first entry
+/// whose running total x 100 reaches the pick roll; weights summing below 1 can give nothing.
+#[test]
+fn the_starting_hand_prop_follows_the_chance_and_the_running_total() {
+    let list = vec![("grocerybag".to_string(), 0.2), ("purse".to_string(), 0.2), ("coffee".to_string(), 0.1)];
+    assert_eq!(HandProp::starting_pick(0.65, &list, 66, 1), None, "66 > 65: no prop");
+    assert_eq!(HandProp::starting_pick(0.65, &list, 65, 1), Some("grocerybag"));
+    assert_eq!(HandProp::starting_pick(0.65, &list, 1, 20), Some("grocerybag"));
+    assert_eq!(HandProp::starting_pick(0.65, &list, 1, 21), Some("purse"));
+    assert_eq!(HandProp::starting_pick(0.65, &list, 1, 50), Some("coffee"));
+    assert_eq!(HandProp::starting_pick(0.65, &list, 1, 51), None, "the list sums to 0.5");
+    assert_eq!(HandProp::starting_pick(0.0, &list, 1, 1), None, "pros never carry");
+}
+
 /// The sit plugin's ops (`826A2898` SetSitTimer, `826AD1F0` GoingToStandBackUp): the sit time lies between the ped type's
 /// min and max, the stand-up roll follows its chance, and timer 24 is retail's SitTimer.
 #[test]

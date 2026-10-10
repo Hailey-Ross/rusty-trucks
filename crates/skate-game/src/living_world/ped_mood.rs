@@ -255,6 +255,25 @@ pub(crate) fn sit_values(bytes: &[u8]) -> BTreeMap<String, skate_core::living_wo
         .collect()
 }
 
+/// Each entity type's starting hand prop: the carry chance (`Hash_3DB019A08284F45C`, read by `8269A588` in the ped
+/// constructor `82E33198`) and its `handprop_odds` list of (handprop key, probability).
+pub(crate) fn starting_hand_props(bytes: &[u8]) -> BTreeMap<String, (f32, Vec<(String, f32)>)> {
+    let Ok(root) = serde_json::from_slice::<Value>(bytes) else { return Default::default() };
+    let Some(entities) = root.pointer("/classes/livingworld_entities").and_then(Value::as_object) else { return Default::default() };
+    let e = Class(entities);
+    entities
+        .iter()
+        .map(|(k, v)| {
+            let list = v.pointer("/fields/handprop_odds").and_then(Value::as_array).map_or_else(Vec::new, |a| {
+                a.iter()
+                    .filter_map(|x| Some((x.pointer("/ref/key")?.as_str()?.to_string(), x.get("probability")?.as_f64()? as f32)))
+                    .collect()
+            });
+            (k.clone(), (e.f32(k, "Hash_3DB019A08284F45C").unwrap_or(0.0), list))
+        })
+        .collect()
+}
+
 pub(crate) fn conversation_tables(bytes: &[u8]) -> ConversationTables {
     let Ok(root) = serde_json::from_slice::<Value>(bytes) else { return Default::default() };
     let class = |n: &str| root.pointer(&format!("/classes/{n}")).and_then(Value::as_object);
@@ -303,6 +322,15 @@ pub(crate) fn reaction_sets(bytes: &[u8]) -> BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    /// Each entity type's starting prop chance and its (key, probability) list from tables.json.
+    #[test]
+    fn starting_hand_props_load_the_chance_and_the_list() {
+        let json = br#"{"classes":{"livingworld_entities":{"granny":{"fields":{"Hash_3DB019A08284F45C":0.65,"handprop_odds":[{"ref":{"class":"livingworld_handprops","key":"purse"},"probability":0.3}]}},"chris_cole":{"fields":{"handprop_odds":[]}}}}}"#;
+        let t = super::starting_hand_props(json);
+        assert_eq!(t["granny"], (0.65, vec![("purse".to_string(), 0.3)]));
+        assert_eq!(t["chris_cole"], (0.0, vec![]));
+    }
+
     #[test]
     fn chase_records_merge_parents_per_entity_type() {
         let json = br#"{"classes": {

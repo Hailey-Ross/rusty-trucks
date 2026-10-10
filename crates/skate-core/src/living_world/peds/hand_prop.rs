@@ -45,6 +45,8 @@ pub struct HandPropSettings {
     /// A released prop takes part in the skater's body contact (retail: an ordinary DMO contact, b92 Q2 / b94); a mod
     /// may turn it off.
     pub skater_contact: bool,
+    /// Walking peds roll a starting prop from their type's chance and list (`82E33198`); a mod may turn it off.
+    pub starting_props: bool,
     /// The released prop's contact group by mass (`82C56BA0`: 12 at or above the small-object mass, else 14; the
     /// threshold is the skater's `SmallObjectMassThreshold` 5.5 [inferred same field, b94]).
     pub heavy_group: u32,
@@ -75,6 +77,7 @@ impl Default for HandPropSettings {
             half_gravity: 4.9,
             unlink_box: [0.5, 2.0, 0.5],
             skater_contact: true,
+            starting_props: true,
             heavy_group: 12,
             small_group: 14,
             clip_blend: 0.2,
