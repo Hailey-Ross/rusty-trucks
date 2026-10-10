@@ -10,7 +10,7 @@ use skate_core::physics::force_queue::QueuedPointForce;
 use skate_core::math::Vector3;
 use skate_core::player::offboard::grab_scene::Descriptor;
 use skate_core::player::selector::conditions::{condition_is_off_ground_skitching, BoardBodyState, TwoStageThresholds};
-use skate_core::riding::skitching::{frame, hold, lean, shimmy, target, SkitchSpringInput, SkitchSpringSettings, SkitchSubMode, SkitchSubModeInput, SkitchSubModeSettings};
+use skate_core::riding::skitching::{frame, hands, hold, lean, shimmy, target, SkitchSpringInput, SkitchSpringSettings, SkitchSubMode, SkitchSubModeInput, SkitchSubModeSettings};
 
 /// Frames the hands, forearms and head stay out of collision each update (`82D91298(state+28, 5)`).
 const CONTACT_OFF_FRAMES: u32 = 5;
@@ -25,6 +25,7 @@ pub(crate) struct SkitchSettings {
     pub hold: hold::HoldSettings,
     pub shimmy: shimmy::ShimmySettings,
     pub lean: lean::LeanSettings,
+    pub hands: hands::HandSettings,
     /// The pre-step's off-ground test (`82D47FC0`: `40AAD3FD99B464F4` 0.1, `F178F963558D24A0` 0.05,
     /// `03A59CDFA0B0B967` 0.1).
     pub off_ground: TwoStageThresholds,
@@ -40,6 +41,7 @@ impl Default for SkitchSettings {
             hold: Default::default(),
             shimmy: Default::default(),
             lean: Default::default(),
+            hands: Default::default(),
             off_ground: TwoStageThresholds { field_856_primary: 0.1, field_856_secondary: 0.05, field_7692: 0.1 },
         }
     }
@@ -63,8 +65,8 @@ pub(crate) struct SkitchState {
     /// 992: time in the state; 784: last frame's target direction (the spring reads it before the target step).
     pub time: f32,
     pub target_dir: [f32; 3],
-    /// 1328 / 1332: the hands are off the edge (set per sub-mode, b52 section 3).
-    pub hands_off: [bool; 2],
+    /// The hands (`82D4A378`: 1328 / 1332 off flags, weights, 984 / 988).
+    pub hands: hands::HandState,
     /// 816: the last spring force.
     pub spring_force: [f32; 3],
     /// The published grab height (280), closing rate (956 -> 284) and along ratio (936 -> 288).
@@ -79,6 +81,10 @@ pub(crate) struct SkitchState {
 fn v(words: &[u32; 72], offset: usize) -> [f32; 3] {
     let i = offset / 4;
     [f32::from_bits(words[i]), f32::from_bits(words[i + 1]), f32::from_bits(words[i + 2])]
+}
+/// A point through an animation transform (rows; `row3 + x row0 + y row1 + z row2`).
+fn affine(t: &[[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| t[3][i] + p[0] * t[0][i] + p[1] * t[1][i] + p[2] * t[2][i])
 }
 fn v4(r: [u32; 4]) -> [f32; 3] {
     [f32::from_bits(r[0]), f32::from_bits(r[1]), f32::from_bits(r[2])]
@@ -96,7 +102,7 @@ pub(crate) fn enter(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Re
     s.shimmy = shimmy::ShimmyState::default();
     s.car = Some(Descriptor { kind: words[47], id: words[48] });
     s.time = 0.0;
-    s.hands_off = [true; 2];
+    s.hands = hands::HandState::default();
     s.spring_force = [0.0; 3];
     s.lean_yaw = 0.0;
     s.lean = 0.0;
@@ -128,7 +134,10 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     };
     let world_grab_z = skater.animation_input.extra.world_grab_z;
     // 82D4B500: z of Skeleton+14208 (part 0's raw global translation; b55).
-    let body_height = skater.animated_skeleton.raw_part0_global[3][2];
+    let body_height = skater.animated_skeleton.raw_part_globals[0][3][2];
+    let raw_parts = skater.animated_skeleton.raw_part_globals;
+    let to_world_m = skater.animated_skeleton.roots.animation_to_world;
+    let world_grab_y = skater.animation_input.extra.world_grab_y;
     let board_speed = p.scalar_2612;
     let negate_height = p.flags_2476 & 0x4 != 0;
     let body = BoardBodyState { field_856: physics.riding.wheel_lines.minimum_distance, field_7692: physics.riding.ground.time_without_wheel_contact };
@@ -138,6 +147,7 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     let mut forces: Vec<QueuedPointForce> = Vec::new();
     let mut board: Option<BoardStep> = None;
     let mut lean_override = None;
+    let mut hand_targets: [Option<hands::HandTarget>; 2] = [None; 2];
     let suppress_lean = p.flags_2488 & 0x0080_0000 != 0;
     if ready {
         // Pre-step 82D47FC0.
@@ -154,18 +164,12 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         // Sub-mode 82D49580 and its release bits.
         let from = s.sub.mode;
         s.sub.step(
-            &SkitchSubModeInput { position: f.along, half_length: half_range, stick, event: s.shimmy.event, car_accel: s.shimmy.car_accel, ready_a: f32::from(u8::from(!s.hands_off[0])), ready_b: f32::from(u8::from(!s.hands_off[1])) },
+            &SkitchSubModeInput { position: f.along, half_length: half_range, stick, event: s.shimmy.event, car_accel: s.shimmy.car_accel, ready_a: f32::from(u8::from(!s.hands.off[0])), ready_b: f32::from(u8::from(!s.hands.off[1])) },
             &settings.sub_mode,
             dt,
         );
         s.hold.mode_bits(from, s.sub.mode, s.sub.switched);
-        // 82D49AB8: hands per sub-mode, then the hold step 82D49D70.
-        match s.sub.mode {
-            1 => s.hands_off = [false, false],
-            2 => s.hands_off = if f.along > 0.0 { [true, false] } else { [false, true] },
-            3 => s.hands_off = [true, true],
-            _ => {}
-        }
+        // 82D49AB8 then the hold step 82D49D70.
         s.hold.step(f.along, f.along_rate, f.along_limit, stick, &settings.hold, dt);
         // 82D49AB8's 936 and the publication's grab height (previous frame at the posed hand, minus the skater).
         s.along_ratio = (f.along / half_range.max(1e-6)).clamp(-1.0, 1.0);
@@ -181,6 +185,29 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         s.shimmy.step(
             &shimmy::ShimmyInput { accel, stick, sub_mode: s.sub.mode, tows_fast: f.tows_fast, along: f.along, edge_point: s.hold.target, limit: f.along_limit, tow_speed: f.tow_speed, side_distance: f.side_distance, dt },
             &settings.shimmy,
+        );
+        // Hands 82D4A378: grip points, release flags, IK weights (writes the hand IK after this borrow).
+        let m = |p: [f32; 3]| affine(&to_world_m, p);
+        let delta = f.car_delta;
+        let motion = move |p: [f32; 3]| frame::to_world(&delta, p);
+        let part = |i: usize| [raw_parts[i][3][0], raw_parts[i][3][1], raw_parts[i][3][2]];
+        hand_targets = s.hands.step(
+            &hands::HandInput {
+                sub_mode: s.sub.mode,
+                lean_yaw: s.lean_yaw,
+                posed: s.hold.posed,
+                half_range,
+                car_velocity: f.car_velocity,
+                mirrored: negate_height,
+                world_grab: [world_grab_y, world_grab_z],
+                hands: [part(3), part(7)],
+                shoulders: [part(5), part(9)],
+                to_world: &m,
+                car_motion: &motion,
+                spline: &chord,
+                dt,
+            },
+            &settings.hands,
         );
         // Forces 82D4AC38 (sub-mode 4: steering only, nothing queued).
         if s.sub.mode != 4 {
@@ -232,7 +259,7 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
             lean_override = Some(m);
         }
         // Tail 82D4AFB8.
-        let (mode, impulse) = s.hold.tail(s.sub.mode, grab_input, s.hands_off[0] && s.hands_off[1], &settings.hold, dt);
+        let (mode, impulse) = s.hold.tail(s.sub.mode, grab_input, s.hands.off[0] && s.hands.off[1], &settings.hold, dt);
         s.sub.mode = mode;
         let impulse_force = match impulse {
             Some(hold::Impulse::PullIn) => Some(target::pull_in_force(f.side_dir, f.axis_distance_rate, f.tow_speed, mass, dt, &settings.target)),
@@ -248,6 +275,15 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     }
     if let Some(m) = lean_override {
         skater.animated_skeleton.board_offset.refresh_orientation(m);
+    }
+    // 82BD9728 / 82BD97D0: hand A -> IK limb 2, hand B -> limb 3 (the handplant hand IK's slots).
+    for (h, t) in hand_targets.iter().enumerate() {
+        if let Some(t) = t {
+            let limb = 2 + h;
+            skater.foot_ik.state.external_targets[limb].world_position = [t.position[0], t.position[1], t.position[2], 1.0];
+            skater.foot_ik.state.limbs[limb].external_target_set = true;
+            skater.foot_ik.state.limbs[limb].target_blend = t.weight;
+        }
     }
     let q = physics.board.forces_mut();
     for force in forces {
@@ -353,6 +389,8 @@ pub(crate) struct SkitchOutput {
     pub absorb_284: f32,
     pub along_288: f32,
     pub shimmy_136: f32,
+    pub grip_132: f32,
+    pub hands_140: u32,
 }
 
 impl SkitchState {
@@ -376,6 +414,8 @@ impl SkitchState {
             absorb_284: self.absorb,
             along_288: self.along_ratio,
             shimmy_136: self.hold.posed_step * 60.0,
+            grip_132: self.hands.grip_height,
+            hands_140: self.hands.mask,
         }
     }
 }

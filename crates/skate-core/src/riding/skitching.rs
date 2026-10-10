@@ -21,6 +21,7 @@ pub mod target;
 pub mod hold;
 pub mod shimmy;
 pub mod lean;
+pub mod hands;
 
 /// `physics_state_skitching/default` values the spring reads (vault data).
 #[derive(Clone, Copy, Debug, PartialEq)]

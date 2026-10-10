@@ -791,3 +791,21 @@ skitch graph nodes (IsSkitchShimmying, SkitchShimmyingBehaviour, SkitchingBehavi
 IsSkitchingWithAbsorb), not evaluated by our graph host yet. Open: animation 132 (988) / 140 (984) and ground 308 (996)
 from the hand-target step `82D4A378` (b59 decoding), state byte 53.
 
+## Skitching step 4g: the hands (2026-10-09)
+
+**Retail [code + data] (`.local/research/npc/b59-skitch-hand-targets.md`; main checked the IK write path).**
+`82D4A378` places each hand on the grab edge at the posed hand position plus that hand's skeleton-local offset, lets a
+hand go when the lean yaw leaves its bound (-60..35 / -35..60 degrees) or its shoulder is more than 0.9 + 0.7 m from
+its grip point (through the skeleton and the car's last-frame motion), moves the hand IK weights toward on / off by
++0.03 / -0.2 per update, follows the world grab height into 988 (gain 0.1, cap 0.8) and hands the grip points (plus
+the car's motion over one tick, clamped to 0.9 m from the shoulder) to the hand IK (`82BD9728` / `82BD97D0`). b59
+corrects b58: the targets are stack vectors, not state+704 / +720.
+
+**Change.** skate-core `riding::skitching::hands` (`HandState::step`, `HandSettings` with the vault values);
+skate-game `skitch_state` runs it after the hold step, feeds the hand-off flags to the sub-mode and the tail (replacing
+the per-sub-mode stand-in), writes the hand IK through the handplant's slots (limb 2 / 3) and publishes 984 / 988
+(animation 140 / 132); `AnimatedSkeleton.raw_part_globals` keeps every part's raw global (was part 0 only).
+
+**Verification.** skate-core `hands_grip_the_edge_and_let_go_when_out_of_reach`; skate-game skitch / handplant /
+animated tests. Not seen in game yet.
+
