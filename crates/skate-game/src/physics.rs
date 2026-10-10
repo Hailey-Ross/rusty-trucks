@@ -634,6 +634,7 @@ impl GamePhysics {
         ai_intents: &[(String, f32)],
     ) -> Result<(), String> {
         self.swap_skater_context(context);
+        controls.ai_driven = true;
         let mut actions = skate_core::input::tick::TickInput::new(0, skate_core::input::gameplay_map::GameplayActions::from_values([0.0; 18]), true).actions();
         let result = controls.update_for_physics(&mut actions, self, skater, camera).and_then(|()| {
             // The AI's ActionGraph signals (`skate_core::living_world::ai_signals`) go where the

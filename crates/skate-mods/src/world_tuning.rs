@@ -43,7 +43,8 @@
 //!   the caps, 0 removes them at once, `ai_skaters` on / off; absent = career free roam),
 //!   `npc_simulated {enabled, radius, max, respawn_seconds, respawn_min, respawn_max}` (NPC
 //!   skaters near the player as full physics skaters driven by their AI record; default off
-//!   until play-tested, 40 m, 3; bail respawn after 5 s clamped to 1.5..7.9 s),
+//!   until play-tested, 40 m, 3; bail respawn after 5 s clamped to 1.5..7.9 s; mode 7 walk back
+//!   `walk_back` (retail on), `walk_arrive_distance` (2.4 m, 0..=20), `walk_stuck_ticks` (600, 0..=36000)),
 //!   `npc_avoid {enabled, max_entries, skitch_cooldown_ticks, radius_skater, radius_pedestrian,
 //!   radius_vehicle, radius_prop, cone, wide_cone, wide_cone_distance, skater_radius,
 //!   speed_margin, stop_gap, stop_gap_far, stop_cone, stop_gap_prop, side_on_angle,
@@ -235,6 +236,12 @@ pub struct NpcSimulatedPatch {
     pub anticipation_distance: Option<f32>,
     pub anticipation_frames: Option<u32>,
     pub max_crossed_nodes: Option<u32>,
+    /// Mode 7: step off and walk back to the line past a blocking prop (controller B, retail on), the
+    /// horizontal arrival distance (m, 0..=20; retail 2.4) and the ticks on one waypoint before it asks to bail
+    /// (0..=36000; retail 600).
+    pub walk_back: Option<bool>,
+    pub walk_arrive_distance: Option<f32>,
+    pub walk_stuck_ticks: Option<u32>,
 }
 
 /// The NPC skaters' obstacle avoider (`skate_core::living_world::avoid::AvoidSettings`): every
@@ -857,7 +864,7 @@ impl Merge for FreePlayPatch {
 
 impl Merge for NpcSimulatedPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, anticipation_distance, anticipation_frames, max_crossed_nodes);
+        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks);
     }
 }
 
@@ -958,6 +965,8 @@ impl LivingWorldPatch {
                     && n.anticipation_distance.is_none_or(|v| v.is_finite() && (0.0..=50.0).contains(&v))
                     && n.anticipation_frames.is_none_or(|v| v <= 600)
                     && n.max_crossed_nodes.is_none_or(|v| v <= 60)
+                    && n.walk_arrive_distance.is_none_or(|v| v.is_finite() && (0.0..=20.0).contains(&v))
+                    && n.walk_stuck_ticks.is_none_or(|v| v <= 36000)
             })
             && self.npc_avoid.as_ref().is_none_or(NpcAvoidPatch::validate)
             && self.ped_brain.as_ref().is_none_or(|p| {

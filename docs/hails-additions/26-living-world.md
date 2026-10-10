@@ -72,6 +72,7 @@ the file of their topic (and get a line here).
 - [NPC skater proxies in retail's collision groups (2026-10-09)](26e-living-world-skater-ai.md#npc-skater-proxies-in-retails-collision-groups-2026-10-09)
 - [Simulated NPC skaters bail and respawn (M7, 2026-10-09)](26e-living-world-skater-ai.md#simulated-npc-skaters-bail-and-respawn-m7-2026-10-09)
 - [Simulated NPC skaters do their recorded jumps and tricks (M7, 2026-10-09)](26e-living-world-skater-ai.md#simulated-npc-skaters-do-their-recorded-jumps-and-tricks-m7-2026-10-09)
+- [Avoider mode 7: stepping off and walking back to the line (2026-10-10)](26e-living-world-skater-ai.md#avoider-mode-7-stepping-off-and-walking-back-to-the-line-2026-10-10)
 
 ### 26f: Pedestrians: body, navigation and look
 

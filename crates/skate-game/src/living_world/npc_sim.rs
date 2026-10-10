@@ -37,11 +37,17 @@ pub(crate) struct SimulatedTierSettings {
     pub respawn_max: f32,
     /// The PathController's ActionGraph signals (anticipation and trick dispatch, retail values).
     pub signals: skate_core::living_world::ai_signals::SignalSettings,
+    /// Mode 7 (a prop blocks the line): step off and walk back to the line past it with controller B
+    /// ("NavMeshController", retail on; a mod may turn it off) and its numbers, plus the sub-mode / reposition
+    /// numbers of the line controller.
+    pub walk_back: bool,
+    pub navmesh: skate_core::living_world::controller_b::ControllerBSettings,
+    pub controller: skate_core::living_world::ai_controller::ControllerSettings,
 }
 
 impl Default for SimulatedTierSettings {
     fn default() -> Self {
-        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius: 40.0, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default() }
+        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius: 40.0, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, navmesh: Default::default(), controller: Default::default() }
     }
 }
 
@@ -70,6 +76,41 @@ pub(crate) struct NpcSim {
     respawn_in: Option<u32>,
     /// The node the trick dispatcher handled last (`pc+820`).
     last_node: Option<u32>,
+    /// Controller B while it is the active controller (`brain+104`), with the line and node it walks back to.
+    walker: Option<Walker>,
+}
+
+/// Controller B's run: the line (`ctrl+592`) and node A re-attaches to when B hands back.
+struct Walker {
+    b: skate_core::living_world::controller_b::ControllerB,
+    line: [u8; 16],
+    node: u32,
+}
+
+/// What B reads from the simulated skater (b80): `[rec+56]+161` = SkaterOffBoard (Processed +2484 0x08000000),
+/// `+160` = TransitioningOnOffBoard (+2480 0x4), both written by `82DB6EC0`; "can move" (`82466ED0`) = off the board
+/// and not toggling (its `[rec+72]+308 / +309` terms are not identified: taken as clear); the hand-back byte
+/// `[rec+28]+59` = the wipeout bit (`82DB6EC0` copies it there).
+pub(crate) fn walker_input(runtime: &SkaterRuntime) -> skate_core::living_world::controller_b::BInput {
+    // The skater, not the board (left lying once off): P = the animation root ([rec+20]+416), B+112 = its forward
+    // row ([rec+20]+0 [inference: forward]).
+    let root = runtime.animated_skeleton.roots.animation_to_world;
+    let position = [root[3][0], root[3][1], root[3][2]];
+    let forward = [root[2][0], 0.0, root[2][2]];
+    let p = &runtime.player_input.processed;
+    let off_board = p.flags_2484 & 0x0800_0000 != 0;
+    let toggling = p.flags_2480 & 0x4 != 0;
+    skate_core::living_world::controller_b::BInput {
+        position,
+        body: forward,
+        facing: forward[0].atan2(forward[2]),
+        abort_flag: false,
+        state_hand_back: p.flags_2468 & WIPEOUT_BIT != 0,
+        online: false,
+        can_move: off_board && !toggling,
+        byte_161: off_board,
+        byte_160: toggling,
+    }
 }
 
 impl NpcSim {
@@ -110,6 +151,7 @@ fn spawn_sim(
         camera: Box::new(crate::camera::CameraRuntime::load(&config.asset_root)?),
         respawn_in: None,
         last_node: None,
+        walker: None,
     })
 }
 
@@ -123,6 +165,7 @@ pub(crate) fn simulate(
     config: Option<Res<crate::config::Config>>,
     graphs: Option<Res<crate::graph_runtime::StockGraphs>>,
     physics: Option<ResMut<GamePhysics>>,
+    peds: Option<Res<super::peds::PedData>>,
     mut npcs: Query<(Entity, &NpcSkater, &mut NpcReplay, Option<&mut NpcSim>)>,
     mut events: MessageWriter<super::npc_skaters::NpcSkaterEvent>,
     mut calls: Local<u64>,
@@ -153,6 +196,7 @@ pub(crate) fn simulate(
                     continue;
                 }
                 let sim = &mut *sim;
+                let replay = &mut *replay;
                 // Bail: the line waits (the cursor is held back) until the respawn places the
                 // skater back on it (retail: placed at the chosen node of its current path, path
                 // state 8, then the spawn push; no fade).
@@ -184,6 +228,82 @@ pub(crate) fn simulate(
                 }
                 let deck = GamePhysics::context_deck(&sim.context);
                 let forward = [deck.basis.columns[2][0], deck.basis.columns[2][1], deck.basis.columns[2][2]];
+                let direct = skate_core::living_world::controller_b::DirectPath;
+                let paths: &dyn skate_core::living_world::controller_b::PathService = match peds.as_deref().and_then(|p| p.nav.as_deref()) {
+                    Some(mesh) => mesh,
+                    None => &direct,
+                };
+                // Mode 7 (b66 / b70 / b78 / b79): the line controller steps off (sub-mode 3 and a one-shot
+                // reposition; a second tick in mode 7 sets sub-mode 5 and posts WipeOutRequest), and the
+                // reposition swaps to controller B, which walks the skater back to the chosen line node.
+                let mut walk_intents: Vec<(String, f32)> = Vec::new();
+                if rules.walk_back && sim.walker.is_none() {
+                    use skate_core::living_world::{ai_controller, avoid::AvoidMode};
+                    let a = &mut replay.avoid;
+                    let mode_7 = a.last.mode == AvoidMode::StepOff;
+                    let prop_node = a.last.steer_target.and_then(|id| a.last.entries.iter().find(|x| x.id == id)).and_then(|x| x.path).map_or(replay.cursor.node, |p| p.node);
+                    let airborne = matches!(state_now as u32, 200..300);
+                    if let Some(w) = ai_controller::step_off(&mut a.controller, &rules.controller, mode_7, airborne, false, prop_node) {
+                        walk_intents.push(("WipeOutRequest".into(), w));
+                        info!("NPC_STEP_OFF #{} {} wipe-out request (still blocked, node {prop_node})", npc.id.serial, npc.character);
+                    }
+                    if let Some(line) = lines.get(&replay.cursor.line) {
+                        let nodes = line.nodes.len() as u32;
+                        if let Some(node) = ai_controller::take_reposition(&mut a.controller, &rules.controller, false, *calls, mode_7, replay.cursor.node, prop_node, nodes) {
+                            // 8246FE38 -> 82455728: the first calm node from there.
+                            let node = ai_controller::safe_node(line, node, &rules.controller);
+                            let n = &line.nodes[node as usize];
+                            let l = (n.step[0] * n.step[0] + n.step[1] * n.step[1] + n.step[2] * n.step[2]).sqrt();
+                            let dir = if l > 1e-6 { n.step.map(|x| x / l) } else { [0.0; 3] };
+                            let input = walker_input(&sim.runtime);
+                            match skate_core::living_world::controller_b::ControllerB::activate(&rules.navmesh, paths, n.position, dir, &input) {
+                                Some(b) => {
+                                    info!("NPC_WALK_BACK #{} {} start: node {node} at [{:.1}, {:.1}, {:.1}], {} waypoints", npc.id.serial, npc.character, n.position[0], n.position[1], n.position[2], b.path.len());
+                                    events.write(super::npc_skaters::NpcSkaterEvent::WalkBack { id: npc.id, node, started: true });
+                                    sim.walker = Some(Walker { b, line: replay.cursor.line, node });
+                                }
+                                None => info!("NPC_WALK_BACK #{} {} no plan to node {node}: stays with the line controller", npc.id.serial, npc.character),
+                            }
+                        }
+                    }
+                }
+                if let Some(w) = sim.walker.as_mut() {
+                    use skate_core::living_world::controller_b::BTick;
+                    let input = walker_input(&sim.runtime);
+                    match w.b.tick(&rules.navmesh, paths, &input) {
+                        BTick::Idle => {}
+                        BTick::Controls(c) => {
+                            walk_intents.extend(c.intents().into_iter().map(|(k, v)| (k.to_string(), v)));
+                        }
+                        BTick::HandBack { reason, wipe_out } => {
+                            if wipe_out {
+                                walk_intents.push(("WipeOutRequest".into(), 1.0));
+                            }
+                            // A re-attaches by its saved line id at the node (`824689C0`); a success resets the
+                            // line controller's sub-mode (b66).
+                            replay.cursor = skate_core::living_world::replay::LineCursor::spawn(&*lines, w.line, w.node);
+                            skate_core::living_world::ai_controller::reposition_done(&mut replay.avoid.controller);
+                            info!("NPC_WALK_BACK #{} {} hand back ({reason:?}) at line node {}", npc.id.serial, npc.character, w.node);
+                            events.write(super::npc_skaters::NpcSkaterEvent::WalkBack { id: npc.id, node: w.node, started: false });
+                            sim.walker = None;
+                        }
+                    }
+                }
+                if sim.walker.is_some() {
+                    // Controller B is the active controller: no PathController record, signals or spawn push (the
+                    // AI source stays present but not fresh: +10689 set, +10688 clear, so the biped runs in the AI's
+                    // direct mode on OB_Mag / OB_Turn, `82D310F8`; b80); the line waits.
+                    if let Some(source) = sim.runtime.ai_physics.as_mut() {
+                        source.fresh = false;
+                    }
+                    replay.avoid.lag += super::npc_skaters::FRAMES_PER_TICK as f32;
+                    if let Err(error) = physics.advance_npc_skater(&mut sim.context, &mut sim.runtime, &mut sim.controls, &graphs, &mut sim.camera, &walk_intents) {
+                        warn!("NPC_SKATER_SIM #{} {}: physics error, back to replay: {error}", npc.id.serial, npc.character);
+                        commands.entity(e).remove::<NpcSim>();
+                        count -= 1;
+                    }
+                    continue;
+                }
                 // The obstacle avoider's answer (`npc_avoid`): retail caps / floors the record
                 // speed (`sub_82470830`) and moves the target across the path (`sub_82464E30`,
                 // controller `+933` = steering).
@@ -242,6 +362,7 @@ pub(crate) fn simulate(
                 // Mode 4 (skitch; b65, main checked 0x8246FC78): GrabWorld every tick on the ground, no tricks.
                 let state = sim.runtime.player_state.current();
                 let mut intents = intents;
+                intents.extend(walk_intents);
                 skate_core::living_world::ai_signals::apply_skitch_mode(
                     &mut intents,
                     &rules.signals,

@@ -380,10 +380,11 @@ and its respawn on the line 5.00 s later at node 52, then tricks again; no panic
   action is dropped, the speed shape is skipped and no grab or trick is posted; the skater keeps driving at its
   target. Nothing ends it except a line reset (the line's end, a junction switch to another line, no line), mode 7 on
   a later tick, a reposition or a full controller reset.
-- Mode 7 (blocked by a prop within 1.5 s, cap under 0.1) is NOT a step-off walk: tick 1 sets sub-mode 3 and a one-shot
-  reposition request; a reposition hands the skater to a second, path-planning controller that rides it to a safe node
-  on its line (`sub_824661A8`, `sub_82455728`: the first of 3 calm nodes); if that plan fails, a second tick in mode 7
-  sets sub-mode 5 and posts `WipeOutRequest` once (the skater bails).
+- Mode 7 (blocked by a prop within 1.5 s, cap under 0.1): tick 1 sets sub-mode 3 and a one-shot reposition request; a
+  reposition hands the skater to a second controller (`sub_824661A8`) at a safe node on its line (`sub_82455728`: the
+  first of 3 calm nodes). That controller is retail's "NavMeshController": the skater steps off and walks there (see
+  "Avoider mode 7: stepping off and walking back to the line" below; corrected 2026-10-10, b78 to b80). If the plan
+  fails, a second tick in mode 7 sets sub-mode 5 and posts `WipeOutRequest` once (the skater bails).
 
 **Change.** skate-core `living_world::ai_controller` (sub-mode values, `enter_low_prop`, `step_off`,
 `reposition_node`, `take_reposition`, `reposition_done`; retail values as `ControllerSettings`) and
@@ -391,9 +392,53 @@ and its respawn on the line 5.00 s later at node 52, then tricks again; no panic
 the line's end; mode 6 enters sub-mode 4, which skips the speed shape (replay and simulated tiers) and drops the
 simulated skater's trick dispatch.
 
-**NOT RETAIL YET / not wired.** Mode 7 is not wired: without retail's second controller (path planning to the safe
-node, `sub_82466CA8` and the path service) every step-off would end in a bail. The replay tier keeps its recorded
+**NOT RETAIL YET.** Mode 7 is wired for simulated skaters only (section below). The replay tier keeps its recorded
 tricks in sub-mode 4. The chooser's mode-7 gates `S+71` and `+6007` are not modelled.
 
 **Verification.** skate-core `ai_controller` (4) and `ai_signals` tests; skate-game npc / living_world 80 pass. Not
+play-tested.
+
+## Avoider mode 7: stepping off and walking back to the line (2026-10-10)
+
+**Retail [code + data] (`.local/research/npc/b78-mode7-controller-b.md`, `b79-controller-b-outputs-path.md`,
+`b80-ob-steer-consumer.md`; main checked every constant, the throttle `82467B00`, the steer `82467C90` with its angle
+`8296EC98`, the reset `82466F40`, the toggle presses `824712E0`, the writer slots `82470D08` / `82470D78`, the reposition
+`8246FE38` and the safe node picker `82455728` with `82455348` / `824545F0`).**
+- The reposition picks the node (cursor + 5 or the prop's node, + 2, a remembered prop node, clamped), then the safe
+  node `82455728`: from there, the first of 3 nodes in a row with more than 45 recorded frames since a jump marker (a
+  ground trick start resets it), more than 15 since a flag-0x4 node, a step slope under 1 and trick class 0, 4 or 8
+  (`82455348`: a ground trick = grind / slide, manual, powerslide, or the ground grabs coffin and gnd_*grab).
+- The brain swaps to controller B (debug name "NavMeshController"; A is "PathController"). B plans a NavPower path
+  (the runtime the peds use) to the node: with waypoints the last one within 2.0 h / 1.0 v of the node, without
+  them the node within 1.5 h / 3.0 v of the skater.
+- Each tick B writes the player's on-foot intents, never position or velocity: `NewToggleOffBoardState` /
+  `ToggleOffBoardState` every 5 ticks while the skater is still on the board ("ToggleOffboardState", byte 161 =
+  SkaterOffBoard), `OB_Steer` (heading error x 6/pi, full lock at 30 degrees; turns in place when it has not moved
+  for 10 ticks), `OB_Mag` (0.5 x distance^2 to the aim point, capped at 1, a 0.3 floor when facing it), and
+  `WipeOutRequest` when stopped or stuck (600 ticks on one waypoint, or 90 ticks without moving or turning).
+- The AI walks in the biped's direct mode (the external-controller flag: `OB_Mag` and `ob_Turn` = `OB_Steer`, no world
+  stick). B hands back to A at the node (within 2.4 h / 1.0 v, heading within pi/8 of the line), when no plan is left,
+  or on abort / wipeout; A re-attaches by its saved line id. A direct plan (no waypoints) hands back on its first tick:
+  the heading is still zero after the reset and the angle of a zero vector is 0.
+
+**Change.** skate-core `living_world::controller_b` (`ControllerB`: activate / plan / tick, the stuck monitor, the
+toggle presses, steer and throttle; `ControllerBSettings` with every retail value; `PathService` with `DirectPath` and
+the peds' `NavMesh`, whose funnel corners become the path elements) and `ai_controller::safe_node`. skate-game: the
+simulated tier runs mode 7 (`step_off`, `take_reposition`, `safe_node`, `ControllerB::activate`), ticks B instead of
+the AI record while it is active (the AI source stays present but not fresh, so the biped keeps its direct mode),
+re-spawns the line cursor at the node on the hand-back and resets the sub-mode; `PlayerControls::ai_driven` keeps the
+neutral pad's analog fill from overwriting the AI's `OB_Mag`. Logs `NPC_STEP_OFF`, `NPC_WALK_BACK`; mod event
+`npc_walk_back {id, node, started}`; mod values `npc_simulated {walk_back, walk_arrive_distance, walk_stuck_ticks}`.
+
+**NOT RETAIL YET / open.** Simulated skaters only (opt-in `SKATE_NPC_SIM=1`); replay-tier skaters still just stop. Our
+path elements are funnel corners (retail's 56-byte elements carry two points per portal); B's heading `B+112` is the
+skater root's forward and P the root position ([inference] for `[rec+20]+0` / `+416`); the "can move" terms
+`[rec+72]+308 / +309` are not identified; the reposition clock is our tick count (retail's clock unit is open).
+
+**Verification.** skate-core `controller_b` (8: plan acceptance, steer and throttle shape, arrival with the one-tick
+heading lag, the direct plan's first-tick hand-back and the steer sign, the stuck wipe-out, the toggle cadence, online
+/ abort) and `ai_controller` (5, incl. `safe_node`); skate-game data-gated
+`controller_b_steps_off_and_walks_the_skater_onto_the_node` (DownTown: off the board at tick 6, `OB_Steer` reaches
+Processed +2680 as -OB_Steer, the heading error goes from -1.57 to 0, hand-back "arrived" at tick 134); skate-core
+living_world 241, skate-mods 105, skate-game living world / NPC / modding / skater context / carry / prop 180. Not
 play-tested.
