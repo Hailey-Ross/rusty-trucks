@@ -33,7 +33,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 **Please test and send logs for**
 1. **Carrying props:** grab benches, bins and vending machines (hold RB) and push, pull, side-step and turn them. Your board should now drop when you grab a prop. Do props stay on the ground and settle when you let go (they used to sink, rock forever or fall through the floor)? Does the grab ever let go on its own?
 2. **NPC skaters:** some now ride fakie on purpose, like the recorded lines (with the fakie upper-body animation). Tell us if one looks like it rides backwards by mistake, or spins round when it switches to another line.
-3. **Pedestrians:** anyone floating, stuck walking on the spot, walking through things, or looking wrong (body shape, clothing colours)?
+3. **Pedestrians:** anyone floating, stuck walking on the spot, walking through things, or looking wrong (body shape, clothing colours)? New: peds use vending machines, sit on benches, take newspapers and throw empty cans into bins; many carry something (bags, coffee, a skateboard, a map). Annoy one that holds a can: it may throw it at you (a can pushes you, a light one should not knock you down). Tell us if a held item floats away from the hand or a ped gets stuck at a bench or machine.
 4. **Cars:** a car now pushes a pedestrian out of its way (that is what retail does, no knock-down). Cars driving through things, flying or vanishing.
 5. **Grinding:** the stair handrail at the **PCU Library** spawn should no longer throw you off at its bottom bend. The two corners of the flat rail there still bail. Tell us any other spot where you bail for no reason.
 6. **Frame rate:** big flips on the Spillway jumps used to hitch; the trick text no longer rebuilds itself every frame. Play with the Frame-time counter on and send a screenshot or video.
@@ -80,6 +80,7 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 - **Movable objects (#15 follow-up):** grab, carry, drag and drop props on foot (hold RB, left stick moves the object, right stick turns), placement mode with saved layouts, authored prop physics.
 - All from the disc data, seeded and multiplayer-ready, with a Lua mod API (`sdk.world.set_tuning`), an NPC draw distance option, and always-on logging of ped positions and floating peds.
 - **Frame drop with the board thrown away fixed:** a hidden board no longer scans every collision triangle each tick.
+- **New in this build:** peds use vending machines, bench seats, bins and newspaper boxes placed from the disc's prop data, with the retail clips; they hold the can or newspaper in the hand, throw empty cans into bins or drop things, and many start out carrying something (by each ped type's retail odds). An angry ped holding a can throws it at you, aimed the way retail aims it, and a thrown can hits you as an ordinary prop (your body now feels thrown props). NPC skaters that get stuck step off, walk back to their line and ride on (retail mode 7). Mods can spawn and remove props while the game runs (`sdk.world.spawn_prop` / `remove_prop`). The benches, bins and hand item models need the setup's map and living world data from this build (a fresh setup or a setup refresh).
 
 **This fork's releases**
 - The release workflow builds, publishes and updates from this repository (the in-game updater follows `Hailey-Ross/rusty-trucks`), a rolling `hails-additions` build on every push, and `PLAY-WITH-LOG.bat` for session logs.
@@ -103,17 +104,17 @@ Being worked on now, ported from the retail game code (the rolling `hails-additi
 From the latest play tests and the overnight work (not play-tested yet):
 - **Carrying props:** the grab point is a straight edge on top of the prop, not retail's authored grab shapes, and stepping up curbs while dragging is not retail's yet. The prop fixes above come from headless tests only.
 - **NPC skaters:** they can spin round when switching to another line (retail's turning comes from full skater physics, not ported yet). Every NPC uses the same stance until each pro's stance is read from the data. Some animations still look stiff, grabs show an ollie, and trick height, grind variety, landings and spins are not finished. They push props but do not steer round obstacles or bail on heavy props yet.
-- **Pedestrians:** they walk through props you have moved; one model walks stiffly and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail. Peds do not run from honking cars yet.
-- **Cars:** a car can knock you over, but through general physics, not retail's own car-hit rules. Paint colours and glass are estimates (the vehicle shader is not decoded yet).
+- **Pedestrians:** they walk through props you have moved; one model walks stiffly and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail. Held items: the carrying arm keeps the walk pose (retail's carry poses are not played yet). Placed props (benches, bins) still pass through your body; only thrown items hit you.
+- **Cars:** paint colours and glass are estimates (the vehicle shader is not decoded yet).
 - **NPC draw distance** (Esc > GRAPHICS) is a quality-of-life option, not retail; higher settings cost frame time. None turns all NPCs off.
 - **Grinding:** the two corners of the flat rail at the PCU Library spawn still make you bail. Some drops off stair edges now land a little faster than before; tell us if landings feel wrong.
 - Known upstream test failures (also on `main`): `pipelines_accept_valid_group_outputs_when_fingerprint_changes` (skate-game) and `a_moving_group_8_body_...` (skate-core).
 
 ## Known missing features
 
-- **NPC skaters:** full skater physics and bails, trick choice from the retail profiles, grabs, grind variety, landings, spins, each pro's stance, obstacle avoidance.
-- **Pedestrians:** behaviour (perception, moods, reactions), stumbling and knock-downs, warnings, chases and takedowns, speech and conversations, hand props, benches, phones and vending machines.
-- **Traffic:** cars do not stop for you, honk, change lanes or park yet; retail's car-hit bails and roof landings are missing; no skitching.
+- **NPC skaters:** full skater physics and bails on by default (opt-in for now), grabs, grind variety, landings, spins.
+- **Pedestrians:** spectating and looking at you, carry poses for held items, ATMs and water fountains (placement not found yet).
+- **Traffic:** roof landings and following a lead car the retail way; skitching is opt-in while it is tested.
 - **Movable objects:** retail object streaming by distance, per-type physics values from the game data, the Object Dropper editor, the phone rows for Reset and Upright, grindable props.
 - **Modes:** Free Play options (Traffic, Pedestrians, A.I. Skaters), zombie mode, the standing pros.
 - **Multiplayer for the living world:** built ready for it, no networking yet.
