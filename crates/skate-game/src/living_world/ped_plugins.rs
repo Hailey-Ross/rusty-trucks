@@ -151,9 +151,17 @@ impl PluginData {
         let mut classes = BTreeMap::new();
         for key in props.keys() {
             let path = field(key, "Hash_48BD5E5A1C5EE7A1").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
-            let descriptor = if path.is_empty() { None } else { descriptor(root, &path).map_err(|e| bevy::log::warn!("PED_PLUGINS {key}: descriptor not loaded: {e}")).ok() };
+            // The disc ships gatheringplace_01..04 (and their gatherbehaviourgeneric graph) only as .xml source, no
+            // compiled .stategraph [data]; every other descriptor ships both. That class gets no plugin here (retail
+            // most likely the same [inferred]: its loader reading the .xml is not decoded).
+            let descriptor = if path.is_empty() { None } else { descriptor(root, &path).map_err(|e| bevy::log::info!("PED_PLUGINS {key}: no compiled descriptor, class has no plugin: {e}")).ok() };
+            // A one-entry list is exported as the bare entry (waypoint_newspaperbox), not an array.
             let hand_props = field(key, "Hash_E15E856F2CA9B96B")
-                .and_then(|v| v.as_array().cloned())
+                .map(|v| match v {
+                    Value::Array(a) => a,
+                    Value::Object(_) => vec![v],
+                    _ => Vec::new(),
+                })
                 .unwrap_or_default()
                 .iter()
                 .filter_map(|e| Some((e.pointer("/ref/key")?.as_str()?.to_string(), e.get("probability")?.as_f64()? as f32)))
@@ -228,6 +236,9 @@ mod tests {
         eprintln!("sit graph {} transfer {names:?}", sit.graph);
         assert!(names.contains(&"HasFirstWaypointAvailable".to_string()) && names.contains(&"IsChasing".to_string()));
         assert_eq!(data.classes["waypoint_conversation"].descriptor.as_ref().map(|d| d.max_participants), Some(3));
+        // Hand props per class: a list (vending machine) and a bare one-entry record (newspaper box).
+        assert_eq!(data.classes["waypoint_vendingmachine"].hand_props, vec![("pop".to_string(), 0.5), ("waterbottle".to_string(), 0.5)]);
+        assert_eq!(data.classes["waypoint_newspaperbox"].hand_props, vec![("newspaper".to_string(), 1.0)]);
         assert!(data.odds["adult_female01"].iter().any(|(c, p)| c == "waypoint_sit" && (*p - 0.7).abs() < 1e-6));
         eprintln!("placed: {:?}", data.placed.iter().map(|(k, v)| (k.clone(), v.len())).collect::<Vec<_>>());
         assert!(data.placed.values().map(Vec::len).sum::<usize>() > 0);

@@ -317,12 +317,19 @@ fn living_world_ped_data_loads_from_the_export() {
     let d = PedData::load(&root);
     eprintln!("{}", d.status);
     assert!(d.ready(), "{}", d.status);
+    // The hand prop attach bone (b87 / b89; right hand: every carry channel is *RH).
+    assert_eq!(d.rig.names.iter().position(|n| n.eq_ignore_ascii_case("RightHandProp")), Some(26));
     assert!(d.clips.len() > 50);
     let look = d.catalog.choose("aletown", 1, &PedOverrides::default()).unwrap();
     let set = &d.anim_sets[&look.anim_set];
     let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default(), plugin_motion: Default::default() };
     let g = ped_globals(&d.rig, &body, &d, 0.0, &[]).unwrap();
     assert!((0.8..1.1).contains(&g[1].w_axis.y), "hips height {}", g[1].w_axis.y);
+    // The hand prop bone hangs off the right hand, a few centimetres away (rig reference local).
+    assert_eq!(d.rig.parents[26], 12);
+    let gap = g[26].w_axis.truncate().distance(g[12].w_axis.truncate());
+    eprintln!("RIGHTHANDPROP to RIGHTHAND {gap:.3} m");
+    assert!(gap < 0.2, "hand prop bone {gap} m from the hand");
 }
 
 /// Visual check helper (no window): with `SKATE_PED_POSE_DUMP=<file.json>` and the data roots,

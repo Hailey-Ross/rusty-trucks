@@ -473,6 +473,14 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
             try:
                 prepare_catalog(game_root,work/'dmo')
                 (private/'native-props/props-availability.json').unlink(missing_ok=True)
+                # Ped hand props (DMO_Global templates) need the livingworld group's tables.json with dmo_models.
+                tables=private/'living_world/tables.json'
+                if tables.is_file() and 'dmo_models' in json.loads(tables.read_text(encoding='utf-8')).get('classes',{}):
+                    from .hand_props import export as write_hand_props
+                    props=write_hand_props(work/'dmo/catalog.json',private,report)['props']
+                    report(f"Hand props: {sum('file' in p for p in props.values())} of {len(props)} exported")
+                else:
+                    report('Hand props skipped: rerun the livingworld group (tables.json has no dmo_models)')
             except CONTENT_ERRORS as error:
                 if (work/'dmo').exists():remove_intermediate(work/'dmo',work)
                 note(private/'native-props/props-availability.json','Movable props',error,report=report)

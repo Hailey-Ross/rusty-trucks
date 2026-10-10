@@ -169,6 +169,11 @@ pub enum PedOp {
     IsZombieMode,
     /// `826A99C0`: the ped has a plugin component.
     HasPlugin,
+    /// `826AD1A8`: the ped holds or has requested a hand prop (b25, b87).
+    HasHandProp,
+    /// `826AD270`: HasHandProp and the held record's key is `handprop` (the attribute's hash vs the record key,
+    /// b87).
+    IsHoldingSpecificHandProp { handprop: String },
     /// `826AD558`: distance to the want's target compared with the threshold (squared by the
     /// factory `826D0038`).
     DistanceToWantTarget { want: String, greater: Option<f32>, less: Option<f32> },
@@ -450,6 +455,8 @@ impl PedOp {
             "RunFromHonker" => PedOp::RunFromHonker,
             "IsZombieMode" => PedOp::IsZombieMode,
             "HasPlugin" => PedOp::HasPlugin,
+            "HasHandProp" => PedOp::HasHandProp,
+            "IsHoldingSpecificHandProp" => PedOp::IsHoldingSpecificHandProp { handprop: text("handprop").unwrap_or_default().to_ascii_lowercase() },
             "DistanceToWantTarget" => PedOp::DistanceToWantTarget { want: want(), greater: float("greater"), less: float("less") },
             "Wander" => PedOp::Wander,
             "NoRoadWander" => PedOp::NoRoadWander,
@@ -651,6 +658,51 @@ impl Packet {
     }
 }
 
+/// A ped's hand prop [code, b87].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HandProp {
+    pub key: Option<String>,
+    pub requested: bool,
+    pub holding: bool,
+}
+
+impl HandProp {
+    /// HasHandProp (`826AD1A8`): held, or requested and not created yet.
+    pub fn has(&self) -> bool {
+        self.holding || self.requested
+    }
+
+    /// SpawnInteractionBasedHandProp's request (`82E3DDA0`): the record key and the requested bit; the host
+    /// creates the object later and then sets `holding`.
+    pub fn request(&mut self, key: &str) {
+        self.key = Some(key.to_string());
+        self.requested = true;
+    }
+
+    /// The plugin prop's hand prop: a weighted pick from its list (`livingworld_props` field `E15E856F2CA9B96B`,
+    /// {handprop, probability}) with `roll` in [0, 1). NOT RETAIL YET: that the plugin object's vfunc +52 picks
+    /// by these weights is inferred (b87); a one-entry list always gives its entry.
+    pub fn pick(list: &[(String, f32)], roll: f32) -> Option<&str> {
+        let total: f32 = list.iter().map(|(_, p)| p.max(0.0)).sum();
+        if total <= 0.0 {
+            return None;
+        }
+        let mut left = roll.clamp(0.0, 1.0) * total;
+        for (key, p) in list {
+            left -= p.max(0.0);
+            if left < 0.0 {
+                return Some(key);
+            }
+        }
+        list.iter().rev().find(|(_, p)| *p > 0.0).map(|(k, _)| k.as_str())
+    }
+
+    /// The object is gone (thrown, dropped, despawned).
+    pub fn clear(&mut self) {
+        *self = HandProp::default();
+    }
+}
+
 /// What a ped's brain knows and decided (host-owned, serialisable plain data).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PedBrain {
@@ -698,6 +750,9 @@ pub struct PedBrain {
     pub explicit_turn: Option<Vec3>,
     pub monitored: BTreeMap<String, Packet>,
     pub turn_passed: bool,
+    /// The hand prop (`livingworld_handprops` key at `ped+5760`), requested (`brain+3279` bit 0x01, set by
+    /// `82E3DDA0`) and held (`brain+3278` bit 0x02, set when `82E3EC60` attaches the created object) [code, b87].
+    pub hand_prop: HandProp,
     /// What the ped knows about and sees (`brain+624`; KnowAboutWantTarget's `82E42868`).
     pub perceptions: super::perception::Perceptions,
     /// LostChasee: the chasee's last known position the ped walks to; SetAltTargetToChaseePosition:
@@ -981,6 +1036,8 @@ impl BrainHost<'_> {
             PedOp::IsBeingHonkedAt => b.honker.is_some(),
             PedOp::IsZombieMode => b.zombie,
             PedOp::HasPlugin => b.has_plugin,
+            PedOp::HasHandProp => b.hand_prop.has(),
+            PedOp::IsHoldingSpecificHandProp { handprop } => b.hand_prop.has() && b.hand_prop.key.as_deref().is_some_and(|k| k.eq_ignore_ascii_case(handprop)),
             PedOp::SimpleTimerExpired { timer } => b.timer(*timer) <= 0.0,
             PedOp::IsChasing => b.chasee.is_some(),
             // A target without a group yet takes chasers (the group is empty).

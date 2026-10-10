@@ -572,3 +572,27 @@ fn monitored_packets_follow_retail() {
     h.end(0, [0; 6], &f);
     assert!(!h.brain.monitored.contains_key("Sit"));
 }
+
+#[test]
+fn hand_prop_conditions_and_the_weighted_pick() {
+    let list = vec![("pop".to_string(), 0.5), ("waterbottle".to_string(), 0.5)];
+    assert_eq!(HandProp::pick(&list, 0.0), Some("pop"));
+    assert_eq!(HandProp::pick(&list, 0.49), Some("pop"));
+    assert_eq!(HandProp::pick(&list, 0.51), Some("waterbottle"));
+    assert_eq!(HandProp::pick(&list, 1.0), Some("waterbottle"));
+    assert_eq!(HandProp::pick(&[("newspaper".to_string(), 1.0)], 0.7), Some("newspaper"));
+    assert_eq!(HandProp::pick(&[], 0.3), None);
+    let conditions = ops(&[("HasHandProp", &[]), ("IsHoldingSpecificHandProp", &[("handprop", "Newspaper")]), ("IsHoldingSpecificHandProp", &[("handprop", "tazr")])]);
+    let behaviors = ops(&[]);
+    let mut brain = PedBrain::default();
+    let settings = BrainSettings::default();
+    let at = |_: u64| None;
+    let f = frame();
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &at, chase: ChaseView::default() };
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f), h.condition_activation(2, &f)), (0, 0, 0));
+    // Requested (82E3DDA0) already counts as HasHandProp (826AD1A8); the key test is case-blind like the hash.
+    h.brain.hand_prop.request("newspaper");
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f), h.condition_activation(2, &f)), (1, 1, 0));
+    h.brain.hand_prop.clear();
+    assert_eq!(h.condition_activation(0, &f), 0);
+}

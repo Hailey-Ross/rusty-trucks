@@ -345,7 +345,8 @@ impl PedAnimPlayer {
         self.reaction.as_ref().map(|r| r.steps[r.index].anim)
     }
 
-    fn in_branch_window(&self) -> bool {
+    /// The current clip is in a branch window (`InTurnBranchWindow`; a clip without windows always is).
+    pub fn in_branch_window(&self) -> bool {
         self.current.windows.is_empty() || self.current.windows.iter().any(|&(s, e, tag)| tag != 0 && self.current.time >= s && self.current.time <= e)
     }
 

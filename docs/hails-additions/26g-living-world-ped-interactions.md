@@ -779,3 +779,48 @@ RX2 makes the template join safe); 13 of the 22 templates are not placed through
 `test_dynamic_props`; skate-game `hotpoint_props_load_with_stable_ids`, living world / ped 103. The disc parse: 22
 templates, types {6: 30, 2: 7, 1: 5, 0: 1}. Not play-tested.
 
+
+**Live check (2026-10-10).** Muted Industrial run on the refreshed install: ped #2 took a bench seat after the vending
+machine, reached the seat waypoint (0.048 m off), turned to its orientation and sat (`Sit` motion, `SitForever`). Our
+prop-obstacle stand-in logged `PED_BLOCKED` against the bench while the ped slid along its face, but it arrived, so the
+navmesh-cut exemption is not needed for this seat. The seated ped was later removed by the retail distance cull: the idle
+player rolled away from the spawn into the bowl at 11 m/s (fast census circle with its forward offset); `PED_DESPAWN` now
+logs each removal with its reason.
+
+## Ped hand props: the vending machine can, the newspaper (2026-10-10)
+
+**Retail [code + data] (`.local/research/peds/b87-ped-hand-props.md`, `b89-hand-prop-models.md`, main checked the key
+addresses).** The vending machine and newspaper box motion states run `SpawnInteractionBasedHandProp` (Begin `826AE950`) in the
+collect clip's branch window (`InTurnBranchWindow`). It asks the ped's plugin object (vfunc +52) for a hand prop key and
+`82E3DDA0` stores the `livingworld_handprops` record and sets the requested bit (`brain+3279` 0x01, which `HasHandProp`
+`826AD1A8` already counts). The ped update later creates the object (`82E3DE18`: the record's `model` is a `dmo_models`
+record whose first field is a DMO template id, looked up in collection `0xDA7A8F0EF63BE539`) and attaches it (`82E3EC60`:
+`ped+5920`, `brain+3278` 0x02). Every frame the object is put at the hand matrix composed with the record's local offset.
+`IsHoldingSpecificHandProp` (`826AD270`) compares the held record's key with its `handprop` attribute. Which props a plugin
+offers is data: `livingworld_props` field `E15E856F2CA9B96B` (vending machine: pop 0.5, waterbottle 0.5; newspaper box:
+newspaper 1.0). The `_lw` models are DMO templates in `worlddmo.big` `DMO_Global` (one mesh each); 22 of the 23 records
+resolve (`orange_lw` is in no DMO pack).
+
+**Change.** Setup: `tools/asset_pipeline/hand_props.py` writes `living_world/hand_props/<key>.glb` from the DMO catalog
+template (model space, texture) plus `hand_props.json` (key, model, template, characteristics, or the error); `dmo_models`
+joins the exported vault classes in `tables.json`; it runs in the `maps` group after the DMO catalog. Core: `PedBrain.hand_prop`
+(`HandProp`: key, requested, holding; the weighted pick), conditions `HasHandProp` and `IsHoldingSpecificHandProp`, and the
+`hand_prop` flag on the collect steps of `plugin_motion`. Game: the motion run flags the collect clip's branch window,
+`think_peds` picks the key with the ped's seeded brain RNG (`PED_HAND_PROP ... requested`, mod event `ped_hand_prop`),
+`ped_hand_props::sync_hand_props` creates the object as a child of the ped's scene (`... created`) and removes it when the
+brain drops the prop, and `present_ped_pose` places it at the rig bone `RIGHTHANDPROP` (26, 7.5 cm off `RIGHTHAND`) times the
+record's offset. A one-entry hand prop list (the newspaper box) is exported as a bare record; the loader now takes it.
+
+**NOT RETAIL YET / open.** The hand bone is inferred (every carry channel is `*RH`; which bone fills the hand matrix at
+skeleton +19504 is not decoded). The record offset mapping (`Hash_3FE1...` = Euler degrees, `Hash_DC20...` = metres,
+applied as translation then X, Y, Z) is inferred from the value shapes. The weighted pick by the plugin object is inferred.
+The object is drawn only: no physics body, no carry channel, no release (`ThrowHandPropAtTrashBin`, `DropHandProp`,
+`HasDisposableHandProp`, `CanSitWithHandProp` are not ported), and what removes a released prop is open. Starting props on
+walking peds (the spawn path `82E33198`) are not ported.
+
+**Verification.** skate-core `hand_prop_conditions_and_the_weighted_pick`, `every_plugin_state_is_listed_and_its_names_load`;
+skate-game `record_offset_is_translation_then_rotation`, data-gated `stock_hand_props_load_with_models` (22 of 23 with
+models), `stock_descriptors_parse` (hand prop lists incl. the bare record), `living_world_ped_data_loads_from_the_export`
+(`RIGHTHANDPROP` = 26 under `RIGHTHAND`). Offline export on the user's disc: 22 GLBs (pop can 7 x 12.8 cm, rendered).
+Muted Industrial run: the ped at the vending machine requested and created `pop` in `VendCollect` (tick 1051) and carried it
+to a bench. Not seen on screen yet.

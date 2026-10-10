@@ -75,7 +75,9 @@ TABLE_CLASSES = (
     'livingworld_handprops_usagecharacteristics', 'livingworld_conversations',
     'livingworld_conversation_categories', 'livingworld_conversation_category_groups',
     'livingworld_load_groups', 'livingworld_props', 'physics_ai',
-    'livingworld_vehicle_characteristics', 'livingworld_vehicle_drivers')
+    'livingworld_vehicle_characteristics', 'livingworld_vehicle_drivers',
+    # Hand prop models: livingworld_handprops.model -> dmo_models (first field = the DMO template id, 82E3DE18; b87 / b89).
+    'dmo_models')
 
 # Readable names for fields the research identified (.claude/notes/npc-livingworld-re.md,
 # peds-re.md). Everything else keeps its Hash_ name. Tags: [data] read from the vault values,

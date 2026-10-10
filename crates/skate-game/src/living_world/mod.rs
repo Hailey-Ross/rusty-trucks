@@ -33,6 +33,7 @@ pub(crate) mod npc_sim;
 pub(crate) mod npc_skaters;
 pub(crate) mod ped_graph;
 pub(crate) mod ped_mood;
+pub(crate) mod ped_hand_props;
 pub(crate) mod ped_plugins;
 pub(crate) mod peds;
 pub(crate) mod vehicle_contacts;

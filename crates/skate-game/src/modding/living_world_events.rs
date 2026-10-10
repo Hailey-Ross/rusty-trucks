@@ -80,6 +80,7 @@ pub(crate) fn payloads(
             PedEvent::Taze { id, target } => out.push(json!({"name": "living_world", "event": "ped_taze", "id": id.to_u64(), "target": target})),
             PedEvent::Takedown { id, target, success } => out.push(json!({"name": "living_world", "event": "ped_takedown", "id": id.to_u64(), "target": target, "success": success})),
             PedEvent::Speech { id, value, topic, state } => out.push(json!({"name": "living_world", "event": "ped_speech", "id": id.to_u64(), "value": value, "variant": topic.map(|t| t.0), "list_value": topic.map(|t| t.1), "state": state})),
+            PedEvent::HandProp { id, key } => out.push(json!({"name": "living_world", "event": "ped_hand_prop", "id": id.to_u64(), "hand_prop": key})),
             _ => {}
         }
     }
