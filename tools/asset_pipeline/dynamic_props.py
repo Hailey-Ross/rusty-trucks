@@ -73,8 +73,12 @@ def locators(raw):
 
 def template_meshes(raw):
     """Resolve EB000D tInstance -> EB0001 model -> EB0023 mesh -> declaration."""
+    from .grab_data import GRABDATA, section_splines
     table = sections(raw)
     result = {}
+    # Grab splines by position (b48, validated against parkassets' single-template copies; the retail link is
+    # not decoded): the GRABDATA section between a template's EB0001 model and the next template's model.
+    model_indices = sorted(struct.unpack_from('>I', raw, at+128)[0] for _, at, _ in records(raw, 0xEB000D, 160))
     for _, at, _ in records(raw, 0xEB000D, 160):
         key = f'{struct.unpack_from(">Q", raw, at+104)[0]:016X}'
         index = struct.unpack_from('>I', raw, at+128)[0]
@@ -96,7 +100,13 @@ def template_meshes(raw):
             mesh_info.append(table[descriptor][0])
         if key in result:
             raise ValueError('Duplicate DMO template ID')
-        result[key] = dict(mesh_info=mesh_info, matrix=matrix(raw, at),
+        following = next((i for i in model_indices if i > index), len(table))
+        grab = [i for i in range(index + 1, following) if table[i][5] == GRABDATA]
+        if len(grab) > 1:
+            raise ValueError('Two GRABDATA sections for one DMO template')
+        splines = [dict(points=g['control_points'], direction=g['direction'], bounds=g['bounds'], flags=g['flags'])
+                   for i in grab for g in section_splines(raw, table[i][0], table[i][2])]
+        result[key] = dict(mesh_info=mesh_info, matrix=matrix(raw, at), grab_splines=splines,
                           model_matrix=matrix(raw, base+struct.unpack_from('>I', raw, base+32)[0]),
                           characteristics=characteristics_key(raw, at))
     return result
@@ -233,7 +243,7 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
                 raise ValueError('Conflicting DMO locator '+key)
             placements[key] = item
     report = dict(map=district['map_name'], instances=[], unresolved=[], simulation='initial placement only',
-                  types={})
+                  types={}, grab_splines={})
     with tempfile.TemporaryDirectory(prefix='skate-dmo-') as work:
         root = Path(work); models = []; records = []; used = set(); positions = {}
         for item in placements.values():
@@ -262,6 +272,8 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
             report['instances'].append(dict(item, model_asset=template['asset_id'], meshes=len(template['meshes'])))
             if template.get('characteristics'):
                 report['types'][key] = template['characteristics']
+            if template.get('grab_splines'):
+                report['grab_splines'][key] = template['grab_splines']
         if models:
             manifest = dict(map_name=district['map_name'], district_name=district['district_name'],
                 models=models, textures={key:textures[key] for key in sorted(used)},

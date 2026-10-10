@@ -25,32 +25,38 @@ def grab_splines(raw):
     """Every grab spline of an RX2 as dicts (model frame)."""
     result = []
     for offset, _, size, _, _, kind in sections(raw):
-        if kind != GRABDATA:
+        if kind == GRABDATA:
+            result.extend(section_splines(raw, offset, size))
+    return result
+
+
+def section_splines(raw, offset, size):
+    """The grab splines of one GRABDATA section (multi-template DMO arenas link one section per template)."""
+    result = []
+    if offset + 28 > len(raw) or offset + size > len(raw):
+        raise ValueError('Truncated GRABDATA section')
+    count, total, _, enabled_count, entries, points, directions = struct.unpack_from('>7I', raw, offset)
+    if enabled_count > count or entries + count * ENTRY_SIZE > size or points + total * 16 > size or directions + enabled_count * 16 > size:
+        raise ValueError('Unexpected GRABDATA header')
+    if sum(1 for index in range(count) if raw[offset + entries + index * ENTRY_SIZE + 70]) != enabled_count:
+        raise ValueError('GRABDATA enabled count does not match its entries')
+    for index in range(count):
+        at = offset + entries + index * ENTRY_SIZE
+        bmin = struct.unpack_from('>3f', raw, at)
+        bmax = struct.unpack_from('>3f', raw, at + 16)
+        point_offset = struct.unpack_from('>I', raw, at + 48)[0]
+        direction_offset = struct.unpack_from('>I', raw, at + 56)[0]
+        flags = struct.unpack_from('>I', raw, at + 60)[0]
+        n, enabled = raw[at + 68], raw[at + 70]
+        if n == 0 or enabled == 0:
             continue
-        if offset + 28 > len(raw) or offset + size > len(raw):
-            raise ValueError('Truncated GRABDATA section')
-        count, total, _, enabled_count, entries, points, directions = struct.unpack_from('>7I', raw, offset)
-        if enabled_count > count or entries + count * ENTRY_SIZE > size or points + total * 16 > size or directions + enabled_count * 16 > size:
-            raise ValueError('Unexpected GRABDATA header')
-        if sum(1 for index in range(count) if raw[offset + entries + index * ENTRY_SIZE + 70]) != enabled_count:
-            raise ValueError('GRABDATA enabled count does not match its entries')
-        for index in range(count):
-            at = offset + entries + index * ENTRY_SIZE
-            bmin = struct.unpack_from('>3f', raw, at)
-            bmax = struct.unpack_from('>3f', raw, at + 16)
-            point_offset = struct.unpack_from('>I', raw, at + 48)[0]
-            direction_offset = struct.unpack_from('>I', raw, at + 56)[0]
-            flags = struct.unpack_from('>I', raw, at + 60)[0]
-            n, enabled = raw[at + 68], raw[at + 70]
-            if n == 0 or enabled == 0:
-                continue
-            if n % 4 != 0 or point_offset + n * 16 > size or direction_offset + 16 > size:
-                raise ValueError('Unexpected GRABDATA entry')
-            control = [list(struct.unpack_from('>3f', raw, offset + point_offset + k * 16)) for k in range(n)]
-            result.append(dict(
-                control_points=control,
-                direction=list(struct.unpack_from('>3f', raw, offset + direction_offset)),
-                bounds=[list(bmin), list(bmax)],
-                flags=flags,
-            ))
+        if n % 4 != 0 or point_offset + n * 16 > size or direction_offset + 16 > size:
+            raise ValueError('Unexpected GRABDATA entry')
+        control = [list(struct.unpack_from('>3f', raw, offset + point_offset + k * 16)) for k in range(n)]
+        result.append(dict(
+            control_points=control,
+            direction=list(struct.unpack_from('>3f', raw, offset + direction_offset)),
+            bounds=[list(bmin), list(bmax)],
+            flags=flags,
+        ))
     return result

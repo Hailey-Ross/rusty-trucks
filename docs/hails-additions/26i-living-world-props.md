@@ -540,3 +540,22 @@ step and anchor velocity); `cargo test -p skate-game --bin skate3rust` 546 pass,
 
 Open: 82BDF268 (sweep, step-up, weight +1124) not decoded; the follow begins at the board-frame COM (our stand-in
 for Skeleton+15872); per prop type record+272 and grab splines need the DMO data.
+
+## Move Object step 1: props' authored grab splines in the export (2026-10-09)
+
+**Retail [data] (`.local/research/npc/b48-prop-grab-splines-port-map.md`, `b54-dmo-grab-provider.md`; main checked the
+GRABDATA header against parkassets and the per-template link below).** DMO templates carry authored grab splines (RW4
+GRABDATA): 102 of the 136 worlddmo templates have one section. In a multi-template worlddmo arena the section sits
+between the template's EB0001 model and the next template's model (the retail link `*(R+136)` is not decoded; the
+positional rule matches parkassets' single-template copies byte for byte). In single-player worlds props answer the
+grab query through the type-2 world-object provider (`82C4BE80`), not the DMO provider (`82589130`, used only in an
+online session, b54).
+
+**Change.** `tools/asset_pipeline/grab_data.py` `section_splines` (one section); `dynamic_props.template_meshes`
+links each template's section by position and keeps `grab_splines`; the native-props export writes
+`grab_splines[<template id>] = [{points, direction, bounds, flags}]` next to `types` (model frame, same fields as the
+cars).
+
+**Verification.** Python dynamic_props / grab_data tests; over all 119 parkassets DMO RX2s the per-template splines
+equal the whole-file parse (main's run, 2026-10-09). The game does not read the field yet.
+
