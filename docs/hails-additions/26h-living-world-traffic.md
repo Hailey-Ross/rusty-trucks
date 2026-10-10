@@ -662,3 +662,23 @@ the endpoint chord, `+2668` stays 0 and `82D91298(state+28, 2)` is not called.
 car only), `world_objects_are_not_latched_yet`. Not run in game (the riding grab now submits a query each frame;
 regression check pending).
 
+## Skitching step 4b: the hold target and the release impulses (2026-10-09)
+
+**Retail [code + data] (`.local/research/npc/b52-skitch-target-impulses.md` sections 1-2; main checked the impulse
+vault keys).** `82D4B8C0` builds the hold target (the side-shifted previous frame at the hand's along coordinate),
+its horizontal direction (the tow spring's next axis), the yaw between the grab point and the target, and the lean
+yaw (`940`); `82D4BCF8` turns the skater's facing toward the target at up to 180 degrees per second, scaled by the
+larger of a turn-in curve over the skitch time and a gain over the tow speed. On release `82D4B1D0` pulls in
+(rate 856 - 2.0, never outward, never faster than the tow speed) and `82D4B378` pushes off (856 + 2.5), one frame of
+force tag 6.
+
+**Change.** skate-core `riding::skitching::target` (`step`, `pull_in_force`, `push_off_force`, `TargetSettings` with
+the vault values, `wrap`, `yaw`).
+
+**Engine choices.** The signed angle `8286CD88` is the standard angle a -> b about the axis (internals not decoded);
+`6FB7A3D992163663` (the speed gain) is not in the collections by hash, the stored graph between the other two keys
+(`HeadingAdjustVsSpeed`) is used for it (unverified).
+
+**Verification.** skate-core `facing_the_target_needs_no_yaw`, `a_target_to_the_side_turns_at_most_the_rate_cap`,
+`release_impulses_pull_in_never_outward_and_push_off`. Not wired: state 104's handler is next.
+
