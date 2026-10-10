@@ -679,3 +679,39 @@ reaction player (no locomotion while it runs), as the motion graph's state is no
 **Verification.** skate-core `the_taunt_faces_the_victim_holds_the_intent_and_unsets_the_want`; skate-game living_world
 (71). Not seen in game yet. Open: the hand props (throw / drop), which our peds do not carry.
 
+## Ped plugins on world props: data, rolls and the offer scan (groundwork, 2026-10-10)
+
+**Retail [code + data] (`.local/research/peds/b81-ped-plugin-acquisition.md`, `b82-ped-plugin-search.md`,
+`b83-plugin-offer-and-radii.md`; main checked the ped roll `82E3B060`, the d100 roll `8269A588`, the offer test
+`826BFE18` and its constants, the sit ops and the stock tables).**
+- Plugin props: benches, trash bins, newspaper boxes, vending machines, ATMs, water fountains, look-at and spectate
+  spots, gathering places. Each prop class (`livingworld_props`) names a descriptor (`PluginDescriptor/*.xml`: the plugin
+  graph, `maxNumberOfParticipants` default 1, a transfer expression of named conditions) and hand-prop odds. Placed
+  waypoint groups come from the world (`waypoints.json`: vending machines, trash bins); seats come from DMO hotpoints
+  (`82C4E128`: type 1 trash bin, 2 newspaper box, other = a seat, one waypoint each).
+- A ped type's `plugin_odds` (per class) drives the ped's yes / no when offered (`82E3B060`: odds x 100 >=
+  `rand() % 100 + 1`) and the spawner's weighted pick of a ped type to spawn at a free prop (`826B90F8`).
+- The offer scan (`826C0058`, every 11th manager tick at 1/60 s) walks every ped for every offer: no current plugin,
+  the prop not refused (`82E3AF90`), |dy| < 1.8 m, within the offer radius, the offer's own test, then the odds roll;
+  the winner takes the waypoint. A refusal (and a taken plugin, `8269F248`) blocks that prop for that ped for 30 s
+  (`82E40BD0` / `82E40AF0`: at most 16 entries, the countdown stops at -30).
+- Sit (`sit_body.xml`): SetSitTimer (`826A2898`) = 30 + rand x (60 - 30) s for the stock types, then GoingToStandBackUp
+  (`826AD1F0`) rolls the type's stand-up chance (0.5); a ped that loses the roll stays seated.
+
+**Change.** skate-core `peds::plugins` (descriptor and transfer-expression tree, plugin props with waypoint locks and
+cooldown, `plugin_odds` lookup, the d100 roll, the refusal memory, the ped roll, the offer scan, the spawn pick, the
+hotpoint class map) and the sit ops in `peds::brain` (`SetSitTimer`, `GoingToStandBackUp`, per-ped seeded rolls,
+`SitValues` from the tables). skate-game `ped_plugins` loads the prop classes with their descriptors (from the compiled
+`.stategraph`), the `plugin_odds` per ped type and the placed props per district; `PED_PLUGINS` log.
+
+**NOT RETAIL YET / not wired.** Peds do not take plugins yet: the plugin graphs other than the conversation, 25 of
+their operations, the hotpoint export (benches) and the monitored-intent animations are still to port. Open in the
+research: the offer radius (ours will read the class field `E2101F2B17A0E6B5`: 10 sit / 5 bin / 15 ATM, inference), the
+offer's own tests (vfuncs 9 / 10 / 18), the spawn ring radii and the cooldown source.
+
+**Verification.** skate-core `plugins` (6: hotpoint classes, waypoint locks and cooldown, the ped roll and the refusal
+memory with eviction and floor, the offer scan's filters, the weighted spawn pick, transfer expressions) and the brain
+sit test; skate-game `ped_plugins` (parsing) and the data-gated `stock_descriptors_parse` (sit's transfer conditions,
+the conversation's 3 participants, adult_female01's sit odds 0.7, placed props DownTown 27 / Industrial 10 /
+University 37).
+

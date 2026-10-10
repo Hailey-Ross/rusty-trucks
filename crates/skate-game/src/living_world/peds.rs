@@ -95,6 +95,8 @@ pub(crate) struct PedData {
     /// The conversation plugin graph (`plugin/conversation.stategraph`) and the conversation tables.
     pub conversation_graph: Option<Arc<super::ped_graph::PedGraph>>,
     pub conversations: Arc<super::ped_mood::ConversationTables>,
+    /// Ped plugins on world props: classes, descriptors, `plugin_odds`, placed props (`ped_plugins`).
+    pub plugins: Arc<super::ped_plugins::PluginData>,
     /// The sit plugin's values by entity type (`ped_mood::sit_values`).
     pub sit: Arc<BTreeMap<String, skate_core::living_world::peds::brain::SitValues>>,
     /// Each entity type's vision test ranges (`ped_mood::sight`).
@@ -487,6 +489,19 @@ fn load_ped_data(
             loaded.sit = Arc::new(sit);
         }
         Err(error) => warn!("PED_MOOD tables not loaded (no mood reactions): {error}"),
+    }
+    match super::ped_plugins::PluginData::load(&config.asset_root) {
+        Ok(p) => {
+            info!(
+                "PED_PLUGINS {} prop classes ({} with descriptors), {} ped types with plugin_odds, placed props {:?}",
+                p.classes.len(),
+                p.classes.values().filter(|c| c.descriptor.is_some()).count(),
+                p.odds.len(),
+                p.placed.iter().map(|(k, v)| (k.clone(), v.len())).collect::<Vec<_>>()
+            );
+            loaded.plugins = Arc::new(p);
+        }
+        Err(error) => warn!("PED_PLUGINS not loaded (no plugin props): {error}"),
     }
     info!("LIVING_WORLD {}", loaded.status);
     loaded.loaded_for = Some(key);
