@@ -171,11 +171,15 @@ pub struct Car {
     pub passage: Option<super::passage::Passage>,
     /// Pulling over, parked, pulling out (b73); lane changes stay `Following` with a passage.
     pub manoeuvre: super::manoeuvre::Manoeuvre,
+    /// The car alarm sounds (`+3424` bit 0x10; set by a contact while parked, `sub_82C3C150`, cleared by
+    /// StopAlarming `82C3A4D0`). Host-set each tick from the alarm rule. While it is on, StayingParked
+    /// (`82C39138`) holds the parked time `+3712` at 0 and `IsRequiredToPullOut` (`82C3A3A8`) is false.
+    pub alarming: bool,
 }
 
 impl Car {
     pub fn new(key: VehicleKey, cursor: LaneCursor, length: f32, params: FollowParams) -> Self {
-        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE, decider: Default::default(), passage: None, manoeuvre: Default::default() }
+        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE, decider: Default::default(), passage: None, manoeuvre: Default::default(), alarming: false }
     }
 
     /// On `place` for the lane lists: its own place, or the target lane of a running lane change (retail registers
@@ -427,12 +431,13 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         // Parked (`82C39138`): standing, the parked time runs; `IsRequiredToPullOut` (`82C3A3A8`) after the parked
         // time when the end of the approach is still on this road: the passage back to the outer lane
         // (`82C3AFB8`: d1 = d + approach, from the kerb slot to lane n - 1; the spot is released).
+        // A sounding alarm holds the parked time at 0 and blocks the pull-out (`82C39138`, `82C3A3A8`).
         if let (Manoeuvre::Parked { spot, time }, Place::Lane { segment, lane }) = (manoeuvre, me.cursor.place) {
-            let time = time + dt;
+            let time = if me.alarming { 0.0 } else { time + dt };
             let d = me.cursor.distance;
             let seg = &net.segments[segment];
             let mut passage = None;
-            if time > p.parked_time && d + approach < seg.length {
+            if !me.alarming && time > p.parked_time && d + approach < seg.length {
                 let from = net.lane_frame(segment, seg.lanes as f32, d);
                 let to = net.lane_frame(segment, lane as f32, d + approach);
                 passage = super::passage::Passage::begin(seg.lanes, lane, d, d + approach, (from.position, from.forward), (to.position, to.forward), &p.passage);

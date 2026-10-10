@@ -59,8 +59,9 @@ pub(crate) struct SkaterRuntime {
     /// WipeoutGround Enter used it.
     pub takedown: Option<Takedown>,
     /// The vehicle-group solids (traffic car proxies, mod vehicles) the skeleton touched in the last
-    /// solve: (solid id, contact point). The living world maps them to cars (the hit brake).
-    pub vehicle_hits: Vec<(u64, [f32; 3])>,
+    /// solve: (solid id, contact point, relative speed at the contact m/s). The living world maps them to
+    /// cars (the hit brake, the parked car alarm).
+    pub vehicle_hits: Vec<(u64, [f32; 3], f32)>,
     pub scoring: crate::scoring_runtime::Runtime,
     pub climbing: super::climbing::Runtime,
     /// Completed physical pose in native animation space, read by rendering.

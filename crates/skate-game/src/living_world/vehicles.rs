@@ -529,10 +529,22 @@ pub(crate) fn drive_traffic(
     (observers, peds, ped_obstacles): (Res<super::LivingWorldObservers>, Query<(&super::peds::Pedestrian, &super::peds::PedBody)>, Option<Res<super::peds::PedObstacles>>),
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     npc_sims: Query<&super::npc_sim::NpcSim>,
+    (alarms, parked_q): (Option<Res<crate::game_audio::world_bridge::Bridge>>, Query<Has<crate::world_audio::VehicleParked>>),
 ) {
     let st = &mut *state;
     let traffic = &mut *traffic;
     let Some(net) = st.roads.as_ref() else { return };
+    // The car alarm (`+3424` bit 0x10) is the alarm rule's (game_audio::car_alarm): read back every tick.
+    for car in &mut traffic.cars {
+        let on = match (alarms.as_deref(), traffic.index.get(&car.key)) {
+            (Some(b), Some((e, _))) => b.alarm_left(*e).is_some(),
+            _ => false,
+        };
+        if on != car.alarming {
+            info!("VEHICLE_ALARM car=#{} on={on} manoeuvre={:?}", car.key, car.manoeuvre);
+        }
+        car.alarming = on;
+    }
     // The held bits are cleared and set again every tick (82C34CD0 / 82C361E8; b57): the local player's state 104.
     let held = skater.as_deref().filter(|s| s.player_state.current() == skate_core::player::state::PhysicalStateId::Skitching).and_then(|s| s.skitch_state.held_car());
     // Simulated NPC skaters hold cars too (82C361E8 sets +4402 0x02 for any holder; 0x80 only for the player).
@@ -620,6 +632,15 @@ pub(crate) fn drive_traffic(
         };
         st.world.update_lane(id, net.segments[segment].id, lane, distance, c.speed);
         let Some((e, _)) = traffic.index.get(&c.key) else { continue };
+        // StayingParked (`82C39120` begin / `82C391F0` end, `+3424` bit 0x80): only a parked car's contacts alarm.
+        let parked = matches!(c.manoeuvre, skate_core::living_world::traffic::manoeuvre::Manoeuvre::Parked { .. });
+        if parked_q.get(*e).is_ok_and(|has| has != parked) {
+            if parked {
+                commands.entity(*e).insert(crate::world_audio::VehicleParked);
+            } else {
+                commands.entity(*e).remove::<crate::world_audio::VehicleParked>();
+            }
+        }
         let Ok((meta, mut motion, mut audio, mut velocity)) = cars_q.get_mut(*e) else { continue };
         let t = car_transform(net, c);
         motion.prev = prev_pose.get(&c.key).copied().unwrap_or(t);
@@ -690,18 +711,25 @@ pub(crate) fn proxy(car: &TrafficCar, pose: &Transform, velocity: Vec3) -> skate
 
 /// The skater's body hit a car (`sub_82C3C150`, actor branch): a contact ahead of the car (ours:
 /// along its velocity; retail's axis is the car's vtable +24, inferred forward) latches the hit
-/// brake on the follower car. Logs `VEHICLE_HIT`.
+/// brake on the follower car. Logs `VEHICLE_HIT`. Every contact also goes to the car alarm rule as a
+/// [`VehicleImpact`](crate::world_audio::VehicleImpact) (relative speed at the contact; the rule sets a
+/// parked car's alarm off).
 pub(crate) fn apply_vehicle_hits(
     mut skater: Option<ResMut<crate::physics::SkaterRuntime>>,
-    cars: Query<(&TrafficCar, &CarMotion)>,
+    cars: Query<(Entity, &TrafficCar, &CarMotion)>,
     mut traffic: ResMut<TrafficState>,
+    mut impacts: Option<MessageWriter<crate::world_audio::VehicleImpact>>,
 ) {
+    use crate::world_audio::{ImpactSource, VehicleImpact};
     let Some(skater) = skater.as_deref_mut() else { return };
-    for (id, point) in std::mem::take(&mut skater.vehicle_hits) {
+    for (id, point, speed) in std::mem::take(&mut skater.vehicle_hits) {
         if id & PROXY_ID_TAG != PROXY_ID_TAG {
             continue;
         }
-        let Some((car, motion)) = cars.iter().find(|(c, _)| (PROXY_ID_TAG | c.id.to_u64()) == id) else { continue };
+        let Some((entity, car, motion)) = cars.iter().find(|(_, c, _)| (PROXY_ID_TAG | c.id.to_u64()) == id) else { continue };
+        if let Some(w) = impacts.as_mut() {
+            w.write(VehicleImpact::speed(entity, ImpactSource::Player, speed));
+        }
         let at = motion.curr.translation;
         let v = motion.velocity;
         let ahead = (Vec3::from_array(point) - at).dot(v) > 0.0;

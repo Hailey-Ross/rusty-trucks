@@ -114,7 +114,7 @@ fn publish_board_observations(
     frames.publish_centre_of_mass(physical_com, dt, flags_2472);
 }
 
-fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> (Vec<SkeletonContactReport>, Vec<(u64, [f32; 3])>) {
+fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> (Vec<SkeletonContactReport>, Vec<(u64, [f32; 3], f32)>) {
     let mut vehicle_hits = Vec::new();
     let rows = physics.board.solved_contacts();
     let mut storage: Vec<_> = rows
@@ -169,7 +169,11 @@ fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> (Vec<SkeletonContac
             let vehicle = other_group == 8;
             if let CollisionBody::Attached(index) = other {
                 if let Some((_, solid)) = physics.network_proxies.solids.iter().find(|(i, _)| *i == index).filter(|_| vehicle) {
-                    vehicle_hits.push((solid.id, [point[0], point[1], point[2]]));
+                    // The relative velocity at the contact (the car alarm's impact, `sub_82C3C150` m+48; VEHHIT).
+                    let at = |id| resolve(id, physics, skater).map_or([0.0; 4], |b| linear_velocity_at_point(b, point));
+                    let (va, vb) = (at(spy[24]), at(spy[25]));
+                    let speed = (0..3).map(|i| (va[i] - vb[i]) * (va[i] - vb[i])).sum::<f32>().sqrt();
+                    vehicle_hits.push((solid.id, [point[0], point[1], point[2]], speed));
                 }
             }
             destination.push(SkeletonContactReport {

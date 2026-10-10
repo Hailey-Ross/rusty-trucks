@@ -127,6 +127,7 @@ the file of their topic (and get a line here).
 - [Skitching step 4f: the lean (2026-10-09)](26h-living-world-traffic.md#skitching-step-4f-the-lean-2026-10-09)
 - [Skitching step 4g: the hands (2026-10-09)](26h-living-world-traffic.md#skitching-step-4g-the-hands-2026-10-09)
 - [Skitching step 4h: the skitch animation graph nodes (2026-10-09)](26h-living-world-traffic.md#skitching-step-4h-the-skitch-animation-graph-nodes-2026-10-09)
+- [Traffic: the car alarm on parked cars (2026-10-10)](26h-living-world-traffic.md#traffic-the-car-alarm-on-parked-cars-2026-10-10)
 
 ### 26i: Props
 

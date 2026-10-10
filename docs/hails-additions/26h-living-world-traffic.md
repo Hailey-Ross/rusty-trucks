@@ -471,8 +471,7 @@ a kinematic car box: 12 m/s group 8 bails at tick 6 (group 0: tick 7 through the
 bails at tick 22 because that box never brakes, group 0 never); `living_world_traffic_proxy_is_the_model_box`
 asserts the group; skate-core `a_car_hit_by_the_skater_ahead_brakes_to_a_stop_then_drives_on`. Not play-tested.
 
-**Open.** Roofs (no roof code found; the car is a moving surface in group 8 now), the parked-car alarm (no parked
-cars yet), the hit-by mask's reader, a board-only car contact.
+**Open.** Roofs (no roof code found; the car is a moving surface in group 8 now), the hit-by mask's reader, a board-only car contact.
 
 ## Traffic: obstacles ahead (V4 look-ahead, 2026-10-09)
 
@@ -1038,11 +1037,35 @@ past the middle of its pull-over) off the outer lane; `Car::pose` draws a parked
 pull-over, held-pull-over and parked-time values, rolls the trait at spawn and emits `TrafficEvent::PullingOver /
 PullingOut`.
 
-**NOT RETAIL YET / open.** The reservations are derived from the cars each tick (same set as retail's list); the car
-alarm does not hold a parked car (retail: the alarm pauses the parked timer); before halfway retail only follows a car
+**NOT RETAIL YET / open.** The reservations are derived from the cars each tick (same set as retail's list); before halfway retail only follows a car
 ahead that is itself in a passage (ours follows any); retail has no position clamp at the spot (ours keeps the
 follower's clamps); the acceleration chain is the old one (todo).
 
 **Verification.** skate-core `a_car_pulls_over_parks_and_pulls_out` (spot 200 m on a 400 m road, kerb slot 4 m
 aside, parked at 0 m/s, back on the lane past the spot), `pull_over_tests`, traffic 53; skate-game vehicles /
 living_world 71. Not play-tested.
+
+## Traffic: the car alarm on parked cars (2026-10-10)
+
+**Retail [code] (spec `.claude/notes/world-traffic-audio.md` "Car alarm trigger", recomp session 2026-10-04 16:11).**
+StayingParked's begin / end (`82C39120` / `82C391F0`) set and clear `+3424` bit 0x80; the collision callback
+`sub_82C3C150` only tests a parked car: a contact whose vector `m+48` is longer than the spec's 0.1 sets the alarm
+(`+3424` bit 0x10) and zeroes the alarm timer `+3716` and the parked timer `+3712`. StayingParked's update `82C39138`
+then holds `+3712` at 0 while the alarm sounds, and `IsRequiredToPullOut` (`82C3A3A8`) is false while bit 0x10 is set.
+StopAlarming (`82C3A4D0`) clears it after 8 s; the parked time then runs again from 0.
+
+**Change.** skate-core: `Car::alarming` (host-set each tick); `follow::step` keeps a parked car's time at 0 and skips
+the pull-out while it is on. skate-game: `drive_traffic` puts `VehicleParked` on a car entity while its manoeuvre is
+Parked (removed when it leaves), reads the alarm back from the audio bridge every tick (`VEHICLE_ALARM` log on a
+change); `apply_vehicle_hits` sends a `VehicleImpact` (relative speed at the contact, `ImpactSource::Player`) for every
+skeleton contact with a car proxy, so the existing alarm rule (`game_audio/car_alarm.rs`, data `world_tuning.vehicle_alarm`,
+mod `sdk.world_audio.alarm_rule`) sets the alarm off and every further contact restarts it. Moddable as before: the
+rule's threshold / length / enable, mod `impact` events, the `parked` option.
+
+**NOT RETAIL YET / open.** Only the player's skeleton contacts reach the car (retail's callback sees any collider:
+board, peds, props, NPC skaters); whether retail's `m+48` is a speed or an impulse is open (ours: relative speed, the
+VEHHIT reading).
+
+**Verification.** skate-core `an_alarming_parked_car_holds_its_parked_time_and_stays` (parked time held at 0 for 10 s,
+no pull-out, then the full 2 s parked time after the alarm); skate-game `a_parked_car_is_marked_for_the_car_alarm`,
+the car alarm rule tests. Not play-tested (DownTown: wait for a car to pull over, walk into it).

@@ -337,3 +337,30 @@ fn a_car_enters_the_grab_scene_with_its_rear_spline_in_world_space() {
     assert!((start[0] - (1.0 - 2.39)).abs() < 1e-4 && (start[1] - 0.93).abs() < 1e-4 && (start[2] - (2.0 - 0.78)).abs() < 1e-4, "{start:?}");
     assert!(skate_core::player::offboard::grab_scene::Registry::new(vec![o]).is_ok());
 }
+
+/// StayingParked (`82C39120` / `82C391F0`): a parked car carries `VehicleParked` (only then do contacts set its
+/// alarm off), loses it when it leaves the parked state, and with no alarm rule present it never alarms.
+#[test]
+fn a_parked_car_is_marked_for_the_car_alarm() {
+    use skate_core::living_world::traffic::manoeuvre::Manoeuvre;
+    let has = |a: &mut App| {
+        let mut q = a.world_mut().query_filtered::<(), (With<TrafficCar>, With<crate::world_audio::VehicleParked>)>();
+        q.iter(a.world()).count()
+    };
+    let mut a = app();
+    spawn(&mut a, record(1, 0, 40.0, 0));
+    run(&mut a, 0.1, 60.0);
+    assert_eq!(has(&mut a), 0, "a driving car is not parked");
+    {
+        let mut t = a.world_mut().resource_mut::<TrafficState>();
+        let d = t.cars[0].cursor.distance;
+        t.cars[0].manoeuvre = Manoeuvre::Parked { spot: d, time: 0.0 };
+    }
+    run(&mut a, 0.1, 60.0);
+    assert_eq!(has(&mut a), 1);
+    let c = a.world().resource::<TrafficState>().cars[0];
+    assert!(!c.alarming && matches!(c.manoeuvre, Manoeuvre::Parked { time, .. } if time > 0.0), "{:?}", c.manoeuvre);
+    a.world_mut().resource_mut::<TrafficState>().cars[0].manoeuvre = Manoeuvre::Following;
+    run(&mut a, 0.1, 60.0);
+    assert_eq!(has(&mut a), 0);
+}

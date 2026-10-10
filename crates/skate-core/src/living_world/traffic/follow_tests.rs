@@ -438,3 +438,37 @@ fn a_car_pulls_over_parks_and_pulls_out() {
     assert!((cars[0].pose(&net).position[0] - lane_x).abs() < 1e-3);
     assert!(cars[0].cursor.distance > over);
 }
+
+/// A sounding car alarm (`+3424` bit 0x10): StayingParked (`82C39138`) holds the parked time at 0 and the car never
+/// pulls out (`82C3A3A8`); once the alarm stops, the parked time runs again from 0.
+#[test]
+fn an_alarming_parked_car_holds_its_parked_time_and_stays() {
+    use crate::living_world::traffic::manoeuvre::Manoeuvre;
+    let input = RoadInput { segments: vec![segment(0x300, (0x1, 0), (0x2, 0), [0.0; 3], [0.0, 0.0, 400.0])], junctions: vec![] };
+    let net = RoadNetwork::build(&input).unwrap();
+    let mut clock = SignalClock::new(timings());
+    let s = seg(&net, 0x300);
+    let mut c = car(&net, 1, s, 200.0);
+    c.params.parked_time = 2.0;
+    c.manoeuvre = Manoeuvre::Parked { spot: 200.0, time: 1.5 };
+    c.alarming = true;
+    let mut cars = vec![c];
+    let mut rng = Rng::new(7);
+    let mut events = Vec::new();
+    for _ in 0..60 * 10 {
+        clock.tick(&mut Vec::new());
+        events.extend(step(&net, &clock, &mut cars, DT, ConnectorChoice::LeastLoaded, &mut rng));
+    }
+    assert_eq!(cars[0].manoeuvre, Manoeuvre::Parked { spot: 200.0, time: 0.0 }, "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, FollowEvent::PullingOut { .. })));
+    cars[0].alarming = false;
+    let mut ticks = 0;
+    while !events.iter().any(|e| matches!(e, FollowEvent::PullingOut { .. })) {
+        clock.tick(&mut Vec::new());
+        events.extend(step(&net, &clock, &mut cars, DT, ConnectorChoice::LeastLoaded, &mut rng));
+        ticks += 1;
+        assert!(ticks < 60 * 5, "no pull-out after the alarm");
+    }
+    // The full parked time again (2 s), not the 0.5 s left before the alarm.
+    assert!((ticks as f32 * DT - 2.0).abs() < 2.0 * DT, "{ticks}");
+}
