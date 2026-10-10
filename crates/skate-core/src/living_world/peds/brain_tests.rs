@@ -447,3 +447,199 @@ fn the_taunt_faces_the_victim_holds_the_intent_and_unsets_the_want() {
     h.end(0, [0; 6], &f);
     assert!(!h.brain.wants.contains_key("taunt") && h.brain.face.is_none() && !h.brain.monitored.contains_key("SGIntent"));
 }
+
+/// ThrowHandPropAtWantTarget (`826A7A58` / `826A7AA8`): Begin aims at the want's target with its velocity and plays the
+/// attack clip; Update keeps the want while the prop is held and through the flight (timer 35), then unsets it.
+#[test]
+fn the_attack_throw_aims_at_the_want_target_and_unsets_the_want_after_the_flight() {
+    use crate::living_world::peds::hand_prop::THROW_REACTION_TIMER;
+    let behaviors = ops(&[("ThrowHandPropAtWantTarget", &[("want", "throwhandprop")])]);
+    assert_eq!(behaviors[0], PedOp::ThrowHandPropAtWantTarget { want: "throwhandprop".into() });
+    let mut brain = PedBrain::default();
+    brain.set_want("throwhandprop", 7);
+    brain.hand_prop.holding = true;
+    let settings = BrainSettings { hand_prop: crate::living_world::peds::hand_prop::HandPropSettings { jitter_max: 0.0, ..Default::default() }, ..Default::default() };
+    let at = |id: u64| (id == 7).then_some([0.0, 0.0, 8.0]);
+    let velocity = |id: u64| (id == 7).then_some([0.0, 0.0, 3.0]);
+    let f = frame();
+    let chase = ChaseView { velocity: Some(&velocity), ..Default::default() };
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &at, chase };
+    h.begin(0, [0; 6], &f);
+    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::HandPropClip { clip: "HandPropAttackThrow" }]);
+    // Straight ahead and running away: the target 2.5 m further after 0.8333 s, then the 10 m/s prop's catch-up time.
+    let target = h.brain.hand_prop.throw.expect("throw started").target;
+    let t = 10.5 / 7.0;
+    assert!(target[0] == 0.0 && (target[2] - (10.5 + 3.0 * t)).abs() < 1e-3 && target[1] == 1.0, "{target:?}");
+    h.update(0, [0; 6], &f);
+    assert!(h.brain.wants.contains_key("throwhandprop"), "still held");
+    h.brain.tick_timers(0.84);
+    assert!(h.brain.update_hand_prop_release(&settings.hand_prop, [0.2, 1.2, 0.3]).is_some());
+    h.update(0, [0; 6], &f);
+    assert!(h.brain.timer(THROW_REACTION_TIMER) > 0.0 && h.brain.wants.contains_key("throwhandprop"), "in flight");
+    h.brain.tick_timers(5.0);
+    h.update(0, [0; 6], &f);
+    assert!(!h.brain.wants.contains_key("throwhandprop"));
+}
+
+/// The starting hand prop (`82E33198`): the chance roll first (`8269A588`: chance x 100 >= roll), then the first entry
+/// whose running total x 100 reaches the pick roll; weights summing below 1 can give nothing.
+#[test]
+fn the_starting_hand_prop_follows_the_chance_and_the_running_total() {
+    let list = vec![("grocerybag".to_string(), 0.2), ("purse".to_string(), 0.2), ("coffee".to_string(), 0.1)];
+    assert_eq!(HandProp::starting_pick(0.65, &list, 66, 1), None, "66 > 65: no prop");
+    assert_eq!(HandProp::starting_pick(0.65, &list, 65, 1), Some("grocerybag"));
+    assert_eq!(HandProp::starting_pick(0.65, &list, 1, 20), Some("grocerybag"));
+    assert_eq!(HandProp::starting_pick(0.65, &list, 1, 21), Some("purse"));
+    assert_eq!(HandProp::starting_pick(0.65, &list, 1, 50), Some("coffee"));
+    assert_eq!(HandProp::starting_pick(0.65, &list, 1, 51), None, "the list sums to 0.5");
+    assert_eq!(HandProp::starting_pick(0.0, &list, 1, 1), None, "pros never carry");
+}
+
+/// The sit plugin's ops (`826A2898` SetSitTimer, `826AD1F0` GoingToStandBackUp): the sit time lies between the ped type's
+/// min and max, the stand-up roll follows its chance, and timer 24 is retail's SitTimer.
+#[test]
+fn the_sit_timer_and_the_stand_up_roll_follow_the_ped_type() {
+    assert_eq!(timers::NAMES[timers::SIT as usize], "SitTimer");
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    for seed in 0..20u64 {
+        let mut brain = PedBrain { rng: Some(crate::living_world::Rng::new(seed)), ..Default::default() };
+        let behaviors = [PedOp::SetSitTimer];
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+        h.begin(0, [0; 6], &frame());
+        let t = brain.timers[&timers::SIT];
+        assert!((30.0..60.0).contains(&t), "{t}");
+    }
+    let rate = |chance: f32| {
+        let mut brain = PedBrain { rng: Some(crate::living_world::Rng::new(3)), sit: SitValues { stand_up_chance: chance, ..Default::default() }, ..Default::default() };
+        (0..1000).filter(|_| brain.roll_stand_up()).count()
+    };
+    assert_eq!(rate(0.0), 0);
+    assert_eq!(rate(1.0), 1000);
+    let half = rate(0.5);
+    assert!((430..570).contains(&half), "{half}");
+}
+
+/// The plugin flags (`826A7498`, `826A3108`, `826A2988` and their Ends): set while the behaviour runs, cleared at its
+/// end; the explicit turn takes the locked waypoint's orientation, and nothing without a waypoint.
+#[test]
+fn plugin_flags_hold_while_their_behaviours_run() {
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let behaviors = [PedOp::OwnPluginObject, PedOp::IgnoreStandingCollisions, PedOp::SetExplicitTurnDirectionToWaypointOrientation];
+    let mut brain = PedBrain::default();
+    {
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+        for i in 0..3 {
+            h.begin(i, [0; 6], &frame());
+        }
+    }
+    assert!(brain.own_plugin_object && brain.ignore_standing_collisions);
+    assert_eq!(brain.explicit_turn, None, "no waypoint locked");
+    brain.waypoint = Some([1.0, 0.0, 0.0]);
+    brain.waypoint_facing = Some([0.0, 0.0, -1.0]);
+    {
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+        h.begin(2, [0; 6], &frame());
+    }
+    assert_eq!(brain.explicit_turn, Some([0.0, 0.0, -1.0]));
+    {
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+        for i in 0..3 {
+            h.end(i, [0; 6], &frame());
+        }
+    }
+    assert!(!brain.own_plugin_object && !brain.ignore_standing_collisions && brain.explicit_turn.is_none());
+}
+
+/// IsOnRoad (the stub, always false), SimpleRandom (percentage x 0.01 against a roll), IsAtWaypoint (3 m horizontal
+/// by default) and InSkaterRadius (3D).
+#[test]
+fn plugin_conditions_follow_retail() {
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let conditions = [PedOp::IsOnRoad, PedOp::SimpleRandom { chance: 0.2 }, PedOp::IsAtWaypoint { radius: 3.0 }, PedOp::InSkaterRadius { radius: 25.0 }];
+    let mut brain = PedBrain { rng: Some(crate::living_world::Rng::new(5)), waypoint: Some([2.9, 10.0, 0.0]), ..Default::default() };
+    let mut h = BrainHost { behaviors: &[], conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: Some(([0.0, 24.0, 5.0], [0.0; 3])), target_position: &none, chase: Default::default() };
+    let f = frame();
+    assert_eq!(h.condition_activation(0, &f), 0);
+    let hits: u32 = (0..1000).map(|_| h.condition_activation(1, &f)).sum();
+    assert!((150..250).contains(&hits), "{hits}");
+    assert_eq!(h.condition_activation(2, &f), 1, "10 m above but 2.9 m away horizontally");
+    assert_eq!(h.condition_activation(3, &f), 1, "24.5 m");
+    h.skater = Some(([0.0, 25.0, 5.0], [0.0; 3]));
+    assert_eq!(h.condition_activation(3, &f), 0, "25.5 m");
+    h.brain.waypoint = None;
+    assert_eq!(h.condition_activation(2, &f), 0);
+}
+
+/// The collision / mood switches hold while their behaviours run; DisableAllMoods restores what it saved.
+#[test]
+fn collision_and_mood_switches_restore_at_end() {
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let behaviors = [PedOp::DisableHeavyCollision, PedOp::DisableCollisionSliding, PedOp::DisableAllMoods, PedOp::OverridePluginCollision, PedOp::OverridePluginAvoid];
+    let conditions = [PedOp::IsPluginCollisionOverride, PedOp::IsPluginAvoidOverride];
+    let mut brain = PedBrain { moods_disabled: true, ..Default::default() };
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    let f = frame();
+    for i in 0..5 {
+        h.begin(i, [0; 6], &f);
+    }
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f)), (1, 1));
+    for i in 0..5 {
+        h.end(i, [0; 6], &f);
+    }
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f)), (0, 0));
+    assert!(!brain.heavy_collision_disabled && !brain.collision_sliding_disabled);
+    assert!(brain.moods_disabled, "restored to the value before the behaviour");
+}
+
+/// Monitored packets as retail (`826A2600` / `826A27D0` / `826ACF90` / `826A2770`, b84): stage names from the XML,
+/// Increment only moves the stage, HasMonitoredIntent reads the active flag, the Create End removes the packet.
+#[test]
+fn monitored_packets_follow_retail() {
+    let behaviors = ops(&[("CreateSimpleMonitoredIntent", &[("intentName", "Sit"), ("numberOfStages", "2"), ("stage2Name", "StandUp")]), ("IncrementMonitoredPacketStage", &[("intentName", "Sit")])]);
+    let conditions = ops(&[("HasMonitoredIntent", &[("intentName", "Sit")])]);
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let f = frame();
+    let mut brain = PedBrain::default();
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    h.begin(0, [0; 6], &f);
+    assert_eq!(h.brain.monitored["Sit"].current(), Some("Sit"));
+    h.begin(1, [0; 6], &f);
+    assert_eq!(h.brain.monitored["Sit"].current(), Some("StandUp"));
+    assert_eq!(h.condition_activation(0, &f), 1, "still active: the motion side ends it");
+    // A ported motion state keeps it until its clips end; an unported one ends at the last stage (fallback).
+    h.brain.settle_packets(&|name| name == "Sit");
+    assert_eq!(h.condition_activation(0, &f), 1);
+    h.brain.settle_packets(&|_| false);
+    assert_eq!(h.condition_activation(0, &f), 0);
+    h.end(0, [0; 6], &f);
+    assert!(!h.brain.monitored.contains_key("Sit"));
+}
+
+#[test]
+fn hand_prop_conditions_and_the_weighted_pick() {
+    let list = vec![("pop".to_string(), 0.5), ("waterbottle".to_string(), 0.5)];
+    assert_eq!(HandProp::pick(&list, 0.0), Some("pop"));
+    assert_eq!(HandProp::pick(&list, 0.49), Some("pop"));
+    assert_eq!(HandProp::pick(&list, 0.51), Some("waterbottle"));
+    assert_eq!(HandProp::pick(&list, 1.0), Some("waterbottle"));
+    assert_eq!(HandProp::pick(&[("newspaper".to_string(), 1.0)], 0.7), Some("newspaper"));
+    assert_eq!(HandProp::pick(&[], 0.3), None);
+    let conditions = ops(&[("HasHandProp", &[]), ("IsHoldingSpecificHandProp", &[("handprop", "Newspaper")]), ("IsHoldingSpecificHandProp", &[("handprop", "tazr")])]);
+    let behaviors = ops(&[]);
+    let mut brain = PedBrain::default();
+    let settings = BrainSettings::default();
+    let at = |_: u64| None;
+    let f = frame();
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &at, chase: ChaseView::default() };
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f), h.condition_activation(2, &f)), (0, 0, 0));
+    // Requested (82E3DDA0) already counts as HasHandProp (826AD1A8); the key test is case-blind like the hash.
+    h.brain.hand_prop.request("newspaper");
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f), h.condition_activation(2, &f)), (1, 1, 0));
+    h.brain.hand_prop.clear();
+    assert_eq!(h.condition_activation(0, &f), 0);
+}

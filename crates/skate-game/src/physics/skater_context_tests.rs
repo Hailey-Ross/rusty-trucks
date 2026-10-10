@@ -250,3 +250,137 @@ fn a_traffic_car_knocks_the_skater_down_above_the_contact_limit() {
     eprintln!("12 m/s: first wipeout tick {fast:?}");
     assert!(fast.is_some_and(|t| t < 10), "a 12 m/s car hit wipes the skater out at once");
 }
+
+/// A ped's thrown can (`living_world::ped_hand_props::push_hand_prop_proxies`: a small finite-mass box in group 14)
+/// hitting the standing skater's chest at the attack throw's 10 m/s is an ordinary contact (b92 Q2, b94): it reaches the
+/// region forces (halved as a small object below 5.5 kg) and the usual wipeout check decides. Logs the outcome.
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn a_thrown_can_reaches_the_skater_region_forces() {
+    use skate_dynamics::rapier3d::prelude::{Pose, Rotation, SharedShape, Vector};
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let rig = Rig { graphs: crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap(), root_dir: root_dir.clone() };
+    let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    let mut player = rig.skater(&physics);
+    for _ in 0..30 {
+        rig.step(&mut physics, &mut player, pad());
+    }
+    let deck = physics.board.bodies()[BodyId::Deck.index()].rates.position;
+    let (speed, mass) = (10.0_f32, 0.4_f32);
+    let mut x = deck.x + 1.5;
+    let (mut peak, mut wipeout) = (0.0_f32, None);
+    for tick in 0..30 {
+        x -= speed / 60.0;
+        let centre = Vector::new(x, deck.y + 1.3, deck.z);
+        let solid = skate_dynamics::SolidBody {
+            id: 0x7E57_0000_0000_0002,
+            pose: Pose::from_parts(centre, Rotation::IDENTITY),
+            center_of_mass: centre,
+            inertia_rotation: Rotation::IDENTITY,
+            inverse_mass: 1.0 / mass,
+            inverse_inertia: Vector::new(500.0, 500.0, 500.0),
+            linvel: Vector::new(-speed, 0.0, 0.0),
+            angvel: Vector::new(0.0, 0.0, 0.0),
+            contact_group: 14,
+            colliders: vec![skate_dynamics::SolidCollider { shape: SharedShape::cuboid(0.04, 0.07, 0.04), pose: Pose::from_parts(centre, Rotation::IDENTITY), friction: 0.5 }],
+        };
+        let mut proxies = network::Proxies::default();
+        proxies.append_solid(solid, &physics, &player.runtime, false);
+        physics.network_proxies = proxies;
+        rig.step(&mut physics, &mut player, pad());
+        peak = player.runtime.collision_feedback.regions.iter().map(|r| r.force).fold(peak, f32::max);
+        if wipeout.is_none() && player.runtime.player_state.current() == PhysicalStateId::WipeoutGround {
+            wipeout = Some(tick);
+        }
+    }
+    eprintln!("thrown can {speed} m/s {mass} kg: peak region force {peak:.2}, wipeout tick {wipeout:?}");
+    assert!(peak > 1.0, "the can's contact reaches the region forces: {peak}");
+}
+
+/// Mode 7's controller B (NavMeshController, b78 to b80) on a simulated skater: B's intents alone (no pad, the AI
+/// source present but not fresh) make it press the off-board toggle, step off, turn on foot through `OB_Steer` ->
+/// `ob_Turn` (Processed +2680 = -OB_Steer) and line up with the node direction, then hand back (arrived).
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn controller_b_steps_off_and_walks_the_skater_onto_the_node() {
+    use skate_core::living_world::controller_b::{BTick, ControllerB, ControllerBSettings, HandBack, PathElement, PathService};
+    // The goal as the only corner: what the peds' navmesh returns on open ground.
+    struct Corner;
+    impl PathService for Corner {
+        fn solve(&self, _from: [f32; 3], to: [f32; 3]) -> Option<Vec<PathElement>> {
+            Some(vec![PathElement { entry: to, exit: to }])
+        }
+    }
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap();
+    let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    let spawn = physics.board.part_transforms()[BodyId::Deck.index()];
+    let mut context = physics.new_skater_context(spawn).unwrap();
+    let mut runtime = physics.load_skater_in_context(&mut context, &root_dir, &graphs, "easy").unwrap();
+    let mut controls = PlayerControls::default();
+    let mut camera = crate::camera::CameraRuntime::load(&root_dir).unwrap();
+    // Settle on the board for half a second (an empty, present AI source, as while B is active).
+    let record = skate_core::living_world::ai_record::build(
+        &skate_core::living_world::ai_record::LineTarget { position: [spawn.translation.x, spawn.translation.y, spawn.translation.z], frame: [0.0, 0.0, 0.0, 1.0], step: [0.0; 3] },
+        [0.0, 0.0, 1.0],
+        &Default::default(),
+    );
+    runtime.ai_physics = Some(super::skater::AiPhysicsSource { record, fresh: false });
+    for _ in 0..30 {
+        physics.advance_npc_skater(&mut context, &mut runtime, &mut controls, &graphs, &mut camera, &[]).unwrap();
+    }
+    let root = runtime.animated_skeleton.roots.animation_to_world;
+    let at = [root[3][0], root[3][1], root[3][2]];
+    let forward = [root[2][0], 0.0, root[2][2]];
+    let right = [forward[2], 0.0, -forward[0]];
+    let l = (right[0] * right[0] + right[2] * right[2]).sqrt();
+    let right = right.map(|x| x / l);
+    let target = [at[0] + right[0] * 3.0, at[1], at[2] + right[2] * 3.0];
+    let s = ControllerBSettings::default();
+    let input = crate::living_world::npc_sim::walker_input(&runtime);
+    let mut b = ControllerB::activate(&s, &Corner, target, right, &input).expect("the corner plan accepts the goal");
+    let (mut off_board_at, mut turn_checked, mut result) = (None, false, None);
+    for tick in 0..600 {
+        let input = crate::living_world::npc_sim::walker_input(&runtime);
+        let at = input.position;
+        if input.byte_161 && off_board_at.is_none() {
+            off_board_at = Some(tick);
+        }
+        let intents: Vec<(String, f32)> = match b.tick(&s, &Corner, &input) {
+            BTick::Controls(c) => c.intents().into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            BTick::HandBack { reason, .. } => {
+                result = Some((tick, reason));
+                break;
+            }
+            BTick::Idle => Vec::new(),
+        };
+        let steer = intents.iter().find(|x| x.0 == "OB_Steer").map(|x| x.1);
+        physics.advance_npc_skater(&mut context, &mut runtime, &mut controls, &graphs, &mut camera, &intents).unwrap();
+        if runtime.player_state.current() == PhysicalStateId::BipedGround && tick < 40 {
+            let x = &runtime.animation_input.extra;
+            eprintln!("  tick {tick}: OB_Mag sent {:?} -> magnitude {:.3}, OB_Steer sent {steer:?} -> turn {:.3}", intents.iter().find(|x| x.0 == "OB_Mag").map(|x| x.1), x.offboard_magnitude, x.offboard_turn);
+        }
+        if let (Some(steer), PhysicalStateId::BipedGround) = (steer, runtime.player_state.current()) {
+            if steer.abs() > 0.1 && !turn_checked && tick < 60 {
+                let turn = runtime.animation_input.extra.offboard_turn;
+                eprintln!("tick {tick}: OB_Steer {steer:.3} -> offboard_turn {turn:.3}, state {:?}", runtime.player_state.current());
+                if (turn + steer).abs() < 1e-4 {
+                    turn_checked = true;
+                }
+            }
+        }
+        if tick % 30 == 0 {
+            eprintln!("tick {tick} state {:?} at {at:?} steer {steer:?} heading error {:.2}", runtime.player_state.current(), b.heading_error);
+        }
+    }
+    eprintln!("off board at {off_board_at:?}, result {result:?}");
+    assert!(off_board_at.is_some(), "the toggle presses never took the skater off the board");
+    assert!(turn_checked, "no steer while off the board");
+    assert!(matches!(result, Some((_, HandBack::Arrived))), "{result:?}");
+}

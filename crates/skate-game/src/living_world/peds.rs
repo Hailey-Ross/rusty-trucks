@@ -94,7 +94,17 @@ pub(crate) struct PedData {
     pub chase_global: Option<Arc<skate_core::living_world::peds::chase::ChaseRecord>>,
     /// The conversation plugin graph (`plugin/conversation.stategraph`) and the conversation tables.
     pub conversation_graph: Option<Arc<super::ped_graph::PedGraph>>,
+    /// The world-prop plugin graphs by prop class (each descriptor's `file`, compiled).
+    pub plugin_graphs: BTreeMap<String, Arc<super::ped_graph::PedGraph>>,
     pub conversations: Arc<super::ped_mood::ConversationTables>,
+    /// Ped plugins on world props: classes, descriptors, `plugin_odds`, placed props (`ped_plugins`).
+    pub plugins: Arc<super::ped_plugins::PluginData>,
+    /// Hand props: records and models (`ped_hand_props`).
+    pub hand_props: Arc<super::ped_hand_props::HandPropData>,
+    /// Each entity type's starting hand prop chance and list (`ped_mood::starting_hand_props`).
+    pub starting_props: Arc<BTreeMap<String, (f32, Vec<(String, f32)>)>>,
+    /// The sit plugin's values by entity type (`ped_mood::sit_values`).
+    pub sit: Arc<BTreeMap<String, skate_core::living_world::peds::brain::SitValues>>,
     /// Each entity type's vision test ranges (`ped_mood::sight`).
     pub sight: Arc<BTreeMap<String, skate_core::living_world::peds::perception::Sight>>,
     /// Each entity type's takedown table (`ped_mood::takedown_tables`).
@@ -312,6 +322,8 @@ pub(crate) struct PedBody {
     /// Seconds the body's steps have been refused (walls, other peds, the crosswalk rule).
     pub blocked: f32,
     pub position: Vec3,
+    /// The last console tick's movement over its length, m/s (the attack throw's look-ahead, `82E3E960`).
+    pub velocity: Vec3,
     pub heading: f32,
     /// Console ticks stepped since the spawn.
     pub ticks: u64,
@@ -320,6 +332,7 @@ pub(crate) struct PedBody {
     /// The taunt clip (motiongraph_taunt): requested by TakedownTauntVictim, playing, finished (the brain then
     /// drops its "SGIntent").
     pub taunt: TauntClip,
+    pub plugin_motion: PluginMotionRun,
 }
 
 /// Where a ped's taunt clip is.
@@ -330,6 +343,21 @@ pub(crate) enum TauntClip {
     Requested,
     Playing,
     Done,
+}
+
+/// A plugin state's run on the motion side (`skate_core::living_world::peds::plugin_motion`): the packet it plays,
+/// its progress (the taunt's handshake) and a pending release of its held cycle.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PluginMotionRun {
+    pub packet: Option<String>,
+    pub state: TauntClip,
+    pub release: bool,
+    /// The step that spawns the hand prop reached its branch window (`SpawnInteractionBasedHandProp`); the brain side
+    /// takes it once (`think_peds`) and `hand_prop_taken` keeps it from firing again in the same run.
+    pub hand_prop_due: bool,
+    pub hand_prop_taken: bool,
+    /// A hand prop throw clip the brain asked for (`82E3E648` plays it on the ped, blend 0.2) and its blend.
+    pub throw_clip: Option<(&'static str, f32)>,
 }
 
 /// LivingWorldId -> entity.
@@ -366,6 +394,8 @@ pub(crate) enum PedEvent {
     /// graph state that sent it.
     /// `topic`: a conversation turn's variant and row value (`ped+2472` / `+2476`).
     Speech { id: LivingWorldId, value: i32, topic: Option<(u8, i32)>, state: String },
+    /// The ped took a hand prop (`livingworld_handprops` key) at a plugin prop (SpawnInteractionBasedHandProp).
+    HandProp { id: LivingWorldId, key: String },
 }
 
 /// Skater against ped contact (doc 26, "Skater hits peds"). NOT RETAIL YET: the skater is a
@@ -464,8 +494,8 @@ fn load_ped_data(
         }
         Err(error) => warn!("PED_GRAPH not loaded (peds keep wandering without the behaviour graph): {error}"),
     }
-    match std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| Ok((super::ped_mood::parse(&b)?, super::ped_mood::reaction_sets(&b), super::ped_mood::chase_records(&b), super::ped_mood::takedown_tables(&b), super::ped_mood::sight(&b), super::ped_mood::conversation_tables(&b)))) {
-        Ok((tables, sets, (chase, global), takedowns, sight, conversations)) => {
+    match std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| Ok((super::ped_mood::parse(&b)?, super::ped_mood::reaction_sets(&b), super::ped_mood::chase_records(&b), super::ped_mood::takedown_tables(&b), super::ped_mood::sight(&b), super::ped_mood::conversation_tables(&b), super::ped_mood::sit_values(&b), super::ped_mood::starting_hand_props(&b)))) {
+        Ok((tables, sets, (chase, global), takedowns, sight, conversations, sit, starting_props)) => {
             info!(
                 "PED_MOOD tables: {} categories, {} results, {} reaction sets, {} entity types, {} chase records (global {})",
                 tables.categories.len(),
@@ -482,8 +512,46 @@ fn load_ped_data(
             loaded.takedowns = Arc::new(takedowns);
             loaded.sight = Arc::new(sight);
             loaded.conversations = Arc::new(conversations);
+            loaded.sit = Arc::new(sit);
+            loaded.starting_props = Arc::new(starting_props);
         }
         Err(error) => warn!("PED_MOOD tables not loaded (no mood reactions): {error}"),
+    }
+    match super::ped_plugins::PluginData::load(&config.asset_root) {
+        Ok(mut p) => {
+            // The map's DMO hotpoint props (benches, bins, newspaper boxes) beside the placed waypoint groups.
+            let seats = super::ped_plugins::map_props(&config.asset_root, &map.name);
+            info!("PED_PLUGINS {}: {} hotpoint props ({} seats)", map.name, seats.len(), seats.iter().filter(|s| s.class == "waypoint_sit").count());
+            p.placed.entry(map.name.clone()).or_default().extend(seats);
+            info!(
+                "PED_PLUGINS {} prop classes ({} with descriptors), {} ped types with plugin_odds, placed props {:?}",
+                p.classes.len(),
+                p.classes.values().filter(|c| c.descriptor.is_some()).count(),
+                p.odds.len(),
+                p.placed.iter().map(|(k, v)| (k.clone(), v.len())).collect::<Vec<_>>()
+            );
+            // Each class's plugin graph (`plugin/<name>.xml` compiled to `.stategraph`).
+            for (class, c) in &p.classes {
+                let Some(d) = c.descriptor.as_ref().filter(|d| !d.graph.is_empty() && class != "waypoint_conversation") else { continue };
+                let relative = format!("private/stock/data/{}", d.graph.replace('\\', "/").trim_end_matches(".xml").to_string() + ".stategraph");
+                match super::ped_graph::PedGraph::load(&config.asset_root, &relative) {
+                    Ok(g) => {
+                        info!("PED_GRAPH plugin {class}: {} behaviours, {} conditions; not ported yet: {:?}", g.behaviors.len(), g.conditions.len(), g.pending().keys().collect::<Vec<_>>());
+                        loaded.plugin_graphs.insert(class.clone(), Arc::new(g));
+                    }
+                    Err(error) => warn!("PED_GRAPH plugin {class} not loaded: {error}"),
+                }
+            }
+            loaded.plugins = Arc::new(p);
+        }
+        Err(error) => warn!("PED_PLUGINS not loaded (no plugin props): {error}"),
+    }
+    match super::ped_hand_props::HandPropData::load(&config.asset_root) {
+        Ok(h) => {
+            info!("PED_HAND_PROPS {} records, {} with models", h.props.len(), h.props.values().filter(|p| p.glb.is_some()).count());
+            loaded.hand_props = Arc::new(h);
+        }
+        Err(error) => warn!("PED_HAND_PROPS not loaded (no hand props): {error}"),
     }
     info!("LIVING_WORLD {}", loaded.status);
     loaded.loaded_for = Some(key);
@@ -511,6 +579,7 @@ pub(crate) fn apply_ped_records(
             continue;
         }
         if let Some(e) = index.0.remove(&r.id) {
+            info!("PED_DESPAWN ped=#{} reason={:?} tick={}", r.id.serial, r.reason, r.tick);
             commands.entity(e).despawn();
             events.write(PedEvent::Despawned { id: r.id, reason: r.reason });
         }
@@ -571,7 +640,7 @@ pub(crate) fn apply_ped_records(
             tint_a: look.tint_a,
             tint_b: look.tint_b,
         };
-        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: TauntClip::None };
+        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, velocity: Vec3::ZERO, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: TauntClip::None, plugin_motion: PluginMotionRun::default() };
         let e = commands
             .spawn((
                 Name::new(format!("Pedestrian {} ({})", s.id.serial, look.recipe)),
@@ -645,6 +714,7 @@ pub(crate) fn advance_peds(
         let me = id_order(ped.id);
         while body.ticks < target {
             let mut turn = 0.0;
+            let step_from = body.position;
             // The taunt clip (motiongraph_taunt `PlayTaunt`: the remapped "Taunt" once, blend 0.1, then
             // `MajorIntentComplete`); a set without the clip completes at once.
             match body.taunt {
@@ -653,6 +723,37 @@ pub(crate) fn advance_peds(
                     body.taunt = if body.player.react(set, vec![step], 0.0) { TauntClip::Playing } else { TauntClip::Done };
                 }
                 TauntClip::Playing if body.player.state != Locomotion::Reaction => body.taunt = TauntClip::Done,
+                _ => {}
+            }
+            // A hand prop throw clip (`82E3E648`, ped vfunc +240): played once over what runs.
+            if let Some((clip, blend)) = body.plugin_motion.throw_clip.take() {
+                let step = skate_core::living_world::peds::skater_contact::ReactionStep { anim: clip, mirror: false, blend, cycle: false };
+                if !body.player.react(set, vec![step], 0.0) {
+                    info!("PED_HAND_PROP ped=#{} no clip {clip} tick={tick}", ped.id.serial);
+                }
+            }
+            // A plugin state's clips (sit, ATM, vending machine, water fountain, newspaper box).
+            let run = &mut body.plugin_motion;
+            match (run.state, run.packet.as_deref().and_then(skate_core::living_world::peds::plugin_motion::motion_for)) {
+                (TauntClip::Requested, Some(m)) if !body.player.reacting() => {
+                    use skate_core::living_world::peds::plugin_motion::BLEND;
+                    let steps = m.steps.iter().map(|st| skate_core::living_world::peds::skater_contact::ReactionStep { anim: st.anim, mirror: false, blend: BLEND, cycle: st.hold_until.is_some() }).collect();
+                    run.state = if body.player.react(set, steps, f32::INFINITY) { TauntClip::Playing } else { TauntClip::Done };
+                }
+                (TauntClip::Playing, m) => {
+                    if std::mem::take(&mut run.release) {
+                        body.player.release_hold();
+                    }
+                    // VendHandProp / CollectHandProp: the collect clip's branch window (`InTurnBranchWindow`).
+                    let collect = m.and_then(|m| m.steps.iter().find(|st| st.hand_prop)).map(|st| st.anim);
+                    if !run.hand_prop_taken && collect.is_some() && body.player.reaction_anim() == collect && body.player.in_branch_window() {
+                        run.hand_prop_due = true;
+                        run.hand_prop_taken = true;
+                    }
+                    if !body.player.reacting() {
+                        run.state = TauntClip::Done;
+                    }
+                }
                 _ => {}
             }
             // A skater running into the ped (retail `sub_82E38FB8` kind 5).
@@ -673,9 +774,29 @@ pub(crate) fn advance_peds(
             let face = mind.filter(|m| m.brain.speed_suggestion == Some(0.0)).and_then(|m| m.brain.face);
             // LockToCurrentPosition: stand where the ped is (turning only for a face point).
             let locked = mind.is_some_and(|m| m.brain.position_locked);
+            // TargetWaypoint's slide: within the slide distance the think step moves the ped onto the point; the body
+            // stands (no wander target while the route is off).
+            let sliding = mind.is_some_and(|m| {
+                m.brain.approach.zip(m.brain.approach_slide).is_some_and(|((p, _), (slide, _))| (p[0] - body.position.x).hypot(p[2] - body.position.z) <= slide)
+            });
             match data.nav.as_deref() {
                 _ if body.player.state == Locomotion::Reaction => body.player.intent = skate_core::living_world::peds::anim::Intent::Idle,
-                _ if locked && face.is_none() => body.player.intent = skate_core::living_world::peds::anim::Intent::Idle,
+                _ if (locked || sliding) && face.is_none() => {
+                    body.player.intent = skate_core::living_world::peds::anim::Intent::Idle;
+                    // The explicit turn direction (`+2100` bit 0x20): a ped standing on its waypoint keeps turning to
+                    // the waypoint's orientation.
+                    if let Some(dir) = mind.and_then(|m| m.brain.explicit_turn).filter(|d| d[0] * d[0] + d[2] * d[2] > 1e-6) {
+                        let mut error = dir[0].atan2(dir[2]) - body.heading;
+                        while error > std::f32::consts::PI {
+                            error -= std::f32::consts::TAU;
+                        }
+                        while error < -std::f32::consts::PI {
+                            error += std::f32::consts::TAU;
+                        }
+                        let step = nav_settings.wander.turn_rate * dt;
+                        turn = error.clamp(-step, step);
+                    }
+                }
                 _ if face.is_some() => {
                     let p = face.unwrap_or_default();
                     let d = [p[0] - body.position.x, p[2] - body.position.z];
@@ -769,6 +890,7 @@ pub(crate) fn advance_peds(
             body.heading += out.root.yaw;
             body.feet_down = out.feet_down;
             body.body_fall = out.body_fall;
+            body.velocity = (body.position - step_from) / dt;
             body.ticks += 1;
             if let Some(s) = out.entered {
                 events.write(PedEvent::State { id: ped.id, state: s });
@@ -822,7 +944,7 @@ pub(crate) fn id_order(id: LivingWorldId) -> u64 {
 /// The look of one ped (render side).
 #[derive(Component, Default)]
 pub(crate) struct PedPuppet {
-    scene: Option<Entity>,
+    pub(crate) scene: Option<Entity>,
     bindings: Option<crate::animation::AnimationStatus>,
     /// Rig bones without clip data: (bone, rig parent, bind offset from the parent, native space).
     followers: Vec<(usize, usize, Mat4)>,
@@ -1078,16 +1200,23 @@ pub(crate) fn present_ped_pose(
     settings: Res<LivingWorldSettings>,
     fixed: Res<Time<Fixed>>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
-    mut peds: Query<(&Pedestrian, &PedBody, &mut PedPuppet, Option<&mut super::npc_skaters::NpcFade>)>,
+    mut peds: Query<(&Pedestrian, &PedBody, &mut PedPuppet, Option<&mut super::npc_skaters::NpcFade>, Option<&super::ped_hand_props::HeldHandProp>)>,
     mut joints: Query<&mut Transform, Without<PedBody>>,
     mut vis: Query<&mut Visibility>,
 ) {
     let hz = state.world.clock().hz;
     let ahead = ((state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * hz).clamp(0.0, 1.0) as f32) * tick_seconds(hz);
     let camera = cameras.iter().next().map(|c| c.translation());
-    for (ped, body, mut puppet, fade) in &mut peds {
+    let hand_bone = data.rig.names.iter().position(|n| n.eq_ignore_ascii_case(super::ped_hand_props::HAND_PROP_BONE));
+    for (ped, body, mut puppet, fade, held) in &mut peds {
         let Some(bindings) = puppet.bindings.as_ref() else { continue };
         let Some(globals) = ped_globals(&data.rig, body, &*data, ahead, &puppet.followers) else { continue };
+        // The held hand prop at the hand bone's native frame and the record's offset (`82E3E4F0`, every frame).
+        if let (Some(h), Some(bone)) = (held, hand_bone.and_then(|i| globals.get(i)))
+            && let Ok(mut t) = joints.get_mut(h.entity)
+        {
+            *t = Transform::from_matrix(*bone * h.local);
+        }
         for (joint, local) in bindings.pose_transforms(&ped_joint_globals(&globals, puppet.basis)) {
             if let Ok(mut t) = joints.get_mut(joint) {
                 *t = local;
@@ -1154,6 +1283,7 @@ pub(crate) fn install(app: &mut App) {
     app.init_resource::<PedData>()
         .init_resource::<PedLooks>()
         .init_resource::<PedIndex>()
+        .init_resource::<super::ped_hand_props::ReleasedHandProps>()
         .init_resource::<PedRejected>()
         .init_resource::<PedNavSettings>()
         .init_resource::<PedObstacles>()
@@ -1163,7 +1293,8 @@ pub(crate) fn install(app: &mut App) {
         .add_message::<SkaterTakedownRequest>()
         .init_resource::<PedChaseGroups>()
         .init_resource::<PedConversations>()
-        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, apply_skater_takedowns, advance_peds, log_ped_readout).chain().after(super::step_population))
+        .init_resource::<PedPluginProps>()
+        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, super::ped_hand_props::sync_hand_props, apply_skater_takedowns, advance_peds, log_ped_readout).chain().after(super::step_population))
         .init_resource::<PedMaterials>()
         .add_systems(Update, (present_ped_looks, present_ped_tints, present_ped_pose).chain().after(crate::app::FrameSet::Animation).before(super::npc_skaters::present_fade));
 }
@@ -1192,6 +1323,54 @@ pub(crate) struct PedMind {
     /// Population ticks run so far.
     ticks: u64,
     state: Option<usize>,
+    /// The world prop the ped took (index in `PedPluginProps`, prop id, waypoint) and the props it refused (`82E40BD0`).
+    prop: Option<(usize, u64, usize)>,
+    refusals: skate_core::living_world::peds::plugins::RefusalMemory,
+    /// A release the brain posted (DropHandProp) for `sync_hand_props`: the velocity, m/s.
+    pub hand_prop_release: Option<[f32; 3]>,
+    /// Log repeat limiter for PED_BRAIN / PED_MOOD lines (a refused startconversation re-raises its want every few
+    /// ticks, retail by b28 / b29, and filled the log with 27k lines in 4 minutes).
+    log_repeats: LogRepeats,
+}
+
+/// Per-ped log repeat limiter: the same line key logs at most once per `LOG_REPEAT_TICKS`; the next line of that
+/// key carries how many were held back.
+#[derive(Default)]
+struct LogRepeats(BTreeMap<u64, (u64, u32)>);
+
+/// 5 s of the 60 Hz world tick.
+const LOG_REPEAT_TICKS: u64 = 300;
+
+impl LogRepeats {
+    /// `Some(held back count)` when the line should be logged now, `None` when it is held back.
+    fn allow(&mut self, key: u64, tick: u64) -> Option<u32> {
+        match self.0.get_mut(&key) {
+            Some((last, held)) if tick < *last + LOG_REPEAT_TICKS => {
+                *held += 1;
+                None
+            }
+            Some((last, held)) => {
+                *last = tick;
+                Some(std::mem::take(held))
+            }
+            None => {
+                self.0.insert(key, (tick, 0));
+                Some(0)
+            }
+        }
+    }
+}
+
+/// The world props offering ped plugins on the current map (host-owned; `skate_core::living_world::peds::plugins`).
+#[derive(Resource, Default)]
+pub(crate) struct PedPluginProps {
+    pub key: Option<(String, u64)>,
+    pub props: Vec<skate_core::living_world::peds::plugins::PluginProp>,
+    pub settings: skate_core::living_world::peds::plugins::PluginSettings,
+    /// World ticks since the last offer scan (`826C0058` every 11th tick) and the last world tick seen.
+    pub scan_ticks: u32,
+    pub last_tick: Option<u64>,
+    pub rng: Option<skate_core::living_world::Rng>,
 }
 
 /// The live conversations by id (host-owned plain data, `skate_core::living_world::peds::conversation`).
@@ -1261,7 +1440,7 @@ pub(crate) fn think_peds(
     // same message in one system conflict).
     mut events: ResMut<bevy::ecs::message::Messages<PedEvent>>,
     mut cursor: Local<Option<bevy::ecs::message::MessageCursor<PedEvent>>>,
-    (mut traffic_events, cars): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>),
+    (mut traffic_events, cars, mut plugin_props): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>),
 ) {
     // Horn kind 2 at a ped (`sub_82E3C3D0`: the honker id into brain `+3232`; the last car wins).
     let honked: BTreeMap<u64, u64> = traffic_events.read().filter_map(|e| match e { super::vehicles::TrafficEvent::HonkedAt { id, ped } => Some((*ped, id.to_u64())), _ => None }).collect();
@@ -1289,6 +1468,84 @@ pub(crate) fn think_peds(
         .map(|(_, p, b, _)| (p.id.to_u64(), (p.entity.clone(), b.position.to_array())))
         .chain(players.iter().enumerate().map(|(i, p)| (PLAYER_TARGET_BASE + i as u64, ("skater".to_string(), *p))))
         .collect();
+    // Velocity of every id this tick (the attack throw's look-ahead).
+    let velocities: BTreeMap<u64, [f32; 3]> = list
+        .iter()
+        .map(|(_, p, b, _)| (p.id.to_u64(), b.velocity.to_array()))
+        .chain(observers.observers.iter().enumerate().map(|(i, o)| (PLAYER_TARGET_BASE + i as u64, o.velocity)))
+        .collect();
+    let velocity_of = |id: u64| velocities.get(&id).copied();
+    // World-prop plugins: the map's props, then the offer scan every 11th world tick (`826C0058` -> `826BFE18`).
+    {
+        let pp = &mut *plugin_props;
+        let key = data.loaded_for.clone();
+        if pp.key != key {
+            pp.props = key.as_ref().and_then(|k| data.plugins.placed.get(&k.0)).cloned().unwrap_or_default();
+            pp.key = key;
+            pp.scan_ticks = 0;
+            info!("PED_PLUGINS props on this map: {}", pp.props.len());
+        }
+        let seed = state.world.seed();
+        let rng = pp.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(seed, &[0x504c_5547])));
+        let elapsed = pp.last_tick.map_or(1, |t| tick.saturating_sub(t)) as u32;
+        pp.last_tick = Some(tick);
+        pp.scan_ticks += elapsed;
+        // Waypoints held by peds that are gone or no longer on the prop are released.
+        let holding: Vec<(u64, u64)> = list.iter().filter_map(|(_, p, _, m)| m.prop.map(|(_, id, _)| (p.id.to_u64(), id))).collect();
+        for prop in &mut pp.props {
+            for w in &mut prop.waypoints {
+                if let Some(o) = w.occupant.filter(|o| !holding.contains(&(*o, prop.id))) {
+                    info!("PED_PLUGIN_PROP {} {:016X} released: ped {o} gone tick={tick}", prop.class, prop.id);
+                    w.occupant = None;
+                }
+            }
+        }
+        while pp.scan_ticks >= pp.settings.scan_period.max(1) {
+            pp.scan_ticks -= pp.settings.scan_period.max(1);
+            let mut attaches = Vec::new();
+            {
+                // The descriptors' transfer expressions (`UseWorldProp`: e.g. usetrashbin needs a disposable hand prop).
+                let views: std::collections::HashMap<u64, skate_core::living_world::peds::plugins::TransferView> =
+                    list.iter().map(|(_, p, _, m)| (p.id.to_u64(), skate_core::living_world::peds::plugins::TransferView::of(&m.brain))).collect();
+                let mut qualifies = |prop: &skate_core::living_world::peds::plugins::PluginProp, ped: &skate_core::living_world::peds::plugins::OfferPed| {
+                    let view = views.get(&ped.id).copied().unwrap_or_default();
+                    let transfer = data.plugins.classes.get(&prop.class).and_then(|c| c.descriptor.as_ref()).and_then(|d| d.transfer.as_ref());
+                    transfer.is_none_or(|t| t.evaluate(&mut |name, _| view.condition(name, prop, ped.position)))
+                };
+                let mut offer_peds: Vec<skate_core::living_world::peds::plugins::OfferPed> = list
+                    .iter_mut()
+                    .map(|(_, p, b, m)| {
+                        let m = &mut **m;
+                        skate_core::living_world::peds::plugins::OfferPed {
+                            id: p.id.to_u64(),
+                            position: b.position.to_array(),
+                            has_plugin: m.brain.has_plugin || m.prop.is_some(),
+                            odds: data.plugins.odds.get(&p.entity).map(Vec::as_slice).unwrap_or(&[]),
+                            memory: &mut m.refusals,
+                        }
+                    })
+                    .collect();
+                for (index, prop) in pp.props.iter_mut().enumerate() {
+                    if !data.plugin_graphs.contains_key(&prop.class) {
+                        continue;
+                    }
+                    let class = data.plugins.classes.get(&prop.class);
+                    // [inference] the offer radius: the class field E2101F2B17A0E6B5 (10 sit / 5 bin / 15 ATM).
+                    let radius = class.and_then(|c| c.numbers.get("Hash_E2101F2B17A0E6B5").copied()).unwrap_or(10.0);
+                    let max = class.and_then(|c| c.descriptor.as_ref()).map_or(1, |d| d.max_participants);
+                    for a in skate_core::living_world::peds::plugins::offer(prop, radius, max, &mut offer_peds, &mut qualifies, &pp.settings, rng) {
+                        attaches.push((index, a));
+                    }
+                }
+            }
+            for (index, a) in attaches {
+                if let Some((_, p, _, m)) = list.iter_mut().find(|(_, p, ..)| p.id.to_u64() == a.ped) {
+                    m.prop = Some((index, a.prop, a.waypoint));
+                    info!("PED_PLUGIN_PROP ped=#{} takes {} {:016X} waypoint {} tick={tick}", p.id.serial, pp.props[index].class, a.prop, a.waypoint);
+                }
+            }
+        }
+    }
     let entity = |id: u64| entities.get(&id).cloned();
     let target = |id: u64| entities.get(&id).map(|e| e.1);
     let player_list: Vec<(u64, [f32; 3])> = players.iter().enumerate().map(|(i, p)| (PLAYER_TARGET_BASE + i as u64, *p)).collect();
@@ -1405,6 +1662,25 @@ pub(crate) fn think_peds(
                 }
                 mind.mood.post(MoodEvent { category: category.into(), instigator, second: Some(hit), position: at }, magnitude(category));
             }
+            // The brain's own rolls (sit time, stand-up) and its type's sit values, once per ped.
+            if mind.brain.rng.is_none() {
+                mind.brain.rng = Some(skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(world_seed, &[0x4252_4e52, me])));
+                mind.brain.sit = entity(me).and_then(|(name, _)| data.sit.get(name.as_str()).copied()).unwrap_or_default();
+                // The starting hand prop (ped constructor `82E33198`): the type's chance, then its weighted list.
+                let start = entity(me).and_then(|(name, _)| data.starting_props.get(name.as_str()));
+                if let (Some((chance, list)), true) = (start, settings.ped_brain.values.hand_prop.starting_props) {
+                    let r = mind.brain.rng.as_mut().expect("seeded above");
+                    let (a, b) = (r.modulo(100) + 1, r.modulo(100) + 1);
+                    if let Some(key) = skate_core::living_world::peds::brain::HandProp::starting_pick(*chance, list, a, b).map(str::to_string) {
+                        mind.brain.hand_prop.request(&key);
+                        if let Some(r) = data.hand_props.props.get(&key) {
+                            let h = &mut mind.brain.hand_prop;
+                            (h.disposable, h.can_sit, h.can_attack_throw) = (r.disposable, r.can_sit, r.can_attack_throw);
+                        }
+                        info!("PED_HAND_PROP ped=#{} requested {key} at spawn tick={tick}", ped.id.serial);
+                    }
+                }
+            }
             let rng = mind.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(world_seed, &[0x4d4f_4f44, me])));
             let ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy };
             let brain = &mind.brain;
@@ -1413,16 +1689,20 @@ pub(crate) fn think_peds(
             // `sub_82E41B98` does nothing for a busy ped (`sub_82E3BF70`); a pass sets WaitingToReact.
             let produced = if brain.busy() { None } else { tables.produce(&mut mind.mood, &ctx, false, &outstanding, &pending, rng) };
             if let Some(reaction) = produced {
-                info!(
-                    "PED_MOOD ped=#{} {} result={} category={} roll={:?} passed={} wants={:?} tick={tick}",
-                    ped.id.serial,
-                    set,
-                    reaction.result,
-                    reaction.category,
-                    reaction.rolled,
-                    reaction.passed,
-                    reaction.wants.iter().map(|w| w.want.as_str()).collect::<Vec<_>>()
-                );
+                let key = reaction.result.bytes().chain([0]).chain(reaction.category.bytes()).fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)) & !(1 << 63);
+                if let Some(held) = mind.log_repeats.allow(key, tick) {
+                    info!(
+                        "PED_MOOD ped=#{} {} result={} category={} roll={:?} passed={} wants={:?} tick={tick}{}",
+                        ped.id.serial,
+                        set,
+                        reaction.result,
+                        reaction.category,
+                        reaction.rolled,
+                        reaction.passed,
+                        reaction.wants.iter().map(|w| w.want.as_str()).collect::<Vec<_>>(),
+                        if held > 0 { format!(" (+{held} held back)") } else { String::new() }
+                    );
+                }
                 if reaction.passed {
                     mind.brain.waiting_to_react = true;
                 }
@@ -1486,10 +1766,32 @@ pub(crate) fn think_peds(
             if mind.brain.plugin.is_none_or(|id| !conversations.map.get(&id).is_some_and(|c| c.members.iter().any(|m| m.ped == me))) {
                 mind.brain.plugin = conversations.map.values().find(|c| c.members.iter().any(|m| m.ped == me)).map(|c| c.id);
             }
-            mind.brain.has_plugin = mind.brain.plugin.is_some();
+            mind.refusals.tick(dt, &plugin_props.settings);
+            // HasPlugin: a conversation member, or a ped that took a world prop.
+            let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id).and_then(|p| p.waypoints.get(w)).copied());
+            if mind.prop.is_some() && prop_wp.is_none() {
+                mind.prop = None;
+            }
+            mind.brain.has_plugin = mind.brain.plugin.is_some() || mind.prop.is_some();
+            // ThrowHandPropAtTrashBin's target, the plugin object's hotpoint 0 (`826A7998`, b87 §3): our hotpoint props
+            // are one prop per hotpoint and every stock bin has only hotpoint 0, so the taken prop's own point.
+            mind.brain.plugin_target = mind.prop.and_then(|(i, id, _)| plugin_props.props.get(i).filter(|p| p.id == id)).and_then(|p| p.waypoints.first()).map(|w| w.position);
             let conv = mind.brain.plugin.and_then(|id| conversations.map.get(&id));
-            let free: Vec<[f32; 3]> = conv.map(|c| c.waypoints.iter().filter(|w| w.1.is_none()).map(|w| w.0).collect()).unwrap_or_default();
-            let conversation = conv.map(|c| skate_core::living_world::peds::brain::ConversationInfo { complete: c.is_complete(), speaker: c.speaker(), center: c.center, free_waypoints: &free, speech: c.turn_speech() });
+            let free: Vec<[f32; 3]> = match (conv, prop_wp) {
+                (Some(c), _) => c.waypoints.iter().filter(|w| w.1.is_none()).map(|w| w.0).collect(),
+                (None, Some(w)) => vec![w.position],
+                _ => Vec::new(),
+            };
+            // A world prop's view: its waypoint (reserved at the offer) and a facing point along its orientation.
+            let conversation = match (conv, prop_wp) {
+                (Some(c), _) => Some(skate_core::living_world::peds::brain::ConversationInfo { complete: c.is_complete(), speaker: c.speaker(), center: c.center, free_waypoints: &free, speech: c.turn_speech() }),
+                (None, Some(w)) => {
+                    mind.brain.waypoint_facing = Some(w.facing);
+                    let center = [w.position[0] + w.facing[0] * 10.0, w.position[1], w.position[2] + w.facing[2] * 10.0];
+                    Some(skate_core::living_world::peds::brain::ConversationInfo { complete: false, speaker: None, center, free_waypoints: &free, speech: None })
+                }
+                _ => None,
+            };
             let groups_now = &chase_groups.0;
             let groups = |chasee: u64| groups_now.get(&chasee).map(|g| g.info(max_chasers(chasee)));
             // UpdateBlockPrediction (`82D99540`): the chasee radius `G+1648` has no known writer: 0.0.
@@ -1507,11 +1809,15 @@ pub(crate) fn think_peds(
                 heading: body.heading,
                 skater: observers.observers.first().map(|o| (o.position, o.velocity)),
                 target_position: &target,
-                chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation },
+                chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array() },
             };
             controller.update(program, dt, &mut host);
             // The Plugin state runs the plugin's own graph on the same brain (`8269F248`).
-            match (mind.brain.in_plugin, data.conversation_graph.as_deref()) {
+            let plugin_graph = match mind.prop {
+                Some((i, ..)) => plugin_props.props.get(i).and_then(|p| data.plugin_graphs.get(&p.class)).map(|g| &**g),
+                None => data.conversation_graph.as_deref(),
+            };
+            match (mind.brain.in_plugin, plugin_graph) {
                 (true, Some(pg)) => {
                     let pc = mind.plugin_controller.get_or_insert_with(|| skate_core::graph::controller::Controller::new(pg.graph.runtime.program.topology.states.len()));
                     let mut host = skate_core::living_world::peds::brain::BrainHost {
@@ -1523,12 +1829,19 @@ pub(crate) fn think_peds(
                         heading: body.heading,
                         skater: observers.observers.first().map(|o| (o.position, o.velocity)),
                         target_position: &target,
-                        chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation },
+                        chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array() },
                     };
                     pc.update(&pg.graph.runtime.program, dt, &mut host);
+                    if mind.prop.is_some() && pc.frame.current == mind.plugin_state && tick % 150 == 0 {
+                        // Progress of a ped on a world prop (logs must diagnose a stall).
+                        let name = |s: Option<usize>| s.and_then(|s| pg.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
+                        let dist = mind.brain.waypoint.map(|w| ((w[0] - body.position.x).powi(2) + (w[2] - body.position.z).powi(2)).sqrt());
+                        info!("PED_PLUGIN_WAIT ped=#{} in {} dist={:?} at=[{:.2}, {:.2}, {:.2}] approach={:?} slide={:?} route={} tick={tick}", ped.id.serial, name(pc.frame.current), dist.map(|d| (d * 1000.0).round() / 1000.0), body.position.x, body.position.y, body.position.z, mind.brain.approach.map(|a| a.1), mind.brain.approach_slide, body.nav.route.is_some());
+                    }
                     if pc.frame.current != mind.plugin_state {
                         let name = |s: Option<usize>| s.and_then(|s| pg.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
-                        info!("PED_PLUGIN ped=#{} {} -> {} waypoint={:?} tick={tick}", ped.id.serial, name(mind.plugin_state), name(pc.frame.current), mind.brain.waypoint.map(|w| [w[0].round(), w[2].round()]));
+                        let dist = mind.brain.waypoint.map(|w| ((w[0] - body.position.x).powi(2) + (w[2] - body.position.z).powi(2)).sqrt());
+                        info!("PED_PLUGIN ped=#{} {} -> {} waypoint={:?} dist={:?} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, name(mind.plugin_state), name(pc.frame.current), mind.brain.waypoint.map(|w| [w[0].round(), w[2].round()]), dist.map(|d| (d * 1000.0).round() / 1000.0), body.position.x, body.position.y, body.position.z);
                         mind.plugin_state = pc.frame.current;
                     }
                 }
@@ -1537,6 +1850,57 @@ pub(crate) fn think_peds(
                     mind.plugin_state = None;
                 }
             }
+            // The motion side of the monitored packets (`82E29540`): a plugin state plays the front packet, releases its
+            // held cycle on the next stage intent and ends the packet when its clips are done (`IntentStageComplete`
+            // decrement, `MajorIntentComplete`); packets whose motion state is not ported end at their last stage.
+            {
+                use skate_core::living_world::peds::plugin_motion::motion_for;
+                let run = &mut body.plugin_motion;
+                match run.packet.clone() {
+                    None => {
+                        if let Some(name) = mind.brain.monitored.iter().find(|(n, p)| p.active && motion_for(n).is_some()).map(|(n, _)| n.clone()) {
+                            info!("PED_PLUGIN_MOTION ped=#{} {name} start tick={tick}", ped.id.serial);
+                            *run = PluginMotionRun { packet: Some(name), state: TauntClip::Requested, ..Default::default() };
+                        }
+                    }
+                    Some(name) => match mind.brain.monitored.get_mut(&name) {
+                        None => *run = PluginMotionRun::default(),
+                        Some(p) => {
+                            let m = motion_for(&name).expect("only plugin states start a run");
+                            if run.state == TauntClip::Done {
+                                if m.decrement && p.stage > 0 {
+                                    p.stage -= 1;
+                                }
+                                p.active = false;
+                                info!("PED_PLUGIN_MOTION ped=#{} {name} complete tick={tick}", ped.id.serial);
+                                *run = PluginMotionRun::default();
+                            } else if m.steps.iter().any(|st| st.hold_until.is_some() && st.hold_until == p.current()) {
+                                run.release = true;
+                            }
+                        }
+                    },
+                }
+            }
+            // SpawnInteractionBasedHandProp (`826AE950` -> `82E3DDA0`): the plugin prop's hand prop is requested
+            // (`brain+3279` 0x01) with its record's bools; `ped_hand_props::sync_hand_props` creates the object.
+            if std::mem::take(&mut body.plugin_motion.hand_prop_due) {
+                let class = mind.prop.and_then(|(i, _, _)| plugin_props.props.get(i)).map(|p| p.class.clone());
+                let list = class.as_ref().and_then(|c| data.plugins.classes.get(c)).map(|c| c.hand_props.clone()).unwrap_or_default();
+                let roll = mind.brain.rng.as_mut().map_or(0.0, |r| r.unit());
+                match skate_core::living_world::peds::brain::HandProp::pick(&list, roll) {
+                    Some(key) => {
+                        mind.brain.hand_prop.request(key);
+                        if let Some(r) = data.hand_props.props.get(key) {
+                            let h = &mut mind.brain.hand_prop;
+                            (h.disposable, h.can_sit, h.can_attack_throw) = (r.disposable, r.can_sit, r.can_attack_throw);
+                        }
+                        info!("PED_HAND_PROP ped=#{} requested {key} from {} tick={tick}", ped.id.serial, class.as_deref().unwrap_or("?"));
+                        events.write(PedEvent::HandProp { id: ped.id, key: key.to_string() });
+                    }
+                    None => info!("PED_HAND_PROP ped=#{} none offered by {} tick={tick}", ped.id.serial, class.as_deref().unwrap_or("?")),
+                }
+            }
+            mind.brain.settle_packets(&|name| name == "SGIntent" || skate_core::living_world::peds::plugin_motion::motion_for(name).is_some());
             // Group changes, in the order the graph asked for them.
             for request in std::mem::take(&mut mind.brain.chase_requests) {
                 use skate_core::living_world::peds::brain::ChaseRequest;
@@ -1639,6 +2003,20 @@ pub(crate) fn think_peds(
                         }
                         continue;
                     }
+                    ChaseRequest::ExitPlugin if mind.prop.is_some() => {
+                        if let Some((i, id, _)) = mind.prop.take() {
+                            if let Some(p) = plugin_props.props.get_mut(i).filter(|p| p.id == id) {
+                                p.release(me);
+                                info!("PED_PLUGIN_PROP ped=#{} leaves {} {:016X} tick={tick}", ped.id.serial, p.class, id);
+                            }
+                        }
+                        mind.brain.has_plugin = false;
+                        mind.brain.waypoint = None;
+                        mind.brain.waypoint_facing = None;
+                        mind.plugin_controller = None;
+                        mind.plugin_state = None;
+                        continue;
+                    }
                     ChaseRequest::ExitPlugin => {
                         if let Some(id) = mind.brain.plugin.take() {
                             use skate_core::living_world::peds::conversation::Left;
@@ -1686,6 +2064,15 @@ pub(crate) fn think_peds(
                         mind.brain.speech = Some(if target >= PLAYER_TARGET_BASE { 65 } else { 19 });
                         body.taunt = TauntClip::Requested;
                         info!("PED_TAUNT ped=#{} target={target} tick={tick}", ped.id.serial);
+                        continue;
+                    }
+                    ChaseRequest::HandPropClip { clip } => {
+                        body.plugin_motion.throw_clip = Some((clip, settings.ped_brain.values.hand_prop.clip_blend));
+                        info!("PED_HAND_PROP ped=#{} throw clip {clip} target={:?} tick={tick}", ped.id.serial, mind.brain.hand_prop.throw.map(|t| t.target));
+                        continue;
+                    }
+                    ChaseRequest::HandPropReleased { velocity } => {
+                        mind.hand_prop_release = Some(velocity);
                         continue;
                     }
                     ChaseRequest::MoodReset { target } => {
@@ -1846,7 +2233,11 @@ pub(crate) fn think_peds(
         }
         if controller.frame.current != mind.state {
             let name = |s: Option<usize>| s.and_then(|s| graph.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
-            info!("PED_BRAIN ped=#{} {} -> {} intent={:?} wants={:?} tick={tick}", ped.id.serial, name(mind.state), name(controller.frame.current), mind.brain.motion_intent, mind.brain.wants.keys().collect::<Vec<_>>());
+            let key = (1 << 63) | (mind.state.map_or(0, |s| s as u64 + 1) << 24) | controller.frame.current.map_or(0, |s| s as u64 + 1);
+            if let Some(held) = mind.log_repeats.allow(key, tick) {
+                let held = if held > 0 { format!(" (+{held} held back)") } else { String::new() };
+                info!("PED_BRAIN ped=#{} {} -> {} intent={:?} wants={:?} tick={tick}{held}", ped.id.serial, name(mind.state), name(controller.frame.current), mind.brain.motion_intent, mind.brain.wants.keys().collect::<Vec<_>>());
+            }
             mind.state = controller.frame.current;
         }
     }

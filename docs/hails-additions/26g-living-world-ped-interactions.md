@@ -679,3 +679,283 @@ reaction player (no locomotion while it runs), as the motion graph's state is no
 **Verification.** skate-core `the_taunt_faces_the_victim_holds_the_intent_and_unsets_the_want`; skate-game living_world
 (71). Not seen in game yet. Open: the hand props (throw / drop), which our peds do not carry.
 
+## Ped plugins on world props: data, rolls and the offer scan (groundwork, 2026-10-10)
+
+**Retail [code + data] (`.local/research/peds/b81-ped-plugin-acquisition.md`, `b82-ped-plugin-search.md`,
+`b83-plugin-offer-and-radii.md`; main checked the ped roll `82E3B060`, the d100 roll `8269A588`, the offer test
+`826BFE18` and its constants, the sit ops and the stock tables).**
+- Plugin props: benches, trash bins, newspaper boxes, vending machines, ATMs, water fountains, look-at and spectate
+  spots, gathering places. Each prop class (`livingworld_props`) names a descriptor (`PluginDescriptor/*.xml`: the plugin
+  graph, `maxNumberOfParticipants` default 1, a transfer expression of named conditions) and hand-prop odds. Placed
+  waypoint groups come from the world (`waypoints.json`: vending machines, trash bins); seats come from DMO hotpoints
+  (`82C4E128`: type 1 trash bin, 2 newspaper box, other = a seat, one waypoint each).
+- A ped type's `plugin_odds` (per class) drives the ped's yes / no when offered (`82E3B060`: odds x 100 >=
+  `rand() % 100 + 1`) and the spawner's weighted pick of a ped type to spawn at a free prop (`826B90F8`).
+- The offer scan (`826C0058`, every 11th manager tick at 1/60 s) walks every ped for every offer: no current plugin,
+  the prop not refused (`82E3AF90`), |dy| < 1.8 m, within the offer radius, the offer's own test, then the odds roll;
+  the winner takes the waypoint. A refusal (and a taken plugin, `8269F248`) blocks that prop for that ped for 30 s
+  (`82E40BD0` / `82E40AF0`: at most 16 entries, the countdown stops at -30).
+- Sit (`sit_body.xml`): SetSitTimer (`826A2898`) = 30 + rand x (60 - 30) s for the stock types, then GoingToStandBackUp
+  (`826AD1F0`) rolls the type's stand-up chance (0.5); a ped that loses the roll stays seated.
+
+**Change.** skate-core `peds::plugins` (descriptor and transfer-expression tree, plugin props with waypoint locks and
+cooldown, `plugin_odds` lookup, the d100 roll, the refusal memory, the ped roll, the offer scan, the spawn pick, the
+hotpoint class map) and the sit ops in `peds::brain` (`SetSitTimer`, `GoingToStandBackUp`, per-ped seeded rolls,
+`SitValues` from the tables). skate-game `ped_plugins` loads the prop classes with their descriptors (from the compiled
+`.stategraph`), the `plugin_odds` per ped type and the placed props per district; `PED_PLUGINS` log.
+
+**NOT RETAIL YET / not wired.** Peds do not take plugins yet: the plugin graphs other than the conversation, 25 of
+their operations, the hotpoint export (benches) and the monitored-intent animations are still to port. Open in the
+research: the offer radius (ours will read the class field `E2101F2B17A0E6B5`: 10 sit / 5 bin / 15 ATM, inference), the
+offer's own tests (vfuncs 9 / 10 / 18), the spawn ring radii and the cooldown source.
+
+**Verification.** skate-core `plugins` (6: hotpoint classes, waypoint locks and cooldown, the ped roll and the refusal
+memory with eviction and floor, the offer scan's filters, the weighted spawn pick, transfer expressions) and the brain
+sit test; skate-game `ped_plugins` (parsing) and the data-gated `stock_descriptors_parse` (sit's transfer conditions,
+the conversation's 3 participants, adult_female01's sit odds 0.7, placed props DownTown 27 / Industrial 10 /
+University 37).
+
+## Ped plugins on world props: motion states and the wiring (2026-10-10)
+
+**Retail [code + data] (`.local/research/peds/b84-plugin-intent-animation.md`, `b85-packet-completion-and-clips.md`;
+main checked the packet ops `826A2600` / `826A27D0` / `826ACF90` / `826A2770`, `LockFirstWaypoint` `826A0580` and the
+motion XML).** The plugin body graph creates a monitored packet (one intent per stage, e.g. Sit then StandUp); the
+AI side only moves its stage; the ped motion graph plays a state per packet (Sit: Stand2Sit, SitIdleCyc held until
+StandUp, Sit2Stand; ATM: insert card, select, collect money, collect card; vending; water fountain until
+FinishDrinking; newspaper box) and ends the packet (`IntentStageComplete decrement` on the machines,
+`MajorIntentComplete` clears the active flag). The clip behind each logical name is the ped's anim set remap (sit per
+set: NPC / FEM / BUM / GRAN; the machines shared). `LockFirstWaypoint` locks the prop's first free waypoint.
+
+**Change.** skate-core: monitored packets as retail (stage names, active flag, the Create End removes the packet),
+`plugin_motion` (the five plugin states as step tables), `PedAnimPlayer::release_hold`, the plugin clip names in the
+loader list, `LockFirstWaypoint`. skate-game: each class's plugin graph loads from its descriptor; `PedPluginProps`
+holds the map's placed props (waypoints.json), runs `plugins::offer` every 11th world tick with the class radius and the
+ped type's `plugin_odds` (seeded), releases waypoints of peds that left; a ped that took a prop has HasPlugin, its
+plugin view is the prop's waypoint (facing point along its orientation) and its plugin graph is the class's; ExitPlugin
+releases the waypoint. The motion side plays the front active packet (`PED_PLUGIN_MOTION`) and ends it; Converse keeps
+the last-stage fallback. Logs `PED_PLUGINS`, `PED_GRAPH plugin <class>`, `PED_PLUGIN_PROP`.
+
+**NOT RETAIL YET / open.** Benches (DMO hotpoint seats) are not exported yet, so only the placed vending machines and
+trash bins are offered; the offer's own tests (vfuncs 9 / 10 / 18) and the radius source are open (radius = the class
+field `E2101F2B17A0E6B5`, inference); the step tables stand in for the motion graph; hand props (vending can,
+newspaper, trash throw), the sit-avoid states and the Collision exits are not ported; the packet queue is one packet
+per name (retail queues them).
+
+Two body rules came out of the run: within TargetWaypoint's slide distance the body stands while the slide moves it
+(it used to wander off before reaching 0.025 m), and a ped standing on its waypoint keeps turning to the explicit turn
+direction that SetExplicitTurnDirectionToWaypointOrientation and TurnToFaceWaypointOrientation set (`826A0DC8`); without it
+the facing test flickered at its 0.3 rad edge and restarted the interaction. Logs `PED_PLUGIN` (with the distance to the
+waypoint and the position) and `PED_PLUGIN_WAIT` (every 2.5 s while on a prop).
+
+**Verification.** skate-core peds (packets, the sit sequence's hold and release, plugin motion names), plugins (6),
+living_world 255; skate-game living world / ped / npc / modding 159; data-gated `placed_plugin_waypoints_against_the_navmesh`
+(every placed waypoint on the mesh or unlocated). Muted Industrial run with the release build: ped #2 takes the vending
+machine `CD3BB21DBDF4C550` at tick 10, walks 10 m, slides to 0.019 m, faces it, plays the vending clips (8 s), says its line,
+leaves (tick 1098) and is offered it again once its 30 s memory runs out. Not play-tested. Open: the conversation's
+Speak / TurnToFace flicker (conversation waypoints have no orientation).
+
+## Ped plugins on world props: benches, bins and newspaper boxes from the model hotpoints (2026-10-10)
+
+**Retail [code + data] (`.local/research/peds/b86-dmo-hotpoints.md`, main checked the parse on the user's disc).** A dynamic
+object's seats, bin and newspaper-box points are hotpoints in its model RX2 in `parkassets.big` (RW type 0x00EB001E
+HOTPOINTDATA: count, entries at +16, 112-byte records with a row-vector matrix whose row 3 is the position and row 2 the
+facing axis, +96 the type). `82C4E128` makes one one-waypoint group per hotpoint when the object spawns: type 0 is the root,
+8 is skipped, 1 a trash bin, 2 a newspaper box, any other type a seat. On the disc: 22 templates, 30 seats, 7 newspaper-box
+points, 5 bin points (e.g. a flat bench has 4 seats, a picnic table 4, a patio chair 1).
+
+**Change.** Setup: `tools/asset_pipeline/hotpoint_data.py` (strict parser, the class map as data) reads parkassets.big in
+`prepare_catalog` (`hotpoints.json`); the map's props report gains `hotpoints`, `hotpoint_classes` and `plugin_props` (each
+placed object's hotpoints with a class, through the same transform as its geometry). Game: `ped_plugins::map_props` adds
+them to the map's plugin props (id = DMO instance id with the hotpoint index in the top byte); `PED_PLUGINS <map>: N
+hotpoint props` log. Brain: `DisableCollisionsWithBehaviourSource` (`826A7378` / `826A7410`).
+
+**NOT RETAIL YET / open.** Needs the `maps` setup group re-run (the current install has no `plugin_props` yet, so benches
+are not offered until then). Seats follow the initial placement (a moved bench keeps its seats where it stood); the ped is
+not yet exempt from its plugin prop's navmesh cut (the DMO instance to prop id mapping is open), which a seat inside the
+bench's cut needs; the EMBEDDEDDATA list that links a template to its hotpoint records is not decoded (one section per
+RX2 makes the template join safe); 13 of the 22 templates are not placed through worlddmo.
+
+**Verification.** Python `test_hotpoint_data` (parse, header / matrix checks, the placement transform and the class map),
+`test_dynamic_props`; skate-game `hotpoint_props_load_with_stable_ids`, living world / ped 103. The disc parse: 22
+templates, types {6: 30, 2: 7, 1: 5, 0: 1}. Not play-tested.
+
+
+**Live check (2026-10-10).** Muted Industrial run on the refreshed install: ped #2 took a bench seat after the vending
+machine, reached the seat waypoint (0.048 m off), turned to its orientation and sat (`Sit` motion, `SitForever`). Our
+prop-obstacle stand-in logged `PED_BLOCKED` against the bench while the ped slid along its face, but it arrived, so the
+navmesh-cut exemption is not needed for this seat. The seated ped was later removed by the retail distance cull: the idle
+player rolled away from the spawn into the bowl at 11 m/s (fast census circle with its forward offset); `PED_DESPAWN` now
+logs each removal with its reason.
+
+## Ped hand props: the vending machine can, the newspaper (2026-10-10)
+
+**Retail [code + data] (`.local/research/peds/b87-ped-hand-props.md`, `b89-hand-prop-models.md`, main checked the key
+addresses).** The vending machine and newspaper box motion states run `SpawnInteractionBasedHandProp` (Begin `826AE950`) in the
+collect clip's branch window (`InTurnBranchWindow`). It asks the ped's plugin object (vfunc +52) for a hand prop key and
+`82E3DDA0` stores the `livingworld_handprops` record and sets the requested bit (`brain+3279` 0x01, which `HasHandProp`
+`826AD1A8` already counts). The ped update later creates the object (`82E3DE18`: the record's `model` is a `dmo_models`
+record whose first field is a DMO template id, looked up in collection `0xDA7A8F0EF63BE539`) and attaches it (`82E3EC60`:
+`ped+5920`, `brain+3278` 0x02). Every frame the object is put at the hand matrix composed with the record's local offset.
+`IsHoldingSpecificHandProp` (`826AD270`) compares the held record's key with its `handprop` attribute. Which props a plugin
+offers is data: `livingworld_props` field `E15E856F2CA9B96B` (vending machine: pop 0.5, waterbottle 0.5; newspaper box:
+newspaper 1.0). The `_lw` models are DMO templates in `worlddmo.big` `DMO_Global` (one mesh each); 22 of the 23 records
+resolve (`orange_lw` is in no DMO pack).
+
+**Change.** Setup: `tools/asset_pipeline/hand_props.py` writes `living_world/hand_props/<key>.glb` from the DMO catalog
+template (model space, texture) plus `hand_props.json` (key, model, template, characteristics, or the error); `dmo_models`
+joins the exported vault classes in `tables.json`; it runs in the `maps` group after the DMO catalog. Core: `PedBrain.hand_prop`
+(`HandProp`: key, requested, holding; the weighted pick), conditions `HasHandProp` and `IsHoldingSpecificHandProp`, and the
+`hand_prop` flag on the collect steps of `plugin_motion`. Game: the motion run flags the collect clip's branch window,
+`think_peds` picks the key with the ped's seeded brain RNG (`PED_HAND_PROP ... requested`, mod event `ped_hand_prop`),
+`ped_hand_props::sync_hand_props` creates the object as a child of the ped's scene (`... created`) and removes it when the
+brain drops the prop, and `present_ped_pose` places it at the rig bone `RIGHTHANDPROP` (26, 7.5 cm off `RIGHTHAND`) times the
+record's offset. A one-entry hand prop list (the newspaper box) is exported as a bare record; the loader now takes it.
+
+**NOT RETAIL YET / open.** The hand bone is inferred (every carry channel is `*RH`; which bone fills the hand matrix at
+skeleton +19504 is not decoded). The record offset mapping (`Hash_3FE1...` = Euler degrees, `Hash_DC20...` = metres,
+applied as translation then X, Y, Z) is inferred from the value shapes. The weighted pick by the plugin object is inferred.
+The object is drawn only: no physics body, no carry channel, no release (`ThrowHandPropAtTrashBin`, `DropHandProp`,
+`HasDisposableHandProp`, `CanSitWithHandProp` are not ported), and what removes a released prop is open. Starting props on
+walking peds (the spawn path `82E33198`) are not ported.
+
+**Verification.** skate-core `hand_prop_conditions_and_the_weighted_pick`, `every_plugin_state_is_listed_and_its_names_load`;
+skate-game `record_offset_is_translation_then_rotation`, data-gated `stock_hand_props_load_with_models` (22 of 23 with
+models), `stock_descriptors_parse` (hand prop lists incl. the bare record), `living_world_ped_data_loads_from_the_export`
+(`RIGHTHANDPROP` = 26 under `RIGHTHAND`). Offline export on the user's disc: 22 GLBs (pop can 7 x 12.8 cm, rendered).
+Muted Industrial run: the ped at the vending machine requested and created `pop` in `VendCollect` (tick 1051) and carried it
+to a bench. Not seen on screen yet.
+
+## Ped hand props: the bin throw, the drop and the released prop (2026-10-10)
+
+**Problem.** Peds held their vending can or newspaper forever: the release ops (`ThrowHandPropAtTrashBin`,
+`DropHandProp`), the hand prop conditions (`HasDisposableHandProp`, `CanSitWithHandProp`, `CanAttackThrowHandProp`) and the
+world prop descriptors' transfer gates were not ported, so `usetrashbin.xml` exited at once and any ped took a bin.
+
+**Evidence** [code] (TU3 recomp, reference only; research b25, b87, b90, b91, b92; main-checked):
+- `sub_82E3E648` starts a throw only while holding: pending + aimed bits, target, launch speed and release time; the light
+  throw (bin) is 5.0 m/s (`0x821F1790`) after 0.91667 s (`0x82063BE0`), the attack throw 10.0 / 0.8333. Its clip by the
+  flat angle to the target: below 0.6854 or above 5.5978 rad `HandPropThrowLightForward`, then `L45` (< 0.8854), `L90`
+  (< 1.6708), `R180` (< 4.6124), `R90` (< 4.8124), else `R45` (thresholds `0x822F9144..58`, names at `0x82064A00..7C`).
+- `ThrowHandPropAtTrashBin` (`826A7998`) aims at the plugin object's hotpoint 0. Every stock bin has one hotpoint.
+- The launch solve `sub_82E16AB0`: the flat speed is the launch speed, flight time = flat distance / speed, vertical speed =
+  dy / t + 4.9 t (`0x822F8FA4`); no speed or a target straight above gives zero velocity and time -1 (`0x8216DEE0`).
+- The per-ped update `82E3ED50` releases when the release time has run out, with the launch velocity from the prop's hand
+  position, and sets timer 35 to the flight time; `82E3EBE0` clears holding and calls the object's release (+136,
+  `82C56C70`: kinematic off, velocity written only for flag 1; DropHandProp passes flag 0). A released prop stays linked
+  until it leaves the box 0.5 / 2.0 / 0.5 m around the ped (`82E3F090` -> unlink `82E3FAE0`); the ped never destroys it.
+- The dynamic-object manager's create (`826B8830`) refuses at 49 live objects [code, b91]; the census culls
+  `dynamicobjects` beyond 100 m (`livingworld_census_ranges` [data]). The record bools: IsDisposable (+60, `Hash_D02B...`),
+  CanSitWithHandProp (+61, `Hash_BCE5...`), CanAttackThrowHandProp (+62, `Hash_4080...`) [b90].
+- A thrown prop hitting the skater has no special effect: the DMO class posts nothing and the skater contact switch treats
+  groups 12 / 13 / 14 as an ordinary prop contact [code, b92].
+
+**Change.** Core `peds/hand_prop.rs`: `HandPropSettings` (retail defaults, in `BrainSettings.hand_prop`, so the
+`ped_brain` mod domain reaches them), `launch`, `flat_angle`, `light_throw_clip`, `PedBrain::start_light_throw` /
+`drop_hand_prop` / `update_hand_prop_release` / `update_hand_prop_link`. Brain: `HandProp` gets `linked`, `throw` and the
+record bools; ops `ThrowHandPropAtTrashBin`, `DropHandProp`, `DisallowHandPropActions` (flag); conditions
+`HasDisposableHandProp`, `CanSitWithHandProp`, `CanAttackThrowHandProp`; requests `HandPropClip` / `HandPropReleased`;
+`plugin_target` (host-set hotpoint 0). Plugins: `TransferView` evaluates the world prop descriptors' transfer
+conditions in the offer scan. Game: the request carries the record bools; the throw clip plays on the ped;
+`sync_hand_props` clears the request bit on the create attempt, releases the held object as a prop created mid-game
+(doc 27 "Props created mid-game": collision from the model's meshes, its model detached from the hand and following the
+body), keeps the link until the unlink box, refuses creates past 49 live released props and culls released props beyond
+100 m of every observer. Logs: `PED_HAND_PROP ... throw clip`, `... released body=.. velocity=..`, `... unlinked`,
+`... culled`, `... not created (pool full | no model)`.
+
+**NOT RETAIL YET / open.** The release frame: retail compares a clip time query (skeleton +17936 vfunc +36) with the
+release time; ours runs timer 34 out (equal if the query is the time remaining, inferred). The drop keeps the hand's
+velocity in retail; ours is zero. The released body uses the default physics block and box: the hand prop template's
+`livingworld_dynamicobject_characteristics` record is not resolved (b91), collision groups 12 / 13 / 14 are not modelled.
+The pool and cull are counted over released hand props only (retail's pool holds every live DMO). The flat angle's sign is
+inferred from the clip names. `IsNearCrossWalk` answers false. The attack throw: see the next section.
+
+**Verification.** skate-core `launch_reaches_the_target`, `light_throw_clip_by_angle`, `bin_throw_releases_then_unlinks`,
+`drop_releases_with_zero_velocity`, `world_prop_transfer_reads_the_hand_prop`; skate-game data-gated
+`stock_hand_props_load_with_models` (pop disposable, newspaper not). Muted Industrial run (6 min, after fixing the
+vending / sit gates `HasFirstWaypointAvailable` / `InFrontOfFirstWaypoint`, which the first run showed): ped #2 took the
+vending machine, created `pop` at tick 1051 and sat on a bench with it (pop allows sitting); no ped took a bin in the run,
+so the throw is not seen in game yet.
+
+### Peds that start out carrying a hand prop
+
+**Problem.** Only peds that used a vending machine or a newspaper box ever held a prop; retail also gives walking peds a
+starting prop (grocery bags, purses, briefcases, coffee, skateboards, maps, ...), and the angry throw needs one.
+
+**Evidence** [code, main-read]: the ped constructor `82E33198` rolls `8269A588` with the entity's field
+`Hash_3DB019A08284F45C` (chance; `rand() % 100 + 1 <= chance x 100`), then walks its `handprop_odds` list (field
+`Hash_46B836EE959C0238`, at most 32 entries of {handprop, probability}): a second `rand() % 100 + 1` roll picks the first
+entry whose running total x 100 (`0x820ED57C` = 100.0) reaches it, and `82E3DDA0` stores the record and sets the request
+bit (no pick: the bit is cleared). The weights are not normalised. Stock [data]: 0.65 for adult women and grannies,
+0.6 for adult / business / worker men and skaters, 0.5 jocks and teens, 0.75 bums, 0.1 security (coffee), 0 for pros.
+
+**Change.** Core `HandProp::starting_pick(chance, list, chance_roll, pick_roll)`; setting `hand_prop.starting_props`
+(mod opt-out). Game: `ped_mood::starting_hand_props` loads the chance and list per entity type into
+`PedData.starting_props`; each ped rolls once with its seeded brain RNG when its brain is first set up, and the request
+goes through the existing create path (`PED_HAND_PROP ... requested <key> at spawn`).
+
+**NOT RETAIL YET / open.** The constructor also needs bit 0x80 of byte +112 of the spawn description before rolling; who
+sets it is not found (all our ambient peds roll). Retail's rolls come from its global generator. The carry channels
+(`CarrySmallRHChannel` etc., record +56 applied in pose state 7) are not played yet, so the arm keeps the walk pose.
+
+**Verification.** skate-core `the_starting_hand_prop_follows_the_chance_and_the_running_total`; skate-game
+`starting_hand_props_load_the_chance_and_the_list`. Not seen in game yet.
+
+### Ped attack throw at the skater
+
+**Problem.** An angry ped holding a can (`pedestrian_wanttothrowhandprop.xml`: want `throwhandprop`, `CanAttackThrowHandProp`,
+`IsFacingWantTarget angle=120 distance=20`) reached `ThrowHandPropAtWantTarget`, which was not ported: the ped stood
+facing the skater and never threw.
+
+**Evidence** [code] (TU3 recomp, reference only; research b25 §5, b92, b93; clip thresholds and names main-read):
+- Begin `826A7A58` -> `sub_82E3E960(ped, want target)`: the target and the ped's own body are both predicted 0.8333 s ahead
+  (`0x82063BE4`, position + velocity x time); the XZ intercept solve `sub_82E15CD0` at 10.0 m/s (`0x82063BF0`) along the
+  dominant axis (strict, so equal |dx| and |dz| have no solution) returns the target's point at the earliest
+  non-negative time; with no solution the aim is the PED'S OWN predicted position (b93 B4). The solve's term is
+  `v_minor + k * v_major` as read (an exact intercept would subtract; ported as read).
+- Then the jitter `sub_82E17508` (3 draws: z, x in [-0.5, 0.5), a length in [0.0, 0.25) m, `0x82165A10` / `0x820C6D98`,
+  a horizontal offset along the normalised (x, z)), then +1.0 m up (`0x82139A20` x `0x8231A844`), then `82E3E648(ped, point,
+  attack 1)`: holding required, launch speed 10.0, release after 0.8333 s (timer 34).
+- The attack clip by the flat angle to the point: below 0.5236 (`0x82063B38`) or above 5.7596 (`0x822F9138`)
+  `HandPropAttackThrow`, below 2.618 (`0x822F913C`) `HandPropAttackThrowLeft`, below 3.6652 (`0x822F9140`)
+  `HandPropAttackThrow` again (behind), else `HandPropAttackThrowRight` (names `0x820649A4..0x820649E4`).
+- Update `826A7AA8`: nothing while held; once released, the want is unset when timer 35 (the flight time) runs out.
+- A thrown can hitting the skater is an ordinary prop contact: no hand-prop hit, bail, speech or score code in the DMO
+  class, and the skater contact switch (`sub_82BD4A30`, `0x82BD5388`) gives groups 12 / 13 / 14 only the generic
+  non-board contact and the region forces (b92 Q2).
+
+**Change.** Core `peds/hand_prop.rs`: `intercept`, `jitter`, `AttackAim`, `attack_point`, `attack_throw_clip`,
+`PedBrain::start_attack_throw` (the aim and its 3 RNG draws come first, as retail, from the brain's seeded RNG, so a host
+decides them); settings `attack_lead_seconds`, `intercept_epsilon`, `jitter_min` / `jitter_max`, `aim_lift` (retail
+defaults, `ped_brain` mod domain). Brain: op `ThrowHandPropAtWantTarget { want }` (Begin / Update), `ChaseView.velocity`
+(target velocities by id) and `own_velocity`. Game: `PedBody.velocity` (last console tick's movement), the velocity map
+of peds and players passed to the brain; the attack clips in the ped clip list. The release, flight and link reuse the
+bin throw's path above.
+
+**NOT RETAIL YET / open.** The intercept epsilon: the image word at `0x82195100` does not read as a float, 1.19e-7 is
+inferred. Retail's jitter draws come from its global generator, ours from the ped's seeded RNG. A zero-length (x, z)
+draw keeps the point (retail normalises it, unread).
+
+**The hit (b94, main-checked `82C56BA0`, `skeleton_feedback.rs:208`).** Before this change our skater body never collided
+with any prop: the prop layer is only queried by the wheels (`physics.rs:754`) and props take a one-way push from the
+skater volumes (`prop_dynamics.rs` `push_from_skater`). Retail's skater contact (`82BD4A30`) handles a DMO like any other
+body: the relative normal speed (halved below `SmallObjectMassThreshold` 5.5) goes into the per-bucket force maxima that
+the regional wipeout check `82BD88A0` reads against the setup `Wipeout_*SkeletonMaxContact[Arms]` limits; we already port
+both (`skate-core/src/player/wipeout/common.rs:19`, `skeleton_body/collision_update.rs:95`). A released hand prop's group
+is 12 at or above the small-object mass and 14 below it (`82C56BA0` [code]). So `ped_hand_props::push_hand_prop_proxies`
+adds every released hand prop to the skater solve as a solid proxy (box, mass, inertia, velocity, group 12 / 14; ids
+`HAND_PROP_PROXY_TAG | body`), the way cars join it (group 8); settings `skater_contact` (mod opt-out), `heavy_group`,
+`small_group`. Measured (DownTown, data-gated test): a 0.4 kg can at 10 m/s into a standing skater's chest peaks at region
+force 3.49 and does not bail them.
+
+**NOT RETAIL YET / open (hit).** The group-pair filter is not found (b94: probably inside the physics middleware; the
+contact recorder `827682B0` has no group test, only same-body and same-owner rejects), so 12 / 14 colliding with the
+skater is [inferred, medium-high]; a recomp trace at `0x82BD5388` would prove it. Retail's solve is two-way (inferred from
+the reduced-mass factor); ours keeps the prop's reaction in the prop step (the proxy is not owned, its solver reaction is
+dropped). Placed (ordinary) DMOs are still not in the skater body contact: their group comes from data (not found), and
+adding every prop changes riding into all props on every map, so it waits for the user's go and a regression pass. No
+mod event for a prop hitting the skater yet.
+
+**Verification.** skate-core `intercept_solve`, `jitter_is_horizontal_and_bounded`, `attack_throw_clip_by_angle`,
+`attack_throw_aims_and_releases`, brain `the_attack_throw_aims_at_the_want_target_and_unsets_the_want_after_the_flight`;
+skate-game `hand_prop_proxy_group_by_mass`, data-gated `a_thrown_can_reaches_the_skater_region_forces` (with
+`a_traffic_car_knocks_the_skater_down_above_the_contact_limit` unchanged: wipeout at tick 6). Not seen in game yet.

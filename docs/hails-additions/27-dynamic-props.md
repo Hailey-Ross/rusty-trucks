@@ -793,6 +793,44 @@ extended. Existing prop tests unchanged.
 **Open questions.** Body field +28 (Upright gate) and the state block +72 vector; whether the integrator scales the
 +160 accumulator by inverse inertia (our port treats it as an angular acceleration, as for the Move Object yaw).
 
+## Props created mid-game (2026-10-10)
+
+**Problem.** Prop physics only had bodies for the props the map places at load (`PropDynamics::new` over the MOBJ
+records, one fixed collision `BoardWorld` from `build_prop_layer`). Retail creates DMOs while the game runs: a ped's
+hand prop (vending can, newspaper) becomes a physics DMO when it is thrown at a bin or dropped, and is removed
+later (doc 26g "Ped hand props"; `ThrowHandPropAtTrashBin`, `DropHandProp`). The throw port needs a body for the can.
+
+**Change** (engine path only; the throw itself is the next step):
+- `skate-core` `BoardWorld::append_triangles`: appends triangles after the existing ones; existing indices, order
+  and query meshes stay as they were, the new range gets its own 64-triangle query meshes (the portable world's
+  grouping), the packed surface list grows with it.
+- `PropCollisionLayer::empty` / `add_instance` / `retire_instance`: an instance from template-space triangles at a
+  pose (edge features from its own triangles through `welded_edge_features`, the welding and edge pairing moved out
+  of `portable_world` unchanged); retiring parks the triangles at `HELD_PARK` and keeps the slot, the next instance
+  with the same triangle count reuses it, so repeated cans do not grow the world.
+- `PropDynamics::build_body` (the body construction moved out of `new` unchanged), `spawn_body` (awake, with the
+  spec's linear and angular velocity, the prop type's tuning and type data like a map prop), `remove_body`,
+  `next_runtime_id` (ids from `RUNTIME_PROP_ID_BASE` = `0x2000_0000`, below the grab-scene tags; deterministic in
+  creation order so a host can hand them to peers), `copy_spec`. Runtime bodies are never "moved" (no authored
+  pose: no reset, no layout entry); map props are never removed by this path.
+- `GamePhysics::spawn_runtime_prop` / `remove_runtime_prop`: the single authority; creates the layer and dynamics
+  on maps without placed props. A render entity with `PropInstance { id }` follows the body
+  (`sync_prop_transforms`). Logs `SKATE_PROP_SPAWN id=.. template=.. instance=..` / `SKATE_PROP_REMOVE id=..`.
+- Mod entry: `sdk.world.spawn_prop(key, from, {position, yaw, velocity, spin})` (`world_spawn_prop`) copies map
+  prop `from` (model, collision, physics block, type data) and throws it; `sdk.world.remove_prop(key)`
+  (`world_remove_prop`); a mod's props are removed on disable (`modding/world_props.rs`, 64 per mod, 256 total).
+
+**Retail parity.** Retail's released hand prop is an ordinary physics DMO, so it gets the same box body, contact
+solver, sleep rule, type data and skater pushes as a map prop. Ours: the id range (retail addresses DMOs by
+manager slot) and the slot reuse. Not decoded yet: the released DMO's physics block and type record for each hand
+prop template, its removal timing.
+
+**Verification.** `skate-core` `appended_triangles_are_queried_and_existing_ones_kept`; `skate-game`
+`runtime_prop_is_thrown_lands_and_is_removed` (empty map: flies with its velocity, lands, sleeps, collides, is
+removed and the slot reused) and `runtime_spawn_keeps_map_props` (map prop body and triangles unchanged, map props
+refuse removal); `skate-mods` command validation and the Lua calls. The map load path is the same code moved into
+`build_body` / `welded_edge_features`; all existing prop tests pass. Not checked in game yet.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with

@@ -72,6 +72,7 @@ the file of their topic (and get a line here).
 - [NPC skater proxies in retail's collision groups (2026-10-09)](26e-living-world-skater-ai.md#npc-skater-proxies-in-retails-collision-groups-2026-10-09)
 - [Simulated NPC skaters bail and respawn (M7, 2026-10-09)](26e-living-world-skater-ai.md#simulated-npc-skaters-bail-and-respawn-m7-2026-10-09)
 - [Simulated NPC skaters do their recorded jumps and tricks (M7, 2026-10-09)](26e-living-world-skater-ai.md#simulated-npc-skaters-do-their-recorded-jumps-and-tricks-m7-2026-10-09)
+- [Avoider mode 7: stepping off and walking back to the line (2026-10-10)](26e-living-world-skater-ai.md#avoider-mode-7-stepping-off-and-walking-back-to-the-line-2026-10-10)
 
 ### 26f: Pedestrians: body, navigation and look
 
@@ -102,6 +103,10 @@ the file of their topic (and get a line here).
 - [Ped conversations: the plugin runner and the conversation object (2026-10-09)](26g-living-world-ped-interactions.md#ped-conversations-the-plugin-runner-and-the-conversation-object-2026-10-09)
 - [Conversation speech, gather timer and abort (2026-10-09)](26g-living-world-ped-interactions.md#conversation-speech-gather-timer-and-abort-2026-10-09)
 - [Peds taunt after a takedown (2026-10-09)](26g-living-world-ped-interactions.md#peds-taunt-after-a-takedown-2026-10-09)
+- [Ped plugins on world props: data, rolls and the offer scan (groundwork, 2026-10-10)](26g-living-world-ped-interactions.md#ped-plugins-on-world-props-data-rolls-and-the-offer-scan-groundwork-2026-10-10)
+- [Ped plugins on world props: motion states and the wiring (2026-10-10)](26g-living-world-ped-interactions.md#ped-plugins-on-world-props-motion-states-and-the-wiring-2026-10-10)
+- [Ped plugins on world props: benches, bins and newspaper boxes from the model hotpoints (2026-10-10)](26g-living-world-ped-interactions.md#ped-plugins-on-world-props-benches-bins-and-newspaper-boxes-from-the-model-hotpoints-2026-10-10)
+- [Ped hand props: the vending machine can, the newspaper (2026-10-10)](26g-living-world-ped-interactions.md#ped-hand-props-the-vending-machine-can-the-newspaper-2026-10-10)
 ### 26h: Traffic
 
 - [Change: milestone V0, vehicle data](26h-living-world-traffic.md#change-milestone-v0-vehicle-data)

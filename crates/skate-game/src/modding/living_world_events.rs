@@ -63,6 +63,7 @@ pub(crate) fn payloads(
             NpcSkaterEvent::LineEnd { id } => out.push(json!({"name": "living_world", "event": "npc_line_end", "id": id.to_u64()})),
             NpcSkaterEvent::Bail { id, respawn_seconds } => out.push(json!({"name": "living_world", "event": "npc_bail", "id": id.to_u64(), "respawn_seconds": respawn_seconds})),
             NpcSkaterEvent::Respawned { id, node } => out.push(json!({"name": "living_world", "event": "npc_respawn", "id": id.to_u64(), "node": node})),
+            NpcSkaterEvent::WalkBack { id, node, started } => out.push(json!({"name": "living_world", "event": "npc_walk_back", "id": id.to_u64(), "node": node, "started": started})),
             NpcSkaterEvent::Avoid { id, mode, target } => out.push(json!({
                 "name": "living_world", "event": "npc_avoid", "id": id.to_u64(), "mode": mode.name(),
                 "target_kind": target.map(|t| format!("{:?}", t.0).to_lowercase()), "target_id": target.map(|t| t.1),
@@ -79,6 +80,7 @@ pub(crate) fn payloads(
             PedEvent::Taze { id, target } => out.push(json!({"name": "living_world", "event": "ped_taze", "id": id.to_u64(), "target": target})),
             PedEvent::Takedown { id, target, success } => out.push(json!({"name": "living_world", "event": "ped_takedown", "id": id.to_u64(), "target": target, "success": success})),
             PedEvent::Speech { id, value, topic, state } => out.push(json!({"name": "living_world", "event": "ped_speech", "id": id.to_u64(), "value": value, "variant": topic.map(|t| t.0), "list_value": topic.map(|t| t.1), "state": state})),
+            PedEvent::HandProp { id, key } => out.push(json!({"name": "living_world", "event": "ped_hand_prop", "id": id.to_u64(), "hand_prop": key})),
             _ => {}
         }
     }

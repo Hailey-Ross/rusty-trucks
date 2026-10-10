@@ -57,11 +57,13 @@ pub struct BrainSettings {
     /// StartChase Update's and NewChasee Begin's speech values (`826A3780` 55, `826A37F0` 15).
     pub start_chase_speech: i32,
     pub new_chasee_speech: i32,
+    /// Hand prop release values (`peds/hand_prop.rs`).
+    pub hand_prop: super::hand_prop::HandPropSettings,
 }
 
 impl Default for BrainSettings {
     fn default() -> Self {
-        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, start_chase_speech: 55, new_chasee_speech: 15 }
+        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default() }
     }
 }
 
@@ -77,6 +79,8 @@ pub mod nav_modifier {
 pub mod timers {
     /// ChannelWarnWantTarget's warn time (`InterestTimer`).
     pub const WARN: i32 = 36;
+    /// SetSitTimer's timer (`SitTimer`).
+    pub const SIT: i32 = 24;
     /// The graph's timer names by index (`sub_82E42B08` compares in this order).
     pub const NAMES: [&str; 47] = [
         "NextWarnTimer",
@@ -167,6 +171,17 @@ pub enum PedOp {
     IsZombieMode,
     /// `826A99C0`: the ped has a plugin component.
     HasPlugin,
+    /// `826AD1A8`: the ped holds or has requested a hand prop (b25, b87).
+    HasHandProp,
+    /// `826AD270`: HasHandProp and the held record's key is `handprop` (the attribute's hash vs the record key,
+    /// b87).
+    IsHoldingSpecificHandProp { handprop: String },
+    /// `8269D170`: HasHandProp and the held record's IsDisposable (record +60, b90).
+    HasDisposableHandProp,
+    /// `8269D268`: no hand prop, or the held record's CanSitWithHandProp (record +61, b90).
+    CanSitWithHandProp,
+    /// `826AD330`: HasHandProp and the held record's CanAttackThrowHandProp (record +62, b25 / b90).
+    CanAttackThrowHandProp,
     /// `826AD558`: distance to the want's target compared with the threshold (squared by the
     /// factory `826D0038`).
     DistanceToWantTarget { want: String, greater: Option<f32>, less: Option<f32> },
@@ -357,6 +372,8 @@ pub enum PedOp {
     /// walk to it at `speed`, stand, turn to its orientation (ours: towards the plugin centre),
     /// facing it within `FOVAngle` (radians), release it.
     LockClosestWaypoint,
+    /// `LockFirstWaypoint` (`826A0580`): with no waypoint locked, lock the plugin's first waypoint if it is free.
+    LockFirstWaypoint,
     HasWaypointLocked,
     DistanceFromWaypointXZ { less_equal: Option<f32>, greater: Option<f32>, y_tolerance: f32 },
     TargetWaypoint { speed: f32, slide_distance: f32, slide_speed: f32 },
@@ -365,7 +382,47 @@ pub enum PedOp {
     IsFacingWaypointOrientation { fov: f32 },
     UnlockWaypoint,
     /// Monitored intents (`intentName`, `numberOfStages`): created, stepped, present.
-    CreateSimpleMonitoredIntent { intent: String, stages: u8 },
+    CreateSimpleMonitoredIntent { intent: String, stages: u8, names: Vec<String> },
+    /// `DisableHeavyCollision` (`826A30D0` / `826A30E8`): `brain+3277` bit 0x20 while active.
+    DisableHeavyCollision,
+    /// `DisableCollisionSliding` (`826A3140` / `826A3158`): ped `+5936` bit 0x40 (collision sliding) off while active.
+    DisableCollisionSliding,
+    /// `DisableAllMoods` (`826A5A20` / `826A5A50`): `brain+3278` bit 0x08 on while active; End restores the value
+    /// saved at Begin.
+    DisableAllMoods,
+    /// `OverridePluginCollision` / `OverridePluginAvoid` (`8269AC98` / `8269ACE8`, `8269AD38` / `8269AD88`):
+    /// `brain+3200` / `+3201` = 1 while active, 0 at End; read by `IsPluginCollisionOverride` (`8269ADD8`) and
+    /// `IsPluginAvoidOverride` (`8269AE38`).
+    OverridePluginCollision,
+    OverridePluginAvoid,
+    IsPluginCollisionOverride,
+    IsPluginAvoidOverride,
+    /// `IsOnRoad` (graph condition, vtable slot 12 = the `li r3,0` stub `8274CA90`): always false.
+    IsOnRoad,
+    /// `SimpleRandom` (`826AB540`, factory `826CCEF0`: `percentage` x 0.01): true when the chance >= a uniform roll in
+    /// [0, 1); rolls on every evaluation.
+    SimpleRandom { chance: f32 },
+    /// `IsAtWaypoint` (`826AB880`, factory `826CDEE8` default `0x82063B08` 3.0): the locked waypoint within `radius`
+    /// horizontally; false without one.
+    IsAtWaypoint { radius: f32 },
+    /// `InSkaterRadius` (`826AAAF8`): the skater within `radius` (3D).
+    InSkaterRadius { radius: f32 },
+    /// `OwnPluginObject` (`826A7498` / `826A74B0`): `brain+3277` bit 0x01 while active.
+    OwnPluginObject,
+    /// `IgnoreStandingCollisions` (`826A3108` / `826A3120`): `brain+3277` bit 0x10 while active.
+    IgnoreStandingCollisions,
+    /// `DisableCollisionsWithBehaviourSource` (`826A7378` / `826A7410`): `brain+3277` bit 0x01 and the plugin prop as an
+    /// object the ped's collision ignores (`82E3DB68`, `ped+5916`) while active. NOT RETAIL YET: the host does not yet
+    /// exempt that prop from the ped's obstacle step (the DMO instance to prop id mapping is open).
+    DisableCollisionsWithBehaviourSource,
+    /// `SetExplicitTurnDirectionToWaypointOrientation` (`826A2988` / `826A29F0`): while active the locomotion turns to
+    /// the locked waypoint's orientation (`ped+5888` +2080, flag +2100 bit 0x20); nothing without a waypoint.
+    SetExplicitTurnDirectionToWaypointOrientation,
+    /// `SetSitTimer` Begin `826A2898`: SitTimer (24) = min + rand x 2^-32 x (max - min), the ped type's sit times.
+    SetSitTimer,
+    /// `GoingToStandBackUp` `826AD1F0` -> `8269A588`: d100 roll (`rand() % 100 + 1`) at most the ped type's
+    /// stand-up chance x 100 (`0x820ED57C` 100.0); rolls on every evaluation.
+    GoingToStandBackUp,
     IncrementMonitoredPacketStage { intent: String },
     /// Conversation ops: in position (vf44), am I the speaker (vf12), speak for the turn time
     /// then pass the turn (vf48), face the speaker, complete (vf36).
@@ -381,6 +438,16 @@ pub enum PedOp {
     /// holds the state while the intent lives (`HasMonitoredIntent SGIntent`). `826A72F0` End: face released, intent
     /// removed, the taunt want unset.
     TakedownTauntVictim,
+    /// `826A7998` Begin: the light throw (`82E3E648` attack 0) at the plugin object's hotpoint 0 (b87 §3, b90 §1);
+    /// the release follows in the per-ped step ([`PedBrain::update_hand_prop_release`]).
+    ThrowHandPropAtTrashBin,
+    /// `826A7A58` Begin: the aimed attack throw at the want's target (`82E3E960` -> `82E3E648` attack 1, b25 §5,
+    /// b92 / b93). `826A7AA8` Update: once the prop is released and timer 35 has run out, the want is unset.
+    ThrowHandPropAtWantTarget { want: String },
+    /// `826A8730` Begin: `82E3EBE0(ped, 0, zero)`, the held prop is released in place (b25 §6).
+    DropHandProp,
+    /// `826A7900` Begin / `826A7918` End: `brain+3279` bit 0x10 for the behaviour's life (b25 §3).
+    DisallowHandPropActions,
     SetWaitingToReactFlagOnBegin,
     ClearWaitingToReactFlagOnBegin,
     SetIsReactingToMoodEventFlagOnBegin,
@@ -406,6 +473,8 @@ impl PedOp {
             "RunFromHonker" => PedOp::RunFromHonker,
             "IsZombieMode" => PedOp::IsZombieMode,
             "HasPlugin" => PedOp::HasPlugin,
+            "HasHandProp" => PedOp::HasHandProp,
+            "IsHoldingSpecificHandProp" => PedOp::IsHoldingSpecificHandProp { handprop: text("handprop").unwrap_or_default().to_ascii_lowercase() },
             "DistanceToWantTarget" => PedOp::DistanceToWantTarget { want: want(), greater: float("greater"), less: float("less") },
             "Wander" => PedOp::Wander,
             "NoRoadWander" => PedOp::NoRoadWander,
@@ -515,6 +584,7 @@ impl PedOp {
             "PedestrianInConversation" => PedOp::PedestrianInConversation,
             "PedestrianIsInConversation" => PedOp::PedestrianIsInConversation,
             "LockClosestWaypoint" => PedOp::LockClosestWaypoint,
+            "LockFirstWaypoint" => PedOp::LockFirstWaypoint,
             "HasWaypointLocked" => PedOp::HasWaypointLocked,
             "DistanceFromWaypointXZ" => PedOp::DistanceFromWaypointXZ { less_equal: float("lessEqual"), greater: float("greater"), y_tolerance: float("yTolerance").unwrap_or(f32::MAX) },
             "TargetWaypoint" => PedOp::TargetWaypoint { speed: float("speed").unwrap_or(1.0), slide_distance: float("slideDistance").unwrap_or(0.0), slide_speed: float("slideSpeed").unwrap_or(0.0) },
@@ -522,14 +592,44 @@ impl PedOp {
             "TurnToFaceWaypointOrientation" => PedOp::TurnToFaceWaypointOrientation,
             "IsFacingWaypointOrientation" => PedOp::IsFacingWaypointOrientation { fov: float("FOVAngle").unwrap_or(0.3) },
             "UnlockWaypoint" => PedOp::UnlockWaypoint,
-            "CreateSimpleMonitoredIntent" => PedOp::CreateSimpleMonitoredIntent { intent: text("intentName").unwrap_or_default(), stages: float("numberOfStages").unwrap_or(1.0) as u8 },
+            "CreateSimpleMonitoredIntent" => {
+                let intent = text("intentName").unwrap_or_default();
+                let stages = float("numberOfStages").unwrap_or(1.0).max(1.0) as u8;
+                // Stage 1 is the packet name, stage n its `stage<n>Name` (b84, `826A2600`).
+                let names = (1..=stages).map(|n| if n == 1 { intent.clone() } else { text(&format!("stage{n}Name")).unwrap_or_default() }).collect();
+                PedOp::CreateSimpleMonitoredIntent { intent, stages, names }
+            }
             "IncrementMonitoredPacketStage" => PedOp::IncrementMonitoredPacketStage { intent: text("intentName").unwrap_or_default() },
+            "SetSitTimer" => PedOp::SetSitTimer,
+            "OwnPluginObject" => PedOp::OwnPluginObject,
+            "IsOnRoad" => PedOp::IsOnRoad,
+            "DisableHeavyCollision" => PedOp::DisableHeavyCollision,
+            "DisableCollisionSliding" => PedOp::DisableCollisionSliding,
+            "DisableAllMoods" => PedOp::DisableAllMoods,
+            "OverridePluginCollision" => PedOp::OverridePluginCollision,
+            "OverridePluginAvoid" => PedOp::OverridePluginAvoid,
+            "IsPluginCollisionOverride" => PedOp::IsPluginCollisionOverride,
+            "IsPluginAvoidOverride" => PedOp::IsPluginAvoidOverride,
+            "SimpleRandom" => PedOp::SimpleRandom { chance: float("percentage").unwrap_or(0.0) * 0.01 },
+            "IsAtWaypoint" => PedOp::IsAtWaypoint { radius: float("radius").unwrap_or(3.0) },
+            "InSkaterRadius" => PedOp::InSkaterRadius { radius: float("radius").unwrap_or(0.0) },
+            "IgnoreStandingCollisions" => PedOp::IgnoreStandingCollisions,
+            "DisableCollisionsWithBehaviourSource" => PedOp::DisableCollisionsWithBehaviourSource,
+            "SetExplicitTurnDirectionToWaypointOrientation" => PedOp::SetExplicitTurnDirectionToWaypointOrientation,
+            "GoingToStandBackUp" => PedOp::GoingToStandBackUp,
             "ConversationSignalInPosition" => PedOp::ConversationSignalInPosition,
             "ConversationThisParticipantIsSpeaker" => PedOp::ConversationThisParticipantIsSpeaker,
             "ConversationSpeak" => PedOp::ConversationSpeak,
             "ConversationListenToSpeaker" => PedOp::ConversationListenToSpeaker,
             "ConversationIsComplete" => PedOp::ConversationIsComplete,
-            "SetExplicitTurnDirectionToWaypointOrientation" | "DisallowHandPropActions" => PedOp::Marker { name: name.to_string() },
+            "ThrowHandPropAtTrashBin" => PedOp::ThrowHandPropAtTrashBin,
+            "ThrowHandPropAtWantTarget" => PedOp::ThrowHandPropAtWantTarget { want: want() },
+            "DropHandProp" => PedOp::DropHandProp,
+            "DisallowHandPropActions" => PedOp::DisallowHandPropActions,
+            "HasDisposableHandProp" => PedOp::HasDisposableHandProp,
+            "CanSitWithHandProp" => PedOp::CanSitWithHandProp,
+            "CanAttackThrowHandProp" => PedOp::CanAttackThrowHandProp,
+            "SetExplicitTurnDirectionToWaypointOrientation" => PedOp::Marker { name: name.to_string() },
             "KnowAboutChasers" | "AllowPedestrianJumping" => PedOp::Marker { name: name.to_string() },
             _ => PedOp::Pending { name: name.to_string() },
         }
@@ -547,9 +647,119 @@ pub struct Want {
     pub needs_addressing: bool,
 }
 
+/// The ped type's sit values (`ped+5696` attribute collection; `livingworld_entities`): sit time min / max (s,
+/// `1190326371F1A684` 30.0 / `69F67C678B2673C9` 60.0) and the stand-up chance (`B040D387ABA6E24D` 0.5).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SitValues {
+    pub min_seconds: f32,
+    pub max_seconds: f32,
+    pub stand_up_chance: f32,
+}
+
+impl Default for SitValues {
+    fn default() -> Self {
+        Self { min_seconds: 30.0, max_seconds: 60.0, stand_up_chance: 0.5 }
+    }
+}
+
+/// A monitored packet (`brain+2188` map, lookup `82E40F10`; b84): one intent per stage, the current stage (`+452`,
+/// from 1), active (`+456`: `HasMonitoredIntent` reads it; the motion side clears it when the packet's last motion
+/// step completes).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Packet {
+    pub stages: Vec<String>,
+    pub stage: u8,
+    pub active: bool,
+}
+
+impl Packet {
+    pub fn new(stages: Vec<String>) -> Self {
+        Self { stages, stage: 1, active: true }
+    }
+
+    /// The intent of the current stage (`None` past the last one).
+    pub fn current(&self) -> Option<&str> {
+        self.stages.get(usize::from(self.stage).checked_sub(1)?).map(String::as_str)
+    }
+}
+
+/// A ped's hand prop [code, b87].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HandProp {
+    pub key: Option<String>,
+    pub requested: bool,
+    pub holding: bool,
+    /// `brain+3278` bit 0x01: a throw started or the prop was released and is still linked to the ped (cleared by
+    /// the unlink `82E3FAE0`).
+    pub linked: bool,
+    /// The started throw (`3279` bit 0x40 aimed, target `+3152`, speed `+3252`).
+    pub throw: Option<super::hand_prop::HandPropThrow>,
+    /// The held record's bools (`livingworld_handprops`, host-set with the request): IsDisposable (+60),
+    /// CanSitWithHandProp (+61), CanAttackThrowHandProp (+62) [b90].
+    pub disposable: bool,
+    pub can_sit: bool,
+    pub can_attack_throw: bool,
+}
+
+impl HandProp {
+    /// HasHandProp (`826AD1A8`): held, or requested and not created yet.
+    pub fn has(&self) -> bool {
+        self.holding || self.requested
+    }
+
+    /// SpawnInteractionBasedHandProp's request (`82E3DDA0`): the record key and the requested bit; the host
+    /// creates the object later and then sets `holding`.
+    pub fn request(&mut self, key: &str) {
+        self.key = Some(key.to_string());
+        self.requested = true;
+    }
+
+    /// The plugin prop's hand prop: a weighted pick from its list (`livingworld_props` field `E15E856F2CA9B96B`,
+    /// {handprop, probability}) with `roll` in [0, 1). NOT RETAIL YET: that the plugin object's vfunc +52 picks
+    /// by these weights is inferred (b87); a one-entry list always gives its entry.
+    pub fn pick(list: &[(String, f32)], roll: f32) -> Option<&str> {
+        let total: f32 = list.iter().map(|(_, p)| p.max(0.0)).sum();
+        if total <= 0.0 {
+            return None;
+        }
+        let mut left = roll.clamp(0.0, 1.0) * total;
+        for (key, p) in list {
+            left -= p.max(0.0);
+            if left < 0.0 {
+                return Some(key);
+            }
+        }
+        list.iter().rev().find(|(_, p)| *p > 0.0).map(|(k, _)| k.as_str())
+    }
+
+    /// The ped's starting prop (ped constructor `82E33198` [code]): `chance_roll` and `pick_roll` are retail's two
+    /// `rand() % 100 + 1` rolls (1..=100). The ped carries something when `chance * 100 >= chance_roll` (`8269A588`, the
+    /// entity's `Hash_3DB019A08284F45C`); then the first entry of its `handprop_odds` list whose running total x 100
+    /// reaches `pick_roll` (weights are not normalised: a list summing below 1 can give nothing).
+    pub fn starting_pick(chance: f32, list: &[(String, f32)], chance_roll: u32, pick_roll: u32) -> Option<&str> {
+        if chance * 100.0 < chance_roll as f32 {
+            return None;
+        }
+        let mut total = 0.0;
+        list.iter().find(|(_, p)| {
+            total += p;
+            pick_roll as f32 <= total * 100.0
+        })
+        .map(|(k, _)| k.as_str())
+    }
+
+    /// The object is gone (thrown, dropped, despawned).
+    pub fn clear(&mut self) {
+        *self = HandProp::default();
+    }
+}
+
 /// What a ped's brain knows and decided (host-owned, serialisable plain data).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PedBrain {
+    /// The ped's own rolls (host-seeded; `None` = seed 0) and its type's sit values.
+    pub rng: Option<crate::living_world::Rng>,
+    pub sit: SitValues,
     pub wants: BTreeMap<String, Want>,
     pub timers: BTreeMap<i32, f32>,
     pub scatter: bool,
@@ -572,8 +782,32 @@ pub struct PedBrain {
     pub in_plugin: bool,
     pub in_conversation: bool,
     pub waypoint: Option<Vec3>,
-    pub monitored: BTreeMap<String, (u8, u8)>,
+    /// The locked waypoint's orientation (a world prop's waypoint facing; host-set with the lock).
+    pub waypoint_facing: Option<Vec3>,
+    /// `brain+3277` bits 0x01 (OwnPluginObject) and 0x10 (IgnoreStandingCollisions).
+    pub own_plugin_object: bool,
+    pub ignore_standing_collisions: bool,
+    /// `ped+5916`: the plugin prop is ignored by the ped's collision (DisableCollisionsWithBehaviourSource).
+    pub ignore_source_collision: bool,
+    /// `brain+3277` bit 0x20, ped `+5936` bit 0x40 cleared, `brain+3278` bit 0x08 (with each DisableAllMoods
+    /// behaviour's saved value), `brain+3200` / `+3201`.
+    pub heavy_collision_disabled: bool,
+    pub collision_sliding_disabled: bool,
+    pub moods_disabled: bool,
+    pub moods_saved: BTreeMap<usize, bool>,
+    pub plugin_collision_override: bool,
+    pub plugin_avoid_override: bool,
+    /// The explicit turn direction the locomotion turns to (`ped+5888` +2080 with +2100 bit 0x20).
+    pub explicit_turn: Option<Vec3>,
+    pub monitored: BTreeMap<String, Packet>,
     pub turn_passed: bool,
+    /// The hand prop (`livingworld_handprops` key at `ped+5760`), requested (`brain+3279` bit 0x01, set by
+    /// `82E3DDA0`) and held (`brain+3278` bit 0x02, set when `82E3EC60` attaches the created object) [code, b87].
+    pub hand_prop: HandProp,
+    /// `brain+3279` bit 0x10 (DisallowHandPropActions).
+    pub hand_prop_actions_disallowed: bool,
+    /// The plugin object's hotpoint 0 (host-set with the plugin lock): ThrowHandPropAtTrashBin's target.
+    pub plugin_target: Option<Vec3>,
     /// What the ped knows about and sees (`brain+624`; KnowAboutWantTarget's `82E42868`).
     pub perceptions: super::perception::Perceptions,
     /// LostChasee: the chasee's last known position the ped walks to; SetAltTargetToChaseePosition:
@@ -670,6 +904,10 @@ pub enum ChaseSteer {
 /// A change to a chase group the brain asks the host for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChaseRequest {
+    /// A hand prop throw started: the host plays `clip` (blend [`super::hand_prop::HandPropSettings::clip_blend`]).
+    HandPropClip { clip: &'static str },
+    /// The held hand prop leaves the hand with `velocity` (m/s): the host turns it into a physics prop.
+    HandPropReleased { velocity: Vec3 },
     Join { chasee: u64 },
     /// SendChaseStateMessage: the host posts it when `target` is a player.
     StateMessage { target: u64, state: u8 },
@@ -737,6 +975,9 @@ pub struct ChaseView<'a> {
     pub block: Option<&'a dyn Fn(u64) -> Option<(bool, Vec3)>>,
     /// The takedown that fits now against a target (`82E3C000`).
     pub takedowns: Option<&'a dyn Fn(u64) -> Option<super::takedown::TakedownChoice>>,
+    /// Target velocities by id and the ped's own velocity, m/s (the attack throw's prediction, `82E3E960`).
+    pub velocity: Option<&'a dyn Fn(u64) -> Option<Vec3>>,
+    pub own_velocity: Vec3,
 }
 
 impl ChaseView<'_> {
@@ -756,6 +997,28 @@ impl PedBrain {
     }
     /// `sub_82E40940`: a length at or below 0 stops the timer; a new timer is dropped when
     /// [`timers::CAPACITY`] are running.
+    pub fn rng(&mut self) -> &mut crate::living_world::Rng {
+        self.rng.get_or_insert_with(|| crate::living_world::Rng::new(0))
+    }
+
+    /// The motion side's end of a packet whose motion state is not ported (`motion_handles` false): taken as done once
+    /// the packet reaches its last stage, so it goes inactive. NOT RETAIL: retail's motion graph clears `+456` when the
+    /// state's last clip completes (`MajorIntentComplete`, b84).
+    pub fn settle_packets(&mut self, motion_handles: &dyn Fn(&str) -> bool) {
+        for (name, p) in self.monitored.iter_mut() {
+            if !motion_handles(name) && p.stages.len() > 1 && usize::from(p.stage) >= p.stages.len() {
+                p.active = false;
+            }
+        }
+    }
+
+    /// `GoingToStandBackUp`'s roll.
+    pub fn roll_stand_up(&mut self) -> bool {
+        let chance = self.sit.stand_up_chance;
+        let k = self.rng().modulo(100) + 1;
+        chance * 100.0 >= k as f32
+    }
+
     pub fn set_timer(&mut self, timer: i32, seconds: f32) {
         if seconds <= 0.0 {
             self.timers.remove(&timer);
@@ -817,6 +1080,17 @@ impl BrainHost<'_> {
     fn evaluate(&self, op: &PedOp) -> bool {
         let b = &*self.brain;
         match op {
+            PedOp::IsOnRoad | PedOp::SimpleRandom { .. } => false,
+            PedOp::IsPluginCollisionOverride => b.plugin_collision_override,
+            PedOp::IsPluginAvoidOverride => b.plugin_avoid_override,
+            PedOp::IsAtWaypoint { radius } => self.brain.waypoint.is_some_and(|w| {
+                let (dx, dz) = (w[0] - self.position[0], w[2] - self.position[2]);
+                (dx * dx + dz * dz).sqrt() < *radius
+            }),
+            PedOp::InSkaterRadius { radius } => self.skater.is_some_and(|(p, _)| {
+                let d = [p[0] - self.position[0], p[1] - self.position[1], p[2] - self.position[2]];
+                (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() < *radius
+            }),
             PedOp::HasWantToAddress { want } => b.wants.get(want).is_some_and(|w| w.needs_addressing),
             PedOp::NeedsToBeginColliding => b.begin_colliding,
             PedOp::IsColliding => b.colliding,
@@ -824,6 +1098,11 @@ impl BrainHost<'_> {
             PedOp::IsBeingHonkedAt => b.honker.is_some(),
             PedOp::IsZombieMode => b.zombie,
             PedOp::HasPlugin => b.has_plugin,
+            PedOp::HasHandProp => b.hand_prop.has(),
+            PedOp::IsHoldingSpecificHandProp { handprop } => b.hand_prop.has() && b.hand_prop.key.as_deref().is_some_and(|k| k.eq_ignore_ascii_case(handprop)),
+            PedOp::HasDisposableHandProp => b.hand_prop.has() && b.hand_prop.disposable,
+            PedOp::CanSitWithHandProp => !b.hand_prop.has() || b.hand_prop.can_sit,
+            PedOp::CanAttackThrowHandProp => b.hand_prop.has() && b.hand_prop.can_attack_throw,
             PedOp::SimpleTimerExpired { timer } => b.timer(*timer) <= 0.0,
             PedOp::IsChasing => b.chasee.is_some(),
             // A target without a group yet takes chasers (the group is empty).
@@ -870,7 +1149,7 @@ impl BrainHost<'_> {
             PedOp::CanSeeChasee => b.chasee.and_then(|c| b.perceptions.get(c)).is_some_and(|e| e.visible || e.told),
             PedOp::HasTakeDownTargetable => b.takedown_target.is_some(),
             PedOp::CanAttemptTakeDownTargetable => b.takedown_target.is_some_and(|t| (self.target_position)(t).is_some()) && b.takedown_choice.is_some(),
-            PedOp::HasMonitoredIntent { intent } => (intent == "ActiveTakedown" && b.takedown_active) || b.monitored.contains_key(intent),
+            PedOp::HasMonitoredIntent { intent } => (intent == "ActiveTakedown" && b.takedown_active) || b.monitored.get(intent).is_some_and(|p| p.active),
             PedOp::TakeDownAttemptSuccessful => b.takedown_result == Some(2),
             PedOp::TakeDownAttemptFailed => b.takedown_result == Some(3),
             PedOp::ChaserShouldGiveUpDueToTakedowns => self.chase.record.and_then(|r| r.give_up_after_takedowns()).is_some_and(|n| b.takedowns >= n),
@@ -895,6 +1174,11 @@ impl BrainHost<'_> {
 
 impl ConditionHost for BrainHost<'_> {
     fn condition_activation(&mut self, condition: usize, _frame: &Frame) -> u32 {
+        match self.conditions.get(condition) {
+            Some(PedOp::GoingToStandBackUp) => return u32::from(self.brain.roll_stand_up()),
+            Some(PedOp::SimpleRandom { chance }) => return u32::from(*chance >= self.brain.rng().unit()),
+            _ => {}
+        }
         u32::from(self.conditions.get(condition).is_some_and(|op| self.evaluate(op)))
     }
 }
@@ -916,6 +1200,29 @@ impl Host for BrainHost<'_> {
                 b.motion_intent = Some(motion::WANDER);
             }
             PedOp::NoRoadWander => b.motion_intent = Some(motion::WANDER),
+            PedOp::ThrowHandPropAtTrashBin => {
+                if let Some(target) = b.plugin_target {
+                    if let Some(clip) = b.start_light_throw(&s.hand_prop, self.heading, self.position, target) {
+                        b.chase_requests.push(ChaseRequest::HandPropClip { clip });
+                    }
+                }
+            }
+            PedOp::ThrowHandPropAtWantTarget { want } => {
+                let target = b.wants.get(want).map(|w| w.target);
+                let motion = target.and_then(|t| Some(((self.target_position)(t)?, self.chase.velocity.and_then(|v| v(t)).unwrap_or([0.0; 3]))));
+                if let Some((at, velocity)) = motion {
+                    let aim = super::hand_prop::AttackAim { position: self.position, velocity: self.chase.own_velocity, target: at, target_velocity: velocity };
+                    if let Some(clip) = b.start_attack_throw(&s.hand_prop, self.heading, aim) {
+                        b.chase_requests.push(ChaseRequest::HandPropClip { clip });
+                    }
+                }
+            }
+            PedOp::DropHandProp => {
+                if let Some(velocity) = b.drop_hand_prop() {
+                    b.chase_requests.push(ChaseRequest::HandPropReleased { velocity });
+                }
+            }
+            PedOp::DisallowHandPropActions => b.hand_prop_actions_disallowed = true,
             PedOp::SuggestVelocity { linear } => b.speed_suggestion = Some(*linear),
             PedOp::KnowAboutWantTarget { want } => {
                 if let Some(w) = b.wants.get(want) {
@@ -989,16 +1296,37 @@ impl Host for BrainHost<'_> {
                 b.position_locked = true;
                 b.locked_at = Some(self.position);
             }
-            PedOp::CreateSimpleMonitoredIntent { intent, stages } => {
-                b.monitored.insert(intent.clone(), (1, (*stages).max(1)));
+            PedOp::OwnPluginObject => b.own_plugin_object = true,
+            PedOp::DisableCollisionsWithBehaviourSource => {
+                b.own_plugin_object = true;
+                b.ignore_source_collision = true;
             }
+            PedOp::DisableHeavyCollision => b.heavy_collision_disabled = true,
+            PedOp::DisableCollisionSliding => b.collision_sliding_disabled = true,
+            PedOp::DisableAllMoods => {
+                b.moods_saved.insert(behavior, b.moods_disabled);
+                b.moods_disabled = true;
+            }
+            PedOp::OverridePluginCollision => b.plugin_collision_override = true,
+            PedOp::OverridePluginAvoid => b.plugin_avoid_override = true,
+            PedOp::IgnoreStandingCollisions => b.ignore_standing_collisions = true,
+            PedOp::SetExplicitTurnDirectionToWaypointOrientation => {
+                if b.waypoint.is_some() {
+                    b.explicit_turn = b.waypoint_facing;
+                }
+            }
+            PedOp::SetSitTimer => {
+                let v = b.sit;
+                let t = v.min_seconds + b.rng().unit() * (v.max_seconds - v.min_seconds);
+                b.set_timer(timers::SIT, t);
+            }
+            PedOp::CreateSimpleMonitoredIntent { intent, names, .. } => {
+                b.monitored.insert(intent.clone(), Packet::new(names.clone()));
+            }
+            // `826A27D0`: only the stage counter moves; the motion side ends the packet.
             PedOp::IncrementMonitoredPacketStage { intent } => {
-                if let Some((stage, stages)) = b.monitored.get(intent).copied() {
-                    if stage >= stages {
-                        b.monitored.remove(intent);
-                    } else {
-                        b.monitored.insert(intent.clone(), (stage + 1, stages));
-                    }
+                if let Some(p) = b.monitored.get_mut(intent) {
+                    p.stage = p.stage.saturating_add(1);
                 }
             }
             PedOp::ConversationSignalInPosition => b.chase_requests.push(ChaseRequest::SignalInPosition),
@@ -1051,6 +1379,15 @@ impl Host for BrainHost<'_> {
                 }
             }
             PedOp::StartInvestigateTimer => b.set_timer(INVESTIGATE_TIMER, self.chase.record.map_or(0.0, |r| r.investigate_time())),
+            PedOp::LockFirstWaypoint => {
+                if self.brain.waypoint.is_none() {
+                    if let Some(w) = self.chase.conversation.and_then(|c| c.free_waypoints.first().copied()) {
+                        self.brain.waypoint = Some(w);
+                        self.brain.chase_requests.push(ChaseRequest::LockWaypoint { at: w });
+                    }
+                }
+                return;
+            }
             PedOp::LockClosestWaypoint => {
                 // `82E1CBC0`: the nearest free waypoint, locked now (the host records the lock).
                 let at = self.position;
@@ -1145,7 +1482,7 @@ impl Host for BrainHost<'_> {
             PedOp::TakedownTauntVictim => {
                 if let Some(target) = b.wants.get("taunt").map(|w| w.target) {
                     b.face = (self.target_position)(target);
-                    b.monitored.insert("SGIntent".to_string(), (1, 1));
+                    b.monitored.insert("SGIntent".to_string(), Packet::new(vec!["SGIntent".to_string()]));
                     b.chase_requests.push(ChaseRequest::Taunt { target });
                 }
             }
@@ -1170,6 +1507,11 @@ impl Host for BrainHost<'_> {
         let b = &mut *self.brain;
         match op {
             PedOp::Wander => b.speed_suggestion = Some(s.wander_speed),
+            PedOp::ThrowHandPropAtWantTarget { want } => {
+                if !b.hand_prop.holding && b.timer(super::hand_prop::THROW_REACTION_TIMER) <= 0.0 {
+                    b.unset_want(want);
+                }
+            }
             PedOp::StartChase => b.speech = Some(s.start_chase_speech),
             PedOp::ChaserEvaluateWhoToTakeDown => b.takedown_target = b.chasee,
             PedOp::TargetWaypoint { speed, slide_distance, slide_speed } => {
@@ -1179,7 +1521,13 @@ impl Host for BrainHost<'_> {
                     b.speed_suggestion = Some(*speed);
                 }
             }
-            PedOp::TurnToFaceWaypointOrientation => b.face = self.chase.conversation.map(|c| c.center),
+            // `826A0DC8`: also the locomotion's explicit turn to the waypoint's orientation (`+2080`, `+2100` bit 0x20).
+            PedOp::TurnToFaceWaypointOrientation => {
+                b.face = self.chase.conversation.map(|c| c.center);
+                if b.waypoint.is_some() && b.waypoint_facing.is_some() {
+                    b.explicit_turn = b.waypoint_facing;
+                }
+            }
             PedOp::ConversationSpeak => {
                 if !b.turn_passed && b.timer(SPEAK_TIMER) <= 0.0 {
                     b.turn_passed = true;
@@ -1308,6 +1656,23 @@ impl Host for BrainHost<'_> {
         let Some(op) = self.behaviors.get(behavior) else { return };
         let b = &mut *self.brain;
         match op {
+            PedOp::OwnPluginObject => b.own_plugin_object = false,
+            PedOp::DisallowHandPropActions => b.hand_prop_actions_disallowed = false,
+            PedOp::DisableCollisionsWithBehaviourSource => {
+                b.own_plugin_object = false;
+                b.ignore_source_collision = false;
+            }
+            // `826A2770`: the Create behaviour's End removes its packet.
+            PedOp::CreateSimpleMonitoredIntent { intent, .. } => {
+                b.monitored.remove(intent);
+            }
+            PedOp::DisableHeavyCollision => b.heavy_collision_disabled = false,
+            PedOp::DisableCollisionSliding => b.collision_sliding_disabled = false,
+            PedOp::DisableAllMoods => b.moods_disabled = b.moods_saved.remove(&behavior).unwrap_or(false),
+            PedOp::OverridePluginCollision => b.plugin_collision_override = false,
+            PedOp::OverridePluginAvoid => b.plugin_avoid_override = false,
+            PedOp::IgnoreStandingCollisions => b.ignore_standing_collisions = false,
+            PedOp::SetExplicitTurnDirectionToWaypointOrientation => b.explicit_turn = None,
             PedOp::SuggestVelocity { .. } => b.speed_suggestion = None,
             PedOp::UnsetWantOnEnd { want } => b.unset_want(want),
             PedOp::Flee => b.flee_from = None,
@@ -1330,7 +1695,11 @@ impl Host for BrainHost<'_> {
             PedOp::UnsetIsReactingToMoodEventFlagOnEnd => b.reacting_to_mood = false,
             PedOp::Plugin => b.in_plugin = false,
             PedOp::PedestrianInConversation => b.in_conversation = false,
-            PedOp::TurnToFaceWaypointOrientation => b.face = None,
+            // `826A0F50` clears the explicit turn flag.
+            PedOp::TurnToFaceWaypointOrientation => {
+                b.face = None;
+                b.explicit_turn = None;
+            }
             PedOp::ConversationListenToSpeaker => b.listen_to = None,
             PedOp::AlertToWantTarget { .. } => {
                 b.look_at.pop();

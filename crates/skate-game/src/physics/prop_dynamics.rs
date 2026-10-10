@@ -386,6 +386,12 @@ pub(crate) struct PropBody {
     /// Self-righting window timer (retail DMO+4376; `Some` = DMO+4464 bit
     /// 0x40 set, [`PropUprightSettings`]).
     upright_timer: Option<f32>,
+    /// Created mid-game ([`PropDynamics::spawn_body`]), not placed by the map:
+    /// no authored pose to reset to or save in the layout.
+    runtime: bool,
+    /// The authored physics block the body was built from (copied by
+    /// [`PropDynamics::copy_spec`]).
+    physics: skate_data::skate_map::ObjectPhysics,
 }
 
 /// Friction pair `[static, dynamic]` of a retail body contact material block.
@@ -675,6 +681,33 @@ pub(crate) struct PropDynamics {
     move_diagnostics: Option<MoveDiagnostics>,
     /// How Move Object commands reach a body (retail defaults, mod knobs).
     move_rules: MoveCommandRules,
+    /// Next id [`PropDynamics::next_runtime_id`] tries.
+    next_runtime_id: u32,
+}
+
+/// First id of bodies created mid-game: ids from here up to [`PROP_GRAB_TAG`]
+/// stay clear of the grab-scene tags (props `0x4000_0000`, cars the high bit).
+/// Ours: retail DMOs are addressed by manager slot, not by such an id.
+pub(crate) const RUNTIME_PROP_ID_BASE: u32 = 0x2000_0000;
+
+/// A prop body created mid-game ([`PropDynamics::spawn_body`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RuntimeProp {
+    /// Prop type key (template name), as a map prop's MOBJ name: picks the
+    /// prop tuning and is logged.
+    pub template: String,
+    /// Template-space collision triangles, scale folded in; the body box is
+    /// their bounds.
+    pub local: Vec<[Vector3; 3]>,
+    /// Authored physics block (density, damping, friction, restitution, gravity scale, sleep).
+    pub physics: skate_data::skate_map::ObjectPhysics,
+    /// Retail per-type data of the template, when known.
+    pub type_data: Option<DmoType>,
+    /// Template origin and rotation at creation.
+    pub origin: Vector3,
+    pub basis: Basis3,
+    pub linear_velocity: Vector3,
+    pub angular_velocity: Vector3,
 }
 
 /// Move Object values logged on HELD_PROP lines.
@@ -863,95 +896,10 @@ impl PropDynamics {
         let mut by_id = std::collections::HashMap::new();
         for (index, entry) in instances.iter().enumerate() {
             let object = &objects[entry.object];
-            let authored = object.physics;
-            let t = &object.transform;
-            let axis_scale = [
-                (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt(),
-                (t[3] * t[3] + t[4] * t[4] + t[5] * t[5]).sqrt(),
-                (t[6] * t[6] + t[7] * t[7] + t[8] * t[8]).sqrt(),
-            ];
-            let basis = Basis3 {
-                columns: [
-                    [t[0] / axis_scale[0], t[1] / axis_scale[0], t[2] / axis_scale[0]],
-                    [t[3] / axis_scale[1], t[4] / axis_scale[1], t[5] / axis_scale[1]],
-                    [t[6] / axis_scale[2], t[7] / axis_scale[2], t[8] / axis_scale[2]],
-                ],
-            };
-            let first = entry.local_points()[0][0];
-            let mut min = first;
-            let mut max = first;
-            for point in entry.local_points().iter().flatten() {
-                min = Vector3::new(min.x.min(point.x), min.y.min(point.y), min.z.min(point.z));
-                max = Vector3::new(max.x.max(point.x), max.y.max(point.y), max.z.max(point.z));
-            }
-            let local_center = scale(add(min, max), 0.5);
-            let half_extents = scale(sub(max, min), 0.5);
-            let volume = 8.0 * half_extents.x * half_extents.y * half_extents.z;
-            let Some(properties) = primitive_mass_properties(
-                skate_core::physics::mass::PartMassInput {
-                    shape: skate_core::physics::mass::MassShape::RoundedBox {
-                        half_extents,
-                        radius: 0.0,
-                    },
-                    requested_mass: volume * authored.density.max(0.001),
-                },
-                RETAIL_UNBOUNDED_VELOCITY,
-                authored.angular_damping,
-            ) else {
+            let Some(body) = Self::build_body(index, entry.id, &object.name, entry.local_points(), object.physics, &object.transform, simulation) else {
                 continue;
             };
-            let mut inertia = properties.dynamics;
-            inertia.linear_drag = authored.linear_damping;
-            inertia.maximum_linear_velocity = RETAIL_UNBOUNDED_VELOCITY;
-            let origin = Vector3::new(t[9], t[10], t[11]);
-            let center = add(origin, mul_basis(basis, local_center));
-            bodies.push(PropBody {
-                instance: index,
-                id: entry.id,
-                local_center,
-                half_extents,
-                template: object.name.clone(),
-                type_data: None,
-                grab_splines: Vec::new(),
-                tuning: PropTuning::default(),
-                authored_center: local_center,
-                authored_half_extents: half_extents,
-                axis_scale: Vector3::new(axis_scale[0], axis_scale[1], axis_scale[2]),
-                stuck_ticks: 0,
-                pushed_by: None,
-                baked: None,
-                contacts: 0,
-                rest_y: center.y,
-                spawn_origin: origin,
-                spawn_basis: basis,
-                commanded: false,
-                commanded_block: false,
-                upright_timer: None,
-                rates: RetailBodyRates {
-                    orientation: quaternion_from_basis(basis),
-                    basis,
-                    world_inverse_inertia: world_inverse_inertia(basis, inertia.inverse_tensor),
-                    position: center,
-                    linear_velocity: Vector3::ZERO,
-                    angular_velocity: Vector3::ZERO,
-                    force_acceleration: scale(
-                        simulation.gravity_acceleration,
-                        authored.gravity_scale,
-                    ),
-                    torque_acceleration: Vector3::ZERO,
-                    kinetic_energy: 0.0,
-                    cool_down: simulation.cool_down,
-                },
-                inertia,
-                authored_inertia: inertia,
-                material: RetailContactMaterial {
-                    static_friction: authored.friction,
-                    dynamic_friction: authored.friction,
-                    restitution: authored.restitution,
-                },
-                enable_sleep: authored.enable_sleep,
-                asleep: !authored.initially_awake,
-            });
+            bodies.push(body);
             by_id.insert(entry.id, bodies.len() - 1);
         }
         Self {
@@ -973,7 +921,209 @@ impl PropDynamics {
             below_logged: std::collections::BTreeMap::new(),
             move_diagnostics: None,
             move_rules: MoveCommandRules::default(),
+            next_runtime_id: RUNTIME_PROP_ID_BASE,
         }
+    }
+
+    /// No bodies yet (a map without placed props, which can still get props
+    /// created mid-game).
+    pub(crate) fn empty(simulation: RetailSimulationStep) -> Self {
+        Self::new(&[], &[], simulation)
+    }
+
+    /// A free id for a body created mid-game: the first unused id from
+    /// [`RUNTIME_PROP_ID_BASE`] up, in creation order (deterministic, so a host
+    /// and its peers agree when the host hands them out).
+    pub(crate) fn next_runtime_id(&mut self) -> u32 {
+        let after = |id: u32| if id + 1 >= PROP_GRAB_TAG { RUNTIME_PROP_ID_BASE } else { id + 1 };
+        let mut id = self.next_runtime_id.max(RUNTIME_PROP_ID_BASE);
+        while self.by_id.contains_key(&id) {
+            id = after(id);
+        }
+        self.next_runtime_id = after(id);
+        id
+    }
+
+    /// Create a body mid-game (retail: the DMO manager creates a physics DMO for
+    /// a released hand prop) on collision instance `instance` (added with
+    /// `PropCollisionLayer::add_instance` at the same pose). Awake, moving at the
+    /// spec's velocities, with the prop type's tuning and type data like a map
+    /// prop. Returns false when the triangles give no body (no volume) or `id`
+    /// is taken.
+    pub(crate) fn spawn_body(&mut self, instance: usize, id: u32, spec: &RuntimeProp) -> bool {
+        if self.by_id.contains_key(&id) {
+            return false;
+        }
+        let c = spec.basis.columns;
+        let t = [
+            c[0][0], c[0][1], c[0][2], c[1][0], c[1][1], c[1][2], c[2][0], c[2][1], c[2][2],
+            spec.origin.x, spec.origin.y, spec.origin.z,
+        ];
+        let Some(mut body) = Self::build_body(instance, id, &spec.template, &spec.local, spec.physics, &t, self.simulation)
+        else {
+            return false;
+        };
+        body.runtime = true;
+        body.type_data = spec.type_data.clone();
+        body.rates.linear_velocity = spec.linear_velocity;
+        body.rates.angular_velocity = spec.angular_velocity;
+        let tuning = *self.tuning.for_template(&spec.template);
+        Self::apply_tuning(&mut body, tuning);
+        body.asleep = false;
+        self.bodies.push(body);
+        let index = self.bodies.len() - 1;
+        self.by_id.insert(id, index);
+        let inertia = self.body_inertia(index);
+        let body = &mut self.bodies[index];
+        body.inertia = inertia;
+        body.rates.world_inverse_inertia = world_inverse_inertia(body.rates.basis, inertia.inverse_tensor);
+        true
+    }
+
+    /// Remove a body created mid-game (retail removes the released hand prop's
+    /// DMO). Map props are never removed. Returns its collision instance for
+    /// `PropCollisionLayer::retire_instance`.
+    pub(crate) fn remove_body(&mut self, id: u32) -> Option<usize> {
+        let index = *self.by_id.get(&id)?;
+        if !self.bodies[index].runtime {
+            return None;
+        }
+        if self.held == Some(id) {
+            self.set_held(None);
+        }
+        let body = self.bodies.remove(index);
+        self.by_id = self.bodies.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+        if self.released.is_some_and(|(r, _)| r == id) {
+            self.released = None;
+        }
+        self.below_logged.remove(&id);
+        Some(body.instance)
+    }
+
+    /// A [`RuntimeProp`] copying body `id`'s template, physics block and type
+    /// data, at its current pose and at rest; `local` is left empty for the
+    /// caller to fill from the collision layer.
+    pub(crate) fn copy_spec(&self, id: u32) -> Option<RuntimeProp> {
+        let body = self.bodies.get(*self.by_id.get(&id)?)?;
+        Some(RuntimeProp {
+            template: body.template.clone(),
+            local: Vec::new(),
+            physics: body.physics,
+            type_data: body.type_data.clone(),
+            origin: body.origin(),
+            basis: body.rates.basis,
+            linear_velocity: Vector3::ZERO,
+            angular_velocity: Vector3::ZERO,
+        })
+    }
+
+    /// Whether `id` is a body created mid-game.
+    pub(crate) fn is_runtime(&self, id: u32) -> bool {
+        self.by_id.get(&id).is_some_and(|&i| self.bodies[i].runtime)
+    }
+
+    /// One box body for a prop instance asleep at its placement `t` (row-vector
+    /// affine: rows are the world images of the local axes, their lengths the
+    /// per-axis scale folded into the box extents) with the authored physics block.
+    /// `None` for an instance without triangles or mass. Shared by the map load and
+    /// [`Self::spawn_body`].
+    #[allow(clippy::too_many_arguments)]
+    fn build_body(
+        instance: usize,
+        id: u32,
+        template: &str,
+        local_points: &[[Vector3; 3]],
+        authored: skate_data::skate_map::ObjectPhysics,
+        t: &[f32; 12],
+        simulation: RetailSimulationStep,
+    ) -> Option<PropBody> {
+        let axis_scale = [
+            (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt(),
+            (t[3] * t[3] + t[4] * t[4] + t[5] * t[5]).sqrt(),
+            (t[6] * t[6] + t[7] * t[7] + t[8] * t[8]).sqrt(),
+        ];
+        let basis = Basis3 {
+            columns: [
+                [t[0] / axis_scale[0], t[1] / axis_scale[0], t[2] / axis_scale[0]],
+                [t[3] / axis_scale[1], t[4] / axis_scale[1], t[5] / axis_scale[1]],
+                [t[6] / axis_scale[2], t[7] / axis_scale[2], t[8] / axis_scale[2]],
+            ],
+        };
+        let first = local_points.first()?[0];
+        let mut min = first;
+        let mut max = first;
+        for point in local_points.iter().flatten() {
+            min = Vector3::new(min.x.min(point.x), min.y.min(point.y), min.z.min(point.z));
+            max = Vector3::new(max.x.max(point.x), max.y.max(point.y), max.z.max(point.z));
+        }
+        let local_center = scale(add(min, max), 0.5);
+        let half_extents = scale(sub(max, min), 0.5);
+        let volume = 8.0 * half_extents.x * half_extents.y * half_extents.z;
+        let properties = primitive_mass_properties(
+            skate_core::physics::mass::PartMassInput {
+                shape: skate_core::physics::mass::MassShape::RoundedBox {
+                    half_extents,
+                    radius: 0.0,
+                },
+                requested_mass: volume * authored.density.max(0.001),
+            },
+            RETAIL_UNBOUNDED_VELOCITY,
+            authored.angular_damping,
+        )?;
+        let mut inertia = properties.dynamics;
+        inertia.linear_drag = authored.linear_damping;
+        inertia.maximum_linear_velocity = RETAIL_UNBOUNDED_VELOCITY;
+        let origin = Vector3::new(t[9], t[10], t[11]);
+        let center = add(origin, mul_basis(basis, local_center));
+        Some(PropBody {
+            instance,
+            id,
+            local_center,
+            half_extents,
+            template: template.to_string(),
+            type_data: None,
+            grab_splines: Vec::new(),
+            tuning: PropTuning::default(),
+            authored_center: local_center,
+            authored_half_extents: half_extents,
+            axis_scale: Vector3::new(axis_scale[0], axis_scale[1], axis_scale[2]),
+            stuck_ticks: 0,
+            pushed_by: None,
+            baked: None,
+            contacts: 0,
+            rest_y: center.y,
+            spawn_origin: origin,
+            spawn_basis: basis,
+            commanded: false,
+            commanded_block: false,
+            upright_timer: None,
+            rates: RetailBodyRates {
+                orientation: quaternion_from_basis(basis),
+                basis,
+                world_inverse_inertia: world_inverse_inertia(basis, inertia.inverse_tensor),
+                position: center,
+                linear_velocity: Vector3::ZERO,
+                angular_velocity: Vector3::ZERO,
+                force_acceleration: scale(
+                    simulation.gravity_acceleration,
+                    authored.gravity_scale,
+                ),
+                torque_acceleration: Vector3::ZERO,
+                kinetic_energy: 0.0,
+                cool_down: simulation.cool_down,
+            },
+            inertia,
+            authored_inertia: inertia,
+            material: RetailContactMaterial {
+                static_friction: authored.friction,
+                dynamic_friction: authored.friction,
+                restitution: authored.restitution,
+            },
+            enable_sleep: authored.enable_sleep,
+            asleep: !authored.initially_awake,
+            runtime: false,
+            physics: authored,
+        })
     }
 
     /// Move Object command rules in effect.
@@ -1167,22 +1317,28 @@ impl PropDynamics {
             if tuning == body.tuning {
                 continue;
             }
-            let origin = body.origin();
-            let (center, half) = match tuning.collision_box {
-                Some(override_box) => (
-                    mul_components(override_box.center, body.axis_scale),
-                    mul_components(override_box.half_extents, body.axis_scale),
-                ),
-                None => (body.authored_center, body.authored_half_extents),
-            };
-            body.local_center = center;
-            body.half_extents = Vector3::new(half.x.abs(), half.y.abs(), half.z.abs());
-            body.rates.position = add(origin, mul_basis(body.rates.basis, center));
-            body.tuning = tuning;
-            body.stuck_ticks = 0;
+            Self::apply_tuning(body, tuning);
             body.wake();
         }
         self.tuning = table;
+    }
+
+    /// Give one body its prop type's tuning: `collision_box` moves the box
+    /// centre so the template origin stays where it is.
+    fn apply_tuning(body: &mut PropBody, tuning: PropTuning) {
+        let origin = body.origin();
+        let (center, half) = match tuning.collision_box {
+            Some(override_box) => (
+                mul_components(override_box.center, body.axis_scale),
+                mul_components(override_box.half_extents, body.axis_scale),
+            ),
+            None => (body.authored_center, body.authored_half_extents),
+        };
+        body.local_center = center;
+        body.half_extents = Vector3::new(half.x.abs(), half.y.abs(), half.z.abs());
+        body.rates.position = add(origin, mul_basis(body.rates.basis, center));
+        body.tuning = tuning;
+        body.stuck_ticks = 0;
     }
 
     /// Restore the shipped defaults (mod disable).
@@ -1255,6 +1411,13 @@ impl PropDynamics {
             .collect();
         out.sort_by_key(|b| b.0);
         out
+    }
+
+    /// One body's box centre, basis, half extents, linear and angular velocity and effective inertia (a solid proxy
+    /// in the skater's contact solve).
+    pub(crate) fn body_state(&self, id: u32) -> Option<(Vector3, Basis3, Vector3, Vector3, Vector3, RetailInertiaDynamics)> {
+        let b = self.bodies.get(*self.by_id.get(&id)?)?;
+        Some((b.rates.position, b.rates.basis, b.half_extents, b.rates.linear_velocity, b.rates.angular_velocity, b.inertia))
     }
 
     /// World position of one body's box centre.
@@ -1642,6 +1805,7 @@ impl PropDynamics {
         let mut ids: Vec<u32> = self
             .bodies
             .iter()
+            .filter(|b| !b.runtime)
             .filter(|b| {
                 let o = b.origin();
                 let d = sub(o, b.spawn_origin);
@@ -1667,6 +1831,9 @@ impl PropDynamics {
     /// fade, is not decoded yet: NOT RETAIL YET, an instant teleport). Returns the
     /// collision instance so the caller can rebake its triangles.
     pub(crate) fn reset_to_spawn(&mut self, id: u32) -> Option<usize> {
+        if self.is_runtime(id) {
+            return None;
+        }
         let (origin, basis) = self.spawn_pose(id)?;
         if self.held == Some(id) {
             self.set_held(None);
@@ -2569,6 +2736,101 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!((hit.geometry.position.y - (REST_Y + 0.5)).abs() < 0.1);
+    }
+
+    /// Template-space triangles of a box with half extents `half` (outward winding).
+    fn box_triangles(half: f32) -> Vec<[Vector3; 3]> {
+        let c = [
+            [-1., -1., -1.], [1., -1., -1.], [1., -1., 1.], [-1., -1., 1.],
+            [-1., 1., -1.], [1., 1., -1.], [1., 1., 1.], [-1., 1., 1.],
+        ]
+        .map(|c: [f32; 3]| Vector3::new(c[0] * half, c[1] * half, c[2] * half));
+        [[4, 7, 6], [4, 6, 5], [0, 1, 2], [0, 2, 3], [1, 5, 6], [1, 6, 2], [0, 7, 4], [0, 3, 7], [3, 2, 6], [3, 6, 7], [0, 5, 1], [0, 4, 5]]
+            .map(|f: [usize; 3]| f.map(|i| c[i]))
+            .to_vec()
+    }
+
+    fn thrown(origin: Vector3, velocity: Vector3) -> RuntimeProp {
+        RuntimeProp {
+            template: "template/can".into(),
+            local: box_triangles(0.5),
+            physics: Default::default(),
+            type_data: None,
+            origin,
+            basis: Basis3 { columns: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]] },
+            linear_velocity: velocity,
+            angular_velocity: Vector3::ZERO,
+        }
+    }
+
+    fn spawn(layer: &mut crate::skate_world::PropCollisionLayer, dynamics: &mut PropDynamics, spec: &RuntimeProp) -> u32 {
+        let id = dynamics.next_runtime_id();
+        let instance = layer.add_instance(id, spec.local.clone(), 0, spec.basis.columns, spec.origin).unwrap();
+        assert!(dynamics.spawn_body(instance, id, spec));
+        id
+    }
+
+    /// A prop created mid-game on a map without placed props flies with its
+    /// throw velocity, lands, sleeps and collides like a map prop; it has no
+    /// authored pose (not "moved", no reset); removing it parks its triangles
+    /// and the next prop of the same size reuses the slot.
+    #[test]
+    fn runtime_prop_is_thrown_lands_and_is_removed() {
+        let world = super::super::ground::Terrain::Flat.world(floor_material());
+        let mut layer = crate::skate_world::PropCollisionLayer::empty(floor_material()).unwrap();
+        let mut dynamics = PropDynamics::empty(simulation());
+        let id = spawn(&mut layer, &mut dynamics, &thrown(Vector3::new(0., REST_Y + 2., 0.), Vector3::new(3., 2., 0.)));
+        assert_eq!(id, RUNTIME_PROP_ID_BASE);
+        assert!(dynamics.is_runtime(id));
+        dynamics.step(&world, &mut layer, &[]);
+        assert!(dynamics.position_of(id).unwrap().x > 0.0, "throw velocity carries it");
+        for _ in 0..400 {
+            dynamics.step(&world, &mut layer, &[]);
+        }
+        let (origin, _) = dynamics.pose(id).unwrap();
+        let body = &dynamics.bodies[0];
+        assert!(body.asleep, "landed prop sleeps: {:#?}", body.rates);
+        assert!(origin.x > 1.0, "landed down range: {origin:?}");
+        assert!((body.rates.position.y - REST_Y).abs() < 0.1, "resting height {}", body.rates.position.y);
+        let probe = |layer: &crate::skate_world::PropCollisionLayer| {
+            layer.world().query_thin_line(Vector3::new(origin.x, REST_Y + 5., origin.z), Vector3::new(origin.x, REST_Y - 1., origin.z)).unwrap()
+        };
+        let hit = probe(&layer).expect("its triangles are rebaked where it landed");
+        assert!((hit.geometry.position.y - (REST_Y + 0.5)).abs() < 0.1);
+        assert!(dynamics.moved_ids().is_empty(), "a runtime prop has no authored pose");
+        assert_eq!(dynamics.reset_to_spawn(id), None);
+
+        let triangles = layer.world().triangles().len();
+        let instance = dynamics.remove_body(id).unwrap();
+        layer.retire_instance(instance, HELD_PARK).unwrap();
+        assert!(dynamics.pose(id).is_none() && !dynamics.is_runtime(id));
+        assert!(probe(&layer).is_none(), "removed prop no longer collides");
+        assert!(layer.retire_instance(instance, HELD_PARK).is_err(), "retired once");
+
+        let again = spawn(&mut layer, &mut dynamics, &thrown(Vector3::new(5., REST_Y + 1., 0.), Vector3::ZERO));
+        assert_ne!(again, id);
+        assert_eq!(layer.world().triangles().len(), triangles, "same-size slot reused");
+        assert_eq!(dynamics.instance_of(again), Some(instance));
+    }
+
+    /// Map props are never removed by the runtime path, and adding a runtime
+    /// prop leaves the map prop's body and triangles as they were.
+    #[test]
+    fn runtime_spawn_keeps_map_props() {
+        let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 0.]);
+        let before: Vec<_> = layer.world().triangles().iter().map(|t| (t.triangle.vertices, t.tag)).collect();
+        let pose = dynamics.pose(7);
+        let id = spawn(&mut layer, &mut dynamics, &thrown(Vector3::new(10., REST_Y + 1., 0.), Vector3::ZERO));
+        let after: Vec<_> = layer.world().triangles()[..before.len()].iter().map(|t| (t.triangle.vertices, t.tag)).collect();
+        assert_eq!(after, before);
+        assert_eq!(dynamics.pose(7), pose);
+        assert_eq!(dynamics.remove_body(7), None);
+        assert!(layer.retire_instance(0, HELD_PARK).is_err());
+        for _ in 0..240 {
+            dynamics.step(&world, &mut layer, &[]);
+        }
+        assert!(dynamics.pose(id).is_some());
+        assert_eq!(dynamics.moved_ids(), Vec::<u32>::new());
     }
 
     /// A moving skater sphere wakes a resting prop and pushes it sideways.

@@ -314,6 +314,10 @@ pub(crate) fn advance(
             biped_correction: contact.active.then_some(contact.direction),
         },
     ) {
+        // An AI's own value (controller B's OB_Mag) wins over the neutral pad's.
+        if controls.ai_driven && controls.action_intents.contains_key(intent.name) {
+            continue;
+        }
         action_intents.insert(intent.name, intent.value);
     }
     for intent in skate_core::input::offboard_intentions::produce_discrete(

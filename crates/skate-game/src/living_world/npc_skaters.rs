@@ -202,6 +202,9 @@ pub(crate) enum NpcSkaterEvent {
     Bail { id: LivingWorldId, respawn_seconds: f32 },
     /// The bail respawn placed it back on its line at `node`.
     Respawned { id: LivingWorldId, node: u32 },
+    /// Mode 7: controller B (NavMeshController) starts walking the skater back to a line node, or hands back
+    /// to the line controller there (`started` false).
+    WalkBack { id: LivingWorldId, node: u32, started: bool },
     /// The obstacle avoider changed mode (target: obstacle kind and id).
     Avoid { id: LivingWorldId, mode: skate_core::living_world::avoid::AvoidMode, target: Option<(skate_core::living_world::avoid::ObstacleKind, u64)> },
 }

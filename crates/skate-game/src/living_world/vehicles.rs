@@ -1045,6 +1045,7 @@ pub(crate) fn install(app: &mut App) {
             FixedUpdate,
             (
                 push_vehicle_proxies.after(crate::multiplayer::prepare),
+                super::ped_hand_props::push_hand_prop_proxies.after(push_vehicle_proxies),
                 push_vehicle_grab_splines,
             )
                 .after(crate::app::SimulationSet::Controls)

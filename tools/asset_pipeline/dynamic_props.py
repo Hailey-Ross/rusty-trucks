@@ -229,6 +229,24 @@ def mobj_extension(records, ranges):
     return bytes(out)
 
 
+def hotpoint_props(instance_id, template_id, transform, hotpoints, classes):
+    """Each hotpoint with a plugin class as one waypoint group (`82C4E128`) at the prop's initial placement: the
+    model-frame point and facing axis (row 2) through the same row-vector transform as the prop's geometry."""
+    result = []
+    for index, h in enumerate(hotpoints):
+        cls = classes.get(str(h['type']), classes.get('default'))
+        if cls in (None, 'root'):
+            continue
+        position = (np.array([*h['position'], 1.0]) @ transform)[:3]
+        facing = (np.array([*h['axes'][2], 0.0]) @ transform)[:3]
+        length = float(np.hypot(facing[0], facing[2]))
+        if length < 1e-6:
+            raise ValueError('Hotpoint facing has no horizontal direction')
+        result.append({'instance_id': instance_id, 'template_id': template_id, 'index': index, 'type': h['type'], 'class': cls,
+                       'position': position.tolist(), 'facing': [float(facing[0] / length), 0.0, float(facing[2] / length)]})
+    return result
+
+
 def export(manifest_path, cache_roots, output, *, catalog_path=None):
     district = json.loads(manifest_path.read_text())
     templates, textures = catalog(cache_roots) if catalog_path is None else load_catalog(catalog_path)
@@ -243,7 +261,10 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
                 raise ValueError('Conflicting DMO locator '+key)
             placements[key] = item
     report = dict(map=district['map_name'], instances=[], unresolved=[], simulation='initial placement only',
-                  types={}, grab_splines={})
+                  types={}, grab_splines={}, hotpoints={}, hotpoint_classes={}, plugin_props=[])
+    # Ped plugin hotpoints per template (parkassets.big, `hotpoint_data`), written by prepare_catalog beside the catalog.
+    hotpoint_file = Path(catalog_path).parent/'hotpoints.json' if catalog_path is not None else None
+    hotpoint_table = json.loads(hotpoint_file.read_text()) if hotpoint_file is not None and hotpoint_file.is_file() else {}
     with tempfile.TemporaryDirectory(prefix='skate-dmo-') as work:
         root = Path(work); models = []; records = []; used = set(); positions = {}
         for item in placements.values():
@@ -274,6 +295,10 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
                 report['types'][key] = template['characteristics']
             if template.get('grab_splines'):
                 report['grab_splines'][key] = template['grab_splines']
+            if key in hotpoint_table.get('hotpoints', {}):
+                report['hotpoints'][key] = hotpoint_table['hotpoints'][key]
+                report['hotpoint_classes'] = hotpoint_table['classes']
+                report['plugin_props'].extend(hotpoint_props(item['instance_id'], key, transform, hotpoint_table['hotpoints'][key], hotpoint_table['classes']))
         if models:
             manifest = dict(map_name=district['map_name'], district_name=district['district_name'],
                 models=models, textures={key:textures[key] for key in sorted(used)},
@@ -307,6 +332,9 @@ def prepare_catalog(game_root, work):
                 district_name=stream.name, map_name=stream.name, raw_texture_cache=True)
         roots.append(root)
     save_catalog(roots, work/'catalog.json')
+    # Ped plugin hotpoints (seats, bins, newspaper boxes) live in parkassets.big, not in worlddmo.big.
+    from .hotpoint_data import CLASSES, parkassets_hotpoints
+    (work/'hotpoints.json').write_text(json.dumps(dict(classes=CLASSES, hotpoints=parkassets_hotpoints(game_root))))
     return roots
 
 

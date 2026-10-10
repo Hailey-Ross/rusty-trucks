@@ -187,11 +187,13 @@ fn living_world_ped_motion_follows_from_the_record_and_tick_at_any_frame_rate() 
             player: PedAnimPlayer::new(set, 77).unwrap(),
             path: skate_core::living_world::peds::anim::TestPath::new(77), nav: Default::default(), blocked: 0.0,
             position: Vec3::new(3.0, 0.0, 10.0),
+            velocity: Vec3::ZERO,
             heading: 0.5,
             ticks: 0,
             feet_down: [false; 2],
             body_fall: 0.0,
             taunt: Default::default(),
+            plugin_motion: Default::default(),
         };
         for _ in 0..ticks {
             body.player.intent = body.path.intent(tick_seconds(60.0), body.player.state);
@@ -256,11 +258,13 @@ fn living_world_ped_mod_overrides_and_render_helpers() {
         player: PedAnimPlayer::new(&d.anim_sets["default"], 1).unwrap(),
         path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0,
         position: Vec3::ZERO,
+        velocity: Vec3::ZERO,
         heading: 0.0,
         ticks: 0,
         feet_down: [false; 2],
         body_fall: 0.0,
         taunt: Default::default(),
+        plugin_motion: Default::default(),
     };
     let g = ped_globals(&d.rig, &body, &d, 0.0, &f).unwrap();
     assert!((g[1].w_axis.y - 0.92).abs() < 1e-5);
@@ -315,12 +319,19 @@ fn living_world_ped_data_loads_from_the_export() {
     let d = PedData::load(&root);
     eprintln!("{}", d.status);
     assert!(d.ready(), "{}", d.status);
+    // The hand prop attach bone (b87 / b89; right hand: every carry channel is *RH).
+    assert_eq!(d.rig.names.iter().position(|n| n.eq_ignore_ascii_case("RightHandProp")), Some(26));
     assert!(d.clips.len() > 50);
     let look = d.catalog.choose("aletown", 1, &PedOverrides::default()).unwrap();
     let set = &d.anim_sets[&look.anim_set];
-    let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default() };
+    let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, velocity: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default(), plugin_motion: Default::default() };
     let g = ped_globals(&d.rig, &body, &d, 0.0, &[]).unwrap();
     assert!((0.8..1.1).contains(&g[1].w_axis.y), "hips height {}", g[1].w_axis.y);
+    // The hand prop bone hangs off the right hand, a few centimetres away (rig reference local).
+    assert_eq!(d.rig.parents[26], 12);
+    let gap = g[26].w_axis.truncate().distance(g[12].w_axis.truncate());
+    eprintln!("RIGHTHANDPROP to RIGHTHAND {gap:.3} m");
+    assert!(gap < 0.2, "hand prop bone {gap} m from the hand");
 }
 
 /// Visual check helper (no window): with `SKATE_PED_POSE_DUMP=<file.json>` and the data roots,
@@ -356,7 +367,7 @@ fn living_world_ped_pose_dump_for_a_render_check() {
         "bones": reference.iter().map(|m| m.to_cols_array().to_vec()).collect::<Vec<_>>()})];
     for (set_name, model) in &looks {
         let set = &d.anim_sets[set_name];
-        let mut body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default() };
+        let mut body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, velocity: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default(), plugin_motion: Default::default() };
         // Scripted intents: idle 0.5 s, walk to 4 s, stop, turn right, then turn left.
         let mut captures: Vec<(u32, String)> = Vec::new();
         let mut turned = 0;
@@ -638,11 +649,13 @@ fn standing_body(at: Vec3) -> PedBody {
         nav: Default::default(),
         blocked: 0.0,
         position: at,
+        velocity: Vec3::ZERO,
         heading: 0.0,
         ticks: 0,
         feet_down: [false; 2],
         body_fall: 0.0,
         taunt: Default::default(),
+        plugin_motion: Default::default(),
     }
 }
 
@@ -855,5 +868,25 @@ fn living_world_ped_plugin_graphs_load() {
         let path = format!("private/stock/data/state/livingworldentities/pedestrian/plugin/{name}.stategraph");
         let g = super::ped_graph::PedGraph::load(&root, &path).unwrap_or_else(|e| panic!("{name}: {e}"));
         eprintln!("plugin {name}: {} behaviours, {} conditions, pending {:?}", g.behaviors.len(), g.conditions.len(), g.pending());
+    }
+}
+
+/// Where the placed plugin waypoints sit against the navmesh: the horizontal gap from each waypoint to its located
+/// navmesh point (a waypoint off the mesh cannot be reached by the route; the template's slide covers 1 m).
+#[test]
+#[ignore = "requires the installed living-world export (SKATE3_ASSET_ROOT)"]
+fn placed_plugin_waypoints_against_the_navmesh() {
+    let root = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let plugins = super::ped_plugins::PluginData::load(&root).unwrap();
+    for (district, props) in &plugins.placed {
+        let mut d = PedData::default();
+        d.load_nav(&root, district, &Default::default());
+        let Some(mesh) = d.nav.clone() else { continue };
+        for p in props {
+            for w in &p.waypoints {
+                let gap = mesh.locate(w.position).map(|n| ((n.position[0] - w.position[0]).powi(2) + (n.position[2] - w.position[2]).powi(2)).sqrt());
+                eprintln!("PLUGIN_WP {district} {} {:016X} at [{:.2}, {:.2}, {:.2}] mesh gap {:?}", p.class, p.id, w.position[0], w.position[1], w.position[2], gap.map(|g| (g * 100.0).round() / 100.0));
+            }
+        }
     }
 }

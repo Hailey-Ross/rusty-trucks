@@ -141,6 +141,14 @@ pub mod names {
         "WipeoutLeftFall", "WipeoutLeftGroundCyc", "WipeoutLeftGetUp",
         // motiongraph_taunt.
         "Taunt",
+        // The plugin states (`super::plugin_motion`): sit, ATM, vending machine, water fountain, newspaper box.
+        "Stand2Sit", "SitIdleCyc", "Sit2Stand", "ATMInsertCard", "ATMMakeSelection", "ATMCollectMoney", "ATMCollectCard",
+        "VendInsert", "VendSelect", "VendCollect", "WaterFountainInto", "WaterFountainCyc", "WaterFountainOut", "NewspaperCollect",
+        // The light hand prop throw (`super::hand_prop::light_throw_clip`).
+        "HandPropThrowLightForward", "HandPropThrowLightL45", "HandPropThrowLightL90", "HandPropThrowLightR180",
+        "HandPropThrowLightR90", "HandPropThrowLightR45",
+        // The attack throw (`super::hand_prop::attack_throw_clip`).
+        "HandPropAttackThrow", "HandPropAttackThrowLeft", "HandPropAttackThrowRight",
     ];
 }
 
@@ -323,12 +331,27 @@ impl PedAnimPlayer {
         true
     }
 
+    /// Release a held cycle step (a plugin state's `HasIntent <next stage>` transition): it ends now.
+    pub fn release_hold(&mut self) {
+        if let Some(r) = self.reaction.as_mut() {
+            if r.steps[r.index].cycle {
+                r.ground_left = 0.0;
+            }
+        }
+    }
+
+    /// Whether a reaction (or plugin sequence) is running.
+    pub fn reacting(&self) -> bool {
+        self.reaction.is_some()
+    }
+
     /// The running reaction's current logical animation, if any.
     pub fn reaction_anim(&self) -> Option<&'static str> {
         self.reaction.as_ref().map(|r| r.steps[r.index].anim)
     }
 
-    fn in_branch_window(&self) -> bool {
+    /// The current clip is in a branch window (`InTurnBranchWindow`; a clip without windows always is).
+    pub fn in_branch_window(&self) -> bool {
         self.current.windows.is_empty() || self.current.windows.iter().any(|&(s, e, tag)| tag != 0 && self.current.time >= s && self.current.time <= e)
     }
 

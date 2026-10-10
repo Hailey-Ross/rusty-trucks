@@ -419,3 +419,36 @@ fn a_knock_down_falls_lies_for_the_ground_time_gets_up_and_walks_on() {
     assert!(log.iter().skip(getup).any(|(s, _)| *s != Locomotion::Reaction), "back to locomotion after the get-up");
     assert_eq!(p.reaction_anim(), None);
 }
+
+/// The sit plugin state (`motiongraph_sit.xml` via `plugin_motion`): Stand2Sit, then SitIdleCyc held for as long as the
+/// packet stays on its first stage, then (released on StandUp) Sit2Stand and back to locomotion.
+#[test]
+fn a_sitting_ped_holds_the_idle_until_released_then_stands_up() {
+    use super::plugin_motion::{motion_for, BLEND};
+    use super::skater_contact::ReactionStep;
+    let (_, mut set, mut clips) = fixture();
+    let r = |c: &str| vec![RemapClip { clip: c.into(), windows: vec![] }];
+    for (name, frames, looping) in [("SITDOWN", 31, false), ("SITIDLE", 21, true), ("STANDUP", 31, false)] {
+        clips.insert(name.into(), clip(name, frames, 0.0, 0.0, looping, 0.0, vec![]));
+    }
+    set.entries.insert("Stand2Sit".into(), r("SITDOWN"));
+    set.entries.insert("SitIdleCyc".into(), r("SITIDLE"));
+    set.entries.insert("Sit2Stand".into(), r("STANDUP"));
+    let m = motion_for("Sit").unwrap();
+    let steps = m.steps.iter().map(|s| ReactionStep { anim: s.anim, mirror: false, blend: BLEND, cycle: s.hold_until.is_some() }).collect();
+    let mut p = PedAnimPlayer::new(&set, 3).unwrap();
+    assert!(p.react(&set, steps, f32::INFINITY));
+    let dt = 1.0 / 60.0;
+    for _ in 0..600 {
+        p.step(dt, &set, &clips);
+    }
+    assert_eq!(p.current_clip(), "SITIDLE", "still seated after 10 s");
+    p.release_hold();
+    let mut log = Vec::new();
+    for _ in 0..120 {
+        p.step(dt, &set, &clips);
+        log.push(p.current_clip().to_owned());
+    }
+    assert!(log.iter().any(|c| c == "STANDUP"));
+    assert!(!p.reacting(), "the run ended after the stand-up");
+}

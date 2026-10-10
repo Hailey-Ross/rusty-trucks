@@ -366,6 +366,77 @@ impl GamePhysics {
         true
     }
 
+    /// Create a prop body mid-game (a released hand prop, a mod's prop): collision triangles in
+    /// the prop layer plus an awake body at the spec's pose and velocities, stepped, pushed and
+    /// rebaked like a map prop. Works on maps without placed props (the layer starts empty).
+    /// The single authority for runtime props; `None` when this context does not own the props
+    /// or the spec gives no body. Returns the body id; a render entity with
+    /// `PropInstance { id }` follows it (`sync_prop_transforms`).
+    pub(crate) fn spawn_runtime_prop(&mut self, spec: &prop_dynamics::RuntimeProp, surface: u32) -> Option<u32> {
+        if !self.owns_props {
+            return None;
+        }
+        if self.prop_layer.is_none() {
+            match crate::skate_world::PropCollisionLayer::empty(self.settings.floor_material) {
+                Ok(layer) => self.prop_layer = Some(layer),
+                Err(error) => {
+                    warn!("SKATE_PROP_SPAWN: empty layer: {error}");
+                    return None;
+                }
+            }
+        }
+        if self.prop_dynamics.is_none() {
+            self.prop_dynamics =
+                Some(prop_dynamics::PropDynamics::empty(prop_dynamics::prop_simulation(self.settings.step.simulation)));
+        }
+        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut()) else {
+            return None;
+        };
+        let id = dynamics.next_runtime_id();
+        let instance = match layer.add_instance(id, spec.local.clone(), surface, spec.basis.columns, spec.origin) {
+            Ok(instance) => instance,
+            Err(error) => {
+                warn!("SKATE_PROP_SPAWN: {}: {error}", spec.template);
+                return None;
+            }
+        };
+        if !dynamics.spawn_body(instance, id, spec) {
+            if let Err(error) = layer.retire_instance(instance, prop_dynamics::HELD_PARK) {
+                warn!("SKATE_PROP_SPAWN: retire {id}: {error}");
+            }
+            warn!("SKATE_PROP_SPAWN: {}: no body", spec.template);
+            return None;
+        }
+        info!("SKATE_PROP_SPAWN id={id} template={} instance={instance}", spec.template);
+        Some(id)
+    }
+
+    /// A runtime prop spec copying prop `from` (template, collision triangles, physics block,
+    /// type data) plus its packed surface, for [`Self::spawn_runtime_prop`] (mods' copies).
+    pub(crate) fn runtime_copy_of(&self, from: u32) -> Option<(prop_dynamics::RuntimeProp, u32)> {
+        let (layer, dynamics) = (self.prop_layer.as_ref()?, self.prop_dynamics.as_ref()?);
+        let mut spec = dynamics.copy_spec(from)?;
+        let entry = layer.instances().get(dynamics.instance_of(from)?)?;
+        spec.local = entry.local_points().to_vec();
+        let surface = layer.world().triangles().get(entry.range.start)?.tag;
+        Some((spec, surface))
+    }
+
+    /// Remove a prop created with [`Self::spawn_runtime_prop`] (retail removes a released hand
+    /// prop's DMO); its collision slot is parked for reuse. Refused (false) for map props and
+    /// unknown ids. The single authority for removals.
+    pub(crate) fn remove_runtime_prop(&mut self, id: u32) -> bool {
+        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut()) else {
+            return false;
+        };
+        let Some(instance) = dynamics.remove_body(id) else { return false };
+        if let Err(error) = layer.retire_instance(instance, prop_dynamics::HELD_PARK) {
+            warn!("SKATE_PROP_REMOVE: retire {id}: {error}");
+        }
+        info!("SKATE_PROP_REMOVE id={id}");
+        true
+    }
+
     /// Upright ONE object (retail cMsgUprightDMO, doc 27 "Upright"): the phone's per-object
     /// Upright posts it and the DMO manager slot +40 (82C4B8C0) opens the DMO's 2 s
     /// self-righting window; the prop step then turns the body back toward world up through the
@@ -634,6 +705,7 @@ impl GamePhysics {
         ai_intents: &[(String, f32)],
     ) -> Result<(), String> {
         self.swap_skater_context(context);
+        controls.ai_driven = true;
         let mut actions = skate_core::input::tick::TickInput::new(0, skate_core::input::gameplay_map::GameplayActions::from_values([0.0; 18]), true).actions();
         let result = controls.update_for_physics(&mut actions, self, skater, camera).and_then(|()| {
             // The AI's ActionGraph signals (`skate_core::living_world::ai_signals`) go where the

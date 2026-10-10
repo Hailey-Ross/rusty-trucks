@@ -539,3 +539,28 @@ fn volume_query_shape_bounds_follow_the_retail_bounds_slots() {
     assert_eq!(b.min.y.to_bits(), (-ey).to_bits());
     assert_eq!(b.max.z.to_bits(), (0.2f32 + 0.03).to_bits());
 }
+
+/// A prop body created mid-game: appended triangles are found by queries, keep
+/// their tag and surface, and the existing triangles and meshes are unchanged.
+#[test]
+fn appended_triangles_are_queried_and_existing_ones_kept() {
+    let mut world = annotated(vec![face(0., 1, 0.), face(10., 2, 0.)]);
+    fn world_line(x: f32) -> (Vector3, Vector3) {
+        (Vector3::new(x - 1., 1., 0.), Vector3::new(x - 1., -1., 0.))
+    }
+    let (start, end) = world_line(50.);
+    assert!(world.query_thin_line(start, end).unwrap().is_none());
+    let meshes_before = world.query_metadata().unwrap().meshes.len();
+    let range = world.append_triangles(&[face(50., 9, 0.)], &[23]).unwrap();
+    assert_eq!(range, 2..3);
+    let hit = world.query_thin_line(start, end).unwrap().expect("appended face is queried");
+    assert_eq!(hit.tag, 9);
+    let metadata = world.query_metadata().unwrap();
+    assert_eq!(metadata.packed_surfaces, [17, 17, 23]);
+    assert_eq!(metadata.meshes.len(), meshes_before + 1);
+    assert_eq!(metadata.meshes[meshes_before].triangle_range, 2..3);
+    metadata.validate(world.triangles()).unwrap();
+    let (start, end) = world_line(0.);
+    assert_eq!(world.query_thin_line(start, end).unwrap().unwrap().tag, 1);
+    assert!(world.append_triangles(&[face(60., 9, 0.)], &[]).is_err(), "surface count must match");
+}
