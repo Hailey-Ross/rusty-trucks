@@ -631,3 +631,34 @@ are applied as in the world-object loop (whether the skitch query takes the box 
 **Open.** The riding skitch query (`82D39BB8`) that submits mode 255 and latches a car, state 104's handler, the car
 side (held flag, tow reaction), flag `0x83082929` (which maps take the DMO path).
 
+## Skitching step 3: the riding skitch query (2026-10-09)
+
+**Retail [code] (`.local/research/npc/b33-skitch-wiring.md` section 2; main read the ground update branch, the box
+flag of `82D2E250` and the query constants).**
+- The ground update `82D37C88` branches on Processed `+2476` bit 22 (the grab input): set, it runs the skitch query
+  `82D39BB8`; clear, it invalidates the grab owner (`82D749D0`). Our ground update always invalidated.
+- The query box is `82D2E250(frame +192, (0, 0.86, 0), (0.48, 0.45, 2.0), out, true)`: with the flag set the box
+  keeps the frame's own forward (row 2, not flattened), right = row 0 flattened and normalised, up = forward x right,
+  placed at the origin + forward x (offset z + extent z) + up x offset y (so it reaches 2 m ahead).
+- When the owner's validated results are ready (`+12836` bit 0x40) the latch `82D39D98` walks them: orients the
+  endpoints, CanGrabSpline, the re-grab cooldown (Processed `+2848` / `+2592`), the time to the spline
+  `max(0, (dot(P - pos, fwd) - 1.0) / max(dot(vSkater - vCar, fwd), 0.5))`, a bind per candidate, and the latch
+  (`+2729`, `+2560` type, `+2564` id) on the first one under 0.1 s.
+- It always submits `82D74200(owner, 255, pos, box, ...)` with margin 0.25 (`0x820991A0`) and the angles 60 / 30
+  degrees (`0x8209919C` / `0x82099198` x the degree constant `0x8206D110`), cap 5. Mode 255 reaches the cars.
+
+**Change.** skate-core `ground_sync::skitch_bounds` (the flag-true box), `SkitchQuerySettings` gains the limits and
+cap, candidate ids are u32 (+192). skate-game `ground_runtime::skitch` (`query_shape`, `latch`, `query`), the ground
+update calls it instead of the invalidate while bit 22 is set, `GroundSettings.skitch` reads the reach and latch time
+from `physics_state_skitching` (retail values as defaults), the grab owner exposes its validated records.
+
+**Engine choices.** The latch is computed but NOT written yet (`skitch::LATCH_ENABLED = false`): it would make the
+selector request state 104, which the registry still refuses (the transition returns an error). NOT RETAIL YET:
+type-2 world objects are not latched (their box `82D2CF68` is not decoded), the spline point is the closest point of
+the endpoint chord, `+2668` stays 0 and `82D91298(state+28, 2)` is not called.
+
+**Verification.** skate-game `the_box_reaches_two_metres_ahead_along_the_frame_forward`,
+`a_close_car_latches_and_a_farther_one_only_binds` (time 0.5 s binds, 0.05 s latches, the cooldown skips the last
+car only), `world_objects_are_not_latched_yet`. Not run in game (the riding grab now submits a query each frame;
+regression check pending).
+

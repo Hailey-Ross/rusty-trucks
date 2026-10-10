@@ -196,11 +196,18 @@ pub struct SkitchQuerySettings {
     pub min_closing: f32,
     /// Latch when the time to the spline is below this (`424A1C69E0076DBB`, 0.1 s).
     pub latch_time: f32,
+    /// The query's CanGrabSpline limits (`82D39BB8` constants: margin 0.25 at `0x820991A0`, angles 60 and 30
+    /// degrees at `0x8209919C` / `0x82099198`, times the degree constant `0x8206D110`) and the result cap
+    /// (`82D74200` passes 5).
+    pub margin: f32,
+    pub angle_a_degrees: f32,
+    pub angle_b_degrees: f32,
+    pub capacity: usize,
 }
 
 impl Default for SkitchQuerySettings {
     fn default() -> Self {
-        Self { box_extents: [0.48, 0.45, 2.0], box_offset: [0.0, 0.86, 0.0], reach: 1.0, min_closing: 0.5, latch_time: 0.1 }
+        Self { box_extents: [0.48, 0.45, 2.0], box_offset: [0.0, 0.86, 0.0], reach: 1.0, min_closing: 0.5, latch_time: 0.1, margin: 0.25, angle_a_degrees: 60.0, angle_b_degrees: 30.0, capacity: 5 }
     }
 }
 
@@ -208,9 +215,9 @@ impl Default for SkitchQuerySettings {
 /// CanGrabSpline (`82E08DB8`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SkitchCandidate {
-    /// Entry +188 (type) and +196 (the object's stable id).
+    /// Entry +188 (type) and +192 (the spline's id; b34 corrects b27's +196, which is the geometry).
     pub kind: u32,
-    pub object: u64,
+    pub object: u32,
     /// Distance ahead of the skater along its forward axis, m, and the closing speed, m/s.
     pub ahead: f32,
     pub closing: f32,
@@ -220,7 +227,7 @@ pub struct SkitchCandidate {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SkitchLatch {
     pub kind: u32,
-    pub object: u64,
+    pub object: u32,
     pub time: f32,
 }
 
@@ -232,7 +239,7 @@ pub fn time_to_skitch(c: &SkitchCandidate, s: &SkitchQuerySettings) -> f32 {
 /// `sub_82D39D98`: the first candidate that latches. While the re-grab cooldown runs
 /// (Processed+2848 > 0) only a type-1 candidate on another object than the last skitched one
 /// (Processed+2592) counts.
-pub fn choose_skitch(candidates: &[SkitchCandidate], cooldown: f32, last_object: Option<u64>, s: &SkitchQuerySettings) -> Option<SkitchLatch> {
+pub fn choose_skitch(candidates: &[SkitchCandidate], cooldown: f32, last_object: Option<u32>, s: &SkitchQuerySettings) -> Option<SkitchLatch> {
     candidates.iter().find_map(|c| {
         if cooldown > 0.0 && !(c.kind == 1 && Some(c.object) != last_object) {
             return None;
