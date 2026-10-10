@@ -324,6 +324,7 @@ pub(crate) struct PedBody {
     /// The taunt clip (motiongraph_taunt): requested by TakedownTauntVictim, playing, finished (the brain then
     /// drops its "SGIntent").
     pub taunt: TauntClip,
+    pub plugin_motion: PluginMotionRun,
 }
 
 /// Where a ped's taunt clip is.
@@ -334,6 +335,15 @@ pub(crate) enum TauntClip {
     Requested,
     Playing,
     Done,
+}
+
+/// A plugin state's run on the motion side (`skate_core::living_world::peds::plugin_motion`): the packet it plays,
+/// its progress (the taunt's handshake) and a pending release of its held cycle.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PluginMotionRun {
+    pub packet: Option<String>,
+    pub state: TauntClip,
+    pub release: bool,
 }
 
 /// LivingWorldId -> entity.
@@ -589,7 +599,7 @@ pub(crate) fn apply_ped_records(
             tint_a: look.tint_a,
             tint_b: look.tint_b,
         };
-        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: TauntClip::None };
+        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: TauntClip::None, plugin_motion: PluginMotionRun::default() };
         let e = commands
             .spawn((
                 Name::new(format!("Pedestrian {} ({})", s.id.serial, look.recipe)),
@@ -671,6 +681,24 @@ pub(crate) fn advance_peds(
                     body.taunt = if body.player.react(set, vec![step], 0.0) { TauntClip::Playing } else { TauntClip::Done };
                 }
                 TauntClip::Playing if body.player.state != Locomotion::Reaction => body.taunt = TauntClip::Done,
+                _ => {}
+            }
+            // A plugin state's clips (sit, ATM, vending machine, water fountain, newspaper box).
+            let run = &mut body.plugin_motion;
+            match (run.state, run.packet.as_deref().and_then(skate_core::living_world::peds::plugin_motion::motion_for)) {
+                (TauntClip::Requested, Some(m)) if !body.player.reacting() => {
+                    use skate_core::living_world::peds::plugin_motion::BLEND;
+                    let steps = m.steps.iter().map(|st| skate_core::living_world::peds::skater_contact::ReactionStep { anim: st.anim, mirror: false, blend: BLEND, cycle: st.hold_until.is_some() }).collect();
+                    run.state = if body.player.react(set, steps, f32::INFINITY) { TauntClip::Playing } else { TauntClip::Done };
+                }
+                (TauntClip::Playing, _) => {
+                    if std::mem::take(&mut run.release) {
+                        body.player.release_hold();
+                    }
+                    if !body.player.reacting() {
+                        run.state = TauntClip::Done;
+                    }
+                }
                 _ => {}
             }
             // A skater running into the ped (retail `sub_82E38FB8` kind 5).
@@ -1560,8 +1588,38 @@ pub(crate) fn think_peds(
                     mind.plugin_state = None;
                 }
             }
-            // Packets whose motion state is not ported end at their last stage (the taunt clip ends its own).
-            mind.brain.settle_packets(&|name| name == "SGIntent");
+            // The motion side of the monitored packets (`82E29540`): a plugin state plays the front packet, releases its
+            // held cycle on the next stage intent and ends the packet when its clips are done (`IntentStageComplete`
+            // decrement, `MajorIntentComplete`); packets whose motion state is not ported end at their last stage.
+            {
+                use skate_core::living_world::peds::plugin_motion::motion_for;
+                let run = &mut body.plugin_motion;
+                match run.packet.clone() {
+                    None => {
+                        if let Some(name) = mind.brain.monitored.iter().find(|(n, p)| p.active && motion_for(n).is_some()).map(|(n, _)| n.clone()) {
+                            info!("PED_PLUGIN_MOTION ped=#{} {name} start tick={tick}", ped.id.serial);
+                            *run = PluginMotionRun { packet: Some(name), state: TauntClip::Requested, release: false };
+                        }
+                    }
+                    Some(name) => match mind.brain.monitored.get_mut(&name) {
+                        None => *run = PluginMotionRun::default(),
+                        Some(p) => {
+                            let m = motion_for(&name).expect("only plugin states start a run");
+                            if run.state == TauntClip::Done {
+                                if m.decrement && p.stage > 0 {
+                                    p.stage -= 1;
+                                }
+                                p.active = false;
+                                info!("PED_PLUGIN_MOTION ped=#{} {name} complete tick={tick}", ped.id.serial);
+                                *run = PluginMotionRun::default();
+                            } else if m.steps.iter().any(|st| st.hold_until.is_some() && st.hold_until == p.current()) {
+                                run.release = true;
+                            }
+                        }
+                    },
+                }
+            }
+            mind.brain.settle_packets(&|name| name == "SGIntent" || skate_core::living_world::peds::plugin_motion::motion_for(name).is_some());
             // Group changes, in the order the graph asked for them.
             for request in std::mem::take(&mut mind.brain.chase_requests) {
                 use skate_core::living_world::peds::brain::ChaseRequest;

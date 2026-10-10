@@ -36,6 +36,7 @@ pub mod flee;
 pub mod honk;
 pub mod mood;
 pub mod nav;
+pub mod plugin_motion;
 pub mod plugins;
 pub mod obstacles;
 pub mod skater_contact;

@@ -141,6 +141,9 @@ pub mod names {
         "WipeoutLeftFall", "WipeoutLeftGroundCyc", "WipeoutLeftGetUp",
         // motiongraph_taunt.
         "Taunt",
+        // The plugin states (`super::plugin_motion`): sit, ATM, vending machine, water fountain, newspaper box.
+        "Stand2Sit", "SitIdleCyc", "Sit2Stand", "ATMInsertCard", "ATMMakeSelection", "ATMCollectMoney", "ATMCollectCard",
+        "VendInsert", "VendSelect", "VendCollect", "WaterFountainInto", "WaterFountainCyc", "WaterFountainOut", "NewspaperCollect",
     ];
 }
 
@@ -321,6 +324,20 @@ impl PedAnimPlayer {
         }
         self.reaction = Some(ReactionRun { steps, index: 0, ground_left: ground_seconds });
         true
+    }
+
+    /// Release a held cycle step (a plugin state's `HasIntent <next stage>` transition): it ends now.
+    pub fn release_hold(&mut self) {
+        if let Some(r) = self.reaction.as_mut() {
+            if r.steps[r.index].cycle {
+                r.ground_left = 0.0;
+            }
+        }
+    }
+
+    /// Whether a reaction (or plugin sequence) is running.
+    pub fn reacting(&self) -> bool {
+        self.reaction.is_some()
     }
 
     /// The running reaction's current logical animation, if any.
