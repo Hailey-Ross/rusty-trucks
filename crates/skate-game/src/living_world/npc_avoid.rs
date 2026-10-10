@@ -43,6 +43,17 @@ pub(crate) struct NpcAvoid {
     /// Lateral offset of the drawn skater, metres right of the line, now and one tick back.
     pub offset: f32,
     pub previous_offset: f32,
+    /// The controller sub-mode state (`ctrl+568` ..., `skate_core::living_world::ai_controller`) and the line it
+    /// belongs to (a line change or the line's end resets it, `sub_82468AC8`; b70).
+    pub controller: skate_core::living_world::ai_controller::ControllerState,
+    pub controller_line: Option<[u8; 16]>,
+}
+
+impl NpcAvoid {
+    /// Controller sub-mode 4 (mode 6, a low prop): no speed shaping, no recorded node actions (b66).
+    pub fn low_prop(&self) -> bool {
+        self.controller.sub_mode == skate_core::living_world::ai_controller::sub_mode::LOW_PROP
+    }
 }
 
 impl NpcAvoid {
@@ -183,6 +194,12 @@ pub(crate) fn avoid(
         let a = &mut replay.avoid;
         a.previous_offset = a.offset;
         let (Some(sample), Some(line)) = (replay.last.clone(), lines.get(&replay.cursor.line)) else { continue };
+        // The node advance runs first (`sub_8246D3C0`): a new line or the line's end resets the sub-mode
+        // (`sub_82468AC8` writes 0 to +568; b70, main checked).
+        if a.controller_line != Some(replay.cursor.line) || replay.cursor.finished {
+            a.controller.sub_mode = skate_core::living_world::ai_controller::sub_mode::NORMAL;
+            a.controller_line = Some(replay.cursor.line);
+        }
         let node = &line.nodes[replay.cursor.node as usize];
         let riding = !replay.cursor.finished && node.flags & (node_flags::AIRBORNE | node_flags::OFF_BOARD) == 0 && replay.cursor.current_trick() < 0;
         let me_id = npc.id.to_u64();
@@ -200,7 +217,11 @@ pub(crate) fn avoid(
         let from = replay.cursor.node;
         let out = if riding { avoid::evaluate(&s, &mut a.state, &me, &near, &|p| project_on_line(line, from, p, s.radius_skater)) } else { AvoidOutput { own_speed: speed, cap: f32::MAX, ..Default::default() } };
         // Speed: hold the cursor back (cap) or let it catch up (floor), on the ground only.
-        if riding && speed > 1e-3 {
+        // Mode 6 enters sub-mode 4 (`sub_8246D560`), which skips the speed shape (`sub_82470830`).
+        if out.mode == AvoidMode::LowProp {
+            skate_core::living_world::ai_controller::enter_low_prop(&mut a.controller);
+        }
+        if riding && speed > 1e-3 && !a.low_prop() {
             let rate = out.shape_speed(speed, false) / speed;
             a.lag = (a.lag + (1.0 - rate) * super::npc_skaters::FRAMES_PER_TICK as f32).max(0.0);
         }

@@ -371,3 +371,29 @@ and its respawn on the line 5.00 s later at node 52, then tricks again; no panic
 
 **Open.** The meaning of `pc+824` / `pc+926` / node flag 0x02 in the posting gate, which `SetTrickHeight` branch
 `TrickHeight` 1.0 takes, which velocity the body leaves the ground with on a recorded arc, timing against a trace.
+
+## Avoider modes 6 and 7: the controller sub-modes (2026-10-09)
+
+**Retail [code] (`.local/research/npc/b66-npc-modes-6-7.md`, `b70-npc-submode-reposition.md`; main checked
+`sub_8246F818` cases 3 / 5 and that the line reset `sub_82468AC8` writes 0 to `ctrl+568`).**
+- Mode 6 (a prop lower than 0.8 within 1 s): `sub_8246D560` sets controller sub-mode 4. While 4 the recorded node
+  action is dropped, the speed shape is skipped and no grab or trick is posted; the skater keeps driving at its
+  target. Nothing ends it except a line reset (the line's end, a junction switch to another line, no line), mode 7 on
+  a later tick, a reposition or a full controller reset.
+- Mode 7 (blocked by a prop within 1.5 s, cap under 0.1) is NOT a step-off walk: tick 1 sets sub-mode 3 and a one-shot
+  reposition request; a reposition hands the skater to a second, path-planning controller that rides it to a safe node
+  on its line (`sub_824661A8`, `sub_82455728`: the first of 3 calm nodes); if that plan fails, a second tick in mode 7
+  sets sub-mode 5 and posts `WipeOutRequest` once (the skater bails).
+
+**Change.** skate-core `living_world::ai_controller` (sub-mode values, `enter_low_prop`, `step_off`,
+`reposition_node`, `take_reposition`, `reposition_done`; retail values as `ControllerSettings`) and
+`ai_signals::drop_trick_dispatch`. skate-game: `NpcAvoid` keeps the controller state and resets it on a line change or
+the line's end; mode 6 enters sub-mode 4, which skips the speed shape (replay and simulated tiers) and drops the
+simulated skater's trick dispatch.
+
+**NOT RETAIL YET / not wired.** Mode 7 is not wired: without retail's second controller (path planning to the safe
+node, `sub_82466CA8` and the path service) every step-off would end in a bail. The replay tier keeps its recorded
+tricks in sub-mode 4. The chooser's mode-7 gates `S+71` and `+6007` are not modelled.
+
+**Verification.** skate-core `ai_controller` (4) and `ai_signals` tests; skate-game npc / living_world 80 pass. Not
+play-tested.

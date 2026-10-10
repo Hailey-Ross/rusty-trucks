@@ -118,15 +118,20 @@ pub fn signals(line: &ReplayLine, s: &SignalSettings, input: &SignalInput, chose
     out
 }
 
+/// Drop the trick dispatch's signals (the tail from `Trick`).
+pub fn drop_trick_dispatch(out: &mut Vec<Signal>) {
+    if let Some(i) = out.iter().position(|x| x.0 == "Trick") {
+        out.truncate(i);
+    }
+}
+
 /// Mode 4 of the obstacle avoider (`sub_8246FA30` at 0x8246FC78; b65): while the skater is not airborne the
 /// controller posts GrabWorld every tick (the player's grab intent, so the riding skitch query and state 104 follow);
 /// while it posts it or the skater is skitching (state 104) the trick dispatch is skipped (its signals dropped).
 pub fn apply_skitch_mode(out: &mut Vec<Signal>, s: &SignalSettings, skitch_mode: bool, airborne: bool, skitching: bool) {
     let grab = skitch_mode && !airborne;
     if grab || skitching {
-        if let Some(i) = out.iter().position(|x| x.0 == "Trick") {
-            out.truncate(i);
-        }
+        drop_trick_dispatch(out);
     }
     if grab {
         out.push(("GrabWorld".into(), s.skitch_grab));

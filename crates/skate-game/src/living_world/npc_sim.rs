@@ -191,7 +191,7 @@ pub(crate) fn simulate(
                 let mut steered = target.clone();
                 let v = target.step.map(|x| x * ai_record::FRAMES_PER_SECOND);
                 let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-                if speed > 1e-3 {
+                if speed > 1e-3 && !avoid.low_prop() {
                     let k = avoid.last.shape_speed(speed, false) / speed;
                     steered.step = target.step.map(|x| x * k);
                 }
@@ -235,9 +235,6 @@ pub(crate) fn simulate(
                         let tricks = &replay.tricks;
                         let chosen = |n: u32| tricks.iter().rev().find(|r| r.line == cursor_line && r.node == n).map_or_else(|| line.node_trick(&line.nodes[n as usize]), |r| r.chosen);
                         let v = skate_core::living_world::ai_signals::signals(line, &rules.signals, &input, &chosen);
-                        if let Some(name) = v.iter().position(|x| x.0 == "Trick").and_then(|i| v.get(i + 1)) {
-                            info!("NPC_SKATER_SIM_TRICK #{} {} {} node {} state {:?}", npc.id.serial, npc.character, name.0, replay.cursor.node, sim.runtime.player_state.current());
-                        }
                         v
                     }
                     None => Vec::new(),
@@ -252,6 +249,14 @@ pub(crate) fn simulate(
                     (200..300).contains(&(state as u32)),
                     state == skate_core::player::state::PhysicalStateId::Skitching,
                 );
+                // Sub-mode 4 (mode 6): the recorded node action is dropped (`ctrl+832 = 0`; b66).
+                if avoid.low_prop() {
+                    skate_core::living_world::ai_signals::drop_trick_dispatch(&mut intents);
+                }
+                // Logged after mode 4 so a dropped trick dispatch is not reported.
+                if let Some(name) = intents.iter().position(|x| x.0 == "Trick").and_then(|i| intents.get(i + 1)) {
+                    info!("NPC_SKATER_SIM_TRICK #{} {} {} node {} state {:?}", npc.id.serial, npc.character, name.0, replay.cursor.node, state);
+                }
                 sim.last_node = Some(replay.cursor.node);
                 if let Err(error) = physics.advance_npc_skater(&mut sim.context, &mut sim.runtime, &mut sim.controls, &graphs, &mut sim.camera, &intents) {
                     warn!("NPC_SKATER_SIM #{} {}: physics error, back to replay: {error}", npc.id.serial, npc.character);
