@@ -658,3 +658,24 @@ turns test now checks the values 33, 36, 38, 39, 40 and the listeners; skate-gam
 
 **Open.** What the variant and row value select on the audio side (readers of `ped+2472` / `+2476` not found); the
 waypoint vfunc 24 body.
+
+## Peds taunt after a takedown (2026-10-09)
+
+**Retail [code + data] (`.local/research/peds/b25-ped-taunt-handprops.md` sections 1-2; main checked the 65 / 19 speech
+values).** After a successful takedown (or an aggressive capture) the graph turns the angry-chase want into a taunt
+want; `TakedownTauntVictim` (`826A70E0`) speaks 65 when the victim is the player and 19 otherwise, faces the victim,
+pushes attention and posts the "Taunt" motion intent: `motiongraph_taunt` plays the ped type's remapped "Taunt" clip
+once (blend 0.1) and completes the intent; the graph holds `DoTaunt` while the intent lives. End (`826A72F0`) releases
+the face and the intent and unsets the taunt want.
+
+**Change.** skate-core brain op `TakedownTauntVictim` (Begin: face the target, monitored "SGIntent", `ChaseRequest::Taunt`;
+End: face off, intent off, want unset); "Taunt" in the logical animation names. skate-game `think_peds` speaks 65 / 19
+and requests the clip (`PedBody.taunt`), the body step plays it through the reaction path and the intent is dropped
+when it ends (a set without the clip completes at once). Log `PED_TAUNT`.
+
+**Engine choices.** The attention push (`sub_82E27A08`, priority 2) is not modelled; the clip plays through the collision
+reaction player (no locomotion while it runs), as the motion graph's state is non-interruptable.
+
+**Verification.** skate-core `the_taunt_faces_the_victim_holds_the_intent_and_unsets_the_want`; skate-game living_world
+(71). Not seen in game yet. Open: the hand props (throw / drop), which our peds do not carry.
+

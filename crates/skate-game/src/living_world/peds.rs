@@ -317,6 +317,19 @@ pub(crate) struct PedBody {
     pub ticks: u64,
     pub feet_down: [bool; 2],
     pub body_fall: f32,
+    /// The taunt clip (motiongraph_taunt): requested by TakedownTauntVictim, playing, finished (the brain then
+    /// drops its "SGIntent").
+    pub taunt: TauntClip,
+}
+
+/// Where a ped's taunt clip is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TauntClip {
+    #[default]
+    None,
+    Requested,
+    Playing,
+    Done,
 }
 
 /// LivingWorldId -> entity.
@@ -558,7 +571,7 @@ pub(crate) fn apply_ped_records(
             tint_a: look.tint_a,
             tint_b: look.tint_b,
         };
-        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0 };
+        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: TauntClip::None };
         let e = commands
             .spawn((
                 Name::new(format!("Pedestrian {} ({})", s.id.serial, look.recipe)),
@@ -632,6 +645,16 @@ pub(crate) fn advance_peds(
         let me = id_order(ped.id);
         while body.ticks < target {
             let mut turn = 0.0;
+            // The taunt clip (motiongraph_taunt `PlayTaunt`: the remapped "Taunt" once, blend 0.1, then
+            // `MajorIntentComplete`); a set without the clip completes at once.
+            match body.taunt {
+                TauntClip::Requested if body.player.state != Locomotion::Reaction => {
+                    let step = skate_core::living_world::peds::skater_contact::ReactionStep { anim: "Taunt", mirror: false, blend: 0.1, cycle: false };
+                    body.taunt = if body.player.react(set, vec![step], 0.0) { TauntClip::Playing } else { TauntClip::Done };
+                }
+                TauntClip::Playing if body.player.state != Locomotion::Reaction => body.taunt = TauntClip::Done,
+                _ => {}
+            }
             // A skater running into the ped (retail `sub_82E38FB8` kind 5).
             if body.player.state != Locomotion::Reaction {
                 let radius = data.nav.as_deref().map_or(super::vehicle_contacts::FALLBACK_PED_RADIUS, |m| m.agent[1]);
@@ -1451,6 +1474,11 @@ pub(crate) fn think_peds(
         while mind.ticks < due {
             mind.ticks += 1;
             mind.brain.tick_timers(dt);
+            // The taunt clip ended (`MajorIntentComplete`): the intent goes, the graph leaves DoTaunt.
+            if body.taunt == TauntClip::Done {
+                body.taunt = TauntClip::None;
+                mind.brain.monitored.remove("SGIntent");
+            }
             // ApproachWantTarget sets its goal each tick it runs.
             mind.brain.approach = None;
             mind.brain.approach_slide = None;
@@ -1651,6 +1679,13 @@ pub(crate) fn think_peds(
                         if let Some(c) = mind.brain.plugin.and_then(|id| conversations.map.get(&id)) {
                             listening.extend(c.listeners());
                         }
+                        continue;
+                    }
+                    // TakedownTauntVictim (`826A70E0`): speech 65 when the victim is the player, else 19.
+                    ChaseRequest::Taunt { target } => {
+                        mind.brain.speech = Some(if target >= PLAYER_TARGET_BASE { 65 } else { 19 });
+                        body.taunt = TauntClip::Requested;
+                        info!("PED_TAUNT ped=#{} target={target} tick={tick}", ped.id.serial);
                         continue;
                     }
                     ChaseRequest::MoodReset { target } => {

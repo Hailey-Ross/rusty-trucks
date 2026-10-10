@@ -139,6 +139,8 @@ pub mod names {
         "WipeoutBackFall", "WipeoutBackGroundCyc", "WipeoutBackGetUp",
         "WipeoutFwdFall", "WipeoutFwdGroundCyc", "WipeoutFwdGetUp",
         "WipeoutLeftFall", "WipeoutLeftGroundCyc", "WipeoutLeftGetUp",
+        // motiongraph_taunt.
+        "Taunt",
     ];
 }
 

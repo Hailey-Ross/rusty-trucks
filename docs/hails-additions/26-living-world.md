@@ -101,6 +101,7 @@ the file of their topic (and get a line here).
 - [Peds greet each other (2026-10-09)](26g-living-world-ped-interactions.md#peds-greet-each-other-2026-10-09)
 - [Ped conversations: the plugin runner and the conversation object (2026-10-09)](26g-living-world-ped-interactions.md#ped-conversations-the-plugin-runner-and-the-conversation-object-2026-10-09)
 - [Conversation speech, gather timer and abort (2026-10-09)](26g-living-world-ped-interactions.md#conversation-speech-gather-timer-and-abort-2026-10-09)
+- [Peds taunt after a takedown (2026-10-09)](26g-living-world-ped-interactions.md#peds-taunt-after-a-takedown-2026-10-09)
 ### 26h: Traffic
 
 - [Change: milestone V0, vehicle data](26h-living-world-traffic.md#change-milestone-v0-vehicle-data)

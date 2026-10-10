@@ -430,3 +430,20 @@ fn run_from_honker_posts_its_intent_and_keeps_the_honker() {
     h.end(0, [0; 6], &f);
     assert_eq!((h.brain.motion_intent, h.brain.honker), (Some(motion::RUN_FROM_HONKER), Some(4)), "only Wander clears the honker");
 }
+
+#[test]
+fn the_taunt_faces_the_victim_holds_the_intent_and_unsets_the_want() {
+    let behaviors = ops(&[("TakedownTauntVictim", &[])]);
+    let mut brain = PedBrain::default();
+    brain.set_want("taunt", 7);
+    let settings = BrainSettings::default();
+    let at = |id: u64| (id == 7).then_some([1.0, 0.0, 2.0]);
+    let f = frame();
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &at, chase: Default::default() };
+    h.begin(0, [0; 6], &f);
+    assert_eq!(h.brain.face, Some([1.0, 0.0, 2.0]));
+    assert!(h.brain.monitored.contains_key("SGIntent"));
+    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::Taunt { target: 7 }]);
+    h.end(0, [0; 6], &f);
+    assert!(!h.brain.wants.contains_key("taunt") && h.brain.face.is_none() && !h.brain.monitored.contains_key("SGIntent"));
+}

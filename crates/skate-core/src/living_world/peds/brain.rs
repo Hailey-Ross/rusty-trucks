@@ -376,6 +376,11 @@ pub enum PedOp {
     ConversationIsComplete,
     /// The mood gate's flags (`brain+3278`): WaitingToReact 0x20 (set by the producer on a pass and
     /// by these ops, cleared when a want group begins) and IsReactingToMoodEvent 0x10.
+    /// `826A70E0` Begin: the taunt want's target (want 3); speech 65 when the victim is the player, else 19 (host);
+    /// face the target; post the "Taunt" motion intent (motiongraph_taunt: the remapped "Taunt" clip once). The graph
+    /// holds the state while the intent lives (`HasMonitoredIntent SGIntent`). `826A72F0` End: face released, intent
+    /// removed, the taunt want unset.
+    TakedownTauntVictim,
     SetWaitingToReactFlagOnBegin,
     ClearWaitingToReactFlagOnBegin,
     SetIsReactingToMoodEventFlagOnBegin,
@@ -498,6 +503,7 @@ impl PedOp {
             "RegisterTazer" => PedOp::RegisterTazer { want: want() },
             "UnregisterTazerOnEnd" => PedOp::UnregisterTazerOnEnd,
             "EndTaze" => PedOp::EndTaze { want: want() },
+            "TakedownTauntVictim" => PedOp::TakedownTauntVictim,
             "SetWaitingToReactFlagOnBegin" => PedOp::SetWaitingToReactFlagOnBegin,
             "ClearWaitingToReactFlagOnBegin" => PedOp::ClearWaitingToReactFlagOnBegin,
             "SetIsReactingToMoodEventFlagOnBegin" => PedOp::SetIsReactingToMoodEventFlagOnBegin,
@@ -690,6 +696,9 @@ pub enum ChaseRequest {
     Taze { target: u64 },
     /// RegisterTazer: the tazer is live (audio burst).
     TazerOn,
+    /// TakedownTauntVictim: speak (65 player / 19 other) and play the "Taunt" clip; the host removes the
+    /// "SGIntent" monitored intent when the clip ends.
+    Taunt { target: u64 },
     /// MoodResetAboutChasee: the host forgets the mood records about `target`.
     MoodReset { target: u64 },
 }
@@ -1133,6 +1142,13 @@ impl Host for BrainHost<'_> {
                 }
             }
             PedOp::RunFromHonker => b.motion_intent = Some(motion::RUN_FROM_HONKER),
+            PedOp::TakedownTauntVictim => {
+                if let Some(target) = b.wants.get("taunt").map(|w| w.target) {
+                    b.face = (self.target_position)(target);
+                    b.monitored.insert("SGIntent".to_string(), (1, 1));
+                    b.chase_requests.push(ChaseRequest::Taunt { target });
+                }
+            }
             PedOp::Flee => {
                 b.motion_intent = Some(motion::FLEE);
                 b.flee_from = b.wants.get("flee").map(|w| w.target);
@@ -1295,6 +1311,11 @@ impl Host for BrainHost<'_> {
             PedOp::SuggestVelocity { .. } => b.speed_suggestion = None,
             PedOp::UnsetWantOnEnd { want } => b.unset_want(want),
             PedOp::Flee => b.flee_from = None,
+            PedOp::TakedownTauntVictim => {
+                b.face = None;
+                b.monitored.remove("SGIntent");
+                b.unset_want("taunt");
+            }
             PedOp::StopAndFaceWantTarget { .. } | PedOp::WatchWantTarget { .. } => {
                 if let Some(saved) = b.saved_speed.take() {
                     b.speed_suggestion = saved;
