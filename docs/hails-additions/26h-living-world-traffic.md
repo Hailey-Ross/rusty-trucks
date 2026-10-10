@@ -827,8 +827,12 @@ the tow speed plus up to 200 m/s^2 x dt, at most 3.5 per update, toward 8 m/s; `
 absorb instance, the condition results); the three conditions parse and evaluate; the behaviours run (instance
 `Instance::Skitching`); `GameplayConditions` carries the 104 outputs (280 / 284 / 136 / 140).
 
-**Engine choices.** NOT RETAIL YET: EnterSkitching's "reachspeed" and the shimmy behaviour's channels (keys
-unresolved) are not written; the push speed's hold bit (1345 bit 0x10) is not ported (always updated).
+EnterSkitchingBehaviour also sets "reachspeed" (1 - n, n from the time to the spline over the current clip's remaining
+fraction, 0.1..0.83, rate-limited by 0.1) and SkitchShimmyingBehaviour "ShimmySpeed" (the shimmy rate between 0.25 and
+0.85, normalised) (b61).
+
+**Engine choices.** NOT RETAIL YET: the shimmy channels SKCH_2H_SHIMMY_LEFT / RIGHT_CHANNEL are not started (their
+contents are not in the stock assets); the push speed's hold bit (1345 bit 0x10) is not ported (always updated).
 
 **Verification.** skate-game `absorb_follows_the_curve_at_most_four_hundredths_per_update`, `shimmy_and_position_results`;
 the stock graph loads with the new conditions (`stock_motion_host_loads_graph_settings_and_authored_riding_tree`, run

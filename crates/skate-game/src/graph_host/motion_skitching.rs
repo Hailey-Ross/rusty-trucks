@@ -10,9 +10,14 @@
 //! - IsSkitchingWithAbsorb (`82BBBD00`): state 104 and graph(ground+284) > 0;
 //! - IsSkitchShimmying (`82BBC1A0`, attribute `direction` left 1 / right 2): anim+136 (negated by the flip) > 0.25 is 1,
 //!   < -0.25 is 2.
+//! - EnterSkitchingBehaviour's "reachspeed" (b61): `rem = 1 - t / len` of the current tree, `X = rem > 0 ?
+//!   ground+276 / rem : len`, `n = clamp01((X - rec+80) / (rec+96 - rec+80))`, rate-limited by 0.1 once started (the
+//!   instance starts at -1), "reachspeed" = 1 - n;
+//! - SkitchShimmyingBehaviour (`82BBC858`): "ShimmySpeed" = `(clamp(|anim+136|, rec+84, rec+88) - rec+84) /
+//!   (rec+88 - rec+84)`, 0 at the floor.
 //! SkitchingPosition's mirror term is (natural stance regular) == (riding switch) and the shimmy flip the mirrored
-//! animation bit (b61). NOT RETAIL YET: the shimmy behaviour's channels (keys unresolved) and "reachspeed" are not
-//! written.
+//! animation bit (b61). NOT RETAIL YET: the shimmy channels SKCH_2H_SHIMMY_LEFT / RIGHT_CHANNEL are not started (their
+//! contents are not in the stock assets).
 use skate_core::point_graph::PointGraph;
 use skate_data::collections::Collections;
 
@@ -76,6 +81,40 @@ impl SkitchingState {
     }
 }
 
+/// EnterSkitchingBehaviour's instance (`+16`, -1 until the first update).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct EnterState {
+    pub reach: f32,
+}
+
+impl Default for EnterState {
+    fn default() -> Self {
+        Self { reach: -1.0 }
+    }
+}
+
+impl EnterState {
+    /// "reachspeed" from the time to the spline and the current tree's time / length.
+    pub(crate) fn update(&mut self, s: &Settings, time_to_skitch: f32, time: f32, length: f32) -> f32 {
+        let rem = if length > 0.0 { 1.0 - time / length } else { 0.0 };
+        let x = if rem > 0.0 { time_to_skitch / rem } else { length };
+        let (lo, hi) = (s.floats[0], s.floats[4]);
+        let mut n = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
+        if self.reach >= 0.0 {
+            n = n.clamp(self.reach - 0.1, self.reach + 0.1);
+        }
+        self.reach = n;
+        1.0 - n
+    }
+}
+
+/// "ShimmySpeed" from the shimmy rate (`82BBC858`).
+pub(crate) fn shimmy_speed(s: &Settings, rate: f32) -> f32 {
+    let (lo, hi) = (s.floats[1], s.floats[2]);
+    let a = rate.abs().clamp(lo, hi);
+    if a > lo { (a - lo) / (hi - lo) } else { 0.0 }
+}
+
 /// IsSkitchShimmying's result for a shimmy rate (`82BBC1A0`): 1 left, 2 right, 0 none.
 pub(crate) fn shimmy_direction(rate: f32, flipped: bool) -> u32 {
     let v = if flipped { -rate } else { rate };
@@ -113,6 +152,22 @@ mod tests {
         assert!((st.absorb - 1.0).abs() < 1e-5);
         assert_eq!(s.absorb_target(2.0), 0.0, "no absorb below the curve's first rise");
         assert!((s.crouch(0.1) - 0.221).abs() < 1e-6, "rec+100 is 0.121");
+    }
+
+    #[test]
+    fn reach_and_shimmy_speeds() {
+        let s = Settings::default();
+        let mut e = EnterState::default();
+        // Half way through the clip, 0.2 s to the spline: X = 0.4, n = (0.4 - 0.1) / 0.73.
+        let r = e.update(&s, 0.2, 0.5, 1.0);
+        assert!((r - (1.0 - 0.3 / 0.73)).abs() < 1e-5, "{r}");
+        // Next update far away: n moves at most 0.1.
+        let n0 = e.reach;
+        e.update(&s, 5.0, 0.5, 1.0);
+        assert!((e.reach - (n0 + 0.1)).abs() < 1e-5);
+        assert_eq!(shimmy_speed(&s, 0.1), 0.0);
+        assert!((shimmy_speed(&s, -0.55) - 0.5).abs() < 1e-5);
+        assert_eq!(shimmy_speed(&s, 2.0), 1.0);
     }
 
     #[test]
