@@ -32,6 +32,7 @@ pub mod choice;
 pub mod colorize;
 pub mod crosswalk;
 pub mod fade;
+pub mod hand_prop;
 pub mod flee;
 pub mod honk;
 pub mod mood;

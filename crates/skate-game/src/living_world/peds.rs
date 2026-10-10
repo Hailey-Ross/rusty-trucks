@@ -352,6 +352,8 @@ pub(crate) struct PluginMotionRun {
     /// takes it once (`think_peds`) and `hand_prop_taken` keeps it from firing again in the same run.
     pub hand_prop_due: bool,
     pub hand_prop_taken: bool,
+    /// A hand prop throw clip the brain asked for (`82E3E648` plays it on the ped, blend 0.2) and its blend.
+    pub throw_clip: Option<(&'static str, f32)>,
 }
 
 /// LivingWorldId -> entity.
@@ -716,6 +718,13 @@ pub(crate) fn advance_peds(
                 }
                 TauntClip::Playing if body.player.state != Locomotion::Reaction => body.taunt = TauntClip::Done,
                 _ => {}
+            }
+            // A hand prop throw clip (`82E3E648`, ped vfunc +240): played once over what runs.
+            if let Some((clip, blend)) = body.plugin_motion.throw_clip.take() {
+                let step = skate_core::living_world::peds::skater_contact::ReactionStep { anim: clip, mirror: false, blend, cycle: false };
+                if !body.player.react(set, vec![step], 0.0) {
+                    info!("PED_HAND_PROP ped=#{} no clip {clip} tick={tick}", ped.id.serial);
+                }
             }
             // A plugin state's clips (sit, ATM, vending machine, water fountain, newspaper box).
             let run = &mut body.plugin_motion;
@@ -1267,6 +1276,7 @@ pub(crate) fn install(app: &mut App) {
     app.init_resource::<PedData>()
         .init_resource::<PedLooks>()
         .init_resource::<PedIndex>()
+        .init_resource::<super::ped_hand_props::ReleasedHandProps>()
         .init_resource::<PedRejected>()
         .init_resource::<PedNavSettings>()
         .init_resource::<PedObstacles>()
@@ -1309,6 +1319,8 @@ pub(crate) struct PedMind {
     /// The world prop the ped took (index in `PedPluginProps`, prop id, waypoint) and the props it refused (`82E40BD0`).
     prop: Option<(usize, u64, usize)>,
     refusals: skate_core::living_world::peds::plugins::RefusalMemory,
+    /// A release the brain posted (DropHandProp) for `sync_hand_props`: the velocity, m/s.
+    pub hand_prop_release: Option<[f32; 3]>,
     /// Log repeat limiter for PED_BRAIN / PED_MOOD lines (a refused startconversation re-raises its want every few
     /// ticks, retail by b28 / b29, and filled the log with 27k lines in 4 minutes).
     log_repeats: LogRepeats,
@@ -1478,6 +1490,14 @@ pub(crate) fn think_peds(
             pp.scan_ticks -= pp.settings.scan_period.max(1);
             let mut attaches = Vec::new();
             {
+                // The descriptors' transfer expressions (`UseWorldProp`: e.g. usetrashbin needs a disposable hand prop).
+                let views: std::collections::HashMap<u64, skate_core::living_world::peds::plugins::TransferView> =
+                    list.iter().map(|(_, p, _, m)| (p.id.to_u64(), skate_core::living_world::peds::plugins::TransferView::of(&m.brain))).collect();
+                let mut qualifies = |prop: &skate_core::living_world::peds::plugins::PluginProp, ped: &skate_core::living_world::peds::plugins::OfferPed| {
+                    let view = views.get(&ped.id).copied().unwrap_or_default();
+                    let transfer = data.plugins.classes.get(&prop.class).and_then(|c| c.descriptor.as_ref()).and_then(|d| d.transfer.as_ref());
+                    transfer.is_none_or(|t| t.evaluate(&mut |name, _| view.condition(name, prop, ped.position)))
+                };
                 let mut offer_peds: Vec<skate_core::living_world::peds::plugins::OfferPed> = list
                     .iter_mut()
                     .map(|(_, p, b, m)| {
@@ -1499,7 +1519,7 @@ pub(crate) fn think_peds(
                     // [inference] the offer radius: the class field E2101F2B17A0E6B5 (10 sit / 5 bin / 15 ATM).
                     let radius = class.and_then(|c| c.numbers.get("Hash_E2101F2B17A0E6B5").copied()).unwrap_or(10.0);
                     let max = class.and_then(|c| c.descriptor.as_ref()).map_or(1, |d| d.max_participants);
-                    for a in skate_core::living_world::peds::plugins::offer(prop, radius, max, &mut offer_peds, &mut |_, _| true, &pp.settings, rng) {
+                    for a in skate_core::living_world::peds::plugins::offer(prop, radius, max, &mut offer_peds, &mut qualifies, &pp.settings, rng) {
                         attaches.push((index, a));
                     }
                 }
@@ -1725,6 +1745,9 @@ pub(crate) fn think_peds(
                 mind.prop = None;
             }
             mind.brain.has_plugin = mind.brain.plugin.is_some() || mind.prop.is_some();
+            // ThrowHandPropAtTrashBin's target, the plugin object's hotpoint 0 (`826A7998`, b87 §3): our hotpoint props
+            // are one prop per hotpoint and every stock bin has only hotpoint 0, so the taken prop's own point.
+            mind.brain.plugin_target = mind.prop.and_then(|(i, id, _)| plugin_props.props.get(i).filter(|p| p.id == id)).and_then(|p| p.waypoints.first()).map(|w| w.position);
             let conv = mind.brain.plugin.and_then(|id| conversations.map.get(&id));
             let free: Vec<[f32; 3]> = match (conv, prop_wp) {
                 (Some(c), _) => c.waypoints.iter().filter(|w| w.1.is_none()).map(|w| w.0).collect(),
@@ -1831,8 +1854,7 @@ pub(crate) fn think_peds(
                 }
             }
             // SpawnInteractionBasedHandProp (`826AE950` -> `82E3DDA0`): the plugin prop's hand prop is requested
-            // (`brain+3279` 0x01). NOT RETAIL YET: the object is not created (the `_lw` hand prop models are not
-            // exported yet), so the ped stays "requested", which HasHandProp already counts.
+            // (`brain+3279` 0x01) with its record's bools; `ped_hand_props::sync_hand_props` creates the object.
             if std::mem::take(&mut body.plugin_motion.hand_prop_due) {
                 let class = mind.prop.and_then(|(i, _, _)| plugin_props.props.get(i)).map(|p| p.class.clone());
                 let list = class.as_ref().and_then(|c| data.plugins.classes.get(c)).map(|c| c.hand_props.clone()).unwrap_or_default();
@@ -1840,6 +1862,10 @@ pub(crate) fn think_peds(
                 match skate_core::living_world::peds::brain::HandProp::pick(&list, roll) {
                     Some(key) => {
                         mind.brain.hand_prop.request(key);
+                        if let Some(r) = data.hand_props.props.get(key) {
+                            let h = &mut mind.brain.hand_prop;
+                            (h.disposable, h.can_sit, h.can_attack_throw) = (r.disposable, r.can_sit, r.can_attack_throw);
+                        }
                         info!("PED_HAND_PROP ped=#{} requested {key} from {} tick={tick}", ped.id.serial, class.as_deref().unwrap_or("?"));
                         events.write(PedEvent::HandProp { id: ped.id, key: key.to_string() });
                     }
@@ -2010,6 +2036,15 @@ pub(crate) fn think_peds(
                         mind.brain.speech = Some(if target >= PLAYER_TARGET_BASE { 65 } else { 19 });
                         body.taunt = TauntClip::Requested;
                         info!("PED_TAUNT ped=#{} target={target} tick={tick}", ped.id.serial);
+                        continue;
+                    }
+                    ChaseRequest::HandPropClip { clip } => {
+                        body.plugin_motion.throw_clip = Some((clip, settings.ped_brain.values.hand_prop.clip_blend));
+                        info!("PED_HAND_PROP ped=#{} throw clip {clip} target={:?} tick={tick}", ped.id.serial, mind.brain.hand_prop.throw.map(|t| t.target));
+                        continue;
+                    }
+                    ChaseRequest::HandPropReleased { velocity } => {
+                        mind.hand_prop_release = Some(velocity);
                         continue;
                     }
                     ChaseRequest::MoodReset { target } => {

@@ -144,6 +144,9 @@ pub mod names {
         // The plugin states (`super::plugin_motion`): sit, ATM, vending machine, water fountain, newspaper box.
         "Stand2Sit", "SitIdleCyc", "Sit2Stand", "ATMInsertCard", "ATMMakeSelection", "ATMCollectMoney", "ATMCollectCard",
         "VendInsert", "VendSelect", "VendCollect", "WaterFountainInto", "WaterFountainCyc", "WaterFountainOut", "NewspaperCollect",
+        // The light hand prop throw (`super::hand_prop::light_throw_clip`).
+        "HandPropThrowLightForward", "HandPropThrowLightL45", "HandPropThrowLightL90", "HandPropThrowLightR180",
+        "HandPropThrowLightR90", "HandPropThrowLightR45",
     ];
 }
 

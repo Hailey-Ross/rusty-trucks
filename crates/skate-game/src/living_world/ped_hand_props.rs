@@ -8,7 +8,12 @@
 //! NOT RETAIL YET: the hand bone is RIGHTHANDPROP (rig 26) [inferred: every carry channel is `*RH`; which bone fills
 //! the hand matrix at skeleton +19504 is not decoded]; the record fields `Hash_3FE1...` = Euler rotation in degrees
 //! and `Hash_DC20...` = translation in metres, applied translation then X, Y, Z [inferred from the value shapes; the
-//! record loader is not read]; the object is drawn only (no physics body until it is released, which is not ported).
+//! record loader is not read].
+//!
+//! Release (b90, b91): the brain's throw / drop (`skate_core::living_world::peds::hand_prop`) releases the object here:
+//! it becomes a prop body created mid-game (`GamePhysics::spawn_runtime_prop`, doc 27 "Props created mid-game") with
+//! the release velocity, its model follows the body, and the ped keeps the link until the prop leaves the unlink box.
+//! The ped never removes it (b90 §3); the dynamic-object pool (49) and the census cull (100 m) do.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -22,6 +27,10 @@ pub(crate) const HAND_PROP_BONE: &str = "RIGHTHANDPROP";
 const ROTATION_FIELD: &str = "Hash_3FE10F7B1115B8E6";
 const OFFSET_FIELD: &str = "Hash_DC20CCEAB4B92992";
 const CHANNEL_FIELD: &str = "Hash_FC1D2C4E5CCA6AED";
+/// IsDisposable (record +60), CanSitWithHandProp (+61), CanAttackThrowHandProp (+62) [b90: names from the hashes].
+const DISPOSABLE_FIELD: &str = "Hash_D02B4381CF62E28A";
+const CAN_SIT_FIELD: &str = "Hash_BCE5969F18AEA914";
+const CAN_ATTACK_THROW_FIELD: &str = "Hash_40802A8929B6B25E";
 
 /// One hand prop record.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -32,6 +41,9 @@ pub(crate) struct HandPropRecord {
     pub rotation_degrees: Vec3,
     pub offset: Vec3,
     pub carry_channel: Option<String>,
+    pub disposable: bool,
+    pub can_sit: bool,
+    pub can_attack_throw: bool,
 }
 
 impl HandPropRecord {
@@ -46,6 +58,10 @@ impl HandPropRecord {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct HandPropData {
     pub props: BTreeMap<String, HandPropRecord>,
+}
+
+fn flag(fields: Option<&Value>, key: &str) -> bool {
+    fields.and_then(|f| f.get(key)).and_then(Value::as_bool).unwrap_or(false)
 }
 
 fn vec3(v: Option<&Value>) -> Vec3 {
@@ -71,6 +87,9 @@ impl HandPropData {
                     rotation_degrees: vec3(fields.and_then(|f| f.get(ROTATION_FIELD))),
                     offset: vec3(fields.and_then(|f| f.get(OFFSET_FIELD))),
                     carry_channel: fields.and_then(|f| f.get(CHANNEL_FIELD)).and_then(Value::as_str).map(str::to_string),
+                    disposable: flag(fields, DISPOSABLE_FIELD),
+                    can_sit: flag(fields, CAN_SIT_FIELD),
+                    can_attack_throw: flag(fields, CAN_ATTACK_THROW_FIELD),
                 },
             );
         }
@@ -86,34 +105,180 @@ pub(crate) struct HeldHandProp {
     pub local: Mat4,
 }
 
-/// Create the requested object (then `holding`, `82E3EC60`) and remove it when the brain dropped the prop.
+/// A released hand prop still linked to its ped (`ped+5920` after the release; unlinked by `82E3FAE0`).
+#[derive(Component, Clone, Copy, Debug)]
+pub(crate) struct ReleasedHandProp {
+    pub body: u32,
+}
+
+/// Live released hand props in creation order: body id and model entity (the dynamic-object manager's share).
+#[derive(Resource, Default)]
+pub(crate) struct ReleasedHandProps(pub Vec<(u32, Entity)>);
+
+/// Create the requested object (then `holding`, `82E3EC60`; the request bit clears whether or not the create worked,
+/// `82E262D0`), release it on the brain's throw / drop, unlink it, cull released props, and remove a held object the
+/// brain no longer has.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sync_hand_props(
     mut commands: Commands,
     server: Res<AssetServer>,
     data: Res<super::peds::PedData>,
     state: Res<super::PopulationState>,
-    mut peds: Query<(Entity, &super::peds::Pedestrian, &mut super::peds::PedMind, Option<&super::peds::PedPuppet>, Option<&HeldHandProp>)>,
+    settings: Res<super::LivingWorldSettings>,
+    observers: Res<super::LivingWorldObservers>,
+    mut released: ResMut<ReleasedHandProps>,
+    mut physics: Option<ResMut<crate::physics::GamePhysics>>,
+    meshes: Res<Assets<Mesh>>,
+    globals: Query<&GlobalTransform>,
+    children: Query<&Children>,
+    mesh_parts: Query<(&Mesh3d, &GlobalTransform)>,
+    mut peds: Query<(Entity, &super::peds::Pedestrian, &super::peds::PedBody, &mut super::peds::PedMind, Option<&super::peds::PedPuppet>, Option<&HeldHandProp>, Option<&ReleasedHandProp>)>,
 ) {
     let tick = state.world.tick();
-    for (e, ped, mut mind, puppet, held) in &mut peds {
-        let want = mind.brain.hand_prop.has().then(|| mind.brain.hand_prop.key.clone()).flatten();
-        if let Some(h) = held
-            && want.as_deref() != Some(h.key.as_str())
-        {
-            commands.entity(h.entity).despawn();
-            commands.entity(e).remove::<HeldHandProp>();
-            mind.brain.hand_prop.holding = false;
-            info!("PED_HAND_PROP ped=#{} {} removed tick={tick}", ped.id.serial, h.key);
+    let s = settings.ped_brain.values.hand_prop;
+    for (e, ped, body, mut mind, puppet, held, linked) in &mut peds {
+        let mind = &mut *mind;
+        if let Some(h) = held {
+            let at = globals.get(h.entity).ok().map(|g| g.translation().to_array());
+            let thrown = at.and_then(|at| mind.brain.update_hand_prop_release(&s, at));
+            if let Some(velocity) = thrown.or(mind.hand_prop_release.take()) {
+                commands.entity(e).remove::<HeldHandProp>();
+                let room = released.0.len() < s.max_live;
+                let id = physics.as_deref_mut().and_then(|p| release(&mut commands, p, h, velocity, &globals, &children, &mesh_parts, &meshes, room));
+                match id {
+                    Some(id) => {
+                        released.0.push((id, h.entity));
+                        commands.entity(e).insert(ReleasedHandProp { body: id });
+                        info!("PED_HAND_PROP ped=#{} {} released body={id} velocity=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, h.key, velocity[0], velocity[1], velocity[2]);
+                    }
+                    None => {
+                        commands.entity(h.entity).despawn();
+                        mind.brain.hand_prop.clear();
+                        info!("PED_HAND_PROP ped=#{} {} released without a body tick={tick}", ped.id.serial, h.key);
+                    }
+                }
+                continue;
+            }
+            let want = mind.brain.hand_prop.has().then(|| mind.brain.hand_prop.key.clone()).flatten();
+            if want.as_deref() != Some(h.key.as_str()) {
+                commands.entity(h.entity).despawn();
+                commands.entity(e).remove::<HeldHandProp>();
+                mind.brain.hand_prop.holding = false;
+                info!("PED_HAND_PROP ped=#{} {} removed tick={tick}", ped.id.serial, h.key);
+            }
             continue;
         }
-        let (Some(key), None, Some(scene)) = (want, held, puppet.and_then(|p| p.scene)) else { continue };
-        let Some(record) = data.hand_props.props.get(&key) else { continue };
-        let Some(glb) = record.glb.clone() else { continue }; // no model: stays requested (retail: the create fails)
+        mind.hand_prop_release = None;
+        // The link (`82E3F090`): unlinked once the released prop leaves the box around the ped, or when it is gone.
+        if let Some(r) = linked {
+            let at = physics.as_deref().and_then(|p| p.prop_dynamics()).and_then(|d| d.position_of(r.body));
+            let out = match at {
+                Some(at) => mind.brain.update_hand_prop_link(&s, [at.x, at.y, at.z], body.position.to_array()),
+                None => {
+                    mind.brain.hand_prop.clear();
+                    true
+                }
+            };
+            if out {
+                commands.entity(e).remove::<ReleasedHandProp>();
+                info!("PED_HAND_PROP ped=#{} unlinked body={} tick={tick}", ped.id.serial, r.body);
+            }
+            continue;
+        }
+        let want = mind.brain.hand_prop.requested.then(|| mind.brain.hand_prop.key.clone()).flatten();
+        let (Some(key), Some(scene)) = (want, puppet.and_then(|p| p.scene)) else { continue };
+        mind.brain.hand_prop.requested = false;
+        let record = data.hand_props.props.get(&key);
+        let Some(glb) = record.and_then(|r| r.glb.clone()) else {
+            info!("PED_HAND_PROP ped=#{} {key} not created (no model) tick={tick}", ped.id.serial);
+            continue;
+        };
+        if released.0.len() >= s.max_live {
+            info!("PED_HAND_PROP ped=#{} {key} not created (pool full) tick={tick}", ped.id.serial);
+            continue;
+        }
         let entity = commands.spawn((SceneRoot(server.load(GltfAssetLabel::Scene(0).from_asset(glb))), Transform::default(), Visibility::Inherited, ChildOf(scene))).id();
-        commands.entity(e).insert(HeldHandProp { key: key.clone(), entity, local: record.local() });
+        commands.entity(e).insert(HeldHandProp { key: key.clone(), entity, local: record.map(HandPropRecord::local).unwrap_or_default() });
         mind.brain.hand_prop.holding = true;
         info!("PED_HAND_PROP ped=#{} {key} created tick={tick}", ped.id.serial);
     }
+    // Released props outside every observer's census cull ring go (b91 / dmo-plan: `dynamicobjects` cull 100 m).
+    let Some(physics) = physics.as_deref_mut() else { return };
+    released.0.retain(|&(id, entity)| {
+        let at = physics.prop_dynamics().and_then(|d| d.position_of(id)).map(|v| Vec3::new(v.x, v.y, v.z));
+        let near = at.is_some_and(|p| observers.observers.is_empty() || observers.observers.iter().any(|o| Vec3::from_array(o.position).distance(p) <= s.cull_distance));
+        if near {
+            return true;
+        }
+        physics.remove_runtime_prop(id);
+        if let Ok(mut model) = commands.get_entity(entity) {
+            model.despawn();
+        }
+        info!("PED_HAND_PROP culled body={id} tick={tick}");
+        false
+    });
+}
+
+/// Turn the held object into a prop body at its world pose moving at `velocity`: collision from its meshes (in the
+/// object's frame, scale folded in), the default physics block (NOT RETAIL YET: the template's
+/// `livingworld_dynamicobject_characteristics` record is not resolved for hand prop templates, b91), and its model
+/// detached from the hand and following the body. `None` when the pool is full or the model has no triangles yet.
+#[allow(clippy::too_many_arguments)]
+fn release(
+    commands: &mut Commands,
+    physics: &mut crate::physics::GamePhysics,
+    held: &HeldHandProp,
+    velocity: [f32; 3],
+    globals: &Query<&GlobalTransform>,
+    children: &Query<&Children>,
+    mesh_parts: &Query<(&Mesh3d, &GlobalTransform)>,
+    meshes: &Assets<Mesh>,
+    room: bool,
+) -> Option<u32> {
+    if !room {
+        return None;
+    }
+    let root = globals.get(held.entity).ok()?.compute_transform();
+    let to_local = |p: Vec3| root.rotation.inverse() * (p - root.translation);
+    let mut local = Vec::new();
+    for part in children.iter_descendants(held.entity) {
+        let Ok((mesh, gt)) = mesh_parts.get(part) else { continue };
+        let Some(mesh) = meshes.get(&mesh.0) else { continue };
+        local.extend(mesh_triangles(mesh).into_iter().map(|t| {
+            t.map(|p| {
+                let q = to_local(gt.transform_point(p));
+                skate_core::math::Vector3::new(q.x, q.y, q.z)
+            })
+        }));
+    }
+    let m = Mat3::from_quat(root.rotation);
+    let spec = crate::physics::prop_dynamics::RuntimeProp {
+        template: format!("handprop/{}", held.key),
+        local,
+        physics: Default::default(),
+        type_data: None,
+        origin: skate_core::math::Vector3::new(root.translation.x, root.translation.y, root.translation.z),
+        basis: skate_core::math::Basis3 { columns: [m.x_axis.to_array(), m.y_axis.to_array(), m.z_axis.to_array()] },
+        linear_velocity: skate_core::math::Vector3::new(velocity[0], velocity[1], velocity[2]),
+        angular_velocity: skate_core::math::Vector3::ZERO,
+    };
+    let id = physics.spawn_runtime_prop(&spec, 0)?;
+    commands.entity(held.entity).remove::<ChildOf>().insert((
+        Transform { translation: root.translation, rotation: root.rotation, scale: root.scale },
+        crate::skate_world::PropInstance { id, template: spec.template.clone(), name: held.key.clone() },
+    ));
+    Some(id)
+}
+
+/// The triangles of a triangle-list mesh in its own space (positions and indices as stored).
+fn mesh_triangles(mesh: &Mesh) -> Vec<[Vec3; 3]> {
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else { return Vec::new() };
+    let p = |i: usize| positions.get(i).map(|v| Vec3::from_array(*v));
+    let indices: Vec<usize> = match mesh.indices() {
+        Some(i) => i.iter().collect(),
+        None => (0..positions.len()).collect(),
+    };
+    indices.chunks_exact(3).filter_map(|c| Some([p(c[0])?, p(c[1])?, p(c[2])?])).collect()
 }
 
 #[cfg(test)]
@@ -137,6 +302,9 @@ mod tests {
         let pop = &d.props["pop"];
         assert_eq!((pop.rotation_degrees, pop.offset), (Vec3::new(10.0, 0.0, 0.0), Vec3::new(0.01, 0.0, 0.01)));
         assert_eq!(pop.carry_channel.as_deref(), Some("CarrySmallRHChannel"));
+        assert!(pop.disposable && pop.can_sit && pop.can_attack_throw);
+        let news = &d.props["newspaper"];
+        assert!(!news.disposable && news.can_sit && news.can_attack_throw);
         eprintln!("hand prop models: {} of {}", d.props.values().filter(|p| p.glb.is_some()).count(), d.props.len());
     }
 }

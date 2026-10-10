@@ -57,11 +57,13 @@ pub struct BrainSettings {
     /// StartChase Update's and NewChasee Begin's speech values (`826A3780` 55, `826A37F0` 15).
     pub start_chase_speech: i32,
     pub new_chasee_speech: i32,
+    /// Hand prop release values (`peds/hand_prop.rs`).
+    pub hand_prop: super::hand_prop::HandPropSettings,
 }
 
 impl Default for BrainSettings {
     fn default() -> Self {
-        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, start_chase_speech: 55, new_chasee_speech: 15 }
+        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default() }
     }
 }
 
@@ -174,6 +176,12 @@ pub enum PedOp {
     /// `826AD270`: HasHandProp and the held record's key is `handprop` (the attribute's hash vs the record key,
     /// b87).
     IsHoldingSpecificHandProp { handprop: String },
+    /// `8269D170`: HasHandProp and the held record's IsDisposable (record +60, b90).
+    HasDisposableHandProp,
+    /// `8269D268`: no hand prop, or the held record's CanSitWithHandProp (record +61, b90).
+    CanSitWithHandProp,
+    /// `826AD330`: HasHandProp and the held record's CanAttackThrowHandProp (record +62, b25 / b90).
+    CanAttackThrowHandProp,
     /// `826AD558`: distance to the want's target compared with the threshold (squared by the
     /// factory `826D0038`).
     DistanceToWantTarget { want: String, greater: Option<f32>, less: Option<f32> },
@@ -430,6 +438,13 @@ pub enum PedOp {
     /// holds the state while the intent lives (`HasMonitoredIntent SGIntent`). `826A72F0` End: face released, intent
     /// removed, the taunt want unset.
     TakedownTauntVictim,
+    /// `826A7998` Begin: the light throw (`82E3E648` attack 0) at the plugin object's hotpoint 0 (b87 §3, b90 §1);
+    /// the release follows in the per-ped step ([`PedBrain::update_hand_prop_release`]).
+    ThrowHandPropAtTrashBin,
+    /// `826A8730` Begin: `82E3EBE0(ped, 0, zero)`, the held prop is released in place (b25 §6).
+    DropHandProp,
+    /// `826A7900` Begin / `826A7918` End: `brain+3279` bit 0x10 for the behaviour's life (b25 §3).
+    DisallowHandPropActions,
     SetWaitingToReactFlagOnBegin,
     ClearWaitingToReactFlagOnBegin,
     SetIsReactingToMoodEventFlagOnBegin,
@@ -604,7 +619,13 @@ impl PedOp {
             "ConversationSpeak" => PedOp::ConversationSpeak,
             "ConversationListenToSpeaker" => PedOp::ConversationListenToSpeaker,
             "ConversationIsComplete" => PedOp::ConversationIsComplete,
-            "SetExplicitTurnDirectionToWaypointOrientation" | "DisallowHandPropActions" => PedOp::Marker { name: name.to_string() },
+            "ThrowHandPropAtTrashBin" => PedOp::ThrowHandPropAtTrashBin,
+            "DropHandProp" => PedOp::DropHandProp,
+            "DisallowHandPropActions" => PedOp::DisallowHandPropActions,
+            "HasDisposableHandProp" => PedOp::HasDisposableHandProp,
+            "CanSitWithHandProp" => PedOp::CanSitWithHandProp,
+            "CanAttackThrowHandProp" => PedOp::CanAttackThrowHandProp,
+            "SetExplicitTurnDirectionToWaypointOrientation" => PedOp::Marker { name: name.to_string() },
             "KnowAboutChasers" | "AllowPedestrianJumping" => PedOp::Marker { name: name.to_string() },
             _ => PedOp::Pending { name: name.to_string() },
         }
@@ -664,6 +685,16 @@ pub struct HandProp {
     pub key: Option<String>,
     pub requested: bool,
     pub holding: bool,
+    /// `brain+3278` bit 0x01: a throw started or the prop was released and is still linked to the ped (cleared by
+    /// the unlink `82E3FAE0`).
+    pub linked: bool,
+    /// The started throw (`3279` bit 0x40 aimed, target `+3152`, speed `+3252`).
+    pub throw: Option<super::hand_prop::HandPropThrow>,
+    /// The held record's bools (`livingworld_handprops`, host-set with the request): IsDisposable (+60),
+    /// CanSitWithHandProp (+61), CanAttackThrowHandProp (+62) [b90].
+    pub disposable: bool,
+    pub can_sit: bool,
+    pub can_attack_throw: bool,
 }
 
 impl HandProp {
@@ -753,6 +784,10 @@ pub struct PedBrain {
     /// The hand prop (`livingworld_handprops` key at `ped+5760`), requested (`brain+3279` bit 0x01, set by
     /// `82E3DDA0`) and held (`brain+3278` bit 0x02, set when `82E3EC60` attaches the created object) [code, b87].
     pub hand_prop: HandProp,
+    /// `brain+3279` bit 0x10 (DisallowHandPropActions).
+    pub hand_prop_actions_disallowed: bool,
+    /// The plugin object's hotpoint 0 (host-set with the plugin lock): ThrowHandPropAtTrashBin's target.
+    pub plugin_target: Option<Vec3>,
     /// What the ped knows about and sees (`brain+624`; KnowAboutWantTarget's `82E42868`).
     pub perceptions: super::perception::Perceptions,
     /// LostChasee: the chasee's last known position the ped walks to; SetAltTargetToChaseePosition:
@@ -849,6 +884,10 @@ pub enum ChaseSteer {
 /// A change to a chase group the brain asks the host for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChaseRequest {
+    /// A hand prop throw started: the host plays `clip` (blend [`super::hand_prop::HandPropSettings::clip_blend`]).
+    HandPropClip { clip: &'static str },
+    /// The held hand prop leaves the hand with `velocity` (m/s): the host turns it into a physics prop.
+    HandPropReleased { velocity: Vec3 },
     Join { chasee: u64 },
     /// SendChaseStateMessage: the host posts it when `target` is a player.
     StateMessage { target: u64, state: u8 },
@@ -1038,6 +1077,9 @@ impl BrainHost<'_> {
             PedOp::HasPlugin => b.has_plugin,
             PedOp::HasHandProp => b.hand_prop.has(),
             PedOp::IsHoldingSpecificHandProp { handprop } => b.hand_prop.has() && b.hand_prop.key.as_deref().is_some_and(|k| k.eq_ignore_ascii_case(handprop)),
+            PedOp::HasDisposableHandProp => b.hand_prop.has() && b.hand_prop.disposable,
+            PedOp::CanSitWithHandProp => !b.hand_prop.has() || b.hand_prop.can_sit,
+            PedOp::CanAttackThrowHandProp => b.hand_prop.has() && b.hand_prop.can_attack_throw,
             PedOp::SimpleTimerExpired { timer } => b.timer(*timer) <= 0.0,
             PedOp::IsChasing => b.chasee.is_some(),
             // A target without a group yet takes chasers (the group is empty).
@@ -1135,6 +1177,19 @@ impl Host for BrainHost<'_> {
                 b.motion_intent = Some(motion::WANDER);
             }
             PedOp::NoRoadWander => b.motion_intent = Some(motion::WANDER),
+            PedOp::ThrowHandPropAtTrashBin => {
+                if let Some(target) = b.plugin_target {
+                    if let Some(clip) = b.start_light_throw(&s.hand_prop, self.heading, self.position, target) {
+                        b.chase_requests.push(ChaseRequest::HandPropClip { clip });
+                    }
+                }
+            }
+            PedOp::DropHandProp => {
+                if let Some(velocity) = b.drop_hand_prop() {
+                    b.chase_requests.push(ChaseRequest::HandPropReleased { velocity });
+                }
+            }
+            PedOp::DisallowHandPropActions => b.hand_prop_actions_disallowed = true,
             PedOp::SuggestVelocity { linear } => b.speed_suggestion = Some(*linear),
             PedOp::KnowAboutWantTarget { want } => {
                 if let Some(w) = b.wants.get(want) {
@@ -1564,6 +1619,7 @@ impl Host for BrainHost<'_> {
         let b = &mut *self.brain;
         match op {
             PedOp::OwnPluginObject => b.own_plugin_object = false,
+            PedOp::DisallowHandPropActions => b.hand_prop_actions_disallowed = false,
             PedOp::DisableCollisionsWithBehaviourSource => {
                 b.own_plugin_object = false;
                 b.ignore_source_collision = false;

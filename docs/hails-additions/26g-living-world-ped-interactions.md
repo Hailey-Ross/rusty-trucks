@@ -824,3 +824,55 @@ models), `stock_descriptors_parse` (hand prop lists incl. the bare record), `liv
 (`RIGHTHANDPROP` = 26 under `RIGHTHAND`). Offline export on the user's disc: 22 GLBs (pop can 7 x 12.8 cm, rendered).
 Muted Industrial run: the ped at the vending machine requested and created `pop` in `VendCollect` (tick 1051) and carried it
 to a bench. Not seen on screen yet.
+
+## Ped hand props: the bin throw, the drop and the released prop (2026-10-10)
+
+**Problem.** Peds held their vending can or newspaper forever: the release ops (`ThrowHandPropAtTrashBin`,
+`DropHandProp`), the hand prop conditions (`HasDisposableHandProp`, `CanSitWithHandProp`, `CanAttackThrowHandProp`) and the
+world prop descriptors' transfer gates were not ported, so `usetrashbin.xml` exited at once and any ped took a bin.
+
+**Evidence** [code] (TU3 recomp, reference only; research b25, b87, b90, b91, b92; main-checked):
+- `sub_82E3E648` starts a throw only while holding: pending + aimed bits, target, launch speed and release time; the light
+  throw (bin) is 5.0 m/s (`0x821F1790`) after 0.91667 s (`0x82063BE0`), the attack throw 10.0 / 0.8333. Its clip by the
+  flat angle to the target: below 0.6854 or above 5.5978 rad `HandPropThrowLightForward`, then `L45` (< 0.8854), `L90`
+  (< 1.6708), `R180` (< 4.6124), `R90` (< 4.8124), else `R45` (thresholds `0x822F9144..58`, names at `0x82064A00..7C`).
+- `ThrowHandPropAtTrashBin` (`826A7998`) aims at the plugin object's hotpoint 0. Every stock bin has one hotpoint.
+- The launch solve `sub_82E16AB0`: the flat speed is the launch speed, flight time = flat distance / speed, vertical speed =
+  dy / t + 4.9 t (`0x822F8FA4`); no speed or a target straight above gives zero velocity and time -1 (`0x8216DEE0`).
+- The per-ped update `82E3ED50` releases when the release time has run out, with the launch velocity from the prop's hand
+  position, and sets timer 35 to the flight time; `82E3EBE0` clears holding and calls the object's release (+136,
+  `82C56C70`: kinematic off, velocity written only for flag 1; DropHandProp passes flag 0). A released prop stays linked
+  until it leaves the box 0.5 / 2.0 / 0.5 m around the ped (`82E3F090` -> unlink `82E3FAE0`); the ped never destroys it.
+- The dynamic-object manager's create (`826B8830`) refuses at 49 live objects [code, b91]; the census culls
+  `dynamicobjects` beyond 100 m (`livingworld_census_ranges` [data]). The record bools: IsDisposable (+60, `Hash_D02B...`),
+  CanSitWithHandProp (+61, `Hash_BCE5...`), CanAttackThrowHandProp (+62, `Hash_4080...`) [b90].
+- A thrown prop hitting the skater has no special effect: the DMO class posts nothing and the skater contact switch treats
+  groups 12 / 13 / 14 as an ordinary prop contact [code, b92].
+
+**Change.** Core `peds/hand_prop.rs`: `HandPropSettings` (retail defaults, in `BrainSettings.hand_prop`, so the
+`ped_brain` mod domain reaches them), `launch`, `flat_angle`, `light_throw_clip`, `PedBrain::start_light_throw` /
+`drop_hand_prop` / `update_hand_prop_release` / `update_hand_prop_link`. Brain: `HandProp` gets `linked`, `throw` and the
+record bools; ops `ThrowHandPropAtTrashBin`, `DropHandProp`, `DisallowHandPropActions` (flag); conditions
+`HasDisposableHandProp`, `CanSitWithHandProp`, `CanAttackThrowHandProp`; requests `HandPropClip` / `HandPropReleased`;
+`plugin_target` (host-set hotpoint 0). Plugins: `TransferView` evaluates the world prop descriptors' transfer
+conditions in the offer scan. Game: the request carries the record bools; the throw clip plays on the ped;
+`sync_hand_props` clears the request bit on the create attempt, releases the held object as a prop created mid-game
+(doc 27 "Props created mid-game": collision from the model's meshes, its model detached from the hand and following the
+body), keeps the link until the unlink box, refuses creates past 49 live released props and culls released props beyond
+100 m of every observer. Logs: `PED_HAND_PROP ... throw clip`, `... released body=.. velocity=..`, `... unlinked`,
+`... culled`, `... not created (pool full | no model)`.
+
+**NOT RETAIL YET / open.** The release frame: retail compares a clip time query (skeleton +17936 vfunc +36) with the
+release time; ours runs timer 34 out (equal if the query is the time remaining, inferred). The drop keeps the hand's
+velocity in retail; ours is zero. The released body uses the default physics block and box: the hand prop template's
+`livingworld_dynamicobject_characteristics` record is not resolved (b91), collision groups 12 / 13 / 14 are not modelled.
+The pool and cull are counted over released hand props only (retail's pool holds every live DMO). The flat angle's sign is
+inferred from the clip names. `IsNearCrossWalk` answers false. The attack throw (`ThrowHandPropAtWantTarget`: intercept
+solve, jitter of 3 RNG draws up to 0.25 m, +1 m) is next (b92, b93).
+
+**Verification.** skate-core `launch_reaches_the_target`, `light_throw_clip_by_angle`, `bin_throw_releases_then_unlinks`,
+`drop_releases_with_zero_velocity`, `world_prop_transfer_reads_the_hand_prop`; skate-game data-gated
+`stock_hand_props_load_with_models` (pop disposable, newspaper not). Muted Industrial run (6 min, after fixing the
+vending / sit gates `HasFirstWaypointAvailable` / `InFrontOfFirstWaypoint`, which the first run showed): ped #2 took the
+vending machine, created `pop` at tick 1051 and sat on a bench with it (pop allows sitting); no ped took a bin in the run,
+so the throw is not seen in game yet.

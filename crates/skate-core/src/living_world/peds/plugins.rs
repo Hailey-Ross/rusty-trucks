@@ -87,6 +87,42 @@ impl Transfer {
     }
 }
 
+/// What a world prop descriptor's transfer conditions read of a ped (`UseWorldProp` descriptors: sit, usetrashbin,
+/// newspaperbox, vend, ATM, water fountain).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TransferView {
+    pub hand_prop: bool,
+    pub disposable: bool,
+    pub can_sit: bool,
+    pub chasing: bool,
+}
+
+impl TransferView {
+    /// A ped's view from its brain.
+    pub fn of(brain: &super::brain::PedBrain) -> Self {
+        let h = &brain.hand_prop;
+        Self { hand_prop: h.has(), disposable: h.disposable, can_sit: h.can_sit, chasing: brain.chasee.is_some() }
+    }
+
+    /// One transfer condition for `ped` at `prop`: `HasHandProp` (`826AD1A8`), `HasDisposableHandProp` (`8269D170`),
+    /// `CanSitWithHandProp` (`8269D268`), `IsChasing`; `IsOnRoad` is false (its condition slot is the `li r3,0` stub
+    /// `8274CA90`). `HasFirstWaypointAvailable` (the prop's waypoint 0 is free) and `InFrontOfFirstWaypoint` (the ped
+    /// is on the facing side of waypoint 0) are [inferred] from their names, their code is not read. Other names
+    /// (`IsNearCrossWalk`, not ported) answer false like the brain's pending conditions.
+    pub fn condition(&self, name: &str, prop: &PluginProp, ped: Vec3) -> bool {
+        let first = prop.waypoints.first();
+        match name {
+            "HasFirstWaypointAvailable" => first.is_some_and(|w| w.occupant.is_none()),
+            "InFrontOfFirstWaypoint" => first.is_some_and(|w| (ped[0] - w.position[0]) * w.facing[0] + (ped[2] - w.position[2]) * w.facing[2] >= 0.0),
+            "HasHandProp" => self.hand_prop,
+            "HasDisposableHandProp" => self.hand_prop && self.disposable,
+            "CanSitWithHandProp" => !self.hand_prop || self.can_sit,
+            "IsChasing" => self.chasing,
+            _ => false,
+        }
+    }
+}
+
 /// One waypoint of a plugin prop: where the ped stands or sits, which way it faces, who holds it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PluginWaypoint {
@@ -281,6 +317,31 @@ pub fn pick_ped_type(candidates: &[(usize, f32, f32)], rng: &mut Rng) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// usetrashbin's transfer (`HasDisposableHandProp and not IsOnRoad and not IsNearCrossWalk and not IsChasing`):
+    /// only a ped holding a disposable prop takes a bin; sit's `CanSitWithHandProp` passes without a prop.
+    #[test]
+    fn world_prop_transfer_reads_the_hand_prop() {
+        let c = |n: &str| Transfer::Condition { name: n.into(), params: vec![] };
+        let bin = Transfer::And(vec![c("HasDisposableHandProp"), Transfer::Not(vec![c("IsOnRoad")]), Transfer::Not(vec![c("IsNearCrossWalk")]), Transfer::Not(vec![c("IsChasing")])]);
+        let prop = PluginProp { id: 1, class: "waypoint_usetrashbin".into(), waypoints: vec![PluginWaypoint { position: [0.0; 3], facing: [0.0, 0.0, 1.0], occupant: None }], cooldown: 0.0, cooldown_reset: 0.0 };
+        let pass = |v: TransferView, t: &Transfer| t.evaluate(&mut |n, _| v.condition(n, &prop, [0.0, 0.0, 1.0]));
+        let pop = TransferView { hand_prop: true, disposable: true, can_sit: true, chasing: false };
+        assert!(pass(pop, &bin));
+        assert!(!pass(TransferView::default(), &bin), "no prop");
+        assert!(!pass(TransferView { disposable: false, ..pop }, &bin), "a newspaper is not disposable");
+        assert!(!pass(TransferView { chasing: true, ..pop }, &bin));
+        let sit = c("CanSitWithHandProp");
+        assert!(pass(TransferView::default(), &sit));
+        assert!(!pass(TransferView { hand_prop: true, ..Default::default() }, &sit));
+        // The vending machine: waypoint 0 free and the ped in front of it, no hand prop.
+        let vend = Transfer::And(vec![c("HasFirstWaypointAvailable"), c("InFrontOfFirstWaypoint"), Transfer::Not(vec![c("HasHandProp")])]);
+        assert!(pass(TransferView::default(), &vend));
+        assert!(!TransferView::default().condition("InFrontOfFirstWaypoint", &prop, [0.0, 0.0, -1.0]), "behind it");
+        let mut held = prop.clone();
+        held.waypoints[0].occupant = Some(9);
+        assert!(!TransferView::default().condition("HasFirstWaypointAvailable", &held, [0.0; 3]));
+    }
 
     fn bench() -> PluginProp {
         let w = |x: f32| PluginWaypoint { position: [x, 0.0, 0.0], facing: [0.0, 0.0, 1.0], occupant: None };
