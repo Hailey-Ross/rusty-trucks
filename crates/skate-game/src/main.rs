@@ -37,6 +37,7 @@ mod verification;
 mod performance;
 mod profiling;
 mod graphics_menu;
+mod fe_backdrop;
 mod retail_menus;
 mod retail_menu_movies;
 mod retail_menu_stage;

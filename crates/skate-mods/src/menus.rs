@@ -300,3 +300,44 @@ mod tests {
         assert!(valid_menu_id("ID_GAMESETTINGS_SFXVOLUME") && valid_menu_id("my-mod.Races") && !valid_menu_id("a b"));
     }
 }
+
+/// An FE screen id: the 16 lowercase hex digits of retail's per-screen key, plus `:n` when screens share the key
+/// (`sdk.menus.info().screens` lists them).
+pub fn valid_screen_key(s: &str) -> bool {
+    let (key, n) = s.split_once(':').unwrap_or((s, "0"));
+    key.len() == 16
+        && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && !n.is_empty()
+        && n.len() <= 2
+        && n.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `sdk.menus.backdrop(screen, options)`: the world behind an FE screen (blur on / off and the ramp). Unset fields
+/// keep the retail value (screen stack info table + FE manager ramp, doc 31 "Pause blur").
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackdropOptions {
+    #[serde(default)]
+    pub blur: Option<bool>,
+    /// Full blur strength (retail 8.0).
+    #[serde(default)]
+    pub strength: Option<f32>,
+    /// Strength change per FE tick (retail 0.8).
+    #[serde(default)]
+    pub step: Option<f32>,
+    /// Tint floor {r, g, b} 0..255 (retail {90, 85, 81}).
+    #[serde(default, deserialize_with = "crate::lua_list::opt_list")]
+    pub tint: Option<Vec<i32>>,
+    /// Tint change per FE tick (retail 15).
+    #[serde(default)]
+    pub tint_step: Option<i32>,
+}
+
+impl BackdropOptions {
+    pub fn validate(&self) -> bool {
+        self.strength.is_none_or(|v| v.is_finite() && (0.0..=64.0).contains(&v))
+            && self.step.is_none_or(|v| v.is_finite() && v > 0.0 && v <= 64.0)
+            && self.tint.as_ref().is_none_or(|t| t.len() == 3 && t.iter().all(|c| (0..=255).contains(c)))
+            && self.tint_step.is_none_or(|v| (1..=255).contains(&v))
+    }
+}

@@ -130,6 +130,18 @@ fn tu3_image_matches_the_documented_tables() {
     assert_eq!((t.templates[69].name.as_str(), t.templates[69].path.as_str()), ("CrossBar", "main/core_menu.swf"));
     assert_eq!((t.templates[90].name.as_str(), t.templates[90].path.as_str()), ("Options", "options/options.swf"));
     assert_eq!(t.templates[131].name, "TipsLoader");
+    // FE screen info table (doc 31 "Pause blur"): 72 records from 0x83026088; byte +4 = blur, set for these ids
+    // (56 = the pause crossbar).
+    assert_eq!(t.addresses["screen_info"], "0x83026088");
+    let blur: Vec<usize> = t.screens.iter().enumerate().filter(|(_, s)| s.blur).map(|(i, _)| i).collect();
+    assert_eq!(t.screens.len(), 72);
+    assert_eq!(t.screens[56].id, "b4b7976b40b3e837");
+    // Shared keys get a position: ids 0 / 32 / 49 share one.
+    assert_eq!((t.screens[0].id.as_str(), t.screens[49].id.as_str()), ("a774f79d33b6be83:0", "a774f79d33b6be83:2"));
+    assert_eq!(
+        blur,
+        [3, 9, 10, 11, 17, 18, 19, 20, 21, 26, 31, 32, 36, 37, 38, 39, 40, 43, 44, 45, 46, 47, 56, 57, 58, 59, 61, 63, 68, 69, 70, 71]
+    );
 }
 
 #[test]
@@ -158,6 +170,12 @@ fn disc_executable_gives_the_same_tables() {
             assert_eq!(a.iter().collect::<Vec<_>>(), b);
         }
         assert_eq!(t.categories, tu3.categories);
+        // 70 screens: TU3's minus its two inserted at ids 31 / 32, same keys and flags.
+        // (ids aside: TU3's 32 shares a key with 0 and 49, so the disc's 47 is position 1, not 2).
+        let mut tu3_screens = tu3.screens.clone();
+        tu3_screens.drain(31..33);
+        let strip = |s: &[skate_data::menu_tables::FeScreen]| s.iter().map(|s| (s.key.clone(), s.blur)).collect::<Vec<_>>();
+        assert_eq!(strip(&t.screens), strip(&tu3_screens));
         assert_eq!(t.keys, tu3.keys);
         let known: Vec<&str> = t.items.iter().map(|i| i.name.as_str()).collect();
         for mode in &t.modes {

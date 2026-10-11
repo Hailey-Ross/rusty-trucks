@@ -17,7 +17,7 @@ if open(xex, 'rb').read(4) != b'XEX2':
     print('Menu table extraction failed: Not an XEX2 executable', file=sys.stderr)
     sys.exit(1)
 item = {'name': 'A', 'label': 'B', 'icon': 'c', 'sub_option_kind': -1, 'help': 'd'}
-open(out, 'w').write(json.dumps({'schema': 1, 'items': [item, item], 'modes': [{'key': 'M'}], 'templates': [{'name': 'CrossBar', 'path': 'main/core_menu.swf', 'kind': 0}]}))
+open(out, 'w').write(json.dumps({'schema': 1, 'items': [item, item], 'modes': [{'key': 'M'}], 'templates': [{'name': 'CrossBar', 'path': 'main/core_menu.swf', 'kind': 0}], 'screens': [{'key': '0000000000000000', 'blur': True}]}))
 print('MENU_TABLES_READY')
 '''
 

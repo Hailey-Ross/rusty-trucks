@@ -587,6 +587,15 @@ function sdk.menus.movie(name, path) end
 ---@param path string
 function sdk.menus.bitmap(movie, bitmap, path) end
 
+---The world behind a front-end screen while it is on top: blur on / off and the ramp, by the
+---screen's retail id (sdk.menus.info().screens lists every id with its retail blur flag; the
+---pause menu is 'b4b7976b40b3e837'). Unset fields keep retail's values (strength 8.0, step 0.8 per
+---tick, tint {90, 85, 81}, tint_step 15); nil options drop this mod's override. The newest mod
+---wins; removed when the mod stops.
+---@param screen string
+---@param options {blur?:boolean,strength?:number,step?:number,tint?:integer[],tint_step?:integer}|nil
+function sdk.menus.backdrop(screen, options) end
+
 ---@class NativeContact
 ---@field a {kind:string,index?:integer} board, skater, external, or world
 ---@field b {kind:string,index?:integer}

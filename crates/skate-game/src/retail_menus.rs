@@ -499,6 +499,9 @@ fn handle(registry: &mut MenuRegistry, entry: EntryRef, owner: Owner, options: &
 
 /// Everything mod `id` did is removed (disable, reload, failure).
 pub(crate) fn clear_owner(world: &mut World, id: &str) {
+    if let Some(mut backdrop) = world.get_resource_mut::<crate::fe_backdrop::FeBackdrop>() {
+        backdrop.clear_owner(id);
+    }
     if let Some(mut movies) = world.get_resource_mut::<crate::retail_menu_movies::RetailMenuMovies>() {
         movies.clear_owner(id);
     }
@@ -510,6 +513,9 @@ pub(crate) fn clear_owner(world: &mut World, id: &str) {
 }
 
 pub(crate) fn clear_mods(world: &mut World) {
+    if let Some(mut backdrop) = world.get_resource_mut::<crate::fe_backdrop::FeBackdrop>() {
+        backdrop.clear_mods();
+    }
     if let Some(mut movies) = world.get_resource_mut::<crate::retail_menu_movies::RetailMenuMovies>() {
         movies.clear_mods();
     }
@@ -535,7 +541,8 @@ pub(crate) fn snapshot(world: &World) -> Value {
     let movies = world
         .get_resource::<crate::retail_menu_movies::RetailMenuMovies>()
         .map_or(Value::Null, |m| m.snapshot());
-    json!({"mode": menus.context.mode, "loaded": menus.loaded, "values": values, "movies": movies})
+    let screens = world.get_resource::<crate::fe_backdrop::FeBackdrop>().map_or(Value::Null, |b| b.snapshot());
+    json!({"mode": menus.context.mode, "loaded": menus.loaded, "values": values, "movies": movies, "screens": screens})
 }
 
 #[cfg(test)]

@@ -68,6 +68,18 @@ pub struct ScreenTemplate {
     pub kind: u32,
 }
 
+/// One FE screen stack record. Numeric ids differ between builds (TU3 inserts two), so `id` is the identity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FeScreen {
+    /// Stable identity: `key`, or `key:n` (n = position among the records sharing that key) when shared.
+    pub id: String,
+    /// The 64-bit value at +16 as 16 hex digits (posted as the focus message; four keys are shared by 2 to 5
+    /// screens, e.g. TU3 ids 0 / 32 / 49).
+    pub key: String,
+    /// Byte +4: the world behind this screen blurs while it is on top (the pause crossbar has it set).
+    pub blur: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AptKey {
     pub name: String,
@@ -116,6 +128,10 @@ pub struct MenuTables {
     /// Screen templates in registration order (empty in tables extracted before they were added).
     #[serde(default)]
     pub templates: Vec<ScreenTemplate>,
+    /// FE screens in id order (screen stack info table, 24-byte records; TU3 0x83026088, 72 records, the disc
+    /// build has 70). Empty in tables extracted before it was added.
+    #[serde(default)]
+    pub screens: Vec<FeScreen>,
     /// Table addresses in this build (diagnostics only).
     pub addresses: std::collections::BTreeMap<String, String>,
 }
@@ -575,6 +591,58 @@ fn templates(img: &Image) -> Result<(u32, Vec<ScreenTemplate>), String> {
     Ok((start, out))
 }
 
+// ---------------------------------------------------------------- FE screen info table
+
+const SCREEN_INFO_RECORD: u32 = 24;
+
+/// Located by code: the FE screen stack init (TU3 sub_825E8C40) loads the table with `lis rH,hi; li rN,count;
+/// addi rT,rH,lo` and stores the count with `stw rN,132(rStack)` a few instructions later.
+fn screen_info(img: &Image) -> Result<(u32, Vec<FeScreen>), String> {
+    let words: Vec<u32> = img.image.image.chunks_exact(4).map(|w| u32::from_be_bytes([w[0], w[1], w[2], w[3]])).collect();
+    let op = |w: u32| w >> 26;
+    let rd = |w: u32| (w >> 21) & 31;
+    let ra = |w: u32| (w >> 16) & 31;
+    let imm = |w: u32| w & 0xFFFF;
+    let mut found = Vec::new();
+    for i in 1..words.len().saturating_sub(8) {
+        let (o, n_reg, a, count) = (op(words[i]), rd(words[i]), ra(words[i]), imm(words[i]));
+        if o != 14 || a != 0 || !(16..=256).contains(&count) {
+            continue;
+        }
+        let (lo_op, h_reg, lo) = (op(words[i + 1]), ra(words[i + 1]), imm(words[i + 1]));
+        let (hi_op, hi_reg, hi_a, hi) = (op(words[i - 1]), rd(words[i - 1]), ra(words[i - 1]), imm(words[i - 1]));
+        if lo_op != 14 || hi_op != 15 || hi_a != 0 || hi_reg != h_reg {
+            continue;
+        }
+        let stores_count = words[i + 2..i + 8].iter().any(|w| op(*w) == 36 && rd(*w) == n_reg && imm(*w) == 132);
+        if !stores_count {
+            continue;
+        }
+        let table = (hi << 16).wrapping_add(lo as i16 as i32 as u32);
+        let flags: Option<Vec<FeScreen>> = (0..count)
+            .map(|id| {
+                let record = img.image.at(table + id * SCREEN_INFO_RECORD, SCREEN_INFO_RECORD as usize)?;
+                let key = record[16..24].iter().map(|b| format!("{b:02x}")).collect();
+                (record[4] <= 1).then(|| FeScreen { id: String::new(), key, blur: record[4] == 1 })
+            })
+            .collect();
+        if let Some(mut flags) = flags {
+            for i in 0..flags.len() {
+                let key = flags[i].key.clone();
+                let before = flags[..i].iter().filter(|s| s.key == key).count();
+                let shared = flags.iter().filter(|s| s.key == key).count() > 1;
+                flags[i].id = if shared { format!("{key}:{before}") } else { key };
+            }
+            found.push((table, flags));
+        }
+    }
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        0 => Err("FE screen info table not found".into()),
+        n => Err(format!("FE screen info table ambiguous ({n} candidates)")),
+    }
+}
+
 pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
     let img = Image { image };
     let (rows_at, settings_rows, settings_screens) = settings(&img)?;
@@ -582,6 +650,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
     let (keys_at, keys) = keys(&img)?;
     let modes = modes(&img, &categories, &items);
     let (templates_at, templates) = templates(&img)?;
+    let (screen_info_at, screens) = screen_info(&img)?;
     if modes.is_empty() {
         return Err("no per-mode crossbar menus found".into());
     }
@@ -592,6 +661,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         ("crossbar_items", items_at),
         ("apt_keys", keys_at),
         ("screen_templates", templates_at),
+        ("screen_info", screen_info_at),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), hex(v)))
@@ -606,6 +676,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         keys,
         modes,
         templates,
+        screens,
         addresses,
     })
 }

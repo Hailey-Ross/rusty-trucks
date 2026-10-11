@@ -568,6 +568,9 @@ pub enum Command {
     /// Replace one bitmap of a front-end APT movie by its stable id (movie import name + bitmap
     /// character id) with a PNG from the mod's folder.
     MenuBitmap { movie: String, bitmap: i32, path: String },
+    /// The backdrop of an FE screen by its retail screen key: blur on / off and the ramp; no options =
+    /// drop this mod's override.
+    MenuBackdrop { screen: String, #[serde(default)] options: Option<crate::menus::BackdropOptions> },
     CameraClearCapture {
         key: String,
     },
@@ -882,6 +885,7 @@ impl Command {
             Self::MenuSetValue { id, value } => crate::menus::valid_menu_id(id) && value.validate(),
             Self::MenuMovie { name, path } => !name.is_empty() && name.len() <= 160 && crate::audio_content::valid_content_path(path, &["json"]),
             Self::MenuBitmap { movie, bitmap, path } => !movie.is_empty() && movie.len() <= 160 && (0..=0xFFFF).contains(bitmap) && crate::graphics_dynamic::valid_texture_path(path),
+            Self::MenuBackdrop { screen, options } => crate::menus::valid_screen_key(screen) && options.as_ref().is_none_or(crate::menus::BackdropOptions::validate),
             Self::CameraClearCapture { key } => crate::schema::valid_id(key),
         }
     }
@@ -988,6 +992,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::MenuUnhandle { .. } => "menu_unhandle",
         Command::MenuSetValue { .. } => "menu_set_value",
         Command::MenuMovie { .. } => "menu_movie",
+        Command::MenuBackdrop { .. } => "menu_backdrop",
         Command::MenuBitmap { .. } => "menu_bitmap",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
@@ -2744,6 +2749,13 @@ mod empty_table_lists {
         assert!(matches!(bitmap, Command::MenuBitmap { bitmap: 2, .. }) && bitmap.validate());
         assert!(!eval("return {kind='menu_bitmap', movie='source/screens/main/core_menu', bitmap=-1, path='fe/glow.png'}").validate());
         assert!(!eval("return {kind='menu_bitmap', movie='source/screens/main/core_menu', bitmap=2, path='fe/glow.json'}").validate());
+        let backdrop = eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={blur=true, tint={30, 30, 30}, step=0.4}}");
+        assert!(matches!(&backdrop, Command::MenuBackdrop { options: Some(o), .. } if o.tint == Some(vec![30, 30, 30])) && backdrop.validate());
+        assert!(eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837'}").validate());
+        assert!(!eval("return {kind='menu_backdrop', screen='56'}").validate());
+        assert!(eval("return {kind='menu_backdrop', screen='a774f79d33b6be83:1'}").validate());
+        assert!(!eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={tint={1, 2}}}").validate());
+        assert!(!eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={step=0}}").validate());
         assert!(matches!(eval("return {kind='menu_set_value', id='a', value=0.25}"), Command::MenuSetValue { value: crate::menus::MenuValue::Float(v), .. } if v == 0.25));
     }
 }

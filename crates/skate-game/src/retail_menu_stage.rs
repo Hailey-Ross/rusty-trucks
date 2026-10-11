@@ -193,6 +193,7 @@ fn update(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut sounds: MessageWriter<FrontendSound>,
+    mut backdrop: ResMut<crate::fe_backdrop::FeBackdrop>,
 ) {
     let (Some(mut ms), Some(movies), Some(menus)) = (stage, movies, menus) else { return };
     if ms.failed {
@@ -289,6 +290,8 @@ fn update(
         }
     }
     ms.crossbar = fe.state;
+    // FE screen stack: the pause crossbar alone (FE id 56) while it is open; retail applies its blur flag on push.
+    backdrop.set_stack(ms.screen.map(|_| crate::fe_backdrop::PAUSE_SCREEN.to_owned()).into_iter().collect());
     if let Err(e) = result {
         error!("RETAIL_MENUS stage stopped: {e}");
         ms.failed = true;

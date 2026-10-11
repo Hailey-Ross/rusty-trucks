@@ -798,7 +798,7 @@ no-op).
 - FIXED (title / category overlap): a clip whose `_x` / `_y` a script set no longer follows its timeline's
   placement (`Movie::script_moved`, stage only; Flash rule, NOT RETAIL YET: retail's flag is not traced). The
   header now reads "Free Play > Main" like retail.
-- No selected-row highlight yet; the blur / dim behind the pause menu is not found (`pause-backdrop.md`).
+- No selected-row highlight yet. The blur behind the pause menu: see "Pause blur" below.
 - Boot registration ported (`retail_menu_stage::boot_registration`, on Game.ScreenManagerReady like retail
   825D9450; research `.local/research/boot-enums.md`, main-checked path indices 28 / 30 / 31 / 32 / 33 / 46): the
   56 Apt keys as RegisterAptInputEnum(name, key INDEX) (retail registers the index, not the record's key code),
@@ -816,7 +816,65 @@ no-op).
   path are not ported. GetProgressionData reads context facts (`progression_*`), -1 (panel hidden) by default.
 - Hooking CoreMenu and the handler into the stage, the Game natives, drawing, input and the FE screen stack are next.
 
+## Pause blur: the world behind FE screens (2026-10-10)
+
+### Problem
+Retail blurs and darkens the world behind the pause menu; our dev view drew the menu over a sharp world, and how
+retail switches the blur on for the pause menu was not known (`pause-backdrop.md`, `pause-blur.md`).
+
+### Evidence (TU3 recomp addresses; research `.local/research/pause-blur-link.md`, all main-checked)
+- [code] Pause open (sub_825EB998) queues a push of FE id 56 on the FE screen stack. The stack's push / replace /
+  pop handlers (sub_82D09B00 .. sub_82D09DE0) call vt+28 with byte +4 of the top screen's record in the info table
+  at [stack+148]; pop applies the new top's byte, an empty stack applies 0.
+- [code] vt+28 of the stack vtable 0x823048E0 (pointer at 0x823048FC) = sub_825EBED8: stores the flag at FE manager
+  +461 and, on an off -> on change only, resets the tint (+476 / +480 / +484) to 255 and the strength (+468 / +472)
+  to 0.0.
+- [data] The info table: 0x83026088, 72 records of 24 bytes (stack init sub_825E8C40: `li r8,72; addi r7,r9,24712`,
+  `stw r8,132(r25)`). Byte +4 is set for 32 screens, including 56 (the pause crossbar) and 69. The 64-bit value at
+  +16 is the same per screen in every build (the disc build has 70 records, TU3 inserts two at ids 31 / 32; equal
+  to TU3's key by key, test `disc_executable_gives_the_same_tables`), but four keys are shared (TU3 ids 0 / 32 / 49,
+  5 / 6 / 7 / 8 / 22, 9 / 10, 12 / 13; research `.local/research/fe-stack-port.md`, main-checked in both builds).
+  Our screen id is the key, plus `:n` (position among the records sharing it) when shared; a shared-key id can
+  differ between builds (TU3 49 = `:2`, disc 47 = `:1`), setup always extracts the disc's.
+- [code + data] FE manager tick sub_825D8E68: while on, tint -15 per tick down to (90, 85, 81) (a global flag at
+  [0x83083C38]+32764 picks (30, 30, 30) instead) and strength +0.8 (0x8208824C) up to 8.0 (0x82099250); while off,
+  tint +15 back to 255 and strength -0.8 to 0. A second byte (+462) gives a blur-only ramp while off (not used by
+  the pause path, not ported).
+
+### Change
+- `skate-core/src/fe_blur.rs` (new): `FeBlur` (set_enabled = sub_825EBED8, tick = sub_825D8E68 with retail's
+  clamps, `advance` at the console's 30 Hz cadence so any frame rate gives the same ramp), `FeBlurParams::RETAIL`.
+- `skate-data` menu_tables: `screens` (`FeScreen { id, key, blur }`), located by the stack init's code pattern (works on
+  both builds); setup re-extracts the tables because `menu_tables.py` now requires `screens`.
+- `skate-game/src/fe_backdrop.rs` + `fe_backdrop.wgsl` (new): the FE stack's top screen key decides on / off
+  (retail flag, then mod overrides, newest last); a two-pass blur + tint on the gameplay camera after the retail
+  tone pass and before the UI pass, so the menu stays sharp and the exposure meter sees the undimmed world. The dev
+  view pushes the pause screen (id `b4b7976b40b3e837`, TU3 id 56) while it is open.
+- Mods: `sdk.menus.backdrop(screen_id, {blur, strength, step, tint={r,g,b}, tint_step})`, nil options drops the
+  mod's override, removed when the mod stops; `sdk.menus.info().screens` lists every id with its retail flag.
+
+### NOT RETAIL YET
+- The blur kernel: retail's blur pass (sub_827F7270, renderer +3292 / pass bit 0x40) is not ported; ours is a
+  17-tap gaussian whose radius is the strength in pixels at 720 lines (assumed). The tint multiplies the displayed
+  colour (tint alpha is 0.0 in retail; assumed multiply).
+- The tick rate of the FE manager is not measured (assumed 30 Hz: about 0.37 s to full tint).
+- The alternative (30, 30, 30) floor and the +462 blur-only mode are not ported.
+
+### Verification
+- `cargo test -p skate-core fe_blur`: the ramp step by step against the clamps above, restart only on off -> on,
+  the same result at 30 and 120 fps.
+- `cargo test -p skate-data --test menu_tables -- --ignored`: the TU3 table address, the 32 blur ids, the pause key
+  at id 56; the disc table equals TU3's minus ids 31 / 32.
+- `cargo test -p skate-mods`, `cargo test -p skate-game fe_backdrop`: command validation, retail flag then the
+  newest mod wins, cleanup per mod.
+
 ## Files
+- Pause blur: `crates/skate-core/src/fe_blur.rs` (new), `lib.rs`; `crates/skate-game/src/fe_backdrop.rs`,
+  `fe_backdrop.wgsl` (new), `retail_menu_stage.rs`, `retail_exposure.rs` (label), `retail_menus.rs` (cleanup,
+  snapshot), `modding/mod.rs`, `app.rs`, `main.rs`; `crates/skate-mods/src/menus.rs`, `vm.rs`, `api.lua`;
+  `sdk/skate.lua`;
+  `crates/skate-data/src/menu_tables.rs` (`FeScreen`, `screens`), `tests/menu_tables.rs`;
+  `tools/asset_pipeline/menu_tables.py`, `test_menu_tables.py`
 - Milestone 6: `crates/skate-core/src/crossbar.rs` (new), `lib.rs`; `crates/skate-game/src/crossbar_host.rs`
   (new), `fe_language.rs` (new), `retail_menu_stage.rs` (new), `apt_stage.rs`, `apt_scene.rs`, `apt_movie.rs`,
   `apt_vm.rs`, `retail_menu_movies.rs`, `scoring_hud.rs` (`render_draws`), `app.rs`, `main.rs`;
