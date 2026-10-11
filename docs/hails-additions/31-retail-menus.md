@@ -925,7 +925,41 @@ manager whose per-screen records also suspend gameplay, show the chyron and set 
 - Screenshot `.local/research/menus-m6/stack.png`: the pause menu through the stack, the world blurred and tinted,
   gameplay suspended (physics 0.01 ms), the selected row's glow animating.
 
+## Pad input (2026-10-10)
+
+### Problem
+The dev view read four keyboard keys; retail turns pad input into Apt key indices through its input map and hands
+them to the top screen's C++ handler and then its movie.
+
+### Evidence (research `.local/research/fe-input.md`)
+- [data, main-checked] The install's stock `input.cfg` defines all 56 Apt keys of the extracted key table
+  (`AptStart = Start.pressed;`, `AptUp = LStickU.repeat || DPadU.repeat;`, `AptUpReleased = ...released`).
+- [code, agent] The FE poll sub_825DFDC8 evaluates the 56 keys in table order for every connected controller and
+  calls the stack's input handler sub_825EC0E8 with the key index; that offers AptStart to the pause opener
+  sub_825EB998, then the main top's C++ handler (crossbar sub_8261B560, which consumes only its close branch),
+  then the movie's `ScreenManager.UpdateInput(id, key, controller)` when the screen's record +12 is set.
+
+### Change
+- `skate-core/src/fe_input.rs` (new): `parse_apt_keys` (Apt expressions over the 24 native slots, key-table
+  order), `FeInput` (held / pressed / released / repeat edges per slot), `RepeatRule` (data), `fired`.
+- `retail_menu_stage.rs`: every controller through `xbox::convert` (the gameplay conversion) plus the keyboard on
+  controller 0's slots; AptStart opens / closes the pause screen; other keys go to the crossbar handler, then to
+  UpdateInput unless consumed; input only while the stack gives the pause screen input.
+  `SKATE3_RETAIL_MENUS_KEYS` injects key indices for screenshot checks. With the dev view on, pad Start no longer
+  opens the overlay menu, and the overlay ignores Escape / Start while a retail screen holds gameplay.
+- NOT RETAIL YET: repeat delay 0.35 s, period 0.09 s and the held threshold 0.5 are our current menus' values;
+  retail's are not found yet (`.local/research/input-repeat.md`). Start closing the open pause menu is unverified.
+
+### Verification
+- `cargo test -p skate-core fe_input`: parsing in key order, unknown slots rejected, press / repeat / release,
+  threshold, pressed keys do not repeat.
+- Screenshot `.local/research/menus-m6/input.png` (`SKATE3_RETAIL_MENUS_KEYS=13`): one AptDown skips the greyed
+  rows to skate.Profile ("View your career profile"); the movie's UpdateInput after the handler changes nothing
+  else.
+
 ## Files
+- Pad input: `crates/skate-core/src/fe_input.rs` (new), `lib.rs`; `crates/skate-game/src/retail_menu_stage.rs`,
+  `graphics_menu.rs` (Start / Escape gating)
 - Screen stack: `crates/skate-core/src/fe_stack.rs` (new), `lib.rs`; `crates/skate-game/src/retail_menu_stage.rs`,
   `fe_backdrop.rs` (index, info), `graphics_menu.rs` (`fe_suspended`), `game_audio/mod.rs`;
   `crates/skate-data/src/menu_tables.rs` (record fields), `tests/menu_tables.rs`

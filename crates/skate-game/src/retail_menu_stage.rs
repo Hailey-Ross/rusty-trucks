@@ -6,7 +6,9 @@
 //! movie through `_global.ScreenManager.SetScreenState` like retail's C++. The current overlay menu is untouched;
 //! swapping it out is a later milestone.
 //!
-//! NOT RETAIL YET: the keys are a dev mapping, not retail's pad path (sub_825EC0E8) and its repeat.
+//! Input: the pad (all four controllers) and the keyboard (arrows = d-pad, Enter = A, Backspace = B, F8 = Start)
+//! feed retail's Apt actions (`skate_core::fe_input`); `SKATE3_RETAIL_MENUS_KEYS=13,13,2` injects key indices
+//! once the menu is ready (screenshot checks). NOT RETAIL YET: the repeat timing (see fe_input).
 use crate::{
     apt_stage::Stage,
     apt_vm::Value,
@@ -22,11 +24,14 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 use skate_core::crossbar::{CrossbarAction, CrossbarRules, CrossbarState, NavEvent};
+use skate_core::fe_input::{fired, parse_apt_keys, AptKey, FeInput, RepeatRule};
 use skate_core::fe_stack::{Effect, FeStack, Layer, Request};
 use skate_core::menus::{EntryRef, MenuAction, Outcome, Owner};
 use std::collections::BTreeMap;
 
 const CROSSBAR: &str = "CrossBar";
+/// Key index of AptStart (Apt key table record 0).
+const APT_START: u32 = 0;
 /// The pause menu template's path under `source/screens/` (template table 0x8302F1A8, record 69).
 const CROSSBAR_PATH: &str = "main/core_menu.swf";
 const CROSSBAR_ENUMS: [&str; 6] =
@@ -50,12 +55,24 @@ struct MenuStage {
     auto_open: bool,
     /// The pause menu's AS screen id (600 + template index; retail 669).
     crossbar_id: i32,
+    /// Retail Apt keys in key-table order (input.cfg expressions).
+    apt_keys: Vec<AptKey>,
+    pads: [FeInput; 4],
+    repeat: RepeatRule,
+    /// `SKATE3_RETAIL_MENUS_KEYS`: key indices to inject, one per frame, while the pause menu takes input.
+    injected: std::collections::VecDeque<u32>,
+}
+
+/// The dev view is on (`SKATE3_RETAIL_MENUS=1`).
+pub(crate) fn enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SKATE3_RETAIL_MENUS").as_deref() == Ok("1"))
 }
 
 pub(crate) struct RetailMenuStagePlugin;
 impl Plugin for RetailMenuStagePlugin {
     fn build(&self, app: &mut App) {
-        if std::env::var("SKATE3_RETAIL_MENUS").as_deref() != Ok("1") {
+        if !enabled() {
             return;
         }
         app.add_systems(PostStartup, setup).add_systems(Update, (update, render).chain());
@@ -108,6 +125,49 @@ fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::P
     stage.call_path("_level0._root.SetScreenEdgeOffset", vec![text("136")], fe)?;
     stage.call_path("_level0._root.UpdatePALMode", vec![text("false")], fe)?;
     Ok(crossbar_id)
+}
+
+/// The Apt keys: names from the menu tables' key table, expressions from the install's stock input.cfg.
+fn apt_keys(assets: &std::path::Path) -> Vec<AptKey> {
+    let names: Vec<String> = std::fs::read_to_string(assets.join(crate::retail_menus::TABLES))
+        .ok()
+        .and_then(|t| skate_data::menu_tables::MenuTables::from_json(&t).ok())
+        .map(|t| t.keys.into_iter().map(|k| k.name).collect())
+        .unwrap_or_default();
+    let cfg = std::fs::read_to_string(assets.join(skate_data::input_config::STOCK_INPUT_PATH)).unwrap_or_default();
+    parse_apt_keys(&cfg, &names).unwrap_or_else(|e| {
+        warn!("RETAIL_MENUS input.cfg: {e}");
+        Vec::new()
+    })
+}
+
+/// The keys fired this frame per controller (FE poll sub_825DFDC8: every connected controller, keys in table
+/// order). The keyboard drives controller 0's slots.
+fn poll_keys(ms: &mut MenuStage, keys: &ButtonInput<KeyCode>, seconds: f32) -> Vec<(u32, usize)> {
+    let mut out = Vec::new();
+    for controller in 0..4 {
+        let mut values = crate::input::platform::poll(controller)
+            .map(|p| skate_core::input::xbox::convert(&p.state, u8::from(p.subtype == 7)))
+            .unwrap_or([0.0; 24]);
+        if controller == 0 {
+            for (key, slot) in [
+                (KeyCode::ArrowUp, 0),
+                (KeyCode::ArrowDown, 1),
+                (KeyCode::ArrowLeft, 2),
+                (KeyCode::ArrowRight, 3),
+                (KeyCode::F8, 4),
+                (KeyCode::Enter, 12),
+                (KeyCode::Backspace, 13),
+            ] {
+                if keys.pressed(key) {
+                    values[slot] = 1.0;
+                }
+            }
+        }
+        let edges = ms.pads[controller].update(&values, seconds, &ms.repeat);
+        out.extend(fired(&ms.apt_keys, &edges).into_iter().map(|k| (k, controller)));
+    }
+    out
 }
 
 fn front_end<'a>(
@@ -183,6 +243,14 @@ fn setup(
                 failed: false,
                 auto_open: std::env::var("SKATE3_RETAIL_MENUS_OPEN").as_deref() == Ok("1"),
                 crossbar_id,
+                apt_keys: apt_keys(&config.asset_root),
+                pads: Default::default(),
+                repeat: RepeatRule::DEFAULT,
+                injected: std::env::var("SKATE3_RETAIL_MENUS_KEYS")
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|k| k.trim().parse().ok())
+                    .collect(),
             });
         }
         Err(e) => error!("RETAIL_MENUS stage failed: {e}"),
@@ -207,6 +275,8 @@ fn update(
     let ms = &mut *ms;
     // The pause crossbar in this build's screen table (TU3 FE id 56); none in tables extracted before screens.
     let pause = backdrop.index(crate::fe_backdrop::PAUSE_SCREEN);
+    // Retail Apt keys fired this frame (pad and keyboard).
+    let mut fired = poll_keys(ms, &keys, time.delta_secs());
     let mut fe = front_end(&menus, &ms.language, ms.crossbar.clone());
     // The item selected this frame: dispatched through the registry once the movie work is done.
     let mut selected: Option<String> = None;
@@ -214,26 +284,29 @@ fn update(
         let id = ms.crossbar_id;
         let auto = ms.auto_open && time.elapsed_secs() > 4.0;
         ms.auto_open &= !auto;
-        if keys.just_pressed(KeyCode::F8) || auto {
-            // Retail Start (sub_825EB998) pushes FE 56 with the plain push; back at level 1 closes it (op 5).
-            match pause {
-                Some(p) if ms.stack.active(p) => ms.stack.request(Layer::Main, Request::Close { screen: p }),
-                Some(p) => ms.stack.request(Layer::Main, Request::push(p)),
-                None => warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup)"),
+        if auto {
+            fired.insert(0, (APT_START, 0));
+        }
+        if ms.stack.input_target().is_some() && pause.is_some() && ms.stack.input_target() == pause {
+            fired.extend(ms.injected.pop_front().map(|k| (k, 0)));
+        }
+        for (key, controller) in fired {
+            if key == APT_START {
+                // Retail Start (sub_825EB998, mode 0) pushes FE 56 with the plain push. NOT RETAIL YET (unverified):
+                // Start while it is open closes it.
+                match pause {
+                    Some(p) if ms.stack.active(p) => ms.stack.request(Layer::Main, Request::Close { screen: p }),
+                    Some(p) => ms.stack.request(Layer::Main, Request::push(p)),
+                    None => warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup)"),
+                }
+                continue;
             }
-        } else if pause.is_some() && ms.stack.input_target() == pause {
-            let event = [
-                (KeyCode::ArrowUp, NavEvent::Up),
-                (KeyCode::ArrowDown, NavEvent::Down),
-                (KeyCode::ArrowLeft, NavEvent::TabLeft),
-                (KeyCode::ArrowRight, NavEvent::TabRight),
-                (KeyCode::Enter, NavEvent::Select),
-                (KeyCode::Backspace, NavEvent::Back),
-            ]
-            .into_iter()
-            .find(|(k, _)| keys.just_pressed(*k))
-            .map(|(_, e)| e);
-            if let Some(event) = event {
+            let Some(p) = pause.filter(|p| ms.stack.input_target() == Some(*p)) else { continue };
+            // sub_825EC0E8: the screen's C++ handler first (crossbar sub_8261B560), then the movie's UpdateInput when
+            // the handler did not consume the key and the screen's record says so (+12). The crossbar consumes
+            // only its close branch.
+            let mut consumed = false;
+            if let Some(event) = NavEvent::from_key_index(key) {
                 let out = fe.state.handle(event, &fe.view, &ms.rules, false);
                 if let Some(sound) = &out.sound {
                     sounds.write(FrontendSound::named(sound));
@@ -248,15 +321,21 @@ fn update(
                 }
                 match out.action {
                     Some(CrossbarAction::Close) => {
-                        if let Some(p) = pause {
-                            ms.stack.request(Layer::Main, Request::Close { screen: p });
-                        }
+                        consumed = true;
+                        ms.stack.request(Layer::Main, Request::Close { screen: p });
                     }
                     Some(CrossbarAction::SelectItem { tab, row }) => {
                         selected = fe.view.item(tab, row).map(str::to_owned);
                     }
                     _ => {}
                 }
+            }
+            if !consumed && backdrop.info(p).input_to_movie {
+                ms.stage.call_path(
+                    "_global.ScreenManager.UpdateInput",
+                    vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())],
+                    &mut fe,
+                )?;
             }
         }
         // The stack's update (sub_82D0A560) and what it asks of the movies and the game.

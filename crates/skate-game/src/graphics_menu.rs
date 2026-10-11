@@ -402,7 +402,10 @@ pub(crate) fn interact(
     if travel.open || travel.closed_this_frame || customiser.open || custom_models.open || mods.open {
         return;
     }
-    if keys.just_pressed(KeyCode::Escape) || nav.pressed & 0x10 != 0 || (menu.open && nav.pressed & 0x2000 != 0) {
+    // With the retail menus' dev view on, pad Start belongs to the retail pause menu; nothing opens this menu while
+    // a retail screen holds gameplay.
+    let pad_start = nav.pressed & 0x10 != 0 && !crate::retail_menu_stage::enabled();
+    if !menu.fe_suspended && (keys.just_pressed(KeyCode::Escape) || pad_start || (menu.open && nav.pressed & 0x2000 != 0)) {
         if menu.open && menu.multiplayer && (menu.browser || menu.network_page != 0) {
             menu.browser = false; if menu.network_page==1 {menu.browser=true;menu.network_page=0;menu.selected=8;} else {let from_debug=menu.network_page==4;menu.network_page = 0; menu.selected = if from_debug {15} else {2};}
         } else if menu.open && menu.map_detail {

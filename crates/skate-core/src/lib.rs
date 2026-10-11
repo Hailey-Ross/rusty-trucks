@@ -13,6 +13,7 @@ pub mod math;
 pub mod menu_values;
 pub mod crossbar;
 pub mod fe_blur;
+pub mod fe_input;
 pub mod fe_stack;
 pub mod menus;
 pub mod physics;
