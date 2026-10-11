@@ -24,6 +24,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 **How to use logging**
 - Start the game with `PLAY-WITH-LOG.bat`. It saves the whole session to `logs\game-<date>-<time>.stderr.log` next to the exe and shows the file name when you quit. One file per session.
 - Peds are logged too: the log notes your position and the nearest ped every 2.5 s, and any ped drawn floating above the floor gets a `PED_FLOATING` line with its exact position, so a floating ped can be found from the log alone.
+- The menus and rumble are logged as well: every menu key you press and which screen took it, what opened and closed, every setting you changed (old and new value) and every rumble with its pad. Zombie mode logs when it is on and how many peds are following you.
 - If the game closes on its own, it also writes a crash report to `%LOCALAPPDATA%\Skate3RustEngine\CrashReports` (paste that path into Explorer's address bar). The crash report is short; please attach the session log as well.
 - For frame rate problems, turn on **GRAPHICS > Frame-time counter** before you play. It shows the 1 % low, the worst frame and hitches (a plain FPS average hides stutter); include a screenshot or video of it with your report.
 - Try to keep one problem per session: start a session, reproduce it, quit. Note roughly when it happened (minutes in) and where (map and spot). A short video makes it much easier.
