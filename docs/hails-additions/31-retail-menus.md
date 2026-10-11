@@ -1298,6 +1298,40 @@ FE screen records (Start then falls back to the PC overlay).
 - Screenshot (`SKATE_VERIFY_MENU=stale`): chip, Game Files section, the row and both description lines.
 - Open: the restart into setup is not run end to end (it needs a release package's setup helper).
 
+## Opt-in features in the PC overlay (2026-10-11)
+
+User: "anything opt in should be added as a setting to the guide overlay that can be toggled on and off if they arent already".
+
+### Problem
+Two player-facing opt-ins on this branch had no overlay row: the non-retail "more audible" world layout (only
+`settings/audio.json` `"more_audible_world": true` by hand, or `SKATE_AUDIO_MORE_AUDIBLE=1`) and setup's speech
+decode (`SKATE_SETUP_SPEECH=1` in the environment of a setup run, about 3.4 GB for the world, main cast and
+announcer speech). Without the decode, ped speech is chosen and logged but silent.
+
+### Change
+- PC overlay, Graphics: a new "Opt-In Features" group after Living World (header 913) with **More Audible World**
+  (row 32: Retail / On, saved in `settings/audio.json`, takes effect at the next start because the runtime picks
+  its instance counts at launch; Y / R resets it to Retail) and **Ped Speech** (row 33: Off / On, saved as
+  `decode_speech` in `settings/audio.json`). The living world branch adds its opt-ins (zombie mode, NPC skater
+  physics, skitching, prop grab) to the same group where both branches meet (doc 26b "Opt-in switches in the PC
+  overlay").
+- Ped Speech on without decoded takes (`private/audio/speech/livingworld` empty or missing) marks the `audio`
+  group stale, so Extras shows **Refresh Game Files** and the title chip says GAME FILES OUT OF DATE; the same
+  check runs at every start while the choice is on (a cancelled refresh asks again). `setup::asset_root` passes
+  `SKATE_SETUP_SPEECH=1` to the setup helper when the install's saved choice is on (logged
+  `SETUP: speech decode asked for`). Off keeps the decoded takes; setup skips the decode from the next refresh.
+- `SKATE_VERIFY_MENU=optin` opens the overlay on the group for screenshots.
+
+### Verification
+- `cargo test -p skate-game --bin skate3rust -- graphics_menu game_audio::tests setup`: all pass except the known
+  upstream failure `pipelines_accept_valid_group_outputs_when_fingerprint_changes`. New test
+  `speech_decode_choice_reaches_setup`.
+- Screenshot on DownTown (`SKATE_VERIFY_MENU=optin`): the group header, both rows and the Ped Speech description.
+- Found while taking it: with `--test-world` the overlay capture (`SKATE_VERIFY_MENU=optin` and the older `npc`)
+  panics in wgpu ("fe backdrop" pipeline Rgba16Float vs the Rgba8UnormSrgb pass); on a real map it renders. Not
+  caused by this change; open.
+- Open: the refresh with the decode is not run end to end (it needs a release package's setup helper).
+
 ## Files
 - Out-of-date prompt: `crates/skate-game/src/asset_check.rs` (new), `setup.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`
 - Stored settings: `crates/skate-game/src/retail_menus.rs` (`StoredSettings`, `setting`), `scoring_hud.rs`
