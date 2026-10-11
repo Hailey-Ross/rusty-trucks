@@ -121,6 +121,15 @@ fn tu3_image_matches_the_documented_tables() {
     assert_eq!(t.mode("Career").unwrap().vtable, "0x82303D54");
     assert_eq!(t.mode("CareerPark").unwrap().vtable, "0x82303D04");
     assert_eq!((t.settings_rows.len(), t.items.len(), t.modes.len()), (36, 49, 9));
+    // Screen templates (doc 31 Milestone 6): 133 records from 0x8302F1A8; 12 Background = FE_root, 69 CrossBar,
+    // 90 Options, 131 TipsLoader.
+    assert_eq!(t.addresses["screen_templates"], "0x8302F1A8");
+    assert_eq!(t.templates.len(), 133);
+    assert_eq!((t.templates[0].name.as_str(), t.templates[0].path.as_str()), ("Ignore", ""));
+    assert_eq!((t.templates[12].name.as_str(), t.templates[12].path.as_str()), ("Background", "main/FE_root.swf"));
+    assert_eq!((t.templates[69].name.as_str(), t.templates[69].path.as_str()), ("CrossBar", "main/core_menu.swf"));
+    assert_eq!((t.templates[90].name.as_str(), t.templates[90].path.as_str()), ("Options", "options/options.swf"));
+    assert_eq!(t.templates[131].name, "TipsLoader");
 }
 
 #[test]

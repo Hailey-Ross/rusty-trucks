@@ -28,7 +28,7 @@ def convert(game_exe, xex, assets, log=None):
         output.unlink(missing_ok=True)
         raise RuntimeError('Menu table extraction failed: ' + (text.strip().splitlines() or ['no output'])[-1])
     tables = json.loads(output.read_text(encoding='utf-8'))
-    if tables.get('schema') != 1 or not tables.get('items') or not tables.get('modes'):
+    if tables.get('schema') != 1 or not tables.get('items') or not tables.get('modes') or not tables.get('templates'):
         output.unlink(missing_ok=True)
         raise ValueError('Menu tables are incomplete')
     return len(tables['items'])

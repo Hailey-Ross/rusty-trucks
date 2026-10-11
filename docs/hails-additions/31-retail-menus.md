@@ -804,8 +804,13 @@ no-op).
   56 Apt keys as RegisterAptInputEnum(name, key INDEX) (retail registers the index, not the record's key code),
   FE_SOUND_<NAME> = record name for all fe records (from the install's audio manifest), SetPlatform "0",
   SetScreenSize 1280 / 720, SetScreenEdgeOffset 136, UpdatePALMode false. Audio.PlaySound from the movies plays
-  the fe record. Open: only the CrossBar template (retail registers 133 in table order: AS id 669, ours 600; the
-  template table needs extracting), the 191 challenge enums, RefreshSubtitle.
+  the fe record. Open: the 191 challenge enums, RefreshSubtitle.
+- Screen templates extracted (`skate-data` menu_tables `templates`, located by the record whose path is
+  "main/core_menu.swf", walked both ways): TU3 133 records at 0x8302F1A8 (0 Ignore, 12 Background = FE_root,
+  69 CrossBar, 90 Options, 131 TipsLoader; test `tu3_image_matches_the_documented_tables`); the disc build's table
+  is at 0x82FD33E8. The stage registers all of them in order, so the pause menu's AS id is 669 like retail (600
+  with tables extracted before this; setup re-extracts because `asset_pipeline/menu_tables.py` now requires
+  templates).
 - Sub-option label and helper tables (0x83027958 / 0x83027A00) are not extracted: GetSubOptionName returns `#`.
 - Label overrides (SignIn / sign out, ReplayEditor instant replay, PartyPlay literal) and the online team pending
   path are not ported. GetProgressionData reads context facts (`progression_*`), -1 (panel hidden) by default.
@@ -815,7 +820,9 @@ no-op).
 - Milestone 6: `crates/skate-core/src/crossbar.rs` (new), `lib.rs`; `crates/skate-game/src/crossbar_host.rs`
   (new), `fe_language.rs` (new), `retail_menu_stage.rs` (new), `apt_stage.rs`, `apt_scene.rs`, `apt_movie.rs`,
   `apt_vm.rs`, `retail_menu_movies.rs`, `scoring_hud.rs` (`render_draws`), `app.rs`, `main.rs`;
-  `tools/prepare_menu_movies.py` (set v4), `tools/vendor/skate3_ui/actions.py` (getURL)
+  `tools/prepare_menu_movies.py` (set v4), `tools/vendor/skate3_ui/actions.py` (getURL);
+  `crates/skate-data/src/menu_tables.rs` (`ScreenTemplate`, `templates`), `crates/skate-data/tests/menu_tables.rs`,
+  `tools/asset_pipeline/menu_tables.py`, `test_menu_tables.py`
 - Milestone 5a: `crates/skate-game/src/apt_stage.rs` (new), `apt_movie.rs`, `apt_vm.rs`, `main.rs` (module)
 - `crates/skate-data/src/menu_tables.rs` (extractor, JSON, conversion), `crates/skate-data/tests/menu_tables.rs`
 - `crates/skate-core/src/menus.rs`, `menus_tests.rs` (registry), `menu_values.rs` (value rules, milestone 2)

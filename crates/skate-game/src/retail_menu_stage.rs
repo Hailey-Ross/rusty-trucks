@@ -6,8 +6,7 @@
 //! movie through `_global.ScreenManager.SetScreenState` like retail's C++. The current overlay menu is untouched;
 //! swapping it out is a later milestone.
 //!
-//! NOT RETAIL YET: only the CrossBar template is registered (retail registers all 133 in table order, so its AS id
-//! is 669, ours 600); the keys are a dev mapping, not retail's pad path (sub_825EC0E8) and its repeat.
+//! NOT RETAIL YET: the keys are a dev mapping, not retail's pad path (sub_825EC0E8) and its repeat.
 use crate::{
     apt_stage::Stage,
     apt_vm::Value,
@@ -46,6 +45,8 @@ struct MenuStage {
     failed: bool,
     /// `SKATE3_RETAIL_MENUS_OPEN=1`: open the pause menu on the first update (screenshot checks).
     auto_open: bool,
+    /// The pause menu's AS screen id (600 + template index; retail 669).
+    crossbar_id: i32,
 }
 
 pub(crate) struct RetailMenuStagePlugin;
@@ -63,12 +64,21 @@ impl Plugin for RetailMenuStagePlugin {
 /// (value = key index, the same index UpdateInput passes), FE_SOUND_<NAME> = "<name>" per fe record, then
 /// platform "0", screen size 1280 x 720, edge offset "136", PAL mode "false". The 191 challenge enums
 /// (eChallengeTypes ..) and RefreshSubtitle are not registered yet (no menu reads them so far).
-fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::Path) -> Result<(), String> {
+fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::Path) -> Result<i32, String> {
     let text = |s: &str| Value::Text(s.into());
-    stage.call_path("_global.ScreenManager.RegisterTemplate", vec![text(CROSSBAR)], fe)?;
     let tables = std::fs::read_to_string(assets.join(crate::retail_menus::TABLES))
         .ok()
         .and_then(|t| skate_data::menu_tables::MenuTables::from_json(&t).ok());
+    // All templates in table order (the AS hands out ids from 600); tables extracted before templates were
+    // added register CrossBar alone.
+    let names: Vec<String> = match tables.as_ref().map(|t| &t.templates).filter(|t| !t.is_empty()) {
+        Some(templates) => templates.iter().map(|t| t.name.clone()).collect(),
+        None => vec![CROSSBAR.into()],
+    };
+    for name in &names {
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![text(name)], fe)?;
+    }
+    let crossbar_id = 600 + names.iter().position(|n| n == CROSSBAR).unwrap_or(0) as i32;
     for (i, key) in tables.iter().flat_map(|t| &t.keys).enumerate() {
         stage.call_path("_level0._root.RegisterAptInputEnum", vec![text(&key.name), text(&i.to_string())], fe)?;
     }
@@ -94,7 +104,7 @@ fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::P
     stage.call_path("_level0._root.SetScreenSize", vec![text("1280"), text("720")], fe)?;
     stage.call_path("_level0._root.SetScreenEdgeOffset", vec![text("136")], fe)?;
     stage.call_path("_level0._root.UpdatePALMode", vec![text("false")], fe)?;
-    Ok(())
+    Ok(crossbar_id)
 }
 
 fn front_end<'a>(
@@ -123,7 +133,7 @@ fn setup(
         .get("source/screens/main/core_menu")
         .map(|m| m.text_assets.language.clone())
         .unwrap_or_default();
-    let result = (|| -> Result<Stage, String> {
+    let result = (|| -> Result<(Stage, i32), String> {
         let mut fe = front_end(&menus, &language, CrossbarState::default());
         let mut stage = Stage::new(&fe)?;
         // Retail boot (sub_825D7E10): screens/main into _level0; its root loads the screen manager into
@@ -134,8 +144,9 @@ fn setup(
         }
         // ScreenManagerReady (825D9450; `.local/research/boot-enums.md`): the C++ answers the screen manager's
         // ready call with the boot registration.
+        let mut crossbar_id = 600;
         if fe.calls.iter().any(|c| c == "Game.ScreenManagerReady()") {
-            boot_registration(&mut stage, &mut fe, &config.asset_root)?;
+            crossbar_id = boot_registration(&mut stage, &mut fe, &config.asset_root)?;
         }
         // Crossbar enums (sub_8261B9C8): RegisterChallengeEnum(name, "%d"), value = index in table 0x830274F0.
         for (i, name) in CROSSBAR_ENUMS.iter().enumerate() {
@@ -145,10 +156,10 @@ fn setup(
                 &mut fe,
             )?;
         }
-        Ok(stage)
+        Ok((stage, crossbar_id))
     })();
     match result {
-        Ok(stage) => {
+        Ok((stage, crossbar_id)) => {
             let white = images.add(Image::new(
                 Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
                 TextureDimension::D2,
@@ -168,6 +179,7 @@ fn setup(
                 slots: Vec::new(),
                 failed: false,
                 auto_open: std::env::var("SKATE3_RETAIL_MENUS_OPEN").as_deref() == Ok("1"),
+                crossbar_id,
             });
         }
         Err(e) => error!("RETAIL_MENUS stage failed: {e}"),
@@ -207,7 +219,7 @@ fn update(
                         ],
                         &mut fe,
                     )?;
-                    ms.screen = Some(600);
+                    ms.screen = Some(ms.crossbar_id);
                 }
                 Some(id) => {
                     close(&mut ms.stage, id, &mut fe)?;

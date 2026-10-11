@@ -58,6 +58,16 @@ pub struct Item {
     pub help: String,
 }
 
+/// A front-end screen template (retail table 0x8302F1A8 in TU3, 16-byte records {name, swf path, type, -1}):
+/// the screen manager registers them in table order, so a screen's AS id is 600 + its index.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScreenTemplate {
+    pub name: String,
+    /// Path under `source/screens/` (`main/core_menu.swf`); empty for the "Ignore" record.
+    pub path: String,
+    pub kind: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AptKey {
     pub name: String,
@@ -103,6 +113,9 @@ pub struct MenuTables {
     pub items: Vec<Item>,
     pub keys: Vec<AptKey>,
     pub modes: Vec<ModeMenu>,
+    /// Screen templates in registration order (empty in tables extracted before they were added).
+    #[serde(default)]
+    pub templates: Vec<ScreenTemplate>,
     /// Table addresses in this build (diagnostics only).
     pub addresses: std::collections::BTreeMap<String, String>,
 }
@@ -529,12 +542,46 @@ fn modes(img: &Image, categories: &[Category], items: &[Item]) -> Vec<ModeMenu> 
     out
 }
 
+// ---------------------------------------------------------------- screen templates
+
+fn template(img: &Image, at: u32) -> Option<ScreenTemplate> {
+    let name = img.string_at(at)?;
+    let path_ptr = img.word(at + 4)?;
+    let path = if path_ptr == 0 { String::new() } else { img.cstr(path_ptr)? };
+    let kind = img.word(at + 8)?;
+    (!name.is_empty() && (path.is_empty() || path.ends_with(".swf")) && kind <= 1 && img.word(at + 12)? == u32::MAX)
+        .then_some(ScreenTemplate { name, path, kind })
+}
+
+/// Located by content: the record whose path is "main/core_menu.swf" (the pause menu), then every valid record
+/// before and after it.
+fn templates(img: &Image) -> Result<(u32, Vec<ScreenTemplate>), String> {
+    let anchor = img
+        .pointers_to_string("main/core_menu.swf")
+        .into_iter()
+        .map(|p| p - 4)
+        .find(|at| template(img, *at).is_some())
+        .ok_or("screen template table not found")?;
+    let mut start = anchor;
+    while template(img, start - 16).is_some() {
+        start -= 16;
+    }
+    let mut out = Vec::new();
+    let mut at = start;
+    while let Some(t) = template(img, at) {
+        out.push(t);
+        at += 16;
+    }
+    Ok((start, out))
+}
+
 pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
     let img = Image { image };
     let (rows_at, settings_rows, settings_screens) = settings(&img)?;
     let (items_at, items, categories_at, categories) = crossbar(&img)?;
     let (keys_at, keys) = keys(&img)?;
     let modes = modes(&img, &categories, &items);
+    let (templates_at, templates) = templates(&img)?;
     if modes.is_empty() {
         return Err("no per-mode crossbar menus found".into());
     }
@@ -544,6 +591,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         ("crossbar_categories", categories_at),
         ("crossbar_items", items_at),
         ("apt_keys", keys_at),
+        ("screen_templates", templates_at),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), hex(v)))
@@ -557,6 +605,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         items,
         keys,
         modes,
+        templates,
         addresses,
     })
 }
