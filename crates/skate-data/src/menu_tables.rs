@@ -148,6 +148,10 @@ pub struct MenuTables {
     /// build has 70). Empty in tables extracted before it was added.
     #[serde(default)]
     pub screens: Vec<FeScreen>,
+    /// Game Settings screen titles per settings screen index (string ids; TU3 0x83026E90, 13 pointers, read by
+    /// GameSettings_GetScreenTitle 825A6DA8). Empty in tables extracted before they were added.
+    #[serde(default)]
+    pub settings_titles: Vec<String>,
     /// Table addresses in this build (diagnostics only).
     pub addresses: std::collections::BTreeMap<String, String>,
 }
@@ -607,6 +611,25 @@ fn templates(img: &Image) -> Result<(u32, Vec<ScreenTemplate>), String> {
     Ok((start, out))
 }
 
+// ---------------------------------------------------------------- settings screen titles
+
+/// Located by content: two consecutive pointers to "ID_GAMESETTINGS_TITLE" (screens 0 and 1), then one string id
+/// per settings screen.
+fn settings_titles(img: &Image, screens: usize) -> Result<(u32, Vec<String>), String> {
+    let start = img
+        .pointers_to_string("ID_GAMESETTINGS_TITLE")
+        .into_iter()
+        .find(|at| img.string_at(at + 4).as_deref() == Some("ID_GAMESETTINGS_TITLE"))
+        .ok_or("settings screen title table not found")?;
+    let titles: Vec<String> = (0..screens as u32)
+        .map_while(|i| img.string_at(start + 4 * i).filter(|t| t.starts_with("ID_GAMESETTINGS_")))
+        .collect();
+    if titles.len() != screens {
+        return Err(format!("settings screen title table has {} titles for {screens} screens", titles.len()));
+    }
+    Ok((start, titles))
+}
+
 // ---------------------------------------------------------------- FE screen info table
 
 const SCREEN_INFO_RECORD: u32 = 24;
@@ -676,6 +699,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
     let modes = modes(&img, &categories, &items);
     let (templates_at, templates) = templates(&img)?;
     let (screen_info_at, screens) = screen_info(&img)?;
+    let (titles_at, settings_titles) = settings_titles(&img, settings_screens.len())?;
     if modes.is_empty() {
         return Err("no per-mode crossbar menus found".into());
     }
@@ -687,6 +711,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         ("apt_keys", keys_at),
         ("screen_templates", templates_at),
         ("screen_info", screen_info_at),
+        ("settings_titles", titles_at),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), hex(v)))
@@ -702,6 +727,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         modes,
         templates,
         screens,
+        settings_titles,
         addresses,
     })
 }

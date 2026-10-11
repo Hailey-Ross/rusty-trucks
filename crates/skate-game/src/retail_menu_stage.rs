@@ -8,7 +8,7 @@
 //!
 //! Input: the pad (all four controllers) and the keyboard (arrows = d-pad, Enter = A, Backspace = B, F8 = Start)
 //! feed retail's Apt actions (`skate_core::fe_input`); `SKATE3_RETAIL_MENUS_KEYS=13,13,2` injects key indices
-//! once the menu is ready (screenshot checks). NOT RETAIL YET: the repeat timing (see fe_input).
+//! once the menu is ready (screenshot checks). Repeat: retail's tick rule (fe_input; tick rate assumed).
 use crate::{
     apt_stage::Stage,
     apt_vm::Value,
@@ -26,14 +26,22 @@ use bevy::{
 use skate_core::crossbar::{CrossbarAction, CrossbarRules, CrossbarState, NavEvent};
 use skate_core::fe_input::{fired, parse_apt_keys, AptKey, FeInput, RepeatRule};
 use skate_core::fe_stack::{Effect, FeStack, Layer, Request};
+use skate_core::menu_values::Direction;
 use skate_core::menus::{EntryRef, MenuAction, Outcome, Owner};
 use std::collections::BTreeMap;
 
 const CROSSBAR: &str = "CrossBar";
 /// Key index of AptStart (Apt key table record 0).
 const APT_START: u32 = 0;
+/// AptPrevious (B), AptLeft, AptRight key indices.
+const APT_PREVIOUS: u32 = 3;
+const APT_LEFT: u32 = 14;
+const APT_RIGHT: u32 = 15;
 /// The pause menu template's path under `source/screens/` (template table 0x8302F1A8, record 69).
 const CROSSBAR_PATH: &str = "main/core_menu.swf";
+/// The Game Settings template (record 90) and its path; FE screen 45's init opens it (sub_8260BF58).
+const OPTIONS: &str = "Options";
+const OPTIONS_PATH: &str = "options/options.swf";
 const CROSSBAR_ENUMS: [&str; 6] =
     ["RefreshMenu", "RefreshOption", "InitialiseMenu", "InitialiseSubOption", "InitSubOptionOnlineTeam", "RefreshDLCBanner"];
 /// Above the scoring HUD's draws on the shared layer.
@@ -55,6 +63,10 @@ struct MenuStage {
     auto_open: bool,
     /// The pause menu's AS screen id (600 + template index; retail 669).
     crossbar_id: i32,
+    /// The Game Settings screen's AS id (retail 690) and state; its titles from the menu tables.
+    options_id: i32,
+    settings: crate::settings_host::SettingsState,
+    settings_titles: Vec<String>,
     /// Retail Apt keys in key-table order (input.cfg expressions).
     apt_keys: Vec<AptKey>,
     pads: [FeInput; 4],
@@ -84,7 +96,7 @@ impl Plugin for RetailMenuStagePlugin {
 /// (value = key index, the same index UpdateInput passes), FE_SOUND_<NAME> = "<name>" per fe record, then
 /// platform "0", screen size 1280 x 720, edge offset "136", PAL mode "false". The 191 challenge enums
 /// (eChallengeTypes ..) and RefreshSubtitle are not registered yet (no menu reads them so far).
-fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::Path) -> Result<i32, String> {
+fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::Path) -> Result<Vec<String>, String> {
     let text = |s: &str| Value::Text(s.into());
     let tables = std::fs::read_to_string(assets.join(crate::retail_menus::TABLES))
         .ok()
@@ -98,7 +110,6 @@ fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::P
     for name in &names {
         stage.call_path("_global.ScreenManager.RegisterTemplate", vec![text(name)], fe)?;
     }
-    let crossbar_id = 600 + names.iter().position(|n| n == CROSSBAR).unwrap_or(0) as i32;
     for (i, key) in tables.iter().flat_map(|t| &t.keys).enumerate() {
         stage.call_path("_level0._root.RegisterAptInputEnum", vec![text(&key.name), text(&i.to_string())], fe)?;
     }
@@ -124,7 +135,7 @@ fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::P
     stage.call_path("_level0._root.SetScreenSize", vec![text("1280"), text("720")], fe)?;
     stage.call_path("_level0._root.SetScreenEdgeOffset", vec![text("136")], fe)?;
     stage.call_path("_level0._root.UpdatePALMode", vec![text("false")], fe)?;
-    Ok(crossbar_id)
+    Ok(names)
 }
 
 /// The Apt keys: names from the menu tables' key table, expressions from the install's stock input.cfg.
@@ -196,7 +207,7 @@ fn setup(
         .get("source/screens/main/core_menu")
         .map(|m| m.text_assets.language.clone())
         .unwrap_or_default();
-    let result = (|| -> Result<(Stage, i32), String> {
+    let result = (|| -> Result<(Stage, Vec<String>), String> {
         let mut fe = front_end(&menus, &language, CrossbarState::default());
         let mut stage = Stage::new(&fe)?;
         // Retail boot (sub_825D7E10): screens/main into _level0; its root loads the screen manager into
@@ -207,9 +218,9 @@ fn setup(
         }
         // ScreenManagerReady (825D9450; `.local/research/boot-enums.md`): the C++ answers the screen manager's
         // ready call with the boot registration.
-        let mut crossbar_id = 600;
+        let mut templates = vec![CROSSBAR.to_owned()];
         if fe.calls.iter().any(|c| c == "Game.ScreenManagerReady()") {
-            crossbar_id = boot_registration(&mut stage, &mut fe, &config.asset_root)?;
+            templates = boot_registration(&mut stage, &mut fe, &config.asset_root)?;
         }
         // Crossbar enums (sub_8261B9C8): RegisterChallengeEnum(name, "%d"), value = index in table 0x830274F0.
         for (i, name) in CROSSBAR_ENUMS.iter().enumerate() {
@@ -219,10 +230,15 @@ fn setup(
                 &mut fe,
             )?;
         }
-        Ok((stage, crossbar_id))
+        Ok((stage, templates))
     })();
     match result {
-        Ok((stage, crossbar_id)) => {
+        Ok((stage, templates)) => {
+            // AS screen ids: 600 + the template's registration index.
+            let as_id = |name: &str| 600 + templates.iter().position(|n| n == name).unwrap_or(0) as i32;
+            let tables = std::fs::read_to_string(config.asset_root.join(crate::retail_menus::TABLES))
+                .ok()
+                .and_then(|t| skate_data::menu_tables::MenuTables::from_json(&t).ok());
             let white = images.add(Image::new(
                 Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
                 TextureDimension::D2,
@@ -242,10 +258,13 @@ fn setup(
                 slots: Vec::new(),
                 failed: false,
                 auto_open: std::env::var("SKATE3_RETAIL_MENUS_OPEN").as_deref() == Ok("1"),
-                crossbar_id,
+                crossbar_id: as_id(CROSSBAR),
+                options_id: as_id(OPTIONS),
+                settings: Default::default(),
+                settings_titles: tables.map(|t| t.settings_titles).unwrap_or_default(),
                 apt_keys: apt_keys(&config.asset_root),
                 pads: Default::default(),
-                repeat: RepeatRule::DEFAULT,
+                repeat: RepeatRule::RETAIL,
                 injected: std::env::var("SKATE3_RETAIL_MENUS_KEYS")
                     .unwrap_or_default()
                     .split(',')
@@ -273,21 +292,27 @@ fn update(
         return;
     }
     let ms = &mut *ms;
-    // The pause crossbar in this build's screen table (TU3 FE id 56); none in tables extracted before screens.
+    // The ported screens in this build's screen table (TU3 FE ids 56 and 45); none in tables extracted before
+    // screens.
     let pause = backdrop.index(crate::fe_backdrop::PAUSE_SCREEN);
+    let options = backdrop.index(crate::fe_backdrop::SETTINGS_SCREEN);
     // Retail Apt keys fired this frame (pad and keyboard).
     let mut fired = poll_keys(ms, &keys, time.delta_secs());
     let mut fe = front_end(&menus, &ms.language, ms.crossbar.clone());
-    // The item selected this frame: dispatched through the registry once the movie work is done.
+    fe.settings = std::mem::take(&mut ms.settings);
+    fe.settings_titles = ms.settings_titles.clone();
+    fe.settings.open = options.is_some() && ms.stack.top(Layer::Main) == options;
+    // Work for the registry once the movie work is done: the crossbar item, settings steps.
     let mut selected: Option<String> = None;
+    let mut steps: Vec<(String, Direction)> = Vec::new();
     let result = (|| -> Result<(), String> {
-        let id = ms.crossbar_id;
+        let (crossbar_id, options_id) = (ms.crossbar_id, ms.options_id);
         let auto = ms.auto_open && time.elapsed_secs() > 4.0;
         ms.auto_open &= !auto;
         if auto {
             fired.insert(0, (APT_START, 0));
         }
-        if ms.stack.input_target().is_some() && pause.is_some() && ms.stack.input_target() == pause {
+        if ms.stack.input_target().is_some() {
             fired.extend(ms.injected.pop_front().map(|k| (k, 0)));
         }
         for (key, controller) in fired {
@@ -301,39 +326,65 @@ fn update(
                 }
                 continue;
             }
-            let Some(p) = pause.filter(|p| ms.stack.input_target() == Some(*p)) else { continue };
-            // sub_825EC0E8: the screen's C++ handler first (crossbar sub_8261B560), then the movie's UpdateInput when
-            // the handler did not consume the key and the screen's record says so (+12). The crossbar consumes
-            // only its close branch.
+            let target = ms.stack.input_target();
+            let Some(screen) = target.filter(|t| Some(*t) == pause || Some(*t) == options) else { continue };
+            // sub_825EC0E8: the screen's C++ handler first, then the movie's UpdateInput when the handler did not
+            // consume the key and the screen's record says so (+12).
             let mut consumed = false;
-            if let Some(event) = NavEvent::from_key_index(key) {
-                let out = fe.state.handle(event, &fe.view, &ms.rules, false);
-                if let Some(sound) = &out.sound {
-                    sounds.write(FrontendSound::named(sound));
-                }
-                if let Some(state) = out.set_state {
-                    // Retail passes both as "%d" strings (sub_8263F320 index 10).
-                    ms.stage.call_path(
-                        "_global.ScreenManager.SetScreenState",
-                        vec![Value::Text(id.to_string()), Value::Text(state.to_string())],
-                        &mut fe,
-                    )?;
-                }
-                match out.action {
-                    Some(CrossbarAction::Close) => {
-                        consumed = true;
-                        ms.stack.request(Layer::Main, Request::Close { screen: p });
+            let movie_id = if Some(screen) == pause { crossbar_id } else { options_id };
+            if Some(screen) == pause {
+                // Crossbar sub_8261B560: consumes only its close branch.
+                if let Some(event) = NavEvent::from_key_index(key) {
+                    let out = fe.state.handle(event, &fe.view, &ms.rules, false);
+                    if let Some(sound) = &out.sound {
+                        sounds.write(FrontendSound::named(sound));
                     }
-                    Some(CrossbarAction::SelectItem { tab, row }) => {
-                        selected = fe.view.item(tab, row).map(str::to_owned);
+                    if let Some(state) = out.set_state {
+                        // Retail passes both as "%d" strings (sub_8263F320 index 10).
+                        set_state(&mut ms.stage, crossbar_id, state, &mut fe)?;
+                    }
+                    match out.action {
+                        Some(CrossbarAction::Close) => {
+                            consumed = true;
+                            ms.stack.request(Layer::Main, Request::Close { screen });
+                        }
+                        Some(CrossbarAction::SelectItem { tab, row }) => {
+                            selected = fe.view.item(tab, row).map(str::to_owned);
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                // Settings sub_8260C258: Back (3) leaves a sub-screen for the main list (sub_8260D078) or closes the
+                // screen; Left / Right (14 / 15) step the highlighted row's value, then SetState(50) refreshes.
+                // NOT RETAIL YET: the per-row UI sounds are fe records not named yet; nav left / right stand in.
+                match key {
+                    APT_PREVIOUS => {
+                        consumed = true;
+                        sounds.write(FrontendSound::named("core_b_button"));
+                        if fe.settings.screen > 1 {
+                            fe.settings.screen = 1;
+                            fe.settings.row = 0;
+                            set_state(&mut ms.stage, options_id, 1, &mut fe)?;
+                        } else {
+                            ms.stack.request(Layer::Main, Request::Close { screen });
+                        }
+                    }
+                    APT_LEFT | APT_RIGHT => {
+                        consumed = true;
+                        if let Some(id) = fe.settings.row_id(fe.settings.row) {
+                            let left = key == APT_LEFT;
+                            steps.push((id.to_owned(), if left { Direction::Left } else { Direction::Right }));
+                            sounds.write(FrontendSound::named(if left { "core_nav_left" } else { "core_nav_right" }));
+                        }
                     }
                     _ => {}
                 }
             }
-            if !consumed && backdrop.info(p).input_to_movie {
+            if !consumed && backdrop.info(screen).input_to_movie {
                 ms.stage.call_path(
                     "_global.ScreenManager.UpdateInput",
-                    vec![Value::Text(id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())],
+                    vec![Value::Text(movie_id.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())],
                     &mut fe,
                 )?;
             }
@@ -343,19 +394,21 @@ fn update(
             match effect {
                 Effect::Open(i) if Some(i) == pause => {
                     fe.state = CrossbarState::open(&fe.view);
-                    // Retail ScreenManagerBase::OpenScreen (sub_82D09140) arguments.
-                    ms.stage.call_path(
-                        "_global.ScreenManager.OpenScreen",
-                        vec![
-                            Value::Text(format!("source/screens/{CROSSBAR_PATH}")),
-                            Value::Text("screen".into()),
-                            Value::Text("0".into()),
-                            Value::Text(CROSSBAR.into()),
-                        ],
-                        &mut fe,
-                    )?;
+                    open_screen(&mut ms.stage, CROSSBAR_PATH, CROSSBAR, &mut fe)?;
                 }
-                Effect::Close(i) if Some(i) == pause => close(&mut ms.stage, id, &mut fe)?,
+                Effect::Open(i) if Some(i) == options => {
+                    // Settings init sub_8260BF58: screen index -1 -> 0 (the pause path opens on the main list).
+                    fe.settings.screen = 0;
+                    fe.settings.row = 0;
+                    open_screen(&mut ms.stage, OPTIONS_PATH, OPTIONS, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == pause => close(&mut ms.stage, crossbar_id, &mut fe)?,
+                Effect::Close(i) if Some(i) == options => {
+                    // Begin close sub_8260C048: SetScreenState(2) outside the front end (FE state 2), then the outro.
+                    set_state(&mut ms.stage, options_id, 2, &mut fe)?;
+                    close(&mut ms.stage, options_id, &mut fe)?;
+                    fe.settings.open = false;
+                }
                 Effect::Open(i) | Effect::Close(i) => warn!("RETAIL_MENUS: FE screen {i} has no template yet"),
                 Effect::SuspendGameplay(on) => {
                     if let Some(overlay) = overlay.as_mut() {
@@ -370,24 +423,33 @@ fn update(
             }
         }
         ms.stage.update(time.delta_secs() * 1000.0, &movies.movies, &mut fe)?;
+        // Settings loaded (vt+108 sub_8260C010): SetScreenState(1) builds the rows; intro complete = ready.
+        if let Some(o) = options.filter(|o| ms.stack.top(Layer::Main) == Some(*o)) {
+            let loaded = format!("Game.OnScreenLoaded({options_id})");
+            if take_call(&mut fe, &loaded) {
+                fe.settings.open = true;
+                set_state(&mut ms.stage, options_id, 1, &mut fe)?;
+            }
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({options_id})")) {
+                ms.stack.ready(o);
+            }
+        }
         // Crossbar IntroComplete (vtable 0x82303F90 +104 = 8261B1F0) selects the mode menu (8261B9E8): when the
         // mode changed it resets level 1, row 0, tab 0 and walks to the first enabled row, then it always posts
         // SetState(InitialiseMenu) through the facade (+56 vt+20). The screen is ready (state 3) from here.
         if let Some(p) = pause.filter(|p| ms.stack.top(Layer::Main) == Some(*p)) {
-            let intro = format!("Game.OnScreenIntroComplete({id})");
-            if fe.calls.iter().any(|c| *c == intro) {
-                fe.calls.clear();
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({crossbar_id})")) {
                 ms.stack.ready(p);
                 fe.state = CrossbarState::open(&fe.view);
-                ms.stage.call_path(
-                    "_global.ScreenManager.SetScreenState",
-                    vec![Value::Text(id.to_string()), Value::Text(ms.rules.state_initialise_menu.to_string())],
-                    &mut fe,
-                )?;
+                set_state(&mut ms.stage, crossbar_id, ms.rules.state_initialise_menu, &mut fe)?;
             }
         }
         Ok(())
     })();
+    // `SKATE3_RETAIL_MENUS_TRACE=1`: log the host calls the movies made that nothing answered (diagnostics).
+    if std::env::var_os("SKATE3_RETAIL_MENUS_TRACE").is_some() && !fe.calls.is_empty() {
+        info!("RETAIL_MENUS calls: {}", fe.calls.join(" | "));
+    }
     // Audio.PlaySound(FE_SOUND_X) from the movies: the value is the fe record name (RegisterAudioEnum).
     for call in fe.calls.iter().filter_map(|c| c.strip_prefix("Audio.PlaySound(")) {
         let name = call.trim_end_matches(')').split(',').next().unwrap_or("");
@@ -396,18 +458,58 @@ fn update(
         }
     }
     ms.crossbar = fe.state;
-    if let (Some(item), Ok(())) = (selected, &result) {
-        // Retail runs the item (its FE screen); ours goes through the registry: an engine handler closes the
-        // pause screen and opens the overlay section, a mod's gets its menu_select event.
-        let outcome = menus.act(MenuAction::Select { entry: EntryRef::item(&item) });
-        info!("RETAIL_MENUS select {item}: {outcome:?}");
-        if let Outcome::Forward(Owner::Engine(name), _) = &outcome {
-            if let (Some(section), Some(overlay)) = (name.strip_prefix(crate::retail_menus::OVERLAY), overlay.as_mut()) {
-                if let Some(p) = pause {
-                    ms.stack.request(Layer::Main, Request::Close { screen: p });
+    ms.settings = fe.settings;
+    let settings_selected = std::mem::take(&mut ms.settings.selected);
+    if result.is_ok() {
+        let mut refresh: Option<i32> = None;
+        if let Some(item) = selected {
+            // Retail runs the item (its FE screen); ours goes through the registry: an engine handler pushes a
+            // ported FE screen or opens an overlay section, a mod's gets its menu_select event.
+            let outcome = menus.act(MenuAction::Select { entry: EntryRef::item(&item) });
+            info!("RETAIL_MENUS select {item}: {outcome:?}");
+            if let Outcome::Forward(Owner::Engine(name), _) = &outcome {
+                if let Some(id) = name.strip_prefix(crate::retail_menus::SCREEN) {
+                    match backdrop.index(id) {
+                        Some(screen) => ms.stack.request(Layer::Main, Request::push(screen)),
+                        None => warn!("RETAIL_MENUS: no FE screen {id}"),
+                    }
+                } else if let (Some(section), Some(overlay)) =
+                    (name.strip_prefix(crate::retail_menus::OVERLAY), overlay.as_mut())
+                {
+                    if let Some(p) = pause {
+                        ms.stack.request(Layer::Main, Request::Close { screen: p });
+                    }
+                    overlay.open_section(section);
                 }
-                overlay.open_section(section);
             }
+        }
+        // Settings OnMenuSelect (sub_8260D290): a link row opens its screen (+68) and rebuilds (SetState(1)); other
+        // rows go to their handler (engine or mod).
+        for row in settings_selected {
+            let Some(id) = ms.settings.row_id(row).map(str::to_owned) else { continue };
+            sounds.write(FrontendSound::named("core_a_button"));
+            match menus.act(MenuAction::Select { entry: EntryRef::setting(&id) }) {
+                Outcome::OpenScreen(screen) => {
+                    ms.settings.screen = screen;
+                    ms.settings.row = 0;
+                    refresh = Some(1);
+                }
+                outcome => info!("RETAIL_MENUS settings select {id}: {outcome:?}"),
+            }
+        }
+        for (id, direction) in steps {
+            let outcome = menus.act(MenuAction::Step { entry: EntryRef::setting(&id), direction });
+            info!("RETAIL_MENUS settings step {id} {direction:?}: {outcome:?}");
+            refresh = refresh.or(Some(50));
+        }
+        if let Some(state) = refresh {
+            let mut fe = front_end(&menus, &ms.language, ms.crossbar.clone());
+            fe.settings = std::mem::take(&mut ms.settings);
+            fe.settings_titles = ms.settings_titles.clone();
+            if let Err(e) = set_state(&mut ms.stage, ms.options_id, state, &mut fe) {
+                error!("RETAIL_MENUS settings refresh: {e}");
+            }
+            ms.settings = fe.settings;
         }
     }
     let stack: Vec<String> = ms.stack.screens(Layer::Main).filter_map(|i| backdrop.id(i).map(str::to_owned)).collect();
@@ -416,6 +518,34 @@ fn update(
         error!("RETAIL_MENUS stage stopped: {e}");
         ms.failed = true;
     }
+}
+
+/// Retail ScreenManagerBase::OpenScreen (sub_82D09140) arguments.
+fn open_screen(stage: &mut Stage, path: &str, template: &str, fe: &mut FrontEnd) -> Result<(), String> {
+    stage.call_path(
+        "_global.ScreenManager.OpenScreen",
+        vec![
+            Value::Text(format!("source/screens/{path}")),
+            Value::Text("screen".into()),
+            Value::Text("0".into()),
+            Value::Text(template.into()),
+        ],
+        fe,
+    )?;
+    Ok(())
+}
+
+/// The C++ SetScreenState through the facade: both as "%d" strings (sub_8263F320 index 10).
+fn set_state(stage: &mut Stage, id: i32, state: i32, fe: &mut FrontEnd) -> Result<(), String> {
+    stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(id.to_string()), Value::Text(state.to_string())], fe)?;
+    Ok(())
+}
+
+/// Whether the movie made this call this frame (removes it).
+fn take_call(fe: &mut FrontEnd, call: &str) -> bool {
+    let before = fe.calls.len();
+    fe.calls.retain(|c| c != call);
+    fe.calls.len() != before
 }
 
 fn close(stage: &mut Stage, id: i32, fe: &mut FrontEnd) -> Result<(), String> {

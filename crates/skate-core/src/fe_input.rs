@@ -3,9 +3,11 @@
 //! FE poll (sub_825DFDC8) passes to the screen stack's input handler, in the order of the Apt key table
 //! (0x83027BF0, extracted at setup). Research `.local/research/fe-input.md`.
 //!
-//! NOT RETAIL YET: retail's repeat delay / period and the stick "held" threshold are not found
-//! (`.local/research/input-repeat.md`); `RepeatRule::DEFAULT` keeps the values our current menus use. The edge of
-//! each suffix (`pressed` / `released` / `repeat` / `held`) is the order-based reading in fe-input.md section 3.
+//! The edges are retail's channel update sub_82966F30 (research `.local/research/input-repeat.md` pass 2; constants
+//! main-checked): held when the value is above 0.5; after each change the next 3 ticks keep it frozen and report no
+//! press or release; repeat fires with the press, 24 ticks later, then every 12. Suffixes (parser sub_829674F0):
+//! held, pressed, released, repeat. NOT RETAIL YET: the tick rate is not proven; the console's 30 Hz cadence is
+//! assumed (0.8 s to the first repeat, then every 0.4 s), normalised so any frame rate gives the same timing.
 
 /// The 24 native pad slots in `input.cfg` / `xbox::convert` order (Button0..Button23).
 pub const SLOTS: [&str; 24] = [
@@ -68,68 +70,96 @@ fn term(text: &str) -> Result<(usize, Edge), String> {
     Ok((slot, edge))
 }
 
-/// Repeat and threshold (data; mods may override).
+/// Edge rule (data with retail defaults; mods may override).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RepeatRule {
-    /// Seconds held before the first repeat.
-    pub delay: f32,
-    /// Seconds between repeats.
-    pub period: f32,
-    /// Slot value that counts as held (sticks are 0..1 per direction).
+    /// Held when the slot value is above this (0x8209975C = 0.5).
     pub threshold: f32,
+    /// Ticks from the press to the first repeat (24).
+    pub first_delay: u32,
+    /// Ticks between later repeats (12).
+    pub period: u32,
+    /// Ticks after a change during which the held state is frozen (3).
+    pub settle: u32,
+    /// Channel update ticks per second (assumed console cadence).
+    pub tick_hz: f32,
 }
 
 impl RepeatRule {
-    /// NOT RETAIL YET: our current menus' values until retail's are found.
-    pub const DEFAULT: Self = Self { delay: 0.35, period: 0.09, threshold: 0.5 };
+    pub const RETAIL: Self = Self { threshold: 0.5, first_delay: 24, period: 12, settle: 3, tick_hz: 30.0 };
 }
 
 impl Default for RepeatRule {
     fn default() -> Self {
-        Self::DEFAULT
+        Self::RETAIL
     }
 }
 
-/// Per-controller slot edges.
-#[derive(Clone, Debug, Default)]
-pub struct FeInput {
-    held: [bool; 24],
-    held_for: [f32; 24],
-    next_repeat: [f32; 24],
+#[derive(Clone, Copy, Debug, Default)]
+struct Channel {
+    held: bool,
+    settle: u32,
+    countdown: u32,
 }
 
-/// This frame's edges per slot.
+/// Per-controller channels (sub_82966F30's 16-byte records).
+#[derive(Clone, Debug, Default)]
+pub struct FeInput {
+    channels: [Channel; 24],
+    pending: f32,
+}
+
+/// The edges of the ticks run this frame, per slot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Edges {
     pub held: [bool; 24],
     pub pressed: [bool; 24],
     pub released: [bool; 24],
-    /// The press itself, then after `delay` every `period` while held.
     pub repeat: [bool; 24],
 }
 
 impl FeInput {
+    /// Run the channel ticks due after `seconds` (none on a frame between ticks).
     pub fn update(&mut self, values: &[f32; 24], seconds: f32, rule: &RepeatRule) -> Edges {
+        let period = 1.0 / rule.tick_hz.max(1.0);
+        self.pending = (self.pending + seconds.max(0.0)).min(period * 8.0);
         let mut e = Edges::default();
-        for i in 0..24 {
-            let held = values[i] >= rule.threshold;
-            e.held[i] = held;
-            e.pressed[i] = held && !self.held[i];
-            e.released[i] = !held && self.held[i];
-            if e.pressed[i] {
-                self.held_for[i] = 0.0;
-                self.next_repeat[i] = rule.delay;
-                e.repeat[i] = true;
-            } else if held {
-                self.held_for[i] += seconds.max(0.0);
-                if self.held_for[i] >= self.next_repeat[i] {
-                    e.repeat[i] = true;
-                    self.next_repeat[i] = self.held_for[i] + rule.period.max(0.01);
-                }
-            }
-            self.held[i] = held;
+        while self.pending >= period {
+            self.pending -= period;
+            self.tick(values, rule, &mut e);
+        }
+        for (i, c) in self.channels.iter().enumerate() {
+            e.held[i] = c.held;
         }
         e
+    }
+
+    fn tick(&mut self, values: &[f32; 24], rule: &RepeatRule, e: &mut Edges) {
+        for (i, c) in self.channels.iter_mut().enumerate() {
+            let raw = values[i] > rule.threshold;
+            if c.settle > 0 {
+                c.settle -= 1;
+            } else if raw != c.held {
+                c.held = raw;
+                c.settle = rule.settle;
+                if raw {
+                    e.pressed[i] = true;
+                    e.repeat[i] = true;
+                    c.countdown = rule.first_delay;
+                } else {
+                    e.released[i] = true;
+                    c.countdown = 0;
+                }
+                continue;
+            }
+            if c.held && c.countdown > 0 {
+                c.countdown -= 1;
+                if c.countdown == 0 {
+                    e.repeat[i] = true;
+                    c.countdown = rule.period.max(1);
+                }
+            }
+        }
     }
 }
 
@@ -174,24 +204,43 @@ mod tests {
     }
 
     #[test]
-    fn press_repeat_release() {
+    fn press_repeat_release_in_ticks() {
         let keys = parse_apt_keys(CFG, &names()).unwrap();
-        let rule = RepeatRule { delay: 0.3, period: 0.1, threshold: 0.5 };
+        let rule = RepeatRule::RETAIL;
+        let tick = 1.0 / rule.tick_hz + 1e-5;
         let mut input = FeInput::default();
         let mut up = [0.0; 24];
         up[slot("DPadU")] = 1.0;
-        assert_eq!(fired(&keys, &input.update(&up, 0.016, &rule)), [3], "press fires up once");
-        assert!(fired(&keys, &input.update(&up, 0.2, &rule)).is_empty());
-        assert_eq!(fired(&keys, &input.update(&up, 0.11, &rule)), [3], "first repeat after the delay");
-        assert!(fired(&keys, &input.update(&up, 0.05, &rule)).is_empty());
-        assert_eq!(fired(&keys, &input.update(&up, 0.06, &rule)), [3], "then every period");
-        assert_eq!(fired(&keys, &input.update(&[0.0; 24], 0.016, &rule)), [4], "release");
+        let mut fires = Vec::new();
+        for t in 0..60 {
+            if !fired(&keys, &input.update(&up, tick, &rule)).is_empty() {
+                fires.push(t);
+            }
+        }
+        assert_eq!(fires, [0, 24, 36, 48], "press, 24 ticks, then every 12");
+        assert_eq!(fired(&keys, &input.update(&[0.0; 24], tick, &rule)), [4], "release");
+        // A press right after the release is frozen by the settle ticks.
+        assert!(fired(&keys, &input.update(&up, tick, &rule)).is_empty());
         let mut stick = [0.0; 24];
-        stick[slot("LStickU")] = 0.4;
-        assert!(fired(&keys, &input.update(&stick, 0.016, &rule)).is_empty(), "below the threshold");
+        stick[slot("LStickU")] = 0.5;
+        let mut fresh = FeInput::default();
+        assert!(fired(&keys, &fresh.update(&stick, tick, &rule)).is_empty(), "0.5 is not above the threshold");
         let mut start = [0.0; 24];
         start[slot("Start")] = 1.0;
-        assert_eq!(fired(&keys, &input.update(&start, 0.016, &rule)), [0]);
-        assert!(fired(&keys, &input.update(&start, 1.0, &rule)).is_empty(), "pressed does not repeat");
+        assert_eq!(fired(&keys, &fresh.update(&start, tick, &rule)), [0]);
+        assert!(fired(&keys, &fresh.update(&start, 2.0, &rule)).is_empty(), "pressed does not repeat");
+    }
+
+    #[test]
+    fn same_ticks_at_any_frame_rate() {
+        let keys = parse_apt_keys(CFG, &names()).unwrap();
+        let rule = RepeatRule::RETAIL;
+        let mut up = [0.0; 24];
+        up[slot("DPadU")] = 1.0;
+        let count = |fps: f32, frames: usize| {
+            let mut input = FeInput::default();
+            (0..frames).filter(|_| !fired(&keys, &input.update(&up, 1.0 / fps, &rule)).is_empty()).count()
+        };
+        assert_eq!(count(30.0, 60), count(144.0, 288));
     }
 }

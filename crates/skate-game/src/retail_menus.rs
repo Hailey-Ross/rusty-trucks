@@ -20,8 +20,15 @@ pub(crate) const OVERLAY: &str = "overlay:";
 /// Retail pause items backed by engine features until their retail FE screens are ported (doc 31 "Row
 /// handlers"): retail opens FE screen ChallengeMap 17 / skate.Profile / GameSettings 45 / Extras 18; we open the
 /// overlay menu section with the same job. Handlers are what enables a retail row; mods stack their own over these.
-pub(crate) const OVERLAY_ITEMS: [(&str, &str); 4] =
-    [("ChallengeMap", "MAPS"), ("SkateProfileOffline", "SKATER"), ("GameSettings", "GRAPHICS"), ("Extras", "EXTRAS")];
+pub(crate) const OVERLAY_ITEMS: [(&str, &str); 3] =
+    [("ChallengeMap", "MAPS"), ("SkateProfileOffline", "SKATER"), ("Extras", "EXTRAS")];
+
+/// Owner prefix of the engine handlers that push a retail FE screen (by its screen id).
+pub(crate) const SCREEN: &str = "screen:";
+
+/// Retail pause items whose retail FE screen is ported: the crossbar pushes it (GameSettings -> FE 45, the Game
+/// Settings screen; TU3 id 56's sibling, screen id = its info record key).
+pub(crate) const SCREEN_ITEMS: [(&str, &str); 1] = [("GameSettings", crate::fe_backdrop::SETTINGS_SCREEN)];
 
 #[derive(Resource)]
 pub(crate) struct RetailMenus {
@@ -46,6 +53,12 @@ impl RetailMenus {
         for (item, section) in OVERLAY_ITEMS {
             if registry.data().item(item).is_some() {
                 let owner = Owner::Engine(format!("{OVERLAY}{section}"));
+                registry.register_handler(EntryRef::item(item), Handler { owner, select: true, highlight: false, callback: None });
+            }
+        }
+        for (item, screen) in SCREEN_ITEMS {
+            if registry.data().item(item).is_some() {
+                let owner = Owner::Engine(format!("{SCREEN}{screen}"));
                 registry.register_handler(EntryRef::item(item), Handler { owner, select: true, highlight: false, callback: None });
             }
         }

@@ -947,8 +947,10 @@ them to the top screen's C++ handler and then its movie.
   UpdateInput unless consumed; input only while the stack gives the pause screen input.
   `SKATE3_RETAIL_MENUS_KEYS` injects key indices for screenshot checks. With the dev view on, pad Start no longer
   opens the overlay menu, and the overlay ignores Escape / Start while a retail screen holds gameplay.
-- NOT RETAIL YET: repeat delay 0.35 s, period 0.09 s and the held threshold 0.5 are our current menus' values;
-  retail's are not found yet (`.local/research/input-repeat.md`). Start closing the open pause menu is unverified.
+- Repeat (updated the same day): retail's channel update sub_82966F30 (research `input-repeat.md` pass 2,
+  constants main-checked): held above 0.5, 3 settle ticks after a change, repeat with the press, after 24 ticks,
+  then every 12. NOT RETAIL YET: the tick rate is assumed to be the console's 30 Hz (0.8 s, then 0.4 s). Start
+  closing the open pause menu is unverified.
 
 ### Verification
 - `cargo test -p skate-core fe_input`: parsing in key order, unknown slots rejected, press / repeat / release,
@@ -957,7 +959,64 @@ them to the top screen's C++ handler and then its movie.
   rows to skate.Profile ("View your career profile"); the movie's UpdateInput after the handler changes nothing
   else.
 
+## Game Settings screen (2026-10-10, in progress)
+
+### Problem
+The crossbar's Game Settings row opened our overlay menu; retail pushes FE screen 45, whose init opens template 90
+"Options" (options.apt) and answers its `Game.GameSettings_*` / `Game.OnMenu*` natives from the settings tables.
+options.apt also needs APT features the pause menu never used (attachMovie, component classes, Math).
+
+### Evidence
+- [data, main-checked] Screen titles: 13 string ids at TU3 0x83026E90 (0 / 1 ID_GAMESETTINGS_TITLE, 2 _DIFFICULTY_,
+  3 / 12 _AUDIO_, 4..8 _VIDEO_, 9 _CONTROL_, 10 _ONLINE_, 11 _SKATEFEED_SETTINGS); the disc build has the same.
+  FE 45's info record key `0ca9bfe5c1ba4995` (unique); its record suspends gameplay, shows the chyron, blurs.
+- [code, research `.local/research/settings-host-map.md`, `settings-screen-boot.md`] The natives, the loaded
+  handler (SetScreenState 1), the begin-close handler (SetScreenState 2 outside FE state 2), Back (sub-screen ->
+  main list, else close), Left / Right (sub_8260C258: step the row, SetState 50), select (sub_8260D290: links set
+  the screen index and rebuild).
+- [data, research `.local/research/apt-components.md`] main.apt's root defines RegisterComponentClasses and
+  IncreaseScreenDepth as named functions on `_level0` and calls them by name (APT 0xb0); each control library
+  registers its component class with `Object.registerClass("<Linkage>", class)`; highlight_option's constructor
+  sets the default title "#TBD TITLE" and SetTitle forwards to its HighlightText child.
+
+### Change
+- `menu_tables`: `settings_titles` (located by two pointers to ID_GAMESETTINGS_TITLE).
+- `settings_host.rs` (new): the GameSettings natives from the registry over a row snapshot taken at
+  GetNumOptions; OnMenuSelect is queued for the host. Value descriptions: the Difficulty row only, from its value
+  label (EASY -> DESCRIPTION_EASY ..., as retail's index table). NOT RETAIL (guard): when no row is enabled the
+  first one counts as enabled, because options.apt's NextValueCalc recurses forever otherwise (mods can do that).
+- `retail_menus.rs`: GameSettings now pushes FE screen 45 (`SCREEN_ITEMS`, owner `screen:<id>`) instead of the
+  overlay section.
+- `retail_menu_stage.rs`: opens / closes either ported screen by template (CrossBar 669 / Options 690 in TU3;
+  the disc build numbers its 129 templates differently); settings input (Back, Left / Right) as sub_8260C258,
+  steps and selects dispatched through the registry, then SetState(50) / SetState(1).
+  NOT RETAIL YET: the per-row UI sounds (core_nav_left / right, core_a_button, core_b_button stand in).
+- APT VM / stage (standard AS2 semantics, each marked NOT RETAIL YET in code): `attachMovie` (script depths above
+  the timeline, kept across seeks, the subtree's class constructors run before it returns, nested clips first),
+  `removeMovieClip` / `getDepth` / `getNextHighestDepth` for attached clips, call-by-name through the scope chain
+  (locals, the timeline, then _global), `Math`, `TextFormat` (a record; setTextFormat not applied), `textHeight`,
+  clip `_width` / `_height` from frame-0 bounds (clip-depth children left out like retail's bounds walk
+  sub_82E59C28), library linkage names carried with imported copies (nested component classes).
+- `SKATE3_RETAIL_MENUS_TRACE=1` logs the host calls the movies made (answered and unanswered).
+
+### Verification
+- `cargo test -p skate-game settings_host retail_options_screen_builds_rows` (the latter data-gated on the menu
+  movie set): the natives in options.apt's order; the movie builds six rows from the registry and the first row
+  reads ID_GAMESETTINGS_DIFFICULTY_SETTINGS.
+- `cargo test -p skate-data --test menu_tables -- --ignored`: title table address and values, disc = TU3.
+- Screenshot `.local/research/menus-m6/settings.png` (`SKATE3_RETAIL_MENUS_KEYS=15,15,15,2`): Game Settings with
+  Difficulty / Audio / Video / Control / Online / skate.Feed Settings, the first row selected.
+
+### Open
+- Panel corner pieces and the A / B button icons draw as white squares (their fills render as plain solid fills;
+  likely gradient fills, not ported in apt_scene).
+- Left / Right and sub-screens not yet checked in game; HUD mode / chyron effects not hooked up.
+
 ## Files
+- Game Settings screen: `crates/skate-game/src/settings_host.rs` (new), `crossbar_host.rs`, `retail_menu_stage.rs`,
+  `retail_menus.rs`, `fe_backdrop.rs`, `apt_vm.rs`, `apt_movie.rs`, `apt_stage.rs` (test), `main.rs`;
+  `crates/skate-core/src/fe_input.rs` (retail repeat ticks); `crates/skate-data/src/menu_tables.rs`
+  (`settings_titles`), `tests/menu_tables.rs`; `tools/asset_pipeline/menu_tables.py`, `test_menu_tables.py`
 - Pad input: `crates/skate-core/src/fe_input.rs` (new), `lib.rs`; `crates/skate-game/src/retail_menu_stage.rs`,
   `graphics_menu.rs` (Start / Escape gating)
 - Screen stack: `crates/skate-core/src/fe_stack.rs` (new), `lib.rs`; `crates/skate-game/src/retail_menu_stage.rs`,

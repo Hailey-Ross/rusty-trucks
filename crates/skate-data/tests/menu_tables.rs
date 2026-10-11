@@ -133,6 +133,11 @@ fn tu3_image_matches_the_documented_tables() {
     // FE screen info table (doc 31 "Pause blur"): 72 records from 0x83026088; byte +4 = blur, set for these ids
     // (56 = the pause crossbar).
     assert_eq!(t.addresses["screen_info"], "0x83026088");
+    // Settings screen titles (doc 31 "Game Settings screen"): 13 at 0x83026E90.
+    assert_eq!(t.addresses["settings_titles"], "0x83026E90");
+    assert_eq!(t.settings_titles.len(), 13);
+    assert_eq!((t.settings_titles[0].as_str(), t.settings_titles[2].as_str(), t.settings_titles[12].as_str()),
+        ("ID_GAMESETTINGS_TITLE", "ID_GAMESETTINGS_DIFFICULTY_SETTINGS", "ID_GAMESETTINGS_AUDIO_SETTINGS"));
     let blur: Vec<usize> = t.screens.iter().enumerate().filter(|(_, s)| s.blur).map(|(i, _)| i).collect();
     assert_eq!(t.screens.len(), 72);
     assert_eq!(t.screens[56].id, "b4b7976b40b3e837");
@@ -183,6 +188,7 @@ fn disc_executable_gives_the_same_tables() {
             s.iter().map(|s| (s.key.clone(), s.blur, s.suspends_gameplay, s.chyron, s.hud, s.input_to_movie)).collect::<Vec<_>>()
         };
         assert_eq!(strip(&t.screens), strip(&tu3_screens));
+        assert_eq!(t.settings_titles, tu3.settings_titles);
         assert_eq!(t.keys, tu3.keys);
         let known: Vec<&str> = t.items.iter().map(|i| i.name.as_str()).collect();
         for mode in &t.modes {

@@ -230,6 +230,25 @@ pub fn to_number(value: &Value) -> Value {
 /// Built-in String methods (standard AS2 semantics, indices in characters). The menu
 /// movies use them on clip names, e.g. screenmanager.OnLoaded takes the screen id from
 /// `Screen_<id>` with indexOf + substring.
+/// Math members (standard AS2 semantics).
+fn math(method: &str, args: &[Value]) -> Option<Value> {
+    let n = |i: usize| args.get(i).map_or(f64::NAN, Value::number);
+    Some(Value::Number(match method {
+        "floor" => n(0).floor(),
+        "ceil" => n(0).ceil(),
+        "round" => (n(0) + 0.5).floor(),
+        "abs" => n(0).abs(),
+        "sqrt" => n(0).sqrt(),
+        "sin" => n(0).sin(),
+        "cos" => n(0).cos(),
+        "atan2" => n(0).atan2(n(1)),
+        "pow" => n(0).powf(n(1)),
+        "min" => n(0).min(n(1)),
+        "max" => n(0).max(n(1)),
+        _ => return None,
+    }))
+}
+
 fn string_method(s: &str, method: &str, args: &[Value]) -> Value {
     let chars: Vec<char> = s.chars().collect();
     let len = chars.len() as i64;
@@ -298,6 +317,11 @@ impl Vm {
     pub fn new() -> Self {
         let mut vm = Self::default();
         vm.global = vm.object(ObjectKind::Plain);
+        // The AS2 Math object (standard semantics; NOT RETAIL YET: the retail player's Math natives are not
+        // decoded). options.apt lays out rows with Math.floor / ceil.
+        let math = vm.object(ObjectKind::Native("Math".into()));
+        let _ = vm.set(vm.global, "Math", Value::Object(math));
+        let _ = vm.set(math, "PI", Value::Number(std::f64::consts::PI));
         vm
     }
     pub fn object(&mut self, kind: ObjectKind) -> usize {
@@ -454,6 +478,11 @@ impl Vm {
         }
         if let Some(value) = self.array_method(object, method, &args)? {
             return Ok(value);
+        }
+        if matches!(&self.objects[object].kind, ObjectKind::Native(n) if n == "Math") {
+            if let Some(value) = math(method, &args) {
+                return Ok(value);
+            }
         }
         host.call(self, object, method, args)
     }
@@ -1005,6 +1034,15 @@ impl Vm {
                             self.set(id, j.to_string(), v)?;
                         }
                         self.set(id, "length", Value::Number(n as f64))?;
+                    } else if name == "TextFormat" {
+                        // AS2 TextFormat(font, size, color, bold, italic, underline, url, target, align, leftMargin,
+                        // rightMargin, indent, leading): a plain record of its arguments (standard semantics; NOT
+                        // RETAIL YET: applying it to text, setTextFormat, is not ported).
+                        const FIELDS: [&str; 13] = ["font", "size", "color", "bold", "italic", "underline", "url",
+                            "target", "align", "leftMargin", "rightMargin", "indent", "leading"];
+                        for (field, v) in FIELDS.iter().zip(args) {
+                            self.set(id, *field, v)?;
+                        }
                     } else if let Value::Object(class) = self.get(self.global, &name) {
                         if let Value::Object(proto) = self.get(class, "prototype") {
                             self.objects[id].prototype = Some(proto);
@@ -1023,8 +1061,20 @@ impl Vm {
                     } else {
                         pop(&mut stack)?
                     };
+                    // Call by name resolves like a variable read: locals, the timeline (`this`), then _global
+                    // (main.apt calls its own root functions, e.g. RegisterComponentClasses, this way).
+                    // NOT RETAIL YET: the retail lookup (call-function handler) is not decoded.
+                    let mut local: Option<Value> = None;
                     let object = if matches!(op, 0x3d | 0xb0 | 0xb1) {
-                        Value::Object(self.global)
+                        let name = method.text();
+                        if let Some(f @ Value::Object(_)) = scope.locals.get(&name) {
+                            local = Some(f.clone());
+                            Value::Object(scope.this)
+                        } else if self.get(scope.this, &name) != Value::Undefined {
+                            Value::Object(scope.this)
+                        } else {
+                            Value::Object(self.global)
+                        }
                     } else {
                         pop(&mut stack)?
                     };
@@ -1035,9 +1085,10 @@ impl Vm {
                     let args = (0..count)
                         .map(|_| pop(&mut stack))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let value = match object {
-                        Value::Object(id) => self.call_method(id, &method.text(), args, host)?,
-                        Value::Text(s) => string_method(&s, &method.text(), &args),
+                    let value = match (object, local) {
+                        (Value::Object(this), Some(Value::Object(f))) => self.call_function(f, this, args, host)?,
+                        (Value::Object(id), _) => self.call_method(id, &method.text(), args, host)?,
+                        (Value::Text(s), _) => string_method(&s, &method.text(), &args),
                         _ => Value::Undefined,
                     };
                     if matches!(op, 0xb1 | 0xb3) {

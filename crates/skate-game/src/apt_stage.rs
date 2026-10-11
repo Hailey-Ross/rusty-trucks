@@ -159,6 +159,58 @@ impl Bindings<'_> {
                 if let Some((_, depth)) = self.state.dynamic.get(&object) {
                     return Ok(Some(Value::Number(*depth as f64)));
                 }
+                if let Some(level) = self.level_of(object) {
+                    let movie = &self.state.levels[level].movie;
+                    if let Value::Object(parent) = vm.get(object, "_parent") {
+                        if let Some((key, _)) = movie.instances.get(&parent).and_then(|p| p.children.iter().find(|(_, c)| **c == object)) {
+                            return Ok(Some(Value::Number((*key - crate::apt_movie::SCRIPT_DEPTH) as f64)));
+                        }
+                    }
+                }
+            }
+            "attachMovie" => {
+                // (linkage, new name, depth[, init object])
+                let linkage = args.first().map(Value::text).unwrap_or_default();
+                let name = args.get(1).map(Value::text).unwrap_or_default();
+                let depth = args.get(2).map_or(0, crate::apt_vm::to_integer);
+                let init = match args.get(3) {
+                    Some(Value::Object(o)) => Some(*o),
+                    _ => None,
+                };
+                if let Some(level) = self.level_of(object) {
+                    let movie = &mut self.state.levels[level].movie;
+                    let before = movie.immediate.len();
+                    let Some(child) = movie.attach(vm, object, &linkage, &name, depth, init)? else {
+                        return Ok(Some(Value::Undefined));
+                    };
+                    // The class constructors of the new subtree run inside attachMovie, before it returns, nested
+                    // clips first (standard AS2; the caller sets titles right after, which later constructors
+                    // would overwrite with their defaults). NOT RETAIL YET: retail's order is not decoded.
+                    let queued: Vec<Pending> = movie.immediate.drain(before.min(movie.immediate.len())..).collect();
+                    let (mut ctors, rest): (Vec<Pending>, Vec<Pending>) =
+                        queued.into_iter().partition(|p| p.event == CLASS_CONSTRUCTOR);
+                    movie.immediate.extend(rest);
+                    ctors.sort_by_key(|p| p.object == child);
+                    let ctors: Vec<(usize, usize)> = ctors
+                        .iter()
+                        .filter_map(|p| Some((p.object, *movie.classes.get(&movie.instances.get(&p.object)?.character)?)))
+                        .collect();
+                    for (clip, class) in ctors {
+                        vm.call_function(class, clip, vec![], self)?;
+                    }
+                    return Ok(Some(Value::Object(child)));
+                }
+            }
+            "getNextHighestDepth" => {
+                if let Some(level) = self.level_of(object) {
+                    let next = self.state.levels[level]
+                        .movie
+                        .instances
+                        .get(&object)
+                        .and_then(|i| i.children.keys().next_back().copied())
+                        .map_or(0, |k| (k - crate::apt_movie::SCRIPT_DEPTH + 1).max(0));
+                    return Ok(Some(Value::Number(next as f64)));
+                }
             }
             _ => {}
         }
@@ -325,7 +377,8 @@ impl Stage {
         let mut native_names = BTreeSet::new();
         let mut loader_prototype = 0;
         let mut object_class = 0;
-        for name in ["MovieClip", "MovieClipLoader", "Object", "Math", "Array", "String"] {
+        // Math is the VM's own object (apt_vm `math`).
+        for name in ["MovieClip", "MovieClipLoader", "Object", "Array", "String"] {
             let object = vm.object(ObjectKind::Plain);
             let prototype = vm.object(ObjectKind::Plain);
             vm.set(object, "prototype", Value::Object(prototype))?;
@@ -719,6 +772,97 @@ mod tests {
     #[test]
     fn retail_screen_manager_closes_a_screen() {
         retail_screen_manager(true);
+    }
+
+    /// The Game Settings screen (template 90 Options) through the screen manager: SetState(1) after it loads makes
+    /// it build its rows from the GameSettings natives (doc 31 "Game Settings screen"). Data-gated like the above;
+    /// `SKATE3_DUMP_DRAWS=1` prints the tree and the draws.
+    #[test]
+    fn retail_options_screen_builds_rows() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        let (data, loaded) = crate::retail_menus::read(&crate::apt_imports::main_checkout().join("assets"));
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        // As the game builds it (retail links and rules, engine handlers).
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        game.settings.open = true;
+        game.settings_titles = vec!["ID_GAMESETTINGS_TITLE".into(); 2];
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("Options".into())], &mut game).unwrap();
+        stage
+            .call_path(
+                "_global.ScreenManager.OpenScreen",
+                vec![
+                    Value::Text("source/screens/options/options.swf".into()),
+                    Value::Text("screen".into()),
+                    Value::Text("0".into()),
+                    Value::Text("Options".into()),
+                ],
+                &mut game,
+            )
+            .unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        assert!(game.calls.iter().any(|c| c == "Game.OnScreenLoaded(600)"), "{:?}", game.calls);
+        if let Err(e) = stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text("1".into())], &mut game) {
+            let n = game.calls.len();
+            panic!("{e}: {} calls, first {:?} last {:?}", n, &game.calls[..n.min(40)], &game.calls[n.saturating_sub(8)..]);
+        }
+        for _ in 0..120 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        eprintln!("rows: {:?}", game.settings.rows);
+        eprintln!("game calls: {:?}", game.calls);
+        eprintln!("unhandled: {:?}", stage.unhandled());
+        let level = stage.levels().iter().find(|l| l.key.ends_with("options/options")).expect("options loaded");
+        // Every named clip in the options movie (rows are attached under the screen's own clip).
+        let names: Vec<String> = level
+            .movie
+            .instances
+            .values()
+            .filter_map(|i| i.placement.as_ref().map(|p| p.name.clone()))
+            .filter(|n| !n.is_empty())
+            .collect();
+        eprintln!("options clips: {names:?}");
+        // Rows carry their real titles: the subtree's constructors ran inside attachMovie (their default
+        // "#TBD TITLE" must not win over CreateOptions' SetTitle).
+        let title = |row: &str| -> String {
+            let Some(r) = level.movie.attached.iter().find(|c| stage.vm.get(**c, "_name").text() == row) else {
+                return String::new();
+            };
+            let mut v = Value::Object(*r);
+            for part in ["mTitle", "mTitle", "TEXTLABEL", "text"] {
+                v = match v { Value::Object(o) => stage.vm.get(o, part), other => other };
+            }
+            v.text()
+        };
+        assert_eq!(title("mItem0"), "ID_GAMESETTINGS_DIFFICULTY_SETTINGS");
+        let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
+        if std::env::var("SKATE3_DUMP_DRAWS").is_ok() {
+            for d in &draws {
+                let xs = d.vertices.iter().map(|v| v.position[0]);
+                let ys = d.vertices.iter().map(|v| v.position[1]);
+                let (x0, x1) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
+                let (y0, y1) = ys.fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(y), b.max(y)));
+                eprintln!("DRAW {:?} {:.0},{:.0}..{:.0},{:.0} mul {:?} {}", d.fill, x0, y0, x1, y1, d.multiply, d.texture.rsplit('/').next().unwrap_or(""));
+            }
+        }
+        assert_eq!(game.settings.rows.len(), registry.screen_rows(0, &context).len());
+        assert!(names.iter().any(|n| n == "mItem0"), "no row clips: {names:?}");
     }
 
     fn retail_screen_manager(close: bool) {

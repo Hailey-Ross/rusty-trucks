@@ -39,6 +39,7 @@ mod profiling;
 mod graphics_menu;
 mod fe_backdrop;
 mod retail_menus;
+mod settings_host;
 mod retail_menu_movies;
 mod retail_menu_stage;
 mod modding;

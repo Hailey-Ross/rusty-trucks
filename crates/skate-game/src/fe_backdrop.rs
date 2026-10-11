@@ -31,6 +31,8 @@ use skate_mods::menus::BackdropOptions;
 
 /// The pause crossbar's screen id (TU3 FE id 56, its key is unique; its record has the blur flag set).
 pub(crate) const PAUSE_SCREEN: &str = "b4b7976b40b3e837";
+/// The Game Settings screen's id (TU3 FE id 45, template 90 Options; its key is unique).
+pub(crate) const SETTINGS_SCREEN: &str = "0ca9bfe5c1ba4995";
 
 #[derive(Resource, Default)]
 pub(crate) struct FeBackdrop {

@@ -147,6 +147,9 @@ pub struct FrontEnd<'a> {
     pub numbers: crate::fe_language::NumberFormat,
     /// Game / Audio / FELanguage calls not handled yet, in order (diagnostics, tests).
     pub calls: Vec<String>,
+    /// The Game Settings screen (settings_host) and its screen titles (menu tables).
+    pub settings: crate::settings_host::SettingsState,
+    pub settings_titles: Vec<String>,
 }
 
 impl<'a> FrontEnd<'a> {
@@ -157,7 +160,17 @@ impl<'a> FrontEnd<'a> {
     ) -> Self {
         let view = RegistryView::new(registry, context, Default::default());
         let state = CrossbarState::open(&view);
-        Self { registry, context, view, state, language, numbers: Default::default(), calls: Vec::new() }
+        Self {
+            registry,
+            context,
+            view,
+            state,
+            language,
+            numbers: Default::default(),
+            calls: Vec::new(),
+            settings: Default::default(),
+            settings_titles: Vec::new(),
+        }
     }
 }
 
@@ -169,6 +182,21 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
         if object == "CoreMenu" {
             let mut core = CoreMenu { registry: self.registry, context: self.context, view: &self.view, state: &mut self.state };
             return core.call(vm, method, &args);
+        }
+        if object == "Game" {
+            let mut settings = crate::settings_host::GameSettings {
+                registry: self.registry,
+                context: self.context,
+                titles: &self.settings_titles,
+                state: &mut self.settings,
+            };
+            if let Some(value) = settings.call(method, &args) {
+                if std::env::var_os("SKATE3_RETAIL_MENUS_TRACE").is_some() {
+                    let args: Vec<String> = args.iter().map(Value::text).collect();
+                    self.calls.push(format!("= Game.{method}({}) -> {}", args.join(","), value.text()));
+                }
+                return Ok(value);
+            }
         }
         if object == "FELanguage" {
             use crate::fe_language::*;
