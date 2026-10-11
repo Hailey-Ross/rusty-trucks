@@ -111,16 +111,26 @@ fn outdated_groups(marker: &serde_json::Value, expected: &serde_json::Value, equ
     })
 }
 
-static STALE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+static STALE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// The asset groups found out of date at startup (empty for development `--assets` / `SKATE3_ASSETS` roots).
-pub(crate) fn stale_groups() -> &'static [String] {
-    STALE.get().map_or(&[], Vec::as_slice)
+/// The asset groups found out of date: at startup by converter version (release copies only), or later from what
+/// the game finds in them (`mark_stale`).
+pub(crate) fn stale_groups() -> Vec<String> {
+    STALE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A feature found its group's files older than this build needs (installs an earlier build stamped as current
+/// although its converter had changed, e.g. menu tables without the FE screen records).
+pub(crate) fn mark_stale(group: &str) {
+    let mut stale = STALE.lock().unwrap_or_else(|e| e.into_inner());
+    if !stale.iter().any(|g| g == group) {
+        stale.push(group.to_owned());
+    }
 }
 
 /// Screenshot coverage (`SKATE_VERIFY_MENU=stale`): pretend a group is out of date in a development run.
 pub(crate) fn preview_stale() {
-    let _ = STALE.set(vec!["hud".into()]);
+    mark_stale("hud");
 }
 
 /// Restart this copy with `--refresh-assets`: setup refreshes the out-of-date groups, then the game starts again.
@@ -224,7 +234,9 @@ pub(crate) fn asset_root() -> Result<PathBuf, String> {
                 if !stale.is_empty() {
                     eprintln!("SETUP: game files out of date for {} (converter changed); the PC overlay offers a refresh", stale.join(", "));
                 }
-                let _ = STALE.set(stale.clone());
+                for group in &stale {
+                    mark_stale(group);
+                }
                 if marker.get("pipelines") != Some(versions) {
                     stamp_pipelines(&base, marker, versions, &stale)?;
                 }

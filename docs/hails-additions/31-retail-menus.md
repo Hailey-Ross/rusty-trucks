@@ -1279,7 +1279,10 @@ FE screen records (Start then falls back to the PC overlay).
   "Your game files are out of date: Extras > Refresh Game Files updates them.", and Extras gets a "Game Files"
   section with **Refresh Game Files** (describes the stale groups by name; Select restarts into setup, logged
   `PC_OVERLAY refresh game files: restarting into setup`; without a setup helper the status says so).
-- Development roots (`--assets`, `SKATE3_ASSETS`) have no `release.json`, so they never show it;
+- Installs an earlier build already stamped as current cannot be told apart by version, so features also report
+  what they find: `setup::mark_stale(group)`; the retail menus call it for `hud` when the menu tables have no FE
+  screen records (the Start fallback case). Not run against such an install (the dev install was refreshed first).
+- Development roots (`--assets`, `SKATE3_ASSETS`) have no `release.json`, so the version check never fires there;
   `SKATE_VERIFY_MENU=stale` previews it for screenshots.
 
 ### Verification
