@@ -10,7 +10,7 @@
 
 Each extracted copy runs its own setup. Keep the `data` folder next to the exe.
 
-If an update needs newer game files, the Guide / F1 / Esc menu says **GAME FILES OUT OF DATE**: open **Extras > Refresh Game Files** and the game restarts into setup, converts only what changed and starts again. Earlier builds could skip this silently; if Start opens the old menu instead of Skate 3's pause menu, that is the sign.
+If an update needs newer game files, the Guide / F1 / Esc menu says **GAME FILES OUT OF DATE**: open **Extras > Refresh Game Files** and the game restarts into setup, converts only what changed and starts again. This also catches copies an earlier build updated without converting the new menu files (there, Start opened the old menu instead of Skate 3's pause menu).
 
 ## Controls (the new parts)
 
