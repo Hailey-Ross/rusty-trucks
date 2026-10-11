@@ -68,6 +68,9 @@ pub struct Movie {
     /// Classes bound by registerClass: character -> class function object. A new clip of that
     /// character gets the class prototype and a constructor call (`CLASS_CONSTRUCTOR`).
     pub classes: BTreeMap<i32, usize>,
+    /// Clips whose position a script set: the timeline no longer moves them (Flash rule; NOT RETAIL YET, the
+    /// retail flag is not traced). Only hosts that call `script_moved` use it (the front-end stage).
+    pub script_moved: std::collections::BTreeSet<usize>,
     states: BTreeMap<i32, Vec<DisplayList>>,
 }
 fn display_states(c: &Character) -> Result<Vec<DisplayList>, String> {
@@ -122,6 +125,7 @@ impl Movie {
                 files
             },
             classes: BTreeMap::new(),
+            script_moved: Default::default(),
             states,
         })
     }
@@ -389,7 +393,7 @@ impl Movie {
                 )?
             };
             let old = self.instances[&child].placement.as_ref();
-            if old.is_none_or(|old| old.matrix != placement.matrix) {
+            if old.is_none_or(|old| old.matrix != placement.matrix) && !self.script_moved.contains(&child) {
                 vm.set(child, "_x", Value::Number(placement.matrix[4] as f64))?;
                 vm.set(child, "_y", Value::Number(placement.matrix[5] as f64))?;
             }

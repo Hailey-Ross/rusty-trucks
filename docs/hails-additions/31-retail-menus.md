@@ -795,8 +795,9 @@ no-op).
   `SKATE3_MENU_MOVIES=<export>/runtime` to run them against a fresh export.
 
 ### Open
-- Mode title and category overlap ("Free PlayMain"): core_menu places the category from the title's
-  `textLabel._width`; ours measures before the text is final or ignores autosize there.
+- FIXED (title / category overlap): a clip whose `_x` / `_y` a script set no longer follows its timeline's
+  placement (`Movie::script_moved`, stage only; Flash rule, NOT RETAIL YET: retail's flag is not traced). The
+  header now reads "Free Play > Main" like retail.
 - No selected-row highlight yet; the blur / dim behind the pause menu is not found (`pause-backdrop.md`).
 - Only the CrossBar template is registered (retail registers 133 in table order: AS id 669, ours 600).
 - Sub-option label and helper tables (0x83027958 / 0x83027A00) are not extracted: GetSubOptionName returns `#`.

@@ -188,6 +188,11 @@ impl Bindings<'_> {
 impl Host for Bindings<'_> {
     fn property_changed(&mut self, vm: &mut Vm, object: usize, key: &str) -> Result<(), String> {
         // Same as the HUD host: a new text or autosize re-localises and re-measures the field.
+        if key.eq_ignore_ascii_case("_x") || key.eq_ignore_ascii_case("_y") {
+            if let Some(level) = self.level_of(object) {
+                self.state.levels[level].movie.script_moved.insert(object);
+            }
+        }
         if key.eq_ignore_ascii_case("text") || key.eq_ignore_ascii_case("autoSize") {
             if let Some(level) = self.level_of(object) {
                 self.state.levels[level].movie.text_changed(vm, object)?;
