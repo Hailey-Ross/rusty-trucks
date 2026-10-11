@@ -140,6 +140,15 @@ impl Menu {
         self.open = !resume;
     }
 }
+/// The PC overlay's toggle (like the recomp's settings overlay): Guide (pad bit 0x0400), F1 or Escape from
+/// anywhere, over the retail menus too; pad Start only while the retail menus are off (with them on, Start is the
+/// retail pause menu's); B closes it while open.
+pub(crate) fn overlay_toggle(escape_or_f1: bool, pressed: u16, open: bool, retail_menus: bool, fe_suspended: bool) -> bool {
+    let guide = pressed & 0x0400 != 0;
+    let pad_start = pressed & 0x0010 != 0 && !retail_menus && !fe_suspended;
+    escape_or_f1 || guide || pad_start || (open && pressed & 0x2000 != 0)
+}
+
 pub(crate) fn gameplay_active(menu: Option<Res<Menu>>) -> bool {
     menu.is_none_or(|m| !m.open && !m.fe_suspended)
 }
@@ -418,11 +427,11 @@ pub(crate) fn interact(
     if travel.open || travel.closed_this_frame || customiser.open || custom_models.open || mods.open {
         return;
     }
-    // The PC overlay (like the recomp's settings overlay): Guide, F1 or Escape toggle it from anywhere, over the
-    // retail menus too. With the retail menus on, pad Start belongs to the retail pause menu.
-    let guide = nav.pressed & 0x0400 != 0 || keys.just_pressed(KeyCode::F1);
-    let pad_start = nav.pressed & 0x10 != 0 && !crate::retail_menu_stage::enabled() && !menu.fe_suspended;
-    if keys.just_pressed(KeyCode::Escape) || guide || pad_start || (menu.open && nav.pressed & 0x2000 != 0) {
+    let escape_or_f1 = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::F1);
+    if overlay_toggle(escape_or_f1, nav.pressed, menu.open, crate::retail_menu_stage::enabled(), menu.fe_suspended) {
+        if nav.pressed & 0x0400 != 0 {
+            info!("PC overlay toggled by the Guide button (open: {})", !menu.open);
+        }
         if menu.open && menu.multiplayer && (menu.browser || menu.network_page != 0) {
             menu.browser = false; if menu.network_page==1 {menu.browser=true;menu.network_page=0;menu.selected=8;} else {let from_debug=menu.network_page==4;menu.network_page = 0; menu.selected = if from_debug {15} else {2};}
         } else if menu.open && menu.map_detail {
@@ -1050,6 +1059,26 @@ fn pace(menu: Option<Res<Menu>>, mut pacer: ResMut<FramePacer>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn guide_opens_the_pc_overlay_everywhere_and_start_only_without_retail_menus() {
+        const GUIDE: u16 = 0x0400;
+        const START: u16 = 0x0010;
+        const B: u16 = 0x2000;
+        // Guide toggles it closed or open, with or without the retail menus, also over a retail screen.
+        for (retail, suspended) in [(false, false), (true, false), (true, true)] {
+            assert!(overlay_toggle(false, GUIDE, false, retail, suspended));
+            assert!(overlay_toggle(false, GUIDE, true, retail, suspended));
+        }
+        assert!(overlay_toggle(true, 0, false, true, true), "F1 / Escape too");
+        // Start: the overlay only without the retail menus; with them it is the retail pause menu's.
+        assert!(overlay_toggle(false, START, false, false, false));
+        assert!(!overlay_toggle(false, START, false, true, false));
+        assert!(!overlay_toggle(false, START, false, false, true), "not over a retail screen");
+        // B closes it while open and does nothing otherwise.
+        assert!(overlay_toggle(false, B, true, true, false));
+        assert!(!overlay_toggle(false, B, false, true, false));
+        assert!(!overlay_toggle(false, 0, true, true, false));
+    }
     #[test]
     fn culling_can_toggle_with_msaa_and_render_scale_changes() {
         let mut app = App::new();
