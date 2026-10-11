@@ -423,13 +423,20 @@ fn render(
     mut materials: ResMut<Assets<HudMaterial>>,
     fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
     overlay: Option<Res<crate::graphics_menu::Menu>>,
+    menus: Option<Res<crate::retail_menus::RetailMenus>>,
 ) {
     let Some(mut hud) = hud else {
         return;
     };
     // An FE screen whose record hides the HUD (the pause menu: mode 1) is on top, or the PC overlay (the recomp's
-    // blurs the HUD into its backdrop; ours sits above the blur pass, so it goes).
-    let hidden = fe_hud.is_some_and(|f| !f.hud) || overlay.is_some_and(|m| m.overlay_visible());
+    // blurs the HUD into its backdrop; ours sits above the blur pass, so it goes), or Game Settings > Video > HUD is
+    // Off (settings +164). NOT RETAIL YET: retail's appliers (sub_824AD2F0 / sub_825DA2A0) are not decoded, so Off
+    // hides the whole gameplay HUD here.
+    let hud_off = menus
+        .as_deref()
+        .and_then(|m| crate::retail_menus::setting(m, "ID_GAMESETTINGS_HUD_TOGGLE"))
+        .is_some_and(|v| skate_core::menu_values::number(&v) == 0.0);
+    let hidden = fe_hud.is_some_and(|f| !f.hud) || overlay.is_some_and(|m| m.overlay_visible()) || hud_off;
     let draws = if hud.failed || hidden {
         Vec::new()
     } else {

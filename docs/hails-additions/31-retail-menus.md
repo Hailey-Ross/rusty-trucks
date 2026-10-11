@@ -1187,7 +1187,33 @@ the recomp's settings overlay (skate3recomp's rexglue-sdk, `src/ui/overlay/simpl
   failure.
 - Open: the user's play test of the retail menus as the default.
 
+## Stored settings: every rule row steps and saves (2026-10-11)
+
+User decision: "Store, then features": first make every settings row work as a setting (steps, saves, readable),
+then port each row's effect. Rows that save but have no effect yet are listed below.
+
+### Change
+- `retail_menus.rs`: `StoredSettings` (`settings/game-settings.json`, string id -> number). Every settings row with a
+  retail rule and no engine binding (`BINDINGS`) gets an `Owner::Engine("settings")` value layer: the saved value,
+  else retail's default. That enables the row; Left / Right step it through retail's rule; a change is saved. A
+  mod's value layers on top and is never saved (same as the engine bindings). `retail_menus::setting(menus, id)`
+  gives features the value in force.
+- Effects so far: HUD Off hides the gameplay HUD (`scoring_hud.rs`). NOT RETAIL YET: retail hides some HUD clips,
+  not all (research in progress, `.local/research/settings-consumers.md`).
+- Saved, no effect yet: Subtitles, Minimap, Cameraman Mode, Vibration (the engine sends no rumble), offboard Y / X
+  axis, HOM mode, Units, Transparency, the Skate Feed toggles.
+- Still greyed (no retail rule decoded): Video Calibration (opens a calibration screen), SFX Pack (hidden with one
+  pack), Auto sign-in (an online popup).
+
+### Verification
+- `cargo test -p skate-game stored_rows_are_enabled_step_save_and_reload_and_mod_values_are_not_saved`: a stored row
+  is enabled with retail's default; nothing is written until a change; Right saves Off; a mod's value shows and is
+  not saved; a new session loads Off; engine-bound rows are not stored.
+- In game (fresh tables, `SKATE3_RETAIL_MENUS_KEYS=15,15,15,2,13,13,2,13,13,13,13,15`): Video Settings, HUD selected
+  and stepped to Off; log `ID_GAMESETTINGS_HUD_TOGGLE = Int(0) (saved)`, the file holds `{"ID_GAMESETTINGS_HUD_TOGGLE": 0}`.
+
 ## Files
+- Stored settings: `crates/skate-game/src/retail_menus.rs` (`StoredSettings`, `setting`), `scoring_hud.rs`
 - Swap-in: `crates/skate-game/src/retail_menu_stage.rs` (`enabled`, `RetailPause`), `graphics_menu.rs` (`overlay_key`)
 - PC overlay: `crates/skate-game/src/input/platform.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`, `fonts/`
   (Inter + OFL), `fe_backdrop.rs` (overlay blur), `scoring_hud.rs` (HUD hidden), `customiser.rs`
