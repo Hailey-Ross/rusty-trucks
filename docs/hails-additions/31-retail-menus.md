@@ -1198,10 +1198,22 @@ then port each row's effect. Rows that save but have no effect yet are listed be
   else retail's default. That enables the row; Left / Right step it through retail's rule; a change is saved. A
   mod's value layers on top and is never saved (same as the engine bindings). `retail_menus::setting(menus, id)`
   gives features the value in force.
-- Effects so far: HUD Off hides the gameplay HUD (`scoring_hud.rs`). NOT RETAIL YET: retail hides some HUD clips,
-  not all (research in progress, `.local/research/settings-consumers.md`).
-- Saved, no effect yet: Subtitles, Minimap, Cameraman Mode, Vibration (the engine sends no rumble), offboard Y / X
-  axis, HOM mode, Units, Transparency, the Skate Feed toggles.
+- Effects so far (research `.local/research/settings-consumers.md`; main-checked the parts marked so):
+  - HUD +164 [code]: retail `sub_825DA2A0` shows / hides the HUD clips trickdisplay, minimap, central and
+    trickanalyzer (manualmeter and online_chyron in the HUD setup `sub_825D99C8`; homscoring always on). Our
+    gameplay HUD draws only trickdisplay, so Off hides it (`scoring_hud.rs`); the other clips follow when they are
+    ported.
+  - Offboard X / Y axis +193 / +192 [code, main-checked]: `sub_8252FEB0` packs them into the camera config
+    `[0x83085450]` +24 / +25 (Transparency +195 into +26); the offboard camera `82DF69C0` negates the look stick's
+    x when +24 is set and y when +25 is set. Ours: `camera::angle::sync_look_invert` sets
+    `CameraRuntime::invert_look`, which the existing publication applies to `look_552_556` (the right stick).
+    Test `look_invert_follows_the_axis_rows`. Not play-tested.
+- Saved, no effect yet (what retail does, from the research, not main-checked): Minimap +158 (`sub_82665278`:
+  hidden with the HUD off, forced on / off in some game states; we draw no minimap), Subtitles +157 (six readers
+  gate subtitles on it or a forced flag; no subtitle text in the engine), Vibration +163 (per pad, the rumble start
+  `sub_82694D38` does nothing when 0; the engine sends no rumble; retail's default comes from the Xbox profile's
+  controller vibration option), Cameraman Mode +165 and HOM mode +184 (readers found, effect undecoded), Units,
+  Transparency (no reader of the copied byte found), the Skate Feed toggles.
 - Still greyed (no retail rule decoded): Video Calibration (opens a calibration screen), SFX Pack (hidden with one
   pack), Auto sign-in (an online popup).
 

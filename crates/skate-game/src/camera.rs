@@ -33,7 +33,7 @@ impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn)
             // After the pause menu, before the fixed simulation steps that advance the camera.
-            .add_systems(PreUpdate, angle::sync_runtime.after(crate::graphics_menu::MenuInput))
+            .add_systems(PreUpdate, (angle::sync_runtime, angle::sync_look_invert).after(crate::graphics_menu::MenuInput))
             .add_systems(Update, present.after(FrameSet::Animation).before(FrameSet::Verification));
     }
 }
