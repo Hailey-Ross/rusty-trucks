@@ -1187,7 +1187,64 @@ the recomp's settings overlay (skate3recomp's rexglue-sdk, `src/ui/overlay/simpl
   failure.
 - Open: the user's play test of the retail menus as the default.
 
+## Stored settings: every rule row steps and saves (2026-10-11)
+
+User decision: "Store, then features": first make every settings row work as a setting (steps, saves, readable),
+then port each row's effect. Rows that save but have no effect yet are listed below.
+
+### Change
+- `retail_menus.rs`: `StoredSettings` (`settings/game-settings.json`, string id -> number). Every settings row with a
+  retail rule and no engine binding (`BINDINGS`) gets an `Owner::Engine("settings")` value layer: the saved value,
+  else retail's default. That enables the row; Left / Right step it through retail's rule; a change is saved. A
+  mod's value layers on top and is never saved (same as the engine bindings). `retail_menus::setting(menus, id)`
+  gives features the value in force.
+- Effects so far (research `.local/research/settings-consumers.md`; main-checked the parts marked so):
+  - HUD +164 [code]: retail `sub_825DA2A0` shows / hides the HUD clips trickdisplay, minimap, central and
+    trickanalyzer (manualmeter and online_chyron in the HUD setup `sub_825D99C8`; homscoring always on). Our
+    gameplay HUD draws only trickdisplay, so Off hides it (`scoring_hud.rs`); the other clips follow when they are
+    ported.
+  - Offboard X / Y axis +193 / +192 [code, main-checked]: `sub_8252FEB0` packs them into the camera config
+    `[0x83085450]` +24 / +25 (Transparency +195 into +26); the offboard camera `82DF69C0` negates the look stick's
+    x when +24 is set and y when +25 is set. Ours: `camera::angle::sync_look_invert` sets
+    `CameraRuntime::invert_look`, which the existing publication applies to `look_552_556` (the right stick).
+    Test `look_invert_follows_the_axis_rows`. Not play-tested.
+- Vibration +163 (2026-10-11): rumble output ported (research `.local/research/rumble.md`; constants main-checked
+  in the TU3 image, the tick and device curve main-checked in `sub_82695010` / `sub_8296D480`):
+  - `skate_core::rumble`: per pad, channels {low, high, decay}; a start overwrites its channel with low / high
+    clamped to 0..1 and decay = clamp(1 - rate / 60) (`sub_82694D38`, only it checks the vibration flag, so
+    switching off lets running rumble fade); each tick sums the channels per motor, caps the sum at
+    max + (1 - max) * 0.2, clamps to 0..1, then decays each channel and drops it once both motors are below 0.001
+    (`sub_82695010`); the device curve (`sub_8296D480`): gamepad motor 0 = 1.2 l - 0.02, motor 1 = 1.05 l + 0.05,
+    other devices 0.7 l - 0.02 / 0.7 l, clamp, exactly 0 stays 0, else trunc(v * 65535). As in retail, a gamepad's
+    motor 1 at level 0 gets 3276 (0.05). Values in `RumbleTuning::RETAIL`.
+  - `rumble.rs` (game): ticked at 60 Hz of real time whatever the frame rate; the Vibration row (value in force)
+    gates starts; switching it on plays retail's test rumble (`sub_8260DF40`: channel 0, 0.5 / 0.5, rate 5.0) on
+    the active pad; output through `input::platform::set_rumble` (SDL `SDL_RumbleGamepad`, re-sent every 0.5 s
+    for a 1 s duration while non-zero; XInput `XInputSetState` on change). NOT RETAIL: Xbox-family pads get the
+    gamepad curve, other pads the other-device curve (retail's known-device test is the 360 pad's caps; on a
+    DualSense the 0.05 floor would be a constant buzz).
+  - Mods: `sdk.input.rumble` / `stop_rumble` (capability `input_rumble`; per-mod channels, stopped with the mod).
+  - NOT PORTED: retail's gameplay rumble events (the posters `sub_82BB8CF0`, 0.5 / 0.5 / rate 1.2, local player only,
+    and `sub_8259E3D0`, per-item channels from `sub_8259DFB0`; which events they belong to is not proven; a recomp
+    trace hook on `sub_82694D38` logging caller, channel and the three floats would settle it).
+  - Tests: `cargo test -p skate-core rumble`, `cargo test -p skate-game rumble` (60 Hz at any frame rate, the
+    switch-on test rumble, off blocks starts, mod channels separate and stopped with their mod). Not felt on a pad.
+- Saved, no effect yet (what retail does, from the research, not main-checked): Minimap +158 (`sub_82665278`:
+  hidden with the HUD off, forced on / off in some game states; we draw no minimap), Subtitles +157 (six readers
+  gate subtitles on it or a forced flag; no subtitle text in the engine), Cameraman Mode +165 and HOM mode +184 (readers found, effect undecoded), Units,
+  Transparency (no reader of the copied byte found), the Skate Feed toggles.
+- Still greyed (no retail rule decoded): Video Calibration (opens a calibration screen), SFX Pack (hidden with one
+  pack), Auto sign-in (an online popup).
+
+### Verification
+- `cargo test -p skate-game stored_rows_are_enabled_step_save_and_reload_and_mod_values_are_not_saved`: a stored row
+  is enabled with retail's default; nothing is written until a change; Right saves Off; a mod's value shows and is
+  not saved; a new session loads Off; engine-bound rows are not stored.
+- In game (fresh tables, `SKATE3_RETAIL_MENUS_KEYS=15,15,15,2,13,13,2,13,13,13,13,15`): Video Settings, HUD selected
+  and stepped to Off; log `ID_GAMESETTINGS_HUD_TOGGLE = Int(0) (saved)`, the file holds `{"ID_GAMESETTINGS_HUD_TOGGLE": 0}`.
+
 ## Files
+- Stored settings: `crates/skate-game/src/retail_menus.rs` (`StoredSettings`, `setting`), `scoring_hud.rs`
 - Swap-in: `crates/skate-game/src/retail_menu_stage.rs` (`enabled`, `RetailPause`), `graphics_menu.rs` (`overlay_key`)
 - PC overlay: `crates/skate-game/src/input/platform.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`, `fonts/`
   (Inter + OFL), `fe_backdrop.rs` (overlay blur), `scoring_hud.rs` (HUD hidden), `customiser.rs`

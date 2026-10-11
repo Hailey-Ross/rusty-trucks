@@ -12,6 +12,7 @@ pub mod graph;
 pub mod input;
 pub mod math;
 pub mod menu_values;
+pub mod rumble;
 pub mod crossbar;
 pub mod fe_blur;
 pub mod fe_input;

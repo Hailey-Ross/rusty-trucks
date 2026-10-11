@@ -685,6 +685,14 @@ function sdk.bodies.angular_impulse(ref,value)
     if ref.kind=="mod" then sdk.physics.torque_impulse(ref.key,value)
     else submit{kind="native_impulse",body={kind=ref.kind,index=ref.index},impulse=value,angular=true} end
 end
+-- Controller rumble (capability input_rumble): retail's rumble channels. low / high = motor levels 0..1, rate =
+-- decay per second (0 = holds until stopped), channel = 0..1023 (this mod's own), pad = slot 0..3 (default: the
+-- active pad). Nothing while Game Settings > Vibration is off. Stops when the mod stops.
+function sdk.input.rumble(o)
+    o=o or {}
+    submit{kind="input_rumble",pad=o.pad,channel=o.channel or 0,low=o.low or 0,high=o.high or 0,rate=o.rate or 0}
+end
+function sdk.input.stop_rumble(pad) submit{kind="input_stop_rumble",pad=pad} end
 function sdk.input.override_action(id,value)
     if type(id)=='string' then id=action_id(id) end
     submit{kind="input_override",action=id,value=value}

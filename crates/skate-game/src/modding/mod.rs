@@ -760,6 +760,7 @@ fn camera_angle_snapshot(world: &World) -> Value {
 fn clear_runtime(world: &mut World, mods: &mut Mods) {
     replication::reset(world,mods);
     audio::clear(world);
+    crate::rumble::clear_mods(world);
     world_audio::clear(world);
     crate::game_audio::clear_mods_runtime(world);
     world_tuning::clear_all(world);
@@ -833,6 +834,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         mods.command_results.retain(|(owner,_),_|owner!=id);
         mods.input_overrides.retain(|_,(owner,_)|owner!=id);
         audio::stop_owner(world, id, true);
+        crate::rumble::stop_owner(world, id);
         world_audio::clear_owner(world, id);
         crate::game_audio::clear_mod(world, id);
         world_tuning::clear_owner(world, id);
@@ -912,6 +914,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             mods.manager.fail(&id, e);
             mods.input_overrides.retain(|_,(owner,_)|owner!=&id);
             audio::stop_owner(world, &id, true);
+            crate::rumble::stop_owner(world, &id);
             world_audio::clear_owner(world, &id);
             crate::game_audio::clear_mod(world, &id);
             world_tuning::clear_owner(world, &id);
@@ -944,6 +947,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             mods.manager.fail(&id, e);
             mods.input_overrides.retain(|_,(owner,_)|owner!=&id);
             audio::stop_owner(world, &id, true);
+            crate::rumble::stop_owner(world, &id);
             world_audio::clear_owner(world, &id);
             crate::game_audio::clear_mod(world, &id);
             world_tuning::clear_owner(world, &id);
@@ -998,6 +1002,11 @@ fn apply_one(
             if mods.input_overrides.get(&action).is_some_and(|(o,_)|o!=id) { return Err("input action owned by another mod".into()); }
             if let Some(value)=value {mods.input_overrides.insert(action,(id.to_owned(),value));} else {mods.input_overrides.remove(&action);}
         }
+        Command::InputRumble {pad,channel,low,high,rate} => {
+            let pad = match pad { Some(p) => usize::from(p), None => world.resource::<crate::input::ControllerInput>().active_slot().ok_or("no controller connected")? };
+            world.resource_mut::<crate::rumble::RumbleOutput>().start_mod(id, pad, channel, skate_core::rumble::Rumble { low, high, rate });
+        }
+        Command::InputStopRumble {pad} => world.resource_mut::<crate::rumble::RumbleOutput>().stop_mod(id, pad.map(usize::from)),
         Command::NativeImpulse {body,impulse,point,angular} => {
             if mods.attach.is_some() || !mods.suspended_by.is_empty() {return Err("native player is attached or suspended".into());}
             player_physics::impulse(world,&body,impulse,point,angular)?;

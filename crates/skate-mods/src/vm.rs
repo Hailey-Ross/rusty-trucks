@@ -525,6 +525,11 @@ pub enum Command {
     EngineInspect { system:String },
     Request { key:String, #[serde(default)] token:u64, command:Box<Command> },
     InputOverride { action:usize, value:Option<f32> },
+    /// Controller rumble (retail's rumble channels): motor levels 0..1, decay rate per second, the mod's channel
+    /// 0..1023, the pad slot (None = the active pad).
+    InputRumble { #[serde(default)] pad:Option<u8>, #[serde(default)] channel:u32, low:f32, high:f32, #[serde(default)] rate:f32 },
+    /// Stop this mod's rumble on a pad (None = every pad).
+    InputStopRumble { #[serde(default)] pad:Option<u8> },
     NativeImpulse { body:crate::extensions::NativeBodyRef, impulse:[f32;3], point:Option<[f32;3]>, angular:bool },
     PlayerJoint { joint:usize, options:crate::extensions::JointOverride },
     PlayerResetJoint { joint:usize },
@@ -644,6 +649,9 @@ impl Command {
             Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog") || crate::audio_tuning::valid_inspect(system) || crate::world_tuning::valid_inspect(system),
             Self::Request {key,command,token} => *token<=9_007_199_254_740_991 && crate::schema::valid_id(key) && !matches!(**command,Self::Request{..}) && command.validate(),
             Self::InputOverride {action,value} => (64..=81).contains(action) && value.is_none_or(|v|v.is_finite() && (-1.0..=1.0).contains(&v)),
+            Self::InputRumble {pad,channel,low,high,rate} => pad.is_none_or(|p|p<4) && *channel<1024
+                && [low,high].iter().all(|v|v.is_finite() && (0.0..=1.0).contains(*v)) && rate.is_finite() && (0.0..=600.0).contains(rate),
+            Self::InputStopRumble {pad} => pad.is_none_or(|p|p<4),
             Self::NativeImpulse {body,impulse,point:p,..} => body.validate() && impulse.iter().all(|v|v.is_finite() && v.abs()<=100_000.) && p.as_ref().is_none_or(point),
             Self::Log { text } => text.len() <= 2048,
             Self::Overlay { key, text } | Self::MultiplayerDebug { key, text } => crate::schema::valid_id(key) && text.len() <= 1024,
@@ -941,6 +949,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::EngineInspect {..} => "engine_inspect",
         Command::Request {..} => "request",
         Command::InputOverride {..} => "input_override",
+        Command::InputRumble {..} => "input_rumble",
+        Command::InputStopRumble {..} => "input_stop_rumble",
         Command::NativeImpulse {..} => "native_impulse",
         Command::Log { .. } => "log",
         Command::Overlay { .. } => "overlay",
@@ -1289,6 +1299,8 @@ impl Vm {
             capabilities.set("command_results", 1)?;
             capabilities.set("native_bodies", 1)?;
             capabilities.set("input_override", 1)?;
+            // sdk.input.rumble / stop_rumble.
+            capabilities.set("input_rumble", 1)?;
             // sdk.input.controller(s) (read-only identity) and sdk.input.action_ids.
             capabilities.set("controllers", 1)?;
             capabilities.set("action_ids", 1)?;

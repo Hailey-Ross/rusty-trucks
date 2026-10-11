@@ -31,6 +31,10 @@ pub(crate) struct CameraRuntime {
     pub simulation_rate_requests: Vec<SimulationRateRequest>,
     pub manual_cam: ManualCam,
     pub manual_cam_settings: ManualCamSettings,
+    /// Game Settings > Control > offboard X / Y axis (settings +193 / +192): retail's camera config +24 / +25,
+    /// which the offboard camera (82DF69C0) applies by negating the look stick's x / y. Synced by
+    /// `sync_look_invert`.
+    pub invert_look: [bool; 2],
     /// Stock camera graph `IsCameraTypeActive` value: 0 Low, 1 High (camera/angle.rs).
     camera_type: u32,
     /// `CameraAngleSettings` generation whose shot tunings are applied (0 = none yet).
@@ -69,6 +73,7 @@ impl CameraRuntime {
             simulation_rate_requests: Vec::new(),
             manual_cam: ManualCam::default(),
             manual_cam_settings: settings::manual_cam_settings(&data)?,
+            invert_look: [false; 2],
             camera_type: super::angle::CameraAngle::default().graph_type(),
             tuning_generation: 0, reselect_shot: false })
     }
