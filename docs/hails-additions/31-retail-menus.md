@@ -1147,8 +1147,12 @@ the recomp's settings overlay (skate3recomp's rexglue-sdk, `src/ui/overlay/simpl
   1.6 spaces; Bevy's justify has no such limit and opened wide gaps); value text clips instead of shrinking then
   ellipsizing; hover needs 2 px of movement since the last hover instead of per frame; Reset to Default shows in
   the legend only on rows that have a default; Close Game replaces the Extras "Quit game" row.
+- NPC Draw Distance (Graphics > Living World; QoL, not retail): the living world's row (None, Retail, 1.5x, 2x,
+  3x), saved in `graphics.json` as `npc_draw_distance`. Here it is a placeholder: the overlay keeps the choice in
+  the `NpcDrawDistance` resource, which nothing reads until the living world (`world/living-world`) lands and
+  applies it; its description says so. On `hails-additions` the row drives the living world directly.
 - Moddability: mod menu sections still become rail categories (`custom_sections`), their entries rows.
-- Tests: `cargo test -p skate-game graphics_menu` (keys, back steps, stepper ends, header placement, repeat timing,
+- Tests: `cargo test -p skate-game graphics_menu` (keys, back steps, stepper ends, header placement, NPC draw distance setting, repeat timing,
   1080p layout, easing).
 - Open: the user's play test of the motion.
 

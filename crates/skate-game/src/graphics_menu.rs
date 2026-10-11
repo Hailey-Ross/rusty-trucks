@@ -49,6 +49,8 @@ struct GraphicsSettings {
     /// With the counter on: the small readout (fps, frame time, 1 % low, worst and a tiny spike
     /// graph) instead of the verbose one. Older settings files lack it and stay verbose.
     frame_stats_simple: bool,
+    /// NPC draw distance multiplier (QoL, not retail): 1 = retail ranges.
+    npc_draw_distance: f32,
 }
 impl Default for GraphicsSettings {
     fn default() -> Self {
@@ -62,11 +64,15 @@ impl Default for GraphicsSettings {
             ambient_level: None,
             frame_stats: false,
             frame_stats_simple: false,
+            npc_draw_distance: NpcDrawDistance::RETAIL,
         }
     }
 }
 impl GraphicsSettings {
     fn validated(mut self) -> Self {
+        if !NpcDrawDistance::MENU_STEPS.contains(&self.npc_draw_distance) {
+            self.npc_draw_distance = NpcDrawDistance::RETAIL;
+        }
         self.ambient_level = self.ambient_level.map(|level| level.min(100));
         self.hour = if self.hour.is_finite() { self.hour.rem_euclid(24.) } else { 12. };
         if !DAY_SPEEDS.contains(&self.day_speed) { self.day_speed = 60; }
@@ -184,6 +190,7 @@ const SECTIONS: &[(&str, &str, &str)] = &[
 const HEADERS: &[(usize, &str)] = &[
     (900, "Display"), (901, "World"), (902, "Audio"), (903, "Interface"), (904, "Difficulty"), (905, "Custom Tuning"),
     (906, "Camera"), (907, "Character"), (908, "Mods & Updates"), (909, "Controllers"), (910, "Teleport Spots"),
+    (911, "Living World"),
 ];
 
 /// How a row behaves (the recomp's `RowSpec::Kind`).
@@ -265,7 +272,7 @@ impl Menu {
             0 => (1000..1000 + self.maps.len()).collect(),
             1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([CAMERA_ANGLE_ROW,8,10]).collect(),
             1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
-            2 => vec![0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW],
+            2 => vec![0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW],
             // Quitting is the rail's Close Game.
             4 => vec![11, 14, 19],
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
@@ -282,6 +289,7 @@ impl Menu {
                 (true, 2, 13) => Some(901),
                 (true, 2, 16) => Some(902),
                 (true, 2, FRAME_STATS_ROW) => Some(903),
+                (true, 2, NPC_DRAW_DISTANCE_ROW) => Some(911),
                 (true, 1, 3) => Some(904),
                 (true, 1, 300) => Some(905),
                 (true, 1, CAMERA_ANGLE_ROW) => Some(906),
@@ -478,6 +486,8 @@ impl Menu {
                 Kind::Enum { index: if !s.frame_stats { 0 } else if s.frame_stats_simple { 1 } else { 2 }, count: 3, wrap: false },
                 "FPS Counter", if !s.frame_stats { "Off" } else if s.frame_stats_simple { "Simple" } else { "Verbose" },
                 "On-screen frame-time readout. Simple shows fps, frame time, 1% low and the worst frame; Verbose shows every timing.").reset(),
+            NPC_DRAW_DISTANCE_ROW => RowView::new(pick(&NpcDrawDistance::MENU_STEPS, &s.npc_draw_distance), "NPC Draw Distance",
+                draw_distance_label(s.npc_draw_distance), NPC_DRAW_DISTANCE_HINT).reset(),
             200..=263 => {
                 let title = self.custom_sections.get(self.section.saturating_sub(SECTIONS.len())).and_then(|(_, e)| e.get(id - 200)).map(|(_, _, t)| t.clone()).unwrap_or_default();
                 RowView::action(title, "Open this mod's menu.")
@@ -510,6 +520,7 @@ pub(crate) struct GraphicsMenuPlugin;
 impl Plugin for GraphicsMenuPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(FramePacer(Instant::now()))
+            .init_resource::<NpcDrawDistance>()
             .add_systems(PostStartup, setup.in_set(PresentationSetup))
             .add_systems(PreUpdate, (refresh_sections, interact, apply_custom_difficulty).chain().in_set(MenuInput).after(bevy::input::InputSystems))
             .add_systems(PreUpdate, finish_menu_travel.after(crate::map_transition::MapTransitionSet).before(crate::input::poll_controllers))
@@ -528,6 +539,7 @@ fn setup(
     mut window: Single<&mut Window, With<PrimaryWindow>>,
     cameras: Query<Entity, With<Camera3d>>,
     mut time: ResMut<Time<Virtual>>,
+    mut npc: ResMut<NpcDrawDistance>,
 ) {
     let path = config
         .asset_root
@@ -542,6 +554,7 @@ fn setup(
         Err(_) => GraphicsSettings::default(),
     }
     .validated();
+    npc.0 = settings.npc_draw_distance;
     window
         .resolution
         .set_physical_resolution(settings.width, settings.height);
@@ -604,6 +617,27 @@ fn setup(
 /// GRAPHICS-section rows for the game_audio volume settings.
 const FRAME_STATS_ROW: usize = 28;
 const AUDIO_ROWS: std::ops::RangeInclusive<usize> = 16..=18;
+/// The player's NPC draw distance multiplier (QoL, not retail; 1 = retail ranges), saved with the graphics
+/// settings. Placeholder until the living world (NPC skaters, peds and cars) reads it; nothing does yet.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NpcDrawDistance(pub f32);
+impl NpcDrawDistance {
+    pub const RETAIL: f32 = 1.0;
+    /// No NPCs at all.
+    pub const NONE: f32 = 0.0;
+    pub const MENU_STEPS: [f32; 5] = [Self::NONE, 1.0, 1.5, 2.0, 3.0];
+}
+impl Default for NpcDrawDistance {
+    fn default() -> Self {
+        Self(Self::RETAIL)
+    }
+}
+/// GRAPHICS-section row of the NPC draw distance (QoL, not retail).
+const NPC_DRAW_DISTANCE_ROW: usize = 29;
+const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time. None turns off all NPC skaters, peds and cars. Takes effect with the living world (NPC skaters, peds and cars); until then the choice is only saved.";
+fn draw_distance_label(multiplier: f32) -> String {
+    if multiplier == NpcDrawDistance::NONE { "None  (no NPCs, not retail)".into() } else if multiplier == NpcDrawDistance::RETAIL { "Retail".into() } else { format!("{multiplier}x  (not retail)") }
+}
 fn audio_row(row: usize) -> crate::game_audio::AudioRow {
     use crate::game_audio::AudioRow;
     match row { 16 => AudioRow::Master, 17 => AudioRow::Ambience, _ => AudioRow::Effects }
@@ -653,7 +687,7 @@ pub(crate) fn interact(
     mut exit: MessageWriter<AppExit>,
     mut net: ResMut<crate::multiplayer::Multiplayer>,
     mut typing: MessageReader<bevy::input::keyboard::KeyboardInput>,
-    (mut updater, mut audio, mut camera_angle): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>, ResMut<crate::camera::CameraAngleSettings>),
+    (mut updater, mut audio, mut camera_angle, mut living): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>, ResMut<crate::camera::CameraAngleSettings>, ResMut<NpcDrawDistance>),
     travel: Res<crate::teleport_menu::Travel>,
     mut mods: ResMut<crate::modding::ModMenu>,
 ) {
@@ -923,7 +957,7 @@ pub(crate) fn interact(
     let day_action = menu.daylight;
     let saved_row = match act {
         Some(Act::Reset(row)) => {
-            reset_row(&mut menu, row, &mut audio, &mut camera_angle);
+            reset_row(&mut menu, row, &mut audio, &mut camera_angle, &mut living);
             Some(row)
         }
         Some(Act::Drag(row, fraction)) => {
@@ -942,13 +976,13 @@ pub(crate) fn interact(
         Some(Act::Step(row, _) | Act::Activate(row)) => {
             let direction = if let Some(Act::Step(_, d)) = act { d } else { 1 };
             run_row(&mut menu, row, direction, (&mut *config, &mut *physics, &mut *net, &mut exit, &mut *customiser,
-                &mut *custom_models, &mut *updater, &mut *audio, &mut *camera_angle, &mut *mods));
+                &mut *custom_models, &mut *updater, &mut *audio, &mut *camera_angle, &mut *mods, &mut *living));
             Some(row)
         }
         None => None,
     };
     if let Some(row) = saved_row {
-        if ((row < 3 || row == FRAME_STATS_ROW) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
+        if ((row < 3 || row == FRAME_STATS_ROW || row == NPC_DRAW_DISTANCE_ROW) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
             let save = (|| -> Result<(), String> {
                 std::fs::create_dir_all(menu.path.parent().unwrap()).map_err(|e| e.to_string())?;
                 std::fs::write(
@@ -981,11 +1015,12 @@ type RowResources<'a, 'w> = (
     &'a mut crate::game_audio::AudioSettings,
     &'a mut crate::camera::CameraAngleSettings,
     &'a mut crate::modding::ModMenu,
+    &'a mut NpcDrawDistance,
 );
 
 /// Step or activate one row (`direction` +1 for Select, which cycles enums with wrap-around).
 fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
-    let (config, physics, net, exit, customiser, custom_models, updater, audio, camera_angle, mods) = r;
+    let (config, physics, net, exit, customiser, custom_models, updater, audio, camera_angle, mods, living) = r;
     if menu.daylight {
         match row {
             0 => menu.settings.hour = ((menu.settings.hour * 4.).round() + direction as f32).rem_euclid(96.) / 4.,
@@ -1101,6 +1136,10 @@ fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
                 let now = if s.frame_stats { (true, s.frame_stats_simple) } else { (false, false) };
                 (s.frame_stats, s.frame_stats_simple) = cycle(&modes, now, direction);
             }
+            NPC_DRAW_DISTANCE_ROW => {
+                menu.settings.npc_draw_distance = cycle(&NpcDrawDistance::MENU_STEPS, menu.settings.npc_draw_distance, direction);
+                living.0 = menu.settings.npc_draw_distance;
+            }
             _ => {}
         }
     }
@@ -1115,7 +1154,8 @@ fn camera_saved(camera_angle: &crate::camera::CameraAngleSettings) -> String {
     }
 }
 /// Y / R: a row back to its default (the rows whose `RowView::reset` is set).
-fn reset_row(menu: &mut Menu, row: usize, audio: &mut crate::game_audio::AudioSettings, camera_angle: &mut crate::camera::CameraAngleSettings) {
+fn reset_row(menu: &mut Menu, row: usize, audio: &mut crate::game_audio::AudioSettings, camera_angle: &mut crate::camera::CameraAngleSettings,
+    living: &mut NpcDrawDistance) {
     let defaults = GraphicsSettings::default();
     let s = &mut menu.settings;
     if menu.daylight {
@@ -1132,6 +1172,10 @@ fn reset_row(menu: &mut Menu, row: usize, audio: &mut crate::game_audio::AudioSe
         1 => s.scale = defaults.scale,
         2 => s.fps = defaults.fps,
         FRAME_STATS_ROW => (s.frame_stats, s.frame_stats_simple) = (defaults.frame_stats, defaults.frame_stats_simple),
+        NPC_DRAW_DISTANCE_ROW => {
+            s.npc_draw_distance = defaults.npc_draw_distance;
+            living.0 = s.npc_draw_distance;
+        }
         CAMERA_ANGLE_ROW => {
             camera_angle.selected = crate::camera::CameraAngle::default();
             menu.status = camera_saved(camera_angle);
@@ -1209,6 +1253,7 @@ fn preview_menu(config: Res<crate::config::Config>, mut menu: ResMut<Menu>, mut 
     match std::env::var("SKATE_VERIFY_MENU").as_deref() {
         Ok("custom") => { menu.open = true; menu.select_section(1); menu.selected=300; menu.view.content = true; menu.view.shown = true; },
         Ok("graphics") => { menu.open = true; menu.select_section(2); menu.view.content = true; menu.view.shown = true; },
+        Ok("npc") => { menu.open = true; menu.select_section(2); menu.selected = NPC_DRAW_DISTANCE_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("maps") => { menu.open = true; menu.select_section(0); menu.view.content = true; menu.view.shown = true; },
         Ok("rail") => { menu.open = true; menu.select_section(2); },
         Ok("mods") => { menu.open = true; mods.begin(); }
@@ -1359,7 +1404,7 @@ mod tests {
     fn pages_put_headers_in_front_of_their_groups() {
         let mut m = menu();
         m.select_section(2);
-        assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW]);
+        assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW, 911, NPC_DRAW_DISTANCE_ROW]);
         m.select_section(1);
         assert_eq!(m.page(), vec![904, 3, 906, CAMERA_ANGLE_ROW, 907, 8, 10]);
         m.select_section(4);
@@ -1430,7 +1475,7 @@ mod tests {
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
             // Audio, controller identity, and frame-time rows are spawned.
-            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id >= 1000));
+            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
@@ -1466,7 +1511,7 @@ mod tests {
         assert!(!SECTIONS.iter().any(|(name,_,_)| matches!(*name,"SESSION"|"WORLD")));
         menu.select_section(2);
         assert!(!menu.multiplayer && !menu.browser);
-        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW]);
+        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW]);
         menu.daylight = true;
         assert_eq!(menu.rows(), vec![0,1,2,3]);
     }
@@ -1485,6 +1530,17 @@ mod tests {
         let simple = GraphicsSettings { frame_stats: true, frame_stats_simple: true, ..default() };
         let saved: GraphicsSettings = serde_json::from_slice(&serde_json::to_vec(&simple).unwrap()).unwrap();
         assert!(saved.frame_stats && saved.frame_stats_simple);
+    }
+    #[test]
+    fn npc_draw_distance_defaults_to_retail_and_keeps_menu_steps_only() {
+        assert_eq!(GraphicsSettings::default().npc_draw_distance, NpcDrawDistance::RETAIL);
+        let odd: GraphicsSettings = serde_json::from_str(r#"{"npc_draw_distance":1.25}"#).unwrap();
+        assert_eq!(odd.validated().npc_draw_distance, NpcDrawDistance::RETAIL);
+        let none: GraphicsSettings = serde_json::from_str(r#"{"npc_draw_distance":0.0}"#).unwrap();
+        assert_eq!(none.validated().npc_draw_distance, NpcDrawDistance::NONE);
+        assert_eq!(draw_distance_label(1.0), "Retail");
+        assert_eq!(draw_distance_label(2.0), "2x  (not retail)");
+        assert_eq!(cycle(&NpcDrawDistance::MENU_STEPS, 3.0, 1), NpcDrawDistance::NONE);
     }
     #[test]
     fn invalid_saved_values_fall_back() {
