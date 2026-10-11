@@ -429,9 +429,10 @@ fn render(
     materials: ResMut<Assets<HudMaterial>>,
     fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
     overlay: Option<Res<crate::graphics_menu::Menu>>,
+    menus: Option<Res<crate::retail_menus::RetailMenus>>,
 ) {
     let started = std::time::Instant::now();
-    render_hud(commands, hud, meshes, materials, fe_hud, overlay);
+    render_hud(commands, hud, meshes, materials, fe_hud, overlay, menus);
     crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_HUD_RENDER, started);
 }
 fn render_hud(
