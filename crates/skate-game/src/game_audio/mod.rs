@@ -517,7 +517,7 @@ fn follow_camera(
 
 /// True while game sound must be silent: menu open, replay running.
 fn silenced(menu: Option<&crate::graphics_menu::Menu>, replay: &crate::replay::Replay) -> bool {
-    menu.is_some_and(|m| m.open) || replay.active
+    menu.is_some_and(|m| m.open || m.fe_suspended) || replay.active
 }
 
 #[cfg(test)]

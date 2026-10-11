@@ -1441,6 +1441,9 @@ fn apply_one(
             let mut movies = world.get_resource_mut::<crate::retail_menu_movies::RetailMenuMovies>().ok_or("menu movies are not ready")?;
             movies.set_mod_bitmap(id, &movie, bitmap, image)?;
         }
+        Command::MenuBackdrop { screen, options } => {
+            world.resource_mut::<crate::fe_backdrop::FeBackdrop>().set_mod(id, screen, options);
+        }
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
     Ok(())

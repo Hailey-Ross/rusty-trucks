@@ -669,7 +669,488 @@ one.
 - Drawing the menus on screen comes with the screen manager milestone (the renderer maps `Draw.texture` through
   `RetailMenuMovies::image`).
 
+## Milestone 5a: the front-end stage (2026-10-10)
+Branch `ui/retail-menus-2` (after #59 merged). Retail's screen manager is a script (`helper/screenmanager.apt`);
+the C++ only calls it by name and answers its callbacks. So the port runs the retail movies themselves on one stage.
+
+### Problem
+The player ran one movie per VM (the HUD). The menus need FE_root, the screen manager and each screen movie in ONE
+script VM sharing `_global`, screens loaded into clips at runtime (MovieClipLoader), clips created by script
+(createEmptyMovieClip), component classes bound by `Object.registerClass`, and each movie at its own frame rate.
+
+### Evidence
+- [code] C++ calls the AS by path string: names at 0x8302C608 + index * 4 (OpenScreen 6, CloseScreen 8,
+  DestroyScreen 9, SetScreenState 10, UpdateInput 11, ShowScreen 12, RegisterTemplate 16), via sub_825D3B38 /
+  sub_8263F320. Template table 0x8302F1A8 (133 records of 16 bytes: name, swf path, type, -1), e.g. 69 CrossBar
+  `main/core_menu.swf`, 90 Options, 131 TipsLoader. OpenScreen (sub_82D09140) passes ("source/screens/" + path,
+  layer, "0"/"1", template name). Callbacks OnScreenLoaded / IntroComplete / OutroComplete (825A4A70 / 825A4AF8 /
+  825A4B70) index their slot with id - 600 (AS id = 600 + template index, the AS hands out depths from 600).
+  Research notes: `.local/research/fe-screen-stack.md`.
+- [code] Retail pop (opcode 0x17, handler 82E6D048) pops only above the stack base; on an empty stack it does
+  nothing. screenmanager.apt relies on it (a pop after a setMember at 0x875).
+- [data] Libraries declare their component classes in their ROOT init actions
+  (`Object.registerClass("Menu_Picker_Component", menu_picker)` in menu_picker.apt); importers name the clip by
+  that linkage name (core_menu imports character 166 as Menu_Picker_Component). Retail loads every library before
+  linking (sub_82E7E8C0), so those init actions run.
+
+### Change
+- `apt_stage.rs` (new): `Stage` = one `Vm` + loaded movies (`Level`), `StageNatives` (the C++ host objects: Game,
+  CoreMenu, ...), `MovieSource` (linked movies with mod overrides). MovieClipLoader (addListener, loadClip queued to
+  the next update like retail's load queue, unloadClip, onLoadStart / Complete / Init), createEmptyMovieClip,
+  removeMovieClip, getDepth, `Object.registerClass`, library root init actions once per stage, `call_path` for the
+  C++ calls (`_global.ScreenManager.OpenScreen`), per-movie `milliseconds_per_frame` (header of character 0).
+  Retail `.swf` template paths map to the packed `.apt` key.
+- `apt_movie.rs`: `initialize_into` (a loaded movie's root reuses the target clip's object, so script references
+  such as ScreenManager.mMovieClipList stay valid), `unload`, `milliseconds_per_frame`, `linkage`,
+  `import_files`, `classes` + `CLASS_CONSTRUCTOR` (clip gets the class prototype; constructor runs after its
+  initialize / construct handlers; the exact retail point is not decoded).
+- `apt_vm.rs`: retail pop rule; String methods (length, indexOf, lastIndexOf, substring, substr, slice, charAt,
+  charCodeAt, case) and Array methods (push, pop, shift, unshift, splice, slice, concat, reverse, join), standard
+  AS2 semantics; `call_function`; `last_instruction` for error reports.
+
+### Verification
+`cargo test -p skate-game apt_` (23 passed, 1 ignored). `retail_screen_manager_opens_a_screen` (data-gated, the
+exported set): FE_root traces "FE_ROOT SETUP!", screenmanager registers `_global.ScreenManager` (currentDepth 600),
+RegisterTemplate("CrossBar"), OpenScreen with the retail CrossBar arguments, the next update loads core_menu
+with its imported components, and the movie calls Game.OnScreenLoaded(600) then Game.OnScreenIntroComplete(600).
+The only call left without a target is `screen_class.OnLoaded()` on core_menu's class, which defines none (an AS2
+no-op).
+
+### Open
+- Root timeline loop: RESOLVED in Milestone 6 (below): loaded roots do not play.
+- Library init order relative to the importer's own init actions, and the registerClass constructor point.
+- `_root` of a loaded movie (ours: its own root; Flash: `_level0` unless locked).
+- Drawing the stage (levels with their parent clip transforms) and the C++ host (CoreMenu, Game) are next.
+- Input repeat timing (`.repeat` actions in input.cfg) is not statically findable; a guarded recomp hook is
+  proposed in `.local/research/input-repeat.md`.
+
+## Milestone 6: pause menu navigation and the CoreMenu object (2026-10-10, in progress)
+
+### Evidence
+- [code] Loaded movie roots do not play: load completion sub_82E7EF28 gives the root clip flag 0x80, not the
+  playing flag 0x40 (set only by play(), action 0x06 handler 82E6BCC8, main-checked; stop 0x07 82E6BDB8 clears it).
+  The tick 82E5B640 advances 0x80 clips only when the APT config byte [0x83037510+64] is set; Skate 3's init
+  (sub_825D39F0 -> sub_82E654A0) leaves it 0. So screenmanager.apt's 2-frame root runs `new screenmanager(this)`
+  once (research `.local/research/apt-root-loop.md`; how frame 0 is first entered is not traced).
+- [code] Crossbar handler sub_8261B560 (research `.local/research/crossbar-nav.md`; main-checked: the eight fe sound
+  keys against fe_callers.txt, the six-entry SetState registration in 8261B9C8, the row walk 8261F0E8 read in full):
+  up / down move the row with wrap and walk to an enabled row (two passes, else row 0 and no sound / SetState),
+  tab left / right wrap, reset the row and post RefreshMenu (0), select opens the sub column (SetState 3) for items
+  with a sub-option kind or runs the item, back at level 1 closes the pause menu (FE id 56), at level 2 returns to
+  level 1. Sounds crossbar_up / down / left / right, core_a / b / x_button.
+- [code] CoreMenu: 21 native members (registrar sub_825B68E0; research `.local/research/coremenu-host.md`), all
+  read-only views of the crossbar screen and the mode menu except SetOnlineTeamSubOptionDone.
+
+### Change
+- `apt_stage.rs`: loaded roots start stopped (above); `retail_screen_manager_closes_a_screen` now passes
+  (OnScreenOutroComplete(600) after CloseScreen("600")).
+- `skate-core/src/crossbar.rs` (new): `CrossbarState` (the screen fields, serialisable), `CrossbarView`,
+  `NavEvent` (retail key indices), `CrossbarRules` (sounds and SetState numbers as data, retail defaults),
+  `handle` (port of sub_8261B560 / 8261F0E8 / 8261D9F8 / 8261BC30 / 8261DA58), `RegistryView` (rows and enabled
+  rules from the menu registry, so mods change the rows).
+- `skate-game/src/crossbar_host.rs` (new): the 21 CoreMenu members over the registry and the crossbar state.
+
+### Drawing and FELanguage (same milestone)
+- `Stage::draw` gives each loaded movie's draws under the clip it was loaded into (ancestor matrices, visibility,
+  alpha); `apt_scene::draw_from`. Font atlases join the menu image map (`RetailMenuMovies::image`). The open pause
+  menu gives 24 draws (22 textured), all textures resolved (data-gated test).
+- Text fields get `_height` (field height; core_menu centres its DLC label with it). NOT RETAIL YET: retail's
+  autosize height rule is not decoded.
+- `fe_language.rs` (new): FELanguage GetLocalizedFormatNumberString / FormatString / FormatStringCustom
+  (registrar 825AA5E8; research `.local/research/felanguage.md`; main-checked the example strings
+  `ID_CROSSBAR_BOARD_SALES_MILESTONE` "Board Sales Milestone {0:d}/{1:d}" and `ID_COMMON_PERCENT` "{0:d}%" in the
+  exported language table). Placeholders `{N:type[.P]}`, `{{` literal, separators as data (`NumberFormat`,
+  retail `. , 3`). NOT RETAIL YET: int vs float is taken from integrality (our VM has only f64); typed formats
+  other than d / f are not decoded.
+- `crossbar_host::FrontEnd`: the stage's host objects (CoreMenu, FELanguage; Game / Audio calls recorded).
+- [data, main-checked] Sub-option label table 0x83027958 and helper table at +168 (7 kinds x 6 pointers; kind 0
+  labels NEW_PARK .. TUTORIAL against helpers MY_PARKS .. PARK_EDITOR, retail pairs them by index); research
+  `.local/research/menu-subtables.md` (extraction next).
+
+### The retail boot and the first picture (same milestone)
+- [code + data] The front end's `_level0` is `screens/main.apt` (sub_825D7E10 loads `source\screens\main` into
+  `_level0`; research `.local/research/fe-main-root.md`). Its root defines Register*Enum, loads main3dhud /
+  autosave / fmv_popup into `_level1..3` with getURL (opcode 0x83, handler 82E72590: "FSCommand:" or a ".swf"
+  load) and fills layer clips with loadMovie: gScreenManager (screenmanager.swf), gChyron, gSubtitle,
+  gFadeBackground. FE_root.apt is template 12 "Background" (main-checked), a screen, not the root.
+- [code, main-checked] Crossbar IntroComplete (vtable 0x82303F90 +104 = 8261B1F0) -> mode selector 8261B9E8 ->
+  SetState(InitialiseMenu) through the facade; the AS compares against FECrossBarScreenMode_* registered by C++
+  through `_level0._root.RegisterChallengeEnum(name, "%d")` (path entry 34), which stores `_global[name]`.
+- [code] Named DefineFunction2 stores into the current scope (82E73010 -> 82E68770): locals in a function, the
+  timeline in a frame action (ours used `_global`).
+- [data] Name lookup ignores case when no exact match: the only spelling in the image is "CoreMenu"
+  (0x82300C68) while core_menu.apt reads `coremenu`.
+- Export set version 4 adds `source/screens/main` and getURL operands (`tools/prepare_menu_movies.py`,
+  `tools/vendor/skate3_ui/actions.py`); the user's install needs the hud setup group re-run (automatic).
+- Stage: getURL `_levelN` loads, MovieClip.loadMovie, text changes re-localise (`property_changed`).
+- Dev view (`retail_menu_stage.rs`, `SKATE3_RETAIL_MENUS=1`, F8; `SKATE3_MENU_MOVIES` points at a dev export):
+  boots main.apt, registers the crossbar enums and the CrossBar template, opens core_menu with the retail
+  arguments and posts InitialiseMenu on IntroComplete. In game (`.local/research/menus-m6/pause.png`): the retail
+  Free Play pause menu, Port Carverton banner, tab icons, and the Free Play Main rows Challenge Map, Resume
+  Career, Free Play, Call Skater, skate.Profile: Career (greyed: no handlers yet, the agreed rule).
+- Missing frame labels leave the clip where it is (Flash behaviour; retail not traced).
+- main.apt needs three more opcodes: 0x3F modulo (82E6E5F8: ToNumber both, C fmod, f32 result), 0x4B ToString
+  (82E70458), 0x44 typeof (82E6ECC0; standard AS2 names, NOT RETAIL YET: retail's name table not read).
+- Data-gated tests skip an installed set older than the engine reads (`apt_imports::test_menu_set`); pass
+  `SKATE3_MENU_MOVIES=<export>/runtime` to run them against a fresh export.
+
+### Open
+- FIXED (title / category overlap): a clip whose `_x` / `_y` a script set no longer follows its timeline's
+  placement (`Movie::script_moved`, stage only; Flash rule, NOT RETAIL YET: retail's flag is not traced). The
+  header now reads "Free Play > Main" like retail.
+- Selected-row highlight works (see "Row handlers"). The blur behind the pause menu: see "Pause blur" below.
+- Boot registration ported (`retail_menu_stage::boot_registration`, on Game.ScreenManagerReady like retail
+  825D9450; research `.local/research/boot-enums.md`, main-checked path indices 28 / 30 / 31 / 32 / 33 / 46): the
+  56 Apt keys as RegisterAptInputEnum(name, key INDEX) (retail registers the index, not the record's key code),
+  FE_SOUND_<NAME> = record name for all fe records (from the install's audio manifest), SetPlatform "0",
+  SetScreenSize 1280 / 720, SetScreenEdgeOffset 136, UpdatePALMode false. Audio.PlaySound from the movies plays
+  the fe record. Open: the 191 challenge enums, RefreshSubtitle.
+- Screen templates extracted (`skate-data` menu_tables `templates`, located by the record whose path is
+  "main/core_menu.swf", walked both ways): TU3 133 records at 0x8302F1A8 (0 Ignore, 12 Background = FE_root,
+  69 CrossBar, 90 Options, 131 TipsLoader; test `tu3_image_matches_the_documented_tables`); the disc build's table
+  is at 0x82FD33E8. The stage registers all of them in order, so the pause menu's AS id is 669 like retail (600
+  with tables extracted before this; setup re-extracts because `asset_pipeline/menu_tables.py` now requires
+  templates).
+- Sub-option tables: done (see "Sub-options").
+- Label overrides (SignIn / sign out, ReplayEditor instant replay, PartyPlay literal) and the online team pending
+  path are not ported. GetProgressionData reads context facts (`progression_*`), -1 (panel hidden) by default.
+- Hooking CoreMenu and the handler into the stage, the Game natives, drawing, input and the FE screen stack are next.
+
+## Pause blur: the world behind FE screens (2026-10-10)
+
+### Problem
+Retail blurs and darkens the world behind the pause menu; our dev view drew the menu over a sharp world, and how
+retail switches the blur on for the pause menu was not known (`pause-backdrop.md`, `pause-blur.md`).
+
+### Evidence (TU3 recomp addresses; research `.local/research/pause-blur-link.md`, all main-checked)
+- [code] Pause open (sub_825EB998) queues a push of FE id 56 on the FE screen stack. The stack's push / replace /
+  pop handlers (sub_82D09B00 .. sub_82D09DE0) call vt+28 with byte +4 of the top screen's record in the info table
+  at [stack+148]; pop applies the new top's byte, an empty stack applies 0.
+- [code] vt+28 of the stack vtable 0x823048E0 (pointer at 0x823048FC) = sub_825EBED8: stores the flag at FE manager
+  +461 and, on an off -> on change only, resets the tint (+476 / +480 / +484) to 255 and the strength (+468 / +472)
+  to 0.0.
+- [data] The info table: 0x83026088, 72 records of 24 bytes (stack init sub_825E8C40: `li r8,72; addi r7,r9,24712`,
+  `stw r8,132(r25)`). Byte +4 is set for 32 screens, including 56 (the pause crossbar) and 69. The 64-bit value at
+  +16 is the same per screen in every build (the disc build has 70 records, TU3 inserts two at ids 31 / 32; equal
+  to TU3's key by key, test `disc_executable_gives_the_same_tables`), but four keys are shared (TU3 ids 0 / 32 / 49,
+  5 / 6 / 7 / 8 / 22, 9 / 10, 12 / 13; research `.local/research/fe-stack-port.md`, main-checked in both builds).
+  Our screen id is the key, plus `:n` (position among the records sharing it) when shared; a shared-key id can
+  differ between builds (TU3 49 = `:2`, disc 47 = `:1`), setup always extracts the disc's.
+- [code + data] FE manager tick sub_825D8E68: while on, tint -15 per tick down to (90, 85, 81) (a global flag at
+  [0x83083C38]+32764 picks (30, 30, 30) instead) and strength +0.8 (0x8208824C) up to 8.0 (0x82099250); while off,
+  tint +15 back to 255 and strength -0.8 to 0. A second byte (+462) gives a blur-only ramp while off (not used by
+  the pause path, not ported).
+
+### Change
+- `skate-core/src/fe_blur.rs` (new): `FeBlur` (set_enabled = sub_825EBED8, tick = sub_825D8E68 with retail's
+  clamps, `advance` at the console's 30 Hz cadence so any frame rate gives the same ramp), `FeBlurParams::RETAIL`.
+- `skate-data` menu_tables: `screens` (`FeScreen { id, key, blur }`), located by the stack init's code pattern (works on
+  both builds); setup re-extracts the tables because `menu_tables.py` now requires `screens`.
+- `skate-game/src/fe_backdrop.rs` + `fe_backdrop.wgsl` (new): the FE stack's top screen key decides on / off
+  (retail flag, then mod overrides, newest last); a two-pass blur + tint on the gameplay camera after the retail
+  tone pass and before the UI pass, so the menu stays sharp and the exposure meter sees the undimmed world. The dev
+  view pushes the pause screen (id `b4b7976b40b3e837`, TU3 id 56) while it is open.
+- Mods: `sdk.menus.backdrop(screen_id, {blur, strength, step, tint={r,g,b}, tint_step})`, nil options drops the
+  mod's override, removed when the mod stops; `sdk.menus.info().screens` lists every id with its retail flag.
+
+### NOT RETAIL YET
+- The blur kernel: retail's blur pass (sub_827F7270, renderer +3292 / pass bit 0x40) is not ported; ours is a
+  17-tap gaussian whose radius is the strength in pixels at 720 lines (assumed). The tint multiplies the displayed
+  colour (tint alpha is 0.0 in retail; assumed multiply).
+- The tick rate of the FE manager is not measured (assumed 30 Hz: about 0.37 s to full tint).
+- The alternative (30, 30, 30) floor and the +462 blur-only mode are not ported.
+
+### Verification
+- `cargo test -p skate-core fe_blur`: the ramp step by step against the clamps above, restart only on off -> on,
+  the same result at 30 and 120 fps.
+- `cargo test -p skate-data --test menu_tables -- --ignored`: the TU3 table address, the 32 blur ids, the pause key
+  at id 56; the disc table equals TU3's minus ids 31 / 32.
+- `cargo test -p skate-mods`, `cargo test -p skate-game fe_backdrop`: command validation, retail flag then the
+  newest mod wins, cleanup per mod.
+
+## Row handlers: retail pause rows open our features (2026-10-10)
+
+### Problem
+Every retail pause row was greyed: the registry enables a row only when someone handles it, and nothing did.
+
+### Change
+- `retail_menus.rs`: `OVERLAY_ITEMS` registers engine handlers (owner `overlay:<SECTION>`) for ChallengeMap -> MAPS,
+  SkateProfileOffline -> SKATER, GameSettings -> GRAPHICS, Extras -> EXTRAS. Retail opens its own FE screens
+  there (ChallengeMap 17, GameSettings 45, Extras 18); until those are ported, the overlay menu section with the
+  same job opens. NOT RETAIL YET by design (a bridge).
+- `retail_menu_stage.rs`: a crossbar select goes through `RetailMenus::act`; an `overlay:` outcome closes the
+  retail pause screen and opens that section (`graphics_menu::Menu::open_section`); a mod's handler gets its
+  `menu_select` event as before. Mods enable or take over any row with `sdk.menus.handle`.
+
+### Verification
+- `cargo test -p skate-game retail_menus`: ChallengeMap is enabled and forwards to `overlay:MAPS`.
+- Screenshot `.local/research/menus-m6/rows.png`: Challenge Map enabled and selected with retail's highlight
+  (large icon, help line "Access challenges and locations"); the highlight needed no extra port.
+
+## Screen stack (2026-10-10)
+
+### Problem
+The dev view opened and closed the pause movie directly; retail runs every FE screen through a two-stack screen
+manager whose per-screen records also suspend gameplay, show the chyron and set the HUD.
+
+### Evidence (TU3 recomp; research `.local/research/fe-stack-port.md`)
+- [code, main-checked] Push sub_82D09C58: closes the old top (sub_82D09848) or hides it (screen vt+28) by the
+  request's keep-open byte, appends, screen vt+48, opens (sub_82D09998), screen vt+44(param), then the blur. The
+  queue runner sub_82D0A2C0 waits while the top's state is not 0 / 3 and dispatches ops 1 pop, 2 push, 3 replace,
+  4 pop to id, 5 close id.
+- [code, agent, not re-read by main] Op 5 below the top unwinds and reopens the id; pop shows a kept-open screen
+  at once; the overlay queue runs only when the main one ran nothing; input goes to the main top only, not while
+  main requests are pending. Record fields: +0 suspends gameplay (context 3 pushed on open, removed on close),
+  +1 chyron, +8 HUD mode (0 on, 1 off, 2 online HUDs only, 3 keep), +12 leftover input to the movie.
+- [data, main-checked] Field counts in TU3: +0 set for 52 screens, +1 for 19, +12 for 62, +8 = 1 for 64; the
+  disc build has the same records minus TU3's ids 31 / 32 (test `disc_executable_gives_the_same_tables`).
+
+### Change
+- `skate-core/src/fe_stack.rs` (new): `FeStack` (main + overlay stacks, FIFO queues, the five ops, the wait rule,
+  `input_target`), `ScreenInfo`, `Effect` for the host (open / close / show, gameplay suspend, chyron, blur, HUD,
+  focus). Serialisable plain requests, screens by this build's index.
+- `menu_tables`: `FeScreen` carries all record fields (`suspends_gameplay`, `chyron`, `hud`, `input_to_movie`).
+- `retail_menu_stage.rs`: F8 pushes the pause screen (retail Start, plain push) or closes it (op 5); the crossbar's
+  back and an engine row close it through the stack; input only while the stack says the pause screen has it.
+  Gameplay suspend sets `graphics_menu::Menu::fe_suspended`, which `gameplay_active`, the time pause and the
+  game audio mute already follow (multiplayer sessions never pause, as with the overlay). The menu and the blur
+  run on real time.
+- NOT RETAIL YET: HUD modes and the chyron are not hooked up; only the pause screen has a movie (other screens log
+  "no template yet"); retail's focus filter for screen 30 is not ported.
+
+### Verification
+- `cargo test -p skate-core fe_stack`: pause push / close, the plain push closing the screen below and the pop
+  reopening it, kept-open hide / show, close below the top, the overlay queue order, input gating.
+- `cargo test -p skate-data --test menu_tables -- --ignored`: record fields and counts, disc vs TU3.
+- Screenshot `.local/research/menus-m6/stack.png`: the pause menu through the stack, the world blurred and tinted,
+  gameplay suspended (physics 0.01 ms), the selected row's glow animating.
+
+## Pad input (2026-10-10)
+
+### Problem
+The dev view read four keyboard keys; retail turns pad input into Apt key indices through its input map and hands
+them to the top screen's C++ handler and then its movie.
+
+### Evidence (research `.local/research/fe-input.md`)
+- [data, main-checked] The install's stock `input.cfg` defines all 56 Apt keys of the extracted key table
+  (`AptStart = Start.pressed;`, `AptUp = LStickU.repeat || DPadU.repeat;`, `AptUpReleased = ...released`).
+- [code, agent] The FE poll sub_825DFDC8 evaluates the 56 keys in table order for every connected controller and
+  calls the stack's input handler sub_825EC0E8 with the key index; that offers AptStart to the pause opener
+  sub_825EB998, then the main top's C++ handler (crossbar sub_8261B560, which consumes only its close branch),
+  then the movie's `ScreenManager.UpdateInput(id, key, controller)` when the screen's record +12 is set.
+
+### Change
+- `skate-core/src/fe_input.rs` (new): `parse_apt_keys` (Apt expressions over the 24 native slots, key-table
+  order), `FeInput` (held / pressed / released / repeat edges per slot), `RepeatRule` (data), `fired`.
+- `retail_menu_stage.rs`: every controller through `xbox::convert` (the gameplay conversion) plus the keyboard on
+  controller 0's slots; AptStart opens / closes the pause screen; other keys go to the crossbar handler, then to
+  UpdateInput unless consumed; input only while the stack gives the pause screen input.
+  `SKATE3_RETAIL_MENUS_KEYS` injects key indices for screenshot checks. With the dev view on, pad Start no longer
+  opens the overlay menu, and the overlay ignores Escape / Start while a retail screen holds gameplay.
+- Repeat (updated the same day): retail's channel update sub_82966F30 (research `input-repeat.md` pass 2,
+  constants main-checked): held above 0.5, 3 settle ticks after a change, repeat with the press, after 24 ticks,
+  then every 12. NOT RETAIL YET: the tick rate is assumed to be the console's 30 Hz (0.8 s, then 0.4 s). Start
+  closing the open pause menu is unverified.
+
+### Verification
+- `cargo test -p skate-core fe_input`: parsing in key order, unknown slots rejected, press / repeat / release,
+  threshold, pressed keys do not repeat.
+- Screenshot `.local/research/menus-m6/input.png` (`SKATE3_RETAIL_MENUS_KEYS=13`): one AptDown skips the greyed
+  rows to skate.Profile ("View your career profile"); the movie's UpdateInput after the handler changes nothing
+  else.
+
+## Game Settings screen (2026-10-10, in progress)
+
+### Problem
+The crossbar's Game Settings row opened our overlay menu; retail pushes FE screen 45, whose init opens template 90
+"Options" (options.apt) and answers its `Game.GameSettings_*` / `Game.OnMenu*` natives from the settings tables.
+options.apt also needs APT features the pause menu never used (attachMovie, component classes, Math).
+
+### Evidence
+- [data, main-checked] Screen titles: 13 string ids at TU3 0x83026E90 (0 / 1 ID_GAMESETTINGS_TITLE, 2 _DIFFICULTY_,
+  3 / 12 _AUDIO_, 4..8 _VIDEO_, 9 _CONTROL_, 10 _ONLINE_, 11 _SKATEFEED_SETTINGS); the disc build has the same.
+  FE 45's info record key `0ca9bfe5c1ba4995` (unique); its record suspends gameplay, shows the chyron, blurs.
+- [code, research `.local/research/settings-host-map.md`, `settings-screen-boot.md`] The natives, the loaded
+  handler (SetScreenState 1), the begin-close handler (SetScreenState 2 outside FE state 2), Back (sub-screen ->
+  main list, else close), Left / Right (sub_8260C258: step the row, SetState 50), select (sub_8260D290: links set
+  the screen index and rebuild).
+- [data, research `.local/research/apt-components.md`] main.apt's root defines RegisterComponentClasses and
+  IncreaseScreenDepth as named functions on `_level0` and calls them by name (APT 0xb0); each control library
+  registers its component class with `Object.registerClass("<Linkage>", class)`; highlight_option's constructor
+  sets the default title "#TBD TITLE" and SetTitle forwards to its HighlightText child.
+
+### Change
+- `menu_tables`: `settings_titles` (located by two pointers to ID_GAMESETTINGS_TITLE).
+- `settings_host.rs` (new): the GameSettings natives from the registry over a row snapshot taken at
+  GetNumOptions; OnMenuSelect is queued for the host. Value descriptions: the Difficulty row only, from its value
+  label (EASY -> DESCRIPTION_EASY ..., as retail's index table). NOT RETAIL (guard): when no row is enabled the
+  first one counts as enabled, because options.apt's NextValueCalc recurses forever otherwise (mods can do that).
+- `retail_menus.rs`: GameSettings now pushes FE screen 45 (`SCREEN_ITEMS`, owner `screen:<id>`) instead of the
+  overlay section.
+- `retail_menu_stage.rs`: opens / closes either ported screen by template (CrossBar 669 / Options 690 in TU3;
+  the disc build numbers its 129 templates differently); settings input (Back, Left / Right) as sub_8260C258,
+  steps and selects dispatched through the registry, then SetState(50) / SetState(1).
+  NOT RETAIL YET: the per-row UI sounds (core_nav_left / right, core_a_button, core_b_button stand in).
+- APT VM / stage (standard AS2 semantics, each marked NOT RETAIL YET in code): `attachMovie` (script depths above
+  the timeline, kept across seeks, the subtree's class constructors run before it returns, nested clips first),
+  `removeMovieClip` / `getDepth` / `getNextHighestDepth` for attached clips, call-by-name through the scope chain
+  (locals, the timeline, then _global), `Math`, `TextFormat` (a record; setTextFormat not applied), `textHeight`,
+  clip `_width` / `_height` from frame-0 bounds (clip-depth children left out like retail's bounds walk
+  sub_82E59C28), library linkage names carried with imported copies (nested component classes).
+- `SKATE3_RETAIL_MENUS_TRACE=1` logs the host calls the movies made (answered and unanswered).
+
+### Verification
+- `cargo test -p skate-game settings_host retail_options_screen_builds_rows` (the latter data-gated on the menu
+  movie set): the natives in options.apt's order; the movie builds six rows from the registry and the first row
+  reads ID_GAMESETTINGS_DIFFICULTY_SETTINGS.
+- `cargo test -p skate-data --test menu_tables -- --ignored`: title table address and values, disc = TU3.
+- Screenshot `.local/research/menus-m6/settings.png` (`SKATE3_RETAIL_MENUS_KEYS=15,15,15,2`): Game Settings with
+  Difficulty / Audio / Video / Control / Online / skate.Feed Settings, the first row selected.
+
+### Panel, sub-screens and colour (same day)
+- [data, research `.local/research/menu-white-squares.md`, main-checked] The squares were not gradients: panel.apt
+  stretches 16 x 16 colour swatches (panelTopFill, panelCoreFill, ...) into its bands with `_xscale` / `_yscale`
+  in BuildPanel, which our APT player ignored; and button_item2's `mButtonRender` is a placeholder for a native
+  component (`_type = "CustomButton"`, `_test` = the button), drawn by the player.
+- APT: `_xscale` / `_yscale` / `_rotation` seeded from the placement, script writes (and `_width` / `_height` on
+  non-text clips, through their bounds) replace the matrix's linear part (`apt_movie::clip_matrix`, both matrix
+  builders). The front-end stage host applies it; the gameplay HUD host does not yet (unchanged).
+- removeMovieClip on attached clips reaches the movie (DeleteOptions on a sub-screen rebuild); test: screen 2.
+- Colour: the menus apply colour transforms in gamma space (hud_render.wgsl mode 1): the console front end works
+  on display values, and a recomp shot shows a near-black panel body where ours was mid grey (solid 0.145
+  encoded twice). The gameplay HUD uses the same path and the scale support (user: "follow retail"; one APT player
+  in retail). Checked: the line HUD's ring at 2 s is identical before / after (textured, identity transform);
+  tinted / solid HUD elements now show their display colours (to look at in play).
+- In game (`SKATE3_RETAIL_MENUS_KEYS=15,15,15,2,2,15`): A on Difficulty Settings opens the Difficulty screen
+  ("Play Mode < Normal >", "Classic Skate Gameplay" description); Right steps the difficulty through the engine
+  binding.
+
+### HUD mode and chyron (same day)
+- HUD mode (+8): the stack's Hud effect sets `fe_backdrop::FeHud`; the scoring HUD draws nothing and the online
+  roster hides while the top screen's mode is "off" (the pause menu, the settings screen); an empty stack means
+  "on" (retail's gameplay screen, FE id 0 mode 0, sits at the bottom; ours has no screen there yet).
+- Chyron (+1): main.apt's layer movies are now exported (menu movie set 5: chyron, subtitle, fmv_popup,
+  fadebackground, autosave; setup re-exports); the Chyron effect calls `_global.Chyron_SetVisible` on a change.
+  NOT RETAIL YET: its text (Chyron_Display from the C++) is not driven, so nothing shows yet; PlayOutro not used.
+
+### Open
+
+## Button prompts (2026-10-10)
+
+### Problem
+Retail draws button glyphs through a native "CustomButton" component (Xbox 360 art). On PC the prompt must show
+the connected pad's own button (user: the glyphs "should be replaced by SDL's appropriate button replacement
+prompt"; size and placement as retail).
+
+### Change
+- `input/controller_kind.rs`: `PromptLabel`; `ControllerKind::face_labels` = SDL's labels of the South / East /
+  West / North buttons for the pad type (`SDL_GetGamepadButtonLabelForType`, `input/platform.rs`), else the
+  family's prompt style (XInput, unknown types).
+- `apt_scene.rs`: a CustomButton clip with a face button in `_test` draws one quad over its placeholder's bounds
+  (retail's box and placement, laid out by button_item2's own script) with texture `prompt/<button>`; other
+  native components draw nothing.
+- `prompt_glyphs.rs` (new): every retail button name (retail's list, TU3 0x82204614: A / B / X / Y, Back, Start,
+  L/R_Bumper, L/R_Trigger, L3/R3_Click, Stick_Left / Stick_Right with _Up / _Down / _L / _R, DPad with
+  _Up / _Down / _Left / _Right) has an equivalent on every family (user: "every console should have equivalent
+  buttons for every entry"):
+
+  | retail | Xbox 360 | Xbox One / Series | PS3 | PS4 | PS5 | Nintendo |
+  |---|---|---|---|---|---|---|
+  | A / B / X / Y | SDL label | SDL label | SDL label | SDL label | SDL label | SDL label (South = B) |
+  | L/R_Bumper | LB / RB | LB / RB | L1 / R1 | L1 / R1 | L1 / R1 | L / R |
+  | L/R_Trigger | LT / RT | LT / RT | L2 / R2 | L2 / R2 | L2 / R2 | ZL / ZR |
+  | Start | START | MENU | START | OPTIONS | OPTIONS | + |
+  | Back | BACK | VIEW | SELECT | SHARE | CREATE | - |
+  | L3/R3_Click | LS / RS | LS / RS | L3 / R3 | L3 / R3 | L3 / R3 | LS / RS |
+  | Stick_*, DPad_* | stick / cross with the direction marked, every family | | | | | |
+
+  Face looks: Xbox coloured balls (retail's), PlayStation dark buttons with coloured symbols, Nintendo dark with
+  light letters; named buttons a dark pill with the name. Generated (a small stroke font), no console art; sized
+  to retail's measured glyph (0.83 of the box; a recomp shot, `.local/research/menus-m6/retail/`). The menu
+  renderer resolves `prompt/<button>` for the first connected pad (`resolve_for`), Xbox 360 without one.
+  `cargo test -p skate-game prompt_sheet -- --ignored` with `SKATE3_PROMPT_SHEET=<folder>` writes a sheet.
+
+### Verification
+- `cargo test -p skate-game prompt_glyphs controller_kind`: glyph size / colours, SDL-less fallbacks (PS5 ->
+  Cross..., Switch South -> B).
+- Screenshot `.local/research/menus-m6/settings.png`: A / B prompts beside Select / Back like the retail shot.
+
+
+## Sub-options (2026-10-10)
+
+### Problem
+GetSubOptionName answered "#" and the sub-option counts were empty, so no crossbar row could open its sub column
+(Enter Skate Park, Skate Reel, On-Screen Help, ...).
+
+### Evidence (research `.local/research/menu-subtables.md`, `coremenu-host.md`; main-checked the table contents)
+- [data] Label table TU3 0x83027958 and helper table right after it (0x83027A00): 7 kinds x 6 string pointers.
+- [code] GetNumSubOptions sub_8261DB48: non-null labels of the kind's row; park kind minus one unless global
+  [0x830B7AE8] == 1; online kinds by online state. GetSubOptionName sub_8261DE88: the label by (kind, sub), with
+  on-screen help naming the action (OFF when on). Level-2 helper text from the helper table (sub_8261E270).
+
+### Change
+- `menu_tables`: `sub_options` (`SubOptionRow { labels, helpers }`, located by the pointer to ID_CROSSBAR_NEW_PARK);
+  setup re-extracts (menu_tables.py requires it).
+- `crossbar_host.rs`: `sub_option_counts` (the count rule; facts `crossbar.park_tutorial`,
+  `crossbar.trick_analyzer`, `crossbar.manual_meter` for the flags), GetSubOptionName, level-2 helpers; the stage
+  builds the crossbar view with these counts. NOT PORTED: the online kinds' rules (offline counts: contacts 3,
+  online team 3, party 1) and label swaps.
+
+### Verification
+- `cargo test -p skate-data --test menu_tables -- --ignored`: TU3 table address and rows, disc 7 rows.
+- `cargo test -p skate-game crossbar_host`: counts (park tutorial flag), names, out-of-range "#", level-2 helper.
+
+## PC overlay on the Guide button (2026-10-11)
+
+### Decision
+User: "maybe we should create a pc overlay like the recomp instead", "on the guide button press". PC-only features
+(Mods, Updates, custom models, day & night, local testing, network debug, mod sections, custom maps, PC video /
+audio / control settings, Quit) live in a PC overlay like the recomp's settings overlay (rexglue
+`simple_settings_overlay`: a fullscreen console-style screen, category rail Video / Controls / Audio / Profile /
+System, opened by its own binding). The retail menus stay retail: Start opens the retail pause menu; retail's
+Extras keeps its own rows.
+
+### Change
+- `input/platform.rs`: SDL's Guide button reads as bit 0x0400 (XInputGetStateEx's place; retail's 24-slot
+  conversion never reads it; not a bindable name for paddles).
+- `graphics_menu.rs`: Guide, F1 or Escape toggle the overlay from anywhere, also over the retail menus; pad Start
+  opens it only while the retail menus are off. `retail_menu_stage.rs`: no retail key handling while the overlay
+  is open.
+- Open: reshape the overlay toward the recomp's category rail; the XInput fallback backend has no Guide (only the
+  SDL path); Windows Game Bar may take the Xbox Guide press first (its own setting).
+
 ## Files
+- PC overlay: `crates/skate-game/src/input/platform.rs`, `graphics_menu.rs`, `retail_menu_stage.rs`
+- Sub-options: `crates/skate-data/src/menu_tables.rs` (`SubOptionRow`), `tests/menu_tables.rs`;
+  `crates/skate-game/src/crossbar_host.rs`, `retail_menu_stage.rs`; `tools/asset_pipeline/menu_tables.py`, `test_menu_tables.py`
+- Button prompts / panel: `crates/skate-game/src/prompt_glyphs.rs` (new), `input/controller_kind.rs`,
+  `input/platform.rs`, `input/tests/controller_kind.rs`, `apt_scene.rs`, `apt_movie.rs` (`clip_matrix`,
+  `transform_changed`), `apt_stage.rs`, `hud_render.wgsl`, `scoring_hud.rs` (`render_draws` gamma flag),
+  `retail_menu_stage.rs`
+- Game Settings screen: `crates/skate-game/src/settings_host.rs` (new), `crossbar_host.rs`, `retail_menu_stage.rs`,
+  `retail_menus.rs`, `fe_backdrop.rs`, `apt_vm.rs`, `apt_movie.rs`, `apt_stage.rs` (test), `main.rs`;
+  `crates/skate-core/src/fe_input.rs` (retail repeat ticks); `crates/skate-data/src/menu_tables.rs`
+  (`settings_titles`), `tests/menu_tables.rs`; `tools/asset_pipeline/menu_tables.py`, `test_menu_tables.py`
+- Pad input: `crates/skate-core/src/fe_input.rs` (new), `lib.rs`; `crates/skate-game/src/retail_menu_stage.rs`,
+  `graphics_menu.rs` (Start / Escape gating)
+- Screen stack: `crates/skate-core/src/fe_stack.rs` (new), `lib.rs`; `crates/skate-game/src/retail_menu_stage.rs`,
+  `fe_backdrop.rs` (index, info), `graphics_menu.rs` (`fe_suspended`), `game_audio/mod.rs`;
+  `crates/skate-data/src/menu_tables.rs` (record fields), `tests/menu_tables.rs`
+- Row handlers: `crates/skate-game/src/retail_menus.rs` (`OVERLAY_ITEMS`), `retail_menu_stage.rs`,
+  `graphics_menu.rs` (`open_section`)
+- Pause blur: `crates/skate-core/src/fe_blur.rs` (new), `lib.rs`; `crates/skate-game/src/fe_backdrop.rs`,
+  `fe_backdrop.wgsl` (new), `retail_menu_stage.rs`, `retail_exposure.rs` (label), `retail_menus.rs` (cleanup,
+  snapshot), `modding/mod.rs`, `app.rs`, `main.rs`; `crates/skate-mods/src/menus.rs`, `vm.rs`, `api.lua`;
+  `sdk/skate.lua`;
+  `crates/skate-data/src/menu_tables.rs` (`FeScreen`, `screens`), `tests/menu_tables.rs`;
+  `tools/asset_pipeline/menu_tables.py`, `test_menu_tables.py`
+- Milestone 6: `crates/skate-core/src/crossbar.rs` (new), `lib.rs`; `crates/skate-game/src/crossbar_host.rs`
+  (new), `fe_language.rs` (new), `retail_menu_stage.rs` (new), `apt_stage.rs`, `apt_scene.rs`, `apt_movie.rs`,
+  `apt_vm.rs`, `retail_menu_movies.rs`, `scoring_hud.rs` (`render_draws`), `app.rs`, `main.rs`;
+  `tools/prepare_menu_movies.py` (set v4), `tools/vendor/skate3_ui/actions.py` (getURL);
+  `crates/skate-data/src/menu_tables.rs` (`ScreenTemplate`, `templates`), `crates/skate-data/tests/menu_tables.rs`,
+  `tools/asset_pipeline/menu_tables.py`, `test_menu_tables.py`
+- Milestone 5a: `crates/skate-game/src/apt_stage.rs` (new), `apt_movie.rs`, `apt_vm.rs`, `main.rs` (module)
 - `crates/skate-data/src/menu_tables.rs` (extractor, JSON, conversion), `crates/skate-data/tests/menu_tables.rs`
 - `crates/skate-core/src/menus.rs`, `menus_tests.rs` (registry), `menu_values.rs` (value rules, milestone 2)
 - `crates/skate-game/src/apt_vm.rs` (milestone 3a opcodes, tests)

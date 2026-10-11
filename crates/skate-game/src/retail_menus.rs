@@ -14,6 +14,22 @@ use std::path::Path;
 
 pub(crate) const TABLES: &str = "private/menu-tables.json";
 
+/// Owner prefix of the engine handlers that open a section of the overlay menu (`graphics_menu`).
+pub(crate) const OVERLAY: &str = "overlay:";
+
+/// Retail pause items backed by engine features until their retail FE screens are ported (doc 31 "Row
+/// handlers"): retail opens FE screen ChallengeMap 17 / skate.Profile / GameSettings 45 / Extras 18; we open the
+/// overlay menu section with the same job. Handlers are what enables a retail row; mods stack their own over these.
+pub(crate) const OVERLAY_ITEMS: [(&str, &str); 3] =
+    [("ChallengeMap", "MAPS"), ("SkateProfileOffline", "SKATER"), ("Extras", "EXTRAS")];
+
+/// Owner prefix of the engine handlers that push a retail FE screen (by its screen id).
+pub(crate) const SCREEN: &str = "screen:";
+
+/// Retail pause items whose retail FE screen is ported: the crossbar pushes it (GameSettings -> FE 45, the Game
+/// Settings screen; TU3 id 56's sibling, screen id = its info record key).
+pub(crate) const SCREEN_ITEMS: [(&str, &str); 1] = [("GameSettings", crate::fe_backdrop::SETTINGS_SCREEN)];
+
 #[derive(Resource)]
 pub(crate) struct RetailMenus {
     pub registry: MenuRegistry,
@@ -33,8 +49,21 @@ pub(crate) struct RetailMenus {
 
 impl RetailMenus {
     pub(crate) fn new(data: MenuData, loaded: bool) -> Self {
+        let mut registry = MenuRegistry::new(data);
+        for (item, section) in OVERLAY_ITEMS {
+            if registry.data().item(item).is_some() {
+                let owner = Owner::Engine(format!("{OVERLAY}{section}"));
+                registry.register_handler(EntryRef::item(item), Handler { owner, select: true, highlight: false, callback: None });
+            }
+        }
+        for (item, screen) in SCREEN_ITEMS {
+            if registry.data().item(item).is_some() {
+                let owner = Owner::Engine(format!("{SCREEN}{screen}"));
+                registry.register_handler(EntryRef::item(item), Handler { owner, select: true, highlight: false, callback: None });
+            }
+        }
         Self {
-            registry: MenuRegistry::new(data),
+            registry,
             context: MenuContext::new("FreePlay"),
             loaded,
             pending: Vec::new(),
@@ -46,7 +75,6 @@ impl RetailMenus {
 
     /// Apply a menu action (from the menu UI, or replayed from another peer) in
     /// the current context; events for mods are queued.
-    #[allow(dead_code)] // The menu UI (a later milestone) is the caller.
     pub(crate) fn act(&mut self, action: MenuAction) -> Outcome {
         let context = self.context.clone();
         let outcome = self.registry.dispatch(action, &context);
@@ -499,6 +527,9 @@ fn handle(registry: &mut MenuRegistry, entry: EntryRef, owner: Owner, options: &
 
 /// Everything mod `id` did is removed (disable, reload, failure).
 pub(crate) fn clear_owner(world: &mut World, id: &str) {
+    if let Some(mut backdrop) = world.get_resource_mut::<crate::fe_backdrop::FeBackdrop>() {
+        backdrop.clear_owner(id);
+    }
     if let Some(mut movies) = world.get_resource_mut::<crate::retail_menu_movies::RetailMenuMovies>() {
         movies.clear_owner(id);
     }
@@ -510,6 +541,9 @@ pub(crate) fn clear_owner(world: &mut World, id: &str) {
 }
 
 pub(crate) fn clear_mods(world: &mut World) {
+    if let Some(mut backdrop) = world.get_resource_mut::<crate::fe_backdrop::FeBackdrop>() {
+        backdrop.clear_mods();
+    }
     if let Some(mut movies) = world.get_resource_mut::<crate::retail_menu_movies::RetailMenuMovies>() {
         movies.clear_mods();
     }
@@ -535,7 +569,8 @@ pub(crate) fn snapshot(world: &World) -> Value {
     let movies = world
         .get_resource::<crate::retail_menu_movies::RetailMenuMovies>()
         .map_or(Value::Null, |m| m.snapshot());
-    json!({"mode": menus.context.mode, "loaded": menus.loaded, "values": values, "movies": movies})
+    let screens = world.get_resource::<crate::fe_backdrop::FeBackdrop>().map_or(Value::Null, |b| b.snapshot());
+    json!({"mode": menus.context.mode, "loaded": menus.loaded, "values": values, "movies": movies, "screens": screens})
 }
 
 #[cfg(test)]
@@ -568,7 +603,10 @@ mod tests {
         apply_command(&mut menus, "m", command(json!({"kind":"menu_handle","entry":"item","id":"m.Races"}))).unwrap();
         let ctx = menus.context.clone();
         let rows = menus.registry.tab_rows("SinglePlayer", &ctx);
-        assert_eq!((rows[0].id.as_str(), rows[0].enabled, rows[1].enabled), ("m.Races", true, false));
+        // ChallengeMap is enabled by the engine's overlay handler (OVERLAY_ITEMS).
+        assert_eq!((rows[0].id.as_str(), rows[0].enabled, rows[1].enabled), ("m.Races", true, true));
+        assert!(matches!(menus.act(MenuAction::Select { entry: EntryRef::item("ChallengeMap") }),
+            Outcome::Forward(Owner::Engine(name), _) if name == "overlay:MAPS"));
 
         apply_command(&mut menus, "m", command(json!({"kind":"menu_set_value","id":"m.Bass","value":0.8}))).unwrap();
         assert!(matches!(menus.act(MenuAction::Select { entry: EntryRef::item("m.Races") }), Outcome::Forward(..)));

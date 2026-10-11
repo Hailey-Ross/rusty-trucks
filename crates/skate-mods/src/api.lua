@@ -718,6 +718,11 @@ function sdk.menus.info() return menu_info() end
 -- with a JSON file in the mod's folder (the format setup exports to assets/private/menu-movies).
 -- Every menu importing it is relinked; the newest mod wins; removed when the mod stops.
 function sdk.menus.movie(name, path) submit{kind="menu_movie",name=name,path=path} end
+-- The world behind an FE screen, by its retail screen id (sdk.menus.info().screens lists them;
+-- the pause menu is 'b4b7976b40b3e837'): options
+-- {blur=true|false, strength=8.0, step=0.8, tint={90,85,81}, tint_step=15}; unset fields keep
+-- retail's values; nil options drop this mod's override. The newest mod wins; removed on stop.
+function sdk.menus.backdrop(screen, options) submit{kind="menu_backdrop",screen=screen,options=options} end
 -- Replace one bitmap of a menu movie by its stable id: the movie's import name plus the bitmap
 -- character id (sdk.menus.info().movies.bitmaps lists them), with a PNG in the mod's folder. The
 -- image covers the same fill area as the retail bitmap; newest mod wins; removed when the mod stops.

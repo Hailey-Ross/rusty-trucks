@@ -79,7 +79,7 @@ pub struct Draw {
     /// Shapes: the unit's render type (clamp or wrap addressing); text draws are `TextureClamped`.
     pub fill: Fill,
 }
-fn compose(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
+pub fn compose(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
     [
         a[0] * b[0] + a[2] * b[1],
         a[1] * b[0] + a[3] * b[1],
@@ -99,17 +99,21 @@ fn transform(m: [f32; 6], v: &Vertex) -> Vertex {
     }
 }
 pub fn draw(movie: &Movie, vm: &Vm, shapes: &dyn ShapeSource) -> Result<Vec<Draw>, String> {
+    draw_from(movie, vm, shapes, IDENTITY, [1.; 4], [0.; 4])
+}
+pub const IDENTITY: [f32; 6] = [1., 0., 0., 1., 0., 0.];
+/// Draws a movie whose root sits under `parent` (a movie loaded into a clip of another movie on the
+/// front-end stage), with the parent's colour transform.
+pub fn draw_from(
+    movie: &Movie,
+    vm: &Vm,
+    shapes: &dyn ShapeSource,
+    parent: [f32; 6],
+    multiply: [f32; 4],
+    add: [f32; 4],
+) -> Result<Vec<Draw>, String> {
     let mut draws = Vec::new();
-    visit(
-        movie,
-        vm,
-        shapes,
-        movie.root,
-        [1., 0., 0., 1., 0., 0.],
-        [1.; 4],
-        [0.; 4],
-        &mut draws,
-    )?;
+    visit(movie, vm, shapes, movie.root, parent, multiply, add, &mut draws)?;
     Ok(draws)
 }
 fn visit(
@@ -126,17 +130,14 @@ fn visit(
         return Ok(());
     }
     let instance = &movie.instances[&id];
-    let mut matrix = instance
-        .placement
-        .as_ref()
-        .map_or([1., 0., 0., 1., 0., 0.], |p| p.matrix);
-    matrix[4] = vm.get(id, "_x").number() as f32;
-    matrix[5] = vm.get(id, "_y").number() as f32;
-    let matrix = compose(parent, matrix);
+    let matrix = compose(parent, crate::apt_movie::clip_matrix(movie, vm, id));
     if matrix.iter().any(|x| !x.is_finite()) {
         return Err(format!(
-            "Nonfinite HUD transform on character {}",
-            instance.character
+            "Nonfinite HUD transform on character {} ({} _x {} _y {})",
+            instance.character,
+            instance.placement.as_ref().map_or("", |p| p.name.as_str()),
+            vm.get(id, "_x").text(),
+            vm.get(id, "_y").text()
         ));
     }
     let color = instance
@@ -153,6 +154,31 @@ fn visit(
         return Ok(());
     }
     let character = &movie.characters[&instance.character];
+    // A clip whose `_type` names a native component is drawn by the player in place of its placeholder shapes
+    // (research `.local/research/menu-white-squares.md`). CustomButton (button_item2's mButtonRender, `_test` = the
+    // retail button "A" / "B" / ...): one quad over the placeholder's bounds with texture `prompt/<button>`, which
+    // the host resolves to the connected pad's prompt (SDL button labels). Other components draw nothing yet.
+    if let crate::apt_vm::Value::Text(kind) = vm.get(id, "_type") {
+        // Only the face buttons have prompts so far ("Unknown" = an unused item; shoulders / Start / sticks: open).
+        let button = vm.get(id, "_test").text();
+        if kind == "CustomButton" && crate::prompt_glyphs::known(&button) {
+            if let Some(b) = movie.character_bounds(instance.character, 0) {
+                let corner = |x: f32, y: f32, u: f32, v: f32| transform(matrix, &Vertex { position: [x, y], uv: [u, v] });
+                let (a, bb, c, d) =
+                    (corner(b[0], b[1], 0., 0.), corner(b[2], b[1], 1., 0.), corner(b[2], b[3], 1., 1.), corner(b[0], b[3], 0., 1.));
+                out.push(Draw {
+                    texture: format!("prompt/{button}"),
+                    fill: Fill::TextureClamped,
+                    vertices: vec![a.clone(), bb, c.clone(), a, c, d],
+                    multiply,
+                    add,
+                });
+            }
+        }
+        if !kind.is_empty() {
+            return Ok(());
+        }
+    }
     if character.type_name == "shape" {
         for shape in shapes
             .shape(character.id)

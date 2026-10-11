@@ -304,7 +304,10 @@ mod sdl {
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
     /// XINPUT_DEVSUBTYPE_GAMEPAD; SDL only opens devices it maps as gamepads.
     const SUBTYPE_GAMEPAD: u8 = 1;
-    const BUTTONS: [(Button, u16); 14] = [
+    /// Guide reads as bit 0x0400 (XInputGetStateEx's place for it): it opens the PC overlay; retail's pad conversion
+    /// never reads it, and it is not a bindable name (a paddle must not become the overlay button).
+    const BUTTONS: [(Button, u16); 15] = [
+        (Button::Guide, 0x0400),
         (Button::DPadUp, 0x0001), (Button::DPadDown, 0x0002),
         (Button::DPadLeft, 0x0004), (Button::DPadRight, 0x0008),
         (Button::Start, 0x0010), (Button::Back, 0x0020),
@@ -446,6 +449,11 @@ mod sdl {
                 paddles: PADDLE_BUTTONS.iter().filter(|&&b| pad.has_button(b)).count() as u8,
                 touchpad: pad.touchpads_count() > 0,
                 misc_button: pad.has_button(Button::Misc1),
+                face_labels: {
+                    let labels = [Button::South, Button::East, Button::West, Button::North]
+                        .map(|b| controller_kind::PromptLabel::from_sdl(gamepads.button_label_for_gamepad_type(pad.r#type(), b)));
+                    labels.iter().all(Option::is_some).then(|| labels.map(Option::unwrap))
+                },
             },
             controller_kind::user_models(),
         ));

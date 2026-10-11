@@ -91,6 +91,9 @@ impl GraphicsSettings {
 #[derive(Resource)]
 pub(crate) struct Menu {
     pub(crate) open: bool,
+    /// A retail FE screen that suspends gameplay is open (info record +0; `retail_menu_stage`): gameplay stops
+    /// like it does for this menu.
+    pub(crate) fe_suspended: bool,
     selected: usize,
     settings: GraphicsSettings,
     path: PathBuf,
@@ -138,7 +141,7 @@ impl Menu {
     }
 }
 pub(crate) fn gameplay_active(menu: Option<Res<Menu>>) -> bool {
-    menu.is_none_or(|m| !m.open)
+    menu.is_none_or(|m| !m.open && !m.fe_suspended)
 }
 
 /// Retail "Camera Angle" (Game Settings > Control Settings), in the SKATER section.
@@ -181,6 +184,14 @@ impl Menu {
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
         }
+    }
+    /// Open the menu on a section by its name (`SECTIONS`); the retail pause rows use this until their retail
+    /// screens are ported.
+    pub(crate) fn open_section(&mut self, name: &str) -> bool {
+        let Some(section) = SECTIONS.iter().position(|s| s.0 == name) else { return false };
+        self.open = true;
+        self.select_section(section);
+        true
     }
     fn select_section(&mut self, section: usize) {
         self.section = section;
@@ -336,6 +347,7 @@ fn setup(
     if config.start_paused { time.pause(); }
     commands.insert_resource(Menu {
         open: config.start_paused,
+        fe_suspended: false,
         selected: 1000,
         settings,
         path,
@@ -406,7 +418,11 @@ pub(crate) fn interact(
     if travel.open || travel.closed_this_frame || customiser.open || custom_models.open || mods.open {
         return;
     }
-    if keys.just_pressed(KeyCode::Escape) || nav.pressed & 0x10 != 0 || (menu.open && nav.pressed & 0x2000 != 0) {
+    // The PC overlay (like the recomp's settings overlay): Guide, F1 or Escape toggle it from anywhere, over the
+    // retail menus too. With the retail menus on, pad Start belongs to the retail pause menu.
+    let guide = nav.pressed & 0x0400 != 0 || keys.just_pressed(KeyCode::F1);
+    let pad_start = nav.pressed & 0x10 != 0 && !crate::retail_menu_stage::enabled() && !menu.fe_suspended;
+    if keys.just_pressed(KeyCode::Escape) || guide || pad_start || (menu.open && nav.pressed & 0x2000 != 0) {
         if menu.open && menu.multiplayer && (menu.browser || menu.network_page != 0) {
             menu.browser = false; if menu.network_page==1 {menu.browser=true;menu.network_page=0;menu.selected=8;} else {let from_debug=menu.network_page==4;menu.network_page = 0; menu.selected = if from_debug {15} else {2};}
         } else if menu.open && menu.map_detail {
@@ -673,7 +689,7 @@ pub(crate) fn interact(
             }
         }
     }
-    if menu.open && !net.active() {
+    if (menu.open || menu.fe_suspended) && !net.active() {
         time.pause();
     } else {
         time.unpause();
@@ -1047,7 +1063,7 @@ mod tests {
         app.insert_resource(SceneTarget(target.clone()))
             .insert_resource(images)
             .insert_resource(Menu {
-                open: false, selected: 0, settings: GraphicsSettings::default(),
+                open: false, fe_suspended: false, selected: 0, settings: GraphicsSettings::default(),
                 difficulty: Difficulty::Easy, custom:Tuning::default(), custom_defaults:Tuning::default(), custom_apply:false, custom_dirty:false, path: PathBuf::new(), status: String::new(),
                 multiplayer: false, browser: false, network_page: 0, browser_count: 0, daylight: false, section: 0, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
                 maps: vec![crate::map_library::Entry { label: "Test world".into(), path: None }], selected_map: 0,
@@ -1087,7 +1103,7 @@ mod tests {
     #[test]
     fn sections_expose_only_real_rows_and_all_maps() {
         let mut menu = Menu {
-            open: true, selected: 1000, settings: GraphicsSettings::default(),
+            open: true, fe_suspended: false, selected: 1000, settings: GraphicsSettings::default(),
             path: PathBuf::new(), difficulty: Difficulty::Easy, custom:Tuning::default(), custom_defaults:Tuning::default(), custom_apply:false, custom_dirty:false, status: String::new(),
             maps: (0..40).map(|i| crate::map_library::Entry { label: format!("Map {i}"), path: None }).collect(),
             selected_map: 0, multiplayer: false, browser: false, network_page: 0, browser_count: 0, daylight: false, section: 0, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
