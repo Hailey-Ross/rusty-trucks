@@ -16,12 +16,12 @@ use bevy::{
 use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Clone, Copy, Debug, ShaderType)]
-struct ColorTransform {
+pub(crate) struct ColorTransform {
     multiply: Vec4,
     add: Vec4,
 }
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct HudMaterial {
+pub(crate) struct HudMaterial {
     #[uniform(0)]
     color: ColorTransform,
     #[texture(1)]
@@ -56,7 +56,7 @@ impl UiMaterial for HudComposite {
         }
     }
 }
-struct Slot {
+pub(crate) struct Slot {
     entity: Entity,
     mesh: Handle<Mesh>,
     material: Handle<HudMaterial>,
@@ -435,8 +435,24 @@ fn render(
             }
         }
     };
-    for (index, draw) in draws.iter().enumerate() {
-        let Some(texture) = hud.textures.get(&draw.texture).cloned() else {
+    let Hud { textures, slots, .. } = &mut *hud;
+    render_draws(&mut commands, &mut meshes, &mut materials, slots, &draws, |t| textures.get(t).cloned(), 0.0);
+}
+
+/// Draws APT geometry into the HUD's offscreen layer (31), reusing one mesh entity per draw slot. `z_base` stacks
+/// another movie set (the retail menus) above the HUD.
+pub(crate) fn render_draws(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<HudMaterial>,
+    slots: &mut Vec<Slot>,
+    draws: &[apt_scene::Draw],
+    texture_of: impl Fn(&str) -> Option<Handle<Image>>,
+    z_base: f32,
+) {
+    let mut used = 0;
+    for draw in draws {
+        let Some(texture) = texture_of(&draw.texture) else {
             continue;
         };
         let mut mesh = Mesh::new(
@@ -458,6 +474,8 @@ fn render(
             Mesh::ATTRIBUTE_NORMAL,
             vec![[0., 0., 1.]; draw.vertices.len()],
         );
+        let index = used;
+        used += 1;
         let material = HudMaterial {
             color: ColorTransform {
                 multiply: draw.multiply.into(),
@@ -465,24 +483,24 @@ fn render(
             },
             atlas: texture,
         };
-        if index == hud.slots.len() {
+        if index == slots.len() {
             let mesh = meshes.add(mesh);
             let material = materials.add(material);
             let entity = commands
                 .spawn((
                     Mesh2d(mesh.clone()),
                     MeshMaterial2d(material.clone()),
-                    Transform::from_xyz(0., 0., index as f32 * 0.01),
+                    Transform::from_xyz(0., 0., z_base + index as f32 * 0.01),
                     RenderLayers::layer(31),
                 ))
                 .id();
-            hud.slots.push(Slot {
+            slots.push(Slot {
                 entity,
                 mesh,
                 material,
             });
         } else {
-            let slot = &hud.slots[index];
+            let slot = &slots[index];
             if let Some(old) = meshes.get_mut(&slot.mesh) {
                 *old = mesh;
             }
@@ -492,7 +510,7 @@ fn render(
             commands.entity(slot.entity).insert(Visibility::Visible);
         }
     }
-    for slot in &hud.slots[draws.len()..] {
+    for slot in &slots[used..] {
         commands.entity(slot.entity).insert(Visibility::Hidden);
     }
 }

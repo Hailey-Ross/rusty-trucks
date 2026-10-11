@@ -308,6 +308,12 @@ impl Stage {
             },
         })
     }
+    /// A script-less empty clip under `parent` (what retail C++ makes to hold the screen manager movie).
+    pub fn create_clip(&mut self, parent: usize, name: &str) -> Result<usize, String> {
+        let id = new_clip(&mut self.vm, parent, name)?;
+        self.state.dynamic.insert(id, (parent, 0));
+        Ok(id)
+    }
     pub fn levels(&self) -> &[Level] {
         &self.state.levels
     }
@@ -722,6 +728,56 @@ mod tests {
             .map(|d| d.texture.clone())
             .collect();
         eprintln!("draws: {} (textured {})", draws.len(), draws.iter().filter(|d| d.fill.textured()).count());
+        if std::env::var("SKATE3_DUMP_DRAWS").is_ok() {
+            // Retail crossbar IntroComplete posts SetState(InitialiseMenu = 2) (8261B9E8).
+            stage
+                .call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text("2".into())], &mut game)
+                .unwrap();
+            for _ in 0..440 {
+                stage.update(16.0, &movies, &mut game).unwrap();
+            }
+            for l in stage.levels() {
+                let r = &l.movie.instances[&l.movie.root];
+                eprintln!("LEVEL {} frame {} playing {} root _x {} _y {} vis {}", l.key, r.frame, r.playing,
+                    stage.vm.get(l.movie.root, "_x").text(), stage.vm.get(l.movie.root, "_y").text(), stage.vm.get(l.movie.root, "_visible").text());
+                fn walk(l: &Level, vm: &Vm, id: usize, depth: usize) {
+                    let i = &l.movie.instances[&id];
+                    let c = &l.movie.characters[&i.character];
+                    eprintln!("{:indent$}- {} {} char {} f{}/{} col {:?} vis {} a {} x {} y {} text {:?}", "", c.type_name,
+                        i.placement.as_ref().map_or("", |p| p.name.as_str()), i.character, i.frame, c.frames.len(), i.placement.as_ref().map(|p| p.color),
+                        vm.get(id, "_visible").text(), vm.get(id, "_alpha").text(), vm.get(id, "_x").text(), vm.get(id, "_y").text(),
+                        vm.get(id, "_displayText").text(), indent = depth * 2);
+                    if depth < 4 {
+                        for child in i.children.values() {
+                            walk(l, vm, *child, depth + 1);
+                        }
+                    }
+                }
+                if l.key.ends_with("core_menu") {
+                    for (_, child) in &r.children {
+                        let name = l.movie.instances[child].placement.as_ref().map_or("", |p| p.name.as_str());
+                        if ["cat0", "mTitle", "mColumnAnim"].contains(&name) {
+                            walk(l, &stage.vm, *child, 1);
+                        }
+                    }
+                }
+                for (depth, child) in &r.children {
+                    let i = &l.movie.instances[child];
+                    eprintln!("  child d{} {} char {} frame {}/{} playing {} _x {} _y {} vis {}", depth,
+                        i.placement.as_ref().map_or("", |p| p.name.as_str()), i.character, i.frame,
+                        l.movie.characters[&i.character].frames.len(), i.playing,
+                        stage.vm.get(*child, "_x").text(), stage.vm.get(*child, "_y").text(), stage.vm.get(*child, "_visible").text());
+                }
+            }
+            for d in stage.draw(|key, movie| set.scene(key, movie)).unwrap() {
+                let xs = d.vertices.iter().map(|v| v.position[0]);
+                let ys = d.vertices.iter().map(|v| v.position[1]);
+                let (x0, x1) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
+                let (y0, y1) = ys.fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(y), b.max(y)));
+                eprintln!("DRAW {:?} {:.0},{:.0}..{:.0},{:.0} mul {:?} add {:?} {}", d.fill, x0, y0, x1, y1, d.multiply, d.add,
+                    d.texture.rsplit('/').next().unwrap_or(""));
+            }
+        }
         assert!(!draws.is_empty());
         assert!(missing.is_empty(), "missing textures {missing:?}");
         if !close {

@@ -39,6 +39,7 @@ mod profiling;
 mod graphics_menu;
 mod retail_menus;
 mod retail_menu_movies;
+mod retail_menu_stage;
 mod modding;
 mod customiser;
 mod customiser_parts;
