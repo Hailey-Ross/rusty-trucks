@@ -48,6 +48,8 @@ struct GraphicsSettings {
     frame_stats_simple: bool,
     /// NPC draw distance multiplier (QoL, not retail): 1 = retail ranges.
     npc_draw_distance: f32,
+    /// The opt-in living world features (`living_world::opt_ins`); all off by default.
+    opt_ins: crate::living_world::opt_ins::OptIns,
 }
 impl Default for GraphicsSettings {
     fn default() -> Self {
@@ -62,6 +64,7 @@ impl Default for GraphicsSettings {
             frame_stats: false,
             frame_stats_simple: false,
             npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
+            opt_ins: Default::default(),
         }
     }
 }
@@ -176,7 +179,7 @@ impl Menu {
             0 => (1000..1000 + self.maps.len()).collect(),
             1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([CAMERA_ANGLE_ROW,8,10]).collect(),
             1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
-            2 => vec![0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW],
+            2 => [0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW].into_iter().chain(OPT_IN_ROWS).collect(),
             4 => vec![7, 11, 14, 19],
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
@@ -255,6 +258,8 @@ fn setup(
     .validated();
     if let Some(mut living) = living {
         living.set_user_draw_distance(settings.npc_draw_distance);
+        // Saved choices, plus any `SKATE_*=1` of this run (not saved).
+        living.set_user_opt_ins(settings.opt_ins.or(crate::living_world::opt_ins::OptIns::from_env()));
     }
     window
         .resolution
@@ -315,7 +320,7 @@ fn setup(
                 body.spawn((Text::new(""),MenuSubtitle,TextFont {font_size:16.,..default()},TextColor(Color::srgb(0.65,0.72,0.72))));
                 body.spawn((Node {height:px(3),width:px(64),margin:UiRect::bottom(px(10)),..default()},BackgroundColor(Color::srgb(0.78,0.96,0.3))));
                 body.spawn((MenuScroll,ScrollPosition::default(),Node {flex_grow:1.,min_height:px(0),overflow:Overflow::scroll_y(),flex_direction:FlexDirection::Column,row_gap:px(8),..default()})).with_children(|list| {
-                    for i in (0..4).chain(300..337).chain(4..10).chain(11..20).chain(20..27).chain([10,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW]).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
+                    for i in (0..4).chain(300..337).chain(4..10).chain(11..20).chain(20..27).chain([10,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW]).chain(OPT_IN_ROWS).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
                         list.spawn((Button,MenuRow(i),Node {flex_direction:if (300..335).contains(&i) {FlexDirection::Column} else {FlexDirection::Row},width:percent(100),min_height:px(56),flex_shrink:0.,padding:UiRect::axes(px(18),px(12)),align_items:AlignItems::Center,border_radius:BorderRadius::all(px(4)),..default()},BackgroundColor(Color::srgb(0.075,0.09,0.095))))
                             .with_children(|row| {
                                 row.spawn((MenuLabel(i),Text::new(""),TextFont {font_size:18.,..default()},TextColor(Color::WHITE)));
@@ -355,6 +360,11 @@ const AUDIO_ROWS: std::ops::Range<usize> = 16..19;
 /// GRAPHICS-section row of the NPC draw distance (QoL, not retail).
 const NPC_DRAW_DISTANCE_ROW: usize = 29;
 const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time. None turns off all NPC skaters, peds and cars.";
+/// GRAPHICS-section rows of the opt-in living world features, in `OptIn::ALL` order.
+const OPT_IN_ROWS: std::ops::Range<usize> = 40..44;
+fn opt_in(row: usize) -> crate::living_world::opt_ins::OptIn {
+    crate::living_world::opt_ins::OptIn::ALL[row - OPT_IN_ROWS.start]
+}
 fn draw_distance_label(multiplier: f32) -> String {
     if multiplier == skate_core::living_world::DrawDistance::NONE { "None  (no NPCs, not retail)".into() } else if multiplier == skate_core::living_world::DrawDistance::RETAIL { "Retail".into() } else { format!("{multiplier}x  (not retail)") }
 }
@@ -463,7 +473,7 @@ pub(crate) fn interact(
         if keys.just_pressed(KeyCode::ArrowDown) || nav.pressed & 2 != 0 {
             menu.selected = visible[(index + 1) % rows];
         }
-        let adjustable = (menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected)) || (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && (menu.selected < 4 || menu.selected == NPC_DRAW_DISTANCE_ROW || AUDIO_ROWS.contains(&menu.selected) || menu.selected == FRAME_STATS_ROW))
+        let adjustable = (menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected)) || (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && (menu.selected < 4 || menu.selected == NPC_DRAW_DISTANCE_ROW || OPT_IN_ROWS.contains(&menu.selected) || AUDIO_ROWS.contains(&menu.selected) || menu.selected == FRAME_STATS_ROW))
             || (!menu.multiplayer && !menu.daylight && menu.section == 1 && menu.selected == CAMERA_ANGLE_ROW);
         if adjustable && (keys.just_pressed(KeyCode::ArrowLeft) || nav.pressed & 4 != 0) {
             action = Some((menu.selected, -1));
@@ -650,11 +660,21 @@ pub(crate) fn interact(
                     menu.settings.npc_draw_distance = cycle(&skate_core::living_world::DrawDistance::MENU_STEPS, menu.settings.npc_draw_distance, direction);
                     living.set_user_draw_distance(menu.settings.npc_draw_distance);
                 }
+                row if OPT_IN_ROWS.contains(&row) => {
+                    // Flips what is on now (a mod's value included); the player's choice is saved.
+                    let o = opt_in(row);
+                    let on = !crate::living_world::opt_ins::in_effect(&living).get(o);
+                    let mut choices = living.user_opt_ins;
+                    choices.set(o, on);
+                    living.set_user_opt_ins(choices);
+                    menu.settings.opt_ins.set(o, on);
+                }
                 _ => {}
             }
         }
         let draw_distance_row = row == NPC_DRAW_DISTANCE_ROW && !menu.multiplayer && !menu.daylight && !day_action;
-        if ((row < 3 || row == FRAME_STATS_ROW || draw_distance_row) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
+        let opt_in_row = OPT_IN_ROWS.contains(&row) && !menu.multiplayer && !menu.daylight && !day_action;
+        if ((row < 3 || row == FRAME_STATS_ROW || draw_distance_row || opt_in_row) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
             let save = (|| -> Result<(), String> {
                 std::fs::create_dir_all(menu.path.parent().unwrap()).map_err(|e| e.to_string())?;
                 std::fs::write(
@@ -670,6 +690,10 @@ pub(crate) fn interact(
             if draw_distance_row {
                 menu.status = format!("{NPC_DRAW_DISTANCE_HINT}
 {}", menu.status);
+            }
+            if opt_in_row {
+                menu.status = format!("{}
+{}", opt_in(row).hint(), menu.status);
             }
         }
     }
@@ -755,7 +779,7 @@ fn labels(
     mut headings: Query<(&mut Text, Has<MenuTitle>), (Or<(With<MenuTitle>, With<MenuSubtitle>)>, Without<StatusLabel>)>,
     mut status: Single<&mut Text, With<StatusLabel>>,
     debug: (Res<crate::modding::Mods>, Res<crate::physics::GamePhysics>, Res<crate::multiplayer::appearance::Appearances>, Res<crate::input::ControllerInput>),
-    (audio, camera_angle): (Option<Res<crate::game_audio::AudioSettings>>, Res<crate::camera::CameraAngleSettings>),
+    (audio, camera_angle, living): (Option<Res<crate::game_audio::AudioSettings>>, Res<crate::camera::CameraAngleSettings>, Option<Res<crate::living_world::LivingWorldSettings>>),
     mut buttons: Query<(&MenuRow, &Interaction, &mut BackgroundColor, &mut Node), Without<MenuRoot>>,
 ) {
     root.display = if menu.open && !travel.open && !customiser.open && !custom_models.open && !mods.open {
@@ -900,6 +924,10 @@ fn labels(
                 19 => controller_label(&debug.3),
                 FRAME_STATS_ROW => format!("Frame-time counter    {}", if !s.frame_stats { "Off" } else if s.frame_stats_simple { "Simple" } else { "Verbose" }),
                 NPC_DRAW_DISTANCE_ROW => format!("NPC draw distance     {}", draw_distance_label(s.npc_draw_distance)),
+                row if OPT_IN_ROWS.contains(&row) => {
+                    let on = living.as_ref().is_some_and(|l| crate::living_world::opt_ins::in_effect(l).get(opt_in(row)));
+                    format!("{:<22}{}", opt_in(row).label(), if on { "On  (testing)" } else { "Off" })
+                }
                 _ => "Multiplayer".into(),
             }
         };
@@ -1098,7 +1126,7 @@ mod tests {
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
             // Audio, controller identity, and frame-time rows are spawned.
-            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id >= 1000));
+            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
@@ -1133,7 +1161,7 @@ mod tests {
         assert!(!SECTIONS.iter().any(|(name,_)| matches!(*name,"SESSION"|"WORLD")));
         menu.select_section(2);
         assert!(!menu.multiplayer && !menu.browser);
-        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW]);
+        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW,40,41,42,43]);
         menu.daylight = true;
         assert_eq!(menu.rows(), vec![0,1,2,3]);
     }
