@@ -211,6 +211,16 @@ All from the TU3 settings input handler `sub_8260C258` (events 14 = Left, 15 = R
   free-skate capture (Master.in1..3 = 32767).
 - SFX pack (`sub_82486870`) and Auto sign-in (`sub_8260E068`) rules not decoded.
 - Retail defaults of the settings object (its constructor) not read; our bound settings keep their own defaults.
+  Update 2026-10-11: read [trace] instead: the recomp booted through the demo path without a signed-in profile,
+  `SKATE3_WATCH` on `0x83067060 +28 @ +128` (hex64) and `+192` (hex16), files in `.local/recomp/defaults/`
+  (the zeroing function `sub_82DE3F38` clears the object first; the values come from later code, not decoded).
+  Values: volumes 1.0, Subtitles 0, Minimap 1, Vibration 1, HUD 1, Camera manual 0, Units 0, Play Mode 1, HOM 0,
+  Camera Angle 0, axes 0 / 0, Transparency 0, the five Skate Feed toggles 1. `skate_core::menu_values::retail_default`
+  holds them; `MenuRegistry::value` falls back to it when a row has no value layer, so rows without an engine
+  setting show retail's value instead of "ERROR!!" (they stay greyed: a default is not a binding). Video Settings
+  before: Subtitles / Minimap / Cameraman Mode / HUD read "ERROR!!"; after: Off / On / Off / On. Test
+  `every_rule_row_has_a_retail_default_that_displays`. The recomp is not retail: the values are its boot state
+  with no save loaded.
 - The current overlay (`graphics_menu.rs`) keeps its own difficulty copy; it is replaced in milestone 5.
 - While a mod holds Play Mode, a difficulty change saved from the current overlay saves that overlay's choice; the
   mod's value itself is never saved. A mod already holding the camera through `sdk.camera` keeps it (the menus
@@ -1156,7 +1166,29 @@ the recomp's settings overlay (skate3recomp's rexglue-sdk, `src/ui/overlay/simpl
   1080p layout, easing).
 - Open: the user's play test of the motion.
 
+## Swap-in: the retail menus are the default (2026-10-11)
+
+### Change
+- `retail_menu_stage.rs`: the stage runs unless `SKATE3_RETAIL_MENUS=0` (was: only with `=1`). Start (and F8) open
+  the retail pause menu; Game Settings opens the retail settings screen; its sub-screens step the bound rows.
+- `RetailPause` (resource): true while the stage loaded and the menu tables carry the FE screen records. When it is
+  false (tables extracted before those records, missing movies, a failed stage, or the menus off), Start opens the
+  PC overlay instead, the fallback, with one log line: `the menu tables have no FE screens yet (run setup); Start
+  opens the PC overlay until then`. `graphics_menu::overlay_key` takes that flag instead of the env switch.
+- The PC overlay keeps Guide / F1 / Escape in both cases.
+
+### Verification
+- Default (no env flags, fresh tables): `SKATE3_RETAIL_MENUS_OPEN=1` opens the retail pause menu ("Free Play >
+  Main", Challenge Map selected).
+- Fallback (the dev install's tables from before the FE screen records): the one warning above, no retail screen.
+- Idle cost (gameplay, menu closed, 1280 x 800, frame counter at 14 s): on 2.74 / 2.10 / 2.08 ms, off 2.12 / 2.13
+  / 2.08 ms; the first "on" run is the only outlier, the other two match "off" to 0.02 ms.
+- `cargo test -p skate-game`: 508 passed, the known `pipelines_accept_valid_group_outputs_when_fingerprint_changes`
+  failure.
+- Open: the user's play test of the retail menus as the default.
+
 ## Files
+- Swap-in: `crates/skate-game/src/retail_menu_stage.rs` (`enabled`, `RetailPause`), `graphics_menu.rs` (`overlay_key`)
 - PC overlay: `crates/skate-game/src/input/platform.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`, `fonts/`
   (Inter + OFL), `fe_backdrop.rs` (overlay blur), `scoring_hud.rs` (HUD hidden), `customiser.rs`
   (`Navigation::held`), `game_audio/mod.rs` (volume row accessors), `custom_difficulty.rs`, `retail_menu_stage.rs`

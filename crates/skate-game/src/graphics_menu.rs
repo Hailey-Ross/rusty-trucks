@@ -159,10 +159,11 @@ pub(crate) enum OverlayKey {
 }
 /// The PC overlay's keys (like the recomp's settings overlay): Guide (pad bit 0x0400) and F1 open or close it from
 /// anywhere, over the retail menus too; Escape opens it and backs out level by level while open, like pad B; pad
-/// Start toggles it only while the retail menus are off (with them on, Start is the retail pause menu's).
-pub(crate) fn overlay_key(escape: bool, f1: bool, pressed: u16, open: bool, retail_menus: bool, fe_suspended: bool) -> Option<OverlayKey> {
+/// Start toggles it only while the retail pause menu cannot open (`retail_menu_stage::RetailPause`: menus off, or
+/// tables from before the FE screen records); otherwise Start is the retail pause menu's.
+pub(crate) fn overlay_key(escape: bool, f1: bool, pressed: u16, open: bool, retail_pause: bool, fe_suspended: bool) -> Option<OverlayKey> {
     let guide = pressed & 0x0400 != 0;
-    let pad_start = pressed & 0x0010 != 0 && !retail_menus && !fe_suspended;
+    let pad_start = pressed & 0x0010 != 0 && !retail_pause && !fe_suspended;
     if f1 || guide || pad_start || (escape && !open) {
         Some(OverlayKey::Toggle)
     } else if open && (escape || pressed & 0x2000 != 0) {
@@ -669,7 +670,7 @@ pub(crate) fn interact(
     keys: Res<ButtonInput<KeyCode>>,
     mut menu: ResMut<Menu>,
     mut time: ResMut<Time<Virtual>>,
-    (window, mouse, mut wheel, real): (Single<&Window, With<PrimaryWindow>>, Res<ButtonInput<MouseButton>>, MessageReader<MouseWheel>, Res<Time<Real>>),
+    (window, mouse, mut wheel, real, retail_pause): (Single<&Window, With<PrimaryWindow>>, Res<ButtonInput<MouseButton>>, MessageReader<MouseWheel>, Res<Time<Real>>, Option<Res<crate::retail_menu_stage::RetailPause>>),
     mut exit: MessageWriter<AppExit>,
     mut net: ResMut<crate::multiplayer::Multiplayer>,
     mut typing: MessageReader<bevy::input::keyboard::KeyboardInput>,
@@ -691,7 +692,8 @@ pub(crate) fn interact(
     let enter = (keys.just_pressed(KeyCode::Enter) && !alt) || keys.just_pressed(KeyCode::NumpadEnter);
     let escape = keys.just_pressed(KeyCode::Escape);
     let f1 = keys.just_pressed(KeyCode::F1);
-    match overlay_key(escape, f1, nav.pressed, menu.open, crate::retail_menu_stage::enabled(), menu.fe_suspended) {
+    let retail_pause = retail_pause.is_some_and(|r| r.0);
+    match overlay_key(escape, f1, nav.pressed, menu.open, retail_pause, menu.fe_suspended) {
         Some(OverlayKey::Toggle) => {
             if nav.pressed & 0x0400 != 0 {
                 info!("PC overlay toggled by the Guide button (open: {})", !menu.open);

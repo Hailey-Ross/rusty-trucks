@@ -172,10 +172,60 @@ pub fn retail_rule(id: &str) -> Option<ValueRule> {
     })
 }
 
+/// Retail's value of a settings row before any save changes it: the settings object
+/// (`[[0x83067060] + 28]`) read in the recomp after a boot without a signed-in profile [trace,
+/// `.local/recomp/defaults/`]: volumes +128 / +132 / +136 = 1.0, Subtitles +157 = 0, Minimap +158 = 1,
+/// Vibration +163 = 1, HUD +164 = 1, Camera manual +165 = 0, Units +168 = 0, Play Mode +180 = 1,
+/// HOM mode +184 = 0, Camera Angle +188 = 0, axes +192 / +193 = 0, Transparency +195 = 0, Skate Feed
+/// +196..+200 = 1. Rows show it until an engine setting or a mod binds a value (the value hooks).
+pub fn retail_default(id: &str) -> Option<SettingValue> {
+    Some(match id {
+        "ID_GAMESETTINGS_SFXVOLUME" | "ID_GAMESETTINGS_DIALOGVOLUME" | "ID_GAMESETTINGS_MUSICVOLUME" => SettingValue::Float(1.0),
+        "ID_GAMESETTINGS_MINIMAP_TOGGLE"
+        | "ID_GAMESETTINGS_HUD_TOGGLE"
+        | "ID_GAMESETTINGS_VIBRATION_TOGGLE"
+        | "ID_GAMESETTINGS_SKATEFEED_BOOTFLOW"
+        | "ID_GAMESETTINGS_SKATEFEED_CHYRON"
+        | "ID_GAMESETTINGS_SKATEFEED_INCOMING_MESSAGE"
+        | "ID_GAMESETTINGS_SKATEFEED_OUTGOING_MESSAGE"
+        | "ID_GAMESETTINGS_SKATEFEED_STATUS_MESSAGE"
+        | "ID_GAMESETTINGS_DIFFICULTY_OPTIONS" => SettingValue::Int(1),
+        "ID_GAMESETTINGS_SUBTITLE_TOGGLE"
+        | "ID_GAMESETTINGS_CAM_MAN_TOGGLE"
+        | "ID_GAMESETTINGS_UNITS_TOGGLE"
+        | "ID_GAMESETTINGS_HOM_MODE_OPTIONS"
+        | "ID_GAMESETTINGS_CAMERA_ANGLE_TOGGLE"
+        | "ID_GAMESETTINGS_OFFBOARD_Y_AXIS_TOGGLE"
+        | "ID_GAMESETTINGS_OFFBOARD_X_AXIS_TOGGLE"
+        | "ID_GAMESETTINGS_TRANSPARENCY_TOGGLE" => SettingValue::Int(0),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use SettingValue::{Bool, Float, Int};
+
+    #[test]
+    fn every_rule_row_has_a_retail_default_that_displays() {
+        for id in [
+            "ID_GAMESETTINGS_SFXVOLUME", "ID_GAMESETTINGS_SUBTITLE_TOGGLE", "ID_GAMESETTINGS_MINIMAP_TOGGLE",
+            "ID_GAMESETTINGS_HUD_TOGGLE", "ID_GAMESETTINGS_CAM_MAN_TOGGLE", "ID_GAMESETTINGS_UNITS_TOGGLE",
+            "ID_GAMESETTINGS_DIFFICULTY_OPTIONS", "ID_GAMESETTINGS_HOM_MODE_OPTIONS", "ID_GAMESETTINGS_SKATEFEED_CHYRON",
+        ] {
+            let (rule, value) = (retail_rule(id).unwrap(), retail_default(id).unwrap());
+            assert!(!matches!(rule.display(&value), Display::Label(ref l) if l.contains("ERROR")), "{id}");
+        }
+        let label = |id: &str| match retail_rule(id).unwrap().display(&retail_default(id).unwrap()) {
+            Display::Label(l) => l,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(label("ID_GAMESETTINGS_SUBTITLE_TOGGLE"), "ID_COMMON_OFF");
+        assert_eq!(label("ID_GAMESETTINGS_HUD_TOGGLE"), "ID_COMMON_ON");
+        assert_eq!(label("ID_GAMESETTINGS_DIFFICULTY_OPTIONS"), "ID_GAMESETTINGS_DIFFICULTY_NORMAL");
+        assert!(retail_default("ID_GAMESETTINGS_SFXPACK").is_none());
+    }
 
     fn f(v: SettingValue) -> f32 {
         number(&v) as f32
