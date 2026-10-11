@@ -306,7 +306,7 @@ mod sdl {
     const SUBTYPE_GAMEPAD: u8 = 1;
     /// Guide reads as bit 0x0400 (XInputGetStateEx's place for it): it opens the PC overlay; retail's pad conversion
     /// never reads it, and it is not a bindable name (a paddle must not become the overlay button).
-    const BUTTONS: [(Button, u16); 15] = [
+    pub(super) const BUTTONS: [(Button, u16); 15] = [
         (Button::Guide, 0x0400),
         (Button::DPadUp, 0x0001), (Button::DPadDown, 0x0002),
         (Button::DPadLeft, 0x0004), (Button::DPadRight, 0x0008),
@@ -565,6 +565,13 @@ mod conversion_tests {
         assert_eq!(button_mask("A"), Some(0x1000));
         assert_eq!(button_mask("left_shoulder"), Some(0x0100));
         assert_eq!(button_mask("guide"), None);
+    }
+
+    #[test]
+    fn guide_reads_as_bit_0x0400_which_retail_conversion_ignores() {
+        assert!(super::sdl::BUTTONS.contains(&(sdl3::gamepad::Button::Guide, 0x0400)));
+        let pressed = skate_core::input::xbox::XboxState { buttons: 0x0400, ..Default::default() };
+        assert!(skate_core::input::xbox::convert(&pressed, 0).iter().all(|v| *v == 0.0), "no retail slot moves");
     }
 }
 
