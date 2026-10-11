@@ -1343,7 +1343,7 @@ fn preview_menu(config: Res<crate::config::Config>, mut menu: ResMut<Menu>, mut 
         Ok("custom") => { menu.open = true; menu.select_section(1); menu.selected=300; menu.view.content = true; menu.view.shown = true; },
         Ok("graphics") => { menu.open = true; menu.select_section(2); menu.view.content = true; menu.view.shown = true; },
         Ok("npc") => { menu.open = true; menu.select_section(2); menu.selected = NPC_DRAW_DISTANCE_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
-        Ok("optin") => { menu.open = true; menu.select_section(2); menu.selected = SPEECH_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
+        Ok("optin") => { menu.open = true; menu.select_section(2); menu.selected = menu.rows().last().copied().unwrap_or(SPEECH_ROW); menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("stale") => { crate::setup::preview_stale(); menu.open = true; menu.select_section(4); menu.selected = REFRESH_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("maps") => { menu.open = true; menu.select_section(0); menu.view.content = true; menu.view.shown = true; },
         Ok("rail") => { menu.open = true; menu.select_section(2); },
