@@ -1,6 +1,6 @@
 //! Dev view of the retail pause menu on the front-end stage (doc 31, Milestone 6).
 //!
-//! Off unless `SKATE3_RETAIL_MENUS=1` (`SKATE3_RETAIL_MENUS_OPEN=1` also opens it at once). F8 opens / closes the retail pause menu (core_menu through the retail
+//! Off unless `SKATE3_RETAIL_MENUS=1` (`SKATE3_RETAIL_MENUS_OPEN=1` also opens it after 4 s). F8 opens / closes the retail pause menu (core_menu through the retail
 //! screen manager, retail CrossBar arguments); while it is open the arrow keys, Enter and Backspace drive the
 //! ported crossbar handler (skate_core::crossbar), whose sounds play as fe records and whose SetState goes to the
 //! movie through `_global.ScreenManager.SetScreenState` like retail's C++. The current overlay menu is untouched;
@@ -21,7 +21,8 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
-use skate_core::crossbar::{CrossbarAction, CrossbarRules, CrossbarState, NavEvent, RegistryView};
+use skate_core::crossbar::{CrossbarAction, CrossbarRules, CrossbarState, NavEvent};
+use skate_core::fe_stack::{Effect, FeStack, Layer, Request};
 use skate_core::menus::{EntryRef, MenuAction, Outcome, Owner};
 use std::collections::BTreeMap;
 
@@ -39,12 +40,13 @@ struct MenuStage {
     crossbar: CrossbarState,
     rules: CrossbarRules,
     language: BTreeMap<String, String>,
-    screen: Option<i32>,
+    /// The FE screen stack (skate_core::fe_stack); the pause crossbar is the only screen with a movie so far.
+    stack: FeStack,
     textures: BTreeMap<String, Handle<Image>>,
     white: Handle<Image>,
     slots: Vec<Slot>,
     failed: bool,
-    /// `SKATE3_RETAIL_MENUS_OPEN=1`: open the pause menu on the first update (screenshot checks).
+    /// `SKATE3_RETAIL_MENUS_OPEN=1`: open the pause menu once the world has run 4 s (screenshot checks).
     auto_open: bool,
     /// The pause menu's AS screen id (600 + template index; retail 669).
     crossbar_id: i32,
@@ -174,7 +176,7 @@ fn setup(
                 crossbar: CrossbarState::default(),
                 rules: CrossbarRules::default(),
                 language,
-                screen: None,
+                stack: FeStack::default(),
                 textures: BTreeMap::new(),
                 white,
                 slots: Vec::new(),
@@ -192,7 +194,8 @@ fn update(
     movies: Option<Res<RetailMenuMovies>>,
     menus: Option<ResMut<RetailMenus>>,
     keys: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
+    // Real time: the menus keep running while they suspend gameplay (virtual time paused).
+    time: Res<Time<Real>>,
     mut sounds: MessageWriter<FrontendSound>,
     mut backdrop: ResMut<crate::fe_backdrop::FeBackdrop>,
     mut overlay: Option<ResMut<crate::graphics_menu::Menu>>,
@@ -202,36 +205,23 @@ fn update(
         return;
     }
     let ms = &mut *ms;
-    let view = RegistryView::new(&menus.registry, &menus.context, Default::default());
+    // The pause crossbar in this build's screen table (TU3 FE id 56); none in tables extracted before screens.
+    let pause = backdrop.index(crate::fe_backdrop::PAUSE_SCREEN);
     let mut fe = front_end(&menus, &ms.language, ms.crossbar.clone());
     // The item selected this frame: dispatched through the registry once the movie work is done.
     let mut selected: Option<String> = None;
     let result = (|| -> Result<(), String> {
-        let toggle = keys.just_pressed(KeyCode::F8) || std::mem::take(&mut ms.auto_open);
-        if toggle {
-            match ms.screen {
-                None => {
-                    fe.state = CrossbarState::open(&view);
-                    fe.view = view;
-                    // Retail ScreenManagerBase::OpenScreen (sub_82D09140) arguments.
-                    ms.stage.call_path(
-                        "_global.ScreenManager.OpenScreen",
-                        vec![
-                            Value::Text(format!("source/screens/{CROSSBAR_PATH}")),
-                            Value::Text("screen".into()),
-                            Value::Text("0".into()),
-                            Value::Text(CROSSBAR.into()),
-                        ],
-                        &mut fe,
-                    )?;
-                    ms.screen = Some(ms.crossbar_id);
-                }
-                Some(id) => {
-                    close(&mut ms.stage, id, &mut fe)?;
-                    ms.screen = None;
-                }
+        let id = ms.crossbar_id;
+        let auto = ms.auto_open && time.elapsed_secs() > 4.0;
+        ms.auto_open &= !auto;
+        if keys.just_pressed(KeyCode::F8) || auto {
+            // Retail Start (sub_825EB998) pushes FE 56 with the plain push; back at level 1 closes it (op 5).
+            match pause {
+                Some(p) if ms.stack.active(p) => ms.stack.request(Layer::Main, Request::Close { screen: p }),
+                Some(p) => ms.stack.request(Layer::Main, Request::push(p)),
+                None => warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup)"),
             }
-        } else if let Some(id) = ms.screen {
+        } else if pause.is_some() && ms.stack.input_target() == pause {
             let event = [
                 (KeyCode::ArrowUp, NavEvent::Up),
                 (KeyCode::ArrowDown, NavEvent::Down),
@@ -258,8 +248,9 @@ fn update(
                 }
                 match out.action {
                     Some(CrossbarAction::Close) => {
-                        close(&mut ms.stage, id, &mut fe)?;
-                        ms.screen = None;
+                        if let Some(p) = pause {
+                            ms.stack.request(Layer::Main, Request::Close { screen: p });
+                        }
                     }
                     Some(CrossbarAction::SelectItem { tab, row }) => {
                         selected = fe.view.item(tab, row).map(str::to_owned);
@@ -268,14 +259,46 @@ fn update(
                 }
             }
         }
+        // The stack's update (sub_82D0A560) and what it asks of the movies and the game.
+        for effect in ms.stack.update(&|i| backdrop.info(i)) {
+            match effect {
+                Effect::Open(i) if Some(i) == pause => {
+                    fe.state = CrossbarState::open(&fe.view);
+                    // Retail ScreenManagerBase::OpenScreen (sub_82D09140) arguments.
+                    ms.stage.call_path(
+                        "_global.ScreenManager.OpenScreen",
+                        vec![
+                            Value::Text(format!("source/screens/{CROSSBAR_PATH}")),
+                            Value::Text("screen".into()),
+                            Value::Text("0".into()),
+                            Value::Text(CROSSBAR.into()),
+                        ],
+                        &mut fe,
+                    )?;
+                }
+                Effect::Close(i) if Some(i) == pause => close(&mut ms.stage, id, &mut fe)?,
+                Effect::Open(i) | Effect::Close(i) => warn!("RETAIL_MENUS: FE screen {i} has no template yet"),
+                Effect::SuspendGameplay(on) => {
+                    if let Some(overlay) = overlay.as_mut() {
+                        overlay.fe_suspended = on;
+                    }
+                }
+                // NOT RETAIL YET: the HUD modes and the chyron are not hooked up.
+                Effect::Hud(_) | Effect::Chyron(_) => {}
+                // The blur follows the stack's top through FeBackdrop (mod overrides); show / param / focus have
+                // no screen that uses them yet.
+                Effect::Blur(_) | Effect::Show(..) | Effect::Param(..) | Effect::Focus(_) => {}
+            }
+        }
         ms.stage.update(time.delta_secs() * 1000.0, &movies.movies, &mut fe)?;
         // Crossbar IntroComplete (vtable 0x82303F90 +104 = 8261B1F0) selects the mode menu (8261B9E8): when the
         // mode changed it resets level 1, row 0, tab 0 and walks to the first enabled row, then it always posts
-        // SetState(InitialiseMenu) through the facade (+56 vt+20).
-        if let Some(id) = ms.screen {
+        // SetState(InitialiseMenu) through the facade (+56 vt+20). The screen is ready (state 3) from here.
+        if let Some(p) = pause.filter(|p| ms.stack.top(Layer::Main) == Some(*p)) {
             let intro = format!("Game.OnScreenIntroComplete({id})");
             if fe.calls.iter().any(|c| *c == intro) {
                 fe.calls.clear();
+                ms.stack.ready(p);
                 fe.state = CrossbarState::open(&fe.view);
                 ms.stage.call_path(
                     "_global.ScreenManager.SetScreenState",
@@ -295,24 +318,21 @@ fn update(
     }
     ms.crossbar = fe.state;
     if let (Some(item), Ok(())) = (selected, &result) {
-        // Retail runs the item (its FE screen); ours goes through the registry: an engine handler opens the
-        // overlay section, a mod's gets its menu_select event.
+        // Retail runs the item (its FE screen); ours goes through the registry: an engine handler closes the
+        // pause screen and opens the overlay section, a mod's gets its menu_select event.
         let outcome = menus.act(MenuAction::Select { entry: EntryRef::item(&item) });
         info!("RETAIL_MENUS select {item}: {outcome:?}");
         if let Outcome::Forward(Owner::Engine(name), _) = &outcome {
             if let (Some(section), Some(overlay)) = (name.strip_prefix(crate::retail_menus::OVERLAY), overlay.as_mut()) {
-                if let Some(id) = ms.screen.take() {
-                    let mut fe = front_end(&menus, &ms.language, ms.crossbar.clone());
-                    if let Err(e) = close(&mut ms.stage, id, &mut fe) {
-                        error!("RETAIL_MENUS close: {e}");
-                    }
+                if let Some(p) = pause {
+                    ms.stack.request(Layer::Main, Request::Close { screen: p });
                 }
                 overlay.open_section(section);
             }
         }
     }
-    // FE screen stack: the pause crossbar alone (FE id 56) while it is open; retail applies its blur flag on push.
-    backdrop.set_stack(ms.screen.map(|_| crate::fe_backdrop::PAUSE_SCREEN.to_owned()).into_iter().collect());
+    let stack: Vec<String> = ms.stack.screens(Layer::Main).filter_map(|i| backdrop.id(i).map(str::to_owned)).collect();
+    backdrop.set_stack(stack);
     if let Err(e) = result {
         error!("RETAIL_MENUS stage stopped: {e}");
         ms.failed = true;

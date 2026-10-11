@@ -136,6 +136,11 @@ fn tu3_image_matches_the_documented_tables() {
     let blur: Vec<usize> = t.screens.iter().enumerate().filter(|(_, s)| s.blur).map(|(i, _)| i).collect();
     assert_eq!(t.screens.len(), 72);
     assert_eq!(t.screens[56].id, "b4b7976b40b3e837");
+    let p = &t.screens[56];
+    assert_eq!((p.suspends_gameplay, p.chyron, p.hud, p.input_to_movie), (true, false, 1, true));
+    let count = |f: fn(&skate_data::menu_tables::FeScreen) -> bool| t.screens.iter().filter(|s| f(s)).count();
+    assert_eq!((count(|s| s.suspends_gameplay), count(|s| s.chyron), count(|s| s.input_to_movie)), (52, 19, 62));
+    assert_eq!(count(|s| s.hud == 1), 64);
     // Shared keys get a position: ids 0 / 32 / 49 share one.
     assert_eq!((t.screens[0].id.as_str(), t.screens[49].id.as_str()), ("a774f79d33b6be83:0", "a774f79d33b6be83:2"));
     assert_eq!(
@@ -174,7 +179,9 @@ fn disc_executable_gives_the_same_tables() {
         // (ids aside: TU3's 32 shares a key with 0 and 49, so the disc's 47 is position 1, not 2).
         let mut tu3_screens = tu3.screens.clone();
         tu3_screens.drain(31..33);
-        let strip = |s: &[skate_data::menu_tables::FeScreen]| s.iter().map(|s| (s.key.clone(), s.blur)).collect::<Vec<_>>();
+        let strip = |s: &[skate_data::menu_tables::FeScreen]| {
+            s.iter().map(|s| (s.key.clone(), s.blur, s.suspends_gameplay, s.chyron, s.hud, s.input_to_movie)).collect::<Vec<_>>()
+        };
         assert_eq!(strip(&t.screens), strip(&tu3_screens));
         assert_eq!(t.keys, tu3.keys);
         let known: Vec<&str> = t.items.iter().map(|i| i.name.as_str()).collect();

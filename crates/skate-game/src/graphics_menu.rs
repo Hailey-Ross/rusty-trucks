@@ -85,6 +85,9 @@ impl GraphicsSettings {
 #[derive(Resource)]
 pub(crate) struct Menu {
     pub(crate) open: bool,
+    /// A retail FE screen that suspends gameplay is open (info record +0; `retail_menu_stage`): gameplay stops
+    /// like it does for this menu.
+    pub(crate) fe_suspended: bool,
     selected: usize,
     settings: GraphicsSettings,
     path: PathBuf,
@@ -132,7 +135,7 @@ impl Menu {
     }
 }
 pub(crate) fn gameplay_active(menu: Option<Res<Menu>>) -> bool {
-    menu.is_none_or(|m| !m.open)
+    menu.is_none_or(|m| !m.open && !m.fe_suspended)
 }
 
 /// Retail "Camera Angle" (Game Settings > Control Settings), in the SKATER section.
@@ -334,6 +337,7 @@ fn setup(
     if config.start_paused { time.pause(); }
     commands.insert_resource(Menu {
         open: config.start_paused,
+        fe_suspended: false,
         selected: 1000,
         settings,
         path,
@@ -656,7 +660,7 @@ pub(crate) fn interact(
             };
         }
     }
-    if menu.open && !net.active() {
+    if (menu.open || menu.fe_suspended) && !net.active() {
         time.pause();
     } else {
         time.unpause();
@@ -1029,7 +1033,7 @@ mod tests {
         app.insert_resource(SceneTarget(target.clone()))
             .insert_resource(images)
             .insert_resource(Menu {
-                open: false, selected: 0, settings: GraphicsSettings::default(),
+                open: false, fe_suspended: false, selected: 0, settings: GraphicsSettings::default(),
                 difficulty: Difficulty::Easy, custom:Tuning::default(), custom_defaults:Tuning::default(), custom_apply:false, custom_dirty:false, path: PathBuf::new(), status: String::new(),
                 multiplayer: false, browser: false, network_page: 0, browser_count: 0, daylight: false, section: 0, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
                 maps: vec![crate::map_library::Entry { label: "Test world".into(), path: None }], selected_map: 0,
@@ -1069,7 +1073,7 @@ mod tests {
     #[test]
     fn sections_expose_only_real_rows_and_all_maps() {
         let mut menu = Menu {
-            open: true, selected: 1000, settings: GraphicsSettings::default(),
+            open: true, fe_suspended: false, selected: 1000, settings: GraphicsSettings::default(),
             path: PathBuf::new(), difficulty: Difficulty::Easy, custom:Tuning::default(), custom_defaults:Tuning::default(), custom_apply:false, custom_dirty:false, status: String::new(),
             maps: (0..40).map(|i| crate::map_library::Entry { label: format!("Map {i}"), path: None }).collect(),
             selected_map: 0, multiplayer: false, browser: false, network_page: 0, browser_count: 0, daylight: false, section: 0, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,

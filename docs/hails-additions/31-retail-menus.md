@@ -887,7 +887,48 @@ Every retail pause row was greyed: the registry enables a row only when someone 
 - Screenshot `.local/research/menus-m6/rows.png`: Challenge Map enabled and selected with retail's highlight
   (large icon, help line "Access challenges and locations"); the highlight needed no extra port.
 
+## Screen stack (2026-10-10)
+
+### Problem
+The dev view opened and closed the pause movie directly; retail runs every FE screen through a two-stack screen
+manager whose per-screen records also suspend gameplay, show the chyron and set the HUD.
+
+### Evidence (TU3 recomp; research `.local/research/fe-stack-port.md`)
+- [code, main-checked] Push sub_82D09C58: closes the old top (sub_82D09848) or hides it (screen vt+28) by the
+  request's keep-open byte, appends, screen vt+48, opens (sub_82D09998), screen vt+44(param), then the blur. The
+  queue runner sub_82D0A2C0 waits while the top's state is not 0 / 3 and dispatches ops 1 pop, 2 push, 3 replace,
+  4 pop to id, 5 close id.
+- [code, agent, not re-read by main] Op 5 below the top unwinds and reopens the id; pop shows a kept-open screen
+  at once; the overlay queue runs only when the main one ran nothing; input goes to the main top only, not while
+  main requests are pending. Record fields: +0 suspends gameplay (context 3 pushed on open, removed on close),
+  +1 chyron, +8 HUD mode (0 on, 1 off, 2 online HUDs only, 3 keep), +12 leftover input to the movie.
+- [data, main-checked] Field counts in TU3: +0 set for 52 screens, +1 for 19, +12 for 62, +8 = 1 for 64; the
+  disc build has the same records minus TU3's ids 31 / 32 (test `disc_executable_gives_the_same_tables`).
+
+### Change
+- `skate-core/src/fe_stack.rs` (new): `FeStack` (main + overlay stacks, FIFO queues, the five ops, the wait rule,
+  `input_target`), `ScreenInfo`, `Effect` for the host (open / close / show, gameplay suspend, chyron, blur, HUD,
+  focus). Serialisable plain requests, screens by this build's index.
+- `menu_tables`: `FeScreen` carries all record fields (`suspends_gameplay`, `chyron`, `hud`, `input_to_movie`).
+- `retail_menu_stage.rs`: F8 pushes the pause screen (retail Start, plain push) or closes it (op 5); the crossbar's
+  back and an engine row close it through the stack; input only while the stack says the pause screen has it.
+  Gameplay suspend sets `graphics_menu::Menu::fe_suspended`, which `gameplay_active`, the time pause and the
+  game audio mute already follow (multiplayer sessions never pause, as with the overlay). The menu and the blur
+  run on real time.
+- NOT RETAIL YET: HUD modes and the chyron are not hooked up; only the pause screen has a movie (other screens log
+  "no template yet"); retail's focus filter for screen 30 is not ported.
+
+### Verification
+- `cargo test -p skate-core fe_stack`: pause push / close, the plain push closing the screen below and the pop
+  reopening it, kept-open hide / show, close below the top, the overlay queue order, input gating.
+- `cargo test -p skate-data --test menu_tables -- --ignored`: record fields and counts, disc vs TU3.
+- Screenshot `.local/research/menus-m6/stack.png`: the pause menu through the stack, the world blurred and tinted,
+  gameplay suspended (physics 0.01 ms), the selected row's glow animating.
+
 ## Files
+- Screen stack: `crates/skate-core/src/fe_stack.rs` (new), `lib.rs`; `crates/skate-game/src/retail_menu_stage.rs`,
+  `fe_backdrop.rs` (index, info), `graphics_menu.rs` (`fe_suspended`), `game_audio/mod.rs`;
+  `crates/skate-data/src/menu_tables.rs` (record fields), `tests/menu_tables.rs`
 - Row handlers: `crates/skate-game/src/retail_menus.rs` (`OVERLAY_ITEMS`), `retail_menu_stage.rs`,
   `graphics_menu.rs` (`open_section`)
 - Pause blur: `crates/skate-core/src/fe_blur.rs` (new), `lib.rs`; `crates/skate-game/src/fe_backdrop.rs`,

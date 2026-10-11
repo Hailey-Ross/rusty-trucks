@@ -78,6 +78,22 @@ pub struct FeScreen {
     pub key: String,
     /// Byte +4: the world behind this screen blurs while it is on top (the pause crossbar has it set).
     pub blur: bool,
+    /// Byte +0: open suspends gameplay (context 3), close resumes it.
+    #[serde(default)]
+    pub suspends_gameplay: bool,
+    /// Byte +1: the chyron shows while it is open.
+    #[serde(default)]
+    pub chyron: bool,
+    /// Word +8: HUD mode while it is the main stack's top (0 on, 1 off, 2 online HUDs only, 3 keep).
+    #[serde(default = "hud_off")]
+    pub hud: i32,
+    /// Byte +12: pad input its own handler leaves goes on to the movie's UpdateInput.
+    #[serde(default)]
+    pub input_to_movie: bool,
+}
+
+fn hud_off() -> i32 {
+    1
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -623,7 +639,16 @@ fn screen_info(img: &Image) -> Result<(u32, Vec<FeScreen>), String> {
             .map(|id| {
                 let record = img.image.at(table + id * SCREEN_INFO_RECORD, SCREEN_INFO_RECORD as usize)?;
                 let key = record[16..24].iter().map(|b| format!("{b:02x}")).collect();
-                (record[4] <= 1).then(|| FeScreen { id: String::new(), key, blur: record[4] == 1 })
+                let hud = i32::from_be_bytes([record[8], record[9], record[10], record[11]]);
+                ([0, 1, 4, 12].iter().all(|i| record[*i] <= 1) && (0..=3).contains(&hud)).then(|| FeScreen {
+                    id: String::new(),
+                    key,
+                    blur: record[4] == 1,
+                    suspends_gameplay: record[0] == 1,
+                    chyron: record[1] == 1,
+                    hud,
+                    input_to_movie: record[12] == 1,
+                })
             })
             .collect();
         if let Some(mut flags) = flags {

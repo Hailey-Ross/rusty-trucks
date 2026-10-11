@@ -25,6 +25,7 @@ use bevy::{
 };
 use serde_json::{Value, json};
 use skate_core::fe_blur::{FeBlur, FeBlurParams};
+use skate_core::fe_stack::{HudMode, ScreenInfo};
 use skate_data::menu_tables::FeScreen;
 use skate_mods::menus::BackdropOptions;
 
@@ -44,6 +45,26 @@ pub(crate) struct FeBackdrop {
 }
 
 impl FeBackdrop {
+    /// This build's index of a screen id (the FE id in its screen table).
+    pub(crate) fn index(&self, id: &str) -> Option<usize> {
+        self.screens.iter().position(|s| s.id == id)
+    }
+
+    pub(crate) fn id(&self, index: usize) -> Option<&str> {
+        self.screens.get(index).map(|s| s.id.as_str())
+    }
+
+    /// The stack record of a screen (retail table; unknown screens get an empty record).
+    pub(crate) fn info(&self, index: usize) -> ScreenInfo {
+        self.screens.get(index).map_or_else(ScreenInfo::default, |s| ScreenInfo {
+            suspends_gameplay: s.suspends_gameplay,
+            chyron: s.chyron,
+            blur: s.blur,
+            hud: HudMode::from_retail(s.hud),
+            input_to_movie: s.input_to_movie,
+        })
+    }
+
     /// The FE stack changed (retail applies the top screen's flag on every push / pop).
     pub(crate) fn set_stack(&mut self, keys: Vec<String>) {
         self.stack = keys;
@@ -144,7 +165,8 @@ fn mark_camera(mut commands: Commands, cameras: Query<Entity, (With<crate::camer
     }
 }
 
-fn advance(time: Res<Time>, mut backdrop: ResMut<FeBackdrop>, mut draw: ResMut<Draw>) {
+/// Real time: the ramp runs while gameplay is suspended.
+fn advance(time: Res<Time<Real>>, mut backdrop: ResMut<FeBackdrop>, mut draw: ResMut<Draw>) {
     let b = &mut *backdrop;
     match b.stack.last().cloned() {
         Some(top) => {
@@ -300,8 +322,8 @@ mod tests {
     fn backdrop() -> FeBackdrop {
         FeBackdrop {
             screens: vec![
-                FeScreen { id: "0000000000000001".into(), key: "0000000000000001".into(), blur: false },
-                FeScreen { id: PAUSE_SCREEN.into(), key: PAUSE_SCREEN.into(), blur: true },
+                FeScreen { id: "0000000000000001".into(), key: "0000000000000001".into(), blur: false, suspends_gameplay: false, chyron: false, hud: 1, input_to_movie: false },
+                FeScreen { id: PAUSE_SCREEN.into(), key: PAUSE_SCREEN.into(), blur: true, suspends_gameplay: true, chyron: false, hud: 1, input_to_movie: true },
             ],
             ..default()
         }
