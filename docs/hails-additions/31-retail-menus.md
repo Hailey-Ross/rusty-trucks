@@ -1208,11 +1208,30 @@ then port each row's effect. Rows that save but have no effect yet are listed be
     x when +24 is set and y when +25 is set. Ours: `camera::angle::sync_look_invert` sets
     `CameraRuntime::invert_look`, which the existing publication applies to `look_552_556` (the right stick).
     Test `look_invert_follows_the_axis_rows`. Not play-tested.
+- Vibration +163 (2026-10-11): rumble output ported (research `.local/research/rumble.md`; constants main-checked
+  in the TU3 image, the tick and device curve main-checked in `sub_82695010` / `sub_8296D480`):
+  - `skate_core::rumble`: per pad, channels {low, high, decay}; a start overwrites its channel with low / high
+    clamped to 0..1 and decay = clamp(1 - rate / 60) (`sub_82694D38`, only it checks the vibration flag, so
+    switching off lets running rumble fade); each tick sums the channels per motor, caps the sum at
+    max + (1 - max) * 0.2, clamps to 0..1, then decays each channel and drops it once both motors are below 0.001
+    (`sub_82695010`); the device curve (`sub_8296D480`): gamepad motor 0 = 1.2 l - 0.02, motor 1 = 1.05 l + 0.05,
+    other devices 0.7 l - 0.02 / 0.7 l, clamp, exactly 0 stays 0, else trunc(v * 65535). As in retail, a gamepad's
+    motor 1 at level 0 gets 3276 (0.05). Values in `RumbleTuning::RETAIL`.
+  - `rumble.rs` (game): ticked at 60 Hz of real time whatever the frame rate; the Vibration row (value in force)
+    gates starts; switching it on plays retail's test rumble (`sub_8260DF40`: channel 0, 0.5 / 0.5, rate 5.0) on
+    the active pad; output through `input::platform::set_rumble` (SDL `SDL_RumbleGamepad`, re-sent every 0.5 s
+    for a 1 s duration while non-zero; XInput `XInputSetState` on change). NOT RETAIL: Xbox-family pads get the
+    gamepad curve, other pads the other-device curve (retail's known-device test is the 360 pad's caps; on a
+    DualSense the 0.05 floor would be a constant buzz).
+  - Mods: `sdk.input.rumble` / `stop_rumble` (capability `input_rumble`; per-mod channels, stopped with the mod).
+  - NOT PORTED: retail's gameplay rumble events (the posters `sub_82BB8CF0`, 0.5 / 0.5 / rate 1.2, local player only,
+    and `sub_8259E3D0`, per-item channels from `sub_8259DFB0`; which events they belong to is not proven; a recomp
+    trace hook on `sub_82694D38` logging caller, channel and the three floats would settle it).
+  - Tests: `cargo test -p skate-core rumble`, `cargo test -p skate-game rumble` (60 Hz at any frame rate, the
+    switch-on test rumble, off blocks starts, mod channels separate and stopped with their mod). Not felt on a pad.
 - Saved, no effect yet (what retail does, from the research, not main-checked): Minimap +158 (`sub_82665278`:
   hidden with the HUD off, forced on / off in some game states; we draw no minimap), Subtitles +157 (six readers
-  gate subtitles on it or a forced flag; no subtitle text in the engine), Vibration +163 (per pad, the rumble start
-  `sub_82694D38` does nothing when 0; the engine sends no rumble; retail's default comes from the Xbox profile's
-  controller vibration option), Cameraman Mode +165 and HOM mode +184 (readers found, effect undecoded), Units,
+  gate subtitles on it or a forced flag; no subtitle text in the engine), Cameraman Mode +165 and HOM mode +184 (readers found, effect undecoded), Units,
   Transparency (no reader of the copied byte found), the Skate Feed toggles.
 - Still greyed (no retail rule decoded): Video Calibration (opens a calibration screen), SFX Pack (hidden with one
   pack), Auto sign-in (an online popup).

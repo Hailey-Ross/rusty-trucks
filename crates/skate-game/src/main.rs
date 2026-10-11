@@ -43,6 +43,7 @@ mod prompt_glyphs;
 mod settings_host;
 mod retail_menu_movies;
 mod retail_menu_stage;
+mod rumble;
 mod modding;
 mod customiser;
 mod customiser_parts;
