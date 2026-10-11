@@ -1279,9 +1279,17 @@ FE screen records (Start then falls back to the PC overlay).
   "Your game files are out of date: Extras > Refresh Game Files updates them.", and Extras gets a "Game Files"
   section with **Refresh Game Files** (describes the stale groups by name; Select restarts into setup, logged
   `PC_OVERLAY refresh game files: restarting into setup`; without a setup helper the status says so).
-- Installs an earlier build already stamped as current cannot be told apart by version, so features also report
-  what they find: `setup::mark_stale(group)`; the retail menus call it for `hud` when the menu tables have no FE
-  screen records (the Start fallback case). Not run against such an install (the dev install was refreshed first).
+- User: "it shouldnt trust a flag to tell if assets are stale, write a lightweight checker that runs on each launch
+  to test asset staleness". `asset_check.rs` runs on a background thread at every start and reads the files
+  themselves: every output in each group's setup receipt (`installation.json` `outputs`) must exist at its recorded
+  size (no hashing), and the HUD group must hold what this build reads (menu tables parse in this build's reader and
+  carry the FE screen records, settings titles, sub-option tables and screen templates; the menu movie manifest is
+  this build's format version and every file it lists exists). Each failure is logged `ASSET_CHECK <group>: <reason>`
+  and marks the group stale; `ASSET_CHECK done in <ms>: game files current` otherwise (178 ms on the refreshed dev
+  install). Groups other than HUD are checked by their receipts; content checks for them (for example the living
+  world's data) are added with the features that need them. Before restarting into setup, Refresh Game Files writes
+  "stale" as the version of every stale group in `installation.json`, so setup's refresh rebuilds exactly those.
+  Tests `a_missing_or_resized_output_flags_its_group`, `hud_check_reads_the_files_not_a_stamp`.
 - Development roots (`--assets`, `SKATE3_ASSETS`) have no `release.json`, so the version check never fires there;
   `SKATE_VERIFY_MENU=stale` previews it for screenshots.
 
@@ -1291,7 +1299,7 @@ FE screen records (Start then falls back to the PC overlay).
 - Open: the restart into setup is not run end to end (it needs a release package's setup helper).
 
 ## Files
-- Out-of-date prompt: `crates/skate-game/src/setup.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`
+- Out-of-date prompt: `crates/skate-game/src/asset_check.rs` (new), `setup.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`
 - Stored settings: `crates/skate-game/src/retail_menus.rs` (`StoredSettings`, `setting`), `scoring_hud.rs`
 - Swap-in: `crates/skate-game/src/retail_menu_stage.rs` (`enabled`, `RetailPause`), `graphics_menu.rs` (`overlay_key`)
 - PC overlay: `crates/skate-game/src/input/platform.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`, `fonts/`

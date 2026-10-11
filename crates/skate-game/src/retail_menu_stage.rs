@@ -321,8 +321,6 @@ fn update(
     available.set_if_neq(RetailPause(ready && pause.is_some()));
     if ready && pause.is_none() && !std::mem::replace(&mut *warned, true) {
         warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup); Start opens the PC overlay until then");
-        // The PC overlay offers the refresh (installs an earlier build stamped current).
-        crate::setup::mark_stale("hud");
     }
     let (Some(mut ms), Some(movies), Some(mut menus)) = (stage, movies, menus) else { return };
     if ms.failed {
