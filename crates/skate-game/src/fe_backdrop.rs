@@ -44,7 +44,17 @@ pub(crate) struct FeBackdrop {
     params: FeBlurParams,
     /// Mod overrides (mod id, screen id, options), oldest first so the newest wins.
     mods: Vec<(String, String, BackdropOptions)>,
+    /// The PC overlay (`graphics_menu`) is showing: it blurs the world like the recomp's settings overlay.
+    overlay: bool,
+    /// The overlay's eased blur strength (retail units, see `OVERLAY_STRENGTH`).
+    overlay_strength: f32,
 }
+
+/// The recomp's settings-overlay blur: a gaussian of sigma 9 px at 1080p (`skate3_menu_blur_sigma`). This pass's
+/// sigma is half its radius and the radius is `strength * height / 720`, so 9 px at 1080p is strength 12.
+const OVERLAY_STRENGTH: f32 = 12.0;
+/// The recomp eases its menu sigma toward the target with a 60 ms time constant.
+const OVERLAY_EASE: f32 = 0.06;
 
 impl FeBackdrop {
     /// This build's index of a screen id (the FE id in its screen table).
@@ -77,6 +87,11 @@ impl FeBackdrop {
         if let Some(options) = options {
             self.mods.push((owner.to_owned(), screen, options));
         }
+    }
+
+    /// The PC overlay opened or closed (its tint is drawn by the overlay itself, like the recomp's).
+    pub(crate) fn set_overlay(&mut self, showing: bool) {
+        self.overlay = showing;
     }
 
     pub(crate) fn clear_owner(&mut self, owner: &str) {
@@ -196,7 +211,12 @@ fn advance(time: Res<Time<Real>>, mut backdrop: ResMut<FeBackdrop>, mut draw: Re
         None => b.blur.set_enabled(false),
     }
     b.blur.advance(time.delta_secs(), &b.params);
-    *draw = Draw { strength: b.blur.strength, tint: b.blur.tint };
+    let target = if b.overlay { OVERLAY_STRENGTH } else { 0.0 };
+    b.overlay_strength += (target - b.overlay_strength) * (1.0 - (-time.delta_secs() / OVERLAY_EASE).exp());
+    if b.overlay_strength < 0.05 && !b.overlay {
+        b.overlay_strength = 0.0;
+    }
+    *draw = Draw { strength: b.blur.strength.max(b.overlay_strength), tint: b.blur.tint };
 }
 
 #[derive(Resource)]

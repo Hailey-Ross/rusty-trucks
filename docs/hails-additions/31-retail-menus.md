@@ -1116,11 +1116,46 @@ Extras keeps its own rows.
 - `graphics_menu.rs`: Guide, F1 or Escape toggle the overlay from anywhere, also over the retail menus; pad Start
   opens it only while the retail menus are off. `retail_menu_stage.rs`: no retail key handling while the overlay
   is open.
-- Open: reshape the overlay toward the recomp's category rail; the XInput fallback backend has no Guide (only the
-  SDL path); Windows Game Bar may take the Xbox Guide press first (its own setting).
+- Open: the XInput fallback backend has no Guide (only the SDL path); Windows Game Bar may take the Xbox Guide
+  press first (its own setting).
+
+### The recomp's look and navigation (2026-10-11)
+User: "faithfully recreate the recomps guide menu and replace our guide menu". The overlay's view is now a port of
+the recomp's settings overlay (skate3recomp's rexglue-sdk, `src/ui/overlay/simple_settings_overlay.cpp`,
+`SimpleSettingsDialog::OnDraw` / `GatherInput`, at `third_party/rexglue-sdk` commit ae6ea8e); the rows stay ours.
+- Look: the recomp's palette, metrics (authored for 1080p, `s = clamp(h / 1080, 0.6, 3) * 0.92`, legend at the
+  base scale), column layout (300 s rail and description, content clamped to 300 to 800 s, the block centred, a
+  whole number of 52 s row slots, at most 12), title "Settings" (sub-pages show their own name), lime section bars,
+  white rows, magenta steppers that grey out at the ends, magenta sliders, the black focus fill with a 2 s lime ring
+  and a 4 s black edge outside it, the teal rail with Close Game pinned under it, the Description panel, and the
+  pad / keyboard legend that follows the last input. Font: Inter Regular / SemiBold (SIL OFL, subset to Latin,
+  `crates/skate-game/src/fonts/`, from Inter 4.1), the recomp's typeface; sizes converted from ImGui line heights
+  to Bevy ems (2048 / 2478).
+- Motion: the focus fill slides at the recomp's rate (`min(1, dt * 22)`, snapping beyond 160 s), the list scroll
+  locks to whole rows and slides at `dt * 16`, focused text styling waits until the fill mostly covers the row, held
+  directions repeat after 0.42 s every 0.11 s, the wheel steps whole rows.
+- Navigation: focus zones rail / rows; Up / Down on the rail switch category, Right or Select enters the rows;
+  Left / Right step (clamped), Select cycles with wrap or runs the row; B / Escape back out one level (text edit,
+  sub-page, rows, rail, closed); F1 / Guide close at once; LB / RB or Q / E (and Tab) change category; Y / R reset
+  the row to its default; X / F apply pending custom tuning (the recomp's Apply & Restart slot; its chip reads
+  "TUNING NOT APPLIED"). The mouse hovers rows into focus, clicks the rail, steppers, rows and slider tracks.
+- Backdrop: the recomp blurs the frame (gaussian sigma 9 px at 1080p, eased with a 60 ms time constant) under a
+  `(6, 9, 11, 133)` wash. Ours uses `fe_backdrop`'s pass at strength 12 (= sigma 9 at 1080p for that shader) with the
+  same easing, and the wash as the overlay's background. The gameplay HUD is hidden while the overlay shows (the
+  recomp's HUD is part of the blurred frame; ours draws above the blur pass).
+- Deviations, not the recomp's: description text is left-aligned (the recomp justifies only when gaps stay under
+  1.6 spaces; Bevy's justify has no such limit and opened wide gaps); value text clips instead of shrinking then
+  ellipsizing; hover needs 2 px of movement since the last hover instead of per frame; Reset to Default shows in
+  the legend only on rows that have a default; Close Game replaces the Extras "Quit game" row.
+- Moddability: mod menu sections still become rail categories (`custom_sections`), their entries rows.
+- Tests: `cargo test -p skate-game graphics_menu` (keys, back steps, stepper ends, header placement, repeat timing,
+  1080p layout, easing).
+- Open: the user's play test of the motion.
 
 ## Files
-- PC overlay: `crates/skate-game/src/input/platform.rs`, `graphics_menu.rs`, `retail_menu_stage.rs`
+- PC overlay: `crates/skate-game/src/input/platform.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`, `fonts/`
+  (Inter + OFL), `fe_backdrop.rs` (overlay blur), `scoring_hud.rs` (HUD hidden), `customiser.rs`
+  (`Navigation::held`), `game_audio/mod.rs` (volume row accessors), `custom_difficulty.rs`, `retail_menu_stage.rs`
 - Sub-options: `crates/skate-data/src/menu_tables.rs` (`SubOptionRow`), `tests/menu_tables.rs`;
   `crates/skate-game/src/crossbar_host.rs`, `retail_menu_stage.rs`; `tools/asset_pipeline/menu_tables.py`, `test_menu_tables.py`
 - Button prompts / panel: `crates/skate-game/src/prompt_glyphs.rs` (new), `input/controller_kind.rs`,

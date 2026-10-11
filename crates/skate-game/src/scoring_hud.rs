@@ -422,12 +422,14 @@ fn render(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<HudMaterial>>,
     fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
+    overlay: Option<Res<crate::graphics_menu::Menu>>,
 ) {
     let Some(mut hud) = hud else {
         return;
     };
-    // An FE screen whose record hides the HUD (the pause menu: mode 1) is on top.
-    let hidden = fe_hud.is_some_and(|f| !f.hud);
+    // An FE screen whose record hides the HUD (the pause menu: mode 1) is on top, or the PC overlay (the recomp's
+    // blurs the HUD into its backdrop; ours sits above the blur pass, so it goes).
+    let hidden = fe_hud.is_some_and(|f| !f.hud) || overlay.is_some_and(|m| m.overlay_visible());
     let draws = if hud.failed || hidden {
         Vec::new()
     } else {
