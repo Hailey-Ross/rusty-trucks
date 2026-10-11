@@ -849,10 +849,14 @@ impl MenuRegistry {
             .collect()
     }
 
+    /// The value in force: the top value layer, else retail's default for the row (shown, not a binding:
+    /// it neither enables the row nor takes Left / Right).
     pub fn value(&self, entry: &EntryRef) -> Option<SettingValue> {
-        match Self::top(&self.hooks.get(entry)?.values)? {
-            ValueHook::Native { get, .. } => Some(get()),
-            ValueHook::Stored(v) => Some(v.clone()),
+        match self.hooks.get(entry).and_then(|h| Self::top(&h.values)) {
+            Some(ValueHook::Native { get, .. }) => Some(get()),
+            Some(ValueHook::Stored(v)) => Some(v.clone()),
+            None if entry.kind == EntryKind::Setting => crate::menu_values::retail_default(&entry.id),
+            None => None,
         }
     }
 

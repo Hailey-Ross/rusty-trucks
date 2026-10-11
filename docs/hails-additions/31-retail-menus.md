@@ -211,6 +211,16 @@ All from the TU3 settings input handler `sub_8260C258` (events 14 = Left, 15 = R
   free-skate capture (Master.in1..3 = 32767).
 - SFX pack (`sub_82486870`) and Auto sign-in (`sub_8260E068`) rules not decoded.
 - Retail defaults of the settings object (its constructor) not read; our bound settings keep their own defaults.
+  Update 2026-10-11: read [trace] instead: the recomp booted through the demo path without a signed-in profile,
+  `SKATE3_WATCH` on `0x83067060 +28 @ +128` (hex64) and `+192` (hex16), files in `.local/recomp/defaults/`
+  (the zeroing function `sub_82DE3F38` clears the object first; the values come from later code, not decoded).
+  Values: volumes 1.0, Subtitles 0, Minimap 1, Vibration 1, HUD 1, Camera manual 0, Units 0, Play Mode 1, HOM 0,
+  Camera Angle 0, axes 0 / 0, Transparency 0, the five Skate Feed toggles 1. `skate_core::menu_values::retail_default`
+  holds them; `MenuRegistry::value` falls back to it when a row has no value layer, so rows without an engine
+  setting show retail's value instead of "ERROR!!" (they stay greyed: a default is not a binding). Video Settings
+  before: Subtitles / Minimap / Cameraman Mode / HUD read "ERROR!!"; after: Off / On / Off / On. Test
+  `every_rule_row_has_a_retail_default_that_displays`. The recomp is not retail: the values are its boot state
+  with no save loaded.
 - The current overlay (`graphics_menu.rs`) keeps its own difficulty copy; it is replaced in milestone 5.
 - While a mod holds Play Mode, a difficulty change saved from the current overlay saves that overlay's choice; the
   mod's value itself is never saved. A mod already holding the camera through `sdk.camera` keeps it (the menus
