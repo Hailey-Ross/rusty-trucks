@@ -54,6 +54,8 @@ impl RumbleOutput {
 
     /// `sdk.input.rumble`: a mod's channel on a pad (None = the active pad).
     pub(crate) fn start_mod(&mut self, owner: &str, pad: usize, channel: u32, rumble: Rumble) {
+        info!("RUMBLE mod {owner} pad {pad} channel {channel}: low {} high {} rate {}{}", rumble.low, rumble.high, rumble.rate,
+            if self.vibration == Some(false) { " (Vibration is off: not started)" } else { "" });
         let internal = mod_channel(owner, channel);
         self.owners.entry(owner.to_owned()).or_default().insert((pad, internal));
         self.start(pad, internal, rumble);
@@ -62,6 +64,9 @@ impl RumbleOutput {
     /// `sdk.input.stop_rumble`: a mod's channels stop (one pad, or all with None).
     pub(crate) fn stop_mod(&mut self, owner: &str, pad: Option<usize>) {
         let Some(set) = self.owners.get_mut(owner) else { return };
+        if !set.is_empty() {
+            info!("RUMBLE mod {owner} stopped (pad {pad:?})");
+        }
         set.retain(|&(p, channel)| {
             let hit = pad.is_none_or(|q| q == p);
             if hit {
@@ -75,6 +80,9 @@ impl RumbleOutput {
     /// the setting just switched on (the caller plays the test rumble).
     fn advance(&mut self, seconds: f32, vibration: bool) -> bool {
         let switched_on = self.vibration == Some(false) && vibration;
+        if self.vibration != Some(vibration) {
+            info!("RUMBLE Vibration {}", if vibration { "on" } else { "off" });
+        }
         self.vibration = Some(vibration);
         for pad in &mut self.pads {
             pad.enabled = vibration;
@@ -109,14 +117,19 @@ fn update(
     menus: Option<Res<crate::retail_menus::RetailMenus>>,
     controllers: Res<crate::input::ControllerInput>,
     mut out: ResMut<RumbleOutput>,
+    mut running: Local<[bool; 4]>,
 ) {
     let vibration = menus
         .as_deref()
         .and_then(|m| crate::retail_menus::setting(m, VIBRATION))
         .is_none_or(|v| skate_core::menu_values::number(&v) != 0.0);
     if out.advance(time.delta_secs(), vibration) {
-        if let Some(pad) = controllers.active_slot() {
-            out.start(pad, 0, TEST);
+        match controllers.active_slot() {
+            Some(pad) => {
+                info!("RUMBLE settings test rumble on pad {pad} (low 0.5 high 0.5 rate 5)");
+                out.start(pad, 0, TEST);
+            }
+            None => info!("RUMBLE settings test rumble: no controller connected"),
         }
     }
     for pad in 0..4 {
@@ -124,6 +137,11 @@ fn update(
             continue;
         }
         let gamepad = xbox_pad(controllers.kind(pad));
+        let active = out.levels[pad] != [0.0, 0.0];
+        if active != running[pad] {
+            running[pad] = active;
+            info!("RUMBLE pad {pad} {} ({} motor curve)", if active { "rumbling" } else { "idle" }, if gamepad { "gamepad" } else { "other-device" });
+        }
         let speeds = std::array::from_fn(|m| motor_speed(m, out.levels[pad][m], gamepad, &out.tuning));
         crate::input::platform::set_rumble(pad, speeds);
     }

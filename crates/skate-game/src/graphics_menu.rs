@@ -676,7 +676,7 @@ pub(crate) fn interact(
     mut typing: MessageReader<bevy::input::keyboard::KeyboardInput>,
     (mut updater, mut audio, mut camera_angle, mut living): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>, ResMut<crate::camera::CameraAngleSettings>, ResMut<crate::living_world::LivingWorldSettings>),
     travel: Res<crate::teleport_menu::Travel>,
-    mut mods: ResMut<crate::modding::ModMenu>,
+    (mut mods, mut logged): (ResMut<crate::modding::ModMenu>, Local<Option<(bool, String, String)>>),
 ) {
     let wheel_notches: f32 = wheel.read().map(|e| if e.unit == MouseScrollUnit::Line { e.y } else { e.y / 40. }).sum();
     if transition.busy() {
@@ -698,9 +698,14 @@ pub(crate) fn interact(
             if nav.pressed & 0x0400 != 0 {
                 info!("PC overlay toggled by the Guide button (open: {})", !menu.open);
             }
+            let cause = if nav.pressed & 0x0400 != 0 { "Guide" } else if f1 { "F1" } else if escape { "Escape" } else { "Start" };
+            info!("PC_OVERLAY {} by {cause}", if menu.open { "close" } else { "open" });
             menu.open = !menu.open;
         }
-        Some(OverlayKey::Back) => menu.back(),
+        Some(OverlayKey::Back) => {
+            info!("PC_OVERLAY back by {}", if escape { "Escape" } else { "B" });
+            menu.back();
+        }
         None => {}
     }
     let held = nav.held();
@@ -897,6 +902,15 @@ pub(crate) fn interact(
         if apply_tuning && menu.custom_dirty {
             menu.custom_apply = true;
         }
+        if let Some(a) = act {
+            let id = match a { Act::Step(id, _) | Act::Activate(id) | Act::Reset(id) | Act::Drag(id, _) => id };
+            let row = view_of(id);
+            // Drags repeat every frame; their result is logged as the status / save line.
+            if !matches!(a, Act::Drag(..)) {
+                info!("PC_OVERLAY {a:?} {:?} was {:?} (section {}, page {:?})", row.map_or("", |r| r.label.as_str()),
+                    row.map_or("", |r| r.value.as_str()), menu.category_name(menu.section), page.first());
+            }
+        }
         if let Some(Act::Activate(id)) = act {
             match view_of(id).map(|r| r.kind) {
                 Some(Kind::Text) => { menu.view.editing = true; act = None; }
@@ -969,6 +983,11 @@ pub(crate) fn interact(
         }
         None => None,
     };
+    if let (Some(row), Some(Act::Step(..) | Act::Reset(..))) = (saved_row, act) {
+        let cx = RowCtx { audio: Some(&*audio), camera: &camera_angle, net: &net, controllers: None, debug: &[], window: UVec2::ZERO };
+        let now = menu.describe(row, &cx);
+        info!("PC_OVERLAY now {:?} = {:?}", now.label, now.value);
+    }
     if let Some(row) = saved_row {
         if ((row < 3 || row == FRAME_STATS_ROW || row == NPC_DRAW_DISTANCE_ROW) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
             let save = (|| -> Result<(), String> {
@@ -983,6 +1002,17 @@ pub(crate) fn interact(
                 Ok(()) => "Saved".into(),
                 Err(e) => format!("Could not save: {e}"),
             };
+        }
+    }
+    // Session log: open / closed, where it is (category, sub-page title), and every status message (saves, errors).
+    let now = (menu.open, format!("{} / {}", menu.category_name(menu.section), menu.title()), menu.status.clone());
+    if logged.as_ref() != Some(&now) {
+        let before = logged.replace(now.clone());
+        if now.0 && before.as_ref().is_none_or(|b| b.1 != now.1 || !b.0) {
+            info!("PC_OVERLAY at {}", now.1);
+        }
+        if !now.2.is_empty() && before.as_ref().is_none_or(|b| b.2 != now.2) {
+            info!("PC_OVERLAY status: {}", now.2.replace('\n', " | "));
         }
     }
     if (menu.open || menu.fe_suspended) && !net.active() {

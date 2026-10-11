@@ -350,6 +350,8 @@ fn update(
             fired.extend(ms.injected.pop_front().map(|k| (k, 0)));
         }
         for (key, controller) in fired {
+            // Session log: every key the menus took, by retail's Apt key name (the user's play tests).
+            info!("RETAIL_MENUS key {} pad {controller} screen {:?}", ms.apt_keys.get(key as usize).map_or("?", |k| k.name.as_str()), ms.stack.input_target().and_then(|t| backdrop.id(t)));
             if key == APT_START {
                 // Retail Start (sub_825EB998, mode 0) pushes FE 56 with the plain push. NOT RETAIL YET (unverified):
                 // Start while it is open closes it.
@@ -398,6 +400,7 @@ fn update(
                         consumed = true;
                         sounds.write(FrontendSound::named("core_b_button"));
                         if fe.settings.screen > 1 {
+                            info!("RETAIL_MENUS settings back to the main list from screen {}", fe.settings.screen);
                             fe.settings.screen = 1;
                             fe.settings.row = 0;
                             set_state(&mut ms.stage, options_id, 1, &mut fe)?;
@@ -428,17 +431,23 @@ fn update(
         for effect in ms.stack.update(&|i| backdrop.info(i)) {
             match effect {
                 Effect::Open(i) if Some(i) == pause => {
+                    info!("RETAIL_MENUS open pause menu (FE {i})");
                     fe.state = CrossbarState::open(&fe.view);
                     open_screen(&mut ms.stage, CROSSBAR_PATH, CROSSBAR, &mut fe)?;
                 }
                 Effect::Open(i) if Some(i) == options => {
                     // Settings init sub_8260BF58: screen index -1 -> 0 (the pause path opens on the main list).
+                    info!("RETAIL_MENUS open Game Settings (FE {i})");
                     fe.settings.screen = 0;
                     fe.settings.row = 0;
                     open_screen(&mut ms.stage, OPTIONS_PATH, OPTIONS, &mut fe)?;
                 }
-                Effect::Close(i) if Some(i) == pause => close(&mut ms.stage, crossbar_id, &mut fe)?,
+                Effect::Close(i) if Some(i) == pause => {
+                    info!("RETAIL_MENUS close pause menu (FE {i})");
+                    close(&mut ms.stage, crossbar_id, &mut fe)?
+                }
                 Effect::Close(i) if Some(i) == options => {
+                    info!("RETAIL_MENUS close Game Settings (FE {i})");
                     // Begin close sub_8260C048: SetScreenState(2) outside the front end (FE state 2), then the outro.
                     set_state(&mut ms.stage, options_id, 2, &mut fe)?;
                     close(&mut ms.stage, options_id, &mut fe)?;
@@ -446,6 +455,7 @@ fn update(
                 }
                 Effect::Open(i) | Effect::Close(i) => warn!("RETAIL_MENUS: FE screen {i} has no template yet"),
                 Effect::SuspendGameplay(on) => {
+                    info!("RETAIL_MENUS gameplay {}", if on { "suspended" } else { "resumed" });
                     if let Some(overlay) = overlay.as_mut() {
                         overlay.fe_suspended = on;
                     }

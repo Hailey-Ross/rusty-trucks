@@ -1243,6 +1243,23 @@ then port each row's effect. Rows that save but have no effect yet are listed be
 - In game (fresh tables, `SKATE3_RETAIL_MENUS_KEYS=15,15,15,2,13,13,2,13,13,13,13,15`): Video Settings, HUD selected
   and stepped to Off; log `ID_GAMESETTINGS_HUD_TOGGLE = Int(0) (saved)`, the file holds `{"ID_GAMESETTINGS_HUD_TOGGLE": 0}`.
 
+## Session logging (2026-10-11)
+
+User: "make sure that the new changes in living world and the retail menu have proper logging so you can review my
+sessions/logs". Every line is `info!`, so `PLAY-WITH-LOG.bat` sessions carry them; grep by prefix:
+- `RETAIL_MENUS key <AptKey> pad <n> screen <id>`: every key the retail menus took (retail's Apt key names);
+  `RETAIL_MENUS open / close pause menu`, `open / close Game Settings` (FE ids), `gameplay suspended / resumed`,
+  `settings back to the main list from screen <n>`, `select <item>: <outcome>`, `settings step <id> <dir>: <outcome>`,
+  `<setting id> = <value> (saved)`, the fallback warning `no FE screens yet (run setup)`.
+- `PC_OVERLAY open / close by <Guide | F1 | Escape | Start>`, `back by <Escape | B>`, `at <category> / <page>`,
+  `<Step | Activate | Reset>(row) "<label>" was "<value>" (section, page)`, `now "<label>" = "<value>"`,
+  `status: <message>` (saves and errors).
+- `RUMBLE Vibration on / off`, `settings test rumble on pad <n>`, `mod <id> pad <n> channel <c>: low high rate`
+  (and "not started" while Vibration is off), `mod <id> stopped`, `pad <n> rumbling / idle (<curve>)`.
+- Already there: `Offboard look invert: x y`, `Camera angle: <label>`, `PC overlay toggled by the Guide button`.
+- Checked in a scripted run (keys 15,15,15,2,...): Vibration on, AptStart, gameplay suspended, open pause menu,
+  three AptRight, AptNext, select, close pause menu, gameplay resumed / suspended, open Game Settings.
+
 ## Files
 - Stored settings: `crates/skate-game/src/retail_menus.rs` (`StoredSettings`, `setting`), `scoring_hud.rs`
 - Swap-in: `crates/skate-game/src/retail_menu_stage.rs` (`enabled`, `RetailPause`), `graphics_menu.rs` (`overlay_key`)
