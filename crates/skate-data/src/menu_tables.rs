@@ -63,7 +63,8 @@ pub struct AptKey {
     pub name: String,
     /// The game input action polled for this key.
     pub action: u32,
-    /// The key code the movies see (AptUp, AptNext, ...).
+    /// The Apt key code in the record (record + 8). Retail does NOT register this: AptUp etc. are set to the
+    /// key's INDEX in the table (ScreenManagerReady 825D9450), the same index UpdateInput passes.
     pub apt_key: u32,
     pub released: bool,
     pub kind: u32,

@@ -58,6 +58,45 @@ impl Plugin for RetailMenuStagePlugin {
     }
 }
 
+/// Retail ScreenManagerReady handler (825D9450), in its order, with values as "%d" strings like retail:
+/// templates (only CrossBar so far: NOT RETAIL YET, retail registers all 133 in table order), the 56 Apt keys
+/// (value = key index, the same index UpdateInput passes), FE_SOUND_<NAME> = "<name>" per fe record, then
+/// platform "0", screen size 1280 x 720, edge offset "136", PAL mode "false". The 191 challenge enums
+/// (eChallengeTypes ..) and RefreshSubtitle are not registered yet (no menu reads them so far).
+fn boot_registration(stage: &mut Stage, fe: &mut FrontEnd, assets: &std::path::Path) -> Result<(), String> {
+    let text = |s: &str| Value::Text(s.into());
+    stage.call_path("_global.ScreenManager.RegisterTemplate", vec![text(CROSSBAR)], fe)?;
+    let tables = std::fs::read_to_string(assets.join(crate::retail_menus::TABLES))
+        .ok()
+        .and_then(|t| skate_data::menu_tables::MenuTables::from_json(&t).ok());
+    for (i, key) in tables.iter().flat_map(|t| &t.keys).enumerate() {
+        stage.call_path("_level0._root.RegisterAptInputEnum", vec![text(&key.name), text(&i.to_string())], fe)?;
+    }
+    let manifest: serde_json::Value = std::fs::read_to_string(assets.join("private/audio/audio_manifest.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let mut sounds: Vec<&str> = manifest["frontend"]["sounds"]
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    sounds.sort_unstable();
+    for name in sounds {
+        stage.call_path(
+            "_level0._root.RegisterAudioEnum",
+            vec![text(&format!("FE_SOUND_{}", name.to_ascii_uppercase())), text(name)],
+            fe,
+        )?;
+    }
+    stage.call_path("_level0._root.SetPlatform", vec![text("0")], fe)?;
+    stage.call_path("_level0._root.SetScreenSize", vec![text("1280"), text("720")], fe)?;
+    stage.call_path("_level0._root.SetScreenEdgeOffset", vec![text("136")], fe)?;
+    stage.call_path("_level0._root.UpdatePALMode", vec![text("false")], fe)?;
+    Ok(())
+}
+
 fn front_end<'a>(
     menus: &'a RetailMenus,
     language: &'a BTreeMap<String, String>,
@@ -70,6 +109,7 @@ fn front_end<'a>(
 
 fn setup(
     mut commands: Commands,
+    config: Res<crate::config::Config>,
     movies: Option<Res<RetailMenuMovies>>,
     menus: Option<Res<RetailMenus>>,
     mut images: ResMut<Assets<Image>>,
@@ -92,6 +132,11 @@ fn setup(
         for _ in 0..4 {
             stage.update(16.0, &movies.movies, &mut fe)?;
         }
+        // ScreenManagerReady (825D9450; `.local/research/boot-enums.md`): the C++ answers the screen manager's
+        // ready call with the boot registration.
+        if fe.calls.iter().any(|c| c == "Game.ScreenManagerReady()") {
+            boot_registration(&mut stage, &mut fe, &config.asset_root)?;
+        }
         // Crossbar enums (sub_8261B9C8): RegisterChallengeEnum(name, "%d"), value = index in table 0x830274F0.
         for (i, name) in CROSSBAR_ENUMS.iter().enumerate() {
             stage.call_path(
@@ -100,7 +145,6 @@ fn setup(
                 &mut fe,
             )?;
         }
-        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text(CROSSBAR.into())], &mut fe)?;
         Ok(stage)
     })();
     match result {
@@ -225,6 +269,13 @@ fn update(
         }
         Ok(())
     })();
+    // Audio.PlaySound(FE_SOUND_X) from the movies: the value is the fe record name (RegisterAudioEnum).
+    for call in fe.calls.iter().filter_map(|c| c.strip_prefix("Audio.PlaySound(")) {
+        let name = call.trim_end_matches(')').split(',').next().unwrap_or("");
+        if !name.is_empty() && name != "undefined" {
+            sounds.write(FrontendSound::named(name));
+        }
+    }
     ms.crossbar = fe.state;
     if let Err(e) = result {
         error!("RETAIL_MENUS stage stopped: {e}");

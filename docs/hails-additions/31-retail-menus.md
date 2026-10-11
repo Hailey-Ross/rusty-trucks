@@ -799,7 +799,13 @@ no-op).
   placement (`Movie::script_moved`, stage only; Flash rule, NOT RETAIL YET: retail's flag is not traced). The
   header now reads "Free Play > Main" like retail.
 - No selected-row highlight yet; the blur / dim behind the pause menu is not found (`pause-backdrop.md`).
-- Only the CrossBar template is registered (retail registers 133 in table order: AS id 669, ours 600).
+- Boot registration ported (`retail_menu_stage::boot_registration`, on Game.ScreenManagerReady like retail
+  825D9450; research `.local/research/boot-enums.md`, main-checked path indices 28 / 30 / 31 / 32 / 33 / 46): the
+  56 Apt keys as RegisterAptInputEnum(name, key INDEX) (retail registers the index, not the record's key code),
+  FE_SOUND_<NAME> = record name for all fe records (from the install's audio manifest), SetPlatform "0",
+  SetScreenSize 1280 / 720, SetScreenEdgeOffset 136, UpdatePALMode false. Audio.PlaySound from the movies plays
+  the fe record. Open: only the CrossBar template (retail registers 133 in table order: AS id 669, ours 600; the
+  template table needs extracting), the 191 challenge enums, RefreshSubtitle.
 - Sub-option label and helper tables (0x83027958 / 0x83027A00) are not extracted: GetSubOptionName returns `#`.
 - Label overrides (SignIn / sign out, ReplayEditor instant replay, PartyPlay literal) and the online team pending
   path are not ported. GetProgressionData reads context facts (`progression_*`), -1 (panel hidden) by default.
