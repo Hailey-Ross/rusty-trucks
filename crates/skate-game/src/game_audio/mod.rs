@@ -67,8 +67,13 @@ struct SavedSettings {
     effects: u32,
     /// Opt-in, NOT retail (user decision 2026-10-03): more audible world objects at once (8 cars,
     /// 24 peds, 3 NPC / remote skaters instead of retail's 4 / 15 / 1; `native::WorldInstances`).
-    /// Read at start. `SKATE_AUDIO_MORE_AUDIBLE=1` turns it on for one run.
+    /// Read at start (the PC overlay's More Audible World row). `SKATE_AUDIO_MORE_AUDIBLE=1` turns it on for
+    /// one run.
     more_audible_world: bool,
+    /// Opt-in: setup decodes the streamed speech (peds, main cast, announcer: about 3.4 GB) so it plays. The PC
+    /// overlay's Ped Speech row; setup gets it as `SKATE_SETUP_SPEECH=1` (`setup::asset_root`), which also works
+    /// by hand for one setup run.
+    decode_speech: bool,
     /// Where mod emitters (`WorldEmitter`, `sdk.world_audio.spawn(key, 'emitter', …)`) get their
     /// emitter state: `"extra"` (the default, user decision 2026-10-04: their own instances of the
     /// private MixMap, so the map's emitters keep retail's 5) or `"shared"` (retail's rule: they
@@ -88,6 +93,7 @@ impl Default for SavedSettings {
             ambience: 100,
             effects: 100,
             more_audible_world: false,
+            decode_speech: false,
             mod_emitter_slots: ModEmitterSlots::Extra,
             retail_volumes: RetailVolumes::default(),
         }
@@ -191,6 +197,21 @@ pub(crate) struct AudioSettings {
     /// Option volumes a mod holds through the retail menus (`sdk.menus.set_value`): in force
     /// over the saved ones, never saved, dropped when the mod stops.
     volume_overrides: RetailVolumeOverrides,
+    /// The world speech takes are decoded (`speech_decoded`), checked at start.
+    speech_decoded: bool,
+}
+
+/// The install holds decoded world speech takes (setup's opt-in decode; `speech/livingworld` beside the manifest).
+fn speech_decoded(asset_root: &std::path::Path) -> bool {
+    std::fs::read_dir(asset_root.join("private/audio/speech/livingworld")).is_ok_and(|mut d| d.next().is_some())
+}
+
+/// Setup's view of the Ped Speech choice: the saved audio settings of the install at `asset_root`.
+pub(crate) fn decode_speech_saved(asset_root: &std::path::Path) -> bool {
+    std::fs::read(asset_root.parent().unwrap_or(asset_root).join("settings/audio.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<SavedSettings>(&b).ok())
+        .is_some_and(|s| s.decode_speech)
 }
 
 /// Runtime-only replacements of the saved option volumes (None = the player's setting).
@@ -211,7 +232,12 @@ impl AudioSettings {
             Err(_) => SavedSettings::default(),
         }
         .validated();
-        Self { saved, path, muted: config.mute, volume_overrides: RetailVolumeOverrides::default() }
+        let speech_decoded = speech_decoded(&config.asset_root);
+        if saved.decode_speech && !speech_decoded {
+            // Asked for but not decoded yet (or the refresh was cancelled): the overlay offers the refresh.
+            crate::setup::mark_stale("audio");
+        }
+        Self { saved, path, muted: config.mute, volume_overrides: RetailVolumeOverrides::default(), speech_decoded }
     }
     /// Linear master gain (0 when muted).
     pub(crate) fn master(&self) -> f32 {
@@ -220,6 +246,31 @@ impl AudioSettings {
     /// The non-retail "more audible" world layout (see `SavedSettings::more_audible_world`).
     pub(crate) fn more_audible_world(&self) -> bool {
         self.saved.more_audible_world || std::env::var("SKATE_AUDIO_MORE_AUDIBLE").is_ok_and(|v| v == "1")
+    }
+    /// The saved choice alone (the overlay row; the runtime takes it at the next start).
+    pub(crate) fn more_audible_world_saved(&self) -> bool {
+        self.saved.more_audible_world
+    }
+    pub(crate) fn set_more_audible_world(&mut self, on: bool) -> String {
+        self.saved.more_audible_world = on;
+        self.save()
+    }
+    /// The speech decode is asked for (`SavedSettings::decode_speech`).
+    pub(crate) fn decode_speech(&self) -> bool {
+        self.saved.decode_speech
+    }
+    /// The world speech takes are decoded in this install.
+    pub(crate) fn speech_decoded(&self) -> bool {
+        self.speech_decoded
+    }
+    /// Ask for the decode (or stop asking); switching it on without decoded takes marks the audio files out of
+    /// date, so the overlay's Refresh Game Files decodes them.
+    pub(crate) fn set_decode_speech(&mut self, on: bool) -> String {
+        self.saved.decode_speech = on;
+        if on && !self.speech_decoded {
+            crate::setup::mark_stale("audio");
+        }
+        self.save()
     }
     /// Whether mod emitters get their own instances (the default; see `SavedSettings::mod_emitter_slots`).
     pub(crate) fn extra_mod_emitter_slots(&self) -> bool {
@@ -262,7 +313,7 @@ impl AudioSettings {
     /// Default settings saved to `path` (tests outside this module).
     #[cfg(test)]
     pub(crate) fn for_test(path: PathBuf) -> Self {
-        Self { saved: SavedSettings::default(), path, muted: false, volume_overrides: Default::default() }
+        Self { saved: SavedSettings::default(), path, muted: false, volume_overrides: Default::default(), speech_decoded: false }
     }
     /// One of retail's option volumes (0..1, the settings object's float).
     pub(crate) fn retail_volume(&self, volume: RetailVolume) -> f32 {
@@ -556,6 +607,7 @@ mod tests {
             path: std::env::temp_dir().join(format!("skate-audio-test-{}-{master}/audio.json", std::process::id())),
             muted: false,
             volume_overrides: RetailVolumeOverrides::default(),
+            speech_decoded: false,
         }
     }
 
@@ -578,6 +630,22 @@ mod tests {
         assert!(more.more_audible_world && more.master == 75);
     }
 
+    /// The Ped Speech choice is off by default and setup reads it from the install's saved settings
+    /// (`decode_speech_saved`, beside `AudioSettings::load`'s path); the decoded takes are found by their folder.
+    #[test]
+    fn speech_decode_choice_reaches_setup() {
+        assert!(!SavedSettings::default().decode_speech);
+        let root = std::env::temp_dir().join(format!("skate-audio-speech-{}", std::process::id()));
+        let assets = root.join("installations").join("a");
+        std::fs::create_dir_all(assets.join("private/audio/speech/livingworld")).unwrap();
+        assert!(!decode_speech_saved(&assets) && !speech_decoded(&assets));
+        std::fs::create_dir_all(root.join("installations/settings")).unwrap();
+        std::fs::write(root.join("installations/settings/audio.json"), br#"{"decode_speech":true}"#).unwrap();
+        std::fs::write(assets.join("private/audio/speech/livingworld/0.wav"), b"x").unwrap();
+        assert!(decode_speech_saved(&assets) && speech_decoded(&assets));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// Mod emitters get their own instances by default (user decision 2026-10-04); `"shared"` in
     /// the file or the variable selects retail's 5; the variable wins over the file either way; a
     /// file without the key gets the default.
@@ -595,7 +663,7 @@ mod tests {
         assert_eq!(ModEmitterSlots::in_force(Extra, Some("shared")), Shared);
         assert_eq!(ModEmitterSlots::in_force(Shared, Some("extra")), Extra);
         assert_eq!(ModEmitterSlots::in_force(Shared, Some("1")), Shared, "unknown values are ignored");
-        let s = |slots| AudioSettings { saved: SavedSettings { mod_emitter_slots: slots, ..Default::default() }, path: std::env::temp_dir().join("x.json"), muted: false, volume_overrides: Default::default() };
+        let s = |slots| AudioSettings { saved: SavedSettings { mod_emitter_slots: slots, ..Default::default() }, path: std::env::temp_dir().join("x.json"), muted: false, volume_overrides: Default::default(), speech_decoded: false };
         if std::env::var("SKATE_AUDIO_MOD_EMITTER_SLOTS").is_err() {
             assert!(s(Extra).extra_mod_emitter_slots() && !s(Shared).extra_mod_emitter_slots());
         }
