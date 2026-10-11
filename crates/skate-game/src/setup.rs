@@ -133,12 +133,31 @@ pub(crate) fn preview_stale() {
     mark_stale("hud");
 }
 
+/// Every file in a group's setup receipt is present at its recorded size (`asset_check`).
+pub(crate) fn outputs_present(install_root: &Path, files: &serde_json::Value) -> bool {
+    receipt_present(install_root, files)
+}
+
 /// Restart this copy with `--refresh-assets`: setup refreshes the out-of-date groups, then the game starts again.
+/// The stale groups' recorded converter versions are cleared first, so setup's refresh (which rebuilds groups whose
+/// version differs) rebuilds exactly those, whatever was stamped before.
 pub(crate) fn restart_with_refresh() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let root = exe.parent().ok_or("No executable directory")?;
     if !root.join("support/skate3setup.exe").is_file() {
         return Err("This copy has no setup helper: unpack the complete package, or run setup by hand.".into());
+    }
+    let base = root.join("data");
+    if let Some((_, marker)) = installed(&base)? {
+        let mut cleared = marker.clone();
+        for group in stale_groups() {
+            if let Some(pipelines) = cleared["pipelines"].as_object_mut() {
+                pipelines.insert(group, serde_json::Value::String("stale".into()));
+            }
+        }
+        let temporary = base.join("installation.json.tmp");
+        std::fs::write(&temporary, serde_json::to_vec_pretty(&cleared).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        std::fs::rename(&temporary, base.join("installation.json")).map_err(|e| e.to_string())?;
     }
     let args: Vec<_> = std::env::args_os().skip(1).filter(|a| a != "--refresh-assets").collect();
     Command::new(&exe).args(args).arg("--refresh-assets").spawn().map_err(|e| format!("Could not restart: {e}"))?;
