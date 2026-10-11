@@ -22,6 +22,7 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 use skate_core::crossbar::{CrossbarAction, CrossbarRules, CrossbarState, NavEvent, RegistryView};
+use skate_core::menus::{EntryRef, MenuAction, Outcome, Owner};
 use std::collections::BTreeMap;
 
 const CROSSBAR: &str = "CrossBar";
@@ -189,19 +190,22 @@ fn setup(
 fn update(
     stage: Option<ResMut<MenuStage>>,
     movies: Option<Res<RetailMenuMovies>>,
-    menus: Option<Res<RetailMenus>>,
+    menus: Option<ResMut<RetailMenus>>,
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut sounds: MessageWriter<FrontendSound>,
     mut backdrop: ResMut<crate::fe_backdrop::FeBackdrop>,
+    mut overlay: Option<ResMut<crate::graphics_menu::Menu>>,
 ) {
-    let (Some(mut ms), Some(movies), Some(menus)) = (stage, movies, menus) else { return };
+    let (Some(mut ms), Some(movies), Some(mut menus)) = (stage, movies, menus) else { return };
     if ms.failed {
         return;
     }
     let ms = &mut *ms;
     let view = RegistryView::new(&menus.registry, &menus.context, Default::default());
     let mut fe = front_end(&menus, &ms.language, ms.crossbar.clone());
+    // The item selected this frame: dispatched through the registry once the movie work is done.
+    let mut selected: Option<String> = None;
     let result = (|| -> Result<(), String> {
         let toggle = keys.just_pressed(KeyCode::F8) || std::mem::take(&mut ms.auto_open);
         if toggle {
@@ -258,7 +262,7 @@ fn update(
                         ms.screen = None;
                     }
                     Some(CrossbarAction::SelectItem { tab, row }) => {
-                        info!("RETAIL_MENUS select {:?}", fe.view.item(tab, row));
+                        selected = fe.view.item(tab, row).map(str::to_owned);
                     }
                     _ => {}
                 }
@@ -290,6 +294,23 @@ fn update(
         }
     }
     ms.crossbar = fe.state;
+    if let (Some(item), Ok(())) = (selected, &result) {
+        // Retail runs the item (its FE screen); ours goes through the registry: an engine handler opens the
+        // overlay section, a mod's gets its menu_select event.
+        let outcome = menus.act(MenuAction::Select { entry: EntryRef::item(&item) });
+        info!("RETAIL_MENUS select {item}: {outcome:?}");
+        if let Outcome::Forward(Owner::Engine(name), _) = &outcome {
+            if let (Some(section), Some(overlay)) = (name.strip_prefix(crate::retail_menus::OVERLAY), overlay.as_mut()) {
+                if let Some(id) = ms.screen.take() {
+                    let mut fe = front_end(&menus, &ms.language, ms.crossbar.clone());
+                    if let Err(e) = close(&mut ms.stage, id, &mut fe) {
+                        error!("RETAIL_MENUS close: {e}");
+                    }
+                }
+                overlay.open_section(section);
+            }
+        }
+    }
     // FE screen stack: the pause crossbar alone (FE id 56) while it is open; retail applies its blur flag on push.
     backdrop.set_stack(ms.screen.map(|_| crate::fe_backdrop::PAUSE_SCREEN.to_owned()).into_iter().collect());
     if let Err(e) = result {

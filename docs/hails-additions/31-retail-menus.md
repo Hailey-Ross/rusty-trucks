@@ -798,7 +798,7 @@ no-op).
 - FIXED (title / category overlap): a clip whose `_x` / `_y` a script set no longer follows its timeline's
   placement (`Movie::script_moved`, stage only; Flash rule, NOT RETAIL YET: retail's flag is not traced). The
   header now reads "Free Play > Main" like retail.
-- No selected-row highlight yet. The blur behind the pause menu: see "Pause blur" below.
+- Selected-row highlight works (see "Row handlers"). The blur behind the pause menu: see "Pause blur" below.
 - Boot registration ported (`retail_menu_stage::boot_registration`, on Game.ScreenManagerReady like retail
   825D9450; research `.local/research/boot-enums.md`, main-checked path indices 28 / 30 / 31 / 32 / 33 / 46): the
   56 Apt keys as RegisterAptInputEnum(name, key INDEX) (retail registers the index, not the record's key code),
@@ -868,7 +868,28 @@ retail switches the blur on for the pause menu was not known (`pause-backdrop.md
 - `cargo test -p skate-mods`, `cargo test -p skate-game fe_backdrop`: command validation, retail flag then the
   newest mod wins, cleanup per mod.
 
+## Row handlers: retail pause rows open our features (2026-10-10)
+
+### Problem
+Every retail pause row was greyed: the registry enables a row only when someone handles it, and nothing did.
+
+### Change
+- `retail_menus.rs`: `OVERLAY_ITEMS` registers engine handlers (owner `overlay:<SECTION>`) for ChallengeMap -> MAPS,
+  SkateProfileOffline -> SKATER, GameSettings -> GRAPHICS, Extras -> EXTRAS. Retail opens its own FE screens
+  there (ChallengeMap 17, GameSettings 45, Extras 18); until those are ported, the overlay menu section with the
+  same job opens. NOT RETAIL YET by design (a bridge).
+- `retail_menu_stage.rs`: a crossbar select goes through `RetailMenus::act`; an `overlay:` outcome closes the
+  retail pause screen and opens that section (`graphics_menu::Menu::open_section`); a mod's handler gets its
+  `menu_select` event as before. Mods enable or take over any row with `sdk.menus.handle`.
+
+### Verification
+- `cargo test -p skate-game retail_menus`: ChallengeMap is enabled and forwards to `overlay:MAPS`.
+- Screenshot `.local/research/menus-m6/rows.png`: Challenge Map enabled and selected with retail's highlight
+  (large icon, help line "Access challenges and locations"); the highlight needed no extra port.
+
 ## Files
+- Row handlers: `crates/skate-game/src/retail_menus.rs` (`OVERLAY_ITEMS`), `retail_menu_stage.rs`,
+  `graphics_menu.rs` (`open_section`)
 - Pause blur: `crates/skate-core/src/fe_blur.rs` (new), `lib.rs`; `crates/skate-game/src/fe_backdrop.rs`,
   `fe_backdrop.wgsl` (new), `retail_menu_stage.rs`, `retail_exposure.rs` (label), `retail_menus.rs` (cleanup,
   snapshot), `modding/mod.rs`, `app.rs`, `main.rs`; `crates/skate-mods/src/menus.rs`, `vm.rs`, `api.lua`;

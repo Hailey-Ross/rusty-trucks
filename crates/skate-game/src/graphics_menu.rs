@@ -176,6 +176,14 @@ impl Menu {
             _ => Vec::new(),
         }
     }
+    /// Open the menu on a section by its name (`SECTIONS`); the retail pause rows use this until their retail
+    /// screens are ported.
+    pub(crate) fn open_section(&mut self, name: &str) -> bool {
+        let Some(section) = SECTIONS.iter().position(|s| s.0 == name) else { return false };
+        self.open = true;
+        self.select_section(section);
+        true
+    }
     fn select_section(&mut self, section: usize) {
         self.section = section;
         self.map_detail = false;

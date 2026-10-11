@@ -14,6 +14,15 @@ use std::path::Path;
 
 pub(crate) const TABLES: &str = "private/menu-tables.json";
 
+/// Owner prefix of the engine handlers that open a section of the overlay menu (`graphics_menu`).
+pub(crate) const OVERLAY: &str = "overlay:";
+
+/// Retail pause items backed by engine features until their retail FE screens are ported (doc 31 "Row
+/// handlers"): retail opens FE screen ChallengeMap 17 / skate.Profile / GameSettings 45 / Extras 18; we open the
+/// overlay menu section with the same job. Handlers are what enables a retail row; mods stack their own over these.
+pub(crate) const OVERLAY_ITEMS: [(&str, &str); 4] =
+    [("ChallengeMap", "MAPS"), ("SkateProfileOffline", "SKATER"), ("GameSettings", "GRAPHICS"), ("Extras", "EXTRAS")];
+
 #[derive(Resource)]
 pub(crate) struct RetailMenus {
     pub registry: MenuRegistry,
@@ -33,8 +42,15 @@ pub(crate) struct RetailMenus {
 
 impl RetailMenus {
     pub(crate) fn new(data: MenuData, loaded: bool) -> Self {
+        let mut registry = MenuRegistry::new(data);
+        for (item, section) in OVERLAY_ITEMS {
+            if registry.data().item(item).is_some() {
+                let owner = Owner::Engine(format!("{OVERLAY}{section}"));
+                registry.register_handler(EntryRef::item(item), Handler { owner, select: true, highlight: false, callback: None });
+            }
+        }
         Self {
-            registry: MenuRegistry::new(data),
+            registry,
             context: MenuContext::new("FreePlay"),
             loaded,
             pending: Vec::new(),
@@ -46,7 +62,6 @@ impl RetailMenus {
 
     /// Apply a menu action (from the menu UI, or replayed from another peer) in
     /// the current context; events for mods are queued.
-    #[allow(dead_code)] // The menu UI (a later milestone) is the caller.
     pub(crate) fn act(&mut self, action: MenuAction) -> Outcome {
         let context = self.context.clone();
         let outcome = self.registry.dispatch(action, &context);
@@ -575,7 +590,10 @@ mod tests {
         apply_command(&mut menus, "m", command(json!({"kind":"menu_handle","entry":"item","id":"m.Races"}))).unwrap();
         let ctx = menus.context.clone();
         let rows = menus.registry.tab_rows("SinglePlayer", &ctx);
-        assert_eq!((rows[0].id.as_str(), rows[0].enabled, rows[1].enabled), ("m.Races", true, false));
+        // ChallengeMap is enabled by the engine's overlay handler (OVERLAY_ITEMS).
+        assert_eq!((rows[0].id.as_str(), rows[0].enabled, rows[1].enabled), ("m.Races", true, true));
+        assert!(matches!(menus.act(MenuAction::Select { entry: EntryRef::item("ChallengeMap") }),
+            Outcome::Forward(Owner::Engine(name), _) if name == "overlay:MAPS"));
 
         apply_command(&mut menus, "m", command(json!({"kind":"menu_set_value","id":"m.Bass","value":0.8}))).unwrap();
         assert!(matches!(menus.act(MenuAction::Select { entry: EntryRef::item("m.Races") }), Outcome::Forward(..)));
