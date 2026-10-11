@@ -1278,20 +1278,23 @@ pub(crate) fn ped_readout(peds: &[(LivingWorldId, String, Locomotion, Vec3)], pl
     }
 }
 
-fn log_ped_readout(state: Res<PopulationState>, observers: Res<super::LivingWorldObservers>, peds: Query<(&Pedestrian, &PedBody)>, mut last: Local<u64>) {
+fn log_ped_readout(state: Res<PopulationState>, observers: Res<super::LivingWorldObservers>, peds: Query<(&Pedestrian, &PedBody, Option<&PedMind>)>, mut last: Local<u64>) {
     // Always on (was debug only, so sessions never had ped positions): every 2.5 s the count, the
     // nearest ped and the player position, so a reported spot can be found in the log.
     if !super::report_due(state.world.tick(), &mut last, 150) {
         return;
     }
-    let list: Vec<_> = peds.iter().map(|(p, b)| (p.id, p.recipe.clone(), b.player.state, b.position)).collect();
+    let list: Vec<_> = peds.iter().map(|(p, b, _)| (p.id, p.recipe.clone(), b.player.state, b.position)).collect();
+    // Zombie mode: how many peds are on ZombieFollow (0 lines out of the mode).
+    let zombies = peds.iter().filter(|(_, _, m)| m.is_some_and(|m| m.brain.motion_intent == Some(skate_core::living_world::peds::brain::motion::ZOMBIE_FOLLOW))).count();
     let player = observers.observers.first().map(|o| Vec3::from_array(o.position));
     let nearest = player.and_then(|at| list.iter().min_by(|a, b| a.3.distance(at).total_cmp(&b.3.distance(at))).map(|n| n.3));
     info!(
-        "LIVING_WORLD {} player={:?} nearest_ped_at={:?}",
+        "LIVING_WORLD {} player={:?} nearest_ped_at={:?}{}",
         ped_readout(&list, player),
         player.map(|p| [p.x, p.y, p.z]),
         nearest.map(|p| [p.x, p.y, p.z]),
+        if zombies > 0 { format!(" zombie_followers={zombies}") } else { String::new() },
     );
 }
 

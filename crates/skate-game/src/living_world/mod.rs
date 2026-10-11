@@ -726,11 +726,22 @@ impl Plugin for LivingWorldPlugin {
             .add_systems(
                 FixedUpdate,
                 (load_for_map, gather_observers, step_population, dmo_stream::stream_dmos).chain().after(crate::app::SimulationSet::Physics),
-            );
+            )
+            .add_systems(Update, log_zombie_mode);
         npc_skaters::install(app);
         peds::install(app);
         vehicles::install(app);
         vehicle_contacts::install(app);
+    }
+}
+
+/// Session log: zombie mode switching on or off (`SKATE_ZOMBIE=1` at start, or a mod's `zombie` value).
+fn log_zombie_mode(settings: Res<LivingWorldSettings>, mut last: Local<Option<bool>>) {
+    if *last != Some(settings.zombie) {
+        if settings.zombie || last.is_some() {
+            info!("LIVING_WORLD zombie mode {}", if settings.zombie { "on: no traffic, every ped follows the player" } else { "off" });
+        }
+        *last = Some(settings.zombie);
     }
 }
 
