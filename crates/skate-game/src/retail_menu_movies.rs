@@ -28,7 +28,7 @@ pub const FORMAT: &str = "skate3-menu-movies";
 /// Largest mod movie file accepted (the biggest retail menu movie is well below this).
 pub const MAX_MOD_MOVIE_BYTES: u64 = 16 << 20;
 /// Manifest version this engine reads (3: textured units carry their bitmap id, Milestone 4; 4: screens/main).
-pub const VERSION: u64 = 4;
+pub const VERSION: u64 = 5;
 /// Mod bitmap limits: per mod, and the largest side (same as mod mesh textures).
 pub const MAX_MOD_BITMAPS: usize = 64;
 pub const MAX_MOD_BITMAP_SIDE: u32 = 2048;

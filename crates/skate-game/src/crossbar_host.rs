@@ -28,6 +28,39 @@ pub struct CoreMenu<'a> {
     pub context: &'a MenuContext,
     pub view: &'a RegistryView,
     pub state: &'a mut CrossbarState,
+    /// Sub-option label / helper rows per kind (menu tables).
+    pub sub_options: &'a [SubOptionRow],
+}
+
+pub use skate_data::menu_tables::SubOptionRow;
+
+/// Context facts the sub-option rules read (set by the systems that own them).
+pub mod sub_option_facts {
+    /// Retail global [0x830B7AE8] == 1: the park kind's last row (tutorial) shows.
+    pub const PARK_TUTORIAL: &str = "crossbar.park_tutorial";
+    /// On-screen help toggles currently on: their row offers "off" (ID_..._OFF).
+    pub const TRICK_ANALYZER: &str = "crossbar.trick_analyzer";
+    pub const MANUAL_METER: &str = "crossbar.manual_meter";
+}
+
+/// GetNumSubOptions (sub_8261DB48) per kind: the non-empty labels of the kind's row; the park kind (0) one less
+/// unless the park tutorial flag is set; offline counts for the online kinds (contacts 3, online team 3, party 1;
+/// their online rules are not ported).
+pub fn sub_option_counts(rows: &[SubOptionRow], context: &MenuContext) -> std::collections::BTreeMap<i32, usize> {
+    let fact = |name: &str| context.facts.get(name).copied().unwrap_or(0.0);
+    rows.iter()
+        .enumerate()
+        .map(|(kind, row)| {
+            let labels = row.labels.iter().filter(|l| !l.is_empty()).count();
+            let count = match kind {
+                0 if fact(sub_option_facts::PARK_TUTORIAL) != 1.0 => labels.saturating_sub(1),
+                1 | 5 => labels.min(3),
+                6 => labels.min(1),
+                _ => labels,
+            };
+            (kind as i32, count)
+        })
+        .collect()
 }
 
 fn icon(icon: &Icon) -> Value {
@@ -86,8 +119,23 @@ impl CoreMenu<'_> {
                     n(self.view.sub_option_count(menu as usize, option as usize))
                 }
             }
-            // NOT PORTED YET: the sub-option label table (0x83027958) is not extracted (doc 31 Milestone 6, open).
-            "GetSubOptionName" => Value::Text("#".into()),
+            // sub_8261DE88: the label table by (kind, sub); on-screen help rows name the action, so an option that
+            // is on offers "off". NOT PORTED: the online kinds' label swaps (host options, online team).
+            "GetSubOptionName" => {
+                let (menu, option, sub) = (Self::arg(args, 0), Self::arg(args, 1), Self::arg(args, 2));
+                let kind = (menu >= 0 && option >= 0).then(|| self.view.sub_option_kind(menu as usize, option as usize));
+                let label = kind
+                    .filter(|k| *k >= 0 && sub >= 0)
+                    .and_then(|k| self.sub_options.get(k as usize)?.labels.get(sub as usize).cloned())
+                    .filter(|l| !l.is_empty());
+                let on = |name: &str| self.context.facts.get(name).copied().unwrap_or(0.0) != 0.0;
+                let label = match (kind, sub, label) {
+                    (Some(4), 0, Some(_)) if on(sub_option_facts::TRICK_ANALYZER) => Some("ID_CROSSBAR_TRICK_ANALYZER_OFF".into()),
+                    (Some(4), 1, Some(_)) if on(sub_option_facts::MANUAL_METER) => Some("ID_CROSSBAR_MANUAL_METER_OFF".into()),
+                    (_, _, label) => label,
+                };
+                Value::Text(label.unwrap_or_else(|| "#".into()))
+            }
             "GetCurrentMenuIndex" => i(self.state.menu),
             "GetCurrentOptionIndex" => i(self.state.option),
             "GetCurrentSubOptionIndex" => i(self.state.sub),
@@ -102,13 +150,17 @@ impl CoreMenu<'_> {
                 data.mode(&self.context.mode).map_or(Value::Undefined, |m| Value::Text(m.title.clone()))
             }
             "GetOptionHelperDescription" => {
-                // sub_8261E270: the item's helper at the option level, the sub-option helper table at level 2
-                // (not extracted yet), else the empty literal.
-                let help = (self.state.level == OPTION_LEVEL)
-                    .then(|| self.item_id(self.state.menu, self.state.option))
-                    .flatten()
-                    .and_then(|id| data.item(id))
-                    .map(|item| item.help.clone());
+                // sub_8261E270: the item's helper at the option level, the sub-option helper table by (kind, sub)
+                // at level 2, else the empty literal.
+                let help = if self.state.level == OPTION_LEVEL {
+                    self.item_id(self.state.menu, self.state.option).and_then(|id| data.item(id)).map(|item| item.help.clone())
+                } else {
+                    let kind = (self.state.menu >= 0 && self.state.option >= 0)
+                        .then(|| self.view.sub_option_kind(self.state.menu as usize, self.state.option as usize))
+                        .filter(|k| *k >= 0);
+                    kind.and_then(|k| self.sub_options.get(k as usize)?.helpers.get(self.state.sub.max(0) as usize).cloned())
+                        .filter(|h| !h.is_empty())
+                };
                 Value::Text(help.unwrap_or_else(|| "#".into()))
             }
             "GetCurrentDLCBannerIndex" => i(self.state.dlc_banner),
@@ -150,6 +202,8 @@ pub struct FrontEnd<'a> {
     /// The Game Settings screen (settings_host) and its screen titles (menu tables).
     pub settings: crate::settings_host::SettingsState,
     pub settings_titles: Vec<String>,
+    /// Crossbar sub-option tables (menu tables).
+    pub sub_options: std::sync::Arc<Vec<SubOptionRow>>,
 }
 
 impl<'a> FrontEnd<'a> {
@@ -170,6 +224,7 @@ impl<'a> FrontEnd<'a> {
             calls: Vec::new(),
             settings: Default::default(),
             settings_titles: Vec::new(),
+            sub_options: Default::default(),
         }
     }
 }
@@ -180,7 +235,13 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     }
     fn call(&mut self, vm: &mut Vm, object: &str, method: &str, args: Vec<Value>) -> Result<Value, String> {
         if object == "CoreMenu" {
-            let mut core = CoreMenu { registry: self.registry, context: self.context, view: &self.view, state: &mut self.state };
+            let mut core = CoreMenu {
+                registry: self.registry,
+                context: self.context,
+                view: &self.view,
+                state: &mut self.state,
+                sub_options: &self.sub_options,
+            };
             return core.call(vm, method, &args);
         }
         if object == "Game" {
@@ -277,7 +338,7 @@ mod tests {
         let view = RegistryView::new(&registry, &context, [(3, 2)].into_iter().collect());
         let mut state = CrossbarState::open(&view);
         let mut vm = Vm::new();
-        let mut m = CoreMenu { registry: &registry, context: &context, view: &view, state: &mut state };
+        let mut m = CoreMenu { registry: &registry, context: &context, view: &view, state: &mut state, sub_options: &[] };
         let num = |v: f64| Value::Number(v);
         assert_eq!(m.call(&mut vm, "GetNumMenus", &[]), Ok(num(2.0)));
         assert_eq!(m.call(&mut vm, "GetMenuName", &[num(1.0)]), Ok(Value::Text("ID_CROSSBAR_OPTIONS".into())));
@@ -294,8 +355,43 @@ mod tests {
         assert_eq!((vm.get(p, "0"), vm.get(p, "length")), (num(-1.0), num(6.0)));
         assert!(m.call(&mut vm, "Nope", &[]).is_err());
         state.online_team_pending = true;
-        let mut m = CoreMenu { registry: &registry, context: &context, view: &view, state: &mut state };
+        let mut m = CoreMenu { registry: &registry, context: &context, view: &view, state: &mut state, sub_options: &[] };
         m.call(&mut vm, "SetOnlineTeamSubOptionDone", &[]).unwrap();
         assert!(!state.online_team_pending);
     }
+
+    #[test]
+    fn sub_options_follow_the_retail_tables() {
+        let registry = registry();
+        let mut context = MenuContext::new("FreePlay");
+        let row = |labels: &[&str], helpers: &[&str]| SubOptionRow {
+            labels: labels.iter().map(|s| s.to_string()).collect(),
+            helpers: helpers.iter().map(|s| s.to_string()).collect(),
+        };
+        let mut rows = vec![row(&["ID_NEW", "ID_MINE", "ID_COMMUNITY", "ID_TUTORIAL", "", ""], &["H0", "H1", "H2", "H3", "", ""])];
+        rows.extend((1..3).map(|_| row(&["", "", "", "", "", ""], &["", "", "", "", "", ""])));
+        rows.push(row(&["ID_REPLAYS", "ID_PHOTOS", "", "", "", ""], &["H_REPLAYS", "H_PHOTOS", "", "", "", ""]));
+        rows.push(row(&["ID_CROSSBAR_TRICK_ANALYZER_ON", "ID_CROSSBAR_MANUAL_METER_ON", "", "", "", ""], &["", "", "", "", "", ""]));
+        // Park: the tutorial row hides unless its flag is set; Skate Reel: two.
+        let counts = sub_option_counts(&rows, &context);
+        assert_eq!((counts[&0], counts[&3], counts[&4]), (3, 2, 2));
+        context.facts.insert(sub_option_facts::PARK_TUTORIAL.into(), 1.0);
+        assert_eq!(sub_option_counts(&rows, &context)[&0], 4);
+        // SkateReel (kind 3) is row 1 of tab 0 in the test registry.
+        let view = RegistryView::new(&registry, &context, sub_option_counts(&rows, &context));
+        let mut state = CrossbarState::open(&view);
+        let mut vm = Vm::new();
+        let num = |v: f64| Value::Number(v);
+        let mut m = CoreMenu { registry: &registry, context: &context, view: &view, state: &mut state, sub_options: &rows };
+        assert_eq!(m.call(&mut vm, "GetSubOptionName", &[num(0.0), num(1.0), num(1.0)]), Ok(Value::Text("ID_PHOTOS".into())));
+        assert_eq!(m.call(&mut vm, "GetSubOptionName", &[num(0.0), num(1.0), num(4.0)]), Ok(Value::Text("#".into())));
+        assert_eq!(m.call(&mut vm, "GetNumSubOptions", &[num(0.0), num(1.0)]), Ok(num(2.0)));
+        state.level = skate_core::crossbar::SUB_OPTION_LEVEL;
+        state.menu = 0;
+        state.option = 1;
+        state.sub = 0;
+        let mut m = CoreMenu { registry: &registry, context: &context, view: &view, state: &mut state, sub_options: &rows };
+        assert_eq!(m.call(&mut vm, "GetOptionHelperDescription", &[]), Ok(Value::Text("H_REPLAYS".into())));
+    }
+
 }

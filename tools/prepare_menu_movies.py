@@ -28,7 +28,7 @@ from vendor.skate3_ui.scene_graph import AssetCache, SceneFlattener
 from vendor.skate3_ui.actions import Actions
 
 FORMAT = 'skate3-menu-movies'
-VERSION = 4  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6)
+VERSION = 5  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies
 # Menu screens the engine's retail menus start from (pause menu, Game Settings,
 # Freeskate options, the screen manager and its helpers). Library movies are
 # found through imports, not listed.
@@ -38,6 +38,12 @@ FONT_PAIRS = {'Futura Shadow': 'futuraheavy'}
 MENU_ROOTS = (
     # The front end's _level0 (defines Register*Enum, which the C++ calls through _level0._root).
     'source/screens/main',
+    # The layers main.apt loads (gChyron, gSubtitle, gFadeBackground, autosave, fmv popup).
+    'source/screens/main/chyron',
+    'source/screens/main/subtitle',
+    'source/screens/main/fmv_popup',
+    'source/controls/fadebackground',
+    'source/controls/autosave',
     'source/screens/main/FE_root',
     'source/screens/main/core_menu',
     'source/screens/main/dimmer',

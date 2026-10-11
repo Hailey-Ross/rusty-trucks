@@ -161,7 +161,7 @@ fn visit(
     if let crate::apt_vm::Value::Text(kind) = vm.get(id, "_type") {
         // Only the face buttons have prompts so far ("Unknown" = an unused item; shoulders / Start / sticks: open).
         let button = vm.get(id, "_test").text();
-        if kind == "CustomButton" && crate::prompt_glyphs::face_index(&button).is_some() {
+        if kind == "CustomButton" && crate::prompt_glyphs::known(&button) {
             if let Some(b) = movie.character_bounds(instance.character, 0) {
                 let corner = |x: f32, y: f32, u: f32, v: f32| transform(matrix, &Vertex { position: [x, y], uv: [u, v] });
                 let (a, bb, c, d) =

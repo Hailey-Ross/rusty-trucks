@@ -109,6 +109,21 @@ impl FeBackdrop {
     }
 }
 
+/// HUD visibility from the FE screen stack (info record +8 of the main stack's top, sub_82D098F0 -> vt+44):
+/// `hud` = the gameplay HUD, `online` = the online HUDs. Retail's gameplay screen (FE id 0, mode "on") sits at the
+/// stack's bottom; ours has no screen there yet, so an empty stack means both on.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FeHud {
+    pub hud: bool,
+    pub online: bool,
+}
+
+impl Default for FeHud {
+    fn default() -> Self {
+        Self { hud: true, online: true }
+    }
+}
+
 /// What the render pass draws this frame.
 #[derive(Resource, Clone, Copy, Default, ExtractResource)]
 struct Draw {
@@ -128,6 +143,7 @@ impl Plugin for FeBackdropPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "fe_backdrop.wgsl");
         app.init_resource::<FeBackdrop>()
+            .init_resource::<FeHud>()
             .init_resource::<Draw>()
             .add_plugins((ExtractResourcePlugin::<Draw>::default(), ExtractComponentPlugin::<BackdropView>::default()))
             .add_systems(Startup, load)

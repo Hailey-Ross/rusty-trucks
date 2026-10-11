@@ -96,6 +96,13 @@ fn hud_off() -> i32 {
     1
 }
 
+/// One sub-option kind's row: label and helper string ids by column ("" = empty).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SubOptionRow {
+    pub labels: Vec<String>,
+    pub helpers: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AptKey {
     pub name: String,
@@ -152,6 +159,11 @@ pub struct MenuTables {
     /// GameSettings_GetScreenTitle 825A6DA8). Empty in tables extracted before they were added.
     #[serde(default)]
     pub settings_titles: Vec<String>,
+    /// Crossbar sub-option rows per sub-option kind (0 parks, 1 contacts, 2 host options, 3 Skate Reel, 4 on-screen
+    /// help, 5 online team, 6 party): labels (TU3 0x83027958) and helper texts (0x83027A00), 7 x 6 string ids,
+    /// "" for an empty slot. Empty in tables extracted before they were added.
+    #[serde(default)]
+    pub sub_options: Vec<SubOptionRow>,
     /// Table addresses in this build (diagnostics only).
     pub addresses: std::collections::BTreeMap<String, String>,
 }
@@ -611,6 +623,38 @@ fn templates(img: &Image) -> Result<(u32, Vec<ScreenTemplate>), String> {
     Ok((start, out))
 }
 
+// ---------------------------------------------------------------- crossbar sub-options
+
+const SUB_OPTION_KINDS: u32 = 7;
+const SUB_OPTION_COLUMNS: u32 = 6;
+
+/// Located by content: the label table starts with a pointer to "ID_CROSSBAR_NEW_PARK" (kind 0, column 0); the
+/// helper table follows it directly (7 x 6 pointers each, null = empty).
+fn sub_options(img: &Image) -> Result<(u32, Vec<SubOptionRow>), String> {
+    let size = SUB_OPTION_KINDS * SUB_OPTION_COLUMNS * 4;
+    let entry = |at: u32| -> Option<String> {
+        match img.word(at)? {
+            0 => Some(String::new()),
+            p => img.cstr(p).filter(|s| s.starts_with("ID_")),
+        }
+    };
+    let start = img
+        .pointers_to_string("ID_CROSSBAR_NEW_PARK")
+        .into_iter()
+        .find(|at| (0..size * 2).step_by(4).all(|o| entry(at + o).is_some()))
+        .ok_or("crossbar sub-option tables not found")?;
+    let rows = (0..SUB_OPTION_KINDS)
+        .map(|kind| {
+            let cell = |table: u32, column: u32| entry(table + (kind * SUB_OPTION_COLUMNS + column) * 4).unwrap_or_default();
+            SubOptionRow {
+                labels: (0..SUB_OPTION_COLUMNS).map(|c| cell(start, c)).collect(),
+                helpers: (0..SUB_OPTION_COLUMNS).map(|c| cell(start + size, c)).collect(),
+            }
+        })
+        .collect();
+    Ok((start, rows))
+}
+
 // ---------------------------------------------------------------- settings screen titles
 
 /// Located by content: two consecutive pointers to "ID_GAMESETTINGS_TITLE" (screens 0 and 1), then one string id
@@ -700,6 +744,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
     let (templates_at, templates) = templates(&img)?;
     let (screen_info_at, screens) = screen_info(&img)?;
     let (titles_at, settings_titles) = settings_titles(&img, settings_screens.len())?;
+    let (sub_options_at, sub_options) = sub_options(&img)?;
     if modes.is_empty() {
         return Err("no per-mode crossbar menus found".into());
     }
@@ -712,6 +757,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         ("screen_templates", templates_at),
         ("screen_info", screen_info_at),
         ("settings_titles", titles_at),
+        ("sub_options", sub_options_at),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), hex(v)))
@@ -728,6 +774,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         templates,
         screens,
         settings_titles,
+        sub_options,
         addresses,
     })
 }

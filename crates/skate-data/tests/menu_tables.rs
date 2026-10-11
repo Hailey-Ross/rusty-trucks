@@ -136,6 +136,15 @@ fn tu3_image_matches_the_documented_tables() {
     // Settings screen titles (doc 31 "Game Settings screen"): 13 at 0x83026E90.
     assert_eq!(t.addresses["settings_titles"], "0x83026E90");
     assert_eq!(t.settings_titles.len(), 13);
+    // Crossbar sub-options (doc 31 "Sub-options"): labels at 0x83027958, helpers right after.
+    assert_eq!(t.addresses["sub_options"], "0x83027958");
+    assert_eq!(t.sub_options.len(), 7);
+    assert_eq!(t.sub_options[3].labels[..4], ["ID_CROSSBAR_SKATEREEL_MY_REPLAYS", "ID_CROSSBAR_SKATEREEL_MY_PHOTOS",
+        "ID_CROSSBAR_SKATEREEL_COMMUNITY_VIDEOS", "ID_CROSSBAR_SKATEREEL_COMMUNITY_PHOTOS"]);
+    assert_eq!(t.sub_options[3].labels[4], "");
+    // Retail pairs the park labels with these helpers as is (label 0 NEW_PARK, helper MY_PARKS).
+    assert_eq!(t.sub_options[0].helpers[0], "ID_CROSSBAR_MY_PARKS_HELPER_TEXT");
+    assert_eq!(t.sub_options[4].labels[..2], ["ID_CROSSBAR_TRICK_ANALYZER_ON", "ID_CROSSBAR_MANUAL_METER_ON"]);
     assert_eq!((t.settings_titles[0].as_str(), t.settings_titles[2].as_str(), t.settings_titles[12].as_str()),
         ("ID_GAMESETTINGS_TITLE", "ID_GAMESETTINGS_DIFFICULTY_SETTINGS", "ID_GAMESETTINGS_AUDIO_SETTINGS"));
     let blur: Vec<usize> = t.screens.iter().enumerate().filter(|(_, s)| s.blur).map(|(i, _)| i).collect();
@@ -189,6 +198,7 @@ fn disc_executable_gives_the_same_tables() {
         };
         assert_eq!(strip(&t.screens), strip(&tu3_screens));
         assert_eq!(t.settings_titles, tu3.settings_titles);
+        assert_eq!(t.sub_options.len(), 7);
         assert_eq!(t.keys, tu3.keys);
         let known: Vec<&str> = t.items.iter().map(|i| i.name.as_str()).collect();
         for mode in &t.modes {

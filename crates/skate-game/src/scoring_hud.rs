@@ -421,11 +421,14 @@ fn render(
     hud: Option<ResMut<Hud>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<HudMaterial>>,
+    fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
 ) {
     let Some(mut hud) = hud else {
         return;
     };
-    let draws = if hud.failed {
+    // An FE screen whose record hides the HUD (the pause menu: mode 1) is on top.
+    let hidden = fe_hud.is_some_and(|f| !f.hud);
+    let draws = if hud.failed || hidden {
         Vec::new()
     } else {
         match apt_scene::draw(&hud.runtime.bindings.movie, &hud.runtime.vm, &hud.shapes) {

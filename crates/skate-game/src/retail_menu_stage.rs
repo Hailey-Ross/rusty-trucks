@@ -65,6 +65,8 @@ struct MenuStage {
     crossbar_id: i32,
     /// The Game Settings screen's AS id (retail 690) and state; its titles from the menu tables.
     options_id: i32,
+    /// The chyron's visibility as last set (vt+48 acts on changes only).
+    chyron: bool,
     settings: crate::settings_host::SettingsState,
     settings_titles: Vec<String>,
     /// Retail Apt keys in key-table order (input.cfg expressions).
@@ -188,8 +190,14 @@ fn front_end<'a>(
 ) -> FrontEnd<'a> {
     let mut fe = FrontEnd::new(&menus.registry, &menus.context, language);
     fe.state = crossbar;
+    fe.sub_options = SUB_OPTIONS.get().cloned().unwrap_or_default();
+    let counts = crate::crossbar_host::sub_option_counts(&fe.sub_options, &menus.context);
+    fe.view = skate_core::crossbar::RegistryView::new(&menus.registry, &menus.context, counts);
     fe
 }
+
+/// The crossbar sub-option tables from the menu tables (read once at setup).
+static SUB_OPTIONS: std::sync::OnceLock<std::sync::Arc<Vec<crate::crossbar_host::SubOptionRow>>> = std::sync::OnceLock::new();
 
 fn setup(
     mut commands: Commands,
@@ -207,6 +215,13 @@ fn setup(
         .get("source/screens/main/core_menu")
         .map(|m| m.text_assets.language.clone())
         .unwrap_or_default();
+    let _ = SUB_OPTIONS.set(std::sync::Arc::new(
+        std::fs::read_to_string(config.asset_root.join(crate::retail_menus::TABLES))
+            .ok()
+            .and_then(|t| skate_data::menu_tables::MenuTables::from_json(&t).ok())
+            .map(|t| t.sub_options)
+            .unwrap_or_default(),
+    ));
     let result = (|| -> Result<(Stage, Vec<String>), String> {
         let mut fe = front_end(&menus, &language, CrossbarState::default());
         let mut stage = Stage::new(&fe)?;
@@ -260,6 +275,7 @@ fn setup(
                 auto_open: std::env::var("SKATE3_RETAIL_MENUS_OPEN").as_deref() == Ok("1"),
                 crossbar_id: as_id(CROSSBAR),
                 options_id: as_id(OPTIONS),
+                chyron: false,
                 settings: Default::default(),
                 settings_titles: tables.map(|t| t.settings_titles).unwrap_or_default(),
                 apt_keys: apt_keys(&config.asset_root),
@@ -286,6 +302,7 @@ fn update(
     mut sounds: MessageWriter<FrontendSound>,
     mut backdrop: ResMut<crate::fe_backdrop::FeBackdrop>,
     mut overlay: Option<ResMut<crate::graphics_menu::Menu>>,
+    mut fe_hud: ResMut<crate::fe_backdrop::FeHud>,
 ) {
     let (Some(mut ms), Some(movies), Some(mut menus)) = (stage, movies, menus) else { return };
     if ms.failed {
@@ -296,8 +313,11 @@ fn update(
     // screens.
     let pause = backdrop.index(crate::fe_backdrop::PAUSE_SCREEN);
     let options = backdrop.index(crate::fe_backdrop::SETTINGS_SCREEN);
-    // Retail Apt keys fired this frame (pad and keyboard).
+    // Retail Apt keys fired this frame (pad and keyboard); none while the PC overlay is open on top.
     let mut fired = poll_keys(ms, &keys, time.delta_secs());
+    if overlay.as_ref().is_some_and(|o| o.open) {
+        fired.clear();
+    }
     let mut fe = front_end(&menus, &ms.language, ms.crossbar.clone());
     fe.settings = std::mem::take(&mut ms.settings);
     fe.settings_titles = ms.settings_titles.clone();
@@ -415,8 +435,32 @@ fn update(
                         overlay.fe_suspended = on;
                     }
                 }
-                // NOT RETAIL YET: the HUD modes and the chyron are not hooked up.
-                Effect::Hud(_) | Effect::Chyron(_) => {}
+                // vt+44(hud, online): 0 both on, 1 both off, 2 online only (3 = keep is never emitted).
+                Effect::Hud(mode) => {
+                    use skate_core::fe_stack::HudMode;
+                    *fe_hud = match mode {
+                        HudMode::On | HudMode::Keep => crate::fe_backdrop::FeHud { hud: true, online: true },
+                        HudMode::Off => crate::fe_backdrop::FeHud { hud: false, online: false },
+                        HudMode::OnlineOnly => crate::fe_backdrop::FeHud { hud: false, online: true },
+                    };
+                }
+                // vt+48 -> sub_825E4408: on a change, the chyron movie's _global.Chyron_SetVisible("true" / "false").
+                // NOT RETAIL YET: retail plays Chyron_PlayOutro instead of hiding when the chyron is mid-show.
+                Effect::Chyron(on) if on != ms.chyron => {
+                    ms.chyron = on;
+                    let defined = matches!(
+                        ms.stage.vm.get(ms.stage.vm.global, "Chyron_SetVisible"),
+                        crate::apt_vm::Value::Object(_)
+                    );
+                    if defined {
+                        ms.stage.call_path(
+                            "_global.Chyron_SetVisible",
+                            vec![Value::Text(if on { "true" } else { "false" }.into())],
+                            &mut fe,
+                        )?;
+                    }
+                }
+                Effect::Chyron(_) => {}
                 // The blur follows the stack's top through FeBackdrop (mod overrides); show / param / focus have
                 // no screen that uses them yet.
                 Effect::Blur(_) | Effect::Show(..) | Effect::Param(..) | Effect::Focus(_) => {}
@@ -512,6 +556,9 @@ fn update(
             ms.settings = fe.settings;
         }
     }
+    if ms.stack.top(Layer::Main).is_none() {
+        *fe_hud = crate::fe_backdrop::FeHud::default();
+    }
     let stack: Vec<String> = ms.stack.screens(Layer::Main).filter_map(|i| backdrop.id(i).map(str::to_owned)).collect();
     backdrop.set_stack(stack);
     if let Err(e) = result {
@@ -580,21 +627,17 @@ fn render(
     };
     // Button prompts (CustomButton components, `prompt/<retail button>`): the first connected pad's printed labels
     // (SDL), Xbox naming without a pad; each label's glyph is generated once (prompt_glyphs).
-    let labels = controllers
-        .as_ref()
-        .and_then(|c| c.kinds.iter().flatten().next().map(|k| k.face_labels))
-        .unwrap_or_else(|| crate::input::controller_kind::PromptStyle::Xbox.labels());
+    let pad = controllers.as_ref().and_then(|c| c.kinds.iter().flatten().next().cloned());
     for draw in &mut draws {
         let Some(button) = draw.texture.strip_prefix("prompt/") else { continue };
-        let Some(label) = crate::prompt_glyphs::face_index(button).map(|i| labels[i]) else {
-            continue;
-        };
-        let key = format!("prompt-glyph/{label:?}");
+        let Some(prompt) = crate::prompt_glyphs::resolve_for(button, pad.as_deref()) else { continue };
+        let key = prompt.key();
+        let pixels = move || crate::prompt_glyphs::render(&prompt);
         if !ms.textures.contains_key(&key) {
             let handle = images.add(Image::new(
                 Extent3d { width: crate::prompt_glyphs::SIZE, height: crate::prompt_glyphs::SIZE, depth_or_array_layers: 1 },
                 TextureDimension::D2,
-                crate::prompt_glyphs::glyph(label),
+                pixels(),
                 TextureFormat::Rgba8UnormSrgb,
                 RenderAssetUsages::RENDER_WORLD,
             ));

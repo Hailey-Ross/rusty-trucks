@@ -811,7 +811,7 @@ no-op).
   is at 0x82FD33E8. The stage registers all of them in order, so the pause menu's AS id is 669 like retail (600
   with tables extracted before this; setup re-extracts because `asset_pipeline/menu_tables.py` now requires
   templates).
-- Sub-option label and helper tables (0x83027958 / 0x83027A00) are not extracted: GetSubOptionName returns `#`.
+- Sub-option tables: done (see "Sub-options").
 - Label overrides (SignIn / sign out, ReplayEditor instant replay, PartyPlay literal) and the online team pending
   path are not ported. GetProgressionData reads context facts (`progression_*`), -1 (panel hidden) by default.
 - Hooking CoreMenu and the handler into the stage, the Game natives, drawing, input and the FE screen stack are next.
@@ -1025,9 +1025,15 @@ options.apt also needs APT features the pause menu never used (attachMovie, comp
   ("Play Mode < Normal >", "Classic Skate Gameplay" description); Right steps the difficulty through the engine
   binding.
 
+### HUD mode and chyron (same day)
+- HUD mode (+8): the stack's Hud effect sets `fe_backdrop::FeHud`; the scoring HUD draws nothing and the online
+  roster hides while the top screen's mode is "off" (the pause menu, the settings screen); an empty stack means
+  "on" (retail's gameplay screen, FE id 0 mode 0, sits at the bottom; ours has no screen there yet).
+- Chyron (+1): main.apt's layer movies are now exported (menu movie set 5: chyron, subtitle, fmv_popup,
+  fadebackground, autosave; setup re-exports); the Chyron effect calls `_global.Chyron_SetVisible` on a change.
+  NOT RETAIL YET: its text (Chyron_Display from the C++) is not driven, so nothing shows yet; PlayOutro not used.
+
 ### Open
-- HUD mode / chyron effects not hooked up.
-- Prompts only for the face buttons; shoulders / Start / sticks draw nothing yet.
 
 ## Button prompts (2026-10-10)
 
@@ -1043,11 +1049,26 @@ prompt"; size and placement as retail).
 - `apt_scene.rs`: a CustomButton clip with a face button in `_test` draws one quad over its placeholder's bounds
   (retail's box and placement, laid out by button_item2's own script) with texture `prompt/<button>`; other
   native components draw nothing.
-- `prompt_glyphs.rs` (new): generated glyphs in retail's prompt style (coloured ball, light symbol, dark outline;
-  A green, B red, X blue, Y yellow, PlayStation symbols in their colours), no console art; the ball spans 0.83 of
-  the box, as measured on a recomp shot (`.local/research/menus-m6/retail/`, retail glyph 10 of 480 px, box 32 of
-  1280). `retail_menu_stage.rs` resolves `prompt/<button>` through the first connected pad's labels (Xbox labels
-  without a pad).
+- `prompt_glyphs.rs` (new): every retail button name (retail's list, TU3 0x82204614: A / B / X / Y, Back, Start,
+  L/R_Bumper, L/R_Trigger, L3/R3_Click, Stick_Left / Stick_Right with _Up / _Down / _L / _R, DPad with
+  _Up / _Down / _Left / _Right) has an equivalent on every family (user: "every console should have equivalent
+  buttons for every entry"):
+
+  | retail | Xbox 360 | Xbox One / Series | PS3 | PS4 | PS5 | Nintendo |
+  |---|---|---|---|---|---|---|
+  | A / B / X / Y | SDL label | SDL label | SDL label | SDL label | SDL label | SDL label (South = B) |
+  | L/R_Bumper | LB / RB | LB / RB | L1 / R1 | L1 / R1 | L1 / R1 | L / R |
+  | L/R_Trigger | LT / RT | LT / RT | L2 / R2 | L2 / R2 | L2 / R2 | ZL / ZR |
+  | Start | START | MENU | START | OPTIONS | OPTIONS | + |
+  | Back | BACK | VIEW | SELECT | SHARE | CREATE | - |
+  | L3/R3_Click | LS / RS | LS / RS | L3 / R3 | L3 / R3 | L3 / R3 | LS / RS |
+  | Stick_*, DPad_* | stick / cross with the direction marked, every family | | | | | |
+
+  Face looks: Xbox coloured balls (retail's), PlayStation dark buttons with coloured symbols, Nintendo dark with
+  light letters; named buttons a dark pill with the name. Generated (a small stroke font), no console art; sized
+  to retail's measured glyph (0.83 of the box; a recomp shot, `.local/research/menus-m6/retail/`). The menu
+  renderer resolves `prompt/<button>` for the first connected pad (`resolve_for`), Xbox 360 without one.
+  `cargo test -p skate-game prompt_sheet -- --ignored` with `SKATE3_PROMPT_SHEET=<folder>` writes a sheet.
 
 ### Verification
 - `cargo test -p skate-game prompt_glyphs controller_kind`: glyph size / colours, SDL-less fallbacks (PS5 ->
@@ -1055,7 +1076,53 @@ prompt"; size and placement as retail).
 - Screenshot `.local/research/menus-m6/settings.png`: A / B prompts beside Select / Back like the retail shot.
 
 
+## Sub-options (2026-10-10)
+
+### Problem
+GetSubOptionName answered "#" and the sub-option counts were empty, so no crossbar row could open its sub column
+(Enter Skate Park, Skate Reel, On-Screen Help, ...).
+
+### Evidence (research `.local/research/menu-subtables.md`, `coremenu-host.md`; main-checked the table contents)
+- [data] Label table TU3 0x83027958 and helper table right after it (0x83027A00): 7 kinds x 6 string pointers.
+- [code] GetNumSubOptions sub_8261DB48: non-null labels of the kind's row; park kind minus one unless global
+  [0x830B7AE8] == 1; online kinds by online state. GetSubOptionName sub_8261DE88: the label by (kind, sub), with
+  on-screen help naming the action (OFF when on). Level-2 helper text from the helper table (sub_8261E270).
+
+### Change
+- `menu_tables`: `sub_options` (`SubOptionRow { labels, helpers }`, located by the pointer to ID_CROSSBAR_NEW_PARK);
+  setup re-extracts (menu_tables.py requires it).
+- `crossbar_host.rs`: `sub_option_counts` (the count rule; facts `crossbar.park_tutorial`,
+  `crossbar.trick_analyzer`, `crossbar.manual_meter` for the flags), GetSubOptionName, level-2 helpers; the stage
+  builds the crossbar view with these counts. NOT PORTED: the online kinds' rules (offline counts: contacts 3,
+  online team 3, party 1) and label swaps.
+
+### Verification
+- `cargo test -p skate-data --test menu_tables -- --ignored`: TU3 table address and rows, disc 7 rows.
+- `cargo test -p skate-game crossbar_host`: counts (park tutorial flag), names, out-of-range "#", level-2 helper.
+
+## PC overlay on the Guide button (2026-10-11)
+
+### Decision
+User: "maybe we should create a pc overlay like the recomp instead", "on the guide button press". PC-only features
+(Mods, Updates, custom models, day & night, local testing, network debug, mod sections, custom maps, PC video /
+audio / control settings, Quit) live in a PC overlay like the recomp's settings overlay (rexglue
+`simple_settings_overlay`: a fullscreen console-style screen, category rail Video / Controls / Audio / Profile /
+System, opened by its own binding). The retail menus stay retail: Start opens the retail pause menu; retail's
+Extras keeps its own rows.
+
+### Change
+- `input/platform.rs`: SDL's Guide button reads as bit 0x0400 (XInputGetStateEx's place; retail's 24-slot
+  conversion never reads it; not a bindable name for paddles).
+- `graphics_menu.rs`: Guide, F1 or Escape toggle the overlay from anywhere, also over the retail menus; pad Start
+  opens it only while the retail menus are off. `retail_menu_stage.rs`: no retail key handling while the overlay
+  is open.
+- Open: reshape the overlay toward the recomp's category rail; the XInput fallback backend has no Guide (only the
+  SDL path); Windows Game Bar may take the Xbox Guide press first (its own setting).
+
 ## Files
+- PC overlay: `crates/skate-game/src/input/platform.rs`, `graphics_menu.rs`, `retail_menu_stage.rs`
+- Sub-options: `crates/skate-data/src/menu_tables.rs` (`SubOptionRow`), `tests/menu_tables.rs`;
+  `crates/skate-game/src/crossbar_host.rs`, `retail_menu_stage.rs`; `tools/asset_pipeline/menu_tables.py`, `test_menu_tables.py`
 - Button prompts / panel: `crates/skate-game/src/prompt_glyphs.rs` (new), `input/controller_kind.rs`,
   `input/platform.rs`, `input/tests/controller_kind.rs`, `apt_scene.rs`, `apt_movie.rs` (`clip_matrix`,
   `transform_changed`), `apt_stage.rs`, `hud_render.wgsl`, `scoring_hud.rs` (`render_draws` gamma flag),
