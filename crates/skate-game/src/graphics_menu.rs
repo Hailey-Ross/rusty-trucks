@@ -1239,6 +1239,7 @@ fn preview_menu(config: Res<crate::config::Config>, mut menu: ResMut<Menu>, mut 
     match std::env::var("SKATE_VERIFY_MENU").as_deref() {
         Ok("custom") => { menu.open = true; menu.select_section(1); menu.selected=300; menu.view.content = true; menu.view.shown = true; },
         Ok("graphics") => { menu.open = true; menu.select_section(2); menu.view.content = true; menu.view.shown = true; },
+        Ok("npc") => { menu.open = true; menu.select_section(2); menu.selected = NPC_DRAW_DISTANCE_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("maps") => { menu.open = true; menu.select_section(0); menu.view.content = true; menu.view.shown = true; },
         Ok("rail") => { menu.open = true; menu.select_section(2); },
         Ok("mods") => { menu.open = true; mods.begin(); }
@@ -1515,6 +1516,17 @@ mod tests {
         let simple = GraphicsSettings { frame_stats: true, frame_stats_simple: true, ..default() };
         let saved: GraphicsSettings = serde_json::from_slice(&serde_json::to_vec(&simple).unwrap()).unwrap();
         assert!(saved.frame_stats && saved.frame_stats_simple);
+    }
+    #[test]
+    fn npc_draw_distance_defaults_to_retail_and_keeps_menu_steps_only() {
+        assert_eq!(GraphicsSettings::default().npc_draw_distance, skate_core::living_world::DrawDistance::RETAIL);
+        let odd: GraphicsSettings = serde_json::from_str(r#"{"npc_draw_distance":1.25}"#).unwrap();
+        assert_eq!(odd.validated().npc_draw_distance, skate_core::living_world::DrawDistance::RETAIL);
+        let none: GraphicsSettings = serde_json::from_str(r#"{"npc_draw_distance":0.0}"#).unwrap();
+        assert_eq!(none.validated().npc_draw_distance, skate_core::living_world::DrawDistance::NONE);
+        assert_eq!(draw_distance_label(1.0), "Retail");
+        assert_eq!(draw_distance_label(2.0), "2x  (not retail)");
+        assert_eq!(cycle(&skate_core::living_world::DrawDistance::MENU_STEPS, 3.0, 1), skate_core::living_world::DrawDistance::NONE);
     }
     #[test]
     fn invalid_saved_values_fall_back() {
