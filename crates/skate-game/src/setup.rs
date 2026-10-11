@@ -98,13 +98,58 @@ fn pipelines_acceptable(
     })
 }
 
+/// Asset groups whose converter changed since setup (no exact or equivalence match) but whose recorded outputs
+/// were still accepted: the game runs on them, and the PC overlay asks the player to refresh (`stale_groups`).
+fn outdated_groups(marker: &serde_json::Value, expected: &serde_json::Value, equivalence: Option<&serde_json::Value>) -> Vec<String> {
+    let installed = marker.get("pipelines").and_then(|v| v.as_object());
+    expected.as_object().map_or(Vec::new(), |wanted| {
+        wanted
+            .iter()
+            .filter(|(group, new_hash)| !pipeline_group_matches(installed.and_then(|i| i.get(*group)), new_hash, group, equivalence))
+            .map(|(group, _)| group.clone())
+            .collect()
+    })
+}
+
+static STALE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// The asset groups found out of date at startup (empty for development `--assets` / `SKATE3_ASSETS` roots).
+pub(crate) fn stale_groups() -> &'static [String] {
+    STALE.get().map_or(&[], Vec::as_slice)
+}
+
+/// Screenshot coverage (`SKATE_VERIFY_MENU=stale`): pretend a group is out of date in a development run.
+pub(crate) fn preview_stale() {
+    let _ = STALE.set(vec!["hud".into()]);
+}
+
+/// Restart this copy with `--refresh-assets`: setup refreshes the out-of-date groups, then the game starts again.
+pub(crate) fn restart_with_refresh() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let root = exe.parent().ok_or("No executable directory")?;
+    if !root.join("support/skate3setup.exe").is_file() {
+        return Err("This copy has no setup helper: unpack the complete package, or run setup by hand.".into());
+    }
+    let args: Vec<_> = std::env::args_os().skip(1).filter(|a| a != "--refresh-assets").collect();
+    Command::new(&exe).args(args).arg("--refresh-assets").spawn().map_err(|e| format!("Could not restart: {e}"))?;
+    Ok(())
+}
+
 fn stamp_pipelines(
     base: &Path,
     marker: &serde_json::Value,
     expected: &serde_json::Value,
+    keep: &[String],
 ) -> Result<(), String> {
     let mut updated = marker.clone();
-    updated["pipelines"] = expected.clone();
+    let mut pipelines = expected.clone();
+    // Out-of-date groups keep their old fingerprint, so the next start still knows to ask for a refresh.
+    for group in keep {
+        if let (Some(old), Some(map)) = (marker["pipelines"].get(group).cloned(), pipelines.as_object_mut()) {
+            map.insert(group.clone(), old);
+        }
+    }
+    updated["pipelines"] = pipelines;
     let bytes = serde_json::to_vec_pretty(&updated).map_err(|e| e.to_string())?;
     let temporary = base.join("installation.json.tmp");
     std::fs::write(&temporary, bytes).map_err(|e| e.to_string())?;
@@ -162,7 +207,9 @@ pub(crate) fn asset_root() -> Result<PathBuf, String> {
         Err(e) => return Err(e.to_string()),
     };
     let existing = installed(&base)?;
-    if let Some((assets, marker)) = &existing {
+    // The PC overlay's Refresh Game Files restarts with this: run setup's refresh even though the copy runs.
+    let refresh_asked = std::env::args_os().any(|arg| arg == "--refresh-assets");
+    if let Some((assets, marker)) = existing.as_ref().filter(|_| !refresh_asked) {
         if installation_ready(
             assets,
             marker,
@@ -173,8 +220,13 @@ pub(crate) fn asset_root() -> Result<PathBuf, String> {
             // Adopt this release's fingerprints when only an equivalence pair differed,
             // so later launches do not keep re-evaluating historical hashes.
             if let Some(versions) = &expected {
+                let stale = outdated_groups(marker, versions, equivalence.as_ref());
+                if !stale.is_empty() {
+                    eprintln!("SETUP: game files out of date for {} (converter changed); the PC overlay offers a refresh", stale.join(", "));
+                }
+                let _ = STALE.set(stale.clone());
                 if marker.get("pipelines") != Some(versions) {
-                    stamp_pipelines(&base, marker, versions)?;
+                    stamp_pipelines(&base, marker, versions, &stale)?;
                 }
             }
             if let Some(fingerprint) = expected_customiser.as_deref() {
@@ -365,6 +417,21 @@ mod tests {
         .unwrap();
         assert_eq!(current["fingerprint"].as_str(), Some("new"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn changed_converters_are_reported_and_keep_their_old_fingerprint_when_stamped() {
+        let marker = serde_json::json!({"version": 1, "pipelines": {"core": "a", "hud": "old", "maps": "m1"}});
+        let expected = serde_json::json!({"core": "a", "hud": "new", "maps": "m2"});
+        let equivalence = serde_json::json!({"maps": [["m1", "m2"]]});
+        assert_eq!(outdated_groups(&marker, &expected, Some(&equivalence)), vec!["hud".to_string()], "an equivalence pair is current");
+        assert_eq!(outdated_groups(&marker, &marker["pipelines"], None), Vec::<String>::new());
+        let dir = std::env::temp_dir().join(format!("skate3rust-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        stamp_pipelines(&dir, &marker, &expected, &["hud".to_string()]).unwrap();
+        let stamped: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("installation.json")).unwrap()).unwrap();
+        assert_eq!(stamped["pipelines"], serde_json::json!({"core": "a", "hud": "old", "maps": "m2"}), "the stale group still asks next time");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

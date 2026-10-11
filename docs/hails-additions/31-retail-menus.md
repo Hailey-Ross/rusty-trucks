@@ -1260,7 +1260,35 @@ sessions/logs". Every line is `info!`, so `PLAY-WITH-LOG.bat` sessions carry the
 - Checked in a scripted run (keys 15,15,15,2,...): Vibration on, AptStart, gameplay suspended, open pause menu,
   three AptRight, AptNext, select, close pause menu, gameplay resumed / suspended, open Game Settings.
 
+## Out-of-date game files prompt (2026-10-11)
+
+User: "add a prompt to the new guide overlay that prompts users to refresh their assets if they are out of date".
+
+### Problem
+A release lists the asset converter versions it expects (`release.json` `asset_pipelines`). When a converter changed
+but the group's recorded outputs were still present, `setup::asset_root` accepted the old files and stamped the new
+versions as installed, so nothing ever asked for a refresh. That is how an install kept menu tables from before the
+FE screen records (Start then falls back to the PC overlay).
+
+### Change
+- `setup.rs`: `outdated_groups` lists the groups with no exact or equivalence match at startup (`stale_groups()`,
+  logged as `SETUP: game files out of date for <groups>`); `stamp_pipelines` keeps those groups' old fingerprints, so
+  every start asks again until a refresh. `--refresh-assets` makes a running copy go through setup's refresh;
+  `restart_with_refresh` starts the exe again with it (needs `support/skate3setup.exe`, the release package's).
+- PC overlay: while groups are stale, the title chip reads "GAME FILES OUT OF DATE", every description ends with
+  "Your game files are out of date: Extras > Refresh Game Files updates them.", and Extras gets a "Game Files"
+  section with **Refresh Game Files** (describes the stale groups by name; Select restarts into setup, logged
+  `PC_OVERLAY refresh game files: restarting into setup`; without a setup helper the status says so).
+- Development roots (`--assets`, `SKATE3_ASSETS`) have no `release.json`, so they never show it;
+  `SKATE_VERIFY_MENU=stale` previews it for screenshots.
+
+### Verification
+- `cargo test -p skate-game changed_converters_are_reported_and_keep_their_old_fingerprint_when_stamped`.
+- Screenshot (`SKATE_VERIFY_MENU=stale`): chip, Game Files section, the row and both description lines.
+- Open: the restart into setup is not run end to end (it needs a release package's setup helper).
+
 ## Files
+- Out-of-date prompt: `crates/skate-game/src/setup.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`
 - Stored settings: `crates/skate-game/src/retail_menus.rs` (`StoredSettings`, `setting`), `scoring_hud.rs`
 - Swap-in: `crates/skate-game/src/retail_menu_stage.rs` (`enabled`, `RetailPause`), `graphics_menu.rs` (`overlay_key`)
 - PC overlay: `crates/skate-game/src/input/platform.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`, `fonts/`

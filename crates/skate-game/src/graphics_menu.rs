@@ -191,6 +191,7 @@ const SECTIONS: &[(&str, &str, &str)] = &[
 const HEADERS: &[(usize, &str)] = &[
     (900, "Display"), (901, "World"), (902, "Audio"), (903, "Interface"), (904, "Difficulty"), (905, "Custom Tuning"),
     (906, "Camera"), (907, "Character"), (908, "Mods & Updates"), (909, "Controllers"), (910, "Teleport Spots"),
+    (912, "Game Files"),
     (911, "Living World"),
 ];
 
@@ -274,8 +275,8 @@ impl Menu {
             1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([CAMERA_ANGLE_ROW,8,10]).collect(),
             1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
             2 => vec![0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW],
-            // Quitting is the rail's Close Game.
-            4 => vec![11, 14, 19],
+            // Quitting is the rail's Close Game; Refresh Game Files only while the game files are out of date.
+            4 => [11, 14, 19].into_iter().chain((!crate::setup::stale_groups().is_empty()).then_some(REFRESH_ROW)).collect(),
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
         }
@@ -297,6 +298,7 @@ impl Menu {
                 (true, 1, 8) => Some(907),
                 (true, 4, 11) => Some(908),
                 (true, 4, 19) => Some(909),
+                (true, 4, REFRESH_ROW) => Some(912),
                 (true, 0, id) if id >= 1_000_000 && page.last().is_none_or(|last| *last < 1_000_000) => Some(910),
                 _ => None,
             };
@@ -475,6 +477,8 @@ impl Menu {
             12 => RowView::action("Teleport", "Pick a drop-in spot on this map."),
             13 => RowView::action("Day & Night", "Time of day, day cycle speed and ambient light for custom maps. Retail maps keep their authored lighting."),
             14 => RowView::action("Mods", "Turn mods on or off and open their menus."),
+            REFRESH_ROW => RowView::new(Kind::Action, "Refresh Game Files", "Out of date",
+                format!("Your game files were converted by an older version of the game ({}), so new features that need them may not work. Refresh converts only what changed, then the game starts again. It takes a few minutes; keep the setup window open.", crate::setup::stale_groups().iter().map(|g| group_name(g)).collect::<Vec<_>>().join(", "))).danger(),
             16 => audio_view(16, "Master Volume", "Overall game volume."),
             17 => audio_view(17, "Ambience Volume", "The world's ambience beds."),
             18 => audio_view(18, "Effects Volume", "Skating and world sound effects."),
@@ -617,6 +621,21 @@ fn setup(
 }
 /// GRAPHICS-section rows for the game_audio volume settings.
 const FRAME_STATS_ROW: usize = 28;
+/// The setup groups (`tools/asset_pipeline/versions.py`) by what the player knows them as.
+fn group_name(group: &str) -> &str {
+    match group {
+        "core" => "skater and animation data",
+        "hud" => "HUD and menus",
+        "character" => "characters",
+        "environment" => "lighting, water and effects",
+        "maps" => "maps",
+        "audio" => "audio",
+        "livingworld" => "living world",
+        other => other,
+    }
+}
+/// EXTRAS row: restart into setup's refresh (shown only while `setup::stale_groups` is not empty).
+const REFRESH_ROW: usize = 31;
 const AUDIO_ROWS: std::ops::RangeInclusive<usize> = 16..=18;
 /// The player's NPC draw distance multiplier (QoL, not retail; 1 = retail ranges), saved with the graphics
 /// settings. Placeholder until the living world (NPC skaters, peds and cars) reads it; nothing does yet.
@@ -1160,6 +1179,13 @@ fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
             },
             13 => { menu.daylight = true; menu.selected = 0; },
             14 => mods.begin(),
+            REFRESH_ROW => match crate::setup::restart_with_refresh() {
+                Ok(()) => {
+                    info!("PC_OVERLAY refresh game files: restarting into setup");
+                    exit.write(AppExit::Success);
+                }
+                Err(e) => menu.status = e,
+            },
             16..=18 => menu.status = audio.adjust(audio_row(row), direction),
             FRAME_STATS_ROW => {
                 // Off, Simple, Verbose (the original readout).
@@ -1286,6 +1312,7 @@ fn preview_menu(config: Res<crate::config::Config>, mut menu: ResMut<Menu>, mut 
         Ok("custom") => { menu.open = true; menu.select_section(1); menu.selected=300; menu.view.content = true; menu.view.shown = true; },
         Ok("graphics") => { menu.open = true; menu.select_section(2); menu.view.content = true; menu.view.shown = true; },
         Ok("npc") => { menu.open = true; menu.select_section(2); menu.selected = NPC_DRAW_DISTANCE_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
+        Ok("stale") => { crate::setup::preview_stale(); menu.open = true; menu.select_section(4); menu.selected = REFRESH_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("maps") => { menu.open = true; menu.select_section(0); menu.view.content = true; menu.view.shown = true; },
         Ok("rail") => { menu.open = true; menu.select_section(2); },
         Ok("mods") => { menu.open = true; mods.begin(); }
