@@ -32,6 +32,7 @@ pub(crate) mod dmo_stream;
 pub(crate) mod npc_avoid;
 pub(crate) mod npc_sim;
 pub(crate) mod npc_skaters;
+pub(crate) mod opt_ins;
 pub(crate) mod ped_graph;
 pub(crate) mod ped_mood;
 pub(crate) mod ped_hand_props;
@@ -167,6 +168,9 @@ pub(crate) struct LivingWorldSettings {
     pub free_play: Option<FreePlay>,
     /// The zombie cheat (later milestone; peds without cap, no traffic, no NPC skaters).
     pub zombie: bool,
+    /// The player's opt-in choices (PC overlay or `SKATE_*=1`, `opt_ins`); kept across mod resets like the
+    /// draw distance.
+    pub user_opt_ins: opt_ins::OptIns,
     /// DMO streaming of the placed props (doc 27 "DMO streaming"; on as in retail, `SKATE_DMO_STREAM=0` turns it off).
     pub dmo_stream: dmo_stream::DmoStreamGameSettings,
     pub net_role: NetRole,
@@ -207,6 +211,7 @@ impl Default for LivingWorldSettings {
             // The zombie cheat; no cheat screen yet: `SKATE_ZOMBIE=1` or the mod value `zombie`.
             zombie: std::env::var("SKATE_ZOMBIE").ok().as_deref() == Some("1"),
             dmo_stream: Default::default(),
+            user_opt_ins: Default::default(),
             net_role: NetRole::Standalone,
             seed: 0,
             debug: false,
@@ -217,11 +222,22 @@ impl Default for LivingWorldSettings {
 impl LivingWorldSettings {
     fn from_env() -> Self {
         let flag = |k: &str| std::env::var(k).ok();
-        Self {
+        let mut s = Self {
             enabled: flag("SKATE_LIVING_WORLD").as_deref() != Some("0"),
             debug: flag("SKATE_LIVING_WORLD_DEBUG").as_deref() == Some("1"),
             ..Self::default()
-        }
+        };
+        s.set_user_opt_ins(opt_ins::OptIns::from_env());
+        s
+    }
+
+    /// The player's opt-in choices, in effect at once (the overlay; at start the saved ones or `SKATE_*=1`).
+    pub(crate) fn set_user_opt_ins(&mut self, choices: opt_ins::OptIns) {
+        self.user_opt_ins = choices;
+        self.zombie = choices.zombie;
+        self.npc_simulated.enabled = choices.npc_physics;
+        crate::physics::set_skitch_enabled(choices.skitch);
+        crate::physics::prop_dynamics::set_prop_grab_enabled(choices.prop_grab);
     }
 
     /// The draw distance in effect (sanitised: non-finite or non-positive = retail, clamped).
@@ -249,8 +265,11 @@ impl LivingWorldSettings {
             npc_draw_distance: self.user_npc_draw_distance,
             user_npc_draw_distance: self.user_npc_draw_distance,
             user_npcs_off: self.user_npcs_off,
+            user_opt_ins: self.user_opt_ins,
             ..Self::default()
         };
+        let choices = self.user_opt_ins;
+        self.set_user_opt_ins(choices);
     }
 
     /// Write the settings into the core config (code defaults and data ranges stay).
@@ -727,7 +746,7 @@ impl Plugin for LivingWorldPlugin {
                 FixedUpdate,
                 (load_for_map, gather_observers, step_population, dmo_stream::stream_dmos).chain().after(crate::app::SimulationSet::Physics),
             )
-            .add_systems(Update, log_zombie_mode);
+            .add_systems(Update, (log_zombie_mode, opt_ins::log_opt_ins));
         npc_skaters::install(app);
         peds::install(app);
         vehicles::install(app);

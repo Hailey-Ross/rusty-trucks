@@ -55,6 +55,9 @@ impl Registry {
         self.objects = native::Registry::new(objects).map_err(str::to_owned)?;
         Ok(())
     }
+    pub(crate) fn has_props(&self) -> bool {
+        self.objects.objects.iter().any(|o| matches!(o.provider, native::Provider::LivingWorld))
+    }
     fn assembly(&self, mesh: u32) -> Option<u32> {
         self.mesh_assemblies
             .iter()

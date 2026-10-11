@@ -27,11 +27,16 @@ fn sub(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2], 0.0]
 }
 
-/// The latch is opt-in until state 104's force composition is complete (`SKATE_SKITCH=1`; doc 26h "Skitching
-/// step 4e"). Without it the query, the bind and the time (`+2664`) still run, but the skater never latches.
+/// The latch is opt-in until state 104's force composition is complete (the PC overlay's Skitching row, or
+/// `SKATE_SKITCH=1` for a run; doc 26h "Skitching step 4e"). Without it the query, the bind and the time (`+2664`)
+/// still run, but the skater never latches.
+static LATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub(crate) fn latch_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("SKATE_SKITCH").is_ok_and(|v| v == "1"))
+    LATCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// Set by `living_world::opt_ins` (the player's choice); in effect from the next tick.
+pub(crate) fn set_latch_enabled(on: bool) {
+    LATCH.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// What `82D39D98` decided this frame.

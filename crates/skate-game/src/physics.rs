@@ -76,6 +76,7 @@ mod revert_state;
 mod ground_exit;
 mod ground_phase;
 mod ground_runtime;
+pub(crate) use ground_runtime::{set_skitch_enabled, skitch_enabled};
 mod input_phase;
 mod landing_quality;
 mod offboard;
@@ -278,7 +279,8 @@ impl GamePhysics {
     /// Move Object reads the authored record (doc 26i "Move Object step 2"); off, the scene holds no props.
     pub(crate) fn refresh_grab_props(&mut self) -> Result<(), String> {
         if !prop_dynamics::prop_grab_enabled() {
-            return Ok(());
+            // Switched off in the PC overlay: the props leave the scene once.
+            return if self.offboard_grab_scene.has_props() { self.offboard_grab_scene.set_props(Vec::new()) } else { Ok(()) };
         }
         let props = self.prop_dynamics.as_ref().map(|d| d.grab_objects()).unwrap_or_default();
         self.offboard_grab_scene.set_props(props)

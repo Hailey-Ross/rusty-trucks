@@ -369,3 +369,25 @@ deck 500 m off; every ped and car stays within cull range of the player and noth
   passes with the fix (2.73 ms hidden vs 2.66 ms dropped) and fails without it (29.3 ms). Not yet confirmed in game.
 - **Open:** in one run a board lying 24 m away cost about 1 ms more per tick than at 0 to 10 m, which looked tied
   to where it landed rather than distance; not investigated.
+
+## Opt-in switches in the PC overlay, 2026-10-11
+
+User: "anything opt in should be added as a setting to the guide overlay that can be toggled on and off if they arent already".
+
+- **Problem:** the living world features still being tested (zombie mode, NPC skater physics, skitching, prop
+  grab) could only be turned on with environment variables (`SKATE_ZOMBIE=1`, `SKATE_NPC_SIM=1`,
+  `SKATE_SKITCH=1`, `SKATE_PROP_GRAB=1`), set in a command window before starting. Skitching and prop grab were
+  also read once per process (`OnceLock`), so they could not change while the game runs.
+- **Change:** `living_world/opt_ins.rs` holds the four choices (`OptIns`, saved as `opt_ins` in
+  `settings/graphics.json`) and the overlay rows' labels and descriptions. The PC overlay's Graphics section gets
+  four On / Off rows after NPC Draw Distance (rows 40 to 43); a change is in effect at once and saved.
+  `LivingWorldSettings::set_user_opt_ins` applies them: `zombie`, `npc_simulated.enabled`, and the skitch latch
+  and prop grab switches (now `AtomicBool`s with setters; prop grab switched off takes the props out of the grab
+  scene once). The variables still turn a feature on for one run (not saved). A mod can still change zombie mode
+  and NPC skater physics through `world.set_tuning("living_world", ...)`; the row shows what is in effect and
+  `reset_mod_overrides` brings back the player's choice when the mod stops (kept like the draw distance). The
+  session log has `OPT_IN <on ones>` (or `none`) at start and on every change.
+- **Not retail:** these are switches for features under test; with all of them off the game is as before. Zombie
+  mode is retail's cheat; this row stands in until the cheat screen exists.
+- **Verification:** tests `choices_round_trip_and_default_off`, `mod_reset_restores_the_players_choice`; the
+  overlay row lists in `graphics_menu` tests include rows 40 to 43.

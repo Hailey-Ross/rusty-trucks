@@ -312,11 +312,16 @@ pub(crate) fn prop_simulation(
     }
 }
 
-/// Props in the grab scene and Move Object on their authored grab records: opt-in with `SKATE_PROP_GRAB=1`
-/// (doc 26i "Move Object step 3"); off, the scene holds no props and carrying uses the box stand-in edge.
+/// Props in the grab scene and Move Object on their authored grab records: opt-in (the PC overlay's Prop Grab
+/// row, or `SKATE_PROP_GRAB=1` for a run; doc 26i "Move Object step 3"); off, the scene holds no props and
+/// carrying uses the box stand-in edge.
+static PROP_GRAB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub(crate) fn prop_grab_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("SKATE_PROP_GRAB").is_ok_and(|v| v == "1"))
+    PROP_GRAB.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// Set by `living_world::opt_ins` (the player's choice); in effect from the next tick.
+pub(crate) fn set_prop_grab_enabled(on: bool) {
+    PROP_GRAB.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Grab-scene id tag of props (cars use `living_world::vehicles::CAR_GRAB_TAG`, the high bit).

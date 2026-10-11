@@ -51,6 +51,8 @@ struct GraphicsSettings {
     frame_stats_simple: bool,
     /// NPC draw distance multiplier (QoL, not retail): 1 = retail ranges.
     npc_draw_distance: f32,
+    /// The opt-in living world features (`living_world::opt_ins`); all off by default.
+    opt_ins: crate::living_world::opt_ins::OptIns,
 }
 impl Default for GraphicsSettings {
     fn default() -> Self {
@@ -65,6 +67,7 @@ impl Default for GraphicsSettings {
             frame_stats: false,
             frame_stats_simple: false,
             npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
+            opt_ins: Default::default(),
         }
     }
 }
@@ -248,6 +251,8 @@ struct RowCtx<'a> {
     controllers: Option<&'a crate::input::ControllerInput>,
     debug: &'a [String],
     window: UVec2,
+    /// The living world opt-ins in effect (`living_world::opt_ins::in_effect`).
+    opt_ins: crate::living_world::opt_ins::OptIns,
 }
 fn pick<T: PartialEq>(values: &[T], value: &T) -> Kind {
     Kind::Enum { index: values.iter().position(|v| v == value).unwrap_or(0), count: values.len(), wrap: false }
@@ -275,7 +280,7 @@ impl Menu {
             0 => (1000..1000 + self.maps.len()).collect(),
             1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([CAMERA_ANGLE_ROW,8,10]).collect(),
             1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
-            2 => vec![0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW, MORE_AUDIBLE_ROW, SPEECH_ROW],
+            2 => [0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW, MORE_AUDIBLE_ROW, SPEECH_ROW].into_iter().chain(OPT_IN_ROWS).collect(),
             // Quitting is the rail's Close Game; Refresh Game Files only while the game files are out of date.
             4 => [11, 14, 19].into_iter().chain((!crate::setup::stale_groups().is_empty()).then_some(REFRESH_ROW)).collect(),
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
@@ -489,6 +494,11 @@ impl Menu {
                 RowView::new(Kind::Enum { index: on as usize, count: 2, wrap: false }, "More Audible World", if on { "On  (not retail)" } else { "Retail" },
                     "Not retail: more cars, peds and NPC skaters heard at once (8 / 24 / 3 instead of retail's 4 / 15 / 1). Takes effect at the next start.").reset()
             }
+            row if OPT_IN_ROWS.contains(&row) => {
+                let o = opt_in(row);
+                let on = cx.opt_ins.get(o);
+                RowView::new(Kind::Enum { index: on as usize, count: 2, wrap: false }, o.label(), if on { "On  (testing)" } else { "Off" }, o.hint())
+            }
             SPEECH_ROW => {
                 let (on, decoded) = cx.audio.map_or((false, false), |a| (a.decode_speech(), a.speech_decoded()));
                 RowView::new(Kind::Enum { index: on as usize, count: 2, wrap: false }, "Ped Speech",
@@ -573,6 +583,8 @@ fn setup(
     .validated();
     if let Some(mut living) = living {
         living.set_user_draw_distance(settings.npc_draw_distance);
+        // Saved choices, plus any `SKATE_*=1` of this run (not saved).
+        living.set_user_opt_ins(settings.opt_ins.or(crate::living_world::opt_ins::OptIns::from_env()));
     }
     window
         .resolution
@@ -655,6 +667,12 @@ const AUDIO_ROWS: std::ops::RangeInclusive<usize> = 16..=18;
 /// speech decode.
 const MORE_AUDIBLE_ROW: usize = 32;
 const SPEECH_ROW: usize = 33;
+/// The living world opt-ins in the same group, in `OptIn::ALL` order (zombie mode, NPC skater physics, skitching,
+/// prop grab; doc 26b "Opt-in switches in the PC overlay").
+const OPT_IN_ROWS: std::ops::Range<usize> = 40..44;
+fn opt_in(row: usize) -> crate::living_world::opt_ins::OptIn {
+    crate::living_world::opt_ins::OptIn::ALL[row - OPT_IN_ROWS.start]
+}
 /// GRAPHICS-section row of the NPC draw distance (QoL, not retail).
 const NPC_DRAW_DISTANCE_ROW: usize = 29;
 const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time. None turns off all NPC skaters, peds and cars.";
@@ -789,7 +807,7 @@ pub(crate) fn interact(
         let dt = real.delta_secs();
         let page = menu.page();
         let views: Vec<RowView> = {
-            let cx = RowCtx { audio: Some(&*audio), camera: &camera_angle, net: &net, controllers: None, debug: &[], window: UVec2::ZERO };
+            let cx = RowCtx { audio: Some(&*audio), camera: &camera_angle, net: &net, controllers: None, debug: &[], window: UVec2::ZERO, opt_ins: crate::living_world::opt_ins::in_effect(&living) };
             page.iter().map(|id| menu.describe(*id, &cx)).collect()
         };
         let selectable: Vec<usize> = page.iter().zip(&views).filter(|(_, v)| v.selectable()).map(|(id, _)| *id).collect();
@@ -1020,12 +1038,12 @@ pub(crate) fn interact(
         None => None,
     };
     if let (Some(row), Some(Act::Step(..) | Act::Reset(..))) = (saved_row, act) {
-        let cx = RowCtx { audio: Some(&*audio), camera: &camera_angle, net: &net, controllers: None, debug: &[], window: UVec2::ZERO };
+        let cx = RowCtx { audio: Some(&*audio), camera: &camera_angle, net: &net, controllers: None, debug: &[], window: UVec2::ZERO, opt_ins: crate::living_world::opt_ins::in_effect(&living) };
         let now = menu.describe(row, &cx);
         info!("PC_OVERLAY now {:?} = {:?}", now.label, now.value);
     }
     if let Some(row) = saved_row {
-        if ((row < 3 || row == FRAME_STATS_ROW || row == NPC_DRAW_DISTANCE_ROW) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
+        if ((row < 3 || row == FRAME_STATS_ROW || row == NPC_DRAW_DISTANCE_ROW || OPT_IN_ROWS.contains(&row)) && !menu.multiplayer && !menu.daylight && !day_action) || (day_action && row < 3) {
             let save = (|| -> Result<(), String> {
                 std::fs::create_dir_all(menu.path.parent().unwrap()).map_err(|e| e.to_string())?;
                 std::fs::write(
@@ -1214,6 +1232,15 @@ fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
                 menu.settings.npc_draw_distance = cycle(&skate_core::living_world::DrawDistance::MENU_STEPS, menu.settings.npc_draw_distance, direction);
                 living.set_user_draw_distance(menu.settings.npc_draw_distance);
             }
+            row if OPT_IN_ROWS.contains(&row) => {
+                // Flips what is on now (a mod's value included); the player's choice is saved.
+                let o = opt_in(row);
+                let on = !crate::living_world::opt_ins::in_effect(living).get(o);
+                let mut choices = living.user_opt_ins;
+                choices.set(o, on);
+                living.set_user_opt_ins(choices);
+                menu.settings.opt_ins.set(o, on);
+            }
             _ => {}
         }
     }
@@ -1329,7 +1356,7 @@ fn preview_menu(config: Res<crate::config::Config>, mut menu: ResMut<Menu>, mut 
         Ok("custom") => { menu.open = true; menu.select_section(1); menu.selected=300; menu.view.content = true; menu.view.shown = true; },
         Ok("graphics") => { menu.open = true; menu.select_section(2); menu.view.content = true; menu.view.shown = true; },
         Ok("npc") => { menu.open = true; menu.select_section(2); menu.selected = NPC_DRAW_DISTANCE_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
-        Ok("optin") => { menu.open = true; menu.select_section(2); menu.selected = SPEECH_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
+        Ok("optin") => { menu.open = true; menu.select_section(2); menu.selected = menu.rows().last().copied().unwrap_or(SPEECH_ROW); menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("stale") => { crate::setup::preview_stale(); menu.open = true; menu.select_section(4); menu.selected = REFRESH_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("maps") => { menu.open = true; menu.select_section(0); menu.view.content = true; menu.view.shown = true; },
         Ok("rail") => { menu.open = true; menu.select_section(2); },
@@ -1481,7 +1508,7 @@ mod tests {
     fn pages_put_headers_in_front_of_their_groups() {
         let mut m = menu();
         m.select_section(2);
-        assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW, 911, NPC_DRAW_DISTANCE_ROW, 913, MORE_AUDIBLE_ROW, SPEECH_ROW]);
+        assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW, 911, NPC_DRAW_DISTANCE_ROW, 913, MORE_AUDIBLE_ROW, SPEECH_ROW, 40, 41, 42, 43]);
         m.select_section(1);
         assert_eq!(m.page(), vec![904, 3, 906, CAMERA_ANGLE_ROW, 907, 8, 10]);
         m.select_section(4);
@@ -1552,7 +1579,7 @@ mod tests {
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
             // Audio, controller identity, and frame-time rows are spawned.
-            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || *id >= 1000));
+            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
@@ -1588,7 +1615,7 @@ mod tests {
         assert!(!SECTIONS.iter().any(|(name,_,_)| matches!(*name,"SESSION"|"WORLD")));
         menu.select_section(2);
         assert!(!menu.multiplayer && !menu.browser);
-        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW,MORE_AUDIBLE_ROW,SPEECH_ROW]);
+        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW,MORE_AUDIBLE_ROW,SPEECH_ROW,40,41,42,43]);
         menu.daylight = true;
         assert_eq!(menu.rows(), vec![0,1,2,3]);
     }
