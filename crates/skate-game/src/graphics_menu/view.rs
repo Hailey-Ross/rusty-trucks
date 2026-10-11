@@ -628,7 +628,8 @@ pub(super) fn view(
     paint.label(ui.title, g.rail_x, g.title_y, g.desc_x + g.desc_w - g.rail_x, snap(g.title_size), &title, TEXT, g.title_size);
     let chip_size = 14. * s;
     let menu_right = g.desc_x + g.desc_w;
-    if menu.custom_dirty {
+    let stale = !crate::setup::stale_groups().is_empty();
+    if stale || menu.custom_dirty {
         let chip_h = chip_size + 12. * s;
         paint.node(ui.chip, |n| {
             n.display = Display::Flex;
@@ -638,7 +639,7 @@ pub(super) fn view(
             n.padding = UiRect::axes(Val::Px(10. * s), Val::Px(6. * s));
         });
         paint.border(ui.chip, WARN, 1.5);
-        paint.text(ui.chip_text, "TUNING NOT APPLIED", WARN, em(chip_size));
+        paint.text(ui.chip_text, if stale { "GAME FILES OUT OF DATE" } else { "TUNING NOT APPLIED" }, WARN, em(chip_size));
     } else {
         paint.hide(ui.chip);
     }
@@ -892,7 +893,13 @@ pub(super) fn view(
         menu.status.clone()
     };
     let note = if menu.view.editing { "Typing: Enter or Esc to finish." } else { "" };
-    let pending = if menu.custom_dirty { "Custom tuning changes are not in use yet. Use Apply Custom Tuning when ready." } else { "" };
+    let pending = if menu.custom_dirty {
+        "Custom tuning changes are not in use yet. Use Apply Custom Tuning when ready."
+    } else if stale {
+        "Your game files are out of date: Extras > Refresh Game Files updates them."
+    } else {
+        ""
+    };
     for (e, value, color) in [(ui.desc_texts[0], desc.as_str(), TEXT), (ui.desc_texts[1], status.as_str(), TEXT_DIM), (ui.desc_texts[2], note, WARN), (ui.desc_texts[3], pending, WARN)] {
         if value.is_empty() {
             paint.hide(e);
