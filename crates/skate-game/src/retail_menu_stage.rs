@@ -1,10 +1,10 @@
 //! Dev view of the retail pause menu on the front-end stage (doc 31, Milestone 6).
 //!
-//! Off unless `SKATE3_RETAIL_MENUS=1` (`SKATE3_RETAIL_MENUS_OPEN=1` also opens it after 4 s). F8 opens / closes the retail pause menu (core_menu through the retail
+//! On unless `SKATE3_RETAIL_MENUS=0` (`SKATE3_RETAIL_MENUS_OPEN=1` also opens it after 4 s). Start and F8 open / close the retail pause menu (core_menu through the retail
 //! screen manager, retail CrossBar arguments); while it is open the arrow keys, Enter and Backspace drive the
 //! ported crossbar handler (skate_core::crossbar), whose sounds play as fe records and whose SetState goes to the
-//! movie through `_global.ScreenManager.SetScreenState` like retail's C++. The current overlay menu is untouched;
-//! swapping it out is a later milestone.
+//! movie through `_global.ScreenManager.SetScreenState` like retail's C++. The PC overlay (`graphics_menu`) stays on
+//! Guide / F1 / Escape, and takes Start too while the retail pause menu cannot open (`RetailPause`).
 //!
 //! Input: the pad (all four controllers) and the keyboard (arrows = d-pad, Enter = A, Backspace = B, F8 = Start)
 //! feed retail's Apt actions (`skate_core::fe_input`); `SKATE3_RETAIL_MENUS_KEYS=13,13,2` injects key indices
@@ -77,15 +77,22 @@ struct MenuStage {
     injected: std::collections::VecDeque<u32>,
 }
 
-/// The dev view is on (`SKATE3_RETAIL_MENUS=1`).
+/// The retail menus are wanted: on unless `SKATE3_RETAIL_MENUS=0`.
 pub(crate) fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("SKATE3_RETAIL_MENUS").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("SKATE3_RETAIL_MENUS").as_deref() != Ok("0"))
 }
+
+/// The retail pause menu can open this frame: the stage loaded and the menu tables carry the FE screen
+/// records. False on installs set up before those existed (or with the menus off): Start then opens the PC
+/// overlay, the fallback, until setup runs again.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RetailPause(pub bool);
 
 pub(crate) struct RetailMenuStagePlugin;
 impl Plugin for RetailMenuStagePlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<RetailPause>();
         if !enabled() {
             return;
         }
@@ -303,16 +310,23 @@ fn update(
     mut backdrop: ResMut<crate::fe_backdrop::FeBackdrop>,
     mut overlay: Option<ResMut<crate::graphics_menu::Menu>>,
     mut fe_hud: ResMut<crate::fe_backdrop::FeHud>,
+    mut available: ResMut<RetailPause>,
+    mut warned: Local<bool>,
 ) {
+    let ready = stage.as_ref().is_some_and(|s| !s.failed) && movies.is_some() && menus.is_some();
+    // The ported screens in this build's screen table (TU3 FE ids 56 and 45); none in tables extracted before
+    // screens.
+    let pause = backdrop.index(crate::fe_backdrop::PAUSE_SCREEN);
+    let options = backdrop.index(crate::fe_backdrop::SETTINGS_SCREEN);
+    available.set_if_neq(RetailPause(ready && pause.is_some()));
+    if ready && pause.is_none() && !std::mem::replace(&mut *warned, true) {
+        warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup); Start opens the PC overlay until then");
+    }
     let (Some(mut ms), Some(movies), Some(mut menus)) = (stage, movies, menus) else { return };
     if ms.failed {
         return;
     }
     let ms = &mut *ms;
-    // The ported screens in this build's screen table (TU3 FE ids 56 and 45); none in tables extracted before
-    // screens.
-    let pause = backdrop.index(crate::fe_backdrop::PAUSE_SCREEN);
-    let options = backdrop.index(crate::fe_backdrop::SETTINGS_SCREEN);
     // Retail Apt keys fired this frame (pad and keyboard); none while the PC overlay is open on top.
     let mut fired = poll_keys(ms, &keys, time.delta_secs());
     if overlay.as_ref().is_some_and(|o| o.open) {
@@ -342,7 +356,8 @@ fn update(
                 match pause {
                     Some(p) if ms.stack.active(p) => ms.stack.request(Layer::Main, Request::Close { screen: p }),
                     Some(p) => ms.stack.request(Layer::Main, Request::push(p)),
-                    None => warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup)"),
+                    // Tables from before the FE screen records: the PC overlay takes Start (`RetailPause`).
+                    None => {}
                 }
                 continue;
             }
