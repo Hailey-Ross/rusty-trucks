@@ -484,16 +484,16 @@ impl Movie {
             "gotoAndPlay" | "gotoAndStop" => {
                 let c = &self.characters[&self.instances[&id].character];
                 let frame = match args.first().ok_or("APT goto requires frame")? {
-                    Value::Text(label) => c
-                        .frames
-                        .iter()
-                        .position(|f| {
-                            f.controls.iter().any(|control| {
-                                control.type_name == "frame_label"
-                                    && control.label.as_deref() == Some(label)
-                            })
+                    // An unknown label leaves the clip where it is (Flash behaviour; retail not traced), so a
+                    // menu item with an icon name the movie lacks does not stop the whole movie.
+                    Value::Text(label) => match c.frames.iter().position(|f| {
+                        f.controls.iter().any(|control| {
+                            control.type_name == "frame_label" && control.label.as_deref() == Some(label)
                         })
-                        .ok_or_else(|| format!("APT character {} lacks label {label}", c.id))?,
+                    }) {
+                        Some(frame) => frame,
+                        None => return Ok(true),
+                    },
                     value => {
                         let frame = value.number();
                         if !frame.is_finite() || frame < 0.0 {

@@ -92,6 +92,9 @@ pub struct Instruction {
     pub parameters: Vec<Parameter>,
     #[serde(default)]
     pub name: String,
+    /// getURL (0x83) target ("_level1", a clip path).
+    #[serde(default)]
+    pub target_name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +128,11 @@ pub trait Host {
     /// ActionScript `trace` (opcode 0x26). Retail prints "AptTrace: %s" to the
     /// debug output (handler 82E6D958); hosts may log it, the default drops it.
     fn trace(&mut self, _message: &str) {}
+    /// getURL (opcode 0x83, retail 82E72590): "FSCommand:<cmd>" goes to the host's fscommand, a ".swf" url
+    /// loads that movie into `target`. Hosts without movies ignore it.
+    fn get_url(&mut self, _vm: &mut Vm, _this: usize, _url: &str, _target: &str) -> Result<(), String> {
+        Ok(())
+    }
     fn call(
         &mut self,
         vm: &mut Vm,
@@ -361,16 +369,26 @@ impl Vm {
             .insert(key.into(), value);
         Ok(())
     }
+    /// Member lookup through the prototype chain. Names match case-insensitively when no exact match exists:
+    /// retail registers the pause menu object as "CoreMenu" (the only spelling in the image, 0x82300C68) and
+    /// core_menu.apt reads it as `coremenu`, so retail's lookup ignores case (SWF 6 rules).
     pub fn get(&self, object: usize, key: &str) -> Value {
-        let mut current = Some(object);
-        for _ in 0..64 {
-            let Some(o) = current.and_then(|i| self.objects.get(i)) else {
-                break;
-            };
-            if let Some(v) = o.fields.get(key) {
-                return v.clone();
+        for exact in [true, false] {
+            let mut current = Some(object);
+            for _ in 0..64 {
+                let Some(o) = current.and_then(|i| self.objects.get(i)) else {
+                    break;
+                };
+                let found = if exact {
+                    o.fields.get(key)
+                } else {
+                    o.fields.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v)
+                };
+                if let Some(v) = found {
+                    return v.clone();
+                }
+                current = o.prototype;
             }
-            current = o.prototype;
         }
         Value::Undefined
     }
@@ -755,6 +773,10 @@ impl Vm {
                 }
                 0xa2 | 0xa3 => stack.push(constant(operand)?),
                 0xae => stack.push(self.variable(scope, &constant(operand)?.text())),
+                0x83 => {
+                    let url = i.operand.as_str().unwrap_or("").to_string();
+                    host.get_url(self, scope.this, &url, &i.target_name)?;
+                }
                 // EA trace (82E6D958): pop one value, print it.
                 0x26 => {
                     let v = pop(&mut stack)?;
@@ -889,6 +911,34 @@ impl Vm {
                         _ => Value::Bool(a == b || a.number() == b.number()),
                     });
                 }
+                // typeof (82E6ECC0) with the standard AS2 result names. NOT RETAIL YET: retail's name table
+                // is not read (main.apt only tests "undefined" / "function" / "movieclip").
+                0x44 => {
+                    let v = pop(&mut stack)?;
+                    let name = match &v {
+                        Value::Undefined => "undefined",
+                        Value::Number(_) => "number",
+                        Value::Bool(_) => "boolean",
+                        Value::Text(_) => "string",
+                        Value::Object(id) => match self.objects.get(*id).map(|o| &o.kind) {
+                            Some(ObjectKind::Function(_)) => "function",
+                            Some(ObjectKind::Native(n)) if n.starts_with("movie:") => "movieclip",
+                            _ => "object",
+                        },
+                    };
+                    stack.push(Value::Text(name.into()));
+                }
+                // ToString (82E70458).
+                0x4b => {
+                    let v = pop(&mut stack)?;
+                    stack.push(Value::Text(v.text()));
+                }
+                // Modulo (82E6E5F8): both operands ToNumber, C fmod, result rounded to f32 (frsp).
+                0x3f => {
+                    let b = pop(&mut stack)?.number();
+                    let a = pop(&mut stack)?.number();
+                    stack.push(Value::Number((a % b) as f32 as f64));
+                }
                 0x50 | 0x51 => {
                     let a = pop(&mut stack)?.number();
                     stack.push(Value::Number(a + if op == 0x50 { 1.0 } else { -1.0 }));
@@ -920,8 +970,13 @@ impl Vm {
                     self.set(object, "prototype", Value::Object(proto))?;
                     if i.name.is_empty() {
                         stack.push(Value::Object(object));
+                    } else if scope.local_definitions {
+                        // Retail (82E73010 -> 82E68770) stores a named function as a variable of the current
+                        // scope: a local inside a function, a member of the timeline in a frame action
+                        // (main.apt's RegisterChallengeEnum lives on _level0._root).
+                        scope.locals.insert(i.name.clone(), Value::Object(object));
                     } else {
-                        self.set(self.global, &i.name, Value::Object(object))?;
+                        self.set(scope.this, &i.name, Value::Object(object))?;
                     }
                 }
                 0x69 => {
@@ -1031,6 +1086,7 @@ mod tests {
             flags: 0,
             parameters: vec![],
             name: String::new(),
+            target_name: String::new(),
         }
     }
     fn text(s: &str) -> Instruction {

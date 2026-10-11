@@ -147,6 +147,14 @@ impl Bindings<'_> {
                 }
                 return Ok(Some(Value::Undefined));
             }
+            "loadMovie" => {
+                // MovieClip.loadMovie(url): the movie replaces this clip's content on a later update (main.apt
+                // fills gScreenManager / gChyron / gSubtitle / gFadeBackground this way).
+                if let Some(url) = args.first() {
+                    self.state.loads.push_back(Load { key: screen_key(&url.text()), target: object, loader: usize::MAX });
+                }
+                return Ok(Some(Value::Undefined));
+            }
             "getDepth" => {
                 if let Some((_, depth)) = self.state.dynamic.get(&object) {
                     return Ok(Some(Value::Number(*depth as f64)));
@@ -178,8 +186,45 @@ impl Bindings<'_> {
 }
 
 impl Host for Bindings<'_> {
+    fn property_changed(&mut self, vm: &mut Vm, object: usize, key: &str) -> Result<(), String> {
+        // Same as the HUD host: a new text or autosize re-localises and re-measures the field.
+        if key.eq_ignore_ascii_case("text") || key.eq_ignore_ascii_case("autoSize") {
+            if let Some(level) = self.level_of(object) {
+                self.state.levels[level].movie.text_changed(vm, object)?;
+            }
+        }
+        Ok(())
+    }
     fn trace(&mut self, message: &str) {
         self.state.traces.push(message.into());
+    }
+    fn get_url(&mut self, vm: &mut Vm, _this: usize, url: &str, target: &str) -> Result<(), String> {
+        if let Some(command) = url.strip_prefix("FSCommand:") {
+            self.state.unhandled.insert(format!("fscommand {command} {target}"));
+            return Ok(());
+        }
+        // main.apt loads main3dhud / autosave / fmv_popup into _level1.._level3. A level is a new root clip
+        // (`_levelN` in _global); like retail's load queue it appears on a later update.
+        if let Some(n) = target.strip_prefix("_level").and_then(|n| n.parse::<u32>().ok()) {
+            let name = format!("_level{n}");
+            let clip = match vm.get(vm.global, &name) {
+                Value::Object(id) => id,
+                _ => {
+                    let id = vm.object(ObjectKind::Native("movie:empty".into()));
+                    vm.set(id, "_name", Value::Text(name.clone()))?;
+                    vm.set(id, "_visible", Value::Bool(true))?;
+                    vm.set(id, "_alpha", Value::Number(100.0))?;
+                    vm.set(id, "_x", Value::Number(0.0))?;
+                    vm.set(id, "_y", Value::Number(0.0))?;
+                    vm.set(vm.global, &name, Value::Object(id))?;
+                    id
+                }
+            };
+            self.state.loads.push_back(Load { key: screen_key(url), target: clip, loader: usize::MAX });
+            return Ok(());
+        }
+        self.state.unhandled.insert(format!("getURL {url} {target}"));
+        Ok(())
     }
     fn call(
         &mut self,
@@ -611,6 +656,9 @@ impl Stage {
         args: Vec<Value>,
         natives: &mut dyn StageNatives,
     ) -> Result<(), String> {
+        if loader == usize::MAX {
+            return self.drain(natives);
+        }
         let Value::Object(list) = self.vm.get(loader, "_listeners") else {
             return Ok(());
         };
@@ -669,16 +717,18 @@ mod tests {
     }
 
     fn retail_screen_manager(close: bool) {
-        let root = std::env::var("SKATE3_MENU_MOVIES")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| crate::apt_imports::main_checkout().join("assets/private/menu-movies"));
-        if !root.join("manifest.json").is_file() {
-            eprintln!("skipped: no exported menu movies in {}", root.display());
+        let Some(root) = crate::apt_imports::test_menu_set() else {
             return;
-        }
+        };
         let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
         let movies = set.movies.clone();
-        let registry = crate::crossbar_host::test_registry();
+        // The real extracted tables (setup's private/menu-tables.json) when present.
+        let (data, loaded) = crate::retail_menus::read(&crate::apt_imports::main_checkout().join("assets"));
+        let registry = if loaded {
+            skate_core::menus::MenuRegistry::new(data)
+        } else {
+            crate::crossbar_host::test_registry()
+        };
         let context = skate_core::menus::MenuContext::new("FreePlay");
         let language = movies
             .get("source/screens/main/core_menu")
@@ -686,11 +736,28 @@ mod tests {
             .unwrap_or_default();
         let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
         let mut stage = Stage::new(&game).unwrap();
-        let fe = stage.load_root("source/screens/main/FE_root", &movies, &mut game).unwrap();
-        // FE_root's own script (retail: "FE_ROOT SETUP!").
-        assert!(stage.take_traces().iter().any(|t| t.contains("FE_ROOT")));
-        let holder = new_clip(&mut stage.vm, fe, "screenmanager_mc").unwrap();
-        stage.load_into("source/helper/screenmanager", holder, &movies, &mut game).unwrap();
+        // Retail _level0 is screens/main.apt (it defines the Register*Enum functions the C++ calls and creates
+        // gScreenManager); its loads land on the following updates.
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        eprintln!("boot levels: {:?}", stage.levels().iter().map(|l| &l.key).collect::<Vec<_>>());
+        eprintln!("boot unhandled: {:?}", stage.unhandled());
+        // The crossbar's enums, like sub_8261B9C8: RegisterChallengeEnum(name, "%d").
+        for (i, name) in ["RefreshMenu", "RefreshOption", "InitialiseMenu", "InitialiseSubOption", "InitSubOptionOnlineTeam", "RefreshDLCBanner"]
+            .iter()
+            .enumerate()
+        {
+            stage
+                .call_path(
+                    "_level0._root.RegisterChallengeEnum",
+                    vec![Value::Text(format!("FECrossBarScreenMode_{name}")), Value::Text(i.to_string())],
+                    &mut game,
+                )
+                .unwrap();
+        }
+        assert_eq!(stage.vm.get(stage.vm.global, "FECrossBarScreenMode_InitialiseMenu"), Value::Text("2".into()));
         let Value::Object(manager) = stage.vm.get(stage.vm.global, "ScreenManager") else {
             panic!("ScreenManager not registered; unhandled: {:?}", stage.unhandled());
         };

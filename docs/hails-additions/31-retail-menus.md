@@ -767,7 +767,38 @@ no-op).
   labels NEW_PARK .. TUTORIAL against helpers MY_PARKS .. PARK_EDITOR, retail pairs them by index); research
   `.local/research/menu-subtables.md` (extraction next).
 
+### The retail boot and the first picture (same milestone)
+- [code + data] The front end's `_level0` is `screens/main.apt` (sub_825D7E10 loads `source\screens\main` into
+  `_level0`; research `.local/research/fe-main-root.md`). Its root defines Register*Enum, loads main3dhud /
+  autosave / fmv_popup into `_level1..3` with getURL (opcode 0x83, handler 82E72590: "FSCommand:" or a ".swf"
+  load) and fills layer clips with loadMovie: gScreenManager (screenmanager.swf), gChyron, gSubtitle,
+  gFadeBackground. FE_root.apt is template 12 "Background" (main-checked), a screen, not the root.
+- [code, main-checked] Crossbar IntroComplete (vtable 0x82303F90 +104 = 8261B1F0) -> mode selector 8261B9E8 ->
+  SetState(InitialiseMenu) through the facade; the AS compares against FECrossBarScreenMode_* registered by C++
+  through `_level0._root.RegisterChallengeEnum(name, "%d")` (path entry 34), which stores `_global[name]`.
+- [code] Named DefineFunction2 stores into the current scope (82E73010 -> 82E68770): locals in a function, the
+  timeline in a frame action (ours used `_global`).
+- [data] Name lookup ignores case when no exact match: the only spelling in the image is "CoreMenu"
+  (0x82300C68) while core_menu.apt reads `coremenu`.
+- Export set version 4 adds `source/screens/main` and getURL operands (`tools/prepare_menu_movies.py`,
+  `tools/vendor/skate3_ui/actions.py`); the user's install needs the hud setup group re-run (automatic).
+- Stage: getURL `_levelN` loads, MovieClip.loadMovie, text changes re-localise (`property_changed`).
+- Dev view (`retail_menu_stage.rs`, `SKATE3_RETAIL_MENUS=1`, F8; `SKATE3_MENU_MOVIES` points at a dev export):
+  boots main.apt, registers the crossbar enums and the CrossBar template, opens core_menu with the retail
+  arguments and posts InitialiseMenu on IntroComplete. In game (`.local/research/menus-m6/pause.png`): the retail
+  Free Play pause menu, Port Carverton banner, tab icons, and the Free Play Main rows Challenge Map, Resume
+  Career, Free Play, Call Skater, skate.Profile: Career (greyed: no handlers yet, the agreed rule).
+- Missing frame labels leave the clip where it is (Flash behaviour; retail not traced).
+- main.apt needs three more opcodes: 0x3F modulo (82E6E5F8: ToNumber both, C fmod, f32 result), 0x4B ToString
+  (82E70458), 0x44 typeof (82E6ECC0; standard AS2 names, NOT RETAIL YET: retail's name table not read).
+- Data-gated tests skip an installed set older than the engine reads (`apt_imports::test_menu_set`); pass
+  `SKATE3_MENU_MOVIES=<export>/runtime` to run them against a fresh export.
+
 ### Open
+- Mode title and category overlap ("Free PlayMain"): core_menu places the category from the title's
+  `textLabel._width`; ours measures before the text is final or ignores autosize there.
+- No selected-row highlight yet; the blur / dim behind the pause menu is not found (`pause-backdrop.md`).
+- Only the CrossBar template is registered (retail registers 133 in table order: AS id 669, ours 600).
 - Sub-option label and helper tables (0x83027958 / 0x83027A00) are not extracted: GetSubOptionName returns `#`.
 - Label overrides (SignIn / sign out, ReplayEditor instant replay, PartyPlay literal) and the online team pending
   path are not ported. GetProgressionData reads context facts (`progression_*`), -1 (panel hidden) by default.
@@ -775,7 +806,9 @@ no-op).
 
 ## Files
 - Milestone 6: `crates/skate-core/src/crossbar.rs` (new), `lib.rs`; `crates/skate-game/src/crossbar_host.rs`
-  (new), `fe_language.rs` (new), `apt_stage.rs`, `apt_scene.rs`, `apt_movie.rs`, `retail_menu_movies.rs`, `main.rs`
+  (new), `fe_language.rs` (new), `retail_menu_stage.rs` (new), `apt_stage.rs`, `apt_scene.rs`, `apt_movie.rs`,
+  `apt_vm.rs`, `retail_menu_movies.rs`, `scoring_hud.rs` (`render_draws`), `app.rs`, `main.rs`;
+  `tools/prepare_menu_movies.py` (set v4), `tools/vendor/skate3_ui/actions.py` (getURL)
 - Milestone 5a: `crates/skate-game/src/apt_stage.rs` (new), `apt_movie.rs`, `apt_vm.rs`, `main.rs` (module)
 - `crates/skate-data/src/menu_tables.rs` (extractor, JSON, conversion), `crates/skate-data/tests/menu_tables.rs`
 - `crates/skate-core/src/menus.rs`, `menus_tests.rs` (registry), `menu_values.rs` (value rules, milestone 2)

@@ -28,6 +28,8 @@ use std::collections::BTreeMap;
 const CROSSBAR: &str = "CrossBar";
 /// The pause menu template's path under `source/screens/` (template table 0x8302F1A8, record 69).
 const CROSSBAR_PATH: &str = "main/core_menu.swf";
+const CROSSBAR_ENUMS: [&str; 6] =
+    ["RefreshMenu", "RefreshOption", "InitialiseMenu", "InitialiseSubOption", "InitSubOptionOnlineTeam", "RefreshDLCBanner"];
 /// Above the scoring HUD's draws on the shared layer.
 const MENU_Z: f32 = 50.0;
 
@@ -84,9 +86,20 @@ fn setup(
     let result = (|| -> Result<Stage, String> {
         let mut fe = front_end(&menus, &language, CrossbarState::default());
         let mut stage = Stage::new(&fe)?;
-        let root = stage.load_root("source/screens/main/FE_root", &movies.movies, &mut fe)?;
-        let holder = stage.create_clip(root, "screenmanager_mc")?;
-        stage.load_into("source/helper/screenmanager", holder, &movies.movies, &mut fe)?;
+        // Retail boot (sub_825D7E10): screens/main into _level0; its root loads the screen manager into
+        // gScreenManager and the HUD / autosave / fmv levels, which land on the next updates.
+        stage.load_root("source/screens/main", &movies.movies, &mut fe)?;
+        for _ in 0..4 {
+            stage.update(16.0, &movies.movies, &mut fe)?;
+        }
+        // Crossbar enums (sub_8261B9C8): RegisterChallengeEnum(name, "%d"), value = index in table 0x830274F0.
+        for (i, name) in CROSSBAR_ENUMS.iter().enumerate() {
+            stage.call_path(
+                "_level0._root.RegisterChallengeEnum",
+                vec![Value::Text(format!("FECrossBarScreenMode_{name}")), Value::Text(i.to_string())],
+                &mut fe,
+            )?;
+        }
         stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text(CROSSBAR.into())], &mut fe)?;
         Ok(stage)
     })();
@@ -248,7 +261,7 @@ fn render(
             }
         }
     };
-    let root = config.asset_root.join("private/menu-movies");
+    let root = crate::retail_menu_movies::set_root(&config);
     for draw in &draws {
         if draw.texture.is_empty() || ms.textures.contains_key(&draw.texture) {
             continue;
