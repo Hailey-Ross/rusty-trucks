@@ -12,7 +12,7 @@ Each extracted copy runs its own setup. Keep the `data` folder next to the exe.
 
 ## Controls (the new parts)
 
-- **Esc** (keyboard) opens the menu: **MAPS** (switch maps and drop-in spots without restarting), **SKATER** (Camera angle High / Low), **GRAPHICS** (display, sound, **Frame-time counter**, **NPC draw distance**), **EXTRAS** (mods, updates).
+- **Guide** (the Xbox / PS / Home button), **F1** or **Esc** (keyboard) opens the menu: **MAPS** (switch maps and drop-in spots without restarting), **SKATER** (Camera angle High / Low), **GRAPHICS** (display, sound, **Frame-time counter**, **NPC draw distance**), **EXTRAS** (mods, updates).
 - **Y:** step off the board. **LT** (on foot): drop the board.
 - **Hold RB** next to a bench, bin or other movable prop to grab it: the **left stick** pushes, pulls and side-steps it, the **right stick** turns you and the prop together. Your board drops when you grab. Let go of RB to drop the prop.
 
@@ -42,6 +42,9 @@ Every report with a log helps. Logs let us see exactly where and when something 
 7. **Audio:** sounds that are missing, late, doubled, too loud or quiet compared with retail.
 8. **Living world:** cars honking, braking, pulling over and parking; run into a parked car (its alarm should sound for about 8 s and the car should not drive off meanwhile); bump the same pedestrian two or three times (warning, then a chase). With the opt-in switches: skitching (`SKATE_SKITCH=1`) and grabbing props (`SKATE_PROP_GRAB=1`, watch the hands).
 9. **Setup:** if the first conversion fails or stops, send the setup window's text and the folder the game is in (long paths and closing the console are handled now).
+12. **Retail menus preview (opt-in):** `set SKATE3_RETAIL_MENUS=1` before starting. **Start** then opens Skate 3's own pause menu (its real menu files from your disc): the world blurs, gameplay pauses, the arrows / d-pad move, **A** selects, **B** goes back. Options > **Game Settings** opens the retail settings screen: try Difficulty Settings and change Play Mode with Left / Right. The button prompts should match your pad (Xbox, PlayStation or Switch buttons). Most other rows are greyed for now; Challenge Map, skate.Profile and Extras open the usual menu. Tell us anything that looks or behaves differently from retail. Setup converts the new menu files on the first start of this build.
+13. **Guide button:** press your pad's Guide / PS / Home button in game; the menu should open and close. The log gets a `PC overlay toggled by the Guide button` line each time; if nothing happens, send the log (Windows Game Bar may take the Xbox button first: turn off "Open Game Bar using this button on a controller" in Windows settings to test).
+14. **HUD colours:** coloured and tinted parts of the trick HUD now show the colours the console shows (darker than before where they were washed out). Tell us if any HUD part now looks wrong.
 
 ## Fixed in this build
 
