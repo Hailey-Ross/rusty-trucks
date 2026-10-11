@@ -293,17 +293,32 @@ impl AudioSettings {
             RetailVolume::Music => &mut o.music,
         } = value;
     }
-    pub(crate) fn label(&self, row: AudioRow) -> String {
-        let (name, value) = match row {
-            AudioRow::Master => ("Master volume", self.saved.master),
-            AudioRow::Ambience => ("Ambience volume", self.saved.ambience),
-            AudioRow::Effects => ("Effects volume", self.saved.effects),
-        };
-        if row == AudioRow::Master && self.muted {
-            format!("{name:<22}{value}%  (muted)")
-        } else {
-            format!("{name:<22}{value}%")
+    /// A menu row's saved volume in percent.
+    pub(crate) fn percent(&self, row: AudioRow) -> u32 {
+        match row {
+            AudioRow::Master => self.saved.master,
+            AudioRow::Ambience => self.saved.ambience,
+            AudioRow::Effects => self.saved.effects,
         }
+    }
+    /// Set a menu row (0..=100, rounded to the row's step) and save; returns a status line.
+    pub(crate) fn set_percent(&mut self, row: AudioRow, percent: u32) -> String {
+        *self.field(row) = (percent.min(100) + STEP / 2) / STEP * STEP;
+        self.save()
+    }
+    /// Put a menu row back to its default and save.
+    pub(crate) fn reset(&mut self, row: AudioRow) -> String {
+        let defaults = SavedSettings::default();
+        let value = match row {
+            AudioRow::Master => defaults.master,
+            AudioRow::Ambience => defaults.ambience,
+            AudioRow::Effects => defaults.effects,
+        };
+        self.set_percent(row, value)
+    }
+    /// `--mute` silences everything whatever the saved volumes say.
+    pub(crate) fn muted(&self) -> bool {
+        self.muted
     }
 }
 
