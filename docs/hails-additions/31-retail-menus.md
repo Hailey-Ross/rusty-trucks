@@ -1018,13 +1018,15 @@ options.apt also needs APT features the pause menu never used (attachMovie, comp
 - removeMovieClip on attached clips reaches the movie (DeleteOptions on a sub-screen rebuild); test: screen 2.
 - Colour: the menus apply colour transforms in gamma space (hud_render.wgsl mode 1): the console front end works
   on display values, and a recomp shot shows a near-black panel body where ours was mid grey (solid 0.145
-  encoded twice). The gameplay HUD keeps the linear path until it is compared against retail (open).
+  encoded twice). The gameplay HUD uses the same path and the scale support (user: "follow retail"; one APT player
+  in retail). Checked: the line HUD's ring at 2 s is identical before / after (textured, identity transform);
+  tinted / solid HUD elements now show their display colours (to look at in play).
 - In game (`SKATE3_RETAIL_MENUS_KEYS=15,15,15,2,2,15`): A on Difficulty Settings opens the Difficulty screen
   ("Play Mode < Normal >", "Classic Skate Gameplay" description); Right steps the difficulty through the engine
   binding.
 
 ### Open
-- HUD mode / chyron effects not hooked up; the gameplay HUD's colour space and scale support (check vs retail).
+- HUD mode / chyron effects not hooked up.
 - Prompts only for the face buttons; shoulders / Start / sticks draw nothing yet.
 
 ## Button prompts (2026-10-10)
