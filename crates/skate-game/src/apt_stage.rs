@@ -134,6 +134,8 @@ impl Bindings<'_> {
                 self.state.dynamic.insert(id, (object, depth));
                 return Ok(Some(Value::Object(id)));
             }
+            // An attachMovie clip: the movie removes it (apt_movie `method`).
+            "removeMovieClip" if self.level_of(object).is_some_and(|l| self.state.levels[l].movie.attached.contains(&object)) => {}
             "removeMovieClip" | "unloadMovie" => {
                 self.unload_into(vm, object);
                 if method == "removeMovieClip" {
@@ -243,6 +245,11 @@ impl Host for Bindings<'_> {
         if key.eq_ignore_ascii_case("_x") || key.eq_ignore_ascii_case("_y") {
             if let Some(level) = self.level_of(object) {
                 self.state.levels[level].movie.script_moved.insert(object);
+            }
+        }
+        if ["_xscale", "_yscale", "_rotation", "_width", "_height"].iter().any(|k| key.eq_ignore_ascii_case(k)) {
+            if let Some(level) = self.level_of(object) {
+                self.state.levels[level].movie.transform_changed(vm, object, key)?;
             }
         }
         if key.eq_ignore_ascii_case("text") || key.eq_ignore_ascii_case("autoSize") {
@@ -664,14 +671,12 @@ impl Stage {
             if !self.vm.get(id, "_visible").truth() {
                 return (matrix, alpha, false);
             }
-            let mut m = self
+            let m = self
                 .state
                 .levels
                 .iter()
-                .find_map(|l| l.movie.instances.get(&id)?.placement.as_ref().map(|p| p.matrix))
-                .unwrap_or(crate::apt_scene::IDENTITY);
-            m[4] = self.vm.get(id, "_x").number() as f32;
-            m[5] = self.vm.get(id, "_y").number() as f32;
+                .find(|l| l.movie.instances.contains_key(&id))
+                .map_or(crate::apt_scene::IDENTITY, |l| crate::apt_movie::clip_matrix(&l.movie, &self.vm, id));
             matrix = crate::apt_scene::compose(m, matrix);
             alpha *= (self.vm.get(id, "_alpha").number() as f32 / 100.).clamp(0., 1.);
             current = self.vm.get(id, "_parent");
@@ -851,6 +856,14 @@ mod tests {
             v.text()
         };
         assert_eq!(title("mItem0"), "ID_GAMESETTINGS_DIFFICULTY_SETTINGS");
+        // A sub-screen rebuild (OnMenuSelect -> screen 2, SetState(1)): DeleteOptions removes the old rows.
+        game.settings.screen = 2;
+        stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text("1".into())], &mut game).unwrap();
+        stage.update(16.0, &movies, &mut game).unwrap();
+        let level = stage.levels().iter().find(|l| l.key.ends_with("options/options")).unwrap();
+        let rows = level.movie.attached.iter().filter(|c| stage.vm.get(**c, "_name").text().starts_with("mItem")).count();
+        let types: Vec<String> = game.settings.rows.iter().map(|id| format!("{id}:{:?}", registry.data().setting(id).map(|s| s.widget))).collect();
+        assert_eq!(rows, game.settings.rows.len(), "{types:?}");
         let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
         if std::env::var("SKATE3_DUMP_DRAWS").is_ok() {
             for d in &draws {
@@ -861,7 +874,7 @@ mod tests {
                 eprintln!("DRAW {:?} {:.0},{:.0}..{:.0},{:.0} mul {:?} {}", d.fill, x0, y0, x1, y1, d.multiply, d.texture.rsplit('/').next().unwrap_or(""));
             }
         }
-        assert_eq!(game.settings.rows.len(), registry.screen_rows(0, &context).len());
+        assert_eq!(game.settings.rows.len(), registry.screen_rows(2, &context).len());
         assert!(names.iter().any(|n| n == "mItem0"), "no row clips: {names:?}");
     }
 

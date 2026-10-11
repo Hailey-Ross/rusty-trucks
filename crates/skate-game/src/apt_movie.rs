@@ -73,12 +73,44 @@ pub struct Movie {
     pub script_moved: std::collections::BTreeSet<usize>,
     /// Clips made by attachMovie: their parent's timeline keeps them (they sit above every timeline depth).
     pub attached: std::collections::BTreeSet<usize>,
+    /// Script-set scale / rotation (`_xscale`, `_yscale` in percent, `_rotation` in degrees; also from `_width` /
+    /// `_height` writes): replaces the placement's linear part when drawing (standard AS2; NOT RETAIL YET: the
+    /// retail property handlers are not decoded).
+    pub scaled: BTreeMap<usize, [f32; 3]>,
     states: BTreeMap<i32, Vec<DisplayList>>,
 }
 
 /// attachMovie depth d is child key d + SCRIPT_DEPTH, above every timeline depth (Flash: timeline depths start at
 /// -16384, script depths at 0). NOT RETAIL YET: retail's depth split is not traced.
 pub const SCRIPT_DEPTH: i32 = 16384;
+
+/// `_xscale` / `_yscale` / `_rotation` of a placement matrix (AS2 reads them from the clip's matrix).
+fn seed_scale(vm: &mut Vm, id: usize, m: &[f32; 6]) -> Result<(), String> {
+    vm.set(id, "_xscale", Value::Number((100.0 * m[0].hypot(m[1])) as f64))?;
+    vm.set(id, "_yscale", Value::Number((100.0 * m[2].hypot(m[3])) as f64))?;
+    vm.set(id, "_rotation", Value::Number(m[1].atan2(m[0]).to_degrees() as f64))?;
+    Ok(())
+}
+
+/// A clip's local matrix: the placement's (or identity), its linear part replaced by a script-set scale /
+/// rotation, translated by `_x` / `_y`.
+pub fn clip_matrix(movie: &Movie, vm: &Vm, id: usize) -> [f32; 6] {
+    let mut m = movie
+        .instances
+        .get(&id)
+        .and_then(|i| i.placement.as_ref())
+        .map_or([1., 0., 0., 1., 0., 0.], |p| p.matrix);
+    if let Some([sx, sy, rotation]) = movie.scaled.get(&id) {
+        let (sin, cos) = rotation.to_radians().sin_cos();
+        m[0] = cos * sx / 100.0;
+        m[1] = sin * sx / 100.0;
+        m[2] = -sin * sy / 100.0;
+        m[3] = cos * sy / 100.0;
+    }
+    m[4] = vm.get(id, "_x").number() as f32;
+    m[5] = vm.get(id, "_y").number() as f32;
+    m
+}
 fn display_states(c: &Character) -> Result<Vec<DisplayList>, String> {
     let mut list = DisplayList::default();
     let mut frames = Vec::new();
@@ -133,6 +165,7 @@ impl Movie {
             classes: BTreeMap::new(),
             script_moved: Default::default(),
             attached: Default::default(),
+            scaled: Default::default(),
             states,
         })
     }
@@ -252,6 +285,36 @@ impl Movie {
         }
         Ok(id)
     }
+    /// A script wrote `key` (`_xscale`, `_yscale`, `_rotation`, `_width`, `_height`) on a clip: record its
+    /// transform. `_width` / `_height` of a non-text clip set the scale through its natural bounds (text fields
+    /// keep their own `_width` meaning, the field box).
+    pub fn transform_changed(&mut self, vm: &mut Vm, id: usize, key: &str) -> Result<(), String> {
+        let Some(instance) = self.instances.get(&id) else { return Ok(()) };
+        let character = instance.character;
+        let is_text = self.characters.get(&character).is_some_and(|c| c.text.is_some());
+        let key = key.to_ascii_lowercase();
+        if is_text && (key == "_width" || key == "_height") {
+            return Ok(());
+        }
+        let number = |vm: &Vm, k: &str| vm.get(id, k).number() as f32;
+        let mut t = [number(vm, "_xscale"), number(vm, "_yscale"), number(vm, "_rotation")];
+        if key == "_width" || key == "_height" {
+            let Some(b) = self.character_bounds(character, 0) else { return Ok(()) };
+            let (natural, axis) = if key == "_width" { (b[2] - b[0], 0) } else { (b[3] - b[1], 1) };
+            if natural > 0.0 {
+                t[axis] = 100.0 * number(vm, &key) / natural;
+                vm.set(id, if axis == 0 { "_xscale" } else { "_yscale" }, Value::Number(t[axis] as f64))?;
+            }
+        } else if let Some(b) = self.character_bounds(character, 0) {
+            vm.set(id, "_width", Value::Number(((b[2] - b[0]) * t[0] / 100.0) as f64))?;
+            vm.set(id, "_height", Value::Number(((b[3] - b[1]) * t[1] / 100.0) as f64))?;
+        }
+        if t.iter().all(|v| v.is_finite()) {
+            self.scaled.insert(id, t);
+        }
+        Ok(())
+    }
+
     /// A character's bounds in its own space: its own (shapes, text) or, for a sprite, the union of its frame-0
     /// children through their matrices, leaving out clip-depth children like retail's bounds walk sub_82E59C28.
     /// New clips get `_width` / `_height` from it. NOT RETAIL YET: static frame-0 bounds, not re-measured when the
@@ -362,6 +425,7 @@ impl Movie {
     }
     fn remove(&mut self, vm: &mut Vm, id: usize) {
         self.attached.remove(&id);
+        self.scaled.remove(&id);
         if let Some(instance) = self.instances.remove(&id) {
             // Retail sub_82E55DA8 dispatches unload before tearing down the children.
             if let Some(p) = &instance.placement {
@@ -440,6 +504,9 @@ impl Movie {
             if old.is_none_or(|old| old.matrix != placement.matrix) && !self.script_moved.contains(&child) {
                 vm.set(child, "_x", Value::Number(placement.matrix[4] as f64))?;
                 vm.set(child, "_y", Value::Number(placement.matrix[5] as f64))?;
+            }
+            if old.is_none_or(|old| old.matrix != placement.matrix) && !self.scaled.contains_key(&child) {
+                seed_scale(vm, child, &placement.matrix)?;
             }
             if !placement.name.is_empty() {
                 vm.set(id, &placement.name, Value::Object(child))?;
@@ -563,6 +630,7 @@ impl Movie {
                 vm.set(child, &k, v)?;
             }
         }
+        seed_scale(vm, child, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0])?;
         self.instances.get_mut(&child).unwrap().placement = Some(Placement {
             character,
             matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],

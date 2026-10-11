@@ -562,10 +562,11 @@ fn render(
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<HudMaterial>>,
+    controllers: Option<Res<crate::input::ControllerInput>>,
 ) {
     let (Some(mut ms), Some(movies)) = (stage, movies) else { return };
     let ms = &mut *ms;
-    let draws = if ms.failed {
+    let mut draws = if ms.failed {
         Vec::new()
     } else {
         match ms.stage.draw(|key, movie| movies.scene(key, movie)) {
@@ -577,6 +578,32 @@ fn render(
             }
         }
     };
+    // Button prompts (CustomButton components, `prompt/<retail button>`): the first connected pad's printed labels
+    // (SDL), Xbox naming without a pad; each label's glyph is generated once (prompt_glyphs).
+    let labels = controllers
+        .as_ref()
+        .and_then(|c| c.kinds.iter().flatten().next().map(|k| k.face_labels))
+        .unwrap_or_else(|| crate::input::controller_kind::PromptStyle::Xbox.labels());
+    for draw in &mut draws {
+        let Some(button) = draw.texture.strip_prefix("prompt/") else { continue };
+        let Some(label) = crate::prompt_glyphs::face_index(button).map(|i| labels[i]) else {
+            continue;
+        };
+        let key = format!("prompt-glyph/{label:?}");
+        if !ms.textures.contains_key(&key) {
+            let handle = images.add(Image::new(
+                Extent3d { width: crate::prompt_glyphs::SIZE, height: crate::prompt_glyphs::SIZE, depth_or_array_layers: 1 },
+                TextureDimension::D2,
+                crate::prompt_glyphs::glyph(label),
+                TextureFormat::Rgba8UnormSrgb,
+                RenderAssetUsages::RENDER_WORLD,
+            ));
+            ms.textures.insert(key.clone(), handle);
+        }
+        draw.texture = key;
+    }
+    // An unresolved prompt draws nothing (an empty key would draw solid white).
+    draws.retain(|d| !d.texture.starts_with("prompt/"));
     let root = crate::retail_menu_movies::set_root(&config);
     for draw in &draws {
         if draw.texture.is_empty() || ms.textures.contains_key(&draw.texture) {
@@ -613,5 +640,7 @@ fn render(
         &draws,
         |t| if t.is_empty() { Some(white.clone()) } else { textures.get(t).cloned() },
         MENU_Z,
+        // Colour transforms in gamma space like the console front end (retail shot: near-black panel body).
+        true,
     );
 }

@@ -446,6 +446,11 @@ mod sdl {
                 paddles: PADDLE_BUTTONS.iter().filter(|&&b| pad.has_button(b)).count() as u8,
                 touchpad: pad.touchpads_count() > 0,
                 misc_button: pad.has_button(Button::Misc1),
+                face_labels: {
+                    let labels = [Button::South, Button::East, Button::West, Button::North]
+                        .map(|b| controller_kind::PromptLabel::from_sdl(gamepads.button_label_for_gamepad_type(pad.r#type(), b)));
+                    labels.iter().all(Option::is_some).then(|| labels.map(Option::unwrap))
+                },
             },
             controller_kind::user_models(),
         ));

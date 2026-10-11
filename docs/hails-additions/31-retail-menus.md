@@ -1007,12 +1007,57 @@ options.apt also needs APT features the pause menu never used (attachMovie, comp
 - Screenshot `.local/research/menus-m6/settings.png` (`SKATE3_RETAIL_MENUS_KEYS=15,15,15,2`): Game Settings with
   Difficulty / Audio / Video / Control / Online / skate.Feed Settings, the first row selected.
 
+### Panel, sub-screens and colour (same day)
+- [data, research `.local/research/menu-white-squares.md`, main-checked] The squares were not gradients: panel.apt
+  stretches 16 x 16 colour swatches (panelTopFill, panelCoreFill, ...) into its bands with `_xscale` / `_yscale`
+  in BuildPanel, which our APT player ignored; and button_item2's `mButtonRender` is a placeholder for a native
+  component (`_type = "CustomButton"`, `_test` = the button), drawn by the player.
+- APT: `_xscale` / `_yscale` / `_rotation` seeded from the placement, script writes (and `_width` / `_height` on
+  non-text clips, through their bounds) replace the matrix's linear part (`apt_movie::clip_matrix`, both matrix
+  builders). The front-end stage host applies it; the gameplay HUD host does not yet (unchanged).
+- removeMovieClip on attached clips reaches the movie (DeleteOptions on a sub-screen rebuild); test: screen 2.
+- Colour: the menus apply colour transforms in gamma space (hud_render.wgsl mode 1): the console front end works
+  on display values, and a recomp shot shows a near-black panel body where ours was mid grey (solid 0.145
+  encoded twice). The gameplay HUD keeps the linear path until it is compared against retail (open).
+- In game (`SKATE3_RETAIL_MENUS_KEYS=15,15,15,2,2,15`): A on Difficulty Settings opens the Difficulty screen
+  ("Play Mode < Normal >", "Classic Skate Gameplay" description); Right steps the difficulty through the engine
+  binding.
+
 ### Open
-- Panel corner pieces and the A / B button icons draw as white squares (their fills render as plain solid fills;
-  likely gradient fills, not ported in apt_scene).
-- Left / Right and sub-screens not yet checked in game; HUD mode / chyron effects not hooked up.
+- HUD mode / chyron effects not hooked up; the gameplay HUD's colour space and scale support (check vs retail).
+- Prompts only for the face buttons; shoulders / Start / sticks draw nothing yet.
+
+## Button prompts (2026-10-10)
+
+### Problem
+Retail draws button glyphs through a native "CustomButton" component (Xbox 360 art). On PC the prompt must show
+the connected pad's own button (user: the glyphs "should be replaced by SDL's appropriate button replacement
+prompt"; size and placement as retail).
+
+### Change
+- `input/controller_kind.rs`: `PromptLabel`; `ControllerKind::face_labels` = SDL's labels of the South / East /
+  West / North buttons for the pad type (`SDL_GetGamepadButtonLabelForType`, `input/platform.rs`), else the
+  family's prompt style (XInput, unknown types).
+- `apt_scene.rs`: a CustomButton clip with a face button in `_test` draws one quad over its placeholder's bounds
+  (retail's box and placement, laid out by button_item2's own script) with texture `prompt/<button>`; other
+  native components draw nothing.
+- `prompt_glyphs.rs` (new): generated glyphs in retail's prompt style (coloured ball, light symbol, dark outline;
+  A green, B red, X blue, Y yellow, PlayStation symbols in their colours), no console art; the ball spans 0.83 of
+  the box, as measured on a recomp shot (`.local/research/menus-m6/retail/`, retail glyph 10 of 480 px, box 32 of
+  1280). `retail_menu_stage.rs` resolves `prompt/<button>` through the first connected pad's labels (Xbox labels
+  without a pad).
+
+### Verification
+- `cargo test -p skate-game prompt_glyphs controller_kind`: glyph size / colours, SDL-less fallbacks (PS5 ->
+  Cross..., Switch South -> B).
+- Screenshot `.local/research/menus-m6/settings.png`: A / B prompts beside Select / Back like the retail shot.
+
 
 ## Files
+- Button prompts / panel: `crates/skate-game/src/prompt_glyphs.rs` (new), `input/controller_kind.rs`,
+  `input/platform.rs`, `input/tests/controller_kind.rs`, `apt_scene.rs`, `apt_movie.rs` (`clip_matrix`,
+  `transform_changed`), `apt_stage.rs`, `hud_render.wgsl`, `scoring_hud.rs` (`render_draws` gamma flag),
+  `retail_menu_stage.rs`
 - Game Settings screen: `crates/skate-game/src/settings_host.rs` (new), `crossbar_host.rs`, `retail_menu_stage.rs`,
   `retail_menus.rs`, `fe_backdrop.rs`, `apt_vm.rs`, `apt_movie.rs`, `apt_stage.rs` (test), `main.rs`;
   `crates/skate-core/src/fe_input.rs` (retail repeat ticks); `crates/skate-data/src/menu_tables.rs`
