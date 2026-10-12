@@ -141,6 +141,9 @@ pub trait Host {
         arguments: Vec<Value>,
     ) -> Result<Value, String>;
 }
+/// Object slots a VM may hold: a runaway guard, not a retail limit. The front end alone keeps about 2000 live and
+/// a pause menu adds about 1300; hosts that load and unload movies `collect` between updates.
+const MAX_OBJECTS: usize = 16_384;
 #[derive(Default)]
 pub struct Vm {
     pub objects: Vec<Object>,
@@ -343,8 +346,9 @@ impl Vm {
     }
     /// Collect only between updates. Host-owned movie handles are explicit
     /// roots; script references and prototypes preserve retired clips when
-    /// they remain reachable. Stable handles never move during collection.
-    pub fn collect(&mut self, host_roots: impl IntoIterator<Item = usize>) -> Result<(), String> {
+    /// they remain reachable. Stable handles never move during collection. Returns every free slot (host side
+    /// tables drop entries for these).
+    pub fn collect(&mut self, host_roots: impl IntoIterator<Item = usize>) -> Result<Vec<usize>, String> {
         if self.depth != 0 {
             return Err("Cannot collect during an APT call".into());
         }
@@ -378,7 +382,7 @@ impl Vm {
                 self.free_objects.push(id);
             }
         }
-        Ok(())
+        Ok(self.free_objects.clone())
     }
     pub fn set(
         &mut self,
@@ -434,6 +438,10 @@ impl Vm {
         x ^= x >> 27;
         self.random_state = x;
         (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
+    }
+    /// Objects in use (the VM's object budget counts every slot; collected slots are reused).
+    pub fn live_objects(&self) -> usize {
+        self.objects.len() - self.free_objects.len()
     }
     pub fn begin_update(&mut self) {
         self.remaining = 100_000;
@@ -716,7 +724,7 @@ impl Vm {
             s.pop().ok_or("APT stack underflow".into())
         }
         while let Some(i) = code.get(pc) {
-            if self.remaining == 0 || self.objects.len() > 4096 {
+            if self.remaining == 0 || self.objects.len() > MAX_OBJECTS {
                 return Err("APT execution/object budget exceeded".into());
             }
             self.remaining -= 1;

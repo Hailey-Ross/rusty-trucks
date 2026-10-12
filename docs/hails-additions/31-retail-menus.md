@@ -1332,6 +1332,45 @@ announcer speech). Without the decode, ped speech is chosen and logged but silen
   caused by this change; open.
 - Open: the refresh with the decode is not run end to end (it needs a release package's setup helper).
 
+## Pause menu froze the game on the third open (2026-10-12)
+
+### Problem
+A hails-additions session (Steam launcher, trace-all) froze with the pause menu: the game stayed suspended and Start did
+nothing, so the game had to be closed.
+
+### Root cause
+- The front-end stage never collected its VM objects. Every pause open loads the crossbar movie (about 1300 objects);
+  closing it unloaded the level but the objects stayed, so the third open crossed the VM's 4096-object guard
+  (`RETAIL_MENUS stage stopped: APT execution/object budget exceeded`).
+- `Vm::collect` existed but nothing called it; and when called, the stage's table of script-made clips
+  (`createEmptyMovieClip`) kept every closed screen alive through the clips' parent links.
+- A stopped stage left gameplay suspended (`fe_suspended`) and the pause backdrop up, and Start is ignored while
+  suspended: the freeze.
+
+### Evidence
+Session log `game-20261012-072425.stderr.log`: pause opened three times (two Challenge Map -> PC overlay round trips in
+between), the third open fails 5 ms after `open pause menu (FE 54)`, physics tick stays at 392 to the end.
+
+### Change
+- `apt_stage.rs`: `Stage::collect` runs at the end of an update once the slots reach twice what survived the last
+  collection (at least 1024). Roots: `_global`, the stage's prototypes, classes and pending loads, and every object id
+  the loaded movies hold (root, instances and children, queued actions, classes, script-moved / attached / scaled
+  clips). The script-made clip table is weak: entries go when their clip is collected.
+- `apt_vm.rs`: `collect` returns the free slots; the object guard is 16384 (a runaway guard, not a retail limit).
+- `retail_menu_stage.rs`: a stopped stage releases the gameplay suspension, the pause backdrop and the HUD mode once
+  (warning `stage stopped with the pause menu open: gameplay resumed`); Start then opens the PC overlay.
+- NOT RETAIL (mechanism): retail's APT player refcounts its objects; the collection only keeps the slots bounded and
+  changes no script-visible behaviour (only unreachable objects are freed).
+
+### Verification
+- `cargo test -p skate-game pause_menu_reopens_without_growing` (data-gated on the exported menu set): 8 open/close
+  cycles of the real crossbar through the retail screen manager; live objects after each cycle
+  `[908, 908, 908, 908, 908, 908, 908, 908]`. Before the change it failed on the third open with the session's error.
+
+### Open questions
+- Challenge Map still opens the PC overlay's Maps section (the bridge in "Row handlers"); retail's Challenge Map
+  screen (FE 17) with its locations and teleports is not ported.
+
 ## Files
 - Out-of-date prompt: `crates/skate-game/src/asset_check.rs` (new), `setup.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`
 - Stored settings: `crates/skate-game/src/retail_menus.rs` (`StoredSettings`, `setting`), `scoring_hud.rs`
