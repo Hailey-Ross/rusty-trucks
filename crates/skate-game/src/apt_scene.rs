@@ -277,10 +277,18 @@ fn visit(
                 16,
             )
             .map_err(|e| e.to_string())?;
+            // `TextField.textColor` (0xRRGGBB) set by the movie's script replaces the field's authored colour; the
+            // alpha stays the field's. The settings rows set it per state in SetState (highlight_selector /
+            // highlight_slider / menu_part_text_hilite: selected 0x37A5FF, rows on / off / disabled); without it the
+            // selected value ("< Normal >", "100%") drew in its dark authored colour (play test, 2026-10-12).
+            let rgb = match vm.get(id, "textColor") {
+                crate::apt_vm::Value::Undefined => argb & 0xFF_FFFF,
+                v => crate::apt_vm::to_integer(&v) as u32 & 0xFF_FFFF,
+            };
             let color = [
-                ((argb >> 16) & 255) as f32 / 255.,
-                ((argb >> 8) & 255) as f32 / 255.,
-                (argb & 255) as f32 / 255.,
+                ((rgb >> 16) & 255) as f32 / 255.,
+                ((rgb >> 8) & 255) as f32 / 255.,
+                (rgb & 255) as f32 / 255.,
                 (argb >> 24) as f32 / 255.,
             ];
             if !vertices.is_empty() {

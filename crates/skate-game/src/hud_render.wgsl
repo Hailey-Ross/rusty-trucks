@@ -11,17 +11,19 @@ fn to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), c > vec3(0.04045));
 }
 
-// mode.x = 1 (the retail menus): APT colour transforms and solid colours are display (gamma) values, like the
-// console's front end; the atlas is sampled as sRGB (linear here) and the target encodes sRGB, so the transform
-// is applied in gamma space and the result handed back as linear. A texture with an identity transform comes out
-// unchanged. Both the menus and the gameplay HUD use it (one APT player in retail); mode.x = 0 keeps the old
-// linear path for any other user.
+// The layer target holds display (gamma) values and blends them there, like the console's front end: retail's APT
+// draw state is straight SRC_ALPHA / INV_SRC_ALPHA (`sub_827E4AF0`, bound by `sub_825D4490`) on a display-value
+// image (research menus-m6 "Retail blend state", medium-high confidence: the 2D pass's format is inferred). Blending
+// in linear made the soft low-alpha glow layers of a selected menu row far too bright (play test, 2026-10-12). The
+// composite (`hud_composite.wgsl`) converts the layer to linear once.
+// mode.x = 1 (the retail menus and the gameplay HUD, one APT player in retail): the colour transform applies to the
+// display value of the texel. mode.x = 0 keeps the linear transform for any other user, stored as display values.
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let t = textureSample(atlas, atlas_sampler, in.uv);
     if color.mode.x < 0.5 {
-        return clamp(t * color.multiply + color.add, vec4(0.0), vec4(1.0));
+        let l = clamp(t * color.multiply + color.add, vec4(0.0), vec4(1.0));
+        return vec4(to_gamma(l.rgb), l.a);
     }
-    let g = clamp(vec4(to_gamma(t.rgb), t.a) * color.multiply + color.add, vec4(0.0), vec4(1.0));
-    return vec4(to_linear(g.rgb), g.a);
+    return clamp(vec4(to_gamma(t.rgb), t.a) * color.multiply + color.add, vec4(0.0), vec4(1.0));
 }

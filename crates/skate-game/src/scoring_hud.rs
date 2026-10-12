@@ -196,7 +196,8 @@ fn setup(
             let target = images.add(Image::new_target_texture(
                 window.physical_width().max(1),
                 window.physical_height().max(1),
-                TextureFormat::Rgba8UnormSrgb,
+                // Display values, blended as the console's front end does (`hud_render.wgsl`).
+                TextureFormat::Rgba8Unorm,
                 None,
             ));
             hud.target = target.clone();
@@ -315,7 +316,7 @@ mod tests {
                 .add(Image::new_target_texture(
                     1280,
                     720,
-                    TextureFormat::Rgba8UnormSrgb,
+                    TextureFormat::Rgba8Unorm,
                     None,
                 ));
         let composite = app
