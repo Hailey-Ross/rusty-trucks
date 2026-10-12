@@ -322,6 +322,11 @@ fn living_world_ped_data_loads_from_the_export() {
     // The hand prop attach bone (b87 / b89; right hand: every carry channel is *RH).
     assert_eq!(d.rig.names.iter().position(|n| n.eq_ignore_ascii_case("RightHandProp")), Some(26));
     assert!(d.clips.len() > 50);
+    // The sit plugin's cycle and the Avoid graph's jump off a seat resolve in the stock sets (the seat-moved avoid).
+    let sit_sets = d.anim_sets.values().filter(|s| s.entries.contains_key(super::peds::SIT_CYCLE)).count();
+    let avoid_sets = d.anim_sets.values().filter(|s| s.entries.contains_key(super::peds::SIT_AVOID_CLIP)).count();
+    eprintln!("anim sets with the sit cycle {sit_sets}, with SitAvoidFwd {avoid_sets}");
+    assert!(avoid_sets > 0 && avoid_sets >= sit_sets, "SitAvoidFwd in {avoid_sets} of {sit_sets} sitting sets");
     let look = d.catalog.choose("aletown", 1, &PedOverrides::default()).unwrap();
     let set = &d.anim_sets[&look.anim_set];
     let body = PedBody { player: PedAnimPlayer::new(set, 1).unwrap(), path: skate_core::living_world::peds::anim::TestPath::new(1), nav: Default::default(), blocked: 0.0, position: Vec3::ZERO, velocity: Vec3::ZERO, heading: 0.0, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: Default::default(), plugin_motion: Default::default() };
@@ -928,4 +933,37 @@ fn placed_plugin_waypoints_against_the_navmesh() {
             }
         }
     }
+}
+
+/// A ped in the Plugin state whose prop streams out switches from the prop's graph to the conversation graph: the
+/// plugin controller is rebuilt for the new graph's state count instead of indexing past the old one (a session
+/// crashed with "the len is 15 but the index is 15" after an angry ped's second knockout, 2026-10-12).
+#[test]
+fn plugin_controller_is_rebuilt_when_the_plugin_graph_changes() {
+    let (mut slot, mut graph) = (None, None);
+    assert_eq!(plugin_controller_for(&mut slot, &mut graph, "waypoint_sit", 15), None);
+    assert_eq!(slot.as_ref().unwrap().frame.state_times.len(), 15);
+    // Same graph: the running controller is kept.
+    slot.as_mut().unwrap().frame.state_times[3] = Some(1.0);
+    assert_eq!(plugin_controller_for(&mut slot, &mut graph, "waypoint_sit", 15), None);
+    assert_eq!(slot.as_ref().unwrap().frame.state_times[3], Some(1.0));
+    // The prop is gone: the conversation graph gets a controller of its own size.
+    assert_eq!(plugin_controller_for(&mut slot, &mut graph, "conversation", 22), Some("waypoint_sit".into()));
+    assert_eq!(slot.as_ref().unwrap().frame.state_times.len(), 22);
+    assert!(slot.as_ref().unwrap().frame.state_times.iter().all(Option::is_none));
+}
+
+/// A seated ped (IgnoreStandingCollisions, `brain+3277` bit 0x10) ignores a gentle bump but is knocked down by a hit
+/// above the knock-down speed, like retail's skater contact rule (`sub_82E38FB8`); a standing ped stumbles from the
+/// same bump. Peds on a bench could not be hit at all before (play test, 2026-10-12).
+#[test]
+fn a_seated_ped_ignores_bumps_but_not_a_hard_hit() {
+    use skate_core::living_world::peds::skater_contact::{CollisionRules, ReactionKind};
+    let rules = CollisionRules::default();
+    let ped = Vec3::new(0.0, 0.0, 0.0);
+    // The skater 0.5 m away on -z, rolling into the ped along +z.
+    let hit = |speed: f32, seated: bool| skater_hit(ped, 0.0, 0.3, [0.0, 0.0, -0.5], [0.0, 0.0, speed], &rules, seated).map(|h| h.0);
+    assert_eq!(hit(1.5, false), Some(ReactionKind::Standing));
+    assert_eq!(hit(1.5, true), None);
+    assert_eq!(hit(4.0, true), Some(ReactionKind::Knockdown));
 }

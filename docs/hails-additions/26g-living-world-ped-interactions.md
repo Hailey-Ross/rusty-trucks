@@ -1038,3 +1038,77 @@ mod event for a prop hitting the skater yet.
 `attack_throw_aims_and_releases`, brain `the_attack_throw_aims_at_the_want_target_and_unsets_the_want_after_the_flight`;
 skate-game `hand_prop_proxy_group_by_mass`, data-gated `a_thrown_can_reaches_the_skater_region_forces` (with
 `a_traffic_car_knocks_the_skater_down_above_the_contact_limit` unchanged: wipeout at tick 6). Not seen in game yet.
+
+## Angry peds, knocked-down peds on their way to a seat, moved benches and a plugin crash (2026-10-12)
+
+### Problems (play tests, 2026-10-12)
+1. An angry ped knocked the skater down, taunted, and chased again the moment its taunt ended, over and over, with no
+   new collision (log: `PED_MOOD ... result=skatercollisionchase category=collision` right after `DoTaunt ->
+   InitialState`, no `PED_SKATER_CONTACT` since the last takedown).
+2. Two peds knocked down several times while walking to a bench never got angry; both then sat down where the bench
+   had been before the skater moved it (in the air).
+3. The game crashed: "index out of bounds: the len is 15 but the index is 15" at `graph/controller.rs:180`
+   (`think_peds`), in the frame props streamed out near an angry ped.
+
+### Root causes [code, the TU3 recomp as reference; graph files from the disc]
+- `IsEndChaseReason` (`826AAC80`: the chase component's end reason, vfunc +84, equals op+28) was not ported, so
+  EndChase always took its default branch. Retail's `pedestrian_endchase.xml` aggressivecapture branch:
+  SendChaseStateMessage end, `IgnoreCollisionsWithWantTarget angrychase`, `UnsetWant angrychase`,
+  `SuppressMoodAboutChasee 5.5`, EndChase.
+- The mood result's want flag 0x40 (`CE65`, set on the chase, tazeperp and runfromchaser results) was dropped when
+  the want was raised: unsetting such a want erases the mood records and the perception entry about its target
+  (`sub_82E42A58` -> `sub_82E40FF0`, research b28 / b18). Our collision record (30 s lifetime) outlived the chase.
+- `ped+5680` (the entity whose contacts the ped ignores) was not modelled: `TakeDownTargetableSuccess` (`826A4E50`)
+  and `IgnoreCollisionsWithWantTarget` (`826A8A60`) store the target there; the contact classifier `sub_82E38400`
+  resolves it (medium confidence on exactly how the classifier uses it). The takedown's own bumps counted as new
+  collisions.
+- `PedestrianColliding` (Begin `8269DA00`, End `8269E610`) was not ported and nothing set the collision component's
+  needs-to-begin / colliding bytes (+8 / +10, read by `NeedsToBeginColliding` `8269E758` and `IsPedestrianColliding`
+  `8269E790`). Retail: a contact sets +8, the graph enters Colliding (also from the Plugin state,
+  `pedestrian_plugin.xml`, unless IsPluginCollisionOverride), whose Begin posts the collision mood broadcast
+  (`sub_8269D8A8`). Ours posted the mood straight from the contact, and a ped in a plugin stayed busy and kept going.
+- Hotpoint seats were fixed at the prop's authored placement (noted NOT RETAIL YET in `ped_plugins::map_props`);
+  retail's hotpoints belong to the object.
+- The ped's plugin controller was sized for the first plugin graph it ran; when the prop streamed out the ped switched
+  to the conversation graph on the same controller.
+- A seated ped could not be hit at all: our contact check skipped every ped playing any reaction clip, and the sit
+  plays as one. Retail skips a contact only while the ped is already in a collision reaction (`sub_82E38FB8`,
+  controller byte +9), and a seated ped's IgnoreStandingCollisions (`brain+3277` bit 0x10, `sit_body.xml`) only drops
+  the stumble: a hit above the knock-down speed (3.0) still knocks it down.
+
+### Change
+- skate-core `peds/brain.rs`: `Want::forget_on_unset` (flag 0x40) and `PedBrain::raise_want`; `unset_want` of such
+  a want forgets the perception entry and requests `ChaseRequest::MoodReset`. New ops `IsEndChaseReason`,
+  `IgnoreCollisionsWithWantTarget`, `PedestrianColliding`; `PedBrain::ignore_collisions_with` (also set by
+  TakeDownTargetableSuccess), `collision_began`; NeedsToBeginColliding / IsPedestrianColliding now have writers.
+- skate-game `living_world/peds.rs`: a reacting contact sets the needs-to-begin and colliding flags; colliding clears
+  when the contact reaction ends; the collision mood broadcast is posted when PedestrianColliding begins
+  (`PedEvent::Colliding`, log `PED_COLLIDING`); contacts from the ignored entity are dropped (no reaction, no mood).
+  Hotpoint seats follow their prop's body every think (`ped_plugins::follow_prop`). The plugin controller is rebuilt
+  when the plugin graph changes (`plugin_controller_for`, log `PED_PLUGIN ped=#N graph <old> -> <new>`). The contact
+  check runs unless the ped is in a contact reaction and passes IgnoreStandingCollisions to the reaction rule.
+- Mods: all of it is driven by the stock graph files and mood tables, which mods already override; no new constants.
+  Multiplayer: host-side ped state; the colliding / ignore flags and the broadcast are host decisions.
+
+### Verification
+- skate-core `a_captured_chasee_is_forgotten_and_its_contacts_ignored`; skate-game
+  `plugin_controller_is_rebuilt_when_the_plugin_graph_changes`, `a_moved_prop_carries_its_seats`,
+  `a_seated_ped_ignores_bumps_but_not_a_hard_hit`; data-gated `living_world_ped_data_loads_from_the_export` checks
+  `SitAvoidFwd` resolves (12 of 12 sitting animation sets). Living world tests
+  86 passed; skate-core 993 passed with only the known upstream `a_moving_group_8_body_...` failure.
+- In game: to be play-tested (local test build `hails-local`).
+
+### Open
+- Retail clears brain `+3277` bit 0x04 at PedestrianColliding Begin / End and sets `+3196` bit 0x20 at End (meanings
+  open, not modelled). How `sub_82E38400` uses `ped+5680` exactly (ignore vs a different contact kind).
+- A bench moved under a seated ped (session `game-20261012-133659`: `PED_PLUGIN_SEAT_MOVED` while ped #6 sat; the
+  ped was left in the air). Retail (research `.local/research/peds/b102-moved-plugin-object-unseat.md`, main checked
+  `82E3DBE0` and `motiongraph_avoid.xml`): the grab is not refused and the ped keeps its plugin and seat. The owned
+  object reporting a move (`82E3DBE0`: the DisableCollisionsWithBehaviourSource source, |v|^2 > 2.5e-5, OwnPluginObject
+  bit 0x01 set, `[ped+5712]+1416 == 0`) makes the ped jump off forward (intent via `82E36B58`, motiongraph_avoid SitJump
+  -> JumpForward `SitAvoidFwd`, blend 0.1, speech PedestrianAvoidJump 4); the locked waypoint is re-read every evaluation
+  (`826AB9C0`), so the graph walks the ped to the seat's new place and sits it again (until the 60 s PluginTimeout).
+  Ours: `PedMind::sit_avoid` raised while the seat moves under its owner (`SEAT_PUSH_SPEED_SQ`, the seat's speed stands
+  in for the object's vector), the body interrupts the sit cycle with `SitAvoidFwd` (`PedAnimPlayer::interrupt`), and
+  the brain's locked waypoint follows the seat. Open: whether `82E3DBE0`'s vector is a velocity or a step, the
+  `+1416` gate, the Back avoid (`ReturnToSit`) and who calls `82E3DBE0`.

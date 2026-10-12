@@ -383,6 +383,9 @@ pub(crate) enum PedEvent {
         /// The skater's speed into the ped, m/s (our stand-in for the ped body's speed).
         closing: f32,
     },
+    /// The ped's Colliding state began (PedestrianColliding Begin `8269DA00`): the collision mood broadcast
+    /// (`sub_8269D8A8`), read by every ped's think on the next step.
+    Colliding { id: LivingWorldId },
     /// A chase group changed (`kind`: join, join_refused, leave, primary, group_end); `chasee` is
     /// the chased id (players: `PLAYER_TARGET_BASE + n`).
     Chase { id: LivingWorldId, chasee: u64, kind: &'static str, reason: Option<i32> },
@@ -402,6 +405,14 @@ pub(crate) enum PedEvent {
 /// vertical cylinder at the observer (the board) of this radius and 2 m tall, and the ped body's
 /// speed after the contact (retail: the Havok solve) is the skater's speed into the ped.
 pub(crate) const SKATER_CONTACT_RADIUS: f32 = 0.35;
+/// `82E3DBE0`'s gate on the owned object's vector, |v|^2 > 2.5e-5 (`0x822F8BE0`) [code].
+pub(crate) const SEAT_PUSH_SPEED_SQ: f32 = 2.5e-5;
+/// The sit plugin's held cycle (`plugin_motion` Sit) and the Avoid graph's forward jump off a seat
+/// (`motiongraph_avoid.xml` JumpForward, `PlayRemappedAnimation SitAvoidFwd`) [data].
+pub(crate) const SIT_CYCLE: &str = "SitIdleCyc";
+pub(crate) const SIT_AVOID_CLIP: &str = "SitAvoidFwd";
+/// `motiongraph_avoid.xml` SitJump: `PedestrianSpeech` PedestrianAvoidJump [data].
+pub(crate) const SIT_AVOID_SPEECH: i32 = 4;
 
 /// The retail reaction to a skater at `skater` moving at `velocity` touching the ped at `ped`
 /// facing `heading`: `None` when not touching, not moving into it, or no reaction.
@@ -412,6 +423,7 @@ pub(crate) fn skater_hit(
     skater: [f32; 3],
     velocity: [f32; 3],
     rules: &skate_core::living_world::peds::skater_contact::CollisionRules,
+    ignore_standing: bool,
 ) -> Option<(skate_core::living_world::peds::skater_contact::ReactionKind, skate_core::living_world::peds::skater_contact::ReactionDirection, f32)> {
     use skate_core::living_world::peds::skater_contact::{reaction_direction, skater_reaction};
     let d = [ped.x - skater[0], ped.z - skater[2]];
@@ -424,7 +436,8 @@ pub(crate) fn skater_hit(
     if closing <= 0.0 {
         return None;
     }
-    let kind = skater_reaction([closing, 0.0], [0.0, 0.0], rules, false)?;
+    // IgnoreStandingCollisions (`brain+3277` bit 0x10, e.g. a seated ped): only a knock-down reacts.
+    let kind = skater_reaction([closing, 0.0], [0.0, 0.0], rules, ignore_standing)?;
     Some((kind, reaction_direction(n, [heading.sin(), heading.cos()]), closing))
 }
 
@@ -737,6 +750,13 @@ pub(crate) fn advance_peds(
             }
             // A plugin state's clips (sit, ATM, vending machine, water fountain, newspaper box).
             let run = &mut body.plugin_motion;
+            // The Avoid graph's SitJump out of the sitting cycle (`think_peds` raises `sit_avoid`).
+            if mind.is_some_and(|m| m.sit_avoid) && body.player.reaction_anim() == Some(SIT_CYCLE) {
+                let steps = vec![skate_core::living_world::peds::skater_contact::ReactionStep { anim: SIT_AVOID_CLIP, mirror: false, blend: 0.1, cycle: false }];
+                if body.player.interrupt(set, steps, 0.0) {
+                    run.state = TauntClip::Done;
+                }
+            }
             match (run.state, run.packet.as_deref().and_then(skate_core::living_world::peds::plugin_motion::motion_for)) {
                 (TauntClip::Requested, Some(m)) if !body.player.reacting() => {
                     use skate_core::living_world::peds::plugin_motion::BLEND;
@@ -759,10 +779,19 @@ pub(crate) fn advance_peds(
                 }
                 _ => {}
             }
-            // A skater running into the ped (retail `sub_82E38FB8` kind 5).
-            if body.player.state != Locomotion::Reaction {
+            // A skater running into the ped (retail `sub_82E38FB8` kind 5). Retail skips the contact only while the ped is
+            // already in a collision reaction (controller byte +9), not during any clip: a ped sitting on a bench or
+            // using a prop (its plugin clip plays as a reaction) can be knocked over.
+            let clip_reaction = body.taunt == TauntClip::Playing || body.plugin_motion.state == TauntClip::Playing;
+            let in_collision = mind.is_some_and(|m| m.brain.colliding) || (body.player.state == Locomotion::Reaction && !clip_reaction);
+            if !in_collision {
                 let radius = data.nav.as_deref().map_or(super::vehicle_contacts::FALLBACK_PED_RADIUS, |m| m.agent[1]);
-                if let Some((kind, direction, closing)) = observers.observers.iter().find_map(|o| skater_hit(body.position, body.heading, radius, o.position, o.velocity, &set.collision)) {
+                // Contacts from the entity the ped ignores (`ped+5680`, its takedown target) are dropped (`sub_82E38400`).
+                let ignored = mind.and_then(|m| m.brain.ignore_collisions_with);
+                if let Some((kind, direction, closing)) = observers.observers.iter().enumerate()
+                    .filter(|(i, _)| ignored != Some(PLAYER_TARGET_BASE + *i as u64))
+                    .find_map(|(_, o)| skater_hit(body.position, body.heading, radius, o.position, o.velocity, &set.collision, mind.is_some_and(|m| m.brain.ignore_standing_collisions)))
+                {
                     let steps = skate_core::living_world::peds::skater_contact::reaction_steps(kind, direction);
                     if body.player.react(set, steps, set.collision.ground_seconds) {
                         info!("PED_SKATER_CONTACT ped=#{} kind={} direction={} closing={closing:.2} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, kind.name(), direction.name(), body.position.x, body.position.y, body.position.z);
@@ -1318,6 +1347,26 @@ pub(crate) fn install(app: &mut App) {
         .add_systems(Update, (present_ped_looks, present_ped_tints, present_ped_pose).chain().after(crate::app::FrameSet::Animation).before(super::npc_skaters::present_fade));
 }
 
+/// `PedMind::plugin_graph` of the conversation graph (prop graphs use their class name).
+const CONVERSATION_GRAPH: &str = "conversation";
+
+/// The plugin controller for graph `key` with `states` states: kept while the graph is the same, made fresh when there
+/// is none or the ped switched graphs (a controller only fits the graph it was sized for). Returns the old graph's key
+/// on a switch.
+pub(crate) fn plugin_controller_for(
+    slot: &mut Option<skate_core::graph::controller::Controller>,
+    graph: &mut Option<String>,
+    key: &str,
+    states: usize,
+) -> Option<String> {
+    let switched = graph.as_deref().is_some_and(|g| g != key);
+    if switched || slot.is_none() {
+        *slot = Some(skate_core::graph::controller::Controller::new(states));
+    }
+    let old = graph.replace(key.to_owned());
+    if switched { old } else { None }
+}
+
 /// A ped's behaviour brain and its controller on the stock ped AI graph (behaviour runtime,
 /// doc 26). Host-owned plain data.
 #[derive(Component, Default)]
@@ -1336,6 +1385,10 @@ pub(crate) struct PedMind {
     /// The plugin graph's controller while the main graph runs the Plugin state.
     plugin_controller: Option<skate_core::graph::controller::Controller>,
     plugin_state: Option<usize>,
+    /// Which plugin graph `plugin_controller` was made for (the prop class, or the conversation graph).
+    plugin_graph: Option<String>,
+    /// The seat's prop is moving under the seated owner this tick: the body jumps off forward (`82E3DBE0`).
+    sit_avoid: bool,
     /// The speech value last sent to the audio side (`PedestrianSpeech` requests a line only when
     /// the value changes; a fresh ped holds the constructor's 68).
     spoken: Option<i32>,
@@ -1465,6 +1518,8 @@ pub(crate) fn think_peds(
     // plugin id carries its DMO body id in the low 32 bits (`ped_plugins::map_props`).
     let dormant = physics.as_ref().and_then(|p| p.prop_dynamics()).map(|d| d.dormant_ids()).unwrap_or_default();
     let streamed_out = |plugin_id: u64| dormant.contains(&(plugin_id as u32));
+    // Peds whose seat's prop moved this tick (grabbed, pushed, knocked): `82E3DBE0` fires the seated owner's avoid.
+    let mut seat_pushed: Vec<u64> = Vec::new();
     // Horn kind 2 at a ped (`sub_82E3C3D0`: the honker id into brain `+3232`; the last car wins).
     let honked: BTreeMap<u64, u64> = traffic_events.read().filter_map(|e| match e { super::vehicles::TrafficEvent::HonkedAt { id, ped } => Some((*ped, id.to_u64())), _ => None }).collect();
     let Some(graph) = data.graph.as_deref() else { return };
@@ -1475,7 +1530,17 @@ pub(crate) fn think_peds(
     // hit fails its "ped itself" prerequisite and records `nearbycollision` instead
     // (`sub_82E41060`). The instigator is the first player (local play; per player later).
     let cursor = cursor.get_or_insert_with(|| events.get_cursor());
-    let collisions: Vec<u64> = cursor.read(&events).filter_map(|e| match e { PedEvent::Hit { id, .. } => Some(id.to_u64()), _ => None }).collect();
+    // A reacting contact sets the hit ped's collision component (`sub_82E38FB8`: needs-to-begin); the mood broadcast
+    // waits for its Colliding state to begin (`PedEvent::Colliding`), so a ped whose state does not allow Colliding
+    // (a non-interruptible chase, a plugin with the collision override) posts nothing yet.
+    let (mut hits, mut collisions) = (Vec::<u64>::new(), Vec::<u64>::new());
+    for e in cursor.read(&events) {
+        match e {
+            PedEvent::Hit { id, .. } => hits.push(id.to_u64()),
+            PedEvent::Colliding { id } => collisions.push(id.to_u64()),
+            _ => {}
+        }
+    }
     if settings.net_role == super::NetRole::Client || !settings.ped_brain.enabled {
         return;
     }
@@ -1507,6 +1572,31 @@ pub(crate) fn think_peds(
             pp.key = key;
             pp.scan_ticks = 0;
             info!("PED_PLUGINS props on this map: {}", pp.props.len());
+        }
+        // Hotpoint seats ride on their object (a prop's plugin id carries its DMO body id in the low 32 bits): every
+        // think they follow the body from its authored pose, so a moved bench takes its seats along.
+        if let (Some(authored), Some(dynamics)) = (pp.key.as_ref().and_then(|k| data.plugins.placed.get(&k.0)), physics.as_ref().and_then(|p| p.prop_dynamics())) {
+            let pose = |(o, b): (skate_core::math::Vector3, skate_core::math::Basis3)| ([o.x, o.y, o.z], b.columns);
+            for (prop, original) in pp.props.iter_mut().zip(authored) {
+                let body = prop.id as u32;
+                let (Some(spawn), Some(now)) = (dynamics.spawn_pose(body), dynamics.pose(body)) else { continue };
+                let (spawn, now) = (pose(spawn), pose(now));
+                for (w, a) in prop.waypoints.iter_mut().zip(&original.waypoints) {
+                    let (position, facing) = super::ped_plugins::follow_prop(a.position, a.facing, spawn, now);
+                    // A seat whose prop moves (grabbed, pushed, knocked): retail keeps the ped's plugin and seat
+                    // (research b102). The owned object reporting a move to its seated ped (`82E3DBE0`: |v|^2 > 2.5e-5,
+                    // `0x822F8BE0`) makes it jump off forward; the graph then walks it to the seat's new place and sits
+                    // it again (the locked waypoint is re-read every evaluation, `826AB9C0`). The seat's own speed stands
+                    // in for the object's vector (open: velocity or step).
+                    let step = (0..3).map(|k| (position[k] - w.position[k]).powi(2)).sum::<f32>().sqrt();
+                    let speed = step / dt.max(1e-4);
+                    if let Some(occupant) = w.occupant.filter(|_| speed * speed > SEAT_PUSH_SPEED_SQ) {
+                        info!("PED_PLUGIN_SEAT_MOVED prop={:016X} {} occupant={occupant} speed={speed:.2} from=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] tick={tick}", prop.id, prop.class, w.position[0], w.position[1], w.position[2], position[0], position[1], position[2]);
+                        seat_pushed.push(occupant);
+                    }
+                    (w.position, w.facing) = (position, facing);
+                }
+            }
         }
         let seed = state.world.seed();
         let rng = pp.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(seed, &[0x504c_5547])));
@@ -1677,10 +1767,18 @@ pub(crate) fn think_peds(
                     mind.mood.post(MoodEvent { category: mood::category::GREETED.into(), instigator: Some(instigator), second: Some(me), position }, 1.0);
                 }
             }
+            if hits.contains(&me) {
+                mind.brain.begin_colliding = true;
+                mind.brain.colliding = true;
+            }
+            // IsPedestrianColliding holds while the contact reaction plays.
+            if mind.brain.colliding && !body.player.reacting() {
+                mind.brain.colliding = false;
+            }
             for &hit in &collisions {
                 let category = if hit == me { mood::category::COLLISION } else { mood::category::NEARBY_COLLISION };
                 let instigator = player_list.first().map(|p| p.0);
-                if instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i)) {
+                if instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i) || mind.brain.ignore_collisions_with == Some(i)) {
                     continue;
                 }
                 mind.mood.post(MoodEvent { category: category.into(), instigator, second: Some(hit), position: at }, magnitude(category));
@@ -1730,7 +1828,7 @@ pub(crate) fn think_peds(
                     mind.brain.waiting_to_react = true;
                 }
                 for w in &reaction.wants {
-                    mind.brain.set_want(&w.want, w.target);
+                    mind.brain.raise_want(&w.want, w.target, w.flag_40);
                 }
                 events.write(PedEvent::Mood { id: ped.id, result: reaction.result.clone(), passed: reaction.passed, wants: reaction.wants.iter().map(|w| w.want.clone()).collect() });
             }
@@ -1790,10 +1888,25 @@ pub(crate) fn think_peds(
                 mind.brain.plugin = conversations.map.values().find(|c| c.members.iter().any(|m| m.ped == me)).map(|c| c.id);
             }
             mind.refusals.tick(dt, &plugin_props.settings);
+            // `82E3DBE0`: the seated owner (OwnPluginObject, `brain+3277` bit 0x01) of a moving object jumps off forward:
+            // intent Avoid / Jump / Forward -> motiongraph_avoid SitJump -> JumpForward `SitAvoidFwd` (blend 0.1), speech
+            // PedestrianAvoidJump (4). The gate `[ped+5712]+1416 == 0` is not decoded (taken as open).
+            // The body plays it (`advance_peds`) while the flag is up.
+            let avoid = seat_pushed.contains(&me) && mind.brain.own_plugin_object && body.player.reaction_anim() == Some(SIT_CYCLE);
+            if avoid && !mind.sit_avoid {
+                mind.brain.speech = Some(SIT_AVOID_SPEECH);
+                info!("PED_SIT_AVOID ped=#{} jumps off forward (its seat moved) tick={tick}", ped.id.serial);
+            }
+            mind.sit_avoid = avoid;
             // HasPlugin: a conversation member, or a ped that took a world prop.
             let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id && !streamed_out(id)).and_then(|p| p.waypoints.get(w)).copied());
             if mind.prop.is_some() && prop_wp.is_none() {
                 mind.prop = None;
+            }
+            // The locked waypoint is read live (`826AB9C0` re-reads its position on every evaluation): a seat that moved
+            // with its prop is where the ped walks and sits.
+            if let (Some(w), true) = (prop_wp, mind.brain.waypoint.is_some()) {
+                mind.brain.waypoint = Some(w.position);
             }
             mind.brain.has_plugin = mind.brain.plugin.is_some() || mind.prop.is_some();
             // ThrowHandPropAtTrashBin's target, the plugin object's hotpoint 0 (`826A7998`, b87 §3): our hotpoint props
@@ -1836,14 +1949,25 @@ pub(crate) fn think_peds(
                 chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array() },
             };
             controller.update(program, dt, &mut host);
+            if std::mem::take(&mut mind.brain.collision_began) {
+                info!("PED_COLLIDING ped=#{} begins: collision broadcast tick={tick}", ped.id.serial);
+                events.write(PedEvent::Colliding { id: ped.id });
+            }
             // The Plugin state runs the plugin's own graph on the same brain (`8269F248`).
             let plugin_graph = match mind.prop {
-                Some((i, ..)) => plugin_props.props.get(i).and_then(|p| data.plugin_graphs.get(&p.class)).map(|g| &**g),
-                None => data.conversation_graph.as_deref(),
+                Some((i, ..)) => plugin_props.props.get(i).and_then(|p| Some((p.class.clone(), data.plugin_graphs.get(&p.class)?))).map(|(k, g)| (k, &**g)),
+                None => data.conversation_graph.as_deref().map(|g| (CONVERSATION_GRAPH.to_owned(), g)),
             };
             match (mind.brain.in_plugin, plugin_graph) {
-                (true, Some(pg)) => {
-                    let pc = mind.plugin_controller.get_or_insert_with(|| skate_core::graph::controller::Controller::new(pg.graph.runtime.program.topology.states.len()));
+                (true, Some((key, pg))) => {
+                    let states = pg.graph.runtime.program.topology.states.len();
+                    if let Some(old) = plugin_controller_for(&mut mind.plugin_controller, &mut mind.plugin_graph, &key, states) {
+                        // The prop the ped used streamed out or was dropped while it stayed in the Plugin state: the
+                        // other graph starts fresh (its controller was sized for the old one; a session crashed, 2026-10-12).
+                        info!("PED_PLUGIN ped=#{} graph {old} -> {key} tick={tick}", ped.id.serial);
+                        mind.plugin_state = None;
+                    }
+                    let pc = mind.plugin_controller.as_mut().expect("plugin controller just made");
                     let mut host = skate_core::living_world::peds::brain::BrainHost {
                         behaviors: &pg.behaviors,
                         conditions: &pg.conditions,
@@ -1872,6 +1996,7 @@ pub(crate) fn think_peds(
                 _ => {
                     mind.plugin_controller = None;
                     mind.plugin_state = None;
+                    mind.plugin_graph = None;
                 }
             }
             // The motion side of the monitored packets (`82E29540`): a plugin state plays the front packet, releases its
@@ -2039,6 +2164,7 @@ pub(crate) fn think_peds(
                         mind.brain.waypoint_facing = None;
                         mind.plugin_controller = None;
                         mind.plugin_state = None;
+                        mind.plugin_graph = None;
                         continue;
                     }
                     ChaseRequest::ExitPlugin => {

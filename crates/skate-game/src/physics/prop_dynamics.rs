@@ -1548,6 +1548,11 @@ impl PropDynamics {
         Some(self.bodies.get(*self.by_id.get(&id)?)?.instance)
     }
 
+    /// The prop currently carried, if any.
+    pub(crate) fn held(&self) -> Option<u32> {
+        self.held
+    }
+
     /// Mark the carried prop: it stops receiving skater pushes and its layer
     /// triangles stay parked until the drop rebakes them.
     pub(crate) fn set_held(&mut self, held: Option<u32>) {
