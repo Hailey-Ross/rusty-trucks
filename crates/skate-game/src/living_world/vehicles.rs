@@ -13,9 +13,9 @@
 //!   External).
 //! - **Look** (`Update`): the car's GLB (`private/living_world/vehicles/<recipe>.glb`, or a mod's
 //!   path from [`VehicleOverrides`]) as a scene, drawn with the glTF materials on render layers 0
-//!   and 28 like mod graphics; the `vehicle_chassis` material gets a tinted copy of its base
-//!   texture ([`tint_rgba8`], rule below), the `vehicle_glass` material is made see-through
-//!   ([`GLASS_ALPHA`], engine value); the six wheel bones spin with the distance driven over the
+//!   and 28 like mod graphics; the `vehicle_chassis` and `vehicle_glass` materials run the
+//!   retail car programs ([`super::vehicle_material`]: paint rule below, lighting, glass) with the
+//!   material rows of `vehicles.json` `materials`; the six wheel bones spin with the distance driven over the
 //!   model's wheel radius (`wheel_hint`, `Hash_FD7A66142F16B9CC`, equal to the wheel bone height
 //!   [data, V0]). Drivers are part of the body mesh [data, V0]; no vehicle lights exist [data].
 //! - **Collision**: one kinematic box per car from the GLB bounds (`mesh_bounds`), infinite mass,
@@ -26,15 +26,16 @@
 //! - **Events** ([`TrafficEvent`]): spawned, despawned, junction answer changed, entered a
 //!   junction, entered a lane; the planned `sdk.living_world` events read these.
 //!
-//! Tint rule (`vehicle_chassis` shader not read; most likely rule, open): the body atlases paint
-//! the car body pure blue `(0, 0, b)` with the shading in `b`, and the model records' base
-//! palettes are chassis `(0, 0, 1)` and secondary `(1, 0, 0)` [data, V0]. So the chassis colour
-//! replaces the blue channel and the secondary colour the red channel, weighted by how pure the
-//! channel is: `out = rgb + m_b (b x chassis - (0, 0, b)) + m_r (r x secondary - (r, 0, 0))`, `m_b
-//! = (b - max(r, g)) / b`, `m_r = (r - max(g, b)) / r`. With the base palette the texture is
-//! unchanged at gain 1 (the identity the base records imply). [`PAINT_GAIN`] scales the painted
-//! value (default 2x modulate: an estimate from the data, not retail; the shader's tint is not
-//! decoded; overridable through [`VehicleOverrides::paint_gain`]).
+//! Paint rule (retail `vehicle_defaultPS`, the program of the `vehicle_chassis` material, TU3
+//! `shaders_final.big`) [code, shader microcode]: the same rule as the ped shaders
+//! (`skate_core::living_world::peds::colorize`): `lin = diffuse^2`; a texel with `G^2 < 0.001225`
+//! becomes `R^2 x i_colorize_red + B^2 x i_colorize_blue` (constant table: `i_colorize_red` c21,
+//! `i_colorize_blue` c22, `i_diffuse` sampler 3), any other keeps `lin`; the shader writes `sqrt`
+//! at the end. The body atlases paint the car body pure blue `(0, 0, b)` and the base palettes are
+//! chassis `(0, 0, 1)` / secondary `(1, 0, 0)` [data, V0], so chassis -> `i_colorize_blue` and
+//! secondary -> `i_colorize_red` (the pair that makes the base palette the identity, as for peds).
+//! No gain in retail; [`VehicleOverrides::paint_gain`] scales both colours for mods (default
+//! [`PAINT_GAIN`] = 1, retail).
 //!
 //! Multiplayer (no networking): a car's motion is a function of its spawn record, the world tick,
 //! the signal clock's tick count (= world ticks since the world loaded) and the other cars (which
@@ -56,14 +57,9 @@ use std::collections::BTreeMap;
 
 /// The six wheel bones of the car rig [data, V0].
 pub(crate) const WHEEL_BONES: [&str; 6] = ["LeftFront_wheel", "RightFront_wheel", "LeftRear_wheel_1", "RightRear_wheel_1", "LeftRear_wheel_2", "RightRear_wheel_2"];
-/// Glass opacity (engine value; the `vehicle_glass` shader is not read, open).
-pub(crate) const GLASS_ALPHA: f32 = 0.55;
-/// Default gain on the painted value of the tint (a 2x modulate). ESTIMATE, NOT RETAIL: the
-/// `vehicle_chassis` shader's tint maths is not decoded. Chosen from the data: the atlases' paint
-/// blue sits around 0.5-0.56, and only with 2x does a palette "white" (0.90) or the taxi yellow
-/// read as that colour (headless renders in `.local/research/npc/v3-tint`; gain 1 gives muddy
-/// half-bright paint). A mod or setting overrides it ([`VehicleOverrides::paint_gain`]).
-pub(crate) const PAINT_GAIN: f32 = 2.0;
+/// Default scale on the tint colours: 1, retail (`vehicle_defaultPS` multiplies the colours as
+/// they are). A mod overrides it ([`VehicleOverrides::paint_gain`]).
+pub(crate) const PAINT_GAIN: f32 = 1.0;
 /// Solid ids of car proxies: a tag in the top bits keeps them apart from NPCs and mod bodies.
 pub(crate) const PROXY_ID_TAG: u64 = 0x5643_0000_0000_0000;
 
@@ -124,6 +120,14 @@ pub(crate) struct VehicleData {
     /// Entity name -> spec.
     pub specs: BTreeMap<String, VehicleSpec>,
     pub timings: Option<SignalTimings>,
+    /// Car material rows (`vehicles.json` `materials`): `AttribulatorMaterialName` -> `m_params`.
+    pub materials: BTreeMap<String, Vec<[f32; 4]>>,
+    /// Material kind (`vehicle_chassis`, `vehicle_glass`) -> the name its retail parts use, for a
+    /// GLB material without `attrib_material` extras.
+    pub material_kinds: BTreeMap<String, String>,
+    /// Environment cube id (GLB material extras `environment`) -> strip PNG, relative to
+    /// `private/living_world/` (`vehicles.json` `environments`).
+    pub environments: BTreeMap<String, String>,
 }
 
 fn vec3(v: &serde_json::Value) -> Option<[f32; 3]> {
@@ -157,6 +161,20 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                 grab_splines: parse_grab_splines(&m["grab_splines"]),
             },
         );
+    }
+    let row = |v: &serde_json::Value| Some([v.get(0)?.as_f64()? as f32, v.get(1)?.as_f64()? as f32, v.get(2)?.as_f64()? as f32, v.get(3)?.as_f64()? as f32]);
+    for (name, m) in doc["materials"].as_object().into_iter().flatten() {
+        data.materials.insert(name.clone(), m["params"].as_array().into_iter().flatten().filter_map(row).collect());
+    }
+    for (id, path) in doc["environments"].as_object().into_iter().flatten() {
+        if let Some(path) = path.as_str() {
+            data.environments.insert(id.clone(), format!("private/living_world/{path}"));
+        }
+    }
+    for (kind, name) in doc["material_kinds"].as_object().into_iter().flatten() {
+        if let Some(name) = name.as_str() {
+            data.material_kinds.insert(kind.clone(), name.to_string());
+        }
     }
     let class = |c: &str, r: &str| tables.as_ref().and_then(|t| t.pointer(&format!("/classes/{c}/{r}/fields")).cloned());
     for (name, e) in doc["entities"].as_object().into_iter().flatten() {
@@ -249,8 +267,13 @@ pub(crate) struct VehicleOverrides {
     pub params: BTreeMap<String, FollowParams>,
     /// Connector choice (retail: least loaded on every car).
     pub connector_choice: ConnectorChoice,
-    /// Tint gain; `None` = [`PAINT_GAIN`] (estimate, not retail).
+    /// Scale on both tint colours; `None` = [`PAINT_GAIN`] (1, retail).
     pub paint_gain: Option<f32>,
+    /// Material name (`character.livingworld_vehicles`, ...) -> `m_params` rows over the export's.
+    pub material_params: BTreeMap<String, Vec<[f32; 4]>>,
+    /// Environment cube id -> asset path of a six-face strip over the export's; `""` draws the
+    /// material without reflections.
+    pub environments: BTreeMap<String, String>,
 }
 
 /// One traffic car.
@@ -336,25 +359,6 @@ pub(crate) fn car_rotation(forward: [f32; 3]) -> Quat {
 fn car_transform(net: &RoadNetwork, car: &Car) -> Transform {
     let frame = car.pose(net);
     Transform::from_translation(Vec3::from_array(frame.position)).with_rotation(car_rotation(frame.forward))
-}
-
-/// Tint an RGBA8 (sRGB) pixel buffer with the chassis and secondary colours (rule in the module
-/// doc). Alpha is kept.
-pub(crate) fn tint_rgba8(pixels: &mut [u8], chassis: [f32; 4], secondary: [f32; 4], gain: f32) {
-    for px in pixels.chunks_exact_mut(4) {
-        let [r, g, b] = [px[0], px[1], px[2]].map(|c| c as f32 / 255.0);
-        let mb = if b > 0.0 { ((b - r.max(g)) / b).clamp(0.0, 1.0) } else { 0.0 };
-        let mr = if r > 0.0 { ((r - g.max(b)) / r).clamp(0.0, 1.0) } else { 0.0 };
-        let (pb, pr) = ((b * gain).min(1.0), (r * gain).min(1.0));
-        let out = [
-            r + mb * (pb * chassis[0]) + mr * (pr * secondary[0] - r),
-            g + mb * (pb * chassis[1]) + mr * (pr * secondary[1]),
-            b + mb * (pb * chassis[2] - b) + mr * (pr * secondary[2]),
-        ];
-        for i in 0..3 {
-            px[i] = (out[i].clamp(0.0, 1.0) * 255.0).round() as u8;
-        }
-    }
 }
 
 /// Load the car data when the world changes.
@@ -909,11 +913,44 @@ pub(crate) struct CarLook {
     ready: bool,
 }
 
-/// Tinted / glass materials per (source material, colours).
+/// Car materials per (source material, colours, gain), shared by cars with the same pair, and the
+/// environment cubes by asset path.
 #[derive(Resource, Default)]
-pub(crate) struct CarMaterials(BTreeMap<(AssetId<StandardMaterial>, [u32; 8]), Handle<StandardMaterial>>);
+pub(crate) struct CarMaterials {
+    materials: BTreeMap<(AssetId<StandardMaterial>, [u32; 8]), Handle<super::vehicle_material::VehicleMaterial>>,
+    environments: BTreeMap<String, Handle<Image>>,
+}
 
-/// Load the GLB, then tint the chassis, clear the glass and find the wheel bones.
+/// The cube a GLB material samples: its `environment` extras id through a mod's path, else the
+/// export's; `None` = no reflections.
+pub(crate) fn environment_path(data: &VehicleData, overrides: &VehicleOverrides, extras: Option<&serde_json::Value>) -> Option<String> {
+    let id = extras?.get("environment")?.as_str()?;
+    overrides.environments.get(id).or_else(|| data.environments.get(id)).filter(|p| !p.is_empty()).cloned()
+}
+
+/// Turn a loaded six-face strip (faces stacked top to bottom, +X, -X, +Y, -Y, +Z, -Z) into a cube
+/// view. False when the image is not such a strip.
+pub(crate) fn make_cube(image: &mut Image) -> bool {
+    use bevy::render::render_resource::{TextureViewDescriptor, TextureViewDimension};
+    if image.texture_descriptor.size.depth_or_array_layers == 6 {
+        return true;
+    }
+    if image.height() != 6 * image.width() || image.reinterpret_stacked_2d_as_array(6).is_err() {
+        return false;
+    }
+    image.texture_view_descriptor = Some(TextureViewDescriptor { dimension: Some(TextureViewDimension::Cube), ..default() });
+    true
+}
+
+/// The `m_params` rows of one GLB material: its `attrib_material` extras, else the name its kind
+/// used in retail; a mod's rows win over the export's.
+pub(crate) fn material_rows<'a>(data: &'a VehicleData, overrides: &'a VehicleOverrides, program: super::vehicle_material::Program, extras: Option<&serde_json::Value>) -> Option<&'a Vec<[f32; 4]>> {
+    let named = extras.and_then(|v| v.get("attrib_material").and_then(|a| a.as_str()).map(str::to_string));
+    let name = named.or_else(|| data.material_kinds.get(program.kind()).cloned())?;
+    overrides.material_params.get(&name).or_else(|| data.materials.get(&name)).filter(|r| !r.is_empty())
+}
+
+/// Load the GLB, then give the body and glass the retail car programs and find the wheel bones.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn present_car_looks(
     mut commands: Commands,
@@ -922,11 +959,16 @@ pub(crate) fn present_car_looks(
     instances: Query<&bevy::scene::SceneInstance>,
     spawner: Res<SceneSpawner>,
     named: Query<(&Name, &Transform)>,
-    meshes: Query<(&MeshMaterial3d<StandardMaterial>, Option<&bevy::gltf::GltfMaterialName>)>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    meshes: Query<(&MeshMaterial3d<StandardMaterial>, Option<&bevy::gltf::GltfMaterialName>, Option<&bevy::gltf::GltfMaterialExtras>)>,
+    sources: Res<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut materials: Option<ResMut<Assets<super::vehicle_material::VehicleMaterial>>>,
+    lighting: Option<Res<crate::retail_character::Lighting>>,
+    traffic: Res<TrafficState>,
+    overrides: Res<VehicleOverrides>,
     mut cache: ResMut<CarMaterials>,
 ) {
+    use super::vehicle_material::{alpha_mode, params, Program, VehicleMaterial};
     for (e, car, look) in &mut cars {
         let Some(mut look) = look else {
             let scene = commands.spawn((SceneRoot(server.load(GltfAssetLabel::Scene(0).from_asset(car.glb.clone()))), Transform::default(), Visibility::Hidden, ChildOf(e))).id();
@@ -947,50 +989,55 @@ pub(crate) fn present_car_looks(
                     wheels.push((ent, *t));
                 }
             }
-            let Ok((handle, name)) = meshes.get(ent) else { continue };
+            let Ok((handle, name, extras)) = meshes.get(ent) else { continue };
             let kind = name.map(|n| n.0.as_str()).unwrap_or("");
             commands.entity(ent).insert((bevy::camera::visibility::RenderLayers::from_layers(&[0, 28]), bevy::camera::visibility::NoFrustumCulling));
+            // Without the retail lighting (no render plugins, no character data) or a material row
+            // the car keeps its glTF materials.
+            let (Some(program), Some(materials), Some(lighting)) = (Program::of(kind), materials.as_mut(), lighting.as_ref()) else { continue };
+            let extras: Option<serde_json::Value> = extras.and_then(|x| serde_json::from_str(&x.value).ok());
+            let Some(rows) = material_rows(&traffic.data, &overrides, program, extras.as_ref()) else { continue };
+            let environment = match environment_path(&traffic.data, &overrides, extras.as_ref()) {
+                None => None,
+                Some(path) => {
+                    let h = cache.environments.entry(path.clone()).or_insert_with(|| server.load(path)).clone();
+                    if server.load_state(&h).is_failed() {
+                        None
+                    } else if !images.get(&h).is_some_and(|i| i.texture_descriptor.size.depth_or_array_layers == 6) {
+                        match images.get_mut(&h) {
+                            None => {
+                                pending = true;
+                                continue;
+                            }
+                            Some(image) => make_cube(image).then_some(h),
+                        }
+                    } else {
+                        Some(h)
+                    }
+                }
+            };
             let bits = |c: [f32; 4]| c.map(f32::to_bits);
             let ch = bits(car.chassis);
             let se = bits(car.secondary);
-            let key = (handle.0.id(), [ch[0], ch[1], ch[2], ch[3], se[0], se[1], se[2], if kind.starts_with("vehicle_glass") { 1 } else { car.paint_gain.to_bits() | 2 }]);
-            if let Some(m) = cache.0.get(&key) {
-                commands.entity(ent).insert(MeshMaterial3d(m.clone()));
+            let key = (handle.0.id(), [ch[0], ch[1], ch[2], ch[3], se[0], se[1], se[2], car.paint_gain.to_bits()]);
+            if let Some(m) = cache.materials.get(&key) {
+                commands.entity(ent).remove::<MeshMaterial3d<StandardMaterial>>().insert(MeshMaterial3d(m.clone()));
                 continue;
             }
-            let Some(source) = materials.get(&handle.0).cloned() else {
+            let Some(source) = sources.get(&handle.0) else {
                 pending = true;
                 continue;
             };
-            let replacement = if kind.starts_with("vehicle_chassis") {
-                let Some(tex) = source.base_color_texture.clone() else { continue };
-                let Some(image) = images.get(&tex) else {
-                    pending = true;
-                    continue;
-                };
-                let mut tinted = image.clone();
-                match tinted.data.as_mut() {
-                    Some(px) if tinted.texture_descriptor.format.block_copy_size(None) == Some(4) => tint_rgba8(px, car.chassis, car.secondary, car.paint_gain),
-                    _ => {
-                        warn!("LIVING_WORLD traffic: {} base texture is not RGBA8; drawn untinted", car.glb);
-                    }
-                }
-                let mut m = source.clone();
-                m.base_color_texture = Some(images.add(tinted));
-                m
-            } else if kind.starts_with("vehicle_glass") {
-                let mut m = source.clone();
-                m.base_color = m.base_color.with_alpha(GLASS_ALPHA);
-                m.alpha_mode = AlphaMode::Blend;
-                m.perceptual_roughness = 0.1;
-                m.reflectance = 0.8;
-                m
-            } else {
-                continue;
+            let material = VehicleMaterial {
+                params: params(program, rows, car.chassis, car.secondary, car.paint_gain, lighting.light, source.normal_map_texture.is_some(), environment.is_some()),
+                diffuse: source.base_color_texture.clone(),
+                normal: source.normal_map_texture.clone(),
+                environment,
+                alpha: alpha_mode(program),
             };
-            let h = materials.add(replacement);
-            cache.0.insert(key, h.clone());
-            commands.entity(ent).insert(MeshMaterial3d(h));
+            let h = materials.add(material);
+            cache.materials.insert(key, h.clone());
+            commands.entity(ent).remove::<MeshMaterial3d<StandardMaterial>>().insert(MeshMaterial3d(h));
         }
         if pending {
             continue;
@@ -998,6 +1045,19 @@ pub(crate) fn present_car_looks(
         look.wheels = wheels;
         look.ready = true;
         commands.entity(scene).insert(Visibility::Inherited);
+    }
+}
+
+/// Follow the character lighting's light (it changes with the world) on every car material.
+pub(crate) fn update_car_light(lighting: Option<Res<crate::retail_character::Lighting>>, cache: Res<CarMaterials>, materials: Option<ResMut<Assets<super::vehicle_material::VehicleMaterial>>>) {
+    let (Some(lighting), Some(mut materials)) = (lighting, materials) else { return };
+    if !lighting.is_changed() {
+        return;
+    }
+    for handle in cache.materials.values() {
+        if let Some(m) = materials.get_mut(handle) {
+            m.params.light = lighting.light;
+        }
     }
 }
 
@@ -1051,5 +1111,5 @@ pub(crate) fn install(app: &mut App) {
                 .after(crate::app::SimulationSet::Controls)
                 .before(crate::app::SimulationSet::Physics),
         )
-        .add_systems(Update, (present_car_looks, present_car_pose).chain().after(crate::app::FrameSet::Animation));
+        .add_systems(Update, (present_car_looks, update_car_light, present_car_pose).chain().after(crate::app::FrameSet::Animation));
 }

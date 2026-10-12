@@ -153,7 +153,8 @@ fn living_world_traffic_spawns_a_car_from_the_record() {
     assert_eq!(car.secondary_id, "vehicle_taxi01/secondary/0");
     assert_eq!(car.glb, "private/living_world/vehicles/taxi_sedan_01.glb");
     assert_eq!(car.wheel_radius, 0.3);
-    assert_eq!(car.paint_gain, PAINT_GAIN, "estimate default, not retail");
+    assert_eq!(car.paint_gain, PAINT_GAIN, "retail: no gain");
+    assert_eq!(PAINT_GAIN, 1.0);
     assert_eq!(audio.engine, "c04_taxi01", "engine record from the entity's spec");
     // On the lane, facing +z (the lane direction).
     assert!(t.translation.x.abs() < 1e-3 && (t.translation.z - (-160.0)).abs() < 1.0, "{:?}", t.translation);
@@ -268,23 +269,73 @@ fn living_world_traffic_overrides_by_key() {
 }
 
 #[test]
-fn living_world_traffic_tint_rule() {
-    // Base palette = identity.
-    let mut px = vec![0, 0, 140, 255, 200, 20, 20, 255, 90, 90, 90, 128, 10, 30, 200, 7];
-    let orig = px.clone();
-    tint_rgba8(&mut px, [0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0], 1.0);
-    for (a, b) in px.iter().zip(&orig) {
-        assert!((*a as i32 - *b as i32).abs() <= 1, "{px:?}");
-    }
-    // Pure paint blue takes the chassis colour times its shading; grey stays; alpha kept.
-    let mut px = vec![0, 0, 128, 255, 90, 90, 90, 128];
-    tint_rgba8(&mut px, [1.0, 0.5, 0.0, 1.0], [0.3, 0.3, 0.3, 1.0], 1.0);
-    assert_eq!(&px[..4], &[128, 64, 0, 255]);
-    assert_eq!(&px[4..], &[90, 90, 90, 128]);
-    // Pure red (tail-light mask) takes the secondary colour.
-    let mut px = vec![200, 0, 0, 255];
-    tint_rgba8(&mut px, [1.0, 0.5, 0.0, 1.0], [0.5, 0.5, 0.5, 1.0], 1.0);
-    assert_eq!(&px[..3], &[100, 100, 100]);
+fn living_world_traffic_material_rows_resolve_by_name_kind_and_mod() {
+    use super::vehicle_material::Program;
+    let doc = br#"{"models": {}, "entities": {},
+        "materials": {"character.livingworld_vehicles": {"params": [[0.05, 1.0, 12.0, 3.0], [1.5, 1.4, 1.2, 5.0]]},
+                      "character.livingworld_vehicles_glass": {"params": [[0.05, 1.0, 12.0, 3.0], [1.5, 1.4, 1.2, 9.0], [8.0, 7.0, 5.0, 10.0], [0.0, 0.0, 0.0, 60.0], [0.0, 0.0, 0.0, 0.75]]}},
+        "material_kinds": {"vehicle_chassis": "character.livingworld_vehicles", "vehicle_glass": "character.livingworld_vehicles_glass"},
+        "environments": {"2c7f38180017266e": "vehicles/env_2c7f38180017266e.png"}}"#;
+    let d = parse_vehicle_data(doc, None).unwrap();
+    let mut o = VehicleOverrides::default();
+    // The GLB's own name wins; a material without one takes its kind's retail row.
+    let x = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+    let named = x(r#"{"kind": "vehicle_chassis", "attrib_material": "character.livingworld_vehicles_glass"}"#);
+    assert_eq!(material_rows(&d, &o, Program::Chassis, Some(&named)).unwrap()[4], [0.0, 0.0, 0.0, 0.75]);
+    assert_eq!(material_rows(&d, &o, Program::Glass, None).unwrap()[1][3], 9.0);
+    assert_eq!(material_rows(&d, &o, Program::Chassis, Some(&x("{}"))).unwrap()[1][3], 5.0);
+    // A mod row replaces the export's; restoring the default undoes it.
+    o.material_params.insert("character.livingworld_vehicles_glass".into(), vec![[0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4], [0.2, 0.3, 0.4, 0.5]]);
+    assert_eq!(material_rows(&d, &o, Program::Glass, None).unwrap()[4], [0.2, 0.3, 0.4, 0.5]);
+    assert_eq!(material_rows(&d, &VehicleOverrides::default(), Program::Glass, None).unwrap()[4][3], 0.75);
+    // Unknown name: no row, the car keeps its glTF material.
+    assert!(material_rows(&d, &o, Program::Glass, Some(&x(r#"{"attrib_material": "character.none"}"#))).is_none());
+    assert_eq!(Program::of("vehicle_glass_000030f203e38817"), Some(Program::Glass));
+    assert_eq!(Program::of("vehicle_chassis_000030f103e38817"), Some(Program::Chassis));
+    assert_eq!(Program::of("Wheel_x"), None);
+    // Environment cube: the material's id through the export's strip, a mod's path, or none.
+    let env = x(r#"{"environment": "2c7f38180017266e"}"#);
+    assert_eq!(environment_path(&d, &o, Some(&env)).as_deref(), Some("private/living_world/vehicles/env_2c7f38180017266e.png"));
+    assert_eq!(environment_path(&d, &o, Some(&x("{}"))), None);
+    o.environments.insert("2c7f38180017266e".into(), String::new());
+    assert_eq!(environment_path(&d, &o, Some(&env)), None, "a mod switches reflections off");
+}
+
+#[test]
+fn living_world_traffic_environment_strip_becomes_a_cube() {
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureViewDimension};
+    let strip = |w: u32, h: u32| Image::new_fill(Extent3d { width: w, height: h, depth_or_array_layers: 1 }, TextureDimension::D2, &[0, 0, 0, 255], TextureFormat::Rgba8UnormSrgb, default());
+    let mut image = strip(4, 24);
+    assert!(make_cube(&mut image));
+    assert_eq!(image.texture_descriptor.size.depth_or_array_layers, 6);
+    assert_eq!((image.width(), image.height()), (4, 4));
+    assert_eq!(image.texture_view_descriptor.as_ref().and_then(|d| d.dimension), Some(TextureViewDimension::Cube));
+    assert!(make_cube(&mut image), "already a cube");
+    assert!(!make_cube(&mut strip(4, 20)), "not six square faces");
+}
+
+#[test]
+fn living_world_traffic_material_uniform_is_the_retail_constant_set() {
+    use super::vehicle_material::{alpha_mode, params, Program, AMBIENT};
+    let rows = [[0.05, 1.0, 12.0, 3.0], [1.5, 1.4, 1.2, 9.0], [8.0, 7.0, 5.0, 10.0], [0.0, 0.0, 0.0, 60.0], [0.0, 0.0, 0.0, 0.75], [0.0, 0.0, 0.0, 0.5]];
+    let light = Vec4::new(0.0, 1.0, 0.0, 2.5);
+    let p = params(Program::Glass, &rows, [0.9, 0.8, 0.1, 1.0], [0.2, 0.2, 0.2, 1.0], 1.0, light, true, false);
+    // i_colorize_red = secondary, i_colorize_blue = chassis (vehicle_defaultPS c21 / c22).
+    assert_eq!(p.red, Vec4::new(0.2, 0.2, 0.2, 1.0));
+    assert_eq!(p.blue, Vec4::new(0.9, 0.8, 0.1, 1.0));
+    // Glass program, normal map, i_params.x = 1 (no fade), no cube.
+    assert_eq!(p.options, Vec4::new(1.0, 1.0, 1.0, 0.0));
+    assert_eq!(p.literals, Vec4::new(AMBIENT[0], AMBIENT[1], AMBIENT[2], skate_core::living_world::peds::colorize::MASK_GREEN_SQ_MAX));
+    assert_eq!(p.rows[4], Vec4::new(0.0, 0.0, 0.0, 0.75));
+    assert_eq!(p.rows[8], Vec4::ZERO, "rows past the export's are zero");
+    assert_eq!(p.light, light);
+    // A mod gain scales both colours, not their alpha.
+    let g = params(Program::Chassis, &rows, [0.5, 0.25, 0.0, 1.0], [0.1, 0.1, 0.1, 1.0], 2.0, light, false, false);
+    assert_eq!(g.blue, Vec4::new(1.0, 0.5, 0.0, 1.0));
+    assert_eq!(g.options.x, 0.0);
+    // Retail render state: opaque body, alpha-blended glass (no depth write).
+    assert_eq!(alpha_mode(Program::Chassis), AlphaMode::Opaque);
+    assert_eq!(alpha_mode(Program::Glass), AlphaMode::Blend);
 }
 
 #[test]

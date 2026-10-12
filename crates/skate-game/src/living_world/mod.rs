@@ -39,6 +39,7 @@ pub(crate) mod ped_hand_props;
 pub(crate) mod ped_plugins;
 pub(crate) mod peds;
 pub(crate) mod vehicle_contacts;
+pub(crate) mod vehicle_material;
 pub(crate) mod vehicles;
 
 #[cfg(test)]

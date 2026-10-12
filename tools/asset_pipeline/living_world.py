@@ -954,7 +954,7 @@ def export(ctx) -> dict:
 
     from . import living_world_vehicles
     vehicle_records = sorted({r for i in census_index['districts'].values() for r in i['vehicle_records']})
-    vehicles = living_world_vehicles.export(game_root, output, work, doc, vehicle_records, report)
+    vehicles = living_world_vehicles.export(game_root, output, work, doc, vehicle_records, report, collections)
     warnings += vehicles.pop('warnings')
 
     problems = validate(private)

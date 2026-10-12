@@ -245,6 +245,30 @@ class VehicleDoc(unittest.TestCase):
             doc['classes']['livingworld_vehicle_drivers'] = {}
             self.assertTrue(any('driver driver_taxi missing' in p for p in veh.validate(doc, v, Path(tmp))))
 
+    def test_material_rows_and_environments_come_from_the_built_cars(self):
+        import struct as st
+        row = lambda *v: st.pack('>4f', *v).hex()
+        collections = [
+            {'class': 'material_character', 'key': 'livingworld', 'parent': '', 'fields': {
+                'm_params': {'array': {'items': [row(0.05, 1, 12, 3), row(1.5, 1.4, 1.2, 5)]}}}},
+            {'class': 'material_character', 'key': 'livingworld_vehicles_glass', 'parent': 'livingworld', 'fields': {
+                'm_params': {'array': {'items': [row(0.05, 1, 12, 3), row(1.5, 1.4, 1.2, 9), row(8, 7, 5, 10),
+                                                 row(0, 0, 0, 60), row(0, 0, 0, 0.75)]}}}},
+            {'class': 'material_character', 'key': 'livingworld_vehicles', 'parent': 'livingworld', 'fields': {}}]
+        manifest = self.manifest()
+        manifest['recipes']['taxi_sedan_01']['glb']['attrib_materials'] = {
+            'vehicle_chassis': ['character.livingworld_vehicles'], 'vehicle_glass': ['character.livingworld_vehicles_glass']}
+        manifest['environments'] = {'2c7f38180017266e': 'vehicles/env_2c7f38180017266e.png'}
+        v = veh.vehicle_doc(vehicle_tables(), manifest, ['dwntwn'], collections)
+        self.assertEqual(v['material_kinds'], {'vehicle_chassis': 'character.livingworld_vehicles',
+                                               'vehicle_glass': 'character.livingworld_vehicles_glass'})
+        # The glass row's own rows; the body row inherits its parent's (vault inheritance).
+        self.assertEqual(v['materials']['character.livingworld_vehicles_glass']['params'][4], [0.0, 0.0, 0.0, 0.75])
+        self.assertEqual(v['materials']['character.livingworld_vehicles']['params'][1], [1.5, 1.4, 1.2, 5.0])
+        self.assertEqual(v['environments'], {'2c7f38180017266e': 'vehicles/env_2c7f38180017266e.png'})
+        self.assertEqual(veh.material_params(collections, ['character.missing']), {})
+        self.assertEqual(veh.vehicle_doc(vehicle_tables(), self.manifest(), ['dwntwn'])['materials'], {})
+
     def test_unbuilt_car_is_a_problem(self):
         doc = vehicle_tables()
         v = veh.vehicle_doc(doc, self.manifest(), ['dwntwn'])

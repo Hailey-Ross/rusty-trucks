@@ -193,14 +193,10 @@ Census cars become visible, moving traffic that obeys the lights and is heard th
   `sub_82E11C78` / `sub_82E11980` [code]); the spacing comes from the look-ahead (V4). Until then the follower treats a
   car inside the junction on another connector into the same exit lane, nearer the exit, as the car ahead.
 - **Look** (`skate-game::living_world::vehicles`): the car GLB as a scene, glTF materials on render layers 0 / 28 (the
-  mod-graphics path); `vehicle_chassis` gets a tinted copy of its base texture, `vehicle_glass` is drawn at 0.55
-  opacity (engine value); wheel bones spin by distance / `wheel_hint` [data]. Drivers are in the body mesh, cars have
-  no lights [data, V0].
-- **Tint rule (shader not decoded, open)**: the atlases paint the body pure blue `(0, 0, b)` and the base palettes are
-  chassis `(0, 0, 1)` / secondary `(1, 0, 0)` [data], so the chassis colour replaces the blue channel and the
-  secondary the red channel, weighted by channel purity; identity for the base palette. The painted value is scaled by
-  a gain of 2.0: an estimate from the data (paint blue sits at 0.5-0.56; only 2x makes palette white and taxi yellow
-  read as such), not retail, overridable (`VehicleOverrides::paint_gain`).
+  mod-graphics path); wheel bones spin by distance / `wheel_hint` [data]. Drivers are in the body mesh, cars have
+  no lights [data, V0]. Paint and glass: superseded on 2026-10-11 by the retail vehicle shaders (see
+  [Car materials](#car-materials-the-retail-vehicle-shaders-2026-10-11)); V3 tinted a texture copy with an inferred
+  rule and a 2.0 gain and drew the glass at 0.55 opacity.
 - **Collision**: a kinematic box per car from the GLB bounds joins the skater's contact solve
   (`physics::network::Proxies`); solid only, bails and roofs are V5.
 - **Audio**: `TrafficAudio` per car: engine = the entity's spec `engine_audio` record, speed = `+3412`, load = the
@@ -1069,3 +1065,74 @@ VEHHIT reading).
 **Verification.** skate-core `an_alarming_parked_car_holds_its_parked_time_and_stays` (parked time held at 0 for 10 s,
 no pull-out, then the full 2 s parked time after the alarm); skate-game `a_parked_car_is_marked_for_the_car_alarm`,
 the car alarm rule tests. Not play-tested (DownTown: wait for a car to pull over, walk into it).
+
+## Car materials: the retail vehicle shaders (2026-10-11)
+
+**Problem.** Car paint and glass were estimates: V3 tinted a copy of the body texture with an inferred channel rule and
+a paint gain of 2.0 chosen by eye, and drew the glass with Bevy PBR at 0.55 opacity. The vehicle shaders were not
+decoded.
+
+**What retail does.**
+- Programs [code, shader microcode of TU3 `shaders_final.big`, read with the offline Xenos decode; constant tables
+  parsed from the `.fpo` objects]: material kind `vehicle_chassis` runs `vehicle_defaultPS`, `vehicle_glass` runs
+  `vehicle_glass_defaultPS`. Constants: `g_vLightDir` c9, `m_params` c14..c19 (rows 0..5), `i_params` c20,
+  `i_colorize_red` c21, `i_colorize_blue` c22; samplers `i_diffuse` 3, `i_normal` 4, `i_environment` 5 (glass: no
+  diffuse, `i_normal` 3, `i_environment` 4).
+- Paint: `lin = diffuse^2`; a texel with `G^2 < 0.001225` becomes `R^2 x i_colorize_red + B^2 x i_colorize_blue`, any
+  other keeps `lin`. The same rule as the ped shaders (doc 26f). Secondary -> red, chassis -> blue (the pair that makes
+  the base palette `(1, 0, 0)` / `(0, 0, 1)` the identity [data]). No gain.
+- Light (both programs): `albedo x (ambient + max(N.L, 0) x m_params[1].rgb x S) + (pow(sat(V.reflect(L)),
+  m_params[2].w) x S x m_params[2].rgb + env^2) x (1 - sat(N.V))^m_params[1].w`, the body's term times `diffuse.a^2`;
+  ambient = the shader literal `(0.1, 0.175, 0.3)` x `m_params[5].w`; S = the shadow lookups, zero where `N.L < 0`;
+  times `m_params[0].y` and the vertex fog factor, plus the fog colour; then the exposure / tone tail shared with the
+  character shaders. Normal map: x in alpha, y in green. Environment lookup at `(R.x, R.y, -R.z)`, R = reflect(-V).
+- Glass: albedo `m_params[4].rgb`, output alpha `i_params.x x m_params[4].w`; body output alpha `i_params.x`.
+- Rows [data, every car arena]: each part names its vault row with `AttribulatorMaterialName`: body (`Accessory`, and
+  `Misc` wheels of reda_car) `character.livingworld_vehicles`, windows (`Equipment`)
+  `character.livingworld_vehicles_glass`; `sub_827E4F58` splits the name into class `material_` + prefix and key
+  [code]. Both rows inherit `livingworld`; glass row 4 = `(0, 0, 0, 0.75)` (black glass at alpha 0.75), body row 5 w =
+  0.3, glass row 5 w = 0.5. The class is `material_character`, not `material_vehicle` (whose rows no car uses).
+- Render state [code, technique setters `sub_82CEF720` (body), `sub_82CF0B90` (glass), state tables built in
+  `sub_82CF5A10`]: body opaque, depth write on; glass SRC_ALPHA / INV_SRC_ALPHA blend, depth test on, depth write
+  off, back-face cull.
+- `i_params.x` [code, `sub_827C1188`, partly read]: min(distance fade, fade-in ramp +1/30 per update clamped to 0..1;
+  the ramp at model +576 checked in the recomp code). 1 for a car in full view.
+- Environment cube [data, code]: every car material samples its own cube, texture `0x2c7f38180017266e` in
+  `livingworld.big` (256 x 256 DXT5, 6 faces, a baked city panorama); the vehicle binders `sub_827C1720` /
+  `sub_827C39F8` never rebind `i_environment` (name hash `0x41C2B2E0`; the sampler binders `sub_82CEF028` /
+  `sub_82CF04C8` take the material's).
+
+**Change.**
+- Converter (`living_world_vehicles.py`, VERSION 3): material extras `attrib_material` from each part's
+  `AttribulatorMaterialName`; `vehicles.json` `materials` (`m_params` rows per name, vault inheritance applied),
+  `material_kinds` (the name each kind used) and `environments` (cube id -> `vehicles/env_<id>.png`, the six faces
+  stacked top to bottom in native order like the map cubes; `decode_cube` reads DXT5 cubes, which the vendored
+  decoder rejects).
+- Engine: `skate-game::living_world::vehicle_material` (`VehicleMaterial`, `vehicle_material.wgsl`) ports both
+  programs: the paint rule in the shader (the palette pair is a uniform, no tinted texture copies), the light terms
+  above with the character lighting's light and Bevy's directional shadow, the cube, glass alpha and blend. Like the
+  character shader it leaves the vertex fog and the tone tail to the frame passes. `present_car_looks` binds it;
+  `update_car_light` follows the light when the world changes. `PAINT_GAIN` is 1 (retail), `GLASS_ALPHA` is gone.
+- Mod surface: `VehicleOverrides::material_params` (rows per material name), `VehicleOverrides::environments` (cube
+  per id, `""` = no reflections), `paint_gain` (scales both colours); a mod GLB names its row with material extras
+  `attrib_material`, else gets its kind's retail row; without a row it keeps its own glTF material.
+
+**Verification.**
+- Tests: skate-game `living_world_traffic_material_rows_resolve_by_name_kind_and_mod`,
+  `living_world_traffic_material_uniform_is_the_retail_constant_set`,
+  `living_world_traffic_environment_strip_becomes_a_cube`; converter
+  `test_material_rows_and_environments_come_from_the_built_cars`; the paint rule's tests are the ped colorize tests
+  (skate-core `peds::colorize`). All living-world tests pass (skate-game 83, skate-core 276, converter 15).
+- Export from the disc: all 17 cars resolve to the two rows; the cube decodes to six clean faces (sky on +Y, ground
+  on -Y).
+- In game (DownTown, `--verify` captures with a camera mod): paint in the palette colours, the red mask (stripes)
+  in the secondary colour, dark see-through glass with the cube reflection, no shader errors. Not compared side by side
+  with the recomp.
+
+**Open.**
+- The distance fade / fade-in of `i_params.x` (near / far keys `0x9FCFDBEA56BA4733` / `0x73B6874C7B46C7C6`, gating
+  byte); cars draw at 1.
+- The vehicle vertex shader did not disassemble (`xenos_disasm.py` fails on the `.vpo`): world-space interpolants are
+  inferred from the pixel shader.
+- The stencil tags (128 body, 255 glass) and what reads them.
+- NPC peds still draw with Bevy PBR and the baked tint; the same lighting port would apply (follow-up).

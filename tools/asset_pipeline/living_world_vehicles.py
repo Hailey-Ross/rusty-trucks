@@ -10,8 +10,12 @@ Outputs (under ``<assets>/private/living_world/``):
     pose), every part as one primitive per material instance (``Accessory`` = body, ``Equipment`` =
     windows, ``Misc`` = separate wheels of ``reda_car``), every LOD as its own mesh / node (``LOD0``,
     ``LOD1``). Materials carry ``extras.kind`` = ``vehicle_chassis`` or ``vehicle_glass`` (from the
-    recipe's XML sibling), the diffuse map (RGBA as stored) and the normal map; the environment cube
-    is not converted (its id is kept in ``extras``). Space: the arena's own (metres, Y up, wheels on
+    recipe's XML sibling), ``extras.attrib_material`` = the part's ``AttribulatorMaterialName`` (the
+    vault material row retail binds, e.g. ``character.livingworld_vehicles``), the diffuse map (RGBA as
+    stored), the normal map and ``extras.environment`` = the id of the environment cube (one shared
+    256x256 DXT5 cube on every retail car), written once as ``vehicles/env_<id>.png``: the six faces
+    stacked top to bottom in native order (+X, -X, +Y, -Y, +Z, -Z), rows not flipped, like the map
+    cubes (``map_writer``). Space: the arena's own (metres, Y up, wheels on
     y = 0, +Z forward).
 
 ``vehicles.json``
@@ -35,7 +39,7 @@ from pathlib import Path
 
 import numpy as np
 
-VERSION = 2
+VERSION = 3
 ARCHIVE = 'data/content/livingworld.big'
 RECIPE_DIR = 'data/content/recipe/vehicle/'
 FLOAT16_4 = 0x001A2360  # Xenos vertex format of the car positions (4 x half float); the shared rx2 reader skips it
@@ -117,13 +121,18 @@ def write_glb(recipe: dict, arena_path, texture_path, output: Path, rx2) -> dict
     from tools.asset_pipeline.character_glb import Glb
     from tools.asset_pipeline.living_world_models import _normal_png
     from PIL import Image
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/utt'))
+    import mdl_parser
     glb = Glb()
-    parsed = {}
+    parsed, attribs = {}, {}
     for part in recipe['parts']:
         for level, lod in enumerate(part['lods']):
             path = arena_path(lod)
             data = rx2.parse_rx2(str(path))
             raw = Path(path).read_bytes()
+            names = {m.value for m in mdl_parser.parse_rx2(raw).materials if m.kind == 'AttribulatorMaterialName'}
+            attribs[(part['slot'], level)] = names.pop() if len(names) == 1 else None
             for mesh in data['meshes']:
                 if mesh.get('indices') and not mesh.get('positions') and mesh.get('vertex_count'):
                     mesh['positions'] = half_positions(raw, mesh, rx2)
@@ -178,7 +187,8 @@ def write_glb(recipe: dict, arena_path, texture_path, output: Path, rx2) -> dict
                         raise ValueError(f"{recipe['name']}/{part['slot']}: vertex without skin weight")
                     attributes['JOINTS_0'] = glb.accessor(joints, 'VEC4', 5123)
                     attributes['WEIGHTS_0'] = glb.accessor(weights / total, 'VEC4')
-                key = (instance['material'], tuple(sorted(instance['textures'].items())))
+                attrib = attribs[(part['slot'], level)]
+                key = (instance['material'], tuple(sorted(instance['textures'].items())), attrib)
                 if key not in materials:
                     textures = instance['textures']
                     if 'diffuse' not in textures:
@@ -191,7 +201,12 @@ def write_glb(recipe: dict, arena_path, texture_path, output: Path, rx2) -> dict
                                                          'metallicFactor': 0.0, 'roughnessFactor': 0.5},
                                 'alphaMode': 'OPAQUE',
                                 'extras': {'kind': kind, 'material_id': instance['material'],
+                                           'attrib_material': attrib,
                                            'environment': textures.get('environment')}}
+                    if attrib:
+                        stats.setdefault('attrib_materials', {}).setdefault(kind, set()).add(attrib)
+                    if textures.get('environment'):
+                        stats.setdefault('environments', set()).add(textures['environment'])
                     if 'normal' in textures:
                         material['normalTexture'] = glb.texture(_normal_png(texture_path(textures['normal'])))
                     glb.doc['materials'].append(material)
@@ -222,6 +237,8 @@ def write_glb(recipe: dict, arena_path, texture_path, output: Path, rx2) -> dict
     temporary = output.with_suffix('.tmp')
     glb.save(temporary)
     temporary.replace(output)
+    stats['attrib_materials'] = {k: sorted(v) for k, v in sorted(stats.get('attrib_materials', {}).items())}
+    stats['environments'] = sorted(stats.get('environments', ()))
     stats['bounds'] = [[_r(v) for v in lo], [_r(v) for v in hi]]
     stats['wheels'] = {n: [_r(v) for v in worlds[n][3, :3]] for n in names if 'wheel' in n.lower()}
     return stats
@@ -242,6 +259,30 @@ def recipe_grab_splines(recipe: dict, read) -> list[dict]:
                 return [{'points': s['control_points'], 'direction': s['direction'], 'bounds': s['bounds'],
                          'flags': s['flags']} for s in found]
     return []
+
+
+def decode_cube(parser, data: bytes) -> np.ndarray:
+    """The six base faces of a cube texture rx2 as one (6 x size, size, 4) RGBA strip. The vendored
+    decoder takes only DXT1 / A8R8G8B8 / B5G6R5 cubes (``tools/vendor`` is fingerprinted, so the DXT5
+    case lives here): each face is a tiled slice of 32-block-aligned rows, 4 KiB aligned."""
+    rx2 = parser.RX2File(data)
+    rx2.parse()
+    entry = next((e for e in rx2.entries if e.is_texture), None)
+    if entry is None:
+        raise ValueError('no texture in cube rx2')
+    hdr = rx2.data[entry.info_offset:entry.info_offset + 52]
+    fmt, size = hdr[35], int.from_bytes(hdr[36:40], 'big')
+    width, height = (size & 0x1FFF) + 1, ((size >> 13) & 0x1FFF) + 1
+    if (int.from_bytes(hdr[48:52], 'big') >> 9) & 3 != 3 or width != height or fmt != parser.FMT_DXT5:
+        raise ValueError(f'not a square DXT5 cube: {width}x{height} fmt={fmt:#x}')
+    blocks = ((width + 3) // 4 + 31) & ~31
+    stride = (blocks * blocks * 16 + 4095) & ~4095
+    raw = rx2.data[rx2.data_base + entry.data_offset:][:entry.buffer_size]
+    if len(raw) < 6 * stride:
+        raise ValueError('truncated cube faces')
+    faces = [np.frombuffer(parser._decode_texture_data(raw[i * stride:(i + 1) * stride], width, height, fmt, hdr[28]),
+                           dtype=np.uint8).reshape(height, width, 4) for i in range(6)]
+    return np.concatenate(faces, 0)
 
 
 def export_models(game_root: Path, manifest: dict, output: Path, work: Path, report=print) -> dict:
@@ -269,9 +310,19 @@ def export_models(game_root: Path, manifest: dict, output: Path, work: Path, rep
         return dest
 
     results = {}
+    environments = {}
     for name, recipe in sorted(manifest['recipes'].items()):
         try:
             stats = write_glb(recipe, lambda lod: extract(lod['arena']), texture, output/f'{name}.glb', RX2)
+            for tid in stats.get('environments', []):
+                if tid not in environments:
+                    try:
+                        from PIL import Image
+                        Image.fromarray(decode_cube(parser, extract(f'data/content/vehicle/texture/0x{tid}.rx2').read_bytes())).save(output/f'env_{tid}.png')
+                        environments[tid] = f'vehicles/env_{tid}.png'
+                    except (ValueError, KeyError, struct.error) as error:
+                        environments[tid] = None  # drawn without reflections
+                        report(f'Living world vehicle environment {tid} unavailable: {error}')
             results[name] = {'status': 'ready', 'file': f'vehicles/{name}.glb', **stats,
                              'grab_splines': recipe_grab_splines(recipe, lambda arena: extract(arena).read_bytes())}
         except (ValueError, KeyError, RuntimeError, IndexError, struct.error, OSError) as error:
@@ -279,6 +330,7 @@ def export_models(game_root: Path, manifest: dict, output: Path, work: Path, rep
                 raise  # disk full / permissions abort setup
             results[name] = {'status': 'unavailable', 'error': str(error)}
             report(f'Living world vehicle {name} unavailable: {error}')
+    results['__environments__'] = {k: v for k, v in sorted(environments.items()) if v}
     return results
 
 
@@ -288,7 +340,28 @@ def _colours(values) -> list[list[float]]:
     return [[v['x'], v['y'], v['z'], v['w']] for v in values or [] if isinstance(v, dict)]
 
 
-def vehicle_doc(doc: dict, manifest: dict, census_records: list[str]) -> dict:
+def material_params(collections: list[dict] | None, names) -> dict:
+    """``{name: {'params': m_params rows}}`` for each ``AttribulatorMaterialName`` (``class.key`` ->
+    vault class ``material_<class>``, row ``key``, inheritance applied; retail ``sub_827E4F58``
+    splits the name the same way). Names whose row is missing are left out."""
+    from .environment import Collections, key_hash
+    if not collections:
+        return {}
+    table = Collections({'collections': collections})
+    out = {}
+    for name in sorted(names):
+        family, _, key = name.partition('.')
+        try:
+            fields, _ = table.resolve('material_' + family, key)
+        except KeyError:
+            continue
+        rows = fields.get(key_hash('m_params'), {}).get('array', {}).get('items', [])
+        if rows:
+            out[name] = {'params': [[_r(v) for v in struct.unpack('>4f', bytes.fromhex(r))] for r in rows]}
+    return out
+
+
+def vehicle_doc(doc: dict, manifest: dict, census_records: list[str], collections: list[dict] | None = None) -> dict:
     """vehicles.json content from the exported tables (``living_world.tables``) and the manifest."""
     from .living_world import census_chain
     c = doc['classes']
@@ -332,7 +405,18 @@ def vehicle_doc(doc: dict, manifest: dict, census_records: list[str]) -> dict:
                                  'lods': len(p['lods'])} for p in r['parts']],
                       'material_types': r['material_types'], 'glb': r.get('glb')}
                for name, r in sorted(manifest['recipes'].items())}
+    # Retail material rows of the car materials (vehicle_defaultPS / vehicle_glass_defaultPS m_params),
+    # by material name, and the name each material kind used (the default for a mod GLB without one).
+    kinds: dict[str, set] = {}
+    for r in manifest['recipes'].values():
+        for kind, names in (r.get('glb') or {}).get('attrib_materials', {}).items():
+            kinds.setdefault(kind, set()).update(names)
+    materials = material_params(collections, {n for names in kinds.values() for n in names})
+    material_kinds = {kind: sorted(names)[0] for kind, names in sorted(kinds.items()) if len(names) == 1}
     return {'version': VERSION, 'models': models, 'entities': entities, 'census': census, 'recipes': recipes,
+            'materials': materials, 'material_kinds': material_kinds,
+            # Environment cube id (GLB material extras ``environment``) -> strip PNG.
+            'environments': manifest.get('environments', {}),
             'specs': sorted(c.get('livingworld_vehicle_characteristics', {})),
             'drivers': sorted(c.get('livingworld_vehicle_drivers', {}))}
 
@@ -367,7 +451,8 @@ def validate(doc: dict, vehicles: dict, root: Path) -> list[str]:
     return sorted(set(problems))
 
 
-def export(game_root: Path, output: Path, work: Path, doc: dict, census_records: list[str], report=print) -> dict:
+def export(game_root: Path, output: Path, work: Path, doc: dict, census_records: list[str], report=print,
+           collections: list[dict] | None = None) -> dict:
     """Build the car models and ``vehicles.json`` into ``output`` (``living_world/``). Returns a report
     (counts and warnings); raises when the vehicle census does not resolve."""
     report('Reading vehicle recipes')
@@ -375,11 +460,12 @@ def export(game_root: Path, output: Path, work: Path, doc: dict, census_records:
     warnings = list(manifest['errors'])
     report('Building vehicle models')
     built = export_models(game_root, manifest, output/'vehicles', work/'living_world_vehicles', report)
+    manifest['environments'] = built.pop('__environments__', {})
     for name, result in built.items():
         manifest['recipes'][name]['glb'] = result
         if result['status'] != 'ready':
             warnings.append(f"vehicle {name}: {result['error']}")
-    vehicles = vehicle_doc(doc, manifest, census_records)
+    vehicles = vehicle_doc(doc, manifest, census_records, collections)
     (output/'vehicles.json').write_text(json.dumps(vehicles, indent=1), encoding='utf-8')
     problems = validate(doc, vehicles, output)
     if problems:
