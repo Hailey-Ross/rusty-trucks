@@ -84,7 +84,12 @@ struct State {
 pub struct Stage {
     pub vm: Vm,
     state: State,
+    /// Object count at which the next update ends with a collection (twice what survived the last one).
+    collect_at: usize,
 }
+
+/// Fewest objects before the stage collects at all (the booted front end alone holds about this many).
+const MIN_COLLECT_AT: usize = 1024;
 
 struct Bindings<'a> {
     state: &'a mut State,
@@ -416,6 +421,7 @@ impl Stage {
                 unhandled: BTreeSet::new(),
                 traces: Vec::new(),
             },
+            collect_at: MIN_COLLECT_AT,
         })
     }
     /// A script-less empty clip under `parent` (what retail C++ makes to hold the screen manager movie).
@@ -423,6 +429,9 @@ impl Stage {
         let id = new_clip(&mut self.vm, parent, name)?;
         self.state.dynamic.insert(id, (parent, 0));
         Ok(id)
+    }
+    pub fn live_objects(&self) -> usize {
+        self.vm.live_objects()
     }
     pub fn levels(&self) -> &[Level] {
         &self.state.levels
@@ -658,6 +667,36 @@ impl Stage {
                 self.drain(natives)?;
             }
         }
+        if self.vm.objects.len() >= self.collect_at {
+            self.collect()?;
+        }
+        Ok(())
+    }
+    /// Frees objects nothing reaches any more, between updates: closed screens leave their clips, listeners and
+    /// script objects behind, and without this a few pause menu opens filled the VM's object budget (session
+    /// 2026-10-12). Roots are `_global` plus every object id the stage and its movies hold. The script-made clip
+    /// table is weak: a clip made inside a screen must not keep that screen alive through its parent once the
+    /// screen unloads, so its entry goes when the clip is collected.
+    /// NOT RETAIL (mechanism): retail's APT player refcounts its objects; this only keeps the slots bounded.
+    pub fn collect(&mut self) -> Result<(), String> {
+        let state = &self.state;
+        let mut roots = vec![state.loader_prototype, state.object_class];
+        roots.extend(state.classes.values());
+        // `loadMovie` loads have no loader (usize::MAX).
+        roots.extend(state.loads.iter().flat_map(|l| [l.target, l.loader]).filter(|&id| id != usize::MAX));
+        for level in &state.levels {
+            let m = &level.movie;
+            if m.root != usize::MAX {
+                roots.push(m.root);
+            }
+            roots.extend(m.instances.iter().flat_map(|(id, i)| std::iter::once(*id).chain(i.children.values().copied())));
+            roots.extend(m.pending.iter().chain(&m.immediate).map(|p| p.object));
+            roots.extend(m.classes.values());
+            roots.extend(m.script_moved.iter().chain(&m.attached).chain(m.scaled.keys()));
+        }
+        let free: BTreeSet<usize> = self.vm.collect(roots)?.into_iter().collect();
+        self.state.dynamic.retain(|id, _| !free.contains(id));
+        self.collect_at = (2 * self.vm.live_objects()).max(MIN_COLLECT_AT);
         Ok(())
     }
     /// Placement of the clip a level's root is loaded into, from its ancestors (each an instance of another
@@ -876,6 +915,56 @@ mod tests {
         }
         assert_eq!(game.settings.rows.len(), registry.screen_rows(2, &context).len());
         assert!(names.iter().any(|n| n == "mItem0"), "no row clips: {names:?}");
+    }
+
+    /// Opening and closing the pause menu many times stays inside the VM's object budget: closed screens'
+    /// clips are collected between updates (a session froze on the third open, 2026-10-12).
+    #[test]
+    fn pause_menu_reopens_without_growing() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        let (data, loaded) = crate::retail_menus::read(&crate::apt_imports::main_checkout().join("assets"));
+        let registry = if loaded { skate_core::menus::MenuRegistry::new(data) } else { crate::crossbar_host::test_registry() };
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("CrossBar".into())], &mut game).unwrap();
+        let mut counts = Vec::new();
+        for _ in 0..8 {
+            stage
+                .call_path(
+                    "_global.ScreenManager.OpenScreen",
+                    vec![
+                        Value::Text("source/screens/main/core_menu.swf".into()),
+                        Value::Text("screen".into()),
+                        Value::Text("0".into()),
+                        Value::Text("CrossBar".into()),
+                    ],
+                    &mut game,
+                )
+                .unwrap();
+            for f in 0..60 {
+                if let Err(e) = stage.update(16.0, &movies, &mut game) {
+                    panic!("{e} at open {} frame {f}: live {} slots {} after {counts:?}", counts.len(), stage.live_objects(), stage.vm.objects.len());
+                }
+            }
+            stage.call_path("_global.ScreenManager.CloseScreen", vec![Value::Text("600".into())], &mut game).unwrap();
+            for _ in 0..60 {
+                stage.update(16.0, &movies, &mut game).unwrap();
+            }
+            stage.collect().unwrap();
+            counts.push(stage.live_objects());
+        }
+        eprintln!("live objects after each open/close: {counts:?}");
+        assert!(counts.iter().all(|&n| n == counts[0]), "objects grow with every open: {counts:?}");
     }
 
     fn retail_screen_manager(close: bool) {

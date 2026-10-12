@@ -324,6 +324,14 @@ fn update(
     }
     let (Some(mut ms), Some(movies), Some(mut menus)) = (stage, movies, menus) else { return };
     if ms.failed {
+        // A stopped stage gives the game back: no suspended gameplay, no pause backdrop (Start then opens the PC
+        // overlay). Without this a stage error with the pause menu open froze the game (session 2026-10-12).
+        if let Some(overlay) = overlay.as_mut().filter(|o| o.fe_suspended) {
+            warn!("RETAIL_MENUS stage stopped with the pause menu open: gameplay resumed");
+            overlay.fe_suspended = false;
+            backdrop.set_stack(Vec::new());
+            *fe_hud = crate::fe_backdrop::FeHud::default();
+        }
         return;
     }
     let ms = &mut *ms;
