@@ -904,6 +904,12 @@ mod tests {
         let types: Vec<String> = game.settings.rows.iter().map(|id| format!("{id}:{:?}", registry.data().setting(id).map(|s| s.widget))).collect();
         assert_eq!(rows, game.settings.rows.len(), "{types:?}");
         let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
+        // Text takes the colour the rows' SetState script sets (`textColor`): the row states' colours appear, not only
+        // the fields' authored ones (on 0x70BBFF, off 0x385570, selected value 0x37A5FF).
+        let script_colours = [0x385570u32, 0x37A5FF];
+        let rgb = |d: &crate::apt_scene::Draw| ((d.multiply[0] * 255.).round() as u32) << 16 | ((d.multiply[1] * 255.).round() as u32) << 8 | (d.multiply[2] * 255.).round() as u32;
+        let text_colours: std::collections::BTreeSet<u32> = draws.iter().filter(|d| d.fill == crate::apt_scene::Fill::TextureClamped).map(rgb).collect();
+        assert!(script_colours.iter().any(|c| text_colours.contains(c)), "text colours {:06X?}", text_colours);
         if std::env::var("SKATE3_DUMP_DRAWS").is_ok() {
             for d in &draws {
                 let xs = d.vertices.iter().map(|v| v.position[0]);

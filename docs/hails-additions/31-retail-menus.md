@@ -1403,6 +1403,42 @@ between), the third open fails 5 ms after `open pause menu (FE 54)`, physics tic
 - Challenge Map still opens the PC overlay's Maps section (the bridge in "Row handlers"); retail's Challenge Map
   screen (FE 17) with its locations and teleports is not ported.
 
+## Settings text colours and the glow (2026-10-12)
+
+### Problem
+Play test: on Difficulty Settings the current value ("< Normal >") was unreadable, the Audio "100%" values were very
+dim, and the selected row's glow was far too bright while it flickered.
+
+### Root cause
+- [data, code] The rows' own scripts set `TextField.textColor` per state in SetState (highlight_selector,
+  highlight_slider, highlight_option, menu_part_text_hilite, main: selected value 0x37A5FF, rows on 0x70BBFF, off
+  0x385570, disabled 0x555555). Our text draw never read it and used only the field's authored `color_argb` (dark
+  navy #0F4670 for the selector value, grey #3E485C for the slider value, #70BBFF for every row title).
+- [code, medium-high] The HUD / menu layer blended in linear space (target `Rgba8UnormSrgb`, shader output converted
+  to linear). Retail's APT draw state is straight SRC_ALPHA / INV_SRC_ALPHA (`sub_827E4AF0`, bound by the draw
+  `sub_825D4490`) on a display-value image (the 2D pass's format is inferred from the recomp's tone chain and frame
+  surface, not traced). Linear blending lifts the selected row's many soft low-alpha glow layers.
+- Research: `.local/research/menus-m6/glow-and-value-text.md` (main verified the textColor finding and the draw path).
+
+### Change
+- `apt_scene.rs`: a text draw takes the RGB of the field's script-set `textColor` when set, the alpha from the field.
+- `scoring_hud.rs`, `hud_render.wgsl`, `hud_composite.wgsl`: the layer target is `Rgba8Unorm` holding display values;
+  both shader modes output display values (mode 1 applies the colour transform to the texel's display value); the
+  composite undoes the coverage, converts to linear and premultiplies again for the frame. The gameplay HUD shares the
+  layer (one APT player in retail).
+- Moddability: the colours stay in the movie scripts (mod movies and scripts use the same path); no Rust constants.
+
+### Verification
+- `retail_options_screen_builds_rows` now also asserts the script colours (0x385570 / 0x37A5FF) reach the draws; the
+  full skate-game suite passes apart from the known upstream `pipelines_accept_valid_group_outputs_when_fingerprint_changes`.
+- In game (local test build): the menus load (a first build put a helper between `@fragment` and the entry point and
+  the composite shader failed to compile; fixed). The user's visual check of the glow and the gameplay HUD is pending.
+
+### Open questions
+- Prove the 2D pass's colour format with a short recomp trace at `sub_825D4490`.
+- `apt_scene.rs` ignores `blend_mode`; retail also has an additive ONE/ONE object (`[0x830680AC]`, user not traced).
+- Trick Guide (Learn tab) is not ported: the row stays greyed.
+
 ## Files
 - Out-of-date prompt: `crates/skate-game/src/asset_check.rs` (new), `setup.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`
 - Stored settings: `crates/skate-game/src/retail_menus.rs` (`StoredSettings`, `setting`), `scoring_hud.rs`
