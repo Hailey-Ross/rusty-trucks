@@ -59,6 +59,7 @@ Not play-tested yet; tell us if any of these still happen.
 - **NPC skaters riding backwards:** retail's facing rule, with the fakie upper-body animation for skaters that ride fakie on purpose.
 - **Pedestrians and cars:** a car pushes a ped out of its way, as in retail; a `VEHICLE_CONTACT` line goes to the session log.
 - **Grind bails at the PCU Library handrail:** the board no longer catches a post under the bottom bend (retail's tighter collision query box).
+- **Car paint and glass:** cars use Skate 3's own car shaders now: paint colours, lighting, reflections and the tinted glass follow retail instead of estimates (re-run setup so the car data is rebuilt).
 - **Car shadows under bridges:** traffic on a bridge no longer casts a shadow onto the street below (retail's world shadow floor).
 - **Props look like retail:** benches, bins and other props use retail's prop shader (dents, grime, rust) after a setup refresh.
 - **Rolling on grass and dirt:** uses retail's sound routing for those surfaces instead of a stand-in grain sound.
@@ -121,7 +122,7 @@ From the latest play tests and the overnight work (not play-tested yet):
 - **Carrying props:** the grab point is a straight edge on top of the prop, not retail's authored grab shapes, and stepping up curbs while dragging is not retail's yet. The prop fixes above come from headless tests only.
 - **NPC skaters:** they can spin round when switching to another line (retail's turning comes from full skater physics, not ported yet). Every NPC uses the same stance until each pro's stance is read from the data. Some animations still look stiff, grabs show an ollie, and trick height, grind variety, landings and spins are not finished. They push props but do not steer round obstacles or bail on heavy props yet.
 - **Pedestrians:** they walk through props you have moved; one model walks stiffly and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail. Placed props (benches, bins) still pass through your body; only thrown items hit you.
-- **Cars:** paint colours and glass are estimates (the vehicle shader is not decoded yet).
+- **Cars:** they appear and vanish at full opacity; retail fades them in and out with distance.
 - **NPC draw distance** (Esc > GRAPHICS) is a quality-of-life option, not retail; higher settings cost frame time. None turns all NPCs off.
 - **Grinding:** the two corners of the flat rail at the PCU Library spawn still make you bail. Some drops off stair edges now land a little faster than before; tell us if landings feel wrong.
 - Known upstream test failures (also on `main`): `pipelines_accept_valid_group_outputs_when_fingerprint_changes` (skate-game) and `a_moving_group_8_body_...` (skate-core).
