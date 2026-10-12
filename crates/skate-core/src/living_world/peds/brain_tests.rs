@@ -262,7 +262,7 @@ fn related_wants_and_nav_modifiers_follow_retail() {
     let f = frame();
     let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
     h.begin(0, [0; 6], &f);
-    assert_eq!(h.brain.wants["angrychase"], Want { target: 42, needs_addressing: true });
+    assert_eq!(h.brain.wants["angrychase"], Want { target: 42, needs_addressing: true, forget_on_unset: false });
     assert!(!h.brain.wants["joinchase"].needs_addressing);
     assert!(h.brain.nav_modifier(nav_modifier::PEDESTRIAN));
     h.begin(1, [0; 6], &f);
@@ -682,4 +682,45 @@ fn hand_prop_conditions_and_the_weighted_pick() {
     assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f), h.condition_activation(2, &f)), (1, 1, 0));
     h.brain.hand_prop.clear();
     assert_eq!(h.condition_activation(0, &f), 0);
+}
+
+/// After a takedown the chase ends through EndChase's aggressivecapture branch like retail
+/// (`pedestrian_endchase.xml`: IgnoreCollisionsWithWantTarget angrychase, UnsetWant angrychase, SuppressMoodAboutChasee
+/// 5.5): the chase want (flag 0x40 from its mood result) forgets the chasee's mood records and perception entry on
+/// unset, and the chasee's contacts are ignored. Without this a ped chased again the moment its taunt ended, without a
+/// new collision (play test, 2026-10-12).
+#[test]
+fn a_captured_chasee_is_forgotten_and_its_contacts_ignored() {
+    use super::super::chase::ChaseGroupInfo;
+    let conditions = ops(&[("IsEndChaseReason", &[("reason", "aggressivecapture")]), ("IsEndChaseReason", &[("reason", "lostinterest")])]);
+    let behaviors = ops(&[("IgnoreCollisionsWithWantTarget", &[("want", "AngryChase")]), ("UnsetWant", &[("want", "AngryChase")]), ("NewChasee", &[])]);
+    assert_eq!(conditions[0], PedOp::IsEndChaseReason { reason: 1 });
+    assert_eq!(behaviors[0], PedOp::IgnoreCollisionsWithWantTarget { want: "angrychase".into() });
+    let info = std::cell::Cell::new(None::<ChaseGroupInfo>);
+    let groups = |_: u64| info.get();
+    let mut brain = PedBrain::default();
+    // Raised by the collisionchase mood result (want flag set).
+    brain.raise_want("angrychase", 100, true);
+    brain.perceptions.know(100, 10.0);
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let f = frame();
+    let view = ChaseView { me: 7, groups: Some(&groups), ..Default::default() };
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: view };
+    h.begin(2, [0; 6], &f);
+    h.brain.chase_requests.clear();
+    // The takedown ended the group with aggressivecapture: EndChase takes that branch, not lostinterest's.
+    info.set(Some(ChaseGroupInfo { count: 1, primary: Some(7), end_reason: Some(1), can_add: false }));
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f)), (1, 0));
+    h.begin(0, [0; 6], &f);
+    assert_eq!(h.brain.ignore_collisions_with, Some(100));
+    h.begin(1, [0; 6], &f);
+    assert!(!h.brain.wants.contains_key("angrychase"));
+    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::MoodReset { target: 100 }]);
+    assert!(h.brain.perceptions.get(100).is_none());
+    // A want without the flag (warn, greet, ...) keeps the memory when it is unset.
+    h.brain.chase_requests.clear();
+    h.brain.set_want("angrychase", 100);
+    h.begin(1, [0; 6], &f);
+    assert!(h.brain.chase_requests.is_empty());
 }

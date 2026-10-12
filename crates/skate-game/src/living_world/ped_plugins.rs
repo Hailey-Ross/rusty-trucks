@@ -103,8 +103,20 @@ fn placed(waypoints: &Value) -> BTreeMap<String, Vec<PluginProp>> {
 
 /// The map's DMO hotpoint plugin props (`native-props/<map>.json` `plugin_props`, setup `hotpoint_data`): one
 /// one-waypoint prop per hotpoint of each placed bench, bin or newspaper box (`82C4E128`), at the initial placement.
-/// The id is the DMO instance id with the hotpoint index in its top byte (stable for a host). NOT RETAIL YET: a prop the
-/// player moves keeps its seats where it was placed.
+/// The id is the DMO instance id with the hotpoint index in its top byte (stable for a host). The hotpoints belong to
+/// the object, so a moved prop carries its seats (`follow_prop`, applied every think from the body's pose).
+/// A hotpoint authored at `position` / `facing` on a prop authored at `spawn` (origin, basis columns), carried to the
+/// prop's pose `now`: the point keeps its place on the object (a bench pushed aside takes its seats along; peds used
+/// to sit in the air where it had been, play test 2026-10-12).
+pub(crate) fn follow_prop(position: [f32; 3], facing: [f32; 3], spawn: ([f32; 3], [[f32; 3]; 3]), now: ([f32; 3], [[f32; 3]; 3])) -> ([f32; 3], [f32; 3]) {
+    // Local = spawn basis transposed (orthonormal) times the offset; world = basis times local.
+    let to_local = |v: [f32; 3]| std::array::from_fn::<f32, 3, _>(|i| (0..3).map(|k| spawn.1[i][k] * v[k]).sum());
+    let to_world = |l: [f32; 3]| std::array::from_fn::<f32, 3, _>(|k| (0..3).map(|i| now.1[i][k] * l[i]).sum());
+    let local = to_local(std::array::from_fn(|k| position[k] - spawn.0[k]));
+    let p = to_world(local);
+    (std::array::from_fn(|k| p[k] + now.0[k]), to_world(to_local(facing)))
+}
+
 pub(crate) fn map_props(root: &Path, map: &str) -> Vec<PluginProp> {
     let path = root.join("private/native-props").join(format!("{map}.json"));
     let Some(report) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { return Vec::new() };
@@ -221,6 +233,20 @@ mod tests {
         assert_eq!(props[0].class, "waypoint_sit");
         assert_eq!(props[0].waypoints[0].position, [10.25, 1.0, 19.5]);
         assert!(map_props(std::path::Path::new("Z:/nowhere"), "Test").is_empty());
+    }
+
+    #[test]
+    fn a_moved_prop_carries_its_seats() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        // A seat 1 m in front (+z) of a bench at (10, 0, 20), facing back towards it.
+        let spawn = ([10.0, 0.0, 20.0], identity);
+        assert_eq!(follow_prop([10.0, 0.5, 21.0], [0.0, 0.0, -1.0], spawn, spawn), ([10.0, 0.5, 21.0], [0.0, 0.0, -1.0]));
+        // Pushed 3 m along x and turned 90 degrees about y (+z goes to +x).
+        let turned = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+        let (p, f) = follow_prop([10.0, 0.5, 21.0], [0.0, 0.0, -1.0], spawn, ([13.0, 0.0, 20.0], turned));
+        let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        assert!(near(p, [14.0, 0.5, 20.0]), "{p:?}");
+        assert!(near(f, [-1.0, 0.0, 0.0]), "{f:?}");
     }
 
     /// The stock descriptors parse: sit's transfer tree and the conversation's 3 participants.

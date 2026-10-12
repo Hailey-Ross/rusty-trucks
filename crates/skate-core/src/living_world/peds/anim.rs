@@ -146,7 +146,7 @@ pub mod names {
         // motiongraph_taunt.
         "Taunt",
         // The plugin states (`super::plugin_motion`): sit, ATM, vending machine, water fountain, newspaper box.
-        "Stand2Sit", "SitIdleCyc", "Sit2Stand", "ATMInsertCard", "ATMMakeSelection", "ATMCollectMoney", "ATMCollectCard",
+        "Stand2Sit", "SitIdleCyc", "Sit2Stand", "SitAvoidFwd", "ATMInsertCard", "ATMMakeSelection", "ATMCollectMoney", "ATMCollectCard",
         "VendInsert", "VendSelect", "VendCollect", "WaterFountainInto", "WaterFountainCyc", "WaterFountainOut", "NewspaperCollect",
         // The light hand prop throw (`super::hand_prop::light_throw_clip`).
         "HandPropThrowLightForward", "HandPropThrowLightL45", "HandPropThrowLightL90", "HandPropThrowLightR180",
@@ -351,6 +351,17 @@ impl PedAnimPlayer {
         }
         self.reaction = Some(ReactionRun { steps, index: 0, ground_left: ground_seconds });
         true
+    }
+
+    /// Replace the running reaction or plugin sequence with `steps` (a motion-graph transition out of it, e.g. the
+    /// Avoid graph's SitJump from `Locomotion.Sit.SittingCyc`); the old one stays when the new one cannot start.
+    pub fn interrupt(&mut self, set: &PedAnimSet, steps: Vec<super::skater_contact::ReactionStep>, ground_seconds: f32) -> bool {
+        let running = self.reaction.take();
+        if self.react(set, steps, ground_seconds) {
+            return true;
+        }
+        self.reaction = running;
+        false
     }
 
     /// Release a held cycle step (a plugin state's `HasIntent <next stage>` transition): it ends now.

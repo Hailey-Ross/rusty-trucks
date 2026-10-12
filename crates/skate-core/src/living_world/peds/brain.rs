@@ -189,6 +189,10 @@ pub enum PedOp {
     /// `8269E758` / `8269E790`: the collision component's "needs to begin" / "is colliding".
     NeedsToBeginColliding,
     IsColliding,
+    /// The Colliding state's behaviour. Begin `8269DA00`: posts the collision mood event (`sub_8269D8A8`, the
+    /// collision broadcast: `collision` for the hit ped, `nearbycollision` for bystanders) and plays the contact
+    /// reaction; End `8269E610`: clears the component's needs-to-begin / colliding bytes (+8, +9, +10).
+    PedestrianColliding,
     /// `826AD790`: brain `+3281` bit 0x80.
     ShouldScatter,
     /// `826ABF98`: a honker is set.
@@ -284,6 +288,12 @@ pub enum PedOp {
     ChasersAreScared,
     /// `826AAC20`: the group's end reason, else this chaser's own, is set.
     IsChaserEndingChase,
+    /// `826AAC80`: the chase component's end reason (vfunc +84) equals `reason` (op+28). Picks EndChase's branch
+    /// (aggressivecapture / lostinterest / default).
+    IsEndChaseReason { reason: i32 },
+    /// `826A8A60`: the want's target handle (`brain+412+12*want`) becomes the entity whose contacts the ped ignores
+    /// (`ped+5680`, read by the contact classifier `sub_82E38400`); EndChase's aggressivecapture branch.
+    IgnoreCollisionsWithWantTarget { want: String },
     /// `826AD690`: this chaser's takedowns reached the record's give-up count.
     ChaserShouldGiveUpDueToTakedowns,
     /// `826A37F0` Begin: speech 15, takedowns 0, join the angrychase target's group.
@@ -502,6 +512,7 @@ impl PedOp {
             "HasSpecificWantThatNeedsToBeAddressed" => PedOp::HasWantToAddress { want: want() },
             "NeedsToBeginColliding" => PedOp::NeedsToBeginColliding,
             "IsPedestrianColliding" => PedOp::IsColliding,
+            "PedestrianColliding" => PedOp::PedestrianColliding,
             "ShouldScatter" => PedOp::ShouldScatter,
             "IsBeingHonkedAt" => PedOp::IsBeingHonkedAt,
             "RunFromHonker" => PedOp::RunFromHonker,
@@ -541,6 +552,8 @@ impl PedOp {
             "ChaseeHasProtector" => PedOp::ChaseeHasProtector,
             "ChasersAreScared" => PedOp::ChasersAreScared,
             "IsChaserEndingChase" => PedOp::IsChaserEndingChase,
+            "IsEndChaseReason" => PedOp::IsEndChaseReason { reason: super::chase::reason::parse(&text("reason").unwrap_or_default().to_ascii_lowercase()) },
+            "IgnoreCollisionsWithWantTarget" => PedOp::IgnoreCollisionsWithWantTarget { want: want() },
             "ChaserShouldGiveUpDueToTakedowns" => PedOp::ChaserShouldGiveUpDueToTakedowns,
             "NewChasee" => PedOp::NewChasee,
             "GiveUpBeingPrimaryChaser" => PedOp::GiveUpBeingPrimaryChaser { timeout: float("timeout").unwrap_or(0.0) },
@@ -675,11 +688,16 @@ impl PedOp {
     }
 }
 
-/// One want slot (`brain+412+want*12`: target handle, flags bit 0x80 "needs addressing").
+/// One want slot (`brain+412+want*12`: target handle, flags bit 0x80 "needs addressing", bit 0x40 "forget the
+/// target on unset").
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Want {
     pub target: u64,
     pub needs_addressing: bool,
+    /// Flag 0x40, from the mood result's `CE65` (set on the chase, tazeperp and runfromchaser results): unsetting the
+    /// want erases the mood records and the perception entry about the target (`sub_82E42A58` -> `sub_82E40FF0`,
+    /// research b28 / b18). Without it a chase's collision record outlived the chase and restarted it at once.
+    pub forget_on_unset: bool,
 }
 
 /// The ped type's sit values (`ped+5696` attribute collection; `livingworld_entities`): sit time min / max (s,
@@ -799,8 +817,13 @@ pub struct PedBrain {
     pub timers: BTreeMap<i32, f32>,
     pub scatter: bool,
     pub honker: Option<u64>,
+    /// The collision component's +8 ("needs to begin colliding", NeedsToBeginColliding): set by a contact that
+    /// made the ped react (`sub_82E38FB8`), cleared when the Colliding state ends.
     pub begin_colliding: bool,
+    /// The component's +10 (IsPedestrianColliding): true while the contact reaction plays (host side).
     pub colliding: bool,
+    /// PedestrianColliding began this tick: the host posts the collision mood broadcast (`sub_8269D8A8`).
+    pub collision_began: bool,
     pub zombie: bool,
     /// ZombieFollow's current goal (host steers the body to it).
     pub zombie_goal: Option<Vec3>,
@@ -892,6 +915,10 @@ pub struct PedBrain {
     /// The variant and row value a conversation turn stores with the speech (`ped+2472` /
     /// `+2476`, `82E3DAD8`); no known audio meaning yet, carried with the speech event.
     pub speech_topic: Option<(u8, i32)>,
+    /// The entity whose contacts the ped ignores (`ped+5680`: set by a successful takedown and by
+    /// IgnoreCollisionsWithWantTarget, kept until the next one; read by the contact classifier `sub_82E38400`). No
+    /// knock-down reaction and no collision mood about it, so a takedown's own bumps do not restart the chase.
+    pub ignore_collisions_with: Option<u64>,
     /// The chasee's id (`brain+3204`, the chaser component's handle).
     pub chasee: Option<u64>,
     /// This chaser's end reason (`brain+2176`).
@@ -1028,11 +1055,19 @@ impl ChaseView<'_> {
 impl PedBrain {
     /// Raise a want (the mood system's job; a mod or test may call it).
     pub fn set_want(&mut self, want: &str, target: u64) {
-        self.wants.insert(want.to_ascii_lowercase(), Want { target, needs_addressing: true });
+        self.raise_want(want, target, false);
     }
-    /// `sub_82E42A58(brain, want, 0)`.
+    /// A want from the mood producer, with the result's flag 0x40 ([`Want::forget_on_unset`]).
+    pub fn raise_want(&mut self, want: &str, target: u64, forget_on_unset: bool) {
+        self.wants.insert(want.to_ascii_lowercase(), Want { target, needs_addressing: true, forget_on_unset });
+    }
+    /// `sub_82E42A58(brain, want, 0)`; a flag 0x40 want also forgets its target (`sub_82E40FF0`: the mood records
+    /// about it, game side through [`ChaseRequest::MoodReset`], and its perception entry).
     pub fn unset_want(&mut self, want: &str) {
-        self.wants.remove(want);
+        if let Some(w) = self.wants.remove(want).filter(|w| w.forget_on_unset) {
+            self.perceptions.forget(w.target);
+            self.chase_requests.push(ChaseRequest::MoodReset { target: w.target });
+        }
     }
     /// `sub_82E40940`: a length at or below 0 stops the timer; a new timer is dropped when
     /// [`timers::CAPACITY`] are running.
@@ -1150,6 +1185,8 @@ impl BrainHost<'_> {
             PedOp::ChaseeHasProtector | PedOp::ChasersAreScared => false,
             // `82E3D988`: no group -> not ending; an ending group's reason wins.
             PedOp::IsChaserEndingChase => b.chasee.and_then(|c| self.chase.group(c)).is_some_and(|g| g.end_reason.is_some() || b.end_reason.is_some()),
+            // The ped's own end reason, else its chase group's (a group end reaches every member).
+            PedOp::IsEndChaseReason { reason } => b.end_reason.or_else(|| b.chasee.and_then(|c| self.chase.group(c)).and_then(|g| g.end_reason)) == Some(*reason),
             // `82E3D7B0` (exhausted: accumulator past the limit; no record or field: never),
             // `82E3D838` (rested: not exhausted and timer 4 out).
             PedOp::NeedToRest => {
@@ -1234,6 +1271,7 @@ impl Host for BrainHost<'_> {
         let s = *self.settings;
         let b = &mut *self.brain;
         match op {
+            PedOp::PedestrianColliding => b.collision_began = true,
             PedOp::Wander => {
                 b.honker = None;
                 b.motion_intent = Some(motion::WANDER);
@@ -1453,7 +1491,14 @@ impl Host for BrainHost<'_> {
             PedOp::TakeDownTargetableSuccess => {
                 b.takedown_active = false;
                 if let Some(target) = b.takedown_target {
+                    // `826A4E50` also stores the target in `ped+5680`: its contacts are ignored from now on.
+                    b.ignore_collisions_with = Some(target);
                     b.chase_requests.push(ChaseRequest::Takedown { target });
+                }
+            }
+            PedOp::IgnoreCollisionsWithWantTarget { want } => {
+                if let Some(w) = b.wants.get(want) {
+                    b.ignore_collisions_with = Some(w.target);
                 }
             }
             PedOp::TakeDownTargetableFailure => {
@@ -1465,7 +1510,8 @@ impl Host for BrainHost<'_> {
             PedOp::ActivateRelatedWant { original, related, deactivate_original } => {
                 // An empty original slot copies nothing we model (inferred: no want raised).
                 if let Some(w) = b.wants.get(original).copied() {
-                    b.wants.insert(related.clone(), Want { target: w.target, needs_addressing: true });
+                    // The related want takes the original's target and flags (inferred: the same slot record).
+                    b.wants.insert(related.clone(), Want { target: w.target, needs_addressing: true, forget_on_unset: w.forget_on_unset });
                     if *deactivate_original {
                         if let Some(o) = b.wants.get_mut(original) {
                             o.needs_addressing = false;
@@ -1715,6 +1761,10 @@ impl Host for BrainHost<'_> {
         let Some(op) = self.behaviors.get(behavior) else { return };
         let b = &mut *self.brain;
         match op {
+            PedOp::PedestrianColliding => {
+                b.begin_colliding = false;
+                b.colliding = false;
+            }
             PedOp::OwnPluginObject => b.own_plugin_object = false,
             PedOp::ZombieFollow => b.zombie_goal = None,
             PedOp::OverrideAnimData { .. } => b.anim_override = None,
