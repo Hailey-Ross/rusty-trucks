@@ -53,6 +53,12 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Angry peds attacking over and over:** after a ped knocks you down it now ends the chase like Skate 3 does: it forgets what made it angry and ignores your bumps for that moment, instead of chasing again the second its taunt ends.
+- **Peds ignoring you while walking to a bench:** a ped you knock over now reacts and can get angry, even on its way to a bench, a vending machine or a bin.
+- **Seated peds:** you can knock a seated ped off a bench with a proper hit (gentle bumps are ignored, like Skate 3).
+- **Moved benches:** a bench you move takes its seats along, so peds sit on it, not in the air where it was. Moving a bench under a seated ped makes them jump off and sit back down at the new spot.
+- **Crash near benches:** fixed a crash when a ped using a bench or other prop lost it as props streamed out around you.
+- **Settings screens:** the selected value ("< Normal >", "100%") is readable again and only the selected row is bright; the selection glow is softer (the menu and HUD layer now blends like the console).
 - **Game files check:** when your converted game files do not match what setup recorded, the log now names the files (`ASSET_CHECK <group>: ... (count: first files)`), so a report shows what changed. Refresh Game Files also works in copies started from a source checkout (`--assets`), not only the release package.
 - **Pause menu froze the game:** opening Skate 3's pause menu a few times (for example Challenge Map, back, and Start again) ran the menu system out of room; it stopped with the game still paused, Start no longer worked and the game had to be closed. Closed menus are now freed, and if the menu system ever stops, the game unpauses and Start opens the Guide / F1 / Esc menu instead.
 - **Props sinking into the ground and never settling:** props now use retail's contact solver (25 iterations) and its sleep rule, so dragged props stay on the street and placed props come to rest.
