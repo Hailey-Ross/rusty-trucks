@@ -28,13 +28,37 @@ fn installation(assets: &Path) -> Option<(PathBuf, serde_json::Value)> {
     (published == install_root).then_some((install_root, marker))
 }
 
-/// Every output each group recorded at setup is still present at its size.
+/// Every output each group recorded at setup is still present at its size. The reason names the first few files
+/// that differ, so a log shows what changed (a hand re-export that skipped setup, a deleted file, ...).
 fn receipts(install_root: &Path, marker: &serde_json::Value) -> Vec<Finding> {
     let Some(groups) = marker["outputs"].as_object() else { return Vec::new() };
     groups
         .iter()
         .filter(|(_, files)| !crate::setup::outputs_present(install_root, files))
-        .map(|(group, _)| finding(group, "converted files missing or changed size"))
+        .map(|(group, files)| {
+            let differ = differing_outputs(install_root, files);
+            let shown = differ.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+            let more = differ.len().saturating_sub(3);
+            let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+            finding(group, format!("converted files missing or changed size ({} of {}: {shown}{more})", differ.len(), files.as_object().map_or(0, |f| f.len())))
+        })
+        .collect()
+}
+
+/// The recorded outputs that are missing or not at their recorded size, as `path (missing)` /
+/// `path (N bytes, recorded M)`.
+fn differing_outputs(install_root: &Path, files: &serde_json::Value) -> Vec<String> {
+    let Some(files) = files.as_object() else { return vec!["no outputs recorded".into()] };
+    files
+        .iter()
+        .filter_map(|(name, entry)| {
+            let recorded = entry["size"].as_u64();
+            match std::fs::metadata(install_root.join(name)) {
+                Ok(m) if m.is_file() && Some(m.len()) == recorded => None,
+                Ok(m) if m.is_file() => Some(format!("{name} ({} bytes, recorded {})", m.len(), recorded.map_or("none".into(), |r| r.to_string()))),
+                _ => Some(format!("{name} (missing)")),
+            }
+        })
         .collect()
 }
 
@@ -139,8 +163,12 @@ mod tests {
         }});
         std::fs::write(base.join("installation.json"), marker.to_string()).unwrap();
         let (found_root, found) = installation(&root.join("assets")).expect("the published installation");
-        let groups: Vec<String> = receipts(&found_root, &found).into_iter().map(|f| f.group).collect();
+        let findings = receipts(&found_root, &found);
+        let groups: Vec<&str> = findings.iter().map(|f| f.group.as_str()).collect();
         assert_eq!(groups, ["audio", "maps"], "missing c.bin, b.bin's size changed; core is fine");
+        // The log names the files.
+        assert!(findings[0].reason.ends_with("(1 of 1: assets/private/c.bin (missing))"), "{}", findings[0].reason);
+        assert!(findings[1].reason.ends_with("(1 of 1: assets/private/b.bin (2 bytes, recorded 3))"), "{}", findings[1].reason);
         let _ = std::fs::remove_dir_all(&base);
     }
 
