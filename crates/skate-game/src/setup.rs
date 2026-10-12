@@ -144,10 +144,15 @@ pub(crate) fn outputs_present(install_root: &Path, files: &serde_json::Value) ->
 pub(crate) fn restart_with_refresh() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let root = exe.parent().ok_or("No executable directory")?;
-    if !root.join("support/skate3setup.exe").is_file() {
-        return Err("This copy has no setup helper: unpack the complete package, or run setup by hand.".into());
-    }
-    let base = root.join("data");
+    let base = match assets_arg() {
+        // A development copy (`--assets <link>`): the installation behind the link, refreshed by the checkout's setup.
+        Some(assets) => {
+            dev_setup(root).ok_or("No setup found: this copy has neither support/skate3setup.exe nor a checkout's tools/setup.py.")?;
+            dev_base(&assets)?
+        }
+        None if root.join("support/skate3setup.exe").is_file() => root.join("data"),
+        None => return Err("This copy has no setup helper: unpack the complete package, or run setup by hand.".into()),
+    };
     if let Some((_, marker)) = installed(&base)? {
         let mut cleared = marker.clone();
         for group in stale_groups() {
@@ -207,8 +212,89 @@ fn installation_ready(
         && customiser_current(assets, expected_customiser)
 }
 
+/// The `--assets` directory, when given (development copies and the Steam launcher's versions).
+fn assets_arg() -> Option<PathBuf> {
+    let mut args = std::env::args_os().skip_while(|a| a != "--assets");
+    args.next()?;
+    Some(args.next().map_or_else(|| PathBuf::from("assets"), PathBuf::from))
+}
+
+/// Setup for a development copy: the packaged helper beside the exe when there is one, else the checkout's
+/// `tools/setup.py` (the source the helper is packaged from) found above the exe (`<checkout>/bin/skate3rust.exe`).
+fn dev_setup(exe_dir: &Path) -> Option<Command> {
+    let packaged = exe_dir.join("support/skate3setup.exe");
+    if packaged.is_file() {
+        return Some(Command::new(packaged));
+    }
+    let checkout = exe_dir.ancestors().find(|d| d.join("tools/setup.py").is_file())?;
+    let mut command = Command::new("py");
+    command.arg("-3.13").arg(checkout.join("tools/setup.py")).current_dir(checkout);
+    Some(command)
+}
+
+/// The data folder (holding `installation.json`) behind an `--assets` link to `<base>/installations/<id>/assets`.
+fn dev_base(assets: &Path) -> Result<PathBuf, String> {
+    let assets = assets.canonicalize().map_err(|e| format!("{}: {e}", assets.display()))?;
+    let base = assets.parent().and_then(Path::parent).and_then(Path::parent).ok_or("--assets is not inside an installation")?;
+    if !base.join("installation.json").is_file() {
+        return Err(format!("--assets is not a set-up installation: no installation.json in {}", base.display()));
+    }
+    Ok(base.to_path_buf())
+}
+
+/// Refresh for a development copy (the PC overlay's Refresh Game Files restarted it with `--refresh-assets`): run
+/// setup's refresh on the installation behind the `--assets` link, then point the link at the new installation
+/// (setup publishes a new `installations/<id>` and removes the old one).
+fn refresh_dev_copy(link: &Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe.parent().ok_or("No executable directory")?;
+    let base = dev_base(link)?;
+    let mut command = dev_setup(exe_dir).ok_or("No setup found for this development copy")?;
+    command.arg("--base").arg(&base).arg("--game-exe").arg(&exe).arg("--refresh");
+    if installed(&base)?.is_some_and(|(assets, _)| crate::game_audio::decode_speech_saved(&assets)) {
+        command.env("SKATE_SETUP_SPEECH", "1");
+    }
+    eprintln!("SETUP: refreshing the development installation in {}", base.display());
+    let status = command.status().map_err(|e| format!("Could not start setup: {e}"))?;
+    if !status.success() { return Err("Setup was cancelled or did not complete".into()); }
+    let (assets, _) = installed(&base)?.ok_or("Setup did not publish a complete installation")?;
+    repoint_link(link, &assets)
+}
+
+/// Points a directory link (junction) at `target`, replacing the old link; a real directory is left alone.
+fn repoint_link(link: &Path, target: &Path) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(link).map_err(|e| format!("{}: {e}", link.display()))?;
+    if link.canonicalize().ok().as_deref() == target.canonicalize().ok().as_deref() {
+        return Ok(());
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT: a junction or symlink, whose removal leaves the target alone.
+        if meta.file_attributes() & 0x400 == 0 {
+            return Err(format!("{} is a real folder, not a link; point --assets at {}", link.display(), target.display()));
+        }
+        std::fs::remove_dir(link).map_err(|e| format!("Could not remove the old link {}: {e}", link.display()))?;
+        // mklink reads a '/' as a switch: installation paths are joined from "installations/<id>".
+        let windows = |p: &Path| p.to_string_lossy().replace('/', "\\");
+        let status = Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(windows(link)).arg(windows(target)).status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() { return Err(format!("Could not link {} to {}", link.display(), target.display())); }
+    }
+    #[cfg(not(windows))] {
+        let _ = meta;
+        return Err("Re-pointing the assets link is Windows-only".into());
+    }
+    eprintln!("SETUP: {} now points at {}", link.display(), target.display());
+    Ok(())
+}
+
 pub(crate) fn asset_root() -> Result<PathBuf, String> {
-    if std::env::args_os().any(|arg| arg == "--assets") { return Ok(PathBuf::from("assets")); }
+    if let Some(assets) = assets_arg() {
+        if std::env::args_os().any(|arg| arg == "--refresh-assets") {
+            refresh_dev_copy(&assets)?;
+        }
+        return Ok(assets);
+    }
     if let Some(root) = std::env::var_os("SKATE3_ASSETS") {
         let path = PathBuf::from(root);
         if path.is_dir() {
@@ -374,6 +460,31 @@ fn receipt_present(root: &Path, files: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A development copy's refresh finds the data folder behind its `--assets` junction and re-points the junction
+    /// at the installation setup publishes (the Steam launcher's copies had no way to refresh, 2026-10-12).
+    #[cfg(windows)]
+    #[test]
+    fn dev_refresh_finds_the_base_and_repoints_the_link() {
+        let dir = std::env::temp_dir().join(format!("skate3rust-dev-refresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["old", "new"] {
+            std::fs::create_dir_all(dir.join("data").join("installations").join(d).join("assets")).unwrap();
+        }
+        std::fs::write(dir.join("data").join("installation.json"), "{}").unwrap();
+        let (data, installs) = (dir.join("data"), dir.join("data").join("installations"));
+        let (old, new) = (installs.join("old").join("assets"), installs.join("new").join("assets"));
+        let link = dir.join("assets");
+        assert!(Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(&link).arg(&old).status().unwrap().success());
+        assert_eq!(dev_base(&link).unwrap(), data.canonicalize().unwrap());
+        // Setup's published path is joined with '/' ("installations/<id>"), which mklink must not read as a switch.
+        repoint_link(&link, &data.join("installations/new/assets")).unwrap();
+        assert_eq!(link.canonicalize().unwrap(), new.canonicalize().unwrap());
+        assert!(old.is_dir(), "re-pointing removes the link, never its old target");
+        // A real folder is never replaced.
+        assert!(repoint_link(&old, &new).is_err());
+        std::fs::remove_dir(&link).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn acknowledged_optional_failure_is_versioned_and_retained_data_is_checked() {
         let root = std::env::temp_dir().join(format!("sk8-availability-{}-{}", std::process::id(),

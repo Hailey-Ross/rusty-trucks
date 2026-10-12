@@ -53,6 +53,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Game files check:** when your converted game files do not match what setup recorded, the log now names the files (`ASSET_CHECK <group>: ... (count: first files)`), so a report shows what changed. Refresh Game Files also works in copies started from a source checkout (`--assets`), not only the release package.
 - **Pause menu froze the game:** opening Skate 3's pause menu a few times (for example Challenge Map, back, and Start again) ran the menu system out of room; it stopped with the game still paused, Start no longer worked and the game had to be closed. Closed menus are now freed, and if the menu system ever stops, the game unpauses and Start opens the Guide / F1 / Esc menu instead.
 - **Props sinking into the ground and never settling:** props now use retail's contact solver (25 iterations) and its sleep rule, so dragged props stay on the street and placed props come to rest.
 - **Board stays with you when grabbing a prop:** grabbing now drops a carried board where you stand, like retail.

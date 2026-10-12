@@ -1298,6 +1298,38 @@ FE screen records (Start then falls back to the PC overlay).
 - Screenshot (`SKATE_VERIFY_MENU=stale`): chip, Game Files section, the row and both description lines.
 - Open: the restart into setup is not run end to end (it needs a release package's setup helper).
 
+## Refresh Game Files in development copies, and which files differ (2026-10-12)
+
+### Problem
+A Steam launcher copy of hails-additions showed GAME FILES OUT OF DATE (living world), and Extras > Refresh Game Files
+only said "This copy has no setup helper". The log said `ASSET_CHECK livingworld: converted files missing or changed
+size` without naming a file.
+
+### Root cause
+- The 19 car models in the dev installation had been re-exported straight into it during the car shader work
+  (2026-10-11, 18:47), after setup's last receipt (15:22): each file 108 bytes larger than recorded. The game data was
+  current; the receipt was not. Release copies are not affected (the converter change shows as a normal refresh offer).
+- The refresh restart only knew the release layout (`support/skate3setup.exe` and `data/` beside the exe). Development
+  copies run `bin/skate3rust.exe --assets <link>`, so there was no helper and the wrong data folder.
+
+### Change
+- `setup.rs`: with `--assets`, Refresh Game Files finds the installation behind the link (`<base>/installations/<id>/assets`),
+  clears the stale groups' fingerprints there and restarts; the restarted copy runs setup's refresh (the packaged helper
+  when present, else the checkout's `tools/setup.py` through `py -3.13`, the source the helper is built from) and points
+  the link at the installation setup publishes. Only a link is replaced, never a real folder.
+- `asset_check.rs`: the receipt finding names the first three files that differ and the count, e.g.
+  `converted files missing or changed size (19 of 114: .../suv_01.glb (710100 bytes, recorded 709992), ... and 16 more)`.
+- Launcher (`.local/steam`, not in the repo): a broken version link is re-pointed at the installation in
+  `data/installation.json`, not at the main checkout's link (which can be stale as well).
+
+### Verification
+- `dev_refresh_finds_the_base_and_repoints_the_link` (Windows): the base behind a junction, re-pointing to a path joined
+  with '/' (mklink read it as a switch before the fix), the old target kept, a real folder refused.
+- `a_missing_or_resized_output_flags_its_group` checks the new reasons.
+- The dev installation refreshed with setup's `refresh=True` (only `livingworld` changed): new installation, every
+  group's receipt matches (core 2033, hud 27, character 60, environment 38, maps 26, audio 4416, livingworld 115 files).
+- Not yet run end to end from the overlay button in a development copy.
+
 ## Opt-in features in the PC overlay (2026-10-11)
 
 User: "anything opt in should be added as a setting to the guide overlay that can be toggled on and off if they arent already".
