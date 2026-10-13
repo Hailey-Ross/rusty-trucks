@@ -20,6 +20,17 @@ fn retail_trick_guide_lists_and_slots() {
     let tables = extract(&XexImage { base_address: 0x8200_0000, image: std::fs::read(image).unwrap() }).unwrap();
     let collections = Collections::load(assets.parent().unwrap().parent().unwrap().parent().unwrap()).unwrap();
     let guide = skate_data::trick_guide::load(&collections, &tables.trick_guide);
+    // Camera tracks (doc 31 "Trick Guide camera"): refs into trickbook_camera_tracks; most tricks have none (0).
+    let mut tracks = std::collections::BTreeMap::<i16, usize>::new();
+    for (_, t) in &guide.tricks {
+        *tracks.entry(t.entry.camera_track).or_default() += 1;
+    }
+    for s in guide.subcategory.values() {
+        *tracks.entry(s.entry.camera_track).or_default() += 1;
+    }
+    eprintln!("camera tracks used: {tracks:?}");
+    assert!(tracks.keys().all(|t| (0..=20).contains(t)), "{tracks:?}");
+    assert!(tracks.contains_key(&3) && tracks.contains_key(&18), "{tracks:?}");
     let mut state = TrickGuideState::open(&guide);
     let categories = state.items(&guide);
     assert_eq!(categories.len(), 8);

@@ -707,10 +707,12 @@ fn update(
     ms.crossbar = fe.state;
     ms.settings = fe.settings;
     ms.trick_guide = std::mem::take(&mut fe.trick_guide);
-    // The 3D demo behind FE 14 (trick_guide_scene.rs): the screen on top and its highlighted clip (S+204).
+    // The 3D demo behind FE 14 (trick_guide_scene.rs): the screen on top, its highlighted clip and camera track
+    // (S+204, S+200).
     demo.set_if_neq(crate::trick_guide_scene::TrickGuideDemo {
         open: ms.trick_guide.open,
         animation: ms.trick_guide.state.animation.clone(),
+        camera_track: ms.trick_guide.state.camera_track,
     });
     let settings_selected = std::mem::take(&mut ms.settings.selected);
     if result.is_ok() {

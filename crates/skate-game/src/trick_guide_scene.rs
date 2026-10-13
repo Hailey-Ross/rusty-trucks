@@ -4,11 +4,16 @@
 //! The player's own rig plays the clip (ViewScene's character is the current player), the set is spawned as a
 //! child of the player root (clip and set share the scene space), and the gameplay camera draws only the demo
 //! layer while the screen is open. Research: `.local/research/menus-m6/trick-guide-*.md`, doc 31 "Trick Guide demo".
-//! NOT RETAIL YET: the camera (the 21 tracks in scene.big `ice_000.bin` are not decoded; a fixed side framing of
-//! the hips stands in), csm_trickguide shadows, fog_trickguide, the set's sky dome.
+//! The camera plays the entry's ICE ViewScene track (scene.big `ice_000.bin`, skate_core::camera_track), fitted to
+//! the clip's length and placed on the skater with the height zeroed ("TrickbookPlayerAtZeroY").
+//! The set takes render location `trick_guide`'s fog and sun (fog_trickguide; retail_sky::SkyPackage::load_scene).
+//! NOT RETAIL YET: csm_trickguide shadows; the rest of the location (exposure, post_fx) stays the map's; in the camera the locator (inferred from the data: the
+//! tracks aim at a skater at the origin while the clips travel up to 70 m), the axis map (track +y = the clips'
+//! run direction +x, Z up), the lens angle taken as the vertical field of view and DUTCH as radians.
 use crate::{animation::AnimationStatus, map_render::{MapEntity, SceneCommands, StagedAssets}, world::PlayerRoot};
 use bevy::{camera::visibility::RenderLayers, ecs::system::SystemState, mesh::skinning::SkinnedMesh, prelude::*};
 use skate_core::animation::{output, pose_sample::{sample_key, select_frames}};
+use skate_core::camera_track::CameraTrack;
 use skate_data::{scene_clip::SceneClip, skate_map::SkateMap};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
@@ -18,12 +23,16 @@ pub(crate) const LAYER: usize = 27;
 const SETTLE_MS: f32 = 60.0;
 /// Init 0x82618A40 copies this into S+204 (.rdata 0x82204B88): the clip before any trick is highlighted.
 const DEFAULT_CLIP: &str = "trickguide_fs_noseblunt_01";
+/// Init 0x82618A40 sets S+200 = 1 with the default clip.
+const DEFAULT_TRACK: i16 = 1;
 
 /// What the retail menu stage shows: FE 14 on top, and the highlighted entry's demo clip (S+204).
 #[derive(Resource, Default, Clone, PartialEq, Debug)]
 pub(crate) struct TrickGuideDemo {
     pub open: bool,
     pub animation: String,
+    /// The entry's camera track (S+200, `trickbook_camera_tracks`; -1 = no camera).
+    pub camera_track: i16,
 }
 
 #[derive(Component)]
@@ -35,15 +44,20 @@ struct Scene {
     root: Option<PathBuf>,
     set: Option<Option<Arc<SkateMap>>>,
     clips: HashMap<String, Option<Arc<SceneClip>>>,
+    /// The ViewScene camera tracks (`ice_000.bin` next to the clips).
+    tracks: Option<Arc<Vec<CameraTrack>>>,
     active: bool,
     /// Requested clip and the settle countdown; the playing clip, its time and the rig bound to its bones.
     requested: String,
+    requested_track: i16,
     settle: f32,
     playing: Option<(String, Arc<SceneClip>)>,
+    track: i16,
     time: f32,
     bindings: Option<AnimationStatus>,
     layers: Vec<(Entity, Option<RenderLayers>)>,
     camera: Option<(Entity, Option<RenderLayers>)>,
+    fov: Option<f32>,
 }
 
 pub(crate) struct TrickGuideScenePlugin;
@@ -76,9 +90,11 @@ fn drive(world: &mut World, mut scene: Local<Scene>) {
     // Rows without a clip (categories) leave S+204 as it was.
     if scene.requested.is_empty() {
         scene.requested = DEFAULT_CLIP.into();
+        scene.requested_track = DEFAULT_TRACK;
     }
     if !demo.animation.is_empty() && demo.animation != scene.requested {
         scene.requested = demo.animation.clone();
+        scene.requested_track = demo.camera_track;
         scene.settle = SETTLE_MS;
     }
     if scene.settle > 0.0 {
@@ -94,6 +110,7 @@ fn drive(world: &mut World, mut scene: Local<Scene>) {
                 clip.frames.len(), clip.fps, scene.bindings.as_ref().map_or(0, |b| b.online_bindings().len()),
                 world.get::<GlobalTransform>(player).map(|t| t.translation()));
             scene.playing = Some((name, clip));
+            scene.track = scene.requested_track;
             scene.time = 0.0;
         }
     }
@@ -109,16 +126,36 @@ fn drive(world: &mut World, mut scene: Local<Scene>) {
             }
         }
     }
-    // NOT RETAIL YET: stand-in framing (side view of the hips) until the ViewScene camera tracks are decoded.
-    let hips = clip.bone_names.iter().position(|n| n == "HIPS").unwrap_or(0);
-    let target = crate::animation::native_matrix(globals[hips]).w_axis.truncate();
     let root = world.get::<GlobalTransform>(player).copied().unwrap_or_default();
-    // The menu covers the right half: aim right of the skater so they sit in the left third.
-    let eye = root.transform_point(target + Vec3::new(1.2, 0.6, 5.5));
-    let look = root.transform_point(target + Vec3::new(1.6, 0.0, 0.0));
+    let track = usize::try_from(scene.track).ok().and_then(|i| scene.tracks.as_ref()?.get(i).cloned());
+    let (eye, look, roll, fov) = match track {
+        Some(track) => {
+            // Retail fits the track to the clip ("Fixing Camera Group length"; sub_82820E98 writes the clip length).
+            let time = scene.time * track.length / clip.duration().max(1e-3);
+            let Some(sample) = track.sample(time) else { return };
+            // The skater with the height zeroed; the track is Z-up with +y along the clips' run (scene +x).
+            let skater = crate::animation::native_matrix(globals[0]).w_axis.truncate() * Vec3::new(1.0, 0.0, 1.0);
+            let scene_point = |[x, y, z]: [f32; 3]| skater + Vec3::new(y, z, x);
+            (scene_point(sample.eye), scene_point(sample.look), sample.dutch, Some(sample.fov_radians()))
+        }
+        // No track (-1, or no ice_000.bin): a side view of the hips, the skater in the left third.
+        None => {
+            let hips = clip.bone_names.iter().position(|n| n == "HIPS").unwrap_or(0);
+            let target = crate::animation::native_matrix(globals[hips]).w_axis.truncate();
+            (target + Vec3::new(1.2, 0.6, 5.5), target + Vec3::new(1.6, 0.0, 0.0), 0.0, None)
+        }
+    };
+    let (eye, look) = (root.transform_point(eye), root.transform_point(look));
     if let Some((camera, _)) = scene.camera {
         if let Some(mut transform) = world.get_mut::<Transform>(camera) {
             *transform = Transform::from_translation(eye).looking_at(look, Vec3::Y);
+            transform.rotate_local_z(roll);
+        }
+        if let (Some(fov), Some(mut projection)) = (fov, world.get_mut::<Projection>(camera)) {
+            if let Projection::Perspective(p) = &mut *projection {
+                scene.fov.get_or_insert(p.fov);
+                p.fov = fov;
+            }
         }
     }
 }
@@ -180,6 +217,14 @@ fn start(world: &mut World, scene: &mut Scene, player: Entity) -> bool {
             .ok().map(Arc::new)
     }).clone();
     let Some(set) = set else { return false };
+    if scene.tracks.is_none() {
+        let path = root.join("ice_000.bin");
+        match std::fs::read(&path).map_err(|e| e.to_string())
+            .and_then(|b| skate_data::ice_camera::scene_tracks(&b, skate_data::ice_camera::VIEW_SCENE)) {
+            Ok(tracks) => scene.tracks = Some(Arc::new(tracks)),
+            Err(e) => warn!("TRICK_GUIDE_DEMO camera tracks {} unavailable (run setup's refresh): {e}", path.display()),
+        }
+    }
     // The set: retail world materials through the map path, tagged as ours and parented to the player root.
     let asset_root = world.resource::<crate::config::Config>().asset_root.clone();
     let tuning = crate::retail_render::MaterialTuning::load(&asset_root);
@@ -188,15 +233,18 @@ fn start(world: &mut World, scene: &mut Scene, player: Entity) -> bool {
     let mut images = StagedAssets::<Image>::staged(world);
     let mut buffers = StagedAssets::<bevy::render::storage::ShaderStorageBuffer>::staged(world);
     let mut commands = SceneCommands::default();
-    crate::skate_world::spawn(&set, &tuning, &Default::default(), &mut commands, &mut meshes, &mut materials,
-        &mut images, &mut buffers);
-    // The set's own sky dome (mesh 0, sky.default), lit by the current map's sun.
+    // The set's own sky dome (mesh 0, sky.default) and the trick_guide render location's sun and fog
+    // (fog_trickguide), which the set's materials take too.
     let map_sky = world.get_resource::<crate::map_transition::CurrentMap>()
         .and_then(|map| crate::retail_sky::SkyPackage::load(&asset_root, &map.name).ok());
     let mut skies = StagedAssets::<crate::retail_sky::SkyMaterial>::staged(world);
-    match crate::retail_sky::SkyPackage::load_scene(&root, map_sky.as_ref()) {
-        Ok(sky) => sky.spawn(&mut commands, &mut meshes, &mut images, &mut skies),
-        Err(e) => warn!("TRICK_GUIDE_DEMO sky {}: {e}", root.display()),
+    let sky = crate::retail_sky::SkyPackage::load_scene(&root, map_sky.as_ref())
+        .inspect_err(|e| warn!("TRICK_GUIDE_DEMO sky {}: {e}", root.display())).ok();
+    let environment = sky.as_ref().map(|s| s.environment()).unwrap_or_default();
+    crate::skate_world::spawn(&set, &tuning, &environment, &mut commands, &mut meshes, &mut materials,
+        &mut images, &mut buffers);
+    if let Some(sky) = sky {
+        sky.spawn(&mut commands, &mut meshes, &mut images, &mut skies);
     }
     meshes.publish_now(world);
     images.publish_now(world);
@@ -270,6 +318,11 @@ fn stop(world: &mut World, scene: &mut Scene) {
         }
     }
     if let Some((entity, layers)) = scene.camera.take() {
+        if let (Some(fov), Some(mut projection)) = (scene.fov.take(), world.get_mut::<Projection>(entity)) {
+            if let Projection::Perspective(p) = &mut *projection {
+                p.fov = fov;
+            }
+        }
         if let Ok(mut e) = world.get_entity_mut(entity) {
             match layers {
                 Some(l) => { e.insert(l); }

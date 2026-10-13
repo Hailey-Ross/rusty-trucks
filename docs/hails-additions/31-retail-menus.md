@@ -1609,10 +1609,8 @@ set. Ours showed the gameplay world behind the menu.
   `SkyPackage::load_scene`.
 - Mods: a mod picks any clip per entry through the existing Trick Guide patches (`sdk.menus.trick_guide`, field
   `animation`). Mod clip folders are not wired yet.
-- NOT RETAIL YET: the camera (a fixed side framing; the 21 ViewScene tracks in scene.big `ice_000.bin` are being
-  decoded, `.local/research/menus-m6/trick-guide-camera.md`), looping (assumed), the dome's sun direction / anchor
-  (taken from the current map: no Trick Guide render location exists), `fog_trickguide` and `csm_trickguide` not
-  applied, the delta add and trajectory parenting (from the data).
+- NOT RETAIL YET: looping (assumed), the delta add and trajectory parenting (from the data). The camera, fog and
+  sun: see "Trick Guide camera, fog and sun" below.
 
 ### Verification
 - `cargo test -p skate-core animation::raw`; ignored data tests `crates/skate-data/tests/scene_clip.rs` (all 312
@@ -1623,12 +1621,75 @@ set. Ours showed the gameplay world behind the menu.
   Closing the guide in a run was not checked (injected keys arrive before the guide takes input); play test pending.
 
 ### Open questions
-- The camera tracks (format partly decoded), DUTCH units, horizontal vs vertical FOV, the locator.
-- Who applies `fog_trickguide`; the CSM override; whether the scene loops the clip (`TrickGuideLoop` = enum 9).
+- Whether the scene loops the clip (`TrickGuideLoop` = enum 9). Camera and environment: next section.
 - 61 clip files and 9 clip names no listed row uses (8 tricks with no subcategory, the unlisted "Retrieve"
   subcategory): retail does not show them either.
 
+## Trick Guide camera, fog and sun (2026-10-12)
+
+### Problem
+The demo used a fixed side view of the hips, no fog, and the current map's sun on the set's dome.
+
+### Root cause / evidence (TU3 recomp code and the disc data; research `.local/research/menus-m6/trick-guide-camera.md`, `trick-guide-fog-csm.md`, `trick-guide-csm-fields.md`)
+- Each Trick Guide entry names a camera track: RefSpec 0x3D3A79F16DCB54BB (a ClassRefSpec: record key in the first
+  8 bytes) into `trickbook_camera_tracks`, whose Int16 is the track index; no ref reads 0 (`sub_826188B8`, S+200);
+  the screen init sets track 1 with the default clip. [code + data] The installed data uses tracks 0, 1, 3, 18, 19, 20.
+- The tracks are the ICE ViewScene block (scene hash 0x7F298808) in scene.big `data/scene/ice_000.bin`: 21 records
+  (`sub_828F51E8`), each with 37 key groups; the camera elements (EYE, LOOK, DUTCH, TANGENT_EYE / TANGENT_LOOK,
+  LENS_LENGTH) sit in group 0 (element table `sub_82903840`; EYE's descriptor names TANGENT_EYE as its tangent
+  element, +64 = 7, and element 87 at +60). [code + data]
+- Interpolation (main read the code): `sub_828F0BB0` sets each element up per segment as a cubic Hermite
+  `((a*u + b)*u + c)*u + p0`, a = m0 + m1 - 2D, b = 3D - m1 - 2*m0; the tangent `sub_828F0990` is the non-uniform
+  Catmull-Rom tangent in the segment's own parameter (neighbour segment weighted by the durations; none at the ends:
+  D), scaled by the tangent element's value at that key. [code]
+- FOV: `sub_828F1E80`, `2*atan(15.96 / lens_mm)`, lens clamped to 10..500 mm. [code]
+- While the set is loaded, the renderer's environment is render location `trick_guide` (`sub_827950A8`: model list
+  +17496 == 1 selects key 0x6568F34643066684, main checked): parents `fe`, `default`; sun (0, 0.8, 0.1), anchor 165,
+  `fog_trickguide` (fog_default made black: near 10, far 200, power 1.9, max 0.8). [code + data]
+- `csm_trickguide` differs from `cascade_shadowmap` in the per-cascade shader bias `g_CSMSelfBias` (0.005, 0.001,
+  0.024 vs 0.0025, 0.005, 0.012), a Bool and a pair (-2, 4) stored next to each other with no reader found; both
+  records share the cascade splits 1.8 / 7.2 / 28.8 m. [code + data, research agent; the bias name by its hash]
+
+### Change
+- `skate-core/src/camera_track.rs` (new): `CameraTrack::sample` (the Hermite and tangent above), `fov_radians`.
+- `skate-data/src/ice_camera.rs` (new): `scene_tracks(bytes, VIEW_SCENE)` reads the block (little-endian; key times
+  u16/65535 of the length, quantised elements MSB-first bit streams).
+- `skate-data/src/trick_guide.rs`: `Entry.camera_track` from the ref; `skate-core` `TrickGuideState.camera_track`
+  (S+200) and `EntryPatch.camera_track`; mods: `sdk.menus.trick_guide` option `camera_track` (track index).
+- `trick_guide_scene.rs`: the playing clip's track is fitted to the clip length (retail "Fixing Camera Group
+  length"), placed on the skater with the height zeroed, and drives the gameplay camera's transform, roll and FOV
+  (restored on close); track -1 or no `ice_000.bin` keeps the side view.
+- Setup `scene_clips.py`: exports `ice_000.bin` next to the clips, and the set's sky package carries the `trick_guide`
+  location's sun, anchor height and fog frame (`scene_environment`); `retail_sky.rs` `load_scene` uses it (older
+  exports: the map's sun, no fog), and the set's materials take its fog.
+- NOT RETAIL YET: the locator and axis map (inferred: the tracks aim at a skater near the origin while clips travel
+  up to 70 m, so the track follows the skater with height zeroed, "TrickbookPlayerAtZeroY"; track +y = the clips'
+  run direction, Z up: scene = (y, z, x)), the lens angle as the vertical FOV, DUTCH as radians and linear, LENS with
+  tangent 1, the spline switch (element 87) assumed on, key times and dequantisation (from the data), the record walk
+  (by the constant +4 word: the element table past id 17 is not decoded). The location's exposure and post_fx refs
+  stay the map's. `csm_trickguide` is not applied: our shadows do not port the base `cascade_shadowmap` record yet,
+  and its own differences are a per-cascade bias Bevy has no slot for and fields with no known reader.
+
+### Verification
+- `cargo test -p skate-core camera_track` (key hits, linear two-key case, ease with tangent 0, Catmull-Rom on
+  collinear keys, the 24 mm angle); ignored data tests `skate-data --test ice_camera` (`SKATE3_ICE`: 21 tracks,
+  lengths, track 0 values, track 3's interior key, finite samples) and `--test trick_guide` (track indices 0..20 in
+  use, 3 and 18 present).
+- In game with the dev export: the default clip with track 1 frames the skater left of the menu, facing the camera;
+  the fog is applied (faint at the set's distances, as its values give). Other tracks are not screenshot (injected
+  keys arrive before the guide takes input). No retail picture of the demo to compare yet.
+
+### Open questions
+- A recomp trace (hooks being designed: `.local/research/menus-m6/trick-guide-hooks.md`) to settle the locator, the
+  axis map, horizontal vs vertical FOV, DUTCH units, element 87 and the track time fitting.
+- Who reads the csm Bool / pair; mapping `cascade_shadowmap` + `csm_trickguide` onto our cascades.
+
 ## Files
+- Trick Guide camera, fog and sun: `crates/skate-core/src/camera_track.rs` (new), `crates/skate-data/src/ice_camera.rs`
+  (new), `crates/skate-data/tests/ice_camera.rs` (new), `crates/skate-data/src/trick_guide.rs`,
+  `crates/skate-core/src/trick_guide.rs`, `crates/skate-mods/src/menus.rs`, `crates/skate-game/src/trick_guide_host.rs`,
+  `crates/skate-game/src/trick_guide_scene.rs`, `crates/skate-game/src/retail_menu_stage.rs`,
+  `crates/skate-game/src/retail_sky.rs`, `tools/asset_pipeline/scene_clips.py`.
 - Trick Guide demo: `crates/skate-core/src/animation/raw.rs` (new), `crates/skate-data/src/scene_clip.rs` (new),
   `tests/scene_clip.rs`, `tests/trick_guide_checklist.rs` (new); `crates/skate-game/src/trick_guide_scene.rs` (new),
   `retail_menu_stage.rs`, `map_render.rs`, `retail_sky.rs`, `app.rs`, `main.rs`; `tools/asset_pipeline/scene_clips.py`,

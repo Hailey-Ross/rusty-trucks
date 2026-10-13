@@ -40,6 +40,9 @@ pub struct Entry {
     pub slots: Vec<Slot>,
     /// The demo animation (`trickguide_*`, 0x3B71EA27D53D7C4F).
     pub animation: String,
+    /// The demo camera track: the Int16 of the `trickbook_camera_tracks` record that RefSpec 0x3D3A79F16DCB54BB
+    /// names (sub_826188B8); no ref reads 0 (the zero block 0x830D0850).
+    pub camera_track: i16,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -97,6 +100,7 @@ pub struct EntryPatch {
     pub description: Option<String>,
     pub slots: Option<Vec<Slot>>,
     pub animation: Option<String>,
+    pub camera_track: Option<i16>,
     pub parent: Option<Key>,
     pub order: Option<i32>,
     pub has_tricks: Option<bool>,
@@ -124,6 +128,9 @@ impl TrickGuide {
             }
             if let Some(v) = &patch.animation {
                 entry.animation = v.clone();
+            }
+            if let Some(v) = patch.camera_track {
+                entry.camera_track = v;
             }
         }
         match kind {
@@ -245,9 +252,10 @@ pub struct TrickGuideState {
     /// S+128: the slots come from the subcategory records (set when the first subcategory of the opened list has no
     /// tricks; cleared on the way back up).
     pub slots_from_subcategory: bool,
-    /// The highlighted entry's slots and demo animation (S+144, S+204; sub_82619D38).
+    /// The highlighted entry's slots, demo animation and camera track (S+144, S+204, S+200; sub_82619D38).
     pub slots: [Slot; SLOTS],
     pub animation: String,
+    pub camera_track: i16,
 }
 
 /// Back's outcome (vt+40, action 3).
@@ -387,6 +395,7 @@ impl TrickGuideState {
                 *slot = *value;
             }
             self.animation = entry.animation.clone();
+            self.camera_track = entry.camera_track;
         }
         movie_state::GESTURES
     }
