@@ -5,15 +5,17 @@
 //! child of the player root (clip and set share the scene space), and the gameplay camera draws only the demo
 //! layer while the screen is open. Research: `.local/research/menus-m6/trick-guide-*.md`, doc 31 "Trick Guide demo".
 //! The camera plays the entry's ICE ViewScene track (scene.big `ice_000.bin`, skate_core::camera_track), fitted to
-//! the clip's length and placed on the skater with the height zeroed ("TrickbookPlayerAtZeroY").
+//! the clip's length (retail writes the clip length into the track), and each point is placed by its segment's
+//! SPACE / AVATAR (`place`): tracks 0, 1, 18, 20 follow the skater's root at height 0, track 3 keeps its eye fixed
+//! in the set and aims at the root, track 19 is fixed. DUTCH is in turns; FOV = 2*atan(15.96/lens).
+//! Measured in the recomp: `.local/research/menus-m6/trick-guide-hooks.md` sections 7 and 8.
 //! The set takes render location `trick_guide`'s fog and sun (fog_trickguide; retail_sky::SkyPackage::load_scene).
-//! NOT RETAIL YET: csm_trickguide shadows; the rest of the location (exposure, post_fx) stays the map's; in the camera the locator (inferred from the data: the
-//! tracks aim at a skater at the origin while the clips travel up to 70 m), the axis map (track +y = the clips'
-//! run direction +x, Z up), the lens angle taken as the vertical field of view and DUTCH as radians.
+//! NOT RETAIL YET: csm_trickguide shadows; the rest of the location (exposure, post_fx) stays the map's; the lens
+//! angle taken as the vertical field of view; the followed root taken as the clip's bone 0.
 use crate::{animation::AnimationStatus, map_render::{MapEntity, SceneCommands, StagedAssets}, world::PlayerRoot};
 use bevy::{camera::visibility::RenderLayers, ecs::system::SystemState, mesh::skinning::SkinnedMesh, prelude::*};
 use skate_core::animation::{output, pose_sample::{sample_key, select_frames}};
-use skate_core::camera_track::CameraTrack;
+use skate_core::camera_track::{CameraSpace, CameraTrack};
 use skate_data::{scene_clip::SceneClip, skate_map::SkateMap};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
@@ -133,10 +135,9 @@ fn drive(world: &mut World, mut scene: Local<Scene>) {
             // Retail fits the track to the clip ("Fixing Camera Group length"; sub_82820E98 writes the clip length).
             let time = scene.time * track.length / clip.duration().max(1e-3);
             let Some(sample) = track.sample(time) else { return };
-            // The skater with the height zeroed; the track is Z-up with +y along the clips' run (scene +x).
-            let skater = crate::animation::native_matrix(globals[0]).w_axis.truncate() * Vec3::new(1.0, 0.0, 1.0);
-            let scene_point = |[x, y, z]: [f32; 3]| skater + Vec3::new(y, z, x);
-            (scene_point(sample.eye), scene_point(sample.look), sample.dutch, Some(sample.fov_radians()))
+            let skater = crate::animation::native_matrix(globals[0]).w_axis.truncate();
+            (place(sample.eye, sample.eye_space, skater), place(sample.look, sample.look_space, skater), sample.dutch,
+                Some(sample.fov_radians()))
         }
         // No track (-1, or no ice_000.bin): a side view of the hips, the skater in the left third.
         None => {
@@ -149,7 +150,9 @@ fn drive(world: &mut World, mut scene: Local<Scene>) {
     if let Some((camera, _)) = scene.camera {
         if let Some(mut transform) = world.get_mut::<Transform>(camera) {
             *transform = Transform::from_translation(eye).looking_at(look, Vec3::Y);
-            transform.rotate_local_z(roll);
+            // DUTCH is in turns: sub_828F2C38 passes dutch * 65536 as a u16 angle; recomp trace: the matrix rolls by
+            // -2*pi*dutch about the forward axis in track space, i.e. -dutch turns about Bevy's local Z.
+            transform.rotate_local_z(-roll * std::f32::consts::TAU);
         }
         if let (Some(fov), Some(mut projection)) = (fov, world.get_mut::<Projection>(camera)) {
             if let Projection::Perspective(p) = &mut *projection {
@@ -157,6 +160,27 @@ fn drive(world: &mut World, mut scene: Local<Scene>) {
                 p.fov = fov;
             }
         }
+    }
+}
+
+/// A track point in scene space (sub_828F36B0). Track space is Z-up and maps to the scene as (y, z, x)
+/// (sub_82673560 returns game positions as (z, x, y)). SPACE 2 adds the followed object's position without
+/// rotation: AVATAR 5 = the scene character's root at height 0, AVATAR 7 = the same root at full height
+/// (sub_828278A8: the clip entry's transform; the demo has one character, the skater). Other SPACE values have no
+/// case and leave the point fixed in the set.
+fn place([x, y, z]: [f32; 3], space: CameraSpace, skater: Vec3) -> Vec3 {
+    let point = Vec3::new(y, z, x);
+    match (space.mode, space.avatar) {
+        (2, 5) => point + skater * Vec3::new(1.0, 0.0, 1.0),
+        (2, 7) => point + skater,
+        // NOT RETAIL YET: SPACE 0 (player locator with orientation), 3 (an object's full matrix) and the other
+        // AVATAR slots are not used by the Trick Guide tracks; they follow the skater at height 0 meanwhile.
+        (0 | 2 | 3, _) => {
+            warn_once!("TRICK_GUIDE_DEMO camera space {} / avatar {} not ported, following the skater", space.mode,
+                space.avatar);
+            point + skater * Vec3::new(1.0, 0.0, 1.0)
+        }
+        _ => point,
     }
 }
 

@@ -1680,11 +1680,82 @@ The demo used a fixed side view of the hips, no fog, and the current map's sun o
   keys arrive before the guide takes input). No retail picture of the demo to compare yet.
 
 ### Open questions
-- A recomp trace (hooks being designed: `.local/research/menus-m6/trick-guide-hooks.md`) to settle the locator, the
-  axis map, horizontal vs vertical FOV, DUTCH units, element 87 and the track time fitting.
+- Settled by the recomp trace (next section) except horizontal vs vertical FOV: the locator, the axis map, DUTCH
+  units, element 87 and the track time fitting.
 - Who reads the csm Bool / pair; mapping `cascade_shadowmap` + `csm_trickguide` onto our cascades.
 
+## Trick Guide camera from the recomp trace (2026-10-12)
+
+### Problem
+The camera port above guessed the parts the code reading had not settled: where each track sits (every track was
+placed on the skater with the height zeroed), the axis map, DUTCH as radians and linear, LENS with tangent 1, the
+spline switch always on, the FOV units and the track time fitting. Tracks 3 and 19 framed the wrong view.
+
+### Root cause / evidence (TU3 recomp code, guarded trace hooks in the recomp and the disc data; research `.local/research/menus-m6/trick-guide-hooks.md` sections 7 and 8, `ice-space-elements.md`)
+Three muted background runs of the recomp opened the guide and highlighted rows covering tracks 0, 1, 3, 18 (Jump),
+19 and 20, logging the per-frame camera matrix, the element values, the clip fit and the camera player's element
+words (64k frames, no malformed lines). A watch-list run read the element descriptors live.
+- Element values live at player + 16 + 4 * id (`sub_828EEA20`); descriptor = `[0x830BBEA8 + 4 * id]`. [code, main
+  checked]
+- Spline switch and tangent per element (descriptor +60 / +64, read live): EYE_X..Z, DUTCH and LENS_LENGTH use
+  CUBIC_EYE (87) / TANGENT_EYE (7); LOOK_X..Z use CUBIC_LOOK (88) / TANGENT_LOOK (8); 65535 = linear.
+  `sub_828F0990` reads the switch element's value; 0 gives the plain segment slope. [code + trace]
+- CUBIC_EYE, CUBIC_LOOK, SPACE_EYE / SPACE_LOOK (89 / 90) and AVATAR_EYE / AVATAR_LOOK (91 / 92) are one value per
+  segment of key group 0 in each track record. The record layout needs the whole element table: every element in id
+  order takes `((bits * count + 31) >> 3) & ~3` bytes, count = segments or keys of its group (`sub_828EE070`). The
+  table (148 elements: name, group, per-segment flag, bits) comes from a static emulation of `sub_82903840`;
+  ids 0..12 and their links were checked live, and the record sizes chain all 21 tracks exactly. [code + data]
+- Placement (`sub_828F2C38` -> `sub_828F36B0`): SPACE 2 adds the position of object AVATAR - 1 from the ICE game
+  interface `[0x830840F4]` (vt+20 = `sub_82673560`) without rotation; other SPACE values with no case leave the point
+  fixed in the set. AVATAR 5 and 7 both read the Trick Guide scene instance (`[[[0x830CFE44]+4]+40]` vt+120 =
+  `sub_828278A8`, key = the scene key 0x00010001 while the guide is open): the translation of the first clip entry's
+  transform, i.e. the demo skater's root; AVATAR 5 zeroes its height, 7 keeps it. The getter returns game positions as
+  (z, x, y) in track space, so the scene maps a track point (x, y, z) to (y, z, x). [code + trace]
+- Per track (trace and disc agree): tracks 0, 1, 18, 20 SPACE 2 / AVATAR 5 for eye and look (the camera moves with the
+  skater, height never changes, up to 85 m); track 3 eye SPACE 1 (fixed), look SPACE 2 / AVATAR 7 (aims at the
+  skater's root at full height); track 19 SPACE 1 for both (fixed). CUBIC_EYE and CUBIC_LOOK are 1 on these tracks.
+  [trace + data]
+- DUTCH: `sub_828F2C38` multiplies it by 65536 into a 16-bit angle, so it is in turns; the traced matrix rolls by
+  -2 pi * DUTCH about its forward axis. [code + trace]
+- FOV: the stored angle equals 2 * atan(15.96 / lens) degrees within 0.012 degrees on every frame. [trace]
+- Track time: `sub_82820E98` writes the clip length into the track's length (+12) for every new clip (track 0 took
+  4.43, 4.62, 2.38, 7.25 s for successive tricks), so the track runs in clip seconds; our fit gives the same key
+  positions. [code + trace]
+- The camera matrix leaves `sub_828F2C38` unchanged through `sub_828F2B58` and on to the camera (shake is off in the
+  guide). [trace]
+
+### Change
+- `skate-data/src/ice_camera.rs`: `ELEMENTS` (the element table), per-element offsets, the per-segment settings of
+  group 0, and the record walk by size (replaces the search for the next record's constant word).
+- `skate-core/src/camera_track.rs`: `CameraSegment` (CUBIC_EYE / CUBIC_LOOK, eye and look `CameraSpace`), per-segment
+  switch (off = linear), DUTCH and LENS splined with CUBIC_EYE / TANGENT_EYE; `CameraSample` carries the spaces.
+- `trick_guide_scene.rs`: `place` puts each point by its segment's space (SPACE 2 + AVATAR 5: the clip's root at
+  height 0; AVATAR 7: the full root; other SPACE values: fixed in the set); DUTCH applied in turns.
+- `retail_menu_stage.rs`: `_` / `_xN` in `SKATE3_RETAIL_MENUS_KEYS` inject empty frames (dev screenshots; the guide
+  opens after its fade, so later keys need a pause).
+- Moddable: the segment settings are part of `CameraTrack`, so a mod that replaces or adds a track by index sets them
+  too; the element table is the file format (stable retail ids and names).
+
+### Verification
+- `cargo test -p skate-core camera_track` (6: key hits, linear two-key case, ease with tangent 0 and the per-segment
+  switch off, Catmull-Rom on collinear keys, DUTCH and LENS following the eye's tangent, the 24 mm angle).
+- `cargo test -p skate-data --test ice_camera -- --ignored` (`SKATE3_ICE`): the size walk finds all 21 tracks with
+  their lengths, and tracks 0, 1, 3, 18, 19, 20 decode to the settings the recomp's camera player held.
+- In game (dev export): Skitching (track 19) frames the same view down the set as the recomp at that row; Pumping
+  (track 3) holds a fixed camera that aims at the skater (not a frame-matched comparison: different clip times).
+
+### Open questions
+- Horizontal or vertical FOV (the projection reader of the stored angle is not found).
+- Which point of the clip vt+40 returns (bone 0 trajectory vs another root; the measured drift fits bone 0).
+- SPACE 0 (player locator with orientation) and 3 (an object's full matrix) and the other AVATAR slots: not used by
+  the Trick Guide tracks, they follow the skater at height 0 and log once.
+- The other per-segment flags (AVATAR_ORBIT, AVOID_*, PLAYER_SPACE_*) are not read yet. PLAYER_SPACE_LAG (98, set on
+  tracks 0 and 3) subtracts an offset from `sub_828F3088` from eye and look; the trace did not separate it from the
+  follow offset.
+
 ## Files
+- Trick Guide camera from the recomp trace: `crates/skate-data/src/ice_camera.rs`, `tests/ice_camera.rs`,
+  `crates/skate-core/src/camera_track.rs`, `crates/skate-game/src/trick_guide_scene.rs`, `retail_menu_stage.rs`.
 - Trick Guide camera, fog and sun: `crates/skate-core/src/camera_track.rs` (new), `crates/skate-data/src/ice_camera.rs`
   (new), `crates/skate-data/tests/ice_camera.rs` (new), `crates/skate-data/src/trick_guide.rs`,
   `crates/skate-core/src/trick_guide.rs`, `crates/skate-mods/src/menus.rs`, `crates/skate-game/src/trick_guide_host.rs`,

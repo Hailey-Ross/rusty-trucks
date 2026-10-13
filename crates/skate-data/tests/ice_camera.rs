@@ -31,6 +31,19 @@ fn view_scene_has_the_21_trick_guide_tracks() {
     // Track 3 (trickguide_airs): one interior key at 32782/65535 of 3.6 s.
     assert_eq!(tracks[3].keys.len(), 3);
     assert!((tracks[3].keys[1].time - 1.8008).abs() < 1e-3);
+    // Per-segment space settings, as the recomp's camera player held them (elements 88..92, 2026-10-12 trace):
+    // (track, CUBIC_LOOK, SPACE_EYE, SPACE_LOOK, AVATAR_EYE, AVATAR_LOOK).
+    for (t, cubic_look, space_eye, space_look, avatar_eye, avatar_look) in
+        [(0, true, 2, 2, 5, 5), (1, true, 2, 2, 5, 5), (3, true, 1, 2, 7, 7), (18, true, 2, 2, 5, 5),
+         (19, true, 1, 1, 0, 0), (20, true, 2, 2, 5, 5)]
+    {
+        assert_eq!(tracks[t].segments.len(), tracks[t].keys.len() - 1, "track {t}");
+        for g in &tracks[t].segments {
+            assert!(g.cubic_eye, "track {t}");
+            assert_eq!((g.cubic_look, g.eye_space.mode, g.look_space.mode, g.eye_space.avatar, g.look_space.avatar),
+                (cubic_look, space_eye, space_look, avatar_eye, avatar_look), "track {t}");
+        }
+    }
     // Every sample stays finite over each track.
     for track in &tracks {
         for i in 0..=20 {

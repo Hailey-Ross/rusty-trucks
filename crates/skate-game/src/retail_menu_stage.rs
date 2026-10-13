@@ -105,8 +105,9 @@ struct MenuStage {
     apt_keys: Vec<AptKey>,
     pads: [FeInput; 4],
     repeat: RepeatRule,
-    /// `SKATE3_RETAIL_MENUS_KEYS`: key indices to inject, one per frame, while the pause menu takes input.
-    injected: std::collections::VecDeque<u32>,
+    /// `SKATE3_RETAIL_MENUS_KEYS`: key indices to inject, one per frame, while the pause menu takes input; `_` is a
+    /// frame without a key (lets a screen load before the next key, e.g. `15,15,2,_x60,13`: `_xN` = N frames).
+    injected: std::collections::VecDeque<Option<u32>>,
 }
 
 /// The retail menus are wanted: on unless `SKATE3_RETAIL_MENUS=0`.
@@ -347,15 +348,26 @@ fn setup(
                 apt_keys: apt_keys(&config.asset_root),
                 pads: Default::default(),
                 repeat: RepeatRule::RETAIL,
-                injected: std::env::var("SKATE3_RETAIL_MENUS_KEYS")
-                    .unwrap_or_default()
-                    .split(',')
-                    .filter_map(|k| k.trim().parse().ok())
-                    .collect(),
+                injected: injected_keys(&std::env::var("SKATE3_RETAIL_MENUS_KEYS").unwrap_or_default()),
             });
         }
         Err(e) => error!("RETAIL_MENUS stage failed: {e}"),
     }
+}
+
+/// `SKATE3_RETAIL_MENUS_KEYS` tokens: a key index, `_` (one empty frame) or `_xN` (N empty frames).
+fn injected_keys(list: &str) -> std::collections::VecDeque<Option<u32>> {
+    let mut out = std::collections::VecDeque::new();
+    for token in list.split(',').map(str::trim) {
+        match token.strip_prefix('_') {
+            Some(rest) => {
+                let frames = rest.strip_prefix('x').and_then(|n| n.parse().ok()).unwrap_or(1);
+                out.extend(std::iter::repeat_n(None, frames));
+            }
+            None => out.extend(token.parse().ok().map(Some)),
+        }
+    }
+    out
 }
 
 fn update(
@@ -434,7 +446,7 @@ fn update(
             fired.insert(0, (APT_START, 0));
         }
         if ms.stack.input_target().is_some() {
-            fired.extend(ms.injected.pop_front().map(|k| (k, 0)));
+            fired.extend(ms.injected.pop_front().flatten().map(|k| (k, 0)));
         }
         for (key, controller) in fired {
             // Session log: every key the menus took, by retail's Apt key name (the user's play tests).
