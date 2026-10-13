@@ -1185,7 +1185,8 @@ the recomp's settings overlay (skate3recomp's rexglue-sdk, `src/ui/overlay/simpl
   / 2.08 ms; the first "on" run is the only outlier, the other two match "off" to 0.02 ms.
 - `cargo test -p skate-game`: 508 passed, the known `pipelines_accept_valid_group_outputs_when_fingerprint_changes`
   failure.
-- Open: the user's play test of the retail menus as the default.
+- Play-tested as the default in hails-additions sessions on 2026-10-12 (pause menu freeze, settings text colours,
+  Trick Guide; each fixed in its own section below).
 
 ## Stored settings: every rule row steps and saves (2026-10-11)
 
