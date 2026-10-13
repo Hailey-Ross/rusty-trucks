@@ -611,6 +611,8 @@ pub enum Command {
     /// Add or change a Trick Guide entry (category / subcategory / trick) by key; no options = drop this mod's
     /// change to it.
     MenuTrickGuide { entry: String, key: String, #[serde(default)] options: Option<crate::menus::TrickGuideOptions> },
+    /// Raise (or replace) this mod's retail popup by key; no options = take it down.
+    MenuPopup { key: String, #[serde(default)] options: Option<crate::menus::PopupOptions> },
     CameraClearCapture {
         key: String,
     },
@@ -939,6 +941,7 @@ impl Command {
             Self::MenuBitmap { movie, bitmap, path } => !movie.is_empty() && movie.len() <= 160 && (0..=0xFFFF).contains(bitmap) && crate::graphics_dynamic::valid_texture_path(path),
             Self::MenuBackdrop { screen, options } => crate::menus::valid_screen_key(screen) && options.as_ref().is_none_or(crate::menus::BackdropOptions::validate),
             Self::MenuTrickGuide { entry, key, options } => crate::menus::TRICK_GUIDE_ENTRIES.contains(&entry.as_str()) && crate::menus::valid_trick_guide_key(key) && options.as_ref().is_none_or(crate::menus::TrickGuideOptions::validate),
+            Self::MenuPopup { key, options } => crate::menus::valid_menu_id(key) && options.as_ref().is_none_or(crate::menus::PopupOptions::validate),
             Self::CameraClearCapture { key } => crate::schema::valid_id(key),
         }
     }
@@ -1055,6 +1058,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::MenuMovie { .. } => "menu_movie",
         Command::MenuBackdrop { .. } => "menu_backdrop",
         Command::MenuTrickGuide { .. } => "menu_trick_guide",
+        Command::MenuPopup { .. } => "menu_popup",
         Command::MenuBitmap { .. } => "menu_bitmap",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
@@ -2874,6 +2878,11 @@ mod empty_table_lists {
         assert!(matches!(bitmap, Command::MenuBitmap { bitmap: 2, .. }) && bitmap.validate());
         assert!(!eval("return {kind='menu_bitmap', movie='source/screens/main/core_menu', bitmap=-1, path='fe/glow.png'}").validate());
         assert!(!eval("return {kind='menu_bitmap', movie='source/screens/main/core_menu', bitmap=2, path='fe/glow.json'}").validate());
+        let popup = eval("return {kind='menu_popup', key='ask', options={description='#Keep going?', options={'ID_COMMON_YES', 'ID_COMMON_NO'}, cancelable=true}}");
+        assert!(matches!(&popup, Command::MenuPopup { options: Some(o), .. } if o.options.as_ref().is_some_and(|o| o.len() == 2) && o.cancelable) && popup.validate());
+        assert!(eval("return {kind='menu_popup', key='ask'}").validate());
+        assert!(!eval("return {kind='menu_popup', key='ask', options={kind='huge'}}").validate());
+        assert!(!eval("return {kind='menu_popup', key='ask', options={options={'1','2','3','4','5','6','7','8','9'}}}").validate());
         let backdrop = eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={blur=true, tint={30, 30, 30}, step=0.4}}");
         assert!(matches!(&backdrop, Command::MenuBackdrop { options: Some(o), .. } if o.tint == Some(vec![30, 30, 30])) && backdrop.validate());
         assert!(eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837'}").validate());

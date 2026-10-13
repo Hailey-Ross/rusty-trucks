@@ -893,6 +893,14 @@ impl Vm {
                     let o = pop(&mut stack)?;
                     if let Value::Object(id) = o {
                         self.set(id, &k, v)?;
+                        // An array (an object with its own numeric `length`) grows when an index at or past its end is
+                        // written (menu_picker's `mItemTextArray[index] = text`, counted with `.length`). Standard AS2
+                        // semantics, NOT RETAIL YET (the retail array object is not decoded).
+                        if let (Ok(index), Some(Value::Number(len))) = (k.parse::<u32>(), self.objects[id].fields.get("length")) {
+                            if f64::from(index) >= *len {
+                                self.set(id, "length", Value::Number(f64::from(index) + 1.0))?;
+                            }
+                        }
                         host.property_changed(self, id, &k)?;
                     }
                 }

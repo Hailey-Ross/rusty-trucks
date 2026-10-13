@@ -206,6 +206,8 @@ pub struct FrontEnd<'a> {
     pub sub_options: std::sync::Arc<Vec<SubOptionRow>>,
     /// The Trick Guide screen (trick_guide_host).
     pub trick_guide: crate::trick_guide_host::TrickGuideHost,
+    /// The popup host (FE screen 29): the shown popup and the choices made.
+    pub popup: crate::popup_host::PopupHost,
 }
 
 impl<'a> FrontEnd<'a> {
@@ -228,13 +230,14 @@ impl<'a> FrontEnd<'a> {
             settings_titles: Vec::new(),
             sub_options: Default::default(),
             trick_guide: Default::default(),
+            popup: Default::default(),
         }
     }
 }
 
 impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     fn objects(&self) -> Vec<String> {
-        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "HUDComponents"].map(String::from).to_vec()
+        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "HUDComponents", "Popup"].map(String::from).to_vec()
     }
     fn call(&mut self, vm: &mut Vm, object: &str, method: &str, args: Vec<Value>) -> Result<Value, String> {
         if object == "CoreMenu" {
@@ -246,6 +249,10 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
                 sub_options: &self.sub_options,
             };
             return core.call(vm, method, &args);
+        }
+        // A shown popup is the focus screen (sub_82D09F28): its natives and the Game menu callbacks go to it first.
+        if let Some(value) = self.popup.call(object, method, &args) {
+            return Ok(value);
         }
         if let Some(value) = self.trick_guide.call(vm, object, method, &args)? {
             return Ok(value);

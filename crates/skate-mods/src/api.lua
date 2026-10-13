@@ -736,6 +736,11 @@ function sdk.menus.backdrop(screen, options) submit{kind="menu_backdrop",screen=
 -- animation, parent, order, has_tricks, position, hidden}; unset fields keep the entry's value; nil options drop
 -- this mod's change. Mods apply in load order; removed when the mod stops.
 function sdk.menus.trick_guide(entry, key, options) submit{kind="menu_trick_guide",entry=entry,key=key,options=options} end
+-- Raise a retail popup over the menus (the Sk8Popup movie, or 'small'): key = the mod's id for it; options
+-- {description, title (small only), options={'ID_COMMON_YES','ID_COMMON_NO'} (up to 8), kind='standard'|'small',
+-- priority (-1000..1000, highest shows), cancelable (B answers 255)}. The choice arrives as on_event
+-- {name='menu_popup', key=key, choice=index}; nil options take it down; removed when the mod stops (no event).
+function sdk.menus.popup(key, options) submit{kind="menu_popup",key=key,options=options} end
 -- Replace one bitmap of a menu movie by its stable id: the movie's import name plus the bitmap
 -- character id (sdk.menus.info().movies.bitmaps lists them), with a PNG in the mod's folder. The
 -- image covers the same fill area as the retail bitmap; newest mod wins; removed when the mod stops.

@@ -1229,12 +1229,14 @@ then port each row's effect. Rows that save but have no effect yet are listed be
     trace hook on `sub_82694D38` logging caller, channel and the three floats would settle it).
   - Tests: `cargo test -p skate-core rumble`, `cargo test -p skate-game rumble` (60 Hz at any frame rate, the
     switch-on test rumble, off blocks starts, mod channels separate and stopped with their mod). Not felt on a pad.
-- Saved, no effect yet (what retail does, from the research, not main-checked): Minimap +158 (`sub_82665278`:
-  hidden with the HUD off, forced on / off in some game states; we draw no minimap), Subtitles +157 (six readers
-  gate subtitles on it or a forced flag; no subtitle text in the engine), Cameraman Mode +165 and HOM mode +184 (readers found, effect undecoded), Units,
+- No effect yet, so greyed (2026-10-13, see "Settings without an effect are greyed" below): Minimap +158
+  (`sub_82665278`: hidden with the HUD off, forced on / off in some game states; we draw no minimap), Subtitles +157
+  (six readers gate subtitles on it or a forced flag; no subtitle text in the engine), Cameraman Mode +165 (decoded
+  2026-10-13, see "Cameraman Mode" below; not ported), HOM mode +184 (readers found, effect undecoded), Units,
   Transparency (no reader of the copied byte found), the Skate Feed toggles.
-- Still greyed (no retail rule decoded): Video Calibration (opens a calibration screen), SFX Pack (hidden with one
-  pack), Auto sign-in (an online popup).
+- Still greyed (no retail rule decoded): SFX Pack (hidden with one pack), Auto sign-in (an online popup; decoded
+  2026-10-13: Left / Right flip byte +194, default 1, a popup only when switched off; left out by the user's choice).
+  Video Calibration now opens its screen (below).
 
 ### Verification
 - `cargo test -p skate-game stored_rows_are_enabled_step_save_and_reload_and_mod_values_are_not_saved`: a stored row
@@ -1328,7 +1330,7 @@ size` without naming a file.
 - `a_missing_or_resized_output_flags_its_group` checks the new reasons.
 - The dev installation refreshed with setup's `refresh=True` (only `livingworld` changed): new installation, every
   group's receipt matches (core 2033, hud 27, character 60, environment 38, maps 26, audio 4416, livingworld 115 files).
-- Not yet run end to end from the overlay button in a development copy.
+- Run end to end from the overlay button in a development copy (the user, by 2026-10-13).
 
 ## Opt-in features in the PC overlay (2026-10-11)
 
@@ -1492,7 +1494,12 @@ C++ screen object answers the movie's FETrickTutorial natives and its picker cal
   `fe_backdrop.rs` `TRICK_GUIDE_SCREEN`; `skater_animation.rs` `regular_stance`.
 - APT fixes found on this screen: `apt_movie.rs` `class_links` (every copy of a library symbol gets its registered
   class; the screen imports "Button Item" itself and again through panel > button_menu, so its button help had no
-  SetButtonType and no prompts); `apt_text.rs` / `apt_scene.rs` word wrap, line advance and alignment 3 centred.
+  SetButtonType and no prompts); `apt_text.rs` / `apt_scene.rs` word wrap, line advance and alignment 3 centred;
+  `apt_movie.rs` `link_imports` (2026-10-13: every library a screen copies from keeps all its exported symbols
+  reachable by linkage name; gesture_item's `SetGestureType(gesture)` runs `attachMovie("g_" + gesture,
+  "gestureitem", 0)` on symbols its timeline never places, so the stick icon showed the ring with no arrow. Retail
+  draws one static arrow per trick, checked frame by frame in a PS3 recording. NOT RETAIL YET: retail's
+  attachMovie lookup is not decoded, this follows the Flash rule).
 - Export: `prepare_menu_movies.py` adds the trickguide root and the FontManager fallback for APT names without a row;
   `prepare_hud.py` exports `LineSpacing`; `menu_tables.py` requires the trick guide tables (setup refreshes both).
 - Moddability: `sdk.menus.trick_guide(entry, key, options)` adds or changes categories, subcategories and tricks by
@@ -1505,7 +1512,8 @@ C++ screen object answers the movie's FETrickTutorial natives and its picker cal
 - `cargo test -p skate-core trick_guide` (navigation, skip rules, leaf slots, remap, patches); `cargo test -p
   skate-data --test menu_tables -- --ignored` (TU3 image and disc xex give the same tables: 8 categories, 58 gestures,
   28 buttons); `--test trick_guide -- --ignored` walks the real tree (8 categories, 217 listed tricks; Kickflip's slot is
-  ollie_kickflip); `retail_trick_guide_screen_opens` (screen manager, picker callbacks, B prompt drawn); the apt_text
+  ollie_kickflip); `retail_trick_guide_screen_opens` (screen manager, picker callbacks, B prompt drawn, Ollie Flips
+attaches the `g_ollie` arrow to the gesture icon; fails without the `link_imports` change); the apt_text
   wrap test; `cargo test -p skate-mods` menu commands; `python -m unittest tools.asset_pipeline.test_menu_tables`.
 - In game (dev build, tables extracted into the install for the shots, then restored): Learn > Trick Guide opens; the
   categories, Flip Tricks > Ollie Flips, Kickflip with its gesture and the wrapped description, Other Tricks > No Comply
@@ -1609,10 +1617,8 @@ set. Ours showed the gameplay world behind the menu.
   `SkyPackage::load_scene`.
 - Mods: a mod picks any clip per entry through the existing Trick Guide patches (`sdk.menus.trick_guide`, field
   `animation`). Mod clip folders are not wired yet.
-- NOT RETAIL YET: the camera (a fixed side framing; the 21 ViewScene tracks in scene.big `ice_000.bin` are being
-  decoded, `.local/research/menus-m6/trick-guide-camera.md`), looping (assumed), the dome's sun direction / anchor
-  (taken from the current map: no Trick Guide render location exists), `fog_trickguide` and `csm_trickguide` not
-  applied, the delta add and trajectory parenting (from the data).
+- NOT RETAIL YET: looping (assumed), the delta add and trajectory parenting (from the data). The camera, fog and
+  sun: see "Trick Guide camera, fog and sun" below.
 
 ### Verification
 - `cargo test -p skate-core animation::raw`; ignored data tests `crates/skate-data/tests/scene_clip.rs` (all 312
@@ -1623,12 +1629,287 @@ set. Ours showed the gameplay world behind the menu.
   Closing the guide in a run was not checked (injected keys arrive before the guide takes input); play test pending.
 
 ### Open questions
-- The camera tracks (format partly decoded), DUTCH units, horizontal vs vertical FOV, the locator.
-- Who applies `fog_trickguide`; the CSM override; whether the scene loops the clip (`TrickGuideLoop` = enum 9).
+- Whether the scene loops the clip (`TrickGuideLoop` = enum 9). Camera and environment: next section.
 - 61 clip files and 9 clip names no listed row uses (8 tricks with no subcategory, the unlisted "Retrieve"
   subcategory): retail does not show them either.
 
+## Trick Guide camera, fog and sun (2026-10-12)
+
+### Problem
+The demo used a fixed side view of the hips, no fog, and the current map's sun on the set's dome.
+
+### Root cause / evidence (TU3 recomp code and the disc data; research `.local/research/menus-m6/trick-guide-camera.md`, `trick-guide-fog-csm.md`, `trick-guide-csm-fields.md`)
+- Each Trick Guide entry names a camera track: RefSpec 0x3D3A79F16DCB54BB (a ClassRefSpec: record key in the first
+  8 bytes) into `trickbook_camera_tracks`, whose Int16 is the track index; no ref reads 0 (`sub_826188B8`, S+200);
+  the screen init sets track 1 with the default clip. [code + data] The installed data uses tracks 0, 1, 3, 18, 19, 20.
+- The tracks are the ICE ViewScene block (scene hash 0x7F298808) in scene.big `data/scene/ice_000.bin`: 21 records
+  (`sub_828F51E8`), each with 37 key groups; the camera elements (EYE, LOOK, DUTCH, TANGENT_EYE / TANGENT_LOOK,
+  LENS_LENGTH) sit in group 0 (element table `sub_82903840`; EYE's descriptor names TANGENT_EYE as its tangent
+  element, +64 = 7, and element 87 at +60). [code + data]
+- Interpolation (main read the code): `sub_828F0BB0` sets each element up per segment as a cubic Hermite
+  `((a*u + b)*u + c)*u + p0`, a = m0 + m1 - 2D, b = 3D - m1 - 2*m0; the tangent `sub_828F0990` is the non-uniform
+  Catmull-Rom tangent in the segment's own parameter (neighbour segment weighted by the durations; none at the ends:
+  D), scaled by the tangent element's value at that key. [code]
+- FOV: `sub_828F1E80`, `2*atan(15.96 / lens_mm)`, lens clamped to 10..500 mm. [code]
+- While the set is loaded, the renderer's environment is render location `trick_guide` (`sub_827950A8`: model list
+  +17496 == 1 selects key 0x6568F34643066684, main checked): parents `fe`, `default`; sun (0, 0.8, 0.1), anchor 165,
+  `fog_trickguide` (fog_default made black: near 10, far 200, power 1.9, max 0.8). [code + data]
+- `csm_trickguide` differs from `cascade_shadowmap` in the per-cascade shader bias `g_CSMSelfBias` (0.005, 0.001,
+  0.024 vs 0.0025, 0.005, 0.012), a Bool and a pair (-2, 4) stored next to each other with no reader found; both
+  records share the cascade splits 1.8 / 7.2 / 28.8 m. [code + data, research agent; the bias name by its hash]
+
+### Change
+- `skate-core/src/camera_track.rs` (new): `CameraTrack::sample` (the Hermite and tangent above), `fov_radians`.
+- `skate-data/src/ice_camera.rs` (new): `scene_tracks(bytes, VIEW_SCENE)` reads the block (little-endian; key times
+  u16/65535 of the length, quantised elements MSB-first bit streams).
+- `skate-data/src/trick_guide.rs`: `Entry.camera_track` from the ref; `skate-core` `TrickGuideState.camera_track`
+  (S+200) and `EntryPatch.camera_track`; mods: `sdk.menus.trick_guide` option `camera_track` (track index).
+- `trick_guide_scene.rs`: the playing clip's track is fitted to the clip length (retail "Fixing Camera Group
+  length"), placed on the skater with the height zeroed, and drives the gameplay camera's transform, roll and FOV
+  (restored on close); track -1 or no `ice_000.bin` keeps the side view.
+- Setup `scene_clips.py`: exports `ice_000.bin` next to the clips, and the set's sky package carries the `trick_guide`
+  location's sun, anchor height and fog frame (`scene_environment`); `retail_sky.rs` `load_scene` uses it (older
+  exports: the map's sun, no fog), and the set's materials take its fog.
+- NOT RETAIL YET: the locator and axis map (inferred: the tracks aim at a skater near the origin while clips travel
+  up to 70 m, so the track follows the skater with height zeroed, "TrickbookPlayerAtZeroY"; track +y = the clips'
+  run direction, Z up: scene = (y, z, x)), the lens angle as the vertical FOV, DUTCH as radians and linear, LENS with
+  tangent 1, the spline switch (element 87) assumed on, key times and dequantisation (from the data), the record walk
+  (by the constant +4 word: the element table past id 17 is not decoded). The location's exposure and post_fx refs
+  stay the map's. `csm_trickguide` is not applied: our shadows do not port the base `cascade_shadowmap` record yet,
+  and its own differences are a per-cascade bias Bevy has no slot for and fields with no known reader.
+
+### Verification
+- `cargo test -p skate-core camera_track` (key hits, linear two-key case, ease with tangent 0, Catmull-Rom on
+  collinear keys, the 24 mm angle); ignored data tests `skate-data --test ice_camera` (`SKATE3_ICE`: 21 tracks,
+  lengths, track 0 values, track 3's interior key, finite samples) and `--test trick_guide` (track indices 0..20 in
+  use, 3 and 18 present).
+- In game with the dev export: the default clip with track 1 frames the skater left of the menu, facing the camera;
+  the fog is applied (faint at the set's distances, as its values give). Other tracks are not screenshot (injected
+  keys arrive before the guide takes input). No retail picture of the demo to compare yet.
+
+### Open questions
+- Settled by the recomp trace (next section) except horizontal vs vertical FOV: the locator, the axis map, DUTCH
+  units, element 87 and the track time fitting.
+- Who reads the csm Bool / pair; mapping `cascade_shadowmap` + `csm_trickguide` onto our cascades.
+
+## Trick Guide camera from the recomp trace (2026-10-12)
+
+### Problem
+The camera port above guessed the parts the code reading had not settled: where each track sits (every track was
+placed on the skater with the height zeroed), the axis map, DUTCH as radians and linear, LENS with tangent 1, the
+spline switch always on, the FOV units and the track time fitting. Tracks 3 and 19 framed the wrong view.
+
+### Root cause / evidence (TU3 recomp code, guarded trace hooks in the recomp and the disc data; research `.local/research/menus-m6/trick-guide-hooks.md` sections 7 and 8, `ice-space-elements.md`)
+Three muted background runs of the recomp opened the guide and highlighted rows covering tracks 0, 1, 3, 18 (Jump),
+19 and 20, logging the per-frame camera matrix, the element values, the clip fit and the camera player's element
+words (64k frames, no malformed lines). A watch-list run read the element descriptors live.
+- Element values live at player + 16 + 4 * id (`sub_828EEA20`); descriptor = `[0x830BBEA8 + 4 * id]`. [code, main
+  checked]
+- Spline switch and tangent per element (descriptor +60 / +64, read live): EYE_X..Z, DUTCH and LENS_LENGTH use
+  CUBIC_EYE (87) / TANGENT_EYE (7); LOOK_X..Z use CUBIC_LOOK (88) / TANGENT_LOOK (8); 65535 = linear.
+  `sub_828F0990` reads the switch element's value; 0 gives the plain segment slope. [code + trace]
+- CUBIC_EYE, CUBIC_LOOK, SPACE_EYE / SPACE_LOOK (89 / 90) and AVATAR_EYE / AVATAR_LOOK (91 / 92) are one value per
+  segment of key group 0 in each track record. The record layout needs the whole element table: every element in id
+  order takes `((bits * count + 31) >> 3) & ~3` bytes, count = segments or keys of its group (`sub_828EE070`). The
+  table (148 elements: name, group, per-segment flag, bits) comes from a static emulation of `sub_82903840`;
+  ids 0..12 and their links were checked live, and the record sizes chain all 21 tracks exactly. [code + data]
+- Placement (`sub_828F2C38` -> `sub_828F36B0`): SPACE 2 adds the position of object AVATAR - 1 from the ICE game
+  interface `[0x830840F4]` (vt+20 = `sub_82673560`) without rotation; other SPACE values with no case leave the point
+  fixed in the set. AVATAR 5 and 7 both read the Trick Guide scene instance (`[[[0x830CFE44]+4]+40]` vt+120 =
+  `sub_828278A8`, key = the scene key 0x00010001 while the guide is open): the translation of the first clip entry's
+  transform, i.e. the demo skater's root; AVATAR 5 zeroes its height, 7 keeps it. The getter returns game positions as
+  (z, x, y) in track space, so the scene maps a track point (x, y, z) to (y, z, x). [code + trace]
+- Per track (trace and disc agree): tracks 0, 1, 18, 20 SPACE 2 / AVATAR 5 for eye and look (the camera moves with the
+  skater, height never changes, up to 85 m); track 3 eye SPACE 1 (fixed), look SPACE 2 / AVATAR 7 (aims at the
+  skater's root at full height); track 19 SPACE 1 for both (fixed). CUBIC_EYE and CUBIC_LOOK are 1 on these tracks.
+  [trace + data]
+- DUTCH: `sub_828F2C38` multiplies it by 65536 into a 16-bit angle, so it is in turns; the traced matrix rolls by
+  -2 pi * DUTCH about its forward axis. [code + trace]
+- FOV: the stored angle equals 2 * atan(15.96 / lens) degrees within 0.012 degrees on every frame. [trace]
+- Track time: `sub_82820E98` writes the clip length into the track's length (+12) for every new clip (track 0 took
+  4.43, 4.62, 2.38, 7.25 s for successive tricks), so the track runs in clip seconds; our fit gives the same key
+  positions. [code + trace]
+- The camera matrix leaves `sub_828F2C38` unchanged through `sub_828F2B58` and on to the camera (shake is off in the
+  guide). [trace]
+
+### Change
+- `skate-data/src/ice_camera.rs`: `ELEMENTS` (the element table), per-element offsets, the per-segment settings of
+  group 0, and the record walk by size (replaces the search for the next record's constant word).
+- `skate-core/src/camera_track.rs`: `CameraSegment` (CUBIC_EYE / CUBIC_LOOK, eye and look `CameraSpace`), per-segment
+  switch (off = linear), DUTCH and LENS splined with CUBIC_EYE / TANGENT_EYE; `CameraSample` carries the spaces.
+- `trick_guide_scene.rs`: `place` puts each point by its segment's space (SPACE 2 + AVATAR 5: the clip's root at
+  height 0; AVATAR 7: the full root; other SPACE values: fixed in the set); DUTCH applied in turns.
+- `retail_menu_stage.rs`: `_` / `_xN` in `SKATE3_RETAIL_MENUS_KEYS` inject empty frames (dev screenshots; the guide
+  opens after its fade, so later keys need a pause).
+- Moddable: the segment settings are part of `CameraTrack`, so a mod that replaces or adds a track by index sets them
+  too; the element table is the file format (stable retail ids and names).
+
+### Verification
+- `cargo test -p skate-core camera_track` (5: key hits and the linear two-key case, ease with tangent 0 and the per-segment
+  switch off, Catmull-Rom on collinear keys, DUTCH and LENS following the eye's tangent, the 24 mm angle).
+- `cargo test -p skate-data --test ice_camera -- --ignored` (`SKATE3_ICE`): the size walk finds all 21 tracks with
+  their lengths, and tracks 0, 1, 3, 18, 19, 20 decode to the settings the recomp's camera player held.
+- In game (dev export): Skitching (track 19) frames the same view down the set as the recomp at that row; Pumping
+  (track 3) holds a fixed camera that aims at the skater (not a frame-matched comparison: different clip times).
+
+### Open questions
+- Horizontal or vertical FOV (the projection reader of the stored angle is not found).
+- Which point of the clip vt+40 returns (bone 0 trajectory vs another root; the measured drift fits bone 0).
+- SPACE 0 (player locator with orientation) and 3 (an object's full matrix) and the other AVATAR slots: not used by
+  the Trick Guide tracks, they follow the skater at height 0 and log once.
+- The other per-segment flags (AVATAR_ORBIT, AVOID_*, PLAYER_SPACE_*) are not read yet. PLAYER_SPACE_LAG (98, set on
+  tracks 0 and 3) subtracts an offset from `sub_828F3088` from eye and look; the trace did not separate it from the
+  follow offset.
+
+## Settings without an effect are greyed (2026-10-13)
+
+User: "for the settings that are not working yet, grey them out as we have for the other retail menu items."
+
+### Change
+- `retail_menus.rs` `NO_EFFECT_YET`: Subtitles, Minimap, Cameraman Mode, HOM mode, Units, Transparency and the four
+  skate.Feed toggles get no stored value layer, so they stay greyed and show retail's default; values saved by
+  earlier builds stay in `settings/game-settings.json` untouched. A mod's value layer (`menu_handle` with a value)
+  still enables a row. An id leaves the list when its feature lands.
+- Rows that work (step, apply, persist): Play Mode, SFX / Dialog / Music volume, Camera Angle (engine bindings),
+  HUD, Offboard Y axis, Vibration (stored rows), Video Calibration (opens its screen).
+
+### Verification
+- `cargo test -p skate-game rows_without_an_effect_stay_greyed_until_a_mod_binds_them`.
+- Screenshot `.local/research/menus-m6/videocal/video-screen.png`: Video Settings with Subtitles, Minimap and Cameraman
+  Mode greyed; Camera Angle, Video Calibration and HUD enabled.
+
+## Video Calibration (2026-10-13)
+
+### Problem
+Game Settings > Video > Video Calibration was greyed (no handler).
+
+### Root cause / evidence (TU3 recomp code, main re-read every handler named here; research `.local/research/menus-m6/video-calibration.md`)
+- Row 25 in the settings select handler `sub_8260D290` plays core_a_button and pushes FE screen 51 through
+  `sub_82D0AEF0(FE, 51, ..)` with param 0, keep-open 1, keep-visible 0 (Game Settings stays open, hidden). FE 51's info
+  record (key `1f3e2788f93b6a2e`) suspends gameplay, shows the chyron, HUD off, no blur, unused keys to the movie.
+- Screen 51 (vtable 0x82303548): init 0x8260E868 sets the page counter +60 to 0 and opens template 91
+  VideoCalibration (`options/videocal.swf`); loaded 0x8260E888 and A run 0x8260E950: below 3 it posts SetState(counter)
+  and counts up, else it pushes the "finished" popup (ID_VIDEO_CALIBRATION_FINISHED_TITLE / _DESC, Yes / No, callback
+  0x8260EA48: choice 0 pops the screen, any other restarts at page 0). Input 0x8260E890: A (core_a_button) advances,
+  B (core_b_button) pops below counter 2, else SetState(counter - 2) and counts down; it always returns 0.
+- The movie calls no Game.* native: pages settings / contrast / brightness (SD variants when Screen_EdgeOffset > 0);
+  nothing is changed or saved by the game. The A / B prompts come from button_menu (`AddItem`), coloured 0xFFFEEC
+  through its SetInfo -> `setTextFormat`.
+- Hidden / shown screens: the facade's ShowScreen (0x825DA410) passes the AS id as "%d" and "true" / "false".
+
+### Change
+- `tools/prepare_menu_movies.py`: root `source/screens/options/videocal` (setup's hud group re-exports; the row stays
+  greyed in sets without it).
+- `skate_core::video_calibration` (new): the counter as retail (`advance`, `back`, `popup_result`), rules as data
+  (`CalibrationRules`: page count, popup strings, sounds; retail's the defaults).
+- `retail_menu_stage.rs`: FE 51 opens / closes its template; A / B as 0x8260E890; loaded posts the first page; settings
+  rows whose engine handler names an FE screen push it with retail's flags; `Effect::Show` reaches the movies through
+  `_global.ScreenManager.ShowScreen`. The row's engine handler (`Owner::Engine("screen:1f3e2788f93b6a2e")`) is
+  registered when the movie is in the set; a mod can register its own handler on the row.
+- `apt_stage.rs`: `TextField.setTextFormat` applies the format's colour as the field's text colour. NOT RETAIL YET:
+  standard AS2 semantics, whole field, font and size not applied.
+- The A / B prompts are the native CustomButton glyphs (doc "Button prompts"), so they follow the connected pad.
+- The "finished" popup is retail's (see "Popups" below): Yes closes the screen (Game Settings shows again on the
+  Video screen), No starts over at the first page; B does nothing (not cancelable, as retail).
+
+### Verification
+- `cargo test -p skate-core video_calibration` (3: retail paging, popup Yes / No, page count as data).
+- `cargo test -p skate-game retail_video_calibration_steps_its_pages` (data-gated on the menu set): the retail movie
+  loads, reports loaded / intro complete and takes SetState 0..2 with no Game.* call unanswered.
+- In game (dev export, `SKATE3_RETAIL_MENUS_KEYS` through Options > Game Settings > Video > Video Calibration):
+  `.local/research/menus-m6/videocal/page0b.png` (the settings page with colour bars, A Continue / B Back),
+  `page1.png` (Contrast after A).
+
+- In game: `.local/research/menus-m6/videocal/popup.png` (the popup over the dimmed brightness page), `yes.png`
+  (back on Video Settings), `no.png` (the first page again).
+
+### Open questions
+- Does retail pick the SD pages on a 720p console? Our boot registers edge offset "136" like retail
+  (`boot-enums.md`), so the movie's `Screen_EdgeOffset > 0` test would choose the SD frames; the shots look like the
+  HD layout, so the movie reads something else or the variable is not where it looks (not checked).
+
+## Popups (2026-10-13)
+
+### Problem
+Retail asks questions through its popup system (Video Calibration's "Are you happy with your video calibration
+settings?"); the engine had none, so the calibration screen auto-answered Yes.
+
+### Root cause / evidence (TU3 recomp code and the menu movies; research `.local/research/menus-m6/fe-popup.md`, agent;
+main re-read the host's show 0x825EF440, choice 0x825EF698, create 0x825EF370 and the OpenScreen bridge 0x82D09140)
+- A caller fills an sPopupInfo (1452 bytes, defaults `sub_82D0B0B0`: title, description, up to 8 options, choice
+  callback, user value, type, priority, default selection, cancelable, auto-remove, keep-on-clear) and pushes it with
+  `sub_82D0A8D0`: it gets the next id and joins a list sorted by priority (ascending, ties in arrival order); the
+  last entry shows (FE vt+24 `sub_825EC530`).
+- The popup is not a stack screen: FE screen 29 is a fixed host. Its create (0x825EF370) opens templates 17 Sk8Popup,
+  18 Sk8SmallPopup and 4 Sk8AutoSavePopup once through the OpenScreen bridge with layer "popup" (the template's visible
+  flag "0"); the screen manager puts them under `gPopups`. Show (0x825EF440): hide all three (ShowScreen false), pick
+  by type, SetScreenState(1), ShowScreen(true), sound core_popup, input ready.
+- The movies pull their text through the AS `Popup` natives (registrar `sub_825A9F40`: GetTitle, GetDescription,
+  GetNumOptions, GetOption, IsPopupCancelable, GetDefaultSelection). While the list has entries every key goes to the
+  host only, its C++ handler returns 0, so the movie's UpdateInput takes it: Up / Down move menu_picker, A calls
+  `Game.OnMenuSelect(menu, index, text)`, B calls `OnMenuSelect(0, 255, 'CANCEL!')` only when cancelable.
+  `Game.OnMenuSelect` goes to the focus screen (`sub_82D09F28`: the host while a popup is up); the host calls
+  `callback(id, choice, user)` and, with auto-remove, removes it (`sub_82D0A628`) and shows the next.
+- Sk8Popup shows the description and the options (no title); the small popup shows the title.
+
+### Change
+- `skate_core::fe_popup` (new): `PopupRequest` (sPopupInfo as data, retail defaults), `PopupList` (retail ordering,
+  ids from 0, choose with auto-remove, remove, clear-all with choice -2, a mod's popups by callback prefix).
+  Callbacks are stable string ids, so requests and events are plain, serialisable data.
+- `popup_host.rs` (new): the `Popup` natives from the shown request; while a popup is shown it answers
+  `Game.OnMenuSelect` / `OnMenuGetItemEnabled` (every item enabled, host vt+72) / `OnMenuHilight`, so the choice does
+  not reach the screen below.
+- `retail_menu_stage.rs`: the popup movies open on the "popup" layer at boot (those in the set); popup show as
+  0x825EF440; keys go to the shown popup first; choices run their callback (Video Calibration's
+  `video_calibration.finished` -> `popup_result`).
+- Mods: `sdk.menus.popup(key, options)` raises or replaces the mod's popup (description, title, up to 8 options, kind
+  standard / small, priority, cancelable); the choice arrives as `on_event {name='menu_popup', key, choice}`; nil
+  options take it down; a stopped mod's popups leave without an event.
+- APT player features the popup movie needed (standard AS2 semantics, each NOT RETAIL YET in code):
+  `MovieClip.createTextField` (a script-made text field with its own descriptor), `setTextFormat` /
+  `setNewTextFormat` font / size / alignment on such fields (font by name, else FontManager's fallback row, exported
+  as `fallback_font` with its font), `wordWrap` on script fields, `TextField.maxscroll` (the wrapped line count: the
+  popup sizes its panel with `body.maxscroll * bodyLineHeight`), arrays growing `length` on an indexed write
+  (menu_picker counts its items with `mItemTextArray.length`), and the stage drawing loaded movies by their holder
+  clip's place in the display tree (`display_path`: popups under gPopups draw over the screens) instead of load order.
+
+### Verification
+- `cargo test -p skate-core fe_popup` (4: priority and tie order, auto-remove and clear-all, retail defaults and the
+  8-option cap, a mod's popups leave with it); `cargo test -p skate-game popup` (natives and focus routing, mod
+  popups); `cargo test -p skate-mods` (the `menu_popup` command parses and validates);
+  `retail_popup_builds_from_the_popup_natives` (data-gated: the retail Sk8Popup builds its panel from the natives
+  with every layout value finite, and A answers 0).
+- In game: the calibration popup, Yes and No (Video Calibration "Verification"); the pause menu screenshot is
+  unchanged with the new draw order (`.local/research/menus-m6/videocal/pause-regress.png`).
+
+### Open questions
+- Host +80 ("suppressed"), sPopupInfo +1450, the per-update / timeout callbacks (+1416 / +1420 / +1424, not ported:
+  no ported popup uses them), the 8th Popup native, the AutoSave popup movie (template 4) is not in the export.
+- APT's real `maxscroll` and text format rules (only what the retail movies need is implemented).
+
+## Cameraman Mode (2026-10-13, decoded, not ported)
+
+Research `.local/research/menus-m6/cameraman-mode.md`, `light-rigs.md` (agent; main checked the S+165 branch in
+`sub_827F4D28`, the rig hashes and the +0x34788 flag in a recomp watch run).
+- [code] The setting is a look switch, not camera behaviour: `sub_82801990` sets the scene render manager's flag
+  `[0x83083C5C]+0x34788` from S+165 (forced on in cutscenes, off in the skatepark state +0x34786); with it set,
+  character presentation objects pick LightRig "nis" (FNV-1 0x1E7BA14D) instead of "default" (`sub_827823D8` ->
+  `sub_827A5A78`), draw an extra character pass (`sub_82784298`), and `sub_827F4D28` sets post mode 4414 (S+165 on)
+  instead of 21 / 286, which `sub_827EE180` turns into technique 0x20559385 instead of 0xBFBCDB6B.
+- [trace, the recomp, 2026-10-13] Gameplay flag bytes +0x34784..+0x34788 = 00 01 00 01 01 with it on; switching it
+  off clears +0x34788 at once.
+- [code] A rig is a shader variant per material binder; its light values come from run-time globals, so a port needs
+  a short recomp hook logging the binder constants (`sub_82CBBBF0` nis / `sub_82CBD050` default) with the setting on
+  and off. Our characters use one fixed rig (`retail_character.rs`). Greyed until then.
+
 ## Files
+- Trick Guide camera from the recomp trace: `crates/skate-data/src/ice_camera.rs`, `tests/ice_camera.rs`,
+  `crates/skate-core/src/camera_track.rs`, `crates/skate-game/src/trick_guide_scene.rs`, `retail_menu_stage.rs`.
+- Trick Guide camera, fog and sun: `crates/skate-core/src/camera_track.rs` (new), `crates/skate-data/src/ice_camera.rs`
+  (new), `crates/skate-data/tests/ice_camera.rs` (new), `crates/skate-data/src/trick_guide.rs`,
+  `crates/skate-core/src/trick_guide.rs`, `crates/skate-mods/src/menus.rs`, `crates/skate-game/src/trick_guide_host.rs`,
+  `crates/skate-game/src/trick_guide_scene.rs`, `crates/skate-game/src/retail_menu_stage.rs`,
+  `crates/skate-game/src/retail_sky.rs`, `tools/asset_pipeline/scene_clips.py`.
 - Trick Guide demo: `crates/skate-core/src/animation/raw.rs` (new), `crates/skate-data/src/scene_clip.rs` (new),
   `tests/scene_clip.rs`, `tests/trick_guide_checklist.rs` (new); `crates/skate-game/src/trick_guide_scene.rs` (new),
   `retail_menu_stage.rs`, `map_render.rs`, `retail_sky.rs`, `app.rs`, `main.rs`; `tools/asset_pipeline/scene_clips.py`,
