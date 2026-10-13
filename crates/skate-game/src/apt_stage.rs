@@ -1197,6 +1197,23 @@ mod tests {
                 eprintln!("DRAW {:?} {:.0},{:.0}..{:.0},{:.0} mul {:?} {}", d.fill, x0, y0, x1, y1, d.multiply, d.texture.rsplit('/').next().unwrap_or(""));
             }
         }
+        // A (Ollie Flips): its first trick's slots fill the gesture icon. gesture_item's SetGestureType attaches
+        // "g_" + the gesture, a symbol the library exports but never places (Movie::link_imports copies it).
+        stage.call_path("_global.ScreenManager.UpdateInput", vec![Value::Text(id.clone()), Value::Text("2".into()), Value::Text("0".into())], &mut game).unwrap();
+        for _ in 0..8 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        let gesture = stage.levels().iter().find_map(|level| {
+            let movie = &level.movie;
+            let arrows: BTreeSet<i32> = movie.linkage.iter().filter(|(n, _)| n.starts_with("g_")).map(|(_, c)| *c).collect();
+            movie.instances.iter().find_map(|(&id, inst)| {
+                (stage.vm.get(id, "_name").text() == "gestureitem" && arrows.contains(&inst.character))
+                    .then(|| movie.linkage.iter().find(|(_, c)| **c == inst.character).map(|(n, _)| n.clone()))
+                    .flatten()
+            })
+        });
+        eprintln!("gesture icon: {gesture:?}; states {:?}; unhandled {:?}", game.trick_guide.states, stage.unhandled());
+        assert!(gesture.is_some(), "no gesture arrow attached to the gesture icon");
     }
 
     /// Opening and closing the pause menu many times stays inside the VM's object budget: closed screens'

@@ -13,6 +13,12 @@ mod apt_text;
 mod apt_vm;
 #[path = "../../skate-game/src/hud_runtime.rs"]
 mod hud_runtime;
+// apt_scene asks which retail button names have a prompt glyph; the HUD data has no button prompts.
+mod prompt_glyphs {
+    pub(crate) fn known(_retail: &str) -> bool {
+        false
+    }
+}
 use apt_vm::Value;
 fn main() -> Result<(), String> {
     let path = std::env::args_os()

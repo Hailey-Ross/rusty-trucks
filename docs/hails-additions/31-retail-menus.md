@@ -1185,7 +1185,8 @@ the recomp's settings overlay (skate3recomp's rexglue-sdk, `src/ui/overlay/simpl
   / 2.08 ms; the first "on" run is the only outlier, the other two match "off" to 0.02 ms.
 - `cargo test -p skate-game`: 508 passed, the known `pipelines_accept_valid_group_outputs_when_fingerprint_changes`
   failure.
-- Open: the user's play test of the retail menus as the default.
+- Play-tested as the default in hails-additions sessions on 2026-10-12 (pause menu freeze, settings text colours,
+  Trick Guide; each fixed in its own section below).
 
 ## Stored settings: every rule row steps and saves (2026-10-11)
 
@@ -1330,7 +1331,7 @@ size` without naming a file.
 - `a_missing_or_resized_output_flags_its_group` checks the new reasons.
 - The dev installation refreshed with setup's `refresh=True` (only `livingworld` changed): new installation, every
   group's receipt matches (core 2033, hud 27, character 60, environment 38, maps 26, audio 4416, livingworld 115 files).
-- Not yet run end to end from the overlay button in a development copy.
+- Run end to end from the overlay button in a development copy (the user, by 2026-10-13).
 
 ## Opt-in features in the PC overlay (2026-10-11)
 
@@ -1494,7 +1495,12 @@ C++ screen object answers the movie's FETrickTutorial natives and its picker cal
   `fe_backdrop.rs` `TRICK_GUIDE_SCREEN`; `skater_animation.rs` `regular_stance`.
 - APT fixes found on this screen: `apt_movie.rs` `class_links` (every copy of a library symbol gets its registered
   class; the screen imports "Button Item" itself and again through panel > button_menu, so its button help had no
-  SetButtonType and no prompts); `apt_text.rs` / `apt_scene.rs` word wrap, line advance and alignment 3 centred.
+  SetButtonType and no prompts); `apt_text.rs` / `apt_scene.rs` word wrap, line advance and alignment 3 centred;
+  `apt_movie.rs` `link_imports` (2026-10-13: every library a screen copies from keeps all its exported symbols
+  reachable by linkage name; gesture_item's `SetGestureType(gesture)` runs `attachMovie("g_" + gesture,
+  "gestureitem", 0)` on symbols its timeline never places, so the stick icon showed the ring with no arrow. Retail
+  draws one static arrow per trick, checked frame by frame in a PS3 recording. NOT RETAIL YET: retail's
+  attachMovie lookup is not decoded, this follows the Flash rule).
 - Export: `prepare_menu_movies.py` adds the trickguide root and the FontManager fallback for APT names without a row;
   `prepare_hud.py` exports `LineSpacing`; `menu_tables.py` requires the trick guide tables (setup refreshes both).
 - Moddability: `sdk.menus.trick_guide(entry, key, options)` adds or changes categories, subcategories and tricks by
@@ -1507,7 +1513,8 @@ C++ screen object answers the movie's FETrickTutorial natives and its picker cal
 - `cargo test -p skate-core trick_guide` (navigation, skip rules, leaf slots, remap, patches); `cargo test -p
   skate-data --test menu_tables -- --ignored` (TU3 image and disc xex give the same tables: 8 categories, 58 gestures,
   28 buttons); `--test trick_guide -- --ignored` walks the real tree (8 categories, 217 listed tricks; Kickflip's slot is
-  ollie_kickflip); `retail_trick_guide_screen_opens` (screen manager, picker callbacks, B prompt drawn); the apt_text
+  ollie_kickflip); `retail_trick_guide_screen_opens` (screen manager, picker callbacks, B prompt drawn, Ollie Flips
+attaches the `g_ollie` arrow to the gesture icon; fails without the `link_imports` change); the apt_text
   wrap test; `cargo test -p skate-mods` menu commands; `python -m unittest tools.asset_pipeline.test_menu_tables`.
 - In game (dev build, tables extracted into the install for the shots, then restored): Learn > Trick Guide opens; the
   categories, Flip Tricks > Ollie Flips, Kickflip with its gesture and the wrapped description, Other Tricks > No Comply
