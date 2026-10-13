@@ -22,4 +22,5 @@ pub mod xex;
 pub mod ocean_pca;
 pub mod menu_tables;
 pub mod trick_guide;
+pub mod scene_clip;
 pub mod trigger_volumes;

@@ -43,7 +43,7 @@ pub(crate) struct StagedAssets<A: Asset> {
 }
 
 impl<A: Asset> StagedAssets<A> {
-    fn new(world: &World) -> Self {
+    pub(crate) fn new(world: &World) -> Self {
         Self {
             provider: world.resource::<Assets<A>>().get_handle_provider(),
             pending: Vec::new(),
@@ -51,7 +51,7 @@ impl<A: Asset> StagedAssets<A> {
         }
     }
 
-    fn publish(&mut self, world: &mut World) {
+    pub(crate) fn publish(&mut self, world: &mut World) {
         let mut assets = world.resource_mut::<Assets<A>>();
         for (handle, asset) in self.pending.drain(..) {
             self.owned.push(handle.id());
@@ -91,13 +91,27 @@ impl<A: Asset> OwnedAssets for StagedAssets<A> {
 #[derive(Default)]
 pub(crate) struct SceneCommands {
     queue: CommandQueue,
+    /// Replaces `MapEntity` for scenes the map change must not retire (the Trick Guide set).
+    tag: Option<std::sync::Arc<dyn Fn(&mut EntityWorldMut) + Send + Sync>>,
 }
 
 impl SceneCommands {
+    pub(crate) fn tagged(tag: impl Fn(&mut EntityWorldMut) + Send + Sync + 'static) -> Self {
+        Self { queue: CommandQueue::default(), tag: Some(std::sync::Arc::new(tag)) }
+    }
     pub(crate) fn spawn<B: Bundle>(&mut self, bundle: B) {
+        let tag = self.tag.clone();
         self.queue.push(move |world: &mut World| {
-            world.spawn((bundle, MapEntity));
+            match tag {
+                Some(tag) => tag(&mut world.spawn(bundle)),
+                None => {
+                    world.spawn((bundle, MapEntity));
+                }
+            }
         });
+    }
+    pub(crate) fn apply(&mut self, world: &mut World) {
+        std::mem::take(&mut self.queue).apply(world);
     }
 }
 

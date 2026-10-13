@@ -12,7 +12,8 @@ COMMON = ('owned_game/**/*.py', 'asset_pipeline/fast_refpack.py', 'asset_pipelin
 PARSERS = ('vendor/utt/**/*.py', 'vendor/university/**/*.py', 'vendor/utt/**/*.json', 'vendor/university/**/*.json')
 SOURCES = {
     'core': ('asset_pipeline/vlt.py', 'asset_pipeline/names.txt', 'asset_pipeline/physics_skeleton.py'),
-    'hud': ('asset_pipeline/optional_content.py', 'prepare_hud.py', 'prepare_runtime_huds.py', 'prepare_menu_movies.py', 'install_prepared_hud.py',
+    'hud': PARSERS + ('asset_pipeline/optional_content.py', 'asset_pipeline/scene_clips.py', 'asset_pipeline/backdrop.py',
+            'asset_pipeline/map_writer.py', 'asset_pipeline/sky.py', 'prepare_trick_guide_scene.py', 'prepare_hud.py', 'prepare_runtime_huds.py', 'prepare_menu_movies.py', 'install_prepared_hud.py',
             'extract_session_marker.py', 'vendor/skate3_ui/**/*.py', 'vendor/skate3_ui/**/*.json'),
     'character': PARSERS + ('extract_default_skater.py', 'default_skater_retail_manifest.json',
                   'asset_pipeline/character*.py', 'asset_pipeline/retail_character.py',

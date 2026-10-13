@@ -33,6 +33,9 @@ def hud(game_root, stage, work, report, log, converted=None):
     report('Preparing original scoring and session-marker HUD assets')
     engine.run(engine.task(engine.TOOLS/'prepare_runtime_huds.py', '--game', game_root,
              '--assets', stage/'assets', '--work', work/'hud'), log, report)
+    report('Extracting the Trick Guide demo clips')
+    engine.run(engine.task(engine.TOOLS/'prepare_trick_guide_scene.py', '--game', game_root,
+             '--assets', stage/'assets', '--work', work/'scene'), log, report)
 
 
 def character(game_root, stage, work, report, log, converted=None):

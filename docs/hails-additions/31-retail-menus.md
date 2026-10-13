@@ -1562,7 +1562,74 @@ Opening and closing the Trick Guide switched screens at once; retail fades to bl
   guide opens, `fade clear` after the count; B at level 0: `fade black`, the guide closes, the pause menu opens again,
   `fade clear`.
 
+## Trick Guide demo (2026-10-12)
+
+### Problem
+Retail shows a 3D demo behind the Trick Guide (FE 14): the player's skater performs the highlighted trick in a small
+set. Ours showed the gameplay world behind the menu.
+
+### Root cause / evidence (TU3; research `.local/research/menus-m6/trick-guide-*.md`, `raw-codec.md`)
+- [code, main-read] Screen init 0x82618A40 loads `DIST_TrickGuide_Textures.rx2` + `DIST_TrickGuide.rx2`
+  (miscload.big) unless online (`sub_82743FC0`), copies the default clip `trickguide_fs_noseblunt_01` (0x82204B88)
+  and attaches `rendering/csm_trickguide`; the clip path is built by `sub_82826488` as
+  `"scene/trickguide/" + name + "1.abin"` (0x82198B78); `sub_82821740` stores the camera track and starts the clip.
+- [data, main-read] scene_000.bin (miscboot.big): `ViewScene` = record 254 (type 22, 5.0 s), one character, name
+  `current_player`, kind `marquee`, default clip `trickguide_bindpose`. So the demo shows the player's own skater.
+- [agent, high] The highlight settles 60 ms (S+332 = 60.0 counted down by the FE update's milliseconds) before the
+  clip changes; the scene restarts at time 0 only on a new clip.
+- [code, main-checked anchors] The clips (scene.big, 312 files) use the RAW codec "DR". Its TU3 sampler
+  `sub_82D1E658` reads the header bytes +27 / +28 and the frame size +24; packed rotations are an axis in two angles
+  (A = bits 21..31 x 2pi/2047 - pi, M = bits 11..20 x pi/1023 - pi/2) times r = bits 0..10 / 2047, with
+  w = sqrt(1 - r^2) (pi at 0x82060C44). The pinned community decoder (tools/vendor/skate3_anim) read the middle field
+  as a length, which folded the skeleton; with the sampler's formula the file's T-pose decodes to the gameplay
+  `RIG_TPOSE` to three decimals.
+- [data, NOT RETAIL YET] The clip channels are deltas on the file's pose (limbs near identity where the pose has large
+  rotations; the HIPS channel is the inverse of the bind trajectory). Each frame = retail's AddSQT (`pose_add::add`,
+  0x828CCC08) of the delta onto the pose, root bones hang from the trajectory. Checked: the bind pose stands (hips
+  0.92 m, head 1.58 m, feet 0.11 m, mirrored); 302 of 312 clips start and end upright, the other 10 are Hall of Meat
+  bails that end on the ground.
+- [data] One authored NaN (trickguide_bs_dark_slide1 frame 103, RIGHT_WHEELBACK translation), also in the
+  reference decoder: the previous frame is held.
+
+### Change
+- `skate-core/src/animation/raw.rs` (new): the RAW decoder (stored components over a caller's base).
+- `skate-data/src/scene_clip.rs` (new): `SceneClip::parse` (131-bone hierarchy, parts by header bits 0..5 / 2,
+  deltas added onto the file's pose).
+- Setup: `tools/asset_pipeline/scene_clips.py` + task `tools/prepare_trick_guide_scene.py` (hud group): the clips to
+  `assets/private/hud/scene/trickguide/`, the set as a render-only `TrickGuide.skate` (backdrop.py's `export_model`,
+  refactored out of the foliage backdrops; their output checked byte-identical), and the set's sky dome as
+  `TrickGuide.sky.*` with its `material_sky` parameters.
+- `skate-game/src/trick_guide_scene.rs` (new): while FE 14 is on top the set and dome spawn on render layer 27 as
+  children of the player root, the player's own rig plays the clip (`AnimationStatus::for_scene`), the gameplay camera
+  draws only that layer; closing despawns them and restores layers. `retail_menu_stage.rs` publishes
+  `TrickGuideDemo` (open, highlighted clip); `map_render.rs` `SceneCommands::tagged`; `retail_sky.rs`
+  `SkyPackage::load_scene`.
+- Mods: a mod picks any clip per entry through the existing Trick Guide patches (`sdk.menus.trick_guide`, field
+  `animation`). Mod clip folders are not wired yet.
+- NOT RETAIL YET: the camera (a fixed side framing; the 21 ViewScene tracks in scene.big `ice_000.bin` are being
+  decoded, `.local/research/menus-m6/trick-guide-camera.md`), looping (assumed), the dome's sun direction / anchor
+  (taken from the current map: no Trick Guide render location exists), `fog_trickguide` and `csm_trickguide` not
+  applied, the delta add and trajectory parenting (from the data).
+
+### Verification
+- `cargo test -p skate-core animation::raw`; ignored data tests `crates/skate-data/tests/scene_clip.rs` (all 312
+  decode, T-pose stands, upright ends) and `tests/trick_guide_checklist.rs` (217 trick rows, all with a clip); script
+  `.claude/skills/retail-menus/tools/check_trick_clips.sh`.
+- In game (default skater and a custom model): the set, the dome and the skater playing the noseblunt
+  (screenshots `.local/research/menus-m6/demo/`); gameplay after the change unchanged (Downtown screenshot).
+  Closing the guide in a run was not checked (injected keys arrive before the guide takes input); play test pending.
+
+### Open questions
+- The camera tracks (format partly decoded), DUTCH units, horizontal vs vertical FOV, the locator.
+- Who applies `fog_trickguide`; the CSM override; whether the scene loops the clip (`TrickGuideLoop` = enum 9).
+- 61 clip files and 9 clip names no listed row uses (8 tricks with no subcategory, the unlisted "Retrieve"
+  subcategory): retail does not show them either.
+
 ## Files
+- Trick Guide demo: `crates/skate-core/src/animation/raw.rs` (new), `crates/skate-data/src/scene_clip.rs` (new),
+  `tests/scene_clip.rs`, `tests/trick_guide_checklist.rs` (new); `crates/skate-game/src/trick_guide_scene.rs` (new),
+  `retail_menu_stage.rs`, `map_render.rs`, `retail_sky.rs`, `app.rs`, `main.rs`; `tools/asset_pipeline/scene_clips.py`,
+  `backdrop.py`, `asset_exports.py`, `versions.py`, `tools/prepare_trick_guide_scene.py` (new).
 - Trick Guide: `crates/skate-core/src/trick_guide.rs` (new), `crates/skate-data/src/trick_guide.rs` (new),
   `menu_tables.rs`, `collections.rs`, `tests/trick_guide.rs` (new); `crates/skate-game/src/trick_guide_host.rs` (new),
   `retail_menu_stage.rs`, `crossbar_host.rs`, `apt_movie.rs`, `apt_stage.rs`, `apt_text.rs`, `apt_scene.rs`,
