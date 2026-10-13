@@ -352,6 +352,10 @@ pub(crate) struct PluginMotionRun {
     pub packet: Option<String>,
     pub state: TauntClip,
     pub release: bool,
+    /// The packet ended while its clips still play (the AI left the sit because the seat moved away). Retail's sit
+    /// state is non-interruptable (`motiongraph_sit.xml`): Stand2Sit plays out, then SittingCyc leaves on
+    /// "not HasIntent Sit" to Sit2Stand, so the held cycle is released as soon as it is reached.
+    pub orphaned: bool,
     /// The step that spawns the hand prop reached its branch window (`SpawnInteractionBasedHandProp`); the brain side
     /// takes it once (`think_peds`) and `hand_prop_taken` keeps it from firing again in the same run.
     pub hand_prop_due: bool,
@@ -764,7 +768,7 @@ pub(crate) fn advance_peds(
                     run.state = if body.player.react(set, steps, f32::INFINITY) { TauntClip::Playing } else { TauntClip::Done };
                 }
                 (TauntClip::Playing, m) => {
-                    if std::mem::take(&mut run.release) {
+                    if std::mem::take(&mut run.release) || run.orphaned {
                         body.player.release_hold();
                     }
                     // VendHandProp / CollectHandProp: the collect clip's branch window (`InTurnBranchWindow`).
@@ -2012,7 +2016,14 @@ pub(crate) fn think_peds(
                             *run = PluginMotionRun { packet: Some(name), state: TauntClip::Requested, ..Default::default() };
                         }
                     }
-                    Some(name) => match mind.brain.monitored.get_mut(&name) {
+                    Some(name) => match mind.brain.monitored.get_mut(&name).filter(|_| !run.orphaned) {
+                        // The packet ended mid-clip: its clips play out (the cycle released) before the run ends.
+                        None if run.state == TauntClip::Playing => {
+                            if !run.orphaned {
+                                info!("PED_PLUGIN_MOTION ped=#{} {name} ended mid-clip, standing up tick={tick}", ped.id.serial);
+                            }
+                            run.orphaned = true;
+                        }
                         None => *run = PluginMotionRun::default(),
                         Some(p) => {
                             let m = motion_for(&name).expect("only plugin states start a run");
