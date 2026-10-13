@@ -14,7 +14,7 @@ Every start checks your converted game files (a fraction of a second, in the bac
 
 ## Controls (the new parts)
 
-- **Start** opens Skate 3's own pause menu (its real menu files from your disc): **A** selects, **B** goes back, the d-pad / arrows move. Options > **Game Settings** is the retail settings screen.
+- **Start** opens Skate 3's own pause menu (its real menu files from your disc): **A** selects, **B** goes back, the d-pad / arrows move. Options > **Game Settings** is the retail settings screen; Learn > **Trick Guide** is Skate 3's own trick guide.
 - **Guide** (the Xbox / PS / Home button), **F1** or **Esc** (keyboard) opens the menu: **MAPS** (switch maps and drop-in spots without restarting), **SKATER** (Camera angle High / Low), **GRAPHICS** (display, sound, **Frame-time counter**, **NPC draw distance**, **Opt-In Features**), **EXTRAS** (mods, updates). The menu now looks and works like the recomp's settings screen: **B** / **Esc** goes back one level, **LB** / **RB** (or **Q** / **E**) switch category, **Y** (or **R**) resets a row, the mouse works too.
 - **Y:** step off the board. **LT** (on foot): drop the board.
 - **Hold RB** next to a bench, bin or other movable prop to grab it: the **left stick** pushes, pulls and side-steps it, the **right stick** turns you and the prop together. Your board drops when you grab. Let go of RB to drop the prop.
@@ -104,6 +104,7 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 **Retail menus (upstream #62, open)**
 - Skate 3's own pause menu and Game Settings screen run on the engine from your disc's menu files, with retail's screen stack, blur, pad input and button prompts for your pad. Now the default (Start); `SKATE3_RETAIL_MENUS=0` turns them off.
 - Every Game Settings row is a real setting (saved, mod-overridable); HUD, offboard axis invert and Vibration act on the game.
+- **Trick Guide** (Learn > Trick Guide): Skate 3's own trick guide with every category, subcategory and trick, the stick gestures and buttons for each, and the description; Manuals opens its tricks straight away, like Skate 3. Mods can add or change entries (`sdk.menus.trick_guide`). Needs Refresh Game Files on an existing install (new menu files). The 3D demo skater behind it is not there yet. Not play-tested yet.
 - Rumble: a port of retail's rumble controller for SDL and XInput pads, with a mod API (`sdk.input.rumble`). Gameplay rumble events are still to come.
 - The Guide / F1 / Esc menu now looks and moves like the recomp's settings screen (blurred world, sliding highlight, category rail, button legend).
 
