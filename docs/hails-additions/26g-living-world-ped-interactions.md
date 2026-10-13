@@ -1112,3 +1112,16 @@ skate-game `hand_prop_proxy_group_by_mass`, data-gated `a_thrown_can_reaches_the
   in for the object's vector), the body interrupts the sit cycle with `SitAvoidFwd` (`PedAnimPlayer::interrupt`), and
   the brain's locked waypoint follows the seat. Open: whether `82E3DBE0`'s vector is a velocity or a step, the
   `+1416` gate, the Back avoid (`ReturnToSit`) and who calls `82E3DBE0`.
+- Fixed (2026-10-13): a bench moved while its ped was still sitting down stayed sat on forever. User report: "When a
+  ped is in the middle of the sitting animation, if you move a bench they will stay sitting." Session
+  `hails-local/logs/game-20261013-112342`: second grab at 17:25:21, ped #6 had restarted Sit at tick 2971; the AI left
+  the sit (`WaitOutTimer -> TargetWaypointPrecise`) and asked to walk to the new seat for 20 s, but the body stayed at
+  [-259.1, 42.97] until `ExitInteraction` (PluginTimeout). Cause: the jump-off only fires from the sitting cycle (right:
+  SitJump needs LastState `SittingCyc`), and when the Sit packet ended mid-`Stand2Sit` the motion run was reset without
+  releasing the held `SitIdleCyc`, so the body sat forever and locomotion never ran. Retail (`motiongraph_sit.xml`):
+  Sit is non-interruptable, `SittingInto` plays `Stand2Sit` out, `SittingCyc` goes to `SittingOut` (`Sit2Stand`) on
+  "not HasIntent Sit", then `SitComplete` -> Locomotion. Change: `PluginMotionRun::orphaned` (skate-game
+  `living_world/peds.rs`): a packet that ends while its clips play keeps the run, releases the held cycle as soon as
+  it is reached and ends with the clips (log `PED_PLUGIN_MOTION ped=#N Sit ended mid-clip, standing up`). Applies to
+  every plugin motion with a held cycle (data-driven by `plugin_motion` steps; nothing new for mods to set).
+  Test: skate-core `a_sit_ended_during_stand2sit_stands_up_once_seated`.

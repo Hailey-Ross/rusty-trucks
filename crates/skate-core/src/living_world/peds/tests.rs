@@ -453,6 +453,46 @@ fn a_sitting_ped_holds_the_idle_until_released_then_stands_up() {
     assert!(!p.reacting(), "the run ended after the stand-up");
 }
 
+/// The Sit intent ends while the ped is still in Stand2Sit (its seat was carried away). Retail's sit state is
+/// non-interruptable: Stand2Sit plays out, SittingCyc leaves on "not HasIntent Sit" to Sit2Stand. A single release
+/// during Stand2Sit is lost (the ped sat forever, session 2026-10-13 11:23); the game keeps releasing until the cycle.
+#[test]
+fn a_sit_ended_during_stand2sit_stands_up_once_seated() {
+    use super::plugin_motion::{motion_for, BLEND};
+    use super::skater_contact::ReactionStep;
+    let (_, mut set, mut clips) = fixture();
+    let r = |c: &str| vec![RemapClip { clip: c.into(), windows: vec![] }];
+    for (name, frames, looping) in [("SITDOWN", 31, false), ("SITIDLE", 21, true), ("STANDUP", 31, false)] {
+        clips.insert(name.into(), clip(name, frames, 0.0, 0.0, looping, 0.0, vec![]));
+    }
+    set.entries.insert("Stand2Sit".into(), r("SITDOWN"));
+    set.entries.insert("SitIdleCyc".into(), r("SITIDLE"));
+    set.entries.insert("Sit2Stand".into(), r("STANDUP"));
+    let m = motion_for("Sit").unwrap();
+    let steps: Vec<ReactionStep> = m.steps.iter().map(|s| ReactionStep { anim: s.anim, mirror: false, blend: BLEND, cycle: s.hold_until.is_some() }).collect();
+    let dt = 1.0 / 60.0;
+    for keep_releasing in [false, true] {
+        let mut p = PedAnimPlayer::new(&set, 3).unwrap();
+        assert!(p.react(&set, steps.clone(), f32::INFINITY));
+        p.step(dt, &set, &clips);
+        assert_eq!(p.reaction_anim(), Some("Stand2Sit"));
+        p.release_hold();
+        let mut log = Vec::new();
+        for _ in 0..600 {
+            if keep_releasing {
+                p.release_hold();
+            }
+            p.step(dt, &set, &clips);
+            log.push(p.current_clip().to_owned());
+        }
+        if keep_releasing {
+            assert!(log.iter().any(|c| c == "STANDUP") && !p.reacting(), "sat down, stood up, run ended");
+        } else {
+            assert_eq!(p.current_clip(), "SITIDLE", "one early release is lost: still seated");
+        }
+    }
+}
+
 /// The ped channel (b99, `82E32878` / `82E3A5A0`): a carry clip fades in over 0.2 s and takes over only the bones its
 /// channel weights pick (here the hips), the rest keeps locomotion; a stop fades it out and frees the slot.
 #[test]
