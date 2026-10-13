@@ -107,6 +107,7 @@ impl TrickGuideMods {
                 description: o.description,
                 slots: o.slots.map(|s| s.iter().map(|s| Slot { gesture: s.gesture, button: s.button, connector: s.connector }).collect()),
                 animation: o.animation,
+                camera_track: o.camera_track,
                 parent: o.parent.as_deref().map(mod_key),
                 order: o.order,
                 has_tricks: o.has_tricks,

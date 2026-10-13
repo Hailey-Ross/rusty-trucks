@@ -141,8 +141,9 @@ impl SkyPackage {
     }
 
     /// The Trick Guide set's dome (`<assets>/private/hud/scene/TrickGuide.sky.*`, setup's scene_clips.py): its own
-    /// material_sky parameters, the sun direction and anchor height of `world` (the current map's sky). NOT RETAIL
-    /// YET: no Trick Guide render location exists in the collections; retail keeping the world's is assumed.
+    /// material_sky parameters with the environment of render location `trick_guide` (sun, anchor height,
+    /// fog_trickguide), which retail's renderer switches to while the set is loaded (sub_827950A8). Exports from
+    /// before that carry no environment: the sun and anchor of `world` (the current map's sky) stand in, no fog.
     pub(crate) fn load_scene(directory: &std::path::Path, world: Option<&SkyPackage>) -> Result<Self, String> {
         let (anchor_height, sun_direction) = world
             .and_then(|w| w.sky.environment.as_ref())
@@ -152,6 +153,9 @@ impl SkyPackage {
             struct Material { sun_scale: f32, multiplier: f32 }
             #[derive(serde::Deserialize)]
             struct Scene { material: Material }
+            if sky.environment.is_some() {
+                return Ok(());
+            }
             let scene: Scene = serde_json::from_slice(json).map_err(|e| e.to_string())?;
             sky.environment = Some(Environment {
                 anchor_height,

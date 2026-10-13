@@ -344,6 +344,9 @@ pub struct TrickGuideOptions {
     /// Demo animation name (tricks need one to be listed).
     #[serde(default)]
     pub animation: Option<String>,
+    /// Demo camera track: an index into the ICE ViewScene tracks (retail 0..20; `trickbook_camera_tracks`).
+    #[serde(default)]
+    pub camera_track: Option<i16>,
     /// The category a subcategory lists under, or the subcategory a trick lists under (key).
     #[serde(default)]
     pub parent: Option<String>,

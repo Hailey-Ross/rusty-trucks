@@ -8,8 +8,12 @@ from pathlib import Path
 from tools.owned_game.big import BigArchive
 
 PREFIX = 'data/scene/trickguide/'
+ICE = 'data/scene/ice_000.bin'
 SET_MODEL = 'world/models/DIST_TrickGuide'
 SET_TEXTURES = 'world/models/DIST_TrickGuide_Textures'
+# The render location the renderer uses while the set is loaded (fog_trickguide, its sun); data, so a mod's setup
+# can point the scene elsewhere.
+LOCATION = 'trick_guide'
 # The set's ground, ledges and boxes; its dome (sky.default) goes to the sky package.
 SET_SHADERS = ('environment.default', 'environmentsimple.default')
 
@@ -22,6 +26,11 @@ def extract(game_root, assets, work):
     if output.exists():
         shutil.rmtree(output)
     shutil.copytree(work/PREFIX, output)
+    # The ICE camera tracks (the ViewScene block holds the demo's 21 tracks).
+    ice = [e for e in archive.entries if e.path.lower() == ICE]
+    if len(ice) != 1:
+        raise RuntimeError('scene.big has no ' + ICE)
+    (assets/'private/hud/scene/ice_000.bin').write_bytes(archive.read(ice[0]))
     misc = BigArchive(game_root/'data/big/miscload.big')
     files = {e.path: e for e in misc.entries}
     read = lambda name: misc.read(files['data/content/' + name + '.rx2'])
@@ -59,6 +68,7 @@ def export_sky(raw, texture_raw, assets):
     if sun.height != 16 or len(sun.rgba) != sun.width*sun.height*4:
         raise ValueError('Unexpected Trick Guide sun-gradient dimensions')
     collections = Collections(json.loads((assets/'private/stock/skater-collections.json').read_text(encoding='utf-8')))
+    material = sky_parameters(collections, 'sky.default')
     output = assets/'private/hud/scene'
     (output/'TrickGuide.sky.rgba').write_bytes(diffuse.rgba)
     (output/'TrickGuide.sky.sun.rgba').write_bytes(sun.rgba)
@@ -66,8 +76,31 @@ def export_sky(raw, texture_raw, assets):
         'width': diffuse.width, 'height': diffuse.height,
         'positions': mesh.vertices.tolist(), 'uvs': mesh.uvs.tolist(), 'indices': mesh.faces.reshape(-1).tolist(),
         'sun_width': sun.width, 'sun_height': sun.height,
-        'material': sky_parameters(collections, 'sky.default'),
+        'material': material,
+        'environment': dict(scene_environment(collections, LOCATION),
+                            sun_scale=material['sun_scale'], multiplier=material['multiplier']),
     }, separators=(',', ':')), encoding='utf-8')
+
+
+def scene_environment(collections, location):
+    """The render location the renderer switches to while the set is loaded (TU3 sub_827950A8: model list +17496
+    == 1, set by the Trick Guide init 0x82618A40, selects key 0x6568F34643066684 `trick_guide`): its sun, anchor
+    height and fog (`fog_trickguide`), resolved through the parents the way world_environment does."""
+    import math
+    import struct
+    from .environment import field, floats, fog_parameters, key_hash
+    fields, chain = collections.resolve('render_locations', key_hash(location))
+    sun = floats(field(fields, 'sun_position'), 3)
+    length = math.sqrt(sum(v*v for v in sun))
+    if length < 1e-6:
+        raise ValueError('Invalid authored sun direction')
+    fog_class, fog_key, _ = struct.unpack('>3Q', bytes.fromhex(field(fields, 'material_fog')))
+    fog, fog_chain = collections.resolve(fog_class, fog_key)
+    values = {n: floats(field(fog, n), 4 if n == 'fog_colour' else 1)
+              for n in ('fog_near', 'fog_far', 'fog_colour', 'fog_power', 'fog_max')}
+    return {'location_chain': chain, 'sun_direction': [v/length for v in sun],
+            'anchor_height': floats(field(fields, 'Hash_2E9AAECD1C29F81F'), 1)[0],
+            'fog': {'chain': fog_chain, **values}, 'fog_frame': fog_parameters(values)}
 
 
 def export_set(raw, texture_raw, output):

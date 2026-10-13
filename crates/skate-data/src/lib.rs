@@ -4,6 +4,7 @@ mod manifest;
 pub use manifest::{AssetError, GameAssets};
 pub mod abin;
 pub mod scene_clip;
+pub mod ice_camera;
 pub mod trick_guide;
 pub mod animation_banks;
 pub mod animation_frames;
