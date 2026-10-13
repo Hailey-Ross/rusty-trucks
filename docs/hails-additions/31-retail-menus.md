@@ -1330,7 +1330,7 @@ size` without naming a file.
 - `a_missing_or_resized_output_flags_its_group` checks the new reasons.
 - The dev installation refreshed with setup's `refresh=True` (only `livingworld` changed): new installation, every
   group's receipt matches (core 2033, hud 27, character 60, environment 38, maps 26, audio 4416, livingworld 115 files).
-- Not yet run end to end from the overlay button in a development copy.
+- Run end to end from the overlay button in a development copy (the user, by 2026-10-13).
 
 ## Opt-in features in the PC overlay (2026-10-11)
 
