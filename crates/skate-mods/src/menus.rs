@@ -365,6 +365,44 @@ pub struct TrickGuideOptions {
 }
 
 /// A Trick Guide key: 16 hex digits (a retail record) or a menu id (the mod's own entry).
+/// A retail popup a mod raises (`sdk.menus.popup`): the retail Sk8Popup / Sk8SmallPopup movie shows it over the
+/// menus, and the player's choice comes back as a `menu_popup` event. Text fields are string ids (FELanguage) or
+/// `#literal text`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PopupOptions {
+    /// Shown by the small popup only (retail's Sk8Popup shows no title).
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Up to 8 choices (index 0 first); one choice shows A Continue, more a list.
+    #[serde(default, deserialize_with = "crate::lua_list::opt_list")]
+    pub options: Option<Vec<String>>,
+    /// "standard" (Sk8Popup, the default) or "small" (Sk8SmallPopup).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The highest priority shows; equal priorities show the newest (retail's list).
+    #[serde(default)]
+    pub priority: Option<i32>,
+    /// B answers choice 255.
+    #[serde(default)]
+    pub cancelable: bool,
+}
+
+pub const MAX_POPUP_OPTIONS: usize = 8;
+
+impl PopupOptions {
+    pub fn validate(&self) -> bool {
+        let text = |t: &Option<String>| t.as_ref().is_none_or(|t| t.len() <= 512);
+        text(&self.title)
+            && text(&self.description)
+            && self.options.as_ref().is_none_or(|o| o.len() <= MAX_POPUP_OPTIONS && o.iter().all(|t| t.len() <= 512))
+            && self.kind.as_deref().is_none_or(|k| matches!(k, "standard" | "small"))
+            && self.priority.is_none_or(|p| (-1000..=1000).contains(&p))
+    }
+}
+
 pub fn valid_trick_guide_key(s: &str) -> bool {
     (s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())) || valid_menu_id(s)
 }

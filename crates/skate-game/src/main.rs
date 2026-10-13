@@ -41,6 +41,7 @@ mod fe_backdrop;
 mod trick_guide_scene;
 mod retail_menus;
 mod prompt_glyphs;
+mod popup_host;
 mod settings_host;
 mod trick_guide_host;
 mod retail_menu_movies;

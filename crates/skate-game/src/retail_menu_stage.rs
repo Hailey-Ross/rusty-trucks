@@ -25,6 +25,7 @@ use bevy::{
 };
 use skate_core::crossbar::{CrossbarAction, CrossbarRules, CrossbarState, NavEvent};
 use skate_core::fe_input::{fired, parse_apt_keys, AptKey, FeInput, RepeatRule};
+use skate_core::fe_popup::PopupKind;
 use skate_core::fe_stack::{Effect, FeStack, Layer, Request};
 use skate_core::menu_values::Direction;
 use skate_core::menus::{EntryRef, MenuAction, Outcome, Owner};
@@ -48,6 +49,8 @@ const TRICK_GUIDE_PATH: &str = "tricks/trickguide.swf";
 /// The Video Calibration template (record 91) and its path; FE screen 51's init opens it (0x8260E868).
 const VIDEO_CALIBRATION: &str = "VideoCalibration";
 const VIDEO_CALIBRATION_PATH: &str = "options/videocal.swf";
+/// The callback id of its "finished" popup (0x8260EA48).
+const VIDEO_CALIBRATION_POPUP: &str = "video_calibration.finished";
 /// The settings row that pushes it (sub_8260D290 row 25).
 const VIDEO_CALIBRATION_ROW: &str = "ID_GAMESETTINGS_VIDEO_CALIBRATION";
 /// The pause menu item that opens it (crossbar case 0x8261BF78).
@@ -110,6 +113,13 @@ struct MenuStage {
     video_cal_id: i32,
     video_cal: skate_core::video_calibration::VideoCalibration,
     video_cal_rules: skate_core::video_calibration::CalibrationRules,
+    /// The popup list (skate_core::fe_popup), the host's state (popup_host) and the popup movies' AS ids by kind
+    /// (preloaded on the "popup" layer; None when the set lacks the movie). `popup_dirty`: show the last entry again
+    /// (FE vt+24 runs on every push and after a removal).
+    popups: skate_core::fe_popup::PopupList,
+    popup: crate::popup_host::PopupHost,
+    popup_ids: Vec<(skate_core::fe_popup::PopupKind, i32)>,
+    popup_dirty: bool,
     /// Retail Apt keys in key-table order (input.cfg expressions).
     apt_keys: Vec<AptKey>,
     pads: [FeInput; 4],
@@ -134,7 +144,9 @@ pub(crate) struct RetailPause(pub bool);
 pub(crate) struct RetailMenuStagePlugin;
 impl Plugin for RetailMenuStagePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<RetailPause>().init_resource::<crate::trick_guide_host::TrickGuideMods>();
+        app.init_resource::<RetailPause>()
+            .init_resource::<crate::trick_guide_host::TrickGuideMods>()
+            .init_resource::<crate::popup_host::PopupMods>();
         if !enabled() {
             return;
         }
@@ -294,12 +306,31 @@ fn setup(
                 &mut fe,
             )?;
         }
+        // Popup host create (FE screen 29 vt+4, 0x825EF370): templates 17 Sk8Popup, 18 Sk8SmallPopup and 4
+        // Sk8AutoSavePopup open once on the AS layer "popup" (OpenScreen bridge 0x82D09140: layer argument, the
+        // template's visible flag "0"); they stay loaded and are shown / hidden per popup.
+        for kind in [PopupKind::Standard, PopupKind::Small, PopupKind::AutoSave] {
+            let template = kind.template();
+            let Some(path) = popup_path(&config.asset_root, template) else { continue };
+            if movies.movies.contains_key(&format!("source/screens/{}", path.trim_end_matches(".swf"))) {
+                open_screen_on(&mut stage, &path, "popup", template, &mut fe)?;
+            }
+        }
         Ok((stage, templates))
     })();
     match result {
         Ok((stage, templates)) => {
             // AS screen ids: 600 + the template's registration index.
             let as_id = |name: &str| 600 + templates.iter().position(|n| n == name).unwrap_or(0) as i32;
+            let popup_ids: Vec<(PopupKind, i32)> = [PopupKind::Standard, PopupKind::Small, PopupKind::AutoSave]
+                .into_iter()
+                .filter(|k| {
+                    popup_path(&config.asset_root, k.template()).is_some_and(|p| {
+                        movies.movies.contains_key(&format!("source/screens/{}", p.trim_end_matches(".swf")))
+                    })
+                })
+                .map(|k| (k, as_id(k.template())))
+                .collect();
             let tables = std::fs::read_to_string(config.asset_root.join(crate::retail_menus::TABLES))
                 .ok()
                 .and_then(|t| skate_data::menu_tables::MenuTables::from_json(&t).ok());
@@ -365,6 +396,10 @@ fn setup(
                 video_cal_id: as_id(VIDEO_CALIBRATION),
                 video_cal: Default::default(),
                 video_cal_rules: Default::default(),
+                popups: Default::default(),
+                popup: Default::default(),
+                popup_ids,
+                popup_dirty: false,
                 chyron: false,
                 settings: Default::default(),
                 settings_titles: tables.map(|t| t.settings_titles).unwrap_or_default(),
@@ -409,6 +444,7 @@ fn update(
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     guide_mods: Res<crate::trick_guide_host::TrickGuideMods>,
     mut demo: ResMut<crate::trick_guide_scene::TrickGuideDemo>,
+    mut popup_mods: ResMut<crate::popup_host::PopupMods>,
 ) {
     let ready = stage.as_ref().is_some_and(|s| !s.failed) && movies.is_some() && menus.is_some();
     // The ported screens in this build's screen table (TU3 FE ids 56 and 45); none in tables extracted before
@@ -456,12 +492,15 @@ fn update(
         }
     }
     fe.trick_guide.open = trick.is_some() && ms.stack.top(Layer::Main) == trick;
+    fe.popup = std::mem::take(&mut ms.popup);
     if let Some(skater) = &skater {
         fe.trick_guide.stance.regular = skater.animation.regular_stance();
     }
     // Work for the registry once the movie work is done: the crossbar item, settings steps.
     let mut selected: Option<String> = None;
     let mut steps: Vec<(String, Direction)> = Vec::new();
+    // Mod popup choices, sent to the mods once the movie work is done.
+    let mut mod_events: Vec<(String, serde_json::Value)> = Vec::new();
     let result = (|| -> Result<(), String> {
         let (crossbar_id, options_id, trick_id, cal_id) = (ms.crossbar_id, ms.options_id, ms.trick_guide_id, ms.video_cal_id);
         let auto = ms.auto_open && time.elapsed_secs() > 4.0;
@@ -475,6 +514,19 @@ fn update(
         for (key, controller) in fired {
             // Session log: every key the menus took, by retail's Apt key name (the user's play tests).
             info!("RETAIL_MENUS key {} pad {controller} screen {:?}", ms.apt_keys.get(key as usize).map_or("?", |k| k.name.as_str()), ms.stack.input_target().and_then(|t| backdrop.id(t)));
+            // sub_825EC0E8 step 2: while the popup list has entries, every key goes to the popup host only; its C++
+            // handler (vt+40) returns 0, so the movie's UpdateInput gets the key once the host is ready (+49).
+            if let Some((_, request)) = ms.popups.shown() {
+                let handle = ms.popup_ids.iter().find(|(k, _)| *k == request.kind).map(|(_, id)| *id);
+                if let (Some(handle), true) = (handle, fe.popup.input_ready) {
+                    ms.stage.call_path(
+                        "_global.ScreenManager.UpdateInput",
+                        vec![Value::Text(handle.to_string()), Value::Text(key.to_string()), Value::Text(controller.to_string())],
+                        &mut fe,
+                    )?;
+                }
+                continue;
+            }
             if key == APT_START {
                 // Retail Start (sub_825EB998, mode 0) pushes FE 56 with the plain push. NOT RETAIL YET (unverified):
                 // Start while it is open closes it.
@@ -525,7 +577,7 @@ fn update(
                     _ => None,
                 };
                 if let Some(action) = action {
-                    run_calibration(&mut ms.stage, &mut ms.stack, &mut ms.video_cal, &ms.video_cal_rules, cal_id, action, screen, &mut fe)?;
+                    run_calibration(&mut ms.stage, &mut ms.stack, &mut ms.popups, &mut ms.popup_dirty, &mut ms.video_cal, &ms.video_cal_rules, cal_id, action, screen, &mut fe)?;
                 }
             } else if Some(screen) == trick {
                 // Screen 14 vt+40 (0x82618F38): Back closes at level 0 or goes up a level (SetState(0)); A on a row
@@ -746,12 +798,46 @@ fn update(
                 ms.stack.ready(o);
             }
         }
+        // Mods' popups (sdk.menus.popup): a new one replaces the mod's popup with the same key; a stopped mod's
+        // leave without an event.
+        for owner in std::mem::take(&mut popup_mods.cleared) {
+            let prefix = owner.map_or_else(|| "mod:".to_owned(), |o| format!("mod:{o}:"));
+            if !ms.popups.clear_owned(&prefix).is_empty() {
+                ms.popup_dirty = true;
+            }
+        }
+        for (owner, key, request) in std::mem::take(&mut popup_mods.requests) {
+            let callback = crate::popup_host::mod_callback(&owner, &key);
+            ms.popup_dirty |= ms.popups.remove_callback(&callback);
+            if let Some(request) = request {
+                let id = ms.popups.push(request);
+                info!("RETAIL_MENUS popup {id} from mod {owner} ({key})");
+                ms.popup_dirty = true;
+            }
+        }
+        // Popup choices (host vt+64 0x825EF698): the callback by id, then the list shows its next entry.
+        for choice in std::mem::take(&mut fe.popup.choices) {
+            let Some(event) = ms.popups.choose(choice) else { continue };
+            info!("RETAIL_MENUS popup {} choice {} ({})", event.id, event.choice, event.callback);
+            ms.popup_dirty = true;
+            if let Some((owner, key)) = event.callback.strip_prefix("mod:").and_then(|c| c.split_once(':')) {
+                mod_events.push((owner.to_owned(), serde_json::json!({"name": "menu_popup", "key": key, "choice": event.choice})));
+            } else if event.callback == VIDEO_CALIBRATION_POPUP {
+                if let Some(c) = cal.filter(|c| ms.stack.active(*c)) {
+                    let action = ms.video_cal.popup_result(event.choice as u32, &ms.video_cal_rules);
+                    run_calibration(&mut ms.stage, &mut ms.stack, &mut ms.popups, &mut ms.popup_dirty, &mut ms.video_cal, &ms.video_cal_rules, cal_id, action, c, &mut fe)?;
+                }
+            }
+        }
+        if std::mem::take(&mut ms.popup_dirty) {
+            show_popup(&mut ms.stage, &ms.popups, &ms.popup_ids, &mut fe, &mut sounds)?;
+        }
         // Video Calibration loaded (vt+108 0x8260E888): the first page; intro complete = ready.
         if let Some(c) = cal.filter(|c| ms.stack.top(Layer::Main) == Some(*c)) {
             if take_call(&mut fe, &format!("Game.OnScreenLoaded({cal_id})")) {
                 let rules = ms.video_cal_rules.clone();
                 let action = ms.video_cal.advance(&rules);
-                run_calibration(&mut ms.stage, &mut ms.stack, &mut ms.video_cal, &ms.video_cal_rules, cal_id, action, c, &mut fe)?;
+                run_calibration(&mut ms.stage, &mut ms.stack, &mut ms.popups, &mut ms.popup_dirty, &mut ms.video_cal, &ms.video_cal_rules, cal_id, action, c, &mut fe)?;
             }
             if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({cal_id})")) {
                 ms.stack.ready(c);
@@ -795,6 +881,7 @@ fn update(
     ms.crossbar = fe.state;
     ms.settings = fe.settings;
     ms.trick_guide = std::mem::take(&mut fe.trick_guide);
+    ms.popup = std::mem::take(&mut fe.popup);
     // The 3D demo behind FE 14 (trick_guide_scene.rs): the screen on top, its highlighted clip and camera track
     // (S+204, S+200).
     demo.set_if_neq(crate::trick_guide_scene::TrickGuideDemo {
@@ -802,6 +889,9 @@ fn update(
         animation: ms.trick_guide.state.animation.clone(),
         camera_track: ms.trick_guide.state.camera_track,
     });
+    for (owner, event) in mod_events {
+        menus.send_event(&owner, event);
+    }
     let settings_selected = std::mem::take(&mut ms.settings.selected);
     if result.is_ok() {
         let mut refresh: Option<i32> = None;
@@ -888,13 +978,14 @@ fn update(
 }
 
 /// Retail ScreenManagerBase::OpenScreen (sub_82D09140) arguments.
-/// A Video Calibration step: post the page, close the screen, or the "finished" popup.
-/// NOT RETAIL YET: retail asks the popup (sub_82D0A8D0, template Sk8Popup) and closes on Yes (0x8260EA48); the popup
-/// system is not ported, so the answer is taken as Yes (close).
+/// A Video Calibration step: post the page, close the screen, or push the "finished" popup (0x8260E950: Sk8Popup,
+/// priority 0, not cancelable, Yes / No; its choice comes back through `VIDEO_CALIBRATION_POPUP`).
 #[allow(clippy::too_many_arguments)]
 fn run_calibration(
     stage: &mut Stage,
     stack: &mut FeStack,
+    popups: &mut skate_core::fe_popup::PopupList,
+    popup_dirty: &mut bool,
     cal: &mut skate_core::video_calibration::VideoCalibration,
     rules: &skate_core::video_calibration::CalibrationRules,
     id: i32,
@@ -903,29 +994,81 @@ fn run_calibration(
     fe: &mut FrontEnd,
 ) -> Result<(), String> {
     use skate_core::video_calibration::CalibrationAction as A;
-    let action = match action {
-        A::Popup => {
-            info!("RETAIL_MENUS Video Calibration finished (popup not ported: Yes)");
-            cal.popup_result(0, rules)
-        }
-        other => other,
-    };
+    let _ = cal;
     match action {
         A::SetState(page) => set_state(stage, id, page as i32, fe),
         A::Close => {
             stack.request(Layer::Main, Request::Close { screen });
             Ok(())
         }
-        A::Popup => Ok(()),
+        A::Popup => {
+            let id = popups.push(skate_core::fe_popup::PopupRequest {
+                title: rules.popup_title.clone(),
+                description: rules.popup_description.clone(),
+                options: rules.popup_buttons.clone(),
+                callback: VIDEO_CALIBRATION_POPUP.into(),
+                ..Default::default()
+            });
+            info!("RETAIL_MENUS Video Calibration finished: popup {id}");
+            *popup_dirty = true;
+            Ok(())
+        }
     }
 }
 
+/// FE vt+24 (`sub_825EC530`) and host 29 show (`0x825EF440`): hide every popup movie, then for the list's last
+/// entry SetScreenState(1) and ShowScreen on its kind's movie, play core_popup and take input. An empty list hides.
+fn show_popup(
+    stage: &mut Stage,
+    popups: &skate_core::fe_popup::PopupList,
+    ids: &[(PopupKind, i32)],
+    fe: &mut FrontEnd,
+    sounds: &mut MessageWriter<FrontendSound>,
+) -> Result<(), String> {
+    let show = |stage: &mut Stage, fe: &mut FrontEnd, id: i32, on: bool| {
+        stage.call_path(
+            "_global.ScreenManager.ShowScreen",
+            vec![Value::Text(id.to_string()), Value::Text(if on { "true" } else { "false" }.into())],
+            fe,
+        )
+    };
+    for (_, id) in ids {
+        show(stage, fe, *id, false)?;
+    }
+    fe.popup.shown = None;
+    fe.popup.input_ready = false;
+    let Some((popup, request)) = popups.shown() else { return Ok(()) };
+    let Some(handle) = ids.iter().find(|(k, _)| *k == request.kind).map(|(_, id)| *id) else {
+        warn!("RETAIL_MENUS: popup {popup} has no movie ({}); run setup", request.kind.template());
+        return Ok(());
+    };
+    fe.popup.shown = Some(request.clone());
+    stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text(handle.to_string()), Value::Text("1".into())], fe)?;
+    show(stage, fe, handle, true)?;
+    sounds.write(FrontendSound::named("core_popup"));
+    fe.popup.input_ready = true;
+    Ok(())
+}
+
+/// A popup template's path from the menu tables' template list (`popup/sk8popup.swf`).
+fn popup_path(assets: &std::path::Path, template: &str) -> Option<String> {
+    let tables = std::fs::read_to_string(assets.join(crate::retail_menus::TABLES)).ok()?;
+    let tables = skate_data::menu_tables::MenuTables::from_json(&tables).ok()?;
+    tables.templates.iter().find(|t| t.name == template).map(|t| t.path.clone())
+}
+
 fn open_screen(stage: &mut Stage, path: &str, template: &str, fe: &mut FrontEnd) -> Result<(), String> {
+    open_screen_on(stage, path, "screen", template, fe)
+}
+
+/// OpenScreen bridge (0x82D09140): path, AS layer ("screen" unless the caller names one), the template's visible flag
+/// ("0" for every menu template here), template name.
+fn open_screen_on(stage: &mut Stage, path: &str, layer: &str, template: &str, fe: &mut FrontEnd) -> Result<(), String> {
     stage.call_path(
         "_global.ScreenManager.OpenScreen",
         vec![
             Value::Text(format!("source/screens/{path}")),
-            Value::Text("screen".into()),
+            Value::Text(layer.into()),
             Value::Text("0".into()),
             Value::Text(template.into()),
         ],

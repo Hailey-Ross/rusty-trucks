@@ -1457,6 +1457,10 @@ fn apply_one(
             let mut mods = world.get_resource_mut::<crate::trick_guide_host::TrickGuideMods>().ok_or("menus are not ready")?;
             mods.set(id, &entry, &key, options);
         }
+        Command::MenuPopup { key, options } => {
+            let mut popups = world.get_resource_mut::<crate::popup_host::PopupMods>().ok_or("menus are not ready")?;
+            popups.set(id, &key, options);
+        }
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
     Ok(())

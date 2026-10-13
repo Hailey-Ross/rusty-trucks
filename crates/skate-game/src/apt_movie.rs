@@ -87,6 +87,8 @@ pub struct Movie {
 /// attachMovie depth d is child key d + SCRIPT_DEPTH, above every timeline depth (Flash: timeline depths start at
 /// -16384, script depths at 0). NOT RETAIL YET: retail's depth split is not traced.
 pub const SCRIPT_DEPTH: i32 = 16384;
+/// Character ids of text fields made by createTextField (each has its own descriptor; below every disc id).
+pub const SCRIPT_TEXT_BASE: i32 = -2_000_000;
 
 /// `_xscale` / `_yscale` / `_rotation` of a placement matrix (AS2 reads them from the clip's matrix).
 fn seed_scale(vm: &mut Vm, id: usize, m: &[f32; 6]) -> Result<(), String> {
@@ -347,6 +349,41 @@ impl Movie {
         }
         out.filter(|o| o.iter().all(|v| v.is_finite()))
     }
+    /// TextField.setTextFormat / setNewTextFormat: the format's colour becomes the field's text colour; on a field
+    /// made by createTextField its font, size and alignment replace the field's own (authored fields keep theirs).
+    /// NOT RETAIL YET: standard AS2 semantics, whole field.
+    pub fn set_text_format(&mut self, vm: &mut Vm, id: usize, format: usize) -> Result<(), String> {
+        let color = vm.get(format, "color");
+        if !matches!(color, Value::Undefined) {
+            vm.set(id, "textColor", color)?;
+        }
+        let Some(character) = self.instances.get(&id).map(|i| i.character).filter(|c| *c <= SCRIPT_TEXT_BASE) else {
+            return Ok(());
+        };
+        let font = match vm.get(format, "font") {
+            Value::Undefined => None,
+            name => self.text_assets.font_named(&name.text()),
+        };
+        let size = vm.get(format, "size");
+        let align = vm.get(format, "align").text();
+        if let Some(text) = self.characters.get_mut(&character).and_then(|c| c.text.as_mut()) {
+            if let Some(font) = font {
+                text["font_id"] = font.into();
+            }
+            if let Value::Number(size) = size {
+                text["font_height"] = size.into();
+            }
+            // 82CA23B4: 1 right, 2 / 3 centred, else left.
+            match align.as_str() {
+                "center" => text["alignment"] = 2.into(),
+                "right" => text["alignment"] = 1.into(),
+                "left" => text["alignment"] = 0.into(),
+                _ => {}
+            }
+        }
+        self.text_changed(vm, id)
+    }
+
     pub fn text_changed(&self, vm: &mut Vm, id: usize) -> Result<(), String> {
         let Some(instance) = self.instances.get(&id) else {
             return Ok(());
@@ -369,6 +406,15 @@ impl Movie {
         // measurement is not decoded.
         vm.set(id, "textHeight", Value::Number(height as f64))?;
         let bounds = character.bounds.ok_or("Missing text bounds")?;
+        // `maxscroll`: the field's line count after the word wrap the renderer applies (apt_scene). sk8popup sizes its
+        // panel with body.maxscroll * bodyLineHeight, i.e. as the line count. NOT RETAIL YET: APT's maxscroll is not
+        // decoded (Flash's would be 1 for text that fits); the line count is what the popup script needs.
+        let lines = if text["word_wrap"].as_bool() == Some(true) || vm.get(id, "wordWrap") == Value::Bool(true) {
+            font.wrap(&value, height, bounds[2] - bounds[0]).len().max(1)
+        } else {
+            value.split('\n').count().max(1)
+        };
+        vm.set(id, "maxscroll", Value::Number(lines as f64))?;
         // The field's authored height (core_menu centres its DLC label with `_height`).
         // NOT RETAIL YET: retail's autosize height (line height vs field) is not decoded; single-line labels
         // keep the field height here.
@@ -673,6 +719,58 @@ impl Movie {
                     }
                 }
                 self.remove(vm, id);
+            }
+            // MovieClip.createTextField(name, depth, x, y, width, height): a new, empty text field at a script depth
+            // (sk8popup's body). Standard AS2 semantics, NOT RETAIL YET (the retail handler is not decoded): its own
+            // text descriptor (font from setTextFormat / setNewTextFormat, else the FontManager fallback at 12 units,
+            // left aligned, white), placed at (x, y), width x height bounds.
+            "createTextField" => {
+                let text = |i: usize| args.get(i).map(Value::text).unwrap_or_default();
+                let number = |i: usize| args.get(i).map_or(0.0, Value::number) as f32;
+                let (name, depth) = (text(0), args.get(1).map_or(0, crate::apt_vm::to_integer) as i32);
+                let font = self.text_assets.font_named("").ok_or("createTextField: the set has no fonts")?;
+                let character = SCRIPT_TEXT_BASE - self.characters.keys().filter(|k| **k <= SCRIPT_TEXT_BASE).count() as i32;
+                self.characters.insert(
+                    character,
+                    Character {
+                        id: character,
+                        type_name: "text".into(),
+                        frames: Vec::new(),
+                        text: Some(serde_json::json!({
+                            "font_id": font, "font_height": 12.0, "color_argb": "#FFFFFFFF", "alignment": 0,
+                            "word_wrap": false, "initial_text": "",
+                        })),
+                        bounds: Some([0.0, 0.0, number(4), number(5)]),
+                    },
+                );
+                let parent = id;
+                let key = depth.saturating_add(SCRIPT_DEPTH);
+                if let Some(old) = self.instances[&parent].children.get(&key).copied() {
+                    self.remove(vm, old);
+                }
+                let child = self.create(vm, character, Some(parent), 1, &[])?;
+                vm.set(child, "_name", Value::Text(name.clone()))?;
+                if !name.is_empty() {
+                    vm.set(parent, &name, Value::Object(child))?;
+                }
+                let matrix = [1.0, 0.0, 0.0, 1.0, number(2), number(3)];
+                seed_scale(vm, child, &matrix)?;
+                vm.set(child, "_x", Value::Number(f64::from(number(2))))?;
+                vm.set(child, "_y", Value::Number(f64::from(number(3))))?;
+                self.instances.get_mut(&child).unwrap().placement = Some(Placement {
+                    character,
+                    matrix,
+                    color: [255, 255, 255, 255, 0, 0, 0, 0],
+                    ratio: 0.0,
+                    name,
+                    clip_depth: -1,
+                    blend_mode: 0,
+                    clip_actions: Vec::new(),
+                });
+                self.instances.get_mut(&parent).unwrap().children.insert(key, child);
+                self.attached.insert(child);
+                self.script_moved.insert(child);
+                return Ok(true);
             }
             "stop" => self.instances.get_mut(&id).unwrap().playing = false,
             "play" => self.instances.get_mut(&id).unwrap().playing = true,

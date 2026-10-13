@@ -32,7 +32,15 @@ pub struct Font {
 pub struct TextAssets {
     pub fonts: BTreeMap<i32, Font>,
     pub language: BTreeMap<String, String>,
+    /// Every font of the set by APT name (lower case), for fonts a script names (TextFormat.font on a
+    /// createTextField field), and the name FontManager falls back to for a name without a row (`fallback_font`
+    /// from the export: sub_82809208 takes the first row whose FileName is not "debug").
+    pub named: BTreeMap<String, Font>,
+    pub fallback: Option<String>,
 }
+
+/// Font ids handed to script-named fonts in `TextAssets::fonts` (below every character id).
+pub const NAMED_FONT_BASE: i32 = -1_000_000;
 /// Retail's one secondary-font rule, 825D6B68: an APT font named "Futura Shadow" (8220BD44, stricmp
 /// 82AE89B0) gets the native font "futuraheavy" (8220BD54) from the global font table (82809208), whether
 /// or not the movie itself uses that font. Data can replace it (`font_pairs`: APT name -> native file name).
@@ -156,7 +164,32 @@ impl TextAssets {
                 font,
             );
         }
+        if let Some(fonts) = json["fonts"].as_object() {
+            for name in fonts.keys() {
+                if json["font_mappings"][name].is_null() {
+                    continue;
+                }
+                let mut font = native_font(json, name)?;
+                font.foreground = foreground(json, name)?;
+                out.named.insert(name.to_lowercase(), font);
+            }
+        }
+        // NOT RETAIL YET (old exports without `fallback_font`): the first name in sorted order stands in.
+        out.fallback = json["fallback_font"].as_str().map(str::to_lowercase).or_else(|| out.named.keys().next().cloned());
         Ok(out)
+    }
+
+    /// The font id for a script-named font (case-insensitive, else the FontManager fallback), added to `fonts`
+    /// on first use. None when the set has no fonts at all.
+    pub fn font_named(&mut self, name: &str) -> Option<i32> {
+        let key = name.to_lowercase();
+        let key = if self.named.contains_key(&key) { key } else { self.fallback.clone()? };
+        let index = self.named.keys().position(|k| *k == key)? as i32;
+        let id = NAMED_FONT_BASE - index;
+        if !self.fonts.contains_key(&id) {
+            self.fonts.insert(id, self.named[&key].clone());
+        }
+        Some(id)
     }
     pub fn localize(&self, text: &str) -> String {
         if let Some(literal) = text.strip_prefix('#') {
