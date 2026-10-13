@@ -3,6 +3,8 @@
 mod manifest;
 pub use manifest::{AssetError, GameAssets};
 pub mod abin;
+pub mod scene_clip;
+pub mod trick_guide;
 pub mod animation_banks;
 pub mod animation_frames;
 pub mod animation_metadata;
@@ -21,6 +23,4 @@ pub mod retail_collision;
 pub mod xex;
 pub mod ocean_pca;
 pub mod menu_tables;
-pub mod trick_guide;
-pub mod scene_clip;
 pub mod trigger_volumes;

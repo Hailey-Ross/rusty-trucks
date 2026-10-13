@@ -6,7 +6,7 @@
 //! layer while the screen is open. Research: `.local/research/menus-m6/trick-guide-*.md`, doc 31 "Trick Guide demo".
 //! NOT RETAIL YET: the camera (the 21 tracks in scene.big `ice_000.bin` are not decoded; a fixed side framing of
 //! the hips stands in), csm_trickguide shadows, fog_trickguide, the set's sky dome.
-use crate::{animation::AnimationStatus, map_render::{SceneCommands, StagedAssets}, world::PlayerRoot};
+use crate::{animation::AnimationStatus, map_render::{MapEntity, SceneCommands, StagedAssets}, world::PlayerRoot};
 use bevy::{camera::visibility::RenderLayers, ecs::system::SystemState, mesh::skinning::SkinnedMesh, prelude::*};
 use skate_core::animation::{output, pose_sample::{sample_key, select_frames}};
 use skate_data::{scene_clip::SceneClip, skate_map::SkateMap};
@@ -183,29 +183,43 @@ fn start(world: &mut World, scene: &mut Scene, player: Entity) -> bool {
     // The set: retail world materials through the map path, tagged as ours and parented to the player root.
     let asset_root = world.resource::<crate::config::Config>().asset_root.clone();
     let tuning = crate::retail_render::MaterialTuning::load(&asset_root);
-    let mut meshes = StagedAssets::<Mesh>::new(world);
-    let mut materials = StagedAssets::<crate::retail_render::WorldMaterial>::new(world);
-    let mut images = StagedAssets::<Image>::new(world);
-    let mut buffers = StagedAssets::<bevy::render::storage::ShaderStorageBuffer>::new(world);
-    let mut commands = SceneCommands::tagged(move |e| {
-        e.insert((SetEntity, RenderLayers::layer(LAYER), ChildOf(player)));
-    });
+    let mut meshes = StagedAssets::<Mesh>::staged(world);
+    let mut materials = StagedAssets::<crate::retail_render::WorldMaterial>::staged(world);
+    let mut images = StagedAssets::<Image>::staged(world);
+    let mut buffers = StagedAssets::<bevy::render::storage::ShaderStorageBuffer>::staged(world);
+    let mut commands = SceneCommands::default();
     crate::skate_world::spawn(&set, &tuning, &Default::default(), &mut commands, &mut meshes, &mut materials,
         &mut images, &mut buffers);
     // The set's own sky dome (mesh 0, sky.default), lit by the current map's sun.
     let map_sky = world.get_resource::<crate::map_transition::CurrentMap>()
         .and_then(|map| crate::retail_sky::SkyPackage::load(&asset_root, &map.name).ok());
-    let mut skies = StagedAssets::<crate::retail_sky::SkyMaterial>::new(world);
+    let mut skies = StagedAssets::<crate::retail_sky::SkyMaterial>::staged(world);
     match crate::retail_sky::SkyPackage::load_scene(&root, map_sky.as_ref()) {
         Ok(sky) => sky.spawn(&mut commands, &mut meshes, &mut images, &mut skies),
         Err(e) => warn!("TRICK_GUIDE_DEMO sky {}: {e}", root.display()),
     }
-    meshes.publish(world);
-    images.publish(world);
-    materials.publish(world);
-    buffers.publish(world);
-    skies.publish(world);
-    commands.apply(world);
+    meshes.publish_now(world);
+    images.publish_now(world);
+    materials.publish_now(world);
+    buffers.publish_now(world);
+    skies.publish_now(world);
+    // The spawn path marks everything `MapEntity`: re-tag what this spawned as the demo set (not retired by a map
+    // change), parent its roots to the player root and put every spawned entity on the demo layer.
+    let before: std::collections::HashSet<Entity> =
+        world.query_filtered::<Entity, With<MapEntity>>().iter(world).collect();
+    commands.apply_now(world);
+    let spawned: Vec<Entity> = world.query_filtered::<Entity, With<MapEntity>>().iter(world)
+        .filter(|e| !before.contains(e)).collect();
+    for root in spawned {
+        let mut family = vec![root];
+        while let Some(entity) = family.pop() {
+            if let Some(children) = world.get::<Children>(entity) {
+                family.extend(children.iter());
+            }
+            world.entity_mut(entity).insert(RenderLayers::layer(LAYER));
+        }
+        world.entity_mut(root).remove::<MapEntity>().insert((SetEntity, ChildOf(player)));
+    }
     // The player's meshes the gameplay camera draws join the demo layer (visible ones on a layer the camera sees:
     // hidden rigs, e.g. the default skater under a custom model, stay out); the camera then sees only the demo
     // layer (and the character light's 28).

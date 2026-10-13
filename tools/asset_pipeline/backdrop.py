@@ -33,12 +33,7 @@ def texture_groups(raw, table, channels):
     return groups
 
 
-FOLIAGE = ('tree.default', 'animated.tree', 'ocean.reflection', 'environment.reflective_simple')
-
-
-def export_model(raw, texture_raw, shaders, output, map_name, district_name, model_name, texture_name):
-    """Write the meshes of one global rx2 model whose shader is in `shaders` as a render-only .skate.
-    Returns False when no mesh matches."""
+def convert(game_root, assets, converted):
     vendor = Path(__file__).resolve().parents[1] / 'vendor'
     sys.path.insert(0, str(vendor / 'utt'))
     sys.path.insert(0, str(vendor / 'university/tools/vanilla_map_extraction/tools'))
@@ -49,59 +44,6 @@ def export_model(raw, texture_raw, shaders, output, map_name, district_name, mod
     from retail_lightmap_uv import decode_lightmap_uvs
     from retail_texture_decode import B5G6R5_FORMAT_ID, decode_b5g6r5
 
-    model = mdl_parser.parse_rx2(raw)
-    groups, bindings = prep._bind_material_groups_by_guid(
-        raw, prep._group_material_parameters(model.materials), len(model.meshes),
-        allow_import_order_fallback=False)
-    selected = [(i, prep._material_metadata(groups, i)) for i in range(len(model.meshes))]
-    selected = [(i, m) for i, m in selected if m['shader_name'] in shaders]
-    if not selected:
-        return False
-    textures = rx2_parser.parse_rx2(texture_raw)
-    table = rx2_parser.RX2File(raw)
-    table.parse()
-    channel_groups = texture_groups(raw, table, prep.RETAIL_TEXTURE_CHANNELS)
-    with tempfile.TemporaryDirectory(prefix='skate-backdrop-') as temporary:
-        root = Path(temporary)
-        arrays, meshes, exported_textures = {}, [], {}
-        for i, material in selected:
-            mesh = model.meshes[i]
-            binding = bindings[i]
-            meshes.append(dict(material, index=i, name=groups[i]['Name'][0],
-                retail_material_guid=f"0x{binding['material_guid']:016X}",
-                retail_material_handle=f"0x{binding['material_handle']:08X}",
-                retail_material_group_index=binding['group_index'], source_offsets=mesh.source_offsets))
-            arrays[f'vertices_{i}'] = mesh.vertices
-            arrays[f'faces_{i}'] = mesh.faces
-            arrays[f'uvs_{i}'] = mesh.uvs
-            arrays[f'normals_{i}'] = mesh.normals
-            lm = decode_lightmap_uvs(raw, vertex_buffer_offset=mesh.source_offsets['vertex_buffer'],
-                vertex_count=mesh.vertex_count, vertex_stride=mesh.vertex_stride, attributes=mesh.attributes)
-            if lm is not None:
-                arrays[f'lightmap_uvs_{i}'] = lm.values
-            for role, name in material['retail_texture_ids'].items():
-                if name in exported_textures:
-                    continue
-                texture = _texture(textures, channel_groups[binding['group_index']][role])
-                rgba = texture.rgba
-                if texture.fmt_id == B5G6R5_FORMAT_ID:
-                    rgba = decode_b5g6r5(textures.data[texture.data_offset:texture.data_offset+texture.buffer_size],
-                                        texture.width, texture.height)
-                path = name + '.rgba'
-                (root/path).write_bytes(rgba)
-                exported_textures[name] = dict(width=texture.width, height=texture.height, rgba=path)
-        np.savez(root/'model.npz', **arrays)
-        manifest = dict(map_name=map_name, district_name=district_name, models=[dict(
-            asset_id='0x'+hashlib.sha256(raw).hexdigest()[:16], npz='model.npz', meshes=meshes)],
-            textures=exported_textures, normal_texture_policy=dict(excluded_texture_ids=[]), grind_splines=[],
-            source_model=model_name, source_textures=texture_name, source_sha256=hashlib.sha256(raw).hexdigest())
-        path = root/'manifest.json'
-        path.write_text(json.dumps(manifest))
-        write(path, output, None, render_only=True)
-    return True
-
-
-def convert(game_root, assets, converted):
     archive = BigArchive(game_root / 'data/big/miscload.big')
     entries = {e.path: e for e in archive.entries}
     collections = Collections(converted)
@@ -125,9 +67,56 @@ def convert(game_root, assets, converted):
             continue
         texture_name = field(fields, 'Hash_CA5A157A65E75934')
         raw = archive.read(entries['data/content/' + model_name + '.rx2'])
-        textures = archive.read(entries['data/content/' + texture_name + '.rx2'])
-        name = own_stream.removeprefix('DIST_')
-        if export_model(raw, textures, FOLIAGE, output/(name+'.skate'), name, own_stream, model_name, texture_name):
+        model = mdl_parser.parse_rx2(raw)
+        groups, bindings = prep._bind_material_groups_by_guid(
+            raw, prep._group_material_parameters(model.materials), len(model.meshes),
+            allow_import_order_fallback=False)
+        selected = [(i, prep._material_metadata(groups, i)) for i in range(len(model.meshes))]
+        selected = [(i, m) for i, m in selected if m['shader_name'] in ('tree.default', 'animated.tree', 'ocean.reflection', 'environment.reflective_simple')]
+        if not selected:
+            continue
+        textures = rx2_parser.parse_rx2(archive.read(entries['data/content/' + texture_name + '.rx2']))
+        table = rx2_parser.RX2File(raw)
+        table.parse()
+        channel_groups = texture_groups(raw, table, prep.RETAIL_TEXTURE_CHANNELS)
+        with tempfile.TemporaryDirectory(prefix='skate-backdrop-') as temporary:
+            root = Path(temporary)
+            arrays, meshes, exported_textures = {}, [], {}
+            for i, material in selected:
+                mesh = model.meshes[i]
+                binding = bindings[i]
+                meshes.append(dict(material, index=i, name=groups[i]['Name'][0],
+                    retail_material_guid=f"0x{binding['material_guid']:016X}",
+                    retail_material_handle=f"0x{binding['material_handle']:08X}",
+                    retail_material_group_index=binding['group_index'], source_offsets=mesh.source_offsets))
+                arrays[f'vertices_{i}'] = mesh.vertices
+                arrays[f'faces_{i}'] = mesh.faces
+                arrays[f'uvs_{i}'] = mesh.uvs
+                arrays[f'normals_{i}'] = mesh.normals
+                lm = decode_lightmap_uvs(raw, vertex_buffer_offset=mesh.source_offsets['vertex_buffer'],
+                    vertex_count=mesh.vertex_count, vertex_stride=mesh.vertex_stride, attributes=mesh.attributes)
+                if lm is not None:
+                    arrays[f'lightmap_uvs_{i}'] = lm.values
+                for role, name in material['retail_texture_ids'].items():
+                    if name in exported_textures:
+                        continue
+                    texture = _texture(textures, channel_groups[binding['group_index']][role])
+                    rgba = texture.rgba
+                    if texture.fmt_id == B5G6R5_FORMAT_ID:
+                        rgba = decode_b5g6r5(textures.data[texture.data_offset:texture.data_offset+texture.buffer_size],
+                                            texture.width, texture.height)
+                    path = name + '.rgba'
+                    (root/path).write_bytes(rgba)
+                    exported_textures[name] = dict(width=texture.width, height=texture.height, rgba=path)
+            np.savez(root/'model.npz', **arrays)
+            name = own_stream.removeprefix('DIST_')
+            manifest = dict(map_name=name, district_name=own_stream, models=[dict(
+                asset_id='0x'+hashlib.sha256(raw).hexdigest()[:16], npz='model.npz', meshes=meshes)],
+                textures=exported_textures, normal_texture_policy=dict(excluded_texture_ids=[]), grind_splines=[],
+                source_model=model_name, source_textures=texture_name, source_sha256=hashlib.sha256(raw).hexdigest())
+            path = root/'manifest.json'
+            path.write_text(json.dumps(manifest))
+            write(path, output/(name+'.skate'), None, render_only=True)
             count += 1
     return count
 
