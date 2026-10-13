@@ -1737,7 +1737,7 @@ words (64k frames, no malformed lines). A watch-list run read the element descri
   too; the element table is the file format (stable retail ids and names).
 
 ### Verification
-- `cargo test -p skate-core camera_track` (6: key hits, linear two-key case, ease with tangent 0 and the per-segment
+- `cargo test -p skate-core camera_track` (5: key hits and the linear two-key case, ease with tangent 0 and the per-segment
   switch off, Catmull-Rom on collinear keys, DUTCH and LENS following the eye's tangent, the 24 mm angle).
 - `cargo test -p skate-data --test ice_camera -- --ignored` (`SKATE3_ICE`): the size walk finds all 21 tracks with
   their lengths, and tracks 0, 1, 3, 18, 19, 20 decode to the settings the recomp's camera player held.
