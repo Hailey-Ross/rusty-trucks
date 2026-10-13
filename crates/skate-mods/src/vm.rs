@@ -576,6 +576,9 @@ pub enum Command {
     /// The backdrop of an FE screen by its retail screen key: blur on / off and the ramp; no options =
     /// drop this mod's override.
     MenuBackdrop { screen: String, #[serde(default)] options: Option<crate::menus::BackdropOptions> },
+    /// Add or change a Trick Guide entry (category / subcategory / trick) by key; no options = drop this mod's
+    /// change to it.
+    MenuTrickGuide { entry: String, key: String, #[serde(default)] options: Option<crate::menus::TrickGuideOptions> },
     CameraClearCapture {
         key: String,
     },
@@ -894,6 +897,7 @@ impl Command {
             Self::MenuMovie { name, path } => !name.is_empty() && name.len() <= 160 && crate::audio_content::valid_content_path(path, &["json"]),
             Self::MenuBitmap { movie, bitmap, path } => !movie.is_empty() && movie.len() <= 160 && (0..=0xFFFF).contains(bitmap) && crate::graphics_dynamic::valid_texture_path(path),
             Self::MenuBackdrop { screen, options } => crate::menus::valid_screen_key(screen) && options.as_ref().is_none_or(crate::menus::BackdropOptions::validate),
+            Self::MenuTrickGuide { entry, key, options } => crate::menus::TRICK_GUIDE_ENTRIES.contains(&entry.as_str()) && crate::menus::valid_trick_guide_key(key) && options.as_ref().is_none_or(crate::menus::TrickGuideOptions::validate),
             Self::CameraClearCapture { key } => crate::schema::valid_id(key),
         }
     }
@@ -1003,6 +1007,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::MenuSetValue { .. } => "menu_set_value",
         Command::MenuMovie { .. } => "menu_movie",
         Command::MenuBackdrop { .. } => "menu_backdrop",
+        Command::MenuTrickGuide { .. } => "menu_trick_guide",
         Command::MenuBitmap { .. } => "menu_bitmap",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
@@ -2764,6 +2769,11 @@ mod empty_table_lists {
         let backdrop = eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={blur=true, tint={30, 30, 30}, step=0.4}}");
         assert!(matches!(&backdrop, Command::MenuBackdrop { options: Some(o), .. } if o.tint == Some(vec![30, 30, 30])) && backdrop.validate());
         assert!(eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837'}").validate());
+        let tg = eval("return {kind='menu_trick_guide', entry='trick', key='my-mod.trick', options={label='#Mod Flip', parent='8bca54f004465329', slots={{gesture=48, button=3, connector=1}}, order=5}}");
+        assert!(matches!(&tg, Command::MenuTrickGuide { options: Some(o), .. } if o.slots.as_ref().is_some_and(|s| s[0].gesture == 48)) && tg.validate());
+        assert!(eval("return {kind='menu_trick_guide', entry='category', key='046ed0ccbda1091f'}").validate());
+        assert!(!eval("return {kind='menu_trick_guide', entry='grind', key='a'}").validate());
+        assert!(!eval("return {kind='menu_trick_guide', entry='trick', key='a', options={slots={{connector=4}}}}").validate());
         assert!(!eval("return {kind='menu_backdrop', screen='56'}").validate());
         assert!(eval("return {kind='menu_backdrop', screen='a774f79d33b6be83:1'}").validate());
         assert!(!eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={tint={1, 2}}}").validate());

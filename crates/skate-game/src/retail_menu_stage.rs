@@ -42,6 +42,13 @@ const CROSSBAR_PATH: &str = "main/core_menu.swf";
 /// The Game Settings template (record 90) and its path; FE screen 45's init opens it (sub_8260BF58).
 const OPTIONS: &str = "Options";
 const OPTIONS_PATH: &str = "options/options.swf";
+/// The Trick Guide template (record 29) and its path; FE screen 14's init opens it (0x82618A40).
+const TRICK_GUIDE: &str = "TrickTutorial";
+const TRICK_GUIDE_PATH: &str = "tricks/trickguide.swf";
+/// The pause menu item that opens it (crossbar case 0x8261BF78).
+const TRICK_GUIDE_ITEM: &str = "TrickGuide";
+/// AptNext (A) key index.
+const APT_NEXT: u32 = 2;
 const CROSSBAR_ENUMS: [&str; 6] =
     ["RefreshMenu", "RefreshOption", "InitialiseMenu", "InitialiseSubOption", "InitSubOptionOnlineTeam", "RefreshDLCBanner"];
 /// Above the scoring HUD's draws on the shared layer.
@@ -69,6 +76,12 @@ struct MenuStage {
     chyron: bool,
     settings: crate::settings_host::SettingsState,
     settings_titles: Vec<String>,
+    /// The Trick Guide screen's AS id (retail 629) and state (empty guide = not available).
+    trick_guide_id: i32,
+    trick_guide: crate::trick_guide_host::TrickGuideHost,
+    /// The retail guide (mod layers apply over it) and the mod generation it was built for.
+    trick_guide_base: std::sync::Arc<skate_core::trick_guide::TrickGuide>,
+    trick_guide_generation: u64,
     /// Retail Apt keys in key-table order (input.cfg expressions).
     apt_keys: Vec<AptKey>,
     pads: [FeInput; 4],
@@ -92,7 +105,7 @@ pub(crate) struct RetailPause(pub bool);
 pub(crate) struct RetailMenuStagePlugin;
 impl Plugin for RetailMenuStagePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<RetailPause>();
+        app.init_resource::<RetailPause>().init_resource::<crate::trick_guide_host::TrickGuideMods>();
         if !enabled() {
             return;
         }
@@ -210,10 +223,10 @@ fn setup(
     mut commands: Commands,
     config: Res<crate::config::Config>,
     movies: Option<Res<RetailMenuMovies>>,
-    menus: Option<Res<RetailMenus>>,
+    menus: Option<ResMut<RetailMenus>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let (Some(movies), Some(menus)) = (movies, menus) else {
+    let (Some(movies), Some(mut menus)) = (movies, menus) else {
         warn!("RETAIL_MENUS stage: menu movies or tables missing");
         return;
     };
@@ -268,6 +281,25 @@ fn setup(
                 TextureFormat::Rgba8UnormSrgb,
                 RenderAssetUsages::RENDER_WORLD,
             ));
+            // The Trick Guide (FE 14): its data from the collections and the tables, its movie in the set; the pause
+            // item gets its engine handler (greyed without them).
+            let guide_tables = tables.as_ref().map(|t| t.trick_guide.clone()).unwrap_or_default();
+            let has_movie = movies.movies.contains_key("source/screens/tricks/trickguide");
+            let trick_guide = match skate_data::collections::Collections::load(&config.asset_root) {
+                Ok(collections) if !guide_tables.categories.is_empty() && has_movie => {
+                    let guide = skate_data::trick_guide::load(&collections, &guide_tables);
+                    if menus.registry.data().item(TRICK_GUIDE_ITEM).is_some() {
+                        let owner = Owner::Engine(format!("{}{}", crate::retail_menus::SCREEN, crate::fe_backdrop::TRICK_GUIDE_SCREEN));
+                        let handler = skate_core::menus::Handler { owner, select: true, highlight: false, callback: None };
+                        menus.registry.register_handler(EntryRef::item(TRICK_GUIDE_ITEM), handler);
+                    }
+                    crate::trick_guide_host::TrickGuideHost::new(std::sync::Arc::new(guide))
+                }
+                _ => {
+                    warn!("RETAIL_MENUS: Trick Guide unavailable (tables {}, movie {has_movie}); run setup", !guide_tables.categories.is_empty());
+                    Default::default()
+                }
+            };
             info!("RETAIL_MENUS stage ready (F8 opens the retail pause menu)");
             commands.insert_resource(MenuStage {
                 stage,
@@ -282,6 +314,10 @@ fn setup(
                 auto_open: std::env::var("SKATE3_RETAIL_MENUS_OPEN").as_deref() == Ok("1"),
                 crossbar_id: as_id(CROSSBAR),
                 options_id: as_id(OPTIONS),
+                trick_guide_id: as_id(TRICK_GUIDE),
+                trick_guide_base: trick_guide.guide.clone(),
+                trick_guide_generation: 0,
+                trick_guide,
                 chyron: false,
                 settings: Default::default(),
                 settings_titles: tables.map(|t| t.settings_titles).unwrap_or_default(),
@@ -312,12 +348,15 @@ fn update(
     mut fe_hud: ResMut<crate::fe_backdrop::FeHud>,
     mut available: ResMut<RetailPause>,
     mut warned: Local<bool>,
+    skater: Option<Res<crate::physics::SkaterRuntime>>,
+    guide_mods: Res<crate::trick_guide_host::TrickGuideMods>,
 ) {
     let ready = stage.as_ref().is_some_and(|s| !s.failed) && movies.is_some() && menus.is_some();
     // The ported screens in this build's screen table (TU3 FE ids 56 and 45); none in tables extracted before
     // screens.
     let pause = backdrop.index(crate::fe_backdrop::PAUSE_SCREEN);
     let options = backdrop.index(crate::fe_backdrop::SETTINGS_SCREEN);
+    let trick = backdrop.index(crate::fe_backdrop::TRICK_GUIDE_SCREEN);
     available.set_if_neq(RetailPause(ready && pause.is_some()));
     if ready && pause.is_none() && !std::mem::replace(&mut *warned, true) {
         warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup); Start opens the PC overlay until then");
@@ -344,11 +383,26 @@ fn update(
     fe.settings = std::mem::take(&mut ms.settings);
     fe.settings_titles = ms.settings_titles.clone();
     fe.settings.open = options.is_some() && ms.stack.top(Layer::Main) == options;
+    fe.trick_guide = std::mem::take(&mut ms.trick_guide);
+    // Mods changed the guide: rebuild it over the retail one; an open screen starts over at the top.
+    if guide_mods.generation != ms.trick_guide_generation && !ms.trick_guide_base.categories.is_empty() {
+        ms.trick_guide_generation = guide_mods.generation;
+        fe.trick_guide.guide = std::sync::Arc::new(guide_mods.apply(&ms.trick_guide_base));
+        let open = fe.trick_guide.open;
+        fe.trick_guide.reset();
+        if open {
+            fe.trick_guide.states.push(skate_core::trick_guide::movie_state::BACK);
+        }
+    }
+    fe.trick_guide.open = trick.is_some() && ms.stack.top(Layer::Main) == trick;
+    if let Some(skater) = &skater {
+        fe.trick_guide.stance.regular = skater.animation.regular_stance();
+    }
     // Work for the registry once the movie work is done: the crossbar item, settings steps.
     let mut selected: Option<String> = None;
     let mut steps: Vec<(String, Direction)> = Vec::new();
     let result = (|| -> Result<(), String> {
-        let (crossbar_id, options_id) = (ms.crossbar_id, ms.options_id);
+        let (crossbar_id, options_id, trick_id) = (ms.crossbar_id, ms.options_id, ms.trick_guide_id);
         let auto = ms.auto_open && time.elapsed_secs() > 4.0;
         ms.auto_open &= !auto;
         if auto {
@@ -372,12 +426,34 @@ fn update(
                 continue;
             }
             let target = ms.stack.input_target();
-            let Some(screen) = target.filter(|t| Some(*t) == pause || Some(*t) == options) else { continue };
+            let Some(screen) = target.filter(|t| [pause, options, trick].contains(&Some(*t))) else { continue };
             // sub_825EC0E8: the screen's C++ handler first, then the movie's UpdateInput when the handler did not
             // consume the key and the screen's record says so (+12).
             let mut consumed = false;
-            let movie_id = if Some(screen) == pause { crossbar_id } else { options_id };
-            if Some(screen) == pause {
+            let movie_id = if Some(screen) == pause {
+                crossbar_id
+            } else if Some(screen) == options {
+                options_id
+            } else {
+                trick_id
+            };
+            if Some(screen) == trick {
+                // Screen 14 vt+40 (0x82618F38): Back closes at level 0 or goes up a level (SetState(0)); A on a row
+                // without a list is consumed. Back plays core_b_button (h64 0x4D927CD64CC8B818). NOT RETAIL YET: the
+                // fade-to-black hold before the close (sub_825E6B30, callback 0x82618EF0) is not ported.
+                let tg = &mut fe.trick_guide;
+                match key {
+                    APT_PREVIOUS => {
+                        sounds.write(FrontendSound::named("core_b_button"));
+                        match tg.state.back() {
+                            skate_core::trick_guide::Back::Close => ms.stack.request(Layer::Main, Request::Close { screen }),
+                            skate_core::trick_guide::Back::Up(state) => tg.states.push(state),
+                        }
+                    }
+                    APT_NEXT => consumed = tg.state.consumes_select(&tg.guide),
+                    _ => {}
+                }
+            } else if Some(screen) == pause {
                 // Crossbar sub_8261B560: consumes only its close branch.
                 if let Some(event) = NavEvent::from_key_index(key) {
                     let out = fe.state.handle(event, &fe.view, &ms.rules, false);
@@ -434,6 +510,7 @@ fn update(
                     &mut fe,
                 )?;
             }
+            flush_trick_guide(&mut ms.stage, trick_id, &mut fe)?;
         }
         // The stack's update (sub_82D0A560) and what it asks of the movies and the game.
         for effect in ms.stack.update(&|i| backdrop.info(i)) {
@@ -449,6 +526,18 @@ fn update(
                     fe.settings.screen = 0;
                     fe.settings.row = 0;
                     open_screen(&mut ms.stage, OPTIONS_PATH, OPTIONS, &mut fe)?;
+                }
+                Effect::Open(i) if Some(i) == trick => {
+                    info!("RETAIL_MENUS open Trick Guide (FE {i})");
+                    fe.trick_guide.reset();
+                    // Its callbacks are ours from the load on (the movie lists its rows while loading).
+                    fe.trick_guide.open = true;
+                    open_screen(&mut ms.stage, TRICK_GUIDE_PATH, TRICK_GUIDE, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == trick => {
+                    info!("RETAIL_MENUS close Trick Guide (FE {i})");
+                    fe.trick_guide.open = false;
+                    close(&mut ms.stage, trick_id, &mut fe)?;
                 }
                 Effect::Close(i) if Some(i) == pause => {
                     info!("RETAIL_MENUS close pause menu (FE {i})");
@@ -511,6 +600,15 @@ fn update(
                 ms.stack.ready(o);
             }
         }
+        // Trick Guide: the movie builds its list itself on load; intro complete = ready. The picker's callbacks
+        // during the update queue screen states.
+        if let Some(t) = trick.filter(|t| ms.stack.top(Layer::Main) == Some(*t)) {
+            take_call(&mut fe, &format!("Game.OnScreenLoaded({trick_id})"));
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({trick_id})")) {
+                ms.stack.ready(t);
+            }
+        }
+        flush_trick_guide(&mut ms.stage, trick_id, &mut fe)?;
         // Crossbar IntroComplete (vtable 0x82303F90 +104 = 8261B1F0) selects the mode menu (8261B9E8): when the
         // mode changed it resets level 1, row 0, tab 0 and walks to the first enabled row, then it always posts
         // SetState(InitialiseMenu) through the facade (+56 vt+20). The screen is ready (state 3) from here.
@@ -536,6 +634,7 @@ fn update(
     }
     ms.crossbar = fe.state;
     ms.settings = fe.settings;
+    ms.trick_guide = std::mem::take(&mut fe.trick_guide);
     let settings_selected = std::mem::take(&mut ms.settings.selected);
     if result.is_ok() {
         let mut refresh: Option<i32> = None;
@@ -612,6 +711,21 @@ fn open_screen(stage: &mut Stage, path: &str, template: &str, fe: &mut FrontEnd)
         ],
         fe,
     )?;
+    Ok(())
+}
+
+/// The Trick Guide's queued screen states (its picker callbacks post them from inside a movie call), in order; the
+/// rebuild they start can queue more (bounded).
+fn flush_trick_guide(stage: &mut Stage, id: i32, fe: &mut FrontEnd) -> Result<(), String> {
+    for _ in 0..8 {
+        let states = std::mem::take(&mut fe.trick_guide.states);
+        if states.is_empty() {
+            return Ok(());
+        }
+        for state in states {
+            set_state(stage, id, state, fe)?;
+        }
+    }
     Ok(())
 }
 

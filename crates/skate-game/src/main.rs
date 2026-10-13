@@ -41,6 +41,7 @@ mod fe_backdrop;
 mod retail_menus;
 mod prompt_glyphs;
 mod settings_host;
+mod trick_guide_host;
 mod retail_menu_movies;
 mod retail_menu_stage;
 mod rumble;

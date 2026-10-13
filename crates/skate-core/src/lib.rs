@@ -24,3 +24,4 @@ pub mod riding;
 pub mod scoring;
 pub mod trigonometry;
 pub mod triggers;
+pub mod trick_guide;

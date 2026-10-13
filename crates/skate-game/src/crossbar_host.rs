@@ -204,6 +204,8 @@ pub struct FrontEnd<'a> {
     pub settings_titles: Vec<String>,
     /// Crossbar sub-option tables (menu tables).
     pub sub_options: std::sync::Arc<Vec<SubOptionRow>>,
+    /// The Trick Guide screen (trick_guide_host).
+    pub trick_guide: crate::trick_guide_host::TrickGuideHost,
 }
 
 impl<'a> FrontEnd<'a> {
@@ -225,13 +227,14 @@ impl<'a> FrontEnd<'a> {
             settings: Default::default(),
             settings_titles: Vec::new(),
             sub_options: Default::default(),
+            trick_guide: Default::default(),
         }
     }
 }
 
 impl crate::apt_stage::StageNatives for FrontEnd<'_> {
     fn objects(&self) -> Vec<String> {
-        ["Game", "CoreMenu", "Audio", "FELanguage"].map(String::from).to_vec()
+        ["Game", "CoreMenu", "Audio", "FELanguage", "FETrickTutorial", "HUDComponents"].map(String::from).to_vec()
     }
     fn call(&mut self, vm: &mut Vm, object: &str, method: &str, args: Vec<Value>) -> Result<Value, String> {
         if object == "CoreMenu" {
@@ -243,6 +246,9 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
                 sub_options: &self.sub_options,
             };
             return core.call(vm, method, &args);
+        }
+        if let Some(value) = self.trick_guide.call(vm, object, method, &args)? {
+            return Ok(value);
         }
         if object == "Game" {
             let mut settings = crate::settings_host::GameSettings {

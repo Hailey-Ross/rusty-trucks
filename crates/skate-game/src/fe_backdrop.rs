@@ -33,6 +33,8 @@ use skate_mods::menus::BackdropOptions;
 pub(crate) const PAUSE_SCREEN: &str = "b4b7976b40b3e837";
 /// The Game Settings screen's id (TU3 FE id 45, template 90 Options; its key is unique).
 pub(crate) const SETTINGS_SCREEN: &str = "0ca9bfe5c1ba4995";
+/// The Trick Guide screen's id (TU3 FE id 14, template 29 TrickTutorial; its key is unique).
+pub(crate) const TRICK_GUIDE_SCREEN: &str = "5d1ecaaf6c7275bf";
 
 #[derive(Resource, Default)]
 pub(crate) struct FeBackdrop {

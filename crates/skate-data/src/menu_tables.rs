@@ -137,6 +137,19 @@ pub struct ModeMenu {
     pub vtable: String,
 }
 
+/// The Trick Guide screen's tables (FE screen 14, template TrickTutorial; doc 31 "Trick Guide").
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrickGuideTables {
+    /// The top-level list in menu order: Attrib keys of `scoring_trickcategory` records, 16 hex digits (TU3
+    /// 0x830274B0, 8 keys; read by the list fill sub_82619368 and sub_82618C10).
+    pub categories: Vec<String>,
+    /// Gesture animation names by a slot's gesture id (TU3 0x830273C8, 58 names; GetMenuItemGesturesButtons
+    /// 825AE968).
+    pub gestures: Vec<String>,
+    /// Button names by a slot's button id (TU3 0x83027350, 28 names; sub_82619FC0).
+    pub buttons: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MenuTables {
     pub schema: u32,
@@ -164,6 +177,9 @@ pub struct MenuTables {
     /// "" for an empty slot. Empty in tables extracted before they were added.
     #[serde(default)]
     pub sub_options: Vec<SubOptionRow>,
+    /// The Trick Guide's category order and slot name tables. Empty in tables extracted before they were added.
+    #[serde(default)]
+    pub trick_guide: TrickGuideTables,
     /// Table addresses in this build (diagnostics only).
     pub addresses: std::collections::BTreeMap<String, String>,
 }
@@ -735,6 +751,85 @@ fn screen_info(img: &Image) -> Result<(u32, Vec<FeScreen>), String> {
     }
 }
 
+// ---------------------------------------------------------------- trick guide
+
+/// A table of string pointers around a pointer to `anchor`: entry 0 points at "", every other entry at a non-empty
+/// string (walked back from the anchor to the "" entry, then forward to the last string).
+fn name_table(img: &Image, anchor: &str) -> Option<(u32, Vec<String>)> {
+    let named = |at: u32| img.string_at(at).filter(|s| !s.is_empty());
+    img.pointers_to_string(anchor).into_iter().find_map(|at| {
+        let mut start = at;
+        while named(start - 4).is_some() {
+            start -= 4;
+        }
+        start -= 4;
+        if img.string_at(start).as_deref() != Some("") {
+            return None;
+        }
+        let mut names = vec![String::new()];
+        let mut cursor = start + 4;
+        while let Some(name) = named(cursor) {
+            names.push(name);
+            cursor += 4;
+        }
+        Some((start, names))
+    })
+}
+
+/// Located by code: the list fill (TU3 sub_82619368) and the level reset (sub_82618C10) both copy the category keys
+/// with `lis rH,hi; addi rT,rH,lo; ...; ld; ...; addi rN,rN,8; addi rX,rT,size; cmpw rN,rX`. The one table copied that
+/// way from two places; size / 8 keys.
+fn trick_categories(img: &Image) -> Result<(u32, Vec<String>), String> {
+    let words: Vec<u32> = img.image.image.chunks_exact(4).map(|w| u32::from_be_bytes([w[0], w[1], w[2], w[3]])).collect();
+    let op = |w: u32| w >> 26;
+    let rd = |w: u32| (w >> 21) & 31;
+    let ra = |w: u32| (w >> 16) & 31;
+    let imm = |w: u32| w & 0xFFFF;
+    let mut sites: std::collections::BTreeMap<(u32, u32), usize> = Default::default();
+    for i in 40..words.len().saturating_sub(3) {
+        let (step, end, cmp) = (words[i], words[i + 1], words[i + 2]);
+        if op(step) != 14 || rd(step) != ra(step) || imm(step) != 8 {
+            continue;
+        }
+        let (cursor, bound, table_reg, size) = (rd(step), rd(end), ra(end), imm(end));
+        if op(end) != 14 || size % 8 != 0 || !(16..=256).contains(&size) {
+            continue;
+        }
+        // cmpw cr, cursor, bound (X-form, xo 0).
+        if op(cmp) != 31 || (cmp >> 1) & 0x3FF != 0 || ra(cmp) != cursor || (cmp >> 11) & 31 != bound {
+            continue;
+        }
+        let body = &words[i - 40..i];
+        let loads_u64 = body.iter().any(|w| op(*w) == 58 && w & 3 == 0);
+        let Some(j) = body.iter().rposition(|w| op(*w) == 14 && rd(*w) == table_reg && ra(*w) != 0) else { continue };
+        let hi_reg = ra(body[j]);
+        let Some(hi) = body[j.saturating_sub(12)..j].iter().rev().find(|w| op(**w) == 15 && rd(**w) == hi_reg && ra(**w) == 0) else {
+            continue;
+        };
+        if loads_u64 {
+            let table = (imm(*hi) << 16).wrapping_add(imm(body[j]) as i16 as i32 as u32);
+            *sites.entry((table, size / 8)).or_default() += 1;
+        }
+    }
+    let found: Vec<(u32, u32)> = sites.into_iter().filter(|(_, n)| *n >= 2).map(|(k, _)| k).collect();
+    let [(table, count)] = found[..] else {
+        return Err(format!("trick guide category table not found ({} candidates)", found.len()));
+    };
+    let keys = (0..count)
+        .map(|i| img.image.at(table + i * 8, 8).map(|b| b.iter().map(|b| format!("{b:02x}")).collect::<String>()))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("trick guide category table outside the image")?;
+    Ok((table, keys))
+}
+
+fn trick_guide(img: &Image) -> Result<(u32, u32, u32, TrickGuideTables), String> {
+    let (categories_at, categories) = trick_categories(img)?;
+    // Gesture names end with "revert"; button names include "Stick_Left_Up" (both located by content).
+    let (gestures_at, gestures) = name_table(img, "revert").ok_or("trick guide gesture names not found")?;
+    let (buttons_at, buttons) = name_table(img, "Stick_Left_Up").ok_or("trick guide button names not found")?;
+    Ok((categories_at, gestures_at, buttons_at, TrickGuideTables { categories, gestures, buttons }))
+}
+
 pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
     let img = Image { image };
     let (rows_at, settings_rows, settings_screens) = settings(&img)?;
@@ -745,6 +840,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
     let (screen_info_at, screens) = screen_info(&img)?;
     let (titles_at, settings_titles) = settings_titles(&img, settings_screens.len())?;
     let (sub_options_at, sub_options) = sub_options(&img)?;
+    let (trick_categories_at, gestures_at, buttons_at, trick_guide) = trick_guide(&img)?;
     if modes.is_empty() {
         return Err("no per-mode crossbar menus found".into());
     }
@@ -758,6 +854,9 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         ("screen_info", screen_info_at),
         ("settings_titles", titles_at),
         ("sub_options", sub_options_at),
+        ("trick_guide_categories", trick_categories_at),
+        ("trick_guide_gestures", gestures_at),
+        ("trick_guide_buttons", buttons_at),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), hex(v)))
@@ -775,6 +874,7 @@ pub fn extract(image: &XexImage) -> Result<MenuTables, String> {
         screens,
         settings_titles,
         sub_options,
+        trick_guide,
         addresses,
     })
 }
