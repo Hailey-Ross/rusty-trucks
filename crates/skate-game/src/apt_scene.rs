@@ -238,7 +238,7 @@ fn visit(
             // below the last, unclipped (82CA2118). NOT RETAIL YET: the wrap flag (descriptor +28) is taken as the
             // field's word_wrap (the descriptor fill is not decoded; the trick guide sets word_wrap and multiline
             // together).
-            let lines = if text["word_wrap"].as_bool() == Some(true) {
+            let lines = if text["word_wrap"].as_bool() == Some(true) || vm.get(id, "wordWrap") == crate::apt_vm::Value::Bool(true) {
                 font.wrap(&value, height, bounds[2] - bounds[0])
             } else {
                 vec![value]

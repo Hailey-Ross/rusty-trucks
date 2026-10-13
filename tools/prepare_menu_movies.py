@@ -207,7 +207,12 @@ def prepare(game, output, collections, roots=MENU_ROOTS):
             fonts[family] = cache.font_asset(fallback)
     language = {row['label'].strip(): row['value'] for row in json.loads(
         (cache_root / 'metadata/languages/english_global.json').read_text(encoding='utf-8'))['entries']}
-    shared = {'language': language, 'fonts': fonts, 'font_mappings': mappings, 'font_pairs': FONT_PAIRS}
+    # Script-made text fields name fonts at run time (sk8popup's createTextField body: "Futura Std Heavy"); the
+    # runtime resolves names without a row to the same fallback, so it is exported with its font.
+    if fallback and fallback not in fonts:
+        fonts[fallback] = cache.font_asset(fallback)
+    shared = {'language': language, 'fonts': fonts, 'font_mappings': mappings, 'font_pairs': FONT_PAIRS,
+              'fallback_font': fallback}
     (runtime / 'shared.json').write_text(json.dumps(shared, separators=(',', ':')) + '\n', encoding='utf-8')
     # RGBA payloads referenced by shapes and fonts, copied from the cache.
     payloads = set()

@@ -641,9 +641,19 @@ fn handle(registry: &mut MenuRegistry, entry: EntryRef, owner: Owner, options: &
 }
 
 /// Everything mod `id` did is removed (disable, reload, failure).
+impl RetailMenus {
+    /// An event for one mod's `on_event` (sent at the next mod update).
+    pub(crate) fn send_event(&mut self, owner: &str, event: Value) {
+        self.pending.push((owner.to_owned(), event));
+    }
+}
+
 pub(crate) fn clear_owner(world: &mut World, id: &str) {
     if let Some(mut guide) = world.get_resource_mut::<crate::trick_guide_host::TrickGuideMods>() {
         guide.clear_owner(id);
+    }
+    if let Some(mut popups) = world.get_resource_mut::<crate::popup_host::PopupMods>() {
+        popups.clear_owner(Some(id));
     }
     if let Some(mut backdrop) = world.get_resource_mut::<crate::fe_backdrop::FeBackdrop>() {
         backdrop.clear_owner(id);
@@ -661,6 +671,9 @@ pub(crate) fn clear_owner(world: &mut World, id: &str) {
 pub(crate) fn clear_mods(world: &mut World) {
     if let Some(mut guide) = world.get_resource_mut::<crate::trick_guide_host::TrickGuideMods>() {
         guide.clear();
+    }
+    if let Some(mut popups) = world.get_resource_mut::<crate::popup_host::PopupMods>() {
+        popups.clear_owner(None);
     }
     if let Some(mut backdrop) = world.get_resource_mut::<crate::fe_backdrop::FeBackdrop>() {
         backdrop.clear_mods();

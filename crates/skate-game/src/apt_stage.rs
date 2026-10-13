@@ -154,16 +154,13 @@ impl Bindings<'_> {
                 }
                 return Ok(Some(Value::Undefined));
             }
-            "setTextFormat" => {
+            "setTextFormat" | "setNewTextFormat" => {
                 // TextField.setTextFormat([begin[, end],] format): the format's colour becomes the field's text colour
                 // (the renderer's `textColor`, apt_scene). button_menu's SetInfo uses it for its prompt labels
                 // (videocal: 0xFFFEEC on the black calibration page). NOT RETAIL YET: standard AS2 semantics, applied
                 // to the whole field and kept for later text; font and size are not applied.
-                if let Some(Value::Object(format)) = args.last() {
-                    let color = vm.get(*format, "color");
-                    if !matches!(color, Value::Undefined) {
-                        vm.set(object, "textColor", color)?;
-                    }
+                if let (Some(Value::Object(format)), Some(level)) = (args.last(), self.level_of(object)) {
+                    self.state.levels[level].movie.set_text_format(vm, object, *format)?;
                 }
                 return Ok(Some(Value::Undefined));
             }
@@ -270,7 +267,7 @@ impl Host for Bindings<'_> {
                 self.state.levels[level].movie.transform_changed(vm, object, key)?;
             }
         }
-        if key.eq_ignore_ascii_case("text") || key.eq_ignore_ascii_case("autoSize") {
+        if key.eq_ignore_ascii_case("text") || key.eq_ignore_ascii_case("autoSize") || key.eq_ignore_ascii_case("wordWrap") {
             if let Some(level) = self.level_of(object) {
                 self.state.levels[level].movie.text_changed(vm, object)?;
             }
@@ -737,16 +734,47 @@ impl Stage {
         }
         (matrix, alpha, true)
     }
-    /// Draws every level in load order (FE_root, the screen manager, then screens in the order they opened),
-    /// each under the clip it was loaded into. `scene` gives a level's shapes and textures.
-    /// NOT RETAIL YET (order): retail draws one display tree by depth; screens sit at depth 600 + template
-    /// index under the screen manager, so load order matches it for the screens opened so far.
+    /// A clip's place in the display tree: the level its top ancestor roots, then the depth of each link from the
+    /// top down (timeline depths, script depths from SCRIPT_DEPTH, createEmptyMovieClip depths as script depths).
+    fn display_path(&self, object: usize) -> (usize, Vec<i32>) {
+        let mut path = Vec::new();
+        let mut current = object;
+        for _ in 0..64 {
+            let Value::Object(parent) = self.vm.get(current, "_parent") else { break };
+            let depth = match self.state.dynamic.get(&current) {
+                Some((_, depth)) => depth.saturating_add(crate::apt_movie::SCRIPT_DEPTH),
+                None => self
+                    .state
+                    .levels
+                    .iter()
+                    .find_map(|l| l.movie.instances.get(&parent))
+                    .and_then(|p| p.children.iter().find(|(_, c)| **c == current).map(|(k, _)| *k))
+                    .unwrap_or(0),
+            };
+            path.push(depth);
+            current = parent;
+        }
+        path.reverse();
+        let top = self.state.levels.iter().position(|l| l.movie.root == current).unwrap_or(usize::MAX);
+        (top, path)
+    }
+    /// Draws every level under the clip it was loaded into, in display-tree order (`display_path`: the screen
+    /// manager's screens under gScreens, popups under gPopups above them), load order between equal places.
+    /// `scene` gives a level's shapes and textures. NOT RETAIL YET (order): retail draws one display tree by depth;
+    /// here each level draws as one block at its holder clip's place (a level's clips never interleave with another
+    /// level's).
     pub fn draw<'s, S: crate::apt_scene::ShapeSource>(
         &'s self,
         scene: impl Fn(&'s str, &'s Movie) -> S,
     ) -> Result<Vec<crate::apt_scene::Draw>, String> {
         let mut out = Vec::new();
-        for level in &self.state.levels {
+        let mut order: Vec<(usize, Vec<i32>, usize)> =
+            self.state.levels.iter().enumerate().map(|(i, l)| {
+                let (top, path) = self.display_path(l.movie.root);
+                (top, path, i)
+            }).collect();
+        order.sort();
+        for level in order.into_iter().map(|(_, _, i)| &self.state.levels[i]) {
             if level.key.ends_with("#unloading") {
                 continue;
             }
@@ -885,6 +913,90 @@ mod tests {
         if std::env::var_os("SKATE3_DUMP_DRAWS").is_some() {
             eprintln!("calls: {:?}\nunhandled: {:?}", game.calls, stage.unhandled());
         }
+    }
+
+    /// The retail popup movie (template 17 Sk8Popup) on the "popup" layer: SetState(1) with a shown popup builds its
+    /// panel from the Popup natives (doc 31 "Popups"), every layout value finite; A on the first option reaches the
+    /// popup host as choice 0. Data-gated like the above; `SKATE3_DUMP_DRAWS=1` prints the draws.
+    #[test]
+    fn retail_popup_builds_from_the_popup_natives() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        let (data, loaded) = crate::retail_menus::read(&crate::apt_imports::main_checkout().join("assets"));
+        if !loaded || !movies.contains_key("source/screens/popup/sk8popup") {
+            eprintln!("skipped: no menu tables or no sk8popup");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("Sk8Popup".into())], &mut game).unwrap();
+        let open = ["source/screens/popup/sk8popup.swf", "popup", "0", "Sk8Popup"].map(|s| Value::Text(s.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", open, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        let rules = skate_core::video_calibration::CalibrationRules::default();
+        game.popup.shown = Some(skate_core::fe_popup::PopupRequest {
+            description: rules.popup_description.clone(),
+            options: rules.popup_buttons.clone(),
+            ..Default::default()
+        });
+        game.popup.input_ready = true;
+        stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text("1".into())], &mut game).unwrap();
+        stage.call_path("_global.ScreenManager.ShowScreen", vec![Value::Text("600".into()), Value::Text("true".into())], &mut game).unwrap();
+        for _ in 0..60 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        let draws = stage.draw(|key, movie| set.scene(key, movie));
+        if std::env::var_os("SKATE3_DUMP_DRAWS").is_some() {
+            eprintln!("unhandled: {:?}\ncalls: {:?}", stage.unhandled(), game.calls);
+        }
+        let draws = draws.unwrap_or_else(|e| panic!("{e}; unhandled {:?}", stage.unhandled()));
+        if std::env::var_os("SKATE3_DUMP_DRAWS").is_some() {
+            for d in &draws {
+                eprintln!("draw {:?} mul {:?} v0 {:?}", d.texture, d.multiply, d.vertices.first().map(|v| v.position));
+            }
+            let level = stage.levels().iter().find(|l| l.key.ends_with("sk8popup")).expect("popup loaded");
+            let root = level.movie.root;
+            eprintln!("root visible {} alpha {} frame {}", stage.vm.get(root, "_visible").text(), stage.vm.get(root, "_alpha").text(), stage.vm.get(root, "_currentframe").text());
+            for (id, inst) in &level.movie.instances {
+                let name = inst.placement.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+                if ["mScreen", "mcPanel", "body"].iter().any(|n| name.eq_ignore_ascii_case(n)) {
+                    eprintln!("{name} {id}: visible {} alpha {} frame {} playing {}", stage.vm.get(*id, "_visible").text(), stage.vm.get(*id, "_alpha").text(), inst.frame, inst.playing);
+                }
+            }
+        }
+        assert!(!draws.is_empty(), "the popup draws");
+        if std::env::var_os("SKATE3_DUMP_DRAWS").is_some() {
+            let level = stage.levels().iter().find(|l| l.key.ends_with("sk8popup")).expect("popup loaded");
+            for (id, inst) in &level.movie.instances {
+                let name = inst.placement.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+                if name.eq_ignore_ascii_case("mMenuPicker") {
+                    let f = |k: &str| stage.vm.get(*id, k).text();
+                    let arr = |k: &str| match stage.vm.get(*id, k) { Value::Object(o) => stage.vm.get(o, "length").text(), v => v.text() };
+                    eprintln!("picker {id}: value {} options {} texts {} types {} gui {} menu {}", f("mCurrentValue"), f("mNumOptions"), arr("mItemTextArray"), arr("mItemTypeArray"), f("mEnableGUI"), f("mMenuID"));
+                    let fields: Vec<String> = stage.vm.objects[*id].fields.keys().cloned().collect();
+                    eprintln!("fields {fields:?}");
+                }
+            }
+        }
+        // A (key index 2, registered like the boot does) picks the first option: Yes.
+        stage.call_path("_level0._root.RegisterAptInputEnum", ["AptNext", "2"].map(|s| Value::Text(s.into())).to_vec(), &mut game).unwrap();
+        stage.call_path("_global.ScreenManager.UpdateInput", ["600", "2", "0"].map(|s| Value::Text(s.into())).to_vec(), &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        assert_eq!(game.popup.choices, vec![0], "calls {:?} traces {:?}", game.calls, stage.take_traces());
     }
 
     /// The Game Settings screen (template 90 Options) through the screen manager: SetState(1) after it loads makes

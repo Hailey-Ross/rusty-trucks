@@ -1803,9 +1803,8 @@ Game Settings > Video > Video Calibration was greyed (no handler).
 - `apt_stage.rs`: `TextField.setTextFormat` applies the format's colour as the field's text colour. NOT RETAIL YET:
   standard AS2 semantics, whole field, font and size not applied.
 - The A / B prompts are the native CustomButton glyphs (doc "Button prompts"), so they follow the connected pad.
-- NOT RETAIL YET: the "finished" popup. Retail's popup system (research `.local/research/menus-m6/fe-popup.md`: FE
-  screen 29 hosts templates 17 / 18 / 4 on the "popup" layer, `Popup.*` natives, choice through Game.OnMenuSelect)
-  is not ported; the answer is taken as Yes (close).
+- The "finished" popup is retail's (see "Popups" below): Yes closes the screen (Game Settings shows again on the
+  Video screen), No starts over at the first page; B does nothing (not cancelable, as retail).
 
 ### Verification
 - `cargo test -p skate-core video_calibration` (3: retail paging, popup Yes / No, page count as data).
@@ -1815,11 +1814,72 @@ Game Settings > Video > Video Calibration was greyed (no handler).
   `.local/research/menus-m6/videocal/page0b.png` (the settings page with colour bars, A Continue / B Back),
   `page1.png` (Contrast after A).
 
+- In game: `.local/research/menus-m6/videocal/popup.png` (the popup over the dimmed brightness page), `yes.png`
+  (back on Video Settings), `no.png` (the first page again).
+
 ### Open questions
-- The popup system port (then the Yes / No popup is retail).
 - Does retail pick the SD pages on a 720p console? Our boot registers edge offset "136" like retail
   (`boot-enums.md`), so the movie's `Screen_EdgeOffset > 0` test would choose the SD frames; the shots look like the
   HD layout, so the movie reads something else or the variable is not where it looks (not checked).
+
+## Popups (2026-10-13)
+
+### Problem
+Retail asks questions through its popup system (Video Calibration's "Are you happy with your video calibration
+settings?"); the engine had none, so the calibration screen auto-answered Yes.
+
+### Root cause / evidence (TU3 recomp code and the menu movies; research `.local/research/menus-m6/fe-popup.md`, agent;
+main re-read the host's show 0x825EF440, choice 0x825EF698, create 0x825EF370 and the OpenScreen bridge 0x82D09140)
+- A caller fills an sPopupInfo (1452 bytes, defaults `sub_82D0B0B0`: title, description, up to 8 options, choice
+  callback, user value, type, priority, default selection, cancelable, auto-remove, keep-on-clear) and pushes it with
+  `sub_82D0A8D0`: it gets the next id and joins a list sorted by priority (ascending, ties in arrival order); the
+  last entry shows (FE vt+24 `sub_825EC530`).
+- The popup is not a stack screen: FE screen 29 is a fixed host. Its create (0x825EF370) opens templates 17 Sk8Popup,
+  18 Sk8SmallPopup and 4 Sk8AutoSavePopup once through the OpenScreen bridge with layer "popup" (the template's visible
+  flag "0"); the screen manager puts them under `gPopups`. Show (0x825EF440): hide all three (ShowScreen false), pick
+  by type, SetScreenState(1), ShowScreen(true), sound core_popup, input ready.
+- The movies pull their text through the AS `Popup` natives (registrar `sub_825A9F40`: GetTitle, GetDescription,
+  GetNumOptions, GetOption, IsPopupCancelable, GetDefaultSelection). While the list has entries every key goes to the
+  host only, its C++ handler returns 0, so the movie's UpdateInput takes it: Up / Down move menu_picker, A calls
+  `Game.OnMenuSelect(menu, index, text)`, B calls `OnMenuSelect(0, 255, 'CANCEL!')` only when cancelable.
+  `Game.OnMenuSelect` goes to the focus screen (`sub_82D09F28`: the host while a popup is up); the host calls
+  `callback(id, choice, user)` and, with auto-remove, removes it (`sub_82D0A628`) and shows the next.
+- Sk8Popup shows the description and the options (no title); the small popup shows the title.
+
+### Change
+- `skate_core::fe_popup` (new): `PopupRequest` (sPopupInfo as data, retail defaults), `PopupList` (retail ordering,
+  ids from 0, choose with auto-remove, remove, clear-all with choice -2, a mod's popups by callback prefix).
+  Callbacks are stable string ids, so requests and events are plain, serialisable data.
+- `popup_host.rs` (new): the `Popup` natives from the shown request; while a popup is shown it answers
+  `Game.OnMenuSelect` / `OnMenuGetItemEnabled` (every item enabled, host vt+72) / `OnMenuHilight`, so the choice does
+  not reach the screen below.
+- `retail_menu_stage.rs`: the popup movies open on the "popup" layer at boot (those in the set); popup show as
+  0x825EF440; keys go to the shown popup first; choices run their callback (Video Calibration's
+  `video_calibration.finished` -> `popup_result`).
+- Mods: `sdk.menus.popup(key, options)` raises or replaces the mod's popup (description, title, up to 8 options, kind
+  standard / small, priority, cancelable); the choice arrives as `on_event {name='menu_popup', key, choice}`; nil
+  options take it down; a stopped mod's popups leave without an event.
+- APT player features the popup movie needed (standard AS2 semantics, each NOT RETAIL YET in code):
+  `MovieClip.createTextField` (a script-made text field with its own descriptor), `setTextFormat` /
+  `setNewTextFormat` font / size / alignment on such fields (font by name, else FontManager's fallback row, exported
+  as `fallback_font` with its font), `wordWrap` on script fields, `TextField.maxscroll` (the wrapped line count: the
+  popup sizes its panel with `body.maxscroll * bodyLineHeight`), arrays growing `length` on an indexed write
+  (menu_picker counts its items with `mItemTextArray.length`), and the stage drawing loaded movies by their holder
+  clip's place in the display tree (`display_path`: popups under gPopups draw over the screens) instead of load order.
+
+### Verification
+- `cargo test -p skate-core fe_popup` (4: priority and tie order, auto-remove and clear-all, retail defaults and the
+  8-option cap, a mod's popups leave with it); `cargo test -p skate-game popup` (natives and focus routing, mod
+  popups); `cargo test -p skate-mods` (the `menu_popup` command parses and validates);
+  `retail_popup_builds_from_the_popup_natives` (data-gated: the retail Sk8Popup builds its panel from the natives
+  with every layout value finite, and A answers 0).
+- In game: the calibration popup, Yes and No (Video Calibration "Verification"); the pause menu screenshot is
+  unchanged with the new draw order (`.local/research/menus-m6/videocal/pause-regress.png`).
+
+### Open questions
+- Host +80 ("suppressed"), sPopupInfo +1450, the per-update / timeout callbacks (+1416 / +1420 / +1424, not ported:
+  no ported popup uses them), the 8th Popup native, the AutoSave popup movie (template 4) is not in the export.
+- APT's real `maxscroll` and text format rules (only what the retail movies need is implemented).
 
 ## Cameraman Mode (2026-10-13, decoded, not ported)
 
