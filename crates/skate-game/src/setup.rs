@@ -373,6 +373,7 @@ mod tests {
         let marker = serde_json::json!({
             "pipelines": {"core": "old", "maps": "maps-old"},
             "outputs": {
+                "core": {"private/game.json": {"size": 2}},
                 "maps": {"maps/university.skate": {"size": 4}}
             }
         });
@@ -387,8 +388,19 @@ mod tests {
         let maps = root.join("maps/university.skate");
         std::fs::create_dir_all(maps.parent().unwrap()).unwrap();
         std::fs::write(&maps, b"test").unwrap();
+        let game = root.join("private/game.json");
+        std::fs::create_dir_all(game.parent().unwrap()).unwrap();
+        std::fs::write(&game, b"{}").unwrap();
+        // Every group with a new fingerprint has its recorded outputs on disk: reused.
         assert!(pipelines_acceptable(&marker, &expected, None, &root));
         assert!(!pipelines_current(&marker, &expected, None));
+        // A group with a new fingerprint and no recorded outputs is not: setup has to run for it.
+        let mut unrecorded = marker.clone();
+        unrecorded["outputs"].as_object_mut().unwrap().remove("core");
+        assert!(!pipelines_acceptable(&unrecorded, &expected, None, &root));
+        // Nor is a recorded output that is missing or has the wrong size.
+        std::fs::write(&game, b"{ }").unwrap();
+        assert!(!pipelines_acceptable(&marker, &expected, None, &root));
         std::fs::remove_dir_all(root).unwrap();
     }
 
