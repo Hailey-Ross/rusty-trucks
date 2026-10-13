@@ -206,9 +206,16 @@ fn start(world: &mut World, scene: &mut Scene, player: Entity) -> bool {
     buffers.publish(world);
     skies.publish(world);
     commands.apply(world);
-    // The player's meshes join the demo layer; the gameplay camera sees only it (and the character light's 28).
-    let mut meshes = world.query_filtered::<(Entity, Option<&RenderLayers>), (With<Mesh3d>, Without<SetEntity>)>();
-    let owned: Vec<_> = meshes.iter(world).map(|(e, l)| (e, l.cloned())).collect();
+    // The player's meshes the gameplay camera draws join the demo layer (visible ones on a layer the camera sees:
+    // hidden rigs, e.g. the default skater under a custom model, stay out); the camera then sees only the demo
+    // layer (and the character light's 28).
+    let camera_layers = world.query_filtered::<Option<&RenderLayers>, With<crate::camera::GameplayCamera>>()
+        .iter(world).next().flatten().cloned().unwrap_or_default();
+    let mut meshes = world.query_filtered::<(Entity, Option<&RenderLayers>, Option<&InheritedVisibility>),
+        (With<Mesh3d>, Without<SetEntity>)>();
+    let owned: Vec<_> = meshes.iter(world)
+        .filter(|(_, l, v)| v.is_none_or(|v| v.get()) && l.cloned().unwrap_or_default().intersects(&camera_layers))
+        .map(|(e, l, _)| (e, l.cloned())).collect();
     for (entity, layers) in owned {
         let mut ancestors = world.query::<&ChildOf>();
         let mut at = entity;

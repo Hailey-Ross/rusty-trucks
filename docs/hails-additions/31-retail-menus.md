@@ -1600,8 +1600,9 @@ set. Ours showed the gameplay world behind the menu.
   refactored out of the foliage backdrops; their output checked byte-identical), and the set's sky dome as
   `TrickGuide.sky.*` with its `material_sky` parameters.
 - `skate-game/src/trick_guide_scene.rs` (new): while FE 14 is on top the set and dome spawn on render layer 27 as
-  children of the player root, the player's own rig plays the clip (`AnimationStatus::for_scene`), the gameplay camera
-  draws only that layer; closing despawns them and restores layers. `retail_menu_stage.rs` publishes
+  children of the player root, the player's own rig plays the clip (`AnimationStatus::for_scene`), the meshes the
+  gameplay camera draws join that layer (hidden rigs stay out: a hidden default skater under a custom model showed
+  through on hails-additions), the gameplay camera draws only that layer; closing despawns them and restores layers. `retail_menu_stage.rs` publishes
   `TrickGuideDemo` (open, highlighted clip); `map_render.rs` `SceneCommands::tagged`; `retail_sky.rs`
   `SkyPackage::load_scene`.
 - Mods: a mod picks any clip per entry through the existing Trick Guide patches (`sdk.menus.trick_guide`, field
