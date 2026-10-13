@@ -29,3 +29,4 @@ pub mod trigonometry;
 pub mod living_world;
 pub mod triggers;
 pub mod trick_guide;
+pub mod video_calibration;

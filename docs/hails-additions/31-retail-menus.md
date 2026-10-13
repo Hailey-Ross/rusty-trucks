@@ -1229,12 +1229,14 @@ then port each row's effect. Rows that save but have no effect yet are listed be
     trace hook on `sub_82694D38` logging caller, channel and the three floats would settle it).
   - Tests: `cargo test -p skate-core rumble`, `cargo test -p skate-game rumble` (60 Hz at any frame rate, the
     switch-on test rumble, off blocks starts, mod channels separate and stopped with their mod). Not felt on a pad.
-- Saved, no effect yet (what retail does, from the research, not main-checked): Minimap +158 (`sub_82665278`:
-  hidden with the HUD off, forced on / off in some game states; we draw no minimap), Subtitles +157 (six readers
-  gate subtitles on it or a forced flag; no subtitle text in the engine), Cameraman Mode +165 and HOM mode +184 (readers found, effect undecoded), Units,
+- No effect yet, so greyed (2026-10-13, see "Settings without an effect are greyed" below): Minimap +158
+  (`sub_82665278`: hidden with the HUD off, forced on / off in some game states; we draw no minimap), Subtitles +157
+  (six readers gate subtitles on it or a forced flag; no subtitle text in the engine), Cameraman Mode +165 (decoded
+  2026-10-13, see "Cameraman Mode" below; not ported), HOM mode +184 (readers found, effect undecoded), Units,
   Transparency (no reader of the copied byte found), the Skate Feed toggles.
-- Still greyed (no retail rule decoded): Video Calibration (opens a calibration screen), SFX Pack (hidden with one
-  pack), Auto sign-in (an online popup).
+- Still greyed (no retail rule decoded): SFX Pack (hidden with one pack), Auto sign-in (an online popup; decoded
+  2026-10-13: Left / Right flip byte +194, default 1, a popup only when switched off; left out by the user's choice).
+  Video Calibration now opens its screen (below).
 
 ### Verification
 - `cargo test -p skate-game stored_rows_are_enabled_step_save_and_reload_and_mod_values_are_not_saved`: a stored row
@@ -1752,6 +1754,87 @@ words (64k frames, no malformed lines). A watch-list run read the element descri
 - The other per-segment flags (AVATAR_ORBIT, AVOID_*, PLAYER_SPACE_*) are not read yet. PLAYER_SPACE_LAG (98, set on
   tracks 0 and 3) subtracts an offset from `sub_828F3088` from eye and look; the trace did not separate it from the
   follow offset.
+
+## Settings without an effect are greyed (2026-10-13)
+
+User: "for the settings that are not working yet, grey them out as we have for the other retail menu items."
+
+### Change
+- `retail_menus.rs` `NO_EFFECT_YET`: Subtitles, Minimap, Cameraman Mode, HOM mode, Units, Transparency and the four
+  skate.Feed toggles get no stored value layer, so they stay greyed and show retail's default; values saved by
+  earlier builds stay in `settings/game-settings.json` untouched. A mod's value layer (`menu_handle` with a value)
+  still enables a row. An id leaves the list when its feature lands.
+- Rows that work (step, apply, persist): Play Mode, SFX / Dialog / Music volume, Camera Angle (engine bindings),
+  HUD, Offboard Y axis, Vibration (stored rows), Video Calibration (opens its screen).
+
+### Verification
+- `cargo test -p skate-game rows_without_an_effect_stay_greyed_until_a_mod_binds_them`.
+- Screenshot `.local/research/menus-m6/videocal/video-screen.png`: Video Settings with Subtitles, Minimap and Cameraman
+  Mode greyed; Camera Angle, Video Calibration and HUD enabled.
+
+## Video Calibration (2026-10-13)
+
+### Problem
+Game Settings > Video > Video Calibration was greyed (no handler).
+
+### Root cause / evidence (TU3 recomp code, main re-read every handler named here; research `.local/research/menus-m6/video-calibration.md`)
+- Row 25 in the settings select handler `sub_8260D290` plays core_a_button and pushes FE screen 51 through
+  `sub_82D0AEF0(FE, 51, ..)` with param 0, keep-open 1, keep-visible 0 (Game Settings stays open, hidden). FE 51's info
+  record (key `1f3e2788f93b6a2e`) suspends gameplay, shows the chyron, HUD off, no blur, unused keys to the movie.
+- Screen 51 (vtable 0x82303548): init 0x8260E868 sets the page counter +60 to 0 and opens template 91
+  VideoCalibration (`options/videocal.swf`); loaded 0x8260E888 and A run 0x8260E950: below 3 it posts SetState(counter)
+  and counts up, else it pushes the "finished" popup (ID_VIDEO_CALIBRATION_FINISHED_TITLE / _DESC, Yes / No, callback
+  0x8260EA48: choice 0 pops the screen, any other restarts at page 0). Input 0x8260E890: A (core_a_button) advances,
+  B (core_b_button) pops below counter 2, else SetState(counter - 2) and counts down; it always returns 0.
+- The movie calls no Game.* native: pages settings / contrast / brightness (SD variants when Screen_EdgeOffset > 0);
+  nothing is changed or saved by the game. The A / B prompts come from button_menu (`AddItem`), coloured 0xFFFEEC
+  through its SetInfo -> `setTextFormat`.
+- Hidden / shown screens: the facade's ShowScreen (0x825DA410) passes the AS id as "%d" and "true" / "false".
+
+### Change
+- `tools/prepare_menu_movies.py`: root `source/screens/options/videocal` (setup's hud group re-exports; the row stays
+  greyed in sets without it).
+- `skate_core::video_calibration` (new): the counter as retail (`advance`, `back`, `popup_result`), rules as data
+  (`CalibrationRules`: page count, popup strings, sounds; retail's the defaults).
+- `retail_menu_stage.rs`: FE 51 opens / closes its template; A / B as 0x8260E890; loaded posts the first page; settings
+  rows whose engine handler names an FE screen push it with retail's flags; `Effect::Show` reaches the movies through
+  `_global.ScreenManager.ShowScreen`. The row's engine handler (`Owner::Engine("screen:1f3e2788f93b6a2e")`) is
+  registered when the movie is in the set; a mod can register its own handler on the row.
+- `apt_stage.rs`: `TextField.setTextFormat` applies the format's colour as the field's text colour. NOT RETAIL YET:
+  standard AS2 semantics, whole field, font and size not applied.
+- The A / B prompts are the native CustomButton glyphs (doc "Button prompts"), so they follow the connected pad.
+- NOT RETAIL YET: the "finished" popup. Retail's popup system (research `.local/research/menus-m6/fe-popup.md`: FE
+  screen 29 hosts templates 17 / 18 / 4 on the "popup" layer, `Popup.*` natives, choice through Game.OnMenuSelect)
+  is not ported; the answer is taken as Yes (close).
+
+### Verification
+- `cargo test -p skate-core video_calibration` (3: retail paging, popup Yes / No, page count as data).
+- `cargo test -p skate-game retail_video_calibration_steps_its_pages` (data-gated on the menu set): the retail movie
+  loads, reports loaded / intro complete and takes SetState 0..2 with no Game.* call unanswered.
+- In game (dev export, `SKATE3_RETAIL_MENUS_KEYS` through Options > Game Settings > Video > Video Calibration):
+  `.local/research/menus-m6/videocal/page0b.png` (the settings page with colour bars, A Continue / B Back),
+  `page1.png` (Contrast after A).
+
+### Open questions
+- The popup system port (then the Yes / No popup is retail).
+- Does retail pick the SD pages on a 720p console? Our boot registers edge offset "136" like retail
+  (`boot-enums.md`), so the movie's `Screen_EdgeOffset > 0` test would choose the SD frames; the shots look like the
+  HD layout, so the movie reads something else or the variable is not where it looks (not checked).
+
+## Cameraman Mode (2026-10-13, decoded, not ported)
+
+Research `.local/research/menus-m6/cameraman-mode.md`, `light-rigs.md` (agent; main checked the S+165 branch in
+`sub_827F4D28`, the rig hashes and the +0x34788 flag in a recomp watch run).
+- [code] The setting is a look switch, not camera behaviour: `sub_82801990` sets the scene render manager's flag
+  `[0x83083C5C]+0x34788` from S+165 (forced on in cutscenes, off in the skatepark state +0x34786); with it set,
+  character presentation objects pick LightRig "nis" (FNV-1 0x1E7BA14D) instead of "default" (`sub_827823D8` ->
+  `sub_827A5A78`), draw an extra character pass (`sub_82784298`), and `sub_827F4D28` sets post mode 4414 (S+165 on)
+  instead of 21 / 286, which `sub_827EE180` turns into technique 0x20559385 instead of 0xBFBCDB6B.
+- [trace, the recomp, 2026-10-13] Gameplay flag bytes +0x34784..+0x34788 = 00 01 00 01 01 with it on; switching it
+  off clears +0x34788 at once.
+- [code] A rig is a shader variant per material binder; its light values come from run-time globals, so a port needs
+  a short recomp hook logging the binder constants (`sub_82CBBBF0` nis / `sub_82CBD050` default) with the setting on
+  and off. Our characters use one fixed rig (`retail_character.rs`). Greyed until then.
 
 ## Files
 - Trick Guide camera from the recomp trace: `crates/skate-data/src/ice_camera.rs`, `tests/ice_camera.rs`,

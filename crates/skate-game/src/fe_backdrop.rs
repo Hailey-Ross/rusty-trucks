@@ -35,6 +35,8 @@ pub(crate) const PAUSE_SCREEN: &str = "b4b7976b40b3e837";
 pub(crate) const SETTINGS_SCREEN: &str = "0ca9bfe5c1ba4995";
 /// The Trick Guide screen's id (TU3 FE id 14, template 29 TrickTutorial; its key is unique).
 pub(crate) const TRICK_GUIDE_SCREEN: &str = "5d1ecaaf6c7275bf";
+/// The Video Calibration screen's id (TU3 FE id 51, template 91 VideoCalibration; its key is unique).
+pub(crate) const VIDEO_CALIBRATION_SCREEN: &str = "1f3e2788f93b6a2e";
 
 #[derive(Resource, Default)]
 pub(crate) struct FeBackdrop {

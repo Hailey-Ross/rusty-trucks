@@ -154,6 +154,19 @@ impl Bindings<'_> {
                 }
                 return Ok(Some(Value::Undefined));
             }
+            "setTextFormat" => {
+                // TextField.setTextFormat([begin[, end],] format): the format's colour becomes the field's text colour
+                // (the renderer's `textColor`, apt_scene). button_menu's SetInfo uses it for its prompt labels
+                // (videocal: 0xFFFEEC on the black calibration page). NOT RETAIL YET: standard AS2 semantics, applied
+                // to the whole field and kept for later text; font and size are not applied.
+                if let Some(Value::Object(format)) = args.last() {
+                    let color = vm.get(*format, "color");
+                    if !matches!(color, Value::Undefined) {
+                        vm.set(object, "textColor", color)?;
+                    }
+                }
+                return Ok(Some(Value::Undefined));
+            }
             "loadMovie" => {
                 // MovieClip.loadMovie(url): the movie replaces this clip's content on a later update (main.apt
                 // fills gScreenManager / gChyron / gSubtitle / gFadeBackground this way).
@@ -818,6 +831,60 @@ mod tests {
     #[test]
     fn retail_screen_manager_closes_a_screen() {
         retail_screen_manager(true);
+    }
+
+    /// Video Calibration (template 91, FE 51): the retail movie loads through the screen manager, reports loaded and
+    /// intro complete, and takes SetState for its three pages (settings, contrast, brightness) with no native left
+    /// unanswered (it calls none; doc 31 "Video Calibration"). Data-gated like the above.
+    #[test]
+    fn retail_video_calibration_steps_its_pages() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/options/videocal") {
+            eprintln!("skipped: menu set without videocal");
+            return;
+        }
+        let (data, loaded) = crate::retail_menus::read(&crate::apt_imports::main_checkout().join("assets"));
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("VideoCalibration".into())], &mut game).unwrap();
+        let open = vec![
+            Value::Text("source/screens/options/videocal.swf".into()),
+            Value::Text("screen".into()),
+            Value::Text("0".into()),
+            Value::Text("VideoCalibration".into()),
+        ];
+        stage.call_path("_global.ScreenManager.OpenScreen", open, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        assert!(game.calls.iter().any(|c| c == "Game.OnScreenLoaded(600)"), "{:?}", game.calls);
+        for page in 0..3 {
+            stage.call_path("_global.ScreenManager.SetScreenState", vec![Value::Text("600".into()), Value::Text(page.to_string())], &mut game).unwrap();
+            for _ in 0..90 {
+                stage.update(16.0, &movies, &mut game).unwrap();
+            }
+        }
+        assert!(game.calls.iter().any(|c| c == "Game.OnScreenIntroComplete(600)"), "{:?}", game.calls);
+        let unanswered: Vec<&String> = stage.unhandled().iter().filter(|c| c.starts_with("Game.")).collect();
+        assert!(unanswered.is_empty(), "{unanswered:?}");
+        if std::env::var_os("SKATE3_DUMP_DRAWS").is_some() {
+            eprintln!("calls: {:?}\nunhandled: {:?}", game.calls, stage.unhandled());
+        }
     }
 
     /// The Game Settings screen (template 90 Options) through the screen manager: SetState(1) after it loads makes
