@@ -685,6 +685,14 @@ function sdk.bodies.angular_impulse(ref,value)
     if ref.kind=="mod" then sdk.physics.torque_impulse(ref.key,value)
     else submit{kind="native_impulse",body={kind=ref.kind,index=ref.index},impulse=value,angular=true} end
 end
+-- Controller rumble (capability input_rumble): retail's rumble channels. low / high = motor levels 0..1, rate =
+-- decay per second (0 = holds until stopped), channel = 0..1023 (this mod's own), pad = slot 0..3 (default: the
+-- active pad). Nothing while Game Settings > Vibration is off. Stops when the mod stops.
+function sdk.input.rumble(o)
+    o=o or {}
+    submit{kind="input_rumble",pad=o.pad,channel=o.channel or 0,low=o.low or 0,high=o.high or 0,rate=o.rate or 0}
+end
+function sdk.input.stop_rumble(pad) submit{kind="input_stop_rumble",pad=pad} end
 function sdk.input.override_action(id,value)
     if type(id)=='string' then id=action_id(id) end
     submit{kind="input_override",action=id,value=value}
@@ -718,6 +726,16 @@ function sdk.menus.info() return menu_info() end
 -- with a JSON file in the mod's folder (the format setup exports to assets/private/menu-movies).
 -- Every menu importing it is relinked; the newest mod wins; removed when the mod stops.
 function sdk.menus.movie(name, path) submit{kind="menu_movie",name=name,path=path} end
+-- The world behind an FE screen, by its retail screen id (sdk.menus.info().screens lists them;
+-- the pause menu is 'b4b7976b40b3e837'): options
+-- {blur=true|false, strength=8.0, step=0.8, tint={90,85,81}, tint_step=15}; unset fields keep
+-- retail's values; nil options drop this mod's override. The newest mod wins; removed on stop.
+function sdk.menus.backdrop(screen, options) submit{kind="menu_backdrop",screen=screen,options=options} end
+-- Add or change a Trick Guide entry: entry 'category' | 'subcategory' | 'trick', key = a retail record's 16 hex
+-- digits or the mod's own id; options {label, description, slots={{gesture, button, connector}, ...} (up to 4),
+-- animation, parent, order, has_tricks, position, hidden}; unset fields keep the entry's value; nil options drop
+-- this mod's change. Mods apply in load order; removed when the mod stops.
+function sdk.menus.trick_guide(entry, key, options) submit{kind="menu_trick_guide",entry=entry,key=key,options=options} end
 -- Replace one bitmap of a menu movie by its stable id: the movie's import name plus the bitmap
 -- character id (sdk.menus.info().movies.bitmaps lists them), with a PNG in the mod's folder. The
 -- image covers the same fill area as the retail bitmap; newest mod wins; removed when the mod stops.

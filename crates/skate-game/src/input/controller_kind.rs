@@ -94,7 +94,55 @@ pub(crate) enum PromptStyle {
     Nintendo,
 }
 
+/// A face-button label as SDL names it (SDL_GamepadButtonLabel): what a prompt shows for a button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PromptLabel {
+    A,
+    B,
+    X,
+    Y,
+    Cross,
+    Circle,
+    Square,
+    Triangle,
+}
+
+impl PromptLabel {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "A" => Self::A,
+            "B" => Self::B,
+            "X" => Self::X,
+            "Y" => Self::Y,
+            "Cross" => Self::Cross,
+            "Circle" => Self::Circle,
+            "Square" => Self::Square,
+            "Triangle" => Self::Triangle,
+            _ => return None,
+        })
+    }
+    pub(crate) fn from_sdl(label: sdl3::gamepad::ButtonLabel) -> Option<Self> {
+        use sdl3::gamepad::ButtonLabel as L;
+        Some(match label {
+            L::A => Self::A,
+            L::B => Self::B,
+            L::X => Self::X,
+            L::Y => Self::Y,
+            L::Cross => Self::Cross,
+            L::Circle => Self::Circle,
+            L::Square => Self::Square,
+            L::Triangle => Self::Triangle,
+            _ => return None,
+        })
+    }
+}
+
 impl PromptStyle {
+    /// The labels of the South, East, West, North buttons.
+    pub(crate) fn labels(self) -> [PromptLabel; 4] {
+        self.face_labels().map(|n| PromptLabel::parse(n).unwrap_or(PromptLabel::A))
+    }
     /// Printed names of the South, East, West, North buttons.
     pub(crate) fn face_labels(self) -> [&'static str; 4] {
         match self {
@@ -129,6 +177,9 @@ pub(crate) struct ControllerKind {
     /// A misc button (Share / Capture / Mute) is reported.
     pub misc_button: bool,
     pub prompt_style: PromptStyle,
+    /// What the South, East, West, North buttons print: SDL's labels for the pad type
+    /// (SDL_GetGamepadButtonLabelForType), else the prompt style's.
+    pub face_labels: [PromptLabel; 4],
 }
 
 impl ControllerKind {
@@ -248,6 +299,8 @@ pub(crate) struct SdlReport {
     pub paddles: u8,
     pub touchpad: bool,
     pub misc_button: bool,
+    /// SDL's labels of the South, East, West, North buttons for this pad type (None when unknown).
+    pub face_labels: Option<[PromptLabel; 4]>,
 }
 
 pub(crate) fn from_sdl(report: SdlReport, user: &[Model]) -> ControllerKind {
@@ -281,6 +334,7 @@ pub(crate) fn from_sdl(report: SdlReport, user: &[Model]) -> ControllerKind {
         touchpad: report.touchpad,
         misc_button: report.misc_button,
         prompt_style: family.prompt_style(),
+        face_labels: report.face_labels.unwrap_or_else(|| family.prompt_style().labels()),
     }
 }
 
@@ -319,6 +373,7 @@ pub(crate) fn from_xinput(caps: XinputCaps, user: &[Model]) -> ControllerKind {
         touchpad: false,
         misc_button: false,
         prompt_style: family.prompt_style(),
+        face_labels: family.prompt_style().labels(),
     }
 }
 

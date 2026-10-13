@@ -137,14 +137,48 @@ pub(crate) struct SkyPackage {
 
 impl SkyPackage {
     pub(crate) fn load(root: &std::path::Path, name: &str) -> Result<Self, String> {
+        Self::load_from(&root.join("private/native-skies"), name, |_, _| Ok(()))
+    }
+
+    /// The Trick Guide set's dome (`<assets>/private/hud/scene/TrickGuide.sky.*`, setup's scene_clips.py): its own
+    /// material_sky parameters, the sun direction and anchor height of `world` (the current map's sky). NOT RETAIL
+    /// YET: no Trick Guide render location exists in the collections; retail keeping the world's is assumed.
+    pub(crate) fn load_scene(directory: &std::path::Path, world: Option<&SkyPackage>) -> Result<Self, String> {
+        let (anchor_height, sun_direction) = world
+            .and_then(|w| w.sky.environment.as_ref())
+            .map_or((165., [0., 1., 0.]), |e| (e.anchor_height, e.sun_direction));
+        Self::load_from(directory, "TrickGuide.sky", |sky, json| {
+            #[derive(serde::Deserialize)]
+            struct Material { sun_scale: f32, multiplier: f32 }
+            #[derive(serde::Deserialize)]
+            struct Scene { material: Material }
+            let scene: Scene = serde_json::from_slice(json).map_err(|e| e.to_string())?;
+            sky.environment = Some(Environment {
+                anchor_height,
+                sun_direction,
+                sun_scale: scene.material.sun_scale,
+                multiplier: scene.material.multiplier,
+                location_chain: vec!["trickguide (sun: current map)".into()],
+                fog_frame: None,
+            });
+            Ok(())
+        })
+    }
+
+    fn load_from(
+        base: &std::path::Path,
+        name: &str,
+        complete: impl FnOnce(&mut Sky, &[u8]) -> Result<(), String>,
+    ) -> Result<Self, String> {
         if name.is_empty() || name.contains(['/', '\\', ':']) || matches!(name, "." | "..") {
             return Err("Invalid retail sky name".into());
         }
-        let base = root.join("private/native-skies");
         let read = |suffix: &str| {
             std::fs::read(base.join(format!("{name}{suffix}"))).map_err(|e| e.to_string())
         };
-        let sky: Sky = serde_json::from_slice(&read(".json")?).map_err(|e| e.to_string())?;
+        let json = read(".json")?;
+        let mut sky: Sky = serde_json::from_slice(&json).map_err(|e| e.to_string())?;
+        complete(&mut sky, &json)?;
         let rgba = read(".rgba")?;
         if sky.width == 0
             || sky.height == 0

@@ -366,7 +366,7 @@ fn prune_bindings(pipeline: Res<Pipeline>, views: Query<&ViewTarget, With<Retail
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, RenderLabel)]
-struct ExposureLabel;
+pub(crate) struct ExposureLabel;
 
 #[derive(Default)]
 struct ExposureNode;

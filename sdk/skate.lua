@@ -587,6 +587,28 @@ function sdk.menus.movie(name, path) end
 ---@param path string
 function sdk.menus.bitmap(movie, bitmap, path) end
 
+---The world behind a front-end screen while it is on top: blur on / off and the ramp, by the
+---screen's retail id (sdk.menus.info().screens lists every id with its retail blur flag; the
+---pause menu is 'b4b7976b40b3e837'). Unset fields keep retail's values (strength 8.0, step 0.8 per
+---tick, tint {90, 85, 81}, tint_step 15); nil options drop this mod's override. The newest mod
+---wins; removed when the mod stops.
+---@param screen string
+---@param options {blur?:boolean,strength?:number,step?:number,tint?:integer[],tint_step?:integer}|nil
+function sdk.menus.backdrop(screen, options) end
+
+---Add or change a Trick Guide entry (pause menu > Learn > Trick Guide). entry is 'category',
+---'subcategory' or 'trick'; key is a retail record's 16 hex digits (its Attrib key) or the mod's own
+---id. Unset fields keep the entry's value: label / description (string ids or '#literal'), up to 4
+---slots {gesture, button, connector} (ids into the retail gesture and button name tables; connector
+---1 Plus, 2 Arrow, 3 Or), animation (tricks are listed only with one), parent (the category of a
+---subcategory, the subcategory of a trick), order (a trick's place), has_tricks (a subcategory
+---opens a list or shows its own slots), position (a category's place), hidden. nil options drop
+---this mod's change; mods apply in load order; removed when the mod stops.
+---@param entry 'category'|'subcategory'|'trick'
+---@param key string
+---@param options {label?:string,description?:string,slots?:{gesture?:integer,button?:integer,connector?:integer}[],animation?:string,parent?:string,order?:integer,has_tricks?:boolean,position?:integer,hidden?:boolean}|nil
+function sdk.menus.trick_guide(entry, key, options) end
+
 ---@class NativeContact
 ---@field a {kind:string,index?:integer} board, skater, external, or world
 ---@field b {kind:string,index?:integer}

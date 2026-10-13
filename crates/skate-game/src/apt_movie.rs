@@ -36,6 +36,9 @@ pub struct Pending {
     pub offset: u32,
     pub event: u32,
 }
+/// `Pending::event` of a registerClass constructor call (not a clip event bit; the stage runs
+/// the class function on the clip instead of an action stream).
+pub const CLASS_CONSTRUCTOR: u32 = 1 << 31;
 #[derive(Clone)]
 pub struct Movie {
     pub characters: BTreeMap<i32, Character>,
@@ -54,7 +57,63 @@ pub struct Movie {
     /// Shape characters copied in by `link_imports`: local id -> (library key, id there). Their GEO
     /// units and bitmaps stay in the library movie (doc 31, Milestone 4).
     pub shape_origins: BTreeMap<i32, (String, i32)>,
+    /// Root timeline rate from the movie header (`milliseconds_per_frame` of character 0),
+    /// when the export carries it; every movie keeps its own rate (core_menu 16 ms, dimmer 83 ms).
+    pub milliseconds_per_frame: Option<f32>,
+    /// Linkage names (import and export records) -> character id; `Object.registerClass` binds
+    /// a class to a clip by this name.
+    pub linkage: BTreeMap<String, i32>,
+    /// The linkage name of every library character copied in (character -> name), also where the movie's own
+    /// name wins in `linkage`: registerClass binds the library's symbol, so every copy gets the class (the trick
+    /// guide imports "Button Item" itself and again through panel > button_menu; its button help had no class).
+    pub class_links: BTreeMap<i32, String>,
+    /// Library movie keys this movie imports from, in record order.
+    pub import_files: Vec<String>,
+    /// Classes bound by registerClass: character -> class function object. A new clip of that
+    /// character gets the class prototype and a constructor call (`CLASS_CONSTRUCTOR`).
+    pub classes: BTreeMap<i32, usize>,
+    /// Clips whose position a script set: the timeline no longer moves them (Flash rule; NOT RETAIL YET, the
+    /// retail flag is not traced). Only hosts that call `script_moved` use it (the front-end stage).
+    pub script_moved: std::collections::BTreeSet<usize>,
+    /// Clips made by attachMovie: their parent's timeline keeps them (they sit above every timeline depth).
+    pub attached: std::collections::BTreeSet<usize>,
+    /// Script-set scale / rotation (`_xscale`, `_yscale` in percent, `_rotation` in degrees; also from `_width` /
+    /// `_height` writes): replaces the placement's linear part when drawing (standard AS2; NOT RETAIL YET: the
+    /// retail property handlers are not decoded).
+    pub scaled: BTreeMap<usize, [f32; 3]>,
     states: BTreeMap<i32, Vec<DisplayList>>,
+}
+
+/// attachMovie depth d is child key d + SCRIPT_DEPTH, above every timeline depth (Flash: timeline depths start at
+/// -16384, script depths at 0). NOT RETAIL YET: retail's depth split is not traced.
+pub const SCRIPT_DEPTH: i32 = 16384;
+
+/// `_xscale` / `_yscale` / `_rotation` of a placement matrix (AS2 reads them from the clip's matrix).
+fn seed_scale(vm: &mut Vm, id: usize, m: &[f32; 6]) -> Result<(), String> {
+    vm.set(id, "_xscale", Value::Number((100.0 * m[0].hypot(m[1])) as f64))?;
+    vm.set(id, "_yscale", Value::Number((100.0 * m[2].hypot(m[3])) as f64))?;
+    vm.set(id, "_rotation", Value::Number(m[1].atan2(m[0]).to_degrees() as f64))?;
+    Ok(())
+}
+
+/// A clip's local matrix: the placement's (or identity), its linear part replaced by a script-set scale /
+/// rotation, translated by `_x` / `_y`.
+pub fn clip_matrix(movie: &Movie, vm: &Vm, id: usize) -> [f32; 6] {
+    let mut m = movie
+        .instances
+        .get(&id)
+        .and_then(|i| i.placement.as_ref())
+        .map_or([1., 0., 0., 1., 0., 0.], |p| p.matrix);
+    if let Some([sx, sy, rotation]) = movie.scaled.get(&id) {
+        let (sin, cos) = rotation.to_radians().sin_cos();
+        m[0] = cos * sx / 100.0;
+        m[1] = sin * sx / 100.0;
+        m[2] = -sin * sy / 100.0;
+        m[3] = cos * sy / 100.0;
+    }
+    m[4] = vm.get(id, "_x").number() as f32;
+    m[5] = vm.get(id, "_y").number() as f32;
+    m
 }
 fn display_states(c: &Character) -> Result<Vec<DisplayList>, String> {
     let mut list = DisplayList::default();
@@ -84,11 +143,45 @@ impl Movie {
             root: usize::MAX,
             text_assets: crate::apt_text::TextAssets::load(json)?,
             shape_origins: BTreeMap::new(),
+            milliseconds_per_frame: json["characters"]
+                .as_array()
+                .and_then(|c| c.iter().find(|c| c["id"] == 0))
+                .and_then(|c| c["movie"]["milliseconds_per_frame"].as_f64())
+                .filter(|ms| *ms > 0.0)
+                .map(|ms| ms as f32),
+            linkage: ["imports", "exports"]
+                .iter()
+                .flat_map(|k| json[*k].as_array().into_iter().flatten())
+                .filter_map(|r| Some((r["name"].as_str()?.to_string(), r["character_id"].as_i64()? as i32)))
+                .collect(),
+            class_links: BTreeMap::new(),
+            import_files: {
+                let mut files: Vec<String> = Vec::new();
+                for r in json["imports"].as_array().into_iter().flatten() {
+                    if let Some(f) = r["file"].as_str() {
+                        let key = crate::apt_imports::library_key(f);
+                        if !files.contains(&key) {
+                            files.push(key);
+                        }
+                    }
+                }
+                files
+            },
+            classes: BTreeMap::new(),
+            script_moved: Default::default(),
+            attached: Default::default(),
+            scaled: Default::default(),
             states,
         })
     }
     pub fn initialize(&mut self, vm: &mut Vm) -> Result<(), String> {
-        self.root = self.create(vm, 0, None, 0, &[])?;
+        self.initialize_into(vm, None)
+    }
+    /// Builds the root timeline. With `into`, the root reuses that script object (a clip a
+    /// MovieClipLoader loads this movie into keeps its identity, name and parent, so script
+    /// references to it, like ScreenManager.mMovieClipList, still reach the loaded screen).
+    pub fn initialize_into(&mut self, vm: &mut Vm, into: Option<usize>) -> Result<(), String> {
+        self.root = self.create_into(vm, 0, None, 0, &[], into)?;
         vm.set(self.root, "_root", Value::Object(self.root))?;
         // Every clip sees the same authored root, including unnamed children.
         for id in self.instances.keys() {
@@ -104,6 +197,17 @@ impl Movie {
         depth: usize,
         events: &[ClipAction],
     ) -> Result<usize, String> {
+        self.create_into(vm, character, parent, depth, events, None)
+    }
+    fn create_into(
+        &mut self,
+        vm: &mut Vm,
+        character: i32,
+        parent: Option<usize>,
+        depth: usize,
+        events: &[ClipAction],
+        into: Option<usize>,
+    ) -> Result<usize, String> {
         if depth > 32 || self.instances.len() > 2048 {
             return Err("APT movie hierarchy limit".into());
         }
@@ -112,7 +216,14 @@ impl Movie {
             .get(&character)
             .ok_or("APT unknown character")?
             .clone();
-        let id = vm.object(ObjectKind::Native(format!("movie:{character}")));
+        let kind = ObjectKind::Native(format!("movie:{character}"));
+        let id = match into {
+            Some(id) => {
+                vm.objects.get_mut(id).ok_or("Invalid APT load target")?.kind = kind;
+                id
+            }
+            None => vm.object(kind),
+        };
         if self.root != usize::MAX {
             vm.set(id, "_root", Value::Object(self.root))?;
         }
@@ -141,12 +252,31 @@ impl Movie {
             },
         );
         self.text_changed(vm, id)?;
+        if c.text.is_none() {
+            if let Some(b) = self.character_bounds(character, 0) {
+                vm.set(id, "_width", Value::Number((b[2] - b[0]) as f64))?;
+                vm.set(id, "_height", Value::Number((b[3] - b[1]) as f64))?;
+            }
+        }
         // Retail sub_82E7AF18 (sprites only): initialize, then construct, both before the
         // new clip's own frame runs.
         let sprite = c.type_name == "sprite";
         if sprite {
             self.queue_events(id, events, clip_event::INITIALIZE, true);
             self.queue_events(id, events, clip_event::CONSTRUCT, true);
+        }
+        // registerClass: the clip takes the class prototype now; its constructor runs right
+        // after the initialize / construct handlers, before the clip's first frame actions.
+        // NOT RETAIL YET (order): retail's point for the constructor is not decoded.
+        if let Some(class) = self.classes.get(&character).copied() {
+            if let Value::Object(proto) = vm.get(class, "prototype") {
+                vm.objects[id].prototype = Some(proto);
+            }
+            self.immediate.push_back(Pending {
+                object: id,
+                offset: 0,
+                event: CLASS_CONSTRUCTOR,
+            });
         }
         if !c.frames.is_empty() {
             self.seek(vm, id, 0, depth + 1)?;
@@ -159,6 +289,63 @@ impl Movie {
             self.queue_events(id, events, clip_event::LOAD, false);
         }
         Ok(id)
+    }
+    /// A script wrote `key` (`_xscale`, `_yscale`, `_rotation`, `_width`, `_height`) on a clip: record its
+    /// transform. `_width` / `_height` of a non-text clip set the scale through its natural bounds (text fields
+    /// keep their own `_width` meaning, the field box).
+    pub fn transform_changed(&mut self, vm: &mut Vm, id: usize, key: &str) -> Result<(), String> {
+        let Some(instance) = self.instances.get(&id) else { return Ok(()) };
+        let character = instance.character;
+        let is_text = self.characters.get(&character).is_some_and(|c| c.text.is_some());
+        let key = key.to_ascii_lowercase();
+        if is_text && (key == "_width" || key == "_height") {
+            return Ok(());
+        }
+        let number = |vm: &Vm, k: &str| vm.get(id, k).number() as f32;
+        let mut t = [number(vm, "_xscale"), number(vm, "_yscale"), number(vm, "_rotation")];
+        if key == "_width" || key == "_height" {
+            let Some(b) = self.character_bounds(character, 0) else { return Ok(()) };
+            let (natural, axis) = if key == "_width" { (b[2] - b[0], 0) } else { (b[3] - b[1], 1) };
+            if natural > 0.0 {
+                t[axis] = 100.0 * number(vm, &key) / natural;
+                vm.set(id, if axis == 0 { "_xscale" } else { "_yscale" }, Value::Number(t[axis] as f64))?;
+            }
+        } else if let Some(b) = self.character_bounds(character, 0) {
+            vm.set(id, "_width", Value::Number(((b[2] - b[0]) * t[0] / 100.0) as f64))?;
+            vm.set(id, "_height", Value::Number(((b[3] - b[1]) * t[1] / 100.0) as f64))?;
+        }
+        if t.iter().all(|v| v.is_finite()) {
+            self.scaled.insert(id, t);
+        }
+        Ok(())
+    }
+
+    /// A character's bounds in its own space: its own (shapes, text) or, for a sprite, the union of its frame-0
+    /// children through their matrices, leaving out clip-depth children like retail's bounds walk sub_82E59C28.
+    /// New clips get `_width` / `_height` from it. NOT RETAIL YET: static frame-0 bounds, not re-measured when the
+    /// clip's content changes.
+    pub fn character_bounds(&self, character: i32, depth: usize) -> Option<[f32; 4]> {
+        if depth > 16 {
+            return None;
+        }
+        let c = self.characters.get(&character)?;
+        if let Some(b) = c.bounds {
+            return Some(b);
+        }
+        let list = self.states.get(&character)?.first()?;
+        let mut out: Option<[f32; 4]> = None;
+        for p in list.depths.values().filter(|p| p.clip_depth < 0) {
+            let Some(b) = self.character_bounds(p.character, depth + 1) else { continue };
+            let m = p.matrix;
+            for (x, y) in [(b[0], b[1]), (b[2], b[1]), (b[0], b[3]), (b[2], b[3])] {
+                let (tx, ty) = (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]);
+                out = Some(match out {
+                    Some(o) => [o[0].min(tx), o[1].min(ty), o[2].max(tx), o[3].max(ty)],
+                    None => [tx, ty, tx, ty],
+                });
+            }
+        }
+        out.filter(|o| o.iter().all(|v| v.is_finite()))
     }
     pub fn text_changed(&self, vm: &mut Vm, id: usize) -> Result<(), String> {
         let Some(instance) = self.instances.get(&id) else {
@@ -178,7 +365,14 @@ impl Movie {
         let height = text["font_height"].as_f64().ok_or("Invalid text size")? as f32;
         let width = font.width(&value, height);
         vm.set(id, "textWidth", Value::Number(width as f64))?;
+        // NOT RETAIL YET: one line of the font size (button_menu centres its labels with textHeight); multi-line
+        // measurement is not decoded.
+        vm.set(id, "textHeight", Value::Number(height as f64))?;
         let bounds = character.bounds.ok_or("Missing text bounds")?;
+        // The field's authored height (core_menu centres its DLC label with `_height`).
+        // NOT RETAIL YET: retail's autosize height (line height vs field) is not decoded; single-line labels
+        // keep the field height here.
+        vm.set(id, "_height", Value::Number((bounds[3] - bounds[1]) as f64))?;
         let autosize = vm.get(id, "autoSize").text();
         vm.set(
             id,
@@ -228,7 +422,15 @@ impl Movie {
             }
         }
     }
+    /// Removes every clip of this movie (unload handlers queued as for a removal).
+    pub fn unload(&mut self, vm: &mut Vm) {
+        if self.root != usize::MAX {
+            self.remove(vm, self.root);
+        }
+    }
     fn remove(&mut self, vm: &mut Vm, id: usize) {
+        self.attached.remove(&id);
+        self.scaled.remove(&id);
         if let Some(instance) = self.instances.remove(&id) {
             // Retail sub_82E55DA8 dispatches unload before tearing down the children.
             if let Some(p) = &instance.placement {
@@ -304,9 +506,12 @@ impl Movie {
                 )?
             };
             let old = self.instances[&child].placement.as_ref();
-            if old.is_none_or(|old| old.matrix != placement.matrix) {
+            if old.is_none_or(|old| old.matrix != placement.matrix) && !self.script_moved.contains(&child) {
                 vm.set(child, "_x", Value::Number(placement.matrix[4] as f64))?;
                 vm.set(child, "_y", Value::Number(placement.matrix[5] as f64))?;
+            }
+            if old.is_none_or(|old| old.matrix != placement.matrix) && !self.scaled.contains_key(&child) {
+                seed_scale(vm, child, &placement.matrix)?;
             }
             if !placement.name.is_empty() {
                 vm.set(id, &placement.name, Value::Object(child))?;
@@ -315,6 +520,10 @@ impl Movie {
             children.insert(depth, child);
         }
         for (depth, child) in &instance.children {
+            if self.attached.contains(child) && !children.contains_key(depth) {
+                children.insert(*depth, *child);
+                continue;
+            }
             if !children.contains_key(depth) {
                 if let Some(name) = self
                     .instances
@@ -383,6 +592,65 @@ impl Movie {
         }
         Ok(())
     }
+    /// MovieClip.attachMovie(linkage, name, depth[, init]): a new clip of the exported (or imported) symbol under
+    /// `parent`, named, at a script depth, with the init object's fields copied in (standard AS2 semantics; NOT
+    /// RETAIL YET: the retail handler is not decoded). `None` when the symbol or the parent is unknown.
+    pub fn attach(
+        &mut self,
+        vm: &mut Vm,
+        parent: usize,
+        linkage: &str,
+        name: &str,
+        depth: i32,
+        init: Option<usize>,
+    ) -> Result<Option<usize>, String> {
+        let (Some(&character), true) = (self.linkage.get(linkage), self.instances.contains_key(&parent)) else {
+            return Ok(None);
+        };
+        let key = depth.saturating_add(SCRIPT_DEPTH);
+        if let Some(old) = self.instances[&parent].children.get(&key).copied() {
+            let old_name = vm.get(old, "_name").text();
+            if vm.get(parent, &old_name) == Value::Object(old) {
+                vm.objects[parent].fields.remove(&old_name);
+            }
+            self.remove(vm, old);
+        }
+        let mut nesting = 1;
+        let mut up = vm.get(parent, "_parent");
+        while let Value::Object(p) = up {
+            nesting += 1;
+            if nesting > 32 {
+                break;
+            }
+            up = vm.get(p, "_parent");
+        }
+        let child = self.create(vm, character, Some(parent), nesting, &[])?;
+        vm.set(child, "_name", Value::Text(name.into()))?;
+        if !name.is_empty() {
+            vm.set(parent, name, Value::Object(child))?;
+        }
+        if let Some(init) = init {
+            let fields: Vec<(String, Value)> = vm.objects[init].fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            for (k, v) in fields {
+                vm.set(child, &k, v)?;
+            }
+        }
+        seed_scale(vm, child, &[1.0, 0.0, 0.0, 1.0, 0.0, 0.0])?;
+        self.instances.get_mut(&child).unwrap().placement = Some(Placement {
+            character,
+            matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            color: [255, 255, 255, 255, 0, 0, 0, 0],
+            ratio: 0.0,
+            name: name.into(),
+            clip_depth: -1,
+            blend_mode: 0,
+            clip_actions: Vec::new(),
+        });
+        self.instances.get_mut(&parent).unwrap().children.insert(key, child);
+        self.attached.insert(child);
+        Ok(Some(child))
+    }
+
     pub fn method(
         &mut self,
         vm: &mut Vm,
@@ -394,21 +662,33 @@ impl Movie {
             return Ok(false);
         }
         match method {
+            "removeMovieClip" if self.attached.contains(&id) => {
+                let name = vm.get(id, "_name").text();
+                if let Value::Object(parent) = vm.get(id, "_parent") {
+                    if vm.get(parent, &name) == Value::Object(id) {
+                        vm.objects[parent].fields.remove(&name);
+                    }
+                    if let Some(instance) = self.instances.get_mut(&parent) {
+                        instance.children.retain(|_, c| *c != id);
+                    }
+                }
+                self.remove(vm, id);
+            }
             "stop" => self.instances.get_mut(&id).unwrap().playing = false,
             "play" => self.instances.get_mut(&id).unwrap().playing = true,
             "gotoAndPlay" | "gotoAndStop" => {
                 let c = &self.characters[&self.instances[&id].character];
                 let frame = match args.first().ok_or("APT goto requires frame")? {
-                    Value::Text(label) => c
-                        .frames
-                        .iter()
-                        .position(|f| {
-                            f.controls.iter().any(|control| {
-                                control.type_name == "frame_label"
-                                    && control.label.as_deref() == Some(label)
-                            })
+                    // An unknown label leaves the clip where it is (Flash behaviour; retail not traced), so a
+                    // menu item with an icon name the movie lacks does not stop the whole movie.
+                    Value::Text(label) => match c.frames.iter().position(|f| {
+                        f.controls.iter().any(|control| {
+                            control.type_name == "frame_label" && control.label.as_deref() == Some(label)
                         })
-                        .ok_or_else(|| format!("APT character {} lacks label {label}", c.id))?,
+                    }) {
+                        Some(frame) => frame,
+                        None => return Ok(true),
+                    },
                     value => {
                         let frame = value.number();
                         if !frame.is_finite() || frame < 0.0 {
@@ -523,6 +803,14 @@ impl Movie {
         };
         let id = as_id.unwrap_or_else(|| self.fresh_character());
         link.memo.entry((lib_key.to_string(), source)).or_insert(id);
+        // The library's linkage names travel with the copy, so a component's nested clips (highlight_option's
+        // HighlightText) get the classes registered for them; the movie's own names win.
+        for (name, character) in &lib.linkage {
+            if *character == source {
+                self.linkage.entry(name.clone()).or_insert(id);
+                self.class_links.insert(id, name.clone());
+            }
+        }
         let mut c = original.clone();
         c.id = id;
         if c.type_name == "shape" {

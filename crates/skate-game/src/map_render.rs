@@ -334,3 +334,23 @@ pub(crate) fn position_celestial_bodies(
         *visibility = if direction.y > -0.05 { Visibility::Inherited } else { Visibility::Hidden };
     }
 }
+
+// ---------------------------------------------------------------------------
+// Scenes outside the map (the Trick Guide demo set, trick_guide_scene.rs)
+// ---------------------------------------------------------------------------
+
+impl SceneCommands {
+    /// Apply the queued spawns now. Every entity gets `MapEntity`; the caller re-tags what it spawned.
+    pub(crate) fn apply_now(&mut self, world: &mut World) {
+        std::mem::take(&mut self.queue).apply(world);
+    }
+}
+
+impl<A: Asset> StagedAssets<A> {
+    pub(crate) fn staged(world: &World) -> Self {
+        Self::new(world)
+    }
+    pub(crate) fn publish_now(&mut self, world: &mut World) {
+        self.publish(world);
+    }
+}

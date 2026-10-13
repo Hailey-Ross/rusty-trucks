@@ -525,6 +525,11 @@ pub enum Command {
     EngineInspect { system:String },
     Request { key:String, #[serde(default)] token:u64, command:Box<Command> },
     InputOverride { action:usize, value:Option<f32> },
+    /// Controller rumble (retail's rumble channels): motor levels 0..1, decay rate per second, the mod's channel
+    /// 0..1023, the pad slot (None = the active pad).
+    InputRumble { #[serde(default)] pad:Option<u8>, #[serde(default)] channel:u32, low:f32, high:f32, #[serde(default)] rate:f32 },
+    /// Stop this mod's rumble on a pad (None = every pad).
+    InputStopRumble { #[serde(default)] pad:Option<u8> },
     NativeImpulse { body:crate::extensions::NativeBodyRef, impulse:[f32;3], point:Option<[f32;3]>, angular:bool },
     PlayerJoint { joint:usize, options:crate::extensions::JointOverride },
     PlayerResetJoint { joint:usize },
@@ -600,6 +605,12 @@ pub enum Command {
     /// Replace one bitmap of a front-end APT movie by its stable id (movie import name + bitmap
     /// character id) with a PNG from the mod's folder.
     MenuBitmap { movie: String, bitmap: i32, path: String },
+    /// The backdrop of an FE screen by its retail screen key: blur on / off and the ramp; no options =
+    /// drop this mod's override.
+    MenuBackdrop { screen: String, #[serde(default)] options: Option<crate::menus::BackdropOptions> },
+    /// Add or change a Trick Guide entry (category / subcategory / trick) by key; no options = drop this mod's
+    /// change to it.
+    MenuTrickGuide { entry: String, key: String, #[serde(default)] options: Option<crate::menus::TrickGuideOptions> },
     CameraClearCapture {
         key: String,
     },
@@ -641,6 +652,9 @@ impl Command {
             Self::EngineInspect {system} => matches!(system.as_str(),"graphs"|"scoring"|"audio_catalog") || crate::audio_tuning::valid_inspect(system) || crate::world_tuning::valid_inspect(system),
             Self::Request {key,command,token} => *token<=9_007_199_254_740_991 && crate::schema::valid_id(key) && !matches!(**command,Self::Request{..}) && command.validate(),
             Self::InputOverride {action,value} => (64..=81).contains(action) && value.is_none_or(|v|v.is_finite() && (-1.0..=1.0).contains(&v)),
+            Self::InputRumble {pad,channel,low,high,rate} => pad.is_none_or(|p|p<4) && *channel<1024
+                && [low,high].iter().all(|v|v.is_finite() && (0.0..=1.0).contains(*v)) && rate.is_finite() && (0.0..=600.0).contains(rate),
+            Self::InputStopRumble {pad} => pad.is_none_or(|p|p<4),
             Self::NativeImpulse {body,impulse,point:p,..} => body.validate() && impulse.iter().all(|v|v.is_finite() && v.abs()<=100_000.) && p.as_ref().is_none_or(point),
             Self::Log { text } => text.len() <= 2048,
             Self::Overlay { key, text } | Self::MultiplayerDebug { key, text } => crate::schema::valid_id(key) && text.len() <= 1024,
@@ -923,6 +937,8 @@ impl Command {
             Self::MenuSetValue { id, value } => crate::menus::valid_menu_id(id) && value.validate(),
             Self::MenuMovie { name, path } => !name.is_empty() && name.len() <= 160 && crate::audio_content::valid_content_path(path, &["json"]),
             Self::MenuBitmap { movie, bitmap, path } => !movie.is_empty() && movie.len() <= 160 && (0..=0xFFFF).contains(bitmap) && crate::graphics_dynamic::valid_texture_path(path),
+            Self::MenuBackdrop { screen, options } => crate::menus::valid_screen_key(screen) && options.as_ref().is_none_or(crate::menus::BackdropOptions::validate),
+            Self::MenuTrickGuide { entry, key, options } => crate::menus::TRICK_GUIDE_ENTRIES.contains(&entry.as_str()) && crate::menus::valid_trick_guide_key(key) && options.as_ref().is_none_or(crate::menus::TrickGuideOptions::validate),
             Self::CameraClearCapture { key } => crate::schema::valid_id(key),
         }
     }
@@ -937,6 +953,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::EngineInspect {..} => "engine_inspect",
         Command::Request {..} => "request",
         Command::InputOverride {..} => "input_override",
+        Command::InputRumble {..} => "input_rumble",
+        Command::InputStopRumble {..} => "input_stop_rumble",
         Command::NativeImpulse {..} => "native_impulse",
         Command::Log { .. } => "log",
         Command::Overlay { .. } => "overlay",
@@ -1035,6 +1053,8 @@ fn command_kind(command: &Command) -> &'static str {
         Command::MenuUnhandle { .. } => "menu_unhandle",
         Command::MenuSetValue { .. } => "menu_set_value",
         Command::MenuMovie { .. } => "menu_movie",
+        Command::MenuBackdrop { .. } => "menu_backdrop",
+        Command::MenuTrickGuide { .. } => "menu_trick_guide",
         Command::MenuBitmap { .. } => "menu_bitmap",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
@@ -1284,6 +1304,8 @@ impl Vm {
             capabilities.set("command_results", 1)?;
             capabilities.set("native_bodies", 1)?;
             capabilities.set("input_override", 1)?;
+            // sdk.input.rumble / stop_rumble.
+            capabilities.set("input_rumble", 1)?;
             // sdk.input.controller(s) (read-only identity) and sdk.input.action_ids.
             capabilities.set("controllers", 1)?;
             capabilities.set("action_ids", 1)?;
@@ -2852,6 +2874,18 @@ mod empty_table_lists {
         assert!(matches!(bitmap, Command::MenuBitmap { bitmap: 2, .. }) && bitmap.validate());
         assert!(!eval("return {kind='menu_bitmap', movie='source/screens/main/core_menu', bitmap=-1, path='fe/glow.png'}").validate());
         assert!(!eval("return {kind='menu_bitmap', movie='source/screens/main/core_menu', bitmap=2, path='fe/glow.json'}").validate());
+        let backdrop = eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={blur=true, tint={30, 30, 30}, step=0.4}}");
+        assert!(matches!(&backdrop, Command::MenuBackdrop { options: Some(o), .. } if o.tint == Some(vec![30, 30, 30])) && backdrop.validate());
+        assert!(eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837'}").validate());
+        let tg = eval("return {kind='menu_trick_guide', entry='trick', key='my-mod.trick', options={label='#Mod Flip', parent='8bca54f004465329', slots={{gesture=48, button=3, connector=1}}, order=5}}");
+        assert!(matches!(&tg, Command::MenuTrickGuide { options: Some(o), .. } if o.slots.as_ref().is_some_and(|s| s[0].gesture == 48)) && tg.validate());
+        assert!(eval("return {kind='menu_trick_guide', entry='category', key='046ed0ccbda1091f'}").validate());
+        assert!(!eval("return {kind='menu_trick_guide', entry='grind', key='a'}").validate());
+        assert!(!eval("return {kind='menu_trick_guide', entry='trick', key='a', options={slots={{connector=4}}}}").validate());
+        assert!(!eval("return {kind='menu_backdrop', screen='56'}").validate());
+        assert!(eval("return {kind='menu_backdrop', screen='a774f79d33b6be83:1'}").validate());
+        assert!(!eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={tint={1, 2}}}").validate());
+        assert!(!eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={step=0}}").validate());
         assert!(matches!(eval("return {kind='menu_set_value', id='a', value=0.25}"), Command::MenuSetValue { value: crate::menus::MenuValue::Float(v), .. } if v == 0.25));
     }
 }

@@ -300,3 +300,110 @@ mod tests {
         assert!(valid_menu_id("ID_GAMESETTINGS_SFXVOLUME") && valid_menu_id("my-mod.Races") && !valid_menu_id("a b"));
     }
 }
+
+/// An FE screen id: the 16 lowercase hex digits of retail's per-screen key, plus `:n` when screens share the key
+/// (`sdk.menus.info().screens` lists them).
+pub fn valid_screen_key(s: &str) -> bool {
+    let (key, n) = s.split_once(':').unwrap_or((s, "0"));
+    key.len() == 16
+        && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && !n.is_empty()
+        && n.len() <= 2
+        && n.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `sdk.menus.trick_guide(entry, key, options)` entry kinds.
+pub const TRICK_GUIDE_ENTRIES: [&str; 3] = ["category", "subcategory", "trick"];
+
+/// One input slot of a Trick Guide entry: ids into the gesture / button name tables, connector 0 none, 1 Plus,
+/// 2 Arrow, 3 Or (doc 31 "Trick Guide").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrickGuideSlot {
+    #[serde(default)]
+    pub gesture: u32,
+    #[serde(default)]
+    pub button: u32,
+    #[serde(default)]
+    pub connector: u32,
+}
+
+/// `sdk.menus.trick_guide(entry, key, options)`: add or change a Trick Guide entry by key (a retail record's 16 hex
+/// digits, or the mod's own id). Unset fields keep the entry's value.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrickGuideOptions {
+    /// Name and description: string ids (FELanguage) or `#literal text`.
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Up to 4 input slots.
+    #[serde(default, deserialize_with = "crate::lua_list::opt_list")]
+    pub slots: Option<Vec<TrickGuideSlot>>,
+    /// Demo animation name (tricks need one to be listed).
+    #[serde(default)]
+    pub animation: Option<String>,
+    /// The category a subcategory lists under, or the subcategory a trick lists under (key).
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// A trick's place in its list (ascending).
+    #[serde(default)]
+    pub order: Option<i32>,
+    /// A subcategory opens a trick list (true) or shows its own slots (false).
+    #[serde(default)]
+    pub has_tricks: Option<bool>,
+    /// A category's place in the top-level list (0-based).
+    #[serde(default)]
+    pub position: Option<u32>,
+    /// Take the entry out of its list.
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+/// A Trick Guide key: 16 hex digits (a retail record) or a menu id (the mod's own entry).
+pub fn valid_trick_guide_key(s: &str) -> bool {
+    (s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())) || valid_menu_id(s)
+}
+
+impl TrickGuideOptions {
+    pub fn validate(&self) -> bool {
+        let text = |t: &Option<String>| t.as_ref().is_none_or(|t| t.len() <= 512);
+        text(&self.label)
+            && text(&self.description)
+            && text(&self.animation)
+            && self.parent.as_ref().is_none_or(|p| valid_trick_guide_key(p))
+            && self.slots.as_ref().is_none_or(|s| s.len() <= 4 && s.iter().all(|s| s.gesture < 256 && s.button < 256 && s.connector <= 3))
+            && self.position.is_none_or(|p| p < 256)
+    }
+}
+
+/// `sdk.menus.backdrop(screen, options)`: the world behind an FE screen (blur on / off and the ramp). Unset fields
+/// keep the retail value (screen stack info table + FE manager ramp, doc 31 "Pause blur").
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackdropOptions {
+    #[serde(default)]
+    pub blur: Option<bool>,
+    /// Full blur strength (retail 8.0).
+    #[serde(default)]
+    pub strength: Option<f32>,
+    /// Strength change per FE tick (retail 0.8).
+    #[serde(default)]
+    pub step: Option<f32>,
+    /// Tint floor {r, g, b} 0..255 (retail {90, 85, 81}).
+    #[serde(default, deserialize_with = "crate::lua_list::opt_list")]
+    pub tint: Option<Vec<i32>>,
+    /// Tint change per FE tick (retail 15).
+    #[serde(default)]
+    pub tint_step: Option<i32>,
+}
+
+impl BackdropOptions {
+    pub fn validate(&self) -> bool {
+        self.strength.is_none_or(|v| v.is_finite() && (0.0..=64.0).contains(&v))
+            && self.step.is_none_or(|v| v.is_finite() && v > 0.0 && v <= 64.0)
+            && self.tint.as_ref().is_none_or(|t| t.len() == 3 && t.iter().all(|c| (0..=255).contains(c)))
+            && self.tint_step.is_none_or(|v| (1..=255).contains(&v))
+    }
+}
