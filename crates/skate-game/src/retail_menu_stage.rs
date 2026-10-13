@@ -49,6 +49,19 @@ const TRICK_GUIDE_PATH: &str = "tricks/trickguide.swf";
 const TRICK_GUIDE_ITEM: &str = "TrickGuide";
 /// AptNext (A) key index.
 const APT_NEXT: u32 = 2;
+/// The fader bit screen changes hold (sub_825E6B30 / sub_825E6BF8 bit 0).
+const FADE_SCREEN: u32 = 0;
+/// Trick Guide state 4 (0x82619A20): updates before it releases the fade and takes input (S+336 > 10).
+const TRICK_GUIDE_FADE_IN_TICKS: u32 = 11;
+
+/// What runs when the screen is black (the fade hold's callback).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FadeAction {
+    /// Crossbar TrickGuide callback 0x8261CDD8: push the screen.
+    Push(usize),
+    /// Screen 14 back callback 0x82618EF0: close it.
+    Close(usize),
+}
 const CROSSBAR_ENUMS: [&str; 6] =
     ["RefreshMenu", "RefreshOption", "InitialiseMenu", "InitialiseSubOption", "InitSubOptionOnlineTeam", "RefreshDLCBanner"];
 /// Above the scoring HUD's draws on the shared layer.
@@ -82,6 +95,12 @@ struct MenuStage {
     /// The retail guide (mod layers apply over it) and the mod generation it was built for.
     trick_guide_base: std::sync::Arc<skate_core::trick_guide::TrickGuide>,
     trick_guide_generation: u64,
+    /// The FE fader (fade to black around screen changes) and the Trick Guide's ticks left before its release
+    /// (None = released / not waiting).
+    fade: skate_core::fe_fade::FeFade<FadeAction>,
+    fade_params: skate_core::fe_fade::FeFadeParams,
+    fade_carry: f32,
+    trick_guide_fade_in: Option<u32>,
     /// Retail Apt keys in key-table order (input.cfg expressions).
     apt_keys: Vec<AptKey>,
     pads: [FeInput; 4],
@@ -317,6 +336,10 @@ fn setup(
                 trick_guide_id: as_id(TRICK_GUIDE),
                 trick_guide_base: trick_guide.guide.clone(),
                 trick_guide_generation: 0,
+                fade: Default::default(),
+                fade_params: Default::default(),
+                fade_carry: 0.0,
+                trick_guide_fade_in: None,
                 trick_guide,
                 chyron: false,
                 settings: Default::default(),
@@ -437,16 +460,30 @@ fn update(
             } else {
                 trick_id
             };
+            if Some(screen) == pause && ms.fade.held(FADE_SCREEN) {
+                // The TrickGuide case sets the crossbar's closing flags (+380 / +52) while the fade runs: no input.
+                continue;
+            }
+            if Some(screen) == trick && (ms.fade.held(FADE_SCREEN) || ms.trick_guide_fade_in.is_some()) {
+                // Input waits for state 2 (0x82619A20 releases the fade first; vt+40 needs S+192 == 2) and stops while
+                // the close fades out (S+52).
+                continue;
+            }
             if Some(screen) == trick {
                 // Screen 14 vt+40 (0x82618F38): Back closes at level 0 or goes up a level (SetState(0)); A on a row
-                // without a list is consumed. Back plays core_b_button (h64 0x4D927CD64CC8B818). NOT RETAIL YET: the
-                // fade-to-black hold before the close (sub_825E6B30, callback 0x82618EF0) is not ported.
+                // without a list is consumed. Back plays core_b_button (h64 0x4D927CD64CC8B818).
                 let tg = &mut fe.trick_guide;
                 match key {
                     APT_PREVIOUS => {
                         sounds.write(FrontendSound::named("core_b_button"));
                         match tg.state.back() {
-                            skate_core::trick_guide::Back::Close => ms.stack.request(Layer::Main, Request::Close { screen }),
+                            // Level 0: hold the fade; the screen closes when black (callback 0x82618EF0).
+                            skate_core::trick_guide::Back::Close => {
+                                let params = ms.fade_params;
+                                if let Some(action) = ms.fade.hold(FADE_SCREEN, Some(FadeAction::Close(screen)), false, &params) {
+                                    run_fade_action(&mut ms.stack, action);
+                                }
+                            }
                             skate_core::trick_guide::Back::Up(state) => tg.states.push(state),
                         }
                     }
@@ -517,6 +554,9 @@ fn update(
             match effect {
                 Effect::Open(i) if Some(i) == pause => {
                     info!("RETAIL_MENUS open pause menu (FE {i})");
+                    // Crossbar init (vt slot 3, sub_8261ACA8) releases the screen fade (back from the Trick Guide).
+                    let params = ms.fade_params;
+                    ms.fade.release(FADE_SCREEN, false, &params);
                     fe.state = CrossbarState::open(&fe.view);
                     open_screen(&mut ms.stage, CROSSBAR_PATH, CROSSBAR, &mut fe)?;
                 }
@@ -537,6 +577,7 @@ fn update(
                 Effect::Close(i) if Some(i) == trick => {
                     info!("RETAIL_MENUS close Trick Guide (FE {i})");
                     fe.trick_guide.open = false;
+                    ms.trick_guide_fade_in = None;
                     close(&mut ms.stage, trick_id, &mut fe)?;
                 }
                 Effect::Close(i) if Some(i) == pause => {
@@ -588,6 +629,32 @@ fn update(
                 Effect::Blur(_) | Effect::Show(..) | Effect::Param(..) | Effect::Focus(_) => {}
             }
         }
+        // NOT RETAIL (guard): retail always returns to the pause menu, whose init releases the fade; with no screen
+        // left (the pause menu was closed meanwhile) the fade would stay black, so release it.
+        if ms.stack.top(Layer::Main).is_none() && ms.fade.held(FADE_SCREEN) {
+            let params = ms.fade_params;
+            ms.fade.release(FADE_SCREEN, false, &params);
+        }
+        // The fader's ticks (FE cadence): the Trick Guide's state-4 count, then actions due at black.
+        let params = ms.fade_params;
+        let before = ms.fade.alpha;
+        let period = 1.0 / params.tick_hz.max(1.0);
+        let ticks = ((time.delta_secs() + ms.fade_carry) / period).floor() as u32;
+        ms.fade_carry = (time.delta_secs() + ms.fade_carry - ticks as f32 * period).min(period * 30.0);
+        for _ in 0..ticks.min(30) {
+            if let Some(n) = ms.trick_guide_fade_in {
+                ms.trick_guide_fade_in = n.checked_sub(1).filter(|n| *n > 0);
+                if ms.trick_guide_fade_in.is_none() {
+                    ms.fade.release(FADE_SCREEN, false, &params);
+                }
+            }
+            for action in ms.fade.tick() {
+                run_fade_action(&mut ms.stack, action);
+            }
+        }
+        if before != ms.fade.alpha && (ms.fade.alpha == 0.0 || ms.fade.alpha == 1.0) {
+            info!("RETAIL_MENUS fade {}", if ms.fade.alpha == 1.0 { "black" } else { "clear" });
+        }
         ms.stage.update(time.delta_secs() * 1000.0, &movies.movies, &mut fe)?;
         // Settings loaded (vt+108 sub_8260C010): SetScreenState(1) builds the rows; intro complete = ready.
         if let Some(o) = options.filter(|o| ms.stack.top(Layer::Main) == Some(*o)) {
@@ -606,6 +673,9 @@ fn update(
             take_call(&mut fe, &format!("Game.OnScreenLoaded({trick_id})"));
             if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({trick_id})")) {
                 ms.stack.ready(t);
+                // State 4: count updates, then release the fade. NOT RETAIL YET: what enters state 4 is not found;
+                // the count starts at the intro's end.
+                ms.trick_guide_fade_in = Some(TRICK_GUIDE_FADE_IN_TICKS);
             }
         }
         flush_trick_guide(&mut ms.stage, trick_id, &mut fe)?;
@@ -646,6 +716,15 @@ fn update(
             if let Outcome::Forward(Owner::Engine(name), _) = &outcome {
                 if let Some(id) = name.strip_prefix(crate::retail_menus::SCREEN) {
                     match backdrop.index(id) {
+                        // The Trick Guide opens when the screen is black (crossbar case 0x8261BF78 holds the fade,
+                        // callback 0x8261CDD8 pushes FE 14). NOT RETAIL YET: Game Settings opens without the fade
+                        // (its case is not checked).
+                        Some(screen) if Some(screen) == trick => {
+                            let params = ms.fade_params;
+                            if let Some(action) = ms.fade.hold(FADE_SCREEN, Some(FadeAction::Push(screen)), false, &params) {
+                                run_fade_action(&mut ms.stack, action);
+                            }
+                        }
                         Some(screen) => ms.stack.request(Layer::Main, Request::push(screen)),
                         None => warn!("RETAIL_MENUS: no FE screen {id}"),
                     }
@@ -712,6 +791,13 @@ fn open_screen(stage: &mut Stage, path: &str, template: &str, fe: &mut FrontEnd)
         fe,
     )?;
     Ok(())
+}
+
+fn run_fade_action(stack: &mut FeStack, action: FadeAction) {
+    match action {
+        FadeAction::Push(screen) => stack.request(Layer::Main, Request::push(screen)),
+        FadeAction::Close(screen) => stack.request(Layer::Main, Request::Close { screen }),
+    }
 }
 
 /// The Trick Guide's queued screen states (its picker callbacks post them from inside a movie call), in order; the
@@ -794,6 +880,18 @@ fn render(
     }
     // An unresolved prompt draws nothing (an empty key would draw solid white).
     draws.retain(|d| !d.texture.starts_with("prompt/"));
+    // The FE fader over everything (alpha 1 = black), past the stage edges for any aspect ratio.
+    if ms.fade.alpha > 0.0 {
+        let v = |x: f32, y: f32| crate::apt_scene::Vertex { position: [x, y], uv: [0.0, 0.0] };
+        let (x0, y0, x1, y1) = (-1280.0, -720.0, 2560.0, 1440.0);
+        draws.push(crate::apt_scene::Draw {
+            texture: String::new(),
+            vertices: vec![v(x0, y0), v(x1, y0), v(x1, y1), v(x0, y0), v(x1, y1), v(x0, y1)],
+            multiply: [0.0, 0.0, 0.0, ms.fade.alpha],
+            add: [0.0; 4],
+            fill: crate::apt_scene::Fill::Solid,
+        });
+    }
     let root = crate::retail_menu_movies::set_root(&config);
     for draw in &draws {
         if draw.texture.is_empty() || ms.textures.contains_key(&draw.texture) {
