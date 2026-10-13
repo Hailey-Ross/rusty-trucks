@@ -854,6 +854,26 @@ impl Movie {
             )?;
             linked += 1;
         }
+        // Every library a copy came from keeps its exported symbols reachable by linkage name, placed or not:
+        // gesture_item's SetGestureType attaches "g_" + the trick's gesture (g_ollie_kickflip...), symbols its own
+        // timeline never places. The movie's own names and earlier copies win. NOT RETAIL YET: retail's
+        // attachMovie lookup is not decoded; this gives the Flash rule (a clip attaches from its defining movie).
+        let touched: std::collections::BTreeSet<String> = memo.keys().map(|(lib, _)| lib.clone()).collect();
+        for lib_key in touched {
+            let Some(library) = libraries.get(&lib_key) else {
+                continue;
+            };
+            let missing: Vec<i32> =
+                library.linkage.iter().filter(|(name, _)| !self.linkage.contains_key(*name)).map(|(_, c)| *c).collect();
+            let mut link = Link {
+                resolution,
+                libraries,
+                memo: &mut memo,
+            };
+            for character in missing {
+                self.copy_character(&mut link, &lib_key, library, character, None, 0)?;
+            }
+        }
         Ok(linked)
     }
     fn fresh_character(&self) -> i32 {
