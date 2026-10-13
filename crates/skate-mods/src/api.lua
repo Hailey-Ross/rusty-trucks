@@ -731,6 +731,11 @@ function sdk.menus.movie(name, path) submit{kind="menu_movie",name=name,path=pat
 -- {blur=true|false, strength=8.0, step=0.8, tint={90,85,81}, tint_step=15}; unset fields keep
 -- retail's values; nil options drop this mod's override. The newest mod wins; removed on stop.
 function sdk.menus.backdrop(screen, options) submit{kind="menu_backdrop",screen=screen,options=options} end
+-- Add or change a Trick Guide entry: entry 'category' | 'subcategory' | 'trick', key = a retail record's 16 hex
+-- digits or the mod's own id; options {label, description, slots={{gesture, button, connector}, ...} (up to 4),
+-- animation, parent, order, has_tricks, position, hidden}; unset fields keep the entry's value; nil options drop
+-- this mod's change. Mods apply in load order; removed when the mod stops.
+function sdk.menus.trick_guide(entry, key, options) submit{kind="menu_trick_guide",entry=entry,key=key,options=options} end
 -- Replace one bitmap of a menu movie by its stable id: the movie's import name plus the bitmap
 -- character id (sdk.menus.info().movies.bitmaps lists them), with a PNG in the mod's folder. The
 -- image covers the same fill area as the retail bitmap; newest mod wins; removed when the mod stops.

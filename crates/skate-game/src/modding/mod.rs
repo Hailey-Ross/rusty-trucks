@@ -1453,6 +1453,10 @@ fn apply_one(
         Command::MenuBackdrop { screen, options } => {
             world.resource_mut::<crate::fe_backdrop::FeBackdrop>().set_mod(id, screen, options);
         }
+        Command::MenuTrickGuide { entry, key, options } => {
+            let mut mods = world.get_resource_mut::<crate::trick_guide_host::TrickGuideMods>().ok_or("menus are not ready")?;
+            mods.set(id, &entry, &key, options);
+        }
         Command::CameraClearCapture { key } => capture::remove(world, id, &key),
     }
     Ok(())

@@ -49,6 +49,8 @@ MENU_ROOTS = (
     'source/screens/main/dimmer',
     'source/screens/main/freeskate_options',
     'source/screens/options/options',
+    # The pause menu's Learn > Trick Guide (template 29 TrickTutorial).
+    'source/screens/tricks/trickguide',
     'source/screens/main3dhud',
     'source/helper/screenmanager',
     'source/helper/screentransitionmanager',
@@ -193,6 +195,14 @@ def prepare(game, output, collections, roots=MENU_ROOTS):
         if partner:
             families |= {name for name, row in mappings.items() if row['file_name'].lower() == partner.lower()}
     fonts = {family: cache.font_asset(family) for family in sorted(families)}
+    # An APT font name without a FontManager row (trickguide's "HelveticaPresto") gets retail's fallback:
+    # sub_82809208 matches AptName case-insensitively, else takes the first row whose FileName is not "debug"
+    # (string 0x821A06E0). Row order = the collection's order; NOT RETAIL YET: the runtime table order is inferred.
+    fallback = next((name for name, row in mappings.items() if row['file_name'].lower() != 'debug'), None)
+    for family in sorted(families):
+        if family not in mappings and fallback:
+            mappings[family] = dict(mappings[fallback], fallback_of=fallback)
+            fonts[family] = cache.font_asset(fallback)
     language = {row['label'].strip(): row['value'] for row in json.loads(
         (cache_root / 'metadata/languages/english_global.json').read_text(encoding='utf-8'))['entries']}
     shared = {'language': language, 'fonts': fonts, 'font_mappings': mappings, 'font_pairs': FONT_PAIRS}

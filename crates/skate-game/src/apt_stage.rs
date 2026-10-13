@@ -507,7 +507,9 @@ impl Stage {
         movie.classes = movie
             .linkage
             .iter()
-            .filter_map(|(name, character)| Some((*character, *self.state.classes.get(name)?)))
+            .map(|(name, character)| (*character, name))
+            .chain(movie.class_links.iter().map(|(character, name)| (*character, name)))
+            .filter_map(|(character, name)| Some((character, *self.state.classes.get(name)?)))
             .collect();
         movie.initialize_into(&mut self.vm, into)?;
         let root = movie.root;
@@ -921,6 +923,101 @@ mod tests {
         }
         assert_eq!(game.settings.rows.len(), registry.screen_rows(2, &context).len());
         assert!(names.iter().any(|n| n == "mItem0"), "no row clips: {names:?}");
+    }
+
+    /// The Trick Guide (pause menu Learn > Trick Guide, template 29 TrickTutorial, movie tricks/trickguide) through the
+    /// screen manager. Data-gated like the above; `SKATE3_DUMP_DRAWS=1` prints the draws.
+    #[test]
+    fn retail_trick_guide_screen_opens() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/tricks/trickguide") {
+            eprintln!("skipped: menu set without the trick guide ({} movies in {}, failures {:?})", movies.len(), root.display(), set.failures);
+            return;
+        }
+        let (data, loaded) = crate::retail_menus::read(&crate::apt_imports::main_checkout().join("assets"));
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        // The guide from the installed collections and the TU3 image's tables (skipped without them).
+        let main = crate::apt_imports::main_checkout();
+        let (Ok(image), Ok(collections)) = (
+            std::fs::read(main.join(".local/tu3-image/default_82000000_011B0000.bin")),
+            skate_data::collections::Collections::load(&main.join("assets")),
+        ) else {
+            eprintln!("skipped: no TU3 image or collections");
+            return;
+        };
+        let tables = skate_data::menu_tables::extract(&skate_data::xex::XexImage { base_address: 0x8200_0000, image }).unwrap();
+        let guide = std::sync::Arc::new(skate_data::trick_guide::load(&collections, &tables.trick_guide));
+        let registry = crate::retail_menus::RetailMenus::new(data, true).registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        game.trick_guide = crate::trick_guide_host::TrickGuideHost::new(guide);
+        game.trick_guide.open = true;
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("TrickTutorial".into())], &mut game).unwrap();
+        // The Apt keys the screen reads, by key index (boot registration).
+        for (name, i) in [("AptNext", "2"), ("AptPrevious", "3"), ("AptUp", "12"), ("AptDown", "13")] {
+            stage.call_path("_level0._root.RegisterAptInputEnum", vec![Value::Text(name.into()), Value::Text(i.into())], &mut game).unwrap();
+        }
+        stage
+            .call_path(
+                "_global.ScreenManager.OpenScreen",
+                vec![
+                    Value::Text("source/screens/tricks/trickguide.swf".into()),
+                    Value::Text("screen".into()),
+                    Value::Text("0".into()),
+                    Value::Text("TrickTutorial".into()),
+                ],
+                &mut game,
+            )
+            .unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        eprintln!("game calls: {:?}", game.calls);
+        eprintln!("unhandled: {:?}", stage.unhandled());
+        assert!(game.calls.iter().any(|c| c.starts_with("Game.OnScreenLoaded(")), "{:?}", game.calls);
+        for _ in 0..120 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        eprintln!("game calls after: {:?}", game.calls);
+        eprintln!("unhandled after: {:?}", stage.unhandled());
+        eprintln!("states: {:?}", game.trick_guide.states);
+        // Down, then A (select Flip tricks), as the stage feeds keys: UpdateInput to the movie.
+        let id = game.calls.iter().find_map(|c| c.strip_prefix("Game.OnScreenLoaded(")).map(|c| c.trim_end_matches(')').to_owned()).unwrap();
+        for key in ["13", "12", "2"] {
+            stage.call_path("_global.ScreenManager.UpdateInput", vec![Value::Text(id.clone()), Value::Text(key.into()), Value::Text("0".into())], &mut game).unwrap();
+            for _ in 0..4 {
+                stage.update(16.0, &movies, &mut game).unwrap();
+            }
+            eprintln!("after key {key}: calls {:?} states {:?} level {} index {}", game.calls, game.trick_guide.states, game.trick_guide.state.level, game.trick_guide.state.index);
+        }
+        let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
+        eprintln!("draws: {}", draws.len());
+        // The panel's button help gets its class through panel > button_menu although the screen imports
+        // "Button Item" itself (Movie::class_links): Back shows its B prompt.
+        assert!(draws.iter().any(|d| d.texture == "prompt/B"), "no B prompt drawn");
+        assert_eq!(game.trick_guide.state.items(&game.trick_guide.guide).len(), 5, "Flip tricks' subcategories listed");
+        if std::env::var("SKATE3_DUMP_DRAWS").is_ok() {
+            for d in &draws {
+                let xs = d.vertices.iter().map(|v| v.position[0]);
+                let ys = d.vertices.iter().map(|v| v.position[1]);
+                let (x0, x1) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
+                let (y0, y1) = ys.fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(y), b.max(y)));
+                eprintln!("DRAW {:?} {:.0},{:.0}..{:.0},{:.0} mul {:?} {}", d.fill, x0, y0, x1, y1, d.multiply, d.texture.rsplit('/').next().unwrap_or(""));
+            }
+        }
     }
 
     /// Opening and closing the pause menu many times stays inside the VM's object budget: closed screens'

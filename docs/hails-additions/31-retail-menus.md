@@ -1437,9 +1437,99 @@ dim, and the selected row's glow was far too bright while it flickered.
 ### Open questions
 - Prove the 2D pass's colour format with a short recomp trace at `sub_825D4490`.
 - `apt_scene.rs` ignores `blend_mode`; retail also has an additive ONE/ONE object (`[0x830680AC]`, user not traced).
-- Trick Guide (Learn tab) is not ported: the row stays greyed.
+- Trick Guide (Learn tab): ported, see "Trick Guide".
+
+## Trick Guide (2026-10-12)
+
+### Problem
+Pause menu > Learn > Trick Guide was greyed: no handler and no retail screen (play test 2026-10-12).
+
+### Root cause
+Not ported yet. Retail runs it as FE screen 14 (template 29 TrickTutorial, movie `screens/tricks/trickguide`); the
+C++ screen object answers the movie's FETrickTutorial natives and its picker callbacks from the trick records.
+
+### Evidence (TU3; main re-read every handler named here)
+- Open: crossbar case 0x8261BF78 starts the fade hold `sub_825E6B30`; its callback 0x8261CDD8 opens FE screen 14
+  through `sub_8261AF30` (the same path as Game Settings / FE 45). Screen 14's vtable is 0x823038B8; init 0x82618A40
+  opens template 29.
+- Lists (`sub_82619368`): level 0 = the 8 category keys at 0x830274B0 (static); level 1 = the category's RefSpec array
+  0x57035D975F71D506 (subcategories); a level with fewer than 2 entries is skipped straight to level 2; level 2 = every
+  `scoring_trick` record with a demo animation (Text 0x3B71EA27D53D7C4F) whose subcategory ref (0x06513CC28A532524)
+  matches, sorted by the Int32 at layout offset 128 (field 0xF9E5D2F69066E925; insertion / intro sort, ascending).
+  S+128 = !Bool 0xA990472B974734C3 of the new list's first subcategory: leaf subcategories show their own slots.
+- Natives (registrar `sub_825AE7E0`): GetMenuItemData 0x825AE8A8 = [level, has submenu (`sub_826192A0`: level 0 true,
+  level 1 the subcategory's bool, level 2 false), description (vt+88 0x826191B0)]; GetMenuItemGesturesButtons
+  0x825AE968 = [slots with a gesture or button set, then gesture name, button name, connector per slot] (gesture ids
+  58 / 59 read ""; connectors 1 Plus, 2 Arrow, 3 Or); IsGoofy 0x825AEBF0 always false; GetCurrentMenuItem = S+116.
+  Game.GetMenuItems 0x825A52A8 lists the current screen's vt+80 / vt+84 (level names: category / subcategory name,
+  trick label). Game.OnMenuGetItemEnabled goes to vt+72 = 0x8281DD70 (always true).
+- Picker callbacks: OnMenuHilight vt+68 0x82618E98 (row; SetState(10) on the upper levels, else fill the slots
+  `sub_82619D38` from the trick or, with S+128, the subcategory record, then SetState(11)); OnMenuSelect vt+64
+  0x82618D98 (save the row, open the next level, an empty level goes back, SetState(1)). Input vt+40 0x82618F38: Back
+  closes at level 0 (fade, callback 0x82618EF0) or goes up a level, twice past a one-entry level, clears S+128,
+  SetState(0), plays core_b_button; A on a row without a list is consumed.
+- Slots: `Sk8::FE::tTrickGuideInputSlot` arrays (12 bytes: gesture id, button id, connector); name tables 0x830273C8
+  (58 gesture names) and 0x83027350 (28 button names). Button remap `sub_82619FC0`: when exactly one of CAS byte +120
+  (= HUDComponents.PlayerStance_IsRegular 0x826635A0) and a controls byte is set, the triggers swap, A shows X, X shows
+  A or B; the movie swaps A / X and the triggers back for a regular stance.
+- Fonts: the movie's title font "HelveticaPresto" has no FontManager row; `sub_82809208` then takes the first row
+  whose FileName is not "debug" (`sub_82AE8A10` returns 0 on a match).
+- Word wrap (the description field): `sub_82CA14D0` loop 0x82CA1BB0 breaks greedily at spaces only, `^` forces a
+  break, a word wider than the field overhangs; lines advance by vfunc +72 (0x82806470: font+360 x scale) x font+364
+  (FontManager row +24 = field 0x672E35A2AA8C4A00: futuraheavy 0.9, others 1.0) x height; per-line alignment
+  0x82CA23B4 (1 right, 2 and 3 centred); no clipping.
+- Research: `.local/research/menus-m6/trick-guide-open.md`, `trick-guide-gestures.md`, `apt-text-wrap.md`.
+
+### Change
+- `skate-core/src/trick_guide.rs` (new): the data model (records by Attrib key), the navigation (lists, select, back,
+  highlight, slots, the button remap) and mod patches (`EntryPatch`, `TrickGuide::apply`).
+- `skate-data/src/trick_guide.rs` (new): builds the guide from the installed collections; `menu_tables.rs` extracts
+  `trick_guide` (category keys by the code that copies them, the two name tables by content); `collections.rs` keeps
+  array elements (`items`).
+- `skate-game/src/trick_guide_host.rs` (new): the natives and picker callbacks, `TrickGuideMods` (mod layers);
+  `retail_menu_stage.rs`: FE 14 open / close, input, queued screen states, the TrickGuide item's engine handler (only
+  with tables, movie and collections, else the row stays greyed); `crossbar_host.rs` routes the objects;
+  `fe_backdrop.rs` `TRICK_GUIDE_SCREEN`; `skater_animation.rs` `regular_stance`.
+- APT fixes found on this screen: `apt_movie.rs` `class_links` (every copy of a library symbol gets its registered
+  class; the screen imports "Button Item" itself and again through panel > button_menu, so its button help had no
+  SetButtonType and no prompts); `apt_text.rs` / `apt_scene.rs` word wrap, line advance and alignment 3 centred.
+- Export: `prepare_menu_movies.py` adds the trickguide root and the FontManager fallback for APT names without a row;
+  `prepare_hud.py` exports `LineSpacing`; `menu_tables.py` requires the trick guide tables (setup refreshes both).
+- Moddability: `sdk.menus.trick_guide(entry, key, options)` adds or changes categories, subcategories and tricks by
+  key (retail 16 hex digits or the mod's own id): label, description, up to 4 slots, animation, parent, order,
+  has_tricks, position, hidden; layered in mod order, removed when the mod stops (`skate-mods` command
+  `menu_trick_guide`, `api.lua`, `sdk/skate.lua`). Retail values are the defaults, all from setup data.
+- Multiplayer: local UI state only.
+
+### Verification
+- `cargo test -p skate-core trick_guide` (navigation, skip rules, leaf slots, remap, patches); `cargo test -p
+  skate-data --test menu_tables -- --ignored` (TU3 image and disc xex give the same tables: 8 categories, 58 gestures,
+  28 buttons); `--test trick_guide -- --ignored` walks the real tree (8 categories, 217 listed tricks; Kickflip's slot is
+  ollie_kickflip); `retail_trick_guide_screen_opens` (screen manager, picker callbacks, B prompt drawn); the apt_text
+  wrap test; `cargo test -p skate-mods` menu commands; `python -m unittest tools.asset_pipeline.test_menu_tables`.
+- In game (dev build, tables extracted into the install for the shots, then restored): Learn > Trick Guide opens; the
+  categories, Flip Tricks > Ollie Flips, Kickflip with its gesture and the wrapped description, Other Tricks > No Comply
+  with A, Arrow, stick, A / B prompts. Pause menu and Game Settings unchanged.
+- Known unrelated failures: skate-core `a_moving_group_8_body_reaches_native_impact_feedback_for_a_stationary_actor`
+  (doc 11), skate-mods `skyline_every_component_is_real_and_drives_through_ground_contact` (Skyline GLB not in a
+  worktree).
+
+### Open questions
+- The 3D demo behind the screen (init loads `DIST_TrickGuide.rx2` unless `sub_82743FC0`; the slot fill keeps the
+  `trickguide_*` animation and a camera track): not ported; the world shows instead (FE 14 has no blur).
+- The fade hold before open / close (`sub_825E6B30`) is not ported (same as the other screens).
+- Remap controls byte (`+224/+20`) and the X setting byte (`+260/+37`) not decoded (defaults: off, X reads A).
+- Font+360 is LineHeight or VAdvanceYMax (equal in every retail font); the wrap flag is taken as `word_wrap`.
+- `SetSkin` on the menu picker is unhandled (the menu_picker class has none; likely a no-op in retail too).
+- Ties in the trick order follow record order; retail's intro sort could order ties differently in lists over 28.
 
 ## Files
+- Trick Guide: `crates/skate-core/src/trick_guide.rs` (new), `crates/skate-data/src/trick_guide.rs` (new),
+  `menu_tables.rs`, `collections.rs`, `tests/trick_guide.rs` (new); `crates/skate-game/src/trick_guide_host.rs` (new),
+  `retail_menu_stage.rs`, `crossbar_host.rs`, `apt_movie.rs`, `apt_stage.rs`, `apt_text.rs`, `apt_scene.rs`,
+  `fe_backdrop.rs`, `skater_animation.rs`, `retail_menus.rs`, `modding/mod.rs`, `main.rs`; `crates/skate-mods/src/menus.rs`,
+  `vm.rs`, `api.lua`; `sdk/skate.lua`; `tools/prepare_menu_movies.py`, `prepare_hud.py`,
+  `asset_pipeline/menu_tables.py`, `test_menu_tables.py`
 - Out-of-date prompt: `crates/skate-game/src/asset_check.rs` (new), `setup.rs`, `graphics_menu.rs`, `graphics_menu/view.rs`
 - Stored settings: `crates/skate-game/src/retail_menus.rs` (`StoredSettings`, `setting`), `scoring_hud.rs`
 - Swap-in: `crates/skate-game/src/retail_menu_stage.rs` (`enabled`, `RetailPause`), `graphics_menu.rs` (`overlay_key`)

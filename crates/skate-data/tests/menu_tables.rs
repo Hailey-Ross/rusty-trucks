@@ -147,6 +147,15 @@ fn tu3_image_matches_the_documented_tables() {
     assert_eq!(t.sub_options[4].labels[..2], ["ID_CROSSBAR_TRICK_ANALYZER_ON", "ID_CROSSBAR_MANUAL_METER_ON"]);
     assert_eq!((t.settings_titles[0].as_str(), t.settings_titles[2].as_str(), t.settings_titles[12].as_str()),
         ("ID_GAMESETTINGS_TITLE", "ID_GAMESETTINGS_DIFFICULTY_SETTINGS", "ID_GAMESETTINGS_AUDIO_SETTINGS"));
+    // Trick Guide (doc 31 "Trick Guide"): 8 category keys, 58 gesture names, 28 button names.
+    assert_eq!(t.addresses["trick_guide_categories"], "0x830274B0");
+    assert_eq!(t.addresses["trick_guide_gestures"], "0x830273C8");
+    assert_eq!(t.addresses["trick_guide_buttons"], "0x83027350");
+    let g = &t.trick_guide;
+    assert_eq!((g.categories.len(), g.gestures.len(), g.buttons.len()), (8, 58, 28));
+    assert_eq!(g.categories[3], "046ed0ccbda1091f");
+    assert_eq!((g.gestures[0].as_str(), g.gestures[48].as_str(), g.gestures[57].as_str()), ("", "ollie_kickflip", "revert"));
+    assert_eq!((g.buttons[3].as_str(), g.buttons[8].as_str(), g.buttons[27].as_str()), ("A", "L_Trigger", "DPad"));
     let blur: Vec<usize> = t.screens.iter().enumerate().filter(|(_, s)| s.blur).map(|(i, _)| i).collect();
     assert_eq!(t.screens.len(), 72);
     assert_eq!(t.screens[56].id, "b4b7976b40b3e837");

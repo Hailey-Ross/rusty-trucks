@@ -100,6 +100,10 @@ impl SkaterAnimation {
     /// Native Initialize82B97E38 selects both orientation/mirror bits for
     /// regular stance. A profile edit changes the natural basis while retaining
     /// the current relative stance and trick state.
+    /// The profile's natural stance is regular (CAS byte +120; HUDComponents.PlayerStance_IsRegular).
+    pub(crate) fn regular_stance(&self) -> bool {
+        self.state.publication.natural_stance == 0
+    }
     pub(crate) fn set_customisation(&mut self, natural: u32, style: u32) {
         if natural <= 1 && self.state.publication.natural_stance != natural as i32 {
             self.state.publication.natural_stance = natural as i32;

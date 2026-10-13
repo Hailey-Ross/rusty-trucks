@@ -231,20 +231,31 @@ fn visit(
             let sy = font.scale[1] * height;
             let value = vm.get(id, "_displayText").text();
             let bounds = character.bounds.ok_or("Missing text bounds")?;
-            let width = font.width(&value, height);
             let alignment = text["alignment"].as_u64().unwrap_or(0);
             let autosize = vm.get(id, "autoSize").text();
             let alignment = if autosize == "left" { 0 } else { alignment };
+            // Word-wrapped fields break into lines (82CA14D0), each aligned on its own and drawn one line advance
+            // below the last, unclipped (82CA2118). NOT RETAIL YET: the wrap flag (descriptor +28) is taken as the
+            // field's word_wrap (the descriptor fill is not decoded; the trick guide sets word_wrap and multiline
+            // together).
+            let lines = if text["word_wrap"].as_bool() == Some(true) {
+                font.wrap(&value, height, bounds[2] - bounds[0])
+            } else {
+                vec![value]
+            };
+            let mut vertices = Vec::new();
+            for (row, value) in lines.iter().enumerate() {
+            let width = font.width(value, height);
+            // 82CA23B4: 1 right, 2 and 3 centred (factor 0.5 at 0x8209975C), else left.
             let mut x = bounds[0]
                 + advance_x
                 + font.offset[0] * sx
                 + match alignment {
                     1 => bounds[2] - bounds[0] - width,
-                    2 => (bounds[2] - bounds[0] - width) * 0.5,
+                    2 | 3 => (bounds[2] - bounds[0] - width) * 0.5,
                     _ => 0.,
                 };
-            let y = bounds[1] + font.offset[1] * sy;
-            let mut vertices = Vec::new();
+            let y = bounds[1] + font.offset[1] * sy + row as f32 * font.line_advance(height);
             for c in value.chars() {
                 if let Some(g) = font.glyph(c) {
                     let x0 = x + g.x_offset * sx;
@@ -268,6 +279,7 @@ fn visit(
                     }
                     x = g.x_advance.mul_add(sx, x);
                 }
+            }
             }
             let argb = u32::from_str_radix(
                 text["color_argb"]

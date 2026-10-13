@@ -17,6 +17,9 @@ pub struct Field {
 pub struct FieldArray {
     #[serde(default)]
     pub text_items: Vec<String>,
+    /// Every element's raw bytes as hex (up to the array count).
+    #[serde(default)]
+    pub items: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

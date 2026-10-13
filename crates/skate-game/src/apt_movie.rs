@@ -63,6 +63,10 @@ pub struct Movie {
     /// Linkage names (import and export records) -> character id; `Object.registerClass` binds
     /// a class to a clip by this name.
     pub linkage: BTreeMap<String, i32>,
+    /// The linkage name of every library character copied in (character -> name), also where the movie's own
+    /// name wins in `linkage`: registerClass binds the library's symbol, so every copy gets the class (the trick
+    /// guide imports "Button Item" itself and again through panel > button_menu; its button help had no class).
+    pub class_links: BTreeMap<i32, String>,
     /// Library movie keys this movie imports from, in record order.
     pub import_files: Vec<String>,
     /// Classes bound by registerClass: character -> class function object. A new clip of that
@@ -150,6 +154,7 @@ impl Movie {
                 .flat_map(|k| json[*k].as_array().into_iter().flatten())
                 .filter_map(|r| Some((r["name"].as_str()?.to_string(), r["character_id"].as_i64()? as i32)))
                 .collect(),
+            class_links: BTreeMap::new(),
             import_files: {
                 let mut files: Vec<String> = Vec::new();
                 for r in json["imports"].as_array().into_iter().flatten() {
@@ -803,6 +808,7 @@ impl Movie {
         for (name, character) in &lib.linkage {
             if *character == source {
                 self.linkage.entry(name.clone()).or_insert(id);
+                self.class_links.insert(id, name.clone());
             }
         }
         let mut c = original.clone();

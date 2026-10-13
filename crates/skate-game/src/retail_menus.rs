@@ -622,6 +622,9 @@ fn handle(registry: &mut MenuRegistry, entry: EntryRef, owner: Owner, options: &
 
 /// Everything mod `id` did is removed (disable, reload, failure).
 pub(crate) fn clear_owner(world: &mut World, id: &str) {
+    if let Some(mut guide) = world.get_resource_mut::<crate::trick_guide_host::TrickGuideMods>() {
+        guide.clear_owner(id);
+    }
     if let Some(mut backdrop) = world.get_resource_mut::<crate::fe_backdrop::FeBackdrop>() {
         backdrop.clear_owner(id);
     }
@@ -636,6 +639,9 @@ pub(crate) fn clear_owner(world: &mut World, id: &str) {
 }
 
 pub(crate) fn clear_mods(world: &mut World) {
+    if let Some(mut guide) = world.get_resource_mut::<crate::trick_guide_host::TrickGuideMods>() {
+        guide.clear();
+    }
     if let Some(mut backdrop) = world.get_resource_mut::<crate::fe_backdrop::FeBackdrop>() {
         backdrop.clear_mods();
     }
