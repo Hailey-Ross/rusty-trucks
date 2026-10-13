@@ -91,28 +91,44 @@ impl<A: Asset> OwnedAssets for StagedAssets<A> {
 #[derive(Default)]
 pub(crate) struct SceneCommands {
     queue: CommandQueue,
+    /// Replaces `MapEntity` for scenes the map change must not retire (the Trick Guide set).
+    tag: Option<std::sync::Arc<dyn Fn(&mut EntityWorldMut) + Send + Sync>>,
 }
 
 impl SceneCommands {
+    pub(crate) fn tagged(tag: impl Fn(&mut EntityWorldMut) + Send + Sync + 'static) -> Self {
+        Self { queue: CommandQueue::default(), tag: Some(std::sync::Arc::new(tag)) }
+    }
     pub(crate) fn spawn<B: Bundle>(&mut self, bundle: B) {
+        let tag = self.tag.clone();
         self.queue.push(move |world: &mut World| {
-            world.spawn((bundle, MapEntity));
+            match tag {
+                Some(tag) => tag(&mut world.spawn(bundle)),
+                None => {
+                    world.spawn((bundle, MapEntity));
+                }
+            }
         });
     }
-
-    /// Apply the queued spawns now (tests; production goes through
-    /// `PreparedScene::publish`).
-    #[cfg(test)]
+    /// Apply the queued spawns now (tests and the Trick Guide set; maps go through `PreparedScene::publish`).
     pub(crate) fn apply(&mut self, world: &mut World) {
         std::mem::take(&mut self.queue).apply(world);
     }
 
     /// A parent with children in one deferred command. Only the parent gets
-    /// `MapEntity`: despawning it removes the children with it, and marking
+    /// `MapEntity` (or the tag): despawning it removes the children with it, and marking
     /// them too would make retirement despawn them twice.
     pub(crate) fn spawn_with_children<B: Bundle, C: Bundle>(&mut self, bundle: B, children: Vec<C>) {
+        let tag = self.tag.clone();
         self.queue.push(move |world: &mut World| {
-            let parent = world.spawn((bundle, MapEntity)).id();
+            let parent = match tag {
+                Some(tag) => {
+                    let mut entity = world.spawn(bundle);
+                    tag(&mut entity);
+                    entity.id()
+                }
+                None => world.spawn((bundle, MapEntity)).id(),
+            };
             for child in children {
                 world.spawn((child, ChildOf(parent)));
             }

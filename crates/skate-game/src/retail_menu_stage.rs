@@ -373,6 +373,7 @@ fn update(
     mut warned: Local<bool>,
     skater: Option<Res<crate::physics::SkaterRuntime>>,
     guide_mods: Res<crate::trick_guide_host::TrickGuideMods>,
+    mut demo: ResMut<crate::trick_guide_scene::TrickGuideDemo>,
 ) {
     let ready = stage.as_ref().is_some_and(|s| !s.failed) && movies.is_some() && menus.is_some();
     // The ported screens in this build's screen table (TU3 FE ids 56 and 45); none in tables extracted before
@@ -394,6 +395,7 @@ fn update(
             backdrop.set_stack(Vec::new());
             *fe_hud = crate::fe_backdrop::FeHud::default();
         }
+        demo.set_if_neq(default());
         return;
     }
     let ms = &mut *ms;
@@ -705,6 +707,11 @@ fn update(
     ms.crossbar = fe.state;
     ms.settings = fe.settings;
     ms.trick_guide = std::mem::take(&mut fe.trick_guide);
+    // The 3D demo behind FE 14 (trick_guide_scene.rs): the screen on top and its highlighted clip (S+204).
+    demo.set_if_neq(crate::trick_guide_scene::TrickGuideDemo {
+        open: ms.trick_guide.open,
+        animation: ms.trick_guide.state.animation.clone(),
+    });
     let settings_selected = std::mem::take(&mut ms.settings.selected);
     if result.is_ok() {
         let mut refresh: Option<i32> = None;

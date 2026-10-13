@@ -38,6 +38,7 @@ mod performance;
 mod profiling;
 mod graphics_menu;
 mod fe_backdrop;
+mod trick_guide_scene;
 mod retail_menus;
 mod prompt_glyphs;
 mod settings_host;

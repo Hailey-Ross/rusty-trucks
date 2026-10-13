@@ -27,4 +27,5 @@ pub mod ped_anim;
 pub mod ped_nav;
 pub mod roads;
 pub mod trick_guide;
+pub mod scene_clip;
 pub mod trigger_volumes;
