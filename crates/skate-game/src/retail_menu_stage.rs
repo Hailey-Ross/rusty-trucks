@@ -45,6 +45,11 @@ const OPTIONS_PATH: &str = "options/options.swf";
 /// The Trick Guide template (record 29) and its path; FE screen 14's init opens it (0x82618A40).
 const TRICK_GUIDE: &str = "TrickTutorial";
 const TRICK_GUIDE_PATH: &str = "tricks/trickguide.swf";
+/// The Video Calibration template (record 91) and its path; FE screen 51's init opens it (0x8260E868).
+const VIDEO_CALIBRATION: &str = "VideoCalibration";
+const VIDEO_CALIBRATION_PATH: &str = "options/videocal.swf";
+/// The settings row that pushes it (sub_8260D290 row 25).
+const VIDEO_CALIBRATION_ROW: &str = "ID_GAMESETTINGS_VIDEO_CALIBRATION";
 /// The pause menu item that opens it (crossbar case 0x8261BF78).
 const TRICK_GUIDE_ITEM: &str = "TrickGuide";
 /// AptNext (A) key index.
@@ -101,6 +106,10 @@ struct MenuStage {
     fade_params: skate_core::fe_fade::FeFadeParams,
     fade_carry: f32,
     trick_guide_fade_in: Option<u32>,
+    /// The Video Calibration screen's AS id (retail 691), its page counter and rules (skate_core::video_calibration).
+    video_cal_id: i32,
+    video_cal: skate_core::video_calibration::VideoCalibration,
+    video_cal_rules: skate_core::video_calibration::CalibrationRules,
     /// Retail Apt keys in key-table order (input.cfg expressions).
     apt_keys: Vec<AptKey>,
     pads: [FeInput; 4],
@@ -320,6 +329,17 @@ fn setup(
                     Default::default()
                 }
             };
+            // Video Calibration (FE 51): the settings row gets its engine handler when the movie is in the set (greyed
+            // otherwise, e.g. sets exported before it was added).
+            if movies.movies.contains_key("source/screens/options/videocal")
+                && menus.registry.data().settings.iter().any(|s| s.id == VIDEO_CALIBRATION_ROW)
+            {
+                let owner = Owner::Engine(format!("{}{}", crate::retail_menus::SCREEN, crate::fe_backdrop::VIDEO_CALIBRATION_SCREEN));
+                let handler = skate_core::menus::Handler { owner, select: true, highlight: false, callback: None };
+                menus.registry.register_handler(EntryRef::setting(VIDEO_CALIBRATION_ROW), handler);
+            } else {
+                warn!("RETAIL_MENUS: Video Calibration unavailable (no videocal movie); run setup");
+            }
             info!("RETAIL_MENUS stage ready (F8 opens the retail pause menu)");
             commands.insert_resource(MenuStage {
                 stage,
@@ -342,6 +362,9 @@ fn setup(
                 fade_carry: 0.0,
                 trick_guide_fade_in: None,
                 trick_guide,
+                video_cal_id: as_id(VIDEO_CALIBRATION),
+                video_cal: Default::default(),
+                video_cal_rules: Default::default(),
                 chyron: false,
                 settings: Default::default(),
                 settings_titles: tables.map(|t| t.settings_titles).unwrap_or_default(),
@@ -393,6 +416,7 @@ fn update(
     let pause = backdrop.index(crate::fe_backdrop::PAUSE_SCREEN);
     let options = backdrop.index(crate::fe_backdrop::SETTINGS_SCREEN);
     let trick = backdrop.index(crate::fe_backdrop::TRICK_GUIDE_SCREEN);
+    let cal = backdrop.index(crate::fe_backdrop::VIDEO_CALIBRATION_SCREEN);
     available.set_if_neq(RetailPause(ready && pause.is_some()));
     if ready && pause.is_none() && !std::mem::replace(&mut *warned, true) {
         warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup); Start opens the PC overlay until then");
@@ -439,7 +463,7 @@ fn update(
     let mut selected: Option<String> = None;
     let mut steps: Vec<(String, Direction)> = Vec::new();
     let result = (|| -> Result<(), String> {
-        let (crossbar_id, options_id, trick_id) = (ms.crossbar_id, ms.options_id, ms.trick_guide_id);
+        let (crossbar_id, options_id, trick_id, cal_id) = (ms.crossbar_id, ms.options_id, ms.trick_guide_id, ms.video_cal_id);
         let auto = ms.auto_open && time.elapsed_secs() > 4.0;
         ms.auto_open &= !auto;
         if auto {
@@ -463,7 +487,7 @@ fn update(
                 continue;
             }
             let target = ms.stack.input_target();
-            let Some(screen) = target.filter(|t| [pause, options, trick].contains(&Some(*t))) else { continue };
+            let Some(screen) = target.filter(|t| [pause, options, trick, cal].contains(&Some(*t))) else { continue };
             // sub_825EC0E8: the screen's C++ handler first, then the movie's UpdateInput when the handler did not
             // consume the key and the screen's record says so (+12).
             let mut consumed = false;
@@ -471,6 +495,8 @@ fn update(
                 crossbar_id
             } else if Some(screen) == options {
                 options_id
+            } else if Some(screen) == cal {
+                cal_id
             } else {
                 trick_id
             };
@@ -483,7 +509,25 @@ fn update(
                 // the close fades out (S+52).
                 continue;
             }
-            if Some(screen) == trick {
+            if Some(screen) == cal {
+                // Screen 51 input 0x8260E890: A advances (0x8260E950), B goes back a page or closes; both play their
+                // sound and leave the key to the movie too (the handler returns 0).
+                let rules = ms.video_cal_rules.clone();
+                let action = match key {
+                    APT_NEXT => {
+                        sounds.write(FrontendSound::named(&rules.sound_next));
+                        Some(ms.video_cal.advance(&rules))
+                    }
+                    APT_PREVIOUS => {
+                        sounds.write(FrontendSound::named(&rules.sound_back));
+                        Some(ms.video_cal.back())
+                    }
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    run_calibration(&mut ms.stage, &mut ms.stack, &mut ms.video_cal, &ms.video_cal_rules, cal_id, action, screen, &mut fe)?;
+                }
+            } else if Some(screen) == trick {
                 // Screen 14 vt+40 (0x82618F38): Back closes at level 0 or goes up a level (SetState(0)); A on a row
                 // without a list is consumed. Back plays core_b_button (h64 0x4D927CD64CC8B818).
                 let tg = &mut fe.trick_guide;
@@ -594,6 +638,27 @@ fn update(
                     ms.trick_guide_fade_in = None;
                     close(&mut ms.stage, trick_id, &mut fe)?;
                 }
+                Effect::Open(i) if Some(i) == cal => {
+                    info!("RETAIL_MENUS open Video Calibration (FE {i})");
+                    ms.video_cal = skate_core::video_calibration::VideoCalibration::open();
+                    open_screen(&mut ms.stage, VIDEO_CALIBRATION_PATH, VIDEO_CALIBRATION, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == cal => {
+                    info!("RETAIL_MENUS close Video Calibration (FE {i})");
+                    close(&mut ms.stage, cal_id, &mut fe)?;
+                }
+                // Screen vt+28 -> facade ShowScreen (0x825DA410): the AS id as "%d" and "true" / "false".
+                Effect::Show(i, visible) if [pause, options, trick, cal].contains(&Some(i)) => {
+                    let id = [(pause, crossbar_id), (options, options_id), (trick, trick_id), (cal, cal_id)]
+                        .into_iter()
+                        .find(|(s, _)| *s == Some(i))
+                        .map_or(0, |(_, id)| id);
+                    ms.stage.call_path(
+                        "_global.ScreenManager.ShowScreen",
+                        vec![Value::Text(id.to_string()), Value::Text(if visible { "true" } else { "false" }.into())],
+                        &mut fe,
+                    )?;
+                }
                 Effect::Close(i) if Some(i) == pause => {
                     info!("RETAIL_MENUS close pause menu (FE {i})");
                     close(&mut ms.stage, crossbar_id, &mut fe)?
@@ -679,6 +744,17 @@ fn update(
             }
             if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({options_id})")) {
                 ms.stack.ready(o);
+            }
+        }
+        // Video Calibration loaded (vt+108 0x8260E888): the first page; intro complete = ready.
+        if let Some(c) = cal.filter(|c| ms.stack.top(Layer::Main) == Some(*c)) {
+            if take_call(&mut fe, &format!("Game.OnScreenLoaded({cal_id})")) {
+                let rules = ms.video_cal_rules.clone();
+                let action = ms.video_cal.advance(&rules);
+                run_calibration(&mut ms.stage, &mut ms.stack, &mut ms.video_cal, &ms.video_cal_rules, cal_id, action, c, &mut fe)?;
+            }
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({cal_id})")) {
+                ms.stack.ready(c);
             }
         }
         // Trick Guide: the movie builds its list itself on load; intro complete = ready. The picker's callbacks
@@ -770,6 +846,18 @@ fn update(
                     ms.settings.row = 0;
                     refresh = Some(1);
                 }
+                // A row whose engine handler is a ported FE screen (row 25 Video Calibration: sub_82D0AEF0 pushes FE 51
+                // with param 0, keep-open 1, keep-visible 0, so Game Settings stays open, hidden).
+                Outcome::Forward(Owner::Engine(name), _) if name.starts_with(crate::retail_menus::SCREEN) => {
+                    let id = &name[crate::retail_menus::SCREEN.len()..];
+                    match backdrop.index(id) {
+                        Some(screen) => ms.stack.request(
+                            Layer::Main,
+                            Request::Push { screen, param: 0, keep_open: true, keep_visible: false },
+                        ),
+                        None => warn!("RETAIL_MENUS: no FE screen {id}"),
+                    }
+                }
                 outcome => info!("RETAIL_MENUS settings select {id}: {outcome:?}"),
             }
         }
@@ -800,6 +888,38 @@ fn update(
 }
 
 /// Retail ScreenManagerBase::OpenScreen (sub_82D09140) arguments.
+/// A Video Calibration step: post the page, close the screen, or the "finished" popup.
+/// NOT RETAIL YET: retail asks the popup (sub_82D0A8D0, template Sk8Popup) and closes on Yes (0x8260EA48); the popup
+/// system is not ported, so the answer is taken as Yes (close).
+#[allow(clippy::too_many_arguments)]
+fn run_calibration(
+    stage: &mut Stage,
+    stack: &mut FeStack,
+    cal: &mut skate_core::video_calibration::VideoCalibration,
+    rules: &skate_core::video_calibration::CalibrationRules,
+    id: i32,
+    action: skate_core::video_calibration::CalibrationAction,
+    screen: usize,
+    fe: &mut FrontEnd,
+) -> Result<(), String> {
+    use skate_core::video_calibration::CalibrationAction as A;
+    let action = match action {
+        A::Popup => {
+            info!("RETAIL_MENUS Video Calibration finished (popup not ported: Yes)");
+            cal.popup_result(0, rules)
+        }
+        other => other,
+    };
+    match action {
+        A::SetState(page) => set_state(stage, id, page as i32, fe),
+        A::Close => {
+            stack.request(Layer::Main, Request::Close { screen });
+            Ok(())
+        }
+        A::Popup => Ok(()),
+    }
+}
+
 fn open_screen(stage: &mut Stage, path: &str, template: &str, fe: &mut FrontEnd) -> Result<(), String> {
     stage.call_path(
         "_global.ScreenManager.OpenScreen",

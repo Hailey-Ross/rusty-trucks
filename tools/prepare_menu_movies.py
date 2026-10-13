@@ -49,6 +49,8 @@ MENU_ROOTS = (
     'source/screens/main/dimmer',
     'source/screens/main/freeskate_options',
     'source/screens/options/options',
+    # Game Settings > Video > Video Calibration (template 91 VideoCalibration, FE screen 51).
+    'source/screens/options/videocal',
     # The pause menu's Learn > Trick Guide (template 29 TrickTutorial).
     'source/screens/tricks/trickguide',
     'source/screens/main3dhud',

@@ -191,8 +191,24 @@ impl Plugin for RetailMenusPlugin {
 /// Owner of the stored settings layer.
 const STORED_OWNER: &str = "settings";
 
-/// Settings rows with a retail rule but no engine binding (`BINDINGS`): Subtitles, Minimap, HUD, Cameraman Mode,
-/// Vibration, the offboard axes, HOM mode, Units, Transparency, the Skate Feed toggles. Their values live in
+/// Rows with a retail rule whose effect the engine does not have yet (user, 2026-10-13: grey them like the other
+/// unported items). They get no stored layer, so they stay greyed and show retail's default; a mod's value layer
+/// still enables them. Remove an id here when its feature lands (doc 31 "Stored settings").
+const NO_EFFECT_YET: [&str; 10] = [
+    "ID_GAMESETTINGS_SUBTITLE_TOGGLE",
+    "ID_GAMESETTINGS_MINIMAP_TOGGLE",
+    "ID_GAMESETTINGS_CAM_MAN_TOGGLE",
+    "ID_GAMESETTINGS_HOM_MODE_OPTIONS",
+    "ID_GAMESETTINGS_UNITS_TOGGLE",
+    "ID_GAMESETTINGS_TRANSPARENCY_TOGGLE",
+    "ID_GAMESETTINGS_SKATEFEED_BOOTFLOW",
+    "ID_GAMESETTINGS_SKATEFEED_CHYRON",
+    "ID_GAMESETTINGS_SKATEFEED_INCOMING_MESSAGE",
+    "ID_GAMESETTINGS_SKATEFEED_OUTGOING_MESSAGE",
+];
+
+/// Settings rows with a retail rule, no engine binding (`BINDINGS`) and an engine effect (not `NO_EFFECT_YET`): HUD,
+/// Vibration, the offboard axes. Their values live in
 /// `settings/game-settings.json` (string id -> number), retail's value (`menu_values::retail_default`) until the
 /// player changes one. Each row is an Engine-owned value layer, so it is enabled and steps through retail's rule;
 /// a mod's value stacks on top and is never saved. Features read the value in force with [`setting`].
@@ -252,7 +268,11 @@ fn sync_stored_values(menus: Option<ResMut<RetailMenus>>, stored: Option<ResMut<
         .settings
         .iter()
         .map(|s| s.id.clone())
-        .filter(|id| skate_core::menu_values::retail_rule(id).is_some() && !BINDINGS.iter().any(|b| b.row == id))
+        .filter(|id| {
+            skate_core::menu_values::retail_rule(id).is_some()
+                && !BINDINGS.iter().any(|b| b.row == id)
+                && !NO_EFFECT_YET.contains(&id.as_str())
+        })
         .collect();
     let mut changed = false;
     for id in ids {
@@ -850,6 +870,33 @@ mod tests {
         again.insert_resource(RetailMenus::new(d, true)).insert_resource(StoredSettings::load(path)).add_systems(Update, sync_stored_values);
         again.update();
         assert_eq!(setting(again.world().resource::<RetailMenus>(), hud), Some(SettingValue::Int(0)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rows whose effect is not ported stay greyed (no stored layer) until a mod binds a value.
+    #[test]
+    fn rows_without_an_effect_stay_greyed_until_a_mod_binds_them() {
+        use skate_core::menus::Setting;
+        let minimap = "ID_GAMESETTINGS_MINIMAP_TOGGLE";
+        let mut d = data();
+        d.settings.push(Setting { id: minimap.into(), label: minimap.into(), widget: Widget::Selector, link: None });
+        d.screens[6].push(minimap.into());
+        let dir = std::env::temp_dir().join(format!("skate3rust-menus-noeffect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut app = App::new();
+        app.insert_resource(RetailMenus::new(d, true))
+            .insert_resource(StoredSettings::load(dir.join("game-settings.json")))
+            .add_systems(Update, sync_stored_values);
+        app.update();
+        let entry = EntryRef::setting(minimap);
+        let menus = app.world().resource::<RetailMenus>();
+        assert!(!menus.registry.enabled(&entry, &menus.context.clone()), "greyed");
+        assert!(menus.registry.owner_value(&entry, &Owner::Engine(STORED_OWNER.into())).is_none(), "not stored");
+        apply_command(&mut app.world_mut().resource_mut::<RetailMenus>(), "m", command(json!({"kind":"menu_handle","entry":"setting","id":minimap,"options":{"select":false,"value":0}}))).unwrap();
+        app.update();
+        let menus = app.world().resource::<RetailMenus>();
+        assert!(menus.registry.enabled(&entry, &menus.context.clone()), "a mod's value enables it");
+        assert!(!dir.join("game-settings.json").exists(), "nothing saved");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
