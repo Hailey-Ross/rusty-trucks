@@ -1515,13 +1515,52 @@ C++ screen object answers the movie's FETrickTutorial natives and its picker cal
   worktree).
 
 ### Open questions
-- The 3D demo behind the screen (init loads `DIST_TrickGuide.rx2` unless `sub_82743FC0`; the slot fill keeps the
-  `trickguide_*` animation and a camera track): not ported; the world shows instead (FE 14 has no blur).
-- The fade hold before open / close (`sub_825E6B30`) is not ported (same as the other screens).
+- The 3D demo behind the screen: not ported; the world shows instead (FE 14 has no blur). Research
+  `.local/research/menus-m6/trick-guide-demo.md` (agent, not main-checked yet): init loads
+  `world/models/DIST_TrickGuide_Textures.rx2` + `DIST_TrickGuide.rx2` (miscload.big, a backdrop set) and
+  `rendering/csm_trickguide` unless `sub_82743FC0` (online state 11); close vt+24 0x82618CA8 unloads; the update posts
+  message 0xF00F5033 (trickbook mode) and 0x58B0BD5C {clip, camera track} to the trickbook object (handlers
+  `sub_82821810`), which plays `scene/trickguide/<name>1.abin` (scene.big, 312 clips, not in our extract) through the
+  cutscene Scene system ("ViewScene"); `trickbook_camera_tracks` = Int16 index (22 records).
+- The fade before open / close: ported, see "Fade to black".
 - Remap controls byte (`+224/+20`) and the X setting byte (`+260/+37`) not decoded (defaults: off, X reads A).
 - Font+360 is LineHeight or VAdvanceYMax (equal in every retail font); the wrap flag is taken as `word_wrap`.
 - `SetSkin` on the menu picker is unhandled (the menu_picker class has none; likely a no-op in retail too).
 - Ties in the trick order follow record order; retail's intro sort could order ties differently in lists over 28.
+
+## Fade to black (2026-10-12)
+
+### Problem
+Opening and closing the Trick Guide switched screens at once; retail fades to black first and back in after.
+
+### Root cause / evidence (TU3, main-read)
+- The FE fader `[[0x830CFE14]+304]`: +12 alpha (1 = black), +16 step, +20 hold bits, +24 actions waiting for black.
+  Hold `sub_825E6B30(fader, bit, callback, instant)`: sets the bit; already black = run the callback now; else queue
+  it and step 0.04 (0x82216FEC; instant 1.0). Tick `sub_825E69A0`: alpha += step, clamped; at 1 the queued callbacks
+  run. Release `sub_825E6BF8(fader, bit, instant)`: clears the bit; with none left and the screen not clear, step
+  -0.04 (0x822F88F8; instant -1).
+- Trick Guide: the crossbar case 0x8261BF78 holds bit 0 with callback 0x8261CDD8 (push FE 14) and sets its closing
+  flags; screen 14's update `sub_82619A20` state 4 counts 11 updates (S+336 > 10), then releases bit 0 and goes to
+  state 2, the only state its input handler takes keys in. Back at level 0 holds bit 0 with callback 0x82618EF0
+  (close). The crossbar's init (vtable 0x82303F90 slot 3, `sub_8261ACA8`) releases bit 0, so the pause menu that comes
+  back fades in.
+
+### Change
+- `skate-core/src/fe_fade.rs` (new): the fader (hold / release / tick, actions at black), `FeFadeParams` (steps and
+  tick rate as data, retail's the defaults), FE cadence like fe_blur.
+- `retail_menu_stage.rs`: TrickGuide select holds the fade and pushes FE 14 at black; the guide counts 11 ticks after
+  its intro and releases; its Back at level 0 holds and closes at black; the pause menu's open releases; no pause input
+  while the fade is held, no guide input before the release; a black quad over the menu layer with the fader's alpha;
+  `RETAIL_MENUS fade black / clear` log lines.
+- NOT RETAIL YET: the 30 Hz FE tick rate (as the blur); what enters screen 14's state 4 (the count starts at the
+  intro's end); Game Settings still opens without the fade (its crossbar case not checked). NOT RETAIL (guard): with
+  no screen left on the stack the fade is released (retail always returns to the pause menu).
+
+### Verification
+- `cargo test -p skate-core fe_fade` (25 ticks to black, the action at black, release order, instant, cadence).
+- In game (tables extracted for the run, then restored): select Trick Guide: `fade black`, the pause menu closes, the
+  guide opens, `fade clear` after the count; B at level 0: `fade black`, the guide closes, the pause menu opens again,
+  `fade clear`.
 
 ## Files
 - Trick Guide: `crates/skate-core/src/trick_guide.rs` (new), `crates/skate-data/src/trick_guide.rs` (new),
