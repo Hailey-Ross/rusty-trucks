@@ -91,44 +91,28 @@ impl<A: Asset> OwnedAssets for StagedAssets<A> {
 #[derive(Default)]
 pub(crate) struct SceneCommands {
     queue: CommandQueue,
-    /// Replaces `MapEntity` for scenes the map change must not retire (the Trick Guide set).
-    tag: Option<std::sync::Arc<dyn Fn(&mut EntityWorldMut) + Send + Sync>>,
 }
 
 impl SceneCommands {
-    pub(crate) fn tagged(tag: impl Fn(&mut EntityWorldMut) + Send + Sync + 'static) -> Self {
-        Self { queue: CommandQueue::default(), tag: Some(std::sync::Arc::new(tag)) }
-    }
     pub(crate) fn spawn<B: Bundle>(&mut self, bundle: B) {
-        let tag = self.tag.clone();
         self.queue.push(move |world: &mut World| {
-            match tag {
-                Some(tag) => tag(&mut world.spawn(bundle)),
-                None => {
-                    world.spawn((bundle, MapEntity));
-                }
-            }
+            world.spawn((bundle, MapEntity));
         });
     }
-    /// Apply the queued spawns now (tests and the Trick Guide set; maps go through `PreparedScene::publish`).
+
+    /// Apply the queued spawns now (tests; production goes through
+    /// `PreparedScene::publish`).
+    #[cfg(test)]
     pub(crate) fn apply(&mut self, world: &mut World) {
         std::mem::take(&mut self.queue).apply(world);
     }
 
     /// A parent with children in one deferred command. Only the parent gets
-    /// `MapEntity` (or the tag): despawning it removes the children with it, and marking
+    /// `MapEntity`: despawning it removes the children with it, and marking
     /// them too would make retirement despawn them twice.
     pub(crate) fn spawn_with_children<B: Bundle, C: Bundle>(&mut self, bundle: B, children: Vec<C>) {
-        let tag = self.tag.clone();
         self.queue.push(move |world: &mut World| {
-            let parent = match tag {
-                Some(tag) => {
-                    let mut entity = world.spawn(bundle);
-                    tag(&mut entity);
-                    entity.id()
-                }
-                None => world.spawn((bundle, MapEntity)).id(),
-            };
+            let parent = world.spawn((bundle, MapEntity)).id();
             for child in children {
                 world.spawn((child, ChildOf(parent)));
             }
@@ -348,5 +332,25 @@ pub(crate) fn position_celestial_bodies(
         let direction = Vec3::new(phase.cos(), phase.sin(), 0.25).normalize();
         transform.translation = direction * 400.0;
         *visibility = if direction.y > -0.05 { Visibility::Inherited } else { Visibility::Hidden };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scenes outside the map (the Trick Guide demo set, trick_guide_scene.rs)
+// ---------------------------------------------------------------------------
+
+impl SceneCommands {
+    /// Apply the queued spawns now. Every entity gets `MapEntity`; the caller re-tags what it spawned.
+    pub(crate) fn apply_now(&mut self, world: &mut World) {
+        std::mem::take(&mut self.queue).apply(world);
+    }
+}
+
+impl<A: Asset> StagedAssets<A> {
+    pub(crate) fn staged(world: &World) -> Self {
+        Self::new(world)
+    }
+    pub(crate) fn publish_now(&mut self, world: &mut World) {
+        self.publish(world);
     }
 }

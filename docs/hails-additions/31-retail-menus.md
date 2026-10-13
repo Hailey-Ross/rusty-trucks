@@ -1596,14 +1596,16 @@ set. Ours showed the gameplay world behind the menu.
 - `skate-data/src/scene_clip.rs` (new): `SceneClip::parse` (131-bone hierarchy, parts by header bits 0..5 / 2,
   deltas added onto the file's pose).
 - Setup: `tools/asset_pipeline/scene_clips.py` + task `tools/prepare_trick_guide_scene.py` (hud group): the clips to
-  `assets/private/hud/scene/trickguide/`, the set as a render-only `TrickGuide.skate` (backdrop.py's `export_model`,
-  refactored out of the foliage backdrops; their output checked byte-identical), and the set's sky dome as
+  `assets/private/hud/scene/trickguide/`, the set as a render-only `TrickGuide.skate` (`export_set`, the format of
+  backdrop.py's global-model export, kept apart from backdrop.py so this branch and the living-world branch merge
+  cleanly), and the set's sky dome as
   `TrickGuide.sky.*` with its `material_sky` parameters.
 - `skate-game/src/trick_guide_scene.rs` (new): while FE 14 is on top the set and dome spawn on render layer 27 as
   children of the player root, the player's own rig plays the clip (`AnimationStatus::for_scene`), the meshes the
   gameplay camera draws join that layer (hidden rigs stay out: a hidden default skater under a custom model showed
   through on hails-additions), the gameplay camera draws only that layer; closing despawns them and restores layers. `retail_menu_stage.rs` publishes
-  `TrickGuideDemo` (open, highlighted clip); `map_render.rs` `SceneCommands::tagged`; `retail_sky.rs`
+  `TrickGuideDemo` (open, highlighted clip); `map_render.rs` `SceneCommands::apply_now` (the demo re-tags what it
+  spawned: its own marker instead of `MapEntity`, parented to the player root, on the demo layer); `retail_sky.rs`
   `SkyPackage::load_scene`.
 - Mods: a mod picks any clip per entry through the existing Trick Guide patches (`sdk.menus.trick_guide`, field
   `animation`). Mod clip folders are not wired yet.
@@ -1630,7 +1632,7 @@ set. Ours showed the gameplay world behind the menu.
 - Trick Guide demo: `crates/skate-core/src/animation/raw.rs` (new), `crates/skate-data/src/scene_clip.rs` (new),
   `tests/scene_clip.rs`, `tests/trick_guide_checklist.rs` (new); `crates/skate-game/src/trick_guide_scene.rs` (new),
   `retail_menu_stage.rs`, `map_render.rs`, `retail_sky.rs`, `app.rs`, `main.rs`; `tools/asset_pipeline/scene_clips.py`,
-  `backdrop.py`, `asset_exports.py`, `versions.py`, `tools/prepare_trick_guide_scene.py` (new).
+  `asset_exports.py`, `versions.py`, `tools/prepare_trick_guide_scene.py` (new).
 - Trick Guide: `crates/skate-core/src/trick_guide.rs` (new), `crates/skate-data/src/trick_guide.rs` (new),
   `menu_tables.rs`, `collections.rs`, `tests/trick_guide.rs` (new); `crates/skate-game/src/trick_guide_host.rs` (new),
   `retail_menu_stage.rs`, `crossbar_host.rs`, `apt_movie.rs`, `apt_stage.rs`, `apt_text.rs`, `apt_scene.rs`,
