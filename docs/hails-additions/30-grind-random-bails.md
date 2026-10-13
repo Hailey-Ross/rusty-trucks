@@ -1,4 +1,7 @@
-# 30. Grinds: random bails at some rails (handrail bend fixed; corners open)
+# 30. Grinds: random bails at some rails (handrail bend and corners fixed)
+
+Update 2026-10-13: the flat-rail corners at the PCU Library no longer bail (the user, in play); the "still bail" notes
+below are the state of the 2026-10-08 passes.
 
 Branch `fix/grind-random-bails` (from `main` b3c9679). Status: **the handrail bend bail is fixed by porting
 retail's per-volume world-query box (third pass, below).** The first two passes found the cause chain and

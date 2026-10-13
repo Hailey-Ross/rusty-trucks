@@ -12,6 +12,24 @@ Each extracted copy runs its own setup. Keep the `data` folder next to the exe.
 
 Every start checks your converted game files (a fraction of a second, in the background; the log says `ASSET_CHECK`). If an update needs newer ones, the Guide / F1 / Esc menu says **GAME FILES OUT OF DATE**: open **Extras > Refresh Game Files** and the game restarts into setup, converts only what changed and starts again. This also catches copies an earlier build updated without converting the new menu files (there, Start opened the old menu instead of Skate 3's pause menu).
 
+## Refreshing game files and trying early features
+
+**Refreshing your game files.** New builds sometimes need game files converted from your disc that an older setup did not make (new menus, props, living world data). You don't need to set up again from scratch:
+1. Update the game (Esc > **EXTRAS** > **Updates**, Branch `hails-additions`), or extract the new zip over your old folder, keeping its `data` folder.
+2. Start the game. If your converted files are older than the build needs, the Guide / F1 / Esc menu shows **GAME FILES OUT OF DATE**.
+3. Open **Extras > Refresh Game Files** (the row only appears while files are out of date). The game restarts into setup, converts only what changed and starts again. It reuses your disc image if it is still where setup found it, otherwise it asks for it again.
+4. Still seeing old menus or missing props? Send the session log from `PLAY-WITH-LOG.bat`: the `ASSET_CHECK` lines name the files that differ.
+
+**Opting in to early features.** Features that are still being tested are off by default. Switch them on in the Guide / F1 / Esc menu under **GRAPHICS > Opt-In Features**. Changes are saved, and most take effect at once:
+- **Zombie Mode:** the retail zombie cheat until the cheat screen exists: yellow screen, no traffic, every ped comes after you.
+- **NPC Skater Physics:** NPC skaters near you run full skater physics and can bail.
+- **Skitching:** ride up behind a traffic car and hold grab.
+- **Prop Grab:** carry props by their real handles, with your hands on the edge.
+- **More Audible World** (not retail, from the next start): more cars, peds and NPC skaters heard at once.
+- **Ped Speech:** peds, pros and the announcer talk. Their speech has to be decoded from your disc first (about 3.4 GB and a few minutes), so switching it on offers **Extras > Refresh Game Files**.
+
+For a single run you can still use the old variables instead (`set SKATE_ZOMBIE=1`, `SKATE_NPC_SIM=1`, `SKATE_SKITCH=1`, `SKATE_PROP_GRAB=1` before starting). Please mention which opt-ins were on when you report a problem.
+
 ## Controls (the new parts)
 
 - **Start** opens Skate 3's own pause menu (its real menu files from your disc): **A** selects, **B** goes back, the d-pad / arrows move. Options > **Game Settings** is the retail settings screen; Learn > **Trick Guide** is Skate 3's own trick guide.
@@ -41,7 +59,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 10. **Props appearing and disappearing:** like retail, placed props (benches, bins, cones and so on) now exist only near you: they appear within about 90 m and go beyond 100 m, and a knocked-over prop is back in its place when you return. Tell us if a prop pops in right in front of you, vanishes while you look at it, or a ped sits on an invisible bench. To compare, start with `set SKATE_DMO_STREAM=0` (props always there, as before).
 11. **Zombie mode (opt-in until the cheat screen exists):** Guide / F1 / Esc menu > Graphics > Opt-In Features > **Zombie Mode**: the screen turns yellow, the streets empty of traffic and every ped comes after you. Tell us how it plays.
 4. **Cars:** a car now pushes a pedestrian out of its way (that is what retail does, no knock-down). Cars driving through things, flying or vanishing.
-5. **Grinding:** the stair handrail at the **PCU Library** spawn should no longer throw you off at its bottom bend. The two corners of the flat rail there still bail. Tell us any other spot where you bail for no reason.
+5. **Grinding:** the stair handrail at the **PCU Library** spawn should no longer throw you off at its bottom bend. Tell us any other spot where you bail for no reason.
 6. **Frame rate:** big flips on the Spillway jumps used to hitch; the trick text no longer rebuilds itself every frame. Play with the Frame-time counter on and send a screenshot or video.
 7. **Audio:** sounds that are missing, late, doubled, too loud or quiet compared with retail.
 8. **Living world:** cars honking, braking, pulling over and parking; run into a parked car (its alarm should sound for about 8 s and the car should not drive off meanwhile); bump the same pedestrian two or three times (warning, then a chase). With the opt-in switches (Graphics > Opt-In Features): **Skitching** and **Prop Grab** (watch the hands).
@@ -56,7 +74,7 @@ Not play-tested yet; tell us if any of these still happen.
 - **Angry peds attacking over and over:** after a ped knocks you down it now ends the chase like Skate 3 does: it forgets what made it angry and ignores your bumps for that moment, instead of chasing again the second its taunt ends.
 - **Peds ignoring you while walking to a bench:** a ped you knock over now reacts and can get angry, even on its way to a bench, a vending machine or a bin.
 - **Seated peds:** you can knock a seated ped off a bench with a proper hit (gentle bumps are ignored, like Skate 3).
-- **Moved benches:** a bench you move takes its seats along, so peds sit on it, not in the air where it was. Moving a bench under a seated ped makes them jump off and sit back down at the new spot.
+- **Moved benches:** a bench you move takes its seats along, so peds sit on it, not in the air where it was. Moving a bench under a seated ped makes them jump off and sit back down at the new spot. A ped still in the middle of sitting down when you take the bench now finishes sitting, stands up and follows it, instead of staying seated in mid-air.
 - **Crash near benches:** fixed a crash when a ped using a bench or other prop lost it as props streamed out around you.
 - **Settings screens:** the selected value ("< Normal >", "100%") is readable again and only the selected row is bright; the selection glow is softer (the menu and HUD layer now blends like the console).
 - **Game files check:** when your converted game files do not match what setup recorded, the log now names the files (`ASSET_CHECK <group>: ... (count: first files)`), so a report shows what changed. Refresh Game Files also works in copies started from a source checkout (`--assets`), not only the release package.
@@ -122,19 +140,17 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 
 Being worked on now, ported from the retail game code (the rolling `hails-additions` build gets them first):
 - **Living world:** feature complete for its pull request (#52) and now being play-tested. Anything that looks or plays wrong with NPC skaters, peds, traffic, props or zombie mode: please send a log (see **Testing and reports**). Later additions (pros at their challenge spots, the Free Play menu and the zombie cheat screen with the menu work, more mod hooks) come in separate updates.
-- **Grinding:** the two flat-rail corners at the PCU Library spawn.
 - **Object Dropper:** the LB phone menu's Object Dropper is a full editor in retail (catalogue, free camera, snapping); research has started. Resetting and uprighting a single object already works for mods.
 - **Peds and moved props:** peds should walk round props after you move them.
 
 ## Known issues
 
-From the latest play tests and the overnight work (not play-tested yet):
-- **Carrying props:** the grab point is a straight edge on top of the prop, not retail's authored grab shapes, and stepping up curbs while dragging is not retail's yet. The prop fixes above come from headless tests only.
-- **NPC skaters:** they can spin round when switching to another line (retail's turning comes from full skater physics, not ported yet). Every NPC uses the same stance until each pro's stance is read from the data. Some animations still look stiff, grabs show an ollie, and trick height, grind variety, landings and spins are not finished. They push props but do not steer round obstacles or bail on heavy props yet.
-- **Pedestrians:** they walk through props you have moved; one model walks stiffly and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail. Placed props (benches, bins) still pass through your body; only thrown items hit you.
+Still open after the play tests up to 2026-10-12 (the fixes from the 2026-10-12 round are not play-tested yet):
+- **Carrying props:** without **Prop Grab** (Opt-In Features) you hold a prop by a straight edge on top, not retail's authored grab shapes; with it on you carry it by its real handles. Stepping up curbs while dragging is not retail's yet.
+- **NPC skaters:** some still spin round at a few line switches. Some animations still look stiff, grind and slide spans all show one 50-50 clip, and trick height, grind variety, landings and spins are not finished.
+- **Pedestrians:** they walk through a prop while you hold it; one model walks stiffly with its arms out and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail. Placed props (benches, bins) still pass through your body; only thrown items hit you.
 - **Cars:** they appear and vanish at full opacity; retail fades them in and out with distance.
 - **NPC draw distance** (Esc > GRAPHICS) is a quality-of-life option, not retail; higher settings cost frame time. None turns all NPCs off.
-- **Grinding:** the two corners of the flat rail at the PCU Library spawn still make you bail. Some drops off stair edges now land a little faster than before; tell us if landings feel wrong.
 - Known upstream test failures (also on `main`): `pipelines_accept_valid_group_outputs_when_fingerprint_changes` (skate-game) and `a_moving_group_8_body_...` (skate-core).
 
 ## Known missing features
