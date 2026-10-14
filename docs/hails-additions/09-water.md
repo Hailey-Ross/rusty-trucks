@@ -931,9 +931,11 @@ User (2026-10-13): "lets also recover the lost improvements noted here". Researc
 - **Deep-only buoyancy guard:** retail `82BE3A70` has no depth gate [code]; not restored.
 - **Board floats:** in the 360 TU3 code nothing lifts a released board: `82C09160` puts it in group 7 on every let-go
   and wipeout, group 7 makes no water contacts, and no other lift or drag source was found [code]. So it sinks to the
-  bed, as it does now. This disagrees with the PS3 footage above (board floating). Open: confirm with a short recomp
-  canal drop trace (hooks listed in `.local/research/b113-water-board-float.md`) before deciding; restoring the old
-  float would be our own choice and needs the user's ok.
+  bed, as it does now. This disagrees with the PS3 footage above (board floating). **Recomp trace (2026-10-14,
+  research b124, muted scripted run, teleport 21 m above the Aletown canal, bail mid-fall):** the player's board
+  comes to rest with its contact point at y 7.815, the canal bed (surface 8.93), vertical speed settling to 0 within
+  about 2 s; the overhead water shot shows the skater in the canal and no board on the surface. So the 360 code
+  sinks the board; ours matches. Restoring the old float would be our own choice and needs the user's ok.
 - **Water look** (body-size calming, ripple scale, third wave, tint): upstream replaced our shader with a port of the
   retail `water_defaultPS`. Ours were project choices; whether to bring any back as an opt-in look layer is the
   user's call.
