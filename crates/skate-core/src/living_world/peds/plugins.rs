@@ -28,11 +28,15 @@ pub struct PluginSettings {
     /// `height_tolerance` (`0x8208EB60` 1.8 m) vertically and the offer radius horizontally.
     pub scan_period: u32,
     pub height_tolerance: f32,
+    /// `InFrontOfFirstWaypoint` (`8269CF58`, b104): the flat angle between waypoint 0's facing and the waypoint-to-ped
+    /// vector must be under this (`0x821DBCF0` 0.523599 rad = 30 degrees; the upper bound `0x822F9114` 5.75959 is the
+    /// same cone on the other side). No distance limit.
+    pub front_half_angle: f32,
 }
 
 impl Default for PluginSettings {
     fn default() -> Self {
-        Self { refusal_capacity: 16, refusal_value: 30.0, refusal_floor: -30.0, scan_period: 11, height_tolerance: 1.8 }
+        Self { refusal_capacity: 16, refusal_value: 30.0, refusal_floor: -30.0, scan_period: 11, height_tolerance: 1.8, front_half_angle: 0.523_599 }
     }
 }
 
@@ -87,6 +91,19 @@ impl Transfer {
     }
 }
 
+/// `8269CF58`: flat (height dropped) angle between `facing` and `at -> ped` under `half_angle`; length^2 <= 1e-4
+/// (`0x8209BE90`) on either vector counts as angle 0 (passes).
+fn in_front(at: Vec3, facing: Vec3, ped: Vec3, half_angle: f32) -> bool {
+    let (vx, vz) = (ped[0] - at[0], ped[2] - at[2]);
+    let (fx, fz) = (facing[0], facing[2]);
+    let (lv, lf) = (vx * vx + vz * vz, fx * fx + fz * fz);
+    if lv <= 1e-4 || lf <= 1e-4 {
+        return true;
+    }
+    let cos = ((vx * fx + vz * fz) / (lv.sqrt() * lf.sqrt())).clamp(-1.0, 1.0);
+    cos.acos() < half_angle
+}
+
 /// What a world prop descriptor's transfer conditions read of a ped (`UseWorldProp` descriptors: sit, usetrashbin,
 /// newspaperbox, vend, ATM, water fountain).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -106,14 +123,14 @@ impl TransferView {
 
     /// One transfer condition for `ped` at `prop`: `HasHandProp` (`826AD1A8`), `HasDisposableHandProp` (`8269D170`),
     /// `CanSitWithHandProp` (`8269D268`), `IsChasing`; `IsOnRoad` is false (its condition slot is the `li r3,0` stub
-    /// `8274CA90`). `HasFirstWaypointAvailable` (the prop's waypoint 0 is free) and `InFrontOfFirstWaypoint` (the ped
-    /// is on the facing side of waypoint 0) are [inferred] from their names, their code is not read. Other names
+    /// `8274CA90`). `HasFirstWaypointAvailable` (the prop's waypoint 0 is free) and `InFrontOfFirstWaypoint` (`8269CF58` [code]: the ped
+    /// within `front_half_angle` of waypoint 0's flat facing; a near-zero vector counts as angle 0) are ported. Other names
     /// (`IsNearCrossWalk`, not ported) answer false like the brain's pending conditions.
-    pub fn condition(&self, name: &str, prop: &PluginProp, ped: Vec3) -> bool {
+    pub fn condition(&self, name: &str, prop: &PluginProp, ped: Vec3, s: &PluginSettings) -> bool {
         let first = prop.waypoints.first();
         match name {
             "HasFirstWaypointAvailable" => first.is_some_and(|w| w.occupant.is_none()),
-            "InFrontOfFirstWaypoint" => first.is_some_and(|w| (ped[0] - w.position[0]) * w.facing[0] + (ped[2] - w.position[2]) * w.facing[2] >= 0.0),
+            "InFrontOfFirstWaypoint" => first.is_some_and(|w| in_front(w.position, w.facing, ped, s.front_half_angle)),
             "HasHandProp" => self.hand_prop,
             "HasDisposableHandProp" => self.hand_prop && self.disposable,
             "CanSitWithHandProp" => !self.hand_prop || self.can_sit,
@@ -325,7 +342,7 @@ mod tests {
         let c = |n: &str| Transfer::Condition { name: n.into(), params: vec![] };
         let bin = Transfer::And(vec![c("HasDisposableHandProp"), Transfer::Not(vec![c("IsOnRoad")]), Transfer::Not(vec![c("IsNearCrossWalk")]), Transfer::Not(vec![c("IsChasing")])]);
         let prop = PluginProp { id: 1, class: "waypoint_usetrashbin".into(), waypoints: vec![PluginWaypoint { position: [0.0; 3], facing: [0.0, 0.0, 1.0], occupant: None }], cooldown: 0.0, cooldown_reset: 0.0 };
-        let pass = |v: TransferView, t: &Transfer| t.evaluate(&mut |n, _| v.condition(n, &prop, [0.0, 0.0, 1.0]));
+        let pass = |v: TransferView, t: &Transfer| t.evaluate(&mut |n, _| v.condition(n, &prop, [0.0, 0.0, 1.0], &PluginSettings::default()));
         let pop = TransferView { hand_prop: true, disposable: true, can_sit: true, chasing: false };
         assert!(pass(pop, &bin));
         assert!(!pass(TransferView::default(), &bin), "no prop");
@@ -337,10 +354,16 @@ mod tests {
         // The vending machine: waypoint 0 free and the ped in front of it, no hand prop.
         let vend = Transfer::And(vec![c("HasFirstWaypointAvailable"), c("InFrontOfFirstWaypoint"), Transfer::Not(vec![c("HasHandProp")])]);
         assert!(pass(TransferView::default(), &vend));
-        assert!(!TransferView::default().condition("InFrontOfFirstWaypoint", &prop, [0.0, 0.0, -1.0]), "behind it");
+        assert!(!TransferView::default().condition("InFrontOfFirstWaypoint", &prop, [0.0, 0.0, -1.0], &PluginSettings::default()), "behind it");
+        // `8269CF58`: a 30 degree cone, no distance limit (b104).
+        let front = |p: Vec3| TransferView::default().condition("InFrontOfFirstWaypoint", &prop, p, &PluginSettings::default());
+        assert!(front([2.0, 0.0, 4.0]), "26.6 degrees off the facing");
+        assert!(!front([3.0, 0.0, 4.0]), "36.9 degrees: outside the cone, though in front");
+        assert!(front([0.0, 5.0, 40.0]), "height dropped, any distance");
+        assert!(front([0.0, 0.0, 0.0]), "on the waypoint counts as angle 0");
         let mut held = prop.clone();
         held.waypoints[0].occupant = Some(9);
-        assert!(!TransferView::default().condition("HasFirstWaypointAvailable", &held, [0.0; 3]));
+        assert!(!TransferView::default().condition("HasFirstWaypointAvailable", &held, [0.0; 3], &PluginSettings::default()));
     }
 
     fn bench() -> PluginProp {

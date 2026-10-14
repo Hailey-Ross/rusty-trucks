@@ -5,8 +5,8 @@ const PLAYER: u64 = 99;
 
 fn tables() -> MoodTables {
     let mut t = MoodTables::default();
-    t.categories.insert("collision".into(), MoodCategory { magnitude: 0.0, lifetime: 30.0 });
-    t.categories.insert("presence".into(), MoodCategory { magnitude: 0.5, lifetime: 30.0 });
+    t.categories.insert("collision".into(), MoodCategory { magnitude: 0.0, lifetime: 30.0, near: 10.0, far: 10.0 });
+    t.categories.insert("presence".into(), MoodCategory { magnitude: 0.5, lifetime: 30.0, near: 10.0, far: 10.0 });
     t.entity_parents.insert("skater".into(), "pedestrians".into());
     t.entity_parents.insert("adult_male".into(), "regular".into());
     t.entity_parents.insert("regular".into(), "pedestrians".into());
@@ -119,4 +119,27 @@ fn presence_posts_other_peds_then_players() {
     assert_eq!(e.len(), 31);
     assert!(e.iter().all(|e| e.instigator != Some(PED) && e.instigator != Some(200)));
     assert_eq!(e.last().unwrap().instigator, Some(7));
+}
+
+#[test]
+fn the_zombie_broadcast_raises_the_zombie_chase_on_the_skater() {
+    let mut t = tables();
+    t.categories.insert("zombiemode".into(), MoodCategory { magnitude: 0.5, lifetime: 30.0, near: 10.0, far: 10.0 });
+    t.results.insert(
+        "skaterzombiechase".into(),
+        MoodResult { category: Some("zombiemode".into()), instigator_type: Some("skater".into()), want_flag: true, wants: vec!["angrychase".into()], ..Default::default() },
+    );
+    t.reactions.get_mut("adult_male").unwrap().results.push(("skaterzombiechase".into(), 1));
+    let far = |id: u64| (id == PLAYER).then(|| ("skater".to_string(), [40.0, 0.0, 0.0]));
+    let events = zombie_mode(&[(PLAYER, [40.0, 0.0, 0.0])]);
+    assert_eq!(events.len(), 1);
+    assert_eq!((events[0].category.as_str(), events[0].instigator, events[0].second), (category::ZOMBIE_MODE, Some(PLAYER), None));
+    let mut store = MoodStore::default();
+    let mut rng = Rng::new(5);
+    let c = MoodContext { zombie: true, ..ctx(&far) };
+    assert!(t.accepts("adult_male", &events[0], &c), "no stock prerequisite on zombiemode, any distance");
+    store.post(events[0].clone(), 0.5);
+    let r = t.produce(&mut store, &c, false, &|_| 0, &|_| false, &mut rng).unwrap();
+    assert_eq!(r.result, "skaterzombiechase");
+    assert_eq!(r.wants, vec![RaisedWant { want: "angrychase".into(), target: PLAYER, flag_40: true }]);
 }
