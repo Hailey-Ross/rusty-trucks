@@ -2416,6 +2416,22 @@ pub(crate) fn think_peds(
             }
             (Some(skate_core::living_world::peds::brain::motion::INTERCEPT), Some(chasee), Some(mesh)) => {
                 use skate_core::living_world::peds::chase;
+                // CannotReachChaseTarget (`82E31D58`, b108): the intercept move's result sets the bit within 5 m of the
+                // chasee and clears it beyond. Ours: a chasee off the navmesh (in water, on a roof) is a failed move
+                // [inferred mapping of retail's result codes 0 / 1 / 3]; back on the navmesh clears it.
+                if let Some(q) = target(chasee) {
+                    let off_mesh = mesh.locate(q).is_none();
+                    let near = (q[0] - at[0]).hypot(q[2] - at[2]) <= settings.ped_brain.values.unreachable_radius;
+                    let now = off_mesh && near;
+                    if now != mind.brain.target_unreachable {
+                        info!("PED_UNREACHABLE ped=#{} chasee={chasee} {} off_mesh={off_mesh} near={near} tick={tick}", ped.id.serial, if now { "cannot reach" } else { "reachable again" });
+                    }
+                    if off_mesh {
+                        mind.brain.target_unreachable = near;
+                    } else {
+                        mind.brain.target_unreachable = false;
+                    }
+                }
                 if let (Some(q), Some(here)) = (target(chasee), mesh.locate(at)) {
                     let velocity = observers.observers.get(chasee.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
                     let speed = record.and_then(|r| r.run_speed()).unwrap_or(0.0);

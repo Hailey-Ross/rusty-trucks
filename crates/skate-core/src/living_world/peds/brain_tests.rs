@@ -749,3 +749,27 @@ fn a_wiping_chasee_is_not_taken_down_and_ends_the_chase_within_2_m() {
     at.set([2.0, 0.0, 0.0]);
     assert_eq!(h.condition_activation(1, &f), 0, "2 m is not under 2 m");
 }
+
+/// `826AD640` / `826A8810` (b108): CannotReachChaseTarget reads the host's bit; SetTargetUnreachableTimer starts
+/// `TargetUnreachableTimer` at the chase record's `unreachable_timer`, so the graph gives up after it.
+#[test]
+fn an_unreachable_chasee_starts_the_record_wait() {
+    let conditions = ops(&[("CannotReachChaseTarget", &[]), ("SimpleTimerExpired", &[("timerName", "TargetUnreachableTimer")]), ("CanTazeUnreachableTargets", &[])]);
+    let behaviors = ops(&[("SetTargetUnreachableTimer", &[])]);
+    let mut record = super::super::chase::ChaseRecord::default();
+    record.fields.insert("unreachable_timer".into(), 5.0);
+    let mut brain = PedBrain::default();
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let f = frame();
+    let view = ChaseView { me: 7, record: Some(&record), ..Default::default() };
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: view };
+    assert_eq!(h.condition_activation(0, &f), 0);
+    h.brain.target_unreachable = true;
+    assert_eq!(h.condition_activation(0, &f), 1);
+    h.begin(0, [0; 6], &f);
+    assert_eq!(h.condition_activation(1, &f), 0, "the 5 s wait runs");
+    h.brain.tick_timers(5.0);
+    assert_eq!(h.condition_activation(1, &f), 1);
+    assert_eq!(h.condition_activation(2, &f), 0, "no tazer without the per-ped flag");
+}
