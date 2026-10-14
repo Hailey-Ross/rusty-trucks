@@ -418,3 +418,51 @@ hold. The cap stays a plain `max_voices` field.
 **Open.** Confirm in the user's next session that `block_voices` stays flat and `voices_refused` stays absent. "No
 landing noise when landing in manual" is a separate report (by design the kind-2 touch is skipped while in a manual);
 check it against `sub_824BB330` if the user still hears it.
+
+## NPC Skater Physics: hitches, skaters vanishing up close, path projection (2026-10-13)
+
+### Problem
+User (2026-10-13): "I can only see skaters in the distance, anytime I get close they just dissapear." / "yea npc
+skaters just dissapear when they get close and I get massive hitches" / "FIX IT, IM NOT SWITCHING IT OFF".
+Sessions `hails-additions/logs/game-20261013-183803` and `-204749` (NPC Skater Physics opt-in on): 59 / 63 switches
+replay -> physics, 26 / 43 bails; 35 of 39 switches hitched over 150 ms.
+
+### Causes and changes
+- **Hitches** (measured, `NPC_SKATER_SIM_LOAD`): every switch loaded a skater from disk: runtime 149 ms, controls
+  31 ms, camera 37 ms. Now `NpcSimPool` keeps loaded skaters with their own physics context (filled up to the sim
+  limit on the first enabled tick, refilled by hand-backs and despawns); a switch or a bail respawn places one with the
+  player's teleport (`SkaterRuntime::travel`; retail places its AI skater object again). Its own context is kept (a
+  fresh context restarted the clock and the camera refused the older subject tick). Earlier the same day: a blocked
+  skater no longer restarts the sim every frame beyond the radius.
+- **Start state** (research `.local/research/npc/b109-npc-sim-bails.md`): sims started between nodes, from rest
+  (the teleport reset zeroed the context velocity) and 0.1 m up. Now a sim starts only on a node with retail's spawn
+  push (x 0.75, `82C04168`) carried through the teleport.
+- **Path projection** (research `.local/research/npc/b110-ai-path-projection.md`, new skate-core
+  `living_world/path_follow.rs`): the line cursor of a simulated skater followed the recording's clock, so the
+  target and the trick events ran away from the skater (137 of 144 trick dispatches were more than 1 m off the line).
+  Ported `sub_8246D560`: nearest node in a forward window (`sub_82455BB0`), two-segment projection with the 0.5
+  hysteresis and the 0.25 clamp (`sub_824563D8` / `sub_8246C930`), lane test (widths / 50, `sub_8246CCC8`), rejoin
+  commit within 0.5 m (`sub_8246E2B8`), cursor B one shaped recorded tick ahead (`sub_8246E3B8`), on path dropped
+  beyond 1.0 m outside the lane (`sub_8246DB50`; no recorded trick then). The cursor now goes to B
+  (`NpcReplay::follow_target`); replay resumes from there on hand-back. Values: `SimulatedTierSettings::path`
+  (retail defaults, mod-overridable). Log `NPC_SKATER_PATH` (left / rejoined the path).
+- Test knob `SKATE_NPC_SIM_RADIUS`; per-system living-world timing in `FRAME_HITCH` (`living_world=[...]`).
+
+### Verification
+- skate-core `living_world::path_follow::tests` (4); skate-core living_world 285 passed; skate-game living_world 87.
+- Muted DownTown runs, radius 150 m, 150 s, up to 3 sims:
+
+| build | disk loads | hitches over 100 ms | bails |
+|---|---|---|---|
+| before (user session 204749, radius 40 m) | one per switch | 82 | 43 |
+| pool, node start, trick gate | 27 | 14 | 29 |
+| + own context kept | 4 | 3 | 26 |
+| + path projection | 3 | 2 (both at load) | 17 |
+
+### Open (next steps)
+- Remaining bails are mostly ground wipeouts while rolling (`PhysicsGround -> WipeoutGround`) and many path leaves
+  (48 left / 31 rejoined in 150 s). Not ported: retail's steering-target gate off path and before node 3
+  (`sub_8246DE38` is skipped there; ours still writes the record from B), the "lost" hand-over to the NavMesh
+  (`sub_82468DD8` / `sub_8246FE38`), the node-change handler `sub_8246BEE0`, the progress tracker `sub_82468240`,
+  which body point retail projects (`sub_82467FC8`; ours the deck).
+- A bail still hides the skater for 5 s (retail respawn delay); what the user sees as "vanishing".

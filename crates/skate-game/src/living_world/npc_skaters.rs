@@ -164,6 +164,9 @@ pub(crate) struct NpcReplay {
     pub previous: Option<LineCursor>,
     /// The obstacle avoider's state: cursor lag and lateral offset ([`super::npc_avoid`]).
     pub avoid: super::npc_avoid::NpcAvoid,
+    /// While simulated: the cursor frame cursor B is at (`skate_core::living_world::path_follow`, retail's projection),
+    /// used instead of the recording's clock.
+    pub follow_target: Option<u64>,
 }
 
 /// The NPC's leave fade and its opacity now (1 = solid). Engine systems and mods read `alpha` to
@@ -717,7 +720,7 @@ pub(crate) fn apply_records(
                 Name::new(format!("NPC skater {} ({character})", s.id.serial)),
                 Transform::from_translation(at).with_rotation(Quat::from_rotation_y(s.heading)),
                 Visibility::Inherited,
-                NpcReplay { cursor, branches: Vec::new(), tricks: Vec::new(), last: sample, previous: None, avoid: Default::default() },
+                NpcReplay { cursor, branches: Vec::new(), tricks: Vec::new(), last: sample, previous: None, avoid: Default::default(), follow_target: None },
                 NpcFade { alpha: state.world.config.skaters.leave_fade.fade_in_alpha(0), ..NpcFade::default() },
                 NpcSkaterAudio { list_order: u32::from(*slot), voice: npc.voice, ..Default::default() },
                 NpcStanceTrack::new(npc.stance),
@@ -758,7 +761,7 @@ pub(crate) fn advance(
     for (e, npc, mut replay, mut transform, mut audio, mut fade) in sorted {
         let elapsed = tick.saturating_sub(npc.spawn_tick) * FRAMES_PER_TICK;
         // The obstacle avoider holds the cursor back (`npc_avoid`); the fade keeps the spawn clock.
-        let target = elapsed.saturating_sub(replay.avoid.held_frames());
+        let target = replay.follow_target.unwrap_or_else(|| elapsed.saturating_sub(replay.avoid.held_frames()));
         let mut out = Vec::new();
         // The switch blend time (branch / chain root blend) is a tuning value, the same on a client.
         replay.cursor.switch_blend_seconds = chain.blend_seconds;
