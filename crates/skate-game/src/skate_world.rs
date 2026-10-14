@@ -971,6 +971,33 @@ impl PropCollisionLayer {
         basis: [[f32; 3]; 3],
         translation: Vector3,
     ) -> Result<(), String> {
+        let triangles = self.bake(instance, basis, translation)?;
+        self.world
+            .replace_triangles(self.instances[instance].range.clone(), &triangles)
+            .map_err(str::to_owned)
+    }
+
+    /// [`Self::rebake`] for several instances in order with one query index rebuild
+    /// (`BoardWorld::replace_triangles_batch`: identical result). An instance whose triangles
+    /// do not bake is skipped and reported, as its own `rebake` call failed before.
+    pub fn rebake_many(&mut self, poses: &[(usize, [[f32; 3]; 3], Vector3)]) -> Vec<(usize, String)> {
+        let mut errors = Vec::new();
+        let mut baked = Vec::with_capacity(poses.len());
+        for &(instance, basis, translation) in poses {
+            match self.bake(instance, basis, translation) {
+                Ok(triangles) => baked.push((self.instances[instance].range.clone(), triangles)),
+                Err(error) => errors.push((instance, error)),
+            }
+        }
+        let edits: Vec<_> = baked.iter().map(|(range, t)| (range.clone(), t.as_slice())).collect();
+        if let Err(error) = self.world.replace_triangles_batch(&edits) {
+            errors.extend(poses.iter().map(|p| (p.0, error.to_owned())));
+        }
+        errors
+    }
+
+    /// One instance's triangles at a rigid pose (tag, flags and edge cosines kept).
+    fn bake(&self, instance: usize, basis: [[f32; 3]; 3], translation: Vector3) -> Result<Vec<WorldTriangle>, String> {
         let entry = &self.instances[instance];
         let transform = |p: Vector3| {
             Vector3::new(
@@ -995,9 +1022,7 @@ impl PropCollisionLayer {
                 .ok_or("Rebaked prop collision triangle is invalid")?,
             );
         }
-        self.world
-            .replace_triangles(entry.range.clone(), &triangles)
-            .map_err(str::to_owned)
+        Ok(triangles)
     }
 
     /// A layer with no instances yet (a map without placed props, which can

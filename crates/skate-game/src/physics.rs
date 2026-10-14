@@ -372,17 +372,35 @@ impl GamePhysics {
     /// authored pose when `authored`, retail; else where it was left) for the DMO census (`living_world::dmo_stream`).
     /// Refused for the held prop and unknown ids. The single authority for streaming.
     pub(crate) fn stream_prop(&mut self, id: u32, dormant: bool, authored: bool) -> bool {
-        if self.prop_carry.held() == Some(id) {
-            return false;
-        }
+        self.stream_props(&[(id, dormant, authored)])[0]
+    }
+
+    /// [`Self::stream_prop`] for a whole stream pass `(id, dormant, authored)`, in order, with one collision rebake
+    /// at the end: each prop used to rebuild the whole collision index (b111: ~410 ms for the first pass). Nothing
+    /// reads prop collision between the props of a pass, and the batched rebake gives the identical index.
+    pub(crate) fn stream_props(&mut self, props: &[(u32, bool, bool)]) -> Vec<bool> {
+        let held = self.prop_carry.held();
         let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut()) else {
-            return false;
+            return vec![false; props.len()];
         };
-        let Some((instance, origin, basis)) = dynamics.set_dormant(id, dormant, authored) else { return false };
-        if let Err(error) = layer.rebake(instance, basis.columns, origin) {
-            warn!("SKATE_PROP_STREAM: rebake {id}: {error}");
+        let mut poses = Vec::new();
+        let mut ids = std::collections::HashMap::new();
+        let done = props
+            .iter()
+            .map(|&(id, dormant, authored)| {
+                if held == Some(id) {
+                    return false;
+                }
+                let Some((instance, origin, basis)) = dynamics.set_dormant(id, dormant, authored) else { return false };
+                poses.push((instance, basis.columns, origin));
+                ids.insert(instance, id);
+                true
+            })
+            .collect();
+        for (instance, error) in layer.rebake_many(&poses) {
+            warn!("SKATE_PROP_STREAM: rebake {}: {error}", ids.get(&instance).copied().unwrap_or(u32::MAX));
         }
-        true
+        done
     }
 
     /// Create a prop body mid-game (a released hand prop, a mod's prop): collision triangles in

@@ -105,6 +105,51 @@ pub fn reposition_node(state: &ControllerState, s: &ControllerSettings, mode_7: 
     node.min(node_count.saturating_sub(1))
 }
 
+/// The off-board toggle the line controller presses (the push-state object `M` at brain `+92` it shares with controller
+/// B; b117, main checked `sub_8246FA30` -> `824712E0`): A's activate clears it (`sub_82468AC8`: mode 0, count 0); each
+/// path tick presses first, then sets the mode for the next tick: 2 = get back on (1 = stay off, when `pc+336`, which
+/// retail never sets for ambient skaters).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OffBoardToggle {
+    pub mode: u8,
+    pub ticks: u32,
+}
+
+impl OffBoardToggle {
+    /// `824712E0`: mode 1 presses while on the board, mode 2 while off it; never while toggling (`byte_160`) or with a
+    /// press pending (`pc+946`); the count is tested, reset on a press, then always counted up. True = send the
+    /// `NewToggleOffBoardState` / `ToggleOffBoardState` pair.
+    pub fn press(&mut self, period: u32, off_board: bool, toggling: bool) -> bool {
+        let press = self.mode != 0 && self.ticks > period && !toggling && ((self.mode == 1 && !off_board) || (self.mode == 2 && off_board));
+        if press {
+            self.ticks = 0;
+        }
+        self.ticks += 1;
+        press
+    }
+
+    /// The end of A's path tick: the mode for the next tick.
+    pub fn line_mode(&mut self, stay_off: bool) {
+        self.mode = if stay_off { 1 } else { 2 };
+    }
+}
+
+/// `sub_8246ED68`: the node a bailed AI skater is placed at again, picked when the bail starts (`sub_8246EE30`,
+/// `pc+880`; main checked 0x8246ED68..0x8246EE24): the projection's search node (`pc+816`) plus
+/// `reposition_past`, a remembered prop's node instead when it lies ahead within `remembered_window`, clamped to
+/// the last node, then the first safe node from there ([`safe_node`]). Not ported: game modes 19 / 20
+/// (`sub_824681D8`) use `sub_824553D8(line, cursor A)` instead.
+pub fn respawn_node(state: &ControllerState, s: &ControllerSettings, search_start: u32, line: &super::replay::ReplayLine) -> u32 {
+    let mut node = search_start + s.reposition_past;
+    if let Some(r) = state.remembered_node {
+        let r = r + s.reposition_past;
+        if r > node && r - node < s.remembered_window {
+            node = r;
+        }
+    }
+    safe_node(line, node.min((line.nodes.len() as u32).saturating_sub(1)), s)
+}
+
 /// `sub_82455348`: the node's jump is a ground trick (category 5 grind / slide, 8 manual, 9 powerslide, or 4 grab
 /// for the ground grabs coffin 60 and gnd_bsgrab / gnd_dblgrab / gnd_fsgrab 67 to 69; `sub_824545F0` reads the
 /// category, table `0x820862A8` +16).
@@ -285,5 +330,44 @@ mod tests {
         assert_eq!(safe_node(&manual, 0, &s), 7);
         let none = ReplayLine { nodes: vec![node(1, 0, 0x4, None, flat); 4], ..line.clone() };
         assert_eq!(safe_node(&none, 0, &s), 3);
+    }
+
+    #[test]
+    fn the_line_controller_presses_the_board_toggle_every_five_ticks_until_back_on() {
+        let mut t = OffBoardToggle::default();
+        // A's activate: mode 0, no press on the first tick.
+        assert!(!t.press(4, true, false));
+        t.line_mode(false);
+        let presses: Vec<bool> = (0..12).map(|_| { let p = t.press(4, true, false); t.line_mode(false); p }).collect();
+        assert_eq!(presses.iter().filter(|&&p| p).count(), 2);
+        assert!(presses[4] && presses[9], "the count passes 4 five ticks after the activate tick, then every 5: {presses:?}");
+        // Not while toggling, not once on the board; mode 1 (stay off) presses only on the board.
+        let mut busy = OffBoardToggle { mode: 2, ticks: 9 };
+        assert!(!busy.press(4, true, true));
+        let mut on = OffBoardToggle { mode: 2, ticks: 9 };
+        assert!(!on.press(4, false, false));
+        let mut stay = OffBoardToggle { mode: 1, ticks: 9 };
+        assert!(stay.press(4, false, false));
+    }
+
+    #[test]
+    fn a_bail_respawns_two_past_the_search_node_at_the_first_safe_node() {
+        use crate::living_world::replay::ReplayLine;
+        let s = ControllerSettings::default();
+        let flat = [0.0, 0.0, 0.1];
+        // Calm 60-frame nodes, except a jump marker at node 9 (frames reset there).
+        let mut nodes: Vec<_> = (0..20).map(|_| node(60, 0, 0, None, flat)).collect();
+        nodes[9].jump = Some(0);
+        let line = ReplayLine { id: [0; 16], flags: 0, skill: -1, nodes, jumps: vec![jump(128, 1)], groups: Vec::new() };
+        let state = ControllerState::default();
+        assert_eq!(respawn_node(&state, &s, 4, &line), safe_node(&line, 6, &s));
+        assert_eq!(respawn_node(&state, &s, 4, &line), 6);
+        // Past the jump marker: not on the take-off.
+        assert_eq!(respawn_node(&state, &s, 8, &line), safe_node(&line, 10, &s));
+        assert!(respawn_node(&state, &s, 8, &line) > 9);
+        // A remembered prop ahead within the window moves it on; clamped at the last node.
+        let remembered = ControllerState { remembered_node: Some(12), ..Default::default() };
+        assert_eq!(respawn_node(&remembered, &s, 4, &line), safe_node(&line, 14, &s));
+        assert_eq!(respawn_node(&state, &s, 19, &line), safe_node(&line, 19, &s));
     }
 }
