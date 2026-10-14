@@ -189,7 +189,12 @@ pub(crate) fn simulate(
             Some(mut sim) => {
                 let state_now = sim.runtime.player_state.current();
                 let settled = matches!(state_now, PhysicalStateId::PhysicsGround | PhysicalStateId::SlideGround);
-                if (!rules.enabled || distance > rules.radius * 1.1 || replay.cursor.finished) && settled {
+                // A skater simulated because a prop blocks it (mode 7, allowed at any distance below) stays simulated
+                // until it is clear; handing it back while still blocked restarted the sim the next frame, every
+                // frame (session game-20261013-183803: 12 restarts in one second at 79 m, ~75 ms each).
+                let blocked = rules.walk_back && replay.avoid.last.mode == skate_core::living_world::avoid::AvoidMode::StepOff;
+                let too_far = distance > rules.radius * 1.1 && !blocked;
+                if (!rules.enabled || too_far || replay.cursor.finished) && settled {
                     commands.entity(e).remove::<NpcSim>();
                     count -= 1;
                     info!("NPC_SKATER_SIM #{} {} -> replay (distance {distance:.1} m)", npc.id.serial, npc.character);

@@ -210,6 +210,9 @@ pub(crate) struct PedNavSettings {
     pub crosswalk: CrosswalkRule,
 }
 
+/// The ped ground probe's retry reach after a miss (`82EA5F48`: 4.0 at `0x82257308`) [code, b107].
+pub(crate) const GROUND_RETRY_FACTOR: f32 = 4.0;
+
 /// Dynamic objects as ped navigation obstacles (fix 11): props and mod bodies by stable id.
 #[derive(Resource, Default, Clone, Debug, PartialEq)]
 pub(crate) struct PedObstacles(pub NavObstacles);
@@ -965,7 +968,10 @@ pub(crate) fn advance_peds(
         // Not retail yet: retail's own ped render placement is not decoded.
         let mut shown = body.position;
         let (up, down) = data.nav.as_deref().map_or((3.0, 3.0), |m| (m.agent[2].max(0.05), m.agent[3].max(0.5)));
-        if let Some(y) = ground(physics.as_deref(), body.position, up, down) {
+        // Retail's NavPower mover probe (`82EA5F48`, debug bool `probe_for_ground` on by default) casts again with
+        // 4x the reach after a miss (`0x82257308` 4.0) [code, b107]: a coarse navmesh triangle can sit 1.7 m above the
+        // pavement (DownTown poly 7376). Upward stays one step so overhead geometry is still never taken.
+        if let Some(y) = ground(physics.as_deref(), body.position, up, down).or_else(|| ground(physics.as_deref(), body.position, up, down * GROUND_RETRY_FACTOR)) {
             shown.y = y;
         }
         transform.translation = shown;
@@ -2032,6 +2038,9 @@ pub(crate) fn think_peds(
                 Some((skate_core::living_world::peds::chase::should_block(at, q, v, 0.0, r), g.formation_point(me, q)))
             };
             mind.brain.zombie = settings.zombie;
+            // ChaseeIsWipedOut / the takedown gate: a player chasee's wiping-out bit; a ped chasee's flag (brain `+3277`
+            // bit 0x04) is not modelled yet (false).
+            let wiping_of = |id: u64| id >= PLAYER_TARGET_BASE && observers.wiping.get((id - PLAYER_TARGET_BASE) as usize).copied().unwrap_or(false);
             let mut host = skate_core::living_world::peds::brain::BrainHost {
                 behaviors: &graph.behaviors,
                 conditions: &graph.conditions,
@@ -2041,7 +2050,7 @@ pub(crate) fn think_peds(
                 heading: body.heading,
                 skater: observers.observers.first().map(|o| (o.position, o.velocity)),
                 target_position: &target,
-                chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array() },
+                chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array(), wiping: Some(&wiping_of) },
             };
             controller.update(program, dt, &mut host);
             if std::mem::take(&mut mind.brain.collision_began) {
@@ -2072,7 +2081,7 @@ pub(crate) fn think_peds(
                         heading: body.heading,
                         skater: observers.observers.first().map(|o| (o.position, o.velocity)),
                         target_position: &target,
-                        chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array() },
+                        chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array(), wiping: Some(&wiping_of) },
                     };
                     pc.update(&pg.graph.runtime.program, dt, &mut host);
                     if mind.prop.is_some() && pc.frame.current == mind.plugin_state && tick % 150 == 0 {
