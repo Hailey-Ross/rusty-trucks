@@ -445,6 +445,29 @@ camera worked perfectly at that time."
   surface=Some(8.934)`, then camera_y 11.68 = 3.00 m above the surface until the respawn; capture shows the overhead
   shot with the vignette.
 
+### What else b3c96793 removed, and what is left to recover (2026-10-13)
+
+User (2026-10-13): "lets also recover the lost improvements noted here". Research b112 / b113 compared the deleted
+`physics/water.rs` and `water_bodies.rs` with the current code (main checked the key lines):
+- **Water detection, the water flag and the water bail:** replaced by the recovered retail contact path
+  (`special_surface.rs`, contacts in `board_ground.rs` / `collision_update.rs`). Nothing to restore.
+- **"Shallow water solid, deep water not":** replaced by the retail group/surface exclusion table (`82767D60` sets only
+  (7,12) and (16,12); `board_world.rs` skips water triangles for groups 7 and 16 only). A water bail asks for ragdoll
+  request 10 instead of 8 (`82D3B5E8`, `li r4,10` on Player `+2488` bit 30 [code]), which puts the body in group 7: it
+  passes the water surface and only the part buoyancy `82BE3998` holds it up. Our port already does this
+  (wipeout `lifecycle.rs`, `collision_mode.rs`). Nothing to restore.
+- **Deep-only buoyancy guard:** retail `82BE3A70` has no depth gate [code]; not restored.
+- **Board floats:** in the 360 TU3 code nothing lifts a released board: `82C09160` puts it in group 7 on every let-go
+  and wipeout, group 7 makes no water contacts, and no other lift or drag source was found [code]. So it sinks to the
+  bed, as it does now. This disagrees with the PS3 footage above (board floating). Open: confirm with a short recomp
+  canal drop trace (hooks listed in `.local/research/b113-water-board-float.md`) before deciding; restoring the old
+  float would be our own choice and needs the user's ok.
+- **Water look** (body-size calming, ripple scale, third wave, tint): upstream replaced our shader with a port of the
+  retail `water_defaultPS`. Ours were project choices; whether to bring any back as an opt-in look layer is the
+  user's call.
+- **Moddability:** the exclusion pairs are a hard-coded `matches!` today; they should become the retail 21 x 14 table
+  as data with the two retail pairs as defaults.
+
 ## Verification
 
 - Unit test `physics::player_input::tests::water_contact_prefers_the_skater_body_height`.
