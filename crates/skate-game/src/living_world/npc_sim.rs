@@ -48,13 +48,18 @@ pub(crate) struct SimulatedTierSettings {
     pub controller: skate_core::living_world::ai_controller::ControllerSettings,
     /// The line controller's analog steer on the ground (`sub_8246AA00` / `sub_82471070`, b121; retail values).
     pub ground_steer: skate_core::living_world::ground_steer::GroundSteerTuning,
+    /// ... and in the air (`sub_8246B358` / `sub_82471188`, b123; retail values).
+    pub air_steer: skate_core::living_world::air_steer::AirSteerTuning,
+    /// The air arm. Ported but OFF by default until it is understood: muted A/B runs (2026-10-14, 240 s) had more bails
+    /// with it (radius 150 m: 48 vs 19; 110 m: 33 vs 24). Test knob `SKATE_NPC_AIR_STEER=1` turns it on.
+    pub air_steer_on: bool,
 }
 
 impl Default for SimulatedTierSettings {
     fn default() -> Self {
         // `SKATE_NPC_SIM_RADIUS` (m): a test knob so an unattended run sees many switches to physics.
         let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(40.0);
-        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default() }
+        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1") }
     }
 }
 
@@ -104,6 +109,8 @@ pub(crate) struct NpcSim {
     trace_ticks: u32,
     /// The last walk-back goal with no navmesh plan (logged once per goal).
     no_plan: Option<u32>,
+    /// The takeoff flip latch (`pc+927` / `pc+928`, `sub_8246A700`), cleared with the controller.
+    air: skate_core::living_world::air_steer::AirLatch,
 }
 
 /// Controller B's run: the line (`ctrl+592`) and node A re-attaches to when B hands back.
@@ -224,7 +231,7 @@ fn spawn_sim(
         Some(pooled) => pooled,
         None => load_body(physics, config, graphs, spawn)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, respawn_node: None, toggle: Default::default(), trace_ticks: 0, no_plan: None };
+    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, respawn_node: None, toggle: Default::default(), trace_ticks: 0, no_plan: None, air: Default::default() };
     place(&mut sim, target)?;
     Ok(sim)
 }
@@ -259,6 +266,7 @@ fn place(sim: &mut NpcSim, target: &ai_record::LineTarget) -> Result<[f32; 3], S
     sim.toggle = Default::default();
     sim.last_deck = None;
     sim.trace_ticks = 60;
+    sim.air = Default::default();
     Ok(velocity)
 }
 
@@ -523,7 +531,10 @@ pub(crate) fn simulate(
                                 Some((id, f)) if id == replay.cursor.line && replay.cursor.node + rules.path.window >= f.search_start => f,
                                 // A line switch (chain or branch): retail's reset `sub_82468AC8` leaves the skater off
                                 // the path with the start gate kept (b118).
-                                Some((_, f)) => f.switch_to(replay.cursor.node),
+                                Some((_, f)) => {
+                                    sim.air = Default::default();
+                                    f.switch_to(replay.cursor.node)
+                                }
                                 None => skate_core::living_world::path_follow::PathFollow::start(replay.cursor.node, &rules.path),
                             };
                             let (pos, heading) = projected_point(sim, state_now);
@@ -623,6 +634,26 @@ pub(crate) fn simulate(
                     }
                     sim.toggle.line_mode(false);
                 }
+                // The takeoff latch (`sub_8246A700`, every path tick): the character's forward against the current node's
+                // recorded skater forward.
+                let character = sim.body.runtime.animated_skeleton.roots.animation_to_world;
+                let (char_forward, char_up) = ([character[2][0], character[2][1], character[2][2]], [character[1][0], character[1][1], character[1][2]]);
+                if let Some(line) = lines.get(&replay.cursor.line) {
+                    let node_forward = skate_core::living_world::air_steer::node_skater_forward(line, replay.cursor.node);
+                    if sim.air.tick(airborne_now, char_forward, node_forward) {
+                        let d = GamePhysics::context_deck(&sim.context).basis.columns[2];
+                        let v = sim.last_deck.map(|q| { let p = projected_point(sim, state_now).0; [p[0] - q[0], p[1] - q[1], p[2] - q[2]] }).unwrap_or([0.0; 3]);
+                        let vl = (v[0] * v[0] + v[2] * v[2]).sqrt().max(1e-6);
+                        debug!(
+                            "NPC_SKATER_TAKEOFF #{} node {} flip {} char.deck {:.2} char.travel {:.2} deck.travel {:.2} char.node {:.2}",
+                            npc.id.serial, replay.cursor.node, sim.air.flip,
+                            char_forward[0] * d[0] + char_forward[2] * d[2],
+                            (char_forward[0] * v[0] + char_forward[2] * v[2]) / vl,
+                            (d[0] * v[0] + d[2] * v[2]) / vl,
+                            char_forward[0] * node_forward[0] + char_forward[2] * node_forward[2]
+                        );
+                    }
+                }
                 // The ground steer (`sub_8246ACF0` -> `sub_8246AA00` / `sub_82471070`, b121): on the ground and on the
                 // board (not toggling), not skitching, every path tick, on or off the path; it turns a skater that left
                 // its line back toward it.
@@ -631,7 +662,21 @@ pub(crate) fn simulate(
                     let p = &sim.body.runtime.player_input.processed;
                     let on_foot = p.flags_2484 & 0x0800_0000 != 0 || p.flags_2480 & 0x4 != 0;
                     let waiting = sim.respawn_in.is_some() || sim.teleport_pending;
-                    if !airborne_now && !on_foot && !waiting && avoid.last.mode != AvoidMode::Skitch {
+                    if airborne_now && !rules.air_steer_on {
+                    } else if airborne_now && !on_foot && !waiting && avoid.last.mode != AvoidMode::Skitch {
+                        // The air arm (`sub_8246B358`, b123): toward the recorded skater forward at the near look-ahead,
+                        // reversed when latched; nothing inside the dead zone.
+                        if let (Some(line), Some((id, f))) = (lines.get(&replay.cursor.line), sim.follow) {
+                            if id == replay.cursor.line {
+                                use skate_core::living_world::air_steer;
+                                let near = path_follow::advance(line, f.a, rules.ground_steer.near_ticks);
+                                let e = air_steer::error(char_forward, char_up, air_steer::skater_forward_at(line, near), sim.air.flip);
+                                if let Some(s) = air_steer::stick(e, &rules.air_steer) {
+                                    intents.extend(ground_steer::intents(s).into_iter().map(|(k, v)| (k.to_string(), v)));
+                                }
+                            }
+                        }
+                    } else if !airborne_now && !on_foot && !waiting && avoid.last.mode != AvoidMode::Skitch {
                         if let (Some(line), Some((id, f))) = (lines.get(&replay.cursor.line), sim.follow) {
                             if id == replay.cursor.line {
                                 let t = &rules.ground_steer;

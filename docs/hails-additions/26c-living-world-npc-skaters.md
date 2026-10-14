@@ -548,6 +548,16 @@ DownTown baseline (radius 150 m, 150 s, player idle): 17 bails, 79 on/off-path s
   sim passes it to `ai_record::steers` and `PathFollow::tick`. The replay tier's flip latch reads the same byte as
   "riding" (replay.rs `node_riding`); left as is tonight (research b120 first: it touches the facing rule behind the
   earlier backwards-riding fix).
+- **Air steer** (research `.local/research/npc/b123-ai-air-steer.md`): in the air retail steers the character toward
+  the recorded skater forward at the near look-ahead (`sub_8246B358`, reversed when the takeoff latch `pc+927` says
+  the character faced against the node's recorded skater, `sub_8246A700`), with a 2 degree dead zone and full stick
+  at 10 (`sub_82471188`), on the same three keys. Now skate-core `living_world::air_steer` (tuning
+  `SimulatedTierSettings::air_steer`). Measured at takeoff: the character forward (animation root row 2) lines up with
+  the deck forward (dot 0.9 to 1.0), so the input axis is right. **Off by default for now:** muted A/B runs (240 s,
+  same build, `SKATE_NPC_AIR_STEER=1` to turn it on) had more bails with it: radius 150 m 48 vs 19, radius 110 m 33
+  vs 24. Candidates: the board adjust write it also makes (`BoardAdjustAngle` / `BoardAdjustMag`, `sub_82471008`, not
+  ported), whether retail's AI input map keeps or clears an unwritten key between ticks, the slerp fraction
+  (`sub_82459F68`). Ported anyway so the next step is a switch, not a rewrite.
 - `NPC_SKATER_BAIL` now says what the skater was doing: previous state, speed, node, cursor A, on path, distance to
   the path and position (logs must diagnose).
 
@@ -566,6 +576,7 @@ DownTown baseline (radius 150 m, 150 s, player idle): 17 bails, 79 on/off-path s
 | + line controller re-boards (skaters ride again instead of standing) | 300 s | 55 | 16 |
 | + line-end retry, switch reset, airborne gate, ground steer | 300 s | 72 (70 at two line ends) | 14 |
 | + line-end fallback, retry on the last node | 300 s | 19 | 12 |
+| + air steer (A/B, 240 s, radius 150 / 110) | 240 s | 48 / 33 on, 19 / 24 off | 7 / 4 on, 7 / 8 off |
 
 The long frames left (100 to 165 ms) show no physics steps and nothing in the instrumented stages or the living
 world systems: not the NPCs; open.
