@@ -75,6 +75,10 @@ Not play-tested yet; tell us if any of these still happen.
 - **Peds ignoring you while walking to a bench:** a ped you knock over now reacts and can get angry, even on its way to a bench, a vending machine or a bin.
 - **Seated peds:** you can knock a seated ped off a bench with a proper hit (gentle bumps are ignored, like Skate 3).
 - **Moved benches:** a bench you move takes its seats along, so peds sit on it, not in the air where it was. Moving a bench under a seated ped makes them jump off and sit back down at the new spot. A ped still in the middle of sitting down when you take the bench now finishes sitting, stands up and follows it, instead of staying seated in mid-air.
+- **Camera in water:** falling into deep water no longer leaves the camera under the water, stuck close to you: the water shot (camera high above the water, dark edges) is back.
+- **Zombie takedowns:** zombies no longer knock you down again while you are down or right after you respawn; once you are down, the chase ends.
+- **Lag spikes with NPC Skater Physics:** fixed the 1-second hitches when an NPC skater was blocked by a prop far away.
+- **Floating peds:** peds on some DownTown pavements were drawn up to 2 m above the ground; they now stand on it.
 - **Zombie mode:** zombies now come after you like Skate 3: they follow you, close in, and attack once they are within a few metres; get away and they fall back to following. Up to 25 can chase you at once (it was 5, and most gave up before they started).
 - **Peds react only to what they can see:** greetings, chats and reactions to collisions now need the ped to actually see you or the event, as in Skate 3, instead of any distance.
 - **Peds and seats:** a ped takes a bench, vending machine or ATM only when it is in front of it (a 30 degree cone, like Skate 3), and does not sit right back down on the seat it just left.
