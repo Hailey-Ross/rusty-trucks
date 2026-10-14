@@ -724,3 +724,28 @@ fn a_captured_chasee_is_forgotten_and_its_contacts_ignored() {
     h.begin(1, [0; 6], &f);
     assert!(h.brain.chase_requests.is_empty());
 }
+
+/// `826ACB70` / `826AC7B0` / `826ACA08` (b106): a wiping-out chasee cannot be taken down, and the chase ends by
+/// aggressive capture once the chaser is within 2 m of it while it is down.
+#[test]
+fn a_wiping_chasee_is_not_taken_down_and_ends_the_chase_within_2_m() {
+    let conditions = ops(&[("ChaseeIsWipedOut", &[]), ("ChaseeCloseEnoughToSatisfyAggressiveChase", &[]), ("CanAttemptTakeDownTargetable", &[])]);
+    let wiping = std::cell::Cell::new(false);
+    let wiping_of = |_: u64| wiping.get();
+    let groups = |_: u64| Some(super::super::chase::ChaseGroupInfo { count: 1, primary: Some(7), end_reason: None, can_add: true });
+    let at = std::cell::Cell::new([1.9f32, 0.0, 0.0]);
+    let target = |_: u64| Some(at.get());
+    let mut brain = PedBrain::default();
+    brain.chasee = Some(100);
+    brain.takedown_target = Some(100);
+    brain.takedown_choice = Some(super::super::takedown::TakedownChoice { entry: 0, mirrored: false, predicted: [0.0; 3] });
+    let settings = BrainSettings::default();
+    let f = frame();
+    let view = ChaseView { me: 7, groups: Some(&groups), wiping: Some(&wiping_of), ..Default::default() };
+    let mut h = BrainHost { behaviors: &[], conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &target, chase: view };
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(1, &f), h.condition_activation(2, &f)), (0, 1, 1));
+    wiping.set(true);
+    assert_eq!((h.condition_activation(0, &f), h.condition_activation(2, &f)), (1, 0), "down: wiped out, no takedown");
+    at.set([2.0, 0.0, 0.0]);
+    assert_eq!(h.condition_activation(1, &f), 0, "2 m is not under 2 m");
+}

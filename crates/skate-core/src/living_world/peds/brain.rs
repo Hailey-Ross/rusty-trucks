@@ -39,6 +39,8 @@ pub struct BrainSettings {
     /// The chase manager's "chases allowed" switch (`G+6332` bit 0x10: on at init `826B41B0`,
     /// game modes turn it off / on through `826B5A98` / `826B5AC0`); CanNewChaseStart reads it.
     pub chases_enabled: bool,
+    /// ChaseeCloseEnoughToSatisfyAggressiveChase (`826AC7B0`): 2 m (`0x82257308` 4.0 squared) [code].
+    pub aggressive_capture_distance: f32,
     /// DrawTazer's draw time (`826A8258`, timer 37, `0x82099478` 0.133 s) and TazeWantTarget's
     /// delay before the hit (`826A8398`, timer 39, `0x820D06C0` 0.3 s); speeches 66 / 67.
     pub tazer_draw_seconds: f32,
@@ -90,7 +92,7 @@ impl Default for ZombieFollowSettings {
 
 impl Default for BrainSettings {
     fn default() -> Self {
-        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default() }
+        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default() }
     }
 }
 
@@ -284,6 +286,11 @@ pub enum PedOp {
     /// `826ACC80`: only the player's actor has a protector interface; what it holds is open, so
     /// false.
     ChaseeHasProtector,
+    /// `826ACB70` [code, b106]: the chasee's chase group exists and its vfn +88 (wiping out) holds.
+    ChaseeIsWipedOut,
+    /// `826AC7B0` [code, b106]: squared 3D distance chaser to chasee under `aggressive_capture_distance`^2
+    /// (`0x82257308` 4.0, so 2 m, strict).
+    ChaseeCloseEnoughToSatisfyAggressiveChase,
     /// `826ACD30`: false in retail (the group owner is never null).
     ChasersAreScared,
     /// `826AAC20`: the group's end reason, else this chaser's own, is set.
@@ -550,6 +557,8 @@ impl PedOp {
             "CanChaseeAddNewChaser" => PedOp::CanChaseeAddNewChaser,
             "IsPrimaryChaser" => PedOp::IsPrimaryChaser,
             "ChaseeHasProtector" => PedOp::ChaseeHasProtector,
+            "ChaseeIsWipedOut" => PedOp::ChaseeIsWipedOut,
+            "ChaseeCloseEnoughToSatisfyAggressiveChase" => PedOp::ChaseeCloseEnoughToSatisfyAggressiveChase,
             "ChasersAreScared" => PedOp::ChasersAreScared,
             "IsChaserEndingChase" => PedOp::IsChaserEndingChase,
             "IsEndChaseReason" => PedOp::IsEndChaseReason { reason: super::chase::reason::parse(&text("reason").unwrap_or_default().to_ascii_lowercase()) },
@@ -1044,6 +1053,9 @@ pub struct ChaseView<'a> {
     /// Target velocities by id and the ped's own velocity, m/s (the attack throw's prediction, `82E3E960`).
     pub velocity: Option<&'a dyn Fn(u64) -> Option<Vec3>>,
     pub own_velocity: Vec3,
+    /// Whether a chasee is wiping out (the chase group's vfn +88: the skater's phys-out byte 59, `825948B0`; a ped's
+    /// brain `+3277` bit 0x04) [code, b106].
+    pub wiping: Option<&'a dyn Fn(u64) -> bool>,
 }
 
 impl ChaseView<'_> {
@@ -1224,7 +1236,16 @@ impl BrainHost<'_> {
             PedOp::HasLineOfSightToTazeTarget => b.tazer_line_of_sight,
             PedOp::CanSeeChasee => b.chasee.and_then(|c| b.perceptions.get(c)).is_some_and(|e| e.visible || e.told),
             PedOp::HasTakeDownTargetable => b.takedown_target.is_some(),
-            PedOp::CanAttemptTakeDownTargetable => b.takedown_target.is_some_and(|t| (self.target_position)(t).is_some()) && b.takedown_choice.is_some(),
+            // `826ACA08` also asks the target's vfn +24 = `825948B0` (wiping out) [code, b106].
+            PedOp::CanAttemptTakeDownTargetable => {
+                b.takedown_target.is_some_and(|t| (self.target_position)(t).is_some() && !self.chase.wiping.is_some_and(|w| w(t))) && b.takedown_choice.is_some()
+            }
+            PedOp::ChaseeIsWipedOut => b.chasee.is_some_and(|c| self.chase.group(c).is_some() && self.chase.wiping.is_some_and(|w| w(c))),
+            PedOp::ChaseeCloseEnoughToSatisfyAggressiveChase => b.chasee.and_then(|c| (self.target_position)(c)).is_some_and(|q| {
+                let d = [q[0] - self.position[0], q[1] - self.position[1], q[2] - self.position[2]];
+                let limit = self.settings.aggressive_capture_distance;
+                d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < limit * limit
+            }),
             PedOp::HasMonitoredIntent { intent } => (intent == "ActiveTakedown" && b.takedown_active) || b.monitored.get(intent).is_some_and(|p| p.active),
             PedOp::TakeDownAttemptSuccessful => b.takedown_result == Some(2),
             PedOp::TakeDownAttemptFailed => b.takedown_result == Some(3),

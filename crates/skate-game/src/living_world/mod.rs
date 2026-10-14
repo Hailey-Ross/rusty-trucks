@@ -572,6 +572,9 @@ pub(crate) fn npc_records(profiles: &[u8]) -> std::collections::BTreeMap<String,
 #[derive(Resource, Default, Clone)]
 pub(crate) struct LivingWorldObservers {
     pub observers: Vec<Observer>,
+    /// Per observer: the skater is wiping out (Processed `+2468` bit 18, phys-out byte 59), what the chase group's
+    /// vfn +88 (`825948B0`) answers for ChaseeIsWipedOut and CanAttemptTakeDownTargetable (b106).
+    pub wiping: Vec<bool>,
     /// Skater slots held by players (local + remote).
     pub player_slots: u32,
     pub online: bool,
@@ -636,6 +639,7 @@ fn gather_observers(
         warn!("LIVING_WORLD census focus is not finite (position {:?}, velocity {:?}); population held", observer.position, observer.velocity);
     }
     out.observers = vec![observer];
+    out.wiping = vec![skater.as_ref().is_some_and(|s| s.player_input.processed.flags_2468 & super::living_world::npc_sim::WIPEOUT_BIT != 0)];
     let online = multiplayer.as_ref().is_some_and(|m| m.active());
     out.online = online;
     out.player_slots = if online { multiplayer.map_or(1, |m| m.player_ids().len().max(1) as u32) } else { 1 };

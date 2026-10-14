@@ -1227,3 +1227,39 @@ main-read):
   attribute; no stock descriptor sets `distance` and the constructor writes no default, so retail most likely never
   passes it (ours: false). Open: zero-fill proof (a one-off hook on `8269CC38` reading `this+36`).
 - Tests: skate-core `world_prop_transfer_reads_the_hand_prop` (cone cases).
+
+## Zombie takedowns on a downed skater, NPC skater sim flip-flop (2026-10-13)
+
+### Problems
+User (2026-10-13): "First one had zombie mode on. it seems to sort of work but its pretty buggy and your character has
+buggy respawns where you can't move." Session `hails-additions/logs/game-20261013-183555`: SKATER_TAKEDOWN, the
+wipeout auto-reset respawns the skater in the crowd, the next takedown lands 1 to 3 s later; ped #6 took the skater
+down twice within 1.3 s while they were still down.
+Second report: "It was REALLY hard to find skaters ... they literally seemed to despawn as soon as I got close to them
+... Also the game had MAJOR lag spikes and hitches". Session `game-20261013-183803` (NPC Skater Physics opt-in on).
+
+### Root causes and changes
+- **ChaseeIsWipedOut / CanAttemptTakeDownTargetable** (research `.local/research/peds/b106-chasee-wiped-out.md`, slot
+  and constant main-read): `ChaseeIsWipedOut` `826ACB70` = the chasee's chase group exists and its vfn +88 holds; for
+  the player that is `825948B0`, the phys-out byte 59 (Processed `+2468` bit 18, wiping out) [code]. The same
+  `825948B0` is the target's vfn +24 in `CanAttemptTakeDownTargetable` `826ACA08` [code]. Ours had neither (Pending =
+  false), so `not ChaseeIsWipedOut` was always true and a downed skater could be taken down again.
+  `ChaseeCloseEnoughToSatisfyAggressiveChase` `826AC7B0`: 3D squared distance under 4.0 (`0x82257308`) = 2 m [code];
+  with ChaseeIsWipedOut it ends the group (aggressivecapture). Ours: `PedOp::ChaseeIsWipedOut`,
+  `PedOp::ChaseeCloseEnoughToSatisfyAggressiveChase` (`BrainSettings::aggressive_capture_distance`, mod-overridable),
+  `ChaseView::wiping` fed from `LivingWorldObservers::wiping` (the skater's bit 18). Open: a ped chasee's flag (brain
+  `+3277` bit 0x04) is not modelled (false); how long bit 18 stays set through get-up and reset (recomp trace).
+- **NPC skater sim flip-flop** (cause of the 0.9 s hitches): a skater blocked by a prop (avoid mode 7) may start the
+  physics sim at any distance, but the hand-back sent it to replay beyond 44 m when settled, and the next frame
+  restarted it. Log: `NPC_SKATER_SIM #31 jerry_hsu <- replay (distance 79.0 m, blocked by a prop (mode 7))` /
+  `-> replay` alternating, 12 starts in the 920 ms hitch second (each start about 75 ms). The hand-back now keeps a
+  blocked skater simulated until it is clear (skate-game `living_world/npc_sim.rs`).
+- **NPC skaters "despawning" up close** [log]: with NPC Skater Physics on, 59 replay -> physics switches within 40 m
+  ended in 26 bails within seconds, and each bail hides the skater for 5 s and respawns it elsewhere on its line
+  (`NPC_SKATER_BAIL ... respawn in 5.00 s`, `NPC_SKATER_RESPAWN ... at line node N`). The physics NPCs bail on the
+  recorded lines' tricks (e.g. n_heelflip into GrindTipslide). Not fixed here: follow-up (the opt-in stays off by
+  default); the sim start cost (~75 ms) is a follow-up too.
+
+### Verification
+- skate-core `a_wiping_chasee_is_not_taken_down_and_ends_the_chase_within_2_m`; living-world tests pass (skate-core
+  peds 112, skate-game 87).
