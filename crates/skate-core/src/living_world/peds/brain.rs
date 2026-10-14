@@ -41,6 +41,8 @@ pub struct BrainSettings {
     pub chases_enabled: bool,
     /// ChaseeCloseEnoughToSatisfyAggressiveChase (`826AC7B0`): 2 m (`0x82257308` 4.0 squared) [code].
     pub aggressive_capture_distance: f32,
+    /// CannotReachChaseTarget's radius (`82E31D58`: flat distance to the chasee, 25.0 squared at `0x8209994C`) [code].
+    pub unreachable_radius: f32,
     /// DrawTazer's draw time (`826A8258`, timer 37, `0x82099478` 0.133 s) and TazeWantTarget's
     /// delay before the hit (`826A8398`, timer 39, `0x820D06C0` 0.3 s); speeches 66 / 67.
     pub tazer_draw_seconds: f32,
@@ -92,7 +94,7 @@ impl Default for ZombieFollowSettings {
 
 impl Default for BrainSettings {
     fn default() -> Self {
-        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default() }
+        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default() }
     }
 }
 
@@ -288,6 +290,15 @@ pub enum PedOp {
     ChaseeHasProtector,
     /// `826ACB70` [code, b106]: the chasee's chase group exists and its vfn +88 (wiping out) holds.
     ChaseeIsWipedOut,
+    /// `826AD640` [code, b108]: brain `+3280` bit 0x08, written only by the intercept goal provider's result
+    /// (`82E31D58`): set when its move ends or fails within `unreachable_radius` (5 m flat, `0x8209994C` 25.0) of the
+    /// chasee, cleared beyond.
+    CannotReachChaseTarget,
+    /// `826A8810` Begin [code, b108]: timer `TargetUnreachableTimer` = the chase record's `unreachable_timer` (5 s for
+    /// peds; 0.0 without a record).
+    SetTargetUnreachableTimer,
+    /// `826AD660`: a per-ped byte whose writer is open (b20 / b108); false until found.
+    CanTazeUnreachableTargets,
     /// `826AC7B0` [code, b106]: squared 3D distance chaser to chasee under `aggressive_capture_distance`^2
     /// (`0x82257308` 4.0, so 2 m, strict).
     ChaseeCloseEnoughToSatisfyAggressiveChase,
@@ -558,6 +569,9 @@ impl PedOp {
             "IsPrimaryChaser" => PedOp::IsPrimaryChaser,
             "ChaseeHasProtector" => PedOp::ChaseeHasProtector,
             "ChaseeIsWipedOut" => PedOp::ChaseeIsWipedOut,
+            "CannotReachChaseTarget" => PedOp::CannotReachChaseTarget,
+            "SetTargetUnreachableTimer" => PedOp::SetTargetUnreachableTimer,
+            "CanTazeUnreachableTargets" => PedOp::CanTazeUnreachableTargets,
             "ChaseeCloseEnoughToSatisfyAggressiveChase" => PedOp::ChaseeCloseEnoughToSatisfyAggressiveChase,
             "ChasersAreScared" => PedOp::ChasersAreScared,
             "IsChaserEndingChase" => PedOp::IsChaserEndingChase,
@@ -930,6 +944,8 @@ pub struct PedBrain {
     pub ignore_collisions_with: Option<u64>,
     /// The chasee's id (`brain+3204`, the chaser component's handle).
     pub chasee: Option<u64>,
+    /// CannotReachChaseTarget's bit (brain `+3280` 0x08), written by the host's intercept movement (`82E31D58`).
+    pub target_unreachable: bool,
     /// This chaser's end reason (`brain+2176`).
     pub end_reason: Option<i32>,
     /// Takedowns in this chase (`brain+3248`).
@@ -1240,6 +1256,8 @@ impl BrainHost<'_> {
             PedOp::CanAttemptTakeDownTargetable => {
                 b.takedown_target.is_some_and(|t| (self.target_position)(t).is_some() && !self.chase.wiping.is_some_and(|w| w(t))) && b.takedown_choice.is_some()
             }
+            PedOp::CannotReachChaseTarget => b.target_unreachable,
+            PedOp::CanTazeUnreachableTargets => false,
             PedOp::ChaseeIsWipedOut => b.chasee.is_some_and(|c| self.chase.group(c).is_some() && self.chase.wiping.is_some_and(|w| w(c))),
             PedOp::ChaseeCloseEnoughToSatisfyAggressiveChase => b.chasee.and_then(|c| (self.target_position)(c)).is_some_and(|q| {
                 let d = [q[0] - self.position[0], q[1] - self.position[1], q[2] - self.position[2]];
@@ -1360,6 +1378,10 @@ impl Host for BrainHost<'_> {
             // `826A77A8`: no ped speech event in zombie mode (b95).
             PedOp::SendSpeech { value } if !b.zombie => b.speech = Some(*value),
             PedOp::SetSimpleTimer { timer, length } => b.set_timer(*timer, *length),
+            PedOp::SetTargetUnreachableTimer => {
+                let seconds = self.chase.record.map_or(0.0, |r| r.unreachable_timer());
+                b.set_timer(timers::index("TargetUnreachableTimer"), seconds);
+            }
             PedOp::InterceptChasee => {
                 b.motion_intent = Some(motion::INTERCEPT);
                 b.chase_steer = Some(ChaseSteer::Intercept);

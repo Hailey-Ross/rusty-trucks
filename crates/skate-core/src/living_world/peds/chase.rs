@@ -82,6 +82,10 @@ impl ChaseRecord {
     pub fn max_lead_time(&self) -> f32 {
         self.get(field::MAX_LEAD_TIME).unwrap_or(35_184_372_088_832.0)
     }
+    /// `826A8810`: the unreachable wait, s; 0.0 without the field.
+    pub fn unreachable_timer(&self) -> f32 {
+        self.get(field::UNREACHABLE_TIMER).unwrap_or(0.0)
+    }
     pub fn run_speed(&self) -> Option<f32> {
         self.get(field::RUN_SPEED)
     }
