@@ -497,7 +497,13 @@ mod sdl {
             },
             controller_kind::user_models(),
         ));
-        slots[index] = Some(Slot { pad, rumble: None, id: id.raw(), number: 0, state: XboxState::default(), kind });
+        // Stop the motors on open: a pad can still be vibrating from a game that ended mid-rumble (killed, crashed),
+        // and the poll loop only sends a stop after a rumble it started itself (2026-10-13: endless rumble).
+        let mut pad = pad;
+        let stopped = pad.set_rumble(0, 0, 0).is_ok();
+        info!("Controller {index}: rumble stopped on open ({})", if stopped { "sent" } else { "not supported" });
+        let rumble = Some(([0, 0], std::time::Instant::now()));
+        slots[index] = Some(Slot { pad, rumble, id: id.raw(), number: 0, state: XboxState::default(), kind });
     }
 
     fn read(pad: &Gamepad, paddles: [u16; 4]) -> XboxState {
