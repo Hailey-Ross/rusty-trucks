@@ -113,6 +113,7 @@ pub(crate) fn avoid(
     mut npcs: Query<(&NpcSkater, &mut NpcReplay)>,
     mut events: MessageWriter<NpcSkaterEvent>,
 ) {
+    let _span = super::timing::span(super::timing::NPC_AVOID);
     if settings.net_role == NetRole::Client {
         return;
     }

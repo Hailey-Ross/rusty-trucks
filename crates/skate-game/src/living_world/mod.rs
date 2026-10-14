@@ -28,6 +28,7 @@ use skate_core::living_world::{
 };
 use std::path::Path;
 
+pub(crate) mod timing;
 pub(crate) mod dmo_stream;
 pub(crate) mod npc_avoid;
 pub(crate) mod npc_sim;
@@ -680,6 +681,7 @@ pub(crate) fn step_population(
     mut spawns: MessageWriter<LivingWorldSpawn>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
 ) {
+    let _span = timing::span(timing::POPULATION);
     if settings.net_role == NetRole::Client {
         return;
     }

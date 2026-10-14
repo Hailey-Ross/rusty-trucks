@@ -170,6 +170,7 @@ pub(crate) fn simulate(
     mut events: MessageWriter<super::npc_skaters::NpcSkaterEvent>,
     mut calls: Local<u64>,
 ) {
+    let _span = super::timing::span(super::timing::NPC_SIM);
     let (Some(config), Some(graphs), Some(mut physics)) = (config, graphs, physics) else { return };
     if physics.failed {
         return;

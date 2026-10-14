@@ -535,6 +535,7 @@ pub(crate) fn drive_traffic(
     npc_sims: Query<&super::npc_sim::NpcSim>,
     (alarms, parked_q): (Option<Res<crate::game_audio::world_bridge::Bridge>>, Query<Has<crate::world_audio::VehicleParked>>),
 ) {
+    let _span = super::timing::span(super::timing::TRAFFIC);
     let st = &mut *state;
     let traffic = &mut *traffic;
     let Some(net) = st.roads.as_ref() else { return };

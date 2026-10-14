@@ -740,6 +740,7 @@ pub(crate) fn advance(
     mut despawns: MessageWriter<LivingWorldDespawn>,
     mut events: MessageWriter<NpcSkaterEvent>,
 ) {
+    let _span = super::timing::span(super::timing::NPC_ADVANCE);
     let lines = npc_lines(&state);
     let tick = state.world.tick();
     let players: Vec<[f32; 3]> = observers.observers.iter().map(|o| o.position).collect();

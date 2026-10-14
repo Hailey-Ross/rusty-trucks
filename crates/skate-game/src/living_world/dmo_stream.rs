@@ -77,6 +77,7 @@ pub(crate) fn stream_dmos(
     mut physics: Option<ResMut<crate::physics::GamePhysics>>,
     mut st: ResMut<DmoStreamState>,
 ) {
+    let _span = super::timing::span(super::timing::DMO_STREAM);
     let Some(physics) = physics.as_deref_mut() else { return };
     let s = settings.dmo_stream;
     let generation = map.as_ref().map_or(0, |m| m.generation);

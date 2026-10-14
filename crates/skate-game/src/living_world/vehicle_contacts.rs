@@ -120,6 +120,7 @@ pub(crate) fn ped_vehicle_contacts(
     mut events: MessageWriter<VehicleContactEvent>,
     mut logged: Local<BTreeMap<(u64, u64), u64>>,
 ) {
+    let _span = super::timing::span(super::timing::VEHICLE_CONTACTS);
     let mut list: Vec<(u64, CarBox, Vec3)> = cars.iter().map(|(c, m)| (c.id.to_u64(), car_box(c, &m.curr), m.velocity)).collect();
     if list.is_empty() {
         return;
