@@ -84,9 +84,8 @@ pub(crate) fn stream_dmos(
     if !s.enabled || settings.net_role == super::NetRole::Client {
         // Off (or a mod turned it off): everything streams back in.
         if let Some(stream) = st.stream.take() {
-            for p in &stream.placements {
-                physics.stream_prop(p.id, false, false);
-            }
+            let pass: Vec<_> = stream.placements.iter().map(|p| (p.id, false, false)).collect();
+            physics.stream_props(&pass);
             info!("DMO_STREAM off: {} props back", stream.placements.len());
         }
         st.built = None;
@@ -131,6 +130,7 @@ pub(crate) fn stream_dmos(
         return;
     }
     let (mut spawned, mut culled, mut evicted) = (0, 0, 0);
+    let mut pass = Vec::with_capacity(decisions.len());
     for d in &decisions {
         let (id, out) = match *d {
             DmoDecision::Spawn(id) => {
@@ -149,15 +149,15 @@ pub(crate) fn stream_dmos(
         if !fill {
             debug!("DMO_STREAM_CHANGE {d:?}");
         }
-        physics.stream_prop(id, out, s.respawn_authored);
+        pass.push((id, out, s.respawn_authored));
     }
     if fill {
         let dormant: Vec<u32> = st.stream.as_ref().map_or_else(Vec::new, |s| s.placements.iter().filter(|p| !s.live.contains(&p.id) && held != Some(p.id) && !layout.contains(&p.id)).map(|p| p.id).collect());
         culled += dormant.len();
-        for id in dormant {
-            physics.stream_prop(id, true, false);
-        }
+        pass.extend(dormant.into_iter().map(|id| (id, true, false)));
     }
+    // One collision rebake for the pass (b114).
+    physics.stream_props(&pass);
     let live = st.stream.as_ref().map_or(0, |s| s.live.len());
     info!("DMO_STREAM fill={fill} spawned={spawned} culled={culled} evicted={evicted} live={live}");
 }

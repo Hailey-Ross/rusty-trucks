@@ -10,9 +10,14 @@
 //! 6. on path is dropped beyond 1.0 m outside the lane (`sub_8246DB50`).
 //!
 //! Positions are (node, t): t in [0, 1] along the segment node -> node + 1. Pure and deterministic (no clock).
-//! NOT RETAIL YET: the "lost" hand-over to the NavMesh (`sub_82468DD8` / `sub_8246FE38`), the node-change handler
-//! (`sub_8246BEE0`), the progress tracker (`sub_82468240`); which body point retail projects (`sub_82467FC8`) is open
-//! (ours: the deck).
+//! 0. "lost" (`sub_8246D3C0` -> `sub_82468DD8`, b115): on a tick the search node did not advance, a skater that was
+//!    off the path, farther than 6 m from the search node and from both lane edge points, and slower than 14 m/s is
+//!    lost; the caller turns it into the reposition request (`ctrl+941`) that hands it to controller B.
+//!
+//! NOT RETAIL YET: the 4.5 m lost test after a line-end re-pick, the node-change handler (`sub_8246BEE0`), the
+//! progress tracker (`sub_82468240`), `G+608` and skater flag `0x04000000` in the lost test; which body point retail
+//! projects (`sub_82467FC8`) is open (ours: the deck), and so is the lane edge axis (`sub_82454648`; ours: the
+//! segment's right).
 
 use super::replay::{ReplayLine, WIDTH_SCALE};
 use super::Vec3;
@@ -35,11 +40,15 @@ pub struct PathTuning {
     pub drop: f32,
     /// The start gate latches once A is past this node (`pc+937`).
     pub start_node: u32,
+    /// Lost: farther than this from the search node and its lane edges (`0x8208F74C`, 6.0 m) ...
+    pub lost_radius: f32,
+    /// ... while slower than this along its heading (`pc+808` < `0x8208EB10`, 14.0 m/s).
+    pub lost_max_speed: f32,
 }
 
 impl Default for PathTuning {
     fn default() -> Self {
-        Self { window: 4, hysteresis: 0.5, clamp_fraction: 0.25, clamp_horizontal: 1.0, clamp_vertical: 5.0, commit: 0.5, drop: 1.0, start_node: 3 }
+        Self { window: 4, hysteresis: 0.5, clamp_fraction: 0.25, clamp_horizontal: 1.0, clamp_vertical: 5.0, commit: 0.5, drop: 1.0, start_node: 3, lost_radius: 6.0, lost_max_speed: 14.0 }
     }
 }
 
@@ -59,22 +68,35 @@ pub struct PathFollow {
     /// `pc+828`: distance skater -> A; `pc+932`: inside the recorded lane.
     pub dist: f32,
     pub inside_lane: bool,
+    /// `pc+868`: distance to A over the lane half width on that side (999 without a width).
+    pub lateral: f32,
     /// `pc+820`: the B node of the previous tick (events up to it are handled).
     pub handled: u32,
+    /// This tick's lost test (`sub_82468DD8`): the caller raises the reposition request.
+    pub lost: bool,
 }
 
 impl PathFollow {
     /// A skater placed on `node` (spawn or respawn): on the path, A = B = the node.
     pub fn start(node: u32, tuning: &PathTuning) -> Self {
-        Self { search_start: node, a: (node, 0.0), b: (node, 0.0), last: (node, 0.0), on_path: true, past_start: node > tuning.start_node, dist: 0.0, inside_lane: true, handled: node }
+        Self { search_start: node, a: (node, 0.0), b: (node, 0.0), last: (node, 0.0), on_path: true, past_start: node > tuning.start_node, dist: 0.0, inside_lane: true, lateral: 0.0, handled: node, lost: false }
     }
 
-    /// One tick at skater position `pos`; `ratio` = shaped speed / recorded speed at A (1.0 unshaped).
-    pub fn tick(&mut self, line: &ReplayLine, pos: Vec3, ratio: f32, tuning: &PathTuning) {
+    /// One tick at skater position `pos`; `ratio` = shaped speed / recorded speed at A (1.0 unshaped); `speed` = the
+    /// skater's signed speed along its heading (`pc+808`, `sub_8246BCF8`); `airborne` = the skater state byte `+438`
+    /// (an air state 200..299 with no wheel touching, `sub_82DB6EC0`; b119): no on-path drop while airborne
+    /// (`sub_8246DB50`).
+    pub fn tick(&mut self, line: &ReplayLine, pos: Vec3, ratio: f32, speed: f32, airborne: bool, tuning: &PathTuning) {
+        self.lost = false;
         if line.nodes.len() < 2 {
             return;
         }
         let n = nearest_forward(line, pos, self.search_start, tuning.window);
+        // A node advance runs the node-change handler instead of the lost test (`sub_8246D3C0`); the test reads the
+        // previous tick's on-path flag.
+        if n == self.search_start {
+            self.lost = !self.on_path && speed < tuning.lost_max_speed && lost(line, n, pos, tuning.lost_radius);
+        }
         self.search_start = n;
         // Projection -> A.
         let proj = project(line, n, pos);
@@ -102,6 +124,7 @@ impl PathFollow {
         let ap = point(line, self.a);
         let offset = [pos[0] - ap[0], pos[1] - ap[1], pos[2] - ap[2]];
         self.dist = dist2(ap, pos).sqrt();
+        self.lateral = 0.0;
         self.inside_lane = if self.dist <= 0.0001 {
             true
         } else {
@@ -111,6 +134,7 @@ impl PathFollow {
             let right = [dir[2], 0.0, -dir[0]];
             let side = usize::from(offset[0] * right[0] + offset[2] * right[2] >= 0.0);
             let w = f32::from(line.nodes[self.a.0 as usize].width[side]) * WIDTH_SCALE;
+            self.lateral = if w > 0.0 { self.dist / w } else { 999.0 };
             self.dist < w
         };
         // Off path: rejoin commit.
@@ -125,9 +149,23 @@ impl PathFollow {
         self.handled = self.b.0;
         self.b = if ratio > 1e-5 { advance(line, self.a, ratio) } else { self.a };
         // On-path drop.
-        if self.on_path && !self.inside_lane && self.dist > tuning.drop {
+        if self.on_path && !airborne && !self.inside_lane && self.dist > tuning.drop {
             self.on_path = false;
         }
+    }
+
+    /// A skater placed again on the line by controller B's hand-back (`sub_824689C0`): the controller reset
+    /// (`sub_82468AC8`: off the path, the start gate cleared) with the search at `node`; the normal rejoin commit puts
+    /// it back on the path.
+    pub fn reattach(node: u32, tuning: &PathTuning) -> Self {
+        Self { on_path: false, past_start: false, ..Self::start(node, tuning) }
+    }
+
+    /// A line switch (junction `sub_8246BEE0` or line end `sub_8246C7F8`): the reset `sub_82468AC8` (b118) leaves the
+    /// skater off the path with the search at `node`, A / B / the handled node cleared, and keeps the start gate
+    /// (`pc+937` is only cleared by the full reset).
+    pub fn switch_to(&self, node: u32) -> Self {
+        Self { search_start: node, a: (0, 0.0), b: (0, 0.0), last: (0, 0.0), on_path: false, past_start: self.past_start, dist: 0.0, inside_lane: false, lateral: 999.0, handled: 0, lost: false }
     }
 
     /// Recorded frames from cursor (`node`, `frame_in_segment`) forward to B (0 when B is not ahead).
@@ -139,6 +177,50 @@ impl PathFollow {
 }
 
 /// Point on the line at (node, t).
+/// `sub_82468DD8`'s distance part: farther than `r` from node `n` and from both of its recorded lane edge points (node
+/// -/+ the lateral axis x the left / right width).
+pub fn lost(line: &ReplayLine, n: u32, pos: Vec3, r: f32) -> bool {
+    let node = &line.nodes[n as usize];
+    let c = node.position;
+    let far = |p: Vec3| dist2(p, pos) > r * r;
+    if !far(c) {
+        return false;
+    }
+    let next = line.nodes.get(n as usize + 1).unwrap_or(node);
+    let dir = if next.step != [0.0; 3] { next.step } else { node.step };
+    let len = dir[0].hypot(dir[2]);
+    if len <= 1e-6 {
+        return true;
+    }
+    let right = [dir[2] / len, 0.0, -dir[0] / len];
+    let (wl, wr) = (f32::from(node.width[0]) * WIDTH_SCALE, f32::from(node.width[1]) * WIDTH_SCALE);
+    far([c[0] - right[0] * wl, c[1], c[2] - right[2] * wl]) && far([c[0] + right[0] * wr, c[1], c[2] + right[2] * wr])
+}
+
+/// The node nearest `pos` over the whole line, first on a tie (`sub_82455108`, the hand-back's search node).
+pub fn nearest_node(line: &ReplayLine, pos: Vec3) -> u32 {
+    let mut best = (0u32, f32::INFINITY);
+    for (i, node) in line.nodes.iter().enumerate() {
+        let d = dist2(node.position, pos);
+        if d < best.1 {
+            best = (i as u32, d);
+        }
+    }
+    best.0
+}
+
+/// The line's forward at cursor `c`: the path frames' forward rows of the two nodes, blended by the fraction (the
+/// look-ahead frame's forward, `pc+304`, for the ground steer).
+pub fn forward(line: &ReplayLine, c: (u32, f32)) -> Vec3 {
+    let at = |i: usize| super::replay::rotate(super::replay::path_frame(&line.nodes[i]), [0.0, 0.0, 1.0]);
+    let i = (c.0 as usize).min(line.nodes.len() - 1);
+    let j = (i + 1).min(line.nodes.len() - 1);
+    let (a, b) = (at(i), at(j));
+    let v: Vec3 = std::array::from_fn(|k| a[k] + (b[k] - a[k]) * c.1);
+    let l = dist2(v, [0.0; 3]).sqrt();
+    if l > 1e-6 { v.map(|x| x / l) } else { a }
+}
+
 pub fn point(line: &ReplayLine, c: (u32, f32)) -> Vec3 {
     let i = (c.0 as usize).min(line.nodes.len() - 1);
     let a = line.nodes[i].position;
@@ -243,7 +325,7 @@ mod tests {
         // lets it lead by at most ~0.7 m), B one recorded frame ahead of A; a clock would run away from it.
         for k in 0..200 {
             let z = 0.05 * k as f32;
-            f.tick(&l, [0.1, 0.0, z], 1.0, &t);
+            f.tick(&l, [0.1, 0.0, z], 1.0, 0.0, false, &t);
             let a = point(&l, f.a)[2];
             assert!(a >= z - 0.05 && a <= z + 0.75, "tick {k}: A at {a}, skater at {z}");
             assert!((along(&l, f.a, f.b) - 1.0).abs() < 1e-3);
@@ -259,7 +341,7 @@ mod tests {
         let mut z = 0.0;
         let mut step = |f: &mut PathFollow, x: f32| {
             z += 0.1;
-            f.tick(&l, [x, 0.0, z], 1.0, &t);
+            f.tick(&l, [x, 0.0, z], 1.0, 0.0, false, &t);
         };
         for _ in 0..30 {
             step(&mut f, 0.0);
@@ -280,7 +362,7 @@ mod tests {
         let l = line(20);
         let t = PathTuning::default();
         let mut f = PathFollow::start(10, &t);
-        f.tick(&l, [0.0, 0.0, 2.0], 1.0, &t);
+        f.tick(&l, [0.0, 0.0, 2.0], 1.0, 0.0, false, &t);
         assert!(f.search_start >= 10 && f.a.0 >= 9, "{:?}", f);
     }
 
@@ -289,9 +371,86 @@ mod tests {
         let l = line(20);
         let t = PathTuning::default();
         let mut f = PathFollow::start(0, &t);
-        f.tick(&l, [0.0, 0.0, 3.0], 1.0, &t);
+        f.tick(&l, [0.0, 0.0, 3.0], 1.0, 0.0, false, &t);
         // Cursor at node 1 frame 0: B at about 3.1 m = 21 frames on.
         assert_eq!(f.frames_to_b(&l, 1, 0), 21);
         assert_eq!(f.frames_to_b(&l, 5, 0), 0, "B behind the cursor");
+    }
+
+    #[test]
+    fn lost_is_beyond_the_radius_from_the_node_and_both_lane_edges() {
+        let mut l = line(10);
+        l.nodes[4].width = [0, 0];
+        assert!(!lost(&l, 4, [5.9, 0.0, 4.0], 6.0));
+        assert!(lost(&l, 4, [6.1, 0.0, 4.0], 6.0));
+        assert!(!lost(&l, 4, [4.4, 0.0, 4.0], 4.5));
+        assert!(lost(&l, 4, [4.6, 0.0, 4.0], 4.5));
+        // 7 m to the side but within 6 m of a 2 m lane edge point: not lost (either side).
+        l.nodes[4].width = [100, 100];
+        assert!(!lost(&l, 4, [7.0, 0.0, 4.0], 6.0));
+        assert!(!lost(&l, 4, [-7.0, 0.0, 4.0], 6.0));
+        assert!(lost(&l, 4, [8.5, 0.0, 4.0], 6.0));
+    }
+
+    #[test]
+    fn the_lost_test_needs_an_off_path_tick_no_node_advance_and_low_speed() {
+        let l = line(10);
+        let t = PathTuning::default();
+        let mut f = PathFollow::start(4, &t);
+        // On path the previous tick: not lost yet, but dropped from the path.
+        f.tick(&l, [9.0, 0.0, 4.0], 1.0, 5.0, false, &t);
+        assert!(!f.lost && !f.on_path);
+        // Off path, same search node, slow: lost; fast (>= 14 m/s) is not; reversing (negative) is.
+        let mut fast = f;
+        fast.tick(&l, [9.0, 0.0, 4.0], 1.0, 14.1, false, &t);
+        assert!(!fast.lost);
+        let mut back = f;
+        back.tick(&l, [9.0, 0.0, 4.0], 1.0, -20.0, false, &t);
+        assert!(back.lost);
+        f.tick(&l, [9.0, 0.0, 4.0], 1.0, 13.9, false, &t);
+        assert!(f.lost);
+        // A node advance suppresses the test on that tick.
+        let mut adv = f;
+        adv.tick(&l, [9.0, 0.0, 6.0], 1.0, 0.0, false, &t);
+        assert!(adv.search_start > 4 && !adv.lost);
+    }
+
+    #[test]
+    fn a_hand_back_reattaches_off_path_at_the_nearest_node_and_rejoins_within_half_a_metre() {
+        let l = line(10);
+        let t = PathTuning::default();
+        assert_eq!(nearest_node(&l, [0.3, 0.0, 7.2]), 7);
+        assert_eq!(nearest_node(&l, [0.0, 0.0, 2.5]), 2, "first on a tie");
+        let mut f = PathFollow::reattach(7, &t);
+        assert!(!f.on_path && !f.past_start);
+        f.tick(&l, [0.4, 0.0, 7.0], 1.0, 0.0, false, &t);
+        assert!(f.on_path && f.past_start);
+    }
+
+    #[test]
+    fn a_line_switch_leaves_the_path_keeps_the_start_gate_and_rejoins_by_the_commit() {
+        let l = line(10);
+        let t = PathTuning::default();
+        let mut f = PathFollow::start(6, &t);
+        f.tick(&l, [0.0, 0.0, 6.2], 1.0, 0.0, false, &t);
+        assert!(f.on_path && f.past_start);
+        let s = f.switch_to(2);
+        assert!(!s.on_path && s.past_start);
+        assert_eq!((s.search_start, s.a, s.b, s.handled), (2, (0, 0.0), (0, 0.0), 0));
+        let mut s = s;
+        s.tick(&l, [0.3, 0.0, 2.1], 1.0, 0.0, false, &t);
+        assert!(s.on_path, "inside the lane / within 0.5 m commits");
+    }
+
+    #[test]
+    fn airborne_the_path_is_not_dropped() {
+        let l = line(10);
+        let t = PathTuning::default();
+        let mut air = PathFollow::start(4, &t);
+        air.tick(&l, [3.0, 1.0, 4.0], 1.0, 5.0, true, &t);
+        assert!(air.on_path);
+        let mut ground = PathFollow::start(4, &t);
+        ground.tick(&l, [3.0, 1.0, 4.0], 1.0, 5.0, false, &t);
+        assert!(!ground.on_path);
     }
 }

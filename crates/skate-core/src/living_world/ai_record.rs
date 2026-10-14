@@ -101,6 +101,23 @@ pub fn build(target: &LineTarget, forward: Vec3, state: &SteerState) -> External
     ExternalPhysicsInput { vectors, flags: state.flags() }
 }
 
+/// `sub_8246DB50` when it skips `sub_8246DE38`: the zeroed record with the -1 splat at +128 and the
+/// flag word seeded with `pc+922 << 25`, bits 31..26 cleared. No steer bit, so the physics board path
+/// does not run and the skater coasts on its own physics until the projection commits again.
+pub fn without_steering(state: &SteerState) -> ExternalPhysicsInput {
+    let mut vectors = [[0u32; 4]; 10];
+    vectors[8] = [(-1.0f32).to_bits(); 4];
+    ExternalPhysicsInput { vectors, flags: u32::from(state.on_board_steering) << 25 }
+}
+
+/// `sub_8246DB50`'s gate for `sub_8246DE38` (main checked 0x8246DCAC..0x8246DD1C): the steering record is
+/// built when the skater is on the path and past the start nodes (`pc+920`, `pc+937`), or always without
+/// on-board steering (`pc+922` clear). Not modelled yet: actor `1904` bit 26 and motion state 104, which
+/// also skip it.
+pub fn steers(state: &SteerState, on_path: bool, past_start: bool) -> bool {
+    !state.on_board_steering || (on_path && past_start)
+}
+
 /// The spawn push (`sub_824701F8` hold branch): while the skater is still within 0.01 m
 /// (`0x820D71E8`; 0.05 m `0x82165A00` when the cursor's node `pc+816` is not 0) of its node in the
 /// ground plane, every board part gets the node's per-frame displacement x 60 x 0.75
@@ -326,5 +343,21 @@ mod tests {
         // Clamped at 99.9 m/s.
         let r = build(&LineTarget { step: [0.0, 0.0, 10.0], ..t }, [0.0, 0.0, 1.0], &SteerState::default());
         assert!((SteerTarget::from_words(&r.vectors, r.flags).velocity.z - MAX_SPEED).abs() < 1e-3);
+    }
+
+    #[test]
+    fn off_the_path_or_before_the_start_nodes_the_record_does_not_steer() {
+        let on_board = SteerState::default();
+        assert!(steers(&on_board, true, true));
+        assert!(!steers(&on_board, false, true), "off the path");
+        assert!(!steers(&on_board, true, false), "before node 3");
+        let walking = SteerState { on_board_steering: false, ..on_board };
+        assert!(steers(&walking, false, false));
+        let r = without_steering(&on_board);
+        assert_eq!(r.flags, 1 << 25);
+        assert_eq!(r.flags & (flags::STEER | flags::POSITION | flags::FACING | flags::VELOCITY), 0);
+        assert_eq!(r.vectors[3], [0; 4], "no target position");
+        assert_eq!(r.vectors[8].map(f32::from_bits), [-1.0; 4]);
+        assert_eq!(without_steering(&walking).flags, 0);
     }
 }

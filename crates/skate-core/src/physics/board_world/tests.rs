@@ -564,3 +564,91 @@ fn appended_triangles_are_queried_and_existing_ones_kept() {
     assert_eq!(world.query_thin_line(start, end).unwrap().unwrap().tag, 1);
     assert!(world.append_triangles(&[face(60., 9, 0.)], &[]).is_err(), "surface count must match");
 }
+
+/// Meshes of 4 triangles over "props" of 3, so meshes straddle props as in the prop collision layer.
+fn chunked(triangles: Vec<WorldTriangle>) -> BoardWorld {
+    let meshes = triangles
+        .chunks(4)
+        .enumerate()
+        .map(|(i, chunk)| QueryMesh {
+            triangle_range: i * 4..i * 4 + chunk.len(),
+            local_to_world: RetailAffineTransform::IDENTITY,
+            world_to_local: RetailAffineTransform::IDENTITY,
+            local_bounds: Bounds::from_points(chunk.iter().flat_map(|t| t.triangle.vertices)).unwrap(),
+            matching_group: -1,
+            rejection_flags: 0x2000,
+            geometry: 5000 + i as u32,
+            pool: QueryPool::Ground,
+        })
+        .collect();
+    let packed_surfaces = vec![17; triangles.len()];
+    BoardWorld::with_query_metadata(triangles, QueryMetadata { packed_surfaces, meshes, static_edges: vec![], island_flags: 0 }).unwrap()
+}
+
+fn fingerprint(world: &BoardWorld) -> String {
+    format!(
+        "{:?}\n{:?}\n{:?}\n{:?}",
+        world.triangles,
+        world.triangle_bounds,
+        world.query_metadata.as_ref().unwrap().meshes,
+        world.query_index
+    )
+}
+
+/// A "prop" moved to `at` (3 triangles), as a stream pass parks or restores it.
+fn prop_at(prop: usize, at: f32) -> Vec<WorldTriangle> {
+    (0..3).map(|k| face(at + k as f32 * 3., (prop * 3 + k) as u32, 0.)).collect()
+}
+
+#[test]
+fn batched_replacements_match_one_call_per_edit() {
+    let props = 40;
+    let start: Vec<WorldTriangle> = (0..props).flat_map(|p| prop_at(p, p as f32 * 20.)).collect();
+    // Unsorted props, one parked and restored in the same pass, one written twice, one unchanged, far parks.
+    let mut seed = 0x2545_F491u32;
+    let mut edits: Vec<(std::ops::Range<usize>, Vec<WorldTriangle>)> = (0..60)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let p = (seed % props as u32) as usize;
+            let at = if seed & 0x100 != 0 { -9000. - p as f32 } else { (seed % 997) as f32 };
+            (p * 3..p * 3 + 3, prop_at(p, at))
+        })
+        .collect();
+    edits.push((7 * 3..7 * 3 + 3, prop_at(7, -9007.)));
+    edits.push((7 * 3..7 * 3 + 3, prop_at(7, 140.)));
+    edits.push((11 * 3..11 * 3 + 3, start[33..36].to_vec()));
+
+    let mut single = chunked(start.clone());
+    for (range, triangles) in &edits {
+        single.replace_triangles(range.clone(), triangles).unwrap();
+    }
+    let mut batched = chunked(start);
+    let refs: Vec<_> = edits.iter().map(|(r, t)| (r.clone(), t.as_slice())).collect();
+    batched.replace_triangles_batch(&refs).unwrap();
+    assert_eq!(fingerprint(&single), fingerprint(&batched));
+    // The same as a world built fresh from the final triangles.
+    let fresh = chunked(batched.triangles.clone());
+    assert_eq!(fingerprint(&fresh), fingerprint(&batched));
+    for x in [0., 140., 500., -9007.] {
+        let (a, b) = (Vector3::new(x, 1., 0.), Vector3::new(x, -1., 0.));
+        assert_eq!(
+            single.query_thin_line(a, b).unwrap().map(|h| h.tag),
+            batched.query_thin_line(a, b).unwrap().map(|h| h.tag)
+        );
+    }
+}
+
+#[test]
+fn a_failed_batch_changes_nothing_and_an_empty_batch_is_a_no_op() {
+    let start: Vec<WorldTriangle> = (0..8).flat_map(|p| prop_at(p, p as f32 * 20.)).collect();
+    let mut world = chunked(start);
+    let before = fingerprint(&world);
+    let good = prop_at(1, 500.);
+    let short = prop_at(2, 600.);
+    assert!(world.replace_triangles_batch(&[(3..6, good.as_slice()), (6..8, short.as_slice())]).is_err());
+    assert_eq!(fingerprint(&world), before);
+    world.replace_triangles_batch(&[]).unwrap();
+    assert_eq!(fingerprint(&world), before);
+}

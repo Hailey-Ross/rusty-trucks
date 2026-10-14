@@ -342,6 +342,26 @@ fn line_end_choice_scores_like_the_branch_chooser_and_falls_back_to_the_first() 
 }
 
 #[test]
+fn the_physics_tier_falls_back_to_the_nearest_free_start_at_any_distance_like_sub_82458968() {
+    let players: [Vec3; 0] = [];
+    let end = along(1, [0.0; 3], [0.0, 1.0], 21);
+    // No start within 4 m of the end (0, 0, 20): line 3 starts 30 m away, line 2 12 m away.
+    let far = along(3, [30.0, 0.0, 20.0], [0.0, 1.0], 10);
+    let near = along(2, [12.0, 0.0, 20.0], [0.0, 1.0], 10);
+    let ls = lines(vec![end, far, near]);
+    let at = ctx([0.0, 0.0, 20.0], &players);
+    assert_eq!(choose_next_line(&ls, &ls[&id(1)], &at), None, "off by default (the replay tier ends there)");
+    let fb = BranchContext { chain: ChainConfig { fallback: true, ..ChainConfig::retail() }, ..at };
+    assert_eq!(choose_next_line(&ls, &ls[&id(1)], &fb), Some((id(2), 0)));
+    // Lines in use are skipped; the current line is never its own fallback.
+    let busy = [id(2)];
+    let fb_busy = BranchContext { in_use: &busy, ..fb };
+    assert_eq!(choose_next_line(&ls, &ls[&id(1)], &fb_busy), Some((id(3), 0)));
+    let alone = lines(vec![along(1, [0.0; 3], [0.0, 1.0], 21)]);
+    assert_eq!(choose_next_line(&alone, &alone[&id(1)], &fb), None);
+}
+
+#[test]
 fn npc_skater_keeps_riding_a_seeded_line_network_for_minutes() {
     use crate::living_world::rng::Rng;
     // Seeded network: a square loop of 4 lines whose starts sit up to 1.5 m off the previous end

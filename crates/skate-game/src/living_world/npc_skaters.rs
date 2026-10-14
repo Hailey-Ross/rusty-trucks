@@ -773,6 +773,21 @@ pub(crate) fn advance(
         replay.cursor.fakie_settings = chain.fakie;
         // The NPC's trick tables (disc profile, mod overrides), read at its trick slots.
         let trick_profile = npc_trick_profile(&state.npc.tricks, &settings.skater_trick_profiles, &npc.character);
+        // A simulated skater (its cursor follows the projection, `follow_target`) at the end of its line looks for
+        // the next line every tick, as retail does (b118); the replay tier still ends there and fades.
+        if replay.follow_target.is_some() && !mirror && lines.get(&replay.cursor.line).is_some_and(|l| replay.cursor.node as usize + 1 >= l.nodes.len()) {
+            if let Some(s) = replay.cursor.sample(&*lines, 0.0) {
+                let others: Vec<([u8; 16], u32)> = order.iter().filter(|o| o.0 != npc.id).map(|o| (o.1, o.2)).collect();
+                let in_use: Vec<[u8; 16]> = others.iter().map(|o| o.0).collect();
+                let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_ref(), seed: npc.seed };
+                // Retail's mode 1 fallback (b122): the physics skater takes the nearest free start at any distance.
+                let chain = skate_core::living_world::replay::ChainConfig { fallback: true, ..chain };
+                let ctx = BranchContext { position: s.position, forward: s.velocity, speed: length(s.velocity), players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online, chain, tricks };
+                if replay.cursor.retry_chain(&*lines, &mut Decider::Decide(ctx), &mut out) {
+                    info!("NPC_SKATER_CHAIN #{} {} line end: next line at node {}", npc.id.serial, npc.character, replay.cursor.node);
+                }
+            }
+        }
         while replay.cursor.frames < target && !replay.cursor.finished {
             if replay.cursor.frames + FRAMES_PER_TICK >= target {
                 replay.previous = Some(replay.cursor.clone());

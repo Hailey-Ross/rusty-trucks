@@ -195,6 +195,12 @@ pub struct ChainConfig {
     pub radius: f32,
     /// Candidate cap (retail 16).
     pub max_candidates: usize,
+    /// With no start within `radius`: take the nearest unused start at any distance (`sub_82458968` mode 1 fallback,
+    /// b122; a valid start wins over a nearer invalid one only below `fallback_valid_d2`, and per-character validity is
+    /// not modelled, so every line counts as valid). Off by default: the replay tier cannot ride the gap; the
+    /// physics tier turns it on (its skater rides or is walked to the new start).
+    pub fallback: bool,
+    pub fallback_valid_d2: f32,
     /// Seconds over which the drawn root (position and orientation) moves from where it was on the
     /// old line onto the new one after a branch or a chain ([`LineSwitch`]). Retail has no such
     /// value: its full skater never jumps, it steers onto the new line (`sub_8246D3C0` /
@@ -241,6 +247,8 @@ impl ChainConfig {
         Self {
             radius: retail::CHAIN_RADIUS,
             max_candidates: retail::CHAIN_MAX_CANDIDATES,
+            fallback: false,
+            fallback_valid_d2: retail::CHAIN_FALLBACK_VALID_D2,
             blend_seconds: SWITCH_BLEND_SECONDS,
             keep_facing: false,
             facing_rule: FacingRule::RidingEntry,
@@ -858,6 +866,8 @@ pub fn choose_next_line(lines: &dyn LineSource, current: &ReplayLine, ctx: &Bran
     let end = current.nodes.last()?.position;
     let r2 = radius * radius;
     let mut candidates: Vec<&ReplayLine> = Vec::new();
+    // The fallback's nearest start at any distance (first in order on a tie).
+    let mut nearest: Option<(&ReplayLine, f32)> = None;
     lines.for_each_line(&mut |l| {
         if candidates.len() >= ctx.chain.max_candidates || l.id == current.id || ctx.in_use.contains(&l.id) {
             return;
@@ -867,12 +877,15 @@ pub fn choose_next_line(lines: &dyn LineSource, current: &ReplayLine, ctx: &Bran
             return;
         }
         let d = sub(start.position, end);
-        if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= r2 {
+        let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        if d2 <= r2 {
             candidates.push(l);
+        } else if nearest.is_none_or(|(_, n)| d2 < n) {
+            nearest = Some((l, d2));
         }
     });
     match candidates.len() {
-        0 => None,
+        0 => ctx.chain.fallback.then_some(nearest).flatten().map(|(l, _)| (l.id, 0)),
         1 => Some((candidates[0].id, 0)),
         _ => {
             let mut best: Option<(usize, i64)> = None;
@@ -990,6 +1003,18 @@ impl LineCursor {
             c.finished = true;
         }
         c
+    }
+
+    /// A physics-simulated skater on the last node of its line (finished, or held there by the projection): retail
+    /// has no finished state; the line-end test holds and `sub_8246C7F8` looks for the next line again every tick
+    /// (b118). True when it chained.
+    pub fn retry_chain(&mut self, lines: &dyn LineSource, decider: &mut Decider, out: &mut Vec<CursorEvent>) -> bool {
+        let Some(line) = lines.line(&self.line) else { return false };
+        if (self.node as usize) + 1 < line.nodes.len() || self.chain(lines, line, decider, out).is_none() {
+            return false;
+        }
+        self.finished = false;
+        true
     }
 
     /// Advance one 60 Hz frame.

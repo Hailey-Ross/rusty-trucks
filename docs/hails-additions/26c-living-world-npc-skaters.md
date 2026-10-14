@@ -466,3 +466,114 @@ replay -> physics, 26 / 43 bails; 35 of 39 switches hitched over 150 ms.
   (`sub_82468DD8` / `sub_8246FE38`), the node-change handler `sub_8246BEE0`, the progress tracker `sub_82468240`,
   which body point retail projects (`sub_82467FC8`; ours the deck).
 - A bail still hides the skater for 5 s (retail respawn delay); what the user sees as "vanishing".
+
+## NPC Skater Physics: bails (2026-10-13 night)
+
+### Problem
+User (2026-10-13): "FIX IT, IM NOT SWITCHING IT OFF" (NPC Skater Physics skaters bail and vanish up close). Muted
+DownTown baseline (radius 150 m, 150 s, player idle): 17 bails, 79 on/off-path switches.
+
+### Causes and changes
+- **Steering record off the path** (`sub_8246DB50`, main checked 0x8246DB50..0x8246DD40): retail zeroes the record,
+  seeds the flag word with `pc+922 << 25` and clears bits 31..26, and only builds the steering target
+  (`sub_8246DE38`) when the skater is on the path and past the start nodes (`pc+920`, `pc+937`), or always without
+  on-board steering. Ours wrote the steering target every tick, pulling a skater that had left its line back toward a
+  point metres away. Now `ai_record::steers` / `ai_record::without_steering`: off the path the skater coasts on its
+  own physics until the rejoin commit. 17 -> 4 bails.
+- **Respawn counted twice:** the placing teleport is queued until the next physics step, so the old wipeout bit was
+  still set on the next tick and started a second 5 s bail (2 of those 4). `NpcSim::placed` ignores it until the bit
+  clears.
+- **Line kept running during a bail:** the projection kept moving the cursor while the skater lay on the ground
+  (node 6 -> 14, a trick dispatched mid-bail). During the respawn wait there is no projection now (the line waits, as
+  the comment always said).
+- **Stale first tick:** the first tick after a start or respawn projected the body's position from before the queued
+  teleport (a pooled body: anywhere), moving the cursor nodes ahead ("left the path at node 1 (A 5+1.00, 79.25 m)").
+  `NpcSim::teleport_pending` skips the projection until the teleport has been applied.
+- **Respawn node** (`sub_8246ED68`, decoded and main checked 0x8246ED68..0x8246EE24, picked when the bail starts by
+  `sub_8246EE30`): the projection's search node `pc+816` plus 2, a remembered prop node ahead within 20 instead,
+  clamped to the last node, then the first safe node (`sub_82455728`, our `ai_controller::safe_node`). Ours placed the
+  skater where it fell, on a take-off: one skater respawned 24 times in a row at node 17, wiping out right after each
+  placement. Now `ai_controller::respawn_node`. Not ported: game modes 19 / 20 (`sub_824681D8`) use
+  `sub_824553D8(line, cursor A)`.
+- **Lost hand-over** (research `.local/research/npc/b115-lost-handover.md`; main checked the test's structure in
+  `sub_82468DD8`): on a tick its search node did not advance, a skater that was off the path, more than 6.0 m from
+  the search node and from both lane edge points, and slower than 14 m/s (`pc+808`) is lost; that raises the same
+  reposition request (`ctrl+941`) mode 7 raises, so controller B walks it back (goal `pc+816` + 2, safe node). On B's
+  hand-back retail's A activate (`sub_824689C0`) resets the controller off the path with the search at the node
+  nearest the skater over the whole line (`sub_82455108`); the normal rejoin commit puts it back on. Ours re-attached
+  on the path at B's goal node. Now `path_follow::lost`, `PathFollow::reattach`, `path_follow::nearest_node`; the
+  reposition counts from `pc+816`. Log `NPC_SKATER_LOST`. Values in `PathTuning` (`lost_radius` 6.0,
+  `lost_max_speed` 14.0; retail defaults, mod-overridable).
+- **Projected point** (research `.local/research/npc/b116-path-follow-inputs.md`, main checked the state 500 /
+  wipeout tests in `sub_82467FC8`): off the board (BipedGround) or wiping out retail projects the animation root
+  (Skeleton +416), not the board; the speed `pc+808` (`sub_8246BCF8`) is that point's displacement, negative only
+  above 0.01 m/s against the heading (the skeleton's forward off the board). Ours projected the deck always, so a
+  skater walking back was measured where its board lay. Now `npc_sim::projected_point`; the hand-back's nearest node
+  uses the skater too.
+- **Getting back on the board** (research `.local/research/npc/b117-ai-reboarding.md`, main checked the press in
+  `sub_8246FA30`): retail's line controller A, not controller B, re-boards a skater: every path tick it presses the
+  off-board toggle (`824712E0`: `NewToggleOffBoardState` + `ToggleOffBoardState` while off the board and not
+  toggling, every 5 ticks) and then sets mode 2 ("get on") for the next tick; A's activate clears it. Ours had no
+  toggle in A, so a skater handed back by controller B stood off its board for good. Now
+  `ai_controller::OffBoardToggle` in the line tick (period from the controller B settings, retail 4).
+- **Line ends and switches** (research `.local/research/npc/b118-node-change-line-end.md`): retail has no
+  "finished" line for an AI skater: at the end it looks for the next line every tick (`sub_8246C7F8`), and every
+  switch runs the reset `sub_82468AC8`, which leaves the skater off the path (rejoin commit again) but keeps the start
+  gate `pc+937`. Ours handed a simulated skater at a line end back to the replay tier, which faded it out, and
+  restarted the projection on the path after a switch. Now `LineCursor::retry_chain` each tick for simulated skaters
+  (log `NPC_SKATER_CHAIN`), no line-end hand-back, and `PathFollow::switch_to` on a switch and on controller B's
+  hand-back. The retry runs whenever the cursor sits on the last node (the projection holds it there, so it never
+  became "finished" and never retried at first).
+- **Line-end fallback** (research `.local/research/npc/b122-line-candidates.md`, `sub_82458968` mode 1): with no
+  line start within 4 m, retail takes the nearest free start at any distance (a valid one over a nearer invalid one
+  below 36 m^2; per-character validity is not modelled, so every line counts as valid). Ours ended the line, and the
+  skater rode off, got lost, bailed and was respawned at the line end again: two skaters made 70 of 72 bails in a
+  300 s run that way (each placement there launched them at 25 to 100 m/s, cause not found; trace
+  `NPC_SKATER_PLACED` at debug level). Now `ChainConfig::fallback` (on for the physics tier only; the replay tier
+  cannot ride the gap). Not ported yet: retail's end point (B past 0.8 of the second-to-last segment), the 4.5 m
+  lost test after a re-pick, junction scoring from the physics skater.
+- **Ground steer** (research `.local/research/npc/b121-ai-ground-steer.md`): retail also steers an AI skater with
+  stick input every path tick on the ground, on or off the path (`sub_8246ACF0` -> `sub_8246AA00` /
+  `sub_82471070`): the heading error to a point 45 ticks ahead on the line, moving toward the point 2 ticks ahead
+  when the skater is 0.4 to 3 m off it, written to `Turn`, `BodySpin` and `KickTurn` (full at 18 degrees). Off the
+  path this is what turns a skater back to its line. Ours had no stick input at all. Now skate-core
+  `living_world::ground_steer` (tuning `SimulatedTierSettings::ground_steer`, retail defaults); `PathFollow` keeps
+  the lateral ratio `pc+868`. Not mapped: the pending trick's category 9 gate.
+- **Respawned cursor ran ahead:** the re-created cursor counts its own frames, but the follow target still held the
+  old count, so the cursor ran up to 38 nodes ahead right after the respawn (then "lost" 50 m from the path). Now the
+  target is reset with the cursor.
+- **Airborne** (research `.local/research/npc/b119-state-byte-438.md`, main checked the writer in `sub_82DB6EC0`):
+  the skater state byte `+438` that `sub_8246DB50` and the junction switch read is "an air state (200..299) with no
+  wheel touching", not "riding". While airborne retail writes no steering target and does not drop the path. Now the
+  sim passes it to `ai_record::steers` and `PathFollow::tick`. The replay tier's flip latch reads the same byte as
+  "riding" (replay.rs `node_riding`); left as is tonight (research b120 first: it touches the facing rule behind the
+  earlier backwards-riding fix).
+- `NPC_SKATER_BAIL` now says what the skater was doing: previous state, speed, node, cursor A, on path, distance to
+  the path and position (logs must diagnose).
+
+### Verification
+- skate-core: `ai_record` (steering gate), `ai_controller` (respawn node), `path_follow` (lost radius / lane edges /
+  speed gate / node advance / reattach / nearest node); living_world 290 passed.
+- Muted DownTown runs (`.local/poc-tests/npcsim.sh`, radius 150 m, up to 3 sims, player idle):
+
+| build | length | bails | hitches over 100 ms (excl. the two load frames) |
+|---|---|---|---|
+| before (8489da5e) | 150 s | 17 | 1 |
+| steering gate | 150 s | 4 (2 double counts) | 1 |
+| + respawn / teleport fixes, retail respawn node | 150 s | 2 | 2 |
+| + lost hand-over | 300 s | 4 | 9 |
+| + projected point | 300 s | 4 | 15 |
+| + line controller re-boards (skaters ride again instead of standing) | 300 s | 55 | 16 |
+| + line-end retry, switch reset, airborne gate, ground steer | 300 s | 72 (70 at two line ends) | 14 |
+| + line-end fallback, retry on the last node | 300 s | 19 | 12 |
+
+The long frames left (100 to 165 ms) show no physics steps and nothing in the instrumented stages or the living
+world systems: not the NPCs; open.
+
+### Open
+- `pc+922` (on-board steering) comes from an undecoded skater field (`[[rec]+32]+320`, `sub_824660A0`); ours stays
+  set. A's second toggle writer `sub_8246FFF8` (node flag 0x10 while state 500) is not ported.
+- On the board retail projects the board rigid body's position (SkateboardReckoning +144); ours the deck part (b116,
+  field not mapped yet). `pc+808`'s scale `[0x8303EE08]` (taken as 1/dt = 60). `+1904` bit `0x04000000` is a scripted
+  AI flag (UnpinAI / ClearBehavior), never set for ambient skaters; `G+608` and motion state 104 not read.
+- The 4.5 m lost test after a line-end re-pick; the node-change handler `sub_8246BEE0`.

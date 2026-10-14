@@ -497,27 +497,47 @@ impl BoardWorld {
         range: std::ops::Range<usize>,
         triangles: &[WorldTriangle],
     ) -> Result<(), &'static str> {
-        if range.len() != triangles.len() || range.end > self.triangles.len() {
-            return Err("replacement triangles must match the existing range");
+        self.replace_triangles_batch(&[(range, triangles)])
+    }
+
+    /// Several [`Self::replace_triangles`] edits applied in order (a later edit of the same range wins), with the
+    /// overlapped mesh bounds and the query index rebuilt once at the end. The index depends only on the final
+    /// mesh bounds, so the result is identical to one call per edit (test
+    /// `batched_replacements_match_one_call_per_edit`); a prop stream pass rebuilt the whole index once per prop.
+    /// Every edit is checked first: an error changes nothing.
+    pub fn replace_triangles_batch(
+        &mut self,
+        edits: &[(std::ops::Range<usize>, &[WorldTriangle])],
+    ) -> Result<(), &'static str> {
+        let mut bounds = Vec::with_capacity(edits.iter().map(|e| e.1.len()).sum());
+        for (range, triangles) in edits {
+            if range.len() != triangles.len() || range.end > self.triangles.len() {
+                return Err("replacement triangles must match the existing range");
+            }
+            for entry in triangles.iter() {
+                bounds.push(Bounds::from_points(entry.triangle.vertices).ok_or("invalid triangle bounds")?);
+            }
         }
-        self.triangles[range.clone()].copy_from_slice(triangles);
-        for (i, entry) in triangles.iter().enumerate() {
-            self.triangle_bounds[range.start + i] =
-                Bounds::from_points(entry.triangle.vertices).ok_or("invalid triangle bounds")?;
+        let mut bounds = bounds.into_iter();
+        for (range, triangles) in edits {
+            self.triangles[range.clone()].copy_from_slice(triangles);
+            for i in range.clone() {
+                self.triangle_bounds[i] = bounds.next().expect("one bounds per triangle");
+            }
         }
         if let Some(metadata) = &mut self.query_metadata {
             for mesh in &mut metadata.meshes {
-                if mesh.triangle_range.start < range.end && range.start < mesh.triangle_range.end {
+                let r = &mesh.triangle_range;
+                if edits.iter().any(|(range, _)| r.start < range.end && range.start < r.end) {
                     mesh.local_bounds = Bounds::from_points(
-                        self.triangles[mesh.triangle_range.clone()]
-                            .iter()
-                            .flat_map(|t| t.triangle.vertices),
+                        self.triangles[r.clone()].iter().flat_map(|t| t.triangle.vertices),
                     )
                     .ok_or("invalid query mesh bounds")?;
                 }
             }
-            let meshes = metadata.meshes.clone();
-            self.query_index = query_index::QueryIndex::new(&meshes);
+            if !edits.is_empty() {
+                self.query_index = query_index::QueryIndex::new(&metadata.meshes);
+            }
         }
         Ok(())
     }

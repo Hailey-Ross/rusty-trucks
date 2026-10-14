@@ -897,6 +897,27 @@ is not exported. Not seen in game yet.
 29 live within 90 m of the spawn after the fill, 757 dormant and out of the obstacle list; 300 m away 29 culled and 8
 spawned; a prop moved 2 m comes back at its authored pose).
 
+## DMO streaming: one collision rebuild per pass (2026-10-13)
+
+- **Problem:** the first streaming pass on DownTown took 412 ms (`FRAME_HITCH ... dmo_stream:412.4`; research
+  `.local/research/peds/b111-dmo-eviction.md`). Every streamed prop rebaked its collision with
+  `BoardWorld::replace_triangles`, which rebuilds the whole query index; the fill pass streams ~790 props.
+- **Change** (research `.local/research/b114-prop-stream-batching.md`, main checked the index build):
+  `BoardWorld::replace_triangles_batch` applies all edits in order and rebuilds the mesh bounds and the index once;
+  `replace_triangles` is a batch of one. `PropCollisionLayer::rebake_many`, `GamePhysics::stream_props` and
+  `stream_dmos` collect a whole pass (and the streaming-off restore) into one call. The streaming decisions and their
+  order are unchanged (they match retail; b111).
+- **Why identical:** `QueryIndex::new` depends only on the final mesh bounds (build order restarts at 0..n, ties by
+  index, query results sorted); a rebake never moves a triangle range, and a later edit of the same prop wins in both
+  versions. Nothing reads prop collision between the props of a pass. The one difference: a batch checks every edit
+  first, so a failure changes nothing (the single call could leave a stale index after copying triangles).
+- **Verification:** skate-core `board_world::broadphase_tests::batched_replacements_match_one_call_per_edit` (63
+  edits over meshes that straddle props, repeated and unchanged props, far parks: triangles, bounds, meshes and index
+  identical to one call per edit and to a fresh build, same line query hits) and
+  `a_failed_batch_changes_nothing_and_an_empty_batch_is_a_no_op`. Muted DownTown run: first pass 412 ms -> 35.5 ms.
+- Not changed (same API possible later, each with its own proof): the per-tick rebake of moving props
+  (`prop_dynamics.rs`) and the layout load.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with
