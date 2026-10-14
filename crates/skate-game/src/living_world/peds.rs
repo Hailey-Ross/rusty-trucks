@@ -929,8 +929,19 @@ pub(crate) fn advance_peds(
                         let now = state.world.tick();
                         if (by.is_some() || near.is_some()) && blocked_logged.get(&ped.id).is_none_or(|t| now >= t + hz) {
                             blocked_logged.insert(ped.id, now);
+                            // The blocker as the log reader sees it: the prop body's model and where it is (its id is a
+                            // prop body id, not a waypoint group id; 2026-10-14 a tree planter read as a newspaper box).
+                            let blocker = by.filter(|id| *id < MOD_BODY_OBSTACLE_BASE).and_then(|id| {
+                                let d = physics.as_deref()?.prop_dynamics()?;
+                                let (c, ..) = d.body_state(id as u32)?;
+                                // "<id>/DMO_DT_BenchFlat_1015_0x..." -> "DMO_DT_BenchFlat_1015".
+                                let t = d.template_of(id as u32)?;
+                                let model = t.split_once('/').map_or(t, |x| x.1).split("_0x").next().unwrap_or(t);
+                                Some(format!("{model} at [{:.2}, {:.2}, {:.2}]", c.x, c.y, c.z))
+                            });
+                            let blocker = blocker.unwrap_or_else(|| if by.is_some_and(|id| id >= MOD_BODY_OBSTACLE_BASE) { "mod body".into() } else { "-".into() });
                             info!(
-                                "PED_BLOCKED ped=#{} at=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] by={by:?} near_moved_spawn={near:?} on_mesh={on_mesh} clear={clear} progressed={progressed} tick={now}",
+                                "PED_BLOCKED ped=#{} at=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] by={by:?} ({blocker}) near_moved_spawn={near:?} on_mesh={on_mesh} clear={clear} progressed={progressed} tick={now}",
                                 ped.id.serial, from[0], from[1], from[2], to.x, to.y, to.z,
                             );
                         }
@@ -2091,7 +2102,10 @@ pub(crate) fn think_peds(
                         // Progress of a ped on a world prop (logs must diagnose a stall).
                         let name = |s: Option<usize>| s.and_then(|s| pg.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
                         let dist = mind.brain.waypoint.map(|w| ((w[0] - body.position.x).powi(2) + (w[2] - body.position.z).powi(2)).sqrt());
-                        info!("PED_PLUGIN_WAIT ped=#{} in {} dist={:?} at=[{:.2}, {:.2}, {:.2}] approach={:?} slide={:?} route={} tick={tick}", ped.id.serial, name(pc.frame.current), dist.map(|d| (d * 1000.0).round() / 1000.0), body.position.x, body.position.y, body.position.z, mind.brain.approach.map(|a| a.1), mind.brain.approach_slide, body.nav.route.is_some());
+                        // The plugin's give-up timer (`PluginTimeout`, 60 s from EnterInteraction) and how many brain timers
+                        // run: a ped stuck past 60 s must show why the timer did not expire (2026-10-14).
+                        let timeout = mind.brain.timers.get(&skate_core::living_world::peds::brain::timers::index("PluginTimeout")).copied();
+                        info!("PED_PLUGIN_WAIT ped=#{} in {} dist={:?} at=[{:.2}, {:.2}, {:.2}] approach={:?} slide={:?} route={} plugin_timeout={timeout:?} timers={} tick={tick}", ped.id.serial, name(pc.frame.current), dist.map(|d| (d * 1000.0).round() / 1000.0), body.position.x, body.position.y, body.position.z, mind.brain.approach.map(|a| a.1), mind.brain.approach_slide, body.nav.route.is_some(), mind.brain.timers.len());
                     }
                     if pc.frame.current != mind.plugin_state {
                         let name = |s: Option<usize>| s.and_then(|s| pg.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
