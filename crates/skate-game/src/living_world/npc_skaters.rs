@@ -687,6 +687,8 @@ pub(crate) fn apply_records(
             continue;
         }
         if let Some(e) = index.0.remove(&r.id) {
+            // A simulated skater's loaded body goes back to the pool first (loading one costs ~220 ms).
+            commands.queue(move |world: &mut World| super::npc_sim::pool_from(world, e));
             commands.entity(e).despawn();
             events.write(NpcSkaterEvent::Despawned { id: r.id, reason: r.reason });
         }
@@ -740,6 +742,7 @@ pub(crate) fn advance(
     mut despawns: MessageWriter<LivingWorldDespawn>,
     mut events: MessageWriter<NpcSkaterEvent>,
 ) {
+    let _span = super::timing::span(super::timing::NPC_ADVANCE);
     let lines = npc_lines(&state);
     let tick = state.world.tick();
     let players: Vec<[f32; 3]> = observers.observers.iter().map(|o| o.position).collect();
@@ -1534,6 +1537,7 @@ pub(crate) fn log_readout(settings: Res<LivingWorldSettings>, state: Res<Populat
 
 pub(crate) fn install(app: &mut App) {
     app.init_resource::<NpcSkaterIndex>()
+        .init_resource::<super::npc_sim::NpcSimPool>()
         .init_resource::<NpcSkaterLooks>()
         .init_resource::<super::npc_avoid::AvoidTrack>()
         .add_message::<NpcSkaterEvent>()

@@ -271,6 +271,7 @@ pub(crate) fn update_ped_obstacles(
     state: Res<PopulationState>,
     mut trace: ResMut<PedObstacleTrace>,
 ) {
+    let _span = super::timing::span(super::timing::PED_OBSTACLES);
     obstacles.0.set_params(settings.ped_obstacles.clone());
     if data.nav.is_none() {
         if !obstacles.0.states.is_empty() {
@@ -725,6 +726,7 @@ pub(crate) fn advance_peds(
     mut blocked_logged: Local<std::collections::HashMap<LivingWorldId, u64>>,
     observers: Res<super::LivingWorldObservers>,
 ) {
+    let _span = super::timing::span(super::timing::ADVANCE_PEDS);
     let obstacles = &obstacles.0;
     let hz = state.world.clock().hz as u64;
     let tick = state.world.tick();
@@ -1550,6 +1552,7 @@ pub(crate) fn think_peds(
     mut cursor: Local<Option<bevy::ecs::message::MessageCursor<PedEvent>>>,
     (mut traffic_events, cars, mut plugin_props, physics): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>, Option<Res<crate::physics::GamePhysics>>),
 ) {
+    let _span = super::timing::span(super::timing::THINK_PEDS);
     // Streamed-out props (DMO streaming): their plugins are not offered and a ped using one lets go. A world prop's
     // plugin id carries its DMO body id in the low 32 bits (`ped_plugins::map_props`).
     let dormant = physics.as_ref().and_then(|p| p.prop_dynamics()).map(|d| d.dormant_ids()).unwrap_or_default();

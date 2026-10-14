@@ -1,0 +1,39 @@
+//! Per-system wall time of the living world's fixed-step systems, summed per frame and read (and reset) by the
+//! `FRAME_HITCH` line (`frame_timing/hitch.rs`), so a hitch names the living-world system that took the time
+//! (2026-10-13: 0.2 to 0.9 s hitches inside the fixed step that no measured stage covered).
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+/// Measured systems, in `FRAME_HITCH` order.
+pub(crate) const NAMES: [&str; 10] =
+    ["population", "dmo_stream", "ped_obstacles", "think_peds", "advance_peds", "npc_avoid", "npc_advance", "npc_sim", "traffic", "vehicle_contacts"];
+pub(crate) const POPULATION: usize = 0;
+pub(crate) const DMO_STREAM: usize = 1;
+pub(crate) const PED_OBSTACLES: usize = 2;
+pub(crate) const THINK_PEDS: usize = 3;
+pub(crate) const ADVANCE_PEDS: usize = 4;
+pub(crate) const NPC_AVOID: usize = 5;
+pub(crate) const NPC_ADVANCE: usize = 6;
+pub(crate) const NPC_SIM: usize = 7;
+pub(crate) const TRAFFIC: usize = 8;
+pub(crate) const VEHICLE_CONTACTS: usize = 9;
+
+static US: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
+
+/// Adds the time until it is dropped to system `index`.
+pub(crate) struct Span(usize, Instant);
+
+pub(crate) fn span(index: usize) -> Span {
+    Span(index, Instant::now())
+}
+
+impl Drop for Span {
+    fn drop(&mut self) {
+        US[self.0].fetch_add(self.1.elapsed().as_micros() as u64, Ordering::Relaxed);
+    }
+}
+
+/// This frame's sums in microseconds, reset to zero.
+pub(crate) fn take() -> [u64; NAMES.len()] {
+    std::array::from_fn(|i| US[i].swap(0, Ordering::Relaxed))
+}
