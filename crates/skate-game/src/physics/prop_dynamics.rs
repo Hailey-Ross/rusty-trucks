@@ -1439,6 +1439,11 @@ impl PropDynamics {
         out
     }
 
+    /// A body's MOBJ template name (its model / prop type), for logs.
+    pub(crate) fn template_of(&self, id: u32) -> Option<&str> {
+        self.bodies.get(*self.by_id.get(&id)?).map(|b| b.template.as_str())
+    }
+
     /// One body's box centre, basis, half extents, linear and angular velocity and effective inertia (a solid proxy
     /// in the skater's contact solve).
     pub(crate) fn body_state(&self, id: u32) -> Option<(Vector3, Basis3, Vector3, Vector3, Vector3, RetailInertiaDynamics)> {
