@@ -92,6 +92,8 @@ pub(crate) struct PedData {
     /// Each entity type's chase record and the chase manager's `global` record (`ped_mood::chase_records`).
     pub chase: Arc<BTreeMap<String, skate_core::living_world::peds::chase::ChaseRecord>>,
     pub chase_global: Option<Arc<skate_core::living_world::peds::chase::ChaseRecord>>,
+    /// The `zombie` chase record (zombie cheat: every chase group and every ped's own record, `ped_mood::ZOMBIE_KEY`).
+    pub chase_zombie: Option<Arc<skate_core::living_world::peds::chase::ChaseRecord>>,
     /// The conversation plugin graph (`plugin/conversation.stategraph`) and the conversation tables.
     pub conversation_graph: Option<Arc<super::ped_graph::PedGraph>>,
     /// The world-prop plugin graphs by prop class (each descriptor's `file`, compiled).
@@ -107,8 +109,12 @@ pub(crate) struct PedData {
     pub sit: Arc<BTreeMap<String, skate_core::living_world::peds::brain::SitValues>>,
     /// Each entity type's vision test ranges (`ped_mood::sight`).
     pub sight: Arc<BTreeMap<String, skate_core::living_world::peds::perception::Sight>>,
+    /// Each entity type's perception scales (near, far, fov) for the mood post's vision test.
+    pub sight_scales: Arc<BTreeMap<String, [f32; 3]>>,
     /// Each entity type's takedown table (`ped_mood::takedown_tables`).
     pub takedowns: Arc<BTreeMap<String, skate_core::living_world::peds::takedown::TakedownTable>>,
+    /// The `zombie` takedown table (zombie cheat, every ped).
+    pub takedown_zombie: Option<Arc<skate_core::living_world::peds::takedown::TakedownTable>>,
     loaded_for: Option<(String, u64)>,
 }
 
@@ -512,22 +518,27 @@ fn load_ped_data(
         Err(error) => warn!("PED_GRAPH not loaded (peds keep wandering without the behaviour graph): {error}"),
     }
     match std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| Ok((super::ped_mood::parse(&b)?, super::ped_mood::reaction_sets(&b), super::ped_mood::chase_records(&b), super::ped_mood::takedown_tables(&b), super::ped_mood::sight(&b), super::ped_mood::conversation_tables(&b), super::ped_mood::sit_values(&b), super::ped_mood::starting_hand_props(&b)))) {
-        Ok((tables, sets, (chase, global), takedowns, sight, conversations, sit, starting_props)) => {
+        Ok((tables, sets, (chase, global, zombie), (takedowns, takedown_zombie), (sight, sight_scales), conversations, sit, starting_props)) => {
             info!(
-                "PED_MOOD tables: {} categories, {} results, {} reaction sets, {} entity types, {} chase records (global {})",
+                "PED_MOOD tables: {} categories, {} results, {} reaction sets, {} entity types, {} chase records (global {}, zombie {}, zombie takedowns {})",
                 tables.categories.len(),
                 tables.results.len(),
                 tables.reactions.len(),
                 sets.len(),
                 chase.len(),
-                global.is_some()
+                global.is_some(),
+                zombie.is_some(),
+                takedown_zombie.is_some()
             );
             loaded.mood = Some(Arc::new(tables));
             loaded.reaction_sets = Arc::new(sets);
             loaded.chase = Arc::new(chase);
             loaded.chase_global = global.map(Arc::new);
+            loaded.chase_zombie = zombie.map(Arc::new);
+            loaded.takedown_zombie = takedown_zombie.map(Arc::new);
             loaded.takedowns = Arc::new(takedowns);
             loaded.sight = Arc::new(sight);
+            loaded.sight_scales = Arc::new(sight_scales);
             loaded.conversations = Arc::new(conversations);
             loaded.sit = Arc::new(sit);
             loaded.starting_props = Arc::new(starting_props);
@@ -1320,10 +1331,23 @@ fn log_ped_readout(state: Res<PopulationState>, observers: Res<super::LivingWorl
     let list: Vec<_> = peds.iter().map(|(p, b, _)| (p.id, p.recipe.clone(), b.player.state, b.position)).collect();
     // Zombie mode: how many peds are on ZombieFollow (0 lines out of the mode).
     let zombies = peds.iter().filter(|(_, _, m)| m.is_some_and(|m| m.brain.motion_intent == Some(skate_core::living_world::peds::brain::motion::ZOMBIE_FOLLOW))).count();
+    // What the peds are doing (session checks of "too much sitting / gathering / no chasing"): per plugin class
+    // (conversation included), chasing, ZombieFollow, and the rest (free: wander, greet, react).
+    let mut activity: BTreeMap<String, u32> = BTreeMap::new();
+    for (_, _, m) in &peds {
+        let key = match m {
+            Some(m) if m.brain.chasee.is_some() => "chasing".to_owned(),
+            Some(m) if m.brain.in_plugin => m.plugin_graph.clone().unwrap_or_else(|| "plugin".to_owned()),
+            Some(m) if m.brain.motion_intent == Some(skate_core::living_world::peds::brain::motion::ZOMBIE_FOLLOW) => "zombie_follow".to_owned(),
+            _ => "free".to_owned(),
+        };
+        *activity.entry(key).or_default() += 1;
+    }
+    let activity = activity.iter().map(|(k, n)| format!("{k}={n}")).collect::<Vec<_>>().join(" ");
     let player = observers.observers.first().map(|o| Vec3::from_array(o.position));
     let nearest = player.and_then(|at| list.iter().min_by(|a, b| a.3.distance(at).total_cmp(&b.3.distance(at))).map(|n| n.3));
     info!(
-        "LIVING_WORLD {} player={:?} nearest_ped_at={:?}{}",
+        "LIVING_WORLD {} player={:?} nearest_ped_at={:?}{} activity: {activity}",
         ped_readout(&list, player),
         player.map(|p| [p.x, p.y, p.z]),
         nearest.map(|p| [p.x, p.y, p.z]),
@@ -1384,6 +1408,8 @@ pub(crate) struct PedMind {
     /// Where the body was at the last think (the ped's speed for the takedown window).
     last_at: Option<[f32; 3]>,
     presence_timer: f32,
+    /// Time to the next zombie broadcast (`mood::BROADCAST_PERIOD`).
+    zombie_timer: f32,
     rng: Option<skate_core::living_world::Rng>,
     controller: Option<skate_core::graph::controller::Controller>,
     /// The plugin graph's controller while the main graph runs the Plugin state.
@@ -1624,10 +1650,11 @@ pub(crate) fn think_peds(
                 // The descriptors' transfer expressions (`UseWorldProp`: e.g. usetrashbin needs a disposable hand prop).
                 let views: std::collections::HashMap<u64, skate_core::living_world::peds::plugins::TransferView> =
                     list.iter().map(|(_, p, _, m)| (p.id.to_u64(), skate_core::living_world::peds::plugins::TransferView::of(&m.brain))).collect();
+                let offer_settings = pp.settings;
                 let mut qualifies = |prop: &skate_core::living_world::peds::plugins::PluginProp, ped: &skate_core::living_world::peds::plugins::OfferPed| {
                     let view = views.get(&ped.id).copied().unwrap_or_default();
                     let transfer = data.plugins.classes.get(&prop.class).and_then(|c| c.descriptor.as_ref()).and_then(|d| d.transfer.as_ref());
-                    transfer.is_none_or(|t| t.evaluate(&mut |name, _| view.condition(name, prop, ped.position)))
+                    transfer.is_none_or(|t| t.evaluate(&mut |name, _| view.condition(name, prop, ped.position, &offer_settings)))
                 };
                 let mut offer_peds: Vec<skate_core::living_world::peds::plugins::OfferPed> = list
                     .iter_mut()
@@ -1704,12 +1731,10 @@ pub(crate) fn think_peds(
             info!("PED_CONVERSATION id={} gather_timeout state={} members={} tick={tick}", c.id, c.state, c.members.len());
         }
     }
-    // How many chasers a chasee takes: its type's chase record; the player's group reads the
-    // `global` record (inferred: the actor's record is not decoded).
-    let max_chasers = |chasee: u64| {
-        let record = if chasee >= PLAYER_TARGET_BASE { data.chase_global.as_deref() } else { entities.get(&chasee).and_then(|e| data.chase.get(&e.0)) };
-        skate_core::living_world::peds::chase::ChaseRecord::max_chasers(record)
-    };
+    // How many chasers a chasee takes: every chase group (skater and ped alike) reads `global`, or `zombie` under the
+    // zombie cheat (group init `82D967B0`, b105).
+    let group_record = if settings.zombie { data.chase_zombie.as_deref() } else { data.chase_global.as_deref() };
+    let max_chasers = |_chasee: u64| skate_core::living_world::peds::chase::ChaseRecord::max_chasers(group_record);
     for (entity_id, ped, mut body, mut mind) in list {
         let mind = &mut *mind;
         let body = &mut *body;
@@ -1741,6 +1766,25 @@ pub(crate) fn think_peds(
             let set = data.reaction_sets.get(&ped.entity).cloned().unwrap_or_else(|| "default".into());
             let magnitude = |c: &str| tables.categories.get(c).map_or(0.0, |c| c.magnitude);
             let lifetime = |c: &str| tables.categories.get(c).map_or(30.0, |c| c.lifetime);
+            // The post's vision test (`sub_82E41060` -> `82E27240`, b5 / b18): the event position against the
+            // category's near / far ranges times the type's scales, the same eye, cone and line as the perception
+            // pass. A type without a perception record keeps every post (retail's record default is unread).
+            let sight_scales = data.sight_scales.get(&ped.entity).copied();
+            let post_eye = [at[0], at[1] + 1.6, at[2]];
+            let post_forward = [body.heading.sin(), 0.0, body.heading.cos()];
+            let post_here = data.nav.as_deref().and_then(|m| m.locate(at).map(|h| (m, h)));
+            let post_los = |_: [f32; 3], t: [f32; 3]| post_here.is_none_or(|(m, h)| m.clear_line(h, t));
+            let seen = |e: &MoodEvent| match (sight_scales, tables.categories.get(&e.category)) {
+                (Some(s), Some(c)) => skate_core::living_world::peds::perception::sees(
+                    at,
+                    post_eye,
+                    post_forward,
+                    e.position,
+                    &skate_core::living_world::peds::perception::Sight::new(c.near, c.far, s[0], s[1], s[2]),
+                    &post_los,
+                ),
+                _ => true,
+            };
             let steps = tick.saturating_sub(ped.spawn_tick).saturating_sub(mind.ticks) as f32;
             if steps > 0.0 {
                 mind.mood.tick(dt * steps, &lifetime);
@@ -1752,10 +1796,42 @@ pub(crate) fn think_peds(
                     let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy };
                     for e in mood::presence(me, at, &ped_list, &player_list) {
                         // A suppressed entity raises no mood (perception `+64`).
-                        if !e.instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i)) && tables.accepts(&set, &e, &post_ctx) {
+                        if !e.instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i)) && tables.accepts(&set, &e, &post_ctx) && seen(&e) {
                             mind.mood.post(e, magnitude(mood::category::PRESENCE));
                         }
                     }
+                }
+                // The zombie broadcast (`sub_82E24B60`): every console frame while the cheat is on.
+                if settings.zombie {
+                    mind.zombie_timer -= dt * steps;
+                    let mut posts = 0;
+                    while mind.zombie_timer <= 0.0 && posts < 8 {
+                        mind.zombie_timer += mood::BROADCAST_PERIOD;
+                        posts += 1;
+                    }
+                    if posts > 0 {
+                        let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: true, busy: &busy };
+                        for e in mood::zombie_mode(&player_list) {
+                            let suppressed = e.instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i));
+                            let in_sight = seen(&e);
+                                let accepted = !suppressed && in_sight && tables.accepts(&set, &e, &post_ctx);
+                            if let Some(held) = mind.log_repeats.allow(0x5a4f_4d42 ^ u64::from(accepted), tick) {
+                                info!(
+                                    "PED_ZOMBIE_POST ped=#{} {set} accepted={accepted} seen={in_sight} suppressed={suppressed} posts={posts} busy={} tick={tick}{}",
+                                    ped.id.serial,
+                                    mind.brain.busy(),
+                                    if held > 0 { format!(" (+{held} held back)") } else { String::new() }
+                                );
+                            }
+                            if accepted {
+                                for _ in 0..posts {
+                                    mind.mood.post(e.clone(), magnitude(mood::category::ZOMBIE_MODE));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    mind.zombie_timer = 0.0;
                 }
             }
             if let Some(&car) = honked.get(&me) {
@@ -1767,8 +1843,9 @@ pub(crate) fn think_peds(
             }
             // ChannelGreetWantTarget's `greeted` (magnitude 1.0, `8269FAC0`).
             for &(_, instigator, position) in greeted_now.iter().filter(|g| g.0 == me) {
-                if !mind.brain.perceptions.suppressed(instigator) {
-                    mind.mood.post(MoodEvent { category: mood::category::GREETED.into(), instigator: Some(instigator), second: Some(me), position }, 1.0);
+                let e = MoodEvent { category: mood::category::GREETED.into(), instigator: Some(instigator), second: Some(me), position };
+                if !mind.brain.perceptions.suppressed(instigator) && seen(&e) {
+                    mind.mood.post(e, 1.0);
                 }
             }
             if hits.contains(&me) {
@@ -1785,7 +1862,13 @@ pub(crate) fn think_peds(
                 if instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i) || mind.brain.ignore_collisions_with == Some(i)) {
                     continue;
                 }
-                mind.mood.post(MoodEvent { category: category.into(), instigator, second: Some(hit), position: at }, magnitude(category));
+                // Event origin (`sub_8269D8A8`: the contact's entity position): the hit ped's, so bystanders run the
+                // vision test against it [inferred: which entity +188 is was not read].
+                let origin = entity(hit).map_or(at, |(_, p)| p);
+                let e = MoodEvent { category: category.into(), instigator, second: Some(hit), position: origin };
+                if seen(&e) {
+                    mind.mood.post(e, magnitude(category));
+                }
             }
             // The brain's own rolls (sit time, stand-up) and its type's sit values, once per ped.
             if mind.brain.rng.is_none() {
@@ -1839,7 +1922,8 @@ pub(crate) fn think_peds(
         }
         let due = tick.saturating_sub(ped.spawn_tick);
         let controller = mind.controller.get_or_insert_with(|| skate_core::graph::controller::Controller::new(program.topology.states.len()));
-        let record = data.chase.get(&ped.entity);
+        // The ped's own chase record: its type's, or `zombie` under the zombie cheat (`82E33FAC`, b105).
+        let record = if settings.zombie { data.chase_zombie.as_deref() } else { data.chase.get(&ped.entity) };
         let ped_speed = mind.last_at.map_or(0.0, |l| ((at[0] - l[0]).powi(2) + (at[2] - l[2]).powi(2)).sqrt() / (dt * tick.saturating_sub(ped.spawn_tick).saturating_sub(mind.ticks).max(1) as f32));
         mind.last_at = Some(at);
         // The takedown contact (`82E38FB8` records a touch of the takedown target and counts it,
@@ -1864,7 +1948,7 @@ pub(crate) fn think_peds(
                 _ => false,
             };
         }
-        let takedown_table = data.takedowns.get(&ped.entity);
+        let takedown_table = if settings.zombie { data.takedown_zombie.as_deref() } else { data.takedowns.get(&ped.entity) };
         let forward = [body.heading.sin(), body.heading.cos()];
         let choose = |t: u64| {
             let (table, p) = (takedown_table?, target(t)?);
@@ -1892,6 +1976,13 @@ pub(crate) fn think_peds(
                 mind.brain.plugin = conversations.map.values().find(|c| c.members.iter().any(|m| m.ped == me)).map(|c| c.id);
             }
             mind.refusals.tick(dt, &plugin_props.settings);
+            // The Plugin behaviour's Update (`8269F248` -> `82E40BD0`, b104) re-stores the 30 s refusal for its prop every
+            // tick it runs, so a ped that leaves a prop is not offered it again for 30 s.
+            if mind.brain.in_plugin {
+                if let Some(prop) = mind.prop.and_then(|(i, ..)| plugin_props.props.get(i)) {
+                    mind.refusals.remember(prop.id, &plugin_props.settings);
+                }
+            }
             // `82E3DBE0`: the seated owner (OwnPluginObject, `brain+3277` bit 0x01) of a moving object jumps off forward:
             // intent Avoid / Jump / Forward -> motiongraph_avoid SitJump -> JumpForward `SitAvoidFwd` (blend 0.1), speech
             // PedestrianAvoidJump (4). The gate `[ped+5712]+1416 == 0` is not decoded (taken as open).
@@ -2406,6 +2497,21 @@ pub(crate) fn think_peds(
             if let Some(held) = mind.log_repeats.allow(key, tick) {
                 let held = if held > 0 { format!(" (+{held} held back)") } else { String::new() };
                 info!("PED_BRAIN ped=#{} {} -> {} intent={:?} wants={:?} tick={tick}{held}", ped.id.serial, name(mind.state), name(controller.frame.current), mind.brain.motion_intent, mind.brain.wants.keys().collect::<Vec<_>>());
+            }
+            // Why a new chase was refused (NewChasee/CancelChase: not CanNewChaseStart or not CanChaseeAddNewChaser).
+            if name(controller.frame.current) == "CancelChase" {
+                let chasee = mind.brain.wants.get("angrychase").map(|w| w.target);
+                let group = chasee.and_then(|c| chase_groups.0.get(&c).map(|g| g.info(max_chasers(c))));
+                if let Some(held) = mind.log_repeats.allow(0x4341_4e43, tick) {
+                    info!(
+                        "PED_CHASE_CANCEL ped=#{} chasee={chasee:?} chases_enabled={} group={:?} max_chasers={:?} tick={tick}{}",
+                        ped.id.serial,
+                        settings.ped_brain.values.chases_enabled,
+                        group,
+                        chasee.map(&max_chasers),
+                        if held > 0 { format!(" (+{held} held back)") } else { String::new() }
+                    );
+                }
             }
             mind.state = controller.frame.current;
         }

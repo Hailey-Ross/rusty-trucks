@@ -69,7 +69,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<MoodTables, String> {
     let mut t = MoodTables::default();
     for key in cats.0.keys() {
         // B1DD absent (discrete): the attribute default 0.0 (`0x830D0850`).
-        t.categories.insert(key.clone(), MoodCategory { magnitude: cats.f32(key, "Hash_B1DD").unwrap_or(0.0), lifetime: cats.f32(key, "Hash_A379").unwrap_or(30.0) });
+        t.categories.insert(key.clone(), MoodCategory { magnitude: cats.f32(key, "Hash_B1DD").unwrap_or(0.0), lifetime: cats.f32(key, "Hash_A379").unwrap_or(30.0), near: cats.f32(key, "Hash_D16BF47CF5417C44").unwrap_or(0.0), far: cats.f32(key, "Hash_A7EB37BC10C5A42F").unwrap_or(0.0) });
     }
     for key in results.0.keys() {
         let gate = |flag: &str| results.flag(key, flag);
@@ -127,9 +127,16 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<MoodTables, String> {
 /// Which chase record an entity type uses (`livingworld_entities` field).
 pub(crate) const CHASE_FIELD: &str = "Hash_FBC42525E74D946F";
 
+/// The chase record every chase group takes (`82D967B0`, b105): `zombie` while the zombie cheat is on (key hash
+/// 0x69FABBFD81C0E5A7 built at `82D96860`), else `global` (`*(0x830C7200)`, static init `82F8FEB8`) [code].
+pub(crate) const GROUP_CHASE_KEY: &str = "global";
+/// The zombie cheat's chase and takedown records: the group above, and every ped's own chase record (`ped+5712`) and
+/// takedown table (`ped+5728`) in the ped constructor `82E33198` (`82E33FAC`..`82E3402C`) [code].
+pub(crate) const ZOMBIE_KEY: &str = "zombie";
+
 /// The chase records (`livingworld_entities_chase`, parents merged, numeric fields) by entity
-/// type, and the chase manager's `global` record.
-pub(crate) fn chase_records(bytes: &[u8]) -> (BTreeMap<String, ChaseRecord>, Option<ChaseRecord>) {
+/// type, and the `global` and `zombie` records.
+pub(crate) fn chase_records(bytes: &[u8]) -> (BTreeMap<String, ChaseRecord>, Option<ChaseRecord>, Option<ChaseRecord>) {
     let Ok(root) = serde_json::from_slice::<Value>(bytes) else { return Default::default() };
     let (Some(entities), Some(chase)) = (root.pointer("/classes/livingworld_entities").and_then(Value::as_object), root.pointer("/classes/livingworld_entities_chase").and_then(Value::as_object)) else {
         return Default::default();
@@ -155,17 +162,17 @@ pub(crate) fn chase_records(bytes: &[u8]) -> (BTreeMap<String, ChaseRecord>, Opt
     };
     let c = Class(entities);
     let by_entity = entities.keys().filter_map(|e| Some((e.clone(), record(&c.reference(e, CHASE_FIELD)?)?))).collect();
-    (by_entity, record("global"))
+    (by_entity, record(GROUP_CHASE_KEY), record(ZOMBIE_KEY))
 }
 
 /// Which takedown table an entity type uses (`livingworld_entities` field).
 pub(crate) const TAKEDOWN_FIELD: &str = "Hash_76AC331FBD5803FF";
 
-/// The takedown tables (`livingworld_entity_takedown`, parents merged) by entity type.
-pub(crate) fn takedown_tables(bytes: &[u8]) -> BTreeMap<String, TakedownTable> {
-    let Ok(root) = serde_json::from_slice::<Value>(bytes) else { return BTreeMap::new() };
+/// The takedown tables (`livingworld_entity_takedown`, parents merged) by entity type, and the `zombie` table.
+pub(crate) fn takedown_tables(bytes: &[u8]) -> (BTreeMap<String, TakedownTable>, Option<TakedownTable>) {
+    let Ok(root) = serde_json::from_slice::<Value>(bytes) else { return Default::default() };
     let (Some(entities), Some(tables)) = (root.pointer("/classes/livingworld_entities").and_then(Value::as_object), root.pointer("/classes/livingworld_entity_takedown").and_then(Value::as_object)) else {
-        return BTreeMap::new();
+        return Default::default();
     };
     let t = Class(tables);
     let table = |key: &str| -> Option<TakedownTable> {
@@ -196,7 +203,7 @@ pub(crate) fn takedown_tables(bytes: &[u8]) -> BTreeMap<String, TakedownTable> {
         Some(TakedownTable { entries, reach_offset: t.f32(key, "Hash_8B45CA8123AD04D4").unwrap_or(d.reach_offset), slack: t.f32(key, "Hash_98DA4760B3C62ED7").unwrap_or(d.slack) })
     };
     let c = Class(entities);
-    entities.keys().filter_map(|e| Some((e.clone(), table(&c.reference(e, TAKEDOWN_FIELD)?)?))).collect()
+    (entities.keys().filter_map(|e| Some((e.clone(), table(&c.reference(e, TAKEDOWN_FIELD)?)?))).collect(), table(ZOMBIE_KEY))
 }
 
 /// Which perceptions record an entity type uses (`livingworld_entities` field).
@@ -204,25 +211,27 @@ pub(crate) const PERCEPTION_FIELD: &str = "Hash_A27862C1107F64EC";
 
 /// Each entity type's vision test ranges (`82E27240`): the mood event category
 /// `chasedpersondetectibilitytest` near (`D16B`) / far (`A7EB`) times the perceptions record's
-/// scales (`D036` / `D238`), its fov (`7435`). Types without a record get none.
-pub(crate) fn sight(bytes: &[u8]) -> BTreeMap<String, Sight> {
-    let Ok(root) = serde_json::from_slice::<Value>(bytes) else { return BTreeMap::new() };
+/// scales (`D036` / `D238`), its fov (`7435`), and the scales themselves (near, far, fov) for the
+/// mood post's test with each category's ranges. Types without a record get none.
+pub(crate) fn sight(bytes: &[u8]) -> (BTreeMap<String, Sight>, BTreeMap<String, [f32; 3]>) {
+    let Ok(root) = serde_json::from_slice::<Value>(bytes) else { return Default::default() };
     let classes = |n: &str| root.pointer(&format!("/classes/{n}")).and_then(Value::as_object).map(Class);
     let (Some(entities), Some(perceptions), Some(cats)) = (classes("livingworld_entities"), classes("livingworld_entities_perceptions"), classes("livingworld_moodeventcategories")) else {
-        return BTreeMap::new();
+        return Default::default();
     };
     let cat = "chasedpersondetectibilitytest";
     let (near, far) = (cats.f32(cat, "Hash_D16BF47CF5417C44").unwrap_or(0.0), cats.f32(cat, "Hash_A7EB37BC10C5A42F").unwrap_or(0.0));
-    entities
+    let scales: BTreeMap<String, [f32; 3]> = entities
         .0
         .keys()
         .filter_map(|e| {
             let p = entities.reference(e, PERCEPTION_FIELD)?;
             perceptions.0.get(&p)?;
             let f = |h: &str| perceptions.f32(&p, h).unwrap_or(0.0);
-            Some((e.clone(), Sight::new(near, far, f("Hash_D036FFCEEC9E7D03"), f("Hash_D238AC1B105361C6"), f("Hash_7435316F4A5E0B59"))))
+            Some((e.clone(), [f("Hash_D036FFCEEC9E7D03"), f("Hash_D238AC1B105361C6"), f("Hash_7435316F4A5E0B59")]))
         })
-        .collect()
+        .collect();
+    (scales.iter().map(|(e, s)| (e.clone(), Sight::new(near, far, s[0], s[1], s[2]))).collect(), scales)
 }
 
 /// The conversation tables: every `livingworld_conversations` row, and per entity type the
@@ -340,11 +349,28 @@ mod tests {
                 "global": {"parent": "default", "fields": {"Hash_5D480F3FFC02E98A": 22.5}},
                 "pedestrians": {"parent": "default", "fields": {"escape_distance": 65.0, "Hash_CD6575C0E03860E7": 11.0}}
             }}}"#;
-        let (by_entity, global) = super::chase_records(json);
+        let (by_entity, global, _) = super::chase_records(json);
         let r = &by_entity["adult_male"];
         assert_eq!((r.escape_distance(), r.run_speed()), (65.0, Some(11.0)));
         // Booleans are not numeric fields.
         assert_eq!(r.fields.len(), 2);
         assert_eq!(skate_core::living_world::peds::chase::predict_angle(global.as_ref()), 22.5);
+    }
+
+    /// The zombie cheat's records (b105): the group cap and the chaser fields come from `zombie`.
+    #[test]
+    fn zombie_chase_and_takedown_records_load_by_key() {
+        let json = br#"{"classes": {
+            "livingworld_entities": {},
+            "livingworld_entities_chase": {
+                "global": {"parent": null, "fields": {"Hash_CEA5D982FD05BE0B": 5}},
+                "zombie": {"parent": null, "fields": {"Hash_CEA5D982FD05BE0B": 25, "escape_distance": 8.0, "give_up_after_takedowns": 1}}
+            },
+            "livingworld_entity_takedown": {"zombie": {"parent": null, "fields": {"takedowns": []}}}}}"#;
+        let (_, global, zombie) = super::chase_records(json);
+        use skate_core::living_world::peds::chase::ChaseRecord;
+        assert_eq!((ChaseRecord::max_chasers(global.as_ref()), ChaseRecord::max_chasers(zombie.as_ref())), (5, 25));
+        assert_eq!(zombie.unwrap().escape_distance(), 8.0);
+        assert!(super::takedown_tables(json).1.is_some());
     }
 }

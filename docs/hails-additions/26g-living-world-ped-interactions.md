@@ -1125,3 +1125,105 @@ skate-game `hand_prop_proxy_group_by_mass`, data-gated `a_thrown_can_reaches_the
   it is reached and ends with the clips (log `PED_PLUGIN_MOTION ped=#N Sit ended mid-clip, standing up`). Applies to
   every plugin motion with a held cycle (data-driven by `plugin_motion` steps; nothing new for mods to set).
   Test: skate-core `a_sit_ended_during_stand2sit_stands_up_once_seated`.
+  Play test (user, 2026-10-13, session `hails-additions/logs/game-20261013-170436`): "I moved a bench as a ped
+  started sitting and she properly stood up once she finished sitting."
+
+## Zombie mode: zombies chase the skater (2026-10-13)
+
+### Problem
+User (2026-10-13): "I also turned on zombie mode, the peds didn't chase me at all and instead were more interested in
+sitting on the benches". Session `hails-additions/logs/game-20261013-170436`: zombie mode on at 23:07:34Z; 22 of 31
+peds reached ZombieFollow (they mill around the skater), no `skaterzombiechase` and no chase in the whole log; 9 peds
+stayed in seat / conversation plugins.
+
+### Root cause
+The chase in zombie mode is not in the ZombieFollow behaviour: it comes from the mood system. Every stock reaction set
+has `skaterzombiechase` at priority 1 (category `zombiemode`, instigator `skater`, want `angrychase`, want flag) [data].
+Nothing in our engine posted the `zombiemode` mood event, so the result could never fire.
+
+### Evidence (retail code, main-read)
+- Poster `sub_82E24B60` (the skater-side broadcaster, also posts skaternoise 5, skaterskitch 4, skaterslam 2): at the
+  end of its per-skater loop, when the living-world manager `*(0x83085494)` (set by `sub_826BBC40`) answers vfunc +156
+  (the zombie test, b4 / b95), it posts category **19 = zombiemode** on the mood bus (`sub_82B938D8`, message id
+  0xF631C8F6, size 80): position = the skater's, instigator = the skater, second = -1 (none), sight factors 1.0 / 1.0
+  (`0x8231A844`) [code].
+- No timer on that branch: it runs every living-world update, `sub_826BE020` -> `sub_82E24B60` [code], so once per
+  console frame (normalised to 30 fps in ours, `mood::BROADCAST_PERIOD`).
+- `zombiemode` category: broadcast_continuous, radius 0 (unlimited), magnitude 0.5, lifetime 30 s, priority 1 [data,
+  b6]. No stock reaction set has a `zombiemode` prerequisite [data].
+- Peds already in a plugin stay there: the producer skips busy peds (`sub_82E3BF70`) and plugin Scatter is off in
+  zombie mode (b95). So seated or conversing peds join once their plugin ends; that part is retail.
+
+### Change
+- skate-core `living_world/peds/mood.rs`: `category::ZOMBIE_MODE`, `BROADCAST_PERIOD`, `zombie_mode(players)`.
+- skate-game `living_world/peds.rs`: while `settings.zombie`, each ped receives one zombiemode post per 1/30 s per
+  player through the normal post gate (suppression, prerequisites). Log `PED_ZOMBIE_POST` (accepted / suppressed /
+  busy, repeat-limited); the produced chase shows as `PED_MOOD ... result=skaterzombiechase`.
+- Session logging: the 2.5 s `LIVING_WORLD peds` readout now ends with `activity:` counts per plugin class
+  (`waypoint_sit`, `conversation`, ...), `chasing`, `zombie_follow` and `free`, so a session shows how many peds sit,
+  gather or chase at any time.
+- Moddability: the zombie flag is the existing setting / Lua toggle; the category, its magnitude and the
+  `skaterzombiechase` result and priority are stock table data a mod can override; the post period is a named const
+  (console cadence).
+- Multiplayer: one post per observer in `player_list` (retail has one local skater).
+
+### Second pass after the user watched the muted test (user: "I was watching the muted test, now make it match retail code")
+With the broadcast alone only 2 or 3 of 31 peds chased and none followed: every ped got the chase want at any distance,
+most hit `CancelChase` (the player's group used the `global` record, max 5 chasers) and suppressed their mood for 5.5 s,
+over and over. Two more retail rules were missing:
+- **Zombie chase and takedown records** (research `.local/research/peds/b105-zombie-chase-record.md`, key hash and gate
+  main-read): the chase group init `82D967B0` (only caller: group ctor `8258E588`) gives every chase group, the
+  skater's and each ped's, the `livingworld_entities_chase` record `zombie` (hash 0x69FABBFD81C0E5A7, `82D96860`) while
+  the zombie gate `*(0x83085494)` vfn +156 holds, else `global` (`*(0x830C7200)`, static init `82F8FEB8`) [code]. The
+  ped constructor `82E33198` (`82E33FAC`..`82E3402C`) sets the ped's own chase record (`ped+5712`) and takedown table
+  (`ped+5728`) to `zombie` under the same gate [code]. Stock `zombie`: max chasers 25, escape 8 m, give up after 1
+  takedown, run speed 12, rest 0 [data]. Ours: `ped_mood::GROUP_CHASE_KEY` / `ZOMBIE_KEY`, `PedData::chase_zombie`
+  / `takedown_zombie`; every chase group now reads `global` / `zombie` (before: the ped type's record for a ped
+  chasee, inferred). Retail picks at construction; ours follows the live setting (open: whether retail rebuilds on a
+  mid-session toggle).
+- **The vision test on every mood post** (`sub_82E41060` -> `82E27240`, decoded in b18): the event position must be
+  inside the category's near sphere (`D16B`) or far cone (`A7EB`, fov, line of sight) times the ped type's
+  perception scales. Ours skipped it ("every post is seen"). zombiemode is 5 / 5, so a zombie takes the chase only
+  within 5 m, after ZombieFollow brought it in (sprint beyond 15 m, ring 1 to 8 m); the 8 m escape then hands it
+  back to ZombieFollow. The test now also applies to presence (10 m sphere / 20 m cone), greeted and the collision
+  posts (event origin: the hit ped, inferred), which retail also gates; this lowers greet / converse / spectate
+  triggers from peds that cannot see the event. `MoodCategory::near` / `far` from data; scales per type
+  (`ped_mood::sight`).
+- `OverrideAnimData` (Begin `826A33C8` / End `826A3428`) only swaps the animation record; ours already matches (b105).
+- Logging: `PED_CHASE_CANCEL` (chasee, group, cap), `PED_ZOMBIE_POST ... seen=`.
+
+### Verification
+- skate-core `the_zombie_broadcast_raises_the_zombie_chase_on_the_skater`, skate-game
+  `zombie_chase_and_takedown_records_load_by_key`; full suites: skate-core 995 passed with only the known upstream
+  `a_moving_group_8_body_...` failure; skate-game 688 passed, failures: the known `setup::tests::pipelines_accept_...`
+  and `retail_menu_movies::tests::retail_menu_movie_set_loads_links_and_runs` ("unsupported menu movie set" on the
+  installed menu assets; not touched here).
+- Muted zombie runs (Industrial, player idle, `SKATE_ZOMBIE=1`): before 2 to 3 chasing, 0 following; after the
+  records and the vision test: 17 on ZombieFollow, chasers rising 1 -> 7 as they come within 5 m, cancels only right
+  after a takedown ends the chase group (retail: a group with an end reason takes no new chasers). No panics.
+
+### Sitting and gathering rates (user: "peds seem to be too interested in sitting over just walking around. Peds also
+seem to congregate too often")
+Research `.local/research/peds/b103-plugin-converse-rates.md` (main re-checked the data and our file:lines): every knob
+checked matches retail. Stock `plugin_odds` for `waypoint_sit` are 0.7 to 0.8 for most ped types (adult_male 0.8, bum
+0.3) [data]; the offer radius is the prop class field `E2101F2B` (sit 10 m) [data], read at skate-game
+`living_world/peds.rs` (offer loop); the offer scan runs every 11 manager ticks at 60 Hz (`826C0058`, b83); a refusal
+blocks one prop for 30 s. DownTown has 639 seats among 860 hotpoint props. Conversations start without a roll
+whenever two compatible peds meet, limited by the 50 m spacing [data + code].
+
+Two mismatches found and fixed (research `.local/research/peds/b104-plugin-transfer-conditions.md`, constants and calls
+main-read):
+- `InFrontOfFirstWaypoint` (`8269CF58`, vtable `0x82308844`) [code]: the flat angle between waypoint 0's facing and the
+  waypoint-to-ped vector must be under 0.523599 rad (`0x821DBCF0`) or over 5.75959 (`0x822F9114`): a 30 degree cone, no
+  distance limit; a near-zero vector (length^2 <= 1e-4) passes. Ours was a 180 degree half-plane, so far more peds
+  qualified for every vending machine, ATM, fountain and seat whose descriptor uses it. Now
+  `PluginSettings::front_half_angle` (retail default, mod-overridable), skate-core `living_world/peds/plugins.rs`.
+- Refusal on leave [code, slot order medium-high]: the 30 s refusal insert `82E40BD0` is called from `8269F248`, the
+  `Plugin` behaviour's Update (vtable `0x8230A294`), so retail re-stores it every tick a ped uses the prop and the ped
+  cannot be offered that prop for 30 s after leaving. Ours stored it once on attach, so after a use over 30 s the ped
+  took the same seat or machine again at once (log: ped #19 left a vending machine at tick 3623 and retook it at 3629).
+  Now refreshed each tick while `in_plugin` (skate-game `living_world/peds.rs`, next to the refusal tick).
+- `IsNearCrossWalk` (plugin transfer op, `8269CC38`) [code]: true when a crosswalk corner is within the op's `distance`
+  attribute; no stock descriptor sets `distance` and the constructor writes no default, so retail most likely never
+  passes it (ours: false). Open: zero-fill proof (a one-off hook on `8269CC38` reading `this+36`).
+- Tests: skate-core `world_prop_transfer_reads_the_hand_prop` (cone cases).

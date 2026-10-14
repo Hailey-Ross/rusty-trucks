@@ -39,7 +39,14 @@ pub mod category {
     pub const GREETED: &str = "greeted";
     pub const COLLISION: &str = "collision";
     pub const NEARBY_COLLISION: &str = "nearbycollision";
+    /// Posted for every skater while the zombie cheat is on (`sub_82E24B60`, category 19); raises
+    /// `skaterzombiechase` in the stock sets.
+    pub const ZOMBIE_MODE: &str = "zombiemode";
 }
+
+/// Console frame the skater broadcasts are posted at (`sub_826BE020` runs once per living-world update, ~30 fps on the
+/// 360); ours posts at this period whatever the engine fps.
+pub const BROADCAST_PERIOD: f32 = 1.0 / 30.0;
 
 /// Presence scan radius, metres (`0x8206D148`).
 pub const PRESENCE_RADIUS: f32 = 35.0;
@@ -53,6 +60,10 @@ pub struct MoodCategory {
     pub magnitude: f32,
     /// `A379`: record lifetime, s.
     pub lifetime: f32,
+    /// The post's vision test ranges (`82E27240` via `sub_82E41060`: near = `D16B`, far = `A7EB`, times the ped type's
+    /// perception scales) [code, b18 / b5]; zombiemode 5 / 5, presence 10 / 20, collision 20 / 20.
+    pub near: f32,
+    pub far: f32,
 }
 
 /// One reaction prerequisite {category, kind a, comparator b, value c}.
@@ -210,6 +221,13 @@ pub fn presence(ped: u64, at: Vec3, peds: &[(u64, Vec3)], players: &[(u64, Vec3)
         .map(event)
         .chain(players.iter().filter(|(_, p)| near(p)).map(event))
         .collect()
+}
+
+/// The zombie broadcast (`sub_82E24B60` tail, gated by the living-world manager's vfunc +156 = zombie mode) [code]: one
+/// event per skater at the skater's position, instigator = the skater, no second entity (`-1`), 1.0 / 1.0 sight
+/// factors. Radius unlimited (category radius 0); each ped's post gate decides.
+pub fn zombie_mode(players: &[(u64, Vec3)]) -> Vec<MoodEvent> {
+    players.iter().map(|&(id, p)| MoodEvent { category: category::ZOMBIE_MODE.into(), instigator: Some(id), second: None, position: p }).collect()
 }
 
 fn dist_sq(a: Vec3, b: Vec3) -> f32 {
