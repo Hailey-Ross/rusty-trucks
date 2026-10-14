@@ -1263,3 +1263,29 @@ Second report: "It was REALLY hard to find skaters ... they literally seemed to 
 ### Verification
 - skate-core `a_wiping_chasee_is_not_taken_down_and_ends_the_chase_within_2_m`; living-world tests pass (skate-core
   peds 112, skate-game 87).
+
+## Floating peds on coarse navmesh triangles (2026-10-13)
+User (2026-10-13): "Additionally I saw floating peds during the test." Session `game-20261013-183555`: 12
+`PED_FLOATING` lines, almost all on DownTown navmesh poly 7376 (area 17 = pavement), drawn about 1.7 m above the floor.
+Research `.local/research/peds/b107-floating-peds.md` (probe constants main-read): poly 7376 is one 25 m triangle of a
+fan (y 31.66 to 32.62) over pavement 1.6 to 1.8 m lower: a coarse but valid retail navmesh. Retail's NavPower mover
+probes the ground after the navmesh step (`82EA5F48`, debug bool `probe_for_ground` on by default) and, after a miss,
+casts again with 4x the reach (`0x82257308` 4.0) [code]. Ours probed 1.6 m down once and drew the ped at the navmesh
+height on a miss. Change: skate-game `living_world/peds.rs` retries with `GROUND_RETRY_FACTOR` (4.0) x the downward
+reach; upward stays one step (so overhead geometry is still never taken). Open: which mover byte enables the probe
+per ped (`(*(this+556))+109`) and the probe length L (`ctx+16`).
+
+## Peds give up a chase they cannot reach (2026-10-13)
+User (2026-10-13): "the ped doesn't give up when attacking the player if they fall into the water, which is something
+we have seen in the recomp where being unable to reach the player causes them to give up".
+Research `.local/research/peds/b108-unreachable-target.md` (main-read: `826AD640` bit, `82E31D58` constant and result
+codes): `CannotReachChaseTarget` (`826AD640`) reads brain `+3280` bit 0x08 [code]; its only writer is the intercept goal
+provider's result (`82E31D58`): for result codes 0, 1 and 3 it sets the bit when the ped is within 5 m flat of the
+chasee (25.0 at `0x8209994C`) and clears it beyond [code]. The stock graph (`pedestrian_chasetargetunreachable.xml`):
+stop, warn, `SetTargetUnreachableTimer` (`826A8810`: the chase record's `unreachable_timer`, 5 s for peds), then
+`ChaserEndChase lostinterest` and `SuppressMoodAboutChasee 10` (or a taze where allowed). Ours: the three ops ported
+(`CanTazeUnreachableTargets` false until its writer is found); the host sets the bit when the chasee is off the
+navmesh within `unreachable_radius` (5 m) and clears it when the chasee is back on it [inferred mapping of retail's
+result codes]. Log `PED_UNREACHABLE`. Test `an_unreachable_chasee_starts_the_record_wait`. Not checked in game yet.
+Related, bench knocked into water: the ped gave up after ~67 s (tick 10251 to 14295, `ExitInteraction`), retail's
+60 s PluginTimeout; retail has no reachability check for plugins (b108) [data].
