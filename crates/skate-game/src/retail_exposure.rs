@@ -198,6 +198,7 @@ fn advance(
     time: Res<Time>,
     meter: Res<ExposureMeter>,
     mut settings: ResMut<Settings>,
+    camera: Option<Res<crate::camera::CameraRuntime>>,
 ) {
     settings.timing.x = time.delta_secs().clamp(0., 0.05);
     settings.meter = meter.packed();
@@ -208,6 +209,8 @@ fn advance(
             *meter == ExposureMeter::default()
         );
     }
+    // Water-shot vignette (camera/water.rs), applied by the tone pass.
+    settings.timing.z = camera.map_or(0., |c| c.water_vignette());
 }
 
 #[derive(Resource)]

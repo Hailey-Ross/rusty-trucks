@@ -886,6 +886,37 @@ Open:
   decal programs (tileable, simple_tileable, environmentparkdecal) are not read yet.
 - Per-texture decal strength for mods (only a global strength now).
 
+
+### Water camera restored after the upstream integration (2026-10-13)
+
+User (2026-10-13): "falling in water still causes the camera to go under the water surface for some reason and get
+stuck all zoomed in on the player. which is not right" / "look back to our old branch on what has changed since the
+camera worked perfectly at that time."
+
+- **What changed:** the camera worked on `water/retail-water` (upstream PR #30, head `5245a185`, merged 2026-10-06 as
+  `c283cc57`). The next upstream integration `b3c96793` (2026-10-07, "Integrate retail audio fixes and current physics,
+  rendering and build updates") replaced our water physics with the recovered special-surface writer and in the same
+  commit deleted `camera/water.rs` (`WaterView`), its call in `CameraRuntime::advance`, the water argument from
+  `physics/camera_output.rs` and the vignette in `retail_exposure.rs` / `.wgsl` and `retail_tone.wgsl`. Without it the
+  recovered CameraMan result is presented as is, and with the skater under the surface its collision pull-in leaves the
+  camera under water, close to the skater.
+- **Change:** `WaterView` restored as it was on PR #30 (shot 3 m above the surface, 60 degrees down drifting toward
+  overhead, vignette, any camera under a water surface lifted 0.3 m above it), wired back into `CameraRuntime::advance`
+  and the tone pass. Its input now comes from the recovered water special surface instead of the deleted wipeout
+  fields: in a water bail = the wiping-out bit (Processed `+2468` bit 18, what the camera publication already reads as
+  `wiping_out_59`) and the water flag `82DB8120` writes to Collision `+3481` (published as Processed `+2488` bit 30),
+  with its height Collision `+28` (Processed `+2924`).
+- **Logging:** `WATER_CAMERA` lines on shot in / out (surface, skater and camera heights) and about once a second in
+  the shot (weight, height above the surface).
+- **Retail parity:** the shot itself was matched to retail footage (PS3 in RPCS3, see "Water bail" above); its
+  distances and timings are matched by eye, not recovered code (open: the retail camera's water shot code). The
+  trigger is now the recovered water flag.
+- **Verification:** skate-game `camera::water::tests` (a water bail keeps the camera above the surface, settles 3 m up
+  looking down, vignette at full weight, blends out; a dry camera is untouched). Muted run with the dev mod
+  `.local/poc-tests/mods/water-autotest` (drops the skater into the Aletown canal): `WATER_CAMERA water bail: shot in
+  surface=Some(8.934)`, then camera_y 11.68 = 3.00 m above the surface until the respawn; capture shows the overhead
+  shot with the vignette.
+
 ## Verification
 
 - Unit test `physics::player_input::tests::water_contact_prefers_the_skater_body_height`.
