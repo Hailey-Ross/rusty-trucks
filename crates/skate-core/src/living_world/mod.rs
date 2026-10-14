@@ -29,6 +29,7 @@ pub mod dmo;
 pub mod draw_distance;
 pub mod leave_fade;
 pub mod npc_tricks;
+pub mod air_steer;
 pub mod ground_steer;
 pub mod path_follow;
 pub mod peds;
