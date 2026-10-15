@@ -76,6 +76,7 @@ def template_meshes(raw):
     from .grab_data import GRABDATA, section_splines
     table = sections(raw)
     result = {}
+    rails = None
     # Grab splines by position (b48, validated against parkassets' single-template copies; the retail link is
     # not decoded): the GRABDATA section between a template's EB0001 model and the next template's model.
     model_indices = sorted(struct.unpack_from('>I', raw, at+128)[0] for _, at, _ in records(raw, 0xEB000D, 160))
@@ -106,10 +107,46 @@ def template_meshes(raw):
             raise ValueError('Two GRABDATA sections for one DMO template')
         splines = [dict(points=g['control_points'], direction=g['direction'], bounds=g['bounds'], flags=g['flags'])
                    for i in grab for g in section_splines(raw, table[i][0], table[i][2])]
+        if rails is None:
+            rails = decode_grind_splines(raw)
         result[key] = dict(mesh_info=mesh_info, matrix=matrix(raw, at), grab_splines=splines,
+                          grind_splines=template_rails(raw, table, at, index, following, rails),
                           model_matrix=matrix(raw, base+struct.unpack_from('>I', raw, base+32)[0]),
                           characteristics=characteristics_key(raw, at))
     return result
+
+
+def decode_grind_splines(raw):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/university/tools/vanilla_map_extraction/tools'))
+    from retail_grind_splines import decode_grind_splines as decode
+    return decode(bytes(raw))
+
+
+def template_rails(raw, table, at, index, following, rails):
+    """Grind rails of one EB000D part, in the part's model space.
+
+    Retail DMO setup 82C535C0 reads the part's EB001B list (tInstance +136):
+    rail count +8, subreference list +24, inserted into the DMO rail map
+    (+1796) that the grind provider 82C4C4E0 walks. The subreference table is
+    not decoded; the list must cover exactly the rails of the one EB0004
+    section in the part's block (true for every Downtown part)."""
+    link = struct.unpack_from('>I', raw, at+136)[0]
+    blocks = [i for i in range(index+1, following) if table[i][5] == 0xEB0004]
+    if link == 0 and not blocks:
+        return []  # No list: 82C535C0 skips a null +136.
+    if link >= len(table) or table[link][5] != 0xEB001B:
+        raise ValueError('Unresolved DMO part rail list')
+    count = struct.unpack_from('>I', raw, table[link][0]+8)[0]
+    if count == 0:
+        if blocks:
+            raise ValueError('DMO rail section outside the part rail list')
+        return []
+    if len(blocks) != 1:
+        raise ValueError('DMO part rail list without one rail section')
+    found = [rail for rail in rails if rail['section_index'] == blocks[0]]
+    if len(found) != count:
+        raise ValueError('DMO part rail list does not match its rail section')
+    return found
 
 
 def characteristics_key(raw, at):
@@ -261,7 +298,7 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
                 raise ValueError('Conflicting DMO locator '+key)
             placements[key] = item
     report = dict(map=district['map_name'], instances=[], unresolved=[], simulation='initial placement only',
-                  types={}, grab_splines={}, hotpoints={}, hotpoint_classes={}, plugin_props=[])
+                  types={}, grab_splines={}, grind_splines={}, hotpoints={}, hotpoint_classes={}, plugin_props=[])
     # Ped plugin hotpoints per template (parkassets.big, `hotpoint_data`), written by prepare_catalog beside the catalog.
     hotpoint_file = Path(catalog_path).parent/'hotpoints.json' if catalog_path is not None else None
     hotpoint_table = json.loads(hotpoint_file.read_text()) if hotpoint_file is not None and hotpoint_file.is_file() else {}
@@ -295,6 +332,8 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
                 report['types'][key] = template['characteristics']
             if template.get('grab_splines'):
                 report['grab_splines'][key] = template['grab_splines']
+            if template.get('grind_splines'):
+                report['grind_splines'][key] = template['grind_splines']
             if key in hotpoint_table.get('hotpoints', {}):
                 report['hotpoints'][key] = hotpoint_table['hotpoints'][key]
                 report['hotpoint_classes'] = hotpoint_table['classes']

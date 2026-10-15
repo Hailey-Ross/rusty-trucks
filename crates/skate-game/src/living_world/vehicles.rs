@@ -79,6 +79,9 @@ pub(crate) struct VehicleModel {
     /// The skitch grab splines (RW4 GRABDATA of the first part arena that has one, b35; one rear-edge spline per
     /// stock car, none on `reda_car`). Empty = the car cannot be skitched (retail).
     pub grab_splines: Vec<CarGrabSpline>,
+    /// The grind rails, model space (`grind_splines`: the EB0004 rails of the grab splines' part arena, car setup
+    /// 82C3CCD8; none on `reda_car`). Empty = the car cannot be grinded.
+    pub grind_rails: std::sync::Arc<[crate::grind_world::props::PropRail]>,
 }
 
 /// The exported `grab_splines` list (cars and props): a spline that is not whole Bezier segments is dropped.
@@ -159,6 +162,14 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                 wheel_radius,
                 bounds,
                 grab_splines: parse_grab_splines(&m["grab_splines"]),
+                grind_rails: if m["grind_splines"].is_null() {
+                    Default::default()
+                } else {
+                    crate::grind_world::props::parse_rails(&m["grind_splines"]).map(Into::into).unwrap_or_else(|e| {
+                        warn!("LIVING_WORLD traffic: {key} grind rails ignored: {e}");
+                        Default::default()
+                    })
+                },
             },
         );
     }
@@ -859,10 +870,36 @@ pub(crate) fn push_vehicle_grab_splines(
     }
     let mut list: Vec<_> = cars.iter().collect();
     list.sort_by_key(|(c, _)| c.id);
+    physics.set_car_rails(car_rails(&list, &traffic.data));
     let objects: Vec<_> = list.into_iter().filter_map(|(car, motion)| car_grab_object(car, motion, &traffic.data)).collect();
     if let Err(e) = physics.set_grab_cars(objects) {
         warn!("LIVING_WORLD traffic: car grab splines rejected: {e}");
     }
+}
+
+/// The cars' grind rails at this tick's car transform, id order (the second rail provider of 82C1EAD8, after the
+/// props; 82C4C4E0 re-places them with the car matrix on every query, no moving / parked test).
+pub(crate) fn car_rails(cars: &[(&TrafficCar, &CarMotion)], data: &VehicleData) -> crate::grind_world::props::PropRailPoses {
+    crate::grind_world::props::PropRailPoses(
+        cars.iter()
+            .filter_map(|(car, motion)| {
+                let rails = data.models.get(&car.model)?.grind_rails.clone();
+                if rails.is_empty() {
+                    return None;
+                }
+                let t = &motion.curr;
+                let axis = |v: Vec3| (t.rotation * v).to_array();
+                Some(crate::grind_world::props::PosedRails {
+                    id: car.id.serial,
+                    tag: crate::grind_world::props::CAR_OWNER_TAG,
+                    origin: t.translation.to_array(),
+                    basis: [axis(Vec3::X), axis(Vec3::Y), axis(Vec3::Z)],
+                    scale: [1.0; 3],
+                    rails,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// One car as a grab-scene object (pure; the engine and the tests use it).

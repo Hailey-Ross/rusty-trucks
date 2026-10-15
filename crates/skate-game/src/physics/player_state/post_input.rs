@@ -44,6 +44,8 @@ struct Services<'a> {
     trajectory_input: skate_core::air::trajectory::SelectorInput,
     trajectory_board_position: [f32; 4],
     world: &'a skate_core::physics::board_world::BoardWorld,
+    /// The props' collision layer for the trajectory's grind surface probes.
+    prop_world: Option<&'a skate_core::physics::board_world::BoardWorld>,
     grab_records: [Option<skate_core::player::offboard::grab_scene::Record>; 2],
     error: Option<String>,
 }
@@ -73,7 +75,7 @@ impl PostInputServices for Services<'_> {
             self.processed,
             self.trajectory_board_position,
         );
-        match self.trajectory.update(input, self.world, grind_context) {
+        match self.trajectory.update(input, self.world, self.prop_world, grind_context) {
             Ok(valid) => u8::from(valid),
             Err(error) => {
                 self.error = Some(error);
@@ -172,6 +174,7 @@ pub(super) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
             board: &mut physics.board,
             settings: &mut physics.settings,
             materials: &physics.grind_materials,
+            props: physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world),
         },
         result: None,
         processed: p,
@@ -179,6 +182,7 @@ pub(super) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
         trajectory_input,
         trajectory_board_position,
         world: &physics.world,
+        prop_world: physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world),
         grab_records: publication.records,
         error: None,
     };

@@ -171,20 +171,99 @@ impl StaticProvider {
     /// native per-asset octree traversal, at most forty original vector indices.
     /// Does not implement or pretend to query unavailable moving providers.
     pub fn query(&self, min: [f32; 3], max: [f32; 3]) -> Result<Vec<usize>, String> {
-        if (0..3).any(|i| !min[i].is_finite() || !max[i].is_finite() || min[i] > max[i]) {
-            return Err("Invalid grind query bounds".into());
-        }
+        self.query_capped(min, max, 40)
+    }
+
+    fn query_capped(&self, min: [f32; 3], max: [f32; 3], cap: usize) -> Result<Vec<usize>, String> {
+        if !admitted(min, max)? { return Ok(vec![]); }
         let query = Bounds { min, max };
-        let delta: [f32; 3] = std::array::from_fn(|i| min[i]-max[i]);
-        let square = (delta[0]*delta[0]+delta[1]*delta[1])+delta[2]*delta[2];
-        if !(square > f32::from_bits(0x3780_0000)) { return Ok(vec![]); }
         let mut result = Vec::new();
         for asset in &self.assets {
+            if result.len() >= cap { break; }
             if !asset.bounds.overlaps(query) { continue; }
-            for local in asset.tree.query(query, 40-result.len()) { result.push(asset.indices[local]); }
-            if result.len() == 40 { break; }
+            for local in asset.tree.query(query, cap-result.len()) { result.push(asset.indices[local]); }
         }
         Ok(result)
+    }
+}
+
+/// 82C1EAD8 query gate: finite ordered box, squared diagonal above 2^-16.
+fn admitted(min: [f32; 3], max: [f32; 3]) -> Result<bool, String> {
+    if (0..3).any(|i| !min[i].is_finite() || !max[i].is_finite() || min[i] > max[i]) {
+        return Err("Invalid grind query bounds".into());
+    }
+    let delta: [f32; 3] = std::array::from_fn(|i| min[i]-max[i]);
+    let square = (delta[0]*delta[0]+delta[1]*delta[1])+delta[2]*delta[2];
+    Ok(square > f32::from_bits(0x3780_0000))
+}
+
+/// One rail record of the shared query: contact primitive plus side metadata.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RailHit {
+    pub primitive: Primitive,
+    pub metadata: spline::PrimitiveMetadata,
+}
+
+impl RailHit {
+    pub(crate) fn prop(primitive: Primitive, guids: [u64; 2], segment_index: u32) -> Self {
+        // 82C4C4E0 merges an unset stack word into bit 31; flags 0 is the port's value (research "Open items").
+        Self { primitive, metadata: spline::PrimitiveMetadata { spline_guids: guids, segment_index, flags: 0 } }
+    }
+}
+
+/// Named rules of the shared rail query; retail values by default, mod-tunable.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RailRules {
+    /// 82C4C4E0 skips a prop whose origin is this far from the query box centre (0x822F8F68 = 225, squared).
+    pub prop_radius: f32,
+    /// Records per query, static and providers together (82C1EAD8).
+    pub cap: usize,
+    /// Whether the prop provider runs at all.
+    pub props: bool,
+    /// Whether the living-world car provider runs at all (retail: the second provider, LWVehicleMan).
+    pub cars: bool,
+}
+
+impl Default for RailRules {
+    fn default() -> Self { Self { prop_radius: 15.0, cap: 40, props: true, cars: true } }
+}
+
+/// A moving rail provider (props; later cars): appends records in its own order up to `cap`.
+pub(crate) trait RailSource {
+    fn append_rails(&self, min: [f32; 3], max: [f32; 3], skip: Option<u32>, rules: &RailRules, out: &mut Vec<RailHit>);
+}
+
+/// 82C1EAD8 (via 826C0630): static rails first, then the prop provider, then the car provider, one shared cap.
+#[derive(Clone, Copy)]
+pub(crate) struct RailView<'a> {
+    pub rails: &'a StaticProvider,
+    pub props: Option<&'a dyn RailSource>,
+    pub cars: Option<&'a dyn RailSource>,
+    /// The querying skater's held prop: its rails are left out (the carrier
+    /// runs no rail query in retail Object Move; carried props cannot be grinded).
+    pub skip: Option<u32>,
+    pub rules: RailRules,
+}
+
+impl<'a> RailView<'a> {
+    pub(crate) fn statics(rails: &'a StaticProvider) -> Self {
+        Self { rails, props: None, cars: None, skip: None, rules: RailRules::default() }
+    }
+
+    pub(crate) fn query(&self, min: [f32; 3], max: [f32; 3]) -> Result<Vec<RailHit>, String> {
+        if !admitted(min, max)? { return Ok(vec![]); }
+        let mut hits = self.rails.query_capped(min, max, self.rules.cap)?.into_iter().map(|i| RailHit {
+            primitive: self.rails.primitives[i],
+            metadata: self.rails.metadata[i],
+        }).collect::<Vec<_>>();
+        if let Some(props) = self.props.filter(|_| self.rules.props && hits.len() < self.rules.cap) {
+            props.append_rails(min, max, self.skip, &self.rules, &mut hits);
+        }
+        if let Some(cars) = self.cars.filter(|_| self.rules.cars && hits.len() < self.rules.cap) {
+            cars.append_rails(min, max, None, &self.rules, &mut hits);
+        }
+        hits.truncate(self.rules.cap);
+        Ok(hits)
     }
 }
 

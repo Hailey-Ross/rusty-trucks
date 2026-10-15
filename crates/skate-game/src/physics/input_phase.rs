@@ -109,6 +109,7 @@ pub(super) fn advance(
         wiping_out: &mut physics.board_wiping_out,
         settings: &mut physics.settings,
         grind_materials: &physics.grind_materials,
+        prop_world: physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world),
         air_targeting_grind: skater.trajectory.selector.grind_locked_to_middle(),
         globals: &skater.animation.packet.hierarchy,
         attributes: skater.animation.attributes.entries(),
@@ -117,6 +118,15 @@ pub(super) fn advance(
         teleported: false,
     };
     let ground_frame = callbacks.riding.reckoning_frames.ground;
+    // 82C1EAD8: map rails, then the props' rails at their last stepped pose (the carried prop left out), then the cars'.
+    let props = physics.prop_dynamics.as_ref();
+    let rails = crate::grind_world::RailView {
+        rails: &physics.grind_world,
+        props: props.map(|d| d as &dyn crate::grind_world::RailSource),
+        cars: Some(&physics.car_rails),
+        skip: props.and_then(|d| d.held()),
+        rules: Default::default(),
+    };
     let continuation = skater.player_input.process_stage(
         &mut physics.board,
         &mut skater.ground_runtime,
@@ -126,7 +136,7 @@ pub(super) fn advance(
         &mut callbacks,
         super::player_input::InputStage::ThroughTeleport,
         &physics.world,
-        &physics.grind_world,
+        rails,
     )?;
     if let Some(continuation) = continuation {
         skater.player_input.process_stage(
@@ -138,7 +148,7 @@ pub(super) fn advance(
             &mut callbacks,
             super::player_input::InputStage::AfterTeleport(continuation),
             &physics.world,
-            &physics.grind_world,
+            rails,
         )?;
     }
     let teleported = callbacks.teleported;
@@ -192,6 +202,8 @@ pub(super) fn collision(skater: &SkaterRuntime) -> CollisionInput {
 }
 
 struct Callbacks<'a, 'p> {
+    /// The props' collision layer for the grind surface probes (`grind_host::LiveHost::props`).
+    prop_world: Option<&'a skate_core::physics::board_world::BoardWorld>,
     skeleton_input: &'a mut SkeletonInputRuntime,
     animated: &'a mut AnimatedSkeleton,
     skeleton_air: &'a mut super::skeleton_air::SkeletonAir,
@@ -228,7 +240,7 @@ impl PlayerInputCallbacks for Callbacks<'_, '_> {
         grind: &mut super::player_input::grind::GrindInputState,
         processed: &ProcessedPhysicsInput,
         world: &skate_core::physics::board_world::BoardWorld,
-        provider: &crate::grind_world::StaticProvider,
+        provider: crate::grind_world::RailView<'_>,
         air_counter: i32,
     ) -> Result<super::player_input::grind::Pending, String> {
         let extra = &self.animation_input.extra;
@@ -249,6 +261,7 @@ impl PlayerInputCallbacks for Callbacks<'_, '_> {
             board,
             settings: self.settings,
             materials: self.grind_materials,
+            props: self.prop_world,
         };
         grind.pre_update(processed, provider, world, context, &mut host)
     }

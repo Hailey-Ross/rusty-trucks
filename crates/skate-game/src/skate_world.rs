@@ -1234,6 +1234,18 @@ pub(crate) fn load_dmo_grab_splines(asset_root: &std::path::Path, map_name: &str
     (!splines.is_empty()).then_some(splines)
 }
 
+/// The grind rails per DMO template id (`native-props/<map>.json` `grind_splines`, template space; retail setup
+/// 82C535C0, doc 26 "Grinding on props"); `None` when the export has none. A malformed list is an error.
+pub(crate) fn load_dmo_grind_rails(asset_root: &std::path::Path, map_name: &str) -> Result<Option<std::collections::BTreeMap<String, Vec<crate::grind_world::props::PropRail>>>, String> {
+    let path = asset_root.join("private").join("native-props").join(format!("{map_name}.json"));
+    let Ok(bytes) = std::fs::read(&path) else { return Ok(None) };
+    let sidecar: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let Some(map) = sidecar.get("grind_splines").and_then(|v| v.as_object()) else { return Ok(None) };
+    let rails = map.iter().map(|(k, v)| Ok((k.clone(), crate::grind_world::props::parse_rails(v).map_err(|e| format!("{}: {k}: {e}", path.display()))?)))
+        .collect::<Result<std::collections::BTreeMap<_, _>, String>>()?;
+    Ok((!rails.is_empty()).then_some(rails))
+}
+
 pub(crate) fn load_dmo_types(
     asset_root: &std::path::Path,
     map_name: &str,
@@ -1333,6 +1345,15 @@ pub(crate) fn load_prop_layer(
             if let Some(splines) = load_dmo_grab_splines(asset_root, map_name) {
                 let with = dynamics.set_grab_splines(&splines);
                 info!("SKATE_PROP_GRAB: {map_name} templates={} props_with_grab_splines={with}/{}", splines.len(), objects.len());
+            }
+            match load_dmo_grind_rails(asset_root, map_name) {
+                Ok(Some(rails)) => {
+                    let templates = rails.len();
+                    let with = dynamics.set_grind_rails(rails);
+                    info!("SKATE_PROP_RAILS: {map_name} templates={templates} props_with_rails={with}/{}", objects.len());
+                }
+                Ok(None) => {}
+                Err(error) => warn!("SKATE_PROP_RAILS: {map_name} not loaded: {error}"),
             }
             Some((layer, dynamics))
         }

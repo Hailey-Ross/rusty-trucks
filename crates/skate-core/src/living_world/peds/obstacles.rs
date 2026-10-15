@@ -424,12 +424,19 @@ impl NavObstacles {
     /// the face removed), when that slide is free; else `None` (the ped stays). Ours: stands in
     /// for the physical contact that keeps a retail ped out of a prop.
     pub fn resolve_step(&self, from: Vec3, to: Vec3, radius: f32) -> Option<Vec3> {
-        if self.step_ok(from, to, radius) {
+        self.resolve_step_ignoring(from, to, radius, None)
+    }
+
+    /// [`Self::resolve_step`] for a ped whose collision ignores one object (`ignore`, an obstacle id): retail
+    /// `DisableCollisionsWithBehaviourSource` (`826A7378`, `82E3DB68` -> `ped+5916`) lets a ped reach a seat whose
+    /// waypoint lies inside its own bench.
+    pub fn resolve_step_ignoring(&self, from: Vec3, to: Vec3, radius: f32, ignore: Option<u64>) -> Option<Vec3> {
+        if self.step_ok_ignoring(from, to, radius, ignore) {
             return Some(to);
         }
         let r = radius + 0.01;
-        let mut blocking: Vec<Footprint> = self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).into_iter().map(|(_, f)| f).collect();
-        blocking.extend(self.loose.iter().filter_map(|id| self.states.get(id).map(|s| s.now)));
+        let mut blocking: Vec<Footprint> = self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).into_iter().filter(|(id, _)| Some(*id) != ignore).map(|(_, f)| f).collect();
+        blocking.extend(self.loose.iter().filter(|id| Some(**id) != ignore).filter_map(|id| self.states.get(id).map(|s| s.now)));
         let f = blocking.into_iter().find(|f| f.applies(to[1], self.params.step_height) && f.contains(to, radius) && !f.contains(from, radius))?;
         // Keep `to` on the face `from` is outside of (the axis where `from` is beyond the grown half).
         let (lf, lt) = (f.local([from[0], from[2]]), f.local([to[0], to[2]]));
@@ -439,13 +446,18 @@ impl NavObstacles {
         l[k] = ext[k].copysign(lf[k]);
         let w = f.world(l);
         let slid = [w[0], to[1], w[1]];
-        self.step_ok(from, slid, radius).then_some(slid)
+        self.step_ok_ignoring(from, slid, radius, ignore).then_some(slid)
     }
 
     /// Whether a ped body of `radius` may step from `from` to `to`: no obstacle (cut or moving,
     /// not carried) overlaps it afterwards, or the step does not go deeper into one it already
     /// overlaps (a prop pushed onto a ped lets it walk out).
     pub fn step_ok(&self, from: Vec3, to: Vec3, radius: f32) -> bool {
+        self.step_ok_ignoring(from, to, radius, None)
+    }
+
+    /// [`Self::step_ok`] without the obstacle `ignore` (see [`Self::resolve_step_ignoring`]).
+    pub fn step_ok_ignoring(&self, from: Vec3, to: Vec3, radius: f32, ignore: Option<u64>) -> bool {
         if !self.params.enabled {
             return true;
         }
@@ -459,7 +471,7 @@ impl NavObstacles {
             let d = |p: Vec3| (p[0] - f.center[0]).hypot(p[2] - f.center[1]);
             f.contains(from, radius) && d(to) > d(from)
         };
-        self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).iter().all(|(_, f)| ok(f))
-            && self.loose.iter().all(|id| self.states.get(id).is_none_or(|s| ok(&s.now)))
+        self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).iter().all(|(id, f)| Some(*id) == ignore || ok(f))
+            && self.loose.iter().all(|id| Some(*id) == ignore || self.states.get(id).is_none_or(|s| ok(&s.now)))
     }
 }

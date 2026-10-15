@@ -124,7 +124,7 @@ pub(super) fn board(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Re
         );
         skater
             .trajectory
-            .update(input, &physics.world, grind_context)?;
+            .update(input, &physics.world, physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world), grind_context)?;
         //82D3AB10 branches directly to the epilogue. No ordinary force tail.
         return Ok(());
     }

@@ -89,7 +89,7 @@ pub(super) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
         );
         skater
             .trajectory
-            .update(input, &physics.world, grind_context)?;
+            .update(input, &physics.world, physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world), grind_context)?;
         //Launch82D678DC stores packet at1920;128 is selector2048. Update's
         //second pass may replace that retained launch velocity before this read.
         skater.ground_animation.launch_velocity = skater

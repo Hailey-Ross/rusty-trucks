@@ -20,7 +20,11 @@ pub struct AirTrajectoryRuntime {
     pending_results: Option<Vec<QueryResult>>,
     grind_settings: grind::Settings,
     grind_world: Option<Arc<StaticProvider>>,
-    nearby_grinds: Vec<usize>,
+    /// The props' rails at the last stepped pose (`set_prop_rails` each tick; carried prop left out).
+    prop_rails: crate::grind_world::props::PropRailPoses,
+    car_rails: crate::grind_world::props::PropRailPoses,
+    /// 82D69D68 keeps the records of the last real query (copies: props move between queries).
+    nearby_grinds: Vec<crate::grind_world::RailHit>,
 }
 impl AirTrajectoryRuntime {
     ///Full82E099A0 query shared by trajectory and Footplant callers.
@@ -38,6 +42,8 @@ impl AirTrajectoryRuntime {
             pending_results: None,
             grind_settings: grind::Settings::load(collections)?,
             grind_world: None,
+            prop_rails: Default::default(),
+            car_rails: Default::default(),
             nearby_grinds: Vec::new(),
         })
     }
@@ -53,6 +59,10 @@ impl AirTrajectoryRuntime {
         }
         Ok(launched)
     }
+    pub fn set_prop_rails(&mut self, props: crate::grind_world::props::PropRailPoses, cars: crate::grind_world::props::PropRailPoses) {
+        self.prop_rails = props;
+        self.car_rails = cars;
+    }
     pub fn bind_grind_world(&mut self, provider: Arc<StaticProvider>) {
         self.grind_world = Some(provider);
         self.nearby_grinds.clear();
@@ -61,6 +71,7 @@ impl AirTrajectoryRuntime {
         &mut self,
         input: SelectorInput,
         world: &BoardWorld,
+        props: Option<&BoardWorld>,
         context: GrindContext,
     ) -> Result<bool, String> {
         let Some(results) = self.pending_results.take() else {
@@ -70,6 +81,13 @@ impl AirTrajectoryRuntime {
             .grind_world
             .as_deref()
             .ok_or("Trajectory static grind provider was not registered")?;
+        let provider = crate::grind_world::RailView {
+            rails: provider,
+            props: Some(&self.prop_rails),
+            cars: Some(&self.car_rails),
+            skip: None,
+            rules: Default::default(),
+        };
         let valid = self.selector.complete_batch(
             &results,
             input,
@@ -79,6 +97,7 @@ impl AirTrajectoryRuntime {
                     prediction,
                     acquire,
                     world,
+                    props,
                     provider,
                     &mut self.nearby_grinds,
                     input.grind_lock_distance,

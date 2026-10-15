@@ -76,6 +76,11 @@ pub(super) fn advance(
     //PlayerUI82898920 remaps the gameplay packet before both controller
     //and physical input consume it. Reuse this tick's sampled mapping.
     let mut simulation_actions = controls.simulation_actions(actions);
+    //82C1F310 sees the props' rails too: their last stepped pose, the carried prop left out.
+    skater.trajectory.set_prop_rails(
+        physics.prop_dynamics.as_ref().map(|d| d.rail_poses(d.held())).unwrap_or_default(),
+        physics.car_rails.clone(),
+    );
     let teleported = input_phase::advance(
         physics,
         skater,

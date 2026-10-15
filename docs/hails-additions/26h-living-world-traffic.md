@@ -1136,3 +1136,30 @@ decoded.
   inferred from the pixel shader.
 - The stencil tags (128 body, 255 glass) and what reads them.
 - NPC peds still draw with Bevy PBR and the baked tint; the same lighting port would apply (follow-up).
+
+## Grinding on cars (2026-10-14)
+
+**Problem.** Living-world cars could not be grinded: no car rails were exported and the rail query had no car provider.
+
+**Retail.** 826C0630 asks the DMO provider and then the vehicle provider (LWVehicleMan, world +2704) with no condition
+between; both run 82C4C4E0 (15 m cull, the car matrix, the rail map +1796, the shared 40-record cap; no moving, parked
+or speed test). Car setup 82C3CCD8 fills the rail map from the same definition as the skitch grab splines
+(82C2A8C8 -> +136: rail count +8, list +24; grab count +12, list +28).
+
+**Evidence.** [code] above. [data] 33 of 39 car part arenas in livingworld.big have one EB0004 section (211 rails,
+flags 0, none closed) and EB001B +8 equals its rail count in all 33; `reda_car` has none. Rails sit on roof edges,
+hood / trunk / bumper edges and pickup bed rims. Not confirmed in a live run (the user was not sure whether retail
+cars are grindable).
+
+**Change.** Pipeline `living_world_vehicles.recipe_grind_rails` (the grab splines' arena, count check) into
+`vehicles.json` `models.<record>.grind_splines`. skate-game `VehicleModel::grind_rails`, `car_rails` (pushed each tick
+from `push_vehicle_grab_splines` into `GamePhysics::set_car_rails`), and the car pass after the props in
+`grind_world::RailView` (`RailRules::cars`, retail on). Owner: tag bit 63 | car serial << 16 | rail index. Same
+consumers as the prop rails (doc 26i "Grinding on props").
+
+**NOT RETAIL YET / open.** Whether retail ever takes a car out of the provider (AI-driven, despawn) is not decoded.
+
+**Verification.** Pipeline `test_grind_rails_come_from_the_grab_arena_and_match_its_rail_list` and the disc check
+(39 arenas, 211 rails); skate-game `a_car_provides_its_grind_rails_at_its_current_transform`,
+`rail_view_puts_static_rails_first_then_props_then_cars_under_one_cap`; skate-game 693 pass (1 known failure).
+Install after refresh: 18 models, 107 rails. Play test pending.

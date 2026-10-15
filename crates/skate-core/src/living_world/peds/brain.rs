@@ -469,8 +469,8 @@ pub enum PedOp {
     /// `IgnoreStandingCollisions` (`826A3108` / `826A3120`): `brain+3277` bit 0x10 while active.
     IgnoreStandingCollisions,
     /// `DisableCollisionsWithBehaviourSource` (`826A7378` / `826A7410`): `brain+3277` bit 0x01 and the plugin prop as an
-    /// object the ped's collision ignores (`82E3DB68`, `ped+5916`) while active. NOT RETAIL YET: the host does not yet
-    /// exempt that prop from the ped's obstacle step (the DMO instance to prop id mapping is open).
+    /// object the ped's collision ignores (`82E3DB68`, `ped+5916`) while active. The host exempts that prop from the ped's
+    /// obstacle step (`Obstacles::resolve_step_ignoring`; body id = the plugin prop id's low 32 bits).
     DisableCollisionsWithBehaviourSource,
     /// `SetExplicitTurnDirectionToWaypointOrientation` (`826A2988` / `826A29F0`): while active the locomotion turns to
     /// the locked waypoint's orientation (`ped+5888` +2080, flag +2100 bit 0x20); nothing without a waypoint.
