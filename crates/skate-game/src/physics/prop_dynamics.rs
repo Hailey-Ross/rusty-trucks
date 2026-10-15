@@ -707,6 +707,11 @@ pub(crate) struct PropDynamics {
     move_rules: MoveCommandRules,
     /// Next id [`PropDynamics::next_runtime_id`] tries.
     next_runtime_id: u32,
+    /// Grind rails per template id, template space (`native-props/<map>.json` `grind_splines`); looked up by
+    /// template at query time, so runtime copies of a template carry them too.
+    grind_rails: std::collections::BTreeMap<String, std::sync::Arc<[crate::grind_world::props::PropRail]>>,
+    /// The prop the local skater grinds now (`set_grinded`): the skater's volumes do not push it.
+    grinded: Option<u32>,
 }
 
 /// First id of bodies created mid-game: ids from here up to [`PROP_GRAB_TAG`]
@@ -747,6 +752,21 @@ pub(crate) struct MoveDiagnostics {
     pub drift: f32,
     /// Measured yaw rate the yaw controller tracks (82D45318 +1192 sign kept).
     pub yaw_rate: f32,
+}
+
+/// 82C4C4E0, our prop pass of the shared rail query: props in id order (retail walks its DMO hash table; NOT
+/// RETAIL ORDER), each placed by its last stepped pose (`grind_world::props::PosedRails`).
+impl crate::grind_world::RailSource for PropDynamics {
+    fn append_rails(&self, min: [f32; 3], max: [f32; 3], skip: Option<u32>, rules: &crate::grind_world::RailRules, out: &mut Vec<crate::grind_world::RailHit>) {
+        if self.grind_rails.is_empty() {
+            return;
+        }
+        for posed in self.rail_poses(skip).0 {
+            if !posed.append(min, max, rules, out) {
+                return;
+            }
+        }
+    }
 }
 
 fn mul_basis(basis: Basis3, v: Vector3) -> Vector3 {
@@ -946,6 +966,8 @@ impl PropDynamics {
             move_diagnostics: None,
             move_rules: MoveCommandRules::default(),
             next_runtime_id: RUNTIME_PROP_ID_BASE,
+            grind_rails: std::collections::BTreeMap::new(),
+            grinded: None,
         }
     }
 
@@ -1259,6 +1281,40 @@ impl PropDynamics {
             count += usize::from(!body.grab_splines.is_empty());
         }
         count
+    }
+
+    /// The grind rails per template id (`native-props/<map>.json` `grind_splines`). Returns the props that got
+    /// rails.
+    pub(crate) fn set_grind_rails(&mut self, rails: std::collections::BTreeMap<String, Vec<crate::grind_world::props::PropRail>>) -> usize {
+        self.grind_rails = rails.into_iter().filter(|(_, r)| !r.is_empty()).map(|(k, r)| (k, r.into())).collect();
+        self.bodies.iter().filter(|b| self.rails_of(b).is_some()).count()
+    }
+
+    /// The prop the local skater grinds this tick (none when not grinding a prop).
+    pub(crate) fn set_grinded(&mut self, id: Option<u32>) {
+        self.grinded = id;
+    }
+
+    fn rails_of(&self, body: &PropBody) -> Option<&std::sync::Arc<[crate::grind_world::props::PropRail]>> {
+        self.grind_rails.get(body.template.split('/').next().unwrap_or_default())
+    }
+
+    /// Every awake or resting (not streamed-out) prop with rails at its last stepped pose, id order, without
+    /// `skip` (the carried prop).
+    pub(crate) fn rail_poses(&self, skip: Option<u32>) -> crate::grind_world::props::PropRailPoses {
+        let mut out: Vec<_> = self
+            .bodies
+            .iter()
+            .filter(|b| !b.dormant && Some(b.id) != skip)
+            .filter_map(|b| {
+                let rails = self.rails_of(b)?.clone();
+                let o = b.origin();
+                let s = b.axis_scale;
+                Some(crate::grind_world::props::PosedRails { id: b.id, tag: crate::grind_world::props::PROP_OWNER_TAG, origin: [o.x, o.y, o.z], basis: b.rates.basis.columns, scale: [s.x, s.y, s.z], rails })
+            })
+            .collect();
+        out.sort_by_key(|p| p.id);
+        crate::grind_world::props::PropRailPoses(out)
     }
 
     /// Every prop with grab splines as a grab-scene object of the world-object provider (scene `+4084`, query mode
@@ -1974,8 +2030,11 @@ impl PropDynamics {
                 let body_bounds = self.bodies[index].bounds();
                 let mut overlapping = false;
                 let mut closing = false;
+                // The prop under the local skater's grind is not pushed by them (others still can).
+                let spared = self.grinded == Some(self.bodies[index].id);
                 let actors = skater_volumes
                     .iter()
+                    .filter(|_| !spared)
                     .map(|v| (LOCAL_PUSHER, v))
                     .chain(others.iter().map(|(actor, v)| (*actor, v)));
                 for (actor, volume) in actors {
@@ -2966,6 +3025,31 @@ mod tests {
         );
     }
 
+    /// The prop the skater grinds is not pushed by the skater's volumes (the user, from retail play); once the grind
+    /// ends the same volume pushes it again.
+    #[test]
+    fn the_grinded_prop_is_not_pushed_by_the_skater() {
+        let (world, mut layer, mut dynamics) = fixture([0., REST_Y, 0.]);
+        let start_x = dynamics.bodies[0].rates.position.x;
+        let volumes = [BoardWorldVolume {
+            collision_group: 4,
+            body: CollisionBody::Board(BodyId::Deck),
+            primitive: ContactPrimitive::Sphere(Sphere { center: Vector3::new(-0.55, REST_Y, 0.), radius: 0.2 }),
+            motion: skate_core::physics::board_world::VolumeMotion { linear_velocity: Vector3::new(2., 0., 0.), ..Default::default() },
+            material: material(),
+        }];
+        dynamics.set_grinded(Some(7));
+        for _ in 0..30 {
+            dynamics.step(&world, &mut layer, &volumes);
+        }
+        assert!((dynamics.bodies[0].rates.position.x - start_x).abs() < 1e-3, "grinded prop moved to {}", dynamics.bodies[0].rates.position.x);
+        dynamics.set_grinded(None);
+        for _ in 0..30 {
+            dynamics.step(&world, &mut layer, &volumes);
+        }
+        assert!(dynamics.bodies[0].rates.position.x > start_x + 0.02, "not pushed after the grind");
+    }
+
     /// A settled prop stays put and finite over long idle ticks.
     #[test]
     fn settled_prop_does_not_sink_or_diverge() {
@@ -3499,6 +3583,64 @@ mod tests {
         assert_eq!(carry.held(), Some(7), "the push dropped the prop");
         assert_eq!(carry.held_grip().unwrap().descriptor, grip.descriptor);
         assert!(dynamics.position_of(7).unwrap().z > 1.25, "the prop did not move");
+    }
+
+    /// The grind surface probes (82C205D8 line queries) find a prop's top through the prop collision layer, which
+    /// the grind host probes next to the map (retail queries one world with the DMOs in it).
+    #[test]
+    fn grind_surface_probes_hit_a_prop_through_the_prop_layer() {
+        let (world, layer, dynamics) = fixture([0., REST_Y, 1.2]);
+        let (origin, _) = dynamics.pose(7).unwrap();
+        let c = dynamics.position_of(7).unwrap();
+        let probe = skate_core::air::trajectory::grind_surface::Probe { start: [c.x, c.y + 2.0, c.z, 1.0], end: [c.x, c.y - 2.0, c.z, 1.0], radius: 0.0 };
+        let on_prop = crate::physics::player_input::grind::world::surface_probe(layer.world(), [0, u32::MAX], 0, probe).unwrap();
+        let hit = on_prop.expect("the probe hits the prop's top");
+        assert!(hit.position[1] > origin.y && hit.normal[1] > 0.9, "{hit:?}");
+        // The map alone (ground under the prop) answers lower or not at all: the host must ask the prop layer.
+        if let Some(ground) = crate::physics::player_input::grind::world::surface_probe(&world, [0, u32::MAX], 0, probe).unwrap() {
+            assert!(ground.fraction > hit.fraction, "{ground:?} {hit:?}");
+        }
+    }
+
+    /// Prop rails (82C4C4E0): template-space segments placed by the current pose like the grab splines, owner
+    /// (prop id, rail), flags 0; the radius rule, the shared cap and the held prop's exclusion apply.
+    #[test]
+    fn prop_rails_follow_the_pose_and_the_query_rules() {
+        use crate::grind_world::{props::{prop_owner, PropRail, PropSegment}, RailRules, RailSource};
+        let (_world, _layer, mut dynamics) = fixture([0., REST_Y, 1.2]);
+        let rail = PropRail { guids: [0x11, 0x22], segments: vec![
+            PropSegment { start: [-0.4, 0.3, -0.5, 1.0], end: [0.0, 0.3, -0.5, 1.0], min: [-0.4, 0.3, -0.5], max: [0.0, 0.3, -0.5] },
+            PropSegment { start: [0.0, 0.3, -0.5, 1.0], end: [0.4, 0.3, -0.5, 1.0], min: [0.0, 0.3, -0.5], max: [0.4, 0.3, -0.5] },
+        ] };
+        assert_eq!(dynamics.set_grind_rails([("template".to_owned(), vec![rail])].into()), 1);
+        let (origin, basis) = dynamics.pose(7).unwrap();
+        let s = dynamics.bodies[0].axis_scale;
+        let place = |p: [f32; 3]| add(origin, mul_basis(basis, Vector3::new(p[0] * s.x, p[1] * s.y, p[2] * s.z)));
+        let mid = place([0.0, 0.3, -0.5]);
+        let (min, max) = ([mid.x - 1.2, mid.y - 1.2, mid.z - 1.2], [mid.x + 1.2, mid.y + 1.2, mid.z + 1.2]);
+        let rules = RailRules::default();
+        let mut hits = Vec::new();
+        dynamics.append_rails(min, max, None, &rules, &mut hits);
+        assert_eq!(hits.len(), 2);
+        for (i, (hit, [a, b])) in hits.iter().zip([[[-0.4, 0.3, -0.5], [0.0, 0.3, -0.5]], [[0.0, 0.3, -0.5], [0.4, 0.3, -0.5]]]).enumerate() {
+            let (a, b) = (place(a), place(b));
+            for (got, want) in [(hit.primitive.start, a), (hit.primitive.end, b)] {
+                assert!((got[0] - want.x).abs() < 1e-5 && (got[1] - want.y).abs() < 1e-5 && (got[2] - want.z).abs() < 1e-5, "{got:?} {want:?}");
+            }
+            assert_eq!(hit.primitive.owner, prop_owner(7, 0));
+            assert_eq!((hit.metadata.spline_guids, hit.metadata.segment_index, hit.metadata.flags), ([0x11, 0x22], i as u32, 0));
+        }
+        // A box away from the segments, the radius rule, the shared cap and the held prop.
+        let far = [mid.x + 5.0, mid.y, mid.z];
+        let mut none = Vec::new();
+        dynamics.append_rails([far[0] - 1.0, far[1] - 1.0, far[2] - 1.0], [far[0] + 1.0, far[1] + 1.0, far[2] + 1.0], None, &rules, &mut none);
+        dynamics.append_rails(min, max, None, &RailRules { prop_radius: 0.01, ..rules }, &mut none);
+        dynamics.append_rails(min, max, Some(7), &rules, &mut none);
+        assert!(none.is_empty(), "{none:?}");
+        let mut capped = Vec::new();
+        dynamics.append_rails(min, max, None, &RailRules { cap: 1, ..rules }, &mut capped);
+        assert_eq!(capped.len(), 1);
+        assert!(prop_owner(7, 0) > u64::from(u32::MAX), "prop owners never meet static 1-based rail owners");
     }
 
     /// A straight push moves the prop along the grab-edge normal at about the

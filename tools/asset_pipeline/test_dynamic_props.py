@@ -10,7 +10,7 @@ import os
 import sys
 
 from .dynamic_props import (locators, transform_mesh, template_meshes, save_catalog, load_catalog, mobj_extension,
-                            characteristics_key, records)
+                            characteristics_key, records, template_rails)
 
 
 def resource(kind, payload):
@@ -109,6 +109,29 @@ class DynamicPropsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'model reference'):
             template_meshes(resource(0xEB000D, payload))
 
+
+    def test_part_rails_follow_the_eb001b_list(self):
+        # One part: EB000D record at 0 (+136 -> section 2), model section 1, rail list, rail section 3.
+        raw = bytearray(256)
+        struct.pack_into('>I', raw, 136, 2)
+        struct.pack_into('>I', raw, 200+8, 2)
+        table = [(0, 0, 160, 0, 0, 0xEB000D), (160, 0, 16, 0, 0, 0xEB0001), (200, 0, 32, 0, 0, 0xEB001B),
+                 (232, 0, 16, 0, 0, 0xEB0004)]
+        rails = [dict(section_index=3, rail_index=0), dict(section_index=3, rail_index=1), dict(section_index=9, rail_index=0)]
+        self.assertEqual(template_rails(raw, table, 0, 1, 4, rails), rails[:2])
+        with self.assertRaisesRegex(ValueError, 'does not match'):
+            template_rails(raw, table, 0, 1, 4, rails[:1])
+        # No list (+136 = 0): no rails, but only when the part has no rail section.
+        struct.pack_into('>I', raw, 136, 0)
+        self.assertEqual(template_rails(raw, table[:3], 0, 1, 3, rails), [])
+        with self.assertRaisesRegex(ValueError, 'rail list'):
+            template_rails(raw, table, 0, 1, 4, rails)
+        # Empty list with a rail section in the block is rejected.
+        struct.pack_into('>I', raw, 136, 2)
+        struct.pack_into('>I', raw, 200+8, 0)
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            template_rails(raw, table, 0, 1, 4, rails)
+        self.assertEqual(template_rails(raw, table[:3], 0, 1, 3, rails), [])
 
 # Fields of livingworld_dynamicobject_characteristics the DMO reads (layout
 # offsets from the schema; doc 26 "Per-type DMO data").

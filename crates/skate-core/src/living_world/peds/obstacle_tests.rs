@@ -247,3 +247,17 @@ fn held_prop_stays_an_obstacle() {
     o.update(&[held_still]);
     assert!(o.cut_count() == 0 && !o.blocked([0.0, 0.0, 0.0], 0.35));
 }
+
+/// `DisableCollisionsWithBehaviourSource`: a ped that ignores its plugin's own prop steps into it (a seat waypoint
+/// inside the bench), while every other obstacle still blocks it.
+#[test]
+fn a_ped_ignoring_its_plugin_prop_steps_into_it_and_nothing_else() {
+    let mut o = NavObstacles::new(ObstacleParams::default());
+    let bench = ObstacleInput { half_extents: [1.0, 0.4, 0.3], ..bin(3_905_883_390, 0.0, 0.0) };
+    assert!(o.update(&[bench, bin(9, 3.0, 0.0)]));
+    let (from, seat) = ([0.0, 0.0, -0.9], [0.0, 0.0, -0.25]);
+    assert!(!o.step_ok(from, seat, 0.35), "the bench blocks a ped that does not ignore it");
+    assert_eq!(o.resolve_step_ignoring(from, seat, 0.35, Some(3_905_883_390)), Some(seat));
+    let (by_bin, into_bin) = ([3.0, 0.0, -0.9], [3.0, 0.0, -0.2]);
+    assert!(o.resolve_step_ignoring(by_bin, into_bin, 0.35, Some(3_905_883_390)) != Some(into_bin), "another prop still blocks");
+}

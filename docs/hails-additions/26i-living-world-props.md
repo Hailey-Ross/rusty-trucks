@@ -681,3 +681,78 @@ a mod's curve does not move the window (it stays the disc curves' end). Only pro
 **Verification.** skate-core `hand_ik_turns_on_in_the_enter_window_and_stays_until_the_next_grab`, move_object 24;
 skate-mods 105; skate-game prop / carry / world_tuning / modding / skitch / handplant 122. Not play-tested (grab a prop
 with `SKATE_PROP_GRAB=1`: the hands should settle onto the edge).
+
+## Grinding on props (2026-10-14)
+
+**Problem.** Props with rails (benches, rails, ledges and other movable objects) could not be grinded: the grind query
+only saw the map's static rails (`grind_world/provider.rs`), and the prop export wrote no rails
+(`dynamic_props.py` `grind_splines=[]`). Retail lets you grind them (the user's play).
+
+**Root cause / retail.** 82C1EAD8, the shared rail query, collects the static rails and then asks two providers (the DMO
+manager, then the living-world vehicle manager, both with the query 82C4C4E0) for up to 40 records in total. 82C4C4E0
+walks every DMO, skips one whose origin is 15 m or more from the query box centre (0x822F8F68 = 225, squared), and
+places each segment of the DMO's rail map (DMO+1796, filled once by setup 82C535C0) with the DMO's current matrix: the
+segment bounds through 8258C1E0 against the query box, the chord D -> (A+B)+(C+D) through the same matrix. The rails
+live in the part's model space, so a pushed or knocked prop takes its rails along and no grind state is attached to the
+prop. Nothing in 82C4C4E0 tests asleep, held or Object Move; a carried prop cannot be grinded because the carrier runs
+no rail query in Object Move (82D32808 and the 82D81610 submit are only reached from BipedGround Sync 82D31DC0; the
+Object Move Sync slot is the empty stub 82B61BB8). The record flags take an unset stack word (`lwz r27,148(r1)`), so
+only bit 31 could carry anything and props never get the near-vertical computation.
+
+**Evidence.** [code] addresses above (TU3 recompilation). [data] Each DMO part's EB000D record has +136 = its EB001B
+list (82C535C0 reads `[...]+136`: rail count +8, list +24); for all 136 parts on the disc (4 worlddmo streams) the
+count equals the rail count of the one EB0004 section in the part's block, or the part has no list (+136 = 0) and no
+rail section. 585 rails in total (Downtown 81, Global 278, Industrial 111, University 115).
+
+**Change.**
+- Pipeline: `dynamic_props.template_rails` (the EB001B link, a count mismatch is an error) and the sidecar
+  `native-props/<map>.json` `grind_splines[template id]`, same record shape as map rails.
+- skate-game `grind_world::props` (`PropRail`, `PosedRails`, `PropRailPoses`, `prop_owner`): rails per template,
+  looked up by template at query time (runtime copies of a template carry them too), placed like the grab splines
+  (origin + basis * (point * axis scale)) from the last completed physics step.
+- `grind_world::RailView`: static rails, then the prop pass, one shared cap; `RailRules` (`prop_radius` 15 m, `cap` 40,
+  `props` on) as named data with the retail values; the carried prop is left out (`skip`).
+- Board grind (`player_input/grind/pre.rs`) and air trajectory (`air_trajectory/grind.rs`, records kept as copies since
+  props move between queries) use the view. Owner of a prop record: tag bit 62 | prop id << 16 | rail index, stable
+  across ticks and peers, never equal to a static owner. Flags 0.
+- Loader `skate_world::load_dmo_grind_rails` (`SKATE_PROP_RAILS:` log line).
+
+**NOT RETAIL YET / open.** Props are walked in id order (retail walks its DMO hash table). Handplant, footplant, the
+off-board edge and contact queries and respawn still see static rails only (todo `offboard-map-rails`). Car rails:
+doc 26h "Grinding on cars". Mod access to the rules and per-template rails is not wired yet.
+The subreference table of EB001B is not decoded (the part block rule stands in, with the count check).
+
+**Verification.** Pipeline `test_part_rails_follow_the_eb001b_list` and the disc check above. skate-game
+`exported_rails_parse_to_chords_and_bounds`, `prop_rails_follow_the_pose_and_the_query_rules`,
+`rail_view_puts_static_rails_first_then_props_under_one_cap`; skate-game 691 pass (2 known unrelated failures:
+`setup::...fingerprint_changes`, `retail_menu_movie_set_loads_links_and_runs` reading another branch's menu export).
+Play test pending.
+
+### Play tests 1 and 2 (2026-10-14): the grind surface probes see props
+
+**Problem.** Prop grinds started and dropped within 1 to 5 frames, some props never grinded (the board bumped off),
+and an ollie over a bench came down short of its rail and bailed instead of locking on.
+
+**Cause.** Every grind runs line probes at the rail's surface (82C205D8 / 82C20728 batch, force exit 82E0AAD0) and the
+air trajectory probes each candidate rail the same way. Ours queried only the map collision; the props live in their
+own collision layer, so a prop rail had no surface. Retail's queries run against one world that holds the DMOs.
+
+**Change.** `grind::world::surface_probe_with_props` / `force_exit_line_hit` (nearest of map and prop layer, the map on
+a tie); `grind_host::LiveHost::props` (pre and post input); `AirTrajectoryRuntime::update(.., props, ..)` at every
+caller. Log `GRIND_RAIL map rail=N | prop=ID rail=N | car=SERIAL rail=N` when a grind takes a rail.
+
+**Open.** The trajectory's landing prediction (`air_trajectory::world::line`) is still map-only.
+
+**Verification.** `grind_surface_probes_hit_a_prop_through_the_prop_layer`; skate-game 693 (known failures only).
+
+### Play test 3 (2026-10-14): the grinded prop is not pushed
+
+**Problem.** Grinding a bench pushed it along; the rail moved under the board, the grind broke and restarted, and
+the skater bailed (log: one rail re-taken 6 times in 9 s while its start moved 1.4 m).
+
+**Change.** The grind keeps the owner of the last rail it took (`GrindInputState::rail_owner`); while the skater is
+in a grind state (4xx) `solve` marks that prop (`PropDynamics::set_grinded`) and the local skater's volumes do not push
+it; other actors still can. Retail: the user's account from play (grinding does not push the prop); the retail
+mechanism is not traced.
+
+**Verification.** `the_grinded_prop_is_not_pushed_by_the_skater`; skate-game 694 (known failures only).

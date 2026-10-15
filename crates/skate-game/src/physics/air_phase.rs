@@ -133,7 +133,7 @@ pub(super) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
     );
     skater
         .trajectory
-        .update(input, &physics.world, grind_context)?;
+        .update(input, &physics.world, physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world), grind_context)?;
     let current = skater
         .air_reckoning
         .fields(&physics.riding)

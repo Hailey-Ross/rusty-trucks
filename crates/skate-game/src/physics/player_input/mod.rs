@@ -139,7 +139,7 @@ impl PlayerInputRuntime {
         callbacks: &mut C,
         stage: InputStage,
         world: &skate_core::physics::board_world::BoardWorld,
-        world_edges: &crate::grind_world::StaticProvider,
+        world_edges: crate::grind_world::RailView<'_>,
     ) -> Result<Option<input_phase::InputContinuation>, String> {
         let mut service = services::Services {
             board,

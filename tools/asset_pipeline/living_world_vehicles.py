@@ -261,6 +261,27 @@ def recipe_grab_splines(recipe: dict, read) -> list[dict]:
     return []
 
 
+def recipe_grind_rails(recipe: dict, read) -> list[dict]:
+    """The grind rails of a recipe, in model space: the same part arena as the grab splines (car setup 82C3CCD8
+    takes both lists from one definition, `82C2A8C8` -> +136: rail count +8, list +24), i.e. that arena's EB0004
+    rails. The definition's rail count must equal them (true for every disc car); none without a definition."""
+    from .dynamic_props import decode_grind_splines, sections
+    from .grab_data import grab_splines
+    for part in recipe['parts']:
+        for lod in part['lods']:
+            raw = read(lod['arena'])
+            if not grab_splines(raw):
+                continue
+            lists = [struct.unpack_from('>I', raw, offset + 8)[0] for offset, _, _, _, _, kind in sections(raw) if kind == 0xEB001B]
+            rails = decode_grind_splines(raw)
+            if len(lists) > 1:
+                raise ValueError('Car part arena with two rail lists')
+            if (lists[0] if lists else 0) != len(rails):
+                raise ValueError('Car rail list does not match its rail section')
+            return rails
+    return []
+
+
 def decode_cube(parser, data: bytes) -> np.ndarray:
     """The six base faces of a cube texture rx2 as one (6 x size, size, 4) RGBA strip. The vendored
     decoder takes only DXT1 / A8R8G8B8 / B5G6R5 cubes (``tools/vendor`` is fingerprinted, so the DXT5
@@ -324,7 +345,8 @@ def export_models(game_root: Path, manifest: dict, output: Path, work: Path, rep
                         environments[tid] = None  # drawn without reflections
                         report(f'Living world vehicle environment {tid} unavailable: {error}')
             results[name] = {'status': 'ready', 'file': f'vehicles/{name}.glb', **stats,
-                             'grab_splines': recipe_grab_splines(recipe, lambda arena: extract(arena).read_bytes())}
+                             'grab_splines': recipe_grab_splines(recipe, lambda arena: extract(arena).read_bytes()),
+                             'grind_splines': recipe_grind_rails(recipe, lambda arena: extract(arena).read_bytes())}
         except (ValueError, KeyError, RuntimeError, IndexError, struct.error, OSError) as error:
             if isinstance(error, OSError) and not isinstance(error, FileNotFoundError):
                 raise  # disk full / permissions abort setup
@@ -381,7 +403,7 @@ def vehicle_doc(doc: dict, manifest: dict, census_records: list[str], collection
                             'secondary': [f'{key}/secondary/{i}' for i in range(len(secondary))]},
             'size_hint': f.get('Hash_F983F2518B335286'), 'wheel_hint': f.get('Hash_FD7A66142F16B9CC'),
             'mesh_bounds': built.get('bounds'), 'wheel_bones': built.get('wheels'),
-            'grab_splines': built.get('grab_splines', [])}
+            'grab_splines': built.get('grab_splines', []), 'grind_splines': built.get('grind_splines', [])}
     entities = {}
     for key, record in sorted(c['livingworld_entities'].items()):
         f = record['fields']

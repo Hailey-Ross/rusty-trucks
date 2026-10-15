@@ -415,3 +415,27 @@ fn a_parked_car_is_marked_for_the_car_alarm() {
     run(&mut a, 0.1, 60.0);
     assert_eq!(has(&mut a), 0);
 }
+
+/// Car rails (second rail provider, 82C4C4E0 with the car matrix): model-space rails placed by the car's current
+/// transform, owner (car serial, rail), no moving / parked test; a model without rails provides none.
+#[test]
+fn a_car_provides_its_grind_rails_at_its_current_transform() {
+    use crate::grind_world::{props::{car_owner, PropRail, PropSegment}, RailRules, RailSource};
+    let mut d = data();
+    let net = road();
+    let (car, ..) = car_from_record(&net, &d, &VehicleOverrides::default(), &std::collections::BTreeMap::new(), &record(7, 0, 50.0, 0), 0.0).unwrap();
+    let rail = PropRail { guids: [3, 4], segments: vec![PropSegment { start: [0.0, 1.5, -1.0, 1.0], end: [0.0, 1.5, 1.0, 1.0], min: [0.0, 1.5, -1.0], max: [0.0, 1.5, 1.0] }] };
+    let t = Transform::from_xyz(1.0, 0.0, 2.0).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    let motion = CarMotion { prev: t, curr: t, wheel_prev: 0.0, wheel: 0.0, velocity: Vec3::new(5.0, 0.0, 0.0) };
+    assert!(car_rails(&[(&car, &motion)], &d).0.is_empty(), "no rails exported for the model: none provided");
+    d.models.get_mut(&car.model).unwrap().grind_rails = vec![rail].into();
+    let poses = car_rails(&[(&car, &motion)], &d);
+    let mut hits = Vec::new();
+    poses.append_rails([-1.0, 0.0, 0.0], [3.0, 3.0, 4.0], None, &RailRules::default(), &mut hits);
+    assert_eq!(hits.len(), 1);
+    let h = hits[0].primitive;
+    // Yaw 90 deg maps model -z to -x: the roof rail runs along world x at height 1.5.
+    assert!((h.start[0] - 0.0).abs() < 1e-4 && (h.start[1] - 1.5).abs() < 1e-4 && (h.start[2] - 2.0).abs() < 1e-4, "{:?}", h.start);
+    assert!((h.end[0] - 2.0).abs() < 1e-4 && (h.end[2] - 2.0).abs() < 1e-4, "{:?}", h.end);
+    assert_eq!(h.owner, car_owner(7, 0));
+}

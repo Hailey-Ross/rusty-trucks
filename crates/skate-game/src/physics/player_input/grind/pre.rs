@@ -8,15 +8,16 @@ impl GrindInputState {
     pub fn pre_update(
         &mut self,
         p: &ProcessedPhysicsInput,
-        provider: &StaticProvider,
+        provider: crate::grind_world::RailView<'_>,
         world: &BoardWorld,
         context: PreContext,
         host: &mut impl Host,
     ) -> Result<Pending, String> {
         self.previous_direction = float(self.investigation.direction_1136);
+        let previous_owner = self.investigation.owner_1296;
         self.investigation = GrindInvestigationFields::default();
         self.permission(p, context.air_counter);
-        let indices = if p.flags_2476 & 0x0100_0000 != 0 {
+        let hits = if p.flags_2476 & 0x0100_0000 != 0 {
             Vec::new()
         } else {
             provider.query(
@@ -24,13 +25,10 @@ impl GrindInputState {
                 core::array::from_fn(|i| context.board[3][i] + 1.2),
             )?
         };
-        let mode = self.material_mode(p, !indices.is_empty(), context.air_targeting_grind_9653);
+        let mode = self.material_mode(p, !hits.is_empty(), context.air_targeting_grind_9653);
         host.apply_material_mode(mode)?;
         self.advance_history(p);
-        let edges = indices
-            .iter()
-            .map(|&i| provider.primitives()[i])
-            .collect::<Vec<_>>();
+        let edges = hits.iter().map(|h| h.primitive).collect::<Vec<_>>();
         let result = investigator::investigate(
             &investigator::Query {
                 board: context.board,
@@ -67,9 +65,7 @@ impl GrindInputState {
         if let Some(contact) = result.candidate {
             let g = contact.geometry;
             let edge = edges[g.primitive];
-            let native = provider
-                .metadata(indices[g.primitive])
-                .ok_or("Selected static grind primitive lacks metadata")?;
+            let native = hits[g.primitive].metadata;
             metadata = Some(PrimitiveMetadata {
                 spline_guids: Some(native.spline_guids),
             });
@@ -87,6 +83,11 @@ impl GrindInputState {
             fields.primitive_start_1264 = raw(edge.start);
             fields.primitive_end_1280 = raw(edge.end);
             fields.owner_1296 = Some(edge.owner);
+            self.rail_owner = Some(edge.owner);
+            if previous_owner != Some(edge.owner) {
+                // Diagnostics: which rail a grind takes (map rail, prop or car), doc 26i "Grinding on props".
+                bevy::log::info!("GRIND_RAIL {} family={} start={:?} end={:?}", crate::grind_world::props::describe_owner(edge.owner), contact.kind, &edge.start[..3], &edge.end[..3]);
+            }
             fields.primitive_flags_1300 = native.flags & 0x8000_0000;
             fields.flags_1516 = if contact.front { 0x2000_0000 } else { 0 };
             //82D8939C/A0 writes both truck hits. FiveO82D89CB8/9D5C
@@ -113,11 +114,20 @@ impl GrindInputState {
             //Accepted family returns before investigator's history-byte write.
         } else {
             self.previous_proximity = result.proximity.is_some();
+            // Diagnostics: a prop or car rail in the query but no grind taken (once per nearest such rail).
+            let near = hits.iter().map(|h| h.primitive.owner).find(|o| *o >= crate::grind_world::props::PROP_OWNER_TAG);
+            if near.is_some() && near != self.near_logged {
+                bevy::log::info!(
+                    "GRIND_NEAR {} rails={} proximity={:?} board=[{:.2}, {:.2}, {:.2}]",
+                    crate::grind_world::props::describe_owner(near.unwrap_or(0)), hits.len(),
+                    result.proximity.map(|p| (crate::grind_world::props::describe_owner(edges[p.contact.primitive].owner), p.deck_contact)),
+                    context.board[3][0], context.board[3][1], context.board[3][2],
+                );
+            }
+            self.near_logged = near;
             if let Some(proximity) = result.proximity {
                 let edge = edges[proximity.contact.primitive];
-                let native = provider
-                    .metadata(indices[proximity.contact.primitive])
-                    .ok_or("Static grind proximity lacks metadata")?;
+                let native = hits[proximity.contact.primitive].metadata;
                 //82D87E18/34/3C: contact+128 and SECOND primitive+208/+224.
                 fields.vector_1232 = raw(proximity.contact.position);
                 fields.second_start_1312 = raw(edge.start);

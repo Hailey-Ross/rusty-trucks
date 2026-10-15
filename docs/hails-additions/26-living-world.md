@@ -112,6 +112,8 @@ the file of their topic (and get a line here).
 - [Ped plugins on world props: motion states and the wiring (2026-10-10)](26g-living-world-ped-interactions.md#ped-plugins-on-world-props-motion-states-and-the-wiring-2026-10-10)
 - [Ped plugins on world props: benches, bins and newspaper boxes from the model hotpoints (2026-10-10)](26g-living-world-ped-interactions.md#ped-plugins-on-world-props-benches-bins-and-newspaper-boxes-from-the-model-hotpoints-2026-10-10)
 - [Ped hand props: the vending machine can, the newspaper (2026-10-10)](26g-living-world-ped-interactions.md#ped-hand-props-the-vending-machine-can-the-newspaper-2026-10-10)
+- [A ped stuck in front of the bench it wants to sit on (2026-10-14)](26g-living-world-ped-interactions.md#a-ped-stuck-in-front-of-the-bench-it-wants-to-sit-on-2026-10-14)
+
 ### 26h: Traffic
 
 - [Change: milestone V0, vehicle data](26h-living-world-traffic.md#change-milestone-v0-vehicle-data)
@@ -138,6 +140,7 @@ the file of their topic (and get a line here).
 - [Skitching step 4g: the hands (2026-10-09)](26h-living-world-traffic.md#skitching-step-4g-the-hands-2026-10-09)
 - [Skitching step 4h: the skitch animation graph nodes (2026-10-09)](26h-living-world-traffic.md#skitching-step-4h-the-skitch-animation-graph-nodes-2026-10-09)
 - [Traffic: the car alarm on parked cars (2026-10-10)](26h-living-world-traffic.md#traffic-the-car-alarm-on-parked-cars-2026-10-10)
+- [Grinding on cars (2026-10-14)](26h-living-world-traffic.md#grinding-on-cars-2026-10-14)
 
 ### 26i: Props
 
@@ -149,3 +152,4 @@ the file of their topic (and get a line here).
 - [Move Object step 1: props' authored grab splines in the export (2026-10-09)](26i-living-world-props.md#move-object-step-1-props-authored-grab-splines-in-the-export-2026-10-09)
 - [Move Object step 2: props in the grab scene (opt-in, 2026-10-09)](26i-living-world-props.md#move-object-step-2-props-in-the-grab-scene-opt-in-2026-10-09)
 - [Move Object step 3c: the hand IK (opt-in, 2026-10-10)](26i-living-world-props.md#move-object-step-3c-the-hand-ik-opt-in-2026-10-10)
+- [Grinding on props (2026-10-14)](26i-living-world-props.md#grinding-on-props-2026-10-14)

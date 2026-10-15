@@ -38,7 +38,7 @@ pub(crate) trait PlayerInputCallbacks {
         grind: &mut GrindInputState,
         processed: &ProcessedPhysicsInput,
         world: &skate_core::physics::board_world::BoardWorld,
-        provider: &crate::grind_world::StaticProvider,
+        provider: crate::grind_world::RailView<'_>,
         air_counter: i32,
     ) -> Result<Pending, String>;
     fn process_skeleton(
@@ -71,7 +71,7 @@ pub(super) struct Services<'a, C> {
     pub callbacks: &'a mut C,
     pub pre_input: &'a mut PreInputManager,
     pub grind: &'a mut GrindInputState,
-    pub world_edges: &'a crate::grind_world::StaticProvider,
+    pub world_edges: crate::grind_world::RailView<'a>,
     pub world: &'a skate_core::physics::board_world::BoardWorld,
     pub pending_grind: &'a mut Option<Pending>,
     pub toolkit: &'a mut Option<BoardToolkit>,

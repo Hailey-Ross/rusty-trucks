@@ -902,8 +902,11 @@ pub(crate) fn advance_peds(
                     let from = body.position.to_array();
                     let (next, mut poly, on_mesh) = constrain_move(mesh, body.nav.poly, from, to.to_array());
                     let moving = (to - body.position).length_squared() > 1e-10;
-                    // Never into a prop or mod body: slide along its face or stay (fix 11).
-                    let (next, clear) = match obstacles.resolve_step(from, next, mesh.agent[1]) {
+                    // Never into a prop or mod body: slide along its face or stay (fix 11). A ped in a plugin whose
+                    // `DisableCollisionsWithBehaviourSource` is active ignores the plugin's own prop (its body id is the
+                    // plugin prop id's low 32 bits), so it can reach a seat inside its bench.
+                    let ignore = mind.filter(|m| m.brain.ignore_source_collision).and_then(|m| m.prop).map(|(_, id, _)| u64::from(id as u32));
+                    let (next, clear) = match obstacles.resolve_step_ignoring(from, next, mesh.agent[1], ignore) {
                         Some(n) if n == next => (n, true),
                         Some(n) => {
                             let (m, k, ok) = constrain_move(mesh, body.nav.poly, from, n);

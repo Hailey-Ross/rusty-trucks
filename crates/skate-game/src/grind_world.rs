@@ -105,7 +105,8 @@ fn box_faces(out: &mut Vec<[Vector3; 4]>, min: Vector3, max: Vector3) {
 mod spline;
 mod provider;
 mod octree;
-pub(crate) use provider::StaticProvider;
+pub(crate) mod props;
+pub(crate) use provider::{RailHit, RailRules, RailSource, RailView, StaticProvider};
 
 #[cfg(test)]
 mod tests;

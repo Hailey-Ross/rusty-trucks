@@ -122,6 +122,13 @@ fn advance_inner(
         .chain(&skeleton_world_volumes)
         .copied()
         .collect();
+    // A grind on a prop rail does not push that prop (user, from retail play): its body is spared the skater's
+    // volumes while the skater is in a grind state (4xx).
+    let grinding = (400..500).contains(&skater.player_input.processed.state_2508);
+    let grinded = skater.player_input.grind.rail_owner.filter(|_| grinding).and_then(crate::grind_world::props::prop_of_owner);
+    if let Some(d) = physics.prop_dynamics.as_mut() {
+        d.set_grinded(grinded);
+    }
     physics.step_props(&push_volumes);
     contacts.extend_from_slice(physics.world.query_primitives(
         &skeleton_world_volumes,

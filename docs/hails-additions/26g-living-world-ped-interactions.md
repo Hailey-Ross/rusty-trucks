@@ -1289,3 +1289,23 @@ navmesh within `unreachable_radius` (5 m) and clears it when the chasee is back 
 result codes]. Log `PED_UNREACHABLE`. Test `an_unreachable_chasee_starts_the_record_wait`. Not checked in game yet.
 Related, bench knocked into water: the ped gave up after ~67 s (tick 10251 to 14295, `ExitInteraction`), retail's
 60 s PluginTimeout; retail has no reachability check for plugins (b108) [data].
+
+## A ped stuck in front of the bench it wants to sit on (2026-10-14)
+
+**Problem.** In a play session a ped took a bench seat, walked up and stood 1.35 m short for a minute (PED_BLOCKED by
+the seat's own bench, AD_Bench_DMO_1009, University), then kept walking into it after giving up.
+
+**Root cause / retail.** The seat waypoint lies inside the bench's obstacle footprint. Retail's sit plugin
+(`state/livingworldentities/pedestrian/plugin/sit.xml`) starts with `DisableCollisionsWithBehaviourSource`
+(826A7378 / 826A7410; 82E3DB68 -> ped+5916): the ped ignores its plugin's own prop while it approaches. Ours set the
+brain flag `ignore_source_collision` but nothing read it.
+
+**Change.** skate-core `Obstacles::resolve_step_ignoring` / `step_ok_ignoring` (one obstacle id left out);
+skate-game `peds.rs` passes the plugin prop's body id (the plugin prop id's low 32 bits) while the flag is set.
+Driven by the behaviour, so mod plugin graphs using it get it too.
+
+**Open.** A ped that left the plugin on its 60 s timeout (that part works) kept walking into the bench; not traced.
+Whether retail's ped+5916 also reaches the NavPower planner / avoider is not decoded.
+
+**Verification.** skate-core `a_ped_ignoring_its_plugin_prop_steps_into_it_and_nothing_else`; skate-core peds 114,
+skate-game 693 (known failures only). Play test pending.

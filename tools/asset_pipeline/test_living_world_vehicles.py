@@ -167,6 +167,30 @@ class GrabSplines(unittest.TestCase):
         self.assertEqual(found[0]['direction'], [0.0, 0.0, -1.0])
         self.assertEqual(veh.recipe_grab_splines({'parts': [{'lods': [{'arena': 'body'}]}]}, arenas.__getitem__), [])
 
+    def test_grind_rails_come_from_the_grab_arena_and_match_its_rail_list(self):
+        import struct
+        from unittest.mock import patch
+        from tools.asset_pipeline.grab_data import GRABDATA
+        from tools.asset_pipeline.test_grab_data import grabdata
+        def arena(rail_count):
+            payloads = [(GRABDATA, grabdata([(0.0, 0.0, 0.0)] * 4)), (0xEB001B, struct.pack('>4I', 0, 0, rail_count, 1))]
+            table = 64; data = 64 + 24 * len(payloads)
+            raw = bytearray(data + sum(len(p) for _, p in payloads))
+            raw[:7] = b'\x89RW4xb2'
+            struct.pack_into('>I', raw, 32, len(payloads)); struct.pack_into('>I', raw, 48, table)
+            for i, (kind, payload) in enumerate(payloads):
+                struct.pack_into('>6I', raw, table + 24 * i, data, 0, len(payload), 0, 0, kind)
+                raw[data:data + len(payload)] = payload; data += len(payload)
+            return bytes(raw)
+        rails = [dict(section_index=9, rail_index=0), dict(section_index=9, rail_index=1)]
+        recipe = {'parts': [{'lods': [{'arena': 'acc'}]}]}
+        with patch('tools.asset_pipeline.dynamic_props.decode_grind_splines', return_value=rails):
+            self.assertEqual(veh.recipe_grind_rails(recipe, {'acc': arena(2)}.__getitem__), rails)
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                veh.recipe_grind_rails(recipe, {'acc': arena(1)}.__getitem__)
+        with patch('tools.asset_pipeline.dynamic_props.decode_grind_splines', return_value=[]):
+            self.assertEqual(veh.recipe_grind_rails(recipe, {'acc': arena(0)}.__getitem__), [])
+
 
 class FakeRx2:
     TYPE_RAW_BUFFER = 0x10031
