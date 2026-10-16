@@ -2,7 +2,7 @@
 //! `82D47318`, Exit `82B61BB8` (empty), Update `82D477C0`, publication `82D4C078`. The maths lives in
 //! `skate_core::riding::skitching` (frame, sub-mode, hold, shimmy, target, spring); this module composes it in
 //! retail order (`.local/research/npc/b50-skitch-prestep-update.md` section 1, b51 sections 1-3).
-//! Reached only with `SKATE_SKITCH=1` for now (`ground_runtime::skitch::latch_enabled`).
+//! Always on in the game since 2026-10-15 (`ground_runtime::skitch::latch_enabled`, set by `LivingWorldPlugin`).
 //! NOT RETAIL YET: the grab point is the point on the record's chord; the sub-mode's hard event comes from the
 //! shimmy state.
 use super::{GamePhysics, SkaterRuntime};

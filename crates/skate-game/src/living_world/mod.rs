@@ -238,8 +238,6 @@ impl LivingWorldSettings {
         self.user_opt_ins = choices;
         self.zombie = choices.zombie;
         self.npc_simulated.enabled = choices.npc_physics;
-        crate::physics::set_skitch_enabled(choices.skitch);
-        crate::physics::prop_dynamics::set_prop_grab_enabled(choices.prop_grab);
     }
 
     /// The draw distance in effect (sanitised: non-finite or non-positive = retail, clamped).
@@ -743,6 +741,11 @@ pub(crate) struct LivingWorldPlugin;
 
 impl Plugin for LivingWorldPlugin {
     fn build(&self, app: &mut App) {
+        // Prop grab (Move Object on the authored grab records) and skitching are always on in the game, not
+        // opt-ins and not switchable (user, 2026-10-15). The switches stay process-wide so unit tests keep their
+        // own default.
+        crate::physics::prop_dynamics::set_prop_grab_enabled(true);
+        crate::physics::set_skitch_enabled(true);
         app.insert_resource(LivingWorldSettings::from_env())
             .init_resource::<PopulationState>()
             .init_resource::<LivingWorldObservers>()
