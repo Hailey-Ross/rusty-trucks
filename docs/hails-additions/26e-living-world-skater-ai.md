@@ -510,3 +510,88 @@ stop the skater (`standing_ped_close_ahead_stops_the_skater`); the speed up / sl
 width blocked; `living_world_npc_skater_steers_around_a_player_standing_on_its_line` (was "stops for"). skate-core
 and skate-game pass apart from the known pre-existing failures. Passive 4-minute run: no skater stood still for
 more than a second (steer 41, slow_down 14, speed_up 11 mode changes).
+
+## Recorded grinds and slides: the input schedule and the takeoff board yaw (2026-10-16)
+
+**Problem.** In the user's 2026-10-15 session the followed NPC skater mark_appleyard landed 4 of 4 recorded grinds as
+another grind (a recorded bs_noseblunt as a 50-50, a bs_tailslide as a 5-0).
+
+**Root cause.** Retail never forces the grind family. It gives the AI skater the inputs a player would give and lets
+the normal grind investigation pick the family (research `.local/research/npc/b113-ai-recorded-grind.md`, main
+re-checked every address below in the recomp):
+- **Dispatch per category** (`sub_8246A2E0`, jump table 0x8246A45C): only ollies and flips (categories 1 / 2,
+  `sub_8246A080` -> `sub_82469448`) post `Trick` + the trick name. A grind (5), nocomply (7), hippy jump (10),
+  footplant (13) only keep the trick in the slot (`pc+844`); fingerflips, grabs and boneless (3 / 4 / 12) do so only
+  when the AI profile's byte +51 is set (layout +400 = `Hash_6DBAF7AD6CDE6A16`, copied by `sub_8245FFD8`; layout
+  offset from the skaterschema), else the slot keeps the previous trick; a revert (11, `sub_8246A1E8`) posts `Trick`
+  and `SlideFs180` (fsrevert) / `SlideBs180` (bsrevert); handplant (6) and manual (8) only validate. An end node or a
+  failed dispatch clears the category (0x8246A6D4). Ours posted `Trick` + name for every category.
+- **The schedule** (`sub_824696B8`, jump table 0x824698F8 -> `sub_82470ED0`): every tick from the start node, the
+  slot trick's `scoring_trick` `SkaterIntentTuple` list (up to 6 entries: intent index, value, first and last tick,
+  last < 0 = until the slot ends) is posted for categories 1-5, 7, 10, 12, 13; 6 posts `GrabWorld` 1.0. Data: a 5-0
+  holds `PhysGrindUpDown` -1, a nosegrind +1, grab variants `Left/RightGroundGrab`; 50-50s, noseblunts, tailslides,
+  boardslides have an empty list. Intent names: the executable's enum table (0x82FCB260, 146 names).
+- **The takeoff board yaw** (`sub_8246B1F8`): on the takeoff edge, d = heading(recorded board forward) -
+  heading(recorded skater forward) of the cursor node, where `sub_8296EC98(v, +Z, +Y)` is the acos of the
+  normalised dot with +Z, made `2 pi -` it when `cross(v, +Z) . +Y < 0` (so `atan2(-v.x, v.z)` in [0, 2 pi); 0 for a
+  zero vector; node matrix row 2 = the quaternion applied to +Z, `sub_82453970`). d is wrapped to [-pi, pi], folded
+  to [-pi/2, pi/2] (nose and tail on the same line); above 0.31416 rad (18 deg) `BoardAdjustAngle` = +-pi/2 by the
+  sign of d and `BoardAdjustMag` = |d| x 6.0606 (not clamped). The air arm (`sub_8246B358` -> `sub_82471008`) posts
+  them every airborne tick, after the yaw steer; with a manual anticipated ahead it posts -2.677 (nosemanual) / 0.257
+  instead, magnitude |0.5|. This was the open sign: decoded, no guess left.
+
+**Change.** `skate-core/src/living_world/ai_signals.rs`: `TrickSlot`, the per-category dispatch, `slot_signals` (the
+writer), `retail_heading`, `BoardYaw` (`takeoff`, `post`), `BoardYawTuning` (retail defaults), `manual_value`,
+`anticipated`. `skate-core/src/input/skater_intent.rs`: the intent enum names. `skate-data/src/scoring.rs`: each
+scorable's `intents` from `Hash_F216FED54DCBEB50` (raw array items now kept by `collections.rs`).
+`skate-data/src/living_world.rs`: `slot_tricks` per profile. `skate-game/src/living_world/npc_sim.rs`: the slot and
+board yaw on the NPC (cleared with the controller), the board yaw latched at takeoff and posted in the air arm (on by
+default and separate from the air steer switch), the writer after the dispatch gates (skitch, off the path or board,
+the placement hold skip it; low props clear the slot). Logs: `NPC_SKATER_SIM_SLOT` (slot opened without a perform),
+`NPC_SKATER_BOARD_YAW` (takeoff yaw outside the dead zone).
+
+**Moddability.** The schedules are the scorable records' data (a content override of `scoring_trick` changes them);
+`npc_simulated {board_yaw, board_yaw_dead_zone, board_yaw_mag_scale}`; the profile byte comes from
+`skater_profiles.json`. Slot and yaw are plain data on the NPC (serialisable, deterministic, no RNG).
+
+**Verification.** Unit tests in `ai_signals.rs` (grind slot and schedule until the end node, schedule windows and
+category arms, revert keys and the profile gate, the heading against `atan2(-x, z)`, the fold and dead zone, a
+noseblunt posting nothing at dispatch); `skate-data` `stock_grinds_carry_their_ai_intent_schedules` on the user's
+assets (5-0 -1, nosegrind +1, noseblunt and 50-50 empty). Exactly 90 deg sits on the fold edge, where the byte
+rounding of the recorded frames decides the side (as in retail). Not yet measured: recorded vs landed grinds in a
+session (needs NPC Skater Physics on near a grinding line; compare `NPC_SKATER_SIM_SLOT` with the landed GRIND lines).
+
+**Open.** Powerslide (9) keeps the perform signals until its writer arm is ported (`RightSlideStart` /
+`LeftSlideStart` by the ground-steer error `pc+824`, `LeftSlide` -0.42 / `RightSlide` +0.42, gated by `pc+920`,
+set in `sub_8246DB50`, not decoded). The flip retry `sub_824695A0` (HoldPattern) and the takeoff branch of
+`sub_8246A700` that posts `WipeOutRequest` (key 0x830BECC4) and clears `pc+844` when `sub_82460460` agrees are not
+ported.
+
+## Bumps: the player and simulated NPC skaters knock each other down (2026-10-16)
+
+**Problem.** The user (2026-10-15 session, confirmed for retail 2026-10-16): bumping NPC skaters should knock them
+down. Ours: a simulated NPC was left out of the player's solve (2026-10-15, its replay proxy had made it collide with
+a copy of itself), and the player was not in the NPC's solve, so nothing could knock anybody down.
+
+**Retail.** Both are full skaters: a skater touching another is an ordinary skeleton contact of collision group 5
+(`sub_82BD4A30`, 0x82BD5388), the force scaled by `AISkeletonScalar` for an AI skater and `SkaterSkeletonScalar`
+otherwise, the non-AI side's ground thresholds by `SkaterSkaterThresholdScalar`; each side's own wipeout check decides
+(research `m7-skater-collision.md`). No skater-specific bail reason. Anger and attacks: no code or data for path AI
+skaters (research b125: the collision mood poster `sub_8269D8A8` reads the ped brain at +5896; the `ai_skater`
+living-world entity is a stub; the mood reaction sets list `skater_male` / `skater_female`). The skaters that warn,
+chase and take the player down are the skater peds (`skater_male01..03`, `skater_female01..03`, category
+`ped_class_skater`, b126), which our ped census and mood system already spawn and run; male ones use the
+reaction sets `skatercollisionwarn:2` / `skatercollisionchase:1` [data] (b125 reports from the recomp: the first bump
+gives a warning, the second an angry chase and the takedown; not re-checked by main), dropping a carried board before
+the chase (`pedestrian_newchasee.xml`); female ones taze or flee.
+
+**Change.** `npc_skaters::push_proxies` adds each simulated NPC's own body after its last step (board and skeleton,
+`BodyState`, like a multiplayer peer: `Proxies::append`) at the end of the player's proxies and records where they
+start (`GamePhysics::npc_sim_proxy_mark`); `npc_sim::run_steps` drops them from each NPC's own solve
+(`Proxies::truncate`) and adds the player's body and the other simulated NPCs instead. `network::capture_body_of`
+captures any context's board. Switch: `npc_simulated.bump` (retail on; `SKATE_NPC_BUMP=0` turns it off).
+
+**Verification.** `physics::skater_context_tests::a_hard_bump_knocks_a_simulated_npc_skater_down` (DownTown, ignored
+test with assets): a skater riding at 9 m/s into the standing player wipes out at tick 26 (the player, shoved by the
+sliding NPC, at tick 36); at 2 m/s it touches (41 contacts) and nobody falls. The game wiring compiles and the suites
+pass; feel in game is for the user's session.

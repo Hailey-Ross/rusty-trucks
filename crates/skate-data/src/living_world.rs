@@ -197,6 +197,10 @@ pub fn skater_characters(json: &[u8], bound: &[&str]) -> Result<Vec<SkaterCharac
 pub const PROFILE_REGULAR_TRICKS: &str = "Hash_E580B6284639E03F";
 /// `ai_skater_profiles` field of the nollie table (nollie flips + nollie; profile +8, layout +164).
 pub const PROFILE_NOLLIE_TRICKS: &str = "Hash_BB901D68361E9833";
+/// `ai_skater_profiles` bool at layout +400 (copied to runtime profile +51 by `sub_8245FFD8`; layout offset from the
+/// skaterschema): the recorded fingerflip / grab / boneless tricks take their slot (`sub_8246A2E0` 0x8246A61C).
+/// Name unresolved; stock: true in 149 of 193 records.
+pub const PROFILE_SLOT_TRICKS: &str = "Hash_6DBAF7AD6CDE6A16";
 
 /// The AI skater profiles' trick tables, and which profile each character uses.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -206,12 +210,21 @@ pub struct SkaterTrickProfiles {
     pub profiles: BTreeMap<String, TrickProfile>,
     /// `characters.*.aiprofile` by character key.
     pub character_profile: BTreeMap<String, String>,
+    /// [`PROFILE_SLOT_TRICKS`] by `ai_skater_profiles` record name.
+    pub slot_tricks: BTreeMap<String, bool>,
 }
 
 impl SkaterTrickProfiles {
     /// The table of a character: its `aiprofile` record, else `default`.
     pub fn for_character(&self, key: &str) -> Option<&TrickProfile> {
         self.character_profile.get(key).and_then(|p| self.profiles.get(p)).or_else(|| self.profiles.get("default"))
+    }
+
+    /// [`PROFILE_SLOT_TRICKS`] of a character's profile (else `default`'s; true when neither has it, the stock
+    /// `default` value).
+    pub fn slot_tricks_for(&self, key: &str) -> bool {
+        let profile = self.character_profile.get(key).filter(|p| self.slot_tricks.contains_key(*p)).map_or("default", |p| p.as_str());
+        self.slot_tricks.get(profile).copied().unwrap_or(true)
     }
 }
 
@@ -242,7 +255,8 @@ pub fn skater_trick_profiles(json: &[u8]) -> Result<SkaterTrickProfiles, LivingW
         .flatten()
         .filter_map(|(k, c)| c["aiprofile"].as_str().filter(|p| !p.is_empty()).map(|p| (k.clone(), p.to_owned())))
         .collect();
-    Ok(SkaterTrickProfiles { profiles, character_profile })
+    let slot_tricks = records.iter().filter_map(|(name, r)| r["fields"][PROFILE_SLOT_TRICKS].as_bool().map(|b| (name.clone(), b))).collect();
+    Ok(SkaterTrickProfiles { profiles, character_profile, slot_tricks })
 }
 
 /// Population view of decoded lines: ambient lines only, start = node 0, heading from node 0

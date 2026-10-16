@@ -74,7 +74,7 @@ pub(crate) struct Multiplayer {
     transport: Option<Box<dyn transport::Transport>>,
     lobby: Option<Session>,
     info: Info,
-    schema: network::Schema,
+    pub(crate) schema: network::Schema,
     anchors: Vec<usize>,
     remotes: BTreeMap<u64, Remote>,
     pub status: String,

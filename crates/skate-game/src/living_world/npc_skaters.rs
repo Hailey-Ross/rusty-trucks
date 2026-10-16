@@ -929,6 +929,14 @@ pub(crate) const PROXY_ID_TAG: u64 = 0x4E50_0000_0000_0000;
 /// The board half of an NPC proxy carries this bit on top of the body's id.
 pub(crate) const PROXY_BOARD_BIT: u64 = 1 << 47;
 
+/// The proxy peer id of a simulated NPC's body (the actor its contacts report).
+pub(crate) fn sim_peer(id: LivingWorldId) -> u64 {
+    PROXY_ID_TAG | (1 << 46) | id.to_u64()
+}
+
+/// The proxy peer id of the player's body in a simulated NPC's solve.
+pub(crate) const PLAYER_PEER: u64 = PROXY_ID_TAG | (1 << 45);
+
 /// Retail collision groups: skater skeleton parts 5 (the skeleton contact pass scales a group-5
 /// force by `SkaterSkeletonScalar` and raises the player's thresholds by
 /// `SkaterSkaterThresholdScalar`, `sub_82BD4A30` at `0x82BD53D0`), board 4 (ignored by that
@@ -1031,6 +1039,8 @@ pub(crate) fn prop_volumes(id: LivingWorldId, s: &ReplaySample) -> [(u64, skate_
 /// push volumes to the prop step ([`prop_volumes`]).
 pub(crate) fn push_proxies(
     npcs: Query<(&NpcSkater, &NpcReplay), Without<super::npc_sim::NpcSim>>,
+    sims: Query<(&NpcSkater, &super::npc_sim::NpcSim)>,
+    net: Option<Res<crate::multiplayer::Multiplayer>>,
     mut physics: ResMut<crate::physics::GamePhysics>,
     skater: Res<crate::physics::SkaterRuntime>,
     replay: Res<crate::replay::Replay>,
@@ -1039,6 +1049,7 @@ pub(crate) fn push_proxies(
     // Replay-tier NPCs only. A simulated NPC has its own physics body; a proxy from its replay sample was an invisible
     // solid copy of it on the line that the simulated body collided with (contact bails and flings, 2026-10-15).
     physics.actor_prop_volumes.clear();
+    physics.npc_sim_proxy_mark = None;
     if replay.active {
         return;
     }
@@ -1048,6 +1059,19 @@ pub(crate) fn push_proxies(
     for &(id, s) in &list {
         for solid in proxy(id, s) {
             proxies.append_solid(solid, &physics, &skater, false);
+        }
+    }
+    // Simulated NPCs: their own body from their last step, the whole skeleton and board like a multiplayer peer's, so
+    // the player and they bump and knock each other down through each one's own skeleton contact and wipeout check
+    // (retail: both are full skaters, group 5; research m7, b125). Appended last: their own solves swap them out.
+    if let Some(net) = net.as_ref().filter(|_| settings.npc_simulated.bump) {
+        physics.npc_sim_proxy_mark = Some(proxies.mark(&skater));
+        let mut bodies: Vec<_> = sims.iter().filter_map(|(n, sim)| sim.last_body().map(|b| (n.id, b))).collect();
+        bodies.sort_by_key(|x| x.0);
+        if let Some(at) = skate_net::prediction::CollisionPrediction::at(0.0) {
+            for (id, body) in bodies {
+                proxies.append(sim_peer(id), body, &net.schema, &physics, &skater, at);
+            }
         }
     }
     physics.network_proxies = proxies;

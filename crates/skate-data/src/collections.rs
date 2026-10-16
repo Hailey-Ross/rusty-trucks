@@ -17,6 +17,9 @@ pub struct Field {
 pub struct FieldArray {
     #[serde(default)]
     pub text_items: Vec<String>,
+    /// The raw elements, big-endian hex, `capacity` of them (unused ones zero).
+    #[serde(default)]
+    pub items: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
