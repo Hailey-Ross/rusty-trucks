@@ -41,6 +41,7 @@ mod seed;
 mod state_replay;
 mod swap;
 pub(crate) mod timing;
+pub(crate) mod hitch_parts;
 pub(crate) mod tuning;
 mod voices;
 pub(crate) mod world_bridge;

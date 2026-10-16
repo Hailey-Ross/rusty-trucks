@@ -77,11 +77,34 @@ pub struct ObstacleParams {
     /// NavPower's bots steer round it is middleware internals, not decoded. `false` = moving
     /// objects do not block a ped's step (the switch a decoded avoider port would replace).
     pub moving_solid: bool,
+    /// Player skaters are obstacles for peds (research b135: the skater's obstacle interface `0x82300910` slot
+    /// +104 returns 1, so `sub_82C477B0` always takes the moving-avoider branch, at any speed, standing included).
+    pub skaters: bool,
+    /// A skater obstacle's half extents (x, y, z), m. NOT RETAIL YET: retail's avoider is `{a, 0.2a, 0.2a}`,
+    /// `a = 0.25 R` with `R` a planner-wide value not read yet; this is a body-sized stand-in.
+    pub skater_half_extents: Vec3,
+}
+
+/// Obstacle ids of player skaters (`SKATER_OBSTACLE_BASE + player index`); always moving avoiders.
+pub const SKATER_OBSTACLE_BASE: u64 = 1 << 41;
+
+/// What a ped's step does not collide with: one object (its plugin prop) and, with its SkaterAvoidance nav
+/// modifier off (`ChangeNavModifierSetting` index 2: chasers, plugin bodies, spectators), the skaters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ignore {
+    pub id: Option<u64>,
+    pub skaters: bool,
+}
+
+impl Ignore {
+    fn skips(&self, id: u64) -> bool {
+        Some(id) == self.id || (self.skaters && id >= SKATER_OBSTACLE_BASE)
+    }
 }
 
 impl Default for ObstacleParams {
     fn default() -> Self {
-        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, step_height: 0.0, held_is_obstacle: true, moving_solid: true }
+        Self { enabled: true, min_half_extent: 0.2, moving_speed: 0.4, recut_fraction: 0.25, detour_margin: 0.1, max_detours: 8, step_height: 0.0, held_is_obstacle: true, moving_solid: true, skaters: true, skater_half_extents: [0.3, 0.9, 0.3] }
     }
 }
 
@@ -257,7 +280,8 @@ impl NavObstacles {
             }
             let now = Footprint::of(input, p.min_half_extent);
             let speed = (input.velocity[0].powi(2) + input.velocity[1].powi(2) + input.velocity[2].powi(2)).sqrt();
-            let moving = speed > p.moving_speed;
+            // A skater is always a moving avoider (never a cut), whatever its speed.
+            let moving = speed > p.moving_speed || input.id >= SKATER_OBSTACLE_BASE;
             let inactive = input.inactive || (input.held && !p.held_is_obstacle) || !p.enabled;
             let state = self.states.entry(input.id).or_insert(ObstacleState { cut: None, cut_at: input.center, now, moving, inactive, held: input.held });
             state.now = now;
@@ -424,19 +448,19 @@ impl NavObstacles {
     /// the face removed), when that slide is free; else `None` (the ped stays). Ours: stands in
     /// for the physical contact that keeps a retail ped out of a prop.
     pub fn resolve_step(&self, from: Vec3, to: Vec3, radius: f32) -> Option<Vec3> {
-        self.resolve_step_ignoring(from, to, radius, None)
+        self.resolve_step_ignoring(from, to, radius, Ignore::default())
     }
 
     /// [`Self::resolve_step`] for a ped whose collision ignores one object (`ignore`, an obstacle id): retail
     /// `DisableCollisionsWithBehaviourSource` (`826A7378`, `82E3DB68` -> `ped+5916`) lets a ped reach a seat whose
     /// waypoint lies inside its own bench.
-    pub fn resolve_step_ignoring(&self, from: Vec3, to: Vec3, radius: f32, ignore: Option<u64>) -> Option<Vec3> {
+    pub fn resolve_step_ignoring(&self, from: Vec3, to: Vec3, radius: f32, ignore: Ignore) -> Option<Vec3> {
         if self.step_ok_ignoring(from, to, radius, ignore) {
             return Some(to);
         }
         let r = radius + 0.01;
-        let mut blocking: Vec<Footprint> = self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).into_iter().filter(|(id, _)| Some(*id) != ignore).map(|(_, f)| f).collect();
-        blocking.extend(self.loose.iter().filter(|id| Some(**id) != ignore).filter_map(|id| self.states.get(id).map(|s| s.now)));
+        let mut blocking: Vec<Footprint> = self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).into_iter().filter(|(id, _)| !ignore.skips(*id)).map(|(_, f)| f).collect();
+        blocking.extend(self.loose.iter().filter(|id| !ignore.skips(**id)).filter_map(|id| self.states.get(id).map(|s| s.now)));
         let f = blocking.into_iter().find(|f| f.applies(to[1], self.params.step_height) && f.contains(to, radius) && !f.contains(from, radius))?;
         // Keep `to` on the face `from` is outside of (the axis where `from` is beyond the grown half).
         let (lf, lt) = (f.local([from[0], from[2]]), f.local([to[0], to[2]]));
@@ -453,11 +477,11 @@ impl NavObstacles {
     /// not carried) overlaps it afterwards, or the step does not go deeper into one it already
     /// overlaps (a prop pushed onto a ped lets it walk out).
     pub fn step_ok(&self, from: Vec3, to: Vec3, radius: f32) -> bool {
-        self.step_ok_ignoring(from, to, radius, None)
+        self.step_ok_ignoring(from, to, radius, Ignore::default())
     }
 
     /// [`Self::step_ok`] without the obstacle `ignore` (see [`Self::resolve_step_ignoring`]).
-    pub fn step_ok_ignoring(&self, from: Vec3, to: Vec3, radius: f32, ignore: Option<u64>) -> bool {
+    pub fn step_ok_ignoring(&self, from: Vec3, to: Vec3, radius: f32, ignore: Ignore) -> bool {
         if !self.params.enabled {
             return true;
         }
@@ -471,7 +495,7 @@ impl NavObstacles {
             let d = |p: Vec3| (p[0] - f.center[0]).hypot(p[2] - f.center[1]);
             f.contains(from, radius) && d(to) > d(from)
         };
-        self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).iter().all(|(id, f)| Some(*id) == ignore || ok(f))
-            && self.loose.iter().all(|id| Some(*id) == ignore || self.states.get(id).is_none_or(|s| ok(&s.now)))
+        self.cuts_near([to[0] - r, to[2] - r], [to[0] + r, to[2] + r]).iter().all(|(id, f)| ignore.skips(*id) || ok(f))
+            && self.loose.iter().all(|id| ignore.skips(*id) || self.states.get(id).is_none_or(|s| ok(&s.now)))
     }
 }

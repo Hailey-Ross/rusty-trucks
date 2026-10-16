@@ -50,11 +50,21 @@ pub struct ConversationParams {
     pub turn_seconds: f32,
     /// The gather timer set by the first join, s (`D+1136`, `0x820D4924` 30.0).
     pub gather_seconds: f32,
+    /// Each waypoint's random offset in x and z, m (`82E1D620`: U(-0.8, 0.8), `0x8208824C`).
+    pub jitter: f32,
+    /// A waypoint's navmesh point must lie within this of it in x and in z, m (`0x8209975C`).
+    pub locate_tolerance: f32,
+    /// Highest area cost a waypoint may stand on (`82926640`: max of the area byte's nibbles; pavement 1).
+    pub max_area_cost: f32,
+    /// Farthest a waypoint may be from the dropped centre, m (`0x8211F0F8` = 9.0 squared).
+    pub max_distance: f32,
+    /// The centre is dropped onto the world with a ray this far above and below it, m (`82E166C0`, `0x822F8B84`).
+    pub drop_height: f32,
 }
 
 impl Default for ConversationParams {
     fn default() -> Self {
-        Self { radius: 1.5, waypoints: 3, exclusion: 50.0, ahead: 3.0, turn_seconds: 3.0, gather_seconds: 30.0 }
+        Self { radius: 1.5, waypoints: 3, exclusion: 50.0, ahead: 3.0, turn_seconds: 3.0, gather_seconds: 30.0, jitter: 0.8, locate_tolerance: 0.5, max_area_cost: 1.0, max_distance: 3.0, drop_height: 3.0 }
     }
 }
 
@@ -119,17 +129,47 @@ pub enum Left {
 /// Uniform [0, 1) from the host's seeded generator.
 pub type Rand<'a> = &'a mut dyn FnMut() -> f32;
 
+/// The navmesh point and area byte under a waypoint candidate (retail's NavPower locate, any area), `None` off the mesh.
+pub type Probe<'a> = &'a dyn Fn(Vec3) -> Option<(Vec3, u8)>;
+
+/// `82926640`: an area byte's cost, the larger of its two nibbles (pavement 0x11 = 1, road 0xA1 = 10, 0xF1 = 15).
+pub fn area_cost(area: u8) -> f32 {
+    (area >> 4).max(area & 0xF) as f32
+}
+
 impl Conversation {
-    /// `82E1D620`: the area at `center` with its waypoints.
-    pub fn new(id: u64, center: Vec3, candidates: Vec<usize>, params: &ConversationParams, rand: Rand) -> Self {
+    /// `82E1D620`: the area at `center` (already dropped onto the world by the host; `None` = the drop missed: no
+    /// waypoints) with its waypoints. Each waypoint (on the circle, jittered) must land on the navmesh within the
+    /// tolerance in x and z, on an area of cost at most `max_area_cost` (so never a road), and within
+    /// `max_distance` of the centre; one failure clears them all (`82E1DAC0`, no retry). Its height is the navmesh's.
+    /// `probe` = `None`: a map without a navmesh keeps the plain circle (NOT RETAIL: retail always has one).
+    pub fn new(id: u64, center: Option<Vec3>, candidates: Vec<usize>, params: &ConversationParams, probe: Option<Probe>, rand: Rand) -> Self {
         let start = rand() * std::f32::consts::PI;
         let step = std::f32::consts::TAU / params.waypoints.max(1) as f32;
-        let waypoints = (0..params.waypoints)
-            .map(|i| {
+        let mut waypoints = Vec::new();
+        if let Some(c) = center {
+            for i in 0..params.waypoints {
                 let a = start + step * i as f32;
-                ([center[0] + a.sin() * params.radius, center[1], center[2] + a.cos() * params.radius], None)
-            })
-            .collect();
+                let mut w = [c[0] + a.sin() * params.radius, c[1], c[2] + a.cos() * params.radius];
+                if let Some(probe) = probe {
+                    w[0] += (rand() * 2.0 - 1.0) * params.jitter;
+                    w[2] += (rand() * 2.0 - 1.0) * params.jitter;
+                    let Some((at, area)) = probe(w) else {
+                        waypoints.clear();
+                        break;
+                    };
+                    let near = (at[0] - w[0]).abs() <= params.locate_tolerance && (at[2] - w[2]).abs() <= params.locate_tolerance;
+                    let d2 = (at[0] - c[0]).powi(2) + (at[1] - c[1]).powi(2) + (at[2] - c[2]).powi(2);
+                    if !near || area_cost(area) - params.max_area_cost > 0.001 || d2 > params.max_distance * params.max_distance {
+                        waypoints.clear();
+                        break;
+                    }
+                    w = [w[0], at[1], w[2]];
+                }
+                waypoints.push((w, None));
+            }
+        }
+        let center = center.unwrap_or_default();
         Self { id, center, waypoints, members: Vec::new(), candidates, row: None, value: None, state: 0, speaker: 0, line: None, variant: 0, gather_timer: 0.0, gather_seconds: params.gather_seconds }
     }
 
@@ -317,7 +357,7 @@ mod tests {
         let rows = vec![ConversationRow { name: "r".into(), participants: vec!["adult_male".into(), "teen_male".into()], values: vec![4] }];
         let mut seq = [0.0f32, 0.0, 0.0, 0.0].into_iter().cycle();
         let mut rand = || seq.next().unwrap();
-        let mut c = Conversation::new(1, [0.0; 3], vec![0], &ConversationParams::default(), &mut rand);
+        let mut c = Conversation::new(1, Some([0.0; 3]), vec![0], &ConversationParams::default(), None, &mut rand);
         assert_eq!(c.waypoints.len(), 3);
         assert!((c.waypoints[0].0[2] - 1.5).abs() < 1e-5, "start angle 0 -> +z");
         assert!(c.allowed_to_join("teen_male", &["adult_male".into()], &rows));
@@ -351,7 +391,7 @@ mod tests {
         let rows = vec![ConversationRow { name: "r".into(), participants: vec!["a".into(), "b".into()], values: vec![8] }];
         let mut seq = [0.0f32, 0.0, 0.0, 0.9, 0.9].into_iter().chain(std::iter::repeat(0.0));
         let mut rand = || seq.next().unwrap();
-        let mut c = Conversation::new(1, [0.0; 3], vec![0], &ConversationParams::default(), &mut rand);
+        let mut c = Conversation::new(1, Some([0.0; 3]), vec![0], &ConversationParams::default(), None, &mut rand);
         c.join(1);
         c.join(2);
         c.signal_in_position(1, &rows, &mut rand);
@@ -365,7 +405,7 @@ mod tests {
     fn the_gather_timer_starts_with_whoever_is_there() {
         let rows = vec![ConversationRow { name: "r".into(), participants: vec!["a".into(), "b".into()], values: vec![] }];
         let mut rand = || 0.0f32;
-        let mut c = Conversation::new(1, [0.0; 3], vec![0], &ConversationParams::default(), &mut rand);
+        let mut c = Conversation::new(1, Some([0.0; 3]), vec![0], &ConversationParams::default(), None, &mut rand);
         c.join(1);
         c.join(2);
         assert_eq!((c.state, c.gather_timer), (1, 30.0));
@@ -378,7 +418,7 @@ mod tests {
     fn a_member_leaving_aborts_and_the_last_one_empties_it() {
         let rows = vec![ConversationRow { name: "r".into(), participants: vec!["a".into(), "b".into()], values: vec![1] }];
         let mut rand = || 0.0f32;
-        let mut c = Conversation::new(1, [0.0; 3], vec![0], &ConversationParams::default(), &mut rand);
+        let mut c = Conversation::new(1, Some([0.0; 3]), vec![0], &ConversationParams::default(), None, &mut rand);
         c.join(1);
         c.join(2);
         c.signal_in_position(1, &rows, &mut rand);
@@ -392,9 +432,27 @@ mod tests {
     #[test]
     fn a_lone_member_ends_the_conversation() {
         let mut rand = || 0.5f32;
-        let mut c = Conversation::new(1, [0.0; 3], vec![], &ConversationParams::default(), &mut rand);
+        let mut c = Conversation::new(1, Some([0.0; 3]), vec![], &ConversationParams::default(), None, &mut rand);
         c.join(10);
         c.signal_in_position(10, &[], &mut rand);
         assert!(c.is_complete());
+    }
+
+    #[test]
+    fn waypoints_keep_off_roads_all_or_nothing() {
+        // `82E1D620` (b134): pavement 0x11 keeps all three at the navmesh height; one road (0xA1) or off-mesh
+        // waypoint clears the set; a missed centre drop gives none.
+        let p = ConversationParams::default();
+        let mut half = || 0.5f32;
+        let pavement = |w: Vec3| Some(([w[0], 0.25, w[2]], 0x11u8));
+        let c = Conversation::new(1, Some([0.0; 3]), vec![], &p, Some(&pavement), &mut half);
+        assert_eq!(c.waypoints.len(), 3);
+        assert!(c.waypoints.iter().all(|(w, _)| w[1] == 0.25));
+        let road_east = |w: Vec3| Some((w, if w[0] > 0.1 { 0xA1u8 } else { 0x11 }));
+        assert!(Conversation::new(1, Some([0.0; 3]), vec![], &p, Some(&road_east), &mut half).waypoints.is_empty());
+        let far = |w: Vec3| Some(([w[0] + 0.6, w[1], w[2]], 0x11u8));
+        assert!(Conversation::new(1, Some([0.0; 3]), vec![], &p, Some(&far), &mut half).waypoints.is_empty(), "outside the 0.5 m tolerance");
+        assert!(Conversation::new(1, None, vec![], &p, Some(&pavement), &mut half).waypoints.is_empty());
+        assert_eq!((area_cost(0x11), area_cost(0xA1), area_cost(0xF1)), (1.0, 10.0, 15.0));
     }
 }

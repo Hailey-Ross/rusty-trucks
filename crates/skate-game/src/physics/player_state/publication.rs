@@ -17,25 +17,7 @@ pub(super) fn publish(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
         biped.frame_output.velocity.map(f32::to_bits);
     skater.player_input.physical.off_board.cadence_phase_80 = biped.cadence.phase.phase;
     skater.player_input.physical.off_board.locomotion_state_84 = biped.cadence.locomotion_index;
-    if !state.is_grind()
-        && state != PhysicalStateId::Nonspecific
-        && !matches!(
-            state,
-            PhysicalStateId::PhysicsGround
-                | PhysicalStateId::PhysicsAir
-                    | PhysicalStateId::PhysicsAirSecondary
-                | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround
-                | PhysicalStateId::KnownAir
-                | PhysicalStateId::BipedAir
-                | PhysicalStateId::BipedGround
-                | PhysicalStateId::OffBoardPushing
-                | PhysicalStateId::GroundAnimation
-                | PhysicalStateId::SlideGround
-                | PhysicalStateId::WipeoutGround
-                | PhysicalStateId::Teleporting
-                | PhysicalStateId::LandingOnDeck
-        )
-    {
+    if !has_output_owner(state) {
         return Err(format!(
             "FillPhysOut requires the actual {state:?} output owner"
         ));
@@ -287,4 +269,46 @@ pub(super) fn publish(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
             .note_boundary(contact, [position[0], position[1], position[2]]);
     }
     Ok(())
+}
+
+/// The states FillPhysOut has an output owner for: every grind, Nonspecific and these.
+pub(super) fn has_output_owner(state: PhysicalStateId) -> bool {
+    state.is_grind()
+        || state == PhysicalStateId::Nonspecific
+        || matches!(
+            state,
+            PhysicalStateId::PhysicsGround
+                | PhysicalStateId::PhysicsAir
+                    | PhysicalStateId::PhysicsAirSecondary
+                | PhysicalStateId::FootPlant | PhysicalStateId::Boneless | PhysicalStateId::HandPlant | PhysicalStateId::RevertGround
+                | PhysicalStateId::KnownAir
+                | PhysicalStateId::BipedAir
+                | PhysicalStateId::BipedGround
+                | PhysicalStateId::OffBoardPushing
+                | PhysicalStateId::GroundAnimation
+                | PhysicalStateId::SlideGround
+                | PhysicalStateId::WipeoutGround
+                | PhysicalStateId::Teleporting
+                | PhysicalStateId::LandingOnDeck
+                //Skitching104 publishes below (82D4C078).
+                | PhysicalStateId::Skitching
+        )
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::*;
+    // Every state the registry runs (but Sleeping) must pass PreState and FillPhysOut: Skitching was
+    // missing from both and the first live skitch failed (2026-10-16 session 3).
+    #[test]
+    fn every_supported_state_has_a_deck_prediction_and_an_output_owner() {
+        let registry = super::super::registry::StateRegistry::new();
+        for state in PhysicalStateId::ALL {
+            if state == PhysicalStateId::Sleeping || !registry.capability(state).supported {
+                continue;
+            }
+            assert!(super::super::pre_state::predicts_deck(state), "{state:?} has no PredictFutureOfDeck");
+            assert!(has_output_owner(state), "{state:?} has no FillPhysOut owner");
+        }
+    }
 }

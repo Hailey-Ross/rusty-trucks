@@ -988,8 +988,13 @@ def export_group(ctx) -> dict:
     peds = export(context)
     skaters = living_world_skaters.export(context)
     output = private/'living_world'
+    report('Placing the challenge hosts')
+    from . import marquee_hosts
+    names = (Path(__file__).parent/'names.txt').read_text(encoding='utf-8').splitlines()
+    hosts = marquee_hosts.export(game_root, output, names)
     files = sorted(p for p in output.rglob('*') if p.is_file() and p.name != 'export.json')
     summary = {'version': VERSION, 'peds': peds, 'skaters': {k: v for k, v in skaters.items() if k != 'sha256'},
+               'hosts': hosts,
                'sha256': {p.relative_to(private).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}
     (output/'export.json').write_text(json.dumps(summary, indent=1), encoding='utf-8')
     return summary

@@ -312,6 +312,7 @@ pub(super) fn update(
     library: Option<Res<Library>>,
     cues: Res<super::skate_events::Cues>,
 ) {
+    let _span = super::hitch_parts::span(super::hitch_parts::GRAIN_BED);
     let _timing = super::timing::scope(&super::timing::GRAIN_BED);
     let (Some(mut native), Some(library)) = (native, library) else { return };
     let native = &mut *native;

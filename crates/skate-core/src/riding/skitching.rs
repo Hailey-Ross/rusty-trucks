@@ -108,6 +108,60 @@ pub struct SkitchSubMode {
     pub pushed: f32,
     /// A mode switch happened this tick (state+1344 bit 0x08).
     pub switched: bool,
+    /// This tick left sub-mode 0 (`82D49580` then writes `908 = 864 = 836`).
+    pub left_zero: bool,
+}
+
+/// What `82D49AB8`'s per-mode writes change (named by role; state offsets in the field docs).
+pub struct SkitchModeWrites<'a> {
+    /// 904 the hold's along target, 864 the shimmy's hand target, 900 the latched edge point, 1344 bits 0x02
+    /// (edge latched) / 0x01 (snapped), 1328 / 1332 the hands' off flags, 960 the outward push timer.
+    pub hold_target: &'a mut f32,
+    pub hand_target: &'a mut f32,
+    pub edge_point: &'a mut f32,
+    pub edge_latched: &'a mut bool,
+    pub snapped: bool,
+    pub hands_off: &'a mut [bool; 2],
+    pub pushed: &'a mut f32,
+}
+
+/// `82D49AB8` before its hold step (`82D49D70`), after the shimmy chain (TU3 call order in the state update:
+/// `82D49580`, `82D48C98`, `82D49AB8`). Retail (evidence only; re-implemented; main read the switch on 1324):
+/// - 0: `904 = clamp(864, -928, 928)`;
+/// - 1: both hands grip again (`1328 = 1332 = 0`) every tick;
+/// - 2: the edge point `e = +-932` (sign of 836, + only for 836 > 0) latches into 900 once (1344 bit 0x02), a
+///   snapped hand (bit 0x01) takes it as 864; 960 counts while the car's along acceleration 868 pushes outward past
+///   50 (both 868 and 836 non-zero, same sign), else 0; the hand on the outer side lets go (836 > 0: hand A off,
+///   B on; else A on, B off);
+/// - 3: the same latch with `e = +-(928 + 0.8)`, both hands off.
+pub fn mode_writes(mode: u8, along: f32, half_length: f32, along_limit: f32, car_accel: f32, w: SkitchModeWrites, s: &SkitchSubModeSettings, dt: f32) {
+    let sign = if along > 0.0 { 1.0 } else { -1.0 };
+    let latch = |e: f32, w: &mut SkitchModeWrites| {
+        if !*w.edge_latched {
+            *w.edge_point = e;
+            *w.edge_latched = true;
+        }
+        if w.snapped {
+            *w.hand_target = e;
+        }
+    };
+    match mode {
+        0 => *w.hold_target = w.hand_target.clamp(-half_length, half_length),
+        1 => *w.hands_off = [false; 2],
+        2 => {
+            let mut w = w;
+            latch(sign * along_limit, &mut w);
+            let outward = car_accel != 0.0 && along != 0.0 && (car_accel > 0.0) == (along > 0.0) && car_accel.abs() > s.push_accel;
+            *w.pushed = if outward { *w.pushed + dt } else { 0.0 };
+            *w.hands_off = if along > 0.0 { [true, false] } else { [false, true] };
+        }
+        3 => {
+            let mut w = w;
+            latch(sign * (half_length + s.step_off), &mut w);
+            *w.hands_off = [true; 2];
+        }
+        _ => {}
+    }
 }
 
 /// What `82D49580` reads each tick (named by role).
@@ -122,7 +176,8 @@ pub struct SkitchSubModeInput {
     /// acceleration (state+868).
     pub event: f32,
     pub car_accel: f32,
-    /// Mode 0 also leaves when either of these (state+1328 / +1332, meanings open) is 0.
+    /// Mode 0 also leaves when either of these (state+1328 / +1332, the hands' off flags, 1 = off) is 0, i.e. when
+    /// a hand grips.
     pub ready_a: f32,
     pub ready_b: f32,
 }
@@ -135,16 +190,19 @@ pub struct SkitchSubModeSettings {
     pub edge_band: f32,
     pub push_time: f32,
     pub push_accel: f32,
+    /// Sub-mode 3's edge point past the half length (`82D49AB8`, `Hash_AED1D7B20DA7CBBA`, 0.8).
+    pub step_off: f32,
 }
 
 impl Default for SkitchSubModeSettings {
     fn default() -> Self {
-        Self { settle: 0.5, edge_band: 0.4, push_time: 0.2, push_accel: 50.0 }
+        Self { settle: 0.5, edge_band: 0.4, push_time: 0.2, push_accel: 50.0, step_off: 0.8 }
     }
 }
 
 impl SkitchSubMode {
-    /// One tick of `82D49580` (+ `82D49AB8`'s timer).
+    /// One tick of `82D49580` (+ `82D49AB8`'s timer 948). Leaving sub-mode 0 also sets the posed hand 908 and the
+    /// hand target 864 to the along position 836: the caller applies that when `left_zero` is true.
     pub fn step(&mut self, i: &SkitchSubModeInput, s: &SkitchSubModeSettings, dt: f32) {
         let inside = i.position.abs() <= i.half_length;
         // `82D471A8`: inside the outer band.
@@ -152,11 +210,6 @@ impl SkitchSubMode {
         // `82D4C180` / `82D4C1F0`: the stick points to the centre / outward.
         let toward = i.stick.abs() > 0.01 && i.stick.signum() != i.position.signum();
         let outward = i.stick.abs() > 0.5 && i.stick.signum() == i.position.signum();
-        if i.car_accel * i.position.signum() > s.push_accel {
-            self.pushed += dt;
-        } else {
-            self.pushed = 0.0;
-        }
         let next = match self.mode {
             0 if self.time > s.settle || i.ready_a == 0.0 || i.ready_b == 0.0 => Some(if inside { 1 } else { 2 }),
             1 if !(inside || toward) => Some(2),
@@ -176,6 +229,7 @@ impl SkitchSubMode {
             _ => None,
         };
         self.switched = false;
+        self.left_zero = self.mode == 0 && next.is_some();
         if let Some(m) = next {
             // The 3 -> 4 switch keeps the timer and sets no switch bit.
             if !(self.mode == 3 && m == 4) {
@@ -208,11 +262,16 @@ pub struct SkitchQuerySettings {
     pub angle_a_degrees: f32,
     pub angle_b_degrees: f32,
     pub capacity: usize,
+    /// The latch's own CanGrabSpline limits (`82D39D98`: margin 0.0 at `0x82165A10`, angles 60 and 40 degrees at
+    /// `0x8209918C` / `0x82099190`).
+    pub latch_margin: f32,
+    pub latch_angle_a_degrees: f32,
+    pub latch_angle_b_degrees: f32,
 }
 
 impl Default for SkitchQuerySettings {
     fn default() -> Self {
-        Self { box_extents: [0.48, 0.45, 2.0], box_offset: [0.0, 0.86, 0.0], reach: 1.0, min_closing: 0.5, latch_time: 0.1, margin: 0.25, angle_a_degrees: 60.0, angle_b_degrees: 30.0, capacity: 5 }
+        Self { box_extents: [0.48, 0.45, 2.0], box_offset: [0.0, 0.86, 0.0], reach: 1.0, min_closing: 0.5, latch_time: 0.1, margin: 0.25, angle_a_degrees: 60.0, angle_b_degrees: 30.0, capacity: 5, latch_margin: 0.0, latch_angle_a_degrees: 60.0, latch_angle_b_degrees: 40.0 }
     }
 }
 
@@ -310,6 +369,32 @@ mod tests {
             m.step(&i, &s, dt);
         }
         assert_eq!(m.mode, 4);
+    }
+
+    #[test]
+    fn each_sub_mode_writes_its_hands_and_edge_point() {
+        let s = SkitchSubModeSettings::default();
+        let dt = 1.0 / 60.0;
+        let (mut hold, mut hand, mut edge, mut latched, mut off, mut pushed) = (0.0, 0.9, 0.0, false, [true; 2], 0.0);
+        let mut run = |mode: u8, along: f32, accel: f32, snapped: bool, hold: &mut f32, hand: &mut f32, edge: &mut f32, latched: &mut bool, off: &mut [bool; 2], pushed: &mut f32| {
+            let w = SkitchModeWrites { hold_target: hold, hand_target: hand, edge_point: edge, edge_latched: latched, snapped, hands_off: off, pushed };
+            mode_writes(mode, along, 0.5, 0.9, accel, w, &s, dt);
+        };
+        // 0: the hold target follows the hand target, clamped to the range.
+        run(0, 0.0, 0.0, false, &mut hold, &mut hand, &mut edge, &mut latched, &mut off, &mut pushed);
+        assert_eq!(hold, 0.5);
+        // 1: both hands grip again every tick.
+        run(1, 0.2, 0.0, false, &mut hold, &mut hand, &mut edge, &mut latched, &mut off, &mut pushed);
+        assert_eq!(off, [false; 2]);
+        // 2 at the + end: the edge point latches once, the outer hand (A) lets go, outward push counts.
+        run(2, 0.6, 60.0, false, &mut hold, &mut hand, &mut edge, &mut latched, &mut off, &mut pushed);
+        assert_eq!((edge, latched, off), (0.9, true, [true, false]));
+        assert!((pushed - dt).abs() < 1e-6);
+        run(2, -0.6, 60.0, true, &mut hold, &mut hand, &mut edge, &mut latched, &mut off, &mut pushed);
+        assert_eq!((edge, hand, off, pushed), (0.9, -0.9, [false, true], 0.0), "latched edge kept; snapped hand takes the new end");
+        // 3: both hands off.
+        run(3, 0.6, 0.0, false, &mut hold, &mut hand, &mut edge, &mut latched, &mut off, &mut pushed);
+        assert_eq!(off, [true; 2]);
     }
 
     #[test]

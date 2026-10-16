@@ -257,7 +257,22 @@ fn a_ped_ignoring_its_plugin_prop_steps_into_it_and_nothing_else() {
     assert!(o.update(&[bench, bin(9, 3.0, 0.0)]));
     let (from, seat) = ([0.0, 0.0, -0.9], [0.0, 0.0, -0.25]);
     assert!(!o.step_ok(from, seat, 0.35), "the bench blocks a ped that does not ignore it");
-    assert_eq!(o.resolve_step_ignoring(from, seat, 0.35, Some(3_905_883_390)), Some(seat));
+    assert_eq!(o.resolve_step_ignoring(from, seat, 0.35, Ignore { id: Some(3_905_883_390), skaters: false }), Some(seat));
     let (by_bin, into_bin) = ([3.0, 0.0, -0.9], [3.0, 0.0, -0.2]);
-    assert!(o.resolve_step_ignoring(by_bin, into_bin, 0.35, Some(3_905_883_390)) != Some(into_bin), "another prop still blocks");
+    assert!(o.resolve_step_ignoring(by_bin, into_bin, 0.35, Ignore { id: Some(3_905_883_390), skaters: false }) != Some(into_bin), "another prop still blocks");
+}
+
+#[test]
+fn a_standing_skater_is_a_moving_avoider_unless_the_ped_ignores_skaters() {
+    // b135: the skater's obstacle interface always takes the moving-avoider branch, even at rest.
+    let mut o = NavObstacles::new(ObstacleParams::default());
+    let h = ObstacleParams::default().skater_half_extents;
+    let skater = ObstacleInput { id: SKATER_OBSTACLE_BASE, center: [0.0, h[1], 0.0], axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], half_extents: h, velocity: [0.0; 3], inactive: false, held: false };
+    o.update(&[skater]);
+    assert!(o.states[&SKATER_OBSTACLE_BASE].moving && o.states[&SKATER_OBSTACLE_BASE].cut.is_none(), "never cut into the mesh");
+    assert!(!o.step_ok([-1.0, 0.0, 0.0], [-0.4, 0.0, 0.0], 0.35), "a walking ped does not step into a standing skater");
+    // SkaterAvoidance off (a chaser): the skater is no obstacle.
+    assert!(o.step_ok_ignoring([-1.0, 0.0, 0.0], [-0.4, 0.0, 0.0], 0.35, Ignore { id: None, skaters: true }));
+    // Mod switch.
+    o.set_params(ObstacleParams { skaters: false, ..ObstacleParams::default() });
 }

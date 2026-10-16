@@ -244,6 +244,7 @@ pub(super) fn update(
     config: Res<crate::config::Config>,
     mut audio: ResMut<MapAudio>,
 ) {
+    let _span = super::hitch_parts::span(super::hitch_parts::MAP_AUDIO);
     let Some(library) = library else { return };
     let key = (map.path.clone(), map.generation, content.generation);
     if audio.key.as_ref() == Some(&key) {

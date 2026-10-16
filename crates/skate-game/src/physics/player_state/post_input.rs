@@ -47,6 +47,7 @@ struct Services<'a> {
     /// The props' collision layer for the trajectory's grind surface probes.
     prop_world: Option<&'a skate_core::physics::board_world::BoardWorld>,
     grab_records: [Option<skate_core::player::offboard::grab_scene::Record>; 2],
+    grab_geometry: &'a mut [Option<std::sync::Arc<skate_core::player::offboard::grab_scene::Geometry>>; 2],
     error: Option<String>,
 }
 impl PostInputServices for Services<'_> {
@@ -92,10 +93,10 @@ impl PostInputServices for Services<'_> {
             CandidateRegistration::Second2176 => 1,
         };
         match &self.grab_records[index] {
-            Some(record) => copy_grab_record_82762ab0(
-                &mut self.processed.grab_records_1888_2176[index],
-                &record.0,
-            ),
+            Some(record) => {
+                copy_grab_record_82762ab0(&mut self.processed.grab_records_1888_2176[index], &record.0);
+                self.grab_geometry[index] = Some(record.1.clone());
+            }
             None => {
                 self.error = Some("Grab publication requested without a completed record".into())
             }
@@ -184,6 +185,7 @@ pub(super) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
         world: &physics.world,
         prop_world: physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world),
         grab_records: publication.records,
+        grab_geometry: &mut skater.grab_geometry,
         error: None,
     };
     run_post_input(

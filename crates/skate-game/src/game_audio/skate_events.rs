@@ -661,6 +661,7 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
         bail: flag(59),
         bail_end: p.skeleton.over_599 != 0,
         on_foot: f.state == 500,
+        skitching: f.state == 104,
         soft_wheels: skater.player_input.processed.scalar_2764 < 0.5,
         push_planted: f.push,
         push_trigger: f.push_trigger,
@@ -719,6 +720,9 @@ fn audio_state(physics: &GamePhysics, skater: &SkaterRuntime, f: AudioFrame) -> 
         body_tag: std::array::from_fn(|i| if fb.regions[i].part.is_some() { fb.regions[i].material_flags } else { 0 }),
         body_slide_flag: fb.specific[1].current,
         body_impact,
+        collide_vehicle: fb.maximum_group_8_force,
+        collide_skater: fb.maximum_skater_force,
+        collide_other: fb.maximum_group_11_force,
         // `+216`: set by `observe` (last tick's `+212`).
         com_speed_216: 0.0,
         hands_on_deck: skate_audio::player::step_on::hands_on_deck(hands, f.state == 500, p.off_board.flag_311 != 0),

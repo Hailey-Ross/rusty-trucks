@@ -19,6 +19,7 @@
 //!   then [`Say::Announcer`] `480_slam_pro` (the host asks the announcer channel when the skater is
 //!   within the crash distance of the camera and its model has an announcer pro id:
 //!   [`super::announcer`]; no line plays without a challenge's announcer).
+//! - **A bump** (`sub_824BDA90`, from the body poster): [`collide`], the collide line.
 use super::Draw;
 use super::speech_manager::main_cast::message;
 
@@ -69,6 +70,18 @@ pub struct SkaterSpeech {
 impl Default for SkaterSpeech {
     fn default() -> Self {
         Self { last: 8318, crash_latch: false }
+    }
+}
+
+/// A non-local skater's collide line (`sub_824BDA90` → `sub_824A9A20` → `sub_824DAC00` on the
+/// skater's speech record): the message pair `130_collide` (8228) / main-cast 3, or in game modes
+/// 19 / 20 8250 or 8240 (`rand() & 1`) / 17. The body poster decides when
+/// ([`crate::player::contacts::Contacts::collides`]).
+pub fn collide(mode: i32, rng: &mut dyn Draw) -> Say {
+    if mode == MODE_RACE_A || mode == MODE_RACE_B {
+        Say::Message(if rng.draw() & 1 == 1 { 8240 } else { 8250 }, 17)
+    } else {
+        Say::Message(8228, 3)
     }
 }
 
@@ -166,5 +179,13 @@ mod tests {
         assert_eq!(s.process(false, &Reactions { trick: true, ..r }, 0, &mut one), vec![Say::Living(8202)]);
         assert!(s.process(false, &Reactions::default(), 0, &mut one).is_empty());
         assert_eq!(s.process(false, &Reactions { chase: true, ..Default::default() }, 0, &mut one), vec![Say::Living(8205)]);
+    }
+
+    #[test]
+    fn a_bumped_skater_says_its_collide_line() {
+        let (mut zero, mut one) = (|| 0u32, || 1u32);
+        assert_eq!(collide(0, &mut zero), Say::Message(8228, 3));
+        assert_eq!(collide(MODE_RACE_A, &mut zero), Say::Message(8250, 17));
+        assert_eq!(collide(MODE_RACE_B, &mut one), Say::Message(8240, 17));
     }
 }

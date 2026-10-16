@@ -418,6 +418,19 @@ class PlayerTuning(unittest.TestCase):
         self.assertEqual(t['audio_tricks'], {ollie[5:]: 28, base[5:]: -1, '0000000000000001': -1})
         self.assertEqual(t['audio_tricks_2'], {}, 'no second field in these records')
 
+    def test_hand_grab_pair_and_bus_come_from_the_splicer_and_eq_records(self):
+        from tools.asset_pipeline.audio_export import EQCHAIN_CLASS, HANDGRAB, HANDGRAB_EQ, player_tuning
+
+        t = player_tuning([
+            {'class': HANDGRAB[0], 'key': 'handgrab', 'parent': '', 'fields': {
+                HANDGRAB[2]: {'type': 'Skate_Collisions', 'data': '000003C5'},
+                HANDGRAB[3]: {'type': 'Skate_Metal', 'data': '000001D0'}}},
+            {'class': EQCHAIN_CLASS, 'key': 'default', 'parent': '', 'fields': {
+                HANDGRAB_EQ: {'type': 'Sk8::Audio::eEQChain', 'data': '00000002'}}},
+        ])
+        self.assertEqual(t['hand_grab'], {'collisions': 0x3C5, 'metal': 0x1D0, 'eq': 2})
+        self.assertNotIn('hand_grab', player_tuning([]))
+
     def test_collision_materials_follow_the_image_keys_and_refspecs(self):
         from tools.asset_pipeline.audio_export import (BAND_CLASS, MATERIAL_CLASS, MATERIAL_KEYS, MATERIAL_KINDS,
                                                         WINDOW_CLASS, player_tuning)

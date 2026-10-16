@@ -439,3 +439,18 @@ fn a_car_provides_its_grind_rails_at_its_current_transform() {
     assert!((h.end[0] - 2.0).abs() < 1e-4 && (h.end[2] - 2.0).abs() < 1e-4, "{:?}", h.end);
     assert_eq!(h.owner, car_owner(7, 0));
 }
+
+#[test]
+fn a_model_without_its_own_collision_takes_the_recipe_mesh() {
+    // Installs exported before 2026-10-16 keep the chassis mesh only on the recipe; without it the car collided as its
+    // bounds box.
+    let doc = br#"{"models": {
+        "a": {"glb": "vehicles/a.glb", "recipe": "r"},
+        "b": {"glb": "vehicles/b.glb", "recipe": "none"},
+        "c": {"glb": "vehicles/c.glb", "recipe": "r", "collision": {"triangles": [[[0,0,0],[0,1,0],[1,0,0]]]}}},
+        "recipes": {"r": {"glb": {"collision": {"triangles": [[[0,0,0],[0,1,0],[0,0,1]], [[0,0,0],[1,0,0],[0,0,1]]]}}}}}"#;
+    let d = parse_vehicle_data(doc, None).unwrap();
+    assert_eq!(d.models["a"].collision.as_ref().map(|c| c.triangles.len()), Some(2));
+    assert!(d.models["b"].collision.is_none(), "no mesh anywhere: the bounds box");
+    assert_eq!(d.models["c"].collision.as_ref().map(|c| c.triangles.len()), Some(1), "the model's own mesh wins");
+}

@@ -1309,3 +1309,142 @@ Whether retail's ped+5916 also reaches the NavPower planner / avoider is not dec
 
 **Verification.** skate-core `a_ped_ignoring_its_plugin_prop_steps_into_it_and_nothing_else`; skate-core peds 114,
 skate-game 693 (known failures only). Play test pending.
+
+## Diagnostics: still peds report what they are doing (2026-10-16)
+
+**Problem.** The user saw small crowds of peds standing next to a pair in conversation ("some congregate, but far
+too many decide to join and it becomes little crowds of peds" / "they are all standing next to a couple of peds in
+conversation for some reason"). Session `game-20261015-220114` could not show why: conversations never had more than
+2 members, only 12 of 154 greets targeted a conversation member, and the log has no positions for peds standing still.
+
+**Change.** `PED_STILL` (skate-game `living_world/peds.rs`, `log_still_ped`): a ped that stays within 0.1 m for 5 s
+(300 ticks on the 60 Hz world clock) logs its position with its graph state, plugin graph / state / prop, conversation
+membership and conversations within 5 m, animation (locomotion, clip, clip time, channel clip, taunt, plugin motion),
+navigation (target, corner, waiting, route, poly, blocked), heading, velocity, flee / chase goals, mood store and the
+whole brain (minus its RNG). It repeats every 5 s while the ped stays; a report equal to the previous one logs a short
+"unchanged" line. Reports queue: at most one full report per tick (`STILL_REPORTS_PER_TICK`), so many stuck peds do
+not all format in the same frame (user: "make them queue up the self report so many peds stuck don't cause spikes").
+
+**Verification.** skate-game ped tests pass (22). Needs a user session to explain the crowds.
+
+## Standing pros: where the challenge hosts stand (placement export, 2026-10-16)
+
+**Problem.** The pros and filmers who stand at challenge spots in retail are challenge hosts (research b96), and our
+engine places none. Their spawn position was open.
+
+**Root cause / evidence** (research b129 `.local/research/peds/b129-standing-pros-placement.md`, b130
+`b130-marquee-skeleton.md`; main's checks marked):
+- Each challenge record (class `A4F35B159D7432B5`) has a `tGlobalSpawnCharacterInfo` array (field
+  `555C505A36C3353A`, 40-byte elements). Element `+24` is a text pointer to a **locator name**, not an id, e.g.
+  `otl_univ_04_challengelocator_01` [data]. `sub_825543E0` reads it, hashes it (`sub_8296EA10`) and finds it in the
+  LocationManager registry (`sub_82910CE8`); a hit goes to `sub_825547F0` -> `sub_82911008` (the record's `+48`, the
+  matrix's translation row), a miss to a pending list (`sub_82557228`) [code, main verified the call chain].
+- The locators are the same `global_locators/*.rx2` records our teleports already read (`teleports.location_records`).
+  Exact-name matching places 77 of 80 hosts (Industrial 26, University 23, DownTown 22, MaloofMoneyCup 3,
+  BlackBoxPark 2, SkateSchool 1); `ftl_univ_01_kalis_locator_01`, `photo_dwtn_02_startlocator_01` and
+  `street_dtwn_01_challengelocator_01` exist in no locator file, so retail keeps them pending (no host there,
+  inferred) [data, main ran the export 2026-10-16].
+- Some challenges have two elements (two people or two spots); `+28` is 0 / 1 / 2 (2 on every photo challenge),
+  meaning open.
+- Model: the marquee skeleton (`MarqueeSkeletonPres`, 133 bones) shares bones 0 to 24 by name and index with the ped
+  rig, so our name binding (`present_ped_looks`, `crates/skate-game/src/living_world/peds.rs:1134`) covers the body;
+  retail ships no remap table. The photographer graph names `PHOT_SHOOT_REVIEW_N_0_N`, which no anim bank contains
+  [data, main checked the graph line].
+
+**Change (step 1 of the port).** `tools/asset_pipeline/marquee_hosts.py`: the `livingworld` setup group writes
+`living_world/marquee_hosts.json` = per challenge and element {challenge, element, entity key, entity name (the key is
+`hash64` of a `livingworld_entities` name: all 80 resolve, 23 people), locator, flag, map, matrix}; unplaced names keep
+`matrix: null`. Test `tools/asset_pipeline/test_marquee_hosts.py`. Not yet read by the
+game.
+
+**Next.** Spawn the hosts from that list on the marquee graph (ops research b131), offline free skate, with a mod
+entry point to add, move or remove hosts (stable id = challenge key + element index; the entity key is not
+unique: one pro hosts 12 challenges).
+
+**Open.** When retail spawns / despawns a host (who calls `sub_82553DD0`, the `IgnorePrereqForLivingWorld` filter,
+distance), the heading (row 2 of the matrix, inferred), the `+28` flag, the clear-area box `sub_82554698` builds
+around a host.
+
+## IsFacingSkater: a half angle through a cosine, and its distance (2026-10-16)
+
+**Problem.** Our `IsFacingSkater` compared the facing dot product with `FOVAngle` itself and ignored `Distance`.
+Stock graphs (0.8) got a 37 degree cone instead of 46, and the marquee graph's `FOVAngle="1.4"` could never be
+true, so a standing pro would never leave HoldAtSpawn.
+
+**Root cause / evidence** (research b131 `.local/research/peds/b131-marquee-ops.md`; main verified 2026-10-16):
+the condition's evaluate `sub_826A9E60` loads op `+32` (`FOVAngle`, default 0.8) into v1 and calls `sub_82473930`,
+a range-reduced even polynomial with constant term 1 (a cosine), then tests the flat dot product against the
+result; op `+48` (`Distance`, default 0.0) compared with 0.0 skips the range test, else the flat distance must be
+below it [code].
+
+**Change.** `crates/skate-core/src/living_world/peds/brain.rs`: `PedOp::IsFacingSkater { fov, distance }`, true when
+`dot > cos(fov)` and (`distance == 0` or flat distance < `distance`). Test
+`is_facing_skater_takes_the_cosine_of_its_half_angle_and_a_flat_distance`. `IsFacingWaypointOrientation` already
+compares the angle (`acos(dot) <= fov`) and is unchanged.
+
+**Verification.** skate-core ped tests pass (115 + the new one). Play-test: peds that react when the skater is in
+front of them now do so over a slightly wider cone.
+
+## Peds are solid: the skater collides with them and can bail (2026-10-16)
+
+**Problem.** Session 10: "peds should have similar physics as npc skaters in the sense that they should move as your bump into them, whereas at the moment you go through them and they 'react' to it after the fact. they also can cause you to bail in retail if you run into them going fast or doing a trick."
+
+**Root cause** [code, research b138; main checked our side]. Retail peds are bodies in collision group 11 inside the
+skater's skeleton contact solve (`sub_82BD4A30`, group switch at `0x82BD5388`: 5 skater, 8 vehicle, 11 pedestrian).
+The solver pushes the two apart, the group-11 force is kept (`+4060`), and the contact also feeds the per-region
+strongest contact that the wipeout checks read, so a hard hit bails the skater through the ordinary thresholds. Our
+skeleton side already had group 11 (`maximum_group_11_force`), but no ped ever added a body, so the skater rolled
+through and only the distance test (`peds::skater_hit`) started the ped's reaction.
+Research b144 [code, main verified the groups in the recomp]: each ped's collision object builds two collision bodies
+(`sub_82E268C8`, ctor `sub_82E0E2A0`): A in group 9 and B in group 11 (the one the skater meets). Agent-derived, not
+re-checked: B has two parts with finite masses (`sub_82AE7770`), posed from bones, and each body can be removed on its
+own (`sub_82E0E730`). Shapes, sizes and masses are data (collision asset, vault), still to be traced.
+
+**Change (step 1).** `living_world/ped_body.rs`: every ped not in a collision reaction adds one upright capsule to the
+skater solve, group 11, the navmesh agent's radius and height ([data] NavPower header 0.35 / 1.6 m), moving at its step
+velocity, id `PED_PROXY_TAG | ped id`, appended after the released hand props. The ped's own reaction (knock-down /
+stumble, `sub_82E38FB8` kind 5) is unchanged. Mod tuning `living_world.ped_body {enabled, mass, radius, height}`
+(validated, reset on mod disable).
+
+**Change (step 1b, retail parts).** Recomp trace b146 (`hooks_pedbody.cpp`, Aletown, 41 peds) and research b147
+(`sub_82E35838`, bone table `sub_82E33070` at 0x82FC9F14, main checked the table and Spine1): body B is three capsules
+posed every frame from the skeleton: part 0 radius 0.20 half length 0.575 10 kg at Hips along Hips -> Head; parts 1 / 2
+radius 0.08 half length 0.20 20 kg each, halfway between LeftForeArm / RightForeArm and their hand along the forearm;
+all moved ahead by the ped's velocity x 1/60 s. `ped_body.rs` poses them from `peds::ped_globals` and the ped root
+(peds within 12 m of an observer, ours); tuning `ped_body {enabled, parts[{from, to, centre, radius, half_length, mass}],
+look_ahead, range}`. Data test `the_retail_parts_find_their_bones_in_the_ped_rig` (reference pose: hips 0.92 m, head
+1.59 m); `a_ped_body_is_solid_to_the_skater` with the retail part 0: 1.4 m/s force 1.17, no wipeout; 9 m/s 8.28, wipeout
+tick 8.
+
+**Earlier (step 1, superseded).** One capsule instead of body B's parts; mass 75 kg (stand-in, finite so the solve gives the ped
+an impulse); no body while the ped is in a collision reaction (research b145 looks for retail's remove / add calls); the
+ped is not yet displaced by the push (b144 found no root write-back; open).
+
+**Tests.** `the_body_is_an_upright_capsule_on_the_ped_in_group_11`, `ped_body_is_mod_reachable_and_reset_on_disable`,
+data test `a_ped_body_is_solid_to_the_skater` (DownTown, standing skater): a ped closing at 1.4 m/s reaches group-11
+force 1.30 and no wipeout; at 9 m/s 20.61 and a wipeout at tick 8 (the ordinary region thresholds).
+
+**Open.** The b144 trace (per-part shapes and masses, remove / add around a knock-down, whether the push moves the ped);
+a session (does it feel solid, do fast and mid-trick hits bail, does the ped's reaction still fire).
+
+## Speech: the start delay and the stream gap (2026-10-16)
+
+**Problem** [code]. The speech tuning's first two words (setup exports them as `unknown_0` / `unknown_4`) were read by
+nobody: every line started the frame it was accepted, and a stream took the next line at once.
+
+**Retail** [code: research `speech-stream-start`, main read the start in Ghidra pseudocode]. `sub_82C5DC80` starts a
+line on its stream at once (active, speaking, interrupt rules, the queue waits) and schedules the voice at the library
+clock (a double) + the event's tuning `+0` (`sub_824823C0` reads the float); scripted dialogue holds a stream with
+the same clock + 1000.0 instead. `sub_82C5DA88` stores tuning `+4` on the stream after a start; `sub_82C5CC90` counts it
+down by the frame's dt only while the stream is idle, and the stream takes no new request until it runs out. Unit:
+seconds [inferred, high: the clock is a double time, the gap counts down by dt, 1000.0 as "never"]. Installed data:
+`+0` non-zero for 18 of 73 living-world events (up to 3.0 s), 43 of 64 main-cast (3.0), 31 of 46 (4.5) and 39 of 64
+announcer (1.5); `+4` up to 10 s.
+
+**Change.** `EventTuning::start_delay` / `stream_gap` (seconds, from `unknown_0` / `unknown_4`; a mod's tuning may
+write `start_delay` / `stream_gap`). The speech host turns them into console frames (`evaluation_dt`) on the request;
+`SpeechPlayer` holds the line's stream with no voice for `start_delay` frames (the cut and speaker checks run as for a
+playing line), and keeps a stream that started a line closed to new lines until it has been idle `gap` frames
+(`available()` counts it busy). Test `the_start_delay_holds_the_voice_and_the_gap_holds_the_stream`.
+
+**Open.** A recomp check of request-to-voice timing for an event with a non-zero `+0` (the speech sessions' traces).

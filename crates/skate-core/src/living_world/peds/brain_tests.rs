@@ -773,3 +773,40 @@ fn an_unreachable_chasee_starts_the_record_wait() {
     assert_eq!(h.condition_activation(1, &f), 1);
     assert_eq!(h.condition_activation(2, &f), 0, "no tazer without the per-ped flag");
 }
+
+#[test]
+fn is_facing_skater_takes_the_cosine_of_its_half_angle_and_a_flat_distance() {
+    // `826A9E60`: dot(forward, flat dir) > cos(FOVAngle); `Distance` 0 = no range test.
+    let conditions = ops(&[("IsFacingSkater", &[]), ("IsFacingSkater", &[("FOVAngle", "1.4"), ("Distance", "6.0")])]);
+    assert_eq!(conditions[0], PedOp::IsFacingSkater { fov: 0.8, distance: 0.0 });
+    let mut brain = PedBrain::default();
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let f = frame();
+    let at = |angle: f32, range: f32| [angle.sin() * range, 3.0, angle.cos() * range];
+    let mut check = |angle: f32, range: f32, op: usize| {
+        let mut h = BrainHost { behaviors: &[], conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: Some((at(angle, range), [0.0; 3])), target_position: &none, chase: Default::default() };
+        h.condition_activation(op, &f)
+    };
+    assert_eq!(check(0.7, 20.0, 0), 1, "0.7 rad is inside the stock 0.8 half angle at any distance");
+    assert_eq!(check(0.9, 20.0, 0), 0);
+    assert_eq!(check(1.3, 5.0, 1), 1, "the marquee's 1.4 rad inside 6 m");
+    assert_eq!(check(1.3, 7.0, 1), 0, "outside 6 m");
+}
+
+#[test]
+fn disable_navigation_holds_while_its_state_runs() {
+    // `826A3170` Update clears the navigation bit every frame, `826A3188` End sets it again.
+    let behaviors = ops(&[("DisableNavigation", &[])]);
+    assert_eq!(behaviors[0], PedOp::DisableNavigation);
+    let mut brain = PedBrain::default();
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let f = frame();
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    h.begin(0, [0; 6], &f);
+    h.update(0, [0; 6], &f);
+    assert!(h.brain.navigation_disabled);
+    h.end(0, [0; 6], &f);
+    assert!(!h.brain.navigation_disabled);
+}

@@ -262,7 +262,9 @@ pub enum PedOp {
     /// velocity x `predictTime` (2.0 s).
     StandAndWatchSkater { max_angle: f32, predict_time: f32 },
     /// `826A9E60`: dot(forward, flat direction to the skater) > `FOVAngle` (a cosine).
-    IsFacingSkater { fov: f32 },
+    /// `826A9E60`: the flat direction to the skater within `FOVAngle` (a half angle, radians: `dot >
+    /// cos(fov)`, `sub_82473930`) and, when `Distance` is not 0, nearer than it (flat).
+    IsFacingSkater { fov: f32, distance: f32 },
     /// `826A3508` Begin: store `speechvalue` on the ped (`ped+2468` through ped vfunc +204,
     /// `82E22798`); the audio side speaks when the value changes. `speechevent` is a label only.
     SendSpeech { value: i32 },
@@ -435,6 +437,9 @@ pub enum PedOp {
     DistanceFromWaypointXZ { less_equal: Option<f32>, greater: Option<f32>, y_tolerance: f32 },
     TargetWaypoint { speed: f32, slide_distance: f32, slide_speed: f32 },
     LockToCurrentPosition,
+    /// `DisableNavigation` (`826A3170` Update clears ped `+5936` bit 0x80, the navmesh navigation `NoRoadWander`
+    /// sets; `826A3188` End sets it): no navigation while active (the marquee graph's AI state).
+    DisableNavigation,
     TurnToFaceWaypointOrientation,
     IsFacingWaypointOrientation { fov: f32 },
     UnlockWaypoint,
@@ -555,7 +560,7 @@ impl PedOp {
             "WatchWantTargetWithoutInterruptingLocomotion" => PedOp::WatchWantTarget { want: want() },
             "TurnToFaceSkater" => PedOp::TurnToFaceSkater,
             "StandAndWatchSkater" => PedOp::StandAndWatchSkater { max_angle: float("maxAngle").unwrap_or(0.4), predict_time: float("predictTime").unwrap_or(2.0) },
-            "IsFacingSkater" => PedOp::IsFacingSkater { fov: float("FOVAngle").unwrap_or(0.8) },
+            "IsFacingSkater" => PedOp::IsFacingSkater { fov: float("FOVAngle").unwrap_or(0.8), distance: float("Distance").unwrap_or(0.0) },
             // The factory reads the float and truncates it (`fctiwz`), default 0.0.
             // Both factories read `timerName` with the default "TimedRangeRandom" (`0x82307E4C`).
             "SetSimpleTimer" => PedOp::SetSimpleTimer { timer: timer(), length: float("length").unwrap_or(0.0) },
@@ -659,6 +664,7 @@ impl PedOp {
             "DistanceFromWaypointXZ" => PedOp::DistanceFromWaypointXZ { less_equal: float("lessEqual"), greater: float("greater"), y_tolerance: float("yTolerance").unwrap_or(f32::MAX) },
             "TargetWaypoint" => PedOp::TargetWaypoint { speed: float("speed").unwrap_or(1.0), slide_distance: float("slideDistance").unwrap_or(0.0), slide_speed: float("slideSpeed").unwrap_or(0.0) },
             "LockToCurrentPosition" => PedOp::LockToCurrentPosition,
+            "DisableNavigation" => PedOp::DisableNavigation,
             "TurnToFaceWaypointOrientation" => PedOp::TurnToFaceWaypointOrientation,
             "IsFacingWaypointOrientation" => PedOp::IsFacingWaypointOrientation { fov: float("FOVAngle").unwrap_or(0.3) },
             "UnlockWaypoint" => PedOp::UnlockWaypoint,
@@ -878,6 +884,8 @@ pub struct PedBrain {
     /// behaviour's saved value), `brain+3200` / `+3201`.
     pub heavy_collision_disabled: bool,
     pub collision_sliding_disabled: bool,
+    /// DisableNavigation: ped `+5936` bit 0x80 cleared (no navigation).
+    pub navigation_disabled: bool,
     pub moods_disabled: bool,
     pub moods_saved: BTreeMap<usize, bool>,
     pub plugin_collision_override: bool,
@@ -1274,9 +1282,15 @@ impl BrainHost<'_> {
                 Some(q) => super::chase::escaped(self.position, q, self.chase.record.unwrap_or(&super::chase::ChaseRecord::default())),
                 None => false,
             },
-            PedOp::IsFacingSkater { fov } => self.skater.and_then(|(p, _)| self.flat_dir(p)).is_some_and(|d| {
-                let f = self.forward();
-                f[0] * d[0] + f[1] * d[1] > *fov
+            PedOp::IsFacingSkater { fov, distance } => self.skater.is_some_and(|(p, _)| {
+                let near = *distance == 0.0 || {
+                    let (dx, dz) = (p[0] - self.position[0], p[2] - self.position[2]);
+                    *distance > (dx * dx + dz * dz).sqrt()
+                };
+                near && self.flat_dir(p).is_some_and(|d| {
+                    let f = self.forward();
+                    f[0] * d[0] + f[1] * d[1] > fov.cos()
+                })
             }),
             PedOp::DistanceToWantTarget { want, greater, less } => match self.want_distance_sq(want) {
                 Some(d2) => greater.is_none_or(|g| d2 > g * g) && less.is_none_or(|l| d2 < l * l),
@@ -1641,6 +1655,7 @@ impl Host for BrainHost<'_> {
         let b = &mut *self.brain;
         match op {
             PedOp::Wander => b.speed_suggestion = Some(s.wander_speed),
+            PedOp::DisableNavigation => b.navigation_disabled = true,
             PedOp::ZombieFollow => {
                 if let Some((player, _)) = self.skater {
                     let z = s.zombie_follow;
@@ -1822,6 +1837,7 @@ impl Host for BrainHost<'_> {
             }
             PedOp::DisableHeavyCollision => b.heavy_collision_disabled = false,
             PedOp::DisableCollisionSliding => b.collision_sliding_disabled = false,
+            PedOp::DisableNavigation => b.navigation_disabled = false,
             PedOp::DisableAllMoods => b.moods_disabled = b.moods_saved.remove(&behavior).unwrap_or(false),
             PedOp::OverridePluginCollision => b.plugin_collision_override = false,
             PedOp::OverridePluginAvoid => b.plugin_avoid_override = false,

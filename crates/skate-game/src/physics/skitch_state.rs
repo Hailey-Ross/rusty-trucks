@@ -3,7 +3,8 @@
 //! `skate_core::riding::skitching` (frame, sub-mode, hold, shimmy, target, spring); this module composes it in
 //! retail order (`.local/research/npc/b50-skitch-prestep-update.md` section 1, b51 sections 1-3).
 //! Always on in the game since 2026-10-15 (`ground_runtime::skitch::latch_enabled`, set by `LivingWorldPlugin`).
-//! NOT RETAIL YET: the grab point is the point on the record's chord; the sub-mode's hard event comes from the
+//! The grab point and the hands' grip points are the record's spline at an along position (`82D2D550`, research
+//! b148), the chord only while no geometry is published. NOT RETAIL YET: the sub-mode's hard event comes from the
 //! shimmy state.
 use super::{GamePhysics, SkaterRuntime};
 use skate_core::physics::force_queue::QueuedPointForce;
@@ -62,6 +63,8 @@ pub(crate) struct SkitchState {
     pub ready: bool,
     pub off_ground: bool,
     pub tows_fast: bool,
+    /// The held record runs against the board side this tick (`82D48148` swapped it; logged on change).
+    pub reoriented: bool,
     /// 992: time in the state; 784: last frame's target direction (the spring reads it before the target step).
     pub time: f32,
     pub target_dir: [f32; 3],
@@ -160,6 +163,7 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     let board_speed = p.scalar_2612;
     let negate_height = p.flags_2476 & 0x4 != 0;
     let body = BoardBodyState { field_856: physics.riding.wheel_lines.minimum_distance, field_7692: physics.riding.ground.time_without_wheel_contact };
+    let geometry = skater.grab_geometry[0].clone();
     let s = &mut skater.skitch_state;
     let settings = s.settings;
     s.ready = ready;
@@ -172,24 +176,104 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         // Pre-step 82D47FC0.
         s.off_ground = condition_is_off_ground_skitching(body, settings.off_ground);
         // Frame step 82D48148 (record copied from Processed+1888 by 82762AB0).
-        let endpoints = [v(&words, 64), v(&words, 80)];
-        let direction = v(&words, 112);
+        // `82D48148` re-orients the held record copy itself (state+1024): with the board side (Processed+128 row 0)
+        // against the direction it swaps +64 / +80, negates +112 and toggles the reverse bit (+200 bit 0x20), so
+        // every later spline lookup (the grab point, the hands' grip points) runs from the skater's side. Re-orienting
+        // only inside the frame step left the hands on the mirrored points (arms crossed, session 2026-10-16).
+        let mut endpoints = [v(&words, 64), v(&words, 80)];
+        let mut direction = v(&words, 112);
+        let reoriented = board_side[0] * direction[0] + board_side[1] * direction[1] + board_side[2] * direction[2] < 0.0;
+        if reoriented {
+            endpoints.swap(0, 1);
+            direction = direction.map(|c| -c);
+        }
+        if reoriented != s.reoriented {
+            bevy::log::info!("SKITCH_REORIENT {} -> {reoriented} board_side={board_side:.2?} direction={direction:.2?} sub_mode={}", s.reoriented, s.sub.mode);
+            s.reoriented = reoriented;
+        }
         let half_range = f32::from_bits(words[45]);
         let mid = [(endpoints[0][0] + endpoints[1][0]) * 0.5, (endpoints[0][1] + endpoints[1][1]) * 0.5, (endpoints[0][2] + endpoints[1][2]) * 0.5];
-        let chord = move |t: f32| [mid[0] + direction[0] * t, mid[1] + direction[1] * t, mid[2] + direction[2] * t];
+        // 82D2D550 on the re-oriented held copy (ends swapped, +112 negated, reverse bit +200 0x20 toggled): the point on
+        // the spline `t` along it from the middle (b148); the chord while no geometry is published.
+        let record = geometry.map(|g| {
+            let mut w = words;
+            if reoriented {
+                for i in 0..4 {
+                    w.swap(16 + i, 20 + i);
+                }
+                for word in &mut w[28..31] {
+                    *word = (-f32::from_bits(*word)).to_bits();
+                }
+                w[50] ^= 0x20 << 24;
+            }
+            skate_core::player::offboard::grab_scene::Record(w, g)
+        });
+        let chord = move |t: f32| match &record {
+            Some(r) => {
+                let q = skate_core::player::offboard::grab_scene::at_along(r, t);
+                [q[0], q[1], q[2]]
+            }
+            None => [mid[0] + direction[0] * t, mid[1] + direction[1] * t, mid[2] + direction[2] * t],
+        };
         let input = frame::FrameInput { endpoints, direction, half_range, up, position, board_side, shimmy_velocity: s.shimmy.velocity };
         let f = frame::step(&input, &mut s.frame, &settings.frame, &chord);
         s.tows_fast = f.tows_fast;
         // Sub-mode 82D49580 and its release bits.
         let from = s.sub.mode;
         let released_before = s.hold.released();
+        // `82D49580` reads the hand-off flags themselves (1328 / 1332, 1 = off: `lwz 1328; cmpwi 0; beq` leaves mode 0),
+        // so mode 0 waits for a hand to grip (or the settle time). Passing `!off` left mode 0 at once with both hands
+        // off, the hands were never cleared and the hold let go after 0.5 s (headless test, 2026-10-16).
         s.sub.step(
-            &SkitchSubModeInput { position: f.along, half_length: half_range, stick, event: s.shimmy.event, car_accel: s.shimmy.car_accel, ready_a: f32::from(u8::from(!s.hands.off[0])), ready_b: f32::from(u8::from(!s.hands.off[1])) },
+            &SkitchSubModeInput { position: f.along, half_length: half_range, stick, event: s.shimmy.event, car_accel: s.shimmy.car_accel, ready_a: f32::from(u8::from(s.hands.off[0])), ready_b: f32::from(u8::from(s.hands.off[1])) },
             &settings.sub_mode,
             dt,
         );
         s.hold.mode_bits(from, s.sub.mode, s.sub.switched);
-        // 82D49AB8 then the hold step 82D49D70.
+        if s.sub.mode != from {
+            // SKITCH_SUBMODE: each 82D49580 switch (the tail's SKITCH_MODE line only compares before / after the tick).
+            bevy::log::info!(
+                "SKITCH_SUBMODE {from} -> {} along={:.2} half={:.2} stick={stick:.2} turn={turn:.2} spin={spin:.2} hands_off={:?}",
+                s.sub.mode,
+                f.along,
+                half_range,
+                s.hands.off
+            );
+        }
+        if s.sub.left_zero {
+            s.hold.posed = f.along;
+            s.shimmy.target = f.along;
+        }
+        // Along chain 82D48C98: the grab point's along displacement over the last frame (frames 128 vs 64, after
+        // the shift) times 7199.999 (0x822F8BDC; b55).
+        let [old, prev, _] = s.frame.frames;
+        let at = |fr: &frame::Frame| [fr[3][0] + fr[0][0] * f.along, fr[3][1] + fr[0][1] * f.along, fr[3][2] + fr[0][2] * f.along];
+        let (a, b) = (at(&prev), at(&old));
+        let accel = f32::from_bits(0x45e0_fffe) * ((a[0] - b[0]) * prev[0][0] + (a[1] - b[1]) * prev[0][1] + (a[2] - b[2]) * prev[0][2]);
+        s.shimmy.step(
+            &shimmy::ShimmyInput { accel, stick, sub_mode: s.sub.mode, tows_fast: f.tows_fast, along: f.along, edge_point: s.shimmy.edge_point, limit: f.along_limit, tow_speed: f.tow_speed, side_distance: f.side_distance, dt },
+            &settings.shimmy,
+        );
+        // 82D49AB8: the per-mode writes (hands re-grip in sub-mode 1, the edge latch 900 and the outer hand off in 2 /
+        // 3, 904 from 864 in 0, the push timer 960), then its hold step 82D49D70.
+        skate_core::riding::skitching::mode_writes(
+            s.sub.mode,
+            f.along,
+            half_range,
+            f.along_limit,
+            s.shimmy.car_accel,
+            skate_core::riding::skitching::SkitchModeWrites {
+                hold_target: &mut s.hold.target,
+                hand_target: &mut s.shimmy.target,
+                edge_point: &mut s.shimmy.edge_point,
+                edge_latched: &mut s.shimmy.latched,
+                snapped: s.shimmy.snapped,
+                hands_off: &mut s.hands.off,
+                pushed: &mut s.sub.pushed,
+            },
+            &settings.sub_mode,
+            dt,
+        );
         s.hold.step(f.along, f.along_rate, f.along_limit, stick, &settings.hold, dt);
         // 82D49AB8's 936 and the publication's grab height (previous frame at the posed hand, minus the skater).
         s.along_ratio = (f.along / half_range.max(1e-6)).clamp(-1.0, 1.0);
@@ -208,16 +292,6 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         } else if !push_contact {
             s.push_latched = false;
         }
-        // Along chain 82D48C98: the grab point's along displacement over the last frame (frames 128 vs 64, after
-        // the shift) times 7199.999 (0x822F8BDC; b55).
-        let [old, prev, _] = s.frame.frames;
-        let at = |fr: &frame::Frame| [fr[3][0] + fr[0][0] * f.along, fr[3][1] + fr[0][1] * f.along, fr[3][2] + fr[0][2] * f.along];
-        let (a, b) = (at(&prev), at(&old));
-        let accel = f32::from_bits(0x45e0_fffe) * ((a[0] - b[0]) * prev[0][0] + (a[1] - b[1]) * prev[0][1] + (a[2] - b[2]) * prev[0][2]);
-        s.shimmy.step(
-            &shimmy::ShimmyInput { accel, stick, sub_mode: s.sub.mode, tows_fast: f.tows_fast, along: f.along, edge_point: s.hold.target, limit: f.along_limit, tow_speed: f.tow_speed, side_distance: f.side_distance, dt },
-            &settings.shimmy,
-        );
         // Hands 82D4A378: grip points, release flags, IK weights (writes the hand IK after this borrow).
         let m = |p: [f32; 3]| affine(&to_world_m, p);
         let delta = f.car_delta;
@@ -295,12 +369,14 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         if mode != from || s.hold.released() != released_before {
             // SKITCH_MODE: every sub-mode change and the hold's release, with where along the car the skater is.
             bevy::log::info!(
-                "SKITCH_MODE {from} -> {mode} released={} along={:.2} tow_speed={:.2} side_distance={:.2} hands_off={:?} grab_input={grab_input}",
+                "SKITCH_MODE {from} -> {mode} released={} along={:.2} tow_speed={:.2} side_distance={:.2} hands_off={:?} grab_input={grab_input} lean_yaw_deg={:.1} reach={:.2?}",
                 s.hold.released(),
                 s.along_ratio,
                 f.tow_speed,
                 f.side_distance,
-                s.hands.off
+                s.hands.off,
+                s.lean_yaw.to_degrees(),
+                s.hands.reach
             );
         }
         s.sub.mode = mode;
@@ -331,6 +407,15 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
     let q = physics.board.forces_mut();
     for force in forces {
         q.append(force);
+    }
+    // Step 14 (b50 table row 14, gated): `82585DD8` keeps the held record (Player+188 / +192) and the grab interface
+    // re-queries the held object's spline (`[Player+12816]` vt+44, slot 11), so the owner publishes it again next tick
+    // and Processed 2480 bit 22 stays set while the car is held. Without it the record was published once (from the
+    // latch's request) and the skater dropped back to the ground after two ticks (headless test, 2026-10-16).
+    if ready {
+        if let Some(car) = skater.skitch_state.car {
+            skater.offboard_grab.request_primary(car);
+        }
     }
     // Always: reckoning (82D8E5C0 / 82D8C8F0) and the skeleton ground update (82BDF530), as Slide does.
     let p = &skater.player_input.processed;

@@ -66,6 +66,7 @@ pub(super) fn update(
     audio: Res<super::map_audio::MapAudio>,
     mut api: ResMut<super::mod_audio::AudioApi>,
 ) {
+    let _span = super::hitch_parts::span(super::hitch_parts::AMBIENCE);
     let Some(mut library) = library else { return };
     let state = &mut *state;
     let now = time.elapsed_secs_f64();

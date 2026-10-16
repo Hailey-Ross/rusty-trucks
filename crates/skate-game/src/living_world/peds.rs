@@ -270,6 +270,7 @@ pub(crate) fn update_ped_obstacles(
     mut obstacles: ResMut<PedObstacles>,
     state: Res<PopulationState>,
     mut trace: ResMut<PedObstacleTrace>,
+    observers: Res<super::LivingWorldObservers>,
 ) {
     let _span = super::timing::span(super::timing::PED_OBSTACLES);
     obstacles.0.set_params(settings.ped_obstacles.clone());
@@ -280,7 +281,15 @@ pub(crate) fn update_ped_obstacles(
         return;
     }
     let solids = mods.as_deref().map(crate::modding::bridge::obstacle_solids).unwrap_or_default();
-    let inputs = obstacle_inputs(physics.as_deref(), &solids);
+    let mut inputs = obstacle_inputs(physics.as_deref(), &solids);
+    // Every player skater (b135: always NavPower's moving avoider for peds), by player index.
+    if settings.ped_obstacles.skaters {
+        let h = settings.ped_obstacles.skater_half_extents;
+        for (n, o) in observers.observers.iter().enumerate() {
+            let center = [o.position[0], o.position[1] + h[1], o.position[2]];
+            inputs.push(ObstacleInput { id: skate_core::living_world::peds::obstacles::SKATER_OBSTACLE_BASE + n as u64, center, axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], half_extents: h, velocity: o.velocity, inactive: false, held: false });
+        }
+    }
     obstacles.0.update(&inputs);
     let tick = state.world.tick();
     let hz = state.world.clock().hz as u64;
@@ -374,6 +383,80 @@ pub(crate) struct PluginMotionRun {
     pub throw_clip: Option<(&'static str, f32)>,
 }
 
+/// A ped counts as still while it stays within this distance of where it stopped, m.
+const STILL_RADIUS: f32 = 0.1;
+/// Ticks still before the first report and between reports (5 s on the 60 Hz world clock).
+const STILL_REPORT_TICKS: u64 = 300;
+/// Full still-ped reports per tick; due peds beyond this wait for a later tick, so many stuck
+/// peds do not all format their report in the same frame.
+const STILL_REPORTS_PER_TICK: u32 = 1;
+
+/// Diagnostics: a ped that has not moved for 5 s logs `PED_STILL` with everything about it (brain,
+/// mood, graph and plugin state, animation, navigation, conversation), then every 5 s while it
+/// stays; a report identical to the previous one logs a short line.
+fn log_still_ped(ped: &Pedestrian, body: &PedBody, mind: &mut PedMind, state: &str, conversations: &BTreeMap<u64, skate_core::living_world::peds::conversation::Conversation>, tick: u64, budget: &mut u32) {
+    let at = body.position.to_array();
+    let still = &mut mind.still;
+    let moved = still.anchor.is_none_or(|(p, _)| (p[0] - at[0]).hypot(p[2] - at[2]) > STILL_RADIUS || (p[1] - at[1]).abs() > STILL_RADIUS);
+    if moved {
+        still.anchor = Some((at, tick));
+        still.due = tick + STILL_REPORT_TICKS;
+        still.last.clear();
+        return;
+    }
+    let since = still.anchor.map_or(tick, |a| a.1);
+    if tick < still.due || *budget == 0 {
+        return;
+    }
+    *budget -= 1;
+    still.due = tick + STILL_REPORT_TICKS;
+    let me = ped.id.to_u64();
+    let seconds = (tick - since) as f32 / 60.0;
+    let member = conversations.values().find(|c| c.members.iter().any(|m| m.ped == me));
+    let near = conversations.values().filter(|c| (c.center[0] - at[0]).hypot(c.center[2] - at[2]) < 5.0).map(|c| (c.id, c.state, c.members.len())).collect::<Vec<_>>();
+    let conversation = member.map(|c| format!("member of {} state={} speaker={} members={:?} row={:?}", c.id, c.state, c.speaker, c.members, c.row));
+    let mut brain = mind.brain.clone();
+    brain.rng = None;
+    let nav = &body.nav;
+    let report = format!(
+        "type={} census={} model={} state={state} plugin_graph={:?} plugin_state={:?} prop={:?} conversation={conversation:?} conversations_within_5m={near:?} \
+         anim={{locomotion={} clip={} clip_time={:.2} channel={:?} taunt={:?} plugin_motion={:?}}} \
+         nav={{target={:?} corner={}/{} waiting={:?} waited={:.1} route={} poly={:?} blocked={:.1}}} heading={:.2} velocity={:?} \
+         flee_goal={:?} chase_goal={:?} mood={:?} brain={brain:?}",
+        ped.entity,
+        ped.census,
+        ped.model,
+        mind.plugin_graph,
+        mind.plugin_state,
+        mind.prop,
+        body.player.state.name(),
+        body.player.current_clip(),
+        body.player.current_time(),
+        body.player.channel_clip(),
+        body.taunt,
+        body.plugin_motion,
+        nav.target,
+        nav.next,
+        nav.corners.len(),
+        nav.waiting,
+        nav.waited,
+        nav.route.is_some(),
+        nav.poly,
+        body.blocked,
+        body.heading,
+        body.velocity.to_array(),
+        mind.flee_goal,
+        mind.chase_goal,
+        mind.mood,
+    );
+    if report == still.last {
+        info!("PED_STILL ped=#{} at=[{:.2}, {:.2}, {:.2}] still={seconds:.0}s unchanged tick={tick}", ped.id.serial, at[0], at[1], at[2]);
+    } else {
+        info!("PED_STILL ped=#{} at=[{:.2}, {:.2}, {:.2}] still={seconds:.0}s {report} tick={tick}", ped.id.serial, at[0], at[1], at[2]);
+        still.last = report;
+    }
+}
+
 /// LivingWorldId -> entity.
 #[derive(Resource, Default)]
 pub(crate) struct PedIndex(pub BTreeMap<LivingWorldId, Entity>);
@@ -421,6 +504,8 @@ pub(crate) enum PedEvent {
 pub(crate) const SKATER_CONTACT_RADIUS: f32 = 0.35;
 /// `82E3DBE0`'s gate on the owned object's vector, |v|^2 > 2.5e-5 (`0x822F8BE0`) [code].
 pub(crate) const SEAT_PUSH_SPEED_SQ: f32 = 2.5e-5;
+/// `82C539A8`'s seat probe tolerance, m (the navmesh point within this of the seat in x and z).
+pub(crate) const SEAT_PROBE_TOLERANCE: f32 = 0.1;
 /// The sit plugin's held cycle (`plugin_motion` Sit) and the Avoid graph's forward jump off a seat
 /// (`motiongraph_avoid.xml` JumpForward, `PlayRemappedAnimation SitAvoidFwd`) [data].
 pub(crate) const SIT_CYCLE: &str = "SitIdleCyc";
@@ -835,7 +920,8 @@ pub(crate) fn advance_peds(
             // branches run), instead of the wander step.
             let face = mind.filter(|m| m.brain.speed_suggestion == Some(0.0)).and_then(|m| m.brain.face);
             // LockToCurrentPosition: stand where the ped is (turning only for a face point).
-            let locked = mind.is_some_and(|m| m.brain.position_locked);
+            // DisableNavigation (ped `+5936` bit 0x80 clear): no navigation, the ped stands the same way.
+            let locked = mind.is_some_and(|m| m.brain.position_locked || m.brain.navigation_disabled);
             // TargetWaypoint's slide: within the slide distance the think step moves the ped onto the point; the body
             // stands (no wander target while the route is off).
             let sliding = mind.is_some_and(|m| {
@@ -915,7 +1001,11 @@ pub(crate) fn advance_peds(
                     // Never into a prop or mod body: slide along its face or stay (fix 11). A ped in a plugin whose
                     // `DisableCollisionsWithBehaviourSource` is active ignores the plugin's own prop (its body id is the
                     // plugin prop id's low 32 bits), so it can reach a seat inside its bench.
-                    let ignore = mind.filter(|m| m.brain.ignore_source_collision).and_then(|m| m.prop).map(|(_, id, _)| u64::from(id as u32));
+                    let ignore = skate_core::living_world::peds::obstacles::Ignore {
+                        id: mind.filter(|m| m.brain.ignore_source_collision).and_then(|m| m.prop).map(|(_, id, _)| u64::from(id as u32)),
+                        // SkaterAvoidance off (ChangeNavModifierSetting index 2): the skaters are not obstacles.
+                        skaters: mind.is_some_and(|m| !m.brain.nav_modifier(skate_core::living_world::peds::brain::nav_modifier::SKATER_AVOIDANCE)),
+                    };
                     let (next, clear) = match obstacles.resolve_step_ignoring(from, next, mesh.agent[1], ignore) {
                         Some(n) if n == next => (n, true),
                         Some(n) => {
@@ -1465,6 +1555,17 @@ pub(crate) struct PedMind {
     /// Log repeat limiter for PED_BRAIN / PED_MOOD lines (a refused startconversation re-raises its want every few
     /// ticks, retail by b28 / b29, and filled the log with 27k lines in 4 minutes).
     log_repeats: LogRepeats,
+    /// Where the ped stopped and since when, for the still-ped report (`log_still_ped`).
+    still: StillWatch,
+}
+
+/// A ped that has not moved: where, since which tick, the next tick a report is due, and the
+/// last full report (a repeat that matches it logs a short line instead).
+#[derive(Default)]
+struct StillWatch {
+    anchor: Option<([f32; 3], u64)>,
+    due: u64,
+    last: String,
 }
 
 /// Per-ped log repeat limiter: the same line key logs at most once per `LOG_REPEAT_TICKS`; the next line of that
@@ -1659,6 +1760,23 @@ pub(crate) fn think_peds(
                     }
                     (w.position, w.facing) = (position, facing);
                 }
+                // The DMO's plugin check (`82C56DB0`, b136 / b137): moved more than its type's max distance, or turned
+                // past its per-axis tolerance -> off (seated peds evicted); else each seat must stand on pavement navmesh.
+                // NOT RETAIL YET: when retail runs it (DMO vtable +264's caller) is open, likely on a move / settle
+                // message; ours every think, only for a prop away from its authored pose.
+                if let Some((tolerance, max_distance)) = dynamics.plugin_check_limits(body) {
+                    use skate_core::living_world::peds::plugins::{check_prop, PropCheck, ROTATION_EPSILON};
+                    let moved = (0..3).any(|k| (now.0[k] - spawn.0[k]).abs() > 1e-3)
+                        || (0..3).any(|c| (0..3).any(|r| (now.1[c][r] - spawn.1[c][r]).abs() > ROTATION_EPSILON));
+                    // The per-seat pavement probe (`82C539A8`) is not applied yet: our probe fails 10-23% of untouched
+                    // authored seats (test `living_world_authored_plugin_seats_pass_the_pavement_probe`), so it is not
+                    // retail's yet; a moved, upright prop keeps its seats as before.
+                    let off = moved && check_prop(spawn, now, tolerance, max_distance) == PropCheck::DisableAll;
+                    if off != prop.disabled {
+                        prop.disabled = off;
+                        info!("PED_PLUGIN_PROP {} {:016X} {} tick={tick}", prop.class, prop.id, if off { "disabled (moved / tipped), occupants evicted" } else { "enabled again" });
+                    }
+                }
             }
         }
         let seed = state.world.seed();
@@ -1703,7 +1821,7 @@ pub(crate) fn think_peds(
                     })
                     .collect();
                 for (index, prop) in pp.props.iter_mut().enumerate() {
-                    if !data.plugin_graphs.contains_key(&prop.class) || streamed_out(prop.id) {
+                    if !data.plugin_graphs.contains_key(&prop.class) || streamed_out(prop.id) || prop.disabled {
                         continue;
                     }
                     let class = data.plugins.classes.get(&prop.class);
@@ -1768,6 +1886,8 @@ pub(crate) fn think_peds(
     // zombie cheat (group init `82D967B0`, b105).
     let group_record = if settings.zombie { data.chase_zombie.as_deref() } else { data.chase_global.as_deref() };
     let max_chasers = |_chasee: u64| skate_core::living_world::peds::chase::ChaseRecord::max_chasers(group_record);
+    // Still-ped reports queue: at most this many full reports per tick, the rest wait their turn.
+    let mut still_budget = STILL_REPORTS_PER_TICK;
     for (entity_id, ped, mut body, mut mind) in list {
         let mind = &mut *mind;
         let body = &mut *body;
@@ -2027,7 +2147,7 @@ pub(crate) fn think_peds(
             }
             mind.sit_avoid = avoid;
             // HasPlugin: a conversation member, or a ped that took a world prop.
-            let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id && !streamed_out(id)).and_then(|p| p.waypoints.get(w)).copied());
+            let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id && !streamed_out(id) && !p.disabled).and_then(|p| p.waypoints.get(w)).copied());
             if mind.prop.is_some() && prop_wp.is_none() {
                 mind.prop = None;
             }
@@ -2256,12 +2376,20 @@ pub(crate) fn think_peds(
                         info!("PED_GREET ped=#{} target={target} tick={tick}", ped.id.serial);
                         continue;
                     }
-                    // SpawnConversationArea (`826A6CD8`): none within 50 m of another; 3 m ahead;
-                    // the starter and its target join.
+                    // SpawnConversationArea (`826A6CD8`): none within 50 m of another; 3 m ahead (no check there);
+                    // the starter and its target join. The waypoint generator (`82E1D620`, b134) drops the centre
+                    // with a +-3 m world ray (`82E166C0`; a miss = no waypoints) and keeps the waypoints only when
+                    // all land on low-cost navmesh (no roads): an area without waypoints dissolves.
                     ChaseRequest::SpawnConversation { target: partner } => {
                         let near = conversations.map.values().any(|c| (c.center[0] - at[0]).powi(2) + (c.center[2] - at[2]).powi(2) < conv_params.exclusion * conv_params.exclusion);
                         if !near && target(partner).is_some() {
-                            let center = [at[0] + body.heading.sin() * conv_params.ahead, at[1], at[2] + body.heading.cos() * conv_params.ahead];
+                            let ahead = [at[0] + body.heading.sin() * conv_params.ahead, at[1], at[2] + body.heading.cos() * conv_params.ahead];
+                            // Without a physics world (tests) the centre is used as it is.
+                            let center = match physics.as_deref() {
+                                Some(p) => ground(Some(p), Vec3::from_array(ahead), conv_params.drop_height, conv_params.drop_height).map(|y| [ahead[0], y, ahead[2]]),
+                                None => Some(ahead),
+                            };
+                            let probe = |w: [f32; 3]| data.nav.as_deref().and_then(|n| n.locate_any(w).map(|p| (p.position, n.area(p.poly))));
                             // The group's category by probability, its rows the candidates.
                             let cats = data.conversations.by_entity.get(&ped.entity).cloned().unwrap_or_default();
                             let total: f32 = cats.iter().map(|c| c.0).sum();
@@ -2272,10 +2400,10 @@ pub(crate) fn think_peds(
                             }).or(cats.last()).map(|c| c.1.clone()).unwrap_or_default();
                             conversations.next_id += 1;
                             let id = conversations.next_id;
-                            let mut c = skate_core::living_world::peds::conversation::Conversation::new(id, center, candidates, &conv_params, &mut conv_rand);
+                            let mut c = skate_core::living_world::peds::conversation::Conversation::new(id, center, candidates, &conv_params, data.nav.is_some().then_some(&probe as skate_core::living_world::peds::conversation::Probe), &mut conv_rand);
                             c.join(me);
                             c.join(partner);
-                            info!("PED_CONVERSATION id={id} start ped=#{} with={partner} center=[{:.1}, {:.1}, {:.1}] tick={tick}", ped.id.serial, center[0], center[1], center[2]);
+                            info!("PED_CONVERSATION id={id} start ped=#{} with={partner} center=[{:.1}, {:.1}, {:.1}] dropped={} waypoints={} tick={tick}", ped.id.serial, c.center[0], c.center[1], c.center[2], center.is_some(), c.waypoints.len());
                             conversations.map.insert(id, c);
                             mind.brain.plugin = Some(id);
                         }
@@ -2546,6 +2674,7 @@ pub(crate) fn think_peds(
                 events.write(PedEvent::Speech { id: ped.id, value, topic, state: state.to_string() });
             }
         }
+        let state_now = controller.frame.current.and_then(|s| graph.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str()).to_string();
         if controller.frame.current != mind.state {
             let name = |s: Option<usize>| s.and_then(|s| graph.graph.binding.states.get(s)).map_or("none", |s| s.name.as_str());
             let key = (1 << 63) | (mind.state.map_or(0, |s| s as u64 + 1) << 24) | controller.frame.current.map_or(0, |s| s as u64 + 1);
@@ -2570,5 +2699,6 @@ pub(crate) fn think_peds(
             }
             mind.state = controller.frame.current;
         }
+        log_still_ped(ped, body, mind, &state_now, &conversations.map, tick, &mut still_budget);
     }
 }

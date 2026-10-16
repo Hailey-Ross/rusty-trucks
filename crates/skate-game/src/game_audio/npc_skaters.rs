@@ -76,6 +76,8 @@ pub(crate) struct NpcHost {
     /// This evaluation's bail grunts (skater id) and every published skater with a voice (id,
     /// voice, COM position, COM velocity): `frame` hands them to the speech host.
     pub(crate) grunts: Vec<u64>,
+    /// This evaluation's collide lines (skater id, one per request; `Contacts::collides`).
+    pub(crate) collides: Vec<u64>,
     pub(crate) speakers: Vec<super::world_speech::SkaterSpeaker>,
 }
 
@@ -156,6 +158,7 @@ impl NpcHost {
         self.nodes.clear();
         self.beds.clear();
         self.grunts.clear();
+        self.collides.clear();
         self.pass = None;
         self.slots = Slots::with_records(world.npc);
         self.last_camera = None;
@@ -209,8 +212,9 @@ pub(super) fn frame(
     cues: Res<super::skate_events::Cues>,
     mut speech: ResMut<super::world_speech::WorldSpeech>,
 ) {
+    let _span = super::hitch_parts::span(super::hitch_parts::NPC_SKATERS);
     // Inert: nothing published and nothing held.
-    if published.skaters.is_empty() && host.objects.is_empty() && host.grunts.is_empty() {
+    if published.skaters.is_empty() && host.objects.is_empty() && host.grunts.is_empty() && host.collides.is_empty() {
         return;
     }
     if !requested() {
@@ -219,6 +223,7 @@ pub(super) fn frame(
     let Some(mut native) = native else { return };
     post(&mut host, &published, &mut native, library.as_deref(), &cues.riding.audio);
     speech.grunts.append(&mut host.grunts);
+    speech.collides.append(&mut host.collides);
     if speech.skaters != host.speakers {
         speech.skaters.clone_from(&host.speakers);
     }
@@ -327,6 +332,9 @@ pub(crate) fn pre(host: &mut NpcHost, published: &NpcSkaters, native: &mut Nativ
         collisions.extend(npc.take_collisions());
         if npc.take_bail_grunt() {
             host.grunts.push(id);
+        }
+        for _ in 0..npc.take_collides() {
+            host.collides.push(id);
         }
         host.objects.insert(id, npc);
     }

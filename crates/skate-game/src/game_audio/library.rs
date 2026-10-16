@@ -578,6 +578,16 @@ struct PlayerTuningJson {
     collision: CollisionJson,
     /// The grind contact sounds' eEQChain bus (`D1A87641CCB98787`; optional).
     grind_contact_eq: Option<u8>,
+    /// `aud_splicer` `handgrab` ids and bus (`audio_export.HANDGRAB`; optional).
+    #[serde(default)]
+    hand_grab: Option<HandGrabJson>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct HandGrabJson {
+    collisions: u32,
+    metal: u32,
+    eq: Option<u8>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -692,6 +702,9 @@ impl CollisionJson {
         c.lift_ids = five(ids("lift_ids"), c.lift_ids);
         c.plant_eq = f("plant_eq").map_or(c.plant_eq, |v| v as u8);
         c.body_cooldown = f("body_cooldown").unwrap_or(c.body_cooldown);
+        // The collide line's floors (`aud_speech` `default`; exported since 2026-10-16).
+        c.collide_vehicle_min = f("collide_vehicle_min").unwrap_or(c.collide_vehicle_min);
+        c.collide_min = f("collide_min").unwrap_or(c.collide_min);
         // The bridge's speed graph (exported since 2026-10-03; the stock vault's words otherwise).
         let eight = |k: &str| -> Option<[f32; 8]> {
             let a = self.posters.get(k)?.as_array()?;
@@ -739,6 +752,7 @@ impl PlayerTuningJson {
                 off: g.off.as_ref().map_or_else(Default::default, GrindContactJson::contact),
             }).collect(),
             grind_contact_eq: self.grind_contact_eq.unwrap_or(d.grind_contact_eq),
+            hand_grab: self.hand_grab.as_ref().map_or(d.hand_grab, |h| skate_audio::player::hand_grabs::HandGrabTuning { collisions: h.collisions, metal: h.metal, eq: h.eq.unwrap_or(d.hand_grab.eq) }),
             landing_materials: self.landing_materials.clone(),
             wheel_bucket_high: self.wheel_bucket_high.unwrap_or(d.wheel_bucket_high),
             wheel_bucket_low: self.wheel_bucket_low.unwrap_or(d.wheel_bucket_low),
@@ -935,6 +949,78 @@ pub(crate) struct Library {
     tuning_saved: TuningSaved,
     /// Mod files' stamps (size, modification time) taken at load (`stamp`).
     stamps: HashMap<String, String>,
+    /// Sample files read ahead off the game thread (`warm_bank`).
+    warm: Warm,
+}
+
+/// Sample files read ahead on a worker thread: a location set's bank is read when the scheduler
+/// picks it (retail loads a set entry's bank at the pick and plays it later), so its first play
+/// does not read the disk on the game thread (2026-10-16: 150 to 870 ms stalls from an HDD
+/// install). Only the bytes move: `clip` builds the same clip from them, and a file that is not
+/// read yet is read on the game thread as before.
+#[derive(Default)]
+struct Warm {
+    jobs: Option<std::sync::mpsc::Sender<(String, PathBuf)>>,
+    /// File → its bytes (None: queued or being read). A dropped entry is never filled.
+    ready: Arc<std::sync::Mutex<HashMap<String, Option<Vec<u8>>>>>,
+}
+
+impl Warm {
+    fn ready(&self) -> std::sync::MutexGuard<'_, HashMap<String, Option<Vec<u8>>>> {
+        self.ready.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn request(&mut self, file: &str, path: PathBuf) {
+        {
+            let mut ready = self.ready();
+            if ready.contains_key(file) {
+                return;
+            }
+            ready.insert(file.to_owned(), None);
+        }
+        let ready = self.ready.clone();
+        let jobs = self.jobs.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<(String, PathBuf)>();
+            let spawned = std::thread::Builder::new().name("audio-warm".into()).spawn(move || {
+                for (file, path) in rx {
+                    let lock = || ready.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if !lock().contains_key(&file) {
+                        continue;
+                    }
+                    let bytes = std::fs::read(&path);
+                    let mut ready = lock();
+                    match bytes {
+                        Ok(b) => {
+                            if let Some(slot) = ready.get_mut(&file) {
+                                *slot = Some(b);
+                            }
+                        }
+                        // The game thread reads it again and reports the error once (`clip`).
+                        Err(_) => {
+                            ready.remove(&file);
+                        }
+                    }
+                }
+            });
+            if spawned.is_err() {
+                warn!("Game audio: no read-ahead thread; sample files load on first play");
+            }
+            tx
+        });
+        if jobs.send((file.to_owned(), path)).is_err() {
+            self.ready().remove(file);
+        }
+    }
+
+    /// The file's bytes if the worker has read them (they leave the store).
+    fn take(&self, file: &str) -> Option<Vec<u8>> {
+        let mut ready = self.ready();
+        if ready.get(file).is_some_and(Option::is_some) { ready.remove(file).flatten() } else { None }
+    }
+
+    fn forget(&self, file: &str) {
+        self.ready().remove(file);
+    }
 }
 
 /// The tuning sections the runtime tuning writes replace (`Library::set_tuning`).
@@ -1374,7 +1460,7 @@ impl Library {
         if !overlays.is_empty() {
             info!("Game audio: content overlays {:?} ({} conflicts, {} warnings, {} rejected)", report.applied, report.conflicts.len(), report.warnings.len(), report.rejected.len());
         }
-        let mut library = Self { root, manifest, mods, loaded: HashMap::new(), failed: Default::default(), tuning_raw: raw, tuning_saved: TuningSaved::default(), stamps: HashMap::new() };
+        let mut library = Self { root, manifest, mods, loaded: HashMap::new(), failed: Default::default(), tuning_raw: raw, tuning_saved: TuningSaved::default(), stamps: HashMap::new(), warm: Warm::default() };
         // The mod files' stamps as loaded (the hot swap compares them: a file edited later is new
         // content of the next library, `stamp`).
         for f in mod_files {
@@ -1391,7 +1477,16 @@ impl Library {
         if self.failed.contains(file) {
             return None;
         }
-        match std::fs::read(self.path(file)) {
+        let read = match self.warm.take(file) {
+            Some(bytes) => Ok(bytes),
+            None => {
+                // Not read ahead (or still being read): read it here; a late result is dropped.
+                self.warm.forget(file);
+                let _span = super::hitch_parts::span(super::hitch_parts::FILE_READ);
+                std::fs::read(self.path(file))
+            }
+        };
+        match read {
             Ok(bytes) => {
                 let peak = wav_peak(&bytes);
                 let channels = wav_channels(&bytes);
@@ -1418,6 +1513,24 @@ impl Library {
         let entry = self.manifest.banks.get(bank)?.get(index)?;
         let file = entry.file.clone();
         self.clip(assets, &file)
+    }
+
+    /// Read a bank's sample files ahead on the worker (`Warm`): a location set entry's pick.
+    pub(crate) fn warm_bank(&mut self, bank: &str) {
+        let Some(entries) = self.manifest.banks.get(bank) else { return };
+        let files: Vec<(String, PathBuf)> = entries.iter()
+            .filter(|e| !self.loaded.contains_key(&e.file) && !self.failed.contains(&e.file))
+            .map(|e| (e.file.clone(), self.path(&e.file))).collect();
+        for (file, path) in files {
+            self.warm.request(&file, path);
+        }
+    }
+
+    /// Drop a bank's read-ahead bytes that were not played (its set entry unloaded).
+    pub(crate) fn cool_bank(&self, bank: &str) {
+        for e in self.manifest.banks.get(bank).into_iter().flatten() {
+            self.warm.forget(&e.file);
+        }
     }
 
     /// Number of samples in a bank (0 when the bank was not exported).
@@ -2016,6 +2129,42 @@ pub(crate) mod tests {
         assert!(library.sample(&mut assets, "x", 2).is_none());
         library.release(&mut assets, &clip);
         assert!(assets.get(clip.handle.id()).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A bank read ahead (`warm_bank`) plays the same bytes as one read at first play; a cooled
+    /// bank and a missing file fall back to the game-thread read, which reports the missing file.
+    #[test]
+    fn read_ahead_gives_the_same_clip_bytes() {
+        let dir = std::env::temp_dir().join(format!("skate-audio-warm-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("private/audio/banks/x")).unwrap();
+        let wav = b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\xbb\x00\x00\x00\x77\x01\x00\x02\x00\x10\x00data\x04\x00\x00\x00\x00\x40\x00\xc0";
+        std::fs::write(dir.join("private/audio/banks/x/0000.wav"), wav).unwrap();
+        std::fs::write(dir.join("private/audio/banks/x/0001.wav"), wav).unwrap();
+        std::fs::write(
+            dir.join("private/audio/audio_manifest.json"),
+            r#"{"version":3,"ambience":{},"grains":{},"wheels":{},
+                "banks":{"x":[{"file":"banks/x/0000.wav","seconds":0.1},{"file":"banks/x/0001.wav","seconds":0.1},{"file":"banks/x/missing.wav","seconds":0.1}]}}"#,
+        )
+        .unwrap();
+        let mut library = Library::load(&dir).unwrap();
+        let mut assets = Assets::<AudioSource>::default();
+        library.warm_bank("x");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while library.warm.ready().get("banks/x/0000.wav").is_some_and(Option::is_none) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(library.warm.ready().get("banks/x/0000.wav").is_some_and(Option::is_some));
+        let clip = library.sample(&mut assets, "x", 0).unwrap();
+        assert_eq!(&*assets.get(clip.handle.id()).unwrap().bytes, &wav[..]);
+        assert!(!library.warm.ready().contains_key("banks/x/0000.wav"), "taken bytes leave the store");
+        // Cooled before play: read at first play, same bytes.
+        library.cool_bank("x");
+        assert!(library.warm.ready().is_empty());
+        let clip = library.sample(&mut assets, "x", 1).unwrap();
+        assert_eq!(&*assets.get(clip.handle.id()).unwrap().bytes, &wav[..]);
+        assert!(library.sample(&mut assets, "x", 2).is_none());
+        assert!(library.failed.contains("banks/x/missing.wav"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

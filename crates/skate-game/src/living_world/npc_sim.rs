@@ -161,10 +161,23 @@ struct Walker {
 /// `+160` = TransitioningOnOffBoard (+2480 0x4), both written by `82DB6EC0`; "can move" (`82466ED0`) = off the board
 /// and not toggling (its `[rec+72]+308 / +309` terms are not identified: taken as clear); the hand-back byte
 /// `[rec+28]+59` = the wipeout bit (`82DB6EC0` copies it there).
+/// The skater's effective animation root (`GetEffectiveRoot` `82BE3650`): rows 0 and 2 negated while Processed 2476 bit 2
+/// (the mirrored stance) is set. The raw root of a goofy / mirrored skater faces backwards: controller B then walked
+/// the skater straight away from its node (session 2026-10-16, NPC #67 cuz, goofy).
+fn effective_root(runtime: &SkaterRuntime) -> skate_core::animation::output::NativeMatrix {
+    let mut root = runtime.animated_skeleton.roots.animation_to_world;
+    if runtime.player_input.processed.flags_2476 & 4 != 0 {
+        for axis in [0, 2] {
+            root[axis] = root[axis].map(|v| -v);
+        }
+    }
+    root
+}
+
 pub(crate) fn walker_input(runtime: &SkaterRuntime) -> skate_core::living_world::controller_b::BInput {
     // The skater, not the board (left lying once off): P = the animation root ([rec+20]+416), B+112 = its forward
-    // row ([rec+20]+0 [inference: forward]).
-    let root = runtime.animated_skeleton.roots.animation_to_world;
+    // row ([rec+20]+0 [inference: forward]) of the effective root.
+    let root = effective_root(runtime);
     let position = [root[3][0], root[3][1], root[3][2]];
     let forward = [root[2][0], 0.0, root[2][2]];
     let p = &runtime.player_input.processed;
@@ -190,7 +203,7 @@ pub(crate) fn walker_input(runtime: &SkaterRuntime) -> skate_core::living_world:
 fn projected_point(sim: &NpcSim, state: PhysicalStateId) -> ([f32; 3], [f32; 3]) {
     let wiped = sim.body.runtime.player_input.processed.flags_2468 & WIPEOUT_BIT != 0;
     if state == PhysicalStateId::BipedGround || wiped {
-        let root = sim.body.runtime.animated_skeleton.roots.animation_to_world;
+        let root = effective_root(&sim.body.runtime);
         ([root[3][0], root[3][1], root[3][2]], [root[2][0], root[2][1], root[2][2]])
     } else {
         let deck = GamePhysics::context_deck(&sim.context);

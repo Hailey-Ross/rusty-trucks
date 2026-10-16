@@ -300,6 +300,56 @@ fn a_thrown_can_reaches_the_skater_region_forces() {
     assert!(peak > 1.0, "the can's contact reaches the region forces: {peak}");
 }
 
+/// Peds are solid (`living_world::ped_body`, retail group 11, b138): a ped body closing on the standing skater is
+/// solved against, so the contact reaches the group-11 force and the region forces (the skater no longer passes
+/// through), and the ordinary wipeout check decides. Walking speed does not bail the skater; the closing speed of a
+/// fast skater (relative speed is what the solve sees) is logged with its outcome.
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn a_ped_body_is_solid_to_the_skater() {
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let rig = Rig { graphs: crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap(), root_dir: root_dir.clone() };
+    let run = |speed: f32| {
+        let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+        let mut player = rig.skater(&physics);
+        for _ in 0..30 {
+            rig.step(&mut physics, &mut player, pad());
+        }
+        let deck = physics.board.bodies()[BodyId::Deck.index()].rates.position;
+        let mut x = deck.x + 1.2;
+        let (mut group11, mut peak, mut wipeout) = (0.0_f32, 0.0_f32, None);
+        for tick in 0..40 {
+            x -= speed / 60.0;
+            let feet = bevy::math::Vec3::new(x, deck.y - 0.1, deck.z);
+            // Retail part 0 (the hips capsule) of a standing ped: hips 0.95 m, head 1.6 m above the feet.
+            let part = &crate::living_world::ped_body::PedBodySettings::default().parts[0];
+            let (hips, head) = (feet + bevy::math::Vec3::Y * 0.95, feet + bevy::math::Vec3::Y * 1.6);
+            let solid = crate::living_world::ped_body::part_proxy(1, 0, hips, head, bevy::math::Vec3::new(-speed, 0.0, 0.0), part, 0.0);
+            let mut proxies = network::Proxies::default();
+            proxies.append_solid(solid, &physics, &player.runtime, false);
+            physics.network_proxies = proxies;
+            rig.step(&mut physics, &mut player, pad());
+            group11 = group11.max(player.runtime.collision_feedback.maximum_group_11_force);
+            peak = player.runtime.collision_feedback.regions.iter().map(|r| r.force).fold(peak, f32::max);
+            if wipeout.is_none() && player.runtime.player_state.current() == PhysicalStateId::WipeoutGround {
+                wipeout = Some(tick);
+            }
+        }
+        eprintln!("ped body at {speed} m/s: group 11 force {group11:.2}, peak region force {peak:.2}, wipeout tick {wipeout:?}");
+        (group11, peak, wipeout)
+    };
+    let (walk11, walk_peak, walk_wipeout) = run(1.4);
+    assert!(walk11 > 0.0 && walk_peak > 0.0, "the walking ped's contact is solved (group 11 {walk11}, region {walk_peak})");
+    assert!(walk_wipeout.is_none(), "a walking ped does not bail the skater");
+    // Retail part 0 (10 kg, r 0.20); 2026-10-16 with the earlier 75 kg stand-in: 1.30 / 20.61, wipeout tick 8.
+    let (fast11, _, fast_wipeout) = run(9.0);
+    assert!(fast11 > walk11, "a harder hit gives a larger group-11 force ({fast11} vs {walk11})");
+    assert!(fast_wipeout.is_some(), "running into a ped fast bails the skater (user: retail does)");
+}
+
 /// DMO streaming on DownTown's placed props (doc 27 "DMO streaming"): from the map spawn the fill pass keeps at most
 /// 49 live props, all within 90 m; the others go dormant (collision parked, out of the obstacle list); walking 300 m away
 /// culls the near ones and brings the props there in.
@@ -603,4 +653,145 @@ fn a_hard_bump_knocks_a_simulated_npc_skater_down() {
     let (npc, player, touched) = run(2.0);
     assert!(touched > 0, "the slow skater reaches the player");
     assert_eq!((npc, player), (None, None), "a slow roll-in knocks nobody down");
+}
+
+/// Skitching end to end (2026-10-16: the first live skitch failed in PreState, then would have in FillPhysOut): the
+/// skater rolls, a taxi with its exported rear grab spline drives just ahead at the skater's speed (grab scene +
+/// solid proxy, as `living_world::vehicles` feeds them), grab is held: the skater must latch (Skitching), be towed
+/// for seconds through every frame stage without an error, and leave Skitching after letting go.
+#[test]
+#[ignore = "requires private stock graphs, the living-world export and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn a_skater_latches_onto_a_traffic_car_rides_and_lets_go() {
+    if std::env::var_os("SKATE_TEST_LOG").is_some() {
+        let _ = bevy::log::tracing_subscriber::fmt().with_writer(std::io::stderr).with_ansi(false).try_init();
+    }
+    use skate_dynamics::rapier3d::prelude::{Pose, Rotation, Vector};
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let dir = root_dir.join("private/living_world");
+    let data = crate::living_world::vehicles::parse_vehicle_data(&std::fs::read(dir.join("vehicles.json")).unwrap(), std::fs::read(dir.join("tables.json")).ok().as_deref()).unwrap();
+    let splines = data.models.get("vehicle_taxi01").map(|m| m.grab_splines.clone()).filter(|s| !s.is_empty()).expect("taxi grab spline");
+    // The taxi's retail chassis mesh (model space), as the traffic proxies collide with it.
+    let mesh = data.models.get("vehicle_taxi01").and_then(|m| m.collision.as_ref()).map(|c| c.shape.clone()).expect("taxi collision mesh");
+    let rear_z = splines.iter().flat_map(|s| s.points.iter().map(|p| p[2])).fold(f32::INFINITY, f32::min);
+    let rig = Rig { graphs: crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap(), root_dir: root_dir.clone() };
+    let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    crate::physics::set_skitch_enabled(true);
+    let mut player = rig.skater(&physics);
+    // Push off and roll.
+    for t in 0..150 {
+        rig.step(&mut physics, &mut player, skate_core::input::xbox::XboxState { buttons: if t < 90 { 0x1000 } else { 0 }, ..pad() });
+    }
+    let deck = physics.board.bodies()[BodyId::Deck.index()].rates;
+    let v = deck.linear_velocity;
+    let speed = (v.x * v.x + v.z * v.z).sqrt();
+    assert!(speed > 1.0, "the skater rolls ({speed:.2} m/s)");
+    let heading = Vec3::new(v.x / speed, 0.0, v.z / speed);
+    let car_speed = speed.max(4.0);
+    let rotation = Quat::from_rotation_y(heading.x.atan2(heading.z));
+    // The car's rear grab spline 0.8 m ahead of the deck.
+    let mut origin = Vec3::new(deck.position.x, deck.position.y - 0.1, deck.position.z) + heading * (0.8 - rear_z);
+    let grab = skate_core::input::xbox::XboxState { buttons: 0x0200, ..pad() }; // RB, retail GrabWorld
+    let mut states = Vec::new();
+    let (mut crossed, mut gripping, mut arm_contacts) = (false, 0, 0usize);
+    for t in 0..420 {
+        origin += heading * (car_speed / 60.0);
+        let transform = Transform::from_translation(origin).with_rotation(rotation);
+        let object = crate::living_world::vehicles::grab_object_at(5, &splines, &transform, heading * car_speed);
+        physics.set_grab_cars(vec![object]).unwrap();
+        let centre = Vector::new(origin.x, origin.y + 0.75, origin.z);
+        let q = Rotation::from_rotation_y(heading.x.atan2(heading.z));
+        let solid = skate_dynamics::SolidBody {
+            id: 0x7E57_0000_0000_0005,
+            pose: Pose::from_parts(centre, q),
+            center_of_mass: centre,
+            inertia_rotation: Rotation::IDENTITY,
+            inverse_mass: 0.0,
+            inverse_inertia: Vector::new(0.0, 0.0, 0.0),
+            linvel: Vector::new(heading.x * car_speed, 0.0, heading.z * car_speed),
+            angvel: Vector::new(0.0, 0.0, 0.0),
+            contact_group: VEHICLE_GROUP,
+            colliders: vec![skate_dynamics::SolidCollider { shape: mesh.clone(), pose: Pose::from_parts(Vector::new(origin.x, origin.y, origin.z), q), friction: 0.5 }],
+        };
+        let mut proxies = network::Proxies::default();
+        proxies.append_solid(solid, &physics, &player.runtime, false);
+        physics.network_proxies = proxies;
+        // Grab for 5 s, then let go.
+        rig.step(&mut physics, &mut player, if t < 300 { grab } else { pad() });
+        states.push(player.runtime.player_state.current());
+        if player.runtime.player_state.current() == PhysicalStateId::Skitching {
+            // Each gripping hand reaches to its own side of the bumper (retail re-orients the held record to the
+            // board side in 82D48148; without it the hands crossed over).
+            let k = &player.runtime.skitch_state;
+            let d = physics.board.bodies()[BodyId::Deck.index()].rates;
+            let deck = Vec3::new(d.position.x, d.position.y, d.position.z);
+            let side = rotation * Vec3::X;
+            let m = player.runtime.animated_skeleton.roots.animation_to_world;
+            let world = |i: usize| {
+                let p = player.runtime.animated_skeleton.raw_part_globals[i][3];
+                Vec3::new(m[0][0] * p[0] + m[1][0] * p[1] + m[2][0] * p[2] + m[3][0], m[0][1] * p[0] + m[1][1] * p[1] + m[2][1] * p[2] + m[3][1], m[0][2] * p[0] + m[1][2] * p[1] + m[2][2] * p[2] + m[3][2])
+            };
+            for (hand, (shoulder, limb)) in [(5, 2), (9, 3)].into_iter().enumerate() {
+                let w = player.runtime.foot_ik.state.external_targets[limb].world_position;
+                let (a, b) = ((world(shoulder) - deck).dot(side), (Vec3::new(w[0], w[1], w[2]) - deck).dot(side));
+                if k.hands.weight[hand] > 0.0 && a.abs() > 0.05 && b.abs() > 0.05 {
+                    crossed |= a.signum() != b.signum();
+                }
+            }
+            // No upper-arm contact through the tow: the bounds box put its rear wall between the hands and the
+            // shoulders (arm hits for the whole tow, session 2026-10-16).
+            let fb = &player.runtime.collision_feedback;
+            // Ticks 10..70: towed in the open (the box car drags the skater into a building from about tick 75).
+            if (10..70).contains(&t) {
+                arm_contacts += usize::from(fb.regions[2].part.is_some() || fb.regions[3].part.is_some());
+            }
+            if k.sub.mode == 1 && k.hands.off == [false; 2] {
+                gripping += 1;
+            }
+        }
+        if std::env::var_os("SKATE_TEST_LOG").is_some() && player.runtime.player_state.current() == PhysicalStateId::Skitching {
+            let k = &player.runtime.skitch_state;
+            let d = physics.board.bodies()[BodyId::Deck.index()].rates;
+            let sp = (d.linear_velocity.x.powi(2) + d.linear_velocity.z.powi(2)).sqrt();
+            let rear = origin + rotation * Vec3::new(0.0, 0.0, rear_z);
+            let gap = Vec3::new(rear.x - d.position.x, 0.0, rear.z - d.position.z).length();
+            eprintln!("SKITCH_TICK t={t} mode={} ready={} deck_speed={sp:.2} car={car_speed:.2} gap={gap:.2} spring={:?} hands_off={:?} reach={:?} dy={:.2} hand_target={:.2} posed={:.2} lean_yaw={:.2}", k.sub.mode, k.ready, k.spring_force, k.hands.off, k.hands.reach, d.position.y - origin.y, k.shimmy.target, k.hold.posed, k.lean_yaw);
+            // Hand sides across the car (+ = car right): shoulder (parts 5 / 9) vs the hand IK target (limbs 2 / 3).
+            let side = rotation * Vec3::X;
+            let m = player.runtime.animated_skeleton.roots.animation_to_world;
+            let world = |i: usize| {
+                let p = player.runtime.animated_skeleton.raw_part_globals[i][3];
+                Vec3::new(m[0][0] * p[0] + m[1][0] * p[1] + m[2][0] * p[2] + m[3][0], m[0][1] * p[0] + m[1][1] * p[1] + m[2][1] * p[2] + m[3][1], m[0][2] * p[0] + m[1][2] * p[1] + m[2][2] * p[2] + m[3][2])
+            };
+            let tgt = |l: usize| {
+                let w = player.runtime.foot_ik.state.external_targets[l].world_position;
+                Vec3::new(w[0], w[1], w[2])
+            };
+            let pr = &player.runtime.player_input.processed;
+            let w = pr.grab_records_1888_2176[0];
+            let dir = Vec3::new(f32::from_bits(w[28]), f32::from_bits(w[29]), f32::from_bits(w[30]));
+            let row0 = Vec3::new(m[0][0], m[0][1], m[0][2]);
+            eprintln!("SKITCH_AXES t={t} mirrored={} hand_x=[{:.2},{:.2}] dir_side={:.2} row0_side={:.2} dir_row0={:.2} row2_fwd={:.2}", pr.flags_2476 & 4 != 0, player.runtime.animated_skeleton.raw_part_globals[3][3][0], player.runtime.animated_skeleton.raw_part_globals[7][3][0], dir.dot(side), row0.dot(side), dir.dot(row0), Vec3::new(m[2][0], m[2][1], m[2][2]).dot(heading));
+            eprintln!("SKITCH_HANDS t={t} shoulder_side=[{:.2},{:.2}] target_side=[{:.2},{:.2}] weight={:?}", (world(5) - Vec3::new(d.position.x, d.position.y, d.position.z)).dot(side), (world(9) - Vec3::new(d.position.x, d.position.y, d.position.z)).dot(side), (tgt(2) - Vec3::new(d.position.x, d.position.y, d.position.z)).dot(side), (tgt(3) - Vec3::new(d.position.x, d.position.y, d.position.z)).dot(side), k.hands.weight);
+        }
+    }
+    let skitching = states.iter().filter(|s| **s == PhysicalStateId::Skitching).count();
+    let first = states.iter().position(|s| *s == PhysicalStateId::Skitching);
+    eprintln!("skitch: first latch tick {first:?}, {skitching} ticks skitching, last state {:?}", states.last());
+    let mut runs: Vec<(PhysicalStateId, usize)> = Vec::new();
+    for st in &states {
+        match runs.last_mut() {
+            Some((k, n)) if k == st => *n += 1,
+            _ => runs.push((*st, 1)),
+        }
+    }
+    eprintln!("skitch states: {runs:?}");
+    assert!(first.is_some_and(|t| t < 120), "the skater latches within 2 s of grabbing behind the car");
+    assert!(skitching >= 60, "towed for at least a second ({skitching} ticks)");
+    assert!(!crossed, "each hand grips its own side of the bumper");
+    assert_eq!(arm_contacts, 0, "the arms do not ride against the held car's chassis");
+    assert!(gripping >= 60, "sub-mode 1 keeps both hands on for at least a second ({gripping} ticks)");
+    assert!(states[340..].iter().all(|s| *s != PhysicalStateId::Skitching), "letting go leaves Skitching");
 }

@@ -215,7 +215,11 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                         Default::default()
                     })
                 },
-                collision: CarCollision::parse(&m["collision"]),
+                // The model's retail chassis mesh; installs exported before 2026-10-16 carry it only on the recipe
+                // (`recipes/<recipe>/glb/collision`), so read it there too: without it the car collided as its bounds
+                // box, whose rear wall sat between a skitcher's hands and shoulders (arm hits the whole tow).
+                collision: CarCollision::parse(&m["collision"])
+                    .or_else(|| m["recipe"].as_str().and_then(|r| CarCollision::parse(&doc["recipes"][r]["glb"]["collision"]))),
             },
         );
     }
@@ -960,23 +964,29 @@ pub(crate) fn car_rails(cars: &[(&TrafficCar, &CarMotion)], data: &VehicleData) 
 
 /// One car as a grab-scene object (pure; the engine and the tests use it).
 pub(crate) fn car_grab_object(car: &TrafficCar, motion: &CarMotion, data: &VehicleData) -> Option<skate_core::player::offboard::grab_scene::Object> {
-    use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry, Object, Provider, Spline};
     let splines = &data.models.get(&car.model)?.grab_splines;
-    let serial = car.id.serial & 0x0FFF_FFFF;
+    Some(grab_object_at(car.id.serial, splines, &motion.curr, motion.velocity))
+}
+
+/// A car's grab-scene object from its model's grab splines at transform `t` moving at `velocity` (serial = the car's
+/// stable id; the spline keys are `CAR_GRAB_TAG | serial << 3 | index`).
+pub(crate) fn grab_object_at(serial: u32, splines: &[CarGrabSpline], t: &Transform, velocity: Vec3) -> skate_core::player::offboard::grab_scene::Object {
+    use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry, Object, Provider, Spline};
+    let serial = serial & 0x0FFF_FFFF;
     let id = CAR_GRAB_TAG | serial;
-    let t = &motion.curr;
+    let motion_velocity = velocity;
     let axis = |v: Vec3| {
         let w = t.rotation * v;
         [w.x, w.y, w.z, 0.0]
     };
-    Some(Object {
+    Object {
         id,
         provider: Provider::Vehicle,
         disabled: false,
         assembly_ready: true,
         assembly: Some(AssemblyData { identity: id, first_part: None }),
         frame: [axis(Vec3::X), axis(Vec3::Y), axis(Vec3::Z), [t.translation.x, t.translation.y, t.translation.z, 1.0]],
-        object_vector_128: [motion.velocity.x, motion.velocity.y, motion.velocity.z, 0.0],
+        object_vector_128: [motion_velocity.x, motion_velocity.y, motion_velocity.z, 0.0],
         splines: splines
             .iter()
             .take(8)
@@ -995,7 +1005,7 @@ pub(crate) fn car_grab_object(car: &TrafficCar, motion: &CarMotion, data: &Vehic
                 }
             })
             .collect(),
-    })
+    }
 }
 
 /// The render side of one car.
@@ -1200,6 +1210,7 @@ pub(crate) fn install(app: &mut App) {
             (
                 push_vehicle_proxies.after(crate::multiplayer::prepare),
                 super::ped_hand_props::push_hand_prop_proxies.after(push_vehicle_proxies),
+                super::ped_body::push_ped_proxies.after(super::ped_hand_props::push_hand_prop_proxies),
                 push_vehicle_grab_splines,
             )
                 .after(crate::app::SimulationSet::Controls)

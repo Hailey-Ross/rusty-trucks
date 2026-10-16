@@ -157,6 +157,56 @@ pub struct PluginProp {
     /// `+232` (counts down) and the value it restarts from (`+228`).
     pub cooldown: f32,
     pub cooldown_reset: f32,
+    /// The prop's plugin is switched off (offer vfunc 20, `82E1CD58`: off and every participant evicted) by the DMO
+    /// check ([`check_prop`]); not offered until a check passes again.
+    pub disabled: bool,
+}
+
+/// What the DMO's plugin check (`82C56DB0`, research b136 / b137) decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PropCheck {
+    /// Off and evicted (`82C53B88`): moved too far, or turned past the tolerance.
+    DisableAll,
+    /// Each seat is probed on the navmesh (`82C539A8`): off where the probe fails or the area is not pavement.
+    ProbeSeats,
+}
+
+/// The rotation-equality epsilon (`0x820BA998` = 2^-16).
+pub const ROTATION_EPSILON: f32 = 1.0 / 65536.0;
+
+/// `82C56DB0` on one prop: `authored` / `now` = (position, basis columns). Moved farther than `max_distance` from
+/// its authored spot (|d|^2 - max^2 > 0) -> off. Every rotation element within 2^-16 of the authored -> probe the
+/// seats. Otherwise the relative rotation as a rotation vector (`8296F1A0`: axis x angle, radians) is compared per
+/// axis with `tolerance_deg` x 0.0174533 (`0x8206D110`); any axis over -> off. NOT RETAIL YET: the volume-box test
+/// (`*(0x83085494)` vf+144) is not ported, and the frame of the relative rotation (`8286CAF0`'s operand order) is
+/// taken as world (now x authored^T).
+pub fn check_prop(authored: (Vec3, [Vec3; 3]), now: (Vec3, [Vec3; 3]), tolerance_deg: Vec3, max_distance: f32) -> PropCheck {
+    let d: f32 = (0..3).map(|k| (now.0[k] - authored.0[k]).powi(2)).sum();
+    if d - max_distance * max_distance > 0.0 {
+        return PropCheck::DisableAll;
+    }
+    let (a, n) = (authored.1, now.1);
+    if (0..3).all(|c| (0..3).all(|r| (n[c][r] - a[c][r]).abs() <= ROTATION_EPSILON)) {
+        return PropCheck::ProbeSeats;
+    }
+    // m[r][c] of now x authored^T, with columns as stored: sum_k n[k][r] a[k][c].
+    let m = |r: usize, c: usize| (0..3).map(|k| n[k][r] * a[k][c]).sum::<f32>();
+    let trace = m(0, 0) + m(1, 1) + m(2, 2);
+    let angle = ((trace - 1.0) * 0.5).clamp(-1.0, 1.0).acos();
+    let s = angle.sin();
+    // Near a half turn the off-diagonal form loses the axis: that is far past any tolerance.
+    if s.abs() < 1e-4 {
+        return if angle < 1e-3 { PropCheck::ProbeSeats } else { PropCheck::DisableAll };
+    }
+    let k = 0.5 * angle / s;
+    let v = [k * (m(2, 1) - m(1, 2)), k * (m(0, 2) - m(2, 0)), k * (m(1, 0) - m(0, 1))];
+    if (0..3).any(|i| v[i].abs() > tolerance_deg[i] * 0.017_453_3) { PropCheck::DisableAll } else { PropCheck::ProbeSeats }
+}
+
+/// `82C539A8`'s seat probe: the navmesh point under the seat (any area) within `tolerance` in x and z, on an area of
+/// cost at most 1 (pavement; `82926640`: the larger nibble of the area byte).
+pub fn seat_on_pavement(seat: Vec3, located: Option<(Vec3, u8)>, tolerance: f32) -> bool {
+    located.is_some_and(|(at, area)| (at[0] - seat[0]).abs() <= tolerance && (at[2] - seat[2]).abs() <= tolerance && super::conversation::area_cost(area) - 1.0 <= 0.001)
 }
 
 impl PluginProp {
@@ -341,7 +391,7 @@ mod tests {
     fn world_prop_transfer_reads_the_hand_prop() {
         let c = |n: &str| Transfer::Condition { name: n.into(), params: vec![] };
         let bin = Transfer::And(vec![c("HasDisposableHandProp"), Transfer::Not(vec![c("IsOnRoad")]), Transfer::Not(vec![c("IsNearCrossWalk")]), Transfer::Not(vec![c("IsChasing")])]);
-        let prop = PluginProp { id: 1, class: "waypoint_usetrashbin".into(), waypoints: vec![PluginWaypoint { position: [0.0; 3], facing: [0.0, 0.0, 1.0], occupant: None }], cooldown: 0.0, cooldown_reset: 0.0 };
+        let prop = PluginProp { id: 1, class: "waypoint_usetrashbin".into(), waypoints: vec![PluginWaypoint { position: [0.0; 3], facing: [0.0, 0.0, 1.0], occupant: None }], cooldown: 0.0, cooldown_reset: 0.0, disabled: false };
         let pass = |v: TransferView, t: &Transfer| t.evaluate(&mut |n, _| v.condition(n, &prop, [0.0, 0.0, 1.0], &PluginSettings::default()));
         let pop = TransferView { hand_prop: true, disposable: true, can_sit: true, chasing: false };
         assert!(pass(pop, &bin));
@@ -368,7 +418,7 @@ mod tests {
 
     fn bench() -> PluginProp {
         let w = |x: f32| PluginWaypoint { position: [x, 0.0, 0.0], facing: [0.0, 0.0, 1.0], occupant: None };
-        PluginProp { id: 7, class: "waypoint_sit".into(), waypoints: vec![w(0.0), w(1.0)], cooldown: 0.0, cooldown_reset: 10.0 }
+        PluginProp { id: 7, class: "waypoint_sit".into(), waypoints: vec![w(0.0), w(1.0)], cooldown: 0.0, cooldown_reset: 10.0, disabled: false }
     }
 
     #[test]
@@ -472,5 +522,25 @@ mod tests {
         assert_eq!(got, vec![Attach { ped: 4, prop: 7, waypoint: 1 }]);
         assert_eq!(b.waypoints[1].occupant, Some(4));
         assert!(peds[3].has_plugin && peds[3].memory.contains(7));
+    }
+
+    #[test]
+    fn a_tipped_or_dragged_away_prop_stops_offering_its_seats() {
+        // `82C56DB0` with the stock limits (b137): (2.5, 15, 2.5) degrees, 5 m.
+        let tol = [2.5, 15.0, 2.5];
+        let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let yaw = |deg: f32| {
+            let (s, c) = deg.to_radians().sin_cos();
+            [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]]
+        };
+        let at = ([1.0, 0.0, 2.0], id);
+        assert_eq!(check_prop(at, at, tol, 5.0), PropCheck::ProbeSeats, "untouched");
+        assert_eq!(check_prop(at, ([1.0, 0.0, 2.0], yaw(10.0)), tol, 5.0), PropCheck::ProbeSeats, "turned 10 degrees in place");
+        assert_eq!(check_prop(at, ([1.0, 0.0, 2.0], yaw(20.0)), tol, 5.0), PropCheck::DisableAll, "turned past 15 degrees");
+        // Knocked onto its back: 90 degrees about x.
+        let tipped = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]];
+        assert_eq!(check_prop(at, ([1.0, 0.0, 2.0], tipped), tol, 5.0), PropCheck::DisableAll, "tipped over");
+        assert_eq!(check_prop(at, ([4.0, 0.0, 6.5], id), tol, 5.0), PropCheck::DisableAll, "slid 5.4 m");
+        assert_eq!(check_prop(at, ([3.0, 0.0, 2.0], id), tol, 5.0), PropCheck::ProbeSeats, "slid 2 m, upright");
     }
 }

@@ -353,6 +353,7 @@ pub(super) fn update(
     mut stats: ResMut<crate::world_audio::WorldEmitterStats>,
     rules: Res<super::mod_rules::AudioRules>,
 ) {
+    let _span = super::hitch_parts::span(super::hitch_parts::EMITTERS);
     let _timing = super::timing::scope(&super::timing::EMITTERS);
     // No native runtime: the emitters are silent (its start logged why).
     let (Some(library), Some(mut native)) = (library, native) else { return };

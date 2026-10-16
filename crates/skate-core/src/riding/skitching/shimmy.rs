@@ -54,6 +54,8 @@ pub struct ShimmyState {
     pub by_velocity: bool,
     pub snapped: bool,
     pub latched: bool,
+    /// 900: the latched edge point (`82D49AB8` sub-modes 2 / 3, `skitching::mode_writes`).
+    pub edge_point: f32,
 }
 
 /// What the chain reads each step.
@@ -79,11 +81,15 @@ impl ShimmyState {
         let k = s.low_pass;
         let stick = if i.stick.abs() > 0.01 { i.stick } else { 0.0 };
         let active = i.stick.abs() > 0.01 || self.event != 0.0;
-        let hold = active || self.latched;
-        if !hold {
+        // `82D48FA8..82D49034` (r28 = active, r22 = 1, r25 = 0): a stick past 0.01 or a car event clears the edge latch
+        // and the snap (1344 bits 0x02 / 0x01); only an idle hand keeps them (r27 = the kept latch, read below). The
+        // inverse (clearing only while idle) pinned the hand on the edge for good: the stick could not bring the
+        // skater back to the middle (session 2026-10-16).
+        if active {
             self.latched = false;
             self.snapped = false;
         }
+        let hold = self.latched;
         // 1. Gate.
         if i.sub_mode == 0 || i.sub_mode == 4 || !i.tows_fast {
             self.stick_accel = 0.0;
@@ -193,6 +199,23 @@ mod tests {
             i.along = st.target;
         }
         assert!(st.velocity.abs() < 0.05, "{}", st.velocity);
+    }
+
+    #[test]
+    fn the_stick_frees_a_hand_snapped_to_the_edge() {
+        let s = ShimmySettings::default();
+        let mut st = ShimmyState { latched: true, snapped: true, target: -1.2, edge_point: -1.2, ..Default::default() };
+        let mut i = ShimmyInput { along: -1.2, edge_point: -1.2, ..input() };
+        // Idle: the hand stays on the latched edge.
+        st.step(&i, &s);
+        assert_eq!((st.target, st.latched), (-1.2, true));
+        // The stick toward the middle clears the latch and moves the hand off the edge.
+        i.stick = 1.0;
+        for _ in 0..30 {
+            st.step(&i, &s);
+            i.along = st.target;
+        }
+        assert!(!st.latched && !st.snapped && st.target > -1.0, "{st:?}");
     }
 
     #[test]

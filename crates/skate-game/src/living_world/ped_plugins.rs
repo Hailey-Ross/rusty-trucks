@@ -93,7 +93,7 @@ fn placed(waypoints: &Value) -> BTreeMap<String, Vec<PluginProp>> {
             .filter_map(|g| {
                 let id = u64::from_str_radix(g.get("id")?.as_str()?, 16).ok()?;
                 let waypoints = g.get("waypoints")?.as_array()?.iter().filter_map(|w| Some(PluginWaypoint { position: v3(w.get("position")?)?, facing: v3(w.get("facing")?)?, occupant: None })).collect();
-                Some(PluginProp { id, class: g.get("type")?.as_str()?.to_string(), waypoints, cooldown: 0.0, cooldown_reset: 0.0 })
+                Some(PluginProp { id, class: g.get("type")?.as_str()?.to_string(), waypoints, cooldown: 0.0, cooldown_reset: 0.0, disabled: false })
             })
             .collect();
         out.insert(district.clone(), props);
@@ -138,6 +138,7 @@ pub(crate) fn map_props(root: &Path, map: &str) -> Vec<PluginProp> {
                 waypoints: vec![PluginWaypoint { position: v3(h.get("position")?)?, facing: v3(h.get("facing")?)?, occupant: None }],
                 cooldown: 0.0,
                 cooldown_reset: 0.0,
+                disabled: false,
             })
         })
         .collect()

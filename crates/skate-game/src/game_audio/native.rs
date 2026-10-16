@@ -457,6 +457,7 @@ impl Native {
         if let Some(&id) = self.banks.get(stem) {
             return Ok(id);
         }
+        let _span = super::hitch_parts::span(super::hitch_parts::BANK_LOAD);
         let (bank, pcm) = match self.prefetch.take(stem) {
             Some(loaded) => loaded,
             None => library.bank_source(stem)?.load()?,
@@ -741,10 +742,10 @@ pub(crate) fn hold_flag_inputs(m: &mut MixMap) {
 /// [`MAX_STEPS_PER_FRAME`]; none on a frame without a step, none while silenced). Written here:
 /// Master.in1–4 (in1..3 = the option volumes, `super::RetailVolumes`), Music.in1/2/5, Reverb.in0..6 (free-skate values, §7.4); through `player_audio`:
 /// PlayerPhysics 0–14, the two 3DObjPos blocks (skater COM and board, with relative speeds and the
-/// sign-flip bits), Jitter, Contacts 1/2/6, Rail 0/1, OffBoard 0; the board owner inputs
+/// sign-flip bits), Jitter, Contacts 1/2/6, Rail 0/1, OffBoard 0, HandGrabs 0 (the skitch latch); the board owner inputs
 /// (`grain_bed.rs`). Left at their free-skate 0: VU (no output meter; only the ambience reads it,
 /// not native yet), Menu / NIS / HOM / Challenge / Speech flags (no such modes in free skate),
-/// HandGrabs, Music.in3/6 (combo emphasis, not wired), and Pause.in0: nothing ticks while the menu
+/// Music.in3/6 (combo emphasis, not wired), and Pause.in0: nothing ticks while the menu
 /// or a replay silences the game (the stream itself is paused), so no evaluation would read it.
 /// Class_Seams' console cadence runs on every rendered frame that is not silenced
 /// ([`PlayerAudio::seam_frame`](super::player_audio::PlayerAudio::seam_frame), game time).
@@ -761,6 +762,7 @@ pub(super) fn mixmap_frame(
     teleport: Option<Res<crate::ui_audio::TeleportEffect>>,
     settings: Option<Res<super::AudioSettings>>,
 ) {
+    let _span = super::hitch_parts::span(super::hitch_parts::MIXMAP_FRAME);
     let _timing = super::timing::scope(&super::timing::MIXMAP_FRAME);
     let silenced = super::silenced(menu.as_deref(), &replay);
     let Some(mut native) = native else {
@@ -878,6 +880,7 @@ pub(super) fn mixmap_frame(
 /// evaluations (MixMap ticks), the local player's update and SFXObj_Reverb's update. The world /
 /// NPC owners' update follows (`world_sources::post`, `npc_skaters::post`).
 pub(super) fn mixmap_tick(native: Option<ResMut<Native>>, inputs: Option<ResMut<super::mixmap_inputs::MixMapInputs>>, content: Option<Res<super::AudioContent>>) {
+    let _span = super::hitch_parts::span(super::hitch_parts::MIXMAP_TICK);
     let _timing = super::timing::scope(&super::timing::MIXMAP_FRAME);
     let Some(mut native) = native else { return };
     let native = &mut *native;
@@ -1032,6 +1035,7 @@ pub(super) fn reverb_frame(
     zones: Res<super::emitters::ReverbZones>,
     audio: Res<super::map_audio::MapAudio>,
 ) {
+    let _span = super::hitch_parts::span(super::hitch_parts::REVERB);
     let (Some(native), Some(library)) = (native, library) else { return };
     let at = cues.riding.board;
     let key = audio.region_key(&library, "audio_reverb", at.x, at.z).unwrap_or(skate_audio::bus::env::DEFAULT_PRESET);
