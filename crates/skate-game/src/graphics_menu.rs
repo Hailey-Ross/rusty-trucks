@@ -253,6 +253,8 @@ struct RowCtx<'a> {
     window: UVec2,
     /// The living world opt-ins in effect (`living_world::opt_ins::in_effect`).
     opt_ins: crate::living_world::opt_ins::OptIns,
+    /// The player's Better Water choice (`water_look::WaterLookSettings`) and the mod patching it, if any.
+    better_water: (bool, Option<String>),
 }
 fn pick<T: PartialEq>(values: &[T], value: &T) -> Kind {
     Kind::Enum { index: values.iter().position(|v| v == value).unwrap_or(0), count: values.len(), wrap: false }
@@ -282,7 +284,7 @@ impl Menu {
             1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
             2 => [0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW, MORE_AUDIBLE_ROW, SPEECH_ROW].into_iter().chain(OPT_IN_ROWS).collect(),
             // Quitting is the rail's Close Game; Refresh Game Files only while the game files are out of date.
-            4 => [11, 14, 19].into_iter().chain((!crate::setup::stale_groups().is_empty()).then_some(REFRESH_ROW)).collect(),
+            4 => [11, 14, 19, BETTER_WATER_ROW].into_iter().chain((!crate::setup::stale_groups().is_empty()).then_some(REFRESH_ROW)).collect(),
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
         }
@@ -489,6 +491,14 @@ impl Menu {
             16 => audio_view(16, "Master Volume", "Overall game volume."),
             17 => audio_view(17, "Ambience Volume", "The world's ambience beds."),
             18 => audio_view(18, "Effects Volume", "Skating and world sound effects."),
+            BETTER_WATER_ROW => {
+                let (on, owner) = (cx.better_water.0, cx.better_water.1.as_deref());
+                RowView::new(Kind::Enum { index: on as usize, count: 2, wrap: false }, "Better Water", if on { "On  (not retail)" } else { "Retail" },
+                    match owner {
+                        Some(owner) => format!("Not retail: finer ripples, an even blue reflection, an extra wave against tiling, calmer fountains and slower waves. Mod {owner} is changing the water look right now."),
+                        None => "Not retail: finer ripples, an even blue reflection, an extra wave against tiling, calmer fountains and slower waves.".into(),
+                    }).reset()
+            }
             MORE_AUDIBLE_ROW => {
                 let on = cx.audio.is_some_and(|a| a.more_audible_world_saved());
                 RowView::new(Kind::Enum { index: on as usize, count: 2, wrap: false }, "More Audible World", if on { "On  (not retail)" } else { "Retail" },
@@ -675,6 +685,8 @@ fn opt_in(row: usize) -> crate::living_world::opt_ins::OptIn {
 }
 /// GRAPHICS-section row of the NPC draw distance (QoL, not retail).
 const NPC_DRAW_DISTANCE_ROW: usize = 29;
+/// EXTRAS row: the water look layer (water_look.rs); off = the retail water.
+const BETTER_WATER_ROW: usize = 30;
 const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time. None turns off all NPC skaters, peds and cars.";
 fn draw_distance_label(multiplier: f32) -> String {
     if multiplier == skate_core::living_world::DrawDistance::NONE { "None  (no NPCs, not retail)".into() } else if multiplier == skate_core::living_world::DrawDistance::RETAIL { "Retail".into() } else { format!("{multiplier}x  (not retail)") }
@@ -728,7 +740,7 @@ pub(crate) fn interact(
     mut exit: MessageWriter<AppExit>,
     mut net: ResMut<crate::multiplayer::Multiplayer>,
     mut typing: MessageReader<bevy::input::keyboard::KeyboardInput>,
-    (mut updater, mut audio, mut camera_angle, mut living): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>, ResMut<crate::camera::CameraAngleSettings>, ResMut<crate::living_world::LivingWorldSettings>),
+    (mut updater, mut audio, mut camera_angle, mut living, mut water_look): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>, ResMut<crate::camera::CameraAngleSettings>, ResMut<crate::living_world::LivingWorldSettings>, Option<ResMut<crate::water_look::WaterLookSettings>>),
     travel: Res<crate::teleport_menu::Travel>,
     (mut mods, mut logged): (ResMut<crate::modding::ModMenu>, Local<Option<(bool, String, String)>>),
 ) {
@@ -807,7 +819,7 @@ pub(crate) fn interact(
         let dt = real.delta_secs();
         let page = menu.page();
         let views: Vec<RowView> = {
-            let cx = RowCtx { audio: Some(&*audio), camera: &camera_angle, net: &net, controllers: None, debug: &[], window: UVec2::ZERO, opt_ins: crate::living_world::opt_ins::in_effect(&living) };
+            let cx = RowCtx { audio: Some(&*audio), camera: &camera_angle, net: &net, controllers: None, debug: &[], window: UVec2::ZERO, opt_ins: crate::living_world::opt_ins::in_effect(&living), better_water: water_look.as_ref().map_or((false, None), |w| (w.selected.enabled, w.patched_by().map(str::to_owned))) };
             page.iter().map(|id| menu.describe(*id, &cx)).collect()
         };
         let selectable: Vec<usize> = page.iter().zip(&views).filter(|(_, v)| v.selectable()).map(|(id, _)| *id).collect();
@@ -1013,7 +1025,11 @@ pub(crate) fn interact(
     let day_action = menu.daylight;
     let saved_row = match act {
         Some(Act::Reset(row)) => {
-            reset_row(&mut menu, row, &mut audio, &mut camera_angle, &mut living);
+            if row == BETTER_WATER_ROW && !menu.daylight && !menu.multiplayer {
+                if let Some(look) = water_look.as_mut() { menu.status = set_better_water(look, false); }
+            } else {
+                reset_row(&mut menu, row, &mut audio, &mut camera_angle, &mut living);
+            }
             Some(row)
         }
         Some(Act::Drag(row, fraction)) => {
@@ -1029,6 +1045,13 @@ pub(crate) fn interact(
             }
             None
         }
+        Some(Act::Step(row, _) | Act::Activate(row)) if row == BETTER_WATER_ROW && !menu.daylight && !menu.multiplayer => {
+            if let Some(look) = water_look.as_mut() {
+                let on = !look.selected.enabled;
+                menu.status = set_better_water(look, on);
+            }
+            Some(row)
+        }
         Some(Act::Step(row, _) | Act::Activate(row)) => {
             let direction = if let Some(Act::Step(_, d)) = act { d } else { 1 };
             run_row(&mut menu, row, direction, (&mut *config, &mut *physics, &mut *net, &mut exit, &mut *customiser,
@@ -1038,7 +1061,7 @@ pub(crate) fn interact(
         None => None,
     };
     if let (Some(row), Some(Act::Step(..) | Act::Reset(..))) = (saved_row, act) {
-        let cx = RowCtx { audio: Some(&*audio), camera: &camera_angle, net: &net, controllers: None, debug: &[], window: UVec2::ZERO, opt_ins: crate::living_world::opt_ins::in_effect(&living) };
+        let cx = RowCtx { audio: Some(&*audio), camera: &camera_angle, net: &net, controllers: None, debug: &[], window: UVec2::ZERO, opt_ins: crate::living_world::opt_ins::in_effect(&living), better_water: water_look.as_ref().map_or((false, None), |w| (w.selected.enabled, w.patched_by().map(str::to_owned))) };
         let now = menu.describe(row, &cx);
         info!("PC_OVERLAY now {:?} = {:?}", now.label, now.value);
     }
@@ -1243,6 +1266,17 @@ fn run_row(menu: &mut Menu, row: usize, direction: i32, r: RowResources) {
             }
             _ => {}
         }
+    }
+}
+/// EXTRAS "Better Water": switches the water look layer and saves `settings/water-look.json`.
+fn set_better_water(look: &mut crate::water_look::WaterLookSettings, on: bool) -> String {
+    look.selected.enabled = on;
+    info!("WATER_LOOK better_water={on} owner={:?}", look.patched_by());
+    match look.save() {
+        Ok(()) if look.patched_by().is_some() => format!(
+            "Better Water saved. Mod {} is changing the water look right now.", look.patched_by().unwrap_or_default()),
+        Ok(()) => "Better Water saved".into(),
+        Err(e) => format!("Applied, but could not save: {e}"),
     }
 }
 fn camera_saved(camera_angle: &crate::camera::CameraAngleSettings) -> String {
@@ -1579,7 +1613,7 @@ mod tests {
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
             // Audio, controller identity, and frame-time rows are spawned.
-            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
+            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || *id == BETTER_WATER_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);

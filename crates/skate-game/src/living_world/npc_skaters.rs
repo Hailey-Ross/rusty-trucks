@@ -740,7 +740,7 @@ pub(crate) fn advance(
     observers: Res<LivingWorldObservers>,
     mut state: ResMut<PopulationState>,
     mut index: ResMut<NpcSkaterIndex>,
-    mut npcs: Query<(Entity, &NpcSkater, &mut NpcReplay, &mut Transform, &mut NpcSkaterAudio, &mut NpcFade)>,
+    mut npcs: Query<(Entity, &NpcSkater, &mut NpcReplay, &mut Transform, &mut NpcSkaterAudio, &mut NpcFade, Option<&super::npc_sim::NpcSim>)>,
     physics: Option<Res<crate::physics::GamePhysics>>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
     mut events: MessageWriter<NpcSkaterEvent>,
@@ -758,7 +758,7 @@ pub(crate) fn advance(
     sorted.sort_by_key(|(_, n, ..)| n.id);
     let fade_cfg = state.world.config.skaters.leave_fade;
     let chain = state.world.config.skaters.line_chain;
-    for (e, npc, mut replay, mut transform, mut audio, mut fade) in sorted {
+    for (e, npc, mut replay, mut transform, mut audio, mut fade, sim) in sorted {
         let elapsed = tick.saturating_sub(npc.spawn_tick) * FRAMES_PER_TICK;
         // The obstacle avoider holds the cursor back (`npc_avoid`); the fade keeps the spawn clock.
         let target = replay.follow_target.unwrap_or_else(|| elapsed.saturating_sub(replay.avoid.held_frames()));
@@ -861,7 +861,16 @@ pub(crate) fn advance(
         transform.rotation = root_rotation(&s);
         let material = physics.as_deref().map_or(skate_audio::player::state::NO_MATERIAL, |p| crate::game_audio::world_bridge::ground_material(p, transform.translation));
         audio.voice = npc.voice;
-        audio.state = Some(lite_state(&s, material));
+        // A simulated NPC sounds from its physics body (its line waits at the node while it bails: a grind kept
+        // sounding after a bail off the rail, user 2026-10-15); a replay-tier one from its line sample.
+        audio.state = Some(match sim {
+            Some(sim) => {
+                let deck = sim.deck_position();
+                let material = physics.as_deref().map_or(skate_audio::player::state::NO_MATERIAL, |p| crate::game_audio::world_bridge::ground_material(p, Vec3::from_array(deck)));
+                sim.lite_state(material)
+            }
+            None => lite_state(&s, material),
+        });
         commands.entity(e).insert(AudioVelocity(Vec3::from_array(s.velocity)));
         replay.last = Some(s);
     }
@@ -1021,12 +1030,14 @@ pub(crate) fn prop_volumes(id: LivingWorldId, s: &ReplaySample) -> [(u64, skate_
 /// Add the NPC proxies to the skater solve (after the network proxies were rebuilt), and their
 /// push volumes to the prop step ([`prop_volumes`]).
 pub(crate) fn push_proxies(
-    npcs: Query<(&NpcSkater, &NpcReplay)>,
+    npcs: Query<(&NpcSkater, &NpcReplay), Without<super::npc_sim::NpcSim>>,
     mut physics: ResMut<crate::physics::GamePhysics>,
     skater: Res<crate::physics::SkaterRuntime>,
     replay: Res<crate::replay::Replay>,
     settings: Res<LivingWorldSettings>,
 ) {
+    // Replay-tier NPCs only. A simulated NPC has its own physics body; a proxy from its replay sample was an invisible
+    // solid copy of it on the line that the simulated body collided with (contact bails and flings, 2026-10-15).
     physics.actor_prop_volumes.clear();
     if replay.active {
         return;
@@ -1126,15 +1137,38 @@ pub(crate) fn present_pose(
     let ahead = (state.world.clock().overstep() + fixed.overstep_fraction() as f64 * fixed.timestep().as_secs_f64() * hz).clamp(0.0, 1.0) as f32
         * FRAMES_PER_TICK as f32;
     for (e, npc, replay, puppet, current, mut root, stance, sim) in &mut npcs {
-        // A simulated NPC skater is drawn from its own physics pose, like the player: its
-        // render pose is in world space, so the puppet root sits at the origin.
+        // A simulated NPC skater is drawn from its own physics pose. That pose is relative to the skater's animation
+        // root (joints within ~2 m of 0, NPC_SKATER_DRAWN 2026-10-15), so the puppet root sits at the animation root in
+        // the world; with the root at the origin every simulated skater was drawn at the map origin and vanished from
+        // where it rode. A pose already in world space (root joint at the skater) keeps the identity root.
         if let Some(sim) = sim {
-            *root = Transform::IDENTITY;
+            let root_of = |world: skate_core::animation::output::NativeMatrix, pose: &[skate_core::animation::output::NativeMatrix]| {
+                let pose_root = pose.first().map(|m| [m[3][0], m[3][1], m[3][2]]).unwrap_or([0.0; 3]);
+                let gap = (0..3).map(|i| (pose_root[i] - world[3][i]).powi(2)).sum::<f32>().sqrt();
+                if gap > 2.0 { Transform::from_matrix(crate::animation::native_matrix(world)) } else { Transform::IDENTITY }
+            };
+            // Frame blending between the previous and the current physics tick (the player's presentation does the
+            // same); not across a placement, which would smear the skater across the map.
+            let current = root_of(sim.animation_root(), sim.render_pose());
+            let blending = sim.previous_pose.len() == sim.render_pose().len() && sim.previous_placements == sim.placements();
+            let alpha = fixed.overstep_fraction();
+            *root = if blending { crate::presentation::blend(root_of(sim.previous_root, &sim.previous_pose), current, alpha) } else { current };
             if let Some(bindings) = puppet.and_then(|p| p.bindings.as_ref()) {
                 let pose: Vec<Mat4> = sim.render_pose().iter().copied().map(crate::animation::native_matrix).collect();
-                for (joint, local) in bindings.pose_transforms(&pose) {
+                let now = bindings.pose_transforms(&pose);
+                let before = if blending {
+                    let pose: Vec<Mat4> = sim.previous_pose.iter().copied().map(crate::animation::native_matrix).collect();
+                    bindings.pose_transforms(&pose)
+                } else {
+                    Vec::new()
+                };
+                for (i, (joint, local)) in now.into_iter().enumerate() {
+                    let shown = match before.get(i) {
+                        Some((j, previous)) if *j == joint => crate::presentation::blend(*previous, local, alpha),
+                        _ => local,
+                    };
                     if let Ok(mut t) = joints.get_mut(joint) {
-                        *t = local;
+                        *t = shown;
                     }
                 }
             }

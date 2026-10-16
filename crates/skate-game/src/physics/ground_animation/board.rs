@@ -77,7 +77,7 @@ pub(super) fn advance(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> 
         info.player_jumped = true;
         //The native caller does not replace Fill's COM velocity144.
         let input = super::super::air_phase::selector_input(physics, skater)?;
-        skater.trajectory.launch(info, input, &physics.world)?;
+        skater.trajectory.launch(info, input, &physics.world, physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world))?;
         let grind_context = super::super::air_trajectory::GrindContext::from_processed(
             &skater.player_input.processed,
             skater

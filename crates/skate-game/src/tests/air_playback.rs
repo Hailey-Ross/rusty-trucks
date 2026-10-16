@@ -53,7 +53,7 @@ fn roll_off_sequence(
     let mut physics = GamePhysics::load_with_terrain(root, ground::Terrain::Course).unwrap();
     // Keep this air fixture's open edge now that the production level has a
     // downhill ramp. The dedicated ramp regression uses the unmodified world.
-    physics.world = BoardWorld::new(
+    physics.world = (BoardWorld::new(
         physics
             .world
             .triangles()
@@ -63,11 +63,11 @@ fn roll_off_sequence(
                 !(face.tag == 1 && face.triangle.vertices.iter().any(|vertex| vertex.z > 4.0))
             })
             .collect(),
-    );
+    )).into();
     if grab_hand.is_some() {
         // A deeper test landing gives the held cycle and OUT animation time
         // to run before contact can hide a failed airborne release.
-        physics.world = BoardWorld::new(
+        physics.world = (BoardWorld::new(
             physics
                 .world
                 .triangles()
@@ -90,7 +90,7 @@ fn roll_off_sequence(
                     .unwrap()
                 })
                 .collect(),
-        );
+        )).into();
     }
     let mut skater = SkaterRuntime::load(root, &graphs, &physics, "normal").unwrap();
     let mut controls = PlayerControls::default();

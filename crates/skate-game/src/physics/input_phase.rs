@@ -119,7 +119,7 @@ pub(super) fn advance(
     };
     let ground_frame = callbacks.riding.reckoning_frames.ground;
     // 82C1EAD8: map rails, then the props' rails at their last stepped pose (the carried prop left out), then the cars'.
-    let props = physics.prop_dynamics.as_ref();
+    let props = physics.prop_dynamics.as_deref();
     let rails = crate::grind_world::RailView {
         rails: &physics.grind_world,
         props: props.map(|d| d as &dyn crate::grind_world::RailSource),

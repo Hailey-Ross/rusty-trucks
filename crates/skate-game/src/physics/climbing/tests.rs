@@ -179,7 +179,7 @@ fn run_climb(drop_board: bool, miss: bool) {
         skater.skateboard_controller.fields.state_448 == 1,
         !drop_board
     );
-    physics.world = world(2.2, 4., 8., false, true);
+    physics.world = (world(2.2, 4., 8., false, true)).into();
     // Put the real skeleton's feet at the fixture origin before entering Biped.
     let c = &skater.climbing.clips.as_ref().unwrap().reach;
     let g: Vec<_> = skater

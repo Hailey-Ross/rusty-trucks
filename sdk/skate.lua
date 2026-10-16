@@ -282,6 +282,20 @@ function sdk.graphics.remove(key) end
 ---@param key string
 ---@param visible boolean
 function sdk.graphics.set_visible(key, visible) end
+---@class WaterLookPatch
+---@field enabled? boolean false = plain retail water_defaultPS look
+---@field ripple_scale? number ripple texture scale multiplier (retail 1)
+---@field reflection_blur? number extra reflection cube mip levels (retail 0)
+---@field reflection_tint? number[] reflection colour multiplier rgb (retail {1,1,1})
+---@field third_wave? boolean rotated third wave against visible tiling
+---@field body_calming? boolean calmer motion on small water bodies
+---@field wave_rate? number wave animation speed relative to retail (retail 1)
+---@field scroll_rate? number water texture scroll speed relative to retail (retail 1)
+---@field seamless_clock? boolean scroll clock without a visible restart (default true; false restarts every 10 s)
+---Replace values of the water look layer (capability water_look 1); nil restores the player's look.
+---One mod at a time; released when the mod is disabled.
+---@param patch WaterLookPatch|nil
+function sdk.graphics.water_look(patch) end
 ---@class MeshBufferOpts
 ---@field body? string
 ---@field position? Vec3 body-local when bound, world when unbound

@@ -571,7 +571,7 @@ pub(super) fn view(
         Res<crate::input::ControllerInput>,
         Res<crate::map_transition::MapTransition>,
     ),
-    (mods, physics, appearances, living): (Res<crate::modding::Mods>, Res<crate::physics::GamePhysics>, Res<crate::multiplayer::appearance::Appearances>, Option<Res<crate::living_world::LivingWorldSettings>>),
+    (mods, physics, appearances, living, water_look): (Res<crate::modding::Mods>, Res<crate::physics::GamePhysics>, Res<crate::multiplayer::appearance::Appearances>, Option<Res<crate::living_world::LivingWorldSettings>>, Option<Res<crate::water_look::WaterLookSettings>>),
     mut parts: Query<Part>,
 ) {
     let mut paint = Paint { q: &mut parts };
@@ -609,6 +609,7 @@ pub(super) fn view(
             debug: &debug_rows,
             window: window.physical_size(),
             opt_ins: living.as_deref().map(crate::living_world::opt_ins::in_effect).unwrap_or_default(),
+            better_water: water_look.as_deref().map_or((false, None), |w| (w.selected.enabled, w.patched_by().map(str::to_owned))),
         };
         page.iter().map(|id| menu.describe(*id, &cx)).collect()
     };

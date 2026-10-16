@@ -52,10 +52,11 @@ impl AirTrajectoryRuntime {
         info: LaunchInfo,
         input: SelectorInput,
         world: &BoardWorld,
+        props: Option<&BoardWorld>,
     ) -> Result<bool, String> {
         let launched = self.selector.launch(info, input, &self.settings)?;
         if launched {
-            self.submit(world)?;
+            self.submit(world, props)?;
         }
         Ok(launched)
     }
@@ -104,19 +105,25 @@ impl AirTrajectoryRuntime {
                     context,
                 )
             },
-            |start, end, radius| world::line(world, start, end, radius),
+            |start, end, radius| world::line_with_props(world, props, start, end, radius),
         )?;
         if self.selector.pending() {
-            self.submit(world)?;
+            self.submit(world, props)?;
         }
         Ok(valid)
     }
-    fn submit(&mut self, world: &BoardWorld) -> Result<(), String> {
+    /// The landing prediction queries the map and the dynamic props (a jump onto a bench predicted no landing on it
+    /// before 2026-10-15, so the grind aim never committed to the bench's rail).
+    fn submit(&mut self, world: &BoardWorld, props: Option<&BoardWorld>) -> Result<(), String> {
         let results = self
             .selector
             .requests()
             .iter()
-            .map(|&request| Self::query(world, request))
+            .map(|&request| query_trajectory(
+                request,
+                |start, end, radius| world::line_with_props(world, props, start, end, radius),
+                |position, radius| world::nearby_with_props(world, props, position, radius),
+            ))
             .collect::<Result<Vec<_>, _>>()?;
         self.pending_results = Some(results);
         Ok(())

@@ -560,6 +560,7 @@ fn snapshot_ro(world: &World, mods: &mut Mods, camera: Option<[f32; 3]>) -> serd
         "frame": world.get_resource::<crate::frame_timing::FrameTiming>().map(|t| t.snapshot()),
         "camera": camera.map(|position| json!({"position": position})),
         "camera_angle": camera_angle_snapshot(world),
+        "water_look": world.get_resource::<crate::water_look::WaterLookSettings>().map_or(Value::Null, |s| s.snapshot()),
         "physics": {"bodies": {}, "contacts": []},
         "network": net,
     })
@@ -752,6 +753,13 @@ fn clear_camera_angle(world: &mut World, owner: Option<&str>) {
     }
 }
 
+/// Water look patch of one mod (`Some`) or of every mod (`None`).
+fn clear_water_look(world: &mut World, owner: Option<&str>) {
+    if let Some(mut settings) = world.get_resource_mut::<crate::water_look::WaterLookSettings>() {
+        settings.clear_owner(owner);
+    }
+}
+
 fn camera_angle_snapshot(world: &World) -> Value {
     let shot = world.get_resource::<crate::camera::CameraRuntime>().map_or("", |c| c.selected_shot());
     world.get_resource::<crate::camera::CameraAngleSettings>().map_or(Value::Null, |s| s.snapshot(shot))
@@ -804,6 +812,7 @@ fn clear_runtime(world: &mut World, mods: &mut Mods) {
     triggers::clear(world);
     capture::clear(world);
     clear_camera_angle(world, None);
+    clear_water_look(world, None);
     world.resource_mut::<crate::physics::GamePhysics>().set_external_queries(None);
     mods.world = DynamicsWorld::default();
     mods.ground_ready = false;
@@ -844,6 +853,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
         triggers::clear_owner(world, id);
         capture::clear_owner(world, id);
         clear_camera_angle(world, Some(id));
+        clear_water_look(world, Some(id));
         player_physics::clear(world,Some(id));
         mods.custom_menus.retain(|(owner,_),_|owner!=id);
         crate::retail_menus::clear_owner(world, id);
@@ -924,6 +934,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
             clear_camera_angle(world, Some(&id));
+            clear_water_look(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
             crate::retail_menus::clear_owner(world, &id);
@@ -957,6 +968,7 @@ fn apply(world: &mut World, mods: &mut Mods) {
             triggers::clear_owner(world, &id);
             capture::clear_owner(world, &id);
             clear_camera_angle(world, Some(&id));
+            clear_water_look(world, Some(&id));
             player_physics::clear(world,Some(&id));
             mods.custom_menus.retain(|(owner,_),_|owner!=&id);
             crate::retail_menus::clear_owner(world, &id);
@@ -1358,6 +1370,12 @@ fn apply_one(
         }
         Command::CameraAngle { angle } => {
             world.resource_mut::<crate::camera::CameraAngleSettings>().force(id, angle.map(Into::into))?;
+        }
+        Command::WaterLook { patch } => {
+            world
+                .get_resource_mut::<crate::water_look::WaterLookSettings>()
+                .ok_or("water look is not available")?
+                .patch(id, patch)?;
         }
         Command::CameraShotTune { shot, patch } => {
             if !world.resource::<crate::camera::CameraRuntime>().has_shot(&shot) {

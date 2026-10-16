@@ -71,6 +71,8 @@ mod grind_world;
 mod skate_world;
 mod map_validation;
 mod water_splash;
+mod water_bodies;
+pub(crate) mod water_look;
 mod game_audio;
 pub(crate) mod world_audio;
 pub(crate) mod ui_audio;
@@ -79,6 +81,14 @@ mod trigger_volumes;
 mod trace_all;
 
 fn main() -> bevy::app::AppExit {
+    // The build uses hardware FMA (`.cargo/config.toml`): say so on an older CPU instead of an illegal-instruction crash.
+    #[cfg(target_arch = "x86_64")]
+    if !std::arch::is_x86_feature_detected!("fma") {
+        let text = "Skate 3 Rust Engine needs a CPU with FMA3 support (Intel Haswell / AMD Piledriver, 2013, or newer).";
+        eprintln!("{text}");
+        crash_report::present_message(text);
+        return bevy::app::AppExit::error();
+    }
     match updater::recover() {
         Ok(true) => return bevy::app::AppExit::Success,
         Err(error) => { eprintln!("{error}"); return bevy::app::AppExit::Success; },

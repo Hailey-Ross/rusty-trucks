@@ -112,7 +112,7 @@ pub(super) fn board(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Re
         launch.start_velocity = response.vector_2688;
         launch.player_jumped = true;
         let input = super::super::air_phase::selector_input(physics, skater)?;
-        skater.trajectory.launch(launch, input, &physics.world)?;
+        skater.trajectory.launch(launch, input, &physics.world, physics.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world))?;
         let grind_context = super::super::air_trajectory::GrindContext::from_processed(
             &skater.player_input.processed,
             skater

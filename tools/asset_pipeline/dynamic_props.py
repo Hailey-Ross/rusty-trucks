@@ -112,8 +112,68 @@ def template_meshes(raw):
         result[key] = dict(mesh_info=mesh_info, matrix=matrix(raw, at), grab_splines=splines,
                           grind_splines=template_rails(raw, table, at, index, following, rails),
                           model_matrix=matrix(raw, base+struct.unpack_from('>I', raw, base+32)[0]),
-                          characteristics=characteristics_key(raw, at))
+                          characteristics=characteristics_key(raw, at), collision=template_collision(raw, table, at))
     return result
+
+
+def template_collision(raw, table, at):
+    """Retail physics collision of one EB000D part, in the part's model space, or None.
+
+    Chain (research dmo-physics-collision.md section 2): tInstance +132 -> EB000A link, +8 -> 0x00040006 (assembly
+    definition), +112 -> root volume 0x00080001 (type 6 aggregate) -> 0x00080002 array of 96 B volumes; a type 6
+    entry whose child is a 0x00080006 ClusteredMesh carries the triangles with their RW edge codes and surfaces (the
+    decoder the map collision uses). Primitive volumes (boxes etc.) are not exported yet. Six templates point the
+    link at another section kind; those return None and keep the render mesh."""
+    def u32(offset):
+        return struct.unpack_from('>I', raw, offset)[0]
+    def kind(index):
+        return table[index][5] if index < len(table) else None
+    link = u32(at+132)
+    if kind(link) != 0xEB000A:
+        return None
+    assembly = u32(table[link][0]+8)
+    if kind(assembly) != 0x00040006:
+        return None
+    root = u32(table[assembly][0]+112)
+    if kind(root) != 0x00080001:
+        return None
+    return collision_from_volume(raw, table, root)
+
+
+def collision_from_volume(raw, table, root):
+    """The ClusteredMesh triangles (edge codes, surfaces) under one RW collision volume section (aggregates walked)."""
+    def u32(offset):
+        return struct.unpack_from('>I', raw, offset)[0]
+    meshes = []
+    def walk(index, depth):
+        if depth > 4 or index >= len(table):
+            return
+        base, _, size, _, _, type_id = table[index]
+        if type_id == 0x00080006:
+            meshes.append(bytes(raw[base:base+size]))
+        elif type_id == 0x00080001:
+            if u32(base+64) == 6:
+                walk(u32(base+68), depth+1)
+        elif type_id == 0x00080002:
+            count, offset = u32(base+36), u32(base+48)
+            for i in range(count):
+                entry = base+offset+i*96
+                if entry+96 > base+size:
+                    break
+                if u32(entry+64) == 6:
+                    walk(u32(entry+68), depth+1)
+    walk(root, 0)
+    if not meshes:
+        return None
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/university/tools/vanilla_map_extraction/tools'))
+    from retail_collision_mesh import decode_clustered_mesh
+    triangles, edges, surfaces = [], [], []
+    for data in meshes:
+        for t in decode_clustered_mesh(data).triangles:
+            triangles.append([list(t.a), list(t.b), list(t.c)])
+            edges.append(list(t.edge_codes) if t.edge_codes is not None else None)
+            surfaces.append(t.surface)
+    return dict(triangles=triangles, edges=edges, surfaces=surfaces)
 
 
 def decode_grind_splines(raw):
@@ -298,7 +358,7 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
                 raise ValueError('Conflicting DMO locator '+key)
             placements[key] = item
     report = dict(map=district['map_name'], instances=[], unresolved=[], simulation='initial placement only',
-                  types={}, grab_splines={}, grind_splines={}, hotpoints={}, hotpoint_classes={}, plugin_props=[])
+                  types={}, grab_splines={}, grind_splines={}, collision={}, hotpoints={}, hotpoint_classes={}, plugin_props=[])
     # Ped plugin hotpoints per template (parkassets.big, `hotpoint_data`), written by prepare_catalog beside the catalog.
     hotpoint_file = Path(catalog_path).parent/'hotpoints.json' if catalog_path is not None else None
     hotpoint_table = json.loads(hotpoint_file.read_text()) if hotpoint_file is not None and hotpoint_file.is_file() else {}
@@ -334,6 +394,8 @@ def export(manifest_path, cache_roots, output, *, catalog_path=None):
                 report['grab_splines'][key] = template['grab_splines']
             if template.get('grind_splines'):
                 report['grind_splines'][key] = template['grind_splines']
+            if template.get('collision'):
+                report['collision'][key] = template['collision']
             if key in hotpoint_table.get('hotpoints', {}):
                 report['hotpoints'][key] = hotpoint_table['hotpoints'][key]
                 report['hotpoint_classes'] = hotpoint_table['classes']
@@ -377,7 +439,40 @@ def prepare_catalog(game_root, work):
     return roots
 
 
+def patch_collision(game_root, native_props, work):
+    """Add the retail DMO collision (`template_collision`) to an installed `native-props/<map>.json` set without a full
+    setup: every DMO stream of worlddmo.big is prepared, and each map's sidecar gets `collision` for the templates its
+    instances use. Returns {map: templates written}."""
+    roots = prepare_catalog(Path(game_root), Path(work))
+    shapes = {}
+    for root in roots:
+        for path in Path(root).rglob('*.rx2'):
+            raw = path.read_bytes()
+            try:
+                table = sections(raw)
+            except ValueError:
+                continue
+            for _, at, _ in records(raw, 0xEB000D, 160):
+                key = f'{struct.unpack_from(">Q", raw, at+104)[0]:016X}'
+                if key not in shapes:
+                    shape = template_collision(raw, table, at)
+                    if shape:
+                        shapes[key] = shape
+    written = {}
+    for sidecar in sorted(Path(native_props).glob('*.json')):
+        report = json.loads(sidecar.read_text())
+        used = {i.get('template_id') for i in report.get('instances', [])}
+        report['collision'] = {k: shapes[k] for k in sorted(used) if k in shapes}
+        sidecar.write_text(json.dumps(report, indent=2))
+        written[sidecar.stem] = len(report['collision'])
+    return written
+
+
 if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == 'patch-collision':
+        # python -m tools.asset_pipeline.dynamic_props patch-collision <game root> <native-props dir> <work dir>
+        print(patch_collision(*sys.argv[2:5]))
+        sys.exit(0)
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--manifest', type=Path, required=True)
     p.add_argument('--cache', type=Path, nargs='+', required=True)

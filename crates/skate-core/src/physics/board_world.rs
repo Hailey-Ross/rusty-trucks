@@ -143,8 +143,45 @@ pub struct BoardWorld {
     maximum_triangle_margin: f32,
     /// Indices of water triangles, for `water_surface_at`.
     water: Vec<usize>,
+    /// The query's own scratch (taken out for the query, so `query_primitives` keeps its `&mut self` API).
+    scratch: Option<Box<QueryScratch>>,
+}
+
+/// The per-query output and retention buffer. A caller that shares one world between threads keeps one of these each
+/// and calls [`BoardWorld::query_primitives_in`] (the world itself is only read by a query).
+#[derive(Clone, Debug)]
+pub struct QueryScratch {
     contacts: Vec<BoardCollision>,
     buffer: ContactBuffer,
+}
+
+impl Default for QueryScratch {
+    fn default() -> Self {
+        Self {
+            contacts: Vec::new(),
+            buffer: ContactBuffer {
+                count: 0,
+                flushed: 0,
+                capacity: 0,
+                dropped: 0,
+                distance_squared_threshold: 0.0,
+                allow_flush: 1,
+                deferred_reduction: 0,
+                full: 0,
+                records: [[0; 64]; 50],
+            },
+        }
+    }
+}
+
+impl QueryScratch {
+    pub fn scratch_contacts(&self) -> &[BoardCollision] {
+        &self.contacts
+    }
+
+    pub fn scratch_dropped_contacts(&self) -> u32 {
+        self.buffer.dropped
+    }
 }
 
 impl BoardWorld {
@@ -191,18 +228,7 @@ impl BoardWorld {
             query_index: query_index::QueryIndex::default(),
             maximum_fatness,
             maximum_triangle_margin,
-            contacts: Vec::new(),
-            buffer: ContactBuffer {
-                count: 0,
-                flushed: 0,
-                capacity: 0,
-                dropped: 0,
-                distance_squared_threshold: 0.0,
-                allow_flush: 1,
-                deferred_reduction: 0,
-                full: 0,
-                records: [[0; 64]; 50],
-            },
+            scratch: Some(Box::default()),
         }
     }
 
@@ -304,8 +330,14 @@ impl BoardWorld {
         board: &BoardRuntime,
         settings: WheelWorldSettings,
     ) -> &[BoardCollision] {
+        let volumes = Self::wheel_volumes(board, settings);
+        self.query_primitives(&volumes, settings.query, settings.retention)
+    }
+
+    /// The wheel spheres [`Self::query`] asks about (shared with callers that keep their own scratch).
+    pub fn wheel_volumes(board: &BoardRuntime, settings: WheelWorldSettings) -> Vec<BoardWorldVolume> {
         let poses = board.part_transforms();
-        let volumes: Vec<_> = BodyId::ORDER[..4]
+        let volumes: Vec<BoardWorldVolume> = BodyId::ORDER[..4]
             .iter()
             .filter_map(|&id| {
                 let body = &board.bodies()[id.index()];
@@ -321,7 +353,7 @@ impl BoardWorld {
                 })
             })
             .collect();
-        self.query_primitives(&volumes, settings.query, settings.retention)
+        volumes
     }
 
     /// World-space shapes come from the live part poses and authored children.
@@ -333,21 +365,37 @@ impl BoardWorld {
         query: WorldContactSettings,
         retention: ContactRetentionSettings,
     ) -> &[BoardCollision] {
-        self.contacts.clear();
-        self.buffer.count = 0;
-        self.buffer.flushed = 0;
-        self.buffer.dropped = 0;
-        self.buffer.full = 0;
-        self.buffer.capacity = retention.capacity;
-        self.buffer.distance_squared_threshold = retention.duplicate_distance_squared;
-        self.buffer.deferred_reduction = u8::from(retention.deferred_reduction);
+        let mut scratch = self.scratch.take().expect("BoardWorld query scratch is always present between queries");
+        self.query_primitives_in(&mut scratch, volumes, query, retention);
+        self.scratch = Some(scratch);
+        &self.scratch.as_ref().expect("restored above").contacts
+    }
+
+    /// [`Self::query_primitives`] with the caller's scratch: the world is only read, so several threads can query one
+    /// shared world, each with its own [`QueryScratch`].
+    pub fn query_primitives_in<'s>(
+        &self,
+        scratch: &'s mut QueryScratch,
+        volumes: &[BoardWorldVolume],
+        query: WorldContactSettings,
+        retention: ContactRetentionSettings,
+    ) -> &'s [BoardCollision] {
+        let QueryScratch { contacts: self_contacts, buffer: self_buffer } = scratch;
+        self_contacts.clear();
+        self_buffer.count = 0;
+        self_buffer.flushed = 0;
+        self_buffer.dropped = 0;
+        self_buffer.full = 0;
+        self_buffer.capacity = retention.capacity;
+        self_buffer.distance_squared_threshold = retention.duplicate_distance_squared;
+        self_buffer.deferred_reduction = u8::from(retention.deferred_reduction);
         // No volumes, no pairs: the union bounds below would be None and
         // candidate_ranges(None) means "every triangle", so a hidden board
         // (all volumes disabled, state 3) walked the whole map each tick
         // for an empty result (fix15). The result and buffer state are the
         // same as the full walk's: nothing allocated, nothing flushed.
         if volumes.is_empty() {
-            return &self.contacts;
+            return &*self_contacts;
         }
         let padding =
             if query.volume_padding.is_finite() && query.maximum_separating_distance.is_finite() {
@@ -386,7 +434,7 @@ impl BoardWorld {
             .and_then(|b| Bounds::from_points(b.iter().flat_map(|b| [b.min, b.max])))
             .map(|b| b.expanded(padding));
         let ranges = self.candidate_ranges(bounds);
-        let mut output = std::mem::take(&mut self.contacts);
+        let mut output = std::mem::take(&mut *self_contacts);
         let mut publish = |records: &[ContactRecord]| {
             output.extend(records.iter().map(collision_from_record));
         };
@@ -423,27 +471,27 @@ impl BoardWorld {
                         dynamic_friction: material.dynamic_friction,
                         tag: entry.tag,
                     };
-                    let Some(slot) = self.buffer.allocate(&mut publish) else {
-                        self.buffer.flush(&mut publish);
+                    let Some(slot) = self_buffer.allocate(&mut publish) else {
+                        self_buffer.flush(&mut publish);
                         break 'triangles;
                     };
-                    self.buffer.records[slot] = retention_record(volume.body, contact);
+                    self_buffer.records[slot] = retention_record(volume.body, contact);
                     //8277C23C removes the most recent record on rejection.
-                    if self.buffer.last_is_duplicate() {
-                        self.buffer.count -= 1;
+                    if self_buffer.last_is_duplicate() {
+                        self_buffer.count -= 1;
                     }
                 }
             }
         }
-        if self.buffer.full == 0 {
-            self.buffer.flush(&mut publish);
+        if self_buffer.full == 0 {
+            self_buffer.flush(&mut publish);
         }
-        self.contacts = output;
-        &self.contacts
+        *self_contacts = output;
+        &*self_contacts
     }
 
     pub fn contacts(&self) -> &[BoardCollision] {
-        &self.contacts
+        &self.scratch.as_ref().expect("BoardWorld query scratch").contacts
     }
 
     /// `water_surface_at`, but only where the water is at least `min_depth`
@@ -602,7 +650,7 @@ impl BoardWorld {
     }
 
     pub fn dropped_contacts(&self) -> u32 {
-        self.buffer.dropped
+        self.scratch.as_ref().expect("BoardWorld query scratch").buffer.dropped
     }
 }
 

@@ -886,7 +886,6 @@ Open:
   decal programs (tileable, simple_tileable, environmentparkdecal) are not read yet.
 - Per-texture decal strength for mods (only a global strength now).
 
-
 ### Water camera restored after the upstream integration (2026-10-13)
 
 User (2026-10-13): "falling in water still causes the camera to go under the water surface for some reason and get
@@ -937,10 +936,73 @@ User (2026-10-13): "lets also recover the lost improvements noted here". Researc
   about 2 s; the overhead water shot shows the skater in the canal and no board on the surface. So the 360 code
   sinks the board; ours matches. Restoring the old float would be our own choice and needs the user's ok.
 - **Water look** (body-size calming, ripple scale, third wave, tint): upstream replaced our shader with a port of the
-  retail `water_defaultPS`. Ours were project choices; whether to bring any back as an opt-in look layer is the
-  user's call.
+  retail `water_defaultPS`. Ours were project choices. Restored 2026-10-15 as an opt-in look layer, see
+  [Water look layer](#water-look-layer-better-water-2026-10-15).
 - **Moddability:** the exclusion pairs are a hard-coded `matches!` today; they should become the retail 21 x 14 table
   as data with the two retail pairs as defaults.
+
+### Water look layer ("Better Water", 2026-10-15)
+
+**Problem.** User (2026-10-15, DownTown Aletown canal, hails-local d9e8df02): "the water effect jumps around alot
+too" and "the water effects look terrible, lets look to reimplement our water effects that upstream didn't take."
+
+**Root cause of the jump.** The retail scroll clock (`retail_render::WaterAnimation`, TU3 0x82790858) adds 1/60 per
+30 Hz update and restarts after 5, so every scroll layer (`retail_world.wgsl`, `p.water[1] * t`) snaps back by
+speed x 5 every 10 s. This is the retail routine; our old `water_time` (seamless 1000-unit loop at the same rate)
+had hidden it and was removed by b3c96793.
+
+**Is ours retail?** No. Every piece below was a project choice matched by eye to RPCS3 footage (sections above);
+upstream's current shader is the retail port. User (2026-10-15): "If not make it a toggle in the extras menu for the
+guide overlay, with the default setting making it retail-like" and "Call it 'Better Water' for the toggle".
+
+**Change.** `water_look.rs` (new): `WaterLook` values, `WaterLookSettings` (player file `settings/water-look.json`,
+one mod patch on top). Off (default) = every piece at its retail value, so the shader output is the retail program.
+On ("Better Water", pause menu EXTRAS) restores, from PR #30's head 5245a185:
+
+| Piece | Better Water | Retail |
+|---|---|---|
+| `ripple_scale` | 4 | 1 |
+| `reflection_blur` (extra cube mips) | 3 | 0 |
+| `reflection_tint` | 0.82, 1.0, 1.04 | 1, 1, 1 |
+| `third_wave` (rotated 0.613x sample + swells) | on | off |
+| `body_calming` (`water_bodies.rs` areas in `decal.y`) | on | off |
+| `wave_rate` (PCA, blended between frames, `pca_slow`) | 0.75 | 1 |
+| `scroll_rate` (texture scroll speed) | 0.5 | 1 |
+| `seamless_clock` (`water_time`) | on | on (see below) |
+
+**Seamless clock is on for both looks.** User (2026-10-15): "I can say as apart of our water testing I NEVER saw it
+reset like ours does in the rust engine reimplmentation of it". So the ported 0x82790858 restart is not what the
+console shows; the seamless clock is the default with Better Water off too, and `seamless_clock = false` (mods only)
+gives the restart. Open: how retail hides the restart (consumer of the published value, shader-side wrap, or a second
+clock); research `.local/research/retail-water-scroll-clock.md`.
+**Found (2026-10-15):** the water shaders never see the 0x82790858 loop. They read the global `g_fAnimationTime`
+(`water_defaultPS`: `uv = raw * (c20 * c21.x) + c19 * c22.x`, c22 = `g_fAnimationTime` [data, shaders_final.big];
+FNV-1 hash 0xE5A76988 registered by sub_826DD6B8 [code, agent-decoded]). sub_82791628, the only caller of
+0x82790858, adds dt to its `.x` every update and nothing resets it [code, main-verified in skate3_recomp.34.cpp:
+`lvx128 v63` from block +0x40000+17024+336, `vaddfp128` with the splatted dt, `stvx128` back]. So retail scrolls
+seamlessly and the seamless clock is the retail behaviour; our 1000-unit loop only keeps f32 precision (invisible,
+every authored speed completes whole repeats). The 0x82790858 value (this+316) has no known reader.
+**Rate measured (2026-10-15):** recomp watch list (no hook build) on `*(0x83083C60)+0x443D0` and the loop counter
+`0x830CEC9C`, 52 s idle at the spawn, muted background run: `g_fAnimationTime.x` rises at **1.0025 per second** with
+no drop in 6,466 samples; the 0x82790858 loop restarts every ~0.55 s in the recomp (it steps per update) and no
+shader reads it. 0 malformed lines. Data: `.local/research/water-clock/` (`watch.txt`, `idle.tsv`, `rate.py`;
+script `.local/recomp/scripts/water_clock_idle.txt`). So the retail scroll runs at real time; `water_time` now uses
+1.0 x `scroll_rate` (retail 1; Better Water keeps the earlier approved half speed, 0.5). The "half real-time, loops
+every 10 s" in [Water time](#water-time) came from the wrong clock.
+
+Frame state grows by `pca_slow` (7 x vec4), `water_look` and `water_tint` (288 bytes). The native `WaterAnimation`
+always runs (it drives the PCA frame); the seamless clock only replaces the published scroll time. At the retail rate
+`pca_slow` is `pca`.
+
+**Moddability.** `sdk.graphics.water_look(patch | nil)` (capability `water_look` 1): any key above plus `enabled`;
+one mod at a time, released on disable / failure / reload; `sdk.snapshot.water_look` reports the active values and
+owner. Documented in `sdk/ENGINE_API.md`, `sdk/skate.lua`. Multiplayer: per-client look; the animation stays a
+function of time.
+
+**Files.** `water_look.rs` (new, tests), `water_bodies.rs` (restored from 5245a185), `retail_render.rs` (frame state,
+body areas, `slow_pca`, `water_time`, tests), `retail_world.wgsl`, `retail_material_bindings.wgsl`,
+`graphics_menu.rs` (EXTRAS row), `modding/mod.rs`, `main.rs`; `skate-mods` `presentation.rs` (`WaterLookPatch`),
+`vm.rs` (command, capability, Lua test), `api.lua`.
 
 ## Verification
 

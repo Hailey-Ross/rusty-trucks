@@ -135,6 +135,42 @@ impl CameraShotTuning {
     }
 }
 
+/// Replacement values for the water look layer (family 33 water: DownTown
+/// fountains, the Aletown canal). Unset fields keep the player's / default
+/// value. `enabled = false` gives the plain retail `water_defaultPS` look.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WaterLookPatch {
+    pub enabled: Option<bool>,
+    /// Ripple texture scale multiplier (retail 1).
+    pub ripple_scale: Option<f32>,
+    /// Extra environment cube mip levels: a blurrier reflection (retail 0).
+    pub reflection_blur: Option<f32>,
+    /// Reflection colour multiplier (retail 1, 1, 1).
+    pub reflection_tint: Option<[f32; 3]>,
+    /// Third, rotated wave sample against visible tiling.
+    pub third_wave: Option<bool>,
+    /// Calmer motion on small water bodies.
+    pub body_calming: Option<bool>,
+    /// Wave animation speed relative to retail's 30 Hz (retail 1).
+    pub wave_rate: Option<f32>,
+    /// Water texture scroll speed relative to retail (retail 1).
+    pub scroll_rate: Option<f32>,
+    /// Scroll clock that never visibly restarts (default on; false gives the
+    /// ported routine's restart every 10 s).
+    pub seamless_clock: Option<bool>,
+}
+impl WaterLookPatch {
+    pub fn validate(&self) -> bool {
+        let ok = |v: Option<f32>, lo: f32, hi: f32| v.is_none_or(|v| range(v, lo, hi));
+        ok(self.ripple_scale, 0.1, 16.0)
+            && ok(self.reflection_blur, 0.0, 8.0)
+            && self.reflection_tint.is_none_or(|t| t.iter().all(|&c| range(c, 0.0, 4.0)))
+            && ok(self.wave_rate, 0.0, 4.0)
+            && ok(self.scroll_rate, 0.0, 4.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CanvasAnchor {

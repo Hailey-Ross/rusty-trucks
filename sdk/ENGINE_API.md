@@ -291,6 +291,30 @@ graph's Low or High branch, which choose different stock shots (`bl_chase` vs
 
 Disabling, failing or reloading the mod releases its angle and shot tunings.
 
+## Water look (`sdk.graphics.water_look`, capability `water_look` 1)
+
+Family 33 water (DownTown fountains, the Aletown canal) draws the retail
+`water_defaultPS` program plus an optional look layer. The player's values live in
+`settings/water-look.json` (missing file = the defaults below; the pause menu
+EXTRAS toggle "Better Water" sets `enabled`). With
+`enabled = false` the water is the plain retail program.
+
+| Key | Default | Retail |
+|---|---|---|
+| `enabled` | false (pause menu EXTRAS "Better Water") | false |
+| `ripple_scale` | 4 | 1 |
+| `reflection_blur` (cube mips) | 3 | 0 |
+| `reflection_tint` | {0.82, 1, 1.04} | {1, 1, 1} |
+| `third_wave` | true | false |
+| `body_calming` | true | false |
+| `wave_rate` | 0.75 | 1 |
+| `scroll_rate` | 0.5 | 1 |
+| `seamless_clock` | true | true (false: the scroll restarts every 10 s) |
+
+`sdk.graphics.water_look(patch)` replaces any of these keys; `nil` restores the
+player's look. One mod at a time; unknown keys or out-of-range values fail the
+command. Disabling, failing or reloading the mod releases it.
+
 ## Local actor suspension and peer cameras
 
 `sdk.player.suspend(true)` freezes the local native simulation, hides its skater,

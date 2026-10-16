@@ -513,6 +513,11 @@ pub enum Command {
         #[serde(default)]
         patch: Option<crate::presentation::CameraShotTuning>,
     },
+    /// Replaces values of the water look layer; nil restores the player's look.
+    WaterLook {
+        #[serde(default)]
+        patch: Option<crate::presentation::WaterLookPatch>,
+    },
     NetworkState {
         key: String,
         #[serde(default)]
@@ -906,6 +911,7 @@ impl Command {
             Self::CameraAngle { .. } => true,
             Self::CameraShotTune { shot, patch } => valid_shot_name(shot)
                 && patch.as_ref().is_none_or(|p| p.validate()),
+            Self::WaterLook { patch } => patch.as_ref().is_none_or(|p| p.validate()),
             Self::NetworkState { key, value } => {
                 crate::schema::valid_id(key)
                     && serde_json::to_vec(value).is_ok_and(|v| v.len() <= 512)
@@ -1028,6 +1034,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::CameraWatch { .. } => "camera_watch",
         Command::CameraAngle { .. } => "camera_angle",
         Command::CameraShotTune { .. } => "camera_shot_tune",
+        Command::WaterLook { .. } => "water_look",
         Command::NetworkState { .. } => "network_state",
         Command::UiMenu { .. } => "ui_menu",
         Command::UiRemoveMenu { .. } => "ui_remove_menu",
@@ -1316,6 +1323,7 @@ impl Vm {
             capabilities.set("player_overlap", 1)?;
             capabilities.set("landed_details", 1)?;
             capabilities.set("camera", 4)?;
+            capabilities.set("water_look", 1)?;
             capabilities.set("player_control", 1)?;
             capabilities.set("session", 1)?;
             capabilities.set("volumes", 1)?;
@@ -1686,6 +1694,41 @@ mod driving_extension_tests {
         let bad:Command=serde_json::from_value(json!({"kind":"camera_shot_tune","shot":"Bad Name","patch":{"PositionDistance":2}})).unwrap();
         assert!(!bad.validate());
         let far:Command=serde_json::from_value(json!({"kind":"camera_shot_tune","shot":"bl_chase","patch":{"PositionDistance":900}})).unwrap();
+        assert!(!far.validate());
+        drop(vm);std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn water_look_api_crosses_the_lua_boundary() {
+        use std::time::{SystemTime,UNIX_EPOCH};
+        let root=std::env::temp_dir().join(format!("skate-water-look-api-{}-{}",
+            std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.lua"), r#"
+            return { on_load=function()
+                assert(sdk.capabilities.water_look >= 1)
+                sdk.graphics.water_look({ripple_scale=2, reflection_tint={0.9,1,1}, seamless_clock=false})
+                sdk.graphics.water_look(nil)
+            end }
+        "#).unwrap();
+        let manifest:Manifest=serde_json::from_value(json!({
+            "id":"tests.water_look","api":2,"name":"Water look test", "version":"1.0.0",
+            "author":"test","description":"test","entry":"main.lua","settings":{}
+        })).unwrap();
+        let snap=json!({});
+        let mut vm=Vm::new(&root,&manifest,&BTreeMap::new(),&snap).unwrap();
+        let out=vm.call("on_load",json!({}),&snap).unwrap();
+        assert_eq!(out.len(),2);
+        match &out[0] { Command::WaterLook{patch:Some(p)} => {
+            assert_eq!(p.ripple_scale,Some(2.0));
+            assert_eq!(p.reflection_tint,Some([0.9,1.0,1.0]));
+            assert_eq!(p.seamless_clock,Some(false));
+            assert_eq!(p.enabled,None);
+            assert!(out[0].validate());
+        }, other => panic!("wrong water look command {other:?}") }
+        assert!(matches!(&out[1],Command::WaterLook{patch:None}));
+        assert!(serde_json::from_value::<Command>(json!({"kind":"water_look","patch":{"ripples":2}})).is_err());
+        let far:Command=serde_json::from_value(json!({"kind":"water_look","patch":{"ripple_scale":900}})).unwrap();
         assert!(!far.validate());
         drop(vm);std::fs::remove_dir_all(root).unwrap();
     }

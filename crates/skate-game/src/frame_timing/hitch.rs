@@ -70,7 +70,10 @@ impl HitchConfig {
 }
 
 /// Wall time of the frame's stages, between marker systems at the set boundaries.
-pub(crate) const STAGES: [&str; 7] = ["fixed_input", "fixed_controls", "fixed_physics", "assets", "present", "animation", "audio"];
+/// `pre_update` = frame start (First) to Update (First, PreUpdate: asset events, input); `post_render` = end of Update to
+/// the next frame start (PostUpdate with visibility, Last, render extract and render): 2026-10-15, hitches of 30 to
+/// 60 ms had every other stage near 1 ms.
+pub(crate) const STAGES: [&str; 9] = ["fixed_input", "fixed_controls", "fixed_physics", "assets", "present", "animation", "audio", "pre_update", "post_render"];
 const F_INPUT: usize = 0;
 const F_CONTROLS: usize = 1;
 const F_PHYSICS: usize = 2;
@@ -78,18 +81,27 @@ const U_ASSETS: usize = 3;
 const U_PRESENT: usize = 4;
 const U_ANIMATION: usize = 5;
 const U_AUDIO: usize = 6;
+const U_PRE: usize = 7;
+const U_POST: usize = 8;
 const NONE: usize = usize::MAX;
 
 /// Phases inside the physics tick (`physics::frame::advance`), summed over the frame's ticks.
 /// Plus the scoring HUD (its fixed-step `advance` and its per-frame `render`).
-pub(crate) const PHASES: [&str; 6] = ["anim_graphs", "solve", "finish_skater", "scoring", "hud_advance", "hud_render"];
+/// `solve_*` split `solve` (all skaters' shared solves, player and simulated NPCs) into its parts, and `solve_npc` is the
+/// part spent on simulated NPC skaters (diagnostics, 2026-10-15).
+pub(crate) const PHASES: [&str; 11] = ["anim_graphs", "solve", "finish_skater", "scoring", "hud_advance", "hud_render", "solve_queries", "solve_contacts", "solve_solver", "solve_rest", "solve_npc"];
+pub(crate) const PHASE_SOLVE_QUERIES: usize = 6;
+pub(crate) const PHASE_SOLVE_CONTACTS: usize = 7;
+pub(crate) const PHASE_SOLVE_SOLVER: usize = 8;
+pub(crate) const PHASE_SOLVE_REST: usize = 9;
+pub(crate) const PHASE_SOLVE_NPC: usize = 10;
 pub(crate) const PHASE_ANIM_GRAPHS: usize = 0;
 pub(crate) const PHASE_SOLVE: usize = 1;
 pub(crate) const PHASE_FINISH: usize = 2;
 pub(crate) const PHASE_SCORING: usize = 3;
 pub(crate) const PHASE_HUD_ADVANCE: usize = 4;
 pub(crate) const PHASE_HUD_RENDER: usize = 5;
-static PHASE_US: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+static PHASE_US: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 
 /// Runs `f`, adding its wall time to physics phase `phase` (always on: one clock read each side).
 pub(crate) fn phase<R>(phase: usize, f: impl FnOnce() -> R) -> R {
@@ -106,14 +118,14 @@ pub(crate) fn add_phase(phase: usize, started: Instant) {
 
 /// Takes (and resets) the physics phase sums (µs), as the log line does each frame.
 #[cfg(test)]
-pub(crate) fn take_phases() -> [u64; 6] {
+pub(crate) fn take_phases() -> [u64; 11] {
     std::array::from_fn(|i| PHASE_US[i].swap(0, Ordering::Relaxed))
 }
 
 #[derive(Resource, Default)]
 pub(crate) struct HitchSpans {
-    open: [Option<Instant>; 7],
-    us: [u64; 7],
+    open: [Option<Instant>; 9],
+    us: [u64; 9],
 }
 
 fn boundary<const END: usize, const BEGIN: usize>(mut spans: ResMut<HitchSpans>) {
@@ -159,11 +171,11 @@ pub(crate) fn register(app: &mut App) {
             boundary::<F_PHYSICS, NONE>.after(SimulationSet::Physics),
         ))
         .add_systems(Update, (
-            boundary::<NONE, U_ASSETS>.before(FrameSet::Assets),
+            boundary::<U_PRE, U_ASSETS>.before(FrameSet::Assets),
             boundary::<U_ASSETS, U_PRESENT>.after(FrameSet::Assets).before(FrameSet::Physics),
             boundary::<U_PRESENT, U_ANIMATION>.after(FrameSet::Physics).before(FrameSet::Animation),
             boundary::<U_ANIMATION, U_AUDIO>.after(FrameSet::Animation),
-            boundary::<U_AUDIO, NONE>.after(crate::game_audio::CueSet),
+            boundary::<U_AUDIO, U_POST>.after(crate::game_audio::CueSet),
         ));
 }
 
@@ -179,9 +191,15 @@ fn log_hitch(
     entities: Query<Entity>,
     mut state: Local<LogState>,
 ) {
+    // `post_render` runs from the end of the last frame's Update to here; `pre_update` from here to this Update.
+    let now = Instant::now();
+    if let Some(t) = spans.open[U_POST].take() {
+        spans.us[U_POST] += now.duration_since(t).as_micros() as u64;
+    }
     let stages = std::mem::take(&mut spans.us);
-    spans.open = [None; 7];
-    let phases: [u64; 6] = std::array::from_fn(|i| PHASE_US[i].swap(0, Ordering::Relaxed));
+    spans.open = [None; 9];
+    spans.open[U_PRE] = Some(now);
+    let phases: [u64; 11] = std::array::from_fn(|i| PHASE_US[i].swap(0, Ordering::Relaxed));
     let lock_us = crate::game_audio::timing::FRAME_GAME_LOCK_US.swap(0, Ordering::Relaxed);
     let living = crate::living_world::timing::take();
     let closed = timing.closed();

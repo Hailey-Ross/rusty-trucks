@@ -22,6 +22,8 @@ mod foot_ik_queries;
 mod foot_physical_output;
 pub(crate) mod ground;
 mod render_pose;
+mod world_handle;
+pub(crate) use world_handle::WorldHandle;
 mod riding_outputs;
 mod skateboard_controller;
 mod skater;
@@ -83,7 +85,6 @@ mod offboard;
 mod player_input;
 mod player_state;
 pub(crate) mod prop_carry;
-pub(crate) mod prop_carry_hud;
 pub(crate) mod prop_dynamics;
 pub(crate) mod prop_layout;
 mod settings;
@@ -121,6 +122,10 @@ use skate_core::{
 
 #[derive(Resource)]
 pub(crate) struct GamePhysics {
+    /// The per-skater collision settings as loaded with the map (new NPC contexts start from these).
+    initial_skater_settings: SkaterSettings,
+    /// An NPC worker's own empty grab scene, held while it does not share the real one (`release_npc_worker`).
+    parked_grab_scene: Option<std::sync::Arc<offboard::grab_scene::Registry>>,
     pub(crate) network_proxies: network::Proxies,
     /// Other skaters' push volumes for the dynamic prop step: (stable actor id, volume), sorted by
     /// id. Rewritten each tick before the solve by `living_world::npc_skaters::push_proxies`
@@ -131,18 +136,20 @@ pub(crate) struct GamePhysics {
     clock: clock::SimulationClock,
     pub board: BoardRuntime,
     pub riding: RidingOutputs,
-    world: BoardWorld,
+    world: world_handle::WorldHandle,
     /// DMO prop instances as a separate collision layer so dynamic bodies can
     /// re-bake their triangle ranges (Phase 2).
     prop_layer: Option<crate::skate_world::PropCollisionLayer>,
-    prop_dynamics: Option<prop_dynamics::PropDynamics>,
+    /// Shared with NPC skater workers (read only there); written only outside the NPC phase.
+    prop_dynamics: Option<std::sync::Arc<prop_dynamics::PropDynamics>>,
     /// Offboard prop carry state (Phase 3); one held prop at a time.
     pub(crate) prop_carry: prop_carry::PropCarry,
     grind_world: std::sync::Arc<crate::grind_world::StaticProvider>,
     /// The living-world cars' rails at this tick's car poses (`set_car_rails`), after the props in the rail query.
     car_rails: crate::grind_world::props::PropRailPoses,
     grind_materials: grind_materials::GrindMaterials,
-    offboard_grab_scene: offboard::grab_scene::Registry,
+    /// Shared with NPC skater workers (read only there).
+    offboard_grab_scene: std::sync::Arc<offboard::grab_scene::Registry>,
     pub(crate) settings: PhysicsSettings,
     animation_profile: animation_phase::AnimationProfile,
     query: WorldContactSettings,
@@ -181,6 +188,48 @@ pub(crate) struct SkaterPhysicsContext {
     processed_flags_2468: u32,
     board_wiping_out: bool,
     owns_props: bool,
+    /// The per-skater collision settings the state handlers write (`SkaterSettings`).
+    skater_settings: SkaterSettings,
+}
+
+/// Mutable access to state shared with NPC skater workers: only outside the NPC phase (no worker alive then).
+fn shared_mut<T>(shared: &mut std::sync::Arc<T>) -> &mut T {
+    std::sync::Arc::get_mut(shared).expect("physics state shared with an NPC worker is changed only outside the NPC phase")
+}
+
+/// Collision settings that live in the shared `PhysicsSettings` but belong to one skater: the slide / grind / wipeout
+/// states and the board manager write them for the skater they step, and `colliders::world_volumes` reads them at the
+/// next solve. Swapped with each simulated NPC's context; before 2026-10-15 an NPC's slide or bail materials leaked into
+/// the next NPC and the player's board.
+#[derive(Clone, Debug)]
+pub(crate) struct SkaterSettings {
+    wheel_material: skate_core::physics::contact::RetailContactMaterial,
+    truck_material: skate_core::physics::contact::RetailContactMaterial,
+    deck_material: skate_core::physics::contact::RetailContactMaterial,
+    truck_collisions: bool,
+    deck_children: Vec<bool>,
+}
+
+impl SkaterSettings {
+    fn of(settings: &settings::PhysicsSettings) -> Self {
+        Self {
+            wheel_material: settings.wheel_material,
+            truck_material: settings.truck_material,
+            deck_material: settings.deck_material,
+            truck_collisions: settings.truck_collisions,
+            deck_children: settings.deck_geometry.children.iter().map(|c| c.collision_enabled).collect(),
+        }
+    }
+
+    fn swap_with(&mut self, settings: &mut settings::PhysicsSettings) {
+        std::mem::swap(&mut self.wheel_material, &mut settings.wheel_material);
+        std::mem::swap(&mut self.truck_material, &mut settings.truck_material);
+        std::mem::swap(&mut self.deck_material, &mut settings.deck_material);
+        std::mem::swap(&mut self.truck_collisions, &mut settings.truck_collisions);
+        for (enabled, child) in self.deck_children.iter_mut().zip(settings.deck_geometry.children.iter_mut()) {
+            std::mem::swap(enabled, &mut child.collision_enabled);
+        }
+    }
 }
 
 /// Cross-phase records for the current fixed tick. Subsystems retain their
@@ -278,17 +327,17 @@ impl GamePhysics {
         self.car_rails = rails;
     }
     pub(crate) fn set_grab_cars(&mut self, cars: Vec<skate_core::player::offboard::grab_scene::Object>) -> Result<(), String> {
-        self.offboard_grab_scene.set_cars(cars)
+        shared_mut(&mut self.offboard_grab_scene).set_cars(cars)
     }
     /// This tick's props in the grab scene (`PropDynamics::grab_objects`). Opt-in with `SKATE_PROP_GRAB=1` until
     /// Move Object reads the authored record (doc 26i "Move Object step 2"); off, the scene holds no props.
     pub(crate) fn refresh_grab_props(&mut self) -> Result<(), String> {
         if !prop_dynamics::prop_grab_enabled() {
             // Switched off in the PC overlay: the props leave the scene once.
-            return if self.offboard_grab_scene.has_props() { self.offboard_grab_scene.set_props(Vec::new()) } else { Ok(()) };
+            return if self.offboard_grab_scene.has_props() { shared_mut(&mut self.offboard_grab_scene).set_props(Vec::new()) } else { Ok(()) };
         }
         let props = self.prop_dynamics.as_ref().map(|d| d.grab_objects()).unwrap_or_default();
-        self.offboard_grab_scene.set_props(props)
+        shared_mut(&mut self.offboard_grab_scene).set_props(props)
     }
     pub(crate) fn set_gesture_preferences(&mut self, gestures: Option<[u32; 4]>) {
         self.animation_profile.gesture_selections = Some(gestures.filter(|g| g.iter().all(|v| *v < 37)).unwrap_or([0, 1, 2, 3]));
@@ -325,12 +374,17 @@ impl GamePhysics {
         self.prop_layer.as_mut().map(crate::skate_world::PropCollisionLayer::world_mut)
     }
 
+    /// The prop world's query handle (its own scratch; the world is only read).
+    pub(crate) fn prop_query(&mut self) -> Option<&mut WorldHandle> {
+        self.prop_layer.as_mut().map(crate::skate_world::PropCollisionLayer::world_handle_mut)
+    }
+
     pub(crate) fn prop_dynamics(&self) -> Option<&prop_dynamics::PropDynamics> {
-        self.prop_dynamics.as_ref()
+        self.prop_dynamics.as_deref()
     }
 
     pub(crate) fn prop_dynamics_mut(&mut self) -> Option<&mut prop_dynamics::PropDynamics> {
-        self.prop_dynamics.as_mut()
+        self.prop_dynamics.as_mut().map(shared_mut)
     }
 
     /// Push, integrate and re-bake dynamic props against the static world.
@@ -340,7 +394,7 @@ impl GamePhysics {
         if !self.owns_props {
             return;
         }
-        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut())
+        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut().map(shared_mut))
         else {
             return;
         };
@@ -358,7 +412,7 @@ impl GamePhysics {
         if self.prop_carry.held() == Some(id) {
             return false;
         }
-        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut())
+        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut().map(shared_mut))
         else {
             return false;
         };
@@ -385,7 +439,7 @@ impl GamePhysics {
     /// reads prop collision between the props of a pass, and the batched rebake gives the identical index.
     pub(crate) fn stream_props(&mut self, props: &[(u32, bool, bool)]) -> Vec<bool> {
         let held = self.prop_carry.held();
-        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut()) else {
+        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut().map(shared_mut)) else {
             return vec![false; props.len()];
         };
         let mut poses = Vec::new();
@@ -429,9 +483,9 @@ impl GamePhysics {
         }
         if self.prop_dynamics.is_none() {
             self.prop_dynamics =
-                Some(prop_dynamics::PropDynamics::empty(prop_dynamics::prop_simulation(self.settings.step.simulation)));
+                Some(std::sync::Arc::new(prop_dynamics::PropDynamics::empty(prop_dynamics::prop_simulation(self.settings.step.simulation))));
         }
-        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut()) else {
+        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut().map(shared_mut)) else {
             return None;
         };
         let id = dynamics.next_runtime_id();
@@ -468,7 +522,7 @@ impl GamePhysics {
     /// prop's DMO); its collision slot is parked for reuse. Refused (false) for map props and
     /// unknown ids. The single authority for removals.
     pub(crate) fn remove_runtime_prop(&mut self, id: u32) -> bool {
-        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut()) else {
+        let (Some(layer), Some(dynamics)) = (self.prop_layer.as_mut(), self.prop_dynamics.as_mut().map(shared_mut)) else {
             return false;
         };
         let Some(instance) = dynamics.remove_body(id) else { return false };
@@ -486,7 +540,7 @@ impl GamePhysics {
     /// Refused (false) for an unknown id or a body without dynamics. The single authority for
     /// uprights.
     pub(crate) fn upright_prop(&mut self, id: u32) -> bool {
-        let Some(dynamics) = self.prop_dynamics.as_mut() else { return false };
+        let Some(dynamics) = self.prop_dynamics.as_mut().map(shared_mut) else { return false };
         let started = dynamics.upright(id);
         if started {
             info!("SKATE_PROP_UPRIGHT id={id}");
@@ -509,22 +563,31 @@ impl GamePhysics {
 
     /// Offboard grab/carry/place of dynamic props (Phases 3-4).
     pub(crate) fn update_prop_carry(&mut self, tick: prop_carry::Tick, carrier: prop_carry::Carrier) {
+        if !self.owns_props {
+            // A simulated NPC (its step may run on a worker that only reads the shared props): with nothing held and
+            // no grab, `PropCarry::update` returns before it touches the props, so skipping it is identical. NPCs do
+            // not grab today (neutral pad, no grab intent); if one ever does, it is logged and skipped.
+            if self.prop_carry.held().is_some() || tick.grab {
+                bevy::log::warn_once!("NPC_SKATER_SIM: a simulated NPC asked to carry a prop; not supported, skipped");
+            }
+            return;
+        }
         let previous = self.prop_carry.held();
-        if let Some(dynamics) = self.prop_dynamics.as_mut() {
+        if let Some(dynamics) = self.prop_dynamics.as_mut().map(shared_mut) {
             self.prop_carry.update(dynamics, tick, carrier);
         }
         let current = self.prop_carry.held();
         if previous == current {
             return;
         }
-        if let Some(dynamics) = self.prop_dynamics.as_mut() {
+        if let Some(dynamics) = self.prop_dynamics.as_mut().map(shared_mut) {
             dynamics.set_held(current);
         }
         // Park the newly held prop's triangles far below the world so skater
         // queries cannot be pushed by it; restore a dropped prop's triangles
         // at its final pose.
         let (Some(layer), Some(dynamics)) =
-            (self.prop_layer.as_mut(), self.prop_dynamics.as_mut())
+            (self.prop_layer.as_mut(), self.prop_dynamics.as_mut().map(shared_mut))
         else {
             return;
         };
@@ -665,6 +728,7 @@ impl GamePhysics {
         let processed_flags_2468 = 0x2000;
         let riding = RidingOutputs::load(&data, &board, processed_flags_2468)?;
         let (query, retention) = ground::query_settings();
+        let initial_skater_settings = SkaterSettings::of(&settings);
         Ok(Self {
             network_proxies: network::Proxies::default(),
             actor_prop_volumes: Vec::new(),
@@ -673,13 +737,13 @@ impl GamePhysics {
             clock: clock::SimulationClock::default(),
             board,
             riding,
-            world,
+            world: world.into(),
             prop_layer,
-            prop_dynamics,
+            prop_dynamics: prop_dynamics.map(std::sync::Arc::new),
             prop_carry,
             grind_world,
             grind_materials,
-            offboard_grab_scene,
+            offboard_grab_scene: std::sync::Arc::new(offboard_grab_scene),
             car_rails: Default::default(),
             settings,
             animation_profile,
@@ -693,7 +757,81 @@ impl GamePhysics {
             board_wiping_out: false,
             collections: std::sync::Arc::new(data),
             owns_props: true,
+            initial_skater_settings,
+            parked_grab_scene: None,
         })
+    }
+
+    /// A worker for one simulated NPC skater's steps on another thread: its own `GamePhysics` whose shared parts
+    /// (collision and prop worlds, dynamic props, grab scene, data) point at this one's, with copies of the small
+    /// per-tick state ([`Self::sync_npc_worker`]). The NPC's own context is swapped into it for each step, as into
+    /// the shared physics before. It never steps the props.
+    pub(crate) fn npc_worker(&self) -> Result<GamePhysics, String> {
+        let spawn = RetailAffineTransform::IDENTITY;
+        let parts = self.new_skater_context(spawn)?;
+        Ok(GamePhysics {
+            initial_skater_settings: self.initial_skater_settings.clone(),
+            network_proxies: self.network_proxies.clone(),
+            actor_prop_volumes: self.actor_prop_volumes.clone(),
+            network_active: self.network_active,
+            network_contacts: 0,
+            clock: parts.clock,
+            board: parts.board,
+            riding: parts.riding,
+            world: self.world.share(),
+            prop_layer: self.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::share),
+            prop_dynamics: self.prop_dynamics.clone(),
+            prop_carry: parts.prop_carry,
+            grind_world: std::sync::Arc::clone(&self.grind_world),
+            grind_materials: self.grind_materials.clone(),
+            offboard_grab_scene: std::sync::Arc::clone(&self.offboard_grab_scene),
+            car_rails: self.car_rails.clone(),
+            settings: self.settings.clone(),
+            animation_profile: self.animation_profile.clone(),
+            query: self.query,
+            retention: self.retention,
+            ticks: parts.ticks,
+            contact_count: 0,
+            failed: false,
+            exchange: parts.exchange,
+            processed_flags_2468: parts.processed_flags_2468,
+            board_wiping_out: false,
+            collections: std::sync::Arc::clone(&self.collections),
+            owns_props: false,
+            parked_grab_scene: Some(std::sync::Arc::new(offboard::grab_scene::Registry::new(&self.world, Vec::new(), Vec::new())?)),
+        })
+    }
+
+    /// Bring a worker's shared parts and per-tick copies up to this physics' state (before the NPC phase's steps):
+    /// what a step through the shared physics would have read at this point of the tick.
+    pub(crate) fn sync_npc_worker(&self, worker: &mut GamePhysics) {
+        worker.network_proxies.clone_from(&self.network_proxies);
+        worker.actor_prop_volumes.clone_from(&self.actor_prop_volumes);
+        worker.network_active = self.network_active;
+        worker.world.reshare(&self.world);
+        worker.prop_layer = self.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::share);
+        worker.prop_dynamics.clone_from(&self.prop_dynamics);
+        worker.grind_world = std::sync::Arc::clone(&self.grind_world);
+        worker.grind_materials.clone_from(&self.grind_materials);
+        worker.offboard_grab_scene = std::sync::Arc::clone(&self.offboard_grab_scene);
+        worker.car_rails.clone_from(&self.car_rails);
+        // The per-skater fields in it are placeholders here: the NPC's own are swapped in for its step.
+        worker.settings.clone_from(&self.settings);
+        worker.animation_profile.clone_from(&self.animation_profile);
+        worker.query = self.query;
+        worker.retention = self.retention;
+        worker.collections = std::sync::Arc::clone(&self.collections);
+
+    }
+
+    /// Release a worker's shares (after the NPC phase) so this physics can change the shared parts again.
+    pub(crate) fn release_npc_worker(worker: &mut GamePhysics) {
+        worker.world.unshare();
+        worker.prop_layer = None;
+        worker.prop_dynamics = None;
+        if let Some(parked) = &worker.parked_grab_scene {
+            worker.offboard_grab_scene = std::sync::Arc::clone(parked);
+        }
     }
 
     /// A fresh skater context at `spawn` (a simulated NPC skater): a new board, riding outputs from
@@ -716,6 +854,8 @@ impl GamePhysics {
             processed_flags_2468,
             board_wiping_out: false,
             owns_props: false,
+            // The values loaded with the map, not whatever the player's current state left in the live settings.
+            skater_settings: self.initial_skater_settings.clone(),
         })
     }
 
@@ -770,6 +910,12 @@ impl GamePhysics {
         context.board.part_transforms()[skate_core::physics::board::BodyId::Deck.index()]
     }
 
+    /// The deck's linear velocity in a context (diagnostics).
+    pub(crate) fn context_deck_velocity(context: &SkaterPhysicsContext) -> [f32; 3] {
+        let v = context.board.bodies()[skate_core::physics::board::BodyId::Deck.index()].rates.linear_velocity;
+        [v.x, v.y, v.z]
+    }
+
     /// Every part of a context's board at `velocity` (`82C04168`, the AI spawn push).
     pub(crate) fn set_context_velocity(context: &mut SkaterPhysicsContext, velocity: [f32; 3]) {
         for body in context.board.bodies_mut() {
@@ -788,6 +934,7 @@ impl GamePhysics {
         std::mem::swap(&mut self.exchange, &mut context.exchange);
         std::mem::swap(&mut self.processed_flags_2468, &mut context.processed_flags_2468);
         std::mem::swap(&mut self.board_wiping_out, &mut context.board_wiping_out);
+        context.skater_settings.swap_with(&mut self.settings);
         std::mem::swap(&mut self.owns_props, &mut context.owns_props);
     }
 
@@ -868,7 +1015,6 @@ impl Plugin for PhysicsPlugin {
             .add_systems(FixedUpdate, manual_landing_log::log_manual_landings.after(SimulationSet::Physics))
             .add_systems(Update, present.in_set(FrameSet::Physics))
             .add_systems(Update, prop_dynamics::sync_prop_transforms.after(FrameSet::Physics));
-        prop_carry_hud::install(app);
     }
 }
 

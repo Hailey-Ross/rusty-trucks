@@ -205,7 +205,7 @@ impl Default for WorldShadowSettings {
     }
 }
 
-/// Shared frame state, matching `FrameState` in the bindings module: 144 bytes.
+/// Shared frame state, matching `FrameState` in the bindings module: 288 bytes.
 ///
 /// `shadow.w` gates every dynamic-shadow read in the world shader. Shadows are
 /// out of scope for v1 (RFC 1 D5), so it stays zero and the shader never touches
@@ -215,10 +215,18 @@ pub(crate) struct FrameStateData {
     pub shadow: Vec4,
     pub clock: Vec4,
     pub pca: [Vec4; 7],
+    /// The same PCA animation at the water look's `wave_rate`, blended between
+    /// frames, for family 33 water (water_look.rs). Equals `pca` at retail rate.
+    pub pca_slow: [Vec4; 7],
+    /// Water look layer (water_look.rs): x ripple scale, y reflection blur
+    /// (mips), z third wave (0 / 1), w body calming (0 / 1).
+    pub water_look: Vec4,
+    /// Water look reflection tint (rgb).
+    pub water_tint: Vec4,
 }
 
 impl FrameStateData {
-    const SIZE: usize = 9 * 16;
+    const SIZE: usize = 18 * 16;
 
     /// Turns the world's dynamic-shadow reads on with `floor` as the lightest
     /// value a dynamic shadow can leave on the baked world (see
@@ -232,6 +240,8 @@ impl FrameStateData {
         for row in std::iter::once(self.shadow)
             .chain(std::iter::once(self.clock))
             .chain(self.pca)
+            .chain(self.pca_slow)
+            .chain([self.water_look, self.water_tint])
         {
             for component in row.to_array() {
                 out.extend_from_slice(&component.to_le_bytes());
@@ -832,6 +842,7 @@ impl MaterialTable {
         let mut unsupported = 0usize;
         let mut unsupported_shaders = std::collections::BTreeMap::<String, usize>::new();
         let mut families = std::collections::BTreeMap::<u32, usize>::new();
+        let mut water = Vec::with_capacity(map.materials.len());
         for material in &map.materials {
             let definition = material
                 .retail_definition
@@ -849,6 +860,7 @@ impl MaterialTable {
                 definition.family = 1;
             }
             *families.entry(definition.family).or_default() += 1;
+            water.push(definition.family == 33);
             requests.push(Some(Request::new(
                 material,
                 &definition,
@@ -857,6 +869,16 @@ impl MaterialTable {
                 &canonical,
                 map,
             )));
+        }
+        // decal.y: area of the water body, for the water look's body calming
+        // (water_bodies.rs; unused by the retail program).
+        let areas = crate::water_bodies::body_areas(&map.geometry.vertices, &map.geometry.indices, &water);
+        for (request, area) in requests.iter_mut().zip(&areas) {
+            if let Some(request) = request
+                && *area > 0.
+            {
+                request.params.decal.y = *area;
+            }
         }
         // One line per table (logs must diagnose props / car shadows: which shader family each
         // material ended up in, e.g. 15 = dynamicobject (D9), 1 = the plain fallback).
@@ -1455,16 +1477,61 @@ fn advance_frame_state(
     time: Res<Time>,
     pca: Option<Res<OceanPca>>,
     decals: Option<Res<DecalSettings>>,
+    look: Option<Res<crate::water_look::WaterLookSettings>>,
     mut animation: Local<WaterAnimation>,
 ) {
+    let look = look.map_or(crate::water_look::WaterLook::RETAIL, |l| l.active().effective());
+    let elapsed = time.elapsed_secs_f64();
     state.clock.x = time.elapsed_secs();
     state.clock.w = decals.map_or(RETAIL_DECAL_OPACITY, |d| d.opacity.clamp(0., 1.));
-    state.clock.z = animation.presentation_frame(time.elapsed_secs_f64());
+    // The native routine always runs (it drives the PCA frame); the water
+    // shaders scroll with `water_time` (retail's g_fAnimationTime).
+    let scroll = animation.presentation_frame(elapsed);
+    state.clock.z = if look.seamless_clock { water_time(elapsed, f64::from(look.scroll_rate)) } else { scroll };
     if let Some(pca) = pca {
         let frame = usize::from(animation.frame) % pca.frames.len();
         state.pca = pca.frames[frame].map(Vec4::from_array);
+        state.pca_slow = if look.wave_rate == 1. {
+            state.pca
+        } else {
+            slow_pca(&pca, elapsed, f64::from(look.wave_rate))
+        };
         state.clock.y = 1.;
     }
+    state.water_look = Vec4::new(
+        look.ripple_scale,
+        look.reflection_blur,
+        f32::from(u8::from(look.third_wave)),
+        f32::from(u8::from(look.body_calming)),
+    );
+    state.water_tint = Vec3::from_array(look.reflection_tint).extend(1.);
+}
+
+/// The PCA frame at `rate` x the retail 30 Hz, blended linearly between
+/// neighbouring frames (PCA weights combine linearly) so a slower rate does
+/// not stutter. The last frame blends into the first, as the animation loops.
+/// Water look layer (`wave_rate`), not retail.
+fn slow_pca(pca: &OceanPca, elapsed: f64, rate: f64) -> [Vec4; 7] {
+    let position = (elapsed * f64::from(pca.hz) * rate).rem_euclid(pca.frames.len() as f64);
+    let index = position as usize % pca.frames.len();
+    let next = (index + 1) % pca.frames.len();
+    let blend = position.fract() as f32;
+    std::array::from_fn(|row| {
+        Vec4::from_array(pca.frames[index][row]).lerp(Vec4::from_array(pca.frames[next][row]), blend)
+    })
+}
+
+/// Water scroll time: retail's `g_fAnimationTime`, which sub_82791628
+/// accumulates without a reset at 1.0 per second (recomp watch, doc 09), times
+/// the look's `scroll_rate`. Loops over a period at which every authored
+/// scroll speed (all multiples of 0.001) completes whole texture repeats, so
+/// the loop is invisible, while keeping t small enough for f32 shader
+/// precision. `seamless_clock = false` publishes 0x82790858's restarting
+/// value instead (a jump every 10 s; never shown by retail).
+const WATER_TIME_PERIOD: f64 = 1000.0;
+
+fn water_time(elapsed_secs: f64, rate: f64) -> f32 {
+    (elapsed_secs * rate).rem_euclid(WATER_TIME_PERIOD) as f32
 }
 
 /// The timing branch of TU3 0x82790858; initialization is 0x827905B0.
@@ -1550,7 +1617,7 @@ impl Plugin for RetailRenderPlugin {
                 crate::skater_ghost::GhostPlugin,
             ))
             .add_plugins(ExtractResourcePlugin::<FrameStateData>::default())
-            .add_systems(Startup, (initialize_frame_state, load_pca))
+            .add_systems(Startup, (initialize_frame_state, load_pca, crate::water_look::load))
             .add_systems(Update, advance_frame_state);
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app.add_systems(
@@ -1743,6 +1810,22 @@ mod tests {
     }
 
     #[test]
+    fn slow_water_pca_blends_frames_and_loops() {
+        // Frame i holds the value i in every component.
+        let pca = OceanPca {
+            hz: 30.,
+            frames: (0..30).map(|i| [[i as f32; 4]; 7]).collect(),
+        };
+        let at = |frame: f64| slow_pca(&pca, frame / (30. * 0.75), 0.75)[3].x;
+        assert!((at(4.0) - 4.0).abs() < 1e-4);
+        assert!((at(4.5) - 4.5).abs() < 1e-4);
+        // The last frame blends into the first, then the animation repeats.
+        assert!((at(29.5) - 14.5).abs() < 1e-4);
+        assert!((at(30.0) - 0.0).abs() < 1e-4);
+        assert!((at(64.0) - 4.0).abs() < 1e-3);
+    }
+
+    #[test]
     fn native_water_clock_preserves_boundaries_and_hitches() {
         let mut clock = WaterAnimation::default();
         let period = f32::from_bits(0x3d08_8889);
@@ -1785,6 +1868,20 @@ mod tests {
         assert_eq!(bytes.len(), MaterialSlots::SIZE);
 
         assert_eq!(FrameStateData::default().encode().len(), FrameStateData::SIZE);
+        // Water time: retail real-time rate, no restart within a session.
+        assert_eq!(water_time(0.0, 1.0), 0.0);
+        assert_eq!(water_time(2.0, 1.0), 2.0);
+        assert!((water_time(10.0, 1.0) - 10.0).abs() < 1e-5);
+        assert!((water_time(999.5, 1.0) - 999.5).abs() < 1e-3);
+        assert!(water_time(1000.0, 1.0).abs() < 1e-3);
+        // Better Water's half rate.
+        assert_eq!(water_time(2.0, 0.5), 1.0);
+        // Every authored water scroll speed (render-parameters water[1])
+        // moves a whole number of tiles per period.
+        for speed in [0.01, 0.2, 0.1, 0.4, 0.22] {
+            let tiles = speed * WATER_TIME_PERIOD;
+            assert!((tiles - tiles.round()).abs() < 1e-6, "speed {speed} is not seamless");
+        }
 
     }
 

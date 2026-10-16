@@ -34,9 +34,10 @@ that collide, can be pushed, grabbed, dragged and placed, with layouts saved per
 - **Phase 3, grab and carry** (`physics/prop_carry.rs`): A on foot toggles grab of the nearest prop
   (#15; since 2026-10-05 a held RB, the retail GrabWorld button, because A is retail sprint, see doc 26 "Props
   pulled toward the player").
-- **Phase 4, placement and layouts** (`prop_carry.rs`, `prop_layout.rs`, `prop_carry_hud.rs`): B while carrying
+- **Phase 4, placement and layouts** (`prop_carry.rs`, `prop_layout.rs`): B while carrying
   enters placement (right stick distance / yaw, DPad height; now releasing RB confirms); poses persist to
-  `settings/prop-layouts/<map>.json` and reload on map load; a small HUD diamond.
+  `settings/prop-layouts/<map>.json` and reload on map load. The placeholder HUD diamond (`prop_carry_hud.rs`,
+  white = prop in reach, cyan = carrying, yellow = placing) was removed 2026-10-15: retail has no such marker.
 - **Later commits:** authored MOBJ physics (density, friction, restitution, damping, sleep flags), Skate 3 style
   drag carry, surface-distance and omnidirectional grab, momentum-style skater push, body-bump speed cap
   (1.2 m/s), retail MovingObject presentation (grab flag, OffBoardPushing 502, MovingObjectNew subtree with the
