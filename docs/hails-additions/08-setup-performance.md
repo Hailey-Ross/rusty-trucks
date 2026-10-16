@@ -203,3 +203,24 @@ Full fresh setup, same machine and source, before → after:
 - Section 3: `scripts/Build.ps1`, `tools/asset_pipeline/customisation_workers.py` (new),
   `customisation_library.py`, `native_roster.py`, `customiser_setup.py`,
   `test_customisation_workers.py` (new), `test_customiser_setup.py`
+
+## Refresh Game Files: setup window opened only after a full file check (2026-10-15)
+
+**Problem.** After Extras > Refresh Game Files the setup window took a while to open (user, 2026-10-15: "I clicked
+it, it took a while and then it eventually opened").
+
+**Root cause.** `tools/setup.py` ran `damaged()` (`asset_pipeline/group_receipts.py`) before creating its window, only
+to list the groups in its label. `damaged()` re-reads and SHA-256 hashes every installed output file of every group
+(audio, maps, props, stock data), minutes on a hard drive. `install()` then ran the same check again on the worker
+thread, so the files were hashed twice.
+
+**Change.** setup.py keeps only the version check before the window (0.75 s measured on the user's installation);
+the file check runs once, inside `install()` on the worker thread, and `damaged(report=...)` shows
+"Checking your installed game files: <group> (n of N)..." in the window while the progress bar runs (user, 2026-10-15:
+"make it show a progress screen while it rechecks every game file it had installed"). The groups that get prepared
+are unchanged; the label now says setup checks the installed files first.
+
+**Files.** `tools/setup.py`, `tools/asset_pipeline/install.py`, `tools/asset_pipeline/group_receipts.py`,
+`tools/test_setup_assets.py` (the progress message per group).
+
+**Verification.** Setup unit tests (37) pass. The window itself has not been opened yet (the user was playing).

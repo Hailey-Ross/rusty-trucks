@@ -101,10 +101,11 @@ def main():
     from tkinter import filedialog,messagebox,ttk
     from tools.asset_pipeline.customiser_setup import install
     from tools.asset_pipeline.versions import installed, fingerprints, changed_groups
-    from tools.asset_pipeline.group_receipts import damaged
     previous=installed(args.base) if args.refresh else None
+    # Only the cheap version check before the window opens: install() checks
+    # the installed files (damaged(): hashes every output) on the worker thread
+    # with progress. Doing it here too kept the window closed for minutes.
     changed=changed_groups(previous[1].get('pipelines',{}),fingerprints()) if previous else set()
-    if previous:changed.update(damaged(*previous,exclude=changed))
     updating=previous is not None
     reuse=saved_source(previous[1]) if previous else None
     window=tk.Tk()
@@ -114,7 +115,7 @@ def main():
     if icon.is_file():window.iconbitmap(str(icon))
     frame=ttk.Frame(window,padding=24);frame.pack(fill='both',expand=True)
     ttk.Label(frame,text='Update game assets' if updating else 'Set up Skate 3 Rust Engine',font=('Segoe UI',20)).pack(anchor='w',pady=(0,16))
-    ttk.Label(frame,text=('Asset version changes: '+(', '.join(sorted(changed)) or 'none')+'.\nOnly changed or incomplete groups will be prepared again.\nYour previous character data remains until preparation succeeds.\n'
+    ttk.Label(frame,text=('Asset version changes: '+(', '.join(sorted(changed)) or 'none')+'.\nSetup first checks your installed files; only changed or incomplete groups\nwill be prepared again.\nYour previous character data remains until preparation succeeds.\n'
               +('Reusing the Xbox source from the previous setup when possible.\nKeep the game data beside default.xex.' if reuse else 'Select your Skate 3 default.xex (or ISO) to continue.\nKeep the game data beside default.xex.')) if updating else 'Select your Skate 3 Xbox 360 ISO, or default.xex inside an\nextracted game folder. Keep the game data beside default.xex.\nSetup prepares the skater, customiser, animations and disc maps.\nNo other apps need installing.\n\nISO extraction needs internet access. Allow free disk space\nand time for the first conversion.',
               font=('Segoe UI',11),justify='left').pack(anchor='w')
     status=tk.StringVar(value=('Reusing your previous Xbox source…' if reuse else 'Choose your game to begin.') if updating else 'Choose your game to begin.')

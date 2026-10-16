@@ -368,7 +368,7 @@ def _install(iso,base,game_exe,report,game_root=None,refresh=False,finalize=None
         game_root=source_directory(game_root, require_core=not previous)
         if previous and previous[1].get('source_hash') not in (None,digest(game_root/'default.xex')):
             raise RuntimeError('Select the same Xbox game edition used to set up this copy')
-    if previous:groups.update(damaged(*previous, exclude=groups))
+    if previous:groups.update(damaged(*previous, exclude=groups, report=report))
     def outputs(stage):
         saved=previous[1].get('outputs',{}) if previous else {}
         return {g:saved[g] if g not in groups and g in saved else record(stage,g) for g in GROUPS}

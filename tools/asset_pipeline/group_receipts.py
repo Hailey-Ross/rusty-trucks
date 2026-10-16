@@ -41,11 +41,15 @@ def record(root, group):
     return receipt(root, files(root, group))
 
 
-def damaged(root, marker, exclude=()):
+def damaged(root, marker, exclude=(), report=None):
     saved = marker.get('outputs', {})
     result = set()
+    checked = [group for group in ROOTS if group not in exclude]
     for group, roots in ROOTS.items():
         if group in exclude:continue
+        # Every installed file is re-read and hashed: minutes on a hard drive,
+        # so setup's window shows which group it is on.
+        if report:report(f'Checking your installed game files: {group} ({checked.index(group)+1} of {len(checked)})...')
         if group in saved:
             if not valid_receipt(root, saved[group]):result.add(group)
         else:
