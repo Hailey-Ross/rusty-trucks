@@ -27,8 +27,8 @@ fn sub(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2], 0.0]
 }
 
-/// The latch is opt-in until state 104's force composition is complete (the PC overlay's Skitching row, or
-/// `SKATE_SKITCH=1` for a run; doc 26h "Skitching step 4e"). Without it the query, the bind and the time (`+2664`)
+/// The latch switch: always on in the game since 2026-10-15 (set by `LivingWorldPlugin`; doc 26h "Skitching step
+/// 4e"); off is the unit tests' default. Without it the query, the bind and the time (`+2664`)
 /// still run, but the skater never latches.
 static LATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub(crate) fn latch_enabled() -> bool {

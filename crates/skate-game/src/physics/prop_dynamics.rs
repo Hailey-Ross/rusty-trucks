@@ -312,8 +312,8 @@ pub(crate) fn prop_simulation(
     }
 }
 
-/// Props in the grab scene and Move Object on their authored grab records: opt-in (the PC overlay's Prop Grab
-/// row, or `SKATE_PROP_GRAB=1` for a run; doc 26i "Move Object step 3"); off, the scene holds no props and
+/// Props in the grab scene and Move Object on their authored grab records: always on in the game (set by
+/// `LivingWorldPlugin`, user 2026-10-15; doc 26i "Move Object step 3"); off (unit tests' default), the scene holds no props and
 /// carrying uses the box stand-in edge.
 static PROP_GRAB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub(crate) fn prop_grab_enabled() -> bool {
