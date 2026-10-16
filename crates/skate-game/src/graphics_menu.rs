@@ -197,6 +197,7 @@ const HEADERS: &[(usize, &str)] = &[
     (912, "Game Files"),
     (911, "Living World"),
     (913, "Opt-In Features"),
+    (914, "Water"),
 ];
 
 /// How a row behaves (the recomp's `RowSpec::Kind`).
@@ -307,6 +308,7 @@ impl Menu {
                 (true, 1, 8) => Some(907),
                 (true, 4, 11) => Some(908),
                 (true, 4, 19) => Some(909),
+                (true, 4, BETTER_WATER_ROW) => Some(914),
                 (true, 4, REFRESH_ROW) => Some(912),
                 (true, 0, id) if id >= 1_000_000 && page.last().is_none_or(|last| *last < 1_000_000) => Some(910),
                 _ => None,
@@ -1546,7 +1548,7 @@ mod tests {
         m.select_section(1);
         assert_eq!(m.page(), vec![904, 3, 906, CAMERA_ANGLE_ROW, 907, 8, 10]);
         m.select_section(4);
-        assert_eq!(m.page(), vec![908, 11, 14, 909, 19]);
+        assert_eq!(m.page(), vec![908, 11, 14, 909, 19, 914, BETTER_WATER_ROW]);
         m.select_section(3);
         assert_eq!(m.page(), m.rows(), "no headers in the multiplayer pages");
         m.select_section(0);
