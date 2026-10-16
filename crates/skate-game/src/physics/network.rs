@@ -65,9 +65,14 @@ pub(crate) fn anchors(skater: &SkaterRuntime) -> Vec<usize> {
     indices
 }
 pub(crate) fn capture_body(physics: &GamePhysics, skater: &SkaterRuntime) -> BodyState {
+    capture_body_of(&physics.board, skater)
+}
+
+/// [`capture_body`] with the board of any skater context (a simulated NPC's own board).
+pub(crate) fn capture_body_of(board: &super::BoardRuntime, skater: &SkaterRuntime) -> BodyState {
     let mut enabled = 0u64;
     {
-        for (i, b) in physics.board.bodies().iter().enumerate() {
+        for (i, b) in board.bodies().iter().enumerate() {
             if b.state_flags != 1 && skater.board_possession_live.volume_enabled(CollisionBody::Board(skate_core::physics::board::BodyId::ORDER[i])) {
                 enabled |= 1 << i;
             }
@@ -86,8 +91,7 @@ pub(crate) fn capture_body(physics: &GamePhysics, skater: &SkaterRuntime) -> Bod
             skater.animated_skeleton.roots.animation_to_world,
         )),
         enabled,
-        bodies: physics
-            .board
+        bodies: board
             .bodies()
             .iter()
             .chain(skater.skeleton.bodies())
@@ -261,7 +265,39 @@ pub(crate) struct Proxies {
     pub dynamics_before: Vec<(u64, usize, [f32; 3], [f32; 3])>,
     pub dynamics_deltas: Vec<(u64, [f32; 3], [f32; 3], [f32; 3], [f32; 3])>,
 }
+/// Where a proxy set stood before some appends ([`Proxies::mark`]), to drop them again ([`Proxies::truncate`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ProxyMark {
+    bodies: usize,
+    volumes: usize,
+    solids: usize,
+    dynamics_before: usize,
+    /// The solve index of the first body appended after the mark (keys of `groups` / `actors`).
+    first_index: usize,
+}
+
 impl Proxies {
+    /// The current end, for a solve by `skater`.
+    pub fn mark(&self, skater: &SkaterRuntime) -> ProxyMark {
+        ProxyMark {
+            bodies: self.bodies.len(),
+            volumes: self.volumes.len(),
+            solids: self.solids.len(),
+            dynamics_before: self.dynamics_before.len(),
+            first_index: skater.skeleton.bodies().len() + skater.skeleton_drives.targets.bodies.len() + self.bodies.len(),
+        }
+    }
+
+    /// Drop everything appended after `mark`.
+    pub fn truncate(&mut self, mark: ProxyMark) {
+        self.bodies.truncate(mark.bodies);
+        self.volumes.truncate(mark.volumes);
+        self.solids.truncate(mark.solids);
+        self.dynamics_before.truncate(mark.dynamics_before);
+        self.groups.retain(|&k, _| k < mark.first_index);
+        self.actors.retain(|&k, _| k < mark.first_index);
+    }
+
     pub fn append(
         &mut self,
         peer: u64,

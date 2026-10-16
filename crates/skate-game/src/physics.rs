@@ -135,6 +135,10 @@ pub(crate) struct GamePhysics {
     pub(crate) network_contacts: usize,
     clock: clock::SimulationClock,
     pub board: BoardRuntime,
+    /// Where the simulated NPC skaters' body proxies start in `network_proxies` (appended last by
+    /// `living_world::npc_skaters::push_proxies`): each NPC's own solve drops them and adds the player and the other
+    /// NPCs instead (`npc_sim::run_steps`), so no NPC collides with a copy of itself.
+    pub(crate) npc_sim_proxy_mark: Option<network::ProxyMark>,
     pub riding: RidingOutputs,
     world: world_handle::WorldHandle,
     /// DMO prop instances as a separate collision layer so dynamic bodies can
@@ -731,6 +735,7 @@ impl GamePhysics {
         let initial_skater_settings = SkaterSettings::of(&settings);
         Ok(Self {
             network_proxies: network::Proxies::default(),
+            npc_sim_proxy_mark: None,
             actor_prop_volumes: Vec::new(),
             network_active: false,
             network_contacts: 0,
@@ -772,6 +777,7 @@ impl GamePhysics {
         Ok(GamePhysics {
             initial_skater_settings: self.initial_skater_settings.clone(),
             network_proxies: self.network_proxies.clone(),
+            npc_sim_proxy_mark: None,
             actor_prop_volumes: self.actor_prop_volumes.clone(),
             network_active: self.network_active,
             network_contacts: 0,
@@ -903,6 +909,11 @@ impl GamePhysics {
         });
         self.swap_skater_context(context);
         result
+    }
+
+    /// The board and skeleton bodies of a context's skater ([`network::capture_body`] for a simulated NPC skater).
+    pub(crate) fn capture_context_body(context: &SkaterPhysicsContext, skater: &SkaterRuntime) -> skate_net::packed::BodyState {
+        network::capture_body_of(&context.board, skater)
     }
 
     /// The deck of a context (the simulated NPC skater's board) without swapping it in.

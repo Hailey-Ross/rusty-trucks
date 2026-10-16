@@ -53,6 +53,13 @@ pub(crate) struct SimulatedTierSettings {
     /// The air arm. Ported but OFF by default until it is understood: muted A/B runs (2026-10-14, 240 s) had more bails
     /// with it (radius 150 m: 48 vs 19; 110 m: 33 vs 24). Test knob `SKATE_NPC_AIR_STEER=1` turns it on.
     pub air_steer_on: bool,
+    /// The takeoff board yaw (`sub_8246B1F8`, posted in the air arm; research b113): retail on, independent of the
+    /// air steer switch (same arm, separate signals). Mod: `npc_simulated.board_yaw*`.
+    pub board_yaw_on: bool,
+    /// The player and simulated NPCs collide as full skaters (each one's own skeleton contact and wipeout check: a hard
+    /// bump knocks a skater down; retail, research m7 / b125). Mod: `npc_simulated.bump`.
+    pub bump: bool,
+    pub board_yaw: skate_core::living_world::ai_signals::BoardYawTuning,
     /// After a placement (switch to physics or respawn) the line controller holds: no steer and no trick for this long,
     /// seconds (retail's hold branch of `824701F8` runs no steer while the placed skater settles; our length,
     /// measured 2026-10-15: 0.5 s took the bails in the first second after a placement from 4 of 16 to 0 of 8).
@@ -63,7 +70,7 @@ impl Default for SimulatedTierSettings {
     fn default() -> Self {
         // `SKATE_NPC_SIM_RADIUS` (m): a test knob so an unattended run sees many switches to physics.
         let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(40.0);
-        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), placement_hold_seconds: 0.5 }
+        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5 }
     }
 }
 
@@ -135,6 +142,12 @@ pub(crate) struct NpcSim {
     no_plan: Option<u32>,
     /// The takeoff flip latch (`pc+927` / `pc+928`, `sub_8246A700`), cleared with the controller.
     air: skate_core::living_world::air_steer::AirLatch,
+    /// The PathController's trick slot (`pc+832` / `+844` / `+904`) and takeoff board yaw (`+856` / `+860` / `+930` /
+    /// `+931`), research b113; cleared with the controller.
+    slot: skate_core::living_world::ai_signals::TrickSlot,
+    board_yaw: skate_core::living_world::ai_signals::BoardYaw,
+    /// The body after the last step (board and skeleton), the proxy others collide with; `None` until the first step.
+    last_body: Option<skate_net::packed::BodyState>,
 }
 
 /// Controller B's run: the line (`ctrl+592`) and node A re-attaches to when B hands back.
@@ -229,6 +242,11 @@ pub(crate) fn pool_from(world: &mut World, e: Entity) {
 }
 
 impl NpcSim {
+    /// The body after the last step (`None` before the first one).
+    pub(crate) fn last_body(&self) -> Option<&skate_net::packed::BodyState> {
+        self.last_body.as_ref()
+    }
+
     /// The traffic car this simulated skater holds in state 104 (the car side's held bit, b57 / b65).
     pub(crate) fn held_car(&self) -> Option<u32> {
         (self.body.runtime.player_state.current() == skate_core::player::state::PhysicalStateId::Skitching).then(|| self.body.runtime.skitch_state.held_car()).flatten()
@@ -298,7 +316,7 @@ fn spawn_sim(
         Some(pooled) => pooled,
         None => load_body(physics, config, graphs, spawn)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placements_at_bail: 0, no_plan: None, air: Default::default() };
+    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placements_at_bail: 0, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None };
     place(&mut sim, target, hold_ticks)?;
     Ok(sim)
 }
@@ -360,6 +378,8 @@ fn settle(sim: &mut NpcSim, hold_ticks: u32) {
     sim.toggle = Default::default();
     sim.last_deck = None;
     sim.trace_ticks = 60;
+    sim.slot = Default::default();
+    sim.board_yaw = Default::default();
     sim.hold_ticks = hold_ticks;
     sim.air = Default::default();
 }
@@ -377,9 +397,11 @@ struct Job {
 /// the same proxies and props (the serial loop before 2026-10-15 let each NPC start from the proxies the previous NPC's
 /// solve had moved). Errors and the shared physics' proxy results are applied afterwards in NPC id order: the shared
 /// proxies end as the last NPC's solve left them, as before.
+#[allow(clippy::too_many_arguments)]
 fn run_steps(
     physics: &mut GamePhysics,
     npcs: &mut Query<(Entity, &NpcSkater, &mut NpcReplay, Option<&mut NpcSim>)>,
+    bump: Option<(&skate_net::packed::BodyState, &crate::physics::network::Schema)>,
     graphs: &crate::graph_runtime::StockGraphs,
     workers: &mut Vec<Box<GamePhysics>>,
     jobs: Vec<Job>,
@@ -403,6 +425,10 @@ fn run_steps(
         }
     }
     let t_sync = std::time::Instant::now();
+    // Every simulated NPC's body from its last step (the others' proxies in each solve), in id order.
+    let mut bodies: Vec<(super::LivingWorldId, Entity, skate_net::packed::BodyState)> =
+        if bump.is_some() { npcs.iter().filter_map(|(e, n, _, sim)| sim.and_then(|s| s.last_body.clone()).map(|b| (n.id, e, b))).collect() } else { Vec::new() };
+    bodies.sort_by_key(|x| x.0);
     let mut work: Vec<(&Job, Mut<NpcSim>, &mut Box<GamePhysics>)> = Vec::with_capacity(jobs.len());
     {
         let mut by_entity: std::collections::BTreeMap<Entity, Mut<NpcSim>> = npcs
@@ -417,6 +443,16 @@ fn run_steps(
                 sim_ref.previous_root = sim_ref.body.runtime.animated_skeleton.roots.animation_to_world;
                 sim_ref.previous_placements = sim_ref.body.runtime.placements();
                 physics.sync_npc_worker(worker);
+                // Its solve: no copy of itself; the player and the other simulated NPCs instead (each as a peer body).
+                if let (Some(mark), Some((player, schema)), Some(at)) = (physics.npc_sim_proxy_mark, bump, skate_net::prediction::CollisionPrediction::at(0.0)) {
+                    let mut proxies = std::mem::take(&mut worker.network_proxies);
+                    proxies.truncate(mark);
+                    proxies.append(super::npc_skaters::PLAYER_PEER, player, schema, worker, &sim_ref.body.runtime, at);
+                    for (id, _, b) in bodies.iter().filter(|x| x.1 != job.entity) {
+                        proxies.append(super::npc_skaters::sim_peer(*id), b, schema, worker, &sim_ref.body.runtime, at);
+                    }
+                    worker.network_proxies = proxies;
+                }
                 work.push((job, sim, worker));
             }
         }
@@ -445,6 +481,16 @@ fn run_steps(
     if let Some((_, _, last)) = work.last() {
         physics.network_proxies.clone_from(&last.network_proxies);
         physics.network_contacts = last.network_contacts;
+        // Not the player's own body (added for that solve only).
+        if let Some(mark) = physics.npc_sim_proxy_mark {
+            physics.network_proxies.truncate(mark);
+        }
+    }
+    for (_, sim, _) in work.iter_mut() {
+        if bump.is_some() {
+            let s = &mut **sim;
+            s.last_body = Some(GamePhysics::capture_context_body(&s.context, &s.body.runtime));
+        }
     }
     for ((job, _, worker), result) in work.iter_mut().zip(results) {
         GamePhysics::release_npc_worker(worker);
@@ -476,6 +522,7 @@ pub(crate) fn simulate(
     graphs: Option<Res<crate::graph_runtime::StockGraphs>>,
     physics: Option<ResMut<GamePhysics>>,
     peds: Option<Res<super::peds::PedData>>,
+    (player, net): (Res<crate::physics::SkaterRuntime>, Option<Res<crate::multiplayer::Multiplayer>>),
     mut npcs: Query<(Entity, &NpcSkater, &mut NpcReplay, Option<&mut NpcSim>)>,
     mut events: MessageWriter<super::npc_skaters::NpcSkaterEvent>,
     mut calls: Local<u64>,
@@ -805,6 +852,8 @@ pub(crate) fn simulate(
                                 // the path with the start gate kept (b118).
                                 Some((_, f)) => {
                                     sim.air = Default::default();
+                                    sim.slot = Default::default();
+                                    sim.board_yaw = Default::default();
                                     skate_core::living_world::ai_controller::path_reset(&mut replay.avoid.controller);
                                     f.switch_to(replay.cursor.node)
                                 }
@@ -890,7 +939,10 @@ pub(crate) fn simulate(
                         GamePhysics::set_context_velocity(&mut sim.context, v);
                     }
                 }
-                // The PathController's ActionGraph signals: anticipation and the trick at its node.
+                // The PathController's ActionGraph signals: anticipation and the trick at its node. The slot is restored
+                // below when the dispatcher would not have run this tick.
+                let slot_before = sim.slot;
+                let mut anticipated = None;
                 let intents = match lines.get(&replay.cursor.line) {
                     Some(line) => {
                         let at = [deck.translation.x, deck.translation.y, deck.translation.z];
@@ -908,7 +960,9 @@ pub(crate) fn simulate(
                         let cursor_line = replay.cursor.line;
                         let tricks = &replay.tricks;
                         let chosen = |n: u32| tricks.iter().rev().find(|r| r.line == cursor_line && r.node == n).map_or_else(|| line.node_trick(&line.nodes[n as usize]), |r| r.chosen);
-                        let v = skate_core::living_world::ai_signals::signals(line, &rules.signals, &input, &chosen);
+                        let slot_tricks = state.npc.tricks.slot_tricks_for(&npc.character);
+                        let v = skate_core::living_world::ai_signals::signals(line, &rules.signals, &input, &chosen, &mut sim.slot, slot_tricks);
+                        anticipated = skate_core::living_world::ai_signals::anticipated(line, &rules.signals, &input);
                         v
                     }
                     None => Vec::new(),
@@ -934,6 +988,13 @@ pub(crate) fn simulate(
                 if let Some(line) = lines.get(&replay.cursor.line) {
                     let node_forward = skate_core::living_world::air_steer::node_skater_forward(line, replay.cursor.node);
                     if sim.air.tick(airborne_now, char_forward, node_forward) {
+                        // `sub_8246B1F8`: the cursor node's recorded board-vs-skater yaw, posted while airborne.
+                        let n = &line.nodes[(replay.cursor.node as usize).min(line.nodes.len() - 1)];
+                        use skate_core::living_world::replay::decode_orientation;
+                        sim.board_yaw = skate_core::living_world::ai_signals::BoardYaw::takeoff(decode_orientation(n.board), decode_orientation(n.skater), &rules.board_yaw);
+                        if sim.board_yaw.set {
+                            info!("NPC_SKATER_BOARD_YAW #{} {} node {} angle {:.2} mag {:.2} slot {} {}", npc.id.serial, npc.character, replay.cursor.node, sim.board_yaw.angle, sim.board_yaw.mag, sim.slot.category, super::npc_skaters::trick_name(sim.slot.trick));
+                        }
                         let d = GamePhysics::context_deck(&sim.context).basis.columns[2];
                         let v = sim.last_deck.map(|q| { let p = projected_point(sim, state_now).0; [p[0] - q[0], p[1] - q[1], p[2] - q[2]] }).unwrap_or([0.0; 3]);
                         let vl = (v[0] * v[0] + v[2] * v[2]).sqrt().max(1e-6);
@@ -957,6 +1018,13 @@ pub(crate) fn simulate(
                     // Retail's hold branch (`824701F8`) runs no steer right after a placement.
                     let hold = sim.hold_ticks > 0;
                     let waiting = sim.respawn_in.is_some() || sim.teleport_pending || hold;
+                    // The air arm's board yaw post (`sub_8246B358` -> `sub_82471008`), after its steer.
+                    if airborne_now && rules.board_yaw_on && !on_foot && !waiting && avoid.last.mode != AvoidMode::Skitch {
+                        use skate_core::living_world::ai_signals::{manual_value, BoardYaw};
+                        let ahead = anticipated.filter(|&t| skate_core::scoring::catalog::category(t) == Some(8) && sim.slot.category != 8);
+                        let post: Option<[_; 2]> = BoardYaw::post(&sim.board_yaw, ahead.map(|t| manual_value(t, rules.board_yaw.manual_value)), &rules.board_yaw);
+                        intents.extend(post.into_iter().flatten());
+                    }
                     if airborne_now && !rules.air_steer_on {
                     } else if airborne_now && !on_foot && !waiting && avoid.last.mode != AvoidMode::Skitch {
                         // The air arm (`sub_8246B358`, b123): toward the recorded skater forward at the near look-ahead,
@@ -1033,9 +1101,28 @@ pub(crate) fn simulate(
                 if avoid.low_prop() {
                     skate_core::living_world::ai_signals::drop_trick_dispatch(&mut intents);
                 }
+                let held = sim.hold_ticks > 0;
                 if sim.hold_ticks > 0 {
                     sim.hold_ticks -= 1;
                     skate_core::living_world::ai_signals::drop_trick_dispatch(&mut intents);
+                }
+                // The per-tick writer's slot arm (`sub_824696B8`, b113): the slot trick's timed intents. It runs inside
+                // the dispatcher, so not when the dispatch was skipped above (skitch, off the path or board, hold).
+                {
+                    let skitch_skip = (avoid.last.mode == skate_core::living_world::avoid::AvoidMode::Skitch && !(200..300).contains(&(state as u32))) || state == skate_core::player::state::PhysicalStateId::Skitching;
+                    if avoid.low_prop() {
+                        sim.slot.category = 0;
+                    }
+                    if skitch_skip || off_path || off_board || held {
+                        sim.slot = slot_before;
+                    } else {
+                        let opened = sim.slot.ticks == 0 && sim.slot.category != 0 && sim.slot != slot_before;
+                        let schedule = usize::try_from(sim.slot.trick).ok().and_then(|t| sim.body.runtime.scoring.data.by_id(t)).map(|d| d.intents.clone()).unwrap_or_default();
+                        if opened && !intents.iter().any(|x| x.0 == "Trick") {
+                            info!("NPC_SKATER_SIM_SLOT #{} {} category {} {} node {} schedule {}", npc.id.serial, npc.character, sim.slot.category, super::npc_skaters::trick_name(sim.slot.trick), replay.cursor.node, schedule.len());
+                        }
+                        intents.extend(skate_core::living_world::ai_signals::slot_signals(&mut sim.slot, &schedule, 1.0));
+                    }
                 }
                 // Logged after mode 4 so a dropped trick dispatch is not reported.
                 if let Some(name) = intents.iter().position(|x| x.0 == "Trick").and_then(|i| intents.get(i + 1)) {
@@ -1114,6 +1201,8 @@ pub(crate) fn simulate(
             }
         }
     }
-    run_steps(&mut physics, &mut npcs, &graphs, &mut workers, jobs, &mut commands, &mut count);
+    let player_body = (rules.bump && net.is_some()).then(|| crate::physics::network::capture_body(&physics, &player));
+    let bump = player_body.as_ref().zip(net.as_ref().map(|n| &n.schema));
+    run_steps(&mut physics, &mut npcs, bump, &graphs, &mut workers, jobs, &mut commands, &mut count);
 
 }

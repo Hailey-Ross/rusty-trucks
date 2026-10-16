@@ -534,3 +534,73 @@ fn npc_skaters_stepped_in_parallel_match_the_serial_steps_bit_for_bit() {
     let moved = npcs_b.iter().map(|n| n.context.board.part_transforms()[BodyId::Deck.index()].translation.z).collect::<Vec<_>>();
     assert!(npcs_b.iter().all(|n| !n.context.failed), "npc physics failed; decks {moved:?}");
 }
+
+/// The player and a simulated NPC skater collide as full skaters (`living_world::npc_skaters::push_proxies` and
+/// `npc_sim::run_steps`: each solve sees the other's board and skeleton as a peer proxy, retail group 5; research m7 /
+/// b125): an NPC riding hard into the standing player is knocked down by its own skeleton contact and wipeout check; a
+/// slow roll-in is not. Logs both sides' first wipeout tick.
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn a_hard_bump_knocks_a_simulated_npc_skater_down() {
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let rig = Rig { graphs: crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap(), root_dir: root_dir.clone() };
+    let at = skate_net::prediction::CollisionPrediction::at(0.0).unwrap();
+    let run = |speed: f32| {
+        let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+        let mut player = rig.skater(&physics);
+        for _ in 0..30 {
+            rig.step(&mut physics, &mut player, pad());
+        }
+        let schema = network::Schema::new(&physics, &player.runtime).unwrap();
+        let mut spawn = physics.board.part_transforms()[BodyId::Deck.index()];
+        spawn.translation.z -= 4.0;
+        let mut context = physics.new_skater_context(spawn).unwrap();
+        let mut npc = physics.load_skater_in_context(&mut context, &root_dir, &rig.graphs, "easy").unwrap();
+        let mut controls = PlayerControls::default();
+        let mut camera = crate::camera::CameraRuntime::load(&root_dir).unwrap();
+        let mut npc_body = GamePhysics::capture_context_body(&context, &npc);
+        let (mut mine, mut theirs, mut touched) = (None, None, 0usize);
+        for t in 0..240 {
+            let mut proxies = network::Proxies::default();
+            proxies.append(crate::living_world::npc_skaters::PLAYER_PEER | 1, &npc_body, &schema, &physics, &player.runtime, at);
+            physics.network_proxies = proxies;
+            rig.step(&mut physics, &mut player, pad());
+            let player_body = network::capture_body(&physics, &player.runtime);
+            let mut proxies = network::Proxies::default();
+            proxies.append(crate::living_world::npc_skaters::PLAYER_PEER, &player_body, &schema, &physics, &npc, at);
+            physics.network_proxies = proxies;
+            // Riding in at `speed` until it touches the player (the sim's spawn push does the same, `ai_record::spawn_push`).
+            if touched == 0 {
+                GamePhysics::set_context_velocity(&mut context, [0.0, 0.0, speed]);
+            }
+            physics.advance_npc_skater(&mut context, &mut npc, &mut controls, &rig.graphs, &mut camera, &[]).unwrap();
+            npc_body = GamePhysics::capture_context_body(&context, &npc);
+            touched = touched.max(physics.network_contacts);
+            if std::env::var_os("BUMP_TRACE").is_some() && t % 5 == 0 {
+                let d = GamePhysics::context_deck(&context).translation;
+                let v = context.board.bodies()[BodyId::Deck.index()].rates.linear_velocity;
+                let p = physics.board.bodies()[BodyId::Deck.index()].rates.position;
+                eprintln!("t {t} npc z {:.2} v {:.2} player z {:.2} contacts {} states {:?} {:?}", d.z, v.z, p.z, physics.network_contacts, npc.player_state.current(), player.runtime.player_state.current());
+            }
+            if theirs.is_none() && npc.player_state.current() == PhysicalStateId::WipeoutGround {
+                theirs = Some(t);
+            }
+            if mine.is_none() && player.runtime.player_state.current() == PhysicalStateId::WipeoutGround {
+                mine = Some(t);
+            }
+        }
+        eprintln!("{speed} m/s: npc wipeout tick {theirs:?}, player wipeout tick {mine:?}, most contacts {touched}");
+        (theirs, mine, touched)
+    };
+    // 2026-10-16 (DownTown, 4 m run-up, pushed until the first contact): 9 m/s -> the NPC wipes out at tick 26; the
+    // standing player (its side: force x SkaterSkeletonScalar, thresholds x SkaterSkaterThresholdScalar) goes down at
+    // tick 36 as the sliding NPC keeps pushing. Only the NPC side is asserted (no retail measurement of the player's).
+    let (npc, _, touched) = run(9.0);
+    assert!(touched > 0 && npc.is_some(), "a 9 m/s skater riding into the player wipes out");
+    let (npc, player, touched) = run(2.0);
+    assert!(touched > 0, "the slow skater reaches the player");
+    assert_eq!((npc, player), (None, None), "a slow roll-in knocks nobody down");
+}
