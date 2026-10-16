@@ -1903,6 +1903,45 @@ Research `.local/research/menus-m6/cameraman-mode.md`, `light-rigs.md` (agent; m
   a short recomp hook logging the binder constants (`sub_82CBBBF0` nis / `sub_82CBD050` default) with the setting on
   and off. Our characters use one fixed rig (`retail_character.rs`). Greyed until then.
 
+## Startup loading screen (2026-10-15)
+
+**Problem.** Starting the game showed a window that sat frozen for about a minute (user: "Starting the game after a
+fresh build take FOREVER, can we add a loading screen or some indication the game isn't frozen"). In the user's
+session log of 2026-10-15 (`game-20261015-215442`) the window opened 7 s after launch and the first frame took 43 s.
+
+**Root cause.** [log] Of those 43 s, about 39 s (03:55:00.6 to 03:55:39.5 UTC) were `game_audio::content::frame` ->
+`native::launch` reading and decoding the AEMS projects and the player's banks inside the first frame, so nothing
+could draw. The launch-time asset check ran in parallel on its own thread for 31 s; the audio start's player banks
+finished 0.5 s after it, so on an HDD the two competed for the disk.
+
+**Change.**
+- `game_audio::native::begin_launch` / `finish_launch`: the first start without audio overlays builds the runtime on
+  an `audio-start` thread from its own `Library::load` of the install (the startup `Library` is the same call on the
+  same root), then installs it on the main thread exactly as `launch` does. `AudioContent` gets a `Starting` state;
+  restarts and the first start with overlays stay synchronous.
+- `splash.rs` (new): a small native splash window (its own thread and message loop) shown from the first moment
+  of the process, before config, skater, physics and world loading. A skateboard with no skater rolls across it,
+  the current step and item are written under it ("Loading sound: sound bank grind_concrete (12 s)"), and the last
+  finished steps are listed dimmed below, like RPCS3's progress lines. `main.rs` names each startup stage on it;
+  any thread reports the item being read (`startup_loading::detail`). `SKATE_NO_SPLASH=1` turns it off.
+- `startup_loading.rs` (new): the game window is created hidden (`app.rs`, `visible: false`) and shown and brought
+  forward when every hold is released; the splash closes then. Gameplay waits while a hold is up (virtual time
+  paused, after the menu's own pause rule), so the start runs in the same order as before. The audio hold is
+  released when the first start is done or failed, at once without an audio install; a hold that hangs gives way
+  after 180 s so the window never stays hidden. Log: `STARTUP_LOADING done in <ms>`.
+- `asset_check.rs`: the check starts once the loading phase is over instead of at startup.
+
+**Not retail.** Retail boots into its own movies and shows its tips loader (FE screen 52, "Loading screen" above)
+for in-game loads; the splash only covers our engine's start. Engine systems or mods hold the loading phase with
+`StartupLoading::hold` / `release` (the label is the splash's step). The splash itself runs before mods load, so
+its look is not moddable. Open: a Lua SDK entry for the hold.
+
+**Verification.** `startup_loading::tests::holds_show_the_first_label_and_end_when_all_are_released`; the data-gated
+`game_audio::content` tests (all 4 pass; `game_world` now starts through the thread and waits for it);
+`splash::tests::steps_and_items_become_finished_lines`. Live run 2026-10-15 (warm file cache): splash up at 1 s
+("Reading the settings and the map"), "Building the world, menus and HUD" with the finished steps at 6 s, game
+window shown at 10 s with the splash gone; `STARTUP_LOADING done in 5170 ms`, no errors.
+
 ## Files
 - Trick Guide camera from the recomp trace: `crates/skate-data/src/ice_camera.rs`, `tests/ice_camera.rs`,
   `crates/skate-core/src/camera_track.rs`, `crates/skate-game/src/trick_guide_scene.rs`, `retail_menu_stage.rs`.

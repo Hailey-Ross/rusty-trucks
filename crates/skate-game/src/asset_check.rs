@@ -2,7 +2,9 @@
 //! every output setup recorded must still be there at its recorded size, and each group's files must hold what
 //! this build reads (format versions and content). A failing group is logged (`ASSET_CHECK <group>: <reason>`) and
 //! marked stale (`setup::mark_stale`), so the PC overlay offers Extras > Refresh Game Files, which makes setup
-//! rebuild exactly those groups. Runs on a background thread so the start is not held up.
+//! rebuild exactly those groups. Runs on a background thread once the startup loading screen is gone, so its
+//! thousands of file reads do not compete with the start's own loading on an HDD (the first start of the audio
+//! runtime waited ~20 s on them, 2026-10-15).
 use bevy::prelude::*;
 use std::path::{Path, PathBuf};
 
@@ -111,8 +113,12 @@ pub(crate) struct AssetCheckPlugin;
 
 impl Plugin for AssetCheckPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, start);
+        app.add_systems(Update, start.run_if(loading_done.and(bevy::ecs::schedule::common_conditions::run_once)));
     }
+}
+
+fn loading_done(loading: Option<Res<crate::startup_loading::StartupLoading>>) -> bool {
+    loading.is_none_or(|l| l.done())
 }
 
 fn start(config: Res<crate::config::Config>) {
