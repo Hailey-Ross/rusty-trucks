@@ -86,7 +86,7 @@ impl GrindInputState {
             self.rail_owner = Some(edge.owner);
             if previous_owner != Some(edge.owner) {
                 // Diagnostics: which rail a grind takes (map rail, prop or car), doc 26i "Grinding on props".
-                bevy::log::info!("GRIND_RAIL {} family={} start={:?} end={:?}", crate::grind_world::props::describe_owner(edge.owner), contact.kind, &edge.start[..3], &edge.end[..3]);
+                bevy::log::info!("GRIND_RAIL {} family={} start={:?} end={:?}", provider.describe(edge.owner), contact.kind, &edge.start[..3], &edge.end[..3]);
             }
             fields.primitive_flags_1300 = native.flags & 0x8000_0000;
             fields.flags_1516 = if contact.front { 0x2000_0000 } else { 0 };
@@ -119,8 +119,8 @@ impl GrindInputState {
             if near.is_some() && near != self.near_logged {
                 bevy::log::info!(
                     "GRIND_NEAR {} rails={} proximity={:?} board=[{:.2}, {:.2}, {:.2}]",
-                    crate::grind_world::props::describe_owner(near.unwrap_or(0)), hits.len(),
-                    result.proximity.map(|p| (crate::grind_world::props::describe_owner(edges[p.contact.primitive].owner), p.deck_contact)),
+                    provider.describe(near.unwrap_or(0)), hits.len(),
+                    result.proximity.map(|p| (provider.describe(edges[p.contact.primitive].owner), p.deck_contact)),
                     context.board[3][0], context.board[3][1], context.board[3][2],
                 );
             }

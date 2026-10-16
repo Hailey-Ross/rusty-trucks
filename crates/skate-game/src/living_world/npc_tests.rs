@@ -1218,10 +1218,11 @@ fn living_world_npc_skaters_pick_tricks_from_their_profile_and_clients_mirror_th
     assert_eq!(a.world().resource::<LivingWorldSettings>().npc_tricks, Default::default());
 }
 
-/// Retail obstacle avoider on the replay tier: a player standing just right of an NPC's line,
-/// 3 m ahead, stops it (cap 0: the cursor is held back); once the player leaves, it rides on.
+/// Retail obstacle avoider on the replay tier: a player standing just right of an NPC's line, 3 m ahead, leaves a
+/// free lateral gap, so the NPC steers into it and passes (retail slows only when the whole width is blocked,
+/// `+6006` = free gap count != 0, b112); once the player leaves, it rides on.
 #[test]
-fn living_world_npc_skater_stops_for_a_player_standing_on_its_line() {
+fn living_world_npc_skater_steers_around_a_player_standing_on_its_line() {
     let mut a = app(11);
     a.init_resource::<super::npc_avoid::AvoidTrack>().init_resource::<Pin>();
     a.add_systems(Update, super::npc_avoid::avoid.after(apply_records).before(advance));
@@ -1238,11 +1239,11 @@ fn living_world_npc_skater_stops_for_a_player_standing_on_its_line() {
     a.world_mut().resource_mut::<Pin>().0 = Some([p[0] + 3.0, p[1], p[2] - 0.5]);
     run(&mut a, 3.0, 60.0);
     let held = npcs(&mut a).into_iter().find(|n| n.0 == id).expect("still live");
-    assert!(held.1[0] - p[0] < 3.0, "stopped short of the player: moved {:.2} m", held.1[0] - p[0]);
+    assert!(held.1[0] - p[0] > 3.0, "passed the player: moved {:.2} m", held.1[0] - p[0]);
     let events = std::mem::take(&mut a.world_mut().resource_mut::<Seen>().0);
     assert!(
-        events.iter().any(|e| matches!(e, NpcSkaterEvent::Avoid { id: i, mode: skate_core::living_world::avoid::AvoidMode::SlowDown, .. } if *i == id)),
-        "an npc_avoid slow_down event: {events:?}"
+        events.iter().any(|e| matches!(e, NpcSkaterEvent::Avoid { id: i, mode: skate_core::living_world::avoid::AvoidMode::Steer, .. } if *i == id)),
+        "an npc_avoid steer event: {events:?}"
     );
     // The player leaves (behind the NPC, out of its cone): it rides on.
     a.world_mut().resource_mut::<Pin>().0 = Some([held.1[0] - 20.0, p[1], p[2] - 20.0]);

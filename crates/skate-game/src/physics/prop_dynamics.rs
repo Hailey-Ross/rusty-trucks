@@ -767,6 +767,9 @@ impl crate::grind_world::RailSource for PropDynamics {
             }
         }
     }
+    fn describe(&self, id: u32) -> Option<String> {
+        self.template_of(id).map(|_| self.describe_template(id))
+    }
 }
 
 fn mul_basis(basis: Basis3, v: Vector3) -> Vector3 {
@@ -1495,6 +1498,11 @@ impl PropDynamics {
         out
     }
 
+    /// A body's model name for logs ("DMO_DT_BenchFlat_1015"), or "?".
+    fn describe_template(&self, id: u32) -> String {
+        self.template_of(id).map_or("?".to_owned(), |t| t.split_once('/').map_or(t, |x| x.1).split("_0x").next().unwrap_or(t).to_owned())
+    }
+
     /// A body's MOBJ template name (its model / prop type), for logs.
     pub(crate) fn template_of(&self, id: u32) -> Option<&str> {
         self.bodies.get(*self.by_id.get(&id)?).map(|b| b.template.as_str())
@@ -2068,6 +2076,7 @@ impl PropDynamics {
                 // the prop every tick forever: it never sleeps and rebakes
                 // its triangles every tick. Count those ticks; past
                 // `stuck_release_ticks` only real hits push it.
+                let release = self.bodies[index].tuning.stuck_release_ticks;
                 let body = &mut self.bodies[index];
                 body.stuck_ticks = if closing {
                     0
@@ -2076,6 +2085,12 @@ impl PropDynamics {
                 } else {
                     0
                 };
+                // Diagnostics: a skater volume that sat inside the prop long enough to stop nudging it (the board
+                // under a seat, or the skater pulled into a fallen bench), once per stay.
+                if body.stuck_ticks == release {
+                    let (id, c, up) = (body.id, body.rates.position, body.rates.basis.columns[1][1]);
+                    info!("PROP_OVERLAP prop={id} ({}) skater inside for {release} ticks at [{:.2}, {:.2}, {:.2}] up_y {up:.2}", self.describe_template(id), c.x, c.y, c.z);
+                }
             }
         }
         let solver = self.tuning.solver;
@@ -2246,6 +2261,13 @@ impl PropDynamics {
         let impulse = scale(push, amount);
         self.bodies[index].apply_impulse(impulse, point);
         self.stats.skater_pushes += 1;
+        // Diagnostics: a big shove (2 m/s or more in one tick), with what the push saw.
+        let dv = amount / mass;
+        if dv >= 2.0 {
+            let id = self.bodies[index].id;
+            let board = matches!(volume.body, skate_core::physics::board_step::CollisionBody::Board(_));
+            info!("PROP_SHOVE prop={id} ({}) dv {dv:.2} m/s mass {mass:.0} kg closing {strongest:.2} m/s by {} at [{:.2}, {:.2}, {:.2}]", self.describe_template(id), if board { "board" } else { "body" }, point.x, point.y, point.z);
+        }
         contact
     }
 
