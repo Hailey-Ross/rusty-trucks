@@ -679,9 +679,9 @@ const AUDIO_ROWS: std::ops::RangeInclusive<usize> = 16..=18;
 /// speech decode.
 const MORE_AUDIBLE_ROW: usize = 32;
 const SPEECH_ROW: usize = 33;
-/// The living world opt-ins in the same group, in `OptIn::ALL` order (zombie mode, NPC skater physics, skitching,
-/// prop grab; doc 26b "Opt-in switches in the PC overlay").
-const OPT_IN_ROWS: std::ops::Range<usize> = 40..44;
+/// The living world opt-ins in the same group, in `OptIn::ALL` order (zombie mode, NPC skater physics; doc 26b
+/// "Opt-in switches in the PC overlay"). One row per opt-in: the range follows the list.
+const OPT_IN_ROWS: std::ops::Range<usize> = 40..40 + crate::living_world::opt_ins::OptIn::ALL.len();
 fn opt_in(row: usize) -> crate::living_world::opt_ins::OptIn {
     crate::living_world::opt_ins::OptIn::ALL[row - OPT_IN_ROWS.start]
 }
@@ -1471,6 +1471,15 @@ fn apply_custom_difficulty(mut menu: ResMut<Menu>, config: Res<crate::config::Co
 
 #[cfg(test)]
 mod tests {
+    /// Every opt-in row names an opt-in (removing two opt-ins once left rows that panicked when the overlay opened).
+    #[test]
+    fn every_opt_in_row_has_an_opt_in() {
+        assert_eq!(OPT_IN_ROWS.len(), crate::living_world::opt_ins::OptIn::ALL.len());
+        for row in OPT_IN_ROWS {
+            let _ = opt_in(row);
+        }
+    }
+
     use super::*;
     fn menu() -> Menu {
         Menu {
@@ -1544,7 +1553,7 @@ mod tests {
     fn pages_put_headers_in_front_of_their_groups() {
         let mut m = menu();
         m.select_section(2);
-        assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW, 911, NPC_DRAW_DISTANCE_ROW, 913, MORE_AUDIBLE_ROW, SPEECH_ROW, 40, 41, 42, 43]);
+        assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW, 911, NPC_DRAW_DISTANCE_ROW, 913, MORE_AUDIBLE_ROW, SPEECH_ROW, 40, 41]);
         m.select_section(1);
         assert_eq!(m.page(), vec![904, 3, 906, CAMERA_ANGLE_ROW, 907, 8, 10]);
         m.select_section(4);
@@ -1651,7 +1660,7 @@ mod tests {
         assert!(!SECTIONS.iter().any(|(name,_,_)| matches!(*name,"SESSION"|"WORLD")));
         menu.select_section(2);
         assert!(!menu.multiplayer && !menu.browser);
-        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW,MORE_AUDIBLE_ROW,SPEECH_ROW,40,41,42,43]);
+        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW,MORE_AUDIBLE_ROW,SPEECH_ROW,40,41]);
         menu.daylight = true;
         assert_eq!(menu.rows(), vec![0,1,2,3]);
     }
