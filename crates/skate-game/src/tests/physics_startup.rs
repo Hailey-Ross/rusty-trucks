@@ -18,7 +18,7 @@ fn stock_skater_startup_builds_the_graphs_and_physical_body_from_the_same_rig() 
         Vector3::new(20.0, ground::HEIGHT, 20.0),
         Vector3::new(-20.0, ground::HEIGHT, 20.0),
     ];
-    physics.world = BoardWorld::new(
+    physics.world = (BoardWorld::new(
         [[0, 2, 1], [0, 3, 2]]
             .map(|indices| {
                 skate_core::physics::board_world::WorldTriangle::from_vertices(
@@ -32,7 +32,7 @@ fn stock_skater_startup_builds_the_graphs_and_physical_body_from_the_same_rig() 
                 .unwrap()
             })
             .to_vec(),
-    );
+    )).into();
     let mut skater = SkaterRuntime::load(root, &graphs, &physics, "normal").unwrap();
     assert_eq!(
         skater.animation.pose.len(),

@@ -170,12 +170,16 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         lin=(cube*olm*olm*fres+ward*p.water[0].rgb)*p.water[1].y;
         alpha=1.0;
     } else if fam==30u || fam==33u {
-        // Native PCA update time: see retail_render::WaterAnimation.
+        // Native PCA update time (retail_render::WaterAnimation), or the water
+        // look's seamless clock (retail_render::water_time).
         let t=frame_state.clock.z;
+        // Water look layer (water_look.rs, project choices); retail values
+        // (1, 0, 0, 0 and tint 1) leave the retail program unchanged.
+        let look=select(vec4<f32>(1.0,0.0,0.0,0.0),frame_state.water_look,fam==33u);
         // Convert to original UVs for scale/scroll, then back to flipped rows.
         let raw_uv=vec2<f32>(i.uv.x,1.0-i.uv.y);
-        // water_defaultPS 11..13: c20 * c21.x, with no extra ripple scale.
-        let uv_scale=select(1.0,p.water[3].x,fam==33u);
+        // water_defaultPS 11..13: c20 * c21.x, times the look's ripple scale.
+        let uv_scale=select(1.0,p.water[3].x*look.x,fam==33u);
         let uv1=raw_uv*p.water[2].xy*uv_scale+p.water[1].xy*t;
         let uv2=raw_uv*p.water[2].zw*uv_scale+p.water[1].zw*t;
         // The double V flip cancels, so per-axis scaling is all that carries over.
@@ -195,14 +199,16 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             let a2=n2*2.0-1.0;
             // water_defaultPS instructions 22..54: the native mean is XYZ,
             // weights are R/G/B pairs. FrameState stores the ocean's R/B/G
-            // arrangement; recover those original registers here.
-            let mean=frame_state.pca[0].xzy;
-            let pca1=vec3<f32>(dot(a1,frame_state.pca[1])+dot(c1,frame_state.pca[2])+mean.x,
-                dot(a1,frame_state.pca[5])+dot(c1,frame_state.pca[6])+mean.y,
-                dot(a1,frame_state.pca[3])+dot(c1,frame_state.pca[4])+mean.z);
-            let pca2=vec3<f32>(dot(a2,frame_state.pca[1])+dot(c2,frame_state.pca[2])+mean.x,
-                dot(a2,frame_state.pca[5])+dot(c2,frame_state.pca[6])+mean.y,
-                dot(a2,frame_state.pca[3])+dot(c2,frame_state.pca[4])+mean.z);
+            // arrangement; recover those original registers here. `pca_slow`
+            // is the animation at the look's wave rate (equal to `pca` at
+            // the retail rate).
+            let mean=frame_state.pca_slow[0].xzy;
+            let pca1=vec3<f32>(dot(a1,frame_state.pca_slow[1])+dot(c1,frame_state.pca_slow[2])+mean.x,
+                dot(a1,frame_state.pca_slow[5])+dot(c1,frame_state.pca_slow[6])+mean.y,
+                dot(a1,frame_state.pca_slow[3])+dot(c1,frame_state.pca_slow[4])+mean.z);
+            let pca2=vec3<f32>(dot(a2,frame_state.pca_slow[1])+dot(c2,frame_state.pca_slow[2])+mean.x,
+                dot(a2,frame_state.pca_slow[5])+dot(c2,frame_state.pca_slow[6])+mean.y,
+                dot(a2,frame_state.pca_slow[3])+dot(c2,frame_state.pca_slow[4])+mean.z);
             let first=vec3<f32>((pca2.x*2.0-1.0)*p.water[0].z,
                 1.0+2.0*(pca2.y-1.0)*p.water[0].z,(pca2.z*2.0-1.0)*p.water[0].z);
             let second=vec3<f32>((pca1.x*2.0-1.0)*p.water[0].w,
@@ -210,6 +216,32 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             // Instructions 47..54 and 69..71 normalize separate reflection
             // and refraction vectors. There is no third wave or area blend.
             water_n=first*inverseSqrt(max(dot(first,first),1e-12));
+            if look.z>0.5 || look.w>0.5 {
+                // Water look: one fine layer at a larger ripple scale tiles
+                // visibly over large stretches (DownTown fountain), so add the
+                // same PCA wave from a rotated sample at 0.613x and broad swells
+                // from the large layer, matched by eye to RPCS3 footage. Smaller
+                // bodies move less: `decal.y` is the body's area (water_bodies.rs),
+                // 100 m² and below calmest, 4000 m² and up (Aletown canal) full.
+                var third=first;
+                if look.z>0.5 {
+                    let k=0.613;
+                    let uv3=mat2x2<f32>(0.8,0.6,-0.6,0.8)*(raw_uv*p.water[2].zw*uv_scale*k)+p.water[1].wz*t*k+vec2<f32>(0.37,0.71);
+                    let s3=s2*k;
+                    let g3=bindings::Gradients(g.ddx*s3,g.ddy*s3);
+                    let a3=bindings::sample_normal_map(slot,vec2<f32>(uv3.x,1.0-uv3.y),g3)*2.0-1.0;
+                    let c3=bindings::sample_detail_map(slot,vec2<f32>(uv3.x,1.0-uv3.y),g3)*2.0-1.0;
+                    let pca3=vec3<f32>(dot(a3,frame_state.pca_slow[1])+dot(c3,frame_state.pca_slow[2])+mean.x,
+                        dot(a3,frame_state.pca_slow[5])+dot(c3,frame_state.pca_slow[6])+mean.y,
+                        dot(a3,frame_state.pca_slow[3])+dot(c3,frame_state.pca_slow[4])+mean.z);
+                    third=vec3<f32>((pca3.x*2.0-1.0)*p.water[0].z,
+                        1.0+2.0*(pca3.y-1.0)*p.water[0].z,(pca3.z*2.0-1.0)*p.water[0].z);
+                }
+                let up=vec3<f32>(0.0,1.0,0.0);
+                let size=select(1.0,saturate(log2(max(p.decal.y,1.0)/100.0)/log2(40.0)),look.w>0.5 && p.decal.y>0.0);
+                let swell=select(0.0,1.0,look.z>0.5);
+                water_n=normalize(2.0*up+(first+third-2.0*up)*(0.6+0.4*size)+(second-up)*2.0*size*size*swell);
+            }
             let refract=second*inverseSqrt(max(dot(second,second),1e-12));
             sample_uv+=0.02*refract.xz*vec2<f32>(1.0,-1.0);
             d=bindings::sample_diffuse(slot,sample_uv,g).rgb;
@@ -248,10 +280,14 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
         if (flags & 64u)!=0u {
             let rv=vd-2.0*water_n*dot(vd,water_n);
             // Instruction 95 uses the environment fetch without an added
-            // mip bias or color multiplier.
-            let cube=bindings::sample_environment(slot,vec3<f32>(-rv.x,-rv.y,rv.z),log2(frame::view.viewport.w/640.0)).rgb;
+            // mip bias or color multiplier; the water look adds both (family
+            // 33: an even steel-blue reflection as in the Aletown canal
+            // footage, where the sharp cube read grey with bright/dark bands).
+            let blur=select(0.0,frame_state.water_look.y,fam==33u);
+            let cube=bindings::sample_environment(slot,vec3<f32>(-rv.x,-rv.y,rv.z),log2(frame::view.viewport.w/640.0)+blur).rgb;
+            let tint=select(vec3<f32>(1.0),frame_state.water_tint.rgb,fam==33u);
             let lum=0.3*saturate(4.0*wm.y-2.6);
-            spec+=cube*(lml.g+lum*(1.0-lml.g))*wm.y*1.5;
+            spec+=cube*tint*(lml.g+lum*(1.0-lml.g))*wm.y*1.5;
         }
         lin=(lml*kd*d+spec)*p.water[0].y;
         alpha=max(spec.g,p.water[3].w);

@@ -183,6 +183,21 @@ impl SkaterRuntime {
         self.teleport_state.request_manual(transform, true);
         Ok(())
     }
+
+    /// An AI skater's respawn destination for the next wipeout-end teleport (instead of the checkpoint history).
+    pub(crate) fn set_respawn_destination(&mut self, transform: [[f32; 4]; 4], on_board: bool) {
+        self.respawn.destination = Some(super::teleport_state::Checkpoint { transform, on_board });
+    }
+
+    pub(crate) fn clear_respawn_destination(&mut self) {
+        self.respawn.destination = None;
+    }
+
+    /// The actor reply alone (retail `825926F8`, NPC skater placements): one reset that also moves the animated
+    /// skeleton's root, unlike the host teleport (which left a placed skater drawn where its body was before).
+    pub(crate) fn place_by_reply(&mut self, transform: [[f32; 4]; 4], on_board: bool) {
+        self.teleport_state.request_manual(transform, on_board);
+    }
     pub fn load(
         asset_root: &Path,
         graphs: &StockGraphs,

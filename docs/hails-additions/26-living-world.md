@@ -56,6 +56,9 @@ the file of their topic (and get a line here).
 - [NPC skaters switching the side they stand on, 2026-10-05](26c-living-world-npc-skaters.md#npc-skaters-switching-the-side-they-stand-on-2026-10-05)
 - [NPC skaters popping between animations, tricks not playing, 2026-10-05](26c-living-world-npc-skaters.md#npc-skaters-popping-between-animations-tricks-not-playing-2026-10-05)
 - [Silent landings (NPC skater sounds filled the voice cap), 2026-10-07](26c-living-world-npc-skaters.md#silent-landings-npc-skater-sounds-filled-the-voice-cap-2026-10-07)
+- [NPC Skater Physics: hitches, skaters vanishing up close, path projection (2026-10-13)](26c-living-world-npc-skaters.md#npc-skater-physics-hitches-skaters-vanishing-up-close-path-projection-2026-10-13)
+- [NPC Skater Physics: bails (2026-10-13 night)](26c-living-world-npc-skaters.md#npc-skater-physics-bails-2026-10-13-night)
+- [NPC Skater Physics: bails right after a placement (2026-10-15)](26c-living-world-npc-skaters.md#npc-skater-physics-bails-right-after-a-placement-2026-10-15)
 
 ### 26d: NPC skaters: stance and riding direction
 

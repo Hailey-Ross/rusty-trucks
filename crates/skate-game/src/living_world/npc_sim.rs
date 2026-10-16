@@ -53,18 +53,26 @@ pub(crate) struct SimulatedTierSettings {
     /// The air arm. Ported but OFF by default until it is understood: muted A/B runs (2026-10-14, 240 s) had more bails
     /// with it (radius 150 m: 48 vs 19; 110 m: 33 vs 24). Test knob `SKATE_NPC_AIR_STEER=1` turns it on.
     pub air_steer_on: bool,
+    /// After a placement (switch to physics or respawn) the line controller holds: no steer and no trick for this long,
+    /// seconds (retail's hold branch of `824701F8` runs no steer while the placed skater settles; our length,
+    /// measured 2026-10-15: 0.5 s took the bails in the first second after a placement from 4 of 16 to 0 of 8).
+    pub placement_hold_seconds: f32,
 }
 
 impl Default for SimulatedTierSettings {
     fn default() -> Self {
         // `SKATE_NPC_SIM_RADIUS` (m): a test knob so an unattended run sees many switches to physics.
         let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(40.0);
-        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1") }
+        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), placement_hold_seconds: 0.5 }
     }
 }
 
 impl SimulatedTierSettings {
     /// The respawn delay in 60 Hz ticks.
+    pub fn placement_hold_ticks(&self) -> u32 {
+        (self.placement_hold_seconds.clamp(0.0, 10.0) * 60.0).round() as u32
+    }
+
     pub fn respawn_ticks(&self) -> u32 {
         let lo = self.respawn_min.min(self.respawn_max);
         (self.respawn_seconds.clamp(lo, self.respawn_max.max(lo)) * 60.0).round() as u32
@@ -100,13 +108,29 @@ pub(crate) struct NpcSim {
     /// was before (a pooled body: anywhere), and projecting that moved the path cursor nodes ahead of the skater
     /// (muted run 2026-10-13: "left the path at node 1 (A 5+1.00, 79.25 m)" on the first tick).
     teleport_pending: bool,
-    /// The node the bail places it at again (`pc+880`, chosen when the bail starts).
-    respawn_node: Option<u32>,
+    /// The skater's placement count when `place` queued the actor reply; the guard above lifts once it changes (the
+    /// reply lands a tick or two later: lifting it after one tick projected the pooled body, 71 m off the line, and the
+    /// skater was "lost" and walked off within 0.1 s, 2026-10-15). Ticks waited, for a logged limit.
+    placements_at_place: u32,
+    pending_ticks: u32,
+    /// The line and node the bail places it at again (`pc+880`, chosen when the bail starts). The line is kept
+    /// with the node: the cursor can chain to the next line during the respawn wait (a walk-back hand back at the
+    /// line end), and the old line's node on the new line ran past its end (crash 2026-10-15, npc_avoid.rs:204).
+    respawn_node: Option<([u8; 16], u32)>,
     /// Line controller A's off-board toggle (re-boards a skater left off its board, b117).
     toggle: skate_core::living_world::ai_controller::OffBoardToggle,
     /// Ticks left of the per-tick NPC_SKATER_PLACED trace after a placement (debug level; how the launch at line
     /// ends was found).
     trace_ticks: u32,
+    /// The skater's placement count when the bail started: a higher count = the respawn teleport happened.
+    placements_at_bail: u32,
+    /// The drawn pose and animation root before the last step, and the placement count then: the draw blends between
+    /// them by the fixed-step overstep, as the player's presentation does (a simulated NPC jumped at 60 Hz before).
+    pub(crate) previous_pose: Vec<skate_core::animation::output::NativeMatrix>,
+    pub(crate) previous_root: skate_core::animation::output::NativeMatrix,
+    pub(crate) previous_placements: u32,
+    /// Ticks left of the hold after a placement (`SimulatedTierSettings::placement_hold_seconds`).
+    hold_ticks: u32,
     /// The last walk-back goal with no navmesh plan (logged once per goal).
     no_plan: Option<u32>,
     /// The takeoff flip latch (`pc+927` / `pc+928`, `sub_8246A700`), cleared with the controller.
@@ -213,6 +237,48 @@ impl NpcSim {
     pub(crate) fn render_pose(&self) -> &[skate_core::animation::output::NativeMatrix] {
         &self.body.runtime.render_pose
     }
+
+    /// The skater's animation root in the world (the frame its render pose is relative to).
+    /// The deck's world position (the simulated board).
+    pub(crate) fn deck_position(&self) -> [f32; 3] {
+        let t = GamePhysics::context_deck(&self.context).translation;
+        [t.x, t.y, t.z]
+    }
+
+    /// The NPC skater audio state from the simulated body: rolling on its wheels, grinding only in a grind state,
+    /// airborne in an air state with no wheel down, silent wheels off the board and in a wipeout.
+    pub(crate) fn lite_state(&self, material: u32) -> skate_audio::player::state::AudioState {
+        let p = &self.body.runtime.player_input.processed;
+        let state = self.body.runtime.player_state.current() as u32;
+        let wheels_down = p.wheel_count_2556 > 0;
+        let off_board = p.flags_2484 & 0x0800_0000 != 0 || (300..400).contains(&state) || (500..600).contains(&state);
+        let grinding = (400..500).contains(&state);
+        let airborne = (200..300).contains(&state) && !wheels_down;
+        let deck = GamePhysics::context_deck(&self.context);
+        let v = GamePhysics::context_deck_velocity(&self.context);
+        let forward = deck.basis.columns[2];
+        skate_audio::player::state::AudioState::rolling(&skate_audio::player::state::LiteSkater {
+            position: [deck.translation.x, deck.translation.y, deck.translation.z],
+            velocity: v,
+            heading: forward[0].atan2(forward[2]),
+            wheels: if off_board || airborne { [false; 4] } else { [wheels_down; 4] },
+            material: if off_board { skate_audio::player::state::NO_MATERIAL } else { material },
+            grinding,
+            grind_material: if grinding { material } else { skate_audio::player::state::NO_MATERIAL },
+            airborne,
+            air_time: if airborne { self.body.runtime.player_state.selector.air_frames.max(0) as f32 / 60.0 } else { 0.0 },
+            dt: (1.0 / skate_core::living_world::clock::RETAIL_TICK_HZ) as f32,
+        })
+    }
+
+    /// The skater's placement count (a change means it was teleported).
+    pub(crate) fn placements(&self) -> u32 {
+        self.body.runtime.placements()
+    }
+
+    pub(crate) fn animation_root(&self) -> skate_core::animation::output::NativeMatrix {
+        self.body.runtime.animated_skeleton.roots.animation_to_world
+    }
 }
 
 fn nearest(observers: &LivingWorldObservers, p: [f32; 3]) -> f32 {
@@ -225,14 +291,15 @@ fn spawn_sim(
     graphs: &crate::graph_runtime::StockGraphs,
     target: &ai_record::LineTarget,
     pool: &mut NpcSimPool,
+    hold_ticks: u32,
 ) -> Result<NpcSim, String> {
     let spawn = line_spawn(target);
     let (context, body) = match pool.bodies.pop() {
         Some(pooled) => pooled,
         None => load_body(physics, config, graphs, spawn)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, respawn_node: None, toggle: Default::default(), trace_ticks: 0, no_plan: None, air: Default::default() };
-    place(&mut sim, target)?;
+    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placements_at_bail: 0, no_plan: None, air: Default::default() };
+    place(&mut sim, target, hold_ticks)?;
     Ok(sim)
 }
 
@@ -249,25 +316,153 @@ fn line_spawn(target: &ai_record::LineTarget) -> skate_core::physics::drive_fram
 /// handover; retail never hands over), so the teleport's reset does not zero the speed (b109: the context velocity
 /// alone was zeroed on the first step and the skater dropped in from rest). Its own context is kept (a fresh one
 /// restarted the clock and the camera refused the older subject tick).
-fn place(sim: &mut NpcSim, target: &ai_record::LineTarget) -> Result<[f32; 3], String> {
+fn place(sim: &mut NpcSim, target: &ai_record::LineTarget, hold_ticks: u32) -> Result<[f32; 3], String> {
     let spawn = line_spawn(target);
+    let c = spawn.basis.columns;
+    info!("NPC_SKATER_PLACE_FRAME up=[{:.2}, {:.2}, {:.2}] forward=[{:.2}, {:.2}, {:.2}] at [{:.2}, {:.2}, {:.2}]", c[1][0], c[1][1], c[1][2], c[2][0], c[2][1], c[2][2], spawn.translation.x, spawn.translation.y, spawn.translation.z);
     // Retail's spawn push (`82C04168`, `ai_record::spawn_push`): on the node, the node's displacement x 60 x 0.75.
     let velocity = ai_record::spawn_push(target.position, target.position, target.step, false, false).unwrap_or([0.0; 3]);
     GamePhysics::set_context_velocity(&mut sim.context, velocity);
-    if let Err(error) = sim.body.runtime.travel(spawn_matrix(&spawn), Some(velocity)) {
-        debug!("NPC_SKATER_SIM place: teleport not queued ({error}); context velocity only");
+    // One reset, the actor reply (retail `825926F8`), like the respawn. `travel` queued the host teleport too, a
+    // second reset that snapped the rolling board back (2026-10-15); the host teleport alone moved the board but not
+    // the animated skeleton's root, so the skater was drawn where its pooled body was and vanished on screen.
+    sim.placements_at_place = sim.body.runtime.placements();
+    sim.pending_ticks = 0;
+    sim.body.runtime.place_by_reply(spawn_matrix(&spawn), true);
+    sim.body.runtime.clear_respawn_destination();
+    settle(sim, hold_ticks);
+    sim.teleport_pending = true;
+    Ok(velocity)
+}
+
+/// Lift the placement guard once the actor reply has landed (or after a logged 30-tick limit).
+fn lift_pending(sim: &mut NpcSim, npc: &super::npc_skaters::NpcSkater) {
+    if !sim.teleport_pending {
+        return;
     }
+    sim.pending_ticks += 1;
+    if sim.body.runtime.placements() != sim.placements_at_place {
+        sim.teleport_pending = false;
+        sim.last_deck = None;
+    } else if sim.pending_ticks >= 30 {
+        warn!("NPC_SKATER_SIM #{} {}: placement did not land in 30 ticks", npc.id.serial, npc.character);
+        sim.teleport_pending = false;
+    }
+}
+
+/// The line-state reset after a placement (the teleport itself is done elsewhere).
+fn settle(sim: &mut NpcSim, hold_ticks: u32) {
     sim.respawn_in = None;
     sim.last_node = None;
     sim.walker = None;
     sim.follow = None;
     sim.placed = true;
-    sim.teleport_pending = true;
     sim.toggle = Default::default();
     sim.last_deck = None;
     sim.trace_ticks = 60;
+    sim.hold_ticks = hold_ticks;
     sim.air = Default::default();
-    Ok(velocity)
+}
+
+/// One simulated NPC's step this tick, run after the per-NPC preparation (`run_steps`).
+struct Job {
+    entity: Entity,
+    serial: u32,
+    character: String,
+    intents: Vec<(String, f32)>,
+}
+
+/// The simulated NPCs' physics steps, each on its own worker (`GamePhysics::npc_worker`) on the compute pool.
+/// Every worker is synced from the shared physics as it stands after the player's step, so each NPC solves against
+/// the same proxies and props (the serial loop before 2026-10-15 let each NPC start from the proxies the previous NPC's
+/// solve had moved). Errors and the shared physics' proxy results are applied afterwards in NPC id order: the shared
+/// proxies end as the last NPC's solve left them, as before.
+fn run_steps(
+    physics: &mut GamePhysics,
+    npcs: &mut Query<(Entity, &NpcSkater, &mut NpcReplay, Option<&mut NpcSim>)>,
+    graphs: &crate::graph_runtime::StockGraphs,
+    workers: &mut Vec<Box<GamePhysics>>,
+    jobs: Vec<Job>,
+    commands: &mut Commands,
+    count: &mut usize,
+) {
+    if jobs.is_empty() {
+        return;
+    }
+    while workers.len() < jobs.len() {
+        match physics.npc_worker() {
+            Ok(mut worker) => {
+                // Shares only while it steps (sync below, release after): the player's step changes the shared parts.
+                GamePhysics::release_npc_worker(&mut worker);
+                workers.push(Box::new(worker));
+            }
+            Err(error) => {
+                warn!("NPC_SKATER_SIM worker: {error}");
+                return;
+            }
+        }
+    }
+    let t_sync = std::time::Instant::now();
+    let mut work: Vec<(&Job, Mut<NpcSim>, &mut Box<GamePhysics>)> = Vec::with_capacity(jobs.len());
+    {
+        let mut by_entity: std::collections::BTreeMap<Entity, Mut<NpcSim>> = npcs
+            .iter_mut()
+            .filter(|n| jobs.iter().any(|j| j.entity == n.0))
+            .filter_map(|(e, _, _, sim)| sim.map(|sim| (e, sim)))
+            .collect();
+        for (job, worker) in jobs.iter().zip(workers.iter_mut()) {
+            if let Some(mut sim) = by_entity.remove(&job.entity) {
+                let sim_ref = &mut *sim;
+                sim_ref.previous_pose.clone_from(&sim_ref.body.runtime.render_pose);
+                sim_ref.previous_root = sim_ref.body.runtime.animated_skeleton.roots.animation_to_world;
+                sim_ref.previous_placements = sim_ref.body.runtime.placements();
+                physics.sync_npc_worker(worker);
+                work.push((job, sim, worker));
+            }
+        }
+    }
+    let sync_us = t_sync.elapsed().as_micros();
+    let t_steps = std::time::Instant::now();
+    let threads: std::sync::Mutex<Vec<std::thread::ThreadId>> = std::sync::Mutex::new(Vec::new());
+    let threads_ref = &threads;
+    let results: Vec<Result<(), String>> = bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default).scope(|scope| {
+        for (job, sim, worker) in work.iter_mut() {
+            let sim = &mut **sim;
+            let worker = &mut ***worker;
+            let intents = &job.intents;
+            scope.spawn(async move {
+                if let Ok(mut t) = threads_ref.lock() {
+                    t.push(std::thread::current().id());
+                }
+                let NpcSim { context, body, .. } = sim;
+                worker.advance_npc_skater(context, &mut body.runtime, &mut body.controls, graphs, &mut body.camera, intents)
+            });
+        }
+    });
+    let steps_us = t_steps.elapsed().as_micros();
+    let t_release = std::time::Instant::now();
+    // In NPC id order: the shared proxies end as the last NPC's solve left them; errors drop that NPC to replay.
+    if let Some((_, _, last)) = work.last() {
+        physics.network_proxies.clone_from(&last.network_proxies);
+        physics.network_contacts = last.network_contacts;
+    }
+    for ((job, _, worker), result) in work.iter_mut().zip(results) {
+        GamePhysics::release_npc_worker(worker);
+        if let Err(error) = result {
+            warn!("NPC_SKATER_SIM #{} {}: physics error, back to replay: {error}", job.serial, job.character);
+            commands.entity(job.entity).remove::<NpcSim>();
+            *count -= 1;
+        }
+    }
+    // NPC_SIM_STEPS (diagnostics): jobs this tick, how many threads ran them, and the wall time of each part (µs).
+    static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if LAST.swap(now, std::sync::atomic::Ordering::Relaxed) != now {
+        let mut ids = threads.into_inner().unwrap_or_default();
+        ids.sort_by_key(|t| format!("{t:?}"));
+        ids.dedup();
+        info!("NPC_SIM_STEPS jobs {} threads {} sync {sync_us} us steps {steps_us} us release {} us", work.len(), ids.len(), t_release.elapsed().as_micros());
+    }
 }
 
 /// Switch NPC skaters between the tiers and step the simulated ones.
@@ -285,6 +480,7 @@ pub(crate) fn simulate(
     mut events: MessageWriter<super::npc_skaters::NpcSkaterEvent>,
     mut calls: Local<u64>,
     mut pool: ResMut<NpcSimPool>,
+    mut workers: Local<Vec<Box<GamePhysics>>>,
 ) {
     let _span = super::timing::span(super::timing::NPC_SIM);
     let (Some(config), Some(graphs), Some(mut physics)) = (config, graphs, physics) else { return };
@@ -321,6 +517,11 @@ pub(crate) fn simulate(
     let mut count = npcs.iter().filter(|n| n.3.is_some()).count();
     let mut sorted: Vec<_> = npcs.iter_mut().collect();
     sorted.sort_by_key(|n| n.1.id);
+    let mut jobs: Vec<Job> = Vec::new();
+    // The grab scene's props, once for the whole NPC phase (each NPC step refreshed it before, with the same props).
+    if let Err(error) = physics.refresh_grab_props() {
+        warn!("NPC_SKATER_SIM grab scene refresh failed: {error}");
+    }
     for (e, npc, mut replay, sim) in sorted {
         let Some(target) = replay.cursor.line_target(&*lines) else { continue };
         let distance = nearest(&observers, target.position);
@@ -357,12 +558,28 @@ pub(crate) fn simulate(
                 }
                 if wiped && sim.respawn_in.is_none() && !sim.placed {
                     let ticks = rules.respawn_ticks();
-                    sim.respawn_in = Some(ticks);
+                    sim.respawn_in = Some(ticks + 600);
                     // Retail picks the node now (`sub_8246EE30` -> `sub_8246ED68`): two past the projection's search
                     // node, then the first safe node. Respawning where it fell put a skater back on a take-off
                     // (muted run 2026-10-13: 24 bails in a row at node 17, each right after the placement).
                     let search_start = sim.follow.map_or(replay.cursor.node, |(_, f)| f.search_start);
-                    sim.respawn_node = lines.get(&replay.cursor.line).map(|line| skate_core::living_world::ai_controller::respawn_node(&replay.avoid.controller, &rules.controller, search_start, line));
+                    sim.respawn_node = lines.get(&replay.cursor.line).map(|line| {
+                        let node = skate_core::living_world::ai_controller::respawn_node(&replay.avoid.controller, &rules.controller, search_start, line);
+                        // NOT RETAIL: retail clamps to the last node and re-picks a line from there. Ours chained to
+                        // the next line's node 0 up to 4 m away, off its path and before its start nodes: no target and
+                        // no spawn push, so the skater stood still (user 2026-10-15, ryan_smith at node 25 of 26). Kept
+                        // off the last two nodes, it respawns on a node, gets the push and chains while riding.
+                        let last = line.nodes.len().saturating_sub(3) as u32;
+                        (replay.cursor.line, node.min(last))
+                    });
+                    // The respawn is the skater's own wipeout-end teleport (like the player's, one actor reply), sent to
+                    // the chosen node instead of its checkpoint history. Before 2026-10-15 a 5 s timer placed it with a
+                    // second teleport while the wipeout was still running: every respawn wiped out again within 0.2 s,
+                    // and the built-in checkpoint respawn later threw the skater to an old checkpoint (41 m off its line).
+                    if let Some(target) = sim.respawn_node.and_then(|(line, node)| skate_core::living_world::replay::LineCursor::spawn(&*lines, line, node).line_target(&*lines)) {
+                        sim.body.runtime.set_respawn_destination(spawn_matrix(&line_spawn(&target)), true);
+                    }
+                    sim.placements_at_bail = sim.body.runtime.placements();
                     let at = projected_point(sim, state_now).0;
                     let speed = sim.last_deck.map_or(0.0, |p| ((at[0] - p[0]).powi(2) + (at[1] - p[1]).powi(2) + (at[2] - p[2]).powi(2)).sqrt() * 60.0);
                     let (on_path, dist, a) = sim.follow.map_or((true, 0.0, (0, 0.0)), |(_, f)| (f.on_path, f.dist, f.a));
@@ -376,17 +593,35 @@ pub(crate) fn simulate(
                     replay.avoid.lag += super::npc_skaters::FRAMES_PER_TICK as f32;
                     // The line waits for the respawn.
                     replay.follow_target = Some(replay.cursor.frames);
+                    let respawned = sim.body.runtime.placements() != sim.placements_at_bail;
+                    if respawned {
+                        // The wipeout-end teleport put the skater on its node: the line state follows (no teleport here).
+                        match sim.respawn_node.take() {
+                            Some((line, node)) => replay.cursor = skate_core::living_world::replay::LineCursor::spawn(&*lines, line, node),
+                            None => replay.cursor.frame_in_segment = 0,
+                        }
+                        replay.follow_target = Some(replay.cursor.frames);
+                        settle(sim, rules.placement_hold_ticks());
+                        let len = lines.get(&replay.cursor.line).map_or(0, |l| l.nodes.len());
+                        info!("NPC_SKATER_RESPAWN #{} {} at line node {} of {len} (wipeout-end teleport after {:.2} s)", npc.id.serial, npc.character, replay.cursor.node, (rules.respawn_ticks().saturating_sub(left)) as f32 / 60.0);
+                        events.write(super::npc_skaters::NpcSkaterEvent::Respawned { id: npc.id, node: replay.cursor.node });
+                        continue;
+                    }
+                    // Fallback only: no wipeout-end teleport within the respawn delay plus 10 s (a wipeout that never
+                    // ends); place it with the line placement, logged so it shows up.
                     if left == 0 {
+                        warn!("NPC_SKATER_RESPAWN #{} {}: no wipeout-end teleport, placing directly", npc.id.serial, npc.character);
+                        sim.body.runtime.clear_respawn_destination();
                         // The same skater placed again on its line, on the node (retail places its AI skater object
                         // again at the chosen node).
                         match sim.respawn_node.take() {
-                            Some(node) => replay.cursor = skate_core::living_world::replay::LineCursor::spawn(&*lines, replay.cursor.line, node),
+                            Some((line, node)) => replay.cursor = skate_core::living_world::replay::LineCursor::spawn(&*lines, line, node),
                             None => replay.cursor.frame_in_segment = 0,
                         }
                         // The new cursor counts its own frames: hold it there (the old target ran it 38 nodes ahead).
                         replay.follow_target = Some(replay.cursor.frames);
                         let Some(target) = replay.cursor.line_target(&*lines) else { continue };
-                        match place(sim, &target) {
+                        match place(sim, &target, rules.placement_hold_ticks()) {
                             Ok(v) => {
                                 let len = lines.get(&replay.cursor.line).map_or(0, |l| l.nodes.len());
                                 info!(
@@ -461,6 +696,15 @@ pub(crate) fn simulate(
                     match w.b.tick(&rules.navmesh, paths, &input) {
                         BTick::Idle => {}
                         BTick::Controls(c) => {
+                            // NPC_WALK_PROGRESS once a second while walking back: where it is, how fast, what it asks for.
+                            if *calls % 60 == npc.id.serial as u64 % 60 {
+                                let i = walker_input(&sim.body.runtime);
+                                info!(
+                                    "NPC_WALK_PROGRESS #{} {} at [{:.2}, {:.2}, {:.2}] off_board {} toggling {} can_move {} state {:?} steer {:.2} throttle {:?} wipe_out {} intents {:?}",
+                                    npc.id.serial, npc.character, i.position[0], i.position[1], i.position[2], i.byte_161, i.byte_160, i.can_move, state_now,
+                                    c.steer, c.throttle, c.wipe_out, c.intents().iter().map(|x| x.0).collect::<Vec<_>>()
+                                );
+                            }
                             walk_intents.extend(c.intents().into_iter().map(|(k, v)| (k.to_string(), v)));
                         }
                         BTick::HandBack { reason, wipe_out } => {
@@ -499,12 +743,9 @@ pub(crate) fn simulate(
                     replay.avoid.lag += super::npc_skaters::FRAMES_PER_TICK as f32;
                     sim.last_state = Some(state_now);
                     sim.last_deck = Some(projected_point(sim, state_now).0);
-                    sim.teleport_pending = false;
-                if let Err(error) = physics.advance_npc_skater(&mut sim.context, &mut sim.body.runtime, &mut sim.body.controls, &graphs, &mut sim.body.camera, &walk_intents) {
-                        warn!("NPC_SKATER_SIM #{} {}: physics error, back to replay: {error}", npc.id.serial, npc.character);
-                        commands.entity(e).remove::<NpcSim>();
-                        count -= 1;
-                    }
+                    lift_pending(sim, npc);
+                    // The step itself runs after the loop, with the other NPCs' steps (in parallel).
+                    jobs.push(Job { entity: e, serial: npc.id.serial, character: npc.character.clone(), intents: walk_intents });
                     continue;
                 }
                 // The obstacle avoider's answer (`npc_avoid`): retail caps / floors the record
@@ -582,7 +823,8 @@ pub(crate) fn simulate(
                 };
                 // `sub_8246DB50`: off the path or before the start nodes `sub_8246DE38` is skipped and the record
                 // carries no target; the skater coasts on its own physics until the projection commits again.
-                let mut record = if ai_record::steers(&steer, on_path && !airborne_now, past_start) { ai_record::build(&steered, forward, &steer) } else { ai_record::without_steering(&steer) };
+                // Retail's hold branch after a placement (`824701F8`) sends a record with no target (no steering).
+                let mut record = if sim.hold_ticks == 0 && ai_record::steers(&steer, on_path && !airborne_now, past_start) { ai_record::build(&steered, forward, &steer) } else { ai_record::without_steering(&steer) };
                 // The recorded jump ahead (`sub_8246DA18`): its arc and whether it lands in a grind.
                 if let Some(line) = lines.get(&replay.cursor.line) {
                     if let Some((node, jump)) = ai_record::upcoming_trajectory(line, replay.cursor.node) {
@@ -661,7 +903,9 @@ pub(crate) fn simulate(
                     use skate_core::living_world::{avoid::AvoidMode, ground_steer, path_follow};
                     let p = &sim.body.runtime.player_input.processed;
                     let on_foot = p.flags_2484 & 0x0800_0000 != 0 || p.flags_2480 & 0x4 != 0;
-                    let waiting = sim.respawn_in.is_some() || sim.teleport_pending;
+                    // Retail's hold branch (`824701F8`) runs no steer right after a placement.
+                    let hold = sim.hold_ticks > 0;
+                    let waiting = sim.respawn_in.is_some() || sim.teleport_pending || hold;
                     if airborne_now && !rules.air_steer_on {
                     } else if airborne_now && !on_foot && !waiting && avoid.last.mode != AvoidMode::Skitch {
                         // The air arm (`sub_8246B358`, b123): toward the recorded skater forward at the near look-ahead,
@@ -703,6 +947,16 @@ pub(crate) fn simulate(
                                 let g = ground_steer::heading_error(&input, t);
                                 let s = ground_steer::stick(g.error, t.full_deg);
                                 intents.extend(ground_steer::intents(s).into_iter().map(|(k, v)| (k.to_string(), v)));
+                                if sim.trace_ticks > 0 {
+                                    let h = |v: [f32; 3]| v[0].atan2(v[2]).to_degrees();
+                                    let pf = path_follow::forward(line, near);
+                                    let w = GamePhysics::context_deck_velocity(&sim.context);
+                                    debug!(
+                                        "NPC_SKATER_STEER #{} error {:.2} deg stick {s:.3} rejoining {} dist {:.2} deck_yaw {:.1} fakie {} line_yaw {:.1} up_y {:.2} vel_yaw {:.1} speed {:.2} state {:?}",
+                                        npc.id.serial, g.error.to_degrees(), g.rejoining, f.dist, h(forward), input.fakie, h(pf), up[1],
+                                        h(w), (w[0] * w[0] + w[2] * w[2]).sqrt(), state
+                                    );
+                                }
                             }
                         }
                     }
@@ -728,9 +982,27 @@ pub(crate) fn simulate(
                 if avoid.low_prop() {
                     skate_core::living_world::ai_signals::drop_trick_dispatch(&mut intents);
                 }
+                if sim.hold_ticks > 0 {
+                    sim.hold_ticks -= 1;
+                    skate_core::living_world::ai_signals::drop_trick_dispatch(&mut intents);
+                }
                 // Logged after mode 4 so a dropped trick dispatch is not reported.
                 if let Some(name) = intents.iter().position(|x| x.0 == "Trick").and_then(|i| intents.get(i + 1)) {
                     info!("NPC_SKATER_SIM_TRICK #{} {} {} node {} state {:?}", npc.id.serial, npc.character, name.0, replay.cursor.node, state);
+                }
+                // NPC_SKATER_DRAWN once a second: where the drawn body is (render pose joints) against the board, so a
+                // skater that vanishes on screen can be told apart from one that bails.
+                if *calls % 60 == npc.id.serial as u64 % 60 {
+                    let pose = sim.render_pose();
+                    let deck = GamePhysics::context_deck(&sim.context).translation;
+                    let bad = pose.iter().filter(|m| m.iter().flatten().any(|x| !x.is_finite())).count();
+                    let (lo, hi) = pose.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), m| {
+                        (std::array::from_fn(|i| lo[i].min(m[3][i])), std::array::from_fn(|i| hi[i].max(m[3][i])))
+                    });
+                    info!(
+                        "NPC_SKATER_DRAWN #{} {} state {:?} deck [{:.1}, {:.1}, {:.1}] joints {} bad {bad} joint box [{:.1}, {:.1}, {:.1}]..[{:.1}, {:.1}, {:.1}]",
+                        npc.id.serial, npc.character, state, deck.x, deck.y, deck.z, pose.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]
+                    );
                 }
                 if sim.trace_ticks > 0 {
                     sim.trace_ticks -= 1;
@@ -745,12 +1017,9 @@ pub(crate) fn simulate(
                 sim.last_node = Some(replay.cursor.node);
                 sim.last_state = Some(state);
                 sim.last_deck = Some(projected_point(sim, state).0);
-                sim.teleport_pending = false;
-                if let Err(error) = physics.advance_npc_skater(&mut sim.context, &mut sim.body.runtime, &mut sim.body.controls, &graphs, &mut sim.body.camera, &intents) {
-                    warn!("NPC_SKATER_SIM #{} {}: physics error, back to replay: {error}", npc.id.serial, npc.character);
-                    commands.entity(e).remove::<NpcSim>();
-                    count -= 1;
-                }
+                lift_pending(sim, npc);
+                // The step itself runs after the loop, with the other NPCs' steps (in parallel).
+                jobs.push(Job { entity: e, serial: npc.id.serial, character: npc.character.clone(), intents });
             }
             None => {
                 // Clients draw what the host sends; only the authority simulates.
@@ -782,7 +1051,7 @@ pub(crate) fn simulate(
                     }
                     continue;
                 }
-                match spawn_sim(&mut physics, &config, &graphs, &target, &mut pool) {
+                match spawn_sim(&mut physics, &config, &graphs, &target, &mut pool, rules.placement_hold_ticks()) {
                     Ok(sim) => {
                         let why = if replay.avoid.last.mode == skate_core::living_world::avoid::AvoidMode::StepOff { ", blocked by a prop (mode 7)" } else { "" };
                         info!("NPC_SKATER_SIM #{} {} <- replay (distance {distance:.1} m{why})", npc.id.serial, npc.character);
@@ -794,4 +1063,6 @@ pub(crate) fn simulate(
             }
         }
     }
+    run_steps(&mut physics, &mut npcs, &graphs, &mut workers, jobs, &mut commands, &mut count);
+
 }

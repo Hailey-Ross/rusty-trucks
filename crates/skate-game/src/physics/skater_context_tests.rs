@@ -451,3 +451,86 @@ fn controller_b_steps_off_and_walks_the_skater_onto_the_node() {
     assert!(turn_checked, "no steer while off the board");
     assert!(matches!(result, Some((_, HandBack::Arrived))), "{result:?}");
 }
+
+/// Two simulated NPC skaters stepped on their own workers in parallel (`GamePhysics::npc_worker`, the compute pool)
+/// match the same NPCs stepped one after another through the shared physics, bit for bit, every tick: the players too.
+/// Both runs give each NPC the proxies as they stand after the player's step and swap its own collision settings.
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn npc_skaters_stepped_in_parallel_match_the_serial_steps_bit_for_bit() {
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let rig = Rig { graphs: crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap(), root_dir: root_dir.clone() };
+    let load = || GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    let input = |t: u32| skate_core::input::xbox::XboxState { buttons: if t < 60 { 0x1000 } else { 0 }, ..pad() };
+    struct Npc {
+        context: SkaterPhysicsContext,
+        runtime: SkaterRuntime,
+        controls: PlayerControls,
+        camera: crate::camera::CameraRuntime,
+    }
+    let npcs = |physics: &mut GamePhysics| -> Vec<Npc> {
+        [4.0f32, -4.0].iter().map(|dx| {
+            let mut spawn = physics.board.part_transforms()[BodyId::Deck.index()];
+            spawn.translation.x += dx;
+            let mut context = physics.new_skater_context(spawn).unwrap();
+            GamePhysics::set_context_velocity(&mut context, [0.0, 0.0, 3.0]);
+            let runtime = physics.load_skater_in_context(&mut context, &root_dir, &rig.graphs, "easy").unwrap();
+            Npc { context, runtime, controls: PlayerControls::default(), camera: crate::camera::CameraRuntime::load(&root_dir).unwrap() }
+        }).collect()
+    };
+    let deck = |c: &SkaterPhysicsContext| {
+        let r = &c.board.bodies()[BodyId::Deck.index()].rates;
+        [r.position.x, r.position.y, r.position.z, r.linear_velocity.x, r.linear_velocity.y, r.linear_velocity.z].map(f32::to_bits)
+    };
+    let intents = |t: u32| if t % 90 < 45 { vec![("Turn".to_string(), 0.5f32)] } else { Vec::new() };
+
+    // Serial: each NPC through the shared physics, from the post-player proxies.
+    let mut a = load();
+    let mut player_a = rig.skater(&a);
+    let mut npcs_a = npcs(&mut a);
+    let mut serial = Vec::new();
+    for t in 0..240 {
+        rig.step(&mut a, &mut player_a, input(t));
+        let proxies = a.network_proxies.bodies.clone();
+        for n in &mut npcs_a {
+            a.network_proxies.bodies.clone_from(&proxies);
+            a.advance_npc_skater(&mut n.context, &mut n.runtime, &mut n.controls, &rig.graphs, &mut n.camera, &intents(t)).unwrap();
+        }
+        serial.push((trace(&a), npcs_a.iter().map(|n| deck(&n.context)).collect::<Vec<_>>()));
+    }
+
+    // Parallel: each NPC on its own worker, on the compute pool.
+    let mut b = load();
+    let mut player_b = rig.skater(&b);
+    let mut npcs_b = npcs(&mut b);
+    let mut workers: Vec<GamePhysics> = (0..npcs_b.len()).map(|_| b.npc_worker().unwrap()).collect();
+    for w in &mut workers {
+        GamePhysics::release_npc_worker(w);
+    }
+    for t in 0..240 {
+        rig.step(&mut b, &mut player_b, input(t));
+        for w in &mut workers {
+            b.sync_npc_worker(w);
+        }
+        let graphs = &rig.graphs;
+        let step_intents = intents(t);
+        let results = bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default).scope(|scope| {
+            for (n, w) in npcs_b.iter_mut().zip(workers.iter_mut()) {
+                let i = &step_intents;
+                scope.spawn(async move { w.advance_npc_skater(&mut n.context, &mut n.runtime, &mut n.controls, graphs, &mut n.camera, i) });
+            }
+        });
+        results.into_iter().for_each(|r| r.unwrap());
+        b.network_proxies.clone_from(&workers.last().unwrap().network_proxies);
+        for w in &mut workers {
+            GamePhysics::release_npc_worker(w);
+        }
+        let got = (trace(&b), npcs_b.iter().map(|n| deck(&n.context)).collect::<Vec<_>>());
+        assert_eq!(got, serial[t as usize], "parallel diverged from serial at tick {t}");
+    }
+    let moved = npcs_b.iter().map(|n| n.context.board.part_transforms()[BodyId::Deck.index()].translation.z).collect::<Vec<_>>();
+    assert!(npcs_b.iter().all(|n| !n.context.failed), "npc physics failed; decks {moved:?}");
+}

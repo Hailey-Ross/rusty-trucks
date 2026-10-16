@@ -605,13 +605,23 @@ pub(crate) fn apply_ped_records(
     physics: Option<Res<crate::physics::GamePhysics>>,
     mut rejected: ResMut<PedRejected>,
     mut events: MessageWriter<PedEvent>,
+    bodies: Query<&PedBody>,
+    observers: Option<Res<super::LivingWorldObservers>>,
 ) {
     for LivingWorldDespawn(r) in despawns.read() {
         if r.id.kind != Kind::Pedestrian {
             continue;
         }
         if let Some(e) = index.0.remove(&r.id) {
-            info!("PED_DESPAWN ped=#{} reason={:?} tick={}", r.id.serial, r.reason, r.tick);
+            // Where the ped was and how far from the census focus, so a "vanished up close" report can be checked.
+            let at = bodies.get(e).ok().map(|b| b.position);
+            let focus = observers.as_deref().and_then(|o| o.observers.first()).map(|o| Vec3::from_array(o.position));
+            let distance = at.zip(focus).map(|(a, f)| a.distance(f));
+            info!(
+                "PED_DESPAWN ped=#{} reason={:?} tick={} at={:?} focus={:?} distance={}",
+                r.id.serial, r.reason, r.tick, at.map(|p| [p.x, p.y, p.z]), focus.map(|p| [p.x, p.y, p.z]),
+                distance.map_or("none".to_string(), |d| format!("{d:.1}"))
+            );
             commands.entity(e).despawn();
             events.write(PedEvent::Despawned { id: r.id, reason: r.reason });
         }

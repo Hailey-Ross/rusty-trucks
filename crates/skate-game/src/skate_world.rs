@@ -924,6 +924,7 @@ fn portable_world(
 /// One prop instance's share of the prop collision world: its world triangle
 /// range plus the winding-fixed template-space source triangles. Rigid-motion
 /// invariance of adjacency flags and edge cosines lets `rebake` skip welding.
+#[derive(Clone)]
 pub(crate) struct PropCollisionInstance {
     pub id: u32,
     /// Index of the originating MOBJ record; `usize::MAX` for an instance
@@ -943,8 +944,10 @@ impl PropCollisionInstance {
 /// Static collision for spawned DMO prop instances, kept out of the map
 /// collision world so dynamic instances can be rebaked independently.
 pub(crate) struct PropCollisionLayer {
-    world: BoardWorld,
-    instances: Vec<PropCollisionInstance>,
+    /// Shared with NPC skater workers ([`Self::share`]); changed only while no worker holds it.
+    world: crate::physics::WorldHandle,
+    /// Shared with NPC skater workers ([`Self::share`]): copying the template triangles per NPC per tick cost ~0.5 ms.
+    instances: std::sync::Arc<Vec<PropCollisionInstance>>,
     contact_material: RetailContactMaterial,
     /// Instances added mid-game and retired since; their parked triangle
     /// ranges are reused by the next instance of the same size.
@@ -952,11 +955,26 @@ pub(crate) struct PropCollisionLayer {
 }
 
 impl PropCollisionLayer {
+    /// A copy for an NPC skater worker: the same (shared) prop world with its own query scratch, and the instance list.
+    pub(crate) fn share(&self) -> Self {
+        Self {
+            world: self.world.share(),
+            instances: std::sync::Arc::clone(&self.instances),
+            contact_material: self.contact_material,
+            retired: self.retired.clone(),
+        }
+    }
+
+    /// The world handle for queries (its own scratch).
+    pub(crate) fn world_handle_mut(&mut self) -> &mut crate::physics::WorldHandle {
+        &mut self.world
+    }
+
     pub fn world(&self) -> &BoardWorld {
-        &self.world
+        &*self.world
     }
     pub fn world_mut(&mut self) -> &mut BoardWorld {
-        &mut self.world
+        &mut *self.world
     }
     pub fn instances(&self) -> &[PropCollisionInstance] {
         &self.instances
@@ -1035,8 +1053,8 @@ impl PropCollisionLayer {
             island_flags: 0,
         };
         Ok(Self {
-            world: BoardWorld::with_query_metadata(vec![], metadata).map_err(str::to_owned)?,
-            instances: Vec::new(),
+            world: BoardWorld::with_query_metadata(vec![], metadata).map_err(str::to_owned)?.into(),
+            instances: std::sync::Arc::new(Vec::new()),
             contact_material: material,
             retired: Vec::new(),
         })
@@ -1107,11 +1125,11 @@ impl PropCollisionLayer {
                     .world
                     .append_triangles(&triangles, &vec![surface as u16; triangles.len()])
                     .map_err(str::to_owned)?;
-                self.instances.push(PropCollisionInstance { id, object: usize::MAX, range, local: Vec::new() });
+                std::sync::Arc::make_mut(&mut self.instances).push(PropCollisionInstance { id, object: usize::MAX, range, local: Vec::new() });
                 self.instances.len() - 1
             }
         };
-        let entry = &mut self.instances[index];
+        let entry = &mut std::sync::Arc::make_mut(&mut self.instances)[index];
         entry.id = id;
         entry.local = local;
         Ok(index)
@@ -1138,12 +1156,64 @@ impl PropCollisionLayer {
 /// baked into world space with the instance transform at load. Reflections
 /// flip winding to keep outward normals; degenerate render triangles are
 /// skipped rather than rejecting the whole layer.
+/// One DMO template's retail physics collision (`native-props/<map>.json` `collision`, setup
+/// `dynamic_props.template_collision`): the template's ClusteredMesh triangles in model space, with their RW edge codes
+/// and surface ids (research dmo-physics-collision.md). Keyed by template id, so a mod can supply or replace one.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PropShape {
+    pub triangles: Vec<[[f32; 3]; 3]>,
+    pub edges: Vec<Option<[u8; 3]>>,
+    pub surfaces: Vec<u32>,
+}
+
+/// The retail collision shapes per DMO template id; empty when setup exported none (older install).
+pub(crate) fn load_dmo_collision(asset_root: &std::path::Path, map_name: &str) -> std::collections::BTreeMap<String, PropShape> {
+    let path = asset_root.join("private").join("native-props").join(format!("{map_name}.json"));
+    let Some(sidecar) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else { return Default::default() };
+    let Some(map) = sidecar.get("collision").and_then(|v| v.as_object()) else { return Default::default() };
+    let mut out = std::collections::BTreeMap::new();
+    for (key, v) in map {
+        let point = |p: &serde_json::Value| -> Option<[f32; 3]> {
+            let a = p.as_array()?;
+            Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32, a.get(2)?.as_f64()? as f32])
+        };
+        let triangles: Option<Vec<[[f32; 3]; 3]>> = v["triangles"].as_array().map(|ts| {
+            ts.iter().filter_map(|t| { let t = t.as_array()?; Some([point(t.first()?)?, point(t.get(1)?)?, point(t.get(2)?)?]) }).collect()
+        });
+        let Some(triangles) = triangles.filter(|t| !t.is_empty()) else { continue };
+        let edges: Vec<Option<[u8; 3]>> = v["edges"].as_array().map(|es| es.iter().map(|e| {
+            let a = e.as_array()?;
+            Some([a.first()?.as_u64()? as u8, a.get(1)?.as_u64()? as u8, a.get(2)?.as_u64()? as u8])
+        }).collect()).unwrap_or_default();
+        let surfaces: Vec<u32> = v["surfaces"].as_array().map(|ss| ss.iter().map(|x| x.as_u64().unwrap_or(0) as u32).collect()).unwrap_or_default();
+        if edges.len() != triangles.len() || surfaces.len() != triangles.len() {
+            warn!("SKATE_PROP_COLLISION: {}: template {key}: triangle, edge and surface counts differ; render mesh kept", path.display());
+            continue;
+        }
+        out.insert(key.clone(), PropShape { triangles, edges, surfaces });
+    }
+    out
+}
+
 pub(crate) fn build_prop_layer(
     map: &SkateMap,
     objects: &[skate_data::skate_map::StaticObject],
     material: RetailContactMaterial,
 ) -> Result<Option<PropCollisionLayer>, String> {
+    build_prop_layer_with(map, objects, material, &Default::default())
+}
+
+/// [`build_prop_layer`] with retail collision shapes per template: a prop whose template has one collides with that
+/// mesh and its native edge codes (retail's DMO physics collision); others with their render triangles (the welded
+/// render mesh left seams between a bench's seat pieces as catching edges, 2026-10-15: 10 of 12 grind bails on one).
+pub(crate) fn build_prop_layer_with(
+    map: &SkateMap,
+    objects: &[skate_data::skate_map::StaticObject],
+    material: RetailContactMaterial,
+    shapes: &std::collections::BTreeMap<String, PropShape>,
+) -> Result<Option<PropCollisionLayer>, String> {
     let mut collision = Vec::new();
+    let mut mismatched = std::collections::BTreeSet::new();
     let mut instances = Vec::new();
     for (object_index, object) in objects.iter().enumerate() {
         let t = &object.transform;
@@ -1170,6 +1240,48 @@ pub(crate) fn build_prop_layer(
             object.first_index as usize..(object.first_index + object.index_count) as usize;
         let start = collision.len();
         let mut local = Vec::new();
+        let template = object.name.split('/').next().unwrap_or_default();
+        // Both meshes should be in the template's model space: a retail shape that does not line up with the render
+        // mesh (the garbage bags sit 0.38 m lower: anchored elsewhere, not decoded) keeps the render mesh, logged once.
+        let shape = shapes.get(template).filter(|shape| {
+            let bounds = |points: &mut dyn Iterator<Item = [f32; 3]>| points.fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), p| {
+                (std::array::from_fn(|i| lo[i].min(p[i])), std::array::from_fn(|i| hi[i].max(p[i])))
+            });
+            let (rl, rh) = bounds(&mut map.geometry.indices[range.clone()].iter().map(|&i| map.geometry.vertices[i as usize].position));
+            let (sl, sh) = bounds(&mut shape.triangles.iter().flatten().copied());
+            let gap = (0..3).map(|i| (rl[i] - sl[i]).abs().max((rh[i] - sh[i]).abs())).fold(0.0f32, f32::max);
+            if gap > 0.25 && mismatched.insert(template.to_owned()) {
+                warn!("SKATE_PROP_COLLISION: template {template} retail shape bounds {sl:?}..{sh:?} differ from the render mesh {rl:?}..{rh:?} by {gap:.2} m; render mesh kept");
+            }
+            gap <= 0.25
+        });
+        if let Some(shape) = shape {
+            for ((tri, edges), surface) in shape.triangles.iter().zip(&shape.edges).zip(&shape.surfaces) {
+                let mut points = *tri;
+                let mut edges = *edges;
+                if determinant < 0. {
+                    points.swap(1, 2);
+                    // Edge i runs from vertex i to i + 1: swapping b and c reverses the loop, so edge 0 (a-b) becomes
+                    // a-c (old edge 2) and edge 2 becomes b-a (old edge 0).
+                    edges = edges.map(|e| [e[2], e[1], e[0]]);
+                }
+                let [a, b, c] = points.map(Vec3::from_array);
+                if (b - a).cross(c - a).length_squared() <= 0. {
+                    continue;
+                }
+                local.push(points.map(|p| Vector3::new(p[0] * scale[0], p[1] * scale[1], p[2] * scale[2])));
+                collision.push(skate_data::skate_map::Collision {
+                    points: points.map(transform),
+                    surface: *surface,
+                    material: 1,
+                    native_edges: edges,
+                });
+            }
+            if collision.len() > start {
+                instances.push(PropCollisionInstance { id: object.id, object: object_index, range: start..collision.len(), local });
+            }
+            continue;
+        }
         for tri in map.geometry.indices[range].chunks_exact(3) {
             let mut points =
                 [tri[0], tri[1], tri[2]].map(|i| map.geometry.vertices[i as usize].position);
@@ -1209,8 +1321,8 @@ pub(crate) fn build_prop_layer(
         return Ok(None);
     }
     Ok(Some(PropCollisionLayer {
-        world: portable_world(&collision, &map.materials, material)?,
-        instances,
+        world: portable_world(&collision, &map.materials, material)?.into(),
+        instances: std::sync::Arc::new(instances),
         contact_material: material,
         retired: Vec::new(),
     }))
@@ -1326,7 +1438,10 @@ pub(crate) fn load_prop_layer(
             }
         }
     }
-    match build_prop_layer(&map, &objects, material) {
+    let shapes = load_dmo_collision(asset_root, map_name);
+    let retail_shaped = objects.iter().filter(|o| shapes.contains_key(o.name.split('/').next().unwrap_or_default())).count();
+    info!("SKATE_PROP_COLLISION: {map_name} retail collision shapes {} templates, {retail_shaped}/{} props", shapes.len(), objects.len());
+    match build_prop_layer_with(&map, &objects, material, &shapes) {
         Ok(Some(layer)) => {
             info!(
                 "SKATE_PROP_COLLISION: {map_name} instances={} triangles={}",

@@ -26,7 +26,11 @@ fn fragment(i: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let z = select(1.0e9, grade[7].x / d, d > 0.0);
     let wa = saturate(z * grade[6].x + grade[6].z);
     let wb = saturate(z * grade[6].y + grade[6].w);
-    let gamma = saturate(wa * graded(curve, 0u) + wb * graded(curve, 3u));
+    var gamma = saturate(wa * graded(curve, 0u) + wb * graded(curve, 3u));
+    // Water-shot vignette (camera/water.rs): dark rounded edges, as retail.
+    let xy = i.uv*2.0-1.0;
+    let edge = smoothstep(0.55,1.3,length(xy));
+    gamma *= 1.0-saturate(exposure.w)*edge;
     // Bevy's final output attachment performs sRGB encoding. The retail
     // curve already includes gamma; invert sRGB here to avoid encoding twice.
     let linear = select(gamma/12.92,pow((gamma+0.055)/1.055,vec3<f32>(2.4)),gamma>vec3<f32>(0.04045));

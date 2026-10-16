@@ -282,6 +282,25 @@ def recipe_grind_rails(recipe: dict, read) -> list[dict]:
     return []
 
 
+def recipe_collision(recipe: dict, read) -> dict | None:
+    """The car body's retail physics collision in model space (research dmo-physics-collision.md: the ``Accessory``
+    part arena holds one 0x00080001 volume over a ClusteredMesh, edge codes and surfaces): what the board and skater
+    meet on a car, in place of a box from the model bounds."""
+    from .dynamic_props import collision_from_volume, sections
+    for part in recipe['parts']:
+        if part['slot'] != 'Accessory':
+            continue
+        for lod in part['lods']:
+            raw = read(lod['arena'])
+            table = sections(raw)
+            for index, entry in enumerate(table):
+                if entry[5] == 0x00080001:
+                    shape = collision_from_volume(raw, table, index)
+                    if shape:
+                        return shape
+    return None
+
+
 def decode_cube(parser, data: bytes) -> np.ndarray:
     """The six base faces of a cube texture rx2 as one (6 x size, size, 4) RGBA strip. The vendored
     decoder takes only DXT1 / A8R8G8B8 / B5G6R5 cubes (``tools/vendor`` is fingerprinted, so the DXT5
@@ -346,7 +365,8 @@ def export_models(game_root: Path, manifest: dict, output: Path, work: Path, rep
                         report(f'Living world vehicle environment {tid} unavailable: {error}')
             results[name] = {'status': 'ready', 'file': f'vehicles/{name}.glb', **stats,
                              'grab_splines': recipe_grab_splines(recipe, lambda arena: extract(arena).read_bytes()),
-                             'grind_splines': recipe_grind_rails(recipe, lambda arena: extract(arena).read_bytes())}
+                             'grind_splines': recipe_grind_rails(recipe, lambda arena: extract(arena).read_bytes()),
+                             'collision': recipe_collision(recipe, lambda arena: extract(arena).read_bytes())}
         except (ValueError, KeyError, RuntimeError, IndexError, struct.error, OSError) as error:
             if isinstance(error, OSError) and not isinstance(error, FileNotFoundError):
                 raise  # disk full / permissions abort setup

@@ -22,6 +22,7 @@ fn advance_inner(
     truck_targets: [f32; 2],
     carry_tick: super::prop_carry::Tick,
 ) -> Result<(), String> {
+    let timer = std::time::Instant::now();
     let mod_before = crate::modding::player_physics::before_solve(physics,skater);
     let before = diagnostics::snapshot(physics, skater);
     diagnostics::validate(&before, "before shared solve").map_err(|error| format!(
@@ -126,8 +127,12 @@ fn advance_inner(
     // volumes while the skater is in a grind state (4xx).
     let grinding = (400..500).contains(&skater.player_input.processed.state_2508);
     let grinded = skater.player_input.grind.rail_owner.filter(|_| grinding).and_then(crate::grind_world::props::prop_of_owner);
-    if let Some(d) = physics.prop_dynamics.as_mut() {
-        d.set_grinded(grinded);
+    // Only the prop-owning step writes it: an NPC's write was dead (the player sets it again before its own
+    // `step_props`, and an NPC's `step_props` returns at once), and NPC workers only read the shared props.
+    if physics.owns_props {
+        if let Some(d) = physics.prop_dynamics.as_mut() {
+            std::sync::Arc::get_mut(d).expect("prop dynamics are not shared during the player's step").set_grinded(grinded);
+        }
     }
     physics.step_props(&push_volumes);
     contacts.extend_from_slice(physics.world.query_primitives(
@@ -139,7 +144,7 @@ fn advance_inner(
     // against it without disturbing the two native query records above.
     let query = physics.query;
     let retention = physics.retention;
-    if let Some(props) = physics.prop_world_mut() {
+    if let Some(props) = physics.prop_query() {
         contacts.extend_from_slice(props.query_primitives(&board_volumes, query, retention));
         contacts.extend_from_slice(props.query_primitives(
             &skeleton_world_volumes,
@@ -147,6 +152,9 @@ fn advance_inner(
             retention,
         ));
     }
+    use crate::frame_timing::hitch::{add_phase, PHASE_SOLVE_CONTACTS, PHASE_SOLVE_QUERIES, PHASE_SOLVE_REST, PHASE_SOLVE_SOLVER};
+    add_phase(PHASE_SOLVE_QUERIES, timer);
+    let timer = std::time::Instant::now();
     assembly_contacts::append(
         &mut contacts,
         &board_volumes,
@@ -172,6 +180,8 @@ fn advance_inner(
         &physics.network_proxies.solids, physics, skater);
     physics.network_contacts = contacts.len() - before_remote;
     physics.contact_count = contacts.len();
+    add_phase(PHASE_SOLVE_CONTACTS, timer);
+    let timer = std::time::Instant::now();
     let dt = physics.settings.step.simulation.time_step;
     let mut joints = crate::modding::player_physics::joints(skater)
         .build(skater.skeleton.bodies(), ATTACHED_REACTION_BASE, dt);
@@ -212,6 +222,8 @@ fn advance_inner(
             drives: &mut drives.rows,
         },
     );
+    add_phase(PHASE_SOLVE_SOLVER, timer);
+    let timer = std::time::Instant::now();
     skater.mod_contact_frame = crate::modding::player_physics::after_solve(physics,skater,&mod_before);
     skater.mod_contact_frame.joint_loads=crate::modding::player_physics::joint_loads(skater,&joints,dt);
     physics.network_proxies.capture_dynamics_reactions(physics.board.solved_reactions(), dt);
@@ -229,6 +241,7 @@ fn advance_inner(
     // same solve above, but must not enter the skeleton-only feedback batch.
     drives.rows.truncate(skeleton_drive_count);
     skater.solved_drives = Some(drives);
+    add_phase(PHASE_SOLVE_REST, timer);
     Ok(())
 }
 

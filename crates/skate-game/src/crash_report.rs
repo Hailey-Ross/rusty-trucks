@@ -394,6 +394,11 @@ fn save(text: &str) -> std::io::Result<PathBuf> {
     }
     Err(error.unwrap())
 }
+/// Show a short message in the diagnostic report window (it is saved like a report).
+pub(crate) fn present_message(text: &str) {
+    present(text);
+}
+
 fn present(text: &str) {
     match save(text) {
         Ok(path) => {

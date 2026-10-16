@@ -25,6 +25,9 @@ pub(super) struct Runtime {
     /// Completed placements (teleports of any kind) of this skater, retail place-skater counter
     /// owner +1864 (sub_825926F8). Read by `skater_ghost` to restart the fade-in.
     pub(crate) placements: u32,
+    /// An AI skater's respawn destination (its path's chosen node, retail `sub_8246ED68`), used instead of the
+    /// checkpoint history by the next wipeout-end teleport. Set by the NPC skater simulation when a bail starts.
+    pub(crate) destination: Option<Checkpoint>,
 }
 
 /// Stable id of the local player in [`PlayerRespawn`] (single-player scene).
@@ -149,6 +152,7 @@ impl Runtime {
             pending: None,
             outbox: Vec::new(),
             placements: 0,
+            destination: None,
             settings: Settings {
                 height: value("Hash_C0526C883AF0ECCA")?,
                 radius: value("Hash_CEB092E418A5B001")?,
@@ -224,6 +228,11 @@ impl Runtime {
 
 ///Actor82592518 saves stance then queues the ordinary deferred reply825926F8.
 pub(super) fn request(physics: &GamePhysics, skater: &mut SkaterRuntime) -> Result<(), String> {
+    // An AI skater respawns at its path node, through the same actor reply (one reset).
+    if let Some(destination) = skater.respawn.destination.take() {
+        skater.teleport_state.reply(destination);
+        return Ok(());
+    }
     let stance = skater.animation.checkpoint_stance();
     let runtime = &mut skater.respawn;
     let candidate = runtime.history.automatic(
@@ -413,6 +422,7 @@ mod tests {
             pending: None,
             outbox: Vec::new(),
             placements: 0,
+            destination: None,
         }
     }
     /// Runs the core 82DB8120 port the way player_state/publication.rs does and completes the

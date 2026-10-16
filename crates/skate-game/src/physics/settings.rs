@@ -28,6 +28,7 @@ use skate_data::collections::Collections;
 /// and the ollie pop's deck ~1 cm low by its 4th frame (retail-matching with 50).
 pub(crate) const SIMULATION_ITERATIONS: u32 = 50;
 
+#[derive(Clone)]
 pub(crate) struct PhysicsSettings {
     pub step: BoardStepSettings,
     pub masses: [RetailBodyMassProperties; 7],

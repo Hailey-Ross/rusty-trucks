@@ -588,3 +588,87 @@ world systems: not the NPCs; open.
   field not mapped yet). `pc+808`'s scale `[0x8303EE08]` (taken as 1/dt = 60). `+1904` bit `0x04000000` is a scripted
   AI flag (UnpinAI / ClearBehavior), never set for ambient skaters; `G+608` and motion state 104 not read.
 - The 4.5 m lost test after a line-end re-pick; the node-change handler `sub_8246BEE0`.
+
+## NPC Skater Physics: bails right after a placement (2026-10-15)
+
+**Problem.** Simulated NPC skaters wiped out about 0.45 s after every placement (switch to physics and every respawn), so
+the user rarely saw one ride past (user: "the skaters seemed to crash as soon as I saw them").
+
+**Evidence.**
+- New log `WIPEOUT_REASONS` (`physics/player_state/selection.rs`): placement bails come from PhysicsGround with ground
+  request 3 (deck angle error) and 18 (squash). They fire when the 0.4 s teleport wipeout cooldown runs out, so the bad
+  state is there from the first tick. A review of 225 bails in 13 user sessions found the same in older builds at
+  0.2 to 0.3 s, matching their cooldown (`.local/research/npc-sim-bail-log-review.md`).
+- New debug log `NPC_SKATER_STEER` (deck, line and velocity yaw per tick after a placement): on ticks 3 to 5 the deck
+  tumbles (up y 0.82 to -0.26), then the skater is left 50 to 60 deg off its line at 3 m/s and takes off crooked
+  (`NPC_SKATER_TAKEOFF char.deck 0.72`, `deck.travel -0.41`). Placement frames themselves are upright
+  (`NPC_SKATER_PLACE_FRAME` up y 0.99), and the steer sign is right (flipped, it diverged faster).
+- Every placement ran two resets: `SkaterRuntime::travel` queues the host teleport with the spawn push and the actor
+  reply, which resets again one tick later and snaps the rolling board back (two `player teleport spawn` lines per
+  placement). Retail places once (`825926F8`) and runs its hold branch (`824701F8`: no steer while the placed skater
+  settles) (`.local/research/npc-sim-placement-bails.md`, code reading, not traced).
+
+**Change.**
+- `place` uses one reset, the host teleport with the spawn push (`SkaterRuntime::teleport_with_velocity`).
+- A hold after each placement: no ground steer and no trick dispatch for `npc_simulated.placement_hold_seconds`
+  (default 0.5 s; mod key, 0..=10).
+- Crash fix (same day): `NpcSim::respawn_node` keeps its line; a walk-back hand back could chain the cursor to the next
+  line during the respawn wait, and the old line's node index ran past the new line (`npc_avoid.rs:204`, index 103 of 70).
+
+**Verification.** Muted 90 to 150 s runs at the PCU Library (`.local/poc-tests/npcsim.sh`, `MAP=University
+TELEPORT=dist_university_library`, radius 150 m):
+
+| placement | bails | within 1 s of a placement |
+|---|---|---|
+| two resets (before) | 16 in 90 s (21 placements) | 4 |
+| actor reply only | 9 in 90 s (15) | 4 |
+| host teleport only | 6 in 90 s (10) | 1 |
+| host teleport + 0.5 s hold (shipped) | 8 in 150 s (17) | 0 |
+| actor reply + 0.5 s hold | 12 in 150 s (17) | 4 |
+
+**Second pass (same day): one respawn path, and a hold with no record target.**
+- Every respawn wiped out again within 0.2 s (8 of 8 in a muted run). Two respawn systems ran per NPC: our 5 s timer
+  placed it with a teleport while its wipeout was still running, and the skater's own wipeout-end respawn (the player's
+  checkpoint respawn, `physics/respawn.rs` `request`) later threw it to an old checkpoint (41 m off its line, then a
+  walk-back). Now the bail sets the chosen node as the skater's respawn destination
+  (`SkaterRuntime::set_respawn_destination`); the wipeout-end teleport places it there through the actor reply (one reset,
+  like the player); `npc_sim` only follows with the line state. A timer 10 s past the respawn delay stays as a logged
+  fallback.
+- During the hold the record carries no target (retail's hold branch: no steering), so the record no longer pulls the
+  body while it settles (pose displacement, request 1, fired at 0.45 s before).
+- Muted PCU runs, 180 s each (real wipeouts counted from `WIPEOUT_REASONS`, which include ones the old bail log hid):
+
+| | wipeouts | checkpoint teleports | walk-backs | placements |
+|---|---|---|---|---|
+| host teleport + hold (first pass) | 29 | 14 | 12 | 20 |
+| one respawn path | 15 | 2 | 2 | 16 |
+| + no record target during the hold | 4 | 1 | 1 | 8 |
+
+**Retail riding mode (recomp trace, 2026-10-15).** Hook `AIPC922` (category `aiskater`, `824660A0`, research-hooks
+branch, uncommitted): the path controller's `pc+922` (the hips ground test, which keeps the record's physics-riding bit
+25) is 0 only on a controller's first sample and at its end, 1 for its whole ride (24 controllers, 360 samples,
+`.local/research/aipc922/`). Retail's ambient AI skaters ride with full physics, like ours; FollowPath (105) is not their
+riding mode. `824660A0` writes `pc+922` every call (not a one-way latch).
+
+**Third pass (same day, after the user's play-tests).**
+- Vanishing: the user saw skaters "vanish instantly, board and all, never come back" at the switch to physics. The
+  render pose of a simulated skater is relative to its animation root (joints within ~2 m of 0, new log
+  `NPC_SKATER_DRAWN`), but the draw set the puppet root to the world origin, so every simulated skater was drawn at the
+  map origin. The puppet root now sits at the animation root (`npc_skaters.rs`, `NpcSim::animation_root`).
+- Placement: one actor reply (retail `825926F8`, `SkaterRuntime::place_by_reply`) for the switch from replay too; the
+  host teleport alone moved the board but not the animation root.
+- Placement guard: the reply lands a tick or two later; the guard lifted after one tick, so the first projection used
+  the pooled body (71 m off the line) and the skater was "lost" and walked off within 0.1 s (user: "they often bail and
+  then run off to a new line"). It now lifts when the placement count changes (logged 30-tick limit).
+- Ghost proxy: `push_proxies` built collision solids from every NPC's replay sample, simulated ones included, so a
+  simulated skater rode with an invisible solid copy of itself on its line (contact bails, flings) and the player hit that
+  copy. Simulated NPCs get no replay proxy now. Open: a proxy from the simulated body for the player to hit (it must not
+  collide with its own skater).
+
+**Open.**
+- NOT RETAIL YET: retail places with the actor reply only and pushes from the hold branch; our reply-only variant
+  bailed more. Needs a recomp trace of the branch `824701F8` takes after `8246E558` (pc+888 / pc+924 on the first ticks).
+- Remaining bails are mostly in the air (KnownAir / PhysicsAir request 1, pose displacement) and spread over lines and
+  nodes; walk-backs stood still for ~10 s before the stuck monitor wiped them out (new log `NPC_WALK_PROGRESS`).
+- Logs added: `WIPEOUT_REASONS`, `GRIND_WIPEOUT`, `PED_DESPAWN at= focus= distance=`, `NPC_AVOID` (bad cursor),
+  `NPC_SKATER_PLACE_FRAME`, `NPC_SKATER_STEER` (debug), `NPC_WALK_PROGRESS`.

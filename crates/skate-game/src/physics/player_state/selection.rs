@@ -61,6 +61,19 @@ pub(super) fn advance(
         skater.player_input.player.ground_history_frames_1304 = 100;
         super::transition::set(physics, skater, requested)?;
     }
+    // WIPEOUT_REASONS: which Wipeout requests (indices into the request array) and values sent the
+    // skater into WipeoutGround, plus the 2480 bit 3 override. The tracing span names the system
+    // (player `physics::advance`, NPC `npc_sim::simulate`) for NPC skaters bailing on placement.
+    if requested != current && requested == skate_core::player::state::PhysicalStateId::WipeoutGround {
+        let w = &skater.wipeout.state;
+        let reasons: Vec<(usize, f32)> = (0..w.reasons.len()).filter(|&i| w.reasons[i]).map(|i| (i, w.values[i])).collect();
+        bevy::log::info!(
+            "WIPEOUT_REASONS from={current:?} reasons={reasons:?} count={} flags_2480_bit3={} tick={}",
+            w.count,
+            p.flags_2480 & (1 << 3) != 0,
+            physics.ticks
+        );
+    }
     //SystemLogic82DB6000 clears the per-frame Wipeout request accumulator.
     skater.wipeout.state.clear_after_selection();
     Ok(())

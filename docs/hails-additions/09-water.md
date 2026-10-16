@@ -886,6 +886,124 @@ Open:
   decal programs (tileable, simple_tileable, environmentparkdecal) are not read yet.
 - Per-texture decal strength for mods (only a global strength now).
 
+### Water camera restored after the upstream integration (2026-10-13)
+
+User (2026-10-13): "falling in water still causes the camera to go under the water surface for some reason and get
+stuck all zoomed in on the player. which is not right" / "look back to our old branch on what has changed since the
+camera worked perfectly at that time."
+
+- **What changed:** the camera worked on `water/retail-water` (upstream PR #30, head `5245a185`, merged 2026-10-06 as
+  `c283cc57`). The next upstream integration `b3c96793` (2026-10-07, "Integrate retail audio fixes and current physics,
+  rendering and build updates") replaced our water physics with the recovered special-surface writer and in the same
+  commit deleted `camera/water.rs` (`WaterView`), its call in `CameraRuntime::advance`, the water argument from
+  `physics/camera_output.rs` and the vignette in `retail_exposure.rs` / `.wgsl` and `retail_tone.wgsl`. Without it the
+  recovered CameraMan result is presented as is, and with the skater under the surface its collision pull-in leaves the
+  camera under water, close to the skater.
+- **Change:** `WaterView` restored as it was on PR #30 (shot 3 m above the surface, 60 degrees down drifting toward
+  overhead, vignette, any camera under a water surface lifted 0.3 m above it), wired back into `CameraRuntime::advance`
+  and the tone pass. Its input now comes from the recovered water special surface instead of the deleted wipeout
+  fields: in a water bail = the wiping-out bit (Processed `+2468` bit 18, what the camera publication already reads as
+  `wiping_out_59`) and the water flag `82DB8120` writes to Collision `+3481` (published as Processed `+2488` bit 30),
+  with its height Collision `+28` (Processed `+2924`).
+- **Logging:** `WATER_CAMERA` lines on shot in / out (surface, skater and camera heights) and about once a second in
+  the shot (weight, height above the surface).
+- **Retail parity:** the shot itself was matched to retail footage (PS3 in RPCS3, see "Water bail" above); its
+  distances and timings are matched by eye, not recovered code (open: the retail camera's water shot code). The
+  trigger is now the recovered water flag.
+- **Verification:** skate-game `camera::water::tests` (a water bail keeps the camera above the surface, settles 3 m up
+  looking down, vignette at full weight, blends out; a dry camera is untouched). Muted run with the dev mod
+  `.local/poc-tests/mods/water-autotest` (drops the skater into the Aletown canal): `WATER_CAMERA water bail: shot in
+  surface=Some(8.934)`, then camera_y 11.68 = 3.00 m above the surface until the respawn; capture shows the overhead
+  shot with the vignette.
+
+### What else b3c96793 removed, and what is left to recover (2026-10-13)
+
+User (2026-10-13): "lets also recover the lost improvements noted here". Research b112 / b113 compared the deleted
+`physics/water.rs` and `water_bodies.rs` with the current code (main checked the key lines):
+- **Water detection, the water flag and the water bail:** replaced by the recovered retail contact path
+  (`special_surface.rs`, contacts in `board_ground.rs` / `collision_update.rs`). Nothing to restore.
+- **"Shallow water solid, deep water not":** replaced by the retail group/surface exclusion table (`82767D60` sets only
+  (7,12) and (16,12); `board_world.rs` skips water triangles for groups 7 and 16 only). A water bail asks for ragdoll
+  request 10 instead of 8 (`82D3B5E8`, `li r4,10` on Player `+2488` bit 30 [code]), which puts the body in group 7: it
+  passes the water surface and only the part buoyancy `82BE3998` holds it up. Our port already does this
+  (wipeout `lifecycle.rs`, `collision_mode.rs`). Nothing to restore.
+- **Deep-only buoyancy guard:** retail `82BE3A70` has no depth gate [code]; not restored.
+- **Board floats:** in the 360 TU3 code nothing lifts a released board: `82C09160` puts it in group 7 on every let-go
+  and wipeout, group 7 makes no water contacts, and no other lift or drag source was found [code]. So it sinks to the
+  bed, as it does now. This disagrees with the PS3 footage above (board floating). **Recomp trace (2026-10-14,
+  research b124, muted scripted run, teleport 21 m above the Aletown canal, bail mid-fall):** the player's board
+  comes to rest with its contact point at y 7.815, the canal bed (surface 8.93), vertical speed settling to 0 within
+  about 2 s; the overhead water shot shows the skater in the canal and no board on the surface. So the 360 code
+  sinks the board; ours matches. Restoring the old float would be our own choice and needs the user's ok.
+- **Water look** (body-size calming, ripple scale, third wave, tint): upstream replaced our shader with a port of the
+  retail `water_defaultPS`. Ours were project choices. Restored 2026-10-15 as an opt-in look layer, see
+  [Water look layer](#water-look-layer-better-water-2026-10-15).
+- **Moddability:** the exclusion pairs are a hard-coded `matches!` today; they should become the retail 21 x 14 table
+  as data with the two retail pairs as defaults.
+
+### Water look layer ("Better Water", 2026-10-15)
+
+**Problem.** User (2026-10-15, DownTown Aletown canal, hails-local d9e8df02): "the water effect jumps around alot
+too" and "the water effects look terrible, lets look to reimplement our water effects that upstream didn't take."
+
+**Root cause of the jump.** The retail scroll clock (`retail_render::WaterAnimation`, TU3 0x82790858) adds 1/60 per
+30 Hz update and restarts after 5, so every scroll layer (`retail_world.wgsl`, `p.water[1] * t`) snaps back by
+speed x 5 every 10 s. This is the retail routine; our old `water_time` (seamless 1000-unit loop at the same rate)
+had hidden it and was removed by b3c96793.
+
+**Is ours retail?** No. Every piece below was a project choice matched by eye to RPCS3 footage (sections above);
+upstream's current shader is the retail port. User (2026-10-15): "If not make it a toggle in the extras menu for the
+guide overlay, with the default setting making it retail-like" and "Call it 'Better Water' for the toggle".
+
+**Change.** `water_look.rs` (new): `WaterLook` values, `WaterLookSettings` (player file `settings/water-look.json`,
+one mod patch on top). Off (default) = every piece at its retail value, so the shader output is the retail program.
+On ("Better Water", pause menu EXTRAS) restores, from PR #30's head 5245a185:
+
+| Piece | Better Water | Retail |
+|---|---|---|
+| `ripple_scale` | 4 | 1 |
+| `reflection_blur` (extra cube mips) | 3 | 0 |
+| `reflection_tint` | 0.82, 1.0, 1.04 | 1, 1, 1 |
+| `third_wave` (rotated 0.613x sample + swells) | on | off |
+| `body_calming` (`water_bodies.rs` areas in `decal.y`) | on | off |
+| `wave_rate` (PCA, blended between frames, `pca_slow`) | 0.75 | 1 |
+| `scroll_rate` (texture scroll speed) | 0.5 | 1 |
+| `seamless_clock` (`water_time`) | on | on (see below) |
+
+**Seamless clock is on for both looks.** User (2026-10-15): "I can say as apart of our water testing I NEVER saw it
+reset like ours does in the rust engine reimplmentation of it". So the ported 0x82790858 restart is not what the
+console shows; the seamless clock is the default with Better Water off too, and `seamless_clock = false` (mods only)
+gives the restart. Open: how retail hides the restart (consumer of the published value, shader-side wrap, or a second
+clock); research `.local/research/retail-water-scroll-clock.md`.
+**Found (2026-10-15):** the water shaders never see the 0x82790858 loop. They read the global `g_fAnimationTime`
+(`water_defaultPS`: `uv = raw * (c20 * c21.x) + c19 * c22.x`, c22 = `g_fAnimationTime` [data, shaders_final.big];
+FNV-1 hash 0xE5A76988 registered by sub_826DD6B8 [code, agent-decoded]). sub_82791628, the only caller of
+0x82790858, adds dt to its `.x` every update and nothing resets it [code, main-verified in skate3_recomp.34.cpp:
+`lvx128 v63` from block +0x40000+17024+336, `vaddfp128` with the splatted dt, `stvx128` back]. So retail scrolls
+seamlessly and the seamless clock is the retail behaviour; our 1000-unit loop only keeps f32 precision (invisible,
+every authored speed completes whole repeats). The 0x82790858 value (this+316) has no known reader.
+**Rate measured (2026-10-15):** recomp watch list (no hook build) on `*(0x83083C60)+0x443D0` and the loop counter
+`0x830CEC9C`, 52 s idle at the spawn, muted background run: `g_fAnimationTime.x` rises at **1.0025 per second** with
+no drop in 6,466 samples; the 0x82790858 loop restarts every ~0.55 s in the recomp (it steps per update) and no
+shader reads it. 0 malformed lines. Data: `.local/research/water-clock/` (`watch.txt`, `idle.tsv`, `rate.py`;
+script `.local/recomp/scripts/water_clock_idle.txt`). So the retail scroll runs at real time; `water_time` now uses
+1.0 x `scroll_rate` (retail 1; Better Water keeps the earlier approved half speed, 0.5). The "half real-time, loops
+every 10 s" in [Water time](#water-time) came from the wrong clock.
+
+Frame state grows by `pca_slow` (7 x vec4), `water_look` and `water_tint` (288 bytes). The native `WaterAnimation`
+always runs (it drives the PCA frame); the seamless clock only replaces the published scroll time. At the retail rate
+`pca_slow` is `pca`.
+
+**Moddability.** `sdk.graphics.water_look(patch | nil)` (capability `water_look` 1): any key above plus `enabled`;
+one mod at a time, released on disable / failure / reload; `sdk.snapshot.water_look` reports the active values and
+owner. Documented in `sdk/ENGINE_API.md`, `sdk/skate.lua`. Multiplayer: per-client look; the animation stays a
+function of time.
+
+**Files.** `water_look.rs` (new, tests), `water_bodies.rs` (restored from 5245a185), `retail_render.rs` (frame state,
+body areas, `slow_pca`, `water_time`, tests), `retail_world.wgsl`, `retail_material_bindings.wgsl`,
+`graphics_menu.rs` (EXTRAS row), `modding/mod.rs`, `main.rs`; `skate-mods` `presentation.rs` (`WaterLookPatch`),
+`vm.rs` (command, capability, Lua test), `api.lua`.
+
 ## Verification
 
 - Unit test `physics::player_input::tests::water_contact_prefers_the_skater_body_height`.

@@ -201,7 +201,10 @@ pub(crate) fn avoid(
             a.controller.sub_mode = skate_core::living_world::ai_controller::sub_mode::NORMAL;
             a.controller_line = Some(replay.cursor.line);
         }
-        let node = &line.nodes[replay.cursor.node as usize];
+        let Some(node) = line.nodes.get(replay.cursor.node as usize) else {
+            warn!("NPC_AVOID #{} cursor node {} is past its line's {} nodes; skipped this tick", npc.id.serial, replay.cursor.node, line.nodes.len());
+            continue;
+        };
         let riding = !replay.cursor.finished && node.flags & (node_flags::AIRBORNE | node_flags::OFF_BOARD) == 0 && replay.cursor.current_trick() < 0;
         let me_id = npc.id.to_u64();
         let near: Vec<Obstacle> = obstacles.iter().filter(|o| o.id != me_id).copied().collect();

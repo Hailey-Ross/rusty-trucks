@@ -121,7 +121,11 @@ pub(super) fn advance(
     //them. Host execution is synchronous; no current-state submission exists
     //yet, preserving next-tick visibility and later PreState82DB60EC consumption.
     {
-        physics.refresh_grab_props()?;
+        // The prop-owning (player) step refreshes the grab scene's props here; simulated NPCs see the scene refreshed
+        // once before their phase (`npc_sim::simulate`): NPC steps do not move props, so every NPC built the same one.
+        if physics.owns_props {
+            physics.refresh_grab_props()?;
+        }
         let scene =
             super::offboard::grab_scene::Scene::new(&physics.world, &physics.offboard_grab_scene);
         skater.offboard_grab.execute_queries(&scene)?;
@@ -265,7 +269,11 @@ pub(super) fn advance(
         actions.value(68),
         actions.value(74) - actions.value(75),
     );
+    let solve_started = std::time::Instant::now();
     crate::frame_timing::hitch::phase(crate::frame_timing::hitch::PHASE_SOLVE, || bevy::log::info_span!("fixed_collision_and_solve").in_scope(|| solve::advance(physics, skater, skater.ground.steering.targets, carry_tick)))?;
+    if skater.ai_physics.is_some() {
+        crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_SOLVE_NPC, solve_started);
+    }
     super::offboard_audit_trace::stage(tick, "solve", physics, skater, controls);
     #[cfg(debug_assertions)]
     super::dev_trace::checkpoint("solve", physics, skater);

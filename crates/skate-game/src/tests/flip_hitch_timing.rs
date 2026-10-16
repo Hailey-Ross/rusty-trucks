@@ -24,7 +24,7 @@ fn flip_hitch_timing() {
     let mut input = crate::input::ControllerInput::default();
     let mut camera = crate::camera::CameraRuntime::load(root).unwrap();
     let dt = physics.settings.step.simulation.time_step;
-    let mut step = |physics: &mut GamePhysics, skater: &mut SkaterRuntime, right: [i16; 2]| -> (f64, [u64; 6]) {
+    let mut step = |physics: &mut GamePhysics, skater: &mut SkaterRuntime, right: [i16; 2]| -> (f64, [u64; 11]) {
         input.sample_raw_for_test(skate_core::input::xbox::XboxState { buttons: 0, triggers: [0; 2], left: [0; 2], right });
         let mut actions = input.player_actions();
         controls.update(&mut actions, dt, physics.settings.input_magnitude_threshold, skater.player_input.physical.scoring.capabilities_204);
@@ -65,7 +65,7 @@ fn flip_hitch_timing() {
     ];
     for (name, flick, boost) in runs {
         set_velocity(&mut physics, &mut skater, Vector3::new(0., 0., 5.), false);
-        let mut ticks: Vec<(f64, u32, u32, String, [u64; 6])> = Vec::new();
+        let mut ticks: Vec<(f64, u32, u32, String, [u64; 11])> = Vec::new();
         let (mut boosted, mut was_air, mut air_ticks) = (false, false, 0);
         for tick in 0..400u32 {
             let right = match tick {
@@ -98,7 +98,7 @@ fn flip_hitch_timing() {
         let median = sorted[sorted.len() / 2];
         let trick = ticks.iter().rev().map(|t| t.3.as_str()).find(|s| !s.is_empty()).unwrap_or("");
         eprintln!("{name}: {} ticks, air {air_ticks} ticks, trick {trick:?}, median {median:.2} ms", ticks.len());
-        let mut worst: Vec<&(f64, u32, u32, String, [u64; 6])> = ticks.iter().collect();
+        let mut worst: Vec<&(f64, u32, u32, String, [u64; 11])> = ticks.iter().collect();
         worst.sort_by(|a, b| b.0.total_cmp(&a.0));
         for (ms, tick, state, _, p) in worst.iter().take(3) {
             eprintln!("   tick {tick:3} state {state} {ms:7.2} ms  anim_graphs {:.2} solve {:.2} finish {:.2} scoring {:.2}",

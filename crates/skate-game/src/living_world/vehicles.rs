@@ -82,6 +82,51 @@ pub(crate) struct VehicleModel {
     /// The grind rails, model space (`grind_splines`: the EB0004 rails of the grab splines' part arena, car setup
     /// 82C3CCD8; none on `reda_car`). Empty = the car cannot be grinded.
     pub grind_rails: std::sync::Arc<[crate::grind_world::props::PropRail]>,
+    /// The car body's retail physics collision (`vehicles.json` `collision`, setup
+    /// `living_world_vehicles.recipe_collision`: the `Accessory` arena's ClusteredMesh, model space). The skater and
+    /// board meet this instead of a box from the model bounds, which sat above the roof / hood / bumper rails.
+    pub collision: Option<CarCollision>,
+}
+
+/// A car body's collision mesh, built once into a shared parry shape.
+#[derive(Clone)]
+pub(crate) struct CarCollision {
+    pub triangles: std::sync::Arc<[[[f32; 3]; 3]]>,
+    pub shape: skate_dynamics::rapier3d::prelude::SharedShape,
+}
+
+impl PartialEq for CarCollision {
+    fn eq(&self, other: &Self) -> bool {
+        self.triangles == other.triangles
+    }
+}
+
+impl std::fmt::Debug for CarCollision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CarCollision({} triangles)", self.triangles.len())
+    }
+}
+
+impl CarCollision {
+    /// From the exported `collision.triangles` (model space); `None` when absent or not a valid mesh.
+    pub(crate) fn parse(value: &serde_json::Value) -> Option<Self> {
+        use skate_dynamics::rapier3d::prelude::{SharedShape, Vector};
+        let point = |p: &serde_json::Value| -> Option<[f32; 3]> {
+            let a = p.as_array()?;
+            Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32, a.get(2)?.as_f64()? as f32])
+        };
+        let triangles: Vec<[[f32; 3]; 3]> = value["triangles"].as_array()?.iter().filter_map(|t| {
+            let t = t.as_array()?;
+            Some([point(t.first()?)?, point(t.get(1)?)?, point(t.get(2)?)?])
+        }).collect();
+        if triangles.is_empty() {
+            return None;
+        }
+        let vertices: Vec<Vector> = triangles.iter().flatten().map(|p| Vector::new(p[0], p[1], p[2])).collect();
+        let indices: Vec<[u32; 3]> = (0..triangles.len() as u32).map(|i| [i * 3, i * 3 + 1, i * 3 + 2]).collect();
+        let shape = SharedShape::trimesh(vertices, indices).ok()?;
+        Some(Self { triangles: triangles.into(), shape })
+    }
 }
 
 /// The exported `grab_splines` list (cars and props): a spline that is not whole Bezier segments is dropped.
@@ -170,6 +215,7 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                         Default::default()
                     })
                 },
+                collision: CarCollision::parse(&m["collision"]),
             },
         );
     }
@@ -698,6 +744,11 @@ pub(crate) fn drive_traffic(
 
 /// The kinematic box of one car, world space.
 pub(crate) fn proxy(car: &TrafficCar, pose: &Transform, velocity: Vec3) -> skate_dynamics::SolidBody {
+    proxy_with(car, pose, velocity, None)
+}
+
+/// [`proxy`] with the car's retail body mesh when it has one (else the box from the model bounds).
+pub(crate) fn proxy_with(car: &TrafficCar, pose: &Transform, velocity: Vec3, collision: Option<&CarCollision>) -> skate_dynamics::SolidBody {
     use skate_dynamics::rapier3d::prelude::{Pose, Rotation, SharedShape, Vector};
     let [lo, hi] = car.bounds;
     let half = [(hi[0] - lo[0]) * 0.5, (hi[1] - lo[1]) * 0.5, (hi[2] - lo[2]) * 0.5];
@@ -717,10 +768,13 @@ pub(crate) fn proxy(car: &TrafficCar, pose: &Transform, velocity: Vec3) -> skate
         // Retail's vehicle contact group (8; the skeleton contact pass keeps the largest
         // relative normal speed against it for the car-hit bail, `sub_82BD4A30` / `sub_82D90C98`).
         contact_group: crate::physics::VEHICLE_GROUP,
-        colliders: vec![skate_dynamics::SolidCollider {
-            shape: SharedShape::cuboid(half[0].max(0.1), half[1].max(0.1), half[2].max(0.1)),
-            pose: Pose::from_parts(p(centre), rotation),
-            friction: 0.5,
+        colliders: vec![match collision {
+            Some(mesh) => skate_dynamics::SolidCollider { shape: mesh.shape.clone(), pose: Pose::from_parts(p(pose.translation), rotation), friction: 0.5 },
+            None => skate_dynamics::SolidCollider {
+                shape: SharedShape::cuboid(half[0].max(0.1), half[1].max(0.1), half[2].max(0.1)),
+                pose: Pose::from_parts(p(centre), rotation),
+                friction: 0.5,
+            },
         }],
     }
 }
@@ -835,6 +889,7 @@ fn look_ahead(
 /// Add the car proxies to the skater solve (after the network proxies were rebuilt).
 pub(crate) fn push_vehicle_proxies(
     cars: Query<(&TrafficCar, &CarMotion)>,
+    traffic: Option<Res<TrafficState>>,
     mut physics: ResMut<crate::physics::GamePhysics>,
     skater: Res<crate::physics::SkaterRuntime>,
     replay: Res<crate::replay::Replay>,
@@ -846,7 +901,8 @@ pub(crate) fn push_vehicle_proxies(
     let mut list: Vec<_> = cars.iter().collect();
     list.sort_by_key(|(c, _)| c.id);
     for (car, motion) in list {
-        proxies.append_solid(proxy(car, &motion.curr, motion.velocity), &physics, &skater, false);
+        let collision = traffic.as_deref().and_then(|t| t.data.models.get(&car.model)).and_then(|m| m.collision.as_ref());
+        proxies.append_solid(proxy_with(car, &motion.curr, motion.velocity, collision), &physics, &skater, false);
     }
     physics.network_proxies = proxies;
 }

@@ -180,7 +180,7 @@ impl Menu {
             1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([CAMERA_ANGLE_ROW,8,10]).collect(),
             1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
             2 => [0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW].into_iter().chain(OPT_IN_ROWS).collect(),
-            4 => vec![7, 11, 14, 19],
+            4 => vec![7, 11, 14, 19, BETTER_WATER_ROW],
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
         }
@@ -320,7 +320,7 @@ fn setup(
                 body.spawn((Text::new(""),MenuSubtitle,TextFont {font_size:16.,..default()},TextColor(Color::srgb(0.65,0.72,0.72))));
                 body.spawn((Node {height:px(3),width:px(64),margin:UiRect::bottom(px(10)),..default()},BackgroundColor(Color::srgb(0.78,0.96,0.3))));
                 body.spawn((MenuScroll,ScrollPosition::default(),Node {flex_grow:1.,min_height:px(0),overflow:Overflow::scroll_y(),flex_direction:FlexDirection::Column,row_gap:px(8),..default()})).with_children(|list| {
-                    for i in (0..4).chain(300..337).chain(4..10).chain(11..20).chain(20..27).chain([10,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW]).chain(OPT_IN_ROWS).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
+                    for i in (0..4).chain(300..337).chain(4..10).chain(11..20).chain(20..27).chain([10,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW,BETTER_WATER_ROW]).chain(OPT_IN_ROWS).chain(200..264).chain([50,51]).chain(1000..1000+maps.len()).chain(1_000_000..1_000_000+destinations.len()) {
                         list.spawn((Button,MenuRow(i),Node {flex_direction:if (300..335).contains(&i) {FlexDirection::Column} else {FlexDirection::Row},width:percent(100),min_height:px(56),flex_shrink:0.,padding:UiRect::axes(px(18),px(12)),align_items:AlignItems::Center,border_radius:BorderRadius::all(px(4)),..default()},BackgroundColor(Color::srgb(0.075,0.09,0.095))))
                             .with_children(|row| {
                                 row.spawn((MenuLabel(i),Text::new(""),TextFont {font_size:18.,..default()},TextColor(Color::WHITE)));
@@ -359,6 +359,8 @@ const FRAME_STATS_ROW: usize = 28;
 const AUDIO_ROWS: std::ops::Range<usize> = 16..19;
 /// GRAPHICS-section row of the NPC draw distance (QoL, not retail).
 const NPC_DRAW_DISTANCE_ROW: usize = 29;
+/// Water look layer (water_look.rs), in EXTRAS: off = the retail water.
+const BETTER_WATER_ROW: usize = 30;
 const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time. None turns off all NPC skaters, peds and cars.";
 /// GRAPHICS-section rows of the opt-in living world features, in `OptIn::ALL` order.
 const OPT_IN_ROWS: std::ops::Range<usize> = 40..44;
@@ -404,7 +406,7 @@ pub(crate) fn interact(
     mut exit: MessageWriter<AppExit>,
     mut net: ResMut<crate::multiplayer::Multiplayer>,
     mut typing: MessageReader<bevy::input::keyboard::KeyboardInput>,
-    (mut updater, mut audio, mut camera_angle, mut living): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>, ResMut<crate::camera::CameraAngleSettings>, ResMut<crate::living_world::LivingWorldSettings>),
+    (mut updater, mut audio, mut camera_angle, mut living, mut water_look): (ResMut<crate::updater::Updater>, ResMut<crate::game_audio::AudioSettings>, ResMut<crate::camera::CameraAngleSettings>, ResMut<crate::living_world::LivingWorldSettings>, Option<ResMut<crate::water_look::WaterLookSettings>>),
     travel: Res<crate::teleport_menu::Travel>,
     mut mods: ResMut<crate::modding::ModMenu>,
 ) {
@@ -473,7 +475,7 @@ pub(crate) fn interact(
         if keys.just_pressed(KeyCode::ArrowDown) || nav.pressed & 2 != 0 {
             menu.selected = visible[(index + 1) % rows];
         }
-        let adjustable = (menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected)) || (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && (menu.selected < 4 || menu.selected == NPC_DRAW_DISTANCE_ROW || OPT_IN_ROWS.contains(&menu.selected) || AUDIO_ROWS.contains(&menu.selected) || menu.selected == FRAME_STATS_ROW))
+        let adjustable = (menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected)) || (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && (menu.selected < 4 || menu.selected == NPC_DRAW_DISTANCE_ROW || OPT_IN_ROWS.contains(&menu.selected) || AUDIO_ROWS.contains(&menu.selected) || menu.selected == FRAME_STATS_ROW || menu.selected == BETTER_WATER_ROW))
             || (!menu.multiplayer && !menu.daylight && menu.section == 1 && menu.selected == CAMERA_ANGLE_ROW);
         if adjustable && (keys.just_pressed(KeyCode::ArrowLeft) || nav.pressed & 4 != 0) {
             action = Some((menu.selected, -1));
@@ -629,6 +631,17 @@ pub(crate) fn interact(
                         Err(e) => format!("Applied, but could not save: {e}"),
                     };
                 }
+                BETTER_WATER_ROW => if let Some(look) = water_look.as_mut() {
+                    look.selected.enabled = !look.selected.enabled;
+                    info!("WATER_LOOK better_water={} owner={:?}", look.selected.enabled, look.patched_by());
+                    menu.status = match look.save() {
+                        Ok(()) if look.patched_by().is_some() => format!(
+                            "Better Water saved. Mod {} is changing the water look right now.",
+                            look.patched_by().unwrap_or_default()),
+                        Ok(()) => "Better Water saved".into(),
+                        Err(e) => format!("Applied, but could not save: {e}"),
+                    };
+                },
                 6 => menu.open = false,
                 7 => {
                     exit.write(AppExit::Success);
@@ -779,7 +792,7 @@ fn labels(
     mut headings: Query<(&mut Text, Has<MenuTitle>), (Or<(With<MenuTitle>, With<MenuSubtitle>)>, Without<StatusLabel>)>,
     mut status: Single<&mut Text, With<StatusLabel>>,
     debug: (Res<crate::modding::Mods>, Res<crate::physics::GamePhysics>, Res<crate::multiplayer::appearance::Appearances>, Res<crate::input::ControllerInput>),
-    (audio, camera_angle, living): (Option<Res<crate::game_audio::AudioSettings>>, Res<crate::camera::CameraAngleSettings>, Option<Res<crate::living_world::LivingWorldSettings>>),
+    (audio, camera_angle, living, water_look): (Option<Res<crate::game_audio::AudioSettings>>, Res<crate::camera::CameraAngleSettings>, Option<Res<crate::living_world::LivingWorldSettings>>, Option<Res<crate::water_look::WaterLookSettings>>),
     mut buttons: Query<(&MenuRow, &Interaction, &mut BackgroundColor, &mut Node), Without<MenuRoot>>,
 ) {
     root.display = if menu.open && !travel.open && !customiser.open && !custom_models.open && !mods.open {
@@ -909,6 +922,7 @@ fn labels(
                 ),
                 3 => format!("Difficulty            {}", menu.difficulty.label()),
                 CAMERA_ANGLE_ROW => format!("Camera angle          {}", camera_angle.selected.label()),
+                BETTER_WATER_ROW => format!("Better Water          {}", if water_look.as_ref().is_some_and(|l| l.selected.enabled) { "On" } else { "Off" }),
                 300..=334 => menu.custom.label(label.0-300),
                 335 => if menu.custom_dirty {"Apply custom tuning *".into()} else {"Apply custom tuning".into()},
                 336 => "Reset custom tuning to Easy".into(),
@@ -1126,7 +1140,7 @@ mod tests {
             assert!(rows.contains(&menu.selected));
             assert!(rows.windows(2).all(|pair| pair[0] < pair[1]));
             // Audio, controller identity, and frame-time rows are spawned.
-            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
+            assert!(rows.iter().all(|id| *id < 20 || *id == FRAME_STATS_ROW || *id == NPC_DRAW_DISTANCE_ROW || *id == BETTER_WATER_ROW || OPT_IN_ROWS.contains(id) || *id >= 1000));
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
