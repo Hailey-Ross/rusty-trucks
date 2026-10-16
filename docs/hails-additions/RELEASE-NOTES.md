@@ -26,9 +26,7 @@ Every start checks your converted game files (a fraction of a second, in the bac
 - **More Audible World** (not retail, from the next start): more cars, peds and NPC skaters heard at once.
 - **Ped Speech:** peds, pros and the announcer talk. Their speech has to be decoded from your disc first (about 3.4 GB and a few minutes), so switching it on offers **Extras > Refresh Game Files**.
 
-For a single run you can still use the old variables instead (`set SKATE_ZOMBIE=1`, `SKATE_NPC_SIM=1` before starting).
-
-**Always on (no switch):** **skitching** (ride up behind a traffic car and hold grab) and **Prop Grab** (carry props by their real handles, hands on the edge). Please mention which opt-ins were on when you report a problem.
+For a single run you can still use the old variables instead (`set SKATE_ZOMBIE=1`, `SKATE_NPC_SIM=1` before starting). Please mention which opt-ins were on when you report a problem.
 
 ## Controls (the new parts)
 
@@ -119,7 +117,6 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 - **Traffic:** road graph, traffic signals, the vehicle census and cars driving on screen. New: cars brake and honk for skaters, peds and props in their way (peds run off the road from a honk), knock you down when they hit you, change lanes, pull over, park and pull out again, and a parked car's alarm goes off when you run into it (it stays parked while the alarm sounds).
 - **Pedestrians react to you:** hit the same ped twice and they stop and warn you, three times and they chase you (with friends joining in and security tazers); a caught skater gets taken down and taunted. Peds greet each other, gather and hold conversations.
 - **NPC skaters** steer, slow down or stop for peds, cars, props and you.
-- **Always on:** **skitching** on traffic cars (ride behind a car and hold grab) and **carrying props by their real handles** with the hands placed on the edge (no switch since 2026-10-15).
 - **Opt-in, still being tested** (off by default; switch them in the Guide / F1 / Esc menu under Graphics > **Opt-In Features**, in effect at once and saved; the old `set SKATE_NPC_SIM=1` style variables still turn one on for a run): **NPC skaters with full physics** near you (**NPC Skater Physics**), **More Audible World** (not retail: more cars, peds and NPC skaters heard at once, from the next start) and **Ped Speech** (peds, pros and the announcer talk; switching it on offers Extras > **Refresh Game Files**, which decodes about 3.4 GB of speech from your disc).
 - **Movable objects (#15 follow-up):** grab, carry, drag and drop props on foot (hold RB, left stick moves the object, right stick turns), placement mode with saved layouts, authored prop physics.
 - All from the disc data, seeded and multiplayer-ready, with a Lua mod API (`sdk.world.set_tuning`), an NPC draw distance option, and always-on logging of ped positions and floating peds.
