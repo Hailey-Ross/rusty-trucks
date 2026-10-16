@@ -231,6 +231,10 @@ impl Default for RailRules {
 /// A moving rail provider (props; later cars): appends records in its own order up to `cap`.
 pub(crate) trait RailSource {
     fn append_rails(&self, min: [f32; 3], max: [f32; 3], skip: Option<u32>, rules: &RailRules, out: &mut Vec<RailHit>);
+    /// The body's model name for logs ("DMO_DT_BenchFlat_1001"), when the source knows it.
+    fn describe(&self, _id: u32) -> Option<String> {
+        None
+    }
 }
 
 /// 82C1EAD8 (via 826C0630): static rails first, then the prop provider, then the car provider, one shared cap.
@@ -246,6 +250,18 @@ pub(crate) struct RailView<'a> {
 }
 
 impl<'a> RailView<'a> {
+    /// A rail owner for the log: `describe_owner` plus the prop's model name when the prop source knows it.
+    pub(crate) fn describe(&self, owner: u64) -> String {
+        let text = super::props::describe_owner(owner);
+        if owner & super::props::CAR_OWNER_TAG == 0 && owner & super::props::PROP_OWNER_TAG != 0 {
+            let id = ((owner >> 16) & 0xFFFF_FFFF) as u32;
+            if let Some(name) = self.props.and_then(|p| p.describe(id)) {
+                return format!("{text} ({name})");
+            }
+        }
+        text
+    }
+
     pub(crate) fn statics(rails: &'a StaticProvider) -> Self {
         Self { rails, props: None, cars: None, skip: None, rules: RailRules::default() }
     }

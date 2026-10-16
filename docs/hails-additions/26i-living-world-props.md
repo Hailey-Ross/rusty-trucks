@@ -756,3 +756,16 @@ it; other actors still can. Retail: the user's account from play (grinding does 
 mechanism is not traced.
 
 **Verification.** `the_grinded_prop_is_not_pushed_by_the_skater`; skate-game 694 (known failures only).
+
+## Prop diagnostics for play sessions (2026-10-16)
+
+The user's prop session of 2026-10-15 (bench seat not grindable, dumpster sent flying, skater pulled into a fallen
+bench) could not be pinned down from the log: the grind lines named props by id only, and nothing logged a shove
+or a skater inside a prop. Now:
+- `GRIND_RAIL` / `GRIND_NEAR` add the prop's model name: `prop=648522868 rail=0 (prop_DT_benchReclaimedMetal_1029)`
+  (`RailSource::describe`, from the prop dynamics' template).
+- `PROP_SHOVE prop=<id> (<model>) dv <m/s> mass <kg> closing <m/s> by board|body at [...]`: a skater push that
+  changes the prop's speed by 2 m/s or more in one tick.
+- `PROP_OVERLAP prop=<id> (<model>) skater inside for <n> ticks at [...] up_y <y>`: a skater volume that sat inside
+  the prop long enough that the nudge stops (`stuck_release_ticks`), once per stay; `up_y` shows a fallen prop.
+No behaviour change.

@@ -23,8 +23,14 @@ fn car(id: u64, position: Vec3, forward: Vec3, speed: f32) -> Obstacle {
 #[test]
 fn standing_ped_close_ahead_stops_the_skater() {
     let s = AvoidSettings::default();
-    // Off-centre (0.5 m right): it blocks [-0.3, 1.3] of the path, one gap stays (no steering).
-    let out = evaluate(&s, &mut AvoidState::default(), &me(4.0), &[ped(7, [0.5, 0.0, 2.0], [0.0; 3])], &straight);
+    // Off-centre (0.5 m right) it blocks [-0.3, 1.3] of the path and one gap stays: retail steers into it
+    // (`+6006` = free gap count != 0, b112), no speed cap.
+    let one = evaluate(&s, &mut AvoidState::default(), &me(4.0), &[ped(7, [0.5, 0.0, 2.0], [0.0; 3])], &straight);
+    assert_eq!(one.mode, AvoidMode::Steer, "{one:?}");
+    assert_eq!(one.shape_speed(4.0, false), 4.0);
+    // A second ped 0.5 m left closes the gap: the whole width is blocked, the skater stops.
+    let out = evaluate(&s, &mut AvoidState::default(), &me(4.0), &[ped(7, [0.5, 0.0, 2.0], [0.0; 3]), ped(8, [-0.5, 0.0, 2.0], [0.0; 3])], &straight);
+    assert!(out.gaps.is_empty(), "{:?}", out.gaps);
     let e = &out.entries[0];
     assert!(e.closing && e.blocks && e.close, "{e:?}");
     // A standing obstacle gets no floor or cap of its own; the close blocker stops (cap 0).
@@ -60,6 +66,12 @@ fn slow_car_crossing_ahead_makes_the_skater_speed_up() {
     assert!((e.floor.unwrap() - 9.0).abs() < 1e-4, "{e:?}");
     assert_eq!(e.cap, Some(0.0));
     assert!(out.floor_valid);
+    // The car is still beside the path: a free gap, so retail steers (b112).
+    assert_eq!(out.mode, AvoidMode::Steer);
+    // With the whole width blocked the floor wins: speed up.
+    let mut out = out;
+    out.gaps.clear();
+    pick_mode(&s, &me(5.0), &mut out);
     assert_eq!(out.mode, AvoidMode::SpeedUp);
     assert!((out.shape_speed(5.0, false) - 9.0).abs() < 1e-4);
 }
@@ -68,8 +80,11 @@ fn slow_car_crossing_ahead_makes_the_skater_speed_up() {
 fn floor_above_speed_plus_headroom_falls_back_to_the_cap() {
     // The same car 1 m from our clearance: floor 4 / 0.05... far above 5 + 5 -> slow down.
     let s = AvoidSettings::default();
-    let out = evaluate(&s, &mut AvoidState::default(), &me(5.0), &[car(9, [2.55, 0.0, 4.0], [-1.0, 0.0, 0.0], 1.0)], &straight);
+    let mut out = evaluate(&s, &mut AvoidState::default(), &me(5.0), &[car(9, [2.55, 0.0, 4.0], [-1.0, 0.0, 0.0], 1.0)], &straight);
     assert!(!out.floor_valid);
+    // Whole width blocked (a free gap would steer, b112).
+    out.gaps.clear();
+    pick_mode(&s, &me(5.0), &mut out);
     assert_eq!(out.mode, AvoidMode::SlowDown);
 }
 

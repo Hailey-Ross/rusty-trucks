@@ -485,3 +485,28 @@ node 70, stage 2 after 1.4 s, re-snapped to node 69 and rode on; a line switch n
 **Open.** A skater held at a speed cap of 0 behind a pedestrian that does not move (jerry_hsu, 80 s in the second
 run) is not a tracker case: cursor B does not lead A, which retail counts as progress. What ends that wait in retail
 is being researched (b112). Medium confidence on the re-snap details (b111).
+
+## Avoider: steer around a partial blocker, and the real closing speed (2026-10-16)
+
+**Problem.** In a passive run (2026-10-15) the NPC skater jerry_hsu stood still behind a pedestrian for more than
+80 s: the avoider held a speed cap of 0 (`slow_down ... cap 0.00`), switching between steer and slow_down.
+
+**Root cause.** Two differences from retail [code, b112, main checked both in the recomp]:
+- The path-split flag `+6006` is "free lateral gap count != 0" (`sub_82465198` tail at `0x82465268`: `addic` /
+  `subfe` on `+64`, the free interval count that starts at 1 for [-1, 1]), and `sub_82465578` goes straight to
+  mode 3 (steer into the gap, `sub_82465280`, no speed limit) when it is set. Ours used `gaps.len() != 1`: a ped
+  near one edge (one free gap) slowed the skater where retail steers, and a fully blocked path steered.
+- The cap only exists while closing (`sub_82464FA8` reads entries with the closing flag, set by `sub_82462D00` from
+  both velocities). Ours gave the avoider the recorded line velocity, which stays non-zero while the cap holds the
+  cursor, so closing never fell to 0 and the cap held for good.
+
+**Change.** `avoid.rs` `pick_mode`: `path_split = !gaps.is_empty()`. `npc_avoid.rs`: the skater's velocity for the
+avoider is its actual motion (the sample's position change per tick; a jump over 2 m falls back to the recorded
+velocity for that tick). Retail reads the skater object's velocity (vtable `+16`; that it is the body velocity is
+[inferred]).
+
+**Verification.** Tests updated to retail: a ped leaving a gap is steered around and two peds closing the width
+stop the skater (`standing_ped_close_ahead_stops_the_skater`); the speed up / slow down tests run with the whole
+width blocked; `living_world_npc_skater_steers_around_a_player_standing_on_its_line` (was "stops for"). skate-core
+and skate-game pass apart from the known pre-existing failures. Passive 4-minute run: no skater stood still for
+more than a second (steer 41, slow_down 14, speed_up 11 mode changes).

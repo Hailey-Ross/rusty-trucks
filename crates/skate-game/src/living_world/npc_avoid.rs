@@ -33,6 +33,9 @@ pub(crate) const LATERAL_STEP: f32 = 0.02;
 /// (`sub_82464968`) reads 0.75 (`0x821814A0`) [inferred: footprint].
 pub(crate) const SKATER_SIZE: f32 = 0.75;
 
+/// A sample that moved farther than this in one tick jumped (respawn, teleport, line switch).
+const MAX_TICK_MOVE: f32 = 2.0;
+
 /// One NPC skater's avoider state (part of [`NpcReplay`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NpcAvoid {
@@ -47,6 +50,8 @@ pub(crate) struct NpcAvoid {
     /// belongs to (a line change or the line's end resets it, `sub_82468AC8`; b70).
     pub controller: skate_core::living_world::ai_controller::ControllerState,
     pub controller_line: Option<[u8; 16]>,
+    /// Last tick's sample position: the skater's actual motion for the avoider (b112).
+    pub moved_from: Option<[f32; 3]>,
 }
 
 impl NpcAvoid {
@@ -108,6 +113,7 @@ pub(crate) fn avoid(
     ped_data: Option<Res<super::peds::PedData>>,
     physics: Option<Res<crate::physics::GamePhysics>>,
     mut track: ResMut<AvoidTrack>,
+    time: Res<Time>,
     peds: Query<(&Pedestrian, &PedBody)>,
     cars: Query<(&TrafficCar, &CarMotion)>,
     mut npcs: Query<(&NpcSkater, &mut NpcReplay)>,
@@ -212,9 +218,19 @@ pub(crate) fn avoid(
         let forward = if speed > 1e-3 { sample.velocity.map(|c| c / speed) } else { [0.0, 0.0, 1.0] };
         let here = project_on_line(line, replay.cursor.node, sample.position, 1.0);
         let width = here.map_or(1.0, |p| if a.offset < 0.0 { p.width_left } else { p.width_right });
+        // The skater's actual velocity (retail reads the skater object's velocity, vtable +16; b112): how far its
+        // sample moved this tick. The recorded velocity stays non-zero while a speed cap holds the cursor, so the
+        // closing rate never fell to 0 and a cap of 0 behind a standing ped held for good. A jump (respawn,
+        // teleport, line switch) falls back to the recorded velocity for that tick.
+        let dt = time.delta_secs();
+        let actual = match a.moved_from {
+            Some(p) if dt > 0.0 && length(sub(sample.position, p)) < MAX_TICK_MOVE => sub(sample.position, p).map(|c| c / dt),
+            _ => sample.velocity,
+        };
+        a.moved_from = Some(sample.position);
         let me = AvoidSelf {
             position: (Vec3::from_array(sample.position) + Vec3::from_array(right_of(forward)) * a.offset).to_array(),
-            velocity: sample.velocity,
+            velocity: actual,
             forward,
             lateral: if width > 1e-4 { a.offset / width } else { 0.0 },
         };

@@ -633,7 +633,9 @@ pub fn steer_point(p: &PathPoint, lateral: f32) -> Vec3 {
 
 /// `sub_82465578`.
 fn pick_mode(s: &AvoidSettings, me: &AvoidSelf, out: &mut AvoidOutput) {
-    let path_split = out.gaps.len() != 1;
+    // `+6006` = free gap count != 0 (`0x82465268`: addic / subfe): steer whenever any lateral gap is free; slow
+    // down only when blockers cover the whole width (b112).
+    let path_split = !out.gaps.is_empty();
     out.lateral = 0.0;
     let Some(target) = out.steer_target.and_then(|id| out.entries.iter().find(|e| e.id == id)).copied() else {
         out.mode = AvoidMode::None;
