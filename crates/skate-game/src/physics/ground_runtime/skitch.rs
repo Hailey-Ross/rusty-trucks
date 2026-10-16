@@ -97,6 +97,7 @@ pub(crate) fn query(state: &mut PhysicsGroundState, owner: &mut Owner, p: &Proce
     let velocity = p.vectors_400_416[0].map(f32::from_bits);
     let (bounds, limits) = query_shape(frame, s);
     if owner.flags_12836 & 0x40 != 0 {
+        let before = state.flag_2729.then_some((state.word_2560, state.word_2564));
         // 82D39D98 resets its outputs each call.
         state.flag_2729 = false;
         state.word_2560 = 0;
@@ -113,6 +114,18 @@ pub(crate) fn query(state: &mut PhysicsGroundState, owner: &mut Owner, p: &Proce
             state.flag_2729 = true;
             state.word_2560 = kind;
             state.word_2564 = id;
+        }
+        let after = state.flag_2729.then_some((state.word_2560, state.word_2564));
+        if after != before {
+            // SKITCH_LATCH: a grabbable spline (kind 1 = traffic car) comes into or leaves latch range.
+            bevy::log::info!(
+                "SKITCH_LATCH {:?} -> {:?} time={:?} candidates={} latch_enabled={}",
+                before,
+                after,
+                decision.time,
+                owner.validated().len(),
+                latch_enabled()
+            );
         }
     }
     owner.query(Query {

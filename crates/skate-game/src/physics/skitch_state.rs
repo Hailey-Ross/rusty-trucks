@@ -113,6 +113,15 @@ pub(crate) fn enter(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> Re
     s.push_speed = 0.0;
     s.push_latched = false;
     s.lean = 0.0;
+    // SKITCH_ENTER: the grabbed record (kind 1 = traffic car; its serial when it is one), so a skitching session
+    // shows when and on what each grab started.
+    bevy::log::info!(
+        "SKITCH_ENTER kind={} id={:#x} car={:?} speed={:.2}",
+        words[47],
+        words[48],
+        s.held_car_serial(),
+        skater.player_input.processed.scalar_2612
+    );
     Ok(())
 }
 
@@ -173,6 +182,7 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         s.tows_fast = f.tows_fast;
         // Sub-mode 82D49580 and its release bits.
         let from = s.sub.mode;
+        let released_before = s.hold.released();
         s.sub.step(
             &SkitchSubModeInput { position: f.along, half_length: half_range, stick, event: s.shimmy.event, car_accel: s.shimmy.car_accel, ready_a: f32::from(u8::from(!s.hands.off[0])), ready_b: f32::from(u8::from(!s.hands.off[1])) },
             &settings.sub_mode,
@@ -282,6 +292,17 @@ pub(crate) fn update(physics: &mut GamePhysics, skater: &mut SkaterRuntime) -> R
         }
         // Tail 82D4AFB8.
         let (mode, impulse) = s.hold.tail(s.sub.mode, grab_input, s.hands.off[0] && s.hands.off[1], &settings.hold, dt);
+        if mode != from || s.hold.released() != released_before {
+            // SKITCH_MODE: every sub-mode change and the hold's release, with where along the car the skater is.
+            bevy::log::info!(
+                "SKITCH_MODE {from} -> {mode} released={} along={:.2} tow_speed={:.2} side_distance={:.2} hands_off={:?} grab_input={grab_input}",
+                s.hold.released(),
+                s.along_ratio,
+                f.tow_speed,
+                f.side_distance,
+                s.hands.off
+            );
+        }
         s.sub.mode = mode;
         let impulse_force = match impulse {
             Some(hold::Impulse::PullIn) => Some(target::pull_in_force(f.side_dir, f.axis_distance_rate, f.tow_speed, mass, dt, &settings.target)),
@@ -420,8 +441,13 @@ impl SkitchState {
     /// The traffic car this skater holds this tick (`82C361E8` runs every gated frame): its serial, decoded from
     /// the car's grab spline id (`living_world::vehicles::CAR_GRAB_TAG | serial << 3 | index`).
     pub(crate) fn held_car(&self) -> Option<u32> {
+        self.ready.then(|| self.held_car_serial()).flatten()
+    }
+
+    /// The held record's traffic car serial, ready or not.
+    fn held_car_serial(&self) -> Option<u32> {
         let car = self.car?;
-        (self.ready && car.kind == 1 && car.id & crate::living_world::vehicles::CAR_GRAB_TAG != 0)
+        (car.kind == 1 && car.id & crate::living_world::vehicles::CAR_GRAB_TAG != 0)
             .then_some((car.id & !crate::living_world::vehicles::CAR_GRAB_TAG) >> 3)
     }
 

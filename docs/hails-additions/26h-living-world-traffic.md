@@ -1163,3 +1163,17 @@ consumers as the prop rails (doc 26i "Grinding on props").
 (39 arenas, 211 rails); skate-game `a_car_provides_its_grind_rails_at_its_current_transform`,
 `rail_view_puts_static_rails_first_then_props_then_cars_under_one_cap`; skate-game 693 pass (1 known failure).
 Install after refresh: 18 models, 107 rails. Play test pending.
+
+## Skitching session logging (2026-10-15)
+
+**Problem.** Skitching wrote no session log lines, so a play session (planned by the user: "Third session will be
+trying out skitching") could not show where a grab failed or let go.
+
+**Change.** Three lines, all on change only:
+- `SKITCH_LATCH <before> -> <after>` (`physics/ground_runtime/skitch.rs`): a grabbable spline (kind, id; kind 1 =
+  traffic car) comes into or leaves latch range, with the time to the spline, the candidate count and the opt-in.
+- `SKITCH_ENTER` (`physics/skitch_state.rs`): the grab starts: record kind and id, the car serial, board speed.
+- `SKITCH_MODE <from> -> <to>` (same file): sub-mode changes and the hold's release, with the position along the
+  car, tow speed, side distance, hands off and the grab input.
+
+No behaviour change.
