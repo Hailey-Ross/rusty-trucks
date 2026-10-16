@@ -34,20 +34,60 @@ pub struct ControllerSettings {
     pub safe_flag_frames: u32,
     pub safe_slope: f32,
     pub safe_run: u32,
+    /// The stuck tracker (`sub_82468240`, b111): no-progress tick limits for stages 1 to 6 (stage 7 and up: 0).
+    pub stuck_limits: [u32; 6],
+    /// A stall clears after more than `stuck_clear_ticks` (25) progress ticks once the skater is more than
+    /// `stuck_clear_distance` (5 m, `0x8209994C` 25.0 squared, horizontal) from where it stalled.
+    pub stuck_clear_ticks: u32,
+    pub stuck_clear_distance: f32,
+    /// Stage 4: total ticks (no progress + progress) before stage 5 (180); the clear in stage 4 needs as many.
+    pub stuck_hold_ticks: u32,
+    /// The tracker counts only after more than `stuck_gate_ticks` (120) ticks since the last full reset (`pc+908`).
+    pub stuck_gate_ticks: u32,
+    /// At the line start (A at node 0, fraction <= `stuck_start_fraction`, `0x82063A48` 0.001) a tick only counts
+    /// as progress when the distance to A shrank by more than `stuck_start_approach` (`0x8208EA80` 0.03 m).
+    pub stuck_start_fraction: f32,
+    pub stuck_start_approach: f32,
 }
 
 impl Default for ControllerSettings {
     fn default() -> Self {
-        Self { reposition_ahead: 5, reposition_past: 2, remembered_window: 20, reposition_interval: 60, wipe_out: 1.0, safe_jump_frames: 45, safe_flag_frames: 15, safe_slope: 1.0, safe_run: 3 }
+        Self {
+            reposition_ahead: 5, reposition_past: 2, remembered_window: 20, reposition_interval: 60, wipe_out: 1.0, safe_jump_frames: 45, safe_flag_frames: 15, safe_slope: 1.0, safe_run: 3,
+            stuck_limits: [30, 30, 2, 180, 30, 3], stuck_clear_ticks: 25, stuck_clear_distance: 5.0, stuck_hold_ticks: 180, stuck_gate_ticks: 120, stuck_start_fraction: 0.001, stuck_start_approach: 0.03,
+        }
     }
 }
 
-/// `ctrl+568` values used here.
+/// `ctrl+568` values used here: the stuck tracker's stage (`sub_82468240`, b111), shared with the avoider's step off
+/// and low prop handling (b66 / b70).
 pub mod sub_mode {
     pub const NORMAL: u8 = 0;
+    /// A stall began (anchor recorded).
+    pub const STALLED: u8 = 1;
+    /// Re-snap the line cursor once (`sub_8246D168`).
+    pub const RESNAP: u8 = 2;
+    /// Walk back to the line (the reposition request); also the avoider's step off.
     pub const STEP_OFF: u8 = 3;
+    /// Hold: no node actions, no speed shaping; also the avoider's low prop.
     pub const LOW_PROP: u8 = 4;
+    /// Bail (`WipeOutRequest` every tick); also the avoider's second step-off tick.
     pub const STEP_OFF_BAIL: u8 = 5;
+    /// Respawn at a safe node (`sub_8246ED68` / `sub_8246E558`).
+    pub const RESPAWN: u8 = 6;
+}
+
+/// The stuck tracker's block besides the stage (`pc+528..+583` minus `+568`; b111 section 2).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StuckTracker {
+    /// `+528`: where the stall began; `+560/+564`: cursor A then.
+    pub anchor: super::Vec3,
+    pub anchor_cursor: (u32, f32),
+    /// `+572` / `+576`: no-progress and progress ticks in this stage.
+    pub no_progress: u32,
+    pub progress: u32,
+    /// `+580`: |skater - A| this tick.
+    pub dist: f32,
 }
 
 /// The controller fields this logic owns (`+568`, `+941`, `+943` / `+756`, `+912`).
@@ -57,6 +97,9 @@ pub struct ControllerState {
     pub reposition_request: bool,
     pub remembered_node: Option<u32>,
     pub last_reposition: Option<u64>,
+    pub stuck: StuckTracker,
+    /// `pc+908`: ticks since the last full reset (the tracker's gate).
+    pub gate_ticks: u32,
 }
 
 /// `sub_8246D560` for mode 6: enter sub-mode 4 (its exit is not decoded yet, b66).
@@ -226,14 +269,240 @@ pub fn take_reposition(state: &mut ControllerState, s: &ControllerSettings, onli
     Some(node)
 }
 
-/// A successful move resets the controller (sub-mode 0; the throttle time is kept).
+/// A successful move resets the controller (sub-mode 0 and the stuck tracker; the throttle time and the tracker's
+/// gate count `pc+908` are kept: `sub_8246FE38` zeroes the tracker block only).
 pub fn reposition_done(state: &mut ControllerState) {
+    *state = ControllerState { last_reposition: state.last_reposition, gate_ticks: state.gate_ticks, ..Default::default() };
+}
+
+/// The path state reset on a line switch (`sub_82468AC8`, b111 section 5 / b118): it clears the tracker block
+/// `pc+528..+583` (stage included; the stage 2 re-snap saves and restores it around this reset). The gate count
+/// `pc+908` and the throttle stay.
+pub fn path_reset(state: &mut ControllerState) {
+    state.stuck = StuckTracker::default();
+    state.sub_mode = sub_mode::NORMAL;
+}
+
+/// The full reset after the skater is placed again (`sub_82468C10`, from `sub_8246E558`): sub-mode, tracker and its
+/// gate count (`pc+908` = 0, so the tracker waits 120 ticks again); the throttle time is kept.
+pub fn full_reset(state: &mut ControllerState) {
     *state = ControllerState { last_reposition: state.last_reposition, ..Default::default() };
+}
+
+/// `sub_82468240` for one tick (b111 section 4): `pos` = the skater, `a` / `a_pos` = cursor A and its point,
+/// `progress` = the projection's flag (`PathFollow::progress`), `can_track` = `sub_82468070` (not scripted, not
+/// toggling on / off the board; on board not airborne, off board not mounting / unmounting). The stage climbs on
+/// no-progress ticks only; progress ticks count toward the clear.
+pub fn track_stuck(state: &mut ControllerState, s: &ControllerSettings, pos: super::Vec3, a: (u32, f32), a_pos: super::Vec3, progress: bool, can_track: bool) {
+    state.gate_ticks = state.gate_ticks.saturating_add(1);
+    let gate = state.gate_ticks > s.stuck_gate_ticks;
+    let t = &mut state.stuck;
+    let old = t.dist;
+    t.dist = ((pos[0] - a_pos[0]).powi(2) + (pos[1] - a_pos[1]).powi(2) + (pos[2] - a_pos[2]).powi(2)).sqrt();
+    let mut progress = progress;
+    if progress {
+        let past_start = a.0 > 0 || a.1 > s.stuck_start_fraction;
+        if !past_start && old > 0.0 && t.dist > old - s.stuck_start_approach {
+            progress = false;
+        }
+    }
+    if progress {
+        if state.sub_mode > sub_mode::NORMAL {
+            t.progress += 1;
+            let away = (pos[0] - t.anchor[0]).powi(2) + (pos[2] - t.anchor[2]).powi(2);
+            if t.progress > s.stuck_clear_ticks
+                && away > s.stuck_clear_distance * s.stuck_clear_distance
+                && (state.sub_mode != sub_mode::LOW_PROP || t.no_progress + t.progress >= s.stuck_hold_ticks)
+            {
+                *t = StuckTracker { dist: t.dist, ..Default::default() };
+                state.sub_mode = sub_mode::NORMAL;
+            }
+        }
+    } else if can_track && gate {
+        if state.sub_mode == sub_mode::NORMAL {
+            *t = StuckTracker { anchor: pos, anchor_cursor: a, no_progress: 0, progress: 0, dist: t.dist };
+            state.sub_mode = sub_mode::STALLED;
+        }
+        t.no_progress += 1;
+        let limit = usize::from(state.sub_mode).checked_sub(1).and_then(|i| s.stuck_limits.get(i)).copied().unwrap_or(0);
+        if t.no_progress > limit {
+            t.no_progress = 0;
+            t.progress = 0;
+            state.sub_mode = state.sub_mode.saturating_add(1);
+        }
+    }
+    if state.sub_mode == sub_mode::LOW_PROP && state.stuck.progress + state.stuck.no_progress > s.stuck_hold_ticks {
+        state.stuck.progress = 0;
+        state.stuck.no_progress = 0;
+        state.sub_mode = sub_mode::STEP_OFF_BAIL;
+    }
+}
+
+/// What the stage asks for this tick (`sub_8246F818`, run before the projection; b111 section 5).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StuckAction {
+    None,
+    /// Stage 2's first tick: re-snap the cursor ([`resnap_node`]) and reset the path state, keeping the tracker.
+    Resnap,
+    /// Stage 5: post `WipeOutRequest` with this value.
+    WipeOut(f32),
+    /// Stage 6: place the skater at [`respawn_node`] and fully reset.
+    Respawn,
+}
+
+/// `sub_8246F818`: stage 3 raises the reposition request (offline only: `online` = `0x830CFE5C`+608), which
+/// [`take_reposition`] turns into the walk back (5+ nodes ahead); the other stages return their action.
+pub fn stuck_action(state: &mut ControllerState, s: &ControllerSettings, online: bool) -> StuckAction {
+    match state.sub_mode {
+        sub_mode::RESNAP if state.stuck.no_progress == 0 && state.stuck.progress == 0 => StuckAction::Resnap,
+        sub_mode::STEP_OFF => {
+            if !online {
+                state.reposition_request = true;
+            }
+            StuckAction::None
+        }
+        sub_mode::STEP_OFF_BAIL => StuckAction::WipeOut(s.wipe_out),
+        sub_mode::RESPAWN => StuckAction::Respawn,
+        _ => StuckAction::None,
+    }
+}
+
+/// `sub_8246D168`'s node: when the line climbs steeper than `safe_slope` (1.0) from `search` to `search + 2`, the
+/// first node after `search + 2` lower than `search`, within 240 summed node frames (node byte `+36` = our `frames`,
+/// `skate-data` `aipath.rs`: 4 s of 60 Hz recording); otherwise (or none found) the node nearest `pos` over the line.
+pub fn resnap_node(line: &super::replay::ReplayLine, s: &ControllerSettings, search: u32, pos: super::Vec3) -> u32 {
+    const BUDGET: u32 = 240;
+    let nodes = &line.nodes;
+    let i = search as usize;
+    if i + 2 < nodes.len() {
+        let (a, b) = (nodes[i].position, nodes[i + 2].position);
+        let h = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+        let slope = if h > 0.001 { (b[1] - a[1]) / h } else { 0.0 };
+        if slope > s.safe_slope {
+            let mut sum = 0u32;
+            for (j, n) in nodes.iter().enumerate().skip(i + 1) {
+                sum += u32::from(n.frames);
+                if sum > BUDGET {
+                    break;
+                }
+                if j > i + 2 && n.position[1] < a[1] {
+                    return j as u32;
+                }
+            }
+        }
+    }
+    super::path_follow::nearest_node(line, pos)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A skater that stops on its line and never moves again: the gate waits 120 ticks, then the stages climb at
+    /// 30 / 30 / 2 / 180 / 30 no-progress ticks past their limit (b111 counts one tick later: re-snap ~32, walk back ~63, bail ~247,
+    /// respawn ~278 ticks into the stall), and each stage asks for its action.
+    #[test]
+    fn a_skater_that_never_moves_climbs_every_stage() {
+        let s = ControllerSettings::default();
+        let mut c = ControllerState::default();
+        let (pos, a, a_pos) = ([0.0, 0.0, 0.0], (10, 0.5), [0.0, 0.0, 1.0]);
+        for _ in 0..120 {
+            track_stuck(&mut c, &s, pos, a, a_pos, false, true);
+        }
+        assert_eq!(c.sub_mode, sub_mode::NORMAL, "the gate holds the tracker off for 120 ticks");
+        let mut entered = Vec::new();
+        for tick in 1..=400u32 {
+            let before = c.sub_mode;
+            track_stuck(&mut c, &s, pos, a, a_pos, false, true);
+            if c.sub_mode != before {
+                entered.push((c.sub_mode, tick));
+            }
+            if c.sub_mode == sub_mode::RESPAWN {
+                break;
+            }
+        }
+        assert_eq!(entered, vec![(1, 1), (2, 31), (3, 62), (4, 65), (5, 246), (6, 277)]);
+        assert_eq!(stuck_action(&mut c, &s, false), StuckAction::Respawn);
+        c.sub_mode = sub_mode::RESNAP;
+        c.stuck.no_progress = 0;
+        c.stuck.progress = 0;
+        assert_eq!(stuck_action(&mut c, &s, false), StuckAction::Resnap);
+        c.stuck.no_progress = 1;
+        assert_eq!(stuck_action(&mut c, &s, false), StuckAction::None, "the re-snap runs on the stage's first tick only");
+        c.sub_mode = sub_mode::STEP_OFF;
+        assert_eq!(stuck_action(&mut c, &s, false), StuckAction::None);
+        assert!(c.reposition_request, "stage 3 raises the walk-back request offline");
+        c.reposition_request = false;
+        assert_eq!(stuck_action(&mut c, &s, true), StuckAction::None);
+        assert!(!c.reposition_request, "not online");
+        c.sub_mode = sub_mode::STEP_OFF_BAIL;
+        assert_eq!(stuck_action(&mut c, &s, false), StuckAction::WipeOut(1.0));
+    }
+
+    /// Progress ticks never lower the stage; the stall clears only after more than 25 of them once the skater is
+    /// more than 5 m (horizontally) from where it stalled.
+    #[test]
+    fn a_stall_clears_after_25_progress_ticks_more_than_5_m_away() {
+        let s = ControllerSettings::default();
+        let mut c = ControllerState { gate_ticks: 1000, ..Default::default() };
+        let a = (10, 0.5);
+        for _ in 0..5 {
+            track_stuck(&mut c, &s, [0.0, 0.0, 0.0], a, [0.0, 0.0, 1.0], false, true);
+        }
+        assert_eq!(c.sub_mode, sub_mode::STALLED);
+        // Inching along within 5 m (and 10 m up: the test is horizontal): stays stalled.
+        for _ in 0..60 {
+            track_stuck(&mut c, &s, [4.0, 10.0, 0.0], a, [4.0, 10.0, 1.0], true, true);
+        }
+        assert_eq!(c.sub_mode, sub_mode::STALLED);
+        for _ in 0..26 {
+            track_stuck(&mut c, &s, [6.0, 0.0, 0.0], a, [6.0, 0.0, 1.0], true, true);
+        }
+        assert_eq!(c.sub_mode, sub_mode::NORMAL);
+        assert_eq!(c.stuck.no_progress + c.stuck.progress, 0);
+    }
+
+    /// While the tracker may not count (airborne, scripted, toggling) nothing starts; at the line start a tick is only
+    /// progress when the skater closed in on cursor A by more than 3 cm.
+    #[test]
+    fn untracked_ticks_and_the_line_start_rule() {
+        let s = ControllerSettings::default();
+        let mut c = ControllerState { gate_ticks: 1000, ..Default::default() };
+        for _ in 0..100 {
+            track_stuck(&mut c, &s, [0.0; 3], (10, 0.5), [0.0, 0.0, 1.0], false, false);
+        }
+        assert_eq!(c.sub_mode, sub_mode::NORMAL);
+        // At node 0: "progress" while standing 1 m from A is no progress.
+        track_stuck(&mut c, &s, [0.0; 3], (0, 0.0), [0.0, 0.0, 1.0], true, true);
+        track_stuck(&mut c, &s, [0.0; 3], (0, 0.0), [0.0, 0.0, 1.0], true, true);
+        assert_eq!(c.sub_mode, sub_mode::STALLED);
+        // Closing in by 5 cm a tick counts.
+        let before = c.stuck.progress;
+        track_stuck(&mut c, &s, [0.0, 0.0, 0.05], (0, 0.0), [0.0, 0.0, 1.0], true, true);
+        assert_eq!(c.stuck.progress, before + 1);
+    }
+
+    /// Stage 4 (hold, also the avoider's low prop) moves on to the bail after 180 ticks in it, progress or not.
+    #[test]
+    fn stage_4_moves_on_to_the_bail_after_180_ticks() {
+        let s = ControllerSettings::default();
+        let mut c = ControllerState { gate_ticks: 1000, sub_mode: sub_mode::LOW_PROP, ..Default::default() };
+        for _ in 0..181 {
+            track_stuck(&mut c, &s, [0.0; 3], (10, 0.5), [0.0, 0.0, 1.0], true, true);
+        }
+        assert_eq!(c.sub_mode, sub_mode::STEP_OFF_BAIL);
+    }
+
+    /// The walk back clears the tracker but keeps its gate count; a placement resets the gate too.
+    #[test]
+    fn resets_keep_or_clear_the_gate() {
+        let mut c = ControllerState { gate_ticks: 500, sub_mode: sub_mode::STEP_OFF, last_reposition: Some(7), ..Default::default() };
+        reposition_done(&mut c);
+        assert_eq!((c.sub_mode, c.gate_ticks, c.last_reposition), (0, 500, Some(7)));
+        c.sub_mode = sub_mode::STEP_OFF_BAIL;
+        full_reset(&mut c);
+        assert_eq!((c.sub_mode, c.gate_ticks, c.last_reposition), (0, 0, Some(7)));
+    }
 
     #[test]
     fn mode_7_requests_a_reposition_then_wipes_out_once() {

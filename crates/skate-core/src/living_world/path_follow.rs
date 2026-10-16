@@ -15,7 +15,7 @@
 //!    lost; the caller turns it into the reposition request (`ctrl+941`) that hands it to controller B.
 //!
 //! NOT RETAIL YET: the 4.5 m lost test after a line-end re-pick, the node-change handler (`sub_8246BEE0`), the
-//! progress tracker (`sub_82468240`), `G+608` and skater flag `0x04000000` in the lost test; which body point retail
+//! `G+608` and skater flag `0x04000000` in the lost test; which body point retail
 //! projects (`sub_82467FC8`) is open (ours: the deck), and so is the lane edge axis (`sub_82454648`; ours: the
 //! segment's right).
 
@@ -44,11 +44,13 @@ pub struct PathTuning {
     pub lost_radius: f32,
     /// ... while slower than this along its heading (`pc+808` < `0x8208EB10`, 14.0 m/s).
     pub lost_max_speed: f32,
+    /// The progress flag's share of A -> B the raw projection must advance per tick (0.025, b110).
+    pub progress_fraction: f32,
 }
 
 impl Default for PathTuning {
     fn default() -> Self {
-        Self { window: 4, hysteresis: 0.5, clamp_fraction: 0.25, clamp_horizontal: 1.0, clamp_vertical: 5.0, commit: 0.5, drop: 1.0, start_node: 3, lost_radius: 6.0, lost_max_speed: 14.0 }
+        Self { window: 4, hysteresis: 0.5, clamp_fraction: 0.25, clamp_horizontal: 1.0, clamp_vertical: 5.0, commit: 0.5, drop: 1.0, start_node: 3, lost_radius: 6.0, lost_max_speed: 14.0, progress_fraction: 0.025 }
     }
 }
 
@@ -74,12 +76,15 @@ pub struct PathFollow {
     pub handled: u32,
     /// This tick's lost test (`sub_82468DD8`): the caller raises the reposition request.
     pub lost: bool,
+    /// This tick's progress flag for the stuck tracker (`sub_8246C930`, b110): false when cursor B is ahead of the
+    /// candidate, A is past the start and the raw projection advanced less than `progress_fraction` of A -> B.
+    pub progress: bool,
 }
 
 impl PathFollow {
     /// A skater placed on `node` (spawn or respawn): on the path, A = B = the node.
     pub fn start(node: u32, tuning: &PathTuning) -> Self {
-        Self { search_start: node, a: (node, 0.0), b: (node, 0.0), last: (node, 0.0), on_path: true, past_start: node > tuning.start_node, dist: 0.0, inside_lane: true, lateral: 0.0, handled: node, lost: false }
+        Self { search_start: node, a: (node, 0.0), b: (node, 0.0), last: (node, 0.0), on_path: true, past_start: node > tuning.start_node, dist: 0.0, inside_lane: true, lateral: 0.0, handled: node, lost: false, progress: true }
     }
 
     /// One tick at skater position `pos`; `ratio` = shaped speed / recorded speed at A (1.0 unshaped); `speed` = the
@@ -88,6 +93,7 @@ impl PathFollow {
     /// (`sub_8246DB50`).
     pub fn tick(&mut self, line: &ReplayLine, pos: Vec3, ratio: f32, speed: f32, airborne: bool, tuning: &PathTuning) {
         self.lost = false;
+        self.progress = true;
         if line.nodes.len() < 2 {
             return;
         }
@@ -108,6 +114,9 @@ impl PathFollow {
         let b_ahead = self.b.0 > cand.0 || (self.b.0 == cand.0 && self.b.1 > cand.1);
         if b_ahead && (self.a.0 > 0 || self.a.1 > 0.1) {
             let dab = along(line, self.a, self.b);
+            if dab > 0.0 && along(line, self.last, proj) < tuning.progress_fraction * dab {
+                self.progress = false;
+            }
             if dab > 0.0 && along(line, self.a, cand) < tuning.clamp_fraction * dab {
                 let q = advance(line, self.a, tuning.clamp_fraction * dab);
                 let qp = point(line, q);
@@ -165,7 +174,7 @@ impl PathFollow {
     /// skater off the path with the search at `node`, A / B / the handled node cleared, and keeps the start gate
     /// (`pc+937` is only cleared by the full reset).
     pub fn switch_to(&self, node: u32) -> Self {
-        Self { search_start: node, a: (0, 0.0), b: (0, 0.0), last: (0, 0.0), on_path: false, past_start: self.past_start, dist: 0.0, inside_lane: false, lateral: 999.0, handled: 0, lost: false }
+        Self { search_start: node, a: (0, 0.0), b: (0, 0.0), last: (0, 0.0), on_path: false, past_start: self.past_start, dist: 0.0, inside_lane: false, lateral: 999.0, handled: 0, lost: false, progress: true }
     }
 
     /// Recorded frames from cursor (`node`, `frame_in_segment`) forward to B (0 when B is not ahead).

@@ -601,6 +601,9 @@ pub(crate) fn simulate(
                             None => replay.cursor.frame_in_segment = 0,
                         }
                         replay.follow_target = Some(replay.cursor.frames);
+                        // Placed again: the full reset (`sub_82468C10`; [inferred] the bail respawner places through the
+                        // same `sub_8246E558` as stage 6), so a stage 5 bail does not repeat after the respawn.
+                        skate_core::living_world::ai_controller::full_reset(&mut replay.avoid.controller);
                         settle(sim, rules.placement_hold_ticks());
                         let len = lines.get(&replay.cursor.line).map_or(0, |l| l.nodes.len());
                         info!("NPC_SKATER_RESPAWN #{} {} at line node {} of {len} (wipeout-end teleport after {:.2} s)", npc.id.serial, npc.character, replay.cursor.node, (rules.respawn_ticks().saturating_sub(left)) as f32 / 60.0);
@@ -612,6 +615,7 @@ pub(crate) fn simulate(
                     if left == 0 {
                         warn!("NPC_SKATER_RESPAWN #{} {}: no wipeout-end teleport, placing directly", npc.id.serial, npc.character);
                         sim.body.runtime.clear_respawn_destination();
+                        skate_core::living_world::ai_controller::full_reset(&mut replay.avoid.controller);
                         // The same skater placed again on its line, on the node (retail places its AI skater object
                         // again at the chosen node).
                         match sim.respawn_node.take() {
@@ -653,6 +657,8 @@ pub(crate) fn simulate(
                 // reposition; a second tick in mode 7 sets sub-mode 5 and posts WipeOutRequest), and the
                 // reposition swaps to controller B, which walks the skater back to the chosen line node.
                 let mut walk_intents: Vec<(String, f32)> = Vec::new();
+                // The stuck tracker's stage actions (`sub_8246F818`, b111), on the stage the previous tick set.
+                let (mut stuck_resnap, mut stuck_respawn) = (false, false);
                 if rules.walk_back && sim.walker.is_none() {
                     use skate_core::living_world::{ai_controller, avoid::AvoidMode};
                     let a = &mut replay.avoid;
@@ -662,6 +668,12 @@ pub(crate) fn simulate(
                     if let Some(w) = ai_controller::step_off(&mut a.controller, &rules.controller, mode_7, airborne, false, prop_node) {
                         walk_intents.push(("WipeOutRequest".into(), w));
                         info!("NPC_STEP_OFF #{} {} wipe-out request (still blocked, node {prop_node})", npc.id.serial, npc.character);
+                    }
+                    match ai_controller::stuck_action(&mut a.controller, &rules.controller, false) {
+                        ai_controller::StuckAction::WipeOut(w) => walk_intents.push(("WipeOutRequest".into(), w)),
+                        ai_controller::StuckAction::Resnap => stuck_resnap = true,
+                        ai_controller::StuckAction::Respawn => stuck_respawn = true,
+                        ai_controller::StuckAction::None => {}
                     }
                     if let Some(line) = lines.get(&replay.cursor.line) {
                         let nodes = line.nodes.len() as u32;
@@ -762,6 +774,25 @@ pub(crate) fn simulate(
                 // airborne skater as off the path for the steering record.
                 let airborne_now = (200..300).contains(&(state_now as u32)) && sim.body.runtime.player_input.processed.wheel_count_2556 == 0;
                 let (on_path, past_start) = match lines.get(&replay.cursor.line) {
+                    Some(line) if stuck_respawn && sim.respawn_in.is_none() && !sim.teleport_pending => {
+                        let search_start = sim.follow.map_or(replay.cursor.node, |(_, f)| f.search_start);
+                        // Kept off the last two nodes like the bail respawn (see there).
+                        let node = skate_core::living_world::ai_controller::respawn_node(&replay.avoid.controller, &rules.controller, search_start, line).min(line.nodes.len().saturating_sub(3) as u32);
+                        replay.cursor = skate_core::living_world::replay::LineCursor::spawn(&*lines, replay.cursor.line, node);
+                        replay.follow_target = Some(replay.cursor.frames);
+                        skate_core::living_world::ai_controller::full_reset(&mut replay.avoid.controller);
+                        sim.follow = None;
+                        if let Some(target) = replay.cursor.line_target(&*lines) {
+                            match place(sim, &target, rules.placement_hold_ticks()) {
+                                Ok(_) => {
+                                    info!("NPC_SKATER_STUCK #{} {} respawn at line node {node} (stage 6, from node {search_start})", npc.id.serial, npc.character);
+                                    events.write(super::npc_skaters::NpcSkaterEvent::Respawned { id: npc.id, node });
+                                }
+                                Err(error) => warn!("NPC_SKATER_STUCK #{} {} respawn at node {node} failed: {error}", npc.id.serial, npc.character),
+                            }
+                        }
+                        (false, false)
+                    }
                     Some(line) => {
                         // During the bail the line waits (above): no projection, so the cursor and its trick events stay
                         // where the skater fell (it kept running before: node 6 -> 14 and a trick dispatched mid-bail).
@@ -774,11 +805,17 @@ pub(crate) fn simulate(
                                 // the path with the start gate kept (b118).
                                 Some((_, f)) => {
                                     sim.air = Default::default();
+                                    skate_core::living_world::ai_controller::path_reset(&mut replay.avoid.controller);
                                     f.switch_to(replay.cursor.node)
                                 }
                                 None => skate_core::living_world::path_follow::PathFollow::start(replay.cursor.node, &rules.path),
                             };
                             let (pos, heading) = projected_point(sim, state_now);
+                            if stuck_resnap {
+                                let node = skate_core::living_world::ai_controller::resnap_node(line, &rules.controller, f.search_start, pos);
+                                info!("NPC_SKATER_STUCK #{} {} re-snap node {} -> {node} (stage 2)", npc.id.serial, npc.character, f.search_start);
+                                f = f.switch_to(node);
+                            }
                             let was_on = f.on_path;
                             let was_lost = f.lost;
                             // `pc+808` (`sub_8246BCF8`): the speed of the projected point, negative when above 0.01 and
@@ -789,6 +826,20 @@ pub(crate) fn simulate(
                                 if s > 0.01 && v[0] * heading[0] + v[1] * heading[1] + v[2] * heading[2] < 0.0 { -s } else { s }
                             });
                             f.tick(line, pos, shape_ratio, speed, airborne_now, &rules.path);
+                            {
+                                use skate_core::living_world::ai_controller;
+                                let c = &mut replay.avoid.controller;
+                                let (before, anchor) = (c.sub_mode, c.stuck.anchor);
+                                // `sub_82468070`: on the board and not airborne (the off-board walk is controller B's).
+                                let can_track = !airborne_now && sim.walker.is_none();
+                                let a_pos = skate_core::living_world::path_follow::point(line, f.a);
+                                ai_controller::track_stuck(c, &rules.controller, pos, f.a, a_pos, f.progress, can_track);
+                                if c.sub_mode != before {
+                                    let anchor = if before == ai_controller::sub_mode::NORMAL { c.stuck.anchor } else { anchor };
+                                    let away = ((pos[0] - anchor[0]).powi(2) + (pos[2] - anchor[2]).powi(2)).sqrt();
+                                    info!("NPC_SKATER_STUCK #{} {} stage {before} -> {} at node {} ({:.1} m from where it stalled, {speed:.1} m/s, on_path {})", npc.id.serial, npc.character, c.sub_mode, f.search_start, away, f.on_path);
+                                }
+                            }
                             // Lost (`sub_82468DD8`): the same one-shot reposition request mode 7 raises (`ctrl+941`); the
                             // next tick hands the skater to controller B, which walks it back (b115).
                             if f.lost && rules.walk_back && sim.walker.is_none() {

@@ -447,3 +447,41 @@ heading lag, the direct plan's first-tick hand-back and the steer sign, the stuc
 Processed +2680 as -OB_Steer, the heading error goes from -1.57 to 0, hand-back "arrived" at tick 134); skate-core
 living_world 241, skate-mods 105, skate-game living world / NPC / modding / skater context / carry / prop 180. Not
 play-tested.
+
+## The stuck tracker: stalled NPC skaters recover in stages (2026-10-15)
+
+**Problem.** In the user's play session of 2026-10-15 (NPC Skater Physics on) two skaters stalled next to their
+line, rolling at 0.2 to 0.3 m/s for 20 to 30 s (user: "a skater that was stuck against a little pillar, it was stuck
+for around 15 seconds before it reset and skated off"). Our only recovery was the "lost" test, which needs the
+skater more than 6 m from its line (`path_follow.rs`, `lost_radius`).
+
+**Root cause.** Retail has a second, independent recovery we had not ported: the stuck tracker `sub_82468240`
+(block `pc+528..+583`), called from the projection `sub_8246C930` with the projection's progress flag. [code, b111]
+Its stage is the controller field `pc+568`, the same field our avoider code already calls the sub-mode
+(`ai_controller::sub_mode`).
+
+**Change.**
+- `path_follow.rs`: the projection's `progress` flag (b110): false when cursor B is ahead of the candidate, A is
+  past the start and the raw projection advanced less than `progress_fraction` (0.025) of A -> B this tick.
+- `ai_controller.rs`: `track_stuck` (the tracker), `stuck_action` (the per-tick reader `sub_8246F818`),
+  `resnap_node` (`sub_8246D168`), `path_reset` (`sub_82468AC8` clears the block on a line switch) and `full_reset`
+  (`sub_82468C10` after a placement). A no-progress tick (after 120 ticks since the last full reset, on the board
+  and not airborne) starts a stall and climbs the stages past 30 / 30 / 2 / 180 / 30 / 3 ticks: 2 re-snaps the line
+  cursor once, 3 raises the walk-back request (5+ nodes ahead, through the existing reposition), 4 holds, 5 posts
+  `WipeOutRequest` (a bail), 6 places the skater at the respawn node. The stall clears after more than 25 progress
+  ticks once the skater is more than 5 m (horizontal) from where it stalled. All values are in
+  `ControllerSettings` (data-driven, mod-overridable); the state is per skater and tick-counted.
+- `npc_sim.rs`: runs the tracker after each projection, the stage actions before it, and the full reset after a
+  bail respawn too ([inferred]: retail's respawner places through the same `sub_8246E558`; without it a stage 5
+  bail would repeat after the respawn). Log: `NPC_SKATER_STUCK #<id> <name> stage <a> -> <b> at node <n>`, the
+  re-snap and the stage 6 respawn.
+
+**Verification.** skate-core `living_world` 308 pass (new: `a_skater_that_never_moves_climbs_every_stage`,
+`a_stall_clears_after_25_progress_ticks_more_than_5_m_away`, `untracked_ticks_and_the_line_start_rule`,
+`stage_4_moves_on_to_the_bail_after_180_ticks`, `resets_keep_or_clear_the_gate`); skate-game 704 pass (known
+upstream setup failure only). Passive 4-minute runs (NPC Skater Physics on, muted, no input): lucas_puig stalled at
+node 70, stage 2 after 1.4 s, re-snapped to node 69 and rode on; a line switch no longer starts a false stall.
+
+**Open.** A skater held at a speed cap of 0 behind a pedestrian that does not move (jerry_hsu, 80 s in the second
+run) is not a tracker case: cursor B does not lead A, which retail counts as progress. What ends that wait in retail
+is being researched (b112). Medium confidence on the re-snap details (b111).
