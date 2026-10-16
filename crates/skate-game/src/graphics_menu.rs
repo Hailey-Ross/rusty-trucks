@@ -362,8 +362,9 @@ const NPC_DRAW_DISTANCE_ROW: usize = 29;
 /// Water look layer (water_look.rs), in EXTRAS: off = the retail water.
 const BETTER_WATER_ROW: usize = 30;
 const NPC_DRAW_DISTANCE_HINT: &str = "NPC draw distance is a QoL option, not retail: peds, NPC skaters and cars appear farther out, with more of them to keep the density. Costs frame time. None turns off all NPC skaters, peds and cars.";
-/// GRAPHICS-section rows of the opt-in living world features, in `OptIn::ALL` order.
-const OPT_IN_ROWS: std::ops::Range<usize> = 40..44;
+/// GRAPHICS-section rows of the opt-in living world features, in `OptIn::ALL` order: one row per opt-in, so the
+/// range follows the list.
+const OPT_IN_ROWS: std::ops::Range<usize> = 40..40 + crate::living_world::opt_ins::OptIn::ALL.len();
 fn opt_in(row: usize) -> crate::living_world::opt_ins::OptIn {
     crate::living_world::opt_ins::OptIn::ALL[row - OPT_IN_ROWS.start]
 }
@@ -1075,6 +1076,15 @@ fn pace(menu: Option<Res<Menu>>, mut pacer: ResMut<FramePacer>) {
 
 #[cfg(test)]
 mod tests {
+    /// Every opt-in row names an opt-in (removing two opt-ins once left rows that panicked when the overlay opened).
+    #[test]
+    fn every_opt_in_row_has_an_opt_in() {
+        assert_eq!(OPT_IN_ROWS.len(), crate::living_world::opt_ins::OptIn::ALL.len());
+        for row in OPT_IN_ROWS {
+            let _ = opt_in(row);
+        }
+    }
+
     use super::*;
     #[test]
     fn culling_can_toggle_with_msaa_and_render_scale_changes() {
@@ -1175,7 +1185,7 @@ mod tests {
         assert!(!SECTIONS.iter().any(|(name,_)| matches!(*name,"SESSION"|"WORLD")));
         menu.select_section(2);
         assert!(!menu.multiplayer && !menu.browser);
-        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW,40,41,42,43]);
+        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW,40,41]);
         menu.daylight = true;
         assert_eq!(menu.rows(), vec![0,1,2,3]);
     }
