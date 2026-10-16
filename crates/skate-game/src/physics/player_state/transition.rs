@@ -30,6 +30,7 @@ impl PhysicalStateCalls for Calls {
                         | PhysicalStateId::WipeoutGround
                         | PhysicalStateId::Teleporting
                         | PhysicalStateId::LandingOnDeck
+                        | PhysicalStateId::Skitching
                 )
         );
     }
@@ -52,6 +53,7 @@ impl PhysicalStateCalls for Calls {
                         | PhysicalStateId::WipeoutGround
                         | PhysicalStateId::Teleporting
                         | PhysicalStateId::LandingOnDeck
+                        | PhysicalStateId::Skitching
                 )
         );
     }
@@ -219,6 +221,29 @@ pub(super) fn set(
     // this record is the coordinator-facing audit/consumer boundary.
     physics.exchange.request_state(requested)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod lifecycle_call_tests {
+    use super::*;
+    // Every state `set` enters/exits must also pass the Calls assertions
+    // (Skitching was missing and panicked on the first live skitch).
+    #[test]
+    fn calls_accept_every_state_set_routes() {
+        use PhysicalStateId::*;
+        let entered = [
+            RevertGround, HandPlant, FootPlant, Boneless, PhysicsGround, PhysicsAirSecondary, PhysicsAir,
+            KnownAir, BipedAir, BipedGround, OffBoardPushing, GroundAnimation, LandingOnDeck, SlideGround,
+            Skitching, WipeoutGround, Teleporting, GrindFiftyFifty, Nonspecific,
+        ];
+        for state in entered {
+            let call = StateCall { state: StateBinding::new(state), active: StateBinding::new(state) };
+            Calls.enter(call);
+            Calls.exit(call);
+        }
+        let call = StateCall { state: StateBinding::new(Sleeping), active: StateBinding::new(Sleeping) };
+        Calls.exit(call);
+    }
 }
 
 #[cfg(test)]

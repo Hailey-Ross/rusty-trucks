@@ -1177,3 +1177,19 @@ trying out skitching") could not show where a grab failed or let go.
   car, tow speed, side distance, hands off and the grab input.
 
 No behaviour change.
+
+## Skitching crash on the first grab (2026-10-15)
+
+**Problem.** The first live skitch (user's session 3, Skitching opt-in on) crashed the game the moment the grab
+latched: `SKITCH_LATCH None -> Some((1, ...))`, then `PhysicsGround -> Skitching`, then a panic at
+`physics/player_state/transition.rs:37`.
+
+**Root cause.** `set` routes Skitching to `skitch_state::enter` (and a no-op exit), but the `PhysicalStateCalls`
+`enter`/`exit` assertions in the same file list every supported state except Skitching, so the lifecycle publication
+asserted before the state's own Enter ran. The registry test only checked that the transition is allowed, not that
+it can be published.
+
+**Change.** Skitching added to both assertion lists. New test `lifecycle_call_tests::calls_accept_every_state_set_routes`
+runs every state `set` enters (and Sleeping on exit) through the Calls assertions.
+
+**Verification.** The new test passes; the user's next skitching session is the live check.
