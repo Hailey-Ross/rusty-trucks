@@ -144,10 +144,7 @@ unsafe extern "system" {
     fn CreatePen(style: i32, width: i32, color: u32) -> Hgdi;
     fn DeleteObject(obj: Hgdi) -> i32;
     fn SelectObject(hdc: Hdc, obj: Hgdi) -> Hgdi;
-    fn RoundRect(hdc: Hdc, l: i32, t: i32, r: i32, b: i32, w: i32, h: i32) -> i32;
     fn Ellipse(hdc: Hdc, l: i32, t: i32, r: i32, b: i32) -> i32;
-    fn MoveToEx(hdc: Hdc, x: i32, y: i32, old: *mut [i32; 2]) -> i32;
-    fn LineTo(hdc: Hdc, x: i32, y: i32) -> i32;
     fn SetTextColor(hdc: Hdc, color: u32) -> u32;
     fn SetBkMode(hdc: Hdc, mode: i32) -> i32;
     fn CreateFontW(h: i32, w: i32, esc: i32, orient: i32, weight: i32, italic: u32, underline: u32, strike: u32, charset: u32, out: u32, clip: u32, quality: u32, pitch: u32, face: *const u16) -> Hgdi;
@@ -155,6 +152,18 @@ unsafe extern "system" {
     fn CreateCompatibleBitmap(hdc: Hdc, w: i32, h: i32) -> Hgdi;
     fn BitBlt(dst: Hdc, x: i32, y: i32, w: i32, h: i32, src: Hdc, sx: i32, sy: i32, rop: u32) -> i32;
     fn DeleteDC(hdc: Hdc) -> i32;
+    fn Polygon(hdc: Hdc, points: *const [i32; 2], count: i32) -> i32;
+    fn StretchBlt(dst: Hdc, x: i32, y: i32, w: i32, h: i32, src: Hdc, sx: i32, sy: i32, sw: i32, sh: i32, rop: u32) -> i32;
+    fn SetStretchBltMode(hdc: Hdc, mode: i32) -> i32;
+    fn SetBrushOrgEx(hdc: Hdc, x: i32, y: i32, old: *mut [i32; 2]) -> i32;
+    #[cfg(test)]
+    fn GetDIBits(hdc: Hdc, bitmap: Hgdi, start: u32, lines: u32, bits: *mut c_void, info: *mut c_void, usage: u32) -> i32;
+}
+#[cfg(test)]
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetDC(hwnd: Hwnd) -> Hdc;
+    fn ReleaseDC(hwnd: Hwnd, hdc: Hdc) -> i32;
 }
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -177,10 +186,17 @@ const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | (g as u32) << 8 | (b as u32) << 16
 }
 const BACKGROUND: u32 = rgb(14, 14, 17);
-const DECK: u32 = rgb(140, 97, 56);
-const TRUCK: u32 = rgb(158, 163, 173);
-const WHEEL: u32 = rgb(237, 232, 214);
-const WHEEL_MARK: u32 = rgb(115, 110, 102);
+const GRIP: u32 = rgb(34, 34, 38);
+const PLY: u32 = rgb(214, 176, 124);
+const PLY_DARK: u32 = rgb(150, 104, 62);
+const PLY_EDGE: u32 = rgb(92, 62, 36);
+const METAL: u32 = rgb(176, 181, 191);
+const METAL_DARK: u32 = rgb(96, 100, 110);
+const WHEEL: u32 = rgb(240, 235, 220);
+const WHEEL_EDGE: u32 = rgb(168, 162, 148);
+const WHEEL_CORE: u32 = rgb(86, 146, 214);
+const BEARING: u32 = rgb(52, 54, 60);
+const SHADOW: u32 = rgb(7, 7, 9);
 const TEXT_BRIGHT: u32 = rgb(217, 217, 217);
 const TEXT_DIM: u32 = rgb(110, 110, 115);
 const TITLE: u32 = rgb(160, 160, 165);
@@ -282,6 +298,100 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, wparam: usize, lparam: 
 }
 
 /// One frame, drawn into a memory bitmap and copied over (no flicker).
+/// The board, side view, `len` px long with its left end at `x` and its top at `y`: kicked nose and tail, griptape
+/// over a maple edge, two trucks, solid urethane wheels, and a
+/// shadow on the ground. Drawn at 4x and scaled down with HALFTONE, so the edges are smooth.
+unsafe fn draw_board(dc: Hdc, x: i32, y: i32, len: i32) {
+    const S: f32 = 4.0;
+    const H: i32 = 40;
+    const PAD: i32 = 6;
+    let l = len as f32;
+    // SAFETY: GDI calls on a DC and objects created here and released before return.
+    unsafe {
+        let (bw, bh) = (((len + 2 * PAD) as f32 * S) as i32, (H as f32 * S) as i32);
+        let big = CreateCompatibleDC(dc);
+        let bitmap = CreateCompatibleBitmap(dc, bw, bh);
+        let old_bitmap = SelectObject(big, bitmap);
+        let bg = CreateSolidBrush(BACKGROUND);
+        FillRect(big, &Rect { left: 0, top: 0, right: bw, bottom: bh }, bg);
+        DeleteObject(bg);
+        let p = |px: f32, py: f32| [((px + PAD as f32) * S) as i32, (py * S) as i32];
+        let fill = |color: u32, edge: u32, edge_px: f32, shape: &dyn Fn(Hdc)| {
+            let brush = CreateSolidBrush(color);
+            let pen = if edge_px > 0.0 { CreatePen(0, (edge_px * S) as i32, edge) } else { CreatePen(5, 0, 0) };
+            let (ob, op) = (SelectObject(big, brush), SelectObject(big, pen));
+            shape(big);
+            SelectObject(big, ob);
+            SelectObject(big, op);
+            DeleteObject(brush);
+            DeleteObject(pen);
+        };
+        let circle = |cx: f32, cy: f32, r: f32| {
+            let (a, b) = (p(cx - r, cy - r), p(cx + r, cy + r));
+            move |d: Hdc| {
+                Ellipse(d, a[0], a[1], b[0], b[1]);
+            }
+        };
+
+        // Shadow on the ground.
+        let (a, b) = (p(10.0, 32.5), p(l - 10.0, 37.5));
+        fill(SHADOW, 0, 0.0, &move |d: Hdc| {
+            Ellipse(d, a[0], a[1], b[0], b[1]);
+        });
+
+        // The deck's top line: tail kick, flat middle, nose kick (the nose a little longer and higher).
+        let top: Vec<(f32, f32)> = vec![
+            (1.0, 3.0), (5.0, 3.6), (11.0, 5.6), (18.0, 8.6), (25.0, 11.0), (31.0, 12.0),
+            (l - 33.0, 12.0), (l - 26.0, 10.8), (l - 18.0, 7.8), (l - 10.0, 4.4), (l - 4.0, 2.4), (l - 1.0, 2.0),
+        ];
+        let deck_at = |down: f32| -> Vec<[i32; 2]> { top.iter().map(|&(px, py)| p(px, py + down)).collect() };
+        let outline = |upper: f32, lower: f32| -> Vec<[i32; 2]> {
+            let mut v = deck_at(upper);
+            let mut under = deck_at(lower);
+            under.reverse();
+            v.extend(under);
+            v
+        };
+        // Maple edge (5 px thick) with a darker centre ply, then the griptape on top.
+        let wood = outline(0.0, 5.0);
+        fill(PLY, PLY_EDGE, 0.5, &move |d: Hdc| {
+            Polygon(d, wood.as_ptr(), wood.len() as i32);
+        });
+        let ply = outline(2.6, 3.4);
+        fill(PLY_DARK, 0, 0.0, &move |d: Hdc| {
+            Polygon(d, ply.as_ptr(), ply.len() as i32);
+        });
+        let grip = outline(0.0, 1.4);
+        fill(GRIP, 0, 0.0, &move |d: Hdc| {
+            Polygon(d, grip.as_ptr(), grip.len() as i32);
+        });
+
+        // Trucks: baseplate under the flat of the deck, the hanger down to the axle.
+        for ax in [40.0, l - 42.0] {
+            let plate = [p(ax - 10.0, 17.0), p(ax + 10.0, 17.0), p(ax + 9.0, 19.5), p(ax - 9.0, 19.5)];
+            fill(METAL, METAL_DARK, 0.5, &move |d: Hdc| {
+                Polygon(d, plate.as_ptr(), 4);
+            });
+            let hanger = [p(ax - 6.0, 19.5), p(ax + 6.0, 19.5), p(ax + 3.5, 26.0), p(ax - 3.5, 26.0)];
+            fill(METAL, METAL_DARK, 0.5, &move |d: Hdc| {
+                Polygon(d, hanger.as_ptr(), 4);
+            });
+            // Wheel: solid urethane with a coloured core and the bearing.
+            let (cx, cy) = (ax, 26.5);
+            fill(WHEEL, WHEEL_EDGE, 0.6, &circle(cx, cy, 7.5));
+            fill(WHEEL_CORE, 0, 0.0, &circle(cx, cy, 3.9));
+            fill(BEARING, 0, 0.0, &circle(cx, cy, 1.7));
+        }
+
+        SetStretchBltMode(dc, 4); // HALFTONE
+        SetBrushOrgEx(dc, 0, 0, std::ptr::null_mut());
+        StretchBlt(dc, x - PAD, y, len + 2 * PAD, H, big, 0, 0, bw, bh, 0x00CC_0020);
+        SelectObject(big, old_bitmap);
+        DeleteObject(bitmap);
+        DeleteDC(big);
+    }
+}
+
 unsafe fn paint(hwnd: Hwnd) {
     // SAFETY: GDI calls on DCs and objects created here and released before return.
     unsafe {
@@ -309,36 +419,7 @@ unsafe fn paint(hwnd: Hwnd) {
         const SPEED: f32 = 170.0;
         let travelled = t * SPEED;
         let x = (travelled % (w + BOARD_W) as f32) as i32 - BOARD_W;
-        let y = 64;
-        let no_pen = CreatePen(5, 0, 0);
-        let old_pen = SelectObject(dc, no_pen);
-        let deck = CreateSolidBrush(DECK);
-        let old_brush = SelectObject(dc, deck);
-        RoundRect(dc, x, y, x + BOARD_W, y + 10, 10, 10);
-        let truck = CreateSolidBrush(TRUCK);
-        SelectObject(dc, truck);
-        let wheel = CreateSolidBrush(WHEEL);
-        const AXLES: [i32; 2] = [32, BOARD_W - 32];
-        const WHEEL_D: i32 = 22;
-        let turn = travelled / (WHEEL_D as f32 / 2.0);
-        for ax in AXLES {
-            SelectObject(dc, truck);
-            RoundRect(dc, x + ax - 14, y + 9, x + ax + 14, y + 16, 3, 3);
-            SelectObject(dc, wheel);
-            let (cx, cy) = (x + ax, y + 16 + WHEEL_D / 2 - 2);
-            Ellipse(dc, cx - WHEEL_D / 2, cy - WHEEL_D / 2, cx + WHEEL_D / 2, cy + WHEEL_D / 2);
-            let mark = CreatePen(0, 3, WHEEL_MARK);
-            let prev = SelectObject(dc, mark);
-            MoveToEx(dc, cx, cy, std::ptr::null_mut());
-            LineTo(dc, cx + (turn.sin() * 8.0) as i32, cy - (turn.cos() * 8.0) as i32);
-            SelectObject(dc, prev);
-            DeleteObject(mark);
-        }
-        SelectObject(dc, old_brush);
-        SelectObject(dc, old_pen);
-        for o in [deck, truck, wheel, no_pen] {
-            DeleteObject(o);
-        }
+        draw_board(dc, x, 52, BOARD_W);
 
         SetBkMode(dc, 1);
         let face = wide("Segoe UI");
@@ -374,6 +455,49 @@ unsafe fn paint(hwnd: Hwnd) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Renders the board alone to a 24-bit BMP (`SKATE_SPLASH_BOARD_BMP=<path>`) to look at it without starting the game.
+    #[test]
+    #[ignore = "writes an image for a visual check"]
+    fn board_renders_to_a_bitmap() {
+        let Some(path) = std::env::var_os("SKATE_SPLASH_BOARD_BMP") else { return };
+        let (w, h) = (240, 60);
+        // SAFETY: a memory DC and bitmap created and released here; GetDIBits copies into an owned buffer.
+        let pixels = unsafe {
+            let dc = CreateCompatibleDC(std::ptr::null_mut());
+            let screen = GetDC(std::ptr::null_mut());
+            let bitmap = CreateCompatibleBitmap(screen, w, h);
+            let old = SelectObject(dc, bitmap);
+            let bg = CreateSolidBrush(BACKGROUND);
+            FillRect(dc, &Rect { left: 0, top: 0, right: w, bottom: h }, bg);
+            DeleteObject(bg);
+            draw_board(dc, 30, 6, 180);
+            SelectObject(dc, old);
+            let mut info = [0u32; 10];
+            info[0] = 40;
+            info[1] = w as u32;
+            info[2] = h as u32;
+            info[3] = 1 | 24 << 16;
+            let row = ((w * 3 + 3) & !3) as usize;
+            let mut buf = vec![0u8; row * h as usize];
+            GetDIBits(dc, bitmap, 0, h as u32, buf.as_mut_ptr().cast(), info.as_mut_ptr().cast(), 0);
+            DeleteObject(bitmap);
+            DeleteDC(dc);
+            ReleaseDC(std::ptr::null_mut(), screen);
+            buf
+        };
+        let mut file = Vec::new();
+        let size = 54 + pixels.len() as u32;
+        file.extend_from_slice(b"BM");
+        for v in [size, 0, 54, 40, w as u32, h as u32] {
+            file.extend_from_slice(&v.to_le_bytes());
+        }
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&24u16.to_le_bytes());
+        file.extend_from_slice(&[0u8; 24]);
+        file.extend_from_slice(&pixels);
+        std::fs::write(path, file).unwrap();
+    }
 
     #[test]
     fn steps_and_items_become_finished_lines() {
