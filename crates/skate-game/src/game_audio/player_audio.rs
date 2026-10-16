@@ -43,6 +43,8 @@ pub(crate) struct PlayerAudio {
     /// The components run (banks loaded, classes bound).
     pub(crate) components: bool,
     grind: Grind,
+    /// HandGrabs' skitch part (`sub_824EC488`): the hand grab pair at a skitch, `HandGrabs.in0` while towed.
+    hand_grabs: skate_audio::player::hand_grabs::HandGrabs,
     speed: SenseOfSpeed,
     foot_drag: FootDrag,
     skid: Skid,
@@ -159,6 +161,7 @@ impl PlayerAudio {
             last_camera: None,
             components,
             grind,
+            hand_grabs: Default::default(),
             speed: SenseOfSpeed::default(),
             foot_drag: FootDrag::default(),
             skid: Skid::default(),
@@ -284,6 +287,8 @@ impl PlayerAudio {
         inputs::write_rail(m, s.grinding, self.was_grinding);
         self.was_grinding = s.grinding;
         inputs::write_off_board(m, s);
+        // HandGrabs.in0 from the skitch latch (set by `update`, so it follows one MixMap write later).
+        m.set_input(keys::hand_grabs(0), 0, self.hand_grabs.input());
         landed
     }
 
@@ -585,6 +590,7 @@ impl PlayerAudio {
             let before = self.collision.starts;
             self.collision.update(m, &self.tuning.collision, s.dt, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref()));
             self.posts += self.collision.starts - before;
+            self.hand_grabs.update(s, &self.tuning.hand_grab, &mut super::mod_audio::Observed::new(&mut rt.splice_host(), &mut self.events, super::mod_audio::Source::Player, 0).rules(self.rules.as_deref()));
         }
         if self.footsteps_on {
             let off = Owner { mixmap: m, key: keys::off_board(0) };

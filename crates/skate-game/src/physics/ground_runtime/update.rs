@@ -117,7 +117,7 @@ impl GroundState {
         //82D37C88 branches on Processed2476 bit22: the skitch query 82D39BB8 (mode 255, then the latch on the
         //owner's validated results), else 82D749D0 on the same PlayerGrabSpline owner as offboard.
         if p.flags_2476 & 0x0040_0000 != 0 {
-            super::skitch::query(&mut self.state, targets.offboard_grab, p, &settings.skitch);
+            super::skitch::query(&mut self.state, targets.offboard_grab, p, frame.toolkit.effective[3], &settings.skitch);
         } else {
             targets.offboard_grab.invalidate();
         }

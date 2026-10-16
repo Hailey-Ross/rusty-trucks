@@ -125,6 +125,11 @@ struct SpeechVoiceJson {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 struct SpeechTuningJson {
+    /// `+0` / `+4` (setup exports them unnamed; a mod's tuning may use the names).
+    #[serde(alias = "unknown_0")]
+    start_delay: f32,
+    #[serde(alias = "unknown_4")]
+    stream_gap: f32,
     gap: f32,
     flags_12: Vec<u8>,
     priority: i32,
@@ -270,6 +275,8 @@ impl WorldTuningJson {
                 Some((
                     id.parse().ok()?,
                     skate_audio::world::speech_manager::EventTuning {
+                        start_delay: t.start_delay,
+                        stream_gap: t.stream_gap,
                         gap: t.gap,
                         priority: t.priority,
                         interrupt: flags(1),
@@ -746,6 +753,7 @@ pub(super) fn frame(
     mut speech: ResMut<super::world_speech::WorldSpeech>,
     listener: Query<&GlobalTransform, With<super::GameAudioListener>>,
 ) {
+    let _span = super::hitch_parts::span(super::hitch_parts::WORLD_SOURCES);
     // Inert: nothing published, expected, held or prefetched.
     let idle = owners.vehicles.is_empty() && owners.peds.is_empty() && host.vehicles.is_empty() && host.ped_objects.is_empty();
     if idle && !owners.expected && host.prefetch.requested.is_empty() {

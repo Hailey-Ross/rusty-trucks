@@ -1193,3 +1193,210 @@ it can be published.
 runs every state `set` enters (and Sleeping on exit) through the Calls assertions.
 
 **Verification.** The new test passes; the user's next skitching session is the live check.
+
+## Skitching holds: crash, held car, hands and sub-mode writes (2026-10-16)
+
+**Problem.** Session 3 (2026-10-16) crashed on the first grab ("PreState requires the selected state's actual
+PredictFutureOfDeck; state=Skitching"). After that fix, session 4: "skitching sorta works, i had to try like repeatedly to grab the car and when it finally did, my arms were all crossed over eachother and i was immediately flung by the car. I couldn't really control like you can in retail leaning with the turns to keep skitching the car." and "both arms just grab spots on the back of the car, not the shoulders of the car." The log showed one latch, sub-mode 1 for 6.7 s, then the release with both hands off.
+
+**Root causes and changes** (all [code], TU3 recomp read by main):
+1. PreState and FillPhysOut had no Skitching entry. Skitching's deck prediction is vtable `0x82327398` slot 6
+   (`82D34DA8`); added to `pre_state::predicts_deck` and `publication::has_output_owner`. Test
+   `every_supported_state_has_a_deck_prediction_and_an_output_owner`.
+2. Step 14 of the gated body (`82585DD8`) re-requests the held car's grab spline every tick; ours published the record
+   once, so the hold dropped after 2 ticks. `skitch_state::update` now calls `offboard_grab.request_primary(car)` each
+   ready tick (`vehicles::grab_object_at` builds the car's grab object).
+3. `82D49580` reads the hand-off flags (1328 / 1332, 1 = off) directly; we passed them inverted.
+4. Crossed arms: `82D48148` re-orients the held record copy itself (state+1024): when the board side
+   (Processed+128 row 0) points against the direction (+112) it swaps +64 / +80, negates +112 and toggles the reverse bit
+   (+200 bit 0x20, read by the spline walk `82D2D550`). Ours flipped only a local copy inside the frame step, so the
+   hands (`82D4A378`: grip parameter = posed hand 908 + the hand part's skeleton-local x) and the grab point used the
+   un-flipped edge and each hand reached to the mirrored point. Headless: shoulder A +0.13 m across the car, target A
+   -0.08 m before; +0.17 m after. `skitch_state::update` re-orients endpoints and direction before the frame step.
+5. The per-mode writes of `82D49AB8` were missing (switch on 1324): 0 `904 = clamp(864, +-928)`; 1 both hands grip
+   again (`1328 = 1332 = 0`) every tick; 2 the edge point `+-932` latches into 900 once (1344 bit 0x02), a snapped hand
+   (0x01) takes it as 864, the push timer 960 counts (868 and 836 same sign, |868| > 50), the outer hand lets go
+   (836 > 0: A off); 3 the same latch at `+-(928 + 0.8)` (`Hash_AED1D7B20DA7CBBA` = 0x3F4CCCCD, checked in the export),
+   both hands off. Without the mode 1 write one transient "off" stayed for the whole tow and the tail let go.
+   New `skitching::mode_writes` (+ `SkitchSubModeSettings::step_off`), run after the shimmy chain as in retail's call
+   order (`82D48148`, `82D49580`, `82D48C98`, `82D49AB8`, `82D4A378`, `82D4AC38`, `82D4A0C0`, `82D47BD8`, `82D4AFB8`);
+   the shimmy now snaps to 900 (it read the hold target 904). The 960 timer moved out of the sub-mode step (retail
+   counts it only in mode 2, and `82D49580` reads last tick's value).
+6. Leaving sub-mode 0 writes `908 = 864 = 836` and `948 = 0` (`82D49580`); ported (`SkitchSubMode::left_zero`).
+
+Checked and NOT changed: "tows fast" (1345 bit 0x40) is rewritten every tick in `82D48148` (r29 = 0, set to 1 only
+when 832 >= 3.0, `Hash_1F85F500908C5E17` = 3.0), as ours does; the research agent's "sticky" reading was wrong.
+
+**Verification.** Headless `a_skater_latches_onto_a_traffic_car_rides_and_lets_go` now asserts that each gripping
+hand's target is on its own shoulder's side of the bumper and that sub-mode 1 keeps both hands on for at least a second
+(it fails with the re-orient disabled). Towed at the car's speed with a steady 0.47 m gap; the spring stays within
++-6 N where it swung +-500 N before. With the left stick held the hand target shimmies along the bumper (0 to 0.74 of
+0.78) and the lean yaw follows (0.2 rad), so the stick reaches the skitch. skate-core `each_sub_mode_writes_its_hands_and_edge_point`. New log line `SKITCH_SUBMODE` (every `82D49580` switch with
+stick, turn, spin).
+
+**Open.** The latch needing repeated tries (research b140). Whether the truck tilt (`82D92440`) reads the stick in
+state 104. The grab point is still the chord, not the polyline walk with the reverse bit.
+
+## Skitching: the latch's own limits and the hand grab sound (2026-10-16)
+
+**Problem.** Session 4: "i had to try like repeatedly to grab the car". Session 5: "Skitching works better but seems to push you off sometimes.", "Additionally skitching sounds incorrect when your riding behind the vehicle", "one of the vehicles forced me off even though it was barely moving in a straight line."
+
+**Latch limits** [code + image, research b140, main checked]. `82D39D98` re-runs CanGrabSpline (`82E08DB8`) with its
+own limits: margin `0x82165A10` = 0.0, angles `0x8209918C` = 60 and `0x82099190` = 40 degrees (r17 / r16, times the
+degree constant `0x8206D110`). Ours reused the query's 0.25 / 60 / 30, rejecting cars near the spline ends.
+New `SkitchQuerySettings::latch_margin` / `latch_angle_a_degrees` / `latch_angle_b_degrees` and
+`ground_runtime::skitch::latch_limits`; test `the_latch_rechecks_with_its_own_wider_limits`. The latch window itself
+(bumper within reach 1.0 + 0.1 s of closing ahead of the root) matched retail already. Open from b140: the spline point
+(retail: the line's crossing of the box's x = 0 plane, ours the closest chord point), +2668 height, the query's box vs
+sphere test.
+
+**Hand grab sound** [code + data, research b141, main checked]. The packer `sub_827A1B78` sets record `+152` bit
+`0x100` while the state is 104 (`0x827A29EC`); the bridge `sub_824B0DA8` copies it to audio state `+744`; its only
+reader `sub_824EC488` (HandGrabs, local player only) starts the `aud_splicer` `handgrab` pair (Skate_Collisions
+0x3C5, Skate_Metal 0x1D0, checked in the vault dump) on the eEQChain bus of `CCDFABBAEEA33EAE` (= 2 in
+`aud_randomeqtuning` default) at the rising edge, and `HandGrabs.in0` = 32767 while latched (the MixMap fades the
+SkateBoard object by it). Rolling itself has no skitch case in retail. Ours had none of this. New
+`skate_audio::player::hand_grabs` (`AudioState::skitching`, `PlayerTuning::hand_grab`, exporter `HANDGRAB` /
+`HANDGRAB_EQ`); tests `a_skitch_starts_the_hand_grab_pair_once_and_holds_the_input`,
+`other_skaters_play_no_hand_grabs`, `test_hand_grab_pair_and_bus_come_from_the_splicer_and_eq_records`. The input is
+written at the next MixMap write after the latch (one write later than retail's same-update write).
+
+**Pushed off.** Not reproduced headless: a 0.6 m/s car straight ahead held for 300 ticks. The session's early
+releases were all sub-mode 1 with both hands off, which only the hands step can set (lean yaw outside -60..35 /
+-35..60 degrees, or a shoulder more than 1.6 m from its grip point). The release log line now carries `lean_yaw_deg`
+and `reach` so the next session shows which. Open.
+
+## Skitching: the stick frees a hand held at the edge (2026-10-16)
+
+**Problem.** Session 6: "There were times that I was stuck on the side edge of the car skitching and couldn't move away from it and recenter myself by shifting to the center of the car, this also happened while going straight and not just in turns or curves." The log shows the along position at -1.0 to -1.3 of the half length for seconds, sub-mode 2 -> 1 with the stick at 1.00 and the position unchanged.
+
+**Root cause** [code, main read `82D48C98`]. At `82D48FA8..82D49034` (r22 = 1, r25 = 0) r28 = active (|924| > 0.01 or the
+event 1000 != 0); with r28 set the chain clears 1344 bits 0x02 (edge latched) and 0x01 (snapped), only an idle hand keeps
+them (r27, read at `82D492D4`, `82D493D0`, `82D49478`). Ours cleared them only while idle and unlatched, so once a hand
+latched the edge in sub-mode 2 it stayed snapped there (`target = 900` every tick) and the stick could not move it.
+
+**Change.** `ShimmyState::step` clears `latched` / `snapped` when active and uses the kept latch as `hold`. Test
+`the_stick_frees_a_hand_snapped_to_the_edge`. The session also showed long tows (9 s, 14 s) ending on the user's
+release, and no hand-off releases in sub-mode 1 after the per-mode writes.
+
+## Cars collide with their retail chassis mesh (2026-10-16)
+
+**Problem.** Session 7: "I did however hear a noise like the collision for the player and the car were colliding or something as i was skitching the whole time. It started when I grabbed the car and stopped only when I let go or was flung off." The log: 54 body-poster arm hits (regions 2 / 3, material 100) and 46 BodySlide posts in a 14 s tow; headless, the upper arms (parts 5 / 9) touched the car every tick.
+
+**Root cause** [code + data, research b143, main checked the install]. The exporter builds each car's chassis mesh
+(`recipes/<recipe>/glb/collision`) but the model entry the game loads copied only the grab and grind splines: the
+installed `vehicles.json` had the mesh on 17 of 18 recipes and on 0 of 18 models, so every car collided as its bounds
+box. The box's rear face stands vertical behind the bumper, between a skitcher's hands and shoulders. Retail has no
+held-car exception (group pair 5 / 8 allowed in `82765EF0`, state 104 changes only the 82D91298 parts, the `82BD80D8`
+held object argument is unused by `82BD4A30`), so the mesh is the fix, not a filter.
+
+**Change.** `living_world_vehicles.py` copies `collision` onto the model; `vehicles::parse_vehicle_data` falls back to
+the recipe's mesh for installs exported before this (no setup refresh needed). Tests
+`a_model_without_its_own_collision_takes_the_recipe_mesh`; the headless skitch test now tows behind the taxi's retail
+mesh and asserts no arm contact while towed in the open (ticks 10..70; with the box: contact every tick).
+
+**Open.** A session confirming the arm hits are gone. Every traffic collision (car knock-downs, NPC skaters) now
+uses the mesh too; `a_traffic_car_knocks_the_skater_down_above_the_contact_limit` passes with it.
+
+## Skitching hitches: audio files read on the game thread (2026-10-16)
+
+**Problem.** Session 8: "considerable hitching that made it difficult to hold onto the cars as I skitched." The hitch
+rate was the same in sessions 7 and 8 (0.9 per second); the large ones (150 to 870 ms) are the `audio` stage of the
+`FRAME_HITCH` line ([doc 25](25-perf-diagnostics.md)), while towed fast, not at the latch.
+
+**Root cause** [log + code]. A sound's first play reads its file from disk on the game thread, and the install sits on
+an HDD. In `game-20261016-142030`, 6 of the 8 audio-stage hitches over 100 ms after loading start in the frame a sound
+first plays: a living-world speech line 3 times (257, 181, 723 ms) and a location set one-shot 3 times
+(`delivery_truck_in_2` 153 ms, `Tire_Squeals` 867 ms, `Siren_city_4` 260 ms). The speech take is read and decoded in
+`world_speech::Voices::ensure` while the native runtime lock is held, so the audio render waited too
+(`audio_lock_wait` 713 ms at 20:23:09, an audible gap). The set one-shot is read in `Library::clip` from
+`random_sets::update`. The other 2 (264, 395 ms) have no log event. Note: the hitch line's `audio` stage runs from the
+end of Animation to the end of `CueSet`, so other Update systems can land in it.
+
+**Change (step 1).**
+- Location sets read a bank's files when the scheduler picks the entry, on an `audio-warm` worker thread
+  (`Library::warm_bank`); retail's EmitterSystem also loads the bank at the pick and plays it seconds later. `clip`
+  builds the clip from the read-ahead bytes (the same bytes), and reads on the game thread as before when they are not
+  there yet. Bytes of an entry that unloads unplayed, or of a rebuilt set, are dropped (`cool_bank`).
+- `FRAME_HITCH` gains `audio_parts=[...]`: always-on wall time of the audio frame systems, the game-thread bank loads
+  (`bank_load`) and first-play file reads (`file_read`), those over 1 ms, largest first (`game_audio/hitch_parts.rs`).
+- Test `read_ahead_gives_the_same_clip_bytes`.
+
+**Change (step 2, speech).** Research `speech-stream-start` [code, recomp reference, main checked our side]: retail's
+start (`sub_82C5DC80`) takes the stream in the same update (active, speaking byte, interrupt rules, queued requests
+wait, stop works) and leaves the data to the library's stream player; the game code has no ready check for normal
+lines (only scripted dialogue holds a stream, `sub_824A4EE8` / `sub_82C5E7C8`). So the port keeps every logical step
+at the request and only the voice waits for its data:
+- `SpeechVoices::prepare` (skate-audio): Ready / Loading / Failed. A Loading line keeps its stream with no voice; the
+  cut and speaker checks run as for a playing line; the voice opens once the take is in (one `Started`). Failed ends
+  the line as a failed open did. The default is Ready, so other hosts are unchanged.
+- The game's speech host reads and decodes takes on a `speech-takes` worker (`world_speech::TakeLoader`, keyed by
+  path, 16 uncollected takes kept). A take the worker could not read answers Ready, so the old read runs and reports
+  the missing decode once, as before. Headless tests keep the read at the start (`cfg(test)`).
+- The read no longer happens under the native runtime lock in play, so the audio render no longer waits on it.
+- Tests `a_loading_take_holds_its_stream_and_opens_when_it_is_in`, `the_take_loader_decodes_like_the_game_thread`.
+
+**Difference to retail, kept on purpose.** A line becomes audible when its take is read (a warm read is a few ms, a
+cold HDD read up to the stalls above); retail's audible start depends on its own stream buffering, which the
+research could not decode. The logical timing (stream taken, speaking, queue) is unchanged and deterministic.
+
+**Open.** Retail delays a line's start by the event's speech tuning `+0` and blocks a stream for tuning `+4` after a
+line ends (setup exports both as `unknown_0` / `unknown_4`, `world_audio.py:374`; the engine reads neither): a parity
+follow-up.
+
+**Verification.** Session 10 (2026-10-16, this change, 241 s, 5 tows, 16 speech lines started): no hitch over 100 ms
+(session 9 on the build before: 20, 15 of them at a first play); the worst two (68, 52 ms) were render frames with
+no audio system over 1 ms. User: "there we some minor hitches but nothing as bad as before." and "no notice of ped
+lines but they really didn't talk much while i was playing".
+
+## Skitching: both bumpers keep the one pressed first (2026-10-16)
+
+**Problem** [code]. `PlayerControls.bumper_state_502` / `bumper_state_104` were never set, so the controller's
+bumper arbitration (`82598FE0`, ported in `skate-core/src/input/controller.rs`) always dropped bit 28 when both bumpers
+were held, also while skitching.
+
+**Root cause / change** [code, main read the recomp]. Retail's caller `825999F0` reads the skater's current state
+(`*(*(x+28)+16)`) and passes `state == 502` (off-board pushing) and `state == 104` (skitching) to `825992D8`; in those
+states both bumpers held keep the one pressed first. `PlayerControls::update_for_physics` now sets both flags from
+`physical.state.state_16` before the controller update. Test `both_bumpers_keep_the_first_only_in_states_502_and_104`.
+
+## Skitching: the grab point follows the bumper spline (2026-10-16)
+
+**Problem** [code]. The grab point and the hands' grip points were taken on the straight chord between the record's
+ends (`skitch_state.rs`, NOT RETAIL YET note), so on a curved bumper they missed the curve sideways and in height.
+
+**Retail** [code, research b148 (Ghidra + recomp asm), main checked the offsets in the pseudocode]. `82D2D550` looks a
+point up by a signed position `t` along the record from the middle of its ends: at or past +-half (`+180`) the ends
+(`+64` / `+80`); otherwise u = t + half (reverse bit `+200` 0x20: half - t); the geometry's points (`+196` -> `+48`,
+count `+68`) are walked first to last, each segment counting its length projected onto the first -> last direction
+(floored at 1e-4, `0x8209BE90`), and the segment that takes the total past u holds the point, to world by the record
+frame. Callers: the frame step `82D48148` (`t` = state+836) and the hand targets `82D4A378`; the latch does not use it
+(its point stays a separate leftover, b140).
+
+**Change.** `grab_scene::at_along` (skate-core); the published records' geometry is kept beside the 72-word copy
+(`SkaterRuntime::grab_geometry`, set where `82762AB0` copies the record); the skitch step builds its point lookup from
+the re-oriented held copy (ends swapped, +112 negated, reverse bit toggled), the chord only without geometry. Test
+`along_lookup_follows_the_spline_and_its_reverse_bit`.
+
+**Open.** Whether the geometry's points are the raw control points or a smoothed list (b148: medium, control points).
+
+## Skitching: the latch point is the edge's centreline crossing (2026-10-16)
+
+**Problem** [code]. The latch (`82D39D98`) timed each candidate edge from the point of its chord closest to the skater's
+centre of mass (`ground_runtime/skitch.rs`).
+
+**Retail** [code, research b149, main checked the formula in the pseudocode]. Both edge ends (swapped so the second has
+the larger box-local x) go into the query box's frame; the point is where the edge crosses the box's local x = 0 plane,
+the skater's centreline: t = l1.x / (l1.x - l2.x), unclamped, no fallback (a parallel edge gives NaN, and the time's
+fsel turns it into 0). The query's segment test (`82ADD910`) is against a sphere of radius |extents| at the box
+centre (`82ADD6A8`), which ours already does.
+
+**Change.** `latch` takes that crossing (`bounds.frame`: right, up, forward, centre). Tests: the skitch latch tests and
+the headless tow `a_skater_latches_onto_a_traffic_car_rides_and_lets_go`.
+
+`+2668` [code, research b150, main checked the store in the recomp]: P.y minus Processed+176 .y, the effective board
+transform's row 3 (the deck position, written only by `82C013F0`; ours `BoardToolkit::effective[3]`), set for every
+gated candidate before the time gate. `query` now takes the deck and writes it (`LatchDecision::height`). Test
+`the_latch_height_is_the_crossing_above_the_deck`.
+
+**Open.** `+2736` and `82D91298` on latch (documented above); who reads the published height (block +32 +280).

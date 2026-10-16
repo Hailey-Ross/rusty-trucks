@@ -312,9 +312,24 @@ impl NavMesh {
     /// a point in the gap of a tile seam lands on its own layer's edge, not on a wall-top layer
     /// overhead (fix 17).
     pub fn locate(&self, p: Vec3) -> Option<NavPoint> {
+        self.locate_where(p, &|area| self.rules.walkable(area))
+    }
+
+    /// [`Self::locate`] over every polygon whatever its area (retail's NavPower locate `82C46348` takes any area;
+    /// its callers judge the polygon, e.g. the conversation waypoints by area cost).
+    pub fn locate_any(&self, p: Vec3) -> Option<NavPoint> {
+        self.locate_where(p, &|_| true)
+    }
+
+    /// The area byte of a polygon.
+    pub fn area(&self, poly: u32) -> u8 {
+        self.polys[poly as usize].area
+    }
+
+    fn locate_where(&self, p: Vec3, accept: &dyn Fn(u8) -> bool) -> Option<NavPoint> {
         let mut best: Option<(f32, u32)> = None;
         for &k in self.candidates(p[0], p[2]) {
-            if !self.rules.walkable(self.polys[k as usize].area) || !self.contains_xz(k, p[0], p[2]) {
+            if !accept(self.polys[k as usize].area) || !self.contains_xz(k, p[0], p[2]) {
                 continue;
             }
             let dy = (self.height_at(k, p[0], p[2]) - p[1]).abs();
@@ -336,7 +351,7 @@ impl NavMesh {
             for j in j0..=j1 {
                 for &k in self.grid.get(&(i, j)).map_or(&[][..], |v| v.as_slice()) {
                     let poly = &self.polys[k as usize];
-                    if !self.rules.walkable(poly.area) || (poly.centre[1] - p[1]).abs() > self.rules.locate_height {
+                    if !accept(poly.area) || (poly.centre[1] - p[1]).abs() > self.rules.locate_height {
                         continue;
                     }
                     let n = poly.verts.len();

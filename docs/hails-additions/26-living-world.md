@@ -81,6 +81,12 @@ the file of their topic (and get a line here).
 - [Simulated NPC skaters bail and respawn (M7, 2026-10-09)](26e-living-world-skater-ai.md#simulated-npc-skaters-bail-and-respawn-m7-2026-10-09)
 - [Simulated NPC skaters do their recorded jumps and tricks (M7, 2026-10-09)](26e-living-world-skater-ai.md#simulated-npc-skaters-do-their-recorded-jumps-and-tricks-m7-2026-10-09)
 - [Avoider mode 7: stepping off and walking back to the line (2026-10-10)](26e-living-world-skater-ai.md#avoider-mode-7-stepping-off-and-walking-back-to-the-line-2026-10-10)
+- [Avoider modes 6 and 7: the controller sub-modes (2026-10-09)](26e-living-world-skater-ai.md#avoider-modes-6-and-7-the-controller-sub-modes-2026-10-09)
+- [The stuck tracker: stalled NPC skaters recover in stages (2026-10-15)](26e-living-world-skater-ai.md#the-stuck-tracker-stalled-npc-skaters-recover-in-stages-2026-10-15)
+- [Avoider: steer around a partial blocker, and the real closing speed (2026-10-16)](26e-living-world-skater-ai.md#avoider-steer-around-a-partial-blocker-and-the-real-closing-speed-2026-10-16)
+- [Recorded grinds and slides: the input schedule and the takeoff board yaw (2026-10-16)](26e-living-world-skater-ai.md#recorded-grinds-and-slides-the-input-schedule-and-the-takeoff-board-yaw-2026-10-16)
+- [Bumps: the player and simulated NPC skaters knock each other down (2026-10-16)](26e-living-world-skater-ai.md#bumps-the-player-and-simulated-npc-skaters-knock-each-other-down-2026-10-16)
+- [Bumped NPC skaters: no anger, a collide line; pros stay calm (2026-10-16)](26e-living-world-skater-ai.md#bumped-npc-skaters-no-anger-a-collide-line-pros-stay-calm-2026-10-16)
 
 ### 26f: Pedestrians: body, navigation and look
 
@@ -116,6 +122,15 @@ the file of their topic (and get a line here).
 - [Ped plugins on world props: benches, bins and newspaper boxes from the model hotpoints (2026-10-10)](26g-living-world-ped-interactions.md#ped-plugins-on-world-props-benches-bins-and-newspaper-boxes-from-the-model-hotpoints-2026-10-10)
 - [Ped hand props: the vending machine can, the newspaper (2026-10-10)](26g-living-world-ped-interactions.md#ped-hand-props-the-vending-machine-can-the-newspaper-2026-10-10)
 - [A ped stuck in front of the bench it wants to sit on (2026-10-14)](26g-living-world-ped-interactions.md#a-ped-stuck-in-front-of-the-bench-it-wants-to-sit-on-2026-10-14)
+- [Ped hand props: the bin throw, the drop and the released prop (2026-10-10)](26g-living-world-ped-interactions.md#ped-hand-props-the-bin-throw-the-drop-and-the-released-prop-2026-10-10)
+- [Angry peds, knocked-down peds on their way to a seat, moved benches and a plugin crash (2026-10-12)](26g-living-world-ped-interactions.md#angry-peds-knocked-down-peds-on-their-way-to-a-seat-moved-benches-and-a-plugin-crash-2026-10-12)
+- [Zombie mode: zombies chase the skater (2026-10-13)](26g-living-world-ped-interactions.md#zombie-mode-zombies-chase-the-skater-2026-10-13)
+- [Zombie takedowns on a downed skater, NPC skater sim flip-flop (2026-10-13)](26g-living-world-ped-interactions.md#zombie-takedowns-on-a-downed-skater-npc-skater-sim-flip-flop-2026-10-13)
+- [Floating peds on coarse navmesh triangles (2026-10-13)](26g-living-world-ped-interactions.md#floating-peds-on-coarse-navmesh-triangles-2026-10-13)
+- [Peds give up a chase they cannot reach (2026-10-13)](26g-living-world-ped-interactions.md#peds-give-up-a-chase-they-cannot-reach-2026-10-13)
+- [Diagnostics: still peds report what they are doing (2026-10-16)](26g-living-world-ped-interactions.md#diagnostics-still-peds-report-what-they-are-doing-2026-10-16)
+- [Standing pros: where the challenge hosts stand (placement export, 2026-10-16)](26g-living-world-ped-interactions.md#standing-pros-where-the-challenge-hosts-stand-placement-export-2026-10-16)
+- [IsFacingSkater: a half angle through a cosine, and its distance (2026-10-16)](26g-living-world-ped-interactions.md#isfacingskater-a-half-angle-through-a-cosine-and-its-distance-2026-10-16)
 
 ### 26h: Traffic
 
@@ -144,6 +159,17 @@ the file of their topic (and get a line here).
 - [Skitching step 4h: the skitch animation graph nodes (2026-10-09)](26h-living-world-traffic.md#skitching-step-4h-the-skitch-animation-graph-nodes-2026-10-09)
 - [Traffic: the car alarm on parked cars (2026-10-10)](26h-living-world-traffic.md#traffic-the-car-alarm-on-parked-cars-2026-10-10)
 - [Grinding on cars (2026-10-14)](26h-living-world-traffic.md#grinding-on-cars-2026-10-14)
+- [Skitching step 6: cars slow down for a skater behind them (2026-10-09)](26h-living-world-traffic.md#skitching-step-6-cars-slow-down-for-a-skater-behind-them-2026-10-09)
+- [Skitching step 4i: PushSpeed's latch and step (2026-10-09)](26h-living-world-traffic.md#skitching-step-4i-pushspeeds-latch-and-step-2026-10-09)
+- [Skitching step 4j: the board's effective transform rows (2026-10-09)](26h-living-world-traffic.md#skitching-step-4j-the-boards-effective-transform-rows-2026-10-09)
+- [Skitching step 7: NPC skaters skitch (opt-in, 2026-10-09)](26h-living-world-traffic.md#skitching-step-7-npc-skaters-skitch-opt-in-2026-10-09)
+- [Manoeuvres groundwork: lane-change passage, stop spots, gap check (2026-10-09)](26h-living-world-traffic.md#manoeuvres-groundwork-lane-change-passage-stop-spots-gap-check-2026-10-09)
+- [Traffic: the horn's driver fields corrected (2026-10-09)](26h-living-world-traffic.md#traffic-the-horns-driver-fields-corrected-2026-10-09)
+- [Traffic: cars change lane (2026-10-09)](26h-living-world-traffic.md#traffic-cars-change-lane-2026-10-09)
+- [Traffic: cars pull over, park and pull out (2026-10-09)](26h-living-world-traffic.md#traffic-cars-pull-over-park-and-pull-out-2026-10-09)
+- [Car materials: the retail vehicle shaders (2026-10-11)](26h-living-world-traffic.md#car-materials-the-retail-vehicle-shaders-2026-10-11)
+- [Skitching session logging (2026-10-15)](26h-living-world-traffic.md#skitching-session-logging-2026-10-15)
+- [Skitching crash on the first grab (2026-10-15)](26h-living-world-traffic.md#skitching-crash-on-the-first-grab-2026-10-15)
 
 ### 26i: Props
 
@@ -156,3 +182,6 @@ the file of their topic (and get a line here).
 - [Move Object step 2: props in the grab scene (opt-in, 2026-10-09)](26i-living-world-props.md#move-object-step-2-props-in-the-grab-scene-opt-in-2026-10-09)
 - [Move Object step 3c: the hand IK (opt-in, 2026-10-10)](26i-living-world-props.md#move-object-step-3c-the-hand-ik-opt-in-2026-10-10)
 - [Grinding on props (2026-10-14)](26i-living-world-props.md#grinding-on-props-2026-10-14)
+- [Move Object step 3: carrying a prop by its authored grab record (opt-in, 2026-10-09)](26i-living-world-props.md#move-object-step-3-carrying-a-prop-by-its-authored-grab-record-opt-in-2026-10-09)
+- [Move Object step 3b: the rebind block, re-grab and hand points (opt-in, 2026-10-09)](26i-living-world-props.md#move-object-step-3b-the-rebind-block-re-grab-and-hand-points-opt-in-2026-10-09)
+- [Prop diagnostics for play sessions (2026-10-16)](26i-living-world-props.md#prop-diagnostics-for-play-sessions-2026-10-16)

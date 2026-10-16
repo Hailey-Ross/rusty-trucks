@@ -423,7 +423,10 @@ def vehicle_doc(doc: dict, manifest: dict, census_records: list[str], collection
                             'secondary': [f'{key}/secondary/{i}' for i in range(len(secondary))]},
             'size_hint': f.get('Hash_F983F2518B335286'), 'wheel_hint': f.get('Hash_FD7A66142F16B9CC'),
             'mesh_bounds': built.get('bounds'), 'wheel_bones': built.get('wheels'),
-            'grab_splines': built.get('grab_splines', []), 'grind_splines': built.get('grind_splines', [])}
+            'grab_splines': built.get('grab_splines', []), 'grind_splines': built.get('grind_splines', []),
+            # The retail chassis collision (the game fell back to a bounds box without it: the box's rear wall
+            # sat between a skitcher's hands and shoulders, 2026-10-16).
+            'collision': built.get('collision')}
     entities = {}
     for key, record in sorted(c['livingworld_entities'].items()):
         f = record['fields']

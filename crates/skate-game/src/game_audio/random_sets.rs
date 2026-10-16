@@ -166,6 +166,7 @@ pub(super) fn update(
     content: Res<super::AudioContent>,
     audio: Res<super::map_audio::MapAudio>,
 ) {
+    let _span = super::hitch_parts::span(super::hitch_parts::RANDOM_SETS);
     let Some(mut library) = library else { return };
     let state = &mut *state;
     let Ok(ear) = listener.single() else { return };
@@ -179,6 +180,7 @@ pub(super) fn update(
                 }
             }
         }
+        cool_slots(&library, state);
         state.key = None;
         state.slots.clear();
         state.bags.clear();
@@ -197,6 +199,7 @@ pub(super) fn update(
                 }
             }
         }
+        cool_slots(&library, state);
         state.key = key;
         state.slots = key.and_then(|k| library.random_set(k)).map_or(Vec::new(), |s| vec![Slot::Unloaded; s.sounds.len()]);
         state.timer = 0.0;
@@ -216,6 +219,8 @@ pub(super) fn update(
     while state.slots.iter().filter(|s| **s != Slot::Unloaded).count() < LOADED {
         let Some(pick) = weighted(&weights, &state.slots, &mut rng) else { break };
         state.slots[pick] = Slot::Loaded(now);
+        // Retail loads the bank at the pick: read its files now, off the game thread.
+        library.warm_bank(&set.sounds[pick].bank);
     }
 
     // Timer: past the interval the oldest loaded idle entry plays.
@@ -230,6 +235,7 @@ pub(super) fn update(
             if layers.is_empty() {
                 // The bank's program does not answer this sound's selector: retail is silent too.
                 state.slots[entry] = Slot::Unloaded;
+                library.cool_bank(&sound.bank);
             } else {
                 let gain = sound.volume * level(set.min_level, set.max_level, &mut rng);
                 let samples = library.bank_len(&sound.bank);
@@ -300,8 +306,19 @@ pub(super) fn update(
         if let Some(slot) = state.slots.get_mut(post.entry) {
             *slot = Slot::Unloaded;
         }
+        library.cool_bank(&set.sounds[post.entry].bank);
     }
     state.rng = rng;
+}
+
+/// Drop the read-ahead bytes of the current set's entries (the set is rebuilt).
+fn cool_slots(library: &Library, state: &State) {
+    let Some(set) = state.key.and_then(|k| library.random_set(k)) else { return };
+    for (sound, slot) in set.sounds.iter().zip(&state.slots) {
+        if *slot != Slot::Unloaded {
+            library.cool_bank(&sound.bank);
+        }
+    }
 }
 
 #[cfg(test)]

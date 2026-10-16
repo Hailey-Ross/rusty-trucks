@@ -85,6 +85,9 @@ pub(crate) struct SkaterRuntime {
     pub revert_state: super::revert_state::RevertState,
     pub slide_state: super::slide_state::SlideState,
     pub skitch_state: super::skitch_state::SkitchState,
+    /// The spline geometry of the published grab records (Processed 1888 / 2176 keep only the 72 words; the skitch
+    /// grab point walks the points, 82D2D550 via the held record's +196).
+    pub grab_geometry: [Option<std::sync::Arc<skate_core::player::offboard::grab_scene::Geometry>>; 2],
     pub trajectory: super::air_trajectory::AirTrajectoryRuntime,
     pub grind_camera: super::grind_camera::GrindCamera,
     pub grind: super::grind::Runtime,
@@ -350,6 +353,7 @@ impl SkaterRuntime {
             revert_state: super::revert_state::RevertState::load(&data)?,
             slide_state: super::slide_state::SlideState::load(&data)?,
             skitch_state: Default::default(),
+            grab_geometry: [None, None],
             trajectory,
             grind_camera: super::grind_camera::GrindCamera::default(),
             grind: super::grind::Runtime::load(&data)?,

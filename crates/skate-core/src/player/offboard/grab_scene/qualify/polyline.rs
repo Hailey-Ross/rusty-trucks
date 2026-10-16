@@ -29,6 +29,34 @@ pub fn nearest_distance(r:&Record,world:Vector)->f32 {
     }
     distance
 }
+/// 82D2D550: the spline point at a signed position `t` along the record, from the middle of its ends (the skitch frame
+/// step 82D48148 and hand targets 82D4A378; research b148). At or past +-half (`+180`) the ends (+64 / +80); otherwise
+/// u = t + half (reverse bit `+200` 0x20: half - t), and the points are walked first to last, each segment counting its
+/// length projected onto the first -> last direction (floored at 1e-4, 0x8209BE90); the first segment that takes the
+/// total past u holds the point, stepped back inside it, to world by the record frame. Unlike 82D2D2B0 (`at_distance`)
+/// the order never reverses and lengths are projected.
+pub fn at_along(r:&Record,t:f32)->Vector {
+    let half=r.scalar(180);
+    let [first_end,last_end]=r.endpoints();
+    let points=r.points();
+    if t<= -half || points.len()<=1 {return first_end;}
+    if t>=half {return last_end;}
+    let u=if r.byte(200)&0x20!=0 {half-t} else {t+half};
+    let axis=normalize(sub(points[points.len()-1],points[0]));
+    let mut total=0.;
+    for pair in points.windows(2) {
+        let (a,b)=(pair[0],pair[1]);
+        let segment=sub(b,a);
+        let projected=dot(segment,axis).max(1e-4);
+        total+=projected;
+        if total>u {
+            let back=(total-u)/projected;
+            let local=std::array::from_fn(|i| b[i]-segment[i]*back);
+            return transform(frame(r),local);
+        }
+    }
+    last_end
+}
 pub fn at_distance(r:&Record,distance:f32)->Vector {
     let endpoints=r.endpoints();
     if r.points().len()<=1 || 0.>=distance {return endpoints[0];}

@@ -240,6 +240,7 @@ fn reset_hosts(world: &mut World) {
 /// The first system of the audio pass: the native runtime's first start (after the first mod
 /// scan, or at once without the mod system) and the restart after an overlay change.
 pub(super) fn frame(world: &mut World) {
+    let _span = super::hitch_parts::span(super::hitch_parts::CONTENT);
     let mods = world.contains_resource::<crate::modding::Mods>();
     let Some(content) = world.get_resource::<AudioContent>() else { return };
     let (runtime, pending, scanned, overlays) = (content.runtime, content.pending, content.scanned, !content.overlays.is_empty());

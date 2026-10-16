@@ -202,6 +202,7 @@ fn log_hitch(
     let phases: [u64; 11] = std::array::from_fn(|i| PHASE_US[i].swap(0, Ordering::Relaxed));
     let lock_us = crate::game_audio::timing::FRAME_GAME_LOCK_US.swap(0, Ordering::Relaxed);
     let living = crate::living_world::timing::take();
+    let audio_parts = crate::game_audio::hitch_parts::take();
     let closed = timing.closed();
     if closed.frame == 0 || !config.is_hitch(closed.ms, closed.median_ms) {
         return;
@@ -237,9 +238,13 @@ fn log_hitch(
     let mut lw: Vec<(&str, u64)> = crate::living_world::timing::NAMES.iter().copied().zip(living).filter(|(_, u)| *u >= 1000).collect();
     lw.sort_by(|a, b| b.1.cmp(&a.1));
     let living_line = lw.iter().map(|(n, u)| format!("{n}:{:.1}", *u as f64 / 1000.0)).collect::<Vec<_>>().join(" ");
+    // The game audio's frame systems (the `audio` stage and the Native bank loads), largest first, those over 1 ms.
+    let mut au: Vec<(&str, u64)> = crate::game_audio::hitch_parts::NAMES.iter().copied().zip(audio_parts).filter(|(_, u)| *u >= 1000).collect();
+    au.sort_by(|a, b| b.1.cmp(&a.1));
+    let audio_line = au.iter().map(|(n, u)| format!("{n}:{:.1}", *u as f64 / 1000.0)).collect::<Vec<_>>().join(" ");
     let slowest = STAGES.iter().zip(&stages).chain(PHASES.iter().zip(&phases)).max_by_key(|(_, u)| **u).map_or("", |(n, _)| n);
     info!(
-        "FRAME_HITCH frame={} ms={:.1} median_ms={} main_ms={:.1} fixed_ms={:.1} steps={} wait_ms={:.1} audio_lock_ms={:.1} slowest={slowest} stages=[{}] phases=[{}] living_world=[{living_line}]{player} entities={} voices={} aems_instances={} suppressed={suppressed}",
+        "FRAME_HITCH frame={} ms={:.1} median_ms={} main_ms={:.1} fixed_ms={:.1} steps={} wait_ms={:.1} audio_lock_ms={:.1} slowest={slowest} stages=[{}] phases=[{}] living_world=[{living_line}] audio_parts=[{audio_line}]{player} entities={} voices={} aems_instances={} suppressed={suppressed}",
         closed.frame,
         closed.ms,
         closed.median_ms.map_or("-".to_owned(), |m| format!("{m:.1}")),

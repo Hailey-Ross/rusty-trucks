@@ -28,6 +28,9 @@
 //!   obstacles; retail on / 0.2 / 0.4 / 0.25 / held props stay obstacles; `moving_solid` is our
 //!   stand-in for NavPower's moving avoider, default on),
 //!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on),
+//!   `ped_body {enabled, parts, look_ahead, range}` (peds as solid bodies in the skater's contact solve, collision
+//!   group 11; retail on, three capsule parts posed from bones: `parts` = [{from, to, centre, radius, half_length,
+//!   mass}], `look_ahead` seconds of ped velocity, `range` m from an observer),
 //!   `ped_vehicle_contact {enabled, push}` (traffic cars touching peds; retail on / on: the ped is
 //!   pushed out of the car, no knock-down),
 //!   `npc_tricks {mode, gate_window, min_air_frames}` (the trick an NPC skater does at a recorded
@@ -178,6 +181,8 @@ pub struct LivingWorldPatch {
     pub ped_obstacles: Option<PedObstaclesPatch>,
     /// NPC skaters pushing dynamic props (fix 19).
     pub npc_skater_props: Option<NpcSkaterPropsPatch>,
+    /// Peds as solid bodies the skater collides with.
+    pub ped_body: Option<PedBodyPatch>,
     /// Traffic cars touching peds (`skate_core::living_world::peds::VehicleContactParams`).
     pub ped_vehicle_contact: Option<PedVehicleContactPatch>,
     /// NPC skater trick choice (`skate_core::living_world::npc_tricks`).
@@ -416,6 +421,29 @@ pub struct NpcSkaterPropsPatch {
     pub enabled: Option<bool>,
 }
 
+/// Peds as solid bodies in the skater's contact solve (retail collision group 11, `sub_82BD4A30`): the skater is
+/// stopped or deflected and a hard hit can bail it. `parts` replaces the whole part list.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PedBodyPatch {
+    pub enabled: Option<bool>,
+    pub parts: Option<Vec<PedBodyPartPatch>>,
+    pub look_ahead: Option<f32>,
+    pub range: Option<f32>,
+}
+
+/// One capsule between two rig bones: centred at `centre` (0 = `from`, 1 = `to`), along `from -> to`; m / kg.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PedBodyPartPatch {
+    pub from: String,
+    pub to: String,
+    pub centre: f32,
+    pub radius: f32,
+    pub half_length: f32,
+    pub mass: f32,
+}
+
 /// Ped obstacle rules (`skate_core::living_world::peds::ObstacleParams`; retail: on, 0.2 m minimum
 /// half extent, no cut above 0.4 m/s, re-cut after 0.25 x the smallest half extent; ours: 0.1 m
 /// detour margin, 0 m step height). `held_is_obstacle`: a prop held by Move Object (or an attached
@@ -432,6 +460,9 @@ pub struct PedObstaclesPatch {
     pub step_height: Option<f32>,
     pub held_is_obstacle: Option<bool>,
     pub moving_solid: Option<bool>,
+    /// Player skaters are ped obstacles (retail on, b135) and their box half extents (NOT RETAIL YET size).
+    pub skaters: Option<bool>,
+    pub skater_half_extents: Option<[f32; 3]>,
 }
 
 /// NPC skater line end (`skate_core::living_world::replay::ChainConfig`): continue on an unused
@@ -661,6 +692,10 @@ pub struct CarryMaterialPatch {
     /// data +16 / +32 of the type; class default 1.2 / 0).
     pub inertia_scale: Option<[f32; 3]>,
     pub inertia_offset: Option<[f32; 3]>,
+    /// Ped plugins on this prop type stop being offered (seated peds evicted) past these: per-axis rotation
+    /// tolerance from the authored pose, degrees (retail (2.5, 15, 2.5)), and max distance moved (retail 5 m).
+    pub plugin_rotation_tolerance: Option<[f32; 3]>,
+    pub plugin_max_distance: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -749,7 +784,7 @@ impl Merge for SkaterFadePatch {
 }
 impl Merge for PedObstaclesPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height, held_is_obstacle, moving_solid);
+        merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents);
     }
 }
 impl Merge for PedVehicleContactPatch {
@@ -760,6 +795,11 @@ impl Merge for PedVehicleContactPatch {
 impl Merge for NpcSkaterPropsPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; enabled);
+    }
+}
+impl Merge for PedBodyPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; enabled, parts, look_ahead, range);
     }
 }
 impl Merge for SkaterLineChainPatch {
@@ -787,6 +827,7 @@ impl Merge for LivingWorldPatch {
         merge_nested(&mut self.ped_fade, &b.ped_fade);
         merge_nested(&mut self.ped_obstacles, &b.ped_obstacles);
         merge_nested(&mut self.npc_skater_props, &b.npc_skater_props);
+        merge_nested(&mut self.ped_body, &b.ped_body);
         merge_nested(&mut self.ped_vehicle_contact, &b.ped_vehicle_contact);
         merge_nested(&mut self.npc_tricks, &b.npc_tricks);
         merge_nested(&mut self.npc_simulated, &b.npc_simulated);
@@ -877,7 +918,7 @@ impl Merge for CarryPatch {
             hold_box_extents, record_272_speed_scale, grab_end_exclusion, hand_ik_enter, hand_ik_curve, hand_ik_rate, hand_ik_reach, commanded_material, upright_cos,
             apply_at_com, yaw_replaces_torque, ignore_vertical, wake_on_command);
         for (k, v) in &b.by_template {
-            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, material_free_upright, upright_pair, restitution, record_272, linear_drag, angular_drag, mass, maximum_linear_velocity, maximum_angular_velocity, inertia_scale, inertia_offset); }).or_insert_with(|| v.clone());
+            self.by_template.entry(k.clone()).and_modify(|a| { merge_opts!(a, v; material_held, material_free, material_free_upright, upright_pair, restitution, record_272, linear_drag, angular_drag, mass, maximum_linear_velocity, maximum_angular_velocity, inertia_scale, inertia_offset, plugin_rotation_tolerance, plugin_max_distance); }).or_insert_with(|| v.clone());
         }
     }
 }
@@ -965,6 +1006,17 @@ impl LivingWorldPatch {
             && self.ped_fade.as_ref().is_none_or(|f| finite(f.fade_in_seconds) && f.distance.is_none_or(|d| d.iter().all(|v| finite(Some(*v)))))
             && self.ped_obstacles.as_ref().is_none_or(|o| {
                 [o.min_half_extent, o.moving_speed, o.recut_fraction, o.detour_margin, o.step_height].into_iter().all(finite)
+            })
+            && self.ped_body.as_ref().is_none_or(|b| {
+                let name = |n: &str| !n.is_empty() && n.len() <= 64 && n.bytes().all(|c| c.is_ascii_graphic());
+                b.parts.as_ref().is_none_or(|parts| parts.len() <= 8 && parts.iter().all(|p| {
+                    name(&p.from) && name(&p.to) && p.centre.is_finite() && (0.0..=1.0).contains(&p.centre)
+                        && p.radius.is_finite() && (0.01..=2.0).contains(&p.radius)
+                        && p.half_length.is_finite() && (0.0..=2.0).contains(&p.half_length)
+                        && p.mass.is_finite() && (0.1..=MAX_NUMBER).contains(&p.mass)
+                }))
+                    && b.look_ahead.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+                    && b.range.is_none_or(|v| v.is_finite() && (0.0..=200.0).contains(&v))
             })
             && self.skater_clips.as_ref().is_none_or(|m| {
                 m.len() <= MAX_TEMPLATES
@@ -1086,7 +1138,8 @@ impl CarryPatch {
                     && [v.material_held, v.material_free, v.material_free_upright].into_iter().flatten().all(material_block)
                     && [v.restitution, v.linear_drag, v.angular_drag, v.maximum_linear_velocity, v.maximum_angular_velocity].into_iter().flatten().all(|r| r.is_finite() && (0.0..=MAX_NUMBER).contains(&r))
                     && v.mass.is_none_or(|m| m.is_finite() && m > 0.0 && m <= MAX_NUMBER)
-                    && [v.inertia_scale, v.inertia_offset].into_iter().flatten().flatten().all(|x| x.is_finite() && x.abs() <= MAX_NUMBER)
+                    && [v.inertia_scale, v.inertia_offset, v.plugin_rotation_tolerance].into_iter().flatten().flatten().all(|x| x.is_finite() && x.abs() <= MAX_NUMBER)
+                    && v.plugin_max_distance.is_none_or(|x| x.is_finite() && (0.0..=MAX_NUMBER).contains(&x))
             })
     }
 }

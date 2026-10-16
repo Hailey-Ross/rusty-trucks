@@ -6,7 +6,7 @@ mod polyline;
 mod selection;
 #[cfg(test)] mod tests;
 pub use selection::{best_spline,best_spline_excluding};
-pub use polyline::{nearest_distance,at_distance};
+pub use polyline::{nearest_distance,at_distance,at_along};
 use super::Record;
 use crate::player::offboard::ground_sync::{Bounds,BoardLimits};
 use math::*;

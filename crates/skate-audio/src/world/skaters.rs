@@ -430,6 +430,11 @@ impl NpcSkater {
         std::mem::take(&mut self.board.bail_grunt)
     }
 
+    /// The collide lines the body poster asked for since the last take (`Contacts::collides`).
+    pub fn take_collides(&mut self) -> u32 {
+        std::mem::take(&mut self.board.collides)
+    }
+
     /// Stop the wheel streams (the skater lost its instance: retail's release stops every layer).
     pub fn stop_wheels(&mut self, streams: &mut dyn StreamHost) {
         let s = AudioState { local: false, ..Default::default() };

@@ -140,6 +140,11 @@ pub struct ContactsTuning {
     pub body_110: [[f32; 2]; 2],
     pub body_111: [f32; 2],
     pub body_112: [[f32; 2]; 2],
+    /// The collide line's floors (`sub_824BDA90`, class `aud_speech` `default`): a car contact
+    /// above `7503A1AD356BFCCD` (0.16), a skater or group 11 contact above `359EC8EF52598AA8` (0.2)
+    /// (contact speeds, [`super::AudioState::collide_vehicle`]).
+    pub collide_vehicle_min: f32,
+    pub collide_min: f32,
 }
 
 impl Default for ContactsTuning {
@@ -195,6 +200,8 @@ impl Default for ContactsTuning {
             body_110: [[0.75, 1.25], [0.7, 1.25]],
             body_111: [0.65, 1.25],
             body_112: [[0.05, 0.3], [0.3, 0.55]],
+            collide_vehicle_min: 0.16,
+            collide_min: 0.2,
         }
     }
 }
@@ -368,6 +375,12 @@ pub struct Contacts {
     grunt_armed: bool,
     /// The bail grunt is due (set by the body poster; the NPC host takes it).
     pub bail_grunt: bool,
+    /// Collide lines due (`sub_824BDA90`, set by the body poster; the NPC host takes them): the
+    /// poster calls it for every region it reaches (an impact, no cooldown, before the bands), and
+    /// for a non-local skater any of the three contact speeds over its floor asks for the skater's
+    /// collide line ([`crate::world::skater_speech::collide`]). The local player's own branch
+    /// (main-cast lines on a skater contact) is not modelled.
+    pub collides: u32,
     /// This process's landing posts ([`LandingNote`]), `None` on a process without a landing,
     /// manual landing or manual skip.
     pub landing_note: Option<LandingNote>,
@@ -682,6 +695,11 @@ impl Contacts {
         for i in 0..6 {
             let impact = if self.body_speed_on { s.body_impact[i] * scale } else { s.body_impact[i] };
             if impact > 0.0 && !(self.body_cooldown[i] > 0.0) {
+                // `sub_824BDA90` (call at 0x824BC354, before the bands): `+596` against the car
+                // floor, `+608` and `+600` against the other.
+                if !s.local && (s.collide_vehicle > c.collide_vehicle_min || s.collide_other > c.collide_min || s.collide_skater > c.collide_min) {
+                    self.collides += 1;
+                }
                 let (a, cloth, pad) = body_materials(i, s.body_slide_flag);
                 let tag = s.body_tag[i];
                 let b = if tag == 0 { none } else { (tag as i32 - 1).clamp(0, none) };
@@ -1597,6 +1615,33 @@ mod tests {
             }
         }
         assert_eq!(at, [2, 32, 62, 92]);
+    }
+
+    /// `sub_824BDA90` (2026-10-16): a non-local skater whose region posts while a skater, car or
+    /// group 11 contact is over its floor asks for the collide line, once per region the poster
+    /// reaches (the cooldown holds the next); the local player and a soft contact ask nothing.
+    #[test]
+    fn a_bumped_npc_skater_asks_for_the_collide_line() {
+        let (t, c) = (body_tuning(), ContactsTuning::default());
+        let run = |s: &AudioState, steps: usize| {
+            let mut k = Contacts { body_on: true, ..Default::default() };
+            let mut h = Log::default();
+            for _ in 0..steps {
+                k.body_calls = Some(1);
+                k.process(s, [0; 4], &t, &c, &mut h);
+            }
+            k.collides
+        };
+        let mut s = AudioState { local: false, collide_skater: 0.5, ..AudioState::default() };
+        s.body_impact[2] = 0.7;
+        s.body_tag[2] = 3;
+        assert_eq!(run(&s, 1), 1);
+        assert_eq!(run(&s, 5), 1, "the region cooldown holds");
+        s.body_impact[4] = 0.7;
+        assert_eq!(run(&s, 1), 2, "one per region");
+        assert_eq!(run(&AudioState { collide_skater: 0.2, ..s }, 1), 0, "not over the floor");
+        assert_eq!(run(&AudioState { collide_skater: 0.0, collide_vehicle: 0.17, ..s }, 1), 2, "a car");
+        assert_eq!(run(&AudioState { local: true, ..s }, 1), 0, "the local player");
     }
 
     /// The deck poster (`sub_824BD000`) on the console cadence (2026-10-03): the same messages on the

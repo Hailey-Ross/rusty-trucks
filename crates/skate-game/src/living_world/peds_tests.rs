@@ -967,3 +967,32 @@ fn a_seated_ped_ignores_bumps_but_not_a_hard_hit() {
     assert_eq!(hit(1.5, true), None);
     assert_eq!(hit(4.0, true), Some(ReactionKind::Knockdown));
 }
+
+/// The DMO plugin check's seat probe (`82C539A8`, b136) at the authored poses: an untouched prop's seat stands on
+/// pavement navmesh for most props. A report while the probe is not applied (it fails 10-23% of untouched seats, so it
+/// does not match retail's yet).
+#[test]
+fn living_world_authored_plugin_seats_pass_the_pavement_probe() {
+    let Some(raw) = std::env::var_os("SKATE3_ASSET_ROOT") else {
+        eprintln!("skipped: set SKATE3_ASSET_ROOT");
+        return;
+    };
+    let root = std::path::PathBuf::from(raw);
+    for district in ["DownTown", "University", "Industrial"] {
+        let mut d = PedData::default();
+        d.load_nav(&root, district, &Default::default());
+        let Some(nav) = d.nav.as_deref() else { continue };
+        let props = super::ped_plugins::map_props(&root, district);
+        let pass = props.iter().filter(|p| p.waypoints.iter().all(|w| {
+            skate_core::living_world::peds::plugins::seat_on_pavement(w.position, nav.locate_any(w.position).map(|q| (q.position, nav.area(q.poly))), super::peds::SEAT_PROBE_TOLERANCE)
+        })).count();
+        let mut fails: std::collections::BTreeMap<&str, usize> = Default::default();
+        for p in props.iter().filter(|p| !p.waypoints.iter().all(|w| skate_core::living_world::peds::plugins::seat_on_pavement(w.position, nav.locate_any(w.position).map(|q| (q.position, nav.area(q.poly))), super::peds::SEAT_PROBE_TOLERANCE))) {
+            *fails.entry(p.class.as_str()).or_default() += 1;
+        }
+        eprintln!("{district}: {pass} of {} plugin props pass the seat probe; failing by class {fails:?}", props.len());
+        // Report only: the probe is not applied in the game until it matches retail (DownTown 770 / 860, University
+        // 308 / 401 on 2026-10-16).
+        assert!(pass > 0, "{district}: the probe finds no seat at all");
+    }
+}

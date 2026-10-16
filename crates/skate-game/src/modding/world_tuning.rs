@@ -231,6 +231,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.step_height = f.step_height.map_or(c.step_height, |v| v.max(0.0));
         c.held_is_obstacle = f.held_is_obstacle.unwrap_or(c.held_is_obstacle);
         c.moving_solid = f.moving_solid.unwrap_or(c.moving_solid);
+        c.skaters = f.skaters.unwrap_or(c.skaters);
+        c.skater_half_extents = f.skater_half_extents.map_or(c.skater_half_extents, |v| v.map(|x| x.max(0.0)));
     }
     if let Some(f) = &p.ped_vehicle_contact {
         let c = &mut s.ped_vehicle_contact;
@@ -239,6 +241,17 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
     }
     if let Some(f) = &p.npc_skater_props {
         s.npc_skater_props.enabled = f.enabled.unwrap_or(s.npc_skater_props.enabled);
+    }
+    if let Some(f) = &p.ped_body {
+        let b = &mut s.ped_body;
+        b.enabled = f.enabled.unwrap_or(b.enabled);
+        if let Some(parts) = &f.parts {
+            b.parts = parts.iter().map(|p| crate::living_world::ped_body::PedBodyPart {
+                from: p.from.clone(), to: p.to.clone(), centre: p.centre, radius: p.radius, half_length: p.half_length, mass: p.mass,
+            }).collect();
+        }
+        b.look_ahead = f.look_ahead.unwrap_or(b.look_ahead);
+        b.range = f.range.unwrap_or(b.range);
     }
     if let Some(m) = &p.skater_clips {
         s.skater_clips = m.clone();
@@ -483,6 +496,8 @@ pub(crate) fn carry_settings(p: &CarryPatch) -> CarrySettings {
                                 maximum_angular_velocity: v.maximum_angular_velocity,
                                 inertia_scale: v.inertia_scale,
                                 inertia_offset: v.inertia_offset,
+                                plugin_rotation_tolerance: v.plugin_rotation_tolerance,
+                                plugin_max_distance: v.plugin_max_distance,
                             },
                         )
                     })
@@ -522,8 +537,11 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "ped_obstacles": {"enabled": s.ped_obstacles.enabled, "min_half_extent": s.ped_obstacles.min_half_extent,
                     "moving_speed": s.ped_obstacles.moving_speed, "recut_fraction": s.ped_obstacles.recut_fraction,
                     "detour_margin": s.ped_obstacles.detour_margin, "step_height": s.ped_obstacles.step_height,
-                    "held_is_obstacle": s.ped_obstacles.held_is_obstacle, "moving_solid": s.ped_obstacles.moving_solid},
+                    "held_is_obstacle": s.ped_obstacles.held_is_obstacle, "moving_solid": s.ped_obstacles.moving_solid,
+                    "skaters": s.ped_obstacles.skaters, "skater_half_extents": s.ped_obstacles.skater_half_extents},
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
+                "ped_body": {"enabled": s.ped_body.enabled, "look_ahead": s.ped_body.look_ahead, "range": s.ped_body.range,
+                    "parts": s.ped_body.parts.iter().map(|p| json!({"from": p.from, "to": p.to, "centre": p.centre, "radius": p.radius, "half_length": p.half_length, "mass": p.mass})).collect::<Vec<_>>()},
                 "ped_vehicle_contact": {"enabled": s.ped_vehicle_contact.enabled, "push": s.ped_vehicle_contact.push},
                 "skater_clips": s.skater_clips,
                 "skater_blend_seconds": s.skater_blend_seconds,
@@ -745,6 +763,23 @@ mod tests {
         assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_vehicle_contact": {"knockdown": true}}))).is_err());
         clear_owner(&mut w, "dev.a");
         assert_eq!(w.resource::<LivingWorldSettings>().ped_vehicle_contact, retail, "mod disable restores retail");
+    }
+
+    #[test]
+    fn ped_body_is_mod_reachable_and_reset_on_disable() {
+        let mut w = world();
+        let default = LivingWorldSettings::default().ped_body;
+        assert!(default.enabled && default.parts.len() == 3, "solid peds, retail three parts");
+        assert_eq!(read(&w, "living_world")["ped_body"]["parts"][0]["from"], json!("Hips"));
+        let arm = json!({"from": "LeftForeArm", "to": "LeftHand", "centre": 0.5, "radius": 0.1, "half_length": 0.2, "mass": 5.0});
+        set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"parts": [arm], "range": 20.0}}))).unwrap();
+        let s = w.resource::<LivingWorldSettings>().ped_body.clone();
+        assert_eq!((s.parts.len(), s.parts[0].mass, s.range, s.look_ahead), (1, 5.0, 20.0, default.look_ahead), "absent fields keep the default");
+        let massless = json!({"from": "Hips", "to": "Head", "centre": 0.0, "radius": 0.2, "half_length": 0.5, "mass": 0.0});
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"parts": [massless]}}))).is_err(), "no massless part");
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_body": {"shape": "box"}}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<LivingWorldSettings>().ped_body, default, "mod disable restores the default");
     }
 
     #[test]
@@ -1046,6 +1081,8 @@ mod tests {
                 maximum_angular_velocity: Some(20.0),
                 inertia_scale: None,
                 inertia_offset: Some([0.0, 0.1, 0.0]),
+                plugin_rotation_tolerance: None,
+                plugin_max_distance: None,
             }
         );
         assert_eq!(read(&w, "carry")["by_template"]["template/bin"]["upright_pair"], json!(true));

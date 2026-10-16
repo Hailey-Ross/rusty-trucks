@@ -472,6 +472,11 @@ pub(crate) struct PropMaterialBlocks {
     /// else the authored box inertia.
     pub inertia_scale: Option<[f32; 3]>,
     pub inertia_offset: Option<[f32; 3]>,
+    /// The ped-plugin check (`82C56DB0`, research b136 / b137): per-axis rotation tolerance from the authored pose in
+    /// degrees (DMO data +0 `Hash_E43445036AAEE7C5`, stock (2.5, 15, 2.5)) and the farthest the prop may move from
+    /// its authored spot (+280 `Hash_2114F9329E98F00C`, stock 5 m) before its seats stop being offered.
+    pub plugin_rotation_tolerance: Option<[f32; 3]>,
+    pub plugin_max_distance: Option<f32>,
 }
 
 /// Box inertia scale of the class's `default` record (DMO data +16), used
@@ -495,6 +500,8 @@ impl PropMaterialBlocks {
             maximum_angular_velocity: self.maximum_angular_velocity.or(base.maximum_angular_velocity),
             inertia_scale: self.inertia_scale.or(base.inertia_scale),
             inertia_offset: self.inertia_offset.or(base.inertia_offset),
+            plugin_rotation_tolerance: self.plugin_rotation_tolerance.or(base.plugin_rotation_tolerance),
+            plugin_max_distance: self.plugin_max_distance.or(base.plugin_max_distance),
         }
     }
 }
@@ -541,6 +548,9 @@ pub(crate) fn dmo_type_blocks(
         maximum_angular_velocity: Some(f("Hash_BAA01E2BA1237455")?),
         inertia_scale: Some(v("Hash_F4D1C84C36A854AC")?),
         inertia_offset: Some(v("Hash_D3CDE380DBB3ADC0")?),
+        // Optional for older exports (every stock record stores them).
+        plugin_rotation_tolerance: v("Hash_E43445036AAEE7C5").ok(),
+        plugin_max_distance: f("Hash_2114F9329E98F00C").ok(),
     })
 }
 
@@ -1984,6 +1994,14 @@ impl PropDynamics {
     pub(crate) fn spawn_pose(&self, id: u32) -> Option<(Vector3, Basis3)> {
         let body = self.bodies.get(*self.by_id.get(&id)?)?;
         Some((body.spawn_origin, body.spawn_basis))
+    }
+
+    /// The ped-plugin check limits of a body's type (mod entry over retail data): rotation tolerance (degrees, per
+    /// axis) and max distance from the authored spot. `None` = no type data (the seats stay offered).
+    pub(crate) fn plugin_check_limits(&self, id: u32) -> Option<([f32; 3], f32)> {
+        let body = self.bodies.get(*self.by_id.get(&id)?)?;
+        let b = self.body_blocks(body);
+        Some((b.plugin_rotation_tolerance?, b.plugin_max_distance?))
     }
 
     /// Return one body to its authored spawn pose, at rest and asleep (the
@@ -4727,7 +4745,8 @@ mod tests {
                 "LinearDrag": float(0.0), "AngularDrag": float(0.0),
                 "Hash_E5778CDD4576D890": float(100.0), "Hash_4890392C91829954": float(100.0),
                 "Hash_BAA01E2BA1237455": float(100.0), "Hash_F4D1C84C36A854AC": vector([1.2; 3]),
-                "Hash_D3CDE380DBB3ADC0": vector([0.0; 3])}},
+                "Hash_D3CDE380DBB3ADC0": vector([0.0; 3]), "Hash_E43445036AAEE7C5": vector([2.5, 15.0, 2.5]),
+                "Hash_2114F9329E98F00C": float(5.0)}},
             {"class": DMO_TYPE_CLASS, "key": "cart", "parent": "default", "source": "", "sha256": "", "fields": {
                 "Hash_C4D8A03586A31915": field("EA::Reflection::Bool", "01"),
                 "Hash_E0101A9DFD63DEE9": float(0.2), "Hash_6E0BB4F5881A4841": float(0.35),
@@ -4743,6 +4762,7 @@ mod tests {
             linear_drag: Some(0.0), angular_drag: Some(0.0), mass: Some(100.0),
             maximum_linear_velocity: Some(100.0), maximum_angular_velocity: Some(100.0),
             inertia_scale: Some([1.2; 3]), inertia_offset: Some([0.0; 3]),
+            plugin_rotation_tolerance: Some([2.5, 15.0, 2.5]), plugin_max_distance: Some(5.0),
         });
         let cart = dmo_type_blocks(&collections, "cart").unwrap();
         assert_eq!(cart.free, Some([0.35, 0.25]));
@@ -4751,6 +4771,7 @@ mod tests {
         assert_eq!((cart.linear_drag, cart.angular_drag), (Some(0.0), Some(0.35)), "drag inherits per field");
         assert_eq!((cart.mass, cart.maximum_linear_velocity, cart.maximum_angular_velocity), (Some(20.0), Some(100.0), Some(100.0)));
         assert_eq!((cart.inertia_scale, cart.inertia_offset), (Some([1.2; 3]), Some([0.0, 0.2, 0.0])), "vectors inherit per field");
+        assert_eq!((cart.plugin_rotation_tolerance, cart.plugin_max_distance), (Some([2.5, 15.0, 2.5]), Some(5.0)), "the plugin check limits inherit");
         assert!(dmo_type_blocks(&collections, "missing").is_err());
     }
 

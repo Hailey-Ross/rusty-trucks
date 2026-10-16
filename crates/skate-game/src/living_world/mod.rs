@@ -34,6 +34,7 @@ pub(crate) mod npc_avoid;
 pub(crate) mod npc_sim;
 pub(crate) mod npc_skaters;
 pub(crate) mod opt_ins;
+pub(crate) mod ped_body;
 pub(crate) mod ped_graph;
 pub(crate) mod ped_mood;
 pub(crate) mod ped_hand_props;
@@ -112,6 +113,9 @@ pub(crate) struct LivingWorldSettings {
     /// NPC skaters push dynamic props like the player's board and body (fix 19; retail NPC skaters
     /// are full skaters). A mod may switch it off; `LivingWorldSettings::default()` restores retail.
     pub npc_skater_props: npc_skaters::NpcSkaterPropContact,
+    /// Peds as solid bodies in the skater's contact solve (retail group 11; `ped_body`). A mod may switch it off or
+    /// change the body; `LivingWorldSettings::default()` restores the default.
+    pub ped_body: ped_body::PedBodySettings,
     /// NPC draw distance (QoL, not retail; `skate_core::living_world::draw_distance`): every
     /// population range (census circles, ped draw fade, NPC skater ranges, cars) x this, caps x
     /// its square. 1.0 = retail. The value in effect: the settings menu writes the player's choice
@@ -196,6 +200,7 @@ impl Default for LivingWorldSettings {
             ped_obstacles: skate_core::living_world::peds::ObstacleParams::default(),
             ped_vehicle_contact: skate_core::living_world::peds::VehicleContactParams::default(),
             npc_skater_props: npc_skaters::NpcSkaterPropContact::default(),
+            ped_body: ped_body::PedBodySettings::default(),
             npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
             user_npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
             user_npcs_off: false,

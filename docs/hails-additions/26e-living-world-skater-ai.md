@@ -595,3 +595,72 @@ captures any context's board. Switch: `npc_simulated.bump` (retail on; `SKATE_NP
 test with assets): a skater riding at 9 m/s into the standing player wipes out at tick 26 (the player, shoved by the
 sliding NPC, at tick 36); at 2 m/s it touches (41 contacts) and nobody falls. The game wiring compiles and the suites
 pass; feel in game is for the user's session.
+
+## Bumped NPC skaters: no anger, a collide line; pros stay calm (2026-10-16)
+
+**Question.** In retail, do NPC skaters get angry when the player bumps them? The user remembered riding and walking
+NPC skaters reacting, and skaters attacking and using tasers (unsure of the details), and that the pros standing at
+challenge spots do not get mad.
+
+**Answer from retail code** (research b127, `.local/research/npc/b127-ai-skater-anger.md`; main's checks marked):
+- Path AI skaters (riding the recorded lines) cannot warn, chase, take down or taze. The chaser component (vtable
+  `0x8232C198`) is built only by the ped constructor `sub_82E33198`; the skater actor constructor `sub_82590DC0` does
+  not build it, it only gets the chase-group (chasee) component [code, main verified both]. The mood brain is a ped
+  object (`ped+5896`) and `livingworld_entities_moodreactions` has no AI skater set [code + data].
+- An off-board AI skater (ToggleOffboardState, an AI controller part) walks as a skater actor: no ped brain, mood or
+  chaser [inferred from component lists, medium-high]. Its trigger is open.
+- What a bumped path skater does: it bails (already ported, see "Bumps" above) and, when it is not the local player,
+  says a skater collide line. `sub_824BDA90` (called by the body poster `sub_824BC188` at `0x824BC354`) sets three
+  flags from skater sound entry floats `+596` / `+608` / `+600` against two tuning values (keys `0x7503A1AD356BFCCD`,
+  `0x359EC8EF52598AA8`, fallback `0x830D0850`) and, off the race modes 19 / 20, posts living-world event 8228
+  `130_collide` with arg 3 (`li r29,8228` at `0x824BDD38`, main verified); no flag = 8318 (none). The takes are skater
+  voices only (`130_89_sktm1_col` etc.). The audio state's `+596` / `+600` / `+608` come from the bridge `sub_824B0DA8`,
+  which copies 116 bytes from the skater entry `+320` to the audio state `+496` (so entry `+420` / `+424` / `+432`)
+  [code, main verified]; per b128 entry `+320` is the collision conditioner block (`sub_82773298`), a copy of the
+  Collision object's `+80`, so the inputs are Collision `+180` / `+184` / `+192` of the current frame.
+  Writer [code, main 2026-10-16]: the tail of `sub_82BD60C8` (r8 = Collision `+80`) copies SkeletonCollision `+4056`
+  -> `+180`, `+4048` -> `+184`, `+4052` (a word) -> `+188`, `+4060` -> `+192`. Those are written by the
+  SkeletonCollision Update `sub_82BD4A30`: zeroed at its start, then per contact report a running max of the contact
+  speed by the other body's group: group 8 (cars) -> `+4056`, group 5 (skaters, times the skater / AI skeleton
+  scalar; `+4052` = the other entity) -> `+4048`, group 11 -> `+4060`. Our port already has these as
+  `maximum_group_8_force` / `maximum_skater_force` / `maximum_group_11_force`
+  (`crates/skate-core/src/physics/skeleton_body/collision_update.rs:122-143`). So the line reads: car contact speed
+  (`+596`) > 0.16, group 11 (`+608`) > 0.2, skater (`+600`) > 0.2 (keys main-checked in `sub_824BDA90`).
+  Thresholds [data, values main-checked 2026-10-16]: `aud_speech/default` 0.16 (`0x7503A1AD356BFCCD`) and 0.2
+  (`0x359EC8EF52598AA8`). (Corrects an earlier note here that tied them to `sub_8252EDD0`: that object is camera
+  tuning.) Correction to b128: the body poster's `+260 + 4i` is the region cooldown, not a previous value, so the
+  check runs for every region the poster reaches (an impact, no cooldown), before the material bands.
+  The post [code, main]: `sub_824A9A20` finds the skater's speech record in the `+708` list and calls `sub_824DAC00`
+  with the pair (8228, main-cast 3); in game modes 19 / 20 (8250 or 8240 by `rand() & 1`, 17); nothing for
+  (8318, 294).
+- The warn / chase / takedown and the tazers the user remembers match the skater-looking peds (b126): `skater_male`
+  peds warn, drop the board and chase; `skater_female` peds taze or flee. Both are already ported via the ped mood path.
+- Pros at challenge spots: their graph `livingworldentities/marquee/marquee.xml` (30 lines) is AI > Marquee
+  (DisableNavigation, LockToCurrentPosition) with only Colliding (NeedsToBeginColliding / IsPedestrianColliding),
+  TrackingSkater (IsFacingSkater / ProTrackSkater) and HoldAtSpawn (ProWaitingForSkater). It has no MonitorEnvironment
+  and no AddressWants, which `pedestrian/Pedestrian.xml` runs, so a pro stumbles on a bump but never gets a mood
+  [data, main verified 2026-10-16]. Our collision rules already give `marquee` no knock-down
+  (`skate-data/tests/ped_anim_data.rs:112`). Standing pros are not spawned by our engine yet (branch plan: challenge
+  hosts, spawn positions open); when they are, they must run the marquee graph, never the pedestrian graph.
+
+**Change (2026-10-16).** NPC skaters say the `130_collide` line when bumped:
+- `skate-audio` `AudioState::collide_vehicle` / `collide_skater` / `collide_other` (`+596` / `+600` / `+608`), filled
+  by `skate_events::audio_state` from the skater's SkeletonCollision maxima.
+- `Contacts::body` (the body poster) counts `collides` for a non-local skater when a region posts and any of the
+  three is over its floor (`ContactsTuning::collide_vehicle_min` 0.16 / `collide_min` 0.2, exported by
+  `tools/asset_pipeline/audio_export.py` as posters `collide_vehicle_min` / `collide_min`; the retail values are
+  the defaults until a setup refresh exports them).
+- `NpcSkater::take_collides` -> NPC host `collides` -> world speech: `skater_speech::collide` gives the message pair,
+  which plays through the skater's speech record like the bail grunt.
+- Tests: `player::contacts::tests::a_bumped_npc_skater_asks_for_the_collide_line`,
+  `world::skater_speech::tests::a_bumped_skater_says_its_collide_line`.
+- Only simulated NPC skaters have a skeleton body, so replay-tier NPCs (no physics contact) never say it.
+
+**Open (follow-ups).** The local player's branch of `sub_824BDA90` (a skater contact posts 32797 and main-cast
+24698 / 24630 for the player); the `+708` list write of `+148` on the skater's speech record when the skater flag is
+set; the `+492` cooldown and event 8290 posted to a listener when the bumped skater hit the local player
+(mode-gated by `*(system)+1036 < 104` and `sub_824F2DF0`).
+
+**Data-driven / mod-overridable:** the two thresholds (tuning by key), the event id per game mode, the voice sets, and
+which graph an entity type runs (graph path per entity). Multiplayer: the host decides whether a bump plays a line,
+keyed by the NPC skater's stable id.

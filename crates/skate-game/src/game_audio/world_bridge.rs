@@ -455,6 +455,7 @@ fn read_back(
     mut stats: ResMut<WorldAudioStats>,
     instances: Query<&WorldAudioInstance>,
 ) {
+    let _span = super::hitch_parts::span(super::hitch_parts::BRIDGE);
     if !bridge.active && bridge.tagged.is_empty() {
         return;
     }

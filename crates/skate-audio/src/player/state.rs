@@ -50,6 +50,8 @@ pub struct AudioState {
     pub bail: bool,
     pub bail_end: bool,
     pub on_foot: bool,
+    /// `+744` the skater is skitching (packer record `+152` bit `0x100` = physical state 104; `hand_grabs`).
+    pub skitching: bool,
     pub soft_wheels: bool,
     /// `+333 || +334` the push foot is planted; `+335` a new push plant this frame.
     pub push_planted: bool,
@@ -165,6 +167,14 @@ pub struct AudioState {
     /// the values before the bridge's speed graph: the poster applies it at [`Self::com_speed_216`]
     /// (retail stores the product back into `+496`).
     pub body_impact: [f32; 6],
+    /// `+596` / `+600` / `+608` (Collision `+180` / `+184` / `+192`, the tail of `sub_82BD60C8`
+    /// copying SkeletonCollision `+4056` / `+4048` / `+4060`): this frame's largest contact speed
+    /// against a group 8 body (a car), a group 5 body (another skater, × the skater / AI scalar)
+    /// and a group 11 body (`SkeletonCollision::maximum_group_8_force` / `maximum_skater_force` /
+    /// `maximum_group_11_force`). The collide line reads them ([`super::contacts`]).
+    pub collide_vehicle: f32,
+    pub collide_skater: f32,
+    pub collide_other: f32,
     /// `+216`: the previous bridge frame's `+212` (|COM v|, m/s; the bridge `sub_824B0DA8` copies
     /// `+212` there after scaling the region impacts by the speed graph at it). The game sets it
     /// per physics step; 0 (graph value 1.0) when nobody does.
@@ -212,6 +222,7 @@ impl Default for AudioState {
             bail: false,
             bail_end: false,
             on_foot: false,
+            skitching: false,
             soft_wheels: false,
             push_planted: false,
             push_trigger: false,
@@ -257,6 +268,9 @@ impl Default for AudioState {
             body_tag: [0; 6],
             body_slide_flag: false,
             body_impact: [0.0; 6],
+            collide_vehicle: 0.0,
+            collide_skater: 0.0,
+            collide_other: 0.0,
             com_speed_216: 0.0,
             hands_on_deck: [false; 2],
             in_water: false,

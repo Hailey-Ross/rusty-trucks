@@ -98,6 +98,10 @@ impl PlayerControls {
         } else {
             None
         };
+        // 825999F0 passes 825992D8 the current state (`*(state+16)`) == 502 (off-board pushing) and == 104
+        // (skitching): with both bumpers held, those states keep the bumper pressed first (82598FE0).
+        self.bumper_state_502 = physical.state.state_16 == 502;
+        self.bumper_state_104 = physical.state.state_16 == 104;
         self.update(
             &mut SimulationActions {
                 source: map,

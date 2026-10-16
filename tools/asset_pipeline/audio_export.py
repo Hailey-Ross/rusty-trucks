@@ -714,6 +714,12 @@ COLLISION_POSTERS = (
     ('Hash_923CCB46EF5BF5BA', 'Hash_F1647BFB782BE97F', 'Hash_DB56952676D7122E', 'tap_first_soft'),
     ('Hash_923CCB46EF5BF5BA', 'Hash_F1647BFB782BE97F', 'Hash_0ACFCB7E532B7A0B', 'tap_second_soft'),
     ('Hash_923CCB46EF5BF5BA', 'Hash_F1647BFB782BE97F', 'Hash_7EA37827E4228614', 'tap_other_soft'),
+    # The collide line's floors (sub_824BDA90): a car contact, a skater / group 11 contact.
+    ('aud_speech', 'default', 'Hash_7503A1AD356BFCCD', 'collide_vehicle_min'),
+    ('aud_speech', 'default', 'Hash_359EC8EF52598AA8', 'collide_min'),
+    # The same class by its hash (hash64('aud_speech')), for a conversion that does not name it.
+    ('Hash_B29C3B2C13D96482', 'default', 'Hash_7503A1AD356BFCCD', 'collide_vehicle_min'),
+    ('Hash_B29C3B2C13D96482', 'default', 'Hash_359EC8EF52598AA8', 'collide_min'),
 )
 
 # The push foot's plant / lift (sub_824BBB28, Contacts `default`): sk8_foley ids by material kind 0..4.
@@ -725,6 +731,10 @@ LIFT_FIELDS = ('Hash_2D97D30AEA78BCE2', 'Hash_73CB69882A79481B', 'Hash_767F6CAEA
 EQCHAIN_CLASS = 'Hash_42AFE160E647167C'
 PLANT_EQ = 'Hash_748CBC9727A5347F'
 GRIND_CONTACT_EQ = 'Hash_D1A87641CCB98787'
+# HandGrabs' skitch pair (sub_824EC488): aud_splicer handgrab, Skate_Collisions / Skate_Metal ids, and its bus
+# (aud_randomeqtuning default).
+HANDGRAB = ('Hash_923CCB46EF5BF5BA', ('handgrab', 'Hash_E0C3B44AB44F7B90'), 'Hash_3A6CB8809410A268', 'Hash_04B0B78035ED5EC6')
+HANDGRAB_EQ = 'Hash_CCDFABBAEEA33EAE'
 # The body poster (sub_824BC188; class 6EBA5BCD3E38A98A `default`): the per-region cooldown and the pad thresholds.
 BODY_POSTERS = (('Hash_6DD85F43C1B6E6AA', 'body_cooldown'),
                 ('Hash_D12003A60E987B9D', 'body_110_head_low'), ('Hash_FA2AA5A0C0481D00', 'body_110_head_high'),
@@ -1037,6 +1047,13 @@ def player_tuning(collections: list[dict], image: bytes | None = None, image_bas
         bus = by_class.get(EQCHAIN_CLASS, {}).get('default', {}).get('fields', {}).get(GRIND_CONTACT_EQ)
         if bus is not None:
             out['grind_contact_eq'] = _words(bus)[0]
+    splicer = by_class.get(HANDGRAB[0], {}) or by_class.get('aud_splicer', {})
+    grab = next((splicer[k] for k in HANDGRAB[1] if k in splicer), None)
+    if grab and HANDGRAB[2] in grab['fields'] and HANDGRAB[3] in grab['fields']:
+        out['hand_grab'] = {'collisions': _words(grab['fields'][HANDGRAB[2]])[0], 'metal': _words(grab['fields'][HANDGRAB[3]])[0]}
+        bus = by_class.get(EQCHAIN_CLASS, {}).get('default', {}).get('fields', {}).get(HANDGRAB_EQ)
+        if bus is not None:
+            out['hand_grab']['eq'] = _words(bus)[0]
     wheel = by_class.get(WHEEL_CLASS, {}).get('default')
     if wheel:
         for field, name in WHEEL_BUCKET.items():
