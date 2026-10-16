@@ -1924,6 +1924,9 @@ finished 0.5 s after it, so on an HDD the two competed for the disk.
   the current step and item are written under it ("Loading sound: sound bank grind_concrete (12 s)"), and the last
   finished steps are listed dimmed below, like RPCS3's progress lines. `main.rs` names each startup stage on it;
   any thread reports the item being read (`startup_loading::detail`). `SKATE_NO_SPLASH=1` turns it off.
+  The board (2026-10-16) is drawn as a side view: kicked nose and tail, griptape over a maple edge, two trucks,
+  urethane wheels and a ground shadow, drawn at 4x and scaled down so the edges are smooth;
+  `SKATE_SPLASH_BOARD_BMP=<path>` writes it to a BMP to look at without starting the game.
 - `startup_loading.rs` (new): the game window is created hidden (`app.rs`, `visible: false`) and shown and brought
   forward when every hold is released; the splash closes then. Gameplay waits while a hold is up (virtual time
   paused, after the menu's own pause rule), so the start runs in the same order as before. The audio hold is
