@@ -70,6 +70,8 @@ pub(crate) fn build(
                 primary_window: Some(Window {
                     title: config.multiplayer.title.clone().unwrap_or_else(||"Skate 3 Rust Engine".into()),
                     resolution: (1280, 800).into(),
+                    // Hidden until the start is done (`startup_loading`); the splash shows meanwhile.
+                    visible: false,
                     ..default()
                 }),
                 ..default()
@@ -148,6 +150,7 @@ pub(crate) fn build(
     app.add_plugins(crate::fe_backdrop::FeBackdropPlugin);
     app.add_plugins(crate::trick_guide_scene::TrickGuideScenePlugin);
     app.add_plugins(crate::rumble::RumblePlugin);
+    app.add_plugins(crate::startup_loading::StartupLoadingPlugin);
     app.add_plugins(crate::asset_check::AssetCheckPlugin);
     app.add_plugins(crate::debug_cam::DebugCamPlugin);
     app.add_plugins(crate::water_splash::WaterSplashPlugin);
