@@ -19,23 +19,23 @@
 //!   kind free): the car brakes toward the skater's speed minus 20 km/h and never accelerates
 //!   ([`super::skater_scan`], b63; this was misread as a lead-following rule before).
 //! - the junction query (`sub_82E11E90`, V1 [`junction_entry`]) runs once the stop line is within
-//!   `look_ahead + speed`; Go enters, Approach slows to the connector's entry speed, Signal /
-//!   Yield / Blocked hold the car at the line [code].
+//!   `speed + standoff` (`+3660` = length x spec `2ACE3FEE`, `82C376E8`); Go enters, every other
+//!   answer (Approach included) is a stop target at the line with that standoff, so Approach slows
+//!   the car until the query answers Go [code, b163].
+//! - the car ahead (`82C38390` -> `82C41120`): a stop target at the bumper-to-bumper gap with half of
+//!   `+3664` (length x `73A1989B`) as the standoff, inside `speed + standoff` [code, b162 M1].
 //! - connector choice: least loaded exit lane per metre on every car (`sub_82C376E8`, V1
 //!   [`choose_connector`]) [code]; the load is the number of cars on the exit lane (the retail
 //!   per-lane vec4 is not read yet, V1 open item).
 //! - acceleration ramps 0.2 m/s^2 per ~0.25 s up to 2.3-3.4 m/s^2 from a stop [trace 47CAEDA0,
 //!   proof1]; hard stops reach about -7.3 m/s^2 [trace 47CAEDA0, 164620].
 //!
-//! V3 simplifications (until V4): no look-ahead obstacles other than cars (skater, NPCs and peds
-//! are V4 / V5); the look-ahead distance is the comfortable stopping distance plus one second of
-//! speed (retail `+3516` is not read); the following rule below 20 km/h and the minimum gap are a
-//! plain "stop `min_gap` behind the car ahead"; a car that got Go and can no longer stop
-//! comfortably commits to the junction (amber dilemma zone); a car at a dead end stops there (the
-//! engine despawns it); no lane changes, overtakes, horns, parking or skids. One engine-side
-//! safeguard that is not retail: [`lead`] treats a car inside the junction on another connector
-//! into the same exit lane, nearer the exit, as the car ahead (two lanes of one approach merging
-//! into one; retail's junction query does not cover that case, its look-ahead does, V4).
+//! Not retail yet: a car at a dead end stops there (the engine despawns it); the obstacle
+//! look-ahead and the query's exit-room check use the engine `min_gap`; two engine-side safeguards:
+//! the step never moves a car into its lead's bumper, and [`lead`] treats a car inside the junction
+//! on another connector into the same exit lane, nearer the exit, as the car ahead (two lanes of
+//! one approach merging into one; retail's junction query does not cover that case, its
+//! look-ahead does).
 //!
 //! Multiplayer seams: [`step`] is a pure function of the road network, the signal clock, the cars
 //! (sorted by key) and `dt`; cars update in key order and see the cars before them already moved
@@ -80,16 +80,16 @@ pub struct FollowParams {
     pub latch_decel: f32,
     /// Acceleration ramp, m/s^3: 0.2 m/s^2 per 0.25 s [trace proof1, 47CAEDA0].
     pub jerk: f32,
-    /// Comfortable braking for the look-ahead and stop planning, m/s^2. Default: the spec field
-    /// `Hash_758229215579C6D1` (2.5-3.0) [data; meaning a candidate, open].
-    pub plan_decel: f32,
-    /// Hardest braking, m/s^2: -7.25 / -7.31 seen [trace 47CAEDA0, 164620].
-    pub hard_brake: f32,
-    /// Distance kept to the car ahead when stopped (rear to front), m. Engine value (retail
-    /// `+3520` not read): 2.0.
+    /// The junction stop standoff, a factor of the car's length (`+3660` = s x spec+44 `Hash_2ACE3FEE16D6F7A2`,
+    /// `82C3CDD0`; 0.5 default, 0.25 most cars, 0.35 minivan; b163): the query window is `speed + standoff`
+    /// (`82C376E8`) and a blocked car stops its front bumper this far before the line.
+    pub stop_standoff_factor: f32,
+    /// The lead standoff, a factor of the car's length (`+3664` = s x `Hash_73A1989BB90C93BA`, 0.5, family 0.6); the
+    /// state update passes half of it to the lead rule (`82C38390` -> `82C41120`; b162 M1).
+    pub lead_standoff_factor: f32,
+    /// Standoff of the obstacle look-ahead and the junction query's exit-room check, m. Engine value (the retail
+    /// source of these two is not read): 2.0.
     pub min_gap: f32,
-    /// Stop distance before the line (`f2` of the stop-line rule), m. Engine value: 0.5.
-    pub stop_margin: f32,
     /// The skater-behind rule (scan range, speeds, braking distances, release grace; b63).
     pub skater: super::skater_scan::SkaterFollowParams,
     /// The manoeuvre decider's values (spec / driver records; b69 / b74) and the lane-change passage: the spec's
@@ -131,10 +131,9 @@ impl Default for FollowParams {
             held_bonus_chance: 1.0,
             latch_decel: 5.0,
             jerk: 0.8,
-            plan_decel: 3.0,
-            hard_brake: 7.3,
+            stop_standoff_factor: 0.5,
+            lead_standoff_factor: 0.5,
             min_gap: 2.0,
-            stop_margin: 0.5,
             skater: Default::default(),
             manoeuvre: Default::default(),
             passage_factor: 2.0,
@@ -165,8 +164,6 @@ pub struct Car {
     pub params: FollowParams,
     /// The last junction answer for the chosen connector (retail junction state `+4392`).
     pub entry: Option<Entry>,
-    /// The car got Go and can no longer stop comfortably: it goes through.
-    pub committed: bool,
     /// An actor (the skater) hit the car ahead of it (retail `+4401` bit 0x20, `sub_82C3C150`): the
     /// planner brakes hard (`sub_82C3FA08` at `0x82C3FE44`: accel = -speed) until the car stands,
     /// then the integrator clears it (`sub_82C3FF38`).
@@ -211,7 +208,7 @@ pub struct Car {
 
 impl Car {
     pub fn new(key: VehicleKey, cursor: LaneCursor, length: f32, params: FollowParams) -> Self {
-        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, brake_latched: false, accel_cap: params.accel_max, speed_bias: 0.0, held_bonus: params.held_cap_add, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE, decider: Default::default(), passage: None, manoeuvre: Default::default(), alarming: false }
+        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, hit_brake: false, brake_latched: false, accel_cap: params.accel_max, speed_bias: 0.0, held_bonus: params.held_cap_add, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE, decider: Default::default(), passage: None, manoeuvre: Default::default(), alarming: false }
     }
 
     /// On `place` for the lane lists: its own place, or the target lane of a running lane change (retail registers
@@ -243,9 +240,22 @@ impl Car {
         }
     }
 
-    /// Look-ahead distance (m): comfortable stopping distance (V3 stand-in for `+3516`).
+    /// The junction stop standoff (`+3660`, mover vt+100 `82C34610`), m. The query runs while the line is within
+    /// `speed + standoff` (`82C376E8`: `vt+100 + vt+92 >= d`) [code]. The car's `length` is taken as retail's size
+    /// `s` (car+36 vt+172; full length per b163 section 1, medium).
+    pub fn junction_standoff(&self) -> f32 {
+        self.length * self.params.stop_standoff_factor
+    }
+
+    /// The lead standoff: half of `+3664` (mover vt+104, `82C38390`), m.
+    pub fn lead_standoff(&self) -> f32 {
+        0.5 * self.length * self.params.lead_standoff_factor
+    }
+
+    /// The query's look-ahead: the junction standoff (the window is `look_ahead + speed`). Whether the query's own
+    /// Approach test (`remaining >= look_ahead`) reads the same value is not read [inferred].
     pub fn look_ahead(&self) -> f32 {
-        self.speed * self.speed / (2.0 * self.params.plan_decel.max(0.1))
+        self.junction_standoff()
     }
 
     pub fn snapshot(&self) -> VehicleSnapshot {
@@ -323,29 +333,6 @@ pub fn stop_accel(speed: f32, distance: f32, margin: f32) -> f32 {
         return f32::NEG_INFINITY;
     }
     -(speed * speed) / (2.0 * d + 0.001)
-}
-
-/// Braking to reach `target` m/s at `distance` (the Approach answer and the following rule).
-pub fn reach_accel(speed: f32, target: f32, distance: f32) -> f32 {
-    if speed <= target {
-        return f32::INFINITY;
-    }
-    if distance <= 0.0 {
-        return f32::NEG_INFINITY;
-    }
-    (target * target - speed * speed) / (2.0 * distance + 0.001)
-}
-
-/// Following a lead `gap` metres ahead (rear of the lead to the front of this car): brake to the
-/// lead's speed by `min_gap` behind it. NOT RETAIL YET: retail's lead handling lives in the
-/// planner's standoff part (`sub_82C41120`); `+3756` / `+3760` / `+3728` belong to the skater
-/// scan, not to a lead (b63).
-pub fn follow_accel(p: &FollowParams, speed: f32, lead_speed: f32, gap: f32) -> f32 {
-    let gap = gap - p.min_gap;
-    if gap <= 0.0 {
-        return f32::NEG_INFINITY;
-    }
-    reach_accel(speed, lead_speed, gap)
 }
 
 /// The speed cap of the car's current place.
@@ -559,11 +546,12 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let mut kind = super::horn::limiter::FREE;
         let mut best = f32::INFINITY;
         let mut entry = me.entry;
-        let mut committed = me.committed;
         if let (Place::Lane { segment, .. }, Some(c)) = (me.cursor.place, me.cursor.next) {
+            // `82C376E8`: d = lane end - position - 0.5 x s (front bumper to the line); the query runs inside the
+            // window `speed + standoff`.
             let to_line = net.segments[segment].length - (me.cursor.distance + me.length * 0.5);
             let snap = me.snapshot();
-            if query_due(&snap, to_line) || to_line <= p.min_gap {
+            if query_due(&snap, to_line) {
                 let info = junction_entry(&EntryQuery { net, signals, occupancy: &occ, vehicles: &snaps, me: &snap, connector: c, check_lights: !me.player_held });
                 if entry != Some(info.entry) {
                     events.push(FollowEvent::Junction { key: me.key, connector: c, entry: info.entry });
@@ -572,50 +560,39 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
                 // FollowingLane stores the answer in the same field as the limiter kind (`+4392`: 1 signal,
                 // 2 approach, 3 yield, 4 blocked, 5 a yield to a flagged car); a car behind one waiting at a light
                 // (1) or a flagged yield (5) counts as waiting itself and does not get the blocked horn.
+                // Any answer but Go (`cmpwi r3,0`) is a stop target at the line: best = d, standoff = `+3660`; the
+                // planner (`82C3FA08`) brakes `-v^2 / (2 (d - standoff) + 0.001)` and stops the car dead inside the
+                // standoff. Approach slows the car this way until it is at the entry speed and the query answers Go.
+                // There is no go-through for a car that can no longer stop (no dilemma zone in `82C376E8` /
+                // `82C41120`; `+4402` bit 0x04 only feeds the horn timer `+3704`) [code].
                 if info.entry != Entry::Go {
                     kind = if info.blocker_flagged { super::horn::limiter::JUNCTION_WAIT } else { info.entry as u8 };
                     best = to_line;
-                }
-                let comfortable = me.speed * me.speed / (2.0 * p.plan_decel.max(0.1));
-                let hard = me.speed * me.speed / (2.0 * p.hard_brake.max(0.1));
-                match info.entry {
-                    Entry::Go => {
-                        if comfortable >= to_line - p.stop_margin {
-                            committed = true;
-                        }
-                    }
-                    Entry::Approach if !committed => {
-                        accel = accel.min(reach_accel(me.speed, net.connectors[c].entry_speed, to_line - p.stop_margin));
-                    }
-                    _ if !committed => {
-                        if hard > to_line - p.stop_margin + 0.25 && me.speed > 0.5 {
-                            // Cannot stop any more: go through (dilemma zone).
-                            committed = true;
-                        } else {
-                            accel = accel.min(stop_accel(me.speed, to_line, p.stop_margin));
-                            hold_at = Some(net.segments[segment].length - me.length * 0.5 - p.stop_margin.min(to_line.max(0.0)));
-                        }
-                    }
-                    _ => {}
+                    let standoff = me.junction_standoff();
+                    accel = accel.min(stop_accel(me.speed, to_line, standoff));
+                    hold_at = Some(net.segments[segment].length - me.length * 0.5 - standoff.min(to_line.max(0.0)));
                 }
             }
         }
-        // The car ahead.
-        let range = me.look_ahead() + me.speed + p.min_gap + 10.0;
+        // The car ahead (`82C38390` -> `82C41120`): gap = bumper to bumper (`0.5 x (s_me + s_lead)` off the centres),
+        // standoff = half of `+3664`; inside `speed + standoff` the lead is the stop target (kind 1 / 3), braking
+        // `-v^2 / (2 (gap - standoff))`, dead stop inside the standoff. No lead-speed matching [code]. Ours: the lead
+        // search reaches the window only (retail's lead finder `82E14F50` range is not read).
+        let lead_standoff = me.lead_standoff();
+        let range = me.speed + lead_standoff;
         let mut limit: Option<f32> = None; // max distance the centre may reach along the current place
         let mut lead_close = None;
-        if let Some((l, gap, lead_speed)) = lead(net, cars, i, range) {
-            accel = accel.min(follow_accel(&p, me.speed, lead_speed, gap));
-            // `sub_82C41120`: inside one second of travel plus the standoff the lead limits; "close" = inside
-            // the standoff (ours: our follower settles at `min_gap`, so the stop margin is the tolerance).
-            lead_close = Some(gap <= p.min_gap + p.stop_margin);
-            if gap <= me.speed + p.min_gap && gap < best {
+        if let Some((l, gap, _)) = lead(net, cars, i, range) {
+            accel = accel.min(stop_accel(me.speed, gap, lead_standoff));
+            // "Close" = inside the standoff (`+4402` bit 0x04 cleared, `82C41120`).
+            lead_close = Some(gap <= lead_standoff);
+            if gap < best {
                 best = gap;
                 use super::horn::limiter::{BEHIND_LEAD, BEHIND_WAITING_LEAD, JUNCTION_WAIT};
                 kind = if matches!(cars[l].limiter, BEHIND_WAITING_LEAD | JUNCTION_WAIT) { BEHIND_WAITING_LEAD } else { BEHIND_LEAD };
             }
-            // Never closer than half the minimum gap (no overlaps whatever the braking).
-            limit = Some(me.cursor.distance + (gap - p.min_gap * 0.5).max(0.0));
+            // ENGINE SAFEGUARD, NOT RETAIL: never into the lead's bumper (a fixed step can overshoot the standoff).
+            limit = Some(me.cursor.distance + gap.max(0.0));
         }
         // A pending pull-over (`82C376E8`, b77): the spot is a stop target (kind 2, standoff = the approach length).
         if let (Pending::PullOver { spot }, Manoeuvre::Following) = (decider.pending, manoeuvre) {
@@ -702,7 +679,8 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             accel
         };
         let latch = me.hit_brake && !me.brake_latched && accel < -p.latch_decel;
-        let accel = accel.max(-p.hard_brake * 4.0).max(-me.speed / dt);
+        // No lower clamp in retail (`82C3FA08`) beyond the dead stop: the step never runs the speed below 0.
+        let accel = accel.max(-me.speed / dt);
         let (mut speed, accel) = integrate(me.speed, accel, cap_now, dt);
         let mut ds = speed * dt;
         let mut target = me.cursor.distance + ds;
@@ -732,7 +710,6 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             car.hit_brake = false;
         }
         car.entry = entry;
-        car.committed = committed;
         car.limiter = kind;
         car.horn_timers = timers;
         car.horn = horn;
@@ -772,7 +749,6 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             match place {
                 Place::Connector { connector } => {
                     car.entry = None;
-                    car.committed = false;
                     events.push(FollowEvent::EnteredJunction { key: car.key, connector });
                 }
                 Place::Lane { segment, lane } => events.push(FollowEvent::EnteredLane { key: car.key, segment, lane }),

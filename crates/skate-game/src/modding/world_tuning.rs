@@ -343,6 +343,7 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         z.ring_max = f.zombie_ring_max.unwrap_or(z.ring_max);
         z.sprint_speed = f.zombie_sprint_speed.unwrap_or(z.sprint_speed);
         z.walk_speed = f.zombie_walk_speed.unwrap_or(z.walk_speed);
+        z.arrive_distance = f.zombie_arrive_distance.unwrap_or(z.arrive_distance);
     }
     if let Some(f) = &p.npc_avoid {
         let a = &mut s.npc_avoid;

@@ -1425,7 +1425,38 @@ gated candidate before the time gate. `query` now takes the deck and writes it (
   b75 O1) and the clamp before the step (retail zeroes the acceleration only after a step past the cap); the lead
   gap and the junction stop window (b162 M1, b163 item 3: `gap = d - 0.5 (s_me + s_lead)`, standoff `0.5 x s x
   73A1` / `s x 2ACE`, brake `-v^2 / (2 (gap - standoff))` inside `gap <= v + standoff`, a dead stop inside the
-  standoff) are the next step; which driver record a car gets (the default one here).
+  standoff) are ported in the next section; which driver record a car gets (the default one here).
 - **Verification:** `a_fast_hit_brake_latches_and_stops_in_about_a_second`, `spawn_draws_follow_the_spec_and_driver_values`
   (core living_world 327 pass); skate-game 715 pass; data-gated skitching and car-knock-down tests pass. Not
   play-tested yet: expect quicker, more varied pull-aways and some cars driving above or below the lane speed.
+
+## Cars: retail's stop standoffs at lines and behind the car ahead (2026-10-16)
+- **Problem (research b162 M1 / M3, b163 sections 2-3):** our follower braked by engine values: a comfortable
+  deceleration and a hard-brake "dilemma zone" that let a car run an amber light, a 0.5 m stop margin, a 2 m minimum
+  gap matched to the lead's speed, a lead search `look_ahead + speed + 2 + 10` m and the query window from
+  `v^2 / (2 x 3.0)`.
+- **Retail [code + data] (main re-read in the recomp asm: `82C376E8` window `vt+100 + vt+92 >= d` around the query
+  `82E11E90`, `cmpwi r3,0` = any answer but Go stops; `82C41120` lead window `gap <= v + standoff` and bit 0x04;
+  b163 for the spawn stores):** at spawn `+3660 = s x spec Hash_2ACE3FEE16D6F7A2` (0.5 default, 0.25 family / sports /
+  taxi / truck, 0.35 minivan) and `+3664 = s x Hash_73A1989BB90C93BA` (0.5, family 0.6), s = the car's size along z.
+  Junction: `d = lane end - position - 0.5 s`; the query runs inside `d <= v + +3660`; any answer but Go (Approach
+  included) makes the line a stop target with standoff `+3660`. Lead: `gap = bumper to bumper`, standoff `0.5 x
+  +3664`, inside `gap <= v + standoff`. The planner (`82C3FA08`, b75) brakes `-v^2 / (2 (d - standoff) + 0.001)`
+  and stops the car dead inside the standoff; no lead-speed matching, no hard-brake clamp. `+4402` bit 0x04 is cleared
+  when something is inside the standoff and only resets the horn timer `+3704`: there is no amber go-through.
+- **Change:** `FollowParams::stop_standoff_factor` / `lead_standoff_factor` (loaded from the spec, mod-settable like
+  every `FollowParams` field), `Car::junction_standoff` / `lead_standoff`; the junction block and the lead block use
+  the retail windows and the stop formula; `look_ahead()` is the junction standoff (the query window). Removed:
+  `plan_decel`, `hard_brake`, `stop_margin`, `committed`, `follow_accel`, `reach_accel`.
+- **NOT RETAIL YET / open:** s = our model length (full length per b163 section 1, medium; one hook on `82E0BE68`
+  would settle it, and the pull-over approach uses half the length, so one of the two is off by 2x); the query's own
+  Approach test (`remaining >= look_ahead`) is assumed to read the same `+3660`; the lead search reaches the window
+  only (retail's `82E14F50` range and its `+3752` free-distance update for any lead are not read); the obstacle
+  look-ahead and the query's exit-room check still use the engine `min_gap` 2.0; an engine safeguard keeps a car out
+  of its lead's bumper when a fixed step overshoots.
+- **Verification:** core traffic 56 pass, incl. `a_car_brakes_by_the_standoff_rule_and_a_mod_factor_moves_the_gap`
+  (window, brake value, dead stop, family factor 0.6 queues at 1.35 m) and `stops_at_red_and_goes_on_green` (holds at
+  the standoff); data-gated DownTown 2 min: 113 junction entries, 0 on red, 0 dead ends; skate-game vehicles 14 pass
+  (the spec loader reads both factors). Not play-tested yet: expect cars to queue closer (about a quarter of a car
+  length) and to brake later and harder at lights, stopping dead at the line instead of running an amber.
+

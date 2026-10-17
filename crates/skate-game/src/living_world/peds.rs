@@ -1037,6 +1037,18 @@ pub(crate) fn advance_peds(
                     let fleeing = mind.is_some_and(|m| m.flee_goal.is_some() || m.chase_goal.is_some());
                     body.player.intent = if fleeing && out.intent == skate_core::living_world::peds::anim::Intent::Walk { skate_core::living_world::peds::anim::Intent::Run } else { out.intent };
                     turn = out.turn;
+                    if out.turn_degrees != 0 {
+                        use skate_core::living_world::peds::anim::{names, Intent};
+                        let walking = body.player.state == Locomotion::Walk;
+                        let clip = if walking { names::walk_turn(out.turn_degrees) } else { names::stand_turn(out.turn_degrees) };
+                        if set.entries.contains_key(clip) {
+                            body.player.turn_degrees = out.turn_degrees;
+                        } else {
+                            // Ours: a set without the bucket's clip (a mod set, a test set) pivots / steers instead.
+                            body.player.intent = if walking { Intent::Walk } else { Intent::Idle };
+                            turn = out.steer;
+                        }
+                    }
                 }
                 None => body.player.intent = body.path.intent(dt, body.player.state),
             }

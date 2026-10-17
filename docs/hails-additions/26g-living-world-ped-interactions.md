@@ -898,7 +898,7 @@ so the throw is not seen in game yet.
 each tick; the body walks a one-point route to the zombie goal at the brain's speed; the anim set override picks the
 `zombie` set. Toggle (no cheat screen yet): `SKATE_ZOMBIE=1` or the mod value `living_world.zombie`; mod keys
 `ped_brain.zombie_follow_distance`, `zombie_sprint_distance`, `zombie_ring_min`, `zombie_ring_max`,
-`zombie_sprint_speed`, `zombie_walk_speed`.
+`zombie_sprint_speed`, `zombie_walk_speed`, `zombie_arrive_distance` (goal reached, 2.0 m 3D: the mover arrival radius, b158 / main-read `82E2BC70`, `82E35E80`).
 
 **The yellow screen (research b100 / b101; values main-checked in the stock collections).** `827F4D28` sets post FX
 bit 0x2000 while the zombie query is true and `827F5450` then builds the near and far colour matrices from the `post_fx`
@@ -1604,3 +1604,48 @@ Peds carried their hand props but never used them, so the phone ring, the call l
 ### Open
 - What a reaction, a sit or a conversation does to a running action (nothing in `82E3F470` cancels one); the litter
   drop vector (ours zero); whether retail's channel ignores a repeated request; the usage entry's `f32_24` / `f32_28`.
+
+## Ped turns: retail's turn buckets, standing and walking (2026-10-16)
+- **Problem (research b156 M1 / M2, b167):** a standing ped turned only by `StandTurnR180` (beyond 135 degrees) or
+  pivoted on the spot at 45 deg/s; a walking ped stopped to pivot beyond 60 degrees. The `StandTurnR45..135` and
+  `WalkTurnR45..180` clips were loaded but never played.
+- **Retail [code + data] (b167; main checked the branch directions and the edge addresses of `82E2A500` in the recomp
+  asm; the edge values were read from the image by the research agent):** the locomotion update `82E36870` ->
+  `82E29540` -> `82E29D98` posts a turn intent through `82E2A500` while no turn or transition runs (loco +0x84 /
+  +0x86). The angle (`82E2ABF8`) is the signed angle from the facing to a point 4.25 ahead on the path. Buckets: from
+  25 / 70 / 115 / 160 degrees the 45 / 90 / 135 / 180 turn of that side (`0x8209994C` / `0x8218155C` / `0x822F929C` /
+  `0x82099154` and their negatives); below 25 no turn. A post clears the steering (command +0x64 = 0); the motion
+  graph state that receives it picks the clip (IdleDefault `StandTurnR*`, Walk `WalkTurnR*` in a branch window,
+  `blendedturn` 0.15 / exit 0.1, left = the mirrored right clip).
+- **Change:** `wander::turn_bucket` and `WanderParams::turn_edges` (data, mod-tunable); `NavOutput::turn_degrees` /
+  `steer`; the step posts the bucket's turn from Idle / Stop / Walk with no steering; the anim player plays
+  `names::stand_turn` / `names::walk_turn` (`Locomotion::WalkTurnLeft` / `WalkTurnRight` return to the walk cycle at
+  the clip's exit); the heading comes from the clip only during a turn.
+- **NOT RETAIL YET (ours):** the angle is to the next corner, not to a point 4.25 ahead on the path (`82E2A6B0` not
+  read); our steering below 25 degrees turns at 45 deg/s (NavPower's rate is not decoded: measure it in the recomp,
+  b158 item 2); while our avoidance stand-in steers no turn is posted and the old stop / pivot rule runs; a set
+  without the bucket's clip (a mod or test set) pivots by the steering instead; run turns (`ChaseRunTurnR*`) are not
+  ported (a running ped still stops to pivot beyond 60 degrees); ForceStop, strafe turns (mask 0xCC) and the
+  requester masks are not ported; the walk turn's return blend to the walk cycle (0.1) is ours.
+
+## Peds that get pinned on a corner step away and choose a new path (2026-10-16)
+- **Problem:** with the turn buckets, a DownTown data run (30 peds, 2 min round the ramp) had 31 walking-in-place
+  episodes: a ped walking at a funnel corner on the mesh boundary it cannot step onto, with the next corner out of
+  straight reach from where it stands; a re-plan gave the same path back. Also the path search could repeat a corner.
+- **Change (ours; NavPower handles this internally and is not decoded):** consecutive duplicate corners are dropped;
+  a walking ped inside the corner radius whose distance to the corner stops shrinking for 0.5 s (`stall_seconds`)
+  moves on to the next corner; a walking ped that stays within 0.3 m (`stuck_distance`) for 2 s (`stuck_seconds`)
+  gives up its target and plans the next one away from the old target with the long fan skipped. That reverse is
+  retail's goal event 4 (`82E31498`: next target direction = old target to ped, pm3 / b158 item 9), whose sender in
+  NavPower is not read; using it for a pinned ped is ours. All three values are `WanderParams` fields.
+- **Verification:** `a_pinned_walking_ped_gives_up_and_plans_away_from_its_target`, `turn_bucket_edges_follow_retail`,
+  `turn_buckets_pick_the_stand_and_walk_turn_clips` (skate-core peds 130 pass); data-gated
+  `downtown_peds_at_the_ramp_never_walk_in_place` 0 episodes (31 before the fix), ped nav data 5 pass; skate-game
+  living_world 93 pass. Not play-tested yet: expect peds to turn on the spot by 45 / 90 / 135 / 180 degrees and to play
+  walking turns at corners instead of stopping to pivot.
+
+## Zombies reach their goal within the mover's 2 m (2026-10-16)
+- ZombieFollow's "goal reached" is the mover's vfunc +124 (`82E2BC70`, main read in the recomp asm): 3D distance
+  within the arrival radius `+0x0C`, and every writer found sets it to `0x82060C50` 2.0 m (`82E35E80`, mover modes
+  2 / 3 / 4 / 6; b158). Ours was 0.5 m flat [inferred]. Now 2.0 m in 3D, mod key `ped_brain.zombie_arrive_distance`;
+  test `zombies_follow_the_player_and_mill_round_them` checks 2.1 m (not reached) and 1.92 m (reached).

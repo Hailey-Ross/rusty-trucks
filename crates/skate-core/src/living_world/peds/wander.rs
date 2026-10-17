@@ -31,9 +31,10 @@
 //!   (walk clip 1.325 m/s, recomp walking median 1.30 [trace]).
 //!
 //! Ours (stated): NavPower's path following and local avoidance are not decoded. A ped follows
-//! the funnel corners of [`NavMesh::find_path`], turns toward the next corner at
-//! [`WanderParams::turn_rate`] (walking, or pivoting on the spot when the corner is more than
-//! [`WanderParams::stop_heading`] off; the 180 degree clips beyond `turn_in_place`), re-targets on arrival (the bot's state 1) and,
+//! the funnel corners of [`NavMesh::find_path`], steers toward the next corner at
+//! [`WanderParams::turn_rate`] below the first turn edge and posts retail's turn buckets past it
+//! (`82E2A500`: 45 / 90 / 135 / 180, standing or walking, the clip turns the ped; the angle is
+//! to the corner, retail's to a point 4.25 ahead on the path `82E2ABF8`), re-targets on arrival (the bot's state 1) and,
 //! when a path cannot be found, as after an event 1-3 (short fan next). Avoidance: a ped yields
 //! (stands) while a ped with a lower id is inside its personal space ahead of it, side-steps a
 //! ped with a higher id standing in its way, steers away from close peds, and never takes a
@@ -73,12 +74,22 @@ pub struct WanderParams {
     /// Turn rate while walking, radians per second. Default from `livingworld_entities_locomotion`
     /// `Hash_AD1EA18F819BF397` = 45 read as degrees per second (meaning unverified).
     pub turn_rate: f32,
-    /// Heading error above which a standing ped plays the 180 turn instead of starting (ours).
-    pub turn_in_place: f32,
-    /// Heading error above which a walking ped stops to pivot, and below which a standing ped
-    /// starts walking (ours, until the motion graph's turn branches run in M4).
+    /// The turn bucket edges, degrees of heading error (`82E2A500`: 25 / 70 / 115 / 160, constants `0x8209994C` /
+    /// `0x8218155C` / `0x822F929C` / `0x82099154` and their negatives; research b167) [code, values read by the
+    /// research agent]: from the first edge up a standing or walking ped posts the 45 / 90 / 135 / 180 turn of that
+    /// side; below it the ped steers.
+    pub turn_edges: [f32; 4],
+    /// Heading error above which a running ped, or a walking ped the avoidance stand-in steers, stops to pivot, and
+    /// below which such a standing ped starts walking (ours, until the run turns and NavPower's avoidance are ported).
     pub stop_heading: f32,
     pub walk_heading: f32,
+    /// Seconds a walking ped may stay inside the corner radius without getting closer before it moves on to the next
+    /// corner (ours).
+    pub stall_seconds: f32,
+    /// A walking ped that moves less than `stuck_distance` metres in `stuck_seconds` plans a new target away from the
+    /// old one (ours).
+    pub stuck_distance: f32,
+    pub stuck_seconds: f32,
     /// Personal space for yielding, metres ahead (ours: the navigation record's 2.0,
     /// `Hash_7C8E344CDEC7510B`, meaning unverified).
     pub yield_distance: f32,
@@ -96,9 +107,12 @@ impl Default for WanderParams {
             mover_value: 2.0,
             corner_radius: 0.5,
             turn_rate: 45f32.to_radians(),
-            turn_in_place: 135f32.to_radians(),
+            turn_edges: [25.0, 70.0, 115.0, 160.0],
             stop_heading: 60f32.to_radians(),
             walk_heading: 15f32.to_radians(),
+            stall_seconds: 0.5,
+            stuck_distance: 0.3,
+            stuck_seconds: 2.0,
             yield_distance: 2.0,
             yield_patience: 3.0,
         }
@@ -144,6 +158,18 @@ pub struct NavOutput {
     /// Heading change to apply this tick (radians, counter-clockwise seen from above).
     pub turn: f32,
     pub waiting: NavWait,
+    /// With a turn intent: the bucket, 45 / 90 / 135 / 180 degrees (0 otherwise).
+    pub turn_degrees: u16,
+    /// The steering turn this tick even with a turn intent: a host whose animation set lacks the bucket's clip
+    /// pivots by it instead (ours).
+    pub steer: f32,
+}
+
+/// The turn bucket for a heading error (radians, positive = left), `82E2A500`: the largest edge reached picks
+/// 180 / 135 / 90 / 45; below the first edge no turn.
+pub fn turn_bucket(error: f32, edges: &[f32; 4]) -> Option<u16> {
+    let deg = error.to_degrees().abs();
+    [(edges[3], 180), (edges[2], 135), (edges[1], 90), (edges[0], 45)].into_iter().find(|(e, _)| deg >= *e).map(|(_, b)| b)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -182,6 +208,13 @@ pub struct PedNav {
     pub obstacle_version: u64,
     /// The polygon the body stands on (kept by [`constrain_move`]; fix 17). `None` = locate.
     pub poly: Option<u32>,
+    /// The corner stall watch (corner index, closest distance, seconds without getting closer).
+    pub stall: Option<(usize, f32, f32)>,
+    /// The stuck watch (anchor position, seconds within `stuck_distance` of it), the reverse flag for the next plan
+    /// and how often the ped gave up (logs, tests).
+    pub stuck: Option<(Vec3, f32)>,
+    pub reverse: bool,
+    pub stuck_count: u32,
 }
 
 fn rotate_y(v: [f32; 2], angle: f32) -> [f32; 2] {
@@ -270,7 +303,19 @@ impl PedNav {
     }
 
     fn plan(&mut self, mesh: &NavMesh, params: &WanderParams, here: NavPoint, heading: f32, obstacles: Option<&NavObstacles>) {
-        let dir = forward(heading);
+        // Reverse (retail goal event 4, `82E31498`: the next target direction = old target to ped; pm3 / b158 item 9).
+        let dir = match (std::mem::take(&mut self.reverse), self.target) {
+            (true, Some(t)) if dist_xz(t, here.position) > 1e-3 => {
+                let (dx, dz) = (here.position[0] - t[0], here.position[2] - t[2]);
+                let l = (dx * dx + dz * dz).sqrt();
+                [dx / l, dz / l]
+            }
+            (true, _) => {
+                let f = forward(heading);
+                [-f[0], -f[1]]
+            }
+            _ => forward(heading),
+        };
         let skip = std::mem::take(&mut self.skip_long);
         let (target, located) = if let Some(route) = &self.route {
             if route.points.is_empty() {
@@ -289,6 +334,7 @@ impl PedNav {
         self.targets_chosen += 1;
         self.target = Some(target);
         self.next = 0;
+        self.stall = None;
         self.corners = match located.and_then(|to| mesh.find_path(here, to)) {
             Some(c) => c,
             None => {
@@ -303,6 +349,8 @@ impl PedNav {
             self.corners = o.detour(mesh, here.position, &self.corners, mesh.agent[1]);
             self.obstacle_version = o.version;
         }
+        // The path search or a detour can repeat a corner; the pass test needs a clear line to a DIFFERENT next one.
+        self.corners.dedup_by(|x, y| dist_xz(*x, *y) < 1e-3);
     }
 
     /// One world tick. `position` / `heading` / `state` are the body's; `others` the nearby
@@ -345,15 +393,40 @@ impl PedNav {
         let here = self.poly.and_then(|k| mesh.point_on(k, position)).or_else(|| mesh.locate(position));
         let Some(here) = here else {
             self.waiting = NavWait::OffMesh;
-            return NavOutput { intent: Intent::Idle, turn: 0.0, waiting: NavWait::OffMesh };
+            return NavOutput { intent: Intent::Idle, turn: 0.0, waiting: NavWait::OffMesh, turn_degrees: 0, steer: 0.0 };
         };
         // Arrival / no plan: choose the next target (the bot's state 1).
         let arrived = self.corners.is_empty() || (self.next + 1 >= self.corners.len() && self.corners.last().is_some_and(|c| dist_xz(*c, position) < params.corner_radius));
-        if arrived {
+        // Ours: stuck watch. A walking ped that moves less than `stuck_distance` in `stuck_seconds` (pinned on a
+        // boundary corner it cannot step onto, 2026-10-16) gives up its target and plans away from it, the long fan
+        // skipped (retail's reverse, event 4, whose sender in NavPower is not decoded).
+        let mut give_up = false;
+        if matches!(state, Locomotion::Walk | Locomotion::Start) {
+            self.stuck = match self.stuck {
+                Some((a, t)) if dist_xz(a, position) < params.stuck_distance => {
+                    if t + dt >= params.stuck_seconds {
+                        give_up = true;
+                        None
+                    } else {
+                        Some((a, t + dt))
+                    }
+                }
+                _ => Some((position, 0.0)),
+            };
+        } else {
+            self.stuck = None;
+        }
+        if give_up {
+            self.reverse = true;
+            self.skip_long = true;
+            self.stuck_count += 1;
+        }
+        if arrived || give_up {
             self.plan(mesh, params, here, heading, obstacles);
         } else if let Some(o) = obstacles.filter(|o| o.version != self.obstacle_version) {
             let rest = self.corners.split_off(self.next.min(self.corners.len()));
             self.corners = o.detour(mesh, position, &rest, mesh.agent[1]);
+            self.corners.dedup_by(|x, y| dist_xz(*x, *y) < 1e-3);
             self.next = 0;
             self.obstacle_version = o.version;
         }
@@ -364,10 +437,29 @@ impl PedNav {
         while self.next + 1 < self.corners.len() && dist_xz(self.corners[self.next], position) < params.corner_radius && mesh.clear_line(at, self.corners[self.next + 1]) {
             self.next += 1;
         }
+        // Ours (NavPower slides past such a corner, not decoded): a walking ped inside the corner radius whose distance
+        // to the corner stops shrinking for `stall_seconds` is at it and walks on to the next corner (a boundary vertex
+        // it cannot step onto, with the next corner out of straight reach; 2026-10-16).
+        if self.next + 1 < self.corners.len() && matches!(state, Locomotion::Walk | Locomotion::Start) && dist_xz(self.corners[self.next], position) < params.corner_radius {
+            let d = dist_xz(self.corners[self.next], position);
+            self.stall = match self.stall {
+                Some((k, best, t)) if k == self.next && d >= best - 0.01 => Some((k, best, t + dt)),
+                _ => Some((self.next, d, 0.0)),
+            };
+            if self.stall.is_some_and(|(_, _, t)| t >= params.stall_seconds) {
+                self.next += 1;
+                self.stall = None;
+            }
+        } else {
+            self.stall = None;
+        }
         let corner = self.corners[self.next.min(self.corners.len() - 1)];
         let to = [corner[0] - position[0], corner[2] - position[2]];
         let desired = if to[0] * to[0] + to[1] * to[1] > 1e-8 { heading_of(to) } else { heading };
         let mut error = wrap(desired - heading);
+        // The turn bucket comes from the path direction (`82E2ABF8`), not the avoidance steering below.
+        let bucket = turn_bucket(error, &params.turn_edges);
+        let left = error > 0.0;
 
         // Avoidance: steer away from close peds; yield to a lower id inside the space ahead.
         let radius = mesh.agent[1].max(0.0);
@@ -419,6 +511,9 @@ impl PedNav {
             let steer = [to[0] + push[0] * 2.0, to[1] + push[1] * 2.0];
             error = wrap(heading_of(steer) - heading);
         }
+        // Ours: while the avoidance stand-in steers, no turn is posted and the stand-in's stop / pivot rule runs (it
+        // walks the ped off its path on purpose; retail's avoidance is NavPower's, not decoded).
+        let avoiding = blocker.is_some() || push != [0.0, 0.0];
 
         // Crosswalk rule (mods): wait before the first road polygon while the walk light is not
         // green.
@@ -447,18 +542,25 @@ impl PedNav {
                 self.corners.clear();
             }
             self.waiting = wait;
-            return NavOutput { intent: Intent::Idle, turn: 0.0, waiting: wait };
+            return NavOutput { intent: Intent::Idle, turn: 0.0, waiting: wait, turn_degrees: 0, steer: 0.0 };
         }
         self.waited = 0.0;
         self.waiting = NavWait::None;
         let turn = error.clamp(-params.turn_rate * dt, params.turn_rate * dt);
-        let out = |intent, turn| NavOutput { intent, turn, waiting: NavWait::None };
-        match state {
-            Locomotion::Idle if error.abs() > params.turn_in_place => out(if error < 0.0 { Intent::TurnRight } else { Intent::TurnLeft }, 0.0),
-            Locomotion::TurnLeft | Locomotion::TurnRight => out(Intent::Idle, 0.0),
-            // Standing (or stopping): pivot toward the corner, walk once roughly facing it.
-            Locomotion::Idle | Locomotion::Stop => out(if error.abs() <= params.walk_heading { Intent::Walk } else { Intent::Idle }, turn),
-            // Walking: steer; a corner far off to the side stops the ped to pivot (no orbiting).
+        let out = |intent, turn| NavOutput { intent, turn, waiting: NavWait::None, turn_degrees: 0, steer: turn };
+        // A posted turn clears the steering (`82E2A500`: command +0x64 = 0) and the clip turns the ped.
+        let post = |degrees| NavOutput { intent: if left { Intent::TurnLeft } else { Intent::TurnRight }, turn: 0.0, waiting: NavWait::None, turn_degrees: degrees, steer: turn };
+        match (state, bucket) {
+            // Turning: the clip's root yaw turns the ped until the turn completes; then a walk turn walks on.
+            (Locomotion::TurnLeft | Locomotion::TurnRight, _) => out(Intent::Idle, 0.0),
+            (Locomotion::WalkTurnLeft | Locomotion::WalkTurnRight, _) => out(Intent::Walk, 0.0),
+            // Standing, stopping or walking past the first edge: the bucket's turn (stand or walk clip).
+            (Locomotion::Idle | Locomotion::Stop | Locomotion::Walk, Some(degrees)) if !avoiding => post(degrees),
+            // Avoiding while standing (ours): pivot, walk once roughly facing the way.
+            (Locomotion::Idle | Locomotion::Stop, _) if avoiding => out(if error.abs() <= params.walk_heading { Intent::Walk } else { Intent::Idle }, turn),
+            // Below the first edge: walk and steer.
+            (Locomotion::Idle | Locomotion::Stop | Locomotion::Walk | Locomotion::Start, _) if !avoiding => out(Intent::Walk, turn),
+            // Running (no run turns yet) or avoiding while walking (ours): a way far off to the side stops the ped to pivot.
             _ => out(if error.abs() > params.stop_heading { Intent::Idle } else { Intent::Walk }, turn),
         }
     }

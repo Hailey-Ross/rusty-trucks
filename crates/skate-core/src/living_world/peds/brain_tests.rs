@@ -521,8 +521,13 @@ fn zombies_follow_the_player_and_mill_round_them() {
     let g = h.brain.zombie_goal.unwrap();
     let r = ((g[0] - player[0]).powi(2) + (g[2] - player[2]).powi(2)).sqrt();
     assert!((1.0..8.0).contains(&r), "ring point {g:?} at {r}");
+    // Goal reached = 3D distance within the mover's 2.0 m arrival radius (`82E2BC70`).
+    h.position = [g[0], g[1] + 2.1, g[2]];
     h.update(0, [0; 6], &f);
-    assert_eq!(h.brain.zombie_goal, Some(g), "not reached yet: keep the point");
+    assert_eq!(h.brain.zombie_goal, Some(g), "2.1 m above the point: not reached yet, keep it");
+    h.position = [g[0] + 1.2, g[1] + 1.5, g[2]];
+    h.update(0, [0; 6], &f);
+    assert_ne!(h.brain.zombie_goal, Some(g), "1.92 m away in 3D: reached, a new ring point");
     h.end(0, [0; 6], &f);
     assert_eq!(h.brain.zombie_goal, None);
     h.begin(1, [0; 6], &f);

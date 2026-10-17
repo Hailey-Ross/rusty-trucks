@@ -279,6 +279,9 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
                 ("Hash_E0C564403296C5F8", &mut params.bias_fast),
                 ("Hash_0070396243C5622D", &mut params.held_bonus),
                 ("Hash_DD49E3C2B833A723", &mut params.latch_decel),
+                // The junction and lead standoffs (`+3660` / `+3664` = length x these, `82C3CDD0`; b163).
+                ("Hash_2ACE3FEE16D6F7A2", &mut params.stop_standoff_factor),
+                ("Hash_73A1989BB90C93BA", &mut params.lead_standoff_factor),
             ] {
                 if let Some(v) = num(hash) {
                     *field = v;

@@ -101,7 +101,7 @@ fn run(m: &NavMesh, bodies: &mut [Body], ticks: u32, rule: CrosswalkRule, signal
                     }
                 }
                 Intent::TurnLeft | Intent::TurnRight => {
-                    b.heading += if out.intent == Intent::TurnLeft { std::f32::consts::PI } else { -std::f32::consts::PI };
+                    b.heading += (out.turn_degrees as f32).to_radians() * if out.intent == Intent::TurnLeft { 1.0 } else { -1.0 };
                     b.state = Locomotion::Idle;
                 }
                 Intent::Idle => b.state = Locomotion::Idle,
@@ -322,7 +322,7 @@ fn downtown_peds_at_the_ramp_never_walk_in_place() {
                     x.walking += dt;
                 }
                 Intent::TurnLeft | Intent::TurnRight => {
-                    x.b.heading += if out.intent == Intent::TurnLeft { std::f32::consts::PI } else { -std::f32::consts::PI };
+                    x.b.heading += (out.turn_degrees as f32).to_radians() * if out.intent == Intent::TurnLeft { 1.0 } else { -1.0 };
                     x.b.state = Locomotion::Idle;
                     x.walking = 0.0;
                     x.anchor = x.b.pos;

@@ -119,7 +119,7 @@ fn run(m: &NavMesh, o: &mut NavObstacles, props: &mut [ObstacleInput], bodies: &
                     }
                 }
                 Intent::TurnLeft | Intent::TurnRight => {
-                    b.heading += if out.intent == Intent::TurnLeft { std::f32::consts::PI } else { -std::f32::consts::PI };
+                    b.heading += (out.turn_degrees as f32).to_radians() * if out.intent == Intent::TurnLeft { 1.0 } else { -1.0 };
                     b.state = Locomotion::Idle;
                 }
                 Intent::Idle => b.state = Locomotion::Idle,

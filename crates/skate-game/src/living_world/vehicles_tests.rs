@@ -68,7 +68,7 @@ fn data() -> VehicleData {
             {"points": [[0.0, 0.0, 0.0]], "direction": [0.0, 0.0, -1.0]}]}},
         "entities": {"taxi01": {"model": "vehicle_taxi01", "spec": "vehicle_spec_taxi01", "driver": "driver_taxi"}}}"#;
     let tables = br#"{"classes": {"livingworld": {"trafficlights": {"fields": {"signal_green": 7.0, "signal_amber": 1.0, "signal_all_red": 0.5, "Hash_5E41C959D17527CC": 0.4}}},
-        "livingworld_vehicle_characteristics": {"vehicle_spec_taxi01": {"fields": {"Hash_328B9F4685A14018": 3.0, "Hash_758229215579C6D1": 2.5,
+        "livingworld_vehicle_characteristics": {"vehicle_spec_taxi01": {"fields": {"Hash_328B9F4685A14018": 3.0, "Hash_758229215579C6D1": 2.5, "Hash_2ACE3FEE16D6F7A2": 0.25, "Hash_73A1989BB90C93BA": 0.5,
         "follow_min_speed_kmh": 20.0, "follow_speed_margin_kmh": 20.0, "engine_audio": {"class": "aud_traffic_engine", "key": "c04_taxi01"}}}},
         "livingworld_vehicle_drivers": {"driver_taxi": {"fields": {"honk_blocked_time": 1.0, "honk_obstacle_time": 2.0, "honk_approach_speed_kmh": 10.0,
         "Hash_50E084076390A573": 0.2, "Hash_20E9C6487FDDBDE8": 1.0}}}}}"#;
@@ -162,6 +162,8 @@ fn living_world_traffic_spawns_a_car_from_the_record() {
     let spec = &a.world().resource::<TrafficState>().cars[0].params;
     // 328B9F46 / 75822921 are the passage and approach factors (b71), not the follower's accel / decel (b75).
     assert_eq!((spec.passage_factor, spec.approach_factor), (3.0, 2.5), "manoeuvre numbers from the spec record");
+    // The junction / lead standoff factors (2ACE3FEE / 73A1989B; stock taxi values 0.25 / 0.5 in the fixture, b163).
+    assert_eq!((spec.stop_standoff_factor, spec.lead_standoff_factor), (0.25, 0.5), "standoff factors from the spec record");
     let car0 = &a.world().resource::<TrafficState>().cars[0];
     assert!((spec.accel_lo..=spec.accel_hi).contains(&car0.accel_cap), "the drawn max acceleration {}", car0.accel_cap);
     assert!(a.world().resource::<Seen>().0.iter().any(|e| matches!(e, TrafficEvent::Spawned { entity, .. } if entity == "taxi01")));

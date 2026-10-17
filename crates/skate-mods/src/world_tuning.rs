@@ -339,8 +339,9 @@ pub struct PedBrainPatch {
     pub hand_prop_skater_contact: Option<bool>,
     pub starting_hand_props: Option<bool>,
     /// ZombieFollow: follow distance (8 m), sprint distance (15 m), ring around the player (1..8 m), sprint and walk
-    /// speeds (8, 3 m/s); 0..=100.
+    /// speeds (8, 3 m/s), goal reached distance (2 m); 0..=100.
     pub zombie_follow_distance: Option<f32>,
+    pub zombie_arrive_distance: Option<f32>,
     pub zombie_sprint_distance: Option<f32>,
     pub zombie_ring_min: Option<f32>,
     pub zombie_ring_max: Option<f32>,
@@ -944,7 +945,7 @@ impl Merge for NpcSimulatedPatch {
 
 impl Merge for PedBrainPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed);
+        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed, zombie_arrive_distance);
     }
 }
 
@@ -1058,7 +1059,7 @@ impl LivingWorldPatch {
             })
             && self.npc_avoid.as_ref().is_none_or(NpcAvoidPatch::validate)
             && self.ped_brain.as_ref().is_none_or(|p| {
-                [p.wander_speed, p.warn_seconds, p.know_about_seconds, p.mood_want_memory_seconds, p.conversation_turn_seconds, p.conversation_gather_seconds, p.run_from_honker_distance, p.run_from_honker_speed, p.attack_throw_speed, p.attack_throw_lead_seconds, p.attack_throw_jitter, p.attack_throw_lift, p.light_throw_speed, p.zombie_follow_distance, p.zombie_sprint_distance, p.zombie_ring_min, p.zombie_ring_max, p.zombie_sprint_speed, p.zombie_walk_speed].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
+                [p.wander_speed, p.warn_seconds, p.know_about_seconds, p.mood_want_memory_seconds, p.conversation_turn_seconds, p.conversation_gather_seconds, p.run_from_honker_distance, p.run_from_honker_speed, p.attack_throw_speed, p.attack_throw_lead_seconds, p.attack_throw_jitter, p.attack_throw_lift, p.light_throw_speed, p.zombie_follow_distance, p.zombie_sprint_distance, p.zombie_ring_min, p.zombie_ring_max, p.zombie_sprint_speed, p.zombie_walk_speed, p.zombie_arrive_distance].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
                     && p.warn_speech.is_none_or(|v| (0..=127).contains(&v))
             })
             && self.traffic_horn.as_ref().is_none_or(|m| {

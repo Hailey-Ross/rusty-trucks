@@ -85,13 +85,14 @@ pub struct ZombieFollowSettings {
     /// `0x82099250` 8.0 and `0x82063B08` 3.0 m/s.
     pub sprint_speed: f32,
     pub walk_speed: f32,
-    /// "Goal reached" (the steering's vfunc +124; its radius is not read): ours, within this flat distance [inferred].
+    /// "Goal reached" = the mover's vfunc +124 (`82E2BC70`): 3D distance within the mover's arrival radius `+0x0C`,
+    /// which every writer found sets to `0x82060C50` 2.0 m (`82E35E80`, mover modes 2 / 3 / 4 / 6) [code].
     pub arrive_distance: f32,
 }
 
 impl Default for ZombieFollowSettings {
     fn default() -> Self {
-        Self { follow_distance: 8.0, sprint_distance: 15.0, ring_min: 1.0, ring_max: 8.0, sprint_speed: 8.0, walk_speed: 3.0, arrive_distance: 0.5 }
+        Self { follow_distance: 8.0, sprint_distance: 15.0, ring_min: 1.0, ring_max: 8.0, sprint_speed: 8.0, walk_speed: 3.0, arrive_distance: 2.0 }
     }
 }
 
@@ -1697,7 +1698,7 @@ impl Host for BrainHost<'_> {
                     let z = s.zombie_follow;
                     let flat = |a: Vec3, c: Vec3| ((a[0] - c[0]).powi(2) + (a[2] - c[2]).powi(2)).sqrt();
                     let d = flat(self.position, player);
-                    let reached = b.zombie_goal.is_none_or(|g| flat(self.position, g) <= z.arrive_distance);
+                    let reached = b.zombie_goal.is_none_or(|g| (0..3).map(|i| (self.position[i] - g[i]).powi(2)).sum::<f32>() <= z.arrive_distance * z.arrive_distance);
                     if d > z.follow_distance {
                         b.zombie_goal = Some(player);
                     } else if reached {
