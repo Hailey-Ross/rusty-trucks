@@ -9,7 +9,10 @@ param(
     [Parameter(Mandatory = $true)][string]$Folder,
     # The recomp game folder you play from (holds game\ and dlc\); with -WithGame it is staged once.
     [string]$Game = '',
-    [switch]$WithGame
+    [switch]$WithGame,
+    # Also stage this PC's recomp save (%APPDATA%\skate3: profile, settings, downloaded content; not the shader
+    # cache or backups), so the second PC plays the same career (play-recomp.ps1 -GetSave).
+    [switch]$WithSave
 )
 $ErrorActionPreference = 'Stop'
 $exe = Join-Path $Build 'skate3.exe'
@@ -37,4 +40,14 @@ if ($WithGame) {
     & robocopy.exe $Game (Join-Path $dest 'game') /E /NFL /NDL /NJH /NP /R:2 /W:5 /XD logs .local /XF skate3.exe rexruntime*.dll LastPlayed.txt quiver-launch.log | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)." }
     Write-Host "Game folder staged in $dest\game; play-recomp.ps1 -GetGame on the second PC copies it and removes this copy."
+}
+
+if ($WithSave) {
+    if (Get-Process skate3 -ErrorAction SilentlyContinue) { throw 'Close the recomp first: its save is written while it runs.' }
+    $save = Join-Path $env:APPDATA 'skate3'
+    if (-not (Test-Path $save)) { throw "No recomp save in $save." }
+    $out = Join-Path $dest 'save\skate3'
+    & robocopy.exe $save $out /MIR /NFL /NDL /NJH /NP /R:2 /W:5 /XD cache '_backup_*' | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)." }
+    Write-Host "Save staged in $out; play-recomp.ps1 -GetSave on the second PC copies it (after backing up its own)."
 }

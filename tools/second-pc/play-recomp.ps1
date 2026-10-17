@@ -13,6 +13,9 @@ param(
     [switch]$Update,
     # First time only: copy the recomp game folder (about 7.5 GB) from the share, then remove the staged copy there.
     [switch]$GetGame,
+    # Copy the main PC's recomp save (career, settings, downloaded content) into %APPDATA%\skate3, after backing up
+    # this PC's own save to %APPDATA%\skate3_backup_<time>. The staged copy on the main PC stays.
+    [switch]$GetSave,
     # Do not send after the session (send later with play-and-send.ps1 -SendOnly).
     [switch]$NoSend
 )
@@ -58,8 +61,8 @@ function Get-Share {
     throw 'The main PC did not answer, or it has not shared a recomp build yet (share-recomp.ps1 on the main PC).'
 }
 
-if ($List -or (-not $Trace -and -not $Update -and -not $GetGame)) {
-    Write-Host 'Usage: PLAY-RECOMP.bat <preset>   (first time: PLAY-RECOMP.bat -GetGame, then -Update)'
+if ($List -or (-not $Trace -and -not $Update -and -not $GetGame -and -not $GetSave)) {
+    Write-Host 'Usage: PLAY-RECOMP.bat <preset>   (first time: PLAY-RECOMP.bat -GetGame, -GetSave, then -Update)'
     Show-Presets
     return
 }
@@ -77,6 +80,28 @@ if ($GetGame) {
     if ($a.Count -ne $b.Count -or $a.Sum -ne $b.Sum) { throw "Copy incomplete ($($b.Count) of $($a.Count) files); run -GetGame again." }
     Remove-Item -Recurse -Force "$share\game"
     Write-Host "Game folder ready ($($b.Count) files); the staged copy on the main PC was removed."
+}
+
+if ($GetSave) {
+    if (Get-Process skate3 -ErrorAction SilentlyContinue) { throw 'Close the recomp first: its save is written while it runs.' }
+    $share = Get-Share
+    $src = "$share\save\skate3"
+    if (-not (Test-Path "$src\profiles\profiles.toml")) { throw "No staged save in $src (the main PC stages it with share-recomp.ps1 -WithSave)." }
+    $save = Join-Path $env:APPDATA 'skate3'
+    if (Test-Path $save) {
+        $backup = Join-Path $env:APPDATA "skate3_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        Copy-Item $save $backup -Recurse
+        Write-Host "This PC's save backed up to $backup"
+    }
+    # Overwrites the save files, keeps this PC's shader cache.
+    & robocopy.exe $src $save /E /NFL /NDL /NJH /NP /R:2 /W:5 | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE)." }
+    $bad = @(Get-ChildItem $src -Recurse -File | Where-Object {
+        $mine = Join-Path $save $_.FullName.Substring($src.Length + 1)
+        -not (Test-Path $mine) -or (Get-FileHash $_.FullName).Hash -ne (Get-FileHash $mine).Hash
+    })
+    if ($bad.Count -gt 0) { throw "$($bad.Count) save files differ after the copy; run -GetSave again." }
+    Write-Host 'Save restored: same career and settings as the main PC.'
 }
 
 if ($Update) {

@@ -248,7 +248,7 @@ measurements, not game code).
 | Script (`tools/second-pc/`) | Runs on | Does |
 |---|---|---|
 | `share-recomp.ps1` | main PC | puts the recomp build (`skate3.exe`, its `rexruntime` DLL, `build.txt` with the build's commit) in `<shared folder>\_recomp\bin\`; with `-WithGame` also stages the recomp game folder in `_recomp\game\` (once, about 7.5 GB) |
-| `play-recomp.ps1` (+ `PLAY-RECOMP.bat`) | second PC | `-GetGame` copies the staged game folder, checks it by size and file count and then removes the staged copy; `-Update` copies the newest build; `-Trace <preset>` plays, checks the trace and sends; `-List` lists the presets; `-NoSend` keeps the session for a later send |
+| `play-recomp.ps1` (+ `PLAY-RECOMP.bat`) | second PC | `-GetGame` copies the staged game folder, checks it by size and file count and then removes the staged copy; `-GetSave` backs up the second PC's save and copies the main PC's in (verified by hash); `-Update` copies the newest build; `-Trace <preset>` plays, checks the trace and sends; `-List` lists the presets; `-NoSend` keeps the session for a later send |
 
 ### Main PC (each new recomp build)
 
@@ -258,6 +258,8 @@ From a checkout of this branch, with the recomp built from the `research-hooks` 
 powershell -ExecutionPolicy Bypass -File tools\second-pc\share-recomp.ps1 -Build <recomp checkout>\out\build\<preset> -Folder <the shared folder>
 # first time, also the game folder (the folder you play the recomp from, with game\ and dlc\):
 #   ... -Game <recomp game folder> -WithGame
+# your save (career, settings, downloaded content from %APPDATA%\skate3; recomp closed):
+#   ... -WithSave
 ```
 
 ### Second PC (once)
@@ -267,6 +269,7 @@ scripts use the same login. Then, from the game folder (A) or `$repo\tools\secon
 
 ```powershell
 .\PLAY-RECOMP.bat -GetGame   # about 7.5 GB over the network, once
+.\PLAY-RECOMP.bat -GetSave   # the main PC's save (about 1 GB); backs up this PC's own save first
 .\PLAY-RECOMP.bat -Update    # the recomp build; again whenever the main PC shares a new one
 ```
 
@@ -299,8 +302,9 @@ line makes the trace unusable and it says so) and sends with `play-and-send.ps1 
 Quit with Escape or F1 (or hold LB + RB + Back for about a second), then **Quit to the desktop**. Closing with Steam's
 **Exit game** is safe too: the trace is written as it goes.
 
-The recomp's save lives in its game folder, so the second PC plays its own copy: what you change there does not touch
-the main PC's save.
+The recomp's save is in `%APPDATA%\skate3` (profile, settings and downloaded content), not in the game folder. Without
+`-GetSave` the second PC starts a new career at character creation. After `-GetSave` it plays a copy of the main PC's
+career; changes there do not go back to the main PC.
 
 Remember what the recomp is ([13](13-recomp-research-hooks.md#warning-reference-and-information-gathering-only)): its
 frame rate and timing differ from the console, so its traces validate retail logic; they are not ground truth.
