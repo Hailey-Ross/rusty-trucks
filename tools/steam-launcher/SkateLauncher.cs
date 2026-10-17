@@ -20,6 +20,8 @@ static class SkateLauncher {
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int h);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("kernel32.dll")] static extern bool GetConsoleMode(IntPtr h, out uint mode);
+    [DllImport("kernel32.dll")] static extern bool SetConsoleMode(IntPtr h, uint mode);
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct FontInfo { public int Size; public int Index; public short W, H; public int Family, Weight;
                       [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Face; }
@@ -183,6 +185,12 @@ static class SkateLauncher {
         try {
             var f = new FontInfo { Size = Marshal.SizeOf(typeof(FontInfo)), W = 0, H = 32, Family = 54, Weight = 400, Face = "Consolas" };
             SetCurrentConsoleFontEx(GetStdHandle(-11), false, ref f);
+        } catch { }
+        // QuickEdit off (keep the extended flags): a click into the console started a text selection that froze its
+        // screen until Esc, so the launcher looked locked.
+        try {
+            uint mode; IntPtr input = GetStdHandle(-10);
+            if (GetConsoleMode(input, out mode)) SetConsoleMode(input, (mode & ~0x0040u) | 0x0080u);
         } catch { }
         Focus();
     }

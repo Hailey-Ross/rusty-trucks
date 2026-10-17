@@ -216,7 +216,26 @@ function Run-Bat([string]$Bat, [string]$Arg) {
     $cmd = '/c ""' + $Bat + '"'
     if ($Arg) { $cmd += ' ' + $Arg }
     $cmd += '"'
-    Start-Process -FilePath cmd.exe -ArgumentList $cmd -Wait -NoNewWindow
+    $run = Start-Process -FilePath cmd.exe -ArgumentList $cmd -NoNewWindow -PassThru
+    Hand-Over-To-Game $run
+    $run.WaitForExit()
+}
+
+# The game starts as a child of this console and gets no foreground of its own: it opened BEHIND the maximised
+# console, and a maximised window cannot be moved (laptop 2026-10-17: "I cant click the game or prompt window").
+# While the console still holds the foreground it may pass it on: once the game's window shows, bring it to the front
+# and minimise the console without activating it. The result screen restores it (Focus-Console / Focus()).
+function Hand-Over-To-Game($run) {
+    $deadline = (Get-Date).AddSeconds(180)
+    while (-not $run.HasExited -and (Get-Date) -lt $deadline) {
+        $game = Get-Process -Name skate3rust, skate3 -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
+        if ($game) {
+            [void][Pad]::SetForegroundWindow($game.MainWindowHandle)
+            [void][Pad]::ShowWindow([Pad]::GetConsoleWindow(), 7)
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    }
 }
 
 function Resolve-Local([string]$Path) { if ([System.IO.Path]::IsPathRooted($Path)) { return $Path }; return (Join-Path $Repo $Path) }
