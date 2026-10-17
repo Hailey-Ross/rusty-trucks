@@ -464,6 +464,23 @@ trace-all.
 Open: when the game restarts itself into setup (Refresh Game Files), the launcher's session record and send did not
 happen once on the laptop; not reproduced yet.
 
+## Steam launcher: the game comes to the front, the console gets out of the way (2026-10-17)
+
+Problem (laptop, user): "the skate launcher prompt window regularly stays over the game and for some reason I cant
+click the game or prompt window to move them". The launcher console is maximised and in the foreground (`Focus()` /
+`Focus-Console`, `ShowWindow` 3) right before the launch; the game starts as a child of that console
+(`Run-Bat` -> `cmd /c PLAY.bat`, no window of its own), so Windows' foreground lock could open it behind the console.
+A maximised window cannot be dragged, and a click into the console with QuickEdit on starts a text selection that
+freezes its screen until Esc.
+
+Change (`tools/steam-launcher`): `launcher.ps1` `Run-Bat` starts the bat without waiting, then `Hand-Over-To-Game`
+waits (up to 180 s) for a `skate3rust` / `skate3` window, gives it the foreground while the console still holds it and
+minimises the console without activating it (`ShowWindow` 7); the result screen restores the console as before.
+`SkateLauncher.cs` turns QuickEdit off for its console (`SetConsoleMode` without `0x40`). The menu stays maximised.
+
+Verification: `csc` builds `SkateLauncher.exe`, `launcher.ps1` parses (PowerShell 5.1). Not checked on the laptop yet:
+start a session from Steam and see the game in front and the console minimised.
+
 ## Map switch: the mods' ground built by the map loader (2026-10-17)
 
 Problem: every map switch froze the game for 1 to 2 s on the first frame on the new map (laptop session
