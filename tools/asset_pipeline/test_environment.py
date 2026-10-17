@@ -90,6 +90,25 @@ class TransparentEnvironmentMaterialTests(unittest.TestCase):
         self.assertEqual(_retail_render_flags('environment.transparent', 2) & 2, 2)
         self.assertEqual(_retail_shader_family('environment.reflective_trans'), 13)
 
+    def test_advertisement_has_its_own_family(self):
+        # advertisement_defaultPS (billboards), opaque.
+        self.assertEqual(_retail_shader_family('advertisement.default'), 17)
+        self.assertEqual(_retail_render_flags('advertisement.default', 0), 0)
+
+    def test_incandescent_transparent_has_its_own_family(self):
+        # transparentincandescent_defaultPS (lit signs).
+        self.assertEqual(_retail_shader_family('incandescent.transparent'), 18)
+        self.assertEqual(_retail_shader_family('incandescent.default'), 12)
+        self.assertEqual(_retail_shader_family('incandescent.videoscreen'), 12)
+
+    def test_animated_flag_has_its_own_family(self):
+        self.assertEqual(_retail_shader_family('animated.flag'), 21)
+        self.assertEqual(_retail_shader_family('animated.tree'), 10)
+
+    def test_traffic_lights_have_their_own_families(self):
+        self.assertEqual(_retail_shader_family('trafficlight.one'), 19)
+        self.assertEqual(_retail_shader_family('trafficlight.two'), 20)
+
 
 if __name__ == '__main__':
     unittest.main()
