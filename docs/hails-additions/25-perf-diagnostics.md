@@ -441,3 +441,37 @@ Identical traces: in all six trace-all runs the audio state log has the same 88-
 - The Chrome trace is armed with F9 / F10 on the keyboard only; a couch session with a pad will not start it.
 - The launcher still sets `SKATE_AEMS=1`, which nothing reads.
 - `BOARD_POSSESSION` lines come from the shared board controller; if NPC or remote skaters drive it the line has no owner field yet.
+
+## Trace-all from the Steam launcher, setup's own packages (2026-10-17)
+
+Problem: trace-all (above) was only reachable from the main PC's private launcher copy; a second PC running the
+committed `tools/steam-launcher` had no way to record a full session. On a source checkout, the game's
+**Refresh Game Files** stopped in the audio group with "No module named 'numpy'": the game starts `tools/setup.py`
+with a system `py -3.13`, and the converter's packages were only installed by hand.
+
+Change:
+- `tools/steam-launcher/launcher.ps1`: entry `rust-traceall` ("Rust engine: play + trace all"): `SKATE_TRACE_ALL=1`
+  with every output in the version's `logs\trace-all-<time>\` (`frames.tsv`, `audio_state.tsv`, `perf.json`; the
+  engine writes the rest next to them). Versions without `SKATE_TRACE_ALL` get the single switches they have; versions
+  without any are hidden. Its result screen counts malformed rows in `audio_state.tsv` and `frames.tsv` (skipping
+  `frames.tsv`'s leading `#` comment line).
+- Launcher: optional `after_session` send script (run with `-SendOnly` after each session, and at the next start for
+  a session closed with Steam's **Exit game**; `launcher.ps1 send`). The next-start `pending` check now also covers
+  trace-all and plain engine sessions. A version without converted game files is not started; the result screen says
+  to run `tools\setup-dev-assets.ps1`.
+- `tools/setup.py`: `ensure_dependencies()`: on a source checkout without numpy / Pillow it creates or updates
+  `.local\venv-setup` from `tools/requirements-setup.txt` (without pyinstaller) and runs setup again in it; a failed
+  install shows a message. The packaged setup exe is unchanged. "Could not reuse the previous Xbox source" only shows
+  when the source failed, not for every error.
+- `tools/setup-dev-assets.ps1`: headless setup for a source checkout (the same venv, `install()`, the `assets`
+  junction, `--check-assets`), for checkouts without the setup window.
+
+Verification: `py -3.13 -m unittest tools.test_setup_dependencies tools.test_setup_dead_console tools.test_setup_refresh`
+(10 tests); a bare Python venv ran `tools/setup.py --help`, installed numpy 2.2.6 / Pillow 11.3.0 into
+`.local\venv-setup` and re-ran; on a laptop (source checkout): a `rust-traceall` session gave `audio_state.tsv` 2328
+rows and `frames.tsv` 28614 rows, 0 malformed; `setup-dev-assets.ps1` converted and linked the files (its final check
+was fixed for Windows PowerShell 5.1 afterwards). `launcher.ps1 entries` lists `rust-traceall` for a checkout with
+trace-all.
+
+Open: when the game restarts itself into setup (Refresh Game Files), the launcher's session record and send did not
+happen once on the laptop; not reproduced yet.
