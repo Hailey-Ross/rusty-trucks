@@ -28,8 +28,13 @@ In order of preference:
    "ours+theirs" / "theirs+ours" with exact context found in the reference; the rest stays as a conflict for you.
    Never loosen it: a fuzzy version once kept one side only and dropped a doc section, an SDK doc block and two
    `validate()` arms.
-3. **By hand:** keep both sides' intent. Lists/match arms/`mod` lines: keep both. A line both branches edited (for
-   example a macro field list or a system chain tuple): merge the fields of both into one line.
+3. **Pick per hunk:** `python .claude/skills/conflict-resolution/tools/pick_hunks.py <file> <choice>...`, one choice
+   per conflict hunk in file order: `o` (ours), `t` (theirs), `ot` / `to` (both, in that order; `ot:SEP` joins them
+   with SEP, `\n` escapes allowed). Handles diff3 hunks. Normalise line endings afterwards if the file mixes them.
+4. **By hand:** keep both sides' intent. Lists/match arms/`mod` lines: keep both. A line both branches edited (for
+   example a macro field list or a system chain tuple): merge the fields of both into one line. Two branches adding a
+   line at the same spot (for example a progress label and a timing span in one function) is a classic case: keep
+   both lines.
 Before committing: `git grep -n -E '^(<<<<<<<|>>>>>>>) '` must be empty; watch for dropped braces.
 
 ## 3. Prove nothing was lost (mandatory)

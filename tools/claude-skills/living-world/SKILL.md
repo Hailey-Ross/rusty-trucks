@@ -9,7 +9,7 @@ Upstream PR #52 ("Living world: NPC skaters, pedestrians and traffic") is the ho
 description and docs first. Movable objects (DMOs) build on upstream PR #15 (dynamic props; credit its author).
 
 ## Source of truth
-Retail code (recomp disassembly as reference, skill `recomp-research`) and stock data. Recomp traces (PEDCOLL, NPC*,
+Retail code (recomp disassembly as reference, skill `recomp-research`; pseudocode via skill `ghidra`) and stock data. Recomp traces (PEDCOLL, NPC*,
 SKATEB, VEH*) only validate; the recomp does not reproduce peds and NPC skaters perfectly. Label every value
 [code]/[data]/[trace] with its address. No game code or data in the repo; values come from each user's own assets at
 setup time (data-driven defaults a mod can override).

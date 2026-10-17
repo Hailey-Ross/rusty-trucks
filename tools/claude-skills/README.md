@@ -43,6 +43,7 @@ asking for the task it describes, or by name (for example `/regression-check`).
 | `recomp-research` | Reverse-engineer retail behaviour with the skate3recomp research build: find code, write guarded trace hooks, drive the game, analyse traces, port in your own words. |
 | `recomp-scripted-runs` | Unattended scripted recomp sessions (pad scripts, teleport routes, background mode, screenshots), passive sessions, the trace line catalogue, recomp artefacts to discount. |
 | `recomp-audio-trace` | Build the recomp research build (title update, clang toolchain) and trace which audio banks/samples retail plays. |
+| `ghidra` | Read retail TU3 functions as Ghidra pseudocode (Ghidra 12.1 + the Xenon360 XEX/XEXP loader with VMX128): where to get the latest releases, setup from your own install, a batch decompile tool, a headless wrapper, an optional language patch for five missing VMX128 instructions, known quirks. |
 | `aems-port` | The native Rust port of the retail audio runtime (AEMS evaluator, voice graph, MixMap, grain bed, Splice, player and world components): workflow, oracles, specs, the console-cadence rule. |
 | `audio-tuning` | Turn a "this sounds wrong" report into a measured, mechanism-level fix: state logs, headless e2e replays, recomp comparisons, world audio checks, re-exporting audio. |
 | `audio-autotest` | The automated in-game check of the audio modding features (muted in the background, or audible for a listener). |
@@ -52,7 +53,7 @@ asking for the task it describes, or by name (for example `/regression-check`).
 
 | Skill | Scripts |
 |---|---|
-| `conflict-resolution/tools` | `check_lines_kept.py` (lines a branch added that the merge lost), `resolve_like.py` (resolve hunks exactly like a reference branch) |
+| `conflict-resolution/tools` | `check_lines_kept.py` (lines a branch added that the merge lost), `resolve_like.py` (resolve hunks exactly like a reference branch), `pick_hunks.py` (resolve conflict hunks by a per-hunk choice) |
 | `optimisation/tools` | `e2e_bench.sh`, `compare_runs.sh`, `timing_summary.py` (headless audio bench and identity check), `audio_timing_summary.py` (`AUDIO_TIMING` readout), `frame_log_summary.py` (`SKATE_FRAME_LOG` readout) |
 | `recomp-research/tools` | `trace.py` (shared trace reader + malformed-line check), `first_pass.py` (summarise first-pass hooks), `fn.sh` (dump a recompiled function), `fnstrings.py` (strings a function references) |
 | `recomp-scripted-runs/tools` | `recomp_script_run.sh` (boot, script, trace, stop), `screen_loop.ps1` (window screenshots), `stop_dev_recomp.ps1`, `make_location_script.py` (Challenge Map teleport scripts) |
@@ -60,6 +61,7 @@ asking for the task it describes, or by name (for example `/regression-check`).
 | `audio-tuning/tools` | `check_sets_vs_trace.py`, `long_run_stats.py`, `check_bed_level.py` (world audio vs recomp traces) |
 | `audio-autotest/tools` | `audio_mod_autotest.ps1` (the autotest runner) |
 | `living-world/tools` | `render_glb.py` (offscreen render of a converted model) |
+| `ghidra/tools` | `decompile.ps1` (pseudocode for a batch of addresses), `ghidra_headless.ps1` (AnalyzeHeadless without the .bat), `scripts/DecompileAt.java` (the post-script) |
 
 More general tools referenced by the skills (map/collision inspection, regression checks with baselines, recomp code
 search, vault inspection, setup equivalence) are in `tools/` of upstream PR #37 ("Tools: published research and
@@ -78,6 +80,9 @@ regression helpers"); fetch that branch if it is not merged yet.
   and read locally; never copy its code or generated code into the engine.
 - Audio skills (`aems-port`, `audio-tuning`, `audio-autotest`, the audio parts of `make-mod`) describe the audio
   branch (upstream PR #32 and its follow-ups); on `main` without it, those crates and switches don't exist yet.
+- For `ghidra`: [Ghidra](https://github.com/NationalSecurityAgency/ghidra) 12.1.x (NSA, Apache-2.0), a JDK 21 or newer, and
+  the [Xenon360](https://github.com/EveryoneEverybody/Xenon360) extension (Apache-2.0) built for the same Ghidra version.
+  Its output is a reading aid for your own copy of the game: never copy pseudocode into the engine.
 
 ## Principles the skills share
 
@@ -94,5 +99,5 @@ regression helpers"); fetch that branch if it is not merged yet.
 ## Contributing
 
 Keep these copies free of machine-specific paths (use placeholders like `<repo>`, `<recomp checkout>`,
-`<extracted disc>`) and personal details. If you change a skill in your `.claude/skills/` copy, bring the generic
+`<extracted disc>`, `<game-install>`, `<ghidra-install>`, `<ghidra-project-dir>`) and personal details. If you change a skill in your `.claude/skills/` copy, bring the generic
 part back here.
