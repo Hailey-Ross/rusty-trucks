@@ -76,8 +76,20 @@ fn vec3(v: Option<&Value>) -> Vec3 {
 impl HandPropData {
     /// From `private/living_world/tables.json` (inheritance already merged by the exporter) and `hand_props.json`.
     pub fn load(root: &Path) -> Result<Self, String> {
+        Self::load_with(root, None)
+    }
+
+    /// [`Self::load`] with `tables.json` already parsed (`None`: read and parse it here).
+    pub fn load_with(root: &Path, parsed: Option<&Value>) -> Result<Self, String> {
         let read = |p: &str| -> Result<Value, String> { serde_json::from_slice(&std::fs::read(root.join(p)).map_err(|e| format!("{p}: {e}"))?).map_err(|e| format!("{p}: {e}")) };
-        let tables = read("private/living_world/tables.json")?;
+        let own;
+        let tables: &Value = match parsed {
+            Some(v) => v,
+            None => {
+                own = read("private/living_world/tables.json")?;
+                &own
+            }
+        };
         let records = tables.pointer("/classes/livingworld_handprops").and_then(Value::as_object).ok_or("tables.json has no livingworld_handprops")?;
         let models = read("private/living_world/hand_props.json").ok();
         let mut props = BTreeMap::new();
