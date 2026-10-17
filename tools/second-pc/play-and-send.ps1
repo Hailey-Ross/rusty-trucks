@@ -102,9 +102,12 @@ function Send-Pending {
     $files = @(Get-ChildItem (Join-Path $Root 'logs') -File -Filter 'game-*.log')
     if (Test-Path $crashDir) { $files += @(Get-ChildItem $crashDir -File) }
     # Trace-all session folders: logs\trace-all-<time> (the Steam launcher's rust-traceall) and bin\logs\trace-all-<unix
-    # seconds> (the engine's default next to the exe). A folder written to in the last 30 s may still be in use.
+    # seconds> (the engine's default next to the exe). While a game runs, a folder written to in the last 30 s may
+    # still be in use; once no game runs (the send right after a session) every folder goes.
+    $gameRunning = [bool](Get-Process skate3rust -ErrorAction SilentlyContinue)
     foreach ($dir in (Join-Path $Root 'logs'), (Join-Path $Root 'bin\logs')) {
         $files += @(Get-ChildItem $dir -Directory -Filter 'trace-all-*' -ErrorAction SilentlyContinue | Where-Object {
+            if (-not $gameRunning) { return $true }
             $newest = Get-ChildItem $_.FullName -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             -not $newest -or $newest.LastWriteTime -lt (Get-Date).AddSeconds(-30)
         })
