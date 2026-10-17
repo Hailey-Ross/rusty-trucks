@@ -819,6 +819,7 @@ keyed by the NPC skater's stable id.
   velocity as its previous value, so the push reads as no acceleration; real hits afterwards still read as bumps.
   Muted DownTown run, same seed: all 35 sim ollies / flips pop (was 33 of 35), andrew_reynolds passes node 60, ticks
   in `Bumped` 239 -> 74. Bails 7 in 150 s (6 before; the sessions diverge). Not play-tested.
-- **Still open (b195, b196 running):** retail and our graph selection both try `Bumped`'s unconditioned exit to
-  `Riding.Turning.Push` before the non-interruptable fallback, yet ours held `Bumped` ~38 ticks: something in our
-  runtime blocks that exit (a real bump on any skater would hit the same).
+- **Why `Bumped` lasts the whole clip (b195, b196 [code]):** retail (`82C14810` / `82C14978`) and ours
+  (`selection.rs:126-154`) only take a transition whose target has an enabled, active leaf; every active leaf under
+  `Riding.Turning.Push` needs a `RightPush` / `LeftPush` intent, which an AI skater does not hold, so `Bumped` runs to
+  its `WillExpire 0.1` exits in both. A pushing player leaves at once. Retail behaviour; no change.
