@@ -67,11 +67,20 @@ pub(super) fn advance(
     if requested != current && requested == skate_core::player::state::PhysicalStateId::WipeoutGround {
         let w = &skater.wipeout.state;
         let reasons: Vec<(usize, f32)> = (0..w.reasons.len()).filter(|&i| w.reasons[i]).map(|i| (i, w.values[i])).collect();
+        // The inputs of the ground squash / displacement checks (`82D8F9E0`): reason 18 = pose error over the squash
+        // limit (x the vehicle scalar while touching a vehicle).
+        let g = &skater.wipeout.settings().ground;
+        let c = &skater.collision_feedback;
         bevy::log::info!(
-            "WIPEOUT_REASONS from={current:?} reasons={reasons:?} count={} flags_2480_bit3={} tick={}",
+            "WIPEOUT_REASONS from={current:?} reasons={reasons:?} count={} flags_2480_bit3={} tick={} max_pose_error={:?} squash_limit={:.3} vehicle_contact={} vehicle_force={:.1} time_on_ground={:.3}",
             w.count,
             p.flags_2480 & (1 << 3) != 0,
-            physics.ticks
+            physics.ticks,
+            skater.collision_maximum_error,
+            if c.flags.group_8 { g.vehicle_scalar } else { 1.0 } * g.max_squash,
+            c.flags.group_8,
+            c.maximum_group_8_force,
+            p.time_on_ground_2752
         );
     }
     //SystemLogic82DB6000 clears the per-frame Wipeout request accumulator.
