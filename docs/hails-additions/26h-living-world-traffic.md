@@ -1378,6 +1378,9 @@ frame. Callers: the frame step `82D48148` (`t` = state+836) and the hand targets
 the re-oriented held copy (ends swapped, +112 negated, reverse bit toggled), the chord only without geometry. Test
 `along_lookup_follows_the_spline_and_its_reverse_bit`.
 
+**Verification.** Session 11 (2026-10-16, hails-additions 678aa1c1, with the latch point, bumpers and the hold fixes):
+"skitching felt so much better and the hands were in the right spots both times I grabbed vehicles."
+
 **Open.** Whether the geometry's points are the raw control points or a smoothed list (b148: medium, control points).
 
 ## Skitching: the latch point is the edge's centreline crossing (2026-10-16)

@@ -810,3 +810,54 @@ fn disable_navigation_holds_while_its_state_runs() {
     h.end(0, [0; 6], &f);
     assert!(!h.brain.navigation_disabled);
 }
+
+/// A finished reaction counts on the target's perception entry (`82E42A58`, `+68`), which the mood records' `7FF7`
+/// test reads: a collisionwarn's want, once unset, lets the next collision escalate. A deactivated want counts
+/// nothing, and a flag 0x40 want forgets its target instead (research b152 M1 / M2).
+#[test]
+fn unset_mood_wants_count_finished_reactions_on_the_perception_entry() {
+    let memory = BrainSettings::default().mood_want_memory_seconds;
+    let mut brain = PedBrain::default();
+    brain.raise_mood_want("warn", 100, false, memory);
+    assert_eq!(brain.perceptions.get(100).map(|e| (e.reacted, e.memory)), Some((0, 30.0)));
+    brain.unset_want("warn");
+    assert_eq!(brain.perceptions.get(100).map(|e| e.reacted), Some(1));
+    // `82E42868` keeps the longer memory.
+    brain.perceptions.know(100, 5.0);
+    assert_eq!(brain.perceptions.get(100).map(|e| e.memory), Some(30.0));
+    brain.raise_mood_want("warn", 100, false, memory);
+    brain.wants.get_mut("warn").expect("raised").needs_addressing = false;
+    brain.unset_want("warn");
+    assert_eq!(brain.perceptions.get(100).map(|e| e.reacted), Some(1), "a deactivated want is not a finished reaction");
+    brain.raise_mood_want("angrychase", 100, true, memory);
+    brain.unset_want("angrychase");
+    assert!(brain.perceptions.get(100).is_none());
+    assert_eq!(brain.chase_requests, vec![ChaseRequest::MoodReset { target: 100 }]);
+}
+
+/// TazeWantTarget (research b153 M4 / M5): no speech or hit timer when the want's target does not resolve
+/// (`826A8398`); after the hit, a target with chasers has its chase group ended with aggressivecapture (`826A8420`).
+#[test]
+fn a_taze_needs_a_resolved_target_and_ends_the_targets_chase_with_a_capture() {
+    let behaviors = ops(&[("TazeWantTarget", &[("want", "taze")])]);
+    let settings = BrainSettings::default();
+    let f = frame();
+    let mut brain = PedBrain::default();
+    brain.set_want("taze", 3);
+    let gone = |_: u64| None;
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &gone, chase: Default::default() };
+    h.begin(0, [0; 6], &f);
+    assert_eq!(h.brain.speech, None);
+    let mut brain = PedBrain::default();
+    brain.set_want("taze", 3);
+    let here = |_: u64| Some([0.0f32, 0.0, 2.0]);
+    let groups = |_: u64| Some(super::super::chase::ChaseGroupInfo { count: 2, primary: Some(8), end_reason: None, can_add: true });
+    let view = ChaseView { me: 7, groups: Some(&groups), ..Default::default() };
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &here, chase: view };
+    h.begin(0, [0; 6], &f);
+    assert_eq!(h.brain.speech, Some(66));
+    h.brain.tick_timers(0.3);
+    h.update(0, [0; 6], &f);
+    let capture = super::super::chase::reason::AGGRESSIVE_CAPTURE;
+    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::Taze { target: 3 }, ChaseRequest::GroupEnd { chasee: 3, reason: capture }]);
+}

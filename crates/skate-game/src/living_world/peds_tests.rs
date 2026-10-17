@@ -872,7 +872,7 @@ fn living_world_ped_mood_tables_warn_then_chase_on_collisions() {
         PLAYER => Some(("skater".to_string(), [1.0, 0.0, 0.0])),
         _ => None,
     };
-    let ctx = MoodContext { ped: PED, ped_type: "adult_male", position: [0.0; 3], entity: &entity, zombie: false, busy: &|_| false };
+    let ctx = MoodContext { ped: PED, ped_type: "adult_male", position: [0.0; 3], entity: &entity, zombie: false, busy: &|_| false, own_plugin_object: false, chasing: false };
     let mut store = MoodStore::default();
     let mut rng = skate_core::living_world::Rng::new(5);
     let hit = || MoodEvent { category: "collision".into(), instigator: Some(PLAYER), second: Some(PED), position: [0.0; 3] };
@@ -966,6 +966,21 @@ fn a_seated_ped_ignores_bumps_but_not_a_hard_hit() {
     assert_eq!(hit(1.5, false), Some(ReactionKind::Standing));
     assert_eq!(hit(1.5, true), None);
     assert_eq!(hit(4.0, true), Some(ReactionKind::Knockdown));
+}
+
+/// DisableHeavyCollision (`brain+3277` bit 0x20) while active: a hard hit only makes the ped stumble, and a seated
+/// ped (IgnoreStandingCollisions too) does not react at all (`sub_82E38FB8`).
+#[test]
+fn disable_heavy_collision_turns_knock_downs_into_stumbles() {
+    use skate_core::living_world::peds::skater_contact::{CollisionRules, ReactionKind};
+    let ped = Vec3::new(0.0, 0.0, 0.0);
+    let hit = |heavy_off: bool, seated: bool| {
+        let rules = contact_rules(&CollisionRules::default(), heavy_off);
+        skater_hit(ped, 0.0, 0.3, [0.0, 0.0, -0.5], [0.0, 0.0, 4.0], &rules, seated).map(|h| h.0)
+    };
+    assert_eq!(hit(false, false), Some(ReactionKind::Knockdown));
+    assert_eq!(hit(true, false), Some(ReactionKind::Standing));
+    assert_eq!(hit(true, true), None);
 }
 
 /// The DMO plugin check's seat probe (`82C539A8`, b136) at the authored poses: an untouched prop's seat stands on

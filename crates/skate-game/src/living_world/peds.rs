@@ -479,6 +479,8 @@ pub(crate) enum PedEvent {
         direction: skate_core::living_world::peds::skater_contact::ReactionDirection,
         /// The skater's speed into the ped, m/s (our stand-in for the ped body's speed).
         closing: f32,
+        /// Who touched the ped (the brain's contact record `+3184`; players: `PLAYER_TARGET_BASE + n`).
+        toucher: u64,
     },
     /// The ped's Colliding state began (PedestrianColliding Begin `8269DA00`): the collision mood broadcast
     /// (`sub_8269D8A8`), read by every ped's think on the next step.
@@ -512,6 +514,15 @@ pub(crate) const SIT_CYCLE: &str = "SitIdleCyc";
 pub(crate) const SIT_AVOID_CLIP: &str = "SitAvoidFwd";
 /// `motiongraph_avoid.xml` SitJump: `PedestrianSpeech` PedestrianAvoidJump [data].
 pub(crate) const SIT_AVOID_SPEECH: i32 = 4;
+
+/// The animation set's collision rules for one contact: DisableHeavyCollision (`brain+3277` bit 0x20) turns the
+/// knock-down off and leaves the standing stumble (`sub_82E38FB8` clears its knock-down test when the bit is set).
+pub(crate) fn contact_rules(
+    set: &skate_core::living_world::peds::skater_contact::CollisionRules,
+    heavy_collision_disabled: bool,
+) -> skate_core::living_world::peds::skater_contact::CollisionRules {
+    skate_core::living_world::peds::skater_contact::CollisionRules { can_knock_down: set.can_knock_down && !heavy_collision_disabled, ..*set }
+}
 
 /// The retail reaction to a skater at `skater` moving at `velocity` touching the ped at `ped`
 /// facing `heading`: `None` when not touching, not moving into it, or no reaction.
@@ -903,14 +914,16 @@ pub(crate) fn advance_peds(
                 let radius = data.nav.as_deref().map_or(super::vehicle_contacts::FALLBACK_PED_RADIUS, |m| m.agent[1]);
                 // Contacts from the entity the ped ignores (`ped+5680`, its takedown target) are dropped (`sub_82E38400`).
                 let ignored = mind.and_then(|m| m.brain.ignore_collisions_with);
-                if let Some((kind, direction, closing)) = observers.observers.iter().enumerate()
-                    .filter(|(i, _)| ignored != Some(PLAYER_TARGET_BASE + *i as u64))
-                    .find_map(|(_, o)| skater_hit(body.position, body.heading, radius, o.position, o.velocity, &set.collision, mind.is_some_and(|m| m.brain.ignore_standing_collisions)))
+                let rules = contact_rules(&set.collision, mind.is_some_and(|m| m.brain.heavy_collision_disabled));
+                if let Some(((kind, direction, closing), toucher)) = observers.observers.iter().enumerate()
+                    .map(|(i, o)| (PLAYER_TARGET_BASE + i as u64, o))
+                    .filter(|(id, _)| ignored != Some(*id))
+                    .find_map(|(id, o)| skater_hit(body.position, body.heading, radius, o.position, o.velocity, &rules, mind.is_some_and(|m| m.brain.ignore_standing_collisions)).map(|h| (h, id)))
                 {
                     let steps = skate_core::living_world::peds::skater_contact::reaction_steps(kind, direction);
                     if body.player.react(set, steps, set.collision.ground_seconds) {
                         info!("PED_SKATER_CONTACT ped=#{} kind={} direction={} closing={closing:.2} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, kind.name(), direction.name(), body.position.x, body.position.y, body.position.z);
-                        events.write(PedEvent::Hit { id: ped.id, kind, direction, closing });
+                        events.write(PedEvent::Hit { id: ped.id, kind, direction, closing, toucher });
                     }
                 }
             }
@@ -1675,6 +1688,7 @@ pub(crate) fn think_peds(
     // same message in one system conflict).
     mut events: ResMut<bevy::ecs::message::Messages<PedEvent>>,
     mut cursor: Local<Option<bevy::ecs::message::MessageCursor<PedEvent>>>,
+    mut touchers: Local<BTreeMap<u64, u64>>,
     (mut traffic_events, cars, mut plugin_props, physics): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>, Option<Res<crate::physics::GamePhysics>>),
 ) {
     let _span = super::timing::span(super::timing::THINK_PEDS);
@@ -1692,16 +1706,20 @@ pub(crate) fn think_peds(
     // Collisions from the skater contact of the last steps (`PedEvent::Hit`): retail posts
     // `collision` to every receiver (broadcast radius 0 = unlimited); a ped that was not the one
     // hit fails its "ped itself" prerequisite and records `nearbycollision` instead
-    // (`sub_82E41060`). The instigator is the first player (local play; per player later).
+    // (`sub_82E41060`). The instigator is the ped's last toucher (the contact record `+3184`), kept until its
+    // Colliding state begins.
     let cursor = cursor.get_or_insert_with(|| events.get_cursor());
     // A reacting contact sets the hit ped's collision component (`sub_82E38FB8`: needs-to-begin); the mood broadcast
     // waits for its Colliding state to begin (`PedEvent::Colliding`), so a ped whose state does not allow Colliding
     // (a non-interruptible chase, a plugin with the collision override) posts nothing yet.
-    let (mut hits, mut collisions) = (Vec::<u64>::new(), Vec::<u64>::new());
+    let (mut hits, mut collisions) = (Vec::<u64>::new(), Vec::<(u64, Option<u64>)>::new());
     for e in cursor.read(&events) {
         match e {
-            PedEvent::Hit { id, .. } => hits.push(id.to_u64()),
-            PedEvent::Colliding { id } => collisions.push(id.to_u64()),
+            PedEvent::Hit { id, toucher, .. } => {
+                hits.push(id.to_u64());
+                touchers.insert(id.to_u64(), *toucher);
+            }
+            PedEvent::Colliding { id } => collisions.push((id.to_u64(), touchers.remove(&id.to_u64()))),
             _ => {}
         }
     }
@@ -1720,6 +1738,8 @@ pub(crate) fn think_peds(
         .map(|(_, p, b, _)| (p.id.to_u64(), (p.entity.clone(), b.position.to_array())))
         .chain(players.iter().enumerate().map(|(i, p)| (PLAYER_TARGET_BASE + i as u64, ("skater".to_string(), *p))))
         .collect();
+    // A hit ped that is gone no longer waits for its Colliding state.
+    touchers.retain(|id, _| entities.contains_key(id));
     // Velocity of every id this tick (the attack throw's look-ahead).
     let velocities: BTreeMap<u64, [f32; 3]> = list
         .iter()
@@ -1945,8 +1965,8 @@ pub(crate) fn think_peds(
                 if mind.presence_timer <= 0.0 {
                     mind.presence_timer = magnitude(mood::category::PRESENCE).max(dt);
                     // `sub_82E41060` drops a post whose prerequisites fail (presence: within 12 m in
-                    // the stock sets). Ours applies it to presence only so far.
-                    let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy };
+                    // the stock sets).
+                    let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some() };
                     for e in mood::presence(me, at, &ped_list, &player_list) {
                         // A suppressed entity raises no mood (perception `+64`).
                         if !e.instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i)) && tables.accepts(&set, &e, &post_ctx) && seen(&e) {
@@ -1963,7 +1983,7 @@ pub(crate) fn think_peds(
                         posts += 1;
                     }
                     if posts > 0 {
-                        let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: true, busy: &busy };
+                        let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: true, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some() };
                         for e in mood::zombie_mode(&player_list) {
                             let suppressed = e.instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i));
                             let in_sight = seen(&e);
@@ -1994,10 +2014,12 @@ pub(crate) fn think_peds(
                 listening.swap_remove(i);
                 mind.brain.speech = Some(skate_core::living_world::peds::conversation::LISTENER_SPEECH);
             }
+            // Every post runs the ped's prerequisites (`sub_82E41060`).
+            let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some() };
             // ChannelGreetWantTarget's `greeted` (magnitude 1.0, `8269FAC0`).
             for &(_, instigator, position) in greeted_now.iter().filter(|g| g.0 == me) {
                 let e = MoodEvent { category: mood::category::GREETED.into(), instigator: Some(instigator), second: Some(me), position };
-                if !mind.brain.perceptions.suppressed(instigator) && seen(&e) {
+                if !mind.brain.perceptions.suppressed(instigator) && tables.accepts(&set, &e, &post_ctx) && seen(&e) {
                     mind.mood.post(e, 1.0);
                 }
             }
@@ -2009,18 +2031,30 @@ pub(crate) fn think_peds(
             if mind.brain.colliding && !body.player.reacting() {
                 mind.brain.colliding = false;
             }
-            for &hit in &collisions {
-                let category = if hit == me { mood::category::COLLISION } else { mood::category::NEARBY_COLLISION };
-                let instigator = player_list.first().map(|p| p.0);
+            for &(hit, toucher) in &collisions {
+                let instigator = toucher.or_else(|| player_list.first().map(|p| p.0));
                 if instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i) || mind.brain.ignore_collisions_with == Some(i)) {
                     continue;
                 }
                 // Event origin (`sub_8269D8A8`: the contact's entity position): the hit ped's, so bystanders run the
                 // vision test against it [inferred: which entity +188 is was not read].
                 let origin = entity(hit).map_or(at, |(_, p)| p);
-                let e = MoodEvent { category: category.into(), instigator, second: Some(hit), position: origin };
+                // `sub_82E41060`: the contact is posted as `collision`; when the prerequisites refuse it and the hit ped
+                // is another ped, it is posted again as `nearbycollision` (stock sets refuse a bystander's `collision`
+                // with kind 6; the security sets have no such item, so their guards react to `collision`).
+                let mut e = MoodEvent { category: mood::category::COLLISION.into(), instigator, second: Some(hit), position: origin };
+                if !tables.accepts(&set, &e, &post_ctx) {
+                    if hit == me {
+                        continue;
+                    }
+                    e.category = mood::category::NEARBY_COLLISION.into();
+                    if !tables.accepts(&set, &e, &post_ctx) {
+                        continue;
+                    }
+                }
                 if seen(&e) {
-                    mind.mood.post(e, magnitude(category));
+                    let m = magnitude(&e.category);
+                    mind.mood.post(e, m);
                 }
             }
             // The brain's own rolls (sit time, stand-up) and its type's sit values, once per ped.
@@ -2043,12 +2077,14 @@ pub(crate) fn think_peds(
                 }
             }
             let rng = mind.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(world_seed, &[0x4d4f_4f44, me])));
-            let ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy };
+            let ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some() };
             let brain = &mind.brain;
-            let outstanding = |id: u64| brain.wants.values().filter(|w| w.target == id).count() as u32;
+            // `7FF7`: the reactions about the instigator the ped has finished (its perception entry `+68`, `82E42A58`).
+            let outstanding = |id: u64| brain.perceptions.get(id).map_or(0, |e| e.reacted);
             let pending = |w: &str| brain.wants.get(w).is_some_and(|x| x.needs_addressing);
             // `sub_82E41B98` does nothing for a busy ped (`sub_82E3BF70`); a pass sets WaitingToReact.
-            let produced = if brain.busy() { None } else { tables.produce(&mut mind.mood, &ctx, false, &outstanding, &pending, rng) };
+            // `072D`: the hand-prop bit (`brain+3278` 0x02, set while a hand prop is attached, `82E3EC60` / `82E3EBE0`).
+            let produced = if brain.busy() { None } else { tables.produce(&mut mind.mood, &ctx, brain.hand_prop.holding, &outstanding, &pending, rng) };
             if let Some(reaction) = produced {
                 let key = reaction.result.bytes().chain([0]).chain(reaction.category.bytes()).fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)) & !(1 << 63);
                 if let Some(held) = mind.log_repeats.allow(key, tick) {
@@ -2068,7 +2104,7 @@ pub(crate) fn think_peds(
                     mind.brain.waiting_to_react = true;
                 }
                 for w in &reaction.wants {
-                    mind.brain.raise_want(&w.want, w.target, w.flag_40);
+                    mind.brain.raise_mood_want(&w.want, w.target, w.flag_40, settings.ped_brain.values.mood_want_memory_seconds);
                 }
                 events.write(PedEvent::Mood { id: ped.id, result: reaction.result.clone(), passed: reaction.passed, wants: reaction.wants.iter().map(|w| w.want.clone()).collect() });
             }
@@ -2318,7 +2354,7 @@ pub(crate) fn think_peds(
                     ChaseRequest::Join { chasee } => {
                         // The formation offset: chaser - chasee at the join (`82D96C38`).
                         let offset = target(chasee).map_or([0.0; 3], |q| [at[0] - q[0], at[1] - q[1], at[2] - q[2]]);
-                        let joined = chase_groups.0.entry(chasee).or_default().add(me, offset);
+                        let joined = chase_groups.0.entry(chasee).or_default().add(me, offset, max_chasers(chasee));
                         if !joined && mind.brain.chasee == Some(chasee) {
                             mind.brain.chasee = None;
                         }

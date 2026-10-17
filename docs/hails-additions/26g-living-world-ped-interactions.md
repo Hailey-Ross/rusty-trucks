@@ -1448,3 +1448,82 @@ playing line), and keeps a stream that started a line closed to new lines until 
 (`available()` counts it busy). Test `the_start_delay_holds_the_voice_and_the_gap_holds_the_stream`.
 
 **Open.** A recomp check of request-to-voice timing for an event with a non-zero `+0` (the speech sessions' traces).
+
+## Ghidra pass 1: knock-downs, mood escalation, chase groups, the taze capture (2026-10-16)
+
+The user asked for Ghidra fixes across the living world to get it closer to retail (plan
+`.claude/todo/living-world-ghidra-pass.md`). This pass compared the ped contact, aggression, chase and taze code with
+the TU3 pseudocode (Ghidra with the Xenon360 extension) and the generated recomp code. Research: b152 (aggression),
+b153 (taze), b154 (chase), b155 (speech, ported later); main re-read every address below before porting it.
+
+### Problems and root causes [code]
+- **A warned ped never escalated to a chase.** The mood records' `7FF7` test ("outstanding reactions about the
+  instigator", [1, 1000] on the stock `collisionchase` results) counted the wants the ped still held. Retail counts on
+  the instigator's perception entry (`+68`): `82E42A58` adds one when a set want (0x80) without flag 0x40 is unset, so
+  the count is the number of reactions the ped has finished about that entity. Once a warn ended, ours read 0 and the
+  chase results could never pass.
+- **The perception entry that holds that count was not made.** A passed mood result calls
+  `82E42868(brain, target, 30.0)` for each want (`sub_82E41B98`, constant `0x820D4924`): find or create the entry and
+  keep it known for at least 30 s. `82E42868` keeps the larger memory; ours overwrote it.
+- **Mood prerequisites.** `sub_82BFEA60` (each item about the ped itself): kind 2 is OwnPluginObject (`brain+3277`
+  bit 0x01), kind 4 "the ped has a chasee", kind 3 the distance from the ped to the record's position (`+48`, not the
+  instigator's live position); comparators 4 and up fail. Ours answered false for kinds 2 and 4, measured kind 3 to
+  the instigator, and passed unknown comparators.
+- **Every post runs the prerequisites** (`sub_82E41060`): a contact is posted as `collision`; when the prerequisites
+  refuse it and the hit ped is another ped, it is retried as `nearbycollision`. Ours chose the category by "was I hit"
+  and skipped the prerequisites for collisions and greets. Stock effect: the security sets have no kind 6 item, so a
+  guard who sees another ped hit gets `collision`, not `nearbycollision`.
+- **The roll cooldown** starts only with a real roll (`|p|` above `0x82063A40`, inside the roll branch); ours always
+  started it. Stock records all have p > 0, so this matters to mods.
+- **The hand-prop gate** (`072D`, `brain+3278` bit 0x02) was always fed false; the bit is set while a hand prop is
+  attached (`82E3EC60`) and cleared on release (`82E3EBE0`, `82E3FAE0`), so the six `throw*` results never passed.
+- **The collision instigator** was always the first player. Retail stores the toucher in the brain's contact record
+  (`+3184`); ours now carries it on `PedEvent::Hit` (and the mod event `ped_hit` as `toucher`).
+- **DisableHeavyCollision** (`brain+3277` bit 0x20) was tracked but not read: `sub_82E38FB8` clears its knock-down
+  test while the bit is set, so a hard hit only makes the ped stumble.
+- **IsEndChaseReason** (`826AAC80` -> GetEndReason `82E3D988`): no group answers -1, an ending group's reason wins over
+  the ped's own. Ours put the ped's own first and answered without a group, so a chaser could take the lostinterest
+  branch while its group ended with aggressivecapture.
+- **AddChaser** (`82D96C38`) refuses a join when the group already holds MaxChasers (vfn16); ours checked only the
+  capacity of 25.
+- **GiveUpPrimary** (`82D97108`) swaps the primary with the next chaser and moves the old primary to the back
+  (erase + push_back), so the primary goes round a group of three or more; ours swapped the first two only.
+- **TazeWantTarget**: Begin (`826A8398`) sets speech 66 and timer 39 only when the want's target resolves; the update
+  (`826A8420`) hits once, then ends the target's chase group with reason 1 (aggressivecapture, group vfn24(1)) while it
+  has chasers. Ours spoke and timed without a target and never ended the chase after a taze.
+
+### Changes
+- `skate-core` `peds/perception.rs`: `Perception::reacted` (`+68`); `know` keeps the larger memory.
+- `skate-core` `peds/brain.rs`: `raise_mood_want` (want + 30 s memory, `BrainSettings::mood_want_memory_seconds`),
+  `unset_want` counts finished reactions and forgets a flag 0x40 target only when the want was set; IsEndChaseReason;
+  TazeWantTarget's target gate and the capture group end.
+- `skate-core` `peds/mood.rs`: prerequisite kinds 2 / 3 / 4, comparators, the roll cooldown and its epsilon;
+  `MoodContext::own_plugin_object` / `chasing`.
+- `skate-core` `peds/chase.rs`: `ChaseGroup::add(.., max_chasers)`, `give_up_primary` rotation.
+- `skate-game` `living_world/peds.rs`: `contact_rules` (DisableHeavyCollision), the toucher on `PedEvent::Hit`, the
+  outstanding count from the perception entry, prerequisites on every post with the `nearbycollision` retry, the
+  hand-prop bit, the group join with the chasee's max.
+- Mods: world tuning `ped_brain.mood_want_memory_seconds` (0..=100, retail 30.0); mod event `ped_hit.toucher`.
+
+### Verification
+- New tests: `unset_mood_wants_count_finished_reactions_on_the_perception_entry`,
+  `a_taze_needs_a_resolved_target_and_ends_the_targets_chase_with_a_capture`,
+  `prerequisites_read_the_peds_own_state_and_the_event_position`,
+  `disable_heavy_collision_turns_knock_downs_into_stumbles`, and the group test extended (full group, rotation).
+  The presence test now posts the far event 13 m away instead of moving the instigator (retail measures to the event).
+- skate-core living_world::peds 122 passed; skate-game 714 passed (1 known failure,
+  `setup::tests::pipelines_accept_valid_group_outputs_when_fingerprint_changes`); skate-mods 106 + 3 passed
+  (1 known failure, `skyline_every_component_is_real_and_drives_through_ground_contact`).
+- Not yet played: needs a session (bump a ped, wait for the warn to end, bump again: retail chases).
+
+### Open
+- Prerequisite kinds 1 (`0x8269A888` vfn16), 5 (`0x8269A950` vfn8, probably an area test), 7 (the chasee's
+  `0x8258E778` vfn12) and 8 (`brain+540` bit 0x80, want slot 10) are still false.
+- The perception list's eviction rule (`82E441C8`) and the per (ped type, instigator type) category mask
+  (`82BFE960`) are not read; the producer gate `brain+3278` bit 0x08 has no known writer.
+- Ped on ped contact (kind 5 with a ped toucher: 6.0 thresholds, zombie mode drops the reaction; a toucher whose
+  chaser component answers vfn92, `brain+3276` bit 0x02, forces a knock-down; the setter is chaser vfn88, its caller
+  not found) and NPC skaters as touchers are not ported; asked the user whether retail does both.
+- GiveUpPrimary's named new primary and the old primary's rest time (vfn48 / vfn52) are not ported.
+- The tazer's draw states (b153 M1 to M3: drawn when the draw clip nears its end, the holster clip, the `tazr` prop and
+  the Tazer motion messages) wait for the animation pass (item 6).
