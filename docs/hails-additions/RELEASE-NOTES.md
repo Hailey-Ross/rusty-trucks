@@ -69,6 +69,15 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Peds hold a grudge (new):** a ped who warned you now chases you if you bump them again, like Skate 3. Before, a ped whose warning had ended could never get angry enough to chase. Security guards also react when they see someone else get hit.
+- **Who knocks peds over (new):** NPC skaters now knock peds over like you do, and a ped who walks into another ped makes both stumble.
+- **Chases (new):** a full chase group stops taking new chasers, the lead chaser changes round the group, a taze ends the chase, and a chase ends cleanly.
+- **Peds use their props (new):** peds now eat, drink, read, drop litter and take phone calls (you hear the ring, the call and the hang-up), with Skate 3's own timings for each ped type.
+- **NPC skater sounds (new):** NPC skaters running full physics now make their bail, push, pop and impact sounds.
+- **NPC skater tricks (new):** NPC skaters whose profile has no grabs no longer do grabs, fingerflips or bonelesses.
+- **Cars (new):** each car pulls away with its own acceleration and some drive a bit slower or faster than the limit, like Skate 3; a car you run into from the front brakes to a stop properly instead of easing off.
+- **City sounds (new):** distant one-shots (sirens, dogs, bangs) keep playing when you move into another area instead of being cut off, and their volumes follow Skate 3's steps. How often they play was checked against Skate 3 and already matched.
+- **Loading NPC skaters (new):** every NPC skater with full physics after the first loads in well under half the time, so the pause when they first appear is shorter.
 - **Stutters while skitching (play-tested):** being towed fast through the city no longer freezes the game for up to a second when a ped speaks or a distant city sound (siren, truck, horn) plays for the first time; those sounds now load in the background.
 - **Skitching holds:** holding on, your hands, letting go at the edge of the bumper and the grab sound work like Skate 3; cars collide with their real body shape, so your arms no longer bump into an invisible box; with both bumpers held, the one you pressed first wins; your grip follows the bumper's curve.
 - **Peds are solid:** you no longer pass through peds. They block you like Skate 3's peds do, and running into one fast or mid-trick makes you bail.
