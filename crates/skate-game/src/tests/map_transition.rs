@@ -99,3 +99,12 @@ fn installed_worlds_prepare_commit_and_retire_without_simulation() {
     assert_eq!(world.resource::<Assets<Mesh>>().len(), procedural_meshes);
     assert!(world.get_entity(character).is_ok());
 }
+
+#[test]
+fn scripted_switch_reads_seconds_then_a_path_with_a_drive_letter() {
+    assert_eq!(parse_scripted_switch(r"20:C:\maps\DownTown.skate"), Some((20.0, PathBuf::from(r"C:\maps\DownTown.skate"))));
+    assert_eq!(parse_scripted_switch("2.5 : maps/University.skate"), Some((2.5, PathBuf::from("maps/University.skate"))));
+    assert_eq!(parse_scripted_switch("DownTown.skate"), None, "seconds are required");
+    assert_eq!(parse_scripted_switch("-1:x.skate"), None);
+    assert_eq!(parse_scripted_switch("5:"), None);
+}

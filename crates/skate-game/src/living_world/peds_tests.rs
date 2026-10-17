@@ -872,7 +872,7 @@ fn living_world_ped_mood_tables_warn_then_chase_on_collisions() {
         PLAYER => Some(("skater".to_string(), [1.0, 0.0, 0.0])),
         _ => None,
     };
-    let ctx = MoodContext { ped: PED, ped_type: "adult_male", position: [0.0; 3], entity: &entity, zombie: false, busy: &|_| false, own_plugin_object: false, chasing: false };
+    let ctx = MoodContext { ped: PED, ped_type: "adult_male", position: [0.0; 3], entity: &entity, zombie: false, busy: &|_| false, own_plugin_object: false, chasing: false, flee_pending: false };
     let mut store = MoodStore::default();
     let mut rng = skate_core::living_world::Rng::new(5);
     let hit = || MoodEvent { category: "collision".into(), instigator: Some(PLAYER), second: Some(PED), position: [0.0; 3] };

@@ -48,6 +48,8 @@ struct PreparedWorld {
     retail: bool,
     triggers: crate::trigger_volumes::TriggerVolumes,
     difficulty: crate::difficulty::Difficulty,
+    /// The mods' dynamics ground for the new map, built here so the switch does not build it on the game thread.
+    mod_ground: Result<skate_dynamics::GroundCollider, String>,
 }
 
 enum Phase {
@@ -91,11 +93,34 @@ impl Plugin for MapTransitionPlugin {
             .add_message::<WorldChanged>()
             .add_systems(PreUpdate, poll.in_set(MapTransitionSet).after(crate::graphics_menu::MenuInput)
                 .before(crate::input::poll_controllers))
+            .add_systems(PreUpdate, scripted_switch.before(MapTransitionSet))
             .configure_sets(FixedUpdate, (
                 crate::app::SimulationSet::Input, crate::app::SimulationSet::Controls,
                 crate::app::SimulationSet::Physics,
             ).run_if(crate::graphics_menu::gameplay_active));
     }
+}
+
+/// Diagnostics: `SKATE_MAP_SWITCH=<seconds>:<map .skate path>` requests one map switch that many seconds after
+/// start, so an unattended run (`--trace`, frame log) can measure a switch (2026-10-17: a 1 to 2 s "audio" stage
+/// frame after every switch). Unset, nothing happens.
+fn scripted_switch(time: Res<Time<Real>>, mut transition: ResMut<MapTransition>, mut done: Local<bool>) {
+    static PLAN: std::sync::OnceLock<Option<(f32, std::path::PathBuf)>> = std::sync::OnceLock::new();
+    let plan = PLAN.get_or_init(|| parse_scripted_switch(&std::env::var("SKATE_MAP_SWITCH").ok()?));
+    let Some((after, path)) = plan else { return };
+    if *done || time.elapsed_secs() < *after || transition.busy() {
+        return;
+    }
+    *done = true;
+    info!("SKATE_MAP_SWITCH requesting {} after {:.1} s", path.display(), time.elapsed_secs());
+    transition.request(Entry { label: path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned()), path: Some(path.clone()) });
+}
+
+/// `<seconds>:<path>` (the path may hold ':' itself, e.g. a drive letter).
+fn parse_scripted_switch(value: &str) -> Option<(f32, std::path::PathBuf)> {
+    let (seconds, path) = value.split_once(':')?;
+    let seconds = seconds.trim().parse::<f32>().ok().filter(|s| s.is_finite() && *s >= 0.0)?;
+    (!path.trim().is_empty()).then(|| (seconds, std::path::PathBuf::from(path.trim())))
 }
 
 fn start(world: &World, entry: Entry) -> Result<Phase, String> {
@@ -124,7 +149,7 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
         // Both builders only read the decoded package. Reserve render handles
         // on a second worker while the first constructs fresh simulation state;
         // neither publishes to the live world until both have succeeded.
-        let (physics, skater, controls, camera, simulation_time, render_time) =
+        let (physics, skater, controls, camera, mod_ground, simulation_time, render_time) =
             std::thread::scope(|scope| -> Result<_, String> {
                 let rendering = std::thread::Builder::new().name("map-render-loader".into())
                     .spawn_scoped(scope, || {
@@ -136,12 +161,20 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
                 let simulation = (|| -> Result<_, String> {
                     stage.store(1, Ordering::Relaxed);
                     let physics = info_span!("load_physics").in_scope(|| GamePhysics::load_with_difficulty(&root, map.as_ref(), difficulty))?;
+                    // The same collider the mods' first fixed tick on the new map built on the game thread (1 to 2 s on a
+                    // city map, 2026-10-17), from the same triangles; installed on that same tick.
+                    // Its own thread over a copy of the triangles, next to the skater and camera loads below.
+                    let triangles = crate::modding::ground_triangles(&physics);
+                    let ground_job = std::thread::Builder::new().name("mod-ground".into())
+                        .spawn(move || info_span!("build_mod_ground").in_scope(|| skate_dynamics::DynamicsWorld::build_ground(triangles.into_iter())))
+                        .map_err(|e| format!("Could not start the mod ground builder: {e}"))?;
                     stage.store(2, Ordering::Relaxed);
                     let skater = SkaterRuntime::load_for_world(&root, &graphs, &physics, difficulty.profile_key(), Some(source))?;
                     let mut controls = PlayerControls::load(&root)?;
                     controls.preferences = preferences;
                     let camera = crate::camera::CameraRuntime::load(&root)?;
-                    Ok((physics, skater, controls, camera))
+                    let mod_ground = ground_job.join().unwrap_or_else(|_| Err("the mod ground builder failed unexpectedly".into()));
+                    Ok((physics, skater, controls, camera, mod_ground))
                 })();
                 let simulation_time = simulation_started.elapsed();
                 stage.store(3, Ordering::Relaxed);
@@ -149,15 +182,15 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
                 // render work or reserved scene can outlive a failed request.
                 let render_time = rendering.join()
                     .map_err(|_| "Map render preparation failed unexpectedly".to_string())?;
-                let (physics, skater, controls, camera) = simulation?;
-                Ok((physics, skater, controls, camera, simulation_time, render_time))
+                let (physics, skater, controls, camera, mod_ground) = simulation?;
+                Ok((physics, skater, controls, camera, mod_ground, simulation_time, render_time))
             })?;
         eprintln!("MAP_LOAD_TIMING name={:?} read_ms={} validation_ms={} simulation_ms={} render_ms={} prepare_ms={} parallel=true",
             metadata.name, read_time.as_millis(), validation_time.as_millis(),
             simulation_time.as_millis(), render_time.as_millis(), started.elapsed().as_millis());
         // Drop the decoded package on this worker. Physics and rendering now
         // own their data; retaining it would double large-city CPU memory.
-        Ok(PreparedWorld { map_fingerprint, scene, physics, skater, controls, camera, metadata, retail, triggers, difficulty })
+        Ok(PreparedWorld { map_fingerprint, scene, physics, skater, controls, camera, metadata, retail, triggers, difficulty, mod_ground })
     }).map_err(|e| format!("Could not start map loader: {e}"))?;
     Ok(Phase::Loading { entry, progress, job })
 }
@@ -223,6 +256,7 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
     for mut transform in world.query_filtered::<&mut Transform, With<crate::world::PlayerRoot>>().iter_mut(world) {
         *transform = root_transform;
     }
+    world.insert_resource(crate::modding::PreparedGround { generation: prepared.metadata.generation, ground: Some(prepared.mod_ground) });
     world.insert_resource(prepared.physics);
     world.insert_resource(prepared.skater);
     world.insert_resource(prepared.controls);

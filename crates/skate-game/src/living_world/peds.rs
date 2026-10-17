@@ -2058,7 +2058,7 @@ pub(crate) fn think_peds(
                     mind.presence_timer = magnitude(mood::category::PRESENCE).max(dt);
                     // `sub_82E41060` drops a post whose prerequisites fail (presence: within 12 m in
                     // the stock sets).
-                    let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some() };
+                    let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some(), flee_pending: mind.brain.wants.get("flee").is_some_and(|w| w.needs_addressing) };
                     for e in mood::presence(me, at, &ped_list, &player_list) {
                         // A suppressed entity raises no mood (perception `+64`).
                         if !e.instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i)) && tables.accepts(&set, &e, &post_ctx) && seen(&e) {
@@ -2075,7 +2075,7 @@ pub(crate) fn think_peds(
                         posts += 1;
                     }
                     if posts > 0 {
-                        let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: true, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some() };
+                        let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: true, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some(), flee_pending: mind.brain.wants.get("flee").is_some_and(|w| w.needs_addressing) };
                         for e in mood::zombie_mode(&player_list) {
                             let suppressed = e.instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i));
                             let in_sight = seen(&e);
@@ -2107,7 +2107,7 @@ pub(crate) fn think_peds(
                 mind.brain.speech = Some(skate_core::living_world::peds::conversation::LISTENER_SPEECH);
             }
             // Every post runs the ped's prerequisites (`sub_82E41060`).
-            let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some() };
+            let post_ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some(), flee_pending: mind.brain.wants.get("flee").is_some_and(|w| w.needs_addressing) };
             // ChannelGreetWantTarget's `greeted` (magnitude 1.0, `8269FAC0`).
             for &(_, instigator, position) in greeted_now.iter().filter(|g| g.0 == me) {
                 let e = MoodEvent { category: mood::category::GREETED.into(), instigator: Some(instigator), second: Some(me), position };
@@ -2169,14 +2169,15 @@ pub(crate) fn think_peds(
                 }
             }
             let rng = mind.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(world_seed, &[0x4d4f_4f44, me])));
-            let ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some() };
+            let ctx = MoodContext { ped: me, ped_type: &set, position: at, entity: &entity, zombie: settings.zombie, busy: &busy, own_plugin_object: mind.brain.own_plugin_object, chasing: mind.brain.chasee.is_some(), flee_pending: mind.brain.wants.get("flee").is_some_and(|w| w.needs_addressing) };
             let brain = &mind.brain;
             // `7FF7`: the reactions about the instigator the ped has finished (its perception entry `+68`, `82E42A58`).
             let outstanding = |id: u64| brain.perceptions.get(id).map_or(0, |e| e.reacted);
             let pending = |w: &str| brain.wants.get(w).is_some_and(|x| x.needs_addressing);
-            // `sub_82E41B98` does nothing for a busy ped (`sub_82E3BF70`); a pass sets WaitingToReact.
+            // `sub_82E41B98` does nothing for a busy ped (`sub_82E3BF70`) or while DisableAllMoods holds (`brain+0xCCE` bit
+            // 0x08, set / restored by `826A5A20` / `826A5A50`, research b176); a pass sets WaitingToReact.
             // `072D`: the hand-prop bit (`brain+3278` 0x02, set while a hand prop is attached, `82E3EC60` / `82E3EBE0`).
-            let produced = if brain.busy() { None } else { tables.produce(&mut mind.mood, &ctx, brain.hand_prop.holding, &outstanding, &pending, rng) };
+            let produced = if brain.busy() || brain.moods_disabled { None } else { tables.produce(&mut mind.mood, &ctx, brain.hand_prop.holding, &outstanding, &pending, rng) };
             if let Some(reaction) = produced {
                 let key = reaction.result.bytes().chain([0]).chain(reaction.category.bytes()).fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)) & !(1 << 63);
                 if let Some(held) = mind.log_repeats.allow(key, tick) {

@@ -250,6 +250,8 @@ pub struct MoodContext<'a> {
     /// kind 4, the ped has a chasee (chaser component `0x8269A940` vfunc +12).
     pub own_plugin_object: bool,
     pub chasing: bool,
+    /// Kind 8: want slot 10 (`flee`) is pending (`brain+540` bit 0x80, `sub_82BFEA60`, research b176).
+    pub flee_pending: bool,
 }
 
 /// A raised want.
@@ -308,11 +310,12 @@ impl MoodTables {
 
     /// Prerequisites of a record's category (`sub_82BFED98`, AND of the items; each item `sub_82BFEA60` about the
     /// ped itself) [code]: kind 2 OwnPluginObject, 3 the squared distance from the ped to the record's position
-    /// (`+48`), 4 the ped is chasing, 6 the second entity is the ped itself (`sub_82E41060`'s input), 9 zombie mode.
+    /// (`+48`), 4 the ped is chasing, 6 the second entity is the ped itself (`sub_82E41060`'s input), 8 the `flee` want
+    /// (slot 10) is pending, 9 zombie mode.
     /// Comparators: 0 the value, 1 its negation, 2 farther than the item value, 3 nearer; any other is false. Only
     /// kind 3 has a distance (0.0 otherwise) and only kind 3 squares the item value.
-    /// NOT RETAIL YET: kinds 1 (`0x8269A888` vfunc +16), 5 (`0x8269A950` vfunc +8 with the position), 7 (the chasee's
-    /// `0x8258E778` vfunc +12) and 8 (`brain+540` bit 0x80, the pending flag of want slot 10) are false (research b152).
+    /// NOT RETAIL YET: kinds 1 (`0x8269A888` vfunc +16), 5 (`0x8269A950` vfunc +8 with the position) and 7 (the
+    /// chasee's `0x8258E778` vfunc +12) are false (research b152).
     pub fn prerequisites_pass(&self, reactions: &MoodReactions, record: &MoodRecord, ctx: &MoodContext) -> bool {
         reactions.prerequisites.iter().filter(|p| p.category == record.category).all(|p| {
             let (value, item, distance) = match p.kind {
@@ -320,6 +323,7 @@ impl MoodTables {
                 3 => (false, p.value * p.value, dist_sq(record.position, ctx.position)),
                 4 => (ctx.chasing, p.value, 0.0),
                 6 => (record.second == Some(ctx.ped), p.value, 0.0),
+                8 => (ctx.flee_pending, p.value, 0.0),
                 9 => (ctx.zombie, p.value, 0.0),
                 _ => (false, p.value, 0.0),
             };
