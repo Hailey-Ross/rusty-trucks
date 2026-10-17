@@ -247,7 +247,7 @@ measurements, not game code).
 
 | Script (`tools/second-pc/`) | Runs on | Does |
 |---|---|---|
-| `share-recomp.ps1` | main PC | puts the recomp build (`skate3.exe`, its `rexruntime` DLL, `build.txt` with the build's commit) in `<shared folder>\_recomp\bin\`; with `-WithGame` also stages the recomp game folder in `_recomp\game\` (once, about 7.5 GB) |
+| `share-recomp.ps1` | main PC | puts the recomp build (`skate3.exe`, its `rexruntime` DLL, `build.txt` with the build's commit) in `<shared folder>\_recomp\bin\`; with `-WithGame` also stages the recomp game folder in `_recomp\game\` (once, about 7.5 GB); with `-WithSave` your recomp save in `_recomp\save\` (about 1 GB) |
 | `play-recomp.ps1` (+ `PLAY-RECOMP.bat`) | second PC | `-GetGame` copies the staged game folder, checks it by size and file count and then removes the staged copy; `-GetSave` backs up the second PC's save and copies the main PC's in (verified by hash); `-Update` copies the newest build; `-Trace <preset>` plays, checks the trace and sends; `-List` lists the presets; `-NoSend` keeps the session for a later send |
 
 ### Main PC (each new recomp build)
