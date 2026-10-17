@@ -39,6 +39,10 @@ def font_mapping(collections: Path, cache: AssetCache) -> dict:
             raise ValueError(f'Ambiguous native font record: {apt_name}')
         scale = {name: struct.unpack('>f',bytes.fromhex(field(name)['data']))[0]
                  for name in ('ScaleX','ScaleY','OffsetX','OffsetY')}
+        # Line spacing (unnamed float, layout +28 = FontManager row +24 -> font+364 in 82809308; wrapped
+        # text advances LineHeight * scale * this * height per line, 82CA2118). futuraheavy 0.9, others 1.0.
+        spacing = field('Hash_672E35A2AA8C4A00')
+        scale['LineSpacing'] = struct.unpack('>f',bytes.fromhex(spacing['data']))[0] if spacing else 1.0
         target = matches[0]['font']['family']
         provenance = {'class': row['class'], 'key': row['key'],
                       'source_sha256': row['sha256'], 'file_name':filename,

@@ -161,6 +161,21 @@ mod windows {
     unsafe extern "system" {
         fn XInputGetState(index: u32, state: *mut State) -> u32;
         fn XInputGetCapabilities(index: u32, flags: u32, capabilities: *mut Capabilities) -> u32;
+        fn XInputSetState(index: u32, vibration: *mut Vibration) -> u32;
+    }
+
+    /// Motor speeds for one slot (XInputSetState); sent only when they change, like retail's device flush.
+    pub(super) fn set_rumble(index: u32, speeds: [u16; 2]) {
+        static SENT: std::sync::Mutex<[Option<[u16; 2]>; 4]> = std::sync::Mutex::new([None; 4]);
+        let mut sent = SENT.lock().unwrap_or_else(|e| e.into_inner());
+        if sent[index as usize] == Some(speeds) {
+            return;
+        }
+        let mut vibration = Vibration { left: speeds[0], right: speeds[1] };
+        // SAFETY: a valid XINPUT_VIBRATION for the call's duration.
+        if unsafe { XInputSetState(index, &mut vibration) } == 0 {
+            sent[index as usize] = Some(speeds);
+        }
     }
     #[link(name = "kernel32")]
     unsafe extern "system" {
@@ -304,7 +319,10 @@ mod sdl {
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1);
     /// XINPUT_DEVSUBTYPE_GAMEPAD; SDL only opens devices it maps as gamepads.
     const SUBTYPE_GAMEPAD: u8 = 1;
-    const BUTTONS: [(Button, u16); 14] = [
+    /// Guide reads as bit 0x0400 (XInputGetStateEx's place for it): it opens the PC overlay; retail's pad conversion
+    /// never reads it, and it is not a bindable name (a paddle must not become the overlay button).
+    pub(super) const BUTTONS: [(Button, u16); 15] = [
+        (Button::Guide, 0x0400),
         (Button::DPadUp, 0x0001), (Button::DPadDown, 0x0002),
         (Button::DPadLeft, 0x0004), (Button::DPadRight, 0x0008),
         (Button::Start, 0x0010), (Button::Back, 0x0020),
@@ -321,10 +339,22 @@ mod sdl {
     /// Latest (packet number, state, identity) per slot, like XInputGetState's snapshot.
     pub(super) struct Shared {
         slots: Mutex<[Published; 4]>,
+        /// Requested motor speeds per slot (`set_rumble`); the SDL thread applies them.
+        rumble: Mutex<[[u16; 2]; 4]>,
+    }
+
+    /// SDL rumble runs for a duration: re-send a running request well before it ends.
+    const RUMBLE_REFRESH: std::time::Duration = std::time::Duration::from_millis(500);
+    const RUMBLE_DURATION_MS: u32 = 1000;
+
+    pub(super) fn set_rumble(shared: &Shared, index: usize, speeds: [u16; 2]) {
+        shared.rumble.lock().unwrap_or_else(|e| e.into_inner())[index] = speeds;
     }
 
     struct Slot {
         pad: Gamepad,
+        /// Motor speeds last sent and when (None = nothing sent yet).
+        rumble: Option<([u16; 2], std::time::Instant)>,
         id: u32,
         number: u32,
         state: XboxState,
@@ -334,7 +364,8 @@ mod sdl {
     /// SDL must be pumped on the thread that initialised it, while Bevy runs
     /// systems on a pool; a dedicated thread owns SDL and publishes snapshots.
     pub(super) fn start() -> Result<&'static Shared, String> {
-        let shared: &'static Shared = Box::leak(Box::new(Shared { slots: Mutex::new(Default::default()) }));
+        let shared: &'static Shared =
+            Box::leak(Box::new(Shared { slots: Mutex::new(Default::default()), rumble: Mutex::new([[0; 2]; 4]) }));
         let (ready, started) = mpsc::channel();
         std::thread::Builder::new()
             .name("sdl-gamepad".into())
@@ -409,6 +440,18 @@ mod sdl {
                 *output = Some((slot.number, state, slot.kind.clone()));
             }
             *shared.slots.lock().unwrap_or_else(|e| e.into_inner()) = published;
+            let requested = *shared.rumble.lock().unwrap_or_else(|e| e.into_inner());
+            for (slot, speeds) in slots.iter_mut().zip(requested) {
+                let Some(slot) = slot else { continue };
+                let due = match slot.rumble {
+                    None => speeds != [0, 0],
+                    Some((sent, at)) => sent != speeds || (speeds != [0, 0] && at.elapsed() >= RUMBLE_REFRESH),
+                };
+                if due {
+                    let _ = slot.pad.set_rumble(speeds[0], speeds[1], RUMBLE_DURATION_MS);
+                    slot.rumble = Some((speeds, std::time::Instant::now()));
+                }
+            }
             std::thread::sleep(POLL_INTERVAL);
         }
     }
@@ -446,10 +489,21 @@ mod sdl {
                 paddles: PADDLE_BUTTONS.iter().filter(|&&b| pad.has_button(b)).count() as u8,
                 touchpad: pad.touchpads_count() > 0,
                 misc_button: pad.has_button(Button::Misc1),
+                face_labels: {
+                    let labels = [Button::South, Button::East, Button::West, Button::North]
+                        .map(|b| controller_kind::PromptLabel::from_sdl(gamepads.button_label_for_gamepad_type(pad.r#type(), b)));
+                    labels.iter().all(Option::is_some).then(|| labels.map(Option::unwrap))
+                },
             },
             controller_kind::user_models(),
         ));
-        slots[index] = Some(Slot { pad, id: id.raw(), number: 0, state: XboxState::default(), kind });
+        // Stop the motors on open: a pad can still be vibrating from a game that ended mid-rumble (killed, crashed),
+        // and the poll loop only sends a stop after a rumble it started itself (2026-10-13: endless rumble).
+        let mut pad = pad;
+        let stopped = pad.set_rumble(0, 0, 0).is_ok();
+        info!("Controller {index}: rumble stopped on open ({})", if stopped { "sent" } else { "not supported" });
+        let rumble = Some(([0, 0], std::time::Instant::now()));
+        slots[index] = Some(Slot { pad, rumble, id: id.raw(), number: 0, state: XboxState::default(), kind });
     }
 
     fn read(pad: &Gamepad, paddles: [u16; 4]) -> XboxState {
@@ -505,6 +559,18 @@ fn backend() -> &'static Backend {
     })
 }
 
+/// Motor speeds (low-frequency left, high-frequency right) for controller slot `index`.
+pub(crate) fn set_rumble(index: usize, speeds: [u16; 2]) {
+    assert!(index < 4);
+    match backend() {
+        Backend::Sdl(shared) => sdl::set_rumble(shared, index, speeds),
+        #[cfg(windows)]
+        Backend::XInput => windows::set_rumble(index as u32, speeds),
+        #[cfg(not(windows))]
+        Backend::Unavailable => {}
+    }
+}
+
 pub(crate) fn poll_cached(
     index: usize,
     cache: &mut CapabilityCache,
@@ -557,6 +623,13 @@ mod conversion_tests {
         assert_eq!(button_mask("A"), Some(0x1000));
         assert_eq!(button_mask("left_shoulder"), Some(0x0100));
         assert_eq!(button_mask("guide"), None);
+    }
+
+    #[test]
+    fn guide_reads_as_bit_0x0400_which_retail_conversion_ignores() {
+        assert!(super::sdl::BUTTONS.contains(&(sdl3::gamepad::Button::Guide, 0x0400)));
+        let pressed = skate_core::input::xbox::XboxState { buttons: 0x0400, ..Default::default() };
+        assert!(skate_core::input::xbox::convert(&pressed, 0).iter().all(|v| *v == 0.0), "no retail slot moves");
     }
 }
 

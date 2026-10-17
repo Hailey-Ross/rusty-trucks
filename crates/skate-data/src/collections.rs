@@ -17,7 +17,7 @@ pub struct Field {
 pub struct FieldArray {
     #[serde(default)]
     pub text_items: Vec<String>,
-    /// The raw elements, big-endian hex, `capacity` of them (unused ones zero).
+    /// The raw elements as big-endian hex.
     #[serde(default)]
     pub items: Vec<String>,
 }

@@ -43,8 +43,8 @@ pub(crate) fn advance(
         feedback,
         skater.centre_of_mass_output,
         CameraPreferences {
-            // User preferences are owned here: ordinary uninverted controls.
-            invert_look: [false; 2],
+            // Game Settings > Control > offboard X / Y axis (`CameraRuntime::invert_look`).
+            invert_look: camera.invert_look,
             // Native preferences constructor82DF6294/629C initializes both
             // fields to zero.82DF8E80 only updates its air-side bytes37..39.
             shake_variant: 0,

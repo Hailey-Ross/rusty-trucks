@@ -27,8 +27,8 @@ use std::path::Path;
 pub const FORMAT: &str = "skate3-menu-movies";
 /// Largest mod movie file accepted (the biggest retail menu movie is well below this).
 pub const MAX_MOD_MOVIE_BYTES: u64 = 16 << 20;
-/// Manifest version this engine reads (3: textured units carry their bitmap id, Milestone 4).
-pub const VERSION: u64 = 3;
+/// Manifest version this engine reads (3: textured units carry their bitmap id, Milestone 4; 4: screens/main).
+pub const VERSION: u64 = 5;
 /// Mod bitmap limits: per mod, and the largest side (same as mod mesh textures).
 pub const MAX_MOD_BITMAPS: usize = 64;
 pub const MAX_MOD_BITMAP_SIDE: u32 = 2048;
@@ -175,6 +175,13 @@ impl RetailMenuMovies {
         self.failures.clear();
         let mut all_shapes = BTreeMap::new();
         let mut images = BTreeMap::new();
+        // Font atlases: text draws name them (apt_text), so they resolve like bitmaps.
+        for font in self.shared.get("fonts").and_then(Value::as_object).into_iter().flat_map(|f| f.values()) {
+            let size = &font["definition"]["textures"][0];
+            if let (Some(path), Some(w), Some(h)) = (font["texture"].as_str(), size["width"].as_u64(), size["height"].as_u64()) {
+                images.insert(path.to_string(), [w as u32, h as u32]);
+            }
+        }
         let mut decls = BTreeMap::new();
         let mut libraries = BTreeMap::new();
         for key in &keys {
@@ -424,8 +431,15 @@ pub fn valid_movie_name(key: &str) -> bool {
         })
 }
 
+/// The exported set: `SKATE3_MENU_MOVIES` (a dev export) or the installed `private/menu-movies`.
+pub(crate) fn set_root(config: &crate::config::Config) -> std::path::PathBuf {
+    std::env::var("SKATE3_MENU_MOVIES")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| config.asset_root.join("private/menu-movies"))
+}
+
 pub(crate) fn load(mut commands: Commands, config: Res<crate::config::Config>) {
-    let root = config.asset_root.join("private/menu-movies");
+    let root = set_root(&config);
     let movies = RetailMenuMovies::read(&root).unwrap_or_else(|e| {
         warn!("RETAIL_MENUS menu movies unavailable: {e}");
         RetailMenuMovies::default()
@@ -620,13 +634,9 @@ mod tests {
     /// `assets/private/menu-movies`, found from a worktree too). Skips when absent.
     #[test]
     fn retail_menu_movie_set_loads_links_and_runs() {
-        let root = std::env::var("SKATE3_MENU_MOVIES")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| crate::apt_imports::main_checkout().join("assets/private/menu-movies"));
-        if !root.join("manifest.json").is_file() {
-            eprintln!("skipped: no exported menu movies in {}", root.display());
+        let Some(root) = crate::apt_imports::test_menu_set() else {
             return;
-        }
+        };
         let m = RetailMenuMovies::read(&root).unwrap();
         // After M3e (doc 31 "Milestone 3e") every movie loads; any failure is a regression.
         for (key, e) in &m.failures {

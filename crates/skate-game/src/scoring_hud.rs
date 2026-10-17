@@ -16,12 +16,14 @@ use bevy::{
 use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Clone, Copy, Debug, ShaderType)]
-struct ColorTransform {
+pub(crate) struct ColorTransform {
     multiply: Vec4,
     add: Vec4,
+    /// x = 1: apply the transform in gamma space (hud_render.wgsl; the retail menus and the HUD).
+    mode: Vec4,
 }
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct HudMaterial {
+pub(crate) struct HudMaterial {
     #[uniform(0)]
     color: ColorTransform,
     #[texture(1)]
@@ -56,7 +58,7 @@ impl UiMaterial for HudComposite {
         }
     }
 }
-struct Slot {
+pub(crate) struct Slot {
     entity: Entity,
     mesh: Handle<Mesh>,
     material: Handle<HudMaterial>,
@@ -194,7 +196,8 @@ fn setup(
             let target = images.add(Image::new_target_texture(
                 window.physical_width().max(1),
                 window.physical_height().max(1),
-                TextureFormat::Rgba8UnormSrgb,
+                // Display values, blended as the console's front end does (`hud_render.wgsl`).
+                TextureFormat::Rgba8Unorm,
                 None,
             ));
             hud.target = target.clone();
@@ -313,7 +316,7 @@ mod tests {
                 .add(Image::new_target_texture(
                     1280,
                     720,
-                    TextureFormat::Rgba8UnormSrgb,
+                    TextureFormat::Rgba8Unorm,
                     None,
                 ));
         let composite = app
@@ -425,21 +428,36 @@ fn render(
     hud: Option<ResMut<Hud>>,
     meshes: ResMut<Assets<Mesh>>,
     materials: ResMut<Assets<HudMaterial>>,
+    fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
+    overlay: Option<Res<crate::graphics_menu::Menu>>,
+    menus: Option<Res<crate::retail_menus::RetailMenus>>,
 ) {
     let started = std::time::Instant::now();
-    render_draws(commands, hud, meshes, materials);
+    render_hud(commands, hud, meshes, materials, fe_hud, overlay, menus);
     crate::frame_timing::hitch::add_phase(crate::frame_timing::hitch::PHASE_HUD_RENDER, started);
 }
-fn render_draws(
+fn render_hud(
     mut commands: Commands,
     hud: Option<ResMut<Hud>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<HudMaterial>>,
+    fe_hud: Option<Res<crate::fe_backdrop::FeHud>>,
+    overlay: Option<Res<crate::graphics_menu::Menu>>,
+    menus: Option<Res<crate::retail_menus::RetailMenus>>,
 ) {
     let Some(mut hud) = hud else {
         return;
     };
-    let draws = if hud.failed {
+    // An FE screen whose record hides the HUD (the pause menu: mode 1) is on top, or the PC overlay (the recomp's
+    // blurs the HUD into its backdrop; ours sits above the blur pass, so it goes), or Game Settings > Video > HUD is
+    // Off (settings +164). NOT RETAIL YET: retail's appliers (sub_824AD2F0 / sub_825DA2A0) are not decoded, so Off
+    // hides the whole gameplay HUD here.
+    let hud_off = menus
+        .as_deref()
+        .and_then(|m| crate::retail_menus::setting(m, "ID_GAMESETTINGS_HUD_TOGGLE"))
+        .is_some_and(|v| skate_core::menu_values::number(&v) == 0.0);
+    let hidden = fe_hud.is_some_and(|f| !f.hud) || overlay.is_some_and(|m| m.overlay_visible()) || hud_off;
+    let draws = if hud.failed || hidden {
         Vec::new()
     } else {
         match apt_scene::draw(&hud.runtime.bindings.movie, &hud.runtime.vm, &hud.shapes) {
@@ -483,11 +501,12 @@ fn hud_mesh(draw: &apt_scene::Draw) -> Mesh {
     );
     mesh
 }
-fn hud_material(draw: &apt_scene::Draw, atlas: Handle<Image>) -> HudMaterial {
+fn hud_material(draw: &apt_scene::Draw, atlas: Handle<Image>, gamma: bool) -> HudMaterial {
     HudMaterial {
         color: ColorTransform {
             multiply: draw.multiply.into(),
             add: draw.add.into(),
+            mode: Vec4::new(f32::from(u8::from(gamma)), 0., 0., 0.),
         },
         atlas,
     }
@@ -523,6 +542,7 @@ fn mesh_matches(mesh: &Mesh, draw: &apt_scene::Draw) -> bool {
 fn material_matches(old: &HudMaterial, new: &HudMaterial) -> bool {
     bits(old.color.multiply.to_array(), new.color.multiply.to_array())
         && bits(old.color.add.to_array(), new.color.add.to_array())
+        && bits(old.color.mode.to_array(), new.color.mode.to_array())
         && old.atlas == new.atlas
 }
 /// Write this frame's draws into the retained slots. A slot's mesh, material and visibility are
@@ -538,11 +558,40 @@ fn apply_draws(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<HudMaterial>,
 ) {
+    apply_draws_with(commands, slots, |t| textures.get(t).cloned(), draws, meshes, materials, 0.0, true);
+}
+
+/// Draws APT geometry into the HUD's offscreen layer (31), one retained slot per draw. `z_base` stacks another
+/// movie set (the retail menus) above the HUD; `gamma` applies colour transforms in gamma space.
+pub(crate) fn render_draws(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<HudMaterial>,
+    slots: &mut Vec<Slot>,
+    draws: &[apt_scene::Draw],
+    texture_of: impl Fn(&str) -> Option<Handle<Image>>,
+    z_base: f32,
+    gamma: bool,
+) {
+    apply_draws_with(commands, slots, texture_of, draws, meshes, materials, z_base, gamma);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_draws_with(
+    commands: &mut Commands,
+    slots: &mut Vec<Slot>,
+    texture_of: impl Fn(&str) -> Option<Handle<Image>>,
+    draws: &[apt_scene::Draw],
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<HudMaterial>,
+    z_base: f32,
+    gamma: bool,
+) {
     for (index, draw) in draws.iter().enumerate() {
-        let Some(texture) = textures.get(&draw.texture).cloned() else {
+        let Some(texture) = texture_of(&draw.texture) else {
             continue;
         };
-        let material = hud_material(draw, texture);
+        let material = hud_material(draw, texture, gamma);
         if index == slots.len() {
             let mesh = meshes.add(hud_mesh(draw));
             let material = materials.add(material);
@@ -550,7 +599,7 @@ fn apply_draws(
                 .spawn((
                     Mesh2d(mesh.clone()),
                     MeshMaterial2d(material.clone()),
-                    Transform::from_xyz(0., 0., index as f32 * 0.01),
+                    Transform::from_xyz(0., 0., z_base + index as f32 * 0.01),
                     RenderLayers::layer(31),
                 ))
                 .id();
@@ -637,6 +686,7 @@ mod draw_tests {
                 color: ColorTransform {
                     multiply: draw.multiply.into(),
                     add: draw.add.into(),
+                    mode: Vec4::new(1., 0., 0., 0.),
                 },
                 atlas: texture,
             };

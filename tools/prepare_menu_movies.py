@@ -28,7 +28,7 @@ from vendor.skate3_ui.scene_graph import AssetCache, SceneFlattener
 from vendor.skate3_ui.actions import Actions
 
 FORMAT = 'skate3-menu-movies'
-VERSION = 3  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4)
+VERSION = 5  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies
 # Menu screens the engine's retail menus start from (pause menu, Game Settings,
 # Freeskate options, the screen manager and its helpers). Library movies are
 # found through imports, not listed.
@@ -36,11 +36,23 @@ VERSION = 3  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Mil
 FONT_PAIRS = {'Futura Shadow': 'futuraheavy'}
 
 MENU_ROOTS = (
+    # The front end's _level0 (defines Register*Enum, which the C++ calls through _level0._root).
+    'source/screens/main',
+    # The layers main.apt loads (gChyron, gSubtitle, gFadeBackground, autosave, fmv popup).
+    'source/screens/main/chyron',
+    'source/screens/main/subtitle',
+    'source/screens/main/fmv_popup',
+    'source/controls/fadebackground',
+    'source/controls/autosave',
     'source/screens/main/FE_root',
     'source/screens/main/core_menu',
     'source/screens/main/dimmer',
     'source/screens/main/freeskate_options',
     'source/screens/options/options',
+    # Game Settings > Video > Video Calibration (template 91 VideoCalibration, FE screen 51).
+    'source/screens/options/videocal',
+    # The pause menu's Learn > Trick Guide (template 29 TrickTutorial).
+    'source/screens/tricks/trickguide',
     'source/screens/main3dhud',
     'source/helper/screenmanager',
     'source/helper/screentransitionmanager',
@@ -185,9 +197,22 @@ def prepare(game, output, collections, roots=MENU_ROOTS):
         if partner:
             families |= {name for name, row in mappings.items() if row['file_name'].lower() == partner.lower()}
     fonts = {family: cache.font_asset(family) for family in sorted(families)}
+    # An APT font name without a FontManager row (trickguide's "HelveticaPresto") gets retail's fallback:
+    # sub_82809208 matches AptName case-insensitively, else takes the first row whose FileName is not "debug"
+    # (string 0x821A06E0). Row order = the collection's order; NOT RETAIL YET: the runtime table order is inferred.
+    fallback = next((name for name, row in mappings.items() if row['file_name'].lower() != 'debug'), None)
+    for family in sorted(families):
+        if family not in mappings and fallback:
+            mappings[family] = dict(mappings[fallback], fallback_of=fallback)
+            fonts[family] = cache.font_asset(fallback)
     language = {row['label'].strip(): row['value'] for row in json.loads(
         (cache_root / 'metadata/languages/english_global.json').read_text(encoding='utf-8'))['entries']}
-    shared = {'language': language, 'fonts': fonts, 'font_mappings': mappings, 'font_pairs': FONT_PAIRS}
+    # Script-made text fields name fonts at run time (sk8popup's createTextField body: "Futura Std Heavy"); the
+    # runtime resolves names without a row to the same fallback, so it is exported with its font.
+    if fallback and fallback not in fonts:
+        fonts[fallback] = cache.font_asset(fallback)
+    shared = {'language': language, 'fonts': fonts, 'font_mappings': mappings, 'font_pairs': FONT_PAIRS,
+              'fallback_font': fallback}
     (runtime / 'shared.json').write_text(json.dumps(shared, separators=(',', ':')) + '\n', encoding='utf-8')
     # RGBA payloads referenced by shapes and fonts, copied from the cache.
     payloads = set()

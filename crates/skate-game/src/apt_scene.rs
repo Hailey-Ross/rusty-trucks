@@ -79,7 +79,7 @@ pub struct Draw {
     /// Shapes: the unit's render type (clamp or wrap addressing); text draws are `TextureClamped`.
     pub fill: Fill,
 }
-fn compose(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
+pub fn compose(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
     [
         a[0] * b[0] + a[2] * b[1],
         a[1] * b[0] + a[3] * b[1],
@@ -99,17 +99,21 @@ fn transform(m: [f32; 6], v: &Vertex) -> Vertex {
     }
 }
 pub fn draw(movie: &Movie, vm: &Vm, shapes: &dyn ShapeSource) -> Result<Vec<Draw>, String> {
+    draw_from(movie, vm, shapes, IDENTITY, [1.; 4], [0.; 4])
+}
+pub const IDENTITY: [f32; 6] = [1., 0., 0., 1., 0., 0.];
+/// Draws a movie whose root sits under `parent` (a movie loaded into a clip of another movie on the
+/// front-end stage), with the parent's colour transform.
+pub fn draw_from(
+    movie: &Movie,
+    vm: &Vm,
+    shapes: &dyn ShapeSource,
+    parent: [f32; 6],
+    multiply: [f32; 4],
+    add: [f32; 4],
+) -> Result<Vec<Draw>, String> {
     let mut draws = Vec::new();
-    visit(
-        movie,
-        vm,
-        shapes,
-        movie.root,
-        [1., 0., 0., 1., 0., 0.],
-        [1.; 4],
-        [0.; 4],
-        &mut draws,
-    )?;
+    visit(movie, vm, shapes, movie.root, parent, multiply, add, &mut draws)?;
     Ok(draws)
 }
 fn visit(
@@ -126,17 +130,14 @@ fn visit(
         return Ok(());
     }
     let instance = &movie.instances[&id];
-    let mut matrix = instance
-        .placement
-        .as_ref()
-        .map_or([1., 0., 0., 1., 0., 0.], |p| p.matrix);
-    matrix[4] = vm.get(id, "_x").number() as f32;
-    matrix[5] = vm.get(id, "_y").number() as f32;
-    let matrix = compose(parent, matrix);
+    let matrix = compose(parent, crate::apt_movie::clip_matrix(movie, vm, id));
     if matrix.iter().any(|x| !x.is_finite()) {
         return Err(format!(
-            "Nonfinite HUD transform on character {}",
-            instance.character
+            "Nonfinite HUD transform on character {} ({} _x {} _y {})",
+            instance.character,
+            instance.placement.as_ref().map_or("", |p| p.name.as_str()),
+            vm.get(id, "_x").text(),
+            vm.get(id, "_y").text()
         ));
     }
     let color = instance
@@ -153,6 +154,31 @@ fn visit(
         return Ok(());
     }
     let character = &movie.characters[&instance.character];
+    // A clip whose `_type` names a native component is drawn by the player in place of its placeholder shapes
+    // (research `.local/research/menu-white-squares.md`). CustomButton (button_item2's mButtonRender, `_test` = the
+    // retail button "A" / "B" / ...): one quad over the placeholder's bounds with texture `prompt/<button>`, which
+    // the host resolves to the connected pad's prompt (SDL button labels). Other components draw nothing yet.
+    if let crate::apt_vm::Value::Text(kind) = vm.get(id, "_type") {
+        // Only the face buttons have prompts so far ("Unknown" = an unused item; shoulders / Start / sticks: open).
+        let button = vm.get(id, "_test").text();
+        if kind == "CustomButton" && crate::prompt_glyphs::known(&button) {
+            if let Some(b) = movie.character_bounds(instance.character, 0) {
+                let corner = |x: f32, y: f32, u: f32, v: f32| transform(matrix, &Vertex { position: [x, y], uv: [u, v] });
+                let (a, bb, c, d) =
+                    (corner(b[0], b[1], 0., 0.), corner(b[2], b[1], 1., 0.), corner(b[2], b[3], 1., 1.), corner(b[0], b[3], 0., 1.));
+                out.push(Draw {
+                    texture: format!("prompt/{button}"),
+                    fill: Fill::TextureClamped,
+                    vertices: vec![a.clone(), bb, c.clone(), a, c, d],
+                    multiply,
+                    add,
+                });
+            }
+        }
+        if !kind.is_empty() {
+            return Ok(());
+        }
+    }
     if character.type_name == "shape" {
         for shape in shapes
             .shape(character.id)
@@ -205,20 +231,31 @@ fn visit(
             let sy = font.scale[1] * height;
             let value = vm.get(id, "_displayText").text();
             let bounds = character.bounds.ok_or("Missing text bounds")?;
-            let width = font.width(&value, height);
             let alignment = text["alignment"].as_u64().unwrap_or(0);
             let autosize = vm.get(id, "autoSize").text();
             let alignment = if autosize == "left" { 0 } else { alignment };
+            // Word-wrapped fields break into lines (82CA14D0), each aligned on its own and drawn one line advance
+            // below the last, unclipped (82CA2118). NOT RETAIL YET: the wrap flag (descriptor +28) is taken as the
+            // field's word_wrap (the descriptor fill is not decoded; the trick guide sets word_wrap and multiline
+            // together).
+            let lines = if text["word_wrap"].as_bool() == Some(true) || vm.get(id, "wordWrap") == crate::apt_vm::Value::Bool(true) {
+                font.wrap(&value, height, bounds[2] - bounds[0])
+            } else {
+                vec![value]
+            };
+            let mut vertices = Vec::new();
+            for (row, value) in lines.iter().enumerate() {
+            let width = font.width(value, height);
+            // 82CA23B4: 1 right, 2 and 3 centred (factor 0.5 at 0x8209975C), else left.
             let mut x = bounds[0]
                 + advance_x
                 + font.offset[0] * sx
                 + match alignment {
                     1 => bounds[2] - bounds[0] - width,
-                    2 => (bounds[2] - bounds[0] - width) * 0.5,
+                    2 | 3 => (bounds[2] - bounds[0] - width) * 0.5,
                     _ => 0.,
                 };
-            let y = bounds[1] + font.offset[1] * sy;
-            let mut vertices = Vec::new();
+            let y = bounds[1] + font.offset[1] * sy + row as f32 * font.line_advance(height);
             for c in value.chars() {
                 if let Some(g) = font.glyph(c) {
                     let x0 = x + g.x_offset * sx;
@@ -243,6 +280,7 @@ fn visit(
                     x = g.x_advance.mul_add(sx, x);
                 }
             }
+            }
             let argb = u32::from_str_radix(
                 text["color_argb"]
                     .as_str()
@@ -251,10 +289,18 @@ fn visit(
                 16,
             )
             .map_err(|e| e.to_string())?;
+            // `TextField.textColor` (0xRRGGBB) set by the movie's script replaces the field's authored colour; the
+            // alpha stays the field's. The settings rows set it per state in SetState (highlight_selector /
+            // highlight_slider / menu_part_text_hilite: selected 0x37A5FF, rows on / off / disabled); without it the
+            // selected value ("< Normal >", "100%") drew in its dark authored colour (play test, 2026-10-12).
+            let rgb = match vm.get(id, "textColor") {
+                crate::apt_vm::Value::Undefined => argb & 0xFF_FFFF,
+                v => crate::apt_vm::to_integer(&v) as u32 & 0xFF_FFFF,
+            };
             let color = [
-                ((argb >> 16) & 255) as f32 / 255.,
-                ((argb >> 8) & 255) as f32 / 255.,
-                (argb & 255) as f32 / 255.,
+                ((rgb >> 16) & 255) as f32 / 255.,
+                ((rgb >> 8) & 255) as f32 / 255.,
+                (rgb & 255) as f32 / 255.,
                 (argb >> 24) as f32 / 255.,
             ];
             if !vertices.is_empty() {

@@ -12,6 +12,7 @@ fn sdl(gamepad_type: T, vendor_product: Option<(u16, u16)>, paddles: u8) -> Cont
             paddles,
             touchpad: false,
             misc_button: false,
+            face_labels: None,
         },
         &[],
     )
@@ -161,4 +162,12 @@ fn xinput_identity_of_connected_pad() {
         println!("XInput slot {slot}: {:?}", kind.as_ref().map(ControllerKind::summary));
     }
     assert!(kinds.iter().any(Option::is_some), "no XInput pad connected");
+}
+
+#[test]
+fn face_labels_fall_back_to_the_prompt_style() {
+    let ps = sdl(T::PS5, None, 0);
+    assert_eq!(ps.face_labels, [PromptLabel::Cross, PromptLabel::Circle, PromptLabel::Square, PromptLabel::Triangle]);
+    let switch = sdl(T::NintendoSwitchPro, None, 0);
+    assert_eq!(switch.face_labels[0], PromptLabel::B, "South prints B on Nintendo pads");
 }

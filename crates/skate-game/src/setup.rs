@@ -98,13 +98,92 @@ fn pipelines_acceptable(
     })
 }
 
+/// Asset groups whose converter changed since setup (no exact or equivalence match) but whose recorded outputs
+/// were still accepted: the game runs on them, and the PC overlay asks the player to refresh (`stale_groups`).
+fn outdated_groups(marker: &serde_json::Value, expected: &serde_json::Value, equivalence: Option<&serde_json::Value>) -> Vec<String> {
+    let installed = marker.get("pipelines").and_then(|v| v.as_object());
+    expected.as_object().map_or(Vec::new(), |wanted| {
+        wanted
+            .iter()
+            .filter(|(group, new_hash)| !pipeline_group_matches(installed.and_then(|i| i.get(*group)), new_hash, group, equivalence))
+            .map(|(group, _)| group.clone())
+            .collect()
+    })
+}
+
+static STALE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The asset groups found out of date: at startup by converter version (release copies only), or later from what
+/// the game finds in them (`mark_stale`).
+pub(crate) fn stale_groups() -> Vec<String> {
+    STALE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A feature found its group's files older than this build needs (installs an earlier build stamped as current
+/// although its converter had changed, e.g. menu tables without the FE screen records).
+pub(crate) fn mark_stale(group: &str) {
+    let mut stale = STALE.lock().unwrap_or_else(|e| e.into_inner());
+    if !stale.iter().any(|g| g == group) {
+        stale.push(group.to_owned());
+    }
+}
+
+/// Screenshot coverage (`SKATE_VERIFY_MENU=stale`): pretend a group is out of date in a development run.
+pub(crate) fn preview_stale() {
+    mark_stale("hud");
+}
+
+/// Every file in a group's setup receipt is present at its recorded size (`asset_check`).
+pub(crate) fn outputs_present(install_root: &Path, files: &serde_json::Value) -> bool {
+    receipt_present(install_root, files)
+}
+
+/// Restart this copy with `--refresh-assets`: setup refreshes the out-of-date groups, then the game starts again.
+/// The stale groups' recorded converter versions are cleared first, so setup's refresh (which rebuilds groups whose
+/// version differs) rebuilds exactly those, whatever was stamped before.
+pub(crate) fn restart_with_refresh() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let root = exe.parent().ok_or("No executable directory")?;
+    let base = match assets_arg() {
+        // A development copy (`--assets <link>`): the installation behind the link, refreshed by the checkout's setup.
+        Some(assets) => {
+            dev_setup(root).ok_or("No setup found: this copy has neither support/skate3setup.exe nor a checkout's tools/setup.py.")?;
+            dev_base(&assets)?
+        }
+        None if root.join("support/skate3setup.exe").is_file() => root.join("data"),
+        None => return Err("This copy has no setup helper: unpack the complete package, or run setup by hand.".into()),
+    };
+    if let Some((_, marker)) = installed(&base)? {
+        let mut cleared = marker.clone();
+        for group in stale_groups() {
+            if let Some(pipelines) = cleared["pipelines"].as_object_mut() {
+                pipelines.insert(group, serde_json::Value::String("stale".into()));
+            }
+        }
+        let temporary = base.join("installation.json.tmp");
+        std::fs::write(&temporary, serde_json::to_vec_pretty(&cleared).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        std::fs::rename(&temporary, base.join("installation.json")).map_err(|e| e.to_string())?;
+    }
+    let args: Vec<_> = std::env::args_os().skip(1).filter(|a| a != "--refresh-assets").collect();
+    Command::new(&exe).args(args).arg("--refresh-assets").spawn().map_err(|e| format!("Could not restart: {e}"))?;
+    Ok(())
+}
+
 fn stamp_pipelines(
     base: &Path,
     marker: &serde_json::Value,
     expected: &serde_json::Value,
+    keep: &[String],
 ) -> Result<(), String> {
     let mut updated = marker.clone();
-    updated["pipelines"] = expected.clone();
+    let mut pipelines = expected.clone();
+    // Out-of-date groups keep their old fingerprint, so the next start still knows to ask for a refresh.
+    for group in keep {
+        if let (Some(old), Some(map)) = (marker["pipelines"].get(group).cloned(), pipelines.as_object_mut()) {
+            map.insert(group.clone(), old);
+        }
+    }
+    updated["pipelines"] = pipelines;
     let bytes = serde_json::to_vec_pretty(&updated).map_err(|e| e.to_string())?;
     let temporary = base.join("installation.json.tmp");
     std::fs::write(&temporary, bytes).map_err(|e| e.to_string())?;
@@ -133,8 +212,89 @@ fn installation_ready(
         && customiser_current(assets, expected_customiser)
 }
 
+/// The `--assets` directory, when given (development copies and the Steam launcher's versions).
+fn assets_arg() -> Option<PathBuf> {
+    let mut args = std::env::args_os().skip_while(|a| a != "--assets");
+    args.next()?;
+    Some(args.next().map_or_else(|| PathBuf::from("assets"), PathBuf::from))
+}
+
+/// Setup for a development copy: the packaged helper beside the exe when there is one, else the checkout's
+/// `tools/setup.py` (the source the helper is packaged from) found above the exe (`<checkout>/bin/skate3rust.exe`).
+fn dev_setup(exe_dir: &Path) -> Option<Command> {
+    let packaged = exe_dir.join("support/skate3setup.exe");
+    if packaged.is_file() {
+        return Some(Command::new(packaged));
+    }
+    let checkout = exe_dir.ancestors().find(|d| d.join("tools/setup.py").is_file())?;
+    let mut command = Command::new("py");
+    command.arg("-3.13").arg(checkout.join("tools/setup.py")).current_dir(checkout);
+    Some(command)
+}
+
+/// The data folder (holding `installation.json`) behind an `--assets` link to `<base>/installations/<id>/assets`.
+fn dev_base(assets: &Path) -> Result<PathBuf, String> {
+    let assets = assets.canonicalize().map_err(|e| format!("{}: {e}", assets.display()))?;
+    let base = assets.parent().and_then(Path::parent).and_then(Path::parent).ok_or("--assets is not inside an installation")?;
+    if !base.join("installation.json").is_file() {
+        return Err(format!("--assets is not a set-up installation: no installation.json in {}", base.display()));
+    }
+    Ok(base.to_path_buf())
+}
+
+/// Refresh for a development copy (the PC overlay's Refresh Game Files restarted it with `--refresh-assets`): run
+/// setup's refresh on the installation behind the `--assets` link, then point the link at the new installation
+/// (setup publishes a new `installations/<id>` and removes the old one).
+fn refresh_dev_copy(link: &Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe.parent().ok_or("No executable directory")?;
+    let base = dev_base(link)?;
+    let mut command = dev_setup(exe_dir).ok_or("No setup found for this development copy")?;
+    command.arg("--base").arg(&base).arg("--game-exe").arg(&exe).arg("--refresh");
+    if installed(&base)?.is_some_and(|(assets, _)| crate::game_audio::decode_speech_saved(&assets)) {
+        command.env("SKATE_SETUP_SPEECH", "1");
+    }
+    eprintln!("SETUP: refreshing the development installation in {}", base.display());
+    let status = command.status().map_err(|e| format!("Could not start setup: {e}"))?;
+    if !status.success() { return Err("Setup was cancelled or did not complete".into()); }
+    let (assets, _) = installed(&base)?.ok_or("Setup did not publish a complete installation")?;
+    repoint_link(link, &assets)
+}
+
+/// Points a directory link (junction) at `target`, replacing the old link; a real directory is left alone.
+fn repoint_link(link: &Path, target: &Path) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(link).map_err(|e| format!("{}: {e}", link.display()))?;
+    if link.canonicalize().ok().as_deref() == target.canonicalize().ok().as_deref() {
+        return Ok(());
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT: a junction or symlink, whose removal leaves the target alone.
+        if meta.file_attributes() & 0x400 == 0 {
+            return Err(format!("{} is a real folder, not a link; point --assets at {}", link.display(), target.display()));
+        }
+        std::fs::remove_dir(link).map_err(|e| format!("Could not remove the old link {}: {e}", link.display()))?;
+        // mklink reads a '/' as a switch: installation paths are joined from "installations/<id>".
+        let windows = |p: &Path| p.to_string_lossy().replace('/', "\\");
+        let status = Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(windows(link)).arg(windows(target)).status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() { return Err(format!("Could not link {} to {}", link.display(), target.display())); }
+    }
+    #[cfg(not(windows))] {
+        let _ = meta;
+        return Err("Re-pointing the assets link is Windows-only".into());
+    }
+    eprintln!("SETUP: {} now points at {}", link.display(), target.display());
+    Ok(())
+}
+
 pub(crate) fn asset_root() -> Result<PathBuf, String> {
-    if std::env::args_os().any(|arg| arg == "--assets") { return Ok(PathBuf::from("assets")); }
+    if let Some(assets) = assets_arg() {
+        if std::env::args_os().any(|arg| arg == "--refresh-assets") {
+            refresh_dev_copy(&assets)?;
+        }
+        return Ok(assets);
+    }
     if let Some(root) = std::env::var_os("SKATE3_ASSETS") {
         let path = PathBuf::from(root);
         if path.is_dir() {
@@ -162,7 +322,9 @@ pub(crate) fn asset_root() -> Result<PathBuf, String> {
         Err(e) => return Err(e.to_string()),
     };
     let existing = installed(&base)?;
-    if let Some((assets, marker)) = &existing {
+    // The PC overlay's Refresh Game Files restarts with this: run setup's refresh even though the copy runs.
+    let refresh_asked = std::env::args_os().any(|arg| arg == "--refresh-assets");
+    if let Some((assets, marker)) = existing.as_ref().filter(|_| !refresh_asked) {
         if installation_ready(
             assets,
             marker,
@@ -173,8 +335,15 @@ pub(crate) fn asset_root() -> Result<PathBuf, String> {
             // Adopt this release's fingerprints when only an equivalence pair differed,
             // so later launches do not keep re-evaluating historical hashes.
             if let Some(versions) = &expected {
+                let stale = outdated_groups(marker, versions, equivalence.as_ref());
+                if !stale.is_empty() {
+                    eprintln!("SETUP: game files out of date for {} (converter changed); the PC overlay offers a refresh", stale.join(", "));
+                }
+                for group in &stale {
+                    mark_stale(group);
+                }
                 if marker.get("pipelines") != Some(versions) {
-                    stamp_pipelines(&base, marker, versions)?;
+                    stamp_pipelines(&base, marker, versions, &stale)?;
                 }
             }
             if let Some(fingerprint) = expected_customiser.as_deref() {
@@ -192,6 +361,11 @@ pub(crate) fn asset_root() -> Result<PathBuf, String> {
     let mut command = Command::new(setup);
     command.arg("--base").arg(&base).arg("--game-exe").arg(&exe);
     if existing.is_some() { command.arg("--refresh"); }
+    // The PC overlay's Ped Speech row (saved in the install's audio settings): the opt-in speech decode.
+    if existing.as_ref().is_some_and(|(assets, _)| crate::game_audio::decode_speech_saved(assets)) {
+        eprintln!("SETUP: speech decode asked for (Ped Speech is on)");
+        command.env("SKATE_SETUP_SPEECH", "1");
+    }
     #[cfg(windows)] {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
@@ -286,6 +460,31 @@ fn receipt_present(root: &Path, files: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A development copy's refresh finds the data folder behind its `--assets` junction and re-points the junction
+    /// at the installation setup publishes (the Steam launcher's copies had no way to refresh, 2026-10-12).
+    #[cfg(windows)]
+    #[test]
+    fn dev_refresh_finds_the_base_and_repoints_the_link() {
+        let dir = std::env::temp_dir().join(format!("skate3rust-dev-refresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for d in ["old", "new"] {
+            std::fs::create_dir_all(dir.join("data").join("installations").join(d).join("assets")).unwrap();
+        }
+        std::fs::write(dir.join("data").join("installation.json"), "{}").unwrap();
+        let (data, installs) = (dir.join("data"), dir.join("data").join("installations"));
+        let (old, new) = (installs.join("old").join("assets"), installs.join("new").join("assets"));
+        let link = dir.join("assets");
+        assert!(Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(&link).arg(&old).status().unwrap().success());
+        assert_eq!(dev_base(&link).unwrap(), data.canonicalize().unwrap());
+        // Setup's published path is joined with '/' ("installations/<id>"), which mklink must not read as a switch.
+        repoint_link(&link, &data.join("installations/new/assets")).unwrap();
+        assert_eq!(link.canonicalize().unwrap(), new.canonicalize().unwrap());
+        assert!(old.is_dir(), "re-pointing removes the link, never its old target");
+        // A real folder is never replaced.
+        assert!(repoint_link(&old, &new).is_err());
+        std::fs::remove_dir(&link).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn acknowledged_optional_failure_is_versioned_and_retained_data_is_checked() {
         let root = std::env::temp_dir().join(format!("sk8-availability-{}-{}", std::process::id(),
@@ -365,6 +564,21 @@ mod tests {
         .unwrap();
         assert_eq!(current["fingerprint"].as_str(), Some("new"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn changed_converters_are_reported_and_keep_their_old_fingerprint_when_stamped() {
+        let marker = serde_json::json!({"version": 1, "pipelines": {"core": "a", "hud": "old", "maps": "m1"}});
+        let expected = serde_json::json!({"core": "a", "hud": "new", "maps": "m2"});
+        let equivalence = serde_json::json!({"maps": [["m1", "m2"]]});
+        assert_eq!(outdated_groups(&marker, &expected, Some(&equivalence)), vec!["hud".to_string()], "an equivalence pair is current");
+        assert_eq!(outdated_groups(&marker, &marker["pipelines"], None), Vec::<String>::new());
+        let dir = std::env::temp_dir().join(format!("skate3rust-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        stamp_pipelines(&dir, &marker, &expected, &["hud".to_string()]).unwrap();
+        let stamped: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("installation.json")).unwrap()).unwrap();
+        assert_eq!(stamped["pipelines"], serde_json::json!({"core": "a", "hud": "old", "maps": "m2"}), "the stale group still asks next time");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

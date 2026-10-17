@@ -300,3 +300,151 @@ mod tests {
         assert!(valid_menu_id("ID_GAMESETTINGS_SFXVOLUME") && valid_menu_id("my-mod.Races") && !valid_menu_id("a b"));
     }
 }
+
+/// An FE screen id: the 16 lowercase hex digits of retail's per-screen key, plus `:n` when screens share the key
+/// (`sdk.menus.info().screens` lists them).
+pub fn valid_screen_key(s: &str) -> bool {
+    let (key, n) = s.split_once(':').unwrap_or((s, "0"));
+    key.len() == 16
+        && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && !n.is_empty()
+        && n.len() <= 2
+        && n.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `sdk.menus.trick_guide(entry, key, options)` entry kinds.
+pub const TRICK_GUIDE_ENTRIES: [&str; 3] = ["category", "subcategory", "trick"];
+
+/// One input slot of a Trick Guide entry: ids into the gesture / button name tables, connector 0 none, 1 Plus,
+/// 2 Arrow, 3 Or (doc 31 "Trick Guide").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrickGuideSlot {
+    #[serde(default)]
+    pub gesture: u32,
+    #[serde(default)]
+    pub button: u32,
+    #[serde(default)]
+    pub connector: u32,
+}
+
+/// `sdk.menus.trick_guide(entry, key, options)`: add or change a Trick Guide entry by key (a retail record's 16 hex
+/// digits, or the mod's own id). Unset fields keep the entry's value.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrickGuideOptions {
+    /// Name and description: string ids (FELanguage) or `#literal text`.
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Up to 4 input slots.
+    #[serde(default, deserialize_with = "crate::lua_list::opt_list")]
+    pub slots: Option<Vec<TrickGuideSlot>>,
+    /// Demo animation name (tricks need one to be listed).
+    #[serde(default)]
+    pub animation: Option<String>,
+    /// Demo camera track: an index into the ICE ViewScene tracks (retail 0..20; `trickbook_camera_tracks`).
+    #[serde(default)]
+    pub camera_track: Option<i16>,
+    /// The category a subcategory lists under, or the subcategory a trick lists under (key).
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// A trick's place in its list (ascending).
+    #[serde(default)]
+    pub order: Option<i32>,
+    /// A subcategory opens a trick list (true) or shows its own slots (false).
+    #[serde(default)]
+    pub has_tricks: Option<bool>,
+    /// A category's place in the top-level list (0-based).
+    #[serde(default)]
+    pub position: Option<u32>,
+    /// Take the entry out of its list.
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+/// A Trick Guide key: 16 hex digits (a retail record) or a menu id (the mod's own entry).
+/// A retail popup a mod raises (`sdk.menus.popup`): the retail Sk8Popup / Sk8SmallPopup movie shows it over the
+/// menus, and the player's choice comes back as a `menu_popup` event. Text fields are string ids (FELanguage) or
+/// `#literal text`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PopupOptions {
+    /// Shown by the small popup only (retail's Sk8Popup shows no title).
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Up to 8 choices (index 0 first); one choice shows A Continue, more a list.
+    #[serde(default, deserialize_with = "crate::lua_list::opt_list")]
+    pub options: Option<Vec<String>>,
+    /// "standard" (Sk8Popup, the default) or "small" (Sk8SmallPopup).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The highest priority shows; equal priorities show the newest (retail's list).
+    #[serde(default)]
+    pub priority: Option<i32>,
+    /// B answers choice 255.
+    #[serde(default)]
+    pub cancelable: bool,
+}
+
+pub const MAX_POPUP_OPTIONS: usize = 8;
+
+impl PopupOptions {
+    pub fn validate(&self) -> bool {
+        let text = |t: &Option<String>| t.as_ref().is_none_or(|t| t.len() <= 512);
+        text(&self.title)
+            && text(&self.description)
+            && self.options.as_ref().is_none_or(|o| o.len() <= MAX_POPUP_OPTIONS && o.iter().all(|t| t.len() <= 512))
+            && self.kind.as_deref().is_none_or(|k| matches!(k, "standard" | "small"))
+            && self.priority.is_none_or(|p| (-1000..=1000).contains(&p))
+    }
+}
+
+pub fn valid_trick_guide_key(s: &str) -> bool {
+    (s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())) || valid_menu_id(s)
+}
+
+impl TrickGuideOptions {
+    pub fn validate(&self) -> bool {
+        let text = |t: &Option<String>| t.as_ref().is_none_or(|t| t.len() <= 512);
+        text(&self.label)
+            && text(&self.description)
+            && text(&self.animation)
+            && self.parent.as_ref().is_none_or(|p| valid_trick_guide_key(p))
+            && self.slots.as_ref().is_none_or(|s| s.len() <= 4 && s.iter().all(|s| s.gesture < 256 && s.button < 256 && s.connector <= 3))
+            && self.position.is_none_or(|p| p < 256)
+    }
+}
+
+/// `sdk.menus.backdrop(screen, options)`: the world behind an FE screen (blur on / off and the ramp). Unset fields
+/// keep the retail value (screen stack info table + FE manager ramp, doc 31 "Pause blur").
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackdropOptions {
+    #[serde(default)]
+    pub blur: Option<bool>,
+    /// Full blur strength (retail 8.0).
+    #[serde(default)]
+    pub strength: Option<f32>,
+    /// Strength change per FE tick (retail 0.8).
+    #[serde(default)]
+    pub step: Option<f32>,
+    /// Tint floor {r, g, b} 0..255 (retail {90, 85, 81}).
+    #[serde(default, deserialize_with = "crate::lua_list::opt_list")]
+    pub tint: Option<Vec<i32>>,
+    /// Tint change per FE tick (retail 15).
+    #[serde(default)]
+    pub tint_step: Option<i32>,
+}
+
+impl BackdropOptions {
+    pub fn validate(&self) -> bool {
+        self.strength.is_none_or(|v| v.is_finite() && (0.0..=64.0).contains(&v))
+            && self.step.is_none_or(|v| v.is_finite() && v > 0.0 && v <= 64.0)
+            && self.tint.as_ref().is_none_or(|t| t.len() == 3 && t.iter().all(|c| (0..=255).contains(c)))
+            && self.tint_step.is_none_or(|v| (1..=255).contains(&v))
+    }
+}

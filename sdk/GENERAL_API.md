@@ -42,7 +42,7 @@ reads the latest snapshot, without executing a new simulation step:
 | player | Mode, bail, stance, pose, velocity, scoring and transition counters | Existing player teleport, participation, attachment and gesture controls |
 | rig | Native bodies, anatomical joints, solver contacts and joint loads | `sdk.rig`, typed `sdk.bodies` impulses |
 | bodies | This mod's Rapier bodies and contacts | `sdk.physics` creation, geometry, forces, velocities, transforms, joints and motors |
-| input | Raw pad, keys, 18 mapped action values and controller identity | `sdk.input.override_action` |
+| input | Raw pad, keys, 18 mapped action values and controller identity | `sdk.input.override_action`, `sdk.input.rumble` |
 | graphs | Live action/motion controller states, state times and active behavior IDs | `sdk.graphs.set_enabled` |
 | animation | Tick, pose generation and bone count | No arbitrary animation replacement or pose injection |
 | scoring | Current player scoring observations | No arbitrary native score/collector mutation |
@@ -201,6 +201,14 @@ solids include a 0.025 m contact tolerance. Suspended/attached players are exclu
 This differs from `sdk.volumes`, which checks observed player root positions.
 
 ## Input and graph control
+
+`sdk.input.rumble{low=, high=, rate=, channel=, pad=}` (capability `input_rumble`) starts controller rumble
+through the engine's port of retail's rumble channels: `low` / `high` are the two motor levels (0..1), `rate`
+the decay per second (0 holds until stopped; retail's settings test uses 5.0), `channel` 0..1023 is the mod's own
+(starting the same channel again replaces it), `pad` the slot 0..3 (default: the active pad). Several channels
+mix like retail's (sum, capped above the strongest). `sdk.input.stop_rumble(pad)` stops this mod's channels on a
+pad, or on every pad with nil. Nothing starts while Game Settings > Control > Vibration is off; a mod's rumble
+stops when the mod stops or reloads.
 
 `sdk.input.override_action(id, value)` overrides mapped gameplay actions 64–81
 with a value in `[-1,1]`; nil releases the slot. It applies at the next input
