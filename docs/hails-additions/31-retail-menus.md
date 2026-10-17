@@ -1215,15 +1215,26 @@ then port each row's effect. Rows that save but have no effect yet are listed be
     clamped to 0..1 and decay = clamp(1 - rate / 60) (`sub_82694D38`, only it checks the vibration flag, so
     switching off lets running rumble fade); each tick sums the channels per motor, caps the sum at
     max + (1 - max) * 0.2, clamps to 0..1, then decays each channel and drops it once both motors are below 0.001
-    (`sub_82695010`); the device curve (`sub_8296D480`): gamepad motor 0 = 1.2 l - 0.02, motor 1 = 1.05 l + 0.05,
-    other devices 0.7 l - 0.02 / 0.7 l, clamp, exactly 0 stays 0, else trunc(v * 65535). As in retail, a gamepad's
-    motor 1 at level 0 gets 3276 (0.05). Values in `RumbleTuning::RETAIL`.
+    (`sub_82695010`); the device curve (`sub_8296D480`): wireless pads (capability type 1 and flags & 0x0002 =
+    X_INPUT_CAPS_WIRELESS, `rlwinm r10,r11,0,30,30`; main-checked 2026-10-17) motor 0 = 1.2 l - 0.02, motor 1 =
+    1.05 l + 0.05, wired and other pads 0.7 l - 0.02 / 0.7 l, clamp, exactly 0 stays 0, else trunc(v * 65535). As in
+    retail, a wireless pad's motor 1 at level 0 gets 3276 (0.05). Values in `RumbleTuning::RETAIL`.
   - `rumble.rs` (game): ticked at 60 Hz of real time whatever the frame rate; the Vibration row (value in force)
     gates starts; switching it on plays retail's test rumble (`sub_8260DF40`: channel 0, 0.5 / 0.5, rate 5.0) on
     the active pad; output through `input::platform::set_rumble` (SDL `SDL_RumbleGamepad`, re-sent every 0.5 s
-    for a 1 s duration while non-zero; XInput `XInputSetState` on change). NOT RETAIL: Xbox-family pads get the
-    gamepad curve, other pads the other-device curve (retail's known-device test is the 360 pad's caps; on a
-    DualSense the 0.05 floor would be a constant buzz).
+    for a 1 s duration while non-zero; XInput `XInputSetState` on change). The curve follows retail's test: wireless
+    from XINPUT_CAPS_WIRELESS (XInput) or SDL's connection state (`SDL_GetGamepadConnectionState`); unknown counts
+    as wired.
+  - Fix 2026-10-17 (user: "the rumble on the controller still starts as soon as the game does and hasn't been
+    stopping when the game closes"; research b173): before, every Xbox-family pad took the wireless curve and the
+    curve ran with no live channel, so motor 1 got 3276 from the first frame, SDL re-sent it every 0.5 s, and no
+    exit path sent a zero. Now: NOT RETAIL (host) an idle pad (no live channel) gets [0, 0] instead of the curve's
+    floor (retail sends the floor and the console driver lets it lapse; a PC pad keeps it); zero is never re-sent;
+    on exit `platform::stop_rumble_on_exit` zeroes every pad after `app.run()` returns (window close, quit, Ctrl+C)
+    and in the panic hook (SDL thread answers within 200 ms, plus all XInput slots on Windows); the crash supervisor
+    zeroes all XInput slots once the game process ends, which covers a killed game. Tests: core curve (wired has no
+    floor), `an_idle_pad_gets_a_stop_and_a_live_one_the_retail_curve`, `only_a_wireless_pad_takes_the_wireless_curve`,
+    `idle_is_never_refreshed_and_a_running_rumble_is`. Not felt on a pad yet.
   - Mods: `sdk.input.rumble` / `stop_rumble` (capability `input_rumble`; per-mod channels, stopped with the mod).
   - NOT RETAIL (2026-10-17, user: "set that to default to off for now"): Vibration defaults to Off (retail +163 = 1) until
     the rumble that starts with the game and keeps going after it closes is fixed (todo `rumble-starts-and-sticks`);
@@ -1261,7 +1272,8 @@ sessions/logs". Every line is `info!`, so `PLAY-WITH-LOG.bat` sessions carry the
   `<Step | Activate | Reset>(row) "<label>" was "<value>" (section, page)`, `now "<label>" = "<value>"`,
   `status: <message>` (saves and errors).
 - `RUMBLE Vibration on / off`, `settings test rumble on pad <n>`, `mod <id> pad <n> channel <c>: low high rate`
-  (and "not started" while Vibration is off), `mod <id> stopped`, `pad <n> rumbling / idle (<curve>)`.
+  (and "not started" while Vibration is off), `mod <id> stopped`, `pad <n>: wireless / wired curve (<pad summary>)` on connect, `pad <n> rumbling / idle (speeds
+  <low> / <high>)`, `stopped on exit (<backend>)`; the controller summary says `wireless` / `wired` for SDL pads.
 - Already there: `Offboard look invert: x y`, `Camera angle: <label>`, `PC overlay toggled by the Guide button`.
 - Checked in a scripted run (keys 15,15,15,2,...): Vibration on, AptStart, gameplay suspended, open pause menu,
   three AptRight, AptNext, select, close pause menu, gameplay resumed / suspended, open Game Settings.

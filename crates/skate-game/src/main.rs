@@ -217,7 +217,10 @@ fn main() -> bevy::app::AppExit {
     eprintln!("REPORT_META stage=app_run");
     splash::stage("Building the world, menus and HUD");
     drop(_startup);
-    app.run()
+    let exit = app.run();
+    // Window close, quit and Ctrl+C all end here: leave no pad rumbling.
+    input::platform::stop_rumble_on_exit();
+    exit
 }
 
 #[cfg(test)]

@@ -167,7 +167,7 @@ pub(crate) struct ControllerKind {
     pub driver: String,
     /// XInput capability subtype (XINPUT_DEVSUBTYPE_*); XInput backend only.
     pub xinput_subtype: Option<u8>,
-    /// XINPUT_CAPS_WIRELESS; XInput backend only.
+    /// Wireless connection: XINPUT_CAPS_WIRELESS (XInput) or SDL's connection state; None when unknown.
     pub wireless: Option<bool>,
     /// Back paddles the driver reports as buttons (usable in settings).
     pub paddles: u8,
@@ -190,7 +190,11 @@ impl ControllerKind {
             text += &format!(" {vendor:04x}:{product:04x}");
         }
         text += &match self.backend {
-            Backend::Sdl => format!(", SDL via {}", if self.driver.is_empty() { "?" } else { &self.driver }),
+            Backend::Sdl => format!(
+                ", SDL via {}{}",
+                if self.driver.is_empty() { "?" } else { &self.driver },
+                match self.wireless { Some(true) => " wireless", Some(false) => " wired", None => "" }
+            ),
             Backend::Xinput => format!(
                 ", XInput subtype {}{}",
                 self.xinput_subtype.unwrap_or(0),
@@ -299,6 +303,8 @@ pub(crate) struct SdlReport {
     pub paddles: u8,
     pub touchpad: bool,
     pub misc_button: bool,
+    /// SDL_GetGamepadConnectionState: Some(true) wireless, Some(false) wired, None unknown.
+    pub wireless: Option<bool>,
     /// SDL's labels of the South, East, West, North buttons for this pad type (None when unknown).
     pub face_labels: Option<[PromptLabel; 4]>,
 }
@@ -328,7 +334,7 @@ pub(crate) fn from_sdl(report: SdlReport, user: &[Model]) -> ControllerKind {
         backend: Backend::Sdl,
         driver: report.path,
         xinput_subtype: None,
-        wireless: None,
+        wireless: report.wireless,
         paddles: report.paddles,
         hardware_paddles: model.map_or(0, |m| m.paddles),
         touchpad: report.touchpad,
