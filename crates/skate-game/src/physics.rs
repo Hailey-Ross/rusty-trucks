@@ -937,6 +937,16 @@ impl GamePhysics {
         }
     }
 
+    /// An AI spawn push: [`Self::set_context_velocity`], and the acceleration sampler's previous velocities take the
+    /// pushed value, so the push itself reads as no acceleration. Outcome-matched: retail's spawn-placed skaters ride
+    /// off and do their recorded tricks; with the one-step velocity jump read as acceleration, every placed NPC played
+    /// the non-interruptable `RidingIdle.Bumped` clip for ~0.6 s and a recorded trick inside it never played (b194).
+    pub(crate) fn push_context_velocity(context: &mut SkaterPhysicsContext, velocity: [f32; 3]) {
+        Self::set_context_velocity(context, velocity);
+        let v = Vector3::new(velocity[0], velocity[1], velocity[2]);
+        context.riding.ground.previous_velocities.fill(v);
+    }
+
     pub(crate) fn swap_skater_context(&mut self, context: &mut SkaterPhysicsContext) {
         std::mem::swap(&mut self.clock, &mut context.clock);
         std::mem::swap(&mut self.board, &mut context.board);

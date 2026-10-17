@@ -812,5 +812,13 @@ keyed by the NPC skater's stable id.
   run does it (#1 to #7, 25 to 39 ticks). `IsBumped` (`82BA7310`, `ground_acceleration.rs`) reads the deck's observed
   acceleration, and the push takes the deck from about 1 to 5.7 m/s in one tick. #2's respawn is 14 ticks before its
   ollie at node 58: the action graph takes it (`OllieAnticipation` -> `TrickFromSquare`), the motion graph stays in
-  `Bumped`, so nothing pops. Open: whether retail's push also reads as a bump (its velocity history at a placement),
-  and whether retail's motion graph lets a trick leave `Bumped`.
+  `Bumped`, so nothing pops.
+- **Fix (outcome-matched, 2026-10-17):** retail's code also sets the push as one velocity step without touching the
+  sampler's history (b194 [code]: `82C04168`, `82C07D20`), but retail's spawn-placed skaters ride off and do their
+  tricks. Here the spawn push (`GamePhysics::push_context_velocity`) also gives the acceleration sampler the pushed
+  velocity as its previous value, so the push reads as no acceleration; real hits afterwards still read as bumps.
+  Muted DownTown run, same seed: all 35 sim ollies / flips pop (was 33 of 35), andrew_reynolds passes node 60, ticks
+  in `Bumped` 239 -> 74. Bails 7 in 150 s (6 before; the sessions diverge). Not play-tested.
+- **Still open (b195, b196 running):** retail and our graph selection both try `Bumped`'s unconditioned exit to
+  `Riding.Turning.Push` before the non-interruptable fallback, yet ours held `Bumped` ~38 ticks: something in our
+  runtime blocks that exit (a real bump on any skater would hit the same).

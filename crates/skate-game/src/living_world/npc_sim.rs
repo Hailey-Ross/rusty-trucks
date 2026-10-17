@@ -1021,7 +1021,7 @@ pub(crate) fn simulate(
                                 let moved = (at[0] - placed[0]).hypot(at[2] - placed[2]);
                                 let push = ai_record::spawn_push(at, placed, target.step, replay.cursor.node == 0, false);
                                 if let Some(v) = push {
-                                    GamePhysics::set_context_velocity(&mut sim.context, v);
+                                    GamePhysics::push_context_velocity(&mut sim.context, v);
                                 }
                                 info!(
                                     "NPC_SKATER_PUSH #{} {} node {} {} (moved {moved:.3} m since the hold started)",

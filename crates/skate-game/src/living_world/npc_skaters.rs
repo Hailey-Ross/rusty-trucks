@@ -694,6 +694,7 @@ pub(crate) fn apply_records(
             commands.queue(move |world: &mut World| super::npc_sim::pool_from(world, e));
             commands.entity(e).despawn();
             events.write(NpcSkaterEvent::Despawned { id: r.id, reason: r.reason });
+            info!("NPC_SKATER_DESPAWN #{} reason {:?} tick {} left {}", r.id.serial, r.reason, r.tick, index.0.len());
         }
     }
     let lines = npc_lines(&state);
@@ -729,6 +730,16 @@ pub(crate) fn apply_records(
             .id();
         index.0.insert(s.id, e);
         events.write(NpcSkaterEvent::Spawned { id: s.id, character: character.clone(), line: *line });
+        info!(
+            "NPC_SKATER_SPAWN #{} {character} line {} at [{:.1}, {:.1}, {:.1}] tick {} live {}",
+            s.id.serial,
+            line.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            at.x,
+            at.y,
+            at.z,
+            s.tick,
+            index.0.len()
+        );
     }
 }
 
@@ -889,6 +900,7 @@ pub(crate) fn advance(
             if index.0.remove(&id).is_some() {
                 commands.entity(e).despawn();
                 events.write(NpcSkaterEvent::Despawned { id, reason: DespawnReason::External });
+                info!("NPC_SKATER_DESPAWN #{} reason faded out left {}", id.serial, index.0.len());
             }
         }
     }
