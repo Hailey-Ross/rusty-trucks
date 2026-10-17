@@ -26,12 +26,27 @@ $sentFile = Join-Path $Root 'logs\sent.txt'
 $crashDir = Join-Path $env:LOCALAPPDATA 'Skate3RustEngine\CrashReports'
 New-Item -ItemType Directory -Force -Path (Join-Path $Root 'logs') | Out-Null
 
-# Open the share with the login saved by setup. Until an SMB session exists, a plain Test-Path can say "does not
-# exist" on a share that works.
+# Open the share with the login saved by setup and return the server that answered (the name, else the IP; on
+# Wi-Fi the name lookup failed now and then with "System error 67"), or $null. Until an SMB session exists, a plain
+# Test-Path can say "does not exist" on a share that works.
 function Connect-Share($c) {
-    $unc = "\\$($c.main_pc)\$($c.share)"
-    & net.exe use $unc /persistent:no 2>&1 | Out-Null
-    Test-Path $unc
+    foreach ($server in @($c.main_pc, $c.main_ip) | Where-Object { $_ }) {
+        $unc = "\\$server\$($c.share)"
+        # Windows PowerShell 5.1 turns a native program's stderr into errors, fatal under Stop: run net with Continue.
+        $ErrorActionPreference = 'Continue'
+        & net.exe use $unc /persistent:no 2>&1 | Out-Null
+        if (Test-Path $unc) { return $server }
+    }
+    return $null
+}
+
+# The GitHub CLI, also when this process started before it was installed (Steam keeps an old PATH until sign-out).
+function Get-Gh {
+    $cmd = Get-Command gh -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $exe = Join-Path $env:ProgramFiles 'GitHub CLI\gh.exe'
+    if (Test-Path $exe) { return $exe }
+    return $null
 }
 
 function Read-Config {
@@ -43,15 +58,23 @@ function Read-Config {
 
 function Invoke-Setup {
     Write-Host 'One-time setup: where should session logs go?'
-    $mainPc = Read-Host "Main PC's name (Settings > System > About on the main PC, e.g. MY-DESKTOP) or its IP address"
+    $mainPc = Read-Host "Main PC's name (Settings > System > About on the main PC, e.g. MY-DESKTOP)"
+    $ip = ''
+    try { $ip = ([Net.Dns]::GetHostAddresses($mainPc) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | Select-Object -First 1).IPAddressToString } catch {}
+    $answer = Read-Host "Main PC's IP address, used when the name does not answer [$ip]"
+    if ($answer) { $ip = $answer }
     $share = Read-Host 'Share name [SkateSessions]'
     if (-not $share) { $share = 'SkateSessions' }
     $account = Read-Host 'Account on the main PC [skatelogs]'
     if (-not $account) { $account = 'skatelogs' }
-    $user = if ($mainPc -match '^\d+(\.\d+){3}$') { $account } else { "$mainPc\$account" }
-    Write-Host "Saving the login for $mainPc in Windows Credential Manager; type the password you chose on the main PC."
-    & cmdkey.exe "/add:$mainPc" "/user:$user" /pass
-    if ($LASTEXITCODE -ne 0) { throw 'cmdkey could not save the login.' }
+    $user = "$mainPc\$account"
+    $password = Read-Host "Password of $user (saved in Windows Credential Manager, never in a file)" -AsSecureString
+    $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($password))
+    foreach ($server in @($mainPc, $ip) | Where-Object { $_ }) {
+        & cmdkey.exe "/add:$server" "/user:$user" "/pass:$plain" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "cmdkey could not save the login for $server." }
+    }
+    $plain = $null
     $github = ''
     $answer = Read-Host 'When the main PC cannot be reached, send the logs as a pull request on GitHub instead? (needs the GitHub CLI, signed in; the repo is PUBLIC) [y/N]'
     if ($answer -match '^[yY]') {
@@ -59,20 +82,21 @@ function Invoke-Setup {
         if (-not $github) { $github = 'Hailey-Ross/rusty-trucks' }
         # A missing gh must only warn: with ErrorActionPreference Stop it would end setup before the config is saved.
         $signedIn = $false
-        if (Get-Command gh -ErrorAction SilentlyContinue) { & gh auth status 2>&1 | Out-Null; $signedIn = $LASTEXITCODE -eq 0 }
+        $gh = Get-Gh
+        if ($gh) { $ErrorActionPreference = 'Continue'; & $gh auth status 2>&1 | Out-Null; $signedIn = $LASTEXITCODE -eq 0; $ErrorActionPreference = 'Stop' }
         if (-not $signedIn) { Write-Host 'The GitHub CLI is missing or not signed in: winget install GitHub.cli, then gh auth login.' }
     }
-    "main_pc=$mainPc`nshare=$share`naccount=$user`ngithub_repo=$github`ngithub_base=hails-additions" |
+    "main_pc=$mainPc`nmain_ip=$ip`nshare=$share`naccount=$user`ngithub_repo=$github`ngithub_base=hails-additions" |
         Set-Content -Encoding ASCII $configFile
-    $target = "\\$mainPc\$share"
-    if (Connect-Share (Read-Config)) { Write-Host "OK: $target is reachable." }
-    else { Write-Host "Could not reach $target yet (main PC off, wrong name or password?). Logs stay here until it works." }
+    $server = Connect-Share (Read-Config)
+    if ($server) { Write-Host "OK: \\$server\$share is reachable." }
+    else { Write-Host "Could not reach \\$mainPc\$share or \\$ip\$share yet (main PC off, wrong password?). Logs stay here until it works." }
 }
 
 function Send-Pending {
     $c = Read-Config
     if (-not $c) { Write-Host 'Not set up: run with -Setup.'; return }
-    $target = "\\$($c.main_pc)\$($c.share)\$env:COMPUTERNAME"
+    $target = "\\$($c.main_pc)\$($c.share)\$env:COMPUTERNAME"   # updated to the server that answers
     $sent = @{}
     if (Test-Path $sentFile) { foreach ($n in Get-Content $sentFile) { $sent[$n] = $true } }
     $files = @(Get-ChildItem (Join-Path $Root 'logs') -File -Filter 'game-*.log')
@@ -88,7 +112,9 @@ function Send-Pending {
     $pending = @($files | Where-Object { -not $sent[$_.FullName] })
     if ($pending.Count -eq 0) { Write-Host 'Nothing new to send.'; return }
     try {
-        Connect-Share $c | Out-Null
+        $server = Connect-Share $c
+        if (-not $server) { throw "neither $($c.main_pc) nor $($c.main_ip) answered" }
+        $target = "\\$server\$($c.share)\$env:COMPUTERNAME"
         New-Item -ItemType Directory -Force -Path $target | Out-Null
         foreach ($f in $pending) {
             $dest = if ($f.PSIsContainer) { $target } elseif ($f.DirectoryName -eq $crashDir) { Join-Path $target 'CrashReports' } else { $target }
@@ -113,6 +139,10 @@ function Send-ToGitHub($c, $files) {
     $base = if ($c.github_base) { $c.github_base } else { 'hails-additions' }
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $branch = "session-logs/$($env:COMPUTERNAME.ToLower())-$stamp"
+    $gh = Get-Gh
+    if (-not $gh) { Write-Host 'GitHub fallback: the GitHub CLI is not installed (winget install --id GitHub.cli -e). The logs stay in logs\ and go with the next send.'; return }
+    # gh writes progress to stderr; under Stop Windows PowerShell 5.1 would treat that as a fatal error.
+    $ErrorActionPreference = 'Continue' 
     $work = Join-Path $env:TEMP "skate-session-$stamp"
     try {
         New-Item -ItemType Directory -Force -Path $work | Out-Null
@@ -123,9 +153,9 @@ function Send-ToGitHub($c, $files) {
         $part = $PartMB * 1MB
         $bytes = [IO.File]::ReadAllBytes($zip)
         $count = [math]::Max(1, [math]::Ceiling($bytes.Length / $part))
-        $sha = & gh api "repos/$repo/git/ref/heads/$base" --jq '.object.sha'
+        $sha = & $gh api "repos/$repo/git/ref/heads/$base" --jq '.object.sha'
         if ($LASTEXITCODE -ne 0 -or -not $sha) { throw "cannot read branch $base of $repo (gh signed in?)" }
-        & gh api -X POST "repos/$repo/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" | Out-Null
+        & $gh api -X POST "repos/$repo/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "cannot create branch $branch" }
         $body = Join-Path $work 'body.json'
         for ($i = 0; $i -lt $count; $i++) {
@@ -133,11 +163,11 @@ function Send-ToGitHub($c, $files) {
             $name = (Split-Path $zip -Leaf) + $(if ($count -gt 1) { '.{0:D3}' -f ($i + 1) } else { '' })
             @{ message = "Session logs from $env:COMPUTERNAME ($stamp) $name"; branch = $branch
                content = [Convert]::ToBase64String($bytes, $i * $part, $len) } | ConvertTo-Json | Set-Content -Encoding ASCII $body
-            & gh api -X PUT "repos/$repo/contents/session-logs/$name" --input $body | Out-Null
+            & $gh api -X PUT "repos/$repo/contents/session-logs/$name" --input $body | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "cannot upload $name" }
         }
         $names = ($files | ForEach-Object { "- $($_.Name)" }) -join "`n"
-        $url = & gh pr create --repo $repo --base $base --head $branch --title "Session logs from $env:COMPUTERNAME ($stamp)" `
+        $url = & $gh pr create --repo $repo --base $base --head $branch --title "Session logs from $env:COMPUTERNAME ($stamp)" `
             --body "Session logs sent from $env:COMPUTERNAME because the main PC could not be reached. Not for merging: the main PC fetches the zip and closes this.`n`n$names"
         if ($LASTEXITCODE -ne 0) { throw 'cannot open the pull request' }
         foreach ($f in $files) { Add-Content -Path $sentFile -Value $f.FullName }

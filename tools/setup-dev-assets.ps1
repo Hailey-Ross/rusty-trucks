@@ -54,6 +54,10 @@ if ($old) {
 New-Item -ItemType Junction -Path $link -Target $target | Out-Null
 Write-Host "assets -> $target"
 
+# The game logs to stderr; Windows PowerShell 5.1 turns those lines into errors, fatal under Stop.
+$ErrorActionPreference = 'Continue'
 $check = & $exe --assets $link --check-assets 2>&1 | ForEach-Object { "$_" }
-if ($check -contains 'SKATE_ASSETS_READY') { Write-Host 'SKATE_ASSETS_READY: the game files are ready.' }
+$code = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+if ($code -eq 0 -and $check -contains 'SKATE_ASSETS_READY') { Write-Host 'SKATE_ASSETS_READY: the game files are ready.' }
 else { $check | Select-Object -Last 10; throw 'The game files did not pass the check (see above).' }

@@ -119,8 +119,8 @@ powershell -ExecutionPolicy Bypass -File tools\setup-dev-assets.ps1 -Disc $disc
 It installs the converter's Python packages into `.local\venv-setup`, converts the disc into `data\` (4.7 GB, about
 6 minutes on the laptop), points `assets\` at the result and ends with `SKATE_ASSETS_READY`. Run it again after a pull
 that changes the converters (the game says **GAME FILES OUT OF DATE**); it refreshes only what changed.
-(`setup-dev-assets.ps1` was added 2026-10-17 and has not been run end to end yet; the laptop did the same steps by
-hand.)
+(First run on the laptop 2026-10-17: the conversion and the link worked; its final check stopped on Windows
+PowerShell 5.1 and is fixed since.)
 
 ### Steam launcher
 
@@ -201,8 +201,10 @@ $tools = $game              # for A
    ```powershell
    powershell -ExecutionPolicy Bypass -File "$tools\play-and-send.ps1" -Setup
    ```
-   It asks for the main PC's name (or IP), the share (Enter for `SkateSessions`), the account (Enter for
-   `skatelogs`), saves the password in Windows Credential Manager (`cmdkey`; never in a file), then asks about the
+   It asks for the main PC's name, its IP address (Enter for the one it found; sends fall back to it when the name
+   does not answer, as happened on Wi-Fi with "System error 67"), the share (Enter for `SkateSessions`), the account
+   (Enter for `skatelogs`) and its password, saves the login for both name and IP in Windows Credential Manager
+   (`cmdkey`; never in a file), then asks about the
    GitHub fallback (Enter for `Hailey-Ross/rusty-trucks`). Answers go to `send-sessions.txt` in the game folder (A)
    or checkout root (B).
 4. Optional, check the fallback without playing:
