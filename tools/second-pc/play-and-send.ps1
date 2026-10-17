@@ -2,7 +2,9 @@
 # the main PC's shared folder (\\<main PC>\SkateSessions\<this PC's name>\). A log that cannot be sent (main PC off)
 # stays in logs\ and goes with the next send. First run asks for the main PC's name and the share account's password
 # (saved in Windows Credential Manager, never in a file).
-# Put it with PLAY-AND-SEND.bat next to skate3rust.exe. Guide: docs/hails-additions/second-pc-testing.md
+# Release ZIP: put it with PLAY-AND-SEND.bat next to skate3rust.exe. Source checkout: run it where it is
+# (tools\second-pc); it then works on the checkout root (logs\, bin\skate3rust.exe, send-sessions.txt there).
+# Guide: docs/hails-additions/second-pc-testing.md
 param(
     # Only send what is pending, without playing.
     [switch]$SendOnly,
@@ -14,11 +16,23 @@ param(
     [int]$PartMB = 40
 )
 $ErrorActionPreference = 'Stop'
-Set-Location $PSScriptRoot
-$configFile = Join-Path $PSScriptRoot 'send-sessions.txt'
-$sentFile = Join-Path $PSScriptRoot 'logs\sent.txt'
+# The game folder: next to the script (release ZIP), else the checkout this script is part of (tools\second-pc).
+$Root = $PSScriptRoot
+$checkout = Split-Path (Split-Path $PSScriptRoot)
+if (-not (Test-Path (Join-Path $Root 'skate3rust.exe')) -and (Test-Path (Join-Path $checkout 'Cargo.toml'))) { $Root = $checkout }
+Set-Location $Root
+$configFile = Join-Path $Root 'send-sessions.txt'
+$sentFile = Join-Path $Root 'logs\sent.txt'
 $crashDir = Join-Path $env:LOCALAPPDATA 'Skate3RustEngine\CrashReports'
-New-Item -ItemType Directory -Force -Path (Join-Path $PSScriptRoot 'logs') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $Root 'logs') | Out-Null
+
+# Open the share with the login saved by setup. Until an SMB session exists, a plain Test-Path can say "does not
+# exist" on a share that works.
+function Connect-Share($c) {
+    $unc = "\\$($c.main_pc)\$($c.share)"
+    & net.exe use $unc /persistent:no 2>&1 | Out-Null
+    Test-Path $unc
+}
 
 function Read-Config {
     if (-not (Test-Path $configFile)) { return $null }
@@ -51,7 +65,7 @@ function Invoke-Setup {
     "main_pc=$mainPc`nshare=$share`naccount=$user`ngithub_repo=$github`ngithub_base=hails-additions" |
         Set-Content -Encoding ASCII $configFile
     $target = "\\$mainPc\$share"
-    if (Test-Path $target) { Write-Host "OK: $target is reachable." }
+    if (Connect-Share (Read-Config)) { Write-Host "OK: $target is reachable." }
     else { Write-Host "Could not reach $target yet (main PC off, wrong name or password?). Logs stay here until it works." }
 }
 
@@ -61,11 +75,11 @@ function Send-Pending {
     $target = "\\$($c.main_pc)\$($c.share)\$env:COMPUTERNAME"
     $sent = @{}
     if (Test-Path $sentFile) { foreach ($n in Get-Content $sentFile) { $sent[$n] = $true } }
-    $files = @(Get-ChildItem (Join-Path $PSScriptRoot 'logs') -File -Filter 'game-*.log')
+    $files = @(Get-ChildItem (Join-Path $Root 'logs') -File -Filter 'game-*.log')
     if (Test-Path $crashDir) { $files += @(Get-ChildItem $crashDir -File) }
     # Trace-all session folders: logs\trace-all-<time> (the Steam launcher's rust-traceall) and bin\logs\trace-all-<unix
     # seconds> (the engine's default next to the exe). A folder written to in the last 30 s may still be in use.
-    foreach ($dir in (Join-Path $PSScriptRoot 'logs'), (Join-Path $PSScriptRoot 'bin\logs')) {
+    foreach ($dir in (Join-Path $Root 'logs'), (Join-Path $Root 'bin\logs')) {
         $files += @(Get-ChildItem $dir -Directory -Filter 'trace-all-*' -ErrorAction SilentlyContinue | Where-Object {
             $newest = Get-ChildItem $_.FullName -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             -not $newest -or $newest.LastWriteTime -lt (Get-Date).AddSeconds(-30)
@@ -74,6 +88,7 @@ function Send-Pending {
     $pending = @($files | Where-Object { -not $sent[$_.FullName] })
     if ($pending.Count -eq 0) { Write-Host 'Nothing new to send.'; return }
     try {
+        Connect-Share $c | Out-Null
         New-Item -ItemType Directory -Force -Path $target | Out-Null
         foreach ($f in $pending) {
             $dest = if ($f.PSIsContainer) { $target } elseif ($f.DirectoryName -eq $crashDir) { Join-Path $target 'CrashReports' } else { $target }
@@ -148,14 +163,22 @@ if ($GitHubTest) {
     Remove-Item -Recurse $test, $sentFile -ErrorAction SilentlyContinue
     return
 }
-if ($Setup -or -not (Read-Config)) { Invoke-Setup }
+if ($Setup -or -not (Read-Config)) { Invoke-Setup; if ($Setup) { return } }
 if (-not $SendOnly) {
-    if (-not (Test-Path (Join-Path $PSScriptRoot 'skate3rust.exe'))) { throw 'skate3rust.exe is not in this folder.' }
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $log = "logs\game-$stamp.log"
-    $errLog = "logs\game-$stamp.stderr.log"
-    Write-Host "Playing with logging: $PSScriptRoot\$errLog"
-    Start-Process -FilePath '.\skate3rust.exe' -RedirectStandardOutput $log -RedirectStandardError $errLog -Wait
+    $exe = Join-Path $Root 'skate3rust.exe'
+    $play = Join-Path $Root 'PLAY.bat'
+    if (Test-Path $exe) {
+        # Release ZIP: log like PLAY-WITH-LOG.bat.
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $log = Join-Path $Root "logs\game-$stamp.log"
+        $errLog = Join-Path $Root "logs\game-$stamp.stderr.log"
+        Write-Host "Playing with logging: $errLog"
+        Start-Process -FilePath $exe -RedirectStandardOutput $log -RedirectStandardError $errLog -Wait
+    } elseif (Test-Path $play) {
+        # Source checkout: PLAY.bat starts bin\skate3rust.exe with the checkout's assets and logs to logs\ itself.
+        Write-Host "Playing with $play"
+        & cmd.exe /c "`"$play`""
+    } else { throw "No skate3rust.exe or PLAY.bat in $Root." }
     Write-Host 'Session finished.'
 }
 Send-Pending

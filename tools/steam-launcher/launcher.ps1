@@ -247,8 +247,9 @@ function Run-Recomp($RE, [string]$Lbl) {
 
 # Checks the session written since $Since; returns a one-line summary.
 function Check-Session([string]$Kind, [datetime]$Since, $Ver) {
-    if ($Kind -eq 'rust' -and $Ver) {
-        $f = Get-ChildItem (Join-Path (Version-Dir $Ver) 'logs') -Filter 'game-*.log' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $Since -and $_.Name -notlike '*.stderr.log' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($Kind -eq 'rust') {
+        $root = if ($Ver) { Version-Dir $Ver } else { $Repo }
+        $f = Get-ChildItem (Join-Path $root 'logs') -Filter 'game-*.log' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $Since -and $_.Name -notlike '*.stderr.log' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if (-not $f) { return 'No new game log was written.' }
         $err = Join-Path $f.DirectoryName ($f.BaseName + '.stderr.log')
         $panics = 0; if (Test-Path $err) { $panics = @(Select-String -Path $err -Pattern 'panicked' -SimpleMatch).Count }
@@ -315,7 +316,8 @@ function Send-Sessions {
     $script = Resolve-Local $Config.after_session
     if (-not (Test-Path $script)) { return "Send: $script not found." }
     # Without its settings the script would ask its setup questions, which nobody answers from Steam.
-    if (-not (Test-Path (Join-Path (Split-Path $script) 'send-sessions.txt'))) { return "Send: not set up (run $(Split-Path $script -Leaf) -Setup -SendOnly once)." }
+    # Its settings sit next to it (release ZIP copy) or at the checkout root (tools\second-pc\play-and-send.ps1).
+    if (-not ((Test-Path (Join-Path (Split-Path $script) 'send-sessions.txt')) -or (Test-Path (Join-Path $Repo 'send-sessions.txt')))) { return "Send: not set up (run $(Split-Path $script -Leaf) -Setup once)." }
     Write-Host '  Sending the logs...'
     try { $out = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -SendOnly | ForEach-Object { "$_" } | Where-Object { $_ }) }
     catch { return "Send: failed ($($_.Exception.Message))." }
@@ -387,6 +389,13 @@ function Launch([string]$Key, [string]$Lbl) {
             return
         }
         $play = Join-Path (Version-Dir $ver) 'PLAY.bat'
+        # Without converted game files the game only shows an error; say what to do instead (couch users).
+        if (-not (Test-Path (Join-Path (Version-Dir $ver) 'assets\private\stock'))) {
+            $msg = "Not started: $($ver.name) has no game files (assets\private). Convert them from the disc first: docs\hails-additions\second-pc-testing.md, 'Game files on a source checkout'."
+            Set-Content -Path $LastSession -Value $msg -Encoding UTF8
+            if (-not $NoPrompt) { Show-Message $msg 'Yellow' }
+            return
+        }
     }
     $since = Get-Date
     Set-Content -Path $Playing -Value ("entry=$Key label=$Lbl version=$($ver.id) started=" + $since.ToString('yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
@@ -463,6 +472,8 @@ if ($Entry -eq 'pending') {
     # An engine session closed the same way also missed its send (after_session); send it now.
     $game = Get-ChildItem (Join-Path $Repo 'logs') -Filter 'game-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     $missedSend = $Config -and $Config.after_session -and (($game -and $game.LastWriteTime -gt $since) -or ($ta -and $ta.LastWriteTime -gt $since))
+    # A plain engine session (version '.') closed with Exit game: its panic check too.
+    if ($kind -eq '' -and $game -and $game.LastWriteTime -gt $since) { $kind = 'rust'; $t0 = $game.CreationTime.AddSeconds(-1) }
     if ($kind -eq '' -and -not $missedSend) { exit 0 }
     $summary = ''
     if ($kind) {

@@ -75,8 +75,8 @@ If you copy the launcher folder somewhere outside `tools\` (two levels below the
    malformed-line counts for a trace; the result screen shows them. You build the recomp yourself from your own copy
    of the game; nothing from the game is included here.
    **Optional, send logs after each session:** set `"after_session"` in `config.json` to a send script (path
-   relative to the repository), e.g. the second PC's `play-and-send.ps1` (copied to the repository root, see
-   `docs/hails-additions/second-pc-testing.md`). It runs with `-SendOnly` after every session. Its last line shows
+   relative to the repository), e.g. the second PC's `tools\second-pc\play-and-send.ps1` (it works on the
+   repository root; see `docs/hails-additions/second-pc-testing.md`). It runs with `-SendOnly` after every session. Its last line shows
    on the result screen and in `last_session.txt`. A session closed with Steam's **Exit game** is sent at the next
    start (`pending`). `launcher.ps1 send` sends on demand.
 4. **Add it to Steam:** Steam → **Games → Add a Non-Steam Game to My Library → Browse** → pick
@@ -97,6 +97,7 @@ options need no menu: each starts straight away, shows the result for 10 s at th
 | Skate: play + audio state log | `rust-statelog` |
 | Skate: play + dev test mods | `rust-devmods` |
 | Skate: play + audio trace | `rust-trace` |
+| Skate: play + trace all | `rust-traceall` |
 | Skate: main | `rust-play @main` (a fixed version, for comparing) |
 | Skate: my branch | `rust-play @my-branch` |
 | Skate: recomp | `recomp-play` |
@@ -114,6 +115,7 @@ shortcuts are fixed, for back-to-back comparisons. A shortcut without launch opt
 | `rust-trace` | play + `SKATE_AUDIO_TRACE=1` (native sound starts in `logs\game-*.log`) |
 | `rust-devmods` | play with the version's `mods_enable` mod(s) on |
 | `rust-perf` | play + Bevy performance trace (`PLAY.bat -trace`) |
+| `rust-traceall` | play with every session trace the version has (`SKATE_TRACE_ALL`), all in the version's `logs\trace-all-<time>\`; the result screen counts malformed rows in `audio_state.tsv` and `frames.tsv`. Hidden for versions without traces |
 | `recomp-*` | the modes from `config.json` |
 
 Commands (`launcher.ps1 <command>`, or as launch options): `versions` (list with status), `version-next`,
