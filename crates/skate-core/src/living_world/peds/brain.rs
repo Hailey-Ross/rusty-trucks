@@ -28,6 +28,9 @@ pub struct BrainSettings {
     pub warn_seconds: f32,
     /// KnowAboutWantTarget's value (`826A5A70`, `82E42868(brain, target, 30.0)`; meaning open).
     pub know_about_seconds: f32,
+    /// How long a passed mood result keeps each raised want's target known (`sub_82E41B98` ->
+    /// `82E42868(brain, target, 30.0)`, `0x820D4924`): the entry that counts finished reactions (`7FF7`) lives this long.
+    pub mood_want_memory_seconds: f32,
     /// WatchWantTargetWithoutInterruptingLocomotion keeps walking while the target is within this
     /// angle of the facing, radians (`0x821DBCF4`, 55 deg).
     pub watch_cone: f32,
@@ -94,7 +97,7 @@ impl Default for ZombieFollowSettings {
 
 impl Default for BrainSettings {
     fn default() -> Self {
-        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default() }
+        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, mood_want_memory_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default() }
     }
 }
 
@@ -781,6 +784,16 @@ pub struct HandProp {
     pub disposable: bool,
     pub can_sit: bool,
     pub can_attack_throw: bool,
+    /// The idle actions (`82E3F818` / `82E3F1D8` / `82E3F470`): the usage list (host-set at the attach), the picked
+    /// action (`+0xCBC`), has actions (`+0xCCF` 0x20), running (0x08), the first and second stage done (0x04 / 0x02),
+    /// and a litter drop waiting for timer 34 (`+0xCCE` 0x01).
+    pub actions: Vec<super::hand_prop::HandPropAction>,
+    pub action: i32,
+    pub has_actions: bool,
+    pub acting: bool,
+    pub stage_one: bool,
+    pub stage_two: bool,
+    pub litter_pending: bool,
 }
 
 impl HandProp {
@@ -1097,12 +1110,27 @@ impl PedBrain {
     pub fn raise_want(&mut self, want: &str, target: u64, forget_on_unset: bool) {
         self.wants.insert(want.to_ascii_lowercase(), Want { target, needs_addressing: true, forget_on_unset });
     }
-    /// `sub_82E42A58(brain, want, 0)`; a flag 0x40 want also forgets its target (`sub_82E40FF0`: the mood records
-    /// about it, game side through [`ChaseRequest::MoodReset`], and its perception entry).
+    /// A passed mood result's want (`sub_82E41B98`): raised, and its target known for at least `memory` seconds
+    /// ([`BrainSettings::mood_want_memory_seconds`], `82E42868`), so the entry that counts finished reactions exists.
+    pub fn raise_mood_want(&mut self, want: &str, target: u64, forget_on_unset: bool, memory: f32) {
+        self.raise_want(want, target, forget_on_unset);
+        self.perceptions.know(target, memory);
+    }
+    /// `sub_82E42A58(brain, want, 0)`: a set want (0x80) without flag 0x40 counts one finished reaction on its
+    /// target's perception entry (`+68`, when the entry exists); a flag 0x40 want instead forgets its target
+    /// (`sub_82E40FF0`: the mood records about it, game side through [`ChaseRequest::MoodReset`], and its perception
+    /// entry).
     pub fn unset_want(&mut self, want: &str) {
-        if let Some(w) = self.wants.remove(want).filter(|w| w.forget_on_unset) {
-            self.perceptions.forget(w.target);
-            self.chase_requests.push(ChaseRequest::MoodReset { target: w.target });
+        let Some(w) = self.wants.remove(want) else { return };
+        if w.forget_on_unset {
+            if w.needs_addressing {
+                self.perceptions.forget(w.target);
+                self.chase_requests.push(ChaseRequest::MoodReset { target: w.target });
+            }
+        } else if w.needs_addressing {
+            if let Some(e) = self.perceptions.get_mut(w.target) {
+                e.reacted += 1;
+            }
         }
     }
     /// `sub_82E40940`: a length at or below 0 stops the timer; a new timer is dropped when
@@ -1222,7 +1250,8 @@ impl BrainHost<'_> {
             // `82E3D988`: no group -> not ending; an ending group's reason wins.
             PedOp::IsChaserEndingChase => b.chasee.and_then(|c| self.chase.group(c)).is_some_and(|g| g.end_reason.is_some() || b.end_reason.is_some()),
             // The ped's own end reason, else its chase group's (a group end reaches every member).
-            PedOp::IsEndChaseReason { reason } => b.end_reason.or_else(|| b.chasee.and_then(|c| self.chase.group(c)).and_then(|g| g.end_reason)) == Some(*reason),
+            // `826AAC80` -> GetEndReason `82E3D988`: no group answers -1; an ending group's reason wins over the ped's own.
+            PedOp::IsEndChaseReason { reason } => b.chasee.and_then(|c| self.chase.group(c)).and_then(|g| g.end_reason.or(b.end_reason)) == Some(*reason),
             // `82E3D7B0` (exhausted: accumulator past the limit; no record or field: never),
             // `82E3D838` (rested: not exhausted and timer 4 out).
             PedOp::NeedToRest => {
@@ -1488,9 +1517,12 @@ impl Host for BrainHost<'_> {
                 b.tazer_hit = false;
                 b.tazer_line_of_sight = false;
             }
-            PedOp::TazeWantTarget { .. } => {
-                b.speech = Some(s.taze_speech);
-                b.set_timer(39, s.tazer_hit_seconds);
+            // `826A8398`: the speech and the hit timer start only when the want's target resolves.
+            PedOp::TazeWantTarget { want } => {
+                if b.wants.get(want).is_some_and(|w| (self.target_position)(w.target).is_some()) {
+                    b.speech = Some(s.taze_speech);
+                    b.set_timer(39, s.tazer_hit_seconds);
+                }
             }
             PedOp::RegisterTazer { .. } => {
                 b.tazer_registered = true;
@@ -1618,8 +1650,12 @@ impl Host for BrainHost<'_> {
             }
             PedOp::EndChase => {
                 b.chase_steer = None;
+                // SetChasee(none) `82E3CFF8`: the end reason resets (`brain+2176` = -1), and clearing a set chasee unsets
+                // want slot 1 (`82E42A58(brain, 1, 0)`; slot 1 is angrychase, the brain's debug list `0x820646BC`).
+                b.end_reason = None;
                 if let Some(c) = b.chasee.take() {
                     b.chase_requests.push(ChaseRequest::Leave { chasee: c });
+                    b.unset_want("angrychase");
                 }
                 // Steering speed 0 (`vfn176 -> vfn168(0.0)`): the intercept stops.
                 if b.motion_intent == Some(motion::INTERCEPT) {
@@ -1708,11 +1744,19 @@ impl Host for BrainHost<'_> {
                     b.tazer_state = Some(0);
                 }
             }
+            // `826A8420`: once timer 39 is out, the resolved target is hit once (`brain+3280` bit 0x20); from then on,
+            // every update while the target's chase group has chasers ends it with aggressivecapture (group vfn24(1)).
             PedOp::TazeWantTarget { want } => {
-                if !b.tazer_hit && b.timer(39) <= 0.0 {
-                    if let Some(target) = b.wants.get(want).map(|w| w.target) {
-                        b.tazer_hit = true;
-                        b.chase_requests.push(ChaseRequest::Taze { target });
+                if b.timer(39) <= 0.0 {
+                    if let Some(target) = b.wants.get(want).map(|w| w.target).filter(|t| (self.target_position)(*t).is_some()) {
+                        if !b.tazer_hit {
+                            b.tazer_hit = true;
+                            b.chase_requests.push(ChaseRequest::Taze { target });
+                        }
+                        let capture = super::chase::reason::AGGRESSIVE_CAPTURE;
+                        if self.chase.group(target).is_some_and(|g| g.count > 0 && g.end_reason != Some(capture)) {
+                            b.chase_requests.push(ChaseRequest::GroupEnd { chasee: target, reason: capture });
+                        }
                     }
                 }
             }

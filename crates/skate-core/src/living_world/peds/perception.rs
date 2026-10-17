@@ -29,6 +29,9 @@ pub struct Perception {
     /// Seen this tick (0x40) / just told about it (0x80).
     pub visible: bool,
     pub told: bool,
+    /// Reactions about the target the ped has finished (`+68`): a want without flag 0x40 that was set and is
+    /// unset adds one (`82E42A58`); the mood records' `7FF7` test reads it. Zero on a new entry.
+    pub reacted: u32,
 }
 
 /// At most this many entries (`82E42690`).
@@ -47,10 +50,10 @@ impl Perceptions {
     pub fn get_mut(&mut self, target: u64) -> Option<&mut Perception> {
         self.entries.iter_mut().find(|e| e.target == target)
     }
-    /// `82E42868`: set the memory of `target`'s entry, creating it (just told) when missing.
+    /// `82E42868`: keep `target`'s entry known for at least `memory` seconds, creating it (just told) when missing.
     pub fn know(&mut self, target: u64, memory: f32) {
         if let Some(e) = self.get_mut(target) {
-            e.memory = memory;
+            e.memory = e.memory.max(memory);
             return;
         }
         if self.entries.len() >= CAPACITY {
@@ -58,7 +61,7 @@ impl Perceptions {
                 self.entries.remove(i);
             }
         }
-        self.entries.push(Perception { target, position: [0.0; 3], velocity: [0.0; 3], memory, age: 0.0, suppress: 0.0, visible: false, told: true });
+        self.entries.push(Perception { target, position: [0.0; 3], velocity: [0.0; 3], memory, age: 0.0, suppress: 0.0, visible: false, told: true, reacted: 0 });
     }
     /// `82E3D240`: mood events about `target` are blocked for at least `seconds`.
     pub fn suppress(&mut self, target: u64, seconds: f32) {

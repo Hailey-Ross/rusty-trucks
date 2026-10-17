@@ -139,8 +139,10 @@ impl ChaseGroup {
     }
     /// `82D96C38`: no duplicates, at most [`GROUP_CAPACITY`]; the first chaser resets the end
     /// reason.
-    pub fn add(&mut self, chaser: u64, offset: Vec3) -> bool {
-        if self.chasers.contains(&chaser) || self.chasers.len() >= GROUP_CAPACITY {
+    /// `82D96C38`: a join is refused when the group already holds `max_chasers` (vfn16, the chasee's record) or the
+    /// capacity.
+    pub fn add(&mut self, chaser: u64, offset: Vec3, max_chasers: usize) -> bool {
+        if self.chasers.contains(&chaser) || self.chasers.len() >= max_chasers.min(GROUP_CAPACITY) {
             return false;
         }
         if self.chasers.is_empty() {
@@ -171,7 +173,13 @@ impl ChaseGroup {
         if self.chasers.len() < 2 || self.chasers[0] != chaser {
             return false;
         }
+        // `82D97108`: the primary swaps with the next chaser, then the old primary moves to the back, so with three or
+        // more chasers the primary goes round the group. NOT RETAIL YET: retail can name the new primary (the
+        // caller's handle; the next chaser without one) and raises the old primary's rest time; ours always takes
+        // the next chaser.
         self.chasers.swap(0, 1);
+        let old = self.chasers.remove(1);
+        self.chasers.push(old);
         true
     }
 }
@@ -305,14 +313,21 @@ mod tests {
     #[test]
     fn groups_keep_join_order_and_hand_over_the_primary() {
         let mut g = ChaseGroup { end_reason: Some(reason::LOST_INTEREST), ..Default::default() };
-        assert!(g.add(4, [0.0; 3]));
+        assert!(g.add(4, [0.0; 3], 25));
         assert_eq!(g.end_reason, None, "the first chaser resets the end reason");
-        assert!(g.add(7, [2.0, 0.0, 0.0]) && !g.add(7, [0.0; 3]));
+        assert!(g.add(7, [2.0, 0.0, 0.0], 25) && !g.add(7, [0.0; 3], 25));
         assert_eq!(g.formation_point(7, [10.0, 0.0, 0.0]), [12.0, 0.0, 0.0]);
         assert_eq!(g.info(2), ChaseGroupInfo { count: 2, primary: Some(4), end_reason: None, can_add: false });
         assert!(!g.give_up_primary(7));
         assert!(g.give_up_primary(4));
         assert_eq!(g.chasers, vec![7, 4]);
+        // A full group refuses the join (`82D96C38`); with three chasers the primary goes round.
+        assert!(!g.add(9, [0.0; 3], 2) && g.add(9, [0.0; 3], 3));
+        assert!(g.give_up_primary(7));
+        assert_eq!(g.chasers, vec![4, 9, 7]);
+        assert!(g.give_up_primary(4));
+        assert_eq!(g.chasers, vec![9, 7, 4]);
+        assert!(g.remove(9));
         g.end_reason = Some(reason::AGGRESSIVE_CAPTURE);
         assert!(!g.info(5).can_add);
         assert!(g.remove(7) && g.remove(4));

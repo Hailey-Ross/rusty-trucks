@@ -1378,6 +1378,9 @@ frame. Callers: the frame step `82D48148` (`t` = state+836) and the hand targets
 the re-oriented held copy (ends swapped, +112 negated, reverse bit toggled), the chord only without geometry. Test
 `along_lookup_follows_the_spline_and_its_reverse_bit`.
 
+**Verification.** Session 11 (2026-10-16, hails-additions 678aa1c1, with the latch point, bumpers and the hold fixes):
+"skitching felt so much better and the hands were in the right spots both times I grabbed vehicles."
+
 **Open.** Whether the geometry's points are the raw control points or a smoothed list (b148: medium, control points).
 
 ## Skitching: the latch point is the edge's centreline crossing (2026-10-16)
@@ -1400,3 +1403,29 @@ gated candidate before the time gate. `query` now takes the deck and writes it (
 `the_latch_height_is_the_crossing_above_the_deck`.
 
 **Open.** `+2736` and `82D91298` on latch (documented above); who reads the published height (block +32 +280).
+
+## Cars: retail's per-car acceleration, speed style and hit-brake latch (2026-10-16)
+- **Problem (research b162 / b163, the b75 / b78 port never applied):** the loader put the spec's lane-change passage
+  factor (`328B9F46`) into the max acceleration and the pull-over approach factor (`75822921`) into the planning
+  deceleration; every car of a spec pulled away alike; the cap was `lane x (1 + 0.2 held)`; the hit brake faded as
+  the car slowed (`accel = -speed` each step).
+- **Retail [code + data] (main re-read `82C3FF38` and `82C3FA08`):** at spawn (`82C3CDD0`) each car draws its max
+  acceleration uniformly in [spec+52, spec+56] in 1 % steps (2.0..5.0 default, 2.5..6.0 sports / taxi / truck), a
+  speed style from the driver's normal / slow / fast chances (default 0.8 / 0.1 / 0.1: slow `1 - spec+24`, fast
+  `1 + spec+32`) and the held bonus spec+28 behind the driver's `D0BA2E02` roll (1.0 in every stock driver). The
+  integrator's cap is `(1 + bias + held bonus while held) x the lane speed`; it stands a car at `accel <= 0.001 &&
+  v <= 0.01`. The hit brake sets `accel = -v`; past `-DD49E3C2` (5 m/s^2) it latches (`+0xD60` bit 0x08: the planner
+  is skipped) until the car stands.
+- **Change:** `follow::spawn_draws` (one seeded stream per car, `derive(seed, "SPDC")`), `Car::accel_cap` /
+  `speed_bias` / `held_bonus` / `brake_latched`, the cap formula, the latch and the standstill thresholds; the loader
+  reads the spec and driver fields above and no longer writes `accel_max` / `plan_decel` from the wrong fields.
+  `cap_scale` still multiplies the lane speed (the mod hook, 1.0 = retail); every new value is a `FollowParams` field
+  a mod's traffic parameters can set.
+- **NOT RETAIL YET:** the ramp (retail adds spec+60 per planner call; its cadence against the recomp trace is open,
+  b75 O1) and the clamp before the step (retail zeroes the acceleration only after a step past the cap); the lead
+  gap and the junction stop window (b162 M1, b163 item 3: `gap = d - 0.5 (s_me + s_lead)`, standoff `0.5 x s x
+  73A1` / `s x 2ACE`, brake `-v^2 / (2 (gap - standoff))` inside `gap <= v + standoff`, a dead stop inside the
+  standoff) are the next step; which driver record a car gets (the default one here).
+- **Verification:** `a_fast_hit_brake_latches_and_stops_in_about_a_second`, `spawn_draws_follow_the_spec_and_driver_values`
+  (core living_world 327 pass); skate-game 715 pass; data-gated skitching and car-knock-down tests pass. Not
+  play-tested yet: expect quicker, more varied pull-aways and some cars driving above or below the lane speed.

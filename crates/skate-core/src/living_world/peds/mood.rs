@@ -246,6 +246,10 @@ pub struct MoodContext<'a> {
     pub zombie: bool,
     /// Whether an entity is busy (the ped component's vfunc +32, `sub_82E3BF70`; check 8 `D44E`).
     pub busy: &'a dyn Fn(u64) -> bool,
+    /// The ped's own state for the prerequisites (`sub_82BFEA60`): kind 2, OwnPluginObject (`brain+3277` bit 0x01);
+    /// kind 4, the ped has a chasee (chaser component `0x8269A940` vfunc +12).
+    pub own_plugin_object: bool,
+    pub chasing: bool,
 }
 
 /// A raised want.
@@ -302,31 +306,29 @@ impl MoodTables {
         self.prerequisites_pass(reactions, &record, ctx)
     }
 
-    /// Prerequisites of a record's category (`sub_82BFED98`, AND of the items). Kind 3 measures
-    /// to the instigator (the skater; the second entity without one), kind 6 asks whether the
-    /// second entity is the ped itself (so a bystander's `collision` fails and is posted as
-    /// `nearbycollision`, `sub_82E41060`) [inferred from that rewrite].
+    /// Prerequisites of a record's category (`sub_82BFED98`, AND of the items; each item `sub_82BFEA60` about the
+    /// ped itself) [code]: kind 2 OwnPluginObject, 3 the squared distance from the ped to the record's position
+    /// (`+48`), 4 the ped is chasing, 6 the second entity is the ped itself (`sub_82E41060`'s input), 9 zombie mode.
+    /// Comparators: 0 the value, 1 its negation, 2 farther than the item value, 3 nearer; any other is false. Only
+    /// kind 3 has a distance (0.0 otherwise) and only kind 3 squares the item value.
+    /// NOT RETAIL YET: kinds 1 (`0x8269A888` vfunc +16), 5 (`0x8269A950` vfunc +8 with the position), 7 (the chasee's
+    /// `0x8258E778` vfunc +12) and 8 (`brain+540` bit 0x80, the pending flag of want slot 10) are false (research b152).
     pub fn prerequisites_pass(&self, reactions: &MoodReactions, record: &MoodRecord, ctx: &MoodContext) -> bool {
-        let target = record.instigator.or(record.second).and_then(|id| (ctx.entity)(id).map(|(_, p)| (id, p)));
         reactions.prerequisites.iter().filter(|p| p.category == record.category).all(|p| {
-            let value = match p.kind {
-                3 => return target.is_some_and(|(_, at)| {
-                    let d2 = dist_sq(at, ctx.position);
-                    match p.comparator {
-                        2 => d2 > p.value * p.value,
-                        3 => d2 < p.value * p.value,
-                        _ => true,
-                    }
-                }),
-                6 => record.second == Some(ctx.ped),
-                9 => ctx.zombie,
-                // Ped-state checks not decoded (kinds 1, 2, 4, 5, 7, 8): false.
-                _ => false,
+            let (value, item, distance) = match p.kind {
+                2 => (ctx.own_plugin_object, p.value, 0.0),
+                3 => (false, p.value * p.value, dist_sq(record.position, ctx.position)),
+                4 => (ctx.chasing, p.value, 0.0),
+                6 => (record.second == Some(ctx.ped), p.value, 0.0),
+                9 => (ctx.zombie, p.value, 0.0),
+                _ => (false, p.value, 0.0),
             };
             match p.comparator {
                 0 => value,
                 1 => !value,
-                _ => true,
+                2 => item < distance,
+                3 => distance < item,
+                _ => false,
             }
         })
     }
@@ -339,12 +341,13 @@ impl MoodTables {
         let record = &mut store.records[record_index];
         let mut reaction = MoodReaction { result: name.clone(), category: record.category.clone(), rolled: None, passed: true, wants: Vec::new() };
         if let Some((p, cooldown)) = result.roll {
-            if p.abs() > 1.19e-7 {
+            // The cooldown starts only with a real roll (`|p|` above `0x82063A40`; a 0.0 chance passes unrolled).
+            if p.abs() > 2.938_736e-39 {
                 let n = rng.modulo(100) + 1;
                 reaction.rolled = Some(n);
                 reaction.passed = p * 100.0 >= n as f32;
+                record.cooldowns.insert(name.clone(), cooldown);
             }
-            record.cooldowns.insert(name.clone(), cooldown);
         }
         if !reaction.passed {
             return Some(reaction);

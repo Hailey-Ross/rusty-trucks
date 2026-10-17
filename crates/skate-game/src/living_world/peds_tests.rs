@@ -872,7 +872,7 @@ fn living_world_ped_mood_tables_warn_then_chase_on_collisions() {
         PLAYER => Some(("skater".to_string(), [1.0, 0.0, 0.0])),
         _ => None,
     };
-    let ctx = MoodContext { ped: PED, ped_type: "adult_male", position: [0.0; 3], entity: &entity, zombie: false, busy: &|_| false };
+    let ctx = MoodContext { ped: PED, ped_type: "adult_male", position: [0.0; 3], entity: &entity, zombie: false, busy: &|_| false, own_plugin_object: false, chasing: false };
     let mut store = MoodStore::default();
     let mut rng = skate_core::living_world::Rng::new(5);
     let hit = || MoodEvent { category: "collision".into(), instigator: Some(PLAYER), second: Some(PED), position: [0.0; 3] };
@@ -968,6 +968,21 @@ fn a_seated_ped_ignores_bumps_but_not_a_hard_hit() {
     assert_eq!(hit(4.0, true), Some(ReactionKind::Knockdown));
 }
 
+/// DisableHeavyCollision (`brain+3277` bit 0x20) while active: a hard hit only makes the ped stumble, and a seated
+/// ped (IgnoreStandingCollisions too) does not react at all (`sub_82E38FB8`).
+#[test]
+fn disable_heavy_collision_turns_knock_downs_into_stumbles() {
+    use skate_core::living_world::peds::skater_contact::{CollisionRules, ReactionKind};
+    let ped = Vec3::new(0.0, 0.0, 0.0);
+    let hit = |heavy_off: bool, seated: bool| {
+        let rules = contact_rules(&CollisionRules::default(), heavy_off);
+        skater_hit(ped, 0.0, 0.3, [0.0, 0.0, -0.5], [0.0, 0.0, 4.0], &rules, seated).map(|h| h.0)
+    };
+    assert_eq!(hit(false, false), Some(ReactionKind::Knockdown));
+    assert_eq!(hit(true, false), Some(ReactionKind::Standing));
+    assert_eq!(hit(true, true), None);
+}
+
 /// The DMO plugin check's seat probe (`82C539A8`, b136) at the authored poses: an untouched prop's seat stands on
 /// pavement navmesh for most props. A report while the probe is not applied (it fails 10-23% of untouched seats, so it
 /// does not match retail's yet).
@@ -995,4 +1010,19 @@ fn living_world_authored_plugin_seats_pass_the_pavement_probe() {
         // 308 / 401 on 2026-10-16).
         assert!(pass > 0, "{district}: the probe finds no seat at all");
     }
+}
+
+/// A ped walking into another ped (a step refused by the other, both bodies touching): the touched ped stumbles below
+/// the ped thresholds (6.0) and nothing happens under the zombie cheat (`sub_82E38FB8`, kind 5 with a ped toucher).
+#[test]
+fn a_ped_walking_into_a_ped_makes_it_stumble_unless_zombie_mode() {
+    use skate_core::living_world::peds::skater_contact::{CollisionRules, ReactionKind};
+    let rules = CollisionRules::default();
+    let ped = Vec3::new(0.0, 0.0, 0.0);
+    let hit = |speed: f32, zombie: bool| ped_hit(ped, 0.0, [0.0, 0.0, -0.6], [0.0, 0.0, speed], &rules, false, zombie).map(|h| h.0);
+    assert_eq!(hit(1.4, false), Some(ReactionKind::Standing));
+    assert_eq!(hit(5.0, false), Some(ReactionKind::Standing), "a run is below the ped knock-down speed");
+    assert_eq!(hit(6.5, false), Some(ReactionKind::Knockdown));
+    assert_eq!(hit(1.4, true), None);
+    assert_eq!(hit(-1.4, false), None, "moving apart");
 }

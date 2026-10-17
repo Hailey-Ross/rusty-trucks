@@ -57,10 +57,27 @@ use crate::living_world::rng::Rng;
 /// The follower's numbers. Every field is data a mod may override per car.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FollowParams {
-    /// Largest pull-away acceleration, m/s^2. Default: the spec field `Hash_328B9F4685A14018`
-    /// (2.0 default, 3.0 family, 3.1 minivan) [data; that it is the max accel is the V0 layout
-    /// candidate, open], matching the 2.3-3.4 m/s^2 the recomp reaches [trace].
+    /// Largest pull-away acceleration of a car built without the spawn draw ([`Car::new`]: tests, a fixed value),
+    /// m/s^2. Spawned cars draw theirs ([`spawn_draws`]).
     pub accel_max: f32,
+    /// The spawn draw of a car's max acceleration (`82C3CDD0`, `+3676`): uniform in [`accel_lo`, `accel_hi`] in 1 %
+    /// steps (spec+52 `Hash_5EFF87155A4EABE1`, spec+56 `Hash_CA49D85FA629F7E7`; 2.0..5.0 default, 2.5..6.0 sports,
+    /// taxi, truck; research b75).
+    pub accel_lo: f32,
+    pub accel_hi: f32,
+    /// The driver's speed style chances, normal / slow / fast (`82C43330` over the driver record's `90FC5AB4`,
+    /// `85C11600`, `3C32BAC5`; default 0.8 / 0.1 / 0.1) and the spec's biases: slow `1 - bias_slow` (spec+24
+    /// `Hash_3DF4F2D4CA631369`), fast `1 + bias_fast` (spec+32 `Hash_E0C564403296C5F8`) times the lane speed (b78.2).
+    pub speed_style: [f32; 3],
+    pub bias_slow: f32,
+    pub bias_fast: f32,
+    /// The held bonus (`+3684` = spec+28 `Hash_0070396243C5622D` when the driver's `D0BA2E02DE46A57A` roll passes,
+    /// 1.0 in every stock driver record): added to the cap factor while a skater holds the car (b78.3).
+    pub held_bonus: f32,
+    pub held_bonus_chance: f32,
+    /// The hit brake latches when its deceleration passes this (`DD49E3C2B833A723`, 5.0 m/s^2; `sub_82C3FA08`): the
+    /// planner then leaves the braking as it is until the car stands (`+0xD60` bit 0x08).
+    pub latch_decel: f32,
     /// Acceleration ramp, m/s^3: 0.2 m/s^2 per 0.25 s [trace proof1, 47CAEDA0].
     pub jerk: f32,
     /// Comfortable braking for the look-ahead and stop planning, m/s^2. Default: the spec field
@@ -92,7 +109,8 @@ pub struct FollowParams {
     /// Multiplier on the lane cap (`f2` of the integrator's cap; 1.0 = retail; a mod or the
     /// skitch milestone raises it).
     pub cap_scale: f32,
-    /// Added to the cap scale while a skater holds the car (`+3684`, 0.2 in the recomp trace; b57).
+    /// Added to the cap scale while a skater holds a car built without the spawn draw (tests; spawned cars use their
+    /// drawn held bonus).
     pub held_cap_add: f32,
     /// The driver record's horn values (`livingworld_vehicle_drivers`).
     pub horn: super::horn::HornParams,
@@ -104,6 +122,14 @@ impl Default for FollowParams {
     fn default() -> Self {
         Self {
             accel_max: 2.0,
+            accel_lo: 2.0,
+            accel_hi: 5.0,
+            speed_style: [0.8, 0.1, 0.1],
+            bias_slow: 0.0,
+            bias_fast: 0.5,
+            held_bonus: 0.5,
+            held_bonus_chance: 1.0,
+            latch_decel: 5.0,
             jerk: 0.8,
             plan_decel: 3.0,
             hard_brake: 7.3,
@@ -145,6 +171,12 @@ pub struct Car {
     /// planner brakes hard (`sub_82C3FA08` at `0x82C3FE44`: accel = -speed) until the car stands,
     /// then the integrator clears it (`sub_82C3FF38`).
     pub hit_brake: bool,
+    /// The hit brake passed [`FollowParams::latch_decel`]: the braking stays until the car stands (`+0xD60` 0x08).
+    pub brake_latched: bool,
+    /// The spawn draws ([`spawn_draws`]): max acceleration (`+3676`), speed bias (`+3680`), held bonus (`+3684`).
+    pub accel_cap: f32,
+    pub speed_bias: f32,
+    pub held_bonus: f32,
     /// The nearest obstacle in the look-ahead (`obstacles::nearest`; set by the host each frame, retail
     /// `sub_82C40B70` -> `+3584..+3620`).
     pub obstacle: Option<super::horn::ObstacleHit>,
@@ -179,7 +211,7 @@ pub struct Car {
 
 impl Car {
     pub fn new(key: VehicleKey, cursor: LaneCursor, length: f32, params: FollowParams) -> Self {
-        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE, decider: Default::default(), passage: None, manoeuvre: Default::default(), alarming: false }
+        Car { key, cursor, speed: 0.0, accel: 0.0, length, params, entry: None, committed: false, hit_brake: false, brake_latched: false, accel_cap: params.accel_max, speed_bias: 0.0, held_bonus: params.held_cap_add, obstacle: None, driver: super::horn::DriverBits { horn: true, blocked_long: true }, limiter: 0, horn_timers: Default::default(), horn: 0, honk_target: None, held: false, player_held: false, held_last: false, release_grace: -1.0, skater: super::skater_scan::SkaterScan::NONE, decider: Default::default(), passage: None, manoeuvre: Default::default(), alarming: false }
     }
 
     /// On `place` for the lane lists: its own place, or the target lane of a running lane change (retail registers
@@ -249,6 +281,26 @@ pub enum FollowEvent {
     PullingOut { key: VehicleKey, segment: usize },
 }
 
+/// A spawned car's draws (`82C3CDD0`), in retail's order from one seeded stream: the max acceleration
+/// (`rand % 101` in 1 % steps of the spec range), the speed style (`82C43330`: `rand % 100 + 1` against the running
+/// sum of the driver's chances x 100) and the held-bonus roll (`8269A588`: chance x 100 >= `rand % 100 + 1`).
+pub fn spawn_draws(p: &FollowParams, next: &mut dyn FnMut() -> u32) -> (f32, f32, f32) {
+    let accel_cap = p.accel_lo + (next() % 101) as f32 * 0.01 * (p.accel_hi - p.accel_lo);
+    let roll = (next() % 100 + 1) as f32;
+    let mut sum = 0.0f32;
+    let style = p.speed_style.iter().position(|w| {
+        sum += w;
+        sum * 100.0 >= roll
+    });
+    let speed_bias = match style {
+        Some(1) => -p.bias_slow,
+        Some(2) => p.bias_fast,
+        _ => 0.0,
+    };
+    let held_bonus = if p.held_bonus_chance * 100.0 >= (next() % 100 + 1) as f32 { p.held_bonus } else { 0.0 };
+    (accel_cap, speed_bias, held_bonus)
+}
+
 /// `sub_82C3FF38`: one integrator step. Returns the new (speed, accel).
 pub fn integrate(speed: f32, accel: f32, cap: f32, dt: f32) -> (f32, f32) {
     let accel = if speed > cap && accel > 0.0 { 0.0 } else { accel };
@@ -256,7 +308,8 @@ pub fn integrate(speed: f32, accel: f32, cap: f32, dt: f32) -> (f32, f32) {
     if v < 0.0 {
         v = 0.0;
     }
-    if accel.abs() < 1e-3 && v < 1e-3 {
+    // Standing (`accel <= 0.001 && v <= 0.01`, `0x82063A48` / `0x820D71E8`): both zero (and the latch clears).
+    if accel <= 1e-3 && v <= 0.01 {
         return (0.0, 0.0);
     }
     (v, accel)
@@ -492,9 +545,13 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
             let mut unit = || rng.next_u32() as f32 * 2.328_306_4e-10_f32;
             super::manoeuvre::decide(&mut decider, &p.manoeuvre, &input, &mut unit);
         }
-        let cap_now = cap(net, me.cursor.place) * (p.cap_scale + if me.held { p.held_cap_add } else { 0.0 });
-        // Free road: ramp up to accel_max, never past the cap.
-        let ramp = (me.accel.max(0.0) + p.jerk * dt).min(p.accel_max);
+        // The cap (`sub_82C3FF38`, `+0xE68`): (1 + speed bias + held bonus while held) x the lane speed (`cap_scale`
+        // multiplies the lane speed: the mod hook, 1.0 = retail).
+        let cap_now = cap(net, me.cursor.place) * p.cap_scale * (1.0 + me.speed_bias + if me.held { me.held_bonus } else { 0.0 });
+        // Free road: ramp up to the car's drawn max acceleration (`+3676`), never past the cap. NOT RETAIL YET: the
+        // ramp rate (retail spec+60 per planner call; its cadence vs the recomp trace is open, b75 O1) and the clamp
+        // before the step (retail zeroes the acceleration after a step past the cap).
+        let ramp = (me.accel.max(0.0) + p.jerk * dt).min(me.accel_cap);
         let mut accel = ramp.min((cap_now - me.speed) / dt);
         // Stop line / junction.
         let mut hold_at: Option<f32> = None;
@@ -635,7 +692,16 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         let mut timers = me.horn_timers;
         timers.update(&p.horn, kind, lead_close, me.obstacle.is_some(), me.speed, dt);
         let (horn, honk_target) = super::horn::decide(&p.horn, me.driver, kind, &timers, me.obstacle, me.speed);
-        let accel = if me.hit_brake { accel.min(-me.speed) } else { accel };
+        // The hit brake (`sub_82C3FA08` kind 4): accel = -speed until it passes the latch threshold, then the planner
+        // leaves it as it is until the car stands (bit 0x08), so the braking does not fade as the car slows.
+        let accel = if me.brake_latched {
+            me.accel
+        } else if me.hit_brake {
+            accel.min(-me.speed)
+        } else {
+            accel
+        };
+        let latch = me.hit_brake && !me.brake_latched && accel < -p.latch_decel;
         let accel = accel.max(-p.hard_brake * 4.0).max(-me.speed / dt);
         let (mut speed, accel) = integrate(me.speed, accel, cap_now, dt);
         let mut ds = speed * dt;
@@ -661,6 +727,7 @@ pub fn step(net: &RoadNetwork, signals: &SignalClock, cars: &mut [Car], dt: f32,
         car.accel = accel;
         car.decider = decider;
         car.manoeuvre = manoeuvre;
+        car.brake_latched = (me.brake_latched || latch) && speed > 0.0;
         if speed <= 0.0 {
             car.hit_brake = false;
         }

@@ -672,3 +672,34 @@ riding mode. `824660A0` writes `pc+922` every call (not a one-way latch).
   nodes; walk-backs stood still for ~10 s before the stuck monitor wiped them out (new log `NPC_WALK_PROGRESS`).
 - Logs added: `WIPEOUT_REASONS`, `GRIND_WIPEOUT`, `PED_DESPAWN at= focus= distance=`, `NPC_AVOID` (bad cursor),
   `NPC_SKATER_PLACE_FRAME`, `NPC_SKATER_STEER` (debug), `NPC_WALK_PROGRESS`.
+
+## Simulated skater bodies share one animation source (load time, 2026-10-16)
+- **Problem:** each simulated skater body read and decoded the animation banks from disk (`NPC_SKATER_SIM_LOAD`
+  ~222 ms each in the 2026-10-16 sessions; the pool loads 3 at world start, ~670 ms inside the load hitch).
+- **Change:** `NpcSimPool::source` keeps the first body's `AnimationSource`; later bodies are built on it
+  (`GamePhysics::load_skater_in_context(.., source)`, `SkaterRuntime::load_for_world` also takes the source's banks
+  for the metadata). `SkaterAnimation::load` is `from_source` over a fresh `AnimationSource::load`, the source is
+  immutable (no interior mutability in `animation_pose.rs`), so a shared body is the same runtime.
+- **Verification (optimisation rule: identical behaviour first):** data-gated
+  `a_body_on_a_shared_animation_source_rides_like_a_fresh_load` (DownTown): a fresh and a shared body ride the same
+  push for 240 ticks, deck transform, skeleton root and physical state equal every tick (bit for bit, `Debug`
+  strings); load 161-166 ms from disk vs 64-66 ms on the shared source (2 runs). The bump test still gives NPC wipeout
+  tick 26 and player tick 36. The log line now says `(shared animation source: true/false)`.
+- **Open:** the remaining ~65 ms (collections, skeleton, controls and camera loads); the first body could use the
+  player's source too (left out: a mod could change the player's clips).
+
+## Simulated skaters send the full audio record (2026-10-16)
+- **Problem (research b161):** both NPC tiers sent a cut-down audio state (`lite_state` through
+  `AudioState::rolling`, about 16 of ~80 fields), so a simulated skater's bails, pushes, plants, pop strength, deck and
+  body impacts, skids and seams never sounded, and the bail grunt (armed on the record's bail) never fired.
+- **Retail [code]:** the bridge `sub_824B0DA8` fills an AI skater's record from its skater entry the same way as the
+  player's; the player's sound objects then run on it (our `skate-audio/src/world/skaters.rs` already matches that).
+- **Change:** after each simulated step `npc_sim::run_steps` swaps the NPC's context into its worker and calls
+  `skate_events::skater_audio_state` (the hook the audio port left for this) with the NPC's runtime and its own
+  `SkaterAudioMemory`; `NpcSim::audio_state` holds the record and `npc_skaters` sends it (the lite state only before
+  the first step after a placement). A placement resets the memory.
+- **Verification:** data-gated `a_simulated_npc_skaters_audio_record_is_its_own` (DownTown: the record's board is the
+  NPC's deck, 4 wheels down, not the player's board); skate-game tests pass (known failure only). Not listened to yet.
+- **Open (b161):** the replay tier still sends the lite state (its lines record no contacts); the engine never sets
+  the reaction bits (slam, missed trick, positive, chase, own crash: entry +388 / +392 / +396, writer not found);
+  the loose-board state is never sent for NPCs; the 30 m gate's position.

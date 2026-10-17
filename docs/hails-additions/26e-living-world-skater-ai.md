@@ -664,3 +664,15 @@ set; the `+492` cooldown and event 8290 posted to a listener when the bumped ska
 **Data-driven / mod-overridable:** the two thresholds (tuning by key), the event id per game mode, the voice sets, and
 which graph an entity type runs (graph path per entity). Multiplayer: the host decides whether a bump plays a line,
 keyed by the NPC skater's stable id.
+
+## Replay-tier skaters skip grabs for profiles without slot tricks (2026-10-16)
+- **Problem:** the replay tier played every recorded grab, fingerflip and boneless; the simulated tier already skipped
+  them for profiles without the slot-trick flag, so the same NPC did different tricks in the two tiers.
+- **Retail [code]:** the AI's trick dispatcher `sub_8246A2E0` runs categories 3, 4 and 12 only when the profile byte
+  +0x33 is set (`Hash_6DBAF7AD6CDE6A16`, false in 44 of 193 profiles, mostly pros; research b159 item 1, main re-read
+  the switch).
+- **Change:** `npc_tricks::TrickContext::slot_tricks` (from `LivingWorldTricks::slot_tricks_for`, the same data the
+  simulated tier reads); `choose` starts no trick for those categories without it.
+- **Verification:** `a_profile_without_slot_tricks_skips_grabs`; skate-core living_world 325 pass. Not play-tested yet.
+- **Open (b159):** the early trick fire (record +144), the per-character line check at branches (`sub_82456970`),
+  the powerslide input arm (pc+920; our powerslide request stays a stand-in until it is decoded).

@@ -114,6 +114,9 @@ pub struct TrickContext<'a> {
     pub profile: Option<&'a TrickProfile>,
     /// The NPC's own seed (from its spawn record).
     pub seed: u64,
+    /// The profile's slot-trick flag (`Hash_6DBAF7AD6CDE6A16`, profile byte +0x33): without it the AI never starts a
+    /// grab, fingerflip or boneless (categories 3, 4, 12; `sub_8246A2E0`).
+    pub slot_tricks: bool,
 }
 
 /// The outcome at a start-trick node.
@@ -181,6 +184,10 @@ pub fn choose(line: &ReplayLine, slot: u32, frame: u64, ctx: &TrickContext) -> T
     let Some(node) = line.nodes.get(slot as usize) else { return TrickChoice::Start(-1) };
     let recorded = line.node_trick(node);
     if !is_ollie_or_flip(recorded) {
+        // `sub_8246A2E0`: grabs, fingerflips and bonelesses (3, 4, 12) only with the profile's slot-trick flag.
+        if !ctx.slot_tricks && matches!(catalog::category(recorded), Some(3 | 4 | 12)) {
+            return TrickChoice::Start(-1);
+        }
         return TrickChoice::Start(recorded);
     }
     if catalog::is_chain_level(recorded) {

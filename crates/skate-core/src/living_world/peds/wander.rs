@@ -492,12 +492,17 @@ pub fn constrain_move(mesh: &NavMesh, poly: Option<u32>, from: Vec3, to: Vec3) -
 /// close in on one that already is (peds that spawn overlapping can still separate). A step
 /// that fails is not taken.
 pub fn separation_ok(from: Vec3, to: Vec3, me: u64, others: &[Neighbour], radius: f32) -> bool {
-    others.iter().all(|o| {
+    separation_blocker(from, to, me, others, radius).is_none()
+}
+
+/// The first neighbour (index into `others`) that refuses the step: the two bodies touch there.
+pub fn separation_blocker(from: Vec3, to: Vec3, me: u64, others: &[Neighbour], radius: f32) -> Option<usize> {
+    others.iter().position(|o| {
         if o.order == me || (o.position[1] - to[1]).abs() > 2.0 {
-            return true;
+            return false;
         }
         let after = dist_xz(o.position, to);
-        after >= 2.0 * radius || after >= dist_xz(o.position, from)
+        !(after >= 2.0 * radius || after >= dist_xz(o.position, from))
     })
 }
 

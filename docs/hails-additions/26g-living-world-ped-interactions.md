@@ -1448,3 +1448,159 @@ playing line), and keeps a stream that started a line closed to new lines until 
 (`available()` counts it busy). Test `the_start_delay_holds_the_voice_and_the_gap_holds_the_stream`.
 
 **Open.** A recomp check of request-to-voice timing for an event with a non-zero `+0` (the speech sessions' traces).
+
+## Ghidra pass 1: knock-downs, mood escalation, chase groups, the taze capture (2026-10-16)
+
+The user asked for Ghidra fixes across the living world to get it closer to retail (plan
+`.claude/todo/living-world-ghidra-pass.md`). This pass compared the ped contact, aggression, chase and taze code with
+the TU3 pseudocode (Ghidra with the Xenon360 extension) and the generated recomp code. Research: b152 (aggression),
+b153 (taze), b154 (chase), b155 (speech, ported later); main re-read every address below before porting it.
+
+### Problems and root causes [code]
+- **A warned ped never escalated to a chase.** The mood records' `7FF7` test ("outstanding reactions about the
+  instigator", [1, 1000] on the stock `collisionchase` results) counted the wants the ped still held. Retail counts on
+  the instigator's perception entry (`+68`): `82E42A58` adds one when a set want (0x80) without flag 0x40 is unset, so
+  the count is the number of reactions the ped has finished about that entity. Once a warn ended, ours read 0 and the
+  chase results could never pass.
+- **The perception entry that holds that count was not made.** A passed mood result calls
+  `82E42868(brain, target, 30.0)` for each want (`sub_82E41B98`, constant `0x820D4924`): find or create the entry and
+  keep it known for at least 30 s. `82E42868` keeps the larger memory; ours overwrote it.
+- **Mood prerequisites.** `sub_82BFEA60` (each item about the ped itself): kind 2 is OwnPluginObject (`brain+3277`
+  bit 0x01), kind 4 "the ped has a chasee", kind 3 the distance from the ped to the record's position (`+48`, not the
+  instigator's live position); comparators 4 and up fail. Ours answered false for kinds 2 and 4, measured kind 3 to
+  the instigator, and passed unknown comparators.
+- **Every post runs the prerequisites** (`sub_82E41060`): a contact is posted as `collision`; when the prerequisites
+  refuse it and the hit ped is another ped, it is retried as `nearbycollision`. Ours chose the category by "was I hit"
+  and skipped the prerequisites for collisions and greets. Stock effect: the security sets have no kind 6 item, so a
+  guard who sees another ped hit gets `collision`, not `nearbycollision`.
+- **The roll cooldown** starts only with a real roll (`|p|` above `0x82063A40`, inside the roll branch); ours always
+  started it. Stock records all have p > 0, so this matters to mods.
+- **The hand-prop gate** (`072D`, `brain+3278` bit 0x02) was always fed false; the bit is set while a hand prop is
+  attached (`82E3EC60`) and cleared on release (`82E3EBE0`, `82E3FAE0`), so the six `throw*` results never passed.
+- **The collision instigator** was always the first player. Retail stores the toucher in the brain's contact record
+  (`+3184`); ours now carries it on `PedEvent::Hit` (and the mod event `ped_hit` as `toucher`).
+- **DisableHeavyCollision** (`brain+3277` bit 0x20) was tracked but not read: `sub_82E38FB8` clears its knock-down
+  test while the bit is set, so a hard hit only makes the ped stumble.
+- **IsEndChaseReason** (`826AAC80` -> GetEndReason `82E3D988`): no group answers -1, an ending group's reason wins over
+  the ped's own. Ours put the ped's own first and answered without a group, so a chaser could take the lostinterest
+  branch while its group ended with aggressivecapture.
+- **AddChaser** (`82D96C38`) refuses a join when the group already holds MaxChasers (vfn16); ours checked only the
+  capacity of 25.
+- **GiveUpPrimary** (`82D97108`) swaps the primary with the next chaser and moves the old primary to the back
+  (erase + push_back), so the primary goes round a group of three or more; ours swapped the first two only.
+- **TazeWantTarget**: Begin (`826A8398`) sets speech 66 and timer 39 only when the want's target resolves; the update
+  (`826A8420`) hits once, then ends the target's chase group with reason 1 (aggressivecapture, group vfn24(1)) while it
+  has chasers. Ours spoke and timed without a target and never ended the chase after a taze.
+
+### Changes
+- `skate-core` `peds/perception.rs`: `Perception::reacted` (`+68`); `know` keeps the larger memory.
+- `skate-core` `peds/brain.rs`: `raise_mood_want` (want + 30 s memory, `BrainSettings::mood_want_memory_seconds`),
+  `unset_want` counts finished reactions and forgets a flag 0x40 target only when the want was set; IsEndChaseReason;
+  TazeWantTarget's target gate and the capture group end.
+- `skate-core` `peds/mood.rs`: prerequisite kinds 2 / 3 / 4, comparators, the roll cooldown and its epsilon;
+  `MoodContext::own_plugin_object` / `chasing`.
+- `skate-core` `peds/chase.rs`: `ChaseGroup::add(.., max_chasers)`, `give_up_primary` rotation.
+- `skate-game` `living_world/peds.rs`: `contact_rules` (DisableHeavyCollision), the toucher on `PedEvent::Hit`, the
+  outstanding count from the perception entry, prerequisites on every post with the `nearbycollision` retry, the
+  hand-prop bit, the group join with the chasee's max.
+- Mods: world tuning `ped_brain.mood_want_memory_seconds` (0..=100, retail 30.0); mod event `ped_hit.toucher`.
+
+### Verification
+- New tests: `unset_mood_wants_count_finished_reactions_on_the_perception_entry`,
+  `a_taze_needs_a_resolved_target_and_ends_the_targets_chase_with_a_capture`,
+  `prerequisites_read_the_peds_own_state_and_the_event_position`,
+  `disable_heavy_collision_turns_knock_downs_into_stumbles`, and the group test extended (full group, rotation).
+  The presence test now posts the far event 13 m away instead of moving the instigator (retail measures to the event).
+- skate-core living_world::peds 122 passed; skate-game 714 passed (1 known failure,
+  `setup::tests::pipelines_accept_valid_group_outputs_when_fingerprint_changes`); skate-mods 106 + 3 passed
+  (1 known failure, `skyline_every_component_is_real_and_drives_through_ground_contact`).
+- Not yet played: needs a session (bump a ped, wait for the warn to end, bump again: retail chases).
+
+### Open
+- Prerequisite kinds 1 (`0x8269A888` vfn16), 5 (`0x8269A950` vfn8, probably an area test), 7 (the chasee's
+  `0x8258E778` vfn12) and 8 (`brain+540` bit 0x80, want slot 10) are still false.
+- The perception list's eviction rule (`82E441C8`) and the per (ped type, instigator type) category mask
+  (`82BFE960`) are not read; the producer gate `brain+3278` bit 0x08 has no known writer.
+- Ped on ped contact (kind 5 with a ped toucher: 6.0 thresholds, zombie mode drops the reaction; a toucher whose
+  chaser component answers vfn92, `brain+3276` bit 0x02, forces a knock-down; the setter is chaser vfn88, its caller
+  not found) and NPC skaters as touchers are not ported; asked the user whether retail does both.
+- GiveUpPrimary's named new primary and the old primary's rest time (vfn48 / vfn52) are not ported.
+- The tazer's draw states (b153 M1 to M3: drawn when the draw clip nears its end, the holster clip, the `tazr` prop and
+  the Tazer motion messages) wait for the animation pass (item 6).
+
+## NPC skaters and other peds knock peds over (2026-10-16)
+
+### Problem
+Only the players could knock a ped down or make it stumble. Retail's contact callback `sub_82E38FB8` reacts to any
+`IActor` owner (kind 5, skater thresholds 3.0 / 3.0) and to another ped (the toucher casts to `IPedestrian`,
+`sub_826C2C70`). The user confirmed both for retail (2026-10-16): asked whether NPC skaters knock peds over, "Yes they
+can"; asked whether peds stumble when another ped runs into them, "yes i think so?".
+
+### Retail [code]
+- Ped toucher (`sub_82E38FB8`, the block after the direction): the ped thresholds `081F978F8706D77B` /
+  `5E566360FDC5FDD1` (6.0 / 6.0, exported as `knockdown_speed_flagged_a` / `_b`) replace the skater ones. Under the
+  zombie cheat (`0x83085494` vfn156) a ped's touch gives neither a knock-down nor a stumble. A toucher whose chaser
+  component answers vfn92 (`82E3D968`: its `brain+3276` bit 0x02) knocks the ped down whenever the set allows it and
+  counts on `brain+3248`; that bit's setter is chaser vfn88 (`82E3D920`, only in vtables `0x8232C198` / `0x8232CEA0`),
+  whose caller was not found.
+- The classifier `sub_82E38400` lets a ped toucher through after a centre distance test (R = the two vfn28 values
+  summed times 2.0, `0x82060C50`), and drops it when the touched ped's state `+0xEC` is 2 and two component checks are
+  clear (meaning open).
+
+### Change
+- `skate-core` `peds/skater_contact.rs`: `CollisionRules::ped_knockdown_speed` (data, `skate-data` reads the export)
+  and `ped_reaction` (the ped toucher rule above; `forced` is passed false until the setter is found).
+- `skate-core` `peds/wander.rs`: `separation_blocker` names the ped that refuses a step.
+- `skate-game` `living_world/peds.rs`: the skater touchers are the players then the NPC skaters (their replay sample's
+  position and velocity) in id order; a step refused by another ped is a body contact (`PedContact`), and both peds
+  take the other as toucher on their next step (`ped_hit`). The log line `PED_SKATER_CONTACT` names the toucher
+  (`by=`), and `PedEvent::Hit::toucher` carries it into the mood broadcast.
+- NOT RETAIL YET: an NPC skater is the same 0.35 m cylinder as the player; a ped's touch speed is the closing speed
+  along the line between the two peds (retail: each body's speed after the Havok solve).
+
+### Verification
+- Tests: `a_ped_touching_a_ped_uses_the_ped_thresholds_and_zombie_mode_drops_it` (core),
+  `a_ped_walking_into_a_ped_makes_it_stumble_unless_zombie_mode` (game). Not play-tested yet: watch NPC skaters ride
+  through a crowd, and a chaser running past peds.
+
+### Open
+- The forcing bit's setter (chaser vfn88 caller) and the classifier's state-2 exclusion.
+- Whether retail NPC skaters' bodies use the player's capsule or their own (the ped hits recomp session would show it).
+
+## Peds use their hand props: eat, drink, phone calls, reading, litter (2026-10-16)
+
+### Problem
+Peds carried their hand props but never used them, so the phone ring, the call lines and the litter line (speech 49,
+48, 50, 61; the audio side was ported, research b155 item 2) never happened.
+
+### Retail [code + data] (research b164; main re-read `82E3F818`, `82E1FCD8`, `82E3F1D8`, `82E3F470` and the strings)
+- The attach (`82E3DE18`) takes the entity's usage of the prop (`livingworld_entities` `handprops`: {handprop, usage})
+  and that usage's action list (`livingworld_handprops_usagecharacteristics` `actions`: {action, weight, min, max});
+  a non-empty list sets has-actions (`+0xCCF` 0x20) and picks.
+- The pick (`82E3F818`): `rand % 100 + 1` against the running weight sum x 100 over at most 16 entries; no pick clears
+  has-actions for good. It sets the action (`+0xCBC`) and timer 31 = min + u (max - min), u = `rand x 2^-32`.
+- The start (`82E3F1D8`) when timer 31 runs out: 1 HandPropEat, 2 HandPropDrink, 3 HandPropPhoneAnswer + speech 49,
+  4 HandPropReadInto, 5 HandPropLitter + speech 61 and the drop after timer 34 (0.91667 s); 0 does nothing (and is
+  never picked again: `answercellphonerarely` is 80 % action 0); blends 0.2.
+- The update (`82E3F470`): the phone talks (HandPropPhoneTalk, speech 48) for 7.5 s, says 50, talks 3.5 s more and
+  hangs up; a read cycles 2.0 s and reads out; any other action waits for its clip to end (0.2 s before), returns to
+  the carry pose and picks again. DisallowHandPropActions holds the start back 15 s at a time.
+
+### Change
+- `skate-core` `peds/hand_prop.rs`: `HandPropAction`, `HandPropActionSettings` (every time and speech value, retail
+  defaults, under `HandPropSettings::actions`), `attach_hand_prop_actions`, `pick_hand_prop_action`,
+  `update_hand_prop_action` (returns the channel cue) and `update_litter`; `HandProp` holds the list and the bits.
+- `skate-core` `peds/anim.rs`: the nine clip names and `channel_remaining` (the clip-time query, [inferred] time left).
+- `skate-game`: `HandPropData` loads the usages and each entity's usage per prop; `sync_hand_props` attaches, runs the
+  update (log `PED_HAND_PROP_ACTION`) and releases a littered prop through the existing release; `advance_peds` plays a
+  new cue once and asks again for the talk / read cycles when their clip ends early (retail asks every frame).
+
+### Verification
+- Tests: `a_phone_call_rings_talks_ends_and_picks_again`, `litter_drops_the_prop_and_action_zero_is_terminal`,
+  `disallowed_actions_wait_fifteen_seconds`; the data test `every_census_entity_resolves_a_look_and_animation` now
+  also checks the nine clips in the default set (all present). skate-core peds 127, skate-game 715 pass. Not
+  play-tested yet.
+
+### Open
+- What a reaction, a sit or a conversation does to a running action (nothing in `82E3F470` cancels one); the litter
+  drop vector (ours zero); whether retail's channel ignores a repeated request; the usage entry's `f32_24` / `f32_28`.

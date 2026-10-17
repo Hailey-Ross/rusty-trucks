@@ -155,6 +155,9 @@ pub mod names {
         "HandPropAttackThrow", "HandPropAttackThrowLeft", "HandPropAttackThrowRight",
         // The hand prop carry poses on the ped channel (`livingworld_handprops` `Hash_FC1D2C4E5CCA6AED`, b99).
         "CarrySmallRHChannel", "CarryBigRHChannel", "CarryPaperRHChannel", "CarryWineRHChannel",
+        // The idle hand prop actions on the channel (`82E3F1D8` / `82E3F470`, strings `0x82064AA0..0x82064B3C`).
+        "HandPropEat", "HandPropDrink", "HandPropReadInto", "HandPropReadCyc", "HandPropReadOut", "HandPropPhoneAnswer",
+        "HandPropPhoneTalk", "HandPropPhoneHangup", "HandPropLitter",
     ];
 }
 
@@ -408,6 +411,12 @@ impl PedAnimPlayer {
     /// The slot is free (`skeleton+140 == 7`).
     pub fn channel_idle(&self) -> bool {
         self.channel.is_none()
+    }
+
+    /// Seconds left of the channel's clip (0 when idle or the clip is unknown): the anim's +0x24 query that the
+    /// hand prop actions compare against 0.2 s (`82E3F470`) [inferred: time left].
+    pub fn channel_remaining(&self, clips: &dyn PedClips) -> f32 {
+        self.channel.as_ref().and_then(|c| clips.clip(&c.clip).map(|clip| (clip.length() - c.time).max(0.0))).unwrap_or(0.0)
     }
 
     /// The clip on the channel, if any.

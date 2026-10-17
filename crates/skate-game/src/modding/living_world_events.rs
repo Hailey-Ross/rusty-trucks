@@ -73,8 +73,8 @@ pub(crate) fn payloads(
     }
     for p in peds {
         match p {
-            PedEvent::Hit { id, kind, direction, closing } => {
-                out.push(json!({"name": "living_world", "event": "ped_hit", "id": id.to_u64(), "kind": kind.name(), "direction": direction.name(), "closing": closing}))
+            PedEvent::Hit { id, kind, direction, closing, toucher } => {
+                out.push(json!({"name": "living_world", "event": "ped_hit", "id": id.to_u64(), "kind": kind.name(), "direction": direction.name(), "closing": closing, "toucher": toucher}))
             }
             PedEvent::Chase { id, chasee, kind, reason } => out.push(json!({"name": "living_world", "event": "ped_chase", "id": id.to_u64(), "chasee": chasee, "kind": kind, "reason": reason})),
             PedEvent::Taze { id, target } => out.push(json!({"name": "living_world", "event": "ped_taze", "id": id.to_u64(), "target": target})),
@@ -132,6 +132,7 @@ mod tests {
                 kind: skate_core::living_world::peds::skater_contact::ReactionKind::Knockdown,
                 direction: skate_core::living_world::peds::skater_contact::ReactionDirection::FromBack,
                 closing: 6.5,
+                toucher: 9,
             }, PedEvent::Speech { id: LivingWorldId { kind: Kind::Pedestrian, serial: 4 }, value: 53, topic: None, state: "Warn".into() }, PedEvent::Chase { id: LivingWorldId { kind: Kind::Pedestrian, serial: 4 }, chasee: 9, kind: "group_end", reason: Some(1) }],
         );
         assert_eq!(out.len(), 5);

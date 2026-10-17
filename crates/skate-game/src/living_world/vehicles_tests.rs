@@ -160,7 +160,10 @@ fn living_world_traffic_spawns_a_car_from_the_record() {
     assert!(t.translation.x.abs() < 1e-3 && (t.translation.z - (-160.0)).abs() < 1.0, "{:?}", t.translation);
     assert!((t.rotation * Vec3::Z).z > 0.999);
     let spec = &a.world().resource::<TrafficState>().cars[0].params;
-    assert_eq!((spec.accel_max, spec.plan_decel), (3.0, 2.5), "follower numbers from the spec record");
+    // 328B9F46 / 75822921 are the passage and approach factors (b71), not the follower's accel / decel (b75).
+    assert_eq!((spec.passage_factor, spec.approach_factor), (3.0, 2.5), "manoeuvre numbers from the spec record");
+    let car0 = &a.world().resource::<TrafficState>().cars[0];
+    assert!((spec.accel_lo..=spec.accel_hi).contains(&car0.accel_cap), "the drawn max acceleration {}", car0.accel_cap);
     assert!(a.world().resource::<Seen>().0.iter().any(|e| matches!(e, TrafficEvent::Spawned { entity, .. } if entity == "taxi01")));
 }
 

@@ -148,6 +148,11 @@ pub(crate) struct NpcSim {
     board_yaw: skate_core::living_world::ai_signals::BoardYaw,
     /// The body after the last step (board and skeleton), the proxy others collide with; `None` until the first step.
     last_body: Option<skate_net::packed::BodyState>,
+    /// The full retail audio-state record of the last step (`skate_events::skater_audio_state`, what the player's
+    /// own sound objects read; retail's bridge `sub_824B0DA8` fills an AI skater's record the same way) and its
+    /// per-skater memory (air time, grind latch, rings, push plant).
+    audio: Option<skate_audio::player::state::AudioState>,
+    audio_memory: crate::game_audio::skate_events::SkaterAudioMemory,
 }
 
 /// Controller B's run: the line (`ctrl+592`) and node A re-attaches to when B hands back.
@@ -227,15 +232,25 @@ pub(crate) struct NpcSimPool {
     /// With each its own physics context: its clock keeps running, so the camera's subject ticks stay monotonic.
     bodies: Vec<(SkaterPhysicsContext, SimBody)>,
     prewarmed: bool,
+    /// The animation banks and decoded poses the first loaded body read from disk, shared by every later body.
+    source: Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
 }
 
-fn load_body(physics: &mut GamePhysics, config: &crate::config::Config, graphs: &crate::graph_runtime::StockGraphs, spawn: skate_core::physics::drive_frames::RetailAffineTransform) -> Result<(SkaterPhysicsContext, SimBody), String> {
+fn load_body(
+    physics: &mut GamePhysics,
+    config: &crate::config::Config,
+    graphs: &crate::graph_runtime::StockGraphs,
+    spawn: skate_core::physics::drive_frames::RetailAffineTransform,
+    source: &mut Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
+) -> Result<(SkaterPhysicsContext, SimBody), String> {
     let t0 = std::time::Instant::now();
     let mut context = physics.new_skater_context(spawn)?;
-    let runtime = Box::new(physics.load_skater_in_context(&mut context, &config.asset_root, graphs, config.difficulty.profile_key())?);
+    let shared = source.is_some();
+    let runtime = Box::new(physics.load_skater_in_context(&mut context, &config.asset_root, graphs, config.difficulty.profile_key(), source.clone())?);
+    source.get_or_insert_with(|| runtime.animation.source.clone());
     let controls = Box::new(PlayerControls::load(&config.asset_root)?);
     let camera = Box::new(crate::camera::CameraRuntime::load(&config.asset_root)?);
-    info!("NPC_SKATER_SIM_LOAD loaded a skater from disk in {:.1} ms", t0.elapsed().as_secs_f64() * 1000.0);
+    info!("NPC_SKATER_SIM_LOAD loaded a skater in {:.1} ms (shared animation source: {shared})", t0.elapsed().as_secs_f64() * 1000.0);
     Ok((context, SimBody { runtime, controls, camera }))
 }
 
@@ -274,6 +289,11 @@ impl NpcSim {
     pub(crate) fn deck_position(&self) -> [f32; 3] {
         let t = GamePhysics::context_deck(&self.context).translation;
         [t.x, t.y, t.z]
+    }
+
+    /// The full audio-state record of the last step, when it has stepped since its placement.
+    pub(crate) fn audio_state(&self) -> Option<&skate_audio::player::state::AudioState> {
+        self.audio.as_ref()
     }
 
     /// The NPC skater audio state from the simulated body: rolling on its wheels, grinding only in a grind state,
@@ -327,9 +347,9 @@ fn spawn_sim(
     let spawn = line_spawn(target);
     let (context, body) = match pool.bodies.pop() {
         Some(pooled) => pooled,
-        None => load_body(physics, config, graphs, spawn)?,
+        None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placements_at_bail: 0, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None };
+    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placements_at_bail: 0, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default() };
     place(&mut sim, target, hold_ticks)?;
     Ok(sim)
 }
@@ -395,6 +415,8 @@ fn settle(sim: &mut NpcSim, hold_ticks: u32) {
     sim.board_yaw = Default::default();
     sim.hold_ticks = hold_ticks;
     sim.air = Default::default();
+    sim.audio = None;
+    sim.audio_memory = Default::default();
 }
 
 /// One simulated NPC's step this tick, run after the per-NPC preparation (`run_steps`).
@@ -483,8 +505,16 @@ fn run_steps(
                 if let Ok(mut t) = threads_ref.lock() {
                     t.push(std::thread::current().id());
                 }
-                let NpcSim { context, body, .. } = sim;
-                worker.advance_npc_skater(context, &mut body.runtime, &mut body.controls, graphs, &mut body.camera, intents)
+                let NpcSim { context, body, audio, audio_memory, .. } = sim;
+                let stepped = worker.advance_npc_skater(context, &mut body.runtime, &mut body.controls, graphs, &mut body.camera, intents);
+                if stepped.is_ok() {
+                    // The step's audio record, read with this NPC's own board and riding state swapped in.
+                    worker.swap_skater_context(context);
+                    let dt = (1.0 / skate_core::living_world::clock::RETAIL_TICK_HZ) as f32;
+                    *audio = Some(crate::game_audio::skate_events::skater_audio_state(worker, &body.runtime, audio_memory, dt));
+                    worker.swap_skater_context(context);
+                }
+                stepped
             });
         }
     });
@@ -561,7 +591,7 @@ pub(crate) fn simulate(
         let t0 = std::time::Instant::now();
         let have = pool.bodies.len() + npcs.iter().filter(|n| n.3.is_some()).count();
         for _ in have..rules.max {
-            match load_body(&mut physics, &config, &graphs, spawn) {
+            match load_body(&mut physics, &config, &graphs, spawn, &mut pool.source) {
                 Ok(pooled) => pool.bodies.push(pooled),
                 Err(error) => {
                     warn!("NPC_SKATER_SIM pool: cannot load a skater: {error}");

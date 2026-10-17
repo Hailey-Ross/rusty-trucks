@@ -265,6 +265,10 @@ impl PedTables {
                     num("knockdown_speed_a", "Hash_541FFA2E9D81C947").unwrap_or(d.knockdown_speed[0]),
                     num("knockdown_speed_b", "Hash_7C5E39ECE5A5572E").unwrap_or(d.knockdown_speed[1]),
                 ],
+                ped_knockdown_speed: [
+                    num("knockdown_speed_flagged_a", "Hash_081F978F8706D77B").unwrap_or(d.ped_knockdown_speed[0]),
+                    num("knockdown_speed_flagged_b", "Hash_5E566360FDC5FDD1").unwrap_or(d.ped_knockdown_speed[1]),
+                ],
                 can_knock_down: f.get("Hash_5B92564B352A9FAA").and_then(Value::as_bool).unwrap_or(d.can_knock_down),
                 ground_seconds: num("ground_seconds", "Hash_AD3C483F0C9DAD67").unwrap_or(d.ground_seconds),
             };

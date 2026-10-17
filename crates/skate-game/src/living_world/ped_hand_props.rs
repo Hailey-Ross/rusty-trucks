@@ -54,10 +54,14 @@ impl HandPropRecord {
     }
 }
 
-/// Every hand prop by key (`livingworld_handprops`).
+/// Every hand prop by key (`livingworld_handprops`), and the idle actions: each entity's usage per prop
+/// (`livingworld_entities` `handprops`: {handprop, f32_24, f32_28, usage}) and each usage's action list
+/// (`livingworld_handprops_usagecharacteristics` `actions`) [data, b164].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct HandPropData {
     pub props: BTreeMap<String, HandPropRecord>,
+    pub usages: BTreeMap<String, Vec<skate_core::living_world::peds::hand_prop::HandPropAction>>,
+    pub entity_usage: BTreeMap<(String, String), String>,
 }
 
 fn flag(fields: Option<&Value>, key: &str) -> bool {
@@ -93,7 +97,42 @@ impl HandPropData {
                 },
             );
         }
-        Ok(Self { props })
+        let key_of = |v: Option<&Value>| v.and_then(|r| r.get("key")).and_then(Value::as_str).map(str::to_string);
+        let mut usages = BTreeMap::new();
+        if let Some(records) = tables.pointer("/classes/livingworld_handprops_usagecharacteristics").and_then(Value::as_object) {
+            for (key, record) in records {
+                let list = record.pointer("/fields/actions").and_then(Value::as_array).map_or(Vec::new(), |a| {
+                    a.iter()
+                        .map(|e| {
+                            let f = |k: &str| e.get(k).and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                            skate_core::living_world::peds::hand_prop::HandPropAction {
+                                action: e.get("action").and_then(Value::as_i64).unwrap_or(0) as i32,
+                                weight: f("f32_4"),
+                                min_seconds: f("f32_8"),
+                                max_seconds: f("f32_12"),
+                            }
+                        })
+                        .collect()
+                });
+                usages.insert(key.clone(), list);
+            }
+        }
+        let mut entity_usage = BTreeMap::new();
+        if let Some(records) = tables.pointer("/classes/livingworld_entities").and_then(Value::as_object) {
+            for (entity, record) in records {
+                for e in record.pointer("/fields/handprops").and_then(Value::as_array).into_iter().flatten() {
+                    if let (Some(prop), Some(usage)) = (key_of(e.get("handprop")), key_of(e.get("usage"))) {
+                        entity_usage.insert((entity.clone(), prop), usage);
+                    }
+                }
+            }
+        }
+        Ok(Self { props, usages, entity_usage })
+    }
+
+    /// The idle actions of `entity` holding `prop` (empty: the ped never acts with it).
+    pub fn actions_for(&self, entity: &str, prop: &str) -> Vec<skate_core::living_world::peds::hand_prop::HandPropAction> {
+        self.entity_usage.get(&(entity.to_string(), prop.to_string())).and_then(|u| self.usages.get(u)).cloned().unwrap_or_default()
     }
 }
 
@@ -140,7 +179,8 @@ pub(crate) fn sync_hand_props(
         let mind = &mut *mind;
         if let Some(h) = held {
             let at = globals.get(h.entity).ok().map(|g| g.translation().to_array());
-            let thrown = at.and_then(|at| mind.brain.update_hand_prop_release(&s, at));
+            // A throw's release, or a litter drop (`82E3ED50`: timer 34 after HandPropLitter).
+            let thrown = at.and_then(|at| mind.brain.update_hand_prop_release(&s, at)).or_else(|| mind.brain.update_litter());
             if let Some(velocity) = thrown.or(mind.hand_prop_release.take()) {
                 commands.entity(e).remove::<HeldHandProp>();
                 let room = released.0.len() < s.max_live;
@@ -165,6 +205,16 @@ pub(crate) fn sync_hand_props(
                 commands.entity(e).remove::<HeldHandProp>();
                 mind.brain.hand_prop.holding = false;
                 info!("PED_HAND_PROP ped=#{} {} removed tick={tick}", ped.id.serial, h.key);
+                continue;
+            }
+            // The idle action (`82E3F470`): the channel cue changes only when the action moves on.
+            let left = body.player.channel_remaining(&*data);
+            if let Some(cue) = mind.brain.update_hand_prop_action(&s.actions, left) {
+                if mind.action_cue != Some(cue) {
+                    info!("PED_HAND_PROP_ACTION ped=#{} {} {cue:?} action={} tick={tick}", ped.id.serial, h.key, mind.brain.hand_prop.action);
+                    mind.action_cue = Some(cue);
+                    mind.action_seq = mind.action_seq.wrapping_add(1);
+                }
             }
             continue;
         }
@@ -200,7 +250,10 @@ pub(crate) fn sync_hand_props(
         let entity = commands.spawn((SceneRoot(server.load(GltfAssetLabel::Scene(0).from_asset(glb))), Transform::default(), Visibility::Inherited, ChildOf(scene))).id();
         commands.entity(e).insert(HeldHandProp { key: key.clone(), entity, local: record.map(HandPropRecord::local).unwrap_or_default() });
         mind.brain.hand_prop.holding = true;
-        info!("PED_HAND_PROP ped=#{} {key} created tick={tick}", ped.id.serial);
+        // The attach (`82E3DE18`): this entity's usage of the prop, then the first pick.
+        mind.brain.attach_hand_prop_actions(data.hand_props.actions_for(&ped.entity, &key));
+        mind.action_cue = None;
+        info!("PED_HAND_PROP ped=#{} {key} created actions={} tick={tick}", ped.id.serial, mind.brain.hand_prop.actions.len());
     }
     // Released props outside every observer's census cull ring go (b91 / dmo-plan: `dynamicobjects` cull 100 m).
     let Some(physics) = physics.as_deref_mut() else { return };
