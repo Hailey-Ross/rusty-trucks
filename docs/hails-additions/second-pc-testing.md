@@ -287,7 +287,7 @@ line makes the trace unusable and it says so) and sends with `play-and-send.ps1 
 
 | Preset | Trace categories | What to do |
 |---|---|---|
-| `props` | props | About 2 minutes: ride slowly into an orange pylon (drum or pole), then fast into another pylon, roll onto a bench seat (no grind), grind a bench seat, then get off the board and walk into a bench. About 5 seconds between them, no other props touched in between, in this order. |
+| `props` | props | About 2 minutes at DownTown, Rosalita Skate Park (map teleport): the garbage bin about 14 m straight ahead and the flat bench about 13 m away. Roll slowly into the bin, then hit it fast (same bin is fine once it settled), roll onto the bench seat (no grind), grind the bench seat, then get off the board and walk into the bench. About 5 seconds between them, in this order. |
 | `npc` | npc, world, traffic | Skate around peds and NPC skaters as normal. |
 | `pedbody` | npc, pedbody | Bump into peds, run into them fast, knock some down. |
 | `traffic` | traffic, skitch, npc | Skitch cars, let go at different speeds, also of a stopped car; ride near junctions. |
