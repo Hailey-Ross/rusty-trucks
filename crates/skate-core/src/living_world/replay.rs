@@ -411,6 +411,22 @@ pub fn path_frame(node: &ReplayNode) -> [f32; 4] {
     if node.flags & node_flags::BOARD_FLIPPED != 0 { turn_about_up(q) } else { q }
 }
 
+/// The raw recorded pose at line position (node, t), t in [0, 1] along node -> node + 1: the steering target retail
+/// builds from cursor B (`sub_8246DE38`, b110 2.7): position and path frame interpolated, the segment's per-frame
+/// displacement (the next node's `step`). The last node gives its own pose.
+pub fn line_target_at(line: &ReplayLine, at: (u32, f32)) -> Option<super::ai_record::LineTarget> {
+    let a = line.nodes.get(at.0 as usize)?;
+    Some(match line.nodes.get(at.0 as usize + 1) {
+        Some(b) => segment_target(a, b, at.1.clamp(0.0, 1.0)),
+        None => segment_target(a, a, 0.0),
+    })
+}
+
+fn segment_target(a: &ReplayNode, b: &ReplayNode, t: f32) -> super::ai_record::LineTarget {
+    let position = core::array::from_fn(|k| a.position[k] + (b.position[k] - a.position[k]) * t);
+    super::ai_record::LineTarget { position, frame: nlerp(path_frame(a), path_frame(b), t), step: b.step }
+}
+
 /// The node world frame retail spawns the character with ([code] `sub_82453C58`, called by the
 /// spawn `sub_8245C548` before `sub_8245DA78`): the recorded skater frame on off-board nodes
 /// (flags bit 0x08), the path frame ([`path_frame`]) on every other node.
@@ -1368,12 +1384,10 @@ impl LineCursor {
         let i = self.node as usize;
         let a = line.nodes.get(i)?;
         let seg = line.segment_frames(self.node);
-        let (b, t) = match line.nodes.get(i + 1) {
-            Some(b) if seg > 0 && !self.finished => (b, (self.frame_in_segment as f32 / seg as f32).min(1.0)),
-            _ => (a, 0.0),
-        };
-        let position = core::array::from_fn(|k| a.position[k] + (b.position[k] - a.position[k]) * t);
-        Some(super::ai_record::LineTarget { position, frame: nlerp(path_frame(a), path_frame(b), t), step: b.step })
+        match line.nodes.get(i + 1) {
+            Some(_) if seg > 0 && !self.finished => line_target_at(line, (self.node, self.frame_in_segment as f32 / seg as f32)),
+            _ => Some(segment_target(a, a, 0.0)),
+        }
     }
 
     pub fn sample(&self, lines: &dyn LineSource, alpha: f32) -> Option<ReplaySample> {

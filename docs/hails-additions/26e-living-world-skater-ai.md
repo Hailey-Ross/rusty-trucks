@@ -704,3 +704,26 @@ keyed by the NPC skater's stable id.
   (skate-game wiring: slam by the player at 10 m, nothing at 20 m, one tick only, slam_b at the end); skate-game
   living_world 93, world_tuning 24, world_audio 5, skate-mods world_tuning 3 pass. Not play-tested yet: wipe out
   near an NPC skater and listen for its line.
+
+## The steering record targets cursor B; the handover logs its start speed (2026-10-17)
+
+- **Problem:** a laptop session (DownTown, #38 mark_appleyard) showed a skater stalling right after the replay ->
+  physics handover, then leaving and rejoining its path several times a second. Research b174 compared our projection
+  with retail and found the on / off path test and the projection identical (the flapping is retail's own loop for a
+  skater that does not move), but one real difference in the steering record.
+- **Retail [code] (b110 2.6 / 2.7, m5 path controller):** `sub_8246DB50` builds the record with `sub_8246DE38` from
+  cursor B of the same tick, after the projection: B's interpolated node frame, B's position and B's per-frame
+  displacement x 60, speed-shaped. After a rejoin B = A + one shaped tick, just ahead of the skater.
+- **Ours before:** the record target was the replay cursor taken at the top of the tick (one tick late), and that
+  cursor only moves forward to B, so after a rejoin behind it the target stayed up to about 1 m ahead of retail's.
+- **Change:** `replay::line_target_at(line, (node, t))` (the pose at any line position; `LineCursor::line_target` now
+  uses it), and `npc_sim` builds the record (speed shaping, avoider offset) from `PathFollow::b` after `tick`. The
+  replay cursor stays for drawing, trick signals and the spawn push. The handover line now reads `NPC_SKATER_SIM #id
+  name <- replay (distance, node N, push P m/s)`, and a new one-off line `NPC_SKATER_SIM #id name start speed V m/s
+  after the handover (push P m/s, deck D m from node N, state S)` shows whether the queued teleport keeps the push and
+  whether the deck lands within the 0.01 / 0.05 m spawn push radius (both open in b174 section 4).
+- **Open:** whether the stall itself came from the old target is unproven; read the new start speed line in the next
+  session with a handover. Values stay data (`PathTuning`); the spawn push factor and radii are still constants
+  (`ai_record.rs`), listed in the follow-ups.
+- **Verification:** `steering_target_at_cursor_b_matches_the_cursor_pose_like_sub_8246de38` (skate-core); skate-core
+  living_world 338 pass; skate-game living_world 95 pass (4 ignored). Not play-tested yet.

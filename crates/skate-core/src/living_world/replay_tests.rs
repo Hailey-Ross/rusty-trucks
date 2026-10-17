@@ -1070,3 +1070,24 @@ fn retail_fakie_bit_follows_the_drawn_body_against_travel() {
     let off = crate::animation::riding_fakie::Settings { high_speed: 1000.0, low_speed: 1000.0, ..retail::FAKIE };
     assert!(run(FacingRule::RidingEntry, off).iter().all(|b| !b.0), "a mod can turn the fakie drawing off");
 }
+
+#[test]
+fn steering_target_at_cursor_b_matches_the_cursor_pose_like_sub_8246de38() {
+    // The record target is built from cursor B (node, fraction); the replay cursor at the same place gives the same pose.
+    let ls = lines(vec![straight(1, [10.0, 2.0, 0.0], 8, 4, 0.5)]);
+    let line = &ls[&id(1)];
+    let mut c = LineCursor::spawn(&ls, id(1), 0);
+    c.advance(6, &ls, &mut Decider::Stay, &mut Vec::new());
+    let from_cursor = c.line_target(&ls).unwrap();
+    let at_b = line_target_at(line, (1, 0.5)).unwrap();
+    assert_eq!(from_cursor.position, at_b.position);
+    assert_eq!(from_cursor.step, at_b.step);
+    assert!((at_b.position[2] - 0.75).abs() < 1e-5, "{:?}", at_b.position);
+    // B behind the cursor (after a rejoin): the target moves back with it.
+    let behind = line_target_at(line, (0, 0.0)).unwrap();
+    assert!((behind.position[2] - 0.0).abs() < 1e-5);
+    // The last node gives its own pose; past the end there is none.
+    let last = line_target_at(line, (7, 0.9)).unwrap();
+    assert!((last.position[2] - 3.5).abs() < 1e-5);
+    assert!(line_target_at(line, (8, 0.0)).is_none());
+}
