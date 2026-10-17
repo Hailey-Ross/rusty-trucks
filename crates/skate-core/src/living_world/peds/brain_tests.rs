@@ -861,3 +861,22 @@ fn a_taze_needs_a_resolved_target_and_ends_the_targets_chase_with_a_capture() {
     let capture = super::super::chase::reason::AGGRESSIVE_CAPTURE;
     assert_eq!(h.brain.chase_requests, vec![ChaseRequest::Taze { target: 3 }, ChaseRequest::GroupEnd { chasee: 3, reason: capture }]);
 }
+
+/// EndChase is SetChasee(none) (`82E3CFF8`, research b154 M4): the end reason resets and the angrychase want (slot 1) is
+/// unset, which forgets a flag 0x40 target as the want's unset does.
+#[test]
+fn end_chase_resets_the_end_reason_and_unsets_angrychase() {
+    let behaviors = ops(&[("EndChase", &[])]);
+    let settings = BrainSettings::default();
+    let f = frame();
+    let mut brain = PedBrain::default();
+    brain.raise_mood_want("angrychase", 100, true, settings.mood_want_memory_seconds);
+    brain.chasee = Some(100);
+    brain.end_reason = Some(super::super::chase::reason::AGGRESSIVE_CAPTURE);
+    let none = |_: u64| None;
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    h.begin(0, [0; 6], &f);
+    assert_eq!((h.brain.chasee, h.brain.end_reason), (None, None));
+    assert!(!h.brain.wants.contains_key("angrychase"));
+    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::Leave { chasee: 100 }, ChaseRequest::MoodReset { target: 100 }]);
+}

@@ -1640,8 +1640,12 @@ impl Host for BrainHost<'_> {
             }
             PedOp::EndChase => {
                 b.chase_steer = None;
+                // SetChasee(none) `82E3CFF8`: the end reason resets (`brain+2176` = -1), and clearing a set chasee unsets
+                // want slot 1 (`82E42A58(brain, 1, 0)`; slot 1 is angrychase, the brain's debug list `0x820646BC`).
+                b.end_reason = None;
                 if let Some(c) = b.chasee.take() {
                     b.chase_requests.push(ChaseRequest::Leave { chasee: c });
+                    b.unset_want("angrychase");
                 }
                 // Steering speed 0 (`vfn176 -> vfn168(0.0)`): the intercept stops.
                 if b.motion_intent == Some(motion::INTERCEPT) {
