@@ -84,8 +84,9 @@ different flips from different skaters and from one pass to the next. Not play-t
   starts with `n` / `N` (`sub_82469048`), else the regular table (+0). `u = rand32 / 2^32`; walk the 8-byte entries
   (weight, trick) adding weights (normalised to sum 1 at load, `sub_824720C8`) and take the first with `u < sum`,
   else entry 0. `sub_82469A28` also keeps the recorded trick when the trick's attribute record has no family entries
-  in the per-category list; those records are not decoded, every recorded ollie / flip is taken to have them
-  [inferred].
+  in the per-category list. That check always passes: `sub_82DA1BF0` puts every record into its category's list
+  (it skips only a missing record) and all 105 ollie / flip ids have a record (research b187 [code + data]; main
+  re-read the list loop).
 
 **Data.** The profile tables are already in the `livingworld` export (`skater_profiles.json`,
 `ai_skater_profiles.*.fields`: `Hash_E580B6284639E03F` regular, `Hash_BB901D68361E9833` nollie, inheritance
@@ -138,7 +139,8 @@ needed. The trick table's chain links (+4 previous level, +8 base) are 18 numeri
 
 **Open questions.**
 1. Mode 2 (scripted list, `sub_82469E10`) and who sets modes 0 / 2 (challenge or scripted AI skaters).
-2. The trick attribute records' family entries (`sub_8245F120`, list at `*(0x830CFE64) + (category + 583) * 16`).
+2. Settled (b187): the family entries check always passes for ollies and flips (see above). Still open: the name of
+   the record value +124 (`Hash_D34A84B044B60CE3`, 0 or 1) that the check counts by.
 3. Profile byte +51 (grab / fingerflip / boneless allowed; one of the two unnamed bools) and the gesture-start
    percent (+36): only matter once the simulated tier sends ActionGraph signals.
 4. Skater vfunc +36: whether retail's draw is a per-skater stream or the global generator.
@@ -764,3 +766,22 @@ keyed by the NPC skater's stable id.
   DownTown run: handovers push 5.4 / 6.4 / 7.1 m/s on their first held tick (start speed = push), a bail respawn at
   node 55 pushed 5.7 m/s after its 8-tick hold. Not play-tested yet.
 
+## A dropped trick slot shows no trick pose (2026-10-17)
+- **Problem:** user (laptop session game-20261017-143646) said NPC ollies and landings look wrong. The log has 698
+  trick slots: 465 played as recorded, 215 swapped by the profile pick, 18 dropped (`chosen none`, grabs on profiles
+  without slot tricks).
+- **Retail [code] (research b187):** the swaps are retail. In ambient mode the gate `sub_82469C60` decides, and on a
+  pass `sub_82469A28` takes a weighted pick from the profile's regular or nollie table (by the recorded name's first
+  letter); there is no family, stance or pop class rule. Our `npc_tricks::choose` matches it. A dropped slot starts no
+  trick at all (`sub_8246A2E0`).
+- **Ours before:** a dropped slot still opened the trick span (`replay.rs` START_TRICK arm), so the replay phase was
+  GroundTrick / AirTrick with no trick clip and the puppet fell back to `G_5050_FS_LOW_0_CYC` (a 50-50 grind pose) on
+  the ground or `IA_IDLE_LO_N_0_CYC` in the air.
+- **Change:** a recorded trick the choice dropped opens no span; the record (`chosen -1`) is still logged and mirrored.
+  A START_TRICK node without a trick slot keeps its old behaviour (open below).
+- **Tests:** `a_dropped_slot_opens_no_trick_span` (skate-core npc_tricks tests); skate-core living_world 341 pass.
+  Not play-tested.
+- **Open (b187):** whether retail's AI jump follows the recorded trajectory (`82D682E8` / `82D67A00`): a swapped trick's
+  `_A` clip is cut at the recorded landing whatever its length, which may still look wrong; whether a START_TRICK node
+  without a trick slot opens anything in retail; a `Continue` (chain level) with no open trick plays the recorded
+  chain level here, retail may start nothing (not verified).
