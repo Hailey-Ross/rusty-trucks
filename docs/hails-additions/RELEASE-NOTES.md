@@ -69,6 +69,11 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Stutters while skitching (play-tested):** being towed fast through the city no longer freezes the game for up to a second when a ped speaks or a distant city sound (siren, truck, horn) plays for the first time; those sounds now load in the background.
+- **Skitching holds:** holding on, your hands, letting go at the edge of the bumper and the grab sound work like Skate 3; cars collide with their real body shape, so your arms no longer bump into an invisible box; with both bumpers held, the one you pressed first wins; your grip follows the bumper's curve.
+- **Peds are solid:** you no longer pass through peds. They block you like Skate 3's peds do, and running into one fast or mid-trick makes you bail.
+- **Ped speech timing:** peds, pros and the announcer start their lines with Skate 3's own short delays and leave Skate 3's gap between lines.
+- **Startup screen:** the skateboard rolling on the loading screen is drawn smoother.
 - **Angry peds attacking over and over:** after a ped knocks you down it now ends the chase like Skate 3 does: it forgets what made it angry and ignores your bumps for that moment, instead of chasing again the second its taunt ends.
 - **Peds ignoring you while walking to a bench:** a ped you knock over now reacts and can get angry, even on its way to a bench, a vending machine or a bin.
 - **Seated peds:** you can knock a seated ped off a bench with a proper hit (gentle bumps are ignored, like Skate 3).
