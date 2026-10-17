@@ -122,6 +122,10 @@ that changes the converters (the game says **GAME FILES OUT OF DATE**); it refre
 (First run on the laptop 2026-10-17: the conversion and the link worked; its final check stopped on Windows
 PowerShell 5.1 and is fixed since.)
 
+The game's own **Extras > Refresh Game Files** works on a checkout too: setup installs its Python packages into
+`.local\venv-setup` itself on the first run (about a minute) and restarts in it. Before 2026-10-17 it stopped with
+"No module named 'numpy'" there.
+
 ### Steam launcher
 
 ```powershell

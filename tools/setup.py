@@ -73,8 +73,44 @@ def restart():
     else:command=[sys.executable,str(Path(__file__).resolve()),*sys.argv[1:]]
     return subprocess.call(command,env=env)
 
+def ensure_dependencies():
+    """Source checkout: setup brings its own packages. When numpy / Pillow are missing from this Python (the game
+    starts `py -3.13 tools/setup.py`, a system Python), create or update <checkout>/.local/venv-setup from
+    tools/requirements-setup.txt (the environment tools/setup-dev-assets.ps1 uses too) and run setup again with it.
+    Returns an exit code when setup ran (or failed) in the other Python, None to go on here. The packaged setup exe
+    carries its packages."""
+    if getattr(sys,'frozen',False):return None
+    try:
+        import numpy,PIL  # noqa: F401
+        return None
+    except ImportError:pass
+    import subprocess
+    venv=ROOT/'.local'/'venv-setup'
+    python=venv/'Scripts'/'python.exe'
+    inside=Path(sys.prefix).resolve()==venv.resolve()
+    requirements=[line.strip() for line in (ROOT/'tools'/'requirements-setup.txt').read_text(encoding='utf-8').splitlines()
+                  if line.strip() and not line.strip().startswith(('#','pyinstaller'))]
+    print('Setup: installing its Python packages into '+str(venv)+' (first run only, about a minute)',flush=True)
+    try:
+        if not python.is_file():subprocess.run([sys.executable,'-m','venv',str(venv)],check=True)
+        subprocess.run([str(python),'-m','pip','install','--disable-pip-version-check','-q',*requirements],check=True)
+    except (OSError,subprocess.CalledProcessError) as error:
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root=tk.Tk();root.withdraw()
+            messagebox.showerror('Setup could not finish',f'Setup could not install its Python packages ({error}).\n\n'
+                                 f'Check the internet connection, then try again. Environment: {venv}')
+        except Exception:pass
+        print(f'Setup could not install its Python packages: {error}',flush=True)
+        return 1
+    if inside:return None  # already the setup environment: the packages are there now
+    return subprocess.call([str(python),str(Path(__file__).resolve()),*sys.argv[1:]])
+
 def main():
     tolerate_dead_console()
+    code=ensure_dependencies()
+    if code is not None:return code
     if len(sys.argv)>1 and sys.argv[1]=='--character-import':
         # Keep the importer inside the already versioned setup payload: even
         # protocol-1 updaters deliver it atomically with the game executable.
@@ -135,7 +171,9 @@ def main():
             except Exception as error:
                 args.base.mkdir(parents=True,exist_ok=True)
                 (args.base/'setup-error.log').write_text(traceback.format_exc(),encoding='utf-8')
-                messages.put(('error',str(error)))
+                # "Could not reuse the source" only when the source itself is the problem, not for every failure.
+                source_failed=not (Path(iso).is_file() or Path(iso).is_dir()) or isinstance(error,(FileNotFoundError,PermissionError))
+                messages.put(('error-source' if source_failed else 'error',str(error)))
         threading.Thread(target=work,daemon=True).start()
     def start():
         nonlocal running
@@ -157,9 +195,9 @@ def main():
             if kind=='done':
                 if text!='Ready':messagebox.showwarning('Setup completed with warnings',text,parent=window)
                 running=False;success=True;progress.stop();window.destroy();return
-            if kind=='error':
+            if kind in ('error','error-source'):
                 running=False;progress.stop();button.config(state='normal')
-                if reuse and text:
+                if reuse and text and kind=='error-source':
                     status.set('Could not reuse the previous Xbox source. Select default.xex or an ISO.')
                 messagebox.showerror('Setup could not finish',text+'\n\nDetails: '+str(args.base/'setup-error.log'),parent=window)
         window.after(100,poll)
