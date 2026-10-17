@@ -1247,6 +1247,11 @@ pub(crate) fn simulate(
                     // spawn push; between nodes the push never applies and the sim dropped in from rest (b109:
                     // 21 of 44 bails within 1 s of the start).
                     Some("between nodes")
+                } else if skate_core::living_world::ai_controller::safe_node(line, replay.cursor.node, &rules.controller) != replay.cursor.node {
+                    // Retail only ever places an AI skater on a node its safe-node pick returns (`sub_82455728`: a run
+                    // of calm nodes, no trick, flag or steep slope ahead). Without it the handover landed one node
+                    // before a recorded lip and the skater stalled in the grind (laptop 2026-10-17, node 33, b178).
+                    Some("not a safe node")
                 } else {
                     None
                 };

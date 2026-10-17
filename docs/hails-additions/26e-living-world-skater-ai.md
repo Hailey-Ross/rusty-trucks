@@ -727,3 +727,20 @@ keyed by the NPC skater's stable id.
   (`ai_record.rs`), listed in the follow-ups.
 - **Verification:** `steering_target_at_cursor_b_matches_the_cursor_pose_like_sub_8246de38` (skate-core); skate-core
   living_world 338 pass; skate-game living_world 95 pass (4 ignored). Not play-tested yet.
+
+## Handover only on a safe node (2026-10-17)
+
+- **Problem:** laptop session game-20261017-133408: 6 of 19 replay -> sim handovers lost the spawn push; 4 of them
+  (#48, #54, #60, #74) were handed over at node 33 of one line, one node before a recorded bs_lip (node 34, logged
+  0.04 s later, e.g. #48 19:40:15.278 / .317), and #48 then sat in GrindFiveO at 0 m/s and got stuck (research b178).
+- **Retail [code] (b178):** an AI skater is only ever placed on a node returned by the safe-node pick `sub_82455728`
+  (a run of calm nodes: no recent jump / flag, no steep slope, no trick class other than 0 / 4 / 8 ahead).
+- **Change:** `npc_sim` hands a replay skater to physics only where `ai_controller::safe_node(line, node) == node`;
+  otherwise the every-2-s report says `not a safe node`.
+- **Open (b178, needs a decision):** retail's hold after a placement (30 ticks after a reset placement, 8 after a bail
+  respawn) with the spawn push only on its last tick, measured from the skater point; ours pushes at placement, holds
+  0.5 s and measures the per-tick push from the deck (0.20 to 0.46 m off the node in all 19 handovers, so it never
+  fired). A 30-tick standstill at the handover may be visible.
+- **Verification:** skate-game living_world 95 pass (4 ignored); muted 75 s DownTown run: three handovers (nodes 28, 42,
+  49), start speeds 5.4 / 6.4 / 7.2 m/s = their pushes. Not play-tested yet.
+

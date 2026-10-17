@@ -757,6 +757,28 @@ mechanism is not traced.
 
 **Verification.** `the_grinded_prop_is_not_pushed_by_the_skater`; skate-game 694 (known failures only).
 
+### Play test 5 (laptop, 2026-10-17): the bench seat is shoved on the way down
+
+**Problem.** User: "I could grind the taller back of the seat but I couldnt grind the bench seat itself. I tried 3x in a
+row and each time it pushed the bench" (prop_DT_benchReclaimedMetal_1009, session game-20261017-133408). The seat
+rail took (`GRIND_RAIL`), the state went GrindFiveO -> Nonspecific 16 ms later (`selector::check_for_grind`: the grind
+candidate was gone), and `PED_OBSTACLE` showed the bench moving 0.11 m at 2.21 m/s on the entry frame (and already at
+0.78 m/s before the rail was taken on the second try).
+
+**Cause.** The skater's push treats each prop as one box (`PropDynamics` box primitive): the bench's box reaches the
+backrest top (y 11.65 to 12.61), the seat is at about 12.16, so a board dropping onto the seat is inside the box and
+the shortest way out is sideways through the thin side (half width 0.36 m): the bench is shoved and its rail slides
+from under the board. The spare rule (play test 3) only started once the state was a grind (4xx), a frame late; the
+back rail sits at the box top, which is why it held.
+
+**Change.** `solve`: the prop is also spared while the skater is in the air (2xx) and the air aim's selected landing
+has locked onto that prop's rail (`selector.selection().grind.edge.owner`).
+
+**Open.** Retail has no push volumes (the props share one physics world with the skater); riding onto the seat on the
+ground still meets the box. Not play-tested yet.
+
+**Verification.** skate-game prop / grind tests 123 pass (10 ignored).
+
 ## Prop diagnostics for play sessions (2026-10-16)
 
 The user's prop session of 2026-10-15 (bench seat not grindable, dumpster sent flying, skater pulled into a fallen
