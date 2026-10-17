@@ -268,6 +268,27 @@ function Check-Session([string]$Kind, [datetime]$Since, $Ver) {
         $ok = 'OK'; if ($bad -ne 0) { $ok = 'MALFORMED - unusable' }
         return "$($f.Name): $($lines.Count - 1) rows (~$mins min), $bad malformed - $ok"
     }
+    if ($Kind -eq 'traceall') {
+        $root = if ($Ver) { Version-Dir $Ver } else { $Repo }
+        $d = Get-ChildItem (Join-Path $root 'logs') -Directory -Filter 'trace-all-*' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $Since } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if (-not $d) { return 'No new trace-all folder was written.' }
+        Write-Host '  Checking the trace-all tables...'
+        $parts = @()
+        foreach ($name in 'audio_state.tsv', 'frames.tsv') {
+            $t = Join-Path $d.FullName $name
+            if (-not (Test-Path $t)) { continue }
+            $cols = 0; $rows = 0; $bad = 0
+            foreach ($l in [IO.File]::ReadLines($t)) {
+                $n = ($l -split "`t").Count
+                if ($cols -eq 0) { $cols = $n; continue }
+                $rows++; if ($n -ne $cols) { $bad++ }
+            }
+            $parts += "$name $rows rows, $bad malformed" + $(if ($bad -ne 0) { ' - MALFORMED - unusable' } else { '' })
+        }
+        $mb = [math]::Round((Get-ChildItem $d.FullName -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
+        if ($parts.Count -eq 0) { return "$($d.Name): $mb MB, no tables" }
+        return "$($d.Name) ($mb MB): " + ($parts -join '; ')
+    }
     if ($Kind -eq 'recomp') {
         $d = Get-ChildItem (Recomp-Sessions) -Directory -ErrorAction SilentlyContinue | Where-Object { $_.CreationTime -ge $Since } | Sort-Object CreationTime -Descending | Select-Object -First 1
         if (-not $d) { return 'No new recomp session folder.' }
@@ -311,6 +332,27 @@ $Entries = [ordered]@{
     'rust-trace'    = @{ Name = 'Rust engine: play + audio trace';          Kind = 'rust';     Hint = 'Logs every native sound start in logs\game-*.log (SKATE_AUDIO_TRACE=1).' }
     'rust-devmods'  = @{ Name = 'Rust engine: play with the dev test mods'; Kind = 'rust';     Hint = "Turns on the version's dev test mod (mods_enable in versions.json)." }
     'rust-perf'     = @{ Name = 'Rust engine: play + performance trace';    Kind = 'rust';     Hint = 'Bevy performance trace (PLAY.bat -trace).' }
+    'rust-traceall' = @{ Name = 'Rust engine: play + trace all';            Kind = 'traceall'; Hint = "Every session trace the version has (SKATE_TRACE_ALL: frame log, audio state log, rolling performance report, GPU / render timing, audio trace and timing, living-world readout), all in the version's logs\trace-all-<time> folder. Hidden for versions without traces." }
+}
+# The session traces a version's source contains; rust-traceall turns on all of them. SKATE_TRACE_ALL (newer
+# versions) switches on every diagnostic itself; older versions get the single switches they have.
+$SessionTraces = [ordered]@{
+    traceall   = 'SKATE_TRACE_ALL'
+    statelog   = 'SKATE_AUDIO_STATE_LOG'
+    audiotrace = 'SKATE_AUDIO_TRACE'
+    frametimes = 'SKATE_FRAME_LOG'
+    livingdbg  = 'SKATE_LIVING_WORLD_DEBUG'
+}
+function Version-Traces($v) {
+    $src = Join-Path (Version-Dir $v) 'crates\skate-game\src'
+    $found = @()
+    if (Test-Path $src) {
+        $files = Get-ChildItem -Path $src -Filter '*.rs' -Recurse -File | Where-Object { $_.Name -notlike '*tests*' }
+        foreach ($k in $SessionTraces.Keys) {
+            if ($files | Select-String -Pattern ('"' + $SessionTraces[$k] + '"') -SimpleMatch -List -Quiet) { $found += $k }
+        }
+    }
+    return ,$found
 }
 if ($Config -and $Config.recomp_entries) {
     foreach ($re in @($Config.recomp_entries | ForEach-Object { $_ })) {
@@ -328,6 +370,11 @@ function Launch([string]$Key, [string]$Lbl) {
     if ($Key.StartsWith('rust-')) {
         $ver = Get-Version $Version
         $verText = " [$($ver.id)]"
+        if ($Key -eq 'rust-traceall' -and (Version-Traces $ver).Count -eq 0) {
+            Set-Content -Path $LastSession -Value "Not started: $($ver.name) has no session traces. Use 'play' instead." -Encoding UTF8
+            if (-not $NoPrompt) { Show-Message "$($ver.name) has no session traces." 'Yellow' }
+            return
+        }
         if ($Key -eq 'rust-devmods' -and -not $ver.mods_enable) {
             Set-Content -Path $LastSession -Value "Not started: $($ver.name) has no dev test mod. Use 'play' instead." -Encoding UTF8
             if (-not $NoPrompt) { Show-Message "$($ver.name) has no dev test mod." 'Yellow' }
@@ -356,6 +403,26 @@ function Launch([string]$Key, [string]$Lbl) {
             'rust-trace'    { $env:SKATE_AUDIO_TRACE = '1'; Run-Bat $play '' }
             'rust-devmods'  { $env:SKATE3_MODS_ENABLE = $ver.mods_enable; Run-Bat $play '' }
             'rust-perf'     { Run-Bat $play '-trace' }
+            'rust-traceall' {
+                $traces = Version-Traces $ver
+                # Everything in one folder next to the version's game logs (the send script picks it up from there).
+                $dir = Join-Path (Version-Dir $ver) ('logs\trace-all-' + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+                New-Item -ItemType Directory -Path $dir -Force | Out-Null
+                if ($traces -contains 'statelog') {
+                    $env:SKATE_AUDIO_STATE_LOG = Join-Path $dir 'audio_state.tsv'
+                    $env:SKATE_AEMS = '1'; $env:SKATE_AUDIO_TIMING = '1'
+                }
+                if ($traces -contains 'audiotrace') { $env:SKATE_AUDIO_TRACE = '1' }
+                if ($traces -contains 'frametimes') { $env:SKATE_FRAME_LOG = Join-Path $dir 'frames.tsv' }
+                if ($traces -contains 'livingdbg') { $env:SKATE_LIVING_WORLD_DEBUG = '1' }
+                if ($traces -contains 'traceall') {
+                    # The engine turns on the rest and writes it next to the paths named here.
+                    $env:SKATE_TRACE_ALL = '1'
+                    $env:SKATE_PERF_REPORT = Join-Path $dir 'perf.json'
+                }
+                Write-Host ("  Traces: " + ($traces -join ', ') + " -> $dir") -ForegroundColor Cyan
+                Run-Bat $play ''
+            }
             default {
                 $re = $e.Recomp
                 if ($re.label) { $Lbl = $re.label }
@@ -387,12 +454,15 @@ if ($Entry -eq 'pending') {
     $kind = ''; $t0 = $since
     if ($log -and $log.LastWriteTime -gt $since) { $kind = 'statelog'; $t0 = $log.LastWriteTime.AddSeconds(-1) }
     if ($rec -and $rec.CreationTime -gt $since -and (-not $log -or $rec.CreationTime -gt $log.LastWriteTime)) { $kind = 'recomp'; $t0 = $rec.CreationTime.AddSeconds(-1) }
+    # A trace-all session (rust-traceall, version '.') writes logs\trace-all-<time>\ in the repository.
+    $ta = Get-ChildItem (Join-Path $Repo 'logs') -Directory -Filter 'trace-all-*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($ta -and $ta.LastWriteTime -gt $since -and $ta.LastWriteTime -gt $t0) { $kind = 'traceall'; $t0 = $ta.CreationTime.AddSeconds(-1) }
     # A PLAYING.txt left by a launcher that was closed with its game is stale once no game runs.
     if ((Test-Path $Playing) -and (Running-Games).Count -eq 0) { Remove-Item $Playing -ErrorAction SilentlyContinue }
     if (Test-Path $Playing) { exit 0 }
     # An engine session closed the same way also missed its send (after_session); send it now.
     $game = Get-ChildItem (Join-Path $Repo 'logs') -Filter 'game-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    $missedSend = $Config -and $Config.after_session -and $game -and $game.LastWriteTime -gt $since
+    $missedSend = $Config -and $Config.after_session -and (($game -and $game.LastWriteTime -gt $since) -or ($ta -and $ta.LastWriteTime -gt $since))
     if ($kind -eq '' -and -not $missedSend) { exit 0 }
     $summary = ''
     if ($kind) {
@@ -407,7 +477,8 @@ if ($Entry -eq 'pending') {
 # Version commands (SkateLauncher.exe reads their output; tab-separated where it parses it).
 if ($Entry -eq 'entries') {
     # id, name, hint, ask (1 = ask for a session-folder label)
-    foreach ($k in $Entries.Keys) { $ask = 0; if ($Entries[$k].Recomp -and $Entries[$k].Recomp.ask_label) { $ask = 1 }; "{0}`t{1}`t{2}`t{3}" -f $k, $Entries[$k].Name, $Entries[$k].Hint, $ask }
+    $selVer = Get-Version $Version
+    foreach ($k in $Entries.Keys) { if ($k -eq 'rust-traceall' -and (Version-Traces $selVer).Count -eq 0) { continue }; $ask = 0; if ($Entries[$k].Recomp -and $Entries[$k].Recomp.ask_label) { $ask = 1 }; "{0}`t{1}`t{2}`t{3}" -f $k, $Entries[$k].Name, $Entries[$k].Hint, $ask }
     exit 0
 }
 if ($Entry -eq 'versions') {

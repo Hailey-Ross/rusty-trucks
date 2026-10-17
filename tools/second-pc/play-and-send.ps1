@@ -9,7 +9,9 @@ param(
     # Ask for the main PC and password again.
     [switch]$Setup,
     # Check the GitHub fallback: send one small test file as a pull request (no game, share not used).
-    [switch]$GitHubTest
+    [switch]$GitHubTest,
+    # Upload part size for the GitHub fallback (tests use small parts).
+    [int]$PartMB = 40
 )
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -61,14 +63,22 @@ function Send-Pending {
     if (Test-Path $sentFile) { foreach ($n in Get-Content $sentFile) { $sent[$n] = $true } }
     $files = @(Get-ChildItem (Join-Path $PSScriptRoot 'logs') -File -Filter 'game-*.log')
     if (Test-Path $crashDir) { $files += @(Get-ChildItem $crashDir -File) }
+    # Trace-all session folders: logs\trace-all-<time> (the Steam launcher's rust-traceall) and bin\logs\trace-all-<unix
+    # seconds> (the engine's default next to the exe). A folder written to in the last 30 s may still be in use.
+    foreach ($dir in (Join-Path $PSScriptRoot 'logs'), (Join-Path $PSScriptRoot 'bin\logs')) {
+        $files += @(Get-ChildItem $dir -Directory -Filter 'trace-all-*' -ErrorAction SilentlyContinue | Where-Object {
+            $newest = Get-ChildItem $_.FullName -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            -not $newest -or $newest.LastWriteTime -lt (Get-Date).AddSeconds(-30)
+        })
+    }
     $pending = @($files | Where-Object { -not $sent[$_.FullName] })
     if ($pending.Count -eq 0) { Write-Host 'Nothing new to send.'; return }
     try {
         New-Item -ItemType Directory -Force -Path $target | Out-Null
         foreach ($f in $pending) {
-            $dest = if ($f.DirectoryName -eq $crashDir) { Join-Path $target 'CrashReports' } else { $target }
+            $dest = if ($f.PSIsContainer) { $target } elseif ($f.DirectoryName -eq $crashDir) { Join-Path $target 'CrashReports' } else { $target }
             New-Item -ItemType Directory -Force -Path $dest | Out-Null
-            Copy-Item -LiteralPath $f.FullName -Destination $dest -Force
+            Copy-Item -LiteralPath $f.FullName -Destination $dest -Force -Recurse
             Add-Content -Path $sentFile -Value $f.FullName
             Write-Host "Sent $($f.Name)"
         }
@@ -93,16 +103,24 @@ function Send-ToGitHub($c, $files) {
         New-Item -ItemType Directory -Force -Path $work | Out-Null
         $zip = Join-Path $work "sessions-$($env:COMPUTERNAME)-$stamp.zip"
         Compress-Archive -LiteralPath ($files | ForEach-Object FullName) -DestinationPath $zip -CompressionLevel Optimal
-        if ((Get-Item $zip).Length -gt 90MB) { throw 'the zip is over 90 MB, too big for the GitHub API' }
+        # GitHub's contents API takes files up to about 100 MB (and the request is base64): upload the zip in 40 MB
+        # parts <zip>.001, .002, ...; fetch-github-sessions.ps1 joins them again.
+        $part = $PartMB * 1MB
+        $bytes = [IO.File]::ReadAllBytes($zip)
+        $count = [math]::Max(1, [math]::Ceiling($bytes.Length / $part))
         $sha = & gh api "repos/$repo/git/ref/heads/$base" --jq '.object.sha'
         if ($LASTEXITCODE -ne 0 -or -not $sha) { throw "cannot read branch $base of $repo (gh signed in?)" }
         & gh api -X POST "repos/$repo/git/refs" -f "ref=refs/heads/$branch" -f "sha=$sha" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "cannot create branch $branch" }
         $body = Join-Path $work 'body.json'
-        @{ message = "Session logs from $env:COMPUTERNAME ($stamp)"; branch = $branch
-           content = [Convert]::ToBase64String([IO.File]::ReadAllBytes($zip)) } | ConvertTo-Json | Set-Content -Encoding ASCII $body
-        & gh api -X PUT "repos/$repo/contents/session-logs/$(Split-Path $zip -Leaf)" --input $body | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'cannot upload the zip' }
+        for ($i = 0; $i -lt $count; $i++) {
+            $len = [math]::Min($part, $bytes.Length - $i * $part)
+            $name = (Split-Path $zip -Leaf) + $(if ($count -gt 1) { '.{0:D3}' -f ($i + 1) } else { '' })
+            @{ message = "Session logs from $env:COMPUTERNAME ($stamp) $name"; branch = $branch
+               content = [Convert]::ToBase64String($bytes, $i * $part, $len) } | ConvertTo-Json | Set-Content -Encoding ASCII $body
+            & gh api -X PUT "repos/$repo/contents/session-logs/$name" --input $body | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "cannot upload $name" }
+        }
         $names = ($files | ForEach-Object { "- $($_.Name)" }) -join "`n"
         $url = & gh pr create --repo $repo --base $base --head $branch --title "Session logs from $env:COMPUTERNAME ($stamp)" `
             --body "Session logs sent from $env:COMPUTERNAME because the main PC could not be reached. Not for merging: the main PC fetches the zip and closes this.`n`n$names"
@@ -119,11 +137,15 @@ function Send-ToGitHub($c, $files) {
 if ($GitHubTest) {
     $c = Read-Config
     if (-not $c -or -not $c.github_repo) { throw 'The GitHub fallback is not set up: run with -Setup and answer y.' }
-    $test = Join-Path $env:TEMP "github-fallback-test-$env:COMPUTERNAME.txt"
-    "GitHub fallback test from $env:COMPUTERNAME at $(Get-Date -Format s)" | Set-Content $test
+    # A small trace-all-like folder (a text file and a table), so folders and split parts get checked too.
+    $test = Join-Path $env:TEMP "trace-all-githubtest-$env:COMPUTERNAME"
+    New-Item -ItemType Directory -Force -Path $test | Out-Null
+    "GitHub fallback test from $env:COMPUTERNAME at $(Get-Date -Format s)" | Set-Content (Join-Path $test 'note.txt')
+    $rng = New-Object Random 7
+    $buf = New-Object byte[] (3MB); $rng.NextBytes($buf); [IO.File]::WriteAllBytes((Join-Path $test 'noise.bin'), $buf)
     $sentFile = Join-Path $env:TEMP 'github-fallback-test-sent.txt'
     Send-ToGitHub $c @(Get-Item $test)
-    Remove-Item $test, $sentFile -ErrorAction SilentlyContinue
+    Remove-Item -Recurse $test, $sentFile -ErrorAction SilentlyContinue
     return
 }
 if ($Setup -or -not (Read-Config)) { Invoke-Setup }

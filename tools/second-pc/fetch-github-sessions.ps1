@@ -17,12 +17,22 @@ foreach ($pr in $prs) {
     $dest = Join-Path $Folder $pc.ToUpper()
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     $items = & gh api "repos/$Repo/contents/session-logs?ref=$branch" | ConvertFrom-Json
-    foreach ($item in $items | Where-Object { $_.name -like '*.zip' }) {
-        $zip = Join-Path $env:TEMP $item.name
-        Invoke-WebRequest -UseBasicParsing -Uri $item.download_url -OutFile $zip
+    # A zip comes whole (<name>.zip) or in parts (<name>.zip.001, .002, ...): join the parts in order.
+    $groups = $items | Where-Object { $_.name -match '\.zip(\.\d{3})?$' } | Group-Object { $_.name -replace '\.\d{3}$', '' }
+    foreach ($g in $groups) {
+        $zip = Join-Path $env:TEMP $g.Name
+        $out = [IO.File]::Create($zip)
+        try {
+            foreach ($item in $g.Group | Sort-Object name) {
+                $partFile = Join-Path $env:TEMP ('part-' + $item.name)
+                Invoke-WebRequest -UseBasicParsing -Uri $item.download_url -OutFile $partFile
+                $b = [IO.File]::ReadAllBytes($partFile); $out.Write($b, 0, $b.Length)
+                Remove-Item $partFile
+            }
+        } finally { $out.Close() }
         Expand-Archive -LiteralPath $zip -DestinationPath $dest -Force
         Remove-Item $zip
-        Write-Host "PR #$($pr.number): unpacked $($item.name) into $dest"
+        Write-Host "PR #$($pr.number): unpacked $($g.Name) ($($g.Count) part(s)) into $dest"
     }
     & gh pr close $pr.number --repo $Repo --delete-branch --comment 'Fetched to the main PC.' | Out-Null
     Write-Host "PR #$($pr.number): closed, branch $branch deleted."
