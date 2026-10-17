@@ -998,6 +998,13 @@ impl PedBrain {
     pub fn busy(&self) -> bool {
         self.waiting_to_react || self.reacting_to_mood || self.plugin.is_some()
     }
+    /// Leaving a plugin in any way releases its waypoint: retail's slot `ped+0x1718` belongs to the plugin, and
+    /// LockFirstWaypoint (`826A0580`) only locks an empty one, so a kept prop waypoint would steer the next
+    /// conversation (research b186).
+    pub fn release_plugin_waypoint(&mut self) {
+        self.waypoint = None;
+        self.waypoint_facing = None;
+    }
     /// A nav modifier: the graph's setting, else on (the ped's own default; per-type values open).
     pub fn nav_modifier(&self, modifier: u8) -> bool {
         self.nav_modifiers.get(&modifier).copied().unwrap_or(true)

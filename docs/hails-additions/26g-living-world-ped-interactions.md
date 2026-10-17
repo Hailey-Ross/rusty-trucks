@@ -1728,3 +1728,27 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Verification:** skate-game ped / vehicle / living_world tests 133 pass; muted DownTown run (below). Not
   play-tested: run into a ped fast. Muted DownTown run: no errors, peds spawn, the map switch commits.
 
+
+## A ped that lost its prop no longer stalls a conversation (2026-10-17)
+
+- **Problem:** user (laptop session game-20261017-143646): "I feel like im still seeing alot of peds just standing
+  around and making small groups." Three conversations never finished (ids 60, 70, 85: 1 turn in 236 s, or stuck at
+  state 3 until the log ended), and their members stayed put; 45% of the Plugin `PED_STILL` lines came from them.
+- **Root cause [log + code] (research b186):** a ped whose seat or newspaper box went away without ExitPlugin (streamed
+  out, disabled, moved) dropped `mind.prop` silently but kept the prop's waypoint and facing. As a later conversation
+  partner, LockFirstWaypoint saw a held slot and did not lock the conversation's waypoint, so TurnToFace turned to the
+  old seat facing while IsFacingWaypointOrientation tested the direction to the conversation centre. The graph flipped
+  Speak / TurnToFace every 2 to 3 ticks, every Speak Begin restarted the 3 s turn timer, and the turn never passed.
+- **Retail [code]:** LockFirstWaypoint (`826A0580`) only locks when the waypoint slot `ped+0x1718` is empty (our gate
+  is retail). The slot belongs to the plugin and leaving the plugin releases it; the stale value was ours.
+- **Change:** `PedBrain::release_plugin_waypoint` (skate-core) clears the waypoint and its facing; every plugin exit
+  uses it: the prop ExitPlugin, the conversation ExitPlugin (which kept the facing before) and the silent prop drop,
+  which now also releases the prop's waypoint and logs `PED_PLUGIN_PROP ped=#N leaves <class> <id> (dropped)`.
+  Pick odds, turn length and the gather timer are unchanged (they match retail and the logs).
+- **Tests:** `a_released_prop_waypoint_lets_a_conversation_lock_its_own` (skate-core brain tests); the 5-turn run stays
+  covered by `a_conversation_gathers_starts_and_runs_five_turns`. skate-core peds tests 132 pass; skate-game checks.
+- **Not play-tested:** stand still in DownTown near benches for a few minutes; conversations should finish in 20 to
+  40 s and `(dropped)` leaves show where props went away.
+- **Open:** the retail writer that clears `ped+0x1718` on plugin end is not decoded; whether retail refuses a partner
+  that is in NoRoad; the `start / leave result=empty` churn of one ped every 2 ticks after its conversation emptied
+  (cause unverified, may go away with this fix).

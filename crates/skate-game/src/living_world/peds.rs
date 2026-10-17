@@ -2337,8 +2337,18 @@ pub(crate) fn think_peds(
             mind.sit_avoid = avoid;
             // HasPlugin: a conversation member, or a ped that took a world prop.
             let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id && !streamed_out(id) && !p.disabled).and_then(|p| p.waypoints.get(w)).copied());
+            // A prop lost without ExitPlugin (streamed out, disabled, moved away) releases its waypoint like ExitPlugin
+            // does: retail's waypoint slot `ped+0x1718` belongs to the plugin, and LockFirstWaypoint (`826A0580`) only
+            // locks an empty slot, so a stale prop waypoint would steer a later conversation (b186).
             if mind.prop.is_some() && prop_wp.is_none() {
-                mind.prop = None;
+                if let Some((i, id, _)) = mind.prop.take() {
+                    let class = plugin_props.props.get_mut(i).filter(|p| p.id == id).map(|p| {
+                        p.release(me);
+                        p.class.clone()
+                    });
+                    info!("PED_PLUGIN_PROP ped=#{} leaves {} {:016X} (dropped) tick={tick}", ped.id.serial, class.as_deref().unwrap_or("?"), id);
+                }
+                mind.brain.release_plugin_waypoint();
             }
             // The locked waypoint is read live (`826AB9C0` re-reads its position on every evaluation): a seat that moved
             // with its prop is where the ped walks and sits.
@@ -2618,8 +2628,7 @@ pub(crate) fn think_peds(
                             }
                         }
                         mind.brain.has_plugin = false;
-                        mind.brain.waypoint = None;
-                        mind.brain.waypoint_facing = None;
+                        mind.brain.release_plugin_waypoint();
                         mind.plugin_controller = None;
                         mind.plugin_state = None;
                         mind.plugin_graph = None;
@@ -2640,7 +2649,7 @@ pub(crate) fn think_peds(
                             info!("PED_CONVERSATION id={id} leave ped=#{} result={how} tick={tick}", ped.id.serial);
                         }
                         mind.brain.has_plugin = false;
-                        mind.brain.waypoint = None;
+                        mind.brain.release_plugin_waypoint();
                         continue;
                     }
                     ChaseRequest::SignalInPosition => {

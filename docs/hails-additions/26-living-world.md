@@ -131,6 +131,7 @@ the file of their topic (and get a line here).
 - [Diagnostics: still peds report what they are doing (2026-10-16)](26g-living-world-ped-interactions.md#diagnostics-still-peds-report-what-they-are-doing-2026-10-16)
 - [Standing pros: where the challenge hosts stand (placement export, 2026-10-16)](26g-living-world-ped-interactions.md#standing-pros-where-the-challenge-hosts-stand-placement-export-2026-10-16)
 - [IsFacingSkater: a half angle through a cosine, and its distance (2026-10-16)](26g-living-world-ped-interactions.md#isfacingskater-a-half-angle-through-a-cosine-and-its-distance-2026-10-16)
+- [A ped that lost its prop no longer stalls a conversation (2026-10-17)](26g-living-world-ped-interactions.md#a-ped-that-lost-its-prop-no-longer-stalls-a-conversation-2026-10-17)
 
 ### 26h: Traffic
 
