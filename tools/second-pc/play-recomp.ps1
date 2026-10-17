@@ -39,7 +39,9 @@ $presets = [ordered]@{
     'grind'   = @{ cats = 'grind'; capture = $false; env = @{ SKATE3_GRIND_BOX = '250 300 -445 -410' }; todo = 'Grind the rails and stairs by the University library (full-rate lines inside that box).' }
     'audio'   = @{ cats = 'audio'; capture = $true; env = @{}; todo = 'Play as normal; the sound is recorded with the trace.' }
     'audiox'  = @{ cats = 'audio,audiox,dsp'; capture = $true; env = @{}; todo = 'Heavy: keep it to 1 or 2 minutes around the sound being studied.' }
-    'all'     = @{ cats = 'audio,dsp,npc,world,traffic,aiskater'; capture = $true; env = @{}; todo = 'Everything at once (large): play as normal.' }
+    # Every category the research hooks have (src/research/*.cpp), except the per-frame floods audiox and dspmod
+    # (their own presets) and watch (it needs a list of addresses). A new hook category goes in here too.
+    'all'     = @{ cats = 'audio,dsp,npc,world,traffic,aiskater,props,pedbody,skitch,grind,physics,menus,render,cas,feinput'; capture = $true; env = @{ SKATE3_GRIND_BOX = '250 300 -445 -410' }; todo = 'Every trace category (large) except audiox / dspmod (per-frame, own presets) and watch: play as normal; a props test at Rosalita Skate Park is recorded too.' }
 }
 
 function Show-Presets {

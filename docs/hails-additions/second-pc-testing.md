@@ -297,7 +297,7 @@ line makes the trace unusable and it says so) and sends with `play-and-send.ps1 
 | `grind` | grind | Grind the rails and stairs by the University library (full-rate lines inside that box). |
 | `audio` | audio, plus the sound | Play as normal. |
 | `audiox` | audio, audiox, dsp, plus the sound | Heavy: 1 or 2 minutes around the sound being studied. |
-| `all` | audio, dsp, npc, world, traffic, aiskater, plus the sound | Everything at once (large). |
+| `all` | every hook category: audio, dsp, npc, world, traffic, aiskater, props, pedbody, skitch, grind (with the library box), physics, menus, render, cas, feinput, plus the sound; not audiox / dspmod (per-frame, own presets) or watch (needs an address list) | Everything at once (large). A new hook category is added here too. |
 
 Quit with Escape or F1 (or hold LB + RB + Back for about a second), then **Quit to the desktop**. Closing with Steam's
 **Exit game** is safe too: the trace is written as it goes.
