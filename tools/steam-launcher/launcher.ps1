@@ -287,6 +287,23 @@ function Check-Session([string]$Kind, [datetime]$Since, $Ver) {
     return ''
 }
 
+# Optional: config.json "after_session" names a send script (path relative to the repository, e.g. the second PC's
+# play-and-send.ps1), run with -SendOnly after each session. Returns one line for the result screen ('' = not set).
+function Send-Sessions {
+    if (-not $Config -or -not $Config.after_session) { return '' }
+    $script = Resolve-Local $Config.after_session
+    if (-not (Test-Path $script)) { return "Send: $script not found." }
+    # Without its settings the script would ask its setup questions, which nobody answers from Steam.
+    if (-not (Test-Path (Join-Path (Split-Path $script) 'send-sessions.txt'))) { return "Send: not set up (run $(Split-Path $script -Leaf) -Setup -SendOnly once)." }
+    Write-Host '  Sending the logs...'
+    try { $out = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -SendOnly | ForEach-Object { "$_" } | Where-Object { $_ }) }
+    catch { return "Send: failed ($($_.Exception.Message))." }
+    if ($out.Count -eq 0) { return 'Send: no output.' }
+    $sent = @($out | Where-Object { $_ -like 'Sent *' -and $_ -notlike 'Sent * file(s) to GitHub*' }).Count
+    if ($sent -gt 0) { return "Send: $sent file(s). $($out[-1])" }
+    return "Send: $($out[-1])"
+}
+
 # Entries: the engine modes, then the recomp modes from config.json (none without a config).
 $Entries = [ordered]@{
     'rust-play'     = @{ Name = 'Rust engine: play';                        Kind = 'rust';     Hint = "The version's PLAY.bat." }
@@ -352,9 +369,11 @@ function Launch([string]$Key, [string]$Lbl) {
     if (-not $NoPrompt) { Focus-Console }
     Clear-Host; Write-Host ''; Write-Host '  Session ended.' -ForegroundColor Cyan
     $summary = Check-Session $e.Kind $since $ver
+    $sendResult = Send-Sessions
+    if ($sendResult) { $summary = (@($summary, $sendResult) | Where-Object { $_ }) -join "`r`n" }
     $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     Set-Content -Path $LastSession -Value ("$stamp  $Key $Lbl$verText`r`n$summary") -Encoding UTF8
-    if ($summary -and -not $NoPrompt) { $col = 'Green'; if ($summary -match 'MALFORMED|No new|panic\(s\)') { $col = 'Yellow' }; Show-Message ("Session ended.`n`n" + $summary) $col }
+    if ($summary -and -not $NoPrompt) { $col = 'Green'; if ($summary -match 'MALFORMED|No new|panic\(s\)|Send: (?!\d|Nothing)') { $col = 'Yellow' }; Show-Message ("Session ended.`n`n" + $summary) $col }
 }
 
 # Steam's "Exit game" closes the launcher together with the game, so the after-session check can be skipped.
@@ -370,9 +389,17 @@ if ($Entry -eq 'pending') {
     if ($rec -and $rec.CreationTime -gt $since -and (-not $log -or $rec.CreationTime -gt $log.LastWriteTime)) { $kind = 'recomp'; $t0 = $rec.CreationTime.AddSeconds(-1) }
     # A PLAYING.txt left by a launcher that was closed with its game is stale once no game runs.
     if ((Test-Path $Playing) -and (Running-Games).Count -eq 0) { Remove-Item $Playing -ErrorAction SilentlyContinue }
-    if ($kind -eq '' -or (Test-Path $Playing)) { exit 0 }
-    Write-Host '  Checking the last session (it closed before its check)...'
-    $summary = Check-Session $kind $t0 $null
+    if (Test-Path $Playing) { exit 0 }
+    # An engine session closed the same way also missed its send (after_session); send it now.
+    $game = Get-ChildItem (Join-Path $Repo 'logs') -Filter 'game-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $missedSend = $Config -and $Config.after_session -and $game -and $game.LastWriteTime -gt $since
+    if ($kind -eq '' -and -not $missedSend) { exit 0 }
+    $summary = ''
+    if ($kind) {
+        Write-Host '  Checking the last session (it closed before its check)...'
+        $summary = Check-Session $kind $t0 $null
+    }
+    if ($missedSend) { $summary = (@($summary, (Send-Sessions)) | Where-Object { $_ }) -join "`r`n" }
     Set-Content -Path $LastSession -Value ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "  (checked at next start)`r`n$summary") -Encoding UTF8
     exit 10
 }
@@ -408,6 +435,7 @@ if ($Entry -eq 'build') {
     $v = Get-Version $(if ($Label) { $Label } else { $Version })
     if (Ensure-Version $v) { "Ready: $($v.name) ($(Version-Status $v))"; exit 0 } else { "Build failed: $($v.name)"; exit 1 }
 }
+if ($Entry -eq 'send') { $r = Send-Sessions; if (-not $r) { $r = 'Send: no after_session in config.json.' }; $r; exit 0 }
 if ($Entry -eq 'list') { $Entries.Keys | ForEach-Object { '{0,-15} {1}' -f $_, $Entries[$_].Name }; exit 0 }
 if ($Entry) { Launch $Entry $Label; exit 0 }
 

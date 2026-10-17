@@ -74,6 +74,11 @@ If you copy the launcher folder somewhere outside `tools\` (two levels below the
    `pad.txt`, `audio.f32`, `game.out`, `game.err`). `recomp.trace_check` can name a Python script that prints
    malformed-line counts for a trace; the result screen shows them. You build the recomp yourself from your own copy
    of the game; nothing from the game is included here.
+   **Optional, send logs after each session:** set `"after_session"` in `config.json` to a send script (path
+   relative to the repository), e.g. the second PC's `play-and-send.ps1` (copied to the repository root, see
+   `docs/hails-additions/second-pc-testing.md`). It runs with `-SendOnly` after every session. Its last line shows
+   on the result screen and in `last_session.txt`. A session closed with Steam's **Exit game** is sent at the next
+   start (`pending`). `launcher.ps1 send` sends on demand.
 4. **Add it to Steam:** Steam → **Games → Add a Non-Steam Game to My Library → Browse** → pick
    `tools\steam-launcher\SkateLauncher.exe` → **Add Selected Programs**. In the new entry's **Properties**, rename it
    and put an entry in **Launch options** (table below). Add the exe once per shortcut you want.
@@ -113,7 +118,8 @@ shortcuts are fixed, for back-to-back comparisons. A shortcut without launch opt
 
 Commands (`launcher.ps1 <command>`, or as launch options): `versions` (list with status), `version-next`,
 `version-prev`, `version-set <id>`, `notes [id]`, `build <id>`, `list` / `entries`, `pending` (checks a session that
-was closed with Steam's **Exit game** before its check; the exe runs it at every start).
+was closed with Steam's **Exit game** before its check, and sends its logs when `after_session` is set; the exe runs
+it at every start), `send` (runs `after_session` now).
 
 ## Example
 
