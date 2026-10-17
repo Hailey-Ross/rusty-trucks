@@ -29,7 +29,7 @@ $configFile = Join-Path $Root 'send-sessions.txt'
 
 # Presets: trace categories (SKATE3_TRACE), whether the mixed game sound is captured, extra variables, what to do.
 $presets = [ordered]@{
-    'props'   = @{ cats = 'props'; capture = $false; env = @{}; todo = 'About 2 minutes: ride slowly into a cone, then fast into a cone, roll onto a bench seat, grind a bench seat, then get off the board and walk into a bench. A few seconds between them.' }
+    'props'   = @{ cats = 'props'; capture = $false; env = @{}; todo = 'About 2 minutes: ride slowly into an orange pylon (drum or pole), then fast into another pylon, roll onto a bench seat (no grind), grind a bench seat, then get off the board and walk into a bench. About 5 seconds between them, no other props touched in between, in this order.' }
     'npc'     = @{ cats = 'npc,world,traffic'; capture = $false; env = @{}; todo = 'Skate around peds and NPC skaters as normal.' }
     'pedbody' = @{ cats = 'npc,pedbody'; capture = $false; env = @{}; todo = 'Bump into peds, run into them fast, knock some down.' }
     'traffic' = @{ cats = 'traffic,skitch,npc'; capture = $false; env = @{}; todo = 'Skitch cars, let go at different speeds, also of a stopped car; ride near junctions.' }

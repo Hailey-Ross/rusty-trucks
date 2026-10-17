@@ -287,7 +287,7 @@ line makes the trace unusable and it says so) and sends with `play-and-send.ps1 
 
 | Preset | Trace categories | What to do |
 |---|---|---|
-| `props` | props | About 2 minutes: ride slowly into a cone, then fast into a cone, roll onto a bench seat, grind a bench seat, then get off the board and walk into a bench. A few seconds between them. |
+| `props` | props | About 2 minutes: ride slowly into an orange pylon (drum or pole), then fast into another pylon, roll onto a bench seat (no grind), grind a bench seat, then get off the board and walk into a bench. About 5 seconds between them, no other props touched in between, in this order. |
 | `npc` | npc, world, traffic | Skate around peds and NPC skaters as normal. |
 | `pedbody` | npc, pedbody | Bump into peds, run into them fast, knock some down. |
 | `traffic` | traffic, skitch, npc | Skitch cars, let go at different speeds, also of a stopped car; ride near junctions. |
