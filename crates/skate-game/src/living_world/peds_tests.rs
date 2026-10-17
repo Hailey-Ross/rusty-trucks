@@ -1011,3 +1011,18 @@ fn living_world_authored_plugin_seats_pass_the_pavement_probe() {
         assert!(pass > 0, "{district}: the probe finds no seat at all");
     }
 }
+
+/// A ped walking into another ped (a step refused by the other, both bodies touching): the touched ped stumbles below
+/// the ped thresholds (6.0) and nothing happens under the zombie cheat (`sub_82E38FB8`, kind 5 with a ped toucher).
+#[test]
+fn a_ped_walking_into_a_ped_makes_it_stumble_unless_zombie_mode() {
+    use skate_core::living_world::peds::skater_contact::{CollisionRules, ReactionKind};
+    let rules = CollisionRules::default();
+    let ped = Vec3::new(0.0, 0.0, 0.0);
+    let hit = |speed: f32, zombie: bool| ped_hit(ped, 0.0, [0.0, 0.0, -0.6], [0.0, 0.0, speed], &rules, false, zombie).map(|h| h.0);
+    assert_eq!(hit(1.4, false), Some(ReactionKind::Standing));
+    assert_eq!(hit(5.0, false), Some(ReactionKind::Standing), "a run is below the ped knock-down speed");
+    assert_eq!(hit(6.5, false), Some(ReactionKind::Knockdown));
+    assert_eq!(hit(1.4, true), None);
+    assert_eq!(hit(-1.4, false), None, "moving apart");
+}

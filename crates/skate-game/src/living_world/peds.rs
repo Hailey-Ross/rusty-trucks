@@ -57,7 +57,7 @@ use super::{LivingWorldDespawn, LivingWorldSettings, LivingWorldSpawn, Populatio
 use crate::world_audio::PedAudio;
 use bevy::prelude::*;
 use skate_core::living_world::peds::anim::{PedClip, PedClips, TestPath};
-use skate_core::living_world::peds::wander::{NoSignals, constrain_move, crosswalk_ok, separation_ok};
+use skate_core::living_world::peds::wander::{NoSignals, constrain_move, crosswalk_ok, separation_blocker};
 use skate_core::living_world::peds::{CrosswalkRule, Locomotion, NavMesh, NavObstacles, NavRules, Neighbour, ObstacleInput, PedAnimPlayer, PedCatalog, PedEvaluator, PedNav, PedOverrides, PedRig, WalkSignals, WanderParams};
 use skate_core::living_world::{Decision, DespawnReason, Kind, LivingWorldId, SpawnChoice};
 use std::collections::BTreeMap;
@@ -551,6 +551,44 @@ pub(crate) fn skater_hit(
     Some((kind, reaction_direction(n, [heading.sin(), heading.cos()]), closing))
 }
 
+/// A ped touching the ped at `ped` (retail `sub_82E38FB8` kind 5 with a ped toucher): `toucher` stood there and moved
+/// at `velocity` relative to the ped. NOT RETAIL YET: the ped body speed after the contact (retail: the Havok solve) is
+/// the closing speed along the line between the two.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ped_hit(
+    ped: Vec3,
+    heading: f32,
+    toucher: [f32; 3],
+    velocity: [f32; 3],
+    rules: &skate_core::living_world::peds::skater_contact::CollisionRules,
+    ignore_standing: bool,
+    zombie: bool,
+) -> Option<(skate_core::living_world::peds::skater_contact::ReactionKind, skate_core::living_world::peds::skater_contact::ReactionDirection, f32)> {
+    use skate_core::living_world::peds::skater_contact::{ped_reaction, reaction_direction};
+    let d = [ped.x - toucher[0], ped.z - toucher[2]];
+    let dist = (d[0] * d[0] + d[1] * d[1]).sqrt();
+    if dist <= 1e-4 {
+        return None;
+    }
+    let n = [d[0] / dist, d[1] / dist];
+    let closing = velocity[0] * n[0] + velocity[2] * n[1];
+    if closing <= 0.0 {
+        return None;
+    }
+    let kind = ped_reaction([closing, 0.0], [0.0, 0.0], rules, ignore_standing, zombie, false)?;
+    Some((kind, reaction_direction(n, [heading.sin(), heading.cos()]), closing))
+}
+
+/// Two peds' bodies touched: a step refused by another ped (`separation_blocker`). Each ped takes the other as its
+/// toucher on its next step.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PedContact {
+    touched: LivingWorldId,
+    toucher: LivingWorldId,
+    toucher_at: [f32; 3],
+    velocity: [f32; 3],
+}
+
 impl PedClips for PedData {
     fn clip(&self, name: &str) -> Option<&PedClip> {
         self.clips.get(name)
@@ -831,6 +869,9 @@ pub(crate) fn advance_peds(
     trace: Res<PedObstacleTrace>,
     mut blocked_logged: Local<std::collections::HashMap<LivingWorldId, u64>>,
     observers: Res<super::LivingWorldObservers>,
+    npcs: Query<(&super::npc_skaters::NpcSkater, &super::npc_skaters::NpcReplay)>,
+    settings: Res<LivingWorldSettings>,
+    mut ped_contacts: Local<Vec<PedContact>>,
 ) {
     let _span = super::timing::span(super::timing::ADVANCE_PEDS);
     let obstacles = &obstacles.0;
@@ -840,6 +881,14 @@ pub(crate) fn advance_peds(
     let mut list: Vec<_> = peds.iter_mut().collect();
     list.sort_by_key(|(p, ..)| p.id);
     let mut neighbours: Vec<Neighbour> = list.iter().map(|(p, b, ..)| Neighbour { order: id_order(p.id), position: b.position.to_array() }).collect();
+    let ids: Vec<LivingWorldId> = list.iter().map(|(p, ..)| p.id).collect();
+    let pending = std::mem::take(&mut *ped_contacts);
+    // Skater touchers (`IActor` owners, contact kind 5 with the skater thresholds): the players, then the NPC skaters
+    // in id order (the user, 2026-10-16: NPC skaters knock peds over in retail).
+    let mut actors: Vec<(u64, [f32; 3], [f32; 3])> = observers.observers.iter().enumerate().map(|(i, o)| (PLAYER_TARGET_BASE + i as u64, o.position, o.velocity)).collect();
+    let mut npc_actors: Vec<(u64, [f32; 3], [f32; 3])> = npcs.iter().filter_map(|(n, r)| r.last.as_ref().map(|s| (n.id.to_u64(), s.position, s.velocity))).collect();
+    npc_actors.sort_by_key(|a| a.0);
+    actors.extend(npc_actors);
     let clock = traffic.as_ref().and_then(|t| t.clock.as_ref());
     let road_signals = clock.map(|clock| skate_core::living_world::peds::crosswalk::RoadWalkSignals { arms: &data.arms, clock, radius: 20.0 });
     let signals: &dyn WalkSignals = match &road_signals {
@@ -915,14 +964,17 @@ pub(crate) fn advance_peds(
                 // Contacts from the entity the ped ignores (`ped+5680`, its takedown target) are dropped (`sub_82E38400`).
                 let ignored = mind.and_then(|m| m.brain.ignore_collisions_with);
                 let rules = contact_rules(&set.collision, mind.is_some_and(|m| m.brain.heavy_collision_disabled));
-                if let Some(((kind, direction, closing), toucher)) = observers.observers.iter().enumerate()
-                    .map(|(i, o)| (PLAYER_TARGET_BASE + i as u64, o))
-                    .filter(|(id, _)| ignored != Some(*id))
-                    .find_map(|(id, o)| skater_hit(body.position, body.heading, radius, o.position, o.velocity, &rules, mind.is_some_and(|m| m.brain.ignore_standing_collisions)).map(|h| (h, id)))
-                {
+                let ignore_standing = mind.is_some_and(|m| m.brain.ignore_standing_collisions);
+                let skater = actors.iter()
+                    .filter(|(id, ..)| ignored != Some(*id))
+                    .find_map(|&(id, at, v)| skater_hit(body.position, body.heading, radius, at, v, &rules, ignore_standing).map(|h| (h, id)));
+                let touched = || pending.iter()
+                    .filter(|c| c.touched == ped.id && ignored != Some(c.toucher.to_u64()))
+                    .find_map(|c| ped_hit(body.position, body.heading, c.toucher_at, c.velocity, &rules, ignore_standing, settings.zombie).map(|h| (h, c.toucher.to_u64())));
+                if let Some(((kind, direction, closing), toucher)) = skater.or_else(touched) {
                     let steps = skate_core::living_world::peds::skater_contact::reaction_steps(kind, direction);
                     if body.player.react(set, steps, set.collision.ground_seconds) {
-                        info!("PED_SKATER_CONTACT ped=#{} kind={} direction={} closing={closing:.2} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, kind.name(), direction.name(), body.position.x, body.position.y, body.position.z);
+                        info!("PED_SKATER_CONTACT ped=#{} by={toucher} kind={} direction={} closing={closing:.2} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, kind.name(), direction.name(), body.position.x, body.position.y, body.position.z);
                         events.write(PedEvent::Hit { id: ped.id, kind, direction, closing, toucher });
                     }
                 }
@@ -1032,11 +1084,14 @@ pub(crate) fn advance_peds(
                     // a ped walking into a boundary re-plans instead of walking in place.
                     let wanted = (to - body.position).with_y(0.0).length();
                     let progressed = !moving || Vec3::from_array(next).with_y(0.0).distance(body.position.with_y(0.0)) >= 0.25 * wanted;
-                    let ok = on_mesh
-                        && clear
-                        && progressed
-                        && separation_ok(body.position.to_array(), next, me, &neighbours, mesh.agent[1])
-                        && crosswalk_ok(mesh, nav_settings.crosswalk, signals, body.position.to_array(), next);
+                    let blocker = separation_blocker(body.position.to_array(), next, me, &neighbours, mesh.agent[1]);
+                    let ok = on_mesh && clear && progressed && blocker.is_none() && crosswalk_ok(mesh, nav_settings.crosswalk, signals, body.position.to_array(), next);
+                    // Refused by another ped: the two bodies touch; both react to the other on their next step.
+                    if let Some(j) = blocker.filter(|_| moving) {
+                        let v = ((to - body.position) / dt).with_y(0.0).to_array();
+                        ped_contacts.push(PedContact { touched: ids[j], toucher: ped.id, toucher_at: from, velocity: v });
+                        ped_contacts.push(PedContact { touched: ped.id, toucher: ids[j], toucher_at: neighbours[j].position, velocity: [-v[0], 0.0, -v[2]] });
+                    }
                     // Moved-prop diagnostics: a refused step into a prop, or anywhere near the spot a
                     // moved prop left (once per ped per second).
                     if !ok && moving {

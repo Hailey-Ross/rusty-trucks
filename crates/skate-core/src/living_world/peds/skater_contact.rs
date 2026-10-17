@@ -61,6 +61,8 @@ impl ReactionDirection {
 pub struct CollisionRules {
     /// Knock-down above these body speeds (linear, angular), skater contacts (3.0 / 3.0).
     pub knockdown_speed: [f32; 2],
+    /// The same for a ped touching the ped (`081F978F8706D77B` / `5E566360FDC5FDD1`, 6.0 / 6.0).
+    pub ped_knockdown_speed: [f32; 2],
     /// Byte 17: the set allows knock-downs (false for the marquee sets).
     pub can_knock_down: bool,
     /// Seconds on the ground before getting up (1.5; security 0.5).
@@ -70,7 +72,7 @@ pub struct CollisionRules {
 impl Default for CollisionRules {
     /// The stock `default` set's values (used only when the export has no set).
     fn default() -> Self {
-        Self { knockdown_speed: [3.0, 3.0], can_knock_down: true, ground_seconds: 1.5 }
+        Self { knockdown_speed: [3.0, 3.0], ped_knockdown_speed: [6.0, 6.0], can_knock_down: true, ground_seconds: 1.5 }
     }
 }
 
@@ -111,6 +113,21 @@ pub fn skater_reaction(body_speed: [f32; 2], gate: [f32; 2], rules: &CollisionRu
         return Some(ReactionKind::Knockdown);
     }
     (!immune).then_some(ReactionKind::Standing)
+}
+
+/// [code] `sub_82E38FB8` kind 5 with a ped as toucher (`sub_826C2C70`): the ped thresholds; under the zombie cheat
+/// (`0x83085494` vfn156) a ped's touch never knocks down and gives no stumble either; `forced` = the toucher's chaser
+/// component answers vfn92 (`82E3D968`, its `brain+3276` bit 0x02), a knock-down whenever the set allows one.
+/// NOT RETAIL YET: what sets that bit (chaser vfn88 `82E3D920`) is not found, so callers pass false.
+pub fn ped_reaction(body_speed: [f32; 2], gate: [f32; 2], rules: &CollisionRules, immune: bool, zombie: bool, forced: bool) -> Option<ReactionKind> {
+    if !(body_speed[0] > gate[0] || body_speed[1] > gate[1]) {
+        return None;
+    }
+    let fast = body_speed[0] > rules.ped_knockdown_speed[0] || body_speed[1] > rules.ped_knockdown_speed[1];
+    if rules.can_knock_down && (forced || (fast && !zombie)) {
+        return Some(ReactionKind::Knockdown);
+    }
+    (!immune && !zombie).then_some(ReactionKind::Standing)
 }
 
 /// One animation step of a reaction: the logical (remapped) animation, mirrored or not, the blend in,
@@ -213,5 +230,19 @@ mod tests {
                 assert!(reaction_steps(kind, d).iter().all(|s| REACTION_ANIMS.contains(&s.anim)));
             }
         }
+    }
+
+    #[test]
+    fn a_ped_touching_a_ped_uses_the_ped_thresholds_and_zombie_mode_drops_it() {
+        let r = CollisionRules::default();
+        let gate = [0.0, 0.0];
+        assert_eq!(ped_reaction([4.0, 0.0], gate, &r, false, false, false), Some(ReactionKind::Standing), "below 6.0");
+        assert_eq!(skater_reaction([4.0, 0.0], gate, &r, false), Some(ReactionKind::Knockdown), "a skater at 4 m/s knocks down");
+        assert_eq!(ped_reaction([6.5, 0.0], gate, &r, false, false, false), Some(ReactionKind::Knockdown));
+        assert_eq!(ped_reaction([6.5, 0.0], gate, &r, false, true, false), None, "zombie mode");
+        assert_eq!(ped_reaction([1.0, 0.0], gate, &r, false, true, true), Some(ReactionKind::Knockdown), "a forcing toucher");
+        assert_eq!(ped_reaction([1.0, 0.0], gate, &r, true, false, false), None, "IgnoreStandingCollisions");
+        let marquee = CollisionRules { can_knock_down: false, ..r };
+        assert_eq!(ped_reaction([6.5, 0.0], gate, &marquee, false, false, true), Some(ReactionKind::Standing));
     }
 }

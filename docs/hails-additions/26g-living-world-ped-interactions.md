@@ -1527,3 +1527,42 @@ b153 (taze), b154 (chase), b155 (speech, ported later); main re-read every addre
 - GiveUpPrimary's named new primary and the old primary's rest time (vfn48 / vfn52) are not ported.
 - The tazer's draw states (b153 M1 to M3: drawn when the draw clip nears its end, the holster clip, the `tazr` prop and
   the Tazer motion messages) wait for the animation pass (item 6).
+
+## NPC skaters and other peds knock peds over (2026-10-16)
+
+### Problem
+Only the players could knock a ped down or make it stumble. Retail's contact callback `sub_82E38FB8` reacts to any
+`IActor` owner (kind 5, skater thresholds 3.0 / 3.0) and to another ped (the toucher casts to `IPedestrian`,
+`sub_826C2C70`). The user confirmed both for retail (2026-10-16): asked whether NPC skaters knock peds over, "Yes they
+can"; asked whether peds stumble when another ped runs into them, "yes i think so?".
+
+### Retail [code]
+- Ped toucher (`sub_82E38FB8`, the block after the direction): the ped thresholds `081F978F8706D77B` /
+  `5E566360FDC5FDD1` (6.0 / 6.0, exported as `knockdown_speed_flagged_a` / `_b`) replace the skater ones. Under the
+  zombie cheat (`0x83085494` vfn156) a ped's touch gives neither a knock-down nor a stumble. A toucher whose chaser
+  component answers vfn92 (`82E3D968`: its `brain+3276` bit 0x02) knocks the ped down whenever the set allows it and
+  counts on `brain+3248`; that bit's setter is chaser vfn88 (`82E3D920`, only in vtables `0x8232C198` / `0x8232CEA0`),
+  whose caller was not found.
+- The classifier `sub_82E38400` lets a ped toucher through after a centre distance test (R = the two vfn28 values
+  summed times 2.0, `0x82060C50`), and drops it when the touched ped's state `+0xEC` is 2 and two component checks are
+  clear (meaning open).
+
+### Change
+- `skate-core` `peds/skater_contact.rs`: `CollisionRules::ped_knockdown_speed` (data, `skate-data` reads the export)
+  and `ped_reaction` (the ped toucher rule above; `forced` is passed false until the setter is found).
+- `skate-core` `peds/wander.rs`: `separation_blocker` names the ped that refuses a step.
+- `skate-game` `living_world/peds.rs`: the skater touchers are the players then the NPC skaters (their replay sample's
+  position and velocity) in id order; a step refused by another ped is a body contact (`PedContact`), and both peds
+  take the other as toucher on their next step (`ped_hit`). The log line `PED_SKATER_CONTACT` names the toucher
+  (`by=`), and `PedEvent::Hit::toucher` carries it into the mood broadcast.
+- NOT RETAIL YET: an NPC skater is the same 0.35 m cylinder as the player; a ped's touch speed is the closing speed
+  along the line between the two peds (retail: each body's speed after the Havok solve).
+
+### Verification
+- Tests: `a_ped_touching_a_ped_uses_the_ped_thresholds_and_zombie_mode_drops_it` (core),
+  `a_ped_walking_into_a_ped_makes_it_stumble_unless_zombie_mode` (game). Not play-tested yet: watch NPC skaters ride
+  through a crowd, and a chaser running past peds.
+
+### Open
+- The forcing bit's setter (chaser vfn88 caller) and the classifier's state-2 exclusion.
+- Whether retail NPC skaters' bodies use the player's capsule or their own (the ped hits recomp session would show it).
