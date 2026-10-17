@@ -257,6 +257,9 @@ pub(crate) fn entry() -> Option<i32> {
         start,
     );
     let status = child.wait();
+    // A killed or crashed game could not stop its pads' motors itself.
+    #[cfg(windows)]
+    crate::input::platform::stop_rumble_after_game();
     // A relay may inherit a pipe. Never wait indefinitely for its EOF.
     let deadline = Instant::now() + Duration::from_secs(2);
     while !(out.is_finished() && err.is_finished()) && Instant::now() < deadline {
@@ -286,6 +289,7 @@ pub(crate) fn entry() -> Option<i32> {
 
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
+        crate::input::platform::stop_rumble_on_exit();
         let payload = info
             .payload()
             .downcast_ref::<String>()

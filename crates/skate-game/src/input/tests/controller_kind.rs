@@ -12,6 +12,7 @@ fn sdl(gamepad_type: T, vendor_product: Option<(u16, u16)>, paddles: u8) -> Cont
             paddles,
             touchpad: false,
             misc_button: false,
+            wireless: None,
             face_labels: None,
         },
         &[],

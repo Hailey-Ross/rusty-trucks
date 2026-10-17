@@ -17,10 +17,11 @@ pub struct RumbleTuning {
     pub drop_below: f32,
     /// Cap headroom over the strongest channel: 0.2 at 0x82099280.
     pub headroom: f32,
-    /// Device curve, gamepad: motor 0 = a * level - b (1.2 / 0.02), motor 1 = c * level + d (1.05 / 0.05).
+    /// Device curve, wireless pads (caps flag X_INPUT_CAPS_WIRELESS, `sub_8296D480`): motor 0 = a * level - b
+    /// (1.2 / 0.02), motor 1 = c * level + d (1.05 / 0.05).
     pub pad_low: [f32; 2],
     pub pad_high: [f32; 2],
-    /// Device curve, other devices: motor 0 = e * level - b, motor 1 = e * level (0.7).
+    /// Device curve, wired and other pads: motor 0 = e * level - b, motor 1 = e * level (0.7).
     pub other_scale: f32,
 }
 
@@ -117,11 +118,12 @@ impl PadRumble {
     }
 }
 
-/// The device curve: a motor level (0..1) as a 16-bit motor speed. `gamepad` = the device reports as a gamepad
-/// with rumble (retail's known-device branch). Retail's order: curve, clamp to 0..1, exactly 0 stays 0, else
-/// trunc(v * 65535). So a gamepad's motor 1 at level 0 is 0.05 * 65535 = 3276, as in retail.
-pub fn motor_speed(motor: usize, level: f32, gamepad: bool, tuning: &RumbleTuning) -> u16 {
-    let v = match (gamepad, motor) {
+/// The device curve: a motor level (0..1) as a 16-bit motor speed. `wireless` = retail's test in `sub_8296D480`:
+/// capability type 1 and flags & 0x0002 (X_INPUT_CAPS_WIRELESS); every other pad takes the wired curve. Retail's
+/// order: curve, clamp to 0..1, exactly 0 stays 0, else trunc(v * 65535). So a wireless pad's motor 1 at level 0 is
+/// 0.05 * 65535 = 3276, as in retail.
+pub fn motor_speed(motor: usize, level: f32, wireless: bool, tuning: &RumbleTuning) -> u16 {
+    let v = match (wireless, motor) {
         (true, 0) => level.mul_add(tuning.pad_low[0], -tuning.pad_low[1]),
         (true, _) => level.mul_add(tuning.pad_high[0], tuning.pad_high[1]),
         (false, 0) => level.mul_add(tuning.other_scale, -tuning.pad_low[1]),
@@ -182,12 +184,13 @@ mod tests {
     }
 
     #[test]
-    fn device_curve_matches_retail_including_the_motor_1_floor() {
+    fn device_curve_matches_retail_including_the_wireless_motor_1_floor() {
         assert_eq!(motor_speed(0, 0.0, true, &T), 0);
         assert_eq!(motor_speed(1, 0.0, true, &T), 3276);
         assert_eq!(motor_speed(0, 0.5, true, &T), ((0.5f32 * 1.2 - 0.02) * 65535.0) as u16);
         assert_eq!(motor_speed(1, 1.0, true, &T), 65535);
         assert_eq!(motor_speed(0, 1.0, false, &T), ((0.7f32 - 0.02) * 65535.0) as u16);
-        assert_eq!(motor_speed(1, 0.0, false, &T), 0);
+        assert_eq!(motor_speed(1, 0.0, false, &T), 0, "the wired curve has no floor");
+        assert_eq!(motor_speed(0, 0.0, false, &T), 0);
     }
 }

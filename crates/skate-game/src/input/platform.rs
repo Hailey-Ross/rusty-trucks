@@ -177,6 +177,15 @@ mod windows {
             sent[index as usize] = Some(speeds);
         }
     }
+
+    /// Zero all four slots whatever was sent before (exit paths, and the crash supervisor once the game ended).
+    pub(crate) fn stop_all_rumble() {
+        for index in 0..4 {
+            let mut vibration = Vibration { left: 0, right: 0 };
+            // SAFETY: a valid XINPUT_VIBRATION for the call's duration; an empty slot just fails.
+            unsafe { XInputSetState(index, &mut vibration) };
+        }
+    }
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn LoadLibraryW(name: *const u16) -> *mut std::ffi::c_void;
@@ -341,6 +350,9 @@ mod sdl {
         slots: Mutex<[Published; 4]>,
         /// Requested motor speeds per slot (`set_rumble`); the SDL thread applies them.
         rumble: Mutex<[[u16; 2]; 4]>,
+        /// Exit: the SDL thread zeroes every open pad and sets `stopped`.
+        stop: std::sync::atomic::AtomicBool,
+        stopped: std::sync::atomic::AtomicBool,
     }
 
     /// SDL rumble runs for a duration: re-send a running request well before it ends.
@@ -349,6 +361,39 @@ mod sdl {
 
     pub(super) fn set_rumble(shared: &Shared, index: usize, speeds: [u16; 2]) {
         shared.rumble.lock().unwrap_or_else(|e| e.into_inner())[index] = speeds;
+    }
+
+    /// Exit: ask the SDL thread to zero every pad and wait for it (bounded: the thread may be the one panicking).
+    pub(super) fn stop_all_rumble(shared: &Shared) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        *shared.rumble.lock().unwrap_or_else(|e| e.into_inner()) = [[0; 2]; 4];
+        shared.stop.store(true, SeqCst);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        while !shared.stopped.load(SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        shared.stopped.load(SeqCst)
+    }
+
+    /// Whether the SDL thread sends `speeds` now, given what it last sent and how long ago: on any change, and a
+    /// running rumble again before its duration ends. Zero is never re-sent, so an idle pad gets no traffic.
+    pub(super) fn rumble_due(last: Option<([u16; 2], std::time::Duration)>, speeds: [u16; 2]) -> bool {
+        match last {
+            None => speeds != [0, 0],
+            Some((sent, age)) => sent != speeds || (speeds != [0, 0] && age >= RUMBLE_REFRESH),
+        }
+    }
+
+    #[test]
+    fn idle_is_never_refreshed_and_a_running_rumble_is() {
+        use std::time::Duration;
+        let long = Duration::from_secs(5);
+        assert!(!rumble_due(None, [0, 0]), "nothing to send before any rumble");
+        assert!(!rumble_due(Some(([0, 0], long)), [0, 0]), "an idle pad gets no traffic");
+        assert!(rumble_due(Some(([0, 0], Duration::ZERO)), [0, 3276]), "a change goes out at once");
+        assert!(rumble_due(Some(([0, 3276], Duration::ZERO)), [0, 0]), "so does the stop");
+        assert!(!rumble_due(Some(([9, 9], Duration::from_millis(100))), [9, 9]));
+        assert!(rumble_due(Some(([9, 9], RUMBLE_REFRESH)), [9, 9]), "re-sent before its duration ends");
     }
 
     struct Slot {
@@ -365,7 +410,12 @@ mod sdl {
     /// systems on a pool; a dedicated thread owns SDL and publishes snapshots.
     pub(super) fn start() -> Result<&'static Shared, String> {
         let shared: &'static Shared =
-            Box::leak(Box::new(Shared { slots: Mutex::new(Default::default()), rumble: Mutex::new([[0; 2]; 4]) }));
+            Box::leak(Box::new(Shared {
+            slots: Mutex::new(Default::default()),
+            rumble: Mutex::new([[0; 2]; 4]),
+            stop: Default::default(),
+            stopped: Default::default(),
+        }));
         let (ready, started) = mpsc::channel();
         std::thread::Builder::new()
             .name("sdl-gamepad".into())
@@ -441,13 +491,16 @@ mod sdl {
             }
             *shared.slots.lock().unwrap_or_else(|e| e.into_inner()) = published;
             let requested = *shared.rumble.lock().unwrap_or_else(|e| e.into_inner());
+            if shared.stop.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                for slot in slots.iter_mut().flatten() {
+                    let _ = slot.pad.set_rumble(0, 0, 0);
+                    slot.rumble = Some(([0, 0], std::time::Instant::now()));
+                }
+                shared.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             for (slot, speeds) in slots.iter_mut().zip(requested) {
                 let Some(slot) = slot else { continue };
-                let due = match slot.rumble {
-                    None => speeds != [0, 0],
-                    Some((sent, at)) => sent != speeds || (speeds != [0, 0] && at.elapsed() >= RUMBLE_REFRESH),
-                };
-                if due {
+                if rumble_due(slot.rumble.map(|(sent, at)| (sent, at.elapsed())), speeds) {
                     let _ = slot.pad.set_rumble(speeds[0], speeds[1], RUMBLE_DURATION_MS);
                     slot.rumble = Some((speeds, std::time::Instant::now()));
                 }
@@ -489,6 +542,11 @@ mod sdl {
                 paddles: PADDLE_BUTTONS.iter().filter(|&&b| pad.has_button(b)).count() as u8,
                 touchpad: pad.touchpads_count() > 0,
                 misc_button: pad.has_button(Button::Misc1),
+                wireless: match pad.connection_state() {
+                    Ok(sdl3::joystick::ConnectionState::Wireless) => Some(true),
+                    Ok(sdl3::joystick::ConnectionState::Wired) => Some(false),
+                    _ => None,
+                },
                 face_labels: {
                     let labels = [Button::South, Button::East, Button::West, Button::North]
                         .map(|b| controller_kind::PromptLabel::from_sdl(gamepads.button_label_for_gamepad_type(pad.r#type(), b)));
@@ -535,8 +593,9 @@ enum Backend {
     Unavailable,
 }
 
+static BACKEND: OnceLock<Backend> = OnceLock::new();
+
 fn backend() -> &'static Backend {
-    static BACKEND: OnceLock<Backend> = OnceLock::new();
     BACKEND.get_or_init(|| {
         #[cfg(windows)]
         if std::env::var("SKATE3_INPUT").is_ok_and(|v| v.eq_ignore_ascii_case("xinput")) {
@@ -569,6 +628,28 @@ pub(crate) fn set_rumble(index: usize, speeds: [u16; 2]) {
         #[cfg(not(windows))]
         Backend::Unavailable => {}
     }
+}
+
+/// Exit (normal close, Ctrl+C, panic): zero every pad's motors. Never starts a backend that is not running.
+/// On Windows every XInput slot is zeroed too, which also reaches a pad SDL opened.
+pub(crate) fn stop_rumble_on_exit() {
+    let sdl = match BACKEND.get() {
+        Some(Backend::Sdl(shared)) => Some(sdl::stop_all_rumble(shared)),
+        _ => None,
+    };
+    #[cfg(windows)]
+    windows::stop_all_rumble();
+    bevy::log::info!(
+        "RUMBLE stopped on exit ({})",
+        match sdl { Some(true) => "SDL pads zeroed", Some(false) => "SDL thread did not answer", None => "XInput" }
+    );
+}
+
+/// The crash supervisor, once the game process ended (killed, crashed or closed): zero every XInput slot, which a
+/// killed game could not do itself.
+#[cfg(windows)]
+pub(crate) fn stop_rumble_after_game() {
+    windows::stop_all_rumble();
 }
 
 pub(crate) fn poll_cached(

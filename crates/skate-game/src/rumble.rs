@@ -106,10 +106,20 @@ impl Plugin for RumblePlugin {
     }
 }
 
-/// Retail's known-device curve is the 360 pad's; Xbox-family pads get it, other pads retail's other-device curve.
-fn xbox_pad(kind: Option<&crate::input::controller_kind::ControllerKind>) -> bool {
-    use crate::input::controller_kind::Family;
-    kind.is_some_and(|k| matches!(k.family, Family::Xbox360 | Family::XboxOne | Family::XboxElite | Family::XinputGamepad))
+/// Retail's curve choice (`sub_8296D480`): the wireless curve only when the pad reports X_INPUT_CAPS_WIRELESS (SDL:
+/// a wireless connection), the wired curve for every other pad, including one whose connection is unknown.
+fn wireless_pad(kind: Option<&crate::input::controller_kind::ControllerKind>) -> bool {
+    kind.is_some_and(|k| k.wireless == Some(true))
+}
+
+/// What goes to the pad: the device curve while a channel is live, else [0, 0]. NOT RETAIL (host): retail runs the
+/// curve every tick, so a wireless pad's motor 1 gets its 0.05 floor even with no channel, and the console's driver
+/// lets it lapse; a PC pad would buzz from game start, so an idle pad gets a stop instead.
+fn pad_speeds(levels: [f32; 2], wireless: bool, tuning: &RumbleTuning) -> [u16; 2] {
+    if levels == [0.0, 0.0] {
+        return [0, 0];
+    }
+    std::array::from_fn(|m| motor_speed(m, levels[m], wireless, tuning))
 }
 
 fn update(
@@ -118,11 +128,13 @@ fn update(
     controllers: Res<crate::input::ControllerInput>,
     mut out: ResMut<RumbleOutput>,
     mut running: Local<[bool; 4]>,
+    mut curves: Local<[Option<bool>; 4]>,
 ) {
     let vibration = menus
         .as_deref()
         .and_then(|m| crate::retail_menus::setting(m, VIBRATION))
-        .is_none_or(|v| skate_core::menu_values::number(&v) != 0.0);
+        // No setting found: off (NOT RETAIL, the menu_values default; todo rumble-starts-and-sticks).
+        .is_some_and(|v| skate_core::menu_values::number(&v) != 0.0);
     if out.advance(time.delta_secs(), vibration) {
         match controllers.active_slot() {
             Some(pad) => {
@@ -134,15 +146,25 @@ fn update(
     }
     for pad in 0..4 {
         if controllers.status[pad] != crate::input::ControllerStatus::Ready {
+            curves[pad] = None;
             continue;
         }
-        let gamepad = xbox_pad(controllers.kind(pad));
+        let kind = controllers.kind(pad);
+        let wireless = wireless_pad(kind);
+        if curves[pad] != Some(wireless) {
+            curves[pad] = Some(wireless);
+            info!(
+                "RUMBLE pad {pad}: {} curve ({})",
+                if wireless { "wireless" } else { "wired" },
+                kind.map_or_else(|| "no identity".to_string(), |k| k.summary())
+            );
+        }
         let active = out.levels[pad] != [0.0, 0.0];
+        let speeds = pad_speeds(out.levels[pad], wireless, &out.tuning);
         if active != running[pad] {
             running[pad] = active;
-            info!("RUMBLE pad {pad} {} ({} motor curve)", if active { "rumbling" } else { "idle" }, if gamepad { "gamepad" } else { "other-device" });
+            info!("RUMBLE pad {pad} {} (speeds {} / {})", if active { "rumbling" } else { "idle" }, speeds[0], speeds[1]);
         }
-        let speeds = std::array::from_fn(|m| motor_speed(m, out.levels[pad][m], gamepad, &out.tuning));
         crate::input::platform::set_rumble(pad, speeds);
     }
 }
@@ -202,6 +224,41 @@ mod tests {
         let (a, b) = (at(30.0), at(240.0));
         assert!((a - b).abs() < 0.02, "{a} vs {b}");
         assert!(a > 0.0 && a < 0.5);
+    }
+
+    #[test]
+    fn an_idle_pad_gets_a_stop_and_a_live_one_the_retail_curve() {
+        let t = RumbleTuning::RETAIL;
+        assert_eq!(pad_speeds([0.0, 0.0], true, &t), [0, 0], "no wireless floor without a live channel");
+        assert_eq!(pad_speeds([0.0, 0.0], false, &t), [0, 0]);
+        assert_eq!(pad_speeds([0.5, 0.0], true, &t), [motor_speed(0, 0.5, true, &t), 3276], "floor while live");
+        assert_eq!(pad_speeds([0.5, 0.5], false, &t), [motor_speed(0, 0.5, false, &t), motor_speed(1, 0.5, false, &t)]);
+    }
+
+    #[test]
+    fn only_a_wireless_pad_takes_the_wireless_curve() {
+        use crate::input::controller_kind::{from_sdl, SdlReport};
+        let pad = |wireless| {
+            from_sdl(
+                SdlReport {
+                    name: "Xbox Elite".into(),
+                    gamepad_type: sdl3::gamepad::GamepadType::XboxOne,
+                    vendor_id: Some(0x045e),
+                    product_id: Some(0x0b00),
+                    path: String::new(),
+                    paddles: 4,
+                    touchpad: false,
+                    misc_button: false,
+                    wireless,
+                    face_labels: None,
+                },
+                &[],
+            )
+        };
+        assert!(wireless_pad(Some(&pad(Some(true)))));
+        assert!(!wireless_pad(Some(&pad(Some(false)))), "a wired Xbox pad takes the wired curve, as in retail");
+        assert!(!wireless_pad(Some(&pad(None))));
+        assert!(!wireless_pad(None));
     }
 
     #[test]

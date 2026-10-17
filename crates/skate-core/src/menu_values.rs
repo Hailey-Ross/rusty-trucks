@@ -183,7 +183,6 @@ pub fn retail_default(id: &str) -> Option<SettingValue> {
         "ID_GAMESETTINGS_SFXVOLUME" | "ID_GAMESETTINGS_DIALOGVOLUME" | "ID_GAMESETTINGS_MUSICVOLUME" => SettingValue::Float(1.0),
         "ID_GAMESETTINGS_MINIMAP_TOGGLE"
         | "ID_GAMESETTINGS_HUD_TOGGLE"
-        | "ID_GAMESETTINGS_VIBRATION_TOGGLE"
         | "ID_GAMESETTINGS_SKATEFEED_BOOTFLOW"
         | "ID_GAMESETTINGS_SKATEFEED_CHYRON"
         | "ID_GAMESETTINGS_SKATEFEED_INCOMING_MESSAGE"
@@ -198,6 +197,10 @@ pub fn retail_default(id: &str) -> Option<SettingValue> {
         | "ID_GAMESETTINGS_OFFBOARD_Y_AXIS_TOGGLE"
         | "ID_GAMESETTINGS_OFFBOARD_X_AXIS_TOGGLE"
         | "ID_GAMESETTINGS_TRANSPARENCY_TOGGLE" => SettingValue::Int(0),
+        // NOT RETAIL (user 2026-10-17, "set that to default to off for now"): retail's Vibration default is on (+163 =
+        // 1, above); off until the rumble that starts with the game and outlives it is fixed (todo
+        // rumble-starts-and-sticks). Switching it on in Game Settings still works and is saved.
+        "ID_GAMESETTINGS_VIBRATION_TOGGLE" => SettingValue::Int(0),
         _ => return None,
     })
 }

@@ -69,21 +69,24 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
-- **Ped lighting (new):** peds no longer have rough, blocky dark patches on their shadow side. Their normal maps were converted in the wrong layout. Run **Refresh Game Files** once to get the fixed ped models.
-- **Ped turns (new):** peds turn with Skate 3's turning animations (45, 90, 135 and 180 degrees) while standing and while walking, instead of stopping to pivot, and they follow their path at Skate 3's steering speed (measured in the recompiled game).
-- **Peds no longer get stuck (new):** a ped pinned against a corner it cannot walk round moves on, or turns away and picks a new path.
-- **NPC skater reactions (new):** NPC skaters near a wipeout (yours or another skater's) say Skate 3's slam lines, and their own wipeouts their crash lines.
-- **Cars stopping (new):** cars stop at lights and behind other cars at Skate 3's distances, braking later and harder, and no longer run amber lights.
-- **Zombie mode (new):** zombies pick their next spot round you a little earlier, like Skate 3.
-- **Peds hold a grudge (new):** a ped who warned you now chases you if you bump them again, like Skate 3. Before, a ped whose warning had ended could never get angry enough to chase. Security guards also react when they see someone else get hit.
-- **Who knocks peds over (new):** NPC skaters now knock peds over like you do, and a ped who walks into another ped makes both stumble.
-- **Chases (new):** a full chase group stops taking new chasers, the lead chaser changes round the group, a taze ends the chase, and a chase ends cleanly.
-- **Peds use their props (new):** peds now eat, drink, read, drop litter and take phone calls (you hear the ring, the call and the hang-up), with Skate 3's own timings for each ped type.
-- **NPC skater sounds (new):** NPC skaters running full physics now make their bail, push, pop and impact sounds.
-- **NPC skater tricks (new):** NPC skaters whose profile has no grabs no longer do grabs, fingerflips or bonelesses.
-- **Cars (new):** each car pulls away with its own acceleration and some drive a bit slower or faster than the limit, like Skate 3; a car you run into from the front brakes to a stop properly instead of easing off.
-- **City sounds (new):** distant one-shots (sirens, dogs, bangs) keep playing when you move into another area instead of being cut off, and their volumes follow Skate 3's steps. How often they play was checked against Skate 3 and already matched.
-- **Loading NPC skaters (new):** every NPC skater with full physics after the first loads in well under half the time, so the pause when they first appear is shorter.
+- **Rumble (new):** the controller no longer buzzes from the moment the game starts, and it stops when the game closes, crashes or is killed. Wired and wireless pads now get Skate 3's own motor strengths for each. **Vibration** is Off by default for now: switch it on in Start > Options > Game Settings to try it, and tell us how it feels (USB or wireless).
+- **World shading (new):** fences, billboards, lit signs, traffic lights (Skate 3's 17 second cycle), trees and the memorial flag use Skate 3's own shading. Run **Refresh Game Files** once to get the new map data.
+- **Rusty Trucks (new):** this fork's build now calls itself Rusty Trucks (window title, splash, setup and crash windows). Your files, settings and updates stay as they were.
+- **Ped lighting:** peds no longer have rough, blocky dark patches on their shadow side. Their normal maps were converted in the wrong layout. Run **Refresh Game Files** once to get the fixed ped models.
+- **Ped turns:** peds turn with Skate 3's turning animations (45, 90, 135 and 180 degrees) while standing and while walking, instead of stopping to pivot, and they follow their path at Skate 3's steering speed (measured in the recompiled game).
+- **Peds no longer get stuck:** a ped pinned against a corner it cannot walk round moves on, or turns away and picks a new path.
+- **NPC skater reactions:** NPC skaters near a wipeout (yours or another skater's) say Skate 3's slam lines, and their own wipeouts their crash lines.
+- **Cars stopping:** cars stop at lights and behind other cars at Skate 3's distances, braking later and harder, and no longer run amber lights.
+- **Zombie mode:** zombies pick their next spot round you a little earlier, like Skate 3.
+- **Peds hold a grudge:** a ped who warned you now chases you if you bump them again, like Skate 3. Before, a ped whose warning had ended could never get angry enough to chase. Security guards also react when they see someone else get hit.
+- **Who knocks peds over:** NPC skaters now knock peds over like you do, and a ped who walks into another ped makes both stumble.
+- **Chases:** a full chase group stops taking new chasers, the lead chaser changes round the group, a taze ends the chase, and a chase ends cleanly.
+- **Peds use their props:** peds now eat, drink, read, drop litter and take phone calls (you hear the ring, the call and the hang-up), with Skate 3's own timings for each ped type.
+- **NPC skater sounds:** NPC skaters running full physics now make their bail, push, pop and impact sounds.
+- **NPC skater tricks:** NPC skaters whose profile has no grabs no longer do grabs, fingerflips or bonelesses.
+- **Cars:** each car pulls away with its own acceleration and some drive a bit slower or faster than the limit, like Skate 3; a car you run into from the front brakes to a stop properly instead of easing off.
+- **City sounds:** distant one-shots (sirens, dogs, bangs) keep playing when you move into another area instead of being cut off, and their volumes follow Skate 3's steps. How often they play was checked against Skate 3 and already matched.
+- **Loading NPC skaters:** every NPC skater with full physics after the first loads in well under half the time, so the pause when they first appear is shorter.
 - **Stutters while skitching (play-tested):** being towed fast through the city no longer freezes the game for up to a second when a ped speaks or a distant city sound (siren, truck, horn) plays for the first time; those sounds now load in the background.
 - **Skitching holds:** holding on, your hands, letting go at the edge of the bumper and the grab sound work like Skate 3; cars collide with their real body shape, so your arms no longer bump into an invisible box; with both bumpers held, the one you pressed first wins; your grip follows the bumper's curve.
 - **Peds are solid:** you no longer pass through peds. They block you like Skate 3's peds do, and running into one fast or mid-trick makes you bail.
