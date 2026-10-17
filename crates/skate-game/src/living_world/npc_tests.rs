@@ -1265,3 +1265,42 @@ fn living_world_npc_respawn_delay_is_retails_and_clamped() {
     s.respawn_min = 0.0;
     assert_eq!(s.respawn_ticks(), 30);
 }
+
+/// The reaction manager wiring (`npc_sim::reactions`, research b166 / b168): the player's wipeout start reaches an NPC
+/// skater within 15 m as a slam by the player (0), its end as slam_b; an NPC 20 m away hears nothing.
+#[test]
+fn npc_skaters_react_to_the_players_wipeout_near_them() {
+    use crate::world_audio::{NpcSkaterReactionEvent, SkaterReaction};
+    let mut app = App::new();
+    app.insert_resource(LivingWorldSettings::default())
+        .insert_resource(LivingWorldObservers { observers: vec![skate_core::living_world::Observer { position: [0.0; 3], velocity: [0.0; 3] }], wiping: vec![false], ..Default::default() })
+        .add_message::<NpcSkaterReactionEvent>()
+        .add_systems(Update, super::npc_sim::reactions);
+    let npc = |serial: u32, voice: u32| NpcSkater {
+        id: skate_core::living_world::LivingWorldId { kind: skate_core::living_world::Kind::Skater, serial },
+        character: "test".into(),
+        slot: 0,
+        seed: 0,
+        voice: Some(voice),
+        spawn_tick: 0,
+        start_line: [0; 16],
+        stance: skate_core::living_world::stance::NaturalStance::Regular,
+    };
+    let near = app.world_mut().spawn((npc(1, 89), Transform::from_xyz(10.0, 0.0, 0.0))).id();
+    app.world_mut().spawn((npc(2, 90), Transform::from_xyz(20.0, 0.0, 0.0)));
+    let read = |app: &mut App| -> Vec<(Entity, SkaterReaction, u32)> {
+        let mut msgs = app.world_mut().resource_mut::<Messages<NpcSkaterReactionEvent>>();
+        let out = msgs.drain().map(|m| (m.skater, m.reaction, m.by)).collect();
+        out
+    };
+    app.update();
+    assert!(read(&mut app).is_empty(), "nobody wipes out");
+    app.world_mut().resource_mut::<LivingWorldObservers>().wiping[0] = true;
+    app.update();
+    assert_eq!(read(&mut app), vec![(near, SkaterReaction::Slam, 0)]);
+    app.update();
+    assert!(read(&mut app).is_empty(), "one tick only");
+    app.world_mut().resource_mut::<LivingWorldObservers>().wiping[0] = false;
+    app.update();
+    assert_eq!(read(&mut app), vec![(near, SkaterReaction::SlamB, 0)]);
+}

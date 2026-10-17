@@ -49,7 +49,8 @@
 //!   until play-tested, 40 m, 3; bail respawn after 5 s clamped to 1.5..7.9 s; mode 7 walk back
 //!   `walk_back` (retail on), `walk_arrive_distance` (2.4 m, 0..=20), `walk_stuck_ticks` (600, 0..=36000);
 //!   takeoff board yaw `board_yaw` (retail on), `board_yaw_dead_zone` (0.31416 rad, 0..=pi/2),
-//!   `board_yaw_mag_scale` (6.0606, 0..=100); `bump` (player and simulated NPCs collide as full skaters, retail on)),
+//!   `board_yaw_mag_scale` (6.0606, 0..=100); `bump` (player and simulated NPCs collide as full skaters, retail on); `reactions` (NPC skaters
+//!   react to wipeouts within `reaction_radius` m: slam / slam_b / crash lines, retail on, 15, 0..=100)),
 //!   `npc_avoid {enabled, max_entries, skitch_cooldown_ticks, radius_skater, radius_pedestrian,
 //!   radius_vehicle, radius_prop, cone, wide_cone, wide_cone_distance, skater_radius,
 //!   speed_margin, stop_gap, stop_gap_far, stop_cone, stop_gap_prop, side_on_angle,
@@ -261,6 +262,10 @@ pub struct NpcSimulatedPatch {
     pub board_yaw_mag_scale: Option<f32>,
     /// The player and simulated NPCs bump as full skaters (a hard hit knocks one down; retail on).
     pub bump: Option<bool>,
+    /// NPC skaters react to wipeouts near them (slam / slam_b / crash lines; retail on) within `reaction_radius` m
+    /// (retail 15, 0..=100).
+    pub reactions: Option<bool>,
+    pub reaction_radius: Option<f32>,
 }
 
 /// The NPC skaters' obstacle avoider (`skate_core::living_world::avoid::AvoidSettings`): every
@@ -939,7 +944,7 @@ impl Merge for FreePlayPatch {
 
 impl Merge for NpcSimulatedPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, bump);
+        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, bump, reactions, reaction_radius);
     }
 }
 
@@ -1053,6 +1058,7 @@ impl LivingWorldPatch {
                     && n.anticipation_frames.is_none_or(|v| v <= 600)
                     && n.max_crossed_nodes.is_none_or(|v| v <= 60)
                     && n.walk_arrive_distance.is_none_or(|v| v.is_finite() && (0.0..=20.0).contains(&v))
+                    && n.reaction_radius.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v))
                     && n.walk_stuck_ticks.is_none_or(|v| v <= 36000)
                     && n.board_yaw_dead_zone.is_none_or(|v| v.is_finite() && (0.0..=core::f32::consts::FRAC_PI_2).contains(&v))
                     && n.board_yaw_mag_scale.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v))

@@ -64,13 +64,16 @@ pub(crate) struct SimulatedTierSettings {
     /// seconds (retail's hold branch of `824701F8` runs no steer while the placed skater settles; our length,
     /// measured 2026-10-15: 0.5 s took the bails in the first second after a placement from 4 of 16 to 0 of 8).
     pub placement_hold_seconds: f32,
+    /// NPC skaters' reactions to wipeouts near them (slam / slam_b / crash speech; retail on, 15 m, research b166 /
+    /// b168). Mod: `npc_simulated.reactions`, `npc_simulated.reaction_radius`.
+    pub reactions: skate_core::living_world::npc_reactions::ReactionParams,
 }
 
 impl Default for SimulatedTierSettings {
     fn default() -> Self {
         // `SKATE_NPC_SIM_RADIUS` (m): a test knob so an unattended run sees many switches to physics.
         let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(40.0);
-        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5 }
+        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, reactions: Default::default() }
     }
 }
 
@@ -1248,4 +1251,53 @@ pub(crate) fn simulate(
     let bump = player_body.as_ref().zip(net.as_ref().map(|n| &n.schema));
     run_steps(&mut physics, &mut npcs, bump, &graphs, &mut workers, jobs, &mut commands, &mut count);
 
+}
+
+/// The reaction manager (`sub_8245A7E8` once per simulation tick; `skate_core::living_world::npc_reactions`): the
+/// players (observers, model 0, not listening) and every NPC skater (its voice model, the simulated ones' wipeout byte;
+/// replay-tier skaters never wipe out) in stable order; the raised reactions go out as [`NpcSkaterReactionEvent`]s
+/// (the bridge holds each for a console frame). Host only.
+pub(crate) fn reactions(
+    settings: Res<LivingWorldSettings>,
+    observers: Res<LivingWorldObservers>,
+    npcs: Query<(Entity, &NpcSkater, &Transform, Option<&NpcSim>)>,
+    mut state: Local<skate_core::living_world::npc_reactions::ReactionState>,
+    mut out: MessageWriter<crate::world_audio::NpcSkaterReactionEvent>,
+) {
+    use skate_core::living_world::npc_reactions::{ReactionSkater, NO_MODEL};
+    if settings.net_role == NetRole::Client {
+        return;
+    }
+    let mut skaters: Vec<ReactionSkater> = observers
+        .observers
+        .iter()
+        .enumerate()
+        .map(|(i, o)| ReactionSkater { key: i as u64, position: o.position, wiping: observers.wiping.get(i).copied().unwrap_or(false), model: 0, listens: false })
+        .collect();
+    let mut entities = std::collections::BTreeMap::new();
+    let mut list: Vec<_> = npcs.iter().collect();
+    list.sort_by_key(|(_, npc, ..)| npc.id.serial);
+    for (e, npc, transform, sim) in list {
+        // NPC keys after every player slot.
+        let key = (1u64 << 32) + u64::from(npc.id.serial);
+        let wiping = sim.is_some_and(|s| s.body.runtime.player_input.processed.flags_2468 & WIPEOUT_BIT != 0);
+        skaters.push(ReactionSkater { key, position: transform.translation.to_array(), wiping, model: npc.voice.unwrap_or(NO_MODEL), listens: true });
+        entities.insert(key, e);
+    }
+    use crate::world_audio::{NpcSkaterReactionEvent, SkaterReaction};
+    for (key, r) in state.step(&settings.npc_simulated.reactions, &skaters) {
+        let Some(&skater) = entities.get(&key) else { continue };
+        if let Some(by) = r.slam {
+            out.write(NpcSkaterReactionEvent { skater, reaction: SkaterReaction::Slam, by });
+        }
+        if let Some(by) = r.slam_b {
+            out.write(NpcSkaterReactionEvent { skater, reaction: SkaterReaction::SlamB, by });
+        }
+        if r.crash {
+            out.write(NpcSkaterReactionEvent { skater, reaction: SkaterReaction::Crash, by: 0 });
+        }
+        if r.slam.is_some() || r.slam_b.is_some() {
+            debug!("NPC_SKATER_REACTION key={key} slam={:?} slam_b={:?} crash={}", r.slam, r.slam_b, r.crash);
+        }
+    }
 }

@@ -311,6 +311,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         n.board_yaw.dead_zone = f.board_yaw_dead_zone.unwrap_or(n.board_yaw.dead_zone);
         n.board_yaw.mag_scale = f.board_yaw_mag_scale.unwrap_or(n.board_yaw.mag_scale);
         n.bump = f.bump.unwrap_or(n.bump);
+        n.reactions.enabled = f.reactions.unwrap_or(n.reactions.enabled);
+        n.reactions.radius = f.reaction_radius.unwrap_or(n.reactions.radius);
     }
     if let Some(m) = &p.traffic_horn {
         s.traffic_horn = m.clone();

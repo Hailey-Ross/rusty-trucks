@@ -676,3 +676,31 @@ keyed by the NPC skater's stable id.
 - **Verification:** `a_profile_without_slot_tricks_skips_grabs`; skate-core living_world 325 pass. Not play-tested yet.
 - **Open (b159):** the early trick fire (record +144), the per-character line check at branches (`sub_82456970`),
   the powerslide input arm (pc+920; our powerslide request stays a stand-in until it is decoded).
+
+## NPC skaters react to wipeouts near them: slam, slam_b and crash lines (2026-10-16)
+- **Problem:** the NPC skater speech process (`skate-audio` `skater_speech`, its reaction bytes) was only ever fed by the
+  mod API (`NpcSkaterReactionEvent` from `sdk` world audio): in a normal game NPC skaters never said their slam,
+  slam_b or crash lines.
+- **Retail [code] (research b165 / b166 / b168; main checked the entry header `mulli 544; addi 240` of `8279A2D0`, the
+  per-update reset `clrlwi 7` of R+0x24 in `8245A7E8` and the radius constant `0x822F8F68` with its strict compare in
+  `8245E950`):** the reaction manager `8245A7E8` runs once per simulation tick (tick mask bit 0, `8285C928`). It
+  clears every skater's reaction bits, then each skater's wipeout start (the wipeout byte rising, `82772748` H+0xD1;
+  the byte is Processed `+2468` bit 18, `82DB6EC0`) sets slam on every other skater closer than 15.0 (squared compare
+  against 225.0) with "by" = the sender's model (`8245E6C8`, `8245E740`, 97 when there is none); the wipeout end (H+0xD2)
+  sets slam_b the same way (`8245E848`); skaters are visited in index order, so the last sender names "by". The packer
+  `827A1B78` copies the bits into the speech record's entry (+148 crash = the wipeout byte itself, a level; +152 bits
+  4 / 3 slam / slam_b; +156 the "by" ids).
+- **Change:** `skate_core::living_world::npc_reactions` (pure, deterministic: `ReactionState::step` over the skaters
+  in stable order, previous wipeout per key); `npc_sim::reactions` (after `npc_sim::simulate` in the world tick): the
+  players (observers, model 0, not listening) and every NPC skater (its voice model; the simulated tier's wipeout bit,
+  the replay tier never wipes out) send `NpcSkaterReactionEvent` Slam / SlamB / Crash, which the bridge already holds for
+  a console frame. Host only. Mod values `npc_simulated.reactions` (on) and `npc_simulated.reaction_radius` (15 m);
+  the mod event entry stays as a second writer.
+- **NOT RETAIL YET / open:** trick seen (score > 50, `Hash_4BEEDCA4AD799796` [data]) waits for the writer of the score
+  at (P+0x3C)+0x88; the skater order is ours (players first, then NPC skaters by id); remote players send "by" 0; the
+  call rates of the edge writer / packer / speech reader against the manager's tick are not proven (b168 section 3).
+- **Verification:** `a_wipeout_start_and_end_reach_skaters_within_15_m_for_one_tick`,
+  `an_npc_crash_is_a_level_and_the_last_sender_names_by` (skate-core), `npc_skaters_react_to_the_players_wipeout_near_them`
+  (skate-game wiring: slam by the player at 10 m, nothing at 20 m, one tick only, slam_b at the end); skate-game
+  living_world 93, world_tuning 24, world_audio 5, skate-mods world_tuning 3 pass. Not play-tested yet: wipe out
+  near an NPC skater and listen for its line.

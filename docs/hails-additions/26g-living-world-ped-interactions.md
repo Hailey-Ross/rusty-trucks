@@ -1612,7 +1612,11 @@ Peds carried their hand props but never used them, so the phone ring, the call l
 - **Retail [code + data] (b167; main checked the branch directions and the edge addresses of `82E2A500` in the recomp
   asm; the edge values were read from the image by the research agent):** the locomotion update `82E36870` ->
   `82E29540` -> `82E29D98` posts a turn intent through `82E2A500` while no turn or transition runs (loco +0x84 /
-  +0x86). The angle (`82E2ABF8`) is the signed angle from the facing to a point 4.25 ahead on the path. Buckets: from
+  +0x86). The angle (`82E2ABF8`) is the signed angle from the facing to the desired direction (`82E2AAA0`, b169,
+  main-checked): a forced facing (queue +0x820 when +0x834 & 0x20), else the first face request at ped+0xB0 more than
+  0.1 m away, else an override of the bot (mover slot 0x14), else NavPower's steering velocity normalised (mover slot
+  0x0C, `82C47198`); zero steering posts no turn. The 4.25 that `82E2ABF8` passes on is not used by the angle (it is
+  stored at cmd +0x80). Buckets: from
   25 / 70 / 115 / 160 degrees the 45 / 90 / 135 / 180 turn of that side (`0x8209994C` / `0x8218155C` / `0x822F929C` /
   `0x82099154` and their negatives); below 25 no turn. A post clears the steering (command +0x64 = 0); the motion
   graph state that receives it picks the clip (IdleDefault `StandTurnR*`, Walk `WalkTurnR*` in a branch window,
@@ -1621,8 +1625,8 @@ Peds carried their hand props but never used them, so the phone ring, the call l
   `steer`; the step posts the bucket's turn from Idle / Stop / Walk with no steering; the anim player plays
   `names::stand_turn` / `names::walk_turn` (`Locomotion::WalkTurnLeft` / `WalkTurnRight` return to the walk cycle at
   the clip's exit); the heading comes from the clip only during a turn.
-- **NOT RETAIL YET (ours):** the angle is to the next corner, not to a point 4.25 ahead on the path (`82E2A6B0` not
-  read); our steering below 25 degrees turns at 45 deg/s (NavPower's rate is not decoded: measure it in the recomp,
+- **NOT RETAIL YET (ours):** the angle is to the next corner (our stand-in for NavPower's steering direction; while our
+  avoidance steers no turn is posted); the forced facing and the face-request list are not ported; our steering below 25 degrees turns at 45 deg/s (NavPower's rate is not decoded: measure it in the recomp,
   b158 item 2); while our avoidance stand-in steers no turn is posted and the old stop / pivot rule runs; a set
   without the bucket's clip (a mod or test set) pivots by the steering instead; run turns (`ChaseRunTurnR*`) are not
   ported (a running ped still stops to pivot beyond 60 degrees); ForceStop, strafe turns (mask 0xCC) and the

@@ -34,7 +34,7 @@
 //! the funnel corners of [`NavMesh::find_path`], steers toward the next corner at
 //! [`WanderParams::turn_rate`] below the first turn edge and posts retail's turn buckets past it
 //! (`82E2A500`: 45 / 90 / 135 / 180, standing or walking, the clip turns the ped; the angle is
-//! to the corner, retail's to a point 4.25 ahead on the path `82E2ABF8`), re-targets on arrival (the bot's state 1) and,
+//! to the next corner, retail's against NavPower's steering velocity `82E2ABF8` / `82E2AAA0`, b169), re-targets on arrival (the bot's state 1) and,
 //! when a path cannot be found, as after an event 1-3 (short fan next). Avoidance: a ped yields
 //! (stands) while a ped with a lower id is inside its personal space ahead of it, side-steps a
 //! ped with a higher id standing in its way, steers away from close peds, and never takes a
