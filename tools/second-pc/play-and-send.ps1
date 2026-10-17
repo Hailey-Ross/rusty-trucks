@@ -41,8 +41,10 @@ function Invoke-Setup {
     if ($answer -match '^[yY]') {
         $github = Read-Host 'Repository [Hailey-Ross/rusty-trucks]'
         if (-not $github) { $github = 'Hailey-Ross/rusty-trucks' }
-        & gh auth status 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { Write-Host 'The GitHub CLI is missing or not signed in: winget install GitHub.cli, then gh auth login.' }
+        # A missing gh must only warn: with ErrorActionPreference Stop it would end setup before the config is saved.
+        $signedIn = $false
+        if (Get-Command gh -ErrorAction SilentlyContinue) { & gh auth status 2>&1 | Out-Null; $signedIn = $LASTEXITCODE -eq 0 }
+        if (-not $signedIn) { Write-Host 'The GitHub CLI is missing or not signed in: winget install GitHub.cli, then gh auth login.' }
     }
     "main_pc=$mainPc`nshare=$share`naccount=$user`ngithub_repo=$github`ngithub_base=hails-additions" |
         Set-Content -Encoding ASCII $configFile
