@@ -113,6 +113,8 @@ pub(crate) struct SkaterRuntime {
     ///Skeleton16384 is published by the completed pose-error response. Wipeout
     ///runs after that publication; no fabricated pre-solve measurement exists.
     pub collision_maximum_error: Option<f32>,
+    /// Ticks left of the SKITCH_RELEASE_TRACE log after leaving Skitching (the stopped-car release bail, 2026-10-17).
+    pub skitch_release_trace: u8,
     pub solved_drives: Option<SkeletonDriveBatch>,
     pub foot_ik: FootIk,
     pub foot_physical: FootPhysicalOutputs,
@@ -396,6 +398,7 @@ impl SkaterRuntime {
             collision_pose_error: [0.0; 4],
             collision_extra_errors: [[0.0; 4]; 2],
             collision_maximum_error: None,
+            skitch_release_trace: 0,
             solved_drives: None,
             foot_ik,
             foot_physical: FootPhysicalOutputs::load(&data)?,

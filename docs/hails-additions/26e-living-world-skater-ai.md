@@ -737,10 +737,30 @@ keyed by the NPC skater's stable id.
   (a run of calm nodes: no recent jump / flag, no steep slope, no trick class other than 0 / 4 / 8 ahead).
 - **Change:** `npc_sim` hands a replay skater to physics only where `ai_controller::safe_node(line, node) == node`;
   otherwise the every-2-s report says `not a safe node`.
-- **Open (b178, needs a decision):** retail's hold after a placement (30 ticks after a reset placement, 8 after a bail
-  respawn) with the spawn push only on its last tick, measured from the skater point; ours pushes at placement, holds
-  0.5 s and measures the per-tick push from the deck (0.20 to 0.46 m off the node in all 19 handovers, so it never
-  fired). A 30-tick standstill at the handover may be visible.
+- The hold and push order is the next section.
 - **Verification:** skate-game living_world 95 pass (4 ignored); muted 75 s DownTown run: three handovers (nodes 28, 42,
   49), start speeds 5.4 / 6.4 / 7.2 m/s = their pushes. Not play-tested yet.
+
+## Handover hold and spawn push (2026-10-17)
+
+- **Retail [code] (b178):** a placement resets the controller's hold counter (`pc+888` = 30 in the reset `82468C10`,
+  8 after a bail respawn in `8246EA90`); `824701F8` counts it down one per tick and, while it runs, sends a record
+  with no steer and runs no path branch; the spawn push (`82C04168`) fires only on the counter's last tick, when the
+  skater point (`82467FC8`) is still within 0.01 m (first node) / 0.05 m of its node and the node is not off board.
+- **Ours before:** `place` set the push as the velocity at the placement, every placement held 0.5 s, and the path
+  branch re-tested the push every tick from the deck, which sits 0.20 to 0.46 m off the node (all 19 laptop
+  handovers), so it never fired again.
+- **Change (user 2026-10-17: the handover holds one tick, functionally the same as retail, no visible stop):**
+  - placed at rest (zero velocity); the hold counts only once the placement teleport has landed;
+  - on the hold's last tick the push (`ai_record::spawn_push`) is applied once when the skater is still within the
+    radius of where it stood when the hold started (retail: of the node it was placed on), not on off-board nodes;
+  - the per-tick push in the path branch is gone (retail has none there);
+  - hold lengths: one tick at a replay -> sim switch (`HANDOVER_HOLD_TICKS`, engine handover), 30 ticks after a
+    reset placement (stage-6 stuck respawn, `npc_simulated.placement_hold_seconds` 0.5 s), 8 ticks after a bail
+    respawn (new mod key `npc_simulated.respawn_hold_seconds`, 0..=10 s).
+- **Open:** byte `+0x1B6` (pauses the count with on-board steering), which body point `82467FC8` returns.
+- New log `NPC_SKATER_PUSH #id name node N <speed | none: left its place> (moved d m since the hold started)`.
+- **Verification:** skate-game living_world + world_tuning 118 pass, skate-mods world_tuning pass; muted 90 s
+  DownTown run: handovers push 5.4 / 6.4 / 7.1 m/s on their first held tick (start speed = push), a bail respawn at
+  node 55 pushed 5.7 m/s after its 8-tick hold. Not play-tested yet.
 

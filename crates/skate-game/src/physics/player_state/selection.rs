@@ -46,6 +46,30 @@ pub(super) fn advance(
     };
     let current = skater.player_state.current();
     let requested = skater.player_state.selector.calculate(current, &input);
+    // SKITCH_RELEASE_TRACE: the release tick and the 30 after it, so a squash bail after letting go of a car shows
+    // how the pose error and the car contact developed (research b180: logs had only the bail tick).
+    use skate_core::player::state::PhysicalStateId as Sid;
+    if current == Sid::Skitching && requested != Sid::Skitching {
+        skater.skitch_release_trace = 31;
+    }
+    if skater.skitch_release_trace > 0 {
+        skater.skitch_release_trace -= 1;
+        let g = &skater.wipeout.settings().ground;
+        let c = &skater.collision_feedback;
+        bevy::log::info!(
+            "SKITCH_RELEASE_TRACE t={} {current:?}->{requested:?} max_pose_error={:?} pose_error=[{:.3}, {:.3}, {:.3}] squash_limit={:.3} vehicle_contact={} vehicle_force={:.1} time_on_ground={:.3} tick={}",
+            30 - skater.skitch_release_trace,
+            skater.collision_maximum_error,
+            skater.collision_pose_error[0],
+            skater.collision_pose_error[1],
+            skater.collision_pose_error[2],
+            if c.flags.group_8 { g.vehicle_scalar } else { 1.0 } * g.max_squash,
+            c.flags.group_8,
+            c.maximum_group_8_force,
+            p.time_on_ground_2752,
+            physics.ticks
+        );
+    }
     skater.player_state.requested_state = requested;
     if skater.player_state.selector.request_teleport {
         //0x82D8B034: count > limit sets selector+57 (request teleport -> state 702).
