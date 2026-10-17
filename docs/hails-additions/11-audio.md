@@ -3540,6 +3540,27 @@ session. The new line tells these apart from one session.
   player with `+64` clear; not modelled, it would only make retail quieter.
 - The landing catch itself (when a landing becomes a manual) is the authored motion graph's, not Contacts'.
 
+### Location one-shots: the level grid and set changes (2026-10-16, `game_audio::random_sets`)
+- **Checked first (research b160):** how often the location sets fire already matches retail: the interval
+  `min + (max - min) * (rand % 1000) * 0.001` (sub_824A1980), redrawn on every expiry, 2 loaded banks, the oldest
+  loaded idle entry plays, weighted pick; the timer counts seconds (the recomp: gap / drawn interval 0.998, n = 119).
+  Fires per interval, the recomp vs ours: brewery 0.66 / 0.60, mem_plaza 0.68 / 0.67, city_center 0.42 / 0.53 (noise).
+  The `AUDIO_RANDOM set ... 7-5 s` print is the data (`e_dwtn_skatepark` has min 7, max 5): both draw 5..7.
+- **Level grid [code]:** sub_824A1A20 draws lo = trunc(steps x min), hi = trunc(steps x max), level =
+  (lo + rand % (hi - lo)) / steps, with `steps` the set's field `79460EEF1A8253B0`. Ours rounded both ends and fixed
+  10 steps. Now: the exporter writes `level_steps` (`audio_export.py`), the library and mod sets read it (default 10;
+  mods 1..1000), and `level` truncates.
+- **Set change [code]:** sub_828EA4E0 / 828EA708 mark the old set's entries stale: idle loaded banks unload, playing
+  posts play to their end and their banks count toward the 2-bank cap until they are freed. Ours faded every post out
+  over 0.3 s at a zone change. Now the posts keep playing (`Post::stale`, own bank), count toward the cap, and free
+  their bank when they end; silencing (menus, replays: ours) still stops everything.
+- **Verification:** `levels_are_tenths_below_the_maximum` (truncation and a 4-step grid), skate-game 715 pass, skate-mods
+  106 pass. Not listened to yet. The asset export must be re-run for `level_steps`; until then every set uses 10.
+- **Open (b160):** random posts and .ems emitter starts share one 5-state voice object in retail
+  (`*(0x830CFDC4)+0x2A8` vtable +0xC; a full pool drops the post and the entry fires at the next interval), ours does
+  not claim a state; the MixMap level / pitch / low-pass on posts (sub_824DCF08); one bank load per frame and play
+  only once loaded; `<` vs `>=` on the timer.
+
 ## Credits
 
 The retail measurements in this document were taken with **[skate3recomp](https://github.com/mchughalex/skate3recomp)**

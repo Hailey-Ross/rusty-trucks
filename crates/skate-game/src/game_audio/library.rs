@@ -223,7 +223,11 @@ pub(crate) struct RandomSet {
     pub min_interval: f32,
     #[serde(default = "default_max_interval")]
     pub max_interval: f32,
+    /// The level grid (`79460EEF1A8253B0`, sub_824A1A20); missing in older exports: 10.
+    #[serde(default = "default_level_steps")]
+    pub level_steps: u32,
 }
+fn default_level_steps() -> u32 { 10 }
 fn default_min_level() -> f32 { 0.2 }
 fn one() -> f32 { 1.0 }
 fn default_min_interval() -> f32 { 10.0 }

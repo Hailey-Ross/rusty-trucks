@@ -172,6 +172,7 @@ RANDOM_SET_FIELDS = {
     'Hash_A306BD1F4023A642': 'max_interval',
     'Hash_5CA06CA086D8F953': 'sounds',  # RefSpec array of EMITTER_CLASS records
     'Hash_07DDABF96E5F2731': 'weights',  # Int32 array, one per sound
+    'Hash_79460EEF1A8253B0': 'level_steps',  # Int32: the level grid, lo/hi = trunc(steps * min/max) (sub_824A1A20)
 }
 
 
