@@ -9,6 +9,8 @@ Each document stands alone. File paths are relative to the repository root.
 
 Current known issues and missing features of this branch: [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 
+Playing this branch's rolling build on a second PC (couch testing): [second-pc-testing.md](second-pc-testing.md).
+
 | # | Change | Area | Status |
 |---|---|---|---|
 | 1 | [ISO extraction argument order](01-iso-extraction.md) | Setup (Python) | Superseded: upstream fixed it the same way (`713fe70`, `7ae67f2`, 2026-10-02); dropped from PR A |
