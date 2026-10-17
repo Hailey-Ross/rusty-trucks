@@ -393,7 +393,7 @@ function Launch([string]$Key, [string]$Lbl) {
         $play = Join-Path (Version-Dir $ver) 'PLAY.bat'
         # Without converted game files the game only shows an error; say what to do instead (couch users).
         if (-not (Test-Path (Join-Path (Version-Dir $ver) 'assets\private\stock'))) {
-            $msg = "Not started: $($ver.name) has no game files (assets\private). Convert them from the disc first: docs\hails-additions\second-pc-testing.md, 'Game files on a source checkout'."
+            $msg = "Not started: $($ver.name) has no game files (assets\private). Convert them from the disc first: tools\setup-dev-assets.ps1 -Disc <your Skate 3 ISO or default.xex>."
             Set-Content -Path $LastSession -Value $msg -Encoding UTF8
             if (-not $NoPrompt) { Show-Message $msg 'Yellow' }
             return

@@ -75,8 +75,9 @@ If you copy the launcher folder somewhere outside `tools\` (two levels below the
    malformed-line counts for a trace; the result screen shows them. You build the recomp yourself from your own copy
    of the game; nothing from the game is included here.
    **Optional, send logs after each session:** set `"after_session"` in `config.json` to a send script (path
-   relative to the repository), e.g. the second PC's `tools\second-pc\play-and-send.ps1` (it works on the
-   repository root; see `docs/hails-additions/second-pc-testing.md`). It runs with `-SendOnly` after every session. Its last line shows
+   relative to the repository) that copies the new logs somewhere (for example to another PC). It runs with
+   `-SendOnly` after every session, and its settings file `send-sessions.txt` sits next to it or at the repository
+   root (until it exists the send is skipped with a hint, so Steam never waits on questions). Its last line shows
    on the result screen and in `last_session.txt`. A session closed with Steam's **Exit game** is sent at the next
    start (`pending`). `launcher.ps1 send` sends on demand.
 4. **Add it to Steam:** Steam → **Games → Add a Non-Steam Game to My Library → Browse** → pick
