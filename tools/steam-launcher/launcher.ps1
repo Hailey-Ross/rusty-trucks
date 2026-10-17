@@ -280,6 +280,8 @@ function Check-Session([string]$Kind, [datetime]$Since, $Ver) {
             if (-not (Test-Path $t)) { continue }
             $cols = 0; $rows = 0; $bad = 0
             foreach ($l in [IO.File]::ReadLines($t)) {
+                # frames.tsv starts with a '# skate3rust frame log v1' comment line before its header.
+                if ($l.StartsWith('#')) { continue }
                 $n = ($l -split "`t").Count
                 if ($cols -eq 0) { $cols = $n; continue }
                 $rows++; if ($n -ne $cols) { $bad++ }
