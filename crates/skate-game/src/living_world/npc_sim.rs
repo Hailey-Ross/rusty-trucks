@@ -60,10 +60,12 @@ pub(crate) struct SimulatedTierSettings {
     /// bump knocks a skater down; retail, research m7 / b125). Mod: `npc_simulated.bump`.
     pub bump: bool,
     pub board_yaw: skate_core::living_world::ai_signals::BoardYawTuning,
-    /// After a placement (switch to physics or respawn) the line controller holds: no steer and no trick for this long,
-    /// seconds (retail's hold branch of `824701F8` runs no steer while the placed skater settles; our length,
-    /// measured 2026-10-15: 0.5 s took the bails in the first second after a placement from 4 of 16 to 0 of 8).
+    /// After a reset placement (stage-6 stuck respawn) the line controller holds: no steer and no trick for this long,
+    /// then the spawn push on its last tick (retail's hold counter `pc+888` = 30 from the reset `82468C10`, counted down
+    /// in `824701F8`; b178). A switch from the replay tier holds one tick (engine handover, no visible stop).
     pub placement_hold_seconds: f32,
+    /// The same hold after a bail respawn (retail 8 ticks, `8246EA90`).
+    pub respawn_hold_seconds: f32,
     /// NPC skaters' reactions to wipeouts near them (slam / slam_b / crash speech; retail on, 15 m, research b166 /
     /// b168). Mod: `npc_simulated.reactions`, `npc_simulated.reaction_radius`.
     pub reactions: skate_core::living_world::npc_reactions::ReactionParams,
@@ -73,7 +75,7 @@ impl Default for SimulatedTierSettings {
     fn default() -> Self {
         // `SKATE_NPC_SIM_RADIUS` (m): a test knob so an unattended run sees many switches to physics.
         let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(40.0);
-        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, reactions: Default::default() }
+        Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, respawn_hold_seconds: 8.0 / 60.0, reactions: Default::default() }
     }
 }
 
@@ -81,6 +83,10 @@ impl SimulatedTierSettings {
     /// The respawn delay in 60 Hz ticks.
     pub fn placement_hold_ticks(&self) -> u32 {
         (self.placement_hold_seconds.clamp(0.0, 10.0) * 60.0).round() as u32
+    }
+
+    pub fn respawn_hold_ticks(&self) -> u32 {
+        (self.respawn_hold_seconds.clamp(0.0, 10.0) * 60.0).round() as u32
     }
 
     pub fn respawn_ticks(&self) -> u32 {
@@ -142,8 +148,10 @@ pub(crate) struct NpcSim {
     pub(crate) previous_pose: Vec<skate_core::animation::output::NativeMatrix>,
     pub(crate) previous_root: skate_core::animation::output::NativeMatrix,
     pub(crate) previous_placements: u32,
-    /// Ticks left of the hold after a placement (`SimulatedTierSettings::placement_hold_seconds`).
+    /// Ticks left of the hold after a placement (counted once the placement landed; the spawn push on the last one).
     hold_ticks: u32,
+    /// Where the placed skater was when its hold started counting (the spawn push needs it still there).
+    placed_at: Option<[f32; 3]>,
     /// The last walk-back goal with no navmesh plan (logged once per goal).
     no_plan: Option<u32>,
     /// The takeoff flip latch (`pc+927` / `pc+928`, `sub_8246A700`), cleared with the controller.
@@ -355,11 +363,14 @@ fn spawn_sim(
         Some(pooled) => pooled,
         None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placements_at_bail: 0, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default() };
+    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default() };
     let v = place(&mut sim, target, hold_ticks)?;
     sim.handover_push = Some((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
     Ok(sim)
 }
+
+/// Hold ticks at a switch from the replay tier (retail places with a 30-tick hold; one tick keeps its order).
+const HANDOVER_HOLD_TICKS: u32 = 1;
 
 fn line_spawn(target: &ai_record::LineTarget) -> skate_core::physics::drive_frames::RetailAffineTransform {
     let q = target.frame;
@@ -378,9 +389,10 @@ fn place(sim: &mut NpcSim, target: &ai_record::LineTarget, hold_ticks: u32) -> R
     let spawn = line_spawn(target);
     let c = spawn.basis.columns;
     info!("NPC_SKATER_PLACE_FRAME up=[{:.2}, {:.2}, {:.2}] forward=[{:.2}, {:.2}, {:.2}] at [{:.2}, {:.2}, {:.2}]", c[1][0], c[1][1], c[1][2], c[2][0], c[2][1], c[2][2], spawn.translation.x, spawn.translation.y, spawn.translation.z);
-    // Retail's spawn push (`82C04168`, `ai_record::spawn_push`): on the node, the node's displacement x 60 x 0.75.
+    // Placed at rest: retail's hold branch (`824701F8`) sends a zero-velocity record and pushes on the hold's last tick.
+    // The returned velocity is the push that tick will give (for the logs).
     let velocity = ai_record::spawn_push(target.position, target.position, target.step, false, false).unwrap_or([0.0; 3]);
-    GamePhysics::set_context_velocity(&mut sim.context, velocity);
+    GamePhysics::set_context_velocity(&mut sim.context, [0.0; 3]);
     // One reset, the actor reply (retail `825926F8`), like the respawn. `travel` queued the host teleport too, a
     // second reset that snapped the rolling board back (2026-10-15); the host teleport alone moved the board but not
     // the animated skeleton's root, so the skater was drawn where its pooled body was and vanished on screen.
@@ -421,6 +433,7 @@ fn settle(sim: &mut NpcSim, hold_ticks: u32) {
     sim.slot = Default::default();
     sim.board_yaw = Default::default();
     sim.hold_ticks = hold_ticks;
+    sim.placed_at = None;
     sim.air = Default::default();
     sim.audio = None;
     sim.audio_memory = Default::default();
@@ -701,7 +714,7 @@ pub(crate) fn simulate(
                         // Placed again: the full reset (`sub_82468C10`; [inferred] the bail respawner places through the
                         // same `sub_8246E558` as stage 6), so a stage 5 bail does not repeat after the respawn.
                         skate_core::living_world::ai_controller::full_reset(&mut replay.avoid.controller);
-                        settle(sim, rules.placement_hold_ticks());
+                        settle(sim, rules.respawn_hold_ticks());
                         let len = lines.get(&replay.cursor.line).map_or(0, |l| l.nodes.len());
                         info!("NPC_SKATER_RESPAWN #{} {} at line node {} of {len} (wipeout-end teleport after {:.2} s)", npc.id.serial, npc.character, replay.cursor.node, (rules.respawn_ticks().saturating_sub(left)) as f32 / 60.0);
                         events.write(super::npc_skaters::NpcSkaterEvent::Respawned { id: npc.id, node: replay.cursor.node });
@@ -722,7 +735,7 @@ pub(crate) fn simulate(
                         // The new cursor counts its own frames: hold it there (the old target ran it 38 nodes ahead).
                         replay.follow_target = Some(replay.cursor.frames);
                         let Some(target) = replay.cursor.line_target(&*lines) else { continue };
-                        match place(sim, &target, rules.placement_hold_ticks()) {
+                        match place(sim, &target, rules.respawn_hold_ticks()) {
                             Ok(v) => {
                                 let len = lines.get(&replay.cursor.line).map_or(0, |l| l.nodes.len());
                                 info!(
@@ -987,11 +1000,29 @@ pub(crate) fn simulate(
                     }
                 }
                 sim.body.runtime.ai_physics = Some(crate::physics::AiPhysicsSource { record, fresh: true });
-                if let Some(line) = lines.get(&replay.cursor.line) {
-                    let node = &line.nodes[replay.cursor.node as usize];
-                    let at = [deck.translation.x, deck.translation.y, deck.translation.z];
-                    if let Some(v) = ai_record::spawn_push(at, node.position, target.step, replay.cursor.node == 0, false) {
-                        GamePhysics::set_context_velocity(&mut sim.context, v);
+                // The spawn push (`824701F8` hold branch, `82C04168`): once, on the hold's last tick, while the skater is
+                // still within 0.01 / 0.05 m of where it was placed (retail measures from the node it placed it on), not
+                // on an off-board node. Before 2026-10-17 it was set at the placement and re-tested every tick from the
+                // deck, which sits 0.2 to 0.46 m off the node, so it never fired again (b178).
+                if !sim.teleport_pending && sim.hold_ticks > 0 {
+                    let at = projected_point(sim, state_now).0;
+                    let placed = *sim.placed_at.get_or_insert(at);
+                    if sim.hold_ticks == 1 {
+                        if let Some(line) = lines.get(&replay.cursor.line) {
+                            let node = &line.nodes[replay.cursor.node as usize];
+                            if node.flags & node_flags::OFF_BOARD == 0 {
+                                let moved = (at[0] - placed[0]).hypot(at[2] - placed[2]);
+                                let push = ai_record::spawn_push(at, placed, target.step, replay.cursor.node == 0, false);
+                                if let Some(v) = push {
+                                    GamePhysics::set_context_velocity(&mut sim.context, v);
+                                }
+                                info!(
+                                    "NPC_SKATER_PUSH #{} {} node {} {} (moved {moved:.3} m since the hold started)",
+                                    npc.id.serial, npc.character, replay.cursor.node,
+                                    push.map_or("none: left its place".to_string(), |v| format!("{:.1} m/s", (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()))
+                                );
+                            }
+                        }
                     }
                 }
                 // The PathController's ActionGraph signals: anticipation and the trick at its node. The slot is restored
@@ -1158,7 +1189,10 @@ pub(crate) fn simulate(
                 }
                 let held = sim.hold_ticks > 0;
                 if sim.hold_ticks > 0 {
-                    sim.hold_ticks -= 1;
+                    // The hold counts once the placement has landed (retail places at once).
+                    if !sim.teleport_pending {
+                        sim.hold_ticks -= 1;
+                    }
                     skate_core::living_world::ai_signals::drop_trick_dispatch(&mut intents);
                 }
                 // The per-tick writer's slot arm (`sub_824696B8`, b113): the slot trick's timed intents. It runs inside
@@ -1261,7 +1295,8 @@ pub(crate) fn simulate(
                     }
                     continue;
                 }
-                match spawn_sim(&mut physics, &config, &graphs, &target, &mut pool, rules.placement_hold_ticks()) {
+                // One hold tick at a handover: retail's order (placed at rest, pushed, then steered) without a visible stop.
+                match spawn_sim(&mut physics, &config, &graphs, &target, &mut pool, HANDOVER_HOLD_TICKS) {
                     Ok(sim) => {
                         let why = if replay.avoid.last.mode == skate_core::living_world::avoid::AvoidMode::StepOff { ", blocked by a prop (mode 7)" } else { "" };
                         let push = sim.handover_push.unwrap_or(0.0);

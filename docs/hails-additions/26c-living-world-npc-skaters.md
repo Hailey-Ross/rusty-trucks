@@ -612,6 +612,9 @@ the user rarely saw one ride past (user: "the skaters seemed to crash as soon as
 - `place` uses one reset, the host teleport with the spawn push (`SkaterRuntime::teleport_with_velocity`).
 - A hold after each placement: no ground steer and no trick dispatch for `npc_simulated.placement_hold_seconds`
   (default 0.5 s; mod key, 0..=10).
+  Changed 2026-10-17 (doc 26e "Handover hold and spawn push"): the hold is retail's counter (30 ticks after a reset
+  placement, 8 after a bail respawn via `npc_simulated.respawn_hold_seconds`, one tick at a replay -> sim switch) and
+  the push comes on its last tick.
 - Crash fix (same day): `NpcSim::respawn_node` keeps its line; a walk-back hand back could chain the cursor to the next
   line during the respawn wait, and the old line's node index ran past the new line (`npc_avoid.rs:204`, index 103 of 70).
 

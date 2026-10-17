@@ -45,7 +45,7 @@
 //!   scales the census caps), `ambient_skaters` (NPC skaters offline, retail 3, 0..=8),
 //!   `free_play {traffic, pedestrians, ai_skaters}` (retail Free Play mode: traffic and peds 0..1 scale
 //!   the caps, 0 removes them at once, `ai_skaters` on / off; absent = career free roam),
-//!   `npc_simulated {enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds}` (NPC
+//!   `npc_simulated {enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, respawn_hold_seconds}` (NPC
 //!   skaters near the player as full physics skaters driven by their AI record; default off
 //!   until play-tested, 40 m, 3; bail respawn after 5 s clamped to 1.5..7.9 s; mode 7 walk back
 //!   `walk_back` (retail on), `walk_arrive_distance` (2.4 m, 0..=20), `walk_stuck_ticks` (600, 0..=36000);
@@ -246,6 +246,8 @@ pub struct NpcSimulatedPatch {
     pub respawn_max: Option<f32>,
     /// After a placement the skater holds (no steer, no trick) this long (s, 0..=10; default 0.5).
     pub placement_hold_seconds: Option<f32>,
+    /// The hold after a bail respawn (s, 0..=10; default 8 ticks, retail `8246EA90`).
+    pub respawn_hold_seconds: Option<f32>,
     /// AI trick signals: anticipation distance (m, 0..=50), look-ahead (recorded frames,
     /// 0..=600), max nodes crossed per tick for an event (0..=60); retail 3.0, 60, 3.
     pub anticipation_distance: Option<f32>,
@@ -968,7 +970,7 @@ impl Merge for FreePlayPatch {
 
 impl Merge for NpcSimulatedPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, bump, reactions, reaction_radius);
+        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, respawn_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, bump, reactions, reaction_radius);
     }
 }
 
@@ -1084,6 +1086,7 @@ impl LivingWorldPatch {
                     && n.max.is_none_or(|m| m <= 16)
                     && [n.respawn_seconds, n.respawn_min, n.respawn_max].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=60.0).contains(&v)))
                     && n.placement_hold_seconds.is_none_or(|v| v.is_finite() && (0.0..=10.0).contains(&v))
+                    && n.respawn_hold_seconds.is_none_or(|v| v.is_finite() && (0.0..=10.0).contains(&v))
                     && n.anticipation_distance.is_none_or(|v| v.is_finite() && (0.0..=50.0).contains(&v))
                     && n.anticipation_frames.is_none_or(|v| v <= 600)
                     && n.max_crossed_nodes.is_none_or(|v| v <= 60)
