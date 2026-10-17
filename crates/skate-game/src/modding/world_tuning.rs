@@ -242,6 +242,21 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
     if let Some(f) = &p.npc_skater_props {
         s.npc_skater_props.enabled = f.enabled.unwrap_or(s.npc_skater_props.enabled);
     }
+    if let Some(f) = &p.ped_nav {
+        let n = &mut s.ped_nav;
+        let w = &mut n.wander;
+        w.steer_rate = f.steer_rate.map_or(w.steer_rate, f32::to_radians);
+        w.turn_edges = f.turn_edges.unwrap_or(w.turn_edges);
+        w.stall_seconds = f.stall_seconds.unwrap_or(w.stall_seconds);
+        w.stuck_distance = f.stuck_distance.unwrap_or(w.stuck_distance);
+        w.stuck_seconds = f.stuck_seconds.unwrap_or(w.stuck_seconds);
+        use skate_core::living_world::peds::wander::CrosswalkRule;
+        n.crosswalk = match f.crosswalk.as_deref() {
+            Some("walk_signal") => CrosswalkRule::WalkSignal,
+            Some("off") => CrosswalkRule::Off,
+            _ => n.crosswalk,
+        };
+    }
     if let Some(f) = &p.ped_body {
         let b = &mut s.ped_body;
         b.enabled = f.enabled.unwrap_or(b.enabled);
@@ -767,6 +782,22 @@ mod tests {
         assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_vehicle_contact": {"knockdown": true}}))).is_err());
         clear_owner(&mut w, "dev.a");
         assert_eq!(w.resource::<LivingWorldSettings>().ped_vehicle_contact, retail, "mod disable restores retail");
+    }
+
+    #[test]
+    fn ped_nav_is_mod_reachable_and_reset_on_disable() {
+        use skate_core::living_world::peds::CrosswalkRule;
+        let mut w = world();
+        let default = LivingWorldSettings::default().ped_nav;
+        assert_eq!((default.wander.turn_edges, default.crosswalk), ([25.0, 70.0, 115.0, 160.0], CrosswalkRule::Off));
+        set(&mut w, "dev.a", "living_world", Some(json!({"ped_nav": {"steer_rate": 90.0, "stuck_seconds": 4.0, "crosswalk": "walk_signal"}}))).unwrap();
+        let s = w.resource::<LivingWorldSettings>().ped_nav.clone();
+        assert!((s.wander.steer_rate.to_degrees() - 90.0).abs() < 1e-3);
+        assert_eq!((s.wander.stuck_seconds, s.wander.stall_seconds, s.crosswalk), (4.0, default.wander.stall_seconds, CrosswalkRule::WalkSignal));
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_nav": {"turn_edges": [70.0, 25.0, 115.0, 160.0]}}))).is_err(), "edges ascend");
+        assert!(set(&mut w, "dev.a", "living_world", Some(json!({"ped_nav": {"crosswalk": "always"}}))).is_err());
+        clear_owner(&mut w, "dev.a");
+        assert_eq!(w.resource::<LivingWorldSettings>().ped_nav, default, "mod disable restores the default");
     }
 
     #[test]

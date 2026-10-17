@@ -263,3 +263,31 @@ class Group(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NormalMaps(unittest.TestCase):
+    """`living_world_models._normal_png` (research b171): DXT5 two-channel maps (x in alpha, varying) and DXT1 RGB
+    maps (no alpha: x in red) both come out as tangent-space RGB normals; a flat normal stays +z."""
+
+    def convert(self, rgba):
+        import io
+        from PIL import Image
+        from tools.asset_pipeline.living_world_models import _normal_png
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'n.png'
+            Image.fromarray(rgba).save(p)
+            import numpy as np
+            return np.asarray(Image.open(io.BytesIO(_normal_png(p))).convert('RGB')).astype(int)
+
+    def test_dxt1_rgb_and_dxt5_alpha_layouts(self):
+        import numpy as np
+        # DXT1 RGB: flat (128, 128, 255) and a tilted texel, alpha constant 255.
+        rgb = np.array([[[128, 128, 255, 255], [218, 128, 210, 255]]], dtype=np.uint8)
+        out = self.convert(rgb)
+        self.assertTrue(abs(out[0, 0, 0] - 128) <= 1 and abs(out[0, 0, 1] - 128) <= 1 and out[0, 0, 2] >= 254, out[0, 0])
+        self.assertTrue(out[0, 1, 0] > 200 and out[0, 1, 2] > 200, out[0, 1])
+        # DXT5 two-channel: x in alpha (varies), red unused.
+        two = np.array([[[0, 128, 0, 128], [0, 128, 0, 218]]], dtype=np.uint8)
+        out = self.convert(two)
+        self.assertTrue(abs(out[0, 0, 0] - 128) <= 1 and out[0, 0, 2] >= 254, out[0, 0])
+        self.assertTrue(out[0, 1, 0] > 200 and out[0, 1, 2] > 200, out[0, 1])

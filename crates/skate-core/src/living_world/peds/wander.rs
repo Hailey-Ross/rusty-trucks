@@ -32,7 +32,7 @@
 //!
 //! Ours (stated): NavPower's path following and local avoidance are not decoded. A ped follows
 //! the funnel corners of [`NavMesh::find_path`], steers toward the next corner at
-//! [`WanderParams::turn_rate`] below the first turn edge and posts retail's turn buckets past it
+//! [`WanderParams::steer_rate`] (measured 255 deg/s) below the first turn edge and posts retail's turn buckets past it
 //! (`82E2A500`: 45 / 90 / 135 / 180, standing or walking, the clip turns the ped; the angle is
 //! to the next corner, retail's against NavPower's steering velocity `82E2ABF8` / `82E2AAA0`, b169), re-targets on arrival (the bot's state 1) and,
 //! when a path cannot be found, as after an event 1-3 (short fan next). Avoidance: a ped yields
@@ -74,6 +74,12 @@ pub struct WanderParams {
     /// Turn rate while walking, radians per second. Default from `livingworld_entities_locomotion`
     /// `Hash_AD1EA18F819BF397` = 45 read as degrees per second (meaning unverified).
     pub turn_rate: f32,
+    /// The walking steer rate, radians per second: 255 deg/s [trace, recomp 2026-10-16, PEDFACE at PCU Library and
+    /// Aletown: 30 peds, 9136 walking samples, the facing follows NavPower's steering direction with no lag and its
+    /// corrections outside turn clips peak at 257 deg/s, p99 149]. Code candidate (b158, meaning unverified): the bot
+    /// value +0x80 = clamp(255 x max(1, s), 90, 720) of the truncated speed (`82E2D260`), 255 at s = 1; the 510 it gives
+    /// at the wander speed 2.0 is never seen in the trace.
+    pub steer_rate: f32,
     /// The turn bucket edges, degrees of heading error (`82E2A500`: 25 / 70 / 115 / 160, constants `0x8209994C` /
     /// `0x8218155C` / `0x822F929C` / `0x82099154` and their negatives; research b167) [code, values read by the
     /// research agent]: from the first edge up a standing or walking ped posts the 45 / 90 / 135 / 180 turn of that
@@ -107,6 +113,7 @@ impl Default for WanderParams {
             mover_value: 2.0,
             corner_radius: 0.5,
             turn_rate: 45f32.to_radians(),
+            steer_rate: 255f32.to_radians(),
             turn_edges: [25.0, 70.0, 115.0, 160.0],
             stop_heading: 60f32.to_radians(),
             walk_heading: 15f32.to_radians(),
@@ -546,7 +553,7 @@ impl PedNav {
         }
         self.waited = 0.0;
         self.waiting = NavWait::None;
-        let turn = error.clamp(-params.turn_rate * dt, params.turn_rate * dt);
+        let turn = error.clamp(-params.steer_rate * dt, params.steer_rate * dt);
         let out = |intent, turn| NavOutput { intent, turn, waiting: NavWait::None, turn_degrees: 0, steer: turn };
         // A posted turn clears the steering (`82E2A500`: command +0x64 = 0) and the clip turns the ped.
         let post = |degrees| NavOutput { intent: if left { Intent::TurnLeft } else { Intent::TurnRight }, turn: 0.0, waiting: NavWait::None, turn_degrees: degrees, steer: turn };

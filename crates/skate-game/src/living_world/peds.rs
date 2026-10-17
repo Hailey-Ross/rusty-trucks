@@ -203,7 +203,7 @@ pub(crate) struct Pedestrian {
 
 /// Navigation settings (mod-facing; default = retail): wander parameters, which navmesh areas
 /// peds may use and what they cost, and the crosswalk rule (retail `Off`).
-#[derive(Resource, Default, Clone, PartialEq)]
+#[derive(Resource, Default, Clone, Debug, PartialEq)]
 pub(crate) struct PedNavSettings {
     pub wander: WanderParams,
     pub rules: NavRules,
@@ -1584,6 +1584,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<super::ped_hand_props::ReleasedHandProps>()
         .init_resource::<PedRejected>()
         .init_resource::<PedNavSettings>()
+        .add_systems(PreUpdate, sync_nav_settings)
         .init_resource::<PedObstacles>()
         .init_resource::<PedObstacleTrace>()
         .add_message::<PedEvent>()
@@ -2829,3 +2830,12 @@ pub(crate) fn think_peds(
         log_still_ped(ped, body, mind, &state_now, &conversations.map, tick, &mut still_budget);
     }
 }
+
+/// The mod-facing nav settings (`LivingWorldSettings::ped_nav`, mod `ped_nav`; reset when the mod is disabled) into the
+/// resource the ped step reads.
+fn sync_nav_settings(settings: Res<super::LivingWorldSettings>, mut nav: ResMut<PedNavSettings>) {
+    if settings.is_changed() && *nav != settings.ped_nav {
+        *nav = settings.ped_nav.clone();
+    }
+}
+

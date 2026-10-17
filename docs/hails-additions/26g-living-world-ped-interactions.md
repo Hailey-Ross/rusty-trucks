@@ -1653,3 +1653,41 @@ Peds carried their hand props but never used them, so the phone ring, the call l
   within the arrival radius `+0x0C`, and every writer found sets it to `0x82060C50` 2.0 m (`82E35E80`, mover modes
   2 / 3 / 4 / 6; b158). Ours was 0.5 m flat [inferred]. Now 2.0 m in 3D, mod key `ped_brain.zombie_arrive_distance`;
   test `zombies_follow_the_player_and_mill_round_them` checks 2.1 m (not reached) and 1.92 m (reached).
+
+## Ped steering rate measured in the recomp: 255 deg/s, and the ped_nav mod values (2026-10-16)
+- **Problem:** our walking peds steered at 45 deg/s (a locomotion record value read as degrees per second, meaning
+  unverified); NavPower's real rate was unknown (b158 item 2, b169).
+- **Measurement [trace, recomp]:** a new recomp trace line `PEDFACE` (research hooks on the ped mover's think
+  `82E2CB08` and the steering getter `82E2D180`; offsets from b170, main-checked: ped = mover +4, the turn flag byte
+  `*(ped+0x1704)+0x84`) logs each ped's facing, position, turn / transition flags and NavPower's last steering
+  direction about 3 times a second (the mover think's own rate). Scripted standing runs at PCU Library (user: "much
+  better location") and DownTown Aletown: 30 peds, 12,087 lines, 0 malformed. A walking ped's facing is within 5 deg of
+  the steering direction in nearly every sample (no facing lag). Outside turn clips the walking direction changes p50 0,
+  p90 19, p95 48, p99 149, max 257 deg/s; turn clips p50 68, p90 178, max 328 deg/s.
+- **Change:** `WanderParams::steer_rate` 255 deg/s for the walking steer (the 45 deg/s value stays for standing peds
+  turning to face a point or a waypoint). Code candidate for the value (b158, meaning unverified): the bot value +0x80 =
+  clamp(255 x max(1, s), 90, 720) of the truncated speed (`82E2D260`), 255 at s = 1; the 510 it would give at the
+  wander speed 2.0 never shows in the trace, so the measured 255 is used.
+- **Moddability:** new mod block `living_world.ped_nav {steer_rate, turn_edges, stall_seconds, stuck_distance,
+  stuck_seconds, crosswalk}`, held in `LivingWorldSettings` (reset when the mod is disabled) and copied into the nav
+  settings; before this no ped nav value (crosswalk rule included) was reachable from a mod.
+- **Tools:** `.claude/skills/recomp-research/tools/ped_face_rate.py` (PEDFACE) and `ped_turn_rate.py` (PEDXYZ);
+  scripts `.local/recomp/scripts/pedface_pcu_library.txt` / `pedface_stand.txt`. Credit: the skate3recomp static
+  recompilation and its research hooks.
+- **Verification:** `ped_nav_is_mod_reachable_and_reset_on_disable`; ped suites (see the commit). Not play-tested yet:
+  walking peds now follow path corners quickly instead of arcing slowly.
+
+## Ped normal maps: the RGB layout (2026-10-16)
+- **Problem (user, verbatim: "the lighting of peds in the recomp are much better and smoother ours in the rust engine
+  are rough and blocky feeling dark patches", "mainly on the shadowed side"; research b171, main-checked):** the
+  living-world model exporter read every normal map as retail's two-channel layout (x in alpha, y in green). Ped normal
+  maps are DXT1 (rx2 format 82): no alpha, so x came out 1 and z 0 for every texel. The installed `female_adult_1.glb`
+  body and hair normal textures read R 218..255, B exactly 128 (main checked the pixels): every shaded normal lay flat
+  along the surface tangent, which lights as blotches that change per UV island and DXT block, worst away from the sun.
+- **Change:** `living_world_models._normal_png` picks the layout from the source: DXT5 two-channel (x in alpha;
+  vehicles, unchanged) or DXT1 RGB (x in red; peds); the decoded PNG no longer carries the format, so a constant alpha
+  marks the RGB layout (a mod texture of either kind converts too). Test `NormalMaps` in
+  `tools/asset_pipeline/test_living_world.py` (synthetic, both layouts); the vehicle exporter tests still pass.
+- **Needs** the setup `livingworld` group re-run to re-export the ped models. Open (b171): peds use StandardMaterial with
+  the flat global ambient while the player's character material gets SH fill (retail's ped ambient not read); peds have
+  no RenderLayers [0, 28] (no shadow on the baked world); the normal map X sign after the re-export.

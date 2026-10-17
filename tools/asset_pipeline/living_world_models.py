@@ -24,9 +24,14 @@ from tools.asset_pipeline.character_glb import Glb
 
 
 def _normal_png(source: Path) -> bytes:
-    """Retail two-channel normal map (x in alpha, y in green) to a tangent-space RGB normal map."""
+    """Retail normal map to a tangent-space RGB normal map. Two layouts by source format (research b171): DXT5
+    two-channel (x in alpha, y in green; vehicles) and DXT1 RGB (x in red, y in green; peds, rx2 format 82). The
+    decoded PNG no longer carries the format, so a constant alpha (DXT1 has none) marks the RGB layout. Before
+    2026-10-16 every map was read as two-channel: a DXT1 ped map gave x = 1, z = 0 (normals flat along the surface,
+    blotchy dark shading on the shadow side)."""
     a = np.asarray(Image.open(source).convert('RGBA'), dtype=float)
-    x = a[:, :, 3] / 127.5 - 1.
+    rgb = a[:, :, 3].min() == a[:, :, 3].max()
+    x = (a[:, :, 0] if rgb else a[:, :, 3]) / 127.5 - 1.
     y = a[:, :, 1] / 127.5 - 1.
     s = np.maximum(np.sqrt(x * x + y * y), 1.)
     x /= s

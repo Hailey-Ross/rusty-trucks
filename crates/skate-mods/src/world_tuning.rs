@@ -28,7 +28,8 @@
 //!   obstacles; retail on / 0.2 / 0.4 / 0.25 / held props stay obstacles; `moving_solid` is our
 //!   stand-in for NavPower's moving avoider, default on),
 //!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on),
-//!   `ped_body {enabled, parts, look_ahead, range}` (peds as solid bodies in the skater's contact solve, collision
+//!   `ped_nav {steer_rate, turn_edges, stall_seconds, stuck_distance, stuck_seconds, crosswalk}` (ped navigation, see
+//!   `PedNavPatch`), `ped_body {enabled, parts, look_ahead, range}` (peds as solid bodies in the skater's contact solve, collision
 //!   group 11; retail on, three capsule parts posed from bones: `parts` = [{from, to, centre, radius, half_length,
 //!   mass}], `look_ahead` seconds of ped velocity, `range` m from an observer),
 //!   `ped_vehicle_contact {enabled, push}` (traffic cars touching peds; retail on / on: the ped is
@@ -184,6 +185,8 @@ pub struct LivingWorldPatch {
     pub npc_skater_props: Option<NpcSkaterPropsPatch>,
     /// Peds as solid bodies the skater collides with.
     pub ped_body: Option<PedBodyPatch>,
+    /// Ped navigation: the walking steer rate, the turn bucket edges, the pinned-ped watch and the crosswalk rule.
+    pub ped_nav: Option<PedNavPatch>,
     /// Traffic cars touching peds (`skate_core::living_world::peds::VehicleContactParams`).
     pub ped_vehicle_contact: Option<PedVehicleContactPatch>,
     /// NPC skater trick choice (`skate_core::living_world::npc_tricks`).
@@ -426,6 +429,20 @@ pub struct PedVehicleContactPatch {
 #[serde(deny_unknown_fields)]
 pub struct NpcSkaterPropsPatch {
     pub enabled: Option<bool>,
+}
+
+/// Ped navigation (`skate_core::living_world::peds::wander`): `steer_rate` deg/s (measured 255, 0..=1000),
+/// `turn_edges` deg (retail 25 / 70 / 115 / 160, ascending, 0..=180), `stall_seconds` (0.5), `stuck_distance` m (0.3),
+/// `stuck_seconds` (2.0) (0..=60 each), `crosswalk` "off" (retail) or "walk_signal".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PedNavPatch {
+    pub steer_rate: Option<f32>,
+    pub turn_edges: Option<[f32; 4]>,
+    pub stall_seconds: Option<f32>,
+    pub stuck_distance: Option<f32>,
+    pub stuck_seconds: Option<f32>,
+    pub crosswalk: Option<String>,
 }
 
 /// Peds as solid bodies in the skater's contact solve (retail collision group 11, `sub_82BD4A30`): the skater is
@@ -789,6 +806,12 @@ impl Merge for SkaterFadePatch {
         merge_opts!(self, b; fade_in_seconds, fade_seconds, despawn_alpha);
     }
 }
+impl Merge for PedNavPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; steer_rate, turn_edges, stall_seconds, stuck_distance, stuck_seconds, crosswalk);
+    }
+}
+
 impl Merge for PedObstaclesPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents);
@@ -835,6 +858,7 @@ impl Merge for LivingWorldPatch {
         merge_nested(&mut self.ped_obstacles, &b.ped_obstacles);
         merge_nested(&mut self.npc_skater_props, &b.npc_skater_props);
         merge_nested(&mut self.ped_body, &b.ped_body);
+        merge_nested(&mut self.ped_nav, &b.ped_nav);
         merge_nested(&mut self.ped_vehicle_contact, &b.ped_vehicle_contact);
         merge_nested(&mut self.npc_tricks, &b.npc_tricks);
         merge_nested(&mut self.npc_simulated, &b.npc_simulated);
@@ -1013,6 +1037,12 @@ impl LivingWorldPatch {
             && self.ped_fade.as_ref().is_none_or(|f| finite(f.fade_in_seconds) && f.distance.is_none_or(|d| d.iter().all(|v| finite(Some(*v)))))
             && self.ped_obstacles.as_ref().is_none_or(|o| {
                 [o.min_half_extent, o.moving_speed, o.recut_fraction, o.detour_margin, o.step_height].into_iter().all(finite)
+            })
+            && self.ped_nav.as_ref().is_none_or(|n| {
+                n.steer_rate.is_none_or(|v| v.is_finite() && (0.0..=1000.0).contains(&v))
+                    && n.turn_edges.is_none_or(|e| e.iter().all(|v| v.is_finite() && (0.0..=180.0).contains(v)) && e.windows(2).all(|w| w[0] <= w[1]))
+                    && [n.stall_seconds, n.stuck_distance, n.stuck_seconds].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=60.0).contains(&v)))
+                    && n.crosswalk.as_deref().is_none_or(|c| matches!(c, "off" | "walk_signal"))
             })
             && self.ped_body.as_ref().is_none_or(|b| {
                 let name = |n: &str| !n.is_empty() && n.len() <= 64 && n.bytes().all(|c| c.is_ascii_graphic());
