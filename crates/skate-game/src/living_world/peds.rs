@@ -872,6 +872,7 @@ pub(crate) fn advance_peds(
     npcs: Query<(&super::npc_skaters::NpcSkater, &super::npc_skaters::NpcReplay)>,
     settings: Res<LivingWorldSettings>,
     mut ped_contacts: Local<Vec<PedContact>>,
+    mut played_cues: Local<BTreeMap<LivingWorldId, u32>>,
 ) {
     let _span = super::timing::span(super::timing::ADVANCE_PEDS);
     let obstacles = &obstacles.0;
@@ -1044,6 +1045,25 @@ pub(crate) fn advance_peds(
             // `82E3FAE0`). Retail requests it only while the prop is linked; ours: while held.
             if let Some(h) = mind.map(|m| &m.brain.hand_prop) {
                 let carry = h.key.as_ref().and_then(|k| data.hand_props.props.get(k)).and_then(|r| r.carry_channel.as_deref());
+                // The idle action's cue (`82E3F470`): a new cue plays once; the talk / read cycles are asked for every
+                // frame in retail, so ours asks again when their clip ends early.
+                use skate_core::living_world::peds::hand_prop::ActionCue;
+                if let Some((cue, seq)) = mind.and_then(|m| m.action_cue.map(|c| (c, m.action_seq))) {
+                    let blend = settings.ped_brain.values.hand_prop.actions.clip_blend;
+                    let new = played_cues.get(&ped.id) != Some(&seq);
+                    match cue {
+                        ActionCue::Clip(name) if new || (body.player.channel_idle() && matches!(name, "HandPropPhoneTalk" | "HandPropReadCyc")) => {
+                            body.player.channel_request(set, name, blend, blend);
+                        }
+                        ActionCue::Carry if new => {
+                            if let Some(name) = carry {
+                                body.player.channel_request(set, name, blend, blend);
+                            }
+                        }
+                        _ => {}
+                    }
+                    played_cues.insert(ped.id, seq);
+                }
                 match (h.holding, carry) {
                     (true, Some(name)) if body.player.channel_idle() => {
                         body.player.channel_request(set, name, 0.2, 0.2);
@@ -1590,6 +1610,10 @@ pub(crate) fn plugin_controller_for(
 #[derive(Component, Default)]
 pub(crate) struct PedMind {
     pub brain: skate_core::living_world::peds::brain::PedBrain,
+    /// The idle hand prop action's channel cue and its change count (`ped_hand_props::sync_hand_props` sets them,
+    /// `advance_peds` plays a new cue once).
+    pub action_cue: Option<skate_core::living_world::peds::hand_prop::ActionCue>,
+    pub action_seq: u32,
     pub mood: skate_core::living_world::peds::mood::MoodStore,
     /// The current flee leg's goal (`skate_core::living_world::peds::flee`).
     pub flee_goal: Option<[f32; 3]>,

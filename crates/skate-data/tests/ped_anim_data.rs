@@ -113,6 +113,10 @@ fn every_census_entity_resolves_a_look_and_animation() {
     for name in skate_core::living_world::peds::skater_contact::REACTION_ANIMS {
         assert!(t.anim_sets["default"].entries.contains_key(*name), "default set: {name} missing");
     }
+    // The idle hand prop actions (`82E3F1D8` / `82E3F470`) resolve in the default set too.
+    for name in ["HandPropEat", "HandPropDrink", "HandPropReadInto", "HandPropReadCyc", "HandPropReadOut", "HandPropPhoneAnswer", "HandPropPhoneTalk", "HandPropPhoneHangup", "HandPropLitter"] {
+        assert!(t.anim_sets["default"].entries.contains_key(name), "default set: {name} missing");
+    }
     let o = PedOverrides::default();
     let mut recipes = std::collections::BTreeSet::new();
     for entity in &used {

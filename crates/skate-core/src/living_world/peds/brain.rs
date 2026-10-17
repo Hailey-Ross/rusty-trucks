@@ -784,6 +784,16 @@ pub struct HandProp {
     pub disposable: bool,
     pub can_sit: bool,
     pub can_attack_throw: bool,
+    /// The idle actions (`82E3F818` / `82E3F1D8` / `82E3F470`): the usage list (host-set at the attach), the picked
+    /// action (`+0xCBC`), has actions (`+0xCCF` 0x20), running (0x08), the first and second stage done (0x04 / 0x02),
+    /// and a litter drop waiting for timer 34 (`+0xCCE` 0x01).
+    pub actions: Vec<super::hand_prop::HandPropAction>,
+    pub action: i32,
+    pub has_actions: bool,
+    pub acting: bool,
+    pub stage_one: bool,
+    pub stage_two: bool,
+    pub litter_pending: bool,
 }
 
 impl HandProp {

@@ -17,6 +17,80 @@ use super::brain::PedBrain;
 /// Timer 34 ThrowHandPropTimer and timer 35 ThrowHandPropReactionTimer (`brain.rs` `timers::NAMES`).
 pub const THROW_TIMER: i32 = 34;
 pub const THROW_REACTION_TIMER: i32 = 35;
+/// The idle action's delay (`HandPropActionTimer`, 31) and its usage stages (`HandPropUsageTimer` 32 / 33).
+pub const ACTION_TIMER: i32 = 31;
+pub const USAGE_TIMER: i32 = 32;
+pub const USAGE_TIMER_2: i32 = 33;
+
+/// The idle actions (`brain+0xCBC`, `82E3F1D8`): 0 none, 1 eat, 2 drink, 3 phone, 4 read, 5 litter; -1 after a
+/// finished phone call or read.
+pub mod action {
+    pub const NONE: i32 = 0;
+    pub const EAT: i32 = 1;
+    pub const DRINK: i32 = 2;
+    pub const PHONE: i32 = 3;
+    pub const READ: i32 = 4;
+    pub const LITTER: i32 = 5;
+    pub const DONE: i32 = -1;
+}
+
+/// One entry of a hand prop usage's action list (`livingworld_handprops_usagecharacteristics` `actions`,
+/// `E4E9C4E514981944`: {action, weight, min s, max s}) [data].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HandPropAction {
+    pub action: i32,
+    pub weight: f32,
+    pub min_seconds: f32,
+    pub max_seconds: f32,
+}
+
+/// The idle actions' times and speech values with retail defaults (`82E3F1D8` / `82E3F470`; mod-overridable).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HandPropActionSettings {
+    /// A clip counts as done this close to its end (`0x82099280` 0.2 s), and the clips' blend in / out (0.2).
+    pub clip_end_lead: f32,
+    pub clip_blend: f32,
+    /// The phone call: talk (timer 32, `0x82063C14` 7.5 s), then more talk (timer 33, `0x82063AB8` 3.5 s); a read
+    /// cycle (timer 32, `0x82060C50` 2.0 s); the retry while DisallowHandPropActions holds (timer 31, `0x820BD16C`
+    /// 15 s); the litter drop after the clip starts (timer 34, `0x82063BE0` 0.91667 s).
+    pub talk_seconds: f32,
+    pub talk_more_seconds: f32,
+    pub read_seconds: f32,
+    pub disallowed_retry_seconds: f32,
+    pub litter_release_seconds: f32,
+    /// Speech values (PedestrianSpeech): the ring at the answer (49), talking (48), the call's end (50), litter (61).
+    pub ring_speech: i32,
+    pub talk_speech: i32,
+    pub call_end_speech: i32,
+    pub litter_speech: i32,
+}
+
+impl Default for HandPropActionSettings {
+    fn default() -> Self {
+        Self {
+            clip_end_lead: 0.2,
+            clip_blend: 0.2,
+            talk_seconds: 7.5,
+            talk_more_seconds: 3.5,
+            read_seconds: 2.0,
+            disallowed_retry_seconds: 15.0,
+            litter_release_seconds: 0.916_67,
+            ring_speech: 49,
+            talk_speech: 48,
+            call_end_speech: 50,
+            litter_speech: 61,
+        }
+    }
+}
+
+/// What the ped's channel should play for its idle action this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionCue {
+    /// A logical hand-prop animation (`HandProp*`).
+    Clip(&'static str),
+    /// The action ended: back to the prop's carry pose (the record's `+0x38`).
+    Carry,
+}
 
 /// Release values with retail defaults (mod-overridable).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -53,6 +127,8 @@ pub struct HandPropSettings {
     pub small_group: u32,
     /// The throw clips' blend times (ped vfunc +240, 0.2).
     pub clip_blend: f32,
+    /// The idle actions (eat, drink, phone, read, litter).
+    pub actions: HandPropActionSettings,
     /// The dynamic-object pool: the manager's create (`826B8830`) refuses at 49 live objects, so a ped's hand prop
     /// is then not created [code, b91].
     pub max_live: usize,
@@ -65,6 +141,7 @@ pub struct HandPropSettings {
 impl Default for HandPropSettings {
     fn default() -> Self {
         Self {
+            actions: HandPropActionSettings::default(),
             light_speed: 5.0,
             light_release_seconds: 0.916_67,
             attack_speed: 10.0,
@@ -214,6 +291,147 @@ pub fn attack_throw_clip(angle: f32) -> &'static str {
 }
 
 impl PedBrain {
+    /// The attach (`82E3DE18`): the entity's usage list for the held prop; a non-empty list sets the has-actions bit
+    /// (`+0xCCF` 0x20) and the first action is picked.
+    pub fn attach_hand_prop_actions(&mut self, actions: Vec<HandPropAction>) {
+        self.hand_prop.has_actions = !actions.is_empty();
+        self.hand_prop.actions = actions;
+        self.hand_prop.acting = false;
+        self.pick_hand_prop_action();
+    }
+
+    /// `82E3F818`: a weighted pick over the first 16 entries (`82E1FCD8`: `rand % 100 + 1` against the running sum x
+    /// 100); none clears the has-actions bit for good. The pick sets the action and its delay, timer 31 = min +
+    /// u (max - min) with u = `rand x 2^-32`.
+    pub fn pick_hand_prop_action(&mut self) {
+        if !self.hand_prop.has_actions {
+            return;
+        }
+        let roll = (self.rng().modulo(100) + 1) as f32;
+        let mut sum = 0.0f32;
+        let pick = self.hand_prop.actions.iter().take(16).position(|a| {
+            sum += a.weight;
+            roll <= sum * 100.0
+        });
+        let Some(entry) = pick.map(|i| self.hand_prop.actions[i]) else {
+            self.hand_prop.has_actions = false;
+            return;
+        };
+        let u = self.rng().next_u32() as f32 * 2.328_306_4e-10;
+        self.hand_prop.action = entry.action;
+        self.set_timer(ACTION_TIMER, entry.min_seconds + u * (entry.max_seconds - entry.min_seconds));
+    }
+
+    /// `82E3F1D8`: start the picked action; false when nothing runs (action 0 does nothing and is never picked again;
+    /// an unknown action clears the has-actions bit).
+    fn start_hand_prop_action(&mut self, s: &HandPropActionSettings) -> (bool, Option<ActionCue>) {
+        match self.hand_prop.action {
+            action::NONE => (false, None),
+            action::EAT => (true, Some(ActionCue::Clip("HandPropEat"))),
+            action::DRINK => (true, Some(ActionCue::Clip("HandPropDrink"))),
+            action::PHONE => {
+                self.hand_prop.stage_one = false;
+                self.speech = Some(s.ring_speech);
+                (true, Some(ActionCue::Clip("HandPropPhoneAnswer")))
+            }
+            action::READ => {
+                self.hand_prop.stage_one = false;
+                (true, Some(ActionCue::Clip("HandPropReadInto")))
+            }
+            action::LITTER => {
+                // `+0xCCE` bit 0x01 (released, a drop), timer 34 to the drop.
+                self.hand_prop.litter_pending = true;
+                self.set_timer(THROW_TIMER, s.litter_release_seconds);
+                self.speech = Some(s.litter_speech);
+                (true, Some(ActionCue::Clip("HandPropLitter")))
+            }
+            _ => {
+                self.hand_prop.has_actions = false;
+                (false, None)
+            }
+        }
+    }
+
+    /// `82E3F470`, each tick while the prop is in the hand and not released: wait out timer 31, start the action
+    /// (or, while DisallowHandPropActions holds, wait another 15 s), then run its stages. `channel_left` = seconds
+    /// left of the channel clip (0 when the channel is idle). Returns what the channel should play.
+    pub fn update_hand_prop_action(&mut self, s: &HandPropActionSettings, channel_left: f32) -> Option<ActionCue> {
+        if !self.hand_prop.holding || self.hand_prop.litter_pending || self.timer(ACTION_TIMER) > 0.0 {
+            return None;
+        }
+        if !self.hand_prop.acting {
+            if self.hand_prop_actions_disallowed {
+                self.set_timer(ACTION_TIMER, s.disallowed_retry_seconds);
+                return None;
+            }
+            let (started, cue) = self.start_hand_prop_action(s);
+            self.hand_prop.acting = started;
+            return cue;
+        }
+        let clip_done = channel_left <= s.clip_end_lead;
+        match self.hand_prop.action {
+            action::PHONE if !self.hand_prop.stage_one => {
+                if clip_done {
+                    self.hand_prop.stage_one = true;
+                    self.hand_prop.stage_two = false;
+                    self.set_timer(USAGE_TIMER, s.talk_seconds);
+                }
+                None
+            }
+            action::PHONE if !self.hand_prop.stage_two => {
+                if self.timer(USAGE_TIMER) > 0.0 {
+                    self.speech = Some(s.talk_speech);
+                    return Some(ActionCue::Clip("HandPropPhoneTalk"));
+                }
+                self.speech = Some(s.call_end_speech);
+                self.hand_prop.stage_two = true;
+                self.set_timer(USAGE_TIMER_2, s.talk_more_seconds);
+                None
+            }
+            action::PHONE => {
+                if self.timer(USAGE_TIMER_2) <= 0.0 {
+                    self.hand_prop.action = action::DONE;
+                    return Some(ActionCue::Clip("HandPropPhoneHangup"));
+                }
+                self.speech = Some(s.talk_speech);
+                Some(ActionCue::Clip("HandPropPhoneTalk"))
+            }
+            action::READ if self.hand_prop.stage_one => {
+                if self.timer(USAGE_TIMER) <= 0.0 {
+                    self.hand_prop.action = action::DONE;
+                    return Some(ActionCue::Clip("HandPropReadOut"));
+                }
+                Some(ActionCue::Clip("HandPropReadCyc"))
+            }
+            action::READ => {
+                if clip_done {
+                    self.hand_prop.stage_one = true;
+                    self.set_timer(USAGE_TIMER, s.read_seconds);
+                }
+                None
+            }
+            // Eat, drink, litter and a finished call or read: when the clip ends, the carry pose, then the next pick.
+            _ => {
+                if !clip_done {
+                    return None;
+                }
+                self.hand_prop.acting = false;
+                self.pick_hand_prop_action();
+                Some(ActionCue::Carry)
+            }
+        }
+    }
+
+    /// The litter drop (`82E3ED50` -> `82E3EBE0(ped, 1, v)` when timer 34 runs out after HandPropLitter). NOT RETAIL
+    /// YET: the drop vector (retail passes one, most likely the prop's velocity; ours: zero, like DropHandProp).
+    pub fn update_litter(&mut self) -> Option<Vec3> {
+        if !self.hand_prop.litter_pending || self.timer(THROW_TIMER) > 0.0 {
+            return None;
+        }
+        self.hand_prop.litter_pending = false;
+        self.drop_hand_prop()
+    }
+
     /// `sub_82E3E648(ped, point, attack 0)`: start the light throw at `target` when the ped holds its prop. Returns the
     /// clip to play.
     pub fn start_light_throw(&mut self, settings: &HandPropSettings, heading: f32, position: Vec3, target: Vec3) -> Option<&'static str> {
@@ -412,5 +630,75 @@ mod tests {
         b.hand_prop.holding = true;
         assert_eq!(b.drop_hand_prop(), Some([0.0; 3]));
         assert!(!b.hand_prop.has() && b.hand_prop.linked);
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    fn brain(actions: &[(i32, f32)]) -> PedBrain {
+        let mut b = PedBrain::default();
+        b.hand_prop.holding = true;
+        b.attach_hand_prop_actions(actions.iter().map(|&(action, weight)| HandPropAction { action, weight, min_seconds: 0.0, max_seconds: 0.0 }).collect());
+        b
+    }
+
+    /// `82E3F1D8` / `82E3F470` (research b164): the call answers with the ring (49), talks (48) for 7.5 s, says 50,
+    /// talks 3.5 s more, hangs up, returns to the carry pose and picks again.
+    #[test]
+    fn a_phone_call_rings_talks_ends_and_picks_again() {
+        let s = HandPropActionSettings::default();
+        let mut b = brain(&[(action::PHONE, 1.0)]);
+        assert_eq!(b.hand_prop.action, action::PHONE);
+        assert_eq!(b.update_hand_prop_action(&s, 1.0), Some(ActionCue::Clip("HandPropPhoneAnswer")));
+        assert_eq!(b.speech, Some(49));
+        assert_eq!(b.update_hand_prop_action(&s, 1.0), None, "the answer clip plays");
+        assert_eq!(b.update_hand_prop_action(&s, 0.1), None, "0.2 s from its end the talk starts next");
+        assert_eq!(b.update_hand_prop_action(&s, 0.0), Some(ActionCue::Clip("HandPropPhoneTalk")));
+        assert_eq!(b.speech, Some(48));
+        b.tick_timers(7.5);
+        assert_eq!(b.update_hand_prop_action(&s, 0.0), None);
+        assert_eq!(b.speech, Some(50), "the call's end line before the last 3.5 s");
+        assert_eq!(b.update_hand_prop_action(&s, 0.0), Some(ActionCue::Clip("HandPropPhoneTalk")));
+        b.tick_timers(3.5);
+        assert_eq!(b.update_hand_prop_action(&s, 0.0), Some(ActionCue::Clip("HandPropPhoneHangup")));
+        assert_eq!(b.update_hand_prop_action(&s, 1.0), None, "the hang-up plays");
+        assert_eq!(b.update_hand_prop_action(&s, 0.0), Some(ActionCue::Carry));
+        assert!(!b.hand_prop.acting && b.hand_prop.action == action::PHONE, "picked again");
+    }
+
+    /// Litter (61) drops the prop when timer 34 runs out; action 0 is terminal (`answercellphonerarely`, 80 %).
+    #[test]
+    fn litter_drops_the_prop_and_action_zero_is_terminal() {
+        let s = HandPropActionSettings::default();
+        let mut b = brain(&[(action::LITTER, 1.0)]);
+        assert_eq!(b.update_hand_prop_action(&s, 1.0), Some(ActionCue::Clip("HandPropLitter")));
+        assert_eq!(b.speech, Some(61));
+        assert_eq!(b.update_litter(), None);
+        b.tick_timers(0.92);
+        assert_eq!(b.update_litter(), Some([0.0; 3]));
+        assert!(!b.hand_prop.holding && b.hand_prop.linked);
+        let mut idle = brain(&[(action::NONE, 1.0)]);
+        for _ in 0..3 {
+            assert_eq!(idle.update_hand_prop_action(&s, 0.0), None);
+        }
+        assert!(!idle.hand_prop.acting);
+        let mut never = brain(&[(action::READ, 0.0)]);
+        assert!(!never.hand_prop.has_actions, "a zero weight never picks (plain `read`)");
+        assert_eq!(never.update_hand_prop_action(&s, 0.0), None);
+    }
+
+    /// DisallowHandPropActions holds the action back 15 s at a time (timer 31).
+    #[test]
+    fn disallowed_actions_wait_fifteen_seconds() {
+        let s = HandPropActionSettings::default();
+        let mut b = brain(&[(action::EAT, 1.0)]);
+        b.hand_prop_actions_disallowed = true;
+        assert_eq!(b.update_hand_prop_action(&s, 0.0), None);
+        assert_eq!(b.timer(ACTION_TIMER), 15.0);
+        b.hand_prop_actions_disallowed = false;
+        b.tick_timers(15.0);
+        assert_eq!(b.update_hand_prop_action(&s, 0.0), Some(ActionCue::Clip("HandPropEat")));
     }
 }

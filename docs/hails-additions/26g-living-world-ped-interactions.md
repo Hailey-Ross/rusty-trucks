@@ -1566,3 +1566,41 @@ can"; asked whether peds stumble when another ped runs into them, "yes i think s
 ### Open
 - The forcing bit's setter (chaser vfn88 caller) and the classifier's state-2 exclusion.
 - Whether retail NPC skaters' bodies use the player's capsule or their own (the ped hits recomp session would show it).
+
+## Peds use their hand props: eat, drink, phone calls, reading, litter (2026-10-16)
+
+### Problem
+Peds carried their hand props but never used them, so the phone ring, the call lines and the litter line (speech 49,
+48, 50, 61; the audio side was ported, research b155 item 2) never happened.
+
+### Retail [code + data] (research b164; main re-read `82E3F818`, `82E1FCD8`, `82E3F1D8`, `82E3F470` and the strings)
+- The attach (`82E3DE18`) takes the entity's usage of the prop (`livingworld_entities` `handprops`: {handprop, usage})
+  and that usage's action list (`livingworld_handprops_usagecharacteristics` `actions`: {action, weight, min, max});
+  a non-empty list sets has-actions (`+0xCCF` 0x20) and picks.
+- The pick (`82E3F818`): `rand % 100 + 1` against the running weight sum x 100 over at most 16 entries; no pick clears
+  has-actions for good. It sets the action (`+0xCBC`) and timer 31 = min + u (max - min), u = `rand x 2^-32`.
+- The start (`82E3F1D8`) when timer 31 runs out: 1 HandPropEat, 2 HandPropDrink, 3 HandPropPhoneAnswer + speech 49,
+  4 HandPropReadInto, 5 HandPropLitter + speech 61 and the drop after timer 34 (0.91667 s); 0 does nothing (and is
+  never picked again: `answercellphonerarely` is 80 % action 0); blends 0.2.
+- The update (`82E3F470`): the phone talks (HandPropPhoneTalk, speech 48) for 7.5 s, says 50, talks 3.5 s more and
+  hangs up; a read cycles 2.0 s and reads out; any other action waits for its clip to end (0.2 s before), returns to
+  the carry pose and picks again. DisallowHandPropActions holds the start back 15 s at a time.
+
+### Change
+- `skate-core` `peds/hand_prop.rs`: `HandPropAction`, `HandPropActionSettings` (every time and speech value, retail
+  defaults, under `HandPropSettings::actions`), `attach_hand_prop_actions`, `pick_hand_prop_action`,
+  `update_hand_prop_action` (returns the channel cue) and `update_litter`; `HandProp` holds the list and the bits.
+- `skate-core` `peds/anim.rs`: the nine clip names and `channel_remaining` (the clip-time query, [inferred] time left).
+- `skate-game`: `HandPropData` loads the usages and each entity's usage per prop; `sync_hand_props` attaches, runs the
+  update (log `PED_HAND_PROP_ACTION`) and releases a littered prop through the existing release; `advance_peds` plays a
+  new cue once and asks again for the talk / read cycles when their clip ends early (retail asks every frame).
+
+### Verification
+- Tests: `a_phone_call_rings_talks_ends_and_picks_again`, `litter_drops_the_prop_and_action_zero_is_terminal`,
+  `disallowed_actions_wait_fifteen_seconds`; the data test `every_census_entity_resolves_a_look_and_animation` now
+  also checks the nine clips in the default set (all present). skate-core peds 127, skate-game 715 pass. Not
+  play-tested yet.
+
+### Open
+- What a reaction, a sit or a conversation does to a running action (nothing in `82E3F470` cancels one); the litter
+  drop vector (ours zero); whether retail's channel ignores a repeated request; the usage entry's `f32_24` / `f32_28`.
