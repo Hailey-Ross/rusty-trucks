@@ -101,12 +101,13 @@ function Send-Pending {
     if (Test-Path $sentFile) { foreach ($n in Get-Content $sentFile) { $sent[$n] = $true } }
     $files = @(Get-ChildItem (Join-Path $Root 'logs') -File -Filter 'game-*.log')
     if (Test-Path $crashDir) { $files += @(Get-ChildItem $crashDir -File) }
-    # Trace-all session folders: logs\trace-all-<time> (the Steam launcher's rust-traceall) and bin\logs\trace-all-<unix
-    # seconds> (the engine's default next to the exe). While a game runs, a folder written to in the last 30 s may
-    # still be in use; once no game runs (the send right after a session) every folder goes.
-    $gameRunning = [bool](Get-Process skate3rust -ErrorAction SilentlyContinue)
+    # Session folders: logs\trace-all-<time> (the Steam launcher's rust-traceall), bin\logs\trace-all-<unix seconds>
+    # (the engine's default next to the exe) and logs\recomp-<preset>-<time> (play-recomp.ps1). While a game runs, a
+    # folder written to in the last 30 s may still be in use; once no game runs (the send right after a session) every
+    # folder goes.
+    $gameRunning = [bool](Get-Process skate3rust, skate3 -ErrorAction SilentlyContinue)
     foreach ($dir in (Join-Path $Root 'logs'), (Join-Path $Root 'bin\logs')) {
-        $files += @(Get-ChildItem $dir -Directory -Filter 'trace-all-*' -ErrorAction SilentlyContinue | Where-Object {
+        $files += @(Get-ChildItem $dir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'trace-all-*' -or $_.Name -like 'recomp-*' } | Where-Object {
             if (-not $gameRunning) { return $true }
             $newest = Get-ChildItem $_.FullName -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             -not $newest -or $newest.LastWriteTime -lt (Get-Date).AddSeconds(-30)
@@ -130,6 +131,9 @@ function Send-Pending {
     } catch {
         Write-Host "Could not send to $target ($($_.Exception.Message))."
         $left = @($pending | Where-Object { -not (Select-String -Path $sentFile -SimpleMatch $_.FullName -Quiet -ErrorAction SilentlyContinue) })
+        # A recomp session with the captured game sound (audio.f32) never goes to the public repository: it waits
+        # for the share.
+        $left = @($left | Where-Object { -not ($_.PSIsContainer -and $_.Name -like 'recomp-*' -and (Test-Path (Join-Path $_.FullName 'audio.f32'))) })
         if ($c.github_repo -and $left.Count -gt 0) { Send-ToGitHub $c $left }
         else { Write-Host 'The logs stay in logs\ and go with the next send.' }
     }

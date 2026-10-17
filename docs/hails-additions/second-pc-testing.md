@@ -229,6 +229,84 @@ with the config above), or `tools\second-pc\PLAY-AND-SEND.bat` (runs `PLAY.bat`,
 - What was sent is listed in the second PC's `logs\sent.txt` (full paths: a moved folder sends everything again);
   delete a line to send that item again.
 
+## Recomp trace sessions
+
+The second PC can also play the traced Skate 3 recompilation (the research hooks of
+[13](13-recomp-research-hooks.md#using-it)) and send its traces back like any other session. A recomp session is a
+folder `logs\recomp-<preset>-<date>-<time>\`: the `recomp-` prefix is how the main PC tells it apart from an engine
+session. Nothing has to be built on the second PC: the main PC shares its recomp build.
+
+What a session holds: `trace.tsv` (the trace), `pad.txt` (your pad input), `game.out` / `game.err` (the recomp's own
+output), `session.txt` (preset, trace categories, PC, start and end, exit code, recomp build, line count, malformed
+lines) and, for the audio presets, `audio.f32` (the mixed game sound, float stereo 48 kHz).
+
+**Keep these on your own network.** The recomp build is recompiled game code and the game folder is your copy of the
+game: they only travel from the main PC's share to the second PC. A recomp session with `audio.f32` (game sound) never
+goes through the GitHub fallback; it waits for the share. Traces without sound may use the fallback (they hold
+measurements, not game code).
+
+| Script (`tools/second-pc/`) | Runs on | Does |
+|---|---|---|
+| `share-recomp.ps1` | main PC | puts the recomp build (`skate3.exe`, its `rexruntime` DLL, `build.txt` with the build's commit) in `<shared folder>\_recomp\bin\`; with `-WithGame` also stages the recomp game folder in `_recomp\game\` (once, about 7.5 GB) |
+| `play-recomp.ps1` (+ `PLAY-RECOMP.bat`) | second PC | `-GetGame` copies the staged game folder, checks it by size and file count and then removes the staged copy; `-Update` copies the newest build; `-Trace <preset>` plays, checks the trace and sends; `-List` lists the presets; `-NoSend` keeps the session for a later send |
+
+### Main PC (each new recomp build)
+
+From a checkout of this branch, with the recomp built from the `research-hooks` branch (see 13):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\second-pc\share-recomp.ps1 -Build <recomp checkout>\out\build\<preset> -Folder <the shared folder>
+# first time, also the game folder (the folder you play the recomp from, with game\ and dlc\):
+#   ... -Game <recomp game folder> -WithGame
+```
+
+### Second PC (once)
+
+The share must work already ([Sending sessions back](#sending-sessions-back), `play-and-send.ps1 -Setup`): the recomp
+scripts use the same login. Then, from the game folder (A) or `$repo\tools\second-pc` (B):
+
+```powershell
+.\PLAY-RECOMP.bat -GetGame   # about 7.5 GB over the network, once
+.\PLAY-RECOMP.bat -Update    # the recomp build; again whenever the main PC shares a new one
+```
+
+Both land in `.local\recomp\` (`bin\`, `game\`) under the game folder or checkout. For the release ZIP (A), download
+the scripts next to the game first:
+
+```powershell
+$base = 'https://raw.githubusercontent.com/Hailey-Ross/rusty-trucks/hails-additions/tools/second-pc'
+foreach ($f in 'PLAY-RECOMP.bat', 'play-recomp.ps1', 'play-and-send.ps1') { Invoke-WebRequest -UseBasicParsing "$base/$f" -OutFile "$game\$f" }
+Unblock-File "$game\PLAY-RECOMP.bat", "$game\play-recomp.ps1", "$game\play-and-send.ps1"
+```
+
+### Playing a recomp session
+
+`PLAY-RECOMP.bat <preset>` (for example `PLAY-RECOMP.bat props`). It refuses to start while another game runs (one
+game at a time), prints what to do, plays, writes `session.txt`, checks every trace line (`KIND<tab>ms...`; any other
+line makes the trace unusable and it says so) and sends with `play-and-send.ps1 -SendOnly`.
+
+| Preset | Trace categories | What to do |
+|---|---|---|
+| `props` | props | About 2 minutes: ride slowly into a cone, then fast into a cone, roll onto a bench seat, grind a bench seat, then get off the board and walk into a bench. A few seconds between them. |
+| `npc` | npc, world, traffic | Skate around peds and NPC skaters as normal. |
+| `pedbody` | npc, pedbody | Bump into peds, run into them fast, knock some down. |
+| `traffic` | traffic, skitch, npc | Skitch cars, let go at different speeds, also of a stopped car; ride near junctions. |
+| `grind` | grind | Grind the rails and stairs by the University library (full-rate lines inside that box). |
+| `audio` | audio, plus the sound | Play as normal. |
+| `audiox` | audio, audiox, dsp, plus the sound | Heavy: 1 or 2 minutes around the sound being studied. |
+| `all` | audio, dsp, npc, world, traffic, aiskater, plus the sound | Everything at once (large). |
+
+Quit with Escape or F1 (or hold LB + RB + Back for about a second), then **Quit to the desktop**. Closing with Steam's
+**Exit game** is safe too: the trace is written as it goes.
+
+The recomp's save lives in its game folder, so the second PC plays its own copy: what you change there does not touch
+the main PC's save.
+
+Remember what the recomp is ([13](13-recomp-research-hooks.md#warning-reference-and-information-gathering-only)): its
+frame rate and timing differ from the console, so its traces validate retail logic; they are not ground truth.
+Credits: [skate3recomp](https://github.com/mchughalex/skate3recomp) by @mchughalex, the
+[rexglue SDK](https://github.com/rexglue/rexglue-sdk) and [Xenia](https://github.com/xenia-project/xenia).
+
 ## Moving the ISO
 
 A FAT32 flash drive cannot hold a file over 4 GB, whatever its free space. Format it as exFAT (Explorer: right-click
