@@ -1645,8 +1645,8 @@ Peds carried their hand props but never used them, so the phone ring, the call l
 - **Verification:** `a_pinned_walking_ped_gives_up_and_plans_away_from_its_target`, `turn_bucket_edges_follow_retail`,
   `turn_buckets_pick_the_stand_and_walk_turn_clips` (skate-core peds 130 pass); data-gated
   `downtown_peds_at_the_ramp_never_walk_in_place` 0 episodes (31 before the fix), ped nav data 5 pass; skate-game
-  living_world 93 pass. Not play-tested yet: expect peds to turn on the spot by 45 / 90 / 135 / 180 degrees and to play
-  walking turns at corners instead of stopping to pivot.
+  living_world 93 pass. Play-tested by the user 2026-10-16 (hails-additions 064706e9, with the measured steer rate):
+  "peds seem to turn much better".
 
 ## Zombies reach their goal within the mover's 2 m (2026-10-16)
 - ZombieFollow's "goal reached" is the mover's vfunc +124 (`82E2BC70`, main read in the recomp asm): 3D distance
@@ -1688,6 +1688,7 @@ Peds carried their hand props but never used them, so the phone ring, the call l
   vehicles, unchanged) or DXT1 RGB (x in red; peds); the decoded PNG no longer carries the format, so a constant alpha
   marks the RGB layout (a mod texture of either kind converts too). Test `NormalMaps` in
   `tools/asset_pipeline/test_living_world.py` (synthetic, both layouts); the vehicle exporter tests still pass.
-- **Needs** the setup `livingworld` group re-run to re-export the ped models. Open (b171): peds use StandardMaterial with
+- **Needs** the setup `livingworld` group re-run to re-export the ped models. Play-tested by the user 2026-10-16 after the
+  re-run (hails-additions 064706e9): "the shadows look much better". Open (b171): peds use StandardMaterial with
   the flat global ambient while the player's character material gets SH fill (retail's ped ambient not read); peds have
   no RenderLayers [0, 28] (no shadow on the baked world); the normal map X sign after the re-export.
