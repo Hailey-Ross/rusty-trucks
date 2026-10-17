@@ -1692,3 +1692,18 @@ Peds carried their hand props but never used them, so the phone ring, the call l
   re-run (hails-additions 064706e9): "the shadows look much better". Open (b171): peds use StandardMaterial with
   the flat global ambient while the player's character material gets SH fill (retail's ped ambient not read); peds have
   no RenderLayers [0, 28] (no shadow on the baked world); the normal map X sign after the re-export.
+
+## Moods: DisableAllMoods and prerequisite kind 8 (2026-10-17)
+
+From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.local/research/`):
+- `DisableAllMoods` now stops the mood producer. Retail's producer `sub_82E41B98` skips a ped while `brain+0xCCE` bit
+  0x08 is set (set and restored by `826A5A20` / `826A5A50`) [code, b176]; ours set and restored `moods_disabled` but
+  nothing read it. Now `peds.rs` skips `produce` for a busy ped or while it holds. No stock pedestrian graph uses
+  DisableAllMoods, so stock behaviour does not change.
+- Prerequisite kind 8 is the pending `flee` want (want slot 10, `brain+540` bit 0x80, `sub_82BFEA60`) [code, b176],
+  `MoodContext::flee_pending`; before it was always false. Stock `greeted` uses it as "not fleeing" (default,
+  default_female, security_street): a fleeing ped is no longer greeted.
+- Checked and NOT changed: the return greet repeating from one `greeted` record for its 30 s lifetime is retail's
+  behaviour too (no record consumption or hidden cooldown in the tick / expire / perception / producer chain while the
+  9ABC gate is off, b176 [code]); a recomp trace counting the raises per greet would confirm it.
+- Tests: `prerequisite_kind_8_reads_the_pending_flee_want` (skate-core mood tests).

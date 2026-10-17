@@ -399,6 +399,9 @@ impl Default for DynamicsWorld {
     }
 }
 
+/// A map ground collider from [`DynamicsWorld::build_ground`], not yet in a world.
+pub struct GroundCollider(Collider);
+
 impl DynamicsWorld {
     pub fn has_ground(&self) -> bool {
         self.ground
@@ -408,6 +411,15 @@ impl DynamicsWorld {
         &mut self,
         triangles: impl Iterator<Item = [[f32; 3]; 3]>,
     ) -> Result<(), String> {
+        let ground = Self::build_ground(triangles)?;
+        self.install_ground(ground);
+        Ok(())
+    }
+
+    /// The map ground's collider, built apart from any world so a loader thread can do it (a whole city's trimesh
+    /// with fixed internal edges takes about a second). [`Self::install_ground`] then makes the same world
+    /// [`Self::set_ground`] makes.
+    pub fn build_ground(triangles: impl Iterator<Item = [[f32; 3]; 3]>) -> Result<GroundCollider, String> {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         for triangle in triangles {
@@ -432,9 +444,14 @@ impl DynamicsWorld {
             InteractionTestMode::And,
         ))
         .build();
+        Ok(GroundCollider(collider))
+    }
+
+    /// Adds a ground built by [`Self::build_ground`] (the second half of [`Self::set_ground`]).
+    pub fn install_ground(&mut self, ground: GroundCollider) {
         let body = self.bodies.insert(RigidBodyBuilder::fixed().build());
         self.colliders
-            .insert_with_parent(collider, body, &mut self.bodies);
+            .insert_with_parent(ground.0, body, &mut self.bodies);
         // Raycasts map collider parents back through `reverse`; without this entry
         // every spring_ray misses the map trimesh and tire drive stays at 0 m/s.
         self.ids.insert(GROUND_BODY_ID, body);
@@ -443,7 +460,6 @@ impl DynamicsWorld {
             self.next = GROUND_BODY_ID + 1;
         }
         self.ground = true;
-        Ok(())
     }
 
     pub fn spawn(&mut self, desc: BodyDesc) -> Result<u64, String> {
@@ -1898,6 +1914,31 @@ mod tests {
             speed(&snap)
         );
         id
+    }
+
+    /// A ground built apart (`build_ground`, on another thread here, as the map loader does) and installed gives
+    /// bit for bit the world `set_ground` gives: the same raycast hits and the same settled crate.
+    #[test]
+    fn a_ground_built_apart_is_the_same_as_set_ground() {
+        let tris = vec![
+            [[-40., 0., -40.], [40., 0., -40.], [40., 0., 40.]],
+            [[-40., 0., -40.], [-40., 0., 40.], [40., 0., 40.]],
+            [[0., 0., 5.], [3., 1.5, 5.], [0., 0., 9.]],
+        ];
+        let mut direct = DynamicsWorld::default();
+        direct.set_ground(tris.clone().into_iter()).unwrap();
+        let built = std::thread::spawn(move || DynamicsWorld::build_ground(tris.into_iter())).join().unwrap().unwrap();
+        let mut apart = DynamicsWorld::default();
+        apart.install_ground(built);
+        assert!(apart.has_ground());
+        for origin in [[0.5, 4., 0.5], [1., 4., 6.], [-30., 2., 30.]] {
+            let a = direct.raycast_ground(origin, [0., -1., 0.], 10.).map(|h| format!("{h:?}"));
+            let b = apart.raycast_ground(origin, [0., -1., 0.], 10.).map(|h| format!("{h:?}"));
+            assert_eq!(a, b, "raycast from {origin:?}");
+        }
+        let (a, b) = (settle_crate(&mut direct, 10.), settle_crate(&mut apart, 10.));
+        assert_eq!(format!("{:?}", direct.read(a).unwrap()), format!("{:?}", apart.read(b).unwrap()));
+        assert!(DynamicsWorld::build_ground(std::iter::empty()).is_err(), "no triangles is still an error");
     }
 
     #[test]

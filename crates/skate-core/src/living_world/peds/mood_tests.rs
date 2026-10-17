@@ -34,7 +34,7 @@ fn tables() -> MoodTables {
 }
 
 fn ctx<'a>(entity: &'a dyn Fn(u64) -> Option<(String, Vec3)>) -> MoodContext<'a> {
-    MoodContext { ped: PED, ped_type: "adult_male", position: [0.0; 3], entity, zombie: false, busy: &|_| false, own_plugin_object: false, chasing: false }
+    MoodContext { ped: PED, ped_type: "adult_male", position: [0.0; 3], entity, zombie: false, busy: &|_| false, own_plugin_object: false, chasing: false, flee_pending: false }
 }
 
 fn collision() -> MoodEvent {
@@ -165,4 +165,17 @@ fn prerequisites_read_the_peds_own_state_and_the_event_position() {
     assert!(t.accepts("adult_male", &event("presence", 5, 11.0), &c));
     assert!(!t.accepts("adult_male", &event("presence", 5, 20.0), &c), "measured to the event, not to the instigator");
     assert!(!t.accepts("adult_male", &event("greeted", 5, 0.0), &c));
+}
+
+/// Kind 8 (`sub_82BFEA60`, research b176): the `flee` want (slot 10) pending, as stock `greeted` uses it ("not
+/// fleeing", comparator 1): a fleeing ped is not greeted.
+#[test]
+fn prerequisite_kind_8_reads_the_pending_flee_want() {
+    let mut t = tables();
+    t.reactions.get_mut("adult_male").unwrap().prerequisites =
+        vec![Prerequisite { category: "greeted".into(), kind: 8, comparator: 1, value: 0.0 }];
+    let near = |id: u64| (id == PLAYER).then(|| ("skater".to_string(), [1.0, 0.0, 0.0]));
+    let greeted = MoodEvent { category: "greeted".into(), instigator: Some(PLAYER), second: Some(5), position: [0.0; 3] };
+    assert!(t.accepts("adult_male", &greeted, &ctx(&near)));
+    assert!(!t.accepts("adult_male", &greeted, &MoodContext { flee_pending: true, ..ctx(&near) }), "fleeing: not greeted");
 }

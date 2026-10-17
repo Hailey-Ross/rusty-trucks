@@ -475,3 +475,37 @@ trace-all.
 
 Open: when the game restarts itself into setup (Refresh Game Files), the launcher's session record and send did not
 happen once on the laptop; not reproduced yet.
+
+## Map switch: the mods' ground built by the map loader (2026-10-17)
+
+Problem: every map switch froze the game for 1 to 2 s on the first frame on the new map (laptop session
+2026-10-17: 2132.6 ms on a Ryzen 9 8945HS, University to DownTown; desktop: 1037.6 to 1313.3 ms). `FRAME_HITCH`
+billed it to the "audio" or "pre_update" stage, depending on where the frame's systems fell between the stage markers,
+with none of the measured audio parts near it.
+
+Root cause [trace]: a Chrome trace of the switch (`SKATE_MAP_SWITCH`, below) shows `mods.fixed` taking 1138 ms on the
+first fixed tick on the new map, and 755 ms on the first tick after start. `modding::ensure_ground` rebuilt the mods'
+dynamics ground (`skate_dynamics::DynamicsWorld::set_ground`: one Rapier trimesh of every world collision triangle,
+with fixed internal edges) on the game thread, after the map change cleared it. It runs whether or not a mod uses it.
+
+Change:
+- `skate-dynamics`: `set_ground` split into `build_ground` (the collider, built apart from any world, so on any thread)
+  and `install_ground`; `set_ground` is now the two in a row.
+- `map_transition`: the map loader builds the mods' ground from the new map's physics on its own `mod-ground` thread
+  (next to the skater and camera loads) and hands it over at commit as `modding::PreparedGround`, tagged with the new
+  map generation.
+- `modding::ensure_ground`: on its first tick on a map it installs the prepared ground of that generation; with none
+  (start, a mod reload on the same map, a failed build) it builds it as before. The ground is ready on the same tick,
+  from the same triangles, so mods see the same world.
+- Diagnostics: `SKATE_MAP_SWITCH=<seconds>:<map .skate path>` requests one map switch that long after start, for
+  unattended measurement (`.local/tools/map-switch-run.ps1` on the main PC).
+
+Verification: `cargo test -p skate-dynamics a_ground_built_apart_is_the_same_as_set_ground` (raycast hits and a settled
+crate identical, built on another thread); `cargo test -p skate-game scripted_switch`; map switch University to
+DownTown on the main PC, muted, before / after: the first frame after the commit went from 1313.3 ms (1294.8 ms fixed) to
+254.1 ms (235.4 ms fixed); in a trace `mods.fixed` on that tick went from 1138 ms to 51 ms, and `build_mod_ground`
+(1414 ms) ran on its own thread; map loading (behind the loading screen) went from 3869 to 4191 ms. Left in that
+frame: the living world loading its map data on the first fixed tick (`peds::load_ped_data` 141 ms,
+`living_world::load_for_map` 35 ms), a follow-up.
+
+Not changed: the first ground at start (still built on the first fixed tick, behind the loading screen).

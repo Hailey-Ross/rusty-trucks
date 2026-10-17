@@ -373,17 +373,33 @@ fn net_wire_key(owner: &str, key: &str) -> String {
     }
 }
 
-fn ensure_ground(world: &World, mods: &mut Mods) -> Result<(), String> {
+/// The mods' dynamics ground for a map, built by the map loader off the game thread (`map_transition`); the first
+/// fixed tick on that map installs it instead of building it (2026-10-17: a 1 to 2 s frame after every map switch).
+#[derive(Resource)]
+pub(crate) struct PreparedGround {
+    /// The `CurrentMap` generation it belongs to.
+    pub generation: u64,
+    pub ground: Option<Result<skate_dynamics::GroundCollider, String>>,
+}
+
+/// The world's collision triangles as the mods' ground takes them.
+pub(crate) fn ground_triangles(physics: &crate::physics::GamePhysics) -> Vec<[[f32; 3]; 3]> {
+    physics.world_triangles().iter().map(|t| t.triangle.vertices.map(|p| [p.x, p.y, p.z])).collect()
+}
+
+fn ensure_ground(world: &mut World, mods: &mut Mods) -> Result<(), String> {
     if mods.ground_ready {
         return Ok(());
     }
-    mods.world.set_ground(
-        world
-            .resource::<crate::physics::GamePhysics>()
-            .world_triangles()
-            .iter()
-            .map(|t| t.triangle.vertices.map(|p| [p.x, p.y, p.z])),
-    )?;
+    let generation = world.resource::<crate::map_transition::CurrentMap>().generation;
+    let prepared = world
+        .get_resource_mut::<PreparedGround>()
+        .filter(|p| p.generation == generation)
+        .and_then(|mut p| p.ground.take());
+    match prepared {
+        Some(ground) => mods.world.install_ground(ground?),
+        None => mods.world.set_ground(ground_triangles(world.resource::<crate::physics::GamePhysics>()).into_iter())?,
+    }
     mods.ground_ready = true;
     Ok(())
 }
