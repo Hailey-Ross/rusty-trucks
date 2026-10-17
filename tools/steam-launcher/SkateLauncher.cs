@@ -252,7 +252,28 @@ static class SkateLauncher {
         Timed("Previous session (closed before its check):\n\n" + text, bad ? ConsoleColor.Yellow : ConsoleColor.Green, 8);
     }
 
+    // Windows 11 can host console programs in Windows Terminal (default terminal "Let Windows decide"). Its pseudo
+    // console window takes a minimise but not the restore / maximise / foreground the launcher needs, so after a game
+    // the launcher stayed minimised (laptop 2026-10-17). Inside Terminal, run again in a classic console window
+    // (conhost) and wait for it, so Steam still tracks the session; the Terminal window is minimised meanwhile.
+    static int? InClassicConsole(string[] argv) {
+        if (Environment.GetEnvironmentVariable("WT_SESSION") == null || Array.IndexOf(argv, "--conhost") >= 0) return null;
+        string args = "\"" + Process.GetCurrentProcess().MainModule.FileName + "\" --conhost";
+        foreach (var a in argv) args += " \"" + a + "\"";
+        try {
+            var psi = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "conhost.exe"), args) { UseShellExecute = true, WorkingDirectory = Here };
+            using (var p = Process.Start(psi)) {
+                ShowWindow(GetConsoleWindow(), 7);
+                p.WaitForExit();
+                return p.ExitCode;
+            }
+        } catch { return null; }
+    }
+
     static int Main(string[] argv) {
+        int? relaunched = InClassicConsole(argv);
+        if (relaunched.HasValue) return relaunched.Value;
+        argv = Array.FindAll(argv, a => a != "--conhost");
         SetupConsole();
         Pending();
         if (argv.Length > 0) {

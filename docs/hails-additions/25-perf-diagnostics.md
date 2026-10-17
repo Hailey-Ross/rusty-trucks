@@ -478,8 +478,17 @@ waits (up to 180 s) for a `skate3rust` / `skate3` window, gives it the foregroun
 minimises the console without activating it (`ShowWindow` 7); the result screen restores the console as before.
 `SkateLauncher.cs` turns QuickEdit off for its console (`SetConsoleMode` without `0x40`). The menu stays maximised.
 
-Verification: `csc` builds `SkateLauncher.exe`, `launcher.ps1` parses (PowerShell 5.1). Not checked on the laptop yet:
-start a session from Steam and see the game in front and the console minimised.
+Verification: `csc` builds `SkateLauncher.exe`, `launcher.ps1` parses (PowerShell 5.1). Laptop session 2026-10-17
+13:34: the game came to the front, but the launcher stayed minimised after it.
+
+Follow-up (same day): on Windows 11 with the default terminal "Let Windows decide", Steam's launch opens the
+launcher in Windows Terminal. Its pseudo console window (`GetConsoleWindow()`) takes a minimise but not the restore /
+maximise / foreground the result screen needs, and the console font call has no effect there. `SkateLauncher.cs`
+`InClassicConsole`: inside Terminal (`WT_SESSION` set) it starts itself again under `conhost.exe` (a classic console
+window, marker argument `--conhost`), minimises the Terminal window and waits, returning the child's exit code, so
+Steam still tracks the session. Desktop test inside Terminal (`wt -w new SkateLauncher.exe notes`): the classic
+"Skate launcher" window maximised, the Terminal window minimised, both closed with the launcher, no processes left.
+Not checked on the laptop yet: the result screen coming back after a game.
 
 ## Map switch: the mods' ground built by the map loader (2026-10-17)
 
