@@ -1621,7 +1621,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<NpcSkaterLooks>()
         .init_resource::<super::npc_avoid::AvoidTrack>()
         .add_message::<NpcSkaterEvent>()
-        .add_systems(FixedUpdate, (apply_records, super::npc_avoid::avoid, advance, super::npc_sim::simulate, track_stance, log_backwards, log_readout).chain().after(super::step_population))
+        .add_systems(FixedUpdate, (apply_records, super::npc_avoid::avoid, advance, super::npc_sim::simulate, super::npc_sim::reactions, track_stance, log_backwards, log_readout).chain().after(super::step_population))
         .add_systems(
             FixedUpdate,
             push_proxies.after(crate::multiplayer::prepare).after(crate::app::SimulationSet::Controls).before(crate::app::SimulationSet::Physics),

@@ -116,6 +116,8 @@ pub(crate) struct LivingWorldSettings {
     /// Peds as solid bodies in the skater's contact solve (retail group 11; `ped_body`). A mod may switch it off or
     /// change the body; `LivingWorldSettings::default()` restores the default.
     pub ped_body: ped_body::PedBodySettings,
+    /// Ped navigation (mod `ped_nav`); copied into [`peds::PedNavSettings`] when it changes.
+    pub ped_nav: peds::PedNavSettings,
     /// NPC draw distance (QoL, not retail; `skate_core::living_world::draw_distance`): every
     /// population range (census circles, ped draw fade, NPC skater ranges, cars) x this, caps x
     /// its square. 1.0 = retail. The value in effect: the settings menu writes the player's choice
@@ -201,6 +203,7 @@ impl Default for LivingWorldSettings {
             ped_vehicle_contact: skate_core::living_world::peds::VehicleContactParams::default(),
             npc_skater_props: npc_skaters::NpcSkaterPropContact::default(),
             ped_body: ped_body::PedBodySettings::default(),
+            ped_nav: Default::default(),
             npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
             user_npc_draw_distance: skate_core::living_world::DrawDistance::RETAIL,
             user_npcs_off: false,

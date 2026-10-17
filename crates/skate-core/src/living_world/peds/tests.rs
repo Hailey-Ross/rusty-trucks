@@ -525,3 +525,50 @@ fn the_channel_overrides_only_its_weighted_bones_and_fades() {
     }
     assert!(p.channel_idle(), "the stop fade freed the slot");
 }
+
+/// Turn buckets (`82E2A500`, b167): a standing ped plays the bucket's stand turn, a walking ped the bucket's walk turn
+/// in its branch window and then walks on (`blendedturn`); left turns are the mirrored right clip.
+#[test]
+fn turn_buckets_pick_the_stand_and_walk_turn_clips() {
+    let (_, mut set, mut clips) = fixture();
+    let r = |c: &str| vec![RemapClip { clip: c.into(), windows: vec![] }];
+    for c in [clip("TURN90", 30, 0.0, -std::f32::consts::FRAC_PI_2, false, 0.05, vec![]), clip("WTURN45", 30, 1.3, -std::f32::consts::FRAC_PI_4, false, 0.05, vec![])] {
+        clips.insert(c.name.clone(), c);
+    }
+    set.entries.insert("StandTurnR90".into(), r("TURN90"));
+    set.entries.insert("WalkTurnR45".into(), r("WTURN45"));
+    let dt = 1.0 / 30.0;
+    // Standing, 90 degrees right.
+    let mut p = PedAnimPlayer::new(&set, 3).unwrap();
+    p.turn_degrees = 90;
+    p.intent = Intent::TurnRight;
+    let mut yaw = 0.0;
+    p.step(dt, &set, &clips);
+    assert_eq!((p.state, p.current_clip()), (Locomotion::TurnRight, "TURN90"));
+    p.intent = Intent::Idle;
+    for _ in 0..60 {
+        yaw += p.step(dt, &set, &clips).root.yaw;
+    }
+    assert_eq!(p.state, Locomotion::Idle);
+    assert!((yaw + std::f32::consts::FRAC_PI_2).abs() < 0.3, "right 90 yaw {yaw}");
+    // Walking, 45 degrees left: the mirrored walk turn, then the walk cycle again.
+    let mut p = PedAnimPlayer::new(&set, 3).unwrap();
+    p.intent = Intent::Walk;
+    for _ in 0..90 {
+        p.step(dt, &set, &clips);
+    }
+    assert_eq!(p.state, Locomotion::Walk);
+    p.turn_degrees = 45;
+    p.intent = Intent::TurnLeft;
+    let mut entered = false;
+    for _ in 0..60 {
+        p.step(dt, &set, &clips);
+        if p.state == Locomotion::WalkTurnLeft {
+            entered = true;
+            assert!(p.mirrored() && p.current_clip() == "WTURN45");
+            p.intent = Intent::Walk;
+        }
+    }
+    assert!(entered, "the walk turn played in the branch window");
+    assert_eq!(p.state, Locomotion::Walk, "back on the walk cycle");
+}

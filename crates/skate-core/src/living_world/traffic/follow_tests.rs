@@ -175,10 +175,15 @@ fn pulls_away_with_the_ramp_and_holds_the_lane_limit() {
     assert!((cars[0].accel - 0.2).abs() < 0.02, "accel {}", cars[0].accel);
     run(&net, &mut clock, &mut cars, 60 * 3);
     assert!(cars[0].accel <= FollowParams::default().accel_max + 1e-4);
+    // Peak speed: the lane limit, never more (the car then slows for the stop sign at the end of the road).
     let mut cars2 = vec![car(&net, 1, s, 0.0)];
-    run(&net, &mut clock, &mut cars2, 60 * 12);
-    assert!(cars2[0].speed <= 14.166_667 + 1e-3);
-    assert!(cars2[0].speed > 13.5, "speed {}", cars2[0].speed);
+    let mut peak = 0.0f32;
+    for _ in 0..60 * 12 {
+        run(&net, &mut clock, &mut cars2, 1);
+        peak = peak.max(cars2[0].speed);
+    }
+    assert!(peak <= 14.166_667 + 1e-3);
+    assert!(peak > 13.5, "peak speed {peak}");
 }
 
 #[test]
@@ -221,8 +226,9 @@ fn stops_at_red_and_goes_on_green() {
         let c = &cars[0];
         if let Place::Lane { segment, .. } = c.cursor.place {
             if segment == s && light == Light::Red && c.speed < 0.05 && t > 60 * 15 {
+                // The front bumper stops the junction standoff before the line (`+3660` = 4.5 x 0.5).
                 let to_line = net.segments[s].length - c.cursor.distance - c.length * 0.5;
-                assert!((0.0..=2.0).contains(&to_line), "held {to_line} m before the line");
+                assert!((to_line - c.junction_standoff()).abs() < 0.1, "held {to_line} m before the line");
                 stopped_on_red = true;
             }
         }
@@ -246,9 +252,9 @@ fn keeps_a_gap_and_queues_behind_a_stopped_car() {
     let mut d: Vec<f32> = cars.iter().map(|c| c.cursor.distance).collect();
     d.sort_by(|a, b| b.total_cmp(a));
     for w in d.windows(2) {
+        // Bumper to bumper at the lead standoff (half of 4.5 x 0.5 = 1.125 m, `82C38390`).
         let gap = w[0] - w[1] - 4.5;
-        assert!(gap >= FollowParams::default().min_gap * 0.5 - 1e-3, "gap {gap}");
-        assert!(gap < 6.0, "queued close: gap {gap}");
+        assert!((gap - 1.125).abs() < 0.1, "queued at the lead standoff: gap {gap}");
     }
     assert!(cars.iter().all(|c| c.speed < 0.5));
     // On green the queue drains in step.
@@ -513,4 +519,39 @@ fn spawn_draws_follow_the_spec_and_driver_values() {
     let never = FollowParams { held_bonus_chance: 0.0, ..p };
     let mut it = [0u32, 0, 0].into_iter();
     assert_eq!(spawn_draws(&never, &mut || it.next().unwrap()).2, 0.0);
+}
+
+/// The standoff rule (`82C38390` -> `82C41120` -> `82C3FA08`, b162 M1 / b163): beyond `speed + standoff` a standing
+/// car ahead does not limit; inside it the brake is `-v^2 / (2 (gap - standoff) + 0.001)`; inside the standoff the
+/// car stops dead. A spec override (a mod) of the lead factor moves the stop gap.
+#[test]
+fn a_car_brakes_by_the_standoff_rule_and_a_mod_factor_moves_the_gap() {
+    let net = net_straight(true);
+    let mut clock = SignalClock::new(timings());
+    clock.frozen = true;
+    let s = seg(&net, 0x100);
+    // 10 m/s, the standing car's rear 30 m ahead: outside the 10 + 1.125 m window, free road.
+    let mut cars = vec![car(&net, 1, s, 64.5), car(&net, 2, s, 30.0)];
+    cars[1].speed = 10.0;
+    run(&net, &mut clock, &mut cars, 1);
+    assert!(cars[1].accel >= 0.0, "outside the window: {}", cars[1].accel);
+    // 8 m ahead at 10 m/s: inside the window, the geometric brake.
+    let mut cars = vec![car(&net, 1, s, 42.5), car(&net, 2, s, 30.0)];
+    cars[1].speed = 10.0;
+    let gap: f32 = 42.5 - 30.0 - 4.5;
+    run(&net, &mut clock, &mut cars, 1);
+    let want = -100.0 / (2.0 * (gap - 1.125) + 0.001);
+    assert!((cars[1].accel - want).abs() < 0.05, "accel {} vs {want}", cars[1].accel);
+    // Inside the standoff: a dead stop at once.
+    let mut cars = vec![car(&net, 1, s, 35.5), car(&net, 2, s, 30.0)];
+    cars[1].speed = 3.0;
+    run(&net, &mut clock, &mut cars, 1);
+    assert_eq!(cars[1].speed, 0.0, "1.0 m gap < 1.125 m standoff");
+    // A family-car factor (0.6) queues 4.5 x 0.6 / 2 = 1.35 m behind.
+    let mut cars = vec![car(&net, 1, s, 60.0), car(&net, 2, s, 20.0)];
+    cars[1].params.lead_standoff_factor = 0.6;
+    cars[1].speed = 8.0;
+    run(&net, &mut clock, &mut cars, 60 * 10);
+    let gap = cars[0].cursor.distance - cars[1].cursor.distance - 4.5;
+    assert!((gap - 1.35).abs() < 0.1, "gap {gap}");
 }

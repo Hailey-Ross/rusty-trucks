@@ -203,7 +203,7 @@ pub(crate) struct Pedestrian {
 
 /// Navigation settings (mod-facing; default = retail): wander parameters, which navmesh areas
 /// peds may use and what they cost, and the crosswalk rule (retail `Off`).
-#[derive(Resource, Default, Clone, PartialEq)]
+#[derive(Resource, Default, Clone, Debug, PartialEq)]
 pub(crate) struct PedNavSettings {
     pub wander: WanderParams,
     pub rules: NavRules,
@@ -1037,6 +1037,18 @@ pub(crate) fn advance_peds(
                     let fleeing = mind.is_some_and(|m| m.flee_goal.is_some() || m.chase_goal.is_some());
                     body.player.intent = if fleeing && out.intent == skate_core::living_world::peds::anim::Intent::Walk { skate_core::living_world::peds::anim::Intent::Run } else { out.intent };
                     turn = out.turn;
+                    if out.turn_degrees != 0 {
+                        use skate_core::living_world::peds::anim::{names, Intent};
+                        let walking = body.player.state == Locomotion::Walk;
+                        let clip = if walking { names::walk_turn(out.turn_degrees) } else { names::stand_turn(out.turn_degrees) };
+                        if set.entries.contains_key(clip) {
+                            body.player.turn_degrees = out.turn_degrees;
+                        } else {
+                            // Ours: a set without the bucket's clip (a mod set, a test set) pivots / steers instead.
+                            body.player.intent = if walking { Intent::Walk } else { Intent::Idle };
+                            turn = out.steer;
+                        }
+                    }
                 }
                 None => body.player.intent = body.path.intent(dt, body.player.state),
             }
@@ -1572,6 +1584,7 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<super::ped_hand_props::ReleasedHandProps>()
         .init_resource::<PedRejected>()
         .init_resource::<PedNavSettings>()
+        .add_systems(PreUpdate, sync_nav_settings)
         .init_resource::<PedObstacles>()
         .init_resource::<PedObstacleTrace>()
         .add_message::<PedEvent>()
@@ -2817,3 +2830,12 @@ pub(crate) fn think_peds(
         log_still_ped(ped, body, mind, &state_now, &conversations.map, tick, &mut still_budget);
     }
 }
+
+/// The mod-facing nav settings (`LivingWorldSettings::ped_nav`, mod `ped_nav`; reset when the mod is disabled) into the
+/// resource the ped step reads.
+fn sync_nav_settings(settings: Res<super::LivingWorldSettings>, mut nav: ResMut<PedNavSettings>) {
+    if settings.is_changed() && *nav != settings.ped_nav {
+        *nav = settings.ped_nav.clone();
+    }
+}
+

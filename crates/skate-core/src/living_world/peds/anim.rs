@@ -130,6 +130,24 @@ pub mod names {
     pub const START: &str = "Stand2Walk";
     pub const STOP: &str = "Walk2Stand";
     pub const TURN_180: &str = "StandTurnR180";
+    /// The turn clip of a bucket (`motiongraph_idle.xml` IdleDefault / `motiongraph_walk.xml` Walk turn branches, the
+    /// right-hand clips mirrored for the left; b156 M1 / M2) [data].
+    pub fn stand_turn(degrees: u16) -> &'static str {
+        match degrees {
+            45 => "StandTurnR45",
+            90 => "StandTurnR90",
+            135 => "StandTurnR135",
+            _ => TURN_180,
+        }
+    }
+    pub fn walk_turn(degrees: u16) -> &'static str {
+        match degrees {
+            45 => "WalkTurnR45",
+            90 => "WalkTurnR90",
+            135 => "WalkTurnR135",
+            _ => "WalkTurnR180",
+        }
+    }
     /// The chase / flee run cycle (stock `*_CHASE_RUN_N_0_CYC`, logical name hash
     /// `7746273E01422734`).
     pub const RUN: &str = "FwdChaseRunCyc";
@@ -185,6 +203,9 @@ pub enum Locomotion {
     Stop,
     TurnRight,
     TurnLeft,
+    /// A walk turn (`blendedturn` in Walk: the turn clip, then back to the walk cycle).
+    WalkTurnRight,
+    WalkTurnLeft,
     /// A collision reaction (`Collision` state of the motion graph): no locomotion until it ends.
     Reaction,
 }
@@ -199,6 +220,8 @@ impl Locomotion {
             Locomotion::Stop => "stop",
             Locomotion::TurnRight => "turn_right",
             Locomotion::TurnLeft => "turn_left",
+            Locomotion::WalkTurnRight => "walk_turn_right",
+            Locomotion::WalkTurnLeft => "walk_turn_left",
             Locomotion::Reaction => "reaction",
         }
     }
@@ -252,6 +275,8 @@ pub struct PedAnimPlayer {
     blend_time: f32,
     rng: Rng,
     pub intent: Intent,
+    /// The bucket of a turn intent (45 / 90 / 135 / 180; [`super::wander::NavOutput::turn_degrees`]).
+    pub turn_degrees: u16,
     plays: u32,
     reaction: Option<ReactionRun>,
     channel: Option<ChannelRun>,
@@ -308,6 +333,7 @@ impl PedAnimPlayer {
             blend_time: 0.0,
             rng,
             intent: Intent::Idle,
+            turn_degrees: 180,
             plays: 0,
             reaction: None,
             channel: None,
@@ -508,10 +534,10 @@ impl PedAnimPlayer {
                     }
                 }
                 Intent::TurnRight => {
-                    self.play(set, names::TURN_180, timing::TRANSITION_BLEND, false, Locomotion::TurnRight);
+                    self.play(set, names::stand_turn(self.turn_degrees), timing::TRANSITION_BLEND, false, Locomotion::TurnRight);
                 }
                 Intent::TurnLeft => {
-                    self.play(set, names::TURN_180, timing::TRANSITION_BLEND, true, Locomotion::TurnLeft);
+                    self.play(set, names::stand_turn(self.turn_degrees), timing::TRANSITION_BLEND, true, Locomotion::TurnLeft);
                 }
                 Intent::Idle => {
                     if self.current.wrapped && self.rng.unit() < timing::IDLE_CYCLE_SWAP {
@@ -525,7 +551,18 @@ impl PedAnimPlayer {
                 }
             }
             Locomotion::Walk => {
-                if self.intent == Intent::Run && self.in_branch_window() {
+                // `blendedturn`: wait for the branch window, then the walk turn clip (blend 0.15) [data]. A set
+                // without the clip keeps walking.
+                let turn = match self.intent {
+                    Intent::TurnRight => Some((false, Locomotion::WalkTurnRight)),
+                    Intent::TurnLeft => Some((true, Locomotion::WalkTurnLeft)),
+                    _ => None,
+                };
+                if let Some((mirror, state)) = turn {
+                    if self.in_branch_window() {
+                        self.play(set, names::walk_turn(self.turn_degrees), timing::TRANSITION_BLEND, mirror, state);
+                    }
+                } else if self.intent == Intent::Run && self.in_branch_window() {
                     self.play(set, names::RUN, timing::WALK_BLEND, false, Locomotion::Run);
                 } else if self.intent != Intent::Walk && self.intent != Intent::Run && self.in_branch_window() {
                     self.play(set, names::STOP, timing::TRANSITION_BLEND, false, Locomotion::Stop);
@@ -541,6 +578,12 @@ impl PedAnimPlayer {
             Locomotion::Stop | Locomotion::TurnRight | Locomotion::TurnLeft => {
                 if remaining <= timing::TRANSITION_EXIT {
                     self.play(set, names::IDLE, timing::IDLE_BLEND, false, Locomotion::Idle);
+                }
+            }
+            // `blendedturn` exit (`WillExpire 0.1`, then TurnComplete): back to the walk cycle (its blend is ours).
+            Locomotion::WalkTurnRight | Locomotion::WalkTurnLeft => {
+                if remaining <= timing::TRANSITION_EXIT {
+                    self.play(set, names::WALK, timing::WALK_BLEND, false, Locomotion::Walk);
                 }
             }
             Locomotion::Reaction => {

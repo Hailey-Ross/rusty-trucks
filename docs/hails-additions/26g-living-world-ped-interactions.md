@@ -898,7 +898,7 @@ so the throw is not seen in game yet.
 each tick; the body walks a one-point route to the zombie goal at the brain's speed; the anim set override picks the
 `zombie` set. Toggle (no cheat screen yet): `SKATE_ZOMBIE=1` or the mod value `living_world.zombie`; mod keys
 `ped_brain.zombie_follow_distance`, `zombie_sprint_distance`, `zombie_ring_min`, `zombie_ring_max`,
-`zombie_sprint_speed`, `zombie_walk_speed`.
+`zombie_sprint_speed`, `zombie_walk_speed`, `zombie_arrive_distance` (goal reached, 2.0 m 3D: the mover arrival radius, b158 / main-read `82E2BC70`, `82E35E80`).
 
 **The yellow screen (research b100 / b101; values main-checked in the stock collections).** `827F4D28` sets post FX
 bit 0x2000 while the zombie query is true and `827F5450` then builds the near and far colour matrices from the `post_fx`
@@ -1604,3 +1604,90 @@ Peds carried their hand props but never used them, so the phone ring, the call l
 ### Open
 - What a reaction, a sit or a conversation does to a running action (nothing in `82E3F470` cancels one); the litter
   drop vector (ours zero); whether retail's channel ignores a repeated request; the usage entry's `f32_24` / `f32_28`.
+
+## Ped turns: retail's turn buckets, standing and walking (2026-10-16)
+- **Problem (research b156 M1 / M2, b167):** a standing ped turned only by `StandTurnR180` (beyond 135 degrees) or
+  pivoted on the spot at 45 deg/s; a walking ped stopped to pivot beyond 60 degrees. The `StandTurnR45..135` and
+  `WalkTurnR45..180` clips were loaded but never played.
+- **Retail [code + data] (b167; main checked the branch directions and the edge addresses of `82E2A500` in the recomp
+  asm; the edge values were read from the image by the research agent):** the locomotion update `82E36870` ->
+  `82E29540` -> `82E29D98` posts a turn intent through `82E2A500` while no turn or transition runs (loco +0x84 /
+  +0x86). The angle (`82E2ABF8`) is the signed angle from the facing to the desired direction (`82E2AAA0`, b169,
+  main-checked): a forced facing (queue +0x820 when +0x834 & 0x20), else the first face request at ped+0xB0 more than
+  0.1 m away, else an override of the bot (mover slot 0x14), else NavPower's steering velocity normalised (mover slot
+  0x0C, `82C47198`); zero steering posts no turn. The 4.25 that `82E2ABF8` passes on is not used by the angle (it is
+  stored at cmd +0x80). Buckets: from
+  25 / 70 / 115 / 160 degrees the 45 / 90 / 135 / 180 turn of that side (`0x8209994C` / `0x8218155C` / `0x822F929C` /
+  `0x82099154` and their negatives); below 25 no turn. A post clears the steering (command +0x64 = 0); the motion
+  graph state that receives it picks the clip (IdleDefault `StandTurnR*`, Walk `WalkTurnR*` in a branch window,
+  `blendedturn` 0.15 / exit 0.1, left = the mirrored right clip).
+- **Change:** `wander::turn_bucket` and `WanderParams::turn_edges` (data, mod-tunable); `NavOutput::turn_degrees` /
+  `steer`; the step posts the bucket's turn from Idle / Stop / Walk with no steering; the anim player plays
+  `names::stand_turn` / `names::walk_turn` (`Locomotion::WalkTurnLeft` / `WalkTurnRight` return to the walk cycle at
+  the clip's exit); the heading comes from the clip only during a turn.
+- **NOT RETAIL YET (ours):** the angle is to the next corner (our stand-in for NavPower's steering direction; while our
+  avoidance steers no turn is posted); the forced facing and the face-request list are not ported; our steering below 25 degrees turns at 45 deg/s (NavPower's rate is not decoded: measure it in the recomp,
+  b158 item 2); while our avoidance stand-in steers no turn is posted and the old stop / pivot rule runs; a set
+  without the bucket's clip (a mod or test set) pivots by the steering instead; run turns (`ChaseRunTurnR*`) are not
+  ported (a running ped still stops to pivot beyond 60 degrees); ForceStop, strafe turns (mask 0xCC) and the
+  requester masks are not ported; the walk turn's return blend to the walk cycle (0.1) is ours.
+
+## Peds that get pinned on a corner step away and choose a new path (2026-10-16)
+- **Problem:** with the turn buckets, a DownTown data run (30 peds, 2 min round the ramp) had 31 walking-in-place
+  episodes: a ped walking at a funnel corner on the mesh boundary it cannot step onto, with the next corner out of
+  straight reach from where it stands; a re-plan gave the same path back. Also the path search could repeat a corner.
+- **Change (ours; NavPower handles this internally and is not decoded):** consecutive duplicate corners are dropped;
+  a walking ped inside the corner radius whose distance to the corner stops shrinking for 0.5 s (`stall_seconds`)
+  moves on to the next corner; a walking ped that stays within 0.3 m (`stuck_distance`) for 2 s (`stuck_seconds`)
+  gives up its target and plans the next one away from the old target with the long fan skipped. That reverse is
+  retail's goal event 4 (`82E31498`: next target direction = old target to ped, pm3 / b158 item 9), whose sender in
+  NavPower is not read; using it for a pinned ped is ours. All three values are `WanderParams` fields.
+- **Verification:** `a_pinned_walking_ped_gives_up_and_plans_away_from_its_target`, `turn_bucket_edges_follow_retail`,
+  `turn_buckets_pick_the_stand_and_walk_turn_clips` (skate-core peds 130 pass); data-gated
+  `downtown_peds_at_the_ramp_never_walk_in_place` 0 episodes (31 before the fix), ped nav data 5 pass; skate-game
+  living_world 93 pass. Not play-tested yet: expect peds to turn on the spot by 45 / 90 / 135 / 180 degrees and to play
+  walking turns at corners instead of stopping to pivot.
+
+## Zombies reach their goal within the mover's 2 m (2026-10-16)
+- ZombieFollow's "goal reached" is the mover's vfunc +124 (`82E2BC70`, main read in the recomp asm): 3D distance
+  within the arrival radius `+0x0C`, and every writer found sets it to `0x82060C50` 2.0 m (`82E35E80`, mover modes
+  2 / 3 / 4 / 6; b158). Ours was 0.5 m flat [inferred]. Now 2.0 m in 3D, mod key `ped_brain.zombie_arrive_distance`;
+  test `zombies_follow_the_player_and_mill_round_them` checks 2.1 m (not reached) and 1.92 m (reached).
+
+## Ped steering rate measured in the recomp: 255 deg/s, and the ped_nav mod values (2026-10-16)
+- **Problem:** our walking peds steered at 45 deg/s (a locomotion record value read as degrees per second, meaning
+  unverified); NavPower's real rate was unknown (b158 item 2, b169).
+- **Measurement [trace, recomp]:** a new recomp trace line `PEDFACE` (research hooks on the ped mover's think
+  `82E2CB08` and the steering getter `82E2D180`; offsets from b170, main-checked: ped = mover +4, the turn flag byte
+  `*(ped+0x1704)+0x84`) logs each ped's facing, position, turn / transition flags and NavPower's last steering
+  direction about 3 times a second (the mover think's own rate). Scripted standing runs at PCU Library (user: "much
+  better location") and DownTown Aletown: 30 peds, 12,087 lines, 0 malformed. A walking ped's facing is within 5 deg of
+  the steering direction in nearly every sample (no facing lag). Outside turn clips the walking direction changes p50 0,
+  p90 19, p95 48, p99 149, max 257 deg/s; turn clips p50 68, p90 178, max 328 deg/s.
+- **Change:** `WanderParams::steer_rate` 255 deg/s for the walking steer (the 45 deg/s value stays for standing peds
+  turning to face a point or a waypoint). Code candidate for the value (b158, meaning unverified): the bot value +0x80 =
+  clamp(255 x max(1, s), 90, 720) of the truncated speed (`82E2D260`), 255 at s = 1; the 510 it would give at the
+  wander speed 2.0 never shows in the trace, so the measured 255 is used.
+- **Moddability:** new mod block `living_world.ped_nav {steer_rate, turn_edges, stall_seconds, stuck_distance,
+  stuck_seconds, crosswalk}`, held in `LivingWorldSettings` (reset when the mod is disabled) and copied into the nav
+  settings; before this no ped nav value (crosswalk rule included) was reachable from a mod.
+- **Tools:** `.claude/skills/recomp-research/tools/ped_face_rate.py` (PEDFACE) and `ped_turn_rate.py` (PEDXYZ);
+  scripts `.local/recomp/scripts/pedface_pcu_library.txt` / `pedface_stand.txt`. Credit: the skate3recomp static
+  recompilation and its research hooks.
+- **Verification:** `ped_nav_is_mod_reachable_and_reset_on_disable`; ped suites (see the commit). Not play-tested yet:
+  walking peds now follow path corners quickly instead of arcing slowly.
+
+## Ped normal maps: the RGB layout (2026-10-16)
+- **Problem (user, verbatim: "the lighting of peds in the recomp are much better and smoother ours in the rust engine
+  are rough and blocky feeling dark patches", "mainly on the shadowed side"; research b171, main-checked):** the
+  living-world model exporter read every normal map as retail's two-channel layout (x in alpha, y in green). Ped normal
+  maps are DXT1 (rx2 format 82): no alpha, so x came out 1 and z 0 for every texel. The installed `female_adult_1.glb`
+  body and hair normal textures read R 218..255, B exactly 128 (main checked the pixels): every shaded normal lay flat
+  along the surface tangent, which lights as blotches that change per UV island and DXT block, worst away from the sun.
+- **Change:** `living_world_models._normal_png` picks the layout from the source: DXT5 two-channel (x in alpha;
+  vehicles, unchanged) or DXT1 RGB (x in red; peds); the decoded PNG no longer carries the format, so a constant alpha
+  marks the RGB layout (a mod texture of either kind converts too). Test `NormalMaps` in
+  `tools/asset_pipeline/test_living_world.py` (synthetic, both layouts); the vehicle exporter tests still pass.
+- **Needs** the setup `livingworld` group re-run to re-export the ped models. Open (b171): peds use StandardMaterial with
+  the flat global ambient while the player's character material gets SH fill (retail's ped ambient not read); peds have
+  no RenderLayers [0, 28] (no shadow on the baked world); the normal map X sign after the re-export.

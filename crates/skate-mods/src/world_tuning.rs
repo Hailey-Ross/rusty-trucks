@@ -28,7 +28,8 @@
 //!   obstacles; retail on / 0.2 / 0.4 / 0.25 / held props stay obstacles; `moving_solid` is our
 //!   stand-in for NavPower's moving avoider, default on),
 //!   `npc_skater_props {enabled}` (NPC skaters push dynamic props like the player; retail on),
-//!   `ped_body {enabled, parts, look_ahead, range}` (peds as solid bodies in the skater's contact solve, collision
+//!   `ped_nav {steer_rate, turn_edges, stall_seconds, stuck_distance, stuck_seconds, crosswalk}` (ped navigation, see
+//!   `PedNavPatch`), `ped_body {enabled, parts, look_ahead, range}` (peds as solid bodies in the skater's contact solve, collision
 //!   group 11; retail on, three capsule parts posed from bones: `parts` = [{from, to, centre, radius, half_length,
 //!   mass}], `look_ahead` seconds of ped velocity, `range` m from an observer),
 //!   `ped_vehicle_contact {enabled, push}` (traffic cars touching peds; retail on / on: the ped is
@@ -49,7 +50,8 @@
 //!   until play-tested, 40 m, 3; bail respawn after 5 s clamped to 1.5..7.9 s; mode 7 walk back
 //!   `walk_back` (retail on), `walk_arrive_distance` (2.4 m, 0..=20), `walk_stuck_ticks` (600, 0..=36000);
 //!   takeoff board yaw `board_yaw` (retail on), `board_yaw_dead_zone` (0.31416 rad, 0..=pi/2),
-//!   `board_yaw_mag_scale` (6.0606, 0..=100); `bump` (player and simulated NPCs collide as full skaters, retail on)),
+//!   `board_yaw_mag_scale` (6.0606, 0..=100); `bump` (player and simulated NPCs collide as full skaters, retail on); `reactions` (NPC skaters
+//!   react to wipeouts within `reaction_radius` m: slam / slam_b / crash lines, retail on, 15, 0..=100)),
 //!   `npc_avoid {enabled, max_entries, skitch_cooldown_ticks, radius_skater, radius_pedestrian,
 //!   radius_vehicle, radius_prop, cone, wide_cone, wide_cone_distance, skater_radius,
 //!   speed_margin, stop_gap, stop_gap_far, stop_cone, stop_gap_prop, side_on_angle,
@@ -183,6 +185,8 @@ pub struct LivingWorldPatch {
     pub npc_skater_props: Option<NpcSkaterPropsPatch>,
     /// Peds as solid bodies the skater collides with.
     pub ped_body: Option<PedBodyPatch>,
+    /// Ped navigation: the walking steer rate, the turn bucket edges, the pinned-ped watch and the crosswalk rule.
+    pub ped_nav: Option<PedNavPatch>,
     /// Traffic cars touching peds (`skate_core::living_world::peds::VehicleContactParams`).
     pub ped_vehicle_contact: Option<PedVehicleContactPatch>,
     /// NPC skater trick choice (`skate_core::living_world::npc_tricks`).
@@ -261,6 +265,10 @@ pub struct NpcSimulatedPatch {
     pub board_yaw_mag_scale: Option<f32>,
     /// The player and simulated NPCs bump as full skaters (a hard hit knocks one down; retail on).
     pub bump: Option<bool>,
+    /// NPC skaters react to wipeouts near them (slam / slam_b / crash lines; retail on) within `reaction_radius` m
+    /// (retail 15, 0..=100).
+    pub reactions: Option<bool>,
+    pub reaction_radius: Option<f32>,
 }
 
 /// The NPC skaters' obstacle avoider (`skate_core::living_world::avoid::AvoidSettings`): every
@@ -339,8 +347,9 @@ pub struct PedBrainPatch {
     pub hand_prop_skater_contact: Option<bool>,
     pub starting_hand_props: Option<bool>,
     /// ZombieFollow: follow distance (8 m), sprint distance (15 m), ring around the player (1..8 m), sprint and walk
-    /// speeds (8, 3 m/s); 0..=100.
+    /// speeds (8, 3 m/s), goal reached distance (2 m); 0..=100.
     pub zombie_follow_distance: Option<f32>,
+    pub zombie_arrive_distance: Option<f32>,
     pub zombie_sprint_distance: Option<f32>,
     pub zombie_ring_min: Option<f32>,
     pub zombie_ring_max: Option<f32>,
@@ -420,6 +429,20 @@ pub struct PedVehicleContactPatch {
 #[serde(deny_unknown_fields)]
 pub struct NpcSkaterPropsPatch {
     pub enabled: Option<bool>,
+}
+
+/// Ped navigation (`skate_core::living_world::peds::wander`): `steer_rate` deg/s (measured 255, 0..=1000),
+/// `turn_edges` deg (retail 25 / 70 / 115 / 160, ascending, 0..=180), `stall_seconds` (0.5), `stuck_distance` m (0.3),
+/// `stuck_seconds` (2.0) (0..=60 each), `crosswalk` "off" (retail) or "walk_signal".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PedNavPatch {
+    pub steer_rate: Option<f32>,
+    pub turn_edges: Option<[f32; 4]>,
+    pub stall_seconds: Option<f32>,
+    pub stuck_distance: Option<f32>,
+    pub stuck_seconds: Option<f32>,
+    pub crosswalk: Option<String>,
 }
 
 /// Peds as solid bodies in the skater's contact solve (retail collision group 11, `sub_82BD4A30`): the skater is
@@ -783,6 +806,12 @@ impl Merge for SkaterFadePatch {
         merge_opts!(self, b; fade_in_seconds, fade_seconds, despawn_alpha);
     }
 }
+impl Merge for PedNavPatch {
+    fn merge(&mut self, b: &Self) {
+        merge_opts!(self, b; steer_rate, turn_edges, stall_seconds, stuck_distance, stuck_seconds, crosswalk);
+    }
+}
+
 impl Merge for PedObstaclesPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; enabled, min_half_extent, moving_speed, recut_fraction, detour_margin, step_height, held_is_obstacle, moving_solid, skaters, skater_half_extents);
@@ -829,6 +858,7 @@ impl Merge for LivingWorldPatch {
         merge_nested(&mut self.ped_obstacles, &b.ped_obstacles);
         merge_nested(&mut self.npc_skater_props, &b.npc_skater_props);
         merge_nested(&mut self.ped_body, &b.ped_body);
+        merge_nested(&mut self.ped_nav, &b.ped_nav);
         merge_nested(&mut self.ped_vehicle_contact, &b.ped_vehicle_contact);
         merge_nested(&mut self.npc_tricks, &b.npc_tricks);
         merge_nested(&mut self.npc_simulated, &b.npc_simulated);
@@ -938,13 +968,13 @@ impl Merge for FreePlayPatch {
 
 impl Merge for NpcSimulatedPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, bump);
+        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, bump, reactions, reaction_radius);
     }
 }
 
 impl Merge for PedBrainPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed);
+        merge_opts!(self, b; enabled, mood, wander_speed, warn_seconds, know_about_seconds, mood_want_memory_seconds, conversation_turn_seconds, conversation_gather_seconds, run_from_honker_distance, run_from_honker_speed, warn_speech, attack_throw_speed, attack_throw_lead_seconds, attack_throw_jitter, attack_throw_lift, light_throw_speed, hand_prop_skater_contact, starting_hand_props, zombie_follow_distance, zombie_sprint_distance, zombie_ring_min, zombie_ring_max, zombie_sprint_speed, zombie_walk_speed, zombie_arrive_distance);
     }
 }
 
@@ -1008,6 +1038,12 @@ impl LivingWorldPatch {
             && self.ped_obstacles.as_ref().is_none_or(|o| {
                 [o.min_half_extent, o.moving_speed, o.recut_fraction, o.detour_margin, o.step_height].into_iter().all(finite)
             })
+            && self.ped_nav.as_ref().is_none_or(|n| {
+                n.steer_rate.is_none_or(|v| v.is_finite() && (0.0..=1000.0).contains(&v))
+                    && n.turn_edges.is_none_or(|e| e.iter().all(|v| v.is_finite() && (0.0..=180.0).contains(v)) && e.windows(2).all(|w| w[0] <= w[1]))
+                    && [n.stall_seconds, n.stuck_distance, n.stuck_seconds].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=60.0).contains(&v)))
+                    && n.crosswalk.as_deref().is_none_or(|c| matches!(c, "off" | "walk_signal"))
+            })
             && self.ped_body.as_ref().is_none_or(|b| {
                 let name = |n: &str| !n.is_empty() && n.len() <= 64 && n.bytes().all(|c| c.is_ascii_graphic());
                 b.parts.as_ref().is_none_or(|parts| parts.len() <= 8 && parts.iter().all(|p| {
@@ -1052,13 +1088,14 @@ impl LivingWorldPatch {
                     && n.anticipation_frames.is_none_or(|v| v <= 600)
                     && n.max_crossed_nodes.is_none_or(|v| v <= 60)
                     && n.walk_arrive_distance.is_none_or(|v| v.is_finite() && (0.0..=20.0).contains(&v))
+                    && n.reaction_radius.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v))
                     && n.walk_stuck_ticks.is_none_or(|v| v <= 36000)
                     && n.board_yaw_dead_zone.is_none_or(|v| v.is_finite() && (0.0..=core::f32::consts::FRAC_PI_2).contains(&v))
                     && n.board_yaw_mag_scale.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v))
             })
             && self.npc_avoid.as_ref().is_none_or(NpcAvoidPatch::validate)
             && self.ped_brain.as_ref().is_none_or(|p| {
-                [p.wander_speed, p.warn_seconds, p.know_about_seconds, p.mood_want_memory_seconds, p.conversation_turn_seconds, p.conversation_gather_seconds, p.run_from_honker_distance, p.run_from_honker_speed, p.attack_throw_speed, p.attack_throw_lead_seconds, p.attack_throw_jitter, p.attack_throw_lift, p.light_throw_speed, p.zombie_follow_distance, p.zombie_sprint_distance, p.zombie_ring_min, p.zombie_ring_max, p.zombie_sprint_speed, p.zombie_walk_speed].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
+                [p.wander_speed, p.warn_seconds, p.know_about_seconds, p.mood_want_memory_seconds, p.conversation_turn_seconds, p.conversation_gather_seconds, p.run_from_honker_distance, p.run_from_honker_speed, p.attack_throw_speed, p.attack_throw_lead_seconds, p.attack_throw_jitter, p.attack_throw_lift, p.light_throw_speed, p.zombie_follow_distance, p.zombie_sprint_distance, p.zombie_ring_min, p.zombie_ring_max, p.zombie_sprint_speed, p.zombie_walk_speed, p.zombie_arrive_distance].into_iter().all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v)))
                     && p.warn_speech.is_none_or(|v| (0..=127).contains(&v))
             })
             && self.traffic_horn.as_ref().is_none_or(|m| {

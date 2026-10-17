@@ -163,7 +163,7 @@ fn run(m: &NavMesh, bodies: &mut [Body], ticks: u32, rule: CrosswalkRule, signal
                     }
                 }
                 Intent::TurnLeft | Intent::TurnRight => {
-                    b.heading += if out.intent == Intent::TurnLeft { std::f32::consts::PI } else { -std::f32::consts::PI };
+                    b.heading += (out.turn_degrees as f32).to_radians() * if out.intent == Intent::TurnLeft { 1.0 } else { -1.0 };
                     b.state = Locomotion::Idle;
                 }
                 Intent::Idle => b.state = Locomotion::Idle,
@@ -335,4 +335,38 @@ fn steps_cross_tile_seams_and_never_jump_layers() {
     // A step into a boundary slides onto the edge (no progress beyond it).
     let (edge, ok) = constrain_step(&m, [3.9, 0.0, 5.0], [4.2, 0.0, 5.0]);
     assert!(ok && (edge[0] - 4.0).abs() < 1e-4);
+}
+
+/// `82E2A500` (b167): 25 / 70 / 115 / 160 degree edges pick 45 / 90 / 135 / 180; below 25 no turn; both sides.
+#[test]
+fn turn_bucket_edges_follow_retail() {
+    let e = WanderParams::default().turn_edges;
+    let b = |deg: f32| turn_bucket(deg.to_radians(), &e);
+    assert_eq!([b(24.9), b(25.0), b(69.9), b(70.0), b(114.9), b(115.0), b(159.9), b(160.0), b(180.0)], [None, Some(45), Some(45), Some(90), Some(90), Some(135), Some(135), Some(180), Some(180)]);
+    assert_eq!([b(-30.0), b(-100.0), b(-170.0)], [Some(45), Some(90), Some(180)]);
+}
+
+/// The stuck watch (ours; retail's reverse = goal event 4, b158 item 9): a walking ped that stays within 0.3 m for 2 s
+/// gives up its target and plans the next one away from it, skipping the long fan.
+#[test]
+fn a_pinned_walking_ped_gives_up_and_plans_away_from_its_target() {
+    let m = mesh(&grid(20, 20, 2.0, |_, _| Some(AREA_DEFAULT)));
+    let p = WanderParams::default();
+    let mut nav = PedNav::default();
+    let pos = [20.0, 0.0, 20.0];
+    let dt = 1.0 / 30.0;
+    // Facing +z: the first target lies ahead.
+    nav.step(&m, &p, CrosswalkRule::Off, &NoSignals, 1, pos, 0.0, Locomotion::Walk, &[], dt);
+    let first = nav.target.unwrap();
+    assert!(first[2] > pos[2], "first target ahead: {first:?}");
+    // Walking but pinned: the body never moves.
+    let mut ticks = 0;
+    while nav.stuck_count == 0 && ticks < 90 {
+        nav.step(&m, &p, CrosswalkRule::Off, &NoSignals, 1, pos, 0.0, Locomotion::Walk, &[], dt);
+        ticks += 1;
+    }
+    assert_eq!(nav.stuck_count, 1, "gave up after {ticks} ticks");
+    assert!((ticks as f32 * dt - p.stuck_seconds).abs() < 0.1, "after {} s", ticks as f32 * dt);
+    let next = nav.target.unwrap();
+    assert!(next[2] < pos[2], "planned away from the old target: {next:?}");
 }

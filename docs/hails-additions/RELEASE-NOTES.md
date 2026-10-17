@@ -69,6 +69,12 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Ped lighting (new):** peds no longer have rough, blocky dark patches on their shadow side. Their normal maps were converted in the wrong layout. Run **Refresh Game Files** once to get the fixed ped models.
+- **Ped turns (new):** peds turn with Skate 3's turning animations (45, 90, 135 and 180 degrees) while standing and while walking, instead of stopping to pivot, and they follow their path at Skate 3's steering speed (measured in the recompiled game).
+- **Peds no longer get stuck (new):** a ped pinned against a corner it cannot walk round moves on, or turns away and picks a new path.
+- **NPC skater reactions (new):** NPC skaters near a wipeout (yours or another skater's) say Skate 3's slam lines, and their own wipeouts their crash lines.
+- **Cars stopping (new):** cars stop at lights and behind other cars at Skate 3's distances, braking later and harder, and no longer run amber lights.
+- **Zombie mode (new):** zombies pick their next spot round you a little earlier, like Skate 3.
 - **Peds hold a grudge (new):** a ped who warned you now chases you if you bump them again, like Skate 3. Before, a ped whose warning had ended could never get angry enough to chase. Security guards also react when they see someone else get hit.
 - **Who knocks peds over (new):** NPC skaters now knock peds over like you do, and a ped who walks into another ped makes both stumble.
 - **Chases (new):** a full chase group stops taking new chasers, the lead chaser changes round the group, a taze ends the chase, and a chase ends cleanly.

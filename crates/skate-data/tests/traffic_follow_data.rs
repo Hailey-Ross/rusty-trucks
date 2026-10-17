@@ -1,7 +1,7 @@
 //! Data-gated run of the V3 lane follower (`skate_core::living_world::traffic::follow`) on the
 //! user's own export: DownTown filled with cars by the retail placement rules, two minutes of
 //! traffic at the 60 Hz world tick. Cars follow their lanes, enter signalled junctions only on
-//! green (or turning right, or committed in the amber dilemma zone), never overlap and never pass
+//! green (or turning right; retail has no amber go-through, b163), never overlap and never pass
 //! the lane limit. Skips (passes with a note) when `SKATE3_ASSET_ROOT` is not set.
 
 use skate_core::living_world::rng::Rng;
@@ -67,17 +67,17 @@ fn downtown_traffic_follows_lanes_obeys_lights_and_never_overlaps() {
     let (mut speeds, mut hard) = (Vec::new(), 0u32);
     for tick in 0..60 * 120 {
         clock.tick(&mut Vec::new());
-        let before: Vec<(u32, Option<Entry>, bool)> = cars.iter().map(|c| (c.key, c.entry, c.committed)).collect();
+        let before: Vec<(u32, Option<Entry>)> = cars.iter().map(|c| (c.key, c.entry)).collect();
         let prev: Vec<[f32; 3]> = cars.iter().map(|c| c.cursor.frame(&net).position).collect();
         let events = follow::step(&net, &clock, &mut cars, 1.0 / 60.0, ConnectorChoice::LeastLoaded, &mut step_rng);
         for e in &events {
             match *e {
                 FollowEvent::EnteredJunction { key, connector } => {
                     entered += 1;
-                    let (_, entry, committed) = before.iter().find(|b| b.0 == key).copied().unwrap();
+                    let (_, entry) = before.iter().find(|b| b.0 == key).copied().unwrap();
                     let c = &net.connectors[connector];
                     if let Some(phase) = clock.light_for(&net, connector) {
-                        if phase.light == Light::Red && c.turn() != Turn::Right && !committed {
+                        if phase.light == Light::Red && c.turn() != Turn::Right {
                             on_red += 1;
                             eprintln!("tick {tick}: car {key} entered {:?} on red (entry {entry:?})", c.id);
                         }
