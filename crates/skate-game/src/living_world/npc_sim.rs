@@ -1243,8 +1243,12 @@ pub(crate) fn simulate(
                     let (p, _) = projected_point(sim, state);
                     let v = sim.last_deck.map_or(0.0, |q| ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt() * 60.0);
                     let names: Vec<&str> = intents.iter().map(|x| x.0.as_str()).filter(|n| !n.starts_with("OB_")).collect();
+                    // The action / motion graph states, to see why an intent was or was not taken.
+                    let anim = &sim.body.runtime.animation;
+                    let ag = anim.action_controller.frame.current.and_then(|id| graphs.action.binding.states.get(id)).map_or("?", |s| s.name.as_str());
+                    let mg = anim.motion_controller.frame.current.and_then(|id| graphs.motion.binding.states.get(id)).map_or("?", |s| s.name.as_str());
                     debug!(
-                        "NPC_SKATER_PLACED #{} t{} {:?} at [{:.2}, {:.2}, {:.2}] {v:.1} m/s node {} on_path {on_path} past {past_start} air {airborne_now} flags {:08X} intents {names:?}",
+                        "NPC_SKATER_PLACED #{} t{} {:?} at [{:.2}, {:.2}, {:.2}] {v:.1} m/s node {} on_path {on_path} past {past_start} air {airborne_now} flags {:08X} ag {ag} mg {mg} intents {names:?}",
                         npc.id.serial, trace_ticks() - sim.trace_ticks, state, p[0], p[1], p[2], replay.cursor.node, sim.body.runtime.ai_physics.as_ref().map_or(0, |a| a.record.flags)
                     );
                 }

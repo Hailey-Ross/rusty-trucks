@@ -806,5 +806,11 @@ keyed by the NPC skater's stable id.
   22 / 17 (noise; sessions diverge). Not play-tested.
 - **Not fixed by this:** andrew_reynolds still posts `Trick ollie` at node 58 and never leaves the ground (2 of 45 sim
   ollies / flips in the run fail, both this spot). Speed is fine (7.2 to 7.7 m/s), the early fire does not apply
-  (b188: ollies have no lead), and 13 other ollies popped with no anticipation at all. Open: why the graph does not
-  take this ollie right after the manual's end node.
+  (b188: ollies have no lead), and 13 other ollies popped with no anticipation at all.
+- **Cause found (2026-10-17 ~17:30, per-tick trace with the graph states, `ag` / `mg` on NPC_SKATER_PLACED):** the
+  motion graph sits in `Bumped` from the tick after the spawn push for about 38 ticks (0.6 s); every placed NPC in the
+  run does it (#1 to #7, 25 to 39 ticks). `IsBumped` (`82BA7310`, `ground_acceleration.rs`) reads the deck's observed
+  acceleration, and the push takes the deck from about 1 to 5.7 m/s in one tick. #2's respawn is 14 ticks before its
+  ollie at node 58: the action graph takes it (`OllieAnticipation` -> `TrickFromSquare`), the motion graph stays in
+  `Bumped`, so nothing pops. Open: whether retail's push also reads as a bump (its velocity history at a placement),
+  and whether retail's motion graph lets a trick leave `Bumped`.
