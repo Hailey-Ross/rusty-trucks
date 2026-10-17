@@ -9,7 +9,9 @@
 //! - posting `sub_82E41060`: an existing record with the same (instigator, second entity,
 //!   category) is bumped (`sub_82E41750`: magnitude += the category's per-event magnitude, count
 //!   += 1, age = 0, position = the event's), else a new one is pushed (`sub_82E414D8`: at most 10;
-//!   when full only an event without an instigator or second entity may evict one). The
+//!   when full only an event without an instigator or second entity may evict one: `sub_82E441C8`
+//!   takes the record whose category Priority is numerically highest, the oldest on a tie, the first
+//!   in slot order on an exact tie; b189, main re-read the compares). The
 //!   per-event magnitude is the category field `B1DD` (the presence period, 0.5 s stock; discrete
 //!   categories have none: the attribute default `0x830D0850`, 0.0);
 //! - per tick (`sub_82E41600`): cooldowns run down and go at 0, ages run up, suppress timers run
@@ -64,6 +66,9 @@ pub struct MoodCategory {
     /// perception scales) [code, b18 / b5]; zombiemode 5 / 5, presence 10 / 20, collision 20 / 20.
     pub near: f32,
     pub far: f32,
+    /// `Hash_1A3FB63DFDAE0C4F` (read by the mood manager's vfunc +32, `82BFF308`): which record a full store evicts
+    /// first, the numerically highest (1 = collision / beingchased, kept longest; 6 = litter); absent = 0.
+    pub priority: u32,
 }
 
 /// One reaction prerequisite {category, kind a, comparator b, value c}.
@@ -161,7 +166,13 @@ impl MoodStore {
     pub fn forget(&mut self, entity: u64) {
         self.records.retain(|r| r.instigator != Some(entity) && r.second != Some(entity));
     }
+    /// [`Self::post_ranked`] with every category at the same priority (the oldest record goes when full).
     pub fn post(&mut self, event: MoodEvent, magnitude: f32) -> bool {
+        self.post_ranked(event, magnitude, &|_| 0)
+    }
+
+    /// Post an event (`sub_82E41060`); `priority` gives a category's eviction Priority ([`MoodCategory::priority`]).
+    pub fn post_ranked(&mut self, event: MoodEvent, magnitude: f32, priority: &dyn Fn(&str) -> u32) -> bool {
         if let Some(r) = self.records.iter_mut().find(|r| r.category == event.category && r.instigator == event.instigator && r.second == event.second) {
             r.magnitude += magnitude;
             r.count += 1;
@@ -173,8 +184,17 @@ impl MoodStore {
             if event.instigator.is_some() && event.second.is_some() {
                 return false;
             }
-            // Which record retail evicts (`sub_82E441C8`) is open: the oldest goes here.
-            if let Some(i) = self.records.iter().enumerate().max_by(|a, b| a.1.age.total_cmp(&b.1.age)).map(|x| x.0) {
+            // `sub_82E441C8`: one scan in slot order from (none, 0, -1.0); a higher Priority, or the same one and a
+            // strictly greater age, takes over. The new record's own priority is not compared.
+            let mut best: Option<(usize, u32, f32)> = None;
+            for (i, r) in self.records.iter().enumerate() {
+                let (p, age) = (priority(&r.category), r.age);
+                let (bp, ba) = best.map_or((0, -1.0), |b| (b.1, b.2));
+                if p > bp || (p == bp && age > ba) {
+                    best = Some((i, p, age));
+                }
+            }
+            if let Some((i, ..)) = best {
                 self.records.remove(i);
             }
         }

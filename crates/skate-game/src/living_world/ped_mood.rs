@@ -75,7 +75,7 @@ pub(crate) fn parse_in(root: &Value) -> Result<MoodTables, String> {
     let mut t = MoodTables::default();
     for key in cats.0.keys() {
         // B1DD absent (discrete): the attribute default 0.0 (`0x830D0850`).
-        t.categories.insert(key.clone(), MoodCategory { magnitude: cats.f32(key, "Hash_B1DD").unwrap_or(0.0), lifetime: cats.f32(key, "Hash_A379").unwrap_or(30.0), near: cats.f32(key, "Hash_D16BF47CF5417C44").unwrap_or(0.0), far: cats.f32(key, "Hash_A7EB37BC10C5A42F").unwrap_or(0.0) });
+        t.categories.insert(key.clone(), MoodCategory { magnitude: cats.f32(key, "Hash_B1DD").unwrap_or(0.0), lifetime: cats.f32(key, "Hash_A379").unwrap_or(30.0), near: cats.f32(key, "Hash_D16BF47CF5417C44").unwrap_or(0.0), far: cats.f32(key, "Hash_A7EB37BC10C5A42F").unwrap_or(0.0), priority: cats.u32(key, "Hash_1A3FB63DFDAE0C4F").unwrap_or(0) });
     }
     for key in results.0.keys() {
         let gate = |flag: &str| results.flag(key, flag);

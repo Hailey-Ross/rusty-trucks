@@ -404,9 +404,10 @@ impl PedNav {
         };
         // Arrival / no plan: choose the next target (the bot's state 1).
         let arrived = self.corners.is_empty() || (self.next + 1 >= self.corners.len() && self.corners.last().is_some_and(|c| dist_xz(*c, position) < params.corner_radius));
-        // Ours: stuck watch. A walking ped that moves less than `stuck_distance` in `stuck_seconds` (pinned on a
+        // NOT RETAIL: stuck watch. A walking ped that moves less than `stuck_distance` in `stuck_seconds` (pinned on a
         // boundary corner it cannot step onto, 2026-10-16) gives up its target and plans away from it, the long fan
-        // skipped (retail's reverse, event 4, whose sender in NavPower is not decoded).
+        // skipped. Retail has no such give-up (b190): NavPower's bot keeps a no-progress timer (`82E965D0`, bot +0x21C)
+        // that nothing reads, re-paths when its path turns invalid and only picks a new target when the bot is done.
         let mut give_up = false;
         if matches!(state, Locomotion::Walk | Locomotion::Start) {
             self.stuck = match self.stuck {

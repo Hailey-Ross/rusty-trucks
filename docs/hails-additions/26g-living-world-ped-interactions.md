@@ -1752,3 +1752,33 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Open:** the retail writer that clears `ped+0x1718` on plugin end is not decoded; whether retail refuses a partner
   that is in NoRoad; the `start / leave result=empty` churn of one ped every 2 ticks after its conversation emptied
   (cause unverified, may go away with this fix).
+
+## A full mood store evicts by priority (2026-10-17)
+
+- **Ours before:** when a ped's 10 mood records were full, the oldest record went, so a long-lived collision or
+  being-chased record could be pushed out by a stream of presence events.
+- **Retail [code] (research b189; main re-read the compares in the recomp):** `sub_82E414D8` (only caller
+  `sub_82E41060`, after no record matched the same instigator, second entity and category) drops the new record when
+  the store is full and it has both an instigator and a second entity; otherwise `sub_82E441C8` scans the records in
+  slot order from (none, 0, -1.0) and takes the one whose category Priority is unsigned greater, or equal with a
+  strictly greater age. So the numerically highest Priority goes, the oldest on a tie, the first in slot order on an
+  exact tie; the new record's own Priority is never compared. Priority is the category field
+  `Hash_1A3FB63DFDAE0C4F` read through the mood manager's vfunc +32 (`82BFF308`); stock values 1 (collision,
+  beingchased, nearbysession: kept longest) to 6 (litter: evicted first).
+- **Change:** `MoodCategory::priority` (setup data, absent = 0), `MoodStore::post_ranked` (the scan above); the ped
+  system posts with the categories' priorities. `post` keeps an all-equal priority for tests.
+- **Tests:** `a_full_store_evicts_by_priority_then_age` (b189's case: the youngest litter record goes before an old
+  collision; of two equal-age records the first goes); skate-core living_world 343 pass, skate-game ped tests 28 pass.
+  Not play-tested.
+- **Open:** the attribute default at `0x830D0850` read as a u32 (taken as 0; every stock category has a Priority).
+
+## Peds stuck at walls: retail has no give-up (research, 2026-10-17)
+
+- **Retail [code] (research b190, not traced):** the ambient ped's NavPower bot (`82E974A8`) snaps to the mesh,
+  re-requests its path when it turns invalid (`82E95FD0` -> `82E957F8`) and picks a new target only when the bot is
+  done. It keeps a no-progress timer (`82E965D0`, bot +0x21C, limit min(settings +8, speed x 2.0 x 0.0625)) that no
+  code was found to read. `82E2AAA0` / `82E2ABF8`, named as stuck candidates in b175, are the desired-direction and
+  turn helpers.
+- **Ours:** the stuck watch in `wander.rs` (0.3 m in 2.0 s, then give up and plan away) stays, now labelled NOT RETAIL
+  in the code (it was credited to retail's event 4). A later port: the retail timer as the measurement, the give-up
+  as a mod-switchable non-retail value.
