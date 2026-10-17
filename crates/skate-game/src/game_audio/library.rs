@@ -1530,6 +1530,38 @@ impl Library {
         }
     }
 
+    /// The bed files of the zones `keys` names (hex zone keys from region tiles), each once.
+    pub(crate) fn zone_bed_files<'a>(&self, keys: impl IntoIterator<Item = &'a str>) -> std::collections::BTreeSet<String> {
+        keys.into_iter()
+            .filter_map(|k| u64::from_str_radix(k, 16).ok())
+            .filter_map(|k| self.zone(k)?.bed.as_deref())
+            .filter_map(|bed| self.manifest.ambience.get(bed).map(|e| e.file.clone()))
+            .collect()
+    }
+
+    /// Read files ahead on the worker (`Warm`), skipping loaded and failed ones.
+    pub(crate) fn warm_files<'a>(&mut self, files: impl IntoIterator<Item = &'a String>) {
+        let jobs: Vec<(String, PathBuf)> = files.into_iter()
+            .filter(|f| !self.loaded.contains_key(*f) && !self.failed.contains(*f))
+            .map(|f| (f.clone(), self.path(f))).collect();
+        for (file, path) in jobs {
+            self.warm.request(&file, path);
+        }
+    }
+
+    /// Drop a file's clip and any read-ahead bytes (rodio keeps its own copy while a voice still plays it).
+    pub(crate) fn release_file(&mut self, assets: &mut Assets<AudioSource>, file: &str) {
+        self.warm.forget(file);
+        if let Some(clip) = self.loaded.remove(file) {
+            assets.remove(clip.handle.id());
+        }
+    }
+
+    /// A district's region tiles of one layer (empty when it has none).
+    pub(crate) fn region_tiles(&self, district: &str, layer: &str) -> &[RegionTile] {
+        self.manifest.regions.get(district).and_then(|l| l.get(layer)).map_or(&[], Vec::as_slice)
+    }
+
     /// Drop a bank's read-ahead bytes that were not played (its set entry unloaded).
     pub(crate) fn cool_bank(&self, bank: &str) {
         for e in self.manifest.banks.get(bank).into_iter().flatten() {
@@ -2169,6 +2201,38 @@ pub(crate) mod tests {
         assert_eq!(&*assets.get(clip.handle.id()).unwrap().bytes, &wav[..]);
         assert!(library.sample(&mut assets, "x", 2).is_none());
         assert!(library.failed.contains("banks/x/missing.wav"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The zone beds a map can reach are listed once each (zones without a bed and unknown keys skipped), read
+    /// ahead with the same bytes a game-thread read gives, and released with `release_file` (b198).
+    #[test]
+    fn zone_beds_read_ahead_give_the_same_bytes() {
+        let dir = std::env::temp_dir().join(format!("skate-audio-beds-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("private/audio/ambience")).unwrap();
+        let wav = b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x80\xbb\x00\x00\x00\x77\x01\x00\x02\x00\x10\x00data\x04\x00\x00\x00\x00\x40\x00\xc0";
+        std::fs::write(dir.join("private/audio/ambience/a.wav"), wav).unwrap();
+        std::fs::write(
+            dir.join("private/audio/audio_manifest.json"),
+            r#"{"version":4,"grains":{},"wheels":{},"banks":{},
+                "ambience":{"bed_a":{"file":"ambience/a.wav","seconds":1.0}},
+                "zones":{"00000000000000AA":{"bed":"bed_a"},"00000000000000BB":{"bed":"bed_a"},"00000000000000CC":{}}}"#,
+        )
+        .unwrap();
+        let mut library = Library::load(&dir).unwrap();
+        let mut assets = Assets::<AudioSource>::default();
+        let files = library.zone_bed_files(["AA", "BB", "CC", "DD", "not-hex"]);
+        assert_eq!(files.iter().map(String::as_str).collect::<Vec<_>>(), ["ambience/a.wav"]);
+        library.warm_files(files.iter());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while library.warm.ready().get("ambience/a.wav").is_some_and(Option::is_none) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(library.warm.ready().get("ambience/a.wav").is_some_and(Option::is_some));
+        let clip = library.ambience(&mut assets, "bed_a").unwrap();
+        assert_eq!(&*assets.get(clip.handle.id()).unwrap().bytes, &wav[..]);
+        library.release_file(&mut assets, "ambience/a.wav");
+        assert!(assets.get(clip.handle.id()).is_none() && !library.loaded.contains_key("ambience/a.wav"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }
