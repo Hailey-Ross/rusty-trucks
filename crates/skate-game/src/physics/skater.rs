@@ -62,6 +62,9 @@ pub(crate) struct SkaterRuntime {
     /// solve: (solid id, contact point, relative speed at the contact m/s). The living world maps them to
     /// cars (the hit brake, the parked car alarm).
     pub vehicle_hits: Vec<(u64, [f32; 3], f32)>,
+    /// The ped bodies (group 11 proxies, `living_world::ped_body`) the skeleton touched in the last solve, same
+    /// layout: the ped's knock-down comes from these real contacts (research b185).
+    pub ped_hits: Vec<(u64, [f32; 3], f32)>,
     pub scoring: crate::scoring_runtime::Runtime,
     pub climbing: super::climbing::Runtime,
     /// Completed physical pose in native animation space, read by rendering.
@@ -333,6 +336,7 @@ impl SkaterRuntime {
             ai_physics: None,
             takedown: None,
             vehicle_hits: Vec::new(),
+            ped_hits: Vec::new(),
             respawn,
             scoring: crate::scoring_runtime::Runtime::load(&data)?,
             climbing: super::climbing::Runtime::load(asset_root, &animation.evaluator.frames.bone_names)?,

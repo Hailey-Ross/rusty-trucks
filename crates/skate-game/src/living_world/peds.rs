@@ -889,9 +889,9 @@ pub(crate) fn advance_peds(
     obstacles: Res<PedObstacles>,
     mut peds: Query<(&Pedestrian, &mut PedBody, &mut Transform, &mut PedAudio, Option<&PedMind>)>,
     mut events: MessageWriter<PedEvent>,
-    mut floating_logged: Local<std::collections::HashMap<LivingWorldId, u64>>,
+    (mut floating_logged, mut blocked_logged): (Local<std::collections::HashMap<LivingWorldId, u64>>, Local<std::collections::HashMap<LivingWorldId, u64>>),
     trace: Res<PedObstacleTrace>,
-    mut blocked_logged: Local<std::collections::HashMap<LivingWorldId, u64>>,
+    skater_runtime: Option<Res<crate::physics::SkaterRuntime>>,
     observers: Res<super::LivingWorldObservers>,
     npcs: Query<(&super::npc_skaters::NpcSkater, &super::npc_skaters::NpcReplay)>,
     settings: Res<LivingWorldSettings>,
@@ -990,9 +990,36 @@ pub(crate) fn advance_peds(
                 let ignored = mind.and_then(|m| m.brain.ignore_collisions_with);
                 let rules = contact_rules(&set.collision, mind.is_some_and(|m| m.brain.heavy_collision_disabled));
                 let ignore_standing = mind.is_some_and(|m| m.brain.ignore_standing_collisions);
+                // The local skater meets a near ped's body in its own solve (`ped_body::push_ped_proxies`, group 11):
+                // the reaction comes from those contacts, as retail's comes from the Havok contact (b185). Before
+                // 2026-10-17 the distance test below knocked the ped down about 0.35 m before the bodies met and the
+                // body left the solve, so a fast hit never bailed the skater. Other skaters and peds without a body
+                // keep the distance test (NOT RETAIL).
+                let local = PLAYER_TARGET_BASE;
+                let body_in_solve = skater_runtime.is_some() && settings.ped_body.enabled && !settings.ped_body.parts.is_empty()
+                    && observers.observers.first().is_some_and(|o| Vec3::from_array(o.position).distance(body.position) <= settings.ped_body.range);
+                let solve_hit = || {
+                    let observer = observers.observers.first()?;
+                    if ignored == Some(local) {
+                        return None;
+                    }
+                    // NOT RETAIL YET: the closing speed is the relative speed at the contact; retail reads the ped
+                    // part's velocity after the solve (|v| / |w| > 3.0).
+                    let closing = skater_runtime.as_ref()?.ped_hits.iter()
+                        .filter(|h| (h.0 & !super::ped_body::PED_PROXY_TAG) >> 2 == ped.id.to_u64())
+                        .map(|h| h.2)
+                        .fold(None, |m: Option<f32>, s| Some(m.map_or(s, |m| m.max(s))))?;
+                    let d = [body.position.x - observer.position[0], body.position.z - observer.position[2]];
+                    let len = d[0].hypot(d[1]).max(1e-4);
+                    let n = [d[0] / len, d[1] / len];
+                    use skate_core::living_world::peds::skater_contact::{reaction_direction, skater_reaction};
+                    let kind = skater_reaction([closing, 0.0], [0.0, 0.0], &rules, ignore_standing)?;
+                    Some(((kind, reaction_direction(n, [body.heading.sin(), body.heading.cos()]), closing), local))
+                };
                 let skater = actors.iter()
-                    .filter(|(id, ..)| ignored != Some(*id))
+                    .filter(|(id, ..)| ignored != Some(*id) && !(body_in_solve && *id == local))
                     .find_map(|&(id, at, v)| skater_hit(body.position, body.heading, radius, at, v, &rules, ignore_standing).map(|h| (h, id)));
+                let skater = if body_in_solve { solve_hit().or(skater) } else { skater };
                 let touched = || pending.iter()
                     .filter(|c| c.touched == ped.id && ignored != Some(c.toucher.to_u64()))
                     .find_map(|c| ped_hit(body.position, body.heading, c.toucher_at, c.velocity, &rules, ignore_standing, settings.zombie).map(|h| (h, c.toucher.to_u64())));

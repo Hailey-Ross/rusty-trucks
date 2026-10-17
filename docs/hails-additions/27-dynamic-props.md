@@ -919,6 +919,27 @@ spawned; a prop moved 2 m comes back at its authored pose).
 - Not changed (same API possible later, each with its own proof): the per-tick rebake of moving props
   (`prop_dynamics.rs`) and the layout load.
 
+## DMO streaming: a moved prop is kept, not evicted (2026-10-17)
+
+**Problem.** User (laptop session game-20261017-143646): "props reset their position WAY TOO EASILY. in retail they
+only reset if you get far away or hit the reset button". The log: 21,037 evictions against 353 distance culls in 13
+minutes of DownTown; every eviction respawns the prop at its authored pose, so a knocked prop snapped back.
+
+**Retail [code] (research b184, `.local/research/b184-dmo-eviction-queue.md`).** The census evicts the eviction
+queue's front once per tick while the pool is full (`sub_826BAD98`), as ours does. The queue is a min-heap on the live
+score (`sub_82C49C80` insert from attach `sub_82C52718`, re-scored every manager tick `sub_82C49DB0`), and the live
+score `sub_82C55160` scores an object as kept when its own state says so (`sub_82C485C0`: DMO+0x1170 bit 0x20;
+`sub_82C56AE8`: state word DMO+0x112C == 1; or record flag 0x10), so a disturbed prop never becomes the front. Only
+untouched props go, and they come back where they already were.
+
+**Change.** `DmoStream::step_kept` takes the live objects' keep state and scores a kept live object like a keep
+placement (s1 = 2^31, the keep weight) when picking the front; `step` passes none. `dmo_stream` keeps every prop
+moved off its authored spawn pose (`PropDynamics::moved_ids`). NOT RETAIL YET: "moved" is our reading of retail's
+state 1 until a trace settles it; the overlap blocker (`sub_82C49EB0`) and the current-position score are not ported.
+
+**Verification.** skate-core `a_kept_live_object_is_never_evicted_while_others_can_go` and the 7 other dmo tests;
+muted DownTown run: no errors (29 live at the spawn, under the cap, so no evictions while standing). Not play-tested.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with

@@ -1707,3 +1707,24 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   behaviour too (no record consumption or hidden cooldown in the tick / expire / perception / producer chain while the
   9ABC gate is off, b176 [code]); a recomp trace counting the raises per greet would confirm it.
 - Tests: `prerequisite_kind_8_reads_the_pending_flee_want` (skate-core mood tests).
+
+## A fast hit on a ped comes from the bodies meeting (2026-10-17)
+
+- **Problem:** user (laptop session game-20261017-143646): "while you can bump them, running into them fast should
+  cause bails". 12 ped knockdowns at 3.5 to 7.9 m/s, no skater wipeout after any of them.
+- **Retail [code] (research b185):** there is no ped-hit bail. The skater bails through the ordinary skeleton contact
+  solve: the ped's body parts are group 11 in it (`sub_82BD4A30`), and the ground wipeout checks (`82D8F9E0`: contact
+  force 8.5, arms 30.0, displacement 0.4, squash 0.6, x 0.3 mid-trick) read those contacts. The ped's reaction
+  (`sub_82E38FB8` kind 5) only writes ped state.
+- **Ours before:** `skater_hit` knocked the ped down by distance (ped radius + 0.35 m), about 0.35 m before the bodies
+  met, and from the next tick the knocked-down ped's body left the solve (`ped_body::in_collision`), so the skater
+  never touched it.
+- **Change:** `skeleton_feedback` also collects the group-11 contacts (`SkaterRuntime::ped_hits`: proxy id, point,
+  relative speed); for the local skater and a ped whose body is in its solve, `advance_peds` takes the reaction from
+  those contacts. The distance test stays for other skaters and peds without a body (NOT RETAIL). NOT RETAIL YET:
+  the closing speed is the relative speed at the contact (retail: the ped part's velocity after the solve).
+- **Open:** whether retail keeps the ped's body during the knock-down (b145 trace pending); whether the skater meets
+  body A (group 9).
+- **Verification:** skate-game ped / vehicle / living_world tests 133 pass; muted DownTown run (below). Not
+  play-tested: run into a ped fast. Muted DownTown run: no errors, peds spawn, the map switch commits.
+
