@@ -148,6 +148,11 @@ pub(crate) struct NpcSim {
     board_yaw: skate_core::living_world::ai_signals::BoardYaw,
     /// The body after the last step (board and skeleton), the proxy others collide with; `None` until the first step.
     last_body: Option<skate_net::packed::BodyState>,
+    /// The full retail audio-state record of the last step (`skate_events::skater_audio_state`, what the player's
+    /// own sound objects read; retail's bridge `sub_824B0DA8` fills an AI skater's record the same way) and its
+    /// per-skater memory (air time, grind latch, rings, push plant).
+    audio: Option<skate_audio::player::state::AudioState>,
+    audio_memory: crate::game_audio::skate_events::SkaterAudioMemory,
 }
 
 /// Controller B's run: the line (`ctrl+592`) and node A re-attaches to when B hands back.
@@ -286,6 +291,11 @@ impl NpcSim {
         [t.x, t.y, t.z]
     }
 
+    /// The full audio-state record of the last step, when it has stepped since its placement.
+    pub(crate) fn audio_state(&self) -> Option<&skate_audio::player::state::AudioState> {
+        self.audio.as_ref()
+    }
+
     /// The NPC skater audio state from the simulated body: rolling on its wheels, grinding only in a grind state,
     /// airborne in an air state with no wheel down, silent wheels off the board and in a wipeout.
     pub(crate) fn lite_state(&self, material: u32) -> skate_audio::player::state::AudioState {
@@ -339,7 +349,7 @@ fn spawn_sim(
         Some(pooled) => pooled,
         None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placements_at_bail: 0, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None };
+    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placements_at_bail: 0, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default() };
     place(&mut sim, target, hold_ticks)?;
     Ok(sim)
 }
@@ -405,6 +415,8 @@ fn settle(sim: &mut NpcSim, hold_ticks: u32) {
     sim.board_yaw = Default::default();
     sim.hold_ticks = hold_ticks;
     sim.air = Default::default();
+    sim.audio = None;
+    sim.audio_memory = Default::default();
 }
 
 /// One simulated NPC's step this tick, run after the per-NPC preparation (`run_steps`).
@@ -493,8 +505,16 @@ fn run_steps(
                 if let Ok(mut t) = threads_ref.lock() {
                     t.push(std::thread::current().id());
                 }
-                let NpcSim { context, body, .. } = sim;
-                worker.advance_npc_skater(context, &mut body.runtime, &mut body.controls, graphs, &mut body.camera, intents)
+                let NpcSim { context, body, audio, audio_memory, .. } = sim;
+                let stepped = worker.advance_npc_skater(context, &mut body.runtime, &mut body.controls, graphs, &mut body.camera, intents);
+                if stepped.is_ok() {
+                    // The step's audio record, read with this NPC's own board and riding state swapped in.
+                    worker.swap_skater_context(context);
+                    let dt = (1.0 / skate_core::living_world::clock::RETAIL_TICK_HZ) as f32;
+                    *audio = Some(crate::game_audio::skate_events::skater_audio_state(worker, &body.runtime, audio_memory, dt));
+                    worker.swap_skater_context(context);
+                }
+                stepped
             });
         }
     });

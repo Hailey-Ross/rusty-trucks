@@ -188,7 +188,7 @@ struct Built {
 /// skaters with the player's physics calls it once per physics step per skater (only for skaters
 /// near the camera, see `crate::world_audio`), each with its own `memory`. `dt` = the step's
 /// seconds. Reads the animation's latched push contact without taking it.
-#[cfg_attr(not(test), allow(dead_code))] // the hook for a future AI-skater system (doc 11)
+/// The simulated NPC skaters call it after each step (`living_world::npc_sim::run_steps`).
 pub(crate) fn skater_audio_state(physics: &GamePhysics, skater: &SkaterRuntime, memory: &mut SkaterAudioMemory, dt: f32) -> skate_audio::player::AudioState {
     build(physics, skater, memory, dt, skater.animation_input.audio.push).state
 }

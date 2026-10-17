@@ -864,11 +864,15 @@ pub(crate) fn advance(
         // A simulated NPC sounds from its physics body (its line waits at the node while it bails: a grind kept
         // sounding after a bail off the rail, user 2026-10-15); a replay-tier one from its line sample.
         audio.state = Some(match sim {
-            Some(sim) => {
-                let deck = sim.deck_position();
-                let material = physics.as_deref().map_or(skate_audio::player::state::NO_MATERIAL, |p| crate::game_audio::world_bridge::ground_material(p, Vec3::from_array(deck)));
-                sim.lite_state(material)
-            }
+            // The full record of its last step; the lite state only before its first step after a placement.
+            Some(sim) => match sim.audio_state() {
+                Some(state) => state.clone(),
+                None => {
+                    let deck = sim.deck_position();
+                    let material = physics.as_deref().map_or(skate_audio::player::state::NO_MATERIAL, |p| crate::game_audio::world_bridge::ground_material(p, Vec3::from_array(deck)));
+                    sim.lite_state(material)
+                }
+            },
             None => lite_state(&s, material),
         });
         commands.entity(e).insert(AudioVelocity(Vec3::from_array(s.velocity)));

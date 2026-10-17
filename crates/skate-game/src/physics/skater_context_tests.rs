@@ -839,3 +839,42 @@ fn a_body_on_a_shared_animation_source_rides_like_a_fresh_load() {
         assert_eq!(fresh.player_state.current(), shared.player_state.current(), "state differs at tick {t}");
     }
 }
+
+/// A simulated NPC's audio record (`npc_sim::run_steps`: its context swapped in, `skate_events::skater_audio_state`)
+/// is its own: its board position and its wheels on the ground, not the player's (research b161 item 1: the NPC
+/// tiers sent a cut-down record, so bails, pushes and impacts never sounded).
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn a_simulated_npc_skaters_audio_record_is_its_own() {
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap();
+    let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    let mut spawn = physics.board.part_transforms()[BodyId::Deck.index()];
+    spawn.translation.z -= 6.0;
+    let mut context = physics.new_skater_context(spawn).unwrap();
+    let mut npc = physics.load_skater_in_context(&mut context, &root_dir, &graphs, "easy", None).unwrap();
+    let mut controls = PlayerControls::default();
+    let mut camera = crate::camera::CameraRuntime::load(&root_dir).unwrap();
+    let mut memory = crate::game_audio::skate_events::SkaterAudioMemory::default();
+    let mut state = None;
+    for t in 0..90 {
+        if t < 30 {
+            GamePhysics::set_context_velocity(&mut context, [0.0, 0.0, 4.0]);
+        }
+        physics.advance_npc_skater(&mut context, &mut npc, &mut controls, &graphs, &mut camera, &[]).unwrap();
+        physics.swap_skater_context(&mut context);
+        state = Some(crate::game_audio::skate_events::skater_audio_state(&physics, &npc, &mut memory, 1.0 / 30.0));
+        physics.swap_skater_context(&mut context);
+    }
+    let state = state.unwrap();
+    let deck = GamePhysics::context_deck(&context).translation;
+    let player = physics.board.part_transforms()[BodyId::Deck.index()].translation;
+    let d = |p: [f32; 3], q: skate_core::math::Vector3| ((p[0] - q.x).powi(2) + (p[2] - q.z).powi(2)).sqrt();
+    eprintln!("npc deck {deck:?}, record board {:?}, wheels {}", state.board_position, state.wheel_count);
+    assert!(d(state.board_position, deck) < 0.05, "the record is at the NPC's board");
+    assert!(d(state.board_position, player) > 1.0, "not at the player's board");
+    assert!(state.wheel_count > 0, "the rolling NPC has its wheels down");
+}
