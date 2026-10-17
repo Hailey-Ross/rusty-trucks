@@ -377,3 +377,26 @@ User: "There were MANY floating peds during my last play session. Not on geometr
 - **Files:** `crates/skate-game/src/living_world/peds.rs` (`ground(up, down)`), `peds_tests.rs`.
 - **Logging (always on):** `PED_FLOATING` (warn, every 2 s per ped, once per ped per 10 s) when a ped is drawn more than 0.3 m above the floor under it or over no floor: ped, model, drawn position, navmesh height, floor height, gap, polygon and area code. The ped readout (count, nearest ped, player position) now runs every 2.5 s without debug mode. User: "im tired of you saying you can't see the floating pedestrains". A data check found 167 walkable DownTown polygons (areas 17 and 161) more than 1.6 m above the collision floor or over none; the log names them when a ped walks there.
 - **Peds spawned at the player's height (2026-10-06):** the logs showed nearly every floating ped had no navmesh polygon (32 of 34, then 44 of 44). The census ring point carries the observer's height (`census::ring_point`); where the navmesh has no floor within `locate_height` (4 m) of it, the ped kept that height and hung in the air or under the ground. With a navmesh, such a spawn is now released like an unresolved look and the census tries another point next pass. Not retail yet: retail's spawn validation is not decoded. Session after the fix (about 6.5 minutes): 0 `PED_FLOATING`, the ped count stayed at its cap (14 to 15).
+
+## An ended approach drops its route (2026-10-17)
+
+Problem (laptop session 2026-10-17; user: "There were lots of peds stuck at random points where they were walking into
+a wall or just wandering around in a small circle."): peds stood against something 3 to 12 m short of their target
+with speed about 0; #111 kept one target for 20 s. Research b177 (`.local/research/b177-ped-obstacle-giveup.md`).
+
+Root cause [code, ours]: ApproachWantTarget gives the nav a one-point route (`peds.rs`, the approach arm) and sets no
+chase goal, and the "no brain move" arm only dropped a route when a chase goal had been set. So when the approach
+ended, its point stayed, and every give-up (the stuck watch, the yield patience) re-planned that same point: `plan()`
+with a route ignores `reverse` and clamps to the route's last point (`wander.rs`).
+
+Retail [code, b177]: the mover re-targets only when its path is done (`sub_82E2CB08`, `sub_82E96728`), and a move's
+path goes with the move. Retail has no time / distance give-up in the wander goal: event 4 ("reverse") is only posted
+by the graph op CheckForTargetTimeout, which is commented out in `pedestrian_wander.xml`. Our stuck watch, corner stall
+and patience stay as NOT RETAIL fallbacks.
+
+Change: `PedMind::approach_route` marks the approach's route; `ended_move_drops_route` clears it (and a chase goal's
+route, as before) on the first tick without a brain move. A mod's `PedRoute` is not marked and is not dropped.
+
+Test: `an_ended_approach_or_chase_drops_its_route_once` (peds_tests). Not play-tested yet.
+Open (b177): NavPower's path follower (does it end a path without progress, `sub_82E94F60` / `sub_82E95F00`), the
+10-update reachability check that sets `skip_long` (`sub_82C465A8`), what reads the mover's median speed (+0xE0).

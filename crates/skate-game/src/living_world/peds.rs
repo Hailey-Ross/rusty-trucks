@@ -1618,6 +1618,11 @@ pub(crate) fn plugin_controller_for(
     if switched { old } else { None }
 }
 
+/// No brain move this tick: whether the route a chase or an approach set must go now (both markers are cleared).
+pub(crate) fn ended_move_drops_route(chase_goal: &mut Option<[f32; 3]>, approach_route: &mut bool) -> bool {
+    chase_goal.take().is_some() | std::mem::take(approach_route)
+}
+
 /// A ped's behaviour brain and its controller on the stock ped AI graph (behaviour runtime,
 /// doc 26). Host-owned plain data.
 #[derive(Component, Default)]
@@ -1632,6 +1637,10 @@ pub(crate) struct PedMind {
     pub flee_goal: Option<[f32; 3]>,
     /// The current intercept goal (`skate_core::living_world::peds::chase::intercept`).
     pub chase_goal: Option<[f32; 3]>,
+    /// The nav route is ApproachWantTarget's one-point route: it goes when the approach ends, as retail's mover drops
+    /// a move's path with the move (research b177; before, the point stayed and every give-up re-planned it, a ped stood
+    /// 20 s at a wall, laptop session 2026-10-17 #111).
+    pub approach_route: bool,
     /// Where the body was at the last think (the ped's speed for the takedown window).
     last_at: Option<[f32; 3]>,
     presence_timer: f32,
@@ -2673,13 +2682,17 @@ pub(crate) fn think_peds(
                     // moves the body straight onto the point (ours: no slide clip).
                     Some((slide, speed)) if dist <= slide => {
                         body.nav.set_route(None);
+                        mind.approach_route = false;
                         if dist > 1e-4 {
                             let step = (speed * dt).min(dist);
                             body.position.x += d[0] / dist * step;
                             body.position.z += d[1] / dist * step;
                         }
                     }
-                    _ => body.nav.set_route(one_point(p)),
+                    _ => {
+                        body.nav.set_route(one_point(p));
+                        mind.approach_route = true;
+                    }
                 }
             }
             // PursueChasee (`826A43B0`): run to the formation point.
@@ -2732,7 +2745,7 @@ pub(crate) fn think_peds(
                 }
             }
             _ => {
-                if mind.chase_goal.take().is_some() {
+                if ended_move_drops_route(&mut mind.chase_goal, &mut mind.approach_route) {
                     body.nav.set_route(None);
                 }
             }

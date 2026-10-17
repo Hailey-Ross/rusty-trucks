@@ -1026,3 +1026,17 @@ fn a_ped_walking_into_a_ped_makes_it_stumble_unless_zombie_mode() {
     assert_eq!(hit(1.4, true), None);
     assert_eq!(hit(-1.4, false), None, "moving apart");
 }
+
+/// An ended approach drops its one-point route (research b177: before, the point stayed and every give-up re-planned
+/// it; laptop session 2026-10-17, ped #111 stood 20 s at a wall); a chase goal does as before; nothing set, nothing goes.
+#[test]
+fn an_ended_approach_or_chase_drops_its_route_once() {
+    let (mut chase_goal, mut approach_route) = (None, true);
+    assert!(ended_move_drops_route(&mut chase_goal, &mut approach_route));
+    assert!(!ended_move_drops_route(&mut chase_goal, &mut approach_route), "only once");
+    chase_goal = Some([1.0, 0.0, 2.0]);
+    approach_route = true;
+    assert!(ended_move_drops_route(&mut chase_goal, &mut approach_route));
+    assert!(chase_goal.is_none() && !approach_route, "both markers cleared");
+    assert!(!ended_move_drops_route(&mut None, &mut false));
+}
