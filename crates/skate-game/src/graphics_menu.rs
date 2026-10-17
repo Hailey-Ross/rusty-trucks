@@ -593,6 +593,16 @@ fn setup(
         Err(_) => GraphicsSettings::default(),
     }
     .validated();
+    // The session log shows what a run started with (later changes log as PC_OVERLAY).
+    info!(
+        "GRAPHICS_SETTINGS {}x{} scale {}% framerate cap {} npc draw distance {:.2} frame stats {}",
+        settings.width,
+        settings.height,
+        settings.scale,
+        if settings.fps == 0 { "unlimited".to_string() } else { settings.fps.to_string() },
+        settings.npc_draw_distance,
+        settings.frame_stats
+    );
     if let Some(mut living) = living {
         living.set_user_draw_distance(settings.npc_draw_distance);
         // Saved choices, plus any `SKATE_*=1` of this run (not saved).
