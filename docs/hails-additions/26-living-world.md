@@ -88,6 +88,7 @@ the file of their topic (and get a line here).
 - [Bumps: the player and simulated NPC skaters knock each other down (2026-10-16)](26e-living-world-skater-ai.md#bumps-the-player-and-simulated-npc-skaters-knock-each-other-down-2026-10-16)
 - [Bumped NPC skaters: no anger, a collide line; pros stay calm (2026-10-16)](26e-living-world-skater-ai.md#bumped-npc-skaters-no-anger-a-collide-line-pros-stay-calm-2026-10-16)
 - [A dropped trick slot shows no trick pose (2026-10-17)](26e-living-world-skater-ai.md#a-dropped-trick-slot-shows-no-trick-pose-2026-10-17)
+- [Simulated NPC skaters hold a manual on its side (2026-10-17)](26e-living-world-skater-ai.md#simulated-npc-skaters-hold-a-manual-on-its-side-2026-10-17)
 
 ### 26f: Pedestrians: body, navigation and look
 

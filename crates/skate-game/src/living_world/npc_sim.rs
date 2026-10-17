@@ -405,6 +405,13 @@ fn place(sim: &mut NpcSim, target: &ai_record::LineTarget, hold_ticks: u32) -> R
     Ok(velocity)
 }
 
+/// Ticks of NPC_SKATER_PLACED / NPC_SKATER_STEER debug trace after a placement: 60, or `SKATE_NPC_TRACE_TICKS` for a
+/// longer look at a stall (with `RUST_LOG=info,skate3rust::living_world::npc_sim=debug`).
+fn trace_ticks() -> u32 {
+    static TICKS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *TICKS.get_or_init(|| std::env::var("SKATE_NPC_TRACE_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(60))
+}
+
 /// Lift the placement guard once the actor reply has landed (or after a logged 30-tick limit).
 fn lift_pending(sim: &mut NpcSim, npc: &super::npc_skaters::NpcSkater) {
     if !sim.teleport_pending {
@@ -429,7 +436,7 @@ fn settle(sim: &mut NpcSim, hold_ticks: u32) {
     sim.placed = true;
     sim.toggle = Default::default();
     sim.last_deck = None;
-    sim.trace_ticks = 60;
+    sim.trace_ticks = trace_ticks();
     sim.slot = Default::default();
     sim.board_yaw = Default::default();
     sim.hold_ticks = hold_ticks;
@@ -1108,7 +1115,7 @@ pub(crate) fn simulate(
                     if airborne_now && rules.board_yaw_on && !on_foot && !waiting && avoid.last.mode != AvoidMode::Skitch {
                         use skate_core::living_world::ai_signals::{manual_value, BoardYaw};
                         let ahead = anticipated.filter(|&t| skate_core::scoring::catalog::category(t) == Some(8) && sim.slot.category != 8);
-                        let post: Option<[_; 2]> = BoardYaw::post(&sim.board_yaw, ahead.map(|t| manual_value(t, rules.board_yaw.manual_value)), &rules.board_yaw);
+                        let post: Option<[_; 2]> = BoardYaw::post(&sim.board_yaw, ahead.map(|t| manual_value(t, rules.signals.manual_value)), &rules.board_yaw);
                         intents.extend(post.into_iter().flatten());
                     }
                     if airborne_now && !rules.air_steer_on {
@@ -1238,7 +1245,7 @@ pub(crate) fn simulate(
                     let names: Vec<&str> = intents.iter().map(|x| x.0.as_str()).filter(|n| !n.starts_with("OB_")).collect();
                     debug!(
                         "NPC_SKATER_PLACED #{} t{} {:?} at [{:.2}, {:.2}, {:.2}] {v:.1} m/s node {} on_path {on_path} past {past_start} air {airborne_now} flags {:08X} intents {names:?}",
-                        npc.id.serial, 60 - sim.trace_ticks, state, p[0], p[1], p[2], replay.cursor.node, sim.body.runtime.ai_physics.as_ref().map_or(0, |a| a.record.flags)
+                        npc.id.serial, trace_ticks() - sim.trace_ticks, state, p[0], p[1], p[2], replay.cursor.node, sim.body.runtime.ai_physics.as_ref().map_or(0, |a| a.record.flags)
                     );
                 }
                 // The handover's start speed, once: the first tick with a measured speed after its teleport landed.

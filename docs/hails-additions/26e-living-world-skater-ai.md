@@ -785,3 +785,26 @@ keyed by the NPC skater's stable id.
   `_A` clip is cut at the recorded landing whatever its length, which may still look wrong; whether a START_TRICK node
   without a trick slot opens anything in retail; a `Continue` (chain level) with no open trick plays the recorded
   chain level here, retail may start nothing (not verified).
+
+## Simulated NPC skaters hold a manual on its side (2026-10-17)
+- **Found while chasing** the andrew_reynolds stall at DownTown node 60 (line 006477746e0017fab069ea024b7c9244: a
+  tailmanual at node 56, its end at 57, an ollie at 58 over a ~0.24 m step). A per-tick trace showed `Manual` posted
+  only before node 56 and nothing while the manual was open.
+- **Retail [code] (main read the recomp):** `sub_82469338` gives a manual's side: the tunable `742E...` (default
+  `0x830D0850`, 0.5), positive for nosemanual (2), negated for tailmanual (3), else 0. The anticipation arm of
+  `sub_824696B8` posts `Manual` = that value for the manual ahead (`pc+788` = 8, trick `pc+792`); the dispatcher
+  `sub_8246A2E0` stores it at `pc+836` for a manual (near 0x8246A544); the per-tick writer's category 8 arm
+  (`loc_82469954`, jump table 0x824698F8 case 7) posts `Manual` = `pc+836` every tick until the end node.
+- **Ours before:** anticipation posted `Manual` 1.0 (the nose side, also for a tailmanual) and the writer posted
+  nothing for category 8, so the manual was dropped at its start node.
+- **Change:** `SignalSettings::manual_value` (0.5, the one source; the board yaw's manual side reads it too),
+  `TrickSlot::manual` (`pc+836`), anticipation and the category 8 writer post the side. Mod key
+  `npc_simulated.manual_value` (0..=1). `SKATE_NPC_TRACE_TICKS` (default 60) lengthens the per-tick NPC_SKATER_PLACED
+  debug trace after a placement (`RUST_LOG=info,skate3rust::living_world::npc_sim=debug`).
+- **Tests:** `a_manual_is_anticipated_and_held_with_its_side` (skate-core ai_signals); skate-core living_world 342
+  pass; skate-mods world_tuning pass. Muted 150 s DownTown runs before / after: bails 5 / 6, final stalls 5 / 6, lost
+  22 / 17 (noise; sessions diverge). Not play-tested.
+- **Not fixed by this:** andrew_reynolds still posts `Trick ollie` at node 58 and never leaves the ground (2 of 45 sim
+  ollies / flips in the run fail, both this spot). Speed is fine (7.2 to 7.7 m/s), the early fire does not apply
+  (b188: ollies have no lead), and 13 other ollies popped with no anticipation at all. Open: why the graph does not
+  take this ollie right after the manual's end node.
