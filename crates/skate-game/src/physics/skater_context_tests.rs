@@ -439,7 +439,7 @@ fn controller_b_steps_off_and_walks_the_skater_onto_the_node() {
     let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
     let spawn = physics.board.part_transforms()[BodyId::Deck.index()];
     let mut context = physics.new_skater_context(spawn).unwrap();
-    let mut runtime = physics.load_skater_in_context(&mut context, &root_dir, &graphs, "easy").unwrap();
+    let mut runtime = physics.load_skater_in_context(&mut context, &root_dir, &graphs, "easy", None).unwrap();
     let mut controls = PlayerControls::default();
     let mut camera = crate::camera::CameraRuntime::load(&root_dir).unwrap();
     // Settle on the board for half a second (an empty, present AI source, as while B is active).
@@ -527,7 +527,7 @@ fn npc_skaters_stepped_in_parallel_match_the_serial_steps_bit_for_bit() {
             spawn.translation.x += dx;
             let mut context = physics.new_skater_context(spawn).unwrap();
             GamePhysics::set_context_velocity(&mut context, [0.0, 0.0, 3.0]);
-            let runtime = physics.load_skater_in_context(&mut context, &root_dir, &rig.graphs, "easy").unwrap();
+            let runtime = physics.load_skater_in_context(&mut context, &root_dir, &rig.graphs, "easy", None).unwrap();
             Npc { context, runtime, controls: PlayerControls::default(), camera: crate::camera::CameraRuntime::load(&root_dir).unwrap() }
         }).collect()
     };
@@ -608,7 +608,7 @@ fn a_hard_bump_knocks_a_simulated_npc_skater_down() {
         let mut spawn = physics.board.part_transforms()[BodyId::Deck.index()];
         spawn.translation.z -= 4.0;
         let mut context = physics.new_skater_context(spawn).unwrap();
-        let mut npc = physics.load_skater_in_context(&mut context, &root_dir, &rig.graphs, "easy").unwrap();
+        let mut npc = physics.load_skater_in_context(&mut context, &root_dir, &rig.graphs, "easy", None).unwrap();
         let mut controls = PlayerControls::default();
         let mut camera = crate::camera::CameraRuntime::load(&root_dir).unwrap();
         let mut npc_body = GamePhysics::capture_context_body(&context, &npc);
@@ -794,4 +794,48 @@ fn a_skater_latches_onto_a_traffic_car_rides_and_lets_go() {
     assert_eq!(arm_contacts, 0, "the arms do not ride against the held car's chassis");
     assert!(gripping >= 60, "sub-mode 1 keeps both hands on for at least a second ({gripping} ticks)");
     assert!(states[340..].iter().all(|s| *s != PhysicalStateId::Skitching), "letting go leaves Skitching");
+}
+
+/// A simulated NPC body built on another body's animation source (`NpcSimPool::source`, the load-time optimisation of
+/// 2026-10-16: no second disk read of the banks and poses) rides exactly as a body loaded from disk: both ride the same
+/// push for 240 ticks in their own contexts and their decks and skeleton roots match bit for bit every tick.
+#[test]
+#[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+fn a_body_on_a_shared_animation_source_rides_like_a_fresh_load() {
+    let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+    let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+    let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+    let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+    let graphs = crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap();
+    let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+    let spawn = physics.board.part_transforms()[BodyId::Deck.index()];
+    let mut fresh_context = physics.new_skater_context(spawn).unwrap();
+    let t0 = std::time::Instant::now();
+    let mut fresh = physics.load_skater_in_context(&mut fresh_context, &root_dir, &graphs, "easy", None).unwrap();
+    let fresh_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let mut shared_context = physics.new_skater_context(spawn).unwrap();
+    let t0 = std::time::Instant::now();
+    let mut shared = physics.load_skater_in_context(&mut shared_context, &root_dir, &graphs, "easy", Some(fresh.animation.source.clone())).unwrap();
+    let shared_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("load: from disk {fresh_ms:.1} ms, on the shared source {shared_ms:.1} ms");
+    let (mut controls_a, mut controls_b) = (PlayerControls::default(), PlayerControls::default());
+    let mut camera_a = crate::camera::CameraRuntime::load(&root_dir).unwrap();
+    let mut camera_b = crate::camera::CameraRuntime::load(&root_dir).unwrap();
+    for t in 0..240 {
+        if t < 30 {
+            GamePhysics::set_context_velocity(&mut fresh_context, [0.0, 0.0, 5.0]);
+            GamePhysics::set_context_velocity(&mut shared_context, [0.0, 0.0, 5.0]);
+        }
+        physics.advance_npc_skater(&mut fresh_context, &mut fresh, &mut controls_a, &graphs, &mut camera_a, &[]).unwrap();
+        physics.advance_npc_skater(&mut shared_context, &mut shared, &mut controls_b, &graphs, &mut camera_b, &[]).unwrap();
+        let a = GamePhysics::context_deck(&fresh_context);
+        let b = GamePhysics::context_deck(&shared_context);
+        assert_eq!(format!("{a:?}"), format!("{b:?}"), "deck differs at tick {t}");
+        assert_eq!(
+            format!("{:?}", fresh.animated_skeleton.roots.animation_to_world),
+            format!("{:?}", shared.animated_skeleton.roots.animation_to_world),
+            "skeleton root differs at tick {t}"
+        );
+        assert_eq!(fresh.player_state.current(), shared.player_state.current(), "state differs at tick {t}");
+    }
 }

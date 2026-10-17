@@ -779,7 +779,7 @@ pub(crate) fn advance(
             if let Some(s) = replay.cursor.sample(&*lines, 0.0) {
                 let others: Vec<([u8; 16], u32)> = order.iter().filter(|o| o.0 != npc.id).map(|o| (o.1, o.2)).collect();
                 let in_use: Vec<[u8; 16]> = others.iter().map(|o| o.0).collect();
-                let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_ref(), seed: npc.seed };
+                let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_ref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
                 // Retail's mode 1 fallback (b122): the physics skater takes the nearest free start at any distance.
                 let chain = skate_core::living_world::replay::ChainConfig { fallback: true, ..chain };
                 let ctx = BranchContext { position: s.position, forward: s.velocity, speed: length(s.velocity), players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online, chain, tricks };
@@ -796,7 +796,7 @@ pub(crate) fn advance(
             let others: Vec<([u8; 16], u32)> = order.iter().filter(|o| o.0 != npc.id).map(|o| (o.1, o.2)).collect();
             let in_use: Vec<[u8; 16]> = others.iter().map(|o| o.0).collect();
             let (position, forward, speed) = s.as_ref().map_or(([0.0; 3], [0.0, 0.0, 1.0], 0.0), |s| (s.position, s.velocity, length(s.velocity)));
-            let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_ref(), seed: npc.seed };
+            let tricks = TrickContext { mode: settings.npc_tricks.mode, params: settings.npc_tricks.params, profile: trick_profile.as_ref(), seed: npc.seed, slot_tricks: state.npc.tricks.slot_tricks_for(&npc.character) };
             let ctx = BranchContext { position, forward, speed, players: &players, others: &others, in_use: &in_use, preferred_skill: -1, online: observers.online, chain, tricks };
             let records = replay.branches.clone();
             let trick_records = replay.tricks.clone();

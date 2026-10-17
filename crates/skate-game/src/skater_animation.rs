@@ -38,6 +38,10 @@ pub(crate) struct AnimationSource {
     evaluator: Arc<PoseEvaluator>,
 }
 impl AnimationSource {
+    /// The bank bytes this source decoded (read once, shared by every body built on it).
+    pub(crate) fn banks(&self) -> &skate_data::animation_banks::AnimationBanks {
+        &self.banks
+    }
     pub(crate) fn load(root: &Path) -> Result<Arc<Self>, String> {
         let banks = skate_data::animation_banks::AnimationBanks::load(root)?;
         let mut evaluator = PoseEvaluator::from_banks(&banks)?;

@@ -874,9 +874,12 @@ impl GamePhysics {
         asset_root: &std::path::Path,
         graphs: &crate::graph_runtime::StockGraphs,
         difficulty: &str,
+        source: Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
     ) -> Result<SkaterRuntime, String> {
         self.swap_skater_context(context);
-        let result = SkaterRuntime::load(asset_root, graphs, self, difficulty);
+        // `source`: the immutable animation banks and decoded poses another body already loaded (`SkaterAnimation::load`
+        // is `from_source` over a fresh `AnimationSource::load`; sharing the `Arc` gives the same runtime, no disk read).
+        let result = SkaterRuntime::load_for_world(asset_root, graphs, self, difficulty, source);
         self.swap_skater_context(context);
         result
     }

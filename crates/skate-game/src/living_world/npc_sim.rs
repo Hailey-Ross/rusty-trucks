@@ -227,15 +227,25 @@ pub(crate) struct NpcSimPool {
     /// With each its own physics context: its clock keeps running, so the camera's subject ticks stay monotonic.
     bodies: Vec<(SkaterPhysicsContext, SimBody)>,
     prewarmed: bool,
+    /// The animation banks and decoded poses the first loaded body read from disk, shared by every later body.
+    source: Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
 }
 
-fn load_body(physics: &mut GamePhysics, config: &crate::config::Config, graphs: &crate::graph_runtime::StockGraphs, spawn: skate_core::physics::drive_frames::RetailAffineTransform) -> Result<(SkaterPhysicsContext, SimBody), String> {
+fn load_body(
+    physics: &mut GamePhysics,
+    config: &crate::config::Config,
+    graphs: &crate::graph_runtime::StockGraphs,
+    spawn: skate_core::physics::drive_frames::RetailAffineTransform,
+    source: &mut Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
+) -> Result<(SkaterPhysicsContext, SimBody), String> {
     let t0 = std::time::Instant::now();
     let mut context = physics.new_skater_context(spawn)?;
-    let runtime = Box::new(physics.load_skater_in_context(&mut context, &config.asset_root, graphs, config.difficulty.profile_key())?);
+    let shared = source.is_some();
+    let runtime = Box::new(physics.load_skater_in_context(&mut context, &config.asset_root, graphs, config.difficulty.profile_key(), source.clone())?);
+    source.get_or_insert_with(|| runtime.animation.source.clone());
     let controls = Box::new(PlayerControls::load(&config.asset_root)?);
     let camera = Box::new(crate::camera::CameraRuntime::load(&config.asset_root)?);
-    info!("NPC_SKATER_SIM_LOAD loaded a skater from disk in {:.1} ms", t0.elapsed().as_secs_f64() * 1000.0);
+    info!("NPC_SKATER_SIM_LOAD loaded a skater in {:.1} ms (shared animation source: {shared})", t0.elapsed().as_secs_f64() * 1000.0);
     Ok((context, SimBody { runtime, controls, camera }))
 }
 
@@ -327,7 +337,7 @@ fn spawn_sim(
     let spawn = line_spawn(target);
     let (context, body) = match pool.bodies.pop() {
         Some(pooled) => pooled,
-        None => load_body(physics, config, graphs, spawn)?,
+        None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
     };
     let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placements_at_bail: 0, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None };
     place(&mut sim, target, hold_ticks)?;
@@ -561,7 +571,7 @@ pub(crate) fn simulate(
         let t0 = std::time::Instant::now();
         let have = pool.bodies.len() + npcs.iter().filter(|n| n.3.is_some()).count();
         for _ in have..rules.max {
-            match load_body(&mut physics, &config, &graphs, spawn) {
+            match load_body(&mut physics, &config, &graphs, spawn, &mut pool.source) {
                 Ok(pooled) => pool.bodies.push(pooled),
                 Err(error) => {
                     warn!("NPC_SKATER_SIM pool: cannot load a skater: {error}");

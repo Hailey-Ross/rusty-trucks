@@ -51,7 +51,7 @@ fn profile() -> TrickProfile {
 }
 
 fn ctx(p: &TrickProfile, seed: u64) -> TrickContext<'_> {
-    TrickContext { mode: TrickMode::Profile, params: TrickParams::RETAIL, profile: Some(p), seed }
+    TrickContext { mode: TrickMode::Profile, params: TrickParams::RETAIL, profile: Some(p), seed, slot_tricks: true }
 }
 
 #[test]
@@ -206,4 +206,16 @@ fn seeds_spread_over_the_table_weights() {
     let l = air_line(OLLIE, 60);
     let heel = (0..4000u64).filter(|&s| choose(&l, 1, 10, &ctx(&p, s)) == TrickChoice::Start(HEELFLIP)).count();
     assert!((2800..3200).contains(&heel), "about 3 in 4: {heel}");
+}
+
+/// `sub_8246A2E0` (research b159 item 1): without the profile's slot-trick flag the AI starts no grab (categories 3, 4, 12);
+/// other categories keep the recorded trick.
+#[test]
+fn a_profile_without_slot_tricks_skips_grabs() {
+    let p = profile();
+    assert!(matches!(catalog::category(BSGRAB), Some(3 | 4 | 12)) && !matches!(catalog::category(NOSEMANUAL), Some(3 | 4 | 12)));
+    let off = |t: i16| choose(&air_line(t, 60), 1, 10, &TrickContext { slot_tricks: false, ..ctx(&p, 1) });
+    assert_eq!(off(BSGRAB), TrickChoice::Start(-1));
+    assert_eq!(off(NOSEMANUAL), TrickChoice::Start(NOSEMANUAL));
+    assert_eq!(choose(&air_line(BSGRAB, 60), 1, 10, &ctx(&p, 1)), TrickChoice::Start(BSGRAB));
 }

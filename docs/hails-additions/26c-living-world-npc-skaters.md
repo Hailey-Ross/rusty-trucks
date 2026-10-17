@@ -672,3 +672,18 @@ riding mode. `824660A0` writes `pc+922` every call (not a one-way latch).
   nodes; walk-backs stood still for ~10 s before the stuck monitor wiped them out (new log `NPC_WALK_PROGRESS`).
 - Logs added: `WIPEOUT_REASONS`, `GRIND_WIPEOUT`, `PED_DESPAWN at= focus= distance=`, `NPC_AVOID` (bad cursor),
   `NPC_SKATER_PLACE_FRAME`, `NPC_SKATER_STEER` (debug), `NPC_WALK_PROGRESS`.
+
+## Simulated skater bodies share one animation source (load time, 2026-10-16)
+- **Problem:** each simulated skater body read and decoded the animation banks from disk (`NPC_SKATER_SIM_LOAD`
+  ~222 ms each in the 2026-10-16 sessions; the pool loads 3 at world start, ~670 ms inside the load hitch).
+- **Change:** `NpcSimPool::source` keeps the first body's `AnimationSource`; later bodies are built on it
+  (`GamePhysics::load_skater_in_context(.., source)`, `SkaterRuntime::load_for_world` also takes the source's banks
+  for the metadata). `SkaterAnimation::load` is `from_source` over a fresh `AnimationSource::load`, the source is
+  immutable (no interior mutability in `animation_pose.rs`), so a shared body is the same runtime.
+- **Verification (optimisation rule: identical behaviour first):** data-gated
+  `a_body_on_a_shared_animation_source_rides_like_a_fresh_load` (DownTown): a fresh and a shared body ride the same
+  push for 240 ticks, deck transform, skeleton root and physical state equal every tick (bit for bit, `Debug`
+  strings); load 161-166 ms from disk vs 64-66 ms on the shared source (2 runs). The bump test still gives NPC wipeout
+  tick 26 and player tick 36. The log line now says `(shared animation source: true/false)`.
+- **Open:** the remaining ~65 ms (collections, skeleton, controls and camera loads); the first body could use the
+  player's source too (left out: a mod could change the player's clips).

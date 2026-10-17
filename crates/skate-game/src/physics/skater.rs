@@ -215,7 +215,15 @@ impl SkaterRuntime {
         source: Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
     ) -> Result<Self, String> {
         let data = crate::custom_difficulty::load_collections(asset_root)?;
-        let banks = skate_data::animation_banks::AnimationBanks::load(asset_root)?;
+        // With a shared source its banks are the same file already read; otherwise read them here.
+        let loaded;
+        let banks = match &source {
+            Some(s) => s.banks(),
+            None => {
+                loaded = skate_data::animation_banks::AnimationBanks::load(asset_root)?;
+                &loaded
+            }
+        };
         let animation_metadata = banks.metadata()?;
         // The host's current character is a custom skater with no pro selector
         // or equipped physical hat. These are profile choices, not force values.
