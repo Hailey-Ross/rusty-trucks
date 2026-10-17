@@ -171,6 +171,14 @@ impl DmoStream {
     /// One census pass for `observers` (each with its score view). `exempt` ids (held or carried props) are never
     /// culled or evicted. `fill` uses the larger spawn budget (a map load).
     pub fn step(&mut self, observers: &[(Observer, DmoView)], settings: &DmoStreamSettings, fill: bool, exempt: &dyn Fn(u32) -> bool) -> Vec<DmoDecision> {
+        self.step_kept(observers, settings, fill, exempt, &|_| false)
+    }
+
+    /// [`Self::step`] with the live objects' keep state: a live object for which `kept` is true is scored as kept
+    /// (retail's live score `sub_82C55160` sets the keep flag from the object's own state, research b184), so it is
+    /// never the eviction queue's front while unkept objects are live. Retail still evicts the front every pass; only
+    /// untouched props go, and they come back where they already were.
+    pub fn step_kept(&mut self, observers: &[(Observer, DmoView)], settings: &DmoStreamSettings, fill: bool, exempt: &dyn Fn(u32) -> bool, kept: &dyn Fn(u32) -> bool) -> Vec<DmoDecision> {
         let mut out = Vec::new();
         let circles: Vec<_> = observers.iter().map(|(o, v)| (settings.range.around(o), *v)).filter(|((c, centre), _)| c.cull.is_finite() && centre.iter().all(|x| x.is_finite())).collect();
         if circles.is_empty() {
@@ -196,7 +204,15 @@ impl DmoStream {
         }
         // The best score over the observers' views.
         let best = |p: &DmoPlacement| circles.iter().map(|(_, v)| score_value(score(p, v, &settings.weights))).fold(f32::MIN, f32::max);
-        let front = |s: &Self| s.placements.iter().filter(|p| s.live.contains(&p.id) && !exempt(p.id)).map(|p| (best(p), p.id)).min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        // The live score: a kept object scores like a keep placement (flag 0x10: s1 = 2^31, the keep weight).
+        let live_score = |p: &DmoPlacement| {
+            if kept(p.id) && !p.keep {
+                best(&DmoPlacement { keep: true, ..p.clone() })
+            } else {
+                best(p)
+            }
+        };
+        let front = |s: &Self| s.placements.iter().filter(|p| s.live.contains(&p.id) && !exempt(p.id)).map(|p| (live_score(p), p.id)).min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         // One eviction per pass while the pool is full.
         if self.live.len() >= settings.cap {
             if let Some((_, id)) = front(self) {
