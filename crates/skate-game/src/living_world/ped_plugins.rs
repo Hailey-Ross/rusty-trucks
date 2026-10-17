@@ -147,7 +147,19 @@ pub(crate) fn map_props(root: &Path, map: &str) -> Vec<PluginProp> {
 impl PluginData {
     /// Load from the asset root (`private/living_world/tables.json` and `waypoints.json`, the stock descriptors).
     pub fn load(root: &Path) -> Result<Self, String> {
-        let tables: Value = serde_json::from_slice(&std::fs::read(root.join("private/living_world/tables.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        Self::load_with(root, None)
+    }
+
+    /// [`Self::load`] with `tables.json` already parsed (`None`: read and parse it here).
+    pub fn load_with(root: &Path, parsed: Option<&Value>) -> Result<Self, String> {
+        let read;
+        let tables: &Value = match parsed {
+            Some(v) => v,
+            None => {
+                read = serde_json::from_slice::<Value>(&std::fs::read(root.join("private/living_world/tables.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                &read
+            }
+        };
         let entities = tables.pointer("/classes/livingworld_entities").and_then(Value::as_object).ok_or("tables.json has no livingworld_entities")?;
         let props = tables.pointer("/classes/livingworld_props").and_then(Value::as_object).ok_or("tables.json has no livingworld_props")?;
         let field = |key: &str, name: &str| -> Option<Value> {

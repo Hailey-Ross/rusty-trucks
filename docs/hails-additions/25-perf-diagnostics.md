@@ -514,3 +514,26 @@ frame: the living world loading its map data on the first fixed tick (`peds::loa
 `living_world::load_for_map` 35 ms), a follow-up.
 
 Not changed: the first ground at start (still built on the first fixed tick, behind the loading screen).
+
+## Map switch: the ped data parses `tables.json` once (2026-10-17)
+
+Problem: after a map switch the first fixed tick loads the living world's ped data (`peds::load_ped_data`), 150.3 ms
+on the desktop (University -> DownTown, `.local/tools/map-switch-run.ps1`); on the laptop the same frame is longer.
+New log line `PED_DATA_LOAD <map>: total (bodies, nav, graphs, tables, plugins, hand props)` showed where: the
+1.8 MB `private/living_world/tables.json` was read and parsed eleven times (the body tables, eight mood / chase /
+takedown / sight / conversation / sit / hand prop readers, the plugins and the hand props), about 7 ms each.
+
+Change: `load_ped_data` parses it once and hands the parsed tree to every reader (`ped_mood::*_in`,
+`PedData::load_with`, `PluginData::load_with`, `HandPropData::load_with`). A reader given none reads the file itself, so
+a missing or broken file reports the same errors as before. The byte-taking readers stay for the tests.
+
+Proof of identical behaviour: the same parsed `serde_json::Value` goes through the same reader code; the loaders'
+summary lines after the switch (`PED_GRAPH`, `PED_MOOD tables`, `PED_PLUGINS`, `LIVING_WORLD peds:`) are the same as in
+the session log of 2026-10-16 23:46, except `PED_HAND_PROPS ... with models` (0 -> 22), which comes from
+`hand_props.json` of the refreshed install (this change does not touch that read). skate-game ped tests 71 pass
+(15 ignored, as before), including the data-gated loads from the export.
+
+Result: `PED_DATA_LOAD DownTown` 150.3 -> 79.2 ms (bodies 33.0 -> 34.8 incl. the one parse, tables 53.8 -> 2.3,
+plugins 32.1 -> 14.8, hand props 7.9 -> 0.5; nav 22.5 -> 25.8 and graphs 1.0 -> 1.1 unchanged code, run-to-run noise).
+Left: the body clips and the per-map navmesh (about 60 ms), `load_for_map` (about 35 ms).
+

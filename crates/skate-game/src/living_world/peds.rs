@@ -151,7 +151,15 @@ impl PedData {
 
     /// Read the tables and the bank, decode every clip an animation set names.
     pub(crate) fn load(asset_root: &std::path::Path) -> Self {
-        let tables = std::fs::read(asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| skate_data::ped_anim::PedTables::parse(&b));
+        Self::load_with(asset_root, None)
+    }
+
+    /// [`Self::load`] with `tables.json` already parsed (`None`: read and parse it here).
+    pub(crate) fn load_with(asset_root: &std::path::Path, tables: Option<&serde_json::Value>) -> Self {
+        let tables = match tables {
+            Some(doc) => skate_data::ped_anim::PedTables::from_value(doc),
+            None => std::fs::read(asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| skate_data::ped_anim::PedTables::parse(&b)),
+        };
         let bank = skate_data::ped_anim::PedBank::load(asset_root);
         match (tables, bank) {
             (Ok(t), Ok(bank)) => {
@@ -632,8 +640,15 @@ fn load_ped_data(
     if data.loaded_for.as_ref() == Some(&key) {
         return;
     }
-    let mut loaded = PedData::load(&config.asset_root);
+    // Where the first fixed tick after a map switch goes (low-end PCs: 141 ms here on the desktop, 2026-10-17).
+    let t0 = std::time::Instant::now();
+    // Parsed once for every reader below (1.8 MB; the eleven readers parsed it again each before, about 85 ms on the
+    // desktop). A reader given none reads it itself, so a missing or broken file reports the same errors as before.
+    let tables = std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).map_err(|e| e.to_string()));
+    let mut loaded = PedData::load_with(&config.asset_root, tables.as_ref().ok());
+    let t_data = t0.elapsed();
     loaded.load_nav(&config.asset_root, &map.name, &nav.rules);
+    let t_nav = t0.elapsed();
     match super::ped_graph::PedGraph::load(&config.asset_root, super::ped_graph::AI_GRAPH) {
         Ok(graph) => {
             let pending = graph.pending();
@@ -655,7 +670,8 @@ fn load_ped_data(
         }
         Err(error) => warn!("PED_GRAPH not loaded (peds keep wandering without the behaviour graph): {error}"),
     }
-    match std::fs::read(config.asset_root.join("private/living_world/tables.json")).map_err(|e| e.to_string()).and_then(|b| Ok((super::ped_mood::parse(&b)?, super::ped_mood::reaction_sets(&b), super::ped_mood::chase_records(&b), super::ped_mood::takedown_tables(&b), super::ped_mood::sight(&b), super::ped_mood::conversation_tables(&b), super::ped_mood::sit_values(&b), super::ped_mood::starting_hand_props(&b)))) {
+    let t_graphs = t0.elapsed();
+    match tables.as_ref().map_err(String::clone).and_then(|b| { use super::ped_mood::*; Ok((parse_in(&b)?, reaction_sets_in(&b), chase_records_in(&b), takedown_tables_in(&b), sight_in(&b), conversation_tables_in(&b), sit_values_in(&b), starting_hand_props_in(&b))) }) {
         Ok((tables, sets, (chase, global, zombie), (takedowns, takedown_zombie), (sight, sight_scales), conversations, sit, starting_props)) => {
             info!(
                 "PED_MOOD tables: {} categories, {} results, {} reaction sets, {} entity types, {} chase records (global {}, zombie {}, zombie takedowns {})",
@@ -683,7 +699,8 @@ fn load_ped_data(
         }
         Err(error) => warn!("PED_MOOD tables not loaded (no mood reactions): {error}"),
     }
-    match super::ped_plugins::PluginData::load(&config.asset_root) {
+    let t_tables = t0.elapsed();
+    match super::ped_plugins::PluginData::load_with(&config.asset_root, tables.as_ref().ok()) {
         Ok(mut p) => {
             // The map's DMO hotpoint props (benches, bins, newspaper boxes) beside the placed waypoint groups.
             let seats = super::ped_plugins::map_props(&config.asset_root, &map.name);
@@ -712,13 +729,20 @@ fn load_ped_data(
         }
         Err(error) => warn!("PED_PLUGINS not loaded (no plugin props): {error}"),
     }
-    match super::ped_hand_props::HandPropData::load(&config.asset_root) {
+    let t_plugins = t0.elapsed();
+    match super::ped_hand_props::HandPropData::load_with(&config.asset_root, tables.as_ref().ok()) {
         Ok(h) => {
             info!("PED_HAND_PROPS {} records, {} with models", h.props.len(), h.props.values().filter(|p| p.glb.is_some()).count());
             loaded.hand_props = Arc::new(h);
         }
         Err(error) => warn!("PED_HAND_PROPS not loaded (no hand props): {error}"),
     }
+    let ms = |a: std::time::Duration, b: std::time::Duration| (b - a).as_secs_f64() * 1000.0;
+    let t_end = t0.elapsed();
+    info!(
+        "PED_DATA_LOAD {}: {:.1} ms (bodies {:.1}, nav {:.1}, graphs {:.1}, tables {:.1}, plugins {:.1}, hand props {:.1})",
+        map.name, t_end.as_secs_f64() * 1000.0, t_data.as_secs_f64() * 1000.0, ms(t_data, t_nav), ms(t_nav, t_graphs), ms(t_graphs, t_tables), ms(t_tables, t_plugins), ms(t_plugins, t_end)
+    );
     info!("LIVING_WORLD {}", loaded.status);
     loaded.loaded_for = Some(key);
     if let Some(mut audio) = audio {
