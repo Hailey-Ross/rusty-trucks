@@ -537,3 +537,26 @@ Result: `PED_DATA_LOAD DownTown` 150.3 -> 79.2 ms (bodies 33.0 -> 34.8 incl. the
 plugins 32.1 -> 14.8, hand props 7.9 -> 0.5; nav 22.5 -> 25.8 and graphs 1.0 -> 1.1 unchanged code, run-to-run noise).
 Left: the body clips and the per-map navmesh (about 60 ms), `load_for_map` (about 35 ms).
 
+
+## Low-end PCs: the GPU and graphics settings in the log (2026-10-17)
+
+Problem: a laptop session felt laggy at 100-150 fps (`.claude` todo low-end-pc-performance). Its log named the GPU
+(`AdapterInfo ... DiscreteGpu`) but not the framerate cap or the other graphics settings the run started with, and a
+hybrid laptop that Windows puts on the integrated GPU shows no sign of it beyond being slow.
+
+Change:
+- `graphics_menu::setup` logs `GRAPHICS_SETTINGS <w>x<h> scale <n>% framerate cap <n|unlimited> npc draw distance <x>
+  frame stats <bool>` once at start (changes in the menu already log as `PC_OVERLAY now ...`).
+- `app::warn_integrated_gpu` (Startup): only when the picked adapter is integrated, it lists the Vulkan adapters and
+  warns `GPU_ADAPTER integrated <name> picked although a discrete GPU is present (<names>): set skate3rust.exe to
+  "High performance" in Windows Settings > System > Display > Graphics`; without a discrete GPU an info line.
+  Nothing runs on a discrete adapter.
+
+Also found while measuring (not changed): the frame after a map switch commits uploads the new map's textures and
+meshes in one go on the render thread (`prepare_assets<GpuImage>` 266 ms, `allocate_and_free_meshes` 145 ms on the
+desktop); it falls in the switch's three "publishing" frames behind the pause menu, so play is not affected. Bevy's
+`RenderAssetBytesPerFrame` could spread it, at the cost of the map appearing piece by piece.
+
+Verification: skate-game graphics tests 18 pass; a muted desktop run logs `GRAPHICS_SETTINGS 1280x800 scale 100% framerate
+cap unlimited npc draw distance 1.00 frame stats true` and no `GPU_ADAPTER` line (RTX 4080 SUPER, discrete). The integrated GPU
+path needs a hybrid machine set to the integrated GPU (not checked).

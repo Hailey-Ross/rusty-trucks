@@ -55,6 +55,27 @@ fn log_gpu_timing(device: Option<Res<bevy::render::renderer::RenderDevice>>) {
     );
 }
 
+/// Hybrid laptops: Windows can hand the game the integrated GPU although a discrete one is present (a much slower
+/// game with no other sign). Only when the picked adapter is integrated, list the others and warn with the fix.
+fn warn_integrated_gpu(info: Option<Res<bevy::render::renderer::RenderAdapterInfo>>, instance: Option<Res<bevy::render::renderer::RenderInstance>>) {
+    // By name: `wgpu` is only a dev-dependency here (Bevy re-exports neither `DeviceType` nor `Instance`).
+    let kind = |t: &dyn std::fmt::Debug| format!("{t:?}");
+    let (Some(info), Some(instance)) = (info, instance) else { return };
+    if kind(&info.device_type) != "IntegratedGpu" {
+        return;
+    }
+    let discrete: Vec<String> = instance.enumerate_adapters(Backends::VULKAN).iter().map(|a| a.get_info()).filter(|a| kind(&a.device_type) == "DiscreteGpu").map(|a| a.name).collect();
+    if discrete.is_empty() {
+        info!("GPU_ADAPTER integrated {} (no discrete GPU found)", info.name);
+    } else {
+        warn!(
+            "GPU_ADAPTER integrated {} picked although a discrete GPU is present ({}): set skate3rust.exe to \"High performance\" in Windows Settings > System > Display > Graphics",
+            info.name,
+            discrete.join(", ")
+        );
+    }
+}
+
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
 pub(crate) enum FrameSet {
     Assets,
@@ -180,6 +201,7 @@ pub(crate) fn build(
     app.add_plugins(crate::game_audio::GameAudioPlugin);
     app.add_plugins(crate::living_world::LivingWorldPlugin);
     app.add_systems(Last, crate::crash_context::sample);
+    app.add_systems(Startup, warn_integrated_gpu);
     if crate::trace_all::on() || std::env::var_os("SKATE_GPU_TIMING").is_some_and(|v| v != "0") {
         app.add_systems(Startup, log_gpu_timing);
     }
