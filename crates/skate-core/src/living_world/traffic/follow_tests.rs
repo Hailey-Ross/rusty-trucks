@@ -472,3 +472,45 @@ fn an_alarming_parked_car_holds_its_parked_time_and_stays() {
     // The full parked time again (2 s), not the 0.5 s left before the alarm.
     assert!((ticks as f32 * DT - 2.0).abs() < 2.0 * DT, "{ticks}");
 }
+
+/// The hit brake latches above 5 m/s^2 (`sub_82C3FA08`, `DD49E3C2`): the braking stays at the speed it had when the
+/// latch set, so the car stops in about one second instead of a fading decay; the latch clears at the stop.
+#[test]
+fn a_fast_hit_brake_latches_and_stops_in_about_a_second() {
+    let net = net_straight(false);
+    let mut clock = SignalClock::new(timings());
+    let mut cars = vec![car(&net, 1, seg(&net, 0x100), 0.0)];
+    cars[0].speed = 8.0;
+    cars[0].hit_brake = true;
+    run(&net, &mut clock, &mut cars, 1);
+    assert!(cars[0].brake_latched, "8 m/s brakes harder than 5 m/s^2");
+    let held = cars[0].accel;
+    let mut steps = 1;
+    while cars[0].speed > 0.0 && steps < 600 {
+        run(&net, &mut clock, &mut cars, 1);
+        if cars[0].speed > 0.0 {
+            assert_eq!(cars[0].accel, held, "the latched braking does not fade");
+        }
+        steps += 1;
+    }
+    assert!((steps as f32 * DT) < 1.2, "stopped after {} s", steps as f32 * DT);
+    assert!(!cars[0].brake_latched && !cars[0].hit_brake);
+}
+
+/// The spawn draws (`82C3CDD0`, research b75 / b78): the max acceleration in 1 % steps of the spec range, the speed
+/// style from the driver's chances (normal / slow / fast) and the held bonus behind its roll.
+#[test]
+fn spawn_draws_follow_the_spec_and_driver_values() {
+    let p = FollowParams { bias_slow: 0.3, bias_fast: 0.5, ..FollowParams::default() };
+    let draws = |values: [u32; 3]| {
+        let mut it = values.into_iter();
+        spawn_draws(&p, &mut || it.next().unwrap())
+    };
+    assert_eq!(draws([0, 0, 0]), (2.0, 0.0, 0.5), "rand 0: low end, roll 1 is normal, the bonus passes");
+    assert_eq!(draws([100, 80, 0]).0, 5.0);
+    assert_eq!(draws([50, 84, 0]).1, -0.3, "roll 85 lands in the slow 10 %");
+    assert_eq!(draws([50, 95, 0]).1, 0.5, "roll 96 is fast");
+    let never = FollowParams { held_bonus_chance: 0.0, ..p };
+    let mut it = [0u32, 0, 0].into_iter();
+    assert_eq!(spawn_draws(&never, &mut || it.next().unwrap()).2, 0.0);
+}

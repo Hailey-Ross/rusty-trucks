@@ -260,17 +260,32 @@ pub(crate) fn parse_vehicle_data(vehicles: &[u8], tables: Option<&[u8]>) -> Resu
             m.pull_over_chance = num("pull_over_chance").or_else(|| num("Hash_559BA807F95FF93E")).unwrap_or(m.pull_over_chance);
             m.held_pull_over_chance = num("Hash_99083122A1B7116A").unwrap_or(m.held_pull_over_chance);
             params.parked_time = num("parked_time").or_else(|| num("Hash_988BB0F6F043EB3D")).unwrap_or(params.parked_time);
+            // The speed style chances, normal / slow / fast (`82C43330`, b78.2), and the held-bonus chance (b78.3).
+            for (i, hash) in ["Hash_90FC5AB44797501B", "Hash_85C11600C2914F96", "Hash_3C32BAC5E516710F"].into_iter().enumerate() {
+                if let Some(v) = num(hash) {
+                    params.speed_style[i] = v;
+                }
+            }
+            params.held_bonus_chance = num("Hash_D0BA2E02DE46A57A").unwrap_or(params.held_bonus_chance);
         }
         if let Some(f) = class("livingworld_vehicle_characteristics", spec_name) {
             let num = |k: &str| f.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
-            if let Some(v) = num("Hash_328B9F4685A14018") {
-                params.accel_max = v;
-            }
-            if let Some(v) = num("Hash_758229215579C6D1") {
-                params.plan_decel = v;
+            // The speed control's spec values (`82C3CDD0`, `sub_82C3FF38`, `sub_82C3FA08`; research b75 / b78): the max
+            // accel range, the slow / fast biases, the held bonus and the hit-brake latch.
+            for (hash, field) in [
+                ("Hash_5EFF87155A4EABE1", &mut params.accel_lo),
+                ("Hash_CA49D85FA629F7E7", &mut params.accel_hi),
+                ("Hash_3DF4F2D4CA631369", &mut params.bias_slow),
+                ("Hash_E0C564403296C5F8", &mut params.bias_fast),
+                ("Hash_0070396243C5622D", &mut params.held_bonus),
+                ("Hash_DD49E3C2B833A723", &mut params.latch_decel),
+            ] {
+                if let Some(v) = num(hash) {
+                    *field = v;
+                }
             }
             // Retail reads spec+40 (`328B9F46`) as the lane-change passage factor and spec+48 (`90AB56A5`) as the lane
-            // timer (b72 / b74); the follower's accel / decel reads above are todo traffic-accel-fields-mislabelled.
+            // timer (b72 / b74).
             if let Some(v) = num("Hash_328B9F4685A14018") {
                 params.passage_factor = v;
             }
@@ -488,6 +503,9 @@ pub(crate) fn car_from_record(
     let cursor = LaneCursor { place: Place::Lane { segment: si, lane: (*lane).min(net.segments[si].lanes - 1) }, distance: distance.clamp(0.0, net.segments[si].length), next: None, lane_shift: 0.0 };
     let length = if length > 0.5 { length } else { (m.bounds[1][2] - m.bounds[0][2]).max(3.0) };
     let mut car = Car::new(record.id.serial, cursor, length, params);
+    // The spawn draws (`82C3CDD0`): max acceleration, speed style and held bonus, from their own seeded stream.
+    let mut speed_rng = Rng::new(skate_core::living_world::rng::derive(record.seed, &[0x5350_4443]));
+    (car.accel_cap, car.speed_bias, car.held_bonus) = skate_core::living_world::traffic::follow::spawn_draws(&params, &mut || speed_rng.next_u32());
     let mut horn_rng = Rng::new(skate_core::living_world::rng::derive(record.seed, &[0x484f_524e]));
     car.driver = skate_core::living_world::traffic::horn::DriverBits::roll(&params.horn, &mut || horn_rng.unit());
     // `+4402` bit 0x80 (`82C42348`, the last roll): pulls over even while a skater holds the car.
