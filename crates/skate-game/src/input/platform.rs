@@ -178,6 +178,19 @@ mod windows {
         }
     }
 
+    /// XINPUT_CAPS_WIRELESS of an XInput slot (None when the slot is empty): SDL's XInput driver reports no
+    /// connection state, but retail's curve choice reads exactly this flag.
+    pub(super) fn wireless(index: u32) -> Option<bool> {
+        let mut capabilities = MaybeUninit::<Capabilities>::uninit();
+        // SAFETY: writable storage with the SDK ABI; read only on success.
+        if unsafe { XInputGetCapabilities(index, 1, capabilities.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        // SAFETY: the successful call filled it.
+        let capabilities = unsafe { capabilities.assume_init() };
+        Some(capabilities.flags & 0x0002 != 0)
+    }
+
     /// Zero all four slots whatever was sent before (exit paths, and the crash supervisor once the game ended).
     pub(crate) fn stop_all_rumble() {
         for index in 0..4 {
@@ -384,6 +397,21 @@ mod sdl {
         }
     }
 
+    /// The XInput slot of an SDL pad opened by SDL's XInput driver (device path "XInput#<slot>").
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(super) fn xinput_slot(path: &str) -> Option<u32> {
+        path.strip_prefix("XInput#")?.parse().ok().filter(|&slot| slot < 4)
+    }
+
+    #[test]
+    fn xinput_paths_name_their_slot() {
+        assert_eq!(xinput_slot("XInput#0"), Some(0));
+        assert_eq!(xinput_slot("XInput#3"), Some(3));
+        assert_eq!(xinput_slot("XInput#4"), None);
+        assert_eq!(xinput_slot(r"\\?\HID#VID_045E&PID_0B22"), None);
+        assert_eq!(xinput_slot(""), None);
+    }
+
     #[test]
     fn idle_is_never_refreshed_and_a_running_rumble_is() {
         use std::time::Duration;
@@ -545,6 +573,10 @@ mod sdl {
                 wireless: match pad.connection_state() {
                     Ok(sdl3::joystick::ConnectionState::Wireless) => Some(true),
                     Ok(sdl3::joystick::ConnectionState::Wired) => Some(false),
+                    // SDL's XInput driver ("XInput#<slot>") leaves it unknown: ask XInput, as retail does.
+                    #[cfg(windows)]
+                    _ => xinput_slot(&pad.path().unwrap_or_default()).and_then(super::windows::wireless),
+                    #[cfg(not(windows))]
                     _ => None,
                 },
                 face_labels: {

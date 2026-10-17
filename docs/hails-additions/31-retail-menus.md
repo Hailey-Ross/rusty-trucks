@@ -1223,8 +1223,9 @@ then port each row's effect. Rows that save but have no effect yet are listed be
     gates starts; switching it on plays retail's test rumble (`sub_8260DF40`: channel 0, 0.5 / 0.5, rate 5.0) on
     the active pad; output through `input::platform::set_rumble` (SDL `SDL_RumbleGamepad`, re-sent every 0.5 s
     for a 1 s duration while non-zero; XInput `XInputSetState` on change). The curve follows retail's test: wireless
-    from XINPUT_CAPS_WIRELESS (XInput) or SDL's connection state (`SDL_GetGamepadConnectionState`); unknown counts
-    as wired.
+    from XINPUT_CAPS_WIRELESS (XInput) or SDL's connection state (`SDL_GetGamepadConnectionState`); a pad SDL
+    opened through its XInput driver (path `XInput#<slot>`, connection state unknown) reads XINPUT_CAPS_WIRELESS of
+    that slot (2026-10-17: the laptop's Elite 2 came up unknown, so wired); still unknown counts as wired.
   - Fix 2026-10-17 (user: "the rumble on the controller still starts as soon as the game does and hasn't been
     stopping when the game closes"; research b173): before, every Xbox-family pad took the wireless curve and the
     curve ran with no live channel, so motor 1 got 3276 from the first frame, SDL re-sent it every 0.5 s, and no
