@@ -236,7 +236,7 @@ pub(crate) fn show() {
             };
             RegisterClassExW(&wc);
             let (sw, sh) = (GetSystemMetrics(0), GetSystemMetrics(1));
-            let title = wide("Skate 3 Rust Engine");
+            let title = wide(crate::brand::NAME);
             let hwnd = CreateWindowExW(WS_EX_APPWINDOW, class.as_ptr(), title.as_ptr(), WS_POPUP | WS_VISIBLE, (sw - WIDTH) / 2, (sh - HEIGHT) / 2, WIDTH, HEIGHT, std::ptr::null_mut(), std::ptr::null_mut(), instance, std::ptr::null_mut());
             let _ = ready_tx.send(());
             if hwnd.is_null() {
@@ -436,7 +436,7 @@ unsafe fn paint(hwnd: Hwnd) {
         };
         // DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS (0x8000) | DT_NOPREFIX (0x800)
         let one_line = 0x1 | 0x20 | 0x8000 | 0x800;
-        draw("SKATE 3 RUST ENGINE", 13, 600, TITLE, Rect { left: 0, top: 16, right: w, bottom: 36 }, one_line);
+        draw(&crate::brand::upper(), 13, 600, TITLE, Rect { left: 0, top: 16, right: w, bottom: 36 }, one_line);
         draw(&text, 16, 400, TEXT_BRIGHT, Rect { left: 16, top: 122, right: w - 16, bottom: 146 }, one_line);
         for (i, h_line) in history.iter().rev().enumerate() {
             let top = 152 + i as i32 * 19;

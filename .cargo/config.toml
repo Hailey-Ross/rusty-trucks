@@ -5,3 +5,8 @@
 # Scripts that set CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS add `+fma` there too (that variable overrides this).
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+fma"]
+
+# The fork build's display name (window titles, the splash, setup and crash windows; `crates/skate-game/src/brand.rs`).
+# File, folder and release asset names keep the engine's names (the updater finds releases by asset name).
+[env]
+SKATE_BRAND = "Rusty Trucks"

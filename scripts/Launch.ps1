@@ -7,7 +7,7 @@ try {
     if (-not (Test-Path -LiteralPath $executable)) { throw 'Game is not built. Run BUILD.bat first.' }
     New-Item -ItemType Directory -Path (Join-Path $ProjectRoot 'logs') -Force | Out-Null
     $log = Join-Path $ProjectRoot ('logs/game-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.log')
-    Write-Host 'Starting Skate 3 Rust Engine. Use your XInput controller; Esc opens difficulty/graphics/pause settings.'
+    Write-Host 'Starting Rusty Trucks. Use your XInput controller; Esc opens difficulty/graphics/pause settings.'
     Write-Host "Log: $log"
     $errorLog = [System.IO.Path]::ChangeExtension($log, 'stderr.log')
     # Start-Process ArgumentList arrays split on spaces on Windows PowerShell 5.1.

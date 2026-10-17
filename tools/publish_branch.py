@@ -60,7 +60,7 @@ def publish(directory, branch, notes_file=None):
         release = api('releases', 'POST', dict(
             tag_name=branch,
             target_commitish=meta['revision'],
-            name=branch,
+            name=f'Rusty Trucks ({branch})',
             draft=True,
             prerelease=True,
             make_latest='false',
@@ -83,7 +83,7 @@ def publish(directory, branch, notes_file=None):
              + "### Recent commits\n\n" + '\n'.join(
                  f"- {c['sha'][:8]} {c['commit']['message'].splitlines()[0]}" for c in commits))
     api(f"releases/{release['id']}", 'PATCH', dict(
-        name=branch,
+        name=f'Rusty Trucks ({branch})',
         body=notes,
         target_commitish=meta['revision'],
         draft=False,

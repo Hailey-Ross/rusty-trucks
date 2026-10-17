@@ -323,7 +323,8 @@ fn report(capture: &Capture, outcome: &str, elapsed: f64) -> String {
     #[cfg(not(windows))]
     let os_version = "OS version unavailable";
     let mut text = format!(
-        "Skate 3 Rust Engine diagnostic report v1\nBuild: {}\nPlatform: {} / {}\nUTC Unix seconds: {}\nRuntime seconds: {elapsed:.3}\n{outcome}\n\nNo automatic upload. Review before sharing. Paths and sensitive-context log lines are omitted.\nNative fault stack/registers: unavailable (no memory dump collected).\nGPU/driver, map and settings: available only if initialized and recorded below.\nMods: no authoritative mod inventory; modified asset contents are not collected.\nLogs: last 256 bounded lines; transitions: last 64; panic: first panic message and location pinned, then last 128 lines (frames without symbols dropped).\nState is sampled every second; brief transitions can be missed. Abrupt exits can lose pending pipe data.\n",
+        "{} diagnostic report v1\nBuild: {}\nPlatform: {} / {}\nUTC Unix seconds: {}\nRuntime seconds: {elapsed:.3}\n{outcome}\n\nNo automatic upload. Review before sharing. Paths and sensitive-context log lines are omitted.\nNative fault stack/registers: unavailable (no memory dump collected).\nGPU/driver, map and settings: available only if initialized and recorded below.\nMods: no authoritative mod inventory; modified asset contents are not collected.\nLogs: last 256 bounded lines; transitions: last 64; panic: first panic message and location pinned, then last 128 lines (frames without symbols dropped).\nState is sampled every second; brief transitions can be missed. Abrupt exits can lose pending pipe data.\n",
+        crate::brand::NAME,
         env!("SKATE_BUILD_ID"),
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -438,6 +439,7 @@ fn popup(path: &Path) -> std::io::Result<()> {
                 include_str!("crash_report_ui.ps1"),
             ])
             .env("SKATE_REPORT_PATH", path)
+            .env("SKATE_BRAND", crate::brand::NAME)
             .creation_flags(0x08000000)
             .status()?;
         if !status.success() {

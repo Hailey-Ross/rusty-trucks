@@ -46,7 +46,7 @@ unsafe extern "system" {
 }
 pub(super) fn fallback_notice(text: &str) {
     let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
-    let title: Vec<u16> = "Skate 3 Rust Engine"
+    let title: Vec<u16> = crate::brand::NAME
         .encode_utf16()
         .chain(Some(0))
         .collect();

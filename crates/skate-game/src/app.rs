@@ -89,7 +89,7 @@ pub(crate) fn build(
             })
             .set(WindowPlugin {
                 primary_window: Some(Window {
-                    title: config.multiplayer.title.clone().unwrap_or_else(||"Skate 3 Rust Engine".into()),
+                    title: config.multiplayer.title.clone().unwrap_or_else(|| crate::brand::NAME.into()),
                     resolution: (1280, 800).into(),
                     // Hidden until the start is done (`startup_loading`); the splash shows meanwhile.
                     visible: false,

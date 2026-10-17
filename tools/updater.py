@@ -455,7 +455,7 @@ def main(request=None):
     import tkinter as tk
     from tkinter import ttk
     win = tk.Tk()
-    win.title('Skate 3 Rust Engine — Updates')
+    win.title((os.environ.get('SKATE_BRAND') or 'Skate 3 Rust Engine') + ' - Updates')
     win.geometry('660x520')
     automatic = request['automatic']
     if automatic:

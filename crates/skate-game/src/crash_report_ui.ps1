@@ -4,7 +4,8 @@ Add-Type -AssemblyName System.Drawing
 $path = $env:SKATE_REPORT_PATH
 $report = [IO.File]::ReadAllText($path)
 $form = New-Object Windows.Forms.Form
-$form.Text = 'Skate 3 Rust Engine — diagnostic report'
+$brand = if ($env:SKATE_BRAND) { $env:SKATE_BRAND } else { 'Skate 3 Rust Engine' }
+$form.Text = "$brand - diagnostic report"
 $form.ClientSize = New-Object Drawing.Size(570, 310)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'

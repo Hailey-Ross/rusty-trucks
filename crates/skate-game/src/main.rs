@@ -1,3 +1,4 @@
+mod brand;
 mod frame_timing;
 mod animation;
 mod crash_report;
@@ -86,7 +87,8 @@ fn main() -> bevy::app::AppExit {
     // The build uses hardware FMA (`.cargo/config.toml`): say so on an older CPU instead of an illegal-instruction crash.
     #[cfg(target_arch = "x86_64")]
     if !std::arch::is_x86_feature_detected!("fma") {
-        let text = "Skate 3 Rust Engine needs a CPU with FMA3 support (Intel Haswell / AMD Piledriver, 2013, or newer).";
+        let text = format!("{} needs a CPU with FMA3 support (Intel Haswell / AMD Piledriver, 2013, or newer).", brand::NAME);
+        let text = text.as_str();
         eprintln!("{text}");
         crash_report::present_message(text);
         return bevy::app::AppExit::error();
@@ -102,6 +104,9 @@ fn main() -> bevy::app::AppExit {
     if let Some(code) = extract_ocean_pca() { std::process::exit(code); }
     // Setup tool mode: `--extract-menu-tables <default.xex> <menu-tables.json>`.
     if let Some(code) = extract_menu_tables() { std::process::exit(code); }
+    // The display name for every window this process starts (setup, updater, crash report child): still one thread.
+    // SAFETY: no other thread exists yet, so nothing reads the environment concurrently.
+    unsafe { std::env::set_var("SKATE_BRAND", brand::NAME) };
     if let Some(code) = crash_report::entry() { std::process::exit(code); }
     // Before any thread and the log subscriber: `SKATE_TRACE_ALL=1` turns every diagnostic on.
     trace_all::apply();
