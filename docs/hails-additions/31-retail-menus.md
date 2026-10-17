@@ -1225,6 +1225,9 @@ then port each row's effect. Rows that save but have no effect yet are listed be
     gamepad curve, other pads the other-device curve (retail's known-device test is the 360 pad's caps; on a
     DualSense the 0.05 floor would be a constant buzz).
   - Mods: `sdk.input.rumble` / `stop_rumble` (capability `input_rumble`; per-mod channels, stopped with the mod).
+  - NOT RETAIL (2026-10-17, user: "set that to default to off for now"): Vibration defaults to Off (retail +163 = 1) until
+    the rumble that starts with the game and keeps going after it closes is fixed (todo `rumble-starts-and-sticks`);
+    with no setting found it is off too. Switching it on in Game Settings works and is saved.
   - NOT PORTED: retail's gameplay rumble events (the posters `sub_82BB8CF0`, 0.5 / 0.5 / rate 1.2, local player only,
     and `sub_8259E3D0`, per-item channels from `sub_8259DFB0`; which events they belong to is not proven; a recomp
     trace hook on `sub_82694D38` logging caller, channel and the three floats would settle it).

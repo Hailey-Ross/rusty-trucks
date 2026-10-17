@@ -122,7 +122,8 @@ fn update(
     let vibration = menus
         .as_deref()
         .and_then(|m| crate::retail_menus::setting(m, VIBRATION))
-        .is_none_or(|v| skate_core::menu_values::number(&v) != 0.0);
+        // No setting found: off (NOT RETAIL, the menu_values default; todo rumble-starts-and-sticks).
+        .is_some_and(|v| skate_core::menu_values::number(&v) != 0.0);
     if out.advance(time.delta_secs(), vibration) {
         match controllers.active_slot() {
             Some(pad) => {

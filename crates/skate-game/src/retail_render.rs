@@ -2657,7 +2657,8 @@ mod tests {
             // Blend state 26 is opaque; rasterizer state 0 does not cull.
             assert_eq!(class_and_cutoff(false, false, false, family), (RenderClass::OpaqueTwoSided, -1.));
         }
-        let world = include_str!("retail_world.wgsl");
+        // CRLF checkouts (git autocrlf on Windows) would break the multi-line match below.
+        let world = include_str!("retail_world.wgsl").replace('\r', "");
         // Vertex programs: lamp slot floor(4 * uvA.z) (color.x), "on" UVs above 1.
         assert!(world.contains("let lamp=min(u32(floor(4.0*i.color.x)),3u);"));
         assert!(world.contains(
