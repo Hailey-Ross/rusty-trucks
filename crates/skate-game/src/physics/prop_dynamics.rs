@@ -380,6 +380,10 @@ pub(crate) struct PropBody {
     /// Index into the collision layer's instance list (and its rebake target).
     instance: usize,
     id: u32,
+    /// Dense grab-scene number (map props in load order, then mid-game bodies in creation order): the grab ids
+    /// pack it as `PROP_GRAB_TAG | slot << 6 | spline`, which the 32-bit map instance ids do not fit (only ids
+    /// below 2^24 did, so the grab scene held 2 of DownTown's 786 props, laptop 2026-10-18).
+    grab_slot: u32,
     /// Box centre and half extents in template space, scale folded in.
     local_center: Vector3,
     half_extents: Vector3,
@@ -766,6 +770,8 @@ pub(crate) struct PropDynamics {
     move_rules: MoveCommandRules,
     /// Next id [`PropDynamics::next_runtime_id`] tries.
     next_runtime_id: u32,
+    /// Next grab slot ([`PropBody::grab_slot`]) for a body created mid-game.
+    next_grab_slot: u32,
     /// Grind rails per template id, template space (`native-props/<map>.json` `grind_splines`); looked up by
     /// template at query time, so runtime copies of a template carry them too.
     grind_rails: std::collections::BTreeMap<String, std::sync::Arc<[crate::grind_world::props::PropRail]>>,
@@ -1005,15 +1011,18 @@ impl PropDynamics {
         let mut by_id = std::collections::HashMap::new();
         for (index, entry) in instances.iter().enumerate() {
             let object = &objects[entry.object];
-            let Some(body) = Self::build_body(index, entry.id, &object.name, entry.local_points(), object.physics, &object.transform, simulation) else {
+            let Some(mut body) = Self::build_body(index, entry.id, &object.name, entry.local_points(), object.physics, &object.transform, simulation) else {
                 continue;
             };
+            body.grab_slot = bodies.len() as u32;
             bodies.push(body);
             by_id.insert(entry.id, bodies.len() - 1);
         }
+        let next_grab_slot = bodies.len() as u32;
         Self {
             bodies,
             by_id,
+            next_grab_slot,
             simulation,
             pair: PrimitivePairSettings {
                 padding_a: PropTuning::default().contact_padding,
@@ -1076,6 +1085,8 @@ impl PropDynamics {
             return false;
         };
         body.runtime = true;
+        body.grab_slot = self.next_grab_slot;
+        self.next_grab_slot = self.next_grab_slot.wrapping_add(1);
         body.type_data = spec.type_data.clone();
         body.rates.linear_velocity = spec.linear_velocity;
         body.rates.angular_velocity = spec.angular_velocity;
@@ -1190,6 +1201,7 @@ impl PropDynamics {
         Some(PropBody {
             instance,
             id,
+            grab_slot: 0,
             local_center,
             half_extents,
             template: template.to_string(),
@@ -1392,8 +1404,9 @@ impl PropDynamics {
     /// Every prop with grab splines as a grab-scene object of the world-object provider (scene `+4084`, query mode
     /// bit 0x04; single-player worlds use it, not the DMO provider, b54): template origin and basis as the frame,
     /// points scaled like the body, linear velocity as the record vector, type-2 records. Ids: object
-    /// `PROP_GRAB_TAG | body id`, spline / geometry `PROP_GRAB_TAG | body id << 6 | index`. NOT RETAIL YET: the
-    /// assembly is a stand-in with the object id (the `+172` object is not identified).
+    /// `PROP_GRAB_TAG | grab slot`, spline / geometry `PROP_GRAB_TAG | grab slot << 6 | index`
+    /// ([`Self::prop_of_grab_key`] maps a key back to the prop id). NOT RETAIL YET: the assembly is a stand-in
+    /// with the object id (the `+172` object is not identified).
     pub(crate) fn grab_objects(&self) -> Vec<skate_core::player::offboard::grab_scene::Object> {
         self.bodies.iter().filter(|b| !b.dormant).filter_map(Self::grab_object_of).collect()
     }
@@ -1404,11 +1417,21 @@ impl PropDynamics {
         Self::grab_object_of(self.bodies.get(*self.by_id.get(&id)?)?)
     }
 
+    /// The prop id of a grab-scene object or spline key (`PROP_GRAB_TAG | slot << 6 | index`, or the object id
+    /// `PROP_GRAB_TAG | slot` with `spline_key` false); `None` for a key that is not a present prop's.
+    pub(crate) fn prop_of_grab_key(&self, key: u32, spline_key: bool) -> Option<u32> {
+        if key & PROP_GRAB_TAG == 0 {
+            return None;
+        }
+        let slot = if spline_key { (key & !PROP_GRAB_TAG) >> 6 } else { key & !PROP_GRAB_TAG };
+        self.bodies.iter().find(|b| b.grab_slot == slot).map(|b| b.id)
+    }
+
     fn grab_object_of(b: &PropBody) -> Option<skate_core::player::offboard::grab_scene::Object> {
         use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry, Object, PartData, Provider, RatesData, Spline};
-        (!b.grab_splines.is_empty() && b.id < (1 << 24))
+        (!b.grab_splines.is_empty() && b.grab_slot < (1 << 24))
             .then(|| {
-                let id = PROP_GRAB_TAG | b.id;
+                let id = PROP_GRAB_TAG | b.grab_slot;
                 let o = b.origin();
                 let c = b.rates.basis.columns;
                 let s = b.axis_scale;
@@ -1445,7 +1468,7 @@ impl PropDynamics {
                         .take(64)
                         .enumerate()
                         .map(|(i, g)| {
-                            let key = PROP_GRAB_TAG | (b.id << 6) | i as u32;
+                            let key = PROP_GRAB_TAG | (b.grab_slot << 6) | i as u32;
                             Spline {
                                 descriptor: Descriptor { kind: 2, id: key },
                                 geometry: std::sync::Arc::new(Geometry {
@@ -3695,9 +3718,13 @@ mod tests {
         // 82585F58: the record's part / rates block is filled, so the enter's +216 gate (82D442D0) passes.
         let object = dynamics.grab_object(7).unwrap();
         let part = object.assembly.as_ref().and_then(|a| a.first_part.as_ref()).expect("a part");
-        assert_eq!((part.identity, part.rates.as_ref().map(|r| r.identity)), (PROP_GRAB_TAG | 7, Some(PROP_GRAB_TAG | 7)));
+        // Grab ids pack the body's grab slot (0: the fixture's first body), not its id (map ids are 32-bit).
+        assert_eq!((part.identity, part.rates.as_ref().map(|r| r.identity)), (PROP_GRAB_TAG, Some(PROP_GRAB_TAG)));
         assert_eq!(part.coefficients_0_to_36[4], dynamics.bodies[0].inertia.inverse_mass);
-        let key = |i: u32| PROP_GRAB_TAG | (7 << 6) | i;
+        let key = |i: u32| PROP_GRAB_TAG | i;
+        assert_eq!(dynamics.prop_of_grab_key(key(1), true), Some(7));
+        assert_eq!(dynamics.prop_of_grab_key(PROP_GRAB_TAG, false), Some(7));
+        assert_eq!(dynamics.prop_of_grab_key(1 << 6, true), None, "not a prop key");
         let records = crate::physics::prop_carry::authored_records(&dynamics, 7, true).unwrap();
         let rim = records.iter().find(|r| r.0[48] == key(1)).unwrap().clone();
         assert!(rim.0[49] != 0 && rim.0[54] != 0, "the enter's geometry and rates gate");

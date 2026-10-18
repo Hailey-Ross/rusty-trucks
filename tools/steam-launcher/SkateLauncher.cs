@@ -672,7 +672,9 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         // The Play card (item 0) on the right of the hero.
         if (p.Items.Count > 0) {
             bool sel = p.Sel == 0;
-            var pr = new RectangleF(hero.Right - pad - hero.Width * 0.26f, hero.Bottom - pad - hero.Height * 0.32f, hero.Width * 0.26f, hero.Height * 0.32f);
+            // Above the board's lane (ground line at 0.9 of the hero, the board about 0.1 of it tall), so the rolling
+            // board passes under the card instead of behind it (user 2026-10-18).
+            var pr = new RectangleF(hero.Right - pad - hero.Width * 0.26f, ground - hero.Height * 0.14f - hero.Height * 0.32f, hero.Width * 0.26f, hero.Height * 0.32f);
             hits.Add(new KeyValuePair<RectangleF, int>(pr, 0));
             if (sel) using (var glow = Round(new RectangleF(pr.X - 6, pr.Y - 6, pr.Width + 12, pr.Height + 12), pr.Height * 0.3f)) using (var gb = new SolidBrush(Fade(Accent, 60 + (int)(30 * Math.Sin(t * 3))))) g.FillPath(gb, glow);
             Card(g, pr, pr.Height * 0.24f, sel ? Color.FromArgb(255, 210, 60) : Color.FromArgb(232, 178, 0), sel ? Accent : Color.FromArgb(200, 150, 0), Color.Empty, 0);

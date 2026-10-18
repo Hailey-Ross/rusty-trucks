@@ -57,9 +57,9 @@ fn describe(physics: &super::GamePhysics, Descriptor { kind, id }: Descriptor) -
     let tag = super::prop_dynamics::PROP_GRAB_TAG;
     match kind {
         2 if id & tag != 0 => {
-            let prop = (id & !tag) >> 6;
-            let template = physics.prop_dynamics().map_or_else(String::new, |d| d.describe_template(prop));
-            format!("prop {prop} ({template}) record {}", id & 63)
+            let prop = physics.prop_dynamics().and_then(|d| d.prop_of_grab_key(id, true));
+            let template = physics.prop_dynamics().zip(prop).map_or_else(String::new, |(d, p)| d.describe_template(p));
+            format!("prop {} ({template}) record {}", prop.map_or_else(|| "?".to_owned(), |p| p.to_string()), id & 63)
         }
         1 => format!("car spot {id:#x}"),
         _ => format!("kind {kind} id {id:#x}"),

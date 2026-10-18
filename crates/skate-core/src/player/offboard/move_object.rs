@@ -169,6 +169,10 @@ pub struct MoveObjectTuning {
     pub hand_ik_threshold: f32,
     pub hand_ik_rate: f32,
     pub hand_ik_reach: f32,
+    /// Root yaw ease (82D46610 -> +1124, applied by 82BDF268 / 82BE1058) [code + data]: each held tick the skater
+    /// root turns by the wrapped angle to the edge frame times this curve (023D73966B8669A5) at the time held
+    /// (+1140, 0 at the grab, + `tick` per held tick). 0.18 at the grab, ~0.09 a tick later, 1.0 from 0.5 s.
+    pub root_yaw_gain: PointGraph<8>,
 }
 
 const fn graph(x: [f32; 8], y: [f32; 8]) -> PointGraph<8> {
@@ -221,6 +225,10 @@ impl Default for MoveObjectTuning {
             hand_ik_threshold: 0.1,
             hand_ik_rate: 0.2,
             hand_ik_reach: 0.65,
+            root_yaw_gain: graph(
+                [0.0, 0.0154723, 0.0757329, 0.17671, 0.239414, 0.330619, 0.421824, 0.5],
+                [0.182143, 0.0892857, 0.121429, 0.278571, 0.475, 0.764286, 0.935714, 1.0],
+            ),
         }
     }
 }
@@ -293,6 +301,7 @@ impl MoveObjectTuning {
             hand_ik_threshold: fin(self.hand_ik_threshold, fallback.hand_ik_threshold),
             hand_ik_rate: ok(self.hand_ik_rate, fallback.hand_ik_rate),
             hand_ik_reach: ok(self.hand_ik_reach, fallback.hand_ik_reach),
+            root_yaw_gain: curve(self.root_yaw_gain, fallback.root_yaw_gain),
         }
     }
 }
@@ -674,6 +683,11 @@ pub struct SkaterFollow {
     pub anchor: [f32; 3],
     /// +624: smoothed anchor velocity (m/s, horizontal).
     pub velocity: [f32; 3],
+    /// +1140: time held (s), 0 at the grab, + `tick` per held update.
+    pub time_held: f32,
+    /// Share of the wrapped angle to the edge frame the root turns this tick:
+    /// `root_yaw_gain` at the time held (82D46610 -> +1124).
+    pub root_yaw_gain: f32,
 }
 
 impl SkaterFollow {
@@ -686,12 +700,23 @@ impl SkaterFollow {
     /// `back` is the latched frame row +368: horizontal, from the edge
     /// toward the skater.
     pub fn begin(tuning: &MoveObjectTuning, body: [f32; 3], grip: [f32; 3], back: [f32; 3]) -> Self {
-        Self { point: body, anchor: Self::anchor_of(tuning, grip, back), velocity: [0.0; 3] }
+        Self {
+            point: body,
+            anchor: Self::anchor_of(tuning, grip, back),
+            velocity: [0.0; 3],
+            time_held: 0.0,
+            root_yaw_gain: tuning.root_yaw_gain.evaluate(0.0),
+        }
     }
 
     /// 82D46610 (before the object command, so `back` is the previous
     /// tick's latch): v = keep v + new (anchor - previous anchor) / tick.
+    /// Also the root yaw share for this tick from the time held, then the
+    /// time held advances one tick (+1140; whether retail reads it before or
+    /// after the advance within the tick is not traced).
     pub fn update_anchor(&mut self, tuning: &MoveObjectTuning, grip: [f32; 3], back: [f32; 3]) {
+        self.root_yaw_gain = tuning.root_yaw_gain.evaluate(self.time_held);
+        self.time_held += tuning.tick;
         let anchor = Self::anchor_of(tuning, grip, back);
         let inv = 1.0 / tuning.tick;
         self.velocity = std::array::from_fn(|i| {
@@ -776,6 +801,27 @@ mod tests {
         // 30 deg off the edge normal: within the 80 deg approach limit.
         let (s, c) = 30f32.to_radians().sin_cos();
         assert!(hold([0.0; 3], [s, 0.0, c]), "turned 30 deg");
+    }
+
+    #[test]
+    fn root_yaw_eases_in_over_the_time_held() {
+        // 82D46610 +1124 = angle x curve 023D73966B8669A5 at the time held (+1140, 0 at the grab, + 1/60 per tick).
+        let t = MoveObjectTuning::default();
+        let (grip, back) = ([0.0, 0.0, 1.0], [0.0, 0.0, -1.0]);
+        let mut f = SkaterFollow::begin(&t, [0.0; 3], grip, back);
+        assert_eq!((f.time_held, f.root_yaw_gain), (0.0, t.root_yaw_gain.evaluate(0.0)));
+        assert!((f.root_yaw_gain - 0.182143).abs() < 1e-6);
+        f.update_anchor(&t, grip, back);
+        assert!((f.root_yaw_gain - 0.182143).abs() < 1e-6, "the first held tick reads the time held before it advances");
+        assert!((f.time_held - t.tick).abs() < 1e-7);
+        f.update_anchor(&t, grip, back);
+        assert!(f.root_yaw_gain < 0.182143, "the curve dips after the grab ({})", f.root_yaw_gain);
+        for _ in 0..30 {
+            f.update_anchor(&t, grip, back);
+        }
+        assert_eq!(f.root_yaw_gain, 1.0, "the whole angle from 0.5 s held");
+        // A new grab starts over.
+        assert_eq!(SkaterFollow::begin(&t, [0.0; 3], grip, back).time_held, 0.0);
     }
 
     #[test]
