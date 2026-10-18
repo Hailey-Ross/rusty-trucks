@@ -1,152 +1,146 @@
 # Steam launcher (couch testing)
 
-Start any version of the engine (`main`, your branches, open PRs, work in progress) or the Skate 3 recomp with a
-tracing option, from Steam or Steam Link with a controller, and see after each session whether it went fine.
-Built for testing from the couch: compare two versions back to back, try a PR exactly as it was pushed, record a
-recomp trace session, without touching a keyboard.
+Start any version of the engine (the fork's `hails-additions`, upstream `main`, your branches, open PRs, work in
+progress), the Skate 3 recomp with a tracing option, or retail Skate 3 in RPCS3, from Steam or Steam Link with a
+controller, and see after each session whether it went fine. Built for testing from the couch: compare two versions
+back to back, try a PR exactly as it was pushed, record a recomp trace session, without touching a keyboard.
 
 What it does:
+- **A real window:** `SkateLauncher.exe` is a full-screen menu for the controller (XInput), the keyboard and Steam's
+  desktop layout (arrows, Enter, Esc / Space). It hides while a game runs, so the game gets the front and Steam's
+  gamepad layout, and comes back with the session's result when the game closes.
 - **Versions:** each version is its own git worktree with its own `bin\`, sharing this checkout's prepared assets.
-  Launching a version that isn't built yet, or whose branch has new pushed commits, sets it up and builds it first
+  Two are always there: **hails-additions** (the fork's newest pushed branch) and **Upstream main** (SK8-ENGINE).
+  Launching a version that isn't built yet, or whose branch has new pushed commits, fetches and builds it first
   (fast-forward only; local work is never touched).
-- **What to test:** each version carries notes, shown for a few seconds before the game starts.
-- **Modes** for the engine: play, play with the per-frame audio state log, play with the audio trace, play with a
-  dev test mod switched on, play with a performance trace.
-- **Recomp modes** (optional, for use with the Skate 3 recomp's research hooks:
-  [Hailey-Ross/skate3recomp, branch `research-hooks`](https://github.com/Hailey-Ross/skate3recomp/tree/research-hooks)):
-  start the recomp with trace categories, a sound recording and the pad recording, one session folder per run.
-- **After each session** a short check: the game log's panics, the state log's or trace's malformed lines.
-- **One game at a time:** it starts nothing while `skate3rust.exe` or `skate3.exe` runs. While a game runs,
-  `PLAYING.txt` exists in the state folder, so other tools and scripts can wait for it.
+- **Greyed out until set up:** every entry is listed; one that isn't set up yet (the recomp, RPCS3, sending logs, the
+  recomp share, a trace a version doesn't have) is grey and says what to set up.
+- **Tools:** Refresh Game Files (the game's start-up check without starting the game, and the refresh when it finds a
+  problem), build a version now, send the logs now, the recomp's newest build and save from the main PC, and the
+  first-time setup.
+- **First-time setup:** on a fresh PC the window opens on a setup page that checks Git, Rust, the C++ build tools,
+  LLVM, Python 3.13 and Vulkan, and installs what is missing with winget (one UAC prompt for the machine-wide tools).
+- **Size cap:** optional, the build folders never grow over a set size: before a build the launcher deletes the build
+  cache of the version built longest ago.
+- **Clear builds:** Tools > Clear builds and build caches frees space by hand: everything, every build cache, or one
+  version's build cache (it still plays) or whole build (cache and `bin\`, it builds again at its next launch), each
+  with its size and a confirmation.
+- **After each session** a short check: the game log's panics, the state log's or trace's malformed lines, then the
+  optional log send. A game that restarts itself (Refresh Game Files from the game's menu) is waited for.
+- **One game at a time:** it starts nothing while `skate3rust.exe`, `skate3.exe` or `rpcs3.exe` runs. While a game
+  runs, `PLAYING.txt` exists in the state folder, so other tools and scripts can wait for it.
 
-Windows only. Needs Windows PowerShell 5.1 (built in), git, the Rust toolchain and this repository's dev setup
-(`BUILD.bat` works and `assets\` points at your prepared assets).
+Windows only. Needs Windows PowerShell 5.1 (built in) and winget (App Installer, built into Windows 10 1809+ and 11);
+the first-time setup installs the rest.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `SkateLauncher.cs` | The small exe Steam starts: menu, controller input, result screens. Build it with `build.bat`. |
-| `launcher.ps1` | Does the work: versions, builds, launching, session checks. Run it directly from a keyboard too. |
-| `launcher.bat` | Keyboard menu (`launcher.bat`), or `launcher.bat <entry> [label] [-Version <id>]`. |
-| `build.bat` | Builds `SkateLauncher.exe` with the C# compiler that ships with Windows. |
-| `versions.example.json` | Example version list. |
-| `config.example.json` | Example config for the recomp modes. |
+| `SkateLauncher.exe` | The window Steam starts: menu, controller and keyboard input, result screens. Build it with `build.bat`. |
+| `SkateLauncher.cs` | Its source (C# 5, built with the compiler that ships with Windows). |
+| `launcher.ps1` | Does the work: versions, builds, launching, session checks, tools. The window runs it; it runs from a shell too. |
+| `setup.ps1` | The first-time setup: `setup.ps1` checks, `setup.ps1 -Install` installs what is missing. |
+| `launcher.bat` | `launcher.bat <entry> [label] [-Version <id>]` from a keyboard; no argument opens the window. |
+| `build.bat` | Builds `SkateLauncher.exe`. Run it again after pulling a new launcher. |
+| `versions.example.json`, `config.example.json` | Examples for your own versions and settings. |
 
 State and your own settings live in `.local\steam-launcher\` (gitignored): `versions.json`, `config.json`,
 `version.txt` (the selected version), `last_session.txt` (the last result, also readable remotely) and `PLAYING.txt`.
-If you copy the launcher folder somewhere outside `tools\` (two levels below the repository, e.g.
-`.local\steam\`), it keeps those files next to itself instead.
+If you copy the launcher folder somewhere outside `tools\` (two levels below the repository, e.g. `.local\steam\`), it
+keeps those files next to itself instead.
 
 ## Setup
 
-1. **Build the exe:** double-click `tools\steam-launcher\build.bat`. It writes `SkateLauncher.exe` next to it.
-2. **List your versions:** copy `versions.example.json` to `.local\steam-launcher\versions.json` and edit it.
-   Without it, the launcher has one version: this checkout as it is.
+1. **Build the exe:** double-click `tools\steam-launcher\build.bat`.
+2. **Add it to Steam:** Steam > **Games > Add a Non-Steam Game to My Library > Browse** > pick
+   `tools\steam-launcher\SkateLauncher.exe`. Rename it in **Properties**; add more copies with launch options for
+   one-click modes (table below).
+3. **Start it:** on a fresh PC it opens on **First-time setup**: choose **Install what is missing** and accept the one
+   UAC prompt (the C++ build tools take 10 minutes or more). Then convert your game files once from your own disc:
+   `tools\setup-dev-assets.ps1 -Disc <your Skate 3 ISO or default.xex>`.
+4. **Optional, more versions:** copy `versions.example.json` to `.local\steam-launcher\versions.json` and edit it.
 
    | Field | Meaning |
    |---|---|
-   | `id` | Short name, used in launch options (`@id`). |
+   | `id` | Short name, used in launch options (`@id`). An id of `hails-additions` or `upstream-main` replaces that built-in. |
    | `name` | Shown in the menu. |
-   | `branch` | The branch to check out and follow (fetched from `remote`, default `origin`). |
+   | `branch` | The branch to follow (fetched from `url` when set, else from `remote`, default `origin`). |
+   | `url` | Optional: a repository URL to fetch the branch from (the built-ins use the fork's and upstream's). |
    | `dir` | Where its worktree lives, relative to the repository (e.g. `.local/versions/main`); `.` = this checkout. |
+   | `detached` | Optional: `true` = a launcher-only copy that follows the branch without checking it out (never conflicts with a worktree where you work on that branch). |
    | `notes` | What to test, shown before the game starts (`\n` for new lines). |
-   | `mods_enable` | Optional: the mod id(s) the "dev test mods" mode turns on (`SKATE3_MODS_ENABLE`). |
-   | `dev` | Optional: `true` = build from the working tree as it is; rebuilt only when `bin\` is missing. |
-   | `target` | Optional: cargo target folder, relative to the repository (default: the worktree's own `target\`). |
+   | `mods_enable` | Optional: the mod id(s) the "dev test mods" entry turns on (`SKATE3_MODS_ENABLE`). |
+   | `env` | Optional: environment variables for its sessions, e.g. `{ "SKATE_LIVING_WORLD_DEBUG": "1" }`. |
+   | `dev` | Optional: `true` = build from the working tree as it is; rebuilt when its uncommitted changes change. |
+   | `target` | Optional: its cargo target folder, relative to the repository. |
 
-   Each version builds into its own target folder (they can't share one: cargo would mix the branches' crates). The
-   first build of a version takes several minutes; `launcher.ps1 build <id>` builds one ahead of time.
-3. **Optional, the recomp modes:** copy `config.example.json` to `.local\steam-launcher\config.json` and set
-   `recomp.exe` (your build of the recomp) and `recomp.working_dir` (the folder it runs from). Each entry in
-   `recomp_entries` becomes a mode:
+5. **Optional, settings:** copy `config.example.json` to `.local\steam-launcher\config.json`:
 
    | Field | Meaning |
    |---|---|
-   | `id`, `name`, `hint` | Entry id (starts with `recomp-`), menu text, help line. |
-   | `trace` | Trace categories (`SKATE3_TRACE`); empty = plain play. |
-   | `capture` | `true` = also record the mixed game sound (`audio.f32`). |
-   | `ask_label` / `label` | Ask for a label for the session folder, or always use this one. |
-   | `folder` | Folder name prefix (default: the id without `recomp-`). |
-   | `bat`, `bat_args` | Run your own batch file instead (path relative to the repository). |
+   | `remote` | The git remote for versions without `url` (default `origin`). |
+   | `fork_url`, `upstream_url` | The repositories the two built-in versions follow. |
+   | `target_root` | Build folders go to `<target_root>\<version id>` (e.g. a fast or big drive) instead of each worktree's `target\`. |
+   | `build_cap_gb` | Size cap for the build folders together (e.g. `200`); `0` or missing = no cap. |
+   | `build_cap_dir` | Optional: cap everything under this folder instead (when other builds share the drive folder too); only the launcher's own version build folders are ever deleted. |
+   | `build_reserve_gb` | Room a build needs, kept free under the cap (default `30`). |
+   | `recomp` | The recomp: `exe` (your build), `working_dir`, `args`, `sessions` (default `.local\recomp\sessions`), `trace_check` (a script printing malformed-line counts). |
+   | `recomp_entries` | The recomp modes: `id` (starts with `recomp-`), `name`, `hint`, `trace` (`SKATE3_TRACE` categories), `capture` (record `audio.f32`), `ask_label` / `label`, `folder`, or `bat` + `bat_args` to run your own batch file. |
+   | `rpcs3`, `rpcs3_entries` | Retail Skate 3 in RPCS3: `exe`, `game` (disc folder or `EBOOT.BIN`), `args` (default `--no-gui --fullscreen`); entries `id` (starts with `rpcs3-`), `name`, `hint`, `args`. |
+   | `after_session` | A send script (path relative to the repository, e.g. `tools\second-pc\play-and-send.ps1`) run with `-SendOnly` after each session. Its settings file `send-sessions.txt` sits next to it or at the repository root. |
+   | `recomp_script` | The recomp share script for **Recomp: get the newest build / save** (default `tools\second-pc\play-recomp.ps1` once `send-sessions.txt` exists). |
 
-   Sessions go to `recomp.sessions` (default `.local\recomp\sessions\<prefix>_[label_]<time>\`: `trace.tsv`,
-   `pad.txt`, `audio.f32`, `game.out`, `game.err`). `recomp.trace_check` can name a Python script that prints
-   malformed-line counts for a trace; the result screen shows them. You build the recomp yourself from your own copy
-   of the game; nothing from the game is included here.
-   **Optional, send logs after each session:** set `"after_session"` in `config.json` to a send script (path
-   relative to the repository) that copies the new logs somewhere (for example to another PC). It runs with
-   `-SendOnly` after every session, and its settings file `send-sessions.txt` sits next to it or at the repository
-   root (until it exists the send is skipped with a hint, so Steam never waits on questions). Its last line shows
-   on the result screen and in `last_session.txt`. A session closed with Steam's **Exit game** is sent at the next
-   start (`pending`). `launcher.ps1 send` sends on demand.
-4. **Add it to Steam:** Steam → **Games → Add a Non-Steam Game to My Library → Browse** → pick
-   `tools\steam-launcher\SkateLauncher.exe` → **Add Selected Programs**. In the new entry's **Properties**, rename it
-   and put an entry in **Launch options** (table below). Add the exe once per shortcut you want.
-5. **Controller:** leave Steam Input on its normal **Gamepad** layout; the games get the controller as usual.
+   The size cap: when the build folders (or `build_cap_dir`) plus `build_reserve_gb` are over `build_cap_gb`, the
+   launcher deletes whole version build folders, the one built longest ago first, never the one it is about to build,
+   until it fits. Each version keeps its exe in `bin\`, so it still plays; only its next build starts from scratch.
+   You build the recomp yourself from your own copy of the game; nothing from the game is included here.
 
-### Why one shortcut per mode
+## One-click shortcuts (launch options)
 
-Steam's virtual controller (Steam Link, or Steam Input on) is not visible to a console program, so the menu inside
-the exe only works with a keyboard, or with Steam's controller set to mouse / keyboard mode. Shortcuts with launch
-options need no menu: each starts straight away, shows the result for 10 s at the end and closes by itself.
+Each starts straight away, shows the result for 10 s at the end and closes by itself.
 
 | Shortcut (suggested name) | Launch options |
 |---|---|
 | Skate: next version | `version-next` (selects the next version and shows its notes) |
 | Skate: play | `rust-play` (the selected version) |
-| Skate: play + audio state log | `rust-statelog` |
-| Skate: play + dev test mods | `rust-devmods` |
-| Skate: play + audio trace | `rust-trace` |
 | Skate: play + trace all | `rust-traceall` |
-| Skate: main | `rust-play @main` (a fixed version, for comparing) |
-| Skate: my branch | `rust-play @my-branch` |
-| Skate: recomp | `recomp-play` |
+| Skate: hails-additions | `rust-play @hails-additions` |
+| Skate: upstream main | `rust-play @upstream-main` |
+| Skate: refresh game files | `tool-refresh` |
 | Skate: recomp audio trace | `recomp-audio` |
 
-`version-next` plus the "selected version" shortcuts cover every version with a handful of shortcuts; the `@id`
-shortcuts are fixed, for back-to-back comparisons. A shortcut without launch options opens the full menu.
+A shortcut without launch options opens the menu.
 
 ## Entries and commands
 
 | Entry | What it runs |
 |---|---|
 | `rust-play` | the version's `PLAY.bat` |
-| `rust-statelog` | play + `SKATE_AUDIO_STATE_LOG` (`.local\audio-state-logs\state_*.tsv`; builds with the native audio port write it) |
+| `rust-traceall` | play with every session trace the version has (`SKATE_TRACE_ALL`), all in the version's `logs\trace-all-<time>\`; the result counts malformed rows in `audio_state.tsv` and `frames.tsv` |
+| `rust-statelog` | play + `SKATE_AUDIO_STATE_LOG` (`.local\audio-state-logs\state_*.tsv`) |
 | `rust-trace` | play + `SKATE_AUDIO_TRACE=1` (native sound starts in `logs\game-*.log`) |
 | `rust-devmods` | play with the version's `mods_enable` mod(s) on |
 | `rust-perf` | play + Bevy performance trace (`PLAY.bat -trace`) |
-| `rust-traceall` | play with every session trace the version has (`SKATE_TRACE_ALL`), all in the version's `logs\trace-all-<time>\`; the result screen counts malformed rows in `audio_state.tsv` and `frames.tsv`. Hidden for versions without traces |
-| `recomp-*` | the modes from `config.json` |
+| `tool-refresh` | `skate3rust.exe --update-game-files`: the game's start-up file check without starting the game; out of date = the same refresh as the game's Extras > Refresh Game Files. Versions built before it are greyed out |
+| `tool-build` | fetch and build the selected version now |
+| `tool-send` | the `after_session` send now |
+| `tool-recomp-update`, `tool-recomp-getsave` | `play-recomp.ps1 -Update` / `-GetSave` |
+| `tool-setup` | `setup.ps1 -Install` |
+| `clear-cache <id\|all>`, `clear-build <id\|all>` | delete a version's build cache (its cargo target folder) or its whole build (that plus `bin\`); Tools > Clear builds runs these |
+| `recomp-*`, `rpcs3-*` | the modes from `config.json` |
 
-Commands (`launcher.ps1 <command>`, or as launch options): `versions` (list with status), `version-next`,
-`version-prev`, `version-set <id>`, `notes [id]`, `build <id>`, `list` / `entries`, `pending` (checks a session that
-was closed with Steam's **Exit game** before its check, and sends its logs when `after_session` is set; the exe runs
-it at every start), `send` (runs `after_session` now).
-
-## Example
-
-```
-> launcher.ps1 versions
-main        main             built at 4488651   *
-my-branch   My branch        out of date (built 1a2b3c4, now 5d6e7f8): next launch rebuilds
-
-> launcher.ps1 rust-play -Version my-branch
-  Version: My branch
-  Updating my-branch (2 new commits)...
-  Building My branch at 5d6e7f8. The first build of a version takes several minutes...
-  Starting: Rust engine: play [my-branch]
-  ...
-> type .local\steam-launcher\last_session.txt
-2026-10-04 13:03:44  rust-play  [my-branch]
-game-20261004-130134.log: no panics
-```
+Commands (`launcher.ps1 <command>`): `entries` (id, name, hint, ask, group, on, why off), `versions`, `status`,
+`version-next`, `version-prev`, `version-set <id>`, `notes [id]`, `build <id>`, `pending` (checks a session that was
+closed with Steam's **Exit game** before its check, and sends its logs; the window runs it at every start), `send`,
+`setup-check`, `sizes` (each version's build cache and `bin\` in bytes), `room <id>` (apply the size cap as before a
+build of `<id>`), `list`.
 
 ## Notes
 
-- Closing a game with Steam's **Exit game** also closes the launcher, so its after-session check is skipped; the
-  next start of any shortcut catches it up.
-- A version's worktree is a normal git worktree: remove it with `git worktree remove <dir>` (its `assets` folder is
-  a junction to your prepared assets; remove the junction first, never delete through it).
-- `rust-devmods` sets `SKATE3_MODS_ENABLE` (where the version reads it), which enables those mods unless you
-  switched them off in the mod menu before; mods are read from the version's own `mods\` folder.
+- Closing a game with Steam's **Exit game** also closes the launcher, so its after-session check is skipped; the next
+  start of any shortcut catches it up.
+- A version's worktree is a normal git worktree: remove it with `git worktree remove <dir>` (its `assets` folder is a
+  junction to your prepared assets; remove the junction first, never delete through it).
+- Steam gives the launcher window its desktop layout (keys), and the game its gamepad layout once the game's window
+  is in front; the launcher reads both, and drops a key that repeats a pad press within 150 ms.

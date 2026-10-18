@@ -108,6 +108,8 @@ fn main() -> bevy::app::AppExit {
     // The display name for every window this process starts (setup, updater, crash report child): still one thread.
     // SAFETY: no other thread exists yet, so nothing reads the environment concurrently.
     unsafe { std::env::set_var("SKATE_BRAND", brand::NAME) };
+    // Launcher mode: `--update-game-files [--assets <dir>]` checks the game files and refreshes them if needed.
+    if let Some(code) = setup::update_game_files() { std::process::exit(code); }
     if let Some(code) = crash_report::entry() { std::process::exit(code); }
     // Before any thread and the log subscriber: `SKATE_TRACE_ALL=1` turns every diagnostic on.
     trace_all::apply();

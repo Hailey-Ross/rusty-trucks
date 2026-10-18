@@ -502,6 +502,78 @@ Steam still tracks the session. Desktop test inside Terminal (`wt -w new SkateLa
 "Skate launcher" window maximised, the Terminal window minimised, both closed with the launcher, no processes left.
 Not checked on the laptop yet: the result screen coming back after a game.
 
+## Steam launcher: a real window, Refresh Game Files, first-time setup (2026-10-18)
+
+Problem (laptop notes 2026-10-18, user): "The steam skate launcher needs to be made into a real launcher.. the
+terminal window is still not working properly", and a Refresh Game Files option in the launcher, "so you don't have to
+launch the game to run it". Asked the same morning: entries greyed out until their config is set up; a hails-additions
+version on the fork and one for upstream main, always there and rebuilt when newer; a first-time setup that installs
+the dependencies; a size cap for the build folders that clears old build caches before a build; and Tools options to
+clear all builds, one build or one build cache.
+
+Found on the way (laptop session `game-20261018-094840`): the in-game Refresh Game Files restarts the game into setup
+(`setup::restart_with_refresh` spawns a new `skate3rust.exe --refresh-assets`), and the old process exits. The
+launcher took that exit for the end of the session, so it checked and sent the logs at 09:49:41 while setup was still
+converting (the setup ran until about 09:55 and ended with exit code 1; its output is in the laptop's local log, after
+the part that was sent). `launcher.ps1` `Wait-GameTree` now waits until no game process runs before the check and
+the send.
+
+Change, engine (`setup.rs`, `main.rs`): `skate3rust.exe --update-game-files [--assets <dir>]`, a windowless tool mode
+before the crash supervisor and the splash. It runs `asset_check::check` (the start-of-game check, synchronously) and,
+when it finds a problem, the same refresh as Extras > Refresh Game Files: the out-of-date groups are marked stale and
+their converter versions cleared in `installation.json` (`clear_stale_pipelines`, factored out of
+`restart_with_refresh`), then setup runs (`refresh_dev_copy` for a development copy, `run_release_setup` for a
+release copy; the latter is also what `asset_root` now calls). Log lines `ASSET_CHECK ...`, `GAME_FILES current` /
+`refreshed` / `failed: <why>`; exit code 0 = current or refreshed, 1 = the refresh failed, 2 = no game files yet.
+
+Change, launcher (`tools/steam-launcher`):
+- `SkateLauncher.cs` is a WinForms window (`/target:winexe`), full screen and owner-drawn (no focusable buttons:
+  Space is Steam's local "B"). Input: XInput and the keyboard (arrows, Enter, Esc / Space / Backspace), because Steam
+  gives a launcher window its desktop layout (keys) and the game its gamepad layout once the game is in front
+  (Steam's own logs on this PC: the console launcher got the desktop configuration, the shortcut's layout came about
+  5 s later with the game window). A press that arrives from both sources within 150 ms counts once. Input is read
+  only while the window is active and no job runs (XInput reports the pad to every process). Jobs run `launcher.ps1`
+  hidden, with the output shown live; `AllowSetForegroundWindow` before the start, the window hides once a game window
+  exists and comes back with the result.
+- `launcher.ps1 entries` lists every entry with a group, on/off and why it is off; the window draws off entries grey
+  with the reason (recomp without `recomp.exe`, RPCS3 without `rpcs3`, send without `after_session`, the recomp share
+  tools without `tools\second-pc` set up, traces a version's source doesn't have, Refresh Game Files on a version built
+  before `--update-game-files`).
+- Built-in versions `hails-additions` (fork) and `upstream-main` (SK8-ENGINE), detached launcher-only worktrees that
+  fetch their branch from a URL (`fork_url`, `upstream_url`) on every launch and rebuild when it moved; a
+  `versions.json` entry with the same id replaces one. Merged in from the main PC's private copy: `detached`, the
+  full-refspec fetch (the fork's rolling release tag has the branch's name), re-pointing a version's assets link after a
+  setup refresh, the "NOT UPDATED: local changes" warning, the working-tree hash for `dev` versions, per-version `env`,
+  RPCS3 entries.
+- Tools: Refresh Game Files (`tool-refresh`), build now, send now, the recomp's newest build and save
+  (`play-recomp.ps1 -Update` / `-GetSave`), first-time setup, Clear builds and build caches (`clear-cache`,
+  `clear-build`, per version or `all`, each with its size and a confirmation page).
+- `setup.ps1`: checks Git, the C++ build tools (MSVC, Windows SDK `rc.exe`, CMake, via vswhere), LLVM
+  (`llvm-readobj`, `scripts/Build.ps1`), Python 3.13, Rust (`rustup show active-toolchain`), the GitHub CLI (optional)
+  and Vulkan; `-Install` runs the machine-wide winget installs one after another in ONE elevated step (one UAC prompt;
+  two installers at once broke the laptop's Rust install, `second-pc-testing.md`), plus `LongPathsEnabled`, then
+  rustup unelevated (per user). The window opens on this page while a required tool is missing.
+- Size cap: `build_cap_gb` (and optional `build_cap_dir`, `build_reserve_gb`, `target_root`) in `config.json`.
+  `Make-Room` runs before every build: while the build folders (or `build_cap_dir`) plus the reserve are over the cap,
+  it deletes the build cache of the version built longest ago (by its exe's time), never the one about to build, and
+  only the launcher's own version target folders.
+
+Verification (main PC, 2026-10-18): `cargo test -p skate-game --bin skate3rust -- setup::` 8 passed (new
+`update_game_files_refreshes_only_what_the_check_finds`: current files run no refresh, each out-of-date group once, a
+failed refresh is reported). `skate3rust.exe --update-game-files --assets <this PC's assets>`: `ASSET_CHECK done in
+821 ms: 0 problem(s)`, `GAME_FILES current`, exit 0, no window; a missing folder: exit 2. `launcher.ps1 entries /
+versions / status / sizes`, `setup.ps1` (all found here). The window: main menu, version picker (the built-ins
+listed), greyed Recomp / RPCS3 rows with the reason, a one-click `tool-setup` run that showed "everything is
+installed" and closed after its countdown. Size cap on a scratch checkout with three 3 MB build folders and a cap of
+8.5 MB: the oldest folder went, the one to build and the newer one stayed. `launcher.ps1 tool-refresh` end to end
+(build of this checkout into its K: target, then the check): "Refresh game files: current: nothing to refresh". The
+Clear page listed this checkout's 79.7 GB build cache and 83.2 GB whole build; its confirmation defaults to "No, keep
+it". Self-update: `pending` (run at every start, also by the old console exe) rebuilds `SkateLauncher.exe` when
+`SkateLauncher.cs` is newer, renaming the running exe aside (tested: new exe in place, the old one deleted at the next
+start), so a laptop that pulls the new launcher gets the window without running `build.bat`. Not tested: an actual refresh through
+`--update-game-files` (no out-of-date files here), the elevated installs (everything is installed on this PC), the
+window under Steam / Steam Link (laptop).
+
 ## Map switch: the mods' ground built by the map loader (2026-10-17)
 
 Problem: every map switch froze the game for 1 to 2 s on the first frame on the new map (laptop session
