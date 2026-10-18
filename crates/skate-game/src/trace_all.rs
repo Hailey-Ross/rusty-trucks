@@ -53,6 +53,7 @@ pub(crate) const SWITCHES: &[Switch] = &[
     Switch { name: "SKATE_GPU_TIMING", wants: Wants::Value("1"), output: "GPU pass times in the perf report (only when the adapter supports timestamps)" },
     Switch { name: "SKATE_AUDIO_TRACE", wants: Wants::Value("1"), output: "log: AUDIO_NATIVE post/release, AUDIO_EVENT brake/push/grind, audio frontend trace" },
     Switch { name: "SKATE_AUDIO_TIMING", wants: Wants::Value("1"), output: "log: audio cost line once per second" },
+    Switch { name: "SKATE_SYSTEM_TIMING", wants: Wants::Value("1"), output: "log: SYSTEM_TIMING line once per second (the costliest systems)" },
     Switch { name: "SKATE_LIVING_WORLD_DEBUG", wants: Wants::Value("1"), output: "log: population, NPC skater and traffic readout every 5 s" },
     Switch { name: "SKATE_FPS_LOG", wants: Wants::Value("1"), output: "log: SKATE_FPS_SAMPLE lines" },
 ];

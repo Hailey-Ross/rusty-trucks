@@ -162,6 +162,7 @@ pub(crate) fn build(
             .chain(),
     )
     .add_plugins(crate::frame_timing::FrameTimingPlugin)
+    .add_plugins(crate::system_timing::SystemTimingPlugin)
     .add_plugins(crate::retail_backdrop::BackdropPlugin)
     .add_plugins((
         crate::retail_render::RetailRenderPlugin,
