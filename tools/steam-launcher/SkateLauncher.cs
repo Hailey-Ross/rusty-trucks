@@ -442,6 +442,27 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         return base.ProcessCmdKey(ref msg, key);
     }
+    // Mouse: hovering selects a row or tile, a left click runs it, a right click goes back. The rectangles come
+    // from the last paint (hits), so they always match what is on screen.
+    readonly List<KeyValuePair<RectangleF, int>> hits = new List<KeyValuePair<RectangleF, int>>();
+    int HitAt(Point pt) {
+        foreach (var h in hits) if (h.Key.Contains(pt)) return h.Value;
+        return -1;
+    }
+    protected override void OnMouseMove(MouseEventArgs e) {
+        base.OnMouseMove(e);
+        int i = HitAt(e.Location);
+        if (job == null && i >= 0 && pages.Count > 0 && pages.Peek().Sel != i) { pages.Peek().Sel = i; Invalidate(); }
+    }
+    protected override void OnMouseClick(MouseEventArgs e) {
+        base.OnMouseClick(e);
+        if (job != null) return;
+        if (e.Button == MouseButtons.Right) { Act("back", false); return; }
+        if (e.Button != MouseButtons.Left) return;
+        int i = HitAt(e.Location);
+        if (i >= 0 && pages.Count > 0) { pages.Peek().Sel = i; Act("ok", false); }
+        else if (closeAt >= 0) Close();
+    }
     // One action; the same action from the OTHER source (pad / keys) within 150 ms is dropped: Steam can send a key
     // for a press that XInput also reports.
     void Act(string a, bool fromPad) {
@@ -455,10 +476,11 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             else pages.Pop();
             if (pages.Count == 0) pages.Push(MainPage());
         } else if (p.Items.Count > 0) {
-            if (IsMain(p)) p.Sel = GridMove(p.Sel, a, p.Items.Count);
+            // "ok" first: the main page's grid move used to swallow it, so A / Enter did nothing there (laptop 2026-10-18).
+            if (a == "ok") { var it = p.Items[p.Sel]; if (it.On && it.Run != null) it.Run(); }
+            else if (IsMain(p)) p.Sel = GridMove(p.Sel, a, p.Items.Count);
             else if (a == "up" || a == "left") p.Sel = (p.Sel - 1 + p.Items.Count) % p.Items.Count;
             else if (a == "down" || a == "right") p.Sel = (p.Sel + 1) % p.Items.Count;
-            else if (a == "ok") { var it = p.Items[p.Sel]; if (it.On && it.Run != null) it.Run(); }
         } else if (a == "ok" && p.Body != null) {
             if (p.OnBack != null) p.OnBack(); else pages.Pop();
         }
@@ -575,6 +597,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     void Render(Graphics g, int w, int h) {
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        hits.Clear();
         var all = new RectangleF(0, 0, w, h);
         using (var b = new System.Drawing.Drawing2D.LinearGradientBrush(all, Bg1, Bg2, 90f)) g.FillRectangle(b, all);
         // A soft glow behind the top left, like a lit backdrop.
@@ -650,6 +673,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         if (p.Items.Count > 0) {
             bool sel = p.Sel == 0;
             var pr = new RectangleF(hero.Right - pad - hero.Width * 0.26f, hero.Bottom - pad - hero.Height * 0.32f, hero.Width * 0.26f, hero.Height * 0.32f);
+            hits.Add(new KeyValuePair<RectangleF, int>(pr, 0));
             if (sel) using (var glow = Round(new RectangleF(pr.X - 6, pr.Y - 6, pr.Width + 12, pr.Height + 12), pr.Height * 0.3f)) using (var gb = new SolidBrush(Fade(Accent, 60 + (int)(30 * Math.Sin(t * 3))))) g.FillPath(gb, glow);
             Card(g, pr, pr.Height * 0.24f, sel ? Color.FromArgb(255, 210, 60) : Color.FromArgb(232, 178, 0), sel ? Accent : Color.FromArgb(200, 150, 0), Color.Empty, 0);
             var ink = Color.FromArgb(20, 18, 10);
@@ -664,6 +688,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             var it = p.Items[i]; bool sel = i == p.Sel;
             int k = i - 1; var r = new RectangleF(m + (k % TileCols) * (tw + gap), gy + (k / TileCols) * (th + gap), tw, th);
             Tile(g, it, sel, r, true);
+            hits.Add(new KeyValuePair<RectangleF, int>(r, i));
         }
     }
 
@@ -722,7 +747,9 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         int fit = Math.Max(1, (int)((bottom - y + gap) / (ch + gap)));
         int first = Math.Max(0, Math.Min(p.Sel - fit / 2, p.Items.Count - fit));
         for (int i = first; i < p.Items.Count && i < first + fit; i++) {
-            Tile(g, p.Items[i], i == p.Sel, new RectangleF(m, y, w - 2 * m, ch), false);
+            var r = new RectangleF(m, y, w - 2 * m, ch);
+            Tile(g, p.Items[i], i == p.Sel, r, false);
+            hits.Add(new KeyValuePair<RectangleF, int>(r, i));
             y += ch + gap;
         }
         if (first > 0 || first + fit < p.Items.Count)
