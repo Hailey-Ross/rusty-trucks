@@ -1870,3 +1870,40 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Open:** retail builds candidates from every category of the area's group, ours from one category picked by
   probability (same for stock data: one category); retail keeps a leaver's slot key; an area whose founders were both
   refused is removed at once here (retail behaviour not read).
+
+## On foot: peds give when run into, benches are walked over, a pushed seat throws its ped off (2026-10-17)
+
+- **Report:** laptop session game-20261017-195628 (build 17b3d0d), the user's words: "Peds when run into are too solid.
+  They should be a little easier to push when run into."; "Running into a bench caused me to go through it instead of
+  walking over it. In retail I walked over the same bench at running speeds."; "Pushing a bench in retail bumps peds
+  physically and doesnt unseat them, it knocks them off the seat".
+- **Peds too solid (research b217, main checked the chain):** on foot the walker's last-mile capsule sweep
+  (`physics/solid_contacts.rs` `constrained_position`) stops at the ped body proxies (they are in
+  `network_proxies.solids`, `ped_body.rs` `push_ped_proxies`) as hard walls, so the skeleton never touched a ped,
+  `ped_hits` stayed empty and the ped never reacted. Retail [code, b144 / b146 / b147 / b217]: the ped body is
+  keyframed from the skeleton with a finite mass; the contact only decides stumble or knock-down, and the "give" is the
+  stumble clip's root motion [trace: a stumbled ped moved 0.24-1.1 m in about 1 s in recomp-all-20261017-175036].
+  **Change:** the sweep records the solids that stopped it; ped parts come back with the walker's closing speed and the
+  ped side turns that into the part's speed after the hit by momentum (`ped_body.walker_mass`, mod-facing, 75 kg, NOT
+  RETAIL YET: retail's on-foot path into peds is not found), which feeds the existing stumble / knock-down rules. Log
+  `PED_BODY_CONTACT ped part by=walker closing part_speed`. Test `a_walker_stopped_by_a_ped_reports_the_part`.
+- **Bench walked through (research b218, main checked the probe call sites):** every on-foot query saw only the map
+  world, so a prop was never step geometry; the skeleton's parts were dragged into the bench and shoved it. Retail
+  [code]: the walker's query batches use pool mask 7; pool bit 2 (`82764AB0`: world+0x5580) is the pool the grab
+  request asks with mask 2 (`8275FD00`), the DMOs [inference]; nearest hit across pools, the earlier pool on ties
+  (`8276EE88`). **Change:** `offboard::BipedWorld` (the map plus the prop world, derefs to the map) and
+  `GamePhysics::biped_world()`; the contact toolkit scene, the ground geometry query and the biped air selector answer
+  pool 2 from the prop world. The prop the player holds is left out (NOT RETAIL YET: retail's held-DMO filter is not
+  decoded). Board states are unchanged. Test `biped_lines_see_the_prop_world_as_pool_two_without_the_held_prop`.
+- **Seated ped on a pushed bench (research b219, main re-read `82E3DBE0`):** retail never knocks a seated ped down with
+  its own seat (`sub_82E38400` gives a plugin object kind 3 or 0, never 5). The owned object reports each move as a
+  step vector (`82E3DBE0`): |d|^2 <= 2.5e-5 is added to `brain+3168` and carried by the root update; a bigger step, with
+  OwnPluginObject and the byte `[ped+5888]+1416` == 0, queues Avoid / Jump / Forward (SitAvoidFwd). Ours read the
+  gate as a speed (it fired at 5 mm/s) and raised the jump for one tick only, so it raced the plugin's stand-up (log:
+  #141 avoid and "Sit ended mid-clip, standing up" in the same tick, seated again two ticks later). **Change:** the
+  seat's move over one step of `SEAT_PUSH_STEP_SECONDS` is compared (1/60 s: the DMO post-update `82C562D0` sends
+  its pose change once per sim tick, research b220, so the gate is 0.3 m/s); the jump is held until its clip starts. Logs `PED_SIT_AVOID ... locked=`, `played=`,
+  `PED_SIT_AVOID_DONE moved=`.
+- **Open:** whether the jump clip's root motion takes the ped off the seat (the next session's `PED_SIT_AVOID_DONE
+  moved=` shows it); the small-step carry is not ported (the moved seat already re-places its ped); the `+1416` gate;
+  the walker mass; per-template opt-out of props as biped ground.

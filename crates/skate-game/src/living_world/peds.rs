@@ -512,8 +512,13 @@ pub(crate) enum PedEvent {
 /// vertical cylinder at the observer (the board) of this radius and 2 m tall, and the ped body's
 /// speed after the contact (retail: the Havok solve) is the skater's speed into the ped.
 pub(crate) const SKATER_CONTACT_RADIUS: f32 = 0.35;
-/// `82E3DBE0`'s gate on the owned object's vector, |v|^2 > 2.5e-5 (`0x822F8BE0`) [code].
-pub(crate) const SEAT_PUSH_SPEED_SQ: f32 = 2.5e-5;
+/// `82E3DBE0`'s gate on the owned object's step vector, |d|^2 > 2.5e-5 m^2 (`0x822F8BE0`) [code, b219: a step, not a
+/// speed; smaller steps carry the ped].
+pub(crate) const SEAT_PUSH_STEP_SQ: f32 = 2.5e-5;
+/// The period that step is taken over, s: the DMO post-update `82C562D0` sends its pose change since the last
+/// committed pose to its listeners once per 1/60 s sim tick (b220 [code]; main re-read the pose difference and the
+/// slot 0x68 call), so the gate is 0.3 m/s (the speed-squared reading before 2026-10-17 fired at 5 mm/s).
+pub(crate) const SEAT_PUSH_STEP_SECONDS: f32 = 1.0 / 60.0;
 /// `82C539A8`'s seat probe tolerance, m (the navmesh point within this of the seat in x and z).
 pub(crate) const SEAT_PROBE_TOLERANCE: f32 = 0.1;
 /// The sit plugin's held cycle (`plugin_motion` Sit) and the Avoid graph's forward jump off a seat
@@ -1714,8 +1719,11 @@ pub(crate) struct PedMind {
     plugin_state: Option<usize>,
     /// Which plugin graph `plugin_controller` was made for (the prop class, or the conversation graph).
     plugin_graph: Option<String>,
-    /// The seat's prop is moving under the seated owner this tick: the body jumps off forward (`82E3DBE0`).
+    /// The seat's prop moved under the seated owner: the body jumps off forward (`82E3DBE0`). Held until the jump
+    /// clip starts or the ped is no longer sitting (a one-tick pulse lost the race against the plugin's stand-up).
     sit_avoid: bool,
+    /// Where the jump off started (`PED_SIT_AVOID_DONE` reports how far the ped got).
+    sit_avoid_from: Option<[f32; 3]>,
     /// The speech value last sent to the audio side (`PedestrianSpeech` requests a line only when
     /// the value changes; a fresh ped holds the constructor's 68).
     spoken: Option<i32>,
@@ -1935,10 +1943,11 @@ pub(crate) fn think_peds(
                     // (research b102). The owned object reporting a move to its seated ped (`82E3DBE0`: |v|^2 > 2.5e-5,
                     // `0x822F8BE0`) makes it jump off forward; the graph then walks it to the seat's new place and sits
                     // it again (the locked waypoint is re-read every evaluation, `826AB9C0`). The seat's own speed stands
-                    // in for the object's vector (open: velocity or step).
+                    // in for the object's vector: its move over one step of `SEAT_PUSH_STEP_SECONDS`.
                     let step = (0..3).map(|k| (position[k] - w.position[k]).powi(2)).sum::<f32>().sqrt();
                     let speed = step / dt.max(1e-4);
-                    if let Some(occupant) = w.occupant.filter(|_| speed * speed > SEAT_PUSH_SPEED_SQ) {
+                    let per_step = speed * SEAT_PUSH_STEP_SECONDS;
+                    if let Some(occupant) = w.occupant.filter(|_| per_step * per_step > SEAT_PUSH_STEP_SQ) {
                         info!("PED_PLUGIN_SEAT_MOVED prop={:016X} {} occupant={occupant} speed={speed:.2} from=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] tick={tick}", prop.id, prop.class, w.position[0], w.position[1], w.position[2], position[0], position[1], position[2]);
                         seat_pushed.push(occupant);
                     }
@@ -2381,12 +2390,23 @@ pub(crate) fn think_peds(
             // intent Avoid / Jump / Forward -> motiongraph_avoid SitJump -> JumpForward `SitAvoidFwd` (blend 0.1), speech
             // PedestrianAvoidJump (4). The gate `[ped+5712]+1416 == 0` is not decoded (taken as open).
             // The body plays it (`advance_peds`) while the flag is up.
-            let avoid = seat_pushed.contains(&me) && mind.brain.own_plugin_object && body.player.reaction_anim() == Some(SIT_CYCLE);
-            if avoid && !mind.sit_avoid {
+            let anim = body.player.reaction_anim();
+            let seated = mind.brain.own_plugin_object && anim == Some(SIT_CYCLE);
+            if seat_pushed.contains(&me) && seated && !mind.sit_avoid {
                 mind.brain.speech = Some(SIT_AVOID_SPEECH);
-                info!("PED_SIT_AVOID ped=#{} jumps off forward (its seat moved) tick={tick}", ped.id.serial);
+                mind.sit_avoid = true;
+                mind.sit_avoid_from = Some(at);
+                info!("PED_SIT_AVOID ped=#{} jumps off forward (its seat moved) locked={} tick={tick}", ped.id.serial, mind.brain.locked_at.is_some());
+            } else if mind.sit_avoid && !seated {
+                // `advance_peds` started the jump (or the ped left the seat another way first).
+                mind.sit_avoid = false;
+                info!("PED_SIT_AVOID ped=#{} played={} anim={anim:?} locked={} tick={tick}", ped.id.serial, anim == Some(SIT_AVOID_CLIP), mind.brain.locked_at.is_some());
+            } else if !mind.sit_avoid && anim != Some(SIT_AVOID_CLIP) {
+                if let Some(from) = mind.sit_avoid_from.take() {
+                    let moved = ((at[0] - from[0]).powi(2) + (at[2] - from[2]).powi(2)).sqrt();
+                    info!("PED_SIT_AVOID_DONE ped=#{} moved={moved:.2} anim={anim:?} tick={tick}", ped.id.serial);
+                }
             }
-            mind.sit_avoid = avoid;
             // HasPlugin: a conversation member, or a ped that took a world prop.
             let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id && !streamed_out(id) && !p.disabled).and_then(|p| p.waypoints.get(w)).copied());
             // A prop lost without ExitPlugin (streamed out, disabled, moved away) releases its waypoint like ExitPlugin
