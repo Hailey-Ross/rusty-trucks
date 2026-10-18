@@ -764,7 +764,13 @@ pub(crate) fn simulate(
                     sim.respawn_in = Some(left - 1);
                 }
                 let deck = GamePhysics::context_deck(&sim.context);
-                let forward = [deck.basis.columns[2][0], deck.basis.columns[2][1], deck.basis.columns[2][2]];
+                // The effective deck forward (`GetEffectiveTransform` 82C01BF8 into PhysOut +64, what the AI record, the
+                // steer and the facing gates read; b200): negated while the board is flipped under the rider
+                // (Processed+2468 bit 20). The raw deck pointed backwards after a flip trick, so the steer turned the
+                // wrong end toward the line and the skater rolled away from it (b199 #7, #8).
+                let flipped = sim.body.runtime.player_input.processed.flags_2468 & 0x0010_0000 != 0;
+                let sign = if flipped { -1.0 } else { 1.0 };
+                let forward = [deck.basis.columns[2][0] * sign, deck.basis.columns[2][1] * sign, deck.basis.columns[2][2] * sign];
                 let direct = skate_core::living_world::controller_b::DirectPath;
                 let paths: &dyn skate_core::living_world::controller_b::PathService = match peds.as_deref().and_then(|p| p.nav.as_deref()) {
                     Some(mesh) => mesh,

@@ -823,3 +823,19 @@ keyed by the NPC skater's stable id.
   (`selection.rs:126-154`) only take a transition whose target has an enabled, active leaf; every active leaf under
   `Riding.Turning.Push` needs a `RightPush` / `LeftPush` intent, which an AI skater does not hold, so `Bumped` runs to
   its `WillExpire 0.1` exits in both. A pushing player leaves at once. Retail behaviour; no change.
+
+## Simulated NPC skaters steer by the effective deck after a flip (2026-10-17)
+
+- **Problem:** muted DownTown runs had NPC skaters stall riding away from their line, tail first (#8 lost 38 m off its
+  line after an inward heelflip, #7 likewise).
+- **Retail [code] (research b199, b200):** the AI's record, steer and facing gates read the deck forward from PhysOut
+  +64, filled by `GetEffectiveTransform` (`82C01BF8`): X and Z negated while the board is flipped under the rider
+  (Processed+2468 bit 20). Our sim read the raw deck part, so after a flip trick it steered the wrong end at the line.
+- **Change:** `npc_sim.rs` takes the effective forward (the raw deck's forward, negated while that bit is set) for the
+  AI record, the anticipation facing gate and the ground steer.
+- **Result (same muted run before / after):** NPC_SKATER_LOST 34 -> 9, bails 7 -> 2, NPC_SKATER_BACKWARDS 74 -> 47; the
+  4 remaining final-stage stalls are now at small positive speeds (none rolling away tail first). skate-game
+  living_world tests 95 pass. Not play-tested.
+- **Open (b201):** a skater that really rolls back down a ramp without a flip keeps riding_fakie false because the
+  rule reads the animated root, which faces travel; which side is wrong needs one rerun with `flipped`, `root_yaw`,
+  `eff_yaw`, `cat` and the fakie clocks on NPC_SKATER_STEER (`.local/research/b201-fakie-rollback.md`).
