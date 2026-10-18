@@ -714,6 +714,37 @@ play is no longer a hitch (none of frames 3 to 182 is over the hitch threshold; 
 fix alone, 1718 ms before both). Left in the first second: GPU uploads (`allocate_and_free_meshes` and
 `prepare_assets<GpuImage>`, one run of about 115 ms each; research b231) and `modding::fixed` 52 ms.
 
+## The living world's models load behind the loading screen (2026-10-18)
+
+Problem: ped, car, NPC skater and hand prop models were loaded when the first of each spawned, in the first seconds
+of play: one run of about 115 ms each of `allocate_and_free_meshes` and `prepare_assets<GpuImage>` in the first
+visible second on the desktop, and peds and cars appearing a few frames after they spawned (research b226 item 3,
+plan b229 `.local/research/b229-glb-preload-set.md`, b231 `.local/research/b231-first-second-uploads.md`). The user
+chose the trade-off (2026-10-18, "yes"): about 120 models held for the map against that upload.
+
+Change (`living_world/preload.rs`):
+- `preload_paths` builds the set from the functions the spawners call: every ped recipe a census spawn can reach
+  (`PedCatalog::reachable_recipes`, which shares `model_candidates` with `look_for` so the two cannot drift) through
+  `peds::glb_path`; every car of the vehicle catalog through `vehicles::car_glb` (pulled out of `car_from_record`);
+  every NPC skater character through `npc_skaters::look_path` (pulled out of `present_looks`); every hand prop GLB.
+  Mod looks and overrides apply, as for a spawn. Stock paths the install does not have are left out (the vehicle
+  catalog lists every district's cars; a spawner that picks one fails as before).
+- `preload_models` (Update, which runs behind the loading screen while game time is paused) loads the set once the
+  map's data is in and holds the handles for the map; the spawners' own `server.load` of the same `#Scene0` path then
+  gets the loaded asset. A startup hold `living_world_models` waits until every model is loaded or failed (cap 30 s).
+  It rebuilds on a map switch or a mod look change (not on `CustomModels`, which the customiser marks changed every
+  frame; an NPC look it changes mid-map loads lazily as before), and reloads only when the path set differs.
+- What is shown changes in one way only: peds and cars no longer wait a few frames for their model after they spawn.
+
+Tests: `reachable_recipes_hold_every_look_a_census_spawn_can_get` (skate-core: every look `choose` gives over 2000
+seeds is in the set, also with a mod's category list and entity model), `the_preload_holds_the_paths_the_spawners_load_with_mod_overrides`.
+
+Verification (desktop, DownTown, muted, no mods): `LIVING_WORLD_PRELOAD DownTown: 119 models`, ready in 1395 ms,
+0 error lines; the loading screen is up 0.4 s longer (5029 ms against 4624 ms). The first visible second's worst
+frame is 9 ms plus one 35 ms steady-state stall (before: a 65 ms frame with the ~115 ms uploads); the upload systems'
+long runs now fall before the window is shown. A first run rebuilt the set every frame (`CustomModels`) and requested
+missing stock car files each frame, so the loading screen waited the 30 s cap: both fixed before the commit.
+
 ## Zone ambience beds are read ahead at map load (2026-10-17)
 
 - **Problem:** entering an ambience zone read its bed (16-bit 48 kHz stereo WAV, ~2 min, 15-29 MB) from disk on the

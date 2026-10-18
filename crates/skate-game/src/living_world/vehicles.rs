@@ -473,6 +473,13 @@ fn apply_horn_patch(h: &skate_mods::world_tuning::TrafficHornPatch, p: &mut skat
     p.blocked_long_chance = h.blocked_long_chance.unwrap_or(p.blocked_long_chance);
 }
 
+/// The GLB a car of `entity` (catalog model `model`) loads: a mod's model record, then a mod's GLB for it, else the
+/// record's (`car_from_record` and the living world preload).
+pub(crate) fn car_glb(data: &VehicleData, overrides: &VehicleOverrides, entity: &str, model: &str) -> String {
+    let model_key = overrides.models.get(entity).map_or(model, String::as_str);
+    overrides.glbs.get(model_key).cloned().unwrap_or_else(|| data.models.get(model_key).map(|m| m.glb.clone()).unwrap_or_default())
+}
+
 /// Build a car from a spawn record (pure; the engine and the tests use it).
 pub(crate) fn car_from_record(
     net: &RoadNetwork,
@@ -514,7 +521,7 @@ pub(crate) fn car_from_record(
     // `+4402` bit 0x80 (`82C42348`, the last roll): pulls over even while a skater holds the car.
     car.params.manoeuvre.pulls_over_while_held = skate_core::living_world::traffic::horn::percent_roll(params.manoeuvre.held_pull_over_chance, horn_rng.unit());
     let audio = TrafficAudio { engine: spec.engine.clone(), speed: Some(0.0), load: Some(0.0), ..TrafficAudio::new(spec.engine.clone()) };
-    let glb = overrides.glbs.get(model_key).cloned().unwrap_or(m.glb.clone());
+    let glb = car_glb(data, overrides, entity, model);
     Some((
         TrafficCar {
             id: record.id,
