@@ -99,14 +99,19 @@ function Send-Pending {
     $target = "\\$($c.main_pc)\$($c.share)\$env:COMPUTERNAME"   # updated to the server that answers
     $sent = @{}
     if (Test-Path $sentFile) { foreach ($n in Get-Content $sentFile) { $sent[$n] = $true } }
-    $files = @(Get-ChildItem (Join-Path $Root 'logs') -File -Filter 'game-*.log')
+    # This checkout and every Steam launcher version (.local\versions\<id>, plus the one the launcher names in
+    # SKATE_SEND_LOGS_DIR): a version's sessions write to its own logs\ (laptop 2026-10-18: only a crash report went).
+    $roots = @($Root) + @(Get-ChildItem (Join-Path $Root '.local\versions') -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    if ($env:SKATE_SEND_LOGS_DIR) { $roots += $env:SKATE_SEND_LOGS_DIR }
+    $roots = @($roots | Where-Object { Test-Path $_ } | ForEach-Object { (Resolve-Path $_).Path } | Sort-Object -Unique)
+    $files = @($roots | ForEach-Object { Get-ChildItem (Join-Path $_ 'logs') -File -Filter 'game-*.log' -ErrorAction SilentlyContinue })
     if (Test-Path $crashDir) { $files += @(Get-ChildItem $crashDir -File) }
     # Session folders: logs\trace-all-<time> (the Steam launcher's rust-traceall), bin\logs\trace-all-<unix seconds>
     # (the engine's default next to the exe) and logs\recomp-<preset>-<time> (play-recomp.ps1). While a game runs, a
     # folder written to in the last 30 s may still be in use; once no game runs (the send right after a session) every
     # folder goes.
     $gameRunning = [bool](Get-Process skate3rust, skate3 -ErrorAction SilentlyContinue)
-    foreach ($dir in (Join-Path $Root 'logs'), (Join-Path $Root 'bin\logs')) {
+    foreach ($dir in @($roots | ForEach-Object { (Join-Path $_ 'logs'), (Join-Path $_ 'bin\logs') })) {
         $files += @(Get-ChildItem $dir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'trace-all-*' -or $_.Name -like 'recomp-*' } | Where-Object {
             if (-not $gameRunning) { return $true }
             $newest = Get-ChildItem $_.FullName -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
