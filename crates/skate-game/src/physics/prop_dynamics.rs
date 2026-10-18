@@ -1405,7 +1405,7 @@ impl PropDynamics {
     }
 
     fn grab_object_of(b: &PropBody) -> Option<skate_core::player::offboard::grab_scene::Object> {
-        use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry, Object, Provider, Spline};
+        use skate_core::player::offboard::grab_scene::{AssemblyData, Descriptor, Geometry, Object, PartData, Provider, RatesData, Spline};
         (!b.grab_splines.is_empty() && b.id < (1 << 24))
             .then(|| {
                 let id = PROP_GRAB_TAG | b.id;
@@ -1417,7 +1417,26 @@ impl PropDynamics {
                     provider: Provider::LivingWorld,
                     disabled: false,
                     assembly_ready: true,
-                    assembly: Some(AssemblyData { identity: id, first_part: None }),
+                    // 82585F58 (b227): the part (assembly+8) is the prop's one body, its rates (part+0x4C) the body's
+                    // rigid body: words 56..65 = its Inertia (inverse tensor, inverse mass, spherical, max linear /
+                    // angular velocity, drags; the tensor's w lane is not read), +144 = angular velocity, +160 =
+                    // centre of mass. Move Object reads +216 only as a null gate (82D442D0 / 82D44A10), so the
+                    // stable prop id serves as part and rates identity.
+                    assembly: Some(AssemblyData {
+                        identity: id,
+                        first_part: Some(PartData {
+                            identity: id,
+                            coefficients_0_to_36: {
+                                let (t, i) = (b.inertia.inverse_tensor, &b.inertia);
+                                [t.x, t.y, t.z, 0.0, i.inverse_mass, i.spherical, i.maximum_linear_velocity, i.maximum_angular_velocity, i.linear_drag, i.angular_drag]
+                            },
+                            rates: Some(RatesData {
+                                identity: id,
+                                vector_48: [b.rates.angular_velocity.x, b.rates.angular_velocity.y, b.rates.angular_velocity.z, 0.0],
+                                transform_position_48: [b.rates.position.x, b.rates.position.y, b.rates.position.z, 0.0],
+                            }),
+                        }),
+                    }),
                     frame: [[c[0][0], c[0][1], c[0][2], 0.0], [c[1][0], c[1][1], c[1][2], 0.0], [c[2][0], c[2][1], c[2][2], 0.0], [o.x, o.y, o.z, 1.0]],
                     object_vector_128: [b.rates.linear_velocity.x, b.rates.linear_velocity.y, b.rates.linear_velocity.z, 0.0],
                     splines: b
@@ -3451,6 +3470,7 @@ mod tests {
             forward: Vector3::new(0., 0., 1.),
             time_step: simulation().time_step,
             skeleton: None,
+            ground_grab: None,
         }
     }
 
@@ -3657,6 +3677,39 @@ mod tests {
             let lag = ((target.x - at.position.x).powi(2) + (target.z - at.position.z).powi(2)).sqrt();
             assert!(lag < 0.2, "skater fell {lag} m behind the grab frame");
         }
+    }
+
+    /// With a Ground grab decision (82D324B0) the carry binds exactly the record it qualified, even when another
+    /// record of the prop is nearer (the large dumpster's bottom edges, b224 / b226); no qualified record, no grab.
+    #[test]
+    fn the_carry_binds_the_record_the_ground_decision_qualified() {
+        let (_, _, mut dynamics) = fixture([0., REST_Y, 1.2]);
+        let mut splines = std::collections::BTreeMap::new();
+        // 0: a bottom edge on the near face (approach straight down); 1: the rim higher up the same face.
+        splines.insert("template".to_owned(), vec![
+            crate::living_world::vehicles::CarGrabSpline { points: vec![[-0.4, -0.5, -0.5], [0.4, -0.5, -0.5]], direction: [0.0, -1.0, 0.0], flags: 0 },
+            crate::living_world::vehicles::CarGrabSpline { points: vec![[-0.4, 0.4, -0.5], [0.4, 0.4, -0.5]], direction: [0.0, 0.0, -1.0], flags: 0 },
+        ]);
+        assert_eq!(dynamics.set_grab_splines(&splines), 1);
+        // 82585F58: the record's part / rates block is filled, so Move Object's +216 null gate (82D442D0) passes.
+        let object = dynamics.grab_object(7).unwrap();
+        let part = object.assembly.as_ref().and_then(|a| a.first_part.as_ref()).expect("a part");
+        assert_eq!((part.identity, part.rates.as_ref().map(|r| r.identity)), (PROP_GRAB_TAG | 7, Some(PROP_GRAB_TAG | 7)));
+        assert_eq!(part.coefficients_0_to_36[4], dynamics.bodies[0].inertia.inverse_mass);
+        let key = |i: u32| PROP_GRAB_TAG | (7 << 6) | i;
+        let grab = |dynamics: &mut PropDynamics, decision: Option<(u32, u32)>| {
+            let mut carry = crate::physics::prop_carry::PropCarry::default();
+            carry.set_authored_records(true);
+            let at = crate::physics::prop_carry::Carrier {
+                ground_grab: Some(decision),
+                ..carrier(skate_core::player::state::PhysicalStateId::BipedGround, 0.)
+            };
+            carry.update(dynamics, tick(), at);
+            (carry.held(), carry.held_grip().map(|g| g.descriptor))
+        };
+        assert_eq!(grab(&mut dynamics, Some((2, key(1)))), (Some(7), Some((2, key(1)))), "binds the qualified rim");
+        assert_eq!(grab(&mut dynamics, None), (None, None), "nothing qualified: no grab");
+        assert_eq!(grab(&mut dynamics, Some((2, 1 << 6))), (None, None), "a record that is not a prop's");
     }
 
     /// Move Object step 3: a prop with an authored grab spline is carried by
@@ -4540,6 +4593,7 @@ mod tests {
             forward: Vector3::new(0., 0., 1.),
             time_step: dt,
             skeleton: None,
+            ground_grab: None,
         };
         carry.update(&mut dynamics, tick(), at);
         assert_eq!(carry.held(), Some(id), "grab failed");
@@ -4604,6 +4658,7 @@ mod tests {
             forward: Vector3::new(0., 0., 1.),
             time_step: dt,
             skeleton: None,
+            ground_grab: None,
         };
         carry.update(&mut dynamics, tick(), at);
         assert_eq!(carry.held(), Some(id), "grab failed");
@@ -4734,6 +4789,7 @@ mod tests {
             forward: Vector3::new(0., 0., -1.),
             time_step: dt,
             skeleton: None,
+            ground_grab: None,
         };
         carry.update(&mut dynamics, tick(), at);
         assert_eq!(carry.held(), Some(id), "grab failed");
@@ -4778,6 +4834,7 @@ mod tests {
                 forward: Vector3::new(0., 0., 1.),
                 time_step: dt,
                 skeleton: None,
+                ground_grab: None,
             };
             carry.update(&mut dynamics, tick(), at);
             assert_eq!(carry.held(), Some(id), "{name}: grab failed");
@@ -5204,6 +5261,7 @@ mod tests {
                 forward,
                 time_step: dt,
                 skeleton: None,
+                ground_grab: None,
             };
             use skate_core::player::state::PhysicalStateId::{BipedGround, OffBoardPushing};
             let mut carry = crate::physics::prop_carry::PropCarry::default();

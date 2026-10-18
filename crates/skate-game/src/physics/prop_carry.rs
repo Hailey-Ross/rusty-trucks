@@ -393,6 +393,11 @@ pub(crate) struct Carrier {
     /// Retail skater observations for Move Object; `None` (host tests, the
     /// HUD) skips the record qualification and uses `position` as body.
     pub skeleton: Option<CarrierSkeleton>,
+    /// The Ground grab decision this tick (82D324B0, `biped_ground::grab`): `Some(Some(descriptor))` when a validated
+    /// record qualified (state +144, descriptor +152 / +156), `Some(None)` when none did. Retail Move Object binds
+    /// only that record (published into Player+0x760, b226). `None` (host tests, the HUD) has no decision and keeps
+    /// the interim pick (nearest prop within `grab_range`, its nearest record).
+    pub ground_grab: Option<Option<(u32, u32)>>,
 }
 
 /// The skater inputs retail Move Object reads, from the skater runtime.
@@ -494,6 +499,8 @@ pub(crate) struct PropCarry {
     frame: Option<GrabFrame>,
     /// Closest the skater got to its follow point (optional mod let-go rule).
     closest: f32,
+    /// The grab button last tick (the press edge for `PROP_GRAB_MISS`).
+    grab_down: bool,
     /// Retail skater follow state (+416 / +608 / +624); `None` until the
     /// first held tick.
     follow: Option<SkaterFollow>,
@@ -673,7 +680,17 @@ impl PropCarry {
         if self.held.is_some() || carrier.state != PhysicalStateId::BipedGround {
             return None;
         }
-        let (id, _) = dynamics.nearest_body(carrier.position, self.grab_range())?;
+        let id = match carrier.ground_grab {
+            // The prop of the qualified record (spline key `PROP_GRAB_TAG | body id << 6 | index`).
+            Some(qualified) if self.authored_enabled() => {
+                let (_, key) = qualified?;
+                if key & super::prop_dynamics::PROP_GRAB_TAG == 0 {
+                    return None;
+                }
+                (key & !super::prop_dynamics::PROP_GRAB_TAG) >> 6
+            }
+            _ => dynamics.nearest_body(carrier.position, self.grab_range())?.0,
+        };
         let body = dynamics.held_body(id)?;
         let (frame, record) = self.frame_for(dynamics, id, &body, carrier, &mut None, &mut None)?;
         self.holds(&record, &frame, carrier).then_some(id)
@@ -703,7 +720,13 @@ impl PropCarry {
             let (record, held) = match *bound {
                 None => {
                     let p = carrier.position;
-                    let mut record = best_spline(&records, [p.x, p.y, p.z, 1.0])?;
+                    let mut record = match carrier.ground_grab {
+                        Some(qualified) => {
+                            let descriptor = qualified?;
+                            records.into_iter().find(|r| (r.0[47], r.0[48]) == descriptor)?
+                        }
+                        None => best_spline(&records, [p.x, p.y, p.z, 1.0])?,
+                    };
                     let held = move_object::begin_grip(&mut record, reference, self.locomotion.move_object.grab_end_exclusion);
                     (record, held)
                 }
@@ -761,6 +784,31 @@ impl PropCarry {
         Some((authored_frame(&record, &new)?, record, new))
     }
 
+    /// `PROP_GRAB_MISS` (laptop 2026-10-18: the blue dumpsters never grabbed and left no line): once per grab press
+    /// that starts no carry, with the Ground decision (82D324B0: the qualified record, or none) and the nearest prop.
+    fn log_miss(&self, dynamics: &PropDynamics, carrier: Carrier) {
+        let decision = match carrier.ground_grab {
+            Some(Some((kind, key))) => format!("qualified {kind}/{key:#x} (prop {} record {})", (key & !super::prop_dynamics::PROP_GRAB_TAG) >> 6, key & 63),
+            Some(None) => "no record qualified".to_owned(),
+            None => "no ground decision".to_owned(),
+        };
+        let reason = if carrier.state != PhysicalStateId::BipedGround {
+            "not on foot (BipedGround)"
+        } else if carrier.ground_grab == Some(None) {
+            "no validated record passed 82E08DB8"
+        } else {
+            "the record did not bind or hold"
+        };
+        let nearest = dynamics.nearest_body(carrier.position, self.grab_range()).map_or_else(
+            || "none".to_owned(),
+            |(id, centre)| {
+                let d = sub(centre, carrier.position);
+                format!("{id} ({}) {:.2} m to its centre", dynamics.describe_template(id), dot(d, d).sqrt())
+            },
+        );
+        bevy::log::info!("PROP_GRAB_MISS {reason}: decision {decision}; nearest prop {nearest}; state {:?}", carrier.state);
+    }
+
     fn let_go(&mut self) {
         self.held = None;
         self.mode = Mode::Carry;
@@ -779,6 +827,8 @@ impl PropCarry {
             carrier.state,
             PhysicalStateId::BipedGround | PhysicalStateId::OffBoardPushing
         );
+        let pressed = tick.grab && !self.grab_down;
+        self.grab_down = tick.grab;
         let Some(id) = self.held else {
             if tick.grab {
                 if let Some(id) = self.candidate(dynamics, carrier) {
@@ -786,6 +836,8 @@ impl PropCarry {
                     self.held = Some(id);
                     self.closest = f32::INFINITY;
                     self.hold(dynamics, id, tick, carrier);
+                } else if pressed {
+                    self.log_miss(dynamics, carrier);
                 }
             }
             return;

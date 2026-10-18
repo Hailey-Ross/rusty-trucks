@@ -96,6 +96,11 @@ fn advance_inner(
                     collision_flag: skater.player_input.processed.flags_2484 & 0x0400_0000 != 0,
                     state_time: skater.player_input.processed.state_timer_2664,
                 }),
+                // Only BipedGround runs the decision (82D324B0); other states keep their own binding.
+                ground_grab: (skater.player_state.current() == skate_core::player::state::PhysicalStateId::BipedGround).then(|| {
+                    let g = &skater.biped_ground.ground;
+                    g.flags_144_to_150[0].then_some((g.counter_152, g.counter_156))
+                }),
             },
         );
         // 82D45008 -> 82BD9728 / 82BD97D0: the held prop's hand points as hand IK targets (limbs 2 / 3, the

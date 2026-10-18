@@ -791,3 +791,26 @@ or a skater inside a prop. Now:
 - `PROP_OVERLAP prop=<id> (<model>) skater inside for <n> ticks at [...] up_y <y>`: a skater volume that sat inside
   the prop long enough that the nudge stops (`stuck_release_ticks`), once per stay; `up_y` shows a fallen prop.
 No behaviour change.
+
+## Grab: the carry binds the record the Ground decision qualified (2026-10-18)
+
+- **Report:** laptop sessions game-20261018-120611 and game-20261018-125543 (DownTown, the dumpsters near -212, 10.8,
+  452), the user's words: "I could only grab/move the yellow one, the smaller blue one couldnt be grabbed and the large
+  blue dumpster couldnt be grabbed. they could all be bumped to sort of move". A failed grab left no log line.
+- **Root cause (research b224 / b226, main checked the lines):** two grab paths ran side by side. The Ground decision
+  (`biped_ground/grab.rs`, retail `82D324B0`) already runs retail's validated set: the query of up to 5 records over
+  all props in range (`82D74200`), 3 lines per record (`82D744F8` / `82D74740`), the nearest record (`82D4D150` mode
+  0) and `82E08DB8` at bone 23. But the carry (`prop_carry.rs` `candidate`) picked its own target: the nearest prop
+  within 2 m, then the nearest of ALL that prop's records from the feet, then the hold rule as the start test. On the
+  blue dumpsters the nearest record is a bottom edge (approach straight down) or a corner post: the bottom edge always
+  fails `|approach_side| <= 0.1` (`qualify.rs`), a post the slope test, so the grab was refused every tick.
+- **Change:** `Carrier::ground_grab` passes the Ground decision of the tick (BipedGround only); the carry starts only
+  from the record it qualified (descriptor +152 / +156, the prop from the spline key) and binds exactly that record.
+  Host tests without a decision keep the interim pick. Prop grab objects now carry a part with rates as retail's record
+  init `82585F58` writes them (research b227): part and rates identity = the stable prop id, the Inertia words, angular
+  velocity at +144, centre of mass at +160, so Move Object's `+216` null gate (`82D442D0`) sees a real prop. Nothing
+  reads those words yet. Log `PROP_GRAB_MISS <reason>: decision <qualified record | no record qualified>; nearest prop
+  <id> (<template>)` once per press that starts no carry. Test `the_carry_binds_the_record_the_ground_decision_qualified`.
+- **Open:** whether the large dumpster's rim qualifies from a standing skater (needs the user's next try and the new
+  line); the gated bind in `82D442D0` order (`flags_2480` bit `0x400000`, published one data request later); props in
+  the validation line world (our lines see only static triangles).
