@@ -1840,3 +1840,33 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   other way: ours never adds a third member (retail passers-by can join); research b212 on that and on despawned
   members that never leave.
 - **Next:** confirm in a new laptop session that the flip and the 60 s stalls are gone before changing any rate.
+
+## Passers-by join conversations; the founders pass the same test (2026-10-17)
+
+- **Problem:** ours never added a third member to a conversation, and the starter and its target joined unconditionally
+  (b211, above). Research b212 (`.local/research/b212-conversation-join-despawn.md`); main re-read every address below.
+- **Retail [code]:** a conversation area is an ordinary offer (vtable `0x8232B798`, add / remove in slots 15 / 16), so
+  passers-by reach it through the same wandering-offer scan as seats and ATMs (`826C0058` -> `826BFE18`): no current
+  plugin, not refused, `|dy| < 1.8`, horizontal distance under the offer radius (class field `E2101F2B17A0E6B5`,
+  `waypoint_conversation` 20.0 [data]), the descriptor's transfer expression, the `plugin_odds` roll, then attach.
+  The transfer reads `ConversationIsGatheringMembers` (`8269CE40` -> the conversation's vf4: room and state 0 / 1) and
+  `EntityAllowedToJoinConversation` (`8269CD70` -> vf8: the ped's type fills a free row slot). The add (`82E1D380`)
+  turns a ped away unless vf4 holds and the slot finder (`82E1DB50`) succeeds; `82E1DC70` builds the candidate rows on
+  the first join and on every later join keeps only the rows the joiner matched. The spawner (`826A6CD8`) adds the
+  starter and then the target through the same manager call (slot 13 = `826BFE18`) and ignores the result.
+- **Change:** `Conversation::join` takes the ped's entity type and the rows, refuses a misfit and narrows the candidate
+  rows (the start then picks only among rows every member fits); the member cap comes from the descriptor
+  (`maxNumberOfParticipants`, 3). `plugins::offer_conversation` runs the offer test for one ped; the 11-tick scan offers
+  every gathering area after the placed props ([inference]: registration order not read), and SpawnConversationArea
+  puts the starter and the target (a ped only) through it. The target's refusal memory is written by its own think
+  (one tick later at most). A ped in a conversation re-stores the area's refusal each tick like a prop (`8269F248`).
+  New log line `PED_CONVERSATION id=.. join ped=.. members=.. state=..`; the start line gains `joined=<starter>/<target>`.
+- **Moddable:** offer radius (class field), member cap and transfer conditions (descriptor XML, by name), odds
+  (`plugin_odds` `waypoint_conversation`), rows and categories (tables); the conditions are named so a mod descriptor
+  can combine them.
+- **Tests:** skate-core `a_third_member_joins_while_gathering_and_narrows_the_rows`, `nobody_joins_after_the_start`,
+  `a_passer_by_joins_a_gathering_conversation_through_the_offer`; the stock-data test checks radius 20, the transfer
+  names and the odds key.
+- **Open:** retail builds candidates from every category of the area's group, ours from one category picked by
+  probability (same for stock data: one category); retail keeps a leaver's slot key; an area whose founders were both
+  refused is removed at once here (retail behaviour not read).
