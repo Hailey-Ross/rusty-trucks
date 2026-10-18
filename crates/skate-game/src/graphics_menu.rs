@@ -565,6 +565,9 @@ impl Plugin for GraphicsMenuPlugin {
             .add_systems(PostStartup, setup.in_set(PresentationSetup))
             .add_systems(PreUpdate, (refresh_sections, interact, apply_custom_difficulty).chain().in_set(MenuInput).after(bevy::input::InputSystems))
             .add_systems(PreUpdate, finish_menu_travel.after(crate::map_transition::MapTransitionSet).before(crate::input::poll_controllers))
+            // Challenge Map teleports (retail map screen), applied the same way once their map is loaded.
+            .init_resource::<crate::challenge_map::ChallengeMapTravel>()
+            .add_systems(PreUpdate, crate::challenge_map::finish_travel.after(crate::map_transition::MapTransitionSet).before(crate::input::poll_controllers))
             .add_systems(PreUpdate, toggle_fullscreen.after(bevy::input::InputSystems))
             .add_systems(Update, preview_menu.before(view::view))
             .add_systems(Update, (crate::map_render::advance_day, apply, view::view, view::sync_blur, resize_menu).chain())

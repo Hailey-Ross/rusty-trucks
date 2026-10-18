@@ -1,0 +1,131 @@
+//! The Challenge Map screen's natives (FE screen 17): FEChallengeMap (registrar sub_8264A8A8, 24 getters, research
+//! b255) and the movie's picker callbacks (Game.OnMenuHilight / OnMenuSelect, b256). The navigation is
+//! `skate_core::challenge_map`; this host answers the movie from it and queues the screen states the C++ posts
+//! (`SetState(n)`, applied by `retail_menu_stage` after the call returns) and the leaf a select picked (dispatched
+//! through the menu registry, whose handler decides: a teleport, a mod).
+use crate::apt_vm::{to_integer, Value, Vm};
+use skate_core::challenge_map::{Action, ChallengeMapState};
+use skate_core::menus::{EntryRef, MenuContext, MenuRegistry};
+
+#[derive(Clone, Default)]
+pub struct ChallengeMapHost {
+    pub state: ChallengeMapState,
+    /// The screen is on top of the stack (the picker callbacks are ours).
+    pub open: bool,
+    /// Screen states to post to the movie, in order.
+    pub states: Vec<i32>,
+    /// A leaf the player selected, for the stage to dispatch.
+    pub selected: Option<EntryRef>,
+    /// B at the root asked to close the screen.
+    pub close: bool,
+}
+
+impl ChallengeMapHost {
+    /// Screen init (`sub_826457E0`) on the mode root (`progression` offline).
+    pub fn open(&mut self, registry: &MenuRegistry, ctx: &MenuContext, root: &str) {
+        let (state, states) = ChallengeMapState::open(registry, ctx, root);
+        *self = Self { state, open: true, states, ..Default::default() };
+    }
+
+    /// An action from a callback or a key: its states, its leaf, its close.
+    pub fn apply(&mut self, action: Action) {
+        match action {
+            Action::None => {}
+            Action::Refresh(states) => self.states.extend(states),
+            Action::Select(entry) => self.selected = Some(entry),
+            Action::Close => self.close = true,
+        }
+    }
+
+    /// One native call; None = not ours.
+    pub fn call(
+        &mut self,
+        vm: &mut Vm,
+        registry: &MenuRegistry,
+        ctx: &MenuContext,
+        language: &std::collections::BTreeMap<String, String>,
+        object: &str,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Option<Value>, String> {
+        let text = |id: &str| Value::Text(language.get(id).cloned().unwrap_or_else(|| id.to_owned()));
+        let index = |i: usize| args.get(i).map_or(0, to_integer).max(0) as usize;
+        if object == "Game" && self.open {
+            return Ok(match method {
+                "OnMenuHilight" => {
+                    let states = self.state.hilight(index(1));
+                    self.states.extend(states);
+                    Some(Value::Undefined)
+                }
+                "OnMenuSelect" => {
+                    let action = self.state.select(registry, ctx, index(1));
+                    self.apply(action);
+                    Some(Value::Undefined)
+                }
+                _ => None,
+            });
+        }
+        if object != "FEChallengeMap" {
+            return Ok(None);
+        }
+        let s = &self.state;
+        Ok(Some(match method {
+            // 8264AF28: [count, selected, labels, enabled, icon 1, icon 2]; an empty folder gives one `false` per list.
+            "GetStuffMenuItems" => {
+                let rows = s.rows(registry, ctx);
+                let lists: [Vec<Value>; 4] = if rows.is_empty() {
+                    std::array::from_fn(|_| vec![Value::Bool(false)])
+                } else {
+                    [
+                        rows.iter().map(|r| text(&r.label)).collect(),
+                        rows.iter().map(|r| Value::Bool(r.enabled)).collect(),
+                        rows.iter().map(|_| Value::Text("none".into())).collect(),
+                        rows.iter().map(|_| Value::Text("none".into())).collect(),
+                    ]
+                };
+                let mut values = vec![Value::Number(rows.len() as f64), Value::Number(s.hilight as f64)];
+                for list in lists {
+                    values.push(Value::Object(vm.array(list)?));
+                }
+                Value::Object(vm.array(values)?)
+            }
+            "GetStuffTitleText" | "GetChallengeTitle" => text(&s.title(registry, ctx)),
+            // 8264C208: the tabs' names; 8264C3F0 the current tab.
+            "GetSuperCategories" => {
+                let tabs = s.tabs(registry, ctx).iter().map(|t| text(&registry.data().map_node(t).map_or(t.id.clone(), |n| n.label.clone()))).collect();
+                Value::Object(vm.array(tabs)?)
+            }
+            "GetCurrentSuperCategoryIndex" => Value::Number(s.tab as f64),
+            // 8264B658: false only on an empty filter folder.
+            "IsSelectAvailable" => Value::Bool(s.rows(registry, ctx).get(s.hilight).is_none_or(|r| {
+                !r.entry.kind.is_map_folder() || !registry.data().map_children(&r.entry).is_empty()
+            })),
+            // The map picture: the default map until the map textures are exported (b257). NOT RETAIL YET: the
+            // per-district maps, the cursor (marker projection, b256) and the park screenshot.
+            "IsUsingDefaultMap" => Value::Bool(true),
+            "GetDefaultMapTexture" => Value::Text("map1024".into()),
+            "GetMapTexture" => Value::Object(vm.array(vec![Value::Text("map_missing".into()), Value::Bool(false), Value::Bool(false)])?),
+            "IsCursorVisible" => Value::Bool(false),
+            "GetCursorCoordinates" => Value::Object(vm.array(vec![Value::Number(0.0), Value::Number(0.0)])?),
+            // Retail stubs / constants (b255).
+            "GetStuffMenuChallengeFilterType" => Value::Bool(true),
+            "GetMapDistrictText" => Value::Text("#GetMapDistrictText".into()),
+            "GetPropertyPriceOrPaid" => Value::Text("#GetPropertyPriceOrPaid".into()),
+            "IsPropertyOwned" | "IsChallengeTeamChallenge" | "HasOnlineDifficultySelector" => Value::Bool(false),
+            "GetMapHelperInfoString" => Value::Text("#".into()),
+            // Challenge details: no challenge system yet (the challenge rows stay greyed).
+            "GetChallengeObjectiveTitle" => Value::Text("#OBJECTIVE NOT VALID!".into()),
+            "GetChallengeNumObjectives" | "GetChallengeComponentNumOptions" => Value::Number(0.0),
+            "GetChallengeComponentOption" | "GetCurrentOnlineDifficultyName" => Value::Text(String::new()),
+            // Xbox Live friends (online): empty.
+            "GetChallengeFriendsLeaderboardData" => Value::Object(vm.array(vec![
+                Value::Number(0.0),
+                Value::Bool(false),
+                Value::Number(-1.0),
+                Value::Bool(false),
+                Value::Bool(false),
+            ])?),
+            _ => return Ok(None),
+        }))
+    }
+}

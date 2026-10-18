@@ -21,6 +21,7 @@ pub mod fe_input;
 pub mod fe_popup;
 pub mod fe_stack;
 pub mod menus;
+pub mod challenge_map;
 pub mod physics;
 pub mod player;
 pub mod point_graph;
