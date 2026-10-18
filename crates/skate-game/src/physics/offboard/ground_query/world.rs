@@ -16,6 +16,8 @@ use skate_core::{
 /// The existing ground leaf still owns transforms, exact bounds gates and hits.
 pub struct WorldScene<'a> {
     world: &'a BoardWorld,
+    /// The prop world as pool bit 2 and the held prop's triangles (`offboard::BipedWorld`).
+    props: Option<(&'a BoardWorld, (usize, usize))>,
     edges: Scene<'a>,
 }
 impl GroundQueryScene for WorldScene<'_> {
@@ -65,6 +67,34 @@ impl GroundQueryScene for WorldScene<'_> {
                 surfaces: &metadata.packed_surfaces[source.triangle_range.clone()],
             });
         }
+        // Pool bit 2: the prop world's meshes, a chunk split around the held prop's triangles.
+        if let Some((props, (skip_start, skip_end))) = self.props {
+            let prop_metadata = props.query_metadata()?;
+            let prop_triangles = props.triangles();
+            let mut prop_candidates = Vec::new();
+            for line in &packet.lines {
+                prop_candidates.extend(props.candidate_mesh_indices(props.line_candidate_bounds(line.start, line.end, line.radius))?);
+            }
+            prop_candidates.sort_unstable();
+            prop_candidates.dedup();
+            for index in prop_candidates {
+                let source = &prop_metadata.meshes[index];
+                let r = source.triangle_range.clone();
+                for part in [r.start..r.end.min(skip_start).max(r.start), r.start.max(skip_end).min(r.end)..r.end] {
+                    if part.is_empty() {
+                        continue;
+                    }
+                    pools[1].push(Mesh {
+                        local_to_world: frame(source.local_to_world),
+                        world_to_local: frame(source.world_to_local),
+                        local_bounds: Bounds { min: source.local_bounds.min, max: source.local_bounds.max },
+                        matching_group: source.matching_group,
+                        triangles: &prop_triangles[part.clone()],
+                        surfaces: &prop_metadata.packed_surfaces[part],
+                    });
+                }
+            }
+        }
         super::lines::query_pools(
             [
                 &pools[0],
@@ -82,13 +112,14 @@ impl GroundQueryScene for WorldScene<'_> {
 
 /// Caller supplies actual dynamic-provider views from the same live scene owner.
 /// Empty providers mean the authored scene actually has none, never a failed lookup.
-pub fn with_world_scene<T>(
-    world: &BoardWorld,
+pub fn with_world_scene<'w, T>(
+    world: impl Into<crate::physics::offboard::BipedWorld<'w>>,
     primary_edges: PrimaryEdges<'_>,
     indexed_edges: &[IndexedEdgeBody<'_>],
     operation: impl FnOnce(&mut WorldScene<'_>) -> Result<T, &'static str>,
 ) -> Result<T, &'static str> {
-    let metadata = world.query_metadata()?;
+    let world = world.into();
+    let metadata = world.map.query_metadata()?;
     let edges: Vec<_> = metadata
         .static_edges
         .iter()
@@ -112,7 +143,7 @@ pub fn with_world_scene<T>(
         primary_edges,
         indexed_edges,
     };
-    let mut scene = WorldScene { world, edges };
+    let mut scene = WorldScene { world: world.map, props: world.props, edges };
     operation(&mut scene)
 }
 fn frame(f: RetailAffineTransform) -> Frame {

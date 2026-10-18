@@ -51,6 +51,11 @@ pub(crate) struct PedBodySettings {
     pub look_ahead: f32,
     /// Peds farther than this from every observer get no body (m; ours).
     pub range: f32,
+    /// The on-foot skater's mass against a part it walks into, kg: the part's speed after the hit is the closing
+    /// speed x walker / (walker + part), the speed the stumble / knock-down rules read (retail reads the part's
+    /// velocity after its solve). NOT RETAIL YET: retail's on-foot path into peds is not found (b217); 75 is our
+    /// skater push mass (prop_dynamics `skater_push_mass`).
+    pub walker_mass: f32,
 }
 
 impl Default for PedBodySettings {
@@ -72,6 +77,7 @@ impl Default for PedBodySettings {
             ],
             look_ahead: 1.0 / 60.0,
             range: 12.0,
+            walker_mass: 75.0,
         }
     }
 }

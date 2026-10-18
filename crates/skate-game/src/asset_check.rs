@@ -101,10 +101,23 @@ fn hud(assets: &Path) -> Vec<Finding> {
     out
 }
 
+/// Maps group: the ped hand props carry the grip points this build reads (`attach`, setup since b758f0cc). A file
+/// whose props have none was exported before them; a missing file is not this check's concern (no living world data).
+fn hand_props(assets: &Path) -> Vec<Finding> {
+    let Some(v) = std::fs::read(assets.join("private/living_world/hand_props.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else {
+        return Vec::new();
+    };
+    match v["props"].as_object() {
+        Some(props) if !props.is_empty() && props.values().all(|p| p.get("attach").is_none()) => vec![finding("maps", "hand props lack their grip points (attach)")],
+        _ => Vec::new(),
+    }
+}
+
 /// All checks for an asset root; one finding per group and reason.
 pub(crate) fn check(assets: &Path) -> Vec<Finding> {
     let mut out = installation(assets).map_or(Vec::new(), |(root, marker)| receipts(&root, &marker));
     out.extend(hud(assets));
+    out.extend(hand_props(assets));
     out.dedup();
     out
 }
@@ -176,6 +189,19 @@ mod tests {
         assert!(findings[0].reason.ends_with("(1 of 1: assets/private/c.bin (missing))"), "{}", findings[0].reason);
         assert!(findings[1].reason.ends_with("(1 of 1: assets/private/b.bin (2 bytes, recorded 3))"), "{}", findings[1].reason);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn hand_props_without_grip_points_are_stale() {
+        let dir = std::env::temp_dir().join(format!("skate-asset-check-hand-props-{}", std::process::id()));
+        let file = dir.join("private/living_world/hand_props.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        assert!(hand_props(&dir).is_empty(), "no file: nothing to check");
+        std::fs::write(&file, r#"{"props": {"orange": {"glb": "hand_props/orange.glb"}}}"#).unwrap();
+        assert_eq!(hand_props(&dir), vec![finding("maps", "hand props lack their grip points (attach)")]);
+        std::fs::write(&file, r#"{"props": {"orange": {"glb": "x", "attach": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}, "mod": {"glb": "y"}}}"#).unwrap();
+        assert!(hand_props(&dir).is_empty(), "current export (a prop without a template may lack it)");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

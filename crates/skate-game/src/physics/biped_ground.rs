@@ -343,7 +343,7 @@ pub(crate) fn update(
     }
     let previous_position=owner.controller.state.position_368;
     let mut result=owner.run(job.job);
-    super::solid_contacts::constrain_ground(owner,&mut result,previous_position,&physics.network_proxies.solids);
+    skater.walker_ped_hits = super::solid_contacts::constrain_ground(owner,&mut result,previous_position,&physics.network_proxies.solids);
     if result
         .physical_frame
         .iter()
@@ -455,7 +455,7 @@ pub(crate) fn submit_geometry(
         .result
         .ok_or("Ground geometry submission requires completed motion")?;
     owner.geometry.submit(
-        &physics.world,
+        physics.biped_world(),
         &physics.network_proxies.solids,
         owner.ground.frame_80,
         result.velocity,

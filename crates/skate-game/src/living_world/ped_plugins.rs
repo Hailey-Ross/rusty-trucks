@@ -274,7 +274,17 @@ mod tests {
         sit.transfer.as_ref().unwrap().names(&mut names);
         eprintln!("sit graph {} transfer {names:?}", sit.graph);
         assert!(names.contains(&"HasFirstWaypointAvailable".to_string()) && names.contains(&"IsChasing".to_string()));
-        assert_eq!(data.classes["waypoint_conversation"].descriptor.as_ref().map(|d| d.max_participants), Some(3));
+        let conv = &data.classes["waypoint_conversation"];
+        assert_eq!(conv.descriptor.as_ref().map(|d| d.max_participants), Some(3));
+        // b212: offer radius 20 m; transfer ConversationIsGatheringMembers and EntityAllowedToJoinConversation and not IsChasing.
+        assert_eq!(conv.numbers.get("Hash_E2101F2B17A0E6B5").copied(), Some(20.0));
+        let mut names = Vec::new();
+        conv.descriptor.as_ref().unwrap().transfer.as_ref().expect("conversation transfer").names(&mut names);
+        eprintln!("conversation transfer {names:?}");
+        for n in ["ConversationIsGatheringMembers", "EntityAllowedToJoinConversation", "IsChasing"] {
+            assert!(names.iter().any(|x| x == n), "{n}");
+        }
+        assert!(data.odds["adult_female01"].iter().any(|(c, _)| c == "waypoint_conversation"), "plugin_odds key");
         // Hand props per class: a list (vending machine) and a bare one-entry record (newspaper box).
         assert_eq!(data.classes["waypoint_vendingmachine"].hand_props, vec![("pop".to_string(), 0.5), ("waterbottle".to_string(), 0.5)]);
         assert_eq!(data.classes["waypoint_newspaperbox"].hand_props, vec![("newspaper".to_string(), 1.0)]);

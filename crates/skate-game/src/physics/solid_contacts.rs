@@ -67,8 +67,10 @@ pub(crate) fn append(
 /// Last-mile constraint for animation-driven walking. Native walking may write
 /// its root without integrating a Rapier body; a full-height capsule sweep keeps
 /// that displacement from bypassing the same solid obstacle used by BoardStep.
-/// Only mod solids participate. Stock floor and movement algorithms are intact.
-fn constrained_position(solids:&[(usize,SolidBody)],start:Vec3,target:Vec3) -> Vec3 {
+/// The solids are the network proxies: mod solids and the ped bodies (group 11). Stock floor and movement
+/// algorithms are intact. `blocked` gets each solid that pushed the capsule out or stopped the sweep, with the
+/// contact normal (toward the walker).
+fn constrained_position(solids:&[(usize,SolidBody)],start:Vec3,target:Vec3,blocked:&mut Vec<(u64,Vec3)>) -> Vec3 {
     use skate_dynamics::rapier3d::parry::query::{self,ShapeCastOptions};
     if solids.is_empty() || !start.is_finite() || !target.is_finite() { return target; }
     const SKIN:f32=0.015;
@@ -79,24 +81,25 @@ fn constrained_position(solids:&[(usize,SolidBody)],start:Vec3,target:Vec3) -> V
     // It uses the closed convex volume, not triangle front faces.
     for _ in 0..8 {
         let pose=Pose::from_translation(position);
-        let mut deepest:Option<(f32,Vector)>=None;
+        let mut deepest:Option<(f32,Vector,u64)>=None;
         for (_,body) in solids {
             for collider in &body.colliders {
                 if let Ok(Some(c))=query::contact(&pose,&*capsule,&collider.pose,&*collider.shape,SKIN) {
-                    if c.dist<0. && deepest.as_ref().is_none_or(|(d,_)|c.dist<*d) {
-                        deepest=Some((c.dist,c.normal2));
+                    if c.dist<0. && deepest.as_ref().is_none_or(|(d,..)|c.dist<*d) {
+                        deepest=Some((c.dist,c.normal2,body.id));
                     }
                 }
             }
         }
-        let Some((distance,normal))=deepest else { break };
+        let Some((distance,normal,id))=deepest else { break };
         if !normal.is_finite() || !distance.is_finite() { break; }
         position+=normal*(-distance+SKIN);
+        blocked.push((id,Vec3::from_array(normal.to_array())));
     }
     for _ in 0..5 {
         if remaining.length_squared()<1e-10 { break; }
         let pose=Pose::from_translation(position);
-        let mut nearest:Option<(f32,Vector)>=None;
+        let mut nearest:Option<(f32,Vector,u64)>=None;
         for (_,body) in solids {
             for collider in &body.colliders {
                 let options=ShapeCastOptions { max_time_of_impact:1.,target_distance:SKIN,
@@ -105,13 +108,14 @@ fn constrained_position(solids:&[(usize,SolidBody)],start:Vec3,target:Vec3) -> V
                     let normal=collider.pose.rotation*hit.normal2;
                     // Contacts behind us cannot block movement away/tangential.
                     if normal.dot(remaining) >= -1e-7 { continue; }
-                    if nearest.as_ref().is_none_or(|(t,_)|hit.time_of_impact<*t) {
-                        nearest=Some((hit.time_of_impact,normal));
+                    if nearest.as_ref().is_none_or(|(t,..)|hit.time_of_impact<*t) {
+                        nearest=Some((hit.time_of_impact,normal,body.id));
                     }
                 }
             }
         }
-        let Some((time,normal))=nearest else { position+=remaining; break };
+        let Some((time,normal,id))=nearest else { position+=remaining; break };
+        blocked.push((id,Vec3::from_array(normal.to_array())));
         position+=remaining*time.clamp(0.,1.)+normal*0.001;
         remaining*=1.-time.clamp(0.,1.);
         remaining-=normal*remaining.dot(normal).min(0.);
@@ -119,15 +123,38 @@ fn constrained_position(solids:&[(usize,SolidBody)],start:Vec3,target:Vec3) -> V
     Vec3::from_array(position.to_array())
 }
 
+/// The ped body parts among `blocked`, each once with its largest closing speed (walker velocity against the part's
+/// along the contact normal).
+fn ped_hits(solids:&[(usize,SolidBody)],blocked:&[(u64,Vec3)],walker:Vec3) -> Vec<(u64,[f32;3],f32)> {
+    let mut out:Vec<(u64,[f32;3],f32)>=Vec::new();
+    for &(id,normal) in blocked {
+        if id & 0xFFFF_0000_0000_0000 != crate::living_world::ped_body::PED_PROXY_TAG { continue; }
+        let Some((_,body))=solids.iter().find(|(_,b)|b.id==id) else { continue };
+        let closing=(walker-Vec3::from_array(body.linvel.to_array())).dot(-normal);
+        if !(closing>0.) { continue; }
+        match out.iter_mut().find(|h|h.0==id) {
+            Some(h) => h.2=h.2.max(closing),
+            None => out.push((id,body.pose.translation.to_array(),closing)),
+        }
+    }
+    out
+}
+
+/// Returns the ped body parts (group 11 proxy ids) that stopped the walker this step, each once: (id, part centre,
+/// closing speed of the walker's velocity against the part's along the contact normal, m/s). The ped side turns them
+/// into a reaction (`living_world::peds`, research b217: the walker otherwise never reaches a ped's body, so a ped
+/// run into on foot never stumbled).
 pub(super) fn constrain_ground(
     owner:&mut super::biped_ground::Owner,
     result:&mut skate_core::player::offboard::controller::GroundResult,
     previous:[f32;4],solids:&[(usize,SolidBody)],
-) {
+) -> Vec<(u64,[f32;3],f32)> {
     let start=Vec3::new(previous[0],previous[1],previous[2]);
     let requested=Vec3::new(result.position[0],result.position[1],result.position[2]);
-    let delta=constrained_position(solids,start,requested)-requested;
-    if delta.length_squared()<1e-12 || !delta.is_finite() { return; }
+    let mut blocked=Vec::new();
+    let delta=constrained_position(solids,start,requested,&mut blocked)-requested;
+    let ped_hits=ped_hits(solids,&blocked,Vec3::new(result.velocity[0],result.velocity[1],result.velocity[2]));
+    if delta.length_squared()<1e-12 || !delta.is_finite() { return ped_hits; }
     let shift=|v:&mut [f32;4]| { v[0]+=delta.x;v[1]+=delta.y;v[2]+=delta.z; };
     shift(&mut result.position);
     shift(&mut result.physical_frame[3]);
@@ -141,6 +168,7 @@ pub(super) fn constrain_ground(
     owner.result=Some(*result);
     // Do not replace the actor's velocity with obstacle velocity here: native
     // contact reports must see the real relative impact speed for wipeout.
+    ped_hits
 }
 
 #[cfg(test)]
@@ -152,15 +180,33 @@ mod tests {
         world.solid_bodies().into_iter().enumerate().collect()
     }
     #[test] fn a_walk_step_cannot_cross_the_whole_object() {
-        let end=constrained_position(&obstacle(),Vec3::new(-3.,0.,0.),Vec3::new(3.,0.,0.));
+        let end=constrained_position(&obstacle(),Vec3::new(-3.,0.,0.),Vec3::new(3.,0.,0.),&mut Vec::new());
         assert!(end.x < -0.77);
     }
     #[test] fn walking_away_is_not_blocked() {
-        let end=constrained_position(&obstacle(),Vec3::new(-0.80,0.,0.),Vec3::new(-2.,0.,0.));
+        let end=constrained_position(&obstacle(),Vec3::new(-0.80,0.,0.),Vec3::new(-2.,0.,0.),&mut Vec::new());
         assert!((end.x+2.).abs()<1e-4);
     }
     #[test] fn deep_inside_start_is_recovered() {
-        let end=constrained_position(&obstacle(),Vec3::ZERO,Vec3::ZERO);
+        let end=constrained_position(&obstacle(),Vec3::ZERO,Vec3::ZERO,&mut Vec::new());
         assert!(end.x.abs() > 0.77);
+    }
+
+    #[test]
+    fn a_walker_stopped_by_a_ped_reports_the_part() {
+        // b217: the walker's capsule stops at a ped's torso part; the part comes back with the closing speed, so the
+        // ped side can make it stumble (before, nothing reached the ped on foot).
+        let part=&crate::living_world::ped_body::PedBodySettings::default().parts[0];
+        let ped=crate::living_world::ped_body::part_proxy(7,0,Vec3::new(1.,-0.5,0.),Vec3::new(1.,1.2,0.),Vec3::ZERO,part,0.);
+        let id=ped.id;
+        let solids=vec![(0,ped)];
+        let mut blocked=Vec::new();
+        let end=constrained_position(&solids,Vec3::ZERO,Vec3::new(1.,0.,0.),&mut blocked);
+        assert!(end.x<0.55,"stopped at the part (surface x 0.8, walker radius 0.28): {end}");
+        let hits=ped_hits(&solids,&blocked,Vec3::new(4.,0.,0.));
+        assert_eq!(hits.len(),1);
+        assert_eq!(hits[0].0,id);
+        assert!((hits[0].2-4.).abs()<0.2,"head-on: the full walker speed, {}",hits[0].2);
+        assert!(ped_hits(&solids,&blocked,Vec3::new(-4.,0.,0.)).is_empty(),"walking away closes nothing");
     }
 }

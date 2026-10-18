@@ -512,8 +512,13 @@ pub(crate) enum PedEvent {
 /// vertical cylinder at the observer (the board) of this radius and 2 m tall, and the ped body's
 /// speed after the contact (retail: the Havok solve) is the skater's speed into the ped.
 pub(crate) const SKATER_CONTACT_RADIUS: f32 = 0.35;
-/// `82E3DBE0`'s gate on the owned object's vector, |v|^2 > 2.5e-5 (`0x822F8BE0`) [code].
-pub(crate) const SEAT_PUSH_SPEED_SQ: f32 = 2.5e-5;
+/// `82E3DBE0`'s gate on the owned object's step vector, |d|^2 > 2.5e-5 m^2 (`0x822F8BE0`) [code, b219: a step, not a
+/// speed; smaller steps carry the ped].
+pub(crate) const SEAT_PUSH_STEP_SQ: f32 = 2.5e-5;
+/// The period that step is taken over, s: the DMO post-update `82C562D0` sends its pose change since the last
+/// committed pose to its listeners once per 1/60 s sim tick (b220 [code]; main re-read the pose difference and the
+/// slot 0x68 call), so the gate is 0.3 m/s (the speed-squared reading before 2026-10-17 fired at 5 mm/s).
+pub(crate) const SEAT_PUSH_STEP_SECONDS: f32 = 1.0 / 60.0;
 /// `82C539A8`'s seat probe tolerance, m (the navmesh point within this of the seat in x and z).
 pub(crate) const SEAT_PROBE_TOLERANCE: f32 = 0.1;
 /// The sit plugin's held cycle (`plugin_motion` Sit) and the Avoid graph's forward jump off a seat
@@ -1005,9 +1010,19 @@ pub(crate) fn advance_peds(
                     }
                     // NOT RETAIL YET: the closing speed is the relative speed at the contact; retail reads the ped
                     // part's velocity after the solve (|v| / |w| > 3.0).
-                    let closing = skater_runtime.as_ref()?.ped_hits.iter()
-                        .filter(|h| (h.0 & !super::ped_body::PED_PROXY_TAG) >> 2 == ped.id.to_u64())
-                        .map(|h| h.2)
+                    let runtime = skater_runtime.as_ref()?;
+                    let mine = |h: &&(u64, [f32; 3], f32)| (h.0 & !super::ped_body::PED_PROXY_TAG) >> 2 == ped.id.to_u64();
+                    // On foot the walker's capsule stops at the part (`solid_contacts::constrain_ground`), so it reports
+                    // the part instead of the skeleton: the part's speed after the hit by momentum (`ped_body.walker_mass`,
+                    // NOT RETAIL YET, b217). Retail gives a little through the stumble clip's root motion.
+                    let walker = runtime.walker_ped_hits.iter().filter(mine).map(|h| {
+                        let part = settings.ped_body.parts.get((h.0 & 3) as usize).map_or(0.0, |p| p.mass);
+                        let w = settings.ped_body.walker_mass;
+                        let speed = if part > 0.0 { h.2 * w / (w + part) } else { 0.0 };
+                        info!("PED_BODY_CONTACT ped=#{} part={} by=walker closing={:.2} part_speed={speed:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2);
+                        speed
+                    });
+                    let closing = runtime.ped_hits.iter().filter(mine).map(|h| h.2).chain(walker)
                         .fold(None, |m: Option<f32>, s| Some(m.map_or(s, |m| m.max(s))))?;
                     let d = [body.position.x - observer.position[0], body.position.z - observer.position[2]];
                     let len = d[0].hypot(d[1]).max(1e-4);
@@ -1704,8 +1719,11 @@ pub(crate) struct PedMind {
     plugin_state: Option<usize>,
     /// Which plugin graph `plugin_controller` was made for (the prop class, or the conversation graph).
     plugin_graph: Option<String>,
-    /// The seat's prop is moving under the seated owner this tick: the body jumps off forward (`82E3DBE0`).
+    /// The seat's prop moved under the seated owner: the body jumps off forward (`82E3DBE0`). Held until the jump
+    /// clip starts or the ped is no longer sitting (a one-tick pulse lost the race against the plugin's stand-up).
     sit_avoid: bool,
+    /// Where the jump off started (`PED_SIT_AVOID_DONE` reports how far the ped got).
+    sit_avoid_from: Option<[f32; 3]>,
     /// The speech value last sent to the audio side (`PedestrianSpeech` requests a line only when
     /// the value changes; a fresh ped holds the constructor's 68).
     spoken: Option<i32>,
@@ -1779,6 +1797,8 @@ pub(crate) struct PedConversations {
     pub map: BTreeMap<u64, skate_core::living_world::peds::conversation::Conversation>,
     pub next_id: u64,
     rng: Option<skate_core::living_world::Rng>,
+    /// Refusals a founder's offer test stored on the partner (ped, area key), stored by that ped's next think.
+    pending_refusals: Vec<(u64, u64)>,
 }
 
 /// The chase groups by chasee id (host-owned; retail keeps one on every chasee: the player's
@@ -1923,10 +1943,11 @@ pub(crate) fn think_peds(
                     // (research b102). The owned object reporting a move to its seated ped (`82E3DBE0`: |v|^2 > 2.5e-5,
                     // `0x822F8BE0`) makes it jump off forward; the graph then walks it to the seat's new place and sits
                     // it again (the locked waypoint is re-read every evaluation, `826AB9C0`). The seat's own speed stands
-                    // in for the object's vector (open: velocity or step).
+                    // in for the object's vector: its move over one step of `SEAT_PUSH_STEP_SECONDS`.
                     let step = (0..3).map(|k| (position[k] - w.position[k]).powi(2)).sum::<f32>().sqrt();
                     let speed = step / dt.max(1e-4);
-                    if let Some(occupant) = w.occupant.filter(|_| speed * speed > SEAT_PUSH_SPEED_SQ) {
+                    let per_step = speed * SEAT_PUSH_STEP_SECONDS;
+                    if let Some(occupant) = w.occupant.filter(|_| per_step * per_step > SEAT_PUSH_STEP_SQ) {
                         info!("PED_PLUGIN_SEAT_MOVED prop={:016X} {} occupant={occupant} speed={speed:.2} from=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] tick={tick}", prop.id, prop.class, w.position[0], w.position[1], w.position[2], position[0], position[1], position[2]);
                         seat_pushed.push(occupant);
                     }
@@ -1985,6 +2006,7 @@ pub(crate) fn think_peds(
                         let m = &mut **m;
                         skate_core::living_world::peds::plugins::OfferPed {
                             id: p.id.to_u64(),
+                            entity: &p.entity,
                             position: b.position.to_array(),
                             has_plugin: m.brain.has_plugin || m.prop.is_some(),
                             odds: data.plugins.odds.get(&p.entity).map(Vec::as_slice).unwrap_or(&[]),
@@ -2004,6 +2026,23 @@ pub(crate) fn think_peds(
                         attaches.push((index, a));
                     }
                 }
+                // Spawned conversation areas are offers too (b212; after the placed props [inference]): passers-by join
+                // while they gather, through the descriptor's transfer expression.
+                use skate_core::living_world::peds::plugins::{conversation_qualifies, offer_conversation, CONVERSATION_CLASS};
+                let class = data.plugins.classes.get(CONVERSATION_CLASS);
+                let radius = class.and_then(|c| c.numbers.get("Hash_E2101F2B17A0E6B5").copied()).unwrap_or(20.0);
+                let transfer = class.and_then(|c| c.descriptor.as_ref()).and_then(|d| d.transfer.as_ref());
+                let rows = &data.conversations.rows;
+                let mut qualifies = |c: &skate_core::living_world::peds::conversation::Conversation, ped: &skate_core::living_world::peds::plugins::OfferPed| {
+                    conversation_qualifies(transfer, c, ped.entity, views.get(&ped.id).copied().unwrap_or_default(), rows)
+                };
+                for c in conversations.map.values_mut() {
+                    for ped in offer_peds.iter_mut() {
+                        if offer_conversation(c, radius, ped, &mut qualifies, rows, &offer_settings, rng) {
+                            info!("PED_CONVERSATION id={} join ped={} members={} state={} tick={tick}", c.id, ped.id, c.members.len(), c.state);
+                        }
+                    }
+                }
             }
             for (index, a) in attaches {
                 if let Some((_, p, _, m)) = list.iter_mut().find(|(_, p, ..)| p.id.to_u64() == a.ped) {
@@ -2020,9 +2059,13 @@ pub(crate) fn think_peds(
     // Live peds for the presence scan (`sub_82E3CA20`: every spawned, not torn-down ped counts).
     let ped_list: Vec<(u64, [f32; 3])> = list.iter().map(|(_, p, b, _)| (p.id.to_u64(), b.position.to_array())).collect();
     let greeted_now = std::mem::take(&mut *greeted);
-    // Who is busy this tick (check 8 of the mood results; players: not busy, unverified).
-    let busy_now: BTreeMap<u64, bool> = list.iter().map(|(_, p, _, m)| (p.id.to_u64(), m.brain.busy())).collect();
-    let busy = |id: u64| busy_now.get(&id).copied().unwrap_or(false);
+    // Who is busy this tick (check 8 of the mood results; players: not busy, unverified), and what a conversation
+    // founder's offer test reads of the partner (in a plugin, its transfer view).
+    let busy_now: BTreeMap<u64, (bool, bool, skate_core::living_world::peds::plugins::TransferView)> = list
+        .iter()
+        .map(|(_, p, _, m)| (p.id.to_u64(), (m.brain.busy(), m.brain.has_plugin || m.prop.is_some(), skate_core::living_world::peds::plugins::TransferView::of(&m.brain))))
+        .collect();
+    let busy = |id: u64| busy_now.get(&id).is_some_and(|b| b.0);
     // Chasers that left the world leave their groups (the ped's destruction; retail removes it
     // with the chaser component).
     for g in chase_groups.0.values_mut() {
@@ -2047,6 +2090,13 @@ pub(crate) fn think_peds(
     let conv_params = skate_core::living_world::peds::conversation::ConversationParams {
         turn_seconds: settings.ped_brain.values.conversation_turn_seconds,
         gather_seconds: settings.ped_brain.values.conversation_gather_seconds,
+        // The descriptor's maxNumberOfParticipants (3).
+        max_members: data
+            .plugins
+            .classes
+            .get(skate_core::living_world::peds::plugins::CONVERSATION_CLASS)
+            .and_then(|c| c.descriptor.as_ref())
+            .map_or(skate_core::living_world::peds::conversation::MAX_MEMBERS, |d| d.max_participants as usize),
         ..Default::default()
     };
     // The gather timer (`82E1EB10`): a conversation starts with whoever is there when it runs out.
@@ -2320,24 +2370,43 @@ pub(crate) fn think_peds(
             if mind.brain.plugin.is_none_or(|id| !conversations.map.get(&id).is_some_and(|c| c.members.iter().any(|m| m.ped == me))) {
                 mind.brain.plugin = conversations.map.values().find(|c| c.members.iter().any(|m| m.ped == me)).map(|c| c.id);
             }
+            conversations.pending_refusals.retain(|&(p, key)| {
+                if p == me {
+                    mind.refusals.remember(key, &plugin_props.settings);
+                }
+                p != me
+            });
             mind.refusals.tick(dt, &plugin_props.settings);
-            // The Plugin behaviour's Update (`8269F248` -> `82E40BD0`, b104) re-stores the 30 s refusal for its prop every
-            // tick it runs, so a ped that leaves a prop is not offered it again for 30 s.
+            // The Plugin behaviour's Update (`8269F248` -> `82E40BD0`, b104) re-stores the 30 s refusal for its prop (or
+            // conversation area) every tick it runs, so a ped that leaves it is not offered it again for 30 s.
             if mind.brain.in_plugin {
                 if let Some(prop) = mind.prop.and_then(|(i, ..)| plugin_props.props.get(i)) {
                     mind.refusals.remember(prop.id, &plugin_props.settings);
+                } else if let Some(id) = mind.brain.plugin {
+                    mind.refusals.remember(skate_core::living_world::peds::plugins::conversation_key(id), &plugin_props.settings);
                 }
             }
             // `82E3DBE0`: the seated owner (OwnPluginObject, `brain+3277` bit 0x01) of a moving object jumps off forward:
             // intent Avoid / Jump / Forward -> motiongraph_avoid SitJump -> JumpForward `SitAvoidFwd` (blend 0.1), speech
             // PedestrianAvoidJump (4). The gate `[ped+5712]+1416 == 0` is not decoded (taken as open).
             // The body plays it (`advance_peds`) while the flag is up.
-            let avoid = seat_pushed.contains(&me) && mind.brain.own_plugin_object && body.player.reaction_anim() == Some(SIT_CYCLE);
-            if avoid && !mind.sit_avoid {
+            let anim = body.player.reaction_anim();
+            let seated = mind.brain.own_plugin_object && anim == Some(SIT_CYCLE);
+            if seat_pushed.contains(&me) && seated && !mind.sit_avoid {
                 mind.brain.speech = Some(SIT_AVOID_SPEECH);
-                info!("PED_SIT_AVOID ped=#{} jumps off forward (its seat moved) tick={tick}", ped.id.serial);
+                mind.sit_avoid = true;
+                mind.sit_avoid_from = Some(at);
+                info!("PED_SIT_AVOID ped=#{} jumps off forward (its seat moved) locked={} tick={tick}", ped.id.serial, mind.brain.locked_at.is_some());
+            } else if mind.sit_avoid && !seated {
+                // `advance_peds` started the jump (or the ped left the seat another way first).
+                mind.sit_avoid = false;
+                info!("PED_SIT_AVOID ped=#{} played={} anim={anim:?} locked={} tick={tick}", ped.id.serial, anim == Some(SIT_AVOID_CLIP), mind.brain.locked_at.is_some());
+            } else if !mind.sit_avoid && anim != Some(SIT_AVOID_CLIP) {
+                if let Some(from) = mind.sit_avoid_from.take() {
+                    let moved = ((at[0] - from[0]).powi(2) + (at[2] - from[2]).powi(2)).sqrt();
+                    info!("PED_SIT_AVOID_DONE ped=#{} moved={moved:.2} anim={anim:?} tick={tick}", ped.id.serial);
+                }
             }
-            mind.sit_avoid = avoid;
             // HasPlugin: a conversation member, or a ped that took a world prop.
             let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id && !streamed_out(id) && !p.disabled).and_then(|p| p.waypoints.get(w)).copied());
             // A prop lost without ExitPlugin (streamed out, disabled, moved away) releases its waypoint like ExitPlugin
@@ -2603,11 +2672,38 @@ pub(crate) fn think_peds(
                             conversations.next_id += 1;
                             let id = conversations.next_id;
                             let mut c = skate_core::living_world::peds::conversation::Conversation::new(id, center, candidates, &conv_params, data.nav.is_some().then_some(&probe as skate_core::living_world::peds::conversation::Probe), &mut conv_rand);
-                            c.join(me);
-                            c.join(partner);
-                            info!("PED_CONVERSATION id={id} start ped=#{} with={partner} center=[{:.1}, {:.1}, {:.1}] dropped={} waypoints={} tick={tick}", ped.id.serial, c.center[0], c.center[1], c.center[2], center.is_some(), c.waypoints.len());
+                            // The founders go through the area's offer test (`826A6CD8` -> manager slot 13 `826BFE18`, its
+                            // result ignored): the starter, then the target (a ped only; a player has no participant).
+                            use skate_core::living_world::peds::plugins::{conversation_qualifies, offer_conversation, OfferPed, RefusalMemory, TransferView, CONVERSATION_CLASS};
+                            let rows = &data.conversations.rows;
+                            let class = data.plugins.classes.get(CONVERSATION_CLASS);
+                            let radius = class.and_then(|c| c.numbers.get("Hash_E2101F2B17A0E6B5").copied()).unwrap_or(20.0);
+                            let transfer = class.and_then(|c| c.descriptor.as_ref()).and_then(|d| d.transfer.as_ref());
+                            let odds = |e: &str| data.plugins.odds.get(e).map(Vec::as_slice).unwrap_or(&[]);
+                            let pp = &mut *plugin_props;
+                            let offer_rng = pp.rng.get_or_insert_with(|| skate_core::living_world::Rng::new(skate_core::living_world::rng::derive(world_seed, &[0x504c_5547])));
+                            let my_view = TransferView::of(&mind.brain);
+                            let mut starter = OfferPed { id: me, entity: &ped.entity, position: at, has_plugin: mind.brain.has_plugin || mind.prop.is_some(), odds: odds(&ped.entity), memory: &mut mind.refusals };
+                            let mut q = |c: &skate_core::living_world::peds::conversation::Conversation, p: &OfferPed| conversation_qualifies(transfer, c, p.entity, my_view, rows);
+                            let starter_joined = offer_conversation(&mut c, radius, &mut starter, &mut q, rows, &pp.settings, offer_rng);
+                            let mut partner_joined = false;
+                            if let (Some((kind, pos)), Some(&(_, in_plugin, view))) = (entities.get(&partner), busy_now.get(&partner)) {
+                                // The partner's refusal memory is stored by its own think (`pending_refusals`); a new area is in
+                                // nobody's memory yet.
+                                let mut memory = RefusalMemory::default();
+                                let mut other = OfferPed { id: partner, entity: kind, position: *pos, has_plugin: in_plugin, odds: odds(kind), memory: &mut memory };
+                                let mut q = |c: &skate_core::living_world::peds::conversation::Conversation, p: &OfferPed| conversation_qualifies(transfer, c, p.entity, view, rows);
+                                partner_joined = offer_conversation(&mut c, radius, &mut other, &mut q, rows, &pp.settings, offer_rng);
+                                conversations.pending_refusals.extend(memory.entries.iter().map(|e| (partner, e.0)));
+                            }
+                            info!(
+                                "PED_CONVERSATION id={id} start ped=#{} with={partner} joined={starter_joined}/{partner_joined} center=[{:.1}, {:.1}, {:.1}] dropped={} waypoints={} tick={tick}",
+                                ped.id.serial, c.center[0], c.center[1], c.center[2], center.is_some(), c.waypoints.len()
+                            );
                             conversations.map.insert(id, c);
-                            mind.brain.plugin = Some(id);
+                            if starter_joined {
+                                mind.brain.plugin = Some(id);
+                            }
                         }
                         continue;
                     }
