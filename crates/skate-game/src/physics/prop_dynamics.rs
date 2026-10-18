@@ -271,6 +271,10 @@ pub(crate) struct PropSolverSettings {
     pub bail_heavy_mass: f32,
     /// Ball radius blend: radius = blend x (max(cap, |d|) + cap) (retail 0.5).
     pub bail_blend: f32,
+    /// A prop type of at least this mass (kg) is collision type 12, lighter ones 14 (retail 5.5, `0x822F8C68`, slot 33
+    /// `82C56BA0`; spawns `82C4E940` -> `82E0E338` give the same pair, trace .local/research/prop-types). The on-foot
+    /// walker's queries reject types 13 and 14, so only the heavier props are ground for it.
+    pub walkable_mass: f32,
 }
 
 impl Default for PropSolverSettings {
@@ -287,6 +291,7 @@ impl Default for PropSolverSettings {
             bail_angular_factor: 15.0,
             bail_heavy_mass: 200.0,
             bail_blend: 0.5,
+            walkable_mass: 5.5,
         }
     }
 }
@@ -5238,5 +5243,56 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "props sank: {failures:?}");
+    }
+}
+
+/// Retail collision types of DMO query meshes (the query mesh's rejection flag is `1 << type`; b221-b223 and the trace
+/// in .local/research/prop-types): a held prop (a ped's hand prop switches on pickup, slot 32 `82C56B00`).
+pub(crate) const HELD_COLLISION_TYPE: u32 = 13;
+/// A prop at least `walkable_mass` heavy.
+pub(crate) const HEAVY_COLLISION_TYPE: u32 = 12;
+/// A lighter prop.
+pub(crate) const LIGHT_COLLISION_TYPE: u32 = 14;
+
+/// The collision type of a prop of `mass` kg (13 while held). NOT RETAIL YET for the player's own grab: the ped's
+/// pickup switches to 13 in the trace; that the player's grab does too is not traced.
+pub(crate) fn collision_type(mass: f32, held: bool, walkable_mass: f32) -> u32 {
+    if held {
+        HELD_COLLISION_TYPE
+    } else if mass >= walkable_mass {
+        HEAVY_COLLISION_TYPE
+    } else {
+        LIGHT_COLLISION_TYPE
+    }
+}
+
+impl PropDynamics {
+    /// Each body's collision instance and retail collision type (template mass, not a carry's effective mass).
+    pub(crate) fn for_each_collision_type(&self, held: Option<u32>, mut f: impl FnMut(usize, u32)) {
+        let walkable = self.tuning.solver.walkable_mass;
+        for body in &self.bodies {
+            let w = body.authored_inertia.inverse_mass;
+            let mass = if w > 0.0 { 1.0 / w } else { f32::INFINITY };
+            f(body.instance, collision_type(mass, held == Some(body.id), walkable));
+        }
+    }
+}
+
+#[cfg(test)]
+mod collision_type_tests {
+    use super::*;
+
+    #[test]
+    fn props_get_retails_collision_types_by_mass() {
+        // b223: the flat bench is 50 kg, the cone 1.75 kg; 5.5 kg itself is heavy (`>=`).
+        assert_eq!(collision_type(50.0, false, 5.5), HEAVY_COLLISION_TYPE);
+        assert_eq!(collision_type(1.75, false, 5.5), LIGHT_COLLISION_TYPE);
+        assert_eq!(collision_type(5.5, false, 5.5), HEAVY_COLLISION_TYPE);
+        assert_eq!(collision_type(50.0, true, 5.5), HELD_COLLISION_TYPE);
+        // The walker's mask (0x6000) skips 13 and 14, so only the heavy type is ground for it.
+        let mask = skate_core::player::offboard::air_selector::MESH_REJECT_MASK;
+        assert_eq!(mask & (1 << HEAVY_COLLISION_TYPE), 0);
+        assert_ne!(mask & (1 << LIGHT_COLLISION_TYPE), 0);
+        assert_ne!(mask & (1 << HELD_COLLISION_TYPE), 0);
     }
 }

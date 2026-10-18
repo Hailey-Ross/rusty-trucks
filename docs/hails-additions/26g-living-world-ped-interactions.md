@@ -1904,6 +1904,21 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   seat's move over one step of `SEAT_PUSH_STEP_SECONDS` is compared (1/60 s: the DMO post-update `82C562D0` sends
   its pose change once per sim tick, research b220, so the gate is 0.3 m/s); the jump is held until its clip starts. Logs `PED_SIT_AVOID ... locked=`, `played=`,
   `PED_SIT_AVOID_DONE moved=`.
+- **Which props the walker steps on (research b221-b223, recomp trace, main re-read the type setters):** retail's DMO
+  pool rebuilds its query meshes every frame with rejection flags `1 << type` (`827778C0`); the walker's contact
+  probes ask with mask 0x6000, so types 13 and 14 are never its ground. [trace, `.local/research/prop-types/run1`,
+  hooks PROPTYPE / PROPSETTYPE on the recomp fork] every DMO spawn (`82C4E940` -> `82E0E338`) gets type 12 or 14; a
+  ped's hand prop is made type 14 and switches to 13 the moment the ped takes it (slot 32 `82C56B00`), back to 14 on
+  release (slot 33 `82C56BA0`: 12 when the type's mass is at least 5.5 kg, `0x822F8C68`, else 14, plus a 30 s timer).
+  [code b223] the compared value is the type's mass (`Hash_E5778CDD4576D890`, record +304). So the 50 kg flat bench is
+  ground for the walker, the 1.75 kg cone, cardboard box, trash lid and garbage bag are not. **Change:** the prop layer
+  keeps one set of query meshes per prop; each step gives them the type flag from the template mass (mod-facing
+  `props.solver.walkable_mass`, 5.5 kg) or 13 while the player holds the prop (NOT RETAIL YET: the player's grab
+  switching to 13 is not traced; the ped's pickup is); this replaces the earlier skip of the held prop's triangles.
+  The ground geometry query skips walker types on prop meshes too (NOT RETAIL YET: that query's own mask is not read).
+  Test `props_get_retails_collision_types_by_mass`.
+- **The jump's gate byte (research b220):** `[ped+5888]+1416` is the ped's intent slot #3 "queued" flag (set on
+  enqueue `82E29760`, cleared when the intent ends `82E29B30`): 0 for a seated ped, 1 while the jump plays, so more
+  seat steps queue no second jump, the same outcome as holding the jump until its clip starts.
 - **Open:** whether the jump clip's root motion takes the ped off the seat (the next session's `PED_SIT_AVOID_DONE
-  moved=` shows it); the small-step carry is not ported (the moved seat already re-places its ped); the `+1416` gate;
-  the walker mass; per-template opt-out of props as biped ground.
+  moved=` shows it); the small-step carry is not ported (the moved seat already re-places its ped); the walker mass; per-template opt-out of props as biped ground.

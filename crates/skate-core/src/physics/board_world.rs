@@ -257,6 +257,22 @@ impl BoardWorld {
             .ok_or("Canonical world has no authored query metadata")
     }
 
+    /// Sets the rejection flags of every query mesh that lies inside `range` (one prop instance's own meshes; a
+    /// mesh reaching outside it is left alone). Returns whether any mesh changed. Flags only filter queries, so the
+    /// query index stays as it is.
+    pub fn set_rejection_flags(&mut self, range: std::ops::Range<usize>, flags: u32) -> bool {
+        let Some(metadata) = &mut self.query_metadata else { return false };
+        let mut changed = false;
+        for mesh in &mut metadata.meshes {
+            let r = &mesh.triangle_range;
+            if range.start <= r.start && r.end <= range.end && !r.is_empty() && mesh.rejection_flags != flags {
+                mesh.rejection_flags = flags;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn set_external_queries(&mut self, queries: Option<std::sync::Arc<dyn ExternalQueries>>) {
         self.external = queries;
     }

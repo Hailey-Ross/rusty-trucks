@@ -592,7 +592,8 @@ pub struct PropUprightPatch {
 /// `rest_snap` (engine snap, not retail, default false). The bail clamp (retail 82C530F0: a bailing actor's contact
 /// caps the prop's velocity): `bail_clamp` (on), `bail_linear_factor` (retail 5.0, cap = factor / mass m/s),
 /// `bail_angular_factor` (retail 15.0), `bail_heavy_mass` (retail 200 kg: from this mass on the prop is stopped),
-/// `bail_blend` (retail 0.5).
+/// `bail_blend` (retail 0.5). `walkable_mass` (retail 5.5 kg): lighter props are collision type 14, which the on-foot
+/// walker does not step on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PropSolverPatch {
@@ -607,6 +608,7 @@ pub struct PropSolverPatch {
     pub bail_angular_factor: Option<f32>,
     pub bail_heavy_mass: Option<f32>,
     pub bail_blend: Option<f32>,
+    pub walkable_mass: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -938,7 +940,7 @@ impl Merge for PropTuningPatch {
 impl Merge for PropSolverPatch {
     fn merge(&mut self, b: &Self) {
         merge_opts!(self, b; row_solver, iterations, sleep_energy, sleep_frames, max_sleeps_per_step, rest_snap, bail_clamp,
-            bail_linear_factor, bail_angular_factor, bail_heavy_mass, bail_blend);
+            bail_linear_factor, bail_angular_factor, bail_heavy_mass, bail_blend, walkable_mass);
     }
 }
 impl Merge for PropUprightPatch {
@@ -1143,7 +1145,7 @@ impl PropSolverPatch {
             && self.sleep_energy.is_none_or(|e| e.is_finite() && (0.0..=MAX_NUMBER).contains(&e))
             && self.sleep_frames.is_none_or(|n| (1..=10_000).contains(&n))
             && self.max_sleeps_per_step.is_none_or(|n| n >= 1)
-            && [self.bail_linear_factor, self.bail_angular_factor, self.bail_heavy_mass]
+            && [self.bail_linear_factor, self.bail_angular_factor, self.bail_heavy_mass, self.walkable_mass]
                 .iter()
                 .all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(&v)))
             && self.bail_blend.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))

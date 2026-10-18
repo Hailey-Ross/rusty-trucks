@@ -16,8 +16,8 @@ use skate_core::{
 /// The existing ground leaf still owns transforms, exact bounds gates and hits.
 pub struct WorldScene<'a> {
     world: &'a BoardWorld,
-    /// The prop world as pool bit 2 and the held prop's triangles (`offboard::BipedWorld`).
-    props: Option<(&'a BoardWorld, (usize, usize))>,
+    /// The prop world as pool bit 2 (`offboard::BipedWorld`).
+    props: Option<&'a BoardWorld>,
     edges: Scene<'a>,
 }
 impl GroundQueryScene for WorldScene<'_> {
@@ -67,8 +67,10 @@ impl GroundQueryScene for WorldScene<'_> {
                 surfaces: &metadata.packed_surfaces[source.triangle_range.clone()],
             });
         }
-        // Pool bit 2: the prop world's meshes, a chunk split around the held prop's triangles.
-        if let Some((props, (skip_start, skip_end))) = self.props {
+        // Pool bit 2: the prop world's meshes. Light and held props are left out by their collision type with the
+        // walker's mask (NOT RETAIL YET for this query: the ground query's own mask is not read; the contact probes'
+        // is 0x6000).
+        if let Some(props) = self.props {
             let prop_metadata = props.query_metadata()?;
             let prop_triangles = props.triangles();
             let mut prop_candidates = Vec::new();
@@ -79,20 +81,18 @@ impl GroundQueryScene for WorldScene<'_> {
             prop_candidates.dedup();
             for index in prop_candidates {
                 let source = &prop_metadata.meshes[index];
-                let r = source.triangle_range.clone();
-                for part in [r.start..r.end.min(skip_start).max(r.start), r.start.max(skip_end).min(r.end)..r.end] {
-                    if part.is_empty() {
-                        continue;
-                    }
-                    pools[1].push(Mesh {
-                        local_to_world: frame(source.local_to_world),
-                        world_to_local: frame(source.world_to_local),
-                        local_bounds: Bounds { min: source.local_bounds.min, max: source.local_bounds.max },
-                        matching_group: source.matching_group,
-                        triangles: &prop_triangles[part.clone()],
-                        surfaces: &prop_metadata.packed_surfaces[part],
-                    });
+                if source.rejection_flags & skate_core::player::offboard::air_selector::MESH_REJECT_MASK != 0 {
+                    continue;
                 }
+                let part = source.triangle_range.clone();
+                pools[1].push(Mesh {
+                    local_to_world: frame(source.local_to_world),
+                    world_to_local: frame(source.world_to_local),
+                    local_bounds: Bounds { min: source.local_bounds.min, max: source.local_bounds.max },
+                    matching_group: source.matching_group,
+                    triangles: &prop_triangles[part.clone()],
+                    surfaces: &prop_metadata.packed_surfaces[part],
+                });
             }
         }
         super::lines::query_pools(

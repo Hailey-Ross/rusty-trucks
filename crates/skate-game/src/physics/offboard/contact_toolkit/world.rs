@@ -18,10 +18,8 @@ use skate_core::{
 pub struct StaticScene<'a> {
     world: &'a BoardWorld,
     metadata: &'a QueryMetadata,
-    /// The DMO prop world, queried as pool bit 2 (`82764AB0`: world+0x5580, the pool the grab request `8275FD00`
-    /// asks with mask 2; b218), and the triangles left out of it (the prop the player holds: NOT RETAIL YET, retail's
-    /// filter for a held DMO is not decoded).
-    props: Option<(&'a BoardWorld, &'a QueryMetadata, std::ops::Range<usize>)>,
+    /// The DMO prop world, queried as pool bit 2 (`82764AB0`: world+0x5580, "DMOPool"; b218 / b221).
+    props: Option<(&'a BoardWorld, &'a QueryMetadata)>,
 }
 impl<'a> StaticScene<'a> {
     ///82C20728/82764AB0: caller-sized lines, poolmask7, facing3, no mesh or
@@ -118,14 +116,14 @@ impl<'a> StaticScene<'a> {
     pub fn new(world: impl Into<crate::physics::offboard::BipedWorld<'a>>) -> Result<Self, &'static str> {
         let world = world.into();
         let metadata = world.map.query_metadata()?;
-        let props = world.props.and_then(|(props, (a, b))| props.query_metadata().ok().map(|metadata| (props, metadata, a..b)));
+        let props = world.props.and_then(|props| props.query_metadata().ok().map(|metadata| (props, metadata)));
         Ok(Self { world: world.map, metadata, props })
     }
     /// The worlds that answer `pool`: the map's meshes of that pool, then for pool 2 the prop world's (tagged Ground
     /// there). Earlier sources win ties (`8276EE88`).
-    fn sources(&self, pool: QueryPool) -> impl Iterator<Item = (&'a BoardWorld, &'a QueryMetadata, QueryPool, std::ops::Range<usize>)> {
-        let props = self.props.clone().filter(|_| pool == QueryPool::Island).map(|(w, m, skip)| (w, m, QueryPool::Ground, skip));
-        std::iter::once((self.world, self.metadata, pool, 0..0)).chain(props)
+    fn sources(&self, pool: QueryPool) -> impl Iterator<Item = (&'a BoardWorld, &'a QueryMetadata, QueryPool)> {
+        let props = self.props.filter(|_| pool == QueryPool::Island).map(|(w, m)| (w, m, QueryPool::Ground));
+        std::iter::once((self.world, self.metadata, pool)).chain(props)
     }
     fn pools(&self) -> impl Iterator<Item = QueryPool> {
         [
@@ -177,7 +175,7 @@ impl<'a> StaticScene<'a> {
         let direction = vec3(delta);
         let mut nearest = f32::MAX;
         let mut output = None;
-        for (world, metadata, mesh_pool, skip) in self.sources(pool) {
+        for (world, metadata, mesh_pool) in self.sources(pool) {
         let bounds = world.line_candidate_bounds(start, vec3(probe.end), probe.radius);
         let candidates: Vec<_> = world
             .line_candidates(start, vec3(probe.end), probe.radius)
@@ -194,9 +192,6 @@ impl<'a> StaticScene<'a> {
             let first = candidates.partition_point(|&i| i < mesh.triangle_range.start);
             let last = candidates.partition_point(|&i| i < mesh.triangle_range.end);
             for &index in &candidates[first..last] {
-                if skip.contains(&index) {
-                    continue;
-                }
                 let vertices = world.triangles()[index].triangle.vertices;
                 let mut hit = TriangleLineHit {
                     position: Vector3::ZERO,
@@ -270,7 +265,7 @@ impl<'a> StaticScene<'a> {
         };
         if output.len() >= 64 { return Ok(output); }
         //82770E00 does not apply the trajectory mesh rejection mask here.
-        for (world, metadata, mesh_pool, skip) in self.sources(pool) {
+        for (world, metadata, mesh_pool) in self.sources(pool) {
         let bounds = world.line_candidate_bounds(vec3(center), vec3(center), radius);
         let candidates: Vec<_> = world
             .line_candidates(vec3(center), vec3(center), radius)
@@ -284,9 +279,6 @@ impl<'a> StaticScene<'a> {
             let first = candidates.partition_point(|&i| i < mesh.triangle_range.start);
             let last = candidates.partition_point(|&i| i < mesh.triangle_range.end);
             for &index in &candidates[first..last] {
-                if skip.contains(&index) {
-                    continue;
-                }
                 let vertices = world.triangles()[index].triangle.vertices.map(lanes);
                 if triangle_box(vertices, center, radius) {
                     output.push(vertices);

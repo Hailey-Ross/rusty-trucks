@@ -769,7 +769,7 @@ pub(crate) fn collision_world(
     if let Some(archive) = retail_archive(map)? {
         return retail_collision_world(archive, material);
     }
-    portable_world(&map.geometry.collision, &map.materials, material)
+    portable_world(&map.geometry.collision, &map.materials, material, None)
 }
 
 /// Welded vertices and reconstructed edge features (flags, cosines) of a
@@ -863,6 +863,9 @@ fn portable_world(
     collision: &[skate_data::skate_map::Collision],
     materials: &[skate_data::skate_map::Material],
     material: RetailContactMaterial,
+    // Ranges the query meshes must not cross (one prop instance each, so each has its own collision type); `None`
+    // chunks the whole list.
+    splits: Option<&[std::ops::Range<usize>]>,
 ) -> Result<BoardWorld, String> {
     let points: Vec<_> = collision.iter().map(|t| t.points).collect();
     let (positions, vertices, mut flags, mut cosines) =
@@ -900,8 +903,8 @@ fn portable_world(
     // triangle order and mesh identity/filter values: contact tie-breaking,
     // packed surfaces and adjacency must not change with this acceleration.
     let mut meshes = Vec::new();
-    for start in (0..triangles.len()).step_by(64) {
-        let end = (start + 64).min(triangles.len());
+    let whole = [0..triangles.len()];
+    for (start, end) in splits.unwrap_or(&whole).iter().flat_map(|r| (r.start..r.end).step_by(64).map(move |s| (s, (s + 64).min(r.end)))) {
         let bounds = Bounds::from_points(triangles[start..end].iter().flat_map(|t| t.triangle.vertices))
             .ok_or("SKATE collision bounds empty")?;
         meshes.push(QueryMesh {
@@ -954,6 +957,9 @@ pub(crate) struct PropCollisionLayer {
     /// Instances added mid-game and retired since; their parked triangle
     /// ranges are reused by the next instance of the same size.
     retired: Vec<usize>,
+    /// The collision type last written to each instance's meshes (`u32::MAX` = none yet), so an unchanged type
+    /// costs no mesh scan.
+    collision_types: Vec<u32>,
 }
 
 impl PropCollisionLayer {
@@ -964,6 +970,7 @@ impl PropCollisionLayer {
             instances: std::sync::Arc::clone(&self.instances),
             contact_material: self.contact_material,
             retired: self.retired.clone(),
+            collision_types: self.collision_types.clone(),
         }
     }
 
@@ -978,6 +985,21 @@ impl PropCollisionLayer {
     pub fn world_mut(&mut self) -> &mut BoardWorld {
         &mut *self.world
     }
+    /// Gives an instance's query meshes the retail collision type's rejection flag (`1 << type`; DMOPool rebuild
+    /// `827778C0`). Returns whether anything changed.
+    pub fn set_collision_type(&mut self, instance: usize, collision_type: u32) -> bool {
+        let Some(range) = self.instances.get(instance).map(|i| i.range.clone()) else { return false };
+        if self.collision_types.len() < self.instances.len() {
+            self.collision_types.resize(self.instances.len(), u32::MAX);
+        }
+        if self.collision_types[instance] == collision_type {
+            return false;
+        }
+        self.collision_types[instance] = collision_type;
+        let flags = 1u32.checked_shl(collision_type).unwrap_or(0);
+        self.world_mut().set_rejection_flags(range, flags)
+    }
+
     pub fn instances(&self) -> &[PropCollisionInstance] {
         &self.instances
     }
@@ -1059,6 +1081,7 @@ impl PropCollisionLayer {
             instances: std::sync::Arc::new(Vec::new()),
             contact_material: material,
             retired: Vec::new(),
+            collision_types: Vec::new(),
         })
     }
 
@@ -1323,10 +1346,11 @@ pub(crate) fn build_prop_layer_with(
         return Ok(None);
     }
     Ok(Some(PropCollisionLayer {
-        world: portable_world(&collision, &map.materials, material)?.into(),
+        world: portable_world(&collision, &map.materials, material, Some(&instances.iter().map(|i| i.range.clone()).collect::<Vec<_>>()))?.into(),
         instances: std::sync::Arc::new(instances),
         contact_material: material,
         retired: Vec::new(),
+        collision_types: Vec::new(),
     }))
 }
 

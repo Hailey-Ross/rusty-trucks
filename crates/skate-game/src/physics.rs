@@ -370,13 +370,9 @@ impl GamePhysics {
         &self.world
     }
 
-    /// What the on-foot queries see: the map and the prop world without the held prop (`offboard::BipedWorld`).
+    /// What the on-foot queries see: the map and the prop world (`offboard::BipedWorld`).
     pub(crate) fn biped_world(&self) -> offboard::BipedWorld<'_> {
-        let props = self.prop_layer.as_ref().map(|layer| {
-            let held = self.prop_carry.held().and_then(|id| layer.instances().iter().find(|i| i.id == id));
-            (layer.world(), held.map_or((0, 0), |i| (i.range.start, i.range.end)))
-        });
-        offboard::BipedWorld { map: &self.world, props }
+        offboard::BipedWorld { map: &self.world, props: self.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world) }
     }
 
     pub(crate) fn prop_world(&self) -> Option<&BoardWorld> {
@@ -414,6 +410,11 @@ impl GamePhysics {
         // The bail clamp's gate: the local skater in a wipeout (retail's actor byte is not decoded; b208).
         dynamics.set_bailing(if self.board_wiping_out { &[prop_dynamics::LOCAL_PUSHER] } else { &[] });
         dynamics.step_with_actors(&self.world, layer, volumes, &self.actor_prop_volumes);
+        // Each prop's retail collision type on its query meshes (heavy 12 / light 14 / held 13), which the on-foot
+        // walker's queries filter.
+        dynamics.for_each_collision_type(self.prop_carry.held(), |instance, collision_type| {
+            layer.set_collision_type(instance, collision_type);
+        });
     }
 
     /// Reset ONE object (retail cMsgResetDMO, doc 27 "Object Dropper and reset"): the phone's
