@@ -32,10 +32,67 @@ class Page {
     public string Title; public List<Item> Items = new List<Item>(); public int Sel;
     public string Body;          // a text page (notes, results) instead of a list
     public Action OnBack;        // null = pop the page
+    public string Mono;          // a fixed-width block under the body (a build's first error)
 }
 
-class LauncherForm : Form {
-    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0x0004, RIGHT = 0x0008, A = 0x1000, B = 0x2000;
+// Build progress from the build output (launcher.ps1 marks the build with LAUNCHER_BUILD lines and turns on cargo's own
+// "Building [..] n/total" bar for the window). Every line also goes to the build log file it names.
+class BuildView {
+    static readonly System.Text.RegularExpressions.Regex Ansi = new System.Text.RegularExpressions.Regex(@"\x1B(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(\x07|\x1B\\)|[@-Z\\-_])");
+    static readonly System.Text.RegularExpressions.Regex Bar = new System.Text.RegularExpressions.Regex(@"Building \[[^\]]*\]\s*(\d+)/(\d+)(?::\s*(.*))?");
+    static readonly System.Text.RegularExpressions.Regex Compiling = new System.Text.RegularExpressions.Regex(@"Compiling (\S+) v");
+    static readonly System.Text.RegularExpressions.Regex ErrStart = new System.Text.RegularExpressions.Regex(@"^error(\[E\d+\])?: ");
+    public bool Active, Ended, Ok; public string Name = "", Commit = "", LogPath, Now = "";
+    public int Done, Total, Compiled, Warnings; public DateTime Start, End;
+    public readonly List<string> Error = new List<string>(); bool inError; string couldNot;
+    public readonly List<string> Tail = new List<string>();   // the last clean lines, when there is no error block
+    StreamWriter file;
+
+    // The text after the last \r, no ANSI or control characters, tabs as spaces.
+    public static string Clean(string s) {
+        s = Ansi.Replace(s ?? "", "");
+        int r = s.LastIndexOf('\r'); if (r >= 0) s = s.Substring(r + 1);
+        var sb = new StringBuilder(s.Length);
+        foreach (char c in s) { if (c == '\t') sb.Append("    "); else if (c >= ' ') sb.Append(c); }
+        return sb.ToString().TrimEnd();
+    }
+    // True when the line is a marker or build output (kept out of the plain job log).
+    public bool Feed(string raw) {
+        if (raw.StartsWith("LAUNCHER_BUILD\tbegin\t")) {
+            var f = raw.Split('\t');
+            Close(); Active = true; Ended = false; Name = f.Length > 2 ? f[2] : ""; Commit = f.Length > 3 ? f[3] : ""; LogPath = f.Length > 4 ? f[4] : null;
+            Done = Total = Compiled = Warnings = 0; Error.Clear(); Tail.Clear(); inError = false; couldNot = null; Now = ""; Start = DateTime.Now;
+            try { if (LogPath != null) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)); file = new StreamWriter(LogPath, false, new UTF8Encoding(false)); } } catch { file = null; }
+            return true;
+        }
+        if (raw.StartsWith("LAUNCHER_BUILD\tend\t")) { Active = false; Ended = true; End = DateTime.Now; Ok = raw.EndsWith("\t0"); if (file != null) file.Flush(); return true; }
+        if (!Active) return false;
+        string c = Clean(raw);
+        var m = Bar.Match(c);
+        if (m.Success) { Done = int.Parse(m.Groups[1].Value); Total = int.Parse(m.Groups[2].Value); if (m.Groups[3].Success) Now = m.Groups[3].Value.Trim(); }
+        var cm = Compiling.Match(c);
+        bool barOnly = m.Success && !cm.Success;
+        if (file != null && !barOnly && c != "") { try { file.WriteLine(Ansi.Replace(raw, "").Replace("\r", "")); } catch { } }
+        if (cm.Success) { Compiled++; Now = cm.Groups[1].Value; }
+        if (inError) {
+            if (c == "" || Error.Count >= 40) inError = false; else Error.Add(c);
+        } else if (Error.Count == 0 && ErrStart.IsMatch(c)) {
+            if (c.StartsWith("error: could not compile")) couldNot = c; else { inError = true; Error.Add(c); }
+        } else if (c.StartsWith("warning: ") && !c.Contains(" generated ") && !c.StartsWith("warning: build failed")) Warnings++;
+        if (c != "" && !barOnly) { Tail.Add(c); if (Tail.Count > 15) Tail.RemoveAt(0); }
+        return true;
+    }
+    // The first error block, else cargo's summary and the last lines (e.g. Build.ps1's own failure).
+    public List<string> FirstError() {
+        if (Error.Count > 0) return Error;
+        var l = new List<string>(); if (couldNot != null) l.Add(couldNot); l.AddRange(Tail); return l;
+    }
+    public static string Clock(TimeSpan t) { return ((int)t.TotalMinutes) + ":" + t.Seconds.ToString("00"); }
+    public void Close() { if (file != null) { try { file.Dispose(); } catch { } file = null; } }
+}
+
+class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0x0004, RIGHT = 0x0008, A = 0x1000, B = 0x2000;
+    int frame;
     static readonly string Here = AppDomain.CurrentDomain.BaseDirectory;
     static readonly string[] Labels = { "session", "ride", "grind", "bail", "push", "emit", "carve", "water", "marker" };
     static readonly string[] GameNames = { "skate3", "skate3rust", "rpcs3" };
@@ -43,12 +100,13 @@ class LauncherForm : Form {
     readonly Stack<Page> pages = new Stack<Page>();
     readonly Timer tick = new Timer();
     readonly List<string> log = new List<string>();
+    readonly BuildView build = new BuildView(); bool dirty;
     readonly string[] direct;
     Dictionary<string, string> status = new Dictionary<string, string>();
     Process job; string jobTitle; bool jobHidGame; int closeAt = -1; DateTime closeTime;
     string waitEntry, waitLabel, waitName;   // waiting for another game to close before starting
     ushort prevPad; int held; string lastAction = ""; bool lastFromPad; DateTime lastActionTime = DateTime.MinValue;
-    Font titleFont, itemFont, smallFont;
+    Font monoFont, titleFont, itemFont, smallFont, heroFont, markFont, markLight, playFont, iconFont, iconSmall, itemBold, smallBold;
 
     public LauncherForm(string[] argv) {
         direct = argv;
@@ -63,11 +121,46 @@ class LauncherForm : Form {
         MakeFonts();
     }
 
-    void MakeFonts() {
-        float h = Math.Max(480, ClientSize.Height);
-        titleFont = new Font("Segoe UI Semibold", h / 22f, GraphicsUnit.Pixel);
-        itemFont = new Font("Segoe UI", h / 30f, GraphicsUnit.Pixel);
-        smallFont = new Font("Segoe UI", h / 46f, GraphicsUnit.Pixel);
+    void MakeFonts() { MakeFonts(ClientSize.Height); }
+    void MakeFonts(int height) {
+        float h = Math.Max(480, height);
+        titleFont = new Font("Segoe UI Semibold", h / 24f, GraphicsUnit.Pixel);
+        heroFont = new Font("Segoe UI Semibold", h / 17f, GraphicsUnit.Pixel);
+        itemFont = new Font("Segoe UI", h / 34f, GraphicsUnit.Pixel);
+        itemBold = new Font("Segoe UI Semibold", h / 34f, GraphicsUnit.Pixel);
+        smallFont = new Font("Segoe UI", h / 52f, GraphicsUnit.Pixel);
+        monoFont = new Font("Consolas", h / 50f, GraphicsUnit.Pixel);
+        smallBold = new Font("Segoe UI Semibold", h / 52f, GraphicsUnit.Pixel);
+        markFont = new Font("Segoe UI Black", h / 30f, GraphicsUnit.Pixel);
+        markLight = new Font("Segoe UI Light", h / 30f, GraphicsUnit.Pixel);
+        playFont = new Font("Segoe UI Black", h / 26f, GraphicsUnit.Pixel);
+        iconFont = new Font("Segoe MDL2 Assets", h / 26f, GraphicsUnit.Pixel);
+        iconSmall = new Font("Segoe MDL2 Assets", h / 40f, GraphicsUnit.Pixel);
+    }
+
+    // Draws one screen into a PNG (the --snapshot mode): main, versions, tools or job (a sample build log).
+    public void Snapshot(string file, string screen) {
+        const int w = 1920, h = 1080;
+        MakeFonts(h);
+        RefreshStatus();
+        pages.Push(MainPage());
+        if (screen == "versions") pages.Push(VersionPage());
+        if (screen == "tools") pages.Push(EntryPage("Tools", "tools"));
+        if (screen == "build" || screen == "failed") {
+            job = new Process(); jobTitle = "Update and build";
+            build.Feed("LAUNCHER_BUILD\tbegin\thails-additions\t94774ce\t");
+            build.Start = DateTime.Now.AddSeconds(-190);
+            foreach (var l in new[] { "   Compiling skate-core v0.1.0", "warning: unused import: `skitch_enabled`", " --> crates\\skate-game\\src\\physics.rs:81:53", "", "    Building [=======>        ] 312/540: skate-game, bevy_pbr" }) build.Feed(l);
+            if (screen == "failed") foreach (var l in new[] { "error[E0308]: mismatched types", "  --> crates\\skate-game\\src\\physics\\grab_view.rs:42:5", "   |", "42 |     let x: u32 = 1.0;", "   |            ---   ^^^ expected `u32`, found floating-point number", "" }) build.Feed(l);
+        }
+        if (screen == "job") {
+            job = new Process(); jobTitle = "Building hails-additions"; jobStart = DateTime.Now.AddSeconds(-74);
+            foreach (var l in new[] { "Fetching hails-additions at 94774ce", "   Compiling bevy_render v0.18.1", "   Compiling skate-core v0.1.0", "warning: unused import: `skitch_enabled`", "   Compiling skate-game v0.1.0" }) log.Add(l);
+        }
+        using (var bmp = new Bitmap(w, h)) {
+            using (var g = Graphics.FromImage(bmp)) Render(g, w, h);
+            bmp.Save(file, System.Drawing.Imaging.ImageFormat.Png);
+        }
     }
 
     // ---------- launcher.ps1 ----------
@@ -75,6 +168,8 @@ class LauncherForm : Form {
         var psi = new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + Path.Combine(Here, "launcher.ps1") + "\" " + args) {
             UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Here,
             RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true };
+        // The window's build view: launcher.ps1 marks the build and turns on cargo's progress bar.
+        psi.EnvironmentVariables["SKATE_LAUNCHER_UI"] = "2";
         var oem = Encoding.GetEncoding(System.Globalization.CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
         psi.StandardOutputEncoding = oem; psi.StandardErrorEncoding = oem;
         return psi;
@@ -148,13 +243,13 @@ class LauncherForm : Form {
         var entries = Rows("entries", 7);
         p.Items.Add(new Item("Play: " + St("version"), "Our engine, the selected version (" + St("version_status") + ").", true, delegate { pages.Push(EntryPage("Play: " + St("version"), "rust")); }));
         p.Items.Add(new Item("Choose version", "hails-additions, upstream main and the versions in versions.json.", true, delegate { pages.Push(VersionPage()); }));
-        p.Items.Add(new Item("What to test (this version)", "", true, delegate { ShowText("What to test", Run("notes"), null); }));
+        p.Items.Add(new Item("What to test", "What this version changed and what to try in it.", true, delegate { ShowText("What to test", Run("notes"), null); }));
         bool recomp = entries.Exists(e => e[4] == "recomp"), retail = entries.Exists(e => e[4] == "retail");
-        p.Items.Add(new Item("Recomp (Skate 3 retail)", recomp ? "The recompiled retail game, with or without tracing." : "Not set up: add recomp_entries to config.json (see README.md).", recomp, delegate { pages.Push(EntryPage("Recomp", "recomp")); }));
-        p.Items.Add(new Item("Retail Skate 3 (RPCS3)", retail ? "The PS3 game in RPCS3." : "Not set up: add rpcs3 and rpcs3_entries to config.json (see README.md).", retail, delegate { pages.Push(EntryPage("Retail Skate 3 (RPCS3)", "retail")); }));
+        p.Items.Add(new Item("Recomp", recomp ? "The recompiled retail game, with or without tracing." : "Not set up: add recomp_entries to config.json (see README.md).", recomp, delegate { pages.Push(EntryPage("Recomp", "recomp")); }));
+        p.Items.Add(new Item("Retail (RPCS3)", retail ? "The PS3 game in RPCS3." : "Not set up: add rpcs3 and rpcs3_entries to config.json (see README.md).", retail, delegate { pages.Push(EntryPage("Retail Skate 3 (RPCS3)", "retail")); }));
         p.Items.Add(new Item("Tools", "Refresh game files, build, send logs, recomp update and save, first-time setup.", true, delegate { pages.Push(EntryPage("Tools", "tools")); }));
-        p.Items.Add(new Item("Last session result", "", true, delegate { ShowText("Last session", LastSession(), null); }));
-        p.Items.Add(new Item("Exit", "", true, delegate { Close(); }));
+        p.Items.Add(new Item("Last session", "The result of the last session: what was checked and sent.", true, delegate { ShowText("Last session", LastSession(), null); }));
+        p.Items.Add(new Item("Exit", "Close the launcher.", true, delegate { Close(); }));
         return p;
     }
     Page EntryPage(string title, string group) {
@@ -233,8 +328,9 @@ class LauncherForm : Form {
             else pages.Push(pg);
         }
     }
-    void ShowText(string title, string body, Action back) {
-        var p = new Page { Title = title, Body = body };
+    void ShowText(string title, string body, Action back) { ShowText(title, body, back, null); }
+    void ShowText(string title, string body, Action back, string mono) {
+        var p = new Page { Title = title, Body = body, Mono = mono };
         p.OnBack = back;
         pages.Push(p);
         Invalidate();
@@ -252,11 +348,15 @@ class LauncherForm : Form {
         StartJob(entry + (label == "" ? "" : " " + label), name);
     }
     void StartJob(string args, string title) {
-        jobTitle = title; jobHidGame = false;
+        jobTitle = title; jobHidGame = false; jobStart = DateTime.Now;
+        build.Close(); build.LogPath = null; build.Ended = false; build.Active = false;
         // Let the game take the foreground from us (Steam gives the foreground window its controller layout).
         Native.AllowSetForegroundWindow(-1);
         job = new Process { StartInfo = Ps(args + " -NoPrompt"), EnableRaisingEvents = true };
-        DataReceivedEventHandler add = delegate(object s, DataReceivedEventArgs e) { if (e.Data != null) BeginInvoke((Action)delegate { log.Add(e.Data); if (log.Count > 400) log.RemoveAt(0); Invalidate(); }); };
+        // Build output feeds the build view; other lines the job log. Drawn from the timer, not per line.
+        DataReceivedEventHandler add = delegate(object s, DataReceivedEventArgs e) { if (e.Data != null) BeginInvoke((Action)delegate {
+            if (!build.Feed(e.Data)) { string c = BuildView.Clean(e.Data); if (c != "") { log.Add(c); if (log.Count > 400) log.RemoveAt(0); } }
+            dirty = true; }); };
         job.OutputDataReceived += add; job.ErrorDataReceived += add;
         job.Exited += delegate { BeginInvoke((Action)JobDone); };
         job.Start(); job.StandardInput.Close();
@@ -268,10 +368,18 @@ class LauncherForm : Form {
         if (!Visible) Show();
         WindowState = FormWindowState.Maximized; Activate(); Native.SetForegroundWindow(Handle);
         string text = LastSession();
+        build.Close();
+        string mono = null;
+        if (build.LogPath != null && build.Ended) {
+            string took = BuildView.Clock(build.End - build.Start);
+            if (build.Ok) text += "\n\nBuilt " + build.Name + " at " + build.Commit + " in " + took + (build.Warnings > 0 ? ", " + build.Warnings + " warnings" : "") + ".\nBuild log: " + build.LogPath;
+            else { text += "\n\nBuild failed after " + took + ". Build log: " + build.LogPath + "\n\nFirst error:"; mono = string.Join("\n", build.FirstError()); }
+        }
         bool bad = text.Contains("MALFORMED") || text.Contains("No new") || text.Contains("Not started") || text.Contains("panic(s)") || text.Contains("failed") || text.Contains("Still missing");
-        if (direct.Length > 0) { ShowText(bad ? "Finished, check this" : "Finished", text, null); CloseIn(10); return; }
+        bad = bad || mono != null;
+        if (direct.Length > 0) { ShowText(bad ? "Finished, check this" : "Finished", text, null, mono); CloseIn(10); return; }
         RebuildMain();
-        ShowText(bad ? "Finished, check this" : "Finished", text, null);
+        ShowText(bad ? "Finished, check this" : "Finished", text, null, mono);
     }
     // While a job runs: hide once the game's window shows, so it gets the foreground and the controller layout.
     void WatchGame() {
@@ -289,6 +397,7 @@ class LauncherForm : Form {
                 if (Native.XInputGetState(i, out s) == 0) {
                     ushort b = s.Buttons;
                     if (s.LY > 16000) b |= UP; if (s.LY < -16000) b |= DOWN;
+                    if (s.LX < -16000) b |= LEFT; if (s.LX > 16000) b |= RIGHT;
                     return b;
                 }
             } catch { return 0; }
@@ -303,6 +412,9 @@ class LauncherForm : Form {
         }
         if (waitEntry != null && RunningGames() == "") { string e = waitEntry; waitEntry = null; pages.Pop(); Begin(e, waitLabel, waitName); }
         WatchGame();
+        if (dirty) { dirty = false; Invalidate(); }
+        // The rolling boards and the Play glow: about 30 frames a second while the menu or a job shows.
+        if (Visible && ++frame % 2 == 0 && (job != null || (pages.Count > 0 && IsMain(pages.Peek())))) Invalidate();
         // Only while the menu is in front: XInput reports the pad to every process, so the game's presses would
         // otherwise drive the menu behind it.
         if (job != null || Form.ActiveForm != this) { prevPad = Pad(); return; }
@@ -311,6 +423,8 @@ class LauncherForm : Form {
         else if ((pressed & B) != 0) Act("back", true);
         else if ((pressed & UP) != 0) Act("up", true);
         else if ((pressed & DOWN) != 0) Act("down", true);
+        else if ((pressed & LEFT) != 0) Act("left", true);
+        else if ((pressed & RIGHT) != 0) Act("right", true);
         else if ((b & (UP | DOWN)) != 0 && b == prevPad) { if (++held > 14 && held % 4 == 0) Act((b & UP) != 0 ? "up" : "down", true); }
         if (b != prevPad) held = 0;
         prevPad = b;
@@ -320,6 +434,8 @@ class LauncherForm : Form {
             switch (key) {
                 case Keys.Up: case Keys.W: Act("up", false); return true;
                 case Keys.Down: case Keys.S: Act("down", false); return true;
+                case Keys.Left: case Keys.A: Act("left", false); return true;
+                case Keys.Right: case Keys.D: Act("right", false); return true;
                 case Keys.Enter: Act("ok", false); return true;
                 case Keys.Escape: case Keys.Back: case Keys.Space: Act("back", false); return true;
             }
@@ -339,8 +455,9 @@ class LauncherForm : Form {
             else pages.Pop();
             if (pages.Count == 0) pages.Push(MainPage());
         } else if (p.Items.Count > 0) {
-            if (a == "up") p.Sel = (p.Sel - 1 + p.Items.Count) % p.Items.Count;
-            else if (a == "down") p.Sel = (p.Sel + 1) % p.Items.Count;
+            if (IsMain(p)) p.Sel = GridMove(p.Sel, a, p.Items.Count);
+            else if (a == "up" || a == "left") p.Sel = (p.Sel - 1 + p.Items.Count) % p.Items.Count;
+            else if (a == "down" || a == "right") p.Sel = (p.Sel + 1) % p.Items.Count;
             else if (a == "ok") { var it = p.Items[p.Sel]; if (it.On && it.Run != null) it.Run(); }
         } else if (a == "ok" && p.Body != null) {
             if (p.OnBack != null) p.OnBack(); else pages.Pop();
@@ -348,48 +465,353 @@ class LauncherForm : Form {
         Invalidate();
     }
 
+    // The main page's grid: 0 = the hero's Play card, then tiles in rows of TileCols.
+    static int GridMove(int sel, string a, int count) {
+        if (a == "left") return Math.Max(0, sel - 1);
+        if (a == "right") return Math.Min(count - 1, sel + 1);
+        if (a == "down") return sel == 0 ? Math.Min(1, count - 1) : Math.Min(count - 1, sel + TileCols);
+        if (a == "up") return sel <= TileCols ? 0 : sel - TileCols;
+        return sel;
+    }
+
     // ---------- drawing ----------
-    protected override void OnPaint(PaintEventArgs ev) {
-        var g = ev.Graphics; g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        int w = ClientSize.Width, h = ClientSize.Height, x = w / 12, y = h / 14;
-        var dim = Color.FromArgb(140, 146, 156); var accent = Color.FromArgb(255, 196, 0);
-        if (job != null) {
-            g.DrawString("Running: " + jobTitle, titleFont, Brushes.White, x, y);
-            y += (int)(titleFont.Height * 1.6);
-            int lines = Math.Max(1, (h - y - h / 10) / smallFont.Height);
-            int from = Math.Max(0, log.Count - lines);
-            using (var b = new SolidBrush(dim)) for (int i = from; i < log.Count; i++) { g.DrawString(log[i], smallFont, b, x, y); y += smallFont.Height; }
-            return;
+    // A dark console-launcher look (big hero card, tiles, button prompts) with the splash's skateboard as the mark.
+    static readonly Color Bg1 = Color.FromArgb(16, 18, 24), Bg2 = Color.FromArgb(7, 8, 11);
+    static readonly Color Panel = Color.FromArgb(24, 28, 37), PanelHi = Color.FromArgb(33, 39, 52), Stroke = Color.FromArgb(44, 51, 67);
+    static readonly Color Ink = Color.FromArgb(242, 244, 248), Dim = Color.FromArgb(138, 147, 166), Faint = Color.FromArgb(78, 85, 100);
+    static readonly Color Accent = Color.FromArgb(255, 196, 0), Cool = Color.FromArgb(86, 146, 214);
+    readonly Stopwatch clock = Stopwatch.StartNew();
+    DateTime jobStart;
+
+    protected override void OnPaint(PaintEventArgs ev) { Render(ev.Graphics, ClientSize.Width, ClientSize.Height); }
+
+    // The main page: item 0 is the hero's Play card, the rest tiles in rows of TileCols.
+    const int TileCols = 4;
+    static bool IsMain(Page p) { return p.Title == "Skate launcher" && p.OnBack != null; }
+
+    static System.Drawing.Drawing2D.GraphicsPath Round(RectangleF r, float rad) {
+        var path = new System.Drawing.Drawing2D.GraphicsPath();
+        float d = Math.Min(rad * 2, Math.Min(r.Width, r.Height));
+        path.AddArc(r.X, r.Y, d, d, 180, 90); path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+    static void Card(Graphics g, RectangleF r, float rad, Color top, Color bottom, Color edge, float edgeW) {
+        using (var path = Round(r, rad)) {
+            using (var b = new System.Drawing.Drawing2D.LinearGradientBrush(r, top, bottom, 90f)) g.FillPath(b, path);
+            if (edgeW > 0) using (var pen = new Pen(edge, edgeW)) g.DrawPath(pen, path);
         }
+    }
+    static Color Fade(Color c, int alpha) { return Color.FromArgb(alpha, c.R, c.G, c.B); }
+    static void Write(Graphics g, string s, Font f, Color c, RectangleF r, StringAlignment h, StringAlignment v, bool wrap) {
+        using (var b = new SolidBrush(c)) using (var sf = new StringFormat()) {
+            sf.Alignment = h; sf.LineAlignment = v; sf.Trimming = StringTrimming.EllipsisCharacter;
+            // Wrapped text shows whole lines only (a half-clipped last line reads as noise).
+            sf.FormatFlags = wrap ? StringFormatFlags.LineLimit : StringFormatFlags.NoWrap;
+            g.DrawString(s ?? "", f, b, r, sf);
+        }
+    }
+
+    // The splash's board (splash.rs draw_board), side view, 180 units long, its top-left at (x, y), `len` px long.
+    static void Board(Graphics g, float x, float y, float len) {
+        var st = g.Save();
+        g.TranslateTransform(x, y); g.ScaleTransform(len / 180f, len / 180f);
+        const float l = 180f;
+        Func<float, PointF[]> deck = delegate(float down) {
+            float[,] top = { { 1, 3 }, { 5, 3.6f }, { 11, 5.6f }, { 18, 8.6f }, { 25, 11 }, { 31, 12 }, { l - 33, 12 }, { l - 26, 10.8f }, { l - 18, 7.8f }, { l - 10, 4.4f }, { l - 4, 2.4f }, { l - 1, 2 } };
+            var pts = new PointF[12]; for (int i = 0; i < 12; i++) pts[i] = new PointF(top[i, 0], top[i, 1] + down); return pts;
+        };
+        Func<float, float, PointF[]> outline = delegate(float upper, float lower) {
+            var a = deck(upper); var b = deck(lower); Array.Reverse(b);
+            var all = new PointF[a.Length + b.Length]; a.CopyTo(all, 0); b.CopyTo(all, a.Length); return all;
+        };
+        Action<Color, PointF[]> poly = delegate(Color c, PointF[] pts) { using (var br = new SolidBrush(c)) g.FillPolygon(br, pts); };
+        Action<Color, float, float, float> disc = delegate(Color c, float cx, float cy, float r) { using (var br = new SolidBrush(c)) g.FillEllipse(br, cx - r, cy - r, 2 * r, 2 * r); };
+        using (var sh = new SolidBrush(Color.FromArgb(110, 0, 0, 0))) g.FillEllipse(sh, 10, 32.5f, l - 20, 5);
+        var wood = outline(0, 5);
+        poly(Color.FromArgb(214, 176, 124), wood);
+        using (var pen = new Pen(Color.FromArgb(92, 62, 36), 0.5f)) g.DrawPolygon(pen, wood);
+        poly(Color.FromArgb(150, 104, 62), outline(2.6f, 3.4f));
+        poly(Color.FromArgb(34, 34, 38), outline(0, 1.4f));
+        foreach (float ax in new float[] { 40, l - 42 }) {
+            poly(Color.FromArgb(176, 181, 191), new[] { new PointF(ax - 10, 17), new PointF(ax + 10, 17), new PointF(ax + 9, 19.5f), new PointF(ax - 9, 19.5f) });
+            poly(Color.FromArgb(176, 181, 191), new[] { new PointF(ax - 6, 19.5f), new PointF(ax + 6, 19.5f), new PointF(ax + 3.5f, 26), new PointF(ax - 3.5f, 26) });
+            disc(Color.FromArgb(168, 162, 148), ax, 26.5f, 7.5f); disc(Color.FromArgb(240, 235, 220), ax, 26.5f, 6.9f);
+            disc(Color.FromArgb(86, 146, 214), ax, 26.5f, 3.9f); disc(Color.FromArgb(52, 54, 60), ax, 26.5f, 1.7f);
+        }
+        g.Restore(st);
+    }
+
+    // Windows' own icon font (Segoe MDL2 Assets) per menu entry.
+    static string Glyph(string text) {
+        string t = text.ToLowerInvariant();
+        if (t.StartsWith("play")) return "";
+        if (t.StartsWith("choose version")) return "";
+        if (t.StartsWith("what to test")) return "";
+        if (t.StartsWith("recomp")) return "";
+        if (t.StartsWith("retail")) return "";
+        if (t.StartsWith("tools")) return "";
+        if (t.StartsWith("last session")) return "";
+        if (t.StartsWith("exit")) return "";
+        return "";
+    }
+
+    // A, B, X / Y badges like the controller's.
+    void Prompt(Graphics g, ref float x, float y, string key, Color c, string label) {
+        float d = smallFont.Height * 1.25f;
+        using (var b = new SolidBrush(c)) g.FillEllipse(b, x, y, d, d);
+        Write(g, key, smallBold, Color.FromArgb(16, 18, 24), new RectangleF(x, y, d, d), StringAlignment.Center, StringAlignment.Center, false);
+        x += d + d * 0.35f;
+        var size = g.MeasureString(label, smallFont);
+        Write(g, label, smallFont, Dim, new RectangleF(x, y, size.Width + 4, d), StringAlignment.Near, StringAlignment.Center, false);
+        x += size.Width + d;
+    }
+
+    // Log lines as a TV can read them: no colour codes, only the text after the last carriage return.
+    static readonly System.Text.RegularExpressions.Regex Ansi = new System.Text.RegularExpressions.Regex("\x1B\\[[0-9;?]*[A-Za-z]");
+    static string Clean(string s) { s = Ansi.Replace(s ?? "", ""); int r = s.LastIndexOf('\r'); return (r >= 0 ? s.Substring(r + 1) : s).Trim(); }
+
+    void Render(Graphics g, int w, int h) {
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        var all = new RectangleF(0, 0, w, h);
+        using (var b = new System.Drawing.Drawing2D.LinearGradientBrush(all, Bg1, Bg2, 90f)) g.FillRectangle(b, all);
+        // A soft glow behind the top left, like a lit backdrop.
+        using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
+            path.AddEllipse(-w * 0.25f, -h * 0.55f, w * 0.9f, h * 1.1f);
+            using (var pg = new System.Drawing.Drawing2D.PathGradientBrush(path)) {
+                pg.CenterColor = Color.FromArgb(40, Cool); pg.SurroundColors = new[] { Color.FromArgb(0, Cool) };
+                g.FillPath(pg, path);
+            }
+        }
+        float m = w * 0.045f, t = (float)clock.Elapsed.TotalSeconds;
+        float barH = h * 0.085f;
+        // Top bar: the board as the mark, the wordmark, the version chip.
+        Board(g, m, barH * 0.32f, barH * 1.3f);
+        float wx = m + barH * 1.45f;
+        var skate = g.MeasureString("SKATE", markFont);
+        Write(g, "SKATE", markFont, Ink, new RectangleF(wx, 0, skate.Width + 8, barH), StringAlignment.Near, StringAlignment.Center, false);
+        Write(g, "LAUNCHER", markLight, Dim, new RectangleF(wx + skate.Width * 0.92f, 0, w * 0.3f, barH), StringAlignment.Near, StringAlignment.Center, false);
+        string chip = St("version") == "" ? "" : St("version");
+        if (chip != "") {
+            var cs = g.MeasureString(chip, smallFont);
+            var cr = new RectangleF(w - m - cs.Width - smallFont.Height * 1.6f, barH * 0.28f, cs.Width + smallFont.Height * 1.6f, barH * 0.44f);
+            Card(g, cr, cr.Height / 2, PanelHi, Panel, Stroke, 1);
+            using (var dot = new SolidBrush(Accent)) g.FillEllipse(dot, cr.X + cr.Height * 0.35f, cr.Y + cr.Height * 0.38f, cr.Height * 0.24f, cr.Height * 0.24f);
+            Write(g, chip, smallFont, Ink, new RectangleF(cr.X + cr.Height * 0.7f, cr.Y, cr.Width - cr.Height * 0.7f, cr.Height), StringAlignment.Near, StringAlignment.Center, false);
+        }
+        float top = barH + h * 0.02f, bottom = h - h * 0.085f;
+        using (var pen = new Pen(Fade(Stroke, 160), 1)) g.DrawLine(pen, m, barH, w - m, barH);
+
+        if (job != null) { RenderJob(g, w, h, m, top, bottom, t); return; }
         if (pages.Count == 0) return;
         var p = pages.Peek();
-        g.DrawString(p.Title, titleFont, Brushes.White, x, y);
-        if (p.Title == "Skate launcher") {
-            using (var b = new SolidBrush(dim)) {
-                string send = St("send");
-                g.DrawString("Version: " + St("version") + "   (" + St("version_status") + ")", smallFont, b, x, y + titleFont.Height * 1.1f);
-                g.DrawString("Last: " + St("last") + (send == "" || send == "off" ? "" : "   Send: " + send), smallFont, b, new RectangleF(x, y + titleFont.Height * 1.1f + smallFont.Height, w - 2 * x, smallFont.Height * 2));
-            }
-            y += smallFont.Height * 3;
-        }
-        y += (int)(titleFont.Height * 1.7);
-        if (p.Body != null) {
-            float bodyH = p.Items.Count > 0 ? h / 2.4f : h - y - h / 6f;
-            g.DrawString(p.Body, smallFont, Brushes.Gainsboro, new RectangleF(x, y, w - 2 * x, bodyH));
-            y += (int)bodyH;
-        }
-        for (int i = 0; i < p.Items.Count; i++) {
-            var it = p.Items[i]; bool sel = i == p.Sel;
-            var color = it.On ? Color.White : Color.FromArgb(96, 100, 108);
-            if (sel) using (var hb = new SolidBrush(it.On ? accent : Color.FromArgb(70, 74, 82))) g.FillRectangle(hb, x - 16, y - 4, w - 2 * x + 32, itemFont.Height + 8);
-            using (var tb = new SolidBrush(sel && it.On ? Color.Black : color)) g.DrawString(it.Text + (it.On || !(it.Hint.StartsWith("Not set up") || it.Hint.StartsWith("Needs")) ? "" : "   (not set up)"), itemFont, tb, x, y);
-            y += (int)(itemFont.Height * 1.35);
-        }
+        if (IsMain(p)) RenderMain(g, p, w, h, m, top, bottom, t); else RenderPage(g, p, w, h, m, top, bottom);
+        // Footer: the selected entry's hint on the left, the button prompts on the right.
+        float fy = bottom + (h - bottom - smallFont.Height * 1.25f) / 2;
         string hint = p.Items.Count > 0 ? p.Items[p.Sel].Hint : "";
-        using (var b = new SolidBrush(dim)) {
-            if (hint != "") g.DrawString(hint, smallFont, b, new RectangleF(x, y + smallFont.Height, w - 2 * x, smallFont.Height * 4));
-            string foot = closeAt >= 0 ? "Closing in " + closeAt + " s (any button closes now)" : p.Items.Count > 0 ? "D-pad: move    A: select    B: back" : "A / B: back";
-            g.DrawString(foot, smallFont, b, x, h - h / 12);
+        if (closeAt >= 0) hint = "Closing in " + closeAt + " s (any button closes now)";
+        if (IsMain(p) || closeAt >= 0) Write(g, hint, smallFont, Dim, new RectangleF(m, fy, w * 0.55f, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Center, false);
+        float px = w - m - w * 0.2f;
+        if (p.Items.Count > 0) Prompt(g, ref px, fy, "A", Color.FromArgb(108, 196, 74), "Select");
+        Prompt(g, ref px, fy, "B", Color.FromArgb(228, 76, 70), "Back");
+    }
+
+    void RenderMain(Graphics g, Page p, int w, int h, float m, float top, float bottom, float t) {
+        // Hero card: the selected version, the rolling board, the Play card.
+        var hero = new RectangleF(m, top, w - 2 * m, (bottom - top) * 0.47f);
+        Card(g, hero, h * 0.022f, Color.FromArgb(30, 38, 56), Color.FromArgb(17, 20, 28), Stroke, 1);
+        var clip = g.Save();
+        using (var path = Round(hero, h * 0.022f)) g.SetClip(path);
+        float boardLen = hero.Height * 0.95f, span = hero.Width + boardLen * 0.55f;
+        float bx = hero.X - boardLen + (hero.Width * 0.42f + t * hero.Width * 0.05f) % span;
+        using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
+            path.AddEllipse(hero.Right - hero.Width * 0.5f, hero.Y - hero.Height * 0.4f, hero.Width * 0.7f, hero.Height * 1.6f);
+            using (var pg = new System.Drawing.Drawing2D.PathGradientBrush(path)) {
+                pg.CenterColor = Color.FromArgb(34, Accent); pg.SurroundColors = new[] { Color.FromArgb(0, Accent) };
+                g.FillPath(pg, path);
+            }
+        }
+        // The ground line the board rolls on.
+        float ground = hero.Bottom - hero.Height * 0.1f;
+        using (var gp = new Pen(Color.FromArgb(40, 255, 255, 255), 1)) g.DrawLine(gp, hero.X, ground, hero.Right, ground);
+        // The wheels' bottom is 34 of the board's 180 units below its top.
+        Board(g, bx, ground - boardLen * 0.55f * 34f / 180f, boardLen * 0.55f);
+        g.Restore(clip);
+        float pad = hero.Height * 0.12f;
+        Write(g, "NOW SELECTED", smallBold, Accent, new RectangleF(hero.X + pad, hero.Y + pad, hero.Width * 0.6f, smallFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
+        Write(g, St("version"), heroFont, Ink, new RectangleF(hero.X + pad, hero.Y + pad + smallFont.Height * 1.2f, hero.Width * 0.62f, heroFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
+        float sy = hero.Y + pad + smallFont.Height * 1.3f + heroFont.Height * 1.15f;
+        Write(g, St("version_status"), itemFont, Dim, new RectangleF(hero.X + pad, sy, hero.Width * 0.6f, itemFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
+        string send = St("send");
+        Write(g, "Last session: " + St("last") + (send == "" || send == "off" ? "" : "     Send: " + send), smallFont, Faint, new RectangleF(hero.X + pad, sy + itemFont.Height * 1.3f, hero.Width * 0.6f, smallFont.Height * 2.4f), StringAlignment.Near, StringAlignment.Near, true);
+        // The Play card (item 0) on the right of the hero.
+        if (p.Items.Count > 0) {
+            bool sel = p.Sel == 0;
+            var pr = new RectangleF(hero.Right - pad - hero.Width * 0.26f, hero.Bottom - pad - hero.Height * 0.32f, hero.Width * 0.26f, hero.Height * 0.32f);
+            if (sel) using (var glow = Round(new RectangleF(pr.X - 6, pr.Y - 6, pr.Width + 12, pr.Height + 12), pr.Height * 0.3f)) using (var gb = new SolidBrush(Fade(Accent, 60 + (int)(30 * Math.Sin(t * 3))))) g.FillPath(gb, glow);
+            Card(g, pr, pr.Height * 0.24f, sel ? Color.FromArgb(255, 210, 60) : Color.FromArgb(232, 178, 0), sel ? Accent : Color.FromArgb(200, 150, 0), Color.Empty, 0);
+            var ink = Color.FromArgb(20, 18, 10);
+            Write(g, "", iconFont, ink, new RectangleF(pr.X + pr.Height * 0.25f, pr.Y, pr.Height * 0.6f, pr.Height), StringAlignment.Near, StringAlignment.Center, false);
+            Write(g, "PLAY", playFont, ink, new RectangleF(pr.X + pr.Height * 0.85f, pr.Y, pr.Width - pr.Height, pr.Height), StringAlignment.Near, StringAlignment.Center, false);
+        }
+        // Tiles for everything else.
+        float gy = hero.Bottom + h * 0.03f, gap = w * 0.012f;
+        int n = p.Items.Count - 1, rows = Math.Max(1, (n + TileCols - 1) / TileCols);
+        float tw = (w - 2 * m - gap * (TileCols - 1)) / TileCols, th = Math.Min((bottom - gy - gap * (rows - 1)) / rows, h * 0.15f);
+        for (int i = 1; i < p.Items.Count; i++) {
+            var it = p.Items[i]; bool sel = i == p.Sel;
+            int k = i - 1; var r = new RectangleF(m + (k % TileCols) * (tw + gap), gy + (k / TileCols) * (th + gap), tw, th);
+            Tile(g, it, sel, r, true);
+        }
+    }
+
+    void Tile(Graphics g, Item it, bool sel, RectangleF r, bool icon) {
+        float rad = r.Height * 0.16f;
+        if (sel) Card(g, new RectangleF(r.X - 3, r.Y - 3, r.Width + 6, r.Height + 6), rad + 3, it.On ? Accent : Faint, it.On ? Accent : Faint, Color.Empty, 0);
+        Card(g, r, rad, sel ? PanelHi : Panel, sel ? Panel : Color.FromArgb(20, 23, 31), sel ? Color.Empty : Stroke, sel ? 0 : 1);
+        var ink = it.On ? Ink : Faint;
+        float pad = r.Height * 0.2f, tx = r.X + pad;
+        if (icon) {
+            var ib = new RectangleF(r.X + pad, r.Y + (r.Height - r.Height * 0.5f) / 2, r.Height * 0.5f, r.Height * 0.5f);
+            Card(g, ib, ib.Height * 0.28f, Fade(it.On ? (sel ? Accent : Cool) : Faint, 50), Fade(it.On ? (sel ? Accent : Cool) : Faint, 25), Color.Empty, 0);
+            Write(g, Glyph(it.Text), iconSmall, it.On ? (sel ? Accent : Ink) : Faint, ib, StringAlignment.Center, StringAlignment.Center, false);
+            tx = ib.Right + pad * 0.8f;
+        }
+        float tw = r.Right - tx - pad;
+        string title = it.Text;
+        if (title.StartsWith("> ")) {
+            // The current choice (the version list marks it with "> "): an accent pill instead of the marker.
+            title = title.Substring(2);
+            var ps = g.MeasureString("CURRENT", smallBold);
+            var pill = new RectangleF(r.Right - pad - ps.Width - smallBold.Height * 0.9f, r.Y + r.Height * 0.16f + (itemBold.Height - smallBold.Height * 1.3f) / 2, ps.Width + smallBold.Height * 0.9f, smallBold.Height * 1.3f);
+            Card(g, pill, pill.Height / 2, Accent, Accent, Color.Empty, 0);
+            Write(g, "CURRENT", smallBold, Color.FromArgb(20, 18, 10), pill, StringAlignment.Center, StringAlignment.Center, false);
+            tw = pill.X - tx - pad * 0.5f;
+        }
+        float ty = r.Y + r.Height * 0.16f, hy = ty + itemBold.Height * 1.15f;
+        Write(g, title, itemBold, ink, new RectangleF(tx, ty, tw, itemBold.Height * 1.15f), StringAlignment.Near, StringAlignment.Near, false);
+        // At most two whole lines of the hint.
+        float hh = Math.Min(r.Bottom - hy - pad * 0.3f, smallFont.GetHeight(g) * 2.05f);
+        Write(g, it.Hint, smallFont, it.On ? Dim : Faint, new RectangleF(tx, hy, r.Right - tx - pad, hh), StringAlignment.Near, StringAlignment.Near, true);
+    }
+
+    void RenderPage(Graphics g, Page p, int w, int h, float m, float top, float bottom) {
+        Write(g, p.Title, titleFont, Ink, new RectangleF(m, top, w - 2 * m, titleFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+        float y = top + titleFont.Height * 1.5f;
+        if (p.Body != null) {
+            float bodyH = p.Items.Count > 0 ? (bottom - y) * 0.45f : bottom - y - h * 0.01f;
+            var br = new RectangleF(m, y, w - 2 * m, bodyH);
+            Card(g, br, h * 0.016f, Panel, Color.FromArgb(19, 22, 30), Stroke, 1);
+            float pad = h * 0.025f;
+            float bodyText = br.Height - 2 * pad;
+            if (p.Mono != null) bodyText = Math.Min(bodyText, g.MeasureString(p.Body, smallFont, (int)(br.Width - 2 * pad)).Height + smallFont.Height * 0.5f);
+            Write(g, p.Body, smallFont, Color.FromArgb(214, 218, 226), new RectangleF(br.X + pad, br.Y + pad, br.Width - 2 * pad, bodyText), StringAlignment.Near, StringAlignment.Near, true);
+            if (p.Mono != null) {
+                // A failed build's first error, fixed width so the ^^^ marks stay under the code.
+                var eb = new RectangleF(br.X + pad, br.Y + pad + bodyText, br.Width - 2 * pad, br.Height - 2 * pad - bodyText);
+                Card(g, eb, h * 0.01f, Color.FromArgb(40, 20, 22), Color.FromArgb(26, 14, 16), Color.FromArgb(120, 228, 76, 70), 1);
+                Write(g, p.Mono, monoFont, Color.FromArgb(236, 226, 226), new RectangleF(eb.X + pad * 0.6f, eb.Y + pad * 0.6f, eb.Width - 1.2f * pad, eb.Height - 1.2f * pad), StringAlignment.Near, StringAlignment.Near, true);
+            }
+            y = br.Bottom + h * 0.025f;
+        }
+        if (p.Items.Count == 0) return;
+        // A scrolling list of cards: the selected one stays in view.
+        float ch = h * 0.095f, gap = h * 0.014f;
+        int fit = Math.Max(1, (int)((bottom - y + gap) / (ch + gap)));
+        int first = Math.Max(0, Math.Min(p.Sel - fit / 2, p.Items.Count - fit));
+        for (int i = first; i < p.Items.Count && i < first + fit; i++) {
+            Tile(g, p.Items[i], i == p.Sel, new RectangleF(m, y, w - 2 * m, ch), false);
+            y += ch + gap;
+        }
+        if (first > 0 || first + fit < p.Items.Count)
+            Write(g, (p.Sel + 1) + " / " + p.Items.Count, smallFont, Faint, new RectangleF(m, top, w - 2 * m, titleFont.Height * 1.3f), StringAlignment.Far, StringAlignment.Center, false);
+    }
+
+    // A build: the version and commit, cargo's own step count as a progress bar with the board riding its head, the
+    // crate being built, the warning count and, as soon as it appears, the first error.
+    void RenderBuild(Graphics g, int w, int h, RectangleF card, float pad, float t) {
+        Write(g, "BUILDING", smallBold, Accent, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
+        Write(g, BuildView.Clock(DateTime.Now - build.Start), smallBold, Dim, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Far, StringAlignment.Near, false);
+        float y = card.Y + pad + smallFont.Height * 1.3f;
+        Write(g, build.Name, heroFont, Ink, new RectangleF(card.X + pad, y, card.Width - 2 * pad, heroFont.Height * 1.25f), StringAlignment.Near, StringAlignment.Near, false);
+        y += heroFont.Height * 1.2f;
+        Write(g, "at " + build.Commit, itemFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, itemFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+        y += itemFont.Height * 2.2f;
+        float boardLen = card.Width * 0.12f;
+        var track = new RectangleF(card.X + pad, y + boardLen * 0.26f, card.Width - 2 * pad, h * 0.01f);
+        Card(g, track, track.Height / 2, Stroke, Stroke, Color.Empty, 0);
+        float head;
+        if (build.Total > 0) {
+            float k = Math.Min(1f, build.Done / (float)build.Total);
+            var fill = new RectangleF(track.X, track.Y, Math.Max(track.Height, track.Width * k), track.Height);
+            Card(g, fill, track.Height / 2, build.Ended && !build.Ok ? Color.FromArgb(228, 76, 70) : Accent, build.Ended && !build.Ok ? Color.FromArgb(228, 76, 70) : Accent, Color.Empty, 0);
+            head = fill.Right;
+        } else {
+            // No count yet (cargo prints its bar once the build plan is known): a sweeping segment.
+            float run = (t * 0.35f) % 1f, sx = track.X + run * track.Width * 1.3f - track.Width * 0.3f;
+            var seg = RectangleF.Intersect(track, new RectangleF(sx, track.Y, track.Width * 0.3f, track.Height));
+            if (seg.Width > 0) Card(g, seg, track.Height / 2, Accent, Accent, Color.Empty, 0);
+            head = seg.Width > 0 ? seg.Right : track.X;
+        }
+        var clip = g.Save(); g.SetClip(card);
+        Board(g, Math.Max(track.X - boardLen * 0.4f, Math.Min(head - boardLen * 0.6f, track.Right - boardLen * 0.6f)), track.Y - boardLen * 0.21f, boardLen);
+        g.Restore(clip);
+        y = track.Bottom + h * 0.03f;
+        string count = build.Total > 0 ? build.Done + " / " + build.Total + " build steps" : build.Compiled + " crates compiled";
+        if (build.Ended) count = build.Ok ? "Built in " + BuildView.Clock(build.End - build.Start) : "Build failed";
+        Write(g, count, itemBold, build.Ended && !build.Ok ? Color.FromArgb(255, 120, 110) : Ink, new RectangleF(card.X + pad, y, card.Width * 0.5f, itemBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+        if (build.Warnings > 0) {
+            string wtext = build.Warnings + (build.Warnings == 1 ? " warning" : " warnings");
+            var ws = g.MeasureString(wtext, smallBold);
+            var pill = new RectangleF(card.Right - pad - ws.Width - smallBold.Height, y + (itemBold.Height - smallBold.Height * 1.4f) / 2, ws.Width + smallBold.Height, smallBold.Height * 1.4f);
+            Card(g, pill, pill.Height / 2, Fade(Accent, 40), Fade(Accent, 40), Fade(Accent, 120), 1);
+            Write(g, wtext, smallBold, Accent, pill, StringAlignment.Center, StringAlignment.Center, false);
+        }
+        y += itemBold.Height * 1.4f;
+        if (build.Now != "" && !build.Ended) Write(g, "Now: " + build.Now, smallFont, Dim, new RectangleF(card.X + pad, y, card.Width - 2 * pad, smallFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+        y += smallFont.Height * 2f;
+        if (build.Error.Count > 0) {
+            var eb = new RectangleF(card.X + pad, y, card.Width - 2 * pad, card.Bottom - pad - y);
+            Card(g, eb, h * 0.012f, Color.FromArgb(40, 20, 22), Color.FromArgb(26, 14, 16), Color.FromArgb(120, 228, 76, 70), 1);
+            float ep = h * 0.016f;
+            Write(g, "First error", smallBold, Color.FromArgb(255, 120, 110), new RectangleF(eb.X + ep, eb.Y + ep, eb.Width - 2 * ep, smallBold.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+            Write(g, string.Join("\n", build.Error), monoFont, Color.FromArgb(236, 226, 226), new RectangleF(eb.X + ep, eb.Y + ep + smallBold.Height * 1.5f, eb.Width - 2 * ep, eb.Height - 2 * ep - smallBold.Height * 1.5f), StringAlignment.Near, StringAlignment.Near, true);
+        }
+    }
+
+    void RenderJob(Graphics g, int w, int h, float m, float top, float bottom, float t) {        var card = new RectangleF(w * 0.12f, top + (bottom - top) * 0.03f, w * 0.76f, (bottom - top) * 0.94f);
+        Card(g, card, h * 0.022f, Color.FromArgb(28, 34, 48), Color.FromArgb(16, 19, 26), Stroke, 1);
+        float pad = card.Height * 0.07f;
+        if (build.Active || build.Ended) { RenderBuild(g, w, h, card, pad, t); return; }
+        Write(g, "RUNNING", smallBold, Accent, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Near, StringAlignment.Near, false);
+        var el = DateTime.Now - jobStart;
+        Write(g, ((int)el.TotalMinutes) + ":" + el.Seconds.ToString("00"), smallBold, Dim, new RectangleF(card.X + pad, card.Y + pad, card.Width - 2 * pad, smallFont.Height * 1.2f), StringAlignment.Far, StringAlignment.Near, false);
+        Write(g, jobTitle, heroFont, Ink, new RectangleF(card.X + pad, card.Y + pad + smallFont.Height * 1.3f, card.Width - 2 * pad, heroFont.Height * 1.25f), StringAlignment.Near, StringAlignment.Near, false);
+        // The board rolling along the progress track.
+        float ty = card.Y + pad + smallFont.Height * 1.4f + heroFont.Height * 1.5f, boardLen = card.Width * 0.16f;
+        var track = new RectangleF(card.X + pad, ty + boardLen * 0.26f, card.Width - 2 * pad, h * 0.008f);
+        Card(g, track, track.Height / 2, Stroke, Stroke, Color.Empty, 0);
+        float run = (t * 0.35f) % 1f;
+        float sx = track.X + run * (track.Width + track.Width * 0.3f) - track.Width * 0.3f;
+        var seg = RectangleF.Intersect(track, new RectangleF(sx, track.Y, track.Width * 0.3f, track.Height));
+        if (seg.Width > 0) Card(g, seg, track.Height / 2, Accent, Accent, Color.Empty, 0);
+        var clip = g.Save(); g.SetClip(card);
+        Board(g, Math.Max(track.X - boardLen * 0.5f, Math.Min(seg.Right - boardLen * 0.6f, track.Right - boardLen * 0.5f)), track.Y - boardLen * 0.21f, boardLen);
+        g.Restore(clip);
+        // The last line as the status, a few earlier ones below it.
+        var lines = new List<string>();
+        for (int i = log.Count - 1; i >= 0 && lines.Count < 9; i--) { string c = Clean(log[i]); if (c != "") lines.Add(c); }
+        float ly = track.Bottom + boardLen * 0.45f;
+        Write(g, lines.Count > 0 ? lines[0] : "Starting...", itemFont, Ink, new RectangleF(card.X + pad, ly, card.Width - 2 * pad, itemFont.Height * 1.3f), StringAlignment.Near, StringAlignment.Near, false);
+        ly += itemFont.Height * 1.6f;
+        var logBox = new RectangleF(card.X + pad, ly, card.Width - 2 * pad, card.Bottom - pad - ly);
+        Card(g, logBox, h * 0.012f, Color.FromArgb(12, 14, 19), Color.FromArgb(12, 14, 19), Fade(Stroke, 140), 1);
+        float lh = smallFont.Height * 1.15f, lp = h * 0.015f, yy = logBox.Bottom - lp - lh;
+        for (int i = 1; i < lines.Count && yy >= logBox.Y + lp; i++) {
+            Write(g, lines[i], smallFont, Fade(Dim, Math.Max(70, 255 - i * 22)), new RectangleF(logBox.X + lp, yy, logBox.Width - 2 * lp, lh), StringAlignment.Near, StringAlignment.Near, false);
+            yy -= lh;
         }
     }
 }
@@ -398,6 +820,13 @@ static class SkateLauncher {
     [STAThread]
     static void Main(string[] argv) {
         Application.EnableVisualStyles();
+        // SkateLauncher.exe --snapshot <out.png> [main|versions|tools|job]: draws one screen at 1920x1080 and exits
+        // (checking the look without opening the window).
+        if (argv.Length >= 2 && argv[0] == "--snapshot") {
+            var form = new LauncherForm(new string[0]);
+            form.Snapshot(argv[1], argv.Length > 2 ? argv[2] : "main");
+            return;
+        }
         Application.Run(new LauncherForm(argv));
     }
 }

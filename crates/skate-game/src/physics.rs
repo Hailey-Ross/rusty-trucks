@@ -84,6 +84,7 @@ mod landing_quality;
 mod offboard;
 mod player_input;
 mod player_state;
+pub(crate) mod grab_view;
 pub(crate) mod prop_carry;
 pub(crate) mod prop_dynamics;
 pub(crate) mod prop_layout;

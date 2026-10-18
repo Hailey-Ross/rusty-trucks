@@ -1,4 +1,5 @@
-//! The living world features still being tested, off by default (opt-in): zombie mode and NPC skater physics.
+//! The living world features still being tested, off by default (opt-in): zombie mode, NPC skater physics and the grab
+//! visualizer (`SKATE_VISUALIZE_GRABS=1`).
 //! The player switches them in the PC overlay (Graphics > Living World), in effect at once and saved in
 //! `settings/graphics.json`; `SKATE_ZOMBIE=1` and `SKATE_NPC_SIM=1` turn one on for a run. Prop grab and skitching
 //! are no longer opt-ins: they are always on in the game, not switchable (user, 2026-10-15; `LivingWorldPlugin`). A mod may still change zombie mode and NPC skater physics
@@ -10,22 +11,26 @@ use serde::{Deserialize, Serialize};
 pub(crate) enum OptIn {
     Zombie,
     NpcPhysics,
+    /// Grab cues in the world and grab availability log lines (`grab_view`); a viewer aid, nothing changes in play.
+    VisualizeGrabs,
 }
 
 impl OptIn {
-    pub(crate) const ALL: [OptIn; 2] = [OptIn::Zombie, OptIn::NpcPhysics];
+    pub(crate) const ALL: [OptIn; 3] = [OptIn::Zombie, OptIn::NpcPhysics, OptIn::VisualizeGrabs];
 
     /// The variable that turns it on for a run.
     pub(crate) fn env(self) -> &'static str {
         match self {
             OptIn::Zombie => "SKATE_ZOMBIE",
             OptIn::NpcPhysics => "SKATE_NPC_SIM",
+            OptIn::VisualizeGrabs => "SKATE_VISUALIZE_GRABS",
         }
     }
     pub(crate) fn label(self) -> &'static str {
         match self {
             OptIn::Zombie => "Zombie Mode",
             OptIn::NpcPhysics => "NPC Skater Physics",
+            OptIn::VisualizeGrabs => "Visualize Grabs",
         }
     }
     /// The overlay's status line for the row (what it does and that it is still being tested).
@@ -33,6 +38,7 @@ impl OptIn {
         match self {
             OptIn::Zombie => "Zombie mode (the retail cheat, until the cheat screen exists): yellow screen, no traffic, every ped comes after you.",
             OptIn::NpcPhysics => "NPC skaters near you run full skater physics and bail (still being tested).",
+            OptIn::VisualizeGrabs => "Shows the props and car spots in grab range (green = grab now) and logs grab availability.",
         }
     }
     fn env_on(self) -> bool {
@@ -43,6 +49,7 @@ impl OptIn {
         match self {
             OptIn::Zombie => "zombie",
             OptIn::NpcPhysics => "npc_physics",
+            OptIn::VisualizeGrabs => "visualize_grabs",
         }
     }
 }
@@ -53,6 +60,7 @@ impl OptIn {
 pub(crate) struct OptIns {
     pub zombie: bool,
     pub npc_physics: bool,
+    pub visualize_grabs: bool,
 }
 
 impl OptIns {
@@ -68,12 +76,14 @@ impl OptIns {
         match o {
             OptIn::Zombie => self.zombie,
             OptIn::NpcPhysics => self.npc_physics,
+            OptIn::VisualizeGrabs => self.visualize_grabs,
         }
     }
     pub(crate) fn set(&mut self, o: OptIn, on: bool) {
         match o {
             OptIn::Zombie => self.zombie = on,
             OptIn::NpcPhysics => self.npc_physics = on,
+            OptIn::VisualizeGrabs => self.visualize_grabs = on,
         }
     }
     /// Either one on (saved choice or this run's variable).
@@ -91,6 +101,8 @@ pub(crate) fn in_effect(settings: &super::LivingWorldSettings) -> OptIns {
     OptIns {
         zombie: settings.zombie,
         npc_physics: settings.npc_simulated.enabled,
+        // The player's own choice only: a viewer aid, not a mod tuning.
+        visualize_grabs: settings.user_opt_ins.visualize_grabs,
     }
 }
 

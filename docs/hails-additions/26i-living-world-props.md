@@ -814,3 +814,25 @@ No behaviour change.
 - **Open:** whether the large dumpster's rim qualifies from a standing skater (needs the user's next try and the new
   line); the gated bind in `82D442D0` order (`flags_2480` bit `0x400000`, published one data request later); props in
   the validation line world (our lines see only static triangles).
+
+## Opt-in: Visualize Grabs (2026-10-18)
+
+- **Ask:** the user, 2026-10-18: "add an opt in to the overlay guide called 'visualize grabs' which when enabled shows a
+  visual que when you are in range of a grabbable item, whether its a prop/object or a skitchable vehicle spot, have it
+  trigger additional logging for grabbing and its availability to the player", and "create a new indicator the old
+  one we were using was shit" (the old carry HUD, `prop_carry_hud.rs`, was removed earlier).
+- **What it shows** (PC overlay, Opt-Ins, **Visualize Grabs**; `SKATE_VISUALIZE_GRABS=1` for a run; off by default,
+  saved with the other opt-ins): every grab record in range as an amber line along its spline chord with a dot at
+  each end; the record a grab takes now in green, with a thick line, a ring pulsing around its middle and an arrow
+  pointing down at it. On foot that is the record the Ground grab decision qualifies (`82D324B0`), on board the car
+  spot the skitch latch takes (`82D39D98`).
+- **Where the records come from:** while grab is held, the game's own decision (the owner's validated set and its
+  pick). Without grab held retail runs no query, so the visualizer runs the same query and pick read-only
+  (`biped_ground::grab::preview`, `ground_runtime::skitch::preview`, sharing the decisions' query and qualify code);
+  the preview skips the three validation lines, so a record behind a wall can show until grab is held. A viewer aid
+  only: it never feeds the decision, so play is the same with it on or off.
+- **Logging** (only while it is on): `GRAB_VIEW <on_foot|riding> <grab held|preview> ready=<record> in_range=<n>
+  [<owner> at <m>, height <m>; ...]` when the state, the ready record or the records in range change (with nothing in
+  range: the nearest prop with grab splines within 6 m); `SKITCH_CANDIDATE kind id can_grab time latch_time latch` per
+  car spot when the skitch latch changes. `PROP_GRAB_MISS` is written with or without it.
+- **Not play-tested yet.**

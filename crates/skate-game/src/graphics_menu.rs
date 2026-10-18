@@ -1585,7 +1585,7 @@ mod tests {
         m.select_section(2);
         assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW, 911, NPC_DRAW_DISTANCE_ROW]);
         m.select_section(5);
-        assert_eq!(m.page(), vec![913, MORE_AUDIBLE_ROW, SPEECH_ROW, 40, 41]);
+        assert_eq!(m.page(), vec![913, MORE_AUDIBLE_ROW, SPEECH_ROW, 40, 41, 42]);
         m.select_section(1);
         assert_eq!(m.page(), vec![904, 3, 906, CAMERA_ANGLE_ROW, 907, 8, 10]);
         m.select_section(4);
