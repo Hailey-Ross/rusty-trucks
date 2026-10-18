@@ -2035,6 +2035,7 @@ pub(crate) fn think_peds(
         let gone: Vec<u64> = c.members.iter().map(|m| m.ped).filter(|p| !entities.contains_key(p)).collect();
         for p in gone {
             c.leave(p);
+            info!("PED_CONVERSATION id={} leave ped={p} result=despawned members={} tick={tick}", c.id, c.members.len());
         }
     }
     conversations.map.retain(|_, c| !c.members.is_empty());
