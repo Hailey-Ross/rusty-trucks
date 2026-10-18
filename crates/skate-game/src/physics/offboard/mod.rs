@@ -6,13 +6,13 @@
 pub(crate) mod air_feet;
 
 /// The world the on-foot (biped) queries see: the map, and the DMO prop world as query pool bit 2 (`82764AB0`,
-/// world+0x5580; research b218: retail's walker probes use pool mask 7, so a bench is ordinary step geometry) without
-/// the triangles of the prop the player holds (`skip`, start..end; NOT RETAIL YET: retail's held-DMO filter is not
-/// decoded). Derefs to the map, so map-only code reads it unchanged.
+/// world+0x5580, "DMOPool"; research b218 / b221: retail's walker probes use pool mask 7, so a heavy prop is ordinary
+/// step geometry). Light and held props are left out by their meshes' collision type flags (the walker's mask 0x6000,
+/// `PropDynamics::for_each_collision_type`). Derefs to the map, so map-only code reads it unchanged.
 #[derive(Clone, Copy)]
 pub(crate) struct BipedWorld<'a> {
     pub map: &'a skate_core::physics::board_world::BoardWorld,
-    pub props: Option<(&'a skate_core::physics::board_world::BoardWorld, (usize, usize))>,
+    pub props: Option<&'a skate_core::physics::board_world::BoardWorld>,
 }
 
 impl<'a> From<&'a skate_core::physics::board_world::BoardWorld> for BipedWorld<'a> {

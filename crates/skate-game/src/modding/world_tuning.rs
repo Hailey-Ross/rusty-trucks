@@ -441,6 +441,7 @@ pub(crate) fn props_table(p: &PropsPatch) -> PropTuningTable {
             bail_angular_factor: v.bail_angular_factor.unwrap_or(d.bail_angular_factor),
             bail_heavy_mass: v.bail_heavy_mass.unwrap_or(d.bail_heavy_mass),
             bail_blend: v.bail_blend.unwrap_or(d.bail_blend),
+            walkable_mass: v.walkable_mass.unwrap_or(d.walkable_mass),
         };
     }
     if let Some(v) = &p.upright {
@@ -598,7 +599,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "row_solver": v.row_solver, "iterations": v.iterations, "sleep_energy": v.sleep_energy,
                 "sleep_frames": v.sleep_frames, "max_sleeps_per_step": v.max_sleeps_per_step, "rest_snap": v.rest_snap,
                 "bail_clamp": v.bail_clamp, "bail_linear_factor": v.bail_linear_factor, "bail_angular_factor": v.bail_angular_factor,
-                "bail_heavy_mass": v.bail_heavy_mass, "bail_blend": v.bail_blend,
+                "bail_heavy_mass": v.bail_heavy_mass, "bail_blend": v.bail_blend, "walkable_mass": v.walkable_mass,
             }, "upright": {
                 "window_seconds": u.window_seconds, "tick_seconds": u.tick_seconds, "stop_angle_deg": u.stop_angle_deg,
                 "max_angle_deg": u.max_angle_deg, "dead_band_deg": u.dead_band_deg, "gain_min": u.gain_min, "gain_max": u.gain_max,
