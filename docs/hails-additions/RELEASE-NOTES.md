@@ -70,7 +70,9 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
-- **Grabbing the big dumpsters (new):** a grab now takes the handle Skate 3 picks instead of a bottom edge or corner post, which refused the grab every time on the blue dumpsters. A grab press that starts nothing logs `PROP_GRAB_MISS` with the reason.
+- **Grabbing props works again (new):** in the previous build no prop could be grabbed (only 2 of a map's props were known to the grab check). Benches, bins, newspaper boxes and dumpsters grab again, and a grab takes the handle Skate 3 picks instead of a bottom edge or corner post. A grab press that starts nothing logs `PROP_GRAB_MISS` with the reason, and **Visualize Grabs** shows what is in reach.
+- **Turning while carrying (new):** when you grab a prop you turn to face it over about half a second, like Skate 3, instead of snapping round at once.
+- **Launcher (new):** A / Enter and the mouse work on the main page, and the rolling board no longer goes behind the Play card.
 - **Refresh Game Files from the game (new):** it no longer ends with "exit code 1" after setup finished.
 - **Peds you ride into (new):** a ped you hit on the board now gets the contact (before, no ped ever did, on foot or on board); the log says when a contact got no reaction and why.
 - **No freeze when play starts (new):** the first moment of play used to freeze for about 1 to 2 seconds while the world's collision and the living world loaded. That now happens while the loading screen is still up (it stays up a little longer), and after a map switch play starts without the hitch.
