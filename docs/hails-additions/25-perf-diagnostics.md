@@ -522,7 +522,9 @@ DownTown on the main PC, muted, before / after: the first frame after the commit
 frame: the living world loading its map data on the first fixed tick (`peds::load_ped_data` 141 ms,
 `living_world::load_for_map` 35 ms), a follow-up.
 
-Not changed: the first ground at start (still built on the first fixed tick, behind the loading screen).
+Not changed: the first ground at start (still built on the first fixed tick). Correction 2026-10-17: that tick is
+not behind the loading screen; virtual time is paused there, so it is the first frame of play (1.3 s with the
+checkout's dev mods on the desktop, `modding::fixed`; see "The living world loads behind the loading screen").
 
 ## Map switch: the ped data parses `tables.json` once (2026-10-17)
 
@@ -605,6 +607,53 @@ light leaves the material asset untouched, a new light still reaches it).
 Verification (desktop, DownTown, muted, no mods, 60 s, before / after on the same build otherwise): median frame
 3.48 / 2.68 ms, p90 4.82 / 4.64, p99 6.81 / 5.94; frames in the run 13800 / 16664; summed system time 11.3 / 9.9 ms
 per frame; both car material systems leave the top list; 0 error lines in both runs.
+
+Open (found with the same readout, not fixed): steady-state stalls of 25-90 ms, about one every 1-2 s, also in a
+foreground desktop play session (144 in 4 minutes, mean 31 ms). Their lengths cluster near 33-36 ms and 66-69 ms. In
+every second with a stall the same systems on different threads stretch together by the same amount
+(`propagate_parent_transforms` and the specialisation checks on the main thread, `render_system` on the render
+thread), so the whole process waits on something shared rather than one system being slow. Ruled out: the frame rate
+(a 144 fps cap keeps them), the NPC physics opt-in (fewer with it off, not gone) and log writing (already on its own
+thread). A Chrome trace hides them because it slows every frame; a Windows Performance Recorder trace of one stall is
+next.
+
+## The living world loads behind the loading screen (2026-10-17)
+
+Problem: the living world's map data (`load_for_map`, about 35 ms on the desktop) and the ped data
+(`load_ped_data`, about 79 ms) are FixedUpdate systems. Virtual time is paused while the startup loading screen is
+up and while a map switch publishes, so no fixed tick runs there: both loads landed in the first frame of play
+(research b226, `.local/research/b226-warmup-preload.md`; main checked `startup_loading.rs` and `map_transition.rs`).
+
+Change (plan b228, `.local/research/b228-loaders-behind-gate.md`, checked and extended by main):
+- The same loads run in PreUpdate after the map transition while the loading screen is up
+  (`living_world::behind_loading_gate`: startup not done, or a map transition busy). Both are keyed by
+  (map, generation), so the fixed copies on the first tick find the map loaded and do nothing.
+- Startup takes a `living_world` hold on the loading screen and releases it once both are loaded. At a switch the
+  load runs in the commit frame, three Publishing frames before the unpause.
+- The first tick stays the same: the late load ran the crosswalk upkeep on the old data and then replaced it, so a
+  map's first tick had no signalled arms; an early load skips that upkeep once (`PedData::skip_arms_once`).
+- Settings read only at load (the seed, `enabled`, `pedestrians.enabled`) that change before play starts make the
+  first tick load again with the current ones (`recheck_early_load`), as the late load would have.
+- Ordering made explicit: the NPC skater chain (`avoid`, `simulate`, which read the ped navmesh) runs after
+  `load_ped_data`. Before, only Bevy's shared automatic sync point after the two record systems' Commands ordered
+  them; same order, now stated.
+- Same outcome, earlier: mods' `living_world` despawn events for the old world reach their Update callbacks during
+  the loading frames instead of the first play frame (same events, same order; the fixed readers still get them on
+  the first tick, Bevy 0.18.1 keeps messages until a fixed tick ran). The world audio banks' prefetch now starts
+  behind the loading screen, so the first seconds of world audio can start sooner.
+
+Tests: `the_loading_screen_loads_the_living_world_and_the_first_tick_keeps_it`,
+`settings_changed_behind_the_loading_screen_load_again_on_the_first_tick`,
+`npc_skater_systems_are_ordered_after_the_ped_data_load` (built without automatic sync points, it names `avoid`,
+`advance` and `simulate` when the order is missing).
+
+Verification: skate-game tests 788 pass. A muted map switch run (`map-switch-run.ps1`, University then DownTown,
+dev mods): `LIVING_WORLD data` and `PED_DATA_LOAD` come from `early_load_for_map` / `early_load_ped_data`, at
+startup before `STARTUP_LOADING done` and at the switch right after `MAP_TRANSITION_COMMITTED`; each logs once
+per map (no second load on the first tick, no settings reload); 0 error lines. The first frame with a fixed tick
+after the switch took 6.1 ms (fixed step 1.6 ms), where that tick carried the whole load before (about 115 ms
+on the desktop). At startup the first fixed tick still takes 1.3 s with dev mods: the mods' first ground
+(`modding::fixed`), next on the list.
 
 ## Zone ambience beds are read ahead at map load (2026-10-17)
 
