@@ -570,6 +570,42 @@ Verification: skate-game graphics tests 18 pass; a muted desktop run logs `GRAPH
 cap unlimited npc draw distance 1.00 frame stats true` and no `GPU_ADAPTER` line (RTX 4080 SUPER, discrete). The integrated GPU
 path needs a hybrid machine set to the integrated GPU (not checked).
 
+## Per-system cost readout (`SKATE_SYSTEM_TIMING`, 2026-10-17)
+
+Problem: the frame log gives the frame time and the trace-all Chrome trace gives spans, but neither says which Bevy
+systems cost the most per frame without loading a trace into a viewer, and a laptop session only sends logs.
+
+Change (`crates/skate-game/src/system_timing.rs`, plan from research b214 widened to every system):
+- `SKATE_SYSTEM_TIMING=1`, also on under trace-all, installs a tracing layer that names each Bevy `system` span once
+  when it is created and adds up the wall time between enter and exit per system, with no allocation per run.
+- A system in `Last` logs once per second `SYSTEM_TIMING frames=<n> systems_ms_per_frame=<x> | <name>=<mean ms per
+  frame>/<longest run ms>x<runs> ...` for the top 16 (name = last two path segments), then resets the counters.
+- Parallel systems overlap, so the numbers add up to more than the frame; they show where the CPU goes. Off: the layer
+  is not installed and nothing runs. No game state is read or changed.
+
+Verification: a muted 60 s DownTown run without mods (`frame-time-run.ps1 -NoMods`, which now keeps the lines in the
+run's trace folder as `system_timing.log`) logs one line per second; its top leaf system pointed at the car material
+fix below.
+
+## Car materials are no longer uploaded again every frame (2026-10-17)
+
+Problem: the first `SYSTEM_TIMING` run showed `prepare_erased_assets<VehicleMaterial>` at 0.32 ms per frame and
+`prepare_material_bind_groups` at 0.27 ms, every frame, although no car's look changed.
+
+Root cause: `retail_character::update` writes the eased `display_sh` into `Lighting` every frame, so `Lighting` is
+always "changed". `vehicles::update_car_light` took that as a new light and called `get_mut` on every car material;
+`get_mut` alone marks the asset modified, so Bevy prepared and uploaded every car material again each frame with the
+same values.
+
+Change: `update_car_light` writes only a material whose `params.light` differs from `Lighting::light`. The values the
+GPU sees are the same as before on every frame (a skipped write is one whose value already matches), so the picture
+is unchanged; only the redundant uploads go. Test `car_light_writes_only_materials_whose_light_differs` (an unchanged
+light leaves the material asset untouched, a new light still reaches it).
+
+Verification (desktop, DownTown, muted, no mods, 60 s, before / after on the same build otherwise): median frame
+3.48 / 2.68 ms, p90 4.82 / 4.64, p99 6.81 / 5.94; frames in the run 13800 / 16664; summed system time 11.3 / 9.9 ms
+per frame; both car material systems leave the top list; 0 error lines in both runs.
+
 ## Zone ambience beds are read ahead at map load (2026-10-17)
 
 - **Problem:** entering an ambience zone read its bed (16-bit 48 kHz stereo WAV, ~2 min, 15-29 MB) from disk on the

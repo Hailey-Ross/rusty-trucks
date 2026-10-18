@@ -60,6 +60,12 @@ pub(crate) struct Lighting {
 }
 
 impl Lighting {
+    /// No materials or probes, only the light (tests outside this module).
+    #[cfg(test)]
+    pub(crate) fn with_light(light: Vec4) -> Self {
+        Self { data: LightingData { materials: HashMap::new(), default_sh: [[0.; 3]; 9], native: HashMap::new() }, probes: default(), light, display_sh: None }
+    }
+
     pub(crate) fn default_sh(&self) -> [Vec4; 9] {
         std::array::from_fn(|i| Vec3::from_array(self.data.default_sh[i]).extend(0.))
     }
