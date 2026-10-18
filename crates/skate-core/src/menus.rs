@@ -25,6 +25,18 @@ pub enum EntryKind {
     Category,
     Item,
     Setting,
+    /// Challenge Map nodes (FE screen 17), named after their vault classes (skatercollections): the tree's tabs and
+    /// folders (`map_listing`, `map_filter`), labels (`map_category`) and leaves. An entry's id is its vault key, so
+    /// the hook ids read `fe_locations:<key>` and so on; every node exists in the data, so each has its hooks and stays
+    /// greyed until a handler is registered (b244, b253).
+    MapListing,
+    MapFilter,
+    MapCategory,
+    FeLocation,
+    World,
+    Challenge,
+    MapCommand,
+    CodeUnlock,
 }
 
 impl EntryKind {
@@ -33,15 +45,39 @@ impl EntryKind {
             Self::Category => "category",
             Self::Item => "item",
             Self::Setting => "setting",
+            Self::MapListing => "map_listing",
+            Self::MapFilter => "map_filter",
+            Self::MapCategory => "map_category",
+            Self::FeLocation => "fe_locations",
+            Self::World => "world",
+            Self::Challenge => "challenges",
+            Self::MapCommand => "map_commands",
+            Self::CodeUnlock => "code_unlocks",
         }
     }
     pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "category" => Some(Self::Category),
-            "item" => Some(Self::Item),
-            "setting" => Some(Self::Setting),
-            _ => None,
-        }
+        Some(match name {
+            "category" => Self::Category,
+            "item" => Self::Item,
+            "setting" => Self::Setting,
+            "map_listing" => Self::MapListing,
+            "map_filter" => Self::MapFilter,
+            "map_category" => Self::MapCategory,
+            "fe_locations" => Self::FeLocation,
+            "world" => Self::World,
+            "challenges" => Self::Challenge,
+            "map_commands" => Self::MapCommand,
+            "code_unlocks" => Self::CodeUnlock,
+            _ => return None,
+        })
+    }
+    /// A Challenge Map node kind.
+    pub fn is_map(self) -> bool {
+        !matches!(self, Self::Category | Self::Item | Self::Setting)
+    }
+    /// A Challenge Map folder (tab or folder): enabled when one of its children is.
+    pub fn is_map_folder(self) -> bool {
+        matches!(self, Self::MapListing | Self::MapFilter)
     }
 }
 
@@ -60,6 +96,14 @@ impl EntryRef {
     }
     pub fn setting(id: &str) -> Self {
         Self { kind: EntryKind::Setting, id: id.into() }
+    }
+    /// A Challenge Map node, `kind` one of the map kinds, `key` its vault key.
+    pub fn map(kind: EntryKind, key: &str) -> Self {
+        Self { kind, id: key.into() }
+    }
+    /// The hook id form `<vault class>:<key>` (`fe_locations:dist_downtown_aletown`).
+    pub fn hook_id(&self) -> String {
+        format!("{}:{}", self.kind.name(), self.id)
     }
 }
 
@@ -282,6 +326,17 @@ pub struct MenuData {
     /// Setting ids per screen (retail screen index = position).
     pub screens: Vec<Vec<String>>,
     pub modes: Vec<Mode>,
+    /// The Challenge Map tree (vault `map_listing` parent chain and its leaves), in display order per parent.
+    pub map_nodes: Vec<MapNode>,
+}
+
+/// One Challenge Map node: its entry (kind + vault key), its parent folder, its label string id and sort order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapNode {
+    pub entry: EntryRef,
+    pub parent: Option<EntryRef>,
+    pub label: String,
+    pub order: i32,
 }
 
 impl MenuData {
@@ -302,7 +357,17 @@ impl MenuData {
             EntryKind::Category => self.category(&entry.id).is_some(),
             EntryKind::Item => self.item(&entry.id).is_some(),
             EntryKind::Setting => self.setting(&entry.id).is_some(),
+            _ => self.map_node(entry).is_some(),
         }
+    }
+    pub fn map_node(&self, entry: &EntryRef) -> Option<&MapNode> {
+        self.map_nodes.iter().find(|n| n.entry == *entry)
+    }
+    /// A Challenge Map folder's children in display order (sort order, then data order).
+    pub fn map_children(&self, parent: &EntryRef) -> Vec<&MapNode> {
+        let mut children: Vec<&MapNode> = self.map_nodes.iter().filter(|n| n.parent.as_ref() == Some(parent)).collect();
+        children.sort_by_key(|n| n.order);
+        children
     }
 }
 
@@ -482,6 +547,17 @@ impl MenuData {
                             rows.retain(|x| *x != entry.id);
                         }
                     }
+                    // A Challenge Map node goes with everything under it (the tree roots are the modes).
+                    _ => {
+                        let mut gone = vec![entry.clone()];
+                        let mut i = 0;
+                        while i < gone.len() {
+                            let parent = gone[i].clone();
+                            gone.extend(self.map_nodes.iter().filter(|n| n.parent.as_ref() == Some(&parent)).map(|n| n.entry.clone()));
+                            i += 1;
+                        }
+                        self.map_nodes.retain(|n| !gone.contains(&n.entry));
+                    }
                 }
             }
         }
@@ -603,6 +679,8 @@ pub struct Row {
 
 /// Settings links followed when deciding whether a link row is enabled.
 const MAX_LINK_DEPTH: usize = 4;
+/// Deepest Challenge Map folder nesting the folder rule follows (the retail tree is 3-4 deep).
+const MAX_MAP_DEPTH: usize = 8;
 
 pub struct MenuRegistry {
     base: MenuData,
@@ -801,6 +879,10 @@ impl MenuRegistry {
             if let Some(screen) = self.link_target(&entry.id, ctx) {
                 return self.screen_rows_at(screen, ctx, depth + 1).iter().any(|r| r.enabled);
             }
+        }
+        // A Challenge Map tab / folder opens when something inside it can be used (ours, like the settings link).
+        if entry.kind.is_map_folder() && depth < MAX_MAP_DEPTH {
+            return self.data.map_children(entry).iter().any(|c| self.enabled_at(&c.entry, ctx, depth + 1));
         }
         false
     }

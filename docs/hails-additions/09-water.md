@@ -1076,3 +1076,29 @@ body areas, `slow_pca`, `water_time`, tests), `retail_world.wgsl`, `retail_mater
 - `crates/skate-game/src/main.rs` (`--extract-ocean-pca`).
 - `tools/asset_pipeline/ocean_pca.py` (`convert`), `asset_exports.py`, `install.py`, `versions.py`.
 - Industrial sea / backdrop: `crates/skate-game/src/retail_backdrop.rs` (new, tests), `skate_world.rs` (`spawn_backdrop`, `spawn_static`), `map_render.rs`, `main.rs`, `app.rs`, `modding/world_tuning.rs` and `modding/engine_access.rs` (domain `backdrop`), `crates/skate-mods/src/world_tuning.rs` (`BackdropPatch`), `crates/skate-mods/src/api.lua`, `sdk/skate.lua`, `tools/asset_pipeline/backdrop.py` (`presentation_meshes`), `test_backdrop.py`, `crates/skate-data/examples/water_surfaces.rs` (reads render-only packages).
+
+### Better Water frame cost, measured (2026-10-18)
+
+User (final living world todo, verbatim): "lets begin optimizing the better water opt in so its efficient but also
+looks clean and realistic but not out of place for the game itself".
+
+Method: `.local/research/water-look-bench.ps1` (release build of world/living-world b87342e6, `--teleport
+dist_downtown_canalplaza`, idle, muted, windowed 1280x800, FPS limit off through its own settings folder, trace-all
+with `SKATE_PERF_GPU_EVERY=1`; 60 s per run, first 25 s dropped; two rounds, the second in reverse order; RTX 4080
+SUPER). Each mode writes its own `settings/water-look.json`. Code map: research b250 (`.local/research/b250-better-water-cost.md`).
+
+| Mode | frame_ms p50 (r1 / r2) | p99 | opaque pass GPU ms (r1 / r2) |
+|---|---|---|---|
+| off (retail look) | 3.32 / 3.39 | 6.86 / 6.70 | 0.494 / 0.482 |
+| on (Better Water) | 3.22 / 3.22 | 6.23 / 6.16 | 0.521 / 0.513 |
+| on, `third_wave=false` | 3.19 / 3.15 | 6.02 / 6.22 | 0.484 / 0.475 |
+| on, `reflection_blur=0` | 3.16 / 3.22 | 6.15 / 6.11 | 0.510 / 0.480 |
+| on, `ripple_scale=1` | 3.23 / 3.16 | 6.15 / 6.26 | 0.511 / 0.485 |
+
+Result: frame times differ only by noise. Better Water's cost is about 0.03 ms of opaque-pass GPU time, almost all
+of it the third wave (two more texture samples per water pixel, b250); reflection blur and ripple scale cost nothing
+measurable; the transparent pass stays at 0.034-0.038 ms. Scaled by pixels to the laptop's 2560x1440 that is roughly
+0.1 ms per frame. The GPU numbers are the report's latest sampled frame per run (indicative per piece).
+Change: `FrameStateData::encode` fills a fixed array instead of a new Vec every frame (byte-identical, test). Not
+done (no measurable gain): a separate water pipeline, sharing the third wave's texture page switch.
+Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes in game.

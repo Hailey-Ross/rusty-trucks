@@ -713,7 +713,7 @@ mod tests {
     use skate_core::menus::{Category, Mode, Tab};
 
     fn data() -> MenuData {
-        MenuData {
+        MenuData { map_nodes: Vec::new(),
             categories: vec![Category { id: "SinglePlayer".into(), label: "L".into(), icon: Icon::Retail("singleplayer".into()) }],
             items: vec![skate_core::menus::Item { id: "ChallengeMap".into(), label: "L".into(), icon: Icon::Retail("map".into()), help: String::new(), sub_option_kind: -1 }],
             settings: Vec::new(),
