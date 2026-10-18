@@ -219,6 +219,15 @@ pub(crate) fn walker_input(runtime: &SkaterRuntime) -> skate_core::living_world:
 /// and the speed (`pc+96`) use, with the heading `pc+128` (`sub_8246BCF8`). Off the board (BipedGround) or wiping out:
 /// the animation root and its forward row; on the board: the board (retail: the board rigid body's position,
 /// SkateboardReckoning +144; ours the deck part, open) and the deck's forward.
+/// The per-line state retail's path reset `sub_82468AC8` clears (air, trick slot, board yaw), shared by a line
+/// switch and the stage-2 re-snap so the two cannot drift apart. The tracker block is not touched here: a line switch
+/// also resets it (`path_reset`), the re-snap `sub_8246D168` saves and restores it around the reset (b207).
+fn clear_line_state(sim: &mut NpcSim) {
+    sim.air = Default::default();
+    sim.slot = Default::default();
+    sim.board_yaw = Default::default();
+}
+
 fn projected_point(sim: &NpcSim, state: PhysicalStateId) -> ([f32; 3], [f32; 3]) {
     let wiped = sim.body.runtime.player_input.processed.flags_2468 & WIPEOUT_BIT != 0;
     if state == PhysicalStateId::BipedGround || wiped {
@@ -405,6 +414,13 @@ fn place(sim: &mut NpcSim, target: &ai_record::LineTarget, hold_ticks: u32) -> R
     Ok(velocity)
 }
 
+/// Ticks of NPC_SKATER_PLACED / NPC_SKATER_STEER debug trace after a placement: 60, or `SKATE_NPC_TRACE_TICKS` for a
+/// longer look at a stall (with `RUST_LOG=info,skate3rust::living_world::npc_sim=debug`).
+fn trace_ticks() -> u32 {
+    static TICKS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *TICKS.get_or_init(|| std::env::var("SKATE_NPC_TRACE_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(60))
+}
+
 /// Lift the placement guard once the actor reply has landed (or after a logged 30-tick limit).
 fn lift_pending(sim: &mut NpcSim, npc: &super::npc_skaters::NpcSkater) {
     if !sim.teleport_pending {
@@ -429,7 +445,7 @@ fn settle(sim: &mut NpcSim, hold_ticks: u32) {
     sim.placed = true;
     sim.toggle = Default::default();
     sim.last_deck = None;
-    sim.trace_ticks = 60;
+    sim.trace_ticks = trace_ticks();
     sim.slot = Default::default();
     sim.board_yaw = Default::default();
     sim.hold_ticks = hold_ticks;
@@ -757,8 +773,15 @@ pub(crate) fn simulate(
                     sim.respawn_in = Some(left - 1);
                 }
                 let deck = GamePhysics::context_deck(&sim.context);
-                let forward = [deck.basis.columns[2][0], deck.basis.columns[2][1], deck.basis.columns[2][2]];
+                // The effective deck forward (`GetEffectiveTransform` 82C01BF8 into PhysOut +64, what the AI record, the
+                // steer and the facing gates read; b200): negated while the board is flipped under the rider
+                // (Processed+2468 bit 20). The raw deck pointed backwards after a flip trick, so the steer turned the
+                // wrong end toward the line and the skater rolled away from it (b199 #7, #8).
+                let flipped = sim.body.runtime.player_input.processed.flags_2468 & 0x0010_0000 != 0;
+                let sign = if flipped { -1.0 } else { 1.0 };
+                let forward = [deck.basis.columns[2][0] * sign, deck.basis.columns[2][1] * sign, deck.basis.columns[2][2] * sign];
                 let direct = skate_core::living_world::controller_b::DirectPath;
+                let on_navmesh = peds.as_deref().and_then(|p| p.nav.as_deref()).is_some();
                 let paths: &dyn skate_core::living_world::controller_b::PathService = match peds.as_deref().and_then(|p| p.nav.as_deref()) {
                     Some(mesh) => mesh,
                     None => &direct,
@@ -804,7 +827,10 @@ pub(crate) fn simulate(
                                 }
                                 None => {
                                     if sim.no_plan != Some(node) {
-                                        info!("NPC_WALK_BACK #{} {} no plan to node {node}: stays with the line controller", npc.id.serial, npc.character);
+                                        // Why the plan failed (b207): which path service, from where to where.
+                                        let (from, to) = ([deck.translation.x, deck.translation.y, deck.translation.z], n.position);
+                                        let d = ((to[0] - from[0]).powi(2) + (to[1] - from[1]).powi(2) + (to[2] - from[2]).powi(2)).sqrt();
+                                        info!("NPC_WALK_BACK #{} {} no plan to node {node}: stays with the line controller (service {}, from [{:.1}, {:.1}, {:.1}] to [{:.1}, {:.1}, {:.1}], {d:.1} m)", npc.id.serial, npc.character, if on_navmesh { "navmesh" } else { "direct" }, from[0], from[1], from[2], to[0], to[1], to[2]);
                                     }
                                     sim.no_plan = Some(node);
                                 }
@@ -915,9 +941,7 @@ pub(crate) fn simulate(
                                 // A line switch (chain or branch): retail's reset `sub_82468AC8` leaves the skater off
                                 // the path with the start gate kept (b118).
                                 Some((_, f)) => {
-                                    sim.air = Default::default();
-                                    sim.slot = Default::default();
-                                    sim.board_yaw = Default::default();
+                                    clear_line_state(sim);
                                     skate_core::living_world::ai_controller::path_reset(&mut replay.avoid.controller);
                                     f.switch_to(replay.cursor.node)
                                 }
@@ -927,6 +951,9 @@ pub(crate) fn simulate(
                             if stuck_resnap {
                                 let node = skate_core::living_world::ai_controller::resnap_node(line, &rules.controller, f.search_start, pos);
                                 info!("NPC_SKATER_STUCK #{} {} re-snap node {} -> {node} (stage 2)", npc.id.serial, npc.character, f.search_start);
+                                // Retail's re-snap is a full path reset that keeps the stuck tracker (b207); before,
+                                // ours kept a stale air / trick slot / board yaw across the jump.
+                                clear_line_state(sim);
                                 f = f.switch_to(node);
                             }
                             let was_on = f.on_path;
@@ -1014,7 +1041,7 @@ pub(crate) fn simulate(
                                 let moved = (at[0] - placed[0]).hypot(at[2] - placed[2]);
                                 let push = ai_record::spawn_push(at, placed, target.step, replay.cursor.node == 0, false);
                                 if let Some(v) = push {
-                                    GamePhysics::set_context_velocity(&mut sim.context, v);
+                                    GamePhysics::push_context_velocity(&mut sim.context, v);
                                 }
                                 info!(
                                     "NPC_SKATER_PUSH #{} {} node {} {} (moved {moved:.3} m since the hold started)",
@@ -1108,7 +1135,7 @@ pub(crate) fn simulate(
                     if airborne_now && rules.board_yaw_on && !on_foot && !waiting && avoid.last.mode != AvoidMode::Skitch {
                         use skate_core::living_world::ai_signals::{manual_value, BoardYaw};
                         let ahead = anticipated.filter(|&t| skate_core::scoring::catalog::category(t) == Some(8) && sim.slot.category != 8);
-                        let post: Option<[_; 2]> = BoardYaw::post(&sim.board_yaw, ahead.map(|t| manual_value(t, rules.board_yaw.manual_value)), &rules.board_yaw);
+                        let post: Option<[_; 2]> = BoardYaw::post(&sim.board_yaw, ahead.map(|t| manual_value(t, rules.signals.manual_value)), &rules.board_yaw);
                         intents.extend(post.into_iter().flatten());
                     }
                     if airborne_now && !rules.air_steer_on {
@@ -1236,9 +1263,13 @@ pub(crate) fn simulate(
                     let (p, _) = projected_point(sim, state);
                     let v = sim.last_deck.map_or(0.0, |q| ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt() * 60.0);
                     let names: Vec<&str> = intents.iter().map(|x| x.0.as_str()).filter(|n| !n.starts_with("OB_")).collect();
+                    // The action / motion graph states, to see why an intent was or was not taken.
+                    let anim = &sim.body.runtime.animation;
+                    let ag = anim.action_controller.frame.current.and_then(|id| graphs.action.binding.states.get(id)).map_or("?", |s| s.name.as_str());
+                    let mg = anim.motion_controller.frame.current.and_then(|id| graphs.motion.binding.states.get(id)).map_or("?", |s| s.name.as_str());
                     debug!(
-                        "NPC_SKATER_PLACED #{} t{} {:?} at [{:.2}, {:.2}, {:.2}] {v:.1} m/s node {} on_path {on_path} past {past_start} air {airborne_now} flags {:08X} intents {names:?}",
-                        npc.id.serial, 60 - sim.trace_ticks, state, p[0], p[1], p[2], replay.cursor.node, sim.body.runtime.ai_physics.as_ref().map_or(0, |a| a.record.flags)
+                        "NPC_SKATER_PLACED #{} t{} {:?} at [{:.2}, {:.2}, {:.2}] {v:.1} m/s node {} on_path {on_path} past {past_start} air {airborne_now} flags {:08X} ag {ag} mg {mg} intents {names:?}",
+                        npc.id.serial, trace_ticks() - sim.trace_ticks, state, p[0], p[1], p[2], replay.cursor.node, sim.body.runtime.ai_physics.as_ref().map_or(0, |a| a.record.flags)
                     );
                 }
                 // The handover's start speed, once: the first tick with a measured speed after its teleport landed.

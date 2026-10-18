@@ -1728,3 +1728,115 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Verification:** skate-game ped / vehicle / living_world tests 133 pass; muted DownTown run (below). Not
   play-tested: run into a ped fast. Muted DownTown run: no errors, peds spawn, the map switch commits.
 
+
+## A ped that lost its prop no longer stalls a conversation (2026-10-17)
+
+- **Problem:** user (laptop session game-20261017-143646): "I feel like im still seeing alot of peds just standing
+  around and making small groups." Three conversations never finished (ids 60, 70, 85: 1 turn in 236 s, or stuck at
+  state 3 until the log ended), and their members stayed put; 45% of the Plugin `PED_STILL` lines came from them.
+- **Root cause [log + code] (research b186):** a ped whose seat or newspaper box went away without ExitPlugin (streamed
+  out, disabled, moved) dropped `mind.prop` silently but kept the prop's waypoint and facing. As a later conversation
+  partner, LockFirstWaypoint saw a held slot and did not lock the conversation's waypoint, so TurnToFace turned to the
+  old seat facing while IsFacingWaypointOrientation tested the direction to the conversation centre. The graph flipped
+  Speak / TurnToFace every 2 to 3 ticks, every Speak Begin restarted the 3 s turn timer, and the turn never passed.
+- **Retail [code]:** LockFirstWaypoint (`826A0580`) only locks when the waypoint slot `ped+0x1718` is empty (our gate
+  is retail). The slot belongs to the plugin and leaving the plugin releases it; the stale value was ours.
+- **Change:** `PedBrain::release_plugin_waypoint` (skate-core) clears the waypoint and its facing; every plugin exit
+  uses it: the prop ExitPlugin, the conversation ExitPlugin (which kept the facing before) and the silent prop drop,
+  which now also releases the prop's waypoint and logs `PED_PLUGIN_PROP ped=#N leaves <class> <id> (dropped)`.
+  Pick odds, turn length and the gather timer are unchanged (they match retail and the logs).
+- **Tests:** `a_released_prop_waypoint_lets_a_conversation_lock_its_own` (skate-core brain tests); the 5-turn run stays
+  covered by `a_conversation_gathers_starts_and_runs_five_turns`. skate-core peds tests 132 pass; skate-game checks.
+- **Not play-tested:** stand still in DownTown near benches for a few minutes; conversations should finish in 20 to
+  40 s and `(dropped)` leaves show where props went away.
+- **Open:** the retail writer that clears `ped+0x1718` on plugin end is not decoded; whether retail refuses a partner
+  that is in NoRoad; the `start / leave result=empty` churn of one ped every 2 ticks after its conversation emptied
+  (cause unverified, may go away with this fix).
+
+## A full mood store evicts by priority (2026-10-17)
+
+- **Ours before:** when a ped's 10 mood records were full, the oldest record went, so a long-lived collision or
+  being-chased record could be pushed out by a stream of presence events.
+- **Retail [code] (research b189; main re-read the compares in the recomp):** `sub_82E414D8` (only caller
+  `sub_82E41060`, after no record matched the same instigator, second entity and category) drops the new record when
+  the store is full and it has both an instigator and a second entity; otherwise `sub_82E441C8` scans the records in
+  slot order from (none, 0, -1.0) and takes the one whose category Priority is unsigned greater, or equal with a
+  strictly greater age. So the numerically highest Priority goes, the oldest on a tie, the first in slot order on an
+  exact tie; the new record's own Priority is never compared. Priority is the category field
+  `Hash_1A3FB63DFDAE0C4F` read through the mood manager's vfunc +32 (`82BFF308`); stock values 1 (collision,
+  beingchased, nearbysession: kept longest) to 6 (litter: evicted first).
+- **Change:** `MoodCategory::priority` (setup data, absent = 0), `MoodStore::post_ranked` (the scan above); the ped
+  system posts with the categories' priorities. `post` keeps an all-equal priority for tests.
+- **Tests:** `a_full_store_evicts_by_priority_then_age` (b189's case: the youngest litter record goes before an old
+  collision; of two equal-age records the first goes); skate-core living_world 343 pass, skate-game ped tests 28 pass.
+  Not play-tested.
+- **Open:** the attribute default at `0x830D0850` read as a u32 (taken as 0; every stock category has a Priority).
+
+## Peds stuck at walls: retail has no give-up (research, 2026-10-17)
+
+- **Retail [code] (research b190, not traced):** the ambient ped's NavPower bot (`82E974A8`) snaps to the mesh,
+  re-requests its path when it turns invalid (`82E95FD0` -> `82E957F8`) and picks a new target only when the bot is
+  done. It keeps a no-progress timer (`82E965D0`, bot +0x21C, limit min(settings +8, speed x 2.0 x 0.0625)) that no
+  code was found to read. `82E2AAA0` / `82E2ABF8`, named as stuck candidates in b175, are the desired-direction and
+  turn helpers.
+- **Ours:** the stuck watch in `wander.rs` (0.3 m in 2.0 s, then give up and plan away) stays, now labelled NOT RETAIL
+  in the code (it was credited to retail's event 4). A later port: the retail timer as the measurement, the give-up
+  as a mod-switchable non-retail value.
+
+## Peds stay solid while they react (2026-10-17)
+
+- **Problem:** user (laptop recomp session 175036 notes): "peds are much more solid in retail than ours. you cannot
+  move through a ped."
+- **Root cause (research b203, `.local/research/b203-peds-solid.md`; main checked `ped_body.rs`):** our
+  `push_ped_proxies` took a ped's bodies out of the skater solve for the whole stumble or knock-down (the
+  `in_collision` filter). Every touch starts at least a stumble (retail gate 0), so after the first touch the skater
+  rolled through the ped.
+- **Retail:** [trace] every ped body removal in the laptop session comes from the ped collision object's destructor
+  (`sub_82E22D50`, call at `82E22D90`, ped despawn); the "remove both bodies" slot `sub_82E0D5F0` never runs. [code]
+  `sub_82E268C8` builds body A (group 9) and body B (group 11). So the bodies stay in the world for the ped's whole
+  life, through every reaction.
+- **Change:** `ped_body::push_ped_proxies` adds every near ped's bodies, reacting or not. New hits during a running
+  reaction are still skipped (`peds.rs`, retail `sub_82E38FB8` controller byte +9), so the ped is not knocked down
+  again every tick; the skater is now pushed back by the bodies the whole time.
+- **Verification:** skate-game ped / ped body tests pass (48). Not play-tested.
+- **Open (b203):** whether the skater also pairs with body A (group 9); whether retail treats the re-posed ped part
+  as keyframed or finite mass; the reaction input is the relative contact speed, not the ped part's speed after the
+  solve (NOT RETAIL YET); the proxy has zero inverse inertia. Tune nothing (no mass changes) before those are read.
+
+## Hand props: retail rotation order (2026-10-17)
+
+- **Problem:** user: "ped hand props are NOT held properly with correct positioning/rotation and attachpoints".
+- **Retail [code] (research b202, b204, b205):** the per-frame placement `82E3E4F0` (only while the prop is in hand)
+  writes World = H * T(offset) * R * inverse(P) through `82E3E1B0`: H = the RightHandProp bone times the ped's world
+  matrix (`82E218A0`, slot 3 of the bone table filled by name in `82E33070`); R = Rz * Ry * Rx from the record's
+  degrees (`82473A08` sin / cos per axis; first basis row [cy cz, cy sz, -sy]); P = the prop template's attach
+  locator (`template+0x78`, the type-0 entry of the part's EB001B point list, written by `82C4E128`).
+- **Ours before:** the same bone (`HAND_PROP_BONE`) and T * R, but R in XYZ order and no inverse(P).
+- **Change:** `HandPropRecord::local` uses `EulerRot::ZYX` (z, y, x). Test `record_rotation_is_rz_ry_rx_like_retail`
+  (the stock cellphone's 15 / -10 / 15 degrees against Rz * Ry * Rx).
+- **Attach locator (same day):** setup now exports P. `dynamic_props.template_attach` reads the part's EB001B point
+  list (count +4) and its EB001E section (0x70 B points: matrix +0x00, type +0x60) and keeps the type-0 point;
+  `hand_props.json` carries it as `attach` (row vectors), and `HandPropRecord::local` is T * R * inverse(attach), so
+  the model's grip point, not its origin, lands at the record's offset. [data] All 22 hand props with a template have
+  one rigid type-0 point, and every one's tInstance and model matrices are identity, so P is already in the glb's
+  space (e.g. the bags', briefcase's and duffle bag's points sit 0.34 m up at the handle, most turned about 90
+  degrees). Identity when absent (a mod model, an older install). `hand_props.py` joined the maps group's setup
+  fingerprint (it runs there): release copies ask for Refresh Game Files once. Test
+  `attach_locator_lands_on_the_offset`. Not play-tested.
+- **Modding:** a mod model without a locator is held by its origin (identity attach); rotation and offset stay the
+  record's (tables) values. Open: an `attach` override per record for mods.
+
+## Peds standing in groups: mostly the stalled conversation, not the rate (research, 2026-10-17)
+
+- **Report:** laptop session game-20261017-143646 (build e44f93a): peds "standing around and making small groups";
+  PED_STILL Plugin 633 of 856 samples, conversation 530.
+- **Finding [log] (research b211, `.local/research/b211-ped-conversation-rates.md`):** that build lacks 01383e32 (main
+  checked with `git merge-base`). Three conversations (60, 70, 85) give 245 of the 530 samples: each stuck at state 3,
+  the speaker flipping TurnToFaceWaypointOrientation / ListenToSpeaker every tick, at least two of them peds that had
+  lost their seat but kept its waypoint, the case 01383e32 fixed. Three more waited out the 30 s gather and the 60 s
+  PluginTimeout. Together about 57 % of the samples.
+- **Rules:** no difference from retail found that starts more conversations or keeps them longer (start from the
+  converse mood rows, 50 m exclusion, 30 s gather, 5 turns of 3.0 s, 60 s PluginTimeout). One difference goes the
+  other way: ours never adds a third member (retail passers-by can join); research b212 on that and on despawned
+  members that never leave.
+- **Next:** confirm in a new laptop session that the flip and the 60 s stalls are gone before changing any rate.

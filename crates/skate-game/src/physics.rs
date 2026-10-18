@@ -402,6 +402,8 @@ impl GamePhysics {
         else {
             return;
         };
+        // The bail clamp's gate: the local skater in a wipeout (retail's actor byte is not decoded; b208).
+        dynamics.set_bailing(if self.board_wiping_out { &[prop_dynamics::LOCAL_PUSHER] } else { &[] });
         dynamics.step_with_actors(&self.world, layer, volumes, &self.actor_prop_volumes);
     }
 
@@ -935,6 +937,16 @@ impl GamePhysics {
         for body in context.board.bodies_mut() {
             body.rates.linear_velocity = Vector3::new(velocity[0], velocity[1], velocity[2]);
         }
+    }
+
+    /// An AI spawn push: [`Self::set_context_velocity`], and the acceleration sampler's previous velocities take the
+    /// pushed value, so the push itself reads as no acceleration. Outcome-matched: retail's spawn-placed skaters ride
+    /// off and do their recorded tricks; with the one-step velocity jump read as acceleration, every placed NPC played
+    /// the non-interruptable `RidingIdle.Bumped` clip for ~0.6 s and a recorded trick inside it never played (b194).
+    pub(crate) fn push_context_velocity(context: &mut SkaterPhysicsContext, velocity: [f32; 3]) {
+        Self::set_context_velocity(context, velocity);
+        let v = Vector3::new(velocity[0], velocity[1], velocity[2]);
+        context.riding.ground.previous_velocities.fill(v);
     }
 
     pub(crate) fn swap_skater_context(&mut self, context: &mut SkaterPhysicsContext) {

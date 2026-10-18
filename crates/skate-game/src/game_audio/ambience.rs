@@ -48,6 +48,11 @@ pub(super) struct State {
     /// The map's crossfade bank, the content generation its layouts were built for, and the
     /// layouts (built when either changes, i.e. at map load or an audio content restart).
     layouts: Option<(Option<String>, u64, super::crossfade_layouts::Layouts)>,
+    /// The bed files of every zone the map can reach, read ahead at map load on the worker thread and kept loaded
+    /// while the map lasts, so entering a zone never reads a 15-29 MB bed on the game thread (b198: 150-290 ms
+    /// hitches from an HDD). Same bytes, same start frame: a bed not read yet is read on the spot as before.
+    /// With the map name, map generation and audio content generation they were picked for.
+    resident: (Option<(String, u64, u64)>, std::collections::BTreeSet<String>),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -74,7 +79,11 @@ pub(super) fn update(
     // Free clips whose voices have finished fading.
     let fading = std::mem::take(&mut state.fading);
     for clip in fading {
-        if voices.uses(&clip) { state.fading.push(clip); } else { library.release(&mut assets, &clip); }
+        if voices.uses(&clip) {
+            state.fading.push(clip);
+        } else if !state.resident.1.contains(&*clip.key) {
+            library.release(&mut assets, &clip);
+        }
     }
     let identity = (map.name.clone(), map.generation, content.world_generation);
     let new_map = state.map.as_ref() != Some(&identity);
@@ -103,6 +112,16 @@ pub(super) fn update(
             }
         }
         state.layouts = Some((bank, content.generation, layouts));
+    }
+    let resident_for = (map.name.clone(), map.generation, content.generation);
+    if state.resident.0.as_ref() != Some(&resident_for) {
+        let files = library.zone_bed_files(audio.region_tile_keys(&library, "audio_ambience"));
+        for old in state.resident.1.difference(&files) {
+            library.release_file(&mut assets, old);
+        }
+        library.warm_files(files.iter());
+        info!("AUDIO_AMBIENCE beds read ahead for {}: {}", map.name, files.len());
+        state.resident = (Some(resident_for), files);
     }
     let at = cues.riding.board;
     let desired = audio.region_key(&library, "audio_ambience", at.x, at.z)

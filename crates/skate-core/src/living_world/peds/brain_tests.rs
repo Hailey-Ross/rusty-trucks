@@ -597,6 +597,33 @@ fn plugin_flags_hold_while_their_behaviours_run() {
     assert!(!brain.own_plugin_object && !brain.ignore_standing_collisions && brain.explicit_turn.is_none());
 }
 
+/// A ped whose prop plugin ended keeps no waypoint: as a conversation partner it locks the conversation's waypoint and
+/// faces the centre, not the old seat (research b186: a kept seat waypoint flipped Speak / TurnToFace for minutes).
+#[test]
+fn a_released_prop_waypoint_lets_a_conversation_lock_its_own() {
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let behaviors = [PedOp::LockFirstWaypoint];
+    let free = [[7.5, 0.0, 1.0]];
+    let conversation = || ConversationInfo { complete: false, speaker: None, center: [6.0, 0.0, 1.0], free_waypoints: &free, speech: None };
+    let mut brain = PedBrain { waypoint: Some([-1.0, 0.0, 0.0]), waypoint_facing: Some([0.0, 0.0, 1.0]), ..Default::default() };
+    {
+        let chase = ChaseView { conversation: Some(conversation()), ..Default::default() };
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase };
+        h.begin(0, [0; 6], &frame());
+    }
+    assert_eq!(brain.waypoint, Some([-1.0, 0.0, 0.0]), "a held slot is not relocked (retail's gate)");
+    brain.release_plugin_waypoint();
+    assert_eq!((brain.waypoint, brain.waypoint_facing), (None, None));
+    {
+        let chase = ChaseView { conversation: Some(conversation()), ..Default::default() };
+        let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase };
+        h.begin(0, [0; 6], &frame());
+    }
+    assert_eq!(brain.waypoint, Some([7.5, 0.0, 1.0]));
+    assert!(matches!(brain.chase_requests.last(), Some(ChaseRequest::LockWaypoint { at }) if *at == [7.5, 0.0, 1.0]));
+}
+
 /// IsOnRoad (the stub, always false), SimpleRandom (percentage x 0.01 against a roll), IsAtWaypoint (3 m horizontal
 /// by default) and InSkaterRadius (3D).
 #[test]

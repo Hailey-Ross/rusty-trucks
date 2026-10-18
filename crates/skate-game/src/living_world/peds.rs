@@ -2035,6 +2035,7 @@ pub(crate) fn think_peds(
         let gone: Vec<u64> = c.members.iter().map(|m| m.ped).filter(|p| !entities.contains_key(p)).collect();
         for p in gone {
             c.leave(p);
+            info!("PED_CONVERSATION id={} leave ped={p} result=despawned members={} tick={tick}", c.id, c.members.len());
         }
     }
     conversations.map.retain(|_, c| !c.members.is_empty());
@@ -2091,6 +2092,8 @@ pub(crate) fn think_peds(
             let set = data.reaction_sets.get(&ped.entity).cloned().unwrap_or_else(|| "default".into());
             let magnitude = |c: &str| tables.categories.get(c).map_or(0.0, |c| c.magnitude);
             let lifetime = |c: &str| tables.categories.get(c).map_or(30.0, |c| c.lifetime);
+            // `82BFF308`: the category's eviction Priority (absent = the attribute default, 0).
+            let priority = |c: &str| tables.categories.get(c).map_or(0, |c| c.priority);
             // The post's vision test (`sub_82E41060` -> `82E27240`, b5 / b18): the event position against the
             // category's near / far ranges times the type's scales, the same eye, cone and line as the perception
             // pass. A type without a perception record keeps every post (retail's record default is unread).
@@ -2122,7 +2125,7 @@ pub(crate) fn think_peds(
                     for e in mood::presence(me, at, &ped_list, &player_list) {
                         // A suppressed entity raises no mood (perception `+64`).
                         if !e.instigator.is_some_and(|i| mind.brain.perceptions.suppressed(i)) && tables.accepts(&set, &e, &post_ctx) && seen(&e) {
-                            mind.mood.post(e, magnitude(mood::category::PRESENCE));
+                            mind.mood.post_ranked(e, magnitude(mood::category::PRESENCE), &priority);
                         }
                     }
                 }
@@ -2150,7 +2153,7 @@ pub(crate) fn think_peds(
                             }
                             if accepted {
                                 for _ in 0..posts {
-                                    mind.mood.post(e.clone(), magnitude(mood::category::ZOMBIE_MODE));
+                                    mind.mood.post_ranked(e.clone(), magnitude(mood::category::ZOMBIE_MODE), &priority);
                                 }
                             }
                         }
@@ -2172,7 +2175,7 @@ pub(crate) fn think_peds(
             for &(_, instigator, position) in greeted_now.iter().filter(|g| g.0 == me) {
                 let e = MoodEvent { category: mood::category::GREETED.into(), instigator: Some(instigator), second: Some(me), position };
                 if !mind.brain.perceptions.suppressed(instigator) && tables.accepts(&set, &e, &post_ctx) && seen(&e) {
-                    mind.mood.post(e, 1.0);
+                    mind.mood.post_ranked(e, 1.0, &priority);
                 }
             }
             if hits.contains(&me) {
@@ -2206,7 +2209,7 @@ pub(crate) fn think_peds(
                 }
                 if seen(&e) {
                     let m = magnitude(&e.category);
-                    mind.mood.post(e, m);
+                    mind.mood.post_ranked(e, m, &priority);
                 }
             }
             // The brain's own rolls (sit time, stand-up) and its type's sit values, once per ped.
@@ -2337,8 +2340,18 @@ pub(crate) fn think_peds(
             mind.sit_avoid = avoid;
             // HasPlugin: a conversation member, or a ped that took a world prop.
             let prop_wp = mind.prop.and_then(|(i, id, w)| plugin_props.props.get(i).filter(|p| p.id == id && !streamed_out(id) && !p.disabled).and_then(|p| p.waypoints.get(w)).copied());
+            // A prop lost without ExitPlugin (streamed out, disabled, moved away) releases its waypoint like ExitPlugin
+            // does: retail's waypoint slot `ped+0x1718` belongs to the plugin, and LockFirstWaypoint (`826A0580`) only
+            // locks an empty slot, so a stale prop waypoint would steer a later conversation (b186).
             if mind.prop.is_some() && prop_wp.is_none() {
-                mind.prop = None;
+                if let Some((i, id, _)) = mind.prop.take() {
+                    let class = plugin_props.props.get_mut(i).filter(|p| p.id == id).map(|p| {
+                        p.release(me);
+                        p.class.clone()
+                    });
+                    info!("PED_PLUGIN_PROP ped=#{} leaves {} {:016X} (dropped) tick={tick}", ped.id.serial, class.as_deref().unwrap_or("?"), id);
+                }
+                mind.brain.release_plugin_waypoint();
             }
             // The locked waypoint is read live (`826AB9C0` re-reads its position on every evaluation): a seat that moved
             // with its prop is where the ped walks and sits.
@@ -2618,8 +2631,7 @@ pub(crate) fn think_peds(
                             }
                         }
                         mind.brain.has_plugin = false;
-                        mind.brain.waypoint = None;
-                        mind.brain.waypoint_facing = None;
+                        mind.brain.release_plugin_waypoint();
                         mind.plugin_controller = None;
                         mind.plugin_state = None;
                         mind.plugin_graph = None;
@@ -2640,7 +2652,7 @@ pub(crate) fn think_peds(
                             info!("PED_CONVERSATION id={id} leave ped=#{} result={how} tick={tick}", ped.id.serial);
                         }
                         mind.brain.has_plugin = false;
-                        mind.brain.waypoint = None;
+                        mind.brain.release_plugin_waypoint();
                         continue;
                     }
                     ChaseRequest::SignalInPosition => {

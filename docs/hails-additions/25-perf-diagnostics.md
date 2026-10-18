@@ -581,3 +581,21 @@ desktop); it falls in the switch's three "publishing" frames behind the pause me
 Verification: skate-game graphics tests 18 pass; a muted desktop run logs `GRAPHICS_SETTINGS 1280x800 scale 100% framerate
 cap unlimited npc draw distance 1.00 frame stats true` and no `GPU_ADAPTER` line (RTX 4080 SUPER, discrete). The integrated GPU
 path needs a hybrid machine set to the integrated GPU (not checked).
+
+## Zone ambience beds are read ahead at map load (2026-10-17)
+
+- **Problem:** entering an ambience zone read its bed (16-bit 48 kHz stereo WAV, ~2 min, 15-29 MB) from disk on the
+  game thread: session 11 (2026-10-16) had a 161.6 ms hitch with `audio_parts=[ambience:157.1 file_read:150.1]`. A
+  bed was also released when it faded out, so every later entry read it again.
+- **Change (research b198; outcome identical: same bytes, same start frame):** at map load or an audio content change
+  the ambience system lists the bed files of every zone the map's `audio_ambience` tiles can return (the map's own
+  boxes and its district's retail tiles: `MapAudio::region_tile_keys`, `Library::zone_bed_files`), reads them on the
+  existing `audio-warm` worker thread (`Library::warm_files`) and keeps them loaded while the map lasts (no release
+  on fade); beds that leave the set are released (`Library::release_file`). A bed not read yet is read on the spot
+  as before. Memory: DownTown 6 beds (~140 MB), Industrial ~199 MB, University ~98 MB, small maps 23-29 MB; mod beds
+  come in through the same manifest and go with the library rebuild on a mod toggle.
+- **Tests:** `zone_beds_read_ahead_give_the_same_bytes` (game_audio library tests); game_audio tests 81 pass. Muted
+  DownTown run: `AUDIO_AMBIENCE beds read ahead for DownTown: 6`, the zone change dt_less_busy -> dt_main logs no
+  ambience / file_read hitch; the map-load frame keeps 15 ms of ambience (the first bed starts 1-2 frames after load).
+- **Open (b198):** other game-thread reads in the audio path (crossfade layouts once per map, world speech, mod
+  audio): listed in `.local/research/b198-ambience-prefetch.md`.

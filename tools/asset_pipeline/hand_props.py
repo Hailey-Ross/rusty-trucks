@@ -7,7 +7,8 @@ already reads; placed props only export the templates a map places, so the hand 
 
 Output: ``living_world/hand_props/<handprop key>.glb`` (the template's model space: ``model_matrix @ matrix`` baked
 in, metres, Y up, row vectors written column-major) and ``living_world/hand_props.json``
-``{"version", "props": {key: {"model", "template", "file", "characteristics"} | {"model", "error"}}}``. Records whose
+``{"version", "props": {key: {"model", "template", "file", "characteristics", "attach"} | {"model", "error"}}}``;
+``attach`` is the template's attach locator (``dynamic_props.template_attach``, row vectors, the glb's space) or null. Records whose
 model resolves to no template are listed with an error (stock: ``orange``), never guessed.
 """
 from __future__ import annotations
@@ -108,7 +109,7 @@ def export(catalog_path: Path, private: Path, report=print) -> dict:
             report(f'Hand prop {key} unavailable: {error}')
             continue
         props[key] = {'model': ids['model'], 'template': ids['template'], 'file': f'hand_props/{key}.glb',
-                      'characteristics': template.get('characteristics'), **stats}
+                      'characteristics': template.get('characteristics'), 'attach': template.get('attach'), **stats}
     out = {'version': VERSION, 'props': props}
     (private/'living_world/hand_props.json').write_text(json.dumps(out, indent=2), encoding='utf-8')
     return out

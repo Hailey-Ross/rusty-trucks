@@ -20,8 +20,7 @@
 //! mod-overridable (`living_world.ped_body`).
 use bevy::prelude::*;
 
-use super::peds::{PedBody, PedData, PedMind, Pedestrian, TauntClip};
-use skate_core::living_world::peds::Locomotion;
+use super::peds::{PedBody, PedData, Pedestrian};
 
 /// Retail ped collision group (`sub_82BD4A30`: 5 skater, 8 vehicle, 11 pedestrian).
 pub(crate) const PED_GROUP: u32 = 11;
@@ -106,15 +105,13 @@ pub(crate) fn bone_world(position: Vec3, heading: f32, global: &Mat4) -> Vec3 {
     position + Quat::from_rotation_y(heading) * global.w_axis.truncate()
 }
 
-/// Whether the ped is in a collision reaction (the knock-down / stumble from a hit), not a plugin or taunt clip.
-fn in_collision(body: &PedBody, mind: Option<&PedMind>) -> bool {
-    let clip_reaction = body.taunt == TauntClip::Playing || body.plugin_motion.state == TauntClip::Playing;
-    mind.is_some_and(|m| m.brain.colliding) || (body.player.state == Locomotion::Reaction && !clip_reaction)
-}
-
-/// Add the near peds' bodies to the skater solve (after the other proxies; rebuilt every tick).
+/// Add the near peds' bodies to the skater solve (after the other proxies; rebuilt every tick). The bodies stay
+/// through a stumble or knock-down, as retail's do: retail removes a ped's collision bodies only in the collision
+/// object's destructor (`sub_82E22D50`, ped despawn; research b203, laptop trace 175036), so a skater cannot roll
+/// through a ped that is already reacting. New hits during the reaction are still skipped (`peds.rs`, retail
+/// `sub_82E38FB8`).
 pub(crate) fn push_ped_proxies(
-    peds: Query<(&Pedestrian, &PedBody, Option<&PedMind>)>,
+    peds: Query<(&Pedestrian, &PedBody)>,
     data: Res<PedData>,
     settings: Res<super::LivingWorldSettings>,
     observers: Res<super::LivingWorldObservers>,
@@ -129,13 +126,13 @@ pub(crate) fn push_ped_proxies(
     let bone = |name: &str| data.rig.names.iter().position(|n| n.eq_ignore_ascii_case(name));
     let bones: Vec<Option<(usize, usize)>> = s.parts.iter().map(|p| Some((bone(&p.from)?, bone(&p.to)?))).collect();
     let near = |p: Vec3| observers.observers.iter().any(|o| Vec3::from_array(o.position).distance(p) <= s.range);
-    let mut list: Vec<_> = peds.iter().filter(|(_, body, mind)| near(body.position) && !in_collision(body, *mind)).collect();
+    let mut list: Vec<_> = peds.iter().filter(|(_, body)| near(body.position)).collect();
     if list.is_empty() {
         return;
     }
     list.sort_by_key(|(ped, ..)| ped.id.to_u64());
     let mut solids = Vec::new();
-    for (ped, body, _) in list {
+    for (ped, body) in list {
         let Some(globals) = super::peds::ped_globals(&data.rig, body, &*data, 0.0, &[]) else { continue };
         for (index, (part, pair)) in s.parts.iter().zip(&bones).enumerate() {
             let Some((a, b)) = pair.and_then(|(a, b)| Some((globals.get(a)?, globals.get(b)?))) else { continue };

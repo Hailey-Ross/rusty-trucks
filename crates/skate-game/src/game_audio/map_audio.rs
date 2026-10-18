@@ -56,6 +56,12 @@ impl MapAudio {
         library.region_key(&self.district, layer, x, z)
     }
 
+    /// Every zone key a layer's tiles can return on this map: the map's own boxes and its district's retail tiles.
+    pub(crate) fn region_tile_keys<'a>(&'a self, library: &'a Library, layer: &str) -> impl Iterator<Item = &'a str> + 'a {
+        let own = self.regions.get(layer).map_or(&[][..], Vec::as_slice);
+        own.iter().chain(library.region_tiles(&self.district, layer)).flat_map(|t| t.keys.iter().map(String::as_str))
+    }
+
     /// Every record the emitter system loads, with its file number (the reverb zones' ids keep
     /// retail's `file << 32 | index`): the `.ems` files' records, then the extra records as one
     /// more file.

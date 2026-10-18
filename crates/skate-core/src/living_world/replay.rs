@@ -1089,7 +1089,13 @@ impl LineCursor {
                         },
                         Decider::Stay => Some(recorded),
                     };
-                    self.trick_open = true;
+                    // A recorded trick the choice dropped (-1) starts nothing (`sub_8246A2E0`: grab / fingerflip /
+                    // boneless slots without the profile's slot-trick flag; research b187, b159): no trick phase, so
+                    // the puppet does not fall back to a trick pose. A span without a trick slot keeps its phase
+                    // (open: b187 did not settle it).
+                    if recorded < 0 || chosen.is_none_or(|t| t >= 0) {
+                        self.trick_open = true;
+                    }
                     if let Some(t) = chosen {
                         self.trick = t;
                         if matches!(decider, Decider::Decide(_)) {

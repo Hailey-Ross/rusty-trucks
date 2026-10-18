@@ -326,6 +326,7 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         n.board_yaw_on = f.board_yaw.unwrap_or(n.board_yaw_on);
         n.board_yaw.dead_zone = f.board_yaw_dead_zone.unwrap_or(n.board_yaw.dead_zone);
         n.board_yaw.mag_scale = f.board_yaw_mag_scale.unwrap_or(n.board_yaw.mag_scale);
+        n.signals.manual_value = f.manual_value.unwrap_or(n.signals.manual_value);
         n.bump = f.bump.unwrap_or(n.bump);
         n.reactions.enabled = f.reactions.unwrap_or(n.reactions.enabled);
         n.reactions.radius = f.reaction_radius.unwrap_or(n.reactions.radius);
@@ -434,6 +435,11 @@ pub(crate) fn props_table(p: &PropsPatch) -> PropTuningTable {
             sleep_frames: v.sleep_frames.map_or(d.sleep_frames, |n| n.max(1)),
             max_sleeps_per_step: v.max_sleeps_per_step.map_or(d.max_sleeps_per_step, |n| n.max(1)),
             rest_snap: v.rest_snap.unwrap_or(d.rest_snap),
+            bail_clamp: v.bail_clamp.unwrap_or(d.bail_clamp),
+            bail_linear_factor: v.bail_linear_factor.unwrap_or(d.bail_linear_factor),
+            bail_angular_factor: v.bail_angular_factor.unwrap_or(d.bail_angular_factor),
+            bail_heavy_mass: v.bail_heavy_mass.unwrap_or(d.bail_heavy_mass),
+            bail_blend: v.bail_blend.unwrap_or(d.bail_blend),
         };
     }
     if let Some(v) = &p.upright {
@@ -573,7 +579,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "ambient_skaters": s.ambient_skaters,
                 "zombie": s.zombie,
                 "free_play": s.free_play.map(|f| json!({"traffic": f.traffic, "pedestrians": f.pedestrians, "ai_skaters": f.ai_skaters})),
-                "npc_simulated": {"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max, "respawn_seconds": s.npc_simulated.respawn_seconds, "respawn_min": s.npc_simulated.respawn_min, "respawn_max": s.npc_simulated.respawn_max, "placement_hold_seconds": s.npc_simulated.placement_hold_seconds, "respawn_hold_seconds": s.npc_simulated.respawn_hold_seconds, "anticipation_distance": s.npc_simulated.signals.anticipation_distance, "anticipation_frames": s.npc_simulated.signals.anticipation_frames, "max_crossed_nodes": s.npc_simulated.signals.max_crossed_nodes, "walk_back": s.npc_simulated.walk_back, "walk_arrive_distance": s.npc_simulated.navmesh.arrive_h, "walk_stuck_ticks": s.npc_simulated.navmesh.stuck_waypoint_ticks, "board_yaw": s.npc_simulated.board_yaw_on, "board_yaw_dead_zone": s.npc_simulated.board_yaw.dead_zone, "board_yaw_mag_scale": s.npc_simulated.board_yaw.mag_scale, "bump": s.npc_simulated.bump},
+                "npc_simulated": {"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max, "respawn_seconds": s.npc_simulated.respawn_seconds, "respawn_min": s.npc_simulated.respawn_min, "respawn_max": s.npc_simulated.respawn_max, "placement_hold_seconds": s.npc_simulated.placement_hold_seconds, "respawn_hold_seconds": s.npc_simulated.respawn_hold_seconds, "anticipation_distance": s.npc_simulated.signals.anticipation_distance, "anticipation_frames": s.npc_simulated.signals.anticipation_frames, "max_crossed_nodes": s.npc_simulated.signals.max_crossed_nodes, "walk_back": s.npc_simulated.walk_back, "walk_arrive_distance": s.npc_simulated.navmesh.arrive_h, "walk_stuck_ticks": s.npc_simulated.navmesh.stuck_waypoint_ticks, "board_yaw": s.npc_simulated.board_yaw_on, "board_yaw_dead_zone": s.npc_simulated.board_yaw.dead_zone, "manual_value": s.npc_simulated.signals.manual_value, "board_yaw_mag_scale": s.npc_simulated.board_yaw.mag_scale, "bump": s.npc_simulated.bump},
                 "npc_avoid": npc_avoid,
                 "ped_brain": {"enabled": s.ped_brain.enabled, "mood": s.ped_brain.mood, "wander_speed": s.ped_brain.values.wander_speed, "warn_seconds": s.ped_brain.values.warn_seconds, "know_about_seconds": s.ped_brain.values.know_about_seconds, "mood_want_memory_seconds": s.ped_brain.values.mood_want_memory_seconds, "conversation_turn_seconds": s.ped_brain.values.conversation_turn_seconds, "conversation_gather_seconds": s.ped_brain.values.conversation_gather_seconds, "run_from_honker_distance": s.ped_brain.run_from_honker.side_distance, "run_from_honker_speed": s.ped_brain.run_from_honker.run_speed, "warn_speech": s.ped_brain.values.warn_speech},
                 "npc_tricks": {"mode": s.npc_tricks.mode.name(), "gate_window": s.npc_tricks.params.gate_window, "min_air_frames": s.npc_tricks.params.min_air_frames},
@@ -590,6 +596,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             json!({"default": tuning(&s.0.default), "by_template": by, "solver": {
                 "row_solver": v.row_solver, "iterations": v.iterations, "sleep_energy": v.sleep_energy,
                 "sleep_frames": v.sleep_frames, "max_sleeps_per_step": v.max_sleeps_per_step, "rest_snap": v.rest_snap,
+                "bail_clamp": v.bail_clamp, "bail_linear_factor": v.bail_linear_factor, "bail_angular_factor": v.bail_angular_factor,
+                "bail_heavy_mass": v.bail_heavy_mass, "bail_blend": v.bail_blend,
             }, "upright": {
                 "window_seconds": u.window_seconds, "tick_seconds": u.tick_seconds, "stop_angle_deg": u.stop_angle_deg,
                 "max_angle_deg": u.max_angle_deg, "dead_band_deg": u.dead_band_deg, "gain_min": u.gain_min, "gain_max": u.gain_max,

@@ -940,6 +940,66 @@ state 1 until a trace settles it; the overlap blocker (`sub_82C49EB0`) and the c
 **Verification.** skate-core `a_kept_live_object_is_never_evicted_while_others_can_go` and the 7 other dmo tests;
 muted DownTown run: no errors (29 live at the spawn, under the cap, so no evictions while standing). Not play-tested.
 
+## What wakes a resting prop: the bail kick (research, 2026-10-17)
+
+**Question.** Retail's DMO contact callback `sub_82C54618` calls the velocity kick `sub_82C530F0` only for some
+touchers; which, and is a resting prop static to the skater otherwise (the saved stage A patch
+`.local/patches/stage-a-resting-props-static.patch` assumed so)?
+
+**Retail [code] (`sub_82C54618`, Ghidra + generated code).** The touching collidable is `[event+0x4C]`, its owner
+`[collidable+0x20]`. The owner is looked up for the interface whose type id is `sub_82586478` (returns the name
+"IActor", 0x823000F0) through `sub_82965630`, a search of the owner's sorted (type, interface) pairs. Only an IActor
+toucher can kick, and only when the collidable's kind `[[collidable+0x18]+0x18]` is 3 or 5 (or 4 with byte
+`[[actor->vfn14()+0x48]+0x137]` set) and byte `[[actor->vfn14()+0x1C]+0x4C]` is set; other touchers go into the
+prop's contact list instead.
+
+**Trace (laptop session recomp-all-20261017-175036, 9.2 min).** 1910 PROPHIT, 465 of them the player's board or
+body against a prop, and only 17 kicked: one burst at 271717 to 271754 ms, 50 ms after a ped collision (PEDCOLL ped
+47BA3950 at 271667 ms). The hook's v1 kind / flag fields read the owner instead of the collidable and the IActor call,
+so they say nothing about the gate; v2 (recomp research hooks, PROPHIT `actor` / `actor_vfn14`) logs the real inputs.
+
+**User (2026-10-17).** About the moment at 271.7 s: "Hit and then bailed as a result". About rolling into props:
+"depends on the object. large dumpsters move less, smaller props move easier. Vending machines are heavy."
+
+**Reading.** Rolling into a resting prop moves it by mass (ordinary contact physics, as ours already does through
+the reduced mass of the pair in `push_from_skater`); the kick is an extra impulse while the skater bails. So the stage
+A patch (resting prop static to the skater) is wrong and stays unapplied.
+
+**The "kick" is a clamp [code] (research b206, `.local/research/b206-prop-bail-kick.md`, read from the generated
+code because Ghidra garbles the multiply).** `sub_82C530F0` does not add an impulse: with w = the motion record's
++0x7C (read as inverse mass, not decoded) and d = the DMO's vtable slot 6 vector (`82C48230`, a velocity; the
+callback records a contact only when |d| >= 0.25): s = 5w and the spin is clamped to 15w when the mass (1/w) is
+under 200, else s = 0 and the spin is zeroed; n = d / |d|, mag = 0.5 * (max(s, |d|) + s); the linear velocity is
+pulled into the ball of radius mag around n * mag. Both setters wake the body. [trace] All 17 calls hit one prop with
+mag = 5.0. So a bail contact caps a prop's speed (and spin) rather than throwing it; the contact solve does the
+pushing. Constants [data]: 5.0 (0x821F1790), 15.0, 200.0, 0.5, 0.25.
+
+**Open:** which actor state the gate byte `[[IActor vfn14()+0x1C]+0x4C]` is (bail / ragdoll from the timing and the
+user's account, not decoded; the PROPHIT v2 hook logs the IActor and its vfn14 for one bail-into-prop session);
+collidable kinds 3 / 4 / 5 (b206: maybe our skeleton part groups; we drop group 4 from world volumes,
+`physics/skeleton_colliders.rs:31-34`); then the port: after `push_from_skater` (`prop_dynamics.rs` actor loop),
+when the pushing actor bails, apply the clamp and wake the prop, values data-driven with these defaults.
+
+## The bail clamp, ported (2026-10-17)
+
+- **Retail [code] (b206, b209, b210):** w is the body's inverse mass (the motion record AddForce `82D9CA30` also
+  scales by; written from 1 / the type mass, `82C4E568`); d is the prop's own velocity as its transform tracker
+  measures it (`[dmo+0xA4]+0x90` = last update's displacement / dt, `82E0C578`), about 0 for a resting prop. So for a
+  resting prop the cap is 5 / mass m/s (20 kg: 0.25 m/s) and 15 / mass rad/s, and from 200 kg on the prop is stopped.
+  Main checked in the callback decompile that the |d| >= 0.25 test guards only the non-actor contact record: the actor
+  branch calls `82C530F0` and returns before it.
+- **Change:** `prop_dynamics::bail_clamp` (pure, the formula above) runs once per prop per tick when a bailing pusher's
+  volume touched it this tick, with d = the prop's velocity before this tick's pushes, then wakes it.
+  `PropDynamics::set_bailing` takes the bailing pushers; `GamePhysics::step_props` passes the local skater while
+  `board_wiping_out` is set (our gate: retail's actor byte is not decoded). Values in `PropSolverSettings`
+  (`bail_clamp`, `bail_linear_factor` 5, `bail_angular_factor` 15, `bail_heavy_mass` 200, `bail_blend` 0.5), mod keys
+  in `set_tuning('props', {solver = {...}})` with validation, read back by `get_tuning`, reset on mod disable.
+- **Tests:** `bail_clamp_caps_light_props_and_stops_heavy_ones`, `a_bailing_pusher_does_not_throw_a_bin`; prop and
+  tuning tests pass (82). Not play-tested.
+- **NOT RETAIL YET:** NPC skaters do not report a bail to the prop step (replay NPCs have no bail state, simulated
+  NPCs do not push props); the gate is our wipeout state, not retail's byte; d is the solver velocity, not the
+  tracker's displacement.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with

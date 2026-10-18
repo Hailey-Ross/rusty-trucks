@@ -84,8 +84,9 @@ different flips from different skaters and from one pass to the next. Not play-t
   starts with `n` / `N` (`sub_82469048`), else the regular table (+0). `u = rand32 / 2^32`; walk the 8-byte entries
   (weight, trick) adding weights (normalised to sum 1 at load, `sub_824720C8`) and take the first with `u < sum`,
   else entry 0. `sub_82469A28` also keeps the recorded trick when the trick's attribute record has no family entries
-  in the per-category list; those records are not decoded, every recorded ollie / flip is taken to have them
-  [inferred].
+  in the per-category list. That check always passes: `sub_82DA1BF0` puts every record into its category's list
+  (it skips only a missing record) and all 105 ollie / flip ids have a record (research b187 [code + data]; main
+  re-read the list loop).
 
 **Data.** The profile tables are already in the `livingworld` export (`skater_profiles.json`,
 `ai_skater_profiles.*.fields`: `Hash_E580B6284639E03F` regular, `Hash_BB901D68361E9833` nollie, inheritance
@@ -138,7 +139,8 @@ needed. The trick table's chain links (+4 previous level, +8 base) are 18 numeri
 
 **Open questions.**
 1. Mode 2 (scripted list, `sub_82469E10`) and who sets modes 0 / 2 (challenge or scripted AI skaters).
-2. The trick attribute records' family entries (`sub_8245F120`, list at `*(0x830CFE64) + (category + 583) * 16`).
+2. Settled (b187): the family entries check always passes for ollies and flips (see above). Still open: the name of
+   the record value +124 (`Hash_D34A84B044B60CE3`, 0 or 1) that the check counts by.
 3. Profile byte +51 (grab / fingerflip / boneless allowed; one of the two unnamed bools) and the gesture-start
    percent (+36): only matter once the simulated tier sends ActionGraph signals.
 4. Skater vfunc +36: whether retail's draw is a per-skater stream or the global generator.
@@ -764,3 +766,91 @@ keyed by the NPC skater's stable id.
   DownTown run: handovers push 5.4 / 6.4 / 7.1 m/s on their first held tick (start speed = push), a bail respawn at
   node 55 pushed 5.7 m/s after its 8-tick hold. Not play-tested yet.
 
+## A dropped trick slot shows no trick pose (2026-10-17)
+- **Problem:** user (laptop session game-20261017-143646) said NPC ollies and landings look wrong. The log has 698
+  trick slots: 465 played as recorded, 215 swapped by the profile pick, 18 dropped (`chosen none`, grabs on profiles
+  without slot tricks).
+- **Retail [code] (research b187):** the swaps are retail. In ambient mode the gate `sub_82469C60` decides, and on a
+  pass `sub_82469A28` takes a weighted pick from the profile's regular or nollie table (by the recorded name's first
+  letter); there is no family, stance or pop class rule. Our `npc_tricks::choose` matches it. A dropped slot starts no
+  trick at all (`sub_8246A2E0`).
+- **Ours before:** a dropped slot still opened the trick span (`replay.rs` START_TRICK arm), so the replay phase was
+  GroundTrick / AirTrick with no trick clip and the puppet fell back to `G_5050_FS_LOW_0_CYC` (a 50-50 grind pose) on
+  the ground or `IA_IDLE_LO_N_0_CYC` in the air.
+- **Change:** a recorded trick the choice dropped opens no span; the record (`chosen -1`) is still logged and mirrored.
+  A START_TRICK node without a trick slot keeps its old behaviour (open below).
+- **Tests:** `a_dropped_slot_opens_no_trick_span` (skate-core npc_tricks tests); skate-core living_world 341 pass.
+  Not play-tested.
+- **Open (b187):** whether retail's AI jump follows the recorded trajectory (`82D682E8` / `82D67A00`): a swapped trick's
+  `_A` clip is cut at the recorded landing whatever its length, which may still look wrong; whether a START_TRICK node
+  without a trick slot opens anything in retail; a `Continue` (chain level) with no open trick plays the recorded
+  chain level here, retail may start nothing (not verified).
+
+## Simulated NPC skaters hold a manual on its side (2026-10-17)
+- **Found while chasing** the andrew_reynolds stall at DownTown node 60 (line 006477746e0017fab069ea024b7c9244: a
+  tailmanual at node 56, its end at 57, an ollie at 58 over a ~0.24 m step). A per-tick trace showed `Manual` posted
+  only before node 56 and nothing while the manual was open.
+- **Retail [code] (main read the recomp):** `sub_82469338` gives a manual's side: the tunable `742E...` (default
+  `0x830D0850`, 0.5), positive for nosemanual (2), negated for tailmanual (3), else 0. The anticipation arm of
+  `sub_824696B8` posts `Manual` = that value for the manual ahead (`pc+788` = 8, trick `pc+792`); the dispatcher
+  `sub_8246A2E0` stores it at `pc+836` for a manual (near 0x8246A544); the per-tick writer's category 8 arm
+  (`loc_82469954`, jump table 0x824698F8 case 7) posts `Manual` = `pc+836` every tick until the end node.
+- **Ours before:** anticipation posted `Manual` 1.0 (the nose side, also for a tailmanual) and the writer posted
+  nothing for category 8, so the manual was dropped at its start node.
+- **Change:** `SignalSettings::manual_value` (0.5, the one source; the board yaw's manual side reads it too),
+  `TrickSlot::manual` (`pc+836`), anticipation and the category 8 writer post the side. Mod key
+  `npc_simulated.manual_value` (0..=1). `SKATE_NPC_TRACE_TICKS` (default 60) lengthens the per-tick NPC_SKATER_PLACED
+  debug trace after a placement (`RUST_LOG=info,skate3rust::living_world::npc_sim=debug`).
+- **Tests:** `a_manual_is_anticipated_and_held_with_its_side` (skate-core ai_signals); skate-core living_world 342
+  pass; skate-mods world_tuning pass. Muted 150 s DownTown runs before / after: bails 5 / 6, final stalls 5 / 6, lost
+  22 / 17 (noise; sessions diverge). Not play-tested.
+- **Not fixed by this:** andrew_reynolds still posts `Trick ollie` at node 58 and never leaves the ground (2 of 45 sim
+  ollies / flips in the run fail, both this spot). Speed is fine (7.2 to 7.7 m/s), the early fire does not apply
+  (b188: ollies have no lead), and 13 other ollies popped with no anticipation at all.
+- **Cause found (2026-10-17 ~17:30, per-tick trace with the graph states, `ag` / `mg` on NPC_SKATER_PLACED):** the
+  motion graph sits in `Bumped` from the tick after the spawn push for about 38 ticks (0.6 s); every placed NPC in the
+  run does it (#1 to #7, 25 to 39 ticks). `IsBumped` (`82BA7310`, `ground_acceleration.rs`) reads the deck's observed
+  acceleration, and the push takes the deck from about 1 to 5.7 m/s in one tick. #2's respawn is 14 ticks before its
+  ollie at node 58: the action graph takes it (`OllieAnticipation` -> `TrickFromSquare`), the motion graph stays in
+  `Bumped`, so nothing pops.
+- **Fix (outcome-matched, 2026-10-17):** retail's code also sets the push as one velocity step without touching the
+  sampler's history (b194 [code]: `82C04168`, `82C07D20`), but retail's spawn-placed skaters ride off and do their
+  tricks. Here the spawn push (`GamePhysics::push_context_velocity`) also gives the acceleration sampler the pushed
+  velocity as its previous value, so the push reads as no acceleration; real hits afterwards still read as bumps.
+  Muted DownTown run, same seed: all 35 sim ollies / flips pop (was 33 of 35), andrew_reynolds passes node 60, ticks
+  in `Bumped` 239 -> 74. Bails 7 in 150 s (6 before; the sessions diverge). Not play-tested.
+- **Why `Bumped` lasts the whole clip (b195, b196 [code]):** retail (`82C14810` / `82C14978`) and ours
+  (`selection.rs:126-154`) only take a transition whose target has an enabled, active leaf; every active leaf under
+  `Riding.Turning.Push` needs a `RightPush` / `LeftPush` intent, which an AI skater does not hold, so `Bumped` runs to
+  its `WillExpire 0.1` exits in both. A pushing player leaves at once. Retail behaviour; no change.
+
+## Simulated NPC skaters steer by the effective deck after a flip (2026-10-17)
+
+- **Problem:** muted DownTown runs had NPC skaters stall riding away from their line, tail first (#8 lost 38 m off its
+  line after an inward heelflip, #7 likewise).
+- **Retail [code] (research b199, b200):** the AI's record, steer and facing gates read the deck forward from PhysOut
+  +64, filled by `GetEffectiveTransform` (`82C01BF8`): X and Z negated while the board is flipped under the rider
+  (Processed+2468 bit 20). Our sim read the raw deck part, so after a flip trick it steered the wrong end at the line.
+- **Change:** `npc_sim.rs` takes the effective forward (the raw deck's forward, negated while that bit is set) for the
+  AI record, the anticipation facing gate and the ground steer.
+- **Result (same muted run before / after):** NPC_SKATER_LOST 34 -> 9, bails 7 -> 2, NPC_SKATER_BACKWARDS 74 -> 47; the
+  4 remaining final-stage stalls are now at small positive speeds (none rolling away tail first). skate-game
+  living_world tests 95 pass. Not play-tested.
+- **Open (b201):** a skater that really rolls back down a ramp without a flip keeps riding_fakie false because the
+  rule reads the animated root, which faces travel; which side is wrong needs one rerun with `flipped`, `root_yaw`,
+  `eff_yaw`, `cat` and the fakie clocks on NPC_SKATER_STEER (`.local/research/b201-fakie-rollback.md`).
+
+## The stage-2 re-snap is a full path reset (2026-10-17)
+
+- **Retail [code] (research b207, `.local/research/b207-npc-stall-leftovers.md`):** the stuck re-snap `8246D168` picks
+  the node, saves the stuck tracker block (pc+0x210..0x244), runs the path reset `82468AC8` (projection objects,
+  search, trick fields, the per-line bytes) and restores the tracker. So it keeps the stage but starts the line state
+  fresh, like a line switch.
+- **Ours before:** the line switch cleared the air, trick slot and board yaw and reset the tracker (matches); the
+  re-snap only moved the cursor (`switch_to`), so a stale air / trick slot / board yaw survived the jump.
+- **Change:** `npc_sim::clear_line_state` (air, slot, board yaw) is shared by both; the re-snap calls it before
+  `switch_to` and leaves the tracker alone. skate-game tests pass (777). Not play-tested.
+- **Also from b207 (no change):** walk-back with no plan and the missing push already give retail's outcome (stage 3
+  retries the swap every 60 ticks, stage 4 waits, 5 bails, 6 respawns; the only push is the spawn push). Open: why
+  our NPC plans fail (log the solve result on the no-plan line first); whether ours models retail's 896 / 900 clocks
+  (reset to 7200 ticks by `82468AC8`).

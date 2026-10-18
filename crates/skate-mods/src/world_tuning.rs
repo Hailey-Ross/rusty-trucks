@@ -50,7 +50,8 @@
 //!   until play-tested, 40 m, 3; bail respawn after 5 s clamped to 1.5..7.9 s; mode 7 walk back
 //!   `walk_back` (retail on), `walk_arrive_distance` (2.4 m, 0..=20), `walk_stuck_ticks` (600, 0..=36000);
 //!   takeoff board yaw `board_yaw` (retail on), `board_yaw_dead_zone` (0.31416 rad, 0..=pi/2),
-//!   `board_yaw_mag_scale` (6.0606, 0..=100); `bump` (player and simulated NPCs collide as full skaters, retail on); `reactions` (NPC skaters
+//!   `board_yaw_mag_scale` (6.0606, 0..=100); `manual_value` (the side an NPC holds a manual with: + nose, - tail;
+//!   retail 0.5, 0..=1); `bump` (player and simulated NPCs collide as full skaters, retail on); `reactions` (NPC skaters
 //!   react to wipeouts within `reaction_radius` m: slam / slam_b / crash lines, retail on, 15, 0..=100)),
 //!   `npc_avoid {enabled, max_entries, skitch_cooldown_ticks, radius_skater, radius_pedestrian,
 //!   radius_vehicle, radius_prop, cone, wide_cone, wide_cone_distance, skater_radius,
@@ -265,6 +266,8 @@ pub struct NpcSimulatedPatch {
     pub board_yaw: Option<bool>,
     pub board_yaw_dead_zone: Option<f32>,
     pub board_yaw_mag_scale: Option<f32>,
+    /// The `Manual` value an NPC holds a manual with (+ nosemanual, - tailmanual; 0..=1; retail 0.5).
+    pub manual_value: Option<f32>,
     /// The player and simulated NPCs bump as full skaters (a hard hit knocks one down; retail on).
     pub bump: Option<bool>,
     /// NPC skaters react to wipeouts near them (slam / slam_b / crash lines; retail on) within `reaction_radius` m
@@ -584,7 +587,10 @@ pub struct PropUprightPatch {
 /// 82DC2840): `row_solver` true = retail row solver (false = the engine's older
 /// impulse pass); `iterations` (retail 25, 1..=256); `sleep_energy` (retail 1e-5);
 /// `sleep_frames` (retail 2, 1..=10000); `max_sleeps_per_step` (retail 100);
-/// `rest_snap` (engine snap, not retail, default false).
+/// `rest_snap` (engine snap, not retail, default false). The bail clamp (retail 82C530F0: a bailing actor's contact
+/// caps the prop's velocity): `bail_clamp` (on), `bail_linear_factor` (retail 5.0, cap = factor / mass m/s),
+/// `bail_angular_factor` (retail 15.0), `bail_heavy_mass` (retail 200 kg: from this mass on the prop is stopped),
+/// `bail_blend` (retail 0.5).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PropSolverPatch {
@@ -594,6 +600,11 @@ pub struct PropSolverPatch {
     pub sleep_frames: Option<u32>,
     pub max_sleeps_per_step: Option<u32>,
     pub rest_snap: Option<bool>,
+    pub bail_clamp: Option<bool>,
+    pub bail_linear_factor: Option<f32>,
+    pub bail_angular_factor: Option<f32>,
+    pub bail_heavy_mass: Option<f32>,
+    pub bail_blend: Option<f32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -924,7 +935,8 @@ impl Merge for PropTuningPatch {
 }
 impl Merge for PropSolverPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; row_solver, iterations, sleep_energy, sleep_frames, max_sleeps_per_step, rest_snap);
+        merge_opts!(self, b; row_solver, iterations, sleep_energy, sleep_frames, max_sleeps_per_step, rest_snap, bail_clamp,
+            bail_linear_factor, bail_angular_factor, bail_heavy_mass, bail_blend);
     }
 }
 impl Merge for PropUprightPatch {
@@ -970,7 +982,7 @@ impl Merge for FreePlayPatch {
 
 impl Merge for NpcSimulatedPatch {
     fn merge(&mut self, b: &Self) {
-        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, respawn_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, bump, reactions, reaction_radius);
+        merge_opts!(self, b; enabled, radius, max, respawn_seconds, respawn_min, respawn_max, placement_hold_seconds, respawn_hold_seconds, anticipation_distance, anticipation_frames, max_crossed_nodes, walk_back, walk_arrive_distance, walk_stuck_ticks, board_yaw, board_yaw_dead_zone, board_yaw_mag_scale, manual_value, bump, reactions, reaction_radius);
     }
 }
 
@@ -1095,6 +1107,7 @@ impl LivingWorldPatch {
                     && n.walk_stuck_ticks.is_none_or(|v| v <= 36000)
                     && n.board_yaw_dead_zone.is_none_or(|v| v.is_finite() && (0.0..=core::f32::consts::FRAC_PI_2).contains(&v))
                     && n.board_yaw_mag_scale.is_none_or(|v| v.is_finite() && (0.0..=100.0).contains(&v))
+                    && n.manual_value.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
             })
             && self.npc_avoid.as_ref().is_none_or(NpcAvoidPatch::validate)
             && self.ped_brain.as_ref().is_none_or(|p| {
@@ -1127,6 +1140,10 @@ impl PropSolverPatch {
             && self.sleep_energy.is_none_or(|e| e.is_finite() && (0.0..=MAX_NUMBER).contains(&e))
             && self.sleep_frames.is_none_or(|n| (1..=10_000).contains(&n))
             && self.max_sleeps_per_step.is_none_or(|n| n >= 1)
+            && [self.bail_linear_factor, self.bail_angular_factor, self.bail_heavy_mass]
+                .iter()
+                .all(|v| v.is_none_or(|v| v.is_finite() && (0.0..=MAX_NUMBER).contains(&v)))
+            && self.bail_blend.is_none_or(|v| v.is_finite() && (0.0..=1.0).contains(&v))
     }
 }
 impl PropUprightPatch {
@@ -1283,6 +1300,8 @@ mod tests {
         assert!(!valid_patch("living_world", &json!({"npc_simulated": {"respawn_seconds": 90.0}})));
         assert!(valid_patch("living_world", &json!({"npc_simulated": {"anticipation_distance": 5.0, "anticipation_frames": 90, "max_crossed_nodes": 4}})));
         assert!(!valid_patch("living_world", &json!({"npc_simulated": {"anticipation_frames": 9000}})));
+        assert!(valid_patch("living_world", &json!({"npc_simulated": {"manual_value": 0.8}})));
+        assert!(!valid_patch("living_world", &json!({"npc_simulated": {"manual_value": -0.5}})));
         assert!(valid_patch("living_world", &json!({"skater_clips": {"rolling": "R_IDLE_RIDE_N_0_CYC", "rolling.Aggressive": "X"}})));
         assert!(!valid_patch("living_world", &json!({"skater_clips": {"flying": "X"}})));
         assert!(!valid_patch("living_world", &json!({"skater_clips": {"air": ""}})));
