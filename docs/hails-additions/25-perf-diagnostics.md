@@ -524,7 +524,8 @@ frame: the living world loading its map data on the first fixed tick (`peds::loa
 
 Not changed: the first ground at start (still built on the first fixed tick). Correction 2026-10-17: that tick is
 not behind the loading screen; virtual time is paused there, so it is the first frame of play (1.3 s with the
-checkout's dev mods on the desktop, `modding::fixed`; see "The living world loads behind the loading screen").
+checkout's dev mods on the desktop, `modding::fixed`; see "The living world loads behind the loading screen"). Built behind the loading screen since 2026-10-18 (section "The first ground at start is built behind the
+loading screen").
 
 ## Map switch: the ped data parses `tables.json` once (2026-10-17)
 
@@ -589,6 +590,11 @@ Verification: a muted 60 s DownTown run without mods (`frame-time-run.ps1 -NoMod
 run's trace folder as `system_timing.log`) logs one line per second; its top leaf system pointed at the car material
 fix below.
 
+Added 2026-10-18: after the top list, `| slow name=<ms> ...` lists every system with one run of at least 10 ms,
+whatever its rank (one long wait is small per second and stays out of the top list). Diagnostics for the stalls
+below: `SKATE_PRESENT_MODE=fifo|mailbox|immediate` and `SKATE_FRAME_LATENCY=1..3` override the swapchain
+(default AutoNoVsync and wgpu's latency; `SWAPCHAIN_OVERRIDE` log line when set).
+
 ## Car materials are no longer uploaded again every frame (2026-10-17)
 
 Problem: the first `SYSTEM_TIMING` run showed `prepare_erased_assets<VehicleMaterial>` at 0.32 ms per frame and
@@ -615,7 +621,11 @@ every second with a stall the same systems on different threads stretch together
 thread), so the whole process waits on something shared rather than one system being slow. Ruled out: the frame rate
 (a 144 fps cap keeps them), the NPC physics opt-in (fewer with it off, not gone) and log writing (already on its own
 thread). A Chrome trace hides them because it slows every frame; a Windows Performance Recorder trace of one stall is
-next.
+next. 2026-10-18: the stretching systems all wait inside ComputeTaskPool scopes, and a waiting scope runs unrelated
+pool tasks meanwhile (bevy_tasks `task_pool.rs` scope, tick on), so one blocked task stretches whichever system
+picked it up, on the main or the render thread (research b230). Not the swapchain: `prepare_windows` never shows in
+the `slow` list, and Fifo / Mailbox / Immediate / frame latency 1 all keep them (10 to 38 frames over 25 ms per 60 s
+against 24 and 37 for the default, run-to-run noise).
 
 ## The living world loads behind the loading screen (2026-10-17)
 
@@ -652,8 +662,28 @@ dev mods): `LIVING_WORLD data` and `PED_DATA_LOAD` come from `early_load_for_map
 startup before `STARTUP_LOADING done` and at the switch right after `MAP_TRANSITION_COMMITTED`; each logs once
 per map (no second load on the first tick, no settings reload); 0 error lines. The first frame with a fixed tick
 after the switch took 6.1 ms (fixed step 1.6 ms), where that tick carried the whole load before (about 115 ms
-on the desktop). At startup the first fixed tick still takes 1.3 s with dev mods: the mods' first ground
-(`modding::fixed`), next on the list.
+on the desktop). At startup the first fixed tick still took 1.3 s with dev mods: the mods' first ground
+(`modding::fixed`), moved next ("The first ground at start is built behind the loading screen").
+
+## The first ground at start is built behind the loading screen (2026-10-18)
+
+Problem: the mods' dynamics ground (one Rapier trimesh of every world collision triangle, built whether or not a mod
+uses it) was built on the game thread on the first fixed tick at start, which is the first frame of play: frame 6 of
+a muted DownTown run without mods took 1718 ms, 1714 ms of it fixed. A map switch already built it on the map
+loader's `mod-ground` thread (section "Map switch: the mods' ground built by the map loader").
+
+Change: at Startup, `modding::start_startup_ground` copies the world triangles, builds the ground on a `mod-ground`
+thread and takes a `mod_ground` hold on the startup loading screen; `finish_startup_ground` (PreUpdate) hands the
+finished collider over as `PreparedGround` for the current map generation and releases the hold. `ensure_ground`
+installs it on the first tick, as after a switch: same triangles, same collider (`skate-dynamics` test
+`a_ground_built_apart_is_the_same_as_set_ground`). A failed thread start falls back to the old build on the tick.
+
+Tests: `the_startup_ground_is_handed_to_the_first_tick_and_releases_the_loading_screen`.
+
+Verification (desktop, DownTown, muted, no mods): the first frame of play went from 1718 ms to 587 ms;
+`modding::fixed` on it from about 1100 ms to 51 ms. The loading screen is up 0.7 s longer (4405 ms against
+3691 ms), as the ground takes longer to build than the other loads. Left in that frame: `npc_sim::simulate`
+483 ms with the NPC physics opt-in on (its body pool loads on the first tick, research b215).
 
 ## Zone ambience beds are read ahead at map load (2026-10-17)
 

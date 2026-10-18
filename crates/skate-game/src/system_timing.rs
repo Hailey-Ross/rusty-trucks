@@ -22,6 +22,8 @@ pub(crate) fn on() -> bool {
 const SLOTS: usize = 2048;
 /// Systems on the line.
 const TOP: usize = 16;
+/// A single run this long also lists the system after the top ones (`slow`), whatever its rank.
+const SLOW_NS: u64 = 10_000_000;
 
 struct Slot {
     total_ns: AtomicU64,
@@ -163,7 +165,17 @@ fn report(mut state: Local<ReportState>) {
         .take(TOP)
         .map(|(ns, runs, max, name)| format!("{}={:.3}/{:.2}x{}", short(name), *ns as f64 / 1e6 / frames as f64, *max as f64 / 1e6, runs))
         .collect();
-    info!("SYSTEM_TIMING frames={frames} systems_ms_per_frame={:.3} | {}", total as f64 / 1e6 / frames as f64, top.join(" "));
+    // Any system with one run of at least SLOW_NS, ranked or not: a single long wait (a swapchain acquire, a blocked
+    // task picked up by a waiting scope) is small per second and stays out of the top list.
+    let mut slow: Vec<&(u64, u64, u64, &str)> = rows.iter().filter(|r| r.2 >= SLOW_NS).collect();
+    slow.sort_by(|a, b| b.2.cmp(&a.2));
+    let slow: Vec<String> = slow.iter().map(|(_, _, max, name)| format!("{}={:.2}", short(name), *max as f64 / 1e6)).collect();
+    info!(
+        "SYSTEM_TIMING frames={frames} systems_ms_per_frame={:.3} | {}{}",
+        total as f64 / 1e6 / frames as f64,
+        top.join(" "),
+        if slow.is_empty() { String::new() } else { format!(" | slow {}", slow.join(" ")) }
+    );
 }
 
 /// The last two path segments of a system name (`living_world::peds::think_peds` -> `peds::think_peds`), generics kept.

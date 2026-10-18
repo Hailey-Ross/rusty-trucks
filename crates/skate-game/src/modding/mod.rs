@@ -172,9 +172,10 @@ impl Plugin for ModdingPlugin {
         capture::install(app);
         triggers::install(app);
         living_world_events::install(app);
-        app.add_systems(
+        app.add_systems(Startup, start_startup_ground)
+        .add_systems(
             PreUpdate,
-            maintenance.after(crate::map_transition::MapTransitionSet),
+            (finish_startup_ground, maintenance.after(crate::map_transition::MapTransitionSet)),
         )
         .add_systems(
             FixedUpdate,
@@ -380,6 +381,51 @@ pub(crate) struct PreparedGround {
     /// The `CurrentMap` generation it belongs to.
     pub generation: u64,
     pub ground: Option<Result<skate_dynamics::GroundCollider, String>>,
+}
+
+/// The first map's ground, built on a `mod-ground` thread from startup as the map loader does for a switch: the
+/// startup loading screen waits for it, so the first fixed tick installs it instead of building it on the game
+/// thread (2026-10-17: a 1.7 s first frame of play on the desktop, with or without mods).
+#[derive(Resource)]
+struct StartupGround(std::sync::Mutex<Option<std::thread::JoinHandle<Result<skate_dynamics::GroundCollider, String>>>>);
+
+fn start_startup_ground(
+    mut commands: Commands,
+    physics: Option<Res<crate::physics::GamePhysics>>,
+    startup: Option<ResMut<crate::startup_loading::StartupLoading>>,
+) {
+    let (Some(physics), Some(mut startup)) = (physics, startup) else { return };
+    let triangles = ground_triangles(&physics);
+    let job = std::thread::Builder::new()
+        .name("mod-ground".into())
+        .spawn(move || bevy::log::tracing::info_span!("build_mod_ground").in_scope(|| skate_dynamics::DynamicsWorld::build_ground(triangles.into_iter())));
+    match job {
+        Ok(job) => {
+            startup.hold("mod_ground", "Building the world");
+            commands.insert_resource(StartupGround(std::sync::Mutex::new(Some(job))));
+        }
+        Err(e) => warn!("Mods' ground: no startup builder ({e}); the first fixed tick builds it"),
+    }
+}
+
+/// Hand the finished startup ground to `ensure_ground` and let the loading screen go on.
+fn finish_startup_ground(
+    mut commands: Commands,
+    ground: Option<Res<StartupGround>>,
+    map: Res<crate::map_transition::CurrentMap>,
+    startup: Option<ResMut<crate::startup_loading::StartupLoading>>,
+) {
+    let Some(ground) = ground else { return };
+    let mut slot = ground.0.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().is_some_and(|job| !job.is_finished()) {
+        return;
+    }
+    let built = slot.take().map(|job| job.join().unwrap_or_else(|_| Err("the mods' ground builder panicked".to_string())));
+    commands.insert_resource(PreparedGround { generation: map.generation, ground: built });
+    commands.remove_resource::<StartupGround>();
+    if let Some(mut startup) = startup {
+        startup.release("mod_ground");
+    }
 }
 
 /// The world's collision triangles as the mods' ground takes them.
@@ -1964,5 +2010,38 @@ fn dispatch_profiled(manager: &mut skate_mods::Manager, callback: &str, payload:
     for id in ids {
         let _span = bevy::log::tracing::info_span!("mods.callback", mod_id = %id, callback).entered();
         manager.call(&id, callback, payload.clone());
+    }
+}
+
+#[cfg(test)]
+mod startup_ground_tests {
+    use super::*;
+
+    #[test]
+    fn the_startup_ground_is_handed_to_the_first_tick_and_releases_the_loading_screen() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(crate::map_transition::CurrentMap { path: None, name: "Test".into(), spawn: [0.0; 3], heading: 0.0, generation: 3, audio_tag: None });
+        let mut startup = crate::startup_loading::StartupLoading::new();
+        startup.hold("mod_ground", "Building the world");
+        app.insert_resource(startup);
+        let tris = vec![[[-40., 0., -40.], [40., 0., -40.], [40., 0., 40.]], [[-40., 0., -40.], [-40., 0., 40.], [40., 0., 40.]]];
+        let job = std::thread::spawn(move || skate_dynamics::DynamicsWorld::build_ground(tris.into_iter()));
+        app.insert_resource(StartupGround(std::sync::Mutex::new(Some(job))));
+        app.add_systems(PreUpdate, finish_startup_ground);
+        for _ in 0..200 {
+            app.update();
+            if app.world().get_resource::<PreparedGround>().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let prepared = app.world_mut().remove_resource::<PreparedGround>().expect("the built ground is handed over");
+        assert_eq!(prepared.generation, 3, "tagged with the current map");
+        let mut world = skate_dynamics::DynamicsWorld::default();
+        world.install_ground(prepared.ground.expect("a result").expect("built"));
+        assert!(world.has_ground());
+        assert!(app.world().get_resource::<StartupGround>().is_none());
+        assert!(!app.world().resource::<crate::startup_loading::StartupLoading>().holding("mod_ground"));
     }
 }

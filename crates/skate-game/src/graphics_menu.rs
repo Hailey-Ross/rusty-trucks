@@ -613,7 +613,9 @@ fn setup(
     window
         .resolution
         .set_physical_resolution(settings.width, settings.height);
-    window.present_mode = PresentMode::AutoNoVsync;
+    let (present_mode, latency) = swapchain_overrides();
+    window.present_mode = present_mode;
+    window.desired_maximum_frame_latency = latency;
     let size = settings.internal_size(window.physical_size());
     let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
     image.sampler = ImageSampler::linear();
@@ -1453,6 +1455,22 @@ fn resize_menu(
     }
     *previous = Some(scale);
 }
+/// Swapchain diagnostics (frame-time stalls, 2026-10-17): `SKATE_PRESENT_MODE=fifo|mailbox|immediate` (default
+/// AutoNoVsync) and `SKATE_FRAME_LATENCY=1..3` (default wgpu's); logged when either is set.
+fn swapchain_overrides() -> (PresentMode, Option<std::num::NonZero<u32>>) {
+    let mode = match std::env::var("SKATE_PRESENT_MODE").ok().as_deref().map(str::to_ascii_lowercase).as_deref() {
+        Some("fifo") => PresentMode::Fifo,
+        Some("mailbox") => PresentMode::Mailbox,
+        Some("immediate") => PresentMode::Immediate,
+        _ => PresentMode::AutoNoVsync,
+    };
+    let latency = std::env::var("SKATE_FRAME_LATENCY").ok().and_then(|v| v.parse::<u32>().ok()).and_then(std::num::NonZero::new);
+    if mode != PresentMode::AutoNoVsync || latency.is_some() {
+        info!("SWAPCHAIN_OVERRIDE present mode {mode:?}, frame latency {}", latency.map_or("default".to_string(), |l| l.to_string()));
+    }
+    (mode, latency)
+}
+
 fn pace(menu: Option<Res<Menu>>, mut pacer: ResMut<FramePacer>) {
     let Some(menu) = menu else {
         return;
