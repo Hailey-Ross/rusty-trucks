@@ -4,7 +4,7 @@
 use super::*;
 use skate_core::living_world::census::CensusCategory;
 use skate_core::living_world::{CensusCircle, CensusGrid, CensusRange, CensusRecord, SkaterCharacter, SkaterLine};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn census() -> CensusMap {
     let (w, h) = (600u32, 600u32);
@@ -481,4 +481,48 @@ fn settings_changed_behind_the_loading_screen_load_again_on_the_first_tick() {
     assert_ne!(state.status, "early", "the first fixed tick loaded again");
     assert_eq!(state.world.seed(), 2, "with the current settings");
     assert_eq!(state.loaded_for, Some(("Test".to_string(), 1)));
+}
+
+#[test]
+fn the_preload_holds_the_paths_the_spawners_load_with_mod_overrides() {
+    use skate_core::living_world::peds::{PedCatalog, PedEntity, PedModel};
+    let mut catalog = PedCatalog::default();
+    catalog.categories.insert("aletown".into(), vec!["jock02".into()]);
+    catalog.entities.insert("jock02".into(), PedEntity { model: Some("jock02".into()), ..Default::default() });
+    catalog.models.insert("jock02".into(), PedModel { recipe: "male_jock_2".into(), ..Default::default() });
+    let mut ped_data = peds::PedData { catalog: std::sync::Arc::new(catalog), ..Default::default() };
+    let mut hand = super::ped_hand_props::HandPropData::default();
+    hand.props.insert("bag".into(), super::ped_hand_props::HandPropRecord { glb: Some("private/living_world/hand_props/bag.glb".into()), ..Default::default() });
+    hand.props.insert("nothing".into(), super::ped_hand_props::HandPropRecord::default());
+    ped_data.hand_props = std::sync::Arc::new(hand);
+    let mut state = PopulationState::default();
+    let mut cars = skate_core::living_world::VehicleCatalog::default();
+    cars.categories.insert("sedan".into(), vec!["car_a".into(), "car_b".into()]);
+    cars.entities.insert("car_a".into(), skate_core::living_world::census::VehicleEntity { model: "sedan_model".into(), ..Default::default() });
+    cars.entities.insert("car_b".into(), skate_core::living_world::census::VehicleEntity { model: "missing_model".into(), ..Default::default() });
+    state.vehicles = Some(cars);
+    let mut traffic = vehicles::TrafficState::default();
+    traffic.data.models.insert("sedan_model".into(), vehicles::VehicleModel { glb: "private/living_world/vehicles/sedan.glb".into(), ..Default::default() });
+    let models = crate::custom_models::CustomModels::default();
+    let paths = |looks: &peds::PedLooks, overrides: &vehicles::VehicleOverrides| {
+        preload::preload_paths(&state, &ped_data, looks, &traffic, overrides, &npc_skaters::NpcSkaterLooks::default(), &models)
+    };
+    let stock = paths(&peds::PedLooks::default(), &vehicles::VehicleOverrides::default());
+    // The same strings the spawners load (`glb_path`, `car_glb`, the hand prop record); a missing model gives none.
+    let want: BTreeSet<String> = [
+        peds::glb_path(&peds::PedLooks::default(), "male_jock_2"),
+        "private/living_world/vehicles/sedan.glb".to_string(),
+        "private/living_world/hand_props/bag.glb".to_string(),
+    ]
+    .into();
+    assert_eq!(stock, want);
+    // A mod's ped GLB and car GLB replace the stock paths, as the spawners would load them.
+    let mut looks = peds::PedLooks::default();
+    looks.glb.insert("male_jock_2".into(), "mods/x/jock.glb".into());
+    let mut overrides = vehicles::VehicleOverrides::default();
+    overrides.glbs.insert("sedan_model".into(), "mods/x/sedan.glb".into());
+    let modded = paths(&looks, &overrides);
+    assert!(modded.contains("mods/x/jock.glb") && modded.contains("mods/x/sedan.glb"));
+    assert!(!modded.contains("private/living_world/vehicles/sedan.glb"));
+    assert_eq!(vehicles::car_glb(&traffic.data, &overrides, "car_a", "sedan_model"), "mods/x/sedan.glb");
 }

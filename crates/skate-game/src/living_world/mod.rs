@@ -40,6 +40,7 @@ pub(crate) mod ped_mood;
 pub(crate) mod ped_hand_props;
 pub(crate) mod ped_plugins;
 pub(crate) mod peds;
+pub(crate) mod preload;
 pub(crate) mod vehicle_contacts;
 pub(crate) mod vehicle_material;
 pub(crate) mod vehicles;
@@ -862,7 +863,10 @@ impl Plugin for LivingWorldPlugin {
                 FixedUpdate,
                 (recheck_early_load, load_for_map, gather_observers, step_population, dmo_stream::stream_dmos).chain().after(crate::app::SimulationSet::Physics),
             )
-            .add_systems(Update, (log_zombie_mode, opt_ins::log_opt_ins));
+            .add_systems(Update, (log_zombie_mode, opt_ins::log_opt_ins))
+            .init_resource::<preload::LivingWorldPreload>()
+            .add_systems(Startup, preload::take_models_hold)
+            .add_systems(Update, preload::preload_models);
         add_early_loads(app);
         npc_skaters::install(app);
         peds::install(app);

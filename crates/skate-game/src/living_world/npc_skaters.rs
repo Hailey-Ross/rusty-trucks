@@ -191,6 +191,12 @@ pub(crate) struct NpcSkaterIndex(pub BTreeMap<LivingWorldId, Entity>);
 #[derive(Resource, Default, Clone)]
 pub(crate) struct NpcSkaterLooks(pub BTreeMap<String, String>);
 
+/// The model an NPC skater of `character` loads: a mod's look, else the online roster's, else the stock skater
+/// (`present_looks` and the living world preload).
+pub(crate) fn look_path(looks: &NpcSkaterLooks, models: &crate::custom_models::CustomModels, character: &str) -> String {
+    looks.0.get(character).cloned().or_else(|| models.online_native_path(character)).unwrap_or_else(|| "private/skater.glb".to_owned())
+}
+
 /// What happened to an NPC skater (engine systems, mods, speech).
 #[derive(Message, Clone, Debug, PartialEq)]
 pub(crate) enum NpcSkaterEvent {
@@ -1122,12 +1128,7 @@ pub(crate) fn present_looks(
 ) {
     for (e, npc, puppet) in &mut npcs {
         let Some(mut puppet) = puppet else {
-            let path = looks
-                .0
-                .get(&npc.character)
-                .cloned()
-                .or_else(|| models.online_native_path(&npc.character))
-                .unwrap_or_else(|| "private/skater.glb".to_owned());
+            let path = look_path(&looks, &models, &npc.character);
             let scene = commands.spawn((SceneRoot(server.load(GltfAssetLabel::Scene(0).from_asset(path))), Transform::default(), Visibility::Hidden, ChildOf(e))).id();
             commands.entity(e).insert(NpcPuppet { scene: Some(scene), bindings: None, style: crate::custom_models::native_animation_style(&npc.character) });
             continue;

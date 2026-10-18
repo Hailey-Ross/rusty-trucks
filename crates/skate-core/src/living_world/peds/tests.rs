@@ -572,3 +572,24 @@ fn turn_buckets_pick_the_stand_and_walk_turn_clips() {
     assert!(entered, "the walk turn played in the branch window");
     assert_eq!(p.state, Locomotion::Walk, "back on the walk cycle");
 }
+
+#[test]
+fn reachable_recipes_hold_every_look_a_census_spawn_can_get() {
+    let c = catalog();
+    let mut o = PedOverrides::default();
+    let reachable = c.reachable_recipes(&o);
+    // The group record's three children, the two plain models; the empty category adds none.
+    let want: std::collections::BTreeSet<String> = ["male_jock_2", "male_bum_2", "female_skater_1", "female_skater_2", "female_skater_3"].map(String::from).into();
+    assert_eq!(reachable, want);
+    for seed in 0..2000 {
+        let look = c.choose("aletown", seed, &o).unwrap();
+        assert!(reachable.contains(&look.recipe), "seed {seed}: {} missing", look.recipe);
+    }
+    // A mod's category list replaces the stock one, and a mod's entity model is followed.
+    o.category_entities.insert("aletown".into(), s(&["bum02"]));
+    o.entity_model.insert("bum02".into(), "jock02".into());
+    assert_eq!(c.reachable_recipes(&o), ["male_jock_2".to_string()].into());
+    for seed in 0..200 {
+        assert!(c.reachable_recipes(&o).contains(&c.choose("aletown", seed, &o).unwrap().recipe));
+    }
+}
