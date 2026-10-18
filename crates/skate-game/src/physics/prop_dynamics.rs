@@ -3679,10 +3679,11 @@ mod tests {
         }
     }
 
-    /// With a Ground grab decision (82D324B0) the carry binds exactly the record it qualified, even when another
-    /// record of the prop is nearer (the large dumpster's bottom edges, b224 / b226); no qualified record, no grab.
+    /// The carry binds exactly the record the Move Object enter passed (82D442D0, b233): the decision on tick N
+    /// starts nothing, the published record binds on N+1, even when another record of the prop is nearer (the large
+    /// dumpster's bottom edges, b224 / b226).
     #[test]
-    fn the_carry_binds_the_record_the_ground_decision_qualified() {
+    fn the_carry_binds_the_published_record_at_the_move_object_enter() {
         let (_, _, mut dynamics) = fixture([0., REST_Y, 1.2]);
         let mut splines = std::collections::BTreeMap::new();
         // 0: a bottom edge on the near face (approach straight down); 1: the rim higher up the same face.
@@ -3691,27 +3692,33 @@ mod tests {
             crate::living_world::vehicles::CarGrabSpline { points: vec![[-0.4, 0.4, -0.5], [0.4, 0.4, -0.5]], direction: [0.0, 0.0, -1.0], flags: 0 },
         ]);
         assert_eq!(dynamics.set_grab_splines(&splines), 1);
-        // 82585F58: the record's part / rates block is filled, so Move Object's +216 null gate (82D442D0) passes.
+        // 82585F58: the record's part / rates block is filled, so the enter's +216 gate (82D442D0) passes.
         let object = dynamics.grab_object(7).unwrap();
         let part = object.assembly.as_ref().and_then(|a| a.first_part.as_ref()).expect("a part");
         assert_eq!((part.identity, part.rates.as_ref().map(|r| r.identity)), (PROP_GRAB_TAG | 7, Some(PROP_GRAB_TAG | 7)));
         assert_eq!(part.coefficients_0_to_36[4], dynamics.bodies[0].inertia.inverse_mass);
         let key = |i: u32| PROP_GRAB_TAG | (7 << 6) | i;
-        let grab = |dynamics: &mut PropDynamics, decision: Option<(u32, u32)>| {
-            let mut carry = crate::physics::prop_carry::PropCarry::default();
-            carry.set_authored_records(true);
-            let at = crate::physics::prop_carry::Carrier {
-                ground_grab: Some(decision),
-                ..carrier(skate_core::player::state::PhysicalStateId::BipedGround, 0.)
-            };
-            carry.update(dynamics, tick(), at);
-            (carry.held(), carry.held_grip().map(|g| g.descriptor))
+        let records = crate::physics::prop_carry::authored_records(&dynamics, 7, true).unwrap();
+        let rim = records.iter().find(|r| r.0[48] == key(1)).unwrap().clone();
+        assert!(rim.0[49] != 0 && rim.0[54] != 0, "the enter's geometry and rates gate");
+        let at = crate::physics::prop_carry::Carrier {
+            ground_grab: Some(Some((2, key(1)))),
+            ..carrier(skate_core::player::state::PhysicalStateId::BipedGround, 0.)
         };
-        assert_eq!(grab(&mut dynamics, Some((2, key(1)))), (Some(7), Some((2, key(1)))), "binds the qualified rim");
-        assert_eq!(grab(&mut dynamics, None), (None, None), "nothing qualified: no grab");
-        assert_eq!(grab(&mut dynamics, Some((2, 1 << 6))), (None, None), "a record that is not a prop's");
+        let mut carry = crate::physics::prop_carry::PropCarry::default();
+        carry.set_authored_records(true);
+        carry.update(&mut dynamics, tick(), at);
+        assert_eq!(carry.held(), None, "tick N: the decision alone starts nothing");
+        carry.bind_published(rim);
+        let at = crate::physics::prop_carry::Carrier { ground_grab: Some(None), state: skate_core::player::state::PhysicalStateId::OffBoardPushing, ..at };
+        carry.update(&mut dynamics, tick(), at);
+        assert_eq!((carry.held(), carry.held_grip().map(|g| g.descriptor)), (Some(7), Some((2, key(1)))), "binds the published rim");
+        // Nothing published: no carry, also with grab held in 502.
+        let mut idle = crate::physics::prop_carry::PropCarry::default();
+        idle.set_authored_records(true);
+        idle.update(&mut dynamics, tick(), at);
+        assert_eq!(idle.held(), None);
     }
-
     /// Move Object step 3: a prop with an authored grab spline is carried by
     /// that record (82D444A0 / 82D45D30), not the box stand-in: the grip sits
     /// on the spline, the facing is minus its approach vector, and the grip

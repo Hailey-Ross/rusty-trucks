@@ -1054,13 +1054,22 @@ pub(crate) fn advance_peds(
                         info!("PED_BODY_CONTACT ped=#{} part={} by=walker closing={:.2} part_speed={speed:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2);
                         speed
                     });
-                    let closing = runtime.ped_hits.iter().filter(mine).map(|h| h.2).chain(walker)
+                    // On board the skeleton's solve reports the part it touched with its closing speed.
+                    let board = runtime.ped_hits.iter().filter(mine).map(|h| {
+                        info!("PED_BODY_CONTACT ped=#{} part={} by=board closing={:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2);
+                        h.2
+                    });
+                    let closing = board.chain(walker)
                         .fold(None, |m: Option<f32>, s| Some(m.map_or(s, |m| m.max(s))))?;
                     let d = [body.position.x - observer.position[0], body.position.z - observer.position[2]];
                     let len = d[0].hypot(d[1]).max(1e-4);
                     let n = [d[0] / len, d[1] / len];
                     use skate_core::living_world::peds::skater_contact::{reaction_direction, skater_reaction};
-                    let kind = skater_reaction([closing, 0.0], [0.0, 0.0], &rules, ignore_standing)?;
+                    let Some(kind) = skater_reaction([closing, 0.0], [0.0, 0.0], &rules, ignore_standing) else {
+                        // The contact decided nothing (below the reaction rules, or a standing ped ignored).
+                        info!("PED_BODY_CONTACT_NO_REACTION ped=#{} closing={closing:.2} ignore_standing={ignore_standing} tick={tick}", ped.id.serial);
+                        return None;
+                    };
                     Some(((kind, reaction_direction(n, [body.heading.sin(), body.heading.cos()]), closing), local))
                 };
                 let skater = actors.iter()

@@ -811,9 +811,18 @@ No behaviour change.
   velocity at +144, centre of mass at +160, so Move Object's `+216` null gate (`82D442D0`) sees a real prop. Nothing
   reads those words yet. Log `PROP_GRAB_MISS <reason>: decision <qualified record | no record qualified>; nearest prop
   <id> (<template>)` once per press that starts no carry. Test `the_carry_binds_the_record_the_ground_decision_qualified`.
+- **Retail order, the enter bind (research b233, 2026-10-18):** the Ground decision qualifies on tick N; on N+1 the
+  requested record is published into Player+0x760 (`82D740F8`, `flags_2480` bit `0x400000`), the selector takes 500 to
+  502 and the Move Object enter `82D442D0` binds it only if that bit, the geometry (+196) and the rates identity (+216)
+  are set (`82762AB0` copy, `82D444A0` full); else nothing is held and the skater stays in 502. Ours started the carry
+  on tick N from a rebuilt record. **Change:** the 502 enter (`player_state/transition.rs`) runs that gate on the published
+  record and queues it (`PropCarry::bind_published`); the carry binds it at its next update with a new grip and no hold
+  test (`PROP_GRAB_BIND`; a refused enter logs `PROP_GRAB_MISS Move Object enter refused`). With a Ground decision the
+  carry never starts by itself; the interim pick stays for host tests. Test
+  `the_carry_binds_the_published_record_at_the_move_object_enter`.
 - **Open:** whether the large dumpster's rim qualifies from a standing skater (needs the user's next try and the new
-  line); the gated bind in `82D442D0` order (`flags_2480` bit `0x400000`, published one data request later); props in
-  the validation line world (our lines see only static triangles).
+  lines); Path A in 502 re-requests the held descriptor each tick in retail (`82D44A10` end), ours rebuilds the record
+  from the prop; props in the validation line world (our lines see only static triangles).
 
 ## Opt-in: Visualize Grabs (2026-10-18)
 

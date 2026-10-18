@@ -284,7 +284,7 @@ fn authored_frame(record: &Record, held: &skate_core::player::offboard::move_obj
 
 /// The authored grab records of prop `id` from its current pose; `None`
 /// without grab splines or when `enabled` is false.
-fn authored_records(dynamics: &PropDynamics, id: u32, enabled: bool) -> Option<Vec<Record>> {
+pub(crate) fn authored_records(dynamics: &PropDynamics, id: u32, enabled: bool) -> Option<Vec<Record>> {
     if !enabled {
         return None;
     }
@@ -394,9 +394,10 @@ pub(crate) struct Carrier {
     /// HUD) skips the record qualification and uses `position` as body.
     pub skeleton: Option<CarrierSkeleton>,
     /// The Ground grab decision this tick (82D324B0, `biped_ground::grab`): `Some(Some(descriptor))` when a validated
-    /// record qualified (state +144, descriptor +152 / +156), `Some(None)` when none did. Retail Move Object binds
-    /// only that record (published into Player+0x760, b226). `None` (host tests, the HUD) has no decision and keeps
-    /// the interim pick (nearest prop within `grab_range`, its nearest record).
+    /// record qualified (state +144, descriptor +152 / +156), `Some(None)` when none did or in another state. The game
+    /// always passes one: a carry then starts only from the Move Object enter's bind of the published record
+    /// (`bind_published`, b233). `None` (host tests, the HUD) has no decision and keeps the interim pick (nearest prop
+    /// within `grab_range`, its nearest record).
     pub ground_grab: Option<Option<(u32, u32)>>,
 }
 
@@ -501,6 +502,8 @@ pub(crate) struct PropCarry {
     closest: f32,
     /// The grab button last tick (the press edge for `PROP_GRAB_MISS`).
     grab_down: bool,
+    /// The published record the Move Object enter (82D442D0) passed its gate with, bound at the next update.
+    pending_bind: Option<Record>,
     /// Retail skater follow state (+416 / +608 / +624); `None` until the
     /// first held tick.
     follow: Option<SkaterFollow>,
@@ -680,17 +683,7 @@ impl PropCarry {
         if self.held.is_some() || carrier.state != PhysicalStateId::BipedGround {
             return None;
         }
-        let id = match carrier.ground_grab {
-            // The prop of the qualified record (spline key `PROP_GRAB_TAG | body id << 6 | index`).
-            Some(qualified) if self.authored_enabled() => {
-                let (_, key) = qualified?;
-                if key & super::prop_dynamics::PROP_GRAB_TAG == 0 {
-                    return None;
-                }
-                (key & !super::prop_dynamics::PROP_GRAB_TAG) >> 6
-            }
-            _ => dynamics.nearest_body(carrier.position, self.grab_range())?.0,
-        };
+        let id = dynamics.nearest_body(carrier.position, self.grab_range())?.0;
         let body = dynamics.held_body(id)?;
         let (frame, record) = self.frame_for(dynamics, id, &body, carrier, &mut None, &mut None)?;
         self.holds(&record, &frame, carrier).then_some(id)
@@ -720,13 +713,7 @@ impl PropCarry {
             let (record, held) = match *bound {
                 None => {
                     let p = carrier.position;
-                    let mut record = match carrier.ground_grab {
-                        Some(qualified) => {
-                            let descriptor = qualified?;
-                            records.into_iter().find(|r| (r.0[47], r.0[48]) == descriptor)?
-                        }
-                        None => best_spline(&records, [p.x, p.y, p.z, 1.0])?,
-                    };
+                    let mut record = best_spline(&records, [p.x, p.y, p.z, 1.0])?;
                     let held = move_object::begin_grip(&mut record, reference, self.locomotion.move_object.grab_end_exclusion);
                     (record, held)
                 }
@@ -786,18 +773,11 @@ impl PropCarry {
 
     /// `PROP_GRAB_MISS` (laptop 2026-10-18: the blue dumpsters never grabbed and left no line): once per grab press
     /// that starts no carry, with the Ground decision (82D324B0: the qualified record, or none) and the nearest prop.
-    fn log_miss(&self, dynamics: &PropDynamics, carrier: Carrier) {
+    fn log_miss(&self, dynamics: &PropDynamics, carrier: Carrier, reason: &str) {
         let decision = match carrier.ground_grab {
             Some(Some((kind, key))) => format!("qualified {kind}/{key:#x} (prop {} record {})", (key & !super::prop_dynamics::PROP_GRAB_TAG) >> 6, key & 63),
             Some(None) => "no record qualified".to_owned(),
             None => "no ground decision".to_owned(),
-        };
-        let reason = if carrier.state != PhysicalStateId::BipedGround {
-            "not on foot (BipedGround)"
-        } else if carrier.ground_grab == Some(None) {
-            "no validated record passed 82E08DB8"
-        } else {
-            "the record did not bind or hold"
         };
         let nearest = dynamics.nearest_body(carrier.position, self.grab_range()).map_or_else(
             || "none".to_owned(),
@@ -807,6 +787,33 @@ impl PropCarry {
             },
         );
         bevy::log::info!("PROP_GRAB_MISS {reason}: decision {decision}; nearest prop {nearest}; state {:?}", carrier.state);
+    }
+
+    /// The Move Object enter's bind (82D442D0, research b233): with the published record (Player+0x760) passing the
+    /// gate (flags_2480 bit 0x400000, geometry +196 and rates identity +216 set), it is copied (82762AB0) and bound
+    /// with a new grip (82D444A0 full) at the next carry update. The skater enters 502 either way.
+    pub(crate) fn bind_published(&mut self, record: Record) {
+        self.pending_bind = Some(record);
+    }
+
+    /// Binds a published record: the prop from its spline key, a new grip from bone 23 (82D444A0 full; no hold test,
+    /// as in the enter). None (logged) for a record that is not a prop's or a prop that is gone.
+    fn bind(&mut self, dynamics: &PropDynamics, mut record: Record, carrier: Carrier) -> Option<u32> {
+        let key = record.0[48];
+        let tag = super::prop_dynamics::PROP_GRAB_TAG;
+        let id = (key & tag != 0).then_some((key & !tag) >> 6);
+        let Some(id) = id.filter(|&id| dynamics.held_body(id).is_some()) else {
+            self.log_miss(dynamics, carrier, "the published record is not a prop's that is still there");
+            return None;
+        };
+        let r = carrier.skeleton.map_or(carrier.position, |s| s.reference);
+        let held = skate_core::player::offboard::move_object::begin_grip(&mut record, [r.x, r.y, r.z], self.locomotion.move_object.grab_end_exclusion);
+        self.let_go();
+        self.held = Some(id);
+        self.bound = Some(held);
+        self.closest = f32::INFINITY;
+        bevy::log::info!("PROP_GRAB_BIND prop={id} ({}) record {} kind {}", dynamics.describe_template(id), key & 63, record.0[47]);
+        Some(id)
     }
 
     fn let_go(&mut self) {
@@ -830,15 +837,23 @@ impl PropCarry {
         let pressed = tick.grab && !self.grab_down;
         self.grab_down = tick.grab;
         let Some(id) = self.held else {
-            if tick.grab {
+            if let Some(record) = self.pending_bind.take() {
+                if let Some(id) = self.bind(dynamics, record, carrier) {
+                    self.hold(dynamics, id, tick, carrier);
+                }
+                return;
+            }
+            // With a Ground decision the carry starts only from the Move Object enter's bind (the decision on tick N,
+            // the published record and 502 on N+1, b233); the interim pick is for host tests and the HUD.
+            if tick.grab && carrier.ground_grab.is_none() {
                 if let Some(id) = self.candidate(dynamics, carrier) {
                     self.let_go();
                     self.held = Some(id);
                     self.closest = f32::INFINITY;
                     self.hold(dynamics, id, tick, carrier);
-                } else if pressed {
-                    self.log_miss(dynamics, carrier);
                 }
+            } else if pressed && carrier.state == PhysicalStateId::BipedGround && carrier.ground_grab == Some(None) {
+                self.log_miss(dynamics, carrier, "no validated record passed 82E08DB8");
             }
             return;
         };

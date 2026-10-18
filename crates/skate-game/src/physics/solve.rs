@@ -96,10 +96,11 @@ fn advance_inner(
                     collision_flag: skater.player_input.processed.flags_2484 & 0x0400_0000 != 0,
                     state_time: skater.player_input.processed.state_timer_2664,
                 }),
-                // Only BipedGround runs the decision (82D324B0); other states keep their own binding.
-                ground_grab: (skater.player_state.current() == skate_core::player::state::PhysicalStateId::BipedGround).then(|| {
+                // Only BipedGround runs the decision (82D324B0); in other states nothing qualifies.
+                ground_grab: Some({
                     let g = &skater.biped_ground.ground;
-                    g.flags_144_to_150[0].then_some((g.counter_152, g.counter_156))
+                    let on_foot = skater.player_state.current() == skate_core::player::state::PhysicalStateId::BipedGround;
+                    (on_foot && g.flags_144_to_150[0]).then_some((g.counter_152, g.counter_156))
                 }),
             },
         );

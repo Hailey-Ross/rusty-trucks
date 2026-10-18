@@ -531,7 +531,7 @@ function Run-Tool([string]$Key, $Ver) {
             & (Join-Path $d 'bin\skate3rust.exe') --update-game-files --assets $assets 2>&1 | ForEach-Object { $l = "$_"; if ($l -like 'GAME_FILES *') { $said = $l.Substring(11) }; Write-Host "  $l" }
             $code = $LASTEXITCODE
             # Setup published a new installation: the other versions' links follow at their next launch.
-            $r = switch ($code) { 0 { "Refresh game files: $said." } 2 { 'Refresh game files: no game files yet. Convert them first (tools\setup-dev-assets.ps1).' } default { "Refresh game files: failed (exit code $code), see above." } }
+            $r = switch ($code) { 0 { "Refresh game files: $said." } 2 { 'Refresh game files: no game files yet. Convert them first (tools\setup-dev-assets.ps1).' } default { "Refresh game files: $(if ($said) { $said } else { 'failed' }) (exit code $code)." } }
         }
     }
     Save-Result "$stamp  $Key [$($Ver.id)]`r`n$r"
