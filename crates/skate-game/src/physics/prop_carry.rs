@@ -509,6 +509,8 @@ pub(crate) struct PropCarry {
     /// Retail skater follow state (+416 / +608 / +624); `None` until the
     /// first held tick.
     follow: Option<SkaterFollow>,
+    /// The last stick input `CARRY_STICK` logged (tenths of OB_ObjectMvZ / MvX / MvRot), so it writes on change.
+    stick_logged: Option<[i32; 3]>,
     /// Last command, for HELD_PROP.
     last: MoveObjectCommand,
     last_input: [f32; 3],
@@ -834,6 +836,7 @@ impl PropCarry {
         self.hand_ik = Default::default();
         self.frame = None;
         self.follow = None;
+        self.stick_logged = None;
         self.controller = MoveObjectController::default();
     }
 
@@ -1039,6 +1042,17 @@ impl PropCarry {
             record_272: body.record_272,
         };
         let command = skate_core::player::offboard::move_object::command(&tuning, &mut self.controller, &input);
+        // CARRY_STICK (laptop 2026-10-18: the log had no stick input while carrying): on change, the stick
+        // (push / pull, side, turn), the skater's facing and right, and where the target velocity points.
+        let stick = [input.move_z, input.move_x, input.move_rotation].map(|v| (v * 10.0).round() as i32);
+        if self.stick_logged != Some(stick) {
+            self.stick_logged = Some(stick);
+            let (f, v) = (input.forward, command.target_velocity);
+            bevy::log::info!(
+                "CARRY_STICK prop={id} push={:.1} side={:.1} turn={:.1} facing=[{:.2}, {:.2}] right=[{:.2}, {:.2}] target_velocity=[{:.2}, {:.2}] yaw_target={:.2}",
+                input.move_z, input.move_x, input.move_rotation, f[0], f[2], -f[2], f[0], v[0], v[2], command.yaw_target
+            );
+        }
         // Follow step after the command (this tick's latch): +416 steps
         // toward the edge and that step is the displacement handed to the
         // character move (82D44A10 -> 82BDF268). NOT RETAIL YET: 82BDF268

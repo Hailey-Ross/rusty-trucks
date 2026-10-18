@@ -181,7 +181,8 @@ fn carry(hide_board: bool) {
             step(&mut physics, &mut skater, &mut controls, &mut camera, pad(RB, [0; 2], [0; 2]));
         }
         let (start, f) = root(&skater);
-        let r = [f[2], 0.0, -f[0]];
+        // The skater's right facing `f` (+Y up, right-handed): stick right moves the pair there, as in retail.
+        let r = [-f[2], 0.0, f[0]];
         let prop_start = physics.prop_dynamics().unwrap().position_of(id).unwrap();
         for _ in 0..45 {
             step(&mut physics, &mut skater, &mut controls, &mut camera, pad(RB, [0; 2], stick));

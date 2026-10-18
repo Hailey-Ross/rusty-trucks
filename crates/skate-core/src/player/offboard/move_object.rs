@@ -446,7 +446,8 @@ fn clamp_length(v: [f32; 3], limit: f32) -> [f32; 3] {
     if l > limit && l > 0.0 { v.map(|c| c * limit / l) } else { v }
 }
 
-/// Side axis of a horizontal forward: the skater's right, (0,0,1) -> (1,0,0).
+/// Side axis of a horizontal forward: Y x forward (retail's edge row +144), (0,0,1) -> (1,0,0). In our right-handed,
+/// +Y-up world that is the skater's LEFT; the stick's x uses its negation (+400).
 pub fn side_of(forward: [f32; 3]) -> [f32; 3] {
     [forward[2], 0.0, -forward[0]]
 }
@@ -489,18 +490,21 @@ pub fn command(tuning: &MoveObjectTuning, state: &mut MoveObjectController, inpu
     // wrapped angle between the facing and +368 (8296EBB0) is the drift; above
     // the re-latch threshold (557FA142008FD7CE) the latch is stored, below it
     // the store is skipped (0x82D4570C). The drift does not enter the yaw error.
+    // The latched side row is +400 = -(+144) [code, b240 / b241]: +144 = Y x forward = `side`, so the stick's x moves
+    // the pair to the skater's right, (-f.z, 0, f.x) (laptop 2026-10-18: left / right were reversed while carrying).
+    let right = [-side[0], 0.0, -side[2]];
     let mut drift = 0.0;
     if !state.latched || yaw_target.abs() >= tuning.turning_threshold {
         state.latched = true;
         state.latched_yaw = input.heading;
         state.latched_forward = input.forward;
-        state.latched_side = side;
+        state.latched_side = right;
     } else {
         drift = wrap(input.heading - state.latched_yaw);
         if drift.abs() > tuning.relatch {
             state.latched_yaw = input.heading;
             state.latched_forward = input.forward;
-            state.latched_side = side;
+            state.latched_side = right;
             drift = 0.0;
         }
     }
@@ -967,7 +971,8 @@ mod tests {
         let c = command(&t, &mut s, &i);
         assert!(c.blocked);
         assert!(c.target_velocity[2].abs() < 1e-6, "{c:?}");
-        assert!(c.target_velocity[0] > 0.0, "along the wall kept: {c:?}");
+        // Stick right facing +Z is the skater's right, -X (the +400 side row).
+        assert!(c.target_velocity[0] < 0.0, "along the wall kept: {c:?}");
         // Decays away once free.
         i.contact_normal = [0.0; 3];
         for _ in 0..200 {
