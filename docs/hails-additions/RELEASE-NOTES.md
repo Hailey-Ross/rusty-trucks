@@ -69,6 +69,9 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **No freeze when play starts (new):** the first moment of play used to freeze for about 1 to 2 seconds while the world's collision and the living world loaded. That now happens while the loading screen is still up (it stays up a little longer), and after a map switch play starts without the hitch.
+- **NPC Skater Physics opt-in (new):** switching it on no longer freezes the first moment of play for half a second while its skaters load; they load in the background.
+- **Smoother frames (new):** cars no longer re-send their materials to the graphics card every frame, which lowers the average frame time (on the main test PC from 3.5 to 2.7 ms in DownTown).
 - **Walking into peds (new):** on foot, a ped you run into now stumbles and gives a little, like Skate 3, instead of standing like a wall.
 - **Walking over benches (new):** on foot you step onto and over heavier props like benches, as in Skate 3, instead of shoving them along. Light things (cones, boxes, bin lids, rubbish bags) and the prop you are holding are not something you step onto, also like Skate 3.
 - **Pushing an occupied bench (new):** a ped sitting on a bench you push now jumps off it, like Skate 3, instead of riding along or standing up normally.
