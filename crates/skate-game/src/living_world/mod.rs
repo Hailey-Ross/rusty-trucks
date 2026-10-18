@@ -652,17 +652,113 @@ fn gather_observers(
     out.player_slots = if online { multiplayer.map_or(1, |m| m.player_ids().len().max(1) as u32) } else { 1 };
 }
 
+/// The map's living world data, loaded on the first fixed tick of a map unless the loading screen already did
+/// (`early_load_for_map`).
 fn load_for_map(
     config: Res<crate::config::Config>,
     map: Res<crate::map_transition::CurrentMap>,
     settings: Res<LivingWorldSettings>,
+    state: ResMut<PopulationState>,
+    despawns: MessageWriter<LivingWorldDespawn>,
+    audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
+) {
+    install_for_map(&config, &map, &settings, state, despawns, audio);
+}
+
+/// Behind the loading screen: the game window is not shown yet, or a map switch has not unpaused the game. Virtual
+/// time is paused there, so no fixed tick runs; loading here keeps the work out of the first frame of play.
+fn behind_loading_gate(startup: Option<Res<crate::startup_loading::StartupLoading>>, transition: Option<Res<crate::map_transition::MapTransition>>) -> bool {
+    startup.is_some_and(|l| !l.done()) || transition.is_some_and(|t| t.busy())
+}
+
+/// What an early load read from the settings, for the map it loaded. The first fixed tick loads again when the
+/// settings changed before play started (`recheck_early_load`), so the world is the one a late load would make.
+#[derive(Resource, Default)]
+struct EarlyLoad(Option<((String, u64), (u64, bool, bool))>);
+
+fn load_inputs(settings: &LivingWorldSettings) -> (u64, bool, bool) {
+    (settings.seed, settings.enabled, settings.pedestrians.enabled)
+}
+
+fn early_load_for_map(
+    config: Res<crate::config::Config>,
+    map: Res<crate::map_transition::CurrentMap>,
+    settings: Res<LivingWorldSettings>,
+    state: ResMut<PopulationState>,
+    despawns: MessageWriter<LivingWorldDespawn>,
+    audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
+    mut early: ResMut<EarlyLoad>,
+) {
+    if install_for_map(&config, &map, &settings, state, despawns, audio) {
+        early.0 = Some(((map.name.clone(), map.generation), load_inputs(&settings)));
+    }
+}
+
+/// First fixed tick after an early load: settings that changed since then drop both loads, so this tick loads
+/// with the current ones, as it did before the early load existed.
+fn recheck_early_load(
+    mut early: ResMut<EarlyLoad>,
+    map: Res<crate::map_transition::CurrentMap>,
+    settings: Res<LivingWorldSettings>,
+    mut state: ResMut<PopulationState>,
+    mut peds: ResMut<peds::PedData>,
+) {
+    let Some((key, inputs)) = early.0.take() else { return };
+    if key == (map.name.clone(), map.generation) && inputs != load_inputs(&settings) {
+        info!("LIVING_WORLD settings changed behind the loading screen: loading {} again", map.name);
+        state.loaded_for = None;
+        peds.loaded_for = None;
+    }
+}
+
+/// The startup loading screen waits for the living world (released by `release_startup_hold`).
+fn take_startup_hold(startup: Option<ResMut<crate::startup_loading::StartupLoading>>) {
+    if let Some(mut startup) = startup {
+        startup.hold("living_world", "Loading the living world");
+    }
+}
+
+fn release_startup_hold(
+    map: Res<crate::map_transition::CurrentMap>,
+    state: Res<PopulationState>,
+    peds: Res<peds::PedData>,
+    startup: Option<ResMut<crate::startup_loading::StartupLoading>>,
+) {
+    let key = Some((map.name.clone(), map.generation));
+    if let Some(mut startup) = startup
+        && state.loaded_for == key
+        && peds.loaded_for == key
+    {
+        startup.release("living_world");
+    }
+}
+
+/// The same loads behind the loading screen; the fixed ones (`load_for_map`, `peds::load_ped_data`,
+/// `vehicles::load_traffic_data`) then find the map loaded. At a switch the old map's cars go during the loading
+/// frames, so the first tick no longer pushes them as collision proxies into the new map.
+fn add_early_loads(app: &mut App) {
+    app.add_systems(Startup, take_startup_hold).add_systems(
+        PreUpdate,
+        (early_load_for_map, peds::early_load_ped_data, vehicles::load_traffic_data, release_startup_hold)
+            .chain()
+            .after(crate::map_transition::MapTransitionSet)
+            .after(peds::sync_nav_settings)
+            .run_if(behind_loading_gate),
+    );
+}
+
+/// Install the map's world unless it is installed already; true when it installed.
+fn install_for_map(
+    config: &crate::config::Config,
+    map: &crate::map_transition::CurrentMap,
+    settings: &LivingWorldSettings,
     mut state: ResMut<PopulationState>,
     mut despawns: MessageWriter<LivingWorldDespawn>,
     audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
-) {
+) -> bool {
     let key = (map.name.clone(), map.generation);
     if state.loaded_for.as_ref() == Some(&key) {
-        return;
+        return false;
     }
     for d in state.world.reset_world() {
         if let Decision::Despawn(r) = d {
@@ -675,7 +771,8 @@ fn load_for_map(
     if let Some(mut audio) = audio {
         audio.expected = settings.enabled && !data.npc.lines.is_empty();
     }
-    state.install(&map.name, map.generation, &settings, data);
+    state.install(&map.name, map.generation, settings, data);
+    true
 }
 
 /// One fixed step: settings into the config, then the console ticks that are due.
@@ -760,11 +857,13 @@ impl Plugin for LivingWorldPlugin {
             .init_resource::<dmo_stream::DmoStreamState>()
             .add_message::<LivingWorldSpawn>()
             .add_message::<LivingWorldDespawn>()
+            .init_resource::<EarlyLoad>()
             .add_systems(
                 FixedUpdate,
-                (load_for_map, gather_observers, step_population, dmo_stream::stream_dmos).chain().after(crate::app::SimulationSet::Physics),
+                (recheck_early_load, load_for_map, gather_observers, step_population, dmo_stream::stream_dmos).chain().after(crate::app::SimulationSet::Physics),
             )
             .add_systems(Update, (log_zombie_mode, opt_ins::log_opt_ins));
+        add_early_loads(app);
         npc_skaters::install(app);
         peds::install(app);
         vehicles::install(app);

@@ -1174,13 +1174,17 @@ pub(crate) fn present_car_looks(
 }
 
 /// Follow the character lighting's light (it changes with the world) on every car material.
+/// `Lighting` is marked changed every frame (its displayed SH eases), so only a material whose light differs is
+/// written: `get_mut` alone makes Bevy prepare and upload the material again.
 pub(crate) fn update_car_light(lighting: Option<Res<crate::retail_character::Lighting>>, cache: Res<CarMaterials>, materials: Option<ResMut<Assets<super::vehicle_material::VehicleMaterial>>>) {
     let (Some(lighting), Some(mut materials)) = (lighting, materials) else { return };
     if !lighting.is_changed() {
         return;
     }
     for handle in cache.materials.values() {
-        if let Some(m) = materials.get_mut(handle) {
+        if materials.get(handle).is_some_and(|m| m.params.light != lighting.light)
+            && let Some(m) = materials.get_mut(handle)
+        {
             m.params.light = lighting.light;
         }
     }
@@ -1238,4 +1242,35 @@ pub(crate) fn install(app: &mut App) {
                 .before(crate::app::SimulationSet::Physics),
         )
         .add_systems(Update, (present_car_looks, update_car_light, present_car_pose).chain().after(crate::app::FrameSet::Animation));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::vehicle_material::VehicleMaterial;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn car_light_writes_only_materials_whose_light_differs() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default())).init_asset::<Image>().init_asset::<VehicleMaterial>();
+        let world = app.world_mut();
+        let material = VehicleMaterial { params: default(), diffuse: None, normal: None, environment: None, alpha: AlphaMode::Opaque };
+        let handle = world.resource_mut::<Assets<VehicleMaterial>>().add(material);
+        let mut cache = CarMaterials::default();
+        cache.materials.insert((AssetId::default(), [0; 8]), handle.clone());
+        world.insert_resource(cache);
+        world.insert_resource(crate::retail_character::Lighting::with_light(Vec4::splat(0.5)));
+        world.run_system_once(update_car_light).unwrap();
+        assert_eq!(world.resource::<Assets<VehicleMaterial>>().get(&handle).unwrap().params.light, Vec4::splat(0.5));
+        // Lighting is marked changed every frame with the same light: the material is not touched again.
+        world.clear_trackers();
+        world.resource_mut::<crate::retail_character::Lighting>().set_changed();
+        world.run_system_once(update_car_light).unwrap();
+        assert!(!world.resource_ref::<Assets<VehicleMaterial>>().is_changed());
+        // A new light still reaches it.
+        world.resource_mut::<crate::retail_character::Lighting>().light = Vec4::ONE;
+        world.run_system_once(update_car_light).unwrap();
+        assert_eq!(world.resource::<Assets<VehicleMaterial>>().get(&handle).unwrap().params.light, Vec4::ONE);
+    }
 }

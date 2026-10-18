@@ -115,7 +115,9 @@ pub(crate) struct PedData {
     pub takedowns: Arc<BTreeMap<String, skate_core::living_world::peds::takedown::TakedownTable>>,
     /// The `zombie` takedown table (zombie cheat, every ped).
     pub takedown_zombie: Option<Arc<skate_core::living_world::peds::takedown::TakedownTable>>,
-    loaded_for: Option<(String, u64)>,
+    pub(super) loaded_for: Option<(String, u64)>,
+    /// Loaded behind the loading screen: the first fixed tick leaves `arms` empty, as a late load did.
+    pub(super) skip_arms_once: bool,
 }
 
 impl PedData {
@@ -619,8 +621,8 @@ pub(crate) fn ground(physics: Option<&crate::physics::GamePhysics>, at: Vec3, up
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn load_ped_data(
+/// Fixed tick: keep the loaded data current, then load the map's ped data unless the loading screen already did.
+pub(super) fn load_ped_data(
     config: Option<Res<crate::config::Config>>,
     map: Option<Res<crate::map_transition::CurrentMap>>,
     mut data: ResMut<PedData>,
@@ -635,15 +637,44 @@ fn load_ped_data(
             data.nav = Some(Arc::new(NavMesh::build(&input, nav.rules.clone())));
         }
     }
-    if data.arms.is_empty() {
+    // A late load ran this upkeep on the old data and then replaced it, so a map's first tick had no arms; an early
+    // load skips it once to keep that tick the same.
+    let skip_arms = std::mem::take(&mut data.skip_arms_once);
+    if !skip_arms && data.arms.is_empty() {
         if let Some(roads) = state.roads.as_ref() {
             data.arms = Arc::new(skate_core::living_world::peds::crosswalk::signalled_arms(roads));
         }
     }
     let (Some(config), Some(map)) = (config, map) else { return };
+    load_ped_data_for_map(&config, &map, &mut data, audio, &settings, &nav);
+}
+
+/// Behind the loading screen (`super::behind_loading_gate`): the same load, so the first fixed tick finds it done.
+pub(super) fn early_load_ped_data(
+    config: Res<crate::config::Config>,
+    map: Res<crate::map_transition::CurrentMap>,
+    mut data: ResMut<PedData>,
+    audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
+    settings: Res<LivingWorldSettings>,
+    nav: Res<PedNavSettings>,
+) {
+    if load_ped_data_for_map(&config, &map, &mut data, audio, &settings, &nav) {
+        data.skip_arms_once = true;
+    }
+}
+
+/// Load the map's ped data unless it is loaded already; true when it loaded.
+fn load_ped_data_for_map(
+    config: &crate::config::Config,
+    map: &crate::map_transition::CurrentMap,
+    data: &mut PedData,
+    audio: Option<ResMut<crate::world_audio::LivingWorldAudio>>,
+    settings: &LivingWorldSettings,
+    nav: &PedNavSettings,
+) -> bool {
     let key = (map.name.clone(), map.generation);
     if data.loaded_for.as_ref() == Some(&key) {
-        return;
+        return false;
     }
     // Where the first fixed tick after a map switch goes (low-end PCs: 141 ms here on the desktop, 2026-10-17).
     let t0 = std::time::Instant::now();
@@ -754,6 +785,7 @@ fn load_ped_data(
         audio.expected |= settings.enabled && settings.pedestrians.enabled && loaded.ready();
     }
     *data = loaded;
+    true
 }
 
 /// Spawn and despawn ped entities from the population's records.
@@ -3006,7 +3038,7 @@ pub(crate) fn think_peds(
 
 /// The mod-facing nav settings (`LivingWorldSettings::ped_nav`, mod `ped_nav`; reset when the mod is disabled) into the
 /// resource the ped step reads.
-fn sync_nav_settings(settings: Res<super::LivingWorldSettings>, mut nav: ResMut<PedNavSettings>) {
+pub(super) fn sync_nav_settings(settings: Res<super::LivingWorldSettings>, mut nav: ResMut<PedNavSettings>) {
     if settings.is_changed() && *nav != settings.ped_nav {
         *nav = settings.ped_nav.clone();
     }

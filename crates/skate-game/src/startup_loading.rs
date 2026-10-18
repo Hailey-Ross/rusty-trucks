@@ -28,8 +28,14 @@ pub(crate) struct StartupLoading {
 }
 
 impl StartupLoading {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { holds: Vec::new(), started: Instant::now(), done: false }
+    }
+
+    /// Whether the hold `id` is still taken (tests).
+    #[cfg(test)]
+    pub(crate) fn holding(&self, id: &str) -> bool {
+        self.holds.iter().any(|(h, _)| h == id)
     }
 
     /// Keep the phase going until [`release`](Self::release) with the same id; `label` names the step ("Loading

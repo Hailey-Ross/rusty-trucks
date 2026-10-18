@@ -344,6 +344,7 @@ pub(crate) fn init() -> Result<Guard, String> {
         if let Err(error) = bevy::log::tracing_subscriber::registry()
             .with(filter)
             .with(stderr)
+            .with(crate::system_timing::layer())
             .try_init()
         {
             eprintln!("SKATE_TRACE could not install the log subscriber: {error}");
@@ -374,6 +375,7 @@ pub(crate) fn init() -> Result<Guard, String> {
         .with(filter)
         .with(stderr)
         .with(ChromeLayer { capture })
+        .with(crate::system_timing::layer())
         .try_init()
         .map_err(|e| format!("Could not install the trace subscriber: {e}"))?;
 

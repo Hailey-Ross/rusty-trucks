@@ -375,3 +375,110 @@ fn living_world_debug_summaries_restart_with_a_new_world() {
     assert!(report_due(300, &mut last, 300), "the summary logs again 5 s into the new world");
     assert_eq!(last, 300);
 }
+
+#[test]
+fn npc_skater_systems_are_ordered_after_the_ped_data_load() {
+    // The production registrations; FixedUpdate is only built, never run.
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    peds::install(&mut app);
+    npc_skaters::install(&mut app);
+    app.world_mut().resource_scope(|world, mut schedules: Mut<Schedules>| {
+        // Built on the graph itself: `Schedule::initialize` moves the systems out, and their names with them.
+        // Without automatic sync points: the shared one after the two record systems' Commands orders the
+        // chains today too, but only by accident.
+        let schedule = schedules.get_mut(FixedUpdate).unwrap();
+        schedule.set_build_settings(bevy::ecs::schedule::ScheduleBuildSettings { auto_insert_apply_deferred: false, ..default() });
+        let graph = schedule.graph_mut();
+        graph.initialize(world);
+        graph.build_schedule(world, &Default::default()).unwrap();
+        let unordered: Vec<String> = graph
+            .conflicting_systems()
+            .to_string(graph, world.components())
+            .filter(|(a, b, _)| [a, b].iter().any(|n| n.contains("load_ped_data")))
+            .map(|(a, b, _)| format!("{a} / {b}"))
+            .collect();
+        assert!(unordered.is_empty(), "systems unordered against load_ped_data: {unordered:?}");
+    });
+}
+
+/// The map loaders as the plugin registers them (`add_early_loads` behind the loading screen, the fixed ones on the
+/// first tick), on an empty asset root: the load reports no data but installs the seeded world and the keys.
+fn loader_app(root: &std::path::Path, seed: u64, loading_screen: bool) -> App {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.insert_resource(crate::config::Config {
+        asset_root: root.to_path_buf(), verification_capture: None, map: None, map_path: None,
+        difficulty: crate::difficulty::Difficulty::Hardcore, check_assets: false, validate_maps: false, start_paused: false,
+        teleport: None, mute: false, multiplayer: Default::default(), map_fingerprint: 0,
+    });
+    app.insert_resource(crate::map_transition::CurrentMap { path: None, name: "Test".into(), spawn: [0.0; 3], heading: 0.0, generation: 1, audio_tag: None });
+    app.insert_resource(LivingWorldSettings { seed, ..LivingWorldSettings::default() });
+    app.init_resource::<PopulationState>().init_resource::<peds::PedData>().init_resource::<peds::PedNavSettings>().init_resource::<EarlyLoad>().init_resource::<vehicles::TrafficState>();
+    app.add_message::<LivingWorldDespawn>();
+    if loading_screen {
+        app.insert_resource(crate::startup_loading::StartupLoading::new());
+    }
+    add_early_loads(&mut app);
+    app.add_systems(FixedUpdate, ((recheck_early_load, load_for_map).chain(), peds::load_ped_data).chain());
+    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f32(1.0 / 60.0)));
+    app
+}
+
+fn loaded_key(app: &App) -> (Option<(String, u64)>, Option<(String, u64)>) {
+    (app.world().resource::<PopulationState>().loaded_for.clone(), app.world().resource::<peds::PedData>().loaded_for.clone())
+}
+
+fn fixed_ticks(app: &App) -> u32 {
+    let fixed = app.world().resource::<Time<Fixed>>();
+    (fixed.elapsed_secs_f64() / fixed.timestep().as_secs_f64()).round() as u32
+}
+
+#[test]
+fn the_loading_screen_loads_the_living_world_and_the_first_tick_keeps_it() {
+    let root = std::env::temp_dir().join(format!("skate3rust-early-load-{}", std::process::id()));
+    let key = Some(("Test".to_string(), 1));
+    let mut early = loader_app(&root, 7, true);
+    early.update(); // Startup takes the hold; the first frame has no delta, so no fixed tick
+    assert_eq!(fixed_ticks(&early), 0);
+    assert_eq!(loaded_key(&early), (key.clone(), key.clone()), "loaded behind the loading screen");
+    assert!(!early.world().resource::<crate::startup_loading::StartupLoading>().holding("living_world"), "hold released once both loaded");
+    assert!(early.world().resource::<peds::PedData>().skip_arms_once);
+    assert_eq!(early.world().resource::<vehicles::TrafficState>().loaded_for, key, "traffic data too");
+    // A fixed tick that loaded again would replace the world and this status.
+    early.world_mut().resource_mut::<PopulationState>().status = "early".into();
+    for _ in 0..3 {
+        early.update();
+    }
+    assert!(fixed_ticks(&early) > 0);
+    assert_eq!(early.world().resource::<PopulationState>().status, "early", "the first fixed tick kept the early load");
+    assert!(!early.world().resource::<peds::PedData>().skip_arms_once, "the arms skip lasts one tick");
+    assert!(early.world().resource::<EarlyLoad>().0.is_none());
+    // Without a loading screen the first fixed tick loads, with the same seed and keys.
+    let mut late = loader_app(&root, 7, false);
+    late.update();
+    assert_eq!(loaded_key(&late), (None, None), "nothing loads outside the loading screen before a fixed tick");
+    for _ in 0..3 {
+        late.update();
+    }
+    assert_eq!(loaded_key(&late), (key.clone(), key));
+    assert_eq!(late.world().resource::<PopulationState>().world.seed(), early.world().resource::<PopulationState>().world.seed());
+    assert!(!late.world().resource::<peds::PedData>().skip_arms_once);
+}
+
+#[test]
+fn settings_changed_behind_the_loading_screen_load_again_on_the_first_tick() {
+    let root = std::env::temp_dir().join(format!("skate3rust-early-reload-{}", std::process::id()));
+    let mut app = loader_app(&root, 1, true);
+    app.update();
+    assert_eq!(app.world().resource::<PopulationState>().world.seed(), 1);
+    app.world_mut().resource_mut::<PopulationState>().status = "early".into();
+    app.world_mut().resource_mut::<LivingWorldSettings>().seed = 2;
+    for _ in 0..3 {
+        app.update();
+    }
+    let state = app.world().resource::<PopulationState>();
+    assert_ne!(state.status, "early", "the first fixed tick loaded again");
+    assert_eq!(state.world.seed(), 2, "with the current settings");
+    assert_eq!(state.loaded_for, Some(("Test".to_string(), 1)));
+}
