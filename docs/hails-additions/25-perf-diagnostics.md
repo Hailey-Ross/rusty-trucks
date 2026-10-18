@@ -586,6 +586,22 @@ and the one the launcher names in `SKATE_SEND_LOGS_DIR`. And the restarted refre
 `logs\game-refresh-<unix seconds>.stderr.log` (`setup::refresh_log`): the copy that restarts exits, the launcher closes
 its session log, and the two refreshes of the day ended with exit code 1 and no line saying why.
 
+## Steam launcher: A / Enter did nothing on the main page, no mouse (2026-10-18)
+
+Problem (laptop note launcher-no-select, user): "opened the skate launcher but I cant use A or B in it to select
+anything and I cant click any of the options either.." and "its reading the dpad inputs". The laptop's own XInput poll
+read A / B / D-pad on pad 0 with the launcher in front, so the pad was fine.
+
+Root cause: in `Act()` the main page's grid branch (`if (IsMain(p)) p.Sel = GridMove(...)`) came before the "ok"
+branch, so every action on the main page went to the grid move, which ignores "ok": A and Enter did nothing there
+(the D-pad worked because the grid move handles directions; B on the main page re-opens the main page by design).
+The window had no mouse handling at all.
+
+Change (`tools/steam-launcher/SkateLauncher.cs`): "ok" is handled before the grid move; the last paint records each
+tile's / row's rectangle, hovering selects it, a left click runs it, a right click goes back.
+
+Verification: compiles with the framework csc (exit 0). Not tested on the laptop yet.
+
 ## The world sound banks decode behind the loading screen (2026-10-18)
 
 Problem: a DownTown start from a cold disk froze the game for 4028 ms about 3 s into play; `SYSTEM_TIMING` put 3.8 s of
