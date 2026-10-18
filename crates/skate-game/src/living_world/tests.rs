@@ -414,7 +414,7 @@ fn loader_app(root: &std::path::Path, seed: u64, loading_screen: bool) -> App {
     });
     app.insert_resource(crate::map_transition::CurrentMap { path: None, name: "Test".into(), spawn: [0.0; 3], heading: 0.0, generation: 1, audio_tag: None });
     app.insert_resource(LivingWorldSettings { seed, ..LivingWorldSettings::default() });
-    app.init_resource::<PopulationState>().init_resource::<peds::PedData>().init_resource::<peds::PedNavSettings>().init_resource::<EarlyLoad>();
+    app.init_resource::<PopulationState>().init_resource::<peds::PedData>().init_resource::<peds::PedNavSettings>().init_resource::<EarlyLoad>().init_resource::<vehicles::TrafficState>();
     app.add_message::<LivingWorldDespawn>();
     if loading_screen {
         app.insert_resource(crate::startup_loading::StartupLoading::new());
@@ -444,6 +444,7 @@ fn the_loading_screen_loads_the_living_world_and_the_first_tick_keeps_it() {
     assert_eq!(loaded_key(&early), (key.clone(), key.clone()), "loaded behind the loading screen");
     assert!(!early.world().resource::<crate::startup_loading::StartupLoading>().holding("living_world"), "hold released once both loaded");
     assert!(early.world().resource::<peds::PedData>().skip_arms_once);
+    assert_eq!(early.world().resource::<vehicles::TrafficState>().loaded_for, key, "traffic data too");
     // A fixed tick that loaded again would replace the world and this status.
     early.world_mut().resource_mut::<PopulationState>().status = "early".into();
     for _ in 0..3 {

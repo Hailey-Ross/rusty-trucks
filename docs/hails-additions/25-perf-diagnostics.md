@@ -644,6 +644,12 @@ Change (plan b228, `.local/research/b228-loaders-behind-gate.md`, checked and ex
   map's first tick had no signalled arms; an early load skips that upkeep once (`PedData::skip_arms_once`).
 - Settings read only at load (the seed, `enabled`, `pedestrians.enabled`) that change before play starts make the
   first tick load again with the current ones (`recheck_early_load`), as the late load would have.
+- Added 2026-10-18: the traffic data (`vehicles::load_traffic_data`, about 22 ms; it parses `tables.json` and
+  `vehicles.json`) joins the early loads the same way. At startup nothing changes (no cars yet); at a switch the
+  old map's cars go during the loading frames, so the first tick no longer pushes them as collision proxies into
+  the new map (`push_vehicle_proxies` runs before Physics). Its RNG is not touched by the load. A map switch run
+  logs `LIVING_WORLD traffic models` once per map, at startup before `STARTUP_LOADING done` and right after the
+  commit.
 - Ordering made explicit: the NPC skater chain (`avoid`, `simulate`, which read the ped navmesh) runs after
   `load_ped_data`. Before, only Bevy's shared automatic sync point after the two record systems' Commands ordered
   them; same order, now stated.

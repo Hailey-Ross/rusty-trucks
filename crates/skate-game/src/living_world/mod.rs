@@ -733,12 +733,13 @@ fn release_startup_hold(
     }
 }
 
-/// The same loads behind the loading screen; the fixed ones (`load_for_map`, `peds::load_ped_data`) then find the
-/// map loaded.
+/// The same loads behind the loading screen; the fixed ones (`load_for_map`, `peds::load_ped_data`,
+/// `vehicles::load_traffic_data`) then find the map loaded. At a switch the old map's cars go during the loading
+/// frames, so the first tick no longer pushes them as collision proxies into the new map.
 fn add_early_loads(app: &mut App) {
     app.add_systems(Startup, take_startup_hold).add_systems(
         PreUpdate,
-        (early_load_for_map, peds::early_load_ped_data, release_startup_hold)
+        (early_load_for_map, peds::early_load_ped_data, vehicles::load_traffic_data, release_startup_hold)
             .chain()
             .after(crate::map_transition::MapTransitionSet)
             .after(peds::sync_nav_settings)
