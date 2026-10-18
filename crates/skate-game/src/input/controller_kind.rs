@@ -15,6 +15,9 @@ use serde::Serialize;
 pub(crate) enum Backend {
     Sdl,
     Xinput,
+    /// The Switch's own controller service (hid), read by bevy_horizon.
+    #[cfg(target_os = "horizon")]
+    Horizon,
 }
 
 /// Coarse controller kind. Stable snake_case names are the mod-facing form.
@@ -145,6 +148,8 @@ impl ControllerKind {
                 self.xinput_subtype.unwrap_or(0),
                 if self.wireless == Some(true) { " wireless" } else { "" }
             ),
+            #[cfg(target_os = "horizon")]
+            Backend::Horizon => format!(", Switch hid, {}", self.driver),
         };
         if self.hardware_paddles > 0 || self.paddles > 0 {
             text += &format!(", paddles {} of {}", self.paddles, self.hardware_paddles.max(self.paddles));
@@ -206,6 +211,7 @@ pub(crate) fn model(user: &[Model], vendor: u16, product: u16) -> Option<Model> 
 }
 
 /// SDL_GamepadType → family. The model table refines Xbox One pads into Elite.
+#[cfg(not(target_os = "horizon"))]
 pub(crate) fn family_from_sdl(kind: sdl3::gamepad::GamepadType) -> Family {
     use sdl3::gamepad::GamepadType as T;
     match kind {
@@ -239,6 +245,7 @@ pub(crate) fn family_from_xinput_subtype(subtype: u8) -> Family {
 }
 
 /// What an SDL gamepad reports when it is opened.
+#[cfg(not(target_os = "horizon"))]
 pub(crate) struct SdlReport {
     pub name: String,
     pub gamepad_type: sdl3::gamepad::GamepadType,
@@ -250,6 +257,7 @@ pub(crate) struct SdlReport {
     pub misc_button: bool,
 }
 
+#[cfg(not(target_os = "horizon"))]
 pub(crate) fn from_sdl(report: SdlReport, user: &[Model]) -> ControllerKind {
     let mut family = family_from_sdl(report.gamepad_type);
     let model = report.vendor_id.zip(report.product_id).and_then(|(v, p)| model(user, v, p));

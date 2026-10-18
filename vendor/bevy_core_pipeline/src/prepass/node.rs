@@ -164,6 +164,7 @@ fn run_prepass<'w>(
     }
 
     let depth_stencil_attachment = Some(view_depth_texture.get_attachment(StoreOp::Store));
+    let copy_depth = !world.contains_resource::<super::SkipPrepassDepthCopy>();
 
     let view_entity = graph.view_entity();
     render_context.add_command_buffer_generation_task(move |render_device| {
@@ -238,7 +239,8 @@ fn run_prepass<'w>(
         drop(render_pass);
 
         // After rendering to the view depth texture, copy it to the prepass depth texture if deferred isn't going to
-        if deferred_prepass.is_none()
+        if copy_depth
+            && deferred_prepass.is_none()
             && let Some(prepass_depth_texture) = &view_prepass_textures.depth
         {
             command_encoder.copy_texture_to_texture(

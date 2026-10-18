@@ -365,6 +365,12 @@ impl SkateMap {
         Ok(map)
     }
     pub fn parse(data: &[u8]) -> Result<Self, String> {
+        // std's `available_parallelism` is `Unsupported` on Horizon, which made this one worker
+        // (67 s of texture decoding for University on Ryujinx). Homebrew there may run on three
+        // cores (Ryujinx) or four (Atmosphère's loader); three workers suit both.
+        #[cfg(target_os = "horizon")]
+        let workers = 3;
+        #[cfg(not(target_os = "horizon"))]
         let workers = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
         Self::parse_with_decode_workers(data, workers)
     }

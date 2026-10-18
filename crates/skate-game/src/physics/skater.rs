@@ -63,6 +63,9 @@ pub(crate) struct SkaterRuntime {
     pub skeleton_joints: SkeletonJoints,
     pub(crate) mod_part_overrides: std::collections::BTreeMap<usize,(String,skate_mods::extensions::PartOverride)>,
     pub(crate) mod_contact_frame: crate::modding::player_physics::ContactFrame,
+    /// Whether the solve records `mod_contact_frame` in full: only while a mod can read it
+    /// (physics.rs `advance` sets this each tick).
+    pub(crate) mod_contact_frame_wanted: bool,
     pub(crate) mod_joint_overrides: std::collections::BTreeMap<usize,(String,skate_mods::extensions::JointOverride)>,
     pub skeleton_drives: SkeletonDrives,
     pub skeleton_collision: SkeletonCollisionMode,
@@ -309,6 +312,7 @@ impl SkaterRuntime {
             skeleton_joints,
             mod_joint_overrides: Default::default(),
             mod_contact_frame: Default::default(),
+            mod_contact_frame_wanted: false,
             mod_part_overrides: Default::default(),
             skeleton_drives,
             collision_feedback: skeleton_body::load_feedback(&data, skeleton_collision.settings)?,

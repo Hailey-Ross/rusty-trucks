@@ -179,9 +179,13 @@ fn poll(world: &mut World) {
             Ok(prepared) => {
                 let mut notice = commit(world, prepared);
                 let config = world.resource::<Config>();
-                match crate::map_library::save_default(&config.asset_root, config.map_path.as_deref()) {
-                    Ok(()) => notice.push_str(" Default map saved."),
-                    Err(error) => notice.push_str(&format!(" Could not save default: {error}")),
+                if config.map_path.is_none() && !crate::map_library::SAVE_TEST_WORLD {
+                    notice.push_str(" Not saved as the default map.");
+                } else {
+                    match crate::map_library::save_default(&config.asset_root, config.map_path.as_deref()) {
+                        Ok(()) => notice.push_str(" Default map saved."),
+                        Err(error) => notice.push_str(&format!(" Could not save default: {error}")),
+                    }
                 }
                 Phase::Publishing { frames: 3, notice }
             }

@@ -1,4 +1,5 @@
-//! Native-resolution pause UI over a separately scaled 3D render target.
+//! Native-resolution pause UI over a separately scaled 3D render target. At 100% scale the world
+//! can be drawn straight into the window instead (`choose_presentation`).
 use crate::difficulty::Difficulty;
 use crate::custom_difficulty::{Tuning, OPTIONS};
 use bevy::ui::RelativeCursorPosition;
@@ -9,7 +10,7 @@ use bevy::{
     render::{
         render_resource::{Extent3d, TextureFormat},
     },
-    window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode},
+    window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode, WindowRef},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -28,6 +29,11 @@ const RESOLUTIONS: &[(u32, u32)] = &[
     (3840, 2160),
 ];
 const SCALES: &[u32] = &[25, 50, 67, 75, 85, 100];
+/// The resolution until one is saved. The Switch's screen is 1280x720: 1280x800 doesn't fit it.
+#[cfg(target_os = "horizon")]
+const DEFAULT_RESOLUTION: (u32, u32) = (1280, 720);
+#[cfg(not(target_os = "horizon"))]
+const DEFAULT_RESOLUTION: (u32, u32) = (1280, 800);
 const DAY_SPEEDS: &[u32] = &[0, 1, 10, 30, 60, 120, 360, 720];
 const LIMITS: &[u32] = &[0, 30, 60, 90, 120, 144, 165, 240];
 
@@ -50,8 +56,8 @@ struct GraphicsSettings {
 impl Default for GraphicsSettings {
     fn default() -> Self {
         Self {
-            width: 1280,
-            height: 800,
+            width: DEFAULT_RESOLUTION.0,
+            height: DEFAULT_RESOLUTION.1,
             scale: 100,
             fps: 0,
             hour: 12.,
@@ -68,7 +74,7 @@ impl GraphicsSettings {
         self.hour = if self.hour.is_finite() { self.hour.rem_euclid(24.) } else { 12. };
         if !DAY_SPEEDS.contains(&self.day_speed) { self.day_speed = 60; }
         if !RESOLUTIONS.contains(&(self.width, self.height)) {
-            (self.width, self.height) = (1280, 800);
+            (self.width, self.height) = DEFAULT_RESOLUTION;
         }
         if !SCALES.contains(&self.scale) {
             self.scale = 100;
@@ -125,6 +131,19 @@ impl Menu {
     }
     pub(crate) fn diagnostic_settings(&self) -> String {
         format!("{:?}", self.settings)
+    }
+    /// The 3D render scale in percent of the window.
+    pub(crate) fn render_scale(&self) -> u32 {
+        self.settings.scale
+    }
+    /// Sets the 3D render scale without saving it, as performance.rs's `SKATE_PERF_MATRIX` does.
+    /// False, and nothing changes, for a scale the menu doesn't offer.
+    pub(crate) fn set_render_scale(&mut self, percent: u32) -> bool {
+        if !SCALES.contains(&percent) {
+            return false;
+        }
+        self.settings.scale = percent;
+        true
     }
     pub(crate) fn transition_finished(&mut self, status: String, resume: bool) {
         self.status = status;
@@ -190,6 +209,15 @@ impl Menu {
 
 #[derive(Resource)]
 struct SceneTarget(Handle<Image>);
+/// The camera that presents the scene image and draws the UI over it, its full-screen image
+/// node, and whether the gameplay camera draws into the window itself instead
+/// (`choose_presentation`).
+#[derive(Resource)]
+struct Presenter {
+    output: Entity,
+    node: Entity,
+    direct: bool,
+}
 #[derive(Resource)]
 struct FramePacer(Instant);
 #[derive(Component)]
@@ -210,6 +238,10 @@ pub(crate) struct MenuInput;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PresentationSetup;
 
+/// `choose_presentation`. Overlay cameras that draw into the window start and stop before it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PresentationMode;
+
 pub(crate) struct GraphicsMenuPlugin;
 impl Plugin for GraphicsMenuPlugin {
     fn build(&self, app: &mut App) {
@@ -221,8 +253,13 @@ impl Plugin for GraphicsMenuPlugin {
             .add_systems(Update, preview_menu.before(labels))
             .add_systems(Update, custom_sliders.before(labels))
             .add_systems(Update, (crate::map_render::advance_day, apply, labels, scroll_menu, resize_menu).chain())
+            .add_systems(Update, choose_presentation.in_set(PresentationMode).after(crate::camera::present))
             .add_systems(PostUpdate, crate::map_render::position_celestial_bodies.before(bevy::transform::TransformSystems::Propagate))
             .add_systems(Last, pace);
+        use bevy::render::{Render, RenderApp, RenderSystems};
+        if let Some(render) = app.get_sub_app_mut(RenderApp) {
+            render.add_systems(Render, prewarm_ui_pipelines.in_set(RenderSystems::Queue));
+        }
     }
 }
 fn setup(
@@ -269,7 +306,7 @@ fn setup(
     let output = commands
         .spawn((Camera2d, Msaa::Off, IsDefaultUiCamera))
         .id();
-    commands.spawn((
+    let node = commands.spawn((
         Node {
             width: percent(100),
             height: percent(100),
@@ -278,7 +315,8 @@ fn setup(
         },
         ImageNode::new(target.clone()),
         UiTargetCamera(output),
-    ));
+    )).id();
+    commands.insert_resource(Presenter { output, node, direct: false });
     let data = skate_data::collections::Collections::load(&config.asset_root).expect("validated startup collections");
     let custom_defaults = Tuning::defaults(&data).expect("validated Easy difficulty");
     let custom = Tuning::load(&config.asset_root, &data).expect("validated Custom difficulty");
@@ -714,6 +752,109 @@ fn apply(
         }
     }
     *previous = Some(menu.settings.clone());
+}
+/// At 100% scale the scene image is the window's size, so the presentation camera only clears a
+/// texture and its depth, copies the image into it under the UI, and copies it into the window:
+/// about 18 MB of reads and writes a frame at 1280x720 for no change. With
+/// `RenderOptions::present_direct` the gameplay camera then draws into the window itself, the
+/// UI over the world, and the presentation camera stops. It takes over again at other scales,
+/// while the gameplay camera is stopped (loading, before the first frame), and while another
+/// camera draws into the window: the session-marker HUD's draws over the presentation camera's
+/// texture, which the world's would not be in (session_marker/hud.rs).
+fn choose_presentation(
+    mut commands: Commands,
+    options: Option<Res<crate::render_options::RenderOptions>>,
+    menu: Res<Menu>,
+    target: Res<SceneTarget>,
+    mut presenter: ResMut<Presenter>,
+    mut cameras: Query<(Entity, &mut Camera, &RenderTarget, Has<crate::camera::GameplayCamera>)>,
+    ui_targets: Query<(Entity, &UiTargetCamera)>,
+) {
+    let mut gameplay = None;
+    let mut overlaid = false;
+    for (entity, camera, render_target, is_gameplay) in &cameras {
+        if is_gameplay {
+            gameplay = Some((entity, camera.is_active));
+        } else if entity != presenter.output
+            && camera.is_active
+            && matches!(render_target, RenderTarget::Window(_))
+        {
+            overlaid = true;
+        }
+    }
+    let Some((gameplay, active)) = gameplay else {
+        return;
+    };
+    let enabled = options.map_or(crate::render_options::RenderOptions::default().present_direct, |options| options.present_direct);
+    let direct = enabled && menu.settings.scale == 100 && active && !overlaid;
+    let (from, to) = if direct { (presenter.output, gameplay) } else { (gameplay, presenter.output) };
+    if direct != presenter.direct {
+        presenter.direct = direct;
+        commands.entity(gameplay).insert(if direct {
+            RenderTarget::Window(WindowRef::Primary)
+        } else {
+            RenderTarget::Image(target.0.clone().into())
+        });
+        commands.entity(from).remove::<IsDefaultUiCamera>();
+        commands.entity(to).insert(IsDefaultUiCamera);
+        commands.entity(presenter.node).insert(if direct { Visibility::Hidden } else { Visibility::Inherited });
+        if let Ok((_, mut camera, ..)) = cameras.get_mut(presenter.output) {
+            camera.is_active = !direct;
+        }
+        info!(
+            "[Skate] presentation: {}",
+            if direct { "the gameplay camera draws into the window" } else { "through the scene image" }
+        );
+    }
+    // Every frame, since an overlay spawned after the switch names the camera it found then.
+    for (entity, ui_target) in &ui_targets {
+        if ui_target.entity() == from && entity != presenter.node {
+            commands.entity(entity).insert(UiTargetCamera(to));
+        }
+    }
+}
+/// Bevy compiles a camera's UI pipeline the first time a node draws through it. With direct
+/// presentation the menu draws through the gameplay camera, whose HDR target needs a variant
+/// nothing else uses there (the HUD composite has its own pipeline), so the first pause queued it
+/// behind any world pipelines still compiling and the menu stayed invisible until it was ready.
+/// This asks for every camera's variant as soon as the camera is active, with the key
+/// `queue_uinodes` uses; after the first frame each request is a cache lookup. While the tone
+/// pass writes the window (retail_exposure.rs `choose_tone_output`), the gameplay camera's UI
+/// view isn't HDR, and the key is the presentation camera's.
+fn prewarm_ui_pipelines(
+    ui_pipeline: Option<Res<bevy::ui_render::UiPipeline>>,
+    pipelines: Option<ResMut<bevy::render::render_resource::SpecializedRenderPipelines<bevy::ui_render::UiPipeline>>>,
+    pipeline_cache: Res<bevy::render::render_resource::PipelineCache>,
+    cameras: Query<(&bevy::ui_render::UiCameraView, Option<&bevy::ui_render::UiAntiAlias>), With<bevy::render::view::ExtractedView>>,
+    ui_views: Query<&bevy::render::view::ExtractedView>,
+    mut seen: Local<Vec<(bevy::render::render_resource::CachedRenderPipelineId, bool)>>,
+) {
+    let (Some(ui_pipeline), Some(mut pipelines)) = (ui_pipeline, pipelines) else {
+        return;
+    };
+    for (ui_view, anti_alias) in &cameras {
+        if let Ok(view) = ui_views.get(ui_view.0) {
+            let hdr = view.hdr;
+            let anti_alias = matches!(anti_alias, None | Some(bevy::ui_render::UiAntiAlias::On));
+            let id = pipelines.specialize(
+                &pipeline_cache,
+                &ui_pipeline,
+                bevy::ui_render::UiPipelineKey { hdr, anti_alias },
+            );
+            // Once per variant, so a log shows whether the menu's was ready before a pause.
+            match seen.iter_mut().find(|(seen_id, _)| *seen_id == id) {
+                None => {
+                    info!("[Skate] UI pipeline (hdr {hdr}, anti-alias {anti_alias}): first asked for");
+                    seen.push((id, false));
+                }
+                Some((_, ready)) if !*ready && pipeline_cache.get_render_pipeline(id).is_some() => {
+                    *ready = true;
+                    info!("[Skate] UI pipeline (hdr {hdr}, anti-alias {anti_alias}): ready");
+                }
+                _ => {}
+            }
+        }
+    }
 }
 fn labels(
     menu: Res<Menu>,

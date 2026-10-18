@@ -71,6 +71,9 @@ pub(crate) fn joints(s: &SkaterRuntime) -> SkeletonJoints {
 }
 pub(crate) fn filter_drives(s: &SkaterRuntime, batch: &mut SkeletonDriveBatch) {
     let disabled = disabled_drives(s, false);
+    if disabled.is_empty() {
+        return;
+    }
     let rows = std::mem::take(&mut batch.rows);
     let ids = std::mem::take(&mut batch.identities);
     let spies = std::mem::take(&mut batch.spy);
@@ -392,6 +395,16 @@ pub(crate) struct ContactFrame {
     pub truncated: bool,
     pub joint_loads: std::collections::BTreeMap<usize, Value>,
     pairs: std::collections::BTreeMap<String, Value>,
+}
+impl ContactFrame {
+    /// The frame of a tick no mod can read. It has no contacts, so every contact in the first
+    /// frame a mod reads is a `begin`.
+    pub(crate) fn unread(tick: u64) -> Self {
+        Self {
+            tick,
+            ..Default::default()
+        }
+    }
 }
 pub(crate) fn before_solve(
     p: &GamePhysics,

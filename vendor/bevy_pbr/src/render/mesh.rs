@@ -556,7 +556,8 @@ pub struct MeshInputUniform {
     pub timestamp: u32,
     /// User supplied tag to identify this mesh instance.
     pub tag: u32,
-    /// Padding.
+    /// Padding. skate: the mesh's vertex and index slab ids, for the triangle culling pass
+    /// (`triangle_cull::slab_word`, vendor/README.md).
     pub pad: u32,
 }
 
@@ -834,6 +835,13 @@ pub struct RenderMeshInstanceGpuQueues(Parallel<RenderMeshInstanceGpuQueue>);
 /// On subsequent frames, we try to reextract those meshes.
 #[derive(Resource, Default, Deref, DerefMut)]
 pub struct MeshesToReextractNextFrame(MainEntityHashSet);
+
+/// sk8: `SKATE_REEXTRACT_UNALLOCATED=1` also re-extracts meshes whose mesh had no
+/// allocator slice yet; see [`RenderMeshInstanceGpuBuilder::update`].
+fn reextract_unallocated() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SKATE_REEXTRACT_UNALLOCATED").as_deref() == Ok("1"))
+}
 
 impl RenderMeshInstanceShared {
     /// A gpu builder will provide the mesh instance id
@@ -1146,7 +1154,17 @@ impl RenderMeshInstanceGpuBuilder {
                     mesh_vertex_slice.range.start,
                     mesh_vertex_slice.range.end - mesh_vertex_slice.range.start,
                 ),
-                None => (0, 0),
+                None => {
+                    // sk8: the mesh has no slice yet (bevy_horizon may hold it to pace
+                    // uploads), so this uniform draws nothing. With
+                    // `SKATE_REEXTRACT_UNALLOCATED=1`, extract the entity again each frame
+                    // until it has one, rather than leaving the zero ranges to an outside
+                    // change to `Mesh3d`.
+                    if reextract_unallocated() {
+                        meshes_to_reextract_next_frame.insert(entity);
+                    }
+                    (0, 0)
+                }
             };
         let (mesh_is_indexed, first_index_index, index_count) =
             match mesh_allocator.mesh_index_slice(&self.shared.mesh_asset_id) {
@@ -1210,7 +1228,7 @@ impl RenderMeshInstanceGpuBuilder {
                 self.shared.material_bindings_index.slot,
             ) | ((lightmap_slot as u32) << 16),
             tag: self.shared.tag,
-            pad: 0,
+            pad: slab_word(mesh_allocator.mesh_slabs(&self.shared.mesh_asset_id)),
         };
 
         // Did the last frame contain this entity as well?
@@ -3432,6 +3450,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
         SRes<MeshAllocator>,
         Option<SRes<PreprocessPipelines>>,
         SRes<GpuPreprocessingSupport>,
+        Option<SRes<TriangleCull>>,
     );
     type ViewQuery = Has<PreprocessBindGroups>;
     type ItemQuery = ();
@@ -3448,6 +3467,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
             mesh_allocator,
             preprocess_pipelines,
             preprocessing_support,
+            triangle_cull,
         ): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
@@ -3494,7 +3514,23 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
                     return RenderCommandResult::Skip;
                 };
 
-                pass.set_index_buffer(index_buffer_slice.buffer.slice(..), *index_format);
+                // skate: the triangle culling pass's survivors, where it wrote them for this
+                // draw (vendor/README.md).
+                let index_buffer = match (triangle_cull, item.extra_index()) {
+                    (Some(cull), PhaseItemExtraIndex::IndirectParametersIndex { .. }) => cull
+                        .into_inner()
+                        .index_buffer::<P>(
+                            vertex_buffer_slice.buffer,
+                            index_buffer_slice.buffer,
+                            || {
+                                mesh_instances
+                                    .render_mesh_queue_data(item.main_entity())
+                                    .map(|data| data.shared.tag)
+                            },
+                        ),
+                    _ => index_buffer_slice.buffer,
+                };
+                pass.set_index_buffer(index_buffer.slice(..), *index_format);
 
                 match item.extra_index() {
                     PhaseItemExtraIndex::None | PhaseItemExtraIndex::DynamicOffset(_) => {

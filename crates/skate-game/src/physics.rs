@@ -436,6 +436,9 @@ pub(crate) fn advance(
         return;
     }
     let timer = performance.as_ref().map(|_| std::time::Instant::now());
+    skater.mod_contact_frame_wanted = mods
+        .as_ref()
+        .is_some_and(|m| crate::modding::reads_player_physics(m));
     let mut actions = input.0.actions();
     let input_available = input.0.controller_available();
     #[cfg(debug_assertions)]

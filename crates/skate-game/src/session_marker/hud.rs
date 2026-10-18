@@ -35,9 +35,13 @@ struct Vertex {
 }
 #[derive(Component)]
 struct MarkerHudRoot;
+/// The camera that draws the HUD over the frame (`present`).
+#[derive(Component)]
+struct MarkerHudCamera;
 
 pub(super) fn install(app: &mut App) {
-    app.add_systems(Startup, load).add_systems(Update, present);
+    app.add_systems(Startup, load)
+        .add_systems(Update, present.before(crate::graphics_menu::PresentationMode));
 }
 
 pub(super) fn overlay_path(root: &Path) -> PathBuf {
@@ -55,6 +59,7 @@ fn load(
 ) {
     let layer = RenderLayers::layer(29);
     commands.spawn((
+        MarkerHudCamera,
         Camera2d,
         Camera {
             order: 1,
@@ -163,16 +168,35 @@ fn load(
 fn present(
     session: Res<super::SessionMarker>,
     window: Single<&Window>,
+    options: Option<Res<crate::render_options::RenderOptions>>,
     mut roots: Query<(&mut Transform, &mut Visibility), With<MarkerHudRoot>>,
+    mut cameras: Query<&mut Camera, With<MarkerHudCamera>>,
 ) {
     let scale = (window.width() / 1280.).min(window.height() / 720.);
+    let mut drawn = false;
     for (mut transform, mut visibility) in &mut roots {
-        *visibility = if session.visible {
+        drawn |= session.visible;
+        let placed = Transform {
+            translation: Vec3::new(-window.width() / 2., window.height() / 2., 0.),
+            scale: Vec3::splat(scale),
+            ..*transform
+        };
+        visibility.set_if_neq(if session.visible {
             Visibility::Inherited
         } else {
             Visibility::Hidden
-        };
-        transform.translation = Vec3::new(-window.width() / 2., window.height() / 2., 0.);
-        transform.scale = Vec3::splat(scale);
+        });
+        transform.set_if_neq(placed);
+    }
+    // The camera shares the presentation camera's texture and draws over it without clearing
+    // it, then blends all of it into the window again. Hidden or never loaded, the HUD draws
+    // nothing, so that only clears a depth texture and writes the window with what it already
+    // holds, about 15 MB of reads and writes a frame at 1280x720. `hud_retain` stops it then.
+    let retain = options.map_or(crate::render_options::RenderOptions::default().hud_retain, |options| options.hud_retain);
+    let active = drawn || !retain;
+    for mut camera in &mut cameras {
+        if camera.is_active != active {
+            camera.is_active = active;
+        }
     }
 }

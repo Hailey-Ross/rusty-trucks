@@ -26,6 +26,19 @@ impl Plugin for CharacterLightingPlugin {
             .add_systems(
                 Update,
                 update.after(crate::multiplayer::RemoteRenderSet),
+            )
+            .add_systems(
+                PostUpdate,
+                (
+                    crate::retail_shadow_bounds::caster_bounds,
+                    crate::retail_shadow_bounds::sun_receivers.after(crate::render_options::apply),
+                )
+                    .chain()
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::mesh::InheritWeightSystems)
+                    .after(bevy::asset::AssetEventSystems)
+                    .after(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades)
+                    .after(bevy::light::SimulationLightSystems::CheckLightVisibility),
             );
     }
 }
@@ -101,6 +114,12 @@ impl Material for CharacterMaterial {
 }
 #[derive(Component)]
 struct ShadowSource;
+
+/// The light whose map the baked world samples for the shadows of the skater,
+/// the board and mod graphics (retail_world.wgsl). `caster_bounds`
+/// (retail_shadow_bounds.rs) bounds what it draws.
+#[derive(Component)]
+pub(crate) struct BakedWorldShadows;
 
 /// Package-owned graphics retain their authored PBR materials.
 #[derive(Component)]
@@ -212,8 +231,11 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>, sources: Que
 fn spawn_shadow_sources(commands: &mut Commands, light: Vec3) {
     // Scene sun for authored PBR materials, plus all-caster shadow visibility
     // sampled by the native character shader.
+    // `RenderOptions` replaces these cascades when SKATE_SUN_CASCADES or
+    // SKATE_SUN_SHADOW_DISTANCE is set (render_options.rs).
     commands.spawn((
         ShadowSource,
+        crate::render_options::SceneSun,
         Name::new("Scene sun and shadow visibility"),
         DirectionalLight {
             illuminance: 11_000.,
@@ -233,6 +255,7 @@ fn spawn_shadow_sources(commands: &mut Commands, light: Vec3) {
     // this separate map so baked building/terrain shadows are not re-applied.
     commands.spawn((
         ShadowSource,
+        BakedWorldShadows,
         Name::new("Dynamic object shadows onto baked world"),
         DirectionalLight {
             illuminance: 0.,
@@ -622,7 +645,7 @@ mod tests {
         world.insert_resource(crate::retail_render::RetailScene(false));
         world.init_resource::<Assets<crate::customiser_material::SkaterMaterial>>();
         world.insert_resource(crate::retail_render::FrameStateData {
-            shadow: Vec4::ONE, clock: Vec4::ONE, pca: [Vec4::ONE; 7],
+            shadow: Vec4::ONE, clock: Vec4::ONE, pca: [Vec4::ONE; 7], casters: Vec4::ONE,
         });
         let material = Handle::<StandardMaterial>::default();
         let player = world.spawn((

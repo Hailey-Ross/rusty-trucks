@@ -10,7 +10,7 @@ use crate::{apt_movie::Movie, apt_vm::Vm};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, PartialEq, Deserialize)]
 pub struct Vertex {
     pub position: [f32; 2],
     /// Absent on solid units (no texture).
@@ -70,6 +70,7 @@ impl ShapeSource for Shapes {
         self.get(&character).map(Vec::as_slice)
     }
 }
+#[derive(PartialEq)]
 pub struct Draw {
     /// Texture key ("" for solid units: draw the colour only).
     pub texture: String,

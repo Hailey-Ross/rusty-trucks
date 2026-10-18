@@ -36,8 +36,43 @@ skate-mods = { path = "../skate-mods" }
 skate-dynamics = { path = "../skate-dynamics" }
 skate-audio = { path = "../skate-audio" }
 gltf = { version = "=1.4.1", default-features = true }
-# SDL3 gamepad input for every platform, built from source and statically linked.
+# BC3 encoder for the world texture pages on the Switch (retail_render.rs `PageFormat`):
+# github.com/jansol/texpresso by Jan Solanti, derived from Simon Brown's libsquish. MIT.
+texpresso = { version = "=2.0.2", default-features = false }
+
+# Timestamp queries for gpu_frame_time.rs, which bevy_render does not re-export. The version Bevy
+# already uses; no features of its own.
+wgpu = { version = "=27.0.1", default-features = false }
+
+[target.'cfg(not(target_os = "horizon"))'.dependencies]
+bevy = { workspace = true, features = ["default"] }
+# SDL3 gamepad input for every platform, built from source and statically linked. Not on the
+# Switch, which reads its controllers through bevy_horizon (input/platform.rs `horizon`).
 sdl3 = { version = "=0.20.0", features = ["build-from-source-static"] }
+
+# Nintendo Switch, through bevy-horizon (github.com/JohnUzoka/bevy-horizon, checked out next to this
+# repository; its scripts/build_game.sh builds the NRO). Bevy's default features minus what has no
+# Switch backend: winit, gilrs, x11, wayland, webgl2, the Android glue and sysinfo; also minus
+# custom_cursor, which turns winit on. reflect_auto_register stays: bevy-horizon's `inventory` patch
+# adds Horizon to the targets whose startup constructors run. bevy_horizon replaces winit (window,
+# frame loop, HOME menu) and gilrs (controllers).
+[target.'cfg(target_os = "horizon")'.dependencies]
+bevy = { workspace = true, features = [
+    # Bevy's `default_app` group without custom_cursor, which would pull in winit. Scenes need
+    # reflect_auto_register: Bevy spawns glTF scenes by reflection.
+    "async_executor", "bevy_asset", "bevy_input_focus", "bevy_log", "bevy_state", "bevy_window",
+    "reflect_auto_register",
+    # `default_platform`, without the backends.
+    "std", "default_font", "multi_threaded",
+    "2d_bevy_render", "3d_bevy_render",
+    # `ui_api` and `ui_bevy_render` without the `default_app` they include.
+    "bevy_ui", "bevy_ui_render",
+    "scene", "audio", "picking",
+] }
+# `top_down_alloc`: Rust's blocks of 256 KiB and up go in the top-down region NVK takes GPU memory
+# from, so the scene data freed after loading leaves runs the GPU can use, and freed blocks of up to
+# 8 KiB stay in a cache instead of queueing for malloc's lock (bevy-horizon allocator.rs).
+bevy_horizon = { path = "../../../bevy-horizon/crates/bevy_horizon", default-features = false, features = ["bevy_0_18", "vulkan", "render_0_18", "top_down_alloc"] }
 
 [dev-dependencies]
 naga = { version = "=27.0.3", features = ["wgsl-in"] }

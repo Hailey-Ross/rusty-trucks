@@ -74,6 +74,8 @@ impl Config {
                     config.map_path = Some(path.canonicalize().map_err(|e| e.to_string())?);
                     explicit_map = true;
                 }
+                Some("--test-world") if !crate::map_library::TEST_WORLD_AVAILABLE =>
+                    return Err("--test-world: the Switch build has no test world (map_library.rs)".into()),
                 Some("--test-world") => { explicit_map = true; config.map = None; config.map_path = None; }
                 Some("--check-assets") => config.check_assets = true,
                 // Maps arrive on stdin; never load the saved default map.
@@ -107,8 +109,16 @@ impl Config {
             Some(mode) => mode,
             None => crate::difficulty::Difficulty::load(&config.asset_root)?,
         };
+        if !explicit_map && crate::map_library::test_world_requested() {
+            if crate::map_library::TEST_WORLD_AVAILABLE {
+                eprintln!("[Skate] SKATE_TEST_WORLD=1: starting on the test world");
+                explicit_map = true;
+            } else {
+                eprintln!("[Skate] SKATE_TEST_WORLD=1 ignored: the Switch build has no test world (map_library.rs)");
+            }
+        }
         if !explicit_map {
-            if let Some(path) = crate::map_library::default_map(&config.asset_root)? {
+            if let Some(path) = crate::map_library::start_map(&config.asset_root)? {
                 config.map = Some(skate_data::skate_map::SkateMap::load(&path)?);
                 config.map_path = Some(path.canonicalize().map_err(|e| e.to_string())?);
             }

@@ -229,6 +229,12 @@ pub(crate) fn player_attached(mods: &Mods) -> bool {
     mods.attach.is_some()
 }
 
+/// Whether a mod can read the player's physics this tick: `snapshot_ro`, the only reader of
+/// `SkaterRuntime::mod_contact_frame`, runs only while the runtime is busy.
+pub(crate) fn reads_player_physics(mods: &Mods) -> bool {
+    mods.runtime_busy()
+}
+
 impl Mods {
     fn runtime_busy(&self) -> bool {
         self.manager.packages.values().any(|p| p.running())
@@ -568,10 +574,10 @@ fn fixed(world: &mut World) {
     let dt = world.resource::<Time<Fixed>>().delta_secs_f64();
     world.resource_scope(|world, mut mods: Mut<Mods>| {
         bridge::take_reactions(&mut mods, &mut world.resource_mut::<crate::physics::GamePhysics>());
-        let camera = camera_position(world);
         if mods.runtime_busy()
             || mods.manager.packages.values().any(|package| package.running())
         {
+            let camera = camera_position(world);
             mods.manager.snapshot = std::sync::Arc::new(snapshot_ro(world, &mut mods, camera));
         }
         if let Err(e) = ensure_ground(world, &mut mods) {
@@ -586,7 +592,8 @@ fn fixed(world: &mut World) {
             .filter(|(_, p)| p.running())
             .map(|(id, _)| id.clone())
             .collect();
-        let player_shapes = if mods.suspended_by.is_empty() && mods.attach.is_none() {
+        // Only the running mods' callbacks below use the player's shapes.
+        let player_shapes = if !ids.is_empty() && mods.suspended_by.is_empty() && mods.attach.is_none() {
             bridge::player_shapes(world)
         } else { Vec::new() };
         for id in ids {

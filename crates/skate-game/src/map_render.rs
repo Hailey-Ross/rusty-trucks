@@ -25,6 +25,10 @@ pub(crate) struct MapEntity;
 /// Somewhere to put an asset that may not be the live `Assets<A>` collection.
 pub(crate) trait AssetSink<A: Asset> {
     fn add(&mut self, asset: A) -> Handle<A>;
+    /// A handle for an asset built later, for whatever must refer to it before it exists. It
+    /// must be given its asset with `insert`, or whatever refers to it never becomes ready.
+    fn reserve(&mut self) -> Handle<A>;
+    fn insert(&mut self, handle: &Handle<A>, asset: A);
 }
 
 /// Erased release behaviour for one staged asset type.
@@ -70,9 +74,17 @@ impl<A: Asset> StagedAssets<A> {
 
 impl<A: Asset> AssetSink<A> for StagedAssets<A> {
     fn add(&mut self, asset: A) -> Handle<A> {
-        let handle = self.provider.reserve_handle().typed::<A>();
-        self.pending.push((handle.clone(), asset));
+        let handle = self.reserve();
+        self.insert(&handle, asset);
         handle
+    }
+
+    fn reserve(&mut self) -> Handle<A> {
+        self.provider.reserve_handle().typed::<A>()
+    }
+
+    fn insert(&mut self, handle: &Handle<A>, asset: A) {
+        self.pending.push((handle.clone(), asset));
     }
 }
 
@@ -97,6 +109,13 @@ impl SceneCommands {
     pub(crate) fn spawn<B: Bundle>(&mut self, bundle: B) {
         self.queue.push(move |world: &mut World| {
             world.spawn((bundle, MapEntity));
+        });
+    }
+
+    /// A resource the scene sets, replacing the last map's.
+    pub(crate) fn insert_resource<R: Resource>(&mut self, resource: R) {
+        self.queue.push(move |world: &mut World| {
+            world.insert_resource(resource);
         });
     }
 }
@@ -137,10 +156,14 @@ pub(crate) struct PreparedScene {
     commands: SceneCommands,
     pub stats: crate::skate_world::SceneStats,
     pub retail: bool,
+    /// Read from the render device here, on the main thread, for the worker that prepares.
+    compressed_pages: bool,
 }
 
 impl PreparedScene {
     pub(crate) fn new(world: &World) -> Self {
+        crate::retail_render::log_fetch_support(world);
+        crate::retail_render::log_page_uniform_support(world);
         Self {
             meshes: StagedAssets::new(world),
             images: StagedAssets::new(world),
@@ -151,6 +174,7 @@ impl PreparedScene {
             commands: SceneCommands::default(),
             stats: default(),
             retail: false,
+            compressed_pages: crate::retail_render::compressed_pages(world),
         }
     }
 
@@ -161,7 +185,8 @@ impl PreparedScene {
             return;
         };
         self.retail = crate::retail_render::RetailScene::for_map(map);
-        let tuning = crate::retail_render::MaterialTuning::load(asset_root);
+        let mut tuning = crate::retail_render::MaterialTuning::load(asset_root);
+        tuning.compressed_pages = self.compressed_pages;
         // The sky is loaded before the world because its authored fog frame and
         // sun direction are encoded into the per-material storage buffer while
         // the material table is built, not patched in afterwards.
