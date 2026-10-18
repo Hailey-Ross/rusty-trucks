@@ -146,8 +146,32 @@ pub(crate) fn restart_with_refresh() -> Result<(), String> {
     let root = exe.parent().ok_or("No executable directory")?;
     clear_stale_pipelines(&refresh_base(root)?)?;
     let args: Vec<_> = std::env::args_os().skip(1).filter(|a| a != "--refresh-assets").collect();
-    Command::new(&exe).args(args).arg("--refresh-assets").spawn().map_err(|e| format!("Could not restart: {e}"))?;
+    let mut command = Command::new(&exe);
+    command.args(args).arg("--refresh-assets");
+    // Its own log: the restarted copy outlives the session log this one writes to (a launcher closes that file when
+    // this process exits), so setup's progress and the refreshed game's result were lost (laptop 2026-10-18: two
+    // refreshes ended with exit code 1 and no line saying why).
+    if let Some((path, file)) = refresh_log(root) {
+        eprintln!("SETUP: the refresh logs to {}", path.display());
+        if let Ok(copy) = file.try_clone() {
+            command.stdout(copy);
+        }
+        command.stderr(file);
+    }
+    command.spawn().map_err(|e| format!("Could not restart: {e}"))?;
     Ok(())
+}
+
+/// `logs\game-refresh-<unix seconds>.stderr.log` where this copy's session logs go: the checkout's `logs\` beside
+/// `bin\` for a development copy (`scripts/Launch.ps1`), else `logs\` next to the exe (`PLAY-WITH-LOG.bat`).
+fn refresh_log(exe_dir: &Path) -> Option<(PathBuf, std::fs::File)> {
+    let checkout_logs = exe_dir.parent().map(|p| p.join("logs")).filter(|d| exe_dir.ends_with("bin") && d.is_dir());
+    let dir = checkout_logs.unwrap_or_else(|| exe_dir.join("logs"));
+    std::fs::create_dir_all(&dir).ok()?;
+    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let path = dir.join(format!("game-refresh-{seconds}.stderr.log"));
+    let file = std::fs::File::create(&path).ok()?;
+    Some((path, file))
 }
 
 /// The data folder a refresh rebuilds: the installation behind a development copy's `--assets` link (refreshed by

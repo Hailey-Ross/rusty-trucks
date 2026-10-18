@@ -155,6 +155,33 @@ function Make-Room($v) {
     if ($used + $reserve -gt $cap) { Write-Host ("  Still {0:N1} GB of {1:N0} GB: nothing more of the launcher's to delete; building anyway." -f $used, $cap) }
 }
 
+# Points a checkout's assets junction at the current installation when it no longer resolves: Refresh Game Files
+# publishes a new installation and deletes the old one, re-pointing only the link of the copy that ran it, so the
+# others failed with "Asset root assets: The system cannot find the path specified" (laptop 2026-10-18). A real
+# folder is never touched. Returns a line when it repaired one.
+function Repair-AssetLink([string]$Dir, [string]$Name) {
+    $link = Join-Path $Dir 'assets'
+    $item = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+    if ($item -and -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return '' }
+    if ($item -and (Test-Path (Join-Path $link 'private\game.json'))) { return '' }
+    $target = Current-Assets
+    if (-not (Test-Path (Join-Path $target 'private\game.json'))) { return '' }
+    if ($item) { cmd /c rmdir "$link" | Out-Null }
+    elseif ($Dir -eq $Repo) { return '' }
+    cmd /c mklink /J "$link" "$target" | Out-Null
+    return "Assets link of $Name pointed at the current installation."
+}
+
+# Every checkout the launcher knows: this one and each version's worktree that exists.
+function Repair-AllAssetLinks {
+    $lines = @(Repair-AssetLink $Repo 'this checkout')
+    foreach ($v in $Versions) {
+        $d = Version-Dir $v
+        if ($d -ne $Repo -and (Test-Path (Join-Path $d '.git'))) { $lines += Repair-AssetLink $d $v.name }
+    }
+    return @($lines | Where-Object { $_ })
+}
+
 # Makes sure the version's worktree exists, follows its pushed branch and is built. True = ready.
 function Ensure-Version($v) {
     $ErrorActionPreference = 'Continue'
@@ -171,14 +198,8 @@ function Ensure-Version($v) {
     }
     # Every version shares this checkout's prepared assets (a junction, like the dev setup's own). A setup refresh
     # replaces the installation: a link to the old one no longer resolves, so it is pointed at the current one.
-    $link = Join-Path $d 'assets'
-    if ($d -ne $Repo) {
-        if ((Test-Path $link) -and -not (Test-Path (Join-Path $link 'private\game.json'))) {
-            Write-Host "  Pointing $($v.name)'s assets link at the current installation..."
-            cmd /c rmdir "$link" | Out-Null
-        }
-        if (-not (Test-Path $link)) { cmd /c mklink /J "$link" "$(Current-Assets)" | Out-Null }
-    }
+    $fixed = Repair-AssetLink $d $v.name
+    if ($fixed) { Write-Host "  $fixed" }
     $dirty = [bool](Invoke-Git $d status --porcelain --untracked-files=no)
     if (-not $v.dev -and $dirty -and $v.branch) {
         # Local edits block the fast-forward: say so instead of silently starting an old build.
@@ -572,6 +593,11 @@ function Launch([string]$Key, [string]$Lbl) {
     }
     Write-Host '  Session ended.'
     $summary = Check-Session $e.Kind $since $ver
+    $repaired = @(Repair-AllAssetLinks)
+    if ($repaired.Count -gt 0) { $summary = (@($summary) + $repaired) -join "`r`n" }
+    # The send script picks up the logs of this version's checkout as well as the main one's
+    # (play-and-send.ps1 reads SKATE_SEND_LOGS_DIR; a version's sessions write to its own logs\, laptop 2026-10-18).
+    if ($ver) { $env:SKATE_SEND_LOGS_DIR = Version-Dir $ver }
     $sendResult = Send-Sessions
     if ($sendResult) { $summary = (@($summary, $sendResult) | Where-Object { $_ }) -join "`r`n" }
     $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
@@ -593,6 +619,8 @@ if ($Entry -eq 'pending') {
             try { Move-Item $exe $old -Force; Move-Item $new $exe -Force } catch { Remove-Item $new -ErrorAction SilentlyContinue }
         } else { Remove-Item $new -ErrorAction SilentlyContinue }
     }
+    # A refresh in any copy can leave the others' assets links dangling: repair them at every start.
+    if ((Running-Games).Count -eq 0) { Repair-AllAssetLinks | ForEach-Object { Write-Host "  $_" } }
     $since = [datetime]::MinValue
     if (Test-Path $LastSession) { $since = (Get-Item $LastSession).LastWriteTime }
     $log = Get-ChildItem $StateLogs -Filter 'state_*.tsv' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1

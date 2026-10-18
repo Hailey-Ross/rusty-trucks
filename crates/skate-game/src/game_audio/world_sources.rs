@@ -591,7 +591,60 @@ pub(crate) fn register(app: &mut App) {
     app.init_resource::<WorldOwners>()
         .init_resource::<WorldHost>()
         .init_resource::<WorldHeld>()
-        .add_systems(Update, frame_post.after(super::native::mixmap_tick));
+        .add_systems(Update, frame_post.after(super::native::mixmap_tick))
+        .add_systems(Startup, take_banks_hold)
+        .add_systems(Update, release_banks_hold.after(frame));
+}
+
+/// The startup hold for the world banks: the native runtime only exists once the audio's first start is done, so
+/// [`frame`]'s prefetch asks for the banks then, and the first owners came one frame later and took them still
+/// queued, decoding nearly all of them on the game thread (cold disk 2026-10-18: one 4028 ms frame, 3.8 s of it in
+/// this system). The loading screen now stays up until the prefetch has them.
+const BANKS_HOLD: &str = "world_audio_banks";
+const BANKS_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn take_banks_hold(startup: Option<ResMut<crate::startup_loading::StartupLoading>>) {
+    if let Some(mut startup) = startup
+        && requested()
+        && prefetch_on()
+    {
+        startup.hold(BANKS_HOLD, "Loading the world sounds");
+    }
+}
+
+/// Every world bank is loaded, missing from the install, or requested and no longer queued or decoding.
+fn banks_settled(p: &WorldPrefetch, native: &Native) -> bool {
+    p.epoch == Some(native.prefetch.clears())
+        && TRAFFIC_BANKS.iter().chain(PED_BANKS).all(|&stem| {
+            native.bank_loaded(stem)
+                || p.unavailable.contains(&stem)
+                || (p.requested.contains(&stem) && !native.prefetch.busy(stem))
+        })
+}
+
+/// Released once the audio's first start and the living world's load are done and, when the living world will
+/// publish, the world banks are settled; or after [`BANKS_MAX_WAIT`].
+fn release_banks_hold(
+    startup: Option<ResMut<crate::startup_loading::StartupLoading>>,
+    native: Option<Res<Native>>,
+    host: Res<WorldHost>,
+    living: Res<crate::world_audio::LivingWorldAudio>,
+    mut since: Local<Option<std::time::Instant>>,
+) {
+    let Some(mut startup) = startup else { return };
+    if !startup.holding(BANKS_HOLD) || startup.holding("audio") || startup.holding("living_world") {
+        return;
+    }
+    let started = *since.get_or_insert_with(std::time::Instant::now);
+    let settled = match native {
+        Some(native) => !living.expected || banks_settled(&host.prefetch, &native),
+        // The runtime did not start: nothing to wait for.
+        None => true,
+    };
+    if settled || started.elapsed() >= BANKS_MAX_WAIT {
+        info!("AUDIO_WORLD banks ready behind the loading screen in {} ms{}", started.elapsed().as_millis(), if settled { "" } else { " (gave up waiting)" });
+        startup.release(BANKS_HOLD);
+    }
 }
 
 fn apply(host: &mut WorldHost, rt: &mut skate_audio::runtime::Runtime, cmds: Vec<WorldCommand>) {
@@ -1071,6 +1124,30 @@ mod tests {
         assert!(bank[&9].speaker_repeat.is_empty(), "an install from before the export: +24 for everyone");
     }
 
+    /// The world banks' startup hold waits for the audio's first start and the living world's load, then goes at
+    /// once when there is nothing to decode (no runtime, or no living world on the map).
+    #[test]
+    fn the_world_banks_hold_waits_for_the_audio_and_the_living_world() {
+        let mut app = App::new();
+        let mut loading = crate::startup_loading::StartupLoading::new();
+        loading.hold("audio", "Loading sound");
+        loading.hold("living_world", "Loading the living world");
+        loading.hold(BANKS_HOLD, "Loading the world sounds");
+        app.insert_resource(loading)
+            .init_resource::<WorldHost>()
+            .init_resource::<crate::world_audio::LivingWorldAudio>()
+            .add_systems(Update, release_banks_hold);
+        let holding = |app: &App| app.world().resource::<crate::startup_loading::StartupLoading>().holding(BANKS_HOLD);
+        app.update();
+        assert!(holding(&app), "the audio is still starting");
+        app.world_mut().resource_mut::<crate::startup_loading::StartupLoading>().release("audio");
+        app.update();
+        assert!(holding(&app), "the living world is still loading");
+        app.world_mut().resource_mut::<crate::startup_loading::StartupLoading>().release("living_world");
+        app.update();
+        assert!(!holding(&app), "no runtime: nothing to wait for");
+    }
+
     #[test]
     fn no_owners_means_no_work() {
         // The default host holds nothing: `frame` returns before touching the runtime.
@@ -1163,6 +1240,7 @@ mod tests {
         for stem in &stems {
             native.prefetch.wait(stem);
         }
+        assert!(banks_settled(&p, &native), "decoded or missing: the startup hold can go");
         assert_eq!(snapshot(&native), before, "the requests never touch the runtime");
         let decodes = WAV_DECODES.with(|n| n.get());
         for stem in &stems {

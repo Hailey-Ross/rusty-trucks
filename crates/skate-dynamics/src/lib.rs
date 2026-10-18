@@ -420,6 +420,14 @@ impl DynamicsWorld {
     /// with fixed internal edges takes about a second). [`Self::install_ground`] then makes the same world
     /// [`Self::set_ground`] makes.
     pub fn build_ground(triangles: impl Iterator<Item = [[f32; 3]; 3]>) -> Result<GroundCollider, String> {
+        // Density 0: the ground hangs off a fixed body, whose mass rapier never uses, but with the default density it
+        // integrated the whole city mesh's mass properties when the collider was attached and again at the first
+        // step (about 25 ms each for 1.5 M triangles, 2026-10-18). Same simulation, bit for bit
+        // (`a_massless_ground_simulates_like_the_default_one`).
+        Self::build_ground_with_density(triangles, 0.)
+    }
+
+    fn build_ground_with_density(triangles: impl Iterator<Item = [[f32; 3]; 3]>, density: f32) -> Result<GroundCollider, String> {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         for triangle in triangles {
@@ -438,6 +446,7 @@ impl DynamicsWorld {
         )
         .map_err(|e| e.to_string())?
         .friction(1.)
+        .density(density)
         .collision_groups(InteractionGroups::new(
             Group::ALL,
             Group::ALL,
@@ -1851,6 +1860,56 @@ fn inertia_half_from_shape(shape: &Shape) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An uneven `n` x `n` grid of triangles (two per cell), normals up.
+    fn hilly_ground(n: usize) -> impl Iterator<Item = [[f32; 3]; 3]> {
+        let h = |x: f32, z: f32| (x * 0.37).sin() * 2. + (z * 0.23).cos() * 3.;
+        (0..n * n).flat_map(move |i| {
+            let (x, z) = ((i % n) as f32 - n as f32 / 2., (i / n) as f32 - n as f32 / 2.);
+            [[[x, h(x, z), z], [x, h(x, z + 1.), z + 1.], [x + 1., h(x + 1., z), z]], [[x + 1., h(x + 1., z), z], [x, h(x, z + 1.), z + 1.], [x + 1., h(x + 1., z + 1.), z + 1.]]]
+        })
+    }
+
+    /// The ground's density only fed the fixed ground body's mass, which rapier never uses: bodies dropped, rolled and
+    /// slid over a density-0 ground take the same poses, velocities and contacts, bit for bit, as over the old
+    /// density-1 one.
+    #[test]
+    fn a_massless_ground_simulates_like_the_default_one() {
+        let run = |density: f32| {
+            let mut world = DynamicsWorld::default();
+            world.install_ground(DynamicsWorld::build_ground_with_density(hilly_ground(40), density).unwrap());
+            let ids = [
+                world.spawn(box_desc(BodyType::Dynamic, [0., 8., 0.], [0.5, 0.3, 0.8])).unwrap(),
+                world.spawn(BodyDesc { shape: Shape::Sphere { radius: 0.4 }, heading: 0.7, ..box_desc(BodyType::Dynamic, [4., 7., -3.], [1., 1., 1.]) }).unwrap(),
+                world.spawn(BodyDesc { shape: Shape::Capsule { half_height: 0.6, radius: 0.25 }, heading: 2.1, ..box_desc(BodyType::Dynamic, [-5., 9., 6.], [1., 1., 1.]) }).unwrap(),
+            ];
+            let mut log = String::new();
+            for _ in 0..240 {
+                world.step(1. / 60.);
+                for id in ids {
+                    log += &format!("{:?}\n", world.read(id).unwrap());
+                }
+                log += &format!("{:?}\n", world.drain_contacts());
+            }
+            log
+        };
+        let (old, new) = (run(1.), run(0.));
+        assert!(old.contains("ContactEvent"), "the bodies reach the ground");
+        assert_eq!(old, new);
+    }
+
+    #[test]
+    #[ignore = "timing: a city-sized ground's install and first step"]
+    fn a_city_ground_installs_and_takes_its_first_step_quickly() {
+        let ground = DynamicsWorld::build_ground(hilly_ground(870)).unwrap();
+        let mut world = DynamicsWorld::default();
+        let t = std::time::Instant::now();
+        world.install_ground(ground);
+        world.step(1. / 60.);
+        let took = t.elapsed();
+        eprintln!("install + first step: {took:?}");
+        assert!(took < std::time::Duration::from_millis(5), "{took:?} (about 50 ms with the ground's mass computed)");
+    }
 
     #[test]
     fn external_shapes_detect_sensor_intersection_and_solid_contact_margin() {

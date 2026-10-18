@@ -562,6 +562,76 @@ start), so a laptop that pulls the new launcher gets the window without running 
 `--update-game-files` (no out-of-date files here), the elevated installs (everything is installed on this PC), the
 window under Steam / Steam Link (laptop).
 
+Follow-up (laptop session 2026-10-18 12:06, launcher version hails-additions): a Refresh Game Files in one copy
+published a new installation and deleted the old one; only the link of the copy that ran it was re-pointed, so the
+main checkout and upstream-main failed at start ("Asset root assets: The system cannot find the path specified").
+`launcher.ps1` `Repair-AssetLink` / `Repair-AllAssetLinks`: every checkout's `assets` junction that no longer resolves
+is pointed at the current installation (`data\installation.json`) at every start (`pending`), before a version runs
+and after every session; a real folder is never touched. Tested on a scratch checkout with both links on a deleted
+installation: both repaired. The send after a session missed a version's logs (they are in its own `logs\`):
+`tools/second-pc/play-and-send.ps1` now also collects every `.local\versions\<id>` checkout's `logs\` and `bin\logs\`
+and the one the launcher names in `SKATE_SEND_LOGS_DIR`. And the restarted refresh logs to its own
+`logs\game-refresh-<unix seconds>.stderr.log` (`setup::refresh_log`): the copy that restarts exits, the launcher closes
+its session log, and the two refreshes of the day ended with exit code 1 and no line saying why.
+
+## The world sound banks decode behind the loading screen (2026-10-18)
+
+Problem: a DownTown start from a cold disk froze the game for 4028 ms about 3 s into play; `SYSTEM_TIMING` put 3.8 s of
+it in `game_audio::world_sources::frame`, at "AUDIO_WORLD on". The world banks (traffic and peds) have a prefetch
+worker, but the native runtime (`Native`, which owns the worker) exists only once the audio's first start is done,
+right before the loading screen goes, so `frame` asked for the banks then; the first owners spawned at the next
+fixed tick, and `Prefetch::take` on a bank still queued returns nothing, so the game thread decoded nearly all of
+them itself (the worker decodes one bank at a time). Warm, the same loads took about 0.1 s, so it shows on a first
+start after a reboot.
+
+Change (`world_sources.rs`): a startup hold `world_audio_banks` ("Loading the world sounds"), taken at Startup when
+the world audio and its prefetch are on, released by `release_banks_hold` once the `audio` and `living_world` holds
+are gone and either no runtime started, the living world will not publish on the map, or every world bank is loaded,
+missing from the install, or requested and no longer queued or decoding (`banks_settled`, `Prefetch::busy`); 30 s
+cap. Only the waiting moves: the banks still `load_bank` at the first owner, from the worker's data, as before.
+
+Verification: warm DownTown runs: `AUDIO_WORLD banks ready behind the loading screen in 85 ms`, the loading screen
+4.5 to 5.5 s as before. Tests `the_world_banks_hold_waits_for_the_audio_and_the_living_world` and, data-gated,
+`world_banks_are_prefetched_when_expected_and_load_without_decoding` (now also asserting `banks_settled` once
+decoded). Not reproduced cold (the file cache could not be dropped without admin rights).
+
+## The mods' ground has no mass (2026-10-18)
+
+Problem: the first fixed tick of play took 88 to 97 ms on every DownTown start. A trace from launch (`--trace`, new
+spans `mods.ensure_ground`, `mods.triggers`, `mods.player_shapes`, `mods.sync`) put 51 ms in `modding::fixed`:
+`mods.ensure_ground` 26 ms (attaching the prebuilt ground collider) and `mods.dynamics_step` 26 ms (its first step).
+Rapier computes a collider's mass properties from its shape when it is attached to a body and again at the next step;
+for the city trimesh (reproduced with 1.5 M triangles: 25 ms and 26 ms) that is a pass over every triangle, for a
+fixed body whose mass rapier never uses.
+
+Change (`skate-dynamics`): `build_ground` builds the ground collider with density 0 (`build_ground_with_density`),
+so rapier skips the mass computation. Same simulation: `a_massless_ground_simulates_like_the_default_one` drops a box,
+a sphere and a capsule onto a hilly ground built both ways and compares every body snapshot and contact of 240 steps
+as text (bit for bit). `a_city_ground_installs_and_takes_its_first_step_quickly` (ignored, timing): install plus first
+step of the 1.5 M triangle ground 16.7 us (was about 50 ms). DownTown: the first fixed tick 97 ms -> 39 ms; what is
+left is mostly the DMO census's first fill (`dmo_stream`, 23 to 29 ms, the prop collision layer rebaked once).
+
+## No mods snapshot without a reader (2026-10-18)
+
+Problem: with no mod installed, `modding::update` still cost 0.63 ms of main thread a frame in DownTown (2.2 to 2.4 ms
+on the laptop) and `mods.snapshot` ran 348 times in 9 s. The new `MODS_BUSY <reason>` line (logged when the reason
+changes) showed why: "skater proxies", the living world's NPC skaters, peds and cars mirrored into the mods' world so
+mod bodies can hit them. They kept the runtime busy, so `fixed` and `update` built the full JSON snapshot every tick
+and frame with no mod to read it.
+
+Change (`modding/mod.rs`): `snapshot_has_reader` = busy for any reason but the proxies (a running mod, commands,
+bodies, graphics, overlays, joints, an attach, canvases, volumes). `fixed` builds the snapshot only then; `update`
+returns early without one unless there is a reader, the overlay is open (the mods menu can start a mod there), or the
+next folder scan is due within two frames (`Manager::scan_due_within`, `maintenance`'s scan can start a mod), so a
+starting mod still gets the snapshot of the frame before, as before. The proxies themselves still step and sync.
+Limit: a frame more than twice as long as the one before, right at a scan that starts a newly dropped-in mod, would
+hand it a snapshot one frame older than before.
+
+Verification: test `skater_proxies_alone_need_no_snapshot`. DownTown, no mods, 60 s, warm: median 3.30 -> 3.23 ms,
+p90 5.69 -> 4.90 ms, p99 7.28 -> 6.12 ms, `FRAME_HITCH` lines 60 -> 43; `modding::update` and `modding::fixed` left the
+top 16 of `SYSTEM_TIMING`. Workspace tests: 4211 passed, the Skyline example test the only failure (needs a local
+asset).
+
 ## Map switch: the mods' ground built by the map loader (2026-10-17)
 
 Problem: every map switch froze the game for 1 to 2 s on the first frame on the new map (laptop session
