@@ -20,7 +20,7 @@ Every start checks your converted game files (a fraction of a second, in the bac
 3. Open **Extras > Refresh Game Files** (the row only appears while files are out of date). The game restarts into setup, converts only what changed and starts again. It reuses your disc image if it is still where setup found it, otherwise it asks for it again.
 4. Still seeing old menus or missing props? Send the session log from `PLAY-WITH-LOG.bat`: the `ASSET_CHECK` lines name the files that differ.
 
-**Opting in to early features.** Features that are still being tested are off by default. Switch them on in the Guide / F1 / Esc menu under **GRAPHICS > Opt-In Features**. Changes are saved, and most take effect at once:
+**Opting in to early features.** Features that are still being tested are off by default. Switch them on in the Guide / F1 / Esc menu in the **OPT-INS** section. Changes are saved, and most take effect at once:
 - **Zombie Mode:** the retail zombie cheat until the cheat screen exists: yellow screen, no traffic, every ped comes after you.
 - **NPC Skater Physics:** NPC skaters near you run full skater physics and can bail.
 - **More Audible World** (not retail, from the next start): more cars, peds and NPC skaters heard at once.
@@ -31,7 +31,7 @@ For a single run you can still use the old variables instead (`set SKATE_ZOMBIE=
 ## Controls (the new parts)
 
 - **Start** opens Skate 3's own pause menu (its real menu files from your disc): **A** selects, **B** goes back, the d-pad / arrows move. Options > **Game Settings** is the retail settings screen; Learn > **Trick Guide** is Skate 3's own trick guide.
-- **Guide** (the Xbox / PS / Home button), **F1** or **Esc** (keyboard) opens the menu: **MAPS** (switch maps and drop-in spots without restarting), **SKATER** (Camera angle High / Low), **GRAPHICS** (display, sound, **Frame-time counter**, **NPC draw distance**, **Opt-In Features**), **EXTRAS** (mods, updates). The menu now looks and works like the recomp's settings screen: **B** / **Esc** goes back one level, **LB** / **RB** (or **Q** / **E**) switch category, **Y** (or **R**) resets a row, the mouse works too.
+- **Guide** (the Xbox / PS / Home button), **F1** or **Esc** (keyboard) opens the menu: **MAPS** (switch maps and drop-in spots without restarting), **SKATER** (Camera angle High / Low), **GRAPHICS** (display, sound, **Frame-time counter**, **NPC draw distance**), **EXTRAS** (mods, updates), **OPT-INS** (features still being tested). The menu now looks and works like the recomp's settings screen: **B** / **Esc** goes back one level, **LB** / **RB** (or **Q** / **E**) switch category, **Y** (or **R**) resets a row, the mouse works too.
 - **Y:** step off the board. **LT** (on foot): drop the board.
 - **Hold RB** next to a bench, bin or other movable prop to grab it: the **left stick** pushes, pulls and side-steps it, the **right stick** turns you and the prop together. Your board drops when you grab. Let go of RB to drop the prop.
 
@@ -55,7 +55,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 2. **NPC skaters:** some now ride fakie on purpose, like the recorded lines (with the fakie upper-body animation). Tell us if one looks like it rides backwards by mistake, or spins round when it switches to another line.
 3. **Pedestrians:** anyone floating, stuck walking on the spot, walking through things, or looking wrong (body shape, clothing colours)? New: peds use vending machines, sit on benches, take newspapers and throw empty cans into bins; many carry something (bags, coffee, a skateboard, a map). Annoy one that holds a can: it may throw it at you (a can pushes you, a light one should not knock you down). Tell us if a held item floats away from the hand or a ped gets stuck at a bench or machine. Peds now hold their item with the carrying arm while they walk, and a throw moves only the upper body.
 10. **Props appearing and disappearing:** like retail, placed props (benches, bins, cones and so on) now exist only near you: they appear within about 90 m and go beyond 100 m, and a knocked-over prop is back in its place when you return. Tell us if a prop pops in right in front of you, vanishes while you look at it, or a ped sits on an invisible bench. To compare, start with `set SKATE_DMO_STREAM=0` (props always there, as before).
-11. **Zombie mode (opt-in until the cheat screen exists):** Guide / F1 / Esc menu > Graphics > Opt-In Features > **Zombie Mode**: the screen turns yellow, the streets empty of traffic and every ped comes after you. Tell us how it plays.
+11. **Zombie mode (opt-in until the cheat screen exists):** Guide / F1 / Esc menu > Opt-Ins > **Zombie Mode**: the screen turns yellow, the streets empty of traffic and every ped comes after you. Tell us how it plays.
 4. **Cars:** a car now pushes a pedestrian out of its way (that is what retail does, no knock-down). Cars driving through things, flying or vanishing.
 5. **Grinding:** the stair handrail at the **PCU Library** spawn should no longer throw you off at its bottom bend. Tell us any other spot where you bail for no reason.
 6. **Frame rate:** big flips on the Spillway jumps used to hitch; the trick text no longer rebuilds itself every frame. Play with the Frame-time counter on and send a screenshot or video.
@@ -69,6 +69,11 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Solid peds (new):** you can no longer roll through a ped that is already stumbling or lying on the ground; its body stays solid the whole time, like Skate 3.
+- **Ped hand props (new):** peds hold bags, phones, coffee and the rest by the grip (a bag by its handle) at Skate 3's angle, not by the model's centre. Run **Refresh Game Files** once to get the grip points.
+- **Bailing into props (new):** bailing into a bin or bench no longer throws it; like Skate 3, light props only get nudged and heavy ones (200 kg and up) stay put.
+- **NPC skaters unsticking (new):** a stuck NPC skater that jumps back onto its line starts it fresh instead of carrying over air or trick state.
+- **Opt-Ins (new):** the early features moved out of Graphics into their own **Opt-Ins** section of the Guide / F1 / Esc menu.
 - **Rumble (new):** the controller no longer buzzes from the moment the game starts, and it stops when the game closes, crashes or is killed. Wired and wireless pads now get Skate 3's own motor strengths for each. **Vibration** is Off by default for now: switch it on in Start > Options > Game Settings to try it, and tell us how it feels (USB or wireless).
 - **World shading (new):** fences, billboards, lit signs, traffic lights (Skate 3's 17 second cycle), trees and the memorial flag use Skate 3's own shading. Run **Refresh Game Files** once to get the new map data.
 - **Rusty Trucks (new):** this fork's build now calls itself Rusty Trucks (window title, splash, setup and crash windows). Your files, settings and updates stay as they were.
@@ -140,11 +145,11 @@ Upstream `main` (SK8-ENGINE/skate-3-rust-engine) has merged almost all of this f
 - **Traffic:** road graph, traffic signals, the vehicle census and cars driving on screen. New: cars brake and honk for skaters, peds and props in their way (peds run off the road from a honk), knock you down when they hit you, change lanes, pull over, park and pull out again, and a parked car's alarm goes off when you run into it (it stays parked while the alarm sounds).
 - **Pedestrians react to you:** hit the same ped twice and they stop and warn you, three times and they chase you (with friends joining in and security tazers); a caught skater gets taken down and taunted. Peds greet each other, gather and hold conversations.
 - **NPC skaters** steer, slow down or stop for peds, cars, props and you.
-- **Opt-in, still being tested** (off by default; switch them in the Guide / F1 / Esc menu under Graphics > **Opt-In Features**, in effect at once and saved; the old `set SKATE_NPC_SIM=1` style variables still turn one on for a run): **NPC skaters with full physics** near you (**NPC Skater Physics**), **More Audible World** (not retail: more cars, peds and NPC skaters heard at once, from the next start) and **Ped Speech** (peds, pros and the announcer talk; switching it on offers Extras > **Refresh Game Files**, which decodes about 3.4 GB of speech from your disc).
+- **Opt-in, still being tested** (off by default; switch them in the Guide / F1 / Esc menu under **Opt-Ins**, in effect at once and saved; the old `set SKATE_NPC_SIM=1` style variables still turn one on for a run): **NPC skaters with full physics** near you (**NPC Skater Physics**), **More Audible World** (not retail: more cars, peds and NPC skaters heard at once, from the next start) and **Ped Speech** (peds, pros and the announcer talk; switching it on offers Extras > **Refresh Game Files**, which decodes about 3.4 GB of speech from your disc).
 - **Movable objects (#15 follow-up):** grab, carry, drag and drop props on foot (hold RB, left stick moves the object, right stick turns), placement mode with saved layouts, authored prop physics.
 - All from the disc data, seeded and multiplayer-ready, with a Lua mod API (`sdk.world.set_tuning`), an NPC draw distance option, and always-on logging of ped positions and floating peds.
 - **Frame drop with the board thrown away fixed:** a hidden board no longer scans every collision triangle each tick.
-- **Newest:** props stream like retail (they appear near you and come back in place), peds hold items with a carrying arm and throw with the upper body, and zombie mode works (Graphics > Opt-In Features > Zombie Mode: yellow screen, no traffic, every ped follows you; the cheat screen comes with the menu work).
+- **Newest:** props stream like retail (they appear near you and come back in place), peds hold items with a carrying arm and throw with the upper body, and zombie mode works (Opt-Ins > Zombie Mode: yellow screen, no traffic, every ped follows you; the cheat screen comes with the menu work).
 - **New in this build:** peds use vending machines, bench seats, bins and newspaper boxes placed from the disc's prop data, with the retail clips; they hold the can or newspaper in the hand, throw empty cans into bins or drop things, and many start out carrying something (by each ped type's retail odds). An angry ped holding a can throws it at you, aimed the way retail aims it, and a thrown can hits you as an ordinary prop (your body now feels thrown props). NPC skaters that get stuck step off, walk back to their line and ride on (retail mode 7). Mods can spawn and remove props while the game runs (`sdk.world.spawn_prop` / `remove_prop`). The benches, bins and hand item models need the setup's map and living world data from this build (a fresh setup or a setup refresh).
 
 **Retail menus (upstream #62, open)**
@@ -174,7 +179,7 @@ Being worked on now, ported from the retail game code (the rolling `hails-additi
 ## Known issues
 
 Still open after the play tests up to 2026-10-12 (the fixes from the 2026-10-12 round are not play-tested yet):
-- **Carrying props:** without **Prop Grab** (Opt-In Features) you hold a prop by a straight edge on top, not retail's authored grab shapes; with it on you carry it by its real handles. Stepping up curbs while dragging is not retail's yet.
+- **Carrying props:** without **Prop Grab** (Opt-Ins) you hold a prop by a straight edge on top, not retail's authored grab shapes; with it on you carry it by its real handles. Stepping up curbs while dragging is not retail's yet.
 - **NPC skaters:** some still spin round at a few line switches. Some animations still look stiff, grind and slide spans all show one 50-50 clip, and trick height, grind variety, landings and spins are not finished.
 - **Pedestrians:** they walk through a prop while you hold it; one model walks stiffly with its arms out and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail. Placed props (benches, bins) still pass through your body; only thrown items hit you.
 - **Cars:** they appear and vanish at full opacity; retail fades them in and out with distance.
@@ -188,7 +193,7 @@ Still open after the play tests up to 2026-10-12 (the fixes from the 2026-10-12 
 - **Traffic:** roof landings and following a lead car the retail way; skitching is opt-in while it is tested.
 - **Movable objects:** the Object Dropper editor, the phone rows for Reset and Upright, grindable props.
 - **Challenge Map:** retail's Challenge Map screen (locations and teleports) is not ported yet; in the pause menu, Challenge Map opens the **MAPS** section of the Guide / F1 / Esc menu, where you switch maps and drop-in spots.
-- **Modes:** the Free Play menu (Traffic, Pedestrians, A.I. Skaters), the zombie cheat entry (zombie mode itself works from Graphics > Opt-In Features), the pros at their challenge spots.
+- **Modes:** the Free Play menu (Traffic, Pedestrians, A.I. Skaters), the zombie cheat entry (zombie mode itself works from Opt-Ins), the pros at their challenge spots.
 - **Multiplayer for the living world:** built ready for it, no networking yet.
 - **Teammate recruit menu:** teammate looks come from `settings/living_world_teammates.json` until the menu system exists.
 
