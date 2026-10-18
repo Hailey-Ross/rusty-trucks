@@ -940,6 +940,33 @@ state 1 until a trace settles it; the overlap blocker (`sub_82C49EB0`) and the c
 **Verification.** skate-core `a_kept_live_object_is_never_evicted_while_others_can_go` and the 7 other dmo tests;
 muted DownTown run: no errors (29 live at the spawn, under the cap, so no evictions while standing). Not play-tested.
 
+## What wakes a resting prop: the bail kick (research, 2026-10-17)
+
+**Question.** Retail's DMO contact callback `sub_82C54618` calls the velocity kick `sub_82C530F0` only for some
+touchers; which, and is a resting prop static to the skater otherwise (the saved stage A patch
+`.local/patches/stage-a-resting-props-static.patch` assumed so)?
+
+**Retail [code] (`sub_82C54618`, Ghidra + generated code).** The touching collidable is `[event+0x4C]`, its owner
+`[collidable+0x20]`. The owner is looked up for the interface whose type id is `sub_82586478` (returns the name
+"IActor", 0x823000F0) through `sub_82965630`, a search of the owner's sorted (type, interface) pairs. Only an IActor
+toucher can kick, and only when the collidable's kind `[[collidable+0x18]+0x18]` is 3 or 5 (or 4 with byte
+`[[actor->vfn14()+0x48]+0x137]` set) and byte `[[actor->vfn14()+0x1C]+0x4C]` is set; other touchers go into the
+prop's contact list instead.
+
+**Trace (laptop session recomp-all-20261017-175036, 9.2 min).** 1910 PROPHIT, 465 of them the player's board or
+body against a prop, and only 17 kicked: one burst at 271717 to 271754 ms, 50 ms after a ped collision (PEDCOLL ped
+47BA3950 at 271667 ms). The hook's v1 kind / flag fields read the owner instead of the collidable and the IActor call,
+so they say nothing about the gate; v2 (recomp research hooks, PROPHIT `actor` / `actor_vfn14`) logs the real inputs.
+
+**User (2026-10-17).** About the moment at 271.7 s: "Hit and then bailed as a result". About rolling into props:
+"depends on the object. large dumpsters move less, smaller props move easier. Vending machines are heavy."
+
+**Reading.** Rolling into a resting prop moves it by mass (ordinary contact physics, as ours already does through
+the reduced mass of the pair in `push_from_skater`); the kick is an extra impulse while the skater bails. So the stage
+A patch (resting prop static to the skater) is wrong and stays unapplied. Open: which actor state the byte
+`+0x1C/+0x4C` is (bail / ragdoll is the reading from the timing and the user's account, not decoded); the kick's
+size (`sub_82C530F0`: 5.0 and the body's mass terms); then the port: kick on a bailing skater's contact.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with

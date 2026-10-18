@@ -1782,3 +1782,37 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Ours:** the stuck watch in `wander.rs` (0.3 m in 2.0 s, then give up and plan away) stays, now labelled NOT RETAIL
   in the code (it was credited to retail's event 4). A later port: the retail timer as the measurement, the give-up
   as a mod-switchable non-retail value.
+
+## Peds stay solid while they react (2026-10-17)
+
+- **Problem:** user (laptop recomp session 175036 notes): "peds are much more solid in retail than ours. you cannot
+  move through a ped."
+- **Root cause (research b203, `.local/research/b203-peds-solid.md`; main checked `ped_body.rs`):** our
+  `push_ped_proxies` took a ped's bodies out of the skater solve for the whole stumble or knock-down (the
+  `in_collision` filter). Every touch starts at least a stumble (retail gate 0), so after the first touch the skater
+  rolled through the ped.
+- **Retail:** [trace] every ped body removal in the laptop session comes from the ped collision object's destructor
+  (`sub_82E22D50`, call at `82E22D90`, ped despawn); the "remove both bodies" slot `sub_82E0D5F0` never runs. [code]
+  `sub_82E268C8` builds body A (group 9) and body B (group 11). So the bodies stay in the world for the ped's whole
+  life, through every reaction.
+- **Change:** `ped_body::push_ped_proxies` adds every near ped's bodies, reacting or not. New hits during a running
+  reaction are still skipped (`peds.rs`, retail `sub_82E38FB8` controller byte +9), so the ped is not knocked down
+  again every tick; the skater is now pushed back by the bodies the whole time.
+- **Verification:** skate-game ped / ped body tests pass (48). Not play-tested.
+- **Open (b203):** whether the skater also pairs with body A (group 9); whether retail treats the re-posed ped part
+  as keyframed or finite mass; the reaction input is the relative contact speed, not the ped part's speed after the
+  solve (NOT RETAIL YET); the proxy has zero inverse inertia. Tune nothing (no mass changes) before those are read.
+
+## Hand props: retail rotation order (2026-10-17)
+
+- **Problem:** user: "ped hand props are NOT held properly with correct positioning/rotation and attachpoints".
+- **Retail [code] (research b202, b204, b205):** the per-frame placement `82E3E4F0` (only while the prop is in hand)
+  writes World = H * T(offset) * R * inverse(P) through `82E3E1B0`: H = the RightHandProp bone times the ped's world
+  matrix (`82E218A0`, slot 3 of the bone table filled by name in `82E33070`); R = Rz * Ry * Rx from the record's
+  degrees (`82473A08` sin / cos per axis; first basis row [cy cz, cy sz, -sy]); P = the prop template's attach
+  locator (`template+0x78`, the type-0 entry of the part's EB001B point list, written by `82C4E128`).
+- **Ours before:** the same bone (`HAND_PROP_BONE`) and T * R, but R in XYZ order and no inverse(P).
+- **Change:** `HandPropRecord::local` uses `EulerRot::ZYX` (z, y, x). Test `record_rotation_is_rz_ry_rx_like_retail`
+  (the stock cellphone's 15 / -10 / 15 degrees against Rz * Ry * Rx). Not play-tested.
+- **NOT RETAIL YET:** inverse(P). Setup does not export the attach locator; b205 gives the export recipe
+  (`.local/research/b205-hand-prop-bone-locator.md`), to verify on a real `_lw` template first.

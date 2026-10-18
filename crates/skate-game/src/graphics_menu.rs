@@ -189,6 +189,7 @@ const SECTIONS: &[(&str, &str, &str)] = &[
     ("GRAPHICS", "Graphics", "Display, framerate, world lighting and sound settings."),
     ("MULTIPLAYER", "Multiplayer", "Host or join a session. A session is better with friends."),
     ("EXTRAS", "Extras", "Mods, updates and connected controllers."),
+    ("OPT_INS", "Opt-Ins", "Features that are off by default, some of them not retail."),
 ];
 /// Section header rows (lime bars, not selectable).
 const HEADERS: &[(usize, &str)] = &[
@@ -283,9 +284,10 @@ impl Menu {
             0 => (1000..1000 + self.maps.len()).collect(),
             1 if self.difficulty == Difficulty::Custom => std::iter::once(3).chain(300..337).chain([CAMERA_ANGLE_ROW,8,10]).collect(),
             1 => vec![3, CAMERA_ANGLE_ROW, 8, 10],
-            2 => [0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW, MORE_AUDIBLE_ROW, SPEECH_ROW].into_iter().chain(OPT_IN_ROWS).collect(),
+            2 => vec![0, 1, 2, 13, 16, 17, 18, FRAME_STATS_ROW, NPC_DRAW_DISTANCE_ROW],
             // Quitting is the rail's Close Game; Refresh Game Files only while the game files are out of date.
             4 => [11, 14, 19, BETTER_WATER_ROW].into_iter().chain((!crate::setup::stale_groups().is_empty()).then_some(REFRESH_ROW)).collect(),
+            5 => [MORE_AUDIBLE_ROW, SPEECH_ROW].into_iter().chain(OPT_IN_ROWS).collect(),
             i if i >= SECTIONS.len() => self.custom_sections.get(i-SECTIONS.len()).map_or(Vec::new(), |(_,entries)| (200..200+entries.len()).collect()),
             _ => Vec::new(),
         }
@@ -301,7 +303,7 @@ impl Menu {
                 (true, 2, 16) => Some(902),
                 (true, 2, FRAME_STATS_ROW) => Some(903),
                 (true, 2, NPC_DRAW_DISTANCE_ROW) => Some(911),
-                (true, 2, MORE_AUDIBLE_ROW) => Some(913),
+                (true, 5, MORE_AUDIBLE_ROW) => Some(913),
                 (true, 1, 3) => Some(904),
                 (true, 1, 300) => Some(905),
                 (true, 1, CAMERA_ANGLE_ROW) => Some(906),
@@ -1402,7 +1404,7 @@ fn preview_menu(config: Res<crate::config::Config>, mut menu: ResMut<Menu>, mut 
         Ok("custom") => { menu.open = true; menu.select_section(1); menu.selected=300; menu.view.content = true; menu.view.shown = true; },
         Ok("graphics") => { menu.open = true; menu.select_section(2); menu.view.content = true; menu.view.shown = true; },
         Ok("npc") => { menu.open = true; menu.select_section(2); menu.selected = NPC_DRAW_DISTANCE_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
-        Ok("optin") => { menu.open = true; menu.select_section(2); menu.selected = menu.rows().last().copied().unwrap_or(SPEECH_ROW); menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
+        Ok("optin") => { menu.open = true; menu.select_section(5); menu.selected = menu.rows().last().copied().unwrap_or(SPEECH_ROW); menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("stale") => { crate::setup::preview_stale(); menu.open = true; menu.select_section(4); menu.selected = REFRESH_ROW; menu.view.content = true; menu.view.follow = true; menu.view.shown = true; },
         Ok("maps") => { menu.open = true; menu.select_section(0); menu.view.content = true; menu.view.shown = true; },
         Ok("rail") => { menu.open = true; menu.select_section(2); },
@@ -1563,7 +1565,9 @@ mod tests {
     fn pages_put_headers_in_front_of_their_groups() {
         let mut m = menu();
         m.select_section(2);
-        assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW, 911, NPC_DRAW_DISTANCE_ROW, 913, MORE_AUDIBLE_ROW, SPEECH_ROW, 40, 41]);
+        assert_eq!(m.page(), vec![900, 0, 1, 2, 901, 13, 902, 16, 17, 18, 903, FRAME_STATS_ROW, 911, NPC_DRAW_DISTANCE_ROW]);
+        m.select_section(5);
+        assert_eq!(m.page(), vec![913, MORE_AUDIBLE_ROW, SPEECH_ROW, 40, 41]);
         m.select_section(1);
         assert_eq!(m.page(), vec![904, 3, 906, CAMERA_ANGLE_ROW, 907, 8, 10]);
         m.select_section(4);
@@ -1638,6 +1642,13 @@ mod tests {
         }
         menu.select_section(1);
         assert_eq!(menu.rows(),vec![3,CAMERA_ANGLE_ROW,8,10]);
+        // The opt-ins have their own section, not Graphics.
+        menu.select_section(2);
+        assert!(!menu.rows().iter().any(|id| *id == MORE_AUDIBLE_ROW || *id == SPEECH_ROW || OPT_IN_ROWS.contains(id)));
+        menu.select_section(5);
+        assert_eq!(menu.category_name(5), "Opt-Ins");
+        assert_eq!(menu.rows(), [MORE_AUDIBLE_ROW, SPEECH_ROW].into_iter().chain(OPT_IN_ROWS).collect::<Vec<_>>());
+        assert_eq!(menu.page()[0], 913);
         menu.custom_sections=vec![("Challenges".into(),vec![("test.mod".into(),"race".into(),"Race".into())])];
         menu.select_section(SECTIONS.len());
         assert_eq!(menu.rows(),vec![200]);
@@ -1670,7 +1681,7 @@ mod tests {
         assert!(!SECTIONS.iter().any(|(name,_,_)| matches!(*name,"SESSION"|"WORLD")));
         menu.select_section(2);
         assert!(!menu.multiplayer && !menu.browser);
-        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW,MORE_AUDIBLE_ROW,SPEECH_ROW,40,41]);
+        assert_eq!(menu.rows(), vec![0,1,2,13,16,17,18,FRAME_STATS_ROW,NPC_DRAW_DISTANCE_ROW]);
         menu.daylight = true;
         assert_eq!(menu.rows(), vec![0,1,2,3]);
     }

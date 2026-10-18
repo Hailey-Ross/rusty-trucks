@@ -1372,6 +1372,11 @@ announcer speech). Without the decode, ped speech is chosen and logged but silen
   `SKATE_SETUP_SPEECH=1` to the setup helper when the install's saved choice is on (logged
   `SETUP: speech decode asked for`). Off keeps the decoded takes; setup skips the decode from the next refresh.
 - `SKATE_VERIFY_MENU=optin` opens the overlay on the group for screenshots.
+- 2026-10-17, user: "opt ins sh9uld be moved to their own section and out of graphics in the guide overlay". The
+  group is now its own rail section, **Opt-Ins** (key `OPT_INS`, after Extras, section 5), with the same rows and
+  header 913; Graphics ends at Living World. Appended rather than placed next to Graphics because Multiplayer (3)
+  and Extras (4) are addressed by index. Test: `sections_expose_only_real_rows_and_all_maps`,
+  `pages_put_headers_in_front_of_their_groups`. `SKATE_VERIFY_MENU=optin` opens the new section.
 
 ### Verification
 - `cargo test -p skate-game --bin skate3rust -- graphics_menu game_audio::tests setup`: all pass except the known

@@ -47,10 +47,13 @@ pub(crate) struct HandPropRecord {
 }
 
 impl HandPropRecord {
-    /// The prop's frame in the hand bone's frame.
+    /// The prop's frame in the hand bone's frame. Retail `82E3E1B0` turns the record's degrees into Rz * Ry * Rx
+    /// (z applied last; research b204: rows [cy cz, cy sz, -sy], ...), so the order is ZYX, not XYZ.
+    /// NOT RETAIL YET: retail also applies the inverse of the prop template's attach locator (`template+0x78`,
+    /// written by `82C4E128`), which setup does not export yet.
     pub fn local(&self) -> Mat4 {
         let r = self.rotation_degrees * (std::f32::consts::PI / 180.0);
-        Mat4::from_translation(self.offset) * Mat4::from_quat(Quat::from_euler(EulerRot::XYZ, r.x, r.y, r.z))
+        Mat4::from_translation(self.offset) * Mat4::from_quat(Quat::from_euler(EulerRot::ZYX, r.z, r.y, r.x))
     }
 }
 
@@ -428,6 +431,19 @@ mod tests {
         assert!(m.w_axis.truncate().distance(Vec3::new(0.01, 0.0, 0.01)) < 1e-6);
         // +Y of the prop turns to +Z of the hand under 90 degrees about X.
         assert!(m.transform_vector3(Vec3::Y).distance(Vec3::Z) < 1e-6);
+    }
+
+    /// Retail `82E3E1B0` builds the rotation as Rz * Ry * Rx; its first basis row is [cy cz, cy sz, -sy] (b204).
+    #[test]
+    fn record_rotation_is_rz_ry_rx_like_retail() {
+        // The stock cellphone's angles (15, -10, 15 degrees): with two or more non-zero axes the order matters.
+        let d = Vec3::new(15.0, -10.0, 15.0);
+        let r = HandPropRecord { rotation_degrees: d, ..Default::default() }.local();
+        let (x, y, z) = (d.x.to_radians(), d.y.to_radians(), d.z.to_radians());
+        let row0 = Vec3::new(y.cos() * z.cos(), y.cos() * z.sin(), -y.sin());
+        assert!(r.transform_vector3(Vec3::X).distance(row0) < 1e-5, "{:?} vs {row0:?}", r.transform_vector3(Vec3::X));
+        let rzyx = Mat4::from_rotation_z(z) * Mat4::from_rotation_y(y) * Mat4::from_rotation_x(x);
+        assert!(r.abs_diff_eq(rzyx, 1e-5));
     }
 
     #[test]
