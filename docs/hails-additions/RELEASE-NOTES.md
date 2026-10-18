@@ -70,7 +70,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 
 Not play-tested yet; tell us if any of these still happen.
 - **Walking into peds (new):** on foot, a ped you run into now stumbles and gives a little, like Skate 3, instead of standing like a wall.
-- **Walking over benches (new):** on foot you step onto and over low props like benches, as in Skate 3, instead of shoving them along.
+- **Walking over benches (new):** on foot you step onto and over heavier props like benches, as in Skate 3, instead of shoving them along. Light things (cones, boxes, bin lids, rubbish bags) and the prop you are holding are not something you step onto, also like Skate 3.
 - **Pushing an occupied bench (new):** a ped sitting on a bench you push now jumps off it, like Skate 3, instead of riding along or standing up normally.
 - **Conversations (new):** a passing ped can now join two who are talking, as in Skate 3.
 - **Refresh offered for the hand prop grips (new):** copies set up before the grip points now show **GAME FILES OUT OF DATE**, so **Refresh Game Files** appears.
