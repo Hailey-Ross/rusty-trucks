@@ -149,7 +149,7 @@ pub(crate) fn submit_air(
     skater
         .offboard_air_selector
         .launch(
-            &physics.world,
+            physics.biped_world(),
             packet,
             [gravity.x, gravity.y, gravity.z, 0.],
             context,

@@ -370,6 +370,15 @@ impl GamePhysics {
         &self.world
     }
 
+    /// What the on-foot queries see: the map and the prop world without the held prop (`offboard::BipedWorld`).
+    pub(crate) fn biped_world(&self) -> offboard::BipedWorld<'_> {
+        let props = self.prop_layer.as_ref().map(|layer| {
+            let held = self.prop_carry.held().and_then(|id| layer.instances().iter().find(|i| i.id == id));
+            (layer.world(), held.map_or((0, 0), |i| (i.range.start, i.range.end)))
+        });
+        offboard::BipedWorld { map: &self.world, props }
+    }
+
     pub(crate) fn prop_world(&self) -> Option<&BoardWorld> {
         self.prop_layer.as_ref().map(crate::skate_world::PropCollisionLayer::world)
     }

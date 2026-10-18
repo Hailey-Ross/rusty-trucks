@@ -210,7 +210,7 @@ pub(super) fn advance(
             skater.offboard_contact.submit(
                 input,
                 skater.player_input.processed.actor_query_2952 as i32,
-                &super::offboard::contact_toolkit::StaticScene::new(&physics.world)?,
+                &super::offboard::contact_toolkit::StaticScene::new(physics.biped_world())?,
             )?;
             super::biped_ground::submit_geometry(physics, skater)?;
         }
