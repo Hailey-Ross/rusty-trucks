@@ -70,6 +70,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 
 Not play-tested yet; tell us if any of these still happen.
 - **No freeze when play starts (new):** the first moment of play used to freeze for about 1 to 2 seconds while the world's collision and the living world loaded. That now happens while the loading screen is still up (it stays up a little longer), and after a map switch play starts without the hitch.
+- **People and cars ready at the start (new):** the people, cars, NPC skaters and the things peds carry now load while the loading screen is up, so they no longer pop in a few frames late or stutter the first seconds of play. The loading screen stays up a moment longer.
 - **NPC Skater Physics opt-in (new):** switching it on no longer freezes the first moment of play for half a second while its skaters load; they load in the background.
 - **Smoother frames (new):** cars no longer re-send their materials to the graphics card every frame, which lowers the average frame time (on the main test PC from 3.5 to 2.7 ms in DownTown).
 - **Walking into peds (new):** on foot, a ped you run into now stumbles and gives a little, like Skate 3, instead of standing like a wall.
