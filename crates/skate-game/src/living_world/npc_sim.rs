@@ -781,6 +781,7 @@ pub(crate) fn simulate(
                 let sign = if flipped { -1.0 } else { 1.0 };
                 let forward = [deck.basis.columns[2][0] * sign, deck.basis.columns[2][1] * sign, deck.basis.columns[2][2] * sign];
                 let direct = skate_core::living_world::controller_b::DirectPath;
+                let on_navmesh = peds.as_deref().and_then(|p| p.nav.as_deref()).is_some();
                 let paths: &dyn skate_core::living_world::controller_b::PathService = match peds.as_deref().and_then(|p| p.nav.as_deref()) {
                     Some(mesh) => mesh,
                     None => &direct,
@@ -826,7 +827,10 @@ pub(crate) fn simulate(
                                 }
                                 None => {
                                     if sim.no_plan != Some(node) {
-                                        info!("NPC_WALK_BACK #{} {} no plan to node {node}: stays with the line controller", npc.id.serial, npc.character);
+                                        // Why the plan failed (b207): which path service, from where to where.
+                                        let (from, to) = ([deck.translation.x, deck.translation.y, deck.translation.z], n.position);
+                                        let d = ((to[0] - from[0]).powi(2) + (to[1] - from[1]).powi(2) + (to[2] - from[2]).powi(2)).sqrt();
+                                        info!("NPC_WALK_BACK #{} {} no plan to node {node}: stays with the line controller (service {}, from [{:.1}, {:.1}, {:.1}] to [{:.1}, {:.1}, {:.1}], {d:.1} m)", npc.id.serial, npc.character, if on_navmesh { "navmesh" } else { "direct" }, from[0], from[1], from[2], to[0], to[1], to[2]);
                                     }
                                     sim.no_plan = Some(node);
                                 }

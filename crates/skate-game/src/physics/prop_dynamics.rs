@@ -260,6 +260,17 @@ pub(crate) struct PropSolverSettings {
     /// default, kept as a mod option (with the old 0.5 / 30 sleep values it
     /// reproduces the pre-2026-10-08 settling).
     pub rest_snap: bool,
+    /// The bail clamp (retail `82C530F0`, doc 27 "What wakes a resting prop"): when a bailing actor's volume
+    /// touches a prop, the prop's velocity is capped and it is woken, so bailing into a prop does not throw it.
+    pub bail_clamp: bool,
+    /// Linear cap = `bail_linear_factor` x inverse mass, m/s (retail 5.0, `0x821F1790`).
+    pub bail_linear_factor: f32,
+    /// Spin cap = `bail_angular_factor` x inverse mass, rad/s (retail 15.0).
+    pub bail_angular_factor: f32,
+    /// From this mass on (kg) the linear allowance is 0 and the spin is zeroed (retail 200).
+    pub bail_heavy_mass: f32,
+    /// Ball radius blend: radius = blend x (max(cap, |d|) + cap) (retail 0.5).
+    pub bail_blend: f32,
 }
 
 impl Default for PropSolverSettings {
@@ -271,8 +282,41 @@ impl Default for PropSolverSettings {
             sleep_frames: 2,
             max_sleeps_per_step: 100,
             rest_snap: false,
+            bail_clamp: true,
+            bail_linear_factor: 5.0,
+            bail_angular_factor: 15.0,
+            bail_heavy_mass: 200.0,
+            bail_blend: 0.5,
         }
     }
+}
+
+/// Retail's bail clamp `82C530F0` on one prop: `w` = inverse mass (motion record +0x7C, b209), `d` = the prop's
+/// own velocity as its transform tracker measures it (`[dmo+0xA4]+0x90`, last tick's displacement / dt, written by
+/// `82E0C578` from the DMO update, b210); ours: the prop's velocity before this tick's skater pushes. The linear velocity is pulled into the ball of radius `mag` around `n * mag`
+/// (n = d / |d|, mag = blend x (max(cap, |d|) + cap), cap = factor x w); the spin is capped at the angular factor x w,
+/// or zeroed for a heavy prop (and the linear cap is 0). Returns (linear, angular); `None` for a static body (w = 0).
+pub(crate) fn bail_clamp(s: &PropSolverSettings, w: f32, d: Vector3, linear: Vector3, angular: Vector3) -> Option<(Vector3, Vector3)> {
+    if !(w > 0.0) {
+        return None;
+    }
+    let light = 1.0 / w < s.bail_heavy_mass;
+    let cap = if light { s.bail_linear_factor * w } else { 0.0 };
+    let angular = if light {
+        let limit = s.bail_angular_factor * w;
+        let l = length(angular);
+        if l > limit { scale(angular, limit / l) } else { angular }
+    } else {
+        Vector3::new(0.0, 0.0, 0.0)
+    };
+    let dl = length(d);
+    let n = if dl > 1.5e-5 { scale(d, 1.0 / dl) } else { Vector3::new(0.0, 0.0, 0.0) };
+    let mag = s.bail_blend * (cap.max(dl) + cap);
+    let centre = scale(n, mag);
+    let off = sub(linear, centre);
+    let ol = length(off);
+    let linear = if ol > mag { add(centre, scale(off, if ol > 0.0 { mag / ol } else { 0.0 })) } else { linear };
+    Some((linear, angular))
 }
 
 impl PropTuningTable {
@@ -722,6 +766,9 @@ pub(crate) struct PropDynamics {
     grind_rails: std::collections::BTreeMap<String, std::sync::Arc<[crate::grind_world::props::PropRail]>>,
     /// The prop the local skater grinds now (`set_grinded`): the skater's volumes do not push it.
     grinded: Option<u32>,
+    /// Pushers (actor ids, [`LOCAL_PUSHER`] for the local skater) bailing this tick (`set_bailing`): their contacts
+    /// apply the bail clamp.
+    bailing: Vec<u64>,
 }
 
 /// First id of bodies created mid-game: ids from here up to [`PROP_GRAB_TAG`]
@@ -981,6 +1028,7 @@ impl PropDynamics {
             next_runtime_id: RUNTIME_PROP_ID_BASE,
             grind_rails: std::collections::BTreeMap::new(),
             grinded: None,
+            bailing: Vec::new(),
         }
     }
 
@@ -1306,6 +1354,12 @@ impl PropDynamics {
     /// The prop the local skater grinds this tick (none when not grinding a prop).
     pub(crate) fn set_grinded(&mut self, id: Option<u32>) {
         self.grinded = id;
+    }
+
+    /// The pushers bailing this tick (retail's bail clamp gate; ours: the wipeout state, `board_wiping_out`).
+    pub(crate) fn set_bailing(&mut self, actors: &[u64]) {
+        self.bailing.clear();
+        self.bailing.extend_from_slice(actors);
     }
 
     fn rails_of(&self, body: &PropBody) -> Option<&std::sync::Arc<[crate::grind_world::props::PropRail]>> {
@@ -2056,6 +2110,8 @@ impl PropDynamics {
                 let body_bounds = self.bodies[index].bounds();
                 let mut overlapping = false;
                 let mut closing = false;
+                let before = self.bodies[index].rates.linear_velocity;
+                let mut bail_touch = false;
                 // The prop under the local skater's grind is not pushed by them (others still can).
                 let spared = self.grinded == Some(self.bodies[index].id);
                 let actors = skater_volumes
@@ -2087,6 +2143,17 @@ impl PropDynamics {
                         SkaterContact::Closing => closing = true,
                         SkaterContact::OverlapOnly => overlapping = true,
                         SkaterContact::Separate => {}
+                    }
+                    bail_touch |= contact != SkaterContact::Separate && self.bailing.contains(&actor);
+                }
+                // A bailing actor touched it: retail caps the prop's velocity and wakes it (once per prop per tick).
+                let solver = self.tuning.solver;
+                if bail_touch && solver.bail_clamp {
+                    let body = &mut self.bodies[index];
+                    if let Some((linear, angular)) = bail_clamp(&solver, body.inertia.inverse_mass, before, body.rates.linear_velocity, body.rates.angular_velocity) {
+                        body.rates.linear_velocity = linear;
+                        body.rates.angular_velocity = angular;
+                        body.wake();
                     }
                 }
                 // A skater volume parked inside the box (the board under a
@@ -2675,6 +2742,7 @@ impl PropDynamics {
 }
 
 /// How one skater volume touched a prop this tick.
+#[derive(Clone, Copy, PartialEq)]
 enum SkaterContact {
     Separate,
     /// Inside the box but not closing on it.
@@ -4259,6 +4327,52 @@ mod tests {
             out.push((dynamics.bodies[0].rates.position.x, x));
         }
         out
+    }
+
+    /// Retail's bail clamp `82C530F0` with its defaults: the cap is 5 / mass m/s and 15 / mass rad/s under 200 kg,
+    /// a heavier prop is stopped (b206, b209).
+    #[test]
+    fn bail_clamp_caps_light_props_and_stops_heavy_ones() {
+        let s = PropSolverSettings::default();
+        let v = |x: f32, y: f32, z: f32| Vector3::new(x, y, z);
+        let zero = v(0.0, 0.0, 0.0);
+        // 1 kg at rest (d = 0): the ball is centred on 0 with radius 5, so 10 m/s becomes 5 m/s; spin 30 -> 15.
+        let (l, a) = bail_clamp(&s, 1.0, zero, v(10.0, 0.0, 0.0), v(0.0, 30.0, 0.0)).unwrap();
+        assert!((l.x - 5.0).abs() < 1e-5 && l.y.abs() < 1e-6 && (a.y - 15.0).abs() < 1e-4, "{l:?} {a:?}");
+        // 20 kg: 0.25 m/s, 0.75 rad/s.
+        let (l, a) = bail_clamp(&s, 1.0 / 20.0, zero, v(0.0, 0.0, 3.0), v(2.0, 0.0, 0.0)).unwrap();
+        assert!((length(l) - 0.25).abs() < 1e-5 && (length(a) - 0.75).abs() < 1e-5);
+        // Already inside the ball: unchanged.
+        let (l, _) = bail_clamp(&s, 1.0 / 20.0, zero, v(0.1, 0.0, 0.0), zero).unwrap();
+        assert!((l.x - 0.1).abs() < 1e-6);
+        // Moving along d: up to |d| + cap ahead (ball of radius mag around n * mag).
+        let (l, _) = bail_clamp(&s, 1.0 / 20.0, v(2.0, 0.0, 0.0), v(9.0, 0.0, 0.0), zero).unwrap();
+        assert!((l.x - 2.25).abs() < 1e-5, "{l:?}");
+        // 300 kg: stopped, spin zeroed.
+        let (l, a) = bail_clamp(&s, 1.0 / 300.0, zero, v(1.0, 0.0, 0.0), v(0.0, 1.0, 0.0)).unwrap();
+        assert!(length(l) < 1e-6 && length(a) < 1e-6);
+        // A static body is left alone.
+        assert!(bail_clamp(&s, 0.0, zero, v(1.0, 0.0, 0.0), zero).is_none());
+    }
+
+    /// A bailing pusher's contacts clamp the prop: the bin barely moves, while the same run without the bail
+    /// knocks it ahead.
+    #[test]
+    fn a_bailing_pusher_does_not_throw_a_bin() {
+        let half = [0.3, 0.45, 0.3];
+        let rest = super::super::ground::HEIGHT + 0.45;
+        let pushed = {
+            let (world, mut layer, mut dynamics) = box_fixture([0., rest, 0.], half);
+            npc_run(&mut dynamics, &world, &mut layer, -3.0, 5.0, 120, true)
+        };
+        let (world, mut layer, mut dynamics) = box_fixture([0., rest, 0.], half);
+        dynamics.set_bailing(&[crate::living_world::npc_skaters::PROXY_ID_TAG | NPC.to_u64()]);
+        let bailed = npc_run(&mut dynamics, &world, &mut layer, -3.0, 5.0, 120, true);
+        let (free, clamped) = (pushed.last().unwrap().0, bailed.last().unwrap().0);
+        assert!(free > 1.0 && clamped < free * 0.5, "free push {free:.2} m, bail-clamped {clamped:.2} m");
+        let speed = length(dynamics.bodies[0].rates.linear_velocity);
+        let mass = 1.0 / dynamics.bodies[0].inertia.inverse_mass;
+        assert!(speed <= 2.0 * 5.0 / mass + 1e-3, "speed {speed} for {mass} kg");
     }
 
     /// A bin-sized prop resting on an NPC skater's line is knocked ahead of it (the player's push

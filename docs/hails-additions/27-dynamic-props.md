@@ -980,6 +980,26 @@ collidable kinds 3 / 4 / 5 (b206: maybe our skeleton part groups; we drop group 
 `physics/skeleton_colliders.rs:31-34`); then the port: after `push_from_skater` (`prop_dynamics.rs` actor loop),
 when the pushing actor bails, apply the clamp and wake the prop, values data-driven with these defaults.
 
+## The bail clamp, ported (2026-10-17)
+
+- **Retail [code] (b206, b209, b210):** w is the body's inverse mass (the motion record AddForce `82D9CA30` also
+  scales by; written from 1 / the type mass, `82C4E568`); d is the prop's own velocity as its transform tracker
+  measures it (`[dmo+0xA4]+0x90` = last update's displacement / dt, `82E0C578`), about 0 for a resting prop. So for a
+  resting prop the cap is 5 / mass m/s (20 kg: 0.25 m/s) and 15 / mass rad/s, and from 200 kg on the prop is stopped.
+  Main checked in the callback decompile that the |d| >= 0.25 test guards only the non-actor contact record: the actor
+  branch calls `82C530F0` and returns before it.
+- **Change:** `prop_dynamics::bail_clamp` (pure, the formula above) runs once per prop per tick when a bailing pusher's
+  volume touched it this tick, with d = the prop's velocity before this tick's pushes, then wakes it.
+  `PropDynamics::set_bailing` takes the bailing pushers; `GamePhysics::step_props` passes the local skater while
+  `board_wiping_out` is set (our gate: retail's actor byte is not decoded). Values in `PropSolverSettings`
+  (`bail_clamp`, `bail_linear_factor` 5, `bail_angular_factor` 15, `bail_heavy_mass` 200, `bail_blend` 0.5), mod keys
+  in `set_tuning('props', {solver = {...}})` with validation, read back by `get_tuning`, reset on mod disable.
+- **Tests:** `bail_clamp_caps_light_props_and_stops_heavy_ones`, `a_bailing_pusher_does_not_throw_a_bin`; prop and
+  tuning tests pass (82). Not play-tested.
+- **NOT RETAIL YET:** NPC skaters do not report a bail to the prop step (replay NPCs have no bail state, simulated
+  NPCs do not push props); the gate is our wipeout state, not retail's byte; d is the solver velocity, not the
+  tracker's displacement.
+
 ## Open questions
 
 - Retail parity: every DMO is dynamic and box-approximated; retail drives DMOs through `LWDynamicObjectMan` with

@@ -435,6 +435,11 @@ pub(crate) fn props_table(p: &PropsPatch) -> PropTuningTable {
             sleep_frames: v.sleep_frames.map_or(d.sleep_frames, |n| n.max(1)),
             max_sleeps_per_step: v.max_sleeps_per_step.map_or(d.max_sleeps_per_step, |n| n.max(1)),
             rest_snap: v.rest_snap.unwrap_or(d.rest_snap),
+            bail_clamp: v.bail_clamp.unwrap_or(d.bail_clamp),
+            bail_linear_factor: v.bail_linear_factor.unwrap_or(d.bail_linear_factor),
+            bail_angular_factor: v.bail_angular_factor.unwrap_or(d.bail_angular_factor),
+            bail_heavy_mass: v.bail_heavy_mass.unwrap_or(d.bail_heavy_mass),
+            bail_blend: v.bail_blend.unwrap_or(d.bail_blend),
         };
     }
     if let Some(v) = &p.upright {
@@ -591,6 +596,8 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
             json!({"default": tuning(&s.0.default), "by_template": by, "solver": {
                 "row_solver": v.row_solver, "iterations": v.iterations, "sleep_energy": v.sleep_energy,
                 "sleep_frames": v.sleep_frames, "max_sleeps_per_step": v.max_sleeps_per_step, "rest_snap": v.rest_snap,
+                "bail_clamp": v.bail_clamp, "bail_linear_factor": v.bail_linear_factor, "bail_angular_factor": v.bail_angular_factor,
+                "bail_heavy_mass": v.bail_heavy_mass, "bail_blend": v.bail_blend,
             }, "upright": {
                 "window_seconds": u.window_seconds, "tick_seconds": u.tick_seconds, "stop_angle_deg": u.stop_angle_deg,
                 "max_angle_deg": u.max_angle_deg, "dead_band_deg": u.dead_band_deg, "gain_min": u.gain_min, "gain_max": u.gain_max,

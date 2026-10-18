@@ -402,6 +402,8 @@ impl GamePhysics {
         else {
             return;
         };
+        // The bail clamp's gate: the local skater in a wipeout (retail's actor byte is not decoded; b208).
+        dynamics.set_bailing(if self.board_wiping_out { &[prop_dynamics::LOCAL_PUSHER] } else { &[] });
         dynamics.step_with_actors(&self.world, layer, volumes, &self.actor_prop_volumes);
     }
 
