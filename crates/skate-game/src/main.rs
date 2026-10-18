@@ -103,6 +103,8 @@ fn main() -> bevy::app::AppExit {
     if let Some(code) = extract_ocean_pca() { std::process::exit(code); }
     // Setup tool mode: `--extract-menu-tables <default.xex> <menu-tables.json>`.
     if let Some(code) = extract_menu_tables() { std::process::exit(code); }
+    // Launcher mode: `--update-game-files [--assets <dir>]` checks the game files and refreshes them if needed.
+    if let Some(code) = setup::update_game_files() { std::process::exit(code); }
     if let Some(code) = crash_report::entry() { std::process::exit(code); }
     // Before any thread and the log subscriber: `SKATE_TRACE_ALL=1` turns every diagnostic on.
     trace_all::apply();

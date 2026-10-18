@@ -1,14 +1,19 @@
-# Couch / Steam launcher: start any engine version (main, your branches, open PRs) or the recomp with a tracing
-# option, from the couch with a controller. Started by SkateLauncher.exe (or launcher.bat from a keyboard).
+# Couch / Steam launcher: start any engine version (hails-additions, upstream main, your branches, open PRs), the
+# recomp with a tracing option or retail Skate 3 in RPCS3, from the couch with a controller. SkateLauncher.exe (the
+# window Steam starts) draws the menu and runs this script for the work; it reads the output below.
 # Windows PowerShell 5.1 compatible. See README.md.
-#   launcher.ps1 <entry> [label] [-Version <id>] [-NoPrompt]   run an entry
-#   launcher.ps1 entries                                      list the entries (id, name, hint; tab-separated)
-#   launcher.ps1 versions                                     list the versions (id, name, status, selected)
+#   launcher.ps1 <entry> [label] [-Version <id>] [-NoPrompt]   run an entry (rust-*, recomp-*, rpcs3-*, tool-*)
+#   launcher.ps1 entries                                      the entries: id, name, hint, ask, group, on (1/0), why off
+#   launcher.ps1 versions                                     the versions: id, name, status, selected
 #   launcher.ps1 version-next | version-prev | version-set <id>   select a version (prints its notes)
 #   launcher.ps1 notes [id]                                   what to test in a version
 #   launcher.ps1 build <id>                                   set up / update / build a version without playing
 #   launcher.ps1 pending                                      check a session that closed before its check
-#   launcher.ps1                                              keyboard menu
+#   launcher.ps1 status                                       one line per fact for the window's header (key, value)
+#   launcher.ps1 sizes                                        per version: id, name, build cache bytes, bin bytes
+#   launcher.ps1 clear-cache <id|all> | clear-build <id|all>  delete build caches / builds (cache + bin\)
+#   launcher.ps1 room <id>                                    apply the build size cap as before a build of <id>
+#   launcher.ps1 setup-check                                  what the first-time setup finds (see setup.ps1)
 # While a game runs, PLAYING.txt exists in the state folder: tools and agents should launch nothing while it does.
 param([string]$Entry, [string]$Label, [switch]$NoPrompt, [string]$Version)
 
@@ -25,6 +30,7 @@ $Playing = Join-Path $StateDir 'PLAYING.txt'
 $LastSession = Join-Path $StateDir 'last_session.txt'
 $SelectedFile = Join-Path $StateDir 'version.txt'
 $StateLogs = Join-Path $Repo '.local\audio-state-logs'
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 
 function Read-Json([string]$Path) {
     # PowerShell 5.1 returns a JSON array as one object: callers unroll arrays with ForEach-Object.
@@ -33,15 +39,29 @@ function Read-Json([string]$Path) {
 $Config = $null
 $ConfigFile = Join-Path $StateDir 'config.json'
 if (Test-Path $ConfigFile) { $Config = Read-Json $ConfigFile }
+function Setting([string]$Name, $Default) { if ($Config -and $null -ne $Config.$Name -and "$($Config.$Name)" -ne '') { return $Config.$Name }; return $Default }
+$Remote = Setting 'remote' 'origin'
+
+# Always there: the fork's hails-additions and upstream main, each a launcher-only detached worktree that follows its
+# pushed branch and rebuilds when it moved. The URLs can be changed in config.json (fork_url, upstream_url); a
+# versions.json entry with the same id replaces the built-in one.
+$Builtin = @(
+    [pscustomobject]@{ id = 'hails-additions'; name = 'hails-additions (newest on the fork)'; branch = 'hails-additions'
+                       url = (Setting 'fork_url' 'https://github.com/Hailey-Ross/rusty-trucks.git'); dir = '.local/versions/hails-additions'; detached = $true
+                       notes = 'Always the newest pushed hails-additions: every launch fetches it and rebuilds when it moved. What changed: docs\hails-additions\RELEASE-NOTES.md.' },
+    [pscustomobject]@{ id = 'upstream-main'; name = 'Upstream main (for comparing)'; branch = 'main'
+                       url = (Setting 'upstream_url' 'https://github.com/SK8-ENGINE/skate-3-rust-engine.git'); dir = '.local/versions/upstream-main'; detached = $true
+                       notes = 'Upstream main as it is (SK8-ENGINE), rebuilt when it moved. Use it to compare against hails-additions.' }
+)
+$Versions = @()
 $VersionsFile = Join-Path $StateDir 'versions.json'
 if (Test-Path $VersionsFile) { $Versions = @((Read-Json $VersionsFile) | ForEach-Object { $_ }) }
 else {
-    # No versions.json: one version, this checkout as it is.
-    $Versions = @([pscustomobject]@{ id = 'this'; name = 'This checkout'; branch = ''; dir = '.'; dev = $true;
-                                     notes = 'This checkout as it is. Add a versions.json to compare branches (see README.md).' })
+    $Versions = @([pscustomobject]@{ id = 'this'; name = 'This checkout'; branch = ''; dir = '.'; dev = $true
+                                     notes = 'This checkout as it is. Add a versions.json to compare more branches (see README.md).' })
 }
-$Remote = 'origin'
-if ($Config -and $Config.remote) { $Remote = $Config.remote }
+$own = @($Versions | ForEach-Object { $_.id })
+$Versions = @($Builtin | Where-Object { $own -notcontains $_.id }) + $Versions
 
 function Get-Version([string]$Id) {
     if (-not $Id) {
@@ -49,11 +69,24 @@ function Get-Version([string]$Id) {
         if (Test-Path $SelectedFile) { $s = (Get-Content $SelectedFile -Raw).Trim(); if ($s) { $Id = $s } }
     }
     $v = $Versions | Where-Object { $_.id -eq $Id } | Select-Object -First 1
-    if (-not $v) { throw "Unknown version '$Id' (see versions.json)" }
+    # A selected version that left versions.json falls back to the first one.
+    if (-not $v -and -not $PSBoundParameters.ContainsKey('Id')) { $v = $Versions[0] }
+    if (-not $v) { $v = $Versions[0] }
     return $v
 }
 function Version-Dir($v) { if ($v.dir -eq '.') { return $Repo }; return (Join-Path $Repo $v.dir) }
 function Invoke-Git([string]$Dir) { $ErrorActionPreference = 'Continue'; & git.exe -C $Dir @args 2>$null }
+# Where a version's branch is fetched from and the ref it follows: its own URL (the built-ins) or the remote.
+function Version-Source($v) {
+    if ($v.url) { return @{ Fetch = $v.url; Ref = "refs/remotes/launcher-$($v.id)/$($v.branch)" } }
+    return @{ Fetch = $Remote; Ref = "refs/remotes/$Remote/$($v.branch)" }
+}
+function Fetch-Version($v, [string]$Dir) {
+    $s = Version-Source $v
+    # Full refspec: a release tag with the branch's name (the fork's rolling build) would win otherwise.
+    & git -C $Dir fetch -q $s.Fetch "+refs/heads/$($v.branch):$($s.Ref)" 2>$null
+    return $s.Ref
+}
 
 # One line of status for a version: built (commit) / needs a build / not set up.
 function Version-Status($v) {
@@ -69,6 +102,59 @@ function Version-Status($v) {
     return "out of date (built $built, now $head): next launch rebuilds"
 }
 
+# The published installation's assets (setup's marker), else the checkout's own assets link.
+function Current-Assets {
+    try {
+        $marker = Get-Content -Raw (Join-Path $Repo 'data\installation.json') | ConvertFrom-Json
+        $a = Join-Path (Join-Path $Repo 'data') (($marker.directory -replace '/', '\') + '\assets')
+        if (Test-Path $a) { return $a }
+    } catch {}
+    $a = (Get-Item (Join-Path $Repo 'assets') -Force -ErrorAction SilentlyContinue).Target | Select-Object -First 1
+    if ($a) { return $a }
+    return (Join-Path $Repo 'assets')
+}
+
+# Each version builds into its own target folder (cargo would mix the branches' crates in a shared one): the version's
+# "target", else <target_root>\<id> from config.json, else the worktree's own target\.
+function Target-Dir($v) {
+    if ($v.target) { return (Resolve-Local $v.target) }
+    $root = Setting 'target_root' ''
+    if ($root) { return (Join-Path $root $v.id) }
+    return (Join-Path (Version-Dir $v) 'target')
+}
+function Folder-Bytes([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return [long]0 }
+    $sum = [long]0
+    try { foreach ($f in [System.IO.Directory]::EnumerateFiles($Path, '*', 'AllDirectories')) { try { $sum += ([System.IO.FileInfo]$f).Length } catch {} } } catch {}
+    return $sum
+}
+# Size cap (config.json "build_cap_gb", e.g. 200): the build folders together, or everything under "build_cap_dir" when
+# set (a drive folder other builds share too), stay under the cap. Before a build, while the total plus the room a
+# build needs ("build_reserve_gb", default 30) is over it, the launcher deletes the build cache of the version that
+# was built longest ago, never the one it is about to build. Only the launcher's own version target folders are
+# deleted; a version's bin\ keeps its exe, so it still plays and only its next build starts from scratch.
+function Make-Room($v) {
+    $cap = [double](Setting 'build_cap_gb' 0)
+    if ($cap -le 0) { return }
+    $reserve = [double](Setting 'build_reserve_gb' 30)
+    $capDir = Setting 'build_cap_dir' ''
+    $others = @($Versions | Where-Object { $_.id -ne $v.id } | ForEach-Object { [pscustomobject]@{ V = $_; Dir = (Target-Dir $_) } } |
+        Where-Object { (Test-Path -LiteralPath $_.Dir) -and $_.Dir -ne (Target-Dir $v) })
+    $total = { if ($capDir) { Folder-Bytes $capDir } else { (@($Versions | ForEach-Object { Target-Dir $_ } | Sort-Object -Unique | ForEach-Object { Folder-Bytes $_ }) | Measure-Object -Sum).Sum } }
+    $used = [double](& $total) / 1GB
+    Write-Host ("  Build folders: {0:N1} GB of {1:N0} GB (a build needs about {2:N0} GB)." -f $used, $cap, $reserve)
+    # Oldest build first: the time of its exe in bin\ (never built = oldest).
+    $queue = @($others | Sort-Object { $e = Join-Path (Version-Dir $_.V) 'bin\skate3rust.exe'; if (Test-Path $e) { (Get-Item $e).LastWriteTime } else { [datetime]::MinValue } })
+    foreach ($o in $queue) {
+        if ($used + $reserve -le $cap) { break }
+        $gb = (Folder-Bytes $o.Dir) / 1GB
+        Write-Host ("  Over the cap: deleting the build cache of {0} ({1:N1} GB, {2})..." -f $o.V.name, $gb, $o.Dir)
+        Remove-Item -LiteralPath $o.Dir -Recurse -Force -ErrorAction SilentlyContinue
+        $used = [double](& $total) / 1GB
+    }
+    if ($used + $reserve -gt $cap) { Write-Host ("  Still {0:N1} GB of {1:N0} GB: nothing more of the launcher's to delete; building anyway." -f $used, $cap) }
+}
+
 # Makes sure the version's worktree exists, follows its pushed branch and is built. True = ready.
 function Ensure-Version($v) {
     $ErrorActionPreference = 'Continue'
@@ -76,139 +162,67 @@ function Ensure-Version($v) {
     if (-not (Test-Path (Join-Path $d '.git'))) {
         Write-Host "  Setting up $($v.name): new worktree for $($v.branch)..."
         New-Item -ItemType Directory -Path (Split-Path $d) -Force | Out-Null
-        & git -C $Repo fetch -q $Remote $v.branch
-        & git -C $Repo worktree add $d $v.branch
-        if ($LASTEXITCODE -ne 0) { Write-Host '  Could not create the worktree.' -ForegroundColor Red; return $false }
+        $ref = Fetch-Version $v $Repo
+        # A launcher-only copy ("detached": true) follows the pushed branch without checking it out, so it never
+        # conflicts with a worktree where that branch is being worked on.
+        if ($v.detached -or $v.url) { & git -C $Repo worktree add --detach $d $ref }
+        else { & git -C $Repo worktree add $d $v.branch }
+        if ($LASTEXITCODE -ne 0) { Write-Host '  Could not create the worktree.'; return $false }
     }
-    # Every version shares this checkout's prepared assets (a junction, like the dev setup's own).
+    # Every version shares this checkout's prepared assets (a junction, like the dev setup's own). A setup refresh
+    # replaces the installation: a link to the old one no longer resolves, so it is pointed at the current one.
     $link = Join-Path $d 'assets'
-    if (-not (Test-Path $link)) {
-        $assets = (Get-Item (Join-Path $Repo 'assets') -Force -ErrorAction SilentlyContinue).Target | Select-Object -First 1
-        if (-not $assets) { $assets = Join-Path $Repo 'assets' }
-        cmd /c mklink /J "$link" "$assets" | Out-Null
+    if ($d -ne $Repo) {
+        if ((Test-Path $link) -and -not (Test-Path (Join-Path $link 'private\game.json'))) {
+            Write-Host "  Pointing $($v.name)'s assets link at the current installation..."
+            cmd /c rmdir "$link" | Out-Null
+        }
+        if (-not (Test-Path $link)) { cmd /c mklink /J "$link" "$(Current-Assets)" | Out-Null }
     }
     $dirty = [bool](Invoke-Git $d status --porcelain --untracked-files=no)
+    if (-not $v.dev -and $dirty -and $v.branch) {
+        # Local edits block the fast-forward: say so instead of silently starting an old build.
+        Write-Host "  NOT UPDATED: $($v.name) has local changes, so it stays at its current commit."
+    }
     if (-not $v.dev -and -not $dirty -and $v.branch) {
         # Follow the pushed branch (fast-forward only; local work is never thrown away).
-        & git -C $d fetch -q $Remote $v.branch 2>$null
-        $behind = (Invoke-Git $d rev-list --count "HEAD..$Remote/$($v.branch)")
-        if ($behind -and [int]$behind -gt 0) { Write-Host "  Updating $($v.branch) ($behind new commits)..."; & git -C $d merge -q --ff-only "$Remote/$($v.branch)" 2>$null }
+        $ref = Fetch-Version $v $d
+        $behind = (Invoke-Git $d rev-list --count "HEAD..$ref")
+        if ($behind -and [int]$behind -gt 0) { Write-Host "  Updating $($v.branch) ($behind new commits)..."; & git -C $d merge -q --ff-only $ref 2>$null }
     }
     $exe = Join-Path $d 'bin\skate3rust.exe'
     $marker = Join-Path $d 'bin\built_commit.txt'
     $head = (Invoke-Git $d rev-parse --short HEAD)
+    if ($v.dev) {
+        # A working-tree build: the commit plus a hash of the uncommitted changes, so editing the tree rebuilds it.
+        $diff = (Invoke-Git $d diff HEAD) -join "`n"
+        if ($diff) {
+            $sha = [System.Security.Cryptography.SHA1]::Create()
+            $hash = -join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($diff)) | Select-Object -First 6 | ForEach-Object { $_.ToString('x2') })
+            $head = "$head+$hash"
+        }
+    }
     $built = ''; if (Test-Path $marker) { $built = (Get-Content $marker -Raw).Trim() }
-    $need = -not (Test-Path $exe)
-    if (-not $need -and -not $v.dev -and $built -ne $head) { $need = $true }
-    if (-not $need) { return $true }
-    Write-Host "  Building $($v.name) at $head. The first build of a version takes several minutes..." -ForegroundColor Cyan
-    $target = Join-Path $d 'target'
-    if ($v.target) { $target = Join-Path $Repo $v.target }
-    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+    if ((Test-Path $exe) -and $built -eq $head) { return $true }
+    Write-Host "  Building $($v.name) at $head. The first build of a version takes several minutes..."
+    $target = Target-Dir $v
+    Make-Room $v
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'scripts\Build.ps1') -TargetDirectory $target
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Write-Host '  Build failed.' -ForegroundColor Red; return $false }
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Write-Host '  Build failed.'; return $false }
     Set-Content -Path $marker -Value $head -Encoding ASCII
     return $true
 }
 
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class Pad {
-    [StructLayout(LayoutKind.Sequential)]
-    public struct State { public uint Packet; public ushort Buttons; public byte LT; public byte RT;
-                          public short LX; public short LY; public short RX; public short RY; }
-    [DllImport("xinput1_4.dll")] static extern int XInputGetState(int index, out State state);
-    // Buttons of the first connected controller (0 = none / nothing pressed).
-    public static ushort Buttons() {
-        for (int i = 0; i < 4; i++) {
-            State s;
-            try { if (XInputGetState(i, out s) == 0) { ushort b = s.Buttons;
-                    if (s.LY > 16000) b |= 0x0001; if (s.LY < -16000) b |= 0x0002; return b; } }
-            catch { return 0; }
-        }
-        return 0;
-    }
-    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
-}
-'@
+$GameNames = @('skate3', 'skate3rust', 'rpcs3')
+function Running-Games { @(Get-Process $GameNames -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessName + '.exe' } | Sort-Object -Unique) }
 
-function Focus-Console { $h = [Pad]::GetConsoleWindow(); [void][Pad]::ShowWindow($h, 3); [void][Pad]::SetForegroundWindow($h) }
-
-# Waits for one input: 'up', 'down', 'ok', 'back'. Controller edges with key repeat on the D-pad.
-function Read-Input {
-    $prev = [Pad]::Buttons(); $held = 0
-    while ($true) {
-        if ([Console]::KeyAvailable) {
-            $k = [Console]::ReadKey($true).Key
-            switch ($k) {
-                'UpArrow' { return 'up' } 'W' { return 'up' }
-                'DownArrow' { return 'down' } 'S' { return 'down' }
-                'Enter' { return 'ok' } 'Spacebar' { return 'ok' }
-                'Escape' { return 'back' } 'Backspace' { return 'back' }
-            }
-        }
-        $b = [Pad]::Buttons()
-        $new = $b -band (-bnot $prev)
-        if ($new -band 0x1000) { return 'ok' }      # A
-        if ($new -band 0x2000) { return 'back' }    # B
-        if ($new -band 0x0001) { return 'up' }
-        if ($new -band 0x0002) { return 'down' }
-        if (($b -band 0x0003) -and ($b -eq $prev)) { $held++; if ($held -gt 8) { $held = 6; if ($b -band 1) { return 'up' } else { return 'down' } } } else { $held = 0 }
-        $prev = $b
-        Start-Sleep -Milliseconds 50
-    }
-}
-
-# A menu: returns the chosen item's index, or -1 for back.
-function Show-Menu([string]$Title, [string[]]$Items, [string[]]$Hints) {
-    $i = 0
-    while ($true) {
-        Clear-Host
-        Write-Host ''
-        Write-Host "  $Title" -ForegroundColor Cyan
-        Write-Host ''
-        for ($n = 0; $n -lt $Items.Count; $n++) {
-            if ($n -eq $i) { Write-Host ("  > " + $Items[$n]) -ForegroundColor Black -BackgroundColor Yellow }
-            else { Write-Host ("    " + $Items[$n]) }
-        }
-        Write-Host ''
-        if ($Hints -and $Hints[$i]) { Write-Host ("  " + $Hints[$i]) -ForegroundColor DarkGray }
-        Write-Host ''
-        Write-Host '  D-pad: move    A: select    B: back' -ForegroundColor DarkGray
-        switch (Read-Input) {
-            'up' { $i = ($i - 1 + $Items.Count) % $Items.Count }
-            'down' { $i = ($i + 1) % $Items.Count }
-            'ok' { return $i }
-            'back' { return -1 }
-        }
-    }
-}
-
-function Show-Message([string]$Text, [string]$Color = 'White') {
-    Clear-Host; Write-Host ''; foreach ($l in ($Text -split "`n")) { Write-Host "  $l" -ForegroundColor $Color }
-    Write-Host ''; Write-Host '  A / B: back to the menu' -ForegroundColor DarkGray
-    Focus-Console; [void](Read-Input)
-}
-
-function Running-Games { @(Get-Process skate3, skate3rust -ErrorAction SilentlyContinue | ForEach-Object { $_.ProcessName + '.exe' } | Sort-Object -Unique) }
-
-# Waits until no game runs (B cancels). True = clear to launch.
-function Wait-NoGame {
-    while ($true) {
-        $g = Running-Games
-        if ($g.Count -eq 0) { return $true }
-        Clear-Host; Write-Host ''
-        Write-Host ("  Already running: " + ($g -join ', ')) -ForegroundColor Yellow
-        Write-Host '  Only one game at a time. Close it, or wait here: this continues by itself.'
-        Write-Host ''; Write-Host '  B: back to the menu' -ForegroundColor DarkGray
-        for ($t = 0; $t -lt 20; $t++) {
-            if ([Console]::KeyAvailable) { $k = [Console]::ReadKey($true).Key; if ($k -eq 'Escape' -or $k -eq 'Backspace') { return $false } }
-            if ([Pad]::Buttons() -band 0x2000) { return $false }
-            Start-Sleep -Milliseconds 50
-        }
+# A game can outlive the script that started it: Refresh Game Files restarts the game into setup and back (the
+# laptop's session check and send ran while setup was still converting, 2026-10-18). Wait until none runs.
+function Wait-GameTree {
+    $said = $false
+    while ((Running-Games).Count -gt 0) {
+        if (-not $said) { Write-Host '  The game is still running (it restarted itself, for example to refresh its files)...'; $said = $true }
+        Start-Sleep -Seconds 2
     }
 }
 
@@ -217,25 +231,8 @@ function Run-Bat([string]$Bat, [string]$Arg) {
     if ($Arg) { $cmd += ' ' + $Arg }
     $cmd += '"'
     $run = Start-Process -FilePath cmd.exe -ArgumentList $cmd -NoNewWindow -PassThru
-    Hand-Over-To-Game $run
     $run.WaitForExit()
-}
-
-# The game starts as a child of this console and gets no foreground of its own: it opened BEHIND the maximised
-# console, and a maximised window cannot be moved (laptop 2026-10-17: "I cant click the game or prompt window").
-# While the console still holds the foreground it may pass it on: once the game's window shows, bring it to the front
-# and minimise the console without activating it. The result screen restores it (Focus-Console / Focus()).
-function Hand-Over-To-Game($run) {
-    $deadline = (Get-Date).AddSeconds(180)
-    while (-not $run.HasExited -and (Get-Date) -lt $deadline) {
-        $game = Get-Process -Name skate3rust, skate3 -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
-        if ($game) {
-            [void][Pad]::SetForegroundWindow($game.MainWindowHandle)
-            [void][Pad]::ShowWindow([Pad]::GetConsoleWindow(), 7)
-            return
-        }
-        Start-Sleep -Milliseconds 250
-    }
+    Wait-GameTree
 }
 
 function Resolve-Local([string]$Path) { if ([System.IO.Path]::IsPathRooted($Path)) { return $Path }; return (Join-Path $Repo $Path) }
@@ -244,7 +241,6 @@ function Recomp-Sessions { $p = '.local\recomp\sessions'; if ($Config.recomp.ses
 # Starts the recomp with research-hooks tracing (environment variables of the research-hooks branch) and waits.
 function Run-Recomp($RE, [string]$Lbl) {
     $r = $Config.recomp
-    if (-not $r -or -not $r.exe -or -not (Test-Path $r.exe)) { throw 'Set recomp.exe in config.json (see README.md).' }
     $rargs = '--skate3_demo_path --skate3_demo_path_signed_in'
     if ($r.args) { $rargs = $r.args }
     $cwd = Split-Path $r.exe
@@ -262,6 +258,15 @@ function Run-Recomp($RE, [string]$Lbl) {
     Write-Host "  Session folder: $out"
     Start-Process -FilePath $r.exe -ArgumentList $rargs -WorkingDirectory $cwd -Wait `
         -RedirectStandardOutput (Join-Path $out 'game.out') -RedirectStandardError (Join-Path $out 'game.err')
+}
+
+# Starts RPCS3 straight into the game (config.json "rpcs3": exe, game = disc folder or EBOOT.BIN, args) and waits.
+function Run-Rpcs3($PE) {
+    $r = $Config.rpcs3
+    $a = '--no-gui --fullscreen'
+    if ($r.args) { $a = $r.args }
+    if ($PE.args) { $a = $PE.args }
+    Start-Process -FilePath $r.exe -ArgumentList ($a + ' "' + $r.game + '"') -WorkingDirectory (Split-Path $r.exe) -Wait
 }
 
 # Checks the session written since $Since; returns a one-line summary.
@@ -331,16 +336,25 @@ function Check-Session([string]$Kind, [datetime]$Since, $Ver) {
 }
 
 # Optional: config.json "after_session" names a send script (path relative to the repository, e.g. the second PC's
-# play-and-send.ps1), run with -SendOnly after each session. Returns one line for the result screen ('' = not set).
-function Send-Sessions {
-    if (-not $Config -or -not $Config.after_session) { return '' }
-    $script = Resolve-Local $Config.after_session
-    if (-not (Test-Path $script)) { return "Send: $script not found." }
+# play-and-send.ps1), run with -SendOnly after each session.
+function Send-Script { if (-not $Config -or -not $Config.after_session) { return $null }; return (Resolve-Local $Config.after_session) }
+# Why the send can't run ('' = it can).
+function Send-Blocked {
+    $script = Send-Script
+    if (-not $script) { return 'Not set up: name a send script as "after_session" in config.json (see README.md).' }
+    if (-not (Test-Path $script)) { return "Send script not found: $script" }
     # Without its settings the script would ask its setup questions, which nobody answers from Steam.
     # Its settings sit next to it (release ZIP copy) or at the checkout root (tools\second-pc\play-and-send.ps1).
-    if (-not ((Test-Path (Join-Path (Split-Path $script) 'send-sessions.txt')) -or (Test-Path (Join-Path $Repo 'send-sessions.txt')))) { return "Send: not set up (run $(Split-Path $script -Leaf) -Setup once)." }
+    if (-not ((Test-Path (Join-Path (Split-Path $script) 'send-sessions.txt')) -or (Test-Path (Join-Path $Repo 'send-sessions.txt')))) { return "Not set up: run $(Split-Path $script -Leaf) -Setup once." }
+    return ''
+}
+# Returns one line for the result screen ('' = no send configured).
+function Send-Sessions {
+    if (-not (Send-Script)) { return '' }
+    $blocked = Send-Blocked
+    if ($blocked) { return "Send: $blocked" }
     Write-Host '  Sending the logs...'
-    try { $out = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script -SendOnly | ForEach-Object { "$_" } | Where-Object { $_ }) }
+    try { $out = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Send-Script) -SendOnly | ForEach-Object { "$_" } | Where-Object { $_ }) }
     catch { return "Send: failed ($($_.Exception.Message))." }
     if ($out.Count -eq 0) { return 'Send: no output.' }
     $sent = @($out | Where-Object { $_ -like 'Sent *' -and $_ -notlike 'Sent * file(s) to GitHub*' }).Count
@@ -348,14 +362,31 @@ function Send-Sessions {
     return "Send: $($out[-1])"
 }
 
-# Entries: the engine modes, then the recomp modes from config.json (none without a config).
+# The second PC's recomp tools (tools\second-pc\play-recomp.ps1 -Update / -GetSave): config.json "recomp_script", else
+# that script once the second PC is set up (send-sessions.txt at the checkout root).
+function Recomp-Script {
+    $s = Setting 'recomp_script' ''
+    if ($s) { return (Resolve-Local $s) }
+    $d = Join-Path $Repo 'tools\second-pc\play-recomp.ps1'
+    if ((Test-Path $d) -and (Test-Path (Join-Path $Repo 'send-sessions.txt'))) { return $d }
+    return $null
+}
+
+# Entries. Group: rust (the selected version), recomp, retail (RPCS3), tools. Every entry is always listed; one that
+# isn't set up is greyed out in the window with the reason (Why), so the menu shows what could be there.
 $Entries = [ordered]@{
-    'rust-play'     = @{ Name = 'Rust engine: play';                        Kind = 'rust';     Hint = "The version's PLAY.bat." }
-    'rust-statelog' = @{ Name = 'Rust engine: play + audio state log';      Kind = 'statelog'; Hint = 'Records the per-frame audio state (.local\audio-state-logs; builds with the native audio port).' }
-    'rust-trace'    = @{ Name = 'Rust engine: play + audio trace';          Kind = 'rust';     Hint = 'Logs every native sound start in logs\game-*.log (SKATE_AUDIO_TRACE=1).' }
-    'rust-devmods'  = @{ Name = 'Rust engine: play with the dev test mods'; Kind = 'rust';     Hint = "Turns on the version's dev test mod (mods_enable in versions.json)." }
-    'rust-perf'     = @{ Name = 'Rust engine: play + performance trace';    Kind = 'rust';     Hint = 'Bevy performance trace (PLAY.bat -trace).' }
-    'rust-traceall' = @{ Name = 'Rust engine: play + trace all';            Kind = 'traceall'; Hint = "Every session trace the version has (SKATE_TRACE_ALL: frame log, audio state log, rolling performance report, GPU / render timing, audio trace and timing, living-world readout), all in the version's logs\trace-all-<time> folder. Hidden for versions without traces." }
+    'rust-play'     = @{ Group = 'rust'; Name = 'Play';                       Kind = 'rust';     Hint = "The version's PLAY.bat." }
+    'rust-traceall' = @{ Group = 'rust'; Name = 'Play + trace all';           Kind = 'traceall'; Hint = "Every session trace the version has (SKATE_TRACE_ALL: frame log, audio state log, performance report, GPU / render timing, audio trace, living-world readout), in the version's logs\trace-all-<time> folder." }
+    'rust-statelog' = @{ Group = 'rust'; Name = 'Play + audio state log';     Kind = 'statelog'; Hint = 'Records the per-frame audio state (.local\audio-state-logs).' }
+    'rust-trace'    = @{ Group = 'rust'; Name = 'Play + audio trace';         Kind = 'rust';     Hint = 'Logs every native sound start in logs\game-*.log (SKATE_AUDIO_TRACE=1).' }
+    'rust-devmods'  = @{ Group = 'rust'; Name = 'Play with the dev test mods'; Kind = 'rust';    Hint = "Turns on the version's dev test mod (mods_enable in versions.json)." }
+    'rust-perf'     = @{ Group = 'rust'; Name = 'Play + performance trace';   Kind = 'rust';     Hint = 'Bevy performance trace (PLAY.bat -trace).' }
+    'tool-refresh'  = @{ Group = 'tools'; Name = 'Refresh game files';        Kind = 'tool';     Hint = 'Runs the check the game runs at start, without starting the game. Out of date: converts again only what changed (setup shows its progress).' }
+    'tool-build'    = @{ Group = 'tools'; Name = 'Update and build the selected version'; Kind = 'tool'; Hint = 'Fetches its branch and builds it now, so the next launch starts at once.' }
+    'tool-send'     = @{ Group = 'tools'; Name = 'Send the logs now';         Kind = 'tool';     Hint = 'Runs the after-session send (config.json after_session).' }
+    'tool-recomp-update'  = @{ Group = 'tools'; Name = 'Recomp: get the newest build'; Kind = 'tool'; Hint = "Copies the main PC's newest recomp build (play-recomp.ps1 -Update)." }
+    'tool-recomp-getsave' = @{ Group = 'tools'; Name = 'Recomp: get the main PC save'; Kind = 'tool'; Hint = "Copies the main PC's recomp save after backing up this PC's (play-recomp.ps1 -GetSave)." }
+    'tool-setup'    = @{ Group = 'tools'; Name = 'First-time setup';          Kind = 'tool';     Hint = 'Checks git, Rust, the C++ build tools and Python, and installs what is missing.' }
 }
 # The session traces a version's source contains; rust-traceall turns on all of them. SKATE_TRACE_ALL (newer
 # versions) switches on every diagnostic itself; older versions get the single switches they have.
@@ -366,61 +397,136 @@ $SessionTraces = [ordered]@{
     frametimes = 'SKATE_FRAME_LOG'
     livingdbg  = 'SKATE_LIVING_WORLD_DEBUG'
 }
-function Version-Traces($v) {
+# The switches a version's source contains (null = not set up yet, so unknown).
+function Version-Has($v, [string[]]$Needles) {
     $src = Join-Path (Version-Dir $v) 'crates\skate-game\src'
+    if (-not (Test-Path $src)) { return $null }
+    $files = Get-ChildItem -Path $src -Filter '*.rs' -Recurse -File | Where-Object { $_.Name -notlike '*tests*' }
     $found = @()
-    if (Test-Path $src) {
-        $files = Get-ChildItem -Path $src -Filter '*.rs' -Recurse -File | Where-Object { $_.Name -notlike '*tests*' }
-        foreach ($k in $SessionTraces.Keys) {
-            if ($files | Select-String -Pattern ('"' + $SessionTraces[$k] + '"') -SimpleMatch -List -Quiet) { $found += $k }
-        }
-    }
+    foreach ($n in $Needles) { if ($files | Select-String -Pattern ('"' + $n + '"') -SimpleMatch -List -Quiet) { $found += $n } }
     return ,$found
+}
+function Version-Traces($v) {
+    $has = Version-Has $v @($SessionTraces.Values)
+    if ($null -eq $has) { return ,@() }
+    return ,@($SessionTraces.Keys | Where-Object { $has -contains $SessionTraces[$_] })
 }
 if ($Config -and $Config.recomp_entries) {
     foreach ($re in @($Config.recomp_entries | ForEach-Object { $_ })) {
-        $Entries[$re.id] = @{ Name = $re.name; Kind = $(if ($re.trace -or $re.bat) { 'recomp' } else { 'none' }); Hint = "$($re.hint)"; Recomp = $re }
+        $Entries[$re.id] = @{ Group = 'recomp'; Name = $re.name; Kind = $(if ($re.trace -or $re.bat) { 'recomp' } else { 'none' }); Hint = "$($re.hint)"; Recomp = $re }
+    }
+}
+# RPCS3 (PS3 retail) entries from config.json: "rpcs3" { exe, game, args } and "rpcs3_entries" [{ id, name, hint, args }].
+if ($Config -and $Config.rpcs3_entries) {
+    foreach ($pe in @($Config.rpcs3_entries | ForEach-Object { $_ })) {
+        $Entries[$pe.id] = @{ Group = 'retail'; Name = $pe.name; Kind = 'none'; Hint = "$($pe.hint)"; Rpcs3 = $pe }
     }
 }
 $Labels = @('session', 'ride', 'grind', 'bail', 'push', 'emit', 'carve', 'water', 'marker')
 
+# What the first-time setup still needs ('' = nothing): setup.ps1's checks (git, Rust, C++ build tools, LLVM, Python,
+# Vulkan). The window opens on the setup page while this names something.
+. (Join-Path $Here 'setup.ps1')
+$script:MissingCache = $null
+function Setup-Missing { if ($null -eq $script:MissingCache) { $script:MissingCache = Missing-Tools }; return $script:MissingCache }
+
+# Why an entry can't run now ('' = it can), for the selected version $V.
+function Entry-Blocked([string]$Key, $V) {
+    $e = $Entries[$Key]
+    if ($Key -eq 'tool-setup') { return '' }
+    if ($e.Group -eq 'rust' -or $Key -in @('tool-refresh', 'tool-build')) {
+        $m = Setup-Missing
+        if ($m) { return "Needs $m first: run the first-time setup (Tools)." }
+    }
+    switch ($Key) {
+        'rust-traceall' { if ((Test-Path (Version-Dir $V)) -and (Version-Traces $V).Count -eq 0) { return "$($V.name) has no session traces: use Play." } }
+        'rust-statelog' { $h = Version-Has $V @('SKATE_AUDIO_STATE_LOG'); if ($null -ne $h -and $h.Count -eq 0) { return "$($V.name) has no audio state log." } }
+        'rust-trace'    { $h = Version-Has $V @('SKATE_AUDIO_TRACE'); if ($null -ne $h -and $h.Count -eq 0) { return "$($V.name) has no audio trace." } }
+        'rust-devmods'  { if (-not $V.mods_enable) { return "$($V.name) has no dev test mod (mods_enable in versions.json)." } }
+        'tool-refresh'  {
+            $h = Version-Has $V @('--update-game-files')
+            if ($null -ne $h -and $h.Count -eq 0) { return "$($V.name) can't refresh from here (built before the launcher refresh): use the game's Extras > Refresh Game Files." }
+        }
+        'tool-send'     { return (Send-Blocked) }
+        { $_ -like 'tool-recomp-*' } { if (-not (Recomp-Script)) { return 'Not set up: this PC has no recomp share (tools\second-pc, see docs\hails-additions\second-pc-testing.md), or set recomp_script in config.json.' } }
+    }
+    if ($e.Recomp) {
+        if ($e.Recomp.bat) { if (-not (Test-Path (Resolve-Local $e.Recomp.bat))) { return "Not set up: $($e.Recomp.bat) not found." } }
+        elseif (-not $Config.recomp -or -not $Config.recomp.exe -or -not (Test-Path $Config.recomp.exe)) { return 'Not set up: set recomp.exe in config.json (see README.md).' }
+    }
+    if ($e.Rpcs3) {
+        $r = $Config.rpcs3
+        if (-not $r -or -not $r.exe -or -not (Test-Path -LiteralPath $r.exe)) { return 'Not set up: set rpcs3.exe in config.json (see README.md).' }
+        if (-not $r.game -or -not (Test-Path -LiteralPath $r.game)) { return 'Not set up: set rpcs3.game in config.json (see README.md).' }
+    }
+    return ''
+}
+
+function Save-Result([string]$Text) { Set-Content -Path $LastSession -Value $Text -Encoding UTF8 }
+
+# The tools: no game session, the result goes to last_session.txt like a session's.
+function Run-Tool([string]$Key, $Ver) {
+    $ErrorActionPreference = 'Continue'
+    $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    switch ($Key) {
+        'tool-setup' {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Here 'setup.ps1') -Install
+            $r = if ($LASTEXITCODE -eq 0) { 'First-time setup: everything is installed.' } else { 'First-time setup: not finished (see the steps above).' }
+        }
+        'tool-build' {
+            $r = if (Ensure-Version $Ver) { "Ready: $($Ver.name) ($(Version-Status $Ver))" } else { "Build failed: $($Ver.name)" }
+        }
+        'tool-send' { $r = Send-Sessions }
+        'tool-recomp-update'  { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Recomp-Script) -Update; $r = "Recomp update: exit code $LASTEXITCODE" + $(if ($LASTEXITCODE -eq 0) { ' (done)' } else { ' - see above' }) }
+        'tool-recomp-getsave' { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Recomp-Script) -GetSave; $r = "Recomp save: exit code $LASTEXITCODE" + $(if ($LASTEXITCODE -eq 0) { ' (done)' } else { ' - see above' }) }
+        'tool-refresh' {
+            if (-not (Ensure-Version $Ver)) { $r = "Refresh game files: $($Ver.name) could not be built."; break }
+            $d = Version-Dir $Ver
+            . (Join-Path $d 'scripts\Resolve-DevAssets.ps1')
+            $assets = Resolve-DevAssets -ProjectRoot $d
+            Write-Host "  Checking the game files ($assets)..."
+            $said = ''
+            & (Join-Path $d 'bin\skate3rust.exe') --update-game-files --assets $assets 2>&1 | ForEach-Object { $l = "$_"; if ($l -like 'GAME_FILES *') { $said = $l.Substring(11) }; Write-Host "  $l" }
+            $code = $LASTEXITCODE
+            # Setup published a new installation: the other versions' links follow at their next launch.
+            $r = switch ($code) { 0 { "Refresh game files: $said." } 2 { 'Refresh game files: no game files yet. Convert them first (tools\setup-dev-assets.ps1).' } default { "Refresh game files: failed (exit code $code), see above." } }
+        }
+    }
+    Save-Result "$stamp  $Key [$($Ver.id)]`r`n$r"
+    Write-Host ''
+    Write-Host "  $r"
+}
+
 function Launch([string]$Key, [string]$Lbl) {
     $e = $Entries[$Key]
-    if (-not $e) { if ($NoPrompt) { Set-Content -Path $LastSession -Value "Unknown entry: $Key" -Encoding UTF8 } else { Show-Message "Unknown entry: $Key" 'Red' }; return }
-    if ($NoPrompt) { if ((Running-Games).Count -gt 0) { Set-Content -Path $LastSession -Value 'Not started: another game is running.' -Encoding UTF8; return } }
-    elseif (-not (Wait-NoGame)) { return }
-    $ver = $null; $play = $null; $verText = ''
-    if ($Key.StartsWith('rust-')) {
-        $ver = Get-Version $Version
+    if (-not $e) { Save-Result "Unknown entry: $Key"; return }
+    if ((Running-Games).Count -gt 0) { Save-Result 'Not started: another game is running.'; return }
+    $ver = Get-Version $Version
+    $blocked = Entry-Blocked $Key $ver
+    if ($blocked) { Save-Result "Not started: $blocked"; Write-Host "  $blocked"; return }
+    $verText = ''
+    if ($e.Group -eq 'tools') { Run-Tool $Key $ver; return }
+    $play = $null
+    if ($e.Group -eq 'rust') {
         $verText = " [$($ver.id)]"
-        if ($Key -eq 'rust-traceall' -and (Version-Traces $ver).Count -eq 0) {
-            Set-Content -Path $LastSession -Value "Not started: $($ver.name) has no session traces. Use 'play' instead." -Encoding UTF8
-            if (-not $NoPrompt) { Show-Message "$($ver.name) has no session traces." 'Yellow' }
-            return
-        }
-        if ($Key -eq 'rust-devmods' -and -not $ver.mods_enable) {
-            Set-Content -Path $LastSession -Value "Not started: $($ver.name) has no dev test mod. Use 'play' instead." -Encoding UTF8
-            if (-not $NoPrompt) { Show-Message "$($ver.name) has no dev test mod." 'Yellow' }
-            return
-        }
-        Clear-Host; Write-Host ''; Write-Host ("  Version: " + $ver.name) -ForegroundColor Cyan
+        Write-Host ("  Version: " + $ver.name)
         if (-not (Ensure-Version $ver)) {
-            Set-Content -Path $LastSession -Value "Not started: $($ver.name) could not be set up or built (see the window above)." -Encoding UTF8
-            if (-not $NoPrompt) { Show-Message "Could not build $($ver.name)." 'Red' } else { Start-Sleep -Seconds 15 }
+            Save-Result "Not started: $($ver.name) could not be set up or built (see the output above)."
             return
         }
         $play = Join-Path (Version-Dir $ver) 'PLAY.bat'
         # Without converted game files the game only shows an error; say what to do instead (couch users).
         if (-not (Test-Path (Join-Path (Version-Dir $ver) 'assets\private\stock'))) {
             $msg = "Not started: $($ver.name) has no game files (assets\private). Convert them from the disc first: tools\setup-dev-assets.ps1 -Disc <your Skate 3 ISO or default.xex>."
-            Set-Content -Path $LastSession -Value $msg -Encoding UTF8
-            if (-not $NoPrompt) { Show-Message $msg 'Yellow' }
+            Save-Result $msg; Write-Host "  $msg"
             return
         }
+        # Per-version environment (versions.json "env": { NAME: value }).
+        if ($ver.env) { foreach ($p in $ver.env.PSObject.Properties) { Set-Item -Path ("env:" + $p.Name) -Value ([string]$p.Value) } }
     }
     $since = Get-Date
     Set-Content -Path $Playing -Value ("entry=$Key label=$Lbl version=$($ver.id) started=" + $since.ToString('yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
-    Clear-Host; Write-Host ''; Write-Host ("  Starting: " + $e.Name + $verText) -ForegroundColor Cyan
+    Write-Host ("  Starting: " + $e.Name + $verText)
     try {
         switch ($Key) {
             'rust-play'     { Run-Bat $play '' }
@@ -450,33 +556,43 @@ function Launch([string]$Key, [string]$Lbl) {
                     $env:SKATE_TRACE_ALL = '1'
                     $env:SKATE_PERF_REPORT = Join-Path $dir 'perf.json'
                 }
-                Write-Host ("  Traces: " + ($traces -join ', ') + " -> $dir") -ForegroundColor Cyan
+                Write-Host ("  Traces: " + ($traces -join ', ') + " -> $dir")
                 Run-Bat $play ''
             }
             default {
+                if ($e.Rpcs3) { Run-Rpcs3 $e.Rpcs3; Wait-GameTree; break }
                 $re = $e.Recomp
                 if ($re.label) { $Lbl = $re.label }
                 if ($re.bat) { Run-Bat (Resolve-Local $re.bat) $(if ($Lbl -and $Lbl -ne 'session') { $Lbl } else { "$($re.bat_args)" }) }
-                else { Run-Recomp $re $(if ($Lbl -eq 'session') { '' } else { $Lbl }) }
+                else { Run-Recomp $re $(if ($Lbl -eq 'session') { '' } else { $Lbl }); Wait-GameTree }
             }
         }
     } finally {
         Remove-Item $Playing -ErrorAction SilentlyContinue
     }
-    if (-not $NoPrompt) { Focus-Console }
-    Clear-Host; Write-Host ''; Write-Host '  Session ended.' -ForegroundColor Cyan
+    Write-Host '  Session ended.'
     $summary = Check-Session $e.Kind $since $ver
     $sendResult = Send-Sessions
     if ($sendResult) { $summary = (@($summary, $sendResult) | Where-Object { $_ }) -join "`r`n" }
     $stamp = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-    Set-Content -Path $LastSession -Value ("$stamp  $Key $Lbl$verText`r`n$summary") -Encoding UTF8
-    if ($summary -and -not $NoPrompt) { $col = 'Green'; if ($summary -match 'MALFORMED|No new|panic\(s\)|Send: (?!\d|Nothing)') { $col = 'Yellow' }; Show-Message ("Session ended.`n`n" + $summary) $col }
+    Save-Result ("$stamp  $Key $Lbl$verText`r`n$summary")
 }
 
 # Steam's "Exit game" closes the launcher together with the game, so the after-session check can be skipped.
 # 'pending' checks the newest session (state log or recomp) if it's newer than last_session.txt and writes the result;
 # SkateLauncher.exe runs it at every start. Exit code 10 = a result was written, 0 = nothing pending.
 if ($Entry -eq 'pending') {
+    # A pulled launcher updates its own exe: SkateLauncher.cs newer than SkateLauncher.exe = build it again. The running
+    # exe can be renamed (not overwritten), so the new one takes its name and the next start uses it.
+    $cs = Join-Path $Here 'SkateLauncher.cs'; $exe = Join-Path $Here 'SkateLauncher.exe'; $old = Join-Path $Here 'SkateLauncher.old.exe'
+    if (Test-Path $old) { Remove-Item $old -ErrorAction SilentlyContinue }
+    if ((Test-Path $cs) -and (Test-Path $exe) -and (Get-Item $cs).LastWriteTime -gt (Get-Item $exe).LastWriteTime) {
+        $new = Join-Path $Here 'SkateLauncher.new.exe'
+        & (Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe') /nologo /target:winexe "/out:$new" $cs | Out-Null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $new)) {
+            try { Move-Item $exe $old -Force; Move-Item $new $exe -Force } catch { Remove-Item $new -ErrorAction SilentlyContinue }
+        } else { Remove-Item $new -ErrorAction SilentlyContinue }
+    }
     $since = [datetime]::MinValue
     if (Test-Path $LastSession) { $since = (Get-Item $LastSession).LastWriteTime }
     $log = Get-ChildItem $StateLogs -Filter 'state_*.tsv' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -502,15 +618,20 @@ if ($Entry -eq 'pending') {
         $summary = Check-Session $kind $t0 $null
     }
     if ($missedSend) { $summary = (@($summary, (Send-Sessions)) | Where-Object { $_ }) -join "`r`n" }
-    Set-Content -Path $LastSession -Value ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "  (checked at next start)`r`n$summary") -Encoding UTF8
+    Save-Result ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "  (checked at next start)`r`n$summary")
     exit 10
 }
 
-# Version commands (SkateLauncher.exe reads their output; tab-separated where it parses it).
+# Commands SkateLauncher.exe reads (tab-separated).
 if ($Entry -eq 'entries') {
-    # id, name, hint, ask (1 = ask for a session-folder label)
+    # id, name, hint, ask (1 = ask for a session-folder label), group, on (1/0), why it is off
     $selVer = Get-Version $Version
-    foreach ($k in $Entries.Keys) { if ($k -eq 'rust-traceall' -and (Version-Traces $selVer).Count -eq 0) { continue }; $ask = 0; if ($Entries[$k].Recomp -and $Entries[$k].Recomp.ask_label) { $ask = 1 }; "{0}`t{1}`t{2}`t{3}" -f $k, $Entries[$k].Name, $Entries[$k].Hint, $ask }
+    foreach ($k in $Entries.Keys) {
+        $e = $Entries[$k]
+        $ask = 0; if ($e.Recomp -and $e.Recomp.ask_label) { $ask = 1 }
+        $why = Entry-Blocked $k $selVer
+        "{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}" -f $k, $e.Name, ($e.Hint -replace "`t", ' '), $ask, $e.Group, $(if ($why) { 0 } else { 1 }), $why
+    }
     exit 0
 }
 if ($Entry -eq 'versions') {
@@ -518,6 +639,17 @@ if ($Entry -eq 'versions') {
     foreach ($v in $Versions) { "{0}`t{1}`t{2}`t{3}" -f $v.id, $v.name, (Version-Status $v), $(if ($v.id -eq $sel) { '*' } else { '' }) }
     exit 0
 }
+if ($Entry -eq 'status') {
+    $v = Get-Version ''
+    "version`t$($v.name)"
+    "version_status`t$(Version-Status $v)"
+    $last = if (Test-Path $LastSession) { ((Get-Content $LastSession) -join ' / ') } else { 'No session yet.' }
+    "last`t$last"
+    $sb = Send-Blocked; "send`t$(if (-not (Send-Script)) { 'off' } elseif ($sb) { $sb } else { 'on' })"
+    "setup_missing`t$(Setup-Missing)"
+    exit 0
+}
+if ($Entry -eq 'setup-check') { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Here 'setup.ps1'); exit $LASTEXITCODE }
 if ($Entry -in @('version-next', 'version-prev', 'version-set')) {
     $cur = [array]::IndexOf(@($Versions | ForEach-Object { $_.id }), (Get-Version '').id)
     if ($Entry -eq 'version-set') { $new = Get-Version $Label }
@@ -538,36 +670,41 @@ if ($Entry -eq 'build') {
     $v = Get-Version $(if ($Label) { $Label } else { $Version })
     if (Ensure-Version $v) { "Ready: $($v.name) ($(Version-Status $v))"; exit 0 } else { "Build failed: $($v.name)"; exit 1 }
 }
+# Clearing (Tools > Clear builds): a version's build cache is its cargo target folder; its build is that plus bin\
+# (the exe it plays), so it builds again at its next launch. Only these launcher-known folders are ever deleted.
+if ($Entry -eq 'sizes') {
+    # id, name, build cache bytes, bin bytes
+    foreach ($v in $Versions) { "{0}`t{1}`t{2}`t{3}" -f $v.id, $v.name, (Folder-Bytes (Target-Dir $v)), (Folder-Bytes (Join-Path (Version-Dir $v) 'bin')) }
+    exit 0
+}
+if ($Entry -in @('clear-cache', 'clear-build')) {
+    if ((Running-Games).Count -gt 0) { Save-Result 'Not cleared: a game is running.'; 'Not cleared: a game is running.'; exit 1 }
+    $which = @($Versions | Where-Object { $Label -eq 'all' -or $_.id -eq $Label })
+    if ($which.Count -eq 0) { "Unknown version: $Label"; exit 1 }
+    $freed = [long]0; $done = @()
+    foreach ($v in $which) {
+        $dirs = @(Target-Dir $v)
+        if ($Entry -eq 'clear-build') { $dirs += (Join-Path (Version-Dir $v) 'bin') }
+        foreach ($d in $dirs) {
+            if (-not (Test-Path -LiteralPath $d)) { continue }
+            $freed += Folder-Bytes $d
+            Write-Host "  Deleting $d..."
+            Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $done += $v.name
+    }
+    $what = if ($Entry -eq 'clear-build') { 'builds' } else { 'build caches' }
+    $r = "Cleared the $what of " + ($done -join ', ') + (" ({0:N1} GB freed)." -f ($freed / 1GB))
+    Save-Result ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "  $Entry $Label`r`n$r")
+    "  $r"
+    exit 0
+}
+if ($Entry -eq 'room') { Make-Room (Get-Version $(if ($Label) { $Label } else { $Version })); exit 0 }
 if ($Entry -eq 'send') { $r = Send-Sessions; if (-not $r) { $r = 'Send: no after_session in config.json.' }; $r; exit 0 }
-if ($Entry -eq 'list') { $Entries.Keys | ForEach-Object { '{0,-15} {1}' -f $_, $Entries[$_].Name }; exit 0 }
+if ($Entry -eq 'list') { $Entries.Keys | ForEach-Object { '{0,-20} {1}' -f $_, $Entries[$_].Name }; exit 0 }
 if ($Entry) { Launch $Entry $Label; exit 0 }
 
-# Keyboard menu (launcher.bat). SkateLauncher.exe draws its own menu with the same entries.
-try { $Host.UI.RawUI.WindowTitle = 'Skate launcher' } catch {}
-Focus-Console
-while ($true) {
-    $cv = Get-Version ''
-    $top = Show-Menu 'Skate launcher' @("Rust engine: $($cv.name)", 'Choose version', 'What to test (this version)', 'Recomp (Skate 3 retail)', 'Last session result', 'Exit') @('Our engine, the selected version.', '', '', 'The recompiled retail game, with or without tracing (config.json).', '', '')
-    if ($top -eq 5 -or $top -eq -1) { break }
-    if ($top -eq 4) { $t = 'No session yet.'; if (Test-Path $LastSession) { $t = (Get-Content $LastSession) -join "`n" }; Show-Message $t; continue }
-    if ($top -eq 1) {
-        $pick = Show-Menu 'Choose version' @($Versions | ForEach-Object { $_.name }) @($Versions | ForEach-Object { Version-Status $_ })
-        if ($pick -ge 0) { Set-Content -Path $SelectedFile -Value $Versions[$pick].id -Encoding ASCII }
-        continue
-    }
-    if ($top -eq 2) { Show-Message ("$($cv.name)`n`n" + $cv.notes); continue }
-    $prefix = 'rust-'; if ($top -eq 3) { $prefix = 'recomp-' }
-    $keys = @($Entries.Keys | Where-Object { $_.StartsWith($prefix) })
-    if ($keys.Count -eq 0) { Show-Message 'No recomp entries: add them to config.json (see README.md).' 'Yellow'; continue }
-    while ($true) {
-        $pick = Show-Menu (@('Rust engine', 'Recomp')[[int]($top -eq 3)]) ($keys | ForEach-Object { $Entries[$_].Name }) ($keys | ForEach-Object { $Entries[$_].Hint })
-        if ($pick -eq -1) { break }
-        $key = $keys[$pick]; $lbl = ''
-        if ($Entries[$key].Recomp -and $Entries[$key].Recomp.ask_label) {
-            $l = Show-Menu 'Label for the session folder' $Labels @('No label.')
-            if ($l -eq -1) { continue }
-            $lbl = $Labels[$l]
-        }
-        Launch $key $lbl
-    }
-}
+# No entry: open the window (the menu lives in SkateLauncher.exe now).
+$exe = Join-Path $Here 'SkateLauncher.exe'
+if (-not (Test-Path $exe)) { Write-Host "SkateLauncher.exe is not built yet: run build.bat in $Here first."; exit 1 }
+Start-Process -FilePath $exe

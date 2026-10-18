@@ -144,16 +144,29 @@ pub(crate) fn outputs_present(install_root: &Path, files: &serde_json::Value) ->
 pub(crate) fn restart_with_refresh() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let root = exe.parent().ok_or("No executable directory")?;
-    let base = match assets_arg() {
-        // A development copy (`--assets <link>`): the installation behind the link, refreshed by the checkout's setup.
+    clear_stale_pipelines(&refresh_base(root)?)?;
+    let args: Vec<_> = std::env::args_os().skip(1).filter(|a| a != "--refresh-assets").collect();
+    Command::new(&exe).args(args).arg("--refresh-assets").spawn().map_err(|e| format!("Could not restart: {e}"))?;
+    Ok(())
+}
+
+/// The data folder a refresh rebuilds: the installation behind a development copy's `--assets` link (refreshed by
+/// the checkout's setup), or a release copy's own `data`.
+fn refresh_base(root: &Path) -> Result<PathBuf, String> {
+    match assets_arg() {
         Some(assets) => {
             dev_setup(root).ok_or("No setup found: this copy has neither support/skate3setup.exe nor a checkout's tools/setup.py.")?;
-            dev_base(&assets)?
+            dev_base(&assets)
         }
-        None if root.join("support/skate3setup.exe").is_file() => root.join("data"),
-        None => return Err("This copy has no setup helper: unpack the complete package, or run setup by hand.".into()),
-    };
-    if let Some((_, marker)) = installed(&base)? {
+        None if root.join("support/skate3setup.exe").is_file() => Ok(root.join("data")),
+        None => Err("This copy has no setup helper: unpack the complete package, or run setup by hand.".into()),
+    }
+}
+
+/// Clears the stale groups' recorded converter versions, so setup's refresh (which rebuilds groups whose version
+/// differs) rebuilds exactly those, whatever was stamped before.
+fn clear_stale_pipelines(base: &Path) -> Result<(), String> {
+    if let Some((_, marker)) = installed(base)? {
         let mut cleared = marker.clone();
         for group in stale_groups() {
             if let Some(pipelines) = cleared["pipelines"].as_object_mut() {
@@ -164,8 +177,90 @@ pub(crate) fn restart_with_refresh() -> Result<(), String> {
         std::fs::write(&temporary, serde_json::to_vec_pretty(&cleared).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         std::fs::rename(&temporary, base.join("installation.json")).map_err(|e| e.to_string())?;
     }
-    let args: Vec<_> = std::env::args_os().skip(1).filter(|a| a != "--refresh-assets").collect();
-    Command::new(&exe).args(args).arg("--refresh-assets").spawn().map_err(|e| format!("Could not restart: {e}"))?;
+    Ok(())
+}
+
+/// Launcher mode `--update-game-files` (the Steam launcher's Refresh Game Files): runs the check the game runs at
+/// start (`asset_check`) without starting the game and, when it finds a problem, the same refresh as the PC overlay's
+/// Extras > Refresh Game Files. Exit code 0 = current or refreshed, 1 = the refresh failed, 2 = no game files yet.
+pub(crate) fn update_game_files() -> Option<i32> {
+    if !std::env::args_os().skip(1).any(|a| a == "--update-game-files") {
+        return None;
+    }
+    Some(match update_game_files_now() {
+        Ok(()) => 0,
+        Err((code, error)) => { eprintln!("GAME_FILES failed: {error}"); code }
+    })
+}
+
+fn update_game_files_now() -> Result<(), (i32, String)> {
+    let failed = |e: String| (1, e);
+    let exe = std::env::current_exe().map_err(|e| failed(e.to_string()))?;
+    let root = exe.parent().ok_or_else(|| failed("No executable directory".into()))?;
+    let assets = match assets_arg() {
+        Some(assets) => assets,
+        None => installed(&root.join("data")).map_err(failed)?.map(|(assets, _)| assets)
+            .ok_or_else(|| (2, "this copy has no game files yet: start the game once to run setup".to_owned()))?,
+    };
+    if !assets.is_dir() {
+        return Err((2, format!("no game files at {}", assets.display())));
+    }
+    let started = std::time::Instant::now();
+    let findings = crate::asset_check::check(&assets);
+    eprintln!("ASSET_CHECK done in {} ms: {} problem(s)", started.elapsed().as_millis(), findings.len());
+    let refreshed = refresh_for(findings, |groups| {
+        for group in groups {
+            mark_stale(group);
+        }
+        let base = refresh_base(root)?;
+        clear_stale_pipelines(&base)?;
+        eprintln!("GAME_FILES out of date: refreshing {}", groups.join(", "));
+        match assets_arg() {
+            Some(link) => refresh_dev_copy(&link),
+            None => {
+                let existing = installed(&base)?;
+                run_release_setup(&root.join("support/skate3setup.exe"), &base, &exe, existing.as_ref().map(|(a, _)| a.as_path()))?;
+                installed(&base)?.map(|_| ()).ok_or_else(|| "Setup did not publish a complete installation".to_owned())
+            }
+        }
+    })
+    .map_err(failed)?;
+    eprintln!("{}", if refreshed { "GAME_FILES refreshed" } else { "GAME_FILES current: nothing to refresh" });
+    Ok(())
+}
+
+/// What the start-of-game check found (`asset_check::check`): `refresh` runs once with the out-of-date groups, only
+/// when there is a problem. True = refreshed.
+fn refresh_for(findings: Vec<crate::asset_check::Finding>, refresh: impl FnOnce(&[String]) -> Result<(), String>) -> Result<bool, String> {
+    for f in &findings {
+        eprintln!("ASSET_CHECK {}: {}", f.group, f.reason);
+    }
+    if findings.is_empty() {
+        return Ok(false);
+    }
+    let mut groups: Vec<String> = findings.into_iter().map(|f| f.group).collect();
+    groups.sort();
+    groups.dedup();
+    refresh(&groups)?;
+    Ok(true)
+}
+
+/// Runs a release copy's setup helper on `base`: a refresh when an installation exists (`existing`, its assets).
+fn run_release_setup(setup: &Path, base: &Path, exe: &Path, existing: Option<&Path>) -> Result<(), String> {
+    let mut command = Command::new(setup);
+    command.arg("--base").arg(base).arg("--game-exe").arg(exe);
+    if existing.is_some() { command.arg("--refresh"); }
+    // The PC overlay's Ped Speech row (saved in the install's audio settings): the opt-in speech decode.
+    if existing.is_some_and(crate::game_audio::decode_speech_saved) {
+        eprintln!("SETUP: speech decode asked for (Ped Speech is on)");
+        command.env("SKATE_SETUP_SPEECH", "1");
+    }
+    #[cfg(windows)] {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let status = command.status().map_err(|e| format!("Could not start setup: {e}"))?;
+    if !status.success() { return Err("Setup was cancelled or did not complete".into()); }
     Ok(())
 }
 
@@ -358,20 +453,7 @@ pub(crate) fn asset_root() -> Result<PathBuf, String> {
             "This copy has not been set up. Use the complete Windows package, pass --assets DIRECTORY, or set SKATE3_ASSETS for development.".into(),
         );
     }
-    let mut command = Command::new(setup);
-    command.arg("--base").arg(&base).arg("--game-exe").arg(&exe);
-    if existing.is_some() { command.arg("--refresh"); }
-    // The PC overlay's Ped Speech row (saved in the install's audio settings): the opt-in speech decode.
-    if existing.as_ref().is_some_and(|(assets, _)| crate::game_audio::decode_speech_saved(assets)) {
-        eprintln!("SETUP: speech decode asked for (Ped Speech is on)");
-        command.env("SKATE_SETUP_SPEECH", "1");
-    }
-    #[cfg(windows)] {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let status = command.status().map_err(|e| format!("Could not start setup: {e}"))?;
-    if !status.success() { return Err("Setup was cancelled or did not complete".into()); }
+    run_release_setup(&setup, &base, &exe, existing.as_ref().map(|(assets, _)| assets.as_path()))?;
     let (assets, marker) = installed(&base)?.ok_or("Setup did not publish a complete installation")?;
     if expected.as_ref().is_some_and(|versions| marker.get("pipelines") != Some(versions)) {
         return Err("Setup helper does not match this release's asset extractors. Unpack the complete package.".into());
@@ -484,6 +566,20 @@ mod tests {
         assert!(repoint_link(&old, &new).is_err());
         std::fs::remove_dir(&link).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// The Steam launcher's Refresh Game Files (`--update-game-files`): current files run no refresh; an out-of-date
+    /// group runs it with exactly the groups the start-of-game check found.
+    #[test]
+    fn update_game_files_refreshes_only_what_the_check_finds() {
+        use crate::asset_check::Finding;
+        let found = |group: &str, reason: &str| Finding { group: group.into(), reason: reason.into() };
+        let mut asked = Vec::new();
+        assert_eq!(refresh_for(Vec::new(), |g| { asked.push(g.to_vec()); Ok(()) }), Ok(false));
+        assert!(asked.is_empty(), "current files: no refresh");
+        let findings = vec![found("maps", "hand props lack their grip points (attach)"), found("hud", "menu tables missing"), found("maps", "x")];
+        assert_eq!(refresh_for(findings.clone(), |g| { asked.push(g.to_vec()); Ok(()) }), Ok(true));
+        assert_eq!(asked, vec![vec!["hud".to_owned(), "maps".to_owned()]], "one refresh, each group once");
+        assert_eq!(refresh_for(findings, |_| Err("cancelled".into())), Err("cancelled".to_owned()), "a failed refresh is reported");
     }
     #[test]
     fn acknowledged_optional_failure_is_versioned_and_retained_data_is_checked() {
