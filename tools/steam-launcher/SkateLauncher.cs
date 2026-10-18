@@ -536,6 +536,12 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     }
 
     // The splash's board (splash.rs draw_board), side view, 180 units long, its top-left at (x, y), `len` px long.
+    // The board's x while it rolls along a track on a loop (in at the left, out at the right, again), independent of
+    // the progress (user 2026-10-18: it should not follow the loading bar).
+    static float Rolling(RectangleF track, float boardLen, float t) {
+        float span = track.Width + boardLen;
+        return track.X - boardLen + (t * track.Width * 0.3f) % span;
+    }
     static void Board(Graphics g, float x, float y, float len) {
         var st = g.Save();
         g.TranslateTransform(x, y); g.ScaleTransform(len / 180f, len / 180f);
@@ -785,7 +791,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
             head = seg.Width > 0 ? seg.Right : track.X;
         }
         var clip = g.Save(); g.SetClip(card);
-        Board(g, Math.Max(track.X - boardLen * 0.4f, Math.Min(head - boardLen * 0.6f, track.Right - boardLen * 0.6f)), track.Y - boardLen * 0.21f, boardLen);
+        Board(g, Rolling(track, boardLen, t), track.Y - boardLen * 0.21f, boardLen);
         g.Restore(clip);
         y = track.Bottom + h * 0.03f;
         string count = build.Total > 0 ? build.Done + " / " + build.Total + " build steps" : build.Compiled + " crates compiled";
@@ -827,7 +833,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         var seg = RectangleF.Intersect(track, new RectangleF(sx, track.Y, track.Width * 0.3f, track.Height));
         if (seg.Width > 0) Card(g, seg, track.Height / 2, Accent, Accent, Color.Empty, 0);
         var clip = g.Save(); g.SetClip(card);
-        Board(g, Math.Max(track.X - boardLen * 0.5f, Math.Min(seg.Right - boardLen * 0.6f, track.Right - boardLen * 0.5f)), track.Y - boardLen * 0.21f, boardLen);
+        Board(g, Rolling(track, boardLen, t), track.Y - boardLen * 0.21f, boardLen);
         g.Restore(clip);
         // The last line as the status, a few earlier ones below it.
         var lines = new List<string>();

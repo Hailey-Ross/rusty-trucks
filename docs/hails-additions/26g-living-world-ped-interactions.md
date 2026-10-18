@@ -1946,3 +1946,28 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   The prop is the nearest streamed-in prop box within 0.1 m of the target or edge (`PropDynamics::nearest_body`).
 - **Open:** what the next bench bump logs (`WALKER_STEP` next to `PROP_SHOVE`); with the hits now reported, whether peds
   give enough on foot (`ped_body.walker_mass`, NOT RETAIL YET).
+
+## The tazer draws, cycles and holsters with its clips and the taser in hand (2026-10-18)
+
+- **Problem:** user (laptop session 2026-10-18 152526): "I also pissed off a lady ped and it tased me. However, the
+  animation was not in yet." The taze logic worked (PED_TAZE -> SKATER_TAKEDOWN), but the ped played no clip and held
+  no taser.
+- **Retail (research b248, b153; main checked our anchors):** [data] TazerInto = `SG_TAZR_STND2TAZR_F_0_N`, TazerCyc
+  = `SG_TAZR_TAZR_F_0_CYC`, TazerOut = `SG_TAZR_TAZR2STND_F_0_N`, all on the upper-body channel (ped vfn248 `82E3A3F0`
+  -> vfn240 with blends 0.2) [code]. DrawTazer (`826A8258`) plays TazerInto; once timer 37 (0.133 s) runs out the
+  "tazr" hand prop (tasergun_lw) is requested if the hand was empty at the draw. The ped update `82E3ED50` starts
+  TazerCyc and sets the drawn state 2 when TazerInto has 0.2 s left (HasDrawnTazer tests state 2, b153 M1; ours
+  used 0 and drew on the timer alone). EndTaze (`826A85A8`) plays TazerOut and sets state 3; the draw request,
+  state 0 and the prop's deletion wait for TazerOut's last 0.2 s (b153 M2; ours cleared at once). The player's side
+  is a plain takedown wipeout in retail too (no tased clip found; the only taze extra is a "ZAP!" / "Tazed!" HUD
+  line, not ported).
+- **Change:** brain `DrawTazer` / `EndTaze` post `ChaseRequest::TazerClip`; the body loop plays it on the channel
+  (`PED_TAZER_CLIP`) and records whether the anim set had it; `sync_hand_props` calls
+  `PedBrain::update_tazer_clip` (drawn / put away by the clip's time left; a clip the set lacks counts as ended, so
+  no ped gets stuck). Settings `tazer_clip_blend` / `tazer_clip_end` (0.2 / 0.2); clips and prop through the
+  entity animation and hand prop tables (mods).
+- **Tests:** `a_tazer_is_drawn_then_hits_its_target_once` (draw clip, prop at timer 37, drawn at 0.2 s left),
+  `putting_the_tazer_away_waits_for_the_holster_clip_then_deletes_the_prop` (also: no clip in the set, a hand that
+  already holds a prop). Not play-tested.
+- **Open:** whether our channel loops a `_CYC` clip (one-shots fade at their end; the carry pose then holds the
+  taser), the hand bone (we use RIGHTHANDPROP), the HUD line.

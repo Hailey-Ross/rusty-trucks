@@ -369,10 +369,21 @@ fn a_tazer_is_drawn_then_hits_its_target_once() {
     // 8 m ahead, 3.6 deg off: inside 10 m and the 20 deg cone.
     assert_eq!(h.condition_activation(1, &f), 1);
     h.begin(0, [0; 6], &f);
+    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::TazerClip { clip: TAZER_INTO }], "the draw clip");
+    h.brain.chase_requests.clear();
     h.update(0, [0; 6], &f);
     assert_eq!(h.condition_activation(0, &f), 0, "still drawing");
     h.brain.tick_timers(0.2);
     h.update(0, [0; 6], &f);
+    assert_eq!(h.brain.hand_prop.key.as_deref(), Some(TAZER_PROP), "an empty hand gets the tazer once timer 37 is out");
+    assert_eq!(h.condition_activation(0, &f), 0, "drawn comes from the draw clip, not the timer");
+    // 0.3 s left on the draw clip: not yet; 0.2 s: the cycle clip and drawn (state 2).
+    h.brain.update_tazer_clip(&settings, Some((TAZER_INTO, true)), 0.3);
+    assert_eq!(h.condition_activation(0, &f), 0);
+    h.brain.update_tazer_clip(&settings, Some((TAZER_INTO, true)), 0.2);
+    assert_eq!(h.brain.tazer_state, Some(2));
+    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::TazerClip { clip: TAZER_CYC }]);
+    h.brain.chase_requests.clear();
     assert_eq!(h.condition_activation(0, &f), 1);
     h.begin(1, [0; 6], &f);
     assert_eq!(h.brain.speech, Some(66));
@@ -382,6 +393,40 @@ fn a_tazer_is_drawn_then_hits_its_target_once() {
     h.update(1, [0; 6], &f);
     h.update(1, [0; 6], &f);
     assert_eq!(h.brain.chase_requests, vec![ChaseRequest::Taze { target: 3 }]);
+}
+
+#[test]
+fn putting_the_tazer_away_waits_for_the_holster_clip_then_deletes_the_prop() {
+    let behaviors = ops(&[("EndTaze", &[("want", "taze")])]);
+    let conditions = ops(&[]);
+    let mut brain = PedBrain { tazer_state: Some(2), tazer_drawn_requested: true, ..Default::default() };
+    brain.hand_prop.request(TAZER_PROP);
+    brain.hand_prop.holding = true;
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let f = frame();
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    h.begin(0, [0; 6], &f);
+    assert_eq!((h.brain.tazer_state, h.brain.tazer_drawn_requested), (Some(3), true), "state 3; the request stays until the clip ends");
+    assert_eq!(h.brain.chase_requests, vec![ChaseRequest::TazerClip { clip: TAZER_OUT }]);
+    h.brain.update_tazer_clip(&settings, Some((TAZER_OUT, true)), 0.4);
+    assert!(h.brain.hand_prop.has(), "holster clip still playing");
+    h.brain.update_tazer_clip(&settings, Some((TAZER_OUT, true)), 0.15);
+    assert_eq!((h.brain.tazer_state, h.brain.tazer_drawn_requested, h.brain.hand_prop.has()), (Some(0), false, false));
+    // A ped whose set lacks the clips does not get stuck drawing.
+    let mut b = PedBrain { tazer_state: Some(1), ..Default::default() };
+    b.update_tazer_clip(&settings, Some((TAZER_INTO, false)), 0.0);
+    assert_eq!(b.tazer_state, Some(2));
+    // A hand already holding something keeps it; no tazer prop.
+    let behaviors = ops(&[("DrawTazer", &[("want", "taze")])]);
+    let mut brain = PedBrain::default();
+    brain.hand_prop.request("can");
+    brain.hand_prop.holding = true;
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &conditions, brain: &mut brain, settings: &settings, position: [0.0; 3], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    h.begin(0, [0; 6], &f);
+    h.brain.tick_timers(0.2);
+    h.update(0, [0; 6], &f);
+    assert_eq!(h.brain.hand_prop.key.as_deref(), Some("can"));
 }
 
 #[test]
