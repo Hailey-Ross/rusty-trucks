@@ -156,6 +156,8 @@ pub(super) fn advance(
         )?;
     }
     player_state::pre_state(physics, skater)?;
+    // Only this step's on-foot walker reports ped bodies it ran into (BipedGround below).
+    skater.walker_ped_hits.clear();
     match skater.player_state.current() {
         skate_core::player::state::PhysicalStateId::RevertGround => super::revert_state::update(physics,skater)?,
         skate_core::player::state::PhysicalStateId::HandPlant => super::handplant::update(physics,skater)?,

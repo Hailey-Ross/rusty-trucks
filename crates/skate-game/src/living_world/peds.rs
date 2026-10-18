@@ -1005,9 +1005,19 @@ pub(crate) fn advance_peds(
                     }
                     // NOT RETAIL YET: the closing speed is the relative speed at the contact; retail reads the ped
                     // part's velocity after the solve (|v| / |w| > 3.0).
-                    let closing = skater_runtime.as_ref()?.ped_hits.iter()
-                        .filter(|h| (h.0 & !super::ped_body::PED_PROXY_TAG) >> 2 == ped.id.to_u64())
-                        .map(|h| h.2)
+                    let runtime = skater_runtime.as_ref()?;
+                    let mine = |h: &&(u64, [f32; 3], f32)| (h.0 & !super::ped_body::PED_PROXY_TAG) >> 2 == ped.id.to_u64();
+                    // On foot the walker's capsule stops at the part (`solid_contacts::constrain_ground`), so it reports
+                    // the part instead of the skeleton: the part's speed after the hit by momentum (`ped_body.walker_mass`,
+                    // NOT RETAIL YET, b217). Retail gives a little through the stumble clip's root motion.
+                    let walker = runtime.walker_ped_hits.iter().filter(mine).map(|h| {
+                        let part = settings.ped_body.parts.get((h.0 & 3) as usize).map_or(0.0, |p| p.mass);
+                        let w = settings.ped_body.walker_mass;
+                        let speed = if part > 0.0 { h.2 * w / (w + part) } else { 0.0 };
+                        info!("PED_BODY_CONTACT ped=#{} part={} by=walker closing={:.2} part_speed={speed:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2);
+                        speed
+                    });
+                    let closing = runtime.ped_hits.iter().filter(mine).map(|h| h.2).chain(walker)
                         .fold(None, |m: Option<f32>, s| Some(m.map_or(s, |m| m.max(s))))?;
                     let d = [body.position.x - observer.position[0], body.position.z - observer.position[2]];
                     let len = d[0].hypot(d[1]).max(1e-4);
