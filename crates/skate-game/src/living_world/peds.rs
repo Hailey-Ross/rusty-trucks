@@ -391,6 +391,10 @@ pub(crate) struct PluginMotionRun {
     pub hand_prop_taken: bool,
     /// A hand prop throw clip the brain asked for (`82E3E648` plays it on the ped, blend 0.2) and its blend.
     pub throw_clip: Option<(&'static str, f32)>,
+    /// A tazer clip the brain asked for (`ChaseRequest::TazerClip`), and the last one the channel took with whether
+    /// the ped's set had it (read by `ped_hand_props::sync_hand_props` for `PedBrain::update_tazer_clip`).
+    pub tazer_clip: Option<&'static str>,
+    pub tazer_played: Option<(&'static str, bool)>,
 }
 
 /// A ped counts as still while it stays within this distance of where it stopped, m.
@@ -984,6 +988,13 @@ pub(crate) fn advance_peds(
                 if !body.player.channel_request(set, clip, blend, blend) {
                     info!("PED_HAND_PROP ped=#{} no clip {clip} tick={tick}", ped.id.serial);
                 }
+            }
+            // The tazer's draw / cycle / holster clip (ped vfn248, blends 0.2, b248).
+            if let Some(clip) = body.plugin_motion.tazer_clip.take() {
+                let blend = settings.ped_brain.values.tazer_clip_blend;
+                let ok = body.player.channel_request(set, clip, blend, blend);
+                body.plugin_motion.tazer_played = Some((clip, ok));
+                info!("PED_TAZER_CLIP ped=#{} {clip}{} tick={tick}", ped.id.serial, if ok { "" } else { " (not in the anim set)" });
             }
             // A plugin state's clips (sit, ATM, vending machine, water fountain, newspaper box).
             let run = &mut body.plugin_motion;
@@ -2826,6 +2837,10 @@ pub(crate) fn think_peds(
                     ChaseRequest::HandPropClip { clip } => {
                         body.plugin_motion.throw_clip = Some((clip, settings.ped_brain.values.hand_prop.clip_blend));
                         info!("PED_HAND_PROP ped=#{} throw clip {clip} target={:?} tick={tick}", ped.id.serial, mind.brain.hand_prop.throw.map(|t| t.target));
+                        continue;
+                    }
+                    ChaseRequest::TazerClip { clip } => {
+                        body.plugin_motion.tazer_clip = Some(clip);
                         continue;
                     }
                     ChaseRequest::HandPropReleased { velocity } => {

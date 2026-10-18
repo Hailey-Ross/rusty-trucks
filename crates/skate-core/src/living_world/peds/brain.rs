@@ -52,6 +52,10 @@ pub struct BrainSettings {
     pub tazer_hit_seconds: f32,
     pub taze_speech: i32,
     pub end_taze_speech: i32,
+    /// The tazer clips' channel blends (ped vfn248 `82E3A3F0` -> vfn240(name, 0.2, 0.2)) and the time left on the
+    /// draw / holster clip at which the tazer counts as drawn / put away (`82E3ED50`, `0x82099280` 0.2 s) [code, b248].
+    pub tazer_clip_blend: f32,
+    pub tazer_clip_end: f32,
     /// ChannelGreetWantTarget: the greet time (timer 36, `0x82063AB8` 3.5 s), speeches 56 / 63
     /// (`8269FC30`).
     pub greet_seconds: f32,
@@ -98,7 +102,7 @@ impl Default for ZombieFollowSettings {
 
 impl Default for BrainSettings {
     fn default() -> Self {
-        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, mood_want_memory_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default() }
+        Self { wander_speed: 2.0, warn_seconds: 3.5, know_about_seconds: 30.0, mood_want_memory_seconds: 30.0, watch_cone: 0.959_931, watch_ahead: 4.0, warn_speech: 53, tazer_draw_seconds: 0.133, tazer_hit_seconds: 0.3, taze_speech: 66, end_taze_speech: 67, tazer_clip_blend: 0.2, tazer_clip_end: 0.2, greet_seconds: 3.5, conversation_turn_seconds: 3.0, conversation_gather_seconds: 30.0, greet_speech: 56, return_greet_speech: 63, chases_enabled: true, aggressive_capture_distance: 2.0, unreachable_radius: 5.0, start_chase_speech: 55, new_chasee_speech: 15, hand_prop: Default::default(), zombie_follow: Default::default() }
     }
 }
 
@@ -850,6 +854,39 @@ impl HandProp {
     }
 }
 
+/// The tazer's logical clips (entity animation table: `SG_TAZR_STND2TAZR_F_0_N`, `SG_TAZR_TAZR_F_0_CYC`,
+/// `SG_TAZR_TAZR2STND_F_0_N`) and its hand prop record (`livingworld_handprops` "tazr", tasergun_lw) [data, b248].
+/// Mods change them through those tables.
+pub const TAZER_INTO: &str = "TazerInto";
+pub const TAZER_CYC: &str = "TazerCyc";
+pub const TAZER_OUT: &str = "TazerOut";
+pub const TAZER_PROP: &str = "tazr";
+
+impl PedBrain {
+    /// The ped update's tazer step (`82E3ED50`) [code, b153 / b248]: `played` is the tazer clip the channel last
+    /// took (`TazerClip`) and whether the ped's anim set had it, `left` the seconds left on the channel. Drawing:
+    /// with `tazer_clip_end` left on the draw clip the cycle clip starts and the tazer is drawn (state 2). Putting
+    /// away: with `tazer_clip_end` left on the holster clip the draw request clears, state 0, and the "tazr" prop is
+    /// deleted (not thrown). A clip the set lacks counts as already at its end.
+    pub fn update_tazer_clip(&mut self, s: &BrainSettings, played: Option<(&str, bool)>, left: f32) {
+        let at_end = |clip: &str| played.is_some_and(|(p, ok)| p == clip && (!ok || left <= s.tazer_clip_end));
+        match self.tazer_state {
+            Some(1) if at_end(TAZER_INTO) => {
+                self.tazer_state = Some(2);
+                self.chase_requests.push(ChaseRequest::TazerClip { clip: TAZER_CYC });
+            }
+            Some(3) if at_end(TAZER_OUT) => {
+                self.tazer_state = Some(0);
+                self.tazer_drawn_requested = false;
+                if self.hand_prop.key.as_deref() == Some(TAZER_PROP) {
+                    self.hand_prop.clear();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// What a ped's brain knows and decided (host-owned, serialisable plain data).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PedBrain {
@@ -932,11 +969,14 @@ pub struct PedBrain {
     /// ConversationListenToSpeaker: the speaker the ped looks at (no head tracking consumer yet).
     pub listen_to: Option<u64>,
     pub look_at: Vec<u64>,
-    /// The tazer: draw state (`brain+3264`: 1 drawing, 0 drawn, 3 put away), draw requested (`+3280`
-    /// 0x40), hit delivered (0x20), line of sight (0x10, host-written), the want it aims at
+    /// The tazer: draw state (`brain+3264`: 1 drawing, 2 drawn, 3 putting away, 0 put away; b153), draw requested
+    /// (`+3280` 0x40), hit delivered (0x20), line of sight (0x10, host-written), the want it aims at
     /// (`+3268`) and whether it is registered (`ped+2492`).
     pub tazer_state: Option<u8>,
     pub tazer_drawn_requested: bool,
+    /// The hand was empty when the draw began, so the "tazr" prop is wanted (`826A8258`), and it was requested.
+    pub tazer_hand_was_empty: bool,
+    pub tazer_prop_requested: bool,
     pub tazer_hit: bool,
     pub tazer_line_of_sight: bool,
     pub tazer_want: Option<String>,
@@ -1026,6 +1066,8 @@ pub enum ChaseSteer {
 pub enum ChaseRequest {
     /// A hand prop throw started: the host plays `clip` (blend [`super::hand_prop::HandPropSettings::clip_blend`]).
     HandPropClip { clip: &'static str },
+    /// A tazer clip on the upper-body channel (`TAZER_INTO` / `TAZER_CYC` / `TAZER_OUT`, ped vfn248, blends 0.2).
+    TazerClip { clip: &'static str },
     /// The held hand prop leaves the hand with `velocity` (m/s): the host turns it into a physics prop.
     HandPropReleased { velocity: Vec3 },
     Join { chasee: u64 },
@@ -1293,7 +1335,7 @@ impl BrainHost<'_> {
                 let diff = (d[0].atan2(d[1]) - self.heading).rem_euclid(std::f32::consts::TAU);
                 diff < half || diff > std::f32::consts::TAU - half
             }),
-            PedOp::HasDrawnTazer => b.tazer_drawn_requested && b.tazer_state == Some(0),
+            PedOp::HasDrawnTazer => b.tazer_drawn_requested && b.tazer_state == Some(2),
             PedOp::HasLineOfSightToTazeTarget => b.tazer_line_of_sight,
             PedOp::CanSeeChasee => b.chasee.and_then(|c| b.perceptions.get(c)).is_some_and(|e| e.visible || e.told),
             PedOp::HasTakeDownTargetable => b.takedown_target.is_some(),
@@ -1517,6 +1559,8 @@ impl Host for BrainHost<'_> {
                     b.chase_requests.push(ChaseRequest::Spoke);
                 }
             }
+            // `826A8258`: the draw clip on the upper-body channel (ped vfn248 -> vfn240, blends 0.2), and whether the
+            // hand was empty (only then the "tazr" prop comes once timer 37 runs out).
             PedOp::DrawTazer { want } => {
                 b.tazer_state = Some(1);
                 b.set_timer(37, s.tazer_draw_seconds);
@@ -1524,6 +1568,9 @@ impl Host for BrainHost<'_> {
                 b.tazer_want = Some(want.clone());
                 b.tazer_hit = false;
                 b.tazer_line_of_sight = false;
+                b.tazer_hand_was_empty = !b.hand_prop.has();
+                b.tazer_prop_requested = false;
+                b.chase_requests.push(ChaseRequest::TazerClip { clip: TAZER_INTO });
             }
             // `826A8398`: the speech and the hit timer start only when the want's target resolves.
             PedOp::TazeWantTarget { want } => {
@@ -1536,10 +1583,12 @@ impl Host for BrainHost<'_> {
                 b.tazer_registered = true;
                 b.chase_requests.push(ChaseRequest::TazerOn);
             }
+            // `826A85A8`: the holster clip and state 3; the draw request, state 0 and the prop's removal wait for the
+            // clip's end (`82E3ED50`, [`PedBrain::update_tazer_clip`]; b153 M2).
             PedOp::EndTaze { .. } => {
                 b.tazer_state = Some(3);
-                b.tazer_drawn_requested = false;
                 b.speech = Some(s.end_taze_speech);
+                b.chase_requests.push(ChaseRequest::TazerClip { clip: TAZER_OUT });
             }
             PedOp::SuppressMoodAboutChasee { timeout } => {
                 if let Some(c) = b.chasee {
@@ -1746,10 +1795,12 @@ impl Host for BrainHost<'_> {
             PedOp::ConversationListenToSpeaker => {
                 self.brain.listen_to = self.chase.conversation.and_then(|c| c.speaker);
             }
-            // Ours: the draw ends with timer 37 (retail: the draw clip; the writer of 3264 = 0 is open).
+            // `826A8258` update: once timer 37 runs out the "tazr" prop is requested (`82E3DDA0`) if the hand was empty
+            // at the draw. "Drawn" (state 2) comes from the draw clip, [`PedBrain::update_tazer_clip`].
             PedOp::DrawTazer { .. } => {
-                if b.tazer_state == Some(1) && b.timer(37) <= 0.0 {
-                    b.tazer_state = Some(0);
+                if b.tazer_state == Some(1) && b.timer(37) <= 0.0 && b.tazer_hand_was_empty && !b.tazer_prop_requested {
+                    b.tazer_prop_requested = true;
+                    b.hand_prop.request(TAZER_PROP);
                 }
             }
             // `826A8420`: once timer 39 is out, the resolved target is hit once (`brain+3280` bit 0x20); from then on,

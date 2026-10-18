@@ -176,6 +176,8 @@ pub mod names {
         // The idle hand prop actions on the channel (`82E3F1D8` / `82E3F470`, strings `0x82064AA0..0x82064B3C`).
         "HandPropEat", "HandPropDrink", "HandPropReadInto", "HandPropReadCyc", "HandPropReadOut", "HandPropPhoneAnswer",
         "HandPropPhoneTalk", "HandPropPhoneHangup", "HandPropLitter",
+        // The tazer on the channel (DrawTazer / `82E3ED50` / EndTaze, b248).
+        "TazerInto", "TazerCyc", "TazerOut",
     ];
 }
 

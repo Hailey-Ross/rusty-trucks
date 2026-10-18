@@ -212,6 +212,12 @@ pub(crate) fn sync_hand_props(
     let s = settings.ped_brain.values.hand_prop;
     for (e, ped, body, mut mind, puppet, held, linked) in &mut peds {
         let mind = &mut *mind;
+        // The tazer's clip-driven states (`82E3ED50`): drawn near the draw clip's end, put away (and the "tazr" prop
+        // deleted) near the holster clip's end.
+        if mind.brain.tazer_state.is_some_and(|s| s == 1 || s == 3) {
+            let left = body.player.channel_remaining(&*data);
+            mind.brain.update_tazer_clip(&settings.ped_brain.values, body.plugin_motion.tazer_played, left);
+        }
         if let Some(h) = held {
             let at = globals.get(h.entity).ok().map(|g| g.translation().to_array());
             // A throw's release, or a litter drop (`82E3ED50`: timer 34 after HandPropLitter).
