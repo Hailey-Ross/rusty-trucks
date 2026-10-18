@@ -685,6 +685,29 @@ Verification (desktop, DownTown, muted, no mods): the first frame of play went f
 3691 ms), as the ground takes longer to build than the other loads. Left in that frame: `npc_sim::simulate`
 483 ms with the NPC physics opt-in on (its body pool loads on the first tick, research b215).
 
+## The NPC physics pool loads on its own thread (2026-10-18)
+
+Problem: with the NPC physics opt-in on, the first enabled fixed tick (the first frame of play) loaded three
+skater bodies for the simulated tier on the game thread: 483 ms of `npc_sim::simulate` on the desktop, 0.7 to 0.8 s
+on the laptop (research b215, `.local/research/b215-npc-pool-load.md`, option A1).
+
+Change (`living_world/npc_sim.rs`): the prewarm keeps its gate, spawn transform and count; the load runs on an
+`npc-pool-loader` thread with a released `npc_worker` copy of that tick's physics (the settings, collections and
+grind world a load reads), the same spawn and the shared animation source carried along. `NpcSimPool::finish_load`
+joins it before anything takes a body (`spawn_sim`) or returns one (`pool_from`), so the pool order is the one a
+load on the game thread gives; `simulate` takes it in without waiting once the thread is done. The log lines are the
+same, logged at the join (`NPC_SKATER_SIM pool: ... (... ms, on the loader thread)`). No thread: the old load.
+
+Tests: `pool_bodies_loaded_on_the_loader_thread_ride_like_ones_loaded_here` (ignored, data-gated: two bodies loaded
+here and two on the loader path ride the same push for 240 ticks; decks, skeleton roots and states equal bit for bit
+every tick).
+
+Verification (desktop, DownTown, muted, no mods, NPC physics on): the pool loads in 569 ms on the loader thread,
+done 0.7 s after the loading screen closed and 4.8 s before the first NPC switched to physics; the first frame of
+play is no longer a hitch (none of frames 3 to 182 is over the hitch threshold; it was 587 ms with the startup ground
+fix alone, 1718 ms before both). Left in the first second: GPU uploads (`allocate_and_free_meshes` and
+`prepare_assets<GpuImage>`, one run of about 115 ms each; research b231) and `modding::fixed` 52 ms.
+
 ## Zone ambience beds are read ahead at map load (2026-10-17)
 
 - **Problem:** entering an ambience zone read its bed (16-bit 48 kHz stereo WAV, ~2 min, 15-29 MB) from disk on the

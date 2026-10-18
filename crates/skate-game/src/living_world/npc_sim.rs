@@ -257,6 +257,50 @@ pub(crate) struct NpcSimPool {
     prewarmed: bool,
     /// The animation banks and decoded poses the first loaded body read from disk, shared by every later body.
     source: Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
+    /// The first enabled tick's load, on its own thread (b215: 0.5 to 0.8 s on the game thread in the first frame of
+    /// play); joined before anything takes from or adds to `bodies`, so their order is the one a load here gives.
+    loading: Option<std::thread::JoinHandle<PoolLoad>>,
+}
+
+/// What the pool loader thread hands back: the bodies in load order, the shared source, and its log lines.
+struct PoolLoad {
+    bodies: Vec<(SkaterPhysicsContext, SimBody)>,
+    source: Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
+    error: Option<String>,
+    loads_ms: Vec<(f64, bool)>,
+    started: std::time::Instant,
+}
+
+impl NpcSimPool {
+    /// Take in the loader thread's bodies (blocking until it is done), logging what it loaded.
+    fn finish_load(&mut self) {
+        let Some(job) = self.loading.take() else { return };
+        let load = match job.join() {
+            Ok(load) => load,
+            Err(_) => {
+                warn!("NPC_SKATER_SIM pool: the loader thread panicked; skaters load on demand");
+                return;
+            }
+        };
+        for (ms, shared) in &load.loads_ms {
+            info!("NPC_SKATER_SIM_LOAD loaded a skater in {ms:.1} ms (shared animation source: {shared})");
+        }
+        if let Some(error) = &load.error {
+            warn!("NPC_SKATER_SIM pool: cannot load a skater: {error}");
+        }
+        self.bodies.extend(load.bodies);
+        if self.source.is_none() {
+            self.source = load.source;
+        }
+        info!("NPC_SKATER_SIM pool: {} loaded skaters ready ({:.0} ms, on the loader thread)", self.bodies.len(), load.started.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    /// `finish_load` once the loader thread is done, without waiting for it.
+    fn poll_load(&mut self) {
+        if self.loading.as_ref().is_some_and(|job| job.is_finished()) {
+            self.finish_load();
+        }
+    }
 }
 
 fn load_body(
@@ -267,13 +311,26 @@ fn load_body(
     source: &mut Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
 ) -> Result<(SkaterPhysicsContext, SimBody), String> {
     let t0 = std::time::Instant::now();
-    let mut context = physics.new_skater_context(spawn)?;
     let shared = source.is_some();
-    let runtime = Box::new(physics.load_skater_in_context(&mut context, &config.asset_root, graphs, config.difficulty.profile_key(), source.clone())?);
-    source.get_or_insert_with(|| runtime.animation.source.clone());
-    let controls = Box::new(PlayerControls::load(&config.asset_root)?);
-    let camera = Box::new(crate::camera::CameraRuntime::load(&config.asset_root)?);
+    let pooled = load_body_from(physics, &config.asset_root, graphs, config.difficulty.profile_key(), spawn, source)?;
     info!("NPC_SKATER_SIM_LOAD loaded a skater in {:.1} ms (shared animation source: {shared})", t0.elapsed().as_secs_f64() * 1000.0);
+    Ok(pooled)
+}
+
+/// `load_body` without the log line, from plain inputs (the pool loader thread has no `Config`).
+fn load_body_from(
+    physics: &mut GamePhysics,
+    asset_root: &std::path::Path,
+    graphs: &crate::graph_runtime::StockGraphs,
+    difficulty: &str,
+    spawn: skate_core::physics::drive_frames::RetailAffineTransform,
+    source: &mut Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
+) -> Result<(SkaterPhysicsContext, SimBody), String> {
+    let mut context = physics.new_skater_context(spawn)?;
+    let runtime = Box::new(physics.load_skater_in_context(&mut context, asset_root, graphs, difficulty, source.clone())?);
+    source.get_or_insert_with(|| runtime.animation.source.clone());
+    let controls = Box::new(PlayerControls::load(asset_root)?);
+    let camera = Box::new(crate::camera::CameraRuntime::load(asset_root)?);
     Ok((context, SimBody { runtime, controls, camera }))
 }
 
@@ -288,6 +345,7 @@ fn spawn_matrix(spawn: &skate_core::physics::drive_frames::RetailAffineTransform
 pub(crate) fn pool_from(world: &mut World, e: Entity) {
     let body = world.get_entity_mut(e).ok().and_then(|mut entity| entity.take::<NpcSim>()).map(|sim| (sim.context, sim.body));
     if let (Some(body), Some(mut pool)) = (body, world.get_resource_mut::<NpcSimPool>()) {
+        pool.finish_load();
         pool.bodies.push(body);
     }
 }
@@ -368,6 +426,7 @@ fn spawn_sim(
     hold_ticks: u32,
 ) -> Result<NpcSim, String> {
     let spawn = line_spawn(target);
+    pool.finish_load();
     let (context, body) = match pool.bodies.pop() {
         Some(pooled) => pooled,
         None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
@@ -626,17 +685,57 @@ pub(crate) fn simulate(
         };
         let t0 = std::time::Instant::now();
         let have = pool.bodies.len() + npcs.iter().filter(|n| n.3.is_some()).count();
-        for _ in have..rules.max {
-            match load_body(&mut physics, &config, &graphs, spawn, &mut pool.source) {
-                Ok(pooled) => pool.bodies.push(pooled),
-                Err(error) => {
-                    warn!("NPC_SKATER_SIM pool: cannot load a skater: {error}");
-                    break;
+        // On a loader thread with a worker copy of this tick's physics (the settings, collections and grind world a
+        // load reads; `npc_worker`), the same spawn and the same shared source: the bodies are the ones a load here
+        // gives, in the same order, and `finish_load` joins before any use.
+        let loader = physics.npc_worker().map(|mut worker| {
+            GamePhysics::release_npc_worker(&mut worker);
+            worker
+        });
+        let job = loader.map_err(|e| e.to_string()).and_then(|mut worker| {
+            let (asset_root, graphs, difficulty, mut source) = (config.asset_root.clone(), graphs.clone(), config.difficulty.profile_key().to_string(), pool.source.clone());
+            let count = rules.max.saturating_sub(have);
+            std::thread::Builder::new()
+                .name("npc-pool-loader".into())
+                .spawn(move || {
+                    let mut load = PoolLoad { bodies: Vec::new(), source: None, error: None, loads_ms: Vec::new(), started: t0 };
+                    for _ in 0..count {
+                        let (t, shared) = (std::time::Instant::now(), source.is_some());
+                        match load_body_from(&mut worker, &asset_root, &graphs, &difficulty, spawn, &mut source) {
+                            Ok(pooled) => {
+                                load.bodies.push(pooled);
+                                load.loads_ms.push((t.elapsed().as_secs_f64() * 1000.0, shared));
+                            }
+                            Err(error) => {
+                                load.error = Some(error);
+                                break;
+                            }
+                        }
+                    }
+                    load.source = source;
+                    load
+                })
+                .map_err(|e| e.to_string())
+        });
+        match job {
+            Ok(job) => pool.loading = Some(job),
+            Err(error) => {
+                // No loader thread: load here, as before.
+                warn!("NPC_SKATER_SIM pool: no loader thread ({error}); loading on the game thread");
+                for _ in have..rules.max {
+                    match load_body(&mut physics, &config, &graphs, spawn, &mut pool.source) {
+                        Ok(pooled) => pool.bodies.push(pooled),
+                        Err(error) => {
+                            warn!("NPC_SKATER_SIM pool: cannot load a skater: {error}");
+                            break;
+                        }
+                    }
                 }
+                info!("NPC_SKATER_SIM pool: {} loaded skaters ready ({:.0} ms)", pool.bodies.len(), t0.elapsed().as_secs_f64() * 1000.0);
             }
         }
-        info!("NPC_SKATER_SIM pool: {} loaded skaters ready ({:.0} ms)", pool.bodies.len(), t0.elapsed().as_secs_f64() * 1000.0);
     }
+    pool.poll_load();
     // Every 2 s: why each replay-tier NPC is not simulated (logs must diagnose).
     let report = rules.enabled && *calls % 120 == 0;
     let lines = super::npc_skaters::npc_lines(&state);
@@ -1391,6 +1490,55 @@ pub(crate) fn reactions(
         }
         if r.slam.is_some() || r.slam_b.is_some() {
             debug!("NPC_SKATER_REACTION key={key} slam={:?} slam_b={:?} crash={}", r.slam, r.slam_b, r.crash);
+        }
+    }
+}
+
+#[cfg(test)]
+mod pool_loader_tests {
+    use super::*;
+    use skate_core::physics::board::BodyId;
+
+    /// The pool loader thread (`simulate`'s prewarm: a released `npc_worker`, `load_body_from` on its own thread,
+    /// the shared source carried along) gives the bodies a load on the game thread gives: two of each, in order,
+    /// ride the same push for 240 ticks and their decks, skeleton roots and states match bit for bit every tick.
+    #[test]
+    #[ignore = "requires private stock graphs and an installed map (SKATE3_ASSET_ROOT, SKATE3_MAP=<maps/DownTown.skate>)"]
+    fn pool_bodies_loaded_on_the_loader_thread_ride_like_ones_loaded_here() {
+        let root_dir = std::path::PathBuf::from(std::env::var_os("SKATE3_ASSET_ROOT").unwrap());
+        let map_path = std::path::PathBuf::from(std::env::var_os("SKATE3_MAP").unwrap());
+        let map = skate_data::skate_map::SkateMap::load(&map_path).unwrap();
+        let assets = skate_data::GameAssets::load(&root_dir).unwrap();
+        let graphs = crate::graph_runtime::StockGraphs::load(&root_dir, &assets).unwrap();
+        let mut physics = GamePhysics::load_with_difficulty(&root_dir, Some(&map), crate::difficulty::Difficulty::Easy).unwrap();
+        let spawn = physics.board.part_transforms()[BodyId::Deck.index()];
+        let mut here_source = None;
+        let mut here: Vec<_> = (0..2).map(|_| load_body_from(&mut physics, &root_dir, &graphs, "easy", spawn, &mut here_source).unwrap()).collect();
+        let mut worker = physics.npc_worker().unwrap();
+        GamePhysics::release_npc_worker(&mut worker);
+        let (root, thread_graphs) = (root_dir.clone(), graphs.clone());
+        let mut there: Vec<_> = std::thread::spawn(move || {
+            let mut source = None;
+            (0..2).map(|_| load_body_from(&mut worker, &root, &thread_graphs, "easy", spawn, &mut source).unwrap()).collect::<Vec<_>>()
+        })
+        .join()
+        .unwrap();
+        for t in 0..240 {
+            for (i, ((ca, a), (cb, b))) in here.iter_mut().zip(there.iter_mut()).enumerate() {
+                if t < 30 {
+                    GamePhysics::set_context_velocity(ca, [0.0, 0.0, 5.0]);
+                    GamePhysics::set_context_velocity(cb, [0.0, 0.0, 5.0]);
+                }
+                physics.advance_npc_skater(ca, &mut a.runtime, &mut a.controls, &graphs, &mut a.camera, &[]).unwrap();
+                physics.advance_npc_skater(cb, &mut b.runtime, &mut b.controls, &graphs, &mut b.camera, &[]).unwrap();
+                assert_eq!(format!("{:?}", GamePhysics::context_deck(ca)), format!("{:?}", GamePhysics::context_deck(cb)), "body {i}: deck differs at tick {t}");
+                assert_eq!(
+                    format!("{:?}", a.runtime.animated_skeleton.roots.animation_to_world),
+                    format!("{:?}", b.runtime.animated_skeleton.roots.animation_to_world),
+                    "body {i}: skeleton root differs at tick {t}"
+                );
+                assert_eq!(a.runtime.player_state.current(), b.runtime.player_state.current(), "body {i}: state differs at tick {t}");
+            }
         }
     }
 }
