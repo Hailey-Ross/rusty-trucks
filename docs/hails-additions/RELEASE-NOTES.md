@@ -73,6 +73,8 @@ Not play-tested yet; tell us if any of these still happen.
 - **People and cars ready at the start (new):** the people, cars, NPC skaters and the things peds carry now load while the loading screen is up, so they no longer pop in a few frames late or stutter the first seconds of play. The loading screen stays up a moment longer.
 - **NPC Skater Physics opt-in (new):** switching it on no longer freezes the first moment of play for half a second while its skaters load; they load in the background.
 - **Smoother frames (new):** cars no longer re-send their materials to the graphics card every frame, which lowers the average frame time (on the main test PC from 3.5 to 2.7 ms in DownTown).
+- **No freeze a few seconds into the first start after a reboot (new):** the world's traffic and people sounds now load while the loading screen is up; reading them from a cold disk froze the game for about 4 seconds once play had started.
+- **Shorter hitch when play starts, steadier frames without mods (new):** the first moment of play is about 60 ms shorter, and without mods the game no longer prepares mod data every frame that nothing reads (worst frames down about 15 % in DownTown on the main test PC).
 - **Walking into peds (new):** on foot, a ped you run into now stumbles and gives a little, like Skate 3, instead of standing like a wall.
 - **Walking over benches (new):** on foot you step onto and over heavier props like benches, as in Skate 3, instead of shoving them along. Light things (cones, boxes, bin lids, rubbish bags) and the prop you are holding are not something you step onto, also like Skate 3.
 - **Pushing an occupied bench (new):** a ped sitting on a bench you push now jumps off it, like Skate 3, instead of riding along or standing up normally.
