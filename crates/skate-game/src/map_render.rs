@@ -187,6 +187,7 @@ impl PreparedScene {
         self.retail = crate::retail_render::RetailScene::for_map(map);
         let mut tuning = crate::retail_render::MaterialTuning::load(asset_root);
         tuning.compressed_pages = self.compressed_pages;
+        tuning.page_cache = crate::page_cache::PageCache::for_map(asset_root, &map.name);
         // The sky is loaded before the world because its authored fog frame and
         // sun direction are encoded into the per-material storage buffer while
         // the material table is built, not patched in afterwards.

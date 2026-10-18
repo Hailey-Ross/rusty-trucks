@@ -1113,6 +1113,8 @@ pub(crate) struct MaterialTuning {
     pca_available: bool,
     /// Store the texture pages as BC3 rather than RGBA8; see [`compressed_pages`].
     pub(crate) compressed_pages: bool,
+    /// Where the map's BC3 pages are kept between launches (page_cache.rs); None: built each time.
+    pub(crate) page_cache: Option<crate::page_cache::PageCache>,
 }
 
 impl MaterialTuning {
@@ -1126,6 +1128,7 @@ impl MaterialTuning {
                 rows,
                 pca_available: read_pca(root).is_some(),
                 compressed_pages: false,
+                page_cache: None,
             },
             _ => {
                 warn!(
@@ -1681,7 +1684,7 @@ impl MaterialTable {
         for (source, request) in requests.iter().enumerate() {
             let Some(request) = request else { continue };
             if !slab.fits(request, map) {
-                table.seal(slab, map, tuning.compressed_pages, materials, images, buffers);
+                table.seal(slab, map, tuning, materials, images, buffers);
                 slab = Slab::new(&page_sizes);
             }
             // `seal` is what increments the count, so the slab being filled is
@@ -1689,7 +1692,7 @@ impl MaterialTable {
             let entry = slab.insert(request, map, table.slabs);
             table.entries[source] = Some(entry);
         }
-        table.seal(slab, map, tuning.compressed_pages, materials, images, buffers);
+        table.seal(slab, map, tuning, materials, images, buffers);
         table
     }
 
@@ -1697,7 +1700,7 @@ impl MaterialTable {
         &mut self,
         slab: Slab,
         map: &SkateMap,
-        compressed_pages: bool,
+        tuning: &MaterialTuning,
         materials: &mut impl AssetSink<WorldMaterial>,
         images: &mut impl AssetSink<Image>,
         buffers: &mut impl AssetSink<ShaderStorageBuffer>,
@@ -1728,7 +1731,7 @@ impl MaterialTable {
         ));
 
         let pages = std::array::from_fn(|class| {
-            slab.upload_page(class, map, compressed_pages, images)
+            slab.upload_page(class, map, tuning.compressed_pages, (usize::from(index), tuning.page_cache.as_ref()), images)
         });
         // A class with no textures gets a placeholder page, which nothing samples.
         let page_sizes = std::array::from_fn(|class| {
@@ -2089,11 +2092,14 @@ impl Slab {
         }
     }
 
+    /// `cache`: this slab's index, and the map's page cache (page_cache.rs), which keeps BC3 pages
+    /// between launches.
     fn upload_page(
         &self,
         class: usize,
         map: &SkateMap,
         compressed: bool,
+        (slab, cache): (usize, Option<&crate::page_cache::PageCache>),
         images: &mut impl AssetSink<Image>,
     ) -> Handle<Image> {
         let Some(page) = self.pages.get(class).filter(|p| !p.layers.is_empty()) else {
@@ -2103,9 +2109,38 @@ impl Slab {
         let (width, height) = (page.width, page.height);
         let levels = if page.mips { 32 - width.max(height).leading_zeros() } else { 1 };
         let format = PageFormat::for_page(compressed, width, height);
+        let layer_len = format.layer_len(width, height, levels);
+        let mib = |bytes: usize| bytes as f64 / (1024. * 1024.);
+        let rgba8 = PageFormat::Rgba8.layer_len(width, height, levels) * page.layers.len();
+        let mut cached = None;
+        if let Some(cache) = cache.filter(|_| format == PageFormat::Bc3) {
+            let key = page_key(page, map, format, levels);
+            let hashed = started.elapsed().as_millis();
+            match cache.read(slab, class, key, layer_len * page.layers.len()) {
+                Ok(bytes) if !cache.verify() => {
+                    info!(
+                        "world texture page {class}: {width}x{height}, {} layers, {levels} mip levels, {format:?}, \
+                         {:.1} MiB ({:.1} MiB as RGBA8), read from the page cache in {} ms ({hashed} ms of it hashing its textures)",
+                        page.layers.len(),
+                        mib(bytes.len()),
+                        mib(rgba8),
+                        started.elapsed().as_millis(),
+                    );
+                    return images.add(array_image(
+                        width,
+                        height,
+                        page.layers.len() as u32,
+                        levels,
+                        format.texture_format(),
+                        bytes,
+                        TextureViewDimension::D2Array,
+                    ));
+                }
+                read => cached = Some((cache, key, read, hashed)),
+            }
+        }
         // Allocated once at its final size: a page can be hundreds of MiB, and growing it by
         // doubling would hold the old and new buffers at once and keep up to twice its size.
-        let layer_len = format.layer_len(width, height, levels);
         let mut bytes = vec![0u8; layer_len * page.layers.len()];
         {
             // Each layer is resampled, mipmapped and encoded by itself, so threads take layers
@@ -2138,15 +2173,30 @@ impl Slab {
                 work();
             });
         }
-        let mib = |bytes: usize| bytes as f64 / (1024. * 1024.);
         info!(
             "world texture page {class}: {width}x{height}, {} layers, {levels} mip levels, {format:?}, \
              {:.1} MiB ({:.1} MiB as RGBA8), built in {} ms",
             page.layers.len(),
             mib(bytes.len()),
-            mib(PageFormat::Rgba8.layer_len(width, height, levels) * page.layers.len()),
+            mib(rgba8),
             started.elapsed().as_millis(),
         );
+        if let Some((cache, key, read, hashed)) = cached {
+            match read {
+                Ok(copy) if copy == bytes => {
+                    info!("PAGE_CACHE verify: page {class} of slab {slab} is its cached copy, byte for byte");
+                }
+                Ok(copy) => {
+                    let first = copy.iter().zip(&bytes).position(|(a, b)| a != b);
+                    warn!("PAGE_CACHE verify: page {class} of slab {slab} differs from its cached copy (first at byte {first:?}); writing it again");
+                    cache.write(slab, class, key, &bytes);
+                }
+                Err(miss) => {
+                    info!("PAGE_CACHE page {class} of slab {slab}: {miss} (key {key:016x}, {hashed} ms hashing its textures)");
+                    cache.write(slab, class, key, &bytes);
+                }
+            }
+        }
         images.add(array_image(
             width,
             height,
@@ -2206,6 +2256,28 @@ impl Slab {
             TextureViewDimension::CubeArray,
         ))
     }
+}
+
+/// The page cache's key for `page` (page_cache.rs `key`): its source textures, and its size,
+/// mip levels, format and layer count.
+fn page_key(page: &Page, map: &SkateMap, format: PageFormat, levels: u32) -> u64 {
+    let layers: Vec<(u32, u32, &[u8])> = page
+        .layers
+        .iter()
+        .map(|&id| {
+            let texture = &map.textures[id as usize - 1];
+            (texture.width, texture.height, texture.rgba.as_slice())
+        })
+        .collect();
+    let params = [
+        u64::from(page.width),
+        u64::from(page.height),
+        u64::from(levels),
+        u64::from(page.mips),
+        format as u64,
+        page.layers.len() as u64,
+    ];
+    crate::page_cache::key(&params, &layers, page_workers())
 }
 
 /// `format` is a UNORM format, `Rgba8Unorm` or `PageFormat`'s BC3: retail world textures are

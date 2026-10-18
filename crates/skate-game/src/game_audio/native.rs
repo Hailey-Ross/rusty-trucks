@@ -36,6 +36,7 @@ use skate_audio::runtime::Runtime;
 use super::Library;
 
 pub(crate) mod prefetch;
+pub(crate) mod startup;
 
 /// The host's step: one 60 Hz physics step. The host ticks once per physics step ([`HostClock`]);
 /// the MixMap evaluates on every second one (the console's 30 Hz, `skate_audio::mixmap::cadence`).
@@ -216,6 +217,8 @@ pub(crate) struct Native {
     resident: Vec<String>,
     /// The overlays' Csis projects installed in the runtime: (file, content stamp, registry token).
     pub(crate) mod_projects: Vec<(String, String, u64)>,
+    /// The first start's banks, read while the scene built ([`startup`]); empty after the start.
+    early: startup::Loaded,
 }
 
 /// A pass [`mixmap_frame`] began and [`mixmap_tick`] finishes.
@@ -272,6 +275,12 @@ impl Native {
     /// Start, the evaluator handing out post ids from `first_node` on (1 = a fresh runtime; a
     /// restart continues the old runtime's counter, `content::restart`).
     pub(super) fn start_from(library: &Library, world: WorldInstances, first_node: u32) -> Result<Self, String> {
+        Self::start_early(library, world, first_node, startup::Loaded::default())
+    }
+
+    /// [`Native::start_from`] taking the banks `early` holds from their sources instead of reading
+    /// them again (the first start, [`startup`]).
+    pub(super) fn start_early(library: &Library, world: WorldInstances, first_node: u32, early: startup::Loaded) -> Result<Self, String> {
         let files = library.aems();
         if files.projects.is_empty() {
             return Err("this install has no AEMS banks (run setup to refresh the audio)".into());
@@ -332,6 +341,7 @@ impl Native {
             frontend: None,
             resident: Vec::new(),
             mod_projects,
+            early,
         };
         // The environment (reverb) network and the eEQChain buses (optional install data).
         let (presets, eq) = library.bus_tuning();
@@ -384,6 +394,7 @@ impl Native {
         // The front-end sounds (the session marker's cellphone UI; sk8_menu).
         native.frontend = super::frontend::FrontendHost::load(&native, library);
         native.load_resident_banks(library);
+        std::mem::take(&mut native.early).finish();
         Ok(native)
     }
 
@@ -451,7 +462,8 @@ impl Native {
     }
 
     /// Load a bank (and its samples) unless it is loaded already. A bank the prefetch worker has
-    /// read and decoded is taken from it (waiting if it is mid-decode); otherwise it is read and
+    /// read and decoded is taken from it (waiting if it is mid-decode), and at the first start one
+    /// the start-up thread read from the same source ([`startup`]); otherwise it is read and
     /// decoded here, by the same `BankSource::load`. Either way `load_bank` runs now.
     pub(crate) fn ensure_bank(&mut self, library: &Library, stem: &str) -> Result<usize, String> {
         if let Some(&id) = self.banks.get(stem) {
@@ -459,7 +471,13 @@ impl Native {
         }
         let (bank, pcm) = match self.prefetch.take(stem) {
             Some(loaded) => loaded,
-            None => library.bank_source(stem)?.load()?,
+            None => {
+                let source = library.bank_source(stem)?;
+                match self.early.take_bank(&source) {
+                    Some(loaded) => loaded,
+                    None => source.load()?,
+                }
+            }
         };
         let mut runtime = self.shared.lock().map_err(|_| "audio lock poisoned")?;
         let id = runtime.load_bank(bank, pcm);
@@ -500,7 +518,8 @@ impl Native {
         // trigger sounds like every later one.
         let mut first = false;
         for (i, stem) in super::player_audio::SPLICE_BANKS.iter().enumerate() {
-            match library.splice_bank(stem) {
+            let loaded = library.splice_source(stem).and_then(|source| self.early.take_splice(stem, &source).or_else(|| source.load()));
+            match loaded {
                 Some((bank, pcm)) => {
                     if let Ok(mut runtime) = self.shared.lock() {
                         let rt = &mut *runtime;
@@ -512,7 +531,13 @@ impl Native {
             }
         }
         // SFXObj_Wheels' spin-down recordings, decoded now (first trigger = later triggers).
-        let streams: Vec<_> = super::player_audio::WHEEL_STREAMS.iter().map(|n| library.wheels_pcm(n)).collect();
+        let streams: Vec<_> = super::player_audio::WHEEL_STREAMS
+            .iter()
+            .map(|n| {
+                let file = library.wheels_source(n)?;
+                self.early.take_wheel(n, &file).or_else(|| super::library::wheels_load(&file))
+            })
+            .collect();
         let wheels = streams.iter().all(Option::is_some);
         if let Ok(mut runtime) = self.shared.lock() {
             runtime.load_streams(streams);
@@ -608,6 +633,7 @@ impl Native {
             frontend: None,
             resident: Vec::new(),
             mod_projects: Vec::new(),
+            early: Default::default(),
         }
     }
 
@@ -919,13 +945,16 @@ pub(super) struct Carry {
 /// start (the error is logged; those sounds stay silent).
 pub(super) fn launch(world: &mut World, carry: Option<Carry>) -> bool {
     static DSP: std::sync::Once = std::sync::Once::new();
+    // The banks the start-up thread read during the scene build (the first start; joined and taken
+    // whatever happens next, so its memory never outlives this call unused).
+    let early = world.remove_resource::<startup::EarlyLoads>().map(startup::EarlyLoads::join).unwrap_or_default();
     let Some(settings) = world.get_resource::<super::AudioSettings>() else { return false };
     let instances = carry.map_or_else(|| if settings.more_audible_world() { WorldInstances::MORE_AUDIBLE } else { WorldInstances::RETAIL }, |c| c.world);
     let Some(library) = world.get_resource::<Library>() else { return false };
     // Which compiled copy of the DSP loops runs (hardware FMA or plain; same output bits): chosen
     // once, before the first render (doc 11 "Hardware FMA dispatch").
     DSP.call_once(|| info!("AUDIO_DSP {}", skate_audio::dsp::init_fma()));
-    let (started, projects) = (Native::start_from(library, instances, carry.map_or(1, |c| c.first_node)), library.aems().projects.len());
+    let (started, projects) = (Native::start_early(library, instances, carry.map_or(1, |c| c.first_node), early), library.aems().projects.len());
     match started {
         Ok(mut native) => {
             info!("Game audio: native AEMS runtime on ({projects} projects)");
@@ -1097,6 +1126,7 @@ mod tests {
             frontend: None,
             resident: Vec::new(),
             mod_projects: Vec::new(),
+            early: Default::default(),
         }
     }
 

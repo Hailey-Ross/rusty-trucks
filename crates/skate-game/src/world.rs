@@ -17,7 +17,8 @@ impl Plugin for WorldPlugin {
             .add_systems(Startup, spawn);
     }
 }
-fn spawn(world: &mut World) {
+/// The scene build (Startup). Audio `setup` runs before it, so the start-up banks load meanwhile.
+pub(crate) fn spawn(world: &mut World) {
     let scene = {
         let server = world.resource::<AssetServer>();
         let manifest = world.resource::<AssetManifest>();

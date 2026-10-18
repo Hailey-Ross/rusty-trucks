@@ -37,6 +37,8 @@ impl Config {
         };
         let mut difficulty_override = None;
         let mut explicit_map = false;
+        // The loaded map's fingerprint, hashed while it was read (`map_fingerprint` reads it again).
+        let mut loaded_fingerprint = None;
         let mut args = std::env::args_os().skip(1);
         while let Some(arg) = args.next() {
             match arg.to_str() {
@@ -70,13 +72,15 @@ impl Config {
                 }
                 Some("--map") => {
                     let path = PathBuf::from(args.next().ok_or("--map requires a .skate file")?);
-                    config.map = Some(skate_data::skate_map::SkateMap::load(&path)?);
+                    let (map, fingerprint) = skate_data::skate_map::SkateMap::load_with_fingerprint(&path)?;
+                    config.map = Some(map);
                     config.map_path = Some(path.canonicalize().map_err(|e| e.to_string())?);
+                    loaded_fingerprint = Some(fingerprint);
                     explicit_map = true;
                 }
                 Some("--test-world") if !crate::map_library::TEST_WORLD_AVAILABLE =>
                     return Err("--test-world: the Switch build has no test world (map_library.rs)".into()),
-                Some("--test-world") => { explicit_map = true; config.map = None; config.map_path = None; }
+                Some("--test-world") => { explicit_map = true; config.map = None; config.map_path = None; loaded_fingerprint = None; }
                 Some("--check-assets") => config.check_assets = true,
                 // Maps arrive on stdin; never load the saved default map.
                 Some("--validate-maps") => { config.validate_maps = true; explicit_map = true; }
@@ -119,14 +123,19 @@ impl Config {
         }
         if !explicit_map {
             if let Some(path) = crate::map_library::start_map(&config.asset_root)? {
-                config.map = Some(skate_data::skate_map::SkateMap::load(&path)?);
+                let (map, fingerprint) = skate_data::skate_map::SkateMap::load_with_fingerprint(&path)?;
+                config.map = Some(map);
                 config.map_path = Some(path.canonicalize().map_err(|e| e.to_string())?);
+                loaded_fingerprint = Some(fingerprint);
             }
         }
         if config.validate_maps && (config.map.is_some() || config.check_assets) {
             return Err("--validate-maps reads maps from stdin; do not combine it with --map or --check-assets".into());
         }
-        config.map_fingerprint = map_fingerprint(config.map_path.as_deref())?;
+        config.map_fingerprint = match loaded_fingerprint {
+            Some(fingerprint) => fingerprint,
+            None => map_fingerprint(config.map_path.as_deref())?,
+        };
         if config.multiplayer.direct.is_some() && config.multiplayer.session==0 {return Err("Direct multiplayer requires --net-session (a nonzero number shared by both players)".into());}
         if let Some(id) = &config.teleport {
             let destinations = crate::teleport_menu::load(&config.asset_root)?;
@@ -152,14 +161,16 @@ impl Config {
     }
 }
 
-/// Hash map bytes identically for startup and background map replacement.
+/// Hash map bytes identically for startup and background map replacement. A map just loaded has
+/// its fingerprint from `SkateMap::load_with_fingerprint`, the same hash without reading it again.
 pub(crate) fn map_fingerprint(path: Option<&std::path::Path>) -> Result<u64, String> {
     Ok(if let Some(path)=path {
             use std::io::Read;
+            use skate_data::skate_map::{fingerprint_update, FINGERPRINT_START};
             let mut file=std::fs::File::open(path).map_err(|e|e.to_string())?;
-            let mut hash=0xcbf29ce484222325u64;
+            let mut hash=FINGERPRINT_START;
             let mut buffer=[0;65536];
-            loop {let n=file.read(&mut buffer).map_err(|e|e.to_string())?;if n==0{break;}for b in &buffer[..n]{hash=(hash^u64::from(*b)).wrapping_mul(0x100000001b3);}}
+            loop {let n=file.read(&mut buffer).map_err(|e|e.to_string())?;if n==0{break;}hash=fingerprint_update(hash,&buffer[..n]);}
             hash
         } else {skate_net::hash(b"skate-test-world-v1")})
 }

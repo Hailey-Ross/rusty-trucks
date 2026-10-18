@@ -8,7 +8,9 @@ included.**
 ## What you need
 
 - A Switch running Atmosphère, with the Homebrew Menu (hbmenu) or sphaira.
-- About 5 GB free on the microSD card. FAT32 is fine: no file is near 4 GB.
+- About 6 GB free on the microSD card: about 4.6 GB for the game, and up to 1 GB for
+  the textures it keeps once each map has been played. FAT32 is fine: no file is
+  near 4 GB.
 - The PC version, set up from your own Skate 3 Xbox 360 disc. This Switch build
   matches PC **experimental build 49**; with another build, the export script warns
   you if the files differ.
@@ -57,7 +59,9 @@ game. Started from the Album, homebrew gets too little memory. Then choose
 
 The first launch takes longer while it compiles shaders. The compiled shaders are
 kept in `.mesa` at the root of the SD card, so later launches start faster.
-Deleting `.mesa` is safe.
+The first launch of each map also builds its textures for the Switch and keeps
+them in `switch/skate3rust/cache/`, about 250 MB for University, so later launches
+read them instead. Deleting `.mesa` or `cache` is safe; they're made again.
 
 Controls are the PC version's controller layout. **(+)** opens the menu (graphics,
 difficulty, maps, character); **(B)** goes back. **Quit game** returns to the

@@ -112,8 +112,13 @@ fn start(world: &World, entry: Entry) -> Result<Phase, String> {
     let job = std::thread::Builder::new().name("map-loader".into()).spawn(move || {
         let _span = info_span!("load_map_transition").entered();
         let started = Instant::now();
-        let map = info_span!("read_map").in_scope(|| selected.path.as_deref().map(skate_data::skate_map::SkateMap::load).transpose())?;
-        let map_fingerprint = crate::config::map_fingerprint(selected.path.as_deref())?;
+        let (map, map_fingerprint) = match selected.path.as_deref() {
+            Some(path) => {
+                let (map, fingerprint) = info_span!("read_map").in_scope(|| skate_data::skate_map::SkateMap::load_with_fingerprint(path))?;
+                (Some(map), fingerprint)
+            }
+            None => (None, crate::config::map_fingerprint(None)?),
+        };
         let read_time = started.elapsed();
         let validation_started = Instant::now();
         if let Some(map) = &map { crate::skate_world::validate_runtime(map)?; }

@@ -353,16 +353,60 @@ impl StoredBlock<'_> {
         Ok(decoded)
     }
 }
+/// The map fingerprint's starting value: the fingerprint is 64-bit FNV-1a over the whole `.skate`
+/// file, `fingerprint_update(FINGERPRINT_START, &file)`.
+pub const FINGERPRINT_START: u64 = 0xcbf29ce484222325;
+
+/// Continue a map fingerprint (see [`FINGERPRINT_START`]) over the file's next bytes.
+pub fn fingerprint_update(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 impl SkateMap {
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::read(path, false).map(|(map, _)| map)
+    }
+
+    /// [`load`](Self::load) and the file's fingerprint ([`FINGERPRINT_START`]), hashed from the
+    /// bytes already read, on a thread of its own while the parse runs. Hashing by path reads the
+    /// whole file a second time: 281 MB for University, seconds on the Switch's SD card.
+    pub fn load_with_fingerprint(path: &Path) -> Result<(Self, u64), String> {
+        let (map, fingerprint) = Self::read(path, true)?;
+        Ok((map, fingerprint.unwrap_or_default()))
+    }
+
+    fn read(path: &Path, fingerprint: bool) -> Result<(Self, Option<u64>), String> {
         let started = Instant::now();
         let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let disk = started.elapsed();
         let parse_started = Instant::now();
-        let map = Self::parse(&data).map_err(|e| format!("{}: {e}", path.display()))?;
-        eprintln!("MAP_READ_TIMING name={:?} disk_ms={} parse_ms={} file_bytes={}",
+        let hash = |data: &[u8]| {
+            let started = Instant::now();
+            (fingerprint_update(FINGERPRINT_START, data), started.elapsed())
+        };
+        let (map, hashed) = std::thread::scope(|scope| {
+            let worker = fingerprint.then(|| {
+                std::thread::Builder::new()
+                    .name("map-fingerprint".into())
+                    .spawn_scoped(scope, || hash(&data))
+            });
+            let map = Self::parse(&data);
+            let hashed = match worker {
+                Some(Ok(worker)) => Some(worker.join().unwrap_or_else(|_| hash(&data))),
+                // No thread to be had: hashed here, after the parse, as before.
+                Some(Err(_)) => Some(hash(&data)),
+                None => None,
+            };
+            (map, hashed)
+        });
+        let map = map.map_err(|e| format!("{}: {e}", path.display()))?;
+        let fingerprint_ms = hashed.map_or(String::new(), |(_, time)| format!(" fingerprint_ms={}", time.as_millis()));
+        eprintln!("MAP_READ_TIMING name={:?} disk_ms={} parse_ms={} file_bytes={}{fingerprint_ms}",
             map.name, disk.as_millis(), parse_started.elapsed().as_millis(), data.len());
-        Ok(map)
+        Ok((map, hashed.map(|(hash, _)| hash)))
     }
     pub fn parse(data: &[u8]) -> Result<Self, String> {
         // std's `available_parallelism` is `Unsupported` on Horizon, which made this one worker
