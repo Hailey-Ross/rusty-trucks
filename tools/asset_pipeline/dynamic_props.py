@@ -111,6 +111,7 @@ def template_meshes(raw):
             rails = decode_grind_splines(raw)
         result[key] = dict(mesh_info=mesh_info, matrix=matrix(raw, at), grab_splines=splines,
                           grind_splines=template_rails(raw, table, at, index, following, rails),
+                          attach=template_attach(raw, table, at, index, following),
                           model_matrix=matrix(raw, base+struct.unpack_from('>I', raw, base+32)[0]),
                           characteristics=characteristics_key(raw, at), collision=template_collision(raw, table, at))
     return result
@@ -180,6 +181,32 @@ def decode_grind_splines(raw):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'vendor/university/tools/vanilla_map_extraction/tools'))
     from retail_grind_splines import decode_grind_splines as decode
     return decode(bytes(raw))
+
+
+def template_attach(raw, table, at, index, following):
+    """The part's attach locator (row-vector 4x4, part model space), or None.
+
+    Retail 82C4E128 walks the part's EB001B list (tInstance +136): point count +4, entry table +0x14, 8 B entries
+    (key, subreference); the point whose u32 at +0x60 is 0 becomes the template's attach matrix (template+0x78), which
+    the hand prop placement 82E3E1B0 applies inverted (research b204, b205). The points are the 0x70 B objects of
+    the EB001E section in the part's block (matrix +0x00, two points +0x40 / +0x50, type +0x60). The subreference
+    table is not decoded; like ``template_rails``, the section's count must match the list's."""
+    link = struct.unpack_from('>I', raw, at+136)[0]
+    if link == 0 or link >= len(table) or table[link][5] != 0xEB001B:
+        return None
+    count = struct.unpack_from('>I', raw, table[link][0]+4)[0]
+    blocks = [i for i in range(index+1, following) if table[i][5] == 0xEB001E]
+    if count == 0 or len(blocks) != 1:
+        return None
+    base, _, size, _, _, _ = table[blocks[0]]
+    found, start = struct.unpack_from('>2I', raw, base)
+    if found != count or start+found*0x70 > size:
+        raise ValueError('DMO part point list does not match its point section')
+    for k in range(found):
+        at_point = base+start+k*0x70
+        if struct.unpack_from('>I', raw, at_point+0x60)[0] == 0:
+            return matrix(raw, at_point).tolist()
+    return None
 
 
 def template_rails(raw, table, at, index, following, rails):

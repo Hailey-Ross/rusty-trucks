@@ -9,7 +9,7 @@ import json
 import os
 import sys
 
-from .dynamic_props import (locators, transform_mesh, template_meshes, save_catalog, load_catalog, mobj_extension,
+from .dynamic_props import (template_attach, locators, transform_mesh, template_meshes, save_catalog, load_catalog, mobj_extension,
                             characteristics_key, records, template_rails)
 
 
@@ -132,6 +132,30 @@ class DynamicPropsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'outside'):
             template_rails(raw, table, 0, 1, 4, rails)
         self.assertEqual(template_rails(raw, table[:3], 0, 1, 3, rails), [])
+
+    def test_part_attach_is_the_type_0_point(self):
+        # One part: EB000D record at 0 (+136 -> section 2), model section 1, point list, point section 3 (2 points).
+        raw = bytearray(512)
+        struct.pack_into('>I', raw, 136, 2)
+        struct.pack_into('>I', raw, 200+4, 2)
+        struct.pack_into('>2I', raw, 240, 2, 16)
+        grip = [[0, -1, 0, 0], [0, 0, 1, 0], [-1, 0, 0, 0], [0, 0.343, 0, 1]]
+        for k, kind in enumerate((7, 0)):
+            at = 240+16+k*0x70
+            struct.pack_into('>16f', raw, at, *(x for row in (grip if kind == 0 else np.eye(4).tolist()) for x in row))
+            struct.pack_into('>I', raw, at+0x60, kind)
+        table = [(0, 0, 160, 0, 0, 0xEB000D), (160, 0, 16, 0, 0, 0xEB0001), (200, 0, 32, 0, 0, 0xEB001B),
+                 (240, 0, 256, 0, 0, 0xEB001E)]
+        attach = template_attach(raw, table, 0, 1, 4)
+        self.assertTrue(np.allclose(attach, grip, atol=1e-6))
+        # The list's count must match the section's.
+        struct.pack_into('>I', raw, 200+4, 3)
+        with self.assertRaisesRegex(ValueError, 'does not match'):
+            template_attach(raw, table, 0, 1, 4)
+        # No list, or no point section in the block: no locator.
+        self.assertIsNone(template_attach(raw, table[:3], 0, 1, 3))
+        struct.pack_into('>I', raw, 136, 0)
+        self.assertIsNone(template_attach(raw, table, 0, 1, 4))
 
 # Fields of livingworld_dynamicobject_characteristics the DMO reads (layout
 # offsets from the schema; doc 26 "Per-type DMO data").

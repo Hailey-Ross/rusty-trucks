@@ -1813,6 +1813,15 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   locator (`template+0x78`, the type-0 entry of the part's EB001B point list, written by `82C4E128`).
 - **Ours before:** the same bone (`HAND_PROP_BONE`) and T * R, but R in XYZ order and no inverse(P).
 - **Change:** `HandPropRecord::local` uses `EulerRot::ZYX` (z, y, x). Test `record_rotation_is_rz_ry_rx_like_retail`
-  (the stock cellphone's 15 / -10 / 15 degrees against Rz * Ry * Rx). Not play-tested.
-- **NOT RETAIL YET:** inverse(P). Setup does not export the attach locator; b205 gives the export recipe
-  (`.local/research/b205-hand-prop-bone-locator.md`), to verify on a real `_lw` template first.
+  (the stock cellphone's 15 / -10 / 15 degrees against Rz * Ry * Rx).
+- **Attach locator (same day):** setup now exports P. `dynamic_props.template_attach` reads the part's EB001B point
+  list (count +4) and its EB001E section (0x70 B points: matrix +0x00, type +0x60) and keeps the type-0 point;
+  `hand_props.json` carries it as `attach` (row vectors), and `HandPropRecord::local` is T * R * inverse(attach), so
+  the model's grip point, not its origin, lands at the record's offset. [data] All 22 hand props with a template have
+  one rigid type-0 point, and every one's tInstance and model matrices are identity, so P is already in the glb's
+  space (e.g. the bags', briefcase's and duffle bag's points sit 0.34 m up at the handle, most turned about 90
+  degrees). Identity when absent (a mod model, an older install). `hand_props.py` joined the maps group's setup
+  fingerprint (it runs there): release copies ask for Refresh Game Files once. Test
+  `attach_locator_lands_on_the_offset`. Not play-tested.
+- **Modding:** a mod model without a locator is held by its origin (identity attach); rotation and offset stay the
+  record's (tables) values. Open: an `attach` override per record for mods.
