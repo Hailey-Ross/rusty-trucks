@@ -163,8 +163,49 @@ pub(crate) fn read(root: &Path) -> (MenuData, bool) {
     }
 }
 
+/// Owner prefix of the engine handlers that teleport to a Challenge Map location (`teleport:<fe_locations key>`).
+pub(crate) const TELEPORT: &str = "teleport:";
+
+/// The Challenge Map tree (vault `map_listing` under `progression`, the root career and free skate open; b244d) and
+/// the keys of the locations that have a teleport matrix (`private/teleports.json`, any map).
+fn challenge_map(asset_root: &std::path::Path) -> (Vec<skate_core::menus::MapNode>, Vec<String>) {
+    let nodes = match skate_data::collections::Collections::load(asset_root) {
+        Ok(c) => skate_data::challenge_map::load(c.entries(), "progression", &skate_data::challenge_map::LocationRules::default()),
+        Err(error) => {
+            warn!("RETAIL_MENUS challenge map: {error}");
+            Vec::new()
+        }
+    };
+    let teleports = crate::teleport_menu::load(asset_root)
+        .map(|rows| rows.into_iter().filter(|d| d.matrix.is_some()).map(|d| d.id).collect())
+        .unwrap_or_default();
+    (nodes, teleports)
+}
+
+impl RetailMenus {
+    /// Every Challenge Map location with a teleport matrix gets the engine's teleport handler (so it is enabled);
+    /// every other node keeps its hooks and stays greyed until a handler exists (user, 2026-10-18).
+    pub(crate) fn register_teleports(&mut self, teleports: &[String]) -> usize {
+        let locations: Vec<EntryRef> = self
+            .registry
+            .data()
+            .map_nodes
+            .iter()
+            .filter(|n| n.entry.kind == EntryKind::FeLocation && teleports.contains(&n.entry.id))
+            .map(|n| n.entry.clone())
+            .collect();
+        for entry in &locations {
+            let owner = Owner::Engine(format!("{TELEPORT}{}", entry.id));
+            self.registry.register_handler(entry.clone(), Handler { owner, select: true, highlight: false, callback: None });
+        }
+        locations.len()
+    }
+}
+
 fn load(mut commands: Commands, config: Res<crate::config::Config>) {
-    let (data, loaded) = read(&config.asset_root);
+    let (mut data, loaded) = read(&config.asset_root);
+    let (nodes, teleports) = challenge_map(&config.asset_root);
+    data.map_nodes = nodes;
     if loaded {
         info!(
             "RETAIL_MENUS: {} categories, {} items, {} settings rows, {} modes",
@@ -174,7 +215,10 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>) {
             data.modes.len()
         );
     }
-    commands.insert_resource(RetailMenus::new(data, loaded));
+    let mut menus = RetailMenus::new(data, loaded);
+    let enabled = menus.register_teleports(&teleports);
+    info!("RETAIL_MENUS challenge map: {} nodes, {enabled} teleport locations", menus.registry.data().map_nodes.len());
+    commands.insert_resource(menus);
 }
 
 pub(crate) struct RetailMenusPlugin;
