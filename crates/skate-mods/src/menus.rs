@@ -13,8 +13,13 @@ pub fn valid_menu_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 96 && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
+/// The pause menu kinds, and the Challenge Map node kinds (vault classes: `fe_locations` = a teleport location, ...).
 pub fn valid_entry_kind(s: &str) -> bool {
-    matches!(s, "category" | "item" | "setting")
+    matches!(
+        s,
+        "category" | "item" | "setting" | "map_listing" | "map_filter" | "map_category" | "fe_locations" | "world" | "challenges"
+            | "map_commands" | "code_unlocks"
+    )
 }
 
 fn valid_label(s: &str) -> bool {

@@ -710,7 +710,10 @@ function sdk.rig.reset_part(index) sdk.rig.configure_part(index,nil) end
 
 -- Retail menus (capability retail_menus = 1): the pause menu and Game Settings structure.
 -- Entries: kind 'category' | 'item' | 'setting', keyed by retail internal names; new ones
--- are named '<mod id>.<name>'. Events arrive in on_event (name menu_select / menu_highlight /
+-- are named '<mod id>.<name>'. Challenge Map nodes use their vault class as the kind and their vault key as
+-- the id: 'map_listing' (tabs, folders), 'map_filter', 'map_category', 'fe_locations' (teleport locations,
+-- e.g. sdk.menus.handle('fe_locations', 'dist_downtown_aletown', {...})), 'world', 'challenges',
+-- 'map_commands', 'code_unlocks'; a node without a handler is greyed. Events arrive in on_event (name menu_select / menu_highlight /
 -- menu_value). Everything is removed when the mod stops.
 sdk.menus = { version = 1 }
 local function menu_info() return as_table(sdk.snapshot.menus) or {} end
