@@ -845,3 +845,50 @@ No behaviour change.
   range: the nearest prop with grab splines within 6 m); `SKITCH_CANDIDATE kind id can_grab time latch_time latch` per
   car spot when the skitch latch changes. `PROP_GRAB_MISS` is written with or without it.
 - **Not play-tested yet.**
+
+## Carry: the skater's turn eases in over the first half second (2026-10-18)
+
+Problem (user, asks 15 / 16): prop grab controls "not like retail". Research b240 to b245 (`.local/research/`) checked
+every part of the held update against the retail code. The stick frame (the latched grab edge), the right stick's yaw
+about the prop's centre, the braking to a stop and the held friction pair already match retail; the user confirmed in
+game that the left stick slides the prop the way it is pushed (2026-10-18: "it slides right. it follows the direction
+of the stick").
+
+Root cause of the one difference found: our skater root snapped to face the grab edge every tick. In retail 82D46610
+writes +1124 = the wrapped angle to the edge frame times the curve 023D73966B8669A5 [data] at the time held (+1140:
+0 at the grab, + 1/60 per held tick, image 0x820849C8), and 82BE1058 (called by 82BDF268) turns the character by
++1124 [code]. The curve gives 0.18 of the angle at the grab, about 0.09 a tick later, then ramps to 1.0 at 0.5 s; from
+then on the turn is whole, as before.
+
+Change: `MoveObjectTuning::root_yaw_gain` (skate-core move_object.rs, loaded from the collection in
+offboard/settings.rs), `SkaterFollow::time_held` / `root_yaw_gain` (advanced in `update_anchor`), and
+biped_ground.rs multiplies the turn by `PropCarry::root_yaw_gain()`. Mod key `set_tuning("carry", { root_yaw_gain =
+{{x...}, {y...}} })`, all y 1.0 = the old snap. Test `root_yaw_eases_in_over_the_time_held`.
+
+Open: whether retail reads the time held before or after it advances within the tick (one tick of difference); the
+yaw sign convention of 8296EC98 (ours keeps the edge frame's sense); 82BDF268's translation (+288 hands step, curve
+4E91B4A605E54CC2, cap 8 m/s, then a pull toward +416 of at most 0.3 m) is not ported yet and needs one recomp hook.
+
+## Grab: no prop could be grabbed, the grab scene held 2 of 786 props (2026-10-18)
+
+Problem (laptop session game-20261018-152526, user): "I was trying to grab objects, but nothing happened. I also
+turned on the opt-in to see and visualize grabbing objects, but I couldn't see anything." 57 PROP_GRAB_MISS lines,
+all "decision no record qualified"; every GRAB_VIEW line "in_range=0", also 0.89 m from a bench.
+
+Root cause: the grab-scene ids pack the prop as `PROP_GRAB_TAG | id << 6 | spline`, and `grab_object_of` skipped
+every body whose id is 2^24 or more. Map props carry their 32-bit collision instance id (the test bench:
+4254206437) and mid-game bodies start at 0x2000_0000, so on DownTown only 2 props reached the grab scene. Before
+53ff98bc the carry chose its own target from all props, which hid this; since then it only binds the record the
+Ground decision qualified from the scene, so nothing could be grabbed (the yellow dumpster that grabbed earlier was
+presumably one of the two).
+
+Change (`physics/prop_dynamics.rs`): every body gets a dense grab slot (map props in load order, mid-game bodies in
+creation order, `next_grab_slot`); the grab ids pack the slot, and `prop_of_grab_key` maps a key back to the prop id
+(the carry's bind, PROP_GRAB_MISS and GRAB_VIEW use it). The slot is deterministic per map load (multiplayer: host
+and peers agree as long as they load the same map and create mid-game props in the same order).
+
+Tests: `carry_direction_tests` (data, DownTown) now loads the map's grab splines and DMO types like the world loader
+and turns prop grab on like the game (before, it ran without either and could not have caught this); it asserts the
+test bench has a full 32-bit id, has a grab object and that over 100 props are in the scene, then grabs and follows
+the left stick in 8 directions: both pass. `the_carry_binds_the_published_record_at_the_move_object_enter` checks
+`prop_of_grab_key`.

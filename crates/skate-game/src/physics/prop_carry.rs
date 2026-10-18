@@ -174,6 +174,7 @@ pub(crate) struct LocomotionOverrides {
     pub hand_ik_curve: Option<[[f32; 8]; 2]>,
     pub hand_ik_rate: Option<f32>,
     pub hand_ik_reach: Option<f32>,
+    pub root_yaw_gain: Option<[[f32; 8]; 2]>,
 }
 
 impl LocomotionOverrides {
@@ -201,6 +202,7 @@ impl LocomotionOverrides {
         if let Some(v) = self.lever_yaw { m.lever_yaw = curve(v); }
         if let Some(v) = self.mass_speed { m.mass_speed = curve(v); }
         if let Some(v) = self.inertia_yaw_gain { m.inertia_yaw_gain = curve(v); }
+        if let Some(v) = self.root_yaw_gain { m.root_yaw_gain = curve(v); }
         // `grip_reach` (the old engine reach) now sets the retail follow
         // reach (0.65 m, 82D44A10) between the edge point and the body.
         if let Some(v) = self.grip_reach { m.follow_reach = v; }
@@ -600,6 +602,13 @@ impl PropCarry {
         self.frame.map(|f| (f.skater, f.forward))
     }
 
+    /// Share of the angle to the grab edge the skater root turns this tick
+    /// (82D46610 +1124: curve 023D73966B8669A5 at the time held); 1.0 (a
+    /// snap) before the follow state exists.
+    pub(crate) fn root_yaw_gain(&self) -> f32 {
+        self.follow.map_or(1.0, |f| f.root_yaw_gain)
+    }
+
     /// Snapshot of this slot's Move Object state: held id and the flat
     /// controller state (multiplayer-ready; no transport here).
     #[allow(dead_code)]
@@ -775,7 +784,7 @@ impl PropCarry {
     /// that starts no carry, with the Ground decision (82D324B0: the qualified record, or none) and the nearest prop.
     fn log_miss(&self, dynamics: &PropDynamics, carrier: Carrier, reason: &str) {
         let decision = match carrier.ground_grab {
-            Some(Some((kind, key))) => format!("qualified {kind}/{key:#x} (prop {} record {})", (key & !super::prop_dynamics::PROP_GRAB_TAG) >> 6, key & 63),
+            Some(Some((kind, key))) => format!("qualified {kind}/{key:#x} (prop {:?} record {})", dynamics.prop_of_grab_key(key, true), key & 63),
             Some(None) => "no record qualified".to_owned(),
             None => "no ground decision".to_owned(),
         };
@@ -800,8 +809,7 @@ impl PropCarry {
     /// as in the enter). None (logged) for a record that is not a prop's or a prop that is gone.
     fn bind(&mut self, dynamics: &PropDynamics, mut record: Record, carrier: Carrier) -> Option<u32> {
         let key = record.0[48];
-        let tag = super::prop_dynamics::PROP_GRAB_TAG;
-        let id = (key & tag != 0).then_some((key & !tag) >> 6);
+        let id = dynamics.prop_of_grab_key(key, true);
         let Some(id) = id.filter(|&id| dynamics.held_body(id).is_some()) else {
             self.log_miss(dynamics, carrier, "the published record is not a prop's that is still there");
             return None;

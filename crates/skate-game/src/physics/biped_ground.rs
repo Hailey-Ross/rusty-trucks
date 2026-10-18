@@ -285,11 +285,16 @@ pub(crate) fn update(
     // grab record, 82D46218 / 82D463D8 blend toward it, 82BDF268 moves the
     // character there. The frame blend is a snap at retail data (it only
     // blends when the frame jumps >= 60 m per tick: physics_state_offboard
-    // +448 = 1.0 x 60, 82D46218), so the facing snaps to the edge normal as
-    // in retail. The skater target is the root moved by the step of the
+    // +448 = 1.0 x 60, 82D46218). The root yaw is NOT that frame: 82D46610
+    // writes +1124 = wrapped angle to the edge frame x curve 023D73966B8669A5
+    // at the time held, and 82BE1058 (from 82BDF268) turns the character by
+    // it, so the facing eases in over the first 0.5 s of a grab (0.18 of the
+    // angle at the grab) and turns the whole angle from then on (b243 / b245).
+    // The skater target is the root moved by the step of the
     // retail follow point +416 published by prop_carry (the step is bounded
-    // there, 82BD41B0), one tick behind the prop. NOT RETAIL YET: 82BDF268 itself (character sweep,
-    // step-up, weight +1124); the walking job's velocity override moves the
+    // there, 82BD41B0), one tick behind the prop. NOT RETAIL YET: 82BDF268's
+    // translation (the +288 hands step, then a pull toward +416 of at most
+    // 0.3 m); the walking job's velocity override moves the
     // root onto the target each tick. The walking stick stays idle.
     let moving_object = (p.state_2508 == 502 && physics.prop_carry.held().is_some())
         .then(|| physics.prop_carry.skater_target())
@@ -300,7 +305,7 @@ pub(crate) fn update(
             let (dx, dz) = (target.x - root[0], target.z - root[2]);
             let velocity = [dx / dt, 0.0, dz / dt, 0.0];
             let wrap = |a: f32| (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-            let turn = wrap(facing.x.atan2(facing.z) - frame[2][0].atan2(frame[2][2]));
+            let turn = wrap(facing.x.atan2(facing.z) - frame[2][0].atan2(frame[2][2])) * physics.prop_carry.root_yaw_gain();
             (velocity, turn)
         });
     let (stick_x, stick_z) = if moving_object.is_some() {
