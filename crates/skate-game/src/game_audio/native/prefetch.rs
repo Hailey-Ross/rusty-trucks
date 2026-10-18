@@ -106,6 +106,11 @@ impl Prefetch {
         self.slots.contains_key(stem)
     }
 
+    /// Whether the worker still has the bank queued or is decoding it (the startup hold waits for these).
+    pub(crate) fn busy(&self, stem: &str) -> bool {
+        self.slots.get(stem).is_some_and(|slot| slot.stage.lock().is_ok_and(|s| matches!(*s, Stage::Queued | Stage::Running)))
+    }
+
     /// How many times [`Prefetch::clear`] ran (see the field).
     pub(crate) fn clears(&self) -> u64 {
         self.clears

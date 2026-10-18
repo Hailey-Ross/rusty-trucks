@@ -32,8 +32,7 @@ impl StartupLoading {
         Self { holds: Vec::new(), started: Instant::now(), done: false }
     }
 
-    /// Whether the hold `id` is still taken (tests).
-    #[cfg(test)]
+    /// Whether the hold `id` is still taken (tests, and holds that wait for another, `world_sources`).
     pub(crate) fn holding(&self, id: &str) -> bool {
         self.holds.iter().any(|(h, _)| h == id)
     }

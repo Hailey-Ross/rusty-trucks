@@ -94,6 +94,9 @@ impl Package {
     }
 }
 
+/// How often an unforced [`Manager::scan`] reads the mods folder.
+const SCAN_INTERVAL: Duration = Duration::from_millis(500);
+
 pub struct Manager {
     pub packages: BTreeMap<String, Package>,
     pub diagnostics: Vec<String>,
@@ -134,8 +137,14 @@ impl Manager {
         }
     }
 
+    /// Whether an unforced [`Self::scan`] would read the folder within `ahead` from now (the host keeps the snapshot
+    /// a starting mod gets fresh around then).
+    pub fn scan_due_within(&self, ahead: Duration) -> bool {
+        self.last_scan.elapsed() + ahead >= SCAN_INTERVAL
+    }
+
     pub fn scan(&mut self, force: bool) {
-        if !force && self.last_scan.elapsed() < Duration::from_millis(500) {
+        if !force && self.last_scan.elapsed() < SCAN_INTERVAL {
             return;
         }
         self.last_scan = Instant::now();

@@ -86,6 +86,8 @@ pub(crate) struct Mods {
     skater_remote: BTreeMap<u64, observation::WireObs>,
     pending_remote_teleport: Option<skate_mods::TeleportOptions>,
     volumes: BTreeMap<(String, String), volumes::Volume>,
+    /// The last `MODS_BUSY` reason logged.
+    logged_busy: Option<&'static str>,
     pub(crate) custom_menus: BTreeMap<(String,String), skate_mods::extensions::MenuOptions>,
 }
 
@@ -237,17 +239,41 @@ pub(crate) fn player_attached(mods: &Mods) -> bool {
 
 impl Mods {
     fn runtime_busy(&self) -> bool {
-        self.manager.packages.values().any(|p| p.running())
-            || !self.manager.commands.is_empty()
-            || !self.manager.retired.is_empty()
-            || !self.bodies.is_empty()
-            || !self.graphics.is_empty()
-            || !self.overlays.is_empty()
-            || !self.joints.is_empty()
-            || self.attach.is_some()
-            || !self.canvases.is_empty()
-            || !self.skater_proxies.is_empty()
-            || !self.volumes.is_empty()
+        self.busy_reason().is_some()
+    }
+
+    /// Whether the per-frame snapshot has a reader: a running mod, or runtime state mods left behind (bodies,
+    /// graphics, commands, ...). The skater proxies alone (the living world's NPC skaters, peds and cars mirrored
+    /// into the mods' world for mod bodies to hit) have none, yet they kept the runtime busy, so with no mod at all
+    /// the game built the snapshot every frame and tick (about 0.6 ms of main thread a frame in DownTown, 2026-10-18).
+    fn snapshot_has_reader(&self) -> bool {
+        self.busy_reason_except_proxies().is_some()
+    }
+
+    fn busy_reason_except_proxies(&self) -> Option<&'static str> {
+        self.busy_reasons().find_map(|(busy, why)| (busy && why != PROXIES).then_some(why))
+    }
+
+    fn busy_reasons(&self) -> impl Iterator<Item = (bool, &'static str)> {
+        [
+            (self.manager.packages.values().any(|p| p.running()), "a running mod"),
+            (!self.manager.commands.is_empty(), "pending commands"),
+            (!self.manager.retired.is_empty(), "retired mods"),
+            (!self.bodies.is_empty(), "bodies"),
+            (!self.graphics.is_empty(), "graphics"),
+            (!self.overlays.is_empty(), "overlays"),
+            (!self.joints.is_empty(), "joints"),
+            (self.attach.is_some(), "an attach"),
+            (!self.canvases.is_empty(), "canvases"),
+            (!self.skater_proxies.is_empty(), PROXIES),
+            (!self.volumes.is_empty(), "volumes"),
+        ]
+        .into_iter()
+    }
+
+    /// What keeps the runtime busy (`runtime_busy`), for the `MODS_BUSY` log line.
+    fn busy_reason(&self) -> Option<&'static str> {
+        self.busy_reasons().find_map(|(busy, why)| busy.then_some(why))
     }
 }
 
@@ -450,6 +476,8 @@ fn ensure_ground(world: &mut World, mods: &mut Mods) -> Result<(), String> {
     Ok(())
 }
 
+const PROXIES: &str = "skater proxies";
+
 fn maintenance(world: &mut World) {
     world.resource_scope(|world, mut mods: Mut<Mods>| {
         let generation = world
@@ -637,16 +665,14 @@ fn fixed(world: &mut World) {
     world.resource_scope(|world, mut mods: Mut<Mods>| {
         bridge::take_reactions(&mut mods, &mut world.resource_mut::<crate::physics::GamePhysics>());
         let camera = camera_position(world);
-        if mods.runtime_busy()
-            || mods.manager.packages.values().any(|package| package.running())
-        {
+        if mods.snapshot_has_reader() {
             mods.manager.snapshot = std::sync::Arc::new(snapshot_ro(world, &mut mods, camera));
         }
-        if let Err(e) = ensure_ground(world, &mut mods) {
+        if let Err(e) = bevy::log::tracing::info_span!("mods.ensure_ground").in_scope(|| ensure_ground(world, &mut mods)) {
             warn!("dynamics ground: {e}");
         }
         // Enter/exit events of this tick's trigger update, before on_fixed_update.
-        triggers::dispatch(world, &mut mods);
+        bevy::log::tracing::info_span!("mods.triggers").in_scope(|| triggers::dispatch(world, &mut mods));
         let ids: Vec<_> = mods
             .manager
             .packages
@@ -655,7 +681,7 @@ fn fixed(world: &mut World) {
             .map(|(id, _)| id.clone())
             .collect();
         let player_shapes = if mods.suspended_by.is_empty() && mods.attach.is_none() {
-            bridge::player_shapes(world)
+            bevy::log::tracing::info_span!("mods.player_shapes").in_scope(|| bridge::player_shapes(world))
         } else { Vec::new() };
         for id in ids {
             let _span = bevy::log::tracing::info_span!("mods.fixed_callback", mod_id = %id).entered();
@@ -773,6 +799,7 @@ fn fixed(world: &mut World) {
             mods.world.step(dt as f32);
             mods.last_contacts = mods.world.drain_contacts();
         }
+        let _sync = bevy::log::tracing::info_span!("mods.sync").entered();
         triggers::sync_tracked(world, &mods);
         sync_graphics(world, &mut mods);
         sync_attach(world, &mut mods);
@@ -784,7 +811,23 @@ fn fixed(world: &mut World) {
 fn update(world: &mut World) {
     let _span = bevy::log::tracing::info_span!("mods.update").entered();
     world.resource_scope(|world, mut mods: Mut<Mods>| {
+        let reason = mods.busy_reason();
+        if reason != mods.logged_busy {
+            info!("MODS_BUSY {}", reason.unwrap_or("idle"));
+            mods.logged_busy = reason;
+        }
         if !mods.runtime_busy() {
+            return;
+        }
+        // Proxies only: nothing below has work (no mod to call, no commands, graphics, attach or canvases). The
+        // snapshot is still built while the overlay is open (the mods menu can start a mod there) and around the next
+        // folder scan (`maintenance`, which can start one too), so a starting mod gets the same fresh snapshot as
+        // before.
+        let frame = world.resource::<Time<Real>>().delta();
+        if !mods.snapshot_has_reader()
+            && !world.resource::<crate::graphics_menu::Menu>().open
+            && !mods.manager.scan_due_within(frame * 2)
+        {
             return;
         }
         let camera = camera_position(world);
@@ -1959,6 +2002,7 @@ impl Mods {
             skater_remote: BTreeMap::new(),
             pending_remote_teleport: None,
             volumes: BTreeMap::new(),
+            logged_busy: None,
             custom_menus: BTreeMap::new(),
             suspended_by: BTreeSet::new(),
             hidden_players: BTreeMap::new(),
@@ -2010,6 +2054,28 @@ fn dispatch_profiled(manager: &mut skate_mods::Manager, callback: &str, payload:
     for id in ids {
         let _span = bevy::log::tracing::info_span!("mods.callback", mod_id = %id, callback).entered();
         manager.call(&id, callback, payload.clone());
+    }
+}
+
+#[cfg(test)]
+mod snapshot_reader_tests {
+    use super::*;
+
+    /// The living world's proxies keep the runtime busy but give the snapshot no reader; anything a mod owns does.
+    #[test]
+    fn skater_proxies_alone_need_no_snapshot() {
+        let dir = std::env::temp_dir().join(format!("skate-snapshot-reader-{}", std::process::id()));
+        let mut mods = Mods::new(skate_mods::Manager::new(dir.clone(), dir));
+        assert!(!mods.runtime_busy() && !mods.snapshot_has_reader(), "nothing at all");
+        mods.skater_proxies.insert(3, 7);
+        assert!(mods.runtime_busy(), "the proxies still step and sync");
+        assert_eq!(mods.busy_reason(), Some(PROXIES));
+        assert!(!mods.snapshot_has_reader(), "but no mod reads the snapshot");
+        mods.volumes.insert(("m".into(), "v".into()), volumes::Volume { position: Vec3::ZERO, size: Vec3::ONE, rotation: Quat::IDENTITY, visible: false, color: [1.; 3], opacity: 1., entity: None });
+        assert!(mods.snapshot_has_reader(), "a reason after the proxies in the list still counts");
+        mods.volumes.clear();
+        mods.bodies.insert(("m".into(), "b".into()), 9);
+        assert!(mods.snapshot_has_reader(), "a mod's body");
     }
 }
 
