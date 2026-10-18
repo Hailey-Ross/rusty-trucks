@@ -29,6 +29,7 @@ New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
 $Playing = Join-Path $StateDir 'PLAYING.txt'
 $LastSession = Join-Path $StateDir 'last_session.txt'
 $SelectedFile = Join-Path $StateDir 'version.txt'
+$script:BuildLog = ''
 $StateLogs = Join-Path $Repo '.local\audio-state-logs'
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 
@@ -228,8 +229,28 @@ function Ensure-Version($v) {
     Write-Host "  Building $($v.name) at $head. The first build of a version takes several minutes..."
     $target = Target-Dir $v
     Make-Room $v
+    # The full build output goes to <version>\logs\launcher-build-<id>-<time>.log (written by SkateLauncher.exe, which
+    # draws the progress from it); the newest 10 per version are kept.
+    $logDir = Join-Path $d 'logs'
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    $script:BuildLog = Join-Path $logDir ('launcher-build-' + $v.id + '-' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.log')
+    Get-ChildItem $logDir -Filter ('launcher-build-' + $v.id + '-*.log') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 9 | Remove-Item -ErrorAction SilentlyContinue
+    # The window (SKATE_LAUNCHER_UI=2) gets plain text plus cargo's own "Building [..] n/total" bar; a terminal run keeps
+    # cargo's normal output.
+    $ui = $env:SKATE_LAUNCHER_UI -eq '2'
+    $keep = @{}
+    if ($ui) {
+        $cargoEnv = @{ CARGO_TERM_COLOR = 'never'; CARGO_TERM_PROGRESS_WHEN = 'always'; CARGO_TERM_PROGRESS_WIDTH = '120'; CARGO_TERM_PROGRESS_TERM_INTEGRATION = 'false' }
+        foreach ($k in $cargoEnv.Keys) { $keep[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $cargoEnv[$k]) }
+        Write-Host ("LAUNCHER_BUILD`tbegin`t{0}`t{1}`t{2}" -f $v.name, $head, $script:BuildLog)
+    }
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d 'scripts\Build.ps1') -TargetDirectory $target
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Write-Host '  Build failed.'; return $false }
+    $code = $LASTEXITCODE
+    if ($ui) {
+        foreach ($k in $keep.Keys) { [Environment]::SetEnvironmentVariable($k, $keep[$k]) }
+        Write-Host ("LAUNCHER_BUILD`tend`t{0}" -f $code)
+    }
+    if ($code -ne 0 -or -not (Test-Path $exe)) { Write-Host "  Build failed. Build log: $script:BuildLog"; return $false }
     Set-Content -Path $marker -Value $head -Encoding ASCII
     return $true
 }
@@ -495,13 +516,13 @@ function Run-Tool([string]$Key, $Ver) {
             $r = if ($LASTEXITCODE -eq 0) { 'First-time setup: everything is installed.' } else { 'First-time setup: not finished (see the steps above).' }
         }
         'tool-build' {
-            $r = if (Ensure-Version $Ver) { "Ready: $($Ver.name) ($(Version-Status $Ver))" } else { "Build failed: $($Ver.name)" }
+            $r = if (Ensure-Version $Ver) { "Ready: $($Ver.name) ($(Version-Status $Ver))" } else { "Build failed: $($Ver.name). Build log: $script:BuildLog" }
         }
         'tool-send' { $r = Send-Sessions }
         'tool-recomp-update'  { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Recomp-Script) -Update; $r = "Recomp update: exit code $LASTEXITCODE" + $(if ($LASTEXITCODE -eq 0) { ' (done)' } else { ' - see above' }) }
         'tool-recomp-getsave' { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Recomp-Script) -GetSave; $r = "Recomp save: exit code $LASTEXITCODE" + $(if ($LASTEXITCODE -eq 0) { ' (done)' } else { ' - see above' }) }
         'tool-refresh' {
-            if (-not (Ensure-Version $Ver)) { $r = "Refresh game files: $($Ver.name) could not be built."; break }
+            if (-not (Ensure-Version $Ver)) { $r = "Refresh game files: $($Ver.name) could not be built. Build log: $script:BuildLog"; break }
             $d = Version-Dir $Ver
             . (Join-Path $d 'scripts\Resolve-DevAssets.ps1')
             $assets = Resolve-DevAssets -ProjectRoot $d
@@ -510,7 +531,7 @@ function Run-Tool([string]$Key, $Ver) {
             & (Join-Path $d 'bin\skate3rust.exe') --update-game-files --assets $assets 2>&1 | ForEach-Object { $l = "$_"; if ($l -like 'GAME_FILES *') { $said = $l.Substring(11) }; Write-Host "  $l" }
             $code = $LASTEXITCODE
             # Setup published a new installation: the other versions' links follow at their next launch.
-            $r = switch ($code) { 0 { "Refresh game files: $said." } 2 { 'Refresh game files: no game files yet. Convert them first (tools\setup-dev-assets.ps1).' } default { "Refresh game files: failed (exit code $code), see above." } }
+            $r = switch ($code) { 0 { "Refresh game files: $said." } 2 { 'Refresh game files: no game files yet. Convert them first (tools\setup-dev-assets.ps1).' } default { "Refresh game files: $(if ($said) { $said } else { 'failed' }) (exit code $code)." } }
         }
     }
     Save-Result "$stamp  $Key [$($Ver.id)]`r`n$r"
@@ -532,7 +553,7 @@ function Launch([string]$Key, [string]$Lbl) {
         $verText = " [$($ver.id)]"
         Write-Host ("  Version: " + $ver.name)
         if (-not (Ensure-Version $ver)) {
-            Save-Result "Not started: $($ver.name) could not be set up or built (see the output above)."
+            Save-Result "Not started: $($ver.name) could not be set up or built.$(if ($script:BuildLog) { " Build log: $script:BuildLog" })"
             return
         }
         $play = Join-Path (Version-Dir $ver) 'PLAY.bat'
@@ -696,7 +717,7 @@ if ($Entry -eq 'notes') {
 }
 if ($Entry -eq 'build') {
     $v = Get-Version $(if ($Label) { $Label } else { $Version })
-    if (Ensure-Version $v) { "Ready: $($v.name) ($(Version-Status $v))"; exit 0 } else { "Build failed: $($v.name)"; exit 1 }
+    if (Ensure-Version $v) { "Ready: $($v.name) ($(Version-Status $v))"; exit 0 } else { "Build failed: $($v.name). Build log: $script:BuildLog"; exit 1 }
 }
 # Clearing (Tools > Clear builds): a version's build cache is its cargo target folder; its build is that plus bin\
 # (the exe it plays), so it builds again at its next launch. Only these launcher-known folders are ever deleted.

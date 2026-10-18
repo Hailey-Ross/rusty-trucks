@@ -76,6 +76,10 @@ impl Config {
                 }
                 Some("--test-world") => { explicit_map = true; config.map = None; config.map_path = None; }
                 Some("--check-assets") => config.check_assets = true,
+                // Refresh Game Files restarts the game with this flag (`setup::restart_with_refresh`); the setup step
+                // in `asset_root` reads it before this loop. Rejecting it here made every in-game refresh end with exit
+                // code 1 after setup had finished (laptop 2026-10-18, research b236).
+                Some("--refresh-assets") => {}
                 // Maps arrive on stdin; never load the saved default map.
                 Some("--validate-maps") => { config.validate_maps = true; explicit_map = true; }
                 Some("--start-paused") => config.start_paused = true,

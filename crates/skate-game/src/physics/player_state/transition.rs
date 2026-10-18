@@ -200,6 +200,23 @@ pub(super) fn set(
             super::super::biped_ground::enter(physics, skater)?;
             let drop_board = physics.prop_carry.locomotion().drop_board;
             super::super::biped_ground::ground_board::enter_move_object(physics, skater, drop_board);
+            // 82D442D0's bind (b233): only a record published this tick (flags_2480 bit 0x400000) with a geometry
+            // (+196) and a rates identity (+216) is copied (82762AB0) and bound (82D444A0 full). Else nothing is held
+            // and the skater stays in 502.
+            let words = skater.player_input.processed.grab_records_1888_2176[0];
+            let published = skater.player_input.processed.flags_2480 & 0x0040_0000 != 0;
+            match skater.grab_geometry[0].clone() {
+                Some(geometry) if published && words[49] != 0 && words[54] != 0 => {
+                    if physics.owns_props {
+                        physics.prop_carry.bind_published(skate_core::player::offboard::grab_scene::Record(words, geometry));
+                    }
+                }
+                _ => bevy::log::info!(
+                    "PROP_GRAB_MISS Move Object enter refused: published={published} geometry={:#x} rates={:#x}",
+                    words[49],
+                    words[54]
+                ),
+            }
             Ok(())
         }
         PhysicalStateId::GroundAnimation => super::super::ground_animation::enter(physics, skater),

@@ -24,6 +24,7 @@ Every start checks your converted game files (a fraction of a second, in the bac
 - **Zombie Mode:** the retail zombie cheat until the cheat screen exists: yellow screen, no traffic, every ped comes after you.
 - **NPC Skater Physics:** NPC skaters near you run full skater physics and can bail.
 - **More Audible World** (not retail, from the next start): more cars, peds and NPC skaters heard at once.
+- **Visualize Grabs (new):** shows the props and car bumpers you can grab from where you stand (amber = in range, green with a ring and an arrow = what a grab takes now) and logs `GRAB_VIEW` lines, so a grab that does not start can be checked from the log.
 - **Ped Speech:** peds, pros and the announcer talk. Their speech has to be decoded from your disc first (about 3.4 GB and a few minutes), so switching it on offers **Extras > Refresh Game Files**.
 
 For a single run you can still use the old variables instead (`set SKATE_ZOMBIE=1`, `SKATE_NPC_SIM=1` before starting). Please mention which opt-ins were on when you report a problem.
@@ -69,6 +70,9 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Grabbing the big dumpsters (new):** a grab now takes the handle Skate 3 picks instead of a bottom edge or corner post, which refused the grab every time on the blue dumpsters. A grab press that starts nothing logs `PROP_GRAB_MISS` with the reason.
+- **Refresh Game Files from the game (new):** it no longer ends with "exit code 1" after setup finished.
+- **Peds you ride into (new):** a ped you hit on the board now gets the contact (before, no ped ever did, on foot or on board); the log says when a contact got no reaction and why.
 - **No freeze when play starts (new):** the first moment of play used to freeze for about 1 to 2 seconds while the world's collision and the living world loaded. That now happens while the loading screen is still up (it stays up a little longer), and after a map switch play starts without the hitch.
 - **People and cars ready at the start (new):** the people, cars, NPC skaters and the things peds carry now load while the loading screen is up, so they no longer pop in a few frames late or stutter the first seconds of play. The loading screen stays up a moment longer.
 - **NPC Skater Physics opt-in (new):** switching it on no longer freezes the first moment of play for half a second while its skaters load; they load in the background.
@@ -190,7 +194,7 @@ Being worked on now, ported from the retail game code (the rolling `hails-additi
 ## Known issues
 
 Still open after the play tests up to 2026-10-12 (the fixes from the 2026-10-12 round are not play-tested yet):
-- **Carrying props:** without **Prop Grab** (Opt-Ins) you hold a prop by a straight edge on top, not retail's authored grab shapes; with it on you carry it by its real handles. Stepping up curbs while dragging is not retail's yet.
+- **Carrying props:** stepping up curbs while dragging is not retail's yet, and the stick controls are still being checked against Skate 3.
 - **NPC skaters:** some still spin round at a few line switches. Some animations still look stiff, grind and slide spans all show one 50-50 clip, and trick height, grind variety, landings and spins are not finished.
 - **Pedestrians:** they walk through a prop while you hold it; one model walks stiffly with its arms out and one has a flat head; peds still need a lighting pass; ped clothing colours follow the retail shader but are not fully checked against retail. Placed props (benches, bins) still pass through your body; only thrown items hit you.
 - **Cars:** they appear and vanish at full opacity; retail fades them in and out with distance.

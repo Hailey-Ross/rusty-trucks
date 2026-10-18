@@ -104,7 +104,8 @@ function Send-Pending {
     $roots = @($Root) + @(Get-ChildItem (Join-Path $Root '.local\versions') -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
     if ($env:SKATE_SEND_LOGS_DIR) { $roots += $env:SKATE_SEND_LOGS_DIR }
     $roots = @($roots | Where-Object { Test-Path $_ } | ForEach-Object { (Resolve-Path $_).Path } | Sort-Object -Unique)
-    $files = @($roots | ForEach-Object { Get-ChildItem (Join-Path $_ 'logs') -File -Filter 'game-*.log' -ErrorAction SilentlyContinue })
+    # Game logs, plus the launcher's build logs (<version>\logs\launcher-build-*.log) so a failed build reaches main.
+    $files = @($roots | ForEach-Object { Get-ChildItem -Path (Join-Path $_ 'logs\*') -File -Include 'game-*.log', 'launcher-build-*.log' -ErrorAction SilentlyContinue })
     if (Test-Path $crashDir) { $files += @(Get-ChildItem $crashDir -File) }
     # Session folders: logs\trace-all-<time> (the Steam launcher's rust-traceall), bin\logs\trace-all-<unix seconds>
     # (the engine's default next to the exe) and logs\recomp-<preset>-<time> (play-recomp.ps1). While a game runs, a

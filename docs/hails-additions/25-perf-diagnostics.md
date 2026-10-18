@@ -916,3 +916,18 @@ missing stock car files each frame, so the loading screen waited the 30 s cap: b
   ambience / file_read hitch; the map-load frame keeps 15 ms of ambience (the first bed starts 1-2 frames after load).
 - **Open (b198):** other game-thread reads in the audio path (crossfade layouts once per map, world speech, mod
   audio): listed in `.local/research/b198-ambience-prefetch.md`.
+
+## In-game Refresh Game Files ended with exit code 1 (2026-10-18)
+
+- **Report:** laptop sessions 2026-10-18 09:55 and 12:17: both refreshes ended with setup exit code 1; setup had
+  published a new installation each time.
+- **Root cause (research b236, main checked the lines):** Refresh Game Files restarts the game with its arguments
+  plus `--refresh-assets` (`setup.rs` `restart_with_refresh`); the restarted copy's setup step reads it and repoints
+  the assets link, then the argument loop in `config.rs` had no case for it and returned "Unknown argument", so the
+  game exited with code 1 right after a successful refresh. The crash report hid the reason (its filter drops lines
+  with "unknown argument" and paths).
+- **Change:** `config.rs` accepts `--refresh-assets` (read earlier by setup); the launcher's Refresh result shows
+  setup's own failure line (`GAME_FILES failed: <reason>`) with the exit code instead of "see above".
+- **Verification:** not run (a run with the flag starts a real refresh); the parser has no unit test (it reads the
+  process arguments directly). The next in-game refresh should start the game again; its
+  `logs\game-refresh-<unix>.stderr.log` shows the lines if not.

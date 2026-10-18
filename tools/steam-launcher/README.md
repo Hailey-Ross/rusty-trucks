@@ -8,7 +8,15 @@ back to back, try a PR exactly as it was pushed, record a recomp trace session, 
 What it does:
 - **A real window:** `SkateLauncher.exe` is a full-screen menu for the controller (XInput), the keyboard and Steam's
   desktop layout (arrows, Enter, Esc / Space). It hides while a game runs, so the game gets the front and Steam's
-  gamepad layout, and comes back with the session's result when the game closes.
+  gamepad layout, and comes back with the session's result when the game closes. The main screen is a hero card
+  with the selected version and Play, then tiles (D-pad in all four directions); the splash's skateboard is the mark.
+  `SkateLauncher.exe --snapshot <out.png> [main|versions|tools|job|build|failed]` draws one screen at 1920x1080 into
+  a PNG and exits (checking the look without opening the window).
+- **Builds:** while a version builds, the window shows cargo's own step count as a progress bar, the crate being
+  built, the warning count and, if it fails, the first error in a fixed-width block. The whole output goes to
+  `<version>\logs\launcher-build-<id>-<time>.log` (the newest 10 per version are kept), named on the result screen.
+  `launcher.ps1` switches cargo's progress bar on only for the window (`SKATE_LAUNCHER_UI=2`); a terminal run keeps
+  cargo's normal output.
 - **Versions:** each version is its own git worktree with its own `bin\`, sharing this checkout's prepared assets.
   Two are always there: **hails-additions** (the fork's newest pushed branch) and **Upstream main** (SK8-ENGINE).
   Launching a version that isn't built yet, or whose branch has new pushed commits, fetches and builds it first

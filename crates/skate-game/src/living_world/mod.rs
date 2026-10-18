@@ -863,7 +863,7 @@ impl Plugin for LivingWorldPlugin {
                 FixedUpdate,
                 (recheck_early_load, load_for_map, gather_observers, step_population, dmo_stream::stream_dmos).chain().after(crate::app::SimulationSet::Physics),
             )
-            .add_systems(Update, (log_zombie_mode, opt_ins::log_opt_ins))
+            .add_systems(Update, (log_zombie_mode, opt_ins::log_opt_ins, crate::physics::grab_view::visualize_grabs))
             .init_resource::<preload::LivingWorldPreload>()
             .add_systems(Startup, preload::take_models_hold)
             .add_systems(Update, preload::preload_models);

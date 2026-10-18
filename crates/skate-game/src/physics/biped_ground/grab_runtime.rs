@@ -10,6 +10,11 @@ use skate_core::player::offboard::{
     ground_query::QueryContext,
 };
 
+/// 82D4D150 mode 0 over any record list (the grab visualizer's preview).
+pub(crate) fn best_of(records: &[Record], position: Vector) -> Option<Record> {
+    selection::best(records, position)
+}
+
 #[derive(Default)]
 pub(crate) struct Owner {
     queries: Vec<Query>,

@@ -1922,3 +1922,27 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   seat steps queue no second jump, the same outcome as holding the jump until its clip starts.
 - **Open:** whether the jump clip's root motion takes the ped off the seat (the next session's `PED_SIT_AVOID_DONE
   moved=` shows it); the small-step carry is not ported (the moved seat already re-places its ped); the walker mass; per-template opt-out of props as biped ground.
+
+## On foot: ped contacts were never reported; walker step log (2026-10-18)
+
+- **Report:** laptop session game-20261018-120611: peds still too solid on foot, and walking over the bench still bumps
+  sometimes. The log had 0 `PED_BODY_CONTACT ... by=walker` lines; all 16 `PED_SKATER_CONTACT` lines came from NPC
+  skaters.
+- **Root cause (research b223, main checked every line):** each ped part proxy id was `PED_PROXY_TAG | ped id << 2 |
+  part` with the ped id from `LivingWorldId::to_u64` (kind 1 in bit 56). Shifted by 2 the kind lands in bit 58, so the
+  id's top 16 bits read 0x5445, not the tag 0x5045, and both tag tests (`solid_contacts.rs` walker hits,
+  `skeleton_feedback.rs` board hits) dropped every real ped part. On foot the parts still stopped the walker's capsule
+  (the "too solid" feel) but no ped ever got the contact; on board the parts were filed as vehicle hits. The tests
+  used a bare id 7, which has no kind bits. So the walker part of the 2026-10-17 section above never worked in a build.
+- **Change:** the proxy id carries the ped's serial (`ped_body::proxy_id`, every proxy is a ped), and one decoder
+  (`ped_body::proxy_serial`) serves both tag tests and the ped's own match (`peds.rs`). Ids stay stable per ped (a
+  serial never repeats within its kind), so they remain the multiplayer authority keys. Test
+  `a_part_is_a_capsule_between_its_bones_in_group_11` now covers the largest serial and an id with a kind byte.
+- **Walker step log:** `WALKER_STEP prop=<id> (<template>) <outcome> rise <m> edge_rise <m> ahead <m> speed <m/s>
+  flags <packet flags> kind <slope kind> at [x, y, z]` when the walker's contact target or edge is on a prop, written
+  when the prop or the outcome changes (`WALKER_STEP prop=<id> left` when no prop is involved any more). Outcomes: `step`
+  (target on the prop, rise over the 5 cm step threshold of the contact classifier `82D837C8`), `flat`, `no-candidate`
+  (packet flag 1024), `obstacle` (contact correction active), `no-target`. Diagnostics only, no behaviour change.
+  The prop is the nearest streamed-in prop box within 0.1 m of the target or edge (`PropDynamics::nearest_body`).
+- **Open:** what the next bench bump logs (`WALKER_STEP` next to `PROP_SHOVE`); with the hits now reported, whether peds
+  give enough on foot (`ped_body.walker_mass`, NOT RETAIL YET).
