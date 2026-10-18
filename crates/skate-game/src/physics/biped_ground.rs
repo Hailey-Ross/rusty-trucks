@@ -22,6 +22,8 @@ pub(crate) struct Owner {
     air_launch: skate_core::player::offboard::air_launch::Settings,
     collision_settings: skate_core::player::offboard::ground_lifecycle::CollisionSettings,
     pub grab_settings: skate_core::player::offboard::ground_sync::BoardSettings,
+    /// The last `WALKER_STEP` (prop, outcome), so the line is written on change only.
+    step_log: Option<(u32, &'static str)>,
 }
 
 impl Owner {
@@ -82,6 +84,7 @@ impl Owner {
             air_launch,
             collision_settings: lifecycle::load_collision_settings(data)?,
             grab_settings,
+            step_log: None,
         })
     }
 
@@ -177,6 +180,55 @@ pub(crate) fn exit(skater: &mut SkaterRuntime) {
     //82D30CC0 releases the ground query. It does NOT reset shared Biped
     //motion/cadence/correction; BipedAir and subsequent placement consume them.
     skater.biped_ground.geometry.reset();
+}
+
+/// Diagnostics for walking onto props (bench walk-over bumps, laptop 2026-10-18): which prop the walker's contact
+/// target or edge is on, the step height above the feet, and whether the step was taken or why not. Written when the
+/// prop or the outcome changes. Outcomes: `step` (target contact on the prop, rise over 5 cm: the contact
+/// classifier's step threshold 82D837C8), `flat` (target on the prop, no rise), `no-candidate` (packet flag 1024: no
+/// candidate before the forward limit), `obstacle` (contact correction pushes the walker back), `no-target`.
+fn log_step(owner: &mut Owner, physics: &GamePhysics, prefix: contact_toolkit::ContactPrefix, frame: [[f32; 4]; 4]) {
+    let Some(props) = physics.prop_dynamics() else { return };
+    let prop_at = |p: [f32; 4]| props.nearest_body(skate_core::math::Vector3::new(p[0], p[1], p[2]), 0.1).map(|(id, _)| id);
+    let target = prefix.flags_176 & 2 != 0;
+    let prop = target
+        .then(|| prop_at(prefix.target_position))
+        .flatten()
+        .or_else(|| (prefix.flags_176 & 4 != 0).then(|| prop_at(prefix.edge_position)).flatten());
+    let Some(prop) = prop else {
+        if let Some((id, _)) = owner.step_log.take() {
+            bevy::log::info!("WALKER_STEP prop={id} left");
+        }
+        return;
+    };
+    let rise = prefix.target_position[1] - frame[3][1];
+    let outcome = if target && rise > 0.05 {
+        "step"
+    } else if target {
+        "flat"
+    } else if prefix.flags_176 & 1024 != 0 {
+        "no-candidate"
+    } else if owner.controller.state.contact.active {
+        "obstacle"
+    } else {
+        "no-target"
+    };
+    if owner.step_log == Some((prop, outcome)) {
+        return;
+    }
+    owner.step_log = Some((prop, outcome));
+    let edge_rise = prefix.edge_position[1] - frame[3][1];
+    let speed = owner.controller.state.motion.speed_704;
+    bevy::log::info!(
+        "WALKER_STEP prop={prop} ({}) {outcome} rise {rise:.3} m edge_rise {edge_rise:.3} m ahead {:.2} m speed {speed:.2} m/s flags {:#x} kind {} at [{:.2}, {:.2}, {:.2}]",
+        props.describe_template(prop),
+        prefix.distance_168.min(99.0),
+        prefix.flags_176,
+        prefix.kind_164,
+        frame[3][0],
+        frame[3][1],
+        frame[3][2],
+    );
 }
 
 pub(crate) fn update(
@@ -344,6 +396,7 @@ pub(crate) fn update(
     let previous_position=owner.controller.state.position_368;
     let mut result=owner.run(job.job);
     skater.walker_ped_hits = super::solid_contacts::constrain_ground(owner,&mut result,previous_position,&physics.network_proxies.solids);
+    log_step(owner, physics, contact.prefix, frame);
     if result
         .physical_frame
         .iter()

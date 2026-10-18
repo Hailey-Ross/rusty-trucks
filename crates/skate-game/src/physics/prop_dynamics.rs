@@ -1568,7 +1568,7 @@ impl PropDynamics {
     }
 
     /// A body's model name for logs ("DMO_DT_BenchFlat_1015"), or "?".
-    fn describe_template(&self, id: u32) -> String {
+    pub(crate) fn describe_template(&self, id: u32) -> String {
         self.template_of(id).map_or("?".to_owned(), |t| t.split_once('/').map_or(t, |x| x.1).split("_0x").next().unwrap_or(t).to_owned())
     }
 

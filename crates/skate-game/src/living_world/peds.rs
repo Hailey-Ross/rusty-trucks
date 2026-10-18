@@ -1043,7 +1043,7 @@ pub(crate) fn advance_peds(
                     // NOT RETAIL YET: the closing speed is the relative speed at the contact; retail reads the ped
                     // part's velocity after the solve (|v| / |w| > 3.0).
                     let runtime = skater_runtime.as_ref()?;
-                    let mine = |h: &&(u64, [f32; 3], f32)| (h.0 & !super::ped_body::PED_PROXY_TAG) >> 2 == ped.id.to_u64();
+                    let mine = |h: &&(u64, [f32; 3], f32)| super::ped_body::proxy_serial(h.0) == Some(ped.id.serial);
                     // On foot the walker's capsule stops at the part (`solid_contacts::constrain_ground`), so it reports
                     // the part instead of the skeleton: the part's speed after the hit by momentum (`ped_body.walker_mass`,
                     // NOT RETAIL YET, b217). Retail gives a little through the stumble clip's root motion.

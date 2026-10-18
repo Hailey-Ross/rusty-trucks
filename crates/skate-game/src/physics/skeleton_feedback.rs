@@ -17,7 +17,7 @@ pub(super) fn publish(
     request_partial_ragdoll: bool,
 ) {
     let (reports, hits) = collect(physics, skater);
-    let (ped_hits, vehicle_hits) = hits.into_iter().partition(|h| h.0 & PED_TAG_MASK == crate::living_world::ped_body::PED_PROXY_TAG);
+    let (ped_hits, vehicle_hits) = hits.into_iter().partition(|h| crate::living_world::ped_body::proxy_serial(h.0).is_some());
     skater.vehicle_hits = vehicle_hits;
     skater.ped_hits = ped_hits;
     let p = &skater.player_input.processed;
@@ -115,9 +115,6 @@ fn publish_board_observations(
     frames.publish_local_observations(roots, deck);
     frames.publish_centre_of_mass(physical_com, dt, flags_2472);
 }
-
-/// The tag bits of a ped proxy id (`PED_PROXY_TAG`).
-const PED_TAG_MASK: u64 = 0xFFFF_0000_0000_0000;
 
 fn collect(physics: &GamePhysics, skater: &SkaterRuntime) -> (Vec<SkeletonContactReport>, Vec<(u64, [f32; 3], f32)>) {
     let mut vehicle_hits = Vec::new();

@@ -24,8 +24,20 @@ use super::peds::{PedBody, PedData, Pedestrian};
 
 /// Retail ped collision group (`sub_82BD4A30`: 5 skater, 8 vehicle, 11 pedestrian).
 pub(crate) const PED_GROUP: u32 = 11;
-/// Proxy ids: `PED_PROXY_TAG | ped id << 2 | part` (stable; the multiplayer authority keys).
+/// Proxy ids: `PED_PROXY_TAG | ped serial << 2 | part` (stable; the multiplayer authority keys). The serial, not
+/// `LivingWorldId::to_u64`: its kind byte (bit 56) shifted by 2 lands in the tag bits, and the tag test then dropped
+/// every real ped part (walker and board ped hits were always empty).
 pub(crate) const PED_PROXY_TAG: u64 = 0x5045_0000_0000_0000;
+const PED_PROXY_TAG_MASK: u64 = 0xFFFF_0000_0000_0000;
+
+pub(crate) fn proxy_id(serial: u32, part: usize) -> u64 {
+    PED_PROXY_TAG | (serial as u64) << 2 | part as u64 & 3
+}
+
+/// The ped serial of a ped part proxy id, `None` for any other solid.
+pub(crate) fn proxy_serial(id: u64) -> Option<u32> {
+    (id & PED_PROXY_TAG_MASK == PED_PROXY_TAG).then_some((id >> 2) as u32)
+}
 
 /// One capsule of the body, between two bones.
 #[derive(Clone, Debug, PartialEq)]
@@ -83,7 +95,7 @@ impl Default for PedBodySettings {
 }
 
 /// One part's body: a capsule centred between `a` and `b` (world) along `a -> b`, moving at `velocity`.
-pub(crate) fn part_proxy(id: u64, index: usize, a: Vec3, b: Vec3, velocity: Vec3, part: &PedBodyPart, look_ahead: f32) -> skate_dynamics::SolidBody {
+pub(crate) fn part_proxy(serial: u32, index: usize, a: Vec3, b: Vec3, velocity: Vec3, part: &PedBodyPart, look_ahead: f32) -> skate_dynamics::SolidBody {
     use skate_dynamics::rapier3d::prelude::{Pose, Rotation, SharedShape, Vector};
     let axis = (b - a).try_normalize().unwrap_or(Vec3::Y);
     let q = Quat::from_rotation_arc(Vec3::Y, axis);
@@ -92,7 +104,7 @@ pub(crate) fn part_proxy(id: u64, index: usize, a: Vec3, b: Vec3, velocity: Vec3
     let p = |v: Vec3| Vector::new(v.x, v.y, v.z);
     let pose = Pose::from_parts(p(centre), rotation);
     skate_dynamics::SolidBody {
-        id: PED_PROXY_TAG | (id << 2) | index as u64,
+        id: proxy_id(serial, index),
         pose,
         center_of_mass: p(centre),
         inertia_rotation: rotation,
@@ -143,7 +155,7 @@ pub(crate) fn push_ped_proxies(
         for (index, (part, pair)) in s.parts.iter().zip(&bones).enumerate() {
             let Some((a, b)) = pair.and_then(|(a, b)| Some((globals.get(a)?, globals.get(b)?))) else { continue };
             let (a, b) = (bone_world(body.position, body.heading, a), bone_world(body.position, body.heading, b));
-            solids.push(part_proxy(ped.id.to_u64(), index, a, b, body.velocity, part, s.look_ahead));
+            solids.push(part_proxy(ped.id.serial, index, a, b, body.velocity, part, s.look_ahead));
         }
     }
     let mut proxies = std::mem::take(&mut physics.network_proxies);
@@ -163,6 +175,11 @@ mod tests {
         let arm = &s.parts[1];
         let b = part_proxy(7, 1, Vec3::new(0.0, 1.2, 0.0), Vec3::new(0.3, 1.2, 0.0), Vec3::new(0.6, 0.0, 0.0), arm, s.look_ahead);
         assert_eq!((b.id, b.contact_group), (PED_PROXY_TAG | 7 << 2 | 1, 11));
+        assert_eq!(proxy_serial(b.id), Some(7));
+        // Any serial keeps the tag bits (the kind byte of `to_u64` did not: no ped hit was ever reported).
+        assert_eq!(proxy_serial(proxy_id(u32::MAX, 3)), Some(u32::MAX));
+        let ped = skate_core::living_world::LivingWorldId { kind: skate_core::living_world::Kind::Pedestrian, serial: 5 };
+        assert_eq!(proxy_serial(ped.to_u64() << 2), None, "a kind byte in the id is not a ped proxy");
         assert!((b.inverse_mass - 1.0 / 20.0).abs() < 1e-6);
         let c = b.pose.translation;
         assert!((c.x - (0.15 + 0.6 / 60.0)).abs() < 1e-5 && (c.y - 1.2).abs() < 1e-5, "midway, moved ahead 1/60 s: {c:?}");

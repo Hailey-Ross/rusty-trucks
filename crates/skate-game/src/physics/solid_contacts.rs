@@ -128,7 +128,7 @@ fn constrained_position(solids:&[(usize,SolidBody)],start:Vec3,target:Vec3,block
 fn ped_hits(solids:&[(usize,SolidBody)],blocked:&[(u64,Vec3)],walker:Vec3) -> Vec<(u64,[f32;3],f32)> {
     let mut out:Vec<(u64,[f32;3],f32)>=Vec::new();
     for &(id,normal) in blocked {
-        if id & 0xFFFF_0000_0000_0000 != crate::living_world::ped_body::PED_PROXY_TAG { continue; }
+        if crate::living_world::ped_body::proxy_serial(id).is_none() { continue; }
         let Some((_,body))=solids.iter().find(|(_,b)|b.id==id) else { continue };
         let closing=(walker-Vec3::from_array(body.linvel.to_array())).dot(-normal);
         if !(closing>0.) { continue; }
