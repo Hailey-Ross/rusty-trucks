@@ -168,6 +168,12 @@ impl Owner {
         selection::best(&self.validated, position)
     }
 
+    /// Seed the validated list (other modules' tests).
+    #[cfg(test)]
+    pub(crate) fn set_validated_for_test(&mut self, records: Vec<Record>) {
+        self.validated = records;
+    }
+
     ///82D749D0 cancels spline queries/validation and clears only native readiness.
     ///Scene lines have already completed; dropping them does not publish results.
     pub(crate) fn invalidate(&mut self) {

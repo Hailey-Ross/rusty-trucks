@@ -892,3 +892,33 @@ and turns prop grab on like the game (before, it ran without either and could no
 test bench has a full 32-bit id, has a grab object and that over 100 props are in the scene, then grabs and follows
 the left stick in 8 directions: both pass. `the_carry_binds_the_published_record_at_the_move_object_enter` checks
 `prop_of_grab_key`.
+
+## Carry: left / right on the stick were reversed (2026-10-18)
+
+Problem (laptop session game-20261018-163431, the first with working grabs): "Left stick left/right is reversed
+while carrying". The log had no stick input while carrying.
+
+Root cause: retail moves the pair along the latched side row +400 = -(+144), where +144 = Y x forward [code, b240 /
+b241]. Ours latched +144 itself (`side_of(forward)`, which our code called "the skater's right" but is the left in our
+right-handed +Y-up world; the traffic code's right is (-f.z, 0, f.x)). The DownTown carry test passed because it
+expected the same mirrored "right". The off-centre lever keeps +144 (that sign was already retail's).
+
+Change: `move_object::command` latches `-side` (+400) for the stick's x; `carry_direction_tests` expects stick right
+along (-f.z, 0, f.x). New log line `CARRY_STICK` on every change of the stick while carrying: push / side / turn, the
+facing, the skater's right and the target velocity, so a reversed direction shows in the log.
+
+## Visualize Grabs: the skitch cue follows the car; no stale records on a grab press (2026-10-18)
+
+Problem (same session, laptop notes): after latching on to a car the cue stayed where the grab point was at the latch
+and GRAB_VIEW stopped logging; one line named a dumpster from 50 s earlier, 175 m away.
+
+Root cause (research b251): with grab held the overlay read the grab owner's validated list without checking its
+ready bit (`flags_12836` 0x40, the bit the game's own readers check). The list keeps the last query's records with
+their positions: while skitching no query runs (the skitch state only requests the latched car), so it froze at the
+latch, and between a grab press and the new query's results it still held records from long ago. The view de-dup
+called every state but on-foot "riding", so nothing new logged.
+
+Change (`physics/grab_view.rs`, display only): skitching shows the live car spot the skitch state reads every tick
+(Processed grab record 0 with its geometry while 2480 bit 22 is set); otherwise the owner list only while it is
+ready; a "skitching" mode in GRAB_VIEW. Tests `a_held_grab_shows_the_owner_list_only_while_it_is_ready`,
+`a_skitch_cue_follows_the_live_car_spot`.

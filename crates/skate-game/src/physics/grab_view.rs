@@ -35,7 +35,31 @@ pub(crate) struct View {
 }
 
 fn mode(state: PhysicalStateId) -> &'static str {
-    if state == PhysicalStateId::BipedGround { "on_foot" } else { "riding" }
+    match state {
+        PhysicalStateId::BipedGround => "on_foot",
+        PhysicalStateId::Skitching => "skitching",
+        _ => "riding",
+    }
+}
+
+/// The records shown while the grab input is held (laptop 2026-10-18, b251). Skitching: the live car spot the skitch
+/// state reads every tick (Processed `grab_records_1888_2176[0]` with `grab_geometry[0]`, while 2480 bit 22 is set),
+/// so the cue follows the car; the owner's list stays frozen at the latch. Otherwise the owner's validated list only
+/// while it is ready (`flags_12836` 0x40, the bit the game's own readers check): between a grab press and the new
+/// query's results it still holds records from long ago (a dumpster 175 m away).
+fn held_records(
+    state: PhysicalStateId,
+    owner: &super::biped_ground::grab_runtime::Owner,
+    live: ([u32; 72], u32, Option<std::sync::Arc<skate_core::player::offboard::grab_scene::Geometry>>),
+) -> Vec<Record> {
+    if state == PhysicalStateId::Skitching {
+        let (words, flags_2480, geometry) = live;
+        return match geometry {
+            Some(g) if flags_2480 & 0x0040_0000 != 0 => vec![Record(words, g)],
+            _ => Vec::new(),
+        };
+    }
+    if owner.flags_12836 & 0x40 != 0 { owner.validated().to_vec() } else { Vec::new() }
 }
 
 fn v3(v: [f32; 4]) -> Vec3 {
@@ -116,8 +140,11 @@ pub(crate) fn visualize_grabs(
     };
     let held = skater.player_input.processed.flags_2476 & 0x0040_0000 != 0;
     let preview;
+    let shown;
     let (records, ready) = if held {
-        (skater.offboard_grab.validated(), ready(&skater))
+        let p = &skater.player_input.processed;
+        shown = held_records(skater.player_state.current(), &skater.offboard_grab, (p.grab_records_1888_2176[0], p.flags_2480, skater.grab_geometry[0].clone()));
+        (shown.as_slice(), ready(&skater))
     } else {
         preview = match preview_of(&skater, &physics) {
             Ok(p) => p,
@@ -164,4 +191,44 @@ pub(crate) fn visualize_grabs(
     let ready_text = ready.map_or_else(|| "none".to_owned(), |(kind, id)| describe(&physics, Descriptor { kind, id }));
     info!("GRAB_VIEW {} {} ready={} in_range={} [{}]", view.mode, if held { "grab held" } else { "preview" }, ready_text, records.len(), parts.join("; "));
     *last = Some(view);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skate_core::player::offboard::grab_scene::Geometry;
+
+    fn record(x: f32) -> Record {
+        let g = std::sync::Arc::new(Geometry { id: 1, points: vec![[x - 0.5, 0.5, 0.0, 1.0], [x + 0.5, 0.5, 0.0, 1.0]], approach_vectors: vec![], word_60: 0 });
+        let mut r = Record([0; 72], g);
+        r.set_vector(64, [x - 0.5, 0.5, 0.0, 1.0]);
+        r.set_vector(80, [x + 0.5, 0.5, 0.0, 1.0]);
+        r
+    }
+
+    #[test]
+    fn a_held_grab_shows_the_owner_list_only_while_it_is_ready() {
+        let mut owner = crate::physics::biped_ground::grab_runtime::Owner::default();
+        owner.set_validated_for_test(vec![record(175.0)]);
+        let none = ([0; 72], 0, None);
+        assert!(held_records(PhysicalStateId::PhysicsGround, &owner, none.clone()).is_empty(), "not ready: an old list is not shown");
+        owner.flags_12836 |= 0x40;
+        assert_eq!(held_records(PhysicalStateId::PhysicsGround, &owner, none.clone()).len(), 1);
+        owner.invalidate();
+        assert!(held_records(PhysicalStateId::PhysicsGround, &owner, none).is_empty(), "invalidated: hidden again");
+    }
+
+    #[test]
+    fn a_skitch_cue_follows_the_live_car_spot() {
+        let mut owner = crate::physics::biped_ground::grab_runtime::Owner::default();
+        owner.set_validated_for_test(vec![record(0.0)]);
+        owner.flags_12836 |= 0x40;
+        let live = |x: f32| { let r = record(x); (r.0, 0x0040_0000u32, Some(r.1.clone())) };
+        let at = |records: &[Record]| records[0].endpoints()[0][0] + 0.5;
+        assert_eq!(at(&held_records(PhysicalStateId::Skitching, &owner, live(5.0))), 5.0, "the live spot, not the latch's");
+        assert_eq!(at(&held_records(PhysicalStateId::Skitching, &owner, live(6.0))), 6.0, "follows the car");
+        let (words, _, g) = live(6.0);
+        assert!(held_records(PhysicalStateId::Skitching, &owner, (words, 0, g)).is_empty(), "no published spot: nothing");
+        assert_eq!(mode(PhysicalStateId::Skitching), "skitching");
+    }
 }
