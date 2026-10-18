@@ -1825,3 +1825,18 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   `attach_locator_lands_on_the_offset`. Not play-tested.
 - **Modding:** a mod model without a locator is held by its origin (identity attach); rotation and offset stay the
   record's (tables) values. Open: an `attach` override per record for mods.
+
+## Peds standing in groups: mostly the stalled conversation, not the rate (research, 2026-10-17)
+
+- **Report:** laptop session game-20261017-143646 (build e44f93a): peds "standing around and making small groups";
+  PED_STILL Plugin 633 of 856 samples, conversation 530.
+- **Finding [log] (research b211, `.local/research/b211-ped-conversation-rates.md`):** that build lacks 01383e32 (main
+  checked with `git merge-base`). Three conversations (60, 70, 85) give 245 of the 530 samples: each stuck at state 3,
+  the speaker flipping TurnToFaceWaypointOrientation / ListenToSpeaker every tick, at least two of them peds that had
+  lost their seat but kept its waypoint, the case 01383e32 fixed. Three more waited out the 30 s gather and the 60 s
+  PluginTimeout. Together about 57 % of the samples.
+- **Rules:** no difference from retail found that starts more conversations or keeps them longer (start from the
+  converse mood rows, 50 m exclusion, 30 s gather, 5 turns of 3.0 s, 60 s PluginTimeout). One difference goes the
+  other way: ours never adds a third member (retail passers-by can join); research b212 on that and on despawned
+  members that never leave.
+- **Next:** confirm in a new laptop session that the flip and the 60 s stalls are gone before changing any rate.
