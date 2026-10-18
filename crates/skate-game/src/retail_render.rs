@@ -341,7 +341,29 @@ impl FrameStateData {
         self.shadow = floor.clamp(Vec3::ZERO, Vec3::ONE).extend(1.);
     }
 
-    fn encode(&self) -> Vec<u8> {
+    /// The rows in shader order (shadow, clock, PCA, slow PCA, water look and tint, view-dot-light, traffic lights).
+    fn rows(&self) -> impl Iterator<Item = Vec4> + '_ {
+        std::iter::once(self.shadow)
+            .chain(std::iter::once(self.clock))
+            .chain(self.pca)
+            .chain(self.pca_slow)
+            .chain([self.water_look, self.water_tint])
+            .chain(std::iter::once(self.view_dot_light))
+            .chain(self.traffic_lights)
+    }
+
+    /// The buffer bytes, little-endian f32 lanes, in a fixed array: no allocation per frame (b250).
+    fn encode(&self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        for (i, value) in self.rows().flat_map(|row| row.to_array()).enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+
+    /// The previous `Vec` encoder, kept as the tests' reference for [`Self::encode`].
+    #[cfg(test)]
+    fn encode_vec(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(Self::SIZE);
         for row in std::iter::once(self.shadow)
             .chain(std::iter::once(self.clock))
@@ -2187,6 +2209,22 @@ mod tests {
         assert_eq!(bytes.len(), MaterialSlots::SIZE);
 
         assert_eq!(FrameStateData::default().encode().len(), FrameStateData::SIZE);
+        // The fixed-array encoder writes the same bytes as the old Vec one, also with every lane distinct.
+        let mut n = 0.0f32;
+        let mut next = || { n += 1.25; Vec4::new(n, -n, n * 0.5, n + 0.125) };
+        let state = FrameStateData {
+            shadow: next(),
+            clock: next(),
+            pca: std::array::from_fn(|_| next()),
+            pca_slow: std::array::from_fn(|_| next()),
+            water_look: next(),
+            water_tint: next(),
+            view_dot_light: next(),
+            traffic_lights: std::array::from_fn(|_| next()),
+            ..FrameStateData::default()
+        };
+        assert_eq!(state.encode().as_slice(), state.encode_vec().as_slice());
+        assert_eq!(FrameStateData::default().encode().as_slice(), FrameStateData::default().encode_vec().as_slice());
         // Water time: retail real-time rate, no restart within a session.
         assert_eq!(water_time(0.0, 1.0), 0.0);
         assert_eq!(water_time(2.0, 1.0), 2.0);

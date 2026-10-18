@@ -2067,3 +2067,30 @@ window shown at 10 s with the splash gone; `STARTUP_LOADING done in 5170 ms`, no
   retail case, the SFX pack row, which is last on its screen).
 - Next milestones (settings model done, above): APT player gaps, host side (Game / CoreMenu objects, fe
   sounds, input repeat), then swapping in the retail menus with the current features as hooks.
+
+## Challenge Map: movie export and hooks for every map node (2026-10-18, in progress)
+
+Todo (user, verbatim): "implement the retail challenge map teleports (IE. downtown, university, etc..) for now we
+will be following the same idea as the rest of the retail menus and greying out unusable menu items. all menu items
+should have their hooks added even if nothing uses them (yet!)".
+
+Retail (research b244 to b244d, b255; Ghidra + the exported movie): one movie `source/screens/map/challengemap`
+(template 68, FE screen 17) over the host object FEChallengeMap, whose 24 natives (`sub_8264A8A8`) are all getters
+(GetStuffMenuItems returns [count, selected, labels, enabled, icon 1, icon 2]; several are retail stubs). The tree is
+vault data: `map_listing` (tabs and folders by parent), `map_filter`, `map_category`, and leaves of the classes
+`fe_locations` (teleports), `world`, `challenges`, `map_commands`, `code_unlocks`. Offline modes (career and free
+skate) open the root `progression`, online `online` (`sub_8261BC30`). An fe_locations leaf teleports to its locator
+matrix unchanged, off the board; it loads only when the target is outside the streamed area (30 / 50 m).
+
+Done so far:
+- Export: `tools/prepare_menu_movies.py` adds the movie (format version 6, so installs refresh); the data-gated
+  export test exports 35 movies with every import and no unresolved shapes.
+- Hooks: `skate_core::menus::EntryKind` has one kind per vault class (`map_listing` ... `code_unlocks`), and
+  `MenuData::map_nodes` holds the tree (entry, parent, label, sort order). Every node is an entry from the start, so
+  each has its hooks (handlers, visible / enabled rules, interceptors) with the hook id `<class>:<key>`
+  (`fe_locations:dist_downtown_aletown`). Greying is the existing rule: no handler, greyed; a tab or folder is
+  enabled when something inside it is. `Hide` edits drop a node with everything under it. Test
+  `challenge_map_nodes_have_hooks_and_stay_greyed_until_handled`.
+
+Next: the tree loader from the collections + teleports.json, the FEChallengeMap host object, the off-board teleport
+handler (`fe_locations`), the pause menu row switching to the screen when the movie is installed.

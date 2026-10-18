@@ -28,7 +28,7 @@ from vendor.skate3_ui.scene_graph import AssetCache, SceneFlattener
 from vendor.skate3_ui.actions import Actions
 
 FORMAT = 'skate3-menu-movies'
-VERSION = 5  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies
+VERSION = 6  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies; 6: the challenge map
 # Menu screens the engine's retail menus start from (pause menu, Game Settings,
 # Freeskate options, the screen manager and its helpers). Library movies are
 # found through imports, not listed.
@@ -53,6 +53,9 @@ MENU_ROOTS = (
     'source/screens/options/videocal',
     # The pause menu's Learn > Trick Guide (template 29 TrickTutorial).
     'source/screens/tricks/trickguide',
+    # The pause menu's ChallengeMap / OnlineChallengeMap (template 68 ChallengeMap, FE screen 17, host object
+    # FEChallengeMap).
+    'source/screens/map/challengemap',
     'source/screens/main3dhud',
     'source/helper/screenmanager',
     'source/helper/screentransitionmanager',

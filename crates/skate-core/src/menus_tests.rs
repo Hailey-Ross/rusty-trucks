@@ -41,7 +41,55 @@ fn fixture() -> MenuData {
                 tabs: vec![tab("SinglePlayer", &["ChallengeMap", "SkateWith"]), tab("Create", &["SavePark", "ReplayEditor"])],
             },
         ],
+        map_nodes: Vec::new(),
     }
+}
+
+#[test]
+fn challenge_map_nodes_have_hooks_and_stay_greyed_until_handled() {
+    let node = |kind, key: &str, parent: Option<EntryRef>, order| MapNode { entry: EntryRef::map(kind, key), parent, label: format!("L_{key}"), order };
+    let root = EntryRef::map(EntryKind::MapListing, "progression");
+    let downtown = EntryRef::map(EntryKind::MapFilter, "downtown");
+    let challenges = EntryRef::map(EntryKind::MapListing, "progression_all");
+    let mut data = fixture();
+    data.map_nodes = vec![
+        node(EntryKind::MapListing, "progression", None, 0),
+        node(EntryKind::MapFilter, "downtown", Some(root.clone()), 1),
+        node(EntryKind::FeLocation, "dist_downtown_aletown", Some(downtown.clone()), 2),
+        node(EntryKind::FeLocation, "dist_downtown_canalplaza", Some(downtown.clone()), 1),
+        node(EntryKind::MapListing, "progression_all", Some(root.clone()), 2),
+        node(EntryKind::Challenge, "some_challenge", Some(challenges.clone()), 0),
+    ];
+    let mut registry = MenuRegistry::new(data);
+    let ctx = MenuContext::new("Career");
+    let aletown = EntryRef::map(EntryKind::FeLocation, "dist_downtown_aletown");
+    let challenge = EntryRef::map(EntryKind::Challenge, "some_challenge");
+    // Every node is a real entry with hooks; nothing has a handler yet, so all are greyed, folders too.
+    for n in registry.data().map_nodes.clone() {
+        assert!(registry.visible(&n.entry, &ctx), "{}", n.entry.hook_id());
+        assert!(!registry.enabled(&n.entry, &ctx), "{} greyed", n.entry.hook_id());
+    }
+    assert_eq!(aletown.hook_id(), "fe_locations:dist_downtown_aletown");
+    assert_eq!(EntryKind::parse("fe_locations"), Some(EntryKind::FeLocation));
+    // Display order inside a folder follows the sort order.
+    assert_eq!(registry.data().map_children(&downtown).iter().map(|n| n.entry.id.as_str()).collect::<Vec<_>>(), ["dist_downtown_canalplaza", "dist_downtown_aletown"]);
+    // A teleport handler enables the location and, through it, its folder and the root; the challenges stay greyed.
+    let count = Arc::new(AtomicUsize::new(0));
+    registry.register_handler(aletown.clone(), engine_handler("teleport", count.clone()));
+    assert!(registry.enabled(&aletown, &ctx) && registry.enabled(&downtown, &ctx) && registry.enabled(&root, &ctx));
+    assert!(!registry.enabled(&challenge, &ctx) && !registry.enabled(&challenges, &ctx));
+    assert_eq!(registry.dispatch(MenuAction::Select { entry: aletown.clone() }, &ctx), Outcome::Handled(Owner::Engine("teleport".into())));
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    // A mod stacks over it, and its removal gives the engine's handler back.
+    registry.register_handler(aletown.clone(), mod_handler("m"));
+    assert!(matches!(registry.dispatch(MenuAction::Select { entry: aletown.clone() }, &ctx), Outcome::Forward(Owner::Mod(ref m), _) if m == "m"), "the mod's Lua gets it");
+    registry.remove_owner(&Owner::Mod("m".into()));
+    assert_eq!(registry.dispatch(MenuAction::Select { entry: aletown.clone() }, &ctx), Outcome::Handled(Owner::Engine("teleport".into())));
+    // Without the engine handler everything is greyed again.
+    registry.remove_owner(&Owner::Engine("teleport".into()));
+    assert!(!registry.enabled(&root, &ctx));
+    // A node not in the data is no entry.
+    assert!(!registry.visible(&EntryRef::map(EntryKind::FeLocation, "nowhere"), &ctx));
 }
 
 fn engine_handler(owner: &str, count: Arc<AtomicUsize>) -> Handler {
