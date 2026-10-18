@@ -219,6 +219,15 @@ pub(crate) fn walker_input(runtime: &SkaterRuntime) -> skate_core::living_world:
 /// and the speed (`pc+96`) use, with the heading `pc+128` (`sub_8246BCF8`). Off the board (BipedGround) or wiping out:
 /// the animation root and its forward row; on the board: the board (retail: the board rigid body's position,
 /// SkateboardReckoning +144; ours the deck part, open) and the deck's forward.
+/// The per-line state retail's path reset `sub_82468AC8` clears (air, trick slot, board yaw), shared by a line
+/// switch and the stage-2 re-snap so the two cannot drift apart. The tracker block is not touched here: a line switch
+/// also resets it (`path_reset`), the re-snap `sub_8246D168` saves and restores it around the reset (b207).
+fn clear_line_state(sim: &mut NpcSim) {
+    sim.air = Default::default();
+    sim.slot = Default::default();
+    sim.board_yaw = Default::default();
+}
+
 fn projected_point(sim: &NpcSim, state: PhysicalStateId) -> ([f32; 3], [f32; 3]) {
     let wiped = sim.body.runtime.player_input.processed.flags_2468 & WIPEOUT_BIT != 0;
     if state == PhysicalStateId::BipedGround || wiped {
@@ -928,9 +937,7 @@ pub(crate) fn simulate(
                                 // A line switch (chain or branch): retail's reset `sub_82468AC8` leaves the skater off
                                 // the path with the start gate kept (b118).
                                 Some((_, f)) => {
-                                    sim.air = Default::default();
-                                    sim.slot = Default::default();
-                                    sim.board_yaw = Default::default();
+                                    clear_line_state(sim);
                                     skate_core::living_world::ai_controller::path_reset(&mut replay.avoid.controller);
                                     f.switch_to(replay.cursor.node)
                                 }
@@ -940,6 +947,9 @@ pub(crate) fn simulate(
                             if stuck_resnap {
                                 let node = skate_core::living_world::ai_controller::resnap_node(line, &rules.controller, f.search_start, pos);
                                 info!("NPC_SKATER_STUCK #{} {} re-snap node {} -> {node} (stage 2)", npc.id.serial, npc.character, f.search_start);
+                                // Retail's re-snap is a full path reset that keeps the stuck tracker (b207); before,
+                                // ours kept a stale air / trick slot / board yaw across the jump.
+                                clear_line_state(sim);
                                 f = f.switch_to(node);
                             }
                             let was_on = f.on_path;

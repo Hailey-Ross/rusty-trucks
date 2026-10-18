@@ -839,3 +839,18 @@ keyed by the NPC skater's stable id.
 - **Open (b201):** a skater that really rolls back down a ramp without a flip keeps riding_fakie false because the
   rule reads the animated root, which faces travel; which side is wrong needs one rerun with `flipped`, `root_yaw`,
   `eff_yaw`, `cat` and the fakie clocks on NPC_SKATER_STEER (`.local/research/b201-fakie-rollback.md`).
+
+## The stage-2 re-snap is a full path reset (2026-10-17)
+
+- **Retail [code] (research b207, `.local/research/b207-npc-stall-leftovers.md`):** the stuck re-snap `8246D168` picks
+  the node, saves the stuck tracker block (pc+0x210..0x244), runs the path reset `82468AC8` (projection objects,
+  search, trick fields, the per-line bytes) and restores the tracker. So it keeps the stage but starts the line state
+  fresh, like a line switch.
+- **Ours before:** the line switch cleared the air, trick slot and board yaw and reset the tracker (matches); the
+  re-snap only moved the cursor (`switch_to`), so a stale air / trick slot / board yaw survived the jump.
+- **Change:** `npc_sim::clear_line_state` (air, slot, board yaw) is shared by both; the re-snap calls it before
+  `switch_to` and leaves the tracker alone. skate-game tests pass (777). Not play-tested.
+- **Also from b207 (no change):** walk-back with no plan and the missing push already give retail's outcome (stage 3
+  retries the swap every 60 ticks, stage 4 waits, 5 bails, 6 respawns; the only push is the spawn push). Open: why
+  our NPC plans fail (log the solve result on the no-plan line first); whether ours models retail's 896 / 900 clocks
+  (reset to 7200 ticks by `82468AC8`).

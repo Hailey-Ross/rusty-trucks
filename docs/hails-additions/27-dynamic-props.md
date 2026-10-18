@@ -963,9 +963,22 @@ so they say nothing about the gate; v2 (recomp research hooks, PROPHIT `actor` /
 
 **Reading.** Rolling into a resting prop moves it by mass (ordinary contact physics, as ours already does through
 the reduced mass of the pair in `push_from_skater`); the kick is an extra impulse while the skater bails. So the stage
-A patch (resting prop static to the skater) is wrong and stays unapplied. Open: which actor state the byte
-`+0x1C/+0x4C` is (bail / ragdoll is the reading from the timing and the user's account, not decoded); the kick's
-size (`sub_82C530F0`: 5.0 and the body's mass terms); then the port: kick on a bailing skater's contact.
+A patch (resting prop static to the skater) is wrong and stays unapplied.
+
+**The "kick" is a clamp [code] (research b206, `.local/research/b206-prop-bail-kick.md`, read from the generated
+code because Ghidra garbles the multiply).** `sub_82C530F0` does not add an impulse: with w = the motion record's
++0x7C (read as inverse mass, not decoded) and d = the DMO's vtable slot 6 vector (`82C48230`, a velocity; the
+callback records a contact only when |d| >= 0.25): s = 5w and the spin is clamped to 15w when the mass (1/w) is
+under 200, else s = 0 and the spin is zeroed; n = d / |d|, mag = 0.5 * (max(s, |d|) + s); the linear velocity is
+pulled into the ball of radius mag around n * mag. Both setters wake the body. [trace] All 17 calls hit one prop with
+mag = 5.0. So a bail contact caps a prop's speed (and spin) rather than throwing it; the contact solve does the
+pushing. Constants [data]: 5.0 (0x821F1790), 15.0, 200.0, 0.5, 0.25.
+
+**Open:** which actor state the gate byte `[[IActor vfn14()+0x1C]+0x4C]` is (bail / ragdoll from the timing and the
+user's account, not decoded; the PROPHIT v2 hook logs the IActor and its vfn14 for one bail-into-prop session);
+collidable kinds 3 / 4 / 5 (b206: maybe our skeleton part groups; we drop group 4 from world volumes,
+`physics/skeleton_colliders.rs:31-34`); then the port: after `push_from_skater` (`prop_dynamics.rs` actor loop),
+when the pushing actor bails, apply the clamp and wake the prop, values data-driven with these defaults.
 
 ## Open questions
 
