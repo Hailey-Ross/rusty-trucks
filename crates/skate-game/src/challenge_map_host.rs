@@ -11,6 +11,9 @@ use skate_core::menus::{EntryKind, EntryRef, MenuContext, MenuRegistry};
 pub struct ChallengeMapHost {
     /// The map markers to draw (icon, map pixels from the centre, highlighted), refreshed after each update while open.
     pub markers: Vec<(String, [f32; 2], bool)>,
+    /// The map clip's translation on screen (MapRenderComponent's origin, retail `0x830B8600` = row 3 of the matrix
+    /// the render callback `825D4390` writes; b282), set while drawing: markers and the cursor sit at origin + point.
+    pub origin: [f32; 2],
     pub state: ChallengeMapState,
     /// The screen is on top of the stack (the picker callbacks are ours).
     pub open: bool,
@@ -118,11 +121,13 @@ impl ChallengeMapHost {
                 Value::Bool(false),
             ])?),
             // 8264B570 / 8264B588 (b256 section 2): the cursor sits on the highlighted marker (+0xF2, +0x100 / +0x104,
-            // whole map pixels from the centre); no highlighted marker hides it.
+            // whole pixels); no highlighted marker hides it. The coordinates include the map clip's origin (b282: the
+            // movie sets mCursor._x / _y on the root with no offset).
             "IsCursorVisible" => Value::Bool(s.markers(registry, ctx).iter().any(|(.., h)| *h)),
             "GetCursorCoordinates" => {
                 let at = s.markers(registry, ctx).into_iter().find(|(.., h)| *h).map_or([0.0; 2], |(_, p, _)| p);
-                Value::Object(vm.array(vec![Value::Number(at[0].trunc() as f64), Value::Number(at[1].trunc() as f64)])?)
+                let o = self.origin;
+                Value::Object(vm.array(vec![Value::Number((at[0] + o[0]).trunc() as f64), Value::Number((at[1] + o[1]).trunc() as f64)])?)
             }
             // Retail stubs / constants (b255).
             "GetStuffMenuChallengeFilterType" => Value::Bool(true),

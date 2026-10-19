@@ -1330,19 +1330,26 @@ fn render(
     }
     // An unresolved prompt draws nothing (an empty key would draw solid white).
     draws.retain(|d| !d.texture.starts_with("prompt/"));
-    // Map markers (MapRenderComponent): a 32 x 32 quad per marker (`8268D960`, size 32 x scale 1.0) centred on its map
-    // point in the clip's space, highlighted last; nothing while the Challenge Map is closed (the gate byte, b263).
+    // Map markers (MapRenderComponent): a 32 x 32 screen-pixel quad per marker (`8268D960`, size 32 x scale 1.0) centred
+    // on the map clip's translation plus its map point, highlighted last: retail's drawer (`825E2618`) takes only the
+    // translation of the clip's matrix (`0x830B8600`), not its scale (b282). Nothing while the Challenge Map is closed
+    // (the gate byte, b263).
     let mut expanded = Vec::with_capacity(draws.len());
     for draw in draws.drain(..) {
         if draw.texture != crate::apt_scene::MAP_MARKERS {
             expanded.push(draw);
             continue;
         }
-        let [o, ex, ey] = [draw.vertices[0].position, draw.vertices[1].position, draw.vertices[2].position];
-        let at = |x: f32, y: f32, u: f32, v: f32| crate::apt_scene::Vertex {
-            position: [o[0] + (ex[0] - o[0]) * x + (ey[0] - o[0]) * y, o[1] + (ex[1] - o[1]) * x + (ey[1] - o[1]) * y],
-            uv: [u, v],
-        };
+        let o = draw.vertices[0].position;
+        if ms.challenge_map.origin != o {
+            info!(
+                "CHALLENGE_MAP markers at origin [{:.1}, {:.1}]: {} markers, first {:?}, picture {:?} (none = the default map)",
+                o[0], o[1], ms.challenge_map.markers.len(), ms.challenge_map.markers.first().map(|(i, p, _)| (i.as_str(), [o[0] + p[0], o[1] + p[1]])),
+                ms.challenge_map.state.picture
+            );
+        }
+        ms.challenge_map.origin = o;
+        let at = |x: f32, y: f32, u: f32, v: f32| crate::apt_scene::Vertex { position: [o[0] + x, o[1] + y], uv: [u, v] };
         for (icon, [x, y], _) in &ms.challenge_map.markers {
             let (a, b, c, d) = (at(x - 16., y - 16., 0., 0.), at(x + 16., y - 16., 1., 0.), at(x + 16., y + 16., 1., 1.), at(x - 16., y + 16., 0., 1.));
             expanded.push(crate::apt_scene::Draw {

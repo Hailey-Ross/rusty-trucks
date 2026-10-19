@@ -2181,3 +2181,22 @@ working.
   one level each time (2485 to 13300 over 8 cycles). skate-game 807 pass.
 - **Next session:** the APT objects line should show the same "in use" after each pause close and no level growth
   across Challenge Map uses.
+
+## Challenge Map markers and cursor at the map clip's origin (2026-10-18)
+- **Problem** (laptop session 2026-10-18): "map picture in wrong place, markers in wrong spots, generally the menu did
+  not match retail."
+- **Retail** (research `.local/research/b282-challenge-map-layout.md`, [code]): MapRenderComponent's drawer
+  `825E2618` places markers at the origin `0x830B8600` plus each projected point, 32 x 32 screen pixels. That origin
+  is row 3 of the matrix at `0x830B85D0`, which the render callback `825D4390` writes from the clip's 2D matrix (the
+  four vector stores, row 3 at +48, checked in the recomp): the clip's translation only, not its scale. Earlier
+  research (b263 / b265) read the block as a constant zero. GetCursorCoordinates is the projected point plus the same
+  origin; the movie sets `mCursor._x / _y` on the root with no offset. The projection itself (`8268DB68`) already
+  matched.
+- **Change:** markers are drawn at origin + point, 32 x 32 (before: through the full clip matrix, scale about 2.04 x
+  1.51, so spread out and drawn 65 x 48); `ChallengeMapHost::origin` is set while drawing and GetCursorCoordinates adds
+  it (before: the cursor sat near the top left). Log "CHALLENGE_MAP markers at origin [x, y]: n markers, first (icon,
+  screen point), picture (name or none = the default map)" when the origin changes.
+- **Open:** the picture. Its placement rule matches the movie (`mMapImage` 512 x 512 at (572, 120.5),
+  `mDefaultMapImage` 1024 x 1024 at (291, -41), stretched, no aspect lock); b282's likeliest cause is the default map
+  showing whenever the highlighted row has no picture (`IsUsingDefaultMap`). Decide from the new log line.
+- **Tests:** skate-game 807 pass. Not play-tested.
