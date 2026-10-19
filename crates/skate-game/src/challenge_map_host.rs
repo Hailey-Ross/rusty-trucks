@@ -5,7 +5,7 @@
 //! through the menu registry, whose handler decides: a teleport, a mod).
 use crate::apt_vm::{to_integer, Value, Vm};
 use skate_core::challenge_map::{Action, ChallengeMapState};
-use skate_core::menus::{EntryRef, MenuContext, MenuRegistry};
+use skate_core::menus::{EntryKind, EntryRef, MenuContext, MenuRegistry};
 
 #[derive(Clone, Default)]
 pub struct ChallengeMapHost {
@@ -53,7 +53,7 @@ impl ChallengeMapHost {
         if object == "Game" && self.open {
             return Ok(match method {
                 "OnMenuHilight" => {
-                    let states = self.state.hilight(index(1));
+                    let states = self.state.hilight(registry, ctx, index(1));
                     self.states.extend(states);
                     Some(Value::Undefined)
                 }
@@ -72,7 +72,10 @@ impl ChallengeMapHost {
         }
         let s = &self.state;
         Ok(Some(match method {
-            // 8264AF28: [count, selected, labels, enabled, icon 1, icon 2]; an empty folder gives one `false` per list.
+            // 8264AF28: [count, selected, labels, header, icon 1, icon 2]; an empty folder gives one `false` per list.
+            // List 3 is `!(child vt+0x28)`, not the greying: the movie adds a `true` row as a picker header
+            // (AddSpecificItem(mHeaderItem)) that the picker skips, so only `map_category` labels are true; greyed rows
+            // come from OnMenuGetItemEnabled.
             "GetStuffMenuItems" => {
                 let rows = s.rows(registry, ctx);
                 let lists: [Vec<Value>; 4] = if rows.is_empty() {
@@ -80,7 +83,7 @@ impl ChallengeMapHost {
                 } else {
                     [
                         rows.iter().map(|r| text(&r.label)).collect(),
-                        rows.iter().map(|r| Value::Bool(r.enabled)).collect(),
+                        rows.iter().map(|r| Value::Bool(r.entry.kind == EntryKind::MapCategory)).collect(),
                         rows.iter().map(|_| Value::Text("none".into())).collect(),
                         rows.iter().map(|_| Value::Text("none".into())).collect(),
                     ]

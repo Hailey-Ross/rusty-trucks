@@ -49,7 +49,11 @@ pub struct ChallengeMapState {
     pub root: Option<EntryRef>,
     pub tab: usize,
     pub stack: Vec<EntryRef>,
+    /// The selected row (`mgr+0xE5E8`, GetStuffMenuItems[1]); retail's helper index `+0xD8` follows it through the
+    /// movie's OnMenuHilight round trip after every refresh, so one field gives the same outcome.
     pub hilight: usize,
+    /// Each tab's row at the root (`mgr+0x118 + 4*tab`), keyed by the tab's id so a mod adding tabs keeps them.
+    pub tab_rows: std::collections::BTreeMap<String, usize>,
     pub legend: bool,
 }
 
@@ -94,9 +98,24 @@ impl ChallengeMapState {
         self.node(registry, ctx).and_then(|n| registry.data().map_node(&n).map(|m| m.label.clone())).unwrap_or_default()
     }
 
-    /// OnMenuHilight (`826477D8`): +0xD8 = index; the map cursor follows.
-    pub fn hilight(&mut self, index: usize) -> Vec<i32> {
-        self.hilight = index;
+    /// `sub_82D0D100(mgr, index)`: the first real row (not a `map_category` header) at or after `index`, wrapping;
+    /// unchanged when there is none. At the root it is also the tab's saved row.
+    fn set_sel(&mut self, registry: &MenuRegistry, ctx: &MenuContext, index: usize) {
+        let rows = self.rows(registry, ctx);
+        let n = rows.len();
+        if let Some(i) = (0..n).map(|k| (index + k) % n).find(|&i| rows[i].entry.kind != EntryKind::MapCategory) {
+            self.hilight = i;
+        }
+        if self.stack.is_empty() {
+            if let Some(tab) = self.tabs(registry, ctx).get(self.tab) {
+                self.tab_rows.insert(tab.id.clone(), self.hilight);
+            }
+        }
+    }
+
+    /// OnMenuHilight (`826477D8`): +0xD8 = index and `D100(mgr, index)`; the map cursor follows.
+    pub fn hilight(&mut self, registry: &MenuRegistry, ctx: &MenuContext, index: usize) -> Vec<i32> {
+        self.set_sel(registry, ctx, index);
         vec![state::CURSOR]
     }
 
@@ -113,20 +132,23 @@ impl ChallengeMapState {
                 return Action::None;
             }
             self.stack.push(row.entry.clone());
-            self.hilight = 0;
+            self.set_sel(registry, ctx, 0);
             return Action::Refresh(REFRESH.to_vec());
         }
         Action::Select(row.entry.clone())
     }
 
-    /// B (`82646B28`): hide the legend, else pop a folder, else close at the root.
-    pub fn back(&mut self) -> Action {
+    /// B (`82646B28`): hide the legend, else pop a folder, else close at the root. The pop (`sub_82D0D378`) selects
+    /// the folder the player left in its parent's list (`D100` on its row; unchanged if it is not listed).
+    pub fn back(&mut self, registry: &MenuRegistry, ctx: &MenuContext) -> Action {
         if self.legend {
             self.legend = false;
             return Action::Refresh(vec![state::LEGEND_OFF]);
         }
-        if self.stack.pop().is_some() {
-            self.hilight = 0;
+        if let Some(left) = self.stack.pop() {
+            if let Some(i) = self.rows(registry, ctx).iter().position(|r| r.entry == left) {
+                self.set_sel(registry, ctx, i);
+            }
             return Action::Refresh(REFRESH.to_vec());
         }
         Action::Close
@@ -141,7 +163,9 @@ impl ChallengeMapState {
         Action::Refresh(vec![state::LEGEND_ON])
     }
 
-    /// Next / previous tab (triggers, d-pad or stick left / right): clamped, no wrap; the folder stack resets.
+    /// Next / previous tab (triggers, d-pad or stick left / right): clamped, no wrap; the folder stack resets and the
+    /// tab's saved row comes back (`sub_82D0C1C0`, then the load step `82D0D728`: `D100(mgr, mgr+0x118 + 4*tab)`;
+    /// the first visit starts at row 0, ours: retail's initial slot values are not read, research b261).
     pub fn step_tab(&mut self, registry: &MenuRegistry, ctx: &MenuContext, forward: bool) -> Action {
         let count = self.tabs(registry, ctx).len();
         let next = if forward { (self.tab + 1).min(count.saturating_sub(1)) } else { self.tab.saturating_sub(1) };
@@ -150,7 +174,8 @@ impl ChallengeMapState {
         }
         self.tab = next;
         self.stack.clear();
-        self.hilight = 0;
+        let saved = self.tabs(registry, ctx).get(next).and_then(|t| self.tab_rows.get(&t.id).copied()).unwrap_or(0);
+        self.set_sel(registry, ctx, saved);
         Action::Refresh(REFRESH.to_vec())
     }
 }
@@ -175,6 +200,8 @@ mod tests {
                 node(MapListing, "progression_locations", Some((MapListing, "progression")), 3),
                 node(MapListing, "downtown", Some((MapListing, "progression_locations")), 0),
                 node(MapListing, "empty", Some((MapListing, "progression_locations")), 1),
+                node(MapListing, "uptown", Some((MapListing, "progression_locations")), 2),
+                node(FeLocation, "uptown_spot", Some((MapListing, "uptown")), 0),
                 node(FeLocation, "dist_downtown_aletown", Some((MapListing, "downtown")), 0),
                 node(Challenge, "c1", Some((MapListing, "progression_active")), 0),
             ],
@@ -195,24 +222,34 @@ mod tests {
         assert_eq!(s.tabs(&r, &ctx).iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["progression_active", "progression_locations"]);
         assert_eq!(s.tab, 1, "opens on the locations tab");
         let rows = s.rows(&r, &ctx);
-        assert_eq!(rows.iter().map(|r| (r.entry.id.as_str(), r.enabled)).collect::<Vec<_>>(), [("downtown", true), ("empty", false)]);
+        assert_eq!(rows.iter().map(|r| (r.entry.id.as_str(), r.enabled)).collect::<Vec<_>>(), [("downtown", true), ("empty", false), ("uptown", false)]);
         assert_eq!(s.title(&r, &ctx), "L_progression_locations");
         assert_eq!(s.select(&r, &ctx, 1), Action::None, "an empty, greyed folder does nothing");
         assert_eq!(s.select(&r, &ctx, 0), Action::Refresh(vec![10, 80, 100, 110]));
         assert_eq!(s.title(&r, &ctx), "L_downtown");
         assert_eq!(s.select(&r, &ctx, 0), Action::Select(EntryRef::map(EntryKind::FeLocation, "dist_downtown_aletown")));
-        assert_eq!(s.hilight(0), [110]);
-        // Back pops, then closes at the root.
-        assert!(matches!(s.back(), Action::Refresh(_)));
-        assert_eq!(s.back(), Action::Close);
-        // Tabs clamp, no wrap; the challenges tab's challenge has no handler, so it is greyed.
+        assert_eq!(s.hilight(&r, &ctx, 0), [110]);
+        // Back pops to the folder's row in its parent (`sub_82D0D378`), then closes at the root.
+        assert!(matches!(s.back(&r, &ctx), Action::Refresh(_)));
+        assert_eq!(s.hilight, 0);
+        s.hilight(&r, &ctx, 2);
+        s.stack.push(EntryRef::map(EntryKind::MapListing, "uptown"));
+        assert!(matches!(s.back(&r, &ctx), Action::Refresh(_)));
+        assert_eq!(s.hilight, 2, "back on the Uptown row");
+        // Tabs clamp, no wrap; the challenges tab's challenge has no handler, so it is greyed. Each tab comes back on
+        // its saved row (`mgr+0x118 + 4*tab`).
         assert_eq!(s.step_tab(&r, &ctx, true), Action::None);
         assert!(matches!(s.step_tab(&r, &ctx, false), Action::Refresh(_)));
+        assert_eq!(s.hilight, 0, "a first visit starts at row 0");
         assert_eq!(s.rows(&r, &ctx)[0].enabled, false);
         assert_eq!(s.step_tab(&r, &ctx, false), Action::None);
+        assert!(matches!(s.step_tab(&r, &ctx, true), Action::Refresh(_)));
+        assert_eq!(s.hilight, 2, "the locations tab's saved row");
+        assert!(matches!(s.step_tab(&r, &ctx, false), Action::Refresh(_)));
         // The legend: Y shows it, B hides it before anything else.
         assert!(matches!(s.legend_on(), Action::Refresh(_)));
         assert_eq!(s.legend_on(), Action::None);
-        assert_eq!(s.back(), Action::Refresh(vec![130]));
+        assert_eq!(s.back(&r, &ctx), Action::Refresh(vec![130]));
+        assert_eq!(s.back(&r, &ctx), Action::Close);
     }
 }

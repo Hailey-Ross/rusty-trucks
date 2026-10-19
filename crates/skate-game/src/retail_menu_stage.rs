@@ -383,12 +383,9 @@ fn setup(
                 warn!("RETAIL_MENUS: Video Calibration unavailable (no videocal movie); run setup");
             }
             // The Challenge Map (FE 17): with its movie in the set the pause item opens the retail screen (stacked
-            // over the PC overlay's MAPS handler, which stays the fallback for sets exported before it was added).
-            // NOT READY: the movie's load script still runs away in our VM (2049 clips on frame 0, test
-            // `retail_challenge_map_screen_opens_and_picks_a_location`); a stage error would stop every retail menu, so
-            // the screen is a development switch until that passes.
-            let enabled = std::env::var_os("SKATE3_RETAIL_CHALLENGE_MAP").is_some();
-            if enabled && movies.movies.contains_key("source/screens/map/challengemap") && menus.registry.data().item(CHALLENGE_MAP_ITEM).is_some() {
+            // over the PC overlay's MAPS handler, which stays the fallback for sets exported before it was added;
+            // test `retail_challenge_map_screen_opens_and_picks_a_location`).
+            if movies.movies.contains_key("source/screens/map/challengemap") && menus.registry.data().item(CHALLENGE_MAP_ITEM).is_some() {
                 let owner = Owner::Engine(format!("{}{}", crate::retail_menus::SCREEN, crate::fe_backdrop::CHALLENGE_MAP_SCREEN));
                 let handler = skate_core::menus::Handler { owner, select: true, highlight: false, callback: None };
                 menus.registry.register_handler(EntryRef::item(CHALLENGE_MAP_ITEM), handler);
@@ -602,7 +599,7 @@ fn update(
                 if key == APT_PREVIOUS {
                     consumed = true;
                     sounds.write(FrontendSound::named("core_b_button"));
-                    let action = cm.state.back();
+                    let action = cm.state.back(fe.registry, fe.context);
                     cm.apply(action);
                 } else if MAP_NEXT_TAB.contains(&key) || MAP_PREVIOUS_TAB.contains(&key) {
                     consumed = true;

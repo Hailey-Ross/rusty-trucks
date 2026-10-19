@@ -2099,9 +2099,15 @@ Progress (2026-10-18, evening): the vault tree loads into the menus (`skate_data
 locations; retail's location filter Lua as data), every location with a teleport matrix gets a `teleport:<key>`
 engine handler, the navigation core (`skate_core::challenge_map`) and the FEChallengeMap host (24 getters) are in,
 teleports land off the board (`travel_ex`, `challenge_map::plan`: same map instant, another map through the map
-transition, refused in multiplayer). The stage opens FE 17 with the movie, but the movie's load script still runs
-away in our VM (2049 clips on frame 0), so the screen is a development switch (`SKATE3_RETAIL_CHALLENGE_MAP=1`) and
-players keep the PC overlay's MAPS until research b260's fix lands. Map pictures: research b257 / b258 / b259
+transition, refused in multiplayer). The pause menu's Challenge Map opens FE 17 with the retail movie whenever the
+installed set has it (the PC overlay's MAPS stays the fallback for older sets). The movie loads since the instance
+guard went to 16384 (it pre-allocates 11 picker rows, ~2838 clips; research b260). GetStuffMenuItems list 3 is the
+header flag (`!(child vt+0x28)`), not the greying: the movie adds a `true` row as a picker header (bytecode of
+UpdateStuffMenuItems: `Not; If` jumps to `AddItem` when false, else `AddSpecificItem(text, mHeaderItem)`), and the
+picker skips headers when it places its highlight; sending the greying there made Downtown a header and A landed on
+the greyed Industrial row. Greyed rows come from `Game.OnMenuGetItemEnabled` only. Test
+`retail_challenge_map_screen_opens_and_picks_a_location` (data-gated) opens Downtown and picks its first location
+through the movie's picker. Map pictures: research b257 / b258 / b259
 (fedynamic.big map textures, the image renderer natives, the export plan).
 
 Out-of-date menus force the refresh (user, 2026-10-18): the asset check's menu movie / table findings restart the game

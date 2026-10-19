@@ -1108,7 +1108,6 @@ mod tests {
     /// every FEChallengeMap native the movie calls is answered, the list shows the location folders, A opens Downtown
     /// and A again picks a location the teleport handler enables. Data-gated (a version 6 menu set, the collections).
     #[test]
-    #[ignore = "NOT READY: the movie's load script runs away in our VM (2049 clips on frame 0, research b260)"]
     fn retail_challenge_map_screen_opens_and_picks_a_location() {
         let Some(root) = crate::apt_imports::test_menu_set() else {
             return;
