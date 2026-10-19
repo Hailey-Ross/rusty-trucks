@@ -213,6 +213,8 @@ pub(crate) fn takedown_tables_in(root: &Value) -> (BTreeMap<String, TakedownTabl
                         min_speed: f32::from_bits(u(e, "u32_32")),
                         // Byte +36 of the big-endian word at +36.
                         mirrors: u(e, "u32_36") >> 24 != 0,
+                        // Byte +38 bit 0: may trip on failure (`826A49D8`; b326).
+                        trips: (u(e, "u32_36") >> 8) & 1 != 0,
                     })
                     .collect()
             })

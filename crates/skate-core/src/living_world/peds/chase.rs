@@ -288,6 +288,24 @@ pub fn escaped(chaser: Vec3, chasee: Vec3, record: &ChaseRecord) -> bool {
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - e * e > 0.0
 }
 
+/// The mover's reachability check (`82E2CB08`, every 10 mover updates: `82C465A8` snaps the ped and its current
+/// destination onto the navmesh, `82C464F0` tests that both have a polygon and are connected; research b177 / b302).
+/// `ped` and `destination` are the located polygons (`None` = not on the mesh, e.g. a chasee in deep water).
+/// True when the check reports the destination unreachable (retail result codes 0, 2, 3, 4 post an event; 1 posts
+/// none). Ours: the reachable-but-high-area-class case (`82C47D60`) is not ported.
+pub fn reach_failed(mesh: &super::nav::NavMesh, ped: Option<u32>, destination: Option<u32>) -> bool {
+    !matches!((ped, destination), (Some(a), Some(b)) if mesh.reachable(a, b))
+}
+
+/// What the intercept goal's event handler (`82E31D58`) does with a report: an unreachable report rewrites
+/// CannotReachChaseTarget (`brain+3280` bit 0x08) to "within the unreachable radius of the chasee"; a reachable
+/// destination posts nothing and the bit keeps its value (b302).
+pub fn apply_reach_report(unreachable: &mut bool, failed: bool, near: bool) {
+    if failed {
+        *unreachable = near;
+    }
+}
+
 /// The line the HUD's central message shows when a chase reaches the player (`826B4FC0`, chase manager
 /// `0x830854B8` vtable slot +64): `caught` false = the chase ended (`ID_CHASE_OVER`); a taze picks by halves, a
 /// takedown the four "caught" lines by quarters. `roll` is retail's `rand() % 101 * 0.01`. Language ids: the text is
@@ -312,6 +330,34 @@ pub fn chase_message_roll(r: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::living_world::peds::nav::{AREA_DEFAULT, NavMesh, NavMeshInput, NavPolyInput, NavRules};
+
+    /// Two unconnected 4 m squares: the bank (x 0..4) and an island (x 10..14); water between.
+    fn bank_and_island() -> NavMesh {
+        let quad = |x: f32| NavPolyInput { verts: vec![[x, 0.0, 0.0], [x + 4.0, 0.0, 0.0], [x + 4.0, 0.0, 4.0], [x, 0.0, 4.0]], neighbours: vec![None; 4], area: AREA_DEFAULT };
+        NavMesh::build(&NavMeshInput { agent: [0.12, 0.35, 0.2, 1.6], polygons: vec![quad(0.0), quad(10.0)] }, NavRules::default())
+    }
+
+    #[test]
+    fn reach_reports_fail_off_the_mesh_and_across_islands_and_only_they_rewrite_the_bit() {
+        let m = bank_and_island();
+        let poly = |p: Vec3| m.locate(p).map(|n| n.poly);
+        let (ped, bank, water, island) = (poly([1.0, 0.0, 1.0]), poly([3.0, 0.0, 3.0]), poly([7.0, 0.0, 2.0]), poly([12.0, 0.0, 2.0]));
+        assert!(water.is_none(), "the water between is off the mesh");
+        assert!(!reach_failed(&m, ped, bank));
+        assert!(reach_failed(&m, ped, water), "a chasee in the water");
+        assert!(reach_failed(&m, ped, island), "a chasee on an unconnected island");
+        assert!(reach_failed(&m, None, bank), "the ped itself off the mesh");
+        // 82E31D58: an unreachable report sets the bit within the radius and clears it beyond; a reachable
+        // destination posts nothing, so the bit stays (a chasee back on the bank does not end the wait).
+        let mut bit = false;
+        apply_reach_report(&mut bit, true, true);
+        assert!(bit);
+        apply_reach_report(&mut bit, false, true);
+        assert!(bit, "reachable again keeps the bit");
+        apply_reach_report(&mut bit, true, false);
+        assert!(!bit, "unreachable but farther than the radius clears it");
+    }
 
     #[test]
     fn chase_messages_follow_retails_bands() {

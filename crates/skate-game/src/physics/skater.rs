@@ -124,6 +124,9 @@ pub(crate) struct SkaterRuntime {
     pub collision_maximum_error: Option<f32>,
     /// Ticks left of the SKITCH_RELEASE_TRACE log after leaving Skitching (the stopped-car release bail, 2026-10-17).
     pub skitch_release_trace: u8,
+    /// A new actor's trajectory selector reset waits for its placement (b310): the placement runs the old state's Exit
+    /// first (`frame.rs`, after `enter_after_teleport`), and KnownAir's Exit reads the selection.
+    pub trajectory_reset_pending: bool,
     pub solved_drives: Option<SkeletonDriveBatch>,
     pub foot_ik: FootIk,
     pub foot_physical: FootPhysicalOutputs,
@@ -158,7 +161,9 @@ impl SkaterRuntime {
     pub(crate) fn reset_for_new_actor(&mut self, data: &Collections) -> Result<(), String> {
         self.player_input.reset_for_new_actor(data)?;
         self.player_state.reset_for_new_actor();
-        self.trajectory.reset_for_new_actor();
+        // After the placement's Exit / Enter, not now: a body pooled in KnownAir exits KnownAir there, which needs
+        // its old selection (laptop 2026-10-19: "KnownAir requires a completed selected trajectory" on the first step).
+        self.trajectory_reset_pending = true;
         self.grind.reset_for_new_actor();
         self.takedown = None;
         self.ai_physics = None;
@@ -434,6 +439,7 @@ impl SkaterRuntime {
             collision_extra_errors: [[0.0; 4]; 2],
             collision_maximum_error: None,
             skitch_release_trace: 0,
+            trajectory_reset_pending: false,
             solved_drives: None,
             foot_ik,
             foot_physical: FootPhysicalOutputs::load(&data)?,

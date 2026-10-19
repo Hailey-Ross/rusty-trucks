@@ -1039,3 +1039,148 @@ keyed by the NPC skater's stable id.
   and the subsystems not audited field by field. A pool-order test (same NPC from a dirtied and a clean body, compare
   60 ticks) would show any remaining carry-over.
 
+## Simulated NPC skaters at every distance (2026-10-19)
+
+Problem (PR #52 next item 3): retail simulates every ambient skater; ours switched an NPC from replay to physics only
+within 40 m of an observer and handed it back beyond 44 m.
+
+Retail [code, research b303 `.local/research/b303-retail-skater-sim-scope.md`; main verified skater vtable `0x82300910`
+slot 0x38 = `8258E8B8`]: the SimController update (`sub_82859E70`) runs its fixed phases over the whole actor list with
+only an update-mask filter (`actor->vtable[0x38]() & mask`); the mask is fixed at creation (`skater+1772`), 1 for every
+normal skater, player or AI, so every skater gets the full update every tick at any distance. No distance or count
+tier, no lower rate. The limits are the population's (3 desired offline, AI cap 5, cull beyond 120 m), already ported
+(`skate-core/src/living_world/skaters.rs`).
+
+Change: `npc_simulated.radius` defaults to `f32::MAX` (`npc_sim.rs`), so the hand-back (`distance > 1.1 x radius`) and
+the "too far" wait never fire; a new skater starts on node 0 and switches to physics on its first safe node, as
+retail places an AI skater on a node with the spawn push. A finite radius (mod key, 0 to 500 m) stays a mod's cost
+choice; `max` stays 3. The tier itself stays opt-in (`SKATE_NPC_SIM=1` / the living world NPC physics choice) until
+play-tested. Cost: the per-NPC solve dominates (`.local/research/npc-sim-cost.md`); speed-ups only behaviour-identical.
+
+Test: `living_world_npc_sim_has_no_default_distance_limit` (npc_tests). skate-game unit tests 814 passed. Not
+play-tested; frame time with three far skaters simulated not measured yet.
+Open: whether anything inside retail's per-skater physics thins out far skaters (below `sub_82594B48`, not read).
+
+## Riding tail first: the fakie rule's input lines up with the deck (2026-10-19)
+
+Question (PR #52 next item 5, b199 / b200 / b201): NPC skaters sometimes stalled riding tail first; b201 found the
+fakie rule's input (effective animation root Z) not lined up with the deck and listed debug fields to decide which side
+was wrong. Retail's writer of the riding-fakie byte is known (b200, `sub_82DB6EC0`).
+Change (diagnostics only): `NPC_SKATER_STEER` (debug, `SKATE_NPC_TRACE_TICKS`) now also logs `flipped` (the packet's
+board-flipped bit), `root_yaw` (yaw of the effective root Z, the rule's input), `eff_yaw` (the context's effective
+board forward, `GamePhysics::context_effective_forward`) and `cat` (filtered category).
+Run [trace, ours]: muted `npcsim.sh wt-living` on DownTown, 150 s, radius 150 m, 11 957 steer lines, 0 panics, 3
+bails. Of the moving samples (speed >= 1 m/s) with the deck backwards to the velocity, root and effective forward point
+with the deck in every one (none of b201's mismatch rows); on the ground 421 report fakie true and 11 false (short
+moments after a revert or near 1 m/s, the rule's slow-backwards wait); grinds keep the previous value as the rule does.
+Of 22 stall starts (`NPC_SKATER_STUCK` stage 0 -> 1), 3 were tail first, all at 0.3 to 1.1 m/s with fakie still
+false; 19 were riding forward at 2 to 5 m/s.
+Result: no fakie change needed; b201's mismatch no longer shows (fixed by the later effective-deck work, "Simulated NPC
+skaters steer by the effective deck after a flip"). Open: the forward stalls at 2 to 5 m/s (most stall starts in this
+run), and whether retail's slow-backwards wait matches ours at 0.3 to 1.1 m/s.
+
+## A spawn push does not read as Bumped, as retail (recomp check, 2026-10-19)
+
+Question (PR #52 next item 4, b194 O1 / b195 / b196): after its spawn push, does a retail AI skater read as Bumped
+(`IsBumped` `82BA7310`), which would keep it from tricking? Ours avoids the spike by pre-filling the observed-velocity
+history with the pushed value (`GamePhysics::push_context_velocity`, since 505dc2ef); retail's push `82C04168` does not
+touch the history (b194 [code]), so ours is our own mechanism and needed the retail outcome to judge it.
+Trace [trace, the recomp]: new research hooks (`hooks_physics.cpp`, category `aiskater`): `AIPUSH` (the push when
+called from the AI hold branch `824701F8`) and `BUMPQ` (every true IsBumped result, every evaluation within 1 s after
+an AI push). Background run, player idle 120 s at the save's spawn, `SKATE3_TRACE=aiskater`: 2 AI pushes (3.6 and
+18 m/s), 157 IsBumped evaluations on 5 actors within 1 s after them, all false; the 6 true results all came at other
+times. Malformed lines 0. (The push logs the board, not the actor, so the pushed skater is not tied to one actor id;
+every actor evaluated in the window read false.)
+Result: retail does not read Bumped after the spawn push, which is the outcome our pre-fill gives; kept, now pinned by
+`a_spawn_push_with_a_prefilled_history_does_not_read_as_bumped` (skate-core `physics/tests/board_ground.rs`). No
+engine behaviour change. The hooks go to the recomp fork's research-hooks branch in the commit window.
+
+## NPC skater hitches of ~200 ms: a failed first step dropped a pooled body (2026-10-19)
+
+Problem (laptop sessions 2026-10-19 10:08 / 10:16, hails-local, NPC physics on; user: "large hitch right near the
+beginning"): three FRAME_HITCH of 203 to 213 ms, all in npc_sim (normal 0.5 to 3.8 ms).
+Cause [trace + code]: each hitch is an `NPC_SKATER_SIM_LOAD` of 192 to 201 ms on the game thread, right after
+`NPC_SKATER_SIM #N: physics error, back to replay: KnownAir requires a completed selected trajectory`, which came on
+the first physics step after a handover (one tick after `<- replay`). Two faults (research b310, verified):
+1. The error path removed the `NpcSim` component, dropping the pooled body, so the next switch loaded a new one
+   synchronously (`npc_sim.rs`, the step results loop).
+2. A body pooled mid-jump keeps KnownAir; the new-actor reset (b299) replaced its trajectory selector at once, and the
+   placement's state Exit then ran KnownAir's Exit (`known_air.rs` `frame()`), which reads the selection.
+Retail builds a new actor per NPC (`82590DC0` -> `82DB18A0`), so no old state ever exits on it.
+Change: (1) a failed body goes back to the pool like a hand-back (`pool_from`); (2) `reset_for_new_actor` marks
+`trajectory_reset_pending` and the placement resets the selector right after `enter_after_teleport` (`frame.rs`), so
+the old state exits with its selection and the new actor still never completes the old batch (b299's goal).
+Test: `a_teleport_resets_the_grind_lock_and_a_new_actor_gets_a_fresh_input_cache` (data-gated) checks the pending
+reset and that the next placement does it. Not play-tested.
+
+## A walk-back that frees a stuck skater says so in the log (2026-10-19)
+
+Laptop session 2026-10-19 11:05 (user: "NPC Skater near the end got super stuck in a corner on the bridge over rosalita
+skate park."): #15 logged stage 1 -> 2 -> 3 at node 45 and then nothing. Research b319 (main checked the log and
+`ai_controller.rs`): the stage 3 walk-back to node 64 worked (hand back 17:12:52.18, rejoined the line, trick at node
+69); `reposition_done` clears the stuck watch without a line, so the recovery was invisible. The re-snap 45 -> 45 is
+retail's rule (`8246D168`: skip ahead only where the line climbs steeper than 1.0; else the nearest node). Change:
+`NPC_SKATER_STUCK #id name stage n -> 0 after walk-back to node m` at the hand-back (`npc_sim.rs`); the re-snap
+budget (240 summed node frames) is `ControllerSettings::resnap_frames`. Session counts: 1 -> 2 32, 2 -> 3 19,
+3 -> 4 4 (each after a "no plan" walk-back failure), 4 -> 5 (bail) 3, stage 6 none. Open: why the navmesh walk-back
+plans fail at the same spots (nodes 69 and 36).
+
+## The walk-back start snaps from an obstacle onto the mesh (2026-10-19)
+- **Problem:** laptop session 2026-10-19 11:05 (`game-20261019-110510`): six stage-3 walk-backs logged "no plan" at the
+  same spots (nodes 36 x2, 69 x2, 29, 23), so those skaters climbed to stage 4 / 5 (bail). Every start was off the
+  peds' navmesh by more than their 0.5 m snap: inside the hole the navmesh cuts around an obstacle (0.65 to 2.64 m from
+  the nearest walkable edge), two of them 2 to 3 m up on top of a grind block (#7 in `GrindFiveO` at y 34.3 just
+  before). `NavMesh::solve` stopped at `locate(from)` before looking at the goal. The goals were fine (inside or 0.34 m
+  from main-component polygons). Research `.local/research/b324-walkback-plan-failures.md` (offline check of the
+  logged points against the session's DownTown navmesh).
+- **Retail** ([code], Ghidra, b324; constants as b277): the path request `82928770` finds the start polygon with
+  `82933848` -> `829338B0`, the same unbounded nearest-polygon search as the goal (query range `0x8206D108` FLT_MAX,
+  best distance from `0x822F9310`), closest point `8292F9F0`, 3D distance. Replaying it offline, all six starts snap
+  0.67 to 3.61 m onto main-component polygons and every plan passes the 2.0 h / 1.0 v acceptance, so retail starts
+  these walk-backs.
+- **Change:** `NavMesh::locate_start_nearest(p, max_dist)`: the nearest walkable polygon point at any distance, any
+  component (inside the outline the surface under the point, else the nearest edge point), a ring search over the
+  grid that stops once no farther ring can be nearer; ties to the lower polygon index. The navmesh path service uses
+  `locate(from)` first (unchanged on the mesh) and this search when it fails. New setting
+  `ControllerBSettings::start_locate_radius` (default `f32::MAX` = retail; a mod can cap it, 0.5 = the old
+  behaviour); `PathService::solve` takes it. The peds' `NavRules` (0.5 / 4.0) are unchanged.
+- **Files:** `crates/skate-core/src/living_world/peds/nav.rs` (`locate_start_nearest`, `closest_point`),
+  `crates/skate-core/src/living_world/controller_b.rs` (setting, trait, navmesh service).
+- **Tests:** `walk_back_start_snaps_from_an_obstacle_cut` (a start 2 m inside a 4 x 4 m cut and 2.8 m up snaps to the
+  cut's edge; a 3 m cap refuses it; the ring search equals a scan of every polygon at six points; the plan is accepted,
+  and refused with the old 0.5 m).
+- **Open:** whether retail's candidate filter `82938A90` for this query rejects the same areas as our `walkable`
+  (area 0xF1) [unverified]; retail keeps the raw start as path element 0 (`82928530`, b277), ours aims at the snapped
+  start first (the same walk off the obstacle); a start high on a wall-top island snaps to that island, as retail.
+  The controller settings are mod-reachable now ("The NPC skater controllers are mod-reachable" below).
+
+## The NPC skater controllers are mod-reachable (2026-10-19)
+- **Why:** ask 80 follow-up and the moddability rule: only `npc_simulated.walk_arrive_distance` / `walk_stuck_ticks`
+  reached a mod; the walk-back controller (controller B) and the line controller (stuck tracker, re-snap, reposition,
+  safe node) kept their retail values out of reach. Research `.local/research/b330-controller-settings-mod-reach.md`.
+- **Change:** two `living_world` world-tuning keys, the same pattern as `npc_avoid`:
+  `npc_walk_back {...}` (every `ControllerBSettings` field by its Rust name, e.g. `start_locate_radius`,
+  `goal_locate_radius`, `arrive_h`, `stuck_waypoint_ticks`) and `npc_line_controller {...}` (every
+  `ControllerSettings` field, e.g. `resnap_frames`, `stuck_limits` (six), `safe_run`). Retail values stay the
+  defaults; floats >= 0, counts <= 36000 (ours), `push_period` and `safe_run` >= 1. Applied after `npc_simulated`, so a
+  nested key wins over its alias. Read back in the `living_world` read. Patches are per mod; a mod that stops loses
+  them (`clear_owner`), the first writer keeps a field another mod also sets. Host-side (the NPC simulation runs on
+  the host); the stored patches are JSON.
+- **Files:** `crates/skate-mods/src/world_tuning.rs` (`NpcWalkBackPatch`, `NpcLineControllerPatch`, macro
+  `settings_patch!`), `crates/skate-game/src/modding/world_tuning.rs` (apply, read), `sdk/skate.lua` (stub list).
+- **Tests:** `npc_controller_settings_are_mod_reachable_and_reset_on_disable` (retail defaults, partial patch,
+  nested key over the alias, first writer per field, rejected values, reset on disable).
+## NPC skaters speeding up uphill: the board path, and a bail speed that misread (2026-10-19)
+- **Report:** laptop 2026-10-19 16:11 (University): an NPC skater "went uphill ... without pumping, he randomly just
+  gained a bunch of speed for no reason", and four skaters on one line bailed at "40 m/s" (`NPC_SKATER_BAIL`).
+- **Cause** ([code] + [log], `.local/research/b338-npc-uphill-speed-gain.md`): the AI board path (`82C05EC0`,
+  `skate_core::riding::grounded::state::board_path::update_board_path`) pulls the deck velocity toward the record's
+  target velocity (the recorded node step x 60) by up to 0.2 m/s per tick, whatever the slope; the University library
+  lines are recorded fast (about 14-20 m/s), the spawn push starts at 0.75 of that. Both are retail; not changed.
+  The 40 m/s bails were our measurement: the speed was the projected point's step x 60, and on the wipeout tick the
+  point switches from the deck to the character root.
+- **Change:** the bail line's speed is the deck body's velocity; a new `NPC_SKATER_SPEED` line (the deck speed changed
+  by 2 m/s within 30 ticks; recorded speed, slope along the motion, state, node, on_path, hold) so a speed-up shows its
+  source.
+- **Open:** whether a retail AI skater plays a push while the board path speeds it up (who posts RightPush for AI
+  skaters: Ghidra or a short recomp trace at the library spawn); the board path's share of each change in the line.

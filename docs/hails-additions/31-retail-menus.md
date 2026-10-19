@@ -2200,3 +2200,116 @@ working.
   `mDefaultMapImage` 1024 x 1024 at (291, -41), stretched, no aspect lock); b282's likeliest cause is the default map
   showing whenever the highlighted row has no picture (`IsUsingDefaultMap`). Decide from the new log line.
 - **Tests:** skate-game 807 pass. Not play-tested.
+
+## Standalone skate-data examples build again (2026-10-19)
+
+Problem (PR #52 next item 7): `cargo check -p skate-data --examples` failed in two examples that include skate-game
+sources by `#[path]`. `apt_data` called `apt_vm::Vm::construct`, folded into the VM's opcode handling upstream
+(`ddc30284`, 2026-09-14). `scoring_flow_data` set `Frame::nollie` (the field is gone; `regular`, `player_basis`,
+`board_basis`, `reckoning_up` and `front_flip` were added) and its included `scoring_runtime.rs` / `apt_scene.rs` now
+use `bevy::log::info!` and `crate::image_renderer_host`.
+Change (examples only, no engine code): `apt_data` builds the instance itself (`construct`: plain object with the
+class prototype, then `Vm::call_function`); `scoring_flow_data` fills the new `Frame` fields with neutral values,
+copies `hud_data`'s `image_renderer_host` stand-in and drops the log lines through `extern crate self as bevy` plus a
+local `log::info!` that expands to nothing. Verification: `cargo check -p skate-data --examples` clean (dead-code
+warnings only), `cargo test -p skate-data` all pass. Running the examples needs the user's exported data (not run).
+
+## Skate Profile (FE 61) (2026-10-19)
+
+Problem (PR #52 next item 8, user 2026-10-19: "Port FE 61 now"): the Free Play pause row Skate Profile opened our PC
+overlay's SKATER section; retail opens FE screen 61, the career view.
+
+Root cause / evidence (research `.local/research/b308-retail-offline-profile.md`; main re-read the input handler):
+- FE 61 (vtable 0x82305448) opens template 106 OfflineProfile, `profile/offline_skateProfile` (info record
+  0x830265E0, key `f17ccf55ee91b4f7`). The movie has three tabs (progression, stats, personal bests) and reads its
+  pages from two host objects: Progression (registrar 0x825AFBA8: GetOverallCareerData, GetOverallChallengeData,
+  GetMilestoneDotData, GetSummaryGroupData) and Stats (registrar 0x825AB630: GetStatsChunk, GetPersonalBestChunk,
+  GetCareerProfileSelectedTab = the screen's tab index +0x3C).
+- Init 0x8264C530: tab 0, then the refresh 0x8264C830 (tab 0 / 1 / 2 -> SetState 5 / 10 / 20).
+- Input 0x8264C608 (skate3_recomp.24.cpp:10977): Back plays `core_b_button` and pops the screen (consumed); the tab
+  keys 7 / 10 play `core_tab`, step the tab clamped to 0..2 (at either end the index stays, :11137-11150), then
+  SetState(30) and the refresh, also at either end (:11153-11173); Up / Down / LStick up / down play
+  `profile_career_scroll` and return 0, so the movie scrolls its list. The three sound keys resolve by the install's
+  `fe` records: 0x4D927CD64CC8B818 core_b_button, 0xFD87566338C118E1 core_tab, 0x16469A2827B77C98
+  profile_career_scroll. Y (gamercard) and X (achievements) are console platform UI.
+
+Change:
+- `skate_core::offline_profile`: the tab index, keys and states as data (`ProfileRules`: tab labels and states, the
+  sync state 30, the three sounds; retail's the defaults) and the page data (`ProfileData`: two overall bars, the
+  stats and personal-best rows by stable id).
+- `offline_profile_host.rs`: answers Progression and Stats from `ProfileData`; `ProfileMods` layers mods' changes.
+- `retail_menu_stage.rs`: FE 61 open / close, key routing, the open state posted once the movie loaded; the pause row
+  pushes the screen when the movie is in the set (stacked over the SKATER overlay handler, which stays the fallback
+  for older sets). `tools/prepare_menu_movies.py` exports the movie (its `table` control comes with it).
+- Mods: `sdk.menus.profile(page, key, options)` (`career` / `challenges` bars: title, icon, current, total;
+  `stats` / `personal_bests` rows by key: label, value, order, hidden); removed when the mod stops.
+- NOT RETAIL YET: the engine has no career, challenge or stats records, so the pages open empty (bars 0 / 0, no rows,
+  no milestones or summary groups) until a career system or a mod fills them. The Skater overlay section
+  (difficulty, tuning, camera, look) loses this row as its way in while the retail screen is available.
+
+Verification: `cargo test -p skate-core offline_profile` (4: open page, tab steps and both ends, Back / scroll,
+a mod tab list); `offline_profile_host` mod layers test; skate-mods command validation;
+`retail_skate_profile_screen_opens_and_shows_each_tab` (data-gated: loads the movie, posts 5, 30, 10, 30, 20, 30, 5,
+asserts the movie called GetOverallCareerData, GetStatsChunk, GetPersonalBestChunk and GetCareerProfileSelectedTab
+and that no Progression / Stats call went unanswered). Not yet looked at in the running game.
+
+Open: GetSummaryGroupData / GetMilestoneDotData entry layouts (the movie's SUMMARY_GROUP_* / DOT_DATA_* constants);
+which stats retail lists (tables at 0x83067094 / 0x8306FD58); the career and challenge record keys.
+
+Follow-up (laptop 2026-10-19 12:32): the start-up check said "game files current" on a set without the movie, so no refresh was offered. The menu movie set is now version 8 (`retail_menu_movies::VERSION`, `prepare_menu_movies.py` `VERSION`): an older set forces Refresh Game Files like the Challenge Map's version 6 did; version 7 sets still load (`OLDEST_VERSION` 5) and keep the SKATER overlay until refreshed.
+
+## Extras and cheat codes (FE 18, FE 46) (2026-10-19)
+
+Problem (PR #52 next item 8): the Free Play pause row Extras opened our PC overlay's EXTRAS page; retail opens FE 18,
+whose first row takes a cheat code (the zombie cheat). User choices (2026-10-19): cheat entry = "On-screen keyboard";
+rows 1-3 (console shoe / pre-sell codes) = "Unlock directly"; Licenses / Credits = "Our licenses + greyed credits".
+
+Root cause / evidence (research `.local/research/b320-retail-extras.md`, `b304-retail-cheat-screen.md`,
+`b305-retail-text-entry.md`, `b321-extras-code-unlocks.md`; main checked the template and screen records):
+- FE 18 (vtable 0x82305390) opens template 15 Extras `main/extras.swf` (info key `62b6afde0ba6567b`). Seven rows
+  (table 0x83025EE0): cheat code, Emerica / Etnies shoe code, pre-sell code, credits (FE 25), licenses (viewer FE 3),
+  Skate Reel (sub-list, video player FE 24). Natives: Game.Extras_GetNumOptions / _GetOptionTitle / _MenuTitle and the
+  picker's OnMenuGetItemEnabled / OnMenuSelect. Input 0x82655658: Back only (core_b_button; Skate Reel -> main rows
+  with SetState(10), else pop), never consumed.
+- Row 0 opens FE 46 (key `47ddadb752e051b6`): no movie, retail calls XamShowKeyboardUI (title = the row label,
+  empty default, max 512, empty allowed, mode 0 = characters from `ALL_VALID_ALPHANUMERIC_CHARACTERS`, warning popup
+  0x107 on others and the keyboard again). The callback keeps 32 characters; the matcher compares case-sensitively
+  against the cheat table (0x83025F00); `zombie` (id 5) TOGGLES zombie mode in Free Skate class modes, with the
+  dialogs ID_VALID_CODE_TITLE + ID_VALID_CODE_CHEAT_ZOMBIEMODE(_DISABLED), refused ID_INVALID_CODE_CHEAT_ZOMBIEMODE,
+  wrong ID_VALIDATE_CODE_TITLE + ID_UNLOCK_CODE_FAILED + ID_COMMON_CONTINUE.
+- Rows 1-3 (b321): redeeming sets the row's entitlement flag (unlock kind 8) and grants: Emerica = kind 6
+  `cac_shoe_emerica_promo` (shoe emerica_reynolds_cruisers), Etnies = kind 6 `cac_shoe_etnies_promo` (shoe
+  etnies_skate_3_custom), pre-sell = kind 0 `dist_blackboxpark` (Black Box park) plus two challenges.
+
+Change:
+- skate-core: `extras` (rows as data, Back, select), `text_entry` (FE 46 OK / cancel rules and the on-screen keyboard
+  state, layout as data), `cheats` (table as data, matcher, toggle state, dialogs); tests for each.
+- skate-game: `extras_host.rs` (the natives, the cheat event `CheatChanged`), `text_entry_ui.rs` (the keyboard
+  drawn as a Bevy UI panel while FE 46 is on top; hidden while a popup shows), `retail_menu_stage.rs` (FE 18 / 46
+  open / close, Back, SetState(10) once loaded, the keyboard input: pad grid, A type, X delete, Y shift, Start done,
+  B cancel; PC typing, Backspace, Enter, Escape), the cheat dialogs through the popup list, `living_world` applies
+  the zombie toggle to `LivingWorldSettings.zombie` (session only, like retail per b304).
+- Movie set version 9 (`main/extras` added; an older set forces Refresh Game Files). The asset check now checks the
+  set the menus load (`SKATE3_MENU_MOVIES` when set).
+- NOT RETAIL YET / ours: the keyboard look; who posts retail's first SetState(10); the zombie mode gate (retail's mode
+  values 0 / 3 / 4 not decoded; ours: Free Play). Rows 1-6 greyed for now: rows 1-3 because the engine has no unlock
+  store and nothing locks those shoes or the park yet, Credits / Licenses / Skate Reel until FE 25 / FE 3 / FE 24 are
+  ported. The other retail cheat codes change things the engine does not have and are not listed.
+
+Verification: skate-core `extras`, `text_entry`, `cheats` tests (10); `extras_host` test;
+`retail_extras_screen_lists_its_rows_and_opens_cheat_entry` (data-gated: the real movie lists the rows through our
+natives and A on row 0 asks for the cheat entry); skate-core 1142, skate-game 819, skate-mods 106 pass. Not yet
+looked at in the running game (keyboard look, popup over the keyboard).
+
+## Cheat entry keeps the game paused; its keys are logged; --check-assets sees out-of-date menus (2026-10-19)
+- **Report:** laptop 2026-10-19 16:11: "the cheat entry menu is unusable and doesn't keep the game paused." Opening
+  FE 46 from Extras closed Extras (gameplay resumed) and FE 46 has no suspend flag in the retail screen table, so the
+  game ran behind our keyboard. Retail's FE 46 hands over to the console's system keyboard, which takes the screen.
+- **Change (ours):** `FeBackdrop::info` gives FE 46 (`47ddadb752e051b6`) `suspends_gameplay` (test
+  `the_text_entry_screen_suspends_gameplay`). Every key the on-screen keyboard takes is logged (`TEXT_ENTRY input=...
+  row col key text shift outcome`, `TEXT_ENTRY typed`), and a key that reaches FE 46 while the keyboard is not taking
+  input warns, so the next session shows why typing did nothing (the code path looked correct on reading).
+- **Asset check:** `--check-assets` (the launcher's prebuild check) now runs the same file check as the start-up
+  `ASSET_CHECK`: `SKATE_ASSETS_STALE group=... reason=...` per finding, and `SKATE_ASSETS_REFRESH_NEEDED` with a failing
+  exit when the launch would restart into Refresh Game Files (laptop 2026-10-19: it printed READY with v9 menus while
+  the game reads v10, so a play session became a refresh).

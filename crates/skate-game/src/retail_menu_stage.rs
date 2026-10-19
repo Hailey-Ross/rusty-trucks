@@ -54,6 +54,33 @@ const CHALLENGE_MAP_ITEM: &str = "ChallengeMap";
 /// AptLStickLeft previous (clamped, no wrap).
 const MAP_NEXT_TAB: [u32; 3] = [7, 19, 27];
 const MAP_PREVIOUS_TAB: [u32; 3] = [10, 18, 26];
+/// The Skate Profile template (record 106) and its path; FE screen 61's init opens it (0x8264C530, b308). The Free
+/// Play pause item that opens it.
+const OFFLINE_PROFILE: &str = "OfflineProfile";
+const OFFLINE_PROFILE_PATH: &str = "profile/offline_skateProfile.swf";
+const OFFLINE_PROFILE_ITEM: &str = "SkateProfileOffline";
+/// Its keys (handler 0x8264C608): AptRShift2 next tab, AptLShift2 previous tab, Up / Down / LStickUp / LStickDown
+/// scroll (left to the movie).
+const PROFILE_NEXT_TAB: u32 = 7;
+const PROFILE_PREVIOUS_TAB: u32 = 10;
+const PROFILE_SCROLL: [u32; 4] = [12, 13, 24, 25];
+/// The Extras template (record 15) and its path; FE screen 18's init opens it (0x82655478, b320). The pause item.
+const EXTRAS: &str = "Extras";
+const EXTRAS_PATH: &str = "main/extras.swf";
+const EXTRAS_ITEM: &str = "Extras";
+/// AptMisc (X) and AptOption (Y) key indices.
+const APT_MISC: u32 = 5;
+const APT_OPTION: u32 = 4;
+/// The on-screen keyboard's directions: pad / D-pad / left stick (ours; FE 46 had the system keyboard).
+const KEYS_UP: [u32; 3] = [12, 16, 24];
+const KEYS_DOWN: [u32; 3] = [13, 17, 25];
+const KEYS_LEFT: [u32; 3] = [14, 18, 26];
+const KEYS_RIGHT: [u32; 3] = [15, 19, 27];
+/// The text viewer template (record 28) and its path; FE screen 3's init opens it (0x8263A190, b322).
+const TEXT_VIEWER: &str = "ToSScreen";
+const TEXT_VIEWER_PATH: &str = "nucleus/nucleus_tos.swf";
+/// The cheat dialog's popup callback (its choice changes nothing).
+const CHEAT_POPUP: &str = "cheat_code.dialog";
 /// The Video Calibration template (record 91) and its path; FE screen 51's init opens it (0x8260E868).
 const VIDEO_CALIBRATION: &str = "VideoCalibration";
 const VIDEO_CALIBRATION_PATH: &str = "options/videocal.swf";
@@ -113,6 +140,18 @@ struct MenuStage {
     /// The Challenge Map screen's AS id and host (challenge_map_host).
     challenge_map_id: i32,
     challenge_map: crate::challenge_map_host::ChallengeMapHost,
+    /// The Skate Profile screen's AS id and host (offline_profile_host), and the mod generation its data was built for.
+    offline_profile_id: i32,
+    offline_profile: crate::offline_profile_host::OfflineProfileHost,
+    profile_generation: u64,
+    /// The Extras screen's AS id and host (extras_host), the cheat table, and the text entry FE 46 opens next.
+    extras_id: i32,
+    extras: crate::extras_host::ExtrasHost,
+    cheats: skate_core::cheats::CheatRules,
+    pending_entry: Option<skate_core::text_entry::TextEntryRequest>,
+    /// The text viewer FE 3's AS id and its `tos` host.
+    viewer_id: i32,
+    tos: crate::extras_host::TosHost,
     /// The image slots the movies draw named images through (image_renderer_host).
     image_slots: crate::image_renderer_host::ImageSlots,
     /// The retail guide (mod layers apply over it) and the mod generation it was built for.
@@ -161,7 +200,11 @@ impl Plugin for RetailMenuStagePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RetailPause>()
             .init_resource::<crate::trick_guide_host::TrickGuideMods>()
-            .init_resource::<crate::popup_host::PopupMods>();
+            .init_resource::<crate::offline_profile_host::ProfileMods>()
+            .init_resource::<crate::popup_host::PopupMods>()
+            .add_message::<crate::extras_host::CheatChanged>()
+            .add_message::<crate::extras_host::UnlockGranted>()
+            .add_plugins(crate::text_entry_ui::TextEntryUiPlugin);
         if !enabled() {
             return;
         }
@@ -448,6 +491,22 @@ fn setup(
             } else {
                 warn!("RETAIL_MENUS: Challenge Map screen unavailable (no challengemap movie); the MAPS overlay stands in; run Refresh Game Files");
             }
+            // Skate Profile (FE 61): the same, over the SKATER overlay handler (user 2026-10-19: port it now).
+            if movies.movies.contains_key("source/screens/profile/offline_skateProfile") && menus.registry.data().item(OFFLINE_PROFILE_ITEM).is_some() {
+                let owner = Owner::Engine(format!("{}{}", crate::retail_menus::SCREEN, crate::fe_backdrop::OFFLINE_PROFILE_SCREEN));
+                let handler = skate_core::menus::Handler { owner, select: true, highlight: false, callback: None };
+                menus.registry.register_handler(EntryRef::item(OFFLINE_PROFILE_ITEM), handler);
+            } else {
+                warn!("RETAIL_MENUS: Skate Profile screen unavailable (no offline_skateProfile movie); the SKATER overlay stands in; run Refresh Game Files");
+            }
+            // Extras (FE 18): the same, over the EXTRAS overlay handler.
+            if movies.movies.contains_key("source/screens/main/extras") && menus.registry.data().item(EXTRAS_ITEM).is_some() {
+                let owner = Owner::Engine(format!("{}{}", crate::retail_menus::SCREEN, crate::fe_backdrop::EXTRAS_SCREEN));
+                let handler = skate_core::menus::Handler { owner, select: true, highlight: false, callback: None };
+                menus.registry.register_handler(EntryRef::item(EXTRAS_ITEM), handler);
+            } else {
+                warn!("RETAIL_MENUS: Extras screen unavailable (no extras movie); the EXTRAS overlay stands in; run Refresh Game Files");
+            }
             info!("RETAIL_MENUS stage ready (F8 opens the retail pause menu)");
             commands.insert_resource(MenuStage {
                 stage,
@@ -473,6 +532,15 @@ fn setup(
                 trick_guide,
                 challenge_map_id: as_id(CHALLENGE_MAP),
                 challenge_map: Default::default(),
+                offline_profile_id: as_id(OFFLINE_PROFILE),
+                offline_profile: Default::default(),
+                profile_generation: 0,
+                extras_id: as_id(EXTRAS),
+                extras: Default::default(),
+                cheats: Default::default(),
+                pending_entry: None,
+                viewer_id: as_id(TEXT_VIEWER),
+                tos: Default::default(),
                 image_slots: Default::default(),
                 video_cal_id: as_id(VIDEO_CALIBRATION),
                 video_cal: Default::default(),
@@ -523,10 +591,19 @@ fn update(
     mut available: ResMut<RetailPause>,
     mut warned: Local<bool>,
     skater: Option<Res<crate::physics::SkaterRuntime>>,
-    guide_mods: Res<crate::trick_guide_host::TrickGuideMods>,
-    mut demo: ResMut<crate::trick_guide_scene::TrickGuideDemo>,
+    // Mods' Trick Guide and Skate Profile layers (one parameter: the system is at Bevy's 16).
+    (guide_mods, profile_mods): (Res<crate::trick_guide_host::TrickGuideMods>, Res<crate::offline_profile_host::ProfileMods>),
+    // The Trick Guide's demo and the text entry's keyboard (one parameter: the system is at Bevy's 16).
+    (mut demo, mut text_entry): (ResMut<crate::trick_guide_scene::TrickGuideDemo>, ResMut<crate::extras_host::TextEntryView>),
     mut popup_mods: ResMut<crate::popup_host::PopupMods>,
-    mut travel: ResMut<crate::challenge_map::ChallengeMapTravel>,
+    // Challenge Map travel; cheats out, typed text in and the zombie flag the cheat toggles.
+    (mut travel, mut cheats_out, mut unlocks_out, mut typing, living): (
+        ResMut<crate::challenge_map::ChallengeMapTravel>,
+        MessageWriter<crate::extras_host::CheatChanged>,
+        MessageWriter<crate::extras_host::UnlockGranted>,
+        MessageReader<bevy::input::keyboard::KeyboardInput>,
+        Option<Res<crate::living_world::LivingWorldSettings>>,
+    ),
 ) {
     let ready = stage.as_ref().is_some_and(|s| !s.failed) && movies.is_some() && menus.is_some();
     // The ported screens in this build's screen table (TU3 FE ids 56 and 45); none in tables extracted before
@@ -536,6 +613,10 @@ fn update(
     let trick = backdrop.index(crate::fe_backdrop::TRICK_GUIDE_SCREEN);
     let cal = backdrop.index(crate::fe_backdrop::VIDEO_CALIBRATION_SCREEN);
     let map = backdrop.index(crate::fe_backdrop::CHALLENGE_MAP_SCREEN);
+    let profile = backdrop.index(crate::fe_backdrop::OFFLINE_PROFILE_SCREEN);
+    let extras = backdrop.index(crate::fe_backdrop::EXTRAS_SCREEN);
+    let entry = backdrop.index(crate::fe_backdrop::TEXT_ENTRY_SCREEN);
+    let viewer = backdrop.index(crate::fe_backdrop::TEXT_VIEWER_SCREEN);
     available.set_if_neq(RetailPause(ready && pause.is_some()));
     if ready && pause.is_none() && !std::mem::replace(&mut *warned, true) {
         warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup); Start opens the PC overlay until then");
@@ -579,7 +660,35 @@ fn update(
     fe.challenge_map = std::mem::take(&mut ms.challenge_map);
     fe.image_slots = std::mem::take(&mut ms.image_slots);
     fe.challenge_map.open = map.is_some() && ms.stack.top(Layer::Main) == map;
+    fe.offline_profile = std::mem::take(&mut ms.offline_profile);
+    // Mods changed the profile pages: rebuild them; an open screen shows its tab's page again.
+    if profile_mods.generation != ms.profile_generation {
+        ms.profile_generation = profile_mods.generation;
+        fe.offline_profile.data = profile_mods.apply(&Default::default());
+        if profile.is_some_and(|p| ms.stack.top(Layer::Main) == Some(p)) {
+            let p = &mut fe.offline_profile;
+            p.states.extend(p.screen.refresh(&p.rules));
+        }
+    }
     fe.popup = std::mem::take(&mut ms.popup);
+    fe.extras = std::mem::take(&mut ms.extras);
+    fe.tos = std::mem::take(&mut ms.tos);
+    fe.extras.open = extras.is_some() && ms.stack.top(Layer::Main) == extras;
+    // The on-screen keyboard (FE 46 on top): typed text and Escape (ours), once per frame; the pad keys go through the
+    // key loop below.
+    let entry_open = entry.is_some_and(|e| ms.stack.top(Layer::Main) == Some(e)) && text_entry.keyboard.is_some();
+    let mut entry_outcome = skate_core::text_entry::KeyboardOutcome::None;
+    for event in typing.read() {
+        if entry_open && event.state == bevy::input::ButtonState::Pressed && !keys.pressed(KeyCode::ControlLeft) && !keys.pressed(KeyCode::ControlRight) {
+            if let (Some(t), Some(kb)) = (&event.text, text_entry.keyboard.as_mut()) {
+                t.chars().filter(|c| !c.is_control()).for_each(|c| kb.type_char(c));
+                info!("TEXT_ENTRY typed {t:?} text={:?}", kb.text);
+            }
+        }
+    }
+    if entry_open && keys.just_pressed(KeyCode::Escape) {
+        entry_outcome = skate_core::text_entry::KeyboardOutcome::Cancel;
+    }
     if let Some(skater) = &skater {
         fe.trick_guide.stance.regular = skater.animation.regular_stance();
     }
@@ -591,7 +700,8 @@ fn update(
     let result = (|| -> Result<(), String> {
         let (crossbar_id, options_id, trick_id, cal_id) = (ms.crossbar_id, ms.options_id, ms.trick_guide_id, ms.video_cal_id);
         let map_id = ms.challenge_map_id;
-        let auto = ms.auto_open && time.elapsed_secs() > 4.0;
+        let profile_id = ms.offline_profile_id;
+        let auto =ms.auto_open && time.elapsed_secs() > 4.0;
         ms.auto_open &= !auto;
         if auto {
             fired.insert(0, (APT_START, 0));
@@ -615,6 +725,38 @@ fn update(
                 }
                 continue;
             }
+            // The on-screen keyboard (FE 46 on top; ours): the pad drives the grid, Start finishes. A PC keyboard's
+            // Backspace and Enter arrive as B / A here, so the raw keys pick delete / done instead.
+            if entry_open {
+                use skate_core::text_entry::KeyboardInput as K;
+                let input = match key {
+                    APT_START => Some(K::Done),
+                    APT_PREVIOUS if keys.just_pressed(KeyCode::Backspace) => Some(K::Backspace),
+                    APT_PREVIOUS => Some(K::Cancel),
+                    APT_NEXT if keys.just_pressed(KeyCode::Enter) => Some(K::Done),
+                    APT_NEXT => Some(K::Press),
+                    APT_MISC => Some(K::Backspace),
+                    APT_OPTION => Some(K::Shift),
+                    k if KEYS_UP.contains(&k) => Some(K::Up),
+                    k if KEYS_DOWN.contains(&k) => Some(K::Down),
+                    k if KEYS_LEFT.contains(&k) => Some(K::Left),
+                    k if KEYS_RIGHT.contains(&k) => Some(K::Right),
+                    _ => None,
+                };
+                let layout = text_entry.layout.clone();
+                if let (Some(i), Some(kb)) = (input, text_entry.keyboard.as_mut()) {
+                    let out = kb.input(i, &layout);
+                    // Session log (laptop 2026-10-19: "the cheat entry menu is unusable"): every key the keyboard took.
+                    info!("TEXT_ENTRY input={i:?} row={} col={} key={:?} text={:?} shift={} outcome={out:?}", kb.row, kb.col, kb.key(&layout), kb.text, kb.shift);
+                    if out != skate_core::text_entry::KeyboardOutcome::None {
+                        entry_outcome = out;
+                    }
+                }
+                continue;
+            }
+            if entry.is_some() && ms.stack.input_target() == entry {
+                warn!("TEXT_ENTRY key {key} reached FE 46 but the keyboard is not taking input (top={:?}, keyboard={})", ms.stack.top(Layer::Main), text_entry.keyboard.is_some());
+            }
             if key == APT_START {
                 // Retail Start (sub_825EB998, mode 0) pushes FE 56 with the plain push. NOT RETAIL YET (unverified):
                 // Start while it is open closes it.
@@ -627,7 +769,7 @@ fn update(
                 continue;
             }
             let target = ms.stack.input_target();
-            let Some(screen) = target.filter(|t| [pause, options, trick, cal, map].contains(&Some(*t))) else { continue };
+            let Some(screen) = target.filter(|t| [pause, options, trick, cal, map, profile, extras, viewer].contains(&Some(*t))) else { continue };
             // sub_825EC0E8: the screen's C++ handler first, then the movie's UpdateInput when the handler did not
             // consume the key and the screen's record says so (+12).
             let mut consumed = false;
@@ -639,6 +781,12 @@ fn update(
                 cal_id
             } else if Some(screen) == map {
                 map_id
+            } else if Some(screen) == profile {
+                profile_id
+            } else if Some(screen) == extras {
+                ms.extras_id
+            } else if Some(screen) == viewer {
+                ms.viewer_id
             } else {
                 trick_id
             };
@@ -651,7 +799,49 @@ fn update(
                 // the close fades out (S+52).
                 continue;
             }
-            if Some(screen) == map {
+            if Some(screen) == viewer {
+                // Screen 3 input 0x8263A5A8 (b322), view mode: Back plays core_b_button and closes; the movie scrolls
+                // with the left stick (not consumed).
+                if key == APT_PREVIOUS {
+                    sounds.write(FrontendSound::named("core_b_button"));
+                    ms.stack.request(Layer::Main, Request::Close { screen });
+                }
+            } else if Some(screen) == extras {
+                // Screen 18 input 0x82655658 (b320): Back plays core_b_button and leaves the Skate Reel list (SetState(10))
+                // or pops the screen; never consumed, so every key also reaches the movie's picker.
+                if key == APT_PREVIOUS {
+                    let x = &mut fe.extras;
+                    let out = x.screen.back(&x.rules);
+                    sounds.write(FrontendSound::named(&out.sound));
+                    match out.state {
+                        Some(state) => x.states.push(state),
+                        None => ms.stack.request(Layer::Main, Request::Close { screen }),
+                    }
+                }
+            } else if Some(screen) == profile {
+                // Screen 61 input 0x8264C608 (b308): Back closes, the tab keys step the tab, Up / Down scroll in the
+                // movie; Y (gamercard) and X (achievements) are console platform UI with no PC equivalent.
+                use skate_core::offline_profile::ProfileKey;
+                let key = match key {
+                    APT_PREVIOUS => Some(ProfileKey::Back),
+                    PROFILE_NEXT_TAB => Some(ProfileKey::NextTab),
+                    PROFILE_PREVIOUS_TAB => Some(ProfileKey::PreviousTab),
+                    k if PROFILE_SCROLL.contains(&k) => Some(ProfileKey::Scroll),
+                    _ => None,
+                };
+                if let Some(k) = key.filter(|_| fe.offline_profile.loaded) {
+                    let p = &mut fe.offline_profile;
+                    let out = p.screen.key(k, &p.rules);
+                    consumed = out.consumed;
+                    if let Some(sound) = &out.sound {
+                        sounds.write(FrontendSound::named(sound));
+                    }
+                    p.states.extend(out.states);
+                    if out.close {
+                        ms.stack.request(Layer::Main, Request::Close { screen });
+                    }
+                }
+            } else if Some(screen) == map {
                 // Screen 17 input 82646B28 (b256): B hides the legend, pops a folder or closes at the root; the tab
                 // keys switch tabs (clamped). Up / down / A stay with the movie's picker (OnMenuHilight / OnMenuSelect).
                 // NOT RETAIL YET: Y (legend) and X (online difficulty) are not mapped to their Apt keys.
@@ -767,6 +957,7 @@ fn update(
             }
             flush_trick_guide(&mut ms.stage, trick_id, &mut fe)?;
             flush_challenge_map(&mut ms.stage, &mut ms.stack, map, map_id, &mut fe)?;
+            flush_offline_profile(&mut ms.stage, profile_id, &mut fe)?;
         }
         // The stack's update (sub_82D0A560) and what it asks of the movies and the game.
         let effects = drop_reopen_and_close(ms.stack.update(&|i| backdrop.info(i)));
@@ -817,6 +1008,51 @@ fn update(
                     fe.challenge_map.open = false;
                     close(&mut ms.stage, map_id, &mut fe)?;
                 }
+                Effect::Open(i) if Some(i) == extras => {
+                    info!("RETAIL_MENUS open Extras (FE {i})");
+                    fe.extras.screen = skate_core::extras::Extras::open();
+                    fe.extras.states.clear();
+                    fe.extras.open = true;
+                    open_screen(&mut ms.stage, EXTRAS_PATH, EXTRAS, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == extras => {
+                    info!("RETAIL_MENUS close Extras (FE {i})");
+                    fe.extras.open = false;
+                    close(&mut ms.stage, ms.extras_id, &mut fe)?;
+                }
+                Effect::Open(i) if Some(i) == viewer => {
+                    info!("RETAIL_MENUS open text viewer (FE {i})");
+                    open_screen(&mut ms.stage, TEXT_VIEWER_PATH, TEXT_VIEWER, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == viewer => {
+                    info!("RETAIL_MENUS close text viewer (FE {i})");
+                    close(&mut ms.stage, ms.viewer_id, &mut fe)?;
+                    fe.tos.viewer = None;
+                }
+                // FE 46 (b305): no movie; ours shows the on-screen keyboard while it is on top.
+                Effect::Open(i) if Some(i) == entry => {
+                    if let Some(request) = ms.pending_entry.take() {
+                        info!("RETAIL_MENUS open text entry (FE {i}) for {}", request.callback);
+                        text_entry.title = crate::extras_host::text_of(fe.language, &request.title);
+                        text_entry.keyboard = Some(skate_core::text_entry::Keyboard::open(request));
+                    }
+                    ms.stack.ready(i);
+                }
+                Effect::Close(i) if Some(i) == entry => {
+                    info!("RETAIL_MENUS close text entry (FE {i})");
+                    text_entry.keyboard = None;
+                }
+                Effect::Open(i) if Some(i) == profile => {
+                    info!("RETAIL_MENUS open Skate Profile (FE {i})");
+                    fe.offline_profile.open();
+                    open_screen(&mut ms.stage, OFFLINE_PROFILE_PATH, OFFLINE_PROFILE, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == profile => {
+                    info!("RETAIL_MENUS close Skate Profile (FE {i})");
+                    fe.offline_profile.loaded = false;
+                    fe.offline_profile.states.clear();
+                    close(&mut ms.stage, profile_id, &mut fe)?;
+                }
                 Effect::Open(i) if Some(i) == cal => {
                     info!("RETAIL_MENUS open Video Calibration (FE {i})");
                     ms.video_cal = skate_core::video_calibration::VideoCalibration::open();
@@ -827,8 +1063,8 @@ fn update(
                     close(&mut ms.stage, cal_id, &mut fe)?;
                 }
                 // Screen vt+28 -> facade ShowScreen (0x825DA410): the AS id as "%d" and "true" / "false".
-                Effect::Show(i, visible) if [pause, options, trick, cal].contains(&Some(i)) => {
-                    let id = [(pause, crossbar_id), (options, options_id), (trick, trick_id), (cal, cal_id)]
+                Effect::Show(i, visible) if [pause, options, trick, cal, extras, profile].contains(&Some(i)) => {
+                    let id = [(pause, crossbar_id), (options, options_id), (trick, trick_id), (cal, cal_id), (extras, ms.extras_id), (profile, profile_id)]
                         .into_iter()
                         .find(|(s, _)| *s == Some(i))
                         .map_or(0, |(_, id)| id);
@@ -990,6 +1226,144 @@ fn update(
             }
         }
         flush_challenge_map(&mut ms.stage, &mut ms.stack, map, map_id, &mut fe)?;
+        // Skate Profile: init's page state goes out once the movie loaded; intro complete = ready.
+        if let Some(p) = profile.filter(|p| ms.stack.top(Layer::Main) == Some(*p)) {
+            if take_call(&mut fe, &format!("Game.OnScreenLoaded({profile_id})")) {
+                fe.offline_profile.loaded = true;
+            }
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({profile_id})")) {
+                ms.stack.ready(p);
+            }
+        }
+        flush_offline_profile(&mut ms.stage, profile_id, &mut fe)?;
+        // Extras: loaded -> SetState(10) builds the list (NOT RETAIL YET: who posts retail's first 10 is not found, b320);
+        // intro complete = ready. Then the rows the player picked.
+        if let Some(x) = extras.filter(|x| ms.stack.top(Layer::Main) == Some(*x)) {
+            if take_call(&mut fe, &format!("Game.OnScreenLoaded({})", ms.extras_id)) {
+                fe.extras.states.push(fe.extras.rules.list_state);
+            }
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({})", ms.extras_id)) {
+                ms.stack.ready(x);
+            }
+        }
+        // Text viewer: loaded hook 0x8263A2A0 posts SetState(1) (the movie splits nothing itself: InitWords); intro
+        // complete = ready.
+        if let Some(v) = viewer.filter(|v| ms.stack.top(Layer::Main) == Some(*v)) {
+            if take_call(&mut fe, &format!("Game.OnScreenLoaded({})", ms.viewer_id)) {
+                set_state(&mut ms.stage, ms.viewer_id, 1, &mut fe)?;
+            }
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({})", ms.viewer_id)) {
+                ms.stack.ready(v);
+            }
+        }
+        for state in std::mem::take(&mut fe.extras.states) {
+            set_state(&mut ms.stage, ms.extras_id, state, &mut fe)?;
+        }
+        for action in std::mem::take(&mut fe.extras.selected) {
+            use skate_core::extras::ExtrasAction;
+            info!("RETAIL_MENUS extras select {action:?}");
+            match action {
+                // Row 0 (0x826558E8): text entry for a cheat code, titled with the row's label; push FE 46.
+                ExtrasAction::CheatEntry => {
+                    if let Some(e) = entry {
+                        let label = fe.extras.rules.rows.first().map_or("ID_EXTRA_CHEAT_CODE".to_owned(), |r| r.label.clone());
+                        ms.pending_entry = Some(skate_core::text_entry::TextEntryRequest::cheat_code(&label));
+                        ms.stack.request(Layer::Main, Request::push(e));
+                    }
+                }
+                // Rows 1-3 (ours: unlock directly): the redeem flag and the grants go out as events for the unlock store
+                // (none yet); the popup (ours) says it worked.
+                ExtrasAction::Grant { redeem, grants } => {
+                    let source = fe.extras.rules.rows.iter().find(|r| matches!(&r.action, ExtrasAction::Grant { redeem: r2, .. } if *r2 == redeem)).map_or(String::new(), |r| r.id.clone());
+                    for unlock in std::iter::once(redeem).chain(grants) {
+                        info!("RETAIL_MENUS unlock {} {} from {source}", unlock.kind, unlock.name);
+                        unlocks_out.write(crate::extras_host::UnlockGranted { unlock, source: source.clone() });
+                    }
+                    ms.popups.push(skate_core::fe_popup::PopupRequest {
+                        title: "ID_VALID_CODE_TITLE".into(),
+                        description: "ID_VALID_CODE_DESC".into(),
+                        options: vec!["ID_COMMON_OK".into()],
+                        kind: skate_core::fe_popup::PopupKind::Small,
+                        callback: CHEAT_POPUP.into(),
+                        ..Default::default()
+                    });
+                    ms.popup_dirty = true;
+                }
+                // Row 5: the text viewer FE 3 with our licenses (retail: the web browser's license file).
+                ExtrasAction::TextViewer { title, body } => {
+                    if let Some(v) = viewer {
+                        let text = match body.as_str() {
+                            "licenses" => crate::extras_host::LICENSES.to_owned(),
+                            other => other.strip_prefix('#').unwrap_or(other).to_owned(),
+                        };
+                        fe.tos.viewer = Some(skate_core::text_viewer::TextViewer::open(&title, &text, &Default::default()));
+                        ms.stack.request(Layer::Main, Request::push(v));
+                    }
+                }
+                // Greyed by default until their screens are ported (doc 31).
+                other => warn!("RETAIL_MENUS extras: {other:?} has no handler yet"),
+            }
+        }
+        // The keyboard's result (FE 46 OK path 0x82639890 / cancel 0x82639B00).
+        match std::mem::replace(&mut entry_outcome, skate_core::text_entry::KeyboardOutcome::None) {
+            skate_core::text_entry::KeyboardOutcome::Done(text) => {
+                let allowed = fe.language.get("ALL_VALID_ALPHANUMERIC_CHARACTERS").cloned().unwrap_or_default();
+                let request = text_entry.keyboard.as_ref().map(|k| k.request.clone());
+                use skate_core::text_entry::EntryResult;
+                match request.as_ref().map(|r| (r, skate_core::text_entry::finish(r, &text, &allowed))) {
+                    Some((r, EntryResult::Accepted(text))) => {
+                        if let Some(e) = entry {
+                            ms.stack.request(Layer::Main, Request::Close { screen: e });
+                        }
+                        if r.callback == skate_core::text_entry::CHEAT_CALLBACK {
+                            // The matcher (b304) on the current flags: entering a code toggles what is in effect.
+                            let mut state = skate_core::cheats::CheatState::default();
+                            if living.as_ref().is_some_and(|l| l.zombie) {
+                                state.on.insert("zombie".into());
+                            }
+                            let (outcome, dialog) = skate_core::cheats::enter(&text, &ms.cheats, &fe.context.mode, &mut state);
+                            info!("RETAIL_MENUS cheat code entered: {outcome:?}");
+                            if let skate_core::cheats::CheatOutcome::Toggled { id, on } = &outcome {
+                                cheats_out.write(crate::extras_host::CheatChanged { id: id.clone(), on: *on });
+                            }
+                            ms.popups.push(skate_core::fe_popup::PopupRequest {
+                                title: dialog.title,
+                                description: dialog.text,
+                                options: vec![dialog.button],
+                                kind: skate_core::fe_popup::PopupKind::Small,
+                                callback: CHEAT_POPUP.into(),
+                                ..Default::default()
+                            });
+                            ms.popup_dirty = true;
+                        }
+                    }
+                    // Characters outside the set: retail's warning popup (record 0x107), the keyboard stays.
+                    Some((_, EntryResult::Invalid)) => {
+                        use skate_core::text_entry::{INVALID_BUTTON, INVALID_TEXT, INVALID_TITLE};
+                        ms.popups.push(skate_core::fe_popup::PopupRequest {
+                            title: INVALID_TITLE.into(),
+                            description: INVALID_TEXT.into(),
+                            options: vec![INVALID_BUTTON.into()],
+                            kind: skate_core::fe_popup::PopupKind::Small,
+                            callback: CHEAT_POPUP.into(),
+                            ..Default::default()
+                        });
+                        ms.popup_dirty = true;
+                    }
+                    Some((_, EntryResult::Reopen)) | None => {}
+                }
+            }
+            skate_core::text_entry::KeyboardOutcome::Cancel => {
+                if let Some(e) = entry {
+                    ms.stack.request(Layer::Main, Request::Close { screen: e });
+                }
+            }
+            skate_core::text_entry::KeyboardOutcome::None => {}
+        }
+        let hidden = ms.popups.shown().is_some();
+        if text_entry.hidden != hidden {
+            text_entry.hidden = hidden;
+        }
         // Crossbar IntroComplete (vtable 0x82303F90 +104 = 8261B1F0) selects the mode menu (8261B9E8): when the
         // mode changed it resets level 1, row 0, tab 0 and walks to the first enabled row, then it always posts
         // SetState(InitialiseMenu) through the facade (+56 vt+20). The screen is ready (state 3) from here.
@@ -1018,6 +1392,9 @@ fn update(
     ms.trick_guide = std::mem::take(&mut fe.trick_guide);
     fe.challenge_map.markers = if fe.challenge_map.open { fe.challenge_map.state.markers(fe.registry, fe.context) } else { Vec::new() };
     ms.challenge_map = std::mem::take(&mut fe.challenge_map);
+    ms.offline_profile = std::mem::take(&mut fe.offline_profile);
+    ms.extras = std::mem::take(&mut fe.extras);
+    ms.tos = std::mem::take(&mut fe.tos);
     ms.image_slots = std::mem::take(&mut fe.image_slots);
     ms.popup = std::mem::take(&mut fe.popup);
     // A Challenge Map leaf the player picked goes through the registry: the engine's teleport handler queues the
@@ -1248,6 +1625,17 @@ fn flush_challenge_map(stage: &mut Stage, stack: &mut FeStack, map: Option<usize
         if let Some(screen) = map {
             stack.request(Layer::Main, Request::Close { screen });
         }
+    }
+    Ok(())
+}
+
+/// The Skate Profile's queued screen states, once its movie loaded.
+fn flush_offline_profile(stage: &mut Stage, id: i32, fe: &mut FrontEnd) -> Result<(), String> {
+    if !fe.offline_profile.loaded {
+        return Ok(());
+    }
+    for state in std::mem::take(&mut fe.offline_profile.states) {
+        set_state(stage, id, state, fe)?;
     }
     Ok(())
 }

@@ -144,6 +144,10 @@ pub trait Host {
 /// Object slots a VM may hold: a runaway guard, not a retail limit. The front end alone keeps about 2000 live and
 /// a pause menu adds about 1300; hosts that load and unload movies `collect` between updates.
 pub const MAX_OBJECTS: usize = 16_384;
+/// Instructions one update (or one C++ call into the movies) may run before the VM stops it as a runaway loop. The
+/// text viewer's word layout over a long text (retail allows 81626 characters, FE 3) needs far more than the 100000
+/// this was (2026-10-19: 12.5 k characters ran out); a real infinite loop still stops.
+pub const UPDATE_BUDGET: usize = 2_000_000;
 #[derive(Default)]
 pub struct Vm {
     pub objects: Vec<Object>,
@@ -444,7 +448,7 @@ impl Vm {
         self.objects.len() - self.free_objects.len()
     }
     pub fn begin_update(&mut self) {
-        self.remaining = 100_000;
+        self.remaining = UPDATE_BUDGET;
     }
     pub fn run(&mut self, code: &[Instruction], host: &mut impl Host) -> Result<Value, String> {
         self.begin_update();
@@ -725,7 +729,7 @@ impl Vm {
         }
         while let Some(i) = code.get(pc) {
             if self.remaining == 0 {
-                return Err("APT execution budget exceeded (100000 instructions in one update)".into());
+                return Err(format!("APT execution budget exceeded ({UPDATE_BUDGET} instructions in one update)"));
             }
             if self.objects.len() > MAX_OBJECTS {
                 return Err(format!("APT object budget exceeded (slots {}, in use {})", self.objects.len(), self.live_objects()));

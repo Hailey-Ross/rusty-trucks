@@ -39,6 +39,14 @@ pub(crate) const TRICK_GUIDE_SCREEN: &str = "5d1ecaaf6c7275bf";
 pub(crate) const VIDEO_CALIBRATION_SCREEN: &str = "1f3e2788f93b6a2e";
 /// The Challenge Map screen's id (TU3 FE id 17, template 68 ChallengeMap; screens[17] of the menu tables, b253).
 pub(crate) const CHALLENGE_MAP_SCREEN: &str = "1e146362e71471a9";
+/// The Skate Profile screen's id (TU3 FE id 61, template 106 OfflineProfile; info record 0x830265E0, b308).
+pub(crate) const OFFLINE_PROFILE_SCREEN: &str = "f17ccf55ee91b4f7";
+/// The Extras screen's id (TU3 FE id 18, template 15 Extras; info record 0x83026238, b320).
+pub(crate) const EXTRAS_SCREEN: &str = "62b6afde0ba6567b";
+/// The text entry screen's id (TU3 FE id 46, no template: retail shows the system keyboard, b305).
+pub(crate) const TEXT_ENTRY_SCREEN: &str = "47ddadb752e051b6";
+/// The text viewer's id (TU3 FE id 3, ToSScreen, template 28 `nucleus/nucleus_tos.swf`, b322).
+pub(crate) const TEXT_VIEWER_SCREEN: &str = "bd688a2a5602e595";
 
 #[derive(Resource, Default)]
 pub(crate) struct FeBackdrop {
@@ -75,7 +83,10 @@ impl FeBackdrop {
     /// The stack record of a screen (retail table; unknown screens get an empty record).
     pub(crate) fn info(&self, index: usize) -> ScreenInfo {
         self.screens.get(index).map_or_else(ScreenInfo::default, |s| ScreenInfo {
-            suspends_gameplay: s.suspends_gameplay,
+            // Ours: FE 46 (text entry) hands over to the console's system keyboard in retail, which takes the screen
+            // while it is open; our on-screen keyboard replaces it, so gameplay stays suspended under it too (laptop
+            // 2026-10-19: opening it from Extras resumed the game behind the keyboard).
+            suspends_gameplay: s.suspends_gameplay || s.id == TEXT_ENTRY_SCREEN,
             chyron: s.chyron,
             blur: s.blur,
             hud: HudMode::from_retail(s.hud),
@@ -371,6 +382,15 @@ mod tests {
             ],
             ..default()
         }
+    }
+
+    /// Laptop 2026-10-19: our on-screen keyboard (FE 46, no suspend flag in the retail table) keeps gameplay suspended.
+    #[test]
+    fn the_text_entry_screen_suspends_gameplay() {
+        let mut b = backdrop();
+        b.screens.push(FeScreen { id: TEXT_ENTRY_SCREEN.into(), key: TEXT_ENTRY_SCREEN.into(), blur: false, suspends_gameplay: false, chyron: false, hud: 1, input_to_movie: false });
+        assert!(b.info(2).suspends_gameplay);
+        assert!(!b.info(0).suspends_gameplay, "other screens keep their retail flag");
     }
 
     #[test]

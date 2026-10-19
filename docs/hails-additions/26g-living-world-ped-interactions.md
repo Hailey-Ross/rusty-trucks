@@ -1290,6 +1290,44 @@ result codes]. Log `PED_UNREACHABLE`. Test `an_unreachable_chasee_starts_the_rec
 Related, bench knocked into water: the ped gave up after ~67 s (tick 10251 to 14295, `ExitInteraction`), retail's
 60 s PluginTimeout; retail has no reachability check for plugins (b108) [data].
 
+Update 2026-10-19 (PR #52 next item 2; user 2026-10-15: "I angered a ped and he still attacked me after I fell in the
+water and was unreachable."). Research b302 (`.local/research/b302-chase-target-in-water.md`; main verified the intercept
+goal vtable `0x8232C8A8` slot 0x18 = `82E31D58` and our lines):
+- Retail [code]: no water rule. The report comes from the mover update `82E2CB08`: every 10 mover updates it snaps the
+  ped and its current destination onto the navmesh (`82C465A8`, 0.5 m window) and tests that both have a polygon and
+  are connected (`82C464F0`). Every unreachable result (codes 0, 2, 3, 4; and 1 with a high area class, `82C47D60`)
+  posts an event; a reachable one posts none. The intercept goal's handler `82E31D58` then sets the bit to "within 5 m
+  flat". So the bit only changes on an unreachable report, and a chasee climbing back onto the mesh does not end the wait.
+- Ours before: tested only the chasee off the mesh, every tick, and cleared the bit as soon as the chasee was back on the
+  mesh. The 2026-10-15 log (`.local/session-logs/hails-local-2026-10-16/game-20261015-133314.stderr.log`): #185 set the bit and
+  gave up 5.05 s later (as designed); #189 set it at 19:47:58.87 and cleared it 0.85 s later with `near=false` (the
+  swimmer more than 5 m away, which retail does too) and kept chasing; the skater left the water at 19:48:04.57 and was
+  taken down on land at 19:48:07.96. So this case already followed retail's 5 m rule; what the port changes is the
+  cadence, what counts as unreachable and the clear-on-reachable.
+- Change: `chase::reach_failed` (ped or destination off the mesh, or not connected) and `chase::apply_reach_report`
+  (only a failed report rewrites the bit) in skate-core; the game's intercept arm checks every
+  `reach_check_seconds` (10 / 30 s: 10 mover updates at the console's 30 fps) against its destination (the intercept
+  goal; the chasee while no goal can be made, as the recomp suggests the off-mesh point is not snapped, unproven).
+  Ours: EndChase and a new chasee clear the bit (retail leaves it to the next report; avoids a stale wait). Mod keys
+  `ped_brain.unreachable_radius` and `ped_brain.reach_check_seconds`. `PED_UNREACHABLE` now logs `dist`, `at` and
+  `chasee_at`.
+- Tests: `reach_reports_fail_off_the_mesh_and_across_islands_and_only_they_rewrite_the_bit` (chase.rs),
+  `end_chase_resets_the_end_reason_and_unsets_angrychase` (now also the bit). skate-core peds 148, skate-game
+  living_world 110 passed. Not play-tested.
+- Destination (research b306, `.local/research/b306-intercept-destination-off-mesh.md`; main checked the tail
+  `loc_826A3F08` in `skate3_recomp.27.cpp`: `vfn168(speed)`, `vfn136(0.5)`, `vfn4(r1+128, 1)` on every path) [code]:
+  InterceptChasee Update `826A3BF0` hands the mover the chasee's raw position unless the ped and the chasee are
+  reachable (`82C465A8`) and the solver finds an intercept; then the lead point, projected onto the mesh where it can be
+  (`82C460E0`), else raw. Nothing on the way to the bot (`82E2CFC0` -> `82C47010` -> `82E95C00`, `bot+0x268`) snaps
+  it, so a swimmer fails the check. A path request to an off-mesh point keeps the old path (`82E957F8` returns).
+  Ours before kept the last on-mesh goal (`chase_goal`) when no goal could be made, so a ped that had a goal before
+  the skater jumped in tested that stale bank point and never set the bit; and it made goals by line of sight
+  (`clear_line`), not reachability. Changed: the destination is rebuilt every think from that table (reachability
+  gate, raw chasee otherwise; no record = no intercept = the chasee itself), the route follows it only while it is on
+  the mesh. skate-game unit tests 814 passed.
+- Open: the area-class case; whether Pursue / Block use the same goal object; NavPower's own destination search
+  distance (`82933E18`), which may path to the bank while the check tests the raw point.
+
 ## A ped stuck in front of the bench it wants to sit on (2026-10-14)
 
 **Problem.** In a play session a ped took a bench seat, walked up and stood 1.35 m short for a minute (PED_BLOCKED by
@@ -2167,6 +2205,22 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Tests:** `chase_messages_follow_retails_bands` (skate-core), `a_taze_line_shows_its_text_and_plays_the_default_sound`
   (data-gated: load, show, label text, the default sound, 90 frames), tool tests for the HUD install.
 - **Open:** who sends the chase-over line (first argument 0); the line's on-screen look is not play-tested.
+- **Fix 2026-10-19 (laptop session 10:16, user: "clobbered text appeared after the ped got mad and attacked me, but
+  it never went away and was left on screen"):**
+  - Retail [code]: the post `82663F38` resets the shown-message counter (`+0xBC` = 0) and sets the active flag
+    (`+0xC0` = 1); the central HUD update `82664550` adds one per update and at 180 (`0xB4`), or when `82663E40`
+    says the HUD cannot show, clears both and sends the screen event 5. The movie's `SetState(5)` calls its hide
+    function on `mcMessageText` and `mCelebratory`, which plays "outro" unless `mIsSetToStayUp` [data]. Ours never
+    sent 5, so the clip stayed on its idle loop.
+  - Change: `hud_central::Runtime::tick(dt)` (called every HUD advance) sends `SetState(5)` after
+    `DISPLAY_SECONDS` = 180 / 30 = 6 s (time-based: the console's 30 updates a second, same at any frame rate);
+    `HUD_CENTRAL hidden` is logged. A mod sets its own time: `sdk.ui.central_message(text, seconds)` (0 to 60 s).
+    The label gets the localised text, as retail stores it (`8290C8A8`); the renderer already localised ids
+    (`apt_movie.rs` `text_changed`), so this did not change the look.
+  - "Clobbered" was the line itself: `ID_CHASE_CAUGHT_2` is retail's "Clobbered!" (the takedown lines are BAM!,
+    Clobbered!, KAPOW!!, &@%#!!!), so the text was right; only the hide was missing.
+  - Test: `a_taze_line_shows_its_text_and_plays_the_default_sound` (data-gated) now checks the localised label, the
+    hide at 6 s and the outro frames.
 
 ## The alert over a ped that warns or chases you (2026-10-19)
 
@@ -2198,3 +2252,75 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Tests:** `states_replace_restart_and_end_like_retail`, `warn_lasts_six_seconds_giveup_three_and_ten_at_most`,
   `scale_and_placement_follow_retail` (skate-core); tool tests for the HUD stage; a muted run loads the textures.
 - **Open:** the anchor getter; the gate global in `826A77A8` (vfn 0x9C, ours: not in zombie mode); not play-tested.
+
+## Bumped peds warn before they chase; an attacker does not fall from its own takedown (2026-10-19)
+
+Problem (laptop session 2026-10-19 11:05, notes game-20261019-110510.notes.log): "had a hard time just getting the
+yellow warning to show. Pissed it off to the point it went straight to red and attacked me." and "the ped shouldn't
+fall so easily from its own attack against the player; it can happen but it seems to happen every time I test it."
+
+Root cause / evidence:
+- Warn (research b316, b318; main checked the data and our code): the mood rows decide by the collision count on the
+  skater's record, `skatercollisionwarn` (count 2, priority 2) before `skatercollisionchase` (count 3, priority 1);
+  the producer skips a busy ped (`82E3BF70`), and a ped in a plugin is busy (`*(ped+96)` = the participant's plugin
+  instance, b318). Retail's Plugin state goes to Colliding on a bump (`pedestrian_plugin.xml`, unless
+  IsPluginCollisionOverride) and its End (`8269F310`) releases the plugin (`82E0C9E8`: leaves the conversation,
+  aborting an unfinished one, and clears the instance); Colliding goes on to Wander (`pedestrian_colliding.xml`).
+  Ours only cleared `in_plugin` at Plugin End, so the ped walked back into its conversation, stayed busy through
+  every bump and its first producer run saw count 4 to 6: straight to chase (#4: six bumps, then chase at 17:06:41).
+- Takedown (research b317; main checked the graph data): AttemptTakeDownTargetable and WaitForTakedownDecision are
+  not interruptable and have no Colliding transition (`pedestrian_attempttakedowntargetable.xml`); the contact
+  callback `82E38FB8` only stores the reaction and sets the begin-colliding byte, the touch decides the takedown
+  (`826A4BE8`) and success clears the byte (`826A4E50`). Ours played the reaction at the contact: #4 entered
+  WaitForTakedownDecision at 17:06:44.206, its own lunge read as a Knockdown at 44.276, the takedown succeeded at
+  44.423.
+
+Change:
+- `brain.rs` Plugin End queues the host's ExitPlugin release (conversation leave / abort, prop and waypoint release).
+- `peds.rs` drops a contact from the takedown target while the takedown is active (no reaction, no hit event; the
+  takedown's touch test still sees it); `brain.rs` TakeDownTargetableSuccess clears `begin_colliding`.
+- Ported 2026-10-19 (section "A failed takedown keeps its stored reaction, and may trip"): after a FAILED takedown the stored reaction plays once the graph reaches Colliding.
+
+Verification: skate-core `leaving_the_plugin_state_releases_the_plugin`, `a_takedown_attempt_succeeds_on_contact_with_the_target`
+(now also: success clears begin_colliding); skate-core 1132 and skate-game 817 pass. Needs a play test: bump a
+conversing ped twice (yellow warn on the second), a third time (chase), and let one take you down (it stays up).
+
+Open: the branch that sets brain+3277 bit 0x04 in Colliding Begin (`8269DA00`, `ori 4`); the failed-takedown delayed
+reaction; recomp traces proposed in b317 / b318 (not run).
+
+## A failed takedown keeps its stored reaction, and may trip (2026-10-19)
+- **Problem:** ask 78 follow-up: during a takedown attempt ours dropped every contact (the target's touch decides the
+  takedown, correct; anyone else's contact was played at once or lost), and a failed takedown never tripped.
+- **Retail** ([code] Ghidra + recomp, `.local/research/b326-failed-takedown-reaction.md`; design
+  `.local/research/b329-deferred-reaction-port-plan.md`): AttemptTakeDownTargetable Begin `826A49D8` clears the
+  collision component's begin-colliding byte (+8), so a reaction stored before the attempt is dropped, and copies the
+  chosen entry's byte +38 bit 0 ("may trip"). Its Update `826A4BE8`: a contact by anyone but the target blocks the
+  decision (the graph's 3.0 s timer then fails it). TakeDownTargetableFailure Begin `826A5068`: trips (stores
+  Knockdown / FromBack) when the target refused, or when the entry may trip and a 1..=100 roll is at most
+  `tripChance` x 100 (default 0.35, `8269A588`); otherwise a reaction stored during the attempt stays stored. Only
+  Success `826A4E50` drops it. The stored reaction plays when PedestrianColliding begins (`8269DA00`). Stock data:
+  every takedown entry has byte +38 = 0, so a failed takedown on the player never trips in stock data.
+- **Change:** a contact during the attempt (not by the target) is stored (`PedEvent::ContactStored`,
+  `PED_SKATER_CONTACT_STORED`) into the brain's `pending_reaction` and arms Colliding; Attempt Begin clears it; a stored
+  contact blocks the success decision [approximation: retail looks at the last toucher]; Failure Begin trips or keeps
+  it; Colliding Begin moves it to `reaction_due`, `think_peds` hands it to the body and `advance_peds` plays it in the
+  same fixed tick (`PedEvent::DeferredHit`, `PED_SKATER_CONTACT_DEFERRED`; mods get `ped_hit` with `deferred: true`;
+  not a `Hit`, so it does not arm Colliding again). Data: `TakedownEntry::trips` (byte +38 bit 0 of the table word),
+  `tripChance` from the graph (`TakeDownTargetableFailure`), `BrainSettings::trip_kind` / `trip_direction` (retail
+  Knockdown / FromBack). The roll is the brain's deterministic per-ped RNG, only drawn when the entry may trip.
+- **Files:** `crates/skate-core/src/living_world/peds/{brain.rs,skater_contact.rs,takedown.rs}`,
+  `crates/skate-game/src/living_world/{peds.rs,ped_mood.rs}`, `crates/skate-game/src/modding/living_world_events.rs`.
+- **Tests:** `a_failed_takedown_keeps_its_stored_reaction_and_may_trip` (default 0.35, Attempt Begin drops an earlier
+  one, the decision is blocked, failure keeps it with no roll, Colliding hands it over, a trip replaces it).
+- **No target refuses a takedown (2026-10-19, b340):** the target interface's slot 0x10, which the failure path asks
+  first, is `8281DD70` (`li r3,1; blr`: accept, read in the recomp code [code]) in every vtable that carries the
+  interface (seven, from a memory search for its slot 0x28 `8258E6C8`; the four constructors that register it all
+  start from base vtable `8230065C`). So retail's refusal branch never runs, and ours (`refused = false`,
+  `peds/brain.rs` TakeDownTargetableFailure) has the same outcome. Which classes own the five non-ped vtables is not
+  identified; it does not change the result.
+- **Mod keys (2026-10-19):** `ped_brain.trip_kind` ("Knockdown", retail, or "Standing") and
+  `ped_brain.trip_direction` ("FromBack", retail, "FromFront", "FromLeft", "FromRight") set the reaction a failed
+  takedown's trip stores (`BrainSettings::trip_kind` / `trip_direction`); unknown names fail the patch's validation.
+  Tests: `trip_reaction_names_round_trip_for_mod_data` (skate-core) and the skate-mods patch validation.
+- **Open:**
+  retail's last-toucher rule; brain +0xCCD bit 0x80 (set during the failure) has no reader we know.

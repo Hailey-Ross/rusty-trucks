@@ -452,6 +452,66 @@ impl NavMesh {
         best.map(|(_, at)| at)
     }
 
+    /// The nearest walkable polygon point to `p` (3D), any component, within `max_dist`: retail's path start search
+    /// (`82933848` -> `829338B0`: range FLT_MAX, best distance from ~9.2e18, the closest point of each candidate by
+    /// `8292F9F0`; b324), for a start [`Self::locate`] refuses (more than 0.5 m off the mesh). Inside a polygon's outline
+    /// the point is its surface under `p`, else its nearest edge point. Searched ring by ring over the grid from `p`'s
+    /// cell, stopping once no further ring can hold a nearer point; ties go to the lower polygon index.
+    pub fn locate_start_nearest(&self, p: Vec3, max_dist: f32) -> Option<NavPoint> {
+        let (ci, cj) = ((p[0] / self.cell).floor() as i32, (p[2] / self.cell).floor() as i32);
+        // Rings beyond every grid cell hold nothing.
+        let far = self.grid.keys().map(|&(i, j)| (i - ci).abs().max((j - cj).abs())).max()?;
+        let mut best: Option<(f32, u32, Vec3)> = None;
+        for ring in 0..=far {
+            // Every point in ring `ring` is at least (ring - 1) cells away horizontally.
+            let near = (ring - 1).max(0) as f32 * self.cell;
+            if near > max_dist || best.is_some_and(|(d2, _, _)| near * near > d2) {
+                break;
+            }
+            for i in ci - ring..=ci + ring {
+                for j in cj - ring..=cj + ring {
+                    if (i - ci).abs() != ring && (j - cj).abs() != ring {
+                        continue;
+                    }
+                    for &k in self.grid.get(&(i, j)).map_or(&[][..], |v| v.as_slice()) {
+                        let Some(q) = self.closest_point(k, p) else { continue };
+                        let d2 = dist2_3d(p, q);
+                        if d2.sqrt() <= max_dist && best.is_none_or(|(b, bk, _)| d2 < b || (d2 == b && k < bk)) {
+                            best = Some((d2, k, q));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(_, poly, position)| NavPoint { poly, position })
+    }
+
+    /// The point of walkable polygon `k` nearest to `p` as the start search measures it (`8292F9F0`): inside its
+    /// outline the surface under `p`, else its nearest edge point (3D). `None` for a blocked or empty polygon.
+    pub(crate) fn closest_point(&self, k: u32, p: Vec3) -> Option<Vec3> {
+        let poly = &self.polys[k as usize];
+        if !self.rules.walkable(poly.area) {
+            return None;
+        }
+        if self.contains_xz(k, p[0], p[2]) {
+            return Some([p[0], self.height_at(k, p[0], p[2]), p[2]]);
+        }
+        let n = poly.verts.len();
+        let mut edge: Option<(f32, Vec3)> = None;
+        for e in 0..n {
+            let (q, d2) = closest_on_segment_3d(p, poly.verts[e], poly.verts[(e + 1) % n]);
+            if edge.is_none_or(|(b, _)| d2 < b) {
+                edge = Some((d2, q));
+            }
+        }
+        edge.map(|(_, q)| q)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn polys_len(&self) -> usize {
+        self.polys.len()
+    }
+
     /// Move from `from` toward `to` over the surface: only polygons linked to `from.poly`
     /// (directly or through linked neighbours near the move) can take the step, so a step never
     /// jumps onto an unconnected layer (a wall top or planter island above the ped), and a step

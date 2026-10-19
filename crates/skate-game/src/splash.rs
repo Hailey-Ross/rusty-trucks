@@ -18,9 +18,11 @@ struct Text {
     detail: String,
     history: Vec<String>,
     started: Option<Instant>,
+    /// A warning that stays until the splash closes (out-of-date game files), drawn under the status line.
+    warning: String,
 }
 
-static TEXT: Mutex<Text> = Mutex::new(Text { stage: String::new(), detail: String::new(), history: Vec::new(), started: None });
+static TEXT: Mutex<Text> = Mutex::new(Text { stage: String::new(), detail: String::new(), history: Vec::new(), started: None, warning: String::new() });
 /// The splash window (0 = none, or closed).
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
 const HISTORY_LINES: usize = 4;
@@ -53,6 +55,13 @@ pub(crate) fn detail(text: String) {
         if !previous.is_empty() {
             push_history(&mut t, previous);
         }
+    }
+}
+
+/// A warning shown under the status until the splash closes (the start-up asset check's out-of-date features).
+pub(crate) fn warning(text: String) {
+    if let Ok(mut t) = TEXT.lock() {
+        t.warning = text;
     }
 }
 
@@ -202,6 +211,7 @@ const SHADOW: u32 = rgb(7, 7, 9);
 const TEXT_BRIGHT: u32 = rgb(217, 217, 217);
 const TEXT_DIM: u32 = rgb(110, 110, 115);
 const TITLE: u32 = rgb(160, 160, 165);
+const WARNING: u32 = rgb(236, 172, 76);
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -416,9 +426,9 @@ unsafe fn paint(hwnd: Hwnd) {
         FillRect(dc, &Rect { left: 0, top: 0, right: w, bottom: h }, bg);
         DeleteObject(bg);
 
-        let (text, history, started) = match TEXT.lock() {
-            Ok(t) => (line(&t), t.history.clone(), t.started),
-            Err(_) => (String::new(), Vec::new(), None),
+        let (text, history, started, warning) = match TEXT.lock() {
+            Ok(t) => (line(&t), t.history.clone(), t.started, t.warning.clone()),
+            Err(_) => (String::new(), Vec::new(), None, String::new()),
         };
         let t = started.map_or(0.0, |s| s.elapsed().as_secs_f32());
 
@@ -446,9 +456,15 @@ unsafe fn paint(hwnd: Hwnd) {
         let one_line = 0x1 | 0x20 | 0x8000 | 0x800;
         draw(&crate::brand::upper(), 13, 600, TITLE, Rect { left: 0, top: 16, right: w, bottom: 36 }, one_line);
         draw(&text, 16, 400, TEXT_BRIGHT, Rect { left: 16, top: 122, right: w - 16, bottom: 146 }, one_line);
-        for (i, h_line) in history.iter().rev().enumerate() {
+        // With a warning the finished lines make room for it (two lines kept, the warning in two wrapped lines below).
+        let kept = if warning.is_empty() { HISTORY_LINES } else { 2 };
+        for (i, h_line) in history.iter().rev().take(kept).enumerate() {
             let top = 152 + i as i32 * 19;
             draw(h_line, 13, 400, TEXT_DIM, Rect { left: 16, top, right: w - 16, bottom: top + 18 }, one_line);
+        }
+        if !warning.is_empty() {
+            // DT_CENTER | DT_WORDBREAK (0x10) | DT_END_ELLIPSIS | DT_NOPREFIX
+            draw(&warning, 13, 600, WARNING, Rect { left: 16, top: 194, right: w - 16, bottom: 232 }, 0x1 | 0x10 | 0x8000 | 0x800);
         }
 
         let (cw, ch) = (client.right, client.bottom);
@@ -516,7 +532,7 @@ mod tests {
 
     #[test]
     fn steps_and_items_become_finished_lines() {
-        let mut t = Text { stage: String::new(), detail: String::new(), history: Vec::new(), started: None };
+        let mut t = Text { stage: String::new(), detail: String::new(), history: Vec::new(), started: None, warning: String::new() };
         push_history(&mut t, String::new());
         assert!(t.history.is_empty());
         for i in 0..6 {

@@ -947,6 +947,12 @@ impl GamePhysics {
         [v.x, v.y, v.z]
     }
 
+    /// A context's effective board forward (`riding.motion.effective_basis` column 2, as the animation phase reads
+    /// it; diagnostics).
+    pub(crate) fn context_effective_forward(context: &SkaterPhysicsContext) -> [f32; 3] {
+        context.riding.motion.effective_basis.columns[2]
+    }
+
     /// Every part of a context's board at `velocity` (`82C04168`, the AI spawn push).
     pub(crate) fn set_context_velocity(context: &mut SkaterPhysicsContext, velocity: [f32; 3]) {
         for body in context.board.bodies_mut() {

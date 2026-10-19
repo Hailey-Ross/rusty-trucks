@@ -65,7 +65,7 @@ fn differing_outputs(install_root: &Path, files: &serde_json::Value) -> Vec<Stri
 }
 
 /// HUD group: the menu tables and movies this build's retail menus read.
-fn hud(assets: &Path) -> Vec<Finding> {
+fn hud(assets: &Path, movies: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
     match std::fs::read_to_string(assets.join(crate::retail_menus::TABLES)) {
         Err(_) => out.push(finding("hud", "menu tables missing")),
@@ -85,7 +85,6 @@ fn hud(assets: &Path) -> Vec<Finding> {
             }
         },
     }
-    let movies = assets.join("private/menu-movies");
     match std::fs::read(movies.join("manifest.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) {
         None => out.push(finding("hud", "menu movie manifest missing")),
         Some(m) => {
@@ -98,7 +97,14 @@ fn hud(assets: &Path) -> Vec<Finding> {
             }
         }
     }
-    // The central message HUD (chase "ZAP!" / "BAM!" lines) came after the scoring HUD: offered, not forced.
+    out.extend(hud_features(assets));
+    out
+}
+
+/// HUD files later builds added (offered, not forced): a missing one leaves its feature off until a refresh. The
+/// central message HUD (chase "ZAP!" / "BAM!" lines) and the chase alerts came after the scoring HUD.
+fn hud_features(assets: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
     let hud = assets.join("private/hud/runtime");
     if hud.join("trickdisplay.json").is_file() && !hud.join("hudcentral.json").is_file() {
         out.push(finding("hud", "central message HUD missing"));
@@ -107,6 +113,80 @@ fn hud(assets: &Path) -> Vec<Finding> {
         out.push(finding("hud", "ped chase alert textures missing"));
     }
     out
+}
+
+/// The cheap part of the check, for the start-up splash: a few file tests and one small file read (the full check
+/// waits for the loading screen; its thousands of reads would slow the start on an HDD). These are the features that
+/// stay off until Refresh Game Files; out-of-date menus are not here, the full check forces their refresh.
+pub(crate) fn quick_check(assets: &Path) -> Vec<Finding> {
+    let mut out = hud_features(assets);
+    out.extend(hand_props(assets));
+    out
+}
+
+/// What stays off until a refresh, as the in-game warning box under the frame-time counter shows it (user
+/// 2026-10-19): a generation (bumped on every publish) and the features' names. Set by the start-up check and
+/// replaced by the full check.
+static NOTICE: std::sync::Mutex<(u64, Vec<String>)> = std::sync::Mutex::new((0, Vec::new()));
+
+/// A finding as the player knows the feature (the box and the splash name features, not files).
+pub(crate) fn feature_name(f: &Finding) -> String {
+    match f.reason.as_str() {
+        "central message HUD missing" => "chase messages (ZAP!, BAM!)".into(),
+        "ped chase alert textures missing" => "ped chase alerts".into(),
+        r if r.starts_with("hand prop") => "ped hand props".into(),
+        r if r.starts_with("menu") => "menus".into(),
+        _ => format!("{} files", f.group),
+    }
+}
+
+/// Publish findings for the in-game warning box (names deduplicated, in order).
+pub(crate) fn publish(findings: &[Finding]) {
+    let mut names: Vec<String> = Vec::new();
+    for f in findings {
+        let n = feature_name(f);
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    if let Ok(mut notice) = NOTICE.lock() {
+        notice.0 += 1;
+        notice.1 = names;
+    }
+}
+
+/// The published notice: (generation, features that stay off until a refresh).
+pub(crate) fn notice() -> (u64, Vec<String>) {
+    NOTICE.lock().map(|n| n.clone()).unwrap_or_default()
+}
+
+/// The warning box's text for these features (`None` = nothing to warn about).
+pub(crate) fn warning_box_text(features: &[String]) -> Option<String> {
+    if features.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "GAME FILES NEED A REFRESH
+Off until then: {}
+Launcher: Tools > Refresh Game Files (or Esc > Extras)",
+        features.join(", ")
+    ))
+}
+
+/// The splash warning for start-up findings (user 2026-10-19: "the refresh warning should show under the startup
+/// splash once detected during the startup"); `None` when the files are current.
+pub(crate) fn splash_warning(findings: &[Finding]) -> Option<String> {
+    if findings.is_empty() {
+        return None;
+    }
+    let mut what: Vec<String> = Vec::new();
+    for n in findings.iter().map(feature_name) {
+        if !what.contains(&n) {
+            what.push(n);
+        }
+    }
+    let them = if what.len() == 1 { "it" } else { "them" };
+    Some(format!("Game files need a refresh: {} stay off until then. Refresh Game Files (the launcher's Tools, or Esc > Extras in the game) turns {them} on.", what.join(", ")))
 }
 
 /// Maps group: the ped hand props carry the grip points this build reads (`attach`, setup since b758f0cc). A file
@@ -134,7 +214,10 @@ fn hand_props(assets: &Path) -> Vec<Finding> {
 /// All checks for an asset root; one finding per group and reason.
 pub(crate) fn check(assets: &Path) -> Vec<Finding> {
     let mut out = installation(assets).map_or(Vec::new(), |(root, marker)| receipts(&root, &marker));
-    out.extend(hud(assets));
+    // The set the menus load (`retail_menu_movies::set_root`): a dev export from `SKATE3_MENU_MOVIES` is checked, not the
+    // installed set it replaces.
+    let movies = std::env::var("SKATE3_MENU_MOVIES").map(std::path::PathBuf::from).unwrap_or_else(|_| assets.join("private/menu-movies"));
+    out.extend(hud(assets, &movies));
     out.extend(hand_props(assets));
     out.dedup();
     out
@@ -155,7 +238,7 @@ impl Plugin for AssetCheckPlugin {
 static FORCE_MENU_REFRESH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// A finding that forces the refresh: the menu movies or tables (the `hud` group's menu files).
-fn forces_refresh(f: &Finding) -> bool {
+pub(crate) fn forces_refresh(f: &Finding) -> bool {
     f.group == "hud" && (f.reason.starts_with("menu movie") || f.reason.starts_with("menu tables"))
 }
 
@@ -188,6 +271,7 @@ fn start(config: Res<crate::config::Config>) {
     let _ = std::thread::Builder::new().name("asset-check".into()).spawn(move || {
         let started = std::time::Instant::now();
         let findings = check(&assets);
+        publish(&findings);
         for f in &findings {
             warn!("ASSET_CHECK {}: {}", f.group, f.reason);
             crate::setup::mark_stale(&f.group);
@@ -271,28 +355,50 @@ mod tests {
     }
 
     #[test]
+    fn the_splash_names_what_stays_off_until_a_refresh() {
+        let dir = std::env::temp_dir().join(format!("skate-asset-quick-{}", std::process::id()));
+        let runtime = dir.join("private/hud/runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::write(runtime.join("trickdisplay.json"), "{}").unwrap();
+        let found = quick_check(&dir);
+        let text = splash_warning(&found).expect("two features off");
+        assert!(text.contains("chase messages (ZAP!, BAM!)") && text.contains("ped chase alerts"), "{text}");
+        assert!(text.contains("Refresh Game Files") && text.ends_with("turns them on."), "{text}");
+        let names: Vec<String> = found.iter().map(feature_name).collect();
+        let boxed = warning_box_text(&names).unwrap();
+        assert!(boxed.starts_with("GAME FILES NEED A REFRESH
+") && boxed.contains("Off until then: chase messages (ZAP!, BAM!), ped chase alerts"), "{boxed}");
+        assert_eq!(warning_box_text(&[]), None);
+        std::fs::write(runtime.join("hudcentral.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.join("private/hud/chase-arrows")).unwrap();
+        std::fs::write(dir.join("private/hud/chase-arrows/chase_arrows.json"), "{}").unwrap();
+        assert_eq!(splash_warning(&quick_check(&dir)), None, "current files: no warning");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn hud_check_reads_the_files_not_a_stamp() {
         let dir = std::env::temp_dir().join(format!("skate3rust-asset-check-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let private = dir.join("private");
         std::fs::create_dir_all(private.join("menu-movies")).unwrap();
         // Nothing there: both files reported.
-        let reasons: Vec<String> = hud(&dir).into_iter().map(|f| f.reason).collect();
+        let reasons: Vec<String> = hud(&dir, &dir.join("private/menu-movies")).into_iter().map(|f| f.reason).collect();
         assert_eq!(reasons, ["menu tables missing", "menu movie manifest missing"]);
         // Tables from before the FE screen records, movies one version old.
         std::fs::write(private.join("menu-tables.json"), tables(false)).unwrap();
         std::fs::write(private.join("menu-movies/manifest.json"),
             serde_json::json!({"format": crate::retail_menu_movies::FORMAT, "version": crate::retail_menu_movies::VERSION - 1, "files": {}}).to_string()).unwrap();
-        let reasons: Vec<String> = hud(&dir).into_iter().map(|f| f.reason).collect();
+        let reasons: Vec<String> = hud(&dir, &dir.join("private/menu-movies")).into_iter().map(|f| f.reason).collect();
         assert!(reasons.iter().any(|r| r.contains("FE screen records")), "{reasons:?}");
         assert!(reasons.iter().any(|r| r.contains("menu movies are version")), "{reasons:?}");
         // Current files: clean, and a listed movie that is gone is caught.
         std::fs::write(private.join("menu-tables.json"), tables(true)).unwrap();
         std::fs::write(private.join("menu-movies/manifest.json"),
             serde_json::json!({"format": crate::retail_menu_movies::FORMAT, "version": crate::retail_menu_movies::VERSION, "files": {"a.json": {}}}).to_string()).unwrap();
-        assert_eq!(hud(&dir).into_iter().map(|f| f.reason).collect::<Vec<_>>(), ["menu movie file missing: a.json"]);
+        assert_eq!(hud(&dir, &dir.join("private/menu-movies")).into_iter().map(|f| f.reason).collect::<Vec<_>>(), ["menu movie file missing: a.json"]);
         std::fs::write(private.join("menu-movies/a.json"), "{}").unwrap();
-        assert!(hud(&dir).is_empty());
+        assert!(hud(&dir, &dir.join("private/menu-movies")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

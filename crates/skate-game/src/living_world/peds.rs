@@ -350,6 +350,8 @@ pub(crate) struct PedBody {
     pub nav: PedNav,
     /// Seconds the body's steps have been refused (walls, other peds, the crosswalk rule).
     pub blocked: f32,
+    /// A stored contact reaction whose Colliding state began this tick: `advance_peds` plays it (b326).
+    pub reaction_due: Option<skate_core::living_world::peds::skater_contact::StoredReaction>,
     pub position: Vec3,
     /// The last console tick's movement over its length, m/s (the attack throw's look-ahead, `82E3E960`).
     pub velocity: Vec3,
@@ -495,6 +497,24 @@ pub(crate) enum PedEvent {
         closing: f32,
         /// Who touched the ped (the brain's contact record `+3184`; players: `PLAYER_TARGET_BASE + n`).
         toucher: u64,
+    },
+    /// A contact during the ped's takedown attempt (not by its target): stored, not played (`82E38FB8` stores the
+    /// reaction; the attempt has no Colliding transition); it plays at the ped's next Colliding (b326).
+    ContactStored {
+        id: LivingWorldId,
+        kind: skate_core::living_world::peds::skater_contact::ReactionKind,
+        direction: skate_core::living_world::peds::skater_contact::ReactionDirection,
+        closing: f32,
+        toucher: u64,
+    },
+    /// A stored reaction played when the ped's Colliding state began (a contact during a takedown attempt, or a
+    /// failed takedown's trip; `toucher` is `None` for a trip). Not a `Hit`: it does not arm Colliding again.
+    DeferredHit {
+        id: LivingWorldId,
+        kind: skate_core::living_world::peds::skater_contact::ReactionKind,
+        direction: skate_core::living_world::peds::skater_contact::ReactionDirection,
+        closing: f32,
+        toucher: Option<u64>,
     },
     /// The ped's Colliding state began (PedestrianColliding Begin `8269DA00`): the collision mood broadcast
     /// (`sub_8269D8A8`), read by every ped's think on the next step.
@@ -881,7 +901,7 @@ pub(crate) fn apply_ped_records(
             tint_a: look.tint_a,
             tint_b: look.tint_b,
         };
-        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, position: at, velocity: Vec3::ZERO, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: TauntClip::None, plugin_motion: PluginMotionRun::default() };
+        let body = PedBody { player, path: TestPath::new(s.seed), nav, blocked: 0.0, reaction_due: None, position: at, velocity: Vec3::ZERO, heading: s.heading, ticks: 0, feet_down: [false; 2], body_fall: 0.0, taunt: TauntClip::None, plugin_motion: PluginMotionRun::default() };
         let e = commands
             .spawn((
                 Name::new(format!("Pedestrian {} ({})", s.id.serial, look.recipe)),
@@ -1027,6 +1047,15 @@ pub(crate) fn advance_peds(
                 }
                 _ => {}
             }
+            // A stored reaction whose Colliding began this tick (think_peds handed it over, b326): it plays now, before
+            // this tick's contacts (the ped is colliding from here on, so the contact test below is skipped).
+            if let Some(r) = body.reaction_due.take() {
+                let steps = skate_core::living_world::peds::skater_contact::reaction_steps(r.kind, r.direction);
+                if body.player.react(set, steps, set.collision.ground_seconds) {
+                    info!("PED_SKATER_CONTACT_DEFERRED ped=#{} by={:?} kind={} direction={} closing={:.2} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, r.toucher, r.kind.name(), r.direction.name(), r.closing, body.position.x, body.position.y, body.position.z);
+                    events.write(PedEvent::DeferredHit { id: ped.id, kind: r.kind, direction: r.direction, closing: r.closing, toucher: r.toucher });
+                }
+            }
             // A skater running into the ped (retail `sub_82E38FB8` kind 5). Retail skips the contact only while the ped is
             // already in a collision reaction (controller byte +9), not during any clip: a ped sitting on a bench or
             // using a prop (its plugin clip plays as a reaction) can be knocked over.
@@ -1086,8 +1115,23 @@ pub(crate) fn advance_peds(
                 let touched = || pending.iter()
                     .filter(|c| c.touched == ped.id && ignored != Some(c.toucher.to_u64()))
                     .find_map(|c| ped_hit(body.position, body.heading, c.toucher_at, c.velocity, &rules, ignore_standing, settings.zombie).map(|h| (h, c.toucher.to_u64())));
-                if let Some(((kind, direction, closing), toucher)) = skater.or_else(touched) {
-                    let steps = skate_core::living_world::peds::skater_contact::reaction_steps(kind, direction);
+                // A takedown under way (AttemptTakeDownTargetable / WaitForTakedownDecision, both not interruptable and
+                // without a Colliding transition, `pedestrian_attempttakedowntargetable.xml`): retail's contact callback
+                // `82E38FB8` only stores the reaction, the touch of the target decides the takedown (`826A4BE8`) and
+                // success drops the stored reaction (`826A4E50`), so the attacker never falls from its own lunge (b317,
+                // laptop 2026-10-19). A contact by anyone else during the attempt is stored too and plays when the graph
+                // next reaches Colliding, after a failed takedown (`826A5068` leaves it stored; b326).
+                let attempting = mind.is_some_and(|m| m.brain.takedown_active);
+                let attacking = |toucher: u64| attempting && mind.is_some_and(|m| m.brain.takedown_target == Some(toucher));
+                let contact = skater.or_else(touched).filter(|(_, t)| !attacking(*t));
+                if let Some(((kind, direction, closing), toucher)) = contact.filter(|_| attempting) {
+                    // Stored, not played (the attempt states have no Colliding transition); the latest contact wins.
+                    if mind.is_some_and(|m| m.brain.pending_reaction.is_none()) {
+                        info!("PED_SKATER_CONTACT_STORED ped=#{} by={toucher} kind={} direction={} closing={closing:.2} tick={tick}", ped.id.serial, kind.name(), direction.name());
+                    }
+                    events.write(PedEvent::ContactStored { id: ped.id, kind, direction, closing, toucher });
+                } else if let Some(((kind, direction, closing), toucher)) = contact {
+                    let steps =skate_core::living_world::peds::skater_contact::reaction_steps(kind, direction);
                     if body.player.react(set, steps, set.collision.ground_seconds) {
                         info!("PED_SKATER_CONTACT ped=#{} by={toucher} kind={} direction={} closing={closing:.2} at=[{:.2}, {:.2}, {:.2}] tick={tick}", ped.id.serial, kind.name(), direction.name(), body.position.x, body.position.y, body.position.z);
                         events.write(PedEvent::Hit { id: ped.id, kind, direction, closing, toucher });
@@ -1226,12 +1270,13 @@ pub(crate) fn advance_peds(
                         }
                         None => (next, false),
                     };
-                    // A step that slid to (almost) nothing against an edge counts as refused, so
-                    // a ped walking into a boundary re-plans instead of walking in place.
-                    let wanted = (to - body.position).with_y(0.0).length();
-                    let progressed = !moving || Vec3::from_array(next).with_y(0.0).distance(body.position.with_y(0.0)) >= 0.25 * wanted;
+                    // A step that slides along an edge is applied however short the slide is: retail's mover
+                    // (`82EA5C40`, up to 10 sub-steps of `82EA4C20`) projects the velocity onto a boundary edge it hits
+                    // and moves along it; head-on the projection is zero and the ped stands on the edge. It has no
+                    // progress ratio. Ours refused a slide under 25 % of the wanted step, which pinned peds walking
+                    // into a wall at an angle (b311, b331; a recomp run of 2026-10-19 never saw a retail ped pinned, b325).
                     let blocker = separation_blocker(body.position.to_array(), next, me, &neighbours, mesh.agent[1]);
-                    let ok = on_mesh && clear && progressed && blocker.is_none() && crosswalk_ok(mesh, nav_settings.crosswalk, signals, body.position.to_array(), next);
+                    let ok = on_mesh && clear && blocker.is_none() && crosswalk_ok(mesh, nav_settings.crosswalk, signals, body.position.to_array(), next);
                     // Refused by another ped: the two bodies touch; both react to the other on their next step.
                     if let Some(j) = blocker.filter(|_| moving) {
                         let v = ((to - body.position) / dt).with_y(0.0).to_array();
@@ -1258,7 +1303,7 @@ pub(crate) fn advance_peds(
                             });
                             let blocker = blocker.unwrap_or_else(|| if by.is_some_and(|id| id >= MOD_BODY_OBSTACLE_BASE) { "mod body".into() } else { "-".into() });
                             info!(
-                                "PED_BLOCKED ped=#{} at=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] by={by:?} ({blocker}) near_moved_spawn={near:?} on_mesh={on_mesh} clear={clear} progressed={progressed} tick={now}",
+                                "PED_BLOCKED ped=#{} at=[{:.2}, {:.2}, {:.2}] to=[{:.2}, {:.2}, {:.2}] by={by:?} ({blocker}) near_moved_spawn={near:?} on_mesh={on_mesh} clear={clear} tick={now}",
                                 ped.id.serial, from[0], from[1], from[2], to.x, to.y, to.z,
                             );
                         }
@@ -1270,10 +1315,11 @@ pub(crate) fn advance_peds(
                     } else if moving {
                         body.blocked += dt;
                         if body.blocked > nav_settings.wander.yield_patience {
-                            // Stuck against a wall / ped / red light: pick another way (short fan).
+                            // Refused (off the mesh, into a prop corner with no free slide, a ped, a red light): re-path to the
+                            // same target (ours; retail never gives the target up, b332 / b336); no path there picks a
+                            // new target. A ped standing head-on at a wall is left to the still re-path.
                             body.blocked = 0.0;
-                            body.nav.skip_long = true;
-                            body.nav.corners.clear();
+                            body.nav.repath_due = true;
                         }
                     }
                     neighbours[k].position = body.position.to_array();
@@ -1759,6 +1805,8 @@ pub(crate) struct PedMind {
     /// a move's path with the move (research b177; before, the point stayed and every give-up re-planned it, a ped stood
     /// 20 s at a wall, laptop session 2026-10-17 #111).
     pub approach_route: bool,
+    /// Seconds since the intercept's last reachability check (retail every 10 mover updates, `82E2CB08`).
+    pub reach_clock: f32,
     /// Where the body was at the last think (the ped's speed for the takedown window).
     last_at: Option<[f32; 3]>,
     presence_timer: f32,
@@ -1989,10 +2037,15 @@ pub(crate) fn think_peds(
     // waits for its Colliding state to begin (`PedEvent::Colliding`), so a ped whose state does not allow Colliding
     // (a non-interruptible chase, a plugin with the collision override) posts nothing yet.
     let (mut hits, mut collisions) = (Vec::<u64>::new(), Vec::<(u64, Option<u64>)>::new());
+    let mut stored = Vec::<(u64, skate_core::living_world::peds::skater_contact::StoredReaction)>::new();
     for e in cursor.read(&events) {
         match e {
             PedEvent::Hit { id, toucher, .. } => {
                 hits.push(id.to_u64());
+                touchers.insert(id.to_u64(), *toucher);
+            }
+            PedEvent::ContactStored { id, kind, direction, closing, toucher } => {
+                stored.push((id.to_u64(), skate_core::living_world::peds::skater_contact::StoredReaction { kind: *kind, direction: *direction, closing: *closing, toucher: Some(*toucher) }));
                 touchers.insert(id.to_u64(), *toucher);
             }
             PedEvent::Colliding { id } => collisions.push((id.to_u64(), touchers.remove(&id.to_u64()))),
@@ -2372,6 +2425,12 @@ pub(crate) fn think_peds(
                     mind.mood.post_ranked(e, 1.0, &priority);
                 }
             }
+            // A contact stored during a takedown attempt arms Colliding without playing anything yet; an Attempt Begin
+            // in this update still drops it (`826A49D8`), as retail.
+            for &(_, r) in stored.iter().filter(|s| s.0 == me) {
+                mind.brain.pending_reaction = Some(r);
+                mind.brain.begin_colliding = true;
+            }
             if hits.contains(&me) {
                 mind.brain.begin_colliding = true;
                 mind.brain.colliding = true;
@@ -2465,8 +2524,9 @@ pub(crate) fn think_peds(
         let record = if settings.zombie { data.chase_zombie.as_deref() } else { data.chase.get(&ped.entity) };
         let ped_speed = mind.last_at.map_or(0.0, |l| ((at[0] - l[0]).powi(2) + (at[2] - l[2]).powi(2)).sqrt() / (dt * tick.saturating_sub(ped.spawn_tick).saturating_sub(mind.ticks).max(1) as f32));
         mind.last_at = Some(at);
-        // The takedown contact (`82E38FB8` records a touch of the takedown target and counts it,
-        // `brain+3248`): our skater cylinder against the ped while the takedown plays.
+        // The takedown contact (`82E38FB8` sets the controller's begin-colliding byte +8 and records the touched entity
+        // at brain +0xC70; `826A4BE8` succeeds when that entity is the target, b317): our skater cylinder against the
+        // ped while the takedown plays. `takedowns` is our own count (brain+3248 counts ped-on-ped chase touches).
         if mind.brain.takedown_active && !mind.brain.takedown_contact {
             let ped_radius = data.nav.as_deref().map_or(super::vehicle_contacts::FALLBACK_PED_RADIUS, |m| m.agent[1]);
             if let Some(p) = mind.brain.takedown_target.filter(|t| *t >= PLAYER_TARGET_BASE).and_then(|t| target(t)) {
@@ -2630,6 +2690,12 @@ pub(crate) fn think_peds(
                 chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array(), wiping: Some(&wiping_of) },
             };
             controller.update(program, dt, &mut host);
+            // A stored reaction moved to `reaction_due` at Colliding Begin: the body plays it in `advance_peds` later
+            // this tick (same fixed tick as the Begin, `8269DA00`); IsPedestrianColliding holds while it plays.
+            if let Some(r) = mind.brain.reaction_due.take() {
+                body.reaction_due = Some(r);
+                mind.brain.colliding = true;
+            }
             if std::mem::take(&mut mind.brain.collision_began) {
                 info!("PED_COLLIDING ped=#{} begins: collision broadcast tick={tick}", ped.id.serial);
                 events.write(PedEvent::Colliding { id: ped.id });
@@ -3058,34 +3124,47 @@ pub(crate) fn think_peds(
             }
             (Some(skate_core::living_world::peds::brain::motion::INTERCEPT), Some(chasee), Some(mesh)) => {
                 use skate_core::living_world::peds::chase;
-                // CannotReachChaseTarget (`82E31D58`, b108): the intercept move's result sets the bit within 5 m of the
-                // chasee and clears it beyond. Ours: a chasee off the navmesh (in water, on a roof) is a failed move
-                // [inferred mapping of retail's result codes 0 / 1 / 3]; back on the navmesh clears it.
+                // InterceptChasee Update (`826A3BF0`, b306, recomp-checked tail `loc_826A3F08`): every think the mover
+                // gets a destination. The chasee position, unless the ped and the chasee are reachable (`82C465A8`)
+                // and the solver finds an intercept: then the lead point, on the mesh where it projects (`82C460E0`),
+                // else as it is. A swimmer is handed over as it is (no snap onto the bank), so the reachability check
+                // below fails. The body's route only follows a destination on the mesh (a path request to an off-mesh
+                // point keeps the old path, `82E957F8`).
+                let here = mesh.locate(at);
                 if let Some(q) = target(chasee) {
-                    let off_mesh = mesh.locate(q).is_none();
-                    let near = (q[0] - at[0]).hypot(q[2] - at[2]) <= settings.ped_brain.values.unreachable_radius;
-                    let now = off_mesh && near;
-                    if now != mind.brain.target_unreachable {
-                        info!("PED_UNREACHABLE ped=#{} chasee={chasee} {} off_mesh={off_mesh} near={near} tick={tick}", ped.id.serial, if now { "cannot reach" } else { "reachable again" });
-                    }
-                    if off_mesh {
-                        mind.brain.target_unreachable = near;
-                    } else {
-                        mind.brain.target_unreachable = false;
-                    }
-                }
-                if let (Some(q), Some(here)) = (target(chasee), mesh.locate(at)) {
+                    let chasee_poly = mesh.locate(q).map(|p| p.poly);
+                    let reachable = !chase::reach_failed(mesh, here.map(|p| p.poly), chasee_poly);
                     let velocity = observers.observers.get(chasee.wrapping_sub(PLAYER_TARGET_BASE) as usize).map_or([0.0; 3], |o| o.velocity);
                     let speed = record.and_then(|r| r.run_speed()).unwrap_or(0.0);
-                    // No record: the max lead time reads 0.0, so no goal.
+                    // No record: the max lead time reads 0.0, so no intercept (the chasee itself is the destination).
                     let max_lead = record.map_or(0.0, |r| r.max_lead_time());
-                    let goal = mesh.clear_line(here, q).then(|| chase::intercept(at, q, velocity, speed, max_lead, chase::predict_angle(data.chase_global.as_deref()))).flatten().filter(|i| mesh.locate(i.point).is_some());
-                    if let Some(i) = goal {
-                        if mind.chase_goal.is_none() {
-                            info!("PED_INTERCEPT ped=#{} chasee={chasee} goal=[{:.1}, {:.1}, {:.1}] leads={} t={:.2} tick={tick}", ped.id.serial, i.point[0], i.point[1], i.point[2], i.leads, i.time);
-                        }
-                        body.nav.set_route(Some(skate_core::living_world::peds::PedRoute { points: vec![i.point], looped: false }));
-                        mind.chase_goal = Some(i.point);
+                    let intercept = reachable.then(|| chase::intercept(at, q, velocity, speed, max_lead, chase::predict_angle(data.chase_global.as_deref()))).flatten();
+                    let destination = intercept.map_or(q, |i| mesh.locate(i.point).map_or(i.point, |p| p.position));
+                    if let Some(i) = intercept.filter(|_| mind.chase_goal.is_none()) {
+                        info!("PED_INTERCEPT ped=#{} chasee={chasee} goal=[{:.1}, {:.1}, {:.1}] leads={} t={:.2} tick={tick}", ped.id.serial, i.point[0], i.point[1], i.point[2], i.leads, i.time);
+                    }
+                    if mesh.locate(destination).is_some() {
+                        body.nav.set_route(Some(skate_core::living_world::peds::PedRoute { points: vec![destination], looped: false }));
+                    }
+                    mind.chase_goal = Some(destination);
+                }
+                // CannotReachChaseTarget (`82E31D58`, b108 / b302): every 10 mover updates the mover checks that its
+                // destination and the ped are on the navmesh and connected. An unreachable report rewrites the bit to
+                // "within 5 m flat of the chasee"; a reachable one leaves it, so a chasee climbing back onto the mesh
+                // does not end the wait.
+                mind.reach_clock += dt;
+                if let Some(q) = target(chasee).filter(|_| mind.reach_clock >= settings.ped_brain.values.reach_check_seconds) {
+                    mind.reach_clock = 0.0;
+                    let destination = mind.chase_goal.unwrap_or(q);
+                    let failed = chase::reach_failed(mesh, here.map(|p| p.poly), mesh.locate(destination).map(|p| p.poly));
+                    let near = (q[0] - at[0]).hypot(q[2] - at[2]) <= settings.ped_brain.values.unreachable_radius;
+                    let was = mind.brain.target_unreachable;
+                    chase::apply_reach_report(&mut mind.brain.target_unreachable, failed, near);
+                    if mind.brain.target_unreachable != was {
+                        info!(
+                            "PED_UNREACHABLE ped=#{} chasee={chasee} {} near={near} dist={:.2} at=[{:.2}, {:.2}, {:.2}] chasee_at=[{:.2}, {:.2}, {:.2}] tick={tick}",
+                            ped.id.serial, if was { "reachable again" } else { "cannot reach" }, (q[0] - at[0]).hypot(q[2] - at[2]), at[0], at[1], at[2], q[0], q[1], q[2],
+                        );
                     }
                 }
             }

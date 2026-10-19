@@ -228,6 +228,7 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         c.moving_speed = f.moving_speed.map_or(c.moving_speed, |v| v.max(0.0));
         c.recut_fraction = f.recut_fraction.map_or(c.recut_fraction, |v| v.max(0.0));
         c.detour_margin = f.detour_margin.map_or(c.detour_margin, |v| v.max(0.0));
+        c.target_snap = f.target_snap.map_or(c.target_snap, |v| v.max(0.0));
         c.step_height = f.step_height.map_or(c.step_height, |v| v.max(0.0));
         c.held_is_obstacle = f.held_is_obstacle.unwrap_or(c.held_is_obstacle);
         c.moving_solid = f.moving_solid.unwrap_or(c.moving_solid);
@@ -250,6 +251,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         w.stall_seconds = f.stall_seconds.unwrap_or(w.stall_seconds);
         w.stuck_distance = f.stuck_distance.unwrap_or(w.stuck_distance);
         w.stuck_seconds = f.stuck_seconds.unwrap_or(w.stuck_seconds);
+        w.give_up_seconds = f.give_up_seconds.unwrap_or(w.give_up_seconds);
+        w.yield_patience = f.yield_patience.unwrap_or(w.yield_patience);
         use skate_core::living_world::peds::wander::CrosswalkRule;
         n.crosswalk = match f.crosswalk.as_deref() {
             Some("walk_signal") => CrosswalkRule::WalkSignal,
@@ -332,6 +335,20 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         n.reactions.enabled = f.reactions.unwrap_or(n.reactions.enabled);
         n.reactions.radius = f.reaction_radius.unwrap_or(n.reactions.radius);
     }
+    // After `npc_simulated`: the nested keys win over its walk-back aliases.
+    macro_rules! set {
+        ($to:expr, $from:expr; $($f:ident),*) => { $( if let Some(v) = $from.$f { $to.$f = v; } )* };
+    }
+    if let Some(f) = &p.npc_walk_back {
+        set!(s.npc_simulated.navmesh, f; plan_path_h, plan_path_v, goal_locate_radius, start_locate_radius, plan_direct_h, plan_direct_v, arrive_h, arrive_v, arrive_heading, line_up_h, line_up_v, leg_h, leg_v, leg_epsilon_sq, steer_full_lock, steer_gain, throttle_gain, slow_along, slow_gain, throttle_floor, floor_along, stall_steer, magnitude_cap, move_step_sq, move_anchor_sq, turn_step, turn_anchor, stall_ticks, push_period, stuck_waypoint_ticks, stuck_stall_ticks, stall_recovery_ticks);
+    }
+    if let Some(f) = &p.npc_line_controller {
+        let c = &mut s.npc_simulated.controller;
+        set!(c, f; wipe_out, safe_slope, stuck_clear_distance, stuck_start_fraction, stuck_start_approach, reposition_ahead, reposition_past, remembered_window, safe_jump_frames, safe_flag_frames, safe_run, stuck_clear_ticks, stuck_hold_ticks, stuck_gate_ticks, resnap_frames, stuck_limits);
+        if let Some(v) = f.reposition_interval {
+            c.reposition_interval = u64::from(v);
+        }
+    }
     if let Some(m) = &p.traffic_horn {
         s.traffic_horn = m.clone();
     }
@@ -345,6 +362,8 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         b.values.mood_want_memory_seconds = f.mood_want_memory_seconds.unwrap_or(b.values.mood_want_memory_seconds);
         b.values.conversation_turn_seconds = f.conversation_turn_seconds.unwrap_or(b.values.conversation_turn_seconds);
         b.values.conversation_gather_seconds = f.conversation_gather_seconds.unwrap_or(b.values.conversation_gather_seconds);
+        b.values.unreachable_radius = f.unreachable_radius.unwrap_or(b.values.unreachable_radius);
+        b.values.reach_check_seconds = f.reach_check_seconds.unwrap_or(b.values.reach_check_seconds);
         b.values.warn_speech = f.warn_speech.unwrap_or(b.values.warn_speech);
         b.run_from_honker.side_distance = f.run_from_honker_distance.unwrap_or(b.run_from_honker.side_distance);
         b.run_from_honker.run_speed = f.run_from_honker_speed.unwrap_or(b.run_from_honker.run_speed);
@@ -366,6 +385,9 @@ pub(crate) fn apply_living_world(s: &mut LivingWorldSettings, p: &LivingWorldPat
         z.sprint_speed = f.zombie_sprint_speed.unwrap_or(z.sprint_speed);
         z.walk_speed = f.zombie_walk_speed.unwrap_or(z.walk_speed);
         z.arrive_distance = f.zombie_arrive_distance.unwrap_or(z.arrive_distance);
+        use skate_core::living_world::peds::skater_contact::{ReactionDirection, ReactionKind};
+        b.values.trip_kind = f.trip_kind.as_deref().and_then(ReactionKind::from_name).unwrap_or(b.values.trip_kind);
+        b.values.trip_direction = f.trip_direction.as_deref().and_then(ReactionDirection::from_name).unwrap_or(b.values.trip_direction);
     }
     if let Some(f) = &p.npc_avoid {
         let a = &mut s.npc_avoid;
@@ -559,7 +581,20 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
         "living_world" => world.get_resource::<LivingWorldSettings>().map_or(Value::Null, |s| {
             // Separate (the json! macro's recursion limit).
             let npc_avoid = json!({"enabled": s.npc_avoid.enabled, "max_entries": s.npc_avoid.max_entries, "skitch_cooldown_ticks": s.npc_avoid.skitch_cooldown_ticks, "radius_skater": s.npc_avoid.radius_skater, "radius_pedestrian": s.npc_avoid.radius_pedestrian, "radius_vehicle": s.npc_avoid.radius_vehicle, "radius_prop": s.npc_avoid.radius_prop, "cone": s.npc_avoid.cone, "wide_cone": s.npc_avoid.wide_cone, "wide_cone_distance": s.npc_avoid.wide_cone_distance, "skater_radius": s.npc_avoid.skater_radius, "speed_margin": s.npc_avoid.speed_margin, "stop_gap": s.npc_avoid.stop_gap, "stop_gap_far": s.npc_avoid.stop_gap_far, "stop_cone": s.npc_avoid.stop_cone, "stop_gap_prop": s.npc_avoid.stop_gap_prop, "side_on_angle": s.npc_avoid.side_on_angle, "floor_headroom": s.npc_avoid.floor_headroom, "skitch_cos": s.npc_avoid.skitch_cos, "low_prop_height": s.npc_avoid.low_prop_height, "low_prop_time": s.npc_avoid.low_prop_time, "step_off_cap": s.npc_avoid.step_off_cap, "step_off_time": s.npc_avoid.step_off_time});
+            macro_rules! fields {
+                ($from:expr; $($f:ident),*) => {{
+                    let mut m = serde_json::Map::new();
+                    $( m.insert(stringify!($f).into(), json!($from.$f)); )*
+                    serde_json::Value::Object(m)
+                }};
+            }
+            let nb = &s.npc_simulated.navmesh;
+            let npc_walk_back = fields!(nb; plan_path_h, plan_path_v, goal_locate_radius, start_locate_radius, plan_direct_h, plan_direct_v, arrive_h, arrive_v, arrive_heading, line_up_h, line_up_v, leg_h, leg_v, leg_epsilon_sq, steer_full_lock, steer_gain, throttle_gain, slow_along, slow_gain, throttle_floor, floor_along, stall_steer, magnitude_cap, move_step_sq, move_anchor_sq, turn_step, turn_anchor, stall_ticks, push_period, stuck_waypoint_ticks, stuck_stall_ticks, stall_recovery_ticks);
+            let lc = &s.npc_simulated.controller;
+            let npc_line_controller = fields!(lc; wipe_out, safe_slope, stuck_clear_distance, stuck_start_fraction, stuck_start_approach, reposition_ahead, reposition_past, remembered_window, reposition_interval, safe_jump_frames, safe_flag_frames, safe_run, stuck_clear_ticks, stuck_hold_ticks, stuck_gate_ticks, resnap_frames, stuck_limits);
             json!({
+                "npc_walk_back": npc_walk_back,
+                "npc_line_controller": npc_line_controller,
                 "npc_draw_distance": s.npc_draw_distance,
                 "user_npc_draw_distance": s.user_npc_draw_distance,
                 "skater_fade": {"fade_in_seconds": s.skater_fade.fade_in_seconds, "fade_seconds": s.skater_fade.fade_seconds, "despawn_alpha": s.skater_fade.despawn_alpha},
@@ -567,7 +602,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "ped_fade": {"distance": s.ped_fade.distance, "fade_in_seconds": s.ped_fade.fade_in_seconds, "enabled": s.ped_fade.enabled},
                 "ped_obstacles": {"enabled": s.ped_obstacles.enabled, "min_half_extent": s.ped_obstacles.min_half_extent,
                     "moving_speed": s.ped_obstacles.moving_speed, "recut_fraction": s.ped_obstacles.recut_fraction,
-                    "detour_margin": s.ped_obstacles.detour_margin, "step_height": s.ped_obstacles.step_height,
+                    "detour_margin": s.ped_obstacles.detour_margin, "target_snap": s.ped_obstacles.target_snap, "step_height": s.ped_obstacles.step_height,
                     "held_is_obstacle": s.ped_obstacles.held_is_obstacle, "moving_solid": s.ped_obstacles.moving_solid,
                     "skaters": s.ped_obstacles.skaters, "skater_half_extents": s.ped_obstacles.skater_half_extents},
                 "npc_skater_props": {"enabled": s.npc_skater_props.enabled},
@@ -587,7 +622,7 @@ pub(crate) fn read(world: &World, domain: &str) -> Value {
                 "free_play": s.free_play.map(|f| json!({"traffic": f.traffic, "pedestrians": f.pedestrians, "ai_skaters": f.ai_skaters})),
                 "npc_simulated": {"enabled": s.npc_simulated.enabled, "radius": s.npc_simulated.radius, "max": s.npc_simulated.max, "respawn_seconds": s.npc_simulated.respawn_seconds, "respawn_min": s.npc_simulated.respawn_min, "respawn_max": s.npc_simulated.respawn_max, "placement_hold_seconds": s.npc_simulated.placement_hold_seconds, "respawn_hold_seconds": s.npc_simulated.respawn_hold_seconds, "anticipation_distance": s.npc_simulated.signals.anticipation_distance, "anticipation_frames": s.npc_simulated.signals.anticipation_frames, "max_crossed_nodes": s.npc_simulated.signals.max_crossed_nodes, "walk_back": s.npc_simulated.walk_back, "walk_arrive_distance": s.npc_simulated.navmesh.arrive_h, "walk_stuck_ticks": s.npc_simulated.navmesh.stuck_waypoint_ticks, "board_yaw": s.npc_simulated.board_yaw_on, "board_yaw_dead_zone": s.npc_simulated.board_yaw.dead_zone, "manual_value": s.npc_simulated.signals.manual_value, "board_yaw_mag_scale": s.npc_simulated.board_yaw.mag_scale, "bump": s.npc_simulated.bump},
                 "npc_avoid": npc_avoid,
-                "ped_brain": {"enabled": s.ped_brain.enabled, "mood": s.ped_brain.mood, "wander_speed": s.ped_brain.values.wander_speed, "warn_seconds": s.ped_brain.values.warn_seconds, "know_about_seconds": s.ped_brain.values.know_about_seconds, "mood_want_memory_seconds": s.ped_brain.values.mood_want_memory_seconds, "conversation_turn_seconds": s.ped_brain.values.conversation_turn_seconds, "conversation_gather_seconds": s.ped_brain.values.conversation_gather_seconds, "run_from_honker_distance": s.ped_brain.run_from_honker.side_distance, "run_from_honker_speed": s.ped_brain.run_from_honker.run_speed, "warn_speech": s.ped_brain.values.warn_speech, "water_disables_seats": s.ped_brain.plugins.water_disables_seats, "water_max_depth": s.ped_brain.plugins.water_max_depth},
+                "ped_brain": {"enabled": s.ped_brain.enabled, "mood": s.ped_brain.mood, "wander_speed": s.ped_brain.values.wander_speed, "warn_seconds": s.ped_brain.values.warn_seconds, "know_about_seconds": s.ped_brain.values.know_about_seconds, "mood_want_memory_seconds": s.ped_brain.values.mood_want_memory_seconds, "conversation_turn_seconds": s.ped_brain.values.conversation_turn_seconds, "conversation_gather_seconds": s.ped_brain.values.conversation_gather_seconds, "unreachable_radius": s.ped_brain.values.unreachable_radius, "reach_check_seconds": s.ped_brain.values.reach_check_seconds, "run_from_honker_distance": s.ped_brain.run_from_honker.side_distance, "run_from_honker_speed": s.ped_brain.run_from_honker.run_speed, "warn_speech": s.ped_brain.values.warn_speech, "water_disables_seats": s.ped_brain.plugins.water_disables_seats, "water_max_depth": s.ped_brain.plugins.water_max_depth},
                 "npc_tricks": {"mode": s.npc_tricks.mode.name(), "gate_window": s.npc_tricks.params.gate_window, "min_air_frames": s.npc_tricks.params.min_air_frames},
                 "skater_trick_profiles": s.skater_trick_profiles.iter().map(|(k, v)| {
                     let table = |t: &Option<Vec<(i16, f32)>>| t.as_ref().map(|t| t.iter().map(|e| json!({"trick": e.0, "weight": e.1})).collect::<Vec<_>>());
@@ -799,13 +834,44 @@ mod tests {
         assert_eq!(w.resource::<LivingWorldSettings>().ped_vehicle_contact, retail, "mod disable restores retail");
     }
 
+    /// Ask 80 follow-up: every NPC skater walk-back (controller B) and line controller value is mod-reachable.
+    #[test]
+    fn npc_controller_settings_are_mod_reachable_and_reset_on_disable() {
+        let mut w = world();
+        let retail = LivingWorldSettings::default().npc_simulated;
+        assert_eq!((retail.navmesh.start_locate_radius, retail.controller.resnap_frames, retail.controller.stuck_limits), (f32::MAX, 240, [30, 30, 2, 180, 30, 3]));
+        assert_eq!(read(&w, "living_world")["npc_line_controller"]["resnap_frames"], json!(240));
+        set(&mut w, "dev.a", "living_world", Some(json!({
+            "npc_simulated": {"walk_arrive_distance": 3.0},
+            "npc_walk_back": {"start_locate_radius": 0.5, "arrive_h": 2.0},
+            "npc_line_controller": {"resnap_frames": 120, "stuck_limits": [10, 10, 2, 90, 10, 3]},
+        }))).unwrap();
+        let s = w.resource::<LivingWorldSettings>().npc_simulated;
+        assert_eq!((s.navmesh.start_locate_radius, s.navmesh.goal_locate_radius), (0.5, f32::MAX), "absent fields keep retail");
+        assert_eq!(s.navmesh.arrive_h, 2.0, "the nested key wins over the walk_arrive_distance alias");
+        assert_eq!((s.controller.resnap_frames, s.controller.stuck_limits), (120, [10, 10, 2, 90, 10, 3]));
+        assert_eq!(read(&w, "living_world")["npc_walk_back"]["start_locate_radius"], json!(0.5));
+        // A second mod: the first writer keeps each field it set, the second fills the rest.
+        set(&mut w, "dev.b", "living_world", Some(json!({"npc_line_controller": {"resnap_frames": 60, "safe_run": 4}}))).unwrap();
+        let c = w.resource::<LivingWorldSettings>().npc_simulated.controller;
+        assert_eq!((c.resnap_frames, c.safe_run), (120, 4));
+        for bad in [json!({"npc_walk_back": {"arrive_h": -1.0}}), json!({"npc_walk_back": {"push_period": 0}}), json!({"npc_line_controller": {"stuck_limits": [1, 2, 3, 4, 5]}}), json!({"npc_line_controller": {"resnap": 1}})] {
+            assert!(set(&mut w, "dev.c", "living_world", Some(bad.clone())).is_err(), "{bad}");
+        }
+        clear_owner(&mut w, "dev.a");
+        clear_owner(&mut w, "dev.b");
+        let back = w.resource::<LivingWorldSettings>().npc_simulated;
+        assert_eq!((back.navmesh, back.controller), (retail.navmesh, retail.controller), "mod disable restores retail");
+    }
+
     #[test]
     fn ped_nav_is_mod_reachable_and_reset_on_disable() {
         use skate_core::living_world::peds::CrosswalkRule;
         let mut w = world();
         let default = LivingWorldSettings::default().ped_nav;
         assert_eq!((default.wander.turn_edges, default.crosswalk), ([25.0, 70.0, 115.0, 160.0], CrosswalkRule::Off));
-        set(&mut w, "dev.a", "living_world", Some(json!({"ped_nav": {"steer_rate": 90.0, "stuck_seconds": 4.0, "crosswalk": "walk_signal"}}))).unwrap();
+        set(&mut w, "dev.a", "living_world", Some(json!({"ped_nav": {"steer_rate": 90.0, "stuck_seconds": 4.0, "give_up_seconds": 0.0, "crosswalk": "walk_signal"}}))).unwrap();
+        assert_eq!(w.resource::<LivingWorldSettings>().ped_nav.wander.give_up_seconds, 0.0, "the NOT RETAIL give-up can be switched off");
         let s = w.resource::<LivingWorldSettings>().ped_nav.clone();
         assert!((s.wander.steer_rate.to_degrees() - 90.0).abs() < 1e-3);
         assert_eq!((s.wander.stuck_seconds, s.wander.stall_seconds, s.crosswalk), (4.0, default.wander.stall_seconds, CrosswalkRule::WalkSignal));

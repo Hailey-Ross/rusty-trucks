@@ -469,6 +469,7 @@ fn advance(
     map: Res<crate::map_transition::CurrentMap>,
     mut messages: MessageReader<hud_central::CentralMessage>,
     mut sounds: MessageWriter<crate::ui_audio::FrontendSound>,
+    time: Res<Time>,
 ) {
     let Some(mut hud) = hud else {
         messages.clear();
@@ -479,7 +480,14 @@ fn advance(
             let result = (|| -> Result<(), String> {
                 for message in messages.read() {
                     central.runtime.show(message)?;
-                    info!("HUD_CENTRAL message {:?} style={} audio_hook={}", message.text, message.style, message.audio_hook);
+                    info!(
+                        "HUD_CENTRAL message {:?} text={:?} style={} audio_hook={} seconds={:.1}",
+                        message.text, central.runtime.message_text(), message.style, message.audio_hook,
+                        message.seconds.unwrap_or(hud_central::DISPLAY_SECONDS)
+                    );
+                }
+                if central.runtime.tick(time.delta_secs())? {
+                    info!("HUD_CENTRAL hidden {:?}", central.runtime.message_text());
                 }
                 central.runtime.update()
             })();

@@ -427,7 +427,7 @@ fn controller_b_steps_off_and_walks_the_skater_onto_the_node() {
     // The goal as the only corner: what the peds' navmesh returns on open ground.
     struct Corner;
     impl PathService for Corner {
-        fn solve(&self, _from: [f32; 3], to: [f32; 3], _goal_radius: f32) -> Option<Vec<PathElement>> {
+        fn solve(&self, _from: [f32; 3], to: [f32; 3], _goal_radius: f32, _start_radius: f32) -> Option<Vec<PathElement>> {
             Some(vec![PathElement { entry: to, exit: to }])
         }
     }
@@ -921,5 +921,11 @@ fn a_teleport_resets_the_grind_lock_and_a_new_actor_gets_a_fresh_input_cache() {
     assert_eq!(cache.flags, 0);
     assert_eq!(cache.vectors[8], [(-1.0f32).to_bits(); 4]);
     assert!(cache.vectors.iter().enumerate().all(|(i, v)| i == 8 || *v == [0; 4]));
+    // The trajectory selector's reset waits for the placement's Exit / Enter (a body pooled in KnownAir exits it
+    // there and reads the old selection, b310); the next placement does it.
+    assert!(s.runtime.trajectory_reset_pending);
+    s.runtime.player_input.request_teleport(target).unwrap();
+    rig.step(&mut physics, &mut s, pad());
+    assert!(!s.runtime.trajectory_reset_pending, "the placement reset the selector");
 }
 

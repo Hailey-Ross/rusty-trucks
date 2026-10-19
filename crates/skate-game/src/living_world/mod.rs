@@ -867,7 +867,9 @@ impl Plugin for LivingWorldPlugin {
                 FixedUpdate,
                 (recheck_early_load, load_for_map, gather_observers, step_population, dmo_stream::stream_dmos).chain().after(crate::app::SimulationSet::Physics),
             )
-            .add_systems(Update, (log_zombie_mode, opt_ins::log_opt_ins, crate::physics::grab_view::visualize_grabs))
+            .add_message::<crate::extras_host::CheatChanged>()
+            .add_systems(Update, (apply_cheats, log_zombie_mode).chain())
+            .add_systems(Update, (opt_ins::log_opt_ins, crate::physics::grab_view::visualize_grabs))
             .init_resource::<preload::LivingWorldPreload>()
             .add_systems(Startup, preload::take_models_hold)
             .add_systems(Update, preload::preload_models);
@@ -876,6 +878,18 @@ impl Plugin for LivingWorldPlugin {
         peds::install(app);
         vehicles::install(app);
         vehicle_contacts::install(app);
+    }
+}
+
+/// The Extras cheat code (`zombie`, retail id 5) toggles zombie mode for the session (b304: retail keeps it on the
+/// simulation, not in the profile; medium confidence), through the same flag `SKATE_ZOMBIE`, the overlay opt-in and mods
+/// write.
+fn apply_cheats(mut changed: MessageReader<crate::extras_host::CheatChanged>, mut settings: ResMut<LivingWorldSettings>) {
+    for c in changed.read() {
+        if c.id == "zombie" && settings.zombie != c.on {
+            info!("LIVING_WORLD cheat zombie {}", if c.on { "on" } else { "off" });
+            settings.zombie = c.on;
+        }
     }
 }
 

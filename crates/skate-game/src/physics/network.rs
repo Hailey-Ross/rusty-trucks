@@ -255,7 +255,7 @@ pub(crate) fn bounds(p: ContactPrimitive) -> (Vec3, f32) {
         }
     }
 }
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(crate) struct Proxies {
     pub bodies: Vec<BodySnapshot>,
     pub volumes: Vec<BoardWorldVolume>,
@@ -270,6 +270,36 @@ pub(crate) struct Proxies {
     /// Each observed part's linear and angular velocity after the last solve.
     pub ped_after: Vec<(u64, [f32; 3], [f32; 3])>,
 }
+// By hand so `clone_from` copies field by field into the existing buffers: the NPC worker sync clones a proxy set per
+// job each tick (`npc_sim`), and the derived `clone_from` (= `*self = source.clone()`) allocated every Vec again
+// (b333). Same values either way.
+impl Clone for Proxies {
+    fn clone(&self) -> Self {
+        Self {
+            bodies: self.bodies.clone(),
+            volumes: self.volumes.clone(),
+            solids: self.solids.clone(),
+            groups: self.groups.clone(),
+            actors: self.actors.clone(),
+            dynamics_before: self.dynamics_before.clone(),
+            dynamics_deltas: self.dynamics_deltas.clone(),
+            observed: self.observed.clone(),
+            ped_after: self.ped_after.clone(),
+        }
+    }
+    fn clone_from(&mut self, source: &Self) {
+        self.bodies.clone_from(&source.bodies);
+        self.volumes.clone_from(&source.volumes);
+        self.solids.clone_from(&source.solids);
+        self.groups.clone_from(&source.groups);
+        self.actors.clone_from(&source.actors);
+        self.dynamics_before.clone_from(&source.dynamics_before);
+        self.dynamics_deltas.clone_from(&source.dynamics_deltas);
+        self.observed.clone_from(&source.observed);
+        self.ped_after.clone_from(&source.ped_after);
+    }
+}
+
 /// Where a proxy set stood before some appends ([`Proxies::mark`]), to drop them again ([`Proxies::truncate`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ProxyMark {
@@ -466,5 +496,36 @@ mod ped_after_tests {
         assert_eq!(proxies.ped_after.len(), 1);
         assert!((proxies.ped_after[0].1[0] - 7.0).abs() < 1e-4 && (proxies.ped_after[0].2[1] - 3.0).abs() < 1e-4, "{:?}", proxies.ped_after);
         assert!(proxies.dynamics_deltas.is_empty(), "nothing to write back");
+    }
+}
+
+#[cfg(test)]
+mod clone_tests {
+    use super::*;
+
+    /// The hand-written `clone_from` (buffer reuse, b333) gives the same proxy set as `clone`, also over a longer one.
+    #[test]
+    fn clone_from_equals_clone() {
+        let mut a = Proxies::default();
+        a.groups.insert(3, 11);
+        a.actors.insert(4, (7, 2));
+        a.dynamics_before.push((1, 2, [1.0, 2.0, 3.0], [0.5, -0.0, f32::MIN_POSITIVE]));
+        a.dynamics_deltas.push((9, [1.0; 3], [2.0; 3], [3.0; 3], [4.0; 3]));
+        a.observed.push((5, 6, [0.1; 3], [0.2; 3]));
+        a.ped_after.push((5, [0.3; 3], [0.4; 3]));
+        let mut b = Proxies::default();
+        b.groups.insert(1, 1);
+        b.groups.insert(8, 8);
+        b.dynamics_before.extend([(0, 0, [9.0; 3], [9.0; 3]); 4]);
+        b.ped_after.extend([(0, [9.0; 3], [9.0; 3]); 3]);
+        b.clone_from(&a);
+        let c = a.clone();
+        let bits = |v: &[(u64, usize, [f32; 3], [f32; 3])]| v.iter().map(|e| (e.0, e.1, e.2.map(f32::to_bits), e.3.map(f32::to_bits))).collect::<Vec<_>>();
+        assert_eq!((&b.groups, &b.actors), (&c.groups, &c.actors));
+        assert_eq!(bits(&b.dynamics_before), bits(&c.dynamics_before));
+        assert_eq!(bits(&b.observed), bits(&c.observed));
+        assert_eq!(b.dynamics_deltas.len(), c.dynamics_deltas.len());
+        assert_eq!(b.ped_after.iter().map(|e| (e.0, e.1.map(f32::to_bits))).collect::<Vec<_>>(), c.ped_after.iter().map(|e| (e.0, e.1.map(f32::to_bits))).collect::<Vec<_>>());
+        assert_eq!((b.bodies.len(), b.volumes.len(), b.solids.len()), (0, 0, 0));
     }
 }

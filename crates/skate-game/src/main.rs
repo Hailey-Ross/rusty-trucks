@@ -48,6 +48,9 @@ mod popup_host;
 mod settings_host;
 mod trick_guide_host;
 mod challenge_map_host;
+mod offline_profile_host;
+mod extras_host;
+mod text_entry_ui;
 mod image_renderer_host;
 mod retail_menu_movies;
 mod retail_menu_stage;
@@ -137,6 +140,13 @@ fn main() -> bevy::app::AppExit {
         }
     };
     profiling::map_metadata(&config);
+    // Features that stay off until Refresh Game Files go on the splash at once (the full check runs after loading).
+    let quick = asset_check::quick_check(&config.asset_root);
+    asset_check::publish(&quick);
+    if let Some(text) = asset_check::splash_warning(&quick) {
+        bevy::log::warn!("ASSET_CHECK start-up: {text}");
+        splash::warning(text);
+    }
     eprintln!("REPORT_META startup=map_fingerprint:{:016x} difficulty:{} multiplayer_requested:{} custom_appearance:{} renderer:Vulkan", config.map_fingerprint, config.difficulty.key(), config.multiplayer.host.is_some() || config.multiplayer.direct.is_some(), config.multiplayer.appearance.is_some());
     eprintln!("REPORT_META stage=gameplay_configuration");
     if let Err(error) = skate_data::input_config::StockGameplayConfig::load(&config.asset_root) {
@@ -218,6 +228,17 @@ fn main() -> bevy::app::AppExit {
                 eprintln!("{error}");
                 return bevy::app::AppExit::error();
             }
+        }
+        // The same file check the game runs after loading (laptop 2026-10-19: this printed READY with v9 menus while the
+        // game reads v10, so the launch restarted into Refresh Game Files). A finding that forces that refresh fails the
+        // check; the others (features that stay off until a refresh) are listed and the check still passes.
+        let findings = asset_check::check(&config.asset_root);
+        for f in &findings {
+            eprintln!("SKATE_ASSETS_STALE group={} reason={}", f.group, f.reason);
+        }
+        if findings.iter().any(asset_check::forces_refresh) {
+            eprintln!("SKATE_ASSETS_REFRESH_NEEDED (the game would restart into Refresh Game Files)");
+            return bevy::app::AppExit::error();
         }
         eprintln!("SKATE_ASSETS_READY");
         return bevy::app::AppExit::Success;

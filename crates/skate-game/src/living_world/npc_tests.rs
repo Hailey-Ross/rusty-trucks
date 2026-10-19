@@ -1266,6 +1266,19 @@ fn living_world_npc_respawn_delay_is_retails_and_clamped() {
     assert_eq!(s.respawn_ticks(), 30);
 }
 
+/// Retail simulates every ambient skater at any distance (b303: the SimController updates each skater every tick, no
+/// distance tier), so the simulated tier has no default radius; a mod may still set one (`npc_simulated.radius`).
+#[test]
+fn living_world_npc_sim_has_no_default_distance_limit() {
+    if std::env::var_os("SKATE_NPC_SIM_RADIUS").is_some() {
+        return;
+    }
+    let s = super::npc_sim::SimulatedTierSettings::default();
+    assert_eq!(s.radius, f32::MAX);
+    assert!(!(1.0e6 > s.radius * 1.1), "never handed back for distance");
+    assert_eq!(s.max, 3, "retail keeps 3 ambient skaters offline");
+}
+
 /// The reaction manager wiring (`npc_sim::reactions`, research b166 / b168): the player's wipeout start reaches an NPC
 /// skater within 15 m as a slam by the player (0), its end as slam_b; an NPC 20 m away hears nothing.
 #[test]

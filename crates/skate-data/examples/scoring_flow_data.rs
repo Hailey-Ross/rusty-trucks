@@ -19,6 +19,20 @@ mod prompt_glyphs {
         false
     }
 }
+// apt_scene clamps image slots to the renderer's count; this flow draws no images.
+mod image_renderer_host {
+    pub(crate) const SLOTS: usize = 0;
+    pub(crate) const SLOT_TEXTURE_PREFIX: &str = "slot/";
+}
+// scoring_runtime logs through `bevy::log::info!`; this example runs without bevy, so the crate itself stands in for
+// it (`bevy::log` = this crate's `log`) and the log lines are dropped.
+extern crate self as bevy;
+mod log {
+    macro_rules! info {
+        ($($t:tt)*) => {};
+    }
+    pub(crate) use info;
+}
 #[path = "../../skate-game/src/scoring_runtime.rs"]
 mod scoring_runtime;
 use skate_core::{
@@ -42,8 +56,12 @@ fn frame(
         forward: [0., 0., 1.],
         switch: false,
         fakie: false,
-        nollie: false,
+        regular: true,
+        player_basis: Default::default(),
+        board_basis: Default::default(),
+        reckoning_up: [0., 1., 0.],
         body_flip: false,
+        front_flip: false,
         suspend_air: false,
         landing: Default::default(),
         teleported: false,

@@ -106,6 +106,10 @@ pub(super) fn advance(
         skater.centre_of_mass_filter.reset();
         skater.animation_feedback.reset();
         player_state::enter_after_teleport(physics, skater)?;
+        // A pooled body's new-actor reset of the trajectory selector (b299), now that the old state has exited (b310).
+        if std::mem::take(&mut skater.trajectory_reset_pending) {
+            skater.trajectory.reset_for_new_actor();
+        }
         super::offboard::board_manager::runtime::finish_teleport(physics, skater);
         //82DB8E40 calls SetUpNormal after pose reset, state100 and board reset.
         skater.wipeout_state.ragdoll.restore_normal(

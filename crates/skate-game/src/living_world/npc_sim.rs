@@ -1,11 +1,12 @@
-//! Simulated NPC skaters (doc 26, "Simulated NPC skaters", M7): near the player an NPC skater is
-//! a full physics skater (its own board context and `SkaterRuntime` in the shared world) driven by
-//! its AI record; farther away it stays on the replay tier.
+//! Simulated NPC skaters (doc 26, "Simulated NPC skaters", M7): an NPC skater is a full physics
+//! skater (its own board context and `SkaterRuntime` in the shared world) driven by its AI record,
+//! taken over from the replay tier on its first safe node.
 //!
-//! Retail runs every ambient NPC skater simulated (at most 3 offline). The distance switch is an
-//! engine choice for cost (design: simulated within 40 m, never switched while airborne or
-//! grinding); the handover keeps the line's speed (retail never hands over). Off by default until
-//! play-tested: `SKATE_NPC_SIM=1` or `sdk.world.set_tuning("living_world", {npc_simulated = {...}})`.
+//! Retail runs every ambient NPC skater simulated at any distance (at most 3 offline; b303: the
+//! SimController updates every skater each tick, no distance or count tier). So the radius defaults
+//! to unlimited; a finite `npc_simulated.radius` is a mod's cost choice (handed back beyond
+//! 1.1 x, never switched while airborne or grinding); the handover keeps the line's speed (retail never hands over).
+//! Off by default until play-tested: `SKATE_NPC_SIM=1` or `sdk.world.set_tuning("living_world", {npc_simulated = {...}})`.
 //!
 //! Per tick (after the population and the replay cursors advanced): the record is built from the
 //! cursor (`skate_core::living_world::ai_record`), the retail spawn push applies while the skater
@@ -21,11 +22,11 @@ use skate_core::living_world::ai_record;
 use skate_core::living_world::replay::node_flags;
 use skate_core::player::state::PhysicalStateId;
 
-/// The simulated tier's rules (a mod may change them; `Default` = off, 40 m, 3 skaters).
+/// The simulated tier's rules (a mod may change them; `Default` = off, no distance limit, 3 skaters).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SimulatedTierSettings {
     pub enabled: bool,
-    /// Simulated within this distance of an observer (m); handed back beyond 1.1 x.
+    /// Simulated within this distance of an observer (m); handed back beyond 1.1 x. Retail: every distance (`f32::MAX`).
     pub radius: f32,
     /// At most this many simulated at once (retail keeps 3 ambient skaters).
     pub max: usize,
@@ -74,7 +75,7 @@ pub(crate) struct SimulatedTierSettings {
 impl Default for SimulatedTierSettings {
     fn default() -> Self {
         // `SKATE_NPC_SIM_RADIUS` (m): a test knob so an unattended run sees many switches to physics.
-        let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(40.0);
+        let radius = std::env::var("SKATE_NPC_SIM_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|r| r.is_finite() && *r > 0.0).unwrap_or(f32::MAX);
         Self { enabled: std::env::var("SKATE_NPC_SIM").ok().as_deref() == Some("1"), radius, max: 3, respawn_seconds: 5.0, respawn_min: 1.5, respawn_max: 7.9, signals: Default::default(), walk_back: true, path: Default::default(), navmesh: Default::default(), controller: Default::default(), ground_steer: Default::default(), air_steer: Default::default(), air_steer_on: std::env::var("SKATE_NPC_AIR_STEER").ok().as_deref() == Some("1"), board_yaw_on: std::env::var("SKATE_NPC_BOARD_YAW").ok().as_deref() != Some("0"), board_yaw: Default::default(), bump: std::env::var("SKATE_NPC_BUMP").ok().as_deref() != Some("0"), placement_hold_seconds: 0.5, respawn_hold_seconds: 8.0 / 60.0, reactions: Default::default() }
     }
 }
@@ -157,6 +158,9 @@ pub(crate) struct NpcSim {
     placed_at: Option<[f32; 3]>,
     /// The last walk-back goal with no navmesh plan (logged once per goal).
     no_plan: Option<u32>,
+    /// NPC_SKATER_SPEED watch: the deck speed at the start of the window, the ticks in it and the ticks until the next
+    /// line may print (laptop 2026-10-19: an NPC skater "gained a bunch of speed for no reason" uphill, b338).
+    speed_watch: (f32, u32, u32),
     /// The takeoff flip latch (`pc+927` / `pc+928`, `sub_8246A700`), cleared with the controller.
     air: skate_core::living_world::air_steer::AirLatch,
     /// The PathController's trick slot (`pc+832` / `+844` / `+904`) and takeoff board yaw (`+856` / `+860` / `+930` /
@@ -450,7 +454,7 @@ fn spawn_sim(
         }
         None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
     };
-    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default() };
+    let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default(), speed_watch: (0.0, 0, 0) };
     let v = place(&mut sim, target, hold_ticks)?;
     sim.handover_push = Some((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt());
     Ok(sim)
@@ -678,7 +682,10 @@ fn run_steps(
         GamePhysics::release_npc_worker(worker);
         if let Err(error) = result {
             warn!("NPC_SKATER_SIM #{} {}: physics error, back to replay: {error}", job.serial, job.character);
-            commands.entity(job.entity).remove::<NpcSim>();
+            // Back to the pool like a hand-back (the next placement resets it as a fresh body, b299). Dropping it made
+            // the next switch load a new body on the game thread: ~200 ms hitches (laptop 2026-10-19, KnownAir errors).
+            let entity = job.entity;
+            commands.queue(move |world: &mut World| pool_from(world, entity));
             *count -= 1;
         }
     }
@@ -860,7 +867,11 @@ pub(crate) fn simulate(
                     }
                     sim.placements_at_bail = sim.body.runtime.placements();
                     let at = projected_point(sim, state_now).0;
-                    let speed = sim.last_deck.map_or(0.0, |p| ((at[0] - p[0]).powi(2) + (at[1] - p[1]).powi(2) + (at[2] - p[2]).powi(2)).sqrt() * 60.0);
+                    // The deck body's speed. Not the projected point's step: on the wipeout tick the point switches from
+                    // the deck to the character root, and that one offset read as 20-40 m/s (laptop 2026-10-19: four
+                    // bails at "40 m/s" on one line, b338).
+                    let v = GamePhysics::context_deck_velocity(&sim.context);
+                    let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
                     let (on_path, dist, a) = sim.follow.map_or((true, 0.0, (0, 0.0)), |(_, f)| (f.on_path, f.dist, f.a));
                     // The skater it touched within the last second, if any (NPC_SKATER_CONTACT has the details).
                     let hz = skate_core::living_world::clock::RETAIL_TICK_HZ;
@@ -1028,6 +1039,12 @@ pub(crate) fn simulate(
                             };
                             sim.follow = Some((w.line, reset));
                             sim.toggle = Default::default();
+                            // The walk-back worked: the stuck watch clears (stage -> 0); say so, or a recovered skater
+                            // reads as still stuck in the log (b319).
+                            let stage = replay.avoid.controller.sub_mode;
+                            if stage > 0 {
+                                info!("NPC_SKATER_STUCK #{} {} stage {stage} -> 0 after walk-back to node {node}", npc.id.serial, npc.character);
+                            }
                             skate_core::living_world::ai_controller::reposition_done(&mut replay.avoid.controller);
                             info!("NPC_WALK_BACK #{} {} hand back ({reason:?}) at line node {node} (walked to {})", npc.id.serial, npc.character, w.node);
                             events.write(super::npc_skaters::NpcSkaterEvent::WalkBack { id: npc.id, node: w.node, started: false });
@@ -1137,7 +1154,13 @@ pub(crate) fn simulate(
                                 if c.sub_mode != before {
                                     let anchor = if before == ai_controller::sub_mode::NORMAL { c.stuck.anchor } else { anchor };
                                     let away = ((pos[0] - anchor[0]).powi(2) + (pos[2] - anchor[2]).powi(2)).sqrt();
-                                    info!("NPC_SKATER_STUCK #{} {} stage {before} -> {} at node {} ({:.1} m from where it stalled, {speed:.1} m/s, on_path {})", npc.id.serial, npc.character, c.sub_mode, f.search_start, away, f.on_path);
+                                    // Stage 1 arms on one no-progress tick and does nothing (retail's stage actions start at 2, b309): its
+                                    // entry and clear are debug, the escalations from stage 2 up stay info.
+                                    if before.max(c.sub_mode) >= 2 {
+                                        info!("NPC_SKATER_STUCK #{} {} stage {before} -> {} at node {} ({:.1} m from where it stalled, {speed:.1} m/s, on_path {})", npc.id.serial, npc.character, c.sub_mode, f.search_start, away, f.on_path);
+                                    } else {
+                                        debug!("NPC_SKATER_STUCK #{} {} stage {before} -> {} at node {} ({:.1} m from where it stalled, {speed:.1} m/s, on_path {})", npc.id.serial, npc.character, c.sub_mode, f.search_start, away, f.on_path);
+                                    }
                                 }
                             }
                             // Lost (`sub_82468DD8`): the same one-shot reposition request mode 7 raises (`ctrl+941`); the
@@ -1192,6 +1215,26 @@ pub(crate) fn simulate(
                     cursor = Some(crate::physics::AiRecordCursor { node, frame_in_segment, ext_node: ai_record::trajectory_node(line, node, frame_in_segment), has_trajectory: jump.is_some(), lands_node: node.saturating_sub(1) });
                 }
                 sim.body.runtime.ai_physics = Some(crate::physics::AiPhysicsSource { record, fresh: true, cursor });
+                // NPC_SKATER_SPEED: the deck body's speed changed by 2 m/s within half a second (a line per skater per
+                // half second at most): with the recorded speed the board path pulls toward (`82C05EC0`, b338) and the
+                // slope along the motion, so a speed-up is placed and explained from the log.
+                {
+                    let w = GamePhysics::context_deck_velocity(&sim.context);
+                    let now_speed = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();
+                    let (start, ticks, cooldown) = sim.speed_watch;
+                    let (start, ticks) = if ticks == 0 || ticks >= 30 { (now_speed, 1) } else { (start, ticks + 1) };
+                    let cooldown = cooldown.saturating_sub(1);
+                    sim.speed_watch = (start, ticks, cooldown);
+                    if cooldown == 0 && (now_speed - start).abs() >= 2.0 {
+                        let flat = (w[0] * w[0] + w[2] * w[2]).sqrt();
+                        let grade = if flat > 0.1 { w[1] / flat * 100.0 } else { 0.0 };
+                        info!(
+                            "NPC_SKATER_SPEED #{} {} node {} state {:?} speed {start:.1} -> {now_speed:.1} m/s over {ticks} ticks (recorded {speed:.1} m/s, slope {grade:.0} %, on_path {on_path}, hold {})",
+                            npc.id.serial, npc.character, replay.cursor.node, state_now, sim.hold_ticks
+                        );
+                        sim.speed_watch = (now_speed, 1, 30);
+                    }
+                }
                 // The spawn push (`824701F8` hold branch, `82C04168`): once, on the hold's last tick, while the skater is
                 // still within 0.01 / 0.05 m of where it was placed (retail measures from the node it placed it on), not
                 // on an off-board node. Before 2026-10-17 it was set at the placement and re-tested every tick from the
@@ -1349,9 +1392,14 @@ pub(crate) fn simulate(
                                     let pf = path_follow::forward(line, near);
                                     let w = GamePhysics::context_deck_velocity(&sim.context);
                                     debug!(
-                                        "NPC_SKATER_STEER #{} error {:.2} deg stick {s:.3} rejoining {} dist {:.2} deck_yaw {:.1} fakie {} line_yaw {:.1} up_y {:.2} vel_yaw {:.1} speed {:.2} state {:?}",
+                                        "NPC_SKATER_STEER #{} error {:.2} deg stick {s:.3} rejoining {} dist {:.2} deck_yaw {:.1} fakie {} line_yaw {:.1} up_y {:.2} vel_yaw {:.1} speed {:.2} state {:?} flipped {} root_yaw {:.1} eff_yaw {:.1} cat {:?}",
                                         npc.id.serial, g.error.to_degrees(), g.rejoining, f.dist, h(forward), input.fakie, h(pf), up[1],
-                                        h(w), (w[0] * w[0] + w[2] * w[2]).sqrt(), state
+                                        h(w), (w[0] * w[0] + w[2] * w[2]).sqrt(), state,
+                                        // b201 decision fields: the board-flipped bit, the fakie rule's exact input (effective root Z) and the effective
+                                        // board forward, and the filtered category.
+                                        sim.body.runtime.animation.packet.board_flipped, { let z = effective_root(&sim.body.runtime)[2]; h([z[0], z[1], z[2]]) },
+                                        h(GamePhysics::context_effective_forward(&sim.context)),
+                                        sim.body.runtime.player_state.filtered_output.as_ref().map(|o| o.category)
                                     );
                                 }
                             }

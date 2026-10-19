@@ -16,19 +16,26 @@ use crate::{
 use bevy::prelude::*;
 
 /// Show one centre-screen line: a language id of the HUD movie (`ID_CHASE_TAZER_1`) or plain text. Retail's
-/// defaults: style 0 (off-white), audio hook 0 (the default central message sound).
+/// defaults: style 0 (off-white), audio hook 0 (the default central message sound), shown for
+/// [`DISPLAY_SECONDS`] (`seconds` overrides it, a mod's choice).
 #[derive(Message, Clone, Debug, PartialEq)]
 pub(crate) struct CentralMessage {
     pub text: String,
     pub style: i32,
     pub audio_hook: i32,
+    pub seconds: Option<f32>,
 }
 
 impl CentralMessage {
     pub(crate) fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), style: 0, audio_hook: 0 }
+        Self { text: text.into(), style: 0, audio_hook: 0, seconds: None }
     }
 }
+
+/// How long a message stays before the movie's outro: retail's central HUD update (`82664550`) counts the shown
+/// message's updates (`+0xBC`) and sends the screen event 5 (`SetState(5)`: `HideMessage`, the outro) at 180
+/// (`0xB4`), i.e. 6 s at the console's 30 updates a second; time-based here, so any frame rate gives the same.
+pub(crate) const DISPLAY_SECONDS: f32 = 180.0 / 30.0;
 
 /// `ScreenManager` colours the movie reads (`source/helper/screenmanager`: `mColour_OffWhite` 0xFFFDEC,
 /// `mColour_Red` 9904651); that movie runs on the front-end stage, not here.
@@ -48,6 +55,8 @@ pub struct Runtime {
     pub vm: Vm,
     pub bindings: Bindings,
     controller: usize,
+    /// The shown message's time on screen and its limit (retail `+0xBC` / `+0xC0`); `None` = nothing up.
+    shown: Option<(f32, f32)>,
 }
 
 fn array(vm: &mut Vm, values: impl IntoIterator<Item = Value>) -> Result<Value, String> {
@@ -153,7 +162,7 @@ impl Runtime {
         }
         vm.begin_update();
         bindings.movie.initialize(&mut vm)?;
-        let mut runtime = Self { vm, bindings, controller: usize::MAX };
+        let mut runtime = Self { vm, bindings, controller: usize::MAX, shown: None };
         runtime.drain()?;
         let Value::Object(controller) = runtime.vm.get(runtime.bindings.movie.root, "screen") else {
             return Err("Central HUD controller was not constructed".into());
@@ -177,11 +186,13 @@ impl Runtime {
         Ok(())
     }
 
-    /// Retail `82663F38` then the screen event 4 (`SetState(4)`). A language id the movie knows is shown as its
-    /// text; anything else as written.
+    /// Retail `82663F38` then the screen event 4 (`SetState(4)`). Retail stores the formatted, localised text
+    /// (the id is looked up, `8290C8A8`), so a language id the movie knows goes in as its text ("ZAP!"); anything
+    /// else as written. It restarts the timer.
     pub fn show(&mut self, message: &CentralMessage) -> Result<(), String> {
         let known = self.bindings.movie.text_assets.language.contains_key(&message.text);
-        self.bindings.text = if known { message.text.clone() } else { format!("#{}", message.text) };
+        self.bindings.text = if known { self.bindings.movie.text_assets.localize(&message.text) } else { format!("#{}", message.text) };
+        self.shown = Some((0.0, message.seconds.unwrap_or(DISPLAY_SECONDS)));
         self.bindings.style = message.style;
         self.bindings.audio_hook = message.audio_hook;
         self.vm.begin_update();
@@ -192,6 +203,26 @@ impl Runtime {
     /// The text the message clip shows now (`mScreen.mcMessageText...labelText.text`), for logs and tests.
     pub fn message_text(&self) -> &str {
         &self.bindings.text
+    }
+
+    /// Whether a message is up (shown and not yet hidden).
+    pub fn showing(&self) -> bool {
+        self.shown.is_some()
+    }
+
+    /// Retail's central HUD update (`82664550`): `dt` seconds more on screen; at the limit the screen event 5
+    /// (`SetState(5)`: the movie's `HideMessage`, which plays the outro). True when it hid the message now.
+    pub fn tick(&mut self, dt: f32) -> Result<bool, String> {
+        let Some((t, limit)) = self.shown.as_mut() else { return Ok(false) };
+        *t += dt;
+        if *t < *limit {
+            return Ok(false);
+        }
+        self.shown = None;
+        self.vm.begin_update();
+        self.vm.call_method(self.controller, "SetState", vec![Value::Number(5.0)], &mut self.bindings)?;
+        self.drain()?;
+        Ok(true)
     }
 
     /// One frame of the movie's timelines (intro / idle / outro of the message clip).
@@ -217,11 +248,19 @@ mod tests {
         let mut hud = Runtime::load(&json, &["central_message_default".to_owned()]).unwrap();
         assert_eq!(hud.bindings.movie.text_assets.localize("ID_CHASE_TAZER_1"), "ZAP!");
         hud.show(&CentralMessage::new("ID_CHASE_TAZER_1")).unwrap();
-        // ShowMessage wrote the id into the message clip's label (mcText2.mcTextStringWhite.labelText.text).
-        let id = Value::Text("ID_CHASE_TAZER_1".into());
-        assert!(hud.vm.objects.iter().any(|o| o.fields.get("text") == Some(&id)), "label text set");
+        // ShowMessage wrote the localised text into the message clip's label (mcText2.mcTextStringWhite.labelText.text).
+        let zap = Value::Text("ZAP!".into());
+        assert!(hud.vm.objects.iter().any(|o| o.fields.get("text") == Some(&zap)), "label text set");
         assert_eq!(hud.bindings.sounds, ["central_message_default"], "kAUDIOHOOK_DEFAULT is 0");
         for _ in 0..90 {
+            hud.update().unwrap();
+        }
+        // Retail hides it after 180 central HUD updates (6 s at 30 a second, `82664550`): SetState(5), the outro.
+        assert!(hud.showing());
+        assert!(!hud.tick(DISPLAY_SECONDS - 0.5).unwrap(), "still up before 6 s");
+        assert!(hud.tick(0.5).unwrap(), "hidden at 6 s");
+        assert!(!hud.showing());
+        for _ in 0..60 {
             hud.update().unwrap();
         }
         // Plain text from a mod stays as written.

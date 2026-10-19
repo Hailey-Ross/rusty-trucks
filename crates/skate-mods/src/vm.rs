@@ -200,8 +200,13 @@ pub enum Command {
     UiCanvas { key: String, options: crate::presentation::CanvasOptions },
     UiRemove { key: String },
     /// One line in the HUD's central message (retail's `hudcentral` movie, where the chase shows "ZAP!"): a
-    /// language id of that movie or plain text. A one-shot: the movie's own animation removes it.
-    UiCentralMessage { text: String },
+    /// language id of that movie or plain text, shown for `seconds` (default retail's 6 s, `82664550`), then the
+    /// movie's outro.
+    UiCentralMessage {
+        text: String,
+        #[serde(default)]
+        seconds: Option<f32>,
+    },
     /// Show (true, the default) or hide the alerts over peds that warn or chase the player; released when the
     /// mod stops.
     UiChaseAlerts { enabled: bool },
@@ -624,6 +629,8 @@ pub enum Command {
     MenuTrickGuide { entry: String, key: String, #[serde(default)] options: Option<crate::menus::TrickGuideOptions> },
     /// Raise (or replace) this mod's retail popup by key; no options = take it down.
     MenuPopup { key: String, #[serde(default)] options: Option<crate::menus::PopupOptions> },
+    /// Change a Skate Profile bar or add / change a table row by key; no options = drop this mod's change to it.
+    MenuProfile { page: String, key: String, #[serde(default)] options: Option<crate::menus::ProfileOptions> },
     CameraClearCapture {
         key: String,
     },
@@ -674,7 +681,12 @@ impl Command {
             Self::UiCanvas { key, options } => crate::schema::valid_id(key) && options.validate(),
             Self::UiRemove { key } => crate::schema::valid_id(key),
             Self::UiChaseAlerts { .. } => true,
-            Self::UiCentralMessage { text } => !text.is_empty() && text.chars().count() <= 64 && !text.chars().any(char::is_control),
+            Self::UiCentralMessage { text, seconds } => {
+                !text.is_empty()
+                    && text.chars().count() <= 64
+                    && !text.chars().any(char::is_control)
+                    && seconds.is_none_or(|s| s.is_finite() && s > 0.0 && s <= 60.0)
+            }
             Self::CameraRig { body, options } => crate::schema::valid_id(body) && options.validate(),
             Self::AudioPreload { path } => crate::audio::valid_audio_path(path),
             Self::AudioPlay { key, options } => {
@@ -956,6 +968,9 @@ impl Command {
             Self::MenuBackdrop { screen, options } => crate::menus::valid_screen_key(screen) && options.as_ref().is_none_or(crate::menus::BackdropOptions::validate),
             Self::MenuTrickGuide { entry, key, options } => crate::menus::TRICK_GUIDE_ENTRIES.contains(&entry.as_str()) && crate::menus::valid_trick_guide_key(key) && options.as_ref().is_none_or(crate::menus::TrickGuideOptions::validate),
             Self::MenuPopup { key, options } => crate::menus::valid_menu_id(key) && options.as_ref().is_none_or(crate::menus::PopupOptions::validate),
+            Self::MenuProfile { page, key, options } => {
+                crate::menus::PROFILE_PAGES.contains(&page.as_str()) && crate::menus::valid_menu_id(key) && options.as_ref().is_none_or(|o| o.validate(page))
+            }
             Self::CameraClearCapture { key } => crate::schema::valid_id(key),
         }
     }
@@ -1076,6 +1091,7 @@ fn command_kind(command: &Command) -> &'static str {
         Command::MenuBackdrop { .. } => "menu_backdrop",
         Command::MenuTrickGuide { .. } => "menu_trick_guide",
         Command::MenuPopup { .. } => "menu_popup",
+        Command::MenuProfile { .. } => "menu_profile",
         Command::MenuBitmap { .. } => "menu_bitmap",
         Command::CameraClearCapture { .. } => "camera_clear_capture",
     }
@@ -2945,6 +2961,15 @@ mod empty_table_lists {
         assert!(eval("return {kind='menu_trick_guide', entry='category', key='046ed0ccbda1091f'}").validate());
         assert!(!eval("return {kind='menu_trick_guide', entry='grind', key='a'}").validate());
         assert!(!eval("return {kind='menu_trick_guide', entry='trick', key='a', options={slots={{connector=4}}}}").validate());
+        let row = eval("return {kind='menu_profile', page='stats', key='my-mod.kickflips', options={label='#Kickflips', value=42, order=1}}");
+        assert!(matches!(&row, Command::MenuProfile { options: Some(o), .. } if o.value == Some(crate::menus::ProfileValue::Number(42.0))) && row.validate());
+        assert!(eval("return {kind='menu_profile', page='career', key='my-mod.career', options={title='#Career', current=3, total=10}}").validate());
+        assert!(eval("return {kind='menu_profile', page='personal_bests', key='my-mod.best', options={value='#12.5 m'}}").validate());
+        assert!(eval("return {kind='menu_profile', page='stats', key='my-mod.kickflips'}").validate());
+        // Bar fields on a table page and row fields on a bar are refused, as is an unknown page.
+        assert!(!eval("return {kind='menu_profile', page='stats', key='a', options={total=3}}").validate());
+        assert!(!eval("return {kind='menu_profile', page='career', key='a', options={label='#x'}}").validate());
+        assert!(!eval("return {kind='menu_profile', page='friends', key='a'}").validate());
         assert!(!eval("return {kind='menu_backdrop', screen='56'}").validate());
         assert!(eval("return {kind='menu_backdrop', screen='a774f79d33b6be83:1'}").validate());
         assert!(!eval("return {kind='menu_backdrop', screen='b4b7976b40b3e837', options={tint={1, 2}}}").validate());
