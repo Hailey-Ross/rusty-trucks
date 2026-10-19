@@ -73,6 +73,21 @@ pub(super) fn set(
     crate::crash_context::requested(physics.ticks, current, requested);
     let board_observation =
         super::super::offboard::board_manager::runtime::observe(physics, skater);
+    // An NPC skater entering a grind or slide: what the grind gate (`82D68FE8`, `scoring.rs`) saw, this tick's AI
+    // record, the processed-input cache, and the line cursor the record's trajectory came from (b294, doc 26e).
+    if let Some(ai) = skater.ai_physics.filter(|_| matches!(requested, PhysicalStateId::SlideGround | PhysicalStateId::GrindBoardslide | PhysicalStateId::GrindFiftyFifty | PhysicalStateId::GrindTipslide | PhysicalStateId::GrindFiveO | PhysicalStateId::GrindBackslash | PhysicalStateId::GrindDarkslide)) {
+        let bit = |v: u32, b: u32| (v >> b) & 1;
+        let gate = skater.player_input.processed.external_physics_1616.flags;
+        let cache = skater.player_input.player.external_physics_cache_1008.flags;
+        let c = ai.cursor;
+        info!(requested = ?requested, external_active = bit(skater.player_input.processed.flags_2472, 29),
+            gate_trajectory = bit(gate, 26), gate_lands_in_grind = bit(gate, 27),
+            record_trajectory = bit(ai.record.flags, 26), record_lands_in_grind = bit(ai.record.flags, 27), fresh = ai.fresh,
+            cache_lands_in_grind = bit(cache, 27),
+            cursor_node = c.map(|c| c.node), frame_in_segment = c.map(|c| c.frame_in_segment), ext_node = c.map(|c| c.ext_node),
+            has_trajectory = c.map(|c| c.has_trajectory), lands_node = c.map(|c| c.lands_node),
+            "NPC_GRIND_ENTRY");
+    }
     let p = &mut skater.player_input.processed;
     info!(current = ?current, requested = ?requested,
         board_controller_state = skater.skateboard_controller.fields.state_448,

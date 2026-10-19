@@ -1122,3 +1122,17 @@ Open: the look itself (clean, realistic, fitting Skate 3) needs the user's eyes 
 - **Verification:** `water_look` tests (off = lane 0, on = 2.0), the world shader naga validation
   (`retail_shader_tests`). Not play-tested.
 - **Open:** ocean swells around the boats (b287 part 2: normal-only, boat positions not known yet).
+
+## Better Water: a small splash in shallow water (fountains), 2026-10-19
+
+- **Ask (laptop session 2026-10-19 01:10, build edec93c):** the user: "Fountains: looks good, maybe a small splash
+  added like for deep water when the player falls in for better water mode", and then: "the fountain splash should
+  only haopen in better water mode".
+- **Retail:** shallow water (the University fountain channel) shows no splash (this doc, water entry splash), so the
+  splash is ours and Better Water only.
+- **Change:** `WaterLook.shallow_splash` (Better Water default 0.5, retail look 0): when the skater root or the deck
+  drops into water that is not deep enough for the deep-water plume, `water_splash.rs` spawns the same plume scaled
+  by that share. It reads the effective look, so with Better Water off it is 0 and nothing changes. Mod patch key
+  `shallow_splash` (0 to 2) in `skate-mods` presentation.
+- **Verification:** not built or tested yet (uncommitted at the time of writing); not play-tested.
+- **Open:** the plume's look in a fountain is the deep-water one scaled down; tune from the next session.

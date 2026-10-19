@@ -2090,5 +2090,33 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
   counted as wet (the benches may stand in shallow water with dry seats, or not be seat props). Added
   `PED_PLUGIN_WATER <class> <id> wet lowest_seat surface occupants` on every change of a moved seat prop's water
   state (the first check after a move always logs), with any water surface up to 2 m above the lowest seat.
+- **Second play (laptop 2026-10-19 01:10, build edec93c):** two benches pushed into the Aletown canal; `PED_PLUGIN_WATER`
+  logged only at the grabs (wet=false, surface=None) and never wet=true. Bench 1015 came to rest at
+  (-162.84, 9.91, 450.60), its shape spanning y 8.93 to 10.89, so whether its seats were under the surface, above it
+  (legs in shallow water), or where no water triangle was found is not in the log. Added `PED_PLUGIN_WATER_REST` once
+  per stop of a moved seat prop: its water state, the lowest seat, and the nearest water surface within 5 m above or
+  below it, next to the rule's own window (`water_above`, `water_max_depth`). The next session decides the fix.
 - **Open:** a seated ped's exit through the drop path uses the same path as the tipped bench (not re-checked); the
   other PluginSettings values are not in the mod patch yet.
+
+## A seated ped whose seat is dropped stands up (2026-10-19)
+
+- **Problem (laptop session 2026-10-19 01:10, build edec93c):** the user: "I pushed a bench in the water but for some
+  reason the ped sitting on it was left behind floating seated and unable to be bumped. This happened as the first
+  bench I grabbed and pushed in the water." Log: ped #105 sat on bench 1015, then `PED_PLUGIN_PROP ... leaves
+  waypoint_sit ... (dropped)` (before the grab, among `DMO_STREAM` evictions), its brain went on to a greet, but every
+  later `PED_STILL` kept the position and the clip `NPC_SIT_IDLE03_N_0_CYC`, and bumps logged
+  `PED_BODY_CONTACT_NO_REACTION ignore_standing=true`. A ped on a second bench jumped off as it should.
+- **Retail:** the user confirmed a seated ped stands up before it leaves the seat. `motiongraph_sit.xml` [data, b84]
+  leaves SittingCyc to Sit2Stand on "HasIntent StandUp" or "not HasIntent Sit".
+- **Cause (ours):** the Sit motion holds the sit cycle until the packet's `StandUp` stage (`plugin_motion.rs`). The
+  seat-drop path (`peds.rs`, "(dropped)") released the waypoint but never let the body leave the hold.
+- **Change:** on that drop, a ped still in the sit cycle marks its plugin motion run orphaned, the same path as a
+  packet that ends mid-clip, so the hold releases and Sit2Stand plays (`PED_PLUGIN_MOTION ... seat dropped while
+  seated, standing up`).
+- **Open (b300, not verified by main yet):** retail's Plugin End (`8269F310`) ends the whole sit body, so
+  OwnPluginObject, IgnoreStandingCollisions and LockToCurrentPosition run their End. Ours drops `plugin_controller`
+  without `end_all_behaviors` (skate-core `graph/controller.rs`), so `ignore_standing_collisions` stays set and
+  bumps stay ignored after the stand-up. Port that next. Also log why a seat dropped (streamed out, disabled or lost
+  waypoint); b300 points at DMO streaming evicting the occupied bench.
+- **Verification:** not built or tested yet (uncommitted at the time of writing); not play-tested.

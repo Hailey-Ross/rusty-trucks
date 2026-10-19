@@ -442,7 +442,13 @@ fn spawn_sim(
     let spawn = line_spawn(target);
     pool.finish_load();
     let (context, body) = match pool.bodies.pop() {
-        Some(pooled) => pooled,
+        // A new actor on a pooled body: the input cache a fresh body would have, and no record from the last owner
+        // (b295 / b296; the placement's teleport reset covers the grind manager and the selector).
+        Some((context, mut body)) => {
+            body.runtime.player_input.reset_external_physics_cache();
+            body.runtime.ai_physics = None;
+            (context, body)
+        }
         None => load_body(physics, config, graphs, spawn, &mut pool.source)?,
     };
     let mut sim = NpcSim { context, body, respawn_in: None, last_node: None, walker: None, follow: None, last_state: None, last_deck: None, placed: false, teleport_pending: false, placements_at_place: 0, pending_ticks: 0, respawn_node: None, toggle: Default::default(), trace_ticks: 0, handover_push: None, previous_pose: Vec::new(), previous_root: skate_core::physics::skeleton_animation_record::IDENTITY, previous_placements: 0, hold_ticks: 0, placed_at: None, placements_at_bail: 0, skater_contact: None, no_plan: None, air: Default::default(), slot: Default::default(), board_yaw: Default::default(), last_body: None, audio: None, audio_memory: Default::default() };
@@ -1176,13 +1182,17 @@ pub(crate) fn simulate(
                 // carries no target; the skater coasts on its own physics until the projection commits again.
                 // Retail's hold branch after a placement (`824701F8`) sends a record with no target (no steering).
                 let mut record = if sim.hold_ticks == 0 && ai_record::steers(&steer, on_path && !airborne_now, past_start) { ai_record::build(&steered, forward, &steer) } else { ai_record::without_steering(&steer) };
-                // The recorded jump ahead (`sub_8246DA18`): its arc and whether it lands in a grind.
+                // The recorded jump at the cursor (`sub_8246DA18`): its arc and whether it lands in a grind (b294).
+                let mut cursor = None;
                 if let Some(line) = lines.get(&replay.cursor.line) {
-                    if let Some((node, jump)) = ai_record::upcoming_trajectory(line, replay.cursor.node) {
+                    let (node, frame_in_segment) = (replay.cursor.node, replay.cursor.frame_in_segment);
+                    let jump = ai_record::current_trajectory(line, node, frame_in_segment);
+                    if let Some(jump) = jump {
                         ai_record::with_trajectory(&mut record, jump, ai_record::lands_in_grind(line, node.saturating_sub(1)));
                     }
+                    cursor = Some(crate::physics::AiRecordCursor { node, frame_in_segment, ext_node: ai_record::trajectory_node(line, node, frame_in_segment), has_trajectory: jump.is_some(), lands_node: node.saturating_sub(1) });
                 }
-                sim.body.runtime.ai_physics = Some(crate::physics::AiPhysicsSource { record, fresh: true });
+                sim.body.runtime.ai_physics = Some(crate::physics::AiPhysicsSource { record, fresh: true, cursor });
                 // The spawn push (`824701F8` hold branch, `82C04168`): once, on the hold's last tick, while the skater is
                 // still within 0.01 / 0.05 m of where it was placed (retail measures from the node it placed it on), not
                 // on an off-board node. Before 2026-10-17 it was set at the placement and re-tested every tick from the

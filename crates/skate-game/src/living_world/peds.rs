@@ -1840,6 +1840,9 @@ pub(crate) struct PedPluginProps {
     /// Moved props by id and whether a seat is in water (the water rule, `PluginSettings::water_disables_seats`):
     /// re-checked only when a seat moved, so a resting prop costs no water query.
     pub in_water: BTreeMap<u64, bool>,
+    /// Moved seat props whose seats moved on the last think: when one stops, `PED_PLUGIN_WATER_REST` logs its water
+    /// state where it came to rest (laptop 2026-10-19: a bench pushed into a canal never logged wet=true).
+    pub settling: std::collections::BTreeSet<u64>,
 }
 
 /// The live conversations by id (host-owned plain data, `skate_core::living_world::peds::conversation`).
@@ -2058,6 +2061,18 @@ pub(crate) fn think_peds(
                     }
                     wet
                 };
+                // PED_PLUGIN_WATER_REST: once per stop, the seats' water state at rest and the nearest water surface
+                // within 5 m above or below the lowest seat (so a canal whose surface the rule never meets shows).
+                if moved && seats_moved {
+                    pp.settling.insert(prop.id);
+                } else if pp.settling.remove(&prop.id) && pp.settings.water_disables_seats {
+                    let world = physics.as_ref().map(|p| p.world());
+                    let low = prop.waypoints.iter().map(|w| w.position).min_by(|a, b| a[1].total_cmp(&b[1]));
+                    let near = low.zip(world).and_then(|(p, w)| w.water_surface_at(skate_core::math::Vector3::new(p[0], p[1], p[2]), 5.0, 5.0));
+                    info!("PED_PLUGIN_WATER_REST {} {:016X} wet={wet} lowest_seat={:?} surface_within_5m={near:?} rule_above={} rule_depth={} tick={tick}",
+                        prop.class, prop.id, low.map(|p| [(p[0] * 100.0).round() / 100.0, (p[1] * 100.0).round() / 100.0, (p[2] * 100.0).round() / 100.0]),
+                        pp.settings.water_above, pp.settings.water_max_depth);
+                }
                 let off = tipped || wet;
                 if off != prop.disabled {
                     prop.disabled = off;
@@ -2513,6 +2528,13 @@ pub(crate) fn think_peds(
                         p.class.clone()
                     });
                     info!("PED_PLUGIN_PROP ped=#{} leaves {} {:016X} (dropped) tick={tick}", ped.id.serial, class.as_deref().unwrap_or("?"), id);
+                    // A seated ped stands up (Sit2Stand) before its next behaviour, the way a packet that ends mid-clip
+                    // does: the sit cycle was held until a StandUp stage that never comes once the seat is dropped
+                    // (laptop 2026-10-19: #105 left its seat for a greet and floated seated in the sit idle).
+                    if body.player.reaction_anim() == Some(SIT_CYCLE) && body.plugin_motion.state == TauntClip::Playing && !body.plugin_motion.orphaned {
+                        body.plugin_motion.orphaned = true;
+                        info!("PED_PLUGIN_MOTION ped=#{} seat dropped while seated, standing up tick={tick}", ped.id.serial);
+                    }
                 }
                 mind.brain.release_plugin_waypoint();
             }

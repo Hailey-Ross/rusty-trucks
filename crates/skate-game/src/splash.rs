@@ -136,6 +136,8 @@ unsafe extern "system" {
     fn FillRect(hdc: Hdc, rect: *const Rect, brush: Hgdi) -> i32;
     fn DrawTextW(hdc: Hdc, text: *const u16, len: i32, rect: *mut Rect, format: u32) -> i32;
     fn GetSystemMetrics(index: i32) -> i32;
+    fn SetThreadDpiAwarenessContext(context: isize) -> isize;
+    fn GetDpiForSystem() -> u32;
     fn LoadCursorW(instance: *const c_void, name: usize) -> *mut c_void;
 }
 #[link(name = "gdi32")]
@@ -235,9 +237,15 @@ pub(crate) fn show() {
                 icon_small: std::ptr::null_mut(),
             };
             RegisterClassExW(&wc);
+            // Its own DPI context (per-monitor v2, -4), fixed before the window exists: the renderer makes the
+            // process DPI aware later, and a splash created unaware was rescaled by Windows mid-start. Sized for
+            // the screen's scale; paint draws the 560 x 240 layout and scales it to whatever the window is.
+            SetThreadDpiAwarenessContext(-4);
+            let dpi = GetDpiForSystem().max(96) as i32;
+            let (ww, wh) = (WIDTH * dpi / 96, HEIGHT * dpi / 96);
             let (sw, sh) = (GetSystemMetrics(0), GetSystemMetrics(1));
             let title = wide("Skate 3 Rust Engine");
-            let hwnd = CreateWindowExW(WS_EX_APPWINDOW, class.as_ptr(), title.as_ptr(), WS_POPUP | WS_VISIBLE, (sw - WIDTH) / 2, (sh - HEIGHT) / 2, WIDTH, HEIGHT, std::ptr::null_mut(), std::ptr::null_mut(), instance, std::ptr::null_mut());
+            let hwnd = CreateWindowExW(WS_EX_APPWINDOW, class.as_ptr(), title.as_ptr(), WS_POPUP | WS_VISIBLE, (sw - ww) / 2, (sh - wh) / 2, ww, wh, std::ptr::null_mut(), std::ptr::null_mut(), instance, std::ptr::null_mut());
             let _ = ready_tx.send(());
             if hwnd.is_null() {
                 return;
@@ -399,13 +407,13 @@ unsafe fn paint(hwnd: Hwnd) {
         let screen = BeginPaint(hwnd, &mut ps);
         let mut client = Rect::default();
         GetClientRect(hwnd, &mut client);
-        let (w, h) = (client.right, client.bottom);
+        let (w, h) = (WIDTH, HEIGHT);
         let dc = CreateCompatibleDC(screen);
         let bitmap = CreateCompatibleBitmap(screen, w, h);
         let old_bitmap = SelectObject(dc, bitmap);
 
         let bg = CreateSolidBrush(BACKGROUND);
-        FillRect(dc, &client, bg);
+        FillRect(dc, &Rect { left: 0, top: 0, right: w, bottom: h }, bg);
         DeleteObject(bg);
 
         let (text, history, started) = match TEXT.lock() {
@@ -443,12 +451,19 @@ unsafe fn paint(hwnd: Hwnd) {
             draw(h_line, 13, 400, TEXT_DIM, Rect { left: 16, top, right: w - 16, bottom: top + 18 }, one_line);
         }
 
-        BitBlt(screen, 0, 0, w, h, dc, 0, 0, 0x00CC_0020);
+        let (cw, ch) = (client.right, client.bottom);
+        if (cw, ch) == (w, h) {
+            BitBlt(screen, 0, 0, w, h, dc, 0, 0, 0x00CC_0020);
+        } else {
+            // HALFTONE (4) needs the brush origin reset.
+            SetStretchBltMode(screen, 4);
+            SetBrushOrgEx(screen, 0, 0, std::ptr::null_mut());
+            StretchBlt(screen, 0, 0, cw, ch, dc, 0, 0, w, h, 0x00CC_0020);
+        }
         SelectObject(dc, old_bitmap);
         DeleteObject(bitmap);
         DeleteDC(dc);
         EndPaint(hwnd, &ps);
-        let _ = h;
     }
 }
 

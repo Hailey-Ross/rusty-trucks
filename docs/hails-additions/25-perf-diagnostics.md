@@ -956,3 +956,49 @@ Change (`crates/skate-game/src/system_timing.rs`, research b214 / b268 `.local/r
   (`SKATE_FIXED_TIMING` in its switch list). Not yet run in a game session.
 - Open: nested spans (physics phases, per-mod callbacks) are not split (v2); `.local/tools/frame-time-run.ps1` saves
   only `SYSTEM_TIMING` lines so far.
+
+## Launcher in a window; the launcher and the game come to the front; a steady splash (2026-10-19)
+
+- **Problem (user, 2026-10-19):** "the launcher should be windowed instead of full screen and should open itself to
+  the forefront. when it launches the game it should open it to the forefront as well acter the splash is done
+  loading." And: "the splash startup also currently resizes itself in a weird way based on the resolution settings".
+- **Causes:**
+  - The launcher form was borderless and maximized (`SkateLauncher.cs`), and maximized again after every job.
+  - Windows only lets the foreground owner hand the foreground on. A window that Steam or a hidden launcher starts
+    stays behind, so plain `SetForegroundWindow` failed silently (see also the 2026-10-16 window notes in the
+    steam-launcher skill).
+  - The launcher brought forward the first window the game showed. That is the startup splash; the game's own window
+    comes later and was never brought forward.
+  - The game closed the splash in the same frame it asked for its window to be shown. The splash could go before the
+    window was up, so the foreground went to whatever was behind it and Windows refused the game's focus request.
+  - The splash was created before the renderer makes the process DPI aware, so it was a DPI-unaware window that
+    Windows could rescale during the start; its paint also laid out to the client size it found.
+- **Change:**
+  - Launcher: a normal resizable window at 70 % of the work area (16:10, centred, at least 800 x 540; the layout
+    already scales with the window). `Native.Front` joins the foreground thread's input for the call, then
+    `BringWindowToTop` + `SetForegroundWindow`; used at start, after a job, and for the game.
+  - Launcher: while a game runs it brings forward every new visible main window of the game for 5 minutes (the
+    splash, then the game's window), not only the first.
+  - Game (`startup_loading.rs`): the splash closes 3 frames after the window is shown and focused.
+  - Game (`splash.rs`): the splash thread sets its own per-monitor v2 DPI context before creating the window, sizes
+    the window by the system DPI, draws the 560 x 240 layout into a fixed bitmap and scales it to the window
+    (HALFTONE), so a later DPI or display change cannot re-lay it out.
+- **Verification:** the launcher compiles with csc 4.0 (C# 5); skate-game builds and its suite passes. Not
+  play-tested yet: the foreground behaviour needs Steam and Windows Terminal (test it there, never only in a plain
+  console).
+- **Open:** whether the splash resize the user saw came from DPI or from the game's resolution settings is not
+  proven; the next session with the splash says.
+
+## An assets link to a removed installation repairs itself at start (2026-10-19)
+
+- **Problem (laptop note 2026-10-19):** checkouts and launcher versions share one data folder. A Refresh Game Files in
+  one of them publishes a new `installations/<id>` and removes the old one, so every other `assets` junction pointed
+  at a folder that no longer existed until the next launcher start (`Repair-AllAssetLinks`). Started any other way
+  (scripts, `--check-assets`), the game stopped at once: "Asset root assets: The system cannot find the path
+  specified. (os error 3)".
+- **Change (`setup.rs`):** before the asset root is read, a `--assets` link whose target is gone is followed to its
+  data folder (`<data>/installations/<id>/assets`), and when that data folder has a current installation the link is
+  re-pointed at it (`SETUP: ... pointed at a removed installation` in the log). A working link and a real folder are
+  never touched; a failure only logs and the start goes on as before.
+- **Tests:** `a_link_to_a_removed_installation_is_repointed`.
+

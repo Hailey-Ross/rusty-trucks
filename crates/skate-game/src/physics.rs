@@ -38,7 +38,7 @@ mod solve;
 pub(crate) mod solid_contacts;
 pub(crate) mod network;
 pub(crate) use skater::SkaterRuntime;
-pub(crate) use skater::AiPhysicsSource;
+pub(crate) use skater::{AiPhysicsSource, AiRecordCursor};
 pub(crate) use skater::Takedown;
 pub(crate) use offboard::mod_solid_ground::VEHICLE_GROUP;
 pub(crate) use input_phase::facing_from_visual;
