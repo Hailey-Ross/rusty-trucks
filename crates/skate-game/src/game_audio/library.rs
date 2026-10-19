@@ -709,6 +709,8 @@ impl CollisionJson {
         // The collide line's floors (`aud_speech` `default`; exported since 2026-10-16).
         c.collide_vehicle_min = f("collide_vehicle_min").unwrap_or(c.collide_vehicle_min);
         c.collide_min = f("collide_min").unwrap_or(c.collide_min);
+        // The crash line's mute after a skater collide (`0x82063B08`; not exported: the retail value, a mod can set it).
+        c.collide_crash_mute = f("collide_crash_mute").unwrap_or(c.collide_crash_mute);
         // The bridge's speed graph (exported since 2026-10-03; the stock vault's words otherwise).
         let eight = |k: &str| -> Option<[f32; 8]> {
             let a = self.posters.get(k)?.as_array()?;

@@ -658,10 +658,29 @@ challenge spots do not get mad.
   `world::skater_speech::tests::a_bumped_skater_says_its_collide_line`.
 - Only simulated NPC skaters have a skeleton body, so replay-tier NPCs (no physics contact) never say it.
 
-**Open (follow-ups).** The local player's branch of `sub_824BDA90` (a skater contact posts 32797 and main-cast
-24698 / 24630 for the player); the `+708` list write of `+148` on the skater's speech record when the skater flag is
-set; the `+492` cooldown and event 8290 posted to a listener when the bumped skater hit the local player
-(mode-gated by `*(system)+1036 < 104` and `sub_824F2DF0`).
+**Crash line mute after a skater bump (2026-10-18, b267).** Retail [code]: on the skater flag (`+600` over its floor) a
+non-local skater's `sub_824BDA90` walks the speech records (`+708` list) to the one with the skater's model (`+76`,
+active `+52`) and writes `+148` = 3.0 (`0x82063B08`, at `0x824BDDD8`); `sub_824F9FC8` counts it down by dt, and
+the crash poster `sub_824DB688` posts the crash message 8229 / 125 only when `+148 <= 0` (`fcmpu` against 0.0 at
+`0x82165A10`, else a jump to `0x824DB7D0`). The announcer request after it and the `+193` latch run either way, so
+a crash inside the 3 s stays silent for its whole length. A car or ped contact alone does not set the timer. Ours:
+`Contacts::skater_collides` counts the skater contact's collide lines, the speech host calls
+`SkaterSpeech::mute_crash` for that skater (by id; retail matches by model, which would also mute another skater
+with the same model) and `SkaterSpeech::tick` counts down per console frame. The 3.0 is
+`ContactsTuning::collide_crash_mute`, poster key `collide_crash_mute` (a mod sets it through
+`sdk.audio.set_tuning("player", ...)`). Tests `a_skater_collide_mutes_the_crash_message_for_3_s_but_not_the_announcer`,
+`only_a_skater_contact_counts_as_a_skater_collide`; skate-audio 268 pass, skate-game game_audio + living_world 183
+pass. Not play-tested.
+
+**Open (follow-ups; b267 `.local/research/b267-collide-line-leftovers.md`, agent derivation, not yet checked by
+main unless marked).** Corrections to the list above it: 24630 `423_Collide` / 24698 `474_BailOffBoard` are
+announcer lines (speaker `*(system)+1036`, 104 in free skate), not main-cast; 8290 `210_CollTeam` goes to the bumped
+skater's own speech record when it hit the local player (`+604` == the local index, `+492` 1.0 s cooldown, verified:
+`0x8231A844` = 1.0), with a voice slot (`+28` record `+80` > 0); the `*(system)+1036 < 104` / `sub_824F2DF0` gate
+guards a separate host comment (main-cast 254 for a pro bumper, else 248), not 8290. Still to port: the local
+player's branch (32797 gated by mode 55 or host model 40 / 30 / 31, then the announcer line by on-foot `+716`), 8290
+and the host comment; they need the other skater's index from physics (`+604`). Open: the names of 32797 and 248 /
+254, whether retail NPC skaters ever get ped contacts (`collide_other`, needs a trace).
 
 **Data-driven / mod-overridable:** the two thresholds (tuning by key), the event id per game mode, the voice sets, and
 which graph an entity type runs (graph path per entity). Multiplayer: the host decides whether a bump plays a line,

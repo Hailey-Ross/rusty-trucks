@@ -155,8 +155,8 @@ pub(crate) struct WorldSpeech {
     /// This frame's requests (the hosts append).
     pub(crate) peds: Vec<PedRequest>,
     pub(crate) grunts: Vec<u64>,
-    /// The NPC skaters' collide lines (skater id, one per request).
-    pub(crate) collides: Vec<u64>,
+    /// The NPC skaters' collide lines (skater id, one per request; whether a skater contact asked).
+    pub(crate) collides: Vec<(u64, bool)>,
     /// The published NPC skaters with a voice (the NPC host rewrites it).
     pub(crate) skaters: Vec<SkaterSpeaker>,
     tried: bool,
@@ -841,17 +841,23 @@ pub(crate) fn run(speech: &mut WorldSpeech, peds: &[(u64, u32)], native: &mut Na
         says.push((sk, Some(lw), Some(mc), None, None));
     }
     // `sub_824BDA90`: a bumped NPC skater's collide line (free skate: game mode 0).
-    for id in std::mem::take(&mut speech.collides) {
+    for (id, by_skater) in std::mem::take(&mut speech.collides) {
         let Some(sk) = speech.skaters.iter().find(|s| s.id == id).copied() else { continue };
         if let Say::Message(lw, mc) = skate_audio::world::skater_speech::collide(0, &mut speech.rng) {
             says.push((sk, Some(lw), Some(mc), None, None));
         }
+        // A skater contact mutes this skater's crash line (retail finds the record by model; ours by id).
+        if by_skater {
+            speech.skater_speech.entry(id).or_default().mute_crash(library.contacts_tuning().collide_crash_mute);
+        }
     }
     // `SFXObj_PlayerSpeech`'s non-local process, once per console frame (free skate: game mode 0).
     if m.ticks != speech.last_tick {
+        let dt = m.ticks.saturating_sub(speech.last_tick) as f32 * super::world_sources::evaluation_dt();
         for sk in speech.skaters.clone() {
             let main = speech.cast.is_some() && cast_of(library, sk.voice).is_some();
             let process = speech.skater_speech.entry(sk.id).or_default();
+            process.tick(dt);
             for say in process.process(main, &sk.reactions, 0, &mut speech.rng) {
                 says.push(match say {
                     Say::Living(e) => (sk, Some(e), None, None, None),

@@ -76,8 +76,9 @@ pub(crate) struct NpcHost {
     /// This evaluation's bail grunts (skater id) and every published skater with a voice (id,
     /// voice, COM position, COM velocity): `frame` hands them to the speech host.
     pub(crate) grunts: Vec<u64>,
-    /// This evaluation's collide lines (skater id, one per request; `Contacts::collides`).
-    pub(crate) collides: Vec<u64>,
+    /// This evaluation's collide lines (skater id, one per request; `Contacts::collides`), and whether a
+    /// skater contact asked for it (`Contacts::skater_collides`).
+    pub(crate) collides: Vec<(u64, bool)>,
     pub(crate) speakers: Vec<super::world_speech::SkaterSpeaker>,
 }
 
@@ -333,8 +334,9 @@ pub(crate) fn pre(host: &mut NpcHost, published: &NpcSkaters, native: &mut Nativ
         if npc.take_bail_grunt() {
             host.grunts.push(id);
         }
-        for _ in 0..npc.take_collides() {
-            host.collides.push(id);
+        let (collides, by_skater) = npc.take_collides();
+        for i in 0..collides {
+            host.collides.push((id, i < by_skater));
         }
         host.objects.insert(id, npc);
     }

@@ -145,6 +145,9 @@ pub struct ContactsTuning {
     /// (contact speeds, [`super::AudioState::collide_vehicle`]).
     pub collide_vehicle_min: f32,
     pub collide_min: f32,
+    /// How long a skater's crash line (`sub_824DB688`, 8229 / 125) stays muted after a skater
+    /// contact asked for its collide line (s; `0x82063B08` = 3.0, counted down by `sub_824F9FC8`).
+    pub collide_crash_mute: f32,
 }
 
 impl Default for ContactsTuning {
@@ -202,6 +205,7 @@ impl Default for ContactsTuning {
             body_112: [[0.05, 0.3], [0.3, 0.55]],
             collide_vehicle_min: 0.16,
             collide_min: 0.2,
+            collide_crash_mute: 3.0,
         }
     }
 }
@@ -381,6 +385,10 @@ pub struct Contacts {
     /// collide line ([`crate::world::skater_speech::collide`]). The local player's own branch
     /// (main-cast lines on a skater contact) is not modelled.
     pub collides: u32,
+    /// Of `collides`, the ones asked for by a skater contact (`+600` over its floor): retail then
+    /// mutes that skater's crash line for [`ContactsTuning::collide_crash_mute`] (the speech record's
+    /// `+148`, written at 0x824BDDD8).
+    pub skater_collides: u32,
     /// This process's landing posts ([`LandingNote`]), `None` on a process without a landing,
     /// manual landing or manual skip.
     pub landing_note: Option<LandingNote>,
@@ -699,6 +707,9 @@ impl Contacts {
                 // floor, `+608` and `+600` against the other.
                 if !s.local && (s.collide_vehicle > c.collide_vehicle_min || s.collide_other > c.collide_min || s.collide_skater > c.collide_min) {
                     self.collides += 1;
+                    if s.collide_skater > c.collide_min {
+                        self.skater_collides += 1;
+                    }
                 }
                 let (a, cloth, pad) = body_materials(i, s.body_slide_flag);
                 let tag = s.body_tag[i];
@@ -1630,8 +1641,9 @@ mod tests {
                 k.body_calls = Some(1);
                 k.process(s, [0; 4], &t, &c, &mut h);
             }
-            k.collides
+            (k.collides, k.skater_collides)
         };
+        let run = |s: &AudioState, steps: usize| run(s, steps).0;
         let mut s = AudioState { local: false, collide_skater: 0.5, ..AudioState::default() };
         s.body_impact[2] = 0.7;
         s.body_tag[2] = 3;
@@ -1642,6 +1654,25 @@ mod tests {
         assert_eq!(run(&AudioState { collide_skater: 0.2, ..s }, 1), 0, "not over the floor");
         assert_eq!(run(&AudioState { collide_skater: 0.0, collide_vehicle: 0.17, ..s }, 1), 2, "a car");
         assert_eq!(run(&AudioState { local: true, ..s }, 1), 0, "the local player");
+    }
+
+    /// Of the collide lines, the skater contact's (`+600`) ones mute the crash line (0x824BDDD8); a
+    /// car contact alone does not.
+    #[test]
+    fn only_a_skater_contact_counts_as_a_skater_collide() {
+        let (t, c) = (body_tuning(), ContactsTuning::default());
+        let run = |s: &AudioState| {
+            let mut k = Contacts { body_on: true, ..Default::default() };
+            k.body_calls = Some(1);
+            k.process(s, [0; 4], &t, &c, &mut Log::default());
+            (k.collides, k.skater_collides)
+        };
+        let mut s = AudioState { local: false, collide_skater: 0.5, ..AudioState::default() };
+        s.body_impact[2] = 0.7;
+        s.body_tag[2] = 3;
+        assert_eq!(run(&s), (1, 1));
+        assert_eq!(run(&AudioState { collide_skater: 0.0, collide_vehicle: 0.17, ..s }), (1, 0), "a car");
+        assert_eq!(c.collide_crash_mute, 3.0, "0x82063B08");
     }
 
     /// The deck poster (`sub_824BD000`) on the console cadence (2026-10-03): the same messages on the

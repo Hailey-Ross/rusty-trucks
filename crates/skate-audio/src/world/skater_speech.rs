@@ -60,16 +60,18 @@ pub enum Say {
     Announcer(u16),
 }
 
-/// One skater's process state (`+44` the last living-world event, `+193` the crash latch).
+/// One skater's process state (`+44` the last living-world event, `+193` the crash latch, `+148`
+/// the crash line's mute timer).
 #[derive(Clone, Debug)]
 pub struct SkaterSpeech {
     last: u16,
     crash_latch: bool,
+    crash_mute: f32,
 }
 
 impl Default for SkaterSpeech {
     fn default() -> Self {
-        Self { last: 8318, crash_latch: false }
+        Self { last: 8318, crash_latch: false, crash_mute: 0.0 }
     }
 }
 
@@ -92,7 +94,20 @@ fn pro(model: u32) -> bool {
 impl SkaterSpeech {
     /// Nothing held: the process would do nothing on a frame without reactions.
     pub fn idle(&self) -> bool {
-        self.last == 8318 && !self.crash_latch
+        self.last == 8318 && !self.crash_latch && !(self.crash_mute > 0.0)
+    }
+
+    /// A skater contact asked for this skater's collide line (`sub_824BDA90` at 0x824BDDD8): its
+    /// crash line stays muted for `seconds` (retail 3.0, `ContactsTuning::collide_crash_mute`).
+    pub fn mute_crash(&mut self, seconds: f32) {
+        self.crash_mute = seconds;
+    }
+
+    /// The mute timer's countdown (`sub_824F9FC8`: `+148` -= dt).
+    pub fn tick(&mut self, dt: f32) {
+        if self.crash_mute > 0.0 {
+            self.crash_mute -= dt;
+        }
     }
 
     /// One frame. `main_cast` = the speaker has no living-world voice (record `+100 == 0`).
@@ -139,10 +154,13 @@ impl SkaterSpeech {
                 }
             }
         }
-        // `sub_824DB688`.
+        // `sub_824DB688`: the crash message only with the mute timer run out (`+148 <= 0`); the
+        // announcer request and the latch either way.
         if r.crash {
             if !self.crash_latch {
-                out.push(Say::Message(message::CRASH.0, message::CRASH.1));
+                if !(self.crash_mute > 0.0) {
+                    out.push(Say::Message(message::CRASH.0, message::CRASH.1));
+                }
                 out.push(Say::Announcer(super::announcer::SLAM_PRO));
                 self.crash_latch = true;
             }
@@ -187,5 +205,21 @@ mod tests {
         assert_eq!(collide(0, &mut zero), Say::Message(8228, 3));
         assert_eq!(collide(MODE_RACE_A, &mut zero), Say::Message(8250, 17));
         assert_eq!(collide(MODE_RACE_B, &mut one), Say::Message(8240, 17));
+    }
+
+    #[test]
+    fn a_skater_collide_mutes_the_crash_message_for_3_s_but_not_the_announcer() {
+        let mut s = SkaterSpeech::default();
+        let mut rng = || 0u32;
+        let (crash, calm) = (Reactions { crash: true, ..Default::default() }, Reactions::default());
+        s.mute_crash(3.0);
+        assert!(!s.idle(), "a running mute keeps the process");
+        s.tick(1.0);
+        assert_eq!(s.process(true, &crash, 0, &mut rng), vec![Say::Announcer(24708)], "muted: only the announcer request");
+        assert_eq!(s.process(true, &crash, 0, &mut rng), vec![], "the latch is set while muted too");
+        s.process(true, &calm, 0, &mut rng);
+        s.tick(2.0);
+        assert!(s.idle());
+        assert_eq!(s.process(true, &crash, 0, &mut rng), vec![Say::Message(8229, 125), Say::Announcer(24708)], "the mute ran out");
     }
 }

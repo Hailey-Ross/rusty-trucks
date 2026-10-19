@@ -430,9 +430,10 @@ impl NpcSkater {
         std::mem::take(&mut self.board.bail_grunt)
     }
 
-    /// The collide lines the body poster asked for since the last take (`Contacts::collides`).
-    pub fn take_collides(&mut self) -> u32 {
-        std::mem::take(&mut self.board.collides)
+    /// The collide lines the body poster asked for since the last take (`Contacts::collides`), and
+    /// how many of them a skater contact asked for (`Contacts::skater_collides`).
+    pub fn take_collides(&mut self) -> (u32, u32) {
+        (std::mem::take(&mut self.board.collides), std::mem::take(&mut self.board.skater_collides))
     }
 
     /// Stop the wheel streams (the skater lost its instance: retail's release stops every layer).
