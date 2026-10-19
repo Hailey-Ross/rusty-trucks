@@ -2522,12 +2522,20 @@ pub(crate) fn think_peds(
             // does: retail's waypoint slot `ped+0x1718` belongs to the plugin, and LockFirstWaypoint (`826A0580`) only
             // locks an empty slot, so a stale prop waypoint would steer a later conversation (b186).
             if mind.prop.is_some() && prop_wp.is_none() {
-                if let Some((i, id, _)) = mind.prop.take() {
+                if let Some((i, id, w)) = mind.prop.take() {
+                    // Which condition dropped it (b300 §4: an occupied bench dropped amid stream evictions).
+                    let reason = match plugin_props.props.get(i).filter(|p| p.id == id) {
+                        None => "prop gone",
+                        Some(_) if streamed_out(id) => "streamed out",
+                        Some(p) if p.disabled => "disabled",
+                        Some(p) if p.waypoints.get(w).is_none() => "waypoint missing",
+                        Some(_) => "?",
+                    };
                     let class = plugin_props.props.get_mut(i).filter(|p| p.id == id).map(|p| {
                         p.release(me);
                         p.class.clone()
                     });
-                    info!("PED_PLUGIN_PROP ped=#{} leaves {} {:016X} (dropped) tick={tick}", ped.id.serial, class.as_deref().unwrap_or("?"), id);
+                    info!("PED_PLUGIN_PROP ped=#{} leaves {} {:016X} (dropped: {reason}) tick={tick}", ped.id.serial, class.as_deref().unwrap_or("?"), id);
                     // A seated ped stands up (Sit2Stand) before its next behaviour, the way a packet that ends mid-clip
                     // does: the sit cycle was held until a StandUp stage that never comes once the seat is dropped
                     // (laptop 2026-10-19: #105 left its seat for a greet and floated seated in the sit idle).
@@ -2596,6 +2604,29 @@ pub(crate) fn think_peds(
                 Some((i, ..)) => plugin_props.props.get(i).and_then(|p| Some((p.class.clone(), data.plugin_graphs.get(&p.class)?))).map(|(k, g)| (k, &**g)),
                 None => data.conversation_graph.as_deref().map(|g| (CONVERSATION_GRAPH.to_owned(), g)),
             };
+            // Leaving the Plugin state, or moving to another plugin graph, first ends the old graph's active behaviours:
+            // the Plugin behaviour's End (`8269F310` -> `82E0CFA0`, controller vtable +0x10 = EndAllBehaviours
+            // `82C13498`). So the sit body's End removes its packet (Sit2Stand plays) and OwnPluginObject /
+            // IgnoreStandingCollisions / LockToCurrentPosition clear as in retail (b300).
+            let next_key = plugin_graph.as_ref().filter(|_| mind.brain.in_plugin).map(|(k, _)| k.as_str());
+            if let (Some(old_key), Some(pc)) = (mind.plugin_graph.clone(), mind.plugin_controller.as_mut()) {
+                let old = if old_key == CONVERSATION_GRAPH { data.conversation_graph.as_deref() } else { data.plugin_graphs.get(&old_key).map(|g| &**g) };
+                if let (true, Some(og)) = (next_key != Some(old_key.as_str()), old) {
+                    let mut host = skate_core::living_world::peds::brain::BrainHost {
+                        behaviors: &og.behaviors,
+                        conditions: &og.conditions,
+                        brain: &mut mind.brain,
+                        settings: &settings.ped_brain.values,
+                        position: body.position.to_array(),
+                        heading: body.heading,
+                        skater: observers.observers.first().map(|o| (o.position, o.velocity)),
+                        target_position: &target,
+                        chase: skate_core::living_world::peds::brain::ChaseView { me, record, groups: Some(&groups), takedowns: Some(&choose), block: Some(&block), conversation, velocity: Some(&velocity_of), own_velocity: body.velocity.to_array(), wiping: Some(&wiping_of) },
+                    };
+                    pc.end_all_behaviors(&mut host);
+                    info!("PED_PLUGIN_END ped=#{} graph {old_key} ended (in_plugin={}) tick={tick}", ped.id.serial, mind.brain.in_plugin);
+                }
+            }
             match (mind.brain.in_plugin, plugin_graph) {
                 (true, Some((key, pg))) => {
                     let states = pg.graph.runtime.program.topology.states.len();

@@ -442,11 +442,10 @@ fn spawn_sim(
     let spawn = line_spawn(target);
     pool.finish_load();
     let (context, body) = match pool.bodies.pop() {
-        // A new actor on a pooled body: the input cache a fresh body would have, and no record from the last owner
-        // (b295 / b296; the placement's teleport reset covers the grind manager and the selector).
+        // A new actor on a pooled body: the per-actor parts a fresh body would have, and no record from the last owner
+        // (b295 / b296 / b299; the placement's teleport reset and state Exit / Enter do the rest).
         Some((context, mut body)) => {
-            body.runtime.player_input.reset_external_physics_cache();
-            body.runtime.ai_physics = None;
+            body.runtime.reset_for_new_actor(physics.collections())?;
             (context, body)
         }
         None => load_body(physics, config, graphs, spawn, &mut pool.source)?,

@@ -908,8 +908,15 @@ fn a_teleport_resets_the_grind_lock_and_a_new_actor_gets_a_fresh_input_cache() {
     assert!(counter < 200 && cooldown == 0, "grind lock survived the teleport: {counter} / {cooldown}");
     // The same actor keeps its processed-input cache across the reset (b295).
     assert_ne!(s.runtime.player_input.player.external_physics_cache_1008.flags & (1 << 27), 0);
-    // A new actor on a pooled body starts from 82DB18A0's cache.
-    s.runtime.player_input.reset_external_physics_cache();
+    // A new actor on a pooled body starts from 82DB18A0's cache and the other ctor-built parts (b299).
+    s.runtime.player_input.grind.set_lock_for_test(200, 90);
+    s.runtime.player_state.post.jump_fix_frames = 3;
+    s.runtime.skitch_release_trace = 5;
+    s.runtime.reset_for_new_actor(physics.collections()).unwrap();
+    assert_eq!(s.runtime.player_input.grind.lock_for_test(), (0, 0));
+    assert_eq!(s.runtime.player_state.post.jump_fix_frames, 1000);
+    assert_eq!(s.runtime.skitch_release_trace, 0);
+    assert!(s.runtime.takedown.is_none() && s.runtime.ai_physics.is_none());
     let cache = s.runtime.player_input.player.external_physics_cache_1008;
     assert_eq!(cache.flags, 0);
     assert_eq!(cache.vectors[8], [(-1.0f32).to_bits(); 4]);
