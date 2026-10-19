@@ -74,6 +74,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 
 Not play-tested yet; tell us if any of these still happen.
 - **Launcher in a window (new):** the Steam launcher opens as a normal window instead of full screen and comes to the front, and the game's window comes to the front once the startup splash is done.
+- **Launcher animations (new):** switching screens in the launcher slides and fades the new screen in briefly, and the selection outline eases on instead of snapping.
 - **Startup splash resizing (new):** the splash no longer changes size partway through the start.
 - **Ped left sitting in mid air (new):** a ped who left its bench (for example to greet someone) stayed in the sitting pose where the bench had been; it now stands up first.
 - **Assets link after a refresh (new):** after Refresh Game Files in one copy, other copies that share the converted files repair their link at the next start instead of stopping with "Asset root assets: The system cannot find the path specified".
