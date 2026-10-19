@@ -70,6 +70,7 @@ Every report with a log helps. Logs let us see exactly where and when something 
 ## Fixed in this build
 
 Not play-tested yet; tell us if any of these still happen.
+- **Game files refresh on their own when the menus need it (new):** the first start of this build restarts into **Refresh Game Files** once if your menu files are older than the build reads (it adds the Challenge Map's menu files). Let it finish; the game starts again by itself.
 - **Grabbing props works again (new):** in the previous build no prop could be grabbed (only 2 of a map's props were known to the grab check). Benches, bins, newspaper boxes and dumpsters grab again, and a grab takes the handle Skate 3 picks instead of a bottom edge or corner post. A grab press that starts nothing logs `PROP_GRAB_MISS` with the reason, and **Visualize Grabs** shows what is in reach.
 - **Turning while carrying (new):** when you grab a prop you turn to face it over about half a second, like Skate 3, instead of snapping round at once.
 - **Launcher (new):** A / Enter and the mouse work on the main page, and the rolling board no longer goes behind the Play card.
