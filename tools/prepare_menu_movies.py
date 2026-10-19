@@ -1,7 +1,8 @@
 """Export the original front-end menu movies for the engine's APT player.
 
 Setup runs this inside the HUD stage (prepare_runtime_huds.py). It reads the
-owned disc's fedata.big / fetexture.big / miscboot.big, starts from the menu
+owned disc's fedata.big / fetexture.big / miscboot.big (and fedynamic.big for the
+named runtime images), starts from the menu
 screens in MENU_ROOTS and follows every cross-movie import (retail load queue
 sub_82E7E8C0 requests each import source by name before linking), so the export
 holds the menu movies plus every library movie they import.
@@ -12,6 +13,8 @@ Output (assets/private/menu-movies/, never committed):
   movies/<key>.json        one movie in the HUD player format (characters, actions, shapes)
                            plus imports / exports / character ids for apt_imports.rs
   <cache paths>            the RGBA payloads the shapes and fonts reference
+  manifest images          named runtime images (request key -> RGBA payload, size) the movies load by name
+                           through Game.ImageRenderer_Load (the challenge map pictures)
 
 Movie keys are the retail import paths relative to data/fe/ without extension
 (apt_imports.rs library_key), e.g. source/screens/main/core_menu.
@@ -28,7 +31,7 @@ from vendor.skate3_ui.scene_graph import AssetCache, SceneFlattener
 from vendor.skate3_ui.actions import Actions
 
 FORMAT = 'skate3-menu-movies'
-VERSION = 6  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies; 6: the challenge map
+VERSION = 7  # 2: placement clip actions (Milestone 3d); 3: unit bitmap ids (Milestone 4); 4: screens/main root (Milestone 6); 5: main.apt's layer movies; 6: the challenge map; 7: named runtime images (challenge map pictures)
 # Menu screens the engine's retail menus start from (pause menu, Game Settings,
 # Freeskate options, the screen manager and its helpers). Library movies are
 # found through imports, not listed.
@@ -65,6 +68,10 @@ MENU_ROOTS = (
     'source/screens/popup/small_popup',
 )
 MAX_MOVIES = 256  # apt_imports.rs MAX_MOVIES
+# Runtime images the movies load by name (Game.ImageRenderer_Load, research b257 / b258): only in fedynamic.big.
+IMAGE_PREFIXES_DYNAMIC = ('data/fe/source/images/map/',)
+# Named images already in the main cache (fetexture.big).
+IMAGE_NAMES_CORE = ('data/fe/source/screens/map/cursorchallengemap',)
 
 
 def library_key(file):
@@ -84,6 +91,28 @@ def _contained(root, relative):
     if not path.is_relative_to(root.resolve()) or path == root.resolve():
         raise ValueError(f'Menu movie path escapes its folder: {relative}')
     return path
+
+
+def named_images(cache_root, runtime, prefixes):
+    """{request key: {'rgba', 'width', 'height'}} for every single-texture .rx2 bundle under `prefixes`; copies the
+    RGBA payloads into `runtime`. Key = the retail request path (ImageRenderer_Load 'fe\\source\\images\\map\\map1024')
+    with '/', lower case, without 'data/' and '.rx2'."""
+    manifest = json.loads((cache_root / 'manifest.json').read_text(encoding='utf-8'))
+    out = {}
+    for record in manifest['bundles']:
+        name = record['name'].replace('\\', '/').lower()
+        if not any(name.startswith(p) for p in prefixes) or 'textures' not in record:
+            continue
+        listed = json.loads(_contained(cache_root, record['textures']['manifest']).read_text(encoding='utf-8'))['textures']
+        if len(listed) != 1 or 'rgba_file' not in listed[0]:
+            raise ValueError(f'{name}: expected one decoded texture')
+        texture = listed[0]
+        relative = (Path(record['textures']['manifest']).parent / texture['rgba_file']).as_posix()
+        target = _contained(runtime, relative)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(_contained(cache_root, relative), target)
+        out[name.removeprefix('data/')] = {'rgba': relative, 'width': texture['width'], 'height': texture['height']}
+    return out
 
 
 PLACE_HAS_CLIP_ACTIONS = 0x80
@@ -228,10 +257,23 @@ def prepare(game, output, collections, roots=MENU_ROOTS):
         target = _contained(runtime, relative)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+    # Named runtime images: a second, narrow extraction with fedynamic.big (its own cache, so every movie keeps its
+    # source archive); without fedynamic.big the menus still export and the map pictures draw nothing.
+    missing_images = None
+    try:
+        dynamic_root = output / 'cache-dynamic'
+        extract_project(game, dynamic_root, include_dynamic=True, prefixes=IMAGE_PREFIXES_DYNAMIC, update=True)
+        images = named_images(dynamic_root, runtime, IMAGE_PREFIXES_DYNAMIC)
+    except FileNotFoundError as error:
+        images, missing_images = {}, str(error)
+    images.update(named_images(cache_root, runtime, IMAGE_NAMES_CORE))
     files = {p.relative_to(runtime).as_posix(): _digest(p) for p in sorted(runtime.rglob('*')) if p.is_file()}
     manifest = {'format': FORMAT, 'version': VERSION, 'roots': list(roots), 'movies': movies,
                 'missing_movies': missing, 'shared': 'shared.json',
-                'unresolved_fonts': [f for f, a in fonts.items() if a is None], 'files': files}
+                'unresolved_fonts': [f for f, a in fonts.items() if a is None],
+                'images': dict(sorted(images.items())), 'files': files}
+    if missing_images:
+        manifest['missing_images'] = missing_images
     (runtime / 'manifest.json').write_text(json.dumps(manifest, indent=1) + '\n', encoding='utf-8')
     print(f'Prepared {len(movies)} original menu movies ({len(payloads)} payloads): {runtime}', flush=True)
     return manifest

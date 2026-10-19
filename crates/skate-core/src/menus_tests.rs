@@ -41,7 +41,7 @@ fn fixture() -> MenuData {
                 tabs: vec![tab("SinglePlayer", &["ChallengeMap", "SkateWith"]), tab("Create", &["SavePark", "ReplayEditor"])],
             },
         ],
-        map_nodes: Vec::new(),
+        map_nodes: Vec::new(), map_pictures: Default::default(),
     }
 }
 

@@ -168,18 +168,23 @@ pub(crate) const TELEPORT: &str = "teleport:";
 
 /// The Challenge Map tree (vault `map_listing` under `progression`, the root career and free skate open; b244d) and
 /// the keys of the locations that have a teleport matrix (`private/teleports.json`, any map).
-fn challenge_map(asset_root: &std::path::Path) -> (Vec<skate_core::menus::MapNode>, Vec<String>) {
-    let nodes = match skate_data::collections::Collections::load(asset_root) {
-        Ok(c) => skate_data::challenge_map::load(c.entries(), "progression", &skate_data::challenge_map::LocationRules::default()),
+fn challenge_map(
+    asset_root: &std::path::Path,
+) -> (Vec<skate_core::menus::MapNode>, std::collections::BTreeMap<String, String>, Vec<String>) {
+    let (nodes, pictures) = match skate_data::collections::Collections::load(asset_root) {
+        Ok(c) => (
+            skate_data::challenge_map::load(c.entries(), "progression", &skate_data::challenge_map::LocationRules::default()),
+            skate_data::challenge_map::location_maps(&c),
+        ),
         Err(error) => {
             warn!("RETAIL_MENUS challenge map: {error}");
-            Vec::new()
+            Default::default()
         }
     };
     let teleports = crate::teleport_menu::load(asset_root)
         .map(|rows| rows.into_iter().filter(|d| d.matrix.is_some()).map(|d| d.id).collect())
         .unwrap_or_default();
-    (nodes, teleports)
+    (nodes, pictures, teleports)
 }
 
 impl RetailMenus {
@@ -204,8 +209,9 @@ impl RetailMenus {
 
 fn load(mut commands: Commands, config: Res<crate::config::Config>) {
     let (mut data, loaded) = read(&config.asset_root);
-    let (nodes, teleports) = challenge_map(&config.asset_root);
+    let (nodes, pictures, teleports) = challenge_map(&config.asset_root);
     data.map_nodes = nodes;
+    data.map_pictures = pictures;
     if loaded {
         info!(
             "RETAIL_MENUS: {} categories, {} items, {} settings rows, {} modes",
@@ -757,7 +763,7 @@ mod tests {
     use skate_core::menus::{Category, Mode, Tab};
 
     fn data() -> MenuData {
-        MenuData { map_nodes: Vec::new(),
+        MenuData { map_nodes: Vec::new(), map_pictures: Default::default(),
             categories: vec![Category { id: "SinglePlayer".into(), label: "L".into(), icon: Icon::Retail("singleplayer".into()) }],
             items: vec![skate_core::menus::Item { id: "ChallengeMap".into(), label: "L".into(), icon: Icon::Retail("map".into()), help: String::new(), sub_option_kind: -1 }],
             settings: Vec::new(),

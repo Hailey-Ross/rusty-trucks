@@ -1,7 +1,7 @@
 """Synthetic fixtures for the binary array layout; contains no game data."""
 import struct
 import unittest
-from .vlt import array_items, array_text_items
+from .vlt import array_items, array_text_items, map_info_text
 
 
 class ArrayLayoutTests(unittest.TestCase):
@@ -38,6 +38,12 @@ class ArrayLayoutTests(unittest.TestCase):
                          ['test', 'caf\u00e9', ''])
         with self.assertRaises(ValueError):
             array_text_items(binary, ['0000FFFF'])
+
+    def test_map_info_names_its_texture(self):
+        binary = bytes(8) + b'map1024\0'
+        self.assertEqual(map_info_text(binary, bytes.fromhex('00000008') + bytes(24)), 'map1024')
+        self.assertEqual(map_info_text(binary, bytes(28)), '')
+        self.assertEqual(map_info_text(binary, b''), '')
 
 
 if __name__ == '__main__':

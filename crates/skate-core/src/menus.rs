@@ -328,6 +328,9 @@ pub struct MenuData {
     pub modes: Vec<Mode>,
     /// The Challenge Map tree (vault `map_listing` parent chain and its leaves), in display order per parent.
     pub map_nodes: Vec<MapNode>,
+    /// The Challenge Map picture per location key (the `world` record's tMapInfo name, `map_skateschool`); a location
+    /// not listed shows the default map. Data: mods may change it.
+    pub map_pictures: std::collections::BTreeMap<String, String>,
 }
 
 /// One Challenge Map node: its entry (kind + vault key), its parent folder, its label string id and sort order.

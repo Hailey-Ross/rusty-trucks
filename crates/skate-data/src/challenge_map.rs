@@ -66,6 +66,27 @@ fn typed_ref_key(entry: &Collection, field: &str) -> Option<u64> {
     u64::from_str_radix(text(entry, field)?.get(0..16)?, 16).ok()
 }
 
+const WORLD_CLASS: &str = "world";
+/// `world`'s tMapInfo (b257 / b259): word 0 = the map picture's name (`map_skateschool`); inherited from the parent.
+const WORLD_MAP_INFO: &str = "Hash_20BBC594CD2FAEF8";
+
+/// Each location's map picture name (FE `82649FF8`: the location's district names its `world` record, whose
+/// tMapInfo names the picture), by location key. Records without a name are left out (the default map).
+pub fn location_maps(collections: &crate::collections::Collections) -> BTreeMap<String, String> {
+    let entries = collections.entries();
+    let worlds: BTreeMap<u64, &str> =
+        entries.iter().filter(|e| class_is(e, WORLD_CLASS)).map(|e| (key_hash(&e.key), e.key.as_str())).collect();
+    entries
+        .iter()
+        .filter(|e| class_is(e, "fe_locations"))
+        .filter_map(|loc| {
+            let world = worlds.get(&typed_ref_key(loc, LOCATION_DISTRICT)?)?;
+            let name = collections.field(WORLD_CLASS, world, WORLD_MAP_INFO).ok()?.text.clone()?;
+            (!name.is_empty()).then(|| (loc.key.clone(), name))
+        })
+        .collect()
+}
+
 /// A `Hash_XXXXXXXXXXXXXXXX` key, or `hash(name)` for a readable one.
 fn key_hash(key: &str) -> u64 {
     key.strip_prefix("Hash_").and_then(|h| u64::from_str_radix(h, 16).ok()).unwrap_or_else(|| hash(key))
@@ -111,7 +132,7 @@ mod tests {
     use crate::collections::Field;
 
     fn field(data: &str) -> Field {
-        Field { type_name: String::new(), data: data.to_owned(), array: None }
+        Field { type_name: String::new(), data: data.to_owned(), array: None, text: None }
     }
     fn row(class: &str, key: &str, parent: &str, fields: &[(&str, String)]) -> Collection {
         Collection {

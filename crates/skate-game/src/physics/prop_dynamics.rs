@@ -3690,7 +3690,8 @@ mod tests {
             let (dx, dz) = (end.x - start.x, end.z - start.z);
             let travelled = (dx * dx + dz * dz).sqrt();
             let t = crate::physics::prop_carry::CarryLocomotion::default().move_object;
-            let (ex, ez) = (x * t.side_speed, z * if z > 0.0 { t.push_speed } else { t.pull_speed });
+            // Facing +Z, stick right is the skater's right, -X (the +400 side row, b241; laptop 2026-10-18).
+            let (ex, ez) = (-x * t.side_speed, z * if z > 0.0 { t.push_speed } else { t.pull_speed });
             let expected = (ex * ex + ez * ez).sqrt();
             assert!(travelled > 0.5, "stick ({x:.2}, {z:.2}) did not move the prop: {travelled}");
             let along = (dx * ex + dz * ez) / (travelled * expected);

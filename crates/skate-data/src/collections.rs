@@ -11,6 +11,9 @@ pub struct Field {
     /// text elements resolved (`text_items`).
     #[serde(default)]
     pub array: Option<FieldArray>,
+    /// A struct field's resolved text (the converter's `text`: `Sk8::FE::tMapInfo`'s map texture name).
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -300,7 +303,7 @@ mod tests {
         ]})).unwrap();
         assert_eq!(data.field("physics_mode", "test", "value").unwrap().data, "00000002"); // builds the index
         let mut fields = BTreeMap::new();
-        fields.insert("value".to_owned(), Field { type_name: "EA::Reflection::Float".into(), data: "00000009".into(), array: None });
+        fields.insert("value".to_owned(), Field { type_name: "EA::Reflection::Float".into(), data: "00000009".into(), array: None, text: None });
         data.override_profile("physics_mode", "test", "easy", fields).unwrap();
         assert_eq!(data.field("physics_mode", "test", "value").unwrap().data, "00000009");
         same(&data, "physics_mode", "test", "value");

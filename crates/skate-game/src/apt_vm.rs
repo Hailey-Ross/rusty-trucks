@@ -759,6 +759,12 @@ impl Vm {
                         vec![],
                     )?;
                 }
+                // GotoLabel: gotoAndStop(label) on the current target; a following Play makes it gotoAndPlay
+                // (challenge_info.apt: `GotoLabel "cycle"`).
+                0x8c => {
+                    let label = i.operand.as_str().ok_or("APT GotoLabel operand missing")?.to_owned();
+                    host.call(self, scope.this, "gotoAndStop", vec![Value::Text(label)])?;
+                }
                 // Retail pop (82E6D048) releases the top only while the stack is above its
                 // base; on an empty stack it does nothing. Retail movies rely on it
                 // (screenmanager.apt pops after a setMember that left nothing).

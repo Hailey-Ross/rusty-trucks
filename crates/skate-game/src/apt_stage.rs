@@ -1108,7 +1108,6 @@ mod tests {
     /// every FEChallengeMap native the movie calls is answered, the list shows the location folders, A opens Downtown
     /// and A again picks a location the teleport handler enables. Data-gated (a version 6 menu set, the collections).
     #[test]
-    #[ignore = "NOT READY: the movie's load script runs away in our VM (2049 clips on frame 0, research b260)"]
     fn retail_challenge_map_screen_opens_and_picks_a_location() {
         let Some(root) = crate::apt_imports::test_menu_set() else {
             return;
@@ -1168,6 +1167,15 @@ mod tests {
         }
         let rows = game.challenge_map.state.rows(&registry, &context);
         assert_eq!(rows.len(), 7, "the seven location folders");
+        // SetState 33 loads the default map into an image slot (b262: mDefaultMapImage.LoadRX2Texture); the
+        // ImageRenderComponent quad draws that slot, which resolves to the set's map1024 picture (version 7).
+        let draws = stage.draw(|key, movie| set.scene(key, movie)).unwrap();
+        let slots: Vec<&str> = draws.iter().filter_map(|d| game.image_slots.texture(&d.texture)).collect();
+        eprintln!("image slot draws: {slots:?}");
+        assert!(slots.contains(&"image/fe/source/images/map/map1024"), "the default map draws: {slots:?}");
+        if set.has_named_image("fe/source/images/map/map1024") {
+            assert!(set.image("image/fe/source/images/map/map1024").is_some());
+        }
         // A on the first folder (Downtown) through the movie's picker, then A on its first location.
         let mut selected = None;
         for _ in 0..2 {

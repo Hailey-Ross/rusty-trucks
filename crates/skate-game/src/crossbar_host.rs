@@ -208,6 +208,8 @@ pub struct FrontEnd<'a> {
     pub trick_guide: crate::trick_guide_host::TrickGuideHost,
     /// The Challenge Map screen (challenge_map_host).
     pub challenge_map: crate::challenge_map_host::ChallengeMapHost,
+    /// The image slots (`Game.ImageRenderer_*`, one global manager across screens).
+    pub image_slots: crate::image_renderer_host::ImageSlots,
     /// The popup host (FE screen 29): the shown popup and the choices made.
     pub popup: crate::popup_host::PopupHost,
 }
@@ -233,6 +235,7 @@ impl<'a> FrontEnd<'a> {
             sub_options: Default::default(),
             trick_guide: Default::default(),
             challenge_map: Default::default(),
+            image_slots: Default::default(),
             popup: Default::default(),
         }
     }
@@ -255,6 +258,9 @@ impl crate::apt_stage::StageNatives for FrontEnd<'_> {
         }
         // A shown popup is the focus screen (sub_82D09F28): its natives and the Game menu callbacks go to it first.
         if let Some(value) = self.popup.call(object, method, &args) {
+            return Ok(value);
+        }
+        if let Some(value) = self.image_slots.call(object, method, &args) {
             return Ok(value);
         }
         if let Some(value) = self.challenge_map.call(vm, self.registry, self.context, self.language, object, method, &args)? {
@@ -330,7 +336,7 @@ mod tests {
             help: format!("ID_{id}_HELP"),
             sub_option_kind: kind,
         };
-        MenuRegistry::new(MenuData { map_nodes: Vec::new(),
+        MenuRegistry::new(MenuData { map_nodes: Vec::new(), map_pictures: Default::default(),
             categories: vec![
                 Category { id: "SinglePlayer".into(), label: "ID_CROSSBAR_SINGLE_PLAYER".into(), icon: Icon::Retail("singleplayer".into()) },
                 Category { id: "Options".into(), label: "ID_CROSSBAR_OPTIONS".into(), icon: Icon::Retail("options".into()) },

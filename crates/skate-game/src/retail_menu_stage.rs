@@ -111,6 +111,8 @@ struct MenuStage {
     /// The Challenge Map screen's AS id and host (challenge_map_host).
     challenge_map_id: i32,
     challenge_map: crate::challenge_map_host::ChallengeMapHost,
+    /// The image slots the movies draw named images through (image_renderer_host).
+    image_slots: crate::image_renderer_host::ImageSlots,
     /// The retail guide (mod layers apply over it) and the mod generation it was built for.
     trick_guide_base: std::sync::Arc<skate_core::trick_guide::TrickGuide>,
     trick_guide_generation: u64,
@@ -383,12 +385,9 @@ fn setup(
                 warn!("RETAIL_MENUS: Video Calibration unavailable (no videocal movie); run setup");
             }
             // The Challenge Map (FE 17): with its movie in the set the pause item opens the retail screen (stacked
-            // over the PC overlay's MAPS handler, which stays the fallback for sets exported before it was added).
-            // NOT READY: the movie's load script still runs away in our VM (2049 clips on frame 0, test
-            // `retail_challenge_map_screen_opens_and_picks_a_location`); a stage error would stop every retail menu, so
-            // the screen is a development switch until that passes.
-            let enabled = std::env::var_os("SKATE3_RETAIL_CHALLENGE_MAP").is_some();
-            if enabled && movies.movies.contains_key("source/screens/map/challengemap") && menus.registry.data().item(CHALLENGE_MAP_ITEM).is_some() {
+            // over the PC overlay's MAPS handler, which stays the fallback for sets exported before it was added;
+            // test `retail_challenge_map_screen_opens_and_picks_a_location`).
+            if movies.movies.contains_key("source/screens/map/challengemap") && menus.registry.data().item(CHALLENGE_MAP_ITEM).is_some() {
                 let owner = Owner::Engine(format!("{}{}", crate::retail_menus::SCREEN, crate::fe_backdrop::CHALLENGE_MAP_SCREEN));
                 let handler = skate_core::menus::Handler { owner, select: true, highlight: false, callback: None };
                 menus.registry.register_handler(EntryRef::item(CHALLENGE_MAP_ITEM), handler);
@@ -419,6 +418,7 @@ fn setup(
                 trick_guide,
                 challenge_map_id: as_id(CHALLENGE_MAP),
                 challenge_map: Default::default(),
+                image_slots: Default::default(),
                 video_cal_id: as_id(VIDEO_CALIBRATION),
                 video_cal: Default::default(),
                 video_cal_rules: Default::default(),
@@ -521,6 +521,7 @@ fn update(
     }
     fe.trick_guide.open = trick.is_some() && ms.stack.top(Layer::Main) == trick;
     fe.challenge_map = std::mem::take(&mut ms.challenge_map);
+    fe.image_slots = std::mem::take(&mut ms.image_slots);
     fe.challenge_map.open = map.is_some() && ms.stack.top(Layer::Main) == map;
     fe.popup = std::mem::take(&mut ms.popup);
     if let Some(skater) = &skater {
@@ -602,7 +603,7 @@ fn update(
                 if key == APT_PREVIOUS {
                     consumed = true;
                     sounds.write(FrontendSound::named("core_b_button"));
-                    let action = cm.state.back();
+                    let action = cm.state.back(fe.registry, fe.context);
                     cm.apply(action);
                 } else if MAP_NEXT_TAB.contains(&key) || MAP_PREVIOUS_TAB.contains(&key) {
                     consumed = true;
@@ -954,6 +955,7 @@ fn update(
     ms.settings = fe.settings;
     ms.trick_guide = std::mem::take(&mut fe.trick_guide);
     ms.challenge_map = std::mem::take(&mut fe.challenge_map);
+    ms.image_slots = std::mem::take(&mut fe.image_slots);
     ms.popup = std::mem::take(&mut fe.popup);
     // A Challenge Map leaf the player picked goes through the registry: the engine's teleport handler queues the
     // teleport and closes the map and the pause menu (retail fades out and closes the front end, sub_826494C8);
@@ -1265,6 +1267,22 @@ fn render(
     }
     // An unresolved prompt draws nothing (an empty key would draw solid white).
     draws.retain(|d| !d.texture.starts_with("prompt/"));
+    // Image slots (ImageRenderComponent, `slot/<n>`): the slot's loaded image; an empty slot or an image nobody has
+    // draws nothing (retail: the texture lookup finds nothing, b258 section 2), never the white fallback.
+    for draw in &mut draws {
+        if draw.texture.starts_with(crate::image_renderer_host::SLOT_TEXTURE_PREFIX) {
+            draw.texture = ms.image_slots.texture(&draw.texture).unwrap_or_default().to_owned();
+            if draw.texture.is_empty() {
+                draw.texture = crate::image_renderer_host::SLOT_TEXTURE_PREFIX.to_owned();
+            }
+        }
+    }
+    draws.retain(|d| {
+        let named = [crate::image_renderer_host::SLOT_TEXTURE_PREFIX, crate::image_renderer_host::ASSET_TEXTURE_PREFIX, crate::retail_menu_movies::NAMED_IMAGE_PREFIX]
+            .iter()
+            .any(|p| d.texture.starts_with(p));
+        !named || movies.image(&d.texture).is_some()
+    });
     // The FE fader over everything (alpha 1 = black), past the stage edges for any aspect ratio.
     if ms.fade.alpha > 0.0 {
         let v = |x: f32, y: f32| crate::apt_scene::Vertex { position: [x, y], uv: [0.0, 0.0] };
