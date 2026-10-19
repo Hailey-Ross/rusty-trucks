@@ -914,7 +914,7 @@ keyed by the NPC skater's stable id.
   no goal; other component ignored; under the mesh: straight up; 2.67 m off: plan rejected).
 - **Open:** the root of the #5 stall is earlier: the nollie at node 146 was dropped because the skater was off the
   path (`npc_sim.rs` trick drop), so it never popped onto the raised section at nodes 152 to 159 (a ledge or manual
-  pad, [inference]). Follow-up in `.claude/todo/living-world-follow-ups.md`.
+  pad, [inference]). Ported in the next section.
 
 ## Recorded tricks go out off the path too; leaving the path clears the pending slot (2026-10-18)
 - **Problem:** stall #5 (cuz) was 1.22 m off its path at node 142, so our sim dropped the recorded nollie at node 146
