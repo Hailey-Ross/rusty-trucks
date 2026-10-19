@@ -211,7 +211,7 @@ impl Movie {
         into: Option<usize>,
     ) -> Result<usize, String> {
         if depth > 32 || self.instances.len() > 2048 {
-            return Err("APT movie hierarchy limit".into());
+            return Err(format!("APT movie hierarchy limit (depth {depth}, {} instances, character {character})", self.instances.len()));
         }
         let c = self
             .characters

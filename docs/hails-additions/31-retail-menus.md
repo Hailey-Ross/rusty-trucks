@@ -2094,3 +2094,17 @@ Done so far:
 
 Next: the tree loader from the collections + teleports.json, the FEChallengeMap host object, the off-board teleport
 handler (`fe_locations`), the pause menu row switching to the screen when the movie is installed.
+
+Progress (2026-10-18, evening): the vault tree loads into the menus (`skate_data::challenge_map`, Downtown's 14
+locations; retail's location filter Lua as data), every location with a teleport matrix gets a `teleport:<key>`
+engine handler, the navigation core (`skate_core::challenge_map`) and the FEChallengeMap host (24 getters) are in,
+teleports land off the board (`travel_ex`, `challenge_map::plan`: same map instant, another map through the map
+transition, refused in multiplayer). The stage opens FE 17 with the movie, but the movie's load script still runs
+away in our VM (2049 clips on frame 0), so the screen is a development switch (`SKATE3_RETAIL_CHALLENGE_MAP=1`) and
+players keep the PC overlay's MAPS until research b260's fix lands. Map pictures: research b257 / b258 / b259
+(fedynamic.big map textures, the image renderer natives, the export plan).
+
+Out-of-date menus force the refresh (user, 2026-10-18): the asset check's menu movie / table findings restart the game
+into Refresh Game Files once (`asset_check::force_menu_refresh`); a run the refresh started never forces again.
+The engine still reads a version 5 movie set (`OLDEST_VERSION`), so a refresh that could not run leaves the menus
+working.

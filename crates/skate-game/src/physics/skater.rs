@@ -190,8 +190,19 @@ impl SkaterRuntime {
         transform: [[f32; 4]; 4],
         velocity: Option<[f32; 3]>,
     ) -> Result<(), String> {
+        self.travel_ex(transform, velocity, true)
+    }
+
+    /// A teleport that lands on the board or on foot (retail's Challenge Map teleports arrive off the board, the
+    /// event's IsOnBoard = 0, b244d; the on-foot landing is BipedGround through the teleport state).
+    pub(crate) fn travel_ex(
+        &mut self,
+        transform: [[f32; 4]; 4],
+        velocity: Option<[f32; 3]>,
+        on_board: bool,
+    ) -> Result<(), String> {
         self.player_input.request_teleport_ex(transform, velocity)?;
-        self.teleport_state.request_manual(transform, true);
+        self.teleport_state.request_manual(transform, on_board);
         Ok(())
     }
 

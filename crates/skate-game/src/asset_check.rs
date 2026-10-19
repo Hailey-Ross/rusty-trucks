@@ -126,7 +126,38 @@ pub(crate) struct AssetCheckPlugin;
 
 impl Plugin for AssetCheckPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, start.run_if(loading_done.and(bevy::ecs::schedule::common_conditions::run_once)));
+        app.add_systems(Update, start.run_if(loading_done.and(bevy::ecs::schedule::common_conditions::run_once)))
+            .add_systems(Update, force_menu_refresh);
+    }
+}
+
+/// Set by the check when the retail menu movies or tables are older than this build reads (user, 2026-10-18: "force a
+/// refresh if the menus are out of date for the new menu work"): the game restarts into setup's refresh at once
+/// instead of only offering Extras > Refresh Game Files.
+static FORCE_MENU_REFRESH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A finding that forces the refresh: the menu movies or tables (the `hud` group's menu files).
+fn forces_refresh(f: &Finding) -> bool {
+    f.group == "hud" && (f.reason.starts_with("menu movie") || f.reason.starts_with("menu tables"))
+}
+
+/// Restart into the refresh once. Never from a run the refresh itself started (`--refresh-assets`), so a refresh that
+/// could not fix the files falls back to the menu's Refresh Game Files row instead of looping.
+fn force_menu_refresh(mut exit: MessageWriter<AppExit>, mut done: Local<bool>) {
+    if *done || !FORCE_MENU_REFRESH.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    *done = true;
+    if std::env::args().any(|a| a == "--refresh-assets") {
+        warn!("ASSET_CHECK menus still out of date after a refresh: not forcing another (Extras > Refresh Game Files)");
+        return;
+    }
+    match crate::setup::restart_with_refresh() {
+        Ok(()) => {
+            warn!("ASSET_CHECK menus out of date: restarting into Refresh Game Files");
+            exit.write(AppExit::Success);
+        }
+        Err(e) => warn!("ASSET_CHECK menus out of date, the forced refresh could not start: {e}"),
     }
 }
 
@@ -143,6 +174,9 @@ fn start(config: Res<crate::config::Config>) {
             warn!("ASSET_CHECK {}: {}", f.group, f.reason);
             crate::setup::mark_stale(&f.group);
         }
+        if findings.iter().any(forces_refresh) {
+            FORCE_MENU_REFRESH.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         info!("ASSET_CHECK done in {} ms: {}", started.elapsed().as_millis(),
             if findings.is_empty() { "game files current".to_owned() } else { format!("{} problem(s), refresh offered", findings.len()) });
     });
@@ -151,6 +185,15 @@ fn start(config: Res<crate::config::Config>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn out_of_date_menus_force_the_refresh_and_nothing_else_does() {
+        assert!(forces_refresh(&finding("hud", "menu movies are version 5 (this build reads 6)")));
+        assert!(forces_refresh(&finding("hud", "menu tables lack the FE screens")));
+        assert!(forces_refresh(&finding("hud", "menu movie manifest missing")));
+        assert!(!forces_refresh(&finding("hud", "hud textures missing")), "other hud files only offer the refresh");
+        assert!(!forces_refresh(&finding("audio", "menu movies")), "other groups do not force it");
+    }
 
     fn tables(screens: bool) -> String {
         let mut t = serde_json::json!({

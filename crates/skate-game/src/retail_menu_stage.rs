@@ -46,6 +46,14 @@ const OPTIONS_PATH: &str = "options/options.swf";
 /// The Trick Guide template (record 29) and its path; FE screen 14's init opens it (0x82618A40).
 const TRICK_GUIDE: &str = "TrickTutorial";
 const TRICK_GUIDE_PATH: &str = "tricks/trickguide.swf";
+/// The Challenge Map template (record 68) and its path; FE screen 17 (b244 / b253). The pause item that opens it.
+const CHALLENGE_MAP: &str = "ChallengeMap";
+const CHALLENGE_MAP_PATH: &str = "map/challengemap.swf";
+const CHALLENGE_MAP_ITEM: &str = "ChallengeMap";
+/// Its tab keys (handler 82646B28, b256): AptRShift2 / AptDRight / AptLStickRight next, AptLShift2 / AptDLeft /
+/// AptLStickLeft previous (clamped, no wrap).
+const MAP_NEXT_TAB: [u32; 3] = [7, 19, 27];
+const MAP_PREVIOUS_TAB: [u32; 3] = [10, 18, 26];
 /// The Video Calibration template (record 91) and its path; FE screen 51's init opens it (0x8260E868).
 const VIDEO_CALIBRATION: &str = "VideoCalibration";
 const VIDEO_CALIBRATION_PATH: &str = "options/videocal.swf";
@@ -100,6 +108,9 @@ struct MenuStage {
     /// The Trick Guide screen's AS id (retail 629) and state (empty guide = not available).
     trick_guide_id: i32,
     trick_guide: crate::trick_guide_host::TrickGuideHost,
+    /// The Challenge Map screen's AS id and host (challenge_map_host).
+    challenge_map_id: i32,
+    challenge_map: crate::challenge_map_host::ChallengeMapHost,
     /// The retail guide (mod layers apply over it) and the mod generation it was built for.
     trick_guide_base: std::sync::Arc<skate_core::trick_guide::TrickGuide>,
     trick_guide_generation: u64,
@@ -371,6 +382,19 @@ fn setup(
             } else {
                 warn!("RETAIL_MENUS: Video Calibration unavailable (no videocal movie); run setup");
             }
+            // The Challenge Map (FE 17): with its movie in the set the pause item opens the retail screen (stacked
+            // over the PC overlay's MAPS handler, which stays the fallback for sets exported before it was added).
+            // NOT READY: the movie's load script still runs away in our VM (2049 clips on frame 0, test
+            // `retail_challenge_map_screen_opens_and_picks_a_location`); a stage error would stop every retail menu, so
+            // the screen is a development switch until that passes.
+            let enabled = std::env::var_os("SKATE3_RETAIL_CHALLENGE_MAP").is_some();
+            if enabled && movies.movies.contains_key("source/screens/map/challengemap") && menus.registry.data().item(CHALLENGE_MAP_ITEM).is_some() {
+                let owner = Owner::Engine(format!("{}{}", crate::retail_menus::SCREEN, crate::fe_backdrop::CHALLENGE_MAP_SCREEN));
+                let handler = skate_core::menus::Handler { owner, select: true, highlight: false, callback: None };
+                menus.registry.register_handler(EntryRef::item(CHALLENGE_MAP_ITEM), handler);
+            } else {
+                warn!("RETAIL_MENUS: Challenge Map screen unavailable (no challengemap movie); the MAPS overlay stands in; run Refresh Game Files");
+            }
             info!("RETAIL_MENUS stage ready (F8 opens the retail pause menu)");
             commands.insert_resource(MenuStage {
                 stage,
@@ -393,6 +417,8 @@ fn setup(
                 fade_carry: 0.0,
                 trick_guide_fade_in: None,
                 trick_guide,
+                challenge_map_id: as_id(CHALLENGE_MAP),
+                challenge_map: Default::default(),
                 video_cal_id: as_id(VIDEO_CALIBRATION),
                 video_cal: Default::default(),
                 video_cal_rules: Default::default(),
@@ -445,6 +471,7 @@ fn update(
     guide_mods: Res<crate::trick_guide_host::TrickGuideMods>,
     mut demo: ResMut<crate::trick_guide_scene::TrickGuideDemo>,
     mut popup_mods: ResMut<crate::popup_host::PopupMods>,
+    mut travel: ResMut<crate::challenge_map::ChallengeMapTravel>,
 ) {
     let ready = stage.as_ref().is_some_and(|s| !s.failed) && movies.is_some() && menus.is_some();
     // The ported screens in this build's screen table (TU3 FE ids 56 and 45); none in tables extracted before
@@ -453,6 +480,7 @@ fn update(
     let options = backdrop.index(crate::fe_backdrop::SETTINGS_SCREEN);
     let trick = backdrop.index(crate::fe_backdrop::TRICK_GUIDE_SCREEN);
     let cal = backdrop.index(crate::fe_backdrop::VIDEO_CALIBRATION_SCREEN);
+    let map = backdrop.index(crate::fe_backdrop::CHALLENGE_MAP_SCREEN);
     available.set_if_neq(RetailPause(ready && pause.is_some()));
     if ready && pause.is_none() && !std::mem::replace(&mut *warned, true) {
         warn!("RETAIL_MENUS: the menu tables have no FE screens yet (run setup); Start opens the PC overlay until then");
@@ -492,6 +520,8 @@ fn update(
         }
     }
     fe.trick_guide.open = trick.is_some() && ms.stack.top(Layer::Main) == trick;
+    fe.challenge_map = std::mem::take(&mut ms.challenge_map);
+    fe.challenge_map.open = map.is_some() && ms.stack.top(Layer::Main) == map;
     fe.popup = std::mem::take(&mut ms.popup);
     if let Some(skater) = &skater {
         fe.trick_guide.stance.regular = skater.animation.regular_stance();
@@ -503,6 +533,7 @@ fn update(
     let mut mod_events: Vec<(String, serde_json::Value)> = Vec::new();
     let result = (|| -> Result<(), String> {
         let (crossbar_id, options_id, trick_id, cal_id) = (ms.crossbar_id, ms.options_id, ms.trick_guide_id, ms.video_cal_id);
+        let map_id = ms.challenge_map_id;
         let auto = ms.auto_open && time.elapsed_secs() > 4.0;
         ms.auto_open &= !auto;
         if auto {
@@ -539,7 +570,7 @@ fn update(
                 continue;
             }
             let target = ms.stack.input_target();
-            let Some(screen) = target.filter(|t| [pause, options, trick, cal].contains(&Some(*t))) else { continue };
+            let Some(screen) = target.filter(|t| [pause, options, trick, cal, map].contains(&Some(*t))) else { continue };
             // sub_825EC0E8: the screen's C++ handler first, then the movie's UpdateInput when the handler did not
             // consume the key and the screen's record says so (+12).
             let mut consumed = false;
@@ -549,6 +580,8 @@ fn update(
                 options_id
             } else if Some(screen) == cal {
                 cal_id
+            } else if Some(screen) == map {
+                map_id
             } else {
                 trick_id
             };
@@ -561,7 +594,25 @@ fn update(
                 // the close fades out (S+52).
                 continue;
             }
-            if Some(screen) == cal {
+            if Some(screen) == map {
+                // Screen 17 input 82646B28 (b256): B hides the legend, pops a folder or closes at the root; the tab
+                // keys switch tabs (clamped). Up / down / A stay with the movie's picker (OnMenuHilight / OnMenuSelect).
+                // NOT RETAIL YET: Y (legend) and X (online difficulty) are not mapped to their Apt keys.
+                let cm = &mut fe.challenge_map;
+                if key == APT_PREVIOUS {
+                    consumed = true;
+                    sounds.write(FrontendSound::named("core_b_button"));
+                    let action = cm.state.back();
+                    cm.apply(action);
+                } else if MAP_NEXT_TAB.contains(&key) || MAP_PREVIOUS_TAB.contains(&key) {
+                    consumed = true;
+                    let action = cm.state.step_tab(fe.registry, fe.context, MAP_NEXT_TAB.contains(&key));
+                    if action != skate_core::challenge_map::Action::None {
+                        sounds.write(FrontendSound::named("core_tab"));
+                    }
+                    cm.apply(action);
+                }
+            } else if Some(screen) == cal {
                 // Screen 51 input 0x8260E890: A advances (0x8260E950), B goes back a page or closes; both play their
                 // sound and leave the key to the movie too (the handler returns 0).
                 let rules = ms.video_cal_rules.clone();
@@ -658,6 +709,7 @@ fn update(
                 )?;
             }
             flush_trick_guide(&mut ms.stage, trick_id, &mut fe)?;
+            flush_challenge_map(&mut ms.stage, &mut ms.stack, map, map_id, &mut fe)?;
         }
         // The stack's update (sub_82D0A560) and what it asks of the movies and the game.
         for effect in ms.stack.update(&|i| backdrop.info(i)) {
@@ -689,6 +741,18 @@ fn update(
                     fe.trick_guide.open = false;
                     ms.trick_guide_fade_in = None;
                     close(&mut ms.stage, trick_id, &mut fe)?;
+                }
+                Effect::Open(i) if Some(i) == map => {
+                    // Init sub_826457E0 on the mode root (sub_8261BC30: `progression` in career and free skate).
+                    // NOT RETAIL YET: OnlineChallengeMap (`online`) is not reached; it has no handler.
+                    info!("RETAIL_MENUS open Challenge Map (FE {i})");
+                    fe.challenge_map.open(fe.registry, fe.context, "progression");
+                    open_screen(&mut ms.stage, CHALLENGE_MAP_PATH, CHALLENGE_MAP, &mut fe)?;
+                }
+                Effect::Close(i) if Some(i) == map => {
+                    info!("RETAIL_MENUS close Challenge Map (FE {i})");
+                    fe.challenge_map.open = false;
+                    close(&mut ms.stage, map_id, &mut fe)?;
                 }
                 Effect::Open(i) if Some(i) == cal => {
                     info!("RETAIL_MENUS open Video Calibration (FE {i})");
@@ -855,6 +919,14 @@ fn update(
             }
         }
         flush_trick_guide(&mut ms.stage, trick_id, &mut fe)?;
+        // Challenge Map: intro complete = ready; its open states and the picker's callbacks go out after the update.
+        if let Some(m) = map.filter(|m| ms.stack.top(Layer::Main) == Some(*m)) {
+            take_call(&mut fe, &format!("Game.OnScreenLoaded({map_id})"));
+            if take_call(&mut fe, &format!("Game.OnScreenIntroComplete({map_id})")) {
+                ms.stack.ready(m);
+            }
+        }
+        flush_challenge_map(&mut ms.stage, &mut ms.stack, map, map_id, &mut fe)?;
         // Crossbar IntroComplete (vtable 0x82303F90 +104 = 8261B1F0) selects the mode menu (8261B9E8): when the
         // mode changed it resets level 1, row 0, tab 0 and walks to the first enabled row, then it always posts
         // SetState(InitialiseMenu) through the facade (+56 vt+20). The screen is ready (state 3) from here.
@@ -881,7 +953,23 @@ fn update(
     ms.crossbar = fe.state;
     ms.settings = fe.settings;
     ms.trick_guide = std::mem::take(&mut fe.trick_guide);
+    ms.challenge_map = std::mem::take(&mut fe.challenge_map);
     ms.popup = std::mem::take(&mut fe.popup);
+    // A Challenge Map leaf the player picked goes through the registry: the engine's teleport handler queues the
+    // teleport and closes the map and the pause menu (retail fades out and closes the front end, sub_826494C8);
+    // a mod's handler gets its menu_select event; a greyed one never reaches here.
+    if let Some(entry) = ms.challenge_map.selected.take() {
+        let outcome = menus.act(MenuAction::Select { entry: entry.clone() });
+        info!("RETAIL_MENUS challenge map select {}: {outcome:?}", entry.hook_id());
+        if let Outcome::Forward(Owner::Engine(name), _) = &outcome {
+            if let Some(key) = name.strip_prefix(crate::retail_menus::TELEPORT) {
+                travel.requested.push(key.to_owned());
+                for screen in [map, pause].into_iter().flatten() {
+                    ms.stack.request(Layer::Main, Request::Close { screen });
+                }
+            }
+        }
+    }
     // The 3D demo behind FE 14 (trick_guide_scene.rs): the screen on top, its highlighted clip and camera track
     // (S+204, S+200).
     demo.set_if_neq(crate::trick_guide_scene::TrickGuideDemo {
@@ -1086,6 +1174,19 @@ fn run_fade_action(stack: &mut FeStack, action: FadeAction) {
 
 /// The Trick Guide's queued screen states (its picker callbacks post them from inside a movie call), in order; the
 /// rebuild they start can queue more (bounded).
+/// The Challenge Map's queued screen states (`SetState(n)`), and its close at the root (B).
+fn flush_challenge_map(stage: &mut Stage, stack: &mut FeStack, map: Option<usize>, id: i32, fe: &mut FrontEnd) -> Result<(), String> {
+    for state in std::mem::take(&mut fe.challenge_map.states) {
+        set_state(stage, id, state, fe)?;
+    }
+    if std::mem::take(&mut fe.challenge_map.close) {
+        if let Some(screen) = map {
+            stack.request(Layer::Main, Request::Close { screen });
+        }
+    }
+    Ok(())
+}
+
 fn flush_trick_guide(stage: &mut Stage, id: i32, fe: &mut FrontEnd) -> Result<(), String> {
     for _ in 0..8 {
         let states = std::mem::take(&mut fe.trick_guide.states);

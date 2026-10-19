@@ -1104,6 +1104,83 @@ mod tests {
         assert!(names.iter().any(|n| n == "mItem0"), "no row clips: {names:?}");
     }
 
+    /// The Challenge Map (template 68, movie map/challengemap) through the screen manager on the real vault tree:
+    /// every FEChallengeMap native the movie calls is answered, the list shows the location folders, A opens Downtown
+    /// and A again picks a location the teleport handler enables. Data-gated (a version 6 menu set, the collections).
+    #[test]
+    #[ignore = "NOT READY: the movie's load script runs away in our VM (2049 clips on frame 0, research b260)"]
+    fn retail_challenge_map_screen_opens_and_picks_a_location() {
+        let Some(root) = crate::apt_imports::test_menu_set() else {
+            return;
+        };
+        let set = crate::retail_menu_movies::RetailMenuMovies::read(&root).unwrap();
+        let movies = set.movies.clone();
+        if !movies.contains_key("source/screens/map/challengemap") {
+            eprintln!("skipped: menu set without the challenge map");
+            return;
+        }
+        let assets = crate::apt_imports::main_checkout().join("assets");
+        let (mut data, loaded) = crate::retail_menus::read(&assets);
+        let Ok(collections) = skate_data::collections::Collections::load(&assets) else {
+            eprintln!("skipped: no collections");
+            return;
+        };
+        if !loaded {
+            eprintln!("skipped: no menu tables");
+            return;
+        }
+        data.map_nodes = skate_data::challenge_map::load(collections.entries(), "progression", &Default::default());
+        let mut menus = crate::retail_menus::RetailMenus::new(data, true);
+        assert!(menus.register_teleports(&["dist_downtown_aletown".to_owned()]) == 1);
+        let registry = menus.registry;
+        let context = skate_core::menus::MenuContext::new("FreePlay");
+        let language = movies.get("source/screens/main/core_menu").map(|m| m.text_assets.language.clone()).unwrap_or_default();
+        let mut game = crate::crossbar_host::FrontEnd::new(&registry, &context, &language);
+        game.challenge_map.open(&registry, &context, "progression");
+        let mut stage = Stage::new(&game).unwrap();
+        stage.load_root("source/screens/main", &movies, &mut game).unwrap();
+        for _ in 0..4 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        stage.call_path("_global.ScreenManager.RegisterTemplate", vec![Value::Text("ChallengeMap".into())], &mut game).unwrap();
+        for (name, i) in [("AptNext", "2"), ("AptPrevious", "3"), ("AptUp", "12"), ("AptDown", "13")] {
+            stage.call_path("_level0._root.RegisterAptInputEnum", vec![Value::Text(name.into()), Value::Text(i.into())], &mut game).unwrap();
+        }
+        let args = ["source/screens/map/challengemap.swf", "screen", "0", "ChallengeMap"].map(|a| Value::Text(a.into())).to_vec();
+        stage.call_path("_global.ScreenManager.OpenScreen", args, &mut game).unwrap();
+        for frame in 0..120 {
+            if let Err(e) = stage.update(16.0, &movies, &mut game) {
+                let traces = stage.take_traces();
+                panic!("frame {frame}: {e}\ncalls: {:?}\ntraces (last 40): {:?}", game.calls, &traces[traces.len().saturating_sub(40)..]);
+            }
+        }
+        eprintln!("game calls: {:?}", game.calls);
+        let unanswered: Vec<&String> = game.calls.iter().filter(|c| c.starts_with("FEChallengeMap.")).collect();
+        assert!(unanswered.is_empty(), "FEChallengeMap calls nobody answered: {unanswered:?}");
+        let id = game.calls.iter().find_map(|c| c.strip_prefix("Game.OnScreenLoaded(")).map(|c| c.trim_end_matches(')').to_owned()).expect("the movie loaded");
+        // The open states, as the stage posts them after the update.
+        for state in std::mem::take(&mut game.challenge_map.states) {
+            stage.call_path(&format!("_level0.{id}.SetState"), vec![Value::Text(state.to_string())], &mut game).ok();
+        }
+        for _ in 0..20 {
+            stage.update(16.0, &movies, &mut game).unwrap();
+        }
+        let rows = game.challenge_map.state.rows(&registry, &context);
+        assert_eq!(rows.len(), 7, "the seven location folders");
+        // A on the first folder (Downtown) through the movie's picker, then A on its first location.
+        let mut selected = None;
+        for _ in 0..2 {
+            stage.call_path("_global.ScreenManager.UpdateInput", vec![Value::Text(id.clone()), Value::Text("2".into()), Value::Text("0".into())], &mut game).unwrap();
+            for _ in 0..8 {
+                stage.update(16.0, &movies, &mut game).unwrap();
+            }
+            selected = selected.or(game.challenge_map.selected.clone());
+        }
+        eprintln!("stack {:?} selected {selected:?}", game.challenge_map.state.stack);
+        assert_eq!(game.challenge_map.state.stack.len(), 1, "A opened the Downtown folder");
+        assert!(selected.is_some_and(|e| e.kind == skate_core::menus::EntryKind::FeLocation), "A picked a location");
+    }
+
     /// The Trick Guide (pause menu Learn > Trick Guide, template 29 TrickTutorial, movie tricks/trickguide) through the
     /// screen manager. Data-gated like the above; `SKATE3_DUMP_DRAWS=1` prints the draws.
     #[test]

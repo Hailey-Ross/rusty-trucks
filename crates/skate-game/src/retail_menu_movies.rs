@@ -27,8 +27,12 @@ use std::path::Path;
 pub const FORMAT: &str = "skate3-menu-movies";
 /// Largest mod movie file accepted (the biggest retail menu movie is well below this).
 pub const MAX_MOD_MOVIE_BYTES: u64 = 16 << 20;
-/// Manifest version this engine reads (3: textured units carry their bitmap id, Milestone 4; 4: screens/main).
-pub const VERSION: u64 = 5;
+/// Manifest version setup writes (3: textured units carry their bitmap id, Milestone 4; 4: screens/main; 5: main.apt's
+/// layer movies; 6: the challenge map).
+pub const VERSION: u64 = 6;
+/// The oldest version this engine still reads: 6 only adds a movie, so a 5 set works without the challenge map (its
+/// pause item keeps the PC overlay's MAPS until Refresh Game Files).
+pub const OLDEST_VERSION: u64 = 5;
 /// Mod bitmap limits: per mod, and the largest side (same as mod mesh textures).
 pub const MAX_MOD_BITMAPS: usize = 64;
 pub const MAX_MOD_BITMAP_SIDE: u32 = 2048;
@@ -130,7 +134,8 @@ impl RetailMenuMovies {
             return Ok(Self::default());
         }
         let manifest = read_json(&manifest_path)?;
-        if manifest["format"] != FORMAT || manifest["version"] != VERSION {
+        let version = manifest["version"].as_u64().unwrap_or(0);
+        if manifest["format"] != FORMAT || !(OLDEST_VERSION..=VERSION).contains(&version) {
             // 2 (Milestone 3d): placement clip actions; 3 (Milestone 4): unit bitmap ids. Setup re-exports.
             return Err("unsupported menu movie set".into());
         }
