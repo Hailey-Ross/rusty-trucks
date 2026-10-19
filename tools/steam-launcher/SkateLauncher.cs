@@ -441,7 +441,7 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         }
         if (waitEntry != null && RunningGames() == "") { string e = waitEntry; waitEntry = null; pages.Pop(); Begin(e, waitLabel, waitName); }
         WatchGame();
-        if (dirty) { dirty = false; Invalidate(); }
+        if (dirty || Animating()) { dirty = false; Invalidate(); }
         // The rolling boards and the Play glow: about 30 frames a second while the menu or a job shows.
         if (Visible && ++frame % 2 == 0 && (job != null || (pages.Count > 0 && IsMain(pages.Peek())))) Invalidate();
         // Only while the menu is in front: XInput reports the pad to every process, so the game's presses would
@@ -535,6 +535,18 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
     DateTime jobStart;
 
     protected override void OnPaint(PaintEventArgs ev) { Render(ev.Graphics, ClientSize.Width, ClientSize.Height); }
+
+    // Screen and selection animations (seconds on `clock`): short and eased out, so input never waits on them.
+    string screenKey = ""; int screenDepth, screenDir = 1, selIndex = -1; float screenAt = -1, selAt = -1, selEase = 1;
+    static float Ease(float x) { x = Math.Max(0, Math.Min(1, x)); float r = 1 - x; return 1 - r * r * r; }
+    bool Animating() { float t = (float)clock.Elapsed.TotalSeconds; return t - screenAt < 0.2f || t - selAt < 0.14f; }
+    // The incoming screen fades up from the backdrop (the top bar stays).
+    static void Veil(Graphics g, int w, int h, float barH, float ease) {
+        if (ease >= 1) return;
+        var r = new RectangleF(0, barH + 1, w, h - barH - 1);
+        int a = (int)(255 * (1 - ease));
+        using (var b = new System.Drawing.Drawing2D.LinearGradientBrush(new RectangleF(0, 0, w, h), Fade(Bg1, a), Fade(Bg2, a), 90f)) g.FillRectangle(b, r);
+    }
 
     // The main page: item 0 is the hero's Play card, the rest tiles in rows of TileCols.
     const int TileCols = 4;
@@ -662,10 +674,25 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
         float top = barH + h * 0.02f, bottom = h - h * 0.085f;
         using (var pen = new Pen(Fade(Stroke, 160), 1)) g.DrawLine(pen, m, barH, w - m, barH);
 
-        if (job != null) { RenderJob(g, w, h, m, top, bottom, t); return; }
-        if (pages.Count == 0) return;
+        // A screen change slides the new screen in a little and fades it up (user 2026-10-19: switching screens was
+        // "a little jarring"); a main-page refresh keeps its depth and title, so it does not animate.
+        string key = job != null ? "job" : pages.Count + "|" + (pages.Count > 0 ? pages.Peek().Title : "");
+        if (key != screenKey) {
+            int depth = job != null ? pages.Count + 1 : pages.Count;
+            screenDir = depth >= screenDepth ? 1 : -1;
+            screenKey = key; screenDepth = depth; screenAt = t;
+        }
+        float ease = Ease((t - screenAt) / 0.18f);
+        var content = g.Save();
+        g.TranslateTransform(screenDir * (1 - ease) * w * 0.03f, 0);
+        if (job != null) { RenderJob(g, w, h, m, top, bottom, t); g.Restore(content); Veil(g, w, h, barH, ease); return; }
+        if (pages.Count == 0) { g.Restore(content); return; }
         var p = pages.Peek();
+        if (p.Sel != selIndex) { selIndex = p.Sel; selAt = t; }
+        selEase = Ease((t - selAt) / 0.12f);
         if (IsMain(p)) RenderMain(g, p, w, h, m, top, bottom, t); else RenderPage(g, p, w, h, m, top, bottom);
+        g.Restore(content);
+        Veil(g, w, h, barH, ease);
         // Footer: the selected entry's hint on the left, the button prompts on the right.
         float fy = bottom + (h - bottom - smallFont.Height * 1.25f) / 2;
         string hint = p.Items.Count > 0 ? p.Items[p.Sel].Hint : "";
@@ -731,7 +758,9 @@ class LauncherForm : Form {    const ushort UP = 0x0001, DOWN = 0x0002, LEFT = 0
 
     void Tile(Graphics g, Item it, bool sel, RectangleF r, bool icon) {
         float rad = r.Height * 0.16f;
-        if (sel) Card(g, new RectangleF(r.X - 3, r.Y - 3, r.Width + 6, r.Height + 6), rad + 3, it.On ? Accent : Faint, it.On ? Accent : Faint, Color.Empty, 0);
+        // The selection ring grows out over a few frames instead of snapping on.
+        float ring = 1 + 2 * selEase;
+        if (sel) Card(g, new RectangleF(r.X - ring, r.Y - ring, r.Width + 2 * ring, r.Height + 2 * ring), rad + ring, it.On ? Accent : Faint, it.On ? Accent : Faint, Color.Empty, 0);
         Card(g, r, rad, sel ? PanelHi : Panel, sel ? Panel : Color.FromArgb(20, 23, 31), sel ? Color.Empty : Stroke, sel ? 0 : 1);
         var ink = it.On ? Ink : Faint;
         float pad = r.Height * 0.2f, tx = r.X + pad;
