@@ -103,13 +103,29 @@ pub(crate) fn part_proxy(serial: u32, index: usize, a: Vec3, b: Vec3, velocity: 
         center_of_mass: p(centre),
         inertia_rotation: rotation,
         inverse_mass: if part.mass > 0.0 { 1.0 / part.mass } else { 0.0 },
-        // Keyframed from the pose: the solve does not turn it.
-        inverse_inertia: Vector::new(0.0, 0.0, 0.0),
+        // Posed every frame (not written back), but it turns in the solve like retail's part, whose |w| afterwards
+        // can knock the ped down.
+        inverse_inertia: inverse_inertia(part),
         linvel: p(velocity),
         angvel: Vector::new(0.0, 0.0, 0.0),
         contact_group: PED_GROUP,
         colliders: vec![skate_dynamics::SolidCollider { shape: SharedShape::capsule_y(part.half_length.max(0.0), part.radius.max(0.01)), pose, friction: 0.5 }],
     }
+}
+
+/// A capsule part's inverse inertia in its own frame (axis y): retail `sub_82AE7770` from the shape's per-kg inertia
+/// (`sub_82AE7228`, capsule: R = max(r, 0.05 h), along the axis 0.4 R^2, across (1.6 R^3 + 0.75 h R^2 + 4 h^2 R + h^3)
+/// / (4 R + 3 h)) times the mass (research b275, matches the PEDPART trace). Massless: no rotation.
+pub(crate) fn inverse_inertia(part: &PedBodyPart) -> skate_dynamics::rapier3d::prelude::Vector {
+    use skate_dynamics::rapier3d::prelude::Vector;
+    let (h, m) = (part.half_length.max(0.0), part.mass);
+    let r = part.radius.max(1e-7).max(0.05 * h);
+    let along = 0.4 * r * r;
+    let across = (1.6 * r * r * r + 0.75 * h * r * r + 4.0 * h * h * r + h * h * h) / (4.0 * r + 3.0 * h);
+    if !(m > 0.0) {
+        return Vector::new(0.0, 0.0, 0.0);
+    }
+    Vector::new(1.0 / (across * m), 1.0 / (along * m), 1.0 / (across * m))
 }
 
 /// A bone's world position: the ped root (position, heading) applied to the model-space global.
@@ -162,6 +178,16 @@ pub(crate) fn push_ped_proxies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_parts_turn_with_retails_capsule_inertia() {
+        // b275: the PEDPART trace's inverse inertia (across, along the axis): torso 0.520984 / 6.25, forearm 2.037273 / 19.53125.
+        let parts = PedBodySettings::default().parts;
+        for (part, across, along) in [(&parts[0], 0.520984, 6.25), (&parts[1], 2.037273, 19.53125)] {
+            let i = inverse_inertia(part);
+            assert!((i.x - across).abs() < 1e-4 && (i.z - across).abs() < 1e-4 && (i.y - along).abs() < 1e-3, "{i:?}");
+        }
+    }
 
     #[test]
     fn a_part_is_a_capsule_between_its_bones_in_group_11() {

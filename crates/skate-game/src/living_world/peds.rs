@@ -1051,21 +1051,21 @@ pub(crate) fn advance_peds(
                     if ignored == Some(local) {
                         return None;
                     }
-                    // Retail reads the ped part's linear and angular speed after the solve (|v| / |w| > 3.0); our parts
-                    // have no rotational inertia yet (`ped_body::part_proxy`), so only |v| is read.
+                    // Retail reads the ped part's linear and angular speed after the solve (|v| / |w| > 3.0).
                     let runtime = skater_runtime.as_ref()?;
-                    let mine = |h: &&(u64, [f32; 3], f32)| super::ped_body::proxy_serial(h.0) == Some(ped.id.serial);
+                    let mine = |h: &&(u64, [f32; 3], [f32; 2])| super::ped_body::proxy_serial(h.0) == Some(ped.id.serial);
                     // On board and on foot the skeleton's solve reports each part it touched with the part's speed
                     // after the solve (`skeleton_feedback::publish`), the fastest one decides.
-                    let closing = runtime.ped_hits.iter().filter(mine).map(|h| {
-                        info!("PED_BODY_CONTACT ped=#{} part={} part_speed={:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2);
+                    let speed = runtime.ped_hits.iter().filter(mine).map(|h| {
+                        info!("PED_BODY_CONTACT ped=#{} part={} part_speed={:.2} part_spin={:.2} tick={tick}", ped.id.serial, h.0 & 3, h.2[0], h.2[1]);
                         h.2
-                    }).fold(None, |m: Option<f32>, s| Some(m.map_or(s, |m| m.max(s))))?;
+                    }).fold(None, |m: Option<[f32; 2]>, s| Some(m.map_or(s, |m| [m[0].max(s[0]), m[1].max(s[1])])))?;
+                    let closing = speed[0];
                     let d = [body.position.x - observer.position[0], body.position.z - observer.position[2]];
                     let len = d[0].hypot(d[1]).max(1e-4);
                     let n = [d[0] / len, d[1] / len];
                     use skate_core::living_world::peds::skater_contact::{reaction_direction, skater_reaction};
-                    let Some(kind) = skater_reaction([closing, 0.0], [0.0, 0.0], &rules, ignore_standing) else {
+                    let Some(kind) = skater_reaction(speed, [0.0, 0.0], &rules, ignore_standing) else {
                         // The contact decided nothing (below the reaction rules, or a standing ped ignored).
                         info!("PED_BODY_CONTACT_NO_REACTION ped=#{} closing={closing:.2} ignore_standing={ignore_standing} tick={tick}", ped.id.serial);
                         return None;
