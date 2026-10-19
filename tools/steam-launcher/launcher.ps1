@@ -20,6 +20,11 @@ param([string]$Entry, [string]$Label, [switch]$NoPrompt, [string]$Version)
 $ErrorActionPreference = 'Stop'
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Repo = (Resolve-Path (Join-Path $Here '..\..')).Path
+# Standalone (the launcher-only download, STANDALONE.txt next to this script): no checkout around it. Config and state
+# live here, and each version is its own single-branch clone in versions\<id>, made the first time it is played or
+# built, so a version you never use is never downloaded or built (user 2026-10-19).
+$Standalone = Test-Path (Join-Path $Here 'STANDALONE.txt')
+if ($Standalone) { $Repo = $Here }
 
 # Config and state: next to the script when it lives outside tools\ (a private copy), otherwise in
 # .local\steam-launcher\ (gitignored), so the repository stays clean.
@@ -48,16 +53,19 @@ $Remote = Setting 'remote' 'origin'
 # versions.json entry with the same id replaces the built-in one.
 $Builtin = @(
     [pscustomobject]@{ id = 'hails-additions'; name = 'hails-additions (newest on the fork)'; branch = 'hails-additions'
-                       url = (Setting 'fork_url' 'https://github.com/Hailey-Ross/rusty-trucks.git'); dir = '.local/versions/hails-additions'; detached = $true
+                       url = (Setting 'fork_url' 'https://github.com/Hailey-Ross/rusty-trucks.git'); dir = $(if ($Standalone) { 'versions/hails-additions' } else { '.local/versions/hails-additions' }); detached = $true
                        notes = 'Always the newest pushed hails-additions: every launch fetches it and rebuilds when it moved. What changed: docs\hails-additions\RELEASE-NOTES.md.' },
     [pscustomobject]@{ id = 'upstream-main'; name = 'Upstream main (for comparing)'; branch = 'main'
-                       url = (Setting 'upstream_url' 'https://github.com/SK8-ENGINE/skate-3-rust-engine.git'); dir = '.local/versions/upstream-main'; detached = $true
+                       url = (Setting 'upstream_url' 'https://github.com/SK8-ENGINE/skate-3-rust-engine.git'); dir = $(if ($Standalone) { 'versions/upstream-main' } else { '.local/versions/upstream-main' }); detached = $true
                        notes = 'Upstream main as it is (SK8-ENGINE), rebuilt when it moved. Use it to compare against hails-additions.' }
 )
+# config.json "builtin_versions": ["hails-additions"] keeps only the built-ins you use (default: both).
+$keepBuiltin = @(Setting 'builtin_versions' @('hails-additions', 'upstream-main') | ForEach-Object { $_ })
+$Builtin = @($Builtin | Where-Object { $keepBuiltin -contains $_.id })
 $Versions = @()
 $VersionsFile = Join-Path $StateDir 'versions.json'
 if (Test-Path $VersionsFile) { $Versions = @((Read-Json $VersionsFile) | ForEach-Object { $_ }) }
-else {
+elseif (-not $Standalone) {
     $Versions = @([pscustomobject]@{ id = 'this'; name = 'This checkout'; branch = ''; dir = '.'; dev = $true
                                      notes = 'This checkout as it is. Add a versions.json to compare more branches (see README.md).' })
 }
@@ -105,6 +113,16 @@ function Version-Status($v) {
 
 # The published installation's assets (setup's marker), else the checkout's own assets link.
 function Current-Assets {
+    # Standalone: the first version that has converted game files shares them with the others (one conversion).
+    $bases = @(Join-Path $Repo 'data')
+    if ($Standalone) { $bases += @($Versions | ForEach-Object { Join-Path (Version-Dir $_) 'data' }) }
+    foreach ($b in $bases) {
+        try {
+            $marker = Get-Content -Raw (Join-Path $b 'installation.json') | ConvertFrom-Json
+            $a = Join-Path $b (($marker.directory -replace '/', '\') + '\assets')
+            if (Test-Path $a) { return $a }
+        } catch {}
+    }
     try {
         $marker = Get-Content -Raw (Join-Path $Repo 'data\installation.json') | ConvertFrom-Json
         $a = Join-Path (Join-Path $Repo 'data') (($marker.directory -replace '/', '\') + '\assets')
@@ -188,8 +206,17 @@ function Ensure-Version($v) {
     $ErrorActionPreference = 'Continue'
     $d = Version-Dir $v
     if (-not (Test-Path (Join-Path $d '.git'))) {
-        Write-Host "  Setting up $($v.name): new worktree for $($v.branch)..."
         New-Item -ItemType Directory -Path (Split-Path $d) -Force | Out-Null
+        if ($Standalone) {
+            # Only this branch, from its own URL (or the fork's); updates fetch it again below.
+            $url = if ($v.url) { $v.url } else { Setting 'fork_url' 'https://github.com/Hailey-Ross/rusty-trucks.git' }
+            Write-Host "  Setting up $($v.name): downloading $($v.branch) from $url..."
+            & git clone -q --single-branch --branch $v.branch $url $d
+            if ($LASTEXITCODE -ne 0) { Write-Host '  Could not download it (git clone failed).'; return $false }
+        }
+    }
+    if (-not (Test-Path (Join-Path $d '.git'))) {
+        Write-Host "  Setting up $($v.name): new worktree for $($v.branch)..."
         $ref = Fetch-Version $v $Repo
         # A launcher-only copy ("detached": true) follows the pushed branch without checking it out, so it never
         # conflicts with a worktree where that branch is being worked on.
@@ -277,6 +304,8 @@ function Run-Bat([string]$Bat, [string]$Arg) {
     Wait-GameTree
 }
 
+# Where engine sessions write logs\: this checkout, or in standalone the selected version's clone.
+function Logs-Root { if ($Standalone) { return (Join-Path (Version-Dir (Get-Version $Version)) 'logs') }; return (Join-Path $Repo 'logs') }
 function Resolve-Local([string]$Path) { if ([System.IO.Path]::IsPathRooted($Path)) { return $Path }; return (Join-Path $Repo $Path) }
 function Recomp-Sessions { $p = '.local\recomp\sessions'; if ($Config.recomp.sessions) { $p = $Config.recomp.sessions }; return (Resolve-Local $p) }
 
@@ -559,7 +588,7 @@ function Launch([string]$Key, [string]$Lbl) {
         $play = Join-Path (Version-Dir $ver) 'PLAY.bat'
         # Without converted game files the game only shows an error; say what to do instead (couch users).
         if (-not (Test-Path (Join-Path (Version-Dir $ver) 'assets\private\stock'))) {
-            $msg = "Not started: $($ver.name) has no game files (assets\private). Convert them from the disc first: tools\setup-dev-assets.ps1 -Disc <your Skate 3 ISO or default.xex>."
+            $msg = "Not started: $($ver.name) has no game files (assets\private). Convert them from the disc once: powershell -ExecutionPolicy Bypass -File `"$(Join-Path (Version-Dir $ver) 'tools\setup-dev-assets.ps1')`" -Disc <your Skate 3 ISO or default.xex>."
             Save-Result $msg; Write-Host "  $msg"
             return
         }
@@ -650,13 +679,13 @@ if ($Entry -eq 'pending') {
     if ($log -and $log.LastWriteTime -gt $since) { $kind = 'statelog'; $t0 = $log.LastWriteTime.AddSeconds(-1) }
     if ($rec -and $rec.CreationTime -gt $since -and (-not $log -or $rec.CreationTime -gt $log.LastWriteTime)) { $kind = 'recomp'; $t0 = $rec.CreationTime.AddSeconds(-1) }
     # A trace-all session (rust-traceall, version '.') writes logs\trace-all-<time>\ in the repository.
-    $ta = Get-ChildItem (Join-Path $Repo 'logs') -Directory -Filter 'trace-all-*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $ta = Get-ChildItem (Logs-Root) -Directory -Filter 'trace-all-*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($ta -and $ta.LastWriteTime -gt $since -and $ta.LastWriteTime -gt $t0) { $kind = 'traceall'; $t0 = $ta.CreationTime.AddSeconds(-1) }
     # A PLAYING.txt left by a launcher that was closed with its game is stale once no game runs.
     if ((Test-Path $Playing) -and (Running-Games).Count -eq 0) { Remove-Item $Playing -ErrorAction SilentlyContinue }
     if (Test-Path $Playing) { exit 0 }
     # An engine session closed the same way also missed its send (after_session); send it now.
-    $game = Get-ChildItem (Join-Path $Repo 'logs') -Filter 'game-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $game = Get-ChildItem (Logs-Root) -Filter 'game-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     $missedSend = $Config -and $Config.after_session -and (($game -and $game.LastWriteTime -gt $since) -or ($ta -and $ta.LastWriteTime -gt $since))
     # A plain engine session (version '.') closed with Exit game: its panic check too.
     if ($kind -eq '' -and $game -and $game.LastWriteTime -gt $since) { $kind = 'rust'; $t0 = $game.CreationTime.AddSeconds(-1) }

@@ -41,6 +41,23 @@ What it does:
 Windows only. Needs Windows PowerShell 5.1 (built in) and winget (App Installer, built into Windows 10 1809+ and 11);
 the first-time setup installs the rest.
 
+## Launcher-only download (standalone)
+
+Each fork release also has `skate-launcher-windows.zip`: the launcher on its own, without a game build and without a
+copy of the repository. It downloads and builds only the versions you use:
+
+1. Extract the zip to a folder of its own (for example `C:\Games\SkateLauncher`). The `STANDALONE.txt` inside marks it
+   as standalone: its config, state and versions all stay in this folder.
+2. Run `powershell -ExecutionPolicy Bypass -File setup.ps1 -Install` once (git, Rust and the build tools; one UAC
+   prompt), then `build.bat` (makes `SkateLauncher.exe`), then add `SkateLauncher.exe` to Steam as a non-Steam game.
+3. Choose your versions (optional): by default the launcher lists hails-additions and upstream main. To keep only
+   one, put `{"builtin_versions": ["hails-additions"]}` in `config.json`; add your own branches in `versions.json`
+   (each with `"url"` and `"branch"`).
+4. Play. The first time a version is played or built it is downloaded (only that branch, into `versions\<id>`) and
+   built; later starts fetch it and rebuild only when it moved. A version you never start is never downloaded.
+5. Game files: the first version needs them converted from your Skate 3 disc once; the launcher says how
+   (`tools\setup-dev-assets.ps1 -Disc ...` in that version's folder). Every other version then shares them.
+
 ## Files
 
 | File | What it is |

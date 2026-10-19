@@ -1014,3 +1014,20 @@ Change (`crates/skate-game/src/system_timing.rs`, research b214 / b268 `.local/r
   never touched; a failure only logs and the start goes on as before.
 - **Tests:** `a_link_to_a_removed_installation_is_repointed`.
 
+## Launcher-only download (2026-10-19)
+
+- **Problem:** the couch launcher needed a full checkout of the repository around it, so a player who only wants to
+  play the fork's versions had to clone and set up a dev checkout first.
+- **Change (`tools/steam-launcher/launcher.ps1`, README "Launcher-only download"):** a `STANDALONE.txt` next to the
+  script makes the launcher standalone. Its config, state and versions stay in the launcher folder; each version is a
+  `git clone --single-branch` of only its branch into `versions\<id>`, made the first time it is played or built, and
+  later updates fetch that branch and fast-forward as before. `builtin_versions` in `config.json` limits the built-in
+  list. The first version's `data\` holds the game files that every version shares, and logs go to the selected
+  version's `logs\`. The fork release workflow packages the launcher files plus `STANDALONE.txt` as
+  `skate-launcher-windows.zip` (with `.sha256`) on the rolling release and on tagged releases.
+- **Verification:** the script parses (0 errors); a dry run in a scratch copy listed the versions and entries without
+  downloading; the clone command and the update fetch / fast-forward were run once against the fork's
+  `hails-additions` (6 s, 0.1 GB, only that branch) in a throwaway folder that was then deleted; the workflow's
+  packaging step was run locally up to the zip.
+- **Open:** the first build inside a fresh standalone folder (setup, game files) is untested on a clean PC.
+
