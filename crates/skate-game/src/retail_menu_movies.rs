@@ -499,6 +499,14 @@ pub fn valid_movie_name(key: &str) -> bool {
 }
 
 /// The exported set: `SKATE3_MENU_MOVIES` (a dev export) or the installed `private/menu-movies`.
+/// The world records' own map picture names (manifest `world_maps`, version 7; empty for older sets).
+pub(crate) fn world_maps(root: &Path) -> BTreeMap<String, String> {
+    read_json(&root.join("manifest.json"))
+        .ok()
+        .and_then(|m| serde_json::from_value(m["world_maps"].clone()).ok())
+        .unwrap_or_default()
+}
+
 pub(crate) fn set_root(config: &crate::config::Config) -> std::path::PathBuf {
     std::env::var("SKATE3_MENU_MOVIES")
         .map(std::path::PathBuf::from)

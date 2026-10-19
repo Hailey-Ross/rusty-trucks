@@ -266,6 +266,8 @@ struct LegendItem {
     item: Entity,
     chip: Entity,
     glyph: Entity,
+    /// Pad mode: up to two button glyphs (SDL labels for the connected pad) in place of the text chip.
+    pads: [Entity; 2],
     label: Entity,
 }
 #[derive(Resource)]
@@ -424,8 +426,12 @@ pub(super) fn spawn(commands: &mut Commands, output: Entity, fonts: &mut Assets<
                 .spawn((Node { align_items: AlignItems::Center, justify_content: JustifyContent::Center, ..default() }, BackgroundColor(LEGEND_CHIP), ChildOf(item)))
                 .id();
             let glyph = text(commands, chip, &bold, nowrap);
+            let pads = [0, 1].map(|_| {
+                let node = Node { display: Display::None, ..default() };
+                commands.spawn((node, ImageNode::default(), crate::prompt_glyphs::PromptGlyph("A"), ChildOf(item))).id()
+            });
             let label = text(commands, item, &bold, nowrap);
-            LegendItem { item, chip, glyph, label }
+            LegendItem { item, chip, glyph, pads, label }
         })
         .collect();
     commands.insert_resource(OverlayUi {
@@ -573,6 +579,7 @@ pub(super) fn view(
     ),
     (mods, physics, appearances, living, water_look): (Res<crate::modding::Mods>, Res<crate::physics::GamePhysics>, Res<crate::multiplayer::appearance::Appearances>, Option<Res<crate::living_world::LivingWorldSettings>>, Option<Res<crate::water_look::WaterLookSettings>>),
     mut parts: Query<Part>,
+    mut glyphs: Query<&mut crate::prompt_glyphs::PromptGlyph>,
 ) {
     let mut paint = Paint { q: &mut parts };
     let showing = menu.open && !travel.open && !customiser.open && !custom_models.open && !mods_menu.open;
@@ -922,30 +929,64 @@ pub(super) fn view(
     });
     let v = &menu.view;
     let reset = focus.is_some_and(|i| views[i].reset);
-    let glyphs: Vec<(&str, &str, bool)> = if v.pad_active {
-        [Some(("A", "Select", true)), Some(("B", "Back", true)), reset.then_some(("Y", "Reset to Default", true)), Some(("LB / RB", "Category", false)),
-            menu.custom_dirty.then_some(("X", "Apply Tuning", true))].into_iter().flatten().collect()
-    } else {
-        [Some(("Enter", "Select", false)), Some(("Esc", "Back", false)), reset.then_some(("R", "Reset to Default", false)), Some(("Q / E", "Category", false)),
-            menu.custom_dirty.then_some(("F", "Apply Tuning", false))].into_iter().flatten().collect()
-    };
+    // Pad: the connected pad's own glyphs (SDL labels, prompt_glyphs; retail button names). Keyboard: key chips.
+    let pad: Vec<(&[&'static str], &str)> = [
+        Some((&["A"][..], "Select")),
+        Some((&["B"][..], "Back")),
+        reset.then_some((&["Y"][..], "Reset to Default")),
+        Some((&["L_Bumper", "R_Bumper"][..], "Category")),
+        menu.custom_dirty.then_some((&["X"][..], "Apply Tuning")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let keys: Vec<(&str, &str, bool)> = [Some(("Enter", "Select", false)), Some(("Esc", "Back", false)), reset.then_some(("R", "Reset to Default", false)), Some(("Q / E", "Category", false)),
+        menu.custom_dirty.then_some(("F", "Apply Tuning", false))].into_iter().flatten().collect();
     for (k, item) in ui.legend_items.iter().enumerate() {
-        let Some((glyph, label, circle)) = glyphs.get(k) else {
+        let count = if v.pad_active { pad.len() } else { keys.len() };
+        if k >= count {
             paint.hide(item.item);
             continue;
-        };
+        }
         paint.node(item.item, |n| {
             n.display = Display::Flex;
             n.column_gap = Val::Px(8. * fs);
             n.margin = UiRect::right(Val::Px(26. * fs));
         });
+        if v.pad_active {
+            let (buttons, label) = pad[k];
+            paint.hide(item.chip);
+            for (i, e) in item.pads.iter().enumerate() {
+                let Some(button) = buttons.get(i) else {
+                    paint.hide(*e);
+                    continue;
+                };
+                paint.node(*e, |n| {
+                    n.display = Display::Flex;
+                    n.width = Val::Px(chip_h);
+                    n.height = Val::Px(chip_h);
+                });
+                if let Ok(mut g) = glyphs.get_mut(*e) {
+                    if g.0 != *button {
+                        g.0 = button;
+                    }
+                }
+            }
+            paint.text(item.label, label, LEGEND_LABEL, em(16. * fs));
+            continue;
+        }
+        let (glyph, label, circle) = keys[k];
+        for e in item.pads {
+            paint.hide(e);
+        }
         paint.node(item.chip, |n| {
+            n.display = Display::Flex;
             n.height = Val::Px(chip_h);
             n.min_width = Val::Px(chip_h);
-            n.width = if *circle { Val::Px(chip_h) } else { Val::Auto };
-            n.padding = if *circle { UiRect::ZERO } else { UiRect::axes(Val::Px(9. * fs), Val::ZERO) };
+            n.width = if circle { Val::Px(chip_h) } else { Val::Auto };
+            n.padding = if circle { UiRect::ZERO } else { UiRect::axes(Val::Px(9. * fs), Val::ZERO) };
         });
-        paint.radius(item.chip, if *circle { chip_h * 0.5 } else { 4. * fs });
+        paint.radius(item.chip, if circle { chip_h * 0.5 } else { 4. * fs });
         paint.text(item.glyph, glyph, LEGEND_TEXT, em(15. * fs));
         paint.text(item.label, label, LEGEND_LABEL, em(16. * fs));
     }

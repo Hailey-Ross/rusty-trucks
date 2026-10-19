@@ -70,6 +70,9 @@ MENU_ROOTS = (
 MAX_MOVIES = 256  # apt_imports.rs MAX_MOVIES
 # Runtime images the movies load by name (Game.ImageRenderer_Load, research b257 / b258): only in fedynamic.big.
 IMAGE_PREFIXES_DYNAMIC = ('data/fe/source/images/map/',)
+# Texture packs whose textures the engine draws by texture name (retail looks them up as FNV-1 64 of "<name>.Texture"
+# in the texture manager, research b263): the Challenge Map marker icons. Key: texture/<name>.
+TEXTURE_PACKS_DYNAMIC = ('data/fe/source/images/icons/minimap',)
 # Named images already in the main cache (fetexture.big).
 IMAGE_NAMES_CORE = ('data/fe/source/screens/map/cursorchallengemap',)
 
@@ -91,6 +94,60 @@ def _contained(root, relative):
     if not path.is_relative_to(root.resolve()) or path == root.resolve():
         raise ValueError(f'Menu movie path escapes its folder: {relative}')
     return path
+
+
+# The world records' map picture (`Sk8::FE::tMapInfo` word 0 = the name's offset in skatercollections.bin, research
+# b257 / b259): resolved here, in the menu stage, so the vault converter (core / living world / customiser fingerprints)
+# stays unchanged.
+WORLD_MAP_INFO = 'Hash_20BBC594CD2FAEF8'
+
+
+def world_maps(game, collections, work):
+    """{world record key: map picture name} for every world record that sets its own tMapInfo (children inherit
+    through the collections' parent chain; the engine walks it)."""
+    from vendor.skate3_ui.big import BigArchive
+    from asset_pipeline.vlt import vault
+    from vendor.skate3_ui.project import find_big_directory
+    database = BigArchive(find_big_directory(game) / 'db.big')
+    work.mkdir(parents=True, exist_ok=True)
+    for entry in database.entries:
+        name = Path(entry.path).name.lower()
+        if name in ('skatercollections.bin', 'skatercollections.vlt'):
+            (work / name).write_bytes(database.read(entry))
+    _, binary, _ = vault(work / 'skatercollections')
+    rows = json.loads(Path(collections).read_text(encoding='utf-8'))['collections']
+    out = {}
+    for row in rows:
+        field = row.get('fields', {}).get(WORLD_MAP_INFO)
+        if not field or len(field.get('data', '')) < 8:
+            continue
+        pointer = int(field['data'][:8], 16)
+        end = binary.find(b'\0', pointer) if pointer else -1
+        if pointer and 0 < pointer < len(binary) and end > pointer:
+            out[row['key']] = bytes(binary[pointer:end]).decode('ascii')
+    return out
+
+
+def pack_textures(cache_root, runtime, packs):
+    """{'texture/<name>': {'rgba', 'width', 'height'}} for every decoded texture of the bundles named in `packs`;
+    copies the RGBA payloads into `runtime`."""
+    manifest = json.loads((cache_root / 'manifest.json').read_text(encoding='utf-8'))
+    out = {}
+    for record in manifest['bundles']:
+        name = record['name'].replace('\\', '/').lower()
+        if name not in packs or 'textures' not in record:
+            continue
+        folder = Path(record['textures']['manifest']).parent
+        for texture in json.loads(_contained(cache_root, record['textures']['manifest']).read_text(encoding='utf-8'))['textures']:
+            if 'rgba_file' not in texture:
+                continue
+            relative = (folder / texture['rgba_file']).as_posix()
+            target = _contained(runtime, relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(_contained(cache_root, relative), target)
+            key = 'texture/' + texture['name'].lower().removesuffix('.texture')
+            out[key] = {'rgba': relative, 'width': texture['width'], 'height': texture['height']}
+    return out
 
 
 def named_images(cache_root, runtime, prefixes):
@@ -262,16 +319,25 @@ def prepare(game, output, collections, roots=MENU_ROOTS):
     missing_images = None
     try:
         dynamic_root = output / 'cache-dynamic'
-        extract_project(game, dynamic_root, include_dynamic=True, prefixes=IMAGE_PREFIXES_DYNAMIC, update=True)
+        extract_project(game, dynamic_root, include_dynamic=True, prefixes=IMAGE_PREFIXES_DYNAMIC + TEXTURE_PACKS_DYNAMIC,
+                        update=True)
         images = named_images(dynamic_root, runtime, IMAGE_PREFIXES_DYNAMIC)
+        images.update(pack_textures(dynamic_root, runtime, TEXTURE_PACKS_DYNAMIC))
     except FileNotFoundError as error:
         images, missing_images = {}, str(error)
     images.update(named_images(cache_root, runtime, IMAGE_NAMES_CORE))
+    try:
+        maps = world_maps(game, collections, output / 'db')
+    except (FileNotFoundError, KeyError, ValueError) as error:
+        maps, missing_images = {}, (missing_images or '') + f' world maps: {error}'
+    finally:
+        shutil.rmtree(output / 'db', ignore_errors=True)
     files = {p.relative_to(runtime).as_posix(): _digest(p) for p in sorted(runtime.rglob('*')) if p.is_file()}
     manifest = {'format': FORMAT, 'version': VERSION, 'roots': list(roots), 'movies': movies,
                 'missing_movies': missing, 'shared': 'shared.json',
                 'unresolved_fonts': [f for f, a in fonts.items() if a is None],
-                'images': dict(sorted(images.items())), 'files': files}
+                'images': dict(sorted(images.items())), 'world_maps': dict(sorted(maps.items())),
+                'files': files}
     if missing_images:
         manifest['missing_images'] = missing_images
     (runtime / 'manifest.json').write_text(json.dumps(manifest, indent=1) + '\n', encoding='utf-8')

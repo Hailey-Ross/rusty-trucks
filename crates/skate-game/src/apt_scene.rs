@@ -159,7 +159,7 @@ fn visit(
     // retail button "A" / "B" / ...): one quad over the placeholder's bounds with texture `prompt/<button>`, which
     // the host resolves to the connected pad's prompt (SDL button labels). Other components draw nothing yet.
     if let crate::apt_vm::Value::Text(kind) = vm.get(id, "_type") {
-        // Only the face buttons have prompts so far ("Unknown" = an unused item; shoulders / Start / sticks: open).
+        // Every retail button name resolves to the connected pad's glyph (prompt_glyphs); "Unknown" = an unused item.
         let button = vm.get(id, "_test").text();
         // ImageRenderComponent (research b258 section 3, retail 825E2028): the slot is the last run of decimal digits in
         // the clip's name (its Init renames it to the reserved index), below 40; the host resolves `slot/<n>` to the

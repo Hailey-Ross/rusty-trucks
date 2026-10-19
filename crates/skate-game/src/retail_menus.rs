@@ -170,11 +170,12 @@ pub(crate) const TELEPORT: &str = "teleport:";
 /// the keys of the locations that have a teleport matrix (`private/teleports.json`, any map).
 fn challenge_map(
     asset_root: &std::path::Path,
+    world_maps: &std::collections::BTreeMap<String, String>,
 ) -> (Vec<skate_core::menus::MapNode>, std::collections::BTreeMap<String, String>, Vec<String>) {
     let (nodes, pictures) = match skate_data::collections::Collections::load(asset_root) {
         Ok(c) => (
             skate_data::challenge_map::load(c.entries(), "progression", &skate_data::challenge_map::LocationRules::default()),
-            skate_data::challenge_map::location_maps(&c),
+            skate_data::challenge_map::location_maps(c.entries(), world_maps),
         ),
         Err(error) => {
             warn!("RETAIL_MENUS challenge map: {error}");
@@ -209,7 +210,8 @@ impl RetailMenus {
 
 fn load(mut commands: Commands, config: Res<crate::config::Config>) {
     let (mut data, loaded) = read(&config.asset_root);
-    let (nodes, pictures, teleports) = challenge_map(&config.asset_root);
+    let world_maps = crate::retail_menu_movies::world_maps(&crate::retail_menu_movies::set_root(&config));
+    let (nodes, pictures, teleports) = challenge_map(&config.asset_root, &world_maps);
     data.map_nodes = nodes;
     data.map_pictures = pictures;
     if loaded {

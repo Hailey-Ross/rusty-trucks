@@ -414,6 +414,96 @@ fn dpad(dir: Option<Dir>) -> Vec<u8> {
     })
 }
 
+/// A UI image showing a pad button as the connected pad prints it (retail button name, Xbox 360 naming: "A",
+/// "L_Bumper", "DPad_Left", ...). [`sync_ui_glyphs`] keeps its image current; an unknown name shows nothing.
+#[derive(bevy::prelude::Component, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PromptGlyph(pub &'static str);
+
+/// Generated glyph images by prompt key, shared by every UI glyph.
+#[derive(bevy::prelude::Resource, Default)]
+pub(crate) struct PromptImages {
+    images: std::collections::HashMap<String, bevy::prelude::Handle<bevy::prelude::Image>>,
+    pad: Option<std::sync::Arc<ControllerKind>>,
+}
+
+impl PromptImages {
+    /// The glyph image for `retail` on `pad` (generated once per prompt).
+    pub(crate) fn get(
+        &mut self,
+        images: &mut bevy::prelude::Assets<bevy::prelude::Image>,
+        retail: &str,
+        pad: Option<&ControllerKind>,
+    ) -> Option<bevy::prelude::Handle<bevy::prelude::Image>> {
+        use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+        let prompt = resolve_for(retail, pad)?;
+        let handle = self.images.entry(prompt.key()).or_insert_with(|| {
+            images.add(bevy::prelude::Image::new(
+                Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
+                TextureDimension::D2,
+                render(&prompt),
+                TextureFormat::Rgba8UnormSrgb,
+                bevy::asset::RenderAssetUsages::RENDER_WORLD,
+            ))
+        });
+        Some(handle.clone())
+    }
+}
+
+/// The pad whose labels prompts show: the first connected one (Xbox naming without a pad), as the retail menus.
+pub(crate) fn first_pad(controllers: &crate::input::ControllerInput) -> Option<std::sync::Arc<ControllerKind>> {
+    controllers.kinds.iter().flatten().next().cloned()
+}
+
+/// Gives every [`PromptGlyph`] its image: when it is new or changed, and for all of them when the pad changes.
+pub(crate) fn sync_ui_glyphs(
+    controllers: Option<bevy::prelude::Res<crate::input::ControllerInput>>,
+    mut cache: bevy::prelude::ResMut<PromptImages>,
+    mut images: bevy::prelude::ResMut<bevy::prelude::Assets<bevy::prelude::Image>>,
+    mut glyphs: bevy::prelude::Query<(bevy::prelude::Ref<PromptGlyph>, &mut bevy::prelude::ImageNode, &mut bevy::prelude::Node)>,
+) {
+    let pad = controllers.as_deref().and_then(first_pad);
+    let pad_changed = pad.as_deref().map(|k| (k.family, k.face_labels)) != cache.pad.as_deref().map(|k| (k.family, k.face_labels));
+    if pad_changed {
+        cache.pad = pad.clone();
+    }
+    for (glyph, mut image, mut node) in &mut glyphs {
+        if !pad_changed && !bevy::prelude::DetectChanges::is_changed(&glyph) {
+            continue;
+        }
+        match cache.get(&mut images, glyph.0, pad.as_deref()) {
+            Some(handle) => {
+                if image.image != handle {
+                    image.image = handle;
+                }
+            }
+            None => node.display = bevy::prelude::Display::None,
+        }
+    }
+}
+
+/// A row of button hints: per item the pad's glyphs (retail button names), then the keyboard keys and the action in
+/// text ("[A] Enter  Open"). Glyphs are sized to the text.
+pub(crate) fn hint_row(
+    parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands,
+    items: &[(&[&'static str], &str, &str)],
+    font_size: f32,
+    color: bevy::prelude::Color,
+) {
+    use bevy::prelude::*;
+    let side = Val::Px((font_size * 1.6).round());
+    parent.spawn(Node { column_gap: Val::Px(font_size), align_items: AlignItems::Center, flex_wrap: FlexWrap::Wrap, ..default() }).with_children(|row| {
+        for (buttons, keys, action) in items {
+            row.spawn(Node { column_gap: Val::Px(4.), align_items: AlignItems::Center, ..default() }).with_children(|item| {
+                for button in *buttons {
+                    item.spawn((Node { width: side, height: side, ..default() }, ImageNode::default(), PromptGlyph(button)));
+                }
+                let keys = if keys.is_empty() { String::new() } else { format!("/ {keys}  ") };
+                item.spawn((Text::new(format!("{keys}{action}")), TextFont { font_size, ..default() }, TextColor(color)));
+            });
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

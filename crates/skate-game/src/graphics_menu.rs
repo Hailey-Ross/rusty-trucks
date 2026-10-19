@@ -572,6 +572,9 @@ impl Plugin for GraphicsMenuPlugin {
             .add_systems(PreUpdate, toggle_fullscreen.after(bevy::input::InputSystems))
             .add_systems(Update, preview_menu.before(view::view))
             .add_systems(Update, (crate::map_render::advance_day, apply, view::view, view::sync_blur, resize_menu).chain())
+            // Every UI button prompt (PromptGlyph) shows the connected pad's SDL-labelled glyph.
+            .init_resource::<crate::prompt_glyphs::PromptImages>()
+            .add_systems(Update, crate::prompt_glyphs::sync_ui_glyphs.after(view::view))
             .add_systems(PostUpdate, crate::map_render::position_celestial_bodies.before(bevy::transform::TransformSystems::Propagate))
             .add_systems(Last, pace);
     }

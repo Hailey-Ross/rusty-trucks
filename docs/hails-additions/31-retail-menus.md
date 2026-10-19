@@ -1074,6 +1074,13 @@ prompt"; size and placement as retail).
   | L3/R3_Click | LS / RS | LS / RS | L3 / R3 | L3 / R3 | L3 / R3 | LS / RS |
   | Stick_*, DPad_* | stick / cross with the direction marked, every family | | | | | |
 
+Update 2026-10-18 (user: "use the SDL glyphs for all button prompts"): the same glyphs now replace the button names
+in the engine's own UI too. `prompt_glyphs::PromptGlyph(<retail name>)` is a UI image whose glyph
+`sync_ui_glyphs` keeps current for the first connected pad (re-resolved when the pad changes; one generated image per
+prompt, `PromptImages`); `hint_row` lays out "glyphs, keyboard keys, action". Used by the Guide / F1 / Esc overlay
+footer (A / B / Y / LB + RB / X; keyboard mode keeps its key chips), the replay panel (LT + RT, d-pad, A, Y, Back + B,
+sticks, LB + RB, L3) and the mod menu (d-pad, A, B). Mods: the glyph art follows the prompt style table above.
+
   Face looks: Xbox coloured balls (retail's), PlayStation dark buttons with coloured symbols, Nintendo dark with
   light letters; named buttons a dark pill with the name. Generated (a small stroke font), no console art; sized
   to retail's measured glyph (0.83 of the box; a recomp shot, `.local/research/menus-m6/retail/`). The menu
@@ -2119,8 +2126,13 @@ slot through `Game.ImageRenderer_ReserveNextFreeIndex` and renames the clip to t
 slots and the natives are `image_renderer_host::ImageSlots` (Reserve / Free / Load / LoadAssetByName / Unload /
 LockAspectRatio as b258 section 1); the scene draws an `ImageRenderComponent` as one quad `slot/<n>` over its
 placeholder and the stage resolves it to the slot's image; an empty slot or an unknown image draws nothing (retail),
-never the white fallback. Which picture: the highlighted location's `world` record tMapInfo name
-(`skate_data::challenge_map::location_maps`, the converter's new `text` for `Sk8::FE::tMapInfo`); folders, the root and
+never the white fallback. Which picture: the highlighted location's `world` record tMapInfo name. The menu
+export resolves each world record's own name (word 0 of `Sk8::FE::tMapInfo` = the name's offset in
+skatercollections.bin, read through `vlt.vault`) into the manifest's `world_maps`, and
+`skate_data::challenge_map::location_maps` walks location -> district world -> parents. (A first version put this in
+the vault converter `vlt.py`; that file is in the core, living world and customiser fingerprints, so every install
+would have redone those stages: moved to the menu stage, which re-runs for version 7 anyway.) The icon pack
+`fe/source/images/icons/minimap` is exported per texture (`texture/<name>`, 43) for the markers. Folders, the root and
 `map_portcarverton` use the default `map1024`; a change posts SetState 34. Mods: `RetailMenuMovies::set_named_image`
 replaces a retail picture or adds a name, cleared on mod disable; `MenuData::map_pictures` is data. Not yet: the
 location markers and the highlighted marker (MapRenderComponent, research b263), the cursor position (the cursor
