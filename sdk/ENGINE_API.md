@@ -139,6 +139,13 @@ See `skate.lua` for the complete annotated API. The sample mod in
 `examples/game-of-skate` implements game rules using these generic observations.
 
 
+## Central message
+
+`sdk.ui.central_message(text)` shows one line in the HUD's central message, the
+retail `hudcentral` movie where a ped's taze shows "ZAP!". `text` is a language id
+of that movie (`ID_CHASE_TAZER_1`) or plain text (1 to 64 characters). It plays the
+movie's own intro, sound and outro; nothing to clean up.
+
 ## Mod menus
 
 `sdk.ui.menu(key, {title=..., items=...})` registers or replaces a mod-owned menu

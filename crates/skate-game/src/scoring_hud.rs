@@ -1,5 +1,5 @@
 //! Original APT HUD rendered independently of the world's resolution scale.
-use crate::{apt_scene, config::Config, hud_runtime, physics::SkaterRuntime};
+use crate::{apt_scene, config::Config, hud_central, hud_runtime, physics::SkaterRuntime};
 use bevy::{
     asset::{RenderAssetUsages, embedded_asset},
     camera::{RenderTarget, ScalingMode, visibility::RenderLayers},
@@ -78,6 +78,35 @@ struct Hud {
     slots: Vec<Slot>,
     generation: u64,
     failed: bool,
+    /// The central message HUD (`hud2/hudcentral`), drawn above the trick display; `None` in an install from before
+    /// it was converted (Refresh Game Files adds it).
+    central: Option<Central>,
+}
+/// The central message movie and its draw slots.
+struct Central {
+    runtime: hud_central::Runtime,
+    source: serde_json::Value,
+    shapes: apt_scene::Shapes,
+    sounds: Vec<String>,
+    slots: Vec<Slot>,
+    failed: bool,
+}
+/// Above the trick display's draws (`index * 0.01` from 0), below the retail menus (`MENU_Z` 50).
+const CENTRAL_Z: f32 = 30.0;
+/// The `fe` record names (`private/audio/audio_manifest.json`), registered in the movie as `FE_SOUND_<NAME>`.
+fn frontend_sounds(asset_root: &std::path::Path) -> Vec<String> {
+    let manifest: serde_json::Value = std::fs::read(asset_root.join("private/audio/audio_manifest.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let mut sounds: Vec<String> = manifest["frontend"]["sounds"]
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|s| s["name"].as_str().map(str::to_owned))
+        .collect();
+    sounds.sort_unstable();
+    sounds
 }
 /// Same string the scoring HUD draws: language table first, then a readable fallback.
 pub(crate) fn display_trick(world: &World, label: &str) -> String {
@@ -100,7 +129,7 @@ impl Plugin for ScoringHudPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "hud_render.wgsl");
         embedded_asset!(app, "hud_composite.wgsl");
-        app.add_plugins((
+        app.add_message::<hud_central::CentralMessage>().add_plugins((
             Material2dPlugin::<HudMaterial>::default(),
             UiMaterialPlugin::<HudComposite>::default(),
         ))
@@ -159,6 +188,28 @@ fn setup(
                 files.insert(fg.texture.clone(), fg.size);
             }
         }
+        let central = match std::fs::read(root.join("runtime/hudcentral.json")) {
+            Err(_) => {
+                info!("Central message HUD not installed ({}): Refresh Game Files adds it", root.display());
+                None
+            }
+            Ok(bytes) => {
+                let source: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                let sounds = frontend_sounds(&config.asset_root);
+                let runtime = hud_central::Runtime::load(&source, &sounds)?;
+                let shapes: apt_scene::Shapes = serde_json::from_value(source["shapes"].clone()).map_err(|e| e.to_string())?;
+                for texture in shapes.values().flatten().filter_map(|s| s.texture.as_ref()) {
+                    files.insert(texture.rgba.clone(), [texture.width, texture.height]);
+                }
+                for font in runtime.bindings.movie.text_assets.fonts.values() {
+                    files.insert(font.texture.clone(), font.size);
+                    if let Some(fg) = &font.foreground {
+                        files.insert(fg.texture.clone(), fg.size);
+                    }
+                }
+                Some(Central { runtime, source, shapes, sounds, slots: Vec::new(), failed: false })
+            }
+        };
         let mut textures = BTreeMap::new();
         for (path, size) in files {
             let bytes = std::fs::read(root.join(&path)).map_err(|e| format!("HUD {path}: {e}"))?;
@@ -189,6 +240,7 @@ fn setup(
             slots: Vec::new(),
             generation: 0,
             failed: false,
+            central,
         })
     })();
     match result {
@@ -398,15 +450,49 @@ fn reset(
             hud.failed = true;
         }
     }
+    if let Some(central) = hud.central.as_mut() {
+        match hud_central::Runtime::load(&central.source, &central.sounds) {
+            Ok(runtime) => {
+                central.runtime = runtime;
+                central.failed = false;
+            }
+            Err(error) => {
+                error!("Central message HUD reset: {error}");
+                central.failed = true;
+            }
+        }
+    }
 }
 fn advance(
     hud: Option<ResMut<Hud>>,
     skater: Res<SkaterRuntime>,
     map: Res<crate::map_transition::CurrentMap>,
+    mut messages: MessageReader<hud_central::CentralMessage>,
+    mut sounds: MessageWriter<crate::ui_audio::FrontendSound>,
 ) {
     let Some(mut hud) = hud else {
+        messages.clear();
         return;
     };
+    if hud.generation == map.generation {
+        if let Some(central) = hud.central.as_mut().filter(|c| !c.failed) {
+            let result = (|| -> Result<(), String> {
+                for message in messages.read() {
+                    central.runtime.show(message)?;
+                    info!("HUD_CENTRAL message {:?} style={} audio_hook={}", message.text, message.style, message.audio_hook);
+                }
+                central.runtime.update()
+            })();
+            for name in central.runtime.bindings.sounds.drain(..) {
+                sounds.write(crate::ui_audio::FrontendSound::named(&name));
+            }
+            if let Err(error) = result {
+                error!("Central message HUD stopped: {error}");
+                central.failed = true;
+            }
+        }
+    }
+    messages.clear();
     if hud.failed || hud.generation != map.generation {
         return;
     }
@@ -469,6 +555,19 @@ fn render_hud(
             }
         }
     };
+    let central_draws = match hud.central.as_mut() {
+        Some(central) if !central.failed && !hidden => {
+            match apt_scene::draw(&central.runtime.bindings.movie, &central.runtime.vm, &central.shapes) {
+                Ok(draws) => draws,
+                Err(error) => {
+                    error!("Central message HUD geometry: {error}");
+                    central.failed = true;
+                    Vec::new()
+                }
+            }
+        }
+        _ => Vec::new(),
+    };
     let hud = &mut *hud;
     apply_draws(
         &mut commands,
@@ -478,6 +577,10 @@ fn render_hud(
         &mut meshes,
         &mut materials,
     );
+    if let Some(central) = hud.central.as_mut() {
+        let textures = &hud.textures;
+        render_draws(&mut commands, &mut meshes, &mut materials, &mut central.slots, &central_draws, |t| textures.get(t).cloned(), CENTRAL_Z, true);
+    }
 }
 fn hud_position(v: &apt_scene::Vertex) -> [f32; 3] {
     [v.position[0] - 640., 360. - v.position[1], 0.]

@@ -1707,7 +1707,8 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<PedChaseGroups>()
         .init_resource::<PedConversations>()
         .init_resource::<PedPluginProps>()
-        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, super::ped_hand_props::sync_hand_props, apply_skater_takedowns, advance_peds, log_ped_readout).chain().after(super::step_population))
+        .add_message::<crate::hud_central::CentralMessage>()
+        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, super::ped_hand_props::sync_hand_props, apply_skater_takedowns, post_chase_messages, advance_peds, log_ped_readout).chain().after(super::step_population))
         .init_resource::<PedMaterials>()
         .add_systems(Update, (present_ped_looks, present_ped_tints, present_ped_pose).chain().after(crate::app::FrameSet::Animation).before(super::npc_skaters::present_fade));
 }
@@ -1886,6 +1887,37 @@ pub(crate) fn apply_skater_takedowns(
         let deck = physics.board.bodies()[skate_core::physics::board::BodyId::Deck.index()].rates.position;
         skater.takedown = Some(crate::physics::Takedown::from_positions([deck.x, deck.y, deck.z], r.chaser));
         info!("SKATER_TAKEDOWN from=[{:.1}, {:.1}, {:.1}]", r.chaser[0], r.chaser[1], r.chaser[2]);
+    }
+}
+
+/// A taze or a successful takedown of the local player shows the chase line in the HUD's central message
+/// (`826B4FC0`, chase manager slot +64 with (1, 1) for a taze, (1, 0) for a takedown): "ZAP!" / "Tazed!" or one of
+/// the four "caught" lines, by retail's `rand() % 101` roll. The roll stream is ours (presentation only).
+pub(crate) fn post_chase_messages(
+    mut events: MessageReader<PedEvent>,
+    mut messages: MessageWriter<crate::hud_central::CentralMessage>,
+    mut random: Local<u32>,
+) {
+    use skate_core::living_world::peds::chase::{chase_message, chase_message_roll};
+    for event in events.read() {
+        let (target, tazed) = match *event {
+            PedEvent::Taze { target, .. } => (target, true),
+            PedEvent::Takedown { target, success: true, .. } => (target, false),
+            _ => continue,
+        };
+        // Local play: player 0.
+        if target != PLAYER_TARGET_BASE {
+            continue;
+        }
+        if *random == 0 {
+            *random = 0x2545_f491;
+        }
+        *random ^= *random << 13;
+        *random ^= *random >> 17;
+        *random ^= *random << 5;
+        let id = chase_message(true, tazed, chase_message_roll(*random));
+        info!("PED_CHASE_MESSAGE {id} tazed={tazed}");
+        messages.write(crate::hud_central::CentralMessage::new(id));
     }
 }
 
