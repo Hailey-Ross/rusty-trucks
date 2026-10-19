@@ -1019,3 +1019,15 @@ Change (`crates/skate-game/src/system_timing.rs`, research b214 / b268 `.local/r
   packaging step was run locally up to the zip.
 - **Open:** the first build inside a fresh standalone folder (setup, game files) is untested on a clean PC.
 
+## Launcher: screen and selection animations (2026-10-19)
+
+- **Ask:** the user: launcher menu animations when changing screens and clicking items, "doesn't need to be overdone,
+  but the snappiness of switching screens is a little jarring".
+- **Change (`tools/steam-launcher/SkateLauncher.cs`):** a new screen slides in by 3% of the window width (from the right
+  when opening, from the left when going back) and fades up from the backdrop over 180 ms, eased out. The top bar
+  stays put. The selection ring grows from 1 to 3 px over 120 ms instead of snapping on. A screen counts as new when
+  its depth or title changes, so status refreshes of the main page do not animate. Input is never blocked: the
+  animation only changes what is drawn, and the timer repaints only while one runs.
+- **Verification:** compiles with the .NET Framework 4 `csc` that `build.bat` uses (no warnings). Not looked at on
+  screen yet; the user judges the feel.
+
