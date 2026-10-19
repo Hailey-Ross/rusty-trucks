@@ -2114,9 +2114,24 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Change:** on that drop, a ped still in the sit cycle marks its plugin motion run orphaned, the same path as a
   packet that ends mid-clip, so the hold releases and Sit2Stand plays (`PED_PLUGIN_MOTION ... seat dropped while
   seated, standing up`).
-- **Open (b300, not verified by main yet):** retail's Plugin End (`8269F310`) ends the whole sit body, so
-  OwnPluginObject, IgnoreStandingCollisions and LockToCurrentPosition run their End. Ours drops `plugin_controller`
-  without `end_all_behaviors` (skate-core `graph/controller.rs`), so `ignore_standing_collisions` stays set and
-  bumps stay ignored after the stand-up. Port that next. Also log why a seat dropped (streamed out, disabled or lost
-  waypoint); b300 points at DMO streaming evicting the occupied bench.
 - **Verification:** not built or tested yet (uncommitted at the time of writing); not play-tested.
+
+### Follow-up: the plugin graph ends its behaviours (2026-10-19)
+
+- **Retail [code]:** the Plugin behaviour's End `8269F310` calls the ped's plugin vfuncs +0x1C `82E0CFA0` and +0x20
+  `82E3AEA8`. `82E0CFA0` loads the plugin's graph controller (`plugin+0x30`, object at `+0x1C`) and calls its vtable
+  slot +0x10. The controller vtable `0x82321EA8` reads `82C12F48 82C131B0 82C13260 82C133D0 82C13498 82C12E70`
+  (Ghidra dump), so +8 is Update `82C13260` (what the Plugin Update `8269F248` calls) and +0x10 is EndAllBehaviours
+  `82C13498`. Every active plugin-graph behaviour runs its End: OwnPluginObject, IgnoreStandingCollisions,
+  LockToCurrentPosition and the sit body's Create (its packet goes, so Sit2Stand plays).
+- **Cause (ours):** leaving the Plugin state dropped `plugin_controller` without ending anything, so
+  `ignore_standing_collisions`, `own_plugin_object` and `position_locked` stayed set and bumps were still refused after
+  the stand-up.
+- **Change (`peds.rs`):** before the plugin controller is dropped (Plugin state left) or replaced (another plugin
+  graph), the old graph is looked up by its key and `end_all_behaviors` runs on it with the ped's brain
+  (`PED_PLUGIN_END ped=#.. graph .. ended`). The orphaned-run path above stays as the fallback. The seat-drop log now
+  names the condition: `(dropped: prop gone | streamed out | disabled | waypoint missing)`.
+- **Tests:** `ending_the_plugin_graph_clears_the_seat_flags` (skate-core brain tests).
+- **Open:** `82E3AEA8` (clears three ped slots tied to the plugin graph) is not ported, and what the slots mean is
+  open. Whether a greet may preempt a seated ped in retail is not researched. Why the occupied bench dropped will show
+  in the next session's log.

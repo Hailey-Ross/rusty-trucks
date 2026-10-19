@@ -1018,3 +1018,24 @@ keyed by the NPC skater's stable id.
   the image; `physics/offboard/feet.rs` and its siblings are uncompiled duplicates (not in `offboard/mod.rs`); the
   rest of a pooled body (takedown latch, timers, the grind orientation random stream, b296) still carries over.
 
+### Follow-up: a pooled body resets like a fresh one (2026-10-19)
+
+- **Problem:** the rest of a pooled body (above) carried over to the next NPC: grind input and the takedown latch,
+  post-input counters, the trajectory selector's pending batch, and the grind orientation random stream at the last
+  owner's position. So what a new NPC did in its first ticks depended on which body the pool handed it.
+- **Retail:** a new actor gets a new PhysicalPlayer (`82590DC0` -> `82DB18A0`, b295), so every ctor-built part
+  starts fresh. Our loaders are the ports of those ctors, so the reset re-runs them (b299).
+- **Change:** `SkaterRuntime::reset_for_new_actor` (replaces `reset_external_physics_cache`) re-runs
+  `PlayerInputRuntime::load` from the collections already in memory (`GamePhysics::collections()`, no file I/O). It
+  keeps only the physical / processed input words, which mirror the live state and get the placement's state Exit /
+  Enter. It also resets the post-input state, the trajectory selector, its pending batch and nearby grinds, the grind
+  orientation stream (fixed seed `821642B0`, same as every fresh body), the chromosome, the pending wipeout impulse and
+  the grind manager, `takedown`, `ai_physics` and the skitch-release trace. Only the pool arm of `spawn_sim` calls it;
+  a respawn or next line of the same actor keeps everything, as in retail. Mod-spawned NPCs take the same path, and
+  mod content overrides reach a reused body through the same loaders.
+- **Tests:** `a_teleport_resets_the_grind_lock_and_a_new_actor_gets_a_fresh_input_cache` now also dirties the grind
+  lock, post-input counter and skitch trace and checks that the new-actor reset restores them.
+- **Open (b299 §5):** whether keeping the processed / physical words matches a fresh body after the placement tick,
+  and the subsystems not audited field by field. A pool-order test (same NPC from a dirtied and a clean body, compare
+  60 ticks) would show any remaining carry-over.
+

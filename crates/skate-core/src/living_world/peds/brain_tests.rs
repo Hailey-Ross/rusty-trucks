@@ -957,3 +957,28 @@ fn end_chase_resets_the_end_reason_and_unsets_angrychase() {
     assert!(!h.brain.wants.contains_key("angrychase"));
     assert_eq!(h.brain.chase_requests, vec![ChaseRequest::Leave { chasee: 100 }, ChaseRequest::MoodReset { target: 100 }]);
 }
+
+#[test]
+fn ending_the_plugin_graph_clears_the_seat_flags() {
+    // The Plugin behaviour's End runs the plugin graph's EndAllBehaviours (`8269F310` -> `82E0CFA0`, controller vtable
+    // +0x10 = `82C13498`, b300): a ped that leaves its seat owns no plugin object, stands no longer locked and takes
+    // standing collisions again.
+    use crate::graph::controller::{ActiveBehavior, Controller};
+    let behaviors = ops(&[("OwnPluginObject", &[]), ("IgnoreStandingCollisions", &[]), ("LockToCurrentPosition", &[])]);
+    let mut brain = PedBrain::default();
+    let settings = BrainSettings::default();
+    let none = |_: u64| None;
+    let f = frame();
+    let mut controller = Controller::new(0);
+    let mut h = BrainHost { behaviors: &behaviors, conditions: &[], brain: &mut brain, settings: &settings, position: [1.0, 0.0, 2.0], heading: 0.0, skater: None, target_position: &none, chase: Default::default() };
+    for behavior in 0..behaviors.len() {
+        let instance = h.allocate(behavior, &f);
+        h.begin(behavior, [0; 6], &f);
+        controller.active.push(ActiveBehavior { behavior, instance });
+    }
+    assert!(h.brain.own_plugin_object && h.brain.ignore_standing_collisions && h.brain.position_locked);
+    controller.end_all_behaviors(&mut h);
+    assert!(controller.active.is_empty());
+    assert!(!brain.own_plugin_object && !brain.ignore_standing_collisions && !brain.position_locked);
+    assert_eq!(brain.locked_at, None);
+}

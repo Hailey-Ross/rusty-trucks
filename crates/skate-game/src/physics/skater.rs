@@ -152,6 +152,19 @@ pub(crate) struct SkaterRuntime {
 }
 
 impl SkaterRuntime {
+    /// A pooled body becoming a new NPC: retail builds a new actor and PhysicalPlayer per NPC (`82590DC0` ->
+    /// `82DB18A0`, b295). Re-runs the load-time initialisers of the per-actor parts the placement does not route
+    /// through the state machine (b299); the placement's ResetSystems port and state Exit / Enter do the rest.
+    pub(crate) fn reset_for_new_actor(&mut self, data: &Collections) -> Result<(), String> {
+        self.player_input.reset_for_new_actor(data)?;
+        self.player_state.reset_for_new_actor();
+        self.trajectory.reset_for_new_actor();
+        self.grind.reset_for_new_actor();
+        self.takedown = None;
+        self.ai_physics = None;
+        self.skitch_release_trace = 0;
+        Ok(())
+    }
     /// Prepare all settings before committing; never replace active physics state.
     pub(crate) fn reload_difficulty(&mut self, data: &Collections) -> Result<(), String> {
         let profiles = super::ground_runtime::GroundProfiles::load(data)?;

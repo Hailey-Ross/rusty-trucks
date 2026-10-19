@@ -327,6 +327,10 @@ mod exchange_tests {
 }
 
 impl GamePhysics {
+    /// The setup collections every skater part loads from (read once per world).
+    pub(crate) fn collections(&self) -> &Collections {
+        &self.collections
+    }
     /// This tick's traffic cars in the grab scene (`living_world::vehicles::push_vehicle_grab_splines`).
     pub(crate) fn set_car_rails(&mut self, rails: crate::grind_world::props::PropRailPoses) {
         self.car_rails = rails;
