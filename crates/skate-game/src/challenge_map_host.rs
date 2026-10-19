@@ -62,6 +62,8 @@ impl ChallengeMapHost {
                     self.apply(action);
                     Some(Value::Undefined)
                 }
+                // The picker asks per row (menu, row): our greyed rule (no handler, greyed; folders by their children).
+                "OnMenuGetItemEnabled" => Some(Value::Bool(self.state.rows(registry, ctx).get(index(1)).is_some_and(|r| r.enabled))),
                 _ => None,
             });
         }
