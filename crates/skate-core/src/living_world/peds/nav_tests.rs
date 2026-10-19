@@ -370,3 +370,33 @@ fn a_pinned_walking_ped_gives_up_and_plans_away_from_its_target() {
     let next = nav.target.unwrap();
     assert!(next[2] < pos[2], "planned away from the old target: {next:?}");
 }
+
+/// b277: the path goal is the nearest point the start can reach (retail `82933A48`, unbounded), not the peds' 0.5 m
+/// point query; B's plan acceptance (2.0 h / 1.0 v) then decides.
+#[test]
+fn path_goal_snaps_to_the_nearest_reachable_point() {
+    use crate::living_world::controller_b::{BInput, ControllerB, ControllerBSettings, PathService};
+    // Two strips, x 0..5 and x 6..10 (a hole at 5..6): two components.
+    let m = mesh(&grid(10, 1, 1.0, |i, _| (i != 5).then_some(AREA_DEFAULT)));
+    let start = m.locate([0.5, 0.0, 0.5]).unwrap();
+    // 1.2 m off the mesh: the point query misses it, the goal search snaps to the edge.
+    let off = [-1.2, 0.0, 0.5];
+    assert!(m.locate(off).is_none());
+    let at = m.locate_nearest(off, start.poly, f32::MAX).unwrap();
+    assert_eq!((at.poly, at.position), (0, [0.0, 0.0, 0.5]));
+    // A mod cap below the distance: no goal.
+    assert!(m.locate_nearest(off, start.poly, 1.0).is_none());
+    // On the other strip: only the start's component counts, so the near edge of the first strip wins.
+    let far = m.locate_nearest([6.2, 0.0, 0.5], start.poly, f32::MAX).unwrap();
+    assert_eq!((far.poly, far.position), (4, [5.0, 0.0, 0.5]));
+    // Under the mesh: straight up onto the polygon above it (distance 7.86).
+    let under = m.locate_nearest([2.5, -7.86, 0.5], start.poly, f32::MAX).unwrap();
+    assert_eq!((under.poly, under.position), (2, [2.5, 0.0, 0.5]));
+    // The plan: a 1.2 m snap is accepted, a 2.67 m snap is rejected (stall #5 at node 152).
+    let s = ControllerBSettings::default();
+    let input = BInput { position: start.position, body: [1.0, 0.0, 0.0], can_move: true, ..Default::default() };
+    let path = PathService::solve(&m, start.position, [-1.2, 0.0, 0.5], s.goal_locate_radius).unwrap();
+    assert_eq!(path.last().unwrap().entry, [0.0, 0.0, 0.5]);
+    assert!(ControllerB::activate(&s, &m, [-1.2, 0.0, 0.5], [1.0, 0.0, 0.0], &input).is_some());
+    assert!(ControllerB::activate(&s, &m, [-2.67, 0.0, 0.5], [1.0, 0.0, 0.0], &input).is_none());
+}

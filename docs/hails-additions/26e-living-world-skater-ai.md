@@ -887,3 +887,51 @@ keyed by the NPC skater's stable id.
   retries the swap every 60 ticks, stage 4 waits, 5 bails, 6 respawns; the only push is the spawn push). Open: why
   our NPC plans fail (log the solve result on the no-plan line first); whether ours models retail's 896 / 900 clocks
   (reset to 7200 ticks by `82468AC8`).
+
+## The walk-back goal snaps to the nearest reachable point (2026-10-18)
+- **Problem:** in the muted stall run stall-7, simulated skater #5 (cuz) stalled at node 152 and the walk-back logged
+  "no plan to node 159 / 157" twice. The path service located the goal with the peds' point query (a polygon under the
+  point within 4.0 m, else an edge within 0.5 m), and the goal sat 7.86 m below the only polygon above it, 2.67 m from
+  the nearest edge, so no search started (`NavMesh::solve`, `locate(to)` returned `None`). Research
+  `.local/research/b276-stall5-node152.md`.
+- **Retail** (b277, [code] Ghidra + recomp): the path query `82928990` -> `82928770` finds the goal with `82933E18` ->
+  `82933A48`: the best distance starts at `0x822F9310` (~9.2e18) and the spatial query range is `0x8206D108`
+  (FLT_MAX), so it is unbounded; only polygons in the start's region set count (`8292D250`, goal test `82938C48`, no
+  area test); the closest point of each polygon is `8292F9F0`; one result, the nearest. `82928618` ends the path at the
+  snapped point. The plan acceptance (`82467088`, 2.0 h / 1.0 v from the last waypoint to the node) then rejects a far
+  snap. Not decoded: the start-snap tolerance `*0x83084138` x 0.1.
+- **Change:** `NavMesh::locate_nearest(p, from, max_dist)` (3D nearest point over the polygons reachable from the
+  start; inside a polygon's outline the surface under the point [ours: vertical, retail projects onto the plane]; ties
+  to the lower polygon index). `PathService::solve` takes the goal radius; the navmesh service uses
+  `locate_nearest` for the goal, the start keeps the peds' query. New setting
+  `ControllerBSettings::goal_locate_radius` (default `f32::MAX` = retail; a mod can cap it). The peds' `NavRules`
+  (0.5 / 4.0) are unchanged.
+- **Outcome for #5:** the same as before (the 2.67 m snap fails the 2.0 m acceptance, the stuck stages continue, as
+  retail). Goals 0.5 to 2.0 m off the mesh now plan instead of failing.
+- **Files:** `crates/skate-core/src/living_world/peds/nav.rs` (`locate_nearest`, `closest_on_segment_3d`),
+  `crates/skate-core/src/living_world/controller_b.rs` (setting, trait, navmesh service).
+- **Tests:** `path_goal_snaps_to_the_nearest_reachable_point` (1.2 m off: snapped and planned; cap below the distance:
+  no goal; other component ignored; under the mesh: straight up; 2.67 m off: plan rejected).
+- **Open:** the root of the #5 stall is earlier: the nollie at node 146 was dropped because the skater was off the
+  path (`npc_sim.rs` trick drop), so it never popped onto the raised section at nodes 152 to 159 (a ledge or manual
+  pad, [inference]). Ported in the next section.
+
+## Recorded tricks go out off the path too; leaving the path clears the pending slot (2026-10-18)
+- **Problem:** stall #5 (cuz) was 1.22 m off its path at node 142, so our sim dropped the recorded nollie at node 146
+  (`NPC_SKATER_SIM_TRICK ... dropped ... off the path`) and the skater never popped onto the raised section at nodes
+  152 to 159. Our off-path drop and the frozen slot arm dated from b109 (tricks sent to a sim whose cursor ran ahead of
+  it); the cursor follows the skater since b110.
+- **Retail** (b279, `.local/research/b279-offpath-trick-drop.md`, [code]): the per-tick controller `8246FA30` calls
+  the dispatcher `8246A2E0` before the path drop `8246DB50` (recomp order checked), and the dispatcher never reads the
+  on-path byte `pc+920`; it is gated by off the board (+0xA1), board toggling / a pending toggle press, and skitching.
+  `8246DB50` clears `pc+920` and the pending trick category `pc+832` in the same block on the on-to-off transition
+  (stores checked in the recomp).
+- **Change** (`crates/skate-game/src/living_world/npc_sim.rs`): only off the board drops the trick dispatch; the slot
+  arm runs off the path too; on the tick the skater leaves the path, `sim.slot.category` (our `pc+832`) is cleared
+  once, after that tick's dispatch. The drop / commit distances stay the existing `PathTuning` values (mod data).
+- **Measured** (muted stall run, DownTown 150 s, deterministic per build: two runs of one build were identical):
+  HEAD before: LOST 9, STUCK 161, BAIL 1, off-path trick drops 12; goal search only: LOST 9, STUCK 152, BAIL 2;
+  goal search + this rule: LOST 4, STUCK 109, BAIL 6. Of the six bails: #5 now reaches the stuck chain's stage 5 bail
+  (retail's recovery, before it never got there), #3 is the same as before, #6 on the path, #2 (twice) and #8 bail
+  after tricks fired 1 to 6 m off the path (landings our sim misses; retail fires the same tricks). Watch in play.
+- **Tests:** skate-game 806 pass.

@@ -140,6 +140,20 @@ fn closest_on_segment(p: Vec3, a: Vec3, b: Vec3) -> (Vec3, f32) {
     (q, d[0] * d[0] + d[1] * d[1])
 }
 
+fn dist2_3d(a: Vec3, b: Vec3) -> f32 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+}
+
+/// The closest point of segment `a`-`b` to `p` in 3D, and its squared distance.
+fn closest_on_segment_3d(p: Vec3, a: Vec3, b: Vec3) -> (Vec3, f32) {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    let t = if len > 0.0 { (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / len).clamp(0.0, 1.0) } else { 0.0 };
+    let q = [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t];
+    (q, dist2_3d(p, q))
+}
+
 #[derive(Clone, Copy, PartialEq)]
 struct Open {
     f: f32,
@@ -399,6 +413,43 @@ impl NavMesh {
             }
         }
         best.map(|(_, q)| NavPoint { poly, position: q })
+    }
+
+    /// The point nearest to `p` (3D) on the polygons reachable from `from`, within `max_dist`: retail's path goal
+    /// search (`82933E18` -> `82933A48`, best distance starts at `0x822F9310` ~9.2e18 and the query range is
+    /// `0x8206D108` FLT_MAX, so unbounded; only the start's region set, no area test; the closest point of each
+    /// polygon by `8292F9F0`; b277). Inside a polygon's outline the point is its surface under `p` [ours: vertical,
+    /// retail projects onto the plane]. Ties go to the lower polygon index (deterministic).
+    pub fn locate_nearest(&self, p: Vec3, from: u32, max_dist: f32) -> Option<NavPoint> {
+        if from as usize >= self.polys.len() {
+            return None;
+        }
+        let mut best: Option<(f32, NavPoint)> = None;
+        for k in 0..self.polys.len() as u32 {
+            if !self.reachable(from, k) {
+                continue;
+            }
+            let q = if self.contains_xz(k, p[0], p[2]) {
+                [p[0], self.height_at(k, p[0], p[2]), p[2]]
+            } else {
+                let verts = &self.polys[k as usize].verts;
+                let n = verts.len();
+                let mut edge: Option<(f32, Vec3)> = None;
+                for e in 0..n {
+                    let (q, d2) = closest_on_segment_3d(p, verts[e], verts[(e + 1) % n]);
+                    if edge.is_none_or(|(b, _)| d2 < b) {
+                        edge = Some((d2, q));
+                    }
+                }
+                let Some((_, q)) = edge else { continue };
+                q
+            };
+            let d2 = dist2_3d(p, q);
+            if d2.sqrt() <= max_dist && best.is_none_or(|(b, _)| d2 < b) {
+                best = Some((d2, NavPoint { poly: k, position: q }));
+            }
+        }
+        best.map(|(_, at)| at)
     }
 
     /// Move from `from` toward `to` over the surface: only polygons linked to `from.poly`

@@ -143,7 +143,7 @@ pub trait Host {
 }
 /// Object slots a VM may hold: a runaway guard, not a retail limit. The front end alone keeps about 2000 live and
 /// a pause menu adds about 1300; hosts that load and unload movies `collect` between updates.
-const MAX_OBJECTS: usize = 16_384;
+pub const MAX_OBJECTS: usize = 16_384;
 #[derive(Default)]
 pub struct Vm {
     pub objects: Vec<Object>,
@@ -724,8 +724,11 @@ impl Vm {
             s.pop().ok_or("APT stack underflow".into())
         }
         while let Some(i) = code.get(pc) {
-            if self.remaining == 0 || self.objects.len() > MAX_OBJECTS {
-                return Err("APT execution/object budget exceeded".into());
+            if self.remaining == 0 {
+                return Err("APT execution budget exceeded (100000 instructions in one update)".into());
+            }
+            if self.objects.len() > MAX_OBJECTS {
+                return Err(format!("APT object budget exceeded (slots {}, in use {})", self.objects.len(), self.live_objects()));
             }
             self.remaining -= 1;
             pc += 1;

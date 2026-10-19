@@ -19,6 +19,11 @@ mod prompt_glyphs {
         false
     }
 }
+// apt_scene maps ImageRenderer slots to runtime textures; the HUD data has no image slots.
+mod image_renderer_host {
+    pub(crate) const SLOTS: usize = 0;
+    pub(crate) const SLOT_TEXTURE_PREFIX: &str = "slot/";
+}
 use apt_vm::Value;
 fn main() -> Result<(), String> {
     let path = std::env::args_os()
