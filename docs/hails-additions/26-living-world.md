@@ -46,6 +46,7 @@ the file of their topic (and get a line here).
 - [Population follows the board, not the player, 2026-10-05](26b-living-world-population.md#population-follows-the-board-not-the-player-2026-10-05)
 - [Frame drop with the board thrown away (hidden board scanned the whole map), 2026-10-05](26b-living-world-population.md#frame-drop-with-the-board-thrown-away-hidden-board-scanned-the-whole-map-2026-10-05)
 - [Opt-in switches in the PC overlay, 2026-10-11](26b-living-world-population.md#opt-in-switches-in-the-pc-overlay-2026-10-11)
+- [Map change: fresh NPC bodies, ids that never repeat, ped state cleared, 2026-10-18](26b-living-world-population.md#map-change-fresh-npc-bodies-ids-that-never-repeat-ped-state-cleared-2026-10-18)
 
 ### 26c: NPC skaters: replay tier and animation
 

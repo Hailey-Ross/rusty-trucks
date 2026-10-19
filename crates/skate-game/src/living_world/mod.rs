@@ -454,7 +454,10 @@ impl PopulationState {
     pub(crate) fn install(&mut self, map: &str, generation: u64, settings: &LivingWorldSettings, data: LoadedData) {
         let seed = if settings.seed != 0 { settings.seed } else { skate_core::living_world::rng::derive(0x5345_4544, &[name_hash(map), generation]) };
         self.data_config = data.config;
-        self.world = LivingWorld::new(self.data_config.clone(), seed);
+        let earlier = std::mem::replace(&mut self.world, LivingWorld::new(self.data_config.clone(), seed));
+        // Ids never repeat within a session (b216): host-side maps keyed by id (conversations, chase groups) and mods
+        // rely on it.
+        self.world.continue_serials_from(&earlier);
         self.census = data.census;
         self.skaters = data.skaters;
         self.roads = data.roads;

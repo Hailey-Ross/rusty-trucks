@@ -207,8 +207,21 @@ pub(crate) fn sync_hand_props(
     children: Query<&Children>,
     mesh_parts: Query<(&Mesh3d, &GlobalTransform)>,
     mut peds: Query<(Entity, &super::peds::Pedestrian, &super::peds::PedBody, &mut super::peds::PedMind, Option<&super::peds::PedPuppet>, Option<&HeldHandProp>, Option<&ReleasedHandProp>)>,
+    mut world_key: Local<Option<(String, u64)>>,
 ) {
     let tick = state.world.tick();
+    // A map change (b216): the released props' bodies were in the old world's physics, whose runtime ids the new one
+    // reuses, so only their models go (removing by id would hit a new map's prop).
+    if *world_key != data.loaded_for {
+        if world_key.is_some() {
+            for (_, entity) in released.0.drain(..) {
+                if let Ok(mut model) = commands.get_entity(entity) {
+                    model.despawn();
+                }
+            }
+        }
+        *world_key = data.loaded_for.clone();
+    }
     let s = settings.ped_brain.values.hand_prop;
     for (e, ped, body, mut mind, puppet, held, linked) in &mut peds {
         let mind = &mut *mind;

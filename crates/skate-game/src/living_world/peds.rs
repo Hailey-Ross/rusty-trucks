@@ -1916,6 +1916,21 @@ pub(crate) fn think_peds(
     (mut traffic_events, cars, mut plugin_props, physics): (MessageReader<super::vehicles::TrafficEvent>, Query<(&super::vehicles::TrafficCar, &super::vehicles::CarMotion)>, ResMut<PedPluginProps>, Option<Res<crate::physics::GamePhysics>>),
 ) {
     let _span = super::timing::span(super::timing::THINK_PEDS);
+    // A map change (b216; not the first map, whose key goes from none to some): the conversations, chase groups,
+    // pending refusals and greetings belong to the old world's peds, and the RNG streams restart from the new
+    // world's seed as on a fresh start there. The prop list itself reloads below.
+    if plugin_props.key.is_some() && plugin_props.key != data.loaded_for {
+        conversations.map.clear();
+        conversations.pending_refusals.clear();
+        conversations.rng = None;
+        chase_groups.0.clear();
+        plugin_props.rng = None;
+        plugin_props.last_tick = None;
+        greeted.clear();
+        listening.clear();
+        touchers.clear();
+        info!("PED_WORLD_RESET map changed: conversations, chase groups and ped RNG cleared");
+    }
     // Streamed-out props (DMO streaming): their plugins are not offered and a ped using one lets go. A world prop's
     // plugin id carries its DMO body id in the low 32 bits (`ped_plugins::map_props`).
     let dormant = physics.as_ref().and_then(|p| p.prop_dynamics()).map(|d| d.dormant_ids()).unwrap_or_default();

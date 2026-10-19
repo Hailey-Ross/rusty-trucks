@@ -249,12 +249,14 @@ pub(crate) struct SimBody {
     camera: Box<crate::camera::CameraRuntime>,
 }
 
-/// Loaded skaters waiting for a simulated NPC; filled up to the sim limit on the first enabled tick.
+/// Loaded skaters waiting for a simulated NPC; filled up to the sim limit on the first enabled tick of each map.
 #[derive(Resource, Default)]
 pub(crate) struct NpcSimPool {
     /// With each its own physics context: its clock keeps running, so the camera's subject ticks stay monotonic.
     bodies: Vec<(SkaterPhysicsContext, SimBody)>,
-    prewarmed: bool,
+    /// The `CurrentMap` generation the bodies were loaded for (b216): a body holds its map's grind world and skater
+    /// settings, so a map change drops them and loads new ones, as the player is loaded again per world.
+    prewarmed_for: Option<u64>,
     /// The animation banks and decoded poses the first loaded body read from disk, shared by every later body.
     source: Option<std::sync::Arc<crate::skater_animation::AnimationSource>>,
     /// The first enabled tick's load, on its own thread (b215: 0.5 to 0.8 s on the game thread in the first frame of
@@ -660,7 +662,7 @@ pub(crate) fn simulate(
     graphs: Option<Res<crate::graph_runtime::StockGraphs>>,
     physics: Option<ResMut<GamePhysics>>,
     peds: Option<Res<super::peds::PedData>>,
-    (player, net): (Res<crate::physics::SkaterRuntime>, Option<Res<crate::multiplayer::Multiplayer>>),
+    (player, net, map): (Res<crate::physics::SkaterRuntime>, Option<Res<crate::multiplayer::Multiplayer>>, Option<Res<crate::map_transition::CurrentMap>>),
     mut npcs: Query<(Entity, &NpcSkater, &mut NpcReplay, Option<&mut NpcSim>)>,
     mut events: MessageWriter<super::npc_skaters::NpcSkaterEvent>,
     mut calls: Local<u64>,
@@ -674,10 +676,20 @@ pub(crate) fn simulate(
     }
     let rules = settings.npc_simulated;
     *calls += 1;
-    // Load the skaters once, up front (the first enabled tick, i.e. the map start), so a switch to physics later
-    // takes a loaded one instead of reading it from disk mid-ride.
-    if rules.enabled && !pool.prewarmed && settings.net_role != NetRole::Client {
-        pool.prewarmed = true;
+    // A new map: the pooled bodies (the reset despawn put the simulated ones back already, `apply_records` runs
+    // first) and the workers belong to the old world. The animation source is map independent and stays.
+    let generation = map.as_ref().map_or(0, |m| m.generation);
+    if pool.prewarmed_for.is_some_and(|g| g != generation) {
+        info!("NPC_SKATER_SIM pool: map changed (generation {generation}); dropping {} loaded skaters", pool.bodies.len());
+        pool.loading = None;
+        pool.bodies.clear();
+        pool.prewarmed_for = None;
+        workers.clear();
+    }
+    // Load the skaters once per map, up front (the first enabled tick, i.e. the map start), so a switch to physics
+    // later takes a loaded one instead of reading it from disk mid-ride.
+    if rules.enabled && pool.prewarmed_for.is_none() && settings.net_role != NetRole::Client {
+        pool.prewarmed_for = Some(generation);
         let at = observers.observers.first().map_or([0.0; 3], |o| o.position);
         let spawn = skate_core::physics::drive_frames::RetailAffineTransform {
             basis: skate_core::physics::rigid_body::basis_from_quaternion(skate_core::physics::rigid_body::RetailQuaternion { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }),
