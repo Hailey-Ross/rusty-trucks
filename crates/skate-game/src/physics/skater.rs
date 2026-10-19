@@ -64,7 +64,8 @@ pub(crate) struct SkaterRuntime {
     pub vehicle_hits: Vec<(u64, [f32; 3], f32)>,
     /// The ped bodies (group 11 proxies, `living_world::ped_body`) the skeleton touched in the last solve, same
     /// layout: the ped's knock-down comes from these real contacts (research b185).
-    pub ped_hits: Vec<(u64, [f32; 3], f32)>,
+    /// Ped parts the skeleton touched: proxy id, contact point, the part's (|v|, |w|) after the solve.
+    pub ped_hits: Vec<(u64, [f32; 3], [f32; 2])>,
     /// The ped bodies that stopped the on-foot walker's capsule this step (`solid_contacts::constrain_ground`), same
     /// layout; the closing speed is the walker's, not yet the part's (the ped side applies the masses).
     pub scoring: crate::scoring_runtime::Runtime,
