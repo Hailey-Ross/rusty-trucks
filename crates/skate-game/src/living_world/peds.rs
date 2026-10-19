@@ -1708,7 +1708,10 @@ pub(crate) fn install(app: &mut App) {
         .init_resource::<PedConversations>()
         .init_resource::<PedPluginProps>()
         .add_message::<crate::hud_central::CentralMessage>()
-        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, super::ped_hand_props::sync_hand_props, apply_skater_takedowns, post_chase_messages, advance_peds, log_ped_readout).chain().after(super::step_population))
+        .init_resource::<super::ped_alerts::PedAlerts>()
+        .add_systems(PostStartup, super::ped_alerts::load_alert_textures)
+        .add_systems(Update, super::ped_alerts::draw_ped_alerts.after(crate::app::FrameSet::Animation))
+        .add_systems(FixedUpdate, (load_ped_data, apply_ped_records, release_rejected, update_ped_obstacles, think_peds, super::ped_hand_props::sync_hand_props, apply_skater_takedowns, post_chase_messages, super::ped_alerts::update_ped_alerts, advance_peds, log_ped_readout).chain().after(super::step_population))
         .init_resource::<PedMaterials>()
         .add_systems(Update, (present_ped_looks, present_ped_tints, present_ped_pose).chain().after(crate::app::FrameSet::Animation).before(super::npc_skaters::present_fade));
 }

@@ -2167,3 +2167,34 @@ From the stuck-ped research for the laptop session 2026-10-17 (b175, b176 in `.l
 - **Tests:** `chase_messages_follow_retails_bands` (skate-core), `a_taze_line_shows_its_text_and_plays_the_default_sound`
   (data-gated: load, show, label text, the default sound, 90 frames), tool tests for the HUD install.
 - **Open:** who sends the chase-over line (first argument 0); the line's on-screen look is not play-tested.
+
+## The alert over a ped that warns or chases you (2026-10-19)
+
+- **Ask (user, 2026-10-19):** "the ped alerts that appear over a peds head when they are mad (yellow) and when they
+  are chasing/tazing (orangeish red). the notification is kind of 'sim style'".
+- **Retail (research b191, 2026-10-17; re-checked in Ghidra 2026-10-19):** a screen-space HUD sprite, retail's
+  "ChaseArrow" manager. The graph op `SendChaseStateMessage` (`826A77A8`) posts {ped, state} for a player target:
+  warn (from `pedestrian_dowarning`), chase (intercept / secondary chaser), tired, giveup, end. The handler
+  (`825E35F0`) keeps up to 10 entries (new ped added, known ped's state replaced and timer restarted, end removes).
+  The update `825E2738` (decompiled again this pass) keeps an entry while `ms + dt` stays under 6000 ms for warn and
+  3000 ms for giveup (chase and tired stay), drops a ped that is gone, projects the anchor with the view-projection
+  and scales by camera distance (1.0 under 1 m, 0.4 from 50 m, linear between). The render draws a 64 px sprite
+  per state when the point is in the centred 0.85 box, else an edge arrow on a ring of `0.85 * width / 2 + 20` px.
+- **Retail [data]:** `arrow_warn` (yellow-orange), `arrow_chase` (red), `arrow_tired` (teal), `arrow_giveup` (grey)
+  in `fedynamic.big`, 128 x 128 down arrows (colours checked from the decoded textures this pass).
+- **Ours:**
+  - `skate_core::living_world::peds::chase_alert`: the list, lifetimes, scale and on-screen / edge placement, all in
+    `AlertSettings` with the retail values as defaults.
+  - Setup: `tools/prepare_chase_arrows.py` exports the four textures (`private/hud/chase-arrows`, in the HUD stage;
+    missing = `ASSET_CHECK hud` "ped chase alert textures missing", which offers Refresh Game Files).
+  - Engine: `living_world/ped_alerts.rs` feeds the list from the existing `PedEvent::Chase` `state_*` events for
+    the local player (`PED_ALERT ped=#.. warn` in the log) and draws one UI image per alert: bottom centre on the
+    anchor over the ped, or rotated at the screen edge toward it. Hidden with the HUD (front-end screens, the PC
+    overlay).
+  - Mods: `sdk.ui.chase_alerts(false)` hides them (released when the mod stops); `ped_chase` events as before.
+- **Not retail yet (ours):** the anchor. Retail uses the translation of the matrix the entity's vfn 0x28 returns;
+  that getter is not decoded (the ped vtables' slot 0x28 are not it: the world table holds another class). The user
+  saw the alert over the head, so ours anchors 2.1 m above the ped's root (`PedAlerts.anchor_height`).
+- **Tests:** `states_replace_restart_and_end_like_retail`, `warn_lasts_six_seconds_giveup_three_and_ten_at_most`,
+  `scale_and_placement_follow_retail` (skate-core); tool tests for the HUD stage; a muted run loads the textures.
+- **Open:** the anchor getter; the gate global in `826A77A8` (vfn 0x9C, ours: not in zombie mode); not play-tested.
