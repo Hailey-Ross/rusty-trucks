@@ -161,13 +161,23 @@ fn visit(
     if let crate::apt_vm::Value::Text(kind) = vm.get(id, "_type") {
         // Only the face buttons have prompts so far ("Unknown" = an unused item; shoulders / Start / sticks: open).
         let button = vm.get(id, "_test").text();
-        if kind == "CustomButton" && crate::prompt_glyphs::known(&button) {
+        // ImageRenderComponent (research b258 section 3, retail 825E2028): the slot is the last run of decimal digits in
+        // the clip's name (its Init renames it to the reserved index), below 40; the host resolves `slot/<n>` to the
+        // slot's image, stretched over the placeholder (the Challenge Map never locks the aspect).
+        let texture = match kind.as_str() {
+            "CustomButton" if crate::prompt_glyphs::known(&button) => Some(format!("prompt/{button}")),
+            "ImageRenderComponent" => last_digits(&vm.get(id, "_name").text())
+                .filter(|slot| *slot < crate::image_renderer_host::SLOTS)
+                .map(|slot| format!("{}{slot}", crate::image_renderer_host::SLOT_TEXTURE_PREFIX)),
+            _ => None,
+        };
+        if let Some(texture) = texture {
             if let Some(b) = movie.character_bounds(instance.character, 0) {
                 let corner = |x: f32, y: f32, u: f32, v: f32| transform(matrix, &Vertex { position: [x, y], uv: [u, v] });
                 let (a, bb, c, d) =
                     (corner(b[0], b[1], 0., 0.), corner(b[2], b[1], 1., 0.), corner(b[2], b[3], 1., 1.), corner(b[0], b[3], 0., 1.));
                 out.push(Draw {
-                    texture: format!("prompt/{button}"),
+                    texture,
                     fill: Fill::TextureClamped,
                     vertices: vec![a.clone(), bb, c.clone(), a, c, d],
                     multiply,
@@ -324,4 +334,11 @@ fn visit(
         visit(movie, vm, shapes, *child, matrix, multiply, add, out)?;
     }
     Ok(())
+}
+
+/// The last run of decimal digits in a clip name (`mRenderComponent7` -> 7), as retail 825E2028 reads the slot.
+fn last_digits(name: &str) -> Option<usize> {
+    let end = name.rfind(|c: char| c.is_ascii_digit())? + 1;
+    let start = name[..end].rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
+    name[start..end].parse().ok()
 }

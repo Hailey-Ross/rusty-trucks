@@ -28,11 +28,24 @@ pub const FORMAT: &str = "skate3-menu-movies";
 /// Largest mod movie file accepted (the biggest retail menu movie is well below this).
 pub const MAX_MOD_MOVIE_BYTES: u64 = 16 << 20;
 /// Manifest version setup writes (3: textured units carry their bitmap id, Milestone 4; 4: screens/main; 5: main.apt's
-/// layer movies; 6: the challenge map).
-pub const VERSION: u64 = 6;
-/// The oldest version this engine still reads: 6 only adds a movie, so a 5 set works without the challenge map (its
-/// pause item keeps the PC overlay's MAPS until Refresh Game Files).
+/// layer movies; 6: the challenge map; 7: named runtime images, the challenge map pictures).
+pub const VERSION: u64 = 7;
+/// The oldest version this engine still reads: 6 only adds a movie and 7 an optional image table, so a 5 set works
+/// without the challenge map (its pause item keeps the PC overlay's MAPS until Refresh Game Files) and a 6 set draws
+/// no map pictures.
 pub const OLDEST_VERSION: u64 = 5;
+/// Texture key prefix of a named runtime image (`Game.ImageRenderer_Load`): `image/<image_key>`.
+pub const NAMED_IMAGE_PREFIX: &str = "image/";
+
+/// The table key of a runtime image request: retail builds `data\` + name + `.rx2` (b258 section 2); `\` -> `/`, no
+/// leading `/` or `data/`, no `.rx2`, lower case (retail names are all lower case; this only widens what mods type).
+pub fn image_key(request: &str) -> String {
+    let path = request.replace('\\', "/").to_ascii_lowercase();
+    let path = path.trim_start_matches('/');
+    let path = path.strip_prefix("data/").unwrap_or(path);
+    path.strip_suffix(".rx2").unwrap_or(path).to_owned()
+}
+
 /// Mod bitmap limits: per mod, and the largest side (same as mod mesh textures).
 pub const MAX_MOD_BITMAPS: usize = 64;
 pub const MAX_MOD_BITMAP_SIDE: u32 = 2048;
@@ -104,6 +117,10 @@ pub struct RetailMenuMovies {
     retail_images: BTreeMap<String, [u32; 2]>,
     /// Mod bitmaps in submission order, newest last: (owner, movie key, bitmap id, image).
     mod_bitmaps: Vec<(String, String, i32, ModBitmap)>,
+    /// Named runtime images (manifest `images`, version 7): image key -> payload path, size.
+    named_images: BTreeMap<String, (String, [u32; 2])>,
+    /// Mod named images, newest last: (owner, image key, image). A mod replaces a retail name or adds its own.
+    mod_images: Vec<(String, String, ModBitmap)>,
     /// Linked movies by key (retail layered with mod movies).
     pub movies: BTreeMap<String, Movie>,
     pub imports_total: usize,
@@ -150,6 +167,14 @@ impl RetailMenuMovies {
                 return Err(format!("menu movie path escapes its folder: {file}"));
             }
             out.base.insert(library_key(key), merged(read_json(&root.join(file))?, &out.shared));
+        }
+        for (key, image) in manifest["images"].as_object().into_iter().flatten() {
+            let path = image["rgba"].as_str().ok_or("menu image path missing")?;
+            if path.contains("..") {
+                return Err(format!("menu image path escapes its folder: {path}"));
+            }
+            let size = [image["width"].as_u64().unwrap_or(0) as u32, image["height"].as_u64().unwrap_or(0) as u32];
+            out.named_images.insert(image_key(key), (path.to_owned(), size));
         }
         out.relink();
         Ok(out)
@@ -292,6 +317,34 @@ impl RetailMenuMovies {
         Ok(())
     }
 
+    /// A mod supplies the runtime image `name` (a retail request path such as `fe\source\images\map\map1024`, or
+    /// its own name a world record points at). Same limits as menu bitmaps.
+    pub fn set_named_image(&mut self, owner: &str, name: &str, image: ModBitmap) -> Result<(), String> {
+        let key = image_key(name);
+        let (w, h) = (image.width, image.height);
+        if key.is_empty()
+            || w == 0
+            || h == 0
+            || w > MAX_MOD_BITMAP_SIDE
+            || h > MAX_MOD_BITMAP_SIDE
+            || image.rgba.len() as u64 != u64::from(w) * u64::from(h) * 4
+        {
+            return Err("menu image size out of range".into());
+        }
+        self.mod_images.retain(|(o, k, _)| !(o == owner && *k == key));
+        if self.mod_images.iter().filter(|(o, ..)| o == owner).count() >= MAX_MOD_BITMAPS {
+            return Err(format!("menu image limit reached ({MAX_MOD_BITMAPS} per mod)"));
+        }
+        self.mod_images.push((owner.to_string(), key, image));
+        Ok(())
+    }
+
+    /// Whether a runtime image exists (a mod's or the set's).
+    pub fn has_named_image(&self, name: &str) -> bool {
+        let key = image_key(name);
+        self.mod_images.iter().any(|(_, k, _)| *k == key) || self.named_images.contains_key(&key)
+    }
+
     /// Owner of the newest mod bitmap for a stable id.
     fn mod_bitmap_owner(&self, key: &str, bitmap: i32) -> Option<&str> {
         self.mod_bitmaps
@@ -309,6 +362,13 @@ impl RetailMenuMovies {
 
     /// The image behind a texture key from `MenuScene`.
     pub fn image(&self, texture: &str) -> Option<MenuImage<'_>> {
+        if let Some(key) = texture.strip_prefix(NAMED_IMAGE_PREFIX) {
+            if let Some((.., image)) = self.mod_images.iter().rev().find(|(_, k, _)| k == key) {
+                return Some(MenuImage::Mod(image));
+            }
+            let (path, size) = self.named_images.get(key)?;
+            return Some(MenuImage::Retail { path, width: size[0], height: size[1] });
+        }
         if let Some(rest) = texture.strip_prefix(MOD_TEXTURE_PREFIX) {
             // mod:<owner>:<movie>#<bitmap>
             let (owner, id) = rest.split_once(':')?;
@@ -328,6 +388,7 @@ impl RetailMenuMovies {
     /// Removes everything `owner` supplied (mod disabled or stopped).
     pub fn clear_owner(&mut self, owner: &str) {
         self.mod_bitmaps.retain(|(o, ..)| o != owner);
+        self.mod_images.retain(|(o, ..)| o != owner);
         if self.mods.remove(owner).is_some() {
             self.overrides.clear_owner(owner);
             self.relink();
@@ -339,6 +400,7 @@ impl RetailMenuMovies {
             self.overrides.clear_owner(&owner);
         }
         self.mod_bitmaps.clear();
+        self.mod_images.clear();
         if !self.mods.is_empty() {
             self.mods.clear();
             self.relink();
@@ -627,6 +689,38 @@ mod tests {
         assert_eq!(m.imports_resolved, 1);
         assert!(m.set_mod_movie("a", "../x", movie(&[0], serde_json::json!([]), serde_json::json!([]))).is_err());
         assert!(m.mods.is_empty());
+    }
+
+    /// Version 7's named runtime images: the manifest table by request key, mods replace or add names and revert.
+    #[test]
+    fn named_images_resolve_by_request_key_and_mods_replace_then_revert() {
+        assert_eq!(image_key("fe\\source\\images\\map\\MAP1024"), "fe/source/images/map/map1024");
+        assert_eq!(image_key("data/fe/source/images/map/map1024.rx2"), "fe/source/images/map/map1024");
+        let root = std::env::temp_dir().join(format!("skate3-named-images-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let manifest = |path: &str| {
+            serde_json::json!({"format": FORMAT, "version": 7, "movies": {}, "shared": "shared.json",
+                "images": {"fe/source/images/map/map1024": {"rgba": path, "width": 4, "height": 2}}})
+        };
+        std::fs::write(root.join("shared.json"), "{}").unwrap();
+        std::fs::write(root.join("manifest.json"), manifest("a/0000_map1024.Texture.rgba").to_string()).unwrap();
+        let mut m = RetailMenuMovies::read(&root).unwrap();
+        let key = format!("{NAMED_IMAGE_PREFIX}fe/source/images/map/map1024");
+        assert!(matches!(m.image(&key), Some(MenuImage::Retail { path: "a/0000_map1024.Texture.rgba", width: 4, height: 2 })));
+        assert!(m.image("image/fe/source/images/map/nothing").is_none());
+        assert!(m.has_named_image("fe\\source\\images\\map\\map1024"));
+        let image = ModBitmap { width: 1, height: 1, rgba: vec![255; 4] };
+        assert!(m.set_named_image("mod", "fe/source/images/map/map1024", ModBitmap { width: 2, ..image.clone() }).is_err(), "size check");
+        m.set_named_image("mod", "fe\\source\\images\\map\\map1024", image.clone()).unwrap();
+        m.set_named_image("mod", "mymod/maps/park", image).unwrap();
+        assert!(matches!(m.image(&key), Some(MenuImage::Mod(b)) if b.width == 1));
+        assert!(m.image("image/mymod/maps/park").is_some());
+        m.clear_owner("mod");
+        assert!(matches!(m.image(&key), Some(MenuImage::Retail { .. })));
+        assert!(m.image("image/mymod/maps/park").is_none());
+        std::fs::write(root.join("manifest.json"), manifest("../escape.rgba").to_string()).unwrap();
+        assert!(RetailMenuMovies::read(&root).is_err(), "a path out of the set is refused");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -54,8 +54,13 @@ pub struct ChallengeMapState {
     pub hilight: usize,
     /// Each tab's row at the root (`mgr+0x118 + 4*tab`), keyed by the tab's id so a mod adding tabs keeps them.
     pub tab_rows: std::collections::BTreeMap<String, usize>,
+    /// The map picture shown (`+0xEC`); None = the default map.
+    pub picture: Option<String>,
     pub legend: bool,
 }
+
+/// The `world` map name retail treats as "use the default map" (string 0x821F89E4, b256).
+pub const DEFAULT_PICTURE_NAME: &str = "map_portcarverton";
 
 const REFRESH: [i32; 4] = [state::RELOAD_LIST, state::LIST_TITLE, state::SELECT_TAB, state::CURSOR];
 
@@ -113,10 +118,37 @@ impl ChallengeMapState {
         }
     }
 
-    /// OnMenuHilight (`826477D8`): +0xD8 = index and `D100(mgr, index)`; the map cursor follows.
+    /// The picture for the current list and row (`82649FF8`): the highlighted location's `world` map; folders and the
+    /// root show the default map, as does `map_portcarverton`.
+    pub fn picture_for(&self, registry: &MenuRegistry, ctx: &MenuContext) -> Option<String> {
+        let rows = self.rows(registry, ctx);
+        let row = rows.get(self.hilight).filter(|r| r.entry.kind == EntryKind::FeLocation)?;
+        registry.data().map_pictures.get(&row.entry.id).filter(|n| n.as_str() != DEFAULT_PICTURE_NAME).cloned()
+    }
+
+    /// Re-reads the picture; SetState 34 (RefreshMapTexture) when it changed.
+    fn refresh_picture(&mut self, registry: &MenuRegistry, ctx: &MenuContext, states: &mut Vec<i32>) {
+        let picture = self.picture_for(registry, ctx);
+        if picture != self.picture {
+            self.picture = picture;
+            states.push(state::MAP_TEXTURE);
+        }
+    }
+
+    /// The refreshers after a push, pop or tab switch (b256 section 3), with the map picture.
+    fn refresh(&mut self, registry: &MenuRegistry, ctx: &MenuContext) -> Action {
+        let mut states = REFRESH.to_vec();
+        self.refresh_picture(registry, ctx, &mut states);
+        Action::Refresh(states)
+    }
+
+    /// OnMenuHilight (`826477D8`): +0xD8 = index and `D100(mgr, index)`; the map picture and cursor follow.
     pub fn hilight(&mut self, registry: &MenuRegistry, ctx: &MenuContext, index: usize) -> Vec<i32> {
         self.set_sel(registry, ctx, index);
-        vec![state::CURSOR]
+        let mut states = Vec::new();
+        self.refresh_picture(registry, ctx, &mut states);
+        states.push(state::CURSOR);
+        states
     }
 
     /// OnMenuSelect (`826475B8`): a folder with something in it is pushed; a leaf is selected; a greyed row or an
@@ -133,7 +165,7 @@ impl ChallengeMapState {
             }
             self.stack.push(row.entry.clone());
             self.set_sel(registry, ctx, 0);
-            return Action::Refresh(REFRESH.to_vec());
+            return self.refresh(registry, ctx);
         }
         Action::Select(row.entry.clone())
     }
@@ -149,7 +181,7 @@ impl ChallengeMapState {
             if let Some(i) = self.rows(registry, ctx).iter().position(|r| r.entry == left) {
                 self.set_sel(registry, ctx, i);
             }
-            return Action::Refresh(REFRESH.to_vec());
+            return self.refresh(registry, ctx);
         }
         Action::Close
     }
@@ -176,7 +208,7 @@ impl ChallengeMapState {
         self.stack.clear();
         let saved = self.tabs(registry, ctx).get(next).and_then(|t| self.tab_rows.get(&t.id).copied()).unwrap_or(0);
         self.set_sel(registry, ctx, saved);
-        Action::Refresh(REFRESH.to_vec())
+        self.refresh(registry, ctx)
     }
 }
 

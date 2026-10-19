@@ -46,6 +46,7 @@ mod popup_host;
 mod settings_host;
 mod trick_guide_host;
 mod challenge_map_host;
+mod image_renderer_host;
 mod retail_menu_movies;
 mod retail_menu_stage;
 mod rumble;

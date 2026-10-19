@@ -940,7 +940,7 @@ impl MenuTables {
                 })
                 .collect(),
             // The Challenge Map tree comes from the vault collections, not these tables (added by the game's loader).
-            map_nodes: Vec::new(),
+            map_nodes: Vec::new(), map_pictures: Default::default(),
         }
     }
 }

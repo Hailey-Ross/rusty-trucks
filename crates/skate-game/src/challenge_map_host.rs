@@ -105,11 +105,17 @@ impl ChallengeMapHost {
             "IsSelectAvailable" => Value::Bool(s.rows(registry, ctx).get(s.hilight).is_none_or(|r| {
                 !r.entry.kind.is_map_folder() || !registry.data().map_children(&r.entry).is_empty()
             })),
-            // The map picture: the default map until the map textures are exported (b257). NOT RETAIL YET: the
-            // per-district maps, the cursor (marker projection, b256) and the park screenshot.
-            "IsUsingDefaultMap" => Value::Bool(true),
+            // The map picture (b255 / b256: 8264B488, 8264B4A8, 8264B4B8): the highlighted location's `world` map, else
+            // the default. GetMapTexture = [name or "map_missing", +0xF0 (1 unless the park screenshot), +0xF1 (the
+            // record flag sub_824FB718, not read: 0)]. NOT RETAIL YET: the cursor (marker projection, b256) and the
+            // park screenshot.
+            "IsUsingDefaultMap" => Value::Bool(s.picture.is_none()),
             "GetDefaultMapTexture" => Value::Text("map1024".into()),
-            "GetMapTexture" => Value::Object(vm.array(vec![Value::Text("map_missing".into()), Value::Bool(false), Value::Bool(false)])?),
+            "GetMapTexture" => Value::Object(vm.array(vec![
+                Value::Text(s.picture.clone().unwrap_or_else(|| "map_missing".into())),
+                Value::Bool(true),
+                Value::Bool(false),
+            ])?),
             "IsCursorVisible" => Value::Bool(false),
             "GetCursorCoordinates" => Value::Object(vm.array(vec![Value::Number(0.0), Value::Number(0.0)])?),
             // Retail stubs / constants (b255).

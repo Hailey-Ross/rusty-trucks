@@ -30,6 +30,33 @@ class MenuMovieRules(unittest.TestCase):
         self.assertEqual(menus.library_key('data\\fe\\source\\controls\\panel.apt'), 'source/controls/panel')
         self.assertEqual(menus.library_key('source/controls/panel'), 'source/controls/panel')
 
+    def test_named_images_copy_single_texture_bundles_under_the_prefix(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache, runtime = Path(folder) / 'cache', Path(folder) / 'runtime'
+
+            def bundle(name, textures):
+                manifest = f'assets/{name}/manifest.json'
+                (cache / manifest).parent.mkdir(parents=True, exist_ok=True)
+                (cache / manifest).write_text(json.dumps({'textures': textures}), encoding='utf-8')
+                for t in textures:
+                    (cache / f'assets/{name}' / t['rgba_file']).write_bytes(bytes(16))
+                return {'name': name, 'textures': {'manifest': manifest}}
+
+            one = [{'rgba_file': '0000_test.Texture.rgba', 'width': 2, 'height': 2}]
+            bundles = [bundle('data/fe/source/images/map/test', one), bundle('data/fe/source/other/x', one)]
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / 'manifest.json').write_text(json.dumps({'bundles': bundles}), encoding='utf-8')
+            images = menus.named_images(cache, runtime, ('data/fe/source/images/map/',))
+            self.assertEqual(list(images), ['fe/source/images/map/test'])
+            image = images['fe/source/images/map/test']
+            self.assertEqual((image['width'], image['height']), (2, 2))
+            self.assertEqual((runtime / image['rgba']).read_bytes(), bytes(16))
+            two = one + [{'rgba_file': '0001_b.Texture.rgba', 'width': 2, 'height': 2}]
+            bundles.append(bundle('data/fe/source/images/map/two', two))
+            (cache / 'manifest.json').write_text(json.dumps({'bundles': bundles}), encoding='utf-8')
+            with self.assertRaises(ValueError):
+                menus.named_images(cache, runtime, ('data/fe/source/images/map/',))
+
     def test_install_verifies_hashes_and_replaces(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
