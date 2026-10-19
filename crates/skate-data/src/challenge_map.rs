@@ -67,23 +67,28 @@ fn typed_ref_key(entry: &Collection, field: &str) -> Option<u64> {
 }
 
 const WORLD_CLASS: &str = "world";
-/// `world`'s tMapInfo (b257 / b259): word 0 = the map picture's name (`map_skateschool`); inherited from the parent.
-const WORLD_MAP_INFO: &str = "Hash_20BBC594CD2FAEF8";
 
 /// Each location's map picture name (FE `82649FF8`: the location's district names its `world` record, whose
-/// tMapInfo names the picture), by location key. Records without a name are left out (the default map).
-pub fn location_maps(collections: &crate::collections::Collections) -> BTreeMap<String, String> {
-    let entries = collections.entries();
-    let worlds: BTreeMap<u64, &str> =
-        entries.iter().filter(|e| class_is(e, WORLD_CLASS)).map(|e| (key_hash(&e.key), e.key.as_str())).collect();
+/// tMapInfo names the picture), by location key. `world_maps` = the world records that set their own name (the menu
+/// set's `world_maps`, resolved at export, b259); a record without one inherits its parent's.
+pub fn location_maps(entries: &[Collection], world_maps: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let worlds: Vec<&Collection> = entries.iter().filter(|e| class_is(e, WORLD_CLASS)).collect();
+    let by_hash: BTreeMap<u64, &str> = worlds.iter().copied().map(|e| (key_hash(&e.key), e.key.as_str())).collect();
+    let parent: BTreeMap<&str, &str> = worlds.iter().copied().map(|e| (e.key.as_str(), e.parent.as_str())).collect();
+    fn name_of<'a>(mut world: &'a str, parent: &BTreeMap<&'a str, &'a str>, maps: &BTreeMap<String, String>) -> Option<String> {
+        for _ in 0..16 {
+            if let Some(name) = maps.get(world) {
+                return Some(name.clone());
+            }
+            world = parent.get(world)?;
+        }
+        None
+    }
     entries
         .iter()
         .filter(|e| class_is(e, "fe_locations"))
-        .filter_map(|loc| {
-            let world = worlds.get(&typed_ref_key(loc, LOCATION_DISTRICT)?)?;
-            let name = collections.field(WORLD_CLASS, world, WORLD_MAP_INFO).ok()?.text.clone()?;
-            (!name.is_empty()).then(|| (loc.key.clone(), name))
-        })
+        .filter_map(|loc| Some((loc.key.clone(), name_of(by_hash.get(&typed_ref_key(loc, LOCATION_DISTRICT)?)?, &parent, world_maps)?)))
+        .filter(|(_, name)| !name.is_empty())
         .collect()
 }
 
@@ -132,7 +137,7 @@ mod tests {
     use crate::collections::Field;
 
     fn field(data: &str) -> Field {
-        Field { type_name: String::new(), data: data.to_owned(), array: None, text: None }
+        Field { type_name: String::new(), data: data.to_owned(), array: None }
     }
     fn row(class: &str, key: &str, parent: &str, fields: &[(&str, String)]) -> Collection {
         Collection {
@@ -150,6 +155,24 @@ mod tests {
     /// A typed RefSpec (`ssRefSpec_map_category`): the key, then padding.
     fn typed(key: &str) -> String {
         format!("{:016X}0000000000000000", hash(key))
+    }
+
+    #[test]
+    fn a_location_shows_its_districts_world_map_inherited_up_the_world_records() {
+        let rows = [
+            row("world", "default", "", &[]),
+            row("world", "default_skate3", "default", &[]),
+            row("world", "dist_skateschool", "default_skate3", &[]),
+            row("world", "dist_university", "default_skate3", &[]),
+            row("fe_locations", "school_spot", "skate3", &[(LOCATION_DISTRICT, typed("dist_skateschool"))]),
+            row("fe_locations", "uni_spot", "skate3", &[(LOCATION_DISTRICT, typed("dist_university"))]),
+            row("fe_locations", "nowhere", "skate3", &[]),
+        ];
+        let named = |pairs: &[(&str, &str)]| pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<BTreeMap<_, _>>();
+        let worlds = named(&[("default", "map1024"), ("default_skate3", "map_portcarverton"), ("dist_skateschool", "map_skateschool")]);
+        let maps = location_maps(&rows, &worlds);
+        assert_eq!(maps, named(&[("school_spot", "map_skateschool"), ("uni_spot", "map_portcarverton")]));
+        assert!(location_maps(&rows, &BTreeMap::new()).is_empty(), "an older menu set names no maps");
     }
 
     #[test]

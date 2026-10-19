@@ -79,11 +79,6 @@ def array_text_items(binary, items):
     return values
 
 
-def map_info_text(binary, raw):
-    """Sk8::FE::tMapInfo word 0: the map texture's name in skatercollections.bin (research b257 / b259)."""
-    return array_text_items(binary, [raw[:4].hex().upper()])[0] if len(raw) >= 4 else ''
-
-
 def chunks(data):
     at=0
     while at<len(data):
@@ -155,8 +150,6 @@ def convert(schema_stem, collections_stem, names):
             else:
                 raw=take(data,pos,length)
                 out[name(fkey)]={'type':t,'data':raw.hex().upper()}
-                if t=='Sk8::FE::tMapInfo':
-                    out[name(fkey)]['text']=map_info_text(cb,raw)
                 if flags&1:
                     # Keep the legacy data field unchanged for existing
                     # gameplay consumers. New readers use the full array.

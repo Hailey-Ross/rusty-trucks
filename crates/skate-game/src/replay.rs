@@ -277,8 +277,14 @@ fn setup_ui(mut commands: Commands) {
             bar.spawn((Playhead, Node { width: percent(100), height: percent(100), ..default() },
                 BackgroundColor(Color::srgb(0.35, 0.9, 0.7))));
         });
-        panel.spawn((Text::new("LT / RT  Scrub   |   D-pad left / right  Frame step   |   A  Play / pause   |   Y  Free camera   |   View / B  Exit\nFree camera: Left stick  Move   |   Right stick  Look   |   LB / RB  Down / up   |   L-stick click  Fast\nKeyboard: F6  Replay   |   Arrows  Scrub   |   , / .  Frame step   |   Space  Play   |   C  Camera   |   WASD / Q / E  Move   |   RMB drag  Look"),
-            TextFont { font_size: 14., ..default() }, TextColor(Color::srgb(0.75, 0.82, 0.86))));
+        // Pad hints as the connected pad's glyphs (prompt_glyphs, SDL labels); keyboard hints as text.
+        let hint = Color::srgb(0.75, 0.82, 0.86);
+        crate::prompt_glyphs::hint_row(panel, &[(&["L_Trigger", "R_Trigger"], "", "Scrub"), (&["DPad_Left", "DPad_Right"], "", "Frame step"),
+            (&["A"], "", "Play / pause"), (&["Y"], "", "Free camera"), (&["Back", "B"], "", "Exit")], 14., hint);
+        crate::prompt_glyphs::hint_row(panel, &[(&["Stick_Left"], "", "Move"), (&["Stick_Right"], "", "Look"), (&["L_Bumper", "R_Bumper"], "", "Down / up"),
+            (&["L3_Click"], "", "Fast (free camera)")], 14., hint);
+        panel.spawn((Text::new("Keyboard: F6  Replay   |   Arrows  Scrub   |   , / .  Frame step   |   Space  Play   |   C  Camera   |   WASD / Q / E  Move   |   RMB drag  Look"),
+            TextFont { font_size: 14., ..default() }, TextColor(hint)));
     });
 }
 
