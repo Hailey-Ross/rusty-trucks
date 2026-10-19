@@ -166,26 +166,41 @@ pub(crate) fn read(root: &Path) -> (MenuData, bool) {
 /// Owner prefix of the engine handlers that teleport to a Challenge Map location (`teleport:<fe_locations key>`).
 pub(crate) const TELEPORT: &str = "teleport:";
 
-/// The Challenge Map tree (vault `map_listing` under `progression`, the root career and free skate open; b244d) and
-/// the keys of the locations that have a teleport matrix (`private/teleports.json`, any map).
-fn challenge_map(
-    asset_root: &std::path::Path,
-    world_maps: &std::collections::BTreeMap<String, String>,
-) -> (Vec<skate_core::menus::MapNode>, std::collections::BTreeMap<String, String>, Vec<String>) {
-    let (nodes, pictures) = match skate_data::collections::Collections::load(asset_root) {
+/// The Challenge Map data from the collections and the teleports: the tree (vault `map_listing` under `progression`,
+/// the root career and free skate open; b244d), each location's picture, its marker (research b265: the locator's
+/// x / z plus its world's offset; the locator is the teleport matrix) and the keys of the locations that have a
+/// teleport matrix (`private/teleports.json`, any map).
+pub(crate) struct ChallengeMapData {
+    pub nodes: Vec<skate_core::menus::MapNode>,
+    pub pictures: std::collections::BTreeMap<String, String>,
+    pub markers: std::collections::BTreeMap<String, skate_core::menus::MapMarker>,
+    pub teleports: Vec<String>,
+}
+
+fn challenge_map(asset_root: &std::path::Path, world_maps: &std::collections::BTreeMap<String, String>) -> ChallengeMapData {
+    let rows = crate::teleport_menu::load(asset_root).unwrap_or_default();
+    let locators: std::collections::BTreeMap<&str, [f32; 2]> =
+        rows.iter().filter_map(|d| d.matrix.map(|m| (d.id.as_str(), [m[3][0], m[3][2]]))).collect();
+    let (nodes, pictures, markers) = match skate_data::collections::Collections::load(asset_root) {
         Ok(c) => (
             skate_data::challenge_map::load(c.entries(), "progression", &skate_data::challenge_map::LocationRules::default()),
             skate_data::challenge_map::location_maps(c.entries(), world_maps),
+            skate_data::challenge_map::location_markers(&c)
+                .into_iter()
+                .filter_map(|(key, m)| {
+                    let at = locators.get(key.as_str())?;
+                    let point = [at[0] + m.offset[0], at[1] + m.offset[1]];
+                    Some((key, skate_core::menus::MapMarker { icon: m.icon, point, bounds: m.bounds }))
+                })
+                .collect(),
         ),
         Err(error) => {
             warn!("RETAIL_MENUS challenge map: {error}");
             Default::default()
         }
     };
-    let teleports = crate::teleport_menu::load(asset_root)
-        .map(|rows| rows.into_iter().filter(|d| d.matrix.is_some()).map(|d| d.id).collect())
-        .unwrap_or_default();
-    (nodes, pictures, teleports)
+    let teleports = locators.keys().map(|k| k.to_string()).collect();
+    ChallengeMapData { nodes, pictures, markers, teleports }
 }
 
 impl RetailMenus {
@@ -211,9 +226,11 @@ impl RetailMenus {
 fn load(mut commands: Commands, config: Res<crate::config::Config>) {
     let (mut data, loaded) = read(&config.asset_root);
     let world_maps = crate::retail_menu_movies::world_maps(&crate::retail_menu_movies::set_root(&config));
-    let (nodes, pictures, teleports) = challenge_map(&config.asset_root, &world_maps);
-    data.map_nodes = nodes;
-    data.map_pictures = pictures;
+    let map = challenge_map(&config.asset_root, &world_maps);
+    let teleports = map.teleports;
+    data.map_nodes = map.nodes;
+    data.map_pictures = map.pictures;
+    data.map_markers = map.markers;
     if loaded {
         info!(
             "RETAIL_MENUS: {} categories, {} items, {} settings rows, {} modes",
@@ -765,7 +782,7 @@ mod tests {
     use skate_core::menus::{Category, Mode, Tab};
 
     fn data() -> MenuData {
-        MenuData { map_nodes: Vec::new(), map_pictures: Default::default(),
+        MenuData { map_nodes: Vec::new(), map_pictures: Default::default(), map_markers: Default::default(),
             categories: vec![Category { id: "SinglePlayer".into(), label: "L".into(), icon: Icon::Retail("singleplayer".into()) }],
             items: vec![skate_core::menus::Item { id: "ChallengeMap".into(), label: "L".into(), icon: Icon::Retail("map".into()), help: String::new(), sub_option_kind: -1 }],
             settings: Vec::new(),

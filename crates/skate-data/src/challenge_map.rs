@@ -92,6 +92,55 @@ pub fn location_maps(entries: &[Collection], world_maps: &BTreeMap<String, Strin
         .collect()
 }
 
+const LOCATION_ICON: &str = "Hash_786255B8FF426A3D";
+const LOCATION_WORLD: &str = "Hash_7565CD2A80E93A5E";
+const ICON_CLASS: &str = "Hash_F788504A8D922CED";
+const ICON_NAME: &str = "Hash_FCFE787CCF2F775E";
+const WORLD_OFFSET: &str = "Hash_B88A4034D63E905E";
+const WORLD_MAP_INFO: &str = "Hash_20BBC594CD2FAEF8";
+
+/// What a location's Challenge Map marker needs besides its locator (research b264 / b265).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkerSource {
+    /// The icon texture name: the location's `Icon` (fe_map_icons RefSpec, inherited) record's name text.
+    pub icon: String,
+    /// The location's `World` record's offset (Vector2, inherited; added to the locator's x / z).
+    pub offset: [f32; 2],
+    /// That world's tMapInfo b1..b6 (inherited): the projection bounds and map size.
+    pub bounds: [i32; 6],
+}
+
+/// The marker data per fe_locations key; a location whose World or icon cannot be read is left out.
+pub fn location_markers(collections: &crate::collections::Collections) -> BTreeMap<String, MarkerSource> {
+    let entries = collections.entries();
+    let icons: BTreeMap<u64, &str> =
+        entries.iter().filter(|e| class_is(e, ICON_CLASS)).map(|e| (key_hash(&e.key), e.key.as_str())).collect();
+    let worlds: BTreeMap<u64, &str> =
+        entries.iter().filter(|e| class_is(e, WORLD_CLASS)).map(|e| (key_hash(&e.key), e.key.as_str())).collect();
+    let hex = |data: &str, at: usize| data.get(at..at + 8).and_then(|h| u32::from_str_radix(h, 16).ok());
+    entries
+        .iter()
+        .filter(|e| class_is(e, "fe_locations"))
+        .filter_map(|loc| {
+            let field = |name: &str| collections.field("fe_locations", &loc.key, name).ok().map(|f| f.data.as_str());
+            // Icon: Attrib::RefSpec = class, key; World: ClassRefSpec = key first.
+            let icon_key = u64::from_str_radix(field(LOCATION_ICON)?.get(16..32)?, 16).ok()?;
+            let world_key = u64::from_str_radix(field(LOCATION_WORLD)?.get(0..16)?, 16).ok()?;
+            let icon = collections.field(ICON_CLASS, icons.get(&icon_key)?, ICON_NAME).ok()?.data.clone();
+            let world = worlds.get(&world_key)?;
+            let offset = collections.field(WORLD_CLASS, world, WORLD_OFFSET).ok().map_or([0.0; 2], |f| {
+                [0, 8].map(|at| hex(&f.data, at).map_or(0.0, f32::from_bits))
+            });
+            let info = collections.field(WORLD_CLASS, world, WORLD_MAP_INFO).ok()?;
+            let mut bounds = [0i32; 6];
+            for (i, b) in bounds.iter_mut().enumerate() {
+                *b = hex(&info.data, 8 + 8 * i)? as i32;
+            }
+            Some((loc.key.clone(), MarkerSource { icon, offset, bounds }))
+        })
+        .collect()
+}
+
 /// A `Hash_XXXXXXXXXXXXXXXX` key, or `hash(name)` for a readable one.
 fn key_hash(key: &str) -> u64 {
     key.strip_prefix("Hash_").and_then(|h| u64::from_str_radix(h, 16).ok()).unwrap_or_else(|| hash(key))
@@ -216,5 +265,12 @@ mod tests {
         assert_eq!(downtown.len(), 14);
         assert!(downtown.iter().all(|n| n.entry.kind == EntryKind::FeLocation));
         assert!(downtown.iter().any(|n| n.entry.id == "dist_downtown_aletown"));
+        // Markers (b264 / b265): every career location's icon is mini_teleport; Downtown's world offset and bounds.
+        let markers = location_markers(&collections);
+        let aletown = &markers["dist_downtown_aletown"];
+        assert_eq!(aletown.icon, "mini_teleport");
+        assert_eq!(aletown.offset, [225.0, -175.0]);
+        assert_eq!(aletown.bounds, [2050, -850, 1050, -1250, 512, 512]);
+        assert!(downtown.iter().all(|n| markers.get(&n.entry.id).is_some_and(|m| m.icon == "mini_teleport")));
     }
 }

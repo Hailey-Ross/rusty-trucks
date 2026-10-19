@@ -336,7 +336,7 @@ mod tests {
             help: format!("ID_{id}_HELP"),
             sub_option_kind: kind,
         };
-        MenuRegistry::new(MenuData { map_nodes: Vec::new(), map_pictures: Default::default(),
+        MenuRegistry::new(MenuData { map_nodes: Vec::new(), map_pictures: Default::default(), map_markers: Default::default(),
             categories: vec![
                 Category { id: "SinglePlayer".into(), label: "ID_CROSSBAR_SINGLE_PLAYER".into(), icon: Icon::Retail("singleplayer".into()) },
                 Category { id: "Options".into(), label: "ID_CROSSBAR_OPTIONS".into(), icon: Icon::Retail("options".into()) },

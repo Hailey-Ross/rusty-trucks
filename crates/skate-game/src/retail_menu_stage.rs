@@ -954,6 +954,7 @@ fn update(
     ms.crossbar = fe.state;
     ms.settings = fe.settings;
     ms.trick_guide = std::mem::take(&mut fe.trick_guide);
+    fe.challenge_map.markers = if fe.challenge_map.open { fe.challenge_map.state.markers(fe.registry, fe.context) } else { Vec::new() };
     ms.challenge_map = std::mem::take(&mut fe.challenge_map);
     ms.image_slots = std::mem::take(&mut fe.image_slots);
     ms.popup = std::mem::take(&mut fe.popup);
@@ -1267,6 +1268,31 @@ fn render(
     }
     // An unresolved prompt draws nothing (an empty key would draw solid white).
     draws.retain(|d| !d.texture.starts_with("prompt/"));
+    // Map markers (MapRenderComponent): a 32 x 32 quad per marker (`8268D960`, size 32 x scale 1.0) centred on its map
+    // point in the clip's space, highlighted last; nothing while the Challenge Map is closed (the gate byte, b263).
+    let mut expanded = Vec::with_capacity(draws.len());
+    for draw in draws.drain(..) {
+        if draw.texture != crate::apt_scene::MAP_MARKERS {
+            expanded.push(draw);
+            continue;
+        }
+        let [o, ex, ey] = [draw.vertices[0].position, draw.vertices[1].position, draw.vertices[2].position];
+        let at = |x: f32, y: f32, u: f32, v: f32| crate::apt_scene::Vertex {
+            position: [o[0] + (ex[0] - o[0]) * x + (ey[0] - o[0]) * y, o[1] + (ex[1] - o[1]) * x + (ey[1] - o[1]) * y],
+            uv: [u, v],
+        };
+        for (icon, [x, y], _) in &ms.challenge_map.markers {
+            let (a, b, c, d) = (at(x - 16., y - 16., 0., 0.), at(x + 16., y - 16., 1., 0.), at(x + 16., y + 16., 1., 1.), at(x - 16., y + 16., 0., 1.));
+            expanded.push(crate::apt_scene::Draw {
+                texture: format!("{}texture/{icon}", crate::retail_menu_movies::NAMED_IMAGE_PREFIX),
+                fill: draw.fill,
+                vertices: vec![a.clone(), b, c.clone(), a, c, d],
+                multiply: draw.multiply,
+                add: draw.add,
+            });
+        }
+    }
+    draws = expanded;
     // Image slots (ImageRenderComponent, `slot/<n>`): the slot's loaded image; an empty slot or an image nobody has
     // draws nothing (retail: the texture lookup finds nothing, b258 section 2), never the white fallback.
     for draw in &mut draws {

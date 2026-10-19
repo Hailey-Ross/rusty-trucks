@@ -171,6 +171,13 @@ fn visit(
                 .map(|slot| format!("{}{slot}", crate::image_renderer_host::SLOT_TEXTURE_PREFIX)),
             _ => None,
         };
+        // MapRenderComponent (b262 / b263, retail 825E2618 -> 8268D898): the host draws the map markers in the clip's
+        // own space, centred on its origin; this placeholder carries the clip transform (the images of (0, 0), (1, 0)
+        // and (0, 1)) for the stage to expand (`MAP_MARKERS`).
+        if kind == "MapRenderComponent" {
+            let point = |x: f32, y: f32| transform(matrix, &Vertex { position: [x, y], uv: [0., 0.] });
+            out.push(Draw { texture: MAP_MARKERS.to_owned(), fill: Fill::TextureClamped, vertices: vec![point(0., 0.), point(1., 0.), point(0., 1.)], multiply, add });
+        }
         if let Some(texture) = texture {
             if let Some(b) = movie.character_bounds(instance.character, 0) {
                 let corner = |x: f32, y: f32, u: f32, v: f32| transform(matrix, &Vertex { position: [x, y], uv: [u, v] });
@@ -342,3 +349,6 @@ fn last_digits(name: &str) -> Option<usize> {
     let start = name[..end].rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
     name[start..end].parse().ok()
 }
+
+/// Texture key of the MapRenderComponent placeholder draw (three transformed points, expanded by the host).
+pub(crate) const MAP_MARKERS: &str = "map-markers/";

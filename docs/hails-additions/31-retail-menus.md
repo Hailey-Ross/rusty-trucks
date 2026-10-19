@@ -2134,9 +2134,19 @@ the vault converter `vlt.py`; that file is in the core, living world and customi
 would have redone those stages: moved to the menu stage, which re-runs for version 7 anyway.) The icon pack
 `fe/source/images/icons/minimap` is exported per texture (`texture/<name>`, 43) for the markers. Folders, the root and
 `map_portcarverton` use the default `map1024`; a change posts SetState 34. Mods: `RetailMenuMovies::set_named_image`
-replaces a retail picture or adds a name, cleared on mod disable; `MenuData::map_pictures` is data. Not yet: the
-location markers and the highlighted marker (MapRenderComponent, research b263), the cursor position (the cursor
-clip is movie art; IsCursorVisible answers false), the park screenshot (`LoadAssetByName`). Research files: b257 / b258 / b259
+replaces a retail picture or adds a name, cleared on mod disable; `MenuData::map_pictures` is data. Markers (research b263 / b264 /
+b265, 2026-10-18): in a list of locations each location gets a marker, the highlighted one drawn last. Data per
+location (`skate_data::challenge_map::location_markers`, `MenuData::map_markers`): the icon = the location's `Icon`
+RefSpec (inherited; every career location: `teleport` -> fe_map_icons name `mini_teleport`), the point = the
+locator's x / z (the teleport matrix row 3, the same locator lookup as the teleport) plus the location's `World`
+record's Vector2 offset (Downtown (225, -175), Industrial (1000, 1300), University (1100, -400), Skate School (60, 5),
+others (0, 0)), projected with that world's tMapInfo bounds (`MapMarker::projected`, `sub_8268DB68`: size b5 x b6
+over b2..b1 / b4..b3, 99% / 95%). The movie's `MapRenderComponent` (a CONSTRUCT clip action sets its `_type`, b262)
+draws as a placeholder carrying its transform; the stage expands it into 32 x 32 quads (`8268D960`) textured from the
+icon pack `texture/<icon>`; an icon the pack lacks draws nothing (retail draws `missingtexture` from
+globaltextures.rx2, not exported). The cursor (`IsCursorVisible` / `GetCursorCoordinates`) sits on the highlighted
+marker; the movie places its own cursor clip. Not yet: the park screenshot (`LoadAssetByName`), challenge markers
+(their locator field 0xF1C6D5FA4A23951E; challenges are greyed anyway). Research files: b257 / b258 / b259
 (fedynamic.big map textures, the image renderer natives, the export plan).
 
 Out-of-date menus force the refresh (user, 2026-10-18): the asset check's menu movie / table findings restart the game

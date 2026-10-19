@@ -9,6 +9,8 @@ use skate_core::menus::{EntryKind, EntryRef, MenuContext, MenuRegistry};
 
 #[derive(Clone, Default)]
 pub struct ChallengeMapHost {
+    /// The map markers to draw (icon, map pixels from the centre, highlighted), refreshed after each update while open.
+    pub markers: Vec<(String, [f32; 2], bool)>,
     pub state: ChallengeMapState,
     /// The screen is on top of the stack (the picker callbacks are ours).
     pub open: bool,
@@ -107,8 +109,7 @@ impl ChallengeMapHost {
             })),
             // The map picture (b255 / b256: 8264B488, 8264B4A8, 8264B4B8): the highlighted location's `world` map, else
             // the default. GetMapTexture = [name or "map_missing", +0xF0 (1 unless the park screenshot), +0xF1 (the
-            // record flag sub_824FB718, not read: 0)]. NOT RETAIL YET: the cursor (marker projection, b256) and the
-            // park screenshot.
+            // record flag sub_824FB718, not read: 0)]. NOT RETAIL YET: the park screenshot.
             "IsUsingDefaultMap" => Value::Bool(s.picture.is_none()),
             "GetDefaultMapTexture" => Value::Text("map1024".into()),
             "GetMapTexture" => Value::Object(vm.array(vec![
@@ -116,8 +117,13 @@ impl ChallengeMapHost {
                 Value::Bool(true),
                 Value::Bool(false),
             ])?),
-            "IsCursorVisible" => Value::Bool(false),
-            "GetCursorCoordinates" => Value::Object(vm.array(vec![Value::Number(0.0), Value::Number(0.0)])?),
+            // 8264B570 / 8264B588 (b256 section 2): the cursor sits on the highlighted marker (+0xF2, +0x100 / +0x104,
+            // whole map pixels from the centre); no highlighted marker hides it.
+            "IsCursorVisible" => Value::Bool(s.markers(registry, ctx).iter().any(|(.., h)| *h)),
+            "GetCursorCoordinates" => {
+                let at = s.markers(registry, ctx).into_iter().find(|(.., h)| *h).map_or([0.0; 2], |(_, p, _)| p);
+                Value::Object(vm.array(vec![Value::Number(at[0].trunc() as f64), Value::Number(at[1].trunc() as f64)])?)
+            }
             // Retail stubs / constants (b255).
             "GetStuffMenuChallengeFilterType" => Value::Bool(true),
             "GetMapDistrictText" => Value::Text("#GetMapDistrictText".into()),
