@@ -165,6 +165,12 @@ pub struct WaterLookPatch {
     pub flowing_ripple_scale: Option<f32>,
     /// Splash in shallow water (fountains) as a share of the deep-water plume, 0 = none (retail none).
     pub shallow_splash: Option<f32>,
+    /// Calm open-sea swells (`ocean.default`) as a slope amplitude, 0 = none (retail none).
+    pub ocean_swell: Option<f32>,
+    /// Wavelength of the longest swell in metres.
+    pub ocean_swell_length: Option<f32>,
+    /// Speed of the longest swell in m/s.
+    pub ocean_swell_speed: Option<f32>,
 }
 impl WaterLookPatch {
     pub fn validate(&self) -> bool {
@@ -172,6 +178,9 @@ impl WaterLookPatch {
         ok(self.ripple_scale, 0.1, 16.0)
             && ok(self.flowing_ripple_scale, 0.1, 16.0)
             && ok(self.shallow_splash, 0.0, 2.0)
+            && ok(self.ocean_swell, 0.0, 0.3)
+            && ok(self.ocean_swell_length, 1.0, 400.0)
+            && ok(self.ocean_swell_speed, 0.0, 40.0)
             && ok(self.reflection_blur, 0.0, 8.0)
             && self.reflection_tint.is_none_or(|t| t.iter().all(|&c| range(c, 0.0, 4.0)))
             && ok(self.wave_rate, 0.0, 4.0)

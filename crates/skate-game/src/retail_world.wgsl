@@ -165,7 +165,26 @@ fn fragment(i: VertexOutput) -> @location(0) vec4<f32> {
             overlay=bindings::sample_macro_map(slot,vec2<f32>(uv_overlay.x,1.0-uv_overlay.y),g_macro).r;
         }
         let tonedown=2.0*p.water[1].z*saturate(dot(c1,frame_state.pca[6])+overlay);
-        let nt=normalize(max(abs(normalize(mix(vec3<f32>(0.0,0.0,1.0),pca,tonedown))),vec3<f32>(0.001)));
+        var nt=normalize(max(abs(normalize(mix(vec3<f32>(0.0,0.0,1.0),pca,tonedown))),vec3<f32>(0.001)));
+        // Water look (water_look.rs, not retail): calm open-sea swells, shading only (the ocean mesh is far too
+        // coarse to move). Three sines, each at its deep-water speed for its length; each fades once a pixel covers a
+        // good part of its wavelength, so the far sea does not shimmer. Amplitude 0 (retail) skips it.
+        let swell=frame_state.ocean_swell;
+        if swell.x>0.0 {
+            let px=max(length(dp1.xz),length(dp2.xz));
+            var slope=vec2<f32>(0.0);
+            let dirs=array<vec2<f32>,3>(vec2<f32>(0.8,0.6),vec2<f32>(0.97,-0.24),vec2<f32>(0.42,0.91));
+            let lens=array<f32,3>(1.0,0.61,1.37);
+            let amps=array<f32,3>(1.0,0.55,0.45);
+            for (var w=0u; w<3u; w++) {
+                let len=swell.y*lens[w];
+                let k=6.2831853/len;
+                let speed=swell.z*sqrt(lens[w]);
+                let fade=1.0-smoothstep(0.1,0.35,px/len);
+                slope+=dirs[w]*(amps[w]*fade*cos(k*(dot(dirs[w],i.world_position.xz)-speed*frame_state.clock.x)));
+            }
+            nt=normalize(nt+vec3<f32>(-slope*swell.x,0.0));
+        }
         let n=nt.xzy;
         let rv=vd-2.0*n*dot(vd,n);
         var cube=vec3<f32>(0.0);

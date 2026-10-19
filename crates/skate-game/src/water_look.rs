@@ -52,6 +52,14 @@ pub(crate) struct WaterLook {
     /// the deep-water plume; 0 = none. Retail shows none in shallow water (doc 09), so Better Water only (user
     /// 2026-10-19: "the fountain splash should only haopen in better water mode").
     pub shallow_splash: f32,
+    /// Calm swells on the open sea (family 31 `ocean.default`, seen from Industrial's Tanker spawn) as a slope
+    /// amplitude; 0 = none. Shading only, the ocean mesh is too coarse to move. Retail has none (user 2026-10-19:
+    /// "just make it look nice and calm but moving").
+    pub ocean_swell: f32,
+    /// Wavelength of the longest swell (m); the other two are 0.61x and 1.37x.
+    pub ocean_swell_length: f32,
+    /// Speed of the longest swell (m/s); the others move at the deep-water speed for their length.
+    pub ocean_swell_speed: f32,
 }
 
 impl WaterLook {
@@ -68,6 +76,9 @@ impl WaterLook {
         flowing_water: false,
         flowing_ripple_scale: 1.,
         shallow_splash: 0.,
+        ocean_swell: 0.,
+        ocean_swell_length: 40.,
+        ocean_swell_speed: 7.9,
     };
 
     fn apply(&mut self, patch: &WaterLookPatch) {
@@ -83,11 +94,19 @@ impl WaterLook {
         if let Some(v) = patch.flowing_water { self.flowing_water = v; }
         if let Some(v) = patch.flowing_ripple_scale { self.flowing_ripple_scale = v; }
         if let Some(v) = patch.shallow_splash { self.shallow_splash = v; }
+        if let Some(v) = patch.ocean_swell { self.ocean_swell = v; }
+        if let Some(v) = patch.ocean_swell_length { self.ocean_swell_length = v; }
+        if let Some(v) = patch.ocean_swell_speed { self.ocean_swell_speed = v; }
     }
 
     /// `FrameState.water_tint.w`: the flowing water's ripple scale, 0 = the look stays off flowing water.
     pub fn flowing_lane(&self) -> f32 {
         if self.flowing_water { self.flowing_ripple_scale.max(0.1) } else { 0. }
+    }
+
+    /// `FrameState.ocean_swell`: amplitude, wavelength, speed of the longest swell; amplitude 0 = off.
+    pub fn ocean_swell_row(&self) -> [f32; 4] {
+        [self.ocean_swell.max(0.), self.ocean_swell_length.max(1.), self.ocean_swell_speed.max(0.), 0.]
     }
 
     /// What the shader and clock use: retail values for every piece when the
@@ -112,6 +131,9 @@ impl Default for WaterLook {
             flowing_water: true,
             flowing_ripple_scale: 2.,
             shallow_splash: 0.5,
+            ocean_swell: 0.05,
+            ocean_swell_length: 40.,
+            ocean_swell_speed: 7.9,
         }
     }
 }
@@ -222,6 +244,22 @@ mod tests {
         std::fs::write(WaterLookSettings::path(&assets), br#"{"ripples":2}"#).unwrap();
         assert_eq!(WaterLookSettings::load(&assets).selected, WaterLook::default());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ocean_swells_only_with_better_water_and_mods_can_set_them() {
+        assert_eq!(WaterLook::RETAIL.ocean_swell_row()[0], 0., "off: the sea keeps the retail shading");
+        assert_eq!(WaterLook::default().effective().ocean_swell_row()[0], 0., "Better Water off by default");
+        let on = WaterLook { enabled: true, ..WaterLook::default() }.effective().ocean_swell_row();
+        assert!(on[0] > 0. && on[0] <= 0.1, "calm: {on:?}");
+        let mut s = WaterLookSettings::new(WaterLook { enabled: true, ..WaterLook::default() }, PathBuf::from("unused/water-look.json"));
+        let patch = WaterLookPatch { ocean_swell: Some(0.), ocean_swell_length: Some(80.), ..Default::default() };
+        assert!(patch.validate());
+        assert!(!WaterLookPatch { ocean_swell: Some(1.), ..Default::default() }.validate());
+        s.patch("calm-sea", Some(patch)).unwrap();
+        assert_eq!(s.active().effective().ocean_swell_row()[..2], [0., 80.]);
+        s.clear_owner(Some("calm-sea"));
+        assert!(s.active().effective().ocean_swell_row()[0] > 0.);
     }
 
     #[test]
